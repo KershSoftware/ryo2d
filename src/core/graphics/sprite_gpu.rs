@@ -33,7 +33,6 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
-use super::CameraView;
 use super::camera_gpu::CameraUniforms;
 use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
 use crate::core::asset::SpriteHandle;
@@ -1425,16 +1424,9 @@ impl BatchCollector {
     });
   }
 
-  /// Push every collected sprite onto `list` as `kind`, in submission order,
-  /// with its texture registered in `gpu`. The sprites are placed in screen
-  /// space; `camera` takes them into the world it draws.
-  pub(crate) fn push_to(
-    &self,
-    list: &mut DrawList,
-    kind: DrawKind,
-    gpu: &mut SpriteGpuRenderer,
-    camera: &CameraView,
-  ) {
+  /// Push every collected sprite (world-space instances) onto `list` as
+  /// `kind`, in submission order, with its texture registered in `gpu`.
+  pub(crate) fn push_to(&self, list: &mut DrawList, kind: DrawKind, gpu: &mut SpriteGpuRenderer) {
     let textures: Vec<TextureId> = self
       .sprites
       .iter()
@@ -1442,10 +1434,15 @@ impl BatchCollector {
       .collect();
     for item in &self.items {
       if let Some(&texture) = textures.get(item.sprite) {
-        let instance = screen_to_world(camera, item.instance);
-        list.push_sprite(kind, item.z_order, texture, item.shading, instance);
+        list.push_sprite(kind, item.z_order, texture, item.shading, item.instance);
       }
     }
+  }
+
+  /// The collected instances, in submission order (tests).
+  #[cfg(test)]
+  pub(crate) fn instances(&self) -> impl Iterator<Item = &SpriteInstance> {
+    self.items.iter().map(|item| &item.instance)
   }
 
   /// Get the total number of sprites collected
@@ -1460,23 +1457,6 @@ impl BatchCollector {
     self.sprites.clear();
     self.sprite_index.clear();
   }
-}
-
-/// A screen-space instance in the world `camera` draws: its basis turned
-/// and scaled by the inverse view, its centre through `screen_to_world`.
-fn screen_to_world(camera: &CameraView, mut instance: SpriteInstance) -> SpriteInstance {
-  let turn = glam::Vec2::from_angle(camera.rotation);
-  for column in 0..2 {
-    let [x, y, ..] = instance.transform[column];
-    let world = turn.rotate(glam::Vec2::new(x, y)) / camera.scale;
-    instance.transform[column][0] = world.x;
-    instance.transform[column][1] = world.y;
-  }
-  let [x, y, ..] = instance.transform[2];
-  let center = camera.screen_to_world(glam::Vec2::new(x, y));
-  instance.transform[2][0] = center.x;
-  instance.transform[2][1] = center.y;
-  instance
 }
 
 #[cfg(test)]
@@ -1634,12 +1614,7 @@ mod tests {
       collector.add(sprite, false, SpriteInstance::new(), *z);
     }
     let mut list = DrawList::default();
-    collector.push_to(
-      &mut list,
-      DrawKind::Sprite,
-      renderer,
-      &CameraView::default(),
-    );
+    collector.push_to(&mut list, DrawKind::Sprite, renderer);
     list.sorted();
     list
   }

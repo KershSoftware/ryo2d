@@ -697,6 +697,6 @@ impl Scene for MenuScene {
     // Collect particles for rendering (uses Z_PLATFORM - 1 set in emitter)
     self
       .particle_system
-      .collect_for_render(gpu.world, gpu.camera(), gpu.batch);
+      .collect_for_render(gpu.world, gpu.batch);
   }
 }

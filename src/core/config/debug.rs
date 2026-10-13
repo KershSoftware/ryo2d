@@ -86,7 +86,7 @@
 //! Values set programmatically will override config file settings.
 
 use crate::core::ecs::{GlobalTransform, Vec2, Velocity, Without, World};
-use crate::core::graphics::{Camera2d, CameraView, GroupedCollider};
+use crate::core::graphics::{Camera2d, GroupedCollider};
 use crate::core::physics::{Collider, ColliderShape};
 use crate::core::trail::{Line2D, TrailStyle};
 use crate::core::ui::{Color, UiContext};
@@ -394,113 +394,8 @@ pub mod colors {
 // Debug Rendering Functions
 // ============================================================================
 
-/// A debug shape in whole screen pixels, the unit both the pixel-buffer
-/// overlays and the GPU world path's lines are built from.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum OverlayShape {
-  /// A one-pixel rectangle outline
-  Rect { x: i32, y: i32, w: i32, h: i32 },
-  /// A one-pixel circle outline
-  Circle { x: i32, y: i32, radius: i32 },
-  /// A one-pixel line from the first pixel to the second
-  Line { x0: i32, y0: i32, x1: i32, y1: i32 },
-  /// Origin crosshair arms (a horizontal and a vertical bar) centred here
-  Cross { x: i32, y: i32 },
-}
-
-/// Half the length of an origin crosshair arm, in pixels.
-const CROSS_SIZE: i32 = 4;
-
-/// The collider outlines, `Collider` and `GroupedCollider` components both,
-/// drawn where physics simulates them.
-fn collider_shapes(world: &mut World, camera: &CameraView) -> Vec<(OverlayShape, [u8; 4])> {
-  let mut shapes = Vec::new();
-  let rect = |center: Vec2, size: Vec2| {
-    let (w, h) = (
-      (size.x * camera.scale) as i32,
-      (size.y * camera.scale) as i32,
-    );
-    let (sx, sy) = camera.world_to_screen_xy(center.x, center.y);
-    OverlayShape::Rect {
-      x: sx as i32 - w / 2,
-      y: sy as i32 - h / 2,
-      w,
-      h,
-    }
-  };
-
-  for (global, collider) in world.query::<(&GlobalTransform, &Collider)>().iter(world) {
-    let center = collider.world_center(global.translation());
-    let shape = match collider.shape {
-      ColliderShape::Box { width, height } => rect(center, Vec2::new(width, height)),
-      ColliderShape::Circle { radius } => {
-        let (sx, sy) = camera.world_to_screen_xy(center.x, center.y);
-        OverlayShape::Circle {
-          x: sx as i32,
-          y: sy as i32,
-          radius: (radius * camera.scale) as i32,
-        }
-      }
-    };
-    shapes.push((shape, colors::COLLIDER));
-  }
-
-  // A grouped collider spans `offset` to `offset + size` from its origin
-  for (global, grouped) in world
-    .query::<(&GlobalTransform, &GroupedCollider)>()
-    .iter(world)
-  {
-    let size = Vec2::new(grouped.width, grouped.height);
-    let center = global.translation() + Vec2::new(grouped.offset_x, grouped.offset_y) + size / 2.0;
-    shapes.push((rect(center, size), colors::COLLIDER));
-  }
-  shapes
-}
-
-/// The velocity vectors of moving entities.
-fn velocity_shapes(world: &mut World, camera: &CameraView) -> Vec<(OverlayShape, [u8; 4])> {
-  const VELOCITY_SCALE: f32 = 0.1; // Scale factor for visualizing velocity
-
-  let mut shapes = Vec::new();
-  for (global, velocity) in world.query::<(&GlobalTransform, &Velocity)>().iter(world) {
-    if velocity.dx.abs() < 0.1 && velocity.dy.abs() < 0.1 {
-      continue;
-    }
-    let origin = global.translation();
-    let (screen_x, screen_y) = camera.world_to_screen_xy(origin.x, origin.y);
-    let end_x = screen_x + velocity.dx * VELOCITY_SCALE * camera.scale;
-    let end_y = screen_y + velocity.dy * VELOCITY_SCALE * camera.scale;
-    shapes.push((
-      OverlayShape::Line {
-        x0: screen_x as i32,
-        y0: screen_y as i32,
-        x1: end_x as i32,
-        y1: end_y as i32,
-      },
-      colors::VELOCITY,
-    ));
-  }
-  shapes
-}
-
-/// The origin crosshairs of every placed entity (cameras are not drawn).
-fn origin_shapes(world: &mut World, camera: &CameraView) -> Vec<(OverlayShape, [u8; 4])> {
-  world
-    .query_filtered::<&GlobalTransform, Without<Camera2d>>()
-    .iter(world)
-    .map(|global| {
-      let origin = global.translation();
-      let (screen_x, screen_y) = camera.world_to_screen_xy(origin.x, origin.y);
-      (
-        OverlayShape::Cross {
-          x: screen_x as i32,
-          y: screen_y as i32,
-        },
-        colors::ORIGIN,
-      )
-    })
-    .collect()
-}
+/// Half the length of an origin crosshair arm, in screen pixels.
+const CROSS_SIZE: f32 = 4.0;
 
 /// Which debug overlays [`overlay_lines`] builds.
 #[derive(Debug, Clone, Copy, Default)]
@@ -510,63 +405,69 @@ pub(crate) struct OverlayFlags {
   pub(crate) origins: bool,
 }
 
-/// The enabled debug overlays as unlit, one-pixel lines on top of everything,
-/// for the world passes. The lines use the `Soft` style: a
+/// The enabled debug overlays as unlit world-space lines on top of
+/// everything: collider outlines where physics puts them, velocity arrows from
+/// the origin and origin crosses. `camera_scale` (screen pixels per world
+/// unit) keeps them one pixel wide. The lines use the `Soft` style: a
 /// pixel-wide `Solid` line is anti-aliased into a faint smear.
 pub(crate) fn overlay_lines(
   world: &mut World,
-  camera: &CameraView,
   flags: OverlayFlags,
+  camera_scale: f32,
 ) -> Vec<Line2D> {
-  let mut shapes = Vec::new();
-  if flags.colliders {
-    shapes.extend(collider_shapes(world, camera));
-  }
-  if flags.velocities {
-    shapes.extend(velocity_shapes(world, camera));
-  }
-  if flags.origins {
-    shapes.extend(origin_shapes(world, camera));
-  }
-
-  // Lines are in world units: a pixel is 1 / zoom wide
-  let width = 1.0 / camera.scale;
-  let point = |x: f32, y: f32| {
-    let (wx, wy) = camera.screen_to_world_xy(x, y);
-    Vec2::new(wx, wy)
+  let pixel = if camera_scale.is_finite() && camera_scale > 0.0 {
+    1.0 / camera_scale
+  } else {
+    1.0
   };
   let line = |points: Vec<Vec2>, color: [u8; 4]| {
     Line2D::new(
       points,
       Color::new(color[0], color[1], color[2], color[3]),
-      width,
+      pixel,
     )
     .with_style(TrailStyle::Soft)
     .with_lighting(false)
     .with_z_order(i32::MAX)
   };
-
   let mut lines = Vec::new();
-  for (shape, color) in shapes {
-    match shape {
-      // Each edge is the run of pixels the pixel-buffer outline sets
-      OverlayShape::Rect { x, y, w, h } => {
-        let (x0, y0, x1, y1) = (x as f32, y as f32, (x + w) as f32, (y + h) as f32);
-        for (a, b) in [
-          ((x0, y0 + 0.5), (x1, y0 + 0.5)),
-          ((x0, y1 - 0.5), (x1, y1 - 0.5)),
-          ((x0 + 0.5, y0), (x0 + 0.5, y1)),
-          ((x1 - 0.5, y0), (x1 - 0.5, y1)),
-        ] {
-          lines.push(line(vec![point(a.0, a.1), point(b.0, b.1)], color));
-        }
-      }
-      OverlayShape::Circle { x, y, radius } => {
-        if radius > 0 {
-          let center = point(x as f32 + 0.5, y as f32 + 0.5);
-          let radius = radius as f32 / camera.scale;
-          let mut circle = Line2D::circle(center, radius, Color::WHITE, width, 32);
-          circle.set_color(Color::new(color[0], color[1], color[2], color[3]));
+  // A one-pixel line half a pixel inside an edge covers whole pixels
+  let half = pixel / 2.0;
+  // Origins snap down to a whole pixel, so crosses and arrows stay crisp
+  let snap = |point: Vec2| (point / pixel).floor() * pixel;
+  let rect = |lines: &mut Vec<Line2D>, center: Vec2, size: Vec2| {
+    let (min, max) = (center - size / 2.0, center + size / 2.0);
+    for (a, b) in [
+      (
+        Vec2::new(min.x, min.y + half),
+        Vec2::new(max.x, min.y + half),
+      ),
+      (
+        Vec2::new(min.x, max.y - half),
+        Vec2::new(max.x, max.y - half),
+      ),
+      (
+        Vec2::new(min.x + half, min.y),
+        Vec2::new(min.x + half, max.y),
+      ),
+      (
+        Vec2::new(max.x - half, min.y),
+        Vec2::new(max.x - half, max.y),
+      ),
+    ] {
+      lines.push(line(vec![a, b], colors::COLLIDER));
+    }
+  };
+
+  if flags.colliders {
+    for (global, collider) in world.query::<(&GlobalTransform, &Collider)>().iter(world) {
+      let center = collider.world_center(global.translation());
+      match collider.shape {
+        ColliderShape::Box { width, height } => rect(&mut lines, center, Vec2::new(width, height)),
+        ColliderShape::Circle { radius } => {
+          let mut circle = Line2D::circle(center, radius, Color::WHITE, pixel, 32);
+          let c = colors::COLLIDER;
+          circle.set_color(Color::new(c[0], c[1], c[2], c[3]));
           lines.push(
             circle
               .with_style(TrailStyle::Soft)
@@ -575,19 +476,56 @@ pub(crate) fn overlay_lines(
           );
         }
       }
-      OverlayShape::Line { x0, y0, x1, y1 } => {
-        let a = point(x0 as f32 + 0.5, y0 as f32 + 0.5);
-        let b = point(x1 as f32 + 0.5, y1 as f32 + 0.5);
-        lines.push(line(vec![a, b], color));
+    }
+    // A grouped collider spans `offset` to `offset + size` from its origin
+    for (global, grouped) in world
+      .query::<(&GlobalTransform, &GroupedCollider)>()
+      .iter(world)
+    {
+      let size = Vec2::new(grouped.width, grouped.height);
+      let center =
+        global.translation() + Vec2::new(grouped.offset_x, grouped.offset_y) + size / 2.0;
+      rect(&mut lines, center, size);
+    }
+  }
+
+  if flags.velocities {
+    // Scale factor for visualizing velocity
+    const VELOCITY_SCALE: f32 = 0.1;
+    for (global, velocity) in world.query::<(&GlobalTransform, &Velocity)>().iter(world) {
+      if velocity.dx.abs() < 0.1 && velocity.dy.abs() < 0.1 {
+        continue;
       }
-      OverlayShape::Cross { x, y } => {
-        let (cx, cy) = (x as f32, y as f32);
-        let arm = CROSS_SIZE as f32;
-        let (h0, h1) = (point(cx - arm, cy + 0.5), point(cx + arm + 1.0, cy + 0.5));
-        let (v0, v1) = (point(cx + 0.5, cy - arm), point(cx + 0.5, cy + arm + 1.0));
-        lines.push(line(vec![h0, h1], color));
-        lines.push(line(vec![v0, v1], color));
-      }
+      let origin = snap(global.translation()) + Vec2::splat(half);
+      let end = origin + Vec2::new(velocity.dx, velocity.dy) * VELOCITY_SCALE;
+      lines.push(line(vec![origin, end], colors::VELOCITY));
+    }
+  }
+
+  if flags.origins {
+    // Cameras are not drawn
+    let arm = CROSS_SIZE * pixel;
+    for global in world
+      .query_filtered::<&GlobalTransform, Without<Camera2d>>()
+      .iter(world)
+    {
+      // Arms through the middle of the origin's pixel, `arm` either side
+      let origin = snap(global.translation());
+      let (row, column) = (origin.y + half, origin.x + half);
+      lines.push(line(
+        vec![
+          Vec2::new(origin.x - arm, row),
+          Vec2::new(origin.x + arm + pixel, row),
+        ],
+        colors::ORIGIN,
+      ));
+      lines.push(line(
+        vec![
+          Vec2::new(column, origin.y - arm),
+          Vec2::new(column, origin.y + arm + pixel),
+        ],
+        colors::ORIGIN,
+      ));
     }
   }
   lines
@@ -731,39 +669,31 @@ mod tests {
   use super::*;
 
   #[test]
-  fn overlay_lines_outline_colliders_where_physics_puts_them() {
-    use crate::core::ecs::{GlobalTransform, Transform};
+  fn collider_outlines_are_drawn_where_the_collider_is() {
+    use crate::core::ecs::Transform;
     let mut world = World::new();
-    let t = Transform::from_xy(100.0, 50.0);
     world.spawn((
-      t,
-      GlobalTransform::from_transform(&t),
+      Transform::from_xy(100.0, 50.0),
       Collider::box_collider(20.0, 10.0),
     ));
-    let camera = CameraView::compute(
-      glam::Vec2::new(400.0, 300.0),
-      0.0,
-      &crate::core::graphics::Camera2d::default(),
-      glam::Vec2::ZERO,
-      glam::Vec2::new(800.0, 600.0),
-    );
     let colliders = OverlayFlags {
       colliders: true,
       ..Default::default()
     };
-    let lines = overlay_lines(&mut world, &camera, colliders);
-    assert_eq!(lines.len(), 4, "a box is four edges");
-    let xs: Vec<f32> = lines
+    let lines = overlay_lines(&mut world, colliders, 1.0);
+    let points: Vec<Vec2> = lines
       .iter()
-      .flat_map(|line| line.points().iter().map(|p| p.x))
+      .flat_map(|line| line.points().iter().copied())
       .collect();
-    let min = xs.iter().copied().fold(f32::MAX, f32::min);
-    let max = xs.iter().copied().fold(f32::MIN, f32::max);
-    assert!(
-      (min - 90.0).abs() <= 1.0 && (max - 110.0).abs() <= 1.0,
-      "{min}..{max}"
+    // The outline spans the box (each edge half a pixel inside it)
+    let min = points.iter().copied().fold(Vec2::MAX, Vec2::min);
+    let max = points.iter().copied().fold(Vec2::MIN, Vec2::max);
+    assert_eq!(
+      (min, max),
+      (Vec2::new(90.0, 45.0), Vec2::new(110.0, 55.0)),
+      "{points:?}"
     );
-    assert!(overlay_lines(&mut world, &camera, OverlayFlags::default()).is_empty());
+    assert!(overlay_lines(&mut world, OverlayFlags::default(), 1.0).is_empty());
   }
 
   #[test]

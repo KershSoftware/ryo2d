@@ -955,7 +955,7 @@ impl DemoPage for ParticlesPage {
     // Collect particles for rendering
     self
       .particle_system
-      .collect_for_render(gpu.world, gpu.camera(), gpu.batch);
+      .collect_for_render(gpu.world, gpu.batch);
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {

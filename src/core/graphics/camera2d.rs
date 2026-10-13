@@ -197,18 +197,6 @@ impl CameraView {
     Vec2::from_angle(self.rotation).rotate(local / self.scale) + self.center
   }
 
-  /// [`world_to_screen`](Self::world_to_screen) for the engine's per-axis code.
-  pub(crate) fn world_to_screen_xy(&self, x: f32, y: f32) -> (f32, f32) {
-    let screen = self.world_to_screen(Vec2::new(x, y));
-    (screen.x, screen.y)
-  }
-
-  /// [`screen_to_world`](Self::screen_to_world) for the engine's per-axis code.
-  pub(crate) fn screen_to_world_xy(&self, x: f32, y: f32) -> (f32, f32) {
-    let world = self.screen_to_world(Vec2::new(x, y));
-    (world.x, world.y)
-  }
-
   /// Whether the world box `min..max` can be seen.
   pub fn is_visible(&self, min: Vec2, max: Vec2) -> bool {
     max.x > self.bounds.left

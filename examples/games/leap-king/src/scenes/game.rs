@@ -3663,6 +3663,6 @@ impl Scene for GameScene {
     // Collect particles for rendering
     self
       .particle_system
-      .collect_for_render(gpu.world, gpu.camera(), gpu.batch);
+      .collect_for_render(gpu.world, gpu.batch);
   }
 }

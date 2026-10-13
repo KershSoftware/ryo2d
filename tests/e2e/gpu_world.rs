@@ -793,3 +793,21 @@ fn pixel_art_sprites_land_on_whole_pixels() {
     );
   }
 }
+
+#[test]
+fn render_gpu_sprites_are_placed_in_the_world() {
+  // A render_gpu sprite at world (40, 32) shows 10 px further left when the
+  // camera moves 10 px right
+  let scene = Fixture::new(|ctx| ctx.camera().set_position(42.0, 32.0)).with_gpu_sprite(
+    solid("gpu-world", 4, RED),
+    40.0,
+    32.0,
+    4.0,
+    0,
+  );
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  assert_eq!(frame.get_pixel(30, 32).0, RED);
+  assert_ne!(frame.get_pixel(40, 32).0, RED);
+}

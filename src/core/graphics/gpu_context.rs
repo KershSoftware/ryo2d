@@ -101,7 +101,9 @@ impl<'a> GpuRenderContext<'a> {
     self.camera
   }
 
-  /// Add a sprite instance drawing `sprite`'s texture.
+  /// Add a sprite instance drawing `sprite`'s texture. Instances are in
+  /// world space (their transform's centre is a world position); for
+  /// something fixed on screen, place it with `camera().screen_to_world`.
   ///
   /// The texture is uploaded the first time a frame draws it, and dropped
   /// once no frame has drawn it for 600 frames. This is the low-level API

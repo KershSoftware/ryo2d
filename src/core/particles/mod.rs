@@ -36,7 +36,7 @@
 //! }
 //!
 //! fn render(&mut self, gpu: &mut GpuRenderContext) {
-//!     self.particles.collect_for_render(gpu.world, gpu.camera(), gpu.batch);
+//!     self.particles.collect_for_render(gpu.world, gpu.batch);
 //! }
 //!
 //! // Spawn a fire effect
@@ -99,7 +99,7 @@ use std::collections::HashMap;
 
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Entity, GlobalTransform, SpriteEffect, World};
-use crate::core::graphics::{BatchCollector, CameraView, SpriteInstance};
+use crate::core::graphics::{BatchCollector, SpriteInstance};
 use crate::core::messages::register_message;
 use crate::core::physics::{Collider, ColliderShape};
 use rand::rngs::StdRng;
@@ -796,12 +796,7 @@ impl ParticleSystem {
   ///
   /// Call this in the render phase to add particles to the batch collector.
   /// The camera is used to convert world positions to screen positions.
-  pub fn collect_for_render(
-    &self,
-    world: &World,
-    camera: &CameraView,
-    collector: &mut BatchCollector,
-  ) {
+  pub fn collect_for_render(&self, world: &World, collector: &mut BatchCollector) {
     if self.particles.is_empty() {
       return;
     }
@@ -819,27 +814,16 @@ impl ParticleSystem {
         )
       })
       .collect();
-    let zoom = camera.scale;
 
     for p in &self.particles {
       let Some((sprite, effect, z_order)) = looks.get(&p.emitter_entity) else {
         continue;
       };
 
-      // Convert world position to screen position
-      let (screen_x, screen_y) = camera.world_to_screen_xy(p.x, p.y);
-
-      // Scale size by camera zoom
-      let scaled_size = p.particle.size * zoom;
-
-      // Build sprite instance (centered on position)
-      let mut instance = SpriteInstance::new().with_transform(
-        screen_x - scaled_size * 0.5,
-        screen_y - scaled_size * 0.5,
-        p.particle.rotation,
-        scaled_size,
-        scaled_size,
-      );
+      // Centred on the particle, sized in world units
+      let size = p.particle.size;
+      let mut instance =
+        SpriteInstance::new().with_transform(p.x, p.y, p.particle.rotation, size, size);
 
       // Apply tint from particle color
       instance = instance.with_tint(p.particle.color, p.particle.color.a as f32 / 255.0);
@@ -850,6 +834,27 @@ impl ParticleSystem {
 
       collector.add(sprite, effect.is_some(), instance, *z_order);
     }
+  }
+
+  /// Add one particle of `size` at `position` for `emitter` (tests).
+  #[cfg(test)]
+  pub(crate) fn spawn_test_particle(
+    &mut self,
+    emitter: Entity,
+    position: crate::core::ecs::Vec2,
+    size: f32,
+  ) {
+    let mut particle = Particle::new();
+    particle.size = size;
+    particle.max_lifetime = 1.0;
+    self.particles.push(ParticleData {
+      particle,
+      x: position.x,
+      y: position.y,
+      emitter_entity: emitter,
+      stuck: false,
+      touching: false,
+    });
   }
 
   /// Get the total number of active particles.
@@ -873,7 +878,7 @@ mod tests {
   use super::*;
   use crate::core::asset::SpriteHandle;
   use crate::core::ecs::propagate::propagate_transforms;
-  use crate::core::ecs::{Disabled, Messages, Transform};
+  use crate::core::ecs::{Disabled, Messages, Transform, Vec2};
   use crate::core::graphics::Sprite;
   use crate::core::physics::Collider;
   use crate::core::systems::test_util;
@@ -1023,16 +1028,9 @@ mod tests {
     world.spawn((Transform::from_xy(10.0, 10.0), burst(2)));
     let hidden = world.spawn((Transform::from_xy(20.0, 20.0), burst(3))).id();
     update(&mut system, &mut world, 0.016);
-    let camera = crate::core::graphics::CameraView::compute(
-      glam::Vec2::ZERO,
-      0.0,
-      &crate::core::graphics::Camera2d::default(),
-      glam::Vec2::ZERO,
-      glam::Vec2::new(100.0, 100.0),
-    );
     let drawn = |world: &World| {
       let mut collector = BatchCollector::new();
-      system.collect_for_render(world, &camera, &mut collector);
+      system.collect_for_render(world, &mut collector);
       collector.sprite_count()
     };
     assert_eq!(drawn(&world), 5);
@@ -1581,6 +1579,27 @@ mod tests {
     assert!(
       scene.collisions().is_empty(),
       "a 10 px/s impact is below MIN_BOUNCE_EVENT_SPEED"
+    );
+  }
+
+  #[test]
+  fn particles_are_centred_on_their_world_position() {
+    let mut world = World::new();
+    let mut system = ParticleSystem::new();
+    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(2, 2, 255, 255, 255, 255), "dot");
+    let emitter = world
+      .spawn((
+        Transform::from_xy(100.0, 50.0),
+        ParticleEmitter::new(sprite).with_size(8.0, 8.0),
+      ))
+      .id();
+    system.spawn_test_particle(emitter, Vec2::new(100.0, 50.0), 8.0);
+    let mut collector = BatchCollector::new();
+    system.collect_for_render(&world, &mut collector);
+    let instance = collector.instances().next().unwrap();
+    assert_eq!(
+      (instance.transform[2][0], instance.transform[2][1]),
+      (100.0, 50.0)
     );
   }
 }

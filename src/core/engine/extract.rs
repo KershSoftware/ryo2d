@@ -107,7 +107,7 @@ impl Engine {
           velocities: self.config.debug.show_velocities,
           origins: self.config.debug.show_origins,
         };
-        for line in overlay_lines(&mut self.world, &camera, flags) {
+        for line in overlay_lines(&mut self.world, flags, camera.scale) {
           trails.add_line(&line, Vec2::ZERO);
         }
       }
@@ -150,7 +150,7 @@ impl Engine {
       self.draw_list.clear();
       self
         .batch_collector
-        .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu, &camera);
+        .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu);
       let entity_sprites = self.entity_drawer.collect(
         &mut self.world,
         &camera,

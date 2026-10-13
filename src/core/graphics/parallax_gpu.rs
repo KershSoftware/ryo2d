@@ -25,8 +25,10 @@
 
 use super::GpuRenderContext;
 use crate::core::asset::SpriteHandle;
+use crate::core::graphics::CameraView;
 use crate::core::graphics::parallax::TileMode;
 use crate::core::graphics::sprite_gpu::SpriteInstance;
+use glam::Vec2;
 
 /// One layer of a [`GpuParallaxBackground`], drawn as instanced GPU sprites.
 #[derive(Clone)]
@@ -104,71 +106,80 @@ impl GpuParallaxLayer {
     &self.sprite
   }
 
-  /// Compute sprite instances for this layer
-  fn compute_instances(
-    &self,
-    screen_width: u32,
-    _screen_height: u32,
-    camera_x: f32,
-    elapsed_time: f32,
-  ) -> Vec<SpriteInstance> {
-    let scaled_width = self.sprite_width as f32 * self.scale;
-    let scaled_height = self.sprite_height as f32 * self.scale;
+  /// How far the layer moves with the camera: 0 stays on screen, 1 stays in
+  /// the world.
+  pub fn with_scroll_speed(mut self, speed: f32) -> Self {
+    self.scroll_speed = speed;
+    self
+  }
 
-    if scaled_width <= 0.0 || scaled_height <= 0.0 {
+  /// A layer of a solid `width`x`height` sprite (tests).
+  #[cfg(test)]
+  pub(crate) fn test_layer(width: u32, height: u32) -> Self {
+    let sprite = SpriteHandle::from_sprite(
+      crate::core::graphics::Sprite::solid_rect(width, height, 255, 255, 255, 255),
+      "parallax-test",
+    );
+    Self::new(&sprite, 0.0, 0)
+  }
+
+  /// The layer's sprites as world-space instances: laid out in `view`'s
+  /// screen space (scrolled by the camera's centre times the scroll speed,
+  /// on both axes, and by the auto-scroll), then taken into the world.
+  fn world_instances(&self, view: &CameraView, elapsed_time: f32) -> Vec<SpriteInstance> {
+    let scale = self.scale * view.scale;
+    let scaled_width = self.sprite_width as f32 * scale;
+    let scaled_height = self.sprite_height as f32 * scale;
+    if !(scaled_width > 0.0 && scaled_height > 0.0) {
       return vec![];
     }
 
-    // Calculate total offset: camera-based parallax + time-based auto-scroll
-    let camera_offset = camera_x * self.scroll_speed;
-    let auto_offset = elapsed_time * self.auto_scroll_speed;
-    let total_offset = (camera_offset + auto_offset) * self.scale;
+    // Camera-based parallax plus time-based auto-scroll, in screen units
+    let camera = view.center * self.scroll_speed;
+    let total_offset = (camera.x + elapsed_time * self.auto_scroll_speed) * scale;
+    let y_pos = (self.y_offset - camera.y) * scale;
+    let screen_width = view.rect_size.x;
 
-    let y_pos = self.y_offset * self.scale;
-
+    let mut corners = Vec::new();
     match self.tile_mode {
-      TileMode::None => {
-        let x_pos = -total_offset;
-        vec![self.create_instance(x_pos, y_pos, scaled_width, scaled_height)]
-      }
-
+      TileMode::None => corners.push(Vec2::new(-total_offset, y_pos)),
       TileMode::Horizontal => {
-        let tiles_needed = (screen_width as f32 / scaled_width).ceil() as i32 + 1;
-        let mut instances = Vec::with_capacity(tiles_needed as usize);
-
+        let tiles_needed = (screen_width / scaled_width).ceil() as i32 + 1;
         for i in 0..tiles_needed {
           let x_pos = (i as f32 * scaled_width) - total_offset;
-          if x_pos + scaled_width >= 0.0 && x_pos < screen_width as f32 {
-            instances.push(self.create_instance(x_pos, y_pos, scaled_width, scaled_height));
+          if x_pos + scaled_width >= 0.0 && x_pos < screen_width {
+            corners.push(Vec2::new(x_pos, y_pos));
           }
         }
-
-        instances
       }
-
       TileMode::InfiniteScroll => {
-        let tiles_needed = (screen_width as f32 / scaled_width).ceil() as i32 + 2;
-        let mut instances = Vec::with_capacity(tiles_needed as usize);
-
+        let tiles_needed = (screen_width / scaled_width).ceil() as i32 + 2;
         let base_offset = total_offset.rem_euclid(scaled_width);
-
         for i in 0..tiles_needed {
-          let screen_x = (i as f32 * scaled_width) - base_offset - scaled_width;
-          if screen_x + scaled_width >= 0.0 && screen_x < screen_width as f32 {
-            instances.push(self.create_instance(screen_x, y_pos, scaled_width, scaled_height));
+          let x_pos = (i as f32 * scaled_width) - base_offset - scaled_width;
+          if x_pos + scaled_width >= 0.0 && x_pos < screen_width {
+            corners.push(Vec2::new(x_pos, y_pos));
           }
         }
-
-        instances
       }
     }
+    let size = Vec2::new(scaled_width, scaled_height);
+    corners
+      .into_iter()
+      .map(|corner| {
+        let center = view.screen_to_world(view.rect_min + corner + size / 2.0);
+        self.create_instance(center, size / view.scale, view.rotation)
+      })
+      .collect()
   }
 
-  fn create_instance(&self, x: f32, y: f32, width: f32, height: f32) -> SpriteInstance {
+  /// A world-space instance centred on `center`, turned with the camera so
+  /// it stays square to the screen.
+  fn create_instance(&self, center: Vec2, size: Vec2, rotation: f32) -> SpriteInstance {
     use crate::core::ui::Color;
 
     SpriteInstance::new()
-      .with_transform(x + width / 2.0, y + height / 2.0, 0.0, width, height)
+      .with_transform(center.x, center.y, rotation, size.x, size.y)
       .with_tint(
         Color::new(self.tint[0], self.tint[1], self.tint[2], self.tint[3]),
         1.0,
@@ -251,15 +262,10 @@ impl GpuParallaxBackground {
   ///
   /// Call it from [`Scene::render`](crate::core::scene::Scene::render).
   pub fn render(&self, ctx: &mut GpuRenderContext) {
-    let screen_width = ctx.screen_width();
-    let screen_height = ctx.screen_height();
-    let camera_x = ctx.camera().center.x;
-
+    // Parallax follows the main camera; other cameras see it where it sits
+    let view = ctx.camera();
     for layer in &self.layers {
-      let instances =
-        layer.compute_instances(screen_width, screen_height, camera_x, self.elapsed_time);
-
-      for instance in instances {
+      for instance in layer.world_instances(view, self.elapsed_time) {
         ctx.add_sprite_instance(&layer.sprite, instance, layer.z_order, false);
       }
     }
@@ -352,5 +358,34 @@ impl GpuParallaxBuilder {
       bg.add_layer(layer);
     }
     bg
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::graphics::Camera2d;
+
+  #[test]
+  fn a_layer_scrolls_with_the_camera_on_both_axes() {
+    let layer = GpuParallaxLayer::test_layer(64, 64).with_scroll_speed(0.5);
+    let near = CameraView::compute(
+      Vec2::new(100.0, 100.0),
+      0.0,
+      &Camera2d::default(),
+      Vec2::ZERO,
+      Vec2::new(64.0, 64.0),
+    );
+    let far = CameraView::compute(
+      Vec2::new(120.0, 140.0),
+      0.0,
+      &Camera2d::default(),
+      Vec2::ZERO,
+      Vec2::new(64.0, 64.0),
+    );
+    let a = layer.world_instances(&near, 0.0)[0].transform[2];
+    let b = layer.world_instances(&far, 0.0)[0].transform[2];
+    // Half the camera's movement in world space: 10 right and 20 down
+    assert_eq!((b[0] - a[0], b[1] - a[1]), (10.0, 20.0));
   }
 }
