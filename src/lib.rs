@@ -113,6 +113,12 @@ pub mod prelude {
     AnimatedSprite, Camera, Gpu, GpuRenderContext, Presentation, ScreenMapping, Sprite,
   };
 
+  // Cameras
+  pub use crate::core::graphics::{
+    Camera2d, CameraBounds, CameraClear, CameraShake, CameraTarget, CameraView, MainCamera,
+    Projection, RenderLayers, RenderTarget, Viewport,
+  };
+
   // Tiled rendering
   pub use crate::core::graphics::{
     CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart,

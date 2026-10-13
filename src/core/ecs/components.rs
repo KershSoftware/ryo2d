@@ -4,16 +4,16 @@ use serde::{Deserialize, Serialize};
 
 use super::kernel::Component;
 
-/// Common render layers for organising draw order.
+/// Common z-order layers for organising draw order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RenderLayer {
+pub enum ZLayer {
   Background = -1000,
   Default = 0,
   Foreground = 1000,
   UI = 2000,
 }
 
-impl RenderLayer {
+impl ZLayer {
   pub fn as_z_order(self) -> i32 {
     self as i32
   }
@@ -58,7 +58,7 @@ mod tests {
 
   #[test]
   fn render_layers_order_by_z() {
-    assert!(RenderLayer::Background.as_z_order() < RenderLayer::Default.as_z_order());
-    assert!(RenderLayer::Foreground.as_z_order() < RenderLayer::UI.as_z_order());
+    assert!(ZLayer::Background.as_z_order() < ZLayer::Default.as_z_order());
+    assert!(ZLayer::Foreground.as_z_order() < ZLayer::UI.as_z_order());
   }
 }

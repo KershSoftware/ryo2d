@@ -17,7 +17,7 @@ struct ViewportUniform {
 
 /// Which viewport transform a composite uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Viewport {
+pub(crate) enum CompositeViewport {
   /// Letterboxed/scaled to the window (the presented surface).
   Letterboxed,
   /// 1:1 at game resolution (captures).
@@ -296,11 +296,11 @@ impl Compositor {
     target: &wgpu::TextureView,
     source: &wgpu::TextureView,
     include_ui: bool,
-    viewport: Viewport,
+    viewport: CompositeViewport,
   ) {
     let uniform = match viewport {
-      Viewport::Letterboxed => &self.uniform_buffer,
-      Viewport::Identity => &self.identity_uniform_buffer,
+      CompositeViewport::Letterboxed => &self.uniform_buffer,
+      CompositeViewport::Identity => &self.identity_uniform_buffer,
     };
     let source_bind_group = self.bind_group(device, "Final Source Bind Group", source, uniform);
     let ui_bind_group = include_ui.then(|| {

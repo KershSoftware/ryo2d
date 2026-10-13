@@ -163,10 +163,10 @@ Shadows (all `Default`, builder style):
 - `BlobShadow { radius_x, radius_y, offset_y, color, height, max_height, height_scaling }`: `new()`, `circle(r)`, `ellipse(rx, ry)`, `radii(x, y)`, `offset(y)`, `color(c)`, `with_height_scale(bool)`, `max_height(f32)`, `set_height(&mut, f32)`, `effective_radius()`, `effective_alpha()`.
 - `ContactShadow { radius, intensity, offset_y, color, falloff }`: `new()`, `radius(f32)`, `intensity(f32)`, `offset(y)`, `color(c)`, `falloff(f32)`, `sharp(r)`, `soft(r)`, `alpha_at_distance(d)`.
 
-### Velocity, RenderLayer, YSort
+### Velocity, ZLayer, YSort
 
 - `Velocity { pub dx: f32, pub dy: f32 }` (pixels per second): `new(dx, dy)`, `zero()`, `from_vec2(Vec2)`, `as_vec2()`. Physics integrates it for `RigidBody` entities; nothing integrates it otherwise.
-- `RenderLayer { Background = -1000, Default = 0, Foreground = 1000, UI = 2000 }`: `as_z_order(self) -> i32`.
+- `ZLayer { Background = -1000, Default = 0, Foreground = 1000, UI = 2000 }`: `as_z_order(self) -> i32`.
 - `YSort { foot_offset, sort_offset, depth_scale_enabled, scale_min, scale_max, y_min, y_max }`: sort y-sorted entities by their feet, wherever the anchor is. `new()` (feet at the bottom, `foot_offset` 1.0), `with_foot_offset(0..1)`, `with_sort_offset(px)`, `with_depth_scale(scale_min, scale_max, y_min, y_max)`, `without_depth_scale()`, `calculate_sort_y(top_y, sprite_height)`, `calculate_depth_scale(y) -> (f32, f32)`. Order is by `z_order` first; within one `z_order`, plain sprites draw first, then y-sorted ones by sort y.
 
 ### Material, SpriteShader, SpriteEffect

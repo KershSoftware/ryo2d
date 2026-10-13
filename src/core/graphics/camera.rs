@@ -1,11 +1,15 @@
-use super::super::ecs::{Ease, Resource};
+use glam::Vec2;
 
-/// Camera shake state for impact feedback.
+use super::super::ecs::{Component, Ease, Resource};
+use super::camera2d::CameraBounds;
+
+/// Camera shake for impact feedback, on a camera entity.
 ///
 /// Uses a trauma-based system where trauma accumulates from impacts
-/// and decays over time. Shake intensity is controlled by an easing curve
-/// (default: InQuad for punchy feel).
-#[derive(Debug, Clone)]
+/// and decays over time (in real time, so it keeps going through pause and
+/// slow motion). Shake intensity is controlled by an easing curve (default:
+/// InQuad for punchy feel).
+#[derive(Component, Debug, Clone)]
 pub struct CameraShake {
   /// Current trauma level (0.0 to 1.0, clamped)
   trauma: f32,
@@ -79,8 +83,38 @@ impl CameraShake {
     (n1 + n2 + n3) / 1.75 // Normalize to [-1, 1]
   }
 
+  /// Add trauma (accumulates, clamped to 0.0-1.0): 0.1-0.3 for minor
+  /// impacts, 0.5-0.8 for explosions.
+  pub fn add_trauma(&mut self, amount: f32) {
+    self.trauma = (self.trauma + amount).clamp(0.0, 1.0);
+  }
+
+  /// The offset at full trauma, in screen units, and how fast trauma decays
+  /// per second (defaults 10.0 and 1.0).
+  pub fn configure(&mut self, max_offset: f32, decay_rate: f32) {
+    self.max_offset = max_offset;
+    self.decay_rate = decay_rate;
+  }
+
+  /// The current trauma (0.0 to 1.0).
+  pub fn trauma(&self) -> f32 {
+    self.trauma
+  }
+
+  /// Clear the trauma and the offset at once.
+  pub fn reset(&mut self) {
+    self.trauma = 0.0;
+    self.offset_x = 0.0;
+    self.offset_y = 0.0;
+  }
+
+  /// The current shake offset, in screen units.
+  pub fn offset(&self) -> Vec2 {
+    Vec2::new(self.offset_x, self.offset_y)
+  }
+
   /// Update shake state and calculate new offsets.
-  fn update(&mut self, dt: f32) {
+  pub(crate) fn update(&mut self, dt: f32) {
     if self.trauma <= 0.0 {
       self.offset_x = 0.0;
       self.offset_y = 0.0;
@@ -101,13 +135,13 @@ impl CameraShake {
     self.trauma = (self.trauma - self.decay_rate * dt).max(0.0);
   }
 
-  /// Set the intensity curve.
-  pub fn set_intensity_curve(&mut self, curve: Ease) {
+  /// Set how trauma maps to intensity.
+  pub fn set_curve(&mut self, curve: Ease) {
     self.intensity_curve = curve;
   }
 
-  /// Get the current intensity curve.
-  pub fn intensity_curve(&self) -> Ease {
+  /// How trauma maps to intensity.
+  pub fn curve(&self) -> Ease {
     self.intensity_curve
   }
 }
@@ -281,7 +315,7 @@ impl Camera {
   /// ctx.camera.add_trauma(0.7);
   /// ```
   pub fn add_trauma(&mut self, amount: f32) {
-    self.shake.trauma = (self.shake.trauma + amount).clamp(0.0, 1.0);
+    self.shake.add_trauma(amount);
   }
 
   /// Configure camera shake parameters.
@@ -298,8 +332,7 @@ impl Camera {
   /// ctx.camera.configure_shake(20.0, 0.5);
   /// ```
   pub fn configure_shake(&mut self, max_offset: f32, decay_rate: f32) {
-    self.shake.max_offset = max_offset;
-    self.shake.decay_rate = decay_rate;
+    self.shake.configure(max_offset, decay_rate);
   }
 
   /// Set the shake intensity curve.
@@ -320,12 +353,12 @@ impl Camera {
   /// ctx.camera.set_shake_curve(Ease::Linear);
   /// ```
   pub fn set_shake_curve(&mut self, curve: Ease) {
-    self.shake.set_intensity_curve(curve);
+    self.shake.set_curve(curve);
   }
 
   /// Get the current shake intensity curve.
   pub fn shake_curve(&self) -> Ease {
-    self.shake.intensity_curve()
+    self.shake.curve()
   }
 
   /// Get the current trauma level (0.0 to 1.0).
@@ -338,9 +371,7 @@ impl Camera {
   /// Unlike [`reset`](Self::reset), this only affects the shake state — camera position
   /// and zoom are preserved.
   pub fn reset_trauma(&mut self) {
-    self.shake.trauma = 0.0;
-    self.shake.offset_x = 0.0;
-    self.shake.offset_y = 0.0;
+    self.shake.reset();
   }
 
   /// Get the current shake offset in pixels.
@@ -376,29 +407,6 @@ impl Camera {
     // Camera center must be at least half-viewport away from world edges
     self.x = self.x.clamp(world_min_x + half_w, world_max_x - half_w);
     self.y = self.y.clamp(world_min_y + half_h, world_max_y - half_h);
-  }
-}
-
-/// Represents the visible world-space bounds of the camera
-#[derive(Debug, Clone, Copy)]
-pub struct CameraBounds {
-  pub left: f32,
-  pub right: f32,
-  pub top: f32,
-  pub bottom: f32,
-}
-
-impl CameraBounds {
-  pub fn width(&self) -> f32 {
-    self.right - self.left
-  }
-
-  pub fn height(&self) -> f32 {
-    self.bottom - self.top
-  }
-
-  pub fn contains(&self, x: f32, y: f32) -> bool {
-    x >= self.left && x <= self.right && y >= self.top && y <= self.bottom
   }
 }
 
@@ -661,7 +669,7 @@ mod tests {
   #[test]
   fn camera_shake_with_intensity_curve_builder() {
     let shake = CameraShake::new(15.0, 2.0).with_intensity_curve(Ease::InCubic);
-    assert_eq!(shake.intensity_curve(), Ease::InCubic);
+    assert_eq!(shake.curve(), Ease::InCubic);
   }
 
   #[test]

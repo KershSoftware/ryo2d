@@ -1,6 +1,6 @@
 //! UI upload, the final composite and frame capture
 
-use crate::core::graphics::Viewport;
+use crate::core::graphics::CompositeViewport;
 use crate::core::render::{FrameInfo, RenderContext, RenderPass, pass_ids};
 
 /// Uploads the UI buffer to the compositor's UI texture.
@@ -44,7 +44,7 @@ impl RenderPass for Composite {
       output_view,
       source,
       include_ui,
-      Viewport::Letterboxed,
+      CompositeViewport::Letterboxed,
     );
   }
 }
@@ -74,7 +74,7 @@ impl RenderPass for Capture {
       &view,
       source,
       include_ui,
-      Viewport::Identity,
+      CompositeViewport::Identity,
     );
     ctx.captured = true;
   }

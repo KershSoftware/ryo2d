@@ -30,7 +30,7 @@ src/core/ecs/
   interpolate.rs     snapshot_previous_transforms, render_global
   world_ext.rs       WorldExt (spawn_child, detach_keep_world, skip_interpolation), despawn_game_entities
   pooling.rs         Pool, PoolConfig, PoolExhaustedPolicy, PoolStats
-  components.rs      Velocity, RenderLayer
+  components.rs      Velocity, ZLayer
   renderable.rs      Renderable, RenderStyle, DropShadow, BlobShadow, ContactShadow
   material.rs        Material, SpriteShader, ShaderHandle, ShaderParams, ParamValue
   sprite_effects.rs  SpriteEffect

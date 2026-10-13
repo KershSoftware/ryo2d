@@ -26,7 +26,7 @@ mod y_sort;
 
 pub use glam::{Mat4, Vec2, Vec3, Vec4};
 
-pub use components::{RenderLayer, Velocity};
+pub use components::{Velocity, ZLayer};
 pub use kernel::*;
 pub use knockback::Knockback;
 pub use lerp::Lerp;

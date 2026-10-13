@@ -12,11 +12,13 @@
 pub mod animation;
 mod atlas;
 pub mod camera;
+pub mod camera2d;
 mod compositor;
 mod gpu_context;
 pub mod gpu_error;
 pub mod parallax;
 pub mod parallax_gpu;
+pub mod render_layers;
 pub mod renderer;
 pub mod screen;
 pub mod sprite;
@@ -28,12 +30,17 @@ pub use animation::{
   Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState, ValidatedAnimator,
 };
 pub(crate) use atlas::{AtlasSlot, SlotPage, TextureAtlas};
-pub use camera::{Camera, CameraBounds};
-pub(crate) use compositor::{Compositor, Viewport};
+pub use camera::{Camera, CameraShake};
+pub use camera2d::{
+  Camera2d, CameraBounds, CameraClear, CameraTarget, CameraView, MainCamera, Projection,
+  RenderTarget, Viewport,
+};
+pub(crate) use compositor::{CompositeViewport, Compositor};
 pub use gpu_context::GpuRenderContext;
 pub use gpu_error::GpuError;
 pub use parallax::TileMode;
 pub use parallax_gpu::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
+pub use render_layers::RenderLayers;
 pub use renderer::WgpuRenderer;
 pub use screen::{Presentation, ScreenMapping};
 pub use sprite::{AnimatedSprite, Sprite};
