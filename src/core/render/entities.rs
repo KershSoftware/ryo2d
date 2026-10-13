@@ -117,6 +117,8 @@ struct Drawable<'w> {
 pub(crate) struct EntityDrawer {
   /// Entities already warned about showing a camera its own target
   warned: HashSet<Entity>,
+  /// The shadow ellipse's texture, kept while the renderer keeps it
+  ellipse: Option<TextureId>,
 }
 
 impl EntityDrawer {
@@ -184,6 +186,7 @@ impl EntityDrawer {
       shows: None,
       filter: Filter::Default,
       lit: true,
+      ellipse: &mut self.ellipse,
     };
     for (_, drawable) in &items {
       let shows = drawable.renderable.target;
@@ -366,6 +369,8 @@ struct Emitter<'a> {
   /// The entity's filter, and whether it is lit (its shadows follow it)
   filter: Filter,
   lit: bool,
+  /// The shadow ellipse's texture once known (kept across frames)
+  ellipse: &'a mut Option<TextureId>,
 }
 
 impl Emitter<'_> {
@@ -378,18 +383,27 @@ impl Emitter<'_> {
   /// The shared white ellipse texture, uploaded if need be. One texture for
   /// every shadow: size comes from scaling, colour and opacity from the tint.
   fn ellipse_texture(&mut self) -> Option<TextureId> {
-    if let Some(id) = self.gpu.named_texture(ELLIPSE_ID) {
+    if let Some(id) = *self.ellipse
+      && self.gpu.is_texture(id)
+    {
       return Some(id);
     }
-    let sprite = Sprite::solid_ellipse(ELLIPSE_SIZE, ELLIPSE_SIZE, 255, 255, 255, 255);
-    self.gpu.upload_named(
-      self.device,
-      self.queue,
-      ELLIPSE_ID,
-      ELLIPSE_SIZE,
-      ELLIPSE_SIZE,
-      sprite.data(),
-    )
+    let id = match self.gpu.named_texture(ELLIPSE_ID) {
+      Some(id) => id,
+      None => {
+        let sprite = Sprite::solid_ellipse(ELLIPSE_SIZE, ELLIPSE_SIZE, 255, 255, 255, 255);
+        self.gpu.upload_named(
+          self.device,
+          self.queue,
+          ELLIPSE_ID,
+          ELLIPSE_SIZE,
+          ELLIPSE_SIZE,
+          sprite.data(),
+        )?
+      }
+    };
+    *self.ellipse = Some(id);
+    Some(id)
   }
 
   /// The texture behind `source`, uploaded on first use.

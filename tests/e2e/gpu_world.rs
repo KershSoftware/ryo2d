@@ -1294,3 +1294,37 @@ fn a_custom_shader_draws_with_two_blend_modes_in_one_frame() {
   assert_eq!(frame.get_pixel(16, 16).0, [120, 60, 30, 255]);
   assert!(frame.get_pixel(48, 16).0[0] > 120, "additive brightens");
 }
+
+#[test]
+fn a_fractional_quad_keeps_its_width_as_it_moves_in_pixel_art() {
+  /// A 3-texel-wide red bar scaled by 1.5 at `x`.
+  struct Bar(f32);
+  impl Scene for Bar {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let bar = SpriteHandle::from_sprite(Sprite::solid_rect(3, 4, 220, 30, 40, 255), "frac-bar");
+      ctx.world.spawn((
+        Transform::from_xy(self.0, 8.0).with_scale(Vec2::splat(1.5)),
+        Renderable::sprite(bar),
+      ));
+    }
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+  let width_at = |x: f32| {
+    let builder = EngineBuilder::new().pixel_art(32, 16).start_scene(Bar(x));
+    let mut engine = start(builder)?;
+    engine.step_frames(2).unwrap();
+    let frame = engine.frame().unwrap();
+    Some(
+      (0..32)
+        .filter(|&px| frame.get_pixel(px, 8).0 == RED)
+        .count(),
+    )
+  };
+  let Some(a) = width_at(10.2) else {
+    return;
+  };
+  let b = width_at(10.7).unwrap();
+  assert_eq!(a, b, "the bar is {a} then {b} pixels wide");
+}

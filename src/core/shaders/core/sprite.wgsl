@@ -61,12 +61,17 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     
     // Through the camera
     var clip = globals.view_proj * vec4<f32>(world_pos.xy, 0.0, 1.0);
-    // Pixel art: axis-aligned quads put their corners on whole pixels
+    // Pixel art: an axis-aligned quad's top-left and size round to whole
+    // pixels once, so it keeps its width as it moves
     let axis_aligned = abs(instance.transform0.y) < 1e-5 && abs(instance.transform1.x) < 1e-5;
     if globals.snap > 0.5 && axis_aligned {
-        let pixel = (clip.xy * vec2<f32>(0.5, -0.5) + 0.5) * globals.resolution;
-        let snapped = round(pixel) / globals.resolution;
-        clip = vec4<f32>((snapped - 0.5) * vec2<f32>(2.0, -2.0), clip.z, clip.w);
+        let p0 = to_pixel((transform * vec3<f32>(-0.5, -0.5, 1.0)).xy);
+        let p1 = to_pixel((transform * vec3<f32>(0.5, 0.5, 1.0)).xy);
+        let origin = round(min(p0, p1));
+        let size = round(abs(p1 - p0));
+        // A corner that maps to the larger pixel coordinate counts from the far side
+        let along = select(vertex.position + 0.5, 0.5 - vertex.position, p1 < p0);
+        clip = from_pixel(origin + along * size);
     }
     out.clip_position = clip;
     
@@ -79,6 +84,18 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.uv_bounds = instance.uv_bounds;
     
     return out;
+}
+
+// Target pixel coordinates (top-left origin) of a world position
+fn to_pixel(world: vec2<f32>) -> vec2<f32> {
+    let clip = globals.view_proj * vec4<f32>(world, 0.0, 1.0);
+    return (clip.xy * vec2<f32>(0.5, -0.5) + 0.5) * globals.resolution;
+}
+
+// The clip position of target pixel coordinates
+fn from_pixel(pixel: vec2<f32>) -> vec4<f32> {
+    let ndc = (pixel / globals.resolution - 0.5) * vec2<f32>(2.0, -2.0);
+    return vec4<f32>(ndc, 0.0, 1.0);
 }
 
 // Base fragment shader (no effects)
