@@ -280,7 +280,7 @@ for hit in ctx.messages::<CollisionStarted>() {
 | Clock | What it is | Use |
 |-------|------------|-----|
 | `ctx.time.real` | Wall clock, never scaled or paused | UI animation, real-time effects |
-| `ctx.time.game` | Real delta (capped at 250 ms) times `speed`; zero while paused or in hitstop | `set_speed(0.5)`, `pause()`, `resume()`, `is_paused()`, `hitstop(0.08)`, `elapsed()` |
+| `ctx.time.game` | Real delta times `speed`, capped at 250 ms of game time per frame; zero while paused or in hitstop | `set_speed(0.5)`, `pause()`, `resume()`, `is_paused()`, `hitstop(0.08)`, `elapsed()` |
 | `ctx.time.fixed` | Game time cut into constant steps | `timestep()`, `overstep_fraction()`, `step_count()` |
 
 - The step rate is `EngineBuilder::fixed_hz(hz)` (default 60). Slow motion runs fewer steps, pause and hitstop run none; `dt` never changes. Physics follows all of it.

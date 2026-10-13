@@ -32,7 +32,7 @@ impl RealClock {
 
 /// Game time: real time times `speed`, zero while paused or in hitstop,
 /// and never more than `max_delta` (or one fixed timestep, if longer) of
-/// real time per frame.
+/// game time per frame.
 #[derive(Debug, Clone)]
 pub struct GameClock {
   delta: Duration,
@@ -114,8 +114,8 @@ impl GameClock {
     self.hitstop = Duration::ZERO;
   }
 
-  /// The most real time one frame may add to game time. A fixed timestep
-  /// longer than this raises the cap to one step.
+  /// The most game time one frame may add, after speed scaling. A fixed
+  /// timestep longer than this raises the cap to one step.
   pub fn max_delta(&self) -> Duration {
     self.max_delta
   }
@@ -134,8 +134,8 @@ impl GameClock {
       self.delta = Duration::ZERO;
       return;
     }
-    let capped = real_delta.min(self.max_delta.max(min_cap));
-    self.delta = capped.mul_f32(self.speed);
+    let cap = self.max_delta.max(min_cap);
+    self.delta = real_delta.mul_f32(self.speed).min(cap);
     self.elapsed += self.delta;
   }
 }
@@ -403,7 +403,38 @@ mod tests {
     t.game.set_speed(f32::MAX);
     assert_eq!(t.game.speed(), GameClock::MAX_SPEED);
     t.advance(ms(250));
-    assert!((t.game.delta() - 0.25 * GameClock::MAX_SPEED).abs() < 1e-3);
+    // The cap applies to game time: one frame adds at most max_delta
+    assert!((t.game.delta() - 0.25).abs() < 1e-4, "{}", t.game.delta());
+  }
+
+  #[test]
+  fn the_cap_applies_after_speed_scaling() {
+    let mut t = Time::new(60);
+    t.game.set_speed(2.0);
+    t.advance(ms(200));
+    assert!((t.game.delta() - 0.25).abs() < 1e-4, "{}", t.game.delta());
+  }
+
+  #[test]
+  fn slow_motion_below_the_cap_is_unchanged() {
+    let mut t = Time::new(60);
+    t.game.set_speed(0.5);
+    t.advance(ms(100));
+    assert!((t.game.delta() - 0.05).abs() < 1e-4, "{}", t.game.delta());
+  }
+
+  #[test]
+  fn a_stall_at_100x_runs_at_most_fifteen_steps_at_60_hz() {
+    let mut t = Time::new(60);
+    t.game.set_speed(100.0);
+    t.advance(ms(250));
+    let mut steps = 0;
+    while t.try_expend_fixed_step() {
+      steps += 1;
+    }
+    // 250 ms at 60 Hz is 15 steps less the nanosecond rounding of the
+    // timestep, as in `max_delta_caps_a_stall`: at most 15, never 1500.
+    assert!((14..=15).contains(&steps), "{steps}");
   }
 
   #[test]

@@ -80,7 +80,7 @@ Engine::frame()
 | Clock | Delta | Used by |
 |-------|-------|---------|
 | `time.real` | wall clock, never scaled or paused | camera shake, UI animation (`ui.dt()`), console, timed post-process effects, the hitstop countdown, lighting and trail animation |
-| `time.game` | real delta capped at `max_delta` (250 ms, or one fixed timestep if longer), times `speed`, zero while paused or in hitstop | feeds the fixed clock; sprite effects animate on its elapsed time |
+| `time.game` | real delta times `speed`, capped at `max_delta` (250 ms, or one fixed timestep if longer) per frame, zero while paused or in hitstop | feeds the fixed clock; sprite effects animate on its elapsed time |
 | `time.fixed` | constant `timestep` (`1 / fixed_hz`, default 60 Hz) | `FixedUpdate`: `Scene::update`, juice, physics, scene fixed systems |
 
 - Slow motion runs fewer fixed steps, pause and hitstop run none; the step length never changes, so physics and tweens behave the same at any speed.
