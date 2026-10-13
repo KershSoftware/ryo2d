@@ -973,7 +973,7 @@ mod tests {
       updates_below: false,
     }));
     SceneContext::scoped(&mut world, &mut audio, &mut slot, |ctx| {
-      ctx.camera.zoom = 2.0;
+      ctx.camera().set_zoom(2.0);
       ctx.time.game.set_speed(0.5);
       assert!(
         ctx
@@ -982,7 +982,8 @@ mod tests {
           .is_none()
       );
     });
-    assert_eq!(world.resource::<crate::core::graphics::Camera>().zoom, 2.0);
+    let zoom = crate::core::graphics::CameraMut::main(&mut world).map(|camera| camera.zoom());
+    assert_eq!(zoom, Some(2.0));
     assert_eq!(
       world.resource::<crate::core::time::Time>().game.speed(),
       0.5

@@ -356,7 +356,10 @@ fn an_interpolated_sprite_draws_between_its_last_two_steps() {
       ));
     }
     fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-      for mut transform in ctx.world.query::<&mut Transform>().iter_mut(ctx.world) {
+      let mut sprites = ctx
+        .world
+        .query_filtered::<&mut Transform, With<Renderable>>();
+      for mut transform in sprites.iter_mut(ctx.world) {
         transform.translation.x += 20.0;
       }
       SceneAction::Continue

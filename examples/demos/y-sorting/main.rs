@@ -362,7 +362,7 @@ impl DemoPage for YSortingPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     ctx
-      .camera
+      .camera()
       .set_position(GAME_WIDTH as f32 / 2.0, GAME_HEIGHT as f32 / 2.0);
 
     // Create grass tiles with variation

@@ -511,7 +511,7 @@ impl DemoPage for PathfindingDemoScene {
 
     // Mouse input
     let (mx, my) = ctx.input.mouse_position();
-    let (mx, my) = ctx.camera.screen_to_world(mx, my);
+    let Vec2 { x: mx, y: my } = ctx.camera().screen_to_world(Vec2::new(mx, my));
 
     // Left click - set destination
     if ctx.input.mouse_pressed(MouseButton::Left) {

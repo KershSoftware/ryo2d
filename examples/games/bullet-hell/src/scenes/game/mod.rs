@@ -262,7 +262,7 @@ impl Scene for GameScene {
     self.barriers.clear();
 
     // Configure camera shake for impactful hits (20px max offset, fast decay)
-    ctx.camera.configure_shake(20.0, 1.5);
+    ctx.camera().configure_shake(20.0, 1.5);
 
     // Spawn game entities
     self.spawn_platforms(ctx);
@@ -303,7 +303,7 @@ impl Scene for GameScene {
 
     // Center camera
     ctx
-      .camera
+      .camera()
       .set_position(self.screen_width / 2.0, self.screen_height / 2.0);
   }
 
@@ -539,7 +539,7 @@ impl GameScene {
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_e) {
         renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 100, 100), 1.0));
       }
-      ctx.camera.add_trauma(0.5);
+      ctx.camera().add_trauma(0.5);
       let _ = ctx.audio.play_sound("hurt");
     }
     !was_invincible

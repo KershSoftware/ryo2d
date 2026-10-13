@@ -263,7 +263,7 @@ impl DebugScene {
 impl Scene for DebugScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     ctx
-      .camera
+      .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
     self.spawn_bird(ctx);

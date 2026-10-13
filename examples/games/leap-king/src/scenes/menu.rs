@@ -238,7 +238,7 @@ impl Scene for MenuScene {
 
     // Set camera to show the menu area (center of screen in world space)
     ctx
-      .camera
+      .camera()
       .set_position(self.screen_width / 2.0, self.screen_height / 2.0);
 
     // Set up ambient lighting - bright enough to see rain particles
@@ -697,6 +697,6 @@ impl Scene for MenuScene {
     // Collect particles for rendering (uses Z_PLATFORM - 1 set in emitter)
     self
       .particle_system
-      .collect_for_render(gpu.world, gpu.camera, gpu.batch);
+      .collect_for_render(gpu.world, gpu.camera(), gpu.batch);
   }
 }

@@ -563,10 +563,11 @@ impl DemoPage for InventoryDemoScene {
     }
 
     // Track the scene's entity count for display (the world also holds the
-    // engine's resource and system entities, which have no Transform)
+    // engine's resource and system entities, which have no Transform, and
+    // its main camera)
     self.entity_count = ctx
       .world
-      .query_filtered::<(), With<Transform>>()
+      .query_filtered::<(), (With<Transform>, Without<MainCamera>)>()
       .iter(ctx.world)
       .count() as u32;
 

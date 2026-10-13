@@ -281,10 +281,10 @@ impl DemoPage for SteeringDemoScene {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    let (vw, vh) = ctx.camera.viewport_size();
+    let (vw, vh) = ctx.screen_size();
     self.screen_w = vw;
     self.screen_h = vh;
-    ctx.camera.set_position(vw / 2.0, vh / 2.0);
+    ctx.camera().set_position(vw / 2.0, vh / 2.0);
 
     self.spawn_initial_boids(ctx);
   }
@@ -303,7 +303,7 @@ impl DemoPage for SteeringDemoScene {
 
     // Predator - spawn on mouse hold, despawn on release
     let (mx, my) = ctx.input.mouse_position();
-    let (wx, wy) = ctx.camera.screen_to_world(mx, my);
+    let Vec2 { x: wx, y: wy } = ctx.camera().screen_to_world(Vec2::new(mx, my));
 
     if ctx.input.mouse_down(MouseButton::Left) {
       if self.predator.is_none() {

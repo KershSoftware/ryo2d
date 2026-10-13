@@ -27,7 +27,7 @@ use crate::core::ecs::{
 };
 use crate::core::graphics::sprite_gpu::effective_shader;
 use crate::core::graphics::{
-  Camera, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance, TextureId,
+  CameraView, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance, TextureId,
 };
 use crate::core::graphics::{TileDirection, effect_padding};
 use crate::core::ui::Color;
@@ -81,7 +81,7 @@ impl DrawOrder {
 
 /// What one entity is drawn from.
 struct EntityFrame<'a> {
-  camera: &'a Camera,
+  camera: &'a CameraView,
   /// Render interpolation factor
   alpha: f32,
 }
@@ -117,7 +117,7 @@ impl EntityDrawer {
   pub(crate) fn collect(
     &mut self,
     world: &mut World,
-    camera: &Camera,
+    camera: &CameraView,
     alpha: f32,
     size: (u32, u32),
     gpu: &mut SpriteGpuRenderer,
@@ -497,8 +497,8 @@ fn collect_entity(frame: &EntityFrame<'_>, drawable: &Drawable<'_>, out: &mut Em
 
   match &renderable.style {
     RenderStyle::Single => {
-      let final_scale_x = scale_x * camera.zoom;
-      let final_scale_y = scale_y * camera.zoom;
+      let final_scale_x = scale_x * camera.scale;
+      let final_scale_y = scale_y * camera.scale;
       // World size: the camera applies its zoom in `world_to_screen`
       let sprite_w = source.width as f32 * scale_x;
       let sprite_h = source.height as f32 * scale_y;
@@ -528,14 +528,14 @@ fn collect_entity(frame: &EntityFrame<'_>, drawable: &Drawable<'_>, out: &mut Em
         (center_x - sprite_w / 2.0, center_y - sprite_h / 2.0)
       };
 
-      let (screen_x, screen_y) = camera.world_to_screen(draw_x, draw_y);
-      if !camera.is_visible(draw_x, draw_y, sprite_w, sprite_h) {
+      let (screen_x, screen_y) = camera.world_to_screen_xy(draw_x, draw_y);
+      if !camera.is_visible_rect(draw_x, draw_y, sprite_w, sprite_h) {
         return;
       }
 
       if let Some(shadow) = &renderable.drop_shadow {
         let (shadow_screen_x, shadow_screen_y) =
-          camera.world_to_screen(draw_x + shadow.offset.x, draw_y + shadow.offset.y);
+          camera.world_to_screen_xy(draw_x + shadow.offset.x, draw_y + shadow.offset.y);
         let shadow_alpha = (shadow.color.a as f32 / 255.0) * alpha;
         // The shadow colour tints; its alpha goes in with the entity's
         let shadow_tint = Color::new(shadow.color.r, shadow.color.g, shadow.color.b, 255);
@@ -561,13 +561,13 @@ fn collect_entity(frame: &EntityFrame<'_>, drawable: &Drawable<'_>, out: &mut Em
           // Centred under the sprite's base position, not the rotated corner
           let blob_x = x - eff_radius_x;
           let blob_y = y + blob.offset_y - eff_radius_y;
-          let (blob_screen_x, blob_screen_y) = camera.world_to_screen(blob_x, blob_y);
+          let (blob_screen_x, blob_screen_y) = camera.world_to_screen_xy(blob_x, blob_y);
           let blob_w = (eff_radius_x * 2.0) as u32;
           let blob_h = (eff_radius_y * 2.0) as u32;
           out.draw(
             z,
             &mut Source::ellipse(blob_w, blob_h),
-            Placement::at(blob_screen_x, blob_screen_y, camera.zoom, camera.zoom),
+            Placement::at(blob_screen_x, blob_screen_y, camera.scale, camera.scale),
             Shading::tinted(opaque(blob.color), blob_alpha),
           );
         }
@@ -581,13 +581,19 @@ fn collect_entity(frame: &EntityFrame<'_>, drawable: &Drawable<'_>, out: &mut Em
           let contact_radius_y = contact.radius * 0.4;
           let contact_x = x - contact_radius_x;
           let contact_y = y + contact.offset_y - contact_radius_y;
-          let (contact_screen_x, contact_screen_y) = camera.world_to_screen(contact_x, contact_y);
+          let (contact_screen_x, contact_screen_y) =
+            camera.world_to_screen_xy(contact_x, contact_y);
           let contact_w = (contact_radius_x * 2.0) as u32;
           let contact_h = (contact_radius_y * 2.0) as u32;
           out.draw(
             z,
             &mut Source::ellipse(contact_w.max(2), contact_h.max(2)),
-            Placement::at(contact_screen_x, contact_screen_y, camera.zoom, camera.zoom),
+            Placement::at(
+              contact_screen_x,
+              contact_screen_y,
+              camera.scale,
+              camera.scale,
+            ),
             Shading::tinted(opaque(contact.color), contact_alpha),
           );
         }
@@ -625,8 +631,8 @@ fn collect_entity(frame: &EntityFrame<'_>, drawable: &Drawable<'_>, out: &mut Em
       let rotation_rad = rotation_deg.to_radians();
       let cos_r = rotation_rad.cos();
       let sin_r = rotation_rad.sin();
-      let final_scale_x = scale_x * camera.zoom;
-      let final_scale_y = scale_y * camera.zoom;
+      let final_scale_x = scale_x * camera.scale;
+      let final_scale_y = scale_y * camera.scale;
 
       // A tile's world position, relative to the entity, rotated and scaled
       let tile_position = |i: u32| {
@@ -644,7 +650,7 @@ fn collect_entity(frame: &EntityFrame<'_>, drawable: &Drawable<'_>, out: &mut Em
         for i in 0..tile_count {
           let (world_x, world_y) = tile_position(i);
           let (screen_x, screen_y) =
-            camera.world_to_screen(world_x + shadow.offset.x, world_y + shadow.offset.y);
+            camera.world_to_screen_xy(world_x + shadow.offset.x, world_y + shadow.offset.y);
           out.draw(
             z,
             &mut source,
@@ -663,7 +669,7 @@ fn collect_entity(frame: &EntityFrame<'_>, drawable: &Drawable<'_>, out: &mut Em
 
       for i in 0..tile_count {
         let (world_x, world_y) = tile_position(i);
-        let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
+        let (screen_x, screen_y) = camera.world_to_screen_xy(world_x, world_y);
         out.draw(
           z,
           &mut source,
@@ -696,13 +702,13 @@ fn collect_composite(
   let z = composite.z_order;
   let origin = global.translation();
   let scale = global.scale();
-  let final_scale_x = scale.x * camera.zoom;
-  let final_scale_y = scale.y * camera.zoom;
+  let final_scale_x = scale.x * camera.scale;
+  let final_scale_y = scale.y * camera.scale;
 
   for part in &composite.parts {
     let mut source = Source::sprite(&part.sprite);
     let placement = |world_x: f32, world_y: f32| {
-      let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
+      let (screen_x, screen_y) = camera.world_to_screen_xy(world_x, world_y);
       Placement::at(screen_x, screen_y, final_scale_x, final_scale_y)
         .flipped(part.flip_x, part.flip_y)
     };

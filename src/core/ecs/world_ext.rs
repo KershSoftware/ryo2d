@@ -4,6 +4,7 @@ use super::kernel::{
   Allow, Bundle, ChildOf, Disabled, Entity, IsResource, Observer, SystemIdMarker, Without, World,
 };
 use super::transform::{GlobalTransform, PreviousGlobalTransform};
+use crate::core::graphics::MainCamera;
 
 pub trait WorldExt {
   /// Spawn `bundle` as a child of `parent`.
@@ -41,7 +42,8 @@ impl WorldExt for World {
 }
 
 /// Despawn every game entity, disabled ones included. Resources, observers
-/// and registered systems are entities too, and stay.
+/// and registered systems are entities too, and stay, as does the main
+/// camera (a camera cleanup resets it instead).
 pub(crate) fn despawn_game_entities(world: &mut World) {
   let entities: Vec<Entity> = world
     .query_filtered::<Entity, (
@@ -49,6 +51,7 @@ pub(crate) fn despawn_game_entities(world: &mut World) {
       Without<IsResource>,
       Without<Observer>,
       Without<SystemIdMarker>,
+      Without<MainCamera>,
     )>()
     .iter(world)
     .collect();

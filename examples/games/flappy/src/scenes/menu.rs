@@ -98,7 +98,7 @@ impl Default for MenuScene {
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     ctx
-      .camera
+      .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
     // Register pre-loaded assets with the cache (loaded in new(), before window appeared)

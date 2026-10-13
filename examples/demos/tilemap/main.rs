@@ -221,7 +221,7 @@ impl DemoPage for TilemapPage {
     let map_pixel_w = (MAP_WIDTH * TILE_SIZE) as f32;
     let map_pixel_h = (MAP_HEIGHT * TILE_SIZE) as f32;
     ctx
-      .camera
+      .camera()
       .set_position(map_pixel_w / 2.0, map_pixel_h / 2.0);
 
     // Build and register tilemap
@@ -256,15 +256,15 @@ impl DemoPage for TilemapPage {
       let len = (dx * dx + dy * dy).sqrt();
       dx /= len;
       dy /= len;
-      let (cx, cy) = (ctx.camera.x, ctx.camera.y);
+      let Vec2 { x: cx, y: cy } = ctx.camera().position();
       ctx
-        .camera
+        .camera()
         .set_position(cx + dx * CAMERA_SPEED * dt, cy + dy * CAMERA_SPEED * dt);
     }
 
     // Track mouse in world space
     let (mx, my) = ctx.input.mouse_position();
-    let (wx, wy) = ctx.camera.screen_to_world(mx, my);
+    let Vec2 { x: wx, y: wy } = ctx.camera().screen_to_world(Vec2::new(mx, my));
     self.hover_world = (wx, wy);
 
     if let Some(entity) = self.map_entity {

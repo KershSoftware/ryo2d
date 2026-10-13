@@ -8,7 +8,7 @@ use crate::core::ecs::{
   Bundle, Entity, IntoScheduleConfigs, Message, Messages, Mut, Mutable, Resource, ScheduleSystem,
   World, WorldExt,
 };
-use crate::core::graphics::Camera;
+use crate::core::graphics::{CameraMut, ScreenMapping};
 use crate::core::input::Input;
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::{SceneMessages, register_message};
@@ -24,7 +24,7 @@ use super::SceneSlot;
 
 /// What a scene callback can reach.
 ///
-/// `time`, `input`, `camera` and `assets` are the engine's resources, taken
+/// `time`, `input` and `assets` are the engine's resources, taken
 /// out of the world for the duration of the callback (systems see them as
 /// resources as usual). Everything else lives in `world`; the helpers below
 /// are shorthands for it. The engine inserts every resource the helpers read
@@ -33,7 +33,6 @@ pub struct SceneContext<'a> {
   pub world: &'a mut World,
   pub time: &'a mut Time,
   pub input: &'a mut Input,
-  pub camera: &'a mut Camera,
   pub assets: &'a mut AssetManager,
   pub audio: &'a mut Audio,
   schedules: &'a mut SceneSchedules,
@@ -44,8 +43,8 @@ pub struct SceneContext<'a> {
 impl SceneContext<'_> {
   /// Build a context for `slot` over `world`, run `f`, put the scoped resources back.
   ///
-  /// Panics if `Time`, `Input`, `Camera` or `AssetManager` is not a resource
-  /// (the engine inserts all four at startup).
+  /// Panics if `Time`, `Input` or `AssetManager` is not a resource (the
+  /// engine inserts all three at startup).
   #[cfg(test)]
   pub(crate) fn scoped<R>(
     world: &mut World,
@@ -74,21 +73,18 @@ impl SceneContext<'_> {
   ) -> R {
     world.resource_scope(|world, mut time: Mut<Time>| {
       world.resource_scope(|world, mut input: Mut<Input>| {
-        world.resource_scope(|world, mut camera: Mut<Camera>| {
-          world.resource_scope(|world, mut assets: Mut<AssetManager>| {
-            let mut ctx = SceneContext {
-              world,
-              time: &mut time,
-              input: &mut input,
-              camera: &mut camera,
-              assets: &mut assets,
-              audio,
-              schedules,
-              messages,
-              scope_id,
-            };
-            f(&mut ctx)
-          })
+        world.resource_scope(|world, mut assets: Mut<AssetManager>| {
+          let mut ctx = SceneContext {
+            world,
+            time: &mut time,
+            input: &mut input,
+            assets: &mut assets,
+            audio,
+            schedules,
+            messages,
+            scope_id,
+          };
+          f(&mut ctx)
         })
       })
     })
@@ -197,17 +193,31 @@ impl SceneContext<'_> {
 
   // --- screen and window ---
 
-  /// The game's logical resolution, `(width, height)` in pixels.
+  /// The main camera: move, zoom, turn and shake it, and convert between
+  /// screen and world positions.
+  pub fn camera(&mut self) -> CameraMut<'_> {
+    CameraMut::main_or_spawn(self.world)
+  }
+
+  /// The size of screen space (logical pixels, or the pixel-art target).
   pub fn screen_size(&self) -> (f32, f32) {
-    self.camera.viewport_size()
+    let size = self.screen_size_vec();
+    (size.x, size.y)
   }
 
   pub fn screen_width(&self) -> f32 {
-    self.camera.viewport_size().0
+    self.screen_size_vec().x
   }
 
   pub fn screen_height(&self) -> f32 {
-    self.camera.viewport_size().1
+    self.screen_size_vec().y
+  }
+
+  fn screen_size_vec(&self) -> glam::Vec2 {
+    self
+      .world
+      .get_resource::<ScreenMapping>()
+      .map_or(glam::Vec2::ONE, ScreenMapping::screen_size)
   }
 
   /// The window's DPI scale factor: 1.0 for standard displays, 2.0 for HiDPI.

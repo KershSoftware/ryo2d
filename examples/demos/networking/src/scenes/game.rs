@@ -625,7 +625,7 @@ impl Match {
   /// Build the match's world: background, platform and the host's player
   pub fn enter(&mut self, ctx: &mut SceneContext) {
     ctx
-      .camera
+      .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
     self.spawn_background(ctx);

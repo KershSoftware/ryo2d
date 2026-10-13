@@ -643,8 +643,8 @@ fn a_centred_sprite_stays_on_its_position_under_zoom() {
   // 10 x 10 at the camera's centre, zoomed 2x: 20 x 20 screen pixels around
   // the middle of the 64 x 64 frame, 22..42 on both axes
   let scene = Fixture::new(|ctx| {
-    ctx.camera.set_position(32.0, 32.0);
-    ctx.camera.set_zoom(2.0);
+    ctx.camera().set_position(32.0, 32.0);
+    ctx.camera().set_zoom(2.0);
     ctx.world.spawn((
       Transform::from_xy(32.0, 32.0),
       Renderable::sprite(red_rect(10, 10, "zoomed")),

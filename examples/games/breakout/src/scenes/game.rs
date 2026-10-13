@@ -866,7 +866,7 @@ impl Scene for GameScene {
     self.last_heart_milestone = 0;
 
     ctx
-      .camera
+      .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
     // Load audio files (gracefully handle missing files)

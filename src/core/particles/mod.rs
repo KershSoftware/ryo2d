@@ -36,7 +36,7 @@
 //! }
 //!
 //! fn render(&mut self, gpu: &mut GpuRenderContext) {
-//!     self.particles.collect_for_render(gpu.world, gpu.camera, gpu.batch);
+//!     self.particles.collect_for_render(gpu.world, gpu.camera(), gpu.batch);
 //! }
 //!
 //! // Spawn a fire effect
@@ -99,7 +99,7 @@ use std::collections::HashMap;
 
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Entity, GlobalTransform, SpriteEffect, World};
-use crate::core::graphics::{BatchCollector, Camera, SpriteInstance};
+use crate::core::graphics::{BatchCollector, CameraView, SpriteInstance};
 use crate::core::messages::register_message;
 use crate::core::physics::{Collider, ColliderShape};
 use rand::rngs::StdRng;
@@ -796,7 +796,12 @@ impl ParticleSystem {
   ///
   /// Call this in the render phase to add particles to the batch collector.
   /// The camera is used to convert world positions to screen positions.
-  pub fn collect_for_render(&self, world: &World, camera: &Camera, collector: &mut BatchCollector) {
+  pub fn collect_for_render(
+    &self,
+    world: &World,
+    camera: &CameraView,
+    collector: &mut BatchCollector,
+  ) {
     if self.particles.is_empty() {
       return;
     }
@@ -814,7 +819,7 @@ impl ParticleSystem {
         )
       })
       .collect();
-    let zoom = camera.zoom;
+    let zoom = camera.scale;
 
     for p in &self.particles {
       let Some((sprite, effect, z_order)) = looks.get(&p.emitter_entity) else {
@@ -822,7 +827,7 @@ impl ParticleSystem {
       };
 
       // Convert world position to screen position
-      let (screen_x, screen_y) = camera.world_to_screen(p.x, p.y);
+      let (screen_x, screen_y) = camera.world_to_screen_xy(p.x, p.y);
 
       // Scale size by camera zoom
       let scaled_size = p.particle.size * zoom;
@@ -1007,7 +1012,7 @@ mod tests {
 
   #[test]
   fn particles_of_a_disabled_emitter_are_not_drawn() {
-    use crate::core::graphics::{BatchCollector, Camera};
+    use crate::core::graphics::BatchCollector;
     let mut system = ParticleSystem::with_seed(3);
     let mut world = World::new();
     let burst = |count| {
@@ -1018,7 +1023,13 @@ mod tests {
     world.spawn((Transform::from_xy(10.0, 10.0), burst(2)));
     let hidden = world.spawn((Transform::from_xy(20.0, 20.0), burst(3))).id();
     update(&mut system, &mut world, 0.016);
-    let camera = Camera::centered_at(0.0, 0.0, 100, 100);
+    let camera = crate::core::graphics::CameraView::compute(
+      glam::Vec2::ZERO,
+      0.0,
+      &crate::core::graphics::Camera2d::default(),
+      glam::Vec2::ZERO,
+      glam::Vec2::new(100.0, 100.0),
+    );
     let drawn = |world: &World| {
       let mut collector = BatchCollector::new();
       system.collect_for_render(world, &camera, &mut collector);

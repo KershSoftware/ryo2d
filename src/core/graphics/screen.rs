@@ -2,6 +2,8 @@
 
 use glam::Vec2;
 
+use crate::core::ecs::Resource;
+
 /// How the world reaches the window.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Presentation {
@@ -13,7 +15,9 @@ pub enum Presentation {
 }
 
 /// Converts between window pixels and screen space (UI, mouse, `screen_size`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// A resource: the engine replaces it on every resize and scale-factor change.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
 pub struct ScreenMapping {
   presentation: Presentation,
   physical: (u32, u32),

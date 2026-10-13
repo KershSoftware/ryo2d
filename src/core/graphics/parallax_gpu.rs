@@ -253,7 +253,7 @@ impl GpuParallaxBackground {
   pub fn render(&self, ctx: &mut GpuRenderContext) {
     let screen_width = ctx.screen_width();
     let screen_height = ctx.screen_height();
-    let camera_x = ctx.camera().x;
+    let camera_x = ctx.camera().center.x;
 
     for layer in &self.layers {
       let instances =

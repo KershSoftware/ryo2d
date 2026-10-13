@@ -12,8 +12,9 @@ use crate::core::ecs::{
   DetectChangesMut, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform, Vec2,
   World,
 };
+use crate::core::graphics::GpuRenderContext;
+use crate::core::graphics::camera_mut::main_view;
 use crate::core::graphics::renderer::FrameError;
-use crate::core::graphics::{Camera, GpuRenderContext};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline};
 use crate::core::shaders::EffectsManager;
@@ -49,7 +50,7 @@ impl Engine {
     let mut lighting = self.lighting.take();
     let mut trails = self.trail_renderer.take();
 
-    let camera = self.world.resource::<Camera>().clone();
+    let camera = main_view(&mut self.world);
     let (alpha, real_time, game_time) = {
       let time = self.world.resource::<Time>();
       (
@@ -58,7 +59,7 @@ impl Engine {
         time.game.elapsed(),
       )
     };
-    let camera_pos = Vec2::new(camera.x, camera.y);
+    let camera_pos = camera.center;
     // Sprites are placed in screen units, which the projection spans
     let screen = rend.screen_size();
     let size = rend.ui_size();
@@ -74,6 +75,7 @@ impl Engine {
           &mut gpu,
           rend.device(),
           &camera,
+          rend.screen_size(),
           &self.world,
         );
         host.scenes.render(&mut gpu_ctx);
@@ -124,7 +126,7 @@ impl Engine {
         lighting.set_ambient(*settings.ambient());
         lighting.set_atmosphere(settings.atmosphere().clone());
         let mut effects = self.world.resource_mut::<EffectsManager>();
-        lighting.update_god_rays(&mut effects, &lights, camera_pos, camera.zoom);
+        lighting.update_god_rays(&mut effects, &lights, camera_pos, camera.scale);
       }
 
       // Sprite effects and custom sprite shaders animate on game time
@@ -152,7 +154,7 @@ impl Engine {
           self.draw_list.push_trail_group(false, z);
         }
         // Upload the trail and line vertices once; the world passes only draw
-        trails.prepare(rend.queue(), (camera_pos, camera.zoom, real_time));
+        trails.prepare(rend.queue(), (camera_pos, camera.scale, real_time));
       }
       self.draw_list.sorted();
       gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
@@ -193,7 +195,7 @@ impl Engine {
           effects: world.resource::<EffectsManager>(),
           ui_buffer: &self.ui_buffer,
           camera_pos,
-          camera_zoom: camera.zoom,
+          camera_zoom: camera.scale,
           time: real_time,
           overlay,
         };
@@ -248,6 +250,7 @@ fn game_entity_count(world: &World) -> u32 {
     world.component_id::<IsResource>(),
     world.component_id::<Observer>(),
     world.component_id::<SystemIdMarker>(),
+    world.component_id::<crate::core::graphics::MainCamera>(),
   ]
   .into_iter()
   .flatten()

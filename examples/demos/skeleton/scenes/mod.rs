@@ -48,7 +48,7 @@ impl SceneBase {
   }
 
   pub fn enter(&mut self, ctx: &mut SceneContext) {
-    ctx.camera.set_position(640.0, 360.0);
+    ctx.camera().set_position(640.0, 360.0);
     let entity = ctx
       .world
       .spawn((

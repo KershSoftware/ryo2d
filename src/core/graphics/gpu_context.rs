@@ -1,6 +1,6 @@
 //! The context a scene's `render` callback draws GPU sprites through.
 
-use super::{BatchCollector, Camera, SpriteGpuRenderer, SpriteInstance};
+use super::{BatchCollector, CameraView, SpriteGpuRenderer, SpriteInstance};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{ShaderHandle, ShaderParams, World};
 
@@ -29,8 +29,10 @@ pub struct GpuRenderContext<'a> {
   gpu_renderer: &'a mut SpriteGpuRenderer,
   /// Device for compiling game shaders
   device: &'a wgpu::Device,
-  /// Camera for coordinate transforms
-  pub camera: &'a Camera,
+  /// The main camera's view this frame
+  camera: &'a CameraView,
+  /// The size of screen space
+  screen: glam::Vec2,
   /// The ECS world (read-only for rendering)
   pub world: &'a World,
 }
@@ -41,7 +43,8 @@ impl<'a> GpuRenderContext<'a> {
     batch: &'a mut BatchCollector,
     gpu_renderer: &'a mut SpriteGpuRenderer,
     device: &'a wgpu::Device,
-    camera: &'a Camera,
+    camera: &'a CameraView,
+    screen: glam::Vec2,
     world: &'a World,
   ) -> Self {
     Self {
@@ -49,6 +52,7 @@ impl<'a> GpuRenderContext<'a> {
       gpu_renderer,
       device,
       camera,
+      screen,
       world,
     }
   }
@@ -78,23 +82,22 @@ impl<'a> GpuRenderContext<'a> {
 
   /// Get screen dimensions (width, height)
   pub fn screen_size(&self) -> (f32, f32) {
-    self.camera.viewport_size()
+    (self.screen.x, self.screen.y)
   }
 
   /// Get screen width
   pub fn screen_width(&self) -> u32 {
-    let (w, _) = self.camera.viewport_size();
-    w as u32
+    self.screen.x as u32
   }
 
   /// Get screen height
   pub fn screen_height(&self) -> u32 {
-    let (_, h) = self.camera.viewport_size();
-    h as u32
+    self.screen.y as u32
   }
 
-  /// Get the camera reference
-  pub fn camera(&self) -> &Camera {
+  /// The main camera's view this frame (`world_to_screen`, `center`,
+  /// `scale`, `bounds`).
+  pub fn camera(&self) -> &'a CameraView {
     self.camera
   }
 

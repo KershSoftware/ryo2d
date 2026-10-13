@@ -110,13 +110,13 @@ pub mod prelude {
 
   // Graphics
   pub use crate::core::graphics::{
-    AnimatedSprite, Camera, Gpu, GpuRenderContext, Presentation, ScreenMapping, Sprite,
+    AnimatedSprite, Gpu, GpuRenderContext, Presentation, ScreenMapping, Sprite,
   };
 
   // Cameras
   pub use crate::core::graphics::{
-    Camera2d, CameraBounds, CameraClear, CameraShake, CameraTarget, CameraView, MainCamera,
-    Projection, RenderLayers, RenderTarget, Viewport,
+    Camera2d, CameraBounds, CameraClear, CameraMut, CameraShake, CameraTarget, CameraView,
+    MainCamera, Projection, RenderLayers, RenderTarget, Viewport,
   };
 
   // Tiled rendering

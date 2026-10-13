@@ -36,8 +36,11 @@ use crate::core::ecs::{
   FallbackErrorHandler, IntoScheduleConfigs, Message, Resource, ScheduleSystem, World,
 };
 use crate::core::error::{EngineError, EngineResult};
+use crate::core::graphics::camera_mut::{
+  camera_shake_system, camera_view_system, spawn_main_camera,
+};
 use crate::core::graphics::{
-  BatchCollector, Camera, Gpu, Presentation, ScreenMapping, SpriteGpuRenderer, WgpuRenderer,
+  BatchCollector, Gpu, Presentation, ScreenMapping, SpriteGpuRenderer, WgpuRenderer,
 };
 use crate::core::input::Input;
 use crate::core::input_script::InputScript;
@@ -59,9 +62,9 @@ use crate::core::window::{WindowInfo, WindowRequest};
 use crate::{engine_info, engine_warn};
 
 use frame::{
-  advance_clock_system, asset_pump_system, camera_shake_system, clear_trackers_system,
-  publish_input_system, scene_fixed_systems, scene_transition_system, scene_update_system,
-  scene_update_systems, update_effects_system, update_messages_system,
+  advance_clock_system, asset_pump_system, clear_trackers_system, publish_input_system,
+  scene_fixed_systems, scene_transition_system, scene_update_system, scene_update_systems,
+  update_effects_system, update_messages_system,
 };
 
 /// Events the engine sends its own event loop.
@@ -271,7 +274,8 @@ pub(crate) fn init_world_resources(
   let (w, h) = (config.width, config.height);
   world.insert_resource(Time::new(config.fixed_hz));
   world.insert_resource(Input::new());
-  world.insert_resource(Camera::centered_at(w as f32 / 2.0, h as f32 / 2.0, w, h));
+  world.insert_resource(ScreenMapping::new(config.presentation, (w, h), 1.0));
+  spawn_main_camera(world, glam::Vec2::new(w as f32, h as f32));
   world.insert_resource(assets);
   world.insert_resource(EffectsManager::new());
   world.insert_resource(LightingSettings::default());
@@ -333,7 +337,9 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     Phase::PostUpdate,
     (
       propagate_transforms.in_set(PostUpdateSet::Transforms),
-      camera_shake_system.in_set(PostUpdateSet::Camera),
+      (camera_shake_system, camera_view_system)
+        .chain()
+        .in_set(PostUpdateSet::Camera),
       update_effects_system.in_set(PostUpdateSet::Extract),
     ),
   );
@@ -719,10 +725,7 @@ impl Engine {
     if let Some(trails) = &mut self.trail_renderer {
       trails.set_screen_size(screen);
     }
-    self
-      .world
-      .resource_mut::<Camera>()
-      .set_viewport_size(screen);
+    self.world.insert_resource(mapping);
   }
 
   /// How the world reaches the window.

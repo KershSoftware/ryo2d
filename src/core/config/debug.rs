@@ -85,8 +85,8 @@
 //! Debug settings from `Ryo.toml` are automatically loaded during `build()`.
 //! Values set programmatically will override config file settings.
 
-use crate::core::ecs::{GlobalTransform, Vec2, Velocity, World};
-use crate::core::graphics::{Camera, GroupedCollider};
+use crate::core::ecs::{GlobalTransform, Vec2, Velocity, Without, World};
+use crate::core::graphics::{Camera2d, CameraView, GroupedCollider};
 use crate::core::physics::{Collider, ColliderShape};
 use crate::core::trail::{Line2D, TrailStyle};
 use crate::core::ui::{Color, UiContext};
@@ -413,11 +413,14 @@ const CROSS_SIZE: i32 = 4;
 
 /// The collider outlines, `Collider` and `GroupedCollider` components both,
 /// drawn where physics simulates them.
-fn collider_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
+fn collider_shapes(world: &mut World, camera: &CameraView) -> Vec<(OverlayShape, [u8; 4])> {
   let mut shapes = Vec::new();
   let rect = |center: Vec2, size: Vec2| {
-    let (w, h) = ((size.x * camera.zoom) as i32, (size.y * camera.zoom) as i32);
-    let (sx, sy) = camera.world_to_screen(center.x, center.y);
+    let (w, h) = (
+      (size.x * camera.scale) as i32,
+      (size.y * camera.scale) as i32,
+    );
+    let (sx, sy) = camera.world_to_screen_xy(center.x, center.y);
     OverlayShape::Rect {
       x: sx as i32 - w / 2,
       y: sy as i32 - h / 2,
@@ -431,11 +434,11 @@ fn collider_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8
     let shape = match collider.shape {
       ColliderShape::Box { width, height } => rect(center, Vec2::new(width, height)),
       ColliderShape::Circle { radius } => {
-        let (sx, sy) = camera.world_to_screen(center.x, center.y);
+        let (sx, sy) = camera.world_to_screen_xy(center.x, center.y);
         OverlayShape::Circle {
           x: sx as i32,
           y: sy as i32,
-          radius: (radius * camera.zoom) as i32,
+          radius: (radius * camera.scale) as i32,
         }
       }
     };
@@ -455,7 +458,7 @@ fn collider_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8
 }
 
 /// The velocity vectors of moving entities.
-fn velocity_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
+fn velocity_shapes(world: &mut World, camera: &CameraView) -> Vec<(OverlayShape, [u8; 4])> {
   const VELOCITY_SCALE: f32 = 0.1; // Scale factor for visualizing velocity
 
   let mut shapes = Vec::new();
@@ -464,9 +467,9 @@ fn velocity_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8
       continue;
     }
     let origin = global.translation();
-    let (screen_x, screen_y) = camera.world_to_screen(origin.x, origin.y);
-    let end_x = screen_x + velocity.dx * VELOCITY_SCALE * camera.zoom;
-    let end_y = screen_y + velocity.dy * VELOCITY_SCALE * camera.zoom;
+    let (screen_x, screen_y) = camera.world_to_screen_xy(origin.x, origin.y);
+    let end_x = screen_x + velocity.dx * VELOCITY_SCALE * camera.scale;
+    let end_y = screen_y + velocity.dy * VELOCITY_SCALE * camera.scale;
     shapes.push((
       OverlayShape::Line {
         x0: screen_x as i32,
@@ -480,14 +483,14 @@ fn velocity_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8
   shapes
 }
 
-/// The origin crosshairs of every placed entity.
-fn origin_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
+/// The origin crosshairs of every placed entity (cameras are not drawn).
+fn origin_shapes(world: &mut World, camera: &CameraView) -> Vec<(OverlayShape, [u8; 4])> {
   world
-    .query::<&GlobalTransform>()
+    .query_filtered::<&GlobalTransform, Without<Camera2d>>()
     .iter(world)
     .map(|global| {
       let origin = global.translation();
-      let (screen_x, screen_y) = camera.world_to_screen(origin.x, origin.y);
+      let (screen_x, screen_y) = camera.world_to_screen_xy(origin.x, origin.y);
       (
         OverlayShape::Cross {
           x: screen_x as i32,
@@ -512,7 +515,7 @@ pub(crate) struct OverlayFlags {
 /// pixel-wide `Solid` line is anti-aliased into a faint smear.
 pub(crate) fn overlay_lines(
   world: &mut World,
-  camera: &Camera,
+  camera: &CameraView,
   flags: OverlayFlags,
 ) -> Vec<Line2D> {
   let mut shapes = Vec::new();
@@ -527,9 +530,9 @@ pub(crate) fn overlay_lines(
   }
 
   // Lines are in world units: a pixel is 1 / zoom wide
-  let width = 1.0 / camera.zoom;
+  let width = 1.0 / camera.scale;
   let point = |x: f32, y: f32| {
-    let (wx, wy) = camera.screen_to_world(x, y);
+    let (wx, wy) = camera.screen_to_world_xy(x, y);
     Vec2::new(wx, wy)
   };
   let line = |points: Vec<Vec2>, color: [u8; 4]| {
@@ -561,7 +564,7 @@ pub(crate) fn overlay_lines(
       OverlayShape::Circle { x, y, radius } => {
         if radius > 0 {
           let center = point(x as f32 + 0.5, y as f32 + 0.5);
-          let radius = radius as f32 / camera.zoom;
+          let radius = radius as f32 / camera.scale;
           let mut circle = Line2D::circle(center, radius, Color::WHITE, width, 32);
           circle.set_color(Color::new(color[0], color[1], color[2], color[3]));
           lines.push(
@@ -737,7 +740,13 @@ mod tests {
       GlobalTransform::from_transform(&t),
       Collider::box_collider(20.0, 10.0),
     ));
-    let camera = Camera::centered_at(400.0, 300.0, 800, 600);
+    let camera = CameraView::compute(
+      glam::Vec2::new(400.0, 300.0),
+      0.0,
+      &crate::core::graphics::Camera2d::default(),
+      glam::Vec2::ZERO,
+      glam::Vec2::new(800.0, 600.0),
+    );
     let colliders = OverlayFlags {
       colliders: true,
       ..Default::default()

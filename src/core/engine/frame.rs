@@ -12,7 +12,6 @@ use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::cursor::CursorRequest;
 use crate::core::ecs::{MessageWriter, Res, ResMut, Resource, World};
-use crate::core::graphics::Camera;
 use crate::core::input::{Input, InputEvent};
 use crate::core::messages::{AssetLoadFailed, AssetReloaded, update_messages};
 use crate::core::scene::SceneAction;
@@ -455,11 +454,6 @@ pub(crate) fn asset_pump_system(
       }
     }
   }
-}
-
-/// `PostUpdate`: camera shake runs on real time.
-pub(crate) fn camera_shake_system(time: Res<Time>, mut camera: ResMut<Camera>) {
-  camera.update_shake(time.real.delta());
 }
 
 /// `PostUpdate`: timed post-process effects run on real time.

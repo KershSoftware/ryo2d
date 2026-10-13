@@ -2337,7 +2337,7 @@ impl GameScene {
 
     // Update camera position (camera_y is the center Y position)
     ctx
-      .camera
+      .camera()
       .set_position(self.screen_width / 2.0, self.camera_y);
   }
 
@@ -3129,7 +3129,7 @@ impl GameScene {
     self.notifications.retain(|n| n.timer > 0.0);
   }
 
-  fn update_charge_indicator(&mut self, ctx: &SceneContext) {
+  fn update_charge_indicator(&mut self, ctx: &mut SceneContext) {
     self.charge_indicator.visible = false;
 
     let entity = match self.get_local_player_entity() {
@@ -3163,7 +3163,7 @@ impl GameScene {
     // Convert world position to screen position via camera
     let world_x = transform.translation.x + PLAYER_WIDTH / 2.0;
     let world_y = transform.translation.y + PLAYER_HEIGHT / 2.0;
-    let (sx, sy) = ctx.camera.world_to_screen(world_x, world_y);
+    let Vec2 { x: sx, y: sy } = ctx.camera().world_to_screen(Vec2::new(world_x, world_y));
     self.charge_indicator.screen_x = sx;
     self.charge_indicator.screen_y = sy;
     self.charge_indicator.charge_pct = (charge_time / MAX_CHARGE_TIME).min(1.0);
@@ -3299,7 +3299,7 @@ impl Scene for GameScene {
     self.generator = PlatformGenerator::new(self.seed, self.screen_width);
 
     ctx
-      .camera
+      .camera()
       .set_position(self.screen_width / 2.0, self.screen_height / 2.0);
 
     // Set up atmospheric lighting
@@ -3663,6 +3663,6 @@ impl Scene for GameScene {
     // Collect particles for rendering
     self
       .particle_system
-      .collect_for_render(gpu.world, gpu.camera, gpu.batch);
+      .collect_for_render(gpu.world, gpu.camera(), gpu.batch);
   }
 }

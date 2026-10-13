@@ -903,7 +903,7 @@ impl DemoPage for ParticlesPage {
     self.trail_target_y = height / 2.0;
 
     // Center camera for screen-style coordinates (0,0 = top-left)
-    ctx.camera.set_position(width / 2.0, height / 2.0);
+    ctx.camera().set_position(width / 2.0, height / 2.0);
 
     // Create a simple white particle sprite
     let sprite = Sprite::solid_circle(16, 255, 255, 255, 255);
@@ -916,7 +916,10 @@ impl DemoPage for ParticlesPage {
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Scene-specific interactions
     let (mouse_x, mouse_y) = ctx.input.mouse_position();
-    let (world_x, world_y) = ctx.camera.screen_to_world(mouse_x, mouse_y);
+    let Vec2 {
+      x: world_x,
+      y: world_y,
+    } = ctx.camera().screen_to_world(Vec2::new(mouse_x, mouse_y));
 
     match self.current_scene {
       DemoScene::Explosions => {
@@ -952,7 +955,7 @@ impl DemoPage for ParticlesPage {
     // Collect particles for rendering
     self
       .particle_system
-      .collect_for_render(gpu.world, gpu.camera, gpu.batch);
+      .collect_for_render(gpu.world, gpu.camera(), gpu.batch);
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {

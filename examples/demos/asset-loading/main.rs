@@ -93,7 +93,7 @@ impl DemoPage for LoadingPage {
     // Loading progress lives in the engine, not the scene, so start from zero
     ctx.assets.reset_loading_progress();
     ctx
-      .camera
+      .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
   }
 

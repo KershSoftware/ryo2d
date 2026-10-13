@@ -417,7 +417,7 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
   use crate::core::asset::AssetManager;
   use crate::core::console::{CommandRegistry, register_builtins};
   use crate::core::cursor::CursorRequest;
-  use crate::core::graphics::Camera;
+  use crate::core::graphics::{Presentation, ScreenMapping, camera_mut::spawn_main_camera};
   use crate::core::input::Input;
   use crate::core::lighting::LightingSettings;
   use crate::core::messages::register_engine_messages;
@@ -428,7 +428,12 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
 
   world.insert_resource(Time::new(60));
   world.insert_resource(Input::new());
-  world.insert_resource(Camera::centered_at(400.0, 300.0, 800, 600));
+  world.insert_resource(ScreenMapping::new(
+    Presentation::ResolutionIndependent,
+    (800, 600),
+    1.0,
+  ));
+  spawn_main_camera(world, glam::Vec2::new(800.0, 600.0));
   world.insert_resource(AssetManager::new());
   world.insert_resource(EffectsManager::new());
   world.insert_resource(LightingSettings::default());

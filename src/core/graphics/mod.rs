@@ -13,6 +13,7 @@ pub mod animation;
 mod atlas;
 pub mod camera;
 pub mod camera2d;
+pub mod camera_mut;
 mod compositor;
 mod gpu_context;
 pub mod gpu_error;
@@ -30,7 +31,8 @@ pub use animation::{
   Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState, ValidatedAnimator,
 };
 pub(crate) use atlas::{AtlasSlot, SlotPage, TextureAtlas};
-pub use camera::{Camera, CameraShake};
+pub use camera::CameraShake;
+pub use camera_mut::CameraMut;
 pub use camera2d::{
   Camera2d, CameraBounds, CameraClear, CameraTarget, CameraView, MainCamera, Projection,
   RenderTarget, Viewport,

@@ -84,9 +84,11 @@ impl CameraShakePage {
 
   /// Send the current settings to the camera
   fn apply_config(&mut self, ctx: &mut SceneContext) {
-    ctx.camera.configure_shake(self.max_offset, self.decay_rate);
     ctx
-      .camera
+      .camera()
+      .configure_shake(self.max_offset, self.decay_rate);
+    ctx
+      .camera()
       .set_shake_curve(CURVES[self.curve.min(CURVES.len() - 1)].1);
     self.applied = (self.max_offset, self.decay_rate, self.curve);
   }
@@ -141,16 +143,16 @@ impl DemoPage for CameraShakePage {
     }
 
     if ctx.input.key_pressed(KeyCode::Digit1) {
-      ctx.camera.add_trauma(0.2);
+      ctx.camera().add_trauma(0.2);
     }
     if ctx.input.key_pressed(KeyCode::Digit2) {
-      ctx.camera.add_trauma(0.5);
+      ctx.camera().add_trauma(0.5);
     }
     if ctx.input.key_pressed(KeyCode::Digit3) {
-      ctx.camera.add_trauma(0.8);
+      ctx.camera().add_trauma(0.8);
     }
     if ctx.input.key_pressed(KeyCode::Space) {
-      ctx.camera.add_trauma(1.0);
+      ctx.camera().add_trauma(1.0);
     }
   }
 
