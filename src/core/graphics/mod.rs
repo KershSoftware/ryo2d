@@ -12,6 +12,7 @@
 
 pub mod animation;
 mod atlas;
+pub(crate) mod bind_groups;
 pub mod camera;
 pub mod camera2d;
 pub(crate) mod camera_gpu;

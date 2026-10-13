@@ -462,3 +462,69 @@ fn despawned_cameras_free_their_gpu_state() {
   assert!(busy > calm, "{busy} then {calm}");
   assert_eq!(calm, 1, "only the main camera's uniform remains");
 }
+
+/// Sprites, a line, a batch sprite and two effects (one of them bloom).
+struct Busy;
+
+impl Scene for Busy {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 220, 30, 40, 255), "busy");
+    for i in 0..20 {
+      ctx.world.spawn((
+        Transform::from_xy(10.0 + i as f32 * 5.0, 30.0),
+        Renderable::sprite(sprite.clone()),
+      ));
+    }
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Line2D::horizontal(50.0, 5.0, 100.0, Color::WHITE, 2.0),
+    ));
+    ctx.effects().set_vignette(0.4);
+    ctx.effects().set_bloom(0.6);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
+    let sprite =
+      SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 30, 200, 60, 255), "busy-batch");
+    let instance = SpriteInstance::new().with_transform(60.0, 60.0, 0.0, 4.0, 4.0);
+    gpu.add_sprite_instance(&sprite, instance, 0, false);
+  }
+}
+
+#[test]
+fn steady_frames_create_no_bind_groups() {
+  use crate::core::graphics::bind_groups::created_on_this_thread;
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(Busy)) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let before = created_on_this_thread();
+  engine.step_frames(3).unwrap();
+  assert_eq!(created_on_this_thread() - before, 0);
+}
+
+#[test]
+fn a_resize_rebuilds_bind_groups_once() {
+  use crate::core::graphics::bind_groups::created_on_this_thread;
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(Busy)) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  engine.resize(200, 150);
+  engine.step_frames(1).unwrap();
+  let before = created_on_this_thread();
+  engine.step_frames(3).unwrap();
+  assert_eq!(
+    created_on_this_thread() - before,
+    0,
+    "none after the rebuilding frame"
+  );
+  assert!(
+    engine.frame().unwrap().pixels().any(|p| p.0[0] > 100),
+    "it still draws"
+  );
+}

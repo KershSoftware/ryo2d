@@ -907,20 +907,23 @@ impl LightingRenderer {
 
     // The camera's uniforms and the lights, for this camera
     let light_bind_group = globals.map(|globals| {
-      device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Light Bind Group"),
-        layout: &self.light_bind_group_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: globals.as_entire_binding(),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: self.light_buffer.as_entire_binding(),
-          },
-        ],
-      })
+      crate::core::graphics::bind_groups::create(
+        device,
+        &wgpu::BindGroupDescriptor {
+          label: Some("Light Bind Group"),
+          layout: &self.light_bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: globals.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: self.light_buffer.as_entire_binding(),
+            },
+          ],
+        },
+      )
     });
 
     // Clear and render lights to accumulation buffer
@@ -1000,14 +1003,17 @@ impl LightingRenderer {
     );
 
     // The camera's uniforms
-    let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Shadow Bind Group"),
-      layout: &self.shadow_bind_group_layout,
-      entries: &[wgpu::BindGroupEntry {
-        binding: 0,
-        resource: globals.as_entire_binding(),
-      }],
-    });
+    let shadow_bind_group = crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("Shadow Bind Group"),
+        layout: &self.shadow_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+          binding: 0,
+          resource: globals.as_entire_binding(),
+        }],
+      },
+    );
 
     // Render shadows with reverse-subtract blending to cut from light buffer
     {
@@ -1117,24 +1123,27 @@ impl LightingRenderer {
     queue.write_buffer(&self.raymarch_edge_buffer, 0, bytemuck::cast_slice(&edges));
 
     // Create bind group
-    let raymarch_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Raymarch Shadow Bind Group"),
-      layout: &self.raymarch_bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: globals.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: self.raymarch_params_buffer.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: self.raymarch_edge_buffer.as_entire_binding(),
-        },
-      ],
-    });
+    let raymarch_bind_group = crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("Raymarch Shadow Bind Group"),
+        layout: &self.raymarch_bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: globals.as_entire_binding(),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: self.raymarch_params_buffer.as_entire_binding(),
+          },
+          wgpu::BindGroupEntry {
+            binding: 2,
+            resource: self.raymarch_edge_buffer.as_entire_binding(),
+          },
+        ],
+      },
+    );
 
     // Render raymarch shadows
     {
@@ -1408,28 +1417,31 @@ impl LightingRenderer {
       0,
       bytemuck::cast_slice(&[compose_uniform]),
     );
-    let compose_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Lighting Compose Bind Group"),
-      layout: &self.compose_bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&targets.scene_copy_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::TextureView(&targets.light_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: wgpu::BindingResource::Sampler(&self.sampler),
-        },
-        wgpu::BindGroupEntry {
-          binding: 3,
-          resource: targets.compose_uniforms.as_entire_binding(),
-        },
-      ],
-    });
+    let compose_bind_group = crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("Lighting Compose Bind Group"),
+        layout: &self.compose_bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&targets.scene_copy_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::TextureView(&targets.light_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 2,
+            resource: wgpu::BindingResource::Sampler(&self.sampler),
+          },
+          wgpu::BindGroupEntry {
+            binding: 3,
+            resource: targets.compose_uniforms.as_entire_binding(),
+          },
+        ],
+      },
+    );
     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
       label: Some("Lighting Compose Pass"),
       color_attachments: &[Some(wgpu::RenderPassColorAttachment {

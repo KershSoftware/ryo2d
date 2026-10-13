@@ -9,6 +9,7 @@ use super::manager::CustomEffect;
 use super::post_process_shaders;
 use super::scope::Checked;
 use crate::core::ecs::{ShaderHandle, ShaderParams};
+use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
 use std::collections::{HashMap, HashSet};
 
 /// Which buffer contains the effect output
@@ -363,6 +364,8 @@ impl CustomEffectPipelines {
 
 /// GPU pipeline for post-processing effects
 pub struct PostProcessPipeline {
+  // Every pass's bind group, made once per input and uniform buffer
+  bind_groups: BindGroupCache,
   // Ping-pong textures for effect chaining
   texture_a: wgpu::Texture,
   texture_b: wgpu::Texture,
@@ -638,6 +641,7 @@ impl PostProcessPipeline {
       });
 
     Self {
+      bind_groups: BindGroupCache::default(),
       texture_a,
       texture_b,
       view_a,
@@ -686,6 +690,8 @@ impl PostProcessPipeline {
 
     self.width = width;
     self.height = height;
+    // The bind groups point at the old views
+    self.bind_groups.clear();
 
     let texture_desc = ping_pong_texture_desc(width, height, self.format);
 
@@ -786,49 +792,27 @@ impl PostProcessPipeline {
 
       // Handle god rays specially (different uniform buffer size)
       let bind_group = if is_god_rays {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("God Rays Bind Group"),
-          layout: &self.god_rays_bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(input_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self
-                .god_rays_uniforms
-                .buffer(uniform_index)
-                .as_entire_binding(),
-            },
+        self.bind_groups.get(
+          device,
+          "God Rays Bind Group",
+          &self.god_rays_bind_group_layout,
+          &[
+            Bound::View(input_view.clone()),
+            Bound::Sampler(self.sampler.clone()),
+            Bound::Buffer(self.god_rays_uniforms.buffer(uniform_index).clone()),
           ],
-        })
+        )
       } else {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("Post-Process Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(input_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self
-                .effect_uniforms
-                .buffer(uniform_index)
-                .as_entire_binding(),
-            },
+        self.bind_groups.get(
+          device,
+          "Post-Process Bind Group",
+          &self.bind_group_layout,
+          &[
+            Bound::View(input_view.clone()),
+            Bound::Sampler(self.sampler.clone()),
+            Bound::Buffer(self.effect_uniforms.buffer(uniform_index).clone()),
           ],
-        })
+        )
       };
 
       // Render pass
@@ -912,31 +896,17 @@ impl PostProcessPipeline {
       } else {
         (&self.view_b, &self.view_a)
       };
-      let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Custom Effect Bind Group"),
-        layout: &self.custom.bind_group_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(input_view),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&self.sampler),
-          },
-          wgpu::BindGroupEntry {
-            binding: 2,
-            resource: self.custom_params.buffer(params_index).as_entire_binding(),
-          },
-          wgpu::BindGroupEntry {
-            binding: 3,
-            resource: self
-              .custom_globals
-              .buffer(globals_index)
-              .as_entire_binding(),
-          },
+      let bind_group = self.bind_groups.get(
+        device,
+        "Custom Effect Bind Group",
+        &self.custom.bind_group_layout,
+        &[
+          Bound::View(input_view.clone()),
+          Bound::Sampler(self.sampler.clone()),
+          Bound::Buffer(self.custom_params.buffer(params_index).clone()),
+          Bound::Buffer(self.custom_globals.buffer(globals_index).clone()),
         ],
-      });
+      );
       {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
           label: Some("Custom Effect Pass"),
@@ -1279,27 +1249,16 @@ impl PostProcessPipeline {
 
     // --- Pass 1: Extract bright pixels (scene -> bloom A, half resolution) ---
 
-    let extract_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Bloom Extract Bind Group"),
-      layout: &self.bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(scene_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&self.sampler),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: self
-            .effect_uniforms
-            .buffer(extract_index)
-            .as_entire_binding(),
-        },
+    let extract_bind_group = self.bind_groups.get(
+      device,
+      "Bloom Extract Bind Group",
+      &self.bind_group_layout,
+      &[
+        Bound::View(scene_view.clone()),
+        Bound::Sampler(self.sampler.clone()),
+        Bound::Buffer(self.effect_uniforms.buffer(extract_index).clone()),
       ],
-    });
+    );
 
     {
       let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1326,24 +1285,16 @@ impl PostProcessPipeline {
     // --- Pass 2: Blur loop (bloom A -> B -> A) ---
     for &(h_index, v_index) in &blur_indices {
       // Horizontal blur: bloom A -> bloom B
-      let h_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Bloom Blur H Bind Group"),
-        layout: &self.bind_group_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&self.bloom_view),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&self.sampler),
-          },
-          wgpu::BindGroupEntry {
-            binding: 2,
-            resource: self.effect_uniforms.buffer(h_index).as_entire_binding(),
-          },
+      let h_bind_group = self.bind_groups.get(
+        device,
+        "Bloom Blur H Bind Group",
+        &self.bind_group_layout,
+        &[
+          Bound::View(self.bloom_view.clone()),
+          Bound::Sampler(self.sampler.clone()),
+          Bound::Buffer(self.effect_uniforms.buffer(h_index).clone()),
         ],
-      });
+      );
 
       {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1368,24 +1319,16 @@ impl PostProcessPipeline {
       }
 
       // Vertical blur: bloom B -> bloom A
-      let v_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Bloom Blur V Bind Group"),
-        layout: &self.bind_group_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&self.bloom_view_b),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&self.sampler),
-          },
-          wgpu::BindGroupEntry {
-            binding: 2,
-            resource: self.effect_uniforms.buffer(v_index).as_entire_binding(),
-          },
+      let v_bind_group = self.bind_groups.get(
+        device,
+        "Bloom Blur V Bind Group",
+        &self.bind_group_layout,
+        &[
+          Bound::View(self.bloom_view_b.clone()),
+          Bound::Sampler(self.sampler.clone()),
+          Bound::Buffer(self.effect_uniforms.buffer(v_index).clone()),
         ],
-      });
+      );
 
       {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1411,31 +1354,17 @@ impl PostProcessPipeline {
     }
 
     // --- Pass 3: Composite (scene + upsampled bloom A -> output_view) ---
-    let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Bloom Composite Bind Group"),
-      layout: &self.bloom_composite_bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(scene_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::TextureView(&self.bloom_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: wgpu::BindingResource::Sampler(&self.sampler),
-        },
-        wgpu::BindGroupEntry {
-          binding: 3,
-          resource: self
-            .effect_uniforms
-            .buffer(composite_index)
-            .as_entire_binding(),
-        },
+    let composite_bind_group = self.bind_groups.get(
+      device,
+      "Bloom Composite Bind Group",
+      &self.bloom_composite_bind_group_layout,
+      &[
+        Bound::View(scene_view.clone()),
+        Bound::View(self.bloom_view.clone()),
+        Bound::Sampler(self.sampler.clone()),
+        Bound::Buffer(self.effect_uniforms.buffer(composite_index).clone()),
       ],
-    });
+    );
 
     {
       let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

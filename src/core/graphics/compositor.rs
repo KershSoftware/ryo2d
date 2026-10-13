@@ -5,6 +5,8 @@
 
 use wgpu::util::DeviceExt;
 
+use super::bind_groups::{BindGroupCache, Bound};
+
 /// Viewport uniform data sent to the composite shader.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -26,6 +28,9 @@ pub(crate) enum CompositeViewport {
 
 /// Resources and drawing for the final composite.
 pub(crate) struct Compositor {
+  // The source and UI bind groups, made once per view; cleared when the
+  // views they bind are recreated
+  bind_groups: BindGroupCache,
   // 1.0 when the target is not sRGB, so the composite encodes to sRGB itself
   encode_srgb: f32,
   // REPLACE blend: draws the scene source
@@ -233,6 +238,7 @@ impl Compositor {
     });
 
     Self {
+      bind_groups: BindGroupCache::default(),
       encode_srgb,
       render_pipeline,
       blend_pipeline,
@@ -254,6 +260,12 @@ impl Compositor {
   /// Recreate the UI texture at a new game resolution.
   pub(crate) fn resize_ui(&mut self, device: &wgpu::Device, width: u32, height: u32) {
     (self.ui_texture, self.ui_texture_view) = create_ui_texture(device, width, height);
+    self.bind_groups.clear();
+  }
+
+  /// The scene images were recreated: forget the bind groups sampling them.
+  pub(crate) fn forget_sources(&self) {
+    self.bind_groups.clear();
   }
 
   /// Set the letterbox transform: `[scale_x, scale_y, offset_x, offset_y]`.
@@ -349,24 +361,16 @@ impl Compositor {
     view: &wgpu::TextureView,
     uniform: &wgpu::Buffer,
   ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some(label),
-      layout: &self.bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&self.sampler),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: uniform.as_entire_binding(),
-        },
+    self.bind_groups.get(
+      device,
+      label,
+      &self.bind_group_layout,
+      &[
+        Bound::View(view.clone()),
+        Bound::Sampler(self.sampler.clone()),
+        Bound::Buffer(uniform.clone()),
       ],
-    })
+    )
   }
 }
 

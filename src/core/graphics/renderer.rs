@@ -442,24 +442,27 @@ impl WgpuRenderer {
     let (lit_texture, lit_texture_view) = create_lit_texture(&device, game_width, game_height);
 
     // Create bind group for main game texture
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Texture Bind Group"),
-      layout: &compositor.bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&texture_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&compositor.sampler),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: compositor.uniform_buffer.as_entire_binding(),
-        },
-      ],
-    });
+    let bind_group = crate::core::graphics::bind_groups::create(
+      &device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("Texture Bind Group"),
+        layout: &compositor.bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&texture_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&compositor.sampler),
+          },
+          wgpu::BindGroupEntry {
+            binding: 2,
+            resource: compositor.uniform_buffer.as_entire_binding(),
+          },
+        ],
+      },
+    );
 
     // Fill the game texture with a dark charcoal background, which is presented
     // immediately to prevent a flash on startup
@@ -687,30 +690,34 @@ impl WgpuRenderer {
       .create_view(&wgpu::TextureViewDescriptor::default());
 
     // Recreate bind group with new texture view
-    self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Texture Bind Group"),
-      layout: &self.compositor.bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&self.texture_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&self.compositor.sampler),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: self.compositor.uniform_buffer.as_entire_binding(),
-        },
-      ],
-    });
+    self.bind_group = crate::core::graphics::bind_groups::create(
+      &self.device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("Texture Bind Group"),
+        layout: &self.compositor.bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&self.texture_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&self.compositor.sampler),
+          },
+          wgpu::BindGroupEntry {
+            binding: 2,
+            resource: self.compositor.uniform_buffer.as_entire_binding(),
+          },
+        ],
+      },
+    );
 
     (self.lit_texture, self.lit_texture_view) =
       create_lit_texture(&self.device, new_width, new_height);
     if let Some(post_process) = &mut self.post_process {
       post_process.resize(&self.device, new_width, new_height);
     }
+    self.compositor.forget_sources();
 
     // Recreated at the new size on the next capture
     self.capture_texture = None;

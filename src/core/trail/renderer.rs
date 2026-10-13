@@ -237,14 +237,17 @@ impl TrailRenderer {
       usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
       mapped_at_creation: false,
     });
-    let standalone_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Trail Standalone Bind Group"),
-      layout: &bind_group_layout,
-      entries: &[wgpu::BindGroupEntry {
-        binding: 0,
-        resource: standalone_globals.as_entire_binding(),
-      }],
-    });
+    let standalone_bind_group = crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("Trail Standalone Bind Group"),
+        layout: &bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+          binding: 0,
+          resource: standalone_globals.as_entire_binding(),
+        }],
+      },
+    );
 
     // Create sampler for textures
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -513,14 +516,17 @@ impl TrailRenderer {
       let Some(buffer) = uniforms.buffer(camera) else {
         continue;
       };
-      let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Trail Camera Bind Group"),
-        layout: &self.bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-          binding: 0,
-          resource: buffer.as_entire_binding(),
-        }],
-      });
+      let bind_group = crate::core::graphics::bind_groups::create(
+        device,
+        &wgpu::BindGroupDescriptor {
+          label: Some("Trail Camera Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+          }],
+        },
+      );
       self.camera_bind_groups.insert(camera, bind_group);
     }
   }
@@ -651,20 +657,23 @@ impl TrailRenderer {
       let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
       // Create bind group for this texture
-      let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Trail Texture Bind Group"),
-        layout: &self.texture_bind_group_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&view),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&self.sampler),
-          },
-        ],
-      });
+      let bind_group = crate::core::graphics::bind_groups::create(
+        device,
+        &wgpu::BindGroupDescriptor {
+          label: Some("Trail Texture Bind Group"),
+          layout: &self.texture_bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+          ],
+        },
+      );
 
       self.texture_cache.insert(
         id,

@@ -158,20 +158,23 @@ impl CameraImages {
       view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Camera Image Bind Group"),
-      layout: &self.layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&self.sampler),
-        },
-      ],
-    });
+    let bind_group = crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("Camera Image Bind Group"),
+        layout: &self.layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&self.sampler),
+          },
+        ],
+      },
+    );
     CameraImage {
       texture,
       view,

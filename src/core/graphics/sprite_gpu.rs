@@ -851,14 +851,17 @@ impl SpriteGpuRenderer {
       let Some(buffer) = uniforms.buffer(camera) else {
         continue;
       };
-      let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Sprite Camera Bind Group"),
-        layout: &self.globals_layout,
-        entries: &[wgpu::BindGroupEntry {
-          binding: 0,
-          resource: buffer.as_entire_binding(),
-        }],
-      });
+      let bind_group = crate::core::graphics::bind_groups::create(
+        device,
+        &wgpu::BindGroupDescriptor {
+          label: Some("Sprite Camera Bind Group"),
+          layout: &self.globals_layout,
+          entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+          }],
+        },
+      );
       self.camera_bind_groups.insert(camera, bind_group);
     }
   }

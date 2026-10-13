@@ -487,20 +487,23 @@ impl TextureAtlas {
       format: Some(PAGE_FORMAT),
       ..Default::default()
     });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Render Target"),
-      layout: &self.bind_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&sampled),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&self.sampler),
-        },
-      ],
-    });
+    let bind_group = crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("Render Target"),
+        layout: &self.bind_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&sampled),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&self.sampler),
+          },
+        ],
+      },
+    );
     self.target_ids.insert(key, target);
     self.targets.insert(
       target,
@@ -598,20 +601,23 @@ impl TextureAtlas {
       view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some(label),
-      layout: &self.bind_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&self.sampler),
-        },
-      ],
-    });
+    let bind_group = crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout: &self.bind_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&self.sampler),
+          },
+        ],
+      },
+    );
     (texture, bind_group)
   }
 

@@ -196,20 +196,23 @@ impl DevWindowRenderer {
       ],
     });
 
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("dev_window_bind_group"),
-      layout: &bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&texture_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&sampler),
-        },
-      ],
-    });
+    let bind_group = crate::core::graphics::bind_groups::create(
+      &device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("dev_window_bind_group"),
+        layout: &bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&texture_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&sampler),
+          },
+        ],
+      },
+    );
 
     // Create shader
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -386,20 +389,23 @@ impl DevWindowRenderer {
       ..Default::default()
     });
 
-    self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("dev_window_bind_group"),
-      layout: &self.bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&self.texture_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&sampler),
-        },
-      ],
-    });
+    self.bind_group = crate::core::graphics::bind_groups::create(
+      &self.device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("dev_window_bind_group"),
+        layout: &self.bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&self.texture_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&sampler),
+          },
+        ],
+      },
+    );
   }
 
   /// Clear the pixel buffer with a color.

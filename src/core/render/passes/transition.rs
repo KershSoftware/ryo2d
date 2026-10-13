@@ -66,22 +66,25 @@ impl FadePipeline {
         },
       ],
     });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Transition Bind Group"),
-      layout: &layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: overlay.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::TextureView(
-            &copy.create_view(&wgpu::TextureViewDescriptor::default()),
-          ),
-        },
-      ],
-    });
+    let bind_group = crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("Transition Bind Group"),
+        layout: &layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: overlay.as_entire_binding(),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::TextureView(
+              &copy.create_view(&wgpu::TextureViewDescriptor::default()),
+            ),
+          },
+        ],
+      },
+    );
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Transition Pipeline Layout"),
       bind_group_layouts: &[Some(&layout)],
