@@ -73,6 +73,15 @@ pub(crate) const COMPOSITE: &str = concat!(include_str!("core/fullscreen_quad.wg
 /// A camera's own image placed in its viewport
 pub(crate) const CAMERA_IMAGE: &str = concat!(include_str!("core/camera_image.wgsl"),);
 
+/// The tonemap pass: the scene image into the display image
+pub(crate) const TONEMAP: &str = concat!(
+  include_str!("include/fullscreen.wgsl"),
+  "\n",
+  include_str!("include/color.wgsl"),
+  "\n",
+  include_str!("core/tonemap.wgsl"),
+);
+
 /// The `fade` post-process effect
 pub(crate) const FADE: &str = concat!(
   include_str!("include/fullscreen.wgsl"),
@@ -168,6 +177,7 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("transition", TRANSITION),
     ("composite", COMPOSITE),
     ("camera_image", CAMERA_IMAGE),
+    ("tonemap", TONEMAP),
     ("fade", FADE),
     ("color_tint", COLOR_TINT),
     ("vignette", VIGNETTE),

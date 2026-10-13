@@ -55,8 +55,9 @@ pub(crate) enum FrameImage {
   Game,
   /// The lighting output
   Lit,
-  /// A post-process ping-pong buffer
-  PostProcess(OutputBuffer),
+  /// A buffer of the display effect stage: `A` is the display image the
+  /// `tonemap` pass writes
+  Display(OutputBuffer),
   /// A window camera's own image (inside its camera passes)
   Camera(Entity),
 }

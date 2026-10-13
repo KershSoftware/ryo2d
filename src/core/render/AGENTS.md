@@ -11,11 +11,12 @@ The engine draws every frame through one `RenderPipeline` (a resource, `RenderPi
 | 3 | `LIGHTING` | camera | lighting is on | the camera's lights and shadows, composed into the lit image (straight-in camera) or back into its own image |
 | 4 | `UNLIT_WORLD` | camera | always (returns early with no unlit draws) | the camera's unlit draws (anything `with_lighting(false)`, and debug shapes), by z |
 | 5 | `CAMERAS` | frame | always | window cameras' own images into their viewports, in order; clears the scene image first when no camera drew straight into it |
-| 6 | `TRANSITION` | frame | a transition fade is visible | scene transition fade over the whole frame (not the UI) |
-| 7 | `POST_PROCESS` | frame | effects are active | the effects chain |
-| 8 | `UI` | frame | the UI buffer has content | uploads the UI layer |
-| 9 | `COMPOSITE` | frame | always | to the window or offscreen target through `ScreenMapping` (bars for pixel art), UI blended last |
-| 10 | `CAPTURE` | frame | a capture was requested | frame capture readback copy |
+| 6 | `TONEMAP` | frame | always | writes the display image (the display stage's buffer A) from the latest scene image; the transition, `post_process` and the composite work on the display image |
+| 7 | `TRANSITION` | frame | a transition fade is visible | scene transition fade over the whole frame (not the UI) |
+| 8 | `POST_PROCESS` | frame | effects are active | the effects chain |
+| 9 | `UI` | frame | the UI buffer has content | uploads the UI layer |
+| 10 | `COMPOSITE` | frame | always | to the window or offscreen target through `ScreenMapping` (bars for pixel art), UI blended last |
+| 11 | `CAPTURE` | frame | a capture was requested | frame capture readback copy |
 
 ## Cameras in the Frame
 
@@ -86,7 +87,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 - **Thin passes.** GPU pipelines, bind groups and buffers live in the subsystem renderers (the batch, lighting, post-process, compositor). A pass only calls into them with the `RenderContext`; `world` and `unlit_world` replay the camera's batch draws.
 - **A camera image per camera, then a frame-level composite.** Lighting and the passes keep working on whole images, so no pass needs scissor logic; the common single full-window camera draws straight into the scene image and pays nothing extra. Post-processing runs once per frame, not per camera.
-- **Latest-image tracking.** `RenderContext` tracks which texture holds the latest image (`FrameImage`: game, lit, a camera's own image, or a post-process output). A pass drawing on "the frame" uses `current_view()` / `encoder_and_current_view()`, so a game pass after `post_process` draws on the post-processed image, and a camera pass on its camera's image. Only passes before `composite` reach the screen.
+- **Latest-image tracking.** `RenderContext` tracks which texture holds the latest image (`FrameImage`: game, lit, a camera's own image, or a display-stage buffer: the `tonemap` pass writes the display image, which `post_process` ping-pongs). A pass drawing on "the frame" uses `current_view()` / `encoder_and_current_view()`, so a game pass after `post_process` draws on the post-processed image, and a camera pass on its camera's image. Only passes before `composite` reach the screen.
 - **The UI is composited only if the `ui` pass uploaded it this frame.** The UI texture is persistent; without that flag a disabled or skipped `ui` pass would blend the previous frame's UI.
 - **A capture is read back only if the `capture` pass ran.** Otherwise `render_frame` reports `CaptureError::Readback` rather than returning a stale image.
 - **Scene images follow the render size** (`ScreenMapping::render_size`: the window's physical size, or the pixel-art target); the lit texture is persistent. Camera images and light targets follow their camera's image size.

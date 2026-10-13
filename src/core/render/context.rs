@@ -22,6 +22,13 @@ pub(crate) struct FrameTargets<'a> {
   pub(crate) capture: Option<&'a wgpu::Texture>,
 }
 
+/// The effect stages' pipelines and their ping-pong images.
+pub(crate) struct EffectStages<'a> {
+  /// The display stage: its buffer `A` is the display image the `tonemap`
+  /// pass writes
+  pub(crate) display: &'a mut PostProcessPipeline,
+}
+
 /// What a [`RenderPass`](super::RenderPass) can use while it records its work.
 pub struct RenderContext<'a> {
   device: &'a wgpu::Device,
@@ -31,7 +38,7 @@ pub struct RenderContext<'a> {
   frame: FrameInfo,
   pub(crate) targets: FrameTargets<'a>,
   pub(crate) scene: FrameScene<'a>,
-  pub(crate) post_process: Option<&'a mut PostProcessPipeline>,
+  pub(crate) stages: EffectStages<'a>,
   /// Which texture holds the latest image
   pub(crate) image: FrameImage,
   /// The camera whose passes are running (an index into the scene's
@@ -53,7 +60,7 @@ impl<'a> RenderContext<'a> {
     frame: FrameInfo,
     targets: FrameTargets<'a>,
     scene: FrameScene<'a>,
-    post_process: Option<&'a mut PostProcessPipeline>,
+    stages: EffectStages<'a>,
   ) -> Self {
     Self {
       device,
@@ -62,7 +69,7 @@ impl<'a> RenderContext<'a> {
       frame,
       targets,
       scene,
-      post_process,
+      stages,
       image: FrameImage::Game,
       camera: None,
       scene_image: FrameImage::Game,
@@ -113,7 +120,7 @@ impl<'a> RenderContext<'a> {
   /// pipelines a pass builds. Every game-size image (game, lit and
   /// post-process output) shares it.
   pub fn format(&self) -> wgpu::TextureFormat {
-    image_texture(&self.targets, self.post_process.as_deref(), self.image).format()
+    image_texture(&self.targets, &self.stages, self.image).format()
   }
 
   /// The texture holding the frame's latest image (the game texture, the lit
@@ -124,7 +131,7 @@ impl<'a> RenderContext<'a> {
   /// the screen, so drawing on it from a pass placed after `composite` is not
   /// shown. Insert game passes before `composite` (or after `post_process`).
   pub fn current_view(&self) -> &wgpu::TextureView {
-    image_view(&self.targets, self.post_process.as_deref(), self.image)
+    image_view(&self.targets, &self.stages, self.image)
   }
 
   /// The encoder and the latest image together, to draw onto the image.
@@ -132,7 +139,7 @@ impl<'a> RenderContext<'a> {
   /// Only passes before `composite` reach the window: a pass placed after
   /// `composite` draws on an image that is no longer presented.
   pub fn encoder_and_current_view(&mut self) -> (&mut wgpu::CommandEncoder, &wgpu::TextureView) {
-    let view = image_view(&self.targets, self.post_process.as_deref(), self.image);
+    let view = image_view(&self.targets, &self.stages, self.image);
     (&mut *self.encoder, view)
   }
 
@@ -187,35 +194,34 @@ impl<'a> RenderContext<'a> {
 /// The view of the texture that holds `image`.
 pub(super) fn image_view<'t>(
   targets: &'t FrameTargets<'_>,
-  post_process: Option<&'t PostProcessPipeline>,
+  stages: &'t EffectStages<'_>,
   image: FrameImage,
 ) -> &'t wgpu::TextureView {
-  match (image, post_process) {
-    (FrameImage::Lit, _) => targets.lit_view,
-    (FrameImage::PostProcess(buffer), Some(post_process)) => post_process.get_output_view(buffer),
-    (FrameImage::Camera(camera), _) => targets
+  match image {
+    FrameImage::Game => targets.game_view,
+    FrameImage::Lit => targets.lit_view,
+    FrameImage::Display(buffer) => stages.display.get_output_view(buffer),
+    FrameImage::Camera(camera) => targets
       .camera_images
       .view(camera)
       .unwrap_or(targets.game_view),
-    // Post-process output without a post-process pipeline can't happen; fall back to the scene
-    (FrameImage::Game, _) | (FrameImage::PostProcess(_), None) => targets.game_view,
   }
 }
 
 /// The texture that holds `image`.
 pub(super) fn image_texture<'t>(
   targets: &'t FrameTargets<'_>,
-  post_process: Option<&'t PostProcessPipeline>,
+  stages: &'t EffectStages<'_>,
   image: FrameImage,
 ) -> &'t wgpu::Texture {
-  match (image, post_process) {
-    (FrameImage::Lit, _) => targets.lit,
-    (FrameImage::PostProcess(OutputBuffer::A), Some(post_process)) => post_process.texture_a(),
-    (FrameImage::PostProcess(OutputBuffer::B), Some(post_process)) => post_process.texture_b(),
-    (FrameImage::Camera(camera), _) => targets
+  match image {
+    FrameImage::Game => targets.game,
+    FrameImage::Lit => targets.lit,
+    FrameImage::Display(OutputBuffer::A) => stages.display.texture_a(),
+    FrameImage::Display(OutputBuffer::B) => stages.display.texture_b(),
+    FrameImage::Camera(camera) => targets
       .camera_images
       .texture(camera)
       .unwrap_or(targets.game),
-    (FrameImage::Game, _) | (FrameImage::PostProcess(_), None) => targets.game,
   }
 }

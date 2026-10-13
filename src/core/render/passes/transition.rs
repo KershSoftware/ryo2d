@@ -166,11 +166,11 @@ impl RenderPass for TransitionPass {
     let RenderContext {
       encoder,
       targets,
-      post_process,
+      stages,
       image,
       ..
     } = ctx;
-    let source = image_texture(targets, post_process.as_deref(), *image);
+    let source = image_texture(targets, stages, *image);
     encoder.copy_texture_to_texture(
       source.as_image_copy(),
       fade.copy.as_image_copy(),

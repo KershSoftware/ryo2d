@@ -46,8 +46,8 @@ mod passes;
 mod pipeline;
 pub(crate) mod scratch;
 
-pub(crate) use context::FrameTargets;
 pub use context::RenderContext;
+pub(crate) use context::{EffectStages, FrameTargets};
 #[cfg(test)]
 pub(crate) use debug_draw::ShapeKind;
 pub use debug_draw::{DebugDraw, DebugPen};
@@ -76,6 +76,9 @@ pub mod pass_ids {
   pub const UNLIT_WORLD: &str = "unlit_world";
   /// The window cameras' images placed in their viewports
   pub const CAMERAS: &str = "cameras";
+  /// The look: the scene image into the display image (exposure, curve,
+  /// grading)
+  pub const TONEMAP: &str = "tonemap";
   /// Scene transition fade over the whole frame
   pub const TRANSITION: &str = "transition";
   /// Post-process effects

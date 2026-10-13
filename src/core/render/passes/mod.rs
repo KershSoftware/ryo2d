@@ -9,19 +9,21 @@ mod lighting;
 mod output;
 mod post_process;
 mod scene;
+mod tonemap;
 mod transition;
 mod world;
 
 use super::RenderPass;
 
 /// The built-in passes, in `default_2d` order.
-pub(crate) fn built_in() -> [Box<dyn RenderPass>; 10] {
+pub(crate) fn built_in() -> [Box<dyn RenderPass>; 11] {
   [
     Box::new(scene::Clear),
     Box::new(world::World),
     Box::new(lighting::Lighting),
     Box::new(world::UnlitWorld),
     Box::new(cameras::Cameras),
+    Box::new(tonemap::Tonemap::default()),
     Box::new(transition::TransitionPass::default()),
     Box::new(post_process::PostProcess),
     Box::new(output::Ui),

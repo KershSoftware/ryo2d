@@ -1,6 +1,5 @@
 //! Post-process effects on the latest image
 
-use crate::core::render::context::image_texture;
 use crate::core::render::{FrameImage, FrameInfo, RenderContext, RenderPass, pass_ids};
 use crate::core::shaders::OutputBuffer;
 
@@ -29,34 +28,23 @@ impl RenderPass for PostProcess {
     let time = effects.time();
     let RenderContext {
       encoder,
-      targets,
-      post_process,
+      stages,
       image,
       ..
     } = ctx;
-    let Some(post_process) = post_process.as_deref_mut() else {
+    // Display effects work on the display image the tonemap pass wrote
+    let FrameImage::Display(buffer) = *image else {
       return;
     };
     if active.is_empty() && custom.is_empty() {
       return;
     }
-
-    // The chain reads texture A; the image is already there if A holds it
-    if *image != FrameImage::PostProcess(OutputBuffer::A) {
-      let source = image_texture(targets, Some(&*post_process), *image);
+    let display = &mut *stages.display;
+    // The chain reads texture A
+    if buffer == OutputBuffer::B {
       encoder.copy_texture_to_texture(
-        wgpu::TexelCopyTextureInfo {
-          texture: source,
-          mip_level: 0,
-          origin: wgpu::Origin3d::ZERO,
-          aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyTextureInfo {
-          texture: post_process.texture_a(),
-          mip_level: 0,
-          origin: wgpu::Origin3d::ZERO,
-          aspect: wgpu::TextureAspect::All,
-        },
+        display.texture_b().as_image_copy(),
+        display.texture_a().as_image_copy(),
         wgpu::Extent3d {
           width,
           height,
@@ -64,8 +52,7 @@ impl RenderPass for PostProcess {
         },
       );
     }
-
-    let output = post_process.apply_chain(device, queue, encoder, &active, &custom, time);
-    *image = FrameImage::PostProcess(output);
+    let output = display.apply_chain(device, queue, encoder, &active, &custom, time);
+    *image = FrameImage::Display(output);
   }
 }

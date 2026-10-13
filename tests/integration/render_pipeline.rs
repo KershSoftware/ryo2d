@@ -159,12 +159,13 @@ fn errors_name_the_pass() {
   );
 }
 
-const ORDER: [&str; 10] = [
+const ORDER: [&str; 11] = [
   pass_ids::CLEAR,
   pass_ids::WORLD,
   pass_ids::LIGHTING,
   pass_ids::UNLIT_WORLD,
   pass_ids::CAMERAS,
+  pass_ids::TONEMAP,
   pass_ids::TRANSITION,
   pass_ids::POST_PROCESS,
   pass_ids::UI,
@@ -183,7 +184,7 @@ fn a_plain_frame_runs_the_always_on_passes() {
   // unlit trails or lines
   assert_eq!(
     RenderPipeline::default_2d().passes_to_run(&FrameInfo::default()),
-    vec!["clear", "unlit_world", "cameras", "composite"]
+    vec!["clear", "unlit_world", "cameras", "tonemap", "composite"]
   );
 }
 
@@ -206,6 +207,7 @@ fn a_full_2d_frame_runs_every_scene_pass() {
       "lighting",
       "unlit_world",
       "cameras",
+      "tonemap",
       "transition",
       "post_process",
       "ui",
@@ -229,6 +231,7 @@ fn the_transition_pass_runs_only_while_fading() {
       "world",
       "unlit_world",
       "cameras",
+      "tonemap",
       "transition",
       "composite"
     ]
@@ -271,6 +274,13 @@ fn camera_passes_run_before_the_frame_passes() {
   pipeline.push(PerCamera("late")).unwrap();
   assert_eq!(
     pipeline.passes_to_run(&FrameInfo::default()),
-    vec!["clear", "unlit_world", "late", "cameras", "composite"]
+    vec![
+      "clear",
+      "unlit_world",
+      "late",
+      "cameras",
+      "tonemap",
+      "composite"
+    ]
   );
 }

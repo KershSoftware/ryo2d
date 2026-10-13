@@ -98,11 +98,14 @@ fn effects_apply_to_the_lit_image() {
   );
 }
 
-/// A game pass that clears the current image to magenta.
-struct Magenta;
+/// A game pass that clears the current image to magenta and records the
+/// format it saw.
+struct Magenta(&'static Mutex<Option<ryo2d::wgpu::TextureFormat>>);
 
-/// The format `RenderContext::format` reported inside the pass.
+/// The format `RenderContext::format` reported to the pass after post-processing.
 static SEEN_FORMAT: Mutex<Option<ryo2d::wgpu::TextureFormat>> = Mutex::new(None);
+/// The format it reported to the pass before the tonemap.
+static SEEN_BEFORE_TONEMAP: Mutex<Option<ryo2d::wgpu::TextureFormat>> = Mutex::new(None);
 
 impl RenderPass for Magenta {
   fn id(&self) -> &str {
@@ -110,7 +113,7 @@ impl RenderPass for Magenta {
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
-    if let Ok(mut seen) = SEEN_FORMAT.lock() {
+    if let Ok(mut seen) = self.0.lock() {
       *seen = Some(ctx.format());
     }
     let (encoder, view) = ctx.encoder_and_current_view();
@@ -147,7 +150,7 @@ impl Scene for WithGamePass {
     ctx.effects().set_color_tint(Color::rgb(0, 255, 0), 1.0);
     let _ = ctx
       .render_pipeline()
-      .insert_after(pass_ids::POST_PROCESS, Magenta);
+      .insert_after(pass_ids::POST_PROCESS, Magenta(&SEEN_FORMAT));
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -170,6 +173,33 @@ fn a_game_pass_after_post_process_draws_on_the_frame() {
   assert_eq!(
     *SEEN_FORMAT.lock().unwrap(),
     Some(ryo2d::wgpu::TextureFormat::Rgba8UnormSrgb)
+  );
+}
+
+struct WithEarlyPass;
+
+impl Scene for WithEarlyPass {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    white_sprite(ctx);
+    let _ = ctx
+      .render_pipeline()
+      .insert_before(pass_ids::TONEMAP, Magenta(&SEEN_BEFORE_TONEMAP));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_frame_pass_before_the_tonemap_reaches_the_frame() {
+  let Some(mut engine) = engine(WithEarlyPass) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(32, 32).0,
+    [255, 0, 255, 255]
   );
 }
 

@@ -26,7 +26,8 @@ use winit::window::Window;
 use crate::core::capture::{CapturedFrame, read_texture_rgba};
 use crate::core::error::{CaptureError, CaptureResult};
 use crate::core::render::{
-  DrawList, FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline, TRANSITION_VISIBLE,
+  DrawList, EffectStages, FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline,
+  TRANSITION_VISIBLE,
 };
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
@@ -170,8 +171,8 @@ pub struct WgpuRenderer {
   bind_group: wgpu::BindGroup,
   // Screen space and the window: the scene renders at `render_size()`
   mapping: ScreenMapping,
-  // Post-processing pipeline
-  post_process: Option<PostProcessPipeline>,
+  // The display effect stage; its buffer A is the display image
+  display_effects: PostProcessPipeline,
   // Whether presentation blocks until vsync (Fifo mode)
   // When true, manual frame limiting should be skipped to avoid double-waiting
   presentation_blocks: bool,
@@ -495,8 +496,8 @@ impl WgpuRenderer {
       },
     );
 
-    // Create post-process pipeline
-    let post_process = PostProcessPipeline::new(
+    // Create the display effect stage
+    let display_effects = PostProcessPipeline::new(
       &device,
       game_width,
       game_height,
@@ -517,7 +518,7 @@ impl WgpuRenderer {
       lit_texture_view,
       bind_group,
       mapping,
-      post_process: Some(post_process),
+      display_effects,
       presentation_blocks,
       capture_texture: None,
       keep_scene: false,
@@ -714,9 +715,9 @@ impl WgpuRenderer {
 
     (self.lit_texture, self.lit_texture_view) =
       create_lit_texture(&self.device, new_width, new_height);
-    if let Some(post_process) = &mut self.post_process {
-      post_process.resize(&self.device, new_width, new_height);
-    }
+    self
+      .display_effects
+      .resize(&self.device, new_width, new_height);
     self.compositor.forget_sources();
 
     // Recreated at the new size on the next capture
@@ -768,7 +769,7 @@ impl WgpuRenderer {
       render_height,
       world: !scene.draw_list.items().is_empty(),
       lighting: scene.lighting.is_some(),
-      effects: self.post_process.is_some() && scene.effects.has_active_effects(),
+      effects: scene.effects.has_active_effects(),
       ui: scene.ui_buffer.iter().any(|&b| b != 0),
       transition: scene.overlay.1 > TRANSITION_VISIBLE,
       capture: capture_path.is_some() || self.keep_scene,
@@ -805,7 +806,9 @@ impl WgpuRenderer {
         frame,
         targets,
         scene,
-        self.post_process.as_mut(),
+        EffectStages {
+          display: &mut self.display_effects,
+        },
       );
       pipeline.execute(&mut ctx);
       captured = ctx.captured;
@@ -948,7 +951,7 @@ mod tests {
     assert_eq!(size(&renderer.texture), (96, 80));
     assert_eq!(size(&renderer.lit_texture), (96, 80));
     assert_eq!(size(renderer.compositor.ui_texture()), (96, 80));
-    let post = renderer.post_process.as_ref().expect("post process");
+    let post = &renderer.display_effects;
     assert_eq!(size(post.texture_a()), (96, 80));
     assert_eq!(size(post.texture_b()), (96, 80));
 
