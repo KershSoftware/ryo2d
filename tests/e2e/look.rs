@@ -254,3 +254,19 @@ fn half_strength_blends_halfway() {
   };
   assert!(pixel[0].abs_diff(128) <= 2, "{pixel:?}");
 }
+
+#[test]
+fn extreme_exposure_and_contrast_stay_finite() {
+  let look = Look {
+    exposure: 16.0,
+    grading: ColorGrading {
+      contrast: 10.0,
+      ..ColorGrading::default()
+    },
+    ..Look::default()
+  };
+  let Some(pixel) = shown(square([255, 255, 255, 255], look)) else {
+    return;
+  };
+  assert!(pixel[..3].iter().all(|&c| c >= 242), "{pixel:?}");
+}

@@ -91,14 +91,15 @@ fn balanced(c: vec3<f32>) -> vec3<f32> {
     if look.grade.w < 0.5 {
         return c;
     }
-    let x = c * look.balance.rgb;
-    let contrasted = select(
+    let x = min(c * look.balance.rgb, vec3<f32>(65504.0));
+    // The power can overflow; keep it finite so the mix below never meets inf * 0
+    let contrasted = min(select(
         vec3<f32>(0.0),
         0.18 * pow(x / 0.18, vec3<f32>(look.balance.w)),
         x > vec3<f32>(0.0),
-    );
+    ), vec3<f32>(65504.0));
     let luma = dot(contrasted, vec3<f32>(0.2126, 0.7152, 0.0722));
-    return max(mix(vec3<f32>(luma), contrasted, look.grade.x), vec3<f32>(0.0));
+    return max(vec3<f32>(luma) + (contrasted - vec3<f32>(luma)) * look.grade.x, vec3<f32>(0.0));
 }
 
 // Lift, gamma and gain on the display colour, then the LUT in sRGB
