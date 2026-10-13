@@ -213,7 +213,9 @@ impl Batch2D {
     // The previous sprite's texture and where it lives, reused while
     // sprites share it
     let mut last: Option<(TextureId, AtlasSlot, (u32, u32))> = None;
-    let mut ensured: Option<PipelineKey> = None;
+    // The last pipeline asked for and the shader it resolved to, reused
+    // while drawables share it (a map lookup per sprite otherwise)
+    let mut ensured: Option<(PipelineKey, BatchShader)> = None;
     for (camera, drawn) in cameras.iter().zip(draws.iter_mut()) {
       drawn.camera = Some(camera.entity);
       let first = placed.len() as u32;
@@ -241,9 +243,9 @@ impl Batch2D {
               stream: Stream::Triangles,
               format,
             };
-            if ensured != Some(key) {
+            if ensured.is_none_or(|(last, _)| last != key) {
               pipelines.ensure(device, key, None);
-              ensured = Some(key);
+              ensured = Some((key, shader));
             }
             let state = DrawState {
               page,
@@ -276,24 +278,29 @@ impl Batch2D {
           stream: Stream::Quads,
           format,
         };
-        if ensured != Some(key) {
-          let custom = match wanted {
-            BatchShader::Custom(source) => textures.custom_shader(source),
-            _ => None,
-          };
-          pipelines.ensure(device, key, custom);
-          ensured = Some(key);
-        }
-        // A custom shader draws plain until the GPU accepted its pipeline
-        let shader = if pipelines.get(&key).is_some() {
-          wanted
-        } else {
-          BatchShader::Sprite
+        let shader = match ensured {
+          Some((last, shader)) if last == key => shader,
+          _ => {
+            let custom = match wanted {
+              BatchShader::Custom(source) => textures.custom_shader(source),
+              _ => None,
+            };
+            pipelines.ensure(device, key, custom);
+            // A custom shader draws plain until the GPU accepted its pipeline
+            let shader = if pipelines.get(&key).is_some() {
+              wanted
+            } else {
+              let plain = PipelineKey {
+                shader: BatchShader::Sprite,
+                ..key
+              };
+              pipelines.ensure(device, plain, None);
+              BatchShader::Sprite
+            };
+            ensured = Some((key, shader));
+            shader
+          }
         };
-        if shader != wanted {
-          let plain = PipelineKey { shader, ..key };
-          pipelines.ensure(device, plain, None);
-        }
         // Only built-in effects grow the quad; custom params are not effect ids
         let effects = shader == BatchShader::SpriteEffect;
         placed.push(place_in_slot(&sprite.instance, &slot, page_size, effects));

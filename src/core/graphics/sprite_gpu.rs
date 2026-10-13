@@ -928,6 +928,8 @@ pub struct BatchCollector {
   /// `CollectedSprite`), by serial
   sprites: Vec<SpriteHandle>,
   sprite_index: HashMap<usize, usize>,
+  /// Each handle's texture while pushing to the draw list (reused)
+  textures: Vec<TextureId>,
 }
 
 /// One collected sprite, as the draw list takes it.
@@ -992,14 +994,17 @@ impl BatchCollector {
 
   /// Push every collected sprite (world-space instances) onto `list` as
   /// `kind`, in submission order, with its texture registered in `gpu`.
-  pub(crate) fn push_to(&self, list: &mut DrawList, kind: DrawKind, gpu: &mut SpriteGpuRenderer) {
-    let textures: Vec<TextureId> = self
-      .sprites
-      .iter()
-      .map(|sprite| gpu.texture_of(sprite))
-      .collect();
+  pub(crate) fn push_to(
+    &mut self,
+    list: &mut DrawList,
+    kind: DrawKind,
+    gpu: &mut SpriteGpuRenderer,
+  ) {
+    self.textures.clear();
+    let textures = self.sprites.iter().map(|sprite| gpu.texture_of(sprite));
+    self.textures.extend(textures);
     for item in &self.items {
-      if let Some(&texture) = textures.get(item.sprite) {
+      if let Some(&texture) = self.textures.get(item.sprite) {
         let everyone = (RenderLayers::default(), None, None);
         list.push_sprite_in(
           kind,

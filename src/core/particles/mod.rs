@@ -318,6 +318,8 @@ pub struct ParticleSystem {
   particles: Vec<ParticleData>,
   /// Colliders gathered this update (reused to avoid per-frame allocation)
   colliders: Vec<ParticleCollider>,
+  /// Each emitter's look while collecting for render (reused)
+  looks: HashMap<Entity, (SpriteHandle, Option<SpriteEffect>, SpriteDraw)>,
   /// Random number generator for spawn variation
   rng: StdRng,
 }
@@ -347,6 +349,7 @@ impl ParticleSystem {
     Self {
       particles: Vec::with_capacity(10000),
       colliders: Vec::new(),
+      looks: HashMap::new(),
       rng,
     }
   }
@@ -796,7 +799,7 @@ impl ParticleSystem {
   ///
   /// Call this in the render phase to add particles to the batch collector.
   /// The camera is used to convert world positions to screen positions.
-  pub fn collect_for_render(&self, world: &World, collector: &mut BatchCollector) {
+  pub fn collect_for_render(&mut self, world: &World, collector: &mut BatchCollector) {
     if self.particles.is_empty() {
       return;
     }
@@ -805,19 +808,19 @@ impl ParticleSystem {
     let Some(mut emitters) = world.try_query::<(Entity, &ParticleEmitter)>() else {
       return;
     };
-    let looks: HashMap<Entity, (&SpriteHandle, Option<&SpriteEffect>, SpriteDraw)> = emitters
-      .iter(world)
-      .map(|(entity, emitter)| {
-        let draw = SpriteDraw {
-          z: emitter.z_order,
-          blend: emitter.blend,
-          filter: emitter.filter,
-          lit: emitter.lighting,
-          effects: emitter.effect.is_some(),
-        };
-        (entity, (&emitter.sprite, emitter.effect.as_ref(), draw))
-      })
-      .collect();
+    let looks = &mut self.looks;
+    looks.clear();
+    looks.extend(emitters.iter(world).map(|(entity, emitter)| {
+      let draw = SpriteDraw {
+        z: emitter.z_order,
+        blend: emitter.blend,
+        filter: emitter.filter,
+        lit: emitter.lighting,
+        effects: emitter.effect.is_some(),
+      };
+      let look = (emitter.sprite.clone(), emitter.effect.clone(), draw);
+      (entity, look)
+    }));
 
     for p in &self.particles {
       let Some((sprite, effect, draw)) = looks.get(&p.emitter_entity) else {
@@ -1032,7 +1035,7 @@ mod tests {
     world.spawn((Transform::from_xy(10.0, 10.0), burst(2)));
     let hidden = world.spawn((Transform::from_xy(20.0, 20.0), burst(3))).id();
     update(&mut system, &mut world, 0.016);
-    let drawn = |world: &World| {
+    let mut drawn = |world: &World| {
       let mut collector = BatchCollector::new();
       system.collect_for_render(world, &mut collector);
       collector.sprite_count()

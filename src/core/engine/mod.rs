@@ -167,6 +167,19 @@ pub struct Engine {
   // texture cameras left out for want of their target, and those already
   // warned about
   camera_draws: Vec<crate::core::render::CameraDraw>,
+  // Extraction's buffers, emptied and refilled each frame (borrowed items
+  // are recycled into the frame's lifetime)
+  camera_globals: Vec<(
+    crate::core::ecs::Entity,
+    crate::core::graphics::camera_gpu::CameraGlobals,
+  )>,
+  lights: Vec<(crate::core::ecs::Vec2, crate::core::lighting::Light2D)>,
+  occluders: Vec<(
+    crate::core::ecs::GlobalTransform,
+    &'static crate::core::lighting::LightOccluder2D,
+  )>,
+  parallax: Vec<crate::core::graphics::SpriteInstance>,
+  poly_points: Vec<crate::core::render::batch::PolyPoint>,
   targetless_cameras: Vec<crate::core::ecs::Entity>,
   warned_targetless: std::collections::HashSet<crate::core::ecs::Entity>,
   draw_list: DrawList,
@@ -516,6 +529,11 @@ impl Engine {
       entity_drawer: EntityDrawer::default(),
       camera_uniforms: Default::default(),
       camera_draws: Vec::new(),
+      camera_globals: Vec::new(),
+      lights: Vec::new(),
+      occluders: Vec::new(),
+      parallax: Vec::new(),
+      poly_points: Vec::new(),
       targetless_cameras: Vec::new(),
       warned_targetless: Default::default(),
       draw_list: DrawList::default(),

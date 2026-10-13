@@ -21,6 +21,7 @@ use crate::core::graphics::{
 use crate::core::graphics::{ParallaxLayer, parallax};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
+use crate::core::render::scratch::recycle;
 use crate::core::render::{
   DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, SpriteLook, SpriteShading,
   plan_cameras,
@@ -101,7 +102,8 @@ impl Engine {
       }
 
       // Lights at their world position (occluders are gathered while drawing)
-      let lights = lights_to_draw(&mut self.world, alpha);
+      let mut lights = std::mem::take(&mut self.lights);
+      lights_to_draw(&mut self.world, alpha, &mut lights);
       if let Some(lighting) = lighting.as_mut() {
         let mut settings = self.world.resource_mut::<LightingSettings>();
         lighting.set_enabled(
@@ -150,18 +152,17 @@ impl Engine {
         lighting.sync_cameras(rend.device(), &self.camera_draws);
       }
       let snap = matches!(self.config.presentation, Presentation::PixelArt { .. });
-      let cameras: Vec<_> = self
-        .camera_draws
-        .iter()
-        .map(|camera| {
+      self.camera_globals.clear();
+      self
+        .camera_globals
+        .extend(self.camera_draws.iter().map(|camera| {
           let size = camera.rect.size();
           let globals = CameraGlobals::new(&camera.view, size, game_time, real_time, snap);
           (camera.entity, globals)
-        })
-        .collect();
+        }));
       self
         .camera_uniforms
-        .sync(rend.device(), rend.queue(), &cameras);
+        .sync(rend.device(), rend.queue(), &self.camera_globals);
       batch.sync_cameras(rend.device(), &self.camera_uniforms);
 
       self.draw_list.clear();
@@ -169,7 +170,7 @@ impl Engine {
         .batch_collector
         .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu);
       // Parallax layers, laid out for each camera from its own view
-      let mut quads = Vec::new();
+      let mut quads = std::mem::take(&mut self.parallax);
       for (layer, layers) in self
         .world
         .query::<(&ParallaxLayer, Option<&RenderLayers>)>()
@@ -206,11 +207,12 @@ impl Engine {
         rend.queue(),
         &mut self.draw_list,
       );
+      self.parallax = quads;
       // Trails (world-space points), lines (at their entity) and the debug
       // overlays become triangles, one draw-list item each
       let triangles = batch.triangles();
       triangles.clear();
-      let mut points = Vec::new();
+      let mut points = std::mem::take(&mut self.poly_points);
       for (trail, layers) in self
         .world
         .query::<(&Trail2D, Option<&RenderLayers>)>()
@@ -271,6 +273,7 @@ impl Engine {
       for camera in &self.camera_draws {
         debug.push_for_camera(camera, &mut self.draw_list, triangles, &mut points);
       }
+      self.poly_points = points;
       self.draw_list.sorted();
       batch.prepare(
         rend.device(),
@@ -300,8 +303,10 @@ impl Engine {
         let mut lighting = lighting.as_mut().filter(|l| l.is_enabled());
         // Lights and shadows are uploaded once; every lit camera draws them
         if let Some(lighting) = lighting.as_deref_mut() {
-          let occluders = occluders_to_draw(world, &mut occluder_query, alpha);
+          let mut occluders = recycle(std::mem::take(&mut self.occluders));
+          occluders_to_draw(world, &mut occluder_query, alpha, &mut occluders);
           lighting.prepare_frame(rend.queue(), &lights, &occluders);
+          self.occluders = recycle(occluders);
         }
         let scene = FrameScene {
           sprites: &gpu,
@@ -349,6 +354,7 @@ impl Engine {
     self.sprite_gpu = Some(gpu);
     self.batch = Some(batch);
     self.lighting = lighting;
+    self.lights = lights;
     self.frame_timings.present = present_start.elapsed();
 
     if outcome == PresentOutcome::Presented {
@@ -381,17 +387,19 @@ fn game_entity_count(world: &World) -> u32 {
 
 /// The lights to draw this frame, at their world positions (blended for
 /// interpolated entities, like their sprites).
-fn lights_to_draw(world: &mut World, alpha: f32) -> Vec<(Vec2, Light2D)> {
-  world
-    .query::<(&GlobalTransform, Option<&PreviousGlobalTransform>, &Light2D)>()
-    .iter(world)
-    .map(|(global, previous, light)| {
-      (
-        render_global(global, previous, alpha).translation(),
-        light.clone(),
-      )
-    })
-    .collect()
+fn lights_to_draw(world: &mut World, alpha: f32, out: &mut Vec<(Vec2, Light2D)>) {
+  out.clear();
+  out.extend(
+    world
+      .query::<(&GlobalTransform, Option<&PreviousGlobalTransform>, &Light2D)>()
+      .iter(world)
+      .map(|(global, previous, light)| {
+        (
+          render_global(global, previous, alpha).translation(),
+          light.clone(),
+        )
+      }),
+  );
 }
 
 type OccluderItem = (
@@ -406,11 +414,14 @@ fn occluders_to_draw<'w>(
   world: &'w World,
   query: &mut QueryState<OccluderItem>,
   alpha: f32,
-) -> Vec<(GlobalTransform, &'w LightOccluder2D)> {
-  query
-    .iter(world)
-    .map(|(global, previous, occluder)| (render_global(global, previous, alpha), occluder))
-    .collect()
+  out: &mut Vec<(GlobalTransform, &'w LightOccluder2D)>,
+) {
+  out.clear();
+  out.extend(
+    query
+      .iter(world)
+      .map(|(global, previous, occluder)| (render_global(global, previous, alpha), occluder)),
+  );
 }
 
 #[cfg(test)]
@@ -436,10 +447,12 @@ mod tests {
     let mut world = World::new();
     moved(&mut world, Light2D::point(Color::WHITE, 5.0));
     moved(&mut world, LightOccluder2D::rect(4.0, 4.0));
-    let lights = lights_to_draw(&mut world, 0.5);
+    let mut lights = Vec::new();
+    lights_to_draw(&mut world, 0.5, &mut lights);
     assert_eq!(lights[0].0, Vec2::new(5.0, 0.0));
     let mut query = world.query::<OccluderItem>();
-    let occluders = occluders_to_draw(&world, &mut query, 0.5);
+    let mut occluders = Vec::new();
+    occluders_to_draw(&world, &mut query, 0.5, &mut occluders);
     assert_eq!(occluders[0].0.translation(), Vec2::new(5.0, 0.0));
   }
 }

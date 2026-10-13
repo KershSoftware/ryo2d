@@ -141,6 +141,8 @@ pub struct LightingRenderer {
   bind_groups: BindGroupCache,
 
   /// The lights and shadow vertices `prepare_frame` uploaded this frame
+  /// (`instances` reused across frames)
+  instances: Vec<LightInstance>,
   frame_lights: u32,
   frame_shadow_vertices: u32,
 
@@ -667,6 +669,7 @@ impl LightingRenderer {
       targets: LightTargets::new(device, width, height),
       cameras: HashMap::new(),
       bind_groups: BindGroupCache::default(),
+      instances: Vec::with_capacity(MAX_LIGHTS),
       frame_lights: 0,
       frame_shadow_vertices: 0,
       sampler,
@@ -785,11 +788,12 @@ impl LightingRenderer {
     lights: &[(Vec2, Light2D)],
     occluders: &[(GlobalTransform, &LightOccluder2D)],
   ) {
-    let instances = light_instances(lights.iter().map(|(position, light)| (position, light)));
-    if !instances.is_empty() {
-      queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&instances));
+    let lights_in = lights.iter().map(|(position, light)| (position, light));
+    light_instances(lights_in, &mut self.instances);
+    if !self.instances.is_empty() {
+      queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&self.instances));
     }
-    self.frame_lights = instances.len() as u32;
+    self.frame_lights = self.instances.len() as u32;
     self.frame_shadow_vertices = 0;
     let casts_shadows = lights.iter().any(|(_, light)| light.casts_shadows());
     if casts_shadows && !occluders.is_empty() {
@@ -949,7 +953,8 @@ impl LightingRenderer {
     // Note: We still render the light accumulation pass even if disabled to ensure
     // the light_texture is cleared. The compose pass handles ambient lighting.
 
-    let instances = light_instances(lights);
+    let mut instances = Vec::with_capacity(MAX_LIGHTS);
+    light_instances(lights, &mut instances);
 
     // Upload light data
     if !instances.is_empty() {
@@ -1480,8 +1485,9 @@ impl LightingRenderer {
 /// The GPU instances of `lights` (at most `MAX_LIGHTS`).
 fn light_instances<'a>(
   lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
-) -> Vec<LightInstance> {
-  let mut instances: Vec<LightInstance> = Vec::with_capacity(MAX_LIGHTS);
+  instances: &mut Vec<LightInstance>,
+) {
+  instances.clear();
 
   for (position, light) in lights {
     if instances.len() >= MAX_LIGHTS {
@@ -1541,8 +1547,6 @@ fn light_instances<'a>(
 
     instances.push(instance);
   }
-
-  instances
 }
 
 /// Copy `scene_texture` into the scene copy of `targets` (the same size).

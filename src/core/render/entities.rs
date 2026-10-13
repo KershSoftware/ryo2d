@@ -25,6 +25,7 @@
 use std::collections::HashSet;
 
 use super::batch::{BlendMode, Filter};
+use super::scratch::recycle;
 use super::{CameraDraw, DrawKind, DrawList, SpriteLook, SpriteShading};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::interpolate::render_global;
@@ -119,6 +120,9 @@ pub(crate) struct EntityDrawer {
   warned: HashSet<Entity>,
   /// The shadow ellipse's texture, kept while the renderer keeps it
   ellipse: Option<TextureId>,
+  /// The frame's drawables in order (empty between frames; its allocation
+  /// is reused)
+  items: Vec<(DrawOrder, Drawable<'static>)>,
 }
 
 impl EntityDrawer {
@@ -146,31 +150,33 @@ impl EntityDrawer {
     let world: &World = world;
     // The draw list sorts by each entity's own z; this order (y-sorted after
     // plain within a layer) becomes the submission sequence
-    let mut items: Vec<(DrawOrder, Drawable<'_>)> = drawables
-      .iter(world)
-      .filter(|(_, renderable, ..)| renderable.visible)
-      .map(
-        |(entity, renderable, global, previous, material, y_sort, layers)| {
-          let order = match y_sort {
-            Some(y_sort) => DrawOrder::y_sorted(
-              renderable.z_order,
-              y_sort_key(y_sort, renderable, global.translation().y),
-            ),
-            None => DrawOrder::plain(renderable.z_order),
-          };
-          let drawable = Drawable {
-            entity,
-            renderable,
-            global,
-            previous,
-            material,
-            y_sort,
-            layers: layers.copied().unwrap_or_default(),
-          };
-          (order, drawable)
-        },
-      )
-      .collect();
+    let mut items: Vec<(DrawOrder, Drawable<'_>)> = recycle(std::mem::take(&mut self.items));
+    items.extend(
+      drawables
+        .iter(world)
+        .filter(|(_, renderable, ..)| renderable.visible)
+        .map(
+          |(entity, renderable, global, previous, material, y_sort, layers)| {
+            let order = match y_sort {
+              Some(y_sort) => DrawOrder::y_sorted(
+                renderable.z_order,
+                y_sort_key(y_sort, renderable, global.translation().y),
+              ),
+              None => DrawOrder::plain(renderable.z_order),
+            };
+            let drawable = Drawable {
+              entity,
+              renderable,
+              global,
+              previous,
+              material,
+              y_sort,
+              layers: layers.copied().unwrap_or_default(),
+            };
+            (order, drawable)
+          },
+        ),
+    );
     // Stable, so plain sprites keep their order
     items.sort_by(|(a, _), (b, _)| a.cmp(b));
 
@@ -213,7 +219,9 @@ impl EntityDrawer {
       out.layers = layers.copied().unwrap_or_default();
       collect_composite(&frame, global, previous, composite, &mut out);
     }
-    items.len()
+    let count = items.len();
+    self.items = recycle(items);
+    count
   }
 }
 

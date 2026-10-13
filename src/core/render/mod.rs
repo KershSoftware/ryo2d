@@ -44,6 +44,7 @@ mod frame;
 mod pass;
 mod passes;
 mod pipeline;
+pub(crate) mod scratch;
 
 pub(crate) use context::FrameTargets;
 pub use context::RenderContext;
