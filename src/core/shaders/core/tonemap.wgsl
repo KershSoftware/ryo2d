@@ -1,15 +1,24 @@
 // The look: the latest scene image (linear light, premultiplied, may exceed
 // 1) into the display image (Rgba8UnormSrgb, which encodes sRGB on store),
-// one texel per pixel: exposure, then the curve. `Tonemap::apply` in
+// one texel per pixel: exposure, grading and the curve. `Tonemap::apply` in
 // render/look.rs is the same maths on the CPU; keep them together.
 
 struct Look {
     // x: exposure (EV), y: curve (0 soft, 1 clamp, 2 ACES, 3 AgX), z: knee, w: white
     curve: vec4<f32>,
+    // White balance multipliers (rgb), w: contrast
+    balance: vec4<f32>,
+    // x: saturation, y: LUT strength (0 without one), z: the LUT's N, w: 1 when grading is on
+    grade: vec4<f32>,
+    lift: vec4<f32>,
+    inv_gamma: vec4<f32>,
+    gain: vec4<f32>,
 }
 
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> look: Look;
+@group(0) @binding(2) var lut: texture_3d<f32>;
+@group(0) @binding(3) var lut_sampler: sampler;
 
 // Negative light as none, infinity as the largest value f16 holds
 fn finite(c: vec3<f32>) -> vec3<f32> {
@@ -76,9 +85,43 @@ fn curve(c: vec3<f32>) -> vec3<f32> {
     }
 }
 
+// White balance, contrast about mid-grey in log2 space and saturation, on
+// the HDR light
+fn balanced(c: vec3<f32>) -> vec3<f32> {
+    if look.grade.w < 0.5 {
+        return c;
+    }
+    let x = c * look.balance.rgb;
+    let contrasted = select(
+        vec3<f32>(0.0),
+        0.18 * pow(x / 0.18, vec3<f32>(look.balance.w)),
+        x > vec3<f32>(0.0),
+    );
+    let luma = dot(contrasted, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return max(mix(vec3<f32>(luma), contrasted, look.grade.x), vec3<f32>(0.0));
+}
+
+// Lift, gamma and gain on the display colour, then the LUT in sRGB
+fn graded(display: vec3<f32>) -> vec3<f32> {
+    var d = display;
+    if look.grade.w > 0.5 {
+        d = look.gain.rgb * (d + look.lift.rgb * (vec3<f32>(1.0) - d));
+        d = clamp(pow(max(d, vec3<f32>(0.0)), look.inv_gamma.rgb), vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    if look.grade.y > 0.0 {
+        let s = linear_to_srgb(d);
+        let n = look.grade.z;
+        let uvw = (s * (n - 1.0) + 0.5) / n;
+        let mapped = textureSampleLevel(lut, lut_sampler, uvw, 0.0).rgb;
+        d = srgb_to_linear(mix(s, mapped, look.grade.y));
+    }
+    return d;
+}
+
 @fragment
 fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
     let texel = textureLoad(scene, vec2<i32>(in.position.xy), 0);
     let exposed = finite(texel.rgb) * exp2(look.curve.x);
-    return vec4<f32>(curve(exposed), clamp(texel.a, 0.0, 1.0));
+    let display = graded(curve(balanced(exposed)));
+    return vec4<f32>(display, clamp(texel.a, 0.0, 1.0));
 }

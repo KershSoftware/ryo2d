@@ -2,11 +2,15 @@
 
 use glam::{Mat3, Vec3};
 
+use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Resource;
+use crate::core::graphics::Sprite;
 
 /// How the frame's linear HDR image becomes the display image, once per
 /// frame after every camera has drawn (`ctx.look()`). The tonemap pass
-/// applies the exposure, then the curve.
+/// applies, in order: exposure; white balance, contrast and saturation in
+/// linear HDR; the curve; lift, gamma and gain on the display colour; the LUT
+/// in sRGB.
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct Look {
   /// Exposure in EV (stops): +1 doubles the light, -1 halves it (default 0)
@@ -14,6 +18,8 @@ pub struct Look {
   /// How light near and above white rolls off (default
   /// [`Tonemap::Soft`] with knee 0.8 and white 4)
   pub tonemap: Tonemap,
+  /// Colour grading (default neutral)
+  pub grading: ColorGrading,
 }
 
 impl Default for Look {
@@ -21,7 +27,117 @@ impl Default for Look {
     Self {
       exposure: 0.0,
       tonemap: Tonemap::default(),
+      grading: ColorGrading::default(),
     }
+  }
+}
+
+/// Colour grading, applied by the tonemap pass. White balance, contrast and
+/// saturation work on the HDR light before the curve; lift, gamma and gain
+/// on the display colour after it; the LUT last, in sRGB. The default
+/// changes nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorGrading {
+  /// Warmer (positive) or cooler (negative), -1 to 1
+  pub temperature: f32,
+  /// Toward magenta (positive) or green (negative), -1 to 1
+  pub tint: f32,
+  /// Contrast about mid-grey (0.18) in log2 space; 1 is neutral
+  pub contrast: f32,
+  /// 0 is grey, 1 neutral, above 1 more vivid
+  pub saturation: f32,
+  /// Raises the shadows of the display colour, per channel; 0 is neutral
+  pub lift: Vec3,
+  /// Bends the mid-tones, per channel; 1 is neutral, above 1 brightens
+  pub gamma: Vec3,
+  /// Scales the display colour, per channel; 1 is neutral
+  pub gain: Vec3,
+  /// A colour lookup table, applied last
+  pub lut: Option<ColorLut>,
+  /// How much of the LUT's result shows, 0 to 1
+  pub lut_strength: f32,
+}
+
+impl Default for ColorGrading {
+  fn default() -> Self {
+    Self {
+      temperature: 0.0,
+      tint: 0.0,
+      contrast: 1.0,
+      saturation: 1.0,
+      lift: Vec3::ZERO,
+      gamma: Vec3::ONE,
+      gain: Vec3::ONE,
+      lut: None,
+      lut_strength: 1.0,
+    }
+  }
+}
+
+/// A colour lookup table: a strip of N tiles of N x N side by side (1024x32
+/// for N = 32, 256x16 for N = 16). Tile `b` holds blue `b / (N - 1)`; within
+/// a tile red grows to the right and green downward. Lookups are in sRGB,
+/// where LUTs are authored. It follows its sprite's hot reload.
+#[derive(Debug, Clone)]
+pub struct ColorLut {
+  sprite: SpriteHandle,
+  size: u32,
+}
+
+impl PartialEq for ColorLut {
+  fn eq(&self, other: &Self) -> bool {
+    self.size == other.size && self.sprite.serial() == other.sprite.serial()
+  }
+}
+
+/// Why a sprite is not a [`ColorLut`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LutError {
+  /// A strip is N x N tiles side by side: N * N wide, N high, N from 2 to 64
+  #[error("a LUT strip is N*N wide and N high (N from 2 to 64); this sprite is {width}x{height}")]
+  WrongSize { width: u32, height: u32 },
+}
+
+/// N for a `width` x `height` strip, if it is one.
+pub(crate) fn strip_size(width: u32, height: u32) -> Option<u32> {
+  ((2..=64).contains(&height) && width == height * height).then_some(height)
+}
+
+impl ColorLut {
+  /// The LUT `sprite` holds as a strip.
+  pub fn from_sprite(sprite: &SpriteHandle) -> Result<Self, LutError> {
+    let (width, height) = (sprite.width(), sprite.height());
+    let size = strip_size(width, height).ok_or(LutError::WrongSize { width, height })?;
+    Ok(Self {
+      sprite: sprite.clone(),
+      size,
+    })
+  }
+
+  /// N: the strip's height.
+  pub fn size(&self) -> u32 {
+    self.size
+  }
+
+  /// The strip's sprite.
+  pub(crate) fn sprite(&self) -> &SpriteHandle {
+    &self.sprite
+  }
+
+  /// The strip that changes nothing, N = `size` (2 to 64): a starting point
+  /// for LUTs built in code.
+  pub fn identity_strip(size: u32) -> Sprite {
+    let n = size.clamp(2, 64);
+    let level = |i: u32| ((i * 255 + (n - 1) / 2) / (n - 1)) as u8;
+    let mut data = Vec::with_capacity((n * n * n * 4) as usize);
+    for g in 0..n {
+      for b in 0..n {
+        for r in 0..n {
+          data.extend_from_slice(&[level(r), level(g), level(b), 255]);
+        }
+      }
+    }
+    Sprite::from_rgba(data, n * n, n)
   }
 }
 
@@ -169,24 +285,92 @@ pub(crate) struct LookUniforms {
   /// x: exposure (EV), y: curve (0 soft, 1 clamp, 2 ACES, 3 AgX), z: knee,
   /// w: white
   pub(crate) curve: [f32; 4],
+  /// White balance multipliers (rgb), w: contrast
+  pub(crate) balance: [f32; 4],
+  /// x: saturation, y: LUT strength (0 without one), z: the LUT's N, w: 1
+  /// when the grading is not neutral
+  pub(crate) grade: [f32; 4],
+  pub(crate) lift: [f32; 4],
+  /// 1 / gamma
+  pub(crate) inv_gamma: [f32; 4],
+  pub(crate) gain: [f32; 4],
+}
+
+/// `v` if finite, else `default`, then clamped.
+fn num(v: f32, default: f32, min: f32, max: f32) -> f32 {
+  if v.is_finite() {
+    v.clamp(min, max)
+  } else {
+    default
+  }
+}
+
+fn per_channel(v: Vec3, default: f32, min: f32, max: f32) -> [f32; 4] {
+  [
+    num(v.x, default, min, max),
+    num(v.y, default, min, max),
+    num(v.z, default, min, max),
+    0.0,
+  ]
+}
+
+/// Luminance weights of linear sRGB (Rec. 709).
+const LUMA: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
+
+/// Multipliers that warm or cool and tint, keeping a grey's luminance.
+fn white_balance(temperature: f32, tint: f32) -> Vec3 {
+  let m = Vec3::new(
+    1.0 + 0.25 * temperature,
+    1.0 - 0.25 * tint,
+    1.0 - 0.25 * temperature,
+  );
+  m / m.dot(LUMA)
 }
 
 impl Look {
-  /// What the tonemap shader reads, every parameter sanitized.
-  pub(crate) fn uniforms(&self) -> LookUniforms {
-    let exposure = if self.exposure.is_finite() {
-      self.exposure.clamp(-16.0, 16.0)
-    } else {
-      0.0
-    };
+  /// What the tonemap shader reads, every parameter sanitized; `lut_size`
+  /// is the N of the LUT the GPU holds (0 for none).
+  pub(crate) fn uniforms(&self, lut_size: u32) -> LookUniforms {
+    let exposure = num(self.exposure, 0.0, -16.0, 16.0);
     let (curve, knee, white) = match self.tonemap.sanitized() {
       Tonemap::Soft { knee, white } => (0.0, knee, white),
       Tonemap::Clamp => (1.0, 0.0, 1.0),
       Tonemap::Aces => (2.0, 0.0, 1.0),
       Tonemap::AgX => (3.0, 0.0, 1.0),
     };
+    let g = &self.grading;
+    let temperature = num(g.temperature, 0.0, -1.0, 1.0);
+    let tint = num(g.tint, 0.0, -1.0, 1.0);
+    let contrast = num(g.contrast, 1.0, 0.01, 10.0);
+    let saturation = num(g.saturation, 1.0, 0.0, 4.0);
+    let lift = per_channel(g.lift, 0.0, -1.0, 1.0);
+    let gamma = per_channel(g.gamma, 1.0, 0.01, 10.0);
+    let gain = per_channel(g.gain, 1.0, 0.0, 10.0);
+    let neutral = temperature == 0.0
+      && tint == 0.0
+      && contrast == 1.0
+      && saturation == 1.0
+      && lift[..3] == [0.0; 3]
+      && gamma[..3] == [1.0; 3]
+      && gain[..3] == [1.0; 3];
+    let balance = white_balance(temperature, tint);
+    let strength = if lut_size > 0 {
+      num(g.lut_strength, 1.0, 0.0, 1.0)
+    } else {
+      0.0
+    };
     LookUniforms {
       curve: [exposure, curve, knee, white],
+      balance: [balance.x, balance.y, balance.z, contrast],
+      grade: [
+        saturation,
+        strength,
+        lut_size as f32,
+        if neutral { 0.0 } else { 1.0 },
+      ],
+      lift,
+      inv_gamma: [1.0 / gamma[0], 1.0 / gamma[1], 1.0 / gamma[2], 0.0],
+      gain,
     }
   }
 }
@@ -321,9 +505,82 @@ mod tests {
         knee: 2.0,
         white: f32::NAN,
       },
+      ..Look::default()
     };
-    let curve = look.uniforms().curve;
+    let curve = look.uniforms(0).curve;
     assert_eq!(curve[0], 0.0, "NaN exposure is 0 EV");
     assert!(curve[2] <= 0.99 && curve[3] > curve[2], "{curve:?}");
+  }
+
+  #[test]
+  fn a_lut_strip_is_n_tiles_of_n_by_n() {
+    let lut = |w: u32, h: u32| {
+      let sprite = crate::core::asset::SpriteHandle::from_sprite(
+        crate::core::graphics::Sprite::solid_rect(w, h, 0, 0, 0, 255),
+        format!("lut-{w}x{h}"),
+      );
+      ColorLut::from_sprite(&sprite).map(|lut| lut.size())
+    };
+    assert_eq!(lut(256, 16), Ok(16));
+    assert_eq!(lut(1024, 32), Ok(32));
+    assert_eq!(
+      lut(16, 16),
+      Err(LutError::WrongSize {
+        width: 16,
+        height: 16
+      })
+    );
+    assert_eq!(
+      lut(1, 1),
+      Err(LutError::WrongSize {
+        width: 1,
+        height: 1
+      })
+    );
+  }
+
+  #[test]
+  fn the_identity_strip_is_a_lut() {
+    let strip = ColorLut::identity_strip(4);
+    assert_eq!((strip.width(), strip.height()), (16, 4));
+    // Tile b = 3, red 2, green 1: x = 3 * 4 + 2, y = 1
+    let at = (16 + 3 * 4 + 2) * 4;
+    assert_eq!(&strip.data()[at..at + 4], &[170, 85, 255, 255]);
+  }
+
+  #[test]
+  fn neutral_grading_is_flagged_off() {
+    assert_eq!(Look::default().uniforms(0).grade[3], 0.0);
+    let warm = Look {
+      grading: ColorGrading {
+        temperature: 0.2,
+        ..ColorGrading::default()
+      },
+      ..Look::default()
+    };
+    assert_eq!(warm.uniforms(0).grade[3], 1.0);
+  }
+
+  #[test]
+  fn grading_uniforms_are_finite_whatever_the_settings() {
+    let grading = ColorGrading {
+      temperature: f32::NAN,
+      tint: f32::INFINITY,
+      contrast: 0.0,
+      saturation: -3.0,
+      lift: Vec3::splat(f32::NAN),
+      gamma: Vec3::ZERO,
+      gain: Vec3::splat(f32::INFINITY),
+      lut: None,
+      lut_strength: f32::NAN,
+    };
+    let u = Look {
+      grading,
+      ..Look::default()
+    }
+    .uniforms(0);
+    let all = [u.curve, u.balance, u.grade, u.lift, u.inv_gamma, u.gain].concat();
+    assert!(all.iter().all(|v| v.is_finite()), "{u:?}");
+    assert_eq!(u.grade[1], 0.0, "no LUT, no strength");
   }
 }

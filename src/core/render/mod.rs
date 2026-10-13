@@ -66,7 +66,7 @@ pub use frame::FrameInfo;
 pub(crate) use frame::{
   CameraDraw, FrameImage, FrameScene, LightingFrame, PixelRect, TRANSITION_VISIBLE, plan_cameras,
 };
-pub use look::{Look, Tonemap};
+pub use look::{ColorGrading, ColorLut, Look, LutError, Tonemap};
 pub use pass::{PassScope, RenderPass};
 pub use pipeline::{RenderPipeline, RenderPipelineError};
 

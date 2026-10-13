@@ -135,7 +135,11 @@ fn every_curve_on_the_gpu_matches_tonemap_apply() {
   ];
   for tonemap in curves {
     for exposure in [-1.0_f32, 0.0, 1.0, 2.0, 3.0] {
-      let look = Look { exposure, tonemap };
+      let look = Look {
+        exposure,
+        tonemap,
+        ..Look::default()
+      };
       let Some(pixel) = shown(square([255, 255, 255, 255], look)) else {
         return;
       };
@@ -146,4 +150,107 @@ fn every_curve_on_the_gpu_matches_tonemap_apply() {
       );
     }
   }
+}
+
+fn graded(grading: ColorGrading) -> Look {
+  Look {
+    grading,
+    ..Look::default()
+  }
+}
+
+#[test]
+fn zero_saturation_turns_red_grey() {
+  let look = graded(ColorGrading {
+    saturation: 0.0,
+    ..ColorGrading::default()
+  });
+  let Some(pixel) = shown(square([220, 30, 40, 255], look)) else {
+    return;
+  };
+  assert!(
+    pixel[0].abs_diff(pixel[1]) <= 1 && pixel[1].abs_diff(pixel[2]) <= 1,
+    "{pixel:?}"
+  );
+}
+
+#[test]
+fn a_warm_temperature_warms_grey() {
+  let look = graded(ColorGrading {
+    temperature: 0.5,
+    ..ColorGrading::default()
+  });
+  let Some(pixel) = shown(square([128, 128, 128, 255], look)) else {
+    return;
+  };
+  assert!(pixel[0] > pixel[2] + 10, "{pixel:?}");
+}
+
+#[test]
+fn lift_raises_black() {
+  let look = graded(ColorGrading {
+    lift: Vec3::splat(0.1),
+    ..ColorGrading::default()
+  });
+  let Some(pixel) = shown(square([0, 0, 0, 255], look)) else {
+    return;
+  };
+  assert!(pixel[0].abs_diff(encode(0.1)) <= 1, "{pixel:?}");
+}
+
+/// A LUT that inverts every sRGB channel.
+fn inverting_lut() -> ColorLut {
+  let mut strip = ColorLut::identity_strip(16);
+  let inverted: Vec<u8> = strip
+    .data()
+    .chunks(4)
+    .flat_map(|p| [255 - p[0], 255 - p[1], 255 - p[2], 255])
+    .collect();
+  strip = Sprite::from_rgba(inverted, strip.width(), strip.height());
+  let Ok(lut) = ColorLut::from_sprite(&SpriteHandle::from_sprite(strip, "lut-invert")) else {
+    panic!("a 256x16 strip is a LUT");
+  };
+  lut
+}
+
+#[test]
+fn an_inverting_lut_inverts() {
+  let look = graded(ColorGrading {
+    lut: Some(inverting_lut()),
+    ..ColorGrading::default()
+  });
+  let Some(pixel) = shown(square([200, 100, 50, 255], look)) else {
+    return;
+  };
+  for (got, want) in pixel.iter().zip([55u8, 155, 205]) {
+    assert!(got.abs_diff(want) <= 2, "{pixel:?}");
+  }
+}
+
+#[test]
+fn an_identity_lut_changes_nothing() {
+  let strip = SpriteHandle::from_sprite(ColorLut::identity_strip(16), "lut-identity");
+  let look = graded(ColorGrading {
+    lut: ColorLut::from_sprite(&strip).ok(),
+    ..ColorGrading::default()
+  });
+  let Some(pixel) = shown(square([200, 100, 50, 255], look)) else {
+    return;
+  };
+  for (got, want) in pixel.iter().zip([200u8, 100, 50]) {
+    assert!(got.abs_diff(want) <= 1, "{pixel:?}");
+  }
+}
+
+#[test]
+fn half_strength_blends_halfway() {
+  let look = graded(ColorGrading {
+    lut: Some(inverting_lut()),
+    lut_strength: 0.5,
+    ..ColorGrading::default()
+  });
+  let Some(pixel) = shown(square([200, 100, 50, 255], look)) else {
+    return;
+  };
+  assert!(pixel[0].abs_diff(128) <= 2, "{pixel:?}");
 }
