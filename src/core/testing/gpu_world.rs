@@ -491,7 +491,7 @@ impl Scene for Busy {
     let sprite =
       SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 30, 200, 60, 255), "busy-batch");
     let instance = SpriteInstance::new().with_transform(60.0, 60.0, 0.0, 4.0, 4.0);
-    gpu.add_sprite_instance(&sprite, instance, 0, false);
+    gpu.add_sprite(&sprite, instance, SpriteDraw::default());
   }
 }
 

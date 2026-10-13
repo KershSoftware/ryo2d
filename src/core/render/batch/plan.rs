@@ -51,12 +51,13 @@ pub(crate) enum Placed {
 /// from `first_quad` in the order placed. Consecutive quads with equal
 /// states merge into one draw, as do consecutive triangle items with equal
 /// states and adjacent index ranges; anything else starts a new draw.
+/// Returns the number the next quad would get.
 pub(crate) fn plan_draws<'i>(
   items: impl IntoIterator<Item = &'i DrawItem>,
   out: &mut Vec<Planned>,
   first_quad: u32,
   mut place: impl FnMut(&DrawItem) -> Option<Placed>,
-) {
+) -> u32 {
   out.clear();
   let mut next_quad = first_quad;
   for item in items {
@@ -85,14 +86,14 @@ pub(crate) fn plan_draws<'i>(
       })),
     }
   }
+  next_quad
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::core::graphics::{RenderLayers, SlotPage, SpriteInstance, TextureId};
-  use crate::core::render::batch::key::Sampling;
-  use crate::core::render::batch::{BatchShader, BlendMode};
+  use crate::core::render::batch::{BatchShader, BlendMode, Sampling};
   use crate::core::render::{DrawKind, DrawList, SpriteShading};
 
   fn state(page: usize, blend: BlendMode) -> DrawState {

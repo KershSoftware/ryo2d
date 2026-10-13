@@ -30,14 +30,14 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::Arc;
 
-use super::RenderTarget;
 use super::render_targets::RenderTargets;
 use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
+use super::{RenderLayers, RenderTarget};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
-use crate::core::render::{DrawKind, DrawList, SpriteShading};
+use crate::core::render::batch::{BlendMode, Filter, Sampling};
+use crate::core::render::{DrawKind, DrawList, SpriteLook, SpriteShading};
 use crate::core::shaders::custom::{self, CompiledShader, ShaderKind};
 use crate::core::ui::Color;
 
@@ -428,35 +428,12 @@ pub struct SpriteGpuRenderer {
 }
 
 impl SpriteGpuRenderer {
-  /// Create a new GPU sprite renderer sampling textures with nearest filtering
-  pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-    Self::with_filter(device, queue, wgpu::FilterMode::Nearest)
-  }
-
-  /// Create a sprite renderer sampling textures with `filter`: nearest for
-  /// pixel art, linear when sprites are drawn at the window's resolution.
-  pub fn with_filter(
-    device: &wgpu::Device,
-    _queue: &wgpu::Queue,
-    filter: wgpu::FilterMode,
-  ) -> Self {
-    let texture_layout = Arc::new(crate::core::render::batch::texture_layout(device));
-
-    // Nearest filtering for pixel art; the atlas border covers any edge overshoot
-    let sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
-      label: Some("Sprite Sampler"),
-      address_mode_u: wgpu::AddressMode::ClampToEdge,
-      address_mode_v: wgpu::AddressMode::ClampToEdge,
-      address_mode_w: wgpu::AddressMode::ClampToEdge,
-      mag_filter: filter,
-      min_filter: filter,
-      mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-      ..Default::default()
-    }));
-
+  /// Create a sprite renderer: an empty atlas and no shaders yet.
+  pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue) -> Self {
+    let texture_layout = crate::core::render::batch::texture_layout(device);
     Self {
       custom: CustomShaders::default(),
-      atlas: TextureAtlas::new(device, texture_layout, sampler),
+      atlas: TextureAtlas::new(device, texture_layout),
       registry: TextureRegistry::new(),
       names: HashMap::new(),
       frame: 0,
@@ -602,9 +579,13 @@ impl SpriteGpuRenderer {
     Some((slot, (page.width(), page.height())))
   }
 
-  /// The bind group sampling atlas or target page `page`.
-  pub(crate) fn page_bind_group(&self, page: SlotPage) -> Option<&wgpu::BindGroup> {
-    self.atlas.bind_group(page)
+  /// The bind group sampling atlas or target page `page` with `sampling`.
+  pub(crate) fn page_bind_group(
+    &self,
+    page: SlotPage,
+    sampling: Sampling,
+  ) -> Option<&wgpu::BindGroup> {
+    self.atlas.bind_group(page, sampling)
   }
 
   /// The name and composed WGSL of the game shader with source key `key`
@@ -882,6 +863,52 @@ pub const SPRITE_SHADER: &str = crate::core::shaders::compose::SPRITE;
 // Sprite Batching System
 // =============================================================================
 
+/// How a `Scene::render`, particle or parallax sprite is drawn.
+///
+/// ```ignore
+/// let glow = SpriteDraw { z: 5, blend: BlendMode::Additive, ..Default::default() };
+/// gpu.add_sprite(&spark, instance, glow);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpriteDraw {
+  /// Draw order against entities, sprites and trails (higher draws on top)
+  pub z: i32,
+  /// How its colour combines with what is below
+  pub blend: BlendMode,
+  /// How its texture is sampled when drawn larger or smaller
+  pub filter: Filter,
+  /// Lit by 2D lighting; `false` draws it after lighting, at full brightness
+  pub lit: bool,
+  /// Its instance carries a built-in effect (`SpriteInstance::with_effect`)
+  pub effects: bool,
+}
+
+impl Default for SpriteDraw {
+  /// At z 0, blended over what is below, with the presentation's filter,
+  /// lit, without effects.
+  fn default() -> Self {
+    Self {
+      z: 0,
+      blend: BlendMode::Alpha,
+      filter: Filter::Default,
+      lit: true,
+      effects: false,
+    }
+  }
+}
+
+impl SpriteDraw {
+  /// How the draw list takes a sprite drawn with `shading`.
+  fn look(&self, shading: SpriteShading) -> SpriteLook {
+    SpriteLook {
+      shading,
+      blend: self.blend,
+      filter: self.filter,
+      lit: self.lit,
+    }
+  }
+}
+
 /// Collects the frame's `Scene::render`, particle and parallax sprites.
 ///
 /// Sprites are kept in submission order and join the frame's z-sorted draw
@@ -889,7 +916,7 @@ pub const SPRITE_SHADER: &str = crate::core::shaders::compose::SPRITE;
 ///
 /// ```ignore
 /// let mut collector = BatchCollector::new();
-/// collector.add(&sprite, has_effect, instance, z_order);
+/// collector.add(&sprite, instance, SpriteDraw { z: 2, ..Default::default() });
 /// ```
 #[derive(Debug, Default)]
 pub struct BatchCollector {
@@ -906,7 +933,7 @@ pub struct BatchCollector {
 struct CollectedSprite {
   /// Index of its handle in `sprites`
   sprite: usize,
-  shading: SpriteShading,
+  look: SpriteLook,
   z_order: i32,
   instance: SpriteInstance,
 }
@@ -925,20 +952,14 @@ impl BatchCollector {
     }
   }
 
-  /// Add a sprite drawing `sprite`'s texture.
-  pub fn add(
-    &mut self,
-    sprite: &SpriteHandle,
-    has_effects: bool,
-    instance: SpriteInstance,
-    z_order: i32,
-  ) {
-    let shading = if has_effects {
+  /// Add a sprite drawing `sprite`'s texture as `draw` says.
+  pub fn add(&mut self, sprite: &SpriteHandle, instance: SpriteInstance, draw: SpriteDraw) {
+    let shading = if draw.effects {
       SpriteShading::Effect
     } else {
       SpriteShading::Plain
     };
-    self.add_shaded(sprite, shading, instance, z_order);
+    self.add_shaded(sprite, shading, instance, draw);
   }
 
   /// Add a sprite with its shading already decided.
@@ -947,7 +968,7 @@ impl BatchCollector {
     sprite: &SpriteHandle,
     shading: SpriteShading,
     instance: SpriteInstance,
-    z_order: i32,
+    draw: SpriteDraw,
   ) {
     let index = match self.sprite_index.get(&sprite.serial()) {
       Some(&index) => index,
@@ -961,8 +982,8 @@ impl BatchCollector {
     };
     self.items.push(CollectedSprite {
       sprite: index,
-      shading,
-      z_order,
+      look: draw.look(shading),
+      z_order: draw.z,
       instance,
     });
   }
@@ -977,7 +998,15 @@ impl BatchCollector {
       .collect();
     for item in &self.items {
       if let Some(&texture) = textures.get(item.sprite) {
-        list.push_sprite(kind, item.z_order, texture, item.shading, item.instance);
+        let everyone = (RenderLayers::default(), None);
+        list.push_sprite_in(
+          kind,
+          item.z_order,
+          texture,
+          item.look,
+          item.instance,
+          everyone,
+        );
       }
     }
   }
@@ -1154,7 +1183,11 @@ mod tests {
   fn world_list(renderer: &mut SpriteGpuRenderer, entries: &[(&SpriteHandle, i32)]) -> DrawList {
     let mut collector = BatchCollector::new();
     for (sprite, z) in entries {
-      collector.add(sprite, false, SpriteInstance::new(), *z);
+      let draw = SpriteDraw {
+        z: *z,
+        ..Default::default()
+      };
+      collector.add(sprite, SpriteInstance::new(), draw);
     }
     let mut list = DrawList::default();
     collector.push_to(&mut list, DrawKind::Sprite, renderer);
@@ -1288,9 +1321,17 @@ mod tests {
   fn collector_keeps_submission_order_and_counts() {
     let (c, a) = (solid("tex_c"), solid("tex_a"));
     let mut collector = BatchCollector::new();
-    collector.add(&c, false, SpriteInstance::new(), 100);
-    collector.add(&a, true, SpriteInstance::new(), 0);
-    collector.add(&a.clone(), false, SpriteInstance::new(), 50);
+    let at = |z| SpriteDraw {
+      z,
+      ..Default::default()
+    };
+    collector.add(&c, SpriteInstance::new(), at(100));
+    let effects = SpriteDraw {
+      effects: true,
+      ..Default::default()
+    };
+    collector.add(&a, SpriteInstance::new(), effects);
+    collector.add(&a.clone(), SpriteInstance::new(), at(50));
     assert_eq!(collector.sprite_count(), 3);
 
     // One handle per texture, shared by its sprites

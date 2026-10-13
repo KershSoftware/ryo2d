@@ -24,7 +24,8 @@
 
 use std::collections::HashSet;
 
-use super::{CameraDraw, DrawKind, DrawList, SpriteShading};
+use super::batch::{BlendMode, Filter};
+use super::{CameraDraw, DrawKind, DrawList, SpriteLook, SpriteShading};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{
@@ -181,6 +182,8 @@ impl EntityDrawer {
       targets: world.get_resource::<RenderTargets>(),
       layers: RenderLayers::default(),
       shows: None,
+      filter: Filter::Default,
+      lit: true,
     };
     for (_, drawable) in &items {
       let shows = drawable.renderable.target;
@@ -196,9 +199,13 @@ impl EntityDrawer {
       }
       out.layers = drawable.layers;
       out.shows = shows;
+      out.filter = drawable.renderable.filter;
+      out.lit = drawable.renderable.lighting;
       collect_entity(&frame, drawable, &mut out);
     }
     out.shows = None;
+    out.filter = Filter::Default;
+    out.lit = true;
     for (global, previous, composite, layers) in composites.iter(world) {
       out.layers = layers.copied().unwrap_or_default();
       collect_composite(&frame, global, previous, composite, &mut out);
@@ -303,6 +310,8 @@ struct Shading<'a> {
   effect: Option<&'a SpriteEffect>,
   /// A game shader and its parameters (instead of `effect`)
   custom: Option<(&'a ShaderHandle, &'a ShaderParams)>,
+  /// Shadows blend over what is below whatever their entity's blend
+  blend: BlendMode,
 }
 
 impl<'a> Shading<'a> {
@@ -311,6 +320,7 @@ impl<'a> Shading<'a> {
     alpha: 1.0,
     effect: None,
     custom: None,
+    blend: BlendMode::Alpha,
   };
 
   fn tinted(tint: Color, alpha: f32) -> Self {
@@ -319,7 +329,12 @@ impl<'a> Shading<'a> {
       alpha,
       effect: None,
       custom: None,
+      blend: BlendMode::Alpha,
     }
+  }
+
+  fn blended(self, blend: BlendMode) -> Self {
+    Self { blend, ..self }
   }
 
   /// Shade with `shader`, whichever kind it is.
@@ -348,6 +363,9 @@ struct Emitter<'a> {
   /// The layers of the entity being drawn, and the render target it shows
   layers: RenderLayers,
   shows: Option<RenderTarget>,
+  /// The entity's filter, and whether it is lit (its shadows follow it)
+  filter: Filter,
+  lit: bool,
 }
 
 impl Emitter<'_> {
@@ -423,6 +441,7 @@ impl Emitter<'_> {
       instance.effect_params = effect.effect_params;
       instance.effect_extra = effect.effect_extra;
     }
+    let blend = shading.blend;
     let shading = match (shading.effect, shading.custom) {
       (Some(_), _) => SpriteShading::Effect,
       (None, Some((shader, params))) => {
@@ -434,11 +453,17 @@ impl Emitter<'_> {
       }
       (None, None) => SpriteShading::Plain,
     };
+    let look = SpriteLook {
+      shading,
+      blend,
+      filter: self.filter,
+      lit: self.lit,
+    };
     self.list.push_sprite_in(
       DrawKind::Entity,
       z,
       texture,
-      shading,
+      look,
       instance,
       (self.layers, self.shows),
     );
@@ -559,7 +584,7 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
         Placement::centered(center, scale)
           .rotated(rotation)
           .flipped(renderable.flip_x, renderable.flip_y),
-        Shading::shaded(tint, alpha, shader),
+        Shading::shaded(tint, alpha, shader).blended(renderable.blend),
       );
     }
 
@@ -613,7 +638,7 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
           Placement::from_top_left(tile_corner(i), texels, scale)
             .rotated(rotation)
             .flipped(renderable.flip_x, renderable.flip_y),
-          Shading::tinted(tint, alpha),
+          Shading::tinted(tint, alpha).blended(renderable.blend),
         );
       }
     }

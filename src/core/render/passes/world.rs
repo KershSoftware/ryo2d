@@ -2,11 +2,11 @@
 
 use crate::core::graphics::SpriteGpuRenderer;
 use crate::core::render::batch::Planned;
-use crate::core::render::{DrawPayload, FrameInfo, PassScope, RenderContext, RenderPass, pass_ids};
+use crate::core::render::{FrameInfo, PassScope, RenderContext, RenderPass, pass_ids};
 use crate::core::trail::TrailRenderer;
 
-/// Draws the entities, sprites and lit trails and lines a camera sees onto
-/// its image in one render pass, interleaved by z.
+/// Draws the lit entities, sprites, trails and lines a camera sees onto its
+/// image in one render pass, interleaved by z.
 pub(super) struct World;
 
 impl RenderPass for World {
@@ -23,49 +23,13 @@ impl RenderPass for World {
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
-    let sprites: &SpriteGpuRenderer = ctx.scene.sprites;
-    let trails: Option<&TrailRenderer> = ctx.scene.trails;
-    let (Some(camera), Some(batch)) = (ctx.camera_entity(), ctx.scene.batch) else {
-      return;
-    };
-    // The engine wrote the instances and trail vertices when it laid out
-    // the frame (buffer writes can't happen inside the pass)
-    let draws = batch.draws(camera);
-    if draws.is_empty() {
-      return;
-    }
-    let (encoder, view) = ctx.encoder_and_current_view();
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-      label: Some("World Render Pass"),
-      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        view,
-        depth_slice: None,
-        resolve_target: None,
-        ops: wgpu::Operations {
-          load: wgpu::LoadOp::Load,
-          store: wgpu::StoreOp::Store,
-        },
-      })],
-      depth_stencil_attachment: None,
-      timestamp_writes: None,
-      occlusion_query_set: None,
-      multiview_mask: None,
-    });
-    for planned in draws {
-      match planned {
-        Planned::Draw(draw) => batch.draw(&mut pass, draw, camera, sprites),
-        Planned::External { z, layers } => {
-          if let Some(trails) = trails {
-            trails.draw_group(&mut pass, true, (*z, *layers), camera);
-          }
-        }
-      }
-    }
+    replay(ctx, true, "World Render Pass");
   }
 }
 
-/// Draws the `with_lighting(false)` trails and lines a camera sees, by z,
-/// onto its latest image (the lit one when lighting ran).
+/// Draws what a camera sees `with_lighting(false)` (sprites, particles,
+/// trails and lines), by z, onto its latest image (the lit one when lighting
+/// ran).
 pub(super) struct UnlitWorld;
 
 impl RenderPass for UnlitWorld {
@@ -82,36 +46,47 @@ impl RenderPass for UnlitWorld {
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
-    let Some(trails) = ctx.scene.trails else {
-      return;
-    };
-    let Some(camera) = ctx.current_camera() else {
-      return;
-    };
-    let list = ctx.scene.draw_list;
-    if list.unlit_items_for(camera).next().is_none() {
-      return;
-    }
-    let (encoder, view) = ctx.encoder_and_current_view();
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-      label: Some("Unlit World Render Pass"),
-      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        view,
-        depth_slice: None,
-        resolve_target: None,
-        ops: wgpu::Operations {
-          load: wgpu::LoadOp::Load,
-          store: wgpu::StoreOp::Store,
-        },
-      })],
-      depth_stencil_attachment: None,
-      timestamp_writes: None,
-      occlusion_query_set: None,
-      multiview_mask: None,
-    });
-    for item in list.unlit_items_for(camera) {
-      if let DrawPayload::Trail { z, layers } = item.payload {
-        trails.draw_group(&mut pass, false, (z, layers), camera.entity);
+    replay(ctx, false, "Unlit World Render Pass");
+  }
+}
+
+/// Draw the current camera's `lit` (or unlit) draws onto its image in one
+/// render pass. The engine wrote the instances and trail vertices when it
+/// laid out the frame (buffer writes can't happen inside the pass).
+fn replay(ctx: &mut RenderContext<'_>, lit: bool, label: &str) {
+  let sprites: &SpriteGpuRenderer = ctx.scene.sprites;
+  let trails: Option<&TrailRenderer> = ctx.scene.trails;
+  let (Some(camera), Some(batch)) = (ctx.camera_entity(), ctx.scene.batch) else {
+    return;
+  };
+  let draws = batch.draws(camera, lit);
+  if draws.is_empty() {
+    return;
+  }
+  let (encoder, view) = ctx.encoder_and_current_view();
+  let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    label: Some(label),
+    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+      view,
+      depth_slice: None,
+      resolve_target: None,
+      ops: wgpu::Operations {
+        load: wgpu::LoadOp::Load,
+        store: wgpu::StoreOp::Store,
+      },
+    })],
+    depth_stencil_attachment: None,
+    timestamp_writes: None,
+    occlusion_query_set: None,
+    multiview_mask: None,
+  });
+  for planned in draws {
+    match planned {
+      Planned::Draw(draw) => batch.draw(&mut pass, draw, camera, sprites),
+      Planned::External { z, layers } => {
+        if let Some(trails) = trails {
+          trails.draw_group(&mut pass, lit, (*z, *layers), camera);
+        }
       }
     }
   }

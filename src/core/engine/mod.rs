@@ -806,13 +806,9 @@ impl Engine {
   /// resource and the profiler, then enters the initial scene.
   pub(crate) fn init_gpu(&mut self, renderer: WgpuRenderer, scale_factor: f64) {
     let format = renderer.game_texture_format();
-    // Pixel art samples exact texels; drawing at the window's resolution
-    // smooths scaled and rotated sprites
-    let filter = match self.config.presentation {
-      Presentation::PixelArt { .. } => wgpu::FilterMode::Nearest,
-      Presentation::ResolutionIndependent => wgpu::FilterMode::Linear,
-    };
-    let sprite_gpu = SpriteGpuRenderer::with_filter(renderer.device(), renderer.queue(), filter);
+    // Sprites sample as their filter says, by default nearest for pixel art
+    // and smooth at the window's resolution (the batch resolves it)
+    let sprite_gpu = SpriteGpuRenderer::new(renderer.device(), renderer.queue());
     let batch = Batch2D::new(renderer.device(), format, self.config.presentation);
     // Each camera is lit in light targets of its own size; the renderer's
     // own targets are only for lighting on its own

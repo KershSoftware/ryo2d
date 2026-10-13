@@ -10,12 +10,12 @@
 //! page or a standalone texture.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use etagere::{AllocId, BucketedAtlasAllocator, size2};
 
 use super::RenderTarget;
 use super::texture_registry::TextureId;
+use crate::core::render::batch::Sampling;
 
 /// Edge length of an atlas page in pixels.
 const PAGE_SIZE: u32 = 2048;
@@ -295,23 +295,38 @@ impl AtlasLayout {
 
 struct Page {
   texture: wgpu::Texture,
-  bind_group: wgpu::BindGroup,
+  bind_groups: PageBindGroups,
+}
+
+/// A texture's bind groups, one per sampling.
+struct PageBindGroups {
+  nearest: wgpu::BindGroup,
+  linear: wgpu::BindGroup,
+}
+
+impl PageBindGroups {
+  fn get(&self, sampling: Sampling) -> &wgpu::BindGroup {
+    match sampling {
+      Sampling::Nearest => &self.nearest,
+      Sampling::Linear => &self.linear,
+    }
+  }
 }
 
 /// A render target's texture: cameras draw into `view` (sRGB, blending in
-/// linear); sprites sample it through `bind_group` as raw sRGB bytes, like
+/// linear); sprites sample it through `bind_groups` as raw sRGB bytes, like
 /// the pages.
 struct TargetPage {
   key: TextureId,
   texture: wgpu::Texture,
   view: wgpu::TextureView,
-  bind_group: wgpu::BindGroup,
+  bind_groups: PageBindGroups,
 }
 
 struct Standalone {
   key: TextureId,
   texture: wgpu::Texture,
-  bind_group: wgpu::BindGroup,
+  bind_groups: PageBindGroups,
   slot: AtlasSlot,
   size: (u32, u32),
   last_used: u64,
@@ -319,8 +334,8 @@ struct Standalone {
 
 /// GPU pages + layout + standalone textures.
 ///
-/// The layout and sampler are shared (`Arc`) because wgpu 22 handles are not
-/// `Clone` and bind groups are created lazily as pages and textures appear.
+/// Every page, standalone texture and render target gets a bind group per
+/// sampling when it is created.
 pub(crate) struct TextureAtlas {
   layout: AtlasLayout,
   pages: Vec<Page>,
@@ -329,16 +344,28 @@ pub(crate) struct TextureAtlas {
   next_standalone: usize,
   targets: HashMap<RenderTarget, TargetPage>,
   target_ids: HashMap<TextureId, RenderTarget>,
-  bind_layout: Arc<wgpu::BindGroupLayout>,
-  sampler: Arc<wgpu::Sampler>,
+  bind_layout: wgpu::BindGroupLayout,
+  nearest: wgpu::Sampler,
+  linear: wgpu::Sampler,
 }
 
 impl TextureAtlas {
-  pub(crate) fn new(
-    _device: &wgpu::Device,
-    layout: Arc<wgpu::BindGroupLayout>,
-    sampler: Arc<wgpu::Sampler>,
-  ) -> Self {
+  /// An empty atlas whose textures bind with `layout` (texture, then
+  /// sampler).
+  pub(crate) fn new(device: &wgpu::Device, layout: wgpu::BindGroupLayout) -> Self {
+    // The atlas border covers any edge overshoot of either filter
+    let sampler = |label, filter| {
+      device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some(label),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: filter,
+        min_filter: filter,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+      })
+    };
     Self {
       layout: AtlasLayout::new(PAGE_SIZE, MAX_PAGES),
       pages: Vec::new(),
@@ -348,7 +375,35 @@ impl TextureAtlas {
       targets: HashMap::new(),
       target_ids: HashMap::new(),
       bind_layout: layout,
-      sampler,
+      nearest: sampler("Sprite Sampler (nearest)", wgpu::FilterMode::Nearest),
+      linear: sampler("Sprite Sampler (linear)", wgpu::FilterMode::Linear),
+    }
+  }
+
+  /// The bind groups sampling `view` with each sampler.
+  fn bind(&self, device: &wgpu::Device, view: &wgpu::TextureView, label: &str) -> PageBindGroups {
+    let group = |sampler: &wgpu::Sampler| {
+      crate::core::graphics::bind_groups::create(
+        device,
+        &wgpu::BindGroupDescriptor {
+          label: Some(label),
+          layout: &self.bind_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(sampler),
+            },
+          ],
+        },
+      )
+    };
+    PageBindGroups {
+      nearest: group(&self.nearest),
+      linear: group(&self.linear),
     }
   }
 
@@ -487,23 +542,7 @@ impl TextureAtlas {
       format: Some(PAGE_FORMAT),
       ..Default::default()
     });
-    let bind_group = crate::core::graphics::bind_groups::create(
-      device,
-      &wgpu::BindGroupDescriptor {
-        label: Some("Render Target"),
-        layout: &self.bind_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&sampled),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&self.sampler),
-          },
-        ],
-      },
-    );
+    let bind_groups = self.bind(device, &sampled, "Render Target");
     self.target_ids.insert(key, target);
     self.targets.insert(
       target,
@@ -511,7 +550,7 @@ impl TextureAtlas {
         key,
         texture,
         view,
-        bind_group,
+        bind_groups,
       },
     );
   }
@@ -527,12 +566,14 @@ impl TextureAtlas {
       .map(|page| (&page.texture, &page.view))
   }
 
-  pub(crate) fn bind_group(&self, page: SlotPage) -> Option<&wgpu::BindGroup> {
-    match page {
-      SlotPage::Atlas(i) => self.pages.get(i).map(|p| &p.bind_group),
-      SlotPage::Standalone(i) => self.standalone.get(&i).map(|s| &s.bind_group),
-      SlotPage::Target(target) => self.targets.get(&target).map(|t| &t.bind_group),
-    }
+  /// The bind group sampling `page` with `sampling`.
+  pub(crate) fn bind_group(&self, page: SlotPage, sampling: Sampling) -> Option<&wgpu::BindGroup> {
+    let groups = match page {
+      SlotPage::Atlas(i) => &self.pages.get(i)?.bind_groups,
+      SlotPage::Standalone(i) => &self.standalone.get(&i)?.bind_groups,
+      SlotPage::Target(target) => &self.targets.get(&target)?.bind_groups,
+    };
+    Some(groups.get(sampling))
   }
 
   /// The GPU texture behind `page` (for readback).
@@ -570,10 +611,10 @@ impl TextureAtlas {
   }
 
   fn create_page(&self, device: &wgpu::Device) -> Page {
-    let (texture, bind_group) = self.create_texture(device, PAGE_SIZE, PAGE_SIZE, "Atlas Page");
+    let (texture, bind_groups) = self.create_texture(device, PAGE_SIZE, PAGE_SIZE, "Atlas Page");
     Page {
       texture,
-      bind_group,
+      bind_groups,
     }
   }
 
@@ -583,7 +624,7 @@ impl TextureAtlas {
     width: u32,
     height: u32,
     label: &str,
-  ) -> (wgpu::Texture, wgpu::BindGroup) {
+  ) -> (wgpu::Texture, PageBindGroups) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
       label: Some(label),
       size: wgpu::Extent3d {
@@ -601,24 +642,8 @@ impl TextureAtlas {
       view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = crate::core::graphics::bind_groups::create(
-      device,
-      &wgpu::BindGroupDescriptor {
-        label: Some(label),
-        layout: &self.bind_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&view),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&self.sampler),
-          },
-        ],
-      },
-    );
-    (texture, bind_group)
+    let bind_groups = self.bind(device, &view, label);
+    (texture, bind_groups)
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -633,7 +658,7 @@ impl TextureAtlas {
     frame: u64,
   ) -> AtlasSlot {
     let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
-    let (texture, bind_group) = self.create_texture(device, bw, bh, "Atlas Standalone");
+    let (texture, bind_groups) = self.create_texture(device, bw, bh, "Atlas Standalone");
     write_bordered(queue, &texture, 0, 0, width, height, bordered);
     let id = self.next_standalone;
     self.next_standalone += 1;
@@ -652,7 +677,7 @@ impl TextureAtlas {
       Standalone {
         key,
         texture,
-        bind_group,
+        bind_groups,
         slot,
         size: (width, height),
         last_used: frame,
@@ -924,29 +949,7 @@ mod tests {
   }
 
   fn gpu_atlas(device: &wgpu::Device) -> TextureAtlas {
-    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-      label: None,
-      entries: &[
-        wgpu::BindGroupLayoutEntry {
-          binding: 0,
-          visibility: wgpu::ShaderStages::FRAGMENT,
-          ty: wgpu::BindingType::Texture {
-            multisampled: false,
-            view_dimension: wgpu::TextureViewDimension::D2,
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-          },
-          count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-          binding: 1,
-          visibility: wgpu::ShaderStages::FRAGMENT,
-          ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-          count: None,
-        },
-      ],
-    });
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
-    TextureAtlas::new(device, Arc::new(bgl), Arc::new(sampler))
+    TextureAtlas::new(device, crate::core::render::batch::texture_layout(device))
   }
 
   #[test]
@@ -1059,7 +1062,7 @@ mod tests {
     let slot = atlas
       .slot(&device, &queue, id(0), 2, 2, || px.clone(), 0)
       .unwrap();
-    assert!(atlas.bind_group(slot.page).is_some());
+    assert!(atlas.bind_group(slot.page, Sampling::Nearest).is_some());
     let page = atlas.texture(slot.page).unwrap();
     let img = crate::core::capture::read_texture_rgba(&device, &queue, page).unwrap();
     let ps = 2048.0;

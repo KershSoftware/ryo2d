@@ -53,7 +53,9 @@ pub use renderer::WgpuRenderer;
 pub use screen::{Presentation, ScreenMapping};
 pub use sprite::{AnimatedSprite, Sprite};
 pub(crate) use sprite_gpu::place_in_slot;
-pub use sprite_gpu::{BatchCollector, SpriteGpuRenderer, SpriteInstance, get_sprite_effect};
+pub use sprite_gpu::{
+  BatchCollector, SpriteDraw, SpriteGpuRenderer, SpriteInstance, get_sprite_effect,
+};
 pub(crate) use texture_registry::{TextureId, TextureRegistry, TextureSource};
 pub use tile::{CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart};
 

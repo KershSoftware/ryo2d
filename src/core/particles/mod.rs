@@ -99,7 +99,7 @@ use std::collections::HashMap;
 
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Entity, GlobalTransform, SpriteEffect, World};
-use crate::core::graphics::{BatchCollector, SpriteInstance};
+use crate::core::graphics::{BatchCollector, SpriteDraw, SpriteInstance};
 use crate::core::messages::register_message;
 use crate::core::physics::{Collider, ColliderShape};
 use rand::rngs::StdRng;
@@ -805,18 +805,22 @@ impl ParticleSystem {
     let Some(mut emitters) = world.try_query::<(Entity, &ParticleEmitter)>() else {
       return;
     };
-    let looks: HashMap<Entity, (&SpriteHandle, Option<&SpriteEffect>, i32)> = emitters
+    let looks: HashMap<Entity, (&SpriteHandle, Option<&SpriteEffect>, SpriteDraw)> = emitters
       .iter(world)
       .map(|(entity, emitter)| {
-        (
-          entity,
-          (&emitter.sprite, emitter.effect.as_ref(), emitter.z_order),
-        )
+        let draw = SpriteDraw {
+          z: emitter.z_order,
+          blend: emitter.blend,
+          filter: emitter.filter,
+          lit: emitter.lighting,
+          effects: emitter.effect.is_some(),
+        };
+        (entity, (&emitter.sprite, emitter.effect.as_ref(), draw))
       })
       .collect();
 
     for p in &self.particles {
-      let Some((sprite, effect, z_order)) = looks.get(&p.emitter_entity) else {
+      let Some((sprite, effect, draw)) = looks.get(&p.emitter_entity) else {
         continue;
       };
 
@@ -832,7 +836,7 @@ impl ParticleSystem {
         instance = instance.with_effect(effect);
       }
 
-      collector.add(sprite, effect.is_some(), instance, *z_order);
+      collector.add(sprite, instance, *draw);
     }
   }
 

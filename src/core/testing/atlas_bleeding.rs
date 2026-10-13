@@ -41,10 +41,10 @@ impl Scene for Bleed {
     if self.flip_x {
       instance = instance.with_uv(1.0, 0.0, 0.0, 1.0);
     }
-    gpu.add_sprite_instance(&self.red, instance, 0, false);
+    gpu.add_sprite(&self.red, instance, SpriteDraw::default());
     // Blue off screen, so it is uploaded next to red in the atlas
     let off_screen = SpriteInstance::new().with_transform(-100.0, -100.0, 0.0, 4.0, 4.0);
-    gpu.add_sprite_instance(&self.blue, off_screen, 0, false);
+    gpu.add_sprite(&self.blue, off_screen, SpriteDraw::default());
   }
 }
 

@@ -135,7 +135,7 @@ pub mod prelude {
   pub use crate::core::graphics::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
 
   // GPU sprite batching (for high-performance particle systems)
-  pub use crate::core::graphics::{BatchCollector, SpriteInstance};
+  pub use crate::core::graphics::{BatchCollector, SpriteDraw, SpriteInstance};
   pub use crate::core::render::batch::{BlendMode, Filter};
 
   // Physics

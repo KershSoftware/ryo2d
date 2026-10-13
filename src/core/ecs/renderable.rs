@@ -44,6 +44,7 @@ use super::transform::Anchor;
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Vec2;
 use crate::core::graphics::{RenderTarget, Sprite, TileDirection};
+use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::ui::Color;
 use std::sync::OnceLock;
 
@@ -475,6 +476,15 @@ pub struct Renderable {
   /// A render target drawn instead of `sprite`, at the target's size (see
   /// [`render_target`](Self::render_target))
   pub target: Option<RenderTarget>,
+  /// How the sprite combines with what is below (default `Alpha`;
+  /// `Premultiplied` for a render target)
+  pub blend: BlendMode,
+  /// How the sprite is sampled when drawn larger or smaller (default: the
+  /// presentation's)
+  pub filter: Filter,
+  /// Lit by 2D lighting (default `true`); an unlit sprite and its shadows
+  /// draw after lighting, at full brightness
+  pub lighting: bool,
 }
 
 impl Renderable {
@@ -495,6 +505,9 @@ impl Renderable {
       contact_shadow: None,
       anchor: Anchor::Center,
       target: None,
+      blend: BlendMode::Alpha,
+      filter: Filter::Default,
+      lighting: true,
     }
   }
 
@@ -508,8 +521,10 @@ impl Renderable {
     let placeholder = PLACEHOLDER.get_or_init(|| {
       SpriteHandle::from_sprite(Sprite::solid_rect(1, 1, 0, 0, 0, 0), "render target")
     });
+    // What a camera draws into a target is premultiplied by alpha
     Renderable {
       target: Some(target),
+      blend: BlendMode::Premultiplied,
       ..Self::sprite(placeholder.clone())
     }
   }
@@ -534,7 +549,28 @@ impl Renderable {
       contact_shadow: None,
       anchor: Anchor::Center,
       target: None,
+      blend: BlendMode::Alpha,
+      filter: Filter::Default,
+      lighting: true,
     }
+  }
+
+  /// Set how the sprite combines with what is below.
+  pub fn with_blend(mut self, blend: BlendMode) -> Self {
+    self.blend = blend;
+    self
+  }
+
+  /// Set how the sprite is sampled when drawn larger or smaller.
+  pub fn with_filter(mut self, filter: Filter) -> Self {
+    self.filter = filter;
+    self
+  }
+
+  /// Set whether 2D lighting lights the sprite.
+  pub fn with_lighting(mut self, lighting: bool) -> Self {
+    self.lighting = lighting;
+    self
   }
 
   /// Set visibility

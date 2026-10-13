@@ -58,7 +58,11 @@ impl Scene for Fixture {
   fn render(&mut self, gpu: &mut GpuRenderContext) {
     for (sprite, x, y, size, z) in &self.gpu_sprites {
       let instance = SpriteInstance::new().with_transform(*x, *y, 0.0, *size, *size);
-      gpu.add_sprite_instance(sprite, instance, *z, false);
+      let draw = SpriteDraw {
+        z: *z,
+        ..Default::default()
+      };
+      gpu.add_sprite(sprite, instance, draw);
     }
   }
 
@@ -1088,4 +1092,205 @@ fn a_texture_camera_draws_into_its_viewport_of_the_target() {
     GREEN,
     "not stretched over the right half"
   );
+}
+
+/// A 16x16 colour square drawn with `blend` over a 32x32 grey one.
+struct Over(BlendMode);
+
+impl Scene for Over {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 16.0),
+      Renderable::sprite(solid("under-grey", 32, [100, 100, 100, 255])),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 16.0),
+      Renderable::sprite(solid("over-colour", 16, [120, 60, 30, 255]))
+        .with_z_order(1)
+        .with_blend(self.0),
+    ));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+fn centre_with(blend: BlendMode) -> Option<[u8; 4]> {
+  let mut engine = start(
+    EngineBuilder::new()
+      .resolution(32, 32)
+      .start_scene(Over(blend)),
+  )?;
+  engine.step_frames(2).unwrap();
+  Some(engine.frame().unwrap().get_pixel(16, 16).0)
+}
+
+#[test]
+fn blend_modes_combine_as_named() {
+  let Some(alpha) = centre_with(BlendMode::Alpha) else {
+    return;
+  };
+  let additive = centre_with(BlendMode::Additive).unwrap();
+  let multiply = centre_with(BlendMode::Multiply).unwrap();
+  let screen = centre_with(BlendMode::Screen).unwrap();
+  assert_eq!(alpha, [120, 60, 30, 255], "alpha covers");
+  for c in 0..3 {
+    assert!(additive[c] > 100, "additive brightens: {additive:?}");
+    assert!(multiply[c] < 100, "multiply darkens: {multiply:?}");
+    assert!(
+      screen[c] >= 100 && screen[c] <= additive[c],
+      "screen: {screen:?} vs {additive:?}"
+    );
+  }
+}
+
+#[test]
+fn a_transparent_render_target_shows_without_dark_edges() {
+  struct Glass;
+  impl Scene for Glass {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      // White ground; a half-transparent red square seen two ways
+      ctx.world.spawn((
+        Transform::from_xy(32.0, 16.0),
+        Renderable::sprite(solid("glass-white", 64, [255, 255, 255, 255])),
+      ));
+      let red = solid("glass-red", 8, [220, 30, 40, 128]);
+      ctx.world.spawn((
+        Transform::from_xy(16.0, 16.0),
+        Renderable::sprite(red.clone()).with_z_order(1),
+      ));
+      ctx
+        .world
+        .spawn((Transform::from_xy(500.0, 500.0), Renderable::sprite(red)));
+      let target = ctx.render_targets().create(8, 8);
+      ctx.world.spawn((
+        Transform::from_xy(500.0, 500.0),
+        Camera2d {
+          target: CameraTarget::Texture(target),
+          clear: CameraClear::None,
+          ..Default::default()
+        },
+      ));
+      ctx.world.spawn((
+        Transform::from_xy(48.0, 16.0),
+        Renderable::render_target(target).with_z_order(1),
+      ));
+    }
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+  let Some(mut engine) = start(EngineBuilder::new().resolution(64, 32).start_scene(Glass)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let (direct, shown) = (frame.get_pixel(16, 16).0, frame.get_pixel(48, 16).0);
+  for c in 0..3 {
+    assert!(direct[c].abs_diff(shown[c]) <= 2, "{direct:?} vs {shown:?}");
+  }
+}
+
+#[test]
+fn nearest_and_linear_differ_when_magnified() {
+  struct Checker(Filter);
+  impl Scene for Checker {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let texels = vec![0, 0, 0, 255, 255, 255, 255, 255];
+      let sprite = SpriteHandle::from_sprite(Sprite::from_rgba(texels, 2, 1), "checker-2x1");
+      ctx.world.spawn((
+        Transform::from_xy(16.0, 16.0).with_scale(Vec2::splat(16.0)),
+        Renderable::sprite(sprite).with_filter(self.0),
+      ));
+    }
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+  let middle = |filter| {
+    let mut engine = start(
+      EngineBuilder::new()
+        .resolution(32, 32)
+        .start_scene(Checker(filter)),
+    )?;
+    engine.step_frames(2).unwrap();
+    Some(engine.frame().unwrap().get_pixel(15, 16).0)
+  };
+  let Some(nearest) = middle(Filter::Nearest) else {
+    return;
+  };
+  let linear = middle(Filter::Linear).unwrap();
+  assert!(
+    nearest[0] == 0 || nearest[0] == 255,
+    "nearest is one texel: {nearest:?}"
+  );
+  assert!(
+    linear[0] > 10 && linear[0] < 245,
+    "linear mixes near the edge: {linear:?}"
+  );
+}
+
+#[test]
+fn an_unlit_sprite_keeps_full_brightness_in_the_dark() {
+  let scene = Fixture::new(|ctx| {
+    ctx.lighting().set_ambient(AmbientLight::dark());
+    ctx.lighting().set_enabled(true);
+    let red = solid("dark-red", 8, RED);
+    ctx.world.spawn((
+      Transform::from_xy(8.0, 8.0),
+      Renderable::sprite(red.clone()),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(24.0, 8.0),
+      Renderable::sprite(red).with_lighting(false),
+    ));
+  });
+  let Some(frame) = frame_of(scene, (32, 16)) else {
+    return;
+  };
+  assert!(frame.get_pixel(8, 8).0[0] < 60, "lit and dark");
+  assert_eq!(frame.get_pixel(24, 8).0, RED, "unlit");
+}
+
+#[test]
+fn a_custom_shader_draws_with_two_blend_modes_in_one_frame() {
+  struct TwoBlends;
+  impl Scene for TwoBlends {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let shader = ShaderHandle::from_source(
+        "two-blends",
+        "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }",
+      );
+      let grey = solid("two-grey", 64, [100, 100, 100, 255]);
+      ctx
+        .world
+        .spawn((Transform::from_xy(32.0, 16.0), Renderable::sprite(grey)));
+      let colour = solid("two-colour", 8, [120, 60, 30, 255]);
+      for (x, blend) in [(16.0, BlendMode::Alpha), (48.0, BlendMode::Additive)] {
+        ctx.world.spawn((
+          Transform::from_xy(x, 16.0),
+          Renderable::sprite(colour.clone())
+            .with_z_order(1)
+            .with_blend(blend),
+          Material::custom(shader.clone()),
+        ));
+      }
+    }
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+  let Some(mut engine) = start(
+    EngineBuilder::new()
+      .resolution(64, 32)
+      .start_scene(TwoBlends),
+  ) else {
+    return;
+  };
+  // Custom pipelines are used from the frame after their check
+  engine.step_frames(4).unwrap();
+  let frame = engine.frame().unwrap();
+  assert_eq!(frame.get_pixel(16, 16).0, [120, 60, 30, 255]);
+  assert!(frame.get_pixel(48, 16).0[0] > 120, "additive brightens");
 }

@@ -1,6 +1,6 @@
 //! The context a scene's `render` callback draws GPU sprites through.
 
-use super::{BatchCollector, CameraView, SpriteGpuRenderer, SpriteInstance};
+use super::{BatchCollector, CameraView, SpriteDraw, SpriteGpuRenderer, SpriteInstance};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{ShaderHandle, ShaderParams, World};
 
@@ -18,7 +18,8 @@ use crate::core::ecs::{ShaderHandle, ShaderParams, World};
 ///         let instance = SpriteInstance::new()
 ///             .with_transform(particle.x, particle.y, particle.rotation, 1.0, 1.0);
 ///         // The texture is uploaded the first time a frame draws it
-///         gpu.add_sprite_instance(&particle.sprite, instance, particle.z_order, false);
+///         let draw = SpriteDraw { z: particle.z_order, ..Default::default() };
+///         gpu.add_sprite(&particle.sprite, instance, draw);
 ///     }
 /// }
 /// ```
@@ -64,7 +65,7 @@ impl<'a> GpuRenderContext<'a> {
     shader: &ShaderHandle,
     params: &ShaderParams,
     mut instance: SpriteInstance,
-    z_order: i32,
+    draw: SpriteDraw,
   ) {
     let shading = match self
       .gpu_renderer
@@ -73,7 +74,7 @@ impl<'a> GpuRenderContext<'a> {
       Some(key) => crate::core::render::SpriteShading::Custom(key),
       None => crate::core::render::SpriteShading::Plain,
     };
-    self.batch.add_shaded(sprite, shading, instance, z_order);
+    self.batch.add_shaded(sprite, shading, instance, draw);
   }
 
   /// Get screen dimensions (width, height)
@@ -105,13 +106,7 @@ impl<'a> GpuRenderContext<'a> {
   /// once no frame has drawn it for 600 frames. This is the low-level API
   /// for GPU sprites; most games use the higher-level ones (particles,
   /// `GpuParallaxBackground`).
-  pub fn add_sprite_instance(
-    &mut self,
-    sprite: &SpriteHandle,
-    instance: SpriteInstance,
-    z_order: i32,
-    has_effects: bool,
-  ) {
-    self.batch.add(sprite, has_effects, instance, z_order);
+  pub fn add_sprite(&mut self, sprite: &SpriteHandle, instance: SpriteInstance, draw: SpriteDraw) {
+    self.batch.add(sprite, instance, draw);
   }
 }

@@ -50,10 +50,14 @@ impl Scene for AtlasScene {
     if let Some(effect) = &self.effect {
       instance = instance.with_effect(effect);
     }
-    gpu.add_sprite_instance(&self.sprites[0], instance, 0, self.effect.is_some());
+    let draw = SpriteDraw {
+      effects: self.effect.is_some(),
+      ..Default::default()
+    };
+    gpu.add_sprite(&self.sprites[0], instance, draw);
     for sprite in &self.sprites[1..] {
       let off_screen = SpriteInstance::new().with_transform(-100.0, -100.0, 0.0, 4.0, 4.0);
-      gpu.add_sprite_instance(sprite, off_screen, 0, false);
+      gpu.add_sprite(sprite, off_screen, SpriteDraw::default());
     }
   }
 }

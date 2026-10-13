@@ -5,6 +5,7 @@
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Component;
 use crate::core::ecs::SpriteEffect;
+use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::ui::Color;
 
 /// How particles are emitted from the emitter.
@@ -183,6 +184,15 @@ pub struct ParticleEmitter {
   pub z_order: i32,
   /// Optional sprite effect (glow, dissolve, etc.)
   pub effect: Option<SpriteEffect>,
+  /// How particles combine with what is below (default `Alpha`; `Additive`
+  /// for fire and sparks)
+  pub blend: BlendMode,
+  /// How the particle sprite is sampled when scaled (default: the
+  /// presentation's)
+  pub filter: Filter,
+  /// Lit by 2D lighting (default `true`); unlit particles keep full
+  /// brightness in the dark
+  pub lighting: bool,
 
   // =========================================================================
   // Features
@@ -238,6 +248,9 @@ impl ParticleEmitter {
       drag: 0.0,
       z_order: 0,
       effect: None,
+      blend: BlendMode::Alpha,
+      filter: Filter::Default,
+      lighting: true,
       collision: None,
       layer: 0,
       max_particles: 1000,
@@ -334,6 +347,24 @@ impl ParticleEmitter {
   /// z than the entities they should sit behind.
   pub fn with_z_order(mut self, z_order: i32) -> Self {
     self.z_order = z_order;
+    self
+  }
+
+  /// Set how particles combine with what is below.
+  pub fn with_blend(mut self, blend: BlendMode) -> Self {
+    self.blend = blend;
+    self
+  }
+
+  /// Set how the particle sprite is sampled when scaled.
+  pub fn with_filter(mut self, filter: Filter) -> Self {
+    self.filter = filter;
+    self
+  }
+
+  /// Set whether 2D lighting lights the particles.
+  pub fn with_lighting(mut self, lighting: bool) -> Self {
+    self.lighting = lighting;
     self
   }
 

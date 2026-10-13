@@ -27,7 +27,7 @@ use super::GpuRenderContext;
 use crate::core::asset::SpriteHandle;
 use crate::core::graphics::CameraView;
 use crate::core::graphics::parallax::TileMode;
-use crate::core::graphics::sprite_gpu::SpriteInstance;
+use crate::core::graphics::sprite_gpu::{SpriteDraw, SpriteInstance};
 use glam::Vec2;
 
 /// One layer of a [`GpuParallaxBackground`], drawn as instanced GPU sprites.
@@ -266,7 +266,11 @@ impl GpuParallaxBackground {
     let view = ctx.camera();
     for layer in &self.layers {
       for instance in layer.world_instances(view, self.elapsed_time) {
-        ctx.add_sprite_instance(&layer.sprite, instance, layer.z_order, false);
+        let draw = SpriteDraw {
+          z: layer.z_order,
+          ..Default::default()
+        };
+        ctx.add_sprite(&layer.sprite, instance, draw);
       }
     }
   }

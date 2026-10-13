@@ -409,6 +409,15 @@ fn sprite_entry(layout: &ParamLayout) -> String {
     "
 @fragment
 fn fs_custom(in: VertexOutput) -> @location(0) vec4<f32> {{
+  return finish(ry_custom(in), in.tint);
+}}
+
+@fragment
+fn fs_custom_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {{
+  return finish_premultiplied(ry_custom(in), in.tint);
+}}
+
+fn ry_custom(in: VertexOutput) -> vec4<f32> {{
   ry_bounds = in.uv_bounds;
   let extent = in.uv_bounds.zw - in.uv_bounds.xy;
   let local = (in.uv - in.uv_bounds.xy) / extent;
@@ -416,7 +425,7 @@ fn fs_custom(in: VertexOutput) -> @location(0) vec4<f32> {{
   let f = array<f32, 8>(in.effect_params.x, in.effect_params.y, in.effect_params.z, in.effect_params.w,
                         in.effect_extra.x, in.effect_extra.y, in.effect_extra.z, in.effect_extra.w);
   let params = Params({fields});
-  return finish(sprite(SpriteIn(local, size, in.clip_position.xy, globals.game_time), params), in.tint);
+  return sprite(SpriteIn(local, size, in.clip_position.xy, globals.game_time), params);
 }}
 ",
     fields = sprite_fields(layout)

@@ -52,6 +52,30 @@ pub(crate) enum SpriteShading {
   Custom(u64),
 }
 
+/// How a sprite is drawn, besides its texture and instance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SpriteLook {
+  pub(crate) shading: SpriteShading,
+  pub(crate) blend: BlendMode,
+  pub(crate) filter: Filter,
+  /// Drawn before lighting; otherwise after it, at full brightness
+  pub(crate) lit: bool,
+}
+
+impl SpriteLook {
+  /// `shading`, blended over what is below, with the presentation's filter,
+  /// lit.
+  #[cfg(test)]
+  pub(crate) fn plain(shading: SpriteShading) -> Self {
+    Self {
+      shading,
+      blend: BlendMode::default(),
+      filter: Filter::default(),
+      lit: true,
+    }
+  }
+}
+
 /// A sprite waiting to be drawn.
 #[derive(Debug, Clone)]
 pub(crate) struct DrawSprite {
@@ -72,7 +96,7 @@ pub(crate) struct DrawSprite {
 
 /// The frame's sprites and trail groups, reused across frames.
 ///
-/// Lit items are drawn before lighting; unlit ones (trail groups with
+/// Lit items are drawn before lighting; unlit ones (anything drawn
 /// `with_lighting(false)`) after it.
 #[derive(Debug, Default)]
 pub(crate) struct DrawList {
@@ -93,7 +117,8 @@ impl DrawList {
     self.sorted = true;
   }
 
-  /// Add a sprite to the lit world.
+  /// Add a plain, lit sprite seen by every camera (tests).
+  #[cfg(test)]
   pub(crate) fn push_sprite(
     &mut self,
     kind: DrawKind,
@@ -102,18 +127,19 @@ impl DrawList {
     shading: SpriteShading,
     instance: SpriteInstance,
   ) {
+    let look = SpriteLook::plain(shading);
     let layers = RenderLayers::default();
-    self.push_sprite_in(kind, z, texture, shading, instance, (layers, None));
+    self.push_sprite_in(kind, z, texture, look, instance, (layers, None));
   }
 
-  /// [`push_sprite`](Self::push_sprite) for the cameras on `layers`, from
+  /// Add a sprite drawn as `look` says, for the cameras on `layers`, from
   /// an entity that shows the render target `shows`.
   pub(crate) fn push_sprite_in(
     &mut self,
     kind: DrawKind,
     z: i32,
     texture: TextureId,
-    shading: SpriteShading,
+    look: SpriteLook,
     instance: SpriteInstance,
     (layers, shows): (RenderLayers, Option<RenderTarget>),
   ) {
@@ -121,16 +147,16 @@ impl DrawList {
     let (min, max) = reach(&instance);
     self.sprites.push(DrawSprite {
       texture,
-      shading,
-      blend: BlendMode::default(),
-      filter: Filter::default(),
+      shading: look.shading,
+      blend: look.blend,
+      filter: look.filter,
       instance,
       layers,
       shows,
       min,
       max,
     });
-    self.push_item(true, z, kind, payload);
+    self.push_item(look.lit, z, kind, payload);
   }
 
   /// Add the trail/line geometry of z `z`; `lit` groups draw before lighting.

@@ -12,7 +12,7 @@ use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
   AtlasSlot, Presentation, SpriteGpuRenderer, SpriteInstance, TextureId, place_in_slot,
 };
-use crate::core::render::{CameraDraw, DrawList, DrawPayload, SpriteShading};
+use crate::core::render::{CameraDraw, DrawItem, DrawList, DrawPayload, SpriteShading};
 
 /// Instances the buffer holds at first; it doubles when a frame needs more.
 const FIRST_CAPACITY: usize = 1024;
@@ -32,7 +32,15 @@ pub(crate) struct Batch2D {
   // This frame's instances, remapped into their atlas slots (each camera's
   // in a range of their own), and each camera's draws over them; reused
   placed: Vec<SpriteInstance>,
-  draws: Vec<(Entity, Vec<Planned>)>,
+  draws: Vec<CameraDraws>,
+}
+
+/// One camera's draws: before lighting, and after it.
+#[derive(Default)]
+struct CameraDraws {
+  camera: Option<Entity>,
+  lit: Vec<Planned>,
+  unlit: Vec<Planned>,
 }
 
 impl Batch2D {
@@ -134,15 +142,15 @@ impl Batch2D {
       ..
     } = self;
     placed.clear();
-    draws.resize_with(cameras.len(), || (Entity::PLACEHOLDER, Vec::new()));
+    draws.resize_with(cameras.len(), CameraDraws::default);
     // The previous sprite's texture and where it lives, reused while
     // sprites share it
     let mut last: Option<(TextureId, AtlasSlot, (u32, u32))> = None;
     let mut ensured: Option<PipelineKey> = None;
-    for (camera, (entity, planned)) in cameras.iter().zip(draws.iter_mut()) {
-      *entity = camera.entity;
+    for (camera, drawn) in cameras.iter().zip(draws.iter_mut()) {
+      drawn.camera = Some(camera.entity);
       let first = placed.len() as u32;
-      plan_draws(list.items_for(camera), planned, first, |item| {
+      let mut place = |item: &DrawItem| {
         let index = match item.payload {
           DrawPayload::Sprite(index) => index,
           DrawPayload::Trail { z, layers } => return Some(Placed::External { z, layers }),
@@ -195,7 +203,14 @@ impl Batch2D {
           sampling: sprite.filter.resolve(presentation),
           scissor: None,
         }))
-      });
+      };
+      let next = plan_draws(list.items_for(camera), &mut drawn.lit, first, &mut place);
+      plan_draws(
+        list.unlit_items_for(camera),
+        &mut drawn.unlit,
+        next,
+        &mut place,
+      );
     }
 
     if self.placed.len() > self.capacity {
@@ -207,13 +222,13 @@ impl Batch2D {
     }
   }
 
-  /// The draws [`prepare`](Self::prepare) laid out for `camera`, in order.
-  pub(crate) fn draws(&self, camera: Entity) -> &[Planned] {
-    self
-      .draws
-      .iter()
-      .find(|(entity, _)| *entity == camera)
-      .map_or(&[], |(_, planned)| planned.as_slice())
+  /// The draws [`prepare`](Self::prepare) laid out for `camera`, in order:
+  /// before lighting (`lit`) or after it.
+  pub(crate) fn draws(&self, camera: Entity, lit: bool) -> &[Planned] {
+    let Some(drawn) = self.draws.iter().find(|d| d.camera == Some(camera)) else {
+      return &[];
+    };
+    if lit { &drawn.lit } else { &drawn.unlit }
   }
 
   /// How many draw calls the laid-out frame issues.
@@ -221,7 +236,7 @@ impl Batch2D {
     self
       .draws
       .iter()
-      .flat_map(|(_, planned)| planned)
+      .flat_map(|drawn| drawn.lit.iter().chain(&drawn.unlit))
       .filter(|planned| matches!(planned, Planned::Draw(_)))
       .count()
   }
@@ -247,7 +262,7 @@ impl Batch2D {
     let (Some(pipeline), Some(camera_group), Some(texture_group)) = (
       self.pipelines.get(&key),
       self.camera_groups.get(&camera),
-      textures.page_bind_group(page),
+      textures.page_bind_group(page, draw.state.sampling),
     ) else {
       return;
     };

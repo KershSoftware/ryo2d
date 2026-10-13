@@ -11,13 +11,23 @@ use crate::core::shaders::scope::Checked;
 /// The blend state of `mode`. Every batch shader writes colour premultiplied
 /// by alpha.
 pub(crate) fn blend_state(mode: BlendMode) -> wgpu::BlendState {
-  match mode {
-    BlendMode::Alpha
-    | BlendMode::Premultiplied
-    | BlendMode::Additive
-    | BlendMode::Multiply
-    | BlendMode::Screen => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-  }
+  use wgpu::BlendFactor::{Dst, One, OneMinusDst, OneMinusSrcAlpha, Zero};
+  let add = |src_factor, dst_factor| wgpu::BlendComponent {
+    src_factor,
+    dst_factor,
+    operation: wgpu::BlendOperation::Add,
+  };
+  // Light and shade change the colour below, not how much of it there is
+  let keep = add(Zero, One);
+  let color = match mode {
+    BlendMode::Alpha | BlendMode::Premultiplied => {
+      return wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING;
+    }
+    BlendMode::Additive => add(One, One),
+    BlendMode::Multiply => add(Dst, OneMinusSrcAlpha),
+    BlendMode::Screen => add(OneMinusDst, One),
+  };
+  wgpu::BlendState { color, alpha: keep }
 }
 
 /// What a pipeline is made for: two draws with equal keys share one.
@@ -143,10 +153,14 @@ impl Pipelines {
     let Entry::Vacant(slot) = self.built.entry(key) else {
       return;
     };
-    let entry = match (key.shader, key.stream) {
-      (BatchShader::Sprite, Stream::Quads) => "fs_base",
-      (BatchShader::SpriteEffect, Stream::Quads) => "fs_effect",
-      (BatchShader::Custom(source), Stream::Quads) => {
+    // Premultiplied textures take their colour as it is
+    let premultiplied = key.blend == BlendMode::Premultiplied;
+    let entry = match (key.shader, key.stream, premultiplied) {
+      (BatchShader::Sprite, Stream::Quads, false) => "fs_base",
+      (BatchShader::Sprite, Stream::Quads, true) => "fs_base_premultiplied",
+      (BatchShader::SpriteEffect, Stream::Quads, false) => "fs_effect",
+      (BatchShader::SpriteEffect, Stream::Quads, true) => "fs_effect_premultiplied",
+      (BatchShader::Custom(source), Stream::Quads, _) => {
         let Some((name, wgsl)) = custom else {
           return;
         };
@@ -155,7 +169,12 @@ impl Pipelines {
           label: Some(name),
           source: wgpu::ShaderSource::Wgsl(wgsl.into()),
         });
-        let pipeline = quad_pipeline(device, &self.layout, name, &module, "fs_custom", key);
+        let fragment = if premultiplied {
+          "fs_custom_premultiplied"
+        } else {
+          "fs_custom"
+        };
+        let pipeline = quad_pipeline(device, &self.layout, name, &module, fragment, key);
         // Anything naga accepted but the device rejects is found by a
         // later frame's `settle`, without waiting on the GPU here
         slot.insert(Built {
@@ -246,6 +265,56 @@ fn quad_pipeline(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn every_blend_mode_has_its_state() {
+    use wgpu::{BlendComponent as C, BlendFactor as F, BlendOperation as Op};
+    let over = C {
+      src_factor: F::One,
+      dst_factor: F::OneMinusSrcAlpha,
+      operation: Op::Add,
+    };
+    let keep_alpha = C {
+      src_factor: F::Zero,
+      dst_factor: F::One,
+      operation: Op::Add,
+    };
+    let colour = |mode| blend_state(mode).color;
+    assert_eq!(
+      blend_state(BlendMode::Premultiplied),
+      wgpu::BlendState {
+        color: over,
+        alpha: over
+      }
+    );
+    assert_eq!(
+      colour(BlendMode::Additive),
+      C {
+        src_factor: F::One,
+        dst_factor: F::One,
+        operation: Op::Add
+      }
+    );
+    assert_eq!(
+      colour(BlendMode::Multiply),
+      C {
+        src_factor: F::Dst,
+        dst_factor: F::OneMinusSrcAlpha,
+        operation: Op::Add
+      }
+    );
+    assert_eq!(
+      colour(BlendMode::Screen),
+      C {
+        src_factor: F::OneMinusDst,
+        dst_factor: F::One,
+        operation: Op::Add
+      }
+    );
+    for mode in [BlendMode::Additive, BlendMode::Multiply, BlendMode::Screen] {
+      assert_eq!(blend_state(mode).alpha, keep_alpha, "{mode:?}");
+    }
+  }
 
   #[test]
   fn alpha_blends_premultiplied_colour() {
