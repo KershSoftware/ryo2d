@@ -46,11 +46,13 @@ Engine::frame
 │   ├─ Transforms     propagation
 │   └─ Trails         trail point recording
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
-├─ PostUpdate         Transforms (propagation) → Camera (shake, real time) → Extract (timed effects)
+├─ PostUpdate         Transforms (propagation) → Camera (shake on real time, every CameraView)
+│                     → Extract (timed effects)
 ├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
-│                     the world into the draw list, runs the RenderPipeline:
-│                     clear → world → lighting → unlit_world → transition → post_process
-│                     → ui → composite → capture
+│                     the world into the draw list (world space, sorted once), plans the
+│                     cameras, runs the RenderPipeline:
+│                     per camera: clear → world → lighting → unlit_world
+│                     per frame:  cameras → transition → post_process → ui → composite → capture
 └─ Last               physics registration bookkeeping, forget despawned tilemaps, clear_trackers,
                       check_change_ticks every 1024 frames
 ```
@@ -64,11 +66,11 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `Camera`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer and sprite/lighting/trail renderers, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images) and sprite/lighting/trail renderers, the camera uniforms, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (scene stack + Kira `Audio`), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
-- Scene callbacks get `Time`, `Input`, `Camera` and `AssetManager` as `SceneContext` fields, taken out of the world for the callback (`SceneContext::scoped`). Systems always see them as resources.
+- Scene callbacks get `Time`, `Input` and `AssetManager` as `SceneContext` fields, taken out of the world for the callback (`SceneContext::scoped`). Systems always see them as resources. Cameras are entities (`Camera2d`); the main one (`MainCamera`) is spawned with the world and survives world cleanup, and `ctx.camera()` edits it.
 - Per-frame requests from scenes to the window go through resources (`WindowRequest`, `CursorRequest`) applied in `about_to_wait` (`engine/window.rs`), never by borrowing the window during a callback.
 
 ## Module Map (`src/core/`)
@@ -83,8 +85,8 @@ Engine::frame
 | `systems/` | The built-in systems (juice, physics, trails) |
 | `messages/` | Engine message types, registration, per-scene cursors |
 | `scene/` | `Scene`, `SceneAction`, `SceneContext`, `SceneManager`, cleanup |
-| `render/` | `RenderPipeline` of `RenderPass`es, the draw list, entity extraction |
-| `graphics/` | wgpu renderer, sprite GPU batching, camera, sprite animation, tiles, parallax, atlas, compositor |
+| `render/` | `RenderPipeline` of `RenderPass`es (camera and frame scopes), the draw list, entity extraction, the frame's camera plan |
+| `graphics/` | wgpu renderer, sprite GPU batching, cameras and render targets, the screen mapping, texture registry and atlas, compositor, sprite animation, tiles, parallax |
 | `shaders/` | Post-process effects (`EffectsManager`) and sprite shaders |
 | `lighting/` | 2D lights, occluders, `LightingSettings` |
 | `physics/` | Rapier integration, `RigidBody`, `Collider`, `RapierPhysicsWorld` |

@@ -15,7 +15,7 @@ Conventions: 2D with +Y down, units are pixels, rotation is radians unless a nam
 use ryo2d::prelude::*;
 ```
 
-Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Camera and sprites](#camera-and-sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
+Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Sprites](#sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
 
 ---
 
@@ -145,6 +145,7 @@ pub struct Renderable {
   pub shader: Option<SpriteShader>, pub drop_shadow: Option<DropShadow>,
   pub blob_shadow: Option<BlobShadow>, pub contact_shadow: Option<ContactShadow>,
   pub anchor: Anchor, // default Anchor::Center
+  pub target: Option<RenderTarget>, // drawn instead of `sprite` (see render_target)
 }
 pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f32 } }
 ```
@@ -152,6 +153,7 @@ pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f3
 | Method | |
 |---|---|
 | `sprite(SpriteHandle) -> Self` | single sprite, placed by its anchor |
+| `render_target(RenderTarget) -> Self` | shows a render target at its size, placed, tinted, faded, scaled, turned and flipped like a sprite (see [Cameras](#cameras)) |
 | `tiled(SpriteHandle, TileDirection, target_size: f32) -> Self` | repeated to fill `target_size`, laid out from the entity's position (first tile's top-left); ignores `anchor` |
 | `with_anchor(Anchor)`, `with_z_order(i32)`, `with_visible(bool)`, `with_flip_x(bool)`, `with_flip_y(bool)`, `with_alpha(f32)`, `with_tint(Color)` | builders |
 | `with_shader(SpriteShader)`, `with_drop_shadow(DropShadow)`, `with_blob_shadow(BlobShadow)`, `with_contact_shadow(ContactShadow)` | effects |
@@ -302,7 +304,7 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | UI pass | `Scene::ui` for visible scenes, bottom-up; input it consumes never reaches gameplay |
 | `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Physics` → `Transforms` → `Trails` |
 | `Update` | `UpdateSet::Game` (scene per-frame systems) |
-| `PostUpdate` | `PostUpdateSet::Transforms` → `Camera` (shake) → `Extract` |
+| `PostUpdate` | `PostUpdateSet::Transforms` → `Camera` (shake, then every camera's `CameraView`) → `Extract` |
 | render | draw list from the world, `Scene::render`, render pipeline |
 | `Last` | tracker clearing |
 
@@ -360,14 +362,13 @@ pub struct SceneContext<'a> {
   pub world: &'a mut World,
   pub time: &'a mut Time,
   pub input: &'a mut Input,
-  pub camera: &'a mut Camera,
   pub assets: &'a mut AssetManager,
   pub audio: &'a mut Audio,
   /* the scene's schedules, message cursors, console scope */
 }
 ```
 
-`time`, `input`, `camera` and `assets` are taken out of the world for the callback: use the fields (`ctx.world.resource::<Time>()` panics inside a callback). Systems always see them as resources.
+`time`, `input` and `assets` are taken out of the world for the callback: use the fields (`ctx.world.resource::<Time>()` panics inside a callback). Systems always see them as resources. Cameras are entities: `ctx.camera()` reaches the main one.
 
 | Helper | |
 |---|---|
@@ -382,11 +383,13 @@ pub struct SceneContext<'a> {
 | `lighting(&mut self) -> Mut<'_, LightingSettings>` | ambient, atmosphere, forced on/off |
 | `tilemaps(&mut self) -> Mut<'_, TilemapManager>` | |
 | `render_pipeline(&mut self) -> Mut<'_, RenderPipeline>` | toggle or insert passes (persist across scenes) |
+| `camera(&mut self) -> CameraMut<'_>` | the main camera (respawned over the design area if the game despawned it) |
+| `render_targets(&mut self) -> Mut<'_, RenderTargets>` | textures cameras render into and sprites show |
 | `window(&mut self) -> Mut<'_, WindowRequest>`, `cursor(&mut self) -> Mut<'_, CursorRequest>` | requests applied after the frame |
 | `console(&mut self) -> ConsoleScope<'_>` | scene-scoped console handlers |
 | `spawn_child(&mut self, parent: Entity, bundle: impl Bundle) -> Entity` | |
 | `skip_interpolation(&mut self, entity: Entity)` | |
-| `screen_size() -> (f32, f32)`, `screen_width()`, `screen_height()` | logical game resolution |
+| `screen_size() -> (f32, f32)`, `screen_width()`, `screen_height()` | screen space: the window in logical pixels, or the pixel-art target |
 | `scale_factor() -> f64`, `display_mode() -> DisplayMode` | from `WindowInfo` |
 | `request_display_mode(DisplayMode)`, `request_resolution(w, h)`, `request_display_change(w, h, DisplayMode)`, `request_ui_scale(Option<u32>)` | window changes |
 | `set_cursor(CursorStyle)`, `set_cursor_visible(bool)`, `show_cursor()`, `hide_cursor()`, `set_cursor_confined(bool)`, `set_cursor_locked(bool)`, `set_custom_cursor(&SpriteHandle, hot_x: u16, hot_y: u16)`, `set_custom_cursor_centered(&SpriteHandle)` | cursor |
@@ -423,7 +426,7 @@ impl Scene for Level {
       if let Some(player) = self.player && hit.involves(player) {
         Knockback::apply(ctx.world, player, Vec2::new(-1.0, 0.0), 300.0);
         ctx.time.game.hitstop(0.05);
-        ctx.camera.add_trauma(0.4);
+        ctx.camera().add_trauma(0.4);
       }
     }
     self.particles.update(ctx.world, dt);
@@ -438,7 +441,7 @@ impl Scene for Level {
   }
 
   fn render(&mut self, gpu: &mut GpuRenderContext) {
-    self.particles.collect_for_render(gpu.world, gpu.camera, gpu.batch);
+    self.particles.collect_for_render(gpu.world, gpu.batch);
   }
 }
 ```
@@ -479,6 +482,8 @@ EngineBuilder::new()
 | `build(self) -> Engine`, then `Engine::run(self) -> EngineResult<()>` | |
 
 Settings resolve in order: engine defaults, `Ryo.toml` (or values embedded by `ryo2d build`), builder calls, then saved preferences allowed by `with_user_preferences`.
+
+The resolution model: `resolution(w, h)` is the design area. By default (resolution-independent) the world renders at the window's physical size and the main camera's `Projection::Fit` keeps `w`x`h` world units in view however the window is sized; screen space (UI, mouse, `ctx.screen_size()`) is the window in logical pixels. `pixel_art(w, h)` instead renders into a `w`x`h` target scaled by a whole number to fit the window, centred with bars, nearest sampling, sprites snapped to whole target pixels; screen space is the target. `window_size(w, h)` sets the window's starting logical size (by default the resolution; for pixel art the largest whole multiple that fits 1280x720).
 
 `enum Presentation { ResolutionIndependent (default), PixelArt { width, height } }`. `ScreenMapping` converts between window pixels and screen space: `new(presentation, physical, scale_factor)`, `screen_size()`, `scale()`, `window_rect()`, `window_to_screen(Vec2)`, `screen_to_window(Vec2)`, `render_size()`, `ndc_rect()`, `presentation()`.
 
@@ -550,23 +555,65 @@ See `ryo-audio`.
 
 ---
 
-## Camera and sprites
+## Cameras
 
-`Camera` is a resource and `ctx.camera`:
+Cameras are entities: a `Camera2d` with a `Transform` (its position is the view's centre in world space, its rotation turns the view). The engine spawns the main camera (`MainCamera`, `Interpolated`) at the centre of the design area with `Projection::Fit` over it; it survives world cleanup, and `SceneCleanup::CAMERA` resets its position, zoom, rotation, projection and shake. Spawn more cameras for split screen, minimaps or render-to-texture.
 
 ```rust
-pub struct Camera { pub x: f32, pub y: f32, pub zoom: f32, /* viewport, shake */ } // x, y = view centre in world space
+pub struct Camera2d {
+  pub zoom: f32,              // default 1.0 (clamped to 0.01..=100)
+  pub projection: Projection, // default ScreenUnits
+  pub viewport: Viewport,     // default Viewport::FULL
+  pub order: i32,             // render order within its kind; default 0
+  pub target: CameraTarget,   // default Window
+  pub clear: CameraClear,     // default Background
+}
+pub enum Projection { ScreenUnits, Fit { width: f32, height: f32 } } // ScreenUnits: one world unit per screen unit at zoom 1; Fit: keep width x height world units in view
+pub struct Viewport { pub min: Vec2, pub max: Vec2 } // fractions of the window: Viewport::FULL, Viewport::new(x, y, width, height)
+pub enum CameraTarget { Window, Texture(RenderTarget) }
+pub enum CameraClear { Background, Color(Color), None } // None draws over the cameras below
 ```
+
+Render order: texture cameras first, then window cameras, each by `order` (ties by entity). Window cameras land in their viewports in that order, so a later camera that does not clear (`CameraClear::None`) draws over the earlier ones. Every camera is lit, and shake, rotation and zoom move everything it draws (sprites, trails, lines, lights, shadows, god rays). UI stays in screen space.
+
+`CameraMut` (`ctx.camera()`, or `CameraMut::main(world) -> Option<CameraMut>` where a system holds `&mut World`) edits the main camera:
 
 | | |
 |---|---|
-| `new(viewport_w: u32, viewport_h: u32)`, `centered_at(x, y, w, h)` | |
-| `set_position(x, y)`, `set_zoom(f32)`, `follow(x, y, lerp_factor)` (0.05..0.2 smooth), `snap_to(x, y)`, `clamp_to_bounds(min_x, min_y, max_x, max_y)` | movement |
-| `world_to_screen(x, y) -> (f32, f32)`, `screen_to_world(x, y)`, `visible_bounds() -> CameraBounds`, `is_visible(x, y, w, h) -> bool`, `viewport_size()` | coordinates |
-| `add_trauma(f32)`, `configure_shake(max_offset, decay_rate)`, `set_shake_curve(Ease)`, `shake_curve()`, `trauma()`, `reset_trauma()`, `shake_offset()` | shake (decays in real time) |
-| `set_viewport(w, h)`, `reset()` | |
+| `entity()`, `position() -> Vec2`, `set_position(x, y)`, `zoom()`, `set_zoom(f32)`, `rotation()`, `set_rotation(radians)`, `set_projection(Projection)`, `set_viewport(Viewport)` | the camera |
+| `follow(target: Vec2, lerp)` (0.05..0.2 smooth), `snap_to(Vec2)`, `clamp_to_bounds(min: Vec2, max: Vec2)` | movement |
+| `add_trauma(f32)`, `configure_shake(max_offset, decay_rate)`, `set_shake_curve(Ease)`, `trauma()` | shake (decays in real time) |
+| `view() -> CameraView`, `world_to_screen(Vec2) -> Vec2`, `screen_to_world(Vec2) -> Vec2`, `visible_bounds() -> CameraBounds` | coordinates, as the camera stands now |
 
-`CameraBounds { left, right, top, bottom }`: `width()`, `height()`, `contains(x, y)`.
+Other cameras are edited through their components (`Camera2d`, `Transform`, `CameraShake`). Move a camera that follows the player in `update` (or a `FixedUpdate` system) and keep it `Interpolated`, so it moves as smoothly as the sprites it follows.
+
+- `CameraShake` (component, trauma-based): `new(max_offset, decay_rate)`, `with_intensity_curve(Ease)`, `add_trauma(f32)`, `configure(max_offset, decay_rate)`, `trauma()`, `reset()`, `offset() -> Vec2`, `set_curve(Ease)`, `curve()`.
+- `CameraView` (component the engine computes each frame in `PostUpdateSet::Camera` from the interpolated transform): `view_proj: Mat4`, `center`, `rotation`, `scale` (screen units per world unit), `shake`, `rect_min`, `rect_size` (the viewport in screen units), `bounds: CameraBounds` (encloses a rotated view); `world_to_screen(Vec2) -> Vec2`, `screen_to_world(Vec2) -> Vec2`, `is_visible(min: Vec2, max: Vec2) -> bool`.
+- `CameraBounds { left, right, top, bottom }`: `width()`, `height()`, `contains(x, y)`.
+- `RenderLayers` (component on drawables and cameras): `layer(n)` (0..=31), `all()`, `none()`, `with(n)`, `intersects(&other)`. Default `layer(0)`. A camera draws the entities, composite tiles, trails and lines that share a layer with it; `Scene::render` sprites, particles, parallax and debug overlays are on layer 0.
+
+Render targets: `RenderTargets` (resource, `ctx.render_targets()`) records textures; the GPU textures follow at the next frame.
+
+| `RenderTargets` | |
+|---|---|
+| `create(width, height) -> RenderTarget` | sides clamped to `1..=MAX_TARGET_SIDE` (8192), with a warning |
+| `resize(target, width, height) -> bool`, `remove(target) -> bool` | `false` for an unknown target |
+| `size(target) -> Option<(u32, u32)>`, `contains(target) -> bool` | |
+
+A camera with `CameraTarget::Texture(target)` fills that target (one world unit per target pixel at zoom 1 with `ScreenUnits`); one whose target is missing draws nothing and warns once. `Renderable::render_target(target)` shows it; because texture cameras render first, the sprite shows this frame's image. A camera never draws something showing its own target (it skips it and warns once per entity). A scene switch or reset that clears the world removes every target.
+
+```rust
+// A minimap in the top-right corner, and a render-to-texture monitor
+ctx.world.spawn((
+  Transform::from_xy(0.0, 0.0),
+  Camera2d { zoom: 0.2, viewport: Viewport::new(0.75, 0.0, 0.25, 0.25), order: 1, ..Default::default() },
+));
+let screen = ctx.render_targets().create(128, 96);
+ctx.world.spawn((Transform::from_xy(2000.0, 0.0), Camera2d { target: CameraTarget::Texture(screen), ..Default::default() }));
+ctx.world.spawn((Transform::from_xy(400.0, 200.0), Renderable::render_target(screen)));
+```
+
+## Sprites
 
 `Sprite` (CPU image data):
 
@@ -602,23 +649,23 @@ Wrap a `Sprite` in a `SpriteHandle` for rendering: `ctx.assets.create_sprite(spr
 `Scene::render(&mut self, gpu: &mut GpuRenderContext)` adds batched sprites for the frame; they sort with entities by `z_order`.
 
 ```rust
-pub struct GpuRenderContext<'a> { pub batch: &'a mut BatchCollector, pub camera: &'a Camera, pub world: &'a World, /* .. */ }
+pub struct GpuRenderContext<'a> { pub batch: &'a mut BatchCollector, pub world: &'a World, /* .. */ }
 ```
 
 | `GpuRenderContext` | |
 |---|---|
-| `add_sprite_instance(&SpriteHandle, instance: SpriteInstance, z_order: i32, has_effects: bool)` | one sprite; its texture uploads when first drawn and is dropped 600 frames after it was last drawn |
+| `add_sprite_instance(&SpriteHandle, instance: SpriteInstance, z_order: i32, has_effects: bool)` | one sprite, in world space (the instance's centre is a world position; for something fixed on screen, place it with `camera().screen_to_world`); its texture uploads when first drawn and is dropped 600 frames after it was last drawn |
 | `add_custom_sprite(&SpriteHandle, &ShaderHandle, &ShaderParams, SpriteInstance, z_order)` | one sprite with a game shader |
-| `screen_size()`, `screen_width()`, `screen_height()`, `camera()` | |
+| `screen_size()`, `screen_width()`, `screen_height()`, `camera() -> &CameraView` (the main camera's view) | |
 
-- `SpriteInstance { transform, uv_rect, tint, effect_params, effect_extra, uv_bounds }`: `new()`, `with_transform(x, y, rotation, scale_x, scale_y)`, `with_uv(u_min, v_min, u_max, v_max)`, `with_tint(Color, alpha)`, `with_effect(&SpriteEffect)`.
+- `SpriteInstance { transform, uv_rect, tint, effect_params, effect_extra, uv_bounds }`: `new()`, `with_transform(x, y, rotation, width, height)` (the quad's centre and size in world units), `with_uv(u_min, v_min, u_max, v_max)`, `with_tint(Color, alpha)`, `with_effect(&SpriteEffect)`.
 - `BatchCollector`: `new()`, `with_capacity(n)`, `add(&SpriteHandle, has_effects, SpriteInstance, z_order)`, `sprite_count()`, `clear()`.
 
 Parallax backgrounds:
 
 - `GpuParallaxBuilder`: `new()`, `layer(&SpriteHandle, scroll_speed, z_order)`, `static_layer(&SpriteHandle, z_order)`, then for the last layer `with_auto_scroll(px_per_s)`, `with_y_offset(f32)`, `with_tile_mode(TileMode)`, `with_scale(f32)`; `build() -> GpuParallaxBackground`.
 - `GpuParallaxBackground`: `new()`, `add_layer(GpuParallaxLayer)`, `remove_layer(&SpriteHandle)`, `get_layer_mut(&SpriteHandle)`, `layer_count()`, `update(dt)` (auto-scroll), `set_elapsed_time(f32)`, `render(&self, &mut GpuRenderContext)` (call from `Scene::render`).
-- `GpuParallaxLayer { scroll_speed (0 static, 1 moves with camera), auto_scroll_speed, y_offset, z_order, tile_mode, .. }`: `new(&SpriteHandle, scroll_speed, z_order)`, `with_auto_scroll`, `with_y_offset`, `with_tile_mode`, `with_scale`, `with_tint(r, g, b, a)`, `sprite()`.
+- `GpuParallaxLayer { scroll_speed (0 static, 1 moves with camera), auto_scroll_speed, y_offset, z_order, tile_mode, .. }` (follows the main camera on both axes, scaled by its zoom): `new(&SpriteHandle, scroll_speed, z_order)`, `with_auto_scroll`, `with_y_offset`, `with_tile_mode`, `with_scale`, `with_tint(r, g, b, a)`, `sprite()`.
 - `enum TileMode { None, Horizontal, InfiniteScroll }`.
 
 ---
@@ -668,7 +715,7 @@ Lighting turns on once any `Light2D` exists (or when forced) and lights the worl
 | `GodRaysQuality { Low, Medium, High }` | `samples()`, `decay()` |
 | `VolumetricSettings { enabled, intensity, density, scattering, god_rays }` (per light) | `new(intensity, density, scattering)`, `enabled()`, `god_rays_only()`, `subtle_beam()`, `strong_beam()`, `flashlight()`, `with_god_rays`, `with_intensity`, `with_density`, `with_scattering` |
 
-Lights and occluders sit at their entity's `GlobalTransform`. See `ryo-lighting`.
+Lights and occluders sit at their entity's `GlobalTransform`. Every camera is lit in its own light buffers, so lights turn, zoom and shake with the camera. See `ryo-lighting`.
 
 ---
 
@@ -762,7 +809,7 @@ The scene owns a `ParticleSystem`; emitters and attractors are components.
 |---|---|
 | `new()`, `with_seed(u64)` | |
 | `update(&mut self, world: &mut World, dt: f32)` | call in `update` |
-| `collect_for_render(&self, world: &World, camera: &Camera, collector: &mut BatchCollector)` | call in `render`: `collect_for_render(gpu.world, gpu.camera, gpu.batch)` |
+| `collect_for_render(&self, world: &World, collector: &mut BatchCollector)` | call in `render`: `collect_for_render(gpu.world, gpu.batch)`; particles are centred on their position, in world space |
 | `particle_count()`, `clear()`, `clear_emitter(Entity)` | |
 
 - `ParticleEmitter` (component; emits from its entity's `GlobalTransform`) with public fields for every setting (`mode`, `shape`, `sprite`, `enabled`, lifetime/size/color/speed/rotation ranges, `gravity`, `drag`, `z_order`, `effect`, `collision`, `layer`, `max_particles`). `new(SpriteHandle)`, `with_mode(EmissionMode)`, `with_shape(EmissionShape)`, `with_lifetime(min, max)`, `with_size(min, max)`, `with_end_size(min, max)`, `with_color(start, end)`, `with_speed(min, max)`, `with_rotation(min, max)`, `with_angular_velocity(min, max)`, `with_gravity(x, y)`, `with_drag(f32)`, `with_z_order(i32)`, `with_effect(SpriteEffect)`, `with_layer(u32)`, `with_collision(CollisionConfig)`, `with_max_particles(u32)`, `one_shot()`, `set_enabled(bool)`, `reset()`, `burst(count)`, `is_finished()`. Presets (each `(SpriteHandle) -> Self`): `fire`, `flame_small`, `smoke`, `smoke_thick`, `magic`, `magic_heal`, `rain`, `snow`, `sparks`, `dust`, `confetti`, `bubbles`, `comet_trail`, `exhaust`; `explosion(sprite, count)`, `explosion_debris(sprite, count)`.
@@ -793,28 +840,29 @@ Tile data, coordinates, collision and Tiled import; the renderer does not draw t
 
 ## Render pipeline
 
-`RenderPipeline` (resource, `ctx.render_pipeline()`): the frame's passes, in order. It belongs to the engine, so changes persist across scenes.
+`RenderPipeline` (resource, `ctx.render_pipeline()`): the frame's passes, in order. It belongs to the engine, so changes persist across scenes. Camera passes (`PassScope::Camera`) run first, once per camera in render order, each on that camera's image; then the frame passes run once.
 
 | `RenderPipeline` | |
 |---|---|
 | `push(impl RenderPass) -> Result<(), RenderPipelineError>` | append |
 | `insert_before(anchor: &str, pass)`, `insert_after(anchor, pass)` | relative to a pass id |
 | `remove(id) -> Option<Box<dyn RenderPass>>` | |
-| `set_enabled(id, bool) -> Result<(), RenderPipelineError>`, `is_enabled(id) -> Option<bool>`, `contains(id)`, `pass_ids()`, `passes_to_run(&FrameInfo)` | |
+| `set_enabled(id, bool) -> Result<(), RenderPipelineError>`, `is_enabled(id) -> Option<bool>`, `contains(id)`, `pass_ids()`, `passes_to_run(&FrameInfo)` (in run order: camera passes, then frame passes) | |
 | `new()`, `default_2d()` | |
 
-`pass_ids`: `CLEAR`, `WORLD` (entities, sprites, lit trails and lines in z order), `LIGHTING`, `UNLIT_WORLD`, `TRANSITION`, `POST_PROCESS`, `UI`, `COMPOSITE`, `CAPTURE`. `enum RenderPipelineError { DuplicatePass(String), UnknownPass(String) }`.
+`pass_ids`: per camera `CLEAR`, `WORLD` (entities, sprites, lit trails and lines in z order), `LIGHTING`, `UNLIT_WORLD`; per frame `CAMERAS` (window cameras' images into their viewports), `TRANSITION`, `POST_PROCESS`, `UI`, `COMPOSITE`, `CAPTURE`. `enum RenderPipelineError { DuplicatePass(String), UnknownPass(String) }`.
 
 ```rust
 pub trait RenderPass: Send + Sync {
   fn id(&self) -> &str;
   fn should_run(&self, frame: &FrameInfo) -> bool { true }
+  fn scope(&self) -> PassScope { PassScope::Frame } // or PassScope::Camera
   fn execute(&mut self, ctx: &mut RenderContext<'_>);
 }
 ```
 
-- `RenderContext`: `device()`, `queue()`, `encoder()`, `frame() -> &FrameInfo`, `game_size()`, `format()`, `current_view()`, `encoder_and_current_view()`. GPU types come from `ryo2d::wgpu`.
-- `FrameInfo { game_width, game_height, world, lighting, effects, ui, transition, capture }`: what the frame contains.
+- `RenderContext`: `device()`, `queue()`, `encoder()`, `frame() -> &FrameInfo`, `render_size()` (the scene image in pixels), `screen_size() -> Vec2`, `format()`, `current_view()` (in a camera pass, the camera's image), `encoder_and_current_view()`, `camera() -> Option<&CameraView>` and `camera_entity() -> Option<Entity>` (`Some` in camera passes). GPU types come from `ryo2d::wgpu`.
+- `FrameInfo { screen_width, screen_height, render_width, render_height, world, lighting, effects, ui, transition, capture }`: what the frame contains.
 
 See `ryo-renderer`.
 
@@ -882,7 +930,8 @@ Immediate-mode UI drawn in `Scene::ui` with `UiContext`; retained state structs 
 
 | Type | Variants | Alias |
 |---|---|---|
-| `EngineError` | `Window(String)`, `Render(String)`, `Save(SaveError)`, `WorkspaceError(String)` | `EngineResult<T>` |
+| `EngineError` | `Window(String)`, `Render(String)`, `Save(SaveError)`, `WorkspaceError(String)`, `Gpu(GpuError)` | `EngineResult<T>` |
+| `GpuError` | `NoAdapter`, `RequestDevice`, `CreateSurface`, `DeviceLost` (`String`) | |
 | `AssetError` | `NotFound(PathBuf)`, `LoadError { path, reason }`, `WatchError(String)`, `Sprite(SpriteError)` | `AssetResult<T>` |
 | `SpriteError` | `DecodeError { path, reason }` | `SpriteResult<T>` |
 | `AudioError` | `InitError`, `LoadError`, `PlayError`, `NotFound` (all `String`), `Unavailable` | `AudioResult<T>` |
@@ -891,7 +940,7 @@ Immediate-mode UI drawn in `Scene::ui` with `UiContext`; retained state structs 
 | `NetworkError` | `InitError`, `ConnectionError`, `SendError`, `ReceiveError`, `TransportError` (`String`) | `NetworkResult<T>` |
 | `ReplicationError` | `SerializationError`, `DeserializationError` (`String`), `TypeMismatch { expected, found }`, `UnknownComponent(ComponentTypeId)`, `EntityNotFound(u64)` | `ReplicationResult<T>` |
 
-All are `thiserror` enums (`Display`, `Error`); `SaveError` converts into `EngineError` with `?`.
+All are `thiserror` enums (`Display`, `Error`); `SaveError` and `GpuError` convert into `EngineError` with `?`.
 
 ---
 
@@ -982,12 +1031,15 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 |------|---------------------|
 | `HeadlessEngine::new(builder: EngineBuilder)` | `-> Result<HeadlessEngine, HeadlessError>`: the engine without a window |
 | `HeadlessEngine::new_or_skip(builder)` | `-> Option<HeadlessEngine>`: `None` when no GPU (tests return early) |
+| `HeadlessEngine::with_scale_factor(builder, f64)`, `new_or_skip_with_scale_factor(builder, f64)` | a HiDPI window (physical pixels per logical pixel); the default is 1.0 |
 | `step()` / `step_frames(n)` | `-> Result<StepOutcome, HeadlessError>`: each step advances one fixed timestep (one `FixedUpdate`) and renders |
-| `frame()` | `-> Result<RgbaImage, HeadlessError>`: last frame at game resolution |
-| `frame_count()`, `resize(w, h)` | |
+| `frame()` | `-> Result<RgbaImage, HeadlessError>`: the last scene image (scene + UI, before the bars): the render size |
+| `window_frame()` | `-> Result<RgbaImage, HeadlessError>`: the last window, bars included |
+| `frame_count()`, `resize(w, h)` | `resize` as if the window became `w`x`h` physical pixels |
 | `world()` / `world_mut()` | the world between steps |
 | `press_key` / `release_key` / `tap_key` / `type_text(&str)` | keyboard input (`KeyCode`) |
-| `press_mouse` / `release_mouse` / `mouse_move(x, y)` | mouse input (game coordinates) |
+| `press_mouse` / `release_mouse` / `mouse_move(x, y)` | mouse input (screen space) |
+| `mouse_move_window(x, y)` | the pointer at physical window pixels, mapped like a real cursor |
 | `StepOutcome` | `Running` \| `Quit` |
 | `HeadlessError` | `NoGpu` \| `Render(String)` \| `Capture(CaptureError)` |
 | `shared_gpu()` | one GPU device shared across tests |

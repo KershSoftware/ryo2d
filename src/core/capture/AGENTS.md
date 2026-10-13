@@ -1,6 +1,6 @@
 # AGENTS.md - Frame Capture
 
-Saves the final composed frame (scene + UI) as a PNG at game resolution. Spec: `docs/specs/2026-10-10-frame-capture-design.md`.
+Saves the final composed frame (scene + UI, before the bars) as a PNG at the render size: the pixel-art target, or the window's physical size. Spec: `docs/specs/2026-10-10-frame-capture-design.md`.
 
 ## Split
 
@@ -12,7 +12,7 @@ Saves the final composed frame (scene + UI) as a PNG at game resolution. Spec: `
 
 - `read_texture_rgba` blocks (`Maintain::Wait`) and needs `COPY_SRC` plus an 8-bit RGBA/BGRA format; anything else is `CaptureError::UnsupportedFormat`.
 - The capture texture uses the **surface** format (the final-composite pipelines target it), so readback must handle BGRA.
-- "Frame N" counts presented frames only; a frame lost to `SurfaceError` is retried with the same number.
+- "Frame N" counts presented frames only; a frame the surface skipped (timeout, occluded, outdated, lost) is retried with the same number.
 - There is one present path, `Engine::present_frame` (`engine/extract.rs`), for window and headless runs: it calls `path_for_next_frame` before rendering and `on_frame_presented` only when the frame was presented. Keep it that way if you add another.
 - In-flight writes are joined in `ApplicationHandler::exiting` (`engine/window.rs`; not after `run_app`: on macOS, Cmd+Q exits the process without returning). Scheduled frames never presented are reported as failures there; with `RYO_CAPTURE_EXIT=1` any scheduled failure exits with code 1.
 

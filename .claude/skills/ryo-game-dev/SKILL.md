@@ -58,8 +58,9 @@ struct Level {
 
 impl Scene for Level {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // The camera starts centred on the viewport: world (0, 0) is the screen's top-left
-    let (vw, vh) = ctx.camera.viewport_size();
+    // The main camera starts centred on the design area (the resolution):
+    // world (0, 0) is its top-left
+    let center = ctx.camera().position();
 
     let sprite = ctx
       .assets
@@ -68,7 +69,7 @@ impl Scene for Level {
       .world
       .spawn((
         Player,
-        Transform::from_xy(vw / 2.0, vh / 2.0),
+        Transform::from_xy(center.x, center.y),
         Renderable::sprite(sprite).with_z_order(10),
       ))
       .id();
@@ -137,13 +138,12 @@ Entities are not drawn by `render`: anything with `Transform` + `Renderable` is 
 | `ctx.world` | `&mut World` | Entities, components, queries, resources |
 | `ctx.time` | `&mut Time` | `real`, `game` and `fixed` clocks |
 | `ctx.input` | `&mut Input` | Keyboard, mouse, gamepad, text |
-| `ctx.camera` | `&mut Camera` | Position, zoom, shake, screen/world conversion |
 | `ctx.assets` | `&mut AssetManager` | Sprites (`load_sprite`, `create_sprite`) |
 | `ctx.audio` | `&mut Audio` | Sounds and music (calls return `AudioError::Unavailable` without a device) |
 
-Helpers: `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
+Helpers: `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
 
-**`time`, `input`, `camera` and `assets` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
+**`time`, `input` and `assets` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
 
 ## Entities and Components
 
@@ -293,7 +293,7 @@ if ctx.input.key_pressed(KeyCode::Space) {}  // this step only
 if ctx.input.key_down(KeyCode::KeyW) {}      // held
 if ctx.input.mouse_pressed(MouseButton::Left) {}
 let (mx, my) = ctx.input.mouse_position();
-let (wx, wy) = ctx.camera.screen_to_world(mx, my);
+let world = ctx.camera().screen_to_world(Vec2::new(mx, my)); // mouse is in screen space
 ```
 
 - One-shots (`key_pressed`, `key_released`, `mouse_pressed`, ...) are seen by the first fixed step of a frame; a press in a frame with no step reaches the next step. Handle a press once, in `update` or in a system.
@@ -385,11 +385,45 @@ bullets.release(ctx.world, spent);
 
 Released entities carry `Disabled`: every query, physics and rendering skip them. Its children leave and come back with it, and an acquired entity does not slide from where it was released. `PoolConfig` fields: `initial_capacity`, `max_capacity` (0 = unlimited), `expand_batch_size`, `exhausted_policy` (`Expand`, `ReturnNone`, `RecycleOldest`).
 
-## Camera and Coordinates
+## Cameras and Coordinates
 
-- The camera's position is the centre of the view. It starts (and `SceneCleanup::CAMERA` resets it) at half the viewport, so world (0, 0) is the screen's top-left and world coordinates equal screen pixels until the camera moves. +Y is down.
-- `set_position`, `follow(x, y, lerp)`, `snap_to`, `set_zoom`, `add_trauma(0.4)` (shake, in real time), `screen_to_world`, `world_to_screen`, `visible_bounds()`.
+- Cameras are entities (`Camera2d` + `Transform`); `ctx.camera()` edits the main one. Its position is the centre of the view. It starts (and `SceneCleanup::CAMERA` resets it) at the centre of the design area, so world (0, 0) is the design area's top-left and one world unit is one design pixel. +Y is down; rotation is clockwise in radians.
+- `set_position`, `follow(target, lerp)`, `snap_to`, `clamp_to_bounds(min, max)`, `set_zoom`, `set_rotation`, `add_trauma(0.4)` (shake, in real time), `screen_to_world`, `world_to_screen`, `visible_bounds()`. Shake, rotation and zoom move everything in the world (sprites, trails, lines, lights, shadows); the UI stays put.
+- Follow the player in `update` (or a `FixedUpdate` system) with `ctx.camera().follow(player_pos, 0.1)`: the main camera is `Interpolated`, so it moves as smoothly as the sprite it follows. Give an extra camera `Interpolated` too.
 - Clamp a centred sprite with its half size: `t.translation.x.clamp(half_w, screen_w - half_w)`.
+
+Split screen: two cameras, each with half the window.
+
+```rust
+ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
+let right = ctx.world.spawn((
+  Transform::from_xy(p2.x, p2.y),
+  Camera2d { projection: Projection::Fit { width: 320.0, height: 360.0 }, viewport: Viewport::new(0.5, 0.0, 0.5, 1.0), order: 1, ..Default::default() },
+  Interpolated,
+)).id();
+// In update: move `right`'s Transform after player two
+```
+
+Minimap: a small camera on top that does not clear, seeing only what is on its layer.
+
+```rust
+ctx.world.spawn((
+  Transform::from_xy(0.0, 0.0),
+  Camera2d { zoom: 0.1, viewport: Viewport::new(0.78, 0.02, 0.2, 0.2), order: 10, clear: CameraClear::Color(Color::new(0, 0, 0, 160)), ..Default::default() },
+  RenderLayers::layer(0).with(1), // the world plus minimap-only markers on layer 1
+));
+ctx.world.spawn((Transform::from_xy(x, y), Renderable::sprite(dot), RenderLayers::layer(1)));
+```
+
+Render to texture: a camera draws into a target, and a sprite shows it (this frame's image: texture cameras render first).
+
+```rust
+let monitor = ctx.render_targets().create(160, 90);
+ctx.world.spawn((Transform::from_xy(5000.0, 0.0), Camera2d { target: CameraTarget::Texture(monitor), ..Default::default() }));
+ctx.world.spawn((Transform::from_xy(400.0, 120.0), Renderable::render_target(monitor).with_z_order(5)));
+```
+
+A camera never draws something showing its own target. A world-clearing scene switch removes every target; recreate them in `on_enter`.
 
 ## Resolution and Window
 
@@ -397,8 +431,10 @@ Resolution comes from `Ryo.toml` (`[system] resolution`) or `EngineBuilder::reso
 
 | `Presentation` | Behaviour |
 |--------------|-----------|
-| `ResolutionIndependent` (default) | Renders at the window's resolution; the game resolution is the design area |
-| `PixelArt { width, height }` | Renders into that target, scaled by a whole number and centred with bars (`EngineBuilder::pixel_art(w, h)` or `pixel_art = true` in `[system]`) |
+| `ResolutionIndependent` (default) | Renders at the window's physical resolution (sharp on HiDPI); the resolution is the design area the main camera keeps in view (`Projection::Fit`), so a wider window shows more world at the sides; screen space (UI, mouse) is the window in logical pixels |
+| `PixelArt { width, height }` | Renders into that target, scaled by a whole number and centred with bars, nearest sampling, sprites snapped to whole target pixels (`EngineBuilder::pixel_art(w, h)` or `pixel_art = true` in `[system]`); screen space is the target |
+
+Choose pixel art for low-resolution art that must stay crisp and grid-aligned (every pixel the same size); choose resolution-independent for everything else (smooth scaling, rotation and zoom at any window size).
 
 `EngineBuilder::window_size(w, h)` sets the window's initial size and `resizable(bool)` whether the player can resize it. A saved `resolution` preference picks the window size, not the game's. `DisplayMode` (`Windowed`, `ExclusiveFullscreen`, `BorderlessFullscreen`) is how the window appears: `ctx.request_display_mode(DisplayMode::BorderlessFullscreen)`. Builder overrides (`resolution`, `pixel_art`, `window_size`, `target_fps`, `vsync`, `fixed_hz`) beat `Ryo.toml`; saved player preferences beat both when `with_user_preferences` includes them (`ryo-config-save`).
 

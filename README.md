@@ -156,15 +156,19 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Trails** — Motion path rendering with fade and taper effects
 - **Particles** — GPU-batched particle system with emitters, attractors, and presets
 - **Post-Processing** — Shader pipeline (bloom, CRT, vignette, chromatic aberration, etc.)
-- **Render Pipeline** — Pass-based; games toggle built-in passes or add their own
+- **Render Pipeline** — Pass-based, per camera then per frame; games toggle built-in passes or add their own
+- **Resolution Model** — Resolution-independent (sharp at any window size and on HiDPI) or pixel art (a fixed target scaled by whole numbers)
+- **Web** — The engine builds for wasm32 and runs in browsers with WebGPU
 
 ### Physics & Collision
 - **Rapier2D** — Full physics simulation with rigid bodies
 - **Collision Shapes** — Box and circle colliders with trigger support
 - **Collision Messages** — Started/stopped messages for gameplay logic
 
-### Camera
-- **2D Camera** — Follow targets, zoom, bounds clamping, screen/world conversion
+### Cameras
+- **Cameras as Entities** — Follow targets, zoom, rotation, bounds clamping, screen/world conversion, smooth interpolation
+- **Split Screen & Minimaps** — Any number of cameras with viewports, render order and render layers
+- **Render to Texture** — Cameras render into textures that sprites show
 - **Screen Shake** — Trauma-based shake with smooth noise
 
 ### Input

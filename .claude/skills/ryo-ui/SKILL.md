@@ -28,7 +28,7 @@ impl Scene for Hud {
 - Only the top scene's returned `SceneAction` is applied, and it applies at once: when it brings a new scene to the top, the UI is drawn again so the new scene shows this frame, and no fixed step runs after a `Quit`.
 - `ctx` is the full `SceneContext`: read the world or resources for a HUD, write messages, request window changes.
 - The UI is drawn into its own buffer and composited last, above the world, lighting and post-processing; it is never lit. Engine overlays (FPS, stats) and the console draw over it.
-- Coordinates are screen pixels; `ui.screen_size()` is `(u32, u32)`.
+- Coordinates are screen space: the window in logical pixels (resolution-independent) or the pixel-art target; `ui.screen_size()` is `(u32, u32)`. Cameras never move, zoom, turn or shake the UI.
 - `ui.dt()` is the **real** frame delta (it keeps running through pause, slow motion and hitstop). Animate UI with it.
 
 ## Input and Consumption

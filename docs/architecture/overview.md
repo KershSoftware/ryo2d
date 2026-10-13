@@ -32,9 +32,9 @@ The world is Ryo2D's ECS: `bevy_ecs` 0.20, exposed through `ryo2d::ecs` and the 
 
 | Resources (in the world) | Engine-owned |
 |---|---|
-| `Time`, `Input`, `Camera`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `Gpu` (once the GPU is up), `RapierPhysicsWorld`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack and the Kira audio manager sit in the world as one non-send value that only the scene systems take out |
+| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `RapierPhysicsWorld`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack and the Kira audio manager sit in the world as one non-send value that only the scene systems take out |
 
-In 0.20 a resource is a component on a hidden entity marked `IsResource`, so engine sweeps over "every entity" filter it out.
+In 0.20 a resource is a component on a hidden entity marked `IsResource`, so engine sweeps over "every entity" filter it out. Cameras are entities too (`Camera2d` + `Transform`); the main one (`MainCamera`) is spawned with the world and survives world cleanup.
 
 ## The Frame
 
@@ -63,8 +63,8 @@ Engine::frame()
  │        Transforms ... propagate GlobalTransform
  │        Trails ....... record trail points
  ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems; builder ones by default
- ├─ PostUpdate ... Transforms (propagation), Camera (shake), Extract (timed effects)
- ├─ render ....... Scene::render, query the world into the draw list, run the RenderPipeline
+ ├─ PostUpdate ... Transforms (propagation), Camera (shake, every camera's view), Extract (timed effects)
+ ├─ render ....... Scene::render, query the world into the draw list, plan the cameras, run the RenderPipeline
  └─ Last ......... physics registration bookkeeping, forget despawned tilemaps, clear change trackers
 ```
 
@@ -151,33 +151,51 @@ Rapier2D behind the `RapierPhysicsWorld` resource, stepped in `FixedSet::Physics
 
 ## Rendering
 
-`present_frame` builds each frame from the world by query; there is no render cache. It collects the scenes' `Scene::render` batches, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails, lines, lights and occluders into one draw list, then runs the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`): an ordered list of `RenderPass`es recorded on one command encoder with one submit. The world is drawn on the GPU; only the UI is drawn on the CPU, into a buffer composited last.
+`present_frame` builds each frame from the world by query; there is no render cache. Drawables are gathered once, in world space, and sorted once: the scenes' `Scene::render` batches, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails, lines, lights and occluders. Then each camera keeps what it sees (its `RenderLayers`, its view's bounds) and the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`) runs on one command encoder with one submit: the camera passes once per camera, then the frame passes once. The world is drawn on the GPU through each camera's view-projection matrix; only the UI is drawn on the CPU, into a buffer composited last.
 
 ```
-clear -> world -> lighting -> unlit_world -> transition
-      -> post_process -> ui -> composite -> capture
+gather once (world space, sorted) ──→ cameras in render order: texture cameras, then window cameras (by order)
+                                       │
+  for each camera, on its image:       clear -> world -> lighting -> unlit_world
+                                       │   (the first full-window camera draws straight into the scene image;
+                                       │    other window cameras into images of their own; texture cameras
+                                       │    into their render targets)
+                                       ▼
+  once per frame:                      cameras -> transition -> post_process -> ui -> composite -> capture
+                                       (window cameras' images into their viewports)
 ```
 
-| Pass (`pass_ids`) | Draws |
-|------|-------|
-| `clear` | Clears the game texture |
-| `world` | Entities, `Scene::render` sprites (particles, parallax) and lit trails/lines, in one z-sorted list |
-| `lighting` | 2D lighting with point lights and shadows |
-| `unlit_world` | Trails/lines with `with_lighting(false)`, by z |
-| `transition` | Scene transition fade over the frame |
-| `post_process` | Bloom, CRT, vignette and the other effects |
-| `ui` | Uploads the UI layer |
-| `composite` | Letterboxed present, UI blended last |
-| `capture` | Frame capture readback |
+| Pass (`pass_ids`) | Scope | Draws |
+|------|-------|-------|
+| `clear` | camera | Clears the camera's image (background, a colour, or transparent so the cameras below show) |
+| `world` | camera | Entities, `Scene::render` sprites (particles, parallax) and lit trails/lines, in one z-sorted list |
+| `lighting` | camera | 2D lighting with point lights and shadows, in the camera's own light buffers |
+| `unlit_world` | camera | Trails/lines with `with_lighting(false)`, by z |
+| `cameras` | frame | Window cameras' own images into their viewports, in order |
+| `transition` | frame | Scene transition fade over the frame |
+| `post_process` | frame | Bloom, CRT, vignette and the other effects |
+| `ui` | frame | Uploads the UI layer |
+| `composite` | frame | To the window through `ScreenMapping` (bars for pixel art), UI blended last |
+| `capture` | frame | Frame capture readback |
 
-Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in passes or insert their own. See `src/core/render/AGENTS.md`.
+Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in passes or insert their own (`RenderPass::scope` picks once per frame or once per camera). See `src/core/render/AGENTS.md`.
 
-- **Batching:** consecutive sprites on one atlas page and pipeline merge into one draw; at equal z an entity draws before a `Scene::render` sprite, then trails and lines. 128 bytes per instance (affine transform, UV rect, tint, effect parameters, UV bounds).
-- **Time in shaders:** sprite effects and custom sprite shaders animate on game elapsed time (sprite globals `x`), so they stop with the game clock; the globals also carry real elapsed time in `w`. Post-process effects (built-in and custom), lighting, trails and transitions animate on real time.
+- **Cameras:** `Camera2d { zoom, projection, viewport, order, target, clear }` on an entity with a `Transform`; the engine computes each camera's `CameraView` (view-projection, bounds) from its interpolated transform and shake every frame. Every camera has one uniform buffer that sprites, trails, lights and shadows all draw through, so shake, rotation and zoom move them together. Split screen and minimaps are window cameras with viewports; `RenderTargets` gives textures that texture cameras render into (first, so a sprite showing one shows this frame's image) and `Renderable::render_target` shows.
+- **Textures:** every texture has one `TextureId` in the texture registry (sprites by handle, named pixel textures, render targets). Sprite images live in shared atlas pages; render targets are pages of their own.
+- **Batching:** consecutive sprites on one atlas page and pipeline merge into one draw; at equal z an entity draws before a `Scene::render` sprite, then trails and lines. 128 bytes per instance (affine world transform, UV rect, tint, effect parameters, UV bounds); each camera's visible sprites get a range of the instance buffer.
+- **Time in shaders:** sprite effects and custom sprite shaders animate on game elapsed time, so they stop with the game clock; post-process effects (built-in and custom), lighting, trails and transitions animate on real time. Custom shader errors are collected asynchronously and never block a frame.
 - **Sprite effects** (`SpriteEffect`, 11 built in): Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline. Custom sprite shaders through `Material`.
-- **Post-processing** (`EffectsManager`, `ctx.effects()`): Fade, ColorTint, Vignette, ScreenFlash, CRT, ChromaticAberration, GodRays, AmbientOcclusion, Bloom.
-- **Lighting:** `ctx.lighting()` (`LightingSettings`: ambient, atmosphere, forced on or off); lighting turns on by itself once a `Light2D` exists. The UI is never lit.
-- **Surface errors:** `Outdated` and `Timeout` skip the frame, `Lost` reconfigures, only out-of-memory and device loss are fatal. Vsync uses `Fifo`; without it `Mailbox`, else `Immediate`, with the frame limiter at `target_fps`.
+- **Post-processing** (`EffectsManager`, `ctx.effects()`): Fade, ColorTint, Vignette, ScreenFlash, CRT, ChromaticAberration, GodRays, AmbientOcclusion, Bloom. Once per frame, not per camera.
+- **Lighting:** `ctx.lighting()` (`LightingSettings`: ambient, atmosphere, forced on or off); lighting turns on by itself once a `Light2D` exists and then lights every camera. The UI is never lit.
+- **Surface and GPU errors:** a suboptimal surface draws and then reconfigures; timeout and occlusion skip the frame; outdated reconfigures; lost recreates; a validation error or a lost device is fatal. GPU setup failures are `GpuError`s. Vsync uses `Fifo`; without it `Mailbox`, else `Immediate`, with the frame limiter at `target_fps`.
+
+### Resolution and the window
+
+`ScreenMapping` (a resource) is the one mapping between window pixels and screen space, used by the compositor, the mouse and the tests. In the default resolution-independent presentation the world renders at the window's physical size (sharp on HiDPI), screen space is the window in logical pixels, and the resolution is a design area that the main camera's `Projection::Fit` keeps in view at any window size. With `pixel_art(w, h)` (or `pixel_art = true` in `Ryo.toml`) the world renders into a `w`x`h` target scaled by a whole number to fit the window, centred with bars, sampled nearest, with sprites snapped to whole target pixels; screen space is the target. The UI is drawn in screen space and composited over the scene.
+
+### The web build
+
+The engine builds for `wasm32-unknown-unknown` and runs in browsers with WebGPU: winit starts the app asynchronously (the GPU arrives as an event), time comes from `web-time`, file-backed features (hot reload, saves, the clipboard) are compiled out or report `Unsupported`, and assets load inline. `./dev.sh web <demo>` serves a demo with trunk (demos with an `index.html` and `Trunk.toml`); `check` and `lint` build the engine for wasm32 too. The `ryo2d` command has no web build yet.
 
 ## Audio
 
@@ -253,18 +271,19 @@ The fixed rate is not a Ryo.toml setting: set it with `EngineBuilder::fixed_hz`.
 ## Coordinates
 
 ```
-World space (pixels)                     Screen space
-camera at its centre                     (0,0) at the top-left
+World space (world units)                Screen space
+a camera at the centre of its view       (0,0) at the top-left
 
           ▲ -Y                                0 ─────────────► X
           │                                   │
-◄─────────┼─────────► +X                      │   (after the camera transform)
+◄─────────┼─────────► +X                      │   (through the camera's view)
           │                                   │
           ▼ +Y                                ▼ Y
 ```
 
-- +Y is down in both. A sprite's `Anchor` (default `Center`) is the point placed at its entity's position; rotation and scale happen about it. Tiled runs and composite tiles are laid out from the position as their first tile's top-left.
-- Rapier works in meters: 100 pixels = 1 meter.
+- +Y is down in both; rotation is clockwise. The main camera starts at the centre of the design area, so world (0, 0) is its top-left and one world unit is one design pixel. A sprite's `Anchor` (default `Center`) is the point placed at its entity's position; rotation and scale happen about it. Tiled runs and composite tiles are laid out from the position as their first tile's top-left.
+- Screen space is the window in logical pixels (resolution-independent) or the pixel-art target; the UI and the mouse live there. `CameraView::world_to_screen` / `screen_to_world` convert, shake and rotation included.
+- Rapier works in meters: 100 world units = 1 meter.
 
 ## Networking
 
@@ -281,10 +300,9 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `ecs/` | Kernel re-exports, `Transform`, propagation, interpolation, pooling, `Renderable`, juice components |
 | `engine/`, `scene/`, `schedule.rs`, `time.rs`, `input.rs`, `messages/` | The loop, scenes, phases, clocks, input, messages |
 | `systems/` | The engine's built-in schedule systems |
-| `graphics/` | Sprites, animation, camera and shake, parallax, tiled and composite rendering, the sprite renderer |
-| `render/` | The render pipeline, passes and the draw list |
+| `graphics/` | Sprites, animation, cameras and shake, render targets, render layers, the screen mapping, parallax, tiled and composite rendering, the texture registry and atlas, the sprite renderer |
+| `render/` | The render pipeline, passes, the draw list and the frame's camera plan |
 | `shaders/` | Post-process effects and custom shaders |
-| `texture/` | Texture handles and arrays for custom passes |
 | `lighting/`, `trail/`, `particles/`, `skeleton/`, `tilemap/` | Feature renderers and their components |
 | `physics/` | Rapier integration, colliders, bodies |
 | `navigation/` | Grids, A* pathfinding, agents, steering |
@@ -304,7 +322,8 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `bevy_ecs` | The ECS: storage, queries, schedules, change detection, hierarchy, messages |
 | `glam` | Math types (`Vec2`, `Affine2`, `Mat4`) |
 | `wgpu` | GPU abstraction for rendering |
-| `winit` | Windowing and input |
+| `winit` | Windowing and input (also on the web) |
+| `web-time` | Clocks on native and the web |
 | `rapier2d` | Physics simulation |
 | `kira` | Audio |
 | `gilrs` | Gamepads |

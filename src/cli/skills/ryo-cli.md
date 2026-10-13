@@ -45,7 +45,8 @@ title = "My Game"
 version = "0.1.0"
 
 [system]
-resolution = "1280x720"
+resolution = "1280x720"   # the design area (resolution-independent) or, with pixel_art, the target
+# pixel_art = true         # render into the resolution, scaled by a whole number with bars
 
 [debug]
 show_colliders = false
@@ -116,7 +117,10 @@ When working ON the engine (not a game), use root scripts:
 # Unix/macOS
 ./dev.sh breakout
 ./dev.sh test
+./dev.sh web lighting   # serve a demo in the browser (WebGPU) with trunk
 ```
+
+`./dev web <demo>` builds the demo for `wasm32-unknown-unknown` and serves it with trunk (`cargo install trunk --locked`), opening the browser; trunk rebuilds on engine and demo edits. Only demos with an `index.html` and `Trunk.toml` run on the web (`lighting` today). `check` and `lint` also build the engine for wasm32. The `ryo2d` command has no web build yet.
 
 | Context | Tool |
 |---------|------|

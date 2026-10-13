@@ -10,7 +10,7 @@ Game Texture → [Effect 1] → [Effect 2] → ... → [Effect N] → Final Outp
                Tex A        Tex B               Tex A/B
 ```
 
-The pipeline chains effects through two intermediate textures (A and B): the first effect reads the game texture and writes A, the next reads A and writes B, and so on.
+The pipeline chains effects through two intermediate textures (A and B): the first effect reads the scene image (lit when lighting ran) and writes A, the next reads A and writes B, and so on.
 
 **Critical:** `apply_effects()` returns an `OutputBuffer` that must identify whichever texture holds the final processed output, not the input to the last effect.
 

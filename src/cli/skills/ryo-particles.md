@@ -35,7 +35,7 @@ impl Scene for Level {
 
   fn render(&mut self, gpu: &mut GpuRenderContext) {
     // Add the particles to the batch (their sprites upload when first drawn)
-    self.particles.collect_for_render(gpu.world, gpu.camera, gpu.batch);
+    self.particles.collect_for_render(gpu.world, gpu.batch);
   }
 }
 ```
@@ -43,6 +43,7 @@ impl Scene for Level {
 - `ParticleSystem::new()` is randomly seeded; `ParticleSystem::with_seed(n)` gives the same particles for the same updates (headless tests, replays).
 - `update(world, dt)` runs at the fixed rate with the `dt` `update` receives, so slow motion and pause apply.
 - Particles sort by the emitter's `z_order` (`with_z_order`, default 0) together with entities, other sprites and trails; the UI draws last.
+- Each particle is a world-space quad centred on its position, `size` world units across: every camera draws it through its own view (render layer 0), so it zooms, turns and shakes with the world.
 - `particle_count()`, `clear()` and `clear_emitter(entity)` manage live particles; call `clear()` when a scene resets the world.
 
 ## Emitters
@@ -142,9 +143,9 @@ Following the mouse:
 
 ```rust
 let (mx, my) = ctx.input.mouse_position();
-let target = ctx.camera.screen_to_world(mx, my);
+let target = ctx.camera().screen_to_world(Vec2::new(mx, my));
 if let Some(mut transform) = ctx.world.get_mut::<Transform>(self.attractor) {
-  transform.translation = Vec2::new(target.0, target.1);
+  transform.translation = target;
 }
 ```
 

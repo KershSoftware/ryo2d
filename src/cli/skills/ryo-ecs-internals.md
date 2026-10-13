@@ -84,6 +84,7 @@ A resource must be `Send + Sync`. The scene stack and audio are not, so they liv
 
 - **Insert hook** (`place_on_insert`): inserting a `Transform` sets `GlobalTransform` at once, from the parent's current global for a child. Spawning in `update` therefore places the entity for the rest of the step. Edits through `get_mut::<Transform>` do not fire it; they wait for propagation.
 - **Propagation** (`propagate_transforms`): one system, run in `FixedSet::Transforms` and `PostUpdateSet::Transforms`. Roots are `Transform` without `ChildOf`; a subtree is recomputed when the root's `Transform` changed or, during the walk, an ancestor's `Transform`/`ChildOf` changed. Children of a parent with no `Transform` (a grouping entity) start from the identity; they are recomputed like any node, plus when the grouping entity has just lost its `Transform`. Writes go through `set_if_neq`, so an unmoved entity's `GlobalTransform` is never marked changed.
+- **Cameras** are entities (`Camera2d`, `Transform`, and the `CameraView` it requires). In `PostUpdateSet::Camera` the shake system advances `CameraShake` on real time, then `camera_view_system` computes every camera's `CameraView` from its interpolated transform (after `PostUpdateSet::Transforms`, before `Extract`). The main camera (`MainCamera`, `Interpolated`) is spawned with the world; `ctx.camera()` respawns it over the design area if a game despawned it.
 - **Previous transforms**: propagation also inserts `PreviousGlobalTransform` (with `skip: true`) on every entity that is `Interpolated` or under one, and removes it elsewhere, through `Commands` (applied at the end of the phase).
 - **Snapshot**: `snapshot_previous_transforms` runs first in each fixed step and copies `GlobalTransform` into `PreviousGlobalTransform`, clearing `skip`.
 - **Render**: extraction calls `render_global(global, previous, time.fixed.overstep_fraction())`; gameplay never sees a blend.
@@ -103,8 +104,8 @@ Propagation and physics sync are change-detected, so a spurious write costs work
 
 In `bevy_ecs` 0.20 a resource is a component on a hidden entity marked `IsResource`; observers and registered one-shot systems are entities too. Any sweep over "every entity" must exclude them:
 
-- `despawn_game_entities` (`world_ext.rs`, behind `SceneCleanup::WORLD`) filters `(Allow<Disabled>, Without<IsResource>, Without<Observer>, Without<SystemIdMarker>)`.
-- Counting entities (debug stats) skips archetypes holding those markers.
+- `despawn_game_entities` (`world_ext.rs`, behind `SceneCleanup::WORLD`) filters `(Allow<Disabled>, Without<IsResource>, Without<Observer>, Without<SystemIdMarker>, Without<MainCamera>)`: the main camera survives world cleanup (`SceneCleanup::CAMERA` resets it), other cameras go with the world. `SceneCleanup::WORLD` also clears `RenderTargets`.
+- Counting entities (debug stats) skips archetypes holding those markers, and the main camera.
 - Tests that count entities count their own marker component, not `world.entities()`.
 
 ## Disabled and Pooling

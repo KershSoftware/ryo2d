@@ -22,6 +22,7 @@ You help developers light scenes and cast shadows. Complete signatures are in `r
 - Lighting is **automatic**: it turns on the first frame any `Light2D` exists and stays on. `ctx.lighting().set_enabled(true)` forces it on (a dark scene before any light exists); `set_enabled(false)` forces it off. `enabled()` returns the override (`None` when automatic).
 - Once on, lighting stays on across scene changes, even after `SceneCleanup::LIGHTING` resets the settings to their defaults (dim grey ambient, 0.15). A later scene that wants to be fully lit calls `ctx.lighting().set_enabled(false)` in `on_enter`.
 - The UI is never lit: it is composited after lighting and post-processing.
+- Every camera is lit, each in light buffers of its own size, and lights are drawn through the camera's matrix: they move, zoom, turn and shake with the sprites. A split screen or minimap shows each light where it is. God rays follow the main camera.
 
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
@@ -156,15 +157,18 @@ The world (entities, `Scene::render` GPU sprites, trails and lines) is drawn fir
 
 ## Pipeline
 
+Per camera (the `lighting` camera pass):
+
 ```
-1. Light accumulation: lights add into a light buffer
+1. Light accumulation: lights add into the camera's light buffer, through its view
 2. Shadows: occluder geometry projected away from each light, subtracted from the buffer
-3. Composition: final = scene x (ambient + light buffer), plus atmosphere
+3. Composition: final = the camera's image x (ambient + light buffer), plus atmosphere
 ```
 
 ## Performance
 
 - At most 256 lights draw (one instanced call); extra lights are dropped and there is no viewport culling.
 - Ray-marched shadows consider at most 64 occluder edges; use 16-32 samples, 64 only when needed.
+- Lighting runs once per camera: a minimap camera multiplies its cost. Lights and shadow geometry are built again for every camera.
 - Disable shadows on unimportant lights; simple occluder shapes are cheaper.
 - Lower AO radius is faster.

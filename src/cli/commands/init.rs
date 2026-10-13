@@ -262,6 +262,7 @@ assets = "assets"
 
 [system]
 resolution = "1280x720"
+# pixel_art = true    # render into the resolution, scaled by a whole number (crisp pixel art)
 vsync = true
 display_mode = "windowed"
 master_volume = 0.8
@@ -330,14 +331,16 @@ impl Scene for GameScene {
     // Initialize your game here
     // Spawn entities, load assets, etc.
 
-    // Example: Spawn a simple colored square at center
+    // Example: Spawn a simple colored square where the camera looks
+    // (the centre of the resolution; world (0, 0) is its top-left)
     let sprite = ctx.assets.create_sprite(
       Sprite::solid_rect(64, 64, 0, 255, 255, 255),
       "square"
     );
+    let center = ctx.camera().position();
     // Sprites are centred on their position by default
     ctx.world.spawn((
-      Transform::from_xy(640.0, 360.0),
+      Transform::from_xy(center.x, center.y),
       Renderable::sprite(sprite).with_z_order(0),
     ));
   }
@@ -367,6 +370,9 @@ impl Scene for GameScene {
 }
 
 fn main() {
+  // Resolution-independent: the world renders at the window's size and the
+  // camera keeps 1280x720 world units in view. For pixel art, use
+  // `.pixel_art(320, 180)` instead: a fixed target scaled by whole numbers.
   let engine = EngineBuilder::new()
     .resolution(1280, 720)
     .fixed_hz(60)

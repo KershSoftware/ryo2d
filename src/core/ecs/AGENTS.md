@@ -17,8 +17,8 @@ Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports
 | UI pass | once | `Scene::ui` for visible scenes bottom-up, debug overlays, console; consumption applied to `Input`; a returned `SceneAction` applies at once, and a scene change redraws the UI once so the new scene shows this frame |
 | `FixedUpdate` | 0..N | one run per fixed step; the sets below, chained |
 | `Update` | once | `UpdateSet::Game`: scene per-frame systems and builder ones by default |
-| `PostUpdate` | once | `PostUpdateSet::Transforms` (propagation), `Camera` (shake, real time), `Extract` (timed effects, real time) |
-| render | once | `present_frame` (`engine/extract.rs`): queries the world into the draw list, runs the render pipeline (not a schedule) |
+| `PostUpdate` | once | `PostUpdateSet::Transforms` (propagation), `Camera` (shake on real time, then every camera's `CameraView` from its interpolated transform), `Extract` (timed effects, real time) |
+| render | once | `present_frame` (`engine/extract.rs`): queries the world into the draw list, plans the cameras, runs the render pipeline (not a schedule) |
 | `Last` | once | physics registration bookkeeping, `forget_despawned_tilemaps`, `clear_trackers`, `check_change_ticks` every 1024 frames |
 
 `FixedSet`, in order:
@@ -39,11 +39,11 @@ Game systems: `EngineBuilder::add_systems(phase, systems)` for the whole run (an
 
 ## The Resource-Scope Rule
 
-`SceneContext::scoped_parts` (`scene/context.rs`) takes `Time`, `Input`, `Camera` and `AssetManager` out of the world with nested `resource_scope`s for the length of a scene callback and hands them over as `ctx.time`, `ctx.input`, `ctx.camera`, `ctx.assets`; `ctx.audio` is engine-owned (the non-send `SceneHost`). So:
+`SceneContext::scoped_parts` (`scene/context.rs`) takes `Time`, `Input` and `AssetManager` out of the world with nested `resource_scope`s for the length of a scene callback and hands them over as `ctx.time`, `ctx.input`, `ctx.assets`; `ctx.audio` is engine-owned (the non-send `SceneHost`). Cameras are entities, so `ctx.camera()` works on `ctx.world` directly. So:
 
-- Inside a callback those four are not in `ctx.world`: `ctx.world.resource::<Time>()` panics, and a system run on `ctx.world` that takes `Res<Time>` fails. Use the fields.
+- Inside a callback those three are not in `ctx.world`: `ctx.world.resource::<Time>()` panics, and a system run on `ctx.world` that takes `Res<Time>` fails. Use the fields.
 - Systems run outside callbacks and always see them as resources.
-- Everything else stays in the world; the context's helpers (`effects()`, `lighting()`, `render_pipeline()`, `tilemaps()`, `window()`, `cursor()`, `console()`, `resource*`) return `Mut<..>` into it.
+- Everything else stays in the world; the context's helpers (`camera()`, `effects()`, `lighting()`, `render_pipeline()`, `render_targets()`, `tilemaps()`, `window()`, `cursor()`, `console()`, `resource*`) reach into it.
 - A panic in a callback aborts the frame; the scoped resources are not put back.
 
 ## Transform and Hierarchy

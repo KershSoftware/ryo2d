@@ -13,6 +13,10 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 - **When lighting runs:** with no override (`enabled()` is `None`), lighting turns on once any `Light2D` exists and then stays on, also after the lights are gone and across scene changes. `set_enabled(true)` gives a dark scene before any light exists; `set_enabled(false)` forces it off.
 - `SceneCleanup::LIGHTING` resets the settings (ambient, atmosphere, the override) to their defaults; it does not switch off a renderer that a light already turned on.
 - The UI is never lit: it is composited after lighting and post-processing.
+- **Per camera:** the `lighting` pass runs for every camera. Each lit camera has light targets of its own (`LightTargets`: accumulation buffer, scene copy and compose uniforms, sized to its image), created on first use and dropped with the camera. Lights and shadows draw through the camera's uniform buffer (its `view_proj`), so they move, zoom, turn and shake with the sprites. A camera drawing straight into the scene image composes into the lit image; a camera with an image of its own is lit in place (the compose pass reads the scene copy and writes the camera's image).
+- Each camera's compose uniforms are its own buffer: queue writes all land before the command buffer runs, so a shared buffer would give every camera the last one's values.
+- The renderer's own targets (`LightingRenderer::new(device, width, height, ..)`) serve only its standalone API (`render_lights(.., camera_pos, camera_zoom)`, `compose`, `compose_from_texture`); the engine creates it at 1x1.
+- God rays (a post-process effect) follow the main camera.
 
 ## Limits
 

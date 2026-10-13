@@ -16,46 +16,57 @@ You help developers work on the rendering system.
 - **Pipeline**: `src/core/render/pipeline.rs`
 - **Pass Trait**: `src/core/render/pass.rs`
 - **Built-in Passes**: `src/core/render/passes/`
-- **GPU Sprites**: `src/core/graphics/sprite_gpu.rs`
+- **GPU Sprites**: `src/core/graphics/sprite_gpu.rs`, the atlas (`atlas.rs`) and the texture registry (`texture_registry.rs`)
+- **Cameras**: `src/core/graphics/{camera2d,camera_mut,camera_gpu,camera_images,render_targets,render_layers}.rs`
+- **Screen and window**: `src/core/graphics/screen.rs` (`ScreenMapping`), `compositor.rs`
 - **Shaders**: `src/core/shaders/`
 - **Lighting**: `src/core/lighting/`
 - **Trails**: `src/core/trail/`
 
 ## Extraction
 
-The world is read fresh every frame; there is no render cache to invalidate. `present_frame` (after `PostUpdate`) does:
+The world is read fresh every frame; there is no render cache to invalidate. Everything is gathered once, in world space, and sorted once; each camera then keeps what it sees. `present_frame` (after `PostUpdate`) does:
 
-1. Scenes' `Scene::render(gpu)` hooks fill the `BatchCollector` (particles, parallax, many-sprite effects).
-2. One query over `(Entity, &Renderable, &GlobalTransform, Option<&YSort>)` (plus `CompositeTile`) builds the frame's `DrawList`, sorted by `z_order` then y. `Disabled` entities are skipped by the query itself.
-3. Queries collect `Trail2D` (world-space points), `Line2D` (at its `GlobalTransform` translation), `Light2D` (at its translation) and `LightOccluder2D` (at its `GlobalTransform`, rotation kept).
-4. The render pipeline runs.
+1. Scenes' `Scene::render(gpu)` hooks fill the `BatchCollector` (particles, parallax, many-sprite effects), in world space.
+2. Trails (world-space points), lines (at their entity) and debug overlays go into the trail renderer, grouped by lighting mode, z and `RenderLayers`; lights are gathered at their positions.
+3. The render targets' GPU textures follow `RenderTargets`; the cameras are planned (`plan_cameras`): texture cameras, then window cameras, each by `order`. The first window camera draws straight into the scene image when it covers the window and clears; every other window camera gets an image of its own, sized to its viewport (`CameraImages`); a texture camera's image is its target.
+4. Each camera gets a uniform buffer (`CameraUniforms`, one `CameraGlobals` each: `view_proj`, `resolution` = its image size, `game_time`, `real_time`, `snap`), bound as group 0 by sprites, trails, lights and shadows alike.
+5. One query over the renderables (plus `CompositeTile`) builds the frame's `DrawList`, skipping quads no camera on the entity's layers can see. `Disabled` entities are skipped by the query itself.
+6. `SpriteGpuRenderer::prepare_world` lays each camera's sprites out in a range of the instance buffer of its own (on its layers, inside its `CameraView::bounds`, not showing its own target) and uploads them once.
+7. The render pipeline runs.
 
 Placement rules:
 
-- Entities with `PreviousGlobalTransform` (the `Interpolated` marker on them or an ancestor) draw at `render_global(global, previous, time.fixed.overstep_fraction())`; everything else draws at `GlobalTransform`. Composite tiles, lights, occluders and lines on an interpolated entity are blended the same way.
+- Entities with `PreviousGlobalTransform` (the `Interpolated` marker on them or an ancestor) draw at `render_global(global, previous, time.fixed.overstep_fraction())`; everything else draws at `GlobalTransform`. Composite tiles, lights, occluders and lines on an interpolated entity are blended the same way, and so is a camera's own transform when its `CameraView` is computed.
 - A single sprite is placed by `Renderable::anchor` (default `Anchor::Center`); rotation and scale happen about the anchor. Tiled runs and composite parts are laid out from the entity's position (the first tile's top-left).
 - `YSort` sorts by the sprite's feet (`foot_offset` of the way down from its top edge, wherever the anchor is).
-- Sprite globals (`time_resolution`): `x` = game time (sprite effects; a custom sprite shader's `in.time`), `y`/`z` = size, `w` unused. Lighting, trails, transitions and post-process effects (including a custom effect's `in.time`) use real time.
+- Instances carry world-space quads (centre, size, rotation); the camera's `view_proj` takes them to its image. In pixel-art mode the sprite vertex shader snaps axis-aligned quads to whole target pixels (`snap`); sampling is nearest there and linear otherwise.
+- Sprite effects and a custom sprite shader's `in.time` run on game time; lighting, trails, transitions and post-process effects (including a custom effect's `in.time`) use real time.
 
 ## Rendering Pipeline
 
-Every frame runs through the engine's `RenderPipeline` (`src/core/render/`), built with `RenderPipeline::default_2d()`. One command encoder, one submit per frame. Passes run in list order:
+Every frame runs through the engine's `RenderPipeline` (`src/core/render/`), built with `RenderPipeline::default_2d()`. One command encoder, one submit per frame. The camera passes run first, once per camera in render order, each on that camera's image; then the frame passes run once:
 
 ```
-clear         clear the game texture
-world         entities, Scene::render sprites (particles, parallax) and trails/lines, one z-sorted list (lit by lighting)
-lighting      render_lights + compose, if enabled (the lit texture is persistent)
-unlit_world   trails and lines with `with_lighting(false)`, by z, full brightness on the lit scene
+per camera (PassScope::Camera):
+clear         the camera's image, per CameraClear (Background, Color, or transparent for None)
+world         its entities, Scene::render sprites (particles, parallax) and lit trails/lines, one z-sorted list
+lighting      lights and shadows into its light buffer, composed with its image (lit in place for an image of its own)
+unlit_world   its trails and lines with `with_lighting(false)`, by z, full brightness
+
+per frame (PassScope::Frame):
+cameras       window cameras' own images into their viewports, in order (None blends over); clears the scene image first when no camera drew straight into it
 transition    scene transition fade over the whole frame (not the UI)
 post_process  bloom, CRT, vignette, etc.
 ui            upload the UI layer (only if the scene drew UI)
-composite     letterboxed present to the window/offscreen target; the UI is blended last, untouched by effects
+composite     to the window/offscreen target through ScreenMapping (letterbox for pixel art); the UI is blended last, untouched by effects
 capture       frame capture, when requested
 ```
 
 Gotchas:
 - The UI is only composited if the `ui` pass uploaded it this frame. A requested capture is only read back if the `capture` pass ran; otherwise it reports an error.
-- Every game-size texture follows `resize_buffer` (ResizableStretch).
+- Scene images (game, lit, post-process) have the render size: the window's physical size, or the pixel-art target. A window camera's own image is its viewport's part of it.
+- Per-camera GPU state (uniforms, bind groups, images, light targets) exists only for live cameras and goes with them.
 - Passes are thin: GPU pipelines live in the subsystem renderers (lighting, trails, post-process, ...), and the passes just call them.
 
 ### RenderPass Trait
@@ -64,11 +75,12 @@ Gotchas:
 pub trait RenderPass: Send + Sync {
     fn id(&self) -> &str;                                   // unique
     fn should_run(&self, _frame: &FrameInfo) -> bool { true } // only asked while enabled
+    fn scope(&self) -> PassScope { PassScope::Frame }        // or PassScope::Camera: once per camera
     fn execute(&mut self, ctx: &mut RenderContext<'_>);
 }
 ```
 
-`RenderContext` exposes `device()`, `queue()`, `encoder()`, `frame()`, `game_size()`, `current_view()` and `encoder_and_current_view()` (the encoder plus the view holding the latest image - draw on it to add to the frame). All of these are in the prelude, with `pass_ids`, `RenderPipeline`, `RenderPipelineError` and `FrameInfo`.
+`RenderContext` exposes `device()`, `queue()`, `encoder()`, `frame()`, `render_size()`, `screen_size()`, `format()`, `current_view()` and `encoder_and_current_view()` (the encoder plus the view holding the latest image - in a camera pass, the camera's image - draw on it to add to the frame), and `camera()` / `camera_entity()` (the camera whose passes are running; `None` in a frame pass). All of these are in the prelude, with `pass_ids`, `PassScope`, `RenderPipeline`, `RenderPipelineError` and `FrameInfo`.
 
 ### Configuring the pipeline from a scene
 
@@ -105,13 +117,21 @@ For screen-wide effects written in WGSL, use a custom post-process effect (see C
 
 ## Draw Order
 
-Everything in the world draws on the GPU in one z-sorted list: entities (`Renderable`, `CompositeTile`, shadows), `Scene::render` sprites (particles, parallax) and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then `Scene::render` sprite, then trail/line; within a kind, in submission order. Consecutive sprites on one atlas page merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top.
+Everything in the world draws on the GPU in one z-sorted list, which each camera filters by `RenderLayers` and its view: entities (`Renderable`, `CompositeTile`, shadows), `Scene::render` sprites (particles, parallax) and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then `Scene::render` sprite, then trail/line; within a kind, in submission order. Consecutive sprites on one atlas page merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top.
 
 Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `Trail2D` and `Line2D` have `with_z_order` (default 0). `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; sprites, particles and trails at the same z draw after the layer's entities. `skeleton_debug_lines` draw on top. Debug overlays are unlit lines on top; the transition fade covers the world (including trails) but not the UI. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
 
 ### Texture Atlas and Fidelity
 
-Sprite images are packed into shared atlas pages (2048x2048, 1-px extruded border); images over 256 px get their own texture. Games keep texture ids and normalized UVs; UVs outside a sprite's own rect are transparent, so there is no UV wrapping. Unused entries are evicted and re-uploaded automatically. Tint and effects run in sRGB space, quantised like the old CPU path, so opaque tinted pixels look as before; translucent overlaps blend in linear space and may look slightly different. Outline, glow and directional outline draw outside the sprite. Blob and contact shadows are a tinted ellipse; drop shadows are the sprite's silhouette. `DebugStats::draw_calls` counts the world draws.
+Every texture the renderer draws has one `TextureId` in the `TextureRegistry` (sprites by handle, named pixel textures such as the shadow ellipse, and render targets). Sprite images are packed into shared atlas pages (2048x2048, 1-px extruded border); images over 256 px get their own texture. UVs outside a sprite's own rect are transparent, so there is no UV wrapping. Unused entries are evicted and re-uploaded automatically. Render targets are pages of their own (`SlotPage::Target`): cameras draw into an sRGB view, sprites sample an `Rgba8Unorm` view like the atlas pages; they are never evicted. Tint and effects run in sRGB space, quantised like the old CPU path, so opaque tinted pixels look as before; translucent overlaps blend in linear space and may look slightly different. Outline, glow and directional outline draw outside the sprite. Blob and contact shadows are a tinted ellipse; drop shadows are the sprite's silhouette. `DebugStats::draw_calls` counts the world draws of every camera.
+
+### Resolution and the window
+
+`ScreenMapping` (resource) is the one mapping between the window and screen space: `screen_size()` (logical pixels, or the pixel-art target), `render_size()` (scene images), `window_rect()` (where the scene lands, bars included), `window_to_screen` / `screen_to_window`, `ndc_rect()` (the compositor's rectangle). The compositor, mouse mapping and tests all use it. The UI buffer is screen-space sized and composited with nearest sampling.
+
+### Shaders, errors and the web
+
+Custom shader compilation never blocks the frame: errors are collected asynchronously and a failed sprite shader draws plain (with a warning). GPU setup failures are `GpuError`s (`NoAdapter`, `RequestDevice`, `CreateSurface`, `DeviceLost`). The engine builds for `wasm32` on WebGPU: `./dev.sh web <demo>` serves a demo with trunk (only demos with an `index.html` and `Trunk.toml`, such as `lighting`).
 
 ## Background Rendering
 
@@ -133,14 +153,15 @@ Games use `Scene::render`, called once per frame for every visible scene, bottom
 fn render(&mut self, gpu: &mut GpuRenderContext) {
   // A texture uploads the first time a frame draws it, and is dropped 600 frames after it was last drawn
   for particle in &self.particles {
+    // Centre and size in world units
     let instance = SpriteInstance::new()
-      .with_transform(particle.x, particle.y, particle.rotation, 1.0, 1.0);
+      .with_transform(particle.x, particle.y, particle.rotation, particle.size, particle.size);
     gpu.add_sprite_instance(&self.particle_sprite, instance, particle.z_order, false);
   }
 }
 ```
 
-`gpu` also carries `world` (read-only) and `camera`. Sprites are batched by texture and effect type. Positions are world space; nothing here is interpolated, so move particles in `update` and draw where they are.
+`gpu` also carries `world` (read-only) and `camera()` (the main camera's `CameraView`; to fix something on screen, place it with `camera().screen_to_world`). Sprites are batched by texture and effect type. Positions are world space, on render layer 0; nothing here is interpolated, so move particles in `update` and draw where they are.
 
 ## WGSL Shaders
 
@@ -151,6 +172,8 @@ Located in `src/core/shaders/`:
 | `core/sprite.wgsl` | Sprite rendering, including per-sprite effects |
 | `core/light.wgsl`, `shadow.wgsl`, `raymarch_shadow.wgsl` | Lighting and shadows |
 | `core/trail.wgsl`, `trail_textured.wgsl` | Trails |
+| `core/camera_image.wgsl` | A window camera's own image placed in its viewport |
+| `core/fullscreen_quad.wgsl` | The final composite (and sRGB encoding when the surface is not sRGB) |
 | `post-process/*.wgsl` | Screen-wide effects (one file per effect) |
 
 Basic structure:
@@ -158,7 +181,7 @@ Basic structure:
 ```wgsl
 @vertex
 fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
-    // Transform vertex
+    // The instance's world-space quad, through the camera's globals.view_proj (group 0)
 }
 
 @fragment
@@ -191,7 +214,7 @@ struct Params {          // optional; members f32/vec2/vec3/vec4<f32>, at most 3
 
 fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
   // in.uv: 0..1 across the sprite, in.size: sprite size in texels,
-  // in.screen_pos: pixel position on screen, in.time: game seconds (stops while paused)
+  // in.screen_pos: pixel position in the camera's image, in.time: game seconds (stops while paused)
   let c = sample(in.uv);  // sprite colour; transparent outside the sprite rect
   return vec4<f32>(mix(c.rgb, params.edge, params.amount), c.a);
 }

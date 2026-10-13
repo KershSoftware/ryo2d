@@ -5,7 +5,7 @@
 The engine never runs particles. The scene owns a `ParticleSystem` and drives it itself (see `examples/demos/particles/main.rs`):
 
 1. In `update`: `self.particle_system.update(ctx.world, dt)`. This spawns, simulates, applies attractors, and refreshes the emitter particle counts that `is_finished()` reads. Emitters and attractors act at their `GlobalTransform`: an emitter spawned this step is already placed (inserting a `Transform` places the entity), but one moved by editing its `Transform` this step emits from its old position until the step's propagation.
-2. In `render(gpu: &mut GpuRenderContext)`: `self.particle_system.collect_for_render(gpu.world, gpu.camera, gpu.batch)` (sprites upload when first drawn).
+2. In `render(gpu: &mut GpuRenderContext)`: `self.particle_system.collect_for_render(gpu.world, gpu.batch)` (sprites upload when first drawn). Each particle is a world-space quad centred on its position, `size` world units across, on render layer 0: every camera draws it through its own view.
 
 Particles go into the `render` batch and sort by `z_order` (default 0) with entities, other sprites and trails: at equal z they draw after entities and before trails. Give the particle sprite a lower z to sit behind entities. The UI is drawn last.
 
