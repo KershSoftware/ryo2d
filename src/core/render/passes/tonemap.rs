@@ -2,6 +2,7 @@
 
 use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
 use crate::core::render::context::image_view;
+use crate::core::render::exposure::ExposureGpu;
 use crate::core::render::look::LookUniforms;
 use crate::core::render::{FrameImage, RenderContext, RenderPass, pass_ids};
 use crate::core::shaders::OutputBuffer;
@@ -121,6 +122,7 @@ struct TonemapGpu {
   uniforms: wgpu::Buffer,
   lut: LutTexture,
   lut_sampler: wgpu::Sampler,
+  exposure: ExposureGpu,
   pipeline: wgpu::RenderPipeline,
   bind_groups: BindGroupCache,
 }
@@ -169,6 +171,16 @@ impl TonemapGpu {
           binding: 3,
           visibility: wgpu::ShaderStages::FRAGMENT,
           ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+          count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+          binding: 4,
+          visibility: wgpu::ShaderStages::FRAGMENT,
+          ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+          },
           count: None,
         },
       ],
@@ -229,6 +241,7 @@ impl TonemapGpu {
       uniforms,
       lut: LutTexture::new(device, queue),
       lut_sampler,
+      exposure: ExposureGpu::new(device),
       pipeline,
       bind_groups: BindGroupCache::default(),
     }
@@ -241,6 +254,8 @@ impl TonemapGpu {
 #[derive(Default)]
 pub(super) struct Tonemap {
   gpu: Option<TonemapGpu>,
+  /// The real time of the last frame, for the exposure's speed
+  last_time: Option<f32>,
 }
 
 impl RenderPass for Tonemap {
@@ -263,6 +278,11 @@ impl RenderPass for Tonemap {
       Some(gpu) if gpu.format == format && gpu.size == size => gpu,
       slot => slot.insert(TonemapGpu::new(device, queue, format, size)),
     };
+    let time = ctx.scene.time;
+    let dt = self
+      .last_time
+      .map_or(0.0, |last| (time - last).clamp(0.0, 0.25));
+    self.last_time = Some(time);
     let lut_size = gpu
       .lut
       .sync(device, queue, ctx.scene.look.grading.lut.as_ref());
@@ -271,6 +291,7 @@ impl RenderPass for Tonemap {
       0,
       bytemuck::bytes_of(&ctx.scene.look.uniforms(lut_size)),
     );
+    let look = &ctx.scene.look;
     let RenderContext {
       encoder,
       targets,
@@ -279,6 +300,15 @@ impl RenderPass for Tonemap {
       ..
     } = ctx;
     let source = image_view(targets, stages, *image).clone();
+    gpu.exposure.measure(
+      device,
+      queue,
+      encoder,
+      &source,
+      size,
+      look.auto_exposure.as_ref(),
+      dt,
+    );
     let group = gpu.bind_groups.get(
       device,
       "Tonemap Bind Group",
@@ -288,6 +318,7 @@ impl RenderPass for Tonemap {
         Bound::Buffer(gpu.uniforms.clone()),
         Bound::View(gpu.lut.view.clone()),
         Bound::Sampler(gpu.lut_sampler.clone()),
+        Bound::Buffer(gpu.exposure.state().clone()),
       ],
     );
     {

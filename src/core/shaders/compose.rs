@@ -75,6 +75,9 @@ pub(crate) const TONEMAP: &str = concat!(
   include_str!("core/tonemap.wgsl"),
 );
 
+/// Auto-exposure: the scene image's luminance histogram and stored exposure
+pub(crate) const EXPOSURE: &str = include_str!("core/exposure.wgsl");
+
 /// The `fade` post-process effect
 pub(crate) const FADE: &str = concat!(
   include_str!("include/fullscreen.wgsl"),
@@ -170,6 +173,7 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("composite", COMPOSITE),
     ("camera_image", CAMERA_IMAGE),
     ("tonemap", TONEMAP),
+    ("exposure", EXPOSURE),
     ("fade", FADE),
     ("color_tint", COLOR_TINT),
     ("vignette", VIGNETTE),

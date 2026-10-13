@@ -482,6 +482,10 @@ impl Scene for Busy {
     ));
     ctx.effects().set_vignette(0.4);
     ctx.effects().set_bloom(0.6);
+    let lut = SpriteHandle::from_sprite(ColorLut::identity_strip(16), "busy-lut");
+    let mut look = ctx.look();
+    look.grading.lut = ColorLut::from_sprite(&lut).ok();
+    look.auto_exposure = Some(AutoExposure::default());
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {

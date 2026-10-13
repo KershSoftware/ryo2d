@@ -189,8 +189,8 @@ pub mod prelude {
 
   // Render pipeline
   pub use crate::core::render::{
-    ColorGrading, ColorLut, FrameInfo, Look, LutError, PassScope, RenderContext, RenderPass,
-    RenderPipeline, RenderPipelineError, Tonemap, pass_ids,
+    AutoExposure, ColorGrading, ColorLut, FrameInfo, Look, LutError, PassScope, RenderContext,
+    RenderPass, RenderPipeline, RenderPipelineError, Tonemap, pass_ids,
   };
 
   // Workspace and config

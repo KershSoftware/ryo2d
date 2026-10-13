@@ -13,12 +13,23 @@ struct Look {
     lift: vec4<f32>,
     inv_gamma: vec4<f32>,
     gain: vec4<f32>,
+    // x: 1 when auto-exposure adds its stored EV
+    auto_exposure: vec4<f32>,
 }
+
+struct Exposure {
+    ev: f32,
+    ready: u32,
+    pad0: u32,
+    pad1: u32,
+}
+
 
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> look: Look;
 @group(0) @binding(2) var lut: texture_3d<f32>;
 @group(0) @binding(3) var lut_sampler: sampler;
+@group(0) @binding(4) var<storage, read> exposure: Exposure;
 
 // Negative light as none, infinity as the largest value f16 holds
 fn finite(c: vec3<f32>) -> vec3<f32> {
@@ -122,7 +133,8 @@ fn graded(display: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
     let texel = textureLoad(scene, vec2<i32>(in.position.xy), 0);
-    let exposed = finite(texel.rgb) * exp2(look.curve.x);
+    let ev = look.curve.x + select(0.0, exposure.ev, look.auto_exposure.x > 0.5);
+    let exposed = finite(texel.rgb) * exp2(ev);
     let display = graded(curve(balanced(exposed)));
     return vec4<f32>(display, clamp(texel.a, 0.0, 1.0));
 }

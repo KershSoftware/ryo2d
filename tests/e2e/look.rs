@@ -348,3 +348,105 @@ fn infinite_emission_shows_white_and_leaves_the_rest_alone() {
     "no black (NaN) pixels"
   );
 }
+
+fn auto() -> Look {
+  Look {
+    auto_exposure: Some(AutoExposure::default()),
+    ..Look::default()
+  }
+}
+
+#[test]
+fn auto_exposure_starts_at_its_target() {
+  let Some(pixel) = shown(square([39, 39, 39, 255], auto())) else {
+    return;
+  };
+  // 0.0203 linear, brought to mid-grey (0.18, sRGB 118) on the first frame,
+  // within the histogram's quarter-stop bins
+  assert!(pixel[0].abs_diff(118) <= 4, "{pixel:?}");
+}
+
+#[test]
+fn auto_exposure_stops_at_max_ev() {
+  let Some(pixel) = shown(square([3, 3, 3, 255], auto())) else {
+    return;
+  };
+  // 0.00091 linear wants 7.6 EV; at the 4 EV limit it shows 0.0146 (sRGB 32)
+  assert!(pixel[0].abs_diff(32) <= 3, "{pixel:?}");
+}
+
+#[test]
+fn auto_exposure_eases_toward_a_darker_scene() {
+  // A dark square under a mid-grey one, which is hidden at frame 10
+  let scene = Square {
+    color: [39, 39, 39, 255],
+    look: auto(),
+    setup: Some(Box::new(|ctx: &mut SceneContext| {
+      let grey = SpriteHandle::from_sprite(
+        Sprite::solid_rect(32, 32, 118, 118, 118, 255),
+        "look-auto-grey",
+      );
+      ctx.world.spawn((
+        Transform::from_xy(16.0, 16.0),
+        Renderable::sprite(grey).with_z_order(1),
+      ));
+    })),
+  };
+  let Some(mut engine) = start(scene) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  let world = engine.world_mut();
+  let mut query = world.query::<&mut Renderable>();
+  for mut renderable in query.iter_mut(world) {
+    if renderable.z_order == 1 {
+      renderable.visible = false;
+    }
+  }
+  engine.step_frames(1).unwrap();
+  let soon = engine.frame().unwrap().get_pixel(16, 16).0[0];
+  engine.step_frames(90).unwrap();
+  let later = engine.frame().unwrap().get_pixel(16, 16).0[0];
+  // One frame moves 3 EV/s x 1/60 s: still about as dark as the square is
+  assert!(soon < 50, "after a frame: {soon}");
+  assert!(
+    later.abs_diff(118) <= 4,
+    "after a second and a half: {later}"
+  );
+}
+
+#[test]
+fn auto_exposure_ignores_overflowed_light() {
+  // The dark square plus an 8x8 pile-up past f16's range (6% of the frame)
+  let scene = Square {
+    color: [39, 39, 39, 255],
+    look: auto(),
+    setup: Some(Box::new(|ctx: &mut SceneContext| {
+      let blaze = SpriteHandle::from_sprite(
+        Sprite::solid_rect(8, 8, 255, 255, 255, 255),
+        "look-auto-blaze",
+      );
+      for z in 1..=2 {
+        ctx.world.spawn((
+          Transform::from_xy(4.0, 4.0),
+          Renderable::sprite(blaze.clone())
+            .with_z_order(z)
+            .with_blend(BlendMode::Additive)
+            .with_emission(65504.0),
+        ));
+      }
+    })),
+  };
+  // Away from the blaze
+  let Some(pixel) = shown_at(scene, 24, 24) else {
+    return;
+  };
+  assert!(pixel[0].abs_diff(118) <= 4, "{pixel:?}");
+}
+
+/// The pixel at (`x`, `y`) after two frames.
+fn shown_at(scene: impl Scene + 'static, x: u32, y: u32) -> Option<[u8; 4]> {
+  let mut engine = start(scene)?;
+  engine.step_frames(2).unwrap();
+  Some(engine.frame().unwrap().get_pixel(x, y).0)
+}

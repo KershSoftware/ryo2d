@@ -28,7 +28,7 @@ pub(crate) enum Bound {
 }
 
 /// The most bindings a cached bind group has.
-const MAX_BINDINGS: usize = 4;
+const MAX_BINDINGS: usize = 5;
 
 /// More entries than any pass needs means stale views piled up: start over.
 const MAX_CACHED: usize = 64;

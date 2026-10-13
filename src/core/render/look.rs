@@ -20,6 +20,38 @@ pub struct Look {
   pub tonemap: Tonemap,
   /// Colour grading (default neutral)
   pub grading: ColorGrading,
+  /// Exposure that follows the scene (default off); added to `exposure`
+  pub auto_exposure: Option<AutoExposure>,
+}
+
+/// Exposure that follows the scene's brightness, measured on the GPU each
+/// frame: the average luminance, without the darkest and brightest 5%, is
+/// brought to mid-grey within `min_ev..=max_ev`, plus `compensation`. It
+/// starts at its target and then moves at its speeds, in real time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoExposure {
+  /// The least exposure it uses, in EV (default -4)
+  pub min_ev: f32,
+  /// The most, in EV (default 4)
+  pub max_ev: f32,
+  /// Added to what it measures, in EV: positive brightens (default 0)
+  pub compensation: f32,
+  /// How fast it brightens, in EV per second (default 3)
+  pub speed_up: f32,
+  /// How fast it darkens, in EV per second (default 1)
+  pub speed_down: f32,
+}
+
+impl Default for AutoExposure {
+  fn default() -> Self {
+    Self {
+      min_ev: -4.0,
+      max_ev: 4.0,
+      compensation: 0.0,
+      speed_up: 3.0,
+      speed_down: 1.0,
+    }
+  }
 }
 
 impl Default for Look {
@@ -28,6 +60,7 @@ impl Default for Look {
       exposure: 0.0,
       tonemap: Tonemap::default(),
       grading: ColorGrading::default(),
+      auto_exposure: None,
     }
   }
 }
@@ -294,10 +327,12 @@ pub(crate) struct LookUniforms {
   /// 1 / gamma
   pub(crate) inv_gamma: [f32; 4],
   pub(crate) gain: [f32; 4],
+  /// x: 1 when auto-exposure adds its stored EV
+  pub(crate) auto: [f32; 4],
 }
 
 /// `v` if finite, else `default`, then clamped.
-fn num(v: f32, default: f32, min: f32, max: f32) -> f32 {
+pub(crate) fn num(v: f32, default: f32, min: f32, max: f32) -> f32 {
   if v.is_finite() {
     v.clamp(min, max)
   } else {
@@ -371,6 +406,16 @@ impl Look {
       lift,
       inv_gamma: [1.0 / gamma[0], 1.0 / gamma[1], 1.0 / gamma[2], 0.0],
       gain,
+      auto: [
+        if self.auto_exposure.is_some() {
+          1.0
+        } else {
+          0.0
+        },
+        0.0,
+        0.0,
+        0.0,
+      ],
     }
   }
 }
