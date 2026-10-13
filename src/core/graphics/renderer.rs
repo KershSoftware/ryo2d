@@ -766,7 +766,12 @@ impl WgpuRenderer {
       transition: scene.overlay.1 > TRANSITION_VISIBLE,
       capture: capture_path.is_some() || self.keep_scene,
     };
-    self.camera_images.sync(&self.device, scene.cameras);
+    let sprites = scene.sprites;
+    self
+      .camera_images
+      .sync(&self.device, scene.cameras, |target| {
+        sprites.target_image(target)
+      });
     let mut encoder = self
       .device
       .create_command_encoder(&wgpu::CommandEncoderDescriptor {

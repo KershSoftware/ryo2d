@@ -43,8 +43,9 @@ use super::material::SpriteShader;
 use super::transform::Anchor;
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Vec2;
-use crate::core::graphics::TileDirection;
+use crate::core::graphics::{RenderTarget, Sprite, TileDirection};
 use crate::core::ui::Color;
+use std::sync::OnceLock;
 
 /// Configuration for a drop shadow effect on a sprite.
 ///
@@ -471,6 +472,9 @@ pub struct Renderable {
   ///
   /// Default: `Anchor::Center`.
   pub anchor: Anchor,
+  /// A render target drawn instead of `sprite`, at the target's size (see
+  /// [`render_target`](Self::render_target))
+  pub target: Option<RenderTarget>,
 }
 
 impl Renderable {
@@ -490,6 +494,23 @@ impl Renderable {
       blob_shadow: None,
       contact_shadow: None,
       anchor: Anchor::Center,
+      target: None,
+    }
+  }
+
+  /// Show a render target: what its camera saw this frame, at the target's
+  /// size, placed, tinted, faded, scaled, turned and flipped like a sprite.
+  ///
+  /// A camera never draws a renderable showing its own target.
+  pub fn render_target(target: RenderTarget) -> Self {
+    // Stands in for the sprite; the target is drawn instead
+    static PLACEHOLDER: OnceLock<SpriteHandle> = OnceLock::new();
+    let placeholder = PLACEHOLDER.get_or_init(|| {
+      SpriteHandle::from_sprite(Sprite::solid_rect(1, 1, 0, 0, 0, 0), "render target")
+    });
+    Renderable {
+      target: Some(target),
+      ..Self::sprite(placeholder.clone())
     }
   }
 
@@ -512,6 +533,7 @@ impl Renderable {
       blob_shadow: None,
       contact_shadow: None,
       anchor: Anchor::Center,
+      target: None,
     }
   }
 

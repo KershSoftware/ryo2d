@@ -1036,10 +1036,11 @@ mod tests {
     let mut e = engine();
     e.frame(Some(Duration::from_millis(40)));
     assert_eq!(e.world().resource::<Steps>().0, 2);
-    let mut query = e.world_mut().query::<(
+    // The mover's (the main camera is interpolated too)
+    let mut query = e.world_mut().query_filtered::<(
       &crate::core::ecs::GlobalTransform,
       &crate::core::ecs::PreviousGlobalTransform,
-    )>();
+    ), With<Mover>>();
     let (global, prev) = query.iter(e.world()).next().map(|(g, p)| (*g, *p)).unwrap();
     assert!((global.translation().x - 20.0).abs() < 1e-4);
     assert!(

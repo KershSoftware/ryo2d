@@ -34,7 +34,9 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
+use super::RenderTarget;
 use super::camera_gpu::CameraUniforms;
+use super::render_targets::RenderTargets;
 use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Entity, Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
@@ -932,6 +934,10 @@ impl SpriteGpuRenderer {
       self.atlas.remove(id);
     }
     let entry = self.registry.get(id)?;
+    // Render targets are drawn into by cameras, never uploaded
+    if matches!(entry.source, TextureSource::Target) {
+      return self.atlas.lookup(id);
+    }
     let slot = self.atlas.slot(
       device,
       queue,
@@ -1148,6 +1154,34 @@ impl SpriteGpuRenderer {
 
   /// The texture a sprite draws with, registered on first use; its pixels
   /// are uploaded when a frame draws it.
+  /// Make the GPU textures of `targets` match it: create the new ones,
+  /// recreate the resized ones and free the removed ones.
+  pub(crate) fn sync_targets(&mut self, device: &wgpu::Device, targets: &RenderTargets) {
+    for id in self
+      .registry
+      .retain_targets(|target| targets.contains(target))
+    {
+      self.atlas.remove(id);
+    }
+    for (target, size) in targets.iter() {
+      let id = self.registry.target(target, size.0, size.1);
+      self.atlas.sync_target(device, id, target, size);
+    }
+  }
+
+  /// The id sprites showing `target` draw with, once its texture exists.
+  pub(crate) fn target_texture(&self, target: RenderTarget) -> Option<TextureId> {
+    self.registry.target_id(target)
+  }
+
+  /// `target`'s texture and the view cameras draw into.
+  pub(crate) fn target_image(
+    &self,
+    target: RenderTarget,
+  ) -> Option<(&wgpu::Texture, &wgpu::TextureView)> {
+    self.atlas.target(target)
+  }
+
   pub(crate) fn texture_of(&mut self, sprite: &SpriteHandle) -> TextureId {
     self.registry.sprite(sprite, self.frame)
   }

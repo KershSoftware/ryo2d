@@ -3,6 +3,7 @@
 use crate::core::audio::Audio;
 use crate::core::ecs::World;
 use crate::core::ecs::world_ext::despawn_game_entities;
+use crate::core::graphics::RenderTargets;
 use crate::core::graphics::camera_mut::reset_main_camera;
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::clear_messages;
@@ -21,6 +22,10 @@ pub(super) fn execute_cleanup(cleanup: SceneCleanup, world: &mut World, audio: &
   if cleanup.contains(SceneCleanup::WORLD) {
     despawn_game_entities(world);
     forget_despawned_tilemaps(world);
+    // The cameras and sprites using them are gone
+    if let Some(mut targets) = world.get_resource_mut::<RenderTargets>() {
+      targets.clear();
+    }
   }
   if cleanup.contains(SceneCleanup::CAMERA) {
     reset_main_camera(world);

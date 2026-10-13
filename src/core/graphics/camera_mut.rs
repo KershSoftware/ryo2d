@@ -7,6 +7,7 @@ use super::camera::CameraShake;
 use super::camera2d::{
   Camera2d, CameraBounds, CameraTarget, CameraView, MainCamera, Projection, Viewport,
 };
+use super::render_targets::RenderTargets;
 use super::screen::ScreenMapping;
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::transform::{GlobalTransform, Interpolated, PreviousGlobalTransform};
@@ -103,22 +104,32 @@ type ViewInputs = (
   &'static mut CameraView,
 );
 
+/// The size of what `target` draws on: screen space for the window, the
+/// render target's pixels for a texture (screen space while it is missing).
+fn target_size(target: CameraTarget, screen: Vec2, targets: Option<&RenderTargets>) -> Vec2 {
+  match target {
+    CameraTarget::Window => screen,
+    CameraTarget::Texture(target) => targets
+      .and_then(|targets| targets.size(target))
+      .map_or(screen, |(width, height)| {
+        Vec2::new(width as f32, height as f32)
+      }),
+  }
+}
+
 /// `PostUpdateSet::Camera`, after the shake: every camera's view from its
 /// interpolated transform.
 pub(crate) fn camera_view_system(
   time: Res<Time>,
   mapping: Option<Res<ScreenMapping>>,
+  targets: Option<Res<RenderTargets>>,
   mut cameras: Query<ViewInputs>,
 ) {
   let alpha = time.fixed.overstep_fraction();
   let screen = mapping.map_or(Vec2::ONE, |mapping| mapping.screen_size());
   for (camera, global, previous, shake, mut view) in &mut cameras {
     let at = render_global(global, previous, alpha);
-    let target = match camera.target {
-      CameraTarget::Window => screen,
-      // Texture targets get their size with render targets
-      CameraTarget::Texture(_) => screen,
-    };
+    let target = target_size(camera.target, screen, targets.as_deref());
     let shake = shake.map_or(Vec2::ZERO, CameraShake::offset);
     *view = CameraView::compute(at.translation(), at.rotation(), camera, shake, target);
   }
@@ -303,11 +314,14 @@ impl<'w> CameraMut<'w> {
       .world
       .get::<CameraShake>(self.entity)
       .map_or(Vec2::ZERO, CameraShake::offset);
-    let target = self
+    let screen = self
       .world
       .get_resource::<ScreenMapping>()
       .map_or(Vec2::ONE, ScreenMapping::screen_size);
-    CameraView::compute(position, rotation, &self.camera(), shake, target)
+    let camera = self.camera();
+    let targets = self.world.get_resource::<RenderTargets>();
+    let target = target_size(camera.target, screen, targets);
+    CameraView::compute(position, rotation, &camera, shake, target)
   }
 
   /// A world point on the screen.

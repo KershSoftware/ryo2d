@@ -6,7 +6,7 @@
 
 use super::CameraDraw;
 use crate::core::ecs::Vec2;
-use crate::core::graphics::{RenderLayers, SlotPage, SpriteInstance, TextureId};
+use crate::core::graphics::{RenderLayers, RenderTarget, SlotPage, SpriteInstance, TextureId};
 
 /// What a drawable is, which breaks ties between equal z (in declaration order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -68,6 +68,9 @@ pub(crate) struct DrawSprite {
   pub(crate) instance: SpriteInstance,
   /// The cameras on these layers draw it
   pub(crate) layers: RenderLayers,
+  /// The render target it shows (or its entity does): never drawn by the
+  /// camera drawing into that target
+  pub(crate) shows: Option<RenderTarget>,
   /// The world box its quad stays inside at any rotation
   pub(crate) min: Vec2,
   pub(crate) max: Vec2,
@@ -105,10 +108,12 @@ impl DrawList {
     shading: SpriteShading,
     instance: SpriteInstance,
   ) {
-    self.push_sprite_in(kind, z, texture, shading, instance, RenderLayers::default());
+    let layers = RenderLayers::default();
+    self.push_sprite_in(kind, z, texture, shading, instance, (layers, None));
   }
 
-  /// [`push_sprite`](Self::push_sprite) for the cameras on `layers`.
+  /// [`push_sprite`](Self::push_sprite) for the cameras on `layers`, from
+  /// an entity that shows the render target `shows`.
   pub(crate) fn push_sprite_in(
     &mut self,
     kind: DrawKind,
@@ -116,7 +121,7 @@ impl DrawList {
     texture: TextureId,
     shading: SpriteShading,
     instance: SpriteInstance,
-    layers: RenderLayers,
+    (layers, shows): (RenderLayers, Option<RenderTarget>),
   ) {
     let payload = DrawPayload::Sprite(self.sprites.len());
     let (min, max) = reach(&instance);
@@ -125,6 +130,7 @@ impl DrawList {
       shading,
       instance,
       layers,
+      shows,
       min,
       max,
     });
@@ -189,7 +195,7 @@ impl DrawList {
   }
 
   /// The lit items `camera` draws, in order: those on its layers, and of
-  /// the sprites only those inside its view.
+  /// the sprites only those inside its view that do not show its target.
   pub(crate) fn items_for<'s>(
     &'s self,
     camera: &'s CameraDraw,
@@ -211,7 +217,9 @@ impl DrawList {
   fn sees(&self, camera: &CameraDraw, item: &DrawItem) -> bool {
     match item.payload {
       DrawPayload::Sprite(index) => self.sprites.get(index).is_some_and(|sprite| {
-        sprite.layers.intersects(&camera.layers) && camera.view.is_visible(sprite.min, sprite.max)
+        sprite.layers.intersects(&camera.layers)
+          && camera.view.is_visible(sprite.min, sprite.max)
+          && (sprite.shows.is_none() || sprite.shows != camera.target)
       }),
       DrawPayload::Trail { layers, .. } => layers.intersects(&camera.layers),
     }

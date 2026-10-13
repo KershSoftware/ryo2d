@@ -116,7 +116,7 @@ pub mod prelude {
   // Cameras
   pub use crate::core::graphics::{
     Camera2d, CameraBounds, CameraClear, CameraMut, CameraShake, CameraTarget, CameraView,
-    MainCamera, Projection, RenderLayers, RenderTarget, Viewport,
+    MainCamera, Projection, RenderLayers, RenderTarget, RenderTargets, Viewport,
   };
 
   // Tiled rendering

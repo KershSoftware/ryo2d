@@ -2,7 +2,6 @@
 
 use glam::{Mat4, Vec2, Vec3};
 
-use super::TextureId;
 use crate::core::ecs::{Component, Transform};
 use crate::core::ui::Color;
 
@@ -78,13 +77,15 @@ impl Viewport {
 pub enum CameraTarget {
   /// The window (screen space)
   Window,
-  /// An offscreen image, which sprites can then draw
+  /// A render target, which sprites can then show; the camera fills it,
+  /// one world unit per target pixel at zoom 1 with `ScreenUnits`
   Texture(RenderTarget),
 }
 
-/// An offscreen image cameras draw into (made by `RenderTargets`).
+/// An offscreen image cameras draw into and sprites show (made by
+/// [`RenderTargets`](super::render_targets::RenderTargets)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RenderTarget(pub(crate) TextureId);
+pub struct RenderTarget(pub(crate) u32);
 
 /// What a camera's rectangle is cleared to before it draws.
 #[derive(Debug, Clone, Copy, PartialEq)]

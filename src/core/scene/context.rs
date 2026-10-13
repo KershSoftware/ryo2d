@@ -8,7 +8,7 @@ use crate::core::ecs::{
   Bundle, Entity, IntoScheduleConfigs, Message, Messages, Mut, Mutable, Resource, ScheduleSystem,
   World, WorldExt,
 };
-use crate::core::graphics::{CameraMut, ScreenMapping};
+use crate::core::graphics::{CameraMut, RenderTargets, ScreenMapping};
 use crate::core::input::Input;
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::{SceneMessages, register_message};
@@ -158,6 +158,12 @@ impl SceneContext<'_> {
   /// pops unless the scene removes it.
   pub fn render_pipeline(&mut self) -> Mut<'_, RenderPipeline> {
     self.world.resource_mut::<RenderPipeline>()
+  }
+
+  /// The render targets: textures cameras render into and sprites show.
+  /// Changes reach the GPU at the next frame.
+  pub fn render_targets(&mut self) -> Mut<'_, RenderTargets> {
+    self.world.get_resource_or_init::<RenderTargets>()
   }
 
   /// Pending window changes (resolution, display mode, UI scale), applied

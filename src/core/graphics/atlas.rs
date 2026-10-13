@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use etagere::{AllocId, BucketedAtlasAllocator, size2};
 
+use super::RenderTarget;
 use super::texture_registry::TextureId;
 
 /// Edge length of an atlas page in pixels.
@@ -41,6 +42,8 @@ pub(crate) enum SlotPage {
   Atlas(usize),
   /// Id of a standalone texture (images too large for the atlas)
   Standalone(usize),
+  /// A render target's texture
+  Target(RenderTarget),
 }
 
 /// Where an image lives: a page index and its rect in normalized page UVs.
@@ -295,6 +298,16 @@ struct Page {
   bind_group: wgpu::BindGroup,
 }
 
+/// A render target's texture: cameras draw into `view` (sRGB, blending in
+/// linear); sprites sample it through `bind_group` as raw sRGB bytes, like
+/// the pages.
+struct TargetPage {
+  key: TextureId,
+  texture: wgpu::Texture,
+  view: wgpu::TextureView,
+  bind_group: wgpu::BindGroup,
+}
+
 struct Standalone {
   key: TextureId,
   texture: wgpu::Texture,
@@ -314,6 +327,8 @@ pub(crate) struct TextureAtlas {
   standalone: HashMap<usize, Standalone>,
   standalone_ids: HashMap<TextureId, usize>,
   next_standalone: usize,
+  targets: HashMap<RenderTarget, TargetPage>,
+  target_ids: HashMap<TextureId, RenderTarget>,
   bind_layout: Arc<wgpu::BindGroupLayout>,
   sampler: Arc<wgpu::Sampler>,
 }
@@ -330,6 +345,8 @@ impl TextureAtlas {
       standalone: HashMap::new(),
       standalone_ids: HashMap::new(),
       next_standalone: 0,
+      targets: HashMap::new(),
+      target_ids: HashMap::new(),
       bind_layout: layout,
       sampler,
     }
@@ -399,6 +416,12 @@ impl TextureAtlas {
 
   /// Where `key` lives now, without uploading it or marking it used.
   pub(crate) fn lookup(&self, key: TextureId) -> Option<AtlasSlot> {
+    if let Some(&target) = self.target_ids.get(&key) {
+      return Some(AtlasSlot {
+        page: SlotPage::Target(target),
+        uv: [0.0, 0.0, 1.0, 1.0],
+      });
+    }
     match self.standalone_ids.get(&key) {
       Some(id) => self.standalone.get(id).map(|s| s.slot),
       None => self.layout.get(key),
@@ -407,6 +430,10 @@ impl TextureAtlas {
 
   /// Forget `key`, freeing its atlas rect or standalone texture.
   pub(crate) fn remove(&mut self, key: TextureId) {
+    if let Some(target) = self.target_ids.remove(&key) {
+      self.targets.remove(&target);
+      return;
+    }
     if let Some(id) = self.standalone_ids.get(&key).copied() {
       self.remove_standalone(id);
     }
@@ -419,12 +446,89 @@ impl TextureAtlas {
     self.pages.clear();
     self.standalone.clear();
     self.standalone_ids.clear();
+    self.targets.clear();
+    self.target_ids.clear();
+  }
+
+  /// Give `target` (registered as `key`) a `width`x`height` texture,
+  /// recreated when its size changed.
+  pub(crate) fn sync_target(
+    &mut self,
+    device: &wgpu::Device,
+    key: TextureId,
+    target: RenderTarget,
+    (width, height): (u32, u32),
+  ) {
+    if let Some(page) = self.targets.get(&target)
+      && page.key == key
+      && (page.texture.width(), page.texture.height()) == (width, height)
+    {
+      return;
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Render Target"),
+      size: wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      // Lighting copies the camera's image before lighting it in place
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+        | wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::COPY_SRC,
+      view_formats: &[PAGE_FORMAT],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
+      format: Some(PAGE_FORMAT),
+      ..Default::default()
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("Render Target"),
+      layout: &self.bind_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(&sampled),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::Sampler(&self.sampler),
+        },
+      ],
+    });
+    self.target_ids.insert(key, target);
+    self.targets.insert(
+      target,
+      TargetPage {
+        key,
+        texture,
+        view,
+        bind_group,
+      },
+    );
+  }
+
+  /// `target`'s texture and the view cameras draw into.
+  pub(crate) fn target(
+    &self,
+    target: RenderTarget,
+  ) -> Option<(&wgpu::Texture, &wgpu::TextureView)> {
+    self
+      .targets
+      .get(&target)
+      .map(|page| (&page.texture, &page.view))
   }
 
   pub(crate) fn bind_group(&self, page: SlotPage) -> Option<&wgpu::BindGroup> {
     match page {
       SlotPage::Atlas(i) => self.pages.get(i).map(|p| &p.bind_group),
       SlotPage::Standalone(i) => self.standalone.get(&i).map(|s| &s.bind_group),
+      SlotPage::Target(target) => self.targets.get(&target).map(|t| &t.bind_group),
     }
   }
 
@@ -433,6 +537,7 @@ impl TextureAtlas {
     match page {
       SlotPage::Atlas(i) => self.pages.get(i).map(|p| &p.texture),
       SlotPage::Standalone(i) => self.standalone.get(&i).map(|s| &s.texture),
+      SlotPage::Target(target) => self.targets.get(&target).map(|t| &t.texture),
     }
   }
 

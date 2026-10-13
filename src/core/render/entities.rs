@@ -14,22 +14,28 @@
 //! entities within their layer. Composite tiles draw at their own `z_order`;
 //! on equal z they follow the entities.
 //!
+//! A renderable showing a render target draws the target's texture at the
+//! target's size; the camera drawing into that target skips it.
+//!
 //! Positions come from `GlobalTransform`, interpolated by the frame's alpha
 //! for entities with `PreviousGlobalTransform`. A single sprite is placed by
 //! its `Renderable::anchor`; tiled runs and composite parts are laid out from
 //! the entity's position.
 
+use std::collections::HashSet;
+
 use super::{CameraDraw, DrawKind, DrawList, SpriteShading};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{
-  GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable, ShaderHandle,
-  ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort,
+  Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable,
+  ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort,
 };
 use crate::core::graphics::TileDirection;
 use crate::core::graphics::sprite_gpu::effective_shader;
 use crate::core::graphics::{
-  CompositeTile, RenderLayers, Sprite, SpriteGpuRenderer, SpriteInstance, TextureId,
+  CompositeTile, RenderLayers, RenderTarget, RenderTargets, Sprite, SpriteGpuRenderer,
+  SpriteInstance, TextureId,
 };
 use crate::core::ui::Color;
 
@@ -84,6 +90,7 @@ struct EntityFrame {
 
 /// What a single-sprite entity is drawn from.
 type DrawableItem = (
+  Entity,
   &'static Renderable,
   &'static GlobalTransform,
   Option<&'static PreviousGlobalTransform>,
@@ -95,6 +102,7 @@ type DrawableItem = (
 /// One entity's components, borrowed from the world for the frame.
 #[derive(Clone, Copy)]
 struct Drawable<'w> {
+  entity: Entity,
   renderable: &'w Renderable,
   global: &'w GlobalTransform,
   previous: Option<&'w PreviousGlobalTransform>,
@@ -105,7 +113,10 @@ struct Drawable<'w> {
 
 /// Turns the world's renderable entities into draw list sprites.
 #[derive(Default)]
-pub(crate) struct EntityDrawer;
+pub(crate) struct EntityDrawer {
+  /// Entities already warned about showing a camera its own target
+  warned: HashSet<Entity>,
+}
 
 impl EntityDrawer {
   /// Push the frame's entities onto `list` as world-space quads, returning
@@ -134,25 +145,28 @@ impl EntityDrawer {
     // plain within a layer) becomes the submission sequence
     let mut items: Vec<(DrawOrder, Drawable<'_>)> = drawables
       .iter(world)
-      .filter(|(renderable, ..)| renderable.visible)
-      .map(|(renderable, global, previous, material, y_sort, layers)| {
-        let order = match y_sort {
-          Some(y_sort) => DrawOrder::y_sorted(
-            renderable.z_order,
-            y_sort_key(y_sort, renderable, global.translation().y),
-          ),
-          None => DrawOrder::plain(renderable.z_order),
-        };
-        let drawable = Drawable {
-          renderable,
-          global,
-          previous,
-          material,
-          y_sort,
-          layers: layers.copied().unwrap_or_default(),
-        };
-        (order, drawable)
-      })
+      .filter(|(_, renderable, ..)| renderable.visible)
+      .map(
+        |(entity, renderable, global, previous, material, y_sort, layers)| {
+          let order = match y_sort {
+            Some(y_sort) => DrawOrder::y_sorted(
+              renderable.z_order,
+              y_sort_key(y_sort, renderable, global.translation().y),
+            ),
+            None => DrawOrder::plain(renderable.z_order),
+          };
+          let drawable = Drawable {
+            entity,
+            renderable,
+            global,
+            previous,
+            material,
+            y_sort,
+            layers: layers.copied().unwrap_or_default(),
+          };
+          (order, drawable)
+        },
+      )
       .collect();
     // Stable, so plain sprites keep their order
     items.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -164,12 +178,27 @@ impl EntityDrawer {
       queue,
       list,
       cameras,
+      targets: world.get_resource::<RenderTargets>(),
       layers: RenderLayers::default(),
+      shows: None,
     };
     for (_, drawable) in &items {
+      let shows = drawable.renderable.target;
+      if let Some(target) = shows
+        && cameras.iter().any(|camera| camera.target == Some(target))
+        && self.warned.insert(drawable.entity)
+      {
+        crate::engine_warn!(
+          module: "Render",
+          "{:?} shows the render target its camera draws into; that camera skips it",
+          drawable.entity
+        );
+      }
       out.layers = drawable.layers;
+      out.shows = shows;
       collect_entity(&frame, drawable, &mut out);
     }
+    out.shows = None;
     for (global, previous, composite, layers) in composites.iter(world) {
       out.layers = layers.copied().unwrap_or_default();
       collect_composite(&frame, global, previous, composite, &mut out);
@@ -245,6 +274,16 @@ impl<'a> Source<'a> {
     }
   }
 
+  /// A render target's texture `id`, `width` by `height` pixels.
+  fn target(id: TextureId, (width, height): (u32, u32)) -> Source<'static> {
+    Source {
+      sprite: None,
+      width,
+      height,
+      id: Some(Some(id)),
+    }
+  }
+
   /// The shadow ellipse drawn `width` by `height` pixels (before zoom).
   fn ellipse(width: u32, height: u32) -> Source<'static> {
     Source {
@@ -304,11 +343,20 @@ struct Emitter<'a> {
   /// Quads none of these cameras on `layers` can see are skipped (and
   /// never uploaded)
   cameras: &'a [CameraDraw],
-  /// The layers of the entity being drawn
+  /// The render targets' sizes
+  targets: Option<&'a RenderTargets>,
+  /// The layers of the entity being drawn, and the render target it shows
   layers: RenderLayers,
+  shows: Option<RenderTarget>,
 }
 
 impl Emitter<'_> {
+  /// What showing `target` draws from, once its texture exists.
+  fn target_source(&self, target: RenderTarget) -> Option<Source<'static>> {
+    let size = self.targets?.size(target)?;
+    Some(Source::target(self.gpu.target_texture(target)?, size))
+  }
+
   /// The shared white ellipse texture, uploaded if need be. One texture for
   /// every shadow: size comes from scaling, colour and opacity from the tint.
   fn ellipse_texture(&mut self) -> Option<TextureId> {
@@ -389,9 +437,14 @@ impl Emitter<'_> {
       }
       (None, None) => SpriteShading::Plain,
     };
-    self
-      .list
-      .push_sprite_in(DrawKind::Entity, z, texture, shading, instance, self.layers);
+    self.list.push_sprite_in(
+      DrawKind::Entity,
+      z,
+      texture,
+      shading,
+      instance,
+      (self.layers, self.shows),
+    );
   }
 }
 
@@ -429,7 +482,14 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
   let (pivot_x, pivot_y) = renderable.anchor.to_pivot();
   let alpha = renderable.alpha;
   let tint = renderable.tint;
-  let mut source = Source::sprite(&renderable.sprite);
+  let mut source = match renderable.target {
+    // A missing target (removed, or not made yet) draws nothing
+    Some(target) => match out.target_source(target) {
+      Some(source) => source,
+      None => return,
+    },
+    None => Source::sprite(&renderable.sprite),
+  };
   let texels = Vec2::new(source.width as f32, source.height as f32);
 
   match &renderable.style {

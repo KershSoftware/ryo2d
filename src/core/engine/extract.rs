@@ -15,7 +15,9 @@ use crate::core::ecs::{
 use crate::core::graphics::camera_gpu::CameraGlobals;
 use crate::core::graphics::camera_mut::main_view;
 use crate::core::graphics::renderer::FrameError;
-use crate::core::graphics::{Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers};
+use crate::core::graphics::{
+  Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers, RenderTargets,
+};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline, plan_cameras};
 use crate::core::shaders::EffectsManager;
@@ -138,21 +140,36 @@ impl Engine {
         lighting.update_god_rays(&mut effects, &lights, &camera);
       }
 
-      // The cameras in render order, and each one's uniforms: its matrix,
-      // image size, clocks and pixel snapping (sprite effects and custom
-      // sprite shaders animate on game time)
+      // The render targets' textures, then the cameras in render order and
+      // each one's uniforms: its matrix, image size, clocks and pixel
+      // snapping (sprite effects and custom sprite shaders animate on game
+      // time)
+      let targets = self.world.get_resource::<RenderTargets>();
+      if let Some(targets) = targets {
+        gpu.sync_targets(rend.device(), targets);
+      }
       let lit = lighting
         .as_ref()
         .is_some_and(|lighting| lighting.is_enabled());
+      let mut cameras = self
+        .world
+        .query::<(Entity, &Camera2d, &CameraView, Option<&RenderLayers>)>();
       plan_cameras(
-        self
-          .world
-          .query::<(Entity, &Camera2d, &CameraView, Option<&RenderLayers>)>()
-          .iter(&self.world),
+        cameras.iter(&self.world),
         rend.render_size(),
         lit,
+        self.world.get_resource::<RenderTargets>(),
         &mut self.camera_draws,
+        &mut self.targetless_cameras,
       );
+      for &camera in &self.targetless_cameras {
+        if self.warned_targetless.insert(camera) {
+          crate::engine_warn!(
+            module: "Render",
+            "{camera:?} renders into a render target that does not exist; it draws nothing"
+          );
+        }
+      }
       if let Some(lighting) = lighting.as_mut() {
         lighting.sync_cameras(rend.device(), &self.camera_draws);
       }

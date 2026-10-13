@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::RenderTarget;
 use crate::core::asset::SpriteHandle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -14,6 +15,9 @@ pub(crate) struct TextureId {
 pub(crate) enum TextureSource {
   Sprite(SpriteHandle),
   Pixels(Arc<[u8]>),
+  /// A render target: GPU-only (cameras draw into it), never uploaded,
+  /// evicted or placed in the atlas
+  Target,
 }
 
 impl TextureSource {
@@ -22,6 +26,7 @@ impl TextureSource {
     match self {
       TextureSource::Sprite(sprite) => sprite.with_sprite(|s| s.data().to_vec()),
       TextureSource::Pixels(data) => data.to_vec(),
+      TextureSource::Target => Vec::new(),
     }
   }
 }
@@ -41,6 +46,7 @@ pub(crate) struct TextureRegistry {
   free: Vec<u32>,
   by_sprite: HashMap<usize, TextureId>,
   by_name: HashMap<String, TextureId>,
+  by_target: HashMap<RenderTarget, TextureId>,
 }
 
 impl TextureId {
@@ -144,14 +150,54 @@ impl TextureRegistry {
   fn content(entry: &TextureEntry) -> u64 {
     match &entry.source {
       TextureSource::Sprite(sprite) => sprite.generation(),
-      TextureSource::Pixels(_) => 0,
+      TextureSource::Pixels(_) | TextureSource::Target => 0,
     }
   }
 
   pub(crate) fn needs_upload(&self, id: TextureId) -> bool {
-    self
-      .get(id)
-      .is_some_and(|entry| entry.uploaded_content != Some(Self::content(entry)))
+    self.get(id).is_some_and(|entry| {
+      !matches!(entry.source, TextureSource::Target)
+        && entry.uploaded_content != Some(Self::content(entry))
+    })
+  }
+
+  /// The id of `target`'s texture, now `width`x`height`, registered on
+  /// first use.
+  pub(crate) fn target(&mut self, target: RenderTarget, width: u32, height: u32) -> TextureId {
+    if let Some(&id) = self.by_target.get(&target)
+      && let Some(entry) = self.get_mut(id)
+    {
+      (entry.width, entry.height) = (width, height);
+      return id;
+    }
+    let id = self.insert(TextureEntry {
+      source: TextureSource::Target,
+      width,
+      height,
+      uploaded_content: None,
+      last_used: 0,
+    });
+    self.by_target.insert(target, id);
+    id
+  }
+
+  /// The id of `target`'s texture, if it is registered.
+  pub(crate) fn target_id(&self, target: RenderTarget) -> Option<TextureId> {
+    self.by_target.get(&target).copied()
+  }
+
+  /// Forget the render targets `keep` rejects, returning their ids.
+  pub(crate) fn retain_targets(&mut self, keep: impl Fn(RenderTarget) -> bool) -> Vec<TextureId> {
+    let gone: Vec<TextureId> = self
+      .by_target
+      .iter()
+      .filter(|(target, _)| !keep(**target))
+      .map(|(_, &id)| id)
+      .collect();
+    for &id in &gone {
+      self.remove(id);
+    }
+    gone
   }
 
   pub(crate) fn mark_uploaded(&mut self, id: TextureId) {
@@ -163,10 +209,10 @@ impl TextureRegistry {
   pub(crate) fn prune(&mut self, frame: u64, ttl: u64) -> Vec<TextureId> {
     let mut pruned = Vec::new();
     for (index, (generation, entry)) in self.slots.iter_mut().enumerate() {
-      if entry
-        .as_ref()
-        .is_some_and(|e| frame.saturating_sub(e.last_used) >= ttl)
-      {
+      // Render targets live until they are removed
+      if entry.as_ref().is_some_and(|e| {
+        !matches!(e.source, TextureSource::Target) && frame.saturating_sub(e.last_used) >= ttl
+      }) {
         *entry = None;
         pruned.push(TextureId {
           index: index as u32,
@@ -191,6 +237,7 @@ impl TextureRegistry {
     self.free.push(id.index);
     self.by_sprite.retain(|_, held| *held != id);
     self.by_name.retain(|_, held| *held != id);
+    self.by_target.retain(|_, held| *held != id);
   }
 
   /// Every live texture.
@@ -219,6 +266,21 @@ impl TextureRegistry {
 
 #[cfg(test)]
 mod tests {
+  #[test]
+  fn render_targets_live_until_removed() {
+    let mut registry = TextureRegistry::new();
+    let (a, b) = (RenderTarget(1), RenderTarget(2));
+    let id = registry.target(a, 16, 8);
+    assert_eq!(registry.target(a, 32, 8), id, "one id per target");
+    assert_eq!(registry.get(id).map(|e| (e.width, e.height)), Some((32, 8)));
+    registry.target(b, 4, 4);
+    assert!(!registry.needs_upload(id), "nothing to upload");
+    assert!(registry.prune(1_000_000, 1).is_empty(), "never pruned");
+    assert_eq!(registry.retain_targets(|target| target == b), vec![id]);
+    assert!(registry.get(id).is_none() && registry.target_id(a).is_none());
+    assert!(registry.target_id(b).is_some());
+  }
+
   use super::*;
   use crate::core::graphics::Sprite;
 

@@ -978,3 +978,68 @@ fn render_layers_choose_what_a_camera_sees() {
     "the second camera sees layer 1"
   );
 }
+
+#[test]
+fn a_sprite_shows_what_a_texture_camera_saw_this_frame() {
+  struct Mirror;
+  impl Scene for Mirror {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      // Far away: a green square, seen by a camera that renders to a texture
+      ctx.world.spawn((
+        Transform::from_xy(1000.0, 1000.0),
+        Renderable::sprite(solid("rt-green", 16, GREEN)),
+      ));
+      let target = ctx.render_targets().create(16, 16);
+      ctx.world.spawn((
+        Transform::from_xy(1000.0, 1000.0),
+        Camera2d {
+          target: CameraTarget::Texture(target),
+          ..Default::default()
+        },
+      ));
+      // Near: a sprite showing that texture
+      ctx.world.spawn((
+        Transform::from_xy(32.0, 32.0),
+        Renderable::render_target(target),
+      ));
+    }
+  }
+  let builder = EngineBuilder::new().resolution(64, 64).start_scene(Mirror);
+  let Some(mut engine) = start(builder) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(32, 32).0,
+    GREEN,
+    "on the first frame"
+  );
+}
+
+#[test]
+fn a_camera_skips_a_sprite_showing_its_own_target() {
+  struct Loop;
+  impl Scene for Loop {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let target = ctx.render_targets().create(16, 16);
+      // The texture camera looks at the very sprite that shows its texture
+      ctx.world.spawn((
+        Transform::from_xy(32.0, 32.0),
+        Camera2d {
+          target: CameraTarget::Texture(target),
+          ..Default::default()
+        },
+      ));
+      ctx.world.spawn((
+        Transform::from_xy(32.0, 32.0),
+        Renderable::render_target(target),
+      ));
+    }
+  }
+  let builder = EngineBuilder::new().resolution(64, 64).start_scene(Loop);
+  let Some(mut engine) = start(builder) else {
+    return;
+  };
+  // Reading and writing one texture in a pass would be a validation error
+  engine.step_frames(3).unwrap();
+}

@@ -160,8 +160,12 @@ pub struct Engine {
   entity_drawer: EntityDrawer,
   // Each camera's uniform buffer, kept across frames
   camera_uniforms: crate::core::graphics::camera_gpu::CameraUniforms,
-  // The frame's cameras in render order (reused across frames)
+  // The frame's cameras in render order (reused across frames), the
+  // texture cameras left out for want of their target, and those already
+  // warned about
   camera_draws: Vec<crate::core::render::CameraDraw>,
+  targetless_cameras: Vec<crate::core::ecs::Entity>,
+  warned_targetless: std::collections::HashSet<crate::core::ecs::Entity>,
   draw_list: DrawList,
   batch_collector: BatchCollector,
   // UI
@@ -283,6 +287,7 @@ pub(crate) fn init_world_resources(
   world.insert_resource(assets);
   world.insert_resource(EffectsManager::new());
   world.insert_resource(LightingSettings::default());
+  world.insert_resource(crate::core::graphics::RenderTargets::default());
   world.insert_resource(crate::core::tilemap::TilemapManager::new());
   world.insert_resource(WindowRequest::default());
   world.insert_resource(CursorRequest::default());
@@ -498,9 +503,11 @@ impl Engine {
       sprite_gpu: None,
       lighting: None,
       trail_renderer: None,
-      entity_drawer: EntityDrawer,
+      entity_drawer: EntityDrawer::default(),
       camera_uniforms: Default::default(),
       camera_draws: Vec::new(),
+      targetless_cameras: Vec::new(),
+      warned_targetless: Default::default(),
       draw_list: DrawList::default(),
       batch_collector: BatchCollector::new(),
       ui_font,

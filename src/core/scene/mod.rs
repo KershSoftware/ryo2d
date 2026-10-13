@@ -437,6 +437,7 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
   world.insert_resource(AssetManager::new());
   world.insert_resource(EffectsManager::new());
   world.insert_resource(LightingSettings::default());
+  world.insert_resource(crate::core::graphics::RenderTargets::default());
   world.insert_resource(crate::core::tilemap::TilemapManager::new());
   world.insert_resource(WindowRequest::default());
   world.insert_resource(WindowInfo::default());

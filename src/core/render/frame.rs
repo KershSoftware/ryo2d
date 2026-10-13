@@ -4,7 +4,8 @@ use super::DrawList;
 use crate::core::ecs::{Entity, GlobalTransform, Vec2};
 use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
-  Camera2d, CameraClear, CameraTarget, CameraView, RenderLayers, SpriteGpuRenderer, Viewport,
+  Camera2d, CameraClear, CameraTarget, CameraView, RenderLayers, RenderTarget, RenderTargets,
+  SpriteGpuRenderer, Viewport,
 };
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingRenderer};
 use crate::core::shaders::{EffectsManager, OutputBuffer};
@@ -136,9 +137,12 @@ pub(crate) struct CameraDraw {
   /// Drawables on none of these layers are not drawn by this camera
   pub(crate) layers: RenderLayers,
   pub(crate) clear: CameraClear,
+  /// The render target it draws into (`None` for a window camera)
+  pub(crate) target: Option<RenderTarget>,
   /// Draws straight into the scene image instead of an image of its own
   pub(crate) direct: bool,
-  /// Its image's pixels in the scene image (all of it when direct)
+  /// Its image's pixels in the scene image (all of it when direct; all of
+  /// the target for a texture camera)
   pub(crate) rect: PixelRect,
   /// Lighting runs for it
   pub(crate) lit: bool,
@@ -152,38 +156,65 @@ pub(crate) type CameraSource<'a> = (
   Option<&'a RenderLayers>,
 );
 
-/// Fill `out` with the cameras the frame draws, in render order (by
-/// `order`, ties by entity), on a scene image of `render_size`.
+/// Fill `out` with the cameras the frame draws, in render order: texture
+/// cameras, then window cameras, each by `order` (ties by entity). Window
+/// cameras draw on a scene image of `render_size`.
 ///
 /// The first window camera draws straight into the scene image when it
-/// covers the whole window and clears; every other camera draws into an
-/// image of its own, sized to its viewport. With `lighting`, every camera is
-/// lit. Texture cameras are not drawn.
+/// covers the whole window and clears; every other window camera draws into
+/// an image of its own, sized to its viewport. A texture camera fills its
+/// render target; one whose target is missing from `targets` is left out
+/// and pushed onto `targetless`. With `lighting`, every camera is lit.
 pub(crate) fn plan_cameras<'a>(
   cameras: impl Iterator<Item = CameraSource<'a>>,
   render_size: (u32, u32),
   lighting: bool,
+  targets: Option<&RenderTargets>,
   out: &mut Vec<CameraDraw>,
+  targetless: &mut Vec<Entity>,
 ) {
   out.clear();
-  let mut ordered: Vec<(i32, Entity, &Camera2d, &CameraView, RenderLayers)> = cameras
-    .filter(|(_, camera, ..)| camera.target == CameraTarget::Window)
+  targetless.clear();
+  let mut ordered: Vec<(bool, i32, Entity, &Camera2d, &CameraView, RenderLayers)> = cameras
     .map(|(entity, camera, view, layers)| {
+      let window = camera.target == CameraTarget::Window;
       let layers = layers.copied().unwrap_or_default();
-      (camera.order, entity, camera, view, layers)
+      (window, camera.order, entity, camera, view, layers)
     })
     .collect();
-  ordered.sort_by_key(|&(order, entity, ..)| (order, entity));
-  for (index, (_, entity, camera, view, layers)) in ordered.into_iter().enumerate() {
-    let direct =
-      index == 0 && camera.viewport == Viewport::FULL && camera.clear != CameraClear::None;
+  ordered.sort_by_key(|&(window, order, entity, ..)| (window, order, entity));
+  let mut first_window = true;
+  for (_, _, entity, camera, view, layers) in ordered {
+    let (target, direct, rect) = match camera.target {
+      CameraTarget::Texture(target) => {
+        let Some((width, height)) = targets.and_then(|targets| targets.size(target)) else {
+          targetless.push(entity);
+          continue;
+        };
+        let rect = PixelRect {
+          x: 0,
+          y: 0,
+          width,
+          height,
+        };
+        (Some(target), false, rect)
+      }
+      CameraTarget::Window => {
+        let direct = std::mem::take(&mut first_window)
+          && camera.viewport == Viewport::FULL
+          && camera.clear != CameraClear::None;
+        let rect = PixelRect::of_viewport(&camera.viewport, render_size);
+        (None, direct, rect)
+      }
+    };
     out.push(CameraDraw {
       entity,
       view: *view,
       layers,
       clear: camera.clear,
+      target,
       direct,
-      rect: PixelRect::of_viewport(&camera.viewport, render_size),
+      rect,
       lit: lighting,
     });
   }
@@ -229,19 +260,74 @@ mod tests {
       viewport: Viewport::new(0.0, 0.0, 0.5, 1.0),
       ..Camera2d::default()
     };
-    let mut out = Vec::new();
+    let (mut out, mut targetless) = (Vec::new(), Vec::new());
     let cameras = [(b, &overlay, &view, None), (a, &full, &view, None)];
-    plan_cameras(cameras.into_iter(), (64, 32), true, &mut out);
+    plan_cameras(
+      cameras.into_iter(),
+      (64, 32),
+      true,
+      None,
+      &mut out,
+      &mut targetless,
+    );
     let plan: Vec<_> = out.iter().map(|c| (c.entity, c.direct, c.lit)).collect();
     assert_eq!(plan, [(a, true, true), (b, false, true)]);
 
     // A camera before the full one keeps it from drawing straight in
     let cameras = [(a, &full, &view, None), (c, &half, &view, None)];
-    plan_cameras(cameras.into_iter(), (64, 32), false, &mut out);
+    plan_cameras(
+      cameras.into_iter(),
+      (64, 32),
+      false,
+      None,
+      &mut out,
+      &mut targetless,
+    );
     let plan: Vec<_> = out
       .iter()
       .map(|c| (c.entity, c.direct, c.rect.width))
       .collect();
     assert_eq!(plan, [(c, false, 32), (a, false, 64)]);
+  }
+
+  #[test]
+  fn texture_cameras_come_first_and_need_their_target() {
+    let mut world = World::new();
+    let [window, texture, gone] = [(); 3].map(|_| world.spawn_empty().id());
+    let mut targets = RenderTargets::default();
+    let target = targets.create(16, 8);
+    let removed = targets.create(4, 4);
+    targets.remove(removed);
+    let view = CameraView::default();
+    let main = Camera2d::default();
+    let mirror = Camera2d {
+      order: 5,
+      target: CameraTarget::Texture(target),
+      ..Camera2d::default()
+    };
+    let lost = Camera2d {
+      target: CameraTarget::Texture(removed),
+      ..Camera2d::default()
+    };
+    let (mut out, mut targetless) = (Vec::new(), Vec::new());
+    let cameras = [
+      (window, &main, &view, None),
+      (texture, &mirror, &view, None),
+      (gone, &lost, &view, None),
+    ];
+    plan_cameras(
+      cameras.into_iter(),
+      (64, 32),
+      false,
+      Some(&targets),
+      &mut out,
+      &mut targetless,
+    );
+    let plan: Vec<_> = out
+      .iter()
+      .map(|c| (c.entity, c.direct, c.rect.size()))
+      .collect();
+    assert_eq!(plan, [(texture, false, (16, 8)), (window, true, (64, 32))]);
+    assert_eq!(targetless, [gone]);
   }
 }
