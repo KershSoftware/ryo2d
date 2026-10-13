@@ -2,7 +2,8 @@
 //!
 //! Sprites and trail/line triangles are pushed in any order; the world
 //! passes draw them sorted by z, then by [`DrawKind`], then by submission, so
-//! a trail can sit between two sprites in one render pass.
+//! a trail can sit between two sprites in one render pass. Lights are kept
+//! apart, for the lighting pass.
 
 use super::CameraDraw;
 use super::batch::{BlendMode, Filter};
@@ -117,6 +118,18 @@ pub(crate) struct DrawTriangles {
   pub(crate) vertices: Range<u32>,
 }
 
+/// A light waiting to be drawn into the light buffers of the lit cameras
+/// that see it.
+#[derive(Debug, Clone)]
+pub(crate) struct DrawLight {
+  pub(crate) instance: SpriteInstance,
+  /// The cameras on these layers draw it
+  pub(crate) layers: RenderLayers,
+  /// The world box it lights
+  pub(crate) min: Vec2,
+  pub(crate) max: Vec2,
+}
+
 /// The frame's sprites, trails and lines, reused across frames.
 ///
 /// Lit items are drawn before lighting; unlit ones (anything drawn
@@ -127,6 +140,7 @@ pub(crate) struct DrawList {
   unlit_items: Vec<DrawItem>,
   sprites: Vec<DrawSprite>,
   triangles: Vec<DrawTriangles>,
+  lights: Vec<DrawLight>,
   next_sequence: u32,
   sorted: bool,
 }
@@ -138,6 +152,7 @@ impl DrawList {
     self.unlit_items.clear();
     self.sprites.clear();
     self.triangles.clear();
+    self.lights.clear();
     self.next_sequence = 0;
     self.sorted = true;
   }
@@ -197,6 +212,11 @@ impl DrawList {
     let payload = DrawPayload::Triangles(self.triangles.len());
     self.triangles.push(triangles);
     self.push_item(lit, z, DrawKind::Trail, payload, only_camera);
+  }
+
+  /// Add a light for the lit cameras that see it.
+  pub(crate) fn push_light(&mut self, light: DrawLight) {
+    self.lights.push(light);
   }
 
   fn push_item(
@@ -290,6 +310,16 @@ impl DrawList {
       .unlit_items
       .iter()
       .filter(|item| self.sees(camera, item))
+  }
+
+  /// The lights `camera` draws: those on its layers whose box meets its view.
+  pub(crate) fn lights_for<'s>(
+    &'s self,
+    camera: &'s CameraDraw,
+  ) -> impl Iterator<Item = &'s DrawLight> + 's {
+    self.lights.iter().filter(|light| {
+      light.layers.intersects(&camera.layers) && camera.view.is_visible(light.min, light.max)
+    })
   }
 
   fn sees(&self, camera: &CameraDraw, item: &DrawItem) -> bool {
@@ -432,5 +462,41 @@ mod tests {
     assert!(list.triangles(0).is_none());
     push(&mut list, DrawKind::Sprite, 0, 1);
     assert_eq!(list.sorted()[0].sequence, 0);
+  }
+
+  #[test]
+  fn a_camera_sees_the_lights_on_its_layers_in_its_view() {
+    use crate::core::ecs::World;
+    use crate::core::graphics::{Camera2d, CameraView, RenderLayers};
+    let mut world = World::new();
+    let entity = world.spawn_empty().id();
+    let camera = Camera2d::default();
+    let view = CameraView::compute(
+      Vec2::new(50.0, 50.0),
+      0.0,
+      &camera,
+      Vec2::ZERO,
+      Vec2::new(100.0, 100.0),
+    );
+    let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
+    crate::core::render::plan_cameras(
+      [(entity, &camera, &view, None)].into_iter(),
+      (100, 100),
+      true,
+      None,
+      &mut cameras,
+      &mut targetless,
+    );
+    let light = |at: Vec2, layers: RenderLayers| DrawLight {
+      instance: SpriteInstance::new(),
+      layers,
+      min: at - 5.0,
+      max: at + 5.0,
+    };
+    let mut list = DrawList::default();
+    list.push_light(light(Vec2::new(50.0, 50.0), RenderLayers::default()));
+    list.push_light(light(Vec2::new(500.0, 50.0), RenderLayers::default()));
+    list.push_light(light(Vec2::new(50.0, 50.0), RenderLayers::layer(1)));
+    assert_eq!(list.lights_for(&cameras[0]).count(), 1);
   }
 }

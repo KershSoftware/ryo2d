@@ -15,13 +15,12 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 - The UI is never lit: it is composited after lighting and post-processing.
 - **Per camera:** the `lighting` pass runs for every camera. Each lit camera has light targets of its own (`LightTargets`: accumulation buffer, scene copy and compose uniforms, sized to its image), created on first use and dropped with the camera. Lights and shadows draw through the camera's uniform buffer (its `view_proj`), so they move, zoom, turn and shake with the sprites. A camera drawing straight into the scene image composes into the lit image; a camera with an image of its own is lit in place (the compose pass reads the scene copy and writes the camera's image).
 - Each camera's compose uniforms are its own buffer: queue writes all land before the command buffer runs, so a shared buffer would give every camera the last one's values.
-- The renderer's own targets (`LightingRenderer::new(device, width, height, ..)`) serve only its standalone API (`render_lights(.., camera_pos, camera_zoom)`, `compose`, `compose_from_texture`); the engine creates it at 1x1.
+- Lights are batch quads (`lighting::batch`), drawn by the `lighting` pass into each lit camera's light buffer; `LightingRenderer` is engine-internal and keeps the per-camera light buffers, the scene copies and the compose pass.
 - God rays (a post-process effect) follow the main camera.
 
 ## Limits
 
-- **`MAX_LIGHTS` = 256**: all lights draw in one instanced call. Lights beyond the cap are silently dropped. There is no viewport culling.
-- **`MAX_RAYMARCH_EDGES` = 64**: ray-marched shadows consider at most 64 occluder edges. Extra edges are ignored.
+- **No light cap**: each lit camera draws the lights on its `RenderLayers` whose reach meets its view, in one instanced draw. A light with a radius or intensity that is not positive and finite, or a position that is not finite, draws nothing.
 - Shadow casting and complex occluder polygons add cost. Disable shadows on unimportant lights.
 
 ## Conventions

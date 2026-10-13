@@ -21,9 +21,6 @@ mod capture_readback;
 #[path = "e2e/headless_engine.rs"]
 mod headless_engine;
 
-#[path = "e2e/lighting_renderer.rs"]
-mod lighting_renderer;
-
 #[path = "e2e/network.rs"]
 mod network;
 

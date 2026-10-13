@@ -1,12 +1,11 @@
-//! Ray-marched Shadows page
+//! Placed occluders page
 //!
-//! Demonstrates per-pixel ray casting for accurate 2D shadows.
-//! Ray-marching provides more precise shadows for complex occluder shapes.
+//! Place and remove occluders around a light that casts soft shadow volumes.
 
 use demo_kit::prelude::*;
 
-/// Ray-marched shadow page state
-pub struct RaymarchedShadowsPage {
+/// Placed occluders page state
+pub struct PlacedOccludersPage {
   // Player-controlled light
   light_entity: Option<Entity>,
   /// The marker drawn at the light
@@ -15,8 +14,8 @@ pub struct RaymarchedShadowsPage {
   light_y: f32,
   light_color: Color,
 
-  // Ray-march settings
-  raymarch_samples: i32,
+  // Shadow edge softness
+  softness: f32,
 
   // Placed occluders (by player)
   placed_occluders: Vec<Entity>,
@@ -25,7 +24,7 @@ pub struct RaymarchedShadowsPage {
   static_occluders: Vec<Entity>,
 }
 
-impl RaymarchedShadowsPage {
+impl PlacedOccludersPage {
   pub fn new() -> Self {
     Self {
       light_entity: None,
@@ -34,7 +33,7 @@ impl RaymarchedShadowsPage {
       light_y: 360.0,
       light_color: Color::new(255, 220, 180, 255), // Warm light
 
-      raymarch_samples: 32,
+      softness: 0.4,
 
       placed_occluders: Vec::new(),
       static_occluders: Vec::new(),
@@ -44,7 +43,7 @@ impl RaymarchedShadowsPage {
   fn create_light(&self) -> Light2D {
     Light2D::point(self.light_color, 400.0)
       .with_intensity(1.3)
-      .with_raymarched_shadows(self.raymarch_samples.clamp(4, 64) as u32)
+      .with_soft_shadows(self.softness)
   }
 
   fn update_light(&mut self, ctx: &mut SceneContext) {
@@ -79,7 +78,7 @@ impl RaymarchedShadowsPage {
     // Create visual sprite
     let sprite = ctx.assets.create_sprite(
       Sprite::solid_rect(width as u32, height as u32, 60, 70, 80, 255),
-      format!("rm_occluder_{}_{}", x as i32, y as i32),
+      format!("po_occluder_{}_{}", x as i32, y as i32),
     );
 
     // Spawn entity with both visual and occluder
@@ -122,17 +121,17 @@ impl RaymarchedShadowsPage {
   }
 }
 
-impl DemoPage for RaymarchedShadowsPage {
+impl DemoPage for PlacedOccludersPage {
   fn name(&self) -> &str {
-    "Ray-marched"
+    "Placed occluders"
   }
 
   fn description(&self) -> &str {
-    "Per-pixel ray casting for accurate shadows; more samples are smoother."
+    "Place boxes around a light that casts soft shadow volumes."
   }
 
   fn settings(&mut self, s: &mut Settings) {
-    s.int("Samples", &mut self.raymarch_samples, 4..=64);
+    s.float("Softness", &mut self.softness, 0.0..=1.0, 0.05);
   }
 
   fn controls(&self) -> Vec<Control> {
@@ -150,7 +149,7 @@ impl DemoPage for RaymarchedShadowsPage {
     // Create floor with subtle pattern
     let floor = ctx
       .assets
-      .create_sprite(Sprite::solid_rect(1280, 720, 25, 28, 35, 255), "rm_floor");
+      .create_sprite(Sprite::solid_rect(1280, 720, 25, 28, 35, 255), "po_floor");
     ctx.world.spawn((
       Transform::from_xy(640.0, 360.0),
       Renderable::sprite(floor).with_z_order(0),
@@ -170,7 +169,7 @@ impl DemoPage for RaymarchedShadowsPage {
       self.static_occluders.push(entity);
     }
 
-    // Create the player light with ray-marched shadows
+    // Create the player light with soft shadow volumes
     self.light_entity = Some(
       ctx
         .world
@@ -184,7 +183,7 @@ impl DemoPage for RaymarchedShadowsPage {
     // Create a visual for the light source
     let light_visual = ctx.assets.create_sprite(
       Sprite::solid_circle(20, 255, 220, 150, 255),
-      "rm_light_source",
+      "po_light_source",
     );
     self.light_visual = Some(
       ctx

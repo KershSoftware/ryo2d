@@ -71,7 +71,10 @@ mod tests {
     let light = Light2D::point(Color::WHITE, 50.0).with_god_rays();
     let at = god_ray_positions([(Vec2::ZERO, &light)].into_iter(), &view, screen);
     assert_eq!(at.len(), 1);
-    assert!((at[0].0 - 0.25).abs() < 1e-5 && (at[0].1 - 0.5).abs() < 1e-5, "{at:?}");
+    assert!(
+      (at[0].0 - 0.25).abs() < 1e-5 && (at[0].1 - 0.5).abs() < 1e-5,
+      "{at:?}"
+    );
   }
 
   #[test]

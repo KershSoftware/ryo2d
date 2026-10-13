@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use super::polyline::Vertex2D;
-use super::{BatchShader, BlendMode, PageKind, Stream};
+use super::{BatchShader, BlendMode, LightStep, PageKind, Stream};
 use crate::core::graphics::SpriteInstance;
 use crate::core::shaders::custom::{self, ShaderError};
 use crate::core::shaders::scope::Checked;
@@ -29,6 +29,26 @@ pub(crate) fn blend_state(mode: BlendMode) -> wgpu::BlendState {
     BlendMode::Screen => add(OneMinusDst, One),
   };
   wgpu::BlendState { color, alpha: keep }
+}
+
+/// The blend state and colour writes of a draw into a light buffer.
+pub(crate) fn light_blend(step: LightStep) -> (wgpu::BlendState, wgpu::ColorWrites) {
+  use wgpu::BlendFactor::{One, Zero};
+  let add = |src_factor, dst_factor| wgpu::BlendComponent {
+    src_factor,
+    dst_factor,
+    operation: wgpu::BlendOperation::Add,
+  };
+  match step {
+    // Light adds up; the alpha, a shadowed light's mask, is left alone
+    LightStep::Add => (
+      wgpu::BlendState {
+        color: add(One, One),
+        alpha: add(Zero, One),
+      },
+      wgpu::ColorWrites::COLOR,
+    ),
+  }
 }
 
 /// What a pipeline is made for: two draws with equal keys share one.
@@ -131,10 +151,11 @@ struct Built {
 pub(crate) struct Pipelines {
   /// Camera, then texture
   layout: wgpu::PipelineLayout,
-  /// Camera only (untextured lines)
+  /// Camera only (untextured lines, lights)
   camera_only: wgpu::PipelineLayout,
   sprite: wgpu::ShaderModule,
   line: wgpu::ShaderModule,
+  light: wgpu::ShaderModule,
   built: HashMap<PipelineKey, Built>,
 }
 
@@ -165,6 +186,7 @@ impl Pipelines {
       camera_only,
       sprite: module("Sprite Shader", crate::core::shaders::compose::SPRITE),
       line: module("Line Shader", crate::core::shaders::compose::LINE),
+      light: module("Light Shader", crate::core::shaders::compose::LIGHT),
       built: HashMap::new(),
     }
   }
@@ -230,6 +252,9 @@ impl Pipelines {
         });
         return;
       }
+      (BatchShader::Light(step), Stream::Quads, _, _) => {
+        (&self.light, &self.camera_only, step.fragment())
+      }
       // No such pipeline: sprites are quads and lines triangles
       _ => return,
     };
@@ -279,6 +304,10 @@ fn batch_pipeline(
   fragment: &str,
   key: PipelineKey,
 ) -> wgpu::RenderPipeline {
+  let (blend, write_mask) = match key.shader {
+    BatchShader::Light(step) => light_blend(step),
+    _ => (blend_state(key.blend), wgpu::ColorWrites::ALL),
+  };
   device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
     label: Some(label),
     layout: Some(layout),
@@ -296,8 +325,8 @@ fn batch_pipeline(
       entry_point: Some(fragment),
       targets: &[Some(wgpu::ColorTargetState {
         format: key.format,
-        blend: Some(blend_state(key.blend)),
-        write_mask: wgpu::ColorWrites::ALL,
+        blend: Some(blend),
+        write_mask,
       })],
       compilation_options: Default::default(),
     }),
@@ -364,6 +393,14 @@ mod tests {
     for mode in [BlendMode::Additive, BlendMode::Multiply, BlendMode::Screen] {
       assert_eq!(blend_state(mode).alpha, keep_alpha, "{mode:?}");
     }
+  }
+
+  #[test]
+  fn lights_add_up_and_leave_the_mask_alone() {
+    let (blend, writes) = light_blend(LightStep::Add);
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::One);
+    assert_eq!(writes, wgpu::ColorWrites::COLOR);
   }
 
   #[test]

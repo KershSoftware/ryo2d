@@ -651,7 +651,9 @@ mod tests {
       unreachable!()
     };
     assert_eq!(threshold, 1.0);
-    let PostProcessEffect::Bloom { threshold, .. } = PostProcessEffect::bloom_custom(3.0, 1.0, 5.0, 2) else {
+    let PostProcessEffect::Bloom { threshold, .. } =
+      PostProcessEffect::bloom_custom(3.0, 1.0, 5.0, 2)
+    else {
       unreachable!()
     };
     assert_eq!(threshold, 3.0);

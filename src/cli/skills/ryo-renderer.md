@@ -190,7 +190,7 @@ Located in `src/core/shaders/`:
 | `include/*.wgsl` | Shared: `camera.wgsl`, `color.wgsl`, `sample.wgsl`, `fullscreen.wgsl` (composed by `compose.rs` at compile time) |
 | `core/sprite.wgsl` | Sprites (batch quads), including per-sprite effects and premultiplied entries |
 | `core/line.wgsl` | Trails, lines and debug shapes (batch triangles) |
-| `core/light.wgsl`, `shadow.wgsl`, `raymarch_shadow.wgsl` | Lighting and shadows |
+| `core/light.wgsl`, `shadow.wgsl` | Lighting and shadows |
 | `core/camera_image.wgsl` | A window camera's own image placed in its viewport |
 | `core/fullscreen_quad.wgsl` | The final composite (and sRGB encoding when the surface is not sRGB) |
 | `post-process/*.wgsl` | Screen-wide effects (one file per effect) |

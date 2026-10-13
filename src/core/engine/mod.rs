@@ -173,7 +173,7 @@ pub struct Engine {
     crate::core::ecs::Entity,
     crate::core::graphics::camera_gpu::CameraGlobals,
   )>,
-  lights: Vec<(crate::core::ecs::Vec2, crate::core::lighting::Light2D)>,
+  lights: Vec<crate::core::lighting::FrameLight>,
   occluders: Vec<(
     crate::core::ecs::GlobalTransform,
     &'static crate::core::lighting::LightOccluder2D,
@@ -836,9 +836,8 @@ impl Engine {
     // and smooth at the window's resolution (the batch resolves it)
     let sprite_gpu = SpriteGpuRenderer::new(renderer.device(), renderer.queue());
     let batch = Batch2D::new(renderer.device(), format, self.config.presentation);
-    // Each camera is lit in light targets of its own size; the renderer's
-    // own targets are only for lighting on its own
-    let lighting = LightingRenderer::new(renderer.device(), 1, 1, format);
+    // Each camera is lit in light targets of its own size
+    let lighting = LightingRenderer::new(renderer.device(), format);
     let mapping = renderer.mapping();
 
     self.scale_factor = scale_factor;

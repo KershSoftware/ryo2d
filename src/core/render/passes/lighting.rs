@@ -2,8 +2,8 @@
 
 use crate::core::render::{FrameImage, FrameInfo, PassScope, RenderContext, RenderPass, pass_ids};
 
-/// Renders the lights (and shadows from shadow-casting lights and occluders),
-/// then composes the game texture with them into the lit texture.
+/// Draws the camera's lights from the batch into its light buffer, cuts the
+/// shadows from it, then composes the camera's image with it.
 pub(super) struct Lighting;
 
 impl RenderPass for Lighting {
@@ -31,15 +31,39 @@ impl RenderPass for Lighting {
       image,
       ..
     } = ctx;
-    let Some(lighting) = scene.lighting.as_mut() else {
+    let Some(lighting) = scene.lighting.as_ref() else {
       return;
     };
+    let renderer = &*lighting.renderer;
     let (entity, uniforms) = (camera.entity, scene.camera_uniforms);
-    // The lights and shadows were uploaded once for the frame
-    lighting
-      .renderer
-      .draw_for_camera(device, encoder, entity, uniforms);
-
+    let Some(light_view) = renderer.light_view(entity) else {
+      return;
+    };
+    // The frame's lights, through the batch, into the camera's light buffer
+    {
+      let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Light Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: light_view,
+          depth_slice: None,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+      });
+      if let Some(batch) = scene.batch {
+        for draw in batch.light_draws(entity) {
+          batch.draw(&mut pass, draw, entity, scene.sprites);
+        }
+      }
+    }
+    renderer.draw_shadows_for_camera(device, encoder, entity, uniforms);
     // The camera drawing straight into the scene image is lit into the lit
     // image; a camera with an image of its own is lit in place
     let (scene_texture, output) = if camera.direct {
@@ -51,7 +75,7 @@ impl RenderPass for Lighting {
       };
       (texture, view)
     };
-    lighting.renderer.compose_for_camera(
+    renderer.compose_for_camera(
       device,
       queue,
       encoder,

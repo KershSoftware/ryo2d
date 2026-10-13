@@ -69,7 +69,7 @@ pub(crate) enum FrameImage {
 
 /// Lighting inputs for a frame (only built while lighting is enabled).
 pub(crate) struct LightingFrame<'a> {
-  /// With this frame's lights and shadows uploaded (`prepare_frame`)
+  /// With this frame's shadows uploaded (`prepare_shadows`)
   pub(crate) renderer: &'a mut LightingRenderer,
 }
 

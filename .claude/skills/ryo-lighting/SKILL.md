@@ -12,7 +12,7 @@ You help developers light scenes and cast shadows. Complete signatures are in `r
 ## Resources
 
 - **Lighting**: `src/core/lighting/` (`settings.rs` is what scenes control)
-- **Shaders**: `src/core/shaders/core/light.wgsl`, `shadow.wgsl`, `raymarch_shadow.wgsl`; `post-process/lighting.wgsl`, `god_rays.wgsl`, `ambient_occlusion.wgsl`
+- **Shaders**: `src/core/shaders/core/light.wgsl`, `shadow.wgsl`; `post-process/lighting.wgsl`, `god_rays.wgsl`, `ambient_occlusion.wgsl`
 - **Demos**: `examples/demos/lighting/`, `lighting-volumetric/`, `shadows/`
 
 ## The Model
@@ -55,7 +55,7 @@ Light2D::magic(120.0, color)     // custom colour, soft falloff
 Light2D::flashlight(200.0, 270.0)
 ```
 
-Change a light at runtime through a query or `get_mut`: `set_color`, `set_radius`, `set_intensity`, `set_direction` (spot), `set_cast_shadows`, `set_shadow_softness`, `set_shadow_color`, `set_raymarch_samples`, `set_volumetric`.
+Change a light at runtime through a query or `get_mut`: `set_color`, `set_radius`, `set_intensity`, `set_direction` (spot), `set_cast_shadows`, `set_shadow_softness`, `set_shadow_color`, `set_volumetric`.
 
 ```rust
 if let Some(mut light) = ctx.world.get_mut::<Light2D>(self.torch) {
@@ -71,7 +71,6 @@ Lights are placed at their entity's `GlobalTransform` translation (a child entit
 Light2D::point(color, radius).with_shadows()                 // hard (shadow volumes)
 Light2D::point(color, radius).with_soft_shadows(0.5)         // softness 0.0-1.0
 Light2D::point(color, radius).with_shadows().with_shadow_color(Color::new(50, 30, 80, 255))
-Light2D::point(color, radius).with_raymarched_shadows(32)    // per-pixel, samples 4-64
 ```
 
 ## Occluders
@@ -167,8 +166,7 @@ Per camera (the `lighting` camera pass):
 
 ## Performance
 
-- At most 256 lights draw (one instanced call); extra lights are dropped and there is no viewport culling.
-- Ray-marched shadows consider at most 64 occluder edges; use 16-32 samples, 64 only when needed.
+- Lights have no cap: each lit camera draws the lights on its `RenderLayers` whose reach meets its view.
 - Lighting runs once per camera: a minimap camera multiplies its cost. Lights and shadow geometry are built again for every camera.
 - Disable shadows on unimportant lights; simple occluder shapes are cheaper.
 - Lower AO radius is faster.

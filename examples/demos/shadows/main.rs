@@ -1,8 +1,8 @@
 //! Shadow Demo
 //!
-//! Eight shadow techniques on the demo-kit shell, one page each: hard
-//! (shadow volumes), drop, blob, soft, colored, contact, ambient occlusion
-//! and ray-marched shadows.
+//! Eight shadow pages on the demo-kit shell, one each: hard (shadow
+//! volumes), drop, blob, soft, colored, contact, ambient occlusion and
+//! occluders placed around a light.
 
 mod scenes;
 
@@ -20,6 +20,6 @@ fn main() {
     .page(ColoredShadowsPage::new)
     .page(ContactShadowsPage::new)
     .page(AmbientOcclusionPage::new)
-    .page(RaymarchedShadowsPage::new)
+    .page(PlacedOccludersPage::new)
     .run();
 }

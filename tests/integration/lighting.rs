@@ -47,10 +47,7 @@ fn regression_lighting_disabled_by_default() {
 /// in dark scenes.
 #[test]
 fn regression_ui_unaffected_by_lighting_default() {
-  // The LightingRenderer::new() sets ui_affected_by_lighting: false (line 373)
-  // This test documents that invariant.
-  //
-  // When ui_affected_by_lighting is false:
+  // The UI is never lit. This test documents that invariant:
   // - UI is rendered to a separate buffer
   // - UI buffer is composited AFTER lighting is applied to the scene
   // - UI appears at full brightness regardless of ambient light level

@@ -36,7 +36,8 @@ use crate::core::ui::Color;
 ///
 /// Attach this to any entity with a `Transform` to add dynamic lighting.
 /// Lights are rendered additively to a light accumulation buffer, which
-/// is then multiplied with the scene.
+/// is then multiplied with the scene. A light with `RenderLayers` lights
+/// only the cameras on those layers (by default, layer 0).
 #[derive(Component, Debug, Clone, PartialEq)]
 pub enum Light2D {
   /// A point light that emits light in all directions
@@ -57,8 +58,6 @@ pub enum Light2D {
     shadow_color: Color,
     /// Volumetric lighting settings (visible beams, god rays)
     volumetric: Option<VolumetricSettings>,
-    /// Ray-marched shadow samples (None = use shadow volumes, Some(n) = use ray marching)
-    raymarch_samples: Option<u32>,
   },
 
   /// A spotlight that emits light in a cone
@@ -85,8 +84,6 @@ pub enum Light2D {
     shadow_color: Color,
     /// Volumetric lighting settings (visible beams, god rays)
     volumetric: Option<VolumetricSettings>,
-    /// Ray-marched shadow samples (None = use shadow volumes, Some(n) = use ray marching)
-    raymarch_samples: Option<u32>,
   },
 }
 
@@ -106,7 +103,6 @@ impl Light2D {
       shadow_softness: 0.0,
       shadow_color: Color::BLACK,
       volumetric: None,
-      raymarch_samples: None,
     }
   }
 
@@ -121,7 +117,6 @@ impl Light2D {
       shadow_softness: 0.0,
       shadow_color: Color::BLACK,
       volumetric: None,
-      raymarch_samples: None,
     }
   }
 
@@ -142,7 +137,6 @@ impl Light2D {
       shadow_softness: 0.0,
       shadow_color: Color::BLACK,
       volumetric: None,
-      raymarch_samples: None,
     }
   }
 
@@ -166,7 +160,6 @@ impl Light2D {
       shadow_softness: 0.0,
       shadow_color: Color::BLACK,
       volumetric: None,
-      raymarch_samples: None,
     }
   }
 
@@ -190,7 +183,6 @@ impl Light2D {
       shadow_softness: 0.0,
       shadow_color: Color::BLACK,
       volumetric: None,
-      raymarch_samples: None,
     }
   }
 
@@ -218,7 +210,6 @@ impl Light2D {
       shadow_softness: 0.0,
       shadow_color: Color::BLACK,
       volumetric: None,
-      raymarch_samples: None,
     }
   }
 
@@ -367,49 +358,6 @@ impl Light2D {
   pub fn with_shadow_color(mut self, color: Color) -> Self {
     self.set_shadow_color(color);
     self
-  }
-
-  /// Builder method to enable ray-marched shadows
-  ///
-  /// Ray-marched shadows use per-pixel ray casting for more accurate shadows
-  /// in complex scenes. This is more expensive than shadow volumes but can
-  /// handle overlapping and self-shadowing better.
-  ///
-  /// # Arguments
-  /// * `samples` - Number of samples per ray (8-64, more = higher quality but slower)
-  pub fn with_raymarched_shadows(mut self, samples: u32) -> Self {
-    self.set_cast_shadows(true);
-    self.set_raymarch_samples(Some(samples.clamp(4, 64)));
-    self
-  }
-
-  /// Get the ray-march sample count (None = using shadow volumes)
-  pub fn raymarch_samples(&self) -> Option<u32> {
-    match self {
-      Self::Point {
-        raymarch_samples, ..
-      }
-      | Self::Spot {
-        raymarch_samples, ..
-      } => *raymarch_samples,
-    }
-  }
-
-  /// Set the ray-march sample count
-  pub fn set_raymarch_samples(&mut self, samples: Option<u32>) {
-    match self {
-      Self::Point {
-        raymarch_samples, ..
-      }
-      | Self::Spot {
-        raymarch_samples, ..
-      } => *raymarch_samples = samples,
-    }
-  }
-
-  /// Check if this light uses ray-marched shadows
-  pub fn uses_raymarched_shadows(&self) -> bool {
-    self.casts_shadows() && self.raymarch_samples().is_some()
   }
 
   /// Get the shadow color of this light

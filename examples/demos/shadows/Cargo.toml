@@ -2,7 +2,7 @@
 name = "shadows"
 version = "0.1.0"
 edition = "2024"
-description = "2D shadow techniques: hard, drop, blob, soft, colored, contact, ambient occlusion and ray-marched shadows"
+description = "2D shadow techniques: hard, drop, blob, soft, colored, contact, ambient occlusion and placed occluders"
 
 [[bin]]
 name = "shadows"

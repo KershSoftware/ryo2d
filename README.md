@@ -152,7 +152,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Tweening** — Transform tweens, generic property tweens, sequences, 25 easing functions
 - **Parallax** — Layered scrolling backgrounds with infinite scroll, laid out for every camera
 - **2D Lighting** — Point lights, spotlights, volumetric effects, atmospheric scattering
-- **Shadow System** — Hard shadows, soft shadows, ray-marched shadows, drop/blob/contact shadows, ambient occlusion
+- **Shadow System** — Hard shadows, soft shadows, drop/blob/contact shadows, ambient occlusion
 - **Trails and Lines** — Motion trails and shapes with joins, caps, fade and taper effects
 - **Debug Drawing** — `ctx.debug_draw()` lines, rectangles, circles, arrows and crosses, one pixel wide at any zoom
 - **Particles** — GPU-batched particle system with emitters, attractors, and presets

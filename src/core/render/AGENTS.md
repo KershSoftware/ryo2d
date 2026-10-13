@@ -29,12 +29,12 @@ The engine draws every frame through one `RenderPipeline` (a resource, `RenderPi
 Everything is read from the world by query, every frame. There is no render cache: nothing is invalidated, and an entity draws where its `GlobalTransform` says on the frame it exists. Drawables are gathered once, in world space, and sorted once; each camera keeps what it sees.
 
 1. `Scene::render(gpu)` for the visible scenes, bottom-up (`GpuRenderContext`: `gpu.batch`, `gpu.camera()` = the main camera's view, read-only `gpu.world`); the `BatchCollector` keeps submission order.
-2. Lights (`(&GlobalTransform, &Light2D)`, at their world translation) and occluders (`(&GlobalTransform, &LightOccluder2D)`, keeping rotation); `LightingSettings` is copied into the lighting renderer.
+2. Lights (`(&GlobalTransform, &Light2D)` with their `RenderLayers`, at their world translation; batch quads in the draw list when lighting is on) and occluders (`(&GlobalTransform, &LightOccluder2D)`, keeping rotation); `LightingSettings` is copied into the lighting renderer.
 3. Render targets' textures follow `RenderTargets`; the cameras are planned and their uniforms, bind groups and light targets synced.
 4. The `Scene::render` sprites join the draw list; each `ParallaxLayer` is laid out for every camera on its layers (items for that camera alone).
 5. `EntityDrawer::collect` (`entities.rs`): one query over the visible renderables (with their `RenderLayers`), then the composite tiles. Quads no camera on their layers can see are skipped before their texture uploads. Disabled entities are skipped by the queries themselves.
 6. Trails (`&Trail2D`: world-space points) and lines (`(&GlobalTransform, &Line2D)`: at the entity's translation) become polylines on the batch's triangle stream, one item each. The debug overlays are added to `DebugDraw`, whose shapes are built for each camera in its own screen pixels (items for that camera alone).
-7. The list is sorted; `Batch2D::prepare` makes the frame's textures resident, lays each camera's lit and unlit items (on its layers, inside its `CameraView::bounds`, not showing its own target, `only_camera`) into draws and uploads the instances and triangles once; then the pipeline runs. `present_frame` clears the frame's debug shapes afterwards, drawn or skipped.
+7. The list is sorted; `Batch2D::prepare` makes the frame's textures resident, lays each camera's lit and unlit items (on its layers, inside its `CameraView::bounds`, not showing its own target, `only_camera`), and a lit camera's lights (`DrawList::lights_for`), into draws and uploads the instances and triangles once; then the pipeline runs. `present_frame` clears the frame's debug shapes afterwards, drawn or skipped.
 
 `FrameScene.time` (lighting, trails, the transition) is real elapsed time; post-process effects run on `EffectsManager`'s own clock, advanced with real time in `PostUpdateSet::Extract`. Only `CameraGlobals::game_time` (sprite effects, custom sprite shaders) is game time.
 
@@ -104,5 +104,5 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 - `FrameInfo::world` means the draw list has lit items; `unlit_world` has no flag of its own. `FrameInfo` describes content, not passes: `lighting` and `effects` stay true when the game disabled those passes.
 - Disabling `post_process` removes every effect, including flashes and tints.
 - A game pass records raw wgpu work on `ctx.encoder_and_current_view()` (`ryo2d::wgpu`); there is no higher-level API for game passes. Custom sprite and effect shaders go through `Material` / `EffectsManager::add_custom` instead (`src/core/shaders/AGENTS.md`).
-- `DebugStats::draw_calls` counts the draws of `world` and `unlit_world`, over every camera.
+- `DebugStats::draw_calls` counts the batch's draws (`world`, `unlit_world` and the lights), over every camera.
 - Crate-internal checks that need engine internals live in `src/core/testing/gpu_world.rs`; pixel-level behaviour is in `tests/e2e/gpu_world.rs` and `tests/e2e/render_pipeline.rs`.

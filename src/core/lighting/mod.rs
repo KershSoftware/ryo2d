@@ -11,8 +11,9 @@
 //!
 //! The lighting system uses a deferred lighting approach:
 //!
-//! 1. **Light accumulation pass** - All lights are rendered to a light buffer using
-//!    additive blending. Each light draws a quad covering its radius.
+//! 1. **Light accumulation pass** - Each lit camera draws the lights it sees
+//!    into its light buffer with additive blending. Each light is a batch quad
+//!    covering its radius.
 //!
 //! 2. **Composition pass** - The scene is multiplied by (ambient + light buffer)
 //!    to produce the final lit result.
@@ -190,14 +191,15 @@
 //!
 //! # Performance Notes
 //!
-//! - Lights are batched and rendered in a single draw call
-//! - Maximum of 256 lights per frame
+//! - Lights are batch quads, culled per camera by its view and `RenderLayers`;
+//!   there is no cap on their number
 //! - Light radius determines GPU cost (larger = more pixels to shade)
 //! - For many small lights, consider using particles with glow effects instead
 //! - Shadow casting adds additional cost; disable for lights that don't need it
 
 mod ambient;
 mod atmosphere;
+mod batch;
 mod god_rays;
 mod light;
 mod occluder;
@@ -208,10 +210,11 @@ mod volumetric;
 
 pub use ambient::AmbientLight;
 pub use atmosphere::{Atmosphere, GodRaysQuality};
+pub(crate) use batch::{FrameLight, light_item};
 pub(crate) use god_rays::update_god_rays;
 pub use light::Light2D;
 pub use occluder::LightOccluder2D;
-pub use renderer::{LightingParams, LightingRenderer, MAX_LIGHTS};
+pub(crate) use renderer::LightingRenderer;
 pub use settings::LightingSettings;
 pub use shadow::{MAX_SHADOW_VERTICES, ShadowGeometry, ShadowVertex, generate_shadow_geometry};
 pub use volumetric::VolumetricSettings;

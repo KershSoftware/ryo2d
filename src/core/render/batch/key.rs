@@ -85,6 +85,29 @@ pub(crate) enum BatchShader {
   Line,
   /// Line geometry with a texture along it
   LineTextured,
+  /// A light (or its shadow) into a light buffer
+  Light(LightStep),
+}
+
+/// One draw of a light into a light buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum LightStep {
+  /// Light added up (lights without shadows)
+  Add,
+}
+
+impl LightStep {
+  /// The entry point that draws it.
+  pub(crate) fn fragment(self) -> &'static str {
+    match self {
+      LightStep::Add => "fs_light",
+    }
+  }
+
+  /// The stream it draws from.
+  pub(crate) fn stream(self) -> Stream {
+    Stream::Quads
+  }
 }
 
 /// Which GPU buffer a draw reads: instanced quads or indexed triangles.

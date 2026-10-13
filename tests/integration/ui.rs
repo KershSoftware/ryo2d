@@ -25,8 +25,7 @@ use ryo2d::prelude::*;
 #[test]
 fn regression_ui_visible_in_darkness() {
   // This documents the expected behavior:
-  // - LightingRenderer.ui_affected_by_lighting defaults to false
-  // - When false, UI bypasses the lighting composition
+  // - UI bypasses the lighting composition
   // - UI appears at full brightness regardless of ambient intensity
 
   // In a pitch-black scene (ambient = 0.0), UI should still be visible

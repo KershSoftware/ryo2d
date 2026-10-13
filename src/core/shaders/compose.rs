@@ -35,13 +35,6 @@ pub(crate) const SHADOW: &str = concat!(
   include_str!("core/shadow.wgsl"),
 );
 
-/// Ray-marched shadows
-pub(crate) const RAYMARCH_SHADOW: &str = concat!(
-  include_str!("include/camera.wgsl"),
-  "\n",
-  include_str!("core/raymarch_shadow.wgsl"),
-);
-
 /// Trails and lines (plain and textured)
 pub(crate) const LINE: &str = concat!(
   include_str!("include/camera.wgsl"),
@@ -171,7 +164,6 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("sprite", SPRITE),
     ("light", LIGHT),
     ("shadow", SHADOW),
-    ("raymarch_shadow", RAYMARCH_SHADOW),
     ("line", LINE),
     ("lighting_compose", LIGHTING_COMPOSE),
     ("transition", TRANSITION),

@@ -19,7 +19,7 @@ use crate::core::graphics::{
   Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers, RenderTargets,
 };
 use crate::core::graphics::{ParallaxLayer, parallax};
-use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
+use crate::core::lighting::{FrameLight, Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
 use crate::core::render::scratch::recycle;
 use crate::core::render::{
@@ -115,7 +115,7 @@ impl Engine {
         lighting.set_ambient(*settings.ambient());
         lighting.set_atmosphere(settings.atmosphere().clone());
         let mut effects = self.world.resource_mut::<EffectsManager>();
-        let lights_at = lights.iter().map(|(position, light)| (*position, light));
+        let lights_at = lights.iter().map(|l| (l.position, &l.light));
         crate::core::lighting::update_god_rays(
           &mut effects,
           lights_at,
@@ -173,6 +173,14 @@ impl Engine {
       batch.sync_cameras(rend.device(), &self.camera_uniforms);
 
       self.draw_list.clear();
+      // Lights, for the lit cameras whose layers and view reach them
+      if lit {
+        for light in &lights {
+          if let Some(item) = crate::core::lighting::light_item(light) {
+            self.draw_list.push_light(item);
+          }
+        }
+      }
       self
         .batch_collector
         .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu);
@@ -308,11 +316,11 @@ impl Engine {
         let mut occluder_query = world.query::<OccluderItem>();
         let world: &World = world;
         let mut lighting = lighting.as_mut().filter(|l| l.is_enabled());
-        // Lights and shadows are uploaded once; every lit camera draws them
+        // Shadows are uploaded once; every lit camera draws them
         if let Some(lighting) = lighting.as_deref_mut() {
           let mut occluders = recycle(std::mem::take(&mut self.occluders));
           occluders_to_draw(world, &mut occluder_query, alpha, &mut occluders);
-          lighting.prepare_frame(rend.queue(), &lights, &occluders);
+          lighting.prepare_shadows(rend.queue(), &lights, &occluders);
           self.occluders = recycle(occluders);
         }
         let scene = FrameScene {
@@ -394,18 +402,22 @@ fn game_entity_count(world: &World) -> u32 {
 }
 
 /// The lights to draw this frame, at their world positions (blended for
-/// interpolated entities, like their sprites).
-fn lights_to_draw(world: &mut World, alpha: f32, out: &mut Vec<(Vec2, Light2D)>) {
+/// interpolated entities, like their sprites), with the layers that see them.
+fn lights_to_draw(world: &mut World, alpha: f32, out: &mut Vec<FrameLight>) {
   out.clear();
   out.extend(
     world
-      .query::<(&GlobalTransform, Option<&PreviousGlobalTransform>, &Light2D)>()
+      .query::<(
+        &GlobalTransform,
+        Option<&PreviousGlobalTransform>,
+        &Light2D,
+        Option<&RenderLayers>,
+      )>()
       .iter(world)
-      .map(|(global, previous, light)| {
-        (
-          render_global(global, previous, alpha).translation(),
-          light.clone(),
-        )
+      .map(|(global, previous, light, layers)| FrameLight {
+        position: render_global(global, previous, alpha).translation(),
+        light: light.clone(),
+        layers: layers.copied().unwrap_or_default(),
       }),
   );
 }
@@ -457,7 +469,7 @@ mod tests {
     moved(&mut world, LightOccluder2D::rect(4.0, 4.0));
     let mut lights = Vec::new();
     lights_to_draw(&mut world, 0.5, &mut lights);
-    assert_eq!(lights[0].0, Vec2::new(5.0, 0.0));
+    assert_eq!(lights[0].position, Vec2::new(5.0, 0.0));
     let mut query = world.query::<OccluderItem>();
     let mut occluders = Vec::new();
     occluders_to_draw(&world, &mut query, 0.5, &mut occluders);

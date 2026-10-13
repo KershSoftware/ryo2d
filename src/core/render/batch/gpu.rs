@@ -8,7 +8,10 @@ use wgpu::util::DeviceExt;
 
 use super::pipelines::{self, PipelineKey, Pipelines};
 use super::polyline::{Triangles, Vertex2D};
-use super::{BatchShader, Draw, DrawState, PageKind, Placed, Sampling, Stream, plan_draws};
+use super::{
+  BatchShader, BlendMode, Draw, DrawState, LightStep, PageKind, Placed, Sampling, Stream,
+  plan_draws,
+};
 use crate::core::ecs::Entity;
 use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
@@ -82,12 +85,14 @@ impl GrowingBuffer {
   }
 }
 
-/// One camera's draws: before lighting, and after it.
+/// One camera's draws: before lighting, after it, and its lights (into
+/// its light buffer).
 #[derive(Default)]
 struct CameraDraws {
   camera: Option<Entity>,
   lit: Vec<Draw>,
   unlit: Vec<Draw>,
+  lights: Vec<Draw>,
 }
 
 impl Batch2D {
@@ -321,6 +326,19 @@ impl Batch2D {
         next,
         &mut place,
       );
+      // A lit camera's lights, into its light buffer: those without
+      // shadows add up in one draw
+      drawn.lights.clear();
+      if camera.lit {
+        let key = light_key(LightStep::Add, format);
+        pipelines.ensure(device, key, None);
+        let start = placed.len() as u32;
+        placed.extend(list.lights_for(camera).map(|light| light.instance));
+        let end = placed.len() as u32;
+        if end > start {
+          drawn.lights.push(light_draw(LightStep::Add, start..end));
+        }
+      }
     }
 
     if self.placed.len() > self.capacity {
@@ -346,12 +364,22 @@ impl Batch2D {
     if lit { &drawn.lit } else { &drawn.unlit }
   }
 
+  /// The light draws [`prepare`](Self::prepare) laid out for `camera`,
+  /// into its light buffer (none for a camera that is not lit).
+  pub(crate) fn light_draws(&self, camera: Entity) -> &[Draw] {
+    self
+      .draws
+      .iter()
+      .find(|d| d.camera == Some(camera))
+      .map_or(&[], |drawn| &drawn.lights)
+  }
+
   /// How many draw calls the laid-out frame issues.
   pub(crate) fn draw_count(&self) -> usize {
     self
       .draws
       .iter()
-      .map(|drawn| drawn.lit.len() + drawn.unlit.len())
+      .map(|drawn| drawn.lit.len() + drawn.unlit.len() + drawn.lights.len())
       .sum()
   }
 
@@ -380,13 +408,18 @@ impl Batch2D {
     else {
       return;
     };
-    // Untextured lines bind no texture; everything else samples a page
+    // Untextured lines and lights bind no texture; everything else samples
+    // a page
     let texture_group = match draw.state.page {
       Some(page) => match textures.page_bind_group(page, draw.state.sampling) {
         Some(group) => Some(group),
         None => return,
       },
-      None if draw.stream == Stream::Quads => return,
+      None
+        if draw.stream == Stream::Quads && !matches!(draw.state.shader, BatchShader::Light(_)) =>
+      {
+        return;
+      }
       None => None,
     };
     pass.set_pipeline(pipeline);
@@ -414,6 +447,32 @@ impl Batch2D {
   #[cfg(test)]
   pub(crate) fn capacity(&self) -> usize {
     self.capacity
+  }
+}
+
+/// The pipeline key of a light-buffer draw.
+fn light_key(step: LightStep, format: wgpu::TextureFormat) -> PipelineKey {
+  PipelineKey {
+    shader: BatchShader::Light(step),
+    blend: BlendMode::Additive,
+    stream: step.stream(),
+    page: PageKind::Srgb8,
+    format,
+  }
+}
+
+/// A light-buffer draw of `range` (instances or indices, by the step's stream).
+fn light_draw(step: LightStep, range: std::ops::Range<u32>) -> Draw {
+  Draw {
+    stream: step.stream(),
+    state: DrawState {
+      page: None,
+      shader: BatchShader::Light(step),
+      blend: BlendMode::Additive,
+      sampling: Sampling::Nearest,
+      scissor: None,
+    },
+    range,
   }
 }
 
