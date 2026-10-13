@@ -2,6 +2,7 @@
 
 use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
 use crate::core::render::context::image_view;
+use crate::core::render::look::LookUniforms;
 use crate::core::render::{FrameImage, RenderContext, RenderPass, pass_ids};
 use crate::core::shaders::OutputBuffer;
 
@@ -11,6 +12,7 @@ struct TonemapGpu {
   format: wgpu::TextureFormat,
   size: (u32, u32),
   layout: wgpu::BindGroupLayout,
+  uniforms: wgpu::Buffer,
   pipeline: wgpu::RenderPipeline,
   bind_groups: BindGroupCache,
 }
@@ -19,16 +21,28 @@ impl TonemapGpu {
   fn new(device: &wgpu::Device, format: wgpu::TextureFormat, size: (u32, u32)) -> Self {
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
       label: Some("Tonemap Bind Group Layout"),
-      entries: &[wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-          sample_type: wgpu::TextureSampleType::Float { filterable: false },
-          view_dimension: wgpu::TextureViewDimension::D2,
-          multisampled: false,
+      entries: &[
+        wgpu::BindGroupLayoutEntry {
+          binding: 0,
+          visibility: wgpu::ShaderStages::FRAGMENT,
+          ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+          },
+          count: None,
         },
-        count: None,
-      }],
+        wgpu::BindGroupLayoutEntry {
+          binding: 1,
+          visibility: wgpu::ShaderStages::FRAGMENT,
+          ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+          },
+          count: None,
+        },
+      ],
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Tonemap Shader"),
@@ -64,10 +78,17 @@ impl TonemapGpu {
       multiview_mask: None,
       cache: None,
     });
+    let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("Tonemap Uniforms"),
+      size: std::mem::size_of::<LookUniforms>() as u64,
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+      mapped_at_creation: false,
+    });
     Self {
       format,
       size,
       layout,
+      uniforms,
       pipeline,
       bind_groups: BindGroupCache::default(),
     }
@@ -101,6 +122,12 @@ impl RenderPass for Tonemap {
       Some(gpu) if gpu.format == format && gpu.size == size => gpu,
       slot => slot.insert(TonemapGpu::new(device, format, size)),
     };
+    let queue = ctx.queue();
+    queue.write_buffer(
+      &gpu.uniforms,
+      0,
+      bytemuck::bytes_of(&ctx.scene.look.uniforms()),
+    );
     let RenderContext {
       encoder,
       targets,
@@ -113,7 +140,7 @@ impl RenderPass for Tonemap {
       device,
       "Tonemap Bind Group",
       &gpu.layout,
-      &[Bound::View(source)],
+      &[Bound::View(source), Bound::Buffer(gpu.uniforms.clone())],
     );
     {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

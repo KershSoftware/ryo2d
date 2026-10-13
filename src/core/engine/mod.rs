@@ -302,6 +302,7 @@ pub(crate) fn init_world_resources(
   spawn_main_camera(world, glam::Vec2::new(w as f32, h as f32));
   world.insert_resource(assets);
   world.insert_resource(EffectsManager::new());
+  world.insert_resource(crate::core::render::Look::default());
   world.insert_resource(LightingSettings::default());
   world.insert_resource(crate::core::graphics::RenderTargets::default());
   world.insert_resource(crate::core::render::DebugDraw::default());

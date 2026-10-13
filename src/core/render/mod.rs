@@ -46,6 +46,7 @@ mod debug_draw;
 mod draw_list;
 mod entities;
 mod frame;
+pub(crate) mod look;
 mod pass;
 mod passes;
 mod pipeline;
@@ -65,6 +66,7 @@ pub use frame::FrameInfo;
 pub(crate) use frame::{
   CameraDraw, FrameImage, FrameScene, LightingFrame, PixelRect, TRANSITION_VISIBLE, plan_cameras,
 };
+pub use look::{Look, Tonemap};
 pub use pass::{PassScope, RenderPass};
 pub use pipeline::{RenderPipeline, RenderPipelineError};
 

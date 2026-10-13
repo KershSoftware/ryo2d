@@ -314,6 +314,7 @@ impl Engine {
           draw_list: &self.draw_list,
           lighting: lighting.map(|renderer| LightingFrame { renderer }),
           effects: world.resource::<EffectsManager>(),
+          look: world.resource::<crate::core::render::Look>(),
           ui_buffer: &self.ui_buffer,
           cameras: &self.camera_draws,
           camera_uniforms: &self.camera_uniforms,

@@ -11,6 +11,7 @@ fn engine(scene: impl Scene + 'static) -> Option<HeadlessEngine> {
 }
 
 fn white_sprite(ctx: &mut SceneContext) {
+  ctx.look().tonemap = Tonemap::Clamp;
   let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 255, 255, 255, 255), "white");
   ctx.world.spawn((
     Transform::from_xy(0.0, 0.0),

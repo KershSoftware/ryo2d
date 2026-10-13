@@ -2,6 +2,7 @@
 
 use super::DrawList;
 use super::batch::Batch2D;
+use super::look::Look;
 use crate::core::ecs::Entity;
 use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
@@ -80,6 +81,8 @@ pub(crate) struct FrameScene<'a> {
   /// `Some` only while lighting is enabled
   pub(crate) lighting: Option<LightingFrame<'a>>,
   pub(crate) effects: &'a EffectsManager,
+  /// The frame's look (the tonemap pass reads it)
+  pub(crate) look: &'a Look,
   pub(crate) ui_buffer: &'a [u8],
   /// The cameras the camera passes run for, in render order, and their
   /// uniforms

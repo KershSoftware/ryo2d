@@ -38,6 +38,10 @@ impl AtlasScene {
 }
 
 impl Scene for AtlasScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+  }
+
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     SceneAction::Continue
   }

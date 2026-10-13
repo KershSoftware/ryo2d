@@ -12,6 +12,7 @@ struct Squares;
 
 impl Scene for Squares {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
     let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(20, 20, 255, 0, 0, 255), "red");
     ctx.world.spawn((
       Transform::from_xy(100.0, 50.0),

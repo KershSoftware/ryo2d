@@ -16,6 +16,7 @@ struct Fixture(Option<Setup>);
 
 impl Scene for Fixture {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
     if let Some(mut setup) = self.0.take() {
       setup(ctx);
     }

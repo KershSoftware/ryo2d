@@ -45,5 +45,8 @@ mod custom_shaders;
 #[path = "e2e/sprite_effects.rs"]
 mod sprite_effects;
 
+#[path = "e2e/look.rs"]
+mod look;
+
 #[path = "e2e/lighting.rs"]
 mod lighting;

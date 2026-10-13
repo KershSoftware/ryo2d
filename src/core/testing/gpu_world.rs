@@ -278,6 +278,7 @@ fn editing_a_shader_file_redraws_with_the_new_source() {
   }
   impl Scene for Edits {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.look().tonemap = Tonemap::Clamp;
       let shader = ctx.assets.load_shader(&self.path).expect("load shader");
       let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 200, 30, 40, 255), "edit");
       ctx.world.spawn((

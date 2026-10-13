@@ -82,7 +82,7 @@ impl SceneCleanup {
   pub const WORLD: Self = Self(1 << 0);
   /// Reset camera position, zoom, and shake (viewport preserved).
   pub const CAMERA: Self = Self(1 << 1);
-  /// Clear all post-processing effects.
+  /// Clear all post-processing effects and reset the look.
   pub const EFFECTS: Self = Self(1 << 2);
   /// Reset the lighting settings to defaults: forced on/off, ambient light,
   /// atmosphere, and automatic lighting (back off until a light exists).
@@ -436,6 +436,7 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
   spawn_main_camera(world, glam::Vec2::new(800.0, 600.0));
   world.insert_resource(AssetManager::new());
   world.insert_resource(EffectsManager::new());
+  world.insert_resource(crate::core::render::Look::default());
   world.insert_resource(LightingSettings::default());
   world.insert_resource(crate::core::graphics::RenderTargets::default());
   world.insert_resource(crate::core::render::DebugDraw::default());

@@ -12,6 +12,7 @@ use crate::core::graphics::{CameraMut, RenderTargets, ScreenMapping};
 use crate::core::input::Input;
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::{SceneMessages, register_message};
+use crate::core::render::Look;
 use crate::core::render::{DebugDraw, RenderPipeline};
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
 use crate::core::shaders::EffectsManager;
@@ -137,6 +138,11 @@ impl SceneContext<'_> {
   /// Screen-wide post-process effects.
   pub fn effects(&mut self) -> Mut<'_, EffectsManager> {
     self.world.resource_mut::<EffectsManager>()
+  }
+
+  /// The frame's look: exposure, the tonemap curve and colour grading.
+  pub fn look(&mut self) -> Mut<'_, Look> {
+    self.world.resource_mut::<Look>()
   }
 
   /// Whether lighting runs (forced on or off), ambient light and atmosphere.

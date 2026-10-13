@@ -840,6 +840,7 @@ impl WgpuRenderer {
     let sprites = SpriteGpuRenderer::new(&self.device, &self.queue);
     let uniforms = super::camera_gpu::CameraUniforms::default();
     let effects = EffectsManager::new();
+    let look = crate::core::render::Look::default();
     let draw_list = DrawList::default();
     let scene = FrameScene {
       sprites: &sprites,
@@ -847,6 +848,7 @@ impl WgpuRenderer {
       draw_list: &draw_list,
       lighting: None,
       effects: &effects,
+      look: &look,
       ui_buffer,
       cameras: &[],
       camera_uniforms: &uniforms,

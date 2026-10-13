@@ -8,6 +8,7 @@ use crate::core::graphics::camera_mut::reset_main_camera;
 use crate::core::graphics::{Camera2d, CameraTarget, MainCamera, RenderTargets};
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::clear_messages;
+use crate::core::render::Look;
 use crate::core::shaders::EffectsManager;
 use crate::core::tilemap::manager::forget_despawned_tilemaps;
 use crate::core::time::Time;
@@ -38,10 +39,13 @@ pub(super) fn execute_cleanup(cleanup: SceneCleanup, world: &mut World, audio: &
   if cleanup.contains(SceneCleanup::CAMERA) {
     reset_main_camera(world);
   }
-  if cleanup.contains(SceneCleanup::EFFECTS)
-    && let Some(mut effects) = world.get_resource_mut::<EffectsManager>()
-  {
-    effects.clear();
+  if cleanup.contains(SceneCleanup::EFFECTS) {
+    if let Some(mut effects) = world.get_resource_mut::<EffectsManager>() {
+      effects.clear();
+    }
+    if let Some(mut look) = world.get_resource_mut::<Look>() {
+      *look = Look::default();
+    }
   }
   if cleanup.contains(SceneCleanup::LIGHTING)
     && let Some(mut lighting) = world.get_resource_mut::<LightingSettings>()

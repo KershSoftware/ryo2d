@@ -48,6 +48,7 @@ impl Fixture {
 
 impl Scene for Fixture {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
     (self.setup)(ctx);
   }
 
