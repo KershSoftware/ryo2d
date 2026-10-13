@@ -326,17 +326,50 @@ impl Batch2D {
         next,
         &mut place,
       );
-      // A lit camera's lights, into its light buffer: those without
-      // shadows add up in one draw
+      // A lit camera's lights, into its light buffer
       drawn.lights.clear();
       if camera.lit {
-        let key = light_key(LightStep::Add, format);
-        pipelines.ensure(device, key, None);
+        for step in [
+          LightStep::Add,
+          LightStep::ResetMask,
+          LightStep::Shadow,
+          LightStep::Masked,
+          LightStep::Coloured,
+        ] {
+          pipelines.ensure(device, light_key(step, format), None);
+        }
+        // Lights without shadow volumes add up in one draw
         let start = placed.len() as u32;
-        placed.extend(list.lights_for(camera).map(|light| light.instance));
+        placed.extend(
+          list
+            .lights_for(camera)
+            .filter(|light| light.shadows.is_empty())
+            .map(|light| light.instance),
+        );
         let end = placed.len() as u32;
         if end > start {
           drawn.lights.push(light_draw(LightStep::Add, start..end));
+        }
+        // Each shadowed light masks itself: full in its quad, cut by its
+        // shadows, then let through (and through a coloured shadow, tinted)
+        for light in list
+          .lights_for(camera)
+          .filter(|light| !light.shadows.is_empty())
+        {
+          let at = placed.len() as u32;
+          placed.push(light.instance);
+          drawn
+            .lights
+            .push(light_draw(LightStep::ResetMask, at..at + 1));
+          drawn
+            .lights
+            .push(light_draw(LightStep::Shadow, light.shadows.clone()));
+          drawn.lights.push(light_draw(LightStep::Masked, at..at + 1));
+          if light.coloured {
+            drawn
+              .lights
+              .push(light_draw(LightStep::Coloured, at..at + 1));
+          }
         }
       }
     }

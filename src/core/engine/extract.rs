@@ -101,7 +101,8 @@ impl Engine {
         rend.request_capture(path);
       }
 
-      // Lights at their world position (occluders are gathered while drawing)
+      // Lights at their world position (occluders are gathered with the
+      // frame's triangles, for their shadow volumes)
       let mut lights = std::mem::take(&mut self.lights);
       lights_to_draw(&mut self.world, alpha, &mut lights);
       if let Some(lighting) = lighting.as_mut() {
@@ -173,14 +174,6 @@ impl Engine {
       batch.sync_cameras(rend.device(), &self.camera_uniforms);
 
       self.draw_list.clear();
-      // Lights, for the lit cameras whose layers and view reach them
-      if lit {
-        for light in &lights {
-          if let Some(item) = crate::core::lighting::light_item(light) {
-            self.draw_list.push_light(item);
-          }
-        }
-      }
       self
         .batch_collector
         .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu);
@@ -227,6 +220,19 @@ impl Engine {
       // overlays become triangles, one draw-list item each
       let triangles = batch.triangles();
       triangles.clear();
+      // Lights, each with its shadow volumes, for the lit cameras whose
+      // layers and view reach them
+      let mut occluders = recycle(std::mem::take(&mut self.occluders));
+      if lit {
+        let mut query = self.world.query::<OccluderItem>();
+        occluders_to_draw(&self.world, &mut query, alpha, &mut occluders);
+        for light in &lights {
+          if let Some(item) = crate::core::lighting::light_item(light, &occluders, triangles) {
+            self.draw_list.push_light(item);
+          }
+        }
+      }
+      self.occluders = recycle(occluders);
       let mut points = std::mem::take(&mut self.poly_points);
       for (trail, layers) in self
         .world
@@ -313,16 +319,8 @@ impl Engine {
     let result = self
       .world
       .resource_scope(|world, mut pipeline: Mut<RenderPipeline>| {
-        let mut occluder_query = world.query::<OccluderItem>();
         let world: &World = world;
-        let mut lighting = lighting.as_mut().filter(|l| l.is_enabled());
-        // Shadows are uploaded once; every lit camera draws them
-        if let Some(lighting) = lighting.as_deref_mut() {
-          let mut occluders = recycle(std::mem::take(&mut self.occluders));
-          occluders_to_draw(world, &mut occluder_query, alpha, &mut occluders);
-          lighting.prepare_shadows(rend.queue(), &lights, &occluders);
-          self.occluders = recycle(occluders);
-        }
+        let lighting = lighting.as_mut().filter(|l| l.is_enabled());
         let scene = FrameScene {
           sprites: &gpu,
           batch: Some(&batch),
@@ -332,7 +330,6 @@ impl Engine {
           look: world.resource::<crate::core::render::Look>(),
           ui_buffer: &self.ui_buffer,
           cameras: &self.camera_draws,
-          camera_uniforms: &self.camera_uniforms,
           time: real_time,
           overlay,
         };

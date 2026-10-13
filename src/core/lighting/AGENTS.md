@@ -5,7 +5,7 @@
 The lighting system uses a **deferred lighting approach**:
 
 1. **Light Accumulation Pass**: all lights render to a light buffer with additive blending.
-2. **Shadow Pass**: occluder geometry is projected away from lights and subtracted from the light buffer (reverse-subtract blending).
+2. **Shadows**: each shadow-casting light masks itself in the light buffer's alpha before it adds its light: the mask is reset to 1 in its quad, its shadow volumes (occluder edges facing away from it, projected past its radius, as batch triangles) each keep 1 - strength of it, then the light adds where the mask lets it through (and, for a coloured shadow, tinted where it held it back). One light's shadow never darkens another light, and overlapping shadows combine.
 3. **Composition Pass**: `final_color = base_color × (ambient + light_buffer)`, plus atmosphere scattering/fog.
 
 Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()`): `set_ambient(AmbientLight::...)`, `set_atmosphere(..)` and `set_enabled(bool)`. The `LightingRenderer` is engine-owned; `present_frame` copies the settings into it before each frame. Volumetric light is per light (`Light2D::set_volumetric`); there is no global switch.
@@ -20,8 +20,8 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 
 ## Limits
 
-- **No light cap**: each lit camera draws the lights on its `RenderLayers` whose reach meets its view, in one instanced draw. A light with a radius or intensity that is not positive and finite, or a position that is not finite, draws nothing.
-- Shadow casting and complex occluder polygons add cost. Disable shadows on unimportant lights.
+- **No light cap**: each lit camera draws the lights on its `RenderLayers` whose reach meets its view: those without shadow volumes in one instanced draw, each shadowed one in three or four draws of its own. A light with a radius or intensity that is not positive and finite, or a position that is not finite, draws nothing.
+- **No shadow cap**: shadow volumes are built per light, once a frame, for every enabled occluder within twice its radius, and have no vertex limit. Shadow casting and complex occluder polygons add cost. Disable shadows on unimportant lights.
 
 ## Conventions
 

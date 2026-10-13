@@ -4,7 +4,6 @@ use super::DrawList;
 use super::batch::Batch2D;
 use super::look::Look;
 use crate::core::ecs::Entity;
-use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
   Camera2d, CameraClear, CameraTarget, CameraView, RenderLayers, RenderTarget, RenderTargets,
   SpriteGpuRenderer, Viewport,
@@ -69,7 +68,7 @@ pub(crate) enum FrameImage {
 
 /// Lighting inputs for a frame (only built while lighting is enabled).
 pub(crate) struct LightingFrame<'a> {
-  /// With this frame's shadows uploaded (`prepare_shadows`)
+  /// Each lit camera's light buffer and the compose pass
   pub(crate) renderer: &'a mut LightingRenderer,
 }
 
@@ -88,10 +87,8 @@ pub(crate) struct FrameScene<'a> {
   /// The frame's look (the tonemap pass reads it)
   pub(crate) look: &'a Look,
   pub(crate) ui_buffer: &'a [u8],
-  /// The cameras the camera passes run for, in render order, and their
-  /// uniforms
+  /// The cameras the camera passes run for, in render order
   pub(crate) cameras: &'a [CameraDraw],
-  pub(crate) camera_uniforms: &'a CameraUniforms,
   pub(crate) time: f32,
   /// The scene transition's fade overlay: colour (RGB bytes) and opacity.
   /// Opacity 0 means no fade.

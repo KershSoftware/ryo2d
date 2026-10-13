@@ -851,7 +851,6 @@ impl WgpuRenderer {
     ui_buffer: &[u8],
   ) -> Result<(), FrameError> {
     let sprites = SpriteGpuRenderer::new(&self.device, &self.queue);
-    let uniforms = super::camera_gpu::CameraUniforms::default();
     let effects = EffectsManager::new();
     let look = crate::core::render::Look::default();
     let draw_list = DrawList::default();
@@ -864,7 +863,6 @@ impl WgpuRenderer {
       look: &look,
       ui_buffer,
       cameras: &[],
-      camera_uniforms: &uniforms,
       time: 0.0,
       overlay: ([0; 3], 0.0),
     };

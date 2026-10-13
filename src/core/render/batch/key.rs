@@ -89,24 +89,40 @@ pub(crate) enum BatchShader {
   Light(LightStep),
 }
 
-/// One draw of a light into a light buffer.
+/// One draw of a light into a light buffer. A shadowed light draws, inside
+/// its quad: `ResetMask`, its `Shadow` volumes, `Masked`, and `Coloured` if
+/// its shadow is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum LightStep {
-  /// Light added up (lights without shadows)
+  /// Light added up (lights without shadow volumes)
   Add,
+  /// The light buffer's alpha set to 1 in the light's quad
+  ResetMask,
+  /// Each shadow volume keeps 1 - strength of the alpha
+  Shadow,
+  /// The light added where the alpha lets it through
+  Masked,
+  /// The light, tinted by its shadow colour, where the alpha held it back
+  Coloured,
 }
 
 impl LightStep {
   /// The entry point that draws it.
   pub(crate) fn fragment(self) -> &'static str {
     match self {
-      LightStep::Add => "fs_light",
+      LightStep::Add | LightStep::Masked => "fs_light",
+      LightStep::ResetMask => "fs_mask_reset",
+      LightStep::Shadow => "fs_shadow",
+      LightStep::Coloured => "fs_light_coloured",
     }
   }
 
-  /// The stream it draws from.
+  /// The stream it draws from: shadow volumes are triangles, the rest quads.
   pub(crate) fn stream(self) -> Stream {
-    Stream::Quads
+    match self {
+      LightStep::Shadow => Stream::Triangles,
+      _ => Stream::Quads,
+    }
   }
 }
 

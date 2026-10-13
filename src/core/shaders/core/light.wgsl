@@ -102,3 +102,15 @@ fn light_at(in: VertexOutput) -> vec3<f32> {
 fn fs_light(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(light_at(in), 0.0);
 }
+
+// A shadowed light's mask starts full inside its quad
+@fragment
+fn fs_mask_reset(in: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}
+
+// The light through a coloured shadow: tinted, where the mask held it back
+@fragment
+fn fs_light_coloured(in: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(light_at(in) * in.shadow_color.rgb, 0.0);
+}

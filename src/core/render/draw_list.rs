@@ -128,6 +128,10 @@ pub(crate) struct DrawLight {
   /// The world box it lights
   pub(crate) min: Vec2,
   pub(crate) max: Vec2,
+  /// Its shadow volumes in the batch's triangle indices (empty: none)
+  pub(crate) shadows: std::ops::Range<u32>,
+  /// Its shadow is coloured: the light shows through it, tinted
+  pub(crate) coloured: bool,
 }
 
 /// The frame's sprites, trails and lines, reused across frames.
@@ -492,6 +496,8 @@ mod tests {
       layers,
       min: at - 5.0,
       max: at + 5.0,
+      shadows: 0..0,
+      coloured: false,
     };
     let mut list = DrawList::default();
     list.push_light(light(Vec2::new(50.0, 50.0), RenderLayers::default()));

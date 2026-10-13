@@ -219,3 +219,143 @@ fn degenerate_lights_draw_nothing() {
     "the floor is lit evenly"
   );
 }
+
+/// The red byte at (96, 32), lit by light B; with `with_a`, light A on the
+/// left casts an occluder's shadow over all of B.
+fn light_b(with_a: bool) -> Option<u8> {
+  let frame = lit(move |ctx| {
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    if with_a {
+      ctx.world.spawn((
+        Transform::from_xy(24.0, 32.0),
+        Light2D::point(Color::WHITE, 100.0).with_shadows(),
+      ));
+      ctx.world.spawn((
+        Transform::from_xy(40.0, 32.0),
+        LightOccluder2D::rect(4.0, 16.0),
+      ));
+    }
+    ctx.world.spawn((
+      Transform::from_xy(96.0, 32.0),
+      Light2D::point(Color::WHITE, 20.0).with_intensity(0.3),
+    ));
+  })?;
+  Some(frame.get_pixel(96, 32).0[0])
+}
+
+#[test]
+fn a_shadow_darkens_only_its_own_light() {
+  let (Some(in_shadow), Some(alone)) = (light_b(true), light_b(false)) else {
+    return;
+  };
+  assert!(
+    in_shadow.abs_diff(alone) <= 2,
+    "B alone {alone}, in A's shadow {in_shadow}"
+  );
+}
+
+/// The red byte at (80, 32) behind `occluders` stacked occluders, under a
+/// light whose shadow keeps half its light.
+fn behind(occluders: usize) -> Option<u8> {
+  let frame = lit(move |ctx| {
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    let light = Light2D::point(Color::WHITE, 100.0)
+      .with_intensity(0.5)
+      .with_shadows()
+      .with_shadow_color(Color::new(0, 0, 0, 128));
+    ctx.world.spawn((Transform::from_xy(24.0, 32.0), light));
+    for i in 0..occluders {
+      ctx.world.spawn((
+        Transform::from_xy(40.0 + i as f32 * 6.0, 32.0),
+        LightOccluder2D::rect(4.0, 16.0),
+      ));
+    }
+  })?;
+  Some(frame.get_pixel(80, 32).0[0])
+}
+
+#[test]
+fn overlapping_shadows_combine_instead_of_cutting_twice() {
+  let (Some(open), Some(one), Some(two)) = (behind(0), behind(1), behind(2)) else {
+    return;
+  };
+  let linear = |byte: u8| {
+    let c = f32::from(byte) / 255.0;
+    if c <= 0.04045 {
+      c / 12.92
+    } else {
+      ((c + 0.055) / 1.055).powf(2.4)
+    }
+  };
+  let (open, one, two) = (linear(open), linear(one), linear(two));
+  // Alpha 128 keeps about half the light behind one occluder, a quarter behind two
+  assert!((one / open - 0.5).abs() < 0.06, "one {one} of {open}");
+  assert!((two / open - 0.25).abs() < 0.06, "two {two} of {open}");
+}
+
+#[test]
+fn a_coloured_shadow_lets_its_colour_through() {
+  let Some(frame) = lit(|ctx| {
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    let light = Light2D::point(Color::WHITE, 100.0)
+      .with_intensity(0.5)
+      .with_shadows()
+      .with_shadow_color(Color::rgb(255, 0, 0));
+    ctx.world.spawn((Transform::from_xy(24.0, 32.0), light));
+    ctx.world.spawn((
+      Transform::from_xy(40.0, 32.0),
+      LightOccluder2D::rect(4.0, 16.0),
+    ));
+  }) else {
+    return;
+  };
+  let pixel = frame.get_pixel(80, 32).0;
+  assert!(pixel[0] > 40 && pixel[1] < 10 && pixel[2] < 10, "{pixel:?}");
+}
+
+/// Two lights of intensity 60000 on the edge of a black patch over the left
+/// half of the floor: together they pass what the light buffer's half
+/// floats hold, and bloom spreads whatever they leave.
+#[test]
+fn lights_past_the_half_float_range_leave_no_nan() {
+  let Some(frame) = lit(|ctx| {
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    ctx.effects().set_bloom(1.0);
+    let black = SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 0, 0, 0, 255), "lit-black");
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(black)
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(1),
+    ));
+    for _ in 0..2 {
+      ctx.world.spawn((
+        Transform::from_xy(64.0, 32.0),
+        Light2D::point(Color::WHITE, 30.0).with_intensity(60000.0),
+      ));
+    }
+  }) else {
+    return;
+  };
+  // The lit floor shows white and the black patch beside it glows: NaN
+  // (0 x inf where the light buffer overflowed) would show black, and
+  // bloom would spread it
+  for x in 40..=88 {
+    let pixel = frame.get_pixel(x, 32).0;
+    let lit_floor = x >= 64;
+    let shown = if lit_floor {
+      pixel[0] >= 242
+    } else {
+      pixel[0] > 0
+    };
+    assert!(shown, "x {x}: {pixel:?}");
+  }
+}

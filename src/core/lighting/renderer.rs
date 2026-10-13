@@ -1,16 +1,12 @@
-//! The lighting renderer: each lit camera's light buffer, the shadows cut
-//! from it and the compose pass that lights the scene with it.
+//! The lighting renderer: each lit camera's light buffer and the compose
+//! pass that lights the scene with it.
 //!
-//! Lights themselves are batch quads (`lighting::batch`), drawn into the
-//! light buffers by the `lighting` pass.
+//! Lights and their shadow volumes are batch draws (`lighting::batch`),
+//! drawn into the light buffers by the `lighting` pass.
 
-use super::LightOccluder2D;
-use super::batch::FrameLight;
-use super::shadow::{MAX_SHADOW_VERTICES, ShadowVertex, generate_shadow_geometry};
 use super::{AmbientLight, Atmosphere};
-use crate::core::ecs::{Entity, GlobalTransform};
+use crate::core::ecs::Entity;
 use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
-use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::render::CameraDraw;
 use std::collections::HashMap;
 
@@ -47,14 +43,15 @@ impl LightTargets {
       height,
       depth_or_array_layers: 1,
     };
-    // Additive blending target, HDR-capable
+    // The batch's light draws accumulate into it (their pipelines are
+    // made for the scene format); its alpha masks shadowed lights
     let light_texture = device.create_texture(&wgpu::TextureDescriptor {
       label: Some("Light Accumulation Texture"),
       size,
       mip_level_count: 1,
       sample_count: 1,
       dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba16Float,
+      format: crate::core::render::SCENE_FORMAT,
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
       view_formats: &[],
     });
@@ -95,11 +92,8 @@ pub(crate) struct LightingRenderer {
   /// The targets of each lit camera, at its image's size
   cameras: HashMap<Entity, LightTargets>,
 
-  /// Each lit camera's shadow and compose bind groups, made once
+  /// Each lit camera's compose bind group, made once
   bind_groups: BindGroupCache,
-
-  /// The shadow vertices `prepare_shadows` uploaded this frame
-  frame_shadow_vertices: u32,
 
   /// Sampler for textures
   sampler: wgpu::Sampler,
@@ -118,14 +112,6 @@ pub(crate) struct LightingRenderer {
 
   /// Whether lighting is enabled
   enabled: bool,
-
-  // Shadow rendering resources
-  /// Pipeline for rendering shadow geometry
-  shadow_pipeline: wgpu::RenderPipeline,
-  /// Vertex buffer for shadow geometry
-  shadow_vertex_buffer: wgpu::Buffer,
-  /// Bind group layout for shadow rendering
-  shadow_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl LightingRenderer {
@@ -240,144 +226,16 @@ impl LightingRenderer {
       cache: None,
     });
 
-    // === Shadow Pipeline Setup ===
-
-    // Shadow bind group layout (same globals as lights)
-    let shadow_bind_group_layout =
-      device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Shadow Bind Group Layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-          binding: 0,
-          visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-          ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-          },
-          count: None,
-        }],
-      });
-
-    // Shadow vertex buffer
-    let shadow_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-      label: Some("Shadow Vertex Buffer"),
-      size: (std::mem::size_of::<ShadowVertex>() * MAX_SHADOW_VERTICES) as u64,
-      usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-      mapped_at_creation: false,
-    });
-
-    // Shadow shader
-    let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-      label: Some("Shadow Shader"),
-      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::SHADOW.into()),
-    });
-
-    let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-      label: Some("Shadow Pipeline Layout"),
-      bind_group_layouts: &[Some(&shadow_bind_group_layout)],
-      immediate_size: 0,
-    });
-
-    // Shadow pipeline with reverse-subtract blending
-    let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-      label: Some("Shadow Pipeline"),
-      layout: Some(&shadow_pipeline_layout),
-      vertex: wgpu::VertexState {
-        module: &shadow_shader,
-        entry_point: Some("vs_main"),
-        buffers: &[Some(wgpu::VertexBufferLayout {
-          array_stride: std::mem::size_of::<ShadowVertex>() as u64,
-          step_mode: wgpu::VertexStepMode::Vertex,
-          attributes: &[
-            // position: vec2<f32>
-            wgpu::VertexAttribute {
-              offset: 0,
-              shader_location: 0,
-              format: wgpu::VertexFormat::Float32x2,
-            },
-            // light_pos: vec2<f32>
-            wgpu::VertexAttribute {
-              offset: 8,
-              shader_location: 1,
-              format: wgpu::VertexFormat::Float32x2,
-            },
-            // light_radius: f32
-            wgpu::VertexAttribute {
-              offset: 16,
-              shader_location: 2,
-              format: wgpu::VertexFormat::Float32,
-            },
-            // softness: f32
-            wgpu::VertexAttribute {
-              offset: 20,
-              shader_location: 3,
-              format: wgpu::VertexFormat::Float32,
-            },
-            // shadow_color: u32 (packed RGBA)
-            wgpu::VertexAttribute {
-              offset: 24,
-              shader_location: 4,
-              format: wgpu::VertexFormat::Uint32,
-            },
-          ],
-        })],
-        compilation_options: Default::default(),
-      },
-      fragment: Some(wgpu::FragmentState {
-        module: &shadow_shader,
-        entry_point: Some("fs_main"),
-        targets: &[Some(wgpu::ColorTargetState {
-          format: wgpu::TextureFormat::Rgba16Float,
-          // Reverse subtract: dst = dst - src (subtract shadow from light)
-          blend: Some(wgpu::BlendState {
-            color: wgpu::BlendComponent {
-              src_factor: wgpu::BlendFactor::One,
-              dst_factor: wgpu::BlendFactor::One,
-              operation: wgpu::BlendOperation::ReverseSubtract,
-            },
-            alpha: wgpu::BlendComponent {
-              src_factor: wgpu::BlendFactor::Zero,
-              dst_factor: wgpu::BlendFactor::One,
-              operation: wgpu::BlendOperation::Add,
-            },
-          }),
-          write_mask: wgpu::ColorWrites::ALL,
-        })],
-        compilation_options: Default::default(),
-      }),
-      primitive: wgpu::PrimitiveState {
-        topology: wgpu::PrimitiveTopology::TriangleList,
-        strip_index_format: None,
-        front_face: wgpu::FrontFace::Ccw,
-        cull_mode: None,
-        polygon_mode: wgpu::PolygonMode::Fill,
-        unclipped_depth: false,
-        conservative: false,
-      },
-      depth_stencil: None,
-      multisample: wgpu::MultisampleState {
-        count: 1,
-        mask: !0,
-        alpha_to_coverage_enabled: false,
-      },
-      multiview_mask: None,
-      cache: None,
-    });
-
     Self {
       format,
       cameras: HashMap::new(),
       bind_groups: BindGroupCache::default(),
-      frame_shadow_vertices: 0,
       sampler,
       compose_pipeline,
       compose_bind_group_layout,
       ambient: AmbientLight::default(),
       atmosphere: Atmosphere::default(),
       enabled: false, // Disabled by default, enabled when Light2D entities exist
-      shadow_pipeline,
-      shadow_vertex_buffer,
-      shadow_bind_group_layout,
     }
   }
 
@@ -435,81 +293,9 @@ impl LightingRenderer {
     }
   }
 
-  /// Build this frame's shadow geometry and upload it once; every lit
-  /// camera then cuts it from its light buffer
-  /// ([`draw_shadows_for_camera`](Self::draw_shadows_for_camera)).
-  pub(crate) fn prepare_shadows(
-    &mut self,
-    queue: &wgpu::Queue,
-    lights: &[FrameLight],
-    occluders: &[(GlobalTransform, &LightOccluder2D)],
-  ) {
-    self.frame_shadow_vertices = 0;
-    if occluders.is_empty() || !lights.iter().any(|l| l.light.casts_shadows()) {
-      return;
-    }
-    let occluders: Vec<(&GlobalTransform, &LightOccluder2D)> =
-      occluders.iter().map(|(t, o)| (t, *o)).collect();
-    let lights = lights.iter().map(|l| (&l.position, &l.light));
-    let geometry = generate_shadow_geometry(lights, &occluders);
-    if !geometry.is_empty() {
-      queue.write_buffer(
-        &self.shadow_vertex_buffer,
-        0,
-        bytemuck::cast_slice(&geometry.vertices),
-      );
-      self.frame_shadow_vertices = geometry.vertex_count();
-    }
-  }
-
   /// `camera`'s light buffer, which the batch draws its lights into.
   pub(crate) fn light_view(&self, camera: Entity) -> Option<&wgpu::TextureView> {
     self.cameras.get(&camera).map(|targets| &targets.light_view)
-  }
-
-  /// Subtract this frame's shadows from `camera`'s light buffer (its lights
-  /// already drawn), through its uniforms in `uniforms`.
-  pub(crate) fn draw_shadows_for_camera(
-    &self,
-    device: &wgpu::Device,
-    encoder: &mut wgpu::CommandEncoder,
-    camera: Entity,
-    uniforms: &CameraUniforms,
-  ) {
-    if self.frame_shadow_vertices == 0 {
-      return;
-    }
-    let (Some(globals), Some(targets)) = (uniforms.buffer(camera), self.cameras.get(&camera))
-    else {
-      return;
-    };
-    let shadow_group = self.bind_groups.get(
-      device,
-      "Shadow Bind Group",
-      &self.shadow_bind_group_layout,
-      &[Bound::Buffer(globals.clone())],
-    );
-    // Reverse-subtract blending cuts the shadows from the light buffer
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-      label: Some("Shadow Pass"),
-      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        view: &targets.light_view,
-        depth_slice: None,
-        resolve_target: None,
-        ops: wgpu::Operations {
-          load: wgpu::LoadOp::Load,
-          store: wgpu::StoreOp::Store,
-        },
-      })],
-      depth_stencil_attachment: None,
-      occlusion_query_set: None,
-      multiview_mask: None,
-      timestamp_writes: None,
-    });
-    pass.set_pipeline(&self.shadow_pipeline);
-    pass.set_bind_group(0, &shadow_group, &[]);
-    pass.set_vertex_buffer(0, self.shadow_vertex_buffer.slice(..));
-    pass.draw(0..self.frame_shadow_vertices, 0..1);
   }
 
   /// How many cameras have light targets.

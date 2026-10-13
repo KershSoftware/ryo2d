@@ -16,7 +16,9 @@ struct EffectParams {
 @fragment
 fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
     let scene_color = textureSample(t_scene, s_input, in.uv);
-    let light_color = textureSample(t_light, s_input, in.uv);
+    // Half floats past 65504 are infinite, and 0 x infinity is NaN: many
+    // lights or a huge intensity can overflow the light buffer
+    let light_color = min(textureSample(t_light, s_input, in.uv).rgb, vec3<f32>(65504.0));
 
     // Ambient lighting
     let ambient_color = effect.color.rgb;
@@ -30,7 +32,7 @@ fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
 
     // Apply scattering to lights - makes lights appear more diffuse/spread in fog
     // Higher scattering = lights affect a broader area with softer falloff
-    let scattered_light = light_color.rgb * (1.0 + atmos_scattering * 0.5);
+    let scattered_light = light_color * (1.0 + atmos_scattering * 0.5);
 
     // Calculate total light
     let total_light = ambient + scattered_light;
@@ -43,5 +45,6 @@ fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
     let fog_amount = atmos_density * 0.4;
     lit_color = mix(lit_color, atmos_color * total_light, fog_amount);
 
-    return vec4<f32>(lit_color, scene_color.a);
+    // Within what the scene's half floats hold, so later stages see no infinity
+    return vec4<f32>(min(lit_color, vec3<f32>(65504.0)), scene_color.a);
 }

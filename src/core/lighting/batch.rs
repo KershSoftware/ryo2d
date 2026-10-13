@@ -3,9 +3,11 @@
 
 use glam::Vec2;
 
-use super::Light2D;
+use super::{Light2D, LightOccluder2D};
+use crate::core::ecs::GlobalTransform;
 use crate::core::graphics::{RenderLayers, SpriteInstance};
 use crate::core::render::DrawLight;
+use crate::core::render::batch::Triangles;
 
 /// A light where it is drawn this frame, and the layers that see it.
 #[derive(Debug, Clone)]
@@ -23,7 +25,8 @@ fn or(v: f32, default: f32) -> f32 {
 /// `light` at `position` as a quad instance for `light.wgsl`, or `None`
 /// when it cannot light anything: a radius or intensity that is not
 /// positive and finite, or a position that is not finite. Shape parameters
-/// that are not finite take usable defaults.
+/// that are not finite take usable defaults, and the intensity is at most
+/// 65504 (the largest half float).
 pub(crate) fn light_instance(position: Vec2, light: &Light2D) -> Option<SpriteInstance> {
   let usable = |v: f32| v.is_finite() && v > 0.0;
   let (radius, intensity) = (light.radius(), light.intensity());
@@ -56,22 +59,32 @@ pub(crate) fn light_instance(position: Vec2, light: &Light2D) -> Option<SpriteIn
   let mut instance =
     SpriteInstance::new().with_transform(position.x, position.y, 0.0, radius * 2.0, radius * 2.0);
   instance.uv_rect = [kind, 0.0, 0.0, 0.0];
-  instance.tint = [r, g, b, intensity];
+  // Within what the light buffer's half floats hold (more is infinite)
+  instance.tint = [r, g, b, intensity.min(65504.0)];
   instance.effect_params = params;
   instance.effect_extra = volumetric;
   instance.uv_bounds = light.shadow_color().to_linear();
   Some(instance)
 }
 
-/// `light`'s draw-list item, if it can light anything.
-pub(crate) fn light_item(light: &FrameLight) -> Option<DrawLight> {
+/// `light`'s draw-list item with its shadow volumes from `occluders` in
+/// `triangles`, if it can light anything.
+pub(crate) fn light_item(
+  light: &FrameLight,
+  occluders: &[(GlobalTransform, &LightOccluder2D)],
+  triangles: &mut Triangles,
+) -> Option<DrawLight> {
   let instance = light_instance(light.position, &light.light)?;
   let reach = Vec2::splat(light.light.radius());
+  let shadows = super::push_shadow_volumes(light.position, &light.light, occluders, triangles);
+  let [r, g, b, _] = light.light.shadow_color().to_linear();
   Some(DrawLight {
     instance,
     layers: light.layers,
     min: light.position - reach,
     max: light.position + reach,
+    shadows,
+    coloured: r + g + b > 0.0,
   })
 }
 
@@ -94,7 +107,58 @@ mod tests {
       instance.tint
     );
     assert_eq!(instance.tint[1], 1.0);
-    assert_eq!(instance.tint[3], 3.0, "intensity, unbounded");
+    assert_eq!(instance.tint[3], 3.0, "intensity, past 1");
+  }
+
+  #[test]
+  fn intensity_stays_within_half_float_range() {
+    // The light buffer holds half floats: more would overflow to infinity
+    let light = Light2D::point(Color::WHITE, 40.0).with_intensity(1e9);
+    let Some(instance) = light_instance(Vec2::ZERO, &light) else {
+      panic!("a usable light");
+    };
+    assert_eq!(instance.tint[3], 65504.0);
+  }
+
+  /// A shadow-casting light at the origin as a frame light, with an
+  /// occluder 40 to its right.
+  fn shadowed(light: Light2D) -> (Option<DrawLight>, Triangles) {
+    use crate::core::ecs::Transform;
+    let frame = FrameLight {
+      position: Vec2::ZERO,
+      light: light.with_shadows(),
+      layers: RenderLayers::default(),
+    };
+    let occluder = LightOccluder2D::rect(4.0, 16.0);
+    let at = GlobalTransform::from_transform(&Transform::from_xy(40.0, 0.0));
+    let mut triangles = Triangles::default();
+    let item = light_item(&frame, &[(at, &occluder)], &mut triangles);
+    (item, triangles)
+  }
+
+  #[test]
+  fn a_shadowed_light_carries_its_shadow_volumes() {
+    let (Some(black), _) = shadowed(Light2D::point(Color::WHITE, 100.0)) else {
+      panic!("a usable light");
+    };
+    assert!(!black.shadows.is_empty());
+    assert!(!black.coloured, "a black shadow lets nothing through");
+    let red = Light2D::point(Color::WHITE, 100.0).with_shadow_color(Color::rgb(255, 0, 0));
+    let (Some(red), _) = shadowed(red) else {
+      panic!("a usable light");
+    };
+    assert!(red.coloured);
+  }
+
+  #[test]
+  fn a_light_that_draws_nothing_casts_no_shadows() {
+    let mut light = Light2D::point(Color::WHITE, 100.0);
+    if let Light2D::Point { intensity, .. } = &mut light {
+      *intensity = f32::NAN;
+    }
+    let (item, triangles) = shadowed(light);
+    assert!(item.is_none());
+    assert!(triangles.indices.is_empty() && triangles.vertices.is_empty());
   }
 
   #[test]

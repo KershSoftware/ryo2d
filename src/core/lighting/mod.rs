@@ -216,5 +216,5 @@ pub use light::Light2D;
 pub use occluder::LightOccluder2D;
 pub(crate) use renderer::LightingRenderer;
 pub use settings::LightingSettings;
-pub use shadow::{MAX_SHADOW_VERTICES, ShadowGeometry, ShadowVertex, generate_shadow_geometry};
+pub(crate) use shadow::push_shadow_volumes;
 pub use volumetric::VolumetricSettings;

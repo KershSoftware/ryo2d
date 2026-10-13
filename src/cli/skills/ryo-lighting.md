@@ -160,7 +160,7 @@ Per camera (the `lighting` camera pass):
 
 ```
 1. Light accumulation: lights add into the camera's light buffer, through its view
-2. Shadows: occluder geometry projected away from each light, subtracted from the buffer
+2. Shadows: each shadow-casting light masks itself in the buffer, so its shadows darken only its own light (overlapping shadows combine; a coloured shadow lets its colour through)
 3. Composition: final = the camera's image x (ambient + light buffer), plus atmosphere
 ```
 
