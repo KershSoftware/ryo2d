@@ -108,14 +108,9 @@ const CAPS: [LineCap; 3] = [LineCap::Butt, LineCap::Round, LineCap::Square];
 const CAP_NAMES: [&str; 3] = ["Butt", "Round", "Square"];
 const DEFAULT_CAP: usize = 1;
 
-const JOINS: [LineJoin; 4] = [
-  LineJoin::None,
-  LineJoin::Miter,
-  LineJoin::Bevel,
-  LineJoin::Round,
-];
-const JOIN_NAMES: [&str; 4] = ["None", "Miter", "Bevel", "Round"];
-const DEFAULT_JOIN: usize = 3;
+const JOINS: [LineJoin; 3] = [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round];
+const JOIN_NAMES: [&str; 3] = ["Miter", "Bevel", "Round"];
+const DEFAULT_JOIN: usize = 2;
 
 fn circle_sprite(radius: u32, color: Color) -> SpriteHandle {
   let sprite = Sprite::solid_circle(radius, color.r, color.g, color.b, color.a);

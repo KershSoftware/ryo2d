@@ -49,14 +49,12 @@ pub enum LineCap {
 /// How line segments connect at corners
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineJoin {
-  /// No join handling (current behavior, fast)
+  /// Sharp corner; one longer than four times the line's width is bevelled
   #[default]
-  None,
-  /// Sharp corner with miter limit (default 4.0)
   Miter,
   /// Flat diagonal cut at corner (1 extra triangle per corner)
   Bevel,
-  /// Smooth rounded corner (4-8 extra triangles per corner)
+  /// Smooth rounded corner (a few triangles per corner)
   Round,
 }
 
@@ -150,6 +148,8 @@ pub struct Trail2D {
   effect: Option<TrailEffect>,
   /// How endpoints are drawn
   cap: LineCap,
+  /// How the trail turns its corners
+  join: LineJoin,
   /// Whether scene lighting applies (false: full brightness over the lit scene)
   lighting: bool,
   /// Draw order against sprites and other trails (higher draws on top)
@@ -202,6 +202,7 @@ impl Trail2D {
       style: TrailStyle::Solid,
       effect: None,
       cap: LineCap::Butt,
+      join: LineJoin::Miter,
       lighting: true,
       z_order: 0,
     }
@@ -823,6 +824,22 @@ impl Trail2D {
     self.cap = cap;
   }
 
+  /// Set how the trail turns its corners (default `Miter`).
+  pub fn with_join(mut self, join: LineJoin) -> Self {
+    self.join = join;
+    self
+  }
+
+  /// How the trail turns its corners.
+  pub fn join(&self) -> LineJoin {
+    self.join
+  }
+
+  /// Set how the trail turns its corners.
+  pub fn set_join(&mut self, join: LineJoin) {
+    self.join = join;
+  }
+
   /// Set whether scene lighting applies (default `true`).
   ///
   /// With `false` the trail is drawn at full brightness on top of the lit scene
@@ -1139,8 +1156,14 @@ mod tests {
   }
 
   #[test]
-  fn line_join_defaults_to_none() {
-    assert_eq!(LineJoin::default(), LineJoin::None);
+  fn line_join_defaults_to_miter() {
+    assert_eq!(LineJoin::default(), LineJoin::Miter);
+  }
+
+  #[test]
+  fn a_trail_takes_a_join() {
+    let trail = Trail2D::new(Color::WHITE, 4.0).with_join(LineJoin::Round);
+    assert_eq!(trail.join(), LineJoin::Round);
   }
 
   #[test]

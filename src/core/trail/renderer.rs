@@ -1140,7 +1140,6 @@ impl TrailRenderer {
       LineCap::Square => 2 * 4,          // 2 caps, 4 vertices each
     };
     let join_overhead = match line.join() {
-      LineJoin::None => 0,
       LineJoin::Bevel | LineJoin::Miter => point_count.saturating_sub(2) * 6,
       LineJoin::Round => point_count.saturating_sub(2) * 20,
     };
@@ -1222,7 +1221,7 @@ impl TrailRenderer {
 
       // Handle interior join points — all join types use inline vertex pairs
       // embedded directly in the strip. No separate/deferred geometry needed.
-      let is_interior_join = join != LineJoin::None && i > 0 && i < point_count - 1;
+      let is_interior_join = i > 0 && i < point_count - 1;
       let mut join_handled = false;
 
       if is_interior_join {
@@ -1462,7 +1461,6 @@ impl TrailRenderer {
                 }
               }
             }
-            LineJoin::None => {} // Already handled by early check
           }
         }
       }
@@ -2633,7 +2631,6 @@ mod tests {
           }
         }
       }
-      LineJoin::None => {}
     }
     vertices
   }

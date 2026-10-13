@@ -86,7 +86,7 @@ impl Line2D {
       z_order: 0,
       style: TrailStyle::Solid,
       cap: LineCap::Butt,
-      join: LineJoin::None,
+      join: LineJoin::Miter,
       lighting: true,
     }
   }
@@ -639,14 +639,14 @@ mod tests {
   }
 
   #[test]
-  fn line_default_join_is_none() {
+  fn line_default_join_is_miter() {
     let line = Line2D::default();
-    assert_eq!(line.join(), LineJoin::None);
+    assert_eq!(line.join(), LineJoin::Miter);
   }
 
   #[test]
   fn line_with_join() {
-    let line = Line2D::default().with_join(LineJoin::Miter);
-    assert_eq!(line.join(), LineJoin::Miter);
+    let line = Line2D::default().with_join(LineJoin::Round);
+    assert_eq!(line.join(), LineJoin::Round);
   }
 }

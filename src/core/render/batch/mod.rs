@@ -4,6 +4,7 @@ mod gpu;
 mod key;
 mod pipelines;
 mod plan;
+mod polyline;
 
 pub(crate) use gpu::Batch2D;
 pub(crate) use key::{BatchShader, DrawState, Sampling, Stream};
