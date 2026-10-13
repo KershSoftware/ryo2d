@@ -33,11 +33,6 @@ impl RenderLayers {
   pub const fn intersects(&self, other: &RenderLayers) -> bool {
     self.0 & other.0 != 0
   }
-
-  /// One bit per layer, layer 0 lowest.
-  pub(crate) const fn bits(self) -> u32 {
-    self.0
-  }
 }
 
 impl Default for RenderLayers {

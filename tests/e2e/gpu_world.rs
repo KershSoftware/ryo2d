@@ -1374,3 +1374,134 @@ fn a_shrunk_checker_averages_to_grey_with_mipmaps() {
     "nearest is one texel: {nearest:?}"
   );
 }
+
+#[test]
+fn a_translucent_corner_is_no_darker_than_its_segments() {
+  let scene = Fixture::new(|ctx| {
+    let line = Line2D::new(
+      vec![
+        Vec2::new(4.0, 8.0),
+        Vec2::new(40.0, 8.0),
+        Vec2::new(40.0, 28.0),
+      ],
+      Color::new(255, 255, 255, 128),
+      6.0,
+    )
+    .with_join(LineJoin::Miter)
+    .with_lighting(false);
+    ctx.world.spawn((Transform::from_xy(0.0, 0.0), line));
+  });
+  let Some(frame) = frame_of(scene, (48, 32)) else {
+    return;
+  };
+  let (segment, corner) = (frame.get_pixel(20, 8).0, frame.get_pixel(40, 8).0);
+  for c in 0..3 {
+    assert!(
+      segment[c].abs_diff(corner[c]) <= 2,
+      "segment {segment:?} corner {corner:?}"
+    );
+  }
+}
+
+#[test]
+fn a_tiled_trail_repeats_its_texture_without_seams() {
+  let scene = Fixture::new(|ctx| {
+    // 8x2 texture: left half red, right half blue
+    let mut data = Vec::new();
+    for _ in 0..2 {
+      for x in 0..8 {
+        data.extend_from_slice(if x < 4 { &RED } else { &BLUE });
+      }
+    }
+    let texture = SpriteHandle::from_sprite(Sprite::from_rgba(data, 8, 2), "tile-stripe");
+    // Untapered, so every pixel along it is a whole texel
+    let mut trail = Trail2D::new(Color::WHITE, 6.0)
+      .with_end_width(6.0)
+      .with_length(32)
+      .with_fade(false)
+      .with_texture(texture)
+      .with_texture_mode(TextureMode::Tile)
+      .with_tile_length(8.0)
+      .with_filter(Filter::Nearest)
+      .with_lighting(false);
+    trail.populate_line(4.0, 8.0, 60.0, 8.0, 32);
+    ctx.world.spawn((Transform::from_xy(0.0, 0.0), trail));
+  });
+  let Some(frame) = frame_of(scene, (64, 16)) else {
+    return;
+  };
+  let row: Vec<[u8; 4]> = (8..56).map(|x| frame.get_pixel(x, 8).0).collect();
+  assert!(
+    row.iter().all(|p| *p == RED || *p == BLUE),
+    "every pixel is a texel: {row:?}"
+  );
+  let changes = row.windows(2).filter(|w| w[0] != w[1]).count();
+  assert!(
+    (10..=13).contains(&changes),
+    "a stripe every 4 pixels: {changes} changes"
+  );
+}
+
+#[test]
+fn an_additive_line_brightens_what_is_under_it() {
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 8.0),
+      Renderable::sprite(solid("line-under", 32, [100, 100, 100, 255])),
+    ));
+    let line = Line2D::horizontal(8.0, 0.0, 32.0, Color::new(120, 60, 30, 255), 4.0)
+      .with_blend(BlendMode::Additive)
+      .with_z_order(1)
+      .with_lighting(false);
+    ctx.world.spawn((Transform::from_xy(0.0, 0.0), line));
+  });
+  let Some(frame) = frame_of(scene, (32, 16)) else {
+    return;
+  };
+  let p = frame.get_pixel(16, 8).0;
+  assert!(p[0] > 120 && p[1] > 100 && p[2] > 100, "{p:?}");
+}
+
+#[test]
+fn every_trail_style_draws() {
+  let scene = Fixture::new(|ctx| {
+    for (i, style) in [TrailStyle::Solid, TrailStyle::Soft, TrailStyle::Glow]
+      .into_iter()
+      .enumerate()
+    {
+      let y = 6.0 + i as f32 * 10.0;
+      let mut trail = Trail2D::new(Color::new(30, 200, 60, 255), 6.0)
+        .with_style(style)
+        .with_fade(false)
+        .with_lighting(false);
+      trail.populate_line(4.0, y, 40.0, y, 8);
+      ctx.world.spawn((Transform::from_xy(0.0, 0.0), trail));
+    }
+  });
+  let Some(frame) = frame_of(scene, (48, 32)) else {
+    return;
+  };
+  for y in [6, 16, 26] {
+    assert!(frame.get_pixel(20, y).0[1] > 100, "style at row {y}");
+  }
+}
+
+#[test]
+fn separate_trails_do_not_connect() {
+  let scene = Fixture::new(|ctx| {
+    for y in [4.0, 28.0] {
+      let mut trail = Trail2D::new(Color::new(30, 200, 60, 255), 4.0)
+        .with_fade(false)
+        .with_lighting(false);
+      trail.populate_line(4.0, y, 40.0, y, 8);
+      ctx.world.spawn((Transform::from_xy(0.0, 0.0), trail));
+    }
+  });
+  let Some(frame) = frame_of(scene, (48, 32)) else {
+    return;
+  };
+  assert!(
+    (10..22).all(|y| frame.get_pixel(20, y).0[1] < 100),
+    "nothing between the trails"
+  );
+}

@@ -19,6 +19,7 @@ use crate::core::graphics::{
   Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers, RenderTargets,
 };
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
+use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
 use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline, plan_cameras};
 use crate::core::shaders::EffectsManager;
 use crate::core::time::Time;
@@ -55,7 +56,6 @@ impl Engine {
       return PresentOutcome::Skipped;
     };
     let mut lighting = self.lighting.take();
-    let mut trails = self.trail_renderer.take();
 
     let camera = main_view(&mut self.world);
     let (alpha, real_time, game_time) = {
@@ -86,45 +86,6 @@ impl Engine {
 
       if let Some(path) = self.capture.path_for_next_frame() {
         rend.request_capture(path);
-      }
-
-      // Trails (world-space points), lines (at their entity) and overlays
-      if let Some(trails) = trails.as_mut() {
-        trails.begin_frame();
-        let (device, queue) = (rend.device(), rend.queue());
-        for (trail, layers) in self
-          .world
-          .query::<(&Trail2D, Option<&RenderLayers>)>()
-          .iter(&self.world)
-        {
-          let texture = trail.texture().map(|sprite| gpu.texture_of(sprite));
-          let layers = layers.copied().unwrap_or_default();
-          trails.add_trail_with_device(device, queue, trail, texture, layers);
-        }
-        trails.retain_textures(|id| gpu.is_texture(id));
-        for (global, previous, line, layers) in self
-          .world
-          .query::<(
-            &GlobalTransform,
-            Option<&PreviousGlobalTransform>,
-            &Line2D,
-            Option<&RenderLayers>,
-          )>()
-          .iter(&self.world)
-        {
-          let at = render_global(global, previous, alpha).translation();
-          trails.add_line_in(line, at, layers.copied().unwrap_or_default());
-        }
-        // Unlit lines on top, added last so that when the vertex budget runs
-        // out the overlays are dropped, not game trails
-        let flags = OverlayFlags {
-          colliders: self.config.debug.show_colliders,
-          velocities: self.config.debug.show_velocities,
-          origins: self.config.debug.show_origins,
-        };
-        for line in overlay_lines(&mut self.world, flags, camera.scale) {
-          trails.add_line(&line, Vec2::ZERO);
-        }
       }
 
       // Lights at their world position (occluders are gathered while drawing)
@@ -204,16 +165,63 @@ impl Engine {
         rend.queue(),
         &mut self.draw_list,
       );
-      if let Some(trails) = trails.as_mut() {
-        for (z, layers) in trails.groups(true) {
-          self.draw_list.push_trail_group(true, z, layers);
+      // Trails (world-space points), lines (at their entity) and the debug
+      // overlays become triangles, one draw-list item each
+      let triangles = batch.triangles();
+      triangles.clear();
+      let mut points = Vec::new();
+      for (trail, layers) in self
+        .world
+        .query::<(&Trail2D, Option<&RenderLayers>)>()
+        .iter(&self.world)
+      {
+        let Some(style) = trail_points(trail, &mut points) else {
+          continue;
+        };
+        let look = LineLook {
+          lit: trail.lighting(),
+          z: trail.z_order(),
+          texture: trail.texture().map(|sprite| gpu.texture_of(sprite)),
+          blend: trail.blend(),
+          filter: trail.filter(),
+          layers: layers.copied().unwrap_or_default(),
+        };
+        push_polyline(&mut self.draw_list, triangles, &points, &style, look);
+      }
+      let line_look = |line: &Line2D, layers: Option<&RenderLayers>| LineLook {
+        lit: line.lighting(),
+        z: line.z_order(),
+        texture: None,
+        blend: line.blend(),
+        filter: Filter::Default,
+        layers: layers.copied().unwrap_or_default(),
+      };
+      for (global, previous, line, layers) in self
+        .world
+        .query::<(
+          &GlobalTransform,
+          Option<&PreviousGlobalTransform>,
+          &Line2D,
+          Option<&RenderLayers>,
+        )>()
+        .iter(&self.world)
+      {
+        let at = render_global(global, previous, alpha).translation();
+        if let Some(style) = line_points(line, at, &mut points) {
+          let look = line_look(line, layers);
+          push_polyline(&mut self.draw_list, triangles, &points, &style, look);
         }
-        for (z, layers) in trails.groups(false) {
-          self.draw_list.push_trail_group(false, z, layers);
+      }
+      let flags = OverlayFlags {
+        colliders: self.config.debug.show_colliders,
+        velocities: self.config.debug.show_velocities,
+        origins: self.config.debug.show_origins,
+      };
+      for line in overlay_lines(&mut self.world, flags, camera.scale) {
+        if let Some(style) = line_points(&line, Vec2::ZERO, &mut points) {
+          let look = line_look(&line, None);
+          push_polyline(&mut self.draw_list, triangles, &points, &style, look);
         }
-        // Upload the trail and line vertices once; the world passes only draw
-        trails.sync_cameras(rend.device(), &self.camera_uniforms);
-        trails.prepare(rend.queue());
       }
       self.draw_list.sorted();
       batch.prepare(
@@ -226,10 +234,9 @@ impl Engine {
       (entity_sprites, lights)
     };
 
-    let trail_draws = trails.as_ref().map_or(0, |t| t.draw_count());
     self.debug_stats = DebugStats {
       entity_count: game_entity_count(&self.world),
-      draw_calls: (batch.draw_count() + trail_draws) as u32,
+      draw_calls: batch.draw_count() as u32,
       sprite_count: (entity_sprites + self.batch_collector.sprite_count()) as u32,
     };
     self.frame_timings.render = render_start.elapsed();
@@ -252,7 +259,6 @@ impl Engine {
           sprites: &gpu,
           batch: Some(&batch),
           draw_list: &self.draw_list,
-          trails: trails.as_ref(),
           lighting: lighting.map(|renderer| LightingFrame { renderer }),
           effects: world.resource::<EffectsManager>(),
           ui_buffer: &self.ui_buffer,
@@ -295,7 +301,6 @@ impl Engine {
     self.sprite_gpu = Some(gpu);
     self.batch = Some(batch);
     self.lighting = lighting;
-    self.trail_renderer = trails;
     self.frame_timings.present = present_start.elapsed();
 
     if outcome == PresentOutcome::Presented {

@@ -57,7 +57,6 @@ use crate::core::systems::{
   unregister_removed_bodies,
 };
 use crate::core::time::Time;
-use crate::core::trail::TrailRenderer;
 use crate::core::ui::{BitmapFont, create_debug_font};
 use crate::core::window::{WindowInfo, WindowRequest};
 use crate::{engine_info, engine_warn};
@@ -158,7 +157,6 @@ pub struct Engine {
   pub(crate) sprite_gpu: Option<SpriteGpuRenderer>,
   pub(crate) batch: Option<Batch2D>,
   lighting: Option<LightingRenderer>,
-  trail_renderer: Option<TrailRenderer>,
   entity_drawer: EntityDrawer,
   // Each camera's uniform buffer, kept across frames
   camera_uniforms: crate::core::graphics::camera_gpu::CameraUniforms,
@@ -505,7 +503,6 @@ impl Engine {
       sprite_gpu: None,
       batch: None,
       lighting: None,
-      trail_renderer: None,
       entity_drawer: EntityDrawer::default(),
       camera_uniforms: Default::default(),
       camera_draws: Vec::new(),
@@ -720,8 +717,8 @@ impl Engine {
   }
 
   /// Follow a new screen mapping: the renderer's targets, the UI buffer, the
-  /// lighting and trail projections and the camera's viewport (position,
-  /// zoom and shake are kept).
+  /// lighting projection and the camera's viewport (position, zoom and
+  /// shake are kept).
   fn apply_mapping(&mut self, mapping: ScreenMapping) {
     let Some(renderer) = &mut self.renderer else {
       return;
@@ -802,7 +799,7 @@ impl Engine {
 
   /// Finish GPU-dependent setup once a renderer exists (window or offscreen).
   ///
-  /// Creates the sprite, lighting and trail renderers, inserts the `Gpu`
+  /// Creates the sprite and lighting renderers and the batch, inserts the `Gpu`
   /// resource and the profiler, then enters the initial scene.
   pub(crate) fn init_gpu(&mut self, renderer: WgpuRenderer, scale_factor: f64) {
     let format = renderer.game_texture_format();
@@ -813,8 +810,6 @@ impl Engine {
     // Each camera is lit in light targets of its own size; the renderer's
     // own targets are only for lighting on its own
     let lighting = LightingRenderer::new(renderer.device(), 1, 1, format);
-    let (ui_width, ui_height) = renderer.ui_size();
-    let trail_renderer = TrailRenderer::new(renderer.device(), ui_width, ui_height, format);
     let mapping = renderer.mapping();
 
     self.scale_factor = scale_factor;
@@ -832,7 +827,6 @@ impl Engine {
     self.sprite_gpu = Some(sprite_gpu);
     self.batch = Some(batch);
     self.lighting = Some(lighting);
-    self.trail_renderer = Some(trail_renderer);
     self.last_window_size = mapping.physical_size();
     self.apply_mapping(mapping);
 

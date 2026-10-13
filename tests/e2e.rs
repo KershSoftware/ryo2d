@@ -27,9 +27,6 @@ mod lighting_renderer;
 #[path = "e2e/network.rs"]
 mod network;
 
-#[path = "e2e/trail_renderer.rs"]
-mod trail_renderer;
-
 #[path = "e2e/render_pipeline.rs"]
 mod render_pipeline;
 

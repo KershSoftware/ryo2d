@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
+use super::polyline::Vertex2D;
 use super::{BatchShader, BlendMode, Stream};
 use crate::core::graphics::SpriteInstance;
 use crate::core::shaders::custom::{self, ShaderError};
@@ -105,6 +106,18 @@ const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLay
   attributes: &INSTANCE_ATTRIBUTES,
 };
 
+/// A [`Vertex2D`]: position, UV, colour, parameters, perpendicular and the
+/// atlas slot it samples.
+const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+  0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x2, 5 => Float32x4,
+];
+
+const VERTEX2D_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+  array_stride: std::mem::size_of::<Vertex2D>() as u64,
+  step_mode: wgpu::VertexStepMode::Vertex,
+  attributes: &VERTEX2D_ATTRIBUTES,
+};
+
 /// A pipeline and what to report if the GPU rejects it.
 struct Built {
   state: Checked<wgpu::RenderPipeline>,
@@ -115,8 +128,12 @@ struct Built {
 /// The batch's pipelines, by [`PipelineKey`], made on first use. Built-in
 /// ones are usable at once; a custom one once the GPU's check passed.
 pub(crate) struct Pipelines {
+  /// Camera, then texture
   layout: wgpu::PipelineLayout,
+  /// Camera only (untextured lines)
+  camera_only: wgpu::PipelineLayout,
   sprite: wgpu::ShaderModule,
+  line: wgpu::ShaderModule,
   built: HashMap<PipelineKey, Built>,
 }
 
@@ -131,13 +148,22 @@ impl Pipelines {
       bind_group_layouts: &[Some(camera), Some(textures)],
       immediate_size: 0,
     });
-    let sprite = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-      label: Some("Sprite Shader"),
-      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::SPRITE.into()),
+    let camera_only = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("Batch Line Pipeline Layout"),
+      bind_group_layouts: &[Some(camera)],
+      immediate_size: 0,
     });
+    let module = |label, source: &'static str| {
+      device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+      })
+    };
     Self {
       layout,
-      sprite,
+      camera_only,
+      sprite: module("Sprite Shader", crate::core::shaders::compose::SPRITE),
+      line: module("Line Shader", crate::core::shaders::compose::LINE),
       built: HashMap::new(),
     }
   }
@@ -155,11 +181,21 @@ impl Pipelines {
     };
     // Premultiplied textures take their colour as it is
     let premultiplied = key.blend == BlendMode::Premultiplied;
-    let entry = match (key.shader, key.stream, premultiplied) {
-      (BatchShader::Sprite, Stream::Quads, false) => "fs_base",
-      (BatchShader::Sprite, Stream::Quads, true) => "fs_base_premultiplied",
-      (BatchShader::SpriteEffect, Stream::Quads, false) => "fs_effect",
-      (BatchShader::SpriteEffect, Stream::Quads, true) => "fs_effect_premultiplied",
+    let (module, layout, fragment) = match (key.shader, key.stream, premultiplied) {
+      (BatchShader::Sprite, Stream::Quads, false) => (&self.sprite, &self.layout, "fs_base"),
+      (BatchShader::Sprite, Stream::Quads, true) => {
+        (&self.sprite, &self.layout, "fs_base_premultiplied")
+      }
+      (BatchShader::SpriteEffect, Stream::Quads, false) => {
+        (&self.sprite, &self.layout, "fs_effect")
+      }
+      (BatchShader::SpriteEffect, Stream::Quads, true) => {
+        (&self.sprite, &self.layout, "fs_effect_premultiplied")
+      }
+      (BatchShader::Line, Stream::Triangles, _) => (&self.line, &self.camera_only, "fs_main"),
+      (BatchShader::LineTextured, Stream::Triangles, _) => {
+        (&self.line, &self.layout, "fs_textured")
+      }
       (BatchShader::Custom(source), Stream::Quads, _) => {
         let Some((name, wgsl)) = custom else {
           return;
@@ -174,7 +210,7 @@ impl Pipelines {
         } else {
           "fs_custom"
         };
-        let pipeline = quad_pipeline(device, &self.layout, name, &module, fragment, key);
+        let pipeline = batch_pipeline(device, &self.layout, name, &module, fragment, key);
         // Anything naga accepted but the device rejects is found by a
         // later frame's `settle`, without waiting on the GPU here
         slot.insert(Built {
@@ -183,10 +219,10 @@ impl Pipelines {
         });
         return;
       }
-      // Triangle shaders arrive with the triangle stream
+      // No such pipeline: sprites are quads and lines triangles
       _ => return,
     };
-    let pipeline = quad_pipeline(device, &self.layout, entry, &self.sprite, entry, key);
+    let pipeline = batch_pipeline(device, layout, fragment, module, fragment, key);
     slot.insert(Built {
       state: Checked::Ready(pipeline),
       custom: None,
@@ -222,9 +258,9 @@ impl Pipelines {
   }
 }
 
-/// A pipeline drawing instanced quads with `module`'s `vs_main` and
-/// `fragment`, blended and formatted for `key`.
-fn quad_pipeline(
+/// A pipeline drawing `key`'s stream (instanced quads or indexed triangles)
+/// with `module`'s `vs_main` and `fragment`, blended and formatted for `key`.
+fn batch_pipeline(
   device: &wgpu::Device,
   layout: &wgpu::PipelineLayout,
   label: &str,
@@ -238,7 +274,10 @@ fn quad_pipeline(
     vertex: wgpu::VertexState {
       module,
       entry_point: Some("vs_main"),
-      buffers: &[Some(QUAD_LAYOUT), Some(INSTANCE_LAYOUT)],
+      buffers: match key.stream {
+        Stream::Quads => &[Some(QUAD_LAYOUT), Some(INSTANCE_LAYOUT)],
+        Stream::Triangles => &[Some(VERTEX2D_LAYOUT)],
+      },
       compilation_options: Default::default(),
     },
     fragment: Some(wgpu::FragmentState {

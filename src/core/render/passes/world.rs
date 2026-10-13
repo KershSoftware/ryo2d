@@ -1,9 +1,7 @@
 //! The world: entities, sprites and trails/lines drawn together in z order
 
 use crate::core::graphics::SpriteGpuRenderer;
-use crate::core::render::batch::Planned;
 use crate::core::render::{FrameInfo, PassScope, RenderContext, RenderPass, pass_ids};
-use crate::core::trail::TrailRenderer;
 
 /// Draws the lit entities, sprites, trails and lines a camera sees onto its
 /// image in one render pass, interleaved by z.
@@ -51,11 +49,10 @@ impl RenderPass for UnlitWorld {
 }
 
 /// Draw the current camera's `lit` (or unlit) draws onto its image in one
-/// render pass. The engine wrote the instances and trail vertices when it
-/// laid out the frame (buffer writes can't happen inside the pass).
+/// render pass. The engine wrote the instances and triangles when it laid
+/// out the frame (buffer writes can't happen inside the pass).
 fn replay(ctx: &mut RenderContext<'_>, lit: bool, label: &str) {
   let sprites: &SpriteGpuRenderer = ctx.scene.sprites;
-  let trails: Option<&TrailRenderer> = ctx.scene.trails;
   let (Some(camera), Some(batch)) = (ctx.camera_entity(), ctx.scene.batch) else {
     return;
   };
@@ -80,14 +77,7 @@ fn replay(ctx: &mut RenderContext<'_>, lit: bool, label: &str) {
     occlusion_query_set: None,
     multiview_mask: None,
   });
-  for planned in draws {
-    match planned {
-      Planned::Draw(draw) => batch.draw(&mut pass, draw, camera, sprites),
-      Planned::External { z, layers } => {
-        if let Some(trails) = trails {
-          trails.draw_group(&mut pass, lit, (*z, *layers), camera);
-        }
-      }
-    }
+  for draw in draws {
+    batch.draw(&mut pass, draw, camera, sprites);
   }
 }

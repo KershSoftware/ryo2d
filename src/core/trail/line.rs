@@ -33,6 +33,7 @@
 use super::{LineCap, LineJoin, TrailStyle};
 use crate::core::ecs::Component;
 use crate::core::ecs::Vec2;
+use crate::core::render::batch::BlendMode;
 use crate::core::ui::Color;
 
 /// A 2D line or polyline component.
@@ -63,6 +64,8 @@ pub struct Line2D {
   cap: LineCap,
   /// How segments connect at corners
   join: LineJoin,
+  /// How it combines with what is below
+  blend: BlendMode,
   /// Whether scene lighting applies (false: full brightness over the lit scene)
   lighting: bool,
 }
@@ -87,6 +90,7 @@ impl Line2D {
       style: TrailStyle::Solid,
       cap: LineCap::Butt,
       join: LineJoin::Miter,
+      blend: BlendMode::Alpha,
       lighting: true,
     }
   }
@@ -416,6 +420,18 @@ impl Line2D {
   /// Whether scene lighting applies to this line.
   pub fn lighting(&self) -> bool {
     self.lighting
+  }
+
+  /// Set how the line combines with what is below (default `Alpha`;
+  /// `Additive` for lasers and glows).
+  pub fn with_blend(mut self, blend: BlendMode) -> Self {
+    self.blend = blend;
+    self
+  }
+
+  /// How the line combines with what is below.
+  pub fn blend(&self) -> BlendMode {
+    self.blend
   }
 
   /// Set whether scene lighting applies to this line.

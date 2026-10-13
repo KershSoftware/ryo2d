@@ -1,12 +1,5 @@
 //! Lines and trails as triangles: a strip along the points, a wedge on the
 //! outside of every corner and a cap at each open end.
-#![cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "trails and lines draw through it once they join the batch"
-  )
-)]
 
 use std::ops::Range;
 
@@ -28,6 +21,9 @@ pub(crate) struct Vertex2D {
   pub(crate) params: [f32; 4],
   /// The unit perpendicular displacement effects move the vertex along
   pub(crate) across: [f32; 2],
+  /// The atlas slot a textured line repeats (UV min and max), set when it
+  /// is placed; zero for untextured ones
+  pub(crate) bounds: [f32; 4],
 }
 
 /// A point of a polyline.
@@ -192,6 +188,7 @@ impl Builder<'_> {
       color: point.color,
       params: self.style.params,
       across: across.into(),
+      bounds: [0.0; 4],
     });
     index
   }
@@ -295,51 +292,50 @@ impl Builder<'_> {
 
     let outer_end = self.vertex(p + side * n0 * hw, &point, [u_end, v_out], n0);
     let outer_start = self.vertex(p + side * n1 * hw, &point, [u, v_out], n1);
-    let (inner_end, inner_start, pivot) = if shares_inside {
+    // The corner point: every wedge fans from it, so `v` keeps measuring the
+    // distance from the centre line across the join
+    let centre = self.vertex(p, &point, [u, 0.5], Vec2::ZERO);
+    let (inner_end, inner_start) = if shares_inside {
       let at = p - side * miter * hw;
       let inner = self.vertex(at, &point, [u, v_in], bisector);
       let inner_end = match end_u {
         None => inner,
         Some(u) => self.vertex(at, &point, [u, v_in], bisector),
       };
-      (inner_end, inner, inner)
+      // Between the segments' slanted ends and the point
+      self.triangle(centre, inner_end, outer_end);
+      self.triangle(centre, outer_start, inner);
+      (inner_end, inner)
     } else {
-      // Too sharp to share: each segment keeps its own inner edge, and the
-      // wedge turns about the point
+      // Too sharp to share: each segment keeps its own inner edge
       let inner_end = self.vertex(p - side * n0 * hw, &point, [u_end, v_in], n0);
       let inner_start = self.vertex(p - side * n1 * hw, &point, [u, v_in], n1);
-      let centre = self.vertex(p, &point, [u, 0.5], Vec2::ZERO);
-      (inner_end, inner_start, centre)
+      (inner_end, inner_start)
     };
 
-    // The wedge: a bevel, then the miter's point or the round's arc
-    self.triangle(pivot, outer_end, outer_start);
+    // The outside: a bevel, the miter's point or the round's arc
+    let mitered = self.style.join == LineJoin::Miter && miter.length() <= MITER_LIMIT;
     match self.style.join {
-      LineJoin::Bevel => {}
-      LineJoin::Miter => {
-        if miter.length() <= MITER_LIMIT {
-          let tip = self.vertex(p + side * miter * hw, &point, [u, v_out], bisector);
-          self.triangle(outer_end, tip, outer_start);
-        }
+      LineJoin::Miter if mitered => {
+        let tip = self.vertex(p + side * miter * hw, &point, [u, v_out], bisector);
+        self.triangle(centre, outer_end, tip);
+        self.triangle(centre, tip, outer_start);
       }
+      LineJoin::Miter | LineJoin::Bevel => self.triangle(centre, outer_end, outer_start),
       LineJoin::Round => {
         let from = side * n0;
         let angle = from.angle_to(side * n1);
         let steps = ((angle.abs() / (std::f32::consts::PI / 16.0)).ceil() as u32).max(2);
-        let mut previous = None;
+        let mut previous = outer_end;
         for k in 1..steps {
           let t = k as f32 / steps as f32;
           let direction = Vec2::from_angle(angle * t).rotate(from);
           let across = Vec2::from_angle(angle * t).rotate(n0);
           let arc = self.vertex(p + direction * hw, &point, [u, v_out], across);
-          if let Some(previous) = previous {
-            self.triangle(outer_end, previous, arc);
-          }
-          previous = Some(arc);
+          self.triangle(centre, previous, arc);
+          previous = arc;
         }
-        if let Some(previous) = previous {
-          self.triangle(outer_end, previous, outer_start);
-        }
+        self.triangle(centre, previous, outer_start);
       }
     }
 
@@ -548,6 +544,22 @@ mod tests {
     t.clear();
     assert!(t.vertices.is_empty() && t.indices.is_empty());
     assert_eq!(t.polyline(&points, &style), 0..6);
+  }
+
+  #[test]
+  fn no_triangle_lies_along_one_edge() {
+    // Edge anti-aliasing reads `v` as distance from the centre: a triangle
+    // whose corners all sit on one edge would fade away
+    for join in [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round] {
+      for cap in [LineCap::Butt, LineCap::Square, LineCap::Round] {
+        let t = build(&L, 2.0, join, cap, false);
+        for tri in t.indices.chunks(3) {
+          let v: Vec<f32> = tri.iter().map(|&k| t.vertices[k as usize].uv[1]).collect();
+          let one_edge = v.iter().all(|&v| v == 0.0) || v.iter().all(|&v| v == 1.0);
+          assert!(!one_edge, "{join:?} {cap:?}: {v:?}");
+        }
+      }
+    }
   }
 
   #[test]

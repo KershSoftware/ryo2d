@@ -10,7 +10,6 @@ use crate::core::graphics::{
 };
 use crate::core::lighting::LightingRenderer;
 use crate::core::shaders::{EffectsManager, OutputBuffer};
-use crate::core::trail::TrailRenderer;
 
 /// What this frame contains, decided before any render pass runs.
 ///
@@ -77,7 +76,6 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) batch: Option<&'a Batch2D>,
   /// The z-sorted drawables of the world passes
   pub(crate) draw_list: &'a DrawList,
-  pub(crate) trails: Option<&'a TrailRenderer>,
   /// `Some` only while lighting is enabled
   pub(crate) lighting: Option<LightingFrame<'a>>,
   pub(crate) effects: &'a EffectsManager,

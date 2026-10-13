@@ -1,12 +1,14 @@
-//! The batch on the GPU: the frame's quad instances, each camera's draws
-//! over them, and the pipelines and camera bind groups they draw with.
+//! The batch on the GPU: the frame's quad instances and triangles, each
+//! camera's draws over them, and the pipelines and camera bind groups they
+//! draw with.
 
 use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
 use super::pipelines::{self, PipelineKey, Pipelines};
-use super::{BatchShader, Draw, DrawState, Placed, Planned, Stream, plan_draws};
+use super::polyline::{Triangles, Vertex2D};
+use super::{BatchShader, Draw, DrawState, Placed, Sampling, Stream, plan_draws};
 use crate::core::ecs::Entity;
 use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
@@ -14,7 +16,8 @@ use crate::core::graphics::{
 };
 use crate::core::render::{CameraDraw, DrawItem, DrawList, DrawPayload, SpriteShading};
 
-/// Instances the buffer holds at first; it doubles when a frame needs more.
+/// Instances, vertices and indices the buffers hold at first; each doubles
+/// when a frame needs more.
 const FIRST_CAPACITY: usize = 1024;
 
 /// The 2D batch: lays out the world's drawables per camera and draws them.
@@ -33,14 +36,58 @@ pub(crate) struct Batch2D {
   // in a range of their own), and each camera's draws over them; reused
   placed: Vec<SpriteInstance>,
   draws: Vec<CameraDraws>,
+  // This frame's trails and lines, in world space for every camera; built
+  // while the frame is gathered and uploaded once
+  triangles: Triangles,
+  vertices: GrowingBuffer,
+  indices: GrowingBuffer,
+}
+
+/// A GPU buffer that doubles when a frame needs more.
+struct GrowingBuffer {
+  buffer: wgpu::Buffer,
+  /// In elements
+  capacity: usize,
+  element: usize,
+  usage: wgpu::BufferUsages,
+  label: &'static str,
+}
+
+impl GrowingBuffer {
+  fn new(
+    device: &wgpu::Device,
+    label: &'static str,
+    element: usize,
+    usage: wgpu::BufferUsages,
+  ) -> Self {
+    Self {
+      buffer: buffer(device, label, FIRST_CAPACITY * element, usage),
+      capacity: FIRST_CAPACITY,
+      element,
+      usage,
+      label,
+    }
+  }
+
+  /// Upload `bytes`, growing to the next power of two elements if need be.
+  fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
+    let needed = bytes.len() / self.element;
+    if needed > self.capacity {
+      self.capacity = needed.next_power_of_two();
+      self.buffer = buffer(device, self.label, self.capacity * self.element, self.usage);
+    }
+    if !bytes.is_empty() {
+      queue.write_buffer(&self.buffer, 0, bytes);
+    }
+  }
 }
 
 /// One camera's draws: before lighting, and after it.
 #[derive(Default)]
 struct CameraDraws {
   camera: Option<Entity>,
-  lit: Vec<Planned>,
-  unlit: Vec<Planned>,
+  lit: Vec<Draw>,
+  unlit: Vec<Draw>,
 }
 
 impl Batch2D {
@@ -79,7 +126,25 @@ impl Batch2D {
       capacity: FIRST_CAPACITY,
       placed: Vec::new(),
       draws: Vec::new(),
+      triangles: Triangles::default(),
+      vertices: GrowingBuffer::new(
+        device,
+        "Batch Vertices",
+        std::mem::size_of::<Vertex2D>(),
+        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+      ),
+      indices: GrowingBuffer::new(
+        device,
+        "Batch Indices",
+        std::mem::size_of::<u32>(),
+        wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+      ),
     }
+  }
+
+  /// The frame's trail and line triangles, for gathering them (clear first).
+  pub(crate) fn triangles(&mut self) -> &mut Triangles {
+    &mut self.triangles
   }
 
   /// Bind every camera's uniform buffer (made by `CameraUniforms::sync`),
@@ -115,8 +180,9 @@ impl Batch2D {
   /// Makes the list's textures resident; then, per camera, remaps the
   /// sprites it sees into their atlas slots in draw order, in a range of
   /// the instance buffer of its own, and merges consecutive drawables with
-  /// equal draw states into draws. Call once per frame, after
-  /// [`sync_cameras`](Self::sync_cameras).
+  /// equal draw states into draws (trails and lines by their index ranges).
+  /// Call once per frame, after [`sync_cameras`](Self::sync_cameras) and
+  /// after the frame's triangles are built.
   pub(crate) fn prepare(
     &mut self,
     device: &wgpu::Device,
@@ -139,6 +205,7 @@ impl Batch2D {
       pipelines,
       placed,
       draws,
+      triangles,
       ..
     } = self;
     placed.clear();
@@ -153,7 +220,41 @@ impl Batch2D {
       let mut place = |item: &DrawItem| {
         let index = match item.payload {
           DrawPayload::Sprite(index) => index,
-          DrawPayload::Trail { z, layers } => return Some(Placed::External { z, layers }),
+          DrawPayload::Triangles(index) => {
+            let line = list.triangles(index)?;
+            // A textured one is told where its texture lives
+            let (page, sampling, shader) = match line.texture {
+              None => (None, Sampling::Nearest, BatchShader::Line),
+              Some(texture) => {
+                let (slot, _) = textures.slot(texture)?;
+                let range = line.vertices.start as usize..line.vertices.end as usize;
+                for vertex in triangles.vertices.get_mut(range)? {
+                  vertex.bounds = slot.uv;
+                }
+                let sampling = line.filter.resolve(presentation);
+                (Some(slot.page), sampling, BatchShader::LineTextured)
+              }
+            };
+            let key = PipelineKey {
+              shader,
+              blend: line.blend,
+              stream: Stream::Triangles,
+              format,
+            };
+            if ensured != Some(key) {
+              pipelines.ensure(device, key, None);
+              ensured = Some(key);
+            }
+            let state = DrawState {
+              page,
+              shader,
+              blend: line.blend,
+              sampling,
+              scissor: None,
+            };
+            let indices = line.indices.clone();
+            return Some(Placed::Triangles { state, indices });
+          }
         };
         let sprite = list.sprite(index)?;
         let (slot, page_size) = match last {
@@ -220,11 +321,16 @@ impl Batch2D {
     if !self.placed.is_empty() {
       queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&self.placed));
     }
+    let triangles = &self.triangles;
+    let vertices = bytemuck::cast_slice(&triangles.vertices);
+    self.vertices.write(device, queue, vertices);
+    let indices = bytemuck::cast_slice(&triangles.indices);
+    self.indices.write(device, queue, indices);
   }
 
   /// The draws [`prepare`](Self::prepare) laid out for `camera`, in order:
   /// before lighting (`lit`) or after it.
-  pub(crate) fn draws(&self, camera: Entity, lit: bool) -> &[Planned] {
+  pub(crate) fn draws(&self, camera: Entity, lit: bool) -> &[Draw] {
     let Some(drawn) = self.draws.iter().find(|d| d.camera == Some(camera)) else {
       return &[];
     };
@@ -236,9 +342,8 @@ impl Batch2D {
     self
       .draws
       .iter()
-      .flat_map(|drawn| drawn.lit.iter().chain(&drawn.unlit))
-      .filter(|planned| matches!(planned, Planned::Draw(_)))
-      .count()
+      .map(|drawn| drawn.lit.len() + drawn.unlit.len())
+      .sum()
   }
 
   /// Issue one of `camera`'s draws inside a render pass, sampling the pages
@@ -250,30 +355,45 @@ impl Batch2D {
     camera: Entity,
     textures: &'a SpriteGpuRenderer,
   ) {
-    let Some(page) = draw.state.page else {
-      return;
-    };
     let key = PipelineKey {
       shader: draw.state.shader,
       blend: draw.state.blend,
       stream: draw.stream,
       format: self.format,
     };
-    let (Some(pipeline), Some(camera_group), Some(texture_group)) = (
-      self.pipelines.get(&key),
-      self.camera_groups.get(&camera),
-      textures.page_bind_group(page, draw.state.sampling),
-    ) else {
+    let (Some(pipeline), Some(camera_group)) =
+      (self.pipelines.get(&key), self.camera_groups.get(&camera))
+    else {
       return;
+    };
+    // Untextured lines bind no texture; everything else samples a page
+    let texture_group = match draw.state.page {
+      Some(page) => match textures.page_bind_group(page, draw.state.sampling) {
+        Some(group) => Some(group),
+        None => return,
+      },
+      None if draw.stream == Stream::Quads => return,
+      None => None,
     };
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, camera_group, &[]);
-    pass.set_bind_group(1, texture_group, &[]);
-    pass.set_vertex_buffer(0, self.quad.slice(..));
-    let size = std::mem::size_of::<SpriteInstance>() as u64;
-    let (start, end) = (u64::from(draw.range.start), u64::from(draw.range.end));
-    pass.set_vertex_buffer(1, self.instances.slice(start * size..end * size));
-    pass.draw(0..6, 0..draw.range.len() as u32);
+    if let Some(group) = texture_group {
+      pass.set_bind_group(1, group, &[]);
+    }
+    match draw.stream {
+      Stream::Quads => {
+        pass.set_vertex_buffer(0, self.quad.slice(..));
+        let size = std::mem::size_of::<SpriteInstance>() as u64;
+        let (start, end) = (u64::from(draw.range.start), u64::from(draw.range.end));
+        pass.set_vertex_buffer(1, self.instances.slice(start * size..end * size));
+        pass.draw(0..6, 0..draw.range.len() as u32);
+      }
+      Stream::Triangles => {
+        pass.set_vertex_buffer(0, self.vertices.buffer.slice(..));
+        pass.set_index_buffer(self.indices.buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(draw.range.clone(), 0, 0..1);
+      }
+    }
   }
 
   /// How many instances the buffer holds.
@@ -284,10 +404,21 @@ impl Batch2D {
 }
 
 fn instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+  let size = capacity * std::mem::size_of::<SpriteInstance>();
+  let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+  buffer(device, "Batch Instances", size, usage)
+}
+
+fn buffer(
+  device: &wgpu::Device,
+  label: &str,
+  size: usize,
+  usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
   device.create_buffer(&wgpu::BufferDescriptor {
-    label: Some("Batch Instances"),
-    size: (capacity * std::mem::size_of::<SpriteInstance>()) as u64,
-    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    label: Some(label),
+    size: size as u64,
+    usage,
     mapped_at_creation: false,
   })
 }

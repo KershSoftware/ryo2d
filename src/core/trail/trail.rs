@@ -18,9 +18,9 @@
 //! )).id();
 //! ```
 
-use super::TrailStyle;
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Component;
+use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::ui::Color;
 use std::collections::VecDeque;
 
@@ -32,6 +32,18 @@ pub enum TextureMode {
   Stretch,
   /// Tile the texture along the trail (texture repeats based on trail length)
   Tile,
+}
+
+/// How a trail or line is shaded across its width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrailStyle {
+  /// Solid color with sharp edges
+  #[default]
+  Solid,
+  /// Soft edges that fade out
+  Soft,
+  /// Glow effect with bright core
+  Glow,
 }
 
 /// How line endpoints are drawn
@@ -150,6 +162,10 @@ pub struct Trail2D {
   cap: LineCap,
   /// How the trail turns its corners
   join: LineJoin,
+  /// How it combines with what is below
+  blend: BlendMode,
+  /// How its texture is sampled
+  filter: Filter,
   /// Whether scene lighting applies (false: full brightness over the lit scene)
   lighting: bool,
   /// Draw order against sprites and other trails (higher draws on top)
@@ -203,6 +219,8 @@ impl Trail2D {
       effect: None,
       cap: LineCap::Butt,
       join: LineJoin::Miter,
+      blend: BlendMode::Alpha,
+      filter: Filter::Default,
       lighting: true,
       z_order: 0,
     }
@@ -838,6 +856,29 @@ impl Trail2D {
   /// Set how the trail turns its corners.
   pub fn set_join(&mut self, join: LineJoin) {
     self.join = join;
+  }
+
+  /// Set how the trail combines with what is below (default `Alpha`;
+  /// `Additive` for glowing trails).
+  pub fn with_blend(mut self, blend: BlendMode) -> Self {
+    self.blend = blend;
+    self
+  }
+
+  /// How the trail combines with what is below.
+  pub fn blend(&self) -> BlendMode {
+    self.blend
+  }
+
+  /// Set how the trail's texture is sampled (default: the presentation's).
+  pub fn with_filter(mut self, filter: Filter) -> Self {
+    self.filter = filter;
+    self
+  }
+
+  /// How the trail's texture is sampled.
+  pub fn filter(&self) -> Filter {
+    self.filter
   }
 
   /// Set whether scene lighting applies (default `true`).

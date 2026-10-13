@@ -46,7 +46,9 @@ mod pipeline;
 
 pub(crate) use context::FrameTargets;
 pub use context::RenderContext;
-pub(crate) use draw_list::{DrawItem, DrawKind, DrawList, DrawPayload, SpriteLook, SpriteShading};
+pub(crate) use draw_list::{
+  DrawItem, DrawKind, DrawList, DrawPayload, DrawTriangles, SpriteLook, SpriteShading,
+};
 pub(crate) use entities::EntityDrawer;
 pub use frame::FrameInfo;
 pub(crate) use frame::{

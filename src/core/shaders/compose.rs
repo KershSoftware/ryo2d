@@ -42,18 +42,15 @@ pub(crate) const RAYMARCH_SHADOW: &str = concat!(
   include_str!("core/raymarch_shadow.wgsl"),
 );
 
-/// Trails and lines
-pub(crate) const TRAIL: &str = concat!(
+/// Trails and lines (plain and textured)
+pub(crate) const LINE: &str = concat!(
   include_str!("include/camera.wgsl"),
   "\n",
-  include_str!("core/trail.wgsl"),
-);
-
-/// Textured trails
-pub(crate) const TRAIL_TEXTURED: &str = concat!(
-  include_str!("include/camera.wgsl"),
+  include_str!("include/color.wgsl"),
   "\n",
-  include_str!("core/trail_textured.wgsl"),
+  include_str!("include/sample.wgsl"),
+  "\n",
+  include_str!("core/line.wgsl"),
 );
 
 /// The lit scene composed from the light buffer
@@ -166,8 +163,7 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("light", LIGHT),
     ("shadow", SHADOW),
     ("raymarch_shadow", RAYMARCH_SHADOW),
-    ("trail", TRAIL),
-    ("trail_textured", TRAIL_TEXTURED),
+    ("line", LINE),
     ("lighting_compose", LIGHTING_COMPOSE),
     ("transition", TRANSITION),
     ("composite", COMPOSITE),

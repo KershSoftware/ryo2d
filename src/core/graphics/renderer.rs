@@ -842,7 +842,6 @@ impl WgpuRenderer {
       sprites: &sprites,
       batch: None,
       draw_list: &draw_list,
-      trails: None,
       lighting: None,
       effects: &effects,
       ui_buffer,

@@ -1,12 +1,14 @@
 //! The frame's drawables in draw order
 //!
-//! Sprites and trail/line geometry groups are pushed in any order; the world
+//! Sprites and trail/line triangles are pushed in any order; the world
 //! passes draw them sorted by z, then by [`DrawKind`], then by submission, so
 //! a trail can sit between two sprites in one render pass.
 
 use super::CameraDraw;
 use super::batch::{BlendMode, Filter};
 use crate::core::ecs::Vec2;
+use std::ops::Range;
+
 use crate::core::graphics::{RenderLayers, RenderTarget, SpriteInstance, TextureId};
 
 /// What a drawable is, which breaks ties between equal z (in declaration order).
@@ -16,7 +18,7 @@ pub(crate) enum DrawKind {
   Entity,
   /// A `Scene::render`, particle or parallax sprite
   Sprite,
-  /// A trail or line geometry group
+  /// A trail or line
   Trail,
 }
 
@@ -26,8 +28,8 @@ pub(crate) enum DrawPayload {
   /// Index into the list's sprite instances (atlas page and effects flag are
   /// resolved at draw time)
   Sprite(usize),
-  /// A trail/line geometry group
-  Trail { z: i32, layers: RenderLayers },
+  /// Index into the list's triangle items (trails and lines)
+  Triangles(usize),
 }
 
 /// One drawable and where it sorts.
@@ -94,7 +96,25 @@ pub(crate) struct DrawSprite {
   pub(crate) max: Vec2,
 }
 
-/// The frame's sprites and trail groups, reused across frames.
+/// A trail or line waiting to be drawn: its triangles in the batch's
+/// triangle stream.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DrawTriangles {
+  /// The texture along it (textured trails)
+  pub(crate) texture: Option<TextureId>,
+  pub(crate) blend: BlendMode,
+  pub(crate) filter: Filter,
+  /// The cameras on these layers draw it
+  pub(crate) layers: RenderLayers,
+  /// The world box it stays inside
+  pub(crate) min: Vec2,
+  pub(crate) max: Vec2,
+  pub(crate) indices: Range<u32>,
+  /// Its vertices (a textured one is told its atlas slot when placed)
+  pub(crate) vertices: Range<u32>,
+}
+
+/// The frame's sprites, trails and lines, reused across frames.
 ///
 /// Lit items are drawn before lighting; unlit ones (anything drawn
 /// `with_lighting(false)`) after it.
@@ -103,6 +123,7 @@ pub(crate) struct DrawList {
   items: Vec<DrawItem>,
   unlit_items: Vec<DrawItem>,
   sprites: Vec<DrawSprite>,
+  triangles: Vec<DrawTriangles>,
   next_sequence: u32,
   sorted: bool,
 }
@@ -113,6 +134,7 @@ impl DrawList {
     self.items.clear();
     self.unlit_items.clear();
     self.sprites.clear();
+    self.triangles.clear();
     self.next_sequence = 0;
     self.sorted = true;
   }
@@ -159,9 +181,11 @@ impl DrawList {
     self.push_item(look.lit, z, kind, payload);
   }
 
-  /// Add the trail/line geometry of z `z`; `lit` groups draw before lighting.
-  pub(crate) fn push_trail_group(&mut self, lit: bool, z: i32, layers: RenderLayers) {
-    self.push_item(lit, z, DrawKind::Trail, DrawPayload::Trail { z, layers });
+  /// Add a trail or line at `z`; `lit` ones draw before lighting.
+  pub(crate) fn push_triangles(&mut self, lit: bool, z: i32, triangles: DrawTriangles) {
+    let payload = DrawPayload::Triangles(self.triangles.len());
+    self.triangles.push(triangles);
+    self.push_item(lit, z, DrawKind::Trail, payload);
   }
 
   fn push_item(&mut self, lit: bool, z: i32, kind: DrawKind, payload: DrawPayload) {
@@ -216,6 +240,19 @@ impl DrawList {
     self.sprites.len()
   }
 
+  /// The trail or line a [`DrawPayload::Triangles`] index refers to.
+  pub(crate) fn triangles(&self, index: usize) -> Option<&DrawTriangles> {
+    self.triangles.get(index)
+  }
+
+  /// The textures the frame's trails and lines draw.
+  pub(crate) fn triangle_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
+    self
+      .triangles
+      .iter()
+      .filter_map(|triangles| triangles.texture)
+  }
+
   /// The lit items `camera` draws, in order: those on its layers, and of
   /// the sprites only those inside its view that do not show its target.
   pub(crate) fn items_for<'s>(
@@ -243,7 +280,10 @@ impl DrawList {
           && camera.view.is_visible(sprite.min, sprite.max)
           && (sprite.shows.is_none() || sprite.shows != camera.target)
       }),
-      DrawPayload::Trail { layers, .. } => layers.intersects(&camera.layers),
+      DrawPayload::Triangles(index) => self.triangles.get(index).is_some_and(|triangles| {
+        triangles.layers.intersects(&camera.layers)
+          && camera.view.is_visible(triangles.min, triangles.max)
+      }),
     }
   }
 }
@@ -276,6 +316,21 @@ mod tests {
     );
   }
 
+  /// A line seen by every camera.
+  fn line(list: &mut DrawList, lit: bool, z: i32) {
+    let triangles = DrawTriangles {
+      texture: None,
+      blend: BlendMode::Alpha,
+      filter: Filter::Default,
+      layers: RenderLayers::default(),
+      min: Vec2::ZERO,
+      max: Vec2::ONE,
+      indices: 0..3,
+      vertices: 0..3,
+    };
+    list.push_triangles(lit, z, triangles);
+  }
+
   fn order(items: &[DrawItem]) -> Vec<(i32, DrawKind)> {
     items.iter().map(|item| (item.z, item.kind)).collect()
   }
@@ -284,7 +339,7 @@ mod tests {
   fn sorts_by_z_then_kind_then_sequence() {
     let mut list = DrawList::default();
     push(&mut list, DrawKind::Entity, 1, 0);
-    list.push_trail_group(true, 0, RenderLayers::default());
+    line(&mut list, true, 0);
     push(&mut list, DrawKind::Sprite, 1, 1);
     push(&mut list, DrawKind::Entity, 1, 2);
 
@@ -316,7 +371,7 @@ mod tests {
       .iter()
       .filter_map(|item| match item.payload {
         DrawPayload::Sprite(i) => list.sprite(i).map(|s| s.texture),
-        DrawPayload::Trail { .. } => None,
+        DrawPayload::Triangles(_) => None,
       })
       .collect();
 
@@ -329,9 +384,9 @@ mod tests {
   #[test]
   fn unlit_groups_sort_apart_from_lit_ones() {
     let mut list = DrawList::default();
-    list.push_trail_group(false, 2, RenderLayers::default());
-    list.push_trail_group(true, 5, RenderLayers::default());
-    list.push_trail_group(false, -1, RenderLayers::default());
+    line(&mut list, false, 2);
+    line(&mut list, true, 5);
+    line(&mut list, false, -1);
 
     list.sorted();
 
@@ -346,12 +401,13 @@ mod tests {
   fn clear_empties_the_list_for_reuse() {
     let mut list = DrawList::default();
     push(&mut list, DrawKind::Sprite, 0, 0);
-    list.push_trail_group(false, 0, RenderLayers::default());
+    line(&mut list, false, 0);
 
     list.clear();
 
     assert!(list.items().is_empty() && list.unlit_items().is_empty());
     assert_eq!(list.sprite_count(), 0);
+    assert!(list.triangles(0).is_none());
     push(&mut list, DrawKind::Sprite, 0, 1);
     assert_eq!(list.sorted()[0].sequence, 0);
   }

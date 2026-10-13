@@ -8,7 +8,9 @@
 //!
 //! - **Trail2D**: Automatically records position history and renders a fading path
 //! - **Line2D**: Renders explicitly defined lines, curves, and shapes
-//! - **TrailRenderer**: GPU-accelerated batch renderer for trails and lines
+//!
+//! Both are drawn by the engine's 2D batch as joined polylines, sorted by z
+//! with sprites.
 //!
 //! # Quick Start
 //!
@@ -128,7 +130,7 @@
 //!
 //! # Rendering Styles
 //!
-//! The `TrailRenderer` supports three rendering styles:
+//! Trails and lines take three rendering styles:
 //!
 //! | Style | Description |
 //! |-------|-------------|
@@ -159,19 +161,17 @@
 //!
 //! # Performance Notes
 //!
-//! - Trails and lines are batched and rendered in a single draw call
-//! - Maximum of 65,536 vertices per frame across all trails/lines
+//! - Trails and lines join the 2D batch: neighbours in z with the same blend
+//!   (and texture) share a draw call
 //! - Trail point count affects GPU cost (more points = more vertices)
 //! - Use `with_min_distance()` to prevent point clustering on fast objects
 //! - Disable trails when not visible to save processing
 
 mod line;
-mod renderer;
 #[allow(clippy::module_inception)]
 mod trail;
 
 pub use line::Line2D;
-pub use renderer::{MAX_TRAIL_VERTICES, TrailRenderer, TrailStyle};
 pub use trail::{
-  LineCap, LineJoin, MAX_TRAIL_POINTS, TextureMode, Trail2D, TrailEffect, TrailPoint,
+  LineCap, LineJoin, MAX_TRAIL_POINTS, TextureMode, Trail2D, TrailEffect, TrailPoint, TrailStyle,
 };

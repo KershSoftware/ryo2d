@@ -56,10 +56,6 @@ impl Filter {
 
 /// The shader a batch draw uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-  dead_code,
-  reason = "trails and lines join the batch with their own shaders"
-)]
 pub(crate) enum BatchShader {
   /// Texture times tint
   Sprite,

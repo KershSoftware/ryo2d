@@ -548,8 +548,9 @@ impl SpriteGpuRenderer {
     self.frame += 1;
   }
 
-  /// Make the textures of `list`'s sprites resident for this frame (the
-  /// batch then looks up their [`slot`](Self::slot)s). Call once per frame.
+  /// Make the textures of `list`'s sprites and textured trails resident for
+  /// this frame (the batch then looks up their [`slot`](Self::slot)s). Call
+  /// once per frame.
   pub(crate) fn prepare_textures(
     &mut self,
     device: &wgpu::Device,
@@ -563,6 +564,7 @@ impl SpriteGpuRenderer {
     let textures = (0..list.sprite_count())
       .filter_map(|i| list.sprite(i))
       .map(|sprite| sprite.texture)
+      .chain(list.triangle_textures())
       .filter(|&texture| {
         let repeat = previous == Some(texture);
         previous = Some(texture);
