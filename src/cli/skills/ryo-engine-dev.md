@@ -53,8 +53,9 @@ Engine::frame
 │                     trails and lines as polylines; parallax and debug shapes per camera),
 │                     plans the cameras, lays each camera's items into the 2D batch's draws
 │                     (Batch2D::prepare, uploaded once), runs the RenderPipeline:
-│                     per camera: clear → world → lighting → unlit_world
-│                     per frame:  cameras → transition → post_process → ui → composite → capture
+│                     per camera: clear → world → lighting → unlit_world (Rgba16Float, linear)
+│                     per frame:  cameras → hdr_effects → tonemap → transition → post_process
+│                                 → ui → composite → capture   (tonemap writes the display image)
 └─ Last               physics registration bookkeeping, forget despawned tilemaps, clear_trackers,
                       check_change_ticks every 1024 frames
 ```
@@ -68,7 +69,7 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (scene stack + Kira `Audio`), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.

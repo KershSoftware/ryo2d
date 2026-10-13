@@ -149,6 +149,7 @@ pub struct Renderable {
   pub blend: BlendMode,  // default Alpha (Premultiplied for render_target)
   pub filter: Filter,    // default Filter::Default (the presentation's)
   pub lighting: bool,    // default true; false draws it (and its shadows) after lighting
+  pub emission: f32,     // default 1; above 1 it glows past white and feeds bloom
 }
 pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f32 } }
 ```
@@ -161,6 +162,7 @@ pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f3
 | `with_anchor(Anchor)`, `with_z_order(i32)`, `with_visible(bool)`, `with_flip_x(bool)`, `with_flip_y(bool)`, `with_alpha(f32)`, `with_tint(Color)` | builders |
 | `with_shader(SpriteShader)`, `with_drop_shadow(DropShadow)`, `with_blob_shadow(BlobShadow)`, `with_contact_shadow(ContactShadow)` | effects |
 | `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)` | how it is drawn (shadows always blend `Alpha`) |
+| `with_emission(f32)` | multiplies the sprite's light (default 1). Above 1 it glows past white and feeds bloom; a lit sprite is still darkened by lighting, so to glow in the dark add `with_lighting(false)`. |
 
 Blend and filter modes (on `Renderable`, `ParticleEmitter`, `SpriteDraw`, `ParallaxLayer`, `Trail2D`, `Line2D`):
 
@@ -200,7 +202,7 @@ Shadows (all `Default`, builder style):
 - `enum SpriteShader { BuiltIn(SpriteEffect), Custom { shader: ShaderHandle, params: ShaderParams } }`; also `as_builtin()`, `shader_handle()`, `params()`, `params_mut()`.
 - `enum SpriteEffect { Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline }` with the constructors above plus `glow_with_intensity`, `hit_flash`, `full_grayscale`; `is_animated()`, `update(dt) -> bool` (advances a `Wave`'s phase; the engine does not call it), `apply_cpu(..)`.
 - `ShaderHandle`: `from_source(id, wgsl)`, `id()`, `source()`, `generation()`, `snapshot()`, `replace_source(wgsl)`; load from disk with `ctx.assets.load_shader(path)`.
-- `ShaderParams`: `new()`, `set(name, value) -> &mut Self`, `with(name, value) -> Self`, `get(name) -> Option<ParamValue>`. `enum ParamValue { F32, Vec2, Vec3, Vec4, Color }`, `From<f32 | Vec2 | Vec3 | Vec4 | Color>`.
+- `ShaderParams`: `new()`, `set(name, value) -> &mut Self`, `with(name, value) -> Self`, `get(name) -> Option<ParamValue>`. `enum ParamValue { F32, Vec2, Vec3, Vec4, Color }`, `From<f32 | Vec2 | Vec3 | Vec4 | Color>` (a `Color` is sRGB bytes divided by 255, not linear).
 - A custom sprite shader's time input is game time (it stops with pause and slows with speed).
 
 `trait Lerp: Clone + Send + Sync + 'static { fn lerp(start: &Self, end: &Self, t: f32) -> Self; }`, implemented for `f32`, `(f32, f32)`, `Vec2`, `Color`, `Rect`.
@@ -367,7 +369,7 @@ Only the top scene's action applies; a lower scene's (from `update` or `ui`) is 
 
 - `downcast_return::<T: Any>(returned: Option<Box<dyn Any>>) -> Option<T>` reads `PopReturn` data in `on_resume`.
 - `enum Transition { None, Fade { .. }, Slide { .. } }`: `fade(Duration)`, `fade_color(Duration, r, g, b)`, `fade_white(Duration)`, `slide(Duration, SlideDirection)`, `duration()`. `enum SlideDirection { Left, Right, Up, Down }`.
-- `SceneCleanup` bit flags, applied on `Switch`/`Reset`: `NONE`, `WORLD` (despawn every entity, resources stay), `CAMERA`, `EFFECTS`, `LIGHTING`, `TIME` (game clock speed, pause, hitstop), `MUSIC`, `MESSAGES`, `ALL`, `DEFAULT` (all but `MUSIC`); `|`, `&`, `-`, `!`, `contains`, `is_empty`. Example: `SceneCleanup::DEFAULT - SceneCleanup::WORLD`.
+- `SceneCleanup` bit flags, applied on `Switch`/`Reset`: `NONE`, `WORLD` (despawn every entity, resources stay), `CAMERA`, `EFFECTS` (post-processing effects and the look), `LIGHTING`, `TIME` (game clock speed, pause, hitstop), `MUSIC`, `MESSAGES`, `ALL`, `DEFAULT` (all but `MUSIC`); `|`, `&`, `-`, `!`, `contains`, `is_empty`. Example: `SceneCleanup::DEFAULT - SceneCleanup::WORLD`.
 
 ---
 
@@ -397,6 +399,7 @@ pub struct SceneContext<'a> {
 | `insert_resource<T: Resource>(&mut self, value: T)` | |
 | `effects(&mut self) -> Mut<'_, EffectsManager>` | post-processing |
 | `lighting(&mut self) -> Mut<'_, LightingSettings>` | ambient, atmosphere, forced on/off |
+| `look(&mut self) -> Mut<'_, Look>` | exposure, tonemap curve, colour grading (see [The look](#the-look)) |
 | `tilemaps(&mut self) -> Mut<'_, TilemapManager>` | |
 | `render_pipeline(&mut self) -> Mut<'_, RenderPipeline>` | toggle or insert passes (persist across scenes) |
 | `debug_draw(&mut self) -> Mut<'_, DebugDraw>` | debug lines and shapes over the world (see [Debug drawing](#debug-drawing)) |
@@ -675,8 +678,8 @@ pub struct GpuRenderContext<'a> { pub batch: &'a mut BatchCollector, pub world: 
 | `add_custom_sprite(&SpriteHandle, &ShaderHandle, &ShaderParams, SpriteInstance, SpriteDraw)` | one sprite with a game shader |
 | `screen_size()`, `screen_width()`, `screen_height()`, `camera() -> &CameraView` (the main camera's view) | |
 
-- `SpriteInstance { transform, uv_rect, tint, effect_params, effect_extra, uv_bounds }`: `new()`, `with_transform(x, y, rotation, width, height)` (the quad's centre and size in world units), `with_uv(u_min, v_min, u_max, v_max)`, `with_tint(Color, alpha)`, `with_effect(&SpriteEffect)`.
-- `SpriteDraw { z: i32, blend: BlendMode, filter: Filter, lit: bool, effects: bool }` (`Default`: z 0, `Alpha`, `Filter::Default`, lit, no effects; `effects` when the instance carries `with_effect`): `SpriteDraw { z: 5, blend: BlendMode::Additive, ..Default::default() }`.
+- `SpriteInstance { transform, uv_rect, tint, effect_params, effect_extra, uv_bounds }`: `new()`, `with_transform(x, y, rotation, width, height)` (the quad's centre and size in world units), `with_uv(u_min, v_min, u_max, v_max)`, `with_tint(Color, alpha)`, `with_effect(&SpriteEffect)`, `with_emission(f32)`, `emission() -> f32` (default 1; kept in the transform's last lane as `emission - 1`).
+- `SpriteDraw { z: i32, blend: BlendMode, filter: Filter, lit: bool, effects: bool, emission: f32 }` (`Default`: z 0, `Alpha`, `Filter::Default`, lit, no effects, emission 1; `effects` when the instance carries `with_effect`; `with_emission(f32)` multiplies the instance's emission): `SpriteDraw { z: 5, blend: BlendMode::Additive, ..Default::default() }`.
 - `BatchCollector`: `new()`, `with_capacity(n)`, `add(&SpriteHandle, SpriteInstance, SpriteDraw)`, `sprite_count()`, `clear()`.
 
 Parallax layers (components; spawn one entity per layer):
@@ -732,7 +735,27 @@ Lighting turns on once any `Light2D` exists (or when forced) and lights the worl
 | `GodRaysQuality { Low, Medium, High }` | `samples()`, `decay()` |
 | `VolumetricSettings { enabled, intensity, density, scattering, god_rays }` (per light) | `new(intensity, density, scattering)`, `enabled()`, `god_rays_only()`, `subtle_beam()`, `strong_beam()`, `flashlight()`, `with_god_rays`, `with_intensity`, `with_density`, `with_scattering` |
 
-Lights and occluders sit at their entity's `GlobalTransform`. Every camera is lit in its own light buffers, so lights turn, zoom and shake with the camera. See `ryo-lighting`.
+Lights and occluders sit at their entity's `GlobalTransform`. A light with a `RenderLayers` component on its entity (default `layer(0)`) lights only the cameras on those layers. Lights are batch quads with no cap; each lit camera has its own light buffers, so lights turn, zoom and shake with the camera, and each shadow darkens only its own light. Colours are sRGB: `Color::to_linear() -> [f32; 4]` is the linear-light, straight-alpha form the GPU gets. Light `intensity` above 1 shows (the look rolls it off); `Atmosphere::god_rays_threshold` is linear luminance (default 1.0). Removed: `with_raymarched_shadows` (use `with_soft_shadows`), and the engine-internal `LightingRenderer`, `LightingParams`, `MAX_LIGHTS` and the shadow geometry exports. See `ryo-lighting`.
+
+---
+
+## The look
+
+`Look` is a resource (`ctx.look()`): how the frame's linear HDR image becomes the picture, applied once per frame by the `tonemap` pass. `SceneCleanup::EFFECTS` resets it.
+
+| Type | API |
+|---|---|
+| `Look { exposure: f32, tonemap: Tonemap, grading: ColorGrading, auto_exposure: Option<AutoExposure> }` | `Default`: exposure 0 EV (+1 doubles the light), `Tonemap::Soft { knee: 0.8, white: 4.0 }`, neutral grading, no auto-exposure. Order: exposure (plus the auto EV), white balance, contrast and saturation, the curve, lift/gamma/gain, then the LUT in sRGB |
+| `enum Tonemap { Soft { knee, white }, Clamp, Aces, AgX }` | `apply(self, Vec3) -> Vec3` (linear in after exposure, linear display colour out). `Soft` is identity up to `knee`, then reaches 1 at `white`, keeping hues; `Clamp` clips at 1 (the pre-HDR look); `Aces` is contrasty; `AgX` is soft with hue-faithful highlights |
+| `ColorGrading { temperature, tint, contrast, saturation, lift: Vec3, gamma: Vec3, gain: Vec3, lut: Option<ColorLut>, lut_strength }` | `Default`: 0, 0, 1, 1, `Vec3::ZERO`, `Vec3::ONE`, `Vec3::ONE`, none, 1.0. `temperature` and `tint` are -1 to 1; `contrast` pivots on mid-grey 0.18; `lift`, `gamma` and `gain` work per channel on the display colour |
+| `ColorLut` | `from_sprite(&SpriteHandle) -> Result<ColorLut, LutError>`, `size() -> u32`, `identity_strip(size: u32) -> Sprite` (N from 2 to 64). A strip is N tiles of N x N side by side (N*N wide, N high; 1024x32 for N = 32): tile `b` holds blue `b / (N - 1)`, red grows to the right and green downward. Looked up in sRGB; follows its sprite's hot reload |
+| `enum LutError { WrongSize { width, height } }` | the sprite is not a strip |
+| `AutoExposure { min_ev, max_ev, compensation, speed_up, speed_down }` | `Default`: -4, 4, 0, 3, 1 (EV; speeds in EV per second, real time). Measured on the GPU from the scene (the average luminance without its darkest and brightest 5%) and brought to mid-grey; added to `exposure` |
+
+```rust
+ctx.look().exposure = 0.5;
+ctx.look().tonemap = Tonemap::Aces;
+```
 
 ---
 
@@ -781,15 +804,20 @@ Lights and occluders sit at their entity's `GlobalTransform`. Every camera is li
 | `set_bloom(intensity)`, `set_bloom_custom(threshold, intensity, radius, blur_passes)`, `disable_bloom()`, `has_bloom()` | |
 | `set_god_rays(intensity, light_positions: Vec<(f32, f32)>)`, `set_god_rays_custom(intensity, samples, decay, density, threshold, positions)`, `update_god_rays_lights(positions)`, `disable_god_rays()`, `has_god_rays()` | |
 | `set_ambient_occlusion(intensity, radius)`, `set_ambient_occlusion_custom(.., bias)`, `disable_ambient_occlusion()`, `has_ambient_occlusion()` | |
-| `add_custom(name, ShaderHandle) -> Result<(), EffectError>`, `set_custom_param(name, param, value) -> bool`, `set_custom_enabled(name, bool) -> bool`, `remove_custom(name) -> bool`, `has_custom(name)` | game-written full-screen WGSL |
-| `new()`, `update(dt)`, `time()`, `active_effects()`, `has_active_effects()`, `clear()` | |
+| `add_custom(name, ShaderHandle) -> Result<(), EffectError>`, `add_custom_in(name, ShaderHandle, EffectStage) -> Result<(), EffectError>`, `set_custom_param(name, param, value) -> bool`, `set_custom_enabled(name, bool) -> bool`, `remove_custom(name) -> bool`, `has_custom(name)` | game-written full-screen WGSL; `add_custom` runs on the display image, `add_custom_in` in the stage you pick |
+| `new()`, `update(dt)`, `time()`, `active_effects()`, `active_effects_in(EffectStage)`, `has_active_effects()`, `has_active_effects_in(EffectStage)`, `clear()` | |
 
-`enum PostProcessEffect { Fade, ColorTint, Vignette, ScreenFlash, Crt, ChromaticAberration, GodRays, AmbientOcclusion, Bloom }` (what `active_effects` yields); `enum EffectError { DuplicateName(String) }`.
+`enum PostProcessEffect { Fade, ColorTint, Vignette, ScreenFlash, Crt, ChromaticAberration, GodRays, AmbientOcclusion, Bloom }` (what `active_effects` yields); `PostProcessEffect::stage() -> EffectStage`; `enum EffectError { DuplicateName(String) }`.
+
+`enum EffectStage { Hdr, Display }`: `Hdr` runs on the scene image in linear light that may exceed 1, before the look (bloom, god rays, ambient occlusion); `Display` runs on the display image after it (fade, tint, vignette, flash, CRT, chromatic aberration). A custom effect's `scene(uv)` is linear in both; `Color` params stay sRGB bytes/255, so decode one (`srgb_to_linear`) before mixing it with `scene(uv)`.
+
+Bloom's `threshold` is linear luminance, 0 or more and unbounded above (default 1.0, white): only light brighter than white blooms, so lit highlights, emission and intensity above 1 feed it. God rays' threshold is the same measure.
 
 ---
 
 ## Trails and lines
 
+- `with_emission(f32)` (default 1; `emission()` reads it) on `Trail2D`, `Line2D`, `ParticleEmitter` and `Renderable` multiplies the colour's light: above 1 it glows past white and feeds bloom.
 - `Trail2D` (component, on an entity with a `Transform`): records the entity's world position every fixed step (points are world space). Constructors `new(Color, width)`, `bullet(Color)`, `swipe(Color, w)`, `particle(Color)`, `laser(Color, w)`, `fading_laser(Color, w, fade_time)`, `lightning(Color, w)`, `fire(Color, w)`, `energy(Color, w)`; builders `with_length(max_points)` (≤ 128), `with_end_width`, `with_taper(ratio)`, `with_fade(bool)`, `with_end_color`, `with_min_distance`, `with_emit_interval`, `with_lifetime(secs)`, `with_fade_distance(px)`, `with_texture(SpriteHandle)`, `with_texture_mode(TextureMode)`, `with_tile_length`, `with_style(TrailStyle)`, `with_effect(TrailEffect)`, `with_cap(LineCap)`, `with_join(LineJoin)`, `with_blend(BlendMode)`, `with_filter(Filter)` (textured trails), `with_lighting(bool)`, `with_z_order(i32)`; control `set_enabled`, `set_visible`, `set_recording`, `clear`, `push_point(x, y)`, `push_point_back`, `populate_line(..)`, `update(x, y, dt)`, plus getters/setters for each setting.
 - `Line2D` (component, on an entity with a `Transform`): drawn at the entity's world position (points are offsets from it). `new(points: Vec<Vec2>, Color, width)`, `segment(start, end, Color, w)`, `horizontal(y, x0, x1, Color, w)`, `vertical(x, y0, y1, Color, w)`, `rect(x, y, w, h, Color, line_w)`, `circle(center, r, Color, w, segments)`, `arc(..)`, `quadratic_bezier(..)`, `bezier(..)`, `arrow(start, end, Color, w, head)`; builders `with_end_color`, `with_end_width`, `with_taper`, `with_closed(bool)`, `with_z_order`, `with_style`, `with_cap`, `with_join(LineJoin)`, `with_blend(BlendMode)`, `with_lighting(bool)`; editing `points_mut`, `set_points`, `push_point`, `pop_point`, `clear`; `length()`, `point_at_distance(d)`, `color_at(t)`, `width_at(t)`.
 - `TrailPoint { x, y, age }`: `new(x, y)`.
@@ -880,7 +908,7 @@ Tile data, coordinates, collision and Tiled import; the renderer does not draw t
 | `set_enabled(id, bool) -> Result<(), RenderPipelineError>`, `is_enabled(id) -> Option<bool>`, `contains(id)`, `pass_ids()`, `passes_to_run(&FrameInfo)` (in run order: camera passes, then frame passes) | |
 | `new()`, `default_2d()` | |
 
-`pass_ids`: per camera `CLEAR`, `WORLD` (entities, sprites, lit trails and lines in z order), `LIGHTING`, `UNLIT_WORLD`; per frame `CAMERAS` (window cameras' images into their viewports), `TRANSITION`, `POST_PROCESS`, `UI`, `COMPOSITE`, `CAPTURE`. `enum RenderPipelineError { DuplicatePass(String), UnknownPass(String) }`.
+`pass_ids`: per camera `CLEAR`, `WORLD` (entities, sprites, lit trails and lines in z order), `LIGHTING`, `UNLIT_WORLD`; per frame `CAMERAS` (window cameras' images into their viewports), `HDR_EFFECTS` (bloom, god rays, ambient occlusion on the scene image), `TONEMAP` (the look: the scene image into the display image), `TRANSITION`, `POST_PROCESS` (display effects), `UI`, `COMPOSITE`, `CAPTURE`. `enum RenderPipelineError { DuplicatePass(String), UnknownPass(String) }`.
 
 ```rust
 pub trait RenderPass: Send + Sync {
@@ -891,8 +919,8 @@ pub trait RenderPass: Send + Sync {
 }
 ```
 
-- `RenderContext`: `device()`, `queue()`, `encoder()`, `frame() -> &FrameInfo`, `render_size()` (the scene image in pixels), `screen_size() -> Vec2`, `format()`, `current_view()` (in a camera pass, the camera's image), `encoder_and_current_view()`, `camera() -> Option<&CameraView>` and `camera_entity() -> Option<Entity>` (`Some` in camera passes). GPU types come from `ryo2d::wgpu`.
-- `FrameInfo { screen_width, screen_height, render_width, render_height, world, lighting, effects, ui, transition, capture }`: what the frame contains.
+- `RenderContext`: `device()`, `queue()`, `encoder()`, `frame() -> &FrameInfo`, `render_size()` (the scene image in pixels), `screen_size() -> Vec2`, `format()` (of `current_view()`: `Rgba16Float` before `tonemap` and in camera passes, `Rgba8UnormSrgb` after it), `current_view()` (in a camera pass, the camera's image), `encoder_and_current_view()`, `camera() -> Option<&CameraView>` and `camera_entity() -> Option<Entity>` (`Some` in camera passes). GPU types come from `ryo2d::wgpu`.
+- `FrameInfo { screen_width, screen_height, render_width, render_height, world, lighting, hdr_effects, effects, ui, transition, capture }`: what the frame contains (`hdr_effects`: HDR-stage effects are active; `effects`: display-stage ones).
 
 See `ryo-renderer`.
 

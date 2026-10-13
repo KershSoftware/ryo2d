@@ -51,8 +51,8 @@ pub struct Atmosphere {
   pub god_rays_decay: f32,
   /// God rays intensity multiplier
   pub god_rays_intensity: f32,
-  /// Brightness threshold for god rays: luminance in linear light, 0 or more; 1.0 is white, so only light brighter than white passes
-  /// Only light brighter than this contributes to rays
+  /// Brightness threshold for god rays: luminance in linear light, 0 or
+  /// more. 1.0 is white, so only light brighter than white contributes rays
   pub god_rays_threshold: f32,
 }
 

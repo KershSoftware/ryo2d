@@ -1,6 +1,6 @@
 # AGENTS.md - Render Pipeline
 
-The engine draws every frame through one `RenderPipeline` (a resource, `RenderPipeline::default_2d()`): `Engine::present_frame` (`engine/extract.rs`) builds a `FrameScene` and `WgpuRenderer::render_frame` runs the enabled passes on **one command encoder with one submit**: the camera passes (`PassScope::Camera`) once per camera in render order, each on that camera's image, then the frame passes (`PassScope::Frame`) once. Games reach it with `ctx.render_pipeline()` (a `Mut<RenderPipeline>`): toggle built-in passes or insert their own. The pipeline belongs to the engine, so a scene's changes persist across scene transitions.
+The engine draws every frame through one `RenderPipeline` (a resource, `RenderPipeline::default_2d()`): `Engine::present_frame` (`engine/extract.rs`) builds a `FrameScene` and `WgpuRenderer::render_frame` runs the enabled passes on **one command encoder with one submit**: the camera passes (`PassScope::Camera`) once per camera in render order, each on that camera's image in `Rgba16Float` linear light, then the frame passes (`PassScope::Frame`) once: `cameras -> hdr_effects -> tonemap -> transition -> post_process -> ui -> composite -> capture`. Games reach it with `ctx.render_pipeline()` (a `Mut<RenderPipeline>`): toggle built-in passes or insert their own. The pipeline belongs to the engine, so a scene's changes persist across scene transitions.
 
 ## Default Order (`default_2d`)
 
@@ -11,12 +11,35 @@ The engine draws every frame through one `RenderPipeline` (a resource, `RenderPi
 | 3 | `LIGHTING` | camera | lighting is on | the camera's lights and shadows, composed into the lit image (straight-in camera) or back into its own image |
 | 4 | `UNLIT_WORLD` | camera | always (returns early with no unlit draws) | the camera's unlit draws (anything `with_lighting(false)`, and debug shapes), by z |
 | 5 | `CAMERAS` | frame | always | window cameras' own images into their viewports, in order; clears the scene image first when no camera drew straight into it |
-| 6 | `TONEMAP` | frame | always | writes the display image (the display stage's buffer A) from the latest scene image; the transition, `post_process` and the composite work on the display image |
-| 7 | `TRANSITION` | frame | a transition fade is visible | scene transition fade over the whole frame (not the UI) |
-| 8 | `POST_PROCESS` | frame | effects are active | the effects chain |
-| 9 | `UI` | frame | the UI buffer has content | uploads the UI layer |
-| 10 | `COMPOSITE` | frame | always | to the window or offscreen target through `ScreenMapping` (bars for pixel art), UI blended last |
-| 11 | `CAPTURE` | frame | a capture was requested | frame capture readback copy |
+| 6 | `HDR_EFFECTS` | frame | HDR effects are active | bloom, god rays, ambient occlusion and HDR custom effects on the scene image (linear light, may exceed 1) |
+| 7 | `TONEMAP` | frame | always | the look: writes the display image (the display stage's buffer A) from the latest scene image; the transition, `post_process` and the composite work on the display image |
+| 8 | `TRANSITION` | frame | a transition fade is visible | scene transition fade over the whole frame (not the UI) |
+| 9 | `POST_PROCESS` | frame | display effects are active | fade, tint, vignette, flash, CRT, chromatic aberration and display custom effects on the display image |
+| 10 | `UI` | frame | the UI buffer has content | uploads the UI layer |
+| 11 | `COMPOSITE` | frame | always | to the window or offscreen target through `ScreenMapping` (bars for pixel art), UI blended last |
+| 12 | `CAPTURE` | frame | a capture was requested | frame capture readback copy |
+
+## Images and Formats
+
+- **`SCENE_FORMAT`** (`render/mod.rs`, `Rgba16Float`): linear light, premultiplied by alpha, values may exceed 1. The game texture, the lit image, camera images, render-target textures, the lighting pass's scene copy and the HDR stage's ping-pong pair all use it. Nothing on the CPU writes f16 texels: render passes fill these images.
+- **The display image** is buffer A of the display effect stage, `Rgba8UnormSrgb`; the `tonemap` pass writes it and `post_process` ping-pongs it with buffer B. Unchanged formats: atlas and standalone sprite pages (`Rgba8Unorm`, raw sRGB bytes), the UI texture, the surface, the offscreen target and the capture readback.
+- `FrameImage` (`frame.rs`) names the latest image: `Game`, `Lit`, `Camera(entity)`, `Hdr(buffer)` (the HDR stage) and `Display(buffer)` (the display stage).
+- `RenderContext::format()` is the format of `current_view()`: `Rgba16Float` in camera passes and in frame passes before `tonemap`, `Rgba8UnormSrgb` after it. A game pass builds its pipelines for `ctx.format()`.
+- Two `PostProcessPipeline`s (`EffectStages`: `hdr` and `display`) are built, one per format; each effect runs in the stage `PostProcessEffect::stage()` gives (`EffectStage`, `shaders/AGENTS.md`).
+
+## The Look
+
+- `Look` (`look.rs`, resource, `ctx.look()`) holds exposure, the `Tonemap` curve, `ColorGrading` and optional `AutoExposure`. The `tonemap` pass (`passes/tonemap.rs`, `tonemap.wgsl`) applies, in order: exposure (`exposure + auto EV`), white balance (temperature, tint), contrast and saturation, the curve, lift/gamma/gain on the display colour, then sRGB encoding and the LUT.
+- **`Tonemap::apply` in `look.rs` mirrors `tonemap.wgsl`: change them together.** `every_curve_on_the_gpu_matches_tonemap_apply` (`tests/e2e/look.rs`) pins them.
+- **The LUT** is a 3D texture (`LutTexture`, `passes/tonemap.rs`) uploaded from the strip sprite's pixels. It follows the sprite's generation (hot reload re-uploads; a bad reload keeps the last good one). Lookups are in sRGB.
+- **Auto-exposure** (`exposure.rs`, `exposure.wgsl`): two compute dispatches each frame, one filling a luminance histogram from the scene image and one reducing it (trimmed mean) into a stored EV that moves toward its target at the configured speeds. The tonemap pass binds that stored EV; with auto-exposure off it adds nothing, and turning it off and on again restarts it at its target. The dispatches run inside the tonemap pass, on the scene image it is about to read.
+
+## Lights in the Batch
+
+- `DrawList::lights_for(camera)` gives the lights on the camera's layers whose box meets its view. Lights are batch quads (`lighting/batch.rs`) laid into each lit camera's draws by `Batch2D::prepare`, which also pushes their shadow volumes into the triangle stream.
+- Per lit camera the `lighting` pass replays: one `LightStep::Add` draw for all lights without shadow volumes; for each shadowed light, in its quad, `ResetMask`, then `Shadow` (triangles), `Masked`, and `Coloured` if its shadow is coloured.
+- `light_blend` (`batch/pipelines.rs`) gives each step's blend state and colour writes: `Add` adds colour (alpha untouched); `ResetMask` writes alpha 1 and no colour; `Shadow` writes only alpha, multiplying it by 1 - strength; `Masked` adds the light times the alpha (`DstAlpha`); `Coloured` adds the shadow-tinted light times 1 - alpha.
+- **The mask lives in the light buffer's alpha** so shadows need no stencil, depth or second target: only core WebGPU. One light's shadow never touches another light's colour, because the next light resets the alpha inside its own quad.
 
 ## Cameras in the Frame
 
@@ -62,7 +85,7 @@ One batch draws the world: sprites, shadows, tiles, composite parts, particles, 
 - **Single sprite:** the anchor point (`Renderable::anchor`, default `Anchor::Center`) sits on the position; scale and rotation happen about it.
 - **Tiled run** (`RenderStyle::Tiled`): laid out from the entity's position, which is the first tile's top-left (Up/Left runs grow backwards); the anchor is ignored; the run rotates and scales about that position.
 - **Composite tile:** parts at `origin + offset` (their top-left), scaled by the global scale, never rotated; the origin is blended for interpolated entities.
-- Instances carry world-space quads: centre, size (texels times scale, in world units), rotation and flips. The camera's `view_proj` takes them to its image; in pixel-art mode the sprite vertex shader snaps axis-aligned quads to whole target pixels. A quad is culled per camera by its half-diagonal box. Blending happens in linear space on the GPU.
+- Instances carry world-space quads: centre, size (texels times scale, in world units), rotation and flips. The camera's `view_proj` takes them to its image; in pixel-art mode the sprite vertex shader snaps axis-aligned quads to whole target pixels. A quad is culled per camera by its half-diagonal box. Blending happens in linear light, on the float scene image.
 - Entity sprites are registry textures (`TextureId`) keyed by `SpriteHandle::serial()`, re-uploaded when `generation()` changes (hot reload). A renderable with `target: Some(t)` draws the render target's texture at the target's size; the camera drawing into `t` skips it (warned once per entity).
 
 ## Ordering Rules
@@ -87,7 +110,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 - **Thin passes.** GPU pipelines, bind groups and buffers live in the subsystem renderers (the batch, lighting, post-process, compositor). A pass only calls into them with the `RenderContext`; `world` and `unlit_world` replay the camera's batch draws.
 - **A camera image per camera, then a frame-level composite.** Lighting and the passes keep working on whole images, so no pass needs scissor logic; the common single full-window camera draws straight into the scene image and pays nothing extra. Post-processing runs once per frame, not per camera.
-- **Latest-image tracking.** `RenderContext` tracks which texture holds the latest image (`FrameImage`: game, lit, a camera's own image, or a display-stage buffer: the `tonemap` pass writes the display image, which `post_process` ping-pongs). A pass drawing on "the frame" uses `current_view()` / `encoder_and_current_view()`, so a game pass after `post_process` draws on the post-processed image, and a camera pass on its camera's image. Only passes before `composite` reach the screen.
+- **Latest-image tracking.** `RenderContext` tracks which texture holds the latest image (`FrameImage`: game, lit, a camera's own image, an HDR-stage buffer, or a display-stage buffer: the `tonemap` pass writes the display image, which `post_process` ping-pongs). A pass drawing on "the frame" uses `current_view()` / `encoder_and_current_view()`, so a game pass after `post_process` draws on the post-processed image (`Rgba8UnormSrgb`), one before `tonemap` on a scene image (`Rgba16Float`), and a camera pass on its camera's image. Only passes before `composite` reach the screen.
 - **The UI is composited only if the `ui` pass uploaded it this frame.** The UI texture is persistent; without that flag a disabled or skipped `ui` pass would blend the previous frame's UI.
 - **A capture is read back only if the `capture` pass ran.** Otherwise `render_frame` reports `CaptureError::Readback` rather than returning a stale image.
 - **Scene images follow the render size** (`ScreenMapping::render_size`: the window's physical size, or the pixel-art target); the lit texture is persistent. Camera images and light targets follow their camera's image size.
@@ -102,7 +125,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 ## Gotchas
 
 - `FrameInfo::world` means the draw list has lit items; `unlit_world` has no flag of its own. `FrameInfo` describes content, not passes: `lighting` and `effects` stay true when the game disabled those passes.
-- Disabling `post_process` removes every effect, including flashes and tints.
+- Disabling `post_process` removes every display effect, including flashes and tints; disabling `hdr_effects` removes bloom, god rays and ambient occlusion.
 - A game pass records raw wgpu work on `ctx.encoder_and_current_view()` (`ryo2d::wgpu`); there is no higher-level API for game passes. Custom sprite and effect shaders go through `Material` / `EffectsManager::add_custom` instead (`src/core/shaders/AGENTS.md`).
 - `DebugStats::draw_calls` counts the batch's draws (`world`, `unlit_world` and the lights), over every camera.
 - Crate-internal checks that need engine internals live in `src/core/testing/gpu_world.rs`; pixel-level behaviour is in `tests/e2e/gpu_world.rs` and `tests/e2e/render_pipeline.rs`.

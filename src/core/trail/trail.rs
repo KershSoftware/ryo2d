@@ -913,7 +913,7 @@ impl Trail2D {
     self
   }
 
-  /// Multiply the line's light by `emission` (default 1): above 1 it glows
+  /// Multiply the trail's light by `emission` (default 1): above 1 it glows
   /// past white and feeds bloom. NaN counts as 1; clamped to 0..=65504.
   pub fn with_emission(mut self, emission: f32) -> Self {
     self.emission = if emission.is_nan() {

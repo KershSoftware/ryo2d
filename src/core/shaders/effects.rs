@@ -84,7 +84,7 @@ pub enum PostProcessEffect {
     weight: f32,
     /// Brightness threshold: luminance in linear light, 0 or more; 1.0 is white, so only light brighter than white passes
     threshold: f32,
-    /// Light positions in screen UV space (0-1), max 4 lights
+    /// Light positions in frame coordinates (0 to 1 across the whole frame), max 4 lights
     /// Format: [(x, y), ...] where each position is a light
     light_positions: Vec<(f32, f32)>,
   },
@@ -237,7 +237,7 @@ impl PostProcessEffect {
   ///
   /// # Arguments
   /// * `intensity` - Overall effect intensity (0.0 - 2.0)
-  /// * `light_positions` - Screen-space UV positions of lights (0-1 range)
+  /// * `light_positions` - Positions of lights in frame coordinates (0 to 1 across the whole frame)
   pub fn god_rays(intensity: f32, light_positions: Vec<(f32, f32)>) -> Self {
     Self::GodRays {
       intensity: intensity.clamp(0.0, 2.0),

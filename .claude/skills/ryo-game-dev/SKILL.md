@@ -141,7 +141,7 @@ Entities are not drawn by `render`: anything with `Transform` + `Renderable` is 
 | `ctx.assets` | `&mut AssetManager` | Sprites (`load_sprite`, `create_sprite`) |
 | `ctx.audio` | `&mut Audio` | Sounds and music (calls return `AudioError::Unavailable` without a device) |
 
-Helpers: `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
+Helpers: `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
 
 **`time`, `input` and `assets` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
 
@@ -472,6 +472,39 @@ Resolution comes from `Ryo.toml` (`[system] resolution`) or `EngineBuilder::reso
 Choose pixel art for low-resolution art that must stay crisp and grid-aligned (every pixel the same size); choose resolution-independent for everything else (smooth scaling, rotation and zoom at any window size).
 
 `EngineBuilder::window_size(w, h)` sets the window's initial size and `resizable(bool)` whether the player can resize it. A saved `resolution` preference picks the window size, not the game's. `DisplayMode` (`Windowed`, `ExclusiveFullscreen`, `BorderlessFullscreen`) is how the window appears: `ctx.request_display_mode(DisplayMode::BorderlessFullscreen)`. Builder overrides (`resolution`, `pixel_art`, `window_size`, `target_fps`, `vsync`, `fixed_hz`) beat `Ryo.toml`; saved player preferences beat both when `with_user_preferences` includes them (`ryo-config-save`).
+
+## Glow, Mood and the Look
+
+The world renders in linear HDR and `ctx.look()` (a `Mut<Look>`) decides how it reaches the screen. All colours are sRGB; light above 1 is kept until the look rolls it off. A scene switch resets effects and the look (`SceneCleanup::EFFECTS`). Details in `ryo-renderer` and `ryo-api`.
+
+```rust
+// A glowing pickup: emission above 1, unlit so it glows in the dark, and bloom
+ctx.world.spawn((
+  Transform::from_xy(x, y),
+  Renderable::sprite(gem).with_emission(4.0).with_lighting(false),
+));
+ctx.effects().set_bloom(1.0);
+
+// A moody level: cooler, less saturated, crushed blacks, and a LUT
+let night = ctx.assets.load_sprite("luts/night.png").ok();
+ctx.look().grading = ColorGrading {
+  temperature: -0.3,
+  saturation: 0.8,
+  contrast: 1.2,
+  lift: Vec3::splat(-0.02),
+  lut: night.as_ref().and_then(|strip| ColorLut::from_sprite(strip).ok()),
+  lut_strength: 0.6,
+  ..ColorGrading::default()
+};
+
+// A cave: exposure follows the player from the dark into daylight
+ctx.look().auto_exposure = Some(AutoExposure {
+  compensation: -0.5,
+  ..AutoExposure::default()
+});
+```
+
+`with_emission` multiplies a drawable's light (also on particles, trails and lines). Bloom picks up what is brighter than white (its threshold is linear luminance, default 1.0), so emission above 1 and lights with intensity above 1 glow. A LUT is a strip of N tiles of N x N (`ColorLut::identity_strip(32)` makes a neutral one to paint over).
 
 ## Navigation
 

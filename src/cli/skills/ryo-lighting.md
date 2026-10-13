@@ -12,7 +12,7 @@ You help developers light scenes and cast shadows. Complete signatures are in `r
 ## Resources
 
 - **Lighting**: `src/core/lighting/` (`settings.rs` is what scenes control)
-- **Shaders**: `src/core/shaders/core/light.wgsl`, `shadow.wgsl`; `post-process/lighting.wgsl`, `god_rays.wgsl`, `ambient_occlusion.wgsl`
+- **Shaders**: `src/core/shaders/core/light.wgsl` (lights, batch quads), `shadow.wgsl` (shadow volumes, batch triangles); `post-process/lighting.wgsl` (compose), `god_rays.wgsl`, `ambient_occlusion.wgsl`
 - **Demos**: `examples/demos/lighting/`, `lighting-volumetric/`, `shadows/`
 
 ## The Model
@@ -22,7 +22,10 @@ You help developers light scenes and cast shadows. Complete signatures are in `r
 - Lighting is **automatic**: it turns on the first frame any `Light2D` exists and stays on. `ctx.lighting().set_enabled(true)` forces it on (a dark scene before any light exists); `set_enabled(false)` forces it off. `enabled()` returns the override (`None` when automatic).
 - Once on, lighting stays on across scene changes, even after `SceneCleanup::LIGHTING` resets the settings to their defaults (dim grey ambient, 0.15). A later scene that wants to be fully lit calls `ctx.lighting().set_enabled(false)` in `on_enter`.
 - The UI is never lit: it is composited after lighting and post-processing.
-- Every camera is lit, each in light buffers of its own size, and lights are drawn through the camera's matrix: they move, zoom, turn and shake with the sprites. A split screen or minimap shows each light where it is. God rays follow the main camera.
+- Every camera is lit, each in light buffers of its own size, and lights are drawn through the camera's matrix: they move, zoom, turn and shake with the sprites. A split screen or minimap shows each light where it is. God rays follow the main camera, on the whole frame.
+- **Lights go through the 2D batch.** They are instanced quads, so a light has `RenderLayers` like any drawable (a component on its entity, default layer 0) and lights only the cameras on those layers whose view its reach meets. There is no cap on lights.
+- **Colours are sRGB, decoded for the GPU.** A light of `Color::new(128, 128, 128, 255)` is mid-grey light (linear 0.22), and ambient, shadow and fog colours decode the same way. The engine's presets keep their colour bytes, which now mean the sRGB colour they name, so torches and ambient presets look warmer and darker than before HDR.
+- **Intensity above 1 shows.** Light accumulates in a float buffer, so `with_intensity(3.0)` makes a surface brighter than white; the look (`ctx.look()`) rolls it off, and bloom picks it up.
 
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
@@ -69,9 +72,11 @@ Lights are placed at their entity's `GlobalTransform` translation (a child entit
 
 ```rust
 Light2D::point(color, radius).with_shadows()                 // hard (shadow volumes)
-Light2D::point(color, radius).with_soft_shadows(0.5)         // softness 0.0-1.0
+Light2D::point(color, radius).with_soft_shadows(0.5)         // fades with distance, 0.0-1.0
 Light2D::point(color, radius).with_shadows().with_shadow_color(Color::new(50, 30, 80, 255))
 ```
+
+Each shadow darkens only the light that casts it, never another light's. A soft shadow starts whole at the light and fades with distance from it, letting `softness` of the light through past a distance of `softness / 2` of the radius; its outline stays sharp. The old ray-marched shadows (`with_raymarched_shadows`) are gone: use `with_soft_shadows`. A shadow colour is the light that gets through: black blocks it, a tinted colour lets that colour through (stained glass), and its alpha is the shadow's strength.
 
 ## Occluders
 
@@ -142,7 +147,7 @@ Renderable::sprite(handle).with_contact_shadow(ContactShadow::new().radius(8.0).
 
 ## Ambient Occlusion
 
-A screen-space post-process on `EffectsManager`:
+A screen-space HDR-stage effect on `EffectsManager`:
 
 ```rust
 ctx.effects().set_ambient_occlusion(0.3, 16.0);              // intensity, radius
@@ -152,21 +157,23 @@ ctx.effects().disable_ambient_occlusion();
 
 ## What Gets Lit
 
-The world (entities, `Scene::render` GPU sprites, trails and lines) is drawn first and lit. A `Trail2D` or `Line2D` with `.with_lighting(false)` draws at full brightness over the lit scene (lasers, magic); post-processing still applies. The UI is never lit.
+The world (entities, `Scene::render` GPU sprites, trails and lines) is drawn first and lit. Anything with `.with_lighting(false)` (a `Renderable`, `Trail2D`, `Line2D`, particles) draws at full brightness over the lit scene (lasers, magic, glowing pickups); post-processing still applies. Give it `with_emission(n)` with n above 1 to glow past white and feed bloom. The UI is never lit.
 
 ## Pipeline
 
 Per camera (the `lighting` camera pass):
 
 ```
-1. Light accumulation: lights add into the camera's light buffer, through its view
-2. Shadows: each shadow-casting light masks itself in the buffer, so its shadows darken only its own light (overlapping shadows combine; a coloured shadow lets its colour through)
-3. Composition: final = the camera's image x (ambient + light buffer), plus atmosphere
+1. Light accumulation: lights add into the camera's float light buffer, through its view
+2. Shadows: each shadow-casting light masks itself in the buffer's alpha, so its shadows darken only its own light (overlapping shadows combine; a coloured shadow lets its colour through)
+3. Composition: lit = scene x (ambient + light), plus atmosphere fog, in float with no clamp to 1
 ```
+
+The look then maps the result to the screen. God rays are an HDR effect: they take the main camera's view of the god-ray lights, in frame coordinates, and the atmosphere's settings; their threshold is linear luminance (default 1.0, white), so only light brighter than white makes rays.
 
 ## Performance
 
 - Lights have no cap: each lit camera draws the lights on its `RenderLayers` whose reach meets its view.
-- Lighting runs once per camera: a minimap camera multiplies its cost. Lights and shadow geometry are built again for every camera.
+- Lighting runs once per camera: a minimap camera multiplies its cost, since each lit camera draws its lights and shadows into its own buffer. Lights and shadow geometry are built once per frame, then each camera draws the ones it sees.
 - Disable shadows on unimportant lights; simple occluder shapes are cheaper.
 - Lower AO radius is faster.

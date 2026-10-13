@@ -48,7 +48,9 @@ Placement rules:
 
 ## Rendering Pipeline
 
-Every frame runs through the engine's `RenderPipeline` (`src/core/render/`), built with `RenderPipeline::default_2d()`. One command encoder, one submit per frame. The camera passes run first, once per camera in render order, each on that camera's image; then the frame passes run once:
+Every frame runs through the engine's `RenderPipeline` (`src/core/render/`), built with `RenderPipeline::default_2d()`. One command encoder, one submit per frame. The camera passes run first, once per camera in render order, each on that camera's image; then the frame passes run once.
+
+The world is drawn in linear HDR: every camera image, the scene images and render targets are `Rgba16Float` (`SCENE_FORMAT`), linear light premultiplied by alpha, with values that may exceed 1. The `tonemap` pass applies the frame's `Look` and writes the `Rgba8UnormSrgb` display image; display effects, the transition, the UI and the composite work on that. Every `Color` you give the engine is sRGB and is decoded once (`Color::to_linear`) where it reaches the GPU.
 
 ```
 per camera (PassScope::Camera):
@@ -59,8 +61,10 @@ unlit_world   its unlit batch draws (anything `with_lighting(false)`, debug shap
 
 per frame (PassScope::Frame):
 cameras       window cameras' own images into their viewports, in order (None blends over); clears the scene image first when no camera drew straight into it
+hdr_effects   bloom, god rays, ambient occlusion and HDR custom effects, on the scene image (linear, may exceed 1)
+tonemap       the look: exposure, auto-exposure, curve, grading and LUT; scene image -> display image (Rgba8UnormSrgb)
 transition    scene transition fade over the whole frame (not the UI)
-post_process  bloom, CRT, vignette, etc.
+post_process  display effects: fade, tint, vignette, flash, CRT, chromatic aberration and display custom effects, on the display image
 ui            upload the UI layer (only if the scene drew UI)
 composite     to the window/offscreen target through ScreenMapping (letterbox for pixel art); the UI is blended last, untouched by effects
 capture       frame capture, when requested
@@ -68,7 +72,7 @@ capture       frame capture, when requested
 
 Gotchas:
 - The UI is only composited if the `ui` pass uploaded it this frame. A requested capture is only read back if the `capture` pass ran; otherwise it reports an error.
-- Scene images (game, lit, post-process) have the render size: the window's physical size, or the pixel-art target. A window camera's own image is its viewport's part of it.
+- Scene images (game, lit, HDR and display effect buffers) have the render size: the window's physical size, or the pixel-art target. A window camera's own image is its viewport's part of it.
 - Per-camera GPU state (uniforms, bind groups, images, light targets) exists only for live cameras and goes with them.
 - Passes are thin: GPU pipelines live in the subsystem renderers (the batch, lighting, post-process, ...), and the passes just call them.
 
@@ -105,7 +109,9 @@ if !pipeline.contains("flash") {
 ctx.render_pipeline().remove("flash");
 ```
 
-To draw on the frame, insert the pass before `composite` (or after `post_process`). `composite` copies the frame to the window, so a pass placed after it (including `push` at the end) never reaches the screen. `RenderContext::format()` gives the image's texture format, and `ryo2d::wgpu` re-exports the wgpu types a pass needs.
+To draw on the frame, insert the pass before `composite` (or after `post_process`). `composite` copies the frame to the window, so a pass placed after it (including `push` at the end) never reaches the screen. `ryo2d::wgpu` re-exports the wgpu types a pass needs.
+
+Build a pass's pipelines for `RenderContext::format()`, the format of `current_view()`: a pass in a camera or before `tonemap` sees `Rgba16Float` linear light that may exceed 1 (write premultiplied, linear colour); a pass after `tonemap` (for instance after `post_process`) sees the `Rgba8UnormSrgb` display image, 0 to 1, where the hardware encodes sRGB for you. Place a pass relative to `tonemap` to choose which.
 
 A game pass draws on the latest image:
 
@@ -135,7 +141,7 @@ Particles, parallax and trails default to z 0: give them an explicit z to sit be
 
 ### Texture Atlas and Fidelity
 
-Every texture the renderer draws has one `TextureId` in the `TextureRegistry` (sprites by handle, named pixel textures such as the shadow ellipse, and render targets). Sprite images are packed into shared atlas pages (2048x2048, four mip levels); each slot starts on an 8-pixel grid with an 8-pixel extruded border, so no level bleeds a neighbour. Images over 256 px get their own texture with a full mip chain. Mip levels are averaged on the CPU in linear light (weighted by alpha) when a texture is uploaded. Two samplers (nearest at level 0; trilinear) with a bind group per page each; fragment entries take the UV derivatives first and sample by gradient. UVs outside a sprite's own rect are transparent; only textured trails and lines repeat their texture, inside its slot (`sample_wrapped`). Unused entries are evicted and re-uploaded automatically. Render targets are pages of their own (`SlotPage::Target`): cameras draw into an sRGB view, sprites sample an `Rgba8Unorm` view like the atlas pages; they are never evicted. Their contents are premultiplied, so `Renderable::render_target` blends `Premultiplied`. Tint and effects run in sRGB space, quantised like the old CPU path, so opaque tinted pixels look as before; translucent overlaps blend in linear space and may look slightly different. Outline, glow and directional outline draw outside the sprite. Blob and contact shadows are a tinted ellipse; drop shadows are the sprite's silhouette. `DebugStats::draw_calls` counts the world draws of every camera.
+Every texture the renderer draws has one `TextureId` in the `TextureRegistry` (sprites by handle, named pixel textures such as the shadow ellipse, and render targets). Sprite images are packed into shared atlas pages (2048x2048, four mip levels); each slot starts on an 8-pixel grid with an 8-pixel extruded border, so no level bleeds a neighbour. Images over 256 px get their own texture with a full mip chain. Mip levels are averaged on the CPU in linear light (weighted by alpha) when a texture is uploaded. Two samplers (nearest at level 0; trilinear) with a bind group per page each; fragment entries take the UV derivatives first and sample by gradient. UVs outside a sprite's own rect are transparent; only textured trails and lines repeat their texture, inside its slot (`sample_wrapped`). Unused entries are evicted and re-uploaded automatically. Render targets are pages of their own (`SlotPage::Target`): `Rgba16Float` textures that cameras draw into and sprites sample as linear premultiplied colour (the `*_linear` shader entries, `PageKind::Linear`); they are never evicted, and keep light above 1. Their contents are premultiplied, so `Renderable::render_target` blends `Premultiplied`. Atlas pages stay `Rgba8Unorm` raw sRGB bytes. Tint and effects run in sRGB space, quantised like the old CPU path, so opaque tinted pixels look as before; translucent overlaps blend in linear light, on the float image. Outline, glow and directional outline draw outside the sprite. Blob and contact shadows are a tinted ellipse; drop shadows are the sprite's silhouette. `DebugStats::draw_calls` counts the world draws of every camera.
 
 ### Resolution and the window
 
@@ -179,7 +185,7 @@ fn render(&mut self, gpu: &mut GpuRenderContext) {
 }
 ```
 
-`gpu` also carries `world` (read-only) and `camera()` (the main camera's `CameraView`; to fix something on screen, place it with `camera().screen_to_world`). `SpriteDraw` carries z, blend, filter, lighting and whether the instance has an effect. Positions are world space, on render layer 0; nothing here is interpolated, so move particles in `update` and draw where they are.
+`gpu` also carries `world` (read-only) and `camera()` (the main camera's `CameraView`; to fix something on screen, place it with `camera().screen_to_world`). `SpriteDraw` carries z, blend, filter, lighting, whether the instance has an effect, and an emission that multiplies the instance's. Positions are world space, on render layer 0; nothing here is interpolated, so move particles in `update` and draw where they are.
 
 ## WGSL Shaders
 
@@ -190,7 +196,8 @@ Located in `src/core/shaders/`:
 | `include/*.wgsl` | Shared: `camera.wgsl`, `color.wgsl`, `sample.wgsl`, `fullscreen.wgsl` (composed by `compose.rs` at compile time) |
 | `core/sprite.wgsl` | Sprites (batch quads), including per-sprite effects and premultiplied entries |
 | `core/line.wgsl` | Trails, lines and debug shapes (batch triangles) |
-| `core/light.wgsl`, `shadow.wgsl` | Lighting and shadows |
+| `core/light.wgsl`, `shadow.wgsl` | Lights (batch quads) and shadow volumes (batch triangles) |
+| `core/tonemap.wgsl`, `exposure.wgsl` | The look, and auto-exposure's compute passes |
 | `core/camera_image.wgsl` | A window camera's own image placed in its viewport |
 | `core/fullscreen_quad.wgsl` | The final composite (and sRGB encoding when the surface is not sRGB) |
 | `post-process/*.wgsl` | Screen-wide effects (one file per effect) |
@@ -206,9 +213,19 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
 @fragment
 fn fs_base(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);  // first, while control flow is uniform
-    return finish(sample_sprite(in.uv, in.uv_bounds), in.tint);  // tinted, linear, premultiplied
+    return finish(sample_sprite(in.uv, in.uv_bounds), in.tint, in.emission);  // tinted, times emission, linear, premultiplied
 }
 ```
+
+## The Look and Emission
+
+The `tonemap` pass (`render/passes/tonemap.rs`, `core/tonemap.wgsl`) turns the linear HDR image into the display image, in this order: exposure (`Look::exposure` plus the auto-exposure EV), white balance (temperature, tint), contrast and saturation, the curve (`Tonemap`: `Soft` by default, `Clamp`, `Aces`, `AgX`), lift/gamma/gain on the display colour, then sRGB encoding and the LUT. `Tonemap::apply` in `look.rs` mirrors the shader on the CPU: change them together (`every_curve_on_the_gpu_matches_tonemap_apply` pins them). The WGSL `Look` struct names its field `auto_exposure` (`auto` is reserved). A `ColorLut` is a 3D texture that follows its sprite's hot reload. Auto-exposure (`exposure.rs`) runs two compute dispatches (a luminance histogram of the scene, then a reduction into a stored EV the tonemap binds); it adapts in real time. Games reach the look with `ctx.look()`.
+
+Emission multiplies a drawable's light: `Renderable::with_emission(4.0)` (also on `ParticleEmitter`, `Trail2D`, `Line2D`, `SpriteInstance` and `SpriteDraw`) makes it glow past white, and bloom picks up what exceeds its luminance threshold (default 1.0). A lit sprite is still darkened by lighting; add `with_lighting(false)` to glow in the dark. The sprite shader keeps it in the instance's `transform0.w` as `emission - 1`.
+
+## Effect Stages
+
+Each post-process effect runs in one `EffectStage`: `Hdr` (bloom, god rays, ambient occlusion: linear light before the look, in `hdr_effects`) or `Display` (everything else: after the look, in `post_process`). Two pipelines, one per format, each with its own ping-pong images. Custom effects run in `Display` by default (`add_custom`); `add_custom_in(name, shader, EffectStage::Hdr)` puts one in the HDR stage, where `scene(uv)` can exceed 1. Bloom and god-ray thresholds are linear luminance (1.0 is white), so a threshold under 1 blooms lit surfaces and above 1 only emission and bright lights.
 
 ## Adding Effects
 
@@ -265,6 +282,8 @@ struct Params {          // optional; at most 64 bytes
 fn effect(in: EffectIn, params: Params) -> vec4<f32> {
   // in.uv, in.time (real seconds), in.resolution
   let c = scene(in.uv);  // latest image, LINEAR colour; return linear colour too
+  // A Color param is sRGB bytes/255: decode it before mixing it with scene(uv)
+  // let tint = srgb_to_linear(params.tint.rgb);
   return vec4<f32>(c.rgb * (1.0 - params.strength), c.a);
 }
 ```
@@ -279,7 +298,7 @@ if let Ok(h) = ctx.assets.load_shader("shaders/scan.wgsl") {
 }
 ```
 
-Custom effects run after the built-in effects, in insertion order. `effects.clear()` (part of default scene cleanup) removes them too.
+Custom effects run after the built-in effects of their stage, in insertion order (`add_custom_in` picks the stage; see Effect Stages). `effects.clear()` (part of default scene cleanup) removes them too.
 
 ### Hot reload and errors
 
@@ -297,7 +316,7 @@ fx.enable_crt();
 fx.set_chromatic_aberration(0.005);
 fx.set_god_rays(0.8, vec![(0.5, 0.3)]);
 fx.set_ambient_occlusion(0.3, 16.0);
-fx.set_bloom(1.0);  // multi-pass: extract -> blur -> composite
+fx.set_bloom(1.0);  // HDR stage; multi-pass: extract -> blur -> composite
 fx.flash(Color::RED, Duration::from_millis(100));
 fx.set_sepia(0.5);
 ```

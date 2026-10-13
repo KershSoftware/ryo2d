@@ -32,7 +32,7 @@ The world is Ryo2D's ECS: `bevy_ecs` 0.20, exposed through `ryo2d::ecs` and the 
 
 | Resources (in the world) | Engine-owned |
 |---|---|
-| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `RapierPhysicsWorld`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack and the Kira audio manager sit in the world as one non-send value that only the scene systems take out |
+| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `RapierPhysicsWorld`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack and the Kira audio manager sit in the world as one non-send value that only the scene systems take out |
 
 In 0.20 a resource is a component on a hidden entity marked `IsResource`, so engine sweeps over "every entity" filter it out. Cameras are entities too (`Camera2d` + `Transform`); the main one (`MainCamera`) is spawned with the world and survives world cleanup.
 
@@ -157,13 +157,17 @@ Rapier2D behind the `RapierPhysicsWorld` resource, stepped in `FixedSet::Physics
 gather once (world space, sorted) ──→ cameras in render order: texture cameras, then window cameras (by order)
                                        │
   for each camera, on its image:       clear -> world -> lighting -> unlit_world
-                                       │   (the first full-window camera draws straight into the scene image;
-                                       │    other window cameras into images of their own; texture cameras
+  (Rgba16Float, linear light,          │   (the first full-window camera draws straight into the scene image;
+   may exceed 1)                       │    other window cameras into images of their own; texture cameras
                                        │    into their render targets)
                                        ▼
-  once per frame:                      cameras -> transition -> post_process -> ui -> composite -> capture
-                                       (window cameras' images into their viewports)
+  once per frame:                      cameras -> hdr_effects -> tonemap -> transition -> post_process
+                                         -> ui -> composite -> capture
+                                       (window cameras' images into their viewports; the scene image is
+                                        Rgba16Float up to tonemap, which writes the Rgba8UnormSrgb display image)
 ```
+
+The world is drawn in linear HDR: every colour in the API is sRGB and is decoded once (`Color::to_linear`) where it reaches the GPU, blending happens in linear light on `Rgba16Float` images, and light above 1 survives until the `tonemap` pass applies the frame's `Look` (`ctx.look()`: exposure, auto-exposure, a tonemap curve, colour grading and a LUT) and writes the 8-bit display image. Effects run in two stages: HDR effects (bloom, god rays, ambient occlusion) see linear light before the look; display effects (fade, tint, vignette, flash, CRT, chromatic aberration) work on the display image after it. Custom effects choose their stage (`EffectsManager::add_custom_in`). `Renderable::with_emission` lets a sprite, particle, trail or line glow past white and feed bloom.
 
 | Pass (`pass_ids`) | Scope | Draws |
 |------|-------|-------|
@@ -172,8 +176,10 @@ gather once (world space, sorted) ──→ cameras in render order: texture cam
 | `lighting` | camera | 2D lighting with point lights and shadows, in the camera's own light buffers |
 | `unlit_world` | camera | Anything `with_lighting(false)` (sprites, particles, trails, lines) and debug shapes, by z |
 | `cameras` | frame | Window cameras' own images into their viewports, in order |
+| `hdr_effects` | frame | Bloom, god rays, ambient occlusion and HDR custom effects on the scene image |
+| `tonemap` | frame | The look: the scene image into the display image (exposure, curve, grading) |
 | `transition` | frame | Scene transition fade over the frame |
-| `post_process` | frame | Bloom, CRT, vignette and the other effects |
+| `post_process` | frame | Fade, tint, vignette, flash, CRT, chromatic aberration and display custom effects on the display image |
 | `ui` | frame | Uploads the UI layer |
 | `composite` | frame | To the window through `ScreenMapping` (bars for pixel art), UI blended last |
 | `capture` | frame | Frame capture readback |
@@ -181,15 +187,16 @@ gather once (world space, sorted) ──→ cameras in render order: texture cam
 Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in passes or insert their own (`RenderPass::scope` picks once per frame or once per camera). See `src/core/render/AGENTS.md`.
 
 - **Cameras:** `Camera2d { zoom, projection, viewport, order, target, clear }` on an entity with a `Transform`; the engine computes each camera's `CameraView` (view-projection, bounds) from its interpolated transform and shake every frame. Every camera has one uniform buffer that the batch, lights and shadows all draw through, so shake, rotation and zoom move them together. Split screen and minimaps are window cameras with viewports; `RenderTargets` gives textures that texture cameras render into (first, so a sprite showing one shows this frame's image) and `Renderable::render_target` shows.
-- **Textures:** every texture has one `TextureId` in the texture registry (sprites by handle, named pixel textures, render targets). Sprite images live in shared atlas pages with four mip levels (8-pixel borders on an 8-pixel grid, levels averaged in linear light); large images get textures of their own with full mip chains; render targets are pages of their own. Two samplers (nearest; trilinear) and a bind group per page and sampler, made with the page.
+- **Textures:** every texture has one `TextureId` in the texture registry (sprites by handle, named pixel textures, render targets). Sprite images live in shared atlas pages with four mip levels (8-pixel borders on an 8-pixel grid, levels averaged in linear light); large images get textures of their own with full mip chains; render targets are `Rgba16Float` pages of their own (linear light). Two samplers (nearest; trilinear) and a bind group per page and sampler, made with the page.
 - **Batching:** one batch with two streams: instanced quads (128 bytes: affine world transform, UV rect, tint, effect parameters, UV bounds) and indexed triangles (trails, lines and debug shapes). Consecutive drawables with equal draw states (page, shader, blend mode, sampling) merge into one draw; at equal z an entity draws before a `Scene::render` sprite, then trails and lines. Each camera's visible quads get a range of the instance buffer.
 - **Blend and filter modes:** `BlendMode::{Alpha, Premultiplied, Additive, Multiply, Screen}` and `Filter::{Default, Nearest, Linear}` on sprites, particles, batch sprites, parallax layers, trails and lines. Every batch shader writes premultiplied colour, so each mode is one fixed blend state; `Filter::Default` is nearest for pixel art and linear otherwise.
 - **Bind groups** are made with the resources they bind (per camera, per texture page and sampler, or cached by the frame resources a pass binds), never per frame; tests count them.
 - **Debug drawing:** `ctx.debug_draw()` (`DebugDraw`) draws world-space lines, rectangles, circles, arrows and crosses one screen pixel wide in every camera, for a fixed step or a frame; the engine's overlays and `draw_skeleton` use it.
 - **Time in shaders:** sprite effects and custom sprite shaders animate on game elapsed time, so they stop with the game clock; post-process effects (built-in and custom), lighting, trail effects and transitions animate on real time. Parallax auto-scroll runs on game time. Custom shader errors are collected asynchronously and never block a frame.
-- **Sprite effects** (`SpriteEffect`, 11 built in): Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline. Custom sprite shaders through `Material`.
-- **Post-processing** (`EffectsManager`, `ctx.effects()`): Fade, ColorTint, Vignette, ScreenFlash, CRT, ChromaticAberration, GodRays, AmbientOcclusion, Bloom. Once per frame, not per camera.
-- **Lighting:** `ctx.lighting()` (`LightingSettings`: ambient, atmosphere, forced on or off); lighting turns on by itself once a `Light2D` exists and then lights every camera. The UI is never lit.
+- **Sprite effects** (`SpriteEffect`, 11 built in; they work in sRGB): Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline. Custom sprite shaders through `Material`.
+- **Post-processing** (`EffectsManager`, `ctx.effects()`): Fade, ColorTint, Vignette, ScreenFlash, CRT, ChromaticAberration (display stage) and GodRays, AmbientOcclusion, Bloom (HDR stage). Once per frame, not per camera.
+- **The look:** `ctx.look()` (`Look`: exposure, `AutoExposure`, `Tonemap`, `ColorGrading` with an optional `ColorLut`) is applied by the `tonemap` pass.
+- **Lighting:** `ctx.lighting()` (`LightingSettings`: ambient, atmosphere, forced on or off); lighting turns on by itself once a `Light2D` exists and then lights every camera. Lights and shadow volumes are batch draws into each camera's light buffer, with no light cap; each shadow darkens only its own light. The UI is never lit.
 - **Surface and GPU errors:** a suboptimal surface draws and then reconfigures; timeout and occlusion skip the frame; outdated reconfigures; lost recreates; a validation error or a lost device is fatal. GPU setup failures are `GpuError`s. Vsync uses `Fifo`; without it `Mailbox`, else `Immediate`, with the frame limiter at `target_fps`.
 
 ### Resolution and the window

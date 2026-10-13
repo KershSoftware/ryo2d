@@ -4,9 +4,9 @@
 
 The lighting system uses a **deferred lighting approach**:
 
-1. **Light Accumulation Pass**: all lights render to a light buffer with additive blending.
-2. **Shadows**: each shadow-casting light masks itself in the light buffer's alpha before it adds its light: the mask is reset to 1 in its quad, its shadow volumes (occluder edges facing away from it, projected past its radius, as batch triangles) each keep 1 - strength of it, then the light adds where the mask lets it through (and, for a coloured shadow, tinted where it held it back). One light's shadow never darkens another light, and overlapping shadows combine.
-3. **Composition Pass**: `final_color = base_color × (ambient + light_buffer)`, plus atmosphere scattering/fog.
+1. **Light Accumulation Pass**: lights are batch quads (`batch.rs`), drawn additively into each lit camera's light buffer (`Rgba16Float`, so light above 1 is kept). A light draws on the cameras whose `RenderLayers` it shares and whose view its box meets.
+2. **Shadows**: each shadow-casting light masks itself in the light buffer's alpha before it adds its light: the mask is reset to 1 in its quad, its shadow volumes (occluder edges facing away from it, projected past its radius, as batch triangles) each keep 1 - strength of it, then the light adds where the mask lets it through (and, for a coloured shadow, tinted where it held it back). One light's shadow never darkens another light. The strength of a shadow volume is the shadow colour's alpha times the softness edge term (`shadow.wgsl`; see `Light2D::with_soft_shadows`: a soft shadow fades with distance from the light but keeps its outline); overlapping volumes multiply, each keeping 1 - strength.
+3. **Composition Pass**: `lit = scene × (ambient + light)`, plus atmosphere scattering/fog, in float with no clamp to 1 (the look rolls bright results off later). The light and the result are limited to 65504, the largest f16, so a huge intensity cannot make NaN.
 
 Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()`): `set_ambient(AmbientLight::...)`, `set_atmosphere(..)` and `set_enabled(bool)`. The `LightingRenderer` is engine-owned; `present_frame` copies the settings into it before each frame. Volumetric light is per light (`Light2D::set_volumetric`); there is no global switch.
 
@@ -16,7 +16,8 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 - **Per camera:** the `lighting` pass runs for every camera. Each lit camera has light targets of its own (`LightTargets`: accumulation buffer, scene copy and compose uniforms, sized to its image), created on first use and dropped with the camera. Lights and shadows draw through the camera's uniform buffer (its `view_proj`), so they move, zoom, turn and shake with the sprites. A camera drawing straight into the scene image composes into the lit image; a camera with an image of its own is lit in place (the compose pass reads the scene copy and writes the camera's image).
 - Each camera's compose uniforms are its own buffer: queue writes all land before the command buffer runs, so a shared buffer would give every camera the last one's values.
 - Lights are batch quads (`lighting::batch`), drawn by the `lighting` pass into each lit camera's light buffer; `LightingRenderer` is engine-internal and keeps the per-camera light buffers, the scene copies and the compose pass.
-- God rays (a post-process effect) follow the main camera.
+- **Colours are sRGB in the API.** Every light, shadow, ambient and atmosphere colour decodes through `Color::to_linear` before it reaches the GPU, so `Color(128, 128, 128)` is mid-grey light. Preset colour bytes keep their bytes and now name the sRGB colour they say.
+- God rays are an HDR effect: `god_rays.rs` puts the god-ray lights in frame coordinates (0 to 1 across the whole frame) from the main camera's view and gives the effect the atmosphere's settings. Their threshold is linear luminance.
 
 ## Limits
 
@@ -25,7 +26,7 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 
 ## Conventions
 
-- **Artist-friendly units**: colors use 0-255 RGB, not 0.0-1.0. Radius is in pixels.
+- **Artist-friendly units**: colors use 0-255 sRGB, not 0.0-1.0. Radius is in pixels. Intensity above 1 shows (the look rolls it off).
 - **Placed by `GlobalTransform`**: lights draw at their entity's world translation; occluders use its world translation and rotation (not its scale). On an interpolated entity both are blended with its sprite (`render_global`).
 - **Coordinate space**: occluder vertices are local space (relative to the entity), CCW winding.
 
@@ -33,9 +34,9 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 
 - Lighting is visual: validate changes by running `examples/demos/lighting`, `lighting-volumetric`, or `shadows`.
 - Usage and shadow-type APIs are covered by the `ryo-lighting` skill.
+- The `shadows` demo's mouse-driven lights start at a fixed point until the mouse first moves.
 
 ## Future Work
 
 - [ ] Light cookies (textured lights)
 - [ ] Normal maps for depth-aware lighting
-- [ ] Light layers (selective illumination)

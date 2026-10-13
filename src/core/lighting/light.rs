@@ -339,7 +339,8 @@ impl Light2D {
     }
   }
 
-  /// Set the shadow softness of this light
+  /// Set how much light the light's shadows let through away from the light
+  /// (0.0 = hard, 1.0 = fades out; see [`Light2D::with_soft_shadows`])
   pub fn set_shadow_softness(&mut self, softness: f32) {
     let s = softness.clamp(0.0, 1.0);
     match self {

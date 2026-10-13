@@ -73,7 +73,7 @@ impl DemoPage for Glow {
 ```
 
 - Add `demo-kit = { path = "../../demo-kit" }` to the demo's `Cargo.toml`; a demo of an optional crate also depends on it (`ryo2d-procgen = { path = "../../../crates/ryo2d-procgen" }`) and imports its prelude beside `demo_kit::prelude::*`.
-- Each page is built fresh from its factory when shown or reset, inside its own scene whose cleanup is `SceneCleanup::ALL`: leaving it despawns the page's entities and resets the camera, post-processing effects, lighting settings (ambient, atmosphere, forced on/off), the game clock (speed, pause, hitstop), music and message buffers. Anything else a page changes (cursor, UI scale, render pipeline passes, tilemaps, sound effects, resources it inserted) carries over unless it undoes it in `DemoPage::exit`, or every page sets it in `enter`. Keep feature code plain ryo2d.
+- Each page is built fresh from its factory when shown or reset, inside its own scene whose cleanup is `SceneCleanup::ALL`: leaving it despawns the page's entities and resets the camera, post-processing effects and the look, lighting settings (ambient, atmosphere, forced on/off), the game clock (speed, pause, hitstop), music and message buffers. Anything else a page changes (cursor, UI scale, render pipeline passes, tilemaps, sound effects, resources it inserted) carries over unless it undoes it in `DemoPage::exit`, or every page sets it in `enter`. Keep feature code plain ryo2d.
 
 | Hook | When | Use |
 |---|---|---|
