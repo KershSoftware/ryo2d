@@ -52,7 +52,8 @@ pub enum Light2D {
     falloff: f32,
     /// Whether this light casts shadows
     cast_shadows: bool,
-    /// Shadow edge softness (0.0 = hard/crisp, 1.0 = very soft/blurred)
+    /// How much light shadows let through away from the light (0.0 = hard;
+    /// see [`Light2D::with_soft_shadows`])
     shadow_softness: f32,
     /// Shadow color (default black, can be tinted for colored shadows)
     shadow_color: Color,
@@ -78,7 +79,8 @@ pub enum Light2D {
     softness: f32,
     /// Whether this light casts shadows
     cast_shadows: bool,
-    /// Shadow edge softness (0.0 = hard/crisp, 1.0 = very soft/blurred)
+    /// How much light shadows let through away from the light (0.0 = hard;
+    /// see [`Light2D::with_soft_shadows`])
     shadow_softness: f32,
     /// Shadow color (default black, can be tinted for colored shadows)
     shadow_color: Color,
@@ -310,13 +312,15 @@ impl Light2D {
     self
   }
 
-  /// Builder method to enable soft shadows with specified softness
+  /// Builder method to enable shadows that fade with distance from the light
   ///
-  /// Soft shadows have blurred/feathered edges instead of hard crisp edges.
-  /// This creates a more realistic look as real light sources have area.
+  /// A shadow starts whole at the light and fades over the first
+  /// `softness / 2` of the light's radius, beyond which it lets `softness`
+  /// of the light through: 0.5 keeps half the light past a quarter of the
+  /// radius. The shadow's outline stays sharp.
   ///
   /// # Arguments
-  /// * `softness` - Shadow edge softness (0.0 = hard, 1.0 = very soft)
+  /// * `softness` - How much light the shadow lets through (0.0 = hard, 1.0 = fades out)
   pub fn with_soft_shadows(mut self, softness: f32) -> Self {
     self.set_cast_shadows(true);
     self.set_shadow_softness(softness);

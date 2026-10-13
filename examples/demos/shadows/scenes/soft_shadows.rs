@@ -1,7 +1,7 @@
 //! Soft Shadows page
 //!
-//! Demonstrates soft shadows with configurable edge softness.
-//! Soft shadows fade gradually at the edges instead of having hard edges.
+//! Demonstrates soft shadows with configurable softness: a soft shadow fades
+//! with distance from its light and lets part of the light through.
 
 use demo_kit::prelude::*;
 
@@ -13,8 +13,11 @@ pub struct SoftShadowsPage {
   light_visual: Option<Entity>,
   light_x: f32,
   light_y: f32,
+  /// The mouse when the page opened: the light waits among the occluders
+  /// until the mouse first moves away from it
+  mouse_at_open: Option<(f32, f32)>,
 
-  // Shadow softness (0.0 = hard, 1.0 = very soft)
+  // Shadow softness (0.0 = hard, 1.0 = fades out)
   softness: f32,
 
   // Light radius
@@ -29,10 +32,11 @@ impl SoftShadowsPage {
     Self {
       light_entity: None,
       light_visual: None,
-      light_x: 640.0,
-      light_y: 360.0,
+      light_x: 500.0,
+      light_y: 330.0,
+      mouse_at_open: None,
 
-      softness: 0.5,
+      softness: 0.25,
       light_radius: 400.0,
 
       static_occluders: Vec::new(),
@@ -40,7 +44,8 @@ impl SoftShadowsPage {
   }
 
   fn create_light(&self) -> Light2D {
-    Light2D::point(Color::new(255, 240, 200, 255), self.light_radius)
+    // Warm white (255, 240, 200) read as linear, as when the page was tuned
+    Light2D::point(Color::new(255, 248, 229, 255), self.light_radius)
       .with_intensity(1.3)
       .with_soft_shadows(self.softness)
   }
@@ -98,7 +103,7 @@ impl DemoPage for SoftShadowsPage {
   }
 
   fn description(&self) -> &str {
-    "Shadows with a gradual edge fade instead of hard edges."
+    "Shadows that fade with distance from the light: softness is how much light they let through."
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -111,11 +116,14 @@ impl DemoPage for SoftShadowsPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
+    self.mouse_at_open = Some(ctx.input.mouse_position());
+
     // Configure lighting
-    // Dark ambient for dramatic shadows
+    // Dark ambient for dramatic shadows: (20, 18, 30) read as linear, as when
+    // the page was tuned
     ctx
       .lighting()
-      .set_ambient(AmbientLight::new(Color::new(20, 18, 30, 255), 0.1));
+      .set_ambient(AmbientLight::new(Color::new(79, 75, 96, 255), 0.1));
 
     // Create floor
     let floor = ctx
@@ -174,10 +182,13 @@ impl DemoPage for SoftShadowsPage {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
-    // Move light to mouse position
+    // The light waits among the occluders until the mouse first moves
     let (mx, my) = ctx.input.mouse_position();
-    self.light_x = mx;
-    self.light_y = my;
+    if self.mouse_at_open != Some((mx, my)) {
+      self.mouse_at_open = None;
+      self.light_x = mx;
+      self.light_y = my;
+    }
 
     // Update the light
     self.update_light(ctx);

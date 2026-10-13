@@ -12,6 +12,9 @@ pub struct HardShadowsPage {
   light_visual: Option<Entity>,
   light_x: f32,
   light_y: f32,
+  /// The mouse when the page opened: the light waits among the occluders
+  /// until the mouse first moves away from it
+  mouse_at_open: Option<(f32, f32)>,
   is_spotlight: bool,
   spotlight_direction: f32,
   spotlight_angle: f32,
@@ -29,8 +32,9 @@ impl HardShadowsPage {
     Self {
       light_entity: None,
       light_visual: None,
-      light_x: 640.0,
-      light_y: 360.0,
+      light_x: 560.0,
+      light_y: 300.0,
+      mouse_at_open: None,
       is_spotlight: false,
       spotlight_direction: 270.0, // pointing up
       spotlight_angle: 45.0,
@@ -160,11 +164,14 @@ impl DemoPage for HardShadowsPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
+    self.mouse_at_open = Some(ctx.input.mouse_position());
+
     // Configure lighting
-    // Dark ambient for dramatic shadows
+    // Dark ambient for dramatic shadows: (15, 15, 25) read as linear, as when
+    // the page was tuned
     ctx
       .lighting()
-      .set_ambient(AmbientLight::new(Color::new(15, 15, 25, 255), 0.05));
+      .set_ambient(AmbientLight::new(Color::new(69, 69, 88, 255), 0.05));
 
     // Create floor
     let floor = ctx
@@ -233,10 +240,13 @@ impl DemoPage for HardShadowsPage {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
-    // Move light to mouse position
+    // The light waits among the occluders until the mouse first moves
     let (mx, my) = ctx.input.mouse_position();
-    self.light_x = mx;
-    self.light_y = my;
+    if self.mouse_at_open != Some((mx, my)) {
+      self.mouse_at_open = None;
+      self.light_x = mx;
+      self.light_y = my;
+    }
 
     // Place occluder on left click
     if ctx.input.mouse_pressed(MouseButton::Left) {

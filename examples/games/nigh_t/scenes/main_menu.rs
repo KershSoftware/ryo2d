@@ -112,9 +112,11 @@ impl Scene for MainMenuScene {
     self.mouse_y = center_y;
 
     // Spawn the fairy - tiny bright core sprite with light
-    // Use softer falloff (1.5) for more natural look
+    // Use softer falloff (1.5) for more natural look. Light colours are sRGB;
+    // these were tuned when they were read as linear, so each is that value
+    // encoded to sRGB: (180, 220, 255) became (219, 239, 255)
     let core_sprite = Self::create_core_sprite(ctx.assets);
-    let light_color = Color::rgb(180, 220, 255);
+    let light_color = Color::rgb(219, 239, 255);
     self.fairy_entity = Some(
       ctx
         .world
@@ -130,9 +132,9 @@ impl Scene for MainMenuScene {
 
     // Spawn secondary glow lights that orbit around for organic irregular shape
     let glow_colors = [
-      Color::rgb(150, 200, 255), // Slightly different blue
-      Color::rgb(200, 230, 255), // Whiter
-      Color::rgb(170, 210, 240), // Another variation
+      Color::rgb(202, 229, 255), // Slightly different blue
+      Color::rgb(229, 244, 255), // Whiter
+      Color::rgb(213, 234, 248), // Another variation
     ];
     for (i, color) in glow_colors.iter().enumerate() {
       self.glow_entities[i] = Some(

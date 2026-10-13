@@ -20,7 +20,7 @@
 //!         god_rays_samples: 16,
 //!         god_rays_decay: 0.96,
 //!         god_rays_intensity: 0.8,
-//!         god_rays_threshold: 0.5,
+//!         god_rays_threshold: 1.0,
 //!     });
 //! }
 //! ```
@@ -66,7 +66,7 @@ impl Default for Atmosphere {
       god_rays_samples: 16,
       god_rays_decay: 0.96,
       god_rays_intensity: 0.8,
-      god_rays_threshold: 0.5,
+      god_rays_threshold: 1.0,
     }
   }
 }
@@ -96,7 +96,7 @@ impl Atmosphere {
       god_rays_samples: 16,
       god_rays_decay: 0.95,
       god_rays_intensity: 0.5,
-      god_rays_threshold: 0.6,
+      god_rays_threshold: 1.2,
     }
   }
 
@@ -110,7 +110,7 @@ impl Atmosphere {
       god_rays_samples: 16,
       god_rays_decay: 0.96,
       god_rays_intensity: 0.7,
-      god_rays_threshold: 0.4,
+      god_rays_threshold: 0.8,
     }
   }
 
@@ -124,7 +124,7 @@ impl Atmosphere {
       god_rays_samples: 24,
       god_rays_decay: 0.97,
       god_rays_intensity: 0.9,
-      god_rays_threshold: 0.3,
+      god_rays_threshold: 0.6,
     }
   }
 
@@ -138,7 +138,7 @@ impl Atmosphere {
       god_rays_samples: 20,
       god_rays_decay: 0.95,
       god_rays_intensity: 0.8,
-      god_rays_threshold: 0.35,
+      god_rays_threshold: 0.7,
     }
   }
 
@@ -152,7 +152,7 @@ impl Atmosphere {
       god_rays_samples: 20,
       god_rays_decay: 0.94,
       god_rays_intensity: 0.6,
-      god_rays_threshold: 0.45,
+      god_rays_threshold: 0.9,
     }
   }
 
@@ -289,6 +289,22 @@ mod tests {
   fn effective_intensity_when_disabled() {
     let atmos = Atmosphere::default();
     assert_eq!(atmos.effective_god_rays_intensity(), 0.0);
+  }
+
+  #[test]
+  fn preset_god_rays_come_from_light_not_lit_grey() {
+    // Mid-grey (sRGB 128 is 0.22 linear) under a light of 2 is about 0.43
+    // and stays out of the rays; a sun lit to 1.5 feeds them
+    for atmos in [
+      Atmosphere::clear(),
+      Atmosphere::hazy(),
+      Atmosphere::dusty(),
+      Atmosphere::foggy(),
+      Atmosphere::smoky(),
+      Atmosphere::underwater(),
+    ] {
+      assert!((0.43..1.5).contains(&atmos.god_rays_threshold), "{atmos:?}");
+    }
   }
 
   #[test]

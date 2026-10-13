@@ -1,8 +1,8 @@
 //! Bloom Effect Demo
 //!
-//! Bright pixels bleed light into their neighbours: a dark tile grid with bright
-//! orbiting sprites, a preset choice and live bloom parameters. Runs on the
-//! demo-kit shell.
+//! Light above white bleeds into its neighbours: a dark tile grid with
+//! emissive orbiting sprites, a preset choice and live bloom parameters. Runs
+//! on the demo-kit shell.
 
 use demo_kit::prelude::*;
 
@@ -20,24 +20,25 @@ enum BloomPreset {
 impl BloomPreset {
   fn description(&self) -> &'static str {
     match self {
-      Self::Off => "No bloom. Base scene for comparison.",
-      Self::Subtle => "Low threshold, low intensity. Gentle highlight glow.",
-      Self::Dreamy => "Mid threshold, high radius. Soft ethereal look.",
-      Self::Neon => "Low threshold, high intensity. Punchy neon vibe.",
-      Self::Explosive => "Very low threshold, max intensity & radius.",
-      Self::Custom => "Your own values: tweak the rows on the right.",
+      Self::Off => "No bloom: the emissive sprites shine past white without a glow.",
+      Self::Subtle => "Bloom glows from light above white. Low intensity: a gentle glow.",
+      Self::Dreamy => "Bloom glows from light above white. High radius: a soft, ethereal look.",
+      Self::Neon => "Bloom glows from light above white. High intensity: a punchy neon vibe.",
+      Self::Explosive => "Bloom glows from light above white. Maximum intensity and radius.",
+      Self::Custom => "Bloom glows from light above the threshold (1 is white): tweak the rows.",
     }
   }
 
   fn params(&self) -> (f32, f32, f32, i32) {
-    // (threshold, intensity, radius, blur_passes)
+    // (threshold, intensity, radius, blur_passes): the threshold is linear
+    // light, so 1.0 lets only light above white glow
     match self {
-      Self::Off => (0.7, 0.0, 5.0, 2),
-      Self::Subtle => (0.8, 0.6, 3.0, 1),
-      Self::Dreamy => (0.5, 1.2, 12.0, 3),
-      Self::Neon => (0.3, 2.5, 6.0, 2),
-      Self::Explosive => (0.15, 4.0, 18.0, 4),
-      Self::Custom => (0.7, 1.0, 5.0, 2), // starting values
+      Self::Off => (1.0, 0.0, 5.0, 2),
+      Self::Subtle => (1.0, 0.6, 3.0, 1),
+      Self::Dreamy => (1.0, 1.2, 12.0, 3),
+      Self::Neon => (1.0, 2.5, 6.0, 2),
+      Self::Explosive => (1.0, 4.0, 18.0, 4),
+      Self::Custom => (1.0, 1.0, 5.0, 2), // starting values
     }
   }
 }
@@ -128,9 +129,9 @@ impl BloomPage {
       }
     }
 
-    // Bright center sprites — these WILL bloom
+    // Bright center sprites, emissive so they shine past white — these WILL bloom
     let bright_colors: [(u8, u8, u8); 5] = [
-      (255, 255, 255), // pure white
+      (255, 255, 255), // pure white, the brightest
       (255, 220, 80),  // gold
       (80, 200, 255),  // sky blue
       (255, 100, 200), // hot pink
@@ -148,13 +149,15 @@ impl BloomPage {
         .world
         .spawn((
           Transform::from_xy(cx + angle.cos() * dist, cy + angle.sin() * dist),
-          Renderable::sprite(handle).with_z_order(2),
+          Renderable::sprite(handle)
+            .with_z_order(2)
+            .with_emission(if i == 0 { 6.0 } else { 3.0 }),
         ))
         .id();
       self.bright_sprites.push(entity);
     }
 
-    // Small orbiting particles — fast-moving bright dots
+    // Small orbiting particles — fast-moving emissive dots
     let orbit_colors: [(u8, u8, u8); 8] = [
       (255, 255, 200),
       (200, 255, 255),
@@ -172,7 +175,9 @@ impl BloomPage {
         .world
         .spawn((
           Transform::from_xy(cx, cy),
-          Renderable::sprite(handle).with_z_order(3),
+          Renderable::sprite(handle)
+            .with_z_order(3)
+            .with_emission(3.0),
         ))
         .id();
       self.orbiting_sprites.push(entity);
@@ -272,7 +277,7 @@ impl DemoPage for BloomPage {
     s.choice("Preset", &mut self.current_preset, &PRESET_NAMES);
     s.float("Intensity", &mut self.intensity, 0.0..=5.0, 0.1);
     s.float("Radius", &mut self.radius, 1.0..=20.0, 0.5);
-    s.float("Threshold", &mut self.threshold, 0.0..=1.0, 0.05);
+    s.float("Threshold", &mut self.threshold, 0.0..=4.0, 0.05);
     s.int("Blur passes", &mut self.blur_passes, 1..=5);
   }
 

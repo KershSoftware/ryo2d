@@ -60,6 +60,9 @@ pub struct ColoredShadowsPage {
   light_visual: Option<Entity>,
   light_x: f32,
   light_y: f32,
+  /// The mouse when the page opened: the light waits among the occluders
+  /// until the mouse first moves away from it
+  mouse_at_open: Option<(f32, f32)>,
 
   // Shadow color settings (preset indexes ShadowColorPreset::ALL)
   preset: usize,
@@ -74,8 +77,9 @@ impl ColoredShadowsPage {
     Self {
       light_entity: None,
       light_visual: None,
-      light_x: 640.0,
+      light_x: 560.0,
       light_y: 360.0,
+      mouse_at_open: None,
 
       preset: 0,
       custom_rgb: [100, 100, 100],
@@ -168,10 +172,13 @@ impl DemoPage for ColoredShadowsPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    // Configure lighting
+    self.mouse_at_open = Some(ctx.input.mouse_position());
+
+    // Configure lighting: a dim ambient, (20, 20, 30) read as linear, as when
+    // the page was tuned
     ctx
       .lighting()
-      .set_ambient(AmbientLight::new(Color::new(20, 20, 30, 255), 0.12));
+      .set_ambient(AmbientLight::new(Color::new(79, 79, 96, 255), 0.12));
 
     // Create floor
     let floor = ctx.assets.create_sprite(
@@ -227,10 +234,13 @@ impl DemoPage for ColoredShadowsPage {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
-    // Move light to mouse
+    // The light waits among the occluders until the mouse first moves
     let (mx, my) = ctx.input.mouse_position();
-    self.light_x = mx;
-    self.light_y = my;
+    if self.mouse_at_open != Some((mx, my)) {
+      self.mouse_at_open = None;
+      self.light_x = mx;
+      self.light_y = my;
+    }
 
     self.update_light(ctx);
   }

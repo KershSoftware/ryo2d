@@ -243,8 +243,8 @@ impl Scene for MenuScene {
 
     // Set up ambient lighting - bright enough to see rain particles
     ctx.lighting().set_ambient(AmbientLight::new(
-      Color::rgb(60, 70, 100), // Brighter blue-gray ambient
-      0.6,                     // High intensity so rain is visible everywhere
+      Color::rgb(133, 143, 168), // Brighter blue-gray ambient ((60, 70, 100) read as linear)
+      0.6,                       // High intensity so rain is visible everywhere
     ));
 
     // Spawn fairy lights at random positions

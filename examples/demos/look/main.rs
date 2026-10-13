@@ -463,7 +463,10 @@ impl DemoPage for ExposurePage {
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     self.time += dt;
-    let x = 450.0 + 500.0 * (self.time * 0.25).sin();
+    // Two seconds in the cave first, to watch the dark scene adapt, then the
+    // view swings out to daylight and back
+    let pan = (self.time - 2.0).max(0.0);
+    let x = 450.0 - 500.0 * (pan * 0.25).cos();
     ctx.camera().set_position(x, 320.0);
     ctx.look().auto_exposure = self.auto.then_some(AutoExposure {
       compensation: self.compensation,

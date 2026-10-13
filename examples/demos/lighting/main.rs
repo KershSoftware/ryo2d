@@ -28,6 +28,13 @@ const BULB_DAMPING: f32 = 0.98; // bulb swing damping
 const BULB_GRAVITY: f32 = 980.0; // gravity for bulb pendulum
 const BULB_RADIUS: f32 = 12.0; // half the bulb diameter, for centering
 
+/// The lamp's light. Light colours are sRGB, like sprite colours; this room
+/// was tuned when they were read as linear, so the warm white of
+/// `Light2D::torch`, (255, 200, 100), is encoded to sRGB to keep its look.
+fn lamp_light(radius: f32, intensity: f32) -> Light2D {
+  Light2D::point(Color::new(255, 229, 168, 255), radius).with_intensity(intensity)
+}
+
 /// Pendulum state for physics simulation
 struct PendulumState {
   angle: f32,            // current angle in radians (0 = straight down)
@@ -126,7 +133,7 @@ impl DemoPage for PendulumPage {
 
   fn description(&self) -> &str {
     "A pendulum lamp swinging in a dark room: dynamic light and shadows.\n\
-The lamp is a Light2D::torch on a pendulum simulation; walls, boxes and thin wires are\n\
+The lamp is a warm Light2D::point on a pendulum simulation; walls, boxes and thin wires are\n\
 LightOccluder2D shapes that cast shadows, and light falls off with distance.\n\
 Ambient darkness is the room's base light: 1 is pitch black."
   }
@@ -201,7 +208,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
         .world
         .spawn((
           Transform::from_xy(bob_x, bob_y),
-          Light2D::torch(self.light_radius).with_intensity(self.light_intensity),
+          lamp_light(self.light_radius, self.light_intensity),
         ))
         .id(),
     );
@@ -324,7 +331,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
     if let Some(light_entity) = self.light_entity
       && let Some(mut light) = ctx.world.get_mut::<Light2D>(light_entity)
     {
-      *light = Light2D::torch(self.light_radius).with_intensity(self.light_intensity);
+      *light = lamp_light(self.light_radius, self.light_intensity);
     }
 
     // Update pendulum physics

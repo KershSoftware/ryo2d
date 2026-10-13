@@ -107,25 +107,26 @@ pub const CHARGE_PULSE_AMOUNT: f32 = 0.08; // How much the squish pulses
 pub const CHARGE_SHAKE_MAX: f32 = 3.0; // Maximum shake offset at full charge
 pub const CHARGE_SHAKE_SPEED: f32 = 45.0; // Shake oscillation speed
 
-// Lighting
+// Lighting. Light and ambient colours are sRGB like sprite colours; these were
+// tuned when they were read as linear, so each is that value encoded to sRGB
 pub const PLAYER_LIGHT_RADIUS: f32 = 180.0;
 pub const PLAYER_LIGHT_INTENSITY: f32 = 0.7;
-pub const PLAYER_LIGHT_COLOR: (u8, u8, u8) = (255, 240, 220); // Warm white
+pub const PLAYER_LIGHT_COLOR: (u8, u8, u8) = (255, 248, 239); // Warm white
 pub const LAMP_LIGHT_RADIUS: f32 = 120.0; // Outer glow
 pub const LAMP_LIGHT_INTENSITY: f32 = 0.6;
 pub const LAMP_INNER_RADIUS: f32 = 50.0; // Inner bright core
 pub const LAMP_INNER_INTENSITY: f32 = 1.0;
-pub const LAMP_LIGHT_COLOR: (u8, u8, u8) = (255, 200, 100); // Orange-yellow
-pub const LAMP_INNER_COLOR: (u8, u8, u8) = (255, 240, 200); // Brighter warm white
+pub const LAMP_LIGHT_COLOR: (u8, u8, u8) = (255, 229, 168); // Orange-yellow
+pub const LAMP_INNER_COLOR: (u8, u8, u8) = (255, 248, 229); // Brighter warm white
 pub const LAMP_OFFSET_Y: f32 = -30.0; // Above platform
 pub const LAMP_OFFSET_X: f32 = 20.0; // Offset from edge
 pub const LAMP_OSCILLATE_RADIUS: f32 = 8.0; // How much lamps move (larger = more movement)
 pub const LAMP_OSCILLATE_SPEED: f32 = 3.0; // Oscillation speed (radians/sec)
 
 // Enhanced lighting - atmosphere & ambient
-pub const AMBIENT_DARK_COLOR: (u8, u8, u8) = (8, 8, 18); // Deep cave blue-black
+pub const AMBIENT_DARK_COLOR: (u8, u8, u8) = (50, 50, 75); // Deep cave blue-black
 pub const AMBIENT_DARK_INTENSITY: f32 = 0.03;
-pub const AMBIENT_BRIGHT_COLOR: (u8, u8, u8) = (40, 50, 80); // Dawn sky hint
+pub const AMBIENT_BRIGHT_COLOR: (u8, u8, u8) = (110, 122, 152); // Dawn sky hint
 pub const AMBIENT_BRIGHT_INTENSITY: f32 = 0.12;
 pub const HEIGHT_FOR_MAX_AMBIENT: f32 = 300.0; // Height units for full transition
 

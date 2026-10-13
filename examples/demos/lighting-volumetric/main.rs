@@ -13,6 +13,13 @@
 
 use demo_kit::prelude::*;
 
+// Light and ambient colours are sRGB, like sprite colours. This scene was
+// tuned when they were read as linear, so its colours are those values
+// encoded to sRGB: (255, 200, 100) became (255, 229, 168).
+
+/// The sun's warm white
+const SUN: Color = Color::new(255, 253, 239, 255);
+
 /// Current atmosphere preset
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AtmospherePreset {
@@ -61,12 +68,12 @@ impl AtmospherePreset {
   fn ambient(&self) -> (Color, f32) {
     match self {
       // (color, intensity)
-      Self::Clear => (Color::new(20, 20, 35, 255), 0.08),
-      Self::Hazy => (Color::new(40, 40, 50, 255), 0.12),
-      Self::Dusty => (Color::new(50, 45, 35, 255), 0.10),
-      Self::Foggy => (Color::new(60, 65, 70, 255), 0.20),
-      Self::Smoky => (Color::new(40, 35, 30, 255), 0.08),
-      Self::Underwater => (Color::new(30, 50, 70, 255), 0.15),
+      Self::Clear => (Color::new(79, 79, 104, 255), 0.08),
+      Self::Hazy => (Color::new(110, 110, 122, 255), 0.12),
+      Self::Dusty => (Color::new(122, 117, 104, 255), 0.10),
+      Self::Foggy => (Color::new(133, 138, 143, 255), 0.20),
+      Self::Smoky => (Color::new(110, 104, 96, 255), 0.08),
+      Self::Underwater => (Color::new(96, 122, 143, 255), 0.15),
     }
   }
 
@@ -117,12 +124,12 @@ impl LightPreset {
 
   fn color(&self) -> Color {
     match self {
-      Self::Warm => Color::new(255, 200, 100, 255),
-      Self::Cool => Color::new(150, 180, 255, 255),
+      Self::Warm => Color::new(255, 229, 168, 255),
+      Self::Cool => Color::new(202, 219, 255, 255),
       Self::White => Color::new(255, 255, 255, 255),
-      Self::Warning => Color::new(255, 80, 80, 255),
-      Self::Magic => Color::new(200, 100, 255, 255),
-      Self::Nature => Color::new(100, 255, 150, 255),
+      Self::Warning => Color::new(255, 152, 152, 255),
+      Self::Magic => Color::new(229, 168, 255, 255),
+      Self::Nature => Color::new(168, 255, 202, 255),
     }
   }
 }
@@ -172,7 +179,7 @@ impl VolumetricPage {
       sun_x: 200.0,
       sun_y: 80.0,
       god_rays_enabled: true,
-      god_rays_intensity: 0.4,
+      god_rays_intensity: 0.3,
 
       torch_entities: Vec::new(),
 
@@ -257,11 +264,11 @@ impl VolumetricPage {
       // Update sun light with god rays if enabled
       if let Some(mut light) = ctx.world.get_mut::<Light2D>(entity) {
         if self.god_rays_enabled {
-          *light = Light2D::point(Color::new(255, 250, 220, 255), 300.0)
+          *light = Light2D::point(SUN, 300.0)
             .with_intensity(1.5)
             .with_god_rays();
         } else {
-          *light = Light2D::point(Color::new(255, 250, 220, 255), 300.0).with_intensity(1.5);
+          *light = Light2D::point(SUN, 300.0).with_intensity(1.5);
         }
       }
     }
@@ -315,7 +322,7 @@ impl DemoPage for VolumetricPage {
     // Very dark ambient for dramatic effect
     ctx
       .lighting()
-      .set_ambient(AmbientLight::new(Color::new(15, 15, 25, 255), 0.05));
+      .set_ambient(AmbientLight::new(Color::new(69, 69, 88, 255), 0.05));
 
     // Create ground/floor
     let ground_sprite = ctx
@@ -404,17 +411,18 @@ impl DemoPage for VolumetricPage {
         .world
         .spawn((
           Transform::from_xy(self.sun_x, self.sun_y),
-          Light2D::point(Color::new(255, 250, 220, 255), 300.0)
+          Light2D::point(SUN, 300.0)
             .with_intensity(1.5)
             .with_god_rays(),
         ))
         .id(),
     );
 
-    // Sun visual (bright circle)
+    // Sun visual (bright circle), nearly white: lit past white it keeps its
+    // hue, and so does the haze its god rays spread over the frame
     let sun_sprite = ctx
       .assets
-      .create_sprite(Sprite::solid_circle(60, 255, 250, 200, 255), "sun");
+      .create_sprite(Sprite::solid_circle(60, 255, 252, 230, 255), "sun");
     ctx.world.spawn((
       Transform::from_xy(self.sun_x, self.sun_y),
       Renderable::sprite(sun_sprite).with_z_order(0),
@@ -444,12 +452,12 @@ impl DemoPage for VolumetricPage {
         Renderable::sprite(flame).with_z_order(4),
       ));
 
-      // Torch light
+      // Torch light: Light2D::torch's colour, re-encoded like the presets
       let torch_entity = ctx
         .world
         .spawn((
           Transform::from_xy(*x, y - 20.0),
-          Light2D::torch(120.0).with_intensity(0.8),
+          Light2D::point(LightPreset::Warm.color(), 120.0).with_intensity(0.8),
         ))
         .id();
       self.torch_entities.push(torch_entity);

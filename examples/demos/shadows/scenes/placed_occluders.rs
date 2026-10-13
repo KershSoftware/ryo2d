@@ -12,9 +12,12 @@ pub struct PlacedOccludersPage {
   light_visual: Option<Entity>,
   light_x: f32,
   light_y: f32,
+  /// The mouse when the page opened: the light waits among the occluders
+  /// until the mouse first moves away from it
+  mouse_at_open: Option<(f32, f32)>,
   light_color: Color,
 
-  // Shadow edge softness
+  // Shadow softness: how much light the shadows let through (0 = hard)
   softness: f32,
 
   // Placed occluders (by player)
@@ -29,11 +32,13 @@ impl PlacedOccludersPage {
     Self {
       light_entity: None,
       light_visual: None,
-      light_x: 640.0,
-      light_y: 360.0,
-      light_color: Color::new(255, 220, 180, 255), // Warm light
+      light_x: 500.0,
+      light_y: 380.0,
+      mouse_at_open: None,
+      // Warm light: (255, 220, 180) read as linear, as when the page was tuned
+      light_color: Color::new(255, 239, 219, 255),
 
-      softness: 0.4,
+      softness: 0.2,
 
       placed_occluders: Vec::new(),
       static_occluders: Vec::new(),
@@ -141,10 +146,13 @@ impl DemoPage for PlacedOccludersPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    // Configure lighting - dark ambient for dramatic effect
+    self.mouse_at_open = Some(ctx.input.mouse_position());
+
+    // Configure lighting - dark ambient for dramatic effect: (10, 12, 18) read
+    // as linear, as when the page was tuned
     ctx
       .lighting()
-      .set_ambient(AmbientLight::new(Color::new(10, 12, 18, 255), 0.05));
+      .set_ambient(AmbientLight::new(Color::new(56, 61, 75, 255), 0.05));
 
     // Create floor with subtle pattern
     let floor = ctx
@@ -197,10 +205,13 @@ impl DemoPage for PlacedOccludersPage {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
-    // Move light to mouse position
+    // The light waits among the occluders until the mouse first moves
     let (mx, my) = ctx.input.mouse_position();
-    self.light_x = mx;
-    self.light_y = my;
+    if self.mouse_at_open != Some((mx, my)) {
+      self.mouse_at_open = None;
+      self.light_x = mx;
+      self.light_y = my;
+    }
 
     // Place occluder on left click
     if ctx.input.mouse_pressed(MouseButton::Left) {
