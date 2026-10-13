@@ -1,32 +1,17 @@
-//! GPU-based sprite rendering with per-sprite shader effects
+//! The sprites' textures and game shaders, and the sprite instances the 2D
+//! batch draws.
 //!
-//! This module provides a GPU rendering path for sprites that have `Material`
-//! components or inline shaders. Unlike the CPU software renderer, this path:
-//!
-//! - Renders sprites as textured quads on the GPU
-//! - Applies per-sprite shader effects (outline, glow, dissolve, etc.)
-//! - Supports custom user shaders via `ShaderHandle`
-//! - Can batch sprites with the same shader for performance
-//!
-//! # Architecture
-//!
-//! ```text
-//! Engine present
-//!     │
-//!     ├── DrawList: entities, `Scene::render`/particle/parallax sprites and
-//!     │   trail groups, sorted by z
-//!     │
-//!     └── SpriteGpuRenderer::prepare_world()
-//!         ├── Make used textures resident in the texture atlas
-//!         ├── Per camera: the sprites it sees, remapped into atlas slots
-//!         │   (mask, effect growth) in its own range of the instance buffer
-//!         └── One draw per run of consecutive sprites on one atlas page
-//!             and pipeline (drawn by the camera's `world` pass)
-//! ```
+//! - [`SpriteInstance`]: one world-space quad (transform, UV rect, tint,
+//!   effect parameters, UV bounds), 128 bytes
+//! - [`SpriteDraw`] and [`BatchCollector`]: `Scene::render` and particle
+//!   sprites with their z, blend, filter and lighting
+//! - [`SpriteGpuRenderer`]: the texture registry and atlas (every texture
+//!   drawn, made resident each frame) and game sprite shaders compiled to
+//!   WGSL; the batch (`render/batch`) makes the pipelines and draws
 //!
 //! Textures live in a texture atlas (`Rgba8Unorm` pages holding raw sRGB
-//! bytes). The shader tints and applies effects in sRGB space and converts
-//! to linear on output.
+//! bytes, mipmapped). The shader tints and applies effects in sRGB space and
+//! converts to linear, premultiplied colour on output.
 
 use std::collections::HashMap;
 use std::collections::HashSet;

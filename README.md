@@ -146,14 +146,15 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **State Machines** — Generic FSM and state stack for player states, AI, menus
 
 ### Rendering
-- **Sprites** — GPU-batched rendering with z-ordering and per-sprite shaders
+- **Sprites** — One GPU batch for sprites, particles, trails and lines, with z-ordering, per-sprite shaders, blend modes (alpha, additive, multiply, screen) and mipmapped textures
 - **Animation** — Sprite sheets and state machine controllers
 - **Skeletal Animation** — Bone hierarchies, per-bone keyframe tracks, crossfade blending, FSM controllers
 - **Tweening** — Transform tweens, generic property tweens, sequences, 25 easing functions
-- **Parallax** — Layered scrolling backgrounds with infinite scroll
+- **Parallax** — Layered scrolling backgrounds with infinite scroll, laid out for every camera
 - **2D Lighting** — Point lights, spotlights, volumetric effects, atmospheric scattering
 - **Shadow System** — Hard shadows, soft shadows, ray-marched shadows, drop/blob/contact shadows, ambient occlusion
-- **Trails** — Motion path rendering with fade and taper effects
+- **Trails and Lines** — Motion trails and shapes with joins, caps, fade and taper effects
+- **Debug Drawing** — `ctx.debug_draw()` lines, rectangles, circles, arrows and crosses, one pixel wide at any zoom
 - **Particles** — GPU-batched particle system with emitters, attractors, and presets
 - **Post-Processing** — Shader pipeline (bloom, CRT, vignette, chromatic aberration, etc.)
 - **Render Pipeline** — Pass-based, per camera then per frame; games toggle built-in passes or add their own

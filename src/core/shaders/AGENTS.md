@@ -1,6 +1,12 @@
 # AGENTS.md - Shader System
 
-This module provides the post-processing effect pipeline for Ryo2D, plus the compiler for game-authored WGSL (`custom.rs`).
+This module provides the post-processing effect pipeline for Ryo2D, the engine's WGSL (`core/`, `post-process/`, shared `include/`s composed in `compose.rs`), plus the compiler for game-authored WGSL (`custom.rs`).
+
+## Shared WGSL (`include/`, `compose.rs`)
+
+- `camera.wgsl` (the `CameraGlobals` struct and its group-0 binding), `color.wgsl` (`srgb_to_linear`, `linear_to_srgb`, `premultiply`), `sample.wgsl` (`sample_masked`: a slot-masked sample by gradient; `sample_wrapped`: a texture repeating inside its slot) and `fullscreen.wgsl` (`FullscreenVertex` and the fullscreen `vs_main`).
+- Built-in modules are compile-time `concat!` constants of their includes and body (`compose::SPRITE`, `LINE`, `VIGNETTE`, ...); each struct and function is written once. `every_built_in_shader_parses_and_validates` checks every module with naga and `the_camera_struct_is_declared_once` that bodies don't redeclare the camera.
+- Sprite and line fragment entries take the UV's derivatives first thing, where control flow is uniform, and pass them to the samplers, so any sample picks the right mip level.
 
 ## Ping-Pong Pattern
 
@@ -34,16 +40,17 @@ GodRays uses a separate 128-byte `GodRaysParams` uniform instead of `EffectParam
 
 ## WGSL Effect Shader Contract
 
-Every post-process shader is self-contained. It must:
+Every post-process shader body is composed after `include/fullscreen.wgsl`, which supplies `vs_main` and `FullscreenVertex`. It must:
 - Declare a matching `EffectParams` struct (4 × `vec4<f32>`).
 - Bind `@group(0) @binding(0)` input `texture_2d<f32>`, `@binding(1)` sampler, `@binding(2)` `var<uniform> EffectParams`.
-- Define its own fullscreen `vs_main` (6-vertex quad from `vertex_index`) and `fs_main`. The pipeline hard-codes these entry point names.
+- Define `fs_main(in: FullscreenVertex)` (`in.uv` runs 0..1 over the screen). The pipeline hard-codes the entry point names.
+- Bind groups are made through `graphics::bind_groups::create` and looked up per pass from the chain's `BindGroupCache` (by input view and uniform buffer), so steady frames make none; a resize clears the cache.
 
 ## Custom (Game-Authored) Shaders
 
-`custom.rs` compiles shaders written by games. A game file holds an optional `struct Params { .. }` and one function, `fn sprite(in: SpriteIn, params: Params) -> vec4<f32>` or `fn effect(in: EffectIn, params: Params) -> vec4<f32>`. The compiler prepends the engine prelude, appends a generated entry point (`fs_custom` for sprites, a generated `vs_main`/`fs_main` pair for effects), validates the result with naga and reflects `Params` (members `f32`/`vec2`/`vec3`/`vec4<f32>`; at most 32 bytes for sprites, 64 for effects). Without a `Params` struct the prelude supplies `struct Params { unused: f32 }`. Error positions are mapped back to the game's own line (`<id>:<line>:<column>: <message>`), logged once per source; a failing sprite shader draws plain and a failing effect is skipped. Compiled pipelines are cached by `custom::source_key` (kind + source text), so handles with equal sources compile once and their sprites batch together; per-handle entries (by `ShaderHandle::serial()` and generation) point at them, and both are pruned after 600 unused frames.
+`custom.rs` compiles shaders written by games. A game file holds an optional `struct Params { .. }` and one function, `fn sprite(in: SpriteIn, params: Params) -> vec4<f32>` or `fn effect(in: EffectIn, params: Params) -> vec4<f32>`. The compiler prepends the engine prelude, appends a generated entry point (`fs_custom` and `fs_custom_premultiplied` for sprites, `fs_main` after the shared fullscreen `vs_main` for effects), validates the result with naga and reflects `Params` (members `f32`/`vec2`/`vec3`/`vec4<f32>`; at most 32 bytes for sprites, 64 for effects). Without a `Params` struct the prelude supplies `struct Params { unused: f32 }`. Error positions are mapped back to the game's own line (`<id>:<line>:<column>: <message>`), logged once per source; a failing sprite shader draws plain and a failing effect is skipped. Compiled sprite shaders are cached in the sprite renderer by `custom::source_key` (kind + source text), so handles with equal sources compile once and their sprites batch together; per-handle entries (by `ShaderHandle::serial()` and generation) point at them, and both are pruned after 600 unused frames. The 2D batch makes a sprite shader's pipeline per blend mode it is drawn with (checked by the GPU without blocking; the sprite draws plain until the check passes, and its pipelines go with its source).
 
-Custom effect bind group (group 0): `0` scene texture, `1` sampler, `2` params uniform, `3` globals (time, resolution). An effect's `in.time` is the effects clock (real time); a sprite shader's `in.time` is the sprite globals' `x`, game time, so it freezes under pause. `scene(uv)` samples the latest image in LINEAR colour and the effect returns linear colour. Sprite shaders work in the sprite's sRGB values; the engine tints, rounds and converts to linear afterwards.
+Custom effect bind group (group 0): `0` scene texture, `1` sampler, `2` params uniform, `3` globals (time, resolution). An effect's `in.time` is the effects clock (real time); a sprite shader's `in.time` is the sprite globals' `x`, game time, so it freezes under pause. `scene(uv)` samples the latest image in LINEAR colour and the effect returns linear colour. Sprite shaders work in the sprite's sRGB values and return straight colour; the engine tints, rounds, converts to linear and premultiplies afterwards.
 
 `EffectsManager::add_custom/set_custom_param/set_custom_enabled/remove_custom` hold the custom effects. They run after the built-in effects, in insertion order, each as one ping-pong slot, and `clear()` removes them. Params are packed by name from `ShaderParams` at emit time; `Color` packs as sRGB/255. Hot reload updates the `ShaderHandle` source and bumps its generation, which triggers a rebuild the next frame.
 

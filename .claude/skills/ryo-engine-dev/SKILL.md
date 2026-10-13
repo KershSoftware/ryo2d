@@ -38,19 +38,21 @@ Engine::frame
 │                     consumption applied to Input; a SceneAction applies at once
 │                     (a scene change redraws the UI once so the new scene shows)
 ├─ FixedUpdate × N    while the fixed clock holds a step; a quit ends the steps
-│   ├─ Snapshot       GlobalTransform → PreviousGlobalTransform
+│   ├─ Snapshot       debug shapes of the last step cleared; GlobalTransform → PreviousGlobalTransform
 │   ├─ Juice          animation, tweens, sequences, property tweens, knockback, squash, skeletons
 │   ├─ Scene          transitions, Scene::update (active scene and those under updates_below), action
 │   ├─ Game           the scenes' own FixedUpdate schedules; builder systems by default
 │   ├─ Physics        register, unregister, sync to Rapier, step, sync back, collision messages
 │   ├─ Transforms     propagation
-│   └─ Trails         trail point recording
+│   └─ Trails         trail point recording; later debug shapes last one frame
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
 ├─ PostUpdate         Transforms (propagation) → Camera (shake on real time, every CameraView)
-│                     → Extract (timed effects)
+│                     → Extract (parallax auto-scroll, timed effects)
 ├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
-│                     the world into the draw list (world space, sorted once), plans the
-│                     cameras, runs the RenderPipeline:
+│                     the world into the draw list (world space, sorted once: sprites, entities,
+│                     trails and lines as polylines; parallax and debug shapes per camera),
+│                     plans the cameras, lays each camera's items into the 2D batch's draws
+│                     (Batch2D::prepare, uploaded once), runs the RenderPipeline:
 │                     per camera: clear → world → lighting → unlit_world
 │                     per frame:  cameras → transition → post_process → ui → composite → capture
 └─ Last               physics registration bookkeeping, forget despawned tilemaps, clear_trackers,
@@ -66,7 +68,7 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images) and sprite/lighting/trail renderers, the camera uniforms, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (scene stack + Kira `Audio`), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
@@ -85,8 +87,8 @@ Engine::frame
 | `systems/` | The built-in systems (juice, physics, trails) |
 | `messages/` | Engine message types, registration, per-scene cursors |
 | `scene/` | `Scene`, `SceneAction`, `SceneContext`, `SceneManager`, cleanup |
-| `render/` | `RenderPipeline` of `RenderPass`es (camera and frame scopes), the draw list, entity extraction, the frame's camera plan |
-| `graphics/` | wgpu renderer, sprite GPU batching, cameras and render targets, the screen mapping, texture registry and atlas, compositor, sprite animation, tiles, parallax |
+| `render/` | `RenderPipeline` of `RenderPass`es (camera and frame scopes), the draw list, entity extraction, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, polylines), `DebugDraw` |
+| `graphics/` | wgpu renderer, sprite textures and game shader sources, cameras and render targets, the screen mapping, texture registry and mipmapped atlas, bind-group helper, compositor, sprite animation, tiles, `ParallaxLayer` |
 | `shaders/` | Post-process effects (`EffectsManager`) and sprite shaders |
 | `lighting/` | 2D lights, occluders, `LightingSettings` |
 | `physics/` | Rapier integration, `RigidBody`, `Collider`, `RapierPhysicsWorld` |

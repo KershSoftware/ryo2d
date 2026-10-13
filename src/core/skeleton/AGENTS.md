@@ -6,9 +6,9 @@
 - `SkeletalBlender` crossfades from a **frozen snapshot** of the "from" pose to the **live** "to" pose, so the outgoing animation does not keep advancing during the blend.
 - `SkeletalController` = FSM + animation map + `SkeletalAnimator` + `SkeletalBlender`. `set_state` validates through the FSM, and `force_state` bypasses it.
 
-## Debug Lines
+## Debug Drawing
 
-`skeleton_debug_lines` returns `Line2D`s at z `i32::MAX - 1`, so they draw on top of game content (below the engine's own `i32::MAX` overlays).
+`draw_skeleton(debug, def, transforms, bone_color, joint_color, width, joint_radius)` draws the bones and joints into `DebugDraw` (`ctx.debug_draw()`), so they draw on top of the world, `width` screen pixels wide at any zoom. Call it every update.
 
 ## Coordinate System
 

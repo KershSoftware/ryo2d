@@ -7,9 +7,9 @@ The engine draws every frame through one `RenderPipeline` (a resource, `RenderPi
 | # | Id (`pass_ids`) | Scope | Runs when (`should_run`) | Draws |
 |---|-----------------|-------|--------------------------|-------|
 | 1 | `CLEAR` | camera | always | clears the camera's image per `CameraClear` (transparent for `None`) |
-| 2 | `WORLD` | camera | the draw list has lit items | the camera's entities, `Scene::render` sprites (particles, parallax) and lit trails and lines, one z-sorted list |
+| 2 | `WORLD` | camera | the draw list has lit items | the camera's lit draws from the batch: entities, `Scene::render` sprites (particles), parallax, trails, lines and debug shapes, one z-sorted list |
 | 3 | `LIGHTING` | camera | lighting is on | the camera's lights and shadows, composed into the lit image (straight-in camera) or back into its own image |
-| 4 | `UNLIT_WORLD` | camera | always (returns early with no unlit items) | the camera's trails and lines with `with_lighting(false)`, by z |
+| 4 | `UNLIT_WORLD` | camera | always (returns early with no unlit draws) | the camera's unlit draws (anything `with_lighting(false)`, and debug shapes), by z |
 | 5 | `CAMERAS` | frame | always | window cameras' own images into their viewports, in order; clears the scene image first when no camera drew straight into it |
 | 6 | `TRANSITION` | frame | a transition fade is visible | scene transition fade over the whole frame (not the UI) |
 | 7 | `POST_PROCESS` | frame | effects are active | the effects chain |
@@ -21,28 +21,39 @@ The engine draws every frame through one `RenderPipeline` (a resource, `RenderPi
 
 - `plan_cameras` (`frame.rs`) orders the cameras: texture cameras, then window cameras, each by `order` (ties by entity). The first window camera draws straight into the scene image when its viewport is `Viewport::FULL` and it clears; every other window camera draws into an image of its own (`CameraImages`, `graphics/camera_images.rs`), sized to its viewport in render pixels (`PixelRect::of_viewport`, edges rounded so viewports that meet share them). A texture camera draws straight into its render target when its viewport covers it, otherwise into an image of its own that `leave_camera` places in its rectangle of the target (premultiplied blending, like the `cameras` pass); one whose target is missing is left out (warned once).
 - Each `CameraDraw` carries the view, layers, clear, target, image rectangle and whether it is lit. `RenderContext::enter_camera` points `current_view()` at the camera's image (`FrameImage::Camera`) for its passes; `leave_camera` goes back to the scene image, which a straight-in camera may have left lit.
-- Per-camera GPU state: a uniform buffer per camera (`CameraUniforms`: `view_proj`, image size, game and real time, snap), bind groups in the sprite and trail renderers, camera images and light targets. All of it follows the planned cameras each frame, so a despawned camera's state goes with it.
+- Per-camera GPU state: a uniform buffer per camera (`CameraUniforms`: `view_proj`, image size, game and real time, snap), its bind group in the batch and in lighting, camera images and light targets. All of it follows the planned cameras each frame, so a despawned camera's state goes with it.
 
 ## Building the Frame (`present_frame`)
 
 Everything is read from the world by query, every frame. There is no render cache: nothing is invalidated, and an entity draws where its `GlobalTransform` says on the frame it exists. Drawables are gathered once, in world space, and sorted once; each camera keeps what it sees.
 
 1. `Scene::render(gpu)` for the visible scenes, bottom-up (`GpuRenderContext`: `gpu.batch`, `gpu.camera()` = the main camera's view, read-only `gpu.world`); the `BatchCollector` keeps submission order.
-2. Trails (`&Trail2D`: world-space points), lines (`(&GlobalTransform, &Line2D)`: at the entity's translation) and the debug overlays (unlit `Line2D`s at `i32::MAX`, added last so they are what gets dropped when the vertex budget runs out), grouped by (lit, z, `RenderLayers`).
-3. Lights (`(&GlobalTransform, &Light2D)`, at their world translation) and occluders (`(&GlobalTransform, &LightOccluder2D)`, keeping rotation); `LightingSettings` is copied into the lighting renderer.
-4. Render targets' textures follow `RenderTargets`; the cameras are planned and their uniforms, bind groups and light targets synced.
+2. Lights (`(&GlobalTransform, &Light2D)`, at their world translation) and occluders (`(&GlobalTransform, &LightOccluder2D)`, keeping rotation); `LightingSettings` is copied into the lighting renderer.
+3. Render targets' textures follow `RenderTargets`; the cameras are planned and their uniforms, bind groups and light targets synced.
+4. The `Scene::render` sprites join the draw list; each `ParallaxLayer` is laid out for every camera on its layers (items for that camera alone).
 5. `EntityDrawer::collect` (`entities.rs`): one query over the visible renderables (with their `RenderLayers`), then the composite tiles. Quads no camera on their layers can see are skipped before their texture uploads. Disabled entities are skipped by the queries themselves.
-6. Trail groups join the draw list; trail and line vertices are uploaded once (`TrailRenderer::prepare`) before the pipeline runs; the passes only draw.
-7. The list is sorted; `prepare_world` lays each camera's sprites (on its layers, inside its `CameraView::bounds`, not showing its own target) into its own range of the instance buffer and uploads them once; then the pipeline runs.
+6. Trails (`&Trail2D`: world-space points) and lines (`(&GlobalTransform, &Line2D)`: at the entity's translation) become polylines on the batch's triangle stream, one item each. The debug overlays are added to `DebugDraw`, whose shapes are built for each camera in its own screen pixels (items for that camera alone).
+7. The list is sorted; `Batch2D::prepare` makes the frame's textures resident, lays each camera's lit and unlit items (on its layers, inside its `CameraView::bounds`, not showing its own target, `only_camera`) into draws and uploads the instances and triangles once; then the pipeline runs. `present_frame` clears the frame's debug shapes afterwards, drawn or skipped.
 
 `FrameScene.time` (lighting, trails, the transition) is real elapsed time; post-process effects run on `EffectsManager`'s own clock, advanced with real time in `PostUpdateSet::Extract`. Only `CameraGlobals::game_time` (sprite effects, custom sprite shaders) is game time.
+
+## The 2D Batch (`batch/`)
+
+One batch draws the world: sprites, shadows, tiles, composite parts, particles, `Scene::render` sprites, parallax tiles, trails, lines and debug shapes.
+
+- **Two streams**, each uploaded once per frame into a buffer that doubles when a frame needs more: instanced quads (the 128-byte `SpriteInstance`, remapped into its atlas slot) and indexed triangles (`Vertex2D`, 72 bytes: position, uv, colour, params, across, the slot a textured line repeats).
+- **Keys and planning** (`key.rs`, `plan.rs`): every item resolves to a `DrawState` (page, `BatchShader`, `BlendMode`, `Sampling`, scissor). Per camera, `plan_draws` merges consecutive items with equal states (and, for triangles, adjacent index ranges) into `Draw`s; each camera's quads have a range of the instance buffer of their own, its lit and unlit draws in one range.
+- **Pipelines** (`pipelines.rs`) are made on first use per `(BatchShader, BlendMode, Stream, format)`; a custom sprite shader gets one per blend mode it is drawn with, checked without blocking (`Checked`), and draws plain until its check passes. Every batch shader writes colour premultiplied by alpha, so each `BlendMode` is one fixed blend state (`blend_state`); `Premultiplied` picks the shader entries that take a texture's colour as it is.
+- **Bind groups are made with their resource:** one per camera (its uniform buffer) and one per texture page and sampler (made with the page); none per frame. Every bind group goes through `graphics::bind_groups::create`, which counts them in tests (`steady_frames_create_no_bind_groups`, and a guard test that fails on any other `create_bind_group`); passes that bind frame resources look them up in a `BindGroupCache` keyed by the resources themselves, cleared when those are recreated.
+- **Lines** (`lines.rs`, `polyline.rs`): trails and lines become polylines with miter, bevel or round joins (each corner one wedge, fanned from the corner point, so nothing is covered twice) and butt, square or round caps.
+- **Debug draw** (`render/debug_draw.rs`): `DebugDraw` keeps world-space shapes in a fixed-step list (cleared when the next step begins) and a frame list (cleared after the frame); each camera builds them as polylines in its own screen pixels.
 
 ## Draw Order
 
 - Items sort by (z, kind, submission), once per frame; each camera draws the sorted items it sees. `z_order` picks the layer; at equal z entities draw first, then `Scene::render` sprites, then trails and lines (`DrawKind` order).
 - Within a layer, plain entities keep query order and y-sorted ones follow, ordered by their sort key: the point `YSort.foot_offset` of the way down the sprite (default the feet), computed from the anchor, so the key is the same whichever `Anchor` places the sprite (`y_sort_key`).
 - Shadows draw just before their entity. Composite tiles draw at their own `z_order`, after the layer's entities.
-- Skeleton debug lines are `Line2D`s at `i32::MAX - 1`; the engine's overlays sit at `i32::MAX`.
+- Debug shapes (`DebugDraw`, the overlays, `draw_skeleton`) are unlit at `i32::MAX`.
 
 ## Placement (`entities.rs`)
 
@@ -73,7 +84,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 ## Design Decisions
 
-- **Thin passes.** GPU pipelines, bind groups and buffers live in the subsystem renderers (sprites, trails, lighting, post-process, compositor). A pass only calls into them with the `RenderContext`.
+- **Thin passes.** GPU pipelines, bind groups and buffers live in the subsystem renderers (the batch, lighting, post-process, compositor). A pass only calls into them with the `RenderContext`; `world` and `unlit_world` replay the camera's batch draws.
 - **A camera image per camera, then a frame-level composite.** Lighting and the passes keep working on whole images, so no pass needs scissor logic; the common single full-window camera draws straight into the scene image and pays nothing extra. Post-processing runs once per frame, not per camera.
 - **Latest-image tracking.** `RenderContext` tracks which texture holds the latest image (`FrameImage`: game, lit, a camera's own image, or a post-process output). A pass drawing on "the frame" uses `current_view()` / `encoder_and_current_view()`, so a game pass after `post_process` draws on the post-processed image, and a camera pass on its camera's image. Only passes before `composite` reach the screen.
 - **The UI is composited only if the `ui` pass uploaded it this frame.** The UI texture is persistent; without that flag a disabled or skipped `ui` pass would blend the previous frame's UI.

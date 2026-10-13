@@ -15,7 +15,7 @@ Conventions: 2D with +Y down, units are pixels, rotation is radians unless a nam
 use ryo2d::prelude::*;
 ```
 
-Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Sprites](#sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
+Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Sprites](#sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
 
 ---
 
@@ -146,6 +146,9 @@ pub struct Renderable {
   pub blob_shadow: Option<BlobShadow>, pub contact_shadow: Option<ContactShadow>,
   pub anchor: Anchor, // default Anchor::Center
   pub target: Option<RenderTarget>, // drawn instead of `sprite` (see render_target)
+  pub blend: BlendMode,  // default Alpha (Premultiplied for render_target)
+  pub filter: Filter,    // default Filter::Default (the presentation's)
+  pub lighting: bool,    // default true; false draws it (and its shadows) after lighting
 }
 pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f32 } }
 ```
@@ -153,10 +156,23 @@ pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f3
 | Method | |
 |---|---|
 | `sprite(SpriteHandle) -> Self` | single sprite, placed by its anchor |
-| `render_target(RenderTarget) -> Self` | shows a render target at its size, placed, tinted, faded, scaled, turned and flipped like a sprite (see [Cameras](#cameras)) |
+| `render_target(RenderTarget) -> Self` | shows a render target at its size, placed, tinted, faded, scaled, turned and flipped like a sprite (see [Cameras](#cameras)); blends `Premultiplied` |
 | `tiled(SpriteHandle, TileDirection, target_size: f32) -> Self` | repeated to fill `target_size`, laid out from the entity's position (first tile's top-left); ignores `anchor` |
 | `with_anchor(Anchor)`, `with_z_order(i32)`, `with_visible(bool)`, `with_flip_x(bool)`, `with_flip_y(bool)`, `with_alpha(f32)`, `with_tint(Color)` | builders |
 | `with_shader(SpriteShader)`, `with_drop_shadow(DropShadow)`, `with_blob_shadow(BlobShadow)`, `with_contact_shadow(ContactShadow)` | effects |
+| `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)` | how it is drawn (shadows always blend `Alpha`) |
+
+Blend and filter modes (on `Renderable`, `ParticleEmitter`, `SpriteDraw`, `ParallaxLayer`, `Trail2D`, `Line2D`):
+
+| `BlendMode` | Result |
+|---|---|
+| `Alpha` (default) | ordinary transparency |
+| `Premultiplied` | the texture's colour is already multiplied by alpha (render targets) |
+| `Additive` | adds light: fire, sparks, glows, lasers |
+| `Multiply` | darkens what is below by its colour |
+| `Screen` | lightens what is below without blowing out |
+
+`enum Filter { Default, Nearest, Linear }`: `Default` is nearest under `pixel_art` and linear otherwise. Linear sampling uses mipmaps, so sprites drawn small stay smooth; nearest keeps hard texels.
 | `has_shader`, `has_drop_shadow`, `has_blob_shadow`, `has_contact_shadow`, `is_single`, `is_tiled`, `tile_count() -> u32` | queries |
 
 Shadows (all `Default`, builder style):
@@ -383,6 +399,7 @@ pub struct SceneContext<'a> {
 | `lighting(&mut self) -> Mut<'_, LightingSettings>` | ambient, atmosphere, forced on/off |
 | `tilemaps(&mut self) -> Mut<'_, TilemapManager>` | |
 | `render_pipeline(&mut self) -> Mut<'_, RenderPipeline>` | toggle or insert passes (persist across scenes) |
+| `debug_draw(&mut self) -> Mut<'_, DebugDraw>` | debug lines and shapes over the world (see [Debug drawing](#debug-drawing)) |
 | `camera(&mut self) -> CameraMut<'_>` | the main camera (respawned over the design area if the game despawned it) |
 | `render_targets(&mut self) -> Mut<'_, RenderTargets>` | textures cameras render into and sprites show |
 | `window(&mut self) -> Mut<'_, WindowRequest>`, `cursor(&mut self) -> Mut<'_, CursorRequest>` | requests applied after the frame |
@@ -654,18 +671,18 @@ pub struct GpuRenderContext<'a> { pub batch: &'a mut BatchCollector, pub world: 
 
 | `GpuRenderContext` | |
 |---|---|
-| `add_sprite_instance(&SpriteHandle, instance: SpriteInstance, z_order: i32, has_effects: bool)` | one sprite, in world space (the instance's centre is a world position; for something fixed on screen, place it with `camera().screen_to_world`); its texture uploads when first drawn and is dropped 600 frames after it was last drawn |
-| `add_custom_sprite(&SpriteHandle, &ShaderHandle, &ShaderParams, SpriteInstance, z_order)` | one sprite with a game shader |
+| `add_sprite(&SpriteHandle, instance: SpriteInstance, draw: SpriteDraw)` | one sprite, in world space (the instance's centre is a world position; for something fixed on screen, place it with `camera().screen_to_world`); its texture uploads when first drawn and is dropped 600 frames after it was last drawn |
+| `add_custom_sprite(&SpriteHandle, &ShaderHandle, &ShaderParams, SpriteInstance, SpriteDraw)` | one sprite with a game shader |
 | `screen_size()`, `screen_width()`, `screen_height()`, `camera() -> &CameraView` (the main camera's view) | |
 
 - `SpriteInstance { transform, uv_rect, tint, effect_params, effect_extra, uv_bounds }`: `new()`, `with_transform(x, y, rotation, width, height)` (the quad's centre and size in world units), `with_uv(u_min, v_min, u_max, v_max)`, `with_tint(Color, alpha)`, `with_effect(&SpriteEffect)`.
-- `BatchCollector`: `new()`, `with_capacity(n)`, `add(&SpriteHandle, has_effects, SpriteInstance, z_order)`, `sprite_count()`, `clear()`.
+- `SpriteDraw { z: i32, blend: BlendMode, filter: Filter, lit: bool, effects: bool }` (`Default`: z 0, `Alpha`, `Filter::Default`, lit, no effects; `effects` when the instance carries `with_effect`): `SpriteDraw { z: 5, blend: BlendMode::Additive, ..Default::default() }`.
+- `BatchCollector`: `new()`, `with_capacity(n)`, `add(&SpriteHandle, SpriteInstance, SpriteDraw)`, `sprite_count()`, `clear()`.
 
-Parallax backgrounds:
+Parallax layers (components; spawn one entity per layer):
 
-- `GpuParallaxBuilder`: `new()`, `layer(&SpriteHandle, scroll_speed, z_order)`, `static_layer(&SpriteHandle, z_order)`, then for the last layer `with_auto_scroll(px_per_s)`, `with_y_offset(f32)`, `with_tile_mode(TileMode)`, `with_scale(f32)`; `build() -> GpuParallaxBackground`.
-- `GpuParallaxBackground`: `new()`, `add_layer(GpuParallaxLayer)`, `remove_layer(&SpriteHandle)`, `get_layer_mut(&SpriteHandle)`, `layer_count()`, `update(dt)` (auto-scroll), `set_elapsed_time(f32)`, `render(&self, &mut GpuRenderContext)` (call from `Scene::render`).
-- `GpuParallaxLayer { scroll_speed (0 static, 1 moves with camera), auto_scroll_speed, y_offset, z_order, tile_mode, .. }` (follows the main camera on both axes, scaled by its zoom): `new(&SpriteHandle, scroll_speed, z_order)`, `with_auto_scroll`, `with_y_offset`, `with_tile_mode`, `with_scale`, `with_tint(r, g, b, a)`, `sprite()`.
+- `ParallaxLayer { sprite, scroll: Vec2, auto_scroll: Vec2, offset: Vec2, tile: TileMode, scale, tint, z_order, blend, filter, lighting, scrolled: Vec2 }`: `new(&SpriteHandle)` (fixed on screen at its top-left, untiled, scale 1, white, lit), `with_scroll(Vec2)` (per axis: 0 stays on screen, 1 moves with the world), `with_auto_scroll(Vec2)` (world units per second, game time), `with_offset(Vec2)` (positive moves it right and down), `with_tile(TileMode)`, `with_scale(f32)`, `with_tint(Color)`, `with_z_order(i32)`, `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)`. `scrolled` is how far it has auto-scrolled (set it to carry a backdrop across scenes).
+- Every camera on its `RenderLayers` lays it out from its own view, so split screen and minimaps each get their own parallax.
 - `enum TileMode { None, Horizontal, InfiniteScroll }`.
 
 ---
@@ -773,11 +790,24 @@ Lights and occluders sit at their entity's `GlobalTransform`. Every camera is li
 
 ## Trails and lines
 
-- `Trail2D` (component, on an entity with a `Transform`): records the entity's world position every fixed step (points are world space). Constructors `new(Color, width)`, `bullet(Color)`, `swipe(Color, w)`, `particle(Color)`, `laser(Color, w)`, `fading_laser(Color, w, fade_time)`, `lightning(Color, w)`, `fire(Color, w)`, `energy(Color, w)`; builders `with_length(max_points)` (≤ 128), `with_end_width`, `with_taper(ratio)`, `with_fade(bool)`, `with_end_color`, `with_min_distance`, `with_emit_interval`, `with_lifetime(secs)`, `with_fade_distance(px)`, `with_texture(SpriteHandle)`, `with_texture_mode(TextureMode)`, `with_tile_length`, `with_style(TrailStyle)`, `with_effect(TrailEffect)`, `with_cap(LineCap)`, `with_lighting(bool)`, `with_z_order(i32)`; control `set_enabled`, `set_visible`, `set_recording`, `clear`, `push_point(x, y)`, `push_point_back`, `populate_line(..)`, `update(x, y, dt)`, plus getters/setters for each setting.
-- `Line2D` (component, on an entity with a `Transform`): drawn at the entity's world position (points are offsets from it). `new(points: Vec<Vec2>, Color, width)`, `segment(start, end, Color, w)`, `horizontal(y, x0, x1, Color, w)`, `vertical(x, y0, y1, Color, w)`, `rect(x, y, w, h, Color, line_w)`, `circle(center, r, Color, w, segments)`, `arc(..)`, `quadratic_bezier(..)`, `bezier(..)`, `arrow(start, end, Color, w, head)`; builders `with_end_color`, `with_end_width`, `with_taper`, `with_closed(bool)`, `with_z_order`, `with_style`, `with_cap`, `with_join(LineJoin)`, `with_lighting(bool)`; editing `points_mut`, `set_points`, `push_point`, `pop_point`, `clear`; `length()`, `point_at_distance(d)`, `color_at(t)`, `width_at(t)`.
+- `Trail2D` (component, on an entity with a `Transform`): records the entity's world position every fixed step (points are world space). Constructors `new(Color, width)`, `bullet(Color)`, `swipe(Color, w)`, `particle(Color)`, `laser(Color, w)`, `fading_laser(Color, w, fade_time)`, `lightning(Color, w)`, `fire(Color, w)`, `energy(Color, w)`; builders `with_length(max_points)` (≤ 128), `with_end_width`, `with_taper(ratio)`, `with_fade(bool)`, `with_end_color`, `with_min_distance`, `with_emit_interval`, `with_lifetime(secs)`, `with_fade_distance(px)`, `with_texture(SpriteHandle)`, `with_texture_mode(TextureMode)`, `with_tile_length`, `with_style(TrailStyle)`, `with_effect(TrailEffect)`, `with_cap(LineCap)`, `with_join(LineJoin)`, `with_blend(BlendMode)`, `with_filter(Filter)` (textured trails), `with_lighting(bool)`, `with_z_order(i32)`; control `set_enabled`, `set_visible`, `set_recording`, `clear`, `push_point(x, y)`, `push_point_back`, `populate_line(..)`, `update(x, y, dt)`, plus getters/setters for each setting.
+- `Line2D` (component, on an entity with a `Transform`): drawn at the entity's world position (points are offsets from it). `new(points: Vec<Vec2>, Color, width)`, `segment(start, end, Color, w)`, `horizontal(y, x0, x1, Color, w)`, `vertical(x, y0, y1, Color, w)`, `rect(x, y, w, h, Color, line_w)`, `circle(center, r, Color, w, segments)`, `arc(..)`, `quadratic_bezier(..)`, `bezier(..)`, `arrow(start, end, Color, w, head)`; builders `with_end_color`, `with_end_width`, `with_taper`, `with_closed(bool)`, `with_z_order`, `with_style`, `with_cap`, `with_join(LineJoin)`, `with_blend(BlendMode)`, `with_lighting(bool)`; editing `points_mut`, `set_points`, `push_point`, `pop_point`, `clear`; `length()`, `point_at_distance(d)`, `color_at(t)`, `width_at(t)`.
 - `TrailPoint { x, y, age }`: `new(x, y)`.
-- `enum TrailStyle { Solid, Soft, Glow }`, `enum LineCap { Butt, Round, Square }`, `enum LineJoin { None, Miter, Bevel, Round }`, `enum TextureMode { Stretch, Tile }`, `enum TrailEffect { Lightning { .. }, Noise { .. }, UvScroll { .. }, Ribbon { .. } }`.
-- `TrailRenderer`: the engine's GPU renderer for both (games do not drive it).
+- `enum TrailStyle { Solid, Soft, Glow }`, `enum LineCap { Butt, Round, Square }`, `enum LineJoin { Miter (default), Bevel, Round }`, `enum TextureMode { Stretch, Tile }`, `enum TrailEffect { Lightning { .. }, Noise { .. }, UvScroll { .. }, Ribbon { .. } }`.
+- The engine draws both through the 2D batch as joined polylines (no vertex limit; translucent corners are no darker than their segments).
+
+## Debug drawing
+
+`ctx.debug_draw() -> Mut<'_, DebugDraw>` (or `ResMut<DebugDraw>` in a system): world-space shapes drawn unlit on top of the world, one screen pixel wide in every camera at any zoom.
+
+| `DebugDraw` / `DebugPen` | |
+|---|---|
+| `line(a: Vec2, b: Vec2, Color)`, `polyline(&[Vec2], Color)` | lines |
+| `rect(center: Vec2, size: Vec2, Color)`, `circle(center: Vec2, radius, Color)` | outlines |
+| `arrow(from: Vec2, to: Vec2, Color)`, `cross(at: Vec2, size, Color)` | markers (world units; the arrow's head is a few pixels) |
+| `width(pixels) -> DebugPen`, `layers(RenderLayers) -> DebugPen` | a pen with the same methods, chainable: `debug.width(3.0).layers(RenderLayers::layer(1)).circle(..)` |
+
+Shapes added in a fixed step (`update`, fixed systems) are drawn until the next step begins; shapes added elsewhere for one frame. The engine's collider, velocity and origin overlays use it.
 
 ---
 
@@ -795,7 +825,7 @@ Lights and occluders sit at their entity's `GlobalTransform`. Every camera is li
 | `SkeletalAnimator` (component) `{ animation, time, speed, playing, just_finished }` | `new(Arc<SkeletalAnimation>)`, `play`, `pause`, `reset`, `update(dt)`, `sample(&base) -> Pose` |
 | `SkeletalController` (component) | `new(Arc<SkeletalAnimation>, id, Arc<SkeletonDef>)`, `with_animation(anim, id)`, `with_transition(from, to)`, `with_bidirectional`, `with_transition_from_any`, `with_blend_duration(from, to, secs)`, `with_default_blend_duration`, `set_state(id) -> bool`, `set_state_then(id, next) -> bool`, `force_state`, `current()`, `is_blending()`, `blend_progress()`, `update(dt)`, `sample() -> Pose` |
 | `SkeletalBlender` | `new()`, `start_blend(from: Pose, duration)`, `update(dt)`, `apply(&target) -> Pose`, `is_blending()`, `blend_progress()` |
-| `skeleton_debug_lines(def: &SkeletonDef, world: &[BoneWorldTransform], bone_color, joint_color, line_width, joint_radius) -> Vec<Line2D>` | debug drawing |
+| `draw_skeleton(&mut DebugDraw, def: &SkeletonDef, world: &[BoneWorldTransform], bone_color, joint_color, width_px, joint_radius)` | debug drawing (call every update) |
 
 The engine advances each `Skeleton`'s controller (or standalone animator) every fixed step and places the bones at the entity's `GlobalTransform`.
 
@@ -809,10 +839,10 @@ The scene owns a `ParticleSystem`; emitters and attractors are components.
 |---|---|
 | `new()`, `with_seed(u64)` | |
 | `update(&mut self, world: &mut World, dt: f32)` | call in `update` |
-| `collect_for_render(&self, world: &World, collector: &mut BatchCollector)` | call in `render`: `collect_for_render(gpu.world, gpu.batch)`; particles are centred on their position, in world space |
+| `collect_for_render(&mut self, world: &World, collector: &mut BatchCollector)` | call in `render`: `collect_for_render(gpu.world, gpu.batch)`; particles are centred on their position, in world space |
 | `particle_count()`, `clear()`, `clear_emitter(Entity)` | |
 
-- `ParticleEmitter` (component; emits from its entity's `GlobalTransform`) with public fields for every setting (`mode`, `shape`, `sprite`, `enabled`, lifetime/size/color/speed/rotation ranges, `gravity`, `drag`, `z_order`, `effect`, `collision`, `layer`, `max_particles`). `new(SpriteHandle)`, `with_mode(EmissionMode)`, `with_shape(EmissionShape)`, `with_lifetime(min, max)`, `with_size(min, max)`, `with_end_size(min, max)`, `with_color(start, end)`, `with_speed(min, max)`, `with_rotation(min, max)`, `with_angular_velocity(min, max)`, `with_gravity(x, y)`, `with_drag(f32)`, `with_z_order(i32)`, `with_effect(SpriteEffect)`, `with_layer(u32)`, `with_collision(CollisionConfig)`, `with_max_particles(u32)`, `one_shot()`, `set_enabled(bool)`, `reset()`, `burst(count)`, `is_finished()`. Presets (each `(SpriteHandle) -> Self`): `fire`, `flame_small`, `smoke`, `smoke_thick`, `magic`, `magic_heal`, `rain`, `snow`, `sparks`, `dust`, `confetti`, `bubbles`, `comet_trail`, `exhaust`; `explosion(sprite, count)`, `explosion_debris(sprite, count)`.
+- `ParticleEmitter` (component; emits from its entity's `GlobalTransform`) with public fields for every setting (`mode`, `shape`, `sprite`, `enabled`, lifetime/size/color/speed/rotation ranges, `gravity`, `drag`, `z_order`, `effect`, `blend`, `filter`, `lighting`, `collision`, `layer`, `max_particles`). `new(SpriteHandle)`, `with_mode(EmissionMode)`, `with_shape(EmissionShape)`, `with_lifetime(min, max)`, `with_size(min, max)`, `with_end_size(min, max)`, `with_color(start, end)`, `with_speed(min, max)`, `with_rotation(min, max)`, `with_angular_velocity(min, max)`, `with_gravity(x, y)`, `with_drag(f32)`, `with_z_order(i32)`, `with_effect(SpriteEffect)`, `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)`, `with_layer(u32)`, `with_collision(CollisionConfig)`, `with_max_particles(u32)`, `one_shot()`, `set_enabled(bool)`, `reset()`, `burst(count)`, `is_finished()`. Presets (each `(SpriteHandle) -> Self`): `fire`, `flame_small`, `smoke`, `smoke_thick`, `magic`, `magic_heal`, `rain`, `snow`, `sparks`, `dust`, `confetti`, `bubbles`, `comet_trail`, `exhaust`; `explosion(sprite, count)`, `explosion_debris(sprite, count)`.
 - `enum EmissionMode { Continuous { rate }, Burst { count }, BurstRepeating { count, interval, repeats: Option<u32> } }`.
 - `enum EmissionShape { Point, Line { start_x, start_y, end_x, end_y }, Circle { radius, hollow }, Rectangle { width, height }, Cone { direction, spread, min_speed, max_speed } }` (radians).
 - `ParticleAttractor { attractor_type, layer_mask, enabled }` (component): `new(AttractorType)`, `point(strength, radius)`, `gravity_well(strength, radius)`, `line(x0, y0, x1, y1, strength, radius)`, `area(w, h, fx, fy)`, `vortex(strength, radius)`, `spiral(strength, radius, inward_pull)`, `turbulence(strength, scale, speed)`, `with_layer_mask(u32)`, `with_enabled(bool)`. `enum AttractorType { Point { strength, radius, falloff }, Line { .. }, Area { .. }, Vortex { .. }, Turbulence { .. } }`.

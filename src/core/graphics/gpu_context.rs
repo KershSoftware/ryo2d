@@ -98,14 +98,15 @@ impl<'a> GpuRenderContext<'a> {
     self.camera
   }
 
-  /// Add a sprite instance drawing `sprite`'s texture. Instances are in
-  /// world space (their transform's centre is a world position); for
-  /// something fixed on screen, place it with `camera().screen_to_world`.
+  /// Add a sprite instance drawing `sprite`'s texture, as `draw` says (z,
+  /// blend, filter, lighting, effects). Instances are in world space (their
+  /// transform's centre is a world position); for something fixed on
+  /// screen, place it with `camera().screen_to_world`.
   ///
   /// The texture is uploaded the first time a frame draws it, and dropped
   /// once no frame has drawn it for 600 frames. This is the low-level API
   /// for GPU sprites; most games use the higher-level ones (particles,
-  /// `GpuParallaxBackground`).
+  /// `ParallaxLayer`).
   pub fn add_sprite(&mut self, sprite: &SpriteHandle, instance: SpriteInstance, draw: SpriteDraw) {
     self.batch.add(sprite, instance, draw);
   }

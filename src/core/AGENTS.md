@@ -6,7 +6,7 @@ Most subsystems have their own AGENTS.md or a skill in `.claude/skills/`. This f
 
 - **Engine owns the loop** - `Engine::frame` (`engine/frame.rs`) runs the phases; game code runs in `Scene` callbacks and in systems added to phases, never calls update or render itself
 - **Ryo2D's ECS** - the kernel types (`World`, `Query`, `Commands`, `Resource`, `Message`, ...) are exposed directly from `ryo2d::ecs` and the prelude; `src/core/ecs/AGENTS.md` has the phases, the hierarchy and interpolation rules
-- **Resources over engine fields** - per-frame state the scenes and systems share (`Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `RenderPipeline`, `RenderTargets`, ...) are resources, inserted by `init_world_resources` (`engine/mod.rs`); renderers, the window, Kira audio and the scene stack stay engine-owned
+- **Resources over engine fields** - per-frame state the scenes and systems share (`Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `RenderPipeline`, `RenderTargets`, `DebugDraw`, ...) are resources, inserted by `init_world_resources` (`engine/mod.rs`); renderers, the window, Kira audio and the scene stack stay engine-owned
 - **Cameras are entities** - `Camera2d` + `Transform` (+ the computed `CameraView`), not a resource: viewports, render order, interpolation and per-camera visibility (`RenderLayers`) come from the ECS. The main camera (`MainCamera`) survives world cleanup; `ctx.camera()` edits it
 - **Assets via handles** - loaded through `AssetManager`, shared via `Arc`-backed handles (`SpriteHandle`)
 - **Minimal public surface** - expose only what users need via the `lib.rs` prelude; internals stay private

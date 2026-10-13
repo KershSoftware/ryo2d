@@ -121,7 +121,7 @@ Every method has a default; implement what the scene needs.
 | `on_enter(ctx)` | The scene becomes active: spawn entities, set the camera, load sounds, add systems |
 | `update(ctx, dt) -> SceneAction` | Every fixed step (`dt` is the constant timestep) while the scene is active |
 | `ui(ui, ctx) -> SceneAction` | Once per frame, **before** the fixed steps, for every visible scene bottom-up: draw UI, handle UI input |
-| `render(gpu)` | Once per frame for visible scenes: GPU-batched extras (particles, parallax) |
+| `render(gpu)` | Once per frame for visible scenes: GPU-batched extras (particles, many-sprite effects) |
 | `on_pause(ctx)` / `on_resume(ctx, returned)` | Another scene is pushed on top / the one above popped |
 | `on_exit(ctx)` | The scene leaves the stack |
 | `is_transparent()` | Scenes below are still drawn and still get `ui` (overlays, HUDs) |
@@ -334,6 +334,41 @@ return SceneAction::SwitchWith(
 - Things laid out as a grid or from a corner (backgrounds, tiles, panels) take `.with_anchor(Anchor::TopLeft)`; things that move, rotate or scale keep the centre.
 - `Renderable::tiled(..)` and composite tiles are laid out from the entity's position (the first tile's top-left), whatever the anchor.
 - Sprites: `ctx.assets.load_sprite("player.png")` (relative to `assets/`, returns a `Result`), `ctx.assets.create_sprite(Sprite::solid_rect(w, h, r, g, b, a), "name")`, `Sprite::solid_circle(..)`.
+- Crisp versus smooth: `.with_filter(Filter::Nearest)` keeps hard texels when scaled (pixel art in a smooth game), `.with_filter(Filter::Linear)` smooths (a portrait in a pixel-art game); `Filter::Default` follows the presentation. Linear sprites drawn small stay smooth (mipmaps).
+- Glows and light: `.with_blend(BlendMode::Additive)` adds light (fire, sparks, lasers); `Multiply` darkens, `Screen` lightens. `.with_lighting(false)` keeps a sprite at full brightness in the dark.
+
+Additive particles and trails:
+
+```rust
+ctx.world.spawn((
+  Transform::from_xy(x, y),
+  ParticleEmitter::sparks(spark).with_blend(BlendMode::Additive).with_lighting(false),
+));
+ctx.world.spawn((Transform::from_xy(x, y), Trail2D::laser(Color::CYAN, 3.0).with_blend(BlendMode::Additive)));
+```
+
+Parallax: one entity per layer; every camera (split screen, minimap) lays it out from its own view.
+
+```rust
+ctx.world.spawn(ParallaxLayer::new(&sky).with_z_order(-100));
+ctx.world.spawn(
+  ParallaxLayer::new(&hills).with_scroll(Vec2::splat(0.4)).with_tile(TileMode::InfiniteScroll).with_z_order(-60),
+);
+```
+
+Debug drawing (one screen pixel wide at any zoom; from `update` it lasts until the next step):
+
+```rust
+ctx.debug_draw().line(player, target, Color::RED);
+ctx.debug_draw().width(2.0).circle(enemy, sight_range, Color::YELLOW);
+
+// From a system
+fn show_paths(mut debug: ResMut<DebugDraw>, agents: Query<&Path>) {
+  for path in &agents {
+    debug.polyline(&path.points, Color::GREEN);
+  }
+}
+```
 
 ## Physics in Brief
 

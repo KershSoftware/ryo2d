@@ -43,6 +43,7 @@ impl Scene for Level {
 - `ParticleSystem::new()` is randomly seeded; `ParticleSystem::with_seed(n)` gives the same particles for the same updates (headless tests, replays).
 - `update(world, dt)` runs at the fixed rate with the `dt` `update` receives, so slow motion and pause apply.
 - Particles sort by the emitter's `z_order` (`with_z_order`, default 0) together with entities, other sprites and trails; the UI draws last.
+- `collect_for_render` takes `&mut self` (it reuses its buffers): keep the system in a field of the scene and call it from `render`.
 - Each particle is a world-space quad centred on its position, `size` world units across: every camera draws it through its own view (render layer 0), so it zooms, turns and shakes with the world.
 - `particle_count()`, `clear()` and `clear_emitter(entity)` manage live particles; call `clear()` when a scene resets the world.
 
@@ -190,6 +191,17 @@ for hit in ctx.messages::<ParticleCollision>() {
 ```rust
 .with_effect(SpriteEffect::glow_with_intensity(Color::new(100, 150, 255, 255), 6.0, 1.0))
 ```
+
+How particles draw (fields `blend`, `filter`, `lighting` on the emitter):
+
+```rust
+ParticleEmitter::sparks(spark)
+  .with_blend(BlendMode::Additive)   // fire, sparks, magic: overlapping particles add up to bright cores
+  .with_filter(Filter::Linear)       // smooth when scaled; Filter::Nearest keeps hard texels
+  .with_lighting(false)              // full brightness in the dark (glowing embers)
+```
+
+`BlendMode::Alpha` (the default) suits smoke and dust; `Multiply` darkens (soot, shadows), `Screen` lightens softly.
 
 ## Tips
 

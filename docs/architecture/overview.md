@@ -151,7 +151,7 @@ Rapier2D behind the `RapierPhysicsWorld` resource, stepped in `FixedSet::Physics
 
 ## Rendering
 
-`present_frame` builds each frame from the world by query; there is no render cache. Drawables are gathered once, in world space, and sorted once: the scenes' `Scene::render` batches, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails, lines, lights and occluders. Then each camera keeps what it sees (its `RenderLayers`, its view's bounds) and the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`) runs on one command encoder with one submit: the camera passes once per camera, then the frame passes once. The world is drawn on the GPU through each camera's view-projection matrix; only the UI is drawn on the CPU, into a buffer composited last.
+`present_frame` builds each frame from the world by query; there is no render cache. Drawables are gathered once, in world space, and sorted once: the scenes' `Scene::render` sprites, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails and lines (as joined polylines), lights and occluders; parallax layers and debug shapes are laid out per camera. Then each camera keeps what it sees (its `RenderLayers`, its view's bounds) and one 2D batch (`render/batch`) lays it into draws, and the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`) runs on one command encoder with one submit: the camera passes once per camera, then the frame passes once. The world is drawn on the GPU through each camera's view-projection matrix; only the UI is drawn on the CPU, into a buffer composited last.
 
 ```
 gather once (world space, sorted) ──→ cameras in render order: texture cameras, then window cameras (by order)
@@ -168,9 +168,9 @@ gather once (world space, sorted) ──→ cameras in render order: texture cam
 | Pass (`pass_ids`) | Scope | Draws |
 |------|-------|-------|
 | `clear` | camera | Clears the camera's image (background, a colour, or transparent so the cameras below show) |
-| `world` | camera | Entities, `Scene::render` sprites (particles, parallax) and lit trails/lines, in one z-sorted list |
+| `world` | camera | The camera's lit batch draws: entities, `Scene::render` sprites (particles), parallax, trails, lines and debug shapes, in one z-sorted list |
 | `lighting` | camera | 2D lighting with point lights and shadows, in the camera's own light buffers |
-| `unlit_world` | camera | Trails/lines with `with_lighting(false)`, by z |
+| `unlit_world` | camera | Anything `with_lighting(false)` (sprites, particles, trails, lines) and debug shapes, by z |
 | `cameras` | frame | Window cameras' own images into their viewports, in order |
 | `transition` | frame | Scene transition fade over the frame |
 | `post_process` | frame | Bloom, CRT, vignette and the other effects |
@@ -180,10 +180,13 @@ gather once (world space, sorted) ──→ cameras in render order: texture cam
 
 Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in passes or insert their own (`RenderPass::scope` picks once per frame or once per camera). See `src/core/render/AGENTS.md`.
 
-- **Cameras:** `Camera2d { zoom, projection, viewport, order, target, clear }` on an entity with a `Transform`; the engine computes each camera's `CameraView` (view-projection, bounds) from its interpolated transform and shake every frame. Every camera has one uniform buffer that sprites, trails, lights and shadows all draw through, so shake, rotation and zoom move them together. Split screen and minimaps are window cameras with viewports; `RenderTargets` gives textures that texture cameras render into (first, so a sprite showing one shows this frame's image) and `Renderable::render_target` shows.
-- **Textures:** every texture has one `TextureId` in the texture registry (sprites by handle, named pixel textures, render targets). Sprite images live in shared atlas pages; render targets are pages of their own.
-- **Batching:** consecutive sprites on one atlas page and pipeline merge into one draw; at equal z an entity draws before a `Scene::render` sprite, then trails and lines. 128 bytes per instance (affine world transform, UV rect, tint, effect parameters, UV bounds); each camera's visible sprites get a range of the instance buffer.
-- **Time in shaders:** sprite effects and custom sprite shaders animate on game elapsed time, so they stop with the game clock; post-process effects (built-in and custom), lighting, trails and transitions animate on real time. Custom shader errors are collected asynchronously and never block a frame.
+- **Cameras:** `Camera2d { zoom, projection, viewport, order, target, clear }` on an entity with a `Transform`; the engine computes each camera's `CameraView` (view-projection, bounds) from its interpolated transform and shake every frame. Every camera has one uniform buffer that the batch, lights and shadows all draw through, so shake, rotation and zoom move them together. Split screen and minimaps are window cameras with viewports; `RenderTargets` gives textures that texture cameras render into (first, so a sprite showing one shows this frame's image) and `Renderable::render_target` shows.
+- **Textures:** every texture has one `TextureId` in the texture registry (sprites by handle, named pixel textures, render targets). Sprite images live in shared atlas pages with four mip levels (8-pixel borders on an 8-pixel grid, levels averaged in linear light); large images get textures of their own with full mip chains; render targets are pages of their own. Two samplers (nearest; trilinear) and a bind group per page and sampler, made with the page.
+- **Batching:** one batch with two streams: instanced quads (128 bytes: affine world transform, UV rect, tint, effect parameters, UV bounds) and indexed triangles (trails, lines and debug shapes). Consecutive drawables with equal draw states (page, shader, blend mode, sampling) merge into one draw; at equal z an entity draws before a `Scene::render` sprite, then trails and lines. Each camera's visible quads get a range of the instance buffer.
+- **Blend and filter modes:** `BlendMode::{Alpha, Premultiplied, Additive, Multiply, Screen}` and `Filter::{Default, Nearest, Linear}` on sprites, particles, batch sprites, parallax layers, trails and lines. Every batch shader writes premultiplied colour, so each mode is one fixed blend state; `Filter::Default` is nearest for pixel art and linear otherwise.
+- **Bind groups** are made with the resources they bind (per camera, per texture page and sampler, or cached by the frame resources a pass binds), never per frame; tests count them.
+- **Debug drawing:** `ctx.debug_draw()` (`DebugDraw`) draws world-space lines, rectangles, circles, arrows and crosses one screen pixel wide in every camera, for a fixed step or a frame; the engine's overlays and `draw_skeleton` use it.
+- **Time in shaders:** sprite effects and custom sprite shaders animate on game elapsed time, so they stop with the game clock; post-process effects (built-in and custom), lighting, trail effects and transitions animate on real time. Parallax auto-scroll runs on game time. Custom shader errors are collected asynchronously and never block a frame.
 - **Sprite effects** (`SpriteEffect`, 11 built in): Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline. Custom sprite shaders through `Material`.
 - **Post-processing** (`EffectsManager`, `ctx.effects()`): Fade, ColorTint, Vignette, ScreenFlash, CRT, ChromaticAberration, GodRays, AmbientOcclusion, Bloom. Once per frame, not per camera.
 - **Lighting:** `ctx.lighting()` (`LightingSettings`: ambient, atmosphere, forced on or off); lighting turns on by itself once a `Light2D` exists and then lights every camera. The UI is never lit.
@@ -301,9 +304,9 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `engine/`, `scene/`, `schedule.rs`, `time.rs`, `input.rs`, `messages/` | The loop, scenes, phases, clocks, input, messages |
 | `systems/` | The engine's built-in schedule systems |
 | `graphics/` | Sprites, animation, cameras and shake, render targets, render layers, the screen mapping, parallax, tiled and composite rendering, the texture registry and atlas, the sprite renderer |
-| `render/` | The render pipeline, passes, the draw list and the frame's camera plan |
-| `shaders/` | Post-process effects and custom shaders |
-| `lighting/`, `trail/`, `particles/`, `skeleton/`, `tilemap/` | Feature renderers and their components |
+| `render/` | The render pipeline, passes, the draw list, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, polylines) and debug drawing |
+| `shaders/` | The engine's WGSL and its shared includes, post-process effects and custom shaders |
+| `lighting/`, `trail/`, `particles/`, `skeleton/`, `tilemap/` | Feature renderers (lighting) and components (trails and lines, particles, skeletons, tilemaps) |
 | `physics/` | Rapier integration, colliders, bodies |
 | `navigation/` | Grids, A* pathfinding, agents, steering |
 | `state_machine/` | Generic state machines and stacks |

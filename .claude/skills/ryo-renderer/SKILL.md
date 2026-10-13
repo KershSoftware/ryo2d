@@ -16,31 +16,34 @@ You help developers work on the rendering system.
 - **Pipeline**: `src/core/render/pipeline.rs`
 - **Pass Trait**: `src/core/render/pass.rs`
 - **Built-in Passes**: `src/core/render/passes/`
-- **GPU Sprites**: `src/core/graphics/sprite_gpu.rs`, the atlas (`atlas.rs`) and the texture registry (`texture_registry.rs`)
+- **The 2D batch**: `src/core/render/batch/` (`key.rs` keys and states, `plan.rs` per-camera draws, `pipelines.rs`, `gpu.rs` `Batch2D`, `polyline.rs` and `lines.rs` trails and lines), `src/core/render/debug_draw.rs`
+- **Textures**: `src/core/graphics/sprite_gpu.rs` (textures, game shader sources, `BatchCollector`, `SpriteDraw`), the atlas (`atlas.rs`) and the texture registry (`texture_registry.rs`); bind groups through `graphics/bind_groups.rs`
 - **Cameras**: `src/core/graphics/{camera2d,camera_mut,camera_gpu,camera_images,render_targets,render_layers}.rs`
 - **Screen and window**: `src/core/graphics/screen.rs` (`ScreenMapping`), `compositor.rs`
 - **Shaders**: `src/core/shaders/`
 - **Lighting**: `src/core/lighting/`
-- **Trails**: `src/core/trail/`
+- **Trails and lines**: `src/core/trail/` (components)
+- **Parallax**: `src/core/graphics/parallax.rs` (`ParallaxLayer`)
 
 ## Extraction
 
 The world is read fresh every frame; there is no render cache to invalidate. Everything is gathered once, in world space, and sorted once; each camera then keeps what it sees. `present_frame` (after `PostUpdate`) does:
 
-1. Scenes' `Scene::render(gpu)` hooks fill the `BatchCollector` (particles, parallax, many-sprite effects), in world space.
-2. Trails (world-space points), lines (at their entity) and debug overlays go into the trail renderer, grouped by lighting mode, z and `RenderLayers`; lights are gathered at their positions.
-3. The render targets' GPU textures follow `RenderTargets`; the cameras are planned (`plan_cameras`): texture cameras, then window cameras, each by `order`. The first window camera draws straight into the scene image when it covers the window and clears; every other window camera gets an image of its own, sized to its viewport (`CameraImages`); a texture camera draws straight into its target, or, when its viewport covers only part of it, into an image of its own placed in that part after its passes.
-4. Each camera gets a uniform buffer (`CameraUniforms`, one `CameraGlobals` each: `view_proj`, `resolution` = its image size, `game_time`, `real_time`, `snap`), bound as group 0 by sprites, trails, lights and shadows alike.
-5. One query over the renderables (plus `CompositeTile`) builds the frame's `DrawList`, skipping quads no camera on the entity's layers can see. `Disabled` entities are skipped by the query itself.
-6. `SpriteGpuRenderer::prepare_world` lays each camera's sprites out in a range of the instance buffer of its own (on its layers, inside its `CameraView::bounds`, not showing its own target) and uploads them once.
-7. The render pipeline runs.
+1. Scenes' `Scene::render(gpu)` hooks fill the `BatchCollector` (particles, many-sprite effects), in world space; lights are gathered at their positions.
+2. The render targets' GPU textures follow `RenderTargets`; the cameras are planned (`plan_cameras`): texture cameras, then window cameras, each by `order`. The first window camera draws straight into the scene image when it covers the window and clears; every other window camera gets an image of its own, sized to its viewport (`CameraImages`); a texture camera draws straight into its target, or, when its viewport covers only part of it, into an image of its own placed in that part after its passes.
+3. Each camera gets a uniform buffer (`CameraUniforms`, one `CameraGlobals` each: `view_proj`, `resolution` = its image size, `game_time`, `real_time`, `snap`), bound as group 0 by the batch, lights and shadows alike.
+4. The `Scene::render` sprites join the frame's `DrawList`; each `ParallaxLayer` is laid out for every camera on its layers from that camera's view (items for that camera alone, `only_camera`).
+5. One query over the renderables (plus `CompositeTile`) adds the entities, skipping quads no camera on the entity's layers can see. `Disabled` entities are skipped by the query itself.
+6. Trails and lines become joined polylines on the batch's triangle stream, one item each; `DebugDraw`'s shapes (and the overlays) are built for each camera in its own screen pixels.
+7. `Batch2D::prepare` makes the textures resident, lays each camera's lit and unlit items into draws (on its layers, inside its `CameraView::bounds`, not showing its own target) and uploads the quads and triangles once.
+8. The render pipeline runs; `world` and `unlit_world` replay the camera's draws.
 
 Placement rules:
 
 - Entities with `PreviousGlobalTransform` (the `Interpolated` marker on them or an ancestor) draw at `render_global(global, previous, time.fixed.overstep_fraction())`; everything else draws at `GlobalTransform`. Composite tiles, lights, occluders and lines on an interpolated entity are blended the same way, and so is a camera's own transform when its `CameraView` is computed.
 - A single sprite is placed by `Renderable::anchor` (default `Anchor::Center`); rotation and scale happen about the anchor. Tiled runs and composite parts are laid out from the entity's position (the first tile's top-left).
 - `YSort` sorts by the sprite's feet (`foot_offset` of the way down from its top edge, wherever the anchor is).
-- Instances carry world-space quads (centre, size, rotation); the camera's `view_proj` takes them to its image. In pixel-art mode the sprite vertex shader snaps axis-aligned quads to whole target pixels (`snap`); sampling is nearest there and linear otherwise.
+- Instances carry world-space quads (centre, size, rotation); the camera's `view_proj` takes them to its image. In pixel-art mode the sprite vertex shader rounds an axis-aligned quad's top-left and size to whole target pixels once (`snap`), so it keeps its width as it moves. A drawable's `Filter::Default` samples nearest there and linear (mipmapped) otherwise.
 - Sprite effects and a custom sprite shader's `in.time` run on game time; lighting, trails, transitions and post-process effects (including a custom effect's `in.time`) use real time.
 
 ## Rendering Pipeline
@@ -50,9 +53,9 @@ Every frame runs through the engine's `RenderPipeline` (`src/core/render/`), bui
 ```
 per camera (PassScope::Camera):
 clear         the camera's image, per CameraClear (Background, Color, or transparent for None)
-world         its entities, Scene::render sprites (particles, parallax) and lit trails/lines, one z-sorted list
+world         its lit batch draws: entities, Scene::render sprites, parallax, trails, lines, one z-sorted list
 lighting      lights and shadows into its light buffer, composed with its image (lit in place for an image of its own)
-unlit_world   its trails and lines with `with_lighting(false)`, by z, full brightness
+unlit_world   its unlit batch draws (anything `with_lighting(false)`, debug shapes), by z, full brightness
 
 per frame (PassScope::Frame):
 cameras       window cameras' own images into their viewports, in order (None blends over); clears the scene image first when no camera drew straight into it
@@ -67,7 +70,7 @@ Gotchas:
 - The UI is only composited if the `ui` pass uploaded it this frame. A requested capture is only read back if the `capture` pass ran; otherwise it reports an error.
 - Scene images (game, lit, post-process) have the render size: the window's physical size, or the pixel-art target. A window camera's own image is its viewport's part of it.
 - Per-camera GPU state (uniforms, bind groups, images, light targets) exists only for live cameras and goes with them.
-- Passes are thin: GPU pipelines live in the subsystem renderers (lighting, trails, post-process, ...), and the passes just call them.
+- Passes are thin: GPU pipelines live in the subsystem renderers (the batch, lighting, post-process, ...), and the passes just call them.
 
 ### RenderPass Trait
 
@@ -117,13 +120,22 @@ For screen-wide effects written in WGSL, use a custom post-process effect (see C
 
 ## Draw Order
 
-Everything in the world draws on the GPU in one z-sorted list, which each camera filters by `RenderLayers` and its view: entities (`Renderable`, `CompositeTile`, shadows), `Scene::render` sprites (particles, parallax) and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then `Scene::render` sprite, then trail/line; within a kind, in submission order. Consecutive sprites on one atlas page merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top.
+Everything in the world draws on the GPU in one z-sorted list, which each camera filters by `RenderLayers` and its view: entities (`Renderable`, `CompositeTile`, shadows), `Scene::render` sprites (particles), parallax layers and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then sprite (`Scene::render`, parallax), then trail/line; within a kind, in submission order. Consecutive drawables with equal draw states merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top.
 
-Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `Trail2D` and `Line2D` have `with_z_order` (default 0). `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; sprites, particles and trails at the same z draw after the layer's entities. `skeleton_debug_lines` draw on top. Debug overlays are unlit lines on top; the transition fade covers the world (including trails) but not the UI. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
+Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; sprites, particles and trails at the same z draw after the layer's entities. Debug shapes (`DebugDraw`, the overlays, `draw_skeleton`) are unlit on top at `i32::MAX`; the transition fade covers the world but not the UI. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
+
+## The 2D Batch
+
+- **Streams.** Instanced quads (`SpriteInstance`, 128 bytes, remapped into its atlas slot) and indexed triangles (`Vertex2D`, 72 bytes). Each is written once per frame into a buffer that doubles when needed.
+- **Keys.** Every item resolves to a `DrawState`: page (atlas page, standalone texture or render target; none for untextured lines), `BatchShader` (`Sprite`, `SpriteEffect`, `Custom(source)`, `Line`, `LineTextured`), `BlendMode`, `Sampling`, scissor. `plan_draws` merges consecutive equal states per camera (triangles also need adjacent index ranges).
+- **Blend modes.** Every batch shader outputs premultiplied colour, so each `BlendMode` is one fixed blend state (`pipelines::blend_state`): Alpha and Premultiplied `(One, OneMinusSrcAlpha)`; Additive `(One, One)`; Multiply `(Dst, OneMinusSrcAlpha)`; Screen `(OneMinusDst, One)`; the last three keep the destination's alpha. `Premultiplied` uses the shader entries that take a texture's colour as it is (`fs_*_premultiplied`).
+- **Pipelines** are made on first use per `(BatchShader, BlendMode, Stream, format)`; a custom shader gets one per blend it is drawn with, checked without blocking.
+- **Bind groups are made with their resource**, never per frame: one per camera, one per texture page and sampler. Make every bind group through `graphics::bind_groups::create` (a guard test fails on any other `create_bind_group`); `steady_frames_create_no_bind_groups` counts them. Frame-resource passes (compositor, post-process, lighting) keep a `BindGroupCache` keyed by the resources they bind.
+- **Polylines.** `Triangles::polyline` builds trails, lines and debug shapes: a strip sharing its edge vertices, one wedge per corner on the outside (miter, bevel or round, fanned from the corner point), caps at open ends. `v` runs 0..1 across, `across` is the perpendicular for displacement effects. `line.wgsl` styles them (Solid with pixel-coverage edges, Soft, Glow) and displaces them (Lightning, Noise, Ribbon; UV scroll).
 
 ### Texture Atlas and Fidelity
 
-Every texture the renderer draws has one `TextureId` in the `TextureRegistry` (sprites by handle, named pixel textures such as the shadow ellipse, and render targets). Sprite images are packed into shared atlas pages (2048x2048, 1-px extruded border); images over 256 px get their own texture. UVs outside a sprite's own rect are transparent, so there is no UV wrapping. Unused entries are evicted and re-uploaded automatically. Render targets are pages of their own (`SlotPage::Target`): cameras draw into an sRGB view, sprites sample an `Rgba8Unorm` view like the atlas pages; they are never evicted. Tint and effects run in sRGB space, quantised like the old CPU path, so opaque tinted pixels look as before; translucent overlaps blend in linear space and may look slightly different. Outline, glow and directional outline draw outside the sprite. Blob and contact shadows are a tinted ellipse; drop shadows are the sprite's silhouette. `DebugStats::draw_calls` counts the world draws of every camera.
+Every texture the renderer draws has one `TextureId` in the `TextureRegistry` (sprites by handle, named pixel textures such as the shadow ellipse, and render targets). Sprite images are packed into shared atlas pages (2048x2048, four mip levels); each slot starts on an 8-pixel grid with an 8-pixel extruded border, so no level bleeds a neighbour. Images over 256 px get their own texture with a full mip chain. Mip levels are averaged on the CPU in linear light (weighted by alpha) when a texture is uploaded. Two samplers (nearest at level 0; trilinear) with a bind group per page each; fragment entries take the UV derivatives first and sample by gradient. UVs outside a sprite's own rect are transparent; only textured trails and lines repeat their texture, inside its slot (`sample_wrapped`). Unused entries are evicted and re-uploaded automatically. Render targets are pages of their own (`SlotPage::Target`): cameras draw into an sRGB view, sprites sample an `Rgba8Unorm` view like the atlas pages; they are never evicted. Their contents are premultiplied, so `Renderable::render_target` blends `Premultiplied`. Tint and effects run in sRGB space, quantised like the old CPU path, so opaque tinted pixels look as before; translucent overlaps blend in linear space and may look slightly different. Outline, glow and directional outline draw outside the sprite. Blob and contact shadows are a tinted ellipse; drop shadows are the sprite's silhouette. `DebugStats::draw_calls` counts the world draws of every camera.
 
 ### Resolution and the window
 
@@ -133,14 +145,19 @@ Every texture the renderer draws has one `TextureId` in the `TextureRegistry` (s
 
 Custom shader compilation never blocks the frame: errors are collected asynchronously and a failed sprite shader draws plain (with a warning). GPU setup failures are `GpuError`s (`NoAdapter`, `RequestDevice`, `CreateSurface`, `DeviceLost`). The engine builds for `wasm32` on WebGPU: `./dev.sh web <demo>` serves a demo with trunk (only demos with an `index.html` and `Trunk.toml`, such as `lighting`).
 
-## Background Rendering
+## Parallax
 
-Games render parallax and background layers via the GPU path:
+Parallax layers are components, one entity per layer, laid out for every camera on their layers from its own view:
 
 ```rust
-fn render(&mut self, gpu: &mut GpuRenderContext) {
-  self.background.render(gpu);
-}
+ctx.world.spawn(ParallaxLayer::new(&sky).with_z_order(-100));
+ctx.world.spawn(
+  ParallaxLayer::new(&hills)
+    .with_scroll(Vec2::splat(0.3))
+    .with_tile(TileMode::InfiniteScroll)
+    .with_auto_scroll(Vec2::new(20.0, 0.0))
+    .with_z_order(-80),
+);
 ```
 
 Give parallax layers a negative z (e.g. -100..-20) so they sit behind entities at z 0 and above.
@@ -156,12 +173,13 @@ fn render(&mut self, gpu: &mut GpuRenderContext) {
     // Centre and size in world units
     let instance = SpriteInstance::new()
       .with_transform(particle.x, particle.y, particle.rotation, particle.size, particle.size);
-    gpu.add_sprite_instance(&self.particle_sprite, instance, particle.z_order, false);
+    let draw = SpriteDraw { z: particle.z_order, blend: BlendMode::Additive, ..Default::default() };
+    gpu.add_sprite(&self.particle_sprite, instance, draw);
   }
 }
 ```
 
-`gpu` also carries `world` (read-only) and `camera()` (the main camera's `CameraView`; to fix something on screen, place it with `camera().screen_to_world`). Sprites are batched by texture and effect type. Positions are world space, on render layer 0; nothing here is interpolated, so move particles in `update` and draw where they are.
+`gpu` also carries `world` (read-only) and `camera()` (the main camera's `CameraView`; to fix something on screen, place it with `camera().screen_to_world`). `SpriteDraw` carries z, blend, filter, lighting and whether the instance has an effect. Positions are world space, on render layer 0; nothing here is interpolated, so move particles in `update` and draw where they are.
 
 ## WGSL Shaders
 
@@ -169,9 +187,10 @@ Located in `src/core/shaders/`:
 
 | File | Purpose |
 |------|---------|
-| `core/sprite.wgsl` | Sprite rendering, including per-sprite effects |
+| `include/*.wgsl` | Shared: `camera.wgsl`, `color.wgsl`, `sample.wgsl`, `fullscreen.wgsl` (composed by `compose.rs` at compile time) |
+| `core/sprite.wgsl` | Sprites (batch quads), including per-sprite effects and premultiplied entries |
+| `core/line.wgsl` | Trails, lines and debug shapes (batch triangles) |
 | `core/light.wgsl`, `shadow.wgsl`, `raymarch_shadow.wgsl` | Lighting and shadows |
-| `core/trail.wgsl`, `trail_textured.wgsl` | Trails |
 | `core/camera_image.wgsl` | A window camera's own image placed in its viewport |
 | `core/fullscreen_quad.wgsl` | The final composite (and sRGB encoding when the surface is not sRGB) |
 | `post-process/*.wgsl` | Screen-wide effects (one file per effect) |
@@ -186,7 +205,8 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
 
 @fragment
 fn fs_base(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(sprite_texture, sprite_sampler, in.uv) * in.tint;
+    take_derivatives(in.uv);  // first, while control flow is uniform
+    return finish(sample_sprite(in.uv, in.uv_bounds), in.tint);  // tinted, linear, premultiplied
 }
 ```
 
@@ -202,7 +222,7 @@ Post-process effect: see `src/core/shaders/AGENTS.md` (`effects.rs`, `post-proce
 
 ## Custom Shaders
 
-Games write WGSL; the engine wraps it with a prelude and a generated entry point (`src/core/shaders/custom.rs`). Load with `assets.load_shader("shaders/x.wgsl")` (cached by path; only IO errors are `Err`, so `match` it). `ShaderHandle::from_source(id, wgsl)` makes an inline shader and `handle.replace_source(..)` updates it. Handles with the same source share one compiled pipeline (and one error report), so only the first compiles; cloning one handle is still cheapest.
+Games write WGSL; the engine wraps it with a prelude and a generated entry point (`src/core/shaders/custom.rs`). Load with `assets.load_shader("shaders/x.wgsl")` (cached by path; only IO errors are `Err`, so `match` it). `ShaderHandle::from_source(id, wgsl)` makes an inline shader and `handle.replace_source(..)` updates it. Handles with the same source share one compiled source (and one error report), so only the first compiles; the batch makes a pipeline per blend mode it is drawn with. Cloning one handle is still cheapest.
 
 ### Sprite shader
 
@@ -222,7 +242,7 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 
 WGSL alignment applies: a `vec3<f32>` member takes 16 bytes of alignment, so `{ a: vec3<f32>, b: vec3<f32> }` is 32 bytes. Put `f32`s after a `vec3` to pack tightly (as `edge`/`amount` above do).
 
-Without a `Params` struct the engine supplies `struct Params { unused: f32 }`. The function works in the sprite's sRGB values (straight alpha); the engine applies the tint, rounding and linear conversion afterwards. Custom shaders draw within the sprite's quad. Shadows and tiled tiles draw plain.
+Without a `Params` struct the engine supplies `struct Params { unused: f32 }`. The function works in the sprite's sRGB values (straight alpha); the engine applies the tint, rounding, linear conversion and premultiplication afterwards. Custom shaders draw within the sprite's quad. Shadows and tiled tiles draw plain.
 
 ```rust
 if let Ok(handle) = ctx.assets.load_shader("shaders/dissolve.wgsl") {
@@ -230,7 +250,7 @@ if let Ok(handle) = ctx.assets.load_shader("shaders/dissolve.wgsl") {
     let fx = SpriteShader::custom(handle).with_param("amount", 0.4).with_param("edge", Color::rgb(255, 120, 0));
     Renderable::sprite(sprite).with_shader(fx);   // or a Material component (wins over Renderable::shader)
 }
-// Scene::render: gpu.add_custom_sprite(&sprite, &handle, &params, instance, z_order);
+// Scene::render: gpu.add_custom_sprite(&sprite, &handle, &params, instance, SpriteDraw::default());
 ```
 
 `ParamValue` is `F32`/`Vec2`/`Vec3`/`Vec4`/`Color`, with `From` for `f32`, `glam::Vec2/3/4` and `Color`. A `Color` fills a `vec3<f32>` field with rgb or a `vec4<f32>` field with rgba. A name the shader does not declare, or a value of the wrong type, is warned about and ignored; a declared param never set is zero.
@@ -284,7 +304,7 @@ fx.set_sepia(0.5);
 
 ## Synchronization
 
-Write every instance buffer (`queue.write_buffer`) before beginning the render pass that draws from it; the sprite renderer uploads the whole draw list in `prepare_world` (during extraction), then the `world` pass records the draws.
+Write every buffer (`queue.write_buffer`) before beginning the render pass that draws from it; the batch uploads the frame's quads and triangles in `Batch2D::prepare` (during extraction), then the `world` and `unlit_world` passes record the draws.
 
 ## Tips
 

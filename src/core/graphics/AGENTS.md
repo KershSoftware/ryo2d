@@ -1,15 +1,17 @@
 # AGENTS.md - Graphics Module
 
-The renderers the render passes call (`WgpuRenderer`, `SpriteGpuRenderer`, the compositor, camera images), the screen mapping, cameras and render targets, sprites, sprite animation, tiles and parallax. The frame itself (extraction, draw order, placement, passes) is described in `src/core/render/AGENTS.md`.
+The renderers the render passes call (`WgpuRenderer`, `SpriteGpuRenderer` (textures and game shader sources), the compositor, camera images), the screen mapping, cameras and render targets, sprites, sprite animation, tiles and parallax. The frame itself (extraction, draw order, placement, passes) and the 2D batch that draws the world are described in `src/core/render/AGENTS.md`.
 
 ## Rendering
 
 ```
 World (queried each frame):
   Renderable / CompositeTile ─→ EntityDrawer ────────┐
-  Scene::render(gpu) ─→ BatchCollector ──────────────┼→ DrawList (z-sorted, world space)
-  Trail2D / Line2D ─→ TrailRenderer ─────────────────┘        │
-Cameras (Camera2d + CameraView) ─→ plan_cameras ──→ per camera: its sprites (layers, bounds)
+  Scene::render(gpu) ─→ BatchCollector ──────────────┤
+  ParallaxLayer ─→ laid out per camera ──────────────┼→ DrawList (z-sorted, world space)
+  Trail2D / Line2D ─→ polylines (triangles) ─────────┤        │
+  DebugDraw ─→ polylines per camera ─────────────────┘        │
+Cameras (Camera2d + CameraView) ─→ plan_cameras ──→ per camera: Batch2D draws (layers, bounds)
                                                      → its image → cameras pass → scene image
 UI:
   Scene::ui(ui, ctx) ─→ UiContext ─→ UI buffer ─→ composited last
@@ -43,24 +45,25 @@ Every camera has one uniform buffer (`camera_gpu.rs`: `CameraGlobals { view_proj
 
 ## GPU Sprite Batching
 
-- `BatchCollector` keeps each `Scene::render` sprite in submission order (texture id shared per texture) and pushes them into the `DrawList`. There are no per-texture batches: `SpriteGpuRenderer::prepare_world` merges **consecutive** sprites on one atlas page and pipeline into one draw, so many small textures still cost few draws.
+- `BatchCollector` keeps each `Scene::render` sprite in submission order (texture id shared per texture) with its `SpriteDraw` (z, blend, filter, lit, effects) and pushes them into the `DrawList`. There are no per-texture batches: the batch (`render/batch`) merges **consecutive** drawables with equal draw states (page, shader, blend, sampling) into one draw, so many small textures still cost few draws.
 - Sprites pass their `SpriteHandle`; its texture is registered and uploaded the first time a frame draws it, and dropped once no frame has drawn it for 600 frames. Two handles are two textures, whatever their names.
-- **Synchronization**: all instance data is written to the instance buffer **before** the render pass begins (`prepare_world`), so the GPU never reads a buffer still being written. Each camera's sprites have a range of their own; each draw binds `instance_buffer.slice(offset..end)`.
+- `SpriteGpuRenderer` keeps the textures (registry, atlas, names) and compiles game sprite shaders to WGSL (`shade_custom`); the batch makes their pipelines. It makes the frame's textures resident in `prepare_textures` before the batch lays the frame out.
 
 ## Texture Atlas and Shading
 
 - Every texture has one `TextureId` in the `TextureRegistry` (`texture_registry.rs`): sprites by handle, named pixel textures, and render targets (`TextureSource::Target`, never uploaded, evicted or packed).
-- Sprite images are packed into shared atlas pages (2048x2048, up to 8, 1-px extruded border so scaling never bleeds neighbours). Images over 256 px get their own texture. Games keep their texture ids and normalized UVs; UVs outside a sprite's own rect are transparent (there is no UV wrapping). When every page is full, the least recently used page that nothing drew from this frame is cleared in one go (scattered single evictions rarely free a large enough rect, since the bucketed allocator reclaims space a bucket at a time); only if every page was drawn from this frame are single entries evicted, least recently used first. Every 60 frames, entries unused for 300 frames are freed and empty pages at the end are released. Textures uploaded by id (`render` sprites, particles, parallax) that are neither uploaded nor drawn for 600 frames are dropped with their pixels; entity sprites follow their own 600-frame rule.
+- Sprite images are packed into shared atlas pages (2048x2048, up to 8). Each slot starts on an 8-pixel grid with an 8-pixel extruded border, so no level of the pages' four mip levels bleeds a neighbour. Images over 256 px get their own texture with a full mip chain. Mip levels are made on the CPU when a texture is uploaded (and re-uploaded on hot reload), averaging 2x2 texels in linear light weighted by alpha.
+- Two samplers, made once: nearest (level 0 only) and linear (trilinear). Every page, standalone texture and render target has a bind group per sampler, made with the page; a drawable's `Filter` resolves for the presentation (`Default`: nearest for pixel art, linear otherwise) and picks one. Games keep their texture ids and normalized UVs; UVs outside a sprite's own rect are transparent (there is no UV wrapping). When every page is full, the least recently used page that nothing drew from this frame is cleared in one go (scattered single evictions rarely free a large enough rect, since the bucketed allocator reclaims space a bucket at a time); only if every page was drawn from this frame are single entries evicted, least recently used first. Every 60 frames, entries unused for 300 frames are freed and empty pages at the end are released. Textures uploaded by id (`render` sprites, particles, parallax) that are neither uploaded nor drawn for 600 frames are dropped with their pixels; entity sprites follow their own 600-frame rule.
 - Tint and effects are computed in sRGB space and quantised to 8 bits, as a CPU blit would; translucent overlaps blend in linear space. Outline, glow and directional outline draw outside the sprite.
 - Blob and contact shadows are one tinted ellipse texture; drop shadows are the sprite's silhouette.
-- Render targets are atlas pages of their own (`SlotPage::Target`): an `Rgba8UnormSrgb` texture cameras draw into, sampled by sprites through an `Rgba8Unorm` view (raw sRGB bytes, like the pages), so a sprite showing a target draws through the ordinary sprite runs.
-- Debug overlays (colliders, velocities, origins) are unlit lines on top, on render layer 0. `DebugStats::draw_calls` counts the world draws of every camera.
+- Render targets are atlas pages of their own (`SlotPage::Target`): an `Rgba8UnormSrgb` texture cameras draw into, sampled by sprites through an `Rgba8Unorm` view (raw sRGB bytes, like the pages), so a sprite showing a target draws through the ordinary sprite path. What a camera draws into a target is premultiplied, so `Renderable::render_target` defaults to `BlendMode::Premultiplied`.
+- Debug overlays (colliders, velocities, origins) are `DebugDraw` shapes, one screen pixel wide on top. `DebugStats::draw_calls` counts the world draws of every camera.
 
 ## Parallax
 
-- A builder-driven object (`GpuParallaxBackground`), not ECS components: layers are one cohesive visual, and render-time tiling is cheaper than spawning duplicate entities. The scene owns it, calls `update(dt)` and draws it with `render(gpu)` from `Scene::render`.
+- `ParallaxLayer` is a component (`parallax.rs`): spawn one entity per layer. At extraction each layer is laid out for every camera on its `RenderLayers` from that camera's own view (`layout`, at most `MAX_PARALLAX_TILES` quads), and its quads join the draw list as sprites seen by that camera alone (`only_camera`), so split screen and minimaps each get their own parallax.
+- `scroll` (per axis) is how far it moves with the camera (0 fixed on screen, 1 in the world); `auto_scroll` advances `scrolled` on game time (`advance_parallax`, `PostUpdateSet::Extract`); `offset` places it on screen; `tile` repeats it horizontally.
 - Layers draw at their `z_order` among the entities; they sit behind them only if their z is below the entities' (the examples use -100..-20).
-- Layers follow the main camera on both axes, scaled by its zoom and turned with it; other cameras see them where the main camera put them.
 
 ## Camera Shake
 
