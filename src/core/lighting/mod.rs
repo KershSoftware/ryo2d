@@ -198,6 +198,7 @@
 
 mod ambient;
 mod atmosphere;
+mod god_rays;
 mod light;
 mod occluder;
 mod renderer;
@@ -207,6 +208,7 @@ mod volumetric;
 
 pub use ambient::AmbientLight;
 pub use atmosphere::{Atmosphere, GodRaysQuality};
+pub(crate) use god_rays::update_god_rays;
 pub use light::Light2D;
 pub use occluder::LightOccluder2D;
 pub use renderer::{LightingParams, LightingRenderer, MAX_LIGHTS};

@@ -97,7 +97,7 @@ impl Scene for BrightLine {
     }
     spawn_sprite(ctx, Sprite::from_rgba(pixels, 64, 64), "line");
     if self.bloom {
-      ctx.effects().set_bloom(1.0);
+      ctx.effects().set_bloom_custom(0.5, 1.0, 5.0, 2);
     }
   }
 
@@ -123,6 +123,58 @@ fn bloom_blurs_horizontally() {
     bloomed > plain + 5,
     "bloom must spread light sideways (plain {plain}, bloomed {bloomed})"
   );
+}
+
+/// A black frame with a 2-px white vertical line at x = 32 drawn `layers`
+/// times additively, under default bloom.
+struct GlowingLine {
+  layers: u32,
+}
+
+impl Scene for GlowingLine {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let black = SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 0, 0, 0, 255), "glow-black");
+    ctx
+      .world
+      .spawn((Transform::from_xy(32.0, 32.0), Renderable::sprite(black)));
+    let line = SpriteHandle::from_sprite(Sprite::solid_rect(2, 64, 255, 255, 255, 255), "glow-line");
+    for z in 1..=self.layers as i32 {
+      ctx.world.spawn((
+        Transform::from_xy(33.0, 32.0),
+        Renderable::sprite(line.clone())
+          .with_z_order(z)
+          .with_blend(BlendMode::Additive),
+      ));
+    }
+    ctx.effects().set_bloom(1.0);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+/// The red byte 3 px right of the line.
+fn glow_beside(scene: impl Scene + 'static) -> Option<u8> {
+  let mut engine = engine(scene)?;
+  engine.step_frames(2).unwrap();
+  Some(engine.frame().unwrap().get_pixel(37, 32).0[0])
+}
+
+#[test]
+fn plain_white_does_not_bloom_by_default() {
+  let Some(glow) = glow_beside(GlowingLine { layers: 1 }) else {
+    return;
+  };
+  assert!(glow <= 2, "white is not above the default threshold: {glow}");
+}
+
+#[test]
+fn light_above_white_blooms_by_default() {
+  let Some(glow) = glow_beside(GlowingLine { layers: 3 }) else {
+    return;
+  };
+  assert!(glow > 20, "three layers of white glow: {glow}");
 }
 
 /// `BrightLine` with bloom (threshold 0.5) and the display stage switched off.

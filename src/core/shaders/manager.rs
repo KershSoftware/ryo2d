@@ -487,7 +487,7 @@ impl EffectsManager {
   /// Enable bloom effect with custom settings
   ///
   /// # Arguments
-  /// * `threshold` - Brightness cutoff (0.0 - 1.0)
+  /// * `threshold` - Brightness cutoff, luminance in linear light, 0 or more; 1.0 is white, so only light brighter than white passes
   /// * `intensity` - Glow strength (0.0 - 5.0)
   /// * `radius` - Blur spread (1.0 - 20.0)
   /// * `blur_passes` - Quality level (1 - 5, each pass = H+V blur)

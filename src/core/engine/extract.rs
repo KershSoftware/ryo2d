@@ -115,7 +115,14 @@ impl Engine {
         lighting.set_ambient(*settings.ambient());
         lighting.set_atmosphere(settings.atmosphere().clone());
         let mut effects = self.world.resource_mut::<EffectsManager>();
-        lighting.update_god_rays(&mut effects, &lights, &camera);
+        let lights_at = lights.iter().map(|(position, light)| (*position, light));
+        crate::core::lighting::update_god_rays(
+          &mut effects,
+          lights_at,
+          &camera,
+          rend.screen_size(),
+          lighting.atmosphere(),
+        );
       }
 
       // The render targets' textures, then the cameras in render order and

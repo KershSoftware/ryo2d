@@ -10,7 +10,6 @@ use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
 use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
 use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::render::CameraDraw;
-use crate::core::shaders::EffectsManager;
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
@@ -1320,45 +1319,6 @@ impl LightingRenderer {
   /// Get the light texture view (for debugging or custom effects).
   pub fn light_texture_view(&self) -> &wgpu::TextureView {
     &self.targets.light_view
-  }
-
-  /// Update the god rays post-process effect with positions from lights that contribute.
-  ///
-  /// This method filters lights with `contributes_to_god_rays()` enabled, converts their
-  /// world positions to screen UV coordinates, and updates the EffectsManager.
-  ///
-  /// # Arguments
-  /// * `effects` - The effects manager to update
-  /// * `lights` - Slice of (transform, light) pairs
-  /// * `camera_pos` - Camera position in world space
-  /// * `camera_zoom` - Camera zoom level
-  pub fn update_god_rays(
-    &self,
-    effects: &mut EffectsManager,
-    lights: &[(Vec2, Light2D)],
-    view: &CameraView,
-  ) {
-    // Filter lights that contribute to god rays and convert to screen UV
-    let positions: Vec<(f32, f32)> = lights
-      .iter()
-      .filter(|(_, light)| light.contributes_to_god_rays())
-      .take(4) // Shader supports max 4 lights
-      .map(|(position, _)| {
-        // Where the camera shows the light, as a UV of its rectangle
-        let uv = (view.world_to_screen(*position) - view.rect_min) / view.rect_size;
-        (uv.x, uv.y)
-      })
-      .collect();
-
-    if !positions.is_empty() {
-      if !effects.has_god_rays() {
-        effects.set_god_rays(0.8, positions);
-      } else {
-        effects.update_god_rays_lights(positions);
-      }
-    } else if effects.has_god_rays() {
-      effects.disable_god_rays();
-    }
   }
 
   /// Compose the lit scene from a texture view (instead of pixel data).

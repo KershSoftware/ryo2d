@@ -82,7 +82,7 @@ pub enum PostProcessEffect {
     density: f32,
     /// Weight per sample (0.0 - 1.0)
     weight: f32,
-    /// Brightness threshold for contribution (0.0 - 1.0)
+    /// Brightness threshold: luminance in linear light, 0 or more; 1.0 is white, so only light brighter than white passes
     threshold: f32,
     /// Light positions in screen UV space (0-1), max 4 lights
     /// Format: [(x, y), ...] where each position is a light
@@ -107,7 +107,7 @@ pub enum PostProcessEffect {
   /// Extracts bright areas of the scene and blurs them to create a soft glow.
   /// This is a multi-pass effect (extract -> blur -> composite).
   Bloom {
-    /// Brightness threshold for extraction (0.0 - 1.0)
+    /// Brightness threshold: luminance in linear light, 0 or more; 1.0 is white, so only light brighter than white passes
     threshold: f32,
     /// Glow strength (0.0 - 5.0)
     intensity: f32,
@@ -266,7 +266,7 @@ impl PostProcessEffect {
       decay: decay.clamp(0.8, 0.999),
       density: density.clamp(0.1, 3.0),
       weight: 0.5,
-      threshold: threshold.clamp(0.0, 1.0),
+      threshold: threshold.max(0.0),
       light_positions,
     }
   }
@@ -304,7 +304,7 @@ impl PostProcessEffect {
   /// * `intensity` - Glow strength (0.0 - 5.0)
   pub fn bloom(intensity: f32) -> Self {
     Self::Bloom {
-      threshold: 0.7,
+      threshold: 1.0,
       intensity: intensity.clamp(0.0, 5.0),
       radius: 5.0,
       blur_passes: 2,
@@ -314,13 +314,13 @@ impl PostProcessEffect {
   /// Create a bloom effect with custom settings
   ///
   /// # Arguments
-  /// * `threshold` - Brightness cutoff (0.0 - 1.0)
+  /// * `threshold` - Brightness cutoff, luminance in linear light, 0 or more; 1.0 is white, so only light brighter than white passes
   /// * `intensity` - Glow strength (0.0 - 5.0)
   /// * `radius` - Blur spread (1.0 - 20.0); each pass blurs with sigma of about 1.7 x radius pixels
   /// * `blur_passes` - Quality level (1 - 5, each pass = H+V blur)
   pub fn bloom_custom(threshold: f32, intensity: f32, radius: f32, blur_passes: u32) -> Self {
     Self::Bloom {
-      threshold: threshold.clamp(0.0, 1.0),
+      threshold: threshold.max(0.0),
       intensity: intensity.clamp(0.0, 5.0),
       radius: radius.clamp(1.0, 20.0),
       blur_passes: blur_passes.clamp(1, 5),
@@ -588,7 +588,7 @@ mod tests {
 
   #[test]
   fn bloom_clamps_parameters() {
-    let effect = PostProcessEffect::bloom_custom(2.0, 10.0, 50.0, 10);
+    let effect = PostProcessEffect::bloom_custom(-2.0, 10.0, 50.0, 10);
     if let PostProcessEffect::Bloom {
       threshold,
       intensity,
@@ -596,7 +596,7 @@ mod tests {
       blur_passes,
     } = effect
     {
-      assert!((threshold - 1.0).abs() < 0.001);
+      assert_eq!(threshold, 0.0);
       assert!((intensity - 5.0).abs() < 0.001);
       assert!((radius - 20.0).abs() < 0.001);
       assert_eq!(blur_passes, 5);
@@ -636,5 +636,24 @@ mod tests {
     assert!((params.light_pos_01[2] - 0.3).abs() < 0.001);
     assert!((params.light_pos_01[3] - 0.4).abs() < 0.001);
     assert!((params.params2[2] - 2.0).abs() < 0.001); // num_lights
+  }
+
+  #[test]
+  fn god_rays_pack_their_light_positions() {
+    let effect = PostProcessEffect::god_rays(0.8, vec![(0.2, 0.3), (0.7, 0.8)]);
+    let params = GodRaysParams::from_effect(&effect, 0.0, 64, 64);
+    assert_eq!(params.light_pos_01, [0.2, 0.3, 0.7, 0.8]);
+  }
+
+  #[test]
+  fn bloom_thresholds_are_unbounded_above() {
+    let PostProcessEffect::Bloom { threshold, .. } = PostProcessEffect::bloom(1.0) else {
+      unreachable!()
+    };
+    assert_eq!(threshold, 1.0);
+    let PostProcessEffect::Bloom { threshold, .. } = PostProcessEffect::bloom_custom(3.0, 1.0, 5.0, 2) else {
+      unreachable!()
+    };
+    assert_eq!(threshold, 3.0);
   }
 }

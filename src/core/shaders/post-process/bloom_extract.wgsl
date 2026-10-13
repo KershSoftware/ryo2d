@@ -1,5 +1,5 @@
-// Bloom extract pass - extracts bright pixels above luminance threshold
-// Uses soft knee to prevent hard edges at the threshold boundary.
+// Bloom extract pass - extracts light above a linear luminance threshold
+// (1.0 is white), eased in over the half threshold above it, never clamped.
 // Writes a half-resolution image: each output texel averages the 2x2 scene
 // texels under it, thresholded one by one so thin bright lines survive.
 
@@ -18,12 +18,12 @@ fn luminance(color: vec3<f32>) -> f32 {
     return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-// The bright part of one scene texel, with a soft knee from threshold-0.1
-// to threshold+0.1
+// The bright part of one scene texel: light whose luminance passes
+// `threshold`, eased in over the half threshold above it, never clamped
 fn bright(uv: vec2<f32>, threshold: f32) -> vec3<f32> {
-    let color = textureSampleLevel(t_input, s_input, uv, 0.0);
-    let knee = 0.1;
-    return color.rgb * smoothstep(threshold - knee, threshold + knee, luminance(color.rgb));
+    let color = min(textureSampleLevel(t_input, s_input, uv, 0.0).rgb, vec3<f32>(65504.0));
+    let knee = max(threshold * 0.5, 1e-4);
+    return color * smoothstep(threshold, threshold + knee, luminance(color));
 }
 
 @fragment

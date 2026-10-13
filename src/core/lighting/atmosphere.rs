@@ -51,8 +51,8 @@ pub struct Atmosphere {
   pub god_rays_decay: f32,
   /// God rays intensity multiplier
   pub god_rays_intensity: f32,
-  /// Brightness threshold for god rays (0.0 - 1.0)
-  /// Only pixels brighter than this contribute to rays
+  /// Brightness threshold for god rays: luminance in linear light, 0 or more; 1.0 is white, so only light brighter than white passes
+  /// Only light brighter than this contributes to rays
   pub god_rays_threshold: f32,
 }
 
@@ -174,7 +174,7 @@ impl Atmosphere {
     self.god_rays_intensity = intensity.clamp(0.0, 2.0);
     self.god_rays_samples = samples.clamp(4, 64);
     self.god_rays_decay = decay.clamp(0.8, 0.999);
-    self.god_rays_threshold = threshold.clamp(0.0, 1.0);
+    self.god_rays_threshold = threshold.max(0.0);
     self
   }
 

@@ -64,13 +64,10 @@ fn sample_god_rays(
         let sample_color = textureSample(t_input, s_input, clamped_uv);
         let brightness = luminance(sample_color.rgb);
 
-        // Only accumulate bright pixels above threshold
-        if brightness > threshold {
-            let contribution = (brightness - threshold) / (1.0 - threshold);
-            // Cap individual sample contribution to prevent extreme values
-            let capped_contribution = min(contribution, 2.0);
-            accumulated += sample_color.rgb * decay_factor * weight * capped_contribution;
-        }
+        // Light above the threshold, eased in over the half threshold above it
+        let knee = max(threshold * 0.5, 1e-4);
+        let contribution = smoothstep(threshold, threshold + knee, brightness);
+        accumulated += min(sample_color.rgb, vec3<f32>(65504.0)) * decay_factor * weight * contribution;
 
         // Apply decay for each sample (rays fade as they extend)
         decay_factor *= decay;
@@ -121,13 +118,6 @@ fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
         god_rays += sample_god_rays(in.uv, light_pos, samples, decay, density, weight, threshold);
     }
 
-    // Additive blend with original scene
-    // Clamp god rays contribution to prevent blow-out when looking at bright sources
-    let clamped_rays = min(god_rays * intensity, vec3<f32>(0.6));
-    let final_color = original.rgb + clamped_rays;
-
-    // Clamp final result to valid range
-    let clamped_final = min(final_color, vec3<f32>(1.0));
-
-    return vec4<f32>(clamped_final, original.a);
+    // Added to the HDR scene; the tonemap rolls it off
+    return vec4<f32>(original.rgb + god_rays * intensity, original.a);
 }
