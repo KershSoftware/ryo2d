@@ -22,7 +22,6 @@ impl RenderPass for Lighting {
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
-    // Only the camera drawing straight into the scene image is lit for now
     let Some(camera) = ctx.current_camera().filter(|camera| camera.lit) else {
       return;
     };
@@ -40,13 +39,13 @@ impl RenderPass for Lighting {
     let lights = lighting.lights;
     let light_refs = || lights.iter().map(|(position, light)| (position, light));
 
-    let (camera, uniforms) = (camera.entity, scene.camera_uniforms);
+    let (entity, uniforms) = (camera.entity, scene.camera_uniforms);
     lighting.renderer.render_lights_for_camera(
       device,
       queue,
       encoder,
       light_refs(),
-      camera,
+      entity,
       uniforms,
     );
 
@@ -61,17 +60,31 @@ impl RenderPass for Lighting {
       let geometry = generate_shadow_geometry(light_refs(), &occluders);
       lighting
         .renderer
-        .render_shadows(device, queue, encoder, &geometry, camera, uniforms);
+        .render_shadows(device, queue, encoder, &geometry, entity, uniforms);
     }
 
-    lighting.renderer.compose_from_texture(
+    // The camera drawing straight into the scene image is lit into the lit
+    // image; a camera with an image of its own is lit in place
+    let (scene_texture, output) = if camera.direct {
+      (targets.game, targets.lit_view)
+    } else {
+      let images = targets.camera_images;
+      let (Some(texture), Some(view)) = (images.texture(entity), images.view(entity)) else {
+        return;
+      };
+      (texture, view)
+    };
+    lighting.renderer.compose_for_camera(
       device,
       queue,
       encoder,
-      targets.game,
-      targets.lit_view,
+      entity,
+      scene_texture,
+      output,
       scene.time,
     );
-    *image = FrameImage::Lit;
+    if camera.direct {
+      *image = FrameImage::Lit;
+    }
   }
 }

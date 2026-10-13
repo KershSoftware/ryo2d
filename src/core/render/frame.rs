@@ -157,9 +157,8 @@ pub(crate) type CameraSource<'a> = (
 ///
 /// The first window camera draws straight into the scene image when it
 /// covers the whole window and clears; every other camera draws into an
-/// image of its own, sized to its viewport. Lighting (`lighting`) runs for
-/// the camera that draws straight into the scene image. Texture cameras are
-/// not drawn.
+/// image of its own, sized to its viewport. With `lighting`, every camera is
+/// lit. Texture cameras are not drawn.
 pub(crate) fn plan_cameras<'a>(
   cameras: impl Iterator<Item = CameraSource<'a>>,
   render_size: (u32, u32),
@@ -185,7 +184,7 @@ pub(crate) fn plan_cameras<'a>(
       clear: camera.clear,
       direct,
       rect: PixelRect::of_viewport(&camera.viewport, render_size),
-      lit: direct && lighting,
+      lit: lighting,
     });
   }
 }
@@ -234,7 +233,7 @@ mod tests {
     let cameras = [(b, &overlay, &view, None), (a, &full, &view, None)];
     plan_cameras(cameras.into_iter(), (64, 32), true, &mut out);
     let plan: Vec<_> = out.iter().map(|c| (c.entity, c.direct, c.lit)).collect();
-    assert_eq!(plan, [(a, true, true), (b, false, false)]);
+    assert_eq!(plan, [(a, true, true), (b, false, true)]);
 
     // A camera before the full one keeps it from drawing straight in
     let cameras = [(a, &full, &view, None), (c, &half, &view, None)];

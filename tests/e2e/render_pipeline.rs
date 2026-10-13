@@ -431,3 +431,51 @@ fn a_camera_pass_runs_once_per_camera() {
   engine.step_frames(3).unwrap();
   assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 6);
 }
+
+/// Two lit halves: each camera looks at its own light over white.
+struct LitSplit;
+
+impl Scene for LitSplit {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    for x in [-1000.0, 1000.0] {
+      let white =
+        SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 255, 255, 255, 255), "white-half");
+      ctx
+        .world
+        .spawn((Transform::from_xy(x, 0.0), Renderable::sprite(white)));
+      ctx.world.spawn((
+        Transform::from_xy(x, 0.0),
+        Light2D::point(Color::rgb(255, 255, 255), 6.0),
+      ));
+    }
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.02));
+    ctx.camera().set_position(-1000.0, 0.0);
+    ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
+    ctx.world.spawn((
+      Transform::from_xy(1000.0, 0.0),
+      Camera2d {
+        viewport: Viewport::new(0.5, 0.0, 0.5, 1.0),
+        order: 1,
+        ..Default::default()
+      },
+    ));
+  }
+}
+
+#[test]
+fn every_camera_is_lit() {
+  let Some(mut engine) = engine(LitSplit) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let frame = engine.frame().unwrap();
+  for (lit_x, dark_x) in [(16, 2), (48, 34)] {
+    let (lit, dark) = (frame.get_pixel(lit_x, 32).0, frame.get_pixel(dark_x, 32).0);
+    assert!(
+      lit[0] > dark[0].saturating_add(60),
+      "x = {lit_x}: {lit:?} vs {dark:?}"
+    );
+  }
+}

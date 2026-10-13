@@ -8,7 +8,9 @@ use super::{AmbientLight, Atmosphere, Light2D, LightOccluder2D};
 use crate::core::ecs::{Entity, GlobalTransform, Vec2};
 use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
 use crate::core::graphics::{Camera2d, CameraView};
+use crate::core::render::CameraDraw;
 use crate::core::shaders::EffectsManager;
+use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 /// Maximum number of lights that can be rendered per frame
@@ -67,11 +69,72 @@ struct RaymarchEdge {
   points: [f32; 4],
 }
 
+/// The textures one image is lit with, at its size: the light
+/// accumulation buffer, the copy of the scene the compose pass reads, and
+/// the compose pass's uniforms.
+struct LightTargets {
+  light_view: wgpu::TextureView,
+  scene_copy_texture: wgpu::Texture,
+  scene_copy_view: wgpu::TextureView,
+  compose_uniforms: wgpu::Buffer,
+  width: u32,
+  height: u32,
+}
+
+impl LightTargets {
+  fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    let size = wgpu::Extent3d {
+      width,
+      height,
+      depth_or_array_layers: 1,
+    };
+    // Additive blending target, HDR-capable
+    let light_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Light Accumulation Texture"),
+      size,
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba16Float,
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+      view_formats: &[],
+    });
+    // The compose pass reads a copy of the scene, so it can write the lit
+    // scene over the original
+    let scene_copy_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Scene Copy Texture"),
+      size,
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      view_formats: &[],
+    });
+    let compose_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("Lighting Compose Uniform Buffer"),
+      size: std::mem::size_of::<LightingParams>() as u64,
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+      mapped_at_creation: false,
+    });
+    Self {
+      light_view: light_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+      scene_copy_view: scene_copy_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+      scene_copy_texture,
+      compose_uniforms,
+      width,
+      height,
+    }
+  }
+}
+
 /// The lighting renderer manages GPU resources for 2D lighting.
 pub struct LightingRenderer {
-  /// Light accumulation texture
-  light_texture: wgpu::Texture,
-  light_texture_view: wgpu::TextureView,
+  /// The targets for lighting on its own, at the renderer's size
+  targets: LightTargets,
+
+  /// The targets of each lit camera, at its image's size
+  cameras: HashMap<Entity, LightTargets>,
 
   /// Sampler for textures
   sampler: wgpu::Sampler,
@@ -85,9 +148,6 @@ pub struct LightingRenderer {
   /// Storage buffer for light instances
   light_buffer: wgpu::Buffer,
 
-  /// Uniform buffer for composition pass
-  compose_uniform_buffer: wgpu::Buffer,
-
   /// Bind group layout for light rendering
   light_bind_group_layout: wgpu::BindGroupLayout,
 
@@ -100,19 +160,11 @@ pub struct LightingRenderer {
   /// Current atmosphere settings
   atmosphere: Atmosphere,
 
-  /// Render size of the light and scene textures, in pixels
-  width: u32,
-  height: u32,
-
   /// Whether lighting is enabled
   enabled: bool,
 
   /// Whether UI should be affected by lighting (default: false for always-visible UI)
   ui_affected_by_lighting: bool,
-
-  /// Copy of scene texture for compose shader (workaround for texture sampling issue)
-  scene_copy_texture: wgpu::Texture,
-  scene_copy_view: wgpu::TextureView,
 
   // Shadow rendering resources
   /// Pipeline for rendering shadow geometry
@@ -141,23 +193,6 @@ impl LightingRenderer {
     height: u32,
     output_format: wgpu::TextureFormat,
   ) -> Self {
-    // Create light accumulation texture (additive blending target)
-    let light_texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("Light Accumulation Texture"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba16Float, // HDR-capable
-      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-      view_formats: &[],
-    });
-    let light_texture_view = light_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
     // Create sampler
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
       label: Some("Lighting Sampler"),
@@ -179,19 +214,6 @@ impl LightingRenderer {
     });
 
     // Create globals uniform buffer
-
-    // Create compose uniform buffer
-    let compose_uniform = LightingParams {
-      color: [0.1, 0.1, 0.12, 1.0],
-      params: [0.15, 0.0, 0.0, 0.0], // ambient intensity, atmosphere density, scattering, unused
-      time_resolution: [0.0, width as f32, height as f32, 0.0],
-      atmosphere_color: [0.78, 0.78, 0.82, 1.0], // Default fog color (light gray-blue)
-    };
-    let compose_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: Some("Lighting Compose Uniform Buffer"),
-      contents: bytemuck::cast_slice(&[compose_uniform]),
-      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
 
     // Create bind group layouts
     let light_bind_group_layout =
@@ -383,23 +405,6 @@ impl LightingRenderer {
       multiview_mask: None,
       cache: None,
     });
-
-    // Create scene copy texture (workaround for texture sampling issue in compose shader)
-    let scene_copy_texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("Scene Copy Texture"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-      view_formats: &[],
-    });
-    let scene_copy_view = scene_copy_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     // === Shadow Pipeline Setup ===
 
@@ -653,23 +658,18 @@ impl LightingRenderer {
     });
 
     Self {
-      light_texture,
-      light_texture_view,
+      targets: LightTargets::new(device, width, height),
+      cameras: HashMap::new(),
       sampler,
       light_pipeline,
       compose_pipeline,
       light_buffer,
-      compose_uniform_buffer,
       light_bind_group_layout,
       compose_bind_group_layout,
       ambient: AmbientLight::default(),
       atmosphere: Atmosphere::default(),
-      width,
-      height,
       enabled: false, // Disabled by default, enabled when Light2D entities exist
       ui_affected_by_lighting: false, // By default, UI is always visible
-      scene_copy_texture,
-      scene_copy_view,
       shadow_pipeline,
       shadow_vertex_buffer,
       shadow_bind_group_layout,
@@ -738,49 +738,33 @@ impl LightingRenderer {
 
   /// Resize the light accumulation texture.
   pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-    if width == self.width && height == self.height {
-      return;
+    if (width, height) != (self.targets.width, self.targets.height) {
+      self.targets = LightTargets::new(device, width, height);
     }
+  }
 
-    self.width = width;
-    self.height = height;
-
-    self.light_texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("Light Accumulation Texture"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba16Float,
-      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-      view_formats: &[],
+  /// Keep light targets for every lit camera of `cameras`, sized to its
+  /// image; drop the others.
+  pub(crate) fn sync_cameras(&mut self, device: &wgpu::Device, cameras: &[CameraDraw]) {
+    self.cameras.retain(|entity, targets| {
+      cameras.iter().any(|camera| {
+        camera.entity == *entity
+          && camera.lit
+          && (targets.width, targets.height) == camera.rect.size()
+      })
     });
-    self.light_texture_view = self
-      .light_texture
-      .create_view(&wgpu::TextureViewDescriptor::default());
+    for camera in cameras.iter().filter(|camera| camera.lit) {
+      self.cameras.entry(camera.entity).or_insert_with(|| {
+        let (width, height) = camera.rect.size();
+        LightTargets::new(device, width, height)
+      });
+    }
+  }
 
-    // Recreate scene copy texture
-    self.scene_copy_texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("Scene Copy Texture"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-      view_formats: &[],
-    });
-    self.scene_copy_view = self
-      .scene_copy_texture
-      .create_view(&wgpu::TextureViewDescriptor::default());
+  /// How many cameras have light targets.
+  #[cfg(test)]
+  pub(crate) fn camera_count(&self) -> usize {
+    self.cameras.len()
   }
 
   /// Render lights to the accumulation buffer.
@@ -803,10 +787,12 @@ impl LightingRenderer {
     camera_zoom: f32,
   ) {
     let globals = self.standalone_globals(device, camera_pos, camera_zoom);
-    self.draw_lights(device, queue, encoder, lights, Some(&globals));
+    let target = &self.targets.light_view;
+    self.draw_lights(device, queue, encoder, lights, Some(&globals), target);
   }
 
-  /// Render lights through `camera`, whose uniforms `uniforms` holds.
+  /// Render lights into `camera`'s light buffer, through its uniforms
+  /// (in `uniforms`).
   pub(crate) fn render_lights_for_camera<'a>(
     &self,
     device: &wgpu::Device,
@@ -816,7 +802,10 @@ impl LightingRenderer {
     camera: Entity,
     uniforms: &CameraUniforms,
   ) {
-    self.draw_lights(device, queue, encoder, lights, uniforms.buffer(camera));
+    if let Some(targets) = self.cameras.get(&camera) {
+      let globals = uniforms.buffer(camera);
+      self.draw_lights(device, queue, encoder, lights, globals, &targets.light_view);
+    }
   }
 
   /// The camera uniforms of a view centred on `center` at `zoom`, one world
@@ -826,9 +815,10 @@ impl LightingRenderer {
       zoom,
       ..Camera2d::default()
     };
-    let size = Vec2::new(self.width as f32, self.height as f32);
+    let (width, height) = (self.targets.width, self.targets.height);
+    let size = Vec2::new(width as f32, height as f32);
     let view = CameraView::compute(center, 0.0, &camera, Vec2::ZERO, size);
-    let globals = CameraGlobals::new(&view, (self.width, self.height), 0.0, 0.0, false);
+    let globals = CameraGlobals::new(&view, (width, height), 0.0, 0.0, false);
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
       label: Some("Standalone Light Globals"),
       contents: bytemuck::bytes_of(&globals),
@@ -836,8 +826,8 @@ impl LightingRenderer {
     })
   }
 
-  /// Clear the light buffer and draw `lights` through `globals` (nothing is
-  /// drawn without them).
+  /// Clear the light buffer `target` and draw `lights` into it through
+  /// `globals` (nothing is drawn without them).
   fn draw_lights<'a>(
     &self,
     device: &wgpu::Device,
@@ -845,6 +835,7 @@ impl LightingRenderer {
     encoder: &mut wgpu::CommandEncoder,
     lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
     globals: Option<&wgpu::Buffer>,
+    target: &wgpu::TextureView,
   ) {
     // Note: We still render the light accumulation pass even if disabled to ensure
     // the light_texture is cleared. The compose pass handles ambient lighting.
@@ -939,7 +930,7 @@ impl LightingRenderer {
       let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Light Accumulation Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &self.light_texture_view,
+          view: target,
           depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
@@ -982,12 +973,14 @@ impl LightingRenderer {
     camera: Entity,
     uniforms: &CameraUniforms,
   ) {
-    if let Some(globals) = uniforms.buffer(camera) {
-      self.draw_shadows(device, queue, encoder, shadow_geometry, globals);
+    if let (Some(globals), Some(targets)) = (uniforms.buffer(camera), self.cameras.get(&camera)) {
+      let target = &targets.light_view;
+      self.draw_shadows(device, queue, encoder, shadow_geometry, globals, target);
     }
   }
 
-  /// Subtract `shadow_geometry` from the light buffer, through `globals`.
+  /// Subtract `shadow_geometry` from the light buffer `target`, through
+  /// `globals`.
   fn draw_shadows(
     &self,
     device: &wgpu::Device,
@@ -995,6 +988,7 @@ impl LightingRenderer {
     encoder: &mut wgpu::CommandEncoder,
     shadow_geometry: &ShadowGeometry,
     globals: &wgpu::Buffer,
+    target: &wgpu::TextureView,
   ) {
     if shadow_geometry.is_empty() {
       return;
@@ -1022,7 +1016,7 @@ impl LightingRenderer {
       let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Shadow Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &self.light_texture_view,
+          view: target,
           depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
@@ -1149,7 +1143,7 @@ impl LightingRenderer {
       let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Raymarch Shadow Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &self.light_texture_view,
+          view: &self.targets.light_view,
           depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
@@ -1191,7 +1185,15 @@ impl LightingRenderer {
   ) {
     let globals = self.standalone_globals(device, camera_pos, camera_zoom);
     // First render all lights
-    self.draw_lights(device, queue, encoder, lights.clone(), Some(&globals));
+    let target = &self.targets.light_view;
+    self.draw_lights(
+      device,
+      queue,
+      encoder,
+      lights.clone(),
+      Some(&globals),
+      target,
+    );
 
     // Separate lights into regular shadows and raymarched shadows
     let mut raymarch_lights: Vec<(&Vec2, &Light2D)> = Vec::new();
@@ -1206,7 +1208,7 @@ impl LightingRenderer {
 
     // Generate and render regular shadow volumes
     let shadow_geometry = super::shadow::generate_shadow_geometry(regular_lights, occluders);
-    self.draw_shadows(device, queue, encoder, &shadow_geometry, &globals);
+    self.draw_shadows(device, queue, encoder, &shadow_geometry, &globals, target);
 
     // Render ray-marched shadows for lights that use them
     for (position, light) in raymarch_lights {
@@ -1250,9 +1252,10 @@ impl LightingRenderer {
     // handles the enabled check for light accumulation.
 
     // Write pixel data to our scene copy texture
+    let targets = &self.targets;
     queue.write_texture(
       wgpu::TexelCopyTextureInfo {
-        texture: &self.scene_copy_texture,
+        texture: &targets.scene_copy_texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
@@ -1260,96 +1263,21 @@ impl LightingRenderer {
       pixel_data,
       wgpu::TexelCopyBufferLayout {
         offset: 0,
-        bytes_per_row: Some(4 * self.width),
-        rows_per_image: Some(self.height),
+        bytes_per_row: Some(4 * targets.width),
+        rows_per_image: Some(targets.height),
       },
       wgpu::Extent3d {
-        width: self.width,
-        height: self.height,
+        width: targets.width,
+        height: targets.height,
         depth_or_array_layers: 1,
       },
     );
-
-    // Update compose uniforms with atmosphere
-    let compose_uniform = LightingParams {
-      color: [
-        self.ambient.color.r as f32 / 255.0,
-        self.ambient.color.g as f32 / 255.0,
-        self.ambient.color.b as f32 / 255.0,
-        1.0,
-      ],
-      params: [
-        self.ambient.intensity,
-        self.atmosphere.density,
-        self.atmosphere.scattering,
-        0.0,
-      ],
-      time_resolution: [time, self.width as f32, self.height as f32, 0.0],
-      atmosphere_color: [
-        self.atmosphere.color.r as f32 / 255.0,
-        self.atmosphere.color.g as f32 / 255.0,
-        self.atmosphere.color.b as f32 / 255.0,
-        1.0,
-      ],
-    };
-    queue.write_buffer(
-      &self.compose_uniform_buffer,
-      0,
-      bytemuck::cast_slice(&[compose_uniform]),
-    );
-
-    // Create compose bind group
-    let compose_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Lighting Compose Bind Group"),
-      layout: &self.compose_bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&self.scene_copy_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::TextureView(&self.light_texture_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: wgpu::BindingResource::Sampler(&self.sampler),
-        },
-        wgpu::BindGroupEntry {
-          binding: 3,
-          resource: self.compose_uniform_buffer.as_entire_binding(),
-        },
-      ],
-    });
-
-    // Render composition
-    {
-      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Lighting Compose Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: output_view,
-          depth_slice: None,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-        timestamp_writes: None,
-      });
-
-      render_pass.set_pipeline(&self.compose_pipeline);
-      render_pass.set_bind_group(0, &compose_bind_group, &[]);
-      render_pass.draw(0..6, 0..1);
-    }
+    self.compose_targets(device, queue, encoder, targets, output_view, time);
   }
 
   /// Get the light texture view (for debugging or custom effects).
   pub fn light_texture_view(&self) -> &wgpu::TextureView {
-    &self.light_texture_view
+    &self.targets.light_view
   }
 
   /// Update the god rays post-process effect with positions from lights that contribute.
@@ -1414,32 +1342,48 @@ impl LightingRenderer {
   ) {
     // Auto-resize if scene texture dimensions don't match our internal textures
     let scene_size = scene_texture.size();
-    if scene_size.width != self.width || scene_size.height != self.height {
-      self.resize(device, scene_size.width, scene_size.height);
+    self.resize(device, scene_size.width, scene_size.height);
+    let targets = &self.targets;
+    copy_scene(encoder, scene_texture, targets);
+    self.compose_targets(device, queue, encoder, targets, output_view, time);
+  }
+
+  /// Compose `camera`'s lit image into `output_view` from its scene image
+  /// `scene_texture` (which may be the one behind `output_view`: the scene
+  /// is copied first) and its light buffer.
+  #[allow(clippy::too_many_arguments)]
+  pub(crate) fn compose_for_camera(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    camera: Entity,
+    scene_texture: &wgpu::Texture,
+    output_view: &wgpu::TextureView,
+    time: f32,
+  ) {
+    let Some(targets) = self.cameras.get(&camera) else {
+      return;
+    };
+    if scene_texture.size().width != targets.width || scene_texture.size().height != targets.height
+    {
+      return;
     }
+    copy_scene(encoder, scene_texture, targets);
+    self.compose_targets(device, queue, encoder, targets, output_view, time);
+  }
 
-    // Copy scene texture to our internal scene_copy_texture
-    encoder.copy_texture_to_texture(
-      wgpu::TexelCopyTextureInfo {
-        texture: scene_texture,
-        mip_level: 0,
-        origin: wgpu::Origin3d::ZERO,
-        aspect: wgpu::TextureAspect::All,
-      },
-      wgpu::TexelCopyTextureInfo {
-        texture: &self.scene_copy_texture,
-        mip_level: 0,
-        origin: wgpu::Origin3d::ZERO,
-        aspect: wgpu::TextureAspect::All,
-      },
-      wgpu::Extent3d {
-        width: self.width,
-        height: self.height,
-        depth_or_array_layers: 1,
-      },
-    );
-
-    // Update compose uniforms with atmosphere
+  /// The compose pass: the scene copy in `targets` lit by its light buffer
+  /// (plus ambient and atmosphere), into `output_view`.
+  fn compose_targets(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    targets: &LightTargets,
+    output_view: &wgpu::TextureView,
+    time: f32,
+  ) {
     let compose_uniform = LightingParams {
       color: [
         self.ambient.color.r as f32 / 255.0,
@@ -1453,7 +1397,7 @@ impl LightingRenderer {
         self.atmosphere.scattering,
         0.0,
       ],
-      time_resolution: [time, self.width as f32, self.height as f32, 0.0],
+      time_resolution: [time, targets.width as f32, targets.height as f32, 0.0],
       atmosphere_color: [
         self.atmosphere.color.r as f32 / 255.0,
         self.atmosphere.color.g as f32 / 255.0,
@@ -1462,23 +1406,21 @@ impl LightingRenderer {
       ],
     };
     queue.write_buffer(
-      &self.compose_uniform_buffer,
+      &targets.compose_uniforms,
       0,
       bytemuck::cast_slice(&[compose_uniform]),
     );
-
-    // Create compose bind group
     let compose_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Lighting Compose Bind Group (from texture)"),
+      label: Some("Lighting Compose Bind Group"),
       layout: &self.compose_bind_group_layout,
       entries: &[
         wgpu::BindGroupEntry {
           binding: 0,
-          resource: wgpu::BindingResource::TextureView(&self.scene_copy_view),
+          resource: wgpu::BindingResource::TextureView(&targets.scene_copy_view),
         },
         wgpu::BindGroupEntry {
           binding: 1,
-          resource: wgpu::BindingResource::TextureView(&self.light_texture_view),
+          resource: wgpu::BindingResource::TextureView(&targets.light_view),
         },
         wgpu::BindGroupEntry {
           binding: 2,
@@ -1486,33 +1428,55 @@ impl LightingRenderer {
         },
         wgpu::BindGroupEntry {
           binding: 3,
-          resource: self.compose_uniform_buffer.as_entire_binding(),
+          resource: targets.compose_uniforms.as_entire_binding(),
         },
       ],
     });
-
-    // Render composition
-    {
-      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Lighting Compose Pass (from texture)"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: output_view,
-          depth_slice: None,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-        timestamp_writes: None,
-      });
-
-      render_pass.set_pipeline(&self.compose_pipeline);
-      render_pass.set_bind_group(0, &compose_bind_group, &[]);
-      render_pass.draw(0..6, 0..1);
-    }
+    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+      label: Some("Lighting Compose Pass"),
+      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        view: output_view,
+        depth_slice: None,
+        resolve_target: None,
+        ops: wgpu::Operations {
+          load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+          store: wgpu::StoreOp::Store,
+        },
+      })],
+      depth_stencil_attachment: None,
+      occlusion_query_set: None,
+      multiview_mask: None,
+      timestamp_writes: None,
+    });
+    render_pass.set_pipeline(&self.compose_pipeline);
+    render_pass.set_bind_group(0, &compose_bind_group, &[]);
+    render_pass.draw(0..6, 0..1);
   }
+}
+
+/// Copy `scene_texture` into the scene copy of `targets` (the same size).
+fn copy_scene(
+  encoder: &mut wgpu::CommandEncoder,
+  scene_texture: &wgpu::Texture,
+  targets: &LightTargets,
+) {
+  encoder.copy_texture_to_texture(
+    wgpu::TexelCopyTextureInfo {
+      texture: scene_texture,
+      mip_level: 0,
+      origin: wgpu::Origin3d::ZERO,
+      aspect: wgpu::TextureAspect::All,
+    },
+    wgpu::TexelCopyTextureInfo {
+      texture: &targets.scene_copy_texture,
+      mip_level: 0,
+      origin: wgpu::Origin3d::ZERO,
+      aspect: wgpu::TextureAspect::All,
+    },
+    wgpu::Extent3d {
+      width: targets.width,
+      height: targets.height,
+      depth_or_array_layers: 1,
+    },
+  );
 }

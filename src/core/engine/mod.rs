@@ -160,10 +160,8 @@ pub struct Engine {
   entity_drawer: EntityDrawer,
   // Each camera's uniform buffer, kept across frames
   camera_uniforms: crate::core::graphics::camera_gpu::CameraUniforms,
-  // The frame's cameras in render order (reused across frames), and
-  // whether the warning that only one camera is lit was given
+  // The frame's cameras in render order (reused across frames)
   camera_draws: Vec<crate::core::render::CameraDraw>,
-  warned_unlit_cameras: bool,
   draw_list: DrawList,
   batch_collector: BatchCollector,
   // UI
@@ -503,7 +501,6 @@ impl Engine {
       entity_drawer: EntityDrawer,
       camera_uniforms: Default::default(),
       camera_draws: Vec::new(),
-      warned_unlit_cameras: false,
       draw_list: DrawList::default(),
       batch_collector: BatchCollector::new(),
       ui_font,
@@ -725,10 +722,6 @@ impl Engine {
     if self.ui_buffer.len() != ui_len {
       self.ui_buffer = vec![0; ui_len];
     }
-    if let Some(lighting) = &mut self.lighting {
-      let (width, height) = mapping.render_size();
-      lighting.resize(renderer.device(), width, height);
-    }
     self.world.insert_resource(mapping);
   }
 
@@ -811,8 +804,9 @@ impl Engine {
     };
     let sprite_gpu =
       SpriteGpuRenderer::with_filter(renderer.device(), renderer.queue(), format, filter);
-    let (render_width, render_height) = renderer.render_size();
-    let lighting = LightingRenderer::new(renderer.device(), render_width, render_height, format);
+    // Each camera is lit in light targets of its own size; the renderer's
+    // own targets are only for lighting on its own
+    let lighting = LightingRenderer::new(renderer.device(), 1, 1, format);
     let (ui_width, ui_height) = renderer.ui_size();
     let trail_renderer = TrailRenderer::new(renderer.device(), ui_width, ui_height, format);
     let mapping = renderer.mapping();
@@ -890,14 +884,19 @@ impl Engine {
     &self.debug_stats
   }
 
-  /// Per-camera GPU state: the uniform buffers plus the camera images.
+  /// Per-camera GPU state: the uniform buffers, the camera images and the
+  /// cameras' light targets.
   #[cfg(test)]
   pub(crate) fn camera_gpu_entries(&self) -> usize {
     let images = self
       .renderer
       .as_ref()
       .map_or(0, WgpuRenderer::camera_image_count);
-    self.camera_uniforms.len() + images
+    let lights = self
+      .lighting
+      .as_ref()
+      .map_or(0, LightingRenderer::camera_count);
+    self.camera_uniforms.len() + images + lights
   }
 }
 

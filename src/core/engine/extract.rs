@@ -153,12 +153,8 @@ impl Engine {
         lit,
         &mut self.camera_draws,
       );
-      if lit && !self.warned_unlit_cameras && self.camera_draws.iter().any(|c| !c.direct) {
-        self.warned_unlit_cameras = true;
-        crate::engine_warn!(
-          module: "Render",
-          "Only a camera covering the whole window is lit for now; the others draw unlit"
-        );
+      if let Some(lighting) = lighting.as_mut() {
+        lighting.sync_cameras(rend.device(), &self.camera_draws);
       }
       let snap = matches!(self.config.presentation, Presentation::PixelArt { .. });
       let cameras: Vec<_> = self
