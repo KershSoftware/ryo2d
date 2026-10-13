@@ -1043,3 +1043,49 @@ fn a_camera_skips_a_sprite_showing_its_own_target() {
   // Reading and writing one texture in a pass would be a validation error
   engine.step_frames(3).unwrap();
 }
+
+#[test]
+fn a_texture_camera_draws_into_its_viewport_of_the_target() {
+  struct HalfMirror;
+  impl Scene for HalfMirror {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.world.spawn((
+        Transform::from_xy(1000.0, 1000.0),
+        Renderable::sprite(solid("half-green", 4, GREEN)),
+      ));
+      let target = ctx.render_targets().create(16, 16);
+      // The left half of the target: an 8x16 view centred on the square
+      ctx.world.spawn((
+        Transform::from_xy(1000.0, 1000.0),
+        Camera2d {
+          target: CameraTarget::Texture(target),
+          viewport: Viewport::new(0.0, 0.0, 0.5, 1.0),
+          ..Default::default()
+        },
+      ));
+      ctx.world.spawn((
+        Transform::from_xy(32.0, 32.0),
+        Renderable::render_target(target),
+      ));
+    }
+  }
+  let builder = EngineBuilder::new()
+    .resolution(64, 64)
+    .start_scene(HalfMirror);
+  let Some(mut engine) = start(builder) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  let frame = engine.frame().unwrap();
+  // The target spans window pixels 24..40; the square is target 2..6 by 6..10
+  assert_eq!(
+    frame.get_pixel(27, 32).0,
+    GREEN,
+    "the square, in the left half"
+  );
+  assert_ne!(
+    frame.get_pixel(33, 32).0,
+    GREEN,
+    "not stretched over the right half"
+  );
+}

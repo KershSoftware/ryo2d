@@ -1,10 +1,11 @@
 //! What a scene switch or reset clears.
 
 use crate::core::audio::Audio;
+use crate::core::ecs::With;
 use crate::core::ecs::World;
 use crate::core::ecs::world_ext::despawn_game_entities;
-use crate::core::graphics::RenderTargets;
 use crate::core::graphics::camera_mut::reset_main_camera;
+use crate::core::graphics::{Camera2d, CameraTarget, MainCamera, RenderTargets};
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::clear_messages;
 use crate::core::shaders::EffectsManager;
@@ -22,9 +23,16 @@ pub(super) fn execute_cleanup(cleanup: SceneCleanup, world: &mut World, audio: &
   if cleanup.contains(SceneCleanup::WORLD) {
     despawn_game_entities(world);
     forget_despawned_tilemaps(world);
-    // The cameras and sprites using them are gone
+    // The cameras and sprites using them are gone; the main camera, which
+    // stays, draws to the window again if it drew into one
     if let Some(mut targets) = world.get_resource_mut::<RenderTargets>() {
       targets.clear();
+    }
+    let mut cameras = world.query_filtered::<&mut Camera2d, With<MainCamera>>();
+    for mut camera in cameras.iter_mut(world) {
+      if camera.target != CameraTarget::Window {
+        camera.target = CameraTarget::Window;
+      }
     }
   }
   if cleanup.contains(SceneCleanup::CAMERA) {
@@ -59,7 +67,7 @@ pub(super) fn execute_cleanup(cleanup: SceneCleanup, world: &mut World, audio: &
 mod tests {
   use super::*;
   use crate::core::graphics::camera_mut::spawn_main_camera;
-  use crate::core::graphics::{Camera2d, CameraMut, Presentation, ScreenMapping};
+  use crate::core::graphics::{Camera2d, CameraMut, CameraTarget, Presentation, ScreenMapping};
   use glam::Vec2;
 
   fn cleanup_world() -> (World, Audio) {
@@ -85,5 +93,20 @@ mod tests {
     );
     execute_cleanup(SceneCleanup::CAMERA, &mut world, &mut audio);
     assert_eq!(world.get::<Camera2d>(entity).unwrap().zoom, 1.0);
+  }
+
+  #[test]
+  fn a_world_cleanup_sends_a_main_camera_aimed_at_a_target_back_to_the_window() {
+    let (mut world, mut audio) = cleanup_world();
+    let entity = spawn_main_camera(&mut world, Vec2::new(800.0, 600.0));
+    let target = world.resource_mut::<RenderTargets>().create(32, 32);
+    world.get_mut::<Camera2d>(entity).unwrap().target = CameraTarget::Texture(target);
+    execute_cleanup(SceneCleanup::WORLD, &mut world, &mut audio);
+    assert!(!world.resource::<RenderTargets>().contains(target));
+    assert_eq!(
+      world.get::<Camera2d>(entity).unwrap().target,
+      CameraTarget::Window,
+      "its target is gone, so it draws to the window again"
+    );
   }
 }

@@ -2,9 +2,10 @@
 //!
 //! This module provides:
 //! - [`Sprite`] / [`AnimatedSprite`] - Sprite data and CPU blitting
-//! - [`WgpuRenderer`] - GPU rendering pipeline with letterboxing
+//! - [`WgpuRenderer`] - the GPU renderer, presenting through [`ScreenMapping`]
 //! - [`SpriteGpuRenderer`] - GPU sprite batching for particles/effects
-//! - [`Camera`] - 2D camera with world/screen transforms
+//! - [`Camera2d`] / [`CameraView`] / [`CameraMut`] - cameras as entities, with
+//!   world/screen transforms; [`RenderTargets`] for render-to-texture
 //! - [`Animation`] / [`Animator`] / [`AnimationController`] / [`ValidatedAnimator`] - Sprite animation system
 //! - Tiled rendering for repeating sprites and composite tiles
 //! - [`GpuParallaxBackground`] - GPU-accelerated parallax for layered scrolling backgrounds

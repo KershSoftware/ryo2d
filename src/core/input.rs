@@ -651,19 +651,20 @@ impl Input {
   // Mouse Position
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /// The mouse X position in game-resolution screen pixels (letterboxing and
-  /// window scaling removed); `camera.screen_to_world` gives world space.
-  /// Not updated while the cursor is over the black bars or locked.
+  /// The mouse X position in screen space (logical pixels, or the pixel-art
+  /// target; window scaling and bars removed): over the bars it lies outside
+  /// `0..screen_width`. `ctx.camera().screen_to_world` gives world space.
+  /// Not updated while the cursor is locked.
   pub fn mouse_x(&self) -> f32 {
     self.mouse_x
   }
 
-  /// The mouse Y position in game-resolution screen pixels (see [`Input::mouse_x`]).
+  /// The mouse Y position in screen space (see [`Input::mouse_x`]).
   pub fn mouse_y(&self) -> f32 {
     self.mouse_y
   }
 
-  /// The mouse position `(x, y)` in game-resolution screen pixels (see [`Input::mouse_x`]).
+  /// The mouse position `(x, y)` in screen space (see [`Input::mouse_x`]).
   pub fn mouse_position(&self) -> (f32, f32) {
     (self.mouse_x, self.mouse_y)
   }

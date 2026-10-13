@@ -141,8 +141,12 @@ pub(crate) struct CameraDraw {
   pub(crate) target: Option<RenderTarget>,
   /// Draws straight into the scene image instead of an image of its own
   pub(crate) direct: bool,
-  /// Its image's pixels in the scene image (all of it when direct; all of
-  /// the target for a texture camera)
+  /// Draws into an image of its own, placed in its rectangle afterwards (a
+  /// window camera that is not direct, or a texture camera with a partial
+  /// viewport); otherwise into the scene image or its whole target
+  pub(crate) own_image: bool,
+  /// Its rectangle in the scene image or its target (all of the scene image
+  /// when direct)
   pub(crate) rect: PixelRect,
   /// Lighting runs for it
   pub(crate) lit: bool,
@@ -162,9 +166,11 @@ pub(crate) type CameraSource<'a> = (
 ///
 /// The first window camera draws straight into the scene image when it
 /// covers the whole window and clears; every other window camera draws into
-/// an image of its own, sized to its viewport. A texture camera fills its
-/// render target; one whose target is missing from `targets` is left out
-/// and pushed onto `targetless`. With `lighting`, every camera is lit.
+/// an image of its own, sized to its viewport. A texture camera draws into
+/// its viewport's part of its render target: straight into the target when
+/// the viewport covers it, otherwise into an image of its own placed there;
+/// one whose target is missing from `targets` is left out and pushed onto
+/// `targetless`. With `lighting`, every camera is lit.
 pub(crate) fn plan_cameras<'a>(
   cameras: impl Iterator<Item = CameraSource<'a>>,
   render_size: (u32, u32),
@@ -185,26 +191,21 @@ pub(crate) fn plan_cameras<'a>(
   ordered.sort_by_key(|&(window, order, entity, ..)| (window, order, entity));
   let mut first_window = true;
   for (_, _, entity, camera, view, layers) in ordered {
-    let (target, direct, rect) = match camera.target {
+    let (target, direct, own_image, rect) = match camera.target {
       CameraTarget::Texture(target) => {
-        let Some((width, height)) = targets.and_then(|targets| targets.size(target)) else {
+        let Some(size) = targets.and_then(|targets| targets.size(target)) else {
           targetless.push(entity);
           continue;
         };
-        let rect = PixelRect {
-          x: 0,
-          y: 0,
-          width,
-          height,
-        };
-        (Some(target), false, rect)
+        let rect = PixelRect::of_viewport(&camera.viewport, size);
+        (Some(target), false, rect.size() != size, rect)
       }
       CameraTarget::Window => {
         let direct = std::mem::take(&mut first_window)
           && camera.viewport == Viewport::FULL
           && camera.clear != CameraClear::None;
         let rect = PixelRect::of_viewport(&camera.viewport, render_size);
-        (None, direct, rect)
+        (None, direct, !direct, rect)
       }
     };
     out.push(CameraDraw {
@@ -214,6 +215,7 @@ pub(crate) fn plan_cameras<'a>(
       clear: camera.clear,
       target,
       direct,
+      own_image,
       rect,
       lit: lighting,
     });
@@ -328,6 +330,25 @@ mod tests {
       .map(|c| (c.entity, c.direct, c.rect.size()))
       .collect();
     assert_eq!(plan, [(texture, false, (16, 8)), (window, true, (64, 32))]);
+    assert!(out.iter().all(|c| !c.own_image), "both draw straight in");
     assert_eq!(targetless, [gone]);
+
+    // A partial viewport draws into an image of its own, placed in the target
+    let half = Camera2d {
+      viewport: Viewport::new(0.5, 0.0, 0.5, 1.0),
+      ..mirror
+    };
+    let cameras = [(texture, &half, &view, None)];
+    plan_cameras(
+      cameras.into_iter(),
+      (64, 32),
+      false,
+      Some(&targets),
+      &mut out,
+      &mut targetless,
+    );
+    let rect = out[0].rect;
+    assert!(out[0].own_image);
+    assert_eq!((rect.x, rect.y, rect.size()), (8, 0, (8, 8)));
   }
 }

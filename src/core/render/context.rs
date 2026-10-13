@@ -165,12 +165,20 @@ impl<'a> RenderContext<'a> {
   }
 
   /// Back to the scene image. A camera that drew straight into it leaves
-  /// its latest image (lit or not) as the scene's.
+  /// its latest image (lit or not) as the scene's; a texture camera with an
+  /// image of its own places it in its rectangle of the target.
   pub(super) fn leave_camera(&mut self) {
-    if let Some(camera) = self.current_camera()
-      && !camera.direct
-    {
-      self.image = self.scene_image;
+    if let Some(camera) = self.current_camera() {
+      if !camera.direct {
+        self.image = self.scene_image;
+      }
+      if camera.own_image
+        && let Some((_, view)) = camera
+          .target
+          .and_then(|target| self.scene.sprites.target_image(target))
+      {
+        self.targets.camera_images.place(self.encoder, view, camera);
+      }
     }
     self.camera = None;
   }

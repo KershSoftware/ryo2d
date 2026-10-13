@@ -518,7 +518,7 @@ Engine messages (all `Message + Clone`):
 | Area | Methods |
 |---|---|
 | keyboard | `key_down(KeyCode)`, `key_pressed(KeyCode)`, `key_released(KeyCode)`, `key_repeat(KeyCode)` (press or OS repeat) |
-| mouse | `mouse_down(MouseButton)`, `mouse_pressed(..)`, `mouse_released(..)`, `mouse_x()`, `mouse_y()`, `mouse_position() -> (f32, f32)` (game-resolution screen pixels; `camera.screen_to_world` for world), `mouse_delta()`, `scroll_delta()` |
+| mouse | `mouse_down(MouseButton)`, `mouse_pressed(..)`, `mouse_released(..)`, `mouse_x()`, `mouse_y()`, `mouse_position() -> (f32, f32)` (screen space: logical pixels or the pixel-art target, outside `0..screen_size` over the bars; `ctx.camera().screen_to_world(Vec2::new(x, y))` for world), `mouse_delta()`, `scroll_delta()` |
 | text and IME | `text_input() -> &str`, `has_text_input()`, `consume_text_input()`, `ime_preedit()`, `ime_preedit_cursor()`, `ime_composing()`, `ime_enabled()` |
 | gamepad | `gamepad_connected()`, `gamepad_name()`, `gamepad_button_down/pressed/released(GamepadButton)`, `left_stick()`, `right_stick()` (deadzoned, plus `_x`/`_y`), `left_stick_raw()`, `right_stick_raw()`, `left_trigger()`, `right_trigger()` (0..1) |
 | consumption | `consume_key(KeyCode)`, `consume_mouse(MouseButton)`, `consume_gamepad_button(..)`, `consume_text()`, `consume_scroll()`, `key_pressed_and_consume(..) -> bool`, `mouse_pressed_and_consume(..)`, `gamepad_button_pressed_and_consume(..)`, `consume_key_press`, `consume_mouse_press`, `consume_gamepad_button_press`, `clear_keyboard_state()` |
@@ -600,7 +600,7 @@ Render targets: `RenderTargets` (resource, `ctx.render_targets()`) records textu
 | `resize(target, width, height) -> bool`, `remove(target) -> bool` | `false` for an unknown target |
 | `size(target) -> Option<(u32, u32)>`, `contains(target) -> bool` | |
 
-A camera with `CameraTarget::Texture(target)` fills that target (one world unit per target pixel at zoom 1 with `ScreenUnits`); one whose target is missing draws nothing and warns once. `Renderable::render_target(target)` shows it; because texture cameras render first, the sprite shows this frame's image. A camera never draws something showing its own target (it skips it and warns once per entity). A scene switch or reset that clears the world removes every target.
+A camera with `CameraTarget::Texture(target)` draws into its viewport's part of that target (all of it by default; the rest keeps what was drawn there, so several texture cameras can share a target), one world unit per target pixel at zoom 1 with `ScreenUnits`; one whose target is missing draws nothing and warns once. `Renderable::render_target(target)` shows it; because texture cameras render first, the sprite shows this frame's image. A camera never draws something showing its own target (it skips it and warns once per entity). A scene switch or reset that clears the world removes every target.
 
 ```rust
 // A minimap in the top-right corner, and a render-to-texture monitor

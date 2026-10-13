@@ -77,8 +77,10 @@ impl Viewport {
 pub enum CameraTarget {
   /// The window (screen space)
   Window,
-  /// A render target, which sprites can then show; the camera fills it,
-  /// one world unit per target pixel at zoom 1 with `ScreenUnits`
+  /// A render target, which sprites can then show; the camera draws into
+  /// its viewport's part of it (all of it by default; the rest keeps what
+  /// was drawn there), one world unit per target pixel at zoom 1 with
+  /// `ScreenUnits`
   Texture(RenderTarget),
 }
 

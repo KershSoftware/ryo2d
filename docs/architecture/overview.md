@@ -115,7 +115,7 @@ SceneManager (engine-owned stack over the one shared world)
 
 - A `Scene` implements any of `on_enter`, `on_exit`, `on_pause`, `on_resume`, `update` (each fixed step), `ui` (once a frame, before the steps) and `render` (GPU-batched sprites), plus the flags `is_transparent`, `updates_below`, `is_physics_paused`.
 - `SceneAction`: `Continue`, `Push`, `Pop`, `Switch`, `Reset`, `PopReturn`, `Quit`, each with a `*With(Transition)` form (fade or slide).
-- `SceneContext` has the fields `world`, `time`, `input`, `camera`, `assets`, `audio` and helpers for everything else (`effects()`, `lighting()`, `render_pipeline()`, `window()`, `cursor()`, `tilemaps()`, `console()`, `messages::<T>()`, `write_message`, `resource*`, `add_systems`). `time`, `input`, `camera` and `assets` are taken out of the world for the length of the callback.
+- `SceneContext` has the fields `world`, `time`, `input`, `assets`, `audio` and helpers for everything else (`camera()`, `render_targets()`, `effects()`, `lighting()`, `render_pipeline()`, `window()`, `cursor()`, `tilemaps()`, `console()`, `messages::<T>()`, `write_message`, `resource*`, `add_systems`). `time`, `input` and `assets` are taken out of the world for the length of the callback.
 - On `Switch` and `Reset` the leaving scene's `cleanup_on_exit()` (`SceneCleanup` flags: world, camera, effects, lighting, time, music, messages) resets engine state; `Push` and `Pop` keep it.
 
 ## Messages

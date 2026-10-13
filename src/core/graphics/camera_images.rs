@@ -1,6 +1,6 @@
 //! The images cameras draw into when they do not draw straight into the
-//! scene image (a window camera's own image, a texture camera's target),
-//! and placing window cameras' images in their viewports
+//! scene image (an image of their own, or a texture camera's whole target),
+//! and placing cameras' own images in their rectangles
 
 use std::collections::HashMap;
 
@@ -12,15 +12,16 @@ use crate::core::render::CameraDraw;
 struct CameraImage {
   texture: wgpu::Texture,
   view: wgpu::TextureView,
-  /// For placing a window camera's image in its viewport (a texture
-  /// camera's target is not placed)
+  /// For placing an image of the camera's own in its rectangle (a texture
+  /// camera's whole target is not placed)
   bind_group: Option<wgpu::BindGroup>,
 }
 
-/// An image per window camera that does not draw straight into the scene
-/// image, sized to its viewport in render pixels, and the pipeline that
-/// places them in the scene image; and each texture camera's target (owned
-/// by the sprite renderer, shared here).
+/// An image per camera that draws into one of its own (a window camera that
+/// does not draw straight into the scene image, a texture camera with a
+/// partial viewport), sized to its rectangle, and the pipeline that places
+/// them; and the target of each texture camera that fills it (owned by the
+/// sprite renderer, shared here).
 pub(crate) struct CameraImages {
   images: HashMap<Entity, CameraImage>,
   format: wgpu::TextureFormat,
@@ -104,9 +105,9 @@ impl CameraImages {
     }
   }
 
-  /// Keep an image for every window camera in `cameras` that does not draw
-  /// straight into the scene image, at its rectangle's size, and take each
-  /// texture camera's target from `target_image`; drop the rest.
+  /// Keep an image for every camera in `cameras` that draws into one of its
+  /// own, at its rectangle's size, and take the target of each texture
+  /// camera that fills it from `target_image`; drop the rest.
   pub(crate) fn sync<'t>(
     &mut self,
     device: &wgpu::Device,
@@ -116,29 +117,25 @@ impl CameraImages {
     self.images.retain(|entity, image| {
       cameras.iter().any(|camera| {
         camera.entity == *entity
-          && camera.target.is_none()
-          && !camera.direct
+          && camera.own_image
+          && image.bind_group.is_some()
           && (image.texture.width(), image.texture.height()) == camera.rect.size()
       })
     });
     for camera in cameras {
-      match camera.target {
-        // Taken afresh each frame: a resized target is a new texture
-        Some(target) => {
-          if let Some((texture, view)) = target_image(target) {
-            let image = CameraImage {
-              texture: texture.clone(),
-              view: view.clone(),
-              bind_group: None,
-            };
-            self.images.insert(camera.entity, image);
-          }
-        }
-        None if !camera.direct && !self.images.contains_key(&camera.entity) => {
+      if camera.own_image {
+        if !self.images.contains_key(&camera.entity) {
           let image = self.create(device, camera.rect.size());
           self.images.insert(camera.entity, image);
         }
-        None => {}
+      } else if let Some((texture, view)) = camera.target.and_then(&target_image) {
+        // Taken afresh each frame: a resized target is a new texture
+        let image = CameraImage {
+          texture: texture.clone(),
+          view: view.clone(),
+          bind_group: None,
+        };
+        self.images.insert(camera.entity, image);
       }
     }
   }
@@ -196,16 +193,37 @@ impl CameraImages {
     self.images.len()
   }
 
-  /// Draw the images of the window cameras of `cameras` over `target` (the
-  /// scene image) in their rectangles, in order.
+  /// Draw the own images of the window cameras of `cameras` over `target`
+  /// (the scene image) in their rectangles, in order.
   pub(crate) fn composite(
     &self,
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
     cameras: &[CameraDraw],
   ) {
-    let mut images = cameras.iter().filter_map(|camera| {
-      if camera.direct || camera.target.is_some() {
+    let windows = cameras.iter().filter(|camera| camera.target.is_none());
+    self.draw(encoder, target, windows);
+  }
+
+  /// Draw a texture camera's own image over its `target` in its rectangle.
+  pub(crate) fn place(
+    &self,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    camera: &CameraDraw,
+  ) {
+    self.draw(encoder, target, std::iter::once(camera));
+  }
+
+  /// Draw the own images of `cameras` over `target` in their rectangles.
+  fn draw<'c>(
+    &self,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    cameras: impl Iterator<Item = &'c CameraDraw>,
+  ) {
+    let mut images = cameras.filter_map(|camera| {
+      if !camera.own_image {
         return None;
       }
       let bind_group = self.images.get(&camera.entity)?.bind_group.as_ref()?;
