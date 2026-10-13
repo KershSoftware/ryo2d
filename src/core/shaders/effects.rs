@@ -374,10 +374,10 @@ impl EffectParams {
   pub fn from_effect(effect: &PostProcessEffect, time: f32, width: u32, height: u32) -> Self {
     let (color, params) = match effect {
       PostProcessEffect::Fade { progress, color } => {
-        (color.to_normalized(), [*progress, 0.0, 0.0, 0.0])
+        (color.to_linear(), [*progress, 0.0, 0.0, 0.0])
       }
       PostProcessEffect::ColorTint { color, intensity } => {
-        (color.to_normalized(), [*intensity, 0.0, 0.0, 0.0])
+        (color.to_linear(), [*intensity, 0.0, 0.0, 0.0])
       }
       PostProcessEffect::Vignette {
         intensity,
@@ -385,7 +385,7 @@ impl EffectParams {
         softness,
       } => ([0.0, 0.0, 0.0, 1.0], [*intensity, *radius, *softness, 0.0]),
       PostProcessEffect::ScreenFlash { color, intensity } => {
-        (color.to_normalized(), [*intensity, 0.0, 0.0, 0.0])
+        (color.to_linear(), [*intensity, 0.0, 0.0, 0.0])
       }
       PostProcessEffect::Crt {
         scanline_intensity,

@@ -1428,13 +1428,10 @@ impl LightingRenderer {
     output_view: &wgpu::TextureView,
     time: f32,
   ) {
+    let [ar, ag, ab, _] = self.ambient.color.to_linear();
+    let [fr, fg, fb, _] = self.atmosphere.color.to_linear();
     let compose_uniform = LightingParams {
-      color: [
-        self.ambient.color.r as f32 / 255.0,
-        self.ambient.color.g as f32 / 255.0,
-        self.ambient.color.b as f32 / 255.0,
-        1.0,
-      ],
+      color: [ar, ag, ab, 1.0],
       params: [
         self.ambient.intensity,
         self.atmosphere.density,
@@ -1442,12 +1439,7 @@ impl LightingRenderer {
         0.0,
       ],
       time_resolution: [time, targets.width as f32, targets.height as f32, 0.0],
-      atmosphere_color: [
-        self.atmosphere.color.r as f32 / 255.0,
-        self.atmosphere.color.g as f32 / 255.0,
-        self.atmosphere.color.b as f32 / 255.0,
-        1.0,
-      ],
+      atmosphere_color: [fr, fg, fb, 1.0],
     };
     queue.write_buffer(
       &targets.compose_uniforms,
@@ -1487,6 +1479,12 @@ impl LightingRenderer {
   }
 }
 
+/// A light's colour in linear light, intensity in alpha.
+fn light_color(color: crate::core::ui::Color, intensity: f32) -> [f32; 4] {
+  let [r, g, b, _] = color.to_linear();
+  [r, g, b, intensity]
+}
+
 /// The GPU instances of `lights` (at most `MAX_LIGHTS`).
 fn light_instances<'a>(
   lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
@@ -1512,12 +1510,7 @@ fn light_instances<'a>(
         ..
       } => LightInstance {
         position_radius_type: [pos_x, pos_y, *radius, 0.0],
-        color_intensity: [
-          color.r as f32 / 255.0,
-          color.g as f32 / 255.0,
-          color.b as f32 / 255.0,
-          *intensity,
-        ],
+        color_intensity: light_color(*color, *intensity),
         params: [*falloff, 0.0, 0.0, 0.0],
         volumetric: volumetric
           .as_ref()
@@ -1536,12 +1529,7 @@ fn light_instances<'a>(
         ..
       } => LightInstance {
         position_radius_type: [pos_x, pos_y, *radius, 1.0],
-        color_intensity: [
-          color.r as f32 / 255.0,
-          color.g as f32 / 255.0,
-          color.b as f32 / 255.0,
-          *intensity,
-        ],
+        color_intensity: light_color(*color, *intensity),
         params: [*falloff, *angle, *direction, *softness],
         volumetric: volumetric
           .as_ref()

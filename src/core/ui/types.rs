@@ -83,13 +83,33 @@ impl Color {
   pub const PANEL_BG: Self = Self::new(20, 20, 30, 200);
   pub const PANEL_BORDER: Self = Self::rgb(80, 80, 100);
 
-  /// Convert to normalized RGBA (0.0-1.0 range) for shader uniforms.
+  /// The bytes over 255, for colours used as sRGB; colours reaching the GPU as
+  /// light use [`to_linear`](Self::to_linear).
   pub fn to_normalized(self) -> [f32; 4] {
     [
       self.r as f32 / 255.0,
       self.g as f32 / 255.0,
       self.b as f32 / 255.0,
       self.a as f32 / 255.0,
+    ]
+  }
+
+  /// The colour in linear light, for the GPU: each channel decoded with the
+  /// exact sRGB transfer function, alpha straight (0 to 1).
+  pub fn to_linear(self) -> [f32; 4] {
+    let decode = |channel: u8| {
+      let c = f32::from(channel) / 255.0;
+      if c <= 0.04045 {
+        c / 12.92
+      } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+      }
+    };
+    [
+      decode(self.r),
+      decode(self.g),
+      decode(self.b),
+      f32::from(self.a) / 255.0,
     ]
   }
 }
@@ -191,6 +211,18 @@ pub use crate::core::ecs::transform::Anchor;
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn to_linear_decodes_srgb_and_keeps_alpha_straight() {
+    assert_eq!(Color::BLACK.to_linear(), [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(Color::WHITE.to_linear(), [1.0, 1.0, 1.0, 1.0]);
+    let [grey, _, _, alpha] = Color::new(128, 128, 128, 128).to_linear();
+    assert!((grey - 0.215_861).abs() < 1e-5, "{grey}");
+    assert!((alpha - 128.0 / 255.0).abs() < 1e-6, "{alpha}");
+    // The linear segment near black
+    let [dark, _, _, _] = Color::rgb(10, 10, 10).to_linear();
+    assert!((dark - 10.0 / 255.0 / 12.92).abs() < 1e-7, "{dark}");
+  }
 
   #[test]
   fn color_from_hex_rgb() {

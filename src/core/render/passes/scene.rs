@@ -37,21 +37,13 @@ impl RenderPass for Clear {
   }
 }
 
-/// `color` (sRGB) as the linear, premultiplied colour an sRGB image holds.
+/// `color` (sRGB) as the linear, premultiplied colour a scene image holds.
 fn premultiplied_linear(color: Color) -> wgpu::Color {
-  let linear = |channel: u8| {
-    let c = f64::from(channel) / 255.0;
-    if c <= 0.04045 {
-      c / 12.92
-    } else {
-      ((c + 0.055) / 1.055).powf(2.4)
-    }
-  };
-  let a = f64::from(color.a) / 255.0;
+  let [r, g, b, a] = color.to_linear().map(f64::from);
   wgpu::Color {
-    r: linear(color.r) * a,
-    g: linear(color.g) * a,
-    b: linear(color.b) * a,
+    r: r * a,
+    g: g * a,
+    b: b * a,
     a,
   }
 }

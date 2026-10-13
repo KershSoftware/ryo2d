@@ -234,3 +234,26 @@ fn bloom_spreads_as_wide_as_the_original_kernel() {
     "glow 16 px out is {far}, 6 px out {near}"
   );
 }
+
+struct GreyFade;
+
+impl Scene for GreyFade {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.effects().set_fade_color(1.0, Color::rgb(128, 128, 128));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_fade_reaches_the_colour_it_names() {
+  let Some(mut engine) = engine(GreyFade) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let pixel = engine.frame().unwrap().get_pixel(32, 32).0;
+  // Read as linear (the old rule) it showed about 188
+  assert!(pixel[0].abs_diff(128) <= 1, "{pixel:?}");
+}

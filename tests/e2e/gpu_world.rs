@@ -1495,7 +1495,9 @@ fn every_trail_style_draws() {
     return;
   };
   for y in [6, 16, 26] {
-    assert!(frame.get_pixel(20, y).0[1] > 100, "style at row {y}");
+    // The glow row peaks at 89 now that the colour is decoded (it was a
+    // dimmer fraction of a brighter, undecoded green)
+    assert!(frame.get_pixel(20, y).0[1] > 80, "style at row {y}");
   }
 }
 
@@ -1682,5 +1684,22 @@ fn a_glowing_line_over_white_keeps_its_look() {
   };
   // Glow alpha peaks above 1; it must not subtract from what is below
   let red = frame.get_pixel(32, 31).0[0];
-  assert!(red.abs_diff(226) <= 1, "core red {red}");
+  // 0.127 (the decoded 100) times the glow core's 1.94, over white's 1.0
+  assert!(red.abs_diff(136) <= 1, "core red {red}");
+}
+
+#[test]
+fn a_line_shows_the_colour_it_names() {
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Line2D::horizontal(16.0, 0.0, 32.0, Color::rgb(128, 128, 128), 8.0),
+    ));
+  });
+  let Some(frame) = frame_of(scene, (32, 32)) else {
+    return;
+  };
+  let pixel = frame.get_pixel(16, 16).0;
+  // Read as linear (the old rule) it showed about 188
+  assert!(pixel[0].abs_diff(128) <= 1, "{pixel:?}");
 }

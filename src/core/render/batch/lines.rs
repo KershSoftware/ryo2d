@@ -152,15 +152,9 @@ fn effect_reach(params: &[f32; 4]) -> f32 {
   }
 }
 
-/// A colour's bytes over 255, which line shaders take as linear (as 2a's
-/// trail renderer did).
+/// A colour decoded to linear light, for a vertex.
 pub(crate) fn line_color(color: Color) -> [f32; 4] {
-  [
-    color.r as f32 / 255.0,
-    color.g as f32 / 255.0,
-    color.b as f32 / 255.0,
-    color.a as f32 / 255.0,
-  ]
+  color.to_linear()
 }
 
 /// Effect type in bits 0-3 (0 none, 1 lightning, 2 noise, 3 scroll, 4
