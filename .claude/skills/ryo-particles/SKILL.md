@@ -201,7 +201,7 @@ ParticleEmitter::sparks(spark)
   .with_lighting(false)              // full brightness in the dark (glowing embers)
 ```
 
-`BlendMode::Alpha` (the default) suits smoke and dust; `Multiply` darkens (soot, shadows), `Screen` lightens softly.
+`BlendMode::Alpha` (the default) suits smoke and dust; `Multiply` darkens (soot, shadows), `Screen` lightens softly (a 0..1 formula: over pixels brighter than white it dims them; use `Additive` for light above white).
 
 ## Tips
 

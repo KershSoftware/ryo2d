@@ -16,6 +16,8 @@ struct EffectParams {
 @fragment
 fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
     let scene_color = textureSample(t_scene, s_input, in.uv);
+    // Additive pile-ups can overflow the scene's half floats the same way
+    let scene_rgb = min(scene_color.rgb, vec3<f32>(65504.0));
     // Half floats past 65504 are infinite, and 0 x infinity is NaN: many
     // lights or a huge intensity can overflow the light buffer
     let light_color = min(textureSample(t_light, s_input, in.uv).rgb, vec3<f32>(65504.0));
@@ -38,7 +40,7 @@ fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
     let total_light = ambient + scattered_light;
 
     // Apply lighting to scene
-    var lit_color = scene_color.rgb * total_light;
+    var lit_color = scene_rgb * total_light;
 
     // Apply atmosphere fog - blend toward fog color based on density
     // The effect is subtle: density of 1.0 applies ~40% fog tint

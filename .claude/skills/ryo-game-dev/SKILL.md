@@ -335,7 +335,7 @@ return SceneAction::SwitchWith(
 - `Renderable::tiled(..)` and composite tiles are laid out from the entity's position (the first tile's top-left), whatever the anchor.
 - Sprites: `ctx.assets.load_sprite("player.png")` (relative to `assets/`, returns a `Result`), `ctx.assets.create_sprite(Sprite::solid_rect(w, h, r, g, b, a), "name")`, `Sprite::solid_circle(..)`.
 - Crisp versus smooth: `.with_filter(Filter::Nearest)` keeps hard texels when scaled (pixel art in a smooth game), `.with_filter(Filter::Linear)` smooths (a portrait in a pixel-art game); `Filter::Default` follows the presentation. Linear sprites drawn small stay smooth (mipmaps).
-- Glows and light: `.with_blend(BlendMode::Additive)` adds light (fire, sparks, lasers); `Multiply` darkens, `Screen` lightens. `.with_lighting(false)` keeps a sprite at full brightness in the dark.
+- Glows and light: `.with_blend(BlendMode::Additive)` adds light (fire, sparks, lasers); `Multiply` darkens, `Screen` lightens (a 0..1 formula: over pixels brighter than white it dims them; use `Additive` for light above white). `.with_lighting(false)` keeps a sprite at full brightness in the dark.
 
 Additive particles and trails:
 

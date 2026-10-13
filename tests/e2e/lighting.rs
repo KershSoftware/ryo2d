@@ -359,3 +359,36 @@ fn lights_past_the_half_float_range_leave_no_nan() {
     assert!(shown, "x {x}: {pixel:?}");
   }
 }
+
+/// Two additive sprites of emission 65504 pile up past the half float range
+/// in the scene; with no light and no ambient the lit image stays black
+/// (infinity x 0 is NaN, which bloom would spread). Backends that saturate
+/// half float blending cannot produce the infinity, so this guards the rest.
+#[test]
+fn an_overflowed_scene_texel_in_the_dark_stays_black() {
+  let Some(frame) = lit(|ctx| {
+    {
+      let mut lighting = ctx.lighting();
+      lighting.set_ambient(AmbientLight::with_intensity(0.0));
+      lighting.set_enabled(true);
+    }
+    ctx.effects().set_bloom(1.0);
+    let spark =
+      SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 255, 255, 255), "lit-spark");
+    for _ in 0..2 {
+      ctx.world.spawn((
+        Transform::from_xy(60.0, 28.0),
+        Renderable::sprite(spark.clone())
+          .with_anchor(Anchor::TopLeft)
+          .with_blend(BlendMode::Additive)
+          .with_emission(65504.0)
+          .with_z_order(1),
+      ));
+    }
+  }) else {
+    return;
+  };
+  for (x, y, pixel) in frame.enumerate_pixels() {
+    assert!(pixel.0[..3].iter().all(|&c| c < 4), "({x}, {y}): {pixel:?}");
+  }
+}

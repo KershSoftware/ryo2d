@@ -172,7 +172,7 @@ Blend and filter modes (on `Renderable`, `ParticleEmitter`, `SpriteDraw`, `Paral
 | `Premultiplied` | the texture's colour is already multiplied by alpha (render targets) |
 | `Additive` | adds light: fire, sparks, glows, lasers |
 | `Multiply` | darkens what is below by its colour |
-| `Screen` | lightens what is below without blowing out |
+| `Screen` | lightens what is below without blowing out; a 0..1 formula, so over pixels brighter than white (HDR light, emission) it dims them, and an emissive Screen drawable over a bright pixel can go below zero and show black: use `Additive` for light above white |
 
 `enum Filter { Default, Nearest, Linear }`: `Default` is nearest under `pixel_art` and linear otherwise. Linear sampling uses mipmaps, so sprites drawn small stay smooth; nearest keeps hard texels.
 | `has_shader`, `has_drop_shadow`, `has_blob_shadow`, `has_contact_shadow`, `is_single`, `is_tiled`, `tile_count() -> u32` | queries |

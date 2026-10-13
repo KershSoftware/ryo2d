@@ -19,7 +19,10 @@ pub enum BlendMode {
   Additive,
   /// Darkens what is below by the drawable's colour: shade and stains
   Multiply,
-  /// Lightens what is below without blowing out to white
+  /// Lightens what is below without blowing out to white. A 0..1 formula:
+  /// over pixels brighter than white (HDR light, emission) it dims them, and
+  /// an emissive Screen drawable over a bright pixel can go below zero and
+  /// show black. Use `Additive` for light above white
   Screen,
 }
 
