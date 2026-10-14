@@ -144,6 +144,9 @@ pub mod prelude {
     QueryFilter, RigidBody, Touch, TriggerContents, TriggerEntered, TriggerExited,
   };
 
+  // Gameplay
+  pub use crate::core::gameplay::{MoveBindings, MoveIntent, read_move_bindings};
+
   // 2D lighting
   pub use crate::core::lighting::{
     AmbientLight, Atmosphere, GodRaysQuality, Light2D, LightOccluder2D, LightingSettings,

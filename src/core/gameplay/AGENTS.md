@@ -8,9 +8,13 @@ Gameplay on top of physics: movement presets and the input that drives them, tri
 
 ## The `Movement` Set
 
-`register_gameplay_systems` (`mod.rs`) adds one chain to `FixedSet::Movement`, which runs after the scene's `update` and `FixedSet::Game` and before `FixedSet::Physics`. Systems join the chain in this order as they are written: `place_respawn_points`, `warn_untriggered`, `collect_pickups`, `respawn_pickups`, `apply_kill_zones`, `apply_checkpoints`, `read_move_bindings`, `update_knockback`, `platformer_movement`, `top_down_movement`. Today only `update_knockback` is in it. Every gameplay system's resources are `Time`, `Input` and messages, so a world with those three (`tests/integration/support.rs::gameplay_world`) runs them without a simulation.
+`register_gameplay_systems` (`mod.rs`) adds one chain to `FixedSet::Movement`, which runs after the scene's `update` and `FixedSet::Game` and before `FixedSet::Physics`. Systems join the chain in this order as they are written: `place_respawn_points`, `warn_untriggered`, `collect_pickups`, `respawn_pickups`, `apply_kill_zones`, `apply_checkpoints`, `read_move_bindings`, `update_knockback`, `platformer_movement`, `top_down_movement`. Today `read_move_bindings` and `update_knockback` are in it. Every gameplay system's resources are `Time`, `Input` and messages, so a world with those three (`tests/integration/support.rs::gameplay_world`) runs them without a simulation.
 
 Invalid input is logged once per entity with a `Local<EntityHashSet>` and `crate::engine_warn!(module: "Gameplay", ...)`; nothing panics.
+
+## Movement Input
+
+`MoveIntent` (`intent.rs`) is what every movement preset reads: a clamped `direction`, `jump_held`, and the one-shot `jump_pressed` / `dash_pressed`. `MoveBindings` (requires `MoveIntent`) fills it from the keyboard and the first gamepad: `read_move_bindings` writes every bound intent each fixed step. Input is read from the fixed view, so a press is seen once, in the first fixed step after it, with no latch of its own. Code that writes `MoveIntent` directly (AI, networking) owns the one-shots: presets clear the pressed flags they act on. `direction` is not clamped on write; presets use `clamped_direction()`.
 
 ## Knockback
 

@@ -2,10 +2,12 @@
 //! them, trigger behaviours and knockback. Nothing here names Rapier; this
 //! module depends on `physics`, never the reverse.
 
+mod intent;
 mod knockback;
 #[cfg(test)]
 pub(crate) mod test_util;
 
+pub use intent::{MoveBindings, MoveIntent, read_move_bindings};
 pub use knockback::update_knockback;
 
 use crate::core::ecs::IntoScheduleConfigs;
@@ -15,6 +17,8 @@ use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
 pub fn register_gameplay_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::FixedUpdate,
-    (update_knockback,).chain().in_set(FixedSet::Movement),
+    (read_move_bindings, update_knockback)
+      .chain()
+      .in_set(FixedSet::Movement),
   );
 }
