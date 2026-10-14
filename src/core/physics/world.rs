@@ -1012,32 +1012,39 @@ impl Physics {
       self.warn_once(entity, "a non-finite Transform is not pushed to physics");
       return;
     }
-    let Some(entry) = self.body_entries.get(&entity) else {
+    let Some(handle) = self.handle_if_moved(entity, translation, rotation) else {
       return;
     };
-    let Some(body) = self.bodies.get_mut(entry.handle) else {
-      return;
-    };
-    let current = (from_rapier(body.translation()), body.rotation().angle());
-    if poses_differ(current, (translation, rotation)) {
+    if let Some(body) = self.bodies.get_mut(handle) {
       body.set_position(pose(translation, rotation), true);
     }
+  }
+
+  /// A body's handle when the pose differs from Rapier's. Read through
+  /// `get`: `get_mut` marks a body modified, and Rapier then reprocesses it
+  /// in the next step even when nothing was written.
+  fn handle_if_moved(
+    &self,
+    entity: Entity,
+    translation: Vec2,
+    rotation: f32,
+  ) -> Option<RigidBodyHandle> {
+    let handle = self.body_entries.get(&entity)?.handle;
+    let body = self.bodies.get(handle)?;
+    let current = (from_rapier(body.translation()), body.rotation().angle());
+    poses_differ(current, (translation, rotation)).then_some(handle)
   }
 
   /// Put a body where the game moved it, if that differs from Rapier's pose:
   /// a kinematic body travels there over the step, any other body teleports
   /// and wakes.
   pub(crate) fn move_body(&mut self, entity: Entity, translation: Vec2, rotation: f32) {
-    let Some(entry) = self.body_entries.get(&entity) else {
+    let Some(handle) = self.handle_if_moved(entity, translation, rotation) else {
       return;
     };
-    let Some(body) = self.bodies.get_mut(entry.handle) else {
+    let Some(body) = self.bodies.get_mut(handle) else {
       return;
     };
-    let current = (from_rapier(body.translation()), body.rotation().angle());
-    if !poses_differ(current, (translation, rotation)) {
-      return;
-    }
     if body.is_kinematic() {
       body.set_next_kinematic_position(pose(translation, rotation));
     } else {
@@ -1046,21 +1053,30 @@ impl Physics {
     self.teleported.insert(entity);
   }
 
-  /// Give a dynamic body the game's velocities where they differ from Rapier's.
+  /// Give a dynamic body the game's velocities where they differ from
+  /// Rapier's (compared through `get`, as for `handle_if_moved`).
   pub(crate) fn push_velocity(&mut self, entity: Entity, linvel: Vec2, angvel: f32) {
-    let Some(entry) = self.body_entries.get(&entity) else {
-      return;
-    };
-    let Some(body) = self.bodies.get_mut(entry.handle) else {
-      return;
-    };
-    if !body.is_dynamic() || !linvel.is_finite() || !angvel.is_finite() {
+    if !linvel.is_finite() || !angvel.is_finite() {
       return;
     }
-    if from_rapier(body.linvel()) != linvel {
+    let Some(handle) = self.body_entries.get(&entity).map(|entry| entry.handle) else {
+      return;
+    };
+    let Some(body) = self.bodies.get(handle) else {
+      return;
+    };
+    let new_linvel = from_rapier(body.linvel()) != linvel;
+    let new_angvel = body.angvel() != angvel;
+    if !body.is_dynamic() || !(new_linvel || new_angvel) {
+      return;
+    }
+    let Some(body) = self.bodies.get_mut(handle) else {
+      return;
+    };
+    if new_linvel {
       body.set_linvel(to_rapier(linvel), true);
     }
-    if body.angvel() != angvel {
+    if new_angvel {
       body.set_angvel(angvel, true);
     }
   }
