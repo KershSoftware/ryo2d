@@ -171,8 +171,9 @@ pub struct CharacterState {
   pub(crate) floor_point: Vec2,
   /// The collider underfoot (drop-through starts from it)
   pub(crate) floor_collider: Option<Entity>,
-  /// The last move started inside something solid, or the character is new
-  /// or teleported: the next move pushes out first
+  /// The last move ended inside or within the skin of something solid,
+  /// is still pushing out, or the character is new (until the first step
+  /// after it registers) or teleported: the next move pushes out first
   pub(crate) stuck: bool,
   /// The one-way collider a drop-through started from
   pub(crate) drop_from: Option<Entity>,
@@ -199,6 +200,21 @@ impl Default for CharacterState {
       stuck: true,
       drop_from: None,
     }
+  }
+}
+
+impl CharacterState {
+  /// In the air, touching nothing, and pushing out first on the next move:
+  /// the state after a teleport (that step has no sweep).
+  fn teleported(&mut self) {
+    let mut hits = std::mem::take(&mut self.hits);
+    hits.clear();
+    *self = Self {
+      hits,
+      velocity_before: self.velocity_before,
+      drop_from: self.drop_from,
+      ..Self::default()
+    };
   }
 }
 
@@ -269,8 +285,7 @@ impl Physics {
       return None;
     };
     if self.was_teleported(entity) {
-      state.stuck = true;
-      state.hits.clear();
+      state.teleported();
       return None;
     }
     let mut wanted = *velocity;
@@ -347,7 +362,9 @@ impl Physics {
     let mut pose = start;
     // Push out of what it overlaps first, when the last move ended inside
     // something or there is no move (the sweep's casts push out otherwise).
-    // Rapier does it when the shape does not move.
+    // Rapier does it when the shape does not move, by at most a quarter of
+    // the shape's height a call: a push-out that moved it goes again next step
+    let mut pushing_out = false;
     if state.stuck || desired.length() <= sweep::MIN_MOVE {
       let push_out = KinematicCharacterController {
         snap_to_ground: None,
@@ -355,6 +372,7 @@ impl Physics {
       };
       let out = push_out.move_shape(dt, &queries, &*shape, &pose, Vector::ZERO, |_| {});
       pose.translation += out.translation;
+      pushing_out = out.translation != Vector::ZERO;
     }
     // Keep to the ground only from the ground, and never on the way up
     let snap = platformer && was_on_floor && desired.dot(up) <= 0.0;
@@ -442,7 +460,9 @@ impl Physics {
     state.left_floor = was_on_floor && !state.on_floor;
     state.sliding_down_slope = platformer && moved.sliding_down_slope;
     state.velocity_before = wanted;
-    state.stuck = stuck;
+    // Registering this step, the queries saw nothing registered with it (a
+    // level spawned in the same tick): push out again once they do
+    state.stuck = stuck || pushing_out || self.is_registering(entity);
     *velocity = real;
 
     let delta = from_rapier(pose.translation - start.translation);
@@ -759,6 +779,76 @@ mod tests {
     run(&mut world, &mut s, 10);
     let x = at(&world, e).translation.x;
     assert!(x.is_finite() && x + 10.0 <= 90.5, "{x}");
+  }
+
+  // Review focus 1: a level spawned in the same tick as the character joins
+  // the broad phase at the step, so the first step's queries see none of it
+  #[test]
+  fn a_falling_character_spawned_in_a_wall_with_the_level_is_pushed_out() {
+    let (mut world, mut s) = world(60);
+    world.spawn((Transform::from_xy(100.0, 0.0), Collider::rect(20.0, 400.0)));
+    let e = character(&mut world, 85.0, 0.0);
+    for _ in 0..5 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let x = at(&world, e).translation.x;
+    assert!(x + 10.0 <= 90.5, "{x}");
+  }
+
+  // Review focus 1: Rapier pushes out at most a quarter of the height a step
+  #[test]
+  fn a_falling_character_spawned_deep_in_a_wall_is_pushed_out_over_a_few_steps() {
+    let (mut world, mut s) = world(60);
+    world.spawn((Transform::from_xy(100.0, 0.0), Collider::rect(20.0, 400.0)));
+    let e = character(&mut world, 95.0, 0.0);
+    for _ in 0..5 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let x = at(&world, e).translation.x;
+    assert!(x + 10.0 <= 90.5, "{x}");
+  }
+
+  // Review focus 1
+  #[test]
+  fn a_falling_character_teleported_into_a_wall_is_pushed_out() {
+    let (mut world, mut s) = world(60);
+    world.spawn((Transform::from_xy(100.0, 0.0), Collider::rect(20.0, 400.0)));
+    let e = character(&mut world, 0.0, -100.0);
+    for _ in 0..3 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    world.get_mut::<Transform>(e).unwrap().translation.x = 85.0;
+    for _ in 0..5 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let x = at(&world, e).translation.x;
+    assert!(x + 10.0 <= 90.5, "{x}");
+  }
+
+  #[test]
+  fn a_teleport_into_the_air_forgets_the_floor() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = character(&mut world, 0.0, 79.0);
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    assert!(state(&world, e).on_floor);
+    world.get_mut::<Transform>(e).unwrap().translation.y = -100.0;
+    let mut landings = 0;
+    for i in 0..120 {
+      step(&mut world, &mut s, e, 980.0);
+      let st = state(&world, e);
+      if i < 2 {
+        assert!(
+          !st.on_floor && !st.left_floor && !st.landed && st.floor.is_none(),
+          "step {i} after the teleport: {st:?}"
+        );
+      }
+      landings += usize::from(st.landed);
+    }
+    assert_eq!(landings, 1, "landed once");
+    assert!(state(&world, e).on_floor);
   }
 
   // Review focus 3

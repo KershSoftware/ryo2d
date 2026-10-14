@@ -305,6 +305,9 @@ pub struct Physics {
   pub(crate) compared: usize,
   /// Bodies the game moved through `Transform` this step
   teleported: EntityHashSet,
+  /// Bodies registered since the last step: their colliders, and those
+  /// registered with them, join the broad phase (and the queries) at the step
+  registered: EntityHashSet,
   /// Kinematic bodies the engine moves by velocity this step
   driven: EntityHashSet,
   warned: EntityHashSet,
@@ -458,6 +461,7 @@ impl Physics {
       #[cfg(test)]
       compared: 0,
       teleported: EntityHashSet::default(),
+      registered: EntityHashSet::default(),
       driven: EntityHashSet::default(),
       warned: EntityHashSet::default(),
       #[cfg(test)]
@@ -545,6 +549,13 @@ impl Physics {
         fell_asleep: false,
       },
     );
+    self.registered.insert(entity);
+  }
+
+  /// Whether the body was registered since the last step (queries cannot
+  /// see it, nor anything registered with it, until the step).
+  pub(crate) fn is_registering(&self, entity: Entity) -> bool {
+    self.registered.contains(&entity)
   }
 
   /// Apply an edited `RigidBody` in place: only fields that changed are written.
@@ -1357,6 +1368,7 @@ impl Physics {
       }
     }
     self.departed.clear();
+    self.registered.clear();
     self.break_joints(dt);
     for entry in self.body_entries.values_mut() {
       let asleep = self
