@@ -202,7 +202,8 @@ pub(crate) fn placement(
 /// included); a body's colliders that stay become fixed and its joints
 /// inert. Entities that lost their `RigidBody` or their parent are
 /// remembered for `sync_colliders`, which finds the colliders at and below
-/// them a new owner.
+/// them a new owner. An entity left without any of the three loses its
+/// logged warnings, registered or not.
 pub(crate) fn forget_removed(
   mut physics: ResMut<Physics>,
   mut joints: RemovedComponents<Joint>,
@@ -210,15 +211,25 @@ pub(crate) fn forget_removed(
   mut bodies: RemovedComponents<RigidBody>,
   mut detached: RemovedComponents<ChildOf>,
   relinkable: Query<(), Relinkable>,
+  kept: Query<(), (HasPhysics, Allow<Disabled>)>,
 ) {
   for entity in joints.read() {
     physics.remove_joint(entity);
+    if !kept.contains(entity) {
+      physics.forget_warnings(entity);
+    }
   }
   for entity in colliders.read() {
     physics.remove_collider(entity);
+    if !kept.contains(entity) {
+      physics.forget_warnings(entity);
+    }
   }
   for entity in bodies.read() {
     physics.remove_body(entity);
+    if !kept.contains(entity) {
+      physics.forget_warnings(entity);
+    }
     if relinkable.contains(entity) {
       physics.relink.insert(entity);
     }
@@ -2238,6 +2249,52 @@ mod tests {
     world.get_mut::<Transform>(e).unwrap().scale = Vec2::ZERO;
     run(&mut world, &mut s, 1);
     assert_eq!(world.resource::<Physics>().collider_count(), 0);
+  }
+
+  #[test]
+  fn a_collider_shrunk_to_zero_again_and_again_warns_once() {
+    // A pickup that tweens in from nothing every time it respawns
+    let (mut world, mut s) = world(60);
+    let e = world
+      .spawn((
+        Transform::IDENTITY.with_scale(Vec2::ZERO),
+        Collider::circle(10.0),
+      ))
+      .id();
+    for _ in 0..3 {
+      run(&mut world, &mut s, 1);
+      world.get_mut::<Transform>(e).unwrap().scale = Vec2::ONE;
+      run(&mut world, &mut s, 1);
+      assert_eq!(world.resource::<Physics>().collider_count(), 1);
+      world.get_mut::<Transform>(e).unwrap().scale = Vec2::ZERO;
+    }
+    run(&mut world, &mut s, 1);
+    assert_eq!(world.resource::<Physics>().warnings, 1);
+  }
+
+  #[test]
+  fn entities_that_never_registered_leave_no_warning_behind() {
+    let (mut world, mut s) = world(60);
+    let body = world
+      .spawn((Transform::from_xy(f32::NAN, 0.0), RigidBody::dynamic()))
+      .id();
+    let collider = world
+      .spawn((Transform::IDENTITY, Collider::rect(0.0, 4.0)))
+      .id();
+    let joint = world.spawn(Joint::fixed(body, collider)).id();
+    let removed = world
+      .spawn((Transform::IDENTITY, Collider::rect(0.0, 4.0)))
+      .id();
+    run(&mut world, &mut s, 1);
+    assert_eq!(world.resource::<Physics>().warned_count(), 4);
+    world.despawn(body);
+    world.despawn(collider);
+    world.despawn(joint);
+    world.entity_mut(removed).remove::<Collider>();
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    assert_eq!(physics.warned_count(), 0);
+    assert!(physics.refused.is_empty());
   }
 
   #[test]

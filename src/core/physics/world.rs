@@ -435,6 +435,14 @@ impl Physics {
     density / (unit * unit)
   }
 
+  /// Forget the warnings logged for an entity that has no body, collider
+  /// or joint left (despawned included). Warnings are once per entity while
+  /// it keeps them: taking a collider out of the simulation and putting it
+  /// back (a zero scale, say) does not log again.
+  pub(crate) fn forget_warnings(&mut self, entity: Entity) {
+    self.warned.remove(&entity);
+  }
+
   pub(crate) fn warn_once(&mut self, entity: Entity, what: &str) {
     if self.warned.insert(entity) {
       #[cfg(test)]
@@ -531,6 +539,7 @@ impl Physics {
   /// they join another body. Its joints go inert (Rapier removes them with
   /// the body) until both their bodies are simulated again.
   pub(crate) fn remove_body(&mut self, entity: Entity) {
+    self.refused.remove(&entity);
     let Some(entry) = self.body_entries.remove(&entity) else {
       return;
     };
@@ -579,7 +588,6 @@ impl Physics {
         }
       }
     }
-    self.warned.remove(&entity);
   }
 
   fn add_collider(
@@ -813,7 +821,6 @@ impl Physics {
       &mut self.soft_bodies,
       true,
     );
-    self.warned.remove(&entity);
   }
 
   /// Disable or re-enable an entity's body, collider and joint in Rapier;
@@ -887,7 +894,7 @@ impl Physics {
       return;
     }
     // Remade: a warning already logged for it stays logged
-    self.unlink_joint(entity);
+    self.remove_joint(entity);
     self.insert_joint(entity, joint, enabled);
   }
 
@@ -949,13 +956,8 @@ impl Physics {
     }
   }
 
-  pub(crate) fn remove_joint(&mut self, entity: Entity) {
-    self.unlink_joint(entity);
-    self.warned.remove(&entity);
-  }
-
   /// Take a joint out of Rapier and forget it.
-  fn unlink_joint(&mut self, entity: Entity) {
+  pub(crate) fn remove_joint(&mut self, entity: Entity) {
     if let Some(entry) = self.joint_entries.remove(&entity)
       && let Some(handle) = entry.handle
     {
@@ -1308,6 +1310,12 @@ impl Physics {
   #[cfg(test)]
   pub(crate) fn collider_count(&self) -> usize {
     self.collider_entries.len()
+  }
+
+  /// Entities with a warning logged, for tests.
+  #[cfg(test)]
+  pub(crate) fn warned_count(&self) -> usize {
+    self.warned.len()
   }
 
   /// Whether the entity's body is asleep (at rest, costing nothing).
