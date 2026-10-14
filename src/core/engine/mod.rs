@@ -313,6 +313,8 @@ pub(crate) fn init_world_resources(
   });
   world.insert_resource(RenderPipeline::default_2d());
   world.insert_resource(PhysicsPaused(false));
+  world.insert_resource(frame::PendingTickCheck::default());
+  world.add_observer(frame::record_tick_check);
   world.insert_resource(config.physics.clone());
   world.insert_resource(Physics::new());
   world.insert_resource(commands);

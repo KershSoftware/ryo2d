@@ -1,8 +1,8 @@
 //! The engine's phases and the schedules behind them.
 
 use crate::core::ecs::kernel::{
-  Direction, InternedSystemSet, IntoScheduleConfigs, NodeId, Schedule, ScheduleLabel,
-  ScheduleSystem, SingleThreadedExecutor, SystemSet, World,
+  CheckChangeTicks, Direction, InternedSystemSet, IntoScheduleConfigs, NodeId, Schedule,
+  ScheduleLabel, ScheduleSystem, SingleThreadedExecutor, SystemSet, World,
 };
 
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,7 +57,10 @@ pub enum FixedSet {
   Scene,
   /// The scenes' fixed systems, and builder systems that name no other place
   Game,
-  /// Propagate, register, sync, step, write back
+  /// Trigger behaviours, tile collider rebuilds, movement input, knockback
+  /// and the movement presets
+  Movement,
+  /// The physics step: one system running physics' own schedule
   Physics,
   /// Transform propagation
   Transforms,
@@ -119,6 +122,7 @@ impl EngineSchedules {
         FixedSet::Juice,
         FixedSet::Scene,
         FixedSet::Game,
+        FixedSet::Movement,
         FixedSet::Physics,
         FixedSet::Transforms,
         FixedSet::Trails,
@@ -144,6 +148,22 @@ impl EngineSchedules {
       post_update,
       last: new_schedule(Last),
       game_calls: 0,
+    }
+  }
+
+  /// Clamp every system's change ticks after the world checked its own.
+  /// Bevy clamps the schedules in its `Schedules` resource only; the
+  /// engine's are not there (see `engine::frame::PendingTickCheck`).
+  pub(crate) fn check_change_ticks(&mut self, check: CheckChangeTicks) {
+    for schedule in [
+      &mut self.first,
+      &mut self.pre_update,
+      &mut self.fixed_update,
+      &mut self.update,
+      &mut self.post_update,
+      &mut self.last,
+    ] {
+      schedule.check_change_ticks(check);
     }
   }
 
@@ -284,6 +304,12 @@ impl SceneSchedules {
       schedule.run(world);
     }
   }
+
+  pub(crate) fn check_change_ticks(&mut self, check: CheckChangeTicks) {
+    for schedule in [&mut self.fixed, &mut self.update].into_iter().flatten() {
+      schedule.check_change_ticks(check);
+    }
+  }
 }
 
 #[cfg(test)]
@@ -397,6 +423,10 @@ mod tests {
     );
     s.add_systems(
       Phase::FixedUpdate,
+      push("movement").in_set(FixedSet::Movement),
+    );
+    s.add_systems(
+      Phase::FixedUpdate,
       push("snapshot").in_set(FixedSet::Snapshot),
     );
     s.add_systems(
@@ -407,7 +437,7 @@ mod tests {
     s.run(Phase::FixedUpdate, &mut world);
     assert_eq!(
       world.resource::<Log>().0,
-      ["snapshot", "game", "physics", "transforms"]
+      ["snapshot", "game", "movement", "physics", "transforms"]
     );
   }
 

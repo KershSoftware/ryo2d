@@ -1,8 +1,8 @@
 //! Shared helpers for the physics tests.
 
-use super::sync::register_physics_systems;
+use super::sync::{PhysicsSchedule, register_physics_systems};
 use super::{Collider, Physics, PhysicsConfig, RigidBody};
-use crate::core::ecs::{Entity, Transform, World};
+use crate::core::ecs::{Entity, Mut, Transform, World};
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, Phase};
 use crate::core::time::Time;
@@ -17,6 +17,15 @@ pub(crate) fn world(hz: u32) -> (World, EngineSchedules) {
   let mut schedules = EngineSchedules::new();
   register_physics_systems(&mut schedules);
   (world, schedules)
+}
+
+/// Physics' own schedule, made if the step has not run yet: tests that
+/// place systems inside the step add them here.
+pub(crate) fn physics_schedule(world: &mut World) -> Mut<'_, PhysicsSchedule> {
+  if !world.contains_resource::<PhysicsSchedule>() {
+    world.insert_resource(PhysicsSchedule::new());
+  }
+  world.resource_mut::<PhysicsSchedule>()
 }
 
 pub(crate) fn run(world: &mut World, s: &mut EngineSchedules, steps: usize) {

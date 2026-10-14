@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::core::audio::Audio;
 use crate::core::console::CommandRegistry;
 use crate::core::ecs::World;
+use crate::core::ecs::kernel::CheckChangeTicks;
 use crate::core::graphics::GpuRenderContext;
 use crate::core::messages::SceneMessages;
 use crate::core::schedule::SceneSchedules;
@@ -137,6 +138,13 @@ fn clear_console_scope(world: &mut World, scope_id: u64) {
 }
 
 impl SceneManager {
+  /// Clamp the change ticks of every stacked scene's schedules.
+  pub(crate) fn check_change_ticks(&mut self, check: CheckChangeTicks) {
+    for slot in &mut self.scenes {
+      slot.schedules.check_change_ticks(check);
+    }
+  }
+
   /// Create a new empty scene manager.
   pub fn new() -> Self {
     SceneManager {

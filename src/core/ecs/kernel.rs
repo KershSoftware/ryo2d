@@ -6,6 +6,8 @@
 
 pub use bevy_ecs::bundle::Bundle;
 pub(crate) use bevy_ecs::change_detection::Tick;
+// The world's change-tick check, for clamping schedules it does not own
+pub(crate) use bevy_ecs::change_detection::CheckChangeTicks;
 pub use bevy_ecs::change_detection::{DetectChanges, DetectChangesMut, Mut, Ref};
 pub use bevy_ecs::component::{Component, Mutable};
 pub use bevy_ecs::entity::Entity;

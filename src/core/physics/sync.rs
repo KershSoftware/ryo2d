@@ -1,5 +1,6 @@
 //! Keep Rapier in step with the world. Each fixed step, in
-//! `FixedSet::Physics` while `PhysicsPaused` is false: forget what went away,
+//! `FixedSet::Physics` (one system running `PhysicsSchedule`) while
+//! `PhysicsPaused` is false: forget what went away,
 //! track disabled entities, propagate transforms, register new bodies, bring
 //! colliders in line, push the game's changes, bring joints in line, step,
 //! write the simulated bodies back and turn contacts and broken joints into
@@ -26,12 +27,13 @@ use super::convert::angle_delta;
 use super::events::{CollisionStarted, CollisionStopped, Contact, ContactForce, JointBroken};
 use super::joint::Joint;
 use super::world::{Physics, Placement, WriteBack};
+use crate::core::ecs::kernel::{CheckChangeTicks, Schedule, ScheduleLabel, SingleThreadedExecutor};
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
   EcsSystemState, Entity, GlobalTransform, Has, IntoScheduleConfigs, MessageWriter, Mut, Or,
-  ParamSet, Query, Ref, RemovedComponents, Res, ResMut, SystemChangeTick, Tick, Transform, Vec2,
-  Velocity, With, World,
+  ParamSet, Query, Ref, RemovedComponents, Res, ResMut, Resource, SystemChangeTick, Tick,
+  Transform, Vec2, Velocity, With, World,
 };
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
@@ -821,24 +823,66 @@ pub(crate) fn emit_messages(
   }
 }
 
-/// Add the physics systems to `FixedSet::Physics`, chained, running only
-/// while physics is not paused.
+#[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct PhysicsStep;
+
+/// Physics' own schedule: the step's systems, chained. It runs as one
+/// system in `FixedSet::Physics` (`run_physics_step`), so a game system can
+/// never be ordered between them: the write-back's tick and the chain's
+/// order are physics' alone.
+#[derive(Resource)]
+pub(crate) struct PhysicsSchedule(Schedule);
+
+impl PhysicsSchedule {
+  pub(crate) fn new() -> Self {
+    let mut schedule = Schedule::new(PhysicsStep);
+    schedule.set_executor(SingleThreadedExecutor::new());
+    schedule.add_systems(
+      (
+        forget_removed,
+        track_disabled,
+        propagate_transforms,
+        register_bodies,
+        sync_colliders,
+        push_changes,
+        sync_joints,
+        step_simulation,
+        read_back,
+        emit_messages,
+      )
+        .chain(),
+    );
+    Self(schedule)
+  }
+
+  pub(crate) fn check_change_ticks(&mut self, check: CheckChangeTicks) {
+    self.0.check_change_ticks(check);
+  }
+
+  /// Add systems inside the step, for tests that probe its invariants.
+  #[cfg(test)]
+  pub(crate) fn add_systems<M>(
+    &mut self,
+    systems: impl IntoScheduleConfigs<crate::core::ecs::kernel::ScheduleSystem, M>,
+  ) {
+    self.0.add_systems(systems);
+  }
+}
+
+/// `FixedSet::Physics`: run physics' own schedule, made on first use.
+pub(crate) fn run_physics_step(world: &mut World) {
+  if !world.contains_resource::<PhysicsSchedule>() {
+    world.insert_resource(PhysicsSchedule::new());
+  }
+  world.resource_scope(|world, mut schedule: Mut<PhysicsSchedule>| schedule.0.run(world));
+}
+
+/// Add the physics step to `FixedSet::Physics`, running only while physics
+/// is not paused.
 pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::FixedUpdate,
-    (
-      forget_removed,
-      track_disabled,
-      propagate_transforms,
-      register_bodies,
-      sync_colliders,
-      push_changes,
-      sync_joints,
-      step_simulation,
-      read_back,
-      emit_messages,
-    )
-      .chain()
+    run_physics_step
       .in_set(FixedSet::Physics)
       .run_if(physics_enabled),
   );
@@ -3126,6 +3170,44 @@ mod tests {
     }
   }
 
+  /// Moves the first dynamic body to x = 500 every step.
+  fn teleport_to_500(mut bodies: Query<&mut Transform, With<RigidBody>>) {
+    for mut transform in &mut bodies {
+      transform.translation.x = 500.0;
+    }
+  }
+
+  fn nothing() {}
+
+  #[test]
+  fn a_system_ordered_only_after_another_never_runs_inside_the_physics_step() {
+    // A system that names no set but orders itself after another call's
+    // system belongs to no set: before, the scheduler could place it
+    // between the chain's propagation and its write-back, which then
+    // overwrote what it wrote. The step is one system now.
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let body = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+      ))
+      .id();
+    s.add_game_systems(Phase::FixedUpdate, nothing);
+    s.add_game_systems(Phase::FixedUpdate, teleport_to_500.after(nothing));
+    run(&mut world, &mut s, 3);
+    let (position, _) = world.resource::<Physics>().body_pose(body).unwrap();
+    assert!((position.x - 500.0).abs() < 1e-3, "{position:?}");
+  }
+
+  #[test]
+  fn the_physics_step_runs_its_own_schedule() {
+    let (mut world, mut s) = world(60);
+    run(&mut world, &mut s, 1);
+    assert!(world.contains_resource::<PhysicsSchedule>());
+  }
+
   #[test]
   fn a_command_applied_right_before_the_write_back_is_pushed() {
     let (mut world, mut s, sleeper) = sleeping_ball();
@@ -3137,10 +3219,7 @@ mod tests {
       ))
       .id();
     world.insert_resource(DeferredWrites::default());
-    s.add_systems(
-      Phase::FixedUpdate,
-      defer_writes.after(step_simulation).before(read_back),
-    );
+    physics_schedule(&mut world).add_systems(defer_writes.after(step_simulation).before(read_back));
     run(&mut world, &mut s, 1);
     // Neither body is written back: one is asleep, the other is not driven
     *world.resource_mut::<DeferredWrites>() = DeferredWrites {
@@ -3191,10 +3270,8 @@ mod tests {
   fn written_in_chain(skip_own_writes: bool) -> (f32, f32, Vec<(Vec2, Velocity)>) {
     let (mut world, mut s, balls) = flying(2);
     world.insert_resource(InChainWrites::default());
-    s.add_systems(
-      Phase::FixedUpdate,
-      write_in_chain.after(sync_colliders).before(read_back),
-    );
+    physics_schedule(&mut world)
+      .add_systems(write_in_chain.after(sync_colliders).before(read_back));
     let steps = |world: &mut World, s: &mut EngineSchedules, count: usize| {
       for _ in 0..count {
         if !skip_own_writes {

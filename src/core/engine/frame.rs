@@ -11,7 +11,8 @@ use crate::core::capture::CaptureTarget;
 use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::cursor::CursorRequest;
-use crate::core::ecs::{MessageWriter, Res, ResMut, Resource, World};
+use crate::core::ecs::kernel::CheckChangeTicks;
+use crate::core::ecs::{MessageWriter, On, Res, ResMut, Resource, World};
 use crate::core::input::{Input, InputEvent};
 use crate::core::messages::{AssetLoadFailed, AssetReloaded, update_messages};
 use crate::core::scene::SceneAction;
@@ -93,6 +94,7 @@ impl Engine {
     };
 
     self.schedules.run(Phase::Last, &mut self.world);
+    self.clamp_schedule_ticks();
     self
       .input_script
       .after_frame(&mut self.world.resource_mut::<Input>());
@@ -459,6 +461,46 @@ pub(crate) fn asset_pump_system(
 /// `PostUpdate`: timed post-process effects run on real time.
 pub(crate) fn update_effects_system(time: Res<Time>, mut effects: ResMut<EffectsManager>) {
   effects.update(time.real.delta());
+}
+
+/// The last change-tick check the world ran, waiting for the engine to
+/// clamp the schedules it owns: bevy clamps only the schedules in its
+/// `Schedules` resource, and the engine's, the scenes' and physics' own are
+/// not there. Every schedule run checks (`Schedule::run`), so the check is
+/// observed rather than called.
+#[derive(Resource, Default)]
+pub(crate) struct PendingTickCheck(pub(crate) Option<CheckChangeTicks>);
+
+/// Observer: remember a change-tick check for `Engine::clamp_schedule_ticks`.
+pub(crate) fn record_tick_check(
+  check: On<CheckChangeTicks>,
+  mut pending: ResMut<PendingTickCheck>,
+) {
+  pending.0 = Some(*check);
+}
+
+impl Engine {
+  /// Clamp the change ticks of the schedules the engine owns after the
+  /// world checked its own.
+  fn clamp_schedule_ticks(&mut self) {
+    let Some(check) = self
+      .world
+      .get_resource_mut::<PendingTickCheck>()
+      .and_then(|mut pending| pending.0.take())
+    else {
+      return;
+    };
+    self.schedules.check_change_ticks(check);
+    with_host(&mut self.world, |_, host| {
+      host.scenes.check_change_ticks(check)
+    });
+    if let Some(mut physics) = self
+      .world
+      .get_resource_mut::<crate::core::physics::sync::PhysicsSchedule>()
+    {
+      physics.check_change_ticks(check);
+    }
+  }
 }
 
 /// `Last`: end the frame's change tracking.
@@ -1248,5 +1290,32 @@ mod tests {
   fn frames_are_paced_only_when_presenting_does_not_wait() {
     assert!(should_pace_frames(false), "vsync off: pace to target_fps");
     assert!(!should_pace_frames(true), "vsync on: the display paces");
+  }
+}
+
+#[cfg(test)]
+mod tick_check_tests {
+  use super::*;
+  use crate::core::ecs::World;
+  use crate::core::schedule::{EngineSchedules, SceneSchedules};
+
+  /// Half a billion ticks: bevy only checks change ticks that far apart.
+  /// About a second in debug builds.
+  #[test]
+  fn a_change_tick_check_is_recorded_for_the_engine() {
+    let mut world = World::new();
+    world.init_resource::<PendingTickCheck>();
+    world.add_observer(record_tick_check);
+    for _ in 0..520_000_000u32 {
+      world.increment_change_tick();
+    }
+    assert!(world.check_change_ticks().is_some());
+    let check = world.resource_mut::<PendingTickCheck>().0.take();
+    let check = check.expect("the observer recorded the check");
+    // Every schedule the engine owns accepts it
+    let mut schedules = EngineSchedules::new();
+    schedules.check_change_ticks(check);
+    SceneSchedules::default().check_change_ticks(check);
+    crate::core::physics::sync::PhysicsSchedule::new().check_change_ticks(check);
   }
 }

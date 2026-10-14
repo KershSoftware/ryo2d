@@ -19,7 +19,7 @@ Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports
 | `Update` | once | `UpdateSet::Game`: scene per-frame systems and builder ones by default |
 | `PostUpdate` | once | `PostUpdateSet::Transforms` (propagation), `Camera` (shake on real time, then every camera's `CameraView` from its interpolated transform), `Extract` (timed effects, real time) |
 | render | once | `present_frame` (`engine/extract.rs`): queries the world into the draw list, plans the cameras, runs the render pipeline (not a schedule) |
-| `Last` | once | physics registration bookkeeping, `forget_despawned_tilemaps`, `clear_trackers`, `check_change_ticks` every 1024 frames |
+| `Last` | once | physics registration bookkeeping, `forget_despawned_tilemaps`, `clear_trackers`, `check_change_ticks` every 1024 frames; the engine then clamps its own, the scenes' and physics' schedules (`PendingTickCheck`) |
 
 `FixedSet`, in order:
 
@@ -29,7 +29,8 @@ Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports
 | `Juice` | animation, tweens, tween sequences, property tweens, knockback, squash/stretch, skeletons (`register_juice_systems`) |
 | `Scene` | transitions, `Scene::update` for the active scene and those below `updates_below` scenes, then the action |
 | `Game` | the scenes' own `FixedUpdate` schedules |
-| `Physics` | register, unregister, sync to Rapier, step, sync back, collision messages (`register_physics_systems`; skipped while `PhysicsPaused`) |
+| `Movement` | zone behaviours, tile rebuilds, movement input, knockback, presets |
+| `Physics` | one system running physics' own schedule (`PhysicsSchedule`): register, unregister, sync to Rapier, step, sync back, collision messages (`register_physics_systems`; skipped while `PhysicsPaused`) |
 | `Transforms` | `propagate_transforms` |
 | `Trails` | `record_trail_points` |
 

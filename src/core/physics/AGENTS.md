@@ -23,7 +23,7 @@ The game works in pixels. `PhysicsConfig::pixels_per_meter` (default 100) is Rap
 
 ## The Step
 
-`FixedSet::Physics`, every fixed step while `PhysicsPaused` is false (the scene manager sets it from the top scene's `is_physics_paused` and the stack shape), chained as `register_physics_systems` lists them:
+`FixedSet::Physics`, every fixed step while `PhysicsPaused` is false (the scene manager sets it from the top scene's `is_physics_paused` and the stack shape). It is one exclusive system, `run_physics_step`, running physics' own schedule `PhysicsSchedule` (made on first use), chained as `PhysicsSchedule::new` lists them; no game system can be ordered between them. Tests that probe the chain add systems with `test_util::physics_schedule`. The chain:
 
 1. `forget_removed`: joints, colliders and bodies whose components went away (despawn included; a removed body's joints go inert); entities that lost their `RigidBody` or their parent are queued so their colliders find a new owner, and bodies that lost their parent are recorded (`recheck`) so the next sync compares them.
 2. `track_disabled`: disabled entities (bodies, colliders, joints) leave the simulation; re-enabled ones come back with the edits made meanwhile (`Transform`, `Velocity`, `RigidBody`, `Collider`, `Joint`). A re-enabled joint is queued for `sync_joints`, so it is made after its bodies are registered and moved. It records its tick (`Physics::chain_tick`): a `Transform` changed after it is not in this step's world poses.
