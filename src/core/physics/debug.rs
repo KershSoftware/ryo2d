@@ -62,7 +62,15 @@ fn colour(object: DebugRenderObject, bodies: &RigidBodySet) -> Option<Color> {
 /// Draw the simulation's colliders, joints and contacts into `debug`.
 pub(crate) fn draw(physics: &Physics, debug: &mut DebugDraw) {
   let mode = DebugRenderMode::COLLIDER_SHAPES | DebugRenderMode::JOINTS | DebugRenderMode::CONTACTS;
-  let mut pipeline = DebugRenderPipeline::new(DebugRenderStyle::default(), mode);
+  // Rapier's lengths are in metres; the world is in pixels
+  let unit = physics.params.length_unit;
+  let default = DebugRenderStyle::default();
+  let style = DebugRenderStyle {
+    contact_normal_length: default.contact_normal_length * unit,
+    rigid_body_axes_length: default.rigid_body_axes_length * unit,
+    ..default
+  };
+  let mut pipeline = DebugRenderPipeline::new(style, mode);
   let mut overlay = Overlay {
     debug,
     bodies: &physics.bodies,
@@ -76,4 +84,27 @@ pub(crate) fn draw(physics: &Physics, debug: &mut DebugDraw) {
     &physics.narrow_phase,
     &physics.soft_bodies,
   );
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::physics::test_util::{ball, floor, run, world};
+
+  #[test]
+  fn contact_normals_are_drawn_at_pixel_scale() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    ball(&mut world, 0.0, 85.0);
+    run(&mut world, &mut s, 30);
+    let mut debug = DebugDraw::default();
+    draw(world.resource::<Physics>(), &mut debug);
+    let contact = rgba(colors::CONTACT);
+    let longest = debug
+      .each()
+      .filter(|(shape, points)| shape.color == contact && points.len() == 2)
+      .map(|(_, points)| points[0].distance(points[1]))
+      .fold(0.0, f32::max);
+    assert!(longest >= 10.0, "longest contact line {longest} px");
+  }
 }

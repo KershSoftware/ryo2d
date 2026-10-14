@@ -81,5 +81,5 @@ The order is the dependency order: removals and disables first so nothing below 
 1. **Never name Rapier types outside this module** and never `unwrap` in library code; vectors cross `convert.rs`.
 2. **Do not poll the old API.** There is no raw event list on `Physics`: game code reads `ctx.messages::<CollisionStarted>()` and friends.
 3. **A write to a `Transform` is a teleport** for a dynamic or fixed body and a move for a kinematic one; keep write-backs ordinary changes so propagation sees them.
-4. **Debug overlay (F2)** draws Rapier's own geometry through `DebugDraw`: dynamic, kinematic, fixed, trigger, joint and contact colours from `config::debug::colors`; sleeping bodies and disabled colliders are dimmed.
+4. **Debug overlay (F2)** draws Rapier's own geometry through `DebugDraw`: dynamic, kinematic, fixed, trigger, joint and contact colours from `config::debug::colors`; sleeping bodies and disabled colliders are dimmed. Rapier's style lengths (contact normals, body axes) are in metres, so `debug.rs` scales them by `length_unit`.
 5. **Tests** use `test_util.rs`: a world with the physics systems registered and `run(world, schedules, steps)`. Anything about stepping needs a fixed `dt`.
