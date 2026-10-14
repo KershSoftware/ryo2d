@@ -13,16 +13,14 @@ pub struct Contact {
   pub normal: Vec2,
 }
 
-/// Two colliders started touching, or overlapping for a trigger.
+/// Two colliders started touching. Trigger overlaps are `TriggerEntered`.
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct CollisionStarted {
   pub a: Entity,
   pub b: Entity,
   pub body_a: Entity,
   pub body_b: Entity,
-  /// Either side is a trigger
-  pub trigger: bool,
-  /// The first contact; `None` for triggers
+  /// The first contact
   pub contact: Option<Contact>,
 }
 
@@ -33,8 +31,43 @@ pub struct CollisionStopped {
   pub b: Entity,
   pub body_a: Entity,
   pub body_b: Entity,
-  pub trigger: bool,
 }
+
+/// A collider started overlapping a trigger (`Collider::as_trigger`). Sent
+/// once per body: a body with several colliders enters on its first and
+/// exits when its last one leaves. What can set a trigger off is the usual
+/// layer and mask test. Two overlapping triggers each get a message.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriggerEntered {
+  /// The trigger collider's entity
+  pub trigger: Entity,
+  /// The collider that entered
+  pub other: Entity,
+  /// Its body (the collider itself when it has none)
+  pub other_body: Entity,
+}
+
+/// A body (or bare collider) left a trigger, or one of them went away:
+/// either entity may already be despawned.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriggerExited {
+  pub trigger: Entity,
+  pub other: Entity,
+  pub other_body: Entity,
+}
+
+macro_rules! trigger_helpers {
+  ($($message:ty),*) => {$(
+    impl $message {
+      /// What entered or left: the other side's body, or its collider when it has none.
+      pub fn actor(&self) -> Entity {
+        self.other_body
+      }
+    }
+  )*};
+}
+
+trigger_helpers!(TriggerEntered, TriggerExited);
 
 /// A contact pushing harder than a collider's `with_force_events` threshold,
 /// sent every step it does: breakables, impact sounds.

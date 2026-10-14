@@ -16,7 +16,9 @@ pub use scene::SceneMessages;
 use std::any::{Any, TypeId};
 
 use crate::core::ecs::kernel::{Message, Messages, Resource, World};
-use crate::core::physics::{CollisionStarted, CollisionStopped, ContactForce, JointBroken};
+use crate::core::physics::{
+  CollisionStarted, CollisionStopped, ContactForce, JointBroken, TriggerEntered, TriggerExited,
+};
 
 /// A type-erased `MessageCursor<T>`.
 pub(crate) type ErasedCursor = Box<dyn Any + Send + Sync>;
@@ -98,6 +100,8 @@ pub fn clear_messages(world: &mut World) {
 pub fn register_engine_messages(world: &mut World) {
   register_message::<CollisionStarted>(world);
   register_message::<CollisionStopped>(world);
+  register_message::<TriggerEntered>(world);
+  register_message::<TriggerExited>(world);
   register_message::<ContactForce>(world);
   register_message::<JointBroken>(world);
   register_message::<TweenStarted>(world);

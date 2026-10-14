@@ -1191,13 +1191,14 @@ impl Scene for GameScene {
     // Track balls that need to be removed (hit death zone)
     let mut balls_to_remove: Vec<Entity> = Vec::new();
 
-    for (ball, other) in ball_collisions {
-      // Ball hit death zone
-      if self.death_zone == Some(other) {
-        balls_to_remove.push(ball);
-        continue;
+    // Ball entered the death zone (a trigger, so not a collision)
+    for entered in ctx.messages::<TriggerEntered>() {
+      if self.death_zone == Some(entered.trigger) && self.balls.contains(&entered.actor()) {
+        balls_to_remove.push(entered.actor());
       }
+    }
 
+    for (ball, other) in ball_collisions {
       // Ball hit paddle - add spin based on hit position
       if self.paddle == Some(other) {
         // Play paddle hit sound

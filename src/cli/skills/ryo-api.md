@@ -515,7 +515,8 @@ Engine messages (all `Message + Clone`):
 
 | Type | Fields | Written when |
 |---|---|---|
-| `CollisionStarted` / `CollisionStopped` | `a, b` (colliders), `body_a, body_b`, `trigger: bool`, and on started `contact: Option<Contact { point, normal }>`; `involves(e) -> bool`, `other(e)`, `other_collider(e) -> Option<Entity>` | two colliders start/stop touching |
+| `CollisionStarted` / `CollisionStopped` | `a, b` (colliders), `body_a, body_b`, and on started `contact: Option<Contact { point, normal }>`; `involves(e) -> bool`, `other(e)`, `other_collider(e) -> Option<Entity>` | two colliders start/stop touching (solid contact; triggers send the messages below) |
+| `TriggerEntered` / `TriggerExited` | `trigger, other, other_body: Entity`; `actor() -> Entity` (= `other_body`) | a body (or bare collider) enters/leaves a trigger, once per body |
 | `ContactForce` | `a, b, body_a, body_b, force: f32, direction: Vec2, started: bool` | a contact pushes above `with_force_events` |
 | `JointBroken` | `joint, a, b: Entity` | a joint breaks |
 | `TweenStarted` | `entity` | a `Tween` begins |
@@ -719,6 +720,7 @@ Rapier2D 0.36. A `Collider` joins the simulation on its own (a fixed collider) o
 | `enum JointAnchor` | `Origins` (default), `World(Vec2)`, `Local { a: Vec2, b: Vec2 }` |
 | `enum JointMotor` | `Velocity { target, max_force }`, `Position { target, stiffness, damping }` |
 | `PhysicsConfig` (resource) `{ gravity: Vec2, pixels_per_meter: f32, solver_iterations: usize }` | `default()` ((0, 980), 100, 4), `with_gravity(Vec2)`, `zero_gravity()`, `with_pixels_per_meter(f32)`, `with_solver_iterations(usize)` |
+| `TriggerContents` (component, engine-added to every trigger) | `entities() -> &[Entity]` (bodies inside, in entry order), `contains(e)`, `len()`, `is_empty()` |
 | `QueryFilter` | `new()` / `default()` (every layer, skips triggers), `with_mask(u32)`, `excluding(Entity)` (repeatable), `with_triggers()` |
 | `Hit { collider, body, point: Vec2, normal: Vec2, distance: f32 }` | a ray or shape cast's first contact |
 | `Overlap { collider, body }` | an overlap test result |
@@ -741,8 +743,8 @@ Messages (read with `ctx.messages::<T>()`), all with `a, b` (colliders), `body_a
 
 | Message | Fields |
 |---|---|
-| `CollisionStarted` | `trigger: bool`, `contact: Option<Contact>` (`None` for triggers) |
-| `CollisionStopped` | `trigger: bool`; either entity may already be despawned |
+| `CollisionStarted` | `contact: Option<Contact>` |
+| `CollisionStopped` | either entity may already be despawned |
 | `ContactForce` | `force: f32`, `direction: Vec2`, `started: bool`; sent every step above the collider's `with_force_events` threshold |
 | `JointBroken` | `joint`, `a`, `b` (bodies); the `Joint` component is removed |
 

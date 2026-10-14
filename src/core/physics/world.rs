@@ -134,6 +134,17 @@ fn maps_differ(a: Mat2, b: Mat2) -> bool {
 pub(crate) struct Owner {
   pub(crate) collider: Entity,
   pub(crate) body: Entity,
+  /// Whether the collider is a trigger
+  pub(crate) trigger: bool,
+}
+
+/// A body (or bare collider) entering or leaving a trigger in the last step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TriggerEvent {
+  pub(crate) trigger: Entity,
+  pub(crate) other: Entity,
+  pub(crate) other_body: Entity,
+  pub(crate) entered: bool,
 }
 
 pub(crate) struct BodyEntry {
@@ -197,7 +208,6 @@ pub(crate) struct RawCollision {
   pub(crate) a: Owner,
   pub(crate) b: Owner,
   pub(crate) started: bool,
-  pub(crate) sensor: bool,
   /// World point and normal (pointing from `a` to `b`) of the first contact
   pub(crate) contact: Option<(Vec2, Vec2)>,
 }
@@ -306,6 +316,15 @@ pub struct Physics {
   forced: Vec<RigidBodyHandle>,
   /// The last step's started and stopped contacts
   pub(crate) collisions: Vec<RawCollision>,
+  /// Per (trigger collider, body inside it), how many of that body's
+  /// colliders overlap the trigger: entered at 1, exited at 0
+  trigger_overlaps: HashMap<(Entity, Entity), u32>,
+  /// What each trigger holds now, in entry order (`TriggerContents`)
+  pub(crate) trigger_contents: EntityHashMap<Vec<Entity>>,
+  /// Triggers whose contents changed in the last step
+  pub(crate) changed_triggers: EntityHashSet,
+  /// The last step's trigger entries and exits
+  pub(crate) trigger_events: Vec<TriggerEvent>,
   /// The last step's contact forces
   pub(crate) forces: Vec<RawForce>,
   /// Joints the last step broke: (joint, a, b)
@@ -414,6 +433,10 @@ impl Physics {
       body_entries: EntityHashMap::default(),
       collider_entries: EntityHashMap::default(),
       owners: HashMap::new(),
+      trigger_overlaps: HashMap::new(),
+      trigger_contents: EntityHashMap::default(),
+      changed_triggers: EntityHashSet::default(),
+      trigger_events: Vec::new(),
       joint_entries: EntityHashMap::default(),
       joint_of: HashMap::new(),
       resync_joints: EntityHashSet::default(),
@@ -658,6 +681,7 @@ impl Physics {
       Owner {
         collider: entity,
         body: body.unwrap_or(entity),
+        trigger: collider.is_trigger,
       },
     );
   }
@@ -750,6 +774,11 @@ impl Physics {
         owner.body = body.unwrap_or(entity);
       }
     }
+    if old.is_trigger != collider.is_trigger
+      && let Some(owner) = self.owners.get_mut(&handle)
+    {
+      owner.trigger = collider.is_trigger;
+    }
     let density = self.rapier_density(finite_or(collider.density, 1.0).max(0.0));
     if let Some(rapier) = self.colliders.get_mut(handle) {
       if moved || reparent {
@@ -832,6 +861,7 @@ impl Physics {
   }
 
   pub(crate) fn remove_collider(&mut self, entity: Entity) {
+    self.trigger_contents.remove(&entity);
     let Some(entry) = self.collider_entries.remove(&entity) else {
       return;
     };
@@ -845,6 +875,44 @@ impl Physics {
       &mut self.soft_bodies,
       true,
     );
+  }
+
+  /// Count a trigger overlap starting or stopping, once per body: the body
+  /// enters at its first collider inside and exits when its last one leaves.
+  fn record_trigger(&mut self, a: Owner, b: Owner, started: bool) {
+    for (trigger, other) in [(a, b), (b, a)] {
+      if !trigger.trigger {
+        continue;
+      }
+      let key = (trigger.collider, other.body);
+      let count = self.trigger_overlaps.entry(key).or_insert(0);
+      let changed = if started {
+        *count += 1;
+        *count == 1
+      } else {
+        *count = count.saturating_sub(1);
+        *count == 0
+      };
+      if !started && *count == 0 {
+        self.trigger_overlaps.remove(&key);
+      }
+      if !changed {
+        continue;
+      }
+      let contents = self.trigger_contents.entry(trigger.collider).or_default();
+      if started {
+        contents.push(other.body);
+      } else {
+        contents.retain(|&inside| inside != other.body);
+      }
+      self.changed_triggers.insert(trigger.collider);
+      self.trigger_events.push(TriggerEvent {
+        trigger: trigger.collider,
+        other: other.collider,
+        other_body: other.body,
+        entered: started,
+      });
+    }
   }
 
   /// Disable or re-enable an entity's body, collider and joint in Rapier;
@@ -1194,12 +1262,14 @@ impl Physics {
       }
     }
     self.collisions.clear();
+    self.trigger_events.clear();
     self.forces.clear();
     let events = self
       .collector
       .collisions
       .get_mut()
       .unwrap_or_else(PoisonError::into_inner);
+    let mut sensors: Vec<(Owner, Owner, bool)> = Vec::new();
     for Captured { event, contact } in events.drain(..) {
       let owner = |handle| {
         self
@@ -1209,14 +1279,20 @@ impl Physics {
           .copied()
       };
       if let (Some(a), Some(b)) = (owner(event.collider1()), owner(event.collider2())) {
-        self.collisions.push(RawCollision {
-          a,
-          b,
-          started: event.started(),
-          sensor: event.sensor(),
-          contact,
-        });
+        if event.sensor() {
+          sensors.push((a, b, event.started()));
+        } else {
+          self.collisions.push(RawCollision {
+            a,
+            b,
+            started: event.started(),
+            contact,
+          });
+        }
       }
+    }
+    for (a, b, started) in sensors {
+      self.record_trigger(a, b, started);
     }
     let events = self
       .collector
@@ -1491,7 +1567,8 @@ mod tests {
       physics.owners[&handle],
       Owner {
         collider: e,
-        body: e
+        body: e,
+        trigger: false
       }
     );
 

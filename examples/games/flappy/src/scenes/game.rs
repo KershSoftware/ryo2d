@@ -121,6 +121,15 @@ impl GameScene {
       ))
       .id();
 
+    // Score gate: a trigger in the gap, carried by the top pipe. The bird
+    // can only reach it by flying through the gap.
+    ctx.world.spawn((
+      Transform::from_xy(PIPE_WIDTH / 2.0, gap_center_y),
+      Collider::rect(4.0, PIPE_GAP).as_trigger(),
+      ScoreGate,
+      ChildOf(top_pipe),
+    ));
+
     // BOTTOM PIPE: rises from ground, opening faces up
     // Spans from gap_center_y + PIPE_GAP/2 down to bottom of screen
     let bottom_y = gap_center_y + PIPE_GAP / 2.0;
@@ -425,34 +434,6 @@ impl GameScene {
       self.spawn_pipe_pair(ctx, spawn_x);
     }
 
-    // Update scoring - check if bird passed a pipe
-    if let Some(bird_entity) = self.bird
-      && let Some(bird_transform) = ctx.world.get::<Transform>(bird_entity)
-    {
-      // The bird's left edge (its position is its centre)
-      let bird_x = bird_transform.translation.x - BIRD_SIZE / 2.0;
-
-      // Find any pipe pair that hasn't been scored and has been passed
-      let mut scored_this_frame = false;
-      for &pipe_entity in &self.pipes {
-        if let Some(pipe_transform) = ctx.world.get::<Transform>(pipe_entity) {
-          let pipe_x = pipe_transform.translation.x;
-          // Check if pipe's right edge has passed the bird's position
-          if pipe_x + PIPE_WIDTH < bird_x
-            && let Some(mut pipe) = ctx.world.get_mut::<Pipe>(pipe_entity)
-            && !pipe.has_scored
-          {
-            pipe.has_scored = true;
-            // Only count score once per pipe pair (both top and bottom share same x)
-            if !scored_this_frame {
-              scored_this_frame = true;
-              self.score += 1;
-            }
-          }
-        }
-      }
-    }
-
     // Remove pipes that are off screen
     let mut to_remove = Vec::new();
     for &entity in &self.pipes {
@@ -465,6 +446,18 @@ impl GameScene {
     for entity in to_remove {
       ctx.world.despawn(entity);
       self.pipes.retain(|&e| e != entity);
+    }
+  }
+
+  /// The bird entering a pipe pair's gate scores a point
+  fn check_score_gates(&mut self, ctx: &mut SceneContext) {
+    let Some(bird) = self.bird else {
+      return;
+    };
+    for message in ctx.messages::<TriggerEntered>() {
+      if message.actor() == bird && ctx.world.get::<ScoreGate>(message.trigger).is_some() {
+        self.score += 1;
+      }
     }
   }
 
@@ -524,6 +517,7 @@ impl Scene for GameScene {
     self.update_scrolling(ctx, dt);
     self.update_pipes(ctx);
     self.check_collisions(ctx);
+    self.check_score_gates(ctx);
 
     // Check if bird died - start death timer and play death sound
     if let Some(bird_entity) = self.bird

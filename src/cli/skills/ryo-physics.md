@@ -19,7 +19,7 @@ An entity enters the simulation when it has a `Collider`, with or without a `Rig
 2. Register new bodies, bring colliders and the game's `Transform` / `Velocity` edits in line, make new joints.
 3. Step by the fixed timestep (`EngineBuilder::fixed_hz`, default 60 Hz). Slow motion runs fewer steps; pause and hitstop run none.
 4. Write simulated bodies back into `Transform`, `Velocity` and `AngularVelocity` (ordinary component changes, so propagation and rendering see them move).
-5. Send `CollisionStarted` / `CollisionStopped` / `ContactForce` / `JointBroken` messages.
+5. Send `CollisionStarted` / `CollisionStopped` / `TriggerEntered` / `TriggerExited` / `ContactForce` / `JointBroken` messages, and update every trigger's `TriggerContents`.
 
 Disabled bodies, colliders and joints (`Disabled`, used by `Pool`) leave the simulation; on re-enable they return with the `Transform`, `Velocity`, `RigidBody`, `Collider` and `Joint` edits made meanwhile.
 
@@ -143,13 +143,14 @@ Queries use `QueryFilter::with_mask`, which is matched against the collider's la
 
 ## Triggers
 
-`as_trigger()` colliders detect but never push. They send `CollisionStarted` / `CollisionStopped` with `trigger: true` and `contact: None`, and show in `physics.overlaps(zone)`. Pickups, zones and sensors are triggers on a fixed body (or no body).
+`as_trigger()` colliders detect but never push. A trigger overlap is not a collision: it sends `TriggerEntered` / `TriggerExited` (once per body, however many colliders it has) and shows in `physics.overlaps(zone)`; the engine also keeps a `TriggerContents` component on every trigger, listing what is inside in entry order (`entities()`, `contains(e)`, `len()`, `is_empty()`). Pickups, zones, pressure plates and sensors are triggers on a fixed body (or no body). Two overlapping triggers each get a message.
 
 ## Messages
 
 Read with `ctx.messages::<T>()` in a scene (`MessageReader<T>` in systems); a contact from step N reaches step N+1's `update`.
 
-- `CollisionStarted { a, b, body_a, body_b, trigger, contact: Option<Contact> }` and `CollisionStopped { a, b, body_a, body_b, trigger }`. `a`/`b` are the colliders, `body_a`/`body_b` their bodies (a collider with no body is its own). `contact` is `Contact { point, normal }`, the first contact, the normal pointing from `a` to `b`; `None` for triggers. The order of `a` and `b` is unspecified: use `involves(entity)` (collider or body), `other(entity) -> Option<Entity>` (the other side's body) and `other_collider(entity)`.
+- `CollisionStarted { a, b, body_a, body_b, contact: Option<Contact> }` and `CollisionStopped { a, b, body_a, body_b }`: solid contact only. `a`/`b` are the colliders, `body_a`/`body_b` their bodies (a collider with no body is its own). `contact` is `Contact { point, normal }`, the first contact, the normal pointing from `a` to `b`. The order of `a` and `b` is unspecified: use `involves(entity)` (collider or body), `other(entity) -> Option<Entity>` (the other side's body) and `other_collider(entity)`.
+- `TriggerEntered { trigger, other, other_body }` and `TriggerExited { .. }`: `trigger` is the trigger collider's entity, `other` the collider that entered or left and `other_body` its body (the collider itself when it has none). `actor()` is `other_body`. A body with several colliders enters on its first and exits when its last leaves. On `TriggerExited` either entity may already be despawned.
 - `ContactForce { a, b, body_a, body_b, force, direction, started }`: sent every step a contact pushes above its collider's `with_force_events(threshold)`. Breakables, impact sounds.
 - `JointBroken { joint, a, b }`: a joint exceeded its break force and was removed (its `Joint` component too).
 
@@ -287,11 +288,13 @@ ctx.world.spawn((
 ));
 
 // in update
-for hit in ctx.messages::<CollisionStarted>() {
-  let Some(other) = hit.other(self.player) else { continue };
-  if let Some(coin) = ctx.world.get::<Coin>(other) {
+for entered in ctx.messages::<TriggerEntered>() {
+  if entered.actor() != self.player {
+    continue;
+  }
+  if let Some(coin) = ctx.world.get::<Coin>(entered.trigger) {
     self.score += coin.value;
-    ctx.world.despawn(other);
+    ctx.world.despawn(entered.trigger);
   }
 }
 ```

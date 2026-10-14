@@ -7,7 +7,8 @@ Rapier2D 0.36 behind `Physics` (a resource), driven by the systems in `src/core/
 | File | What |
 |------|------|
 | `body.rs`, `collider.rs`, `joint.rs` | The components: `RigidBody`, `AngularVelocity`, `Collider`, `ColliderShape`, `Joint` |
-| `events.rs` | The messages: `CollisionStarted`, `CollisionStopped`, `ContactForce`, `JointBroken`, and `Contact` |
+| `events.rs` | The messages: `CollisionStarted`, `CollisionStopped`, `TriggerEntered`, `TriggerExited`, `ContactForce`, `JointBroken`, and `Contact` |
+| `triggers.rs` | `TriggerContents` and the system that keeps it |
 | `query.rs` | `QueryFilter`, `Hit`, `Overlap`, `PointHit`, `Touch`, and the `Physics` query, force and contact-state methods |
 | `world.rs` | `Physics`: the Rapier sets, the entity maps, the event collector, queued pushes |
 | `sync.rs` | The systems that keep the world and Rapier in step |
@@ -34,7 +35,8 @@ The game works in pixels. `PhysicsConfig::pixels_per_meter` (default 100) is Rap
 7. `sync_joints`: new and re-enabled joints are made; edits apply in place or remake the joint (see Joints). After `push_changes`, so a joint made as the game moves its body anchors where the body was moved.
 8. `step_simulation`: Rapier steps by `time.fixed.timestep()`, so physics follows game speed, pause and hitstop. Afterwards joints pulled past their break force are removed from Rapier.
 9. `read_back`: simulated bodies write their pose into their local `Transform` (through their parent) and their velocities. Every write is worked out before any lands, each parent placed where the write-back will leave it (its continuous rotation, not Rapier's wrapped angle, which rounds differently at large angles). It is an exclusive system that advances the world's change tick before it writes, and records that tick (`Physics::write_tick`, see Sync Rules).
-10. `emit_messages`: the step's contacts and forces become `CollisionStarted` / `CollisionStopped` and `ContactForce`; broken joints send `JointBroken` and lose their `Joint` component.
+10. `emit_messages`: the step's contacts and forces become `CollisionStarted` / `CollisionStopped` and `ContactForce`; trigger overlaps become `TriggerEntered` / `TriggerExited`; broken joints send `JointBroken` and lose their `Joint` component.
+11. `update_trigger_contents`: `TriggerContents` is added to new triggers (and removed from colliders that stopped being one) and brought up to date for the triggers that changed.
 
 The order is the dependency order: removals and disables first so nothing below touches a stale handle, propagation before anything reads a world pose, registration before colliders (they need an owner) and colliders before pushes, joints after pushes, and messages last so they describe the step just taken.
 
@@ -69,6 +71,7 @@ The order is the dependency order: removals and disables first so nothing below 
 ## Events and Contact State
 
 - An `EventCollector` handler captures the first contact point and normal during the step, while Rapier still holds the pair; `emit_messages` reads the collected list afterwards.
+- Trigger overlaps are not collisions: `emit_messages` writes `TriggerEntered` / `TriggerExited`, counted per body (`Physics::trigger_overlaps`: a body enters at its first collider inside and exits when its last leaves), and `update_trigger_contents` keeps `TriggerContents` on every trigger. `Owner::trigger` marks trigger colliders, so `step` can tell a sensor pair's sides apart; two overlapping triggers each report the other.
 - `Physics::departed` keeps removed colliders' owners until their `Stopped` is reported, so `CollisionStopped` still names entities that were just despawned (either may be gone from the world).
 - `contacts`, `overlaps` and `in_contact` read Rapier's narrow phase, so they see solid contacts and trigger overlaps as the last step left them. They report per collider: a collider touching two of a body's colliders is listed for each.
 - Queries (`raycast`, `shape_cast`, `overlap_*`, `nearest`) also see the world as the last step left it; a body spawned or moved this tick is not in them until the next step. `QueryFilter` skips triggers by default. `nearest` reports the closest surface point and whether the query point is inside; a ray starting inside a collider hits at distance 0 with a zero normal.

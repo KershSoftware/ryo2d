@@ -24,8 +24,12 @@ use super::body::{AngularVelocity, BodyKind, RigidBody};
 use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::angle_delta;
-use super::events::{CollisionStarted, CollisionStopped, Contact, ContactForce, JointBroken};
+use super::events::{
+  CollisionStarted, CollisionStopped, Contact, ContactForce, JointBroken, TriggerEntered,
+  TriggerExited,
+};
 use super::joint::Joint;
+use super::triggers::update_trigger_contents;
 use super::world::{Physics, Placement, WriteBack};
 use crate::core::ecs::kernel::{CheckChangeTicks, Schedule, ScheduleLabel, SingleThreadedExecutor};
 use crate::core::ecs::propagate::propagate_transforms;
@@ -775,10 +779,13 @@ pub(crate) fn read_back(world: &mut World, state: &mut EcsSystemState<ReadBack<'
 
 /// Turn the step's contacts, forces and broken joints into messages; a
 /// broken joint's `Joint` component goes too.
+#[allow(clippy::too_many_arguments)] // one writer per message type
 pub(crate) fn emit_messages(
   physics: Res<Physics>,
   mut started: MessageWriter<CollisionStarted>,
   mut stopped: MessageWriter<CollisionStopped>,
+  mut entered: MessageWriter<TriggerEntered>,
+  mut exited: MessageWriter<TriggerExited>,
   mut forces: MessageWriter<ContactForce>,
   mut broken_joints: MessageWriter<JointBroken>,
   mut commands: Commands,
@@ -791,7 +798,6 @@ pub(crate) fn emit_messages(
         b,
         body_a,
         body_b,
-        trigger: c.sensor,
         contact: c.contact.map(|(point, normal)| Contact { point, normal }),
       });
     } else {
@@ -800,7 +806,22 @@ pub(crate) fn emit_messages(
         b,
         body_a,
         body_b,
-        trigger: c.sensor,
+      });
+    }
+  }
+  for t in &physics.trigger_events {
+    let message = (t.trigger, t.other, t.other_body);
+    if t.entered {
+      entered.write(TriggerEntered {
+        trigger: message.0,
+        other: message.1,
+        other_body: message.2,
+      });
+    } else {
+      exited.write(TriggerExited {
+        trigger: message.0,
+        other: message.1,
+        other_body: message.2,
       });
     }
   }
@@ -849,6 +870,7 @@ impl PhysicsSchedule {
         step_simulation,
         read_back,
         emit_messages,
+        update_trigger_contents,
       )
         .chain(),
     );
@@ -892,9 +914,9 @@ pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
 mod tests {
   use super::*;
   use crate::core::ecs::{Messages, Resource, World};
-  use crate::core::physics::ColliderShape;
   use crate::core::physics::CollisionStarted;
   use crate::core::physics::test_util::*;
+  use crate::core::physics::{ColliderShape, TriggerContents};
   use crate::core::scene::PhysicsPaused;
   use crate::core::schedule::{EngineSchedules, Phase};
 
@@ -1591,11 +1613,10 @@ mod tests {
     let down = if hit.a == b { Vec2::Y } else { -Vec2::Y };
     assert!((contact.normal - down).length() < 1e-3, "{contact:?}");
     assert!((contact.point.y - 100.0).abs() < 1.5, "{contact:?}");
-    assert!(!hit.trigger);
   }
 
   #[test]
-  fn a_trigger_reports_no_contact_point() {
+  fn entering_a_trigger_is_a_trigger_message_not_a_collision() {
     let (mut world, mut s) = world(60);
     let zone = world
       .spawn((
@@ -1605,13 +1626,114 @@ mod tests {
       .id();
     let b = ball(&mut world, 0.0, 0.0);
     run(&mut world, &mut s, 60);
-    let started = read::<CollisionStarted>(&world);
-    let hit = started
-      .iter()
-      .find(|m| m.involves(zone))
-      .expect("entered the zone");
-    assert!(hit.trigger && hit.contact.is_none());
-    assert_eq!(hit.other(zone), Some(b));
+    assert!(
+      read::<CollisionStarted>(&world)
+        .iter()
+        .all(|m| !m.involves(zone)),
+      "a trigger overlap is not a collision"
+    );
+    let entered = read::<TriggerEntered>(&world);
+    assert_eq!(
+      entered,
+      [TriggerEntered {
+        trigger: zone,
+        other: b,
+        other_body: b
+      }]
+    );
+    assert_eq!(entered[0].actor(), b);
+  }
+
+  #[test]
+  fn a_body_with_two_colliders_enters_and_exits_a_trigger_once() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let zone = world
+      .spawn((
+        Transform::from_xy(100.0, 0.0),
+        Collider::rect(40.0, 200.0).as_trigger(),
+      ))
+      .id();
+    let body = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::kinematic(),
+        Velocity::new(300.0, 0.0),
+      ))
+      .id();
+    for dy in [-10.0, 10.0] {
+      world.spawn((
+        Transform::from_xy(0.0, dy),
+        Collider::rect(8.0, 8.0),
+        ChildOf(body),
+      ));
+    }
+    run(&mut world, &mut s, 60);
+    let entered = read::<TriggerEntered>(&world);
+    let exited = read::<TriggerExited>(&world);
+    assert_eq!(entered.len(), 1, "{entered:?}");
+    assert_eq!(exited.len(), 1, "{exited:?}");
+    assert_eq!((entered[0].trigger, entered[0].other_body), (zone, body));
+    assert_eq!((exited[0].trigger, exited[0].other_body), (zone, body));
+  }
+
+  #[test]
+  fn two_overlapping_triggers_each_report_the_other() {
+    let (mut world, mut s) = world(60);
+    let still = world
+      .spawn((
+        Transform::from_xy(50.0, 0.0),
+        Collider::rect(20.0, 20.0).as_trigger(),
+      ))
+      .id();
+    let moving = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::kinematic(),
+        Velocity::new(300.0, 0.0),
+        Collider::rect(20.0, 20.0).as_trigger(),
+      ))
+      .id();
+    run(&mut world, &mut s, 10);
+    let entered = read::<TriggerEntered>(&world);
+    assert!(
+      entered
+        .iter()
+        .any(|m| m.trigger == still && m.other_body == moving)
+    );
+    assert!(
+      entered
+        .iter()
+        .any(|m| m.trigger == moving && m.other_body == still)
+    );
+  }
+
+  #[test]
+  fn trigger_contents_list_what_is_inside_in_entry_order() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let zone = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(200.0, 200.0).as_trigger(),
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    assert!(world.get::<TriggerContents>(zone).unwrap().is_empty());
+    let first = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 2);
+    let second = ball(&mut world, 20.0, 0.0);
+    run(&mut world, &mut s, 2);
+    assert_eq!(
+      world.get::<TriggerContents>(zone).unwrap().entities(),
+      [first, second]
+    );
+    world.despawn(first);
+    run(&mut world, &mut s, 2);
+    assert_eq!(
+      world.get::<TriggerContents>(zone).unwrap().entities(),
+      [second]
+    );
   }
 
   #[test]
@@ -1791,13 +1913,12 @@ mod tests {
       ))
       .id();
     run(&mut world, &mut s, 60);
-    let messages = world.resource::<Messages<CollisionStarted>>();
-    let started: Vec<_> = messages.get_cursor().read(messages).copied().collect();
+    let entered = read::<TriggerEntered>(&world);
     assert!(
-      started
+      entered
         .iter()
-        .any(|m| m.involves(mover) && m.involves(zone) && m.trigger),
-      "{started:?}"
+        .any(|m| m.trigger == zone && m.actor() == mover),
+      "{entered:?}"
     );
   }
 
