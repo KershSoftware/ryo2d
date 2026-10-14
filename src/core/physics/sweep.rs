@@ -18,13 +18,17 @@
 //!   slide).
 //! - A slide within `LEVEL` of level neither climbs nor slips (Rapier tests
 //!   the sign exactly, so float noise in a flat floor's normal stopped runs).
+//! - parry's fallback for a hit right at the start of a cast (`first_hit`)
+//!   is applied with its threshold in world units, as Rapier's nudge is.
 //!
 //! Push-out from a start inside something solid stays with Rapier
 //! (`move_shape` with no translation), which measures no angle.
 
 use rapier2d::control::{CharacterCollision, CharacterLength, KinematicCharacterController};
-use rapier2d::parry::query::ShapeCastOptions;
-use rapier2d::prelude::{ColliderHandle, Pose, QueryFilterFlags, QueryPipeline, Shape, Vector};
+use rapier2d::parry::query::{ShapeCastHit, ShapeCastOptions, ShapeCastStatus};
+use rapier2d::prelude::{
+  Collider, ColliderHandle, Pose, QueryFilterFlags, QueryPipeline, Shape, Vector,
+};
 
 /// Rapier's cap on the casts in one move.
 const MAX_CASTS: usize = 20;
@@ -114,6 +118,9 @@ pub(crate) fn move_shape(
   };
   let dims = dims(shape, kcc.up);
   let skin = eval(kcc.offset, dims.1);
+  // parry's 1e-4 in world units, like the nudge (the controller scales it
+  // by the length unit)
+  let start_tolerance = kcc.normal_nudge_factor;
   let mut remaining = desired;
   for _ in 0..MAX_CASTS {
     let distance = remaining.length();
@@ -122,7 +129,8 @@ pub(crate) fn move_shape(
     }
     let direction = remaining / distance;
     let at = Pose::from_translation(swept.translation) * *start;
-    let Some((handle, hit)) = queries.cast_shape(&at, direction, shape, cast(skin, distance))
+    let options = cast(skin, distance);
+    let Some((handle, hit)) = first_hit(queries, &at, direction, shape, options, start_tolerance)
     else {
       swept.translation += remaining;
       break;
@@ -162,6 +170,73 @@ pub(crate) fn move_shape(
     }
   }
   swept
+}
+
+/// The first collider `shape` at `at` hits moving along `direction` (a unit
+/// vector), with parry's fallback for a hit right at the start of the cast
+/// applied up to `tolerance` px.
+///
+/// A cast that starts on the skin and runs nearly tangent to the surface
+/// (each slide after a hit does) gets an unreliable normal from parry's GJK,
+/// so for a hit within 1e-4 of the start parry takes the normal from a
+/// contact query instead, and reports no hit when the move leaves the
+/// surface. That 1e-4 is in world units, tuned for metres; in pixels the
+/// bad hits came at about 4e-4 px, past it, with normals 10° to 45° off: a
+/// slide down a 1000 px wall was pushed off it for a step every few steps,
+/// and a run along a 1000 px floor lost up to half a step's run. So the
+/// same fallback, for a convex collider (parry keeps its own for the parts
+/// of composite shapes), up to `tolerance` (1e-4 length units): the
+/// contact's normal, or a cast again past that collider when the move
+/// leaves it (parry's "no hit" for the pair).
+fn first_hit(
+  queries: &QueryPipeline,
+  at: &Pose,
+  direction: Vector,
+  shape: &dyn Shape,
+  options: ShapeCastOptions,
+  tolerance: f32,
+) -> Option<(ColliderHandle, ShapeCastHit)> {
+  let (handle, mut hit) = queries.cast_shape(at, direction, shape, options)?;
+  if hit.time_of_impact >= tolerance {
+    return Some((handle, hit));
+  }
+  let Some(collider) = queries
+    .colliders
+    .get(handle)
+    .filter(|collider| collider.shape().is_convex())
+  else {
+    return Some((handle, hit));
+  };
+  let pose = collider.position();
+  let pos12 = pose.inv_mul(at);
+  let Ok(Some(contact)) = queries
+    .dispatcher
+    .contact(&pos12, collider.shape(), shape, f32::MAX)
+  else {
+    return Some((handle, hit));
+  };
+  let normal = pose.transform_vector(contact.normal1);
+  if normal.dot(direction) >= 0.0 {
+    let predicate = queries.filter.predicate;
+    let past = |other: ColliderHandle, collider: &Collider| {
+      other != handle && predicate.is_none_or(|keep| keep(other, collider))
+    };
+    let past_it = QueryPipeline {
+      filter: queries.filter.predicate(&past),
+      ..*queries
+    };
+    return first_hit(&past_it, at, direction, shape, options, tolerance);
+  }
+  hit.normal1 = normal;
+  hit.normal2 = contact.normal2;
+  hit.witness1 = pose.transform_point(contact.point1);
+  hit.witness2 = contact.point2;
+  hit.status = if contact.dist < options.target_distance {
+    ShapeCastStatus::PenetratingOrWithinTargetDist
+  } else {
+    ShapeCastStatus::Converged
+  };
+  Some((handle, hit))
 }
 
 /// `translation` split against a surface: the part leaving it (zero when
