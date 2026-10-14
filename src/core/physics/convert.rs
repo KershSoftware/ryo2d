@@ -29,10 +29,13 @@ pub(crate) fn angle_delta(from: f32, to: f32) -> f32 {
   (to - from + PI).rem_euclid(TAU) - PI
 }
 
-/// Whether two poses differ by more than the sync tolerance.
+/// Whether two poses differ by more than the sync tolerance. The rotation
+/// tolerance grows with the angles: `Transform.rotation` is continuous, and
+/// past a few thousand radians its f32 round-off alone exceeds 1e-4.
 pub(crate) fn poses_differ(a: (Vec2, f32), b: (Vec2, f32)) -> bool {
+  let round_off = 4.0 * f32::EPSILON * a.1.abs().max(b.1.abs());
   (a.0 - b.0).abs().max_element() > POSITION_TOLERANCE
-    || angle_delta(a.1, b.1).abs() > ROTATION_TOLERANCE
+    || angle_delta(a.1, b.1).abs() > ROTATION_TOLERANCE.max(round_off)
 }
 
 #[cfg(test)]
@@ -44,6 +47,19 @@ mod tests {
     assert!((angle_delta(3.0, -3.0) - (TAU - 6.0)).abs() < 1e-5);
     assert!((angle_delta(0.0, 0.5) - 0.5).abs() < 1e-6);
     assert!((angle_delta(10.0 * TAU, 0.25) - 0.25).abs() < 1e-3);
+  }
+
+  #[test]
+  fn large_angles_equal_up_to_round_off_do_not_differ() {
+    let v = Vec2::ZERO;
+    // Rapier's wrapped angle against the continuous `Transform.rotation`
+    for big in [2000.0_f32, 3000.0, 3141.5, 4000.0, 5000.0] {
+      let wrapped = ((f64::from(big) + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+        - std::f64::consts::PI) as f32;
+      assert!(!poses_differ((v, wrapped), (v, big)), "{big}");
+    }
+    assert!(poses_differ((v, 0.0), (v, 1e-3)));
+    assert!(poses_differ((v, 3000.0), (v, 3000.01)));
   }
 
   #[test]

@@ -18,9 +18,8 @@ pub enum BodyKind {
   Kinematic,
 }
 
-/// Makes an entity a physics body. Simulated with its `Collider`s (on the
-/// entity itself; on children from Task 9 of the physics rewrite on), its
-/// `Transform` is written back from the simulation.
+/// Makes an entity a physics body, simulated with the `Collider` on the same
+/// entity; its `Transform` is written back from the simulation.
 ///
 /// Settings that do not apply to a kind are ignored: gravity, damping, CCD
 /// and dominance only matter to dynamic bodies. Mass comes from the colliders.

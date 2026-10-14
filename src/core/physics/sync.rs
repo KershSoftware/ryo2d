@@ -149,11 +149,9 @@ pub(crate) fn track_disabled(
         &mut physics,
         (entity, transform, &velocity, &angular, &body),
       );
-      // An edit since the last step is `register_new`'s; an older one was
-      // skipped while the entity was disabled
-      if !body.is_changed() {
-        apply_edit(&mut physics, entity, &body, &mut velocity, &mut angular);
-      }
+      // Edits made while it was disabled; `register_new` applying a recent
+      // one again changes nothing
+      apply_edit(&mut physics, entity, &body, &mut velocity, &mut angular);
       physics.place_body(entity, transform.translation, transform.rotation);
       physics.push_velocity(entity, velocity.as_vec2(), angular.0);
     }
@@ -809,6 +807,157 @@ mod tests {
       "{position}"
     );
     assert_eq!(at(&world, e).translation, position);
+  }
+
+  #[test]
+  fn re_enabled_and_made_kinematic_with_a_velocity_in_one_tick_moves_by_it() {
+    let (mut world, mut s) = world(60);
+    let e = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 10);
+    world.entity_mut(e).insert(Disabled);
+    run(&mut world, &mut s, 1);
+    world.entity_mut(e).remove::<Disabled>();
+    world
+      .entity_mut(e)
+      .insert((RigidBody::kinematic(), Velocity::new(60.0, 0.0)));
+    let before = at(&world, e).translation;
+    run(&mut world, &mut s, 60);
+    let moved = at(&world, e).translation - before;
+    assert!((moved - Vec2::new(60.0, 0.0)).length() < 0.5, "{moved}");
+    assert_eq!(world.get::<Velocity>(e), Some(&Velocity::new(60.0, 0.0)));
+  }
+
+  #[test]
+  fn an_edit_made_while_disabled_applies_when_only_the_frame_end_sees_the_re_enable() {
+    let (mut world, mut s) = world(60);
+    s.add_systems(Phase::Last, track_disabled);
+    let e = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 10);
+    world.entity_mut(e).insert(Disabled);
+    run(&mut world, &mut s, 1);
+    s.run(Phase::Last, &mut world);
+    // Edited while disabled, then a fixed step, then re-enabled later in the
+    // frame: only the frame-end bookkeeping sees the removal before the
+    // removal events expire
+    world.entity_mut(e).insert(RigidBody::kinematic());
+    run(&mut world, &mut s, 1);
+    world.entity_mut(e).remove::<Disabled>();
+    s.run(Phase::Last, &mut world);
+    world.clear_trackers();
+    world.clear_trackers();
+    let before = at(&world, e).translation;
+    run(&mut world, &mut s, 10);
+    assert_eq!(at(&world, e).translation, before, "it stayed dynamic");
+  }
+
+  /// A ball drifting slower than the sleep threshold, asleep after ten
+  /// seconds: Rapier stops it, though it was still moving.
+  fn sleeping_ball() -> (World, EngineSchedules, Entity) {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let b = ball(&mut world, 0.0, 0.0);
+    world.get_mut::<Velocity>(b).unwrap().dx = 10.0;
+    run(&mut world, &mut s, 600);
+    assert!(world.resource::<Physics>().is_sleeping(b));
+    (world, s, b)
+  }
+
+  #[test]
+  fn a_body_falling_asleep_writes_zero_velocities() {
+    let (world, _, b) = sleeping_ball();
+    assert_eq!(world.get::<Velocity>(b), Some(&Velocity::zero()));
+    assert_eq!(world.get::<AngularVelocity>(b), Some(&AngularVelocity(0.0)));
+  }
+
+  #[test]
+  fn a_sleeping_body_made_kinematic_with_a_velocity_moves_by_it() {
+    let (mut world, mut s, b) = sleeping_ball();
+    world
+      .entity_mut(b)
+      .insert((RigidBody::kinematic(), Velocity::new(60.0, 0.0)));
+    let before = at(&world, b).translation;
+    run(&mut world, &mut s, 60);
+    let moved = at(&world, b).translation - before;
+    assert!((moved - Vec2::new(60.0, 0.0)).length() < 0.5, "{moved}");
+  }
+
+  #[test]
+  fn a_body_disabled_while_asleep_stays_asleep_and_put_when_re_enabled() {
+    let (mut world, mut s, b) = sleeping_ball();
+    let before = at(&world, b);
+    world.entity_mut(b).insert(Disabled);
+    run(&mut world, &mut s, 5);
+    world.entity_mut(b).remove::<Disabled>();
+    run(&mut world, &mut s, 60);
+    assert!(world.resource::<Physics>().is_sleeping(b));
+    assert_eq!(at(&world, b), before);
+  }
+
+  #[test]
+  fn a_disabled_body_keeps_its_velocity() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let e = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Velocity::new(60.0, 0.0),
+        Collider::circle_collider(4.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 30);
+    world.entity_mut(e).insert(Disabled);
+    let parked = at(&world, e).translation;
+    run(&mut world, &mut s, 30);
+    assert_eq!(
+      at(&world, e).translation,
+      parked,
+      "it did not move while disabled"
+    );
+    world.entity_mut(e).remove::<Disabled>();
+    run(&mut world, &mut s, 30);
+    let x = at(&world, e).translation.x;
+    assert!((x - 60.0).abs() < 0.5, "a second of motion at 60 px/s: {x}");
+    assert_eq!(world.get::<Velocity>(e), Some(&Velocity::new(60.0, 0.0)));
+  }
+
+  #[test]
+  fn a_non_finite_transform_never_reaches_a_re_enabled_collider() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    run(&mut world, &mut s, 1);
+    world.entity_mut(f).insert(Disabled);
+    run(&mut world, &mut s, 1);
+    world.get_mut::<Transform>(f).unwrap().translation = Vec2::new(f32::NAN, 300.0);
+    world.entity_mut(f).remove::<Disabled>();
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    let collider = &physics.colliders[physics.collider_entries[&f].handle];
+    assert!(
+      collider.translation().is_finite(),
+      "{:?}",
+      collider.translation()
+    );
+  }
+
+  #[test]
+  fn a_body_turned_thousands_of_radians_still_sleeps() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    // As if a wheel had rolled for minutes: the continuous rotation is large
+    // and f32 round-off at that magnitude exceeds the sync tolerance
+    let e = world
+      .spawn((
+        Transform::IDENTITY.with_rotation(3000.0),
+        RigidBody::dynamic(),
+        Collider::box_collider(10.0, 10.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 600);
+    assert!(
+      world.resource::<Physics>().is_sleeping(e),
+      "the write-back's round-off must not count as a game write"
+    );
   }
 
   #[test]

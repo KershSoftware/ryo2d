@@ -66,6 +66,11 @@ pub(crate) struct BodyEntry {
   pub(crate) handle: RigidBodyHandle,
   /// The settings last applied, compared field by field on edits
   pub(crate) settings: RigidBody,
+  /// Asleep after the last step
+  asleep: bool,
+  /// Fell asleep during the last step: Rapier zeroed its velocities, which
+  /// the write-back passes on once
+  fell_asleep: bool,
 }
 
 pub(crate) struct ColliderEntry {
@@ -257,6 +262,8 @@ impl Physics {
       BodyEntry {
         handle,
         settings: settings.clone(),
+        asleep: false,
+        fell_asleep: false,
       },
     );
     // A collider already simulated on this entity joins its new body
@@ -453,8 +460,7 @@ impl Physics {
   }
 
   /// Whether `linvel`/`angvel` are what the simulation gave the entity's
-  /// dynamic body: its write-back, or anything while it sleeps (Rapier holds
-  /// a sleeping body still, the last write-back stays), not the game's input.
+  /// dynamic body (the write-back, zero once it sleeps), not the game's input.
   pub(crate) fn is_simulated_velocity(&self, entity: Entity, linvel: Vec2, angvel: f32) -> bool {
     let Some(body) = self
       .body_entries
@@ -463,8 +469,7 @@ impl Physics {
     else {
       return false;
     };
-    body.is_dynamic()
-      && (body.is_sleeping() || (from_rapier(body.linvel()) == linvel && body.angvel() == angvel))
+    body.is_dynamic() && from_rapier(body.linvel()) == linvel && body.angvel() == angvel
   }
 
   /// Start pushing a step's changes.
@@ -477,6 +482,7 @@ impl Physics {
   /// (a re-enabled body does not travel to where it was put while disabled).
   pub(crate) fn place_body(&mut self, entity: Entity, translation: Vec2, rotation: f32) {
     if !(translation.is_finite() && rotation.is_finite()) {
+      self.warn_once(entity, "a non-finite Transform is not pushed to physics");
       return;
     }
     let Some(entry) = self.body_entries.get(&entity) else {
@@ -515,6 +521,10 @@ impl Physics {
 
   /// Move a fixed collider that has no body.
   pub(crate) fn move_collider(&mut self, entity: Entity, translation: Vec2, rotation: f32) {
+    if !(translation.is_finite() && rotation.is_finite()) {
+      self.warn_once(entity, "a non-finite Transform is not pushed to physics");
+      return;
+    }
     let Some(entry) = self.collider_entries.get(&entity) else {
       return;
     };
@@ -617,10 +627,18 @@ impl Physics {
       }
     }
     self.departed.clear();
+    for entry in self.body_entries.values_mut() {
+      let asleep = self
+        .bodies
+        .get(entry.handle)
+        .is_some_and(|body| body.is_sleeping());
+      entry.fell_asleep = asleep && !entry.asleep;
+      entry.asleep = asleep;
+    }
   }
 
-  /// Bodies the step moved: awake dynamic bodies and kinematic bodies driven
-  /// by velocity.
+  /// Bodies the step moved: awake dynamic bodies (and those that just fell
+  /// asleep, now still) and kinematic bodies driven by velocity.
   pub(crate) fn moved_bodies(&self) -> impl Iterator<Item = BodyState> + '_ {
     let state = |entity: Entity, body: &rapier2d::prelude::RigidBody, dynamic: bool| BodyState {
       entity,
@@ -635,8 +653,8 @@ impl Physics {
       .iter()
       .filter_map(move |(&entity, entry)| {
         let body = self.bodies.get(entry.handle)?;
-        (body.is_dynamic() && body.is_enabled() && !body.is_sleeping())
-          .then(|| state(entity, body, true))
+        let moved = !body.is_sleeping() || entry.fell_asleep;
+        (body.is_dynamic() && body.is_enabled() && moved).then(|| state(entity, body, true))
       });
     let driven = self.driven.iter().filter_map(move |&entity| {
       let body = self.bodies.get(self.body_entries.get(&entity)?.handle)?;
