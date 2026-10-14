@@ -1,8 +1,11 @@
 //! One-way colliders: the direction kept in Rapier's collider user data, the
-//! contact hook dynamic bodies meet them through, and (Task 6) the rule the
-//! character sweep applies.
+//! contact hook dynamic bodies meet them through, and the rule the character
+//! sweep applies.
 
-use rapier2d::prelude::{ActiveHooks, ContactModificationContext, PhysicsHooks};
+use rapier2d::parry::bounding_volume::Aabb;
+use rapier2d::prelude::{
+  ActiveHooks, Collider as RapierCollider, ContactModificationContext, PhysicsHooks, Vector,
+};
 
 use super::convert::to_rapier;
 use crate::core::ecs::Vec2;
@@ -67,6 +70,55 @@ impl PhysicsHooks for OneWayHooks {
     };
     context.update_as_oneway_platform(allowed, ONE_WAY_ANGLE);
   }
+}
+
+/// How far a character may sit inside a one-way collider's top and still
+/// count as above it, in px.
+const ABOVE_TOLERANCE: f32 = 1.0;
+
+/// The lowest and highest of `p · d` over a box's corners.
+fn extent(corners: [Vector; 4], d: Vector) -> (f32, f32) {
+  corners
+    .iter()
+    .map(|corner| corner.dot(d))
+    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), x| {
+      (lo.min(x), hi.max(x))
+    })
+}
+
+fn corners(aabb: &Aabb) -> [Vector; 4] {
+  [
+    aabb.mins,
+    Vector::new(aabb.maxs.x, aabb.mins.y),
+    aabb.maxs,
+    Vector::new(aabb.mins.x, aabb.maxs.y),
+  ]
+}
+
+/// A one-way collider's world direction and its extent along it (its own
+/// box, turned with it).
+fn collider_extent(collider: &RapierCollider, local: Vec2) -> (Vector, (f32, f32)) {
+  let pose = collider.position();
+  let d = pose.rotation.transform_vector(to_rapier(local));
+  let own = collider.shape().compute_local_aabb();
+  let world = corners(&own).map(|corner| pose.transform_point(corner));
+  (d, extent(world, d))
+}
+
+/// Whether a character whose shape filled `aabb` is entirely on a one-way
+/// collider's solid side (above it), within `ABOVE_TOLERANCE`.
+pub(crate) fn character_above(collider: &RapierCollider, local: Vec2, aabb: &Aabb) -> bool {
+  let (d, (_, top)) = collider_extent(collider, local);
+  let (bottom, _) = extent(corners(aabb), d);
+  bottom >= top - ABOVE_TOLERANCE
+}
+
+/// Whether a character whose shape fills `aabb` is entirely past a one-way
+/// collider, below its lowest point.
+pub(crate) fn character_below(collider: &RapierCollider, local: Vec2, aabb: &Aabb) -> bool {
+  let (d, (low, _)) = collider_extent(collider, local);
+  let (_, high) = extent(corners(aabb), d);
+  high < low
 }
 
 #[cfg(test)]

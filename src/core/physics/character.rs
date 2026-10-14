@@ -8,16 +8,17 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use rapier2d::control::{
   CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
 };
+use rapier2d::parry::bounding_volume::Aabb;
 use rapier2d::parry::query::{QueryDispatcher, ShapeCastHit, ShapeCastOptions, ShapeCastStatus};
 use rapier2d::prelude::{
-  Collider as RapierCollider, ColliderHandle, QueryFilter as RapierFilter, QueryPipeline, Shape,
-  Vector,
+  Collider as RapierCollider, ColliderHandle, Pose, QueryFilter as RapierFilter, QueryPipeline,
+  Shape, Vector,
 };
 
 use super::body::RigidBody;
 use super::convert::{from_rapier, to_rapier};
-use super::sweep;
 use super::world::Physics;
+use super::{one_way, sweep};
 use crate::core::ecs::{
   Component, DetectChangesMut, Entity, Query, Res, ResMut, Transform, Vec2, Velocity,
 };
@@ -229,9 +230,9 @@ impl CharacterState {
 }
 
 /// What `Physics::move_character` reports back to the system.
-#[expect(dead_code, reason = "read once drop-through and knockback land")]
 pub(crate) struct CharacterMove {
   /// The normals of every surface the move touched (for clipping knockback)
+  #[expect(dead_code, reason = "read once knockback lands")]
   pub(crate) normals: Vec<Vec2>,
   /// A drop-through is over
   pub(crate) drop_done: bool,
@@ -271,6 +272,22 @@ fn real_velocity(wanted: Vec2, normals: &[Vec2], up: Option<Vec2>, momentum: Vec
     .iter()
     .fold(wanted, |real, normal| clip(real, *normal, up))
     + momentum
+}
+
+/// What a character's sweep from a pose its shape fills as `start` may hit:
+/// colliders enabled this tick (one disabled this tick stays in the broad
+/// phase until the step, and Rapier's filter never checks), one-way ones
+/// only when the character starts entirely on their solid side, and none of
+/// those while it drops through.
+fn solid(start: Aabb, dropping: bool) -> impl Fn(ColliderHandle, &RapierCollider) -> bool {
+  move |_, collider| {
+    collider.is_enabled()
+      && match one_way::decode(collider.user_data) {
+        None => true,
+        Some(_) if dropping => false,
+        Some(local) => one_way::character_above(collider, local, &start),
+      }
+  }
 }
 
 impl Physics {
@@ -396,6 +413,11 @@ impl Physics {
     };
     let desired = (wanted + extra) * dt;
     let was_on_floor = state.on_floor;
+    let dropping = controller.drop_through;
+    // A drop starts from the one-way floor stood on before this step's probe
+    let stood_on_one_way = state
+      .floor_collider
+      .filter(|_| was_on_floor && state.floor_one_way);
     // The floor it stood on carries it, by the floor's motion this step at
     // the touched point. The queries see the floor where it is, not where
     // the step takes it, so the character's own move is swept (and the floor
@@ -412,13 +434,13 @@ impl Physics {
       .and_then(|floor| self.body_entries.get(&floor))
       .map(|entry| entry.handle);
 
-    // A collider disabled this tick stays in the broad phase until the step
-    let enabled = |_: ColliderHandle, collider: &RapierCollider| collider.is_enabled();
+    // The move and the probe start where the step does
+    let solid_from_start = solid(shape.compute_aabb(&start), dropping);
     let filter = RapierFilter::default()
       .exclude_rigid_body(body_handle)
       .exclude_sensors()
       .groups(groups)
-      .predicate(&enabled);
+      .predicate(&solid_from_start);
     let dispatcher: &dyn QueryDispatcher = self.narrow_phase.query_dispatcher();
     let queries =
       self
@@ -459,10 +481,12 @@ impl Physics {
       })
       .flatten();
 
-    // The carry, past everything but the floor (it moves with the character)
+    // The carry, past everything but the floor (it moves with the character),
+    // starting where the move left it
     if let Some(carrier) = carrier {
+      let solid_from_moved = solid(shape.compute_aabb(&pose), dropping);
       let not_carrier = |handle: ColliderHandle, collider: &RapierCollider| {
-        enabled(handle, collider) && collider.parent() != Some(carrier)
+        solid_from_moved(handle, collider) && collider.parent() != Some(carrier)
       };
       let carrying = QueryPipeline {
         filter: filter.predicate(&not_carrier),
@@ -508,13 +532,47 @@ impl Physics {
       self.push_bodies(&kcc, collider_handle, filter, &*shape, &collisions, dt);
     }
 
+    let drop_done = self.track_drop(state, dropping, stood_on_one_way, &*shape, &pose);
+
     let delta = from_rapier(pose.translation - start.translation);
     let body_translation = from_rapier(self.bodies.get(body_handle)?.translation());
     self.drive_to(entity, body_translation + delta);
-    Some(CharacterMove {
-      normals,
-      drop_done: false,
-    })
+    Some(CharacterMove { normals, drop_done })
+  }
+
+  /// Keep a drop-through's bookkeeping; true when it is over. A drop
+  /// starts from the one-way collider stood on (`stood_on`) and lasts until
+  /// the character, at `pose`, is entirely below it; with no such collider
+  /// (solid ground, the air, the collider gone) it is over at once.
+  fn track_drop(
+    &self,
+    state: &mut CharacterState,
+    dropping: bool,
+    stood_on: Option<Entity>,
+    shape: &dyn Shape,
+    pose: &Pose,
+  ) -> bool {
+    if !dropping {
+      state.drop_from = None;
+      return false;
+    }
+    if state.drop_from.is_none() {
+      state.drop_from = stood_on;
+    }
+    let end = shape.compute_aabb(pose);
+    let still_over = state
+      .drop_from
+      .and_then(|from| self.collider_entries.get(&from))
+      .and_then(|entry| self.colliders.get(entry.handle))
+      .and_then(|collider| {
+        one_way::decode(collider.user_data)
+          .map(|local| !one_way::character_below(collider, local, &end))
+      })
+      .unwrap_or(false);
+    if !still_over {
+      state.drop_from = None;
+    }
+    !still_over
   }
 
   /// Read what a move touched into `state`: the sweep's hits are walls or
@@ -576,6 +634,10 @@ impl Physics {
         state.floor_normal = from_rapier(hit.normal1);
         state.floor = owner.map(|owner| owner.body);
         state.floor_collider = owner.map(|owner| owner.collider);
+        state.floor_one_way = self
+          .colliders
+          .get(handle)
+          .is_some_and(|collider| one_way::decode(collider.user_data).is_some());
         state.floor_point = point + motion;
         state.platform_velocity = if dt > 0.0 { motion / dt } else { Vec2::ZERO };
         normals.push(up);
@@ -585,6 +647,7 @@ impl Physics {
         state.floor_normal = Vec2::ZERO;
         state.floor = None;
         state.floor_collider = None;
+        state.floor_one_way = false;
         state.platform_velocity = Vec2::ZERO;
       }
     }
@@ -632,14 +695,17 @@ pub(crate) fn move_characters(
   )>,
 ) {
   let dt = time.fixed.timestep();
-  for (entity, controller, mut state, mut velocity) in &mut characters {
+  for (entity, mut controller, mut state, mut velocity) in &mut characters {
     let mut v = velocity.as_vec2();
-    let Some(_moved) =
+    let Some(moved) =
       physics.move_character(entity, &controller, &mut state, &mut v, Vec2::ZERO, dt)
     else {
       continue;
     };
     velocity.set_if_neq(Velocity::from_vec2(v));
+    if moved.drop_done {
+      controller.drop_through = false;
+    }
   }
 }
 
@@ -1353,6 +1419,295 @@ mod tests {
         "spin {spin}: the corner moved from {stood} to {} on the platform",
         local.x
       );
+    }
+  }
+
+  fn one_way_platform(world: &mut World, top: f32) -> Entity {
+    world
+      .spawn((
+        Transform::from_xy(0.0, top + 5.0),
+        Collider::rect(200.0, 10.0).one_way(),
+      ))
+      .id()
+  }
+
+  #[test]
+  fn a_character_jumps_up_through_a_one_way_platform_and_lands_on_it() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 200.0);
+    let platform = one_way_platform(&mut world, 100.0);
+    let e = character(&mut world, 0.0, 179.0);
+    for _ in 0..10 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    world.get_mut::<Velocity>(e).unwrap().dy = -620.0;
+    for _ in 0..90 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let st = state(&world, e);
+    assert!(st.on_floor && st.floor_one_way);
+    assert_eq!(st.floor, Some(platform));
+    let bottom = at(&world, e).translation.y + 20.0;
+    assert!((99.0..=100.0).contains(&bottom), "{bottom}");
+  }
+
+  #[test]
+  fn a_character_passes_a_one_way_platform_from_the_side() {
+    let (mut world, mut s) = world(60);
+    one_way_platform(&mut world, 0.0);
+    let e = character(&mut world, -150.0, 5.0);
+    for _ in 0..60 {
+      world.get_mut::<Velocity>(e).unwrap().dx = 300.0;
+      run(&mut world, &mut s, 1);
+    }
+    assert!(at(&world, e).translation.x > 150.0);
+  }
+
+  #[test]
+  fn a_character_walks_off_a_one_way_platform() {
+    let (mut world, mut s) = world(60);
+    one_way_platform(&mut world, 100.0);
+    let e = character(&mut world, 0.0, 70.0);
+    for _ in 0..90 {
+      world.get_mut::<Velocity>(e).unwrap().dx = 200.0;
+      step(&mut world, &mut s, e, 980.0);
+    }
+    assert!(!state(&world, e).on_floor);
+    assert!(at(&world, e).translation.y > 120.0, "fell past the end");
+  }
+
+  #[test]
+  fn drop_through_falls_through_the_platform_underfoot_and_clears() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 300.0);
+    one_way_platform(&mut world, 100.0);
+    let e = character(&mut world, 0.0, 70.0);
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    assert!(state(&world, e).floor_one_way);
+    world
+      .get_mut::<CharacterController>(e)
+      .unwrap()
+      .drop_through = true;
+    for _ in 0..90 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    assert!(at(&world, e).translation.y > 250.0, "on the floor below");
+    assert!(!world.get::<CharacterController>(e).unwrap().drop_through);
+  }
+
+  // A game may clear drop_through itself; the next drop starts afresh from
+  // the platform it is made from
+  #[test]
+  fn a_drop_the_game_cuts_short_does_not_spoil_the_next() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 400.0);
+    one_way_platform(&mut world, 100.0);
+    let lower = one_way_platform(&mut world, 200.0);
+    let e = character(&mut world, 0.0, 70.0);
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    world
+      .get_mut::<CharacterController>(e)
+      .unwrap()
+      .drop_through = true;
+    for _ in 0..10 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    world
+      .get_mut::<CharacterController>(e)
+      .unwrap()
+      .drop_through = false;
+    for _ in 0..60 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    assert_eq!(state(&world, e).floor, Some(lower));
+    world
+      .get_mut::<CharacterController>(e)
+      .unwrap()
+      .drop_through = true;
+    for _ in 0..90 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    assert!(at(&world, e).translation.y > 350.0, "on the floor below");
+    assert!(!world.get::<CharacterController>(e).unwrap().drop_through);
+  }
+
+  #[test]
+  fn drop_through_on_solid_ground_does_nothing_and_clears() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = character(&mut world, 0.0, 79.0);
+    for _ in 0..10 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    world
+      .get_mut::<CharacterController>(e)
+      .unwrap()
+      .drop_through = true;
+    step(&mut world, &mut s, e, 980.0);
+    assert!(state(&world, e).on_floor);
+    assert!(!world.get::<CharacterController>(e).unwrap().drop_through);
+  }
+
+  #[test]
+  fn a_turned_one_way_platform_blocks_a_character_along_its_own_up() {
+    let (mut world, mut s) = world(60);
+    // Its up turned to +X: solid against what comes from the right
+    world.spawn((
+      Transform::IDENTITY.with_rotation(std::f32::consts::FRAC_PI_2),
+      Collider::rect(200.0, 10.0).one_way(),
+    ));
+    let spawn = |world: &mut World, x: f32, y: f32| {
+      world
+        .spawn((
+          Transform::from_xy(x, y),
+          CharacterController::top_down(),
+          Collider::circle(8.0),
+        ))
+        .id()
+    };
+    // On separate lines, so they do not run into each other
+    let from_right = spawn(&mut world, 60.0, 0.0);
+    let from_left = spawn(&mut world, -60.0, 30.0);
+    for _ in 0..30 {
+      world.get_mut::<Velocity>(from_right).unwrap().dx = -300.0;
+      world.get_mut::<Velocity>(from_left).unwrap().dx = 300.0;
+      run(&mut world, &mut s, 1);
+    }
+    assert!(at(&world, from_right).translation.x > 10.0, "blocked");
+    assert!(at(&world, from_left).translation.x > 60.0, "passed");
+  }
+
+  // Review focus 3
+  #[test]
+  fn a_fast_fall_lands_on_a_one_way_segment() {
+    let (mut world, mut s) = world(60);
+    world.spawn((
+      Transform::IDENTITY,
+      Collider::segment(Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0)).one_way(),
+    ));
+    let e = character(&mut world, 0.0, -400.0);
+    for _ in 0..30 {
+      world.get_mut::<Velocity>(e).unwrap().dy = 3000.0;
+      run(&mut world, &mut s, 1);
+    }
+    let bottom = at(&world, e).translation.y + 20.0;
+    assert!((-1.0..=0.0).contains(&bottom), "{bottom}");
+  }
+
+  #[test]
+  fn solid_ground_is_not_one_way() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = character(&mut world, 0.0, 79.0);
+    for _ in 0..10 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let st = state(&world, e);
+    assert!(st.on_floor && !st.floor_one_way);
+  }
+
+  // The carry is swept by the one-way rule too: a lift rising through a
+  // one-way platform takes its rider up through it
+  #[test]
+  fn a_lift_carries_a_character_up_through_a_one_way_platform() {
+    let (mut world, mut s) = world(60);
+    let (lift, e) = on_platform(&mut world, &mut s);
+    one_way_platform(&mut world, 30.0);
+    world.get_mut::<Velocity>(lift).unwrap().dy = -120.0;
+    for i in 0..60 {
+      step(&mut world, &mut s, e, 980.0);
+      let st = state(&world, e);
+      assert!(st.on_floor && !st.landed, "step {i}: {st:?}");
+      let feet = at(&world, e).translation.y + 20.0;
+      let top = at(&world, lift).translation.y - 10.0;
+      assert!(
+        (0.0..=1.0).contains(&(top - feet)),
+        "step {i}: feet {feet}, top {top}"
+      );
+    }
+    assert_eq!(state(&world, e).floor, Some(lift));
+    let feet = at(&world, e).translation.y + 20.0;
+    assert!(feet < 30.0, "through the platform: {feet}");
+  }
+
+  #[test]
+  fn a_lift_sinking_through_a_one_way_platform_leaves_its_rider_on_it() {
+    let (mut world, mut s) = world(60);
+    let (lift, e) = on_platform(&mut world, &mut s);
+    let platform = one_way_platform(&mut world, 160.0);
+    world.get_mut::<Velocity>(lift).unwrap().dy = 120.0;
+    for _ in 0..60 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let st = state(&world, e);
+    assert!(st.on_floor && st.floor_one_way, "{st:?}");
+    assert_eq!(st.floor, Some(platform));
+    let bottom = at(&world, e).translation.y + 20.0;
+    assert!((159.0..=160.0).contains(&bottom), "{bottom}");
+  }
+
+  // The carry's one-way rule starts from where the character's own move
+  // left it: a jump that clears a one-way platform the character stood
+  // inside of is not carried back into it by the lift sinking beneath
+  #[test]
+  fn a_jump_clear_of_a_one_way_platform_is_not_carried_back_into_it() {
+    let (mut world, mut s) = world(60);
+    one_way_platform(&mut world, 0.0);
+    // A lift resting part-way up through it, its top 5 px below the platform's
+    let lift = world
+      .spawn((
+        Transform::from_xy(0.0, 15.0),
+        RigidBody::kinematic(),
+        Collider::rect(200.0, 20.0),
+      ))
+      .id();
+    let e = character(&mut world, 0.0, -16.0);
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let st = state(&world, e);
+    assert!(st.on_floor && st.floor == Some(lift), "{st:?}");
+    world.get_mut::<Transform>(lift).unwrap().translation.y += 20.0;
+    world.get_mut::<Velocity>(e).unwrap().dy = -600.0;
+    step(&mut world, &mut s, e, 980.0);
+    let feet = at(&world, e).translation.y + 20.0;
+    assert!((-1.0..=0.0).contains(&feet), "{feet}");
+  }
+
+  #[test]
+  fn a_character_stays_on_top_of_a_rising_or_sinking_one_way_platform() {
+    for dy in [-60.0, -300.0, 60.0, 300.0] {
+      let (mut world, mut s) = world(60);
+      let platform = world
+        .spawn((
+          Transform::from_xy(0.0, 105.0),
+          RigidBody::kinematic(),
+          Collider::rect(200.0, 10.0).one_way(),
+        ))
+        .id();
+      let e = character(&mut world, 0.0, 70.0);
+      for _ in 0..30 {
+        step(&mut world, &mut s, e, 980.0);
+      }
+      world.get_mut::<Velocity>(platform).unwrap().dy = dy;
+      for i in 0..60 {
+        step(&mut world, &mut s, e, 980.0);
+        let st = state(&world, e);
+        assert!(
+          st.on_floor && st.floor_one_way && !st.landed,
+          "dy {dy}, step {i}: {st:?}"
+        );
+        let feet = at(&world, e).translation.y + 20.0;
+        let top = at(&world, platform).translation.y - 5.0;
+        assert!(
+          (0.0..=1.0).contains(&(top - feet)),
+          "dy {dy}, step {i}: feet {feet}, top {top}"
+        );
+      }
     }
   }
 }
