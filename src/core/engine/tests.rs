@@ -705,5 +705,5 @@ fn built_engines_hold_the_builder_s_resources_and_messages() {
       .contains_resource::<crate::core::ecs::Messages<Scored>>()
   );
   assert!(engine.world.contains_resource::<Time>());
-  assert!(engine.world.contains_resource::<RapierPhysicsWorld>());
+  assert!(engine.world.contains_resource::<Physics>());
 }

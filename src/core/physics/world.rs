@@ -2,7 +2,7 @@
 //!
 //! This module wraps Rapier2D to provide physics simulation with collision response.
 //! It maps ECS entities to Rapier bodies; the physics systems
-//! (`systems/physics.rs`) register bodies, push game changes in, step, and
+//! (`sync.rs`) register bodies, push game changes in, step, and
 //! read positions back.
 //!
 //! ## Collision Events
@@ -32,13 +32,10 @@ use rapier2d::prelude::{
 
 use super::collision::{Collider, ColliderShape};
 use super::components::RigidBody;
+use super::config::PhysicsConfig;
 use super::convert::{from_rapier, to_rapier};
 use crate::core::ecs::{Entity, Resource, Transform, Vec2, Velocity};
 use crate::core::graphics::GroupedCollider;
-
-/// Rapier simulates in pixels; its tolerances and defaults are tuned for
-/// bodies about this many pixels across (one metre).
-const LENGTH_UNIT: f32 = 100.0;
 
 /// Collects Rapier's events during a step; drained right after it.
 #[derive(Default)]
@@ -145,7 +142,7 @@ impl PhysicsCollisionEvent {
 /// - Pushing game writes in and reading simulated positions out
 /// - Collecting and querying collision events
 #[derive(Resource)]
-pub struct RapierPhysicsWorld {
+pub struct Physics {
   // Rapier structures
   rigid_body_set: RigidBodySet,
   collider_set: ColliderSet,
@@ -159,6 +156,8 @@ pub struct RapierPhysicsWorld {
   soft_bodies: SoftBodySet,
   ccd_solver: CCDSolver,
   collector: EventCollector,
+  /// Pixels per second squared, from `PhysicsConfig`.
+  gravity: Vec2,
 
   // Mapping between ECS entities and Rapier handles
   entity_to_body: HashMap<Entity, RigidBodyHandle>,
@@ -170,11 +169,11 @@ pub struct RapierPhysicsWorld {
   collision_events: Vec<PhysicsCollisionEvent>,
 }
 
-impl RapierPhysicsWorld {
+impl Physics {
   /// Create a new Rapier physics world
   pub fn new() -> Self {
     let integration_parameters = IntegrationParameters {
-      length_unit: LENGTH_UNIT,
+      length_unit: PhysicsConfig::DEFAULT_PIXELS_PER_METER,
       ..IntegrationParameters::default()
     };
     Self {
@@ -190,6 +189,7 @@ impl RapierPhysicsWorld {
       soft_bodies: SoftBodySet::new(),
       ccd_solver: CCDSolver::new(),
       collector: EventCollector::default(),
+      gravity: Vec2::new(0.0, 980.0),
       entity_to_body: HashMap::new(),
       body_to_entity: HashMap::new(),
       entity_to_collider: HashMap::new(),
@@ -268,7 +268,7 @@ impl RapierPhysicsWorld {
       ColliderShape::Circle { radius } => ColliderBuilder::ball(radius),
     }
     .translation(to_rapier(offset))
-    .density(1.0 / (LENGTH_UNIT * LENGTH_UNIT))
+    .density(self.rapier_density(1.0))
     .restitution(collider.restitution)
     .friction(collider.friction)
     .sensor(collider.is_trigger)
@@ -382,7 +382,7 @@ impl RapierPhysicsWorld {
     let half = size / 2.0;
     let rapier_collider = ColliderBuilder::cuboid(half.x, half.y)
       .translation(to_rapier(center))
-      .density(1.0 / (LENGTH_UNIT * LENGTH_UNIT))
+      .density(self.rapier_density(1.0))
       .restitution(grouped.restitution)
       .friction(grouped.friction)
       .sensor(grouped.is_trigger)
@@ -415,19 +415,34 @@ impl RapierPhysicsWorld {
     }
   }
 
+  /// Take the unit, solver iterations and gravity from the config.
+  pub(crate) fn configure(&mut self, config: &PhysicsConfig) {
+    self.integration_parameters.length_unit = config.length_unit();
+    self.integration_parameters.num_solver_iterations = config.iterations();
+    self.gravity = if config.gravity.is_finite() {
+      config.gravity
+    } else {
+      Vec2::ZERO
+    };
+  }
+
+  /// Rapier's density for `density` per square metre.
+  pub(crate) fn rapier_density(&self, density: f32) -> f32 {
+    let unit = self.integration_parameters.length_unit;
+    density / (unit * unit)
+  }
+
   /// Advance the simulation by `dt` seconds (the fixed timestep).
-  ///
-  /// `gravity` is in pixels per second squared (e.g., (0.0, 980.0) for Earth-like gravity)
   ///
   /// Collision events are collected during this step and can be queried
   /// with `get_collision_events()` or `drain_collision_events()`.
-  pub fn step(&mut self, gravity: (f32, f32), dt: f32) {
+  pub fn step(&mut self, dt: f32) {
     // Clear previous events
     self.collision_events.clear();
     self.integration_parameters.dt = dt;
 
     self.physics_pipeline.step(
-      to_rapier(Vec2::new(gravity.0, gravity.1)),
+      to_rapier(self.gravity),
       &self.integration_parameters,
       &mut self.island_manager,
       &mut self.broad_phase,
@@ -662,7 +677,7 @@ impl RapierPhysicsWorld {
   }
 }
 
-impl Default for RapierPhysicsWorld {
+impl Default for Physics {
   fn default() -> Self {
     Self::new()
   }
@@ -676,7 +691,7 @@ mod tests {
 
   /// Register an entity directly (the physics systems do this in the engine).
   fn add(
-    physics: &mut RapierPhysicsWorld,
+    physics: &mut Physics,
     entity: Entity,
     x: f32,
     y: f32,
@@ -697,14 +712,14 @@ mod tests {
     Entity::from_raw_u32(index).expect("a valid test index")
   }
 
-  fn collider_center(physics: &RapierPhysicsWorld, entity: Entity) -> Vec2 {
+  fn collider_center(physics: &Physics, entity: Entity) -> Vec2 {
     let handle = physics.entity_to_collider[&entity];
     from_rapier(physics.collider_set[handle].position().translation)
   }
 
   #[test]
   fn a_100_px_box_weighs_one() {
-    let mut world = RapierPhysicsWorld::new();
+    let mut world = Physics::new();
     let e = entity(1);
     world.register_entity(
       e,
@@ -719,7 +734,7 @@ mod tests {
 
   #[test]
   fn positions_are_pixels() {
-    let mut world = RapierPhysicsWorld::new();
+    let mut world = Physics::new();
     let e = entity(1);
     world.register_entity(
       e,
@@ -733,13 +748,13 @@ mod tests {
 
   #[test]
   fn rapier_world_creates() {
-    let physics = RapierPhysicsWorld::new();
+    let physics = Physics::new();
     assert_eq!(physics.body_count(), 0);
   }
 
   #[test]
   fn register_and_unregister_entity() {
-    let mut physics = RapierPhysicsWorld::new();
+    let mut physics = Physics::new();
     let e = entity(1);
     add(
       &mut physics,
@@ -759,7 +774,7 @@ mod tests {
 
   #[test]
   fn step_applies_gravity() {
-    let mut physics = RapierPhysicsWorld::new();
+    let mut physics = Physics::new();
     let e = entity(1);
     add(
       &mut physics,
@@ -770,7 +785,7 @@ mod tests {
       RigidBody::new(),
       Collider::box_collider(32.0, 32.0),
     );
-    physics.step((0.0, 980.0), 1.0 / 60.0);
+    physics.step(1.0 / 60.0);
     let (moved, position, velocity) = physics.read_back().next().unwrap();
     assert_eq!(moved, e);
     assert!(position.y > 100.0, "Entity should fall due to gravity");
@@ -779,7 +794,7 @@ mod tests {
 
   #[test]
   fn kinematic_body_not_affected_by_gravity_nor_read_back() {
-    let mut physics = RapierPhysicsWorld::new();
+    let mut physics = Physics::new();
     let e = entity(1);
     add(
       &mut physics,
@@ -790,14 +805,14 @@ mod tests {
       RigidBody::kinematic(),
       Collider::box_collider(32.0, 32.0),
     );
-    physics.step((0.0, 980.0), 1.0 / 60.0);
+    physics.step(1.0 / 60.0);
     assert_eq!(physics.body_position(e), Some(Vec2::new(100.0, 100.0)));
     assert_eq!(physics.read_back().count(), 0);
   }
 
   #[test]
   fn collision_response_and_events() {
-    let mut physics = RapierPhysicsWorld::new();
+    let mut physics = Physics::new();
     let (ball, floor) = (entity(1), entity(2));
     add(
       &mut physics,
@@ -820,7 +835,7 @@ mod tests {
 
     let mut collision_detected = false;
     for _ in 0..60 {
-      physics.step((0.0, 980.0), 1.0 / 60.0);
+      physics.step(1.0 / 60.0);
       for event in physics.get_collision_events() {
         if event.is_started() && event.involves(ball) && event.involves(floor) {
           collision_detected = true;
@@ -842,7 +857,7 @@ mod tests {
 
   #[test]
   fn set_transform_teleports_and_set_velocity_pushes() {
-    let mut physics = RapierPhysicsWorld::new();
+    let mut physics = Physics::new();
     let e = entity(1);
     add(
       &mut physics,
@@ -856,14 +871,14 @@ mod tests {
     physics.set_transform(e, &Transform::from_xy(300.0, -20.0));
     assert_eq!(physics.body_position(e), Some(Vec2::new(300.0, -20.0)));
     physics.set_velocity(e, &Velocity::new(60.0, 0.0));
-    physics.step((0.0, 0.0), 0.5);
+    physics.step(0.5);
     let x = physics.body_position(e).unwrap().x;
     assert!((x - 330.0).abs() < 0.5, "half a second at 60 px/s: {x}");
   }
 
   #[test]
   fn clear_resets_physics_world() {
-    let mut physics = RapierPhysicsWorld::new();
+    let mut physics = Physics::new();
     let (e1, e2, e3) = (entity(1), entity(2), entity(3));
     add(
       &mut physics,
@@ -922,7 +937,7 @@ mod tests {
 
   #[test]
   fn a_collider_is_centred_on_the_entity() {
-    let mut physics = RapierPhysicsWorld::new();
+    let mut physics = Physics::new();
     let e = entity(1);
     add(
       &mut physics,
@@ -938,7 +953,7 @@ mod tests {
 
   #[test]
   fn a_collider_offset_moves_it_from_the_entity_centre() {
-    let mut physics = RapierPhysicsWorld::new();
+    let mut physics = Physics::new();
     let e = entity(1);
     add(
       &mut physics,
@@ -954,7 +969,7 @@ mod tests {
 
   #[test]
   fn a_grouped_collider_spans_its_offset_and_size() {
-    let mut physics = RapierPhysicsWorld::new();
+    let mut physics = Physics::new();
     let e = entity(1);
     let grouped = GroupedCollider::new(40.0, 20.0).with_offset(-20.0, 0.0);
     physics.register_grouped_entity(

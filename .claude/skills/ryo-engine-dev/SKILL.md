@@ -62,14 +62,14 @@ Engine::frame
 
 - Phases are `bevy_ecs` schedules owned by `EngineSchedules` (`schedule.rs`); sets are `FixedSet`, `UpdateSet`, `PostUpdateSet`. Every schedule uses the single-threaded executor.
 - The UI pass and render are not schedules; they are engine methods between phases.
-- Engine systems are registered in `register_engine_systems` (`engine/mod.rs`), `register_juice_systems` (`systems/mod.rs`) and `register_physics_systems` (`systems/physics.rs`). Games add theirs with `EngineBuilder::add_systems` or `SceneContext::add_systems`.
+- Engine systems are registered in `register_engine_systems` (`engine/mod.rs`), `register_juice_systems` (`systems/mod.rs`) and `register_physics_systems` (`physics/sync.rs`). Games add theirs with `EngineBuilder::add_systems` or `SceneContext::add_systems`.
 - Three clocks (`time.rs`): `real` (wall), `game` (capped, scaled, pausable), `fixed` (constant steps fed by game time). Fixed-step code uses `time.fixed.timestep()`; real-time effects use `time.real`. Sprite shader globals carry game time in `x`.
 
 ## World and Engine State
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (scene stack + Kira `Audio`), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
@@ -92,7 +92,7 @@ Engine::frame
 | `graphics/` | wgpu renderer, sprite textures and game shader sources, cameras and render targets, the screen mapping, texture registry and mipmapped atlas, bind-group helper, compositor, sprite animation, tiles, `ParallaxLayer` |
 | `shaders/` | Post-process effects (`EffectsManager`) and sprite shaders |
 | `lighting/` | 2D lights, occluders, `LightingSettings` |
-| `physics/` | Rapier integration, `RigidBody`, `Collider`, `RapierPhysicsWorld` |
+| `physics/` | Rapier integration, `RigidBody`, `Collider`, `Physics` |
 | `particles/`, `trail/`, `skeleton/`, `tilemap/`, `navigation/`, `state_machine/` | Feature modules |
 | `ui/` | Immediate-mode and retained UI, `UiContext` |
 | `asset/` | `AssetManager`, async loads, hot reload |

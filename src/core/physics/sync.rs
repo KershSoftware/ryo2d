@@ -6,6 +6,7 @@
 //! timestep, write the simulated positions back, and turn Rapier's contacts
 //! into `CollisionStarted`/`CollisionStopped` messages.
 
+use super::{Collider, Physics, PhysicsConfig, RigidBody};
 use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, DetectChanges, DetectChangesMut, Disabled, Entity,
   IntoScheduleConfigs, MessageWriter, Or, Query, Ref, RemovedComponents, Res, ResMut, Transform,
@@ -13,13 +14,12 @@ use crate::core::ecs::{
 };
 use crate::core::graphics::GroupedCollider;
 use crate::core::messages::{CollisionStarted, CollisionStopped};
-use crate::core::physics::{Collider, PhysicsConfig, RapierPhysicsWorld, RigidBody};
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
 use crate::core::time::Time;
 
 /// Run condition: physics steps unless the scene stack paused it.
-pub fn physics_enabled(paused: Res<PhysicsPaused>) -> bool {
+pub(crate) fn physics_enabled(paused: Res<PhysicsPaused>) -> bool {
   !paused.0
 }
 
@@ -47,8 +47,8 @@ type Pushed = (With<RigidBody>, Changed<Velocity>);
 /// to a registered body's `RigidBody` (a dynamic body made kinematic) in
 /// place, keeping its contacts. Runs after `unregister_removed_bodies`, so a
 /// `RigidBody` removed and added again in one tick keeps a body.
-pub fn register_new_bodies(
-  mut physics: ResMut<RapierPhysicsWorld>,
+pub(crate) fn register_new_bodies(
+  mut physics: ResMut<Physics>,
   edited: Query<BodyItem, (Changed<RigidBody>, Without<ChildOf>)>,
   added: Query<BodyItem, (NewBody, Without<ChildOf>)>,
 ) {
@@ -66,8 +66,8 @@ pub fn register_new_bodies(
 
 /// Register the bodies of entities that were re-enabled or detached from
 /// their parent.
-pub fn register_restored_bodies(
-  mut physics: ResMut<RapierPhysicsWorld>,
+pub(crate) fn register_restored_bodies(
+  mut physics: ResMut<Physics>,
   bodies: Query<BodyItem, RootBody>,
   mut re_enabled: RemovedComponents<Disabled>,
   mut detached: RemovedComponents<ChildOf>,
@@ -82,8 +82,8 @@ pub fn register_restored_bodies(
 /// A `RigidBody` on a child entity is not simulated (a body moves its own
 /// `Transform`, which for a child is relative to the parent): take a body
 /// that gained a parent out of the simulation, and log each such body once.
-pub fn drop_parented_bodies(
-  mut physics: ResMut<RapierPhysicsWorld>,
+pub(crate) fn drop_parented_bodies(
+  mut physics: ResMut<Physics>,
   newly_parented: Query<Entity, (With<RigidBody>, Added<ChildOf>)>,
   bodies_on_children: Query<(Entity, Ref<ChildOf>), Added<RigidBody>>,
 ) {
@@ -108,7 +108,7 @@ fn warn_parented(entity: Entity) {
 }
 
 fn register(
-  physics: &mut RapierPhysicsWorld,
+  physics: &mut Physics,
   (entity, transform, velocity, body, collider, grouped): BodyItem,
 ) {
   if physics.is_registered(entity) {
@@ -125,8 +125,8 @@ fn register(
 
 /// Unregister bodies whose `RigidBody` went away (despawn included) and
 /// bodies of entities that were disabled.
-pub fn unregister_removed_bodies(
-  mut physics: ResMut<RapierPhysicsWorld>,
+pub(crate) fn unregister_removed_bodies(
+  mut physics: ResMut<Physics>,
   mut removed: RemovedComponents<RigidBody>,
   disabled: Query<Entity, NewlyDisabled>,
 ) {
@@ -145,8 +145,8 @@ pub fn unregister_removed_bodies(
 /// Physics' own write-back also changes these components, and propagation
 /// must see it. A value equal to the body's is that write-back (or a no-op),
 /// so only values that differ reach Rapier: untouched bodies stay asleep.
-pub fn sync_to_physics(
-  mut physics: ResMut<RapierPhysicsWorld>,
+pub(crate) fn sync_to_physics(
+  mut physics: ResMut<Physics>,
   moved: Query<(Entity, &Transform), Moved>,
   pushed: Query<(Entity, &Velocity), Pushed>,
 ) {
@@ -163,21 +163,22 @@ pub fn sync_to_physics(
 }
 
 /// Step the simulation by the fixed timestep.
-pub fn step_physics(
-  mut physics: ResMut<RapierPhysicsWorld>,
+pub(crate) fn step_physics(
+  mut physics: ResMut<Physics>,
   config: Res<PhysicsConfig>,
   time: Res<Time>,
 ) {
   crate::profile_scope!("cpu:physics");
-  physics.step(config.gravity, time.fixed.timestep());
+  physics.configure(&config);
+  physics.step(time.fixed.timestep());
 }
 
 /// Write simulated positions and velocities of awake dynamic bodies back.
 ///
 /// These are ordinary changes, so propagation and rendering see bodies move;
 /// `sync_to_physics` tells them from game writes by value.
-pub fn sync_from_physics(
-  physics: Res<RapierPhysicsWorld>,
+pub(crate) fn sync_from_physics(
+  physics: Res<Physics>,
   mut bodies: Query<(&mut Transform, Option<&mut Velocity>), With<RigidBody>>,
 ) {
   for (entity, position, velocity) in physics.read_back() {
@@ -195,8 +196,8 @@ pub fn sync_from_physics(
 }
 
 /// Turn the step's contacts into messages.
-pub fn emit_collision_messages(
-  mut physics: ResMut<RapierPhysicsWorld>,
+pub(crate) fn emit_collision_messages(
+  mut physics: ResMut<Physics>,
   mut started: MessageWriter<CollisionStarted>,
   mut stopped: MessageWriter<CollisionStopped>,
 ) {
@@ -217,7 +218,7 @@ pub fn emit_collision_messages(
 
 /// Add the physics systems to `FixedSet::Physics`, chained, running only
 /// while physics is not paused.
-pub fn register_physics_systems(schedules: &mut EngineSchedules) {
+pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::FixedUpdate,
     (
@@ -240,7 +241,6 @@ pub fn register_physics_systems(schedules: &mut EngineSchedules) {
 mod tests {
   use super::*;
   use crate::core::ecs::{Disabled, Transform, World};
-  use crate::core::physics::{Collider, PhysicsConfig, RapierPhysicsWorld, RigidBody};
   use crate::core::scene::PhysicsPaused;
   use crate::core::schedule::{EngineSchedules, Phase};
   use crate::core::time::Time;
@@ -248,15 +248,34 @@ mod tests {
   fn world(hz: u32) -> (World, EngineSchedules) {
     let mut world = World::new();
     world.insert_resource(Time::new(hz));
-    world.insert_resource(RapierPhysicsWorld::new());
-    world.insert_resource(PhysicsConfig {
-      gravity: (0.0, 980.0),
-    });
+    world.insert_resource(Physics::new());
+    world.insert_resource(PhysicsConfig::default());
     world.insert_resource(PhysicsPaused(false));
     crate::core::messages::register_engine_messages(&mut world);
     let mut schedules = EngineSchedules::new();
     register_physics_systems(&mut schedules);
     (world, schedules)
+  }
+
+  #[test]
+  fn gravity_is_pixels_whatever_the_unit() {
+    let fell = |ppm: f32| {
+      let (mut world, mut s) = world(60);
+      *world.resource_mut::<PhysicsConfig>() = PhysicsConfig::default().with_pixels_per_meter(ppm);
+      let e = world
+        .spawn((
+          Transform::IDENTITY,
+          RigidBody::new(),
+          Collider::circle_collider(8.0),
+        ))
+        .id();
+      for _ in 0..60 {
+        s.run(Phase::FixedUpdate, &mut world);
+      }
+      world.get::<Transform>(e).unwrap().translation.y
+    };
+    let (at50, at100) = (fell(50.0), fell(100.0));
+    assert!((at50 - at100).abs() < 2.0, "{at50} vs {at100}");
   }
 
   fn drop_for_one_second(hz: u32) -> f32 {
@@ -296,16 +315,16 @@ mod tests {
       ))
       .id();
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(world.resource::<RapierPhysicsWorld>().is_registered(e));
+    assert!(world.resource::<Physics>().is_registered(e));
     world.entity_mut(e).insert(Disabled);
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(!world.resource::<RapierPhysicsWorld>().is_registered(e));
+    assert!(!world.resource::<Physics>().is_registered(e));
     world.entity_mut(e).remove::<Disabled>();
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(world.resource::<RapierPhysicsWorld>().is_registered(e));
+    assert!(world.resource::<Physics>().is_registered(e));
     world.despawn(e);
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(!world.resource::<RapierPhysicsWorld>().is_registered(e));
+    assert!(!world.resource::<Physics>().is_registered(e));
   }
 
   /// A falling body run for `steps`, then changed by `change`, then run for
@@ -361,7 +380,7 @@ mod tests {
       ))
       .id();
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(!world.resource::<RapierPhysicsWorld>().is_registered(child));
+    assert!(!world.resource::<Physics>().is_registered(child));
     // Parenting a registered body takes it out of the simulation
     let body = world
       .spawn((
@@ -371,14 +390,14 @@ mod tests {
       ))
       .id();
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(world.resource::<RapierPhysicsWorld>().is_registered(body));
+    assert!(world.resource::<Physics>().is_registered(body));
     world.entity_mut(body).insert(ChildOf(parent));
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(!world.resource::<RapierPhysicsWorld>().is_registered(body));
+    assert!(!world.resource::<Physics>().is_registered(body));
     // Detached, it is a root body again
     world.entity_mut(child).remove::<ChildOf>();
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(world.resource::<RapierPhysicsWorld>().is_registered(child));
+    assert!(world.resource::<Physics>().is_registered(child));
   }
 
   #[test]
@@ -386,10 +405,10 @@ mod tests {
     let (mut world, mut s) = world(60);
     let e = world.spawn((Transform::IDENTITY, RigidBody::new())).id();
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(!world.resource::<RapierPhysicsWorld>().is_registered(e));
+    assert!(!world.resource::<Physics>().is_registered(e));
     world.entity_mut(e).insert(Collider::circle_collider(4.0));
     s.run(Phase::FixedUpdate, &mut world);
-    assert!(world.resource::<RapierPhysicsWorld>().is_registered(e));
+    assert!(world.resource::<Physics>().is_registered(e));
   }
 
   #[test]
@@ -411,7 +430,7 @@ mod tests {
       s.run(Phase::FixedUpdate, &mut world);
     }
     assert!(
-      world.resource::<RapierPhysicsWorld>().is_sleeping(ball),
+      world.resource::<Physics>().is_sleeping(ball),
       "ten seconds at rest"
     );
     let before = world.get::<Transform>(ball).unwrap().translation;
@@ -419,7 +438,7 @@ mod tests {
       s.run(Phase::FixedUpdate, &mut world);
     }
     assert!(
-      world.resource::<RapierPhysicsWorld>().is_sleeping(ball),
+      world.resource::<Physics>().is_sleeping(ball),
       "sync must not wake it"
     );
     assert_eq!(world.get::<Transform>(ball).unwrap().translation, before);
@@ -438,10 +457,7 @@ mod tests {
     s.run(Phase::FixedUpdate, &mut world);
     world.get_mut::<Transform>(kin).unwrap().translation.x = 50.0;
     s.run(Phase::FixedUpdate, &mut world);
-    let pos = world
-      .resource::<RapierPhysicsWorld>()
-      .body_position(kin)
-      .unwrap();
+    let pos = world.resource::<Physics>().body_position(kin).unwrap();
     assert!((pos.x - 50.0).abs() < 1e-3);
   }
 

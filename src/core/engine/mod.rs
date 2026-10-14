@@ -47,7 +47,10 @@ use crate::core::input::Input;
 use crate::core::input_script::InputScript;
 use crate::core::lighting::{LightingRenderer, LightingSettings};
 use crate::core::messages::{register_engine_messages, register_message};
-use crate::core::physics::{PhysicsConfig, RapierPhysicsWorld};
+use crate::core::physics::sync::{
+  register_physics_systems, register_restored_bodies, unregister_removed_bodies,
+};
+use crate::core::physics::{Physics, PhysicsConfig};
 use crate::core::render::batch::Batch2D;
 use crate::core::render::{
   DrawList, EntityDrawer, RenderPipeline, begin_debug_fixed_step, end_debug_fixed_step,
@@ -55,10 +58,7 @@ use crate::core::render::{
 use crate::core::scene::{PhysicsPaused, Scene, SceneManager};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet, UpdateSet};
 use crate::core::shaders::EffectsManager;
-use crate::core::systems::{
-  record_trail_points, register_juice_systems, register_physics_systems, register_restored_bodies,
-  unregister_removed_bodies,
-};
+use crate::core::systems::{record_trail_points, register_juice_systems};
 use crate::core::time::Time;
 use crate::core::ui::{BitmapFont, create_debug_font};
 use crate::core::window::{WindowInfo, WindowRequest};
@@ -316,7 +316,7 @@ pub(crate) fn init_world_resources(
   world.insert_resource(RenderPipeline::default_2d());
   world.insert_resource(PhysicsPaused(false));
   world.insert_resource(config.physics.clone());
-  world.insert_resource(RapierPhysicsWorld::new());
+  world.insert_resource(Physics::new());
   world.insert_resource(commands);
   world.insert_resource(FallbackErrorHandler(handle_system_error));
   register_engine_messages(world);

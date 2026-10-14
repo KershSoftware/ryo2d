@@ -131,22 +131,22 @@ Both are resources:
 
 ```rust
 // Gravity in pixels per second squared (default (0, 980))
-EngineBuilder::new().insert_resource(PhysicsConfig::zero_gravity());
+EngineBuilder::new().insert_resource(PhysicsConfig::default().zero_gravity());
 // or at runtime
 if let Some(mut config) = ctx.resource_mut::<PhysicsConfig>() {
-  config.gravity = (0.0, 1600.0);
+  config.gravity = Vec2::new(0.0, 1600.0);
 }
 
 // Current contacts between solid colliders, from Rapier's narrow phase
 // (a trigger's overlaps arrive as messages)
-if let Some(physics) = ctx.resource::<RapierPhysicsWorld>() {
+if let Some(physics) = ctx.resource::<Physics>() {
   let touching = physics.are_intersecting(self.player, self.platform);
   let all = physics.get_current_intersections(self.player);
   let asleep = physics.is_sleeping(self.player);
 }
 ```
 
-`RapierPhysicsWorld`'s own event list (`get_collision_events`, `has_collision`) is drained into the messages inside the physics set, so it is empty when scenes run; read the messages instead.
+`Physics`'s own event list (`get_collision_events`, `has_collision`) is drained into the messages inside the physics set, so it is empty when scenes run; read the messages instead.
 
 ## Common patterns
 

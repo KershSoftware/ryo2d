@@ -1091,7 +1091,7 @@ mod tests {
 
   #[test]
   fn a_despawned_body_leaves_physics_even_when_no_fixed_step_runs_for_frames() {
-    use crate::core::physics::{Collider, RapierPhysicsWorld, RigidBody};
+    use crate::core::physics::{Collider, Physics, RigidBody};
     struct Idle;
     impl Scene for Idle {}
     let mut e = EngineBuilder::new()
@@ -1108,11 +1108,7 @@ mod tests {
       ))
       .id();
     e.frame(Some(Duration::from_millis(20))); // one step registers it
-    assert!(
-      e.world()
-        .resource::<RapierPhysicsWorld>()
-        .is_registered(body)
-    );
+    assert!(e.world().resource::<Physics>().is_registered(body));
     e.world_mut().despawn(body);
     // A high frame rate: frames with no fixed step, while removal events
     // only last two of them
@@ -1120,11 +1116,7 @@ mod tests {
       e.frame(Some(Duration::from_millis(1)));
     }
     e.frame(Some(Duration::from_millis(20)));
-    assert!(
-      !e.world()
-        .resource::<RapierPhysicsWorld>()
-        .is_registered(body)
-    );
+    assert!(!e.world().resource::<Physics>().is_registered(body));
   }
 
   #[test]

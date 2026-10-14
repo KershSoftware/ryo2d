@@ -12,6 +12,7 @@ use crate::core::graphics::{CameraMut, RenderTargets, ScreenMapping};
 use crate::core::input::Input;
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::{SceneMessages, register_message};
+use crate::core::physics::Physics;
 use crate::core::render::Look;
 use crate::core::render::{DebugDraw, RenderPipeline};
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
@@ -138,6 +139,15 @@ impl SceneContext<'_> {
   /// Screen-wide post-process effects.
   pub fn effects(&mut self) -> Mut<'_, EffectsManager> {
     self.world.resource_mut::<EffectsManager>()
+  }
+
+  /// The simulation: forces and impulses, queries and contact state.
+  pub fn physics(&self) -> &Physics {
+    self.world.resource::<Physics>()
+  }
+
+  pub fn physics_mut(&mut self) -> Mut<'_, Physics> {
+    self.world.resource_mut::<Physics>()
   }
 
   /// The frame's look: exposure, the tonemap curve and colour grading.

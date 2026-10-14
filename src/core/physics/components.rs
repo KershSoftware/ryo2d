@@ -1,12 +1,11 @@
 //! Physics components for Rapier2D integration
 //!
 //! This module provides component types used by the Rapier2D physics backend.
-//! The actual physics simulation is handled by [`super::rapier::RapierPhysicsWorld`].
+//! The actual physics simulation is handled by [`super::Physics`].
 //!
 //! ## Components
 //!
 //! - [`RigidBody`] - Controls how physics affects an entity (dynamic vs kinematic)
-//! - [`PhysicsConfig`] - Global physics settings like gravity
 //!
 //! ## How Physics Works
 //!
@@ -15,9 +14,9 @@
 //! 3. Rapier handles gravity, collision response, and velocity integration
 //! 4. Positions sync back to `Transform` after each physics step
 //!
-//! For collision events, see [`super::rapier::PhysicsCollisionEvent`].
+//! For collision events, see [`super::PhysicsCollisionEvent`].
 
-use crate::core::ecs::{Component, Resource};
+use crate::core::ecs::Component;
 
 /// RigidBody component - controls how physics affects an entity
 #[derive(Component, Debug, Clone)]
@@ -88,41 +87,6 @@ impl Default for RigidBody {
   }
 }
 
-/// Physics world configuration
-#[derive(Resource, Debug, Clone)]
-pub struct PhysicsConfig {
-  /// Gravity acceleration in pixels per second squared (positive Y = down in screen coords)
-  pub gravity: (f32, f32),
-}
-
-impl PhysicsConfig {
-  /// Create physics config with Earth-like gravity (scaled for pixel units)
-  /// Default: 980 pixels/s² downward (similar to 9.8 m/s² at 100 pixels per meter)
-  pub fn new() -> Self {
-    PhysicsConfig {
-      gravity: (0.0, 980.0),
-    }
-  }
-
-  /// Create physics config with custom gravity
-  pub fn with_gravity(gx: f32, gy: f32) -> Self {
-    PhysicsConfig { gravity: (gx, gy) }
-  }
-
-  /// No gravity (space, top-down games)
-  pub fn zero_gravity() -> Self {
-    PhysicsConfig {
-      gravity: (0.0, 0.0),
-    }
-  }
-}
-
-impl Default for PhysicsConfig {
-  fn default() -> Self {
-    Self::new()
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -161,18 +125,5 @@ mod tests {
     let rb2 = RigidBody::new().with_ccd().with_drag(0.5);
     assert!(rb2.ccd_enabled);
     assert_eq!(rb2.drag, 0.5);
-  }
-
-  #[test]
-  fn physics_config_defaults() {
-    let config = PhysicsConfig::new();
-    assert_eq!(config.gravity.0, 0.0);
-    assert_eq!(config.gravity.1, 980.0);
-  }
-
-  #[test]
-  fn physics_config_zero_gravity() {
-    let config = PhysicsConfig::zero_gravity();
-    assert_eq!(config.gravity, (0.0, 0.0));
   }
 }

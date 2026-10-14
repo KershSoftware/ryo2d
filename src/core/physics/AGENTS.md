@@ -1,14 +1,14 @@
 # AGENTS.md - Physics Module
 
-Rapier2D behind `RapierPhysicsWorld` (a resource), driven by the systems in `src/core/systems/physics.rs`. Usage is covered by the `ryo-physics` skill.
+Rapier2D behind `Physics` (a resource), driven by the systems in `src/core/physics/sync.rs`. Usage is covered by the `ryo-physics` skill.
 
 ## Coordinate System
 
 Rapier uses meters, Ryo2D uses pixels:
 
 - **100 pixels = 1 meter** (`PIXELS_PER_METER`, a private const in `rapier.rs`)
-- Conversion happens automatically in `RapierPhysicsWorld`
-- Gravity is specified in pixels/s² via the `PhysicsConfig` resource (default `(0.0, 980.0)`, +Y = down)
+- Conversion happens automatically in `Physics`
+- Gravity is specified in pixels/s² via the `PhysicsConfig` resource (default `(0.0, 980.0)`, +Y = down) with `pixels_per_meter` (default 100) and `solver_iterations` (default 4)
 
 ## Geometry
 
@@ -36,5 +36,5 @@ Rapier uses meters, Ryo2D uses pixels:
 2. **Removal bookkeeping also runs in `Last`** every frame, before the trackers are cleared: `unregister_removed_bodies` and `register_restored_bodies` only. Removal events survive two tracker clears, and at render rates above the fixed rate no fixed step may run in between; without it a despawned body would stay in Rapier. Added and edited bodies are tick-based and wait for the next fixed step (running them in `Last` too rebuilt bodies the step had already simulated).
 3. **Bodies must be root entities.** Physics reads and writes the local `Transform` as world space, so a `RigidBody` on an entity with `ChildOf` is not simulated: it is logged once and left out, and detaching the entity brings it back.
 4. **An entity is simulated only with `RigidBody` + `Transform` + (`Collider` or `GroupedCollider`).** A `Collider` without a `RigidBody` is never simulated, and there is no static body type (use a kinematic body).
-5. **Collisions are messages.** The physics set drains `RapierPhysicsWorld`'s event list each step, so game code reads `ctx.messages::<CollisionStarted>()`, not `get_collision_events()`. Overlap queries (`are_intersecting`, `get_current_intersections`) read Rapier's narrow phase and still work.
+5. **Collisions are messages.** The physics set drains `Physics`'s event list each step, so game code reads `ctx.messages::<CollisionStarted>()`, not `get_collision_events()`. Overlap queries (`are_intersecting`, `get_current_intersections`) read Rapier's narrow phase and still work.
 6. **GroupedCollider**: for composite tiles, use `GroupedCollider` from `graphics/tile.rs`.

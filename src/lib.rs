@@ -140,8 +140,8 @@ pub mod prelude {
 
   // Physics
   pub use crate::core::physics::{
-    Collider, ColliderShape, CollisionEventType, PhysicsCollisionEvent, PhysicsConfig,
-    RapierPhysicsWorld, RigidBody,
+    Collider, ColliderShape, CollisionEventType, Physics, PhysicsCollisionEvent, PhysicsConfig,
+    RigidBody,
   };
 
   // 2D lighting
