@@ -147,7 +147,7 @@ pub mod prelude {
   // Gameplay
   pub use crate::core::gameplay::{
     Dash, MoveBindings, MoveIntent, MovementEvent, MovementEventKind, PlatformerMovement,
-    PlatformerState, WallJump, read_move_bindings,
+    PlatformerState, TopDownMovement, TopDownState, WallJump, read_move_bindings,
   };
 
   // 2D lighting

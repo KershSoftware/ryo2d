@@ -8,7 +8,7 @@ Gameplay on top of physics: movement presets and the input that drives them, tri
 
 ## The `Movement` Set
 
-`register_gameplay_systems` (`mod.rs`) adds one chain to `FixedSet::Movement`, which runs after the scene's `update` and `FixedSet::Game` and before `FixedSet::Physics`. Systems join the chain in this order as they are written: `place_respawn_points`, `warn_untriggered`, `collect_pickups`, `respawn_pickups`, `apply_kill_zones`, `apply_checkpoints`, `read_move_bindings`, `update_knockback`, `platformer_movement`, `top_down_movement`. Today `read_move_bindings`, `update_knockback` and `platformer_movement` are in it. Every gameplay system's resources are `Time`, `Input` and messages, so a world with those three (`tests/integration/support.rs::gameplay_world`) runs them without a simulation.
+`register_gameplay_systems` (`mod.rs`) adds one chain to `FixedSet::Movement`, which runs after the scene's `update` and `FixedSet::Game` and before `FixedSet::Physics`. Systems join the chain in this order as they are written: `place_respawn_points`, `warn_untriggered`, `collect_pickups`, `respawn_pickups`, `apply_kill_zones`, `apply_checkpoints`, `read_move_bindings`, `update_knockback`, `platformer_movement`, `top_down_movement`. Today `read_move_bindings`, `update_knockback`, `platformer_movement` and `top_down_movement` are in it. Every gameplay system's resources are `Time`, `Input` and messages, so a world with those three (`tests/integration/support.rs::gameplay_world`) runs them without a simulation.
 
 Invalid input is logged once per entity with a `Local<EntityHashSet>` and `crate::engine_warn!(module: "Gameplay", ...)`; nothing panics.
 
@@ -39,6 +39,17 @@ Invalid input is logged once per entity with a `Local<EntityHashSet>` and `crate
 **Defaults:** run 180 px/s, 0.08 s to full speed, 0.06 s to stop, 65% air control; a 64 px jump peaking at 0.38 s (gravity about 927 px/s², launch about 352 px/s at 60 Hz), falls 1.5 times heavier up to 600 px/s; 0.1 s of coyote time and jump buffer; releasing jump keeps half the rise; no steering during knockback; no air jumps, wall slide, wall jump or dash (`with_air_jumps(n)`, `with_wall_slide(max_speed)`, `with_wall_jump(launch, lock_time)`, `with_dash(speed, duration, cooldown)`; `WallJump` and `Dash` are their settings, and `Dash` is shared with the top-down preset).
 
 `PlatformerState` keeps `facing`, `jumping`, `air_jumps_left`, `wall_sliding`, `dashing`, `dash_ready` and the crate-internal timers (coyote, buffer, wall coyote and side, the wall jump's hold, the dash's time left, cooldown and direction); `reset()` forgets all but the facing (a respawn): the air dash is ready again, and the air jumps come back at the next landing. `MovementEvent` (`events.rs`, `#[non_exhaustive]` kind: `Jumped`, `AirJumped`, `WallJumped`, `Dashed`, `Landed`) is registered with the engine's messages; written in `FixedSet::Movement`, after the scene's `update`, so `update` reads it the next step.
+
+## The Top-Down Preset
+
+`TopDownMovement` (`top_down.rs`) requires `MoveIntent`, `TopDownState` and `CharacterController::top_down()` (a platformer controller already there is warned once and skipped; a non-finite `Velocity` is read as zero and warned once, each with its own warned set). `top_down_movement` writes `Velocity` every step; the controller slides it along every surface and leaves the real velocity, which the next step starts from. Each step:
+
+1. **Facing:** the clamped input's direction (`facing`, unit length, `Y` until steered); no input keeps it.
+2. **Dash:** `dash_pressed` with `dash` set, the cooldown over and no dash running starts one along the facing (not the input, which can be zero), counting the cooldown from the start; `Dashed` written. While it lasts (`dashing`) the velocity is `facing * speed` and the input is ignored; its last step leaves at `min(speed, max_speed)`.
+3. **Move:** otherwise the velocity moves toward `direction * max_speed` in a straight line, at `max_speed / accel_time` per second when there is input and `max_speed / decel_time` when there is none (a zero time is instant: the target at once, no infinite rate is ever multiplied). The direction is clamped to length 1, so diagonals are no faster and a half stick is half speed. While `Knockback` is active the target is scaled by `knockback_control` (0 by default).
+4. **Clear the presses:** `jump_pressed` and `dash_pressed` are consumed.
+
+**Defaults:** 160 px/s, 0.08 s to full speed, 0.1 s to stop, no dash (`with_speed(max, accel_time, decel_time)`, `with_dash(speed, duration, cooldown)` using the platformer's `Dash`, `with_knockback_control(fraction)`). `TopDownState::reset()` forgets the dash and its cooldown, keeping the facing.
 
 ## Knockback
 
