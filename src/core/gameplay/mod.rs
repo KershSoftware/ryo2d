@@ -26,9 +26,13 @@ use crate::core::ecs::IntoScheduleConfigs;
 use crate::core::physics::physics_enabled;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
 
-/// Add the gameplay systems to `FixedSet::Movement`, chained. They run only
-/// while physics does: under a pause overlay (`PhysicsPaused`) a preset would
-/// otherwise pile gravity into `Velocity` and act on the menu's input.
+/// Add the gameplay systems to `FixedSet::Movement`, chained. What simulates
+/// (the pickup respawn timer, movement input, knockback, the presets) runs
+/// only while physics does: under a pause overlay (`PhysicsPaused`) a preset
+/// would otherwise pile gravity into `Velocity` and act on the menu's input.
+/// The trigger behaviours always run: a paused step writes no trigger
+/// messages, so they only drain what arrived before the pause, which would
+/// otherwise age out of the buffers unseen.
 pub fn register_gameplay_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::FixedUpdate,
@@ -36,17 +40,16 @@ pub fn register_gameplay_systems(schedules: &mut EngineSchedules) {
       place_respawn_points,
       warn_untriggered,
       collect_pickups,
-      respawn_pickups,
+      respawn_pickups.run_if(physics_enabled),
       apply_kill_zones,
       apply_checkpoints,
-      read_move_bindings,
-      update_knockback,
-      platformer_movement,
-      top_down_movement,
+      read_move_bindings.run_if(physics_enabled),
+      update_knockback.run_if(physics_enabled),
+      platformer_movement.run_if(physics_enabled),
+      top_down_movement.run_if(physics_enabled),
     )
       .chain()
-      .in_set(FixedSet::Movement)
-      .run_if(physics_enabled),
+      .in_set(FixedSet::Movement),
   );
 }
 

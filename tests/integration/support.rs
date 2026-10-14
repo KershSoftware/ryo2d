@@ -20,7 +20,7 @@ pub fn juice_world(hz: u32) -> (World, EngineSchedules) {
 }
 
 /// A world with a `hz` fixed clock, `Input`, `PhysicsPaused` (false: the
-/// gameplay systems pause with physics) and the engine messages, plus the
+/// simulating gameplay systems pause with physics) and the engine messages, plus the
 /// gameplay systems (knockback) in the fixed update, as the engine registers
 /// them. Physics' registration is crate-internal, and the gameplay systems
 /// here need no simulation: bodiless entities and a dynamic body's `Velocity`.

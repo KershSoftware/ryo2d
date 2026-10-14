@@ -388,7 +388,7 @@ pub trait Scene: 'static {
   }
 
   /// Whether physics should be paused while this scene is on top (the
-  /// gameplay systems, such as the movement presets, pause with it).
+  /// movement presets, knockback and pickup respawn timers pause with it).
   fn is_physics_paused(&self) -> bool {
     false
   }
@@ -407,9 +407,9 @@ pub trait Scene: 'static {
   }
 }
 
-/// Whether physics (and with it the gameplay systems) steps this frame, kept
-/// by the scene manager from the stack's shape and the top scene's
-/// `is_physics_paused`.
+/// Whether physics (and with it the movement presets, knockback and pickup
+/// respawn timers) steps this frame, kept by the scene manager from the
+/// stack's shape and the top scene's `is_physics_paused`.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PhysicsPaused(pub bool);
 

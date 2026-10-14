@@ -261,7 +261,10 @@ mod tests {
   use super::*;
   use crate::core::ecs::{Messages, Transform, Velocity, World};
   use crate::core::gameplay::test_util::*;
+  use crate::core::messages::update_messages;
   use crate::core::physics::{Collider, RigidBody};
+  use crate::core::scene::PhysicsPaused;
+  use crate::core::schedule::EngineSchedules;
 
   fn read<M: crate::core::ecs::Message + Copy>(world: &World) -> Vec<M> {
     let messages = world.resource::<Messages<M>>();
@@ -408,6 +411,60 @@ mod tests {
         entity: player
       }]
     );
+  }
+
+  /// Run until physics reports something entering `trigger`, then pause
+  /// physics for `paused` steps and resume for one, advancing the message
+  /// buffers before each step as the engine's frames do (a message is gone
+  /// two advances after it was written).
+  fn enter_as_physics_pauses(
+    world: &mut World,
+    s: &mut EngineSchedules,
+    trigger: Entity,
+    paused: usize,
+  ) {
+    let entered = |world: &World| {
+      read::<TriggerEntered>(world)
+        .iter()
+        .any(|message| message.trigger == trigger)
+    };
+    for _ in 0..10 {
+      run(world, s, 1);
+      if entered(world) {
+        break;
+      }
+    }
+    assert!(entered(world), "the enter was reported");
+    world.resource_mut::<PhysicsPaused>().0 = true;
+    for _ in 0..paused {
+      update_messages(world);
+      run(world, s, 1);
+    }
+    world.resource_mut::<PhysicsPaused>().0 = false;
+    update_messages(world);
+    run(world, s, 1);
+  }
+
+  #[test]
+  fn a_pickup_entered_as_physics_pauses_is_still_collected() {
+    let (mut world, mut s) = world(60);
+    let coin = zone(&mut world, 0.0, Pickup::new());
+    mover(&mut world, 0.0, 0.0);
+    enter_as_physics_pauses(&mut world, &mut s, coin, 5);
+    assert!(world.get_entity(coin).is_err(), "the pickup was collected");
+  }
+
+  #[test]
+  fn a_kill_zone_entered_as_physics_pauses_still_respawns() {
+    let (mut world, mut s) = world(60);
+    let pit = zone(&mut world, 0.0, KillZone::new());
+    let player = mover(&mut world, 0.0, 0.0);
+    world
+      .entity_mut(player)
+      .insert(Respawn::at(Vec2::new(-200.0, 0.0)));
+    enter_as_physics_pauses(&mut world, &mut s, pit, 5);
+    let x = at(&world, player).translation.x;
+    assert!(x < -150.0, "the kill zone respawned it: x {x}");
   }
 
   #[test]
