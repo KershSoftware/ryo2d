@@ -68,6 +68,13 @@ pub struct Collider {
   /// One-way: solid only against things arriving from this side, a
   /// direction in the collider's own space (`one_way()` is `(0, -1)`: from
   /// above), so it turns with the collider. `None` is solid from every side.
+  ///
+  /// A character is held only when it starts a move entirely past the
+  /// collider's furthest point along the direction (within 1 px), so keep
+  /// the solid side flat across it: tilt a platform by turning the collider,
+  /// not by sloping a polygon's top. A polyline is measured by its bounding
+  /// box, turned with it, which reaches past a polyline that is not flat
+  /// across the direction.
   pub one_way: Option<Vec2>,
 }
 

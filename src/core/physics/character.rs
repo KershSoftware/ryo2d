@@ -8,7 +8,6 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use rapier2d::control::{
   CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
 };
-use rapier2d::parry::bounding_volume::Aabb;
 use rapier2d::parry::query::{QueryDispatcher, ShapeCastHit, ShapeCastOptions, ShapeCastStatus};
 use rapier2d::prelude::{
   Collider as RapierCollider, ColliderHandle, Pose, QueryFilter as RapierFilter, QueryPipeline,
@@ -73,8 +72,10 @@ pub struct CharacterController {
   /// Push dynamic bodies it walks into, with a mass from its collider's
   /// density (default on)
   pub push: bool,
-  /// Ignore one-way platforms until fully below the one underfoot; the
-  /// engine clears it then (or at once when not on a one-way platform)
+  /// Drop through the one-way platform underfoot: one-way platforms are
+  /// ignored until the character is fully below it, lands on something
+  /// solid or is teleported, and the engine clears the flag then (at once,
+  /// ignoring nothing, when it is not standing on a one-way platform)
   pub drop_through: bool,
 }
 
@@ -215,15 +216,14 @@ impl Default for CharacterState {
 }
 
 impl CharacterState {
-  /// In the air, touching nothing, and pushing out first on the next move:
-  /// the state after a teleport (that step has no sweep).
+  /// In the air, touching nothing, not dropping, and pushing out first on
+  /// the next move: the state after a teleport (that step has no sweep).
   fn teleported(&mut self) {
     let mut hits = std::mem::take(&mut self.hits);
     hits.clear();
     *self = Self {
       hits,
       velocity_before: self.velocity_before,
-      drop_from: self.drop_from,
       ..Self::default()
     };
   }
@@ -274,18 +274,22 @@ fn real_velocity(wanted: Vec2, normals: &[Vec2], up: Option<Vec2>, momentum: Vec
     + momentum
 }
 
-/// What a character's sweep from a pose its shape fills as `start` may hit:
-/// colliders enabled this tick (one disabled this tick stays in the broad
-/// phase until the step, and Rapier's filter never checks), one-way ones
-/// only when the character starts entirely on their solid side, and none of
-/// those while it drops through.
-fn solid(start: Aabb, dropping: bool) -> impl Fn(ColliderHandle, &RapierCollider) -> bool {
+/// What a character's sweep of `shape` from `start` may hit: colliders
+/// enabled this tick (one disabled this tick stays in the broad phase until
+/// the step, and Rapier's filter never checks), one-way ones only when the
+/// character starts entirely on their solid side, and none of those while
+/// it drops through.
+fn solid(
+  shape: &dyn Shape,
+  start: Pose,
+  dropping: bool,
+) -> impl Fn(ColliderHandle, &RapierCollider) -> bool + '_ {
   move |_, collider| {
     collider.is_enabled()
       && match one_way::decode(collider.user_data) {
         None => true,
         Some(_) if dropping => false,
-        Some(local) => one_way::character_above(collider, local, &start),
+        Some(local) => one_way::character_above(collider, local, shape, &start),
       }
   }
 }
@@ -413,11 +417,14 @@ impl Physics {
     };
     let desired = (wanted + extra) * dt;
     let was_on_floor = state.on_floor;
-    let dropping = controller.drop_through;
-    // A drop starts from the one-way floor stood on before this step's probe
-    let stood_on_one_way = state
-      .floor_collider
-      .filter(|_| was_on_floor && state.floor_one_way);
+    // Only a character standing on a one-way floor drops (from it, so it is
+    // taken before this step's probe); anywhere else the flag clears at once
+    if controller.drop_through && state.drop_from.is_none() {
+      state.drop_from = state
+        .floor_collider
+        .filter(|_| was_on_floor && state.floor_one_way);
+    }
+    let dropping = controller.drop_through && state.drop_from.is_some();
     // The floor it stood on carries it, by the floor's motion this step at
     // the touched point. The queries see the floor where it is, not where
     // the step takes it, so the character's own move is swept (and the floor
@@ -435,7 +442,7 @@ impl Physics {
       .map(|entry| entry.handle);
 
     // The move and the probe start where the step does
-    let solid_from_start = solid(shape.compute_aabb(&start), dropping);
+    let solid_from_start = solid(&*shape, start, dropping);
     let filter = RapierFilter::default()
       .exclude_rigid_body(body_handle)
       .exclude_sensors()
@@ -484,7 +491,7 @@ impl Physics {
     // The carry, past everything but the floor (it moves with the character),
     // starting where the move left it
     if let Some(carrier) = carrier {
-      let solid_from_moved = solid(shape.compute_aabb(&pose), dropping);
+      let solid_from_moved = solid(&*shape, pose, dropping);
       let not_carrier = |handle: ColliderHandle, collider: &RapierCollider| {
         solid_from_moved(handle, collider) && collider.parent() != Some(carrier)
       };
@@ -532,7 +539,7 @@ impl Physics {
       self.push_bodies(&kcc, collider_handle, filter, &*shape, &collisions, dt);
     }
 
-    let drop_done = self.track_drop(state, dropping, stood_on_one_way, &*shape, &pose);
+    let drop_done = self.track_drop(state, controller.drop_through, &*shape, &pose);
 
     let delta = from_rapier(pose.translation - start.translation);
     let body_translation = from_rapier(self.bodies.get(body_handle)?.translation());
@@ -540,39 +547,37 @@ impl Physics {
     Some(CharacterMove { normals, drop_done })
   }
 
-  /// Keep a drop-through's bookkeeping; true when it is over. A drop
-  /// starts from the one-way collider stood on (`stood_on`) and lasts until
-  /// the character, at `pose`, is entirely below it; with no such collider
-  /// (solid ground, the air, the collider gone) it is over at once.
+  /// Keep a drop-through's bookkeeping after the move; true when the drop
+  /// `wanted` is over. It is over when the character, at `pose`, is
+  /// entirely below the one-way collider it dropped from (`drop_from`),
+  /// when it lands (only on something solid: the drop ignores one-way
+  /// colliders), and at once when there is nothing to drop from (it stood
+  /// on solid ground or nothing, or the collider is gone).
   fn track_drop(
     &self,
     state: &mut CharacterState,
-    dropping: bool,
-    stood_on: Option<Entity>,
+    wanted: bool,
     shape: &dyn Shape,
     pose: &Pose,
   ) -> bool {
-    if !dropping {
+    if !wanted {
       state.drop_from = None;
       return false;
     }
-    if state.drop_from.is_none() {
-      state.drop_from = stood_on;
-    }
-    let end = shape.compute_aabb(pose);
-    let still_over = state
+    let below = state
       .drop_from
       .and_then(|from| self.collider_entries.get(&from))
       .and_then(|entry| self.colliders.get(entry.handle))
       .and_then(|collider| {
         one_way::decode(collider.user_data)
-          .map(|local| !one_way::character_below(collider, local, &end))
+          .map(|local| one_way::character_below(collider, local, shape, pose))
       })
-      .unwrap_or(false);
-    if !still_over {
+      .unwrap_or(true);
+    let over = below || state.on_floor;
+    if over {
       state.drop_from = None;
     }
-    !still_over
+    over
   }
 
   /// Read what a move touched into `state`: the sweep's hits are walls or
@@ -700,6 +705,10 @@ pub(crate) fn move_characters(
     let Some(moved) =
       physics.move_character(entity, &controller, &mut state, &mut v, Vec2::ZERO, dt)
     else {
+      // A teleport ends a drop (the state forgot it; the move did not run)
+      if controller.drop_through && physics.was_teleported(entity) {
+        controller.drop_through = false;
+      }
       continue;
     };
     velocity.set_if_neq(Velocity::from_vec2(v));
@@ -1709,5 +1718,177 @@ mod tests {
         );
       }
     }
+  }
+
+  // A drop that lands on solid ground before it is clear of the platform is
+  // over, so the next one-way platform it jumps up through holds it
+  #[test]
+  fn a_drop_onto_a_floor_just_below_the_platform_ends_on_landing() {
+    let (mut world, mut s) = world(60);
+    world.spawn((Transform::from_xy(0.0, 140.0), Collider::rect(2000.0, 20.0)));
+    one_way_platform(&mut world, 100.0);
+    let high = world
+      .spawn((
+        Transform::from_xy(400.0, 65.0),
+        Collider::rect(200.0, 10.0).one_way(),
+      ))
+      .id();
+    let e = character(&mut world, 0.0, 70.0);
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    assert!(state(&world, e).floor_one_way);
+    world
+      .get_mut::<CharacterController>(e)
+      .unwrap()
+      .drop_through = true;
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let st = state(&world, e);
+    assert!(st.on_floor && !st.floor_one_way, "{st:?}");
+    assert!(
+      !world.get::<CharacterController>(e).unwrap().drop_through,
+      "over on landing"
+    );
+    world.get_mut::<Velocity>(e).unwrap().dx = 200.0;
+    for _ in 0..120 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    world.get_mut::<Velocity>(e).unwrap().dx = 0.0;
+    world.get_mut::<Velocity>(e).unwrap().dy = -500.0;
+    for _ in 0..90 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let st = state(&world, e);
+    assert!(st.on_floor && st.floor == Some(high), "{st:?}");
+  }
+
+  // A respawn mid-drop (`Transform` and `Velocity` written) ends the drop
+  #[test]
+  fn a_teleport_ends_a_drop() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 400.0);
+    one_way_platform(&mut world, 100.0);
+    let ledge = world
+      .spawn((
+        Transform::from_xy(500.0, -95.0),
+        Collider::rect(200.0, 10.0).one_way(),
+      ))
+      .id();
+    let e = character(&mut world, 0.0, 70.0);
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    world
+      .get_mut::<CharacterController>(e)
+      .unwrap()
+      .drop_through = true;
+    for _ in 0..5 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    // 1 px above the ledge
+    world.get_mut::<Transform>(e).unwrap().translation = Vec2::new(500.0, -121.0);
+    *world.get_mut::<Velocity>(e).unwrap() = Velocity::zero();
+    step(&mut world, &mut s, e, 980.0);
+    assert!(
+      !world.get::<CharacterController>(e).unwrap().drop_through,
+      "cleared on the teleport's step"
+    );
+    assert_eq!(state(&world, e).drop_from, None);
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let st = state(&world, e);
+    assert!(st.on_floor && st.floor == Some(ledge), "{st:?}");
+    assert!(!world.get::<CharacterController>(e).unwrap().drop_through);
+  }
+
+  // Only a character standing on a one-way platform drops: pressed in the
+  // air, the flag clears at once and the landing it makes that step holds
+  #[test]
+  fn drop_through_pressed_in_the_air_does_not_skip_the_landing() {
+    let (mut world, mut s) = world(60);
+    let platform = one_way_platform(&mut world, 100.0);
+    let e = character(&mut world, 0.0, 75.0);
+    run(&mut world, &mut s, 1);
+    world
+      .get_mut::<CharacterController>(e)
+      .unwrap()
+      .drop_through = true;
+    world.get_mut::<Velocity>(e).unwrap().dy = 600.0;
+    run(&mut world, &mut s, 1);
+    assert!(!world.get::<CharacterController>(e).unwrap().drop_through);
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let st = state(&world, e);
+    assert!(st.on_floor && st.floor == Some(platform), "{st:?}");
+  }
+
+  // A round character's box sticks out along a turned direction; the rule
+  // measures the shape itself
+  #[test]
+  fn round_characters_stand_on_a_tilted_one_way_platform() {
+    for degrees in [10.0f32, 20.0] {
+      for (name, collider) in [
+        ("circle", Collider::circle(12.0)),
+        ("capsule", Collider::capsule(40.0, 10.0)),
+      ] {
+        let (mut world, mut s) = world(60);
+        let angle = degrees.to_radians();
+        let platform = world
+          .spawn((
+            Transform::from_xy(0.0, 100.0).with_rotation(angle),
+            Collider::rect(300.0, 10.0).one_way(),
+          ))
+          .id();
+        let e = world
+          .spawn((
+            Transform::from_xy(0.0, 50.0),
+            CharacterController::platformer(),
+            collider,
+          ))
+          .id();
+        for _ in 0..60 {
+          step(&mut world, &mut s, e, 980.0);
+        }
+        let st = state(&world, e);
+        assert!(
+          st.on_floor && st.floor_one_way && st.floor == Some(platform),
+          "{name} at {degrees}°: {st:?}"
+        );
+        let up = Vec2::from_angle(angle).rotate(Vec2::NEG_Y);
+        let out = (at(&world, e).translation - Vec2::new(0.0, 100.0)).dot(up);
+        assert!(
+          out > 5.0,
+          "{name} at {degrees}°: {out} along the platform's up"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn a_round_character_is_held_by_a_one_way_wall_turned_30_degrees() {
+    let (mut world, mut s) = world(60);
+    let angle = 30f32.to_radians();
+    world.spawn((
+      Transform::IDENTITY.with_rotation(angle),
+      Collider::rect(200.0, 10.0).one_way(),
+    ));
+    let up = Vec2::from_angle(angle).rotate(Vec2::NEG_Y);
+    let e = world
+      .spawn((
+        Transform::from_xy(up.x * 40.0, up.y * 40.0),
+        CharacterController::top_down(),
+        Collider::circle(8.0),
+      ))
+      .id();
+    for _ in 0..30 {
+      *world.get_mut::<Velocity>(e).unwrap() = Velocity::from_vec2(-up * 300.0);
+      run(&mut world, &mut s, 1);
+    }
+    let out = at(&world, e).translation.dot(up);
+    assert!(out > 12.5, "blocked on the solid side: {out}");
   }
 }
