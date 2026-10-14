@@ -19,7 +19,7 @@ use crate::core::time::Time;
 #[non_exhaustive]
 pub struct Pickup {
   pub respawn_after: Option<f32>,
-  pub(crate) timer: f32,
+  pub(crate) timer: Option<f32>,
 }
 
 impl Pickup {
@@ -149,7 +149,7 @@ pub(crate) fn collect_pickups(
     });
     match pickup.respawn_after {
       Some(seconds) => {
-        pickup.timer = seconds;
+        pickup.timer = Some(seconds);
         commands.entity(message.trigger).insert(Disabled);
       }
       None => commands.entity(message.trigger).despawn(),
@@ -167,12 +167,14 @@ pub(crate) fn respawn_pickups(
 ) {
   let dt = time.fixed.timestep();
   for (entity, mut pickup) in &mut waiting {
-    if pickup.respawn_after.is_none() {
+    let Some(left) = pickup.timer else {
       continue;
-    }
-    pickup.timer -= dt;
-    if pickup.timer <= 0.0 {
+    };
+    if left <= dt {
+      pickup.timer = None;
       commands.entity(entity).remove::<Disabled>();
+    } else {
+      pickup.timer = Some(left - dt);
     }
   }
 }
@@ -325,6 +327,30 @@ mod tests {
     assert!(world.get::<crate::core::ecs::Disabled>(coin).is_some());
     run(&mut world, &mut s, 40);
     assert!(world.get::<crate::core::ecs::Disabled>(coin).is_none());
+  }
+
+  #[test]
+  fn a_pickup_the_game_disabled_stays_disabled() {
+    use crate::core::ecs::Disabled;
+    let (mut world, mut s) = world(60);
+    let spawned = world
+      .spawn((
+        Transform::from_xy(0.0, 0.0),
+        Pickup::new().respawn_after(0.5),
+        Disabled,
+      ))
+      .id();
+    let later = world
+      .spawn((
+        Transform::from_xy(50.0, 0.0),
+        Pickup::new().respawn_after(0.5),
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    world.entity_mut(later).insert(Disabled);
+    run(&mut world, &mut s, 60);
+    assert!(world.get::<Disabled>(spawned).is_some());
+    assert!(world.get::<Disabled>(later).is_some());
   }
 
   #[test]
