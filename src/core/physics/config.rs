@@ -38,8 +38,8 @@ impl PhysicsConfig {
     self
   }
 
-  /// How many pixels make a metre (default 100; choosing it:
-  /// `pixels_per_meter`).
+  /// How many pixels make a metre (default 100). How to choose it:
+  /// [`pixels_per_meter`](Self::pixels_per_meter).
   pub fn with_pixels_per_meter(mut self, pixels: f32) -> Self {
     self.pixels_per_meter = pixels;
     self

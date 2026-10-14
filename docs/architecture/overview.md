@@ -148,7 +148,7 @@ Rapier2D 0.36 behind the public `Physics` resource, which mirrors the ECS: compo
 6. Send `CollisionStarted`, `CollisionStopped`, `ContactForce` and `JointBroken` messages.
 
 - Public surface: components `RigidBody`, `Collider`, `Joint`, `AngularVelocity`; resources `Physics` (queries: `raycast`, `shape_cast`, `overlap_*`, `nearest`; contact state: `contacts`, `overlaps`, `in_contact`; forces and impulses) and `PhysicsConfig`; reached as `ctx.physics()` / `ctx.physics_mut()`.
-- 100 pixels = 1 meter; gravity in pixels/s² (`PhysicsConfig`, default `(0, 980)`, +Y down).
+- `PhysicsConfig::pixels_per_meter` pixels make a Rapier metre (default 100; choose it so typical moving bodies are 0.5 to 2 m); gravity in pixels/s² (default `(0, 980)`, +Y down).
 - Time: one frame adds at most `max_delta` (250 ms) of game time after speed scaling, so a stall runs about 15 fixed steps at 60 Hz, not an unbounded number. Slow motion runs fewer steps; pause and hitstop run none.
 - Colliders follow the entity's world scale, mirroring and rotation. Details and decisions: `src/core/physics/AGENTS.md`.
 
