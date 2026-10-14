@@ -57,7 +57,8 @@ impl QueryFilter {
 }
 
 /// A ray or shape cast's first contact: the world point, the surface normal
-/// there and how far along the cast it is.
+/// there and how far along the cast it is. A ray that starts inside a
+/// collider hits it at distance 0 with a zero normal.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Hit {
   pub collider: Entity,
@@ -115,7 +116,8 @@ impl Physics {
   }
 
   /// The first collider along a ray from `origin` (the direction need not be
-  /// normalised), within `max_distance` px. Queries see the world as the
+  /// normalised), within `max_distance` px. A ray starting inside a collider
+  /// hits it at distance 0 with a zero normal. Queries see the world as the
   /// last step left it.
   pub fn raycast(
     &self,
@@ -261,7 +263,7 @@ impl Physics {
       return None;
     }
     self.with_queries(filter, |queries| {
-      let (handle, projection) = queries.project_point(to_rapier(point), max_distance, true)?;
+      let (handle, projection) = queries.project_point(to_rapier(point), max_distance, false)?;
       let owner = self.owner_of(handle)?;
       Some(PointHit {
         collider: owner.collider,
@@ -606,6 +608,36 @@ mod tests {
       )
       .unwrap();
     assert_eq!(inside.distance, 0.0);
+    assert!(close(hit.point, Vec2::new(-100.0, 200.0)), "{hit:?}");
+  }
+
+  #[test]
+  fn a_ray_starting_inside_hits_at_zero_with_no_normal() {
+    let (world, [floor_e, ..]) = scene();
+    let physics = world.resource::<Physics>();
+    let hit = physics
+      .raycast(Vec2::new(0.0, 205.0), Vec2::Y, 1000.0, &QueryFilter::new())
+      .unwrap();
+    assert_eq!(hit.collider, floor_e);
+    assert_eq!(hit.distance, 0.0);
+    assert!(
+      close(hit.point, Vec2::new(0.0, 205.0)) && hit.normal == Vec2::ZERO,
+      "{hit:?}"
+    );
+  }
+
+  #[test]
+  fn nearest_from_inside_reports_the_closest_boundary_point() {
+    let (world, [floor_e, ..]) = scene();
+    let physics = world.resource::<Physics>();
+    let near = physics
+      .nearest(Vec2::new(0.0, 205.0), 50.0, &QueryFilter::new())
+      .unwrap();
+    assert_eq!(near.collider, floor_e);
+    assert!(
+      near.inside && close(near.point, Vec2::new(0.0, 200.0)),
+      "{near:?}"
+    );
   }
 
   #[test]
