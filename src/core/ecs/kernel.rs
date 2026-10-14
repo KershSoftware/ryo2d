@@ -5,6 +5,7 @@
 //! `Cargo.toml` names it.
 
 pub use bevy_ecs::bundle::Bundle;
+pub(crate) use bevy_ecs::change_detection::Tick;
 pub use bevy_ecs::change_detection::{DetectChanges, DetectChangesMut, Mut, Ref};
 pub use bevy_ecs::component::{Component, Mutable};
 pub use bevy_ecs::entity::Entity;
@@ -22,8 +23,7 @@ pub use bevy_ecs::message::{Message, MessageCursor, MessageReader, MessageWriter
 pub use bevy_ecs::observer::{Observer, On};
 pub(crate) use bevy_ecs::query::QueryState;
 pub use bevy_ecs::query::{Added, Allow, Changed, Has, Or, With, Without};
-pub(crate) use bevy_ecs::system::ParamSet;
-pub(crate) use bevy_ecs::system::SystemIdMarker;
+pub(crate) use bevy_ecs::system::{ParamSet, SystemChangeTick, SystemIdMarker};
 // Resources live on hidden entities; `IsResource` marks them so world-wide
 // entity sweeps can leave them alone.
 pub use bevy_ecs::resource::{IsResource, Resource};

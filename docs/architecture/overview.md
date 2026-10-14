@@ -142,7 +142,7 @@ Rapier2D 0.36 behind the public `Physics` resource, which mirrors the ECS: compo
 
 1. Forget what went away and what was disabled (also in `Last` every frame, so a despawn is never missed at high render rates); propagate transforms so world poses are current.
 2. Register bodies and colliders (a collider attaches to the nearest `RigidBody` at or above it; none above makes it a fixed collider), apply edits in place, make joints.
-3. Push a changed `Transform`, `Velocity` or `AngularVelocity` to its body, compared by value so untouched bodies sleep; a kinematic body travels to its written `Transform` over the step.
+3. Push a changed `Transform`, `Velocity` or `AngularVelocity` to its body, compared by value so untouched bodies sleep (what the last write-back alone changed, recognised by its change tick, is skipped without comparing); a kinematic body travels to its written `Transform` over the step.
 4. Step, then break joints pulled past their break force.
 5. Write poses and velocities of awake dynamic bodies and velocity-driven kinematic bodies back into the local `Transform` (through the parent), `Velocity` and `AngularVelocity`.
 6. Send `CollisionStarted`, `CollisionStopped`, `ContactForce` and `JointBroken` messages.

@@ -25,7 +25,7 @@ use super::config::PhysicsConfig;
 use super::convert::{from_rapier, pose, poses_differ, to_rapier};
 use super::joint::{Joint, generic_joint, has_invalid_drive};
 use super::shape;
-use crate::core::ecs::{Entity, EntityHashMap, EntityHashSet, Resource, Vec2};
+use crate::core::ecs::{Entity, EntityHashMap, EntityHashSet, Resource, Tick, Vec2};
 
 /// A collision event with its first contact, captured during the step.
 struct Captured {
@@ -273,6 +273,20 @@ pub struct Physics {
   /// Owners of colliders removed since the last step: Rapier reports their
   /// `Stopped` events during the next one
   departed: HashMap<ColliderHandle, Owner>,
+  /// The change tick `read_back` last ran at. A `Transform`, `Velocity` or
+  /// `AngularVelocity` last changed at this tick holds what the last step
+  /// left in Rapier: `push_changes` and `sync_colliders` skip a root body
+  /// and its own collider in that state without comparing. Every system
+  /// runs at a tick of its own, so a game write after the write-back carries
+  /// a later tick and is compared by value (`push_changes` has the rules)
+  pub(crate) write_tick: Option<Tick>,
+  /// Bodies that lost their parent since the last push: their local
+  /// `Transform` became their world pose, so a write-back tick on it no
+  /// longer means Rapier holds them there
+  pub(crate) unparented: EntityHashSet,
+  /// Bodies and colliders the sync compared with Rapier, for tests
+  #[cfg(test)]
+  pub(crate) compared: usize,
   /// Bodies the game moved through `Transform` this step
   teleported: EntityHashSet,
   /// Kinematic bodies the engine moves by velocity this step
@@ -405,6 +419,10 @@ impl Physics {
       walk_stack: Vec::new(),
       write_backs: Vec::new(),
       departed: HashMap::new(),
+      write_tick: None,
+      unparented: EntityHashSet::default(),
+      #[cfg(test)]
+      compared: 0,
       teleported: EntityHashSet::default(),
       driven: EntityHashSet::default(),
       warned: EntityHashSet::default(),

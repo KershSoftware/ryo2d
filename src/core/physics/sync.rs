@@ -29,8 +29,8 @@ use super::world::{Physics, Placement, WriteBack};
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
-  Entity, GlobalTransform, IntoScheduleConfigs, MessageWriter, Mut, Or, ParamSet, Query, Ref,
-  RemovedComponents, Res, ResMut, Transform, Vec2, Velocity, With,
+  Entity, GlobalTransform, Has, IntoScheduleConfigs, MessageWriter, Mut, Or, ParamSet, Query, Ref,
+  RemovedComponents, Res, ResMut, SystemChangeTick, Tick, Transform, Vec2, Velocity, With,
 };
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
@@ -76,6 +76,23 @@ type Resync = (
     Changed<GlobalTransform>,
     Changed<ChildOf>,
   )>,
+);
+/// A collider `sync_colliders` was told about by change detection, with
+/// what tells the write-back's own move from any other change
+type ResyncRow<'a> = (
+  Entity,
+  Ref<'a, Collider>,
+  Option<Ref<'a, Transform>>,
+  Has<RigidBody>,
+  Has<ChildOf>,
+);
+/// A body whose world pose changed, with what tells the write-back's own
+/// move from any other (see `push_changes`)
+type MovedRow<'a> = (
+  Entity,
+  &'a GlobalTransform,
+  Ref<'a, Transform>,
+  Option<&'a ChildOf>,
 );
 /// Entities whose subtree may hold colliders that change owner
 type Relinkable = (Or<(With<Collider>, With<Children>)>, Allow<Disabled>);
@@ -207,8 +224,10 @@ pub(crate) fn placement(
 /// included); a body's colliders that stay become fixed and its joints
 /// inert. Entities that lost their `RigidBody` or their parent are
 /// remembered for `sync_colliders`, which finds the colliders at and below
-/// them a new owner. An entity left without any of the three loses its
-/// logged warnings, registered or not.
+/// them a new owner, and bodies that lost their parent for `push_changes`.
+/// An entity left without any of the three loses its logged warnings,
+/// registered or not.
+#[allow(clippy::too_many_arguments)] // one removal reader or query per input
 pub(crate) fn forget_removed(
   mut physics: ResMut<Physics>,
   mut joints: RemovedComponents<Joint>,
@@ -217,6 +236,7 @@ pub(crate) fn forget_removed(
   mut detached: RemovedComponents<ChildOf>,
   relinkable: Query<(), Relinkable>,
   kept: Query<(), (HasPhysics, Allow<Disabled>)>,
+  has_body: Query<(), (With<RigidBody>, Allow<Disabled>)>,
 ) {
   for entity in joints.read() {
     physics.remove_joint(entity);
@@ -242,6 +262,9 @@ pub(crate) fn forget_removed(
   for entity in detached.read() {
     if relinkable.contains(entity) {
       physics.relink.insert(entity);
+    }
+    if has_body.contains(entity) {
+      physics.unparented.insert(entity);
     }
   }
 }
@@ -417,10 +440,16 @@ pub(crate) fn register_bodies(
 /// Bring every collider that changed, moved, scaled or changed owner in line
 /// with the simulation. Owners change when a `RigidBody` appears or goes
 /// above a collider, or when a collider or an ancestor is reparented.
+///
+/// A root body's own collider that only the write-back moved (its
+/// `Transform` last changed at `Physics::write_tick`, its `Collider` not
+/// since) is skipped: it moved with its body, and its placement relative to
+/// the body depends only on the entity's scale and the `Collider`. Every
+/// other source (waiting, new bodies, reparenting, relinking) is visited.
 #[allow(clippy::too_many_arguments)] // one query per input
 pub(crate) fn sync_colliders(
   mut physics: ResMut<Physics>,
-  changed: Query<Entity, Resync>,
+  changed: Query<ResyncRow, Resync>,
   new_bodies: Query<Entity, Added<RigidBody>>,
   reparented: Query<Entity, Changed<ChildOf>>,
   children: Query<&Children, Allow<Disabled>>,
@@ -435,7 +464,21 @@ pub(crate) fn sync_colliders(
   let mut stack = std::mem::take(&mut physics.walk_stack);
   let mut relink = std::mem::take(&mut physics.relink);
   todo.clear();
-  todo.extend(changed.iter());
+  let own = physics.write_tick;
+  todo.extend(
+    changed
+      .iter()
+      .filter(|(_, collider, transform, body, child)| {
+        let own_move = *body
+          && !*child
+          && !collider.is_changed()
+          && transform
+            .as_ref()
+            .is_some_and(|transform| Some(transform.last_changed()) == own);
+        !own_move
+      })
+      .map(|(entity, ..)| entity),
+  );
   // One query's entities are distinct; only other sources can repeat them
   let distinct = todo.len();
   todo.extend(physics.waiting.drain());
@@ -454,6 +497,10 @@ pub(crate) fn sync_colliders(
     let Ok((global, collider)) = colliders.get(entity) else {
       continue;
     };
+    #[cfg(test)]
+    {
+      physics.compared += 1;
+    }
     let body = owning_body(entity, &parents, &bodies);
     let body_pose = body.map(|body| match bodies.get(body) {
       Ok(place) => body_pose(place, &globals),
@@ -473,27 +520,66 @@ pub(crate) fn sync_colliders(
 }
 
 /// Push the game's writes since the last step. The write-back is an
-/// ordinary change too, so values equal to Rapier's (within the sync
-/// tolerance) are skipped: untouched bodies stay asleep. Fixed colliders
-/// without a body are moved by `sync_colliders`.
+/// ordinary change too (propagation must see bodies move), so it is told
+/// apart in two ways:
+///
+/// - By its tick. `read_back` records the tick it ran at
+///   (`Physics::write_tick`). A root body whose `Transform` last changed at
+///   that tick, and that has not lost a parent since (`unparented`), is
+///   where Rapier holds it; velocities last changed at that tick are
+///   Rapier's. These are skipped without a look at Rapier. A game write in
+///   a system or between schedule runs always has a later tick, even when it
+///   writes the same value, and falls through to the comparison.
+/// - By value, for everything else: a pose or velocity equal to Rapier's
+///   (within the sync tolerance) is not pushed, so untouched bodies stay
+///   asleep. A nested body's world pose also depends on its ancestors, so it
+///   is always compared.
+///
+/// Fixed colliders without a body are moved by `sync_colliders`.
 pub(crate) fn push_changes(
   mut physics: ResMut<Physics>,
   time: Res<Time>,
-  moved: Query<(Entity, BodyPlace), (With<RigidBody>, Changed<GlobalTransform>)>,
+  moved: Query<MovedRow, (With<RigidBody>, Changed<GlobalTransform>)>,
   globals: Globals,
-  pushed: Query<(Entity, &Velocity, &AngularVelocity), Pushed>,
+  pushed: Query<(Entity, Ref<Velocity>, Ref<AngularVelocity>), Pushed>,
   kinematic: Query<(Entity, &RigidBody, &Velocity, &AngularVelocity)>,
 ) {
   physics.begin_push();
-  for (entity, place) in &moved {
-    let (translation, rotation) = body_pose(place, &globals);
+  let own = physics.write_tick;
+  let mut unparented = std::mem::take(&mut physics.unparented);
+  let any_unparented = !unparented.is_empty();
+  for (entity, global, transform, parent) in &moved {
+    if parent.is_none()
+      && Some(transform.last_changed()) == own
+      && !(any_unparented && unparented.contains(&entity))
+    {
+      continue;
+    }
+    #[cfg(test)]
+    {
+      physics.compared += 1;
+    }
+    let (translation, rotation) = body_pose((global, &transform, parent), &globals);
     if !(translation.is_finite() && rotation.is_finite()) {
       physics.warn_once(entity, "a non-finite Transform is not pushed to physics");
       continue;
     }
     physics.move_body(entity, translation, rotation);
   }
+  unparented.clear();
+  physics.unparented = unparented;
+  // Unchanged since the last push, or changed by the write-back only
+  let kept = |changed: bool, last: Tick| !changed || Some(last) == own;
   for (entity, velocity, angular) in &pushed {
+    if kept(velocity.is_changed(), velocity.last_changed())
+      && kept(angular.is_changed(), angular.last_changed())
+    {
+      continue;
+    }
+    #[cfg(test)]
+    {
+      physics.compared += 1;
+    }
     physics.push_velocity(entity, velocity.as_vec2(), angular.0);
   }
   let dt = time.fixed.timestep();
@@ -588,12 +674,22 @@ fn world_after_step(
 /// Every write is worked out before the first lands, so `world_after_step`
 /// reads each ancestor's `Transform` as `read_back` found it whatever order
 /// the bodies come in.
+///
+/// Its tick is recorded as `Physics::write_tick`, and the next step's
+/// `push_changes` and `sync_colliders` skip what last changed at that tick
+/// (see `push_changes`). The invariant: nothing else changes a body's
+/// `Transform`, `Velocity` or `AngularVelocity` at this tick. Systems run
+/// at ticks of their own and nothing in the physics chain before this one
+/// is deferred; only commands applied at a sync point directly in front of
+/// it (they take the tick of the system that runs next) could share it.
 pub(crate) fn read_back(
   mut physics: ResMut<Physics>,
   mut locals: Query<LocalLink, Allow<Disabled>>,
   nested: Query<Entity, (With<RigidBody>, With<ChildOf>)>,
   mut velocities: Query<(&mut Velocity, &mut AngularVelocity), With<RigidBody>>,
+  ticks: SystemChangeTick,
 ) {
+  physics.write_tick = Some(ticks.this_run());
   let mut writes = std::mem::take(&mut physics.write_backs);
   writes.clear();
   let resting = nested
@@ -716,7 +812,7 @@ pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::ecs::{Messages, World};
+  use crate::core::ecs::{Messages, Resource, World};
   use crate::core::physics::ColliderShape;
   use crate::core::physics::CollisionStarted;
   use crate::core::physics::test_util::*;
@@ -2501,5 +2597,476 @@ mod tests {
       "{:?}",
       at(&world, b)
     );
+  }
+
+  fn fnv(hash: &mut u32, value: f32) {
+    for byte in value.to_bits().to_le_bytes() {
+      *hash ^= u32::from(byte);
+      *hash = hash.wrapping_mul(0x0100_0193);
+    }
+  }
+
+  /// What `mixed_scene` ended with.
+  struct MixedRun {
+    /// Every body's `Transform`, velocities, Rapier pose and sleep, hashed
+    checksum: u32,
+    asleep: usize,
+    /// Bodies and colliders the sync compared with Rapier over the run
+    compared: usize,
+  }
+
+  /// A scene through every sync path, run for 360 steps: bodies bouncing
+  /// in a box (some spinning, some rotation-locked; they settle, are woken
+  /// around step 200 and settle again), a body with a child collider, a
+  /// body nested under a moving body, a kinematic body driven by velocity,
+  /// a kinematic platform and a kinematic child the game moves, a pendulum
+  /// on a joint, and game writes between steps (teleports, new velocities,
+  /// a same-value write, a detach). Without `skip_own_writes` the
+  /// write-back tick is forgotten before every step, so the sync compares
+  /// everything by value.
+  fn mixed_scene(skip_own_writes: bool) -> MixedRun {
+    let (mut world, mut s) = world(60);
+    s.add_systems(
+      Phase::FixedUpdate,
+      propagate_transforms.in_set(FixedSet::Transforms),
+    );
+    for (x, y, w, h) in [
+      (150.0, -10.0, 340.0, 20.0),
+      (150.0, 310.0, 340.0, 20.0),
+      (-10.0, 150.0, 20.0, 340.0),
+      (310.0, 150.0, 20.0, 340.0),
+    ] {
+      world.spawn((
+        Transform::from_xy(x, y),
+        RigidBody::fixed(),
+        Collider::rect(w, h).with_restitution(0.8),
+      ));
+    }
+    let mut bouncing = Vec::new();
+    for i in 0..60 {
+      let (col, row) = ((i % 10) as f32, (i / 10) as f32);
+      let angle = i as f32 * 2.399;
+      let body = if i % 3 == 0 {
+        RigidBody::dynamic().lock_rotation()
+      } else {
+        RigidBody::dynamic()
+      };
+      let collider = if i % 2 == 0 {
+        Collider::circle(6.0)
+      } else {
+        Collider::rect(10.0, 10.0)
+      };
+      let id = world
+        .spawn((
+          Transform::from_xy(30.0 + col * 24.0, 30.0 + row * 24.0),
+          Velocity::new(angle.cos() * 150.0, angle.sin() * 150.0),
+          body,
+          collider.with_restitution(0.6).with_friction(0.4),
+        ))
+        .id();
+      bouncing.push(id);
+    }
+    let carrier = world
+      .spawn((
+        Transform::from_xy(60.0, 250.0),
+        RigidBody::dynamic(),
+        Velocity::new(40.0, -80.0),
+      ))
+      .id();
+    world.spawn((
+      Transform::from_xy(8.0, 0.0),
+      Collider::rect(12.0, 6.0),
+      ChildOf(carrier),
+    ));
+    let parent = world
+      .spawn((
+        Transform::from_xy(200.0, 60.0),
+        RigidBody::dynamic(),
+        Velocity::new(-60.0, 30.0),
+        Collider::circle(8.0),
+      ))
+      .id();
+    let nested = world
+      .spawn((
+        Transform::from_xy(20.0, 0.0),
+        RigidBody::dynamic(),
+        Collider::circle(4.0),
+        ChildOf(parent),
+      ))
+      .id();
+    world.spawn((
+      Transform::from_xy(20.0, 25.0),
+      RigidBody::kinematic(),
+      Velocity::new(50.0, 0.0),
+      AngularVelocity(1.0),
+      Collider::rect(30.0, 6.0),
+    ));
+    let platform = world
+      .spawn((
+        Transform::from_xy(150.0, 50.0),
+        RigidBody::kinematic(),
+        Collider::rect(60.0, 8.0),
+      ))
+      .id();
+    let holder = world.spawn(Transform::from_xy(250.0, 60.0)).id();
+    world.spawn((
+      Transform::from_xy(0.0, 10.0),
+      RigidBody::kinematic(),
+      Collider::rect(8.0, 8.0),
+      ChildOf(holder),
+    ));
+    let pivot = world
+      .spawn((Transform::from_xy(150.0, 100.0), RigidBody::fixed()))
+      .id();
+    let bob = world
+      .spawn((
+        Transform::from_xy(180.0, 100.0),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+      ))
+      .id();
+    world.spawn(Joint::revolute(pivot, bob).at(Vec2::new(150.0, 100.0)));
+    for step in 0..360 {
+      let t = step as f32;
+      world.get_mut::<Transform>(platform).unwrap().translation.x = 150.0 + 60.0 * (t * 0.05).sin();
+      world.get_mut::<Transform>(holder).unwrap().translation.y = 60.0 + 10.0 * (t * 0.07).sin();
+      match step {
+        50 => {
+          world.get_mut::<Transform>(bouncing[7]).unwrap().translation = Vec2::new(150.0, 150.0)
+        }
+        80 => *world.get_mut::<Velocity>(bouncing[11]).unwrap() = Velocity::new(0.0, -200.0),
+        100 => {
+          world.entity_mut(nested).remove::<ChildOf>();
+        }
+        120 => {
+          let same = at(&world, bouncing[20]);
+          *world.get_mut::<Transform>(bouncing[20]).unwrap() = same;
+        }
+        200 => {
+          world
+            .get_mut::<Transform>(bouncing[30])
+            .unwrap()
+            .translation = Vec2::new(150.0, 120.0)
+        }
+        210 => *world.get_mut::<Velocity>(bouncing[40]).unwrap() = Velocity::new(120.0, -150.0),
+        _ => {}
+      }
+      if !skip_own_writes {
+        world.resource_mut::<Physics>().write_tick = None;
+      }
+      run(&mut world, &mut s, 1);
+    }
+    let mut rows: Vec<_> = world
+      .query::<(Entity, &Transform, &Velocity, &AngularVelocity, &RigidBody)>()
+      .iter(&world)
+      .map(|(entity, transform, velocity, angular, _)| (entity, *transform, *velocity, angular.0))
+      .collect();
+    rows.sort_by_key(|row| row.0);
+    let physics = world.resource::<Physics>();
+    let mut checksum = 0x811c_9dc5_u32;
+    let mut asleep = 0;
+    for (entity, transform, velocity, angular) in rows {
+      let (pose, rotation) = physics.body_pose(entity).unwrap_or_default();
+      let sleeping = physics.is_sleeping(entity);
+      asleep += usize::from(sleeping);
+      for value in [
+        transform.translation.x,
+        transform.translation.y,
+        transform.rotation,
+        velocity.dx,
+        velocity.dy,
+        angular,
+        pose.x,
+        pose.y,
+        rotation,
+        f32::from(u8::from(sleeping)),
+      ] {
+        fnv(&mut checksum, value);
+      }
+    }
+    MixedRun {
+      checksum,
+      asleep,
+      compared: physics.compared,
+    }
+  }
+
+  #[test]
+  fn the_write_back_skip_leaves_every_trajectory_as_it_was() {
+    let (skipping, comparing) = (mixed_scene(true), mixed_scene(false));
+    assert_eq!(
+      skipping.checksum, comparing.checksum,
+      "skipping the write-back's own changes must not change the simulation"
+    );
+    assert!(
+      skipping.asleep > 50,
+      "the scene settles: {}",
+      skipping.asleep
+    );
+    assert!(
+      skipping.compared * 3 < comparing.compared,
+      "the skip skips: {} against {}",
+      skipping.compared,
+      comparing.compared
+    );
+  }
+
+  /// Balls flying apart with no gravity, each with its own collider, and
+  /// the engine's propagation after physics.
+  fn flying(count: usize) -> (World, EngineSchedules, Vec<Entity>) {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    s.add_systems(
+      Phase::FixedUpdate,
+      propagate_transforms.in_set(FixedSet::Transforms),
+    );
+    let balls = (0..count)
+      .map(|i| {
+        let e = ball(&mut world, i as f32 * 40.0, 0.0);
+        *world.get_mut::<Velocity>(e).unwrap() = Velocity::new(5.0 * i as f32, 20.0);
+        e
+      })
+      .collect();
+    (world, s, balls)
+  }
+
+  /// Run one step and return what the sync compared with Rapier in it.
+  fn compared_in_a_step(world: &mut World, s: &mut EngineSchedules) -> usize {
+    world.resource_mut::<Physics>().compared = 0;
+    run(world, s, 1);
+    world.resource::<Physics>().compared
+  }
+
+  #[test]
+  fn what_the_write_back_wrote_is_not_compared_again() {
+    let (mut world, mut s, balls) = flying(10);
+    run(&mut world, &mut s, 3);
+    assert_eq!(
+      compared_in_a_step(&mut world, &mut s),
+      0,
+      "ten bodies and colliders moved by the write-back alone"
+    );
+    // A game write between steps: its body and its collider are compared
+    world.get_mut::<Transform>(balls[3]).unwrap().translation.y += 50.0;
+    assert_eq!(compared_in_a_step(&mut world, &mut s), 2);
+    *world.get_mut::<Velocity>(balls[4]).unwrap() = Velocity::new(0.0, -30.0);
+    assert_eq!(compared_in_a_step(&mut world, &mut s), 1);
+    assert_eq!(
+      world.get::<Velocity>(balls[4]),
+      Some(&Velocity::new(0.0, -30.0))
+    );
+  }
+
+  /// What the game writes in `write_after_physics`, once.
+  #[derive(Resource, Default)]
+  struct LateWrites {
+    teleport: Option<(Entity, Vec2)>,
+    velocity: Option<(Entity, Velocity)>,
+    same: Option<Entity>,
+  }
+
+  /// A game system after physics in the same step: it writes on top of the
+  /// write-back, at a later tick.
+  fn write_after_physics(
+    mut writes: ResMut<LateWrites>,
+    mut bodies: Query<(&mut Transform, &mut Velocity)>,
+  ) {
+    if let Some((e, at)) = writes.teleport.take()
+      && let Ok((mut transform, _)) = bodies.get_mut(e)
+    {
+      transform.translation = at;
+    }
+    if let Some((e, velocity)) = writes.velocity.take()
+      && let Ok((_, mut v)) = bodies.get_mut(e)
+    {
+      *v = velocity;
+    }
+    if let Some(e) = writes.same.take()
+      && let Ok((mut transform, _)) = bodies.get_mut(e)
+    {
+      transform.set_changed();
+    }
+  }
+
+  #[test]
+  fn a_game_write_after_the_write_back_in_the_same_step_is_pushed() {
+    let (mut world, mut s, balls) = flying(3);
+    world.insert_resource(LateWrites::default());
+    s.add_systems(
+      Phase::FixedUpdate,
+      write_after_physics
+        .after(FixedSet::Physics)
+        .before(FixedSet::Transforms),
+    );
+    run(&mut world, &mut s, 3);
+    let (teleported, sped, touched) = (balls[0], balls[1], balls[2]);
+    let target = Vec2::new(-300.0, 200.0);
+    *world.resource_mut::<LateWrites>() = LateWrites {
+      teleport: Some((teleported, target)),
+      velocity: Some((sped, Velocity::new(-90.0, 0.0))),
+      same: Some(touched),
+    };
+    // The write-back lands, then the game's writes on the same bodies
+    run(&mut world, &mut s, 1);
+    assert_eq!(at(&world, teleported).translation, target);
+    world.resource_mut::<Physics>().compared = 0;
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    let (position, _) = physics.body_pose(teleported).unwrap();
+    let expected = target + Vec2::new(0.0, 20.0) / 60.0;
+    assert!((position - expected).length() < 1e-3, "{position}");
+    assert_eq!(
+      world.get::<Velocity>(sped),
+      Some(&Velocity::new(-90.0, 0.0))
+    );
+    // Teleported: body and collider; the new velocity; touched: body and
+    // collider, compared and left alone
+    assert_eq!(physics.compared, 5);
+    assert!(!physics.is_sleeping(touched));
+  }
+
+  /// A body flying under a plain parent 100 px to the right.
+  fn flying_under_a_parent() -> (World, EngineSchedules, Entity) {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let parent = world.spawn(Transform::from_xy(100.0, 0.0)).id();
+    let body = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Velocity::new(30.0, 0.0),
+        Collider::circle(5.0),
+        ChildOf(parent),
+      ))
+      .id();
+    run(&mut world, &mut s, 3);
+    (world, s, body)
+  }
+
+  #[test]
+  fn a_body_detached_after_the_write_back_moves_to_its_new_world_pose() {
+    let (mut world, mut s, body) = flying_under_a_parent();
+    // Its local `Transform`, last written by the write-back, is now its
+    // world pose: 100 px to the left
+    world.entity_mut(body).remove::<ChildOf>();
+    let local = at(&world, body).translation;
+    run(&mut world, &mut s, 1);
+    let (position, _) = world.resource::<Physics>().body_pose(body).unwrap();
+    assert!(
+      (position - (local + Vec2::new(0.5, 0.0))).length() < 1e-3,
+      "{position}"
+    );
+  }
+
+  #[test]
+  fn a_body_detached_between_steps_moves_to_its_new_world_pose() {
+    let (mut world, mut s, body) = flying_under_a_parent();
+    s.add_systems(Phase::Last, (forget_removed, track_disabled).chain());
+    world.entity_mut(body).remove::<ChildOf>();
+    let local = at(&world, body).translation;
+    // Only the frame-end bookkeeping sees the removal before it expires
+    frame_without_a_step(&mut world, &mut s);
+    frame_without_a_step(&mut world, &mut s);
+    run(&mut world, &mut s, 1);
+    let (position, _) = world.resource::<Physics>().body_pose(body).unwrap();
+    assert!(
+      (position - (local + Vec2::new(0.5, 0.0))).length() < 1e-3,
+      "{position}"
+    );
+  }
+
+  #[test]
+  fn a_velocity_driven_kinematic_body_skipped_by_the_sync_keeps_moving() {
+    let (mut world, mut s) = world(60);
+    s.add_systems(
+      Phase::FixedUpdate,
+      propagate_transforms.in_set(FixedSet::Transforms),
+    );
+    let e = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::kinematic(),
+        Velocity::new(60.0, 0.0),
+        AngularVelocity(1.0),
+        Collider::rect(10.0, 10.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 30);
+    assert_eq!(
+      compared_in_a_step(&mut world, &mut s),
+      0,
+      "its write-back is not compared again"
+    );
+    let moved = at(&world, e);
+    assert!((moved.translation.x - 31.0).abs() < 1e-3, "{moved:?}");
+    assert!((moved.rotation - 31.0 / 60.0).abs() < 1e-4, "{moved:?}");
+    // A `Transform` write wins over its velocity for that step
+    world.get_mut::<Transform>(e).unwrap().translation.x = 200.0;
+    run(&mut world, &mut s, 1);
+    let (position, _) = world.resource::<Physics>().body_pose(e).unwrap();
+    assert!((position.x - 200.0).abs() < 1e-3, "{position}");
+    run(&mut world, &mut s, 1);
+    assert!((at(&world, e).translation.x - 201.0).abs() < 1e-3);
+  }
+
+  #[test]
+  fn a_nested_body_is_always_compared_and_keeps_its_own_course() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    s.add_systems(
+      Phase::FixedUpdate,
+      propagate_transforms.in_set(FixedSet::Transforms),
+    );
+    let parent = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Velocity::new(60.0, 0.0),
+        Collider::circle(5.0),
+      ))
+      .id();
+    let child = world
+      .spawn((
+        Transform::from_xy(100.0, 0.0),
+        RigidBody::dynamic(),
+        Velocity::new(0.0, 30.0),
+        Collider::circle(5.0),
+        ChildOf(parent),
+      ))
+      .id();
+    run(&mut world, &mut s, 60);
+    // The parent and its collider were moved by the write-back alone; the
+    // child's world pose depends on its parent, so it and its collider are
+    // compared, and left where Rapier holds them
+    assert_eq!(compared_in_a_step(&mut world, &mut s), 2);
+    let physics = world.resource::<Physics>();
+    let (child_at, _) = physics.body_pose(child).unwrap();
+    assert!(
+      (child_at - Vec2::new(100.0, 30.5)).length() < 1e-3,
+      "not dragged by its parent: {child_at}"
+    );
+  }
+
+  #[test]
+  fn a_moving_body_s_edited_collider_applies() {
+    // The write-back moves it every step; the edit lands on top
+    let (mut world, mut s, balls) = flying(1);
+    run(&mut world, &mut s, 3);
+    let before = world.resource::<Physics>().mass(balls[0]).unwrap();
+    world.get_mut::<Collider>(balls[0]).unwrap().density = 2.0;
+    run(&mut world, &mut s, 1);
+    let after = world.resource::<Physics>().mass(balls[0]).unwrap();
+    assert!((after - 2.0 * before).abs() < 1e-6, "{before} -> {after}");
+  }
+
+  #[test]
+  fn a_moving_nested_body_s_collider_follows_its_parent_s_scale() {
+    let (mut world, mut s, body) = flying_under_a_parent();
+    let before = world.resource::<Physics>().mass(body).unwrap();
+    let parent = world.get::<ChildOf>(body).unwrap().parent();
+    world.get_mut::<Transform>(parent).unwrap().scale = Vec2::splat(2.0);
+    run(&mut world, &mut s, 1);
+    let after = world.resource::<Physics>().mass(body).unwrap();
+    assert!((after - 4.0 * before).abs() < 1e-6, "{before} -> {after}");
   }
 }
