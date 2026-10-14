@@ -137,11 +137,12 @@ if let Some(mut config) = ctx.resource_mut::<PhysicsConfig>() {
   config.gravity = Vec2::new(0.0, 1600.0);
 }
 
-// Current contacts between solid colliders, from Rapier's narrow phase
-// (a trigger's overlaps arrive as messages)
+// Current contacts and trigger overlaps, as the last step left them
+// (an entity is a body: all its colliders; or one collider)
 if let Some(physics) = ctx.resource::<Physics>() {
-  let touching = physics.are_intersecting(self.player, self.platform);
-  let all = physics.get_current_intersections(self.player);
+  let touching = physics.in_contact(self.player, self.platform);
+  let solid = physics.contacts(self.player); // Vec<Touch { collider, body, point, normal, impulse }>
+  let inside = physics.overlaps(self.zone); // Vec<Overlap> of a trigger
   let asleep = physics.is_sleeping(self.player);
 }
 ```

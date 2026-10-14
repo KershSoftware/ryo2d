@@ -1064,44 +1064,6 @@ impl Physics {
       .and_then(|entry| self.bodies.get(entry.handle))
       .is_some_and(|body| body.is_sleeping())
   }
-
-  /// Check if two entities are currently intersecting using Rapier's narrow phase
-  ///
-  /// Unlike collision messages which only fire on state change, this checks
-  /// the current intersection status directly.
-  pub fn are_intersecting(&self, entity_a: Entity, entity_b: Entity) -> bool {
-    let (Some(a), Some(b)) = (
-      self.collider_entries.get(&entity_a),
-      self.collider_entries.get(&entity_b),
-    ) else {
-      return false;
-    };
-    self.narrow_phase.contact_pair(a.handle, b.handle).is_some()
-  }
-
-  /// Check if an entity is currently intersecting with any other entity
-  ///
-  /// Returns a list of entities the given entity is currently touching.
-  pub fn get_current_intersections(&self, entity: Entity) -> Vec<Entity> {
-    let Some(entry) = self.collider_entries.get(&entity) else {
-      return Vec::new();
-    };
-    let handle = entry.handle;
-    self
-      .narrow_phase
-      .contact_pairs_with(handle)
-      // Actual contact points, not just AABB overlap
-      .filter(|pair| pair.has_any_active_contact())
-      .filter_map(|pair| {
-        let other = if pair.collider1 == handle {
-          pair.collider2
-        } else {
-          pair.collider1
-        };
-        Some(self.owners.get(&other)?.collider)
-      })
-      .collect()
-  }
 }
 
 impl Default for Physics {

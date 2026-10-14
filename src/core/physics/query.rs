@@ -10,7 +10,7 @@ use rapier2d::prelude::{
 use super::collider::ColliderShape;
 use super::convert::{from_rapier, pose, to_rapier};
 use super::shape;
-use super::world::{Owner, Physics, Push};
+use super::world::{Owner, Physics, Push, first_contact};
 use crate::core::ecs::{Entity, Vec2};
 
 /// What a query may hit. The default hits every layer and skips triggers
@@ -311,6 +311,97 @@ impl Physics {
   pub fn mass(&self, body: Entity) -> Option<f32> {
     let entry = self.body_entries.get(&body)?;
     Some(self.bodies.get(entry.handle)?.mass())
+  }
+}
+
+/// A solid contact touching one of an entity's colliders: the other side,
+/// the deepest point, the normal from the entity toward the other side
+/// (ground below is `(0, +1)`) and the step's normal impulse.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Touch {
+  pub collider: Entity,
+  pub body: Entity,
+  pub point: Vec2,
+  pub normal: Vec2,
+  pub impulse: f32,
+}
+
+impl Physics {
+  /// The colliders of `entity`: all of a body's, or one collider.
+  fn handles_of(&self, entity: Entity) -> Vec<ColliderHandle> {
+    if let Some(entry) = self.body_entries.get(&entity)
+      && let Some(body) = self.bodies.get(entry.handle)
+    {
+      return body.colliders().to_vec();
+    }
+    self
+      .collider_entries
+      .get(&entity)
+      .map(|entry| vec![entry.handle])
+      .unwrap_or_default()
+  }
+
+  /// The solid contacts touching `entity` (a body: all its colliders; or one
+  /// collider) after the last step.
+  pub fn contacts(&self, entity: Entity) -> Vec<Touch> {
+    let mut touches = Vec::new();
+    for handle in self.handles_of(entity) {
+      for pair in self.narrow_phase.contact_pairs_with(handle) {
+        if !pair.has_any_active_contact() {
+          continue;
+        }
+        let other = if pair.collider1 == handle {
+          pair.collider2
+        } else {
+          pair.collider1
+        };
+        let (Some(owner), Some((point, normal))) = (
+          self.owner_of(other),
+          first_contact(&self.colliders, pair, handle),
+        ) else {
+          continue;
+        };
+        touches.push(Touch {
+          collider: owner.collider,
+          body: owner.body,
+          point,
+          normal,
+          impulse: pair.total_impulse_magnitude(),
+        });
+      }
+    }
+    touches
+  }
+
+  /// The colliders overlapping `entity`'s triggers, or the triggers `entity` is inside.
+  pub fn overlaps(&self, entity: Entity) -> Vec<Overlap> {
+    let mut overlaps = Vec::new();
+    for handle in self.handles_of(entity) {
+      for (a, b, intersecting) in self.narrow_phase.intersection_pairs_with(handle) {
+        let other = if a == handle { b } else { a };
+        if intersecting && let Some(owner) = self.owner_of(other) {
+          overlaps.push(Overlap {
+            collider: owner.collider,
+            body: owner.body,
+          });
+        }
+      }
+    }
+    overlaps
+  }
+
+  /// Whether any collider of `a` touches or overlaps any collider of `b`.
+  pub fn in_contact(&self, a: Entity, b: Entity) -> bool {
+    let theirs = self.handles_of(b);
+    self.handles_of(a).into_iter().any(|mine| {
+      theirs.iter().any(|&other| {
+        self
+          .narrow_phase
+          .contact_pair(mine, other)
+          .is_some_and(|pair| pair.has_any_active_contact())
+          || self.narrow_phase.intersection_pair(mine, other) == Some(true)
+      })
+    })
   }
 }
 
@@ -702,5 +793,94 @@ mod tests {
     assert!(probe(&world).is_none(), "not stepped yet");
     run(&mut world, &mut s, 1);
     assert!(probe(&world).is_some());
+  }
+
+  #[test]
+  fn contacts_report_the_ground_below() {
+    let (mut world, mut s) = world(60);
+    let floor_e = floor(&mut world, 100.0);
+    let crate_e = world
+      .spawn((
+        Transform::from_xy(0.0, 80.0),
+        RigidBody::dynamic().lock_rotation(),
+        Collider::rect(20.0, 20.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 30);
+    let physics = world.resource::<Physics>();
+    let touches = physics.contacts(crate_e);
+    assert_eq!(touches.len(), 1, "{touches:?}");
+    let touch = touches[0];
+    assert_eq!((touch.collider, touch.body), (floor_e, floor_e));
+    assert!(
+      close(touch.normal, Vec2::Y),
+      "from the crate toward the floor: {touch:?}"
+    );
+    assert!(touch.impulse > 0.0 && (touch.point.y - 100.0).abs() < 1.5);
+    let from_floor = physics.contacts(floor_e);
+    assert!(close(from_floor[0].normal, -Vec2::Y));
+    assert!(physics.in_contact(crate_e, floor_e) && physics.in_contact(floor_e, crate_e));
+  }
+
+  #[test]
+  fn overlaps_list_what_is_inside_a_trigger() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let zone = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(100.0, 100.0).as_trigger(),
+      ))
+      .id();
+    let inside = ball(&mut world, 10.0, 10.0);
+    ball(&mut world, 300.0, 0.0);
+    run(&mut world, &mut s, 2);
+    let physics = world.resource::<Physics>();
+    assert_eq!(
+      physics.overlaps(zone),
+      [Overlap {
+        collider: inside,
+        body: inside
+      }]
+    );
+    assert!(physics.in_contact(zone, inside));
+    assert!(
+      physics.contacts(zone).is_empty(),
+      "triggers have no solid contacts"
+    );
+  }
+
+  #[test]
+  fn contact_ends_when_bodies_part() {
+    let (mut world, mut s) = world(60);
+    let floor_e = floor(&mut world, 100.0);
+    let b = ball(&mut world, 0.0, 85.0);
+    run(&mut world, &mut s, 30);
+    assert!(world.resource::<Physics>().in_contact(b, floor_e));
+    world.get_mut::<Transform>(b).unwrap().translation.y = -500.0;
+    run(&mut world, &mut s, 2);
+    assert!(!world.resource::<Physics>().in_contact(b, floor_e));
+  }
+
+  #[test]
+  fn a_body_s_contacts_include_every_collider() {
+    use crate::core::ecs::ChildOf;
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let body = world
+      .spawn((
+        Transform::from_xy(0.0, 80.0),
+        RigidBody::dynamic().lock_rotation(),
+      ))
+      .id();
+    for x in [-30.0, 30.0] {
+      world.spawn((
+        Transform::from_xy(x, 0.0),
+        Collider::rect(20.0, 20.0),
+        ChildOf(body),
+      ));
+    }
+    run(&mut world, &mut s, 30);
+    assert_eq!(world.resource::<Physics>().contacts(body).len(), 2);
   }
 }
