@@ -1709,6 +1709,46 @@ mod tests {
   }
 
   #[test]
+  fn a_trigger_made_solid_forgets_what_was_inside() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let zone = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(200.0, 200.0).as_trigger(),
+      ))
+      .id();
+    let inside = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 3);
+    assert_eq!(
+      world.get::<TriggerContents>(zone).unwrap().entities(),
+      [inside]
+    );
+    world.get_mut::<Collider>(zone).unwrap().is_trigger = false;
+    run(&mut world, &mut s, 2);
+    world.despawn(inside);
+    run(&mut world, &mut s, 2);
+    world.get_mut::<Collider>(zone).unwrap().is_trigger = true;
+    run(&mut world, &mut s, 3);
+    assert!(world.get::<TriggerContents>(zone).unwrap().is_empty());
+  }
+
+  #[test]
+  fn a_solid_made_a_trigger_sends_no_exit_without_an_entry() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    let b = ball(&mut world, 0.0, 80.0);
+    run(&mut world, &mut s, 60);
+    world.get_mut::<Collider>(f).unwrap().is_trigger = true;
+    run(&mut world, &mut s, 2);
+    world.get_mut::<Velocity>(b).unwrap().dy = -300.0;
+    run(&mut world, &mut s, 60);
+    let entered = read::<TriggerEntered>(&world).len();
+    let exited = read::<TriggerExited>(&world).len();
+    assert!(exited <= entered, "{exited} exits, {entered} entries");
+  }
+
+  #[test]
   fn trigger_contents_list_what_is_inside_in_entry_order() {
     let (mut world, mut s) = world(60);
     no_gravity(&mut world);

@@ -778,6 +778,11 @@ impl Physics {
       && let Some(owner) = self.owners.get_mut(&handle)
     {
       owner.trigger = collider.is_trigger;
+      self
+        .trigger_overlaps
+        .retain(|&(trigger, _), _| trigger != entity);
+      self.trigger_contents.remove(&entity);
+      self.changed_triggers.insert(entity);
     }
     let density = self.rapier_density(finite_or(collider.density, 1.0).max(0.0));
     if let Some(rapier) = self.colliders.get_mut(handle) {
@@ -885,17 +890,22 @@ impl Physics {
         continue;
       }
       let key = (trigger.collider, other.body);
-      let count = self.trigger_overlaps.entry(key).or_insert(0);
       let changed = if started {
+        let count = self.trigger_overlaps.entry(key).or_insert(0);
         *count += 1;
         *count == 1
       } else {
+        // A stop only counts for an overlap that was counted
+        let Some(count) = self.trigger_overlaps.get_mut(&key) else {
+          continue;
+        };
         *count = count.saturating_sub(1);
-        *count == 0
+        let gone = *count == 0;
+        if gone {
+          self.trigger_overlaps.remove(&key);
+        }
+        gone
       };
-      if !started && *count == 0 {
-        self.trigger_overlaps.remove(&key);
-      }
       if !changed {
         continue;
       }
