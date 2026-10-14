@@ -8,6 +8,8 @@ pub use bevy_ecs::bundle::Bundle;
 pub use bevy_ecs::change_detection::{DetectChanges, DetectChangesMut, Mut, Ref};
 pub use bevy_ecs::component::{Component, Mutable};
 pub use bevy_ecs::entity::Entity;
+// Maps and sets keyed by `Entity`, with a hash cheaper than SipHash
+pub(crate) use bevy_ecs::entity::{EntityHashMap, EntityHashSet};
 pub use bevy_ecs::entity_disabling::Disabled;
 pub use bevy_ecs::error::BevyError as SystemError;
 pub(crate) use bevy_ecs::error::panic as panic_on_error;

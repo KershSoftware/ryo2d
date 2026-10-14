@@ -5,7 +5,7 @@
 //! (`sync.rs`) register them, push game changes in, step, and read the
 //! simulated bodies back.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::mem::discriminant;
 use std::sync::{Mutex, PoisonError};
 
@@ -25,7 +25,7 @@ use super::config::PhysicsConfig;
 use super::convert::{from_rapier, pose, poses_differ, to_rapier};
 use super::joint::{Joint, generic_joint, has_invalid_drive};
 use super::shape;
-use crate::core::ecs::{Entity, Resource, Vec2};
+use crate::core::ecs::{Entity, EntityHashMap, EntityHashSet, Resource, Vec2};
 
 /// A collision event with its first contact, captured during the step.
 struct Captured {
@@ -249,21 +249,21 @@ pub struct Physics {
   pub(crate) params: IntegrationParameters,
   gravity: Vec2,
   collector: EventCollector,
-  pub(crate) body_entries: HashMap<Entity, BodyEntry>,
-  pub(crate) collider_entries: HashMap<Entity, ColliderEntry>,
+  pub(crate) body_entries: EntityHashMap<BodyEntry>,
+  pub(crate) collider_entries: EntityHashMap<ColliderEntry>,
   pub(crate) owners: HashMap<ColliderHandle, Owner>,
-  pub(crate) joint_entries: HashMap<Entity, JointEntry>,
+  pub(crate) joint_entries: EntityHashMap<JointEntry>,
   joint_of: HashMap<ImpulseJointHandle, Entity>,
   /// Joint entities re-enabled since the last step: `sync_joints` brings
   /// them up to date (or makes them) once bodies are registered and moved
-  pub(crate) resync_joints: HashSet<Entity>,
+  pub(crate) resync_joints: EntityHashSet,
   /// Colliders whose body is not simulated yet; retried every step
-  pub(crate) waiting: HashSet<Entity>,
+  pub(crate) waiting: EntityHashSet,
   /// Bodies refused for a non-finite pose; retried every step
-  pub(crate) refused: HashSet<Entity>,
+  pub(crate) refused: EntityHashSet,
   /// Entities that lost their `RigidBody` or their parent since the last
   /// step: the colliders at and below them may belong to another body now
-  pub(crate) relink: HashSet<Entity>,
+  pub(crate) relink: EntityHashSet,
   /// `sync_colliders`' work list and walk stack, kept between steps so the
   /// hot path does not allocate
   pub(crate) sync_queue: Vec<Entity>,
@@ -274,10 +274,10 @@ pub struct Physics {
   /// `Stopped` events during the next one
   departed: HashMap<ColliderHandle, Owner>,
   /// Bodies the game moved through `Transform` this step
-  teleported: HashSet<Entity>,
+  teleported: EntityHashSet,
   /// Kinematic bodies the engine moves by velocity this step
-  driven: HashSet<Entity>,
-  warned: HashSet<Entity>,
+  driven: EntityHashSet,
+  warned: EntityHashSet,
   /// Warnings logged, for tests
   #[cfg(test)]
   pub(crate) warnings: usize,
@@ -392,22 +392,22 @@ impl Physics {
       },
       gravity: Vec2::new(0.0, 980.0),
       collector: EventCollector::default(),
-      body_entries: HashMap::new(),
-      collider_entries: HashMap::new(),
+      body_entries: EntityHashMap::default(),
+      collider_entries: EntityHashMap::default(),
       owners: HashMap::new(),
-      joint_entries: HashMap::new(),
+      joint_entries: EntityHashMap::default(),
       joint_of: HashMap::new(),
-      resync_joints: HashSet::new(),
-      waiting: HashSet::new(),
-      refused: HashSet::new(),
-      relink: HashSet::new(),
+      resync_joints: EntityHashSet::default(),
+      waiting: EntityHashSet::default(),
+      refused: EntityHashSet::default(),
+      relink: EntityHashSet::default(),
       sync_queue: Vec::new(),
       walk_stack: Vec::new(),
       write_backs: Vec::new(),
       departed: HashMap::new(),
-      teleported: HashSet::new(),
-      driven: HashSet::new(),
-      warned: HashSet::new(),
+      teleported: EntityHashSet::default(),
+      driven: EntityHashSet::default(),
+      warned: EntityHashSet::default(),
       #[cfg(test)]
       warnings: 0,
       queued: Vec::new(),
