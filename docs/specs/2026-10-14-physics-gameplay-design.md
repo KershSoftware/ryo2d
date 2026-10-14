@@ -31,7 +31,7 @@ Sub-project 3b of the professional-grade overhaul builds gameplay physics on 3a'
 | `src/core/gameplay/top_down.rs` | `TopDownMovement`, `TopDownState` | no |
 | `src/core/gameplay/events.rs` | `MovementEvent`, `MovementEventKind`, `PickedUp`, `Killed`, `CheckpointReached` | no |
 | `src/core/gameplay/zones.rs` | `Pickup`, `KillZone`, `Checkpoint`, `Respawn` | no |
-| `src/core/gameplay/knockback.rs` | `Knockback` and its system (moved from `ecs/knockback.rs` and `systems/knockback.rs`) | no |
+| `src/core/gameplay/knockback.rs` | the knockback system (moved from `systems/knockback.rs`; the `Knockback` component stays in `ecs/knockback.rs`, since physics reads it for characters) | no |
 
 `gameplay` depends on `physics`, never the reverse; rapier2d stays inside `src/core/physics/`. The Tiled adapter lives in the tilemap module (`Tilemap::tile_colliders`), so tilemap depends on physics. Everything public is in the prelude.
 
@@ -43,9 +43,9 @@ Sub-project 3b of the professional-grade overhaul builds gameplay physics on 3a'
 4. **Physics**: one exclusive system that runs a private schedule holding the chain: `forget_removed`, `track_disabled`, `propagate_transforms`, `register_bodies`, `sync_colliders`, `push_changes`, **`move_characters`**, `sync_joints`, `step_simulation` (now with the one-way hooks), `read_back`, `emit_messages` (now also the trigger messages and `TriggerContents`). No game system can be ordered into the middle of it.
 5. **Transforms**, **Trails**.
 
-**Input latch:** `MoveBindings` reads input once per frame, before the fixed steps, into `MoveIntent`. `jump_pressed` and `dash_pressed` stay set until a fixed step's presets consume them, so a tap on a frame that runs no fixed step is not lost and one press is not used twice in a frame that runs two.
+**Input:** `MoveBindings` reads input inside the fixed step (`FixedSet::Movement`) through `Input`'s fixed view, which already keeps a press no fixed step has seen for the next frame's first fixed step and shows it there only: a tap on a frame that runs no fixed step is not lost, and one press is not used twice in a frame that runs two. The presets clear `jump_pressed` and `dash_pressed` after acting on them (for intents written by code).
 
-**Change ticks:** every 1,024 frames `clear_trackers_system` also calls `check_change_ticks` on the engine's schedules, the scenes' schedules and the private physics schedule, so a system idle for a long time never misreads change ticks.
+**Change ticks:** bevy clamps only the schedules in its `Schedules` resource, and the engine's, the scenes' and physics' own schedules are not there. An observer records the world's `CheckChangeTicks` check (every schedule run checks, as does `clear_trackers_system` every 1,024 frames) in a resource, and after `Last` the engine clamps its schedules, the scenes' and the physics schedule with it, so a system idle for a long time never misreads change ticks.
 
 **Builder systems:** `EngineBuilder::add_systems` keeps its rules (no set named: `FixedSet::Game`); because the physics step is one system, `.after(other)` can no longer place a system inside it.
 
@@ -85,7 +85,8 @@ CharacterController::top_down()          // no up: every surface is a wall, no s
 pub struct CharacterState {
   pub on_floor: bool, pub on_wall: bool, pub on_ceiling: bool,
   pub floor_normal: Vec2, pub wall_normal: Vec2,      // zero when none
-  pub floor: Option<Entity>, pub platform_velocity: Vec2,
+  pub floor: Option<Entity>, pub floor_one_way: bool,    // the floor is a one-way platform (for drop-through)
+  pub platform_velocity: Vec2,
   pub landed: bool, pub left_floor: bool,             // true on the step it happens
   pub sliding_down_slope: bool,
   pub velocity_before: Vec2,                          // the Velocity the step asked for, before clipping (for bounces)
@@ -100,7 +101,7 @@ pub struct CharacterHit { pub entity: Entity, pub point: Vec2, pub normal: Vec2 
 
 - `Collider::one_way()`: solid only against things arriving from above (the side its local `-Y` faces); `Collider::one_way_towards(direction)`: solid against things arriving from `direction`'s side. The direction turns with the collider's rotation. Works on any shape; only marked colliders run the hook.
 - **Bodies:** marked colliders get Rapier's `ActiveHooks::MODIFY_SOLVER_CONTACTS`; the step's hooks call `update_as_oneway_platform(direction, 45°)` (flipped when the platform is the pair's second collider). A crate tossed up through a platform lands on top; a body part-way through is not snapped back (Rapier tracks each crossing in the manifold).
-- **Characters:** the sweep ignores a one-way collider unless the character's shape was entirely on its solid side at the start of the step and the move goes into it. Jumping up through, walking off and side entry all pass.
+- **Characters:** the sweep ignores a one-way collider unless the character's shape was entirely on its solid side at the start of the step (within a pixel). Jumping up through, walking off and side entry all pass.
 - **Drop-through:** with `drop_through` set, the character ignores the one-way colliders it stands on until it is entirely past them; the engine then clears the flag. The platformer preset sets it on down + jump.
 
 ## Movement presets
@@ -113,7 +114,7 @@ pub struct MoveIntent { pub direction: Vec2, pub jump_held: bool, pub jump_press
 
 `direction` is -1..1 per axis (analog values from sticks; +Y down). Written by `MoveBindings`, game code, an AI or networking.
 
-**`MoveBindings`** (optional component): fills `MoveIntent` from input once per frame. Defaults: arrows/WASD move, Space jump, Shift dash; gamepad stick or d-pad move, South jump, West dash, any gamepad. Builders: `with_move_keys(..)`, `with_jump_keys(..)`, `with_dash_keys(..)`, `with_gamepad(id)`, `keyboard_only()`.
+**`MoveBindings`** (optional component): fills `MoveIntent` from input every fixed step. Defaults: arrows/WASD move, Space jump, Shift dash; the first connected gamepad (the engine tracks one): stick or d-pad move, South jump, West dash. Builders: `with_left/with_right/with_up/with_down/with_jump/with_dash(keys)`, `keyboard_only()` (`gamepad: bool`).
 
 **`PlatformerMovement`** (needs `CharacterController::platformer()`; warned once otherwise). Writes `Velocity` from the intent and `CharacterState`. Starting defaults (tuned in the demo):
 
@@ -140,7 +141,7 @@ The preset uses its own gravity, not `PhysicsConfig`'s (characters are kinematic
 
 ## Triggers
 
-- **Messages:** trigger overlaps leave `CollisionStarted`/`CollisionStopped` (their `trigger` field goes; those messages now mean solid contact only) and become `TriggerEntered { trigger, other, other_body }` / `TriggerExited { .. }`, where `trigger` is the trigger collider's entity, `other` the other collider's entity and `other_body` its body (or `None` for a bare collider). Two triggers overlapping produce one message per trigger.
+- **Messages:** trigger overlaps leave `CollisionStarted`/`CollisionStopped` (their `trigger` field goes; those messages now mean solid contact only) and become `TriggerEntered { trigger, other, other_body }` / `TriggerExited { .. }`, where `trigger` is the trigger collider's entity, `other` the other collider's entity and `other_body` its body (the collider itself when it has none, as in the collision messages; `actor()` returns it). Two triggers overlapping produce one message per trigger.
 - **Once per body:** a body with several colliders inside one trigger enters on its first collider and exits when its last one leaves (fixes 3a's duplicate-trigger minor).
 - **`TriggerContents`** (engine-added to every trigger collider, updated after each step): the bodies, or bare colliders, inside now, in entry order (`entities()`).
 - What can set a trigger off stays the existing layer/mask test.
@@ -171,11 +172,11 @@ TileColliders::from_cells(width, height, tile_size, cells: Vec<TileCell>) // row
 - **One-way cells:** each horizontal run of one-way cells becomes one `Collider::segment(..).one_way()` along its top edge.
 - **Hollow outlines:** a body that ends up inside a solid region is not pushed out; `.solid_rects()` trades seams for solid interiors (one-way and slope cells still produce their own colliders).
 - **Tilemap adapter:** `Tilemap::tile_colliders(&self) -> TileColliders` reads each tile's `solid` and `platform` flags (OR across layers) and a `slope` custom property (`"bottom-left"`, `"bottom-right"`, `"top-left"`, `"top-right"`).
-- **Navigation:** `NavGrid::block_tiles(&TileColliders, origin: Vec2)` blocks exactly the solid and slope cells (`block_collider` would block a whole outline's bounding box).
+- **Navigation:** `NavigationGrid::block_tiles(&TileColliders, origin: Vec2)` blocks exactly the solid and slope cells (`block_collider` would block a whole outline's bounding box); `rebuild_from_world` blocks tile grids this way and skips their outline colliders.
 
 ## Knockback
 
-`Knockback` keeps its API (direction, force in px/s, decay, accumulate, `KnockbackStarted`/`KnockbackFinished`) and moves to `gameplay/knockback.rs`, running in `FixedSet::Movement`. Its effect depends on the target:
+`Knockback` keeps its API (direction, force in px/s, decay, accumulate, `KnockbackStarted`/`KnockbackFinished`) and its system moves to `gameplay/knockback.rs`, running in `FixedSet::Movement` (the component stays in `ecs/knockback.rs`). Its effect depends on the target:
 
 - **Character** (`CharacterController`): its velocity is a separate term in the sweep, not part of `Velocity`, so it decays on its own curve and the presets do not fight it. The part of it running into a hit surface is removed, so a player knocked into a wall stops there. The presets ignore steering while it is active unless `with_knockback_control(fraction)`; their gravity keeps running.
 - **Dynamic body:** one impulse at the start, `mass × direction × force`, so any mass leaves at the same speed; physics slows it afterwards and the decay rate does not apply; the started/finished messages keep the knockback's own timing.
@@ -184,7 +185,7 @@ TileColliders::from_cells(width, height, tile_size, cells: Vec<TileCell>) // row
 
 ## Public API changes
 
-- Added: `CharacterController`, `CharacterState`, `CharacterHit`; `Collider::one_way`, `one_way_towards`; `TriggerEntered`, `TriggerExited`, `TriggerContents`; `TileColliders`, `TileCell`, `SlopeCorner`; `MoveIntent`, `MoveBindings`, `PlatformerMovement`, `PlatformerState`, `TopDownMovement`, `TopDownState`, `MovementEvent`, `MovementEventKind`; `Pickup`, `PickedUp`, `KillZone`, `Killed`, `Checkpoint`, `CheckpointReached`, `Respawn`; `Tilemap::tile_colliders`; `NavGrid::block_tiles`; `FixedSet::Movement`.
+- Added: `CharacterController`, `CharacterState`, `CharacterHit`; `Collider::one_way`, `one_way_towards`; `TriggerEntered`, `TriggerExited`, `TriggerContents`; `TileColliders`, `TileCell`, `SlopeCorner`; `MoveIntent`, `MoveBindings`, `PlatformerMovement`, `PlatformerState`, `TopDownMovement`, `TopDownState`, `MovementEvent`, `MovementEventKind`; `Pickup`, `PickedUp`, `KillZone`, `Killed`, `Checkpoint`, `CheckpointReached`, `Respawn`; `Tilemap::tile_colliders`; `NavigationGrid::block_tiles`; `FixedSet::Movement`.
 - Changed: `CollisionStarted`/`CollisionStopped` lose `trigger` and no longer report trigger overlaps; `Knockback` acts through physics per target; `Knockback` moves module (prelude path unchanged).
 - Internal: the physics chain runs as one exclusive system over a private schedule.
 
@@ -201,7 +202,7 @@ TileColliders::from_cells(width, height, tile_size, cells: Vec<TileCell>) // row
 9. Platformer extras: air jumps, wall slide and wall jump, dash.
 10. `TopDownMovement`.
 11. Behaviours: `Pickup`, `Respawn`, `KillZone`, `Checkpoint`.
-12. `TileColliders`: outlines, slopes, one-way runs, `solid_rects`, rebuild; `Tilemap::tile_colliders`; `NavGrid::block_tiles`.
+12. `TileColliders`: outlines, slopes, one-way runs, `solid_rects`, rebuild; `Tilemap::tile_colliders`; `NavigationGrid::block_tiles`.
 13. Games: bullet-hell; leap-king and the networking demo; flappy.
 14. The `character` demo.
 15. Documentation and the benchmark.
@@ -222,7 +223,7 @@ TileColliders::from_cells(width, height, tile_size, cells: Vec<TileCell>) // row
 
 ## Testing
 
-- **Unit (physics):** a character falls and lands (`on_floor`, `landed` once, `Velocity.dy` zeroed); walks up a 30° slope and slides down a 60° one; stops at a wall (`on_wall`, `wall_normal`, `velocity_before` kept); bumps a ceiling; steps up a ledge below `step_height` and not above; snaps down a slope; rides a horizontally and a vertically moving platform and a rotating one; keeps a platform's momentum on leaving it; pushes a dynamic crate (and not with `with_push(false)`); teleports by `Transform`; top-down slides along walls and is never `on_floor`; a dynamic body is warned about and not moved. One-way: a crate tossed up through lands on top; a character jumps through and lands; side entry passes; drop-through falls through and clears the flag; a rotated one-way platform blocks along its own up. Triggers: entered and exited once per body with two colliders; trigger-trigger produces two messages; `TriggerContents` order; `CollisionStarted` no longer reports triggers. Tiles: loop counts (a square, an L, a ring with a hole gives two loops), a box sliding across a 100-tile floor never stops and a character running across never snags, slopes merge into the floor loop, one-way runs, `set` rebuilds, `solid_rects`, the Tiled adapter, `NavGrid::block_tiles`. Knockback: a character knocked into a wall stops at it; dynamic bodies of different mass leave at the same speed; a fixed body is ignored and warned once; a bodiless entity moves by `Transform`.
+- **Unit (physics):** a character falls and lands (`on_floor`, `landed` once, `Velocity.dy` zeroed); walks up a 30° slope and slides down a 60° one; stops at a wall (`on_wall`, `wall_normal`, `velocity_before` kept); bumps a ceiling; steps up a ledge below `step_height` and not above; snaps down a slope; rides a horizontally and a vertically moving platform and a rotating one; keeps a platform's momentum on leaving it; pushes a dynamic crate (and not with `with_push(false)`); teleports by `Transform`; top-down slides along walls and is never `on_floor`; a dynamic body is warned about and not moved. One-way: a crate tossed up through lands on top; a character jumps through and lands; side entry passes; drop-through falls through and clears the flag; a rotated one-way platform blocks along its own up. Triggers: entered and exited once per body with two colliders; trigger-trigger produces two messages; `TriggerContents` order; `CollisionStarted` no longer reports triggers. Tiles: loop counts (a square, an L, a ring with a hole gives two loops), a box sliding across a 100-tile floor never stops and a character running across never snags, slopes merge into the floor loop, one-way runs, `set` rebuilds, `solid_rects`, the Tiled adapter, `NavigationGrid::block_tiles`. Knockback: a character knocked into a wall stops at it; dynamic bodies of different mass leave at the same speed; a fixed body is ignored and warned once; a bodiless entity moves by `Transform`.
 - **Unit (gameplay):** the platformer reaches its jump height within 1 px at its apex time within one step; coyote time allows a jump within its window and not after; a buffered press jumps on landing; jump cut; air jumps count down and refill; wall slide caps fall speed; wall jump launches away and locks input; dash speed, duration, cooldown, no gravity, one air dash; knockback control 0 ignores steering; top-down acceleration and normalised diagonals; `MoveBindings` latching (a press on a frame with no fixed step reaches the next step; one press jumps once over a frame with two steps). Behaviours: a pickup is collected once (and respawns with `respawn_after`); a kill zone respawns an entity with `Respawn` and clears its velocity, only writes `Killed` otherwise, despawns with `despawning`; a checkpoint moves the point and writes its message only on change.
 - **Schedule:** a system added with `.after(other)` never runs inside the physics step; the tick clamp reaches the engine's, the scenes' and the physics schedules.
 - **E2E (`HeadlessEngine`):** the `character` demo joins the tour; bullet-hell and leap-king run headless with scripted input and land on platforms.
