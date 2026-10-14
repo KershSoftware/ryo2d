@@ -2957,7 +2957,10 @@ mod tests {
     // Teleported: body and collider; the new velocity; touched: body and
     // collider, compared and left alone
     assert_eq!(physics.compared, 5);
-    assert!(!physics.is_sleeping(touched));
+    // A same-value write moves nothing: it keeps its course over 5 steps
+    let (course, _) = physics.body_pose(touched).unwrap();
+    let expected = Vec2::new(80.0, 0.0) + Vec2::new(10.0, 20.0) * 5.0 / 60.0;
+    assert!((course - expected).length() < 1e-3, "{course}");
   }
 
   /// A body flying under a plain parent 100 px to the right.
