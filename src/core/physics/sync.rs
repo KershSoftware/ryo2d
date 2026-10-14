@@ -233,8 +233,9 @@ pub(crate) fn forget_removed(
 /// Disable the simulation of disabled entities; re-enable (or register, if
 /// they were spawned disabled) re-enabled ones. The steps skip a disabled
 /// entity, so what the game changed meanwhile (`Transform`, `Velocity`,
-/// `RigidBody`, `Collider`, `Joint`) is applied as it comes back: bodies and
-/// joints here, colliders by the next `sync_colliders`.
+/// `RigidBody`, `Collider`, `Joint`) is applied as it comes back: bodies
+/// here, colliders by the next `sync_colliders` and joints by the next
+/// `sync_joints`.
 #[allow(clippy::too_many_arguments)] // one query or removal reader per input
 pub(crate) fn track_disabled(
   mut physics: ResMut<Physics>,
@@ -244,7 +245,7 @@ pub(crate) fn track_disabled(
   mut locals: Query<LocalLink, Allow<Disabled>>,
   mut bodies: Query<(&mut Velocity, &mut AngularVelocity, Ref<RigidBody>)>,
   colliders: Query<(), With<Collider>>,
-  joints: Query<&Joint>,
+  joints: Query<(), With<Joint>>,
 ) {
   // Density depends on the unit: configure before anything registers
   physics.configure(&config);
@@ -252,9 +253,10 @@ pub(crate) fn track_disabled(
     physics.set_enabled(entity, false);
   }
   for entity in enabled.read() {
-    if let Ok(joint) = joints.get(entity) {
-      physics.sync_joint(entity, joint);
+    if joints.contains(entity) {
+      // Made or brought up to date by `sync_joints`, after its bodies
       physics.set_joint_enabled(entity, true);
+      physics.resync_joints.insert(entity);
     }
     let has_collider = colliders.contains(entity);
     if !(has_collider || bodies.contains(entity)) {
@@ -470,16 +472,25 @@ pub(crate) fn push_changes(
   physics.apply_queued();
 }
 
-/// Register new and edited joints, and retry inert ones. After
+/// Register new, edited and re-enabled joints, and retry inert ones. After
 /// `push_changes`: a joint made as the game moves one of its bodies anchors
 /// to where the body was moved.
 pub(crate) fn sync_joints(
   mut physics: ResMut<Physics>,
-  joints: Query<(Entity, &Joint), Changed<Joint>>,
+  changed: Query<(Entity, &Joint), Changed<Joint>>,
+  joints: Query<&Joint>,
 ) {
-  for (entity, joint) in &joints {
+  for (entity, joint) in &changed {
     physics.sync_joint(entity, joint);
   }
+  // Re-enabled ones: `Changed` misses edits made while they were disabled
+  let mut resync = std::mem::take(&mut physics.resync_joints);
+  for entity in resync.drain() {
+    if let Ok(joint) = joints.get(entity) {
+      physics.sync_joint(entity, joint);
+    }
+  }
+  physics.resync_joints = resync;
   physics.retry_inert_joints();
 }
 

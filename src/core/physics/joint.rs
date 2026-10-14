@@ -51,7 +51,8 @@ pub enum JointAnchor {
 pub enum JointMotor {
   /// Reach `target` speed (rad/s or px/s) with at most `max_force`.
   Velocity { target: f32, max_force: f32 },
-  /// Spring toward `target` (radians or px).
+  /// Spring toward `target`: a hinge's angle (radians) or a slider's
+  /// position (px), measured as for limits (see `Joint`).
   Position {
     target: f32,
     stiffness: f32,
@@ -60,11 +61,23 @@ pub enum JointMotor {
 }
 
 /// A constraint between bodies `a` and `b`. Edits apply in place on the next
-/// step (an unchanged joint never wakes its bodies). A joint whose bodies are
-/// not both simulated waits (logged once); despawning a body leaves the joint
-/// inert; disabling the joint's entity turns it off until it is re-enabled.
-/// Builders that do not apply to a kind are ignored: limits and motors only
-/// drive revolute and prismatic joints, `at` only places their pivot.
+/// step (an unchanged joint never wakes its bodies); new bodies, a new kind or
+/// new anchors remake it. A joint whose bodies are not both simulated waits
+/// (logged once); despawning a body leaves the joint inert; disabling the
+/// joint's entity turns it off until it is re-enabled.
+///
+/// A hinge's angle (for limits and a position motor) counts from the bodies'
+/// relative angle when the joint was made, so a hinge made at any relative
+/// angle starts at 0, inside its limits. A slider's position is the distance
+/// between its anchors along the axis: 0 as made, unless `with_anchors` set
+/// them apart. Builders that do not apply to a kind are ignored: limits and
+/// motors only drive revolute and prismatic joints, `at` only places their
+/// pivot, and a fixed joint keeps the bodies' relative pose whatever its
+/// anchors. Non-finite limits or motor values are ignored (logged once).
+///
+/// `break_force` measures a sustained pull, a load held through a step: a
+/// sudden jerk may break the joint early or not at all, depending on when in
+/// the step it lands and on the solver iterations.
 #[derive(Component, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Joint {
@@ -72,13 +85,16 @@ pub struct Joint {
   pub b: Entity,
   pub kind: JointKind,
   pub anchor: JointAnchor,
-  /// Revolute: the angle range in radians; prismatic: the distance range in px.
+  /// Revolute: the angle range in radians, from the angle it was made at;
+  /// prismatic: the position range in px (see `Joint`).
   pub limits: Option<(f32, f32)>,
   pub motor: Option<JointMotor>,
   /// Whether the two bodies collide with each other (Box2D's collideConnected).
   pub collisions: bool,
-  /// Remove the joint (sending `JointBroken`) when it pulls harder than this
-  /// force (mass·px/s²).
+  /// Remove the joint (sending `JointBroken`) when, at the end of a step, it
+  /// pulls harder than this force (mass·px/s²). A sustained pull: a sudden
+  /// jerk may break it early or not at all, depending on timing and solver
+  /// iterations.
   pub break_force: Option<f32>,
 }
 
@@ -135,13 +151,14 @@ impl Joint {
     self
   }
 
-  /// Anchors in each body's own space.
+  /// Anchors in each body's own space (a fixed joint ignores them).
   pub fn with_anchors(mut self, a: Vec2, b: Vec2) -> Self {
     self.anchor = JointAnchor::Local { a, b };
     self
   }
 
-  /// The angle range (revolute, radians) or distance range (prismatic, px).
+  /// The angle range (revolute, radians, from the angle it was made at) or
+  /// position range (prismatic, px).
   pub fn with_limits(mut self, min: f32, max: f32) -> Self {
     self.limits = Some((min, max));
     self
@@ -153,7 +170,8 @@ impl Joint {
     self
   }
 
-  /// A motor springing toward the `target` angle or position.
+  /// A motor springing toward the `target` angle (from the angle it was made
+  /// at) or position.
   pub fn with_motor_position(mut self, target: f32, stiffness: f32, damping: f32) -> Self {
     self.motor = Some(JointMotor::Position {
       target,
@@ -169,7 +187,8 @@ impl Joint {
     self
   }
 
-  /// Break (sending `JointBroken`) when pulled harder than `force`.
+  /// Break (sending `JointBroken`) when a sustained pull exceeds `force`; a
+  /// sudden jerk may break it early or not at all (see `Joint`).
   pub fn with_break_force(mut self, force: f32) -> Self {
     self.break_force = Some(force);
     self
@@ -178,6 +197,21 @@ impl Joint {
 
 fn finite(values: &[f32]) -> bool {
   values.iter().all(|v| v.is_finite())
+}
+
+/// Whether `joint` has non-finite limits or motor values, which are ignored.
+pub(crate) fn has_invalid_drive(joint: &Joint) -> bool {
+  let limits = joint.limits.is_some_and(|(min, max)| !finite(&[min, max]));
+  let motor = match joint.motor {
+    Some(JointMotor::Velocity { target, max_force }) => !finite(&[target, max_force]),
+    Some(JointMotor::Position {
+      target,
+      stiffness,
+      damping,
+    }) => !finite(&[target, stiffness, damping]),
+    None => false,
+  };
+  limits || motor
 }
 
 /// Rapier's joint for `joint` between bodies at world poses `pose_a` and
@@ -210,10 +244,16 @@ pub(crate) fn generic_joint(
   }
   let (la, lb) = (to_rapier(la), to_rapier(lb));
   let mut generic: GenericJoint = match joint.kind {
-    JointKind::Revolute => RevoluteJointBuilder::new()
-      .local_anchor1(la)
-      .local_anchor2(lb)
-      .into(),
+    JointKind::Revolute => {
+      let mut generic: GenericJoint = RevoluteJointBuilder::new()
+        .local_anchor1(la)
+        .local_anchor2(lb)
+        .into();
+      // b's frame turned so the angle reads 0 as made (Box2D's
+      // referenceAngle): limits and the motor target count from there
+      generic.set_local_frame2(Pose::new(lb, pose_a.1 - pose_b.1));
+      generic
+    }
     JointKind::Prismatic { axis } => {
       let axis = axis.normalize_or_zero();
       if axis == Vec2::ZERO {
@@ -559,15 +599,205 @@ mod tests {
   }
 
   #[test]
-  fn a_break_force_is_the_force_the_joint_holds() {
+  fn a_break_force_measures_a_sustained_pull() {
     let rope = |a, b| Joint::rope(a, b, 50.0);
     let hinge = |a, b| Joint::revolute(a, b).at(Vec2::ZERO);
     for make in [rope as fn(Entity, Entity) -> Joint, hinge] {
       for iterations in [1, 4, 8] {
-        assert!(!breaks(make, 12_000.0, iterations), "{iterations}");
-        assert!(breaks(make, 8_000.0, iterations), "{iterations}");
+        // A 9,800 load: 5% under breaks, 5% over holds
+        assert!(!breaks(make, 10_300.0, iterations), "{iterations}");
+        assert!(breaks(make, 9_300.0, iterations), "{iterations}");
       }
     }
+  }
+
+  #[test]
+  fn editing_only_the_break_force_leaves_a_sleeping_joint_asleep() {
+    let (mut world, mut s) = world(60);
+    let pivot = anchor(&mut world, Vec2::ZERO);
+    let weight = bob(&mut world, Vec2::new(0.0, 50.0));
+    let joint = world
+      .spawn(Joint::revolute(pivot, weight).at(Vec2::ZERO))
+      .id();
+    run(&mut world, &mut s, 600);
+    assert!(world.resource::<Physics>().is_sleeping(weight), "at rest");
+    world.get_mut::<Joint>(joint).unwrap().break_force = Some(1e6);
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    assert!(physics.is_sleeping(weight), "still asleep");
+    assert_eq!(physics.joint_entries[&joint].joint.break_force, Some(1e6));
+  }
+
+  #[test]
+  fn editing_an_inert_joint_does_not_warn_again() {
+    let (mut world, mut s) = world(60);
+    let pivot = anchor(&mut world, Vec2::ZERO);
+    let weight = bob(&mut world, Vec2::new(0.0, 50.0));
+    let joint = world
+      .spawn(Joint::revolute(pivot, weight).at(Vec2::ZERO))
+      .id();
+    run(&mut world, &mut s, 2);
+    world.despawn(weight);
+    run(&mut world, &mut s, 1);
+    let before = world.resource::<Physics>().warnings;
+    for i in 0..10 {
+      world.get_mut::<Joint>(joint).unwrap().motor = Some(JointMotor::Velocity {
+        target: i as f32,
+        max_force: 10.0,
+      });
+      run(&mut world, &mut s, 1);
+    }
+    let physics = world.resource::<Physics>();
+    assert_eq!(physics.joint_count(), 0, "still inert");
+    assert!(
+      physics.warnings - before <= 1,
+      "{}",
+      physics.warnings - before
+    );
+  }
+
+  #[test]
+  fn a_joint_enabled_as_its_body_moves_keeps_the_moved_pose() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let left = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Collider::rect(20.0, 20.0),
+      ))
+      .id();
+    let right = world
+      .spawn((
+        Transform::from_xy(100.0, 0.0),
+        RigidBody::dynamic(),
+        Collider::rect(20.0, 20.0),
+      ))
+      .id();
+    let joint = world.spawn((Joint::fixed(left, right), Disabled)).id();
+    run(&mut world, &mut s, 1);
+    world.get_mut::<Transform>(right).unwrap().translation = Vec2::new(30.0, 0.0);
+    world.entity_mut(joint).remove::<Disabled>();
+    run(&mut world, &mut s, 30);
+    let offset = at(&world, right).translation - at(&world, left).translation;
+    assert!((offset - Vec2::new(30.0, 0.0)).length() < 0.5, "{offset}");
+  }
+
+  #[test]
+  fn enabling_a_prefab_makes_its_joint_without_a_warning() {
+    let (mut world, mut s) = world(60);
+    let pivot = world
+      .spawn((Transform::IDENTITY, RigidBody::fixed(), Disabled))
+      .id();
+    let weight = world
+      .spawn((
+        Transform::from_xy(0.0, 50.0),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+        Disabled,
+      ))
+      .id();
+    let joint = world
+      .spawn((Joint::rope(pivot, weight, 50.0), Disabled))
+      .id();
+    run(&mut world, &mut s, 1);
+    // The joint comes back before its bodies
+    for e in [joint, pivot, weight] {
+      world.entity_mut(e).remove::<Disabled>();
+    }
+    run(&mut world, &mut s, 30);
+    let physics = world.resource::<Physics>();
+    assert_eq!(physics.joint_count(), 1);
+    assert_eq!(physics.warnings, 0);
+    let d = distance(&world, pivot, weight);
+    assert!(d < 51.0, "{d}");
+  }
+
+  /// An arm on a hinge at the origin, made `start` radians round from its
+  /// pivot body.
+  fn arm_at(world: &mut World, start: f32, joint: fn(Entity, Entity) -> Joint) -> Entity {
+    let pivot = anchor(world, Vec2::ZERO);
+    let arm = world
+      .spawn((
+        Transform::from_translation(Vec2::from_angle(start) * 50.0).with_rotation(start),
+        RigidBody::dynamic(),
+        Collider::rect(100.0, 10.0),
+      ))
+      .id();
+    world.spawn(joint(pivot, arm));
+    arm
+  }
+
+  #[test]
+  fn hinge_limits_count_from_the_angle_it_was_made_at() {
+    let (mut world, mut s) = world(60);
+    let arm = arm_at(&mut world, 1.0, |a, b| {
+      Joint::revolute(a, b).at(Vec2::ZERO).with_limits(-0.2, 0.2)
+    });
+    run(&mut world, &mut s, 120);
+    let r = at(&world, arm).rotation;
+    assert!((r - 1.0).abs() < 0.25, "{r}");
+  }
+
+  #[test]
+  fn a_position_motor_targets_from_the_angle_it_was_made_at() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let arm = arm_at(&mut world, 1.0, |a, b| {
+      Joint::revolute(a, b)
+        .at(Vec2::ZERO)
+        .with_motor_position(0.5, 100.0, 20.0)
+    });
+    run(&mut world, &mut s, 180);
+    let r = at(&world, arm).rotation;
+    assert!((r - 1.5).abs() < 0.05, "{r}");
+  }
+
+  #[test]
+  fn non_finite_limits_and_motors_are_ignored_with_one_warning() {
+    let (mut world, mut s) = world(60);
+    let pivot = anchor(&mut world, Vec2::ZERO);
+    let weight = bob(&mut world, Vec2::new(100.0, 0.0));
+    let joint = world
+      .spawn(
+        Joint::revolute(pivot, weight)
+          .at(Vec2::ZERO)
+          .with_limits(f32::NAN, 0.1)
+          .with_motor_velocity(f32::INFINITY, 10.0),
+      )
+      .id();
+    run(&mut world, &mut s, 30);
+    world.get_mut::<Joint>(joint).unwrap().motor = Some(JointMotor::Position {
+      target: f32::NAN,
+      stiffness: 1.0,
+      damping: 1.0,
+    });
+    run(&mut world, &mut s, 1);
+    assert!((distance(&world, pivot, weight) - 100.0).abs() < 1.0);
+    let p = at(&world, weight).translation;
+    assert!(p.y > 50.0, "it swings freely: {p}");
+    assert_eq!(world.resource::<Physics>().warnings, 1);
+  }
+
+  #[test]
+  fn a_winch_changes_a_rope_s_length_in_place() {
+    let (mut world, mut s) = world(60);
+    let pivot = anchor(&mut world, Vec2::ZERO);
+    let weight = bob(&mut world, Vec2::new(0.0, 50.0));
+    let joint = world.spawn(Joint::rope(pivot, weight, 50.0)).id();
+    run(&mut world, &mut s, 2);
+    let handle = world.resource::<Physics>().joint_entries[&joint].handle;
+    for i in 1..=20 {
+      world.get_mut::<Joint>(joint).unwrap().kind = JointKind::Rope {
+        max_length: 50.0 - i as f32,
+      };
+      run(&mut world, &mut s, 1);
+      let physics = world.resource::<Physics>();
+      assert_eq!(physics.joint_entries[&joint].handle, handle, "step {i}");
+    }
+    run(&mut world, &mut s, 10);
+    let d = distance(&world, pivot, weight);
+    assert!((d - 30.0).abs() < 1.0, "{d}");
   }
 
   #[test]

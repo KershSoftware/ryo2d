@@ -6,6 +6,7 @@
 //! simulated bodies back.
 
 use std::collections::{HashMap, HashSet};
+use std::mem::discriminant;
 use std::sync::{Mutex, PoisonError};
 
 use glam::Mat2;
@@ -22,7 +23,7 @@ use super::body::{BodyKind, RigidBody};
 use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::{from_rapier, pose, poses_differ, to_rapier};
-use super::joint::{Joint, generic_joint};
+use super::joint::{Joint, generic_joint, has_invalid_drive};
 use super::shape;
 use crate::core::ecs::{Entity, Resource, Vec2};
 
@@ -243,6 +244,9 @@ pub struct Physics {
   pub(crate) owners: HashMap<ColliderHandle, Owner>,
   pub(crate) joint_entries: HashMap<Entity, JointEntry>,
   joint_of: HashMap<ImpulseJointHandle, Entity>,
+  /// Joint entities re-enabled since the last step: `sync_joints` brings
+  /// them up to date (or makes them) once bodies are registered and moved
+  pub(crate) resync_joints: HashSet<Entity>,
   /// Colliders whose body is not simulated yet; retried every step
   pub(crate) waiting: HashSet<Entity>,
   /// Entities that lost their `RigidBody` or their parent since the last
@@ -260,6 +264,9 @@ pub struct Physics {
   /// Kinematic bodies the engine moves by velocity this step
   driven: Vec<Entity>,
   warned: HashSet<Entity>,
+  /// Warnings logged, for tests
+  #[cfg(test)]
+  pub(crate) warnings: usize,
   /// Forces and impulses waiting for the next step
   queued: Vec<(Entity, Push)>,
   /// Bodies holding one-step forces, cleared after the step
@@ -376,6 +383,7 @@ impl Physics {
       owners: HashMap::new(),
       joint_entries: HashMap::new(),
       joint_of: HashMap::new(),
+      resync_joints: HashSet::new(),
       waiting: HashSet::new(),
       relink: HashSet::new(),
       sync_queue: Vec::new(),
@@ -384,6 +392,8 @@ impl Physics {
       teleported: HashSet::new(),
       driven: Vec::new(),
       warned: HashSet::new(),
+      #[cfg(test)]
+      warnings: 0,
       queued: Vec::new(),
       forced: Vec::new(),
       collisions: Vec::new(),
@@ -411,6 +421,10 @@ impl Physics {
 
   pub(crate) fn warn_once(&mut self, entity: Entity, what: &str) {
     if self.warned.insert(entity) {
+      #[cfg(test)]
+      {
+        self.warnings += 1;
+      }
       crate::engine_warn!(module: "Physics", "{entity}: {what}");
     }
   }
@@ -814,34 +828,49 @@ impl Physics {
     }
   }
 
-  /// Register a new or edited joint. Motors, limits, collisions and the break
-  /// force change in place; new bodies, kind or anchors remake it.
+  /// Register a new or edited joint. A new break force is only recorded
+  /// (Rapier's joint and its bodies' sleep are untouched); motors, limits,
+  /// collisions and the kind's own values (a winch's rope length) change in
+  /// place, keeping the anchors where they were put; new bodies, a new kind
+  /// or new anchors remake it. An inert joint just records the edit:
+  /// `retry_inert_joints` makes it once its bodies are simulated.
   pub(crate) fn sync_joint(&mut self, entity: Entity, joint: &Joint) {
-    let mut enabled = true;
-    if let Some(entry) = self.joint_entries.get(&entity) {
-      if entry.joint == *joint {
-        return;
-      }
-      enabled = entry.enabled;
-      let same_frame = entry.joint.a == joint.a
-        && entry.joint.b == joint.b
-        && entry.joint.kind == joint.kind
-        && entry.joint.anchor == joint.anchor;
-      if same_frame && let Some(handle) = entry.handle {
-        let (pose_a, pose_b) = entry.poses;
-        if let Some(mut data) = generic_joint(joint, pose_a, pose_b)
-          && let Some(rapier) = self.joints.get_mut(handle, true)
-        {
-          data.set_enabled(enabled);
-          rapier.data = data;
-        }
-        if let Some(entry) = self.joint_entries.get_mut(&entity) {
-          entry.joint = joint.clone();
-        }
-        return;
-      }
-      self.remove_joint(entity);
+    if has_invalid_drive(joint) {
+      self.warn_once(entity, "a joint's non-finite limits or motor are ignored");
     }
+    let Some(entry) = self.joint_entries.get_mut(&entity) else {
+      self.insert_joint(entity, joint, true);
+      return;
+    };
+    if entry.joint == *joint {
+      return;
+    }
+    let Some(handle) = entry.handle else {
+      entry.joint = joint.clone();
+      return;
+    };
+    let mut kept = entry.joint.clone();
+    kept.break_force = joint.break_force;
+    if kept == *joint {
+      entry.joint = joint.clone();
+      return;
+    }
+    let same_frame = entry.joint.a == joint.a
+      && entry.joint.b == joint.b
+      && entry.joint.anchor == joint.anchor
+      && discriminant(&entry.joint.kind) == discriminant(&joint.kind);
+    let enabled = entry.enabled;
+    if same_frame
+      && let Some(mut data) = generic_joint(joint, entry.poses.0, entry.poses.1)
+      && let Some(rapier) = self.joints.get_mut(handle, true)
+    {
+      data.set_enabled(enabled);
+      rapier.data = data;
+      entry.joint = joint.clone();
+      return;
+    }
+    // Remade: a warning already logged for it stays logged
+    self.unlink_joint(entity);
     self.insert_joint(entity, joint, enabled);
   }
 
@@ -904,13 +933,18 @@ impl Physics {
   }
 
   pub(crate) fn remove_joint(&mut self, entity: Entity) {
+    self.unlink_joint(entity);
+    self.warned.remove(&entity);
+  }
+
+  /// Take a joint out of Rapier and forget it.
+  fn unlink_joint(&mut self, entity: Entity) {
     if let Some(entry) = self.joint_entries.remove(&entity)
       && let Some(handle) = entry.handle
     {
       self.joint_of.remove(&handle);
       self.joints.remove(handle, true);
     }
-    self.warned.remove(&entity);
   }
 
   /// Joints simulated now (inert ones left out), for tests.
