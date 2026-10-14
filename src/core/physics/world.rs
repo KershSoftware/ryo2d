@@ -101,6 +101,27 @@ pub(crate) struct RawCollision {
   pub(crate) sensor: bool,
 }
 
+/// A push queued for the next step.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Push {
+  Impulse(Vec2),
+  ImpulseAt(Vec2, Vec2),
+  AngularImpulse(f32),
+  Force(Vec2),
+  ForceAt(Vec2, Vec2),
+  Torque(f32),
+}
+
+impl Push {
+  fn is_finite(self) -> bool {
+    match self {
+      Push::Impulse(v) | Push::Force(v) => v.is_finite(),
+      Push::ImpulseAt(v, p) | Push::ForceAt(v, p) => v.is_finite() && p.is_finite(),
+      Push::AngularImpulse(t) | Push::Torque(t) => t.is_finite(),
+    }
+  }
+}
+
 /// The simulation. Read and steer it with `ctx.physics()` and
 /// `ctx.physics_mut()` (`Res<Physics>`/`ResMut<Physics>` in systems).
 #[derive(Resource)]
@@ -129,6 +150,10 @@ pub struct Physics {
   /// Kinematic bodies the engine moves by velocity this step
   driven: Vec<Entity>,
   warned: HashSet<Entity>,
+  /// Forces and impulses waiting for the next step
+  queued: Vec<(Entity, Push)>,
+  /// Bodies holding one-step forces, cleared after the step
+  forced: Vec<RigidBodyHandle>,
   /// The last step's started and stopped contacts
   pub(crate) collisions: Vec<RawCollision>,
 }
@@ -200,6 +225,8 @@ impl Physics {
       teleported: HashSet::new(),
       driven: Vec::new(),
       warned: HashSet::new(),
+      queued: Vec::new(),
+      forced: Vec::new(),
       collisions: Vec::new(),
     }
   }
@@ -585,6 +612,49 @@ impl Physics {
     self.driven.push(entity);
   }
 
+  pub(crate) fn queue(&mut self, body: Entity, push: Push) {
+    if push.is_finite() {
+      self.queued.push((body, push));
+    }
+  }
+
+  /// Apply the queued pushes to dynamic bodies; one-step forces are
+  /// remembered so `step` can clear them.
+  pub(crate) fn apply_queued(&mut self) {
+    let mut queued = std::mem::take(&mut self.queued);
+    for (entity, push) in queued.drain(..) {
+      let Some(entry) = self.body_entries.get(&entity) else {
+        continue;
+      };
+      let Some(body) = self.bodies.get_mut(entry.handle) else {
+        continue;
+      };
+      if !body.is_dynamic() {
+        continue;
+      }
+      match push {
+        Push::Impulse(impulse) => body.apply_impulse(to_rapier(impulse), true),
+        Push::ImpulseAt(impulse, point) => {
+          body.apply_impulse_at_point(to_rapier(impulse), to_rapier(point), true)
+        }
+        Push::AngularImpulse(impulse) => body.apply_torque_impulse(impulse, true),
+        Push::Force(force) => {
+          body.add_force(to_rapier(force), true);
+          self.forced.push(entry.handle);
+        }
+        Push::ForceAt(force, point) => {
+          body.add_force_at_point(to_rapier(force), to_rapier(point), true);
+          self.forced.push(entry.handle);
+        }
+        Push::Torque(torque) => {
+          body.add_torque(torque, true);
+          self.forced.push(entry.handle);
+        }
+      }
+    }
+    self.queued = queued;
+  }
+
   /// Advance by `dt` seconds, then resolve the step's contacts to entities.
   pub(crate) fn step(&mut self, dt: f32) {
     self.params.dt = dt;
@@ -603,6 +673,12 @@ impl Physics {
       &(),
       &self.collector,
     );
+    for handle in self.forced.drain(..) {
+      if let Some(body) = self.bodies.get_mut(handle) {
+        body.reset_forces(false);
+        body.reset_torques(false);
+      }
+    }
     self.collisions.clear();
     let events = self
       .collector

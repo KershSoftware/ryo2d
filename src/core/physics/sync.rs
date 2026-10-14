@@ -266,6 +266,7 @@ pub(crate) fn push_changes(
       physics.drive_kinematic(entity, velocity.as_vec2(), angular.0, dt);
     }
   }
+  physics.apply_queued();
 }
 
 /// Step the simulation by the fixed timestep.
@@ -340,55 +341,9 @@ mod tests {
   use super::*;
   use crate::core::ecs::{Messages, World};
   use crate::core::messages::CollisionStarted;
+  use crate::core::physics::test_util::*;
   use crate::core::scene::PhysicsPaused;
   use crate::core::schedule::{EngineSchedules, Phase};
-  use crate::core::time::Time;
-
-  fn world(hz: u32) -> (World, EngineSchedules) {
-    let mut world = World::new();
-    world.insert_resource(Time::new(hz));
-    world.insert_resource(Physics::new());
-    world.insert_resource(PhysicsConfig::default());
-    world.insert_resource(PhysicsPaused(false));
-    crate::core::messages::register_engine_messages(&mut world);
-    let mut schedules = EngineSchedules::new();
-    register_physics_systems(&mut schedules);
-    (world, schedules)
-  }
-
-  fn run(world: &mut World, s: &mut EngineSchedules, steps: usize) {
-    for _ in 0..steps {
-      s.run(Phase::FixedUpdate, world);
-    }
-  }
-
-  fn no_gravity(world: &mut World) {
-    *world.resource_mut::<PhysicsConfig>() = PhysicsConfig::default().zero_gravity();
-  }
-
-  fn at(world: &World, e: Entity) -> Transform {
-    *world.get::<Transform>(e).unwrap()
-  }
-
-  /// A static floor: a bare collider 400 wide whose top is at `top`.
-  fn floor(world: &mut World, top: f32) -> Entity {
-    world
-      .spawn((
-        Transform::from_xy(0.0, top + 10.0),
-        Collider::box_collider(400.0, 20.0),
-      ))
-      .id()
-  }
-
-  fn ball(world: &mut World, x: f32, y: f32) -> Entity {
-    world
-      .spawn((
-        Transform::from_xy(x, y),
-        RigidBody::dynamic(),
-        Collider::circle_collider(10.0),
-      ))
-      .id()
-  }
 
   fn drop_for_one_second(hz: u32) -> f32 {
     let (mut world, mut s) = world(hz);

@@ -4,7 +4,10 @@ mod body;
 pub mod collision;
 mod config;
 pub(crate) mod convert;
+mod query;
 pub(crate) mod sync;
+#[cfg(test)]
+pub(crate) mod test_util;
 mod world;
 
 pub use body::{AngularVelocity, BodyKind, RigidBody};
