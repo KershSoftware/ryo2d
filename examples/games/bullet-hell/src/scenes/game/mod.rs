@@ -220,7 +220,10 @@ impl Scene for GameScene {
           Renderable::sprite(bullet_sprite.clone()).with_z_order(Z_BULLET),
           Interpolated,
           // CCD for fast-moving bullets, no gravity
-          RigidBody::new().with_ccd().with_gravity_scale(0.0),
+          RigidBody::dynamic()
+            .with_ccd()
+            .with_gravity_scale(0.0)
+            .lock_rotation(),
           Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
           Velocity::zero(),
           Bullet::new(0.0, 0.0),

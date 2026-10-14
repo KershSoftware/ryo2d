@@ -49,7 +49,11 @@ impl DebugScene {
       .spawn((
         Transform::from_xy(BIRD_START_X, BIRD_START_Y),
         Velocity::new(0.0, 0.0),
-        RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling
+        // CCD prevents tunneling
+        RigidBody::dynamic()
+          .with_ccd()
+          .with_gravity_scale(0.0)
+          .lock_rotation(),
         Collider::circle_collider(BIRD_SIZE / 2.0),
         Renderable::sprite(bird_handle).with_z_order(10),
       ))
@@ -96,7 +100,7 @@ impl DebugScene {
         .spawn((
           Transform::from_xy(x, 0.0),
           Velocity::zero(),
-          RigidBody::kinematic(),
+          RigidBody::fixed(),
           top_collider,
           top_composite,
         ))
@@ -126,7 +130,7 @@ impl DebugScene {
           .spawn((
             Transform::from_xy(x, bottom_y),
             Velocity::zero(),
-            RigidBody::kinematic(),
+            RigidBody::fixed(),
             bottom_collider,
             bottom_composite,
           ))
@@ -144,7 +148,7 @@ impl DebugScene {
       .spawn((
         Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, GROUND_Y + GROUND_HEIGHT / 2.0),
         Velocity::new(0.0, 0.0),
-        RigidBody::kinematic(),
+        RigidBody::fixed(),
         Collider::box_collider(SCREEN_WIDTH as f32, GROUND_HEIGHT),
         Renderable::sprite(ground_handle).with_z_order(15),
       ))

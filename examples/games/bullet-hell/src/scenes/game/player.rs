@@ -55,7 +55,7 @@ impl GameScene {
       }
     }
 
-    let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) else {
+    let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) else {
       return;
     };
 
@@ -134,7 +134,9 @@ impl GameScene {
     let riding_barrier = self.apply_barrier_riding(ctx, player_entity);
 
     // Apply gravity (skip if riding a barrier - they're supported)
-    if !riding_barrier && let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+    if !riding_barrier
+      && let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity)
+    {
       // Apply gravity - reduced when wall sliding for smoother slide
       if was_wall_sliding.is_some() && velocity.dy > 0.0 {
         // Wall sliding: reduced gravity and capped max speed
@@ -147,7 +149,7 @@ impl GameScene {
     }
 
     // Apply velocity to transform (player is kinematic, so we handle movement manually)
-    let Some(velocity) = ctx.world.get::<Velocity>(player_entity).copied() else {
+    let Some(velocity) = ctx.world.get::<PlayerVelocity>(player_entity).copied() else {
       return;
     };
     let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) else {
@@ -227,7 +229,7 @@ impl GameScene {
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
         transform.translation.y = self.screen_height - half_size - 30.0;
       }
-      if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+      if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
         velocity.dy = 0.0;
       }
       if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
@@ -251,7 +253,7 @@ impl GameScene {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
-    let Some(player_velocity) = ctx.world.get::<Velocity>(player_entity) else {
+    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
       return;
     };
 
@@ -300,7 +302,7 @@ impl GameScene {
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
           transform.translation.y = platform_top - half_size;
         }
-        if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+        if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
           velocity.dy = 0.0;
         }
         if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
@@ -319,7 +321,7 @@ impl GameScene {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
-    let Some(player_velocity) = ctx.world.get::<Velocity>(player_entity) else {
+    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
       return;
     };
 
@@ -375,7 +377,7 @@ impl GameScene {
           } else if min_overlap == overlap_top && vel_y > 0.0 {
             // Push up (landing on top, center pivot)
             transform.translation.y = barrier_top - half_size;
-            if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+            if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
               // Inherit the barrier's vertical velocity so player moves with it
               velocity.dy = barrier_vel_y;
             }
@@ -385,7 +387,7 @@ impl GameScene {
           } else if min_overlap == overlap_bottom && vel_y < 0.0 {
             // Push down (hitting from below, center pivot)
             transform.translation.y = barrier_bottom + half_size;
-            if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+            if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
               velocity.dy = 0.0;
             }
           }
@@ -447,7 +449,7 @@ impl GameScene {
         // This distinguishes a real jump from just riding an ascending barrier
         let player_vel_y = ctx
           .world
-          .get::<Velocity>(player_entity)
+          .get::<PlayerVelocity>(player_entity)
           .map(|v| v.dy)
           .unwrap_or(0.0);
 
@@ -466,7 +468,7 @@ impl GameScene {
         }
 
         // Set player velocity to match barrier movement
-        if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+        if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
           velocity.dy = barrier_vel_y;
         }
         if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
@@ -549,7 +551,7 @@ impl GameScene {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
-    let Some(player_velocity) = ctx.world.get::<Velocity>(player_entity) else {
+    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
       return;
     };
 
@@ -583,7 +585,7 @@ impl GameScene {
           if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
             transform.translation.y = turret_top - half_size;
           }
-          if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+          if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
             velocity.dy = 0.0;
           }
           if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
@@ -606,7 +608,7 @@ impl GameScene {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
-    let Some(player_velocity) = ctx.world.get::<Velocity>(player_entity) else {
+    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
       return;
     };
 
@@ -640,7 +642,7 @@ impl GameScene {
           if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
             transform.translation.y = drone_top - half_size;
           }
-          if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+          if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
             velocity.dy = 0.0;
           }
           if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {

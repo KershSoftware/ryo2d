@@ -431,15 +431,15 @@ struct PauseOnHit {
 
 impl Scene for PauseOnHit {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // A falling body overlapping a kinematic floor
+    // A falling body overlapping a fixed floor
     ctx.world.spawn((
       Transform::from_xy(100.0, 100.0),
-      RigidBody::new(),
+      RigidBody::dynamic(),
       Collider::box_collider(20.0, 20.0),
     ));
     ctx.world.spawn((
       Transform::from_xy(100.0, 105.0),
-      RigidBody::kinematic(),
+      RigidBody::fixed(),
       Collider::box_collider(80.0, 20.0),
     ));
   }

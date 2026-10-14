@@ -20,7 +20,7 @@ impl Scene for Bouncing {
     ] {
       ctx.world.spawn((
         Transform::from_xy(x, y),
-        RigidBody::kinematic(),
+        RigidBody::fixed(),
         Collider::box_collider(w, h)
           .with_restitution(1.0)
           .with_friction(0.0),
@@ -40,7 +40,7 @@ impl Scene for Bouncing {
           dx: angle.cos() * 120.0,
           dy: angle.sin() * 120.0,
         },
-        RigidBody::new().with_gravity_scale(0.0),
+        RigidBody::dynamic().with_gravity_scale(0.0).lock_rotation(),
         collider.with_restitution(1.0).with_friction(0.0),
       ));
     }

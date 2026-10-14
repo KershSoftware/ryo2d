@@ -11,6 +11,15 @@ pub enum WallSide {
   Right,
 }
 
+/// The player's velocity in pixels per second. The game moves the player
+/// itself through `Transform`; on a kinematic body the engine's `Velocity`
+/// would move it too, so the player's own movement lives here.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct PlayerVelocity {
+  pub dx: f32,
+  pub dy: f32,
+}
+
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Player {
   pub lives: u32,

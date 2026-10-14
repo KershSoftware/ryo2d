@@ -82,7 +82,7 @@ impl TimeControlPage {
     for (x, y, width, height) in walls {
       ctx.world.spawn((
         Transform::from_xy(x, y),
-        RigidBody::kinematic(),
+        RigidBody::fixed(),
         Collider::box_collider(width, height)
           .with_restitution(1.0)
           .with_friction(0.0),
@@ -117,7 +117,7 @@ impl TimeControlPage {
         Transform::from_xy(x, y),
         Renderable::sprite(sprite).with_z_order(10),
         Velocity::new(angle.cos() * speed, angle.sin() * speed),
-        RigidBody::new().with_gravity_scale(0.5),
+        RigidBody::dynamic().with_gravity_scale(0.5).lock_rotation(),
         Collider::circle_collider(BALL_RADIUS as f32)
           .with_restitution(1.0)
           .with_friction(0.0),

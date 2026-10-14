@@ -1,9 +1,6 @@
 //! The engine's glam (0.31) and Rapier's glam (0.33) are different crates:
 //! every vector crossing into or out of Rapier goes through here.
 
-// Later physics tasks use the pose helpers; remove this allow when they land.
-#![allow(dead_code)]
-
 use std::f32::consts::{PI, TAU};
 
 use rapier2d::math::{Pose, Vector};

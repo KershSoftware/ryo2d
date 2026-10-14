@@ -47,9 +47,7 @@ use crate::core::input::Input;
 use crate::core::input_script::InputScript;
 use crate::core::lighting::{LightingRenderer, LightingSettings};
 use crate::core::messages::{register_engine_messages, register_message};
-use crate::core::physics::sync::{
-  register_physics_systems, register_restored_bodies, unregister_removed_bodies,
-};
+use crate::core::physics::sync::register_physics_systems;
 use crate::core::physics::{Physics, PhysicsConfig};
 use crate::core::render::batch::Batch2D;
 use crate::core::render::{
@@ -377,14 +375,14 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     ),
   );
   // Removal events last two tracker clears, and the fixed steps may not run
-  // that often: physics bookkeeping for despawned, disabled and re-enabled
-  // bodies runs every frame too, before the trackers are cleared. Added and
-  // edited bodies are tick-based and wait for the next fixed step.
+  // that often: physics tracks removals and re-enables every frame too,
+  // before the trackers are cleared. Additions and edits are tick-based and
+  // wait for the next fixed step.
   schedules.add_systems(
     Phase::Last,
     (
-      unregister_removed_bodies,
-      register_restored_bodies,
+      crate::core::physics::sync::forget_removed,
+      crate::core::physics::sync::track_disabled,
       crate::core::tilemap::manager::forget_despawned_tilemaps,
       clear_trackers_system,
     )

@@ -57,7 +57,11 @@ impl GameScene {
       .spawn((
         Transform::from_xy(BIRD_START_X, BIRD_START_Y),
         Velocity::zero(),
-        RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling through pipes
+        // CCD prevents tunneling through pipes
+        RigidBody::dynamic()
+          .with_ccd()
+          .with_gravity_scale(0.0)
+          .lock_rotation(),
         // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
         Collider::circle_collider(BIRD_SIZE * BIRD_COLLIDER_RATIO),
         Renderable::sprite(initial_sprite).with_z_order(10),
@@ -340,8 +344,12 @@ impl GameScene {
           bird.velocity_y = 0.0;
           bird.kill();
         }
-        // Take the bird out of the simulation so physics doesn't move it
-        ctx.world.entity_mut(bird_entity).remove::<RigidBody>();
+        // Take the bird out of the simulation so physics doesn't move it (a
+        // collider left without its body would stay in as a fixed collider)
+        ctx
+          .world
+          .entity_mut(bird_entity)
+          .remove::<(RigidBody, Collider)>();
       }
     }
 

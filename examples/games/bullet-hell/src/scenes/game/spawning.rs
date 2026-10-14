@@ -24,7 +24,7 @@ impl GameScene {
         // Rapier still provides collision detection for events
         RigidBody::kinematic(),
         Collider::box_collider(PLAYER_SIZE, PLAYER_SIZE),
-        Velocity::zero(),
+        PlayerVelocity::default(),
         Player::new(PLAYER_MAX_LIVES),
       ))
       .id();
@@ -46,7 +46,7 @@ impl GameScene {
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_PLATFORM)
           .with_shader(SpriteShader::platform_outline(2)),
-        RigidBody::kinematic(),
+        RigidBody::fixed(),
         // Colliders are not scaled with the sprite: give the final size
         Collider::box_collider(sw, PLATFORM_THICKNESS),
         Platform,
@@ -97,7 +97,7 @@ impl GameScene {
           Renderable::sprite(sprite.clone())
             .with_z_order(Z_PLATFORM)
             .with_shader(SpriteShader::platform_outline(2)),
-          RigidBody::kinematic(),
+          RigidBody::fixed(),
           // Colliders are not scaled with the sprite: give the final size
           Collider::box_collider(width, PLATFORM_THICKNESS),
           Platform,
@@ -297,7 +297,10 @@ impl GameScene {
         Renderable::sprite(sprite).with_z_order(Z_BULLET),
         Interpolated,
         // CCD for fast-moving bullets, no gravity
-        RigidBody::new().with_ccd().with_gravity_scale(0.0),
+        RigidBody::dynamic()
+          .with_ccd()
+          .with_gravity_scale(0.0)
+          .lock_rotation(),
         Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
         Velocity::new(velocity_x, velocity_y),
         Bullet::new(velocity_x, velocity_y),

@@ -3,7 +3,7 @@
 use crate::core::ecs::knockback::retarget;
 use crate::core::ecs::{Entity, Knockback, MessageWriter, Query, Res, Transform, Vec2, Velocity};
 use crate::core::messages::{KnockbackFinished, KnockbackStarted};
-use crate::core::physics::RigidBody;
+use crate::core::physics::{BodyKind, RigidBody};
 use crate::core::time::Time;
 
 type Pushed = (
@@ -45,7 +45,7 @@ pub fn update_knockback(
     if knockback.just_finished {
       finished.write(KnockbackFinished { entity });
     }
-    let dynamic = body.is_some_and(|body| !body.is_kinematic);
+    let dynamic = body.is_some_and(|body| body.kind == BodyKind::Dynamic);
     match velocity {
       Some(mut velocity) if dynamic => {
         let carried = retarget(&mut velocity, knockback.applied, Vec2::new(dx, dy));
@@ -115,7 +115,7 @@ mod tests {
     world
       .spawn((
         Transform::IDENTITY,
-        RigidBody::new(),
+        RigidBody::dynamic(),
         Velocity::new(0.0, 300.0),
         Knockback::new(Vec2::X, 100.0),
       ))
@@ -154,7 +154,7 @@ mod tests {
     world
       .spawn((
         Transform::IDENTITY,
-        RigidBody::new(),
+        RigidBody::dynamic(),
         Velocity::zero(),
         Knockback::new(Vec2::X, 400.0),
       ))

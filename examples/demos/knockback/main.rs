@@ -90,7 +90,7 @@ impl KnockbackDemoScene {
           Transform::from_xy(x, y_bottom),
           Renderable::sprite(physics_sprite).with_z_order(10),
           Velocity::new(0.0, 0.0),
-          RigidBody::new().with_gravity_scale(0.0),
+          RigidBody::dynamic().with_gravity_scale(0.0).lock_rotation(),
           Collider::box_collider(40.0, 40.0),
         ))
         .id();

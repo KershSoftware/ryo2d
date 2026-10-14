@@ -596,7 +596,7 @@ mod tests {
           ));
           ctx.world.spawn((
             Transform::from_xy(0.0, 86.0),
-            RigidBody::new(),
+            RigidBody::dynamic(),
             Collider::box_collider(10.0, 10.0),
           ));
         }
@@ -1103,12 +1103,12 @@ mod tests {
       .world_mut()
       .spawn((
         Transform::IDENTITY,
-        RigidBody::new(),
+        RigidBody::dynamic(),
         Collider::circle_collider(4.0),
       ))
       .id();
     e.frame(Some(Duration::from_millis(20))); // one step registers it
-    assert!(e.world().resource::<Physics>().is_registered(body));
+    assert!(e.world().resource::<Physics>().body_pose(body).is_some());
     e.world_mut().despawn(body);
     // A high frame rate: frames with no fixed step, while removal events
     // only last two of them
@@ -1116,7 +1116,8 @@ mod tests {
       e.frame(Some(Duration::from_millis(1)));
     }
     e.frame(Some(Duration::from_millis(20)));
-    assert!(!e.world().resource::<Physics>().is_registered(body));
+    let physics = e.world().resource::<Physics>();
+    assert_eq!((physics.body_count(), physics.collider_count()), (0, 0));
   }
 
   #[test]

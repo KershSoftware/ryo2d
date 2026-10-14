@@ -1,13 +1,13 @@
 //! Rapier physics: bodies, colliders and the simulation world.
 
+mod body;
 pub mod collision;
-pub mod components;
 mod config;
 pub(crate) mod convert;
 pub(crate) mod sync;
 mod world;
 
+pub use body::{AngularVelocity, BodyKind, RigidBody};
 pub use collision::{Collider, ColliderShape};
-pub use components::RigidBody;
 pub use config::PhysicsConfig;
-pub use world::{CollisionEventType, Physics, PhysicsCollisionEvent};
+pub use world::Physics;
