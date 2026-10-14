@@ -12,7 +12,7 @@ pub(crate) mod test_util;
 pub use events::{MovementEvent, MovementEventKind};
 pub use intent::{MoveBindings, MoveIntent, read_move_bindings};
 pub use knockback::update_knockback;
-pub use platformer::{PlatformerMovement, PlatformerState, platformer_movement};
+pub use platformer::{Dash, PlatformerMovement, PlatformerState, WallJump, platformer_movement};
 
 use crate::core::ecs::IntoScheduleConfigs;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};

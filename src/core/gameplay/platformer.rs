@@ -1,5 +1,6 @@
 //! The platformer preset: run, jump and fall from `MoveIntent`, with the
-//! forgiveness that makes jumps feel fair.
+//! forgiveness that makes jumps feel fair, and the optional extras: air
+//! jumps, wall slide and wall jump, and dash.
 
 use super::events::{MovementEvent, MovementEventKind};
 use super::intent::MoveIntent;
@@ -18,8 +19,12 @@ fn platformer_controller() -> CharacterController {
 /// acceleration, air control, a jump set by its height and the time to its
 /// top, a heavier fall, coyote time, jump buffering and a shorter jump when
 /// the button is released early. Down + jump on a one-way platform drops
-/// through it. It writes the character's `Velocity` every step, with its own
-/// gravity (characters are not dynamic bodies).
+/// through it. Off by default: jumps in the air (`with_air_jumps`), a capped
+/// fall while pressing into a wall (`with_wall_slide`), a jump off a wall
+/// that holds the run input off for a moment (`with_wall_jump`), and a dash
+/// (`with_dash`, one in the air until landing). It writes the character's
+/// `Velocity` every step, with its own gravity (characters are not dynamic
+/// bodies).
 #[derive(Component, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 #[require(MoveIntent, PlatformerState, CharacterController = platformer_controller())]
@@ -48,6 +53,37 @@ pub struct PlatformerMovement {
   pub jump_cut: f32,
   /// The share of steering kept while knockback is active (0: none)
   pub knockback_control: f32,
+  /// Jumps in the air before landing (refilled on landing and by a wall jump)
+  pub air_jumps: u32,
+  /// Fastest fall while pressing into a wall in the air, px/s
+  pub wall_slide: Option<f32>,
+  /// Jumping off a wall touched in the air
+  pub wall_jump: Option<WallJump>,
+  /// A burst of speed along the input, without gravity; one in the air
+  /// until landing
+  pub dash: Option<Dash>,
+}
+
+/// A jump off a wall: the launch away from the wall and up, and how long
+/// the run input is held off afterwards so the jump keeps its direction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WallJump {
+  /// Speed away from the wall (x) and up (y), px/s, both positive
+  pub launch: Vec2,
+  /// Seconds the run input is ignored after the jump
+  pub lock_time: f32,
+}
+
+/// A dash: a burst of speed along the input (or the facing when there is
+/// none), with no gravity while it lasts, leaving no faster than running.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Dash {
+  /// Speed while dashing, px/s
+  pub speed: f32,
+  /// Seconds the dash lasts
+  pub duration: f32,
+  /// Seconds from one dash's start to the next
+  pub cooldown: f32,
 }
 
 impl Default for PlatformerMovement {
@@ -65,6 +101,10 @@ impl Default for PlatformerMovement {
       jump_buffer: 0.1,
       jump_cut: 0.5,
       knockback_control: 0.0,
+      air_jumps: 0,
+      wall_slide: None,
+      wall_jump: None,
+      dash: None,
     }
   }
 }
@@ -109,6 +149,30 @@ impl PlatformerMovement {
     self.knockback_control = fraction;
     self
   }
+
+  pub fn with_air_jumps(mut self, count: u32) -> Self {
+    self.air_jumps = count;
+    self
+  }
+
+  pub fn with_wall_slide(mut self, max_speed: f32) -> Self {
+    self.wall_slide = Some(max_speed);
+    self
+  }
+
+  pub fn with_wall_jump(mut self, launch: Vec2, lock_time: f32) -> Self {
+    self.wall_jump = Some(WallJump { launch, lock_time });
+    self
+  }
+
+  pub fn with_dash(mut self, speed: f32, duration: f32, cooldown: f32) -> Self {
+    self.dash = Some(Dash {
+      speed,
+      duration,
+      cooldown,
+    });
+    self
+  }
 }
 
 /// A platformer character's movement state, written by the engine.
@@ -119,8 +183,25 @@ pub struct PlatformerState {
   pub facing: f32,
   /// Rising from a jump (releasing jump cuts it short)
   pub jumping: bool,
+  /// Air jumps left before landing
+  pub air_jumps_left: u32,
+  /// Pressing into a wall in the air, the fall capped by `wall_slide`
+  pub wall_sliding: bool,
+  /// In a dash
+  pub dashing: bool,
+  /// The air dash is unused (refilled on landing)
+  pub dash_ready: bool,
   pub(crate) coyote: f32,
   pub(crate) buffer: f32,
+  /// Seconds a wall jump still works after the wall was last touched
+  pub(crate) wall_coyote: f32,
+  /// -1 when that wall was on the right (a wall jump goes left), 1 on the left
+  pub(crate) wall_side: f32,
+  /// Seconds left of a wall jump's hold on the run input
+  pub(crate) lock: f32,
+  pub(crate) dash_left: f32,
+  pub(crate) dash_cooldown: f32,
+  pub(crate) dash_direction: Vec2,
 }
 
 impl Default for PlatformerState {
@@ -128,8 +209,18 @@ impl Default for PlatformerState {
     Self {
       facing: 1.0,
       jumping: false,
+      air_jumps_left: 0,
+      wall_sliding: false,
+      dashing: false,
+      dash_ready: true,
       coyote: 0.0,
       buffer: 0.0,
+      wall_coyote: 0.0,
+      wall_side: 0.0,
+      lock: 0.0,
+      dash_left: 0.0,
+      dash_cooldown: 0.0,
+      dash_direction: Vec2::ZERO,
     }
   }
 }
@@ -246,10 +337,16 @@ pub fn platformer_movement(
         entity,
         kind: MovementEventKind::Landed,
       });
+      // Landing refills the air jumps and the air dash, and ends a wall
+      // jump's hold on the run (which would otherwise keep the launch speed
+      // along the ground)
+      state.air_jumps_left = settings.air_jumps;
+      state.dash_ready = true;
+      state.lock = 0.0;
     }
 
     // At least a step each, so a zero coyote time or buffer still jumps
-    // from the floor at once
+    // from the floor (or a wall) at once
     state.coyote = if character.on_floor {
       settings.coyote_time.max(dt)
     } else {
@@ -260,30 +357,86 @@ pub fn platformer_movement(
     } else {
       (state.buffer - dt).max(0.0)
     };
-
-    // Running; knockback takes the steering away
-    let control = if knockback.is_some_and(|knockback| knockback.active) {
-      settings.knockback_control
+    state.lock = (state.lock - dt).max(0.0);
+    state.dash_cooldown = (state.dash_cooldown - dt).max(0.0);
+    if character.on_wall && !character.on_floor {
+      state.wall_coyote = settings.coyote_time.max(dt);
+      state.wall_side = character.wall_normal.x.signum();
     } else {
-      1.0
-    };
-    let target = direction.x * settings.run_speed * control;
-    let mut rate = run_rate(settings, v.x, target);
-    if !character.on_floor {
-      // No air control is no steering, even with an instant (infinite) rate
-      rate = if settings.air_control > 0.0 {
-        rate * settings.air_control
-      } else {
-        0.0
-      };
+      state.wall_coyote = (state.wall_coyote - dt).max(0.0);
     }
-    v.x = approach(v.x, target, rate * dt);
-    if direction.x.abs() > 0.01 {
-      state.facing = direction.x.signum();
+
+    // Dashing: straight along the input (or the facing), with no running,
+    // jumping or gravity while it lasts; one dash in the air until landing
+    if let Some(dash) = settings.dash
+      && intent.dash_pressed
+      && state.dash_ready
+      && state.dash_cooldown <= 0.0
+      && state.dash_left <= 0.0
+    {
+      state.dash_direction = direction
+        .try_normalize()
+        .unwrap_or(Vec2::new(state.facing, 0.0));
+      if state.dash_direction.x.abs() > 0.01 {
+        state.facing = state.dash_direction.x.signum();
+      }
+      state.dash_left = dash.duration;
+      state.dash_cooldown = dash.cooldown;
+      if !character.on_floor {
+        state.dash_ready = false;
+      }
+      state.jumping = false;
+      events.write(MovementEvent {
+        entity,
+        kind: MovementEventKind::Dashed,
+      });
+    }
+    if let Some(dash) = settings.dash
+      && state.dash_left > 0.0
+    {
+      v = state.dash_direction * dash.speed;
+      state.dash_left -= dt;
+      if state.dash_left <= 0.0 {
+        // Out of the dash no faster than running
+        v = state.dash_direction * dash.speed.min(settings.run_speed);
+      }
+      state.dashing = state.dash_left > 0.0;
+      state.wall_sliding = false;
+      intent.jump_pressed = false;
+      intent.dash_pressed = false;
+      velocity.set_if_neq(Velocity::from_vec2(v));
+      continue;
+    }
+    state.dashing = false;
+    // A dash whose settings went away mid-dash does not resume later
+    state.dash_left = 0.0;
+
+    // Running, unless a wall jump holds the input off; knockback takes the
+    // steering away
+    if state.lock <= 0.0 {
+      let control = if knockback.is_some_and(|knockback| knockback.active) {
+        settings.knockback_control
+      } else {
+        1.0
+      };
+      let target = direction.x * settings.run_speed * control;
+      let mut rate = run_rate(settings, v.x, target);
+      if !character.on_floor {
+        // No air control is no steering, even with an instant (infinite) rate
+        rate = if settings.air_control > 0.0 {
+          rate * settings.air_control
+        } else {
+          0.0
+        };
+      }
+      v.x = approach(v.x, target, rate * dt);
+      if direction.x.abs() > 0.01 {
+        state.facing = direction.x.signum();
+      }
     }
 
     // Dropping through (no coyote jump back up through the platform), or
-    // jumping
+    // jumping: from the floor, off a wall, then in the air
     if intent.jump_pressed && direction.y > 0.5 && character.on_floor && character.floor_one_way {
       controller.drop_through = true;
       state.buffer = 0.0;
@@ -296,6 +449,36 @@ pub fn platformer_movement(
       events.write(MovementEvent {
         entity,
         kind: MovementEventKind::Jumped,
+      });
+    } else if let Some(wall) = settings.wall_jump
+      && state.buffer > 0.0
+      && state.wall_coyote > 0.0
+      && !character.on_floor
+    {
+      v.x = state.wall_side * wall.launch.x;
+      v.y = -wall.launch.y;
+      state.lock = wall.lock_time;
+      state.air_jumps_left = settings.air_jumps;
+      state.facing = state.wall_side;
+      state.jumping = true;
+      state.buffer = 0.0;
+      state.wall_coyote = 0.0;
+      events.write(MovementEvent {
+        entity,
+        kind: MovementEventKind::WallJumped,
+      });
+    } else if intent.jump_pressed
+      && !character.on_floor
+      && state.coyote <= 0.0
+      && state.air_jumps_left > 0
+    {
+      v.y = -jump_speed;
+      state.air_jumps_left -= 1;
+      state.jumping = true;
+      state.buffer = 0.0;
+      events.write(MovementEvent {
+        entity,
+        kind: MovementEventKind::AirJumped,
       });
     }
 
@@ -316,6 +499,18 @@ pub fn platformer_movement(
       gravity
     };
     v.y = (v.y + pull * dt).min(settings.max_fall_speed);
+
+    // Sliding down a wall pressed into in the air
+    state.wall_sliding = false;
+    if let Some(max) = settings.wall_slide
+      && character.on_wall
+      && !character.on_floor
+      && v.y > 0.0
+      && direction.x * character.wall_normal.x < 0.0
+    {
+      v.y = v.y.min(max);
+      state.wall_sliding = true;
+    }
 
     intent.jump_pressed = false;
     intent.dash_pressed = false;
@@ -621,5 +816,223 @@ mod tests {
     run(&mut world, &mut s, 1);
     assert!(!events(&world).contains(&MovementEventKind::Jumped));
     assert!(at(&world, e).translation.y > y, "keeps falling");
+  }
+
+  /// A wall on the right (its face at x = 60) and a character in the air beside it.
+  fn beside_a_wall(settings: PlatformerMovement) -> (World, EngineSchedules, Entity) {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 400.0);
+    world.spawn((Transform::from_xy(70.0, 0.0), Collider::rect(20.0, 1000.0)));
+    let e = player(&mut world, 40.0, 0.0);
+    world.entity_mut(e).insert(settings);
+    for _ in 0..10 {
+      intent(&mut world, e).direction = Vec2::X;
+      run(&mut world, &mut s, 1);
+    }
+    (world, s, e)
+  }
+
+  #[test]
+  fn air_jumps_count_down_and_refill_on_landing() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(&mut world, PlatformerMovement::default().with_air_jumps(1));
+    settle(&mut world, &mut s);
+    for _ in 0..3 {
+      intent(&mut world, e).jump_pressed = true;
+      run(&mut world, &mut s, 10);
+    }
+    let kinds = events(&world);
+    assert_eq!(
+      kinds
+        .iter()
+        .filter(|k| **k == MovementEventKind::Jumped)
+        .count(),
+      1
+    );
+    assert_eq!(
+      kinds
+        .iter()
+        .filter(|k| **k == MovementEventKind::AirJumped)
+        .count(),
+      1
+    );
+    run(&mut world, &mut s, 90);
+    assert_eq!(world.get::<PlatformerState>(e).unwrap().air_jumps_left, 1);
+  }
+
+  #[test]
+  fn sliding_down_a_wall_caps_the_fall() {
+    let (mut world, mut s, e) = beside_a_wall(PlatformerMovement::default().with_wall_slide(80.0));
+    for _ in 0..30 {
+      intent(&mut world, e).direction = Vec2::X;
+      run(&mut world, &mut s, 1);
+    }
+    assert!(world.get::<PlatformerState>(e).unwrap().wall_sliding);
+    assert!(world.get::<Velocity>(e).unwrap().dy <= 80.0 + 1e-3);
+  }
+
+  #[test]
+  fn a_wall_jump_launches_away_and_holds_the_direction() {
+    let (mut world, mut s, e) = beside_a_wall(
+      PlatformerMovement::default()
+        .with_wall_slide(80.0)
+        .with_wall_jump(Vec2::new(300.0, 350.0), 0.2),
+    );
+    intent(&mut world, e).direction = Vec2::X;
+    intent(&mut world, e).jump_pressed = true;
+    run(&mut world, &mut s, 1);
+    assert!(events(&world).contains(&MovementEventKind::WallJumped));
+    for _ in 0..6 {
+      intent(&mut world, e).direction = Vec2::X;
+      run(&mut world, &mut s, 1);
+      assert!(
+        world.get::<Velocity>(e).unwrap().dx < 0.0,
+        "input held off during the lock"
+      );
+    }
+  }
+
+  #[test]
+  fn a_dash_is_fast_level_and_limited_in_the_air() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    // Cooldown shorter than the dash, so the second try is limited by the
+    // air dash alone, while the character is still in the air
+    let e = runner(
+      &mut world,
+      PlatformerMovement::default().with_dash(600.0, 0.15, 0.1),
+    );
+    settle(&mut world, &mut s);
+    intent(&mut world, e).jump_pressed = true;
+    intent(&mut world, e).jump_held = true;
+    run(&mut world, &mut s, 5);
+    let y = at(&world, e).translation.y;
+    intent(&mut world, e).direction = Vec2::X;
+    intent(&mut world, e).dash_pressed = true;
+    run(&mut world, &mut s, 1);
+    assert_eq!(
+      world.get::<Velocity>(e).unwrap().as_vec2(),
+      Vec2::new(600.0, 0.0)
+    );
+    run(&mut world, &mut s, 3);
+    assert!(
+      (at(&world, e).translation.y - y).abs() < 1.0,
+      "no gravity while dashing"
+    );
+    run(&mut world, &mut s, 7);
+    assert!(
+      !world.get::<CharacterState>(e).unwrap().on_floor,
+      "still in the air"
+    );
+    intent(&mut world, e).dash_pressed = true;
+    run(&mut world, &mut s, 1);
+    let dashes = events(&world)
+      .iter()
+      .filter(|k| **k == MovementEventKind::Dashed)
+      .count();
+    assert_eq!(dashes, 1, "one air dash until landing");
+  }
+
+  #[test]
+  fn knockback_takes_the_steering_away() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(&mut world, PlatformerMovement::default());
+    settle(&mut world, &mut s);
+    world
+      .entity_mut(e)
+      .insert(Knockback::new(Vec2::NEG_X, 200.0).with_decay_rate(1.0));
+    for _ in 0..10 {
+      intent(&mut world, e).direction = Vec2::X;
+      run(&mut world, &mut s, 1);
+    }
+    assert!(world.get::<Velocity>(e).unwrap().dx.abs() < 1e-3);
+  }
+
+  #[test]
+  fn no_coyote_time_still_jumps_off_a_wall() {
+    let (mut world, mut s, e) = beside_a_wall(
+      PlatformerMovement::default()
+        .with_coyote_time(0.0)
+        .with_wall_jump(Vec2::new(300.0, 350.0), 0.2),
+    );
+    intent(&mut world, e).jump_pressed = true;
+    run(&mut world, &mut s, 1);
+    assert!(events(&world).contains(&MovementEventKind::WallJumped));
+  }
+
+  #[test]
+  fn the_wall_jump_hold_keeps_the_facing_and_ends_on_landing() {
+    // A hold far longer than the fall, so the character lands inside it
+    let (mut world, mut s, e) =
+      beside_a_wall(PlatformerMovement::default().with_wall_jump(Vec2::new(100.0, 100.0), 10.0));
+    intent(&mut world, e).jump_pressed = true;
+    run(&mut world, &mut s, 1);
+    assert!(events(&world).contains(&MovementEventKind::WallJumped));
+    run(&mut world, &mut s, 5);
+    let state = world.get::<PlatformerState>(e).unwrap();
+    assert_eq!(
+      state.facing, -1.0,
+      "facing away from the wall, input held off"
+    );
+    assert_eq!(world.get::<Velocity>(e).unwrap().dx, -100.0);
+    let landed = (0..120).any(|_| {
+      run(&mut world, &mut s, 1);
+      world.get::<CharacterState>(e).unwrap().landed
+    });
+    assert!(landed);
+    // Still pressing toward the wall: on the ground it runs there
+    run(&mut world, &mut s, 10);
+    let dx = world.get::<Velocity>(e).unwrap().dx;
+    assert!((dx - 180.0).abs() < 1e-3, "{dx}");
+    assert_eq!(world.get::<PlatformerState>(e).unwrap().facing, 1.0);
+  }
+
+  #[test]
+  fn a_dash_off_a_wall_faces_its_way_and_ends_the_slide() {
+    let (mut world, mut s, e) = beside_a_wall(
+      PlatformerMovement::default()
+        .with_wall_slide(80.0)
+        .with_dash(600.0, 0.15, 0.1),
+    );
+    run(&mut world, &mut s, 2);
+    assert!(world.get::<PlatformerState>(e).unwrap().wall_sliding);
+    intent(&mut world, e).direction = Vec2::NEG_X;
+    intent(&mut world, e).dash_pressed = true;
+    run(&mut world, &mut s, 1);
+    assert!(events(&world).contains(&MovementEventKind::Dashed));
+    let state = world.get::<PlatformerState>(e).unwrap();
+    assert!(state.dashing && !state.wall_sliding && !state.dash_ready);
+    assert_eq!(state.facing, -1.0);
+    assert_eq!(
+      world.get::<Velocity>(e).unwrap().as_vec2(),
+      Vec2::new(-600.0, 0.0)
+    );
+  }
+
+  #[test]
+  fn reset_keeps_only_the_facing() {
+    let mut state = PlatformerState {
+      facing: -1.0,
+      jumping: true,
+      air_jumps_left: 2,
+      wall_sliding: true,
+      dashing: true,
+      dash_ready: false,
+      lock: 0.1,
+      dash_left: 0.1,
+      dash_cooldown: 0.2,
+      ..PlatformerState::default()
+    };
+    state.reset();
+    assert_eq!(
+      state,
+      PlatformerState {
+        facing: -1.0,
+        ..PlatformerState::default()
+      }
+    );
+    assert!(state.dash_ready);
   }
 }
