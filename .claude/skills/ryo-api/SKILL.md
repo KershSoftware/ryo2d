@@ -256,7 +256,7 @@ ctx.world.entity_mut(player).insert(
 | `push(&mut self, direction, force)`, `push_with_decay(..)`, `stop`, `restart`, `update(dt)` | on a component value |
 | `current_velocity() -> (f32, f32)`, `strength()`, `force()`, `direction() -> Vec2`, `decay_rate()`, `is_finished()` | state |
 
-A dynamic body (`RigidBody::dynamic()`, with `Velocity`) gets the knockback added to its velocity, so gravity and collisions keep acting; the push is taken back as it decays, except what a collision or drag already absorbed, and `stop()` or removing the component takes it back at once. Anything else (fixed and kinematic bodies included) is moved through its `Transform`.
+A character (`CharacterController`) is swept by the push, so surfaces stop it and the part running into them is dropped. A dynamic body takes it as one change in velocity when it starts (the same speed whatever its mass), and physics slows it from there. A kinematic body without a controller and a fixed body ignore it (logged once). An entity without a body is moved through its `Transform`. The system is `update_knockback` in `FixedSet::Movement` (`register_gameplay_systems`).
 
 ### SquashStretch (component)
 

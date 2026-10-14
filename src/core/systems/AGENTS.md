@@ -6,12 +6,11 @@ The engine's built-in systems are ordinary schedule systems: functions taking `Q
 |------|--------|-------|
 | `animation.rs` | `animate_sprites` | `FixedSet::Juice` |
 | `tween.rs` | `update_tweens`, `update_tween_sequences`, `update_property_tweens` | `FixedSet::Juice` |
-| `knockback.rs` | `update_knockback` | `FixedSet::Juice` |
 | `squash_stretch.rs` | `update_squash_stretch` | `FixedSet::Juice` |
 | `skeleton.rs` | `update_skeletons` | `FixedSet::Juice` |
 | `trail.rs` | `record_trail_points` | `FixedSet::Trails` |
 
-The juice systems run chained in the order above (`register_juice_systems`); physics registers through `register_physics_systems` (`core/physics/sync.rs`, listed in `core/physics/AGENTS.md`). Everything else the engine schedules (clocks, input, messages, assets, propagation, camera shake, effects, tracker clearing, the scene systems) is added in `register_engine_systems` (`engine/mod.rs`).
+The juice systems run chained in the order above (`register_juice_systems`); physics registers through `register_physics_systems` (`core/physics/sync.rs`, listed in `core/physics/AGENTS.md`) and gameplay (knockback) through `register_gameplay_systems` (`core/gameplay/`, see its AGENTS.md). Everything else the engine schedules (clocks, input, messages, assets, propagation, camera shake, effects, tracker clearing, the scene systems) is added in `register_engine_systems` (`engine/mod.rs`).
 
 ## Conventions
 

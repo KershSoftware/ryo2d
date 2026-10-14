@@ -29,48 +29,15 @@
 //!
 //! # Physics Integration
 //!
-//! A dynamic body gets the knockback added to its `Velocity`, so gravity and
-//! collisions keep acting; as the push decays it is taken back, except what
-//! the simulation already absorbed (a wall, drag). Removing or replacing an
-//! active knockback, or stopping it, takes back what it added. Anything else
-//! is moved through its `Transform`.
+//! What the push does depends on the entity: a character
+//! (`CharacterController`) is swept by it, so walls, floors and ceilings
+//! stop it and the part running into them is dropped; a dynamic body takes
+//! it as one change in velocity when it starts, and physics slows it from
+//! there; a kinematic body without a controller, or a fixed body, ignores
+//! it (logged once); an entity without a body moves through its `Transform`.
 
 use super::Vec2;
-use super::components::Velocity;
-use super::kernel::{Component, DeferredWorld, Entity, HookContext, World};
-
-/// Move `velocity` from carrying `applied` of knockback to carrying
-/// `target`, returning what it carries afterwards. A take-back never pushes
-/// the body's velocity along the push below zero: what a collision or drag
-/// absorbed is not handed back.
-pub(crate) fn retarget(velocity: &mut Velocity, applied: Vec2, target: Vec2) -> Vec2 {
-  let mut change = target - applied;
-  if let Some(direction) = applied.try_normalize() {
-    let taken_back = -change.dot(direction);
-    let moving = Vec2::new(velocity.dx, velocity.dy).dot(direction).max(0.0);
-    if taken_back > moving {
-      change += direction * (taken_back - moving);
-    }
-  }
-  velocity.dx += change.x;
-  velocity.dy += change.y;
-  applied + change
-}
-
-/// An active knockback that is removed or replaced takes back what it added.
-fn take_back_on_discard(mut world: DeferredWorld, context: HookContext) {
-  let Some(applied) = world
-    .get::<Knockback>(context.entity)
-    .map(|knockback| knockback.applied)
-  else {
-    return;
-  };
-  if applied != Vec2::ZERO
-    && let Some(mut velocity) = world.get_mut::<Velocity>(context.entity)
-  {
-    retarget(&mut velocity, applied, Vec2::ZERO);
-  }
-}
+use super::kernel::{Component, Entity, World};
 
 /// Component for applying decaying directional force to an entity.
 ///
@@ -91,7 +58,6 @@ fn take_back_on_discard(mut world: DeferredWorld, context: HookContext) {
 ///     .with_decay_rate(8.0);  // Fast decay
 /// ```
 #[derive(Component, Debug, Clone)]
-#[component(on_discard = take_back_on_discard)]
 pub struct Knockback {
   /// Normalized direction X component
   direction_x: f32,
@@ -111,9 +77,6 @@ pub struct Knockback {
   pub just_finished: bool,
   /// Whether to accumulate with existing knockback (blend directions)
   pub accumulate: bool,
-  /// The velocity this knockback has added to a dynamic body, taken back
-  /// step by step as it decays
-  pub(crate) applied: Vec2,
 }
 
 impl Default for Knockback {
@@ -128,7 +91,6 @@ impl Default for Knockback {
       just_started: false,
       just_finished: false,
       accumulate: true,
-      applied: Vec2::ZERO,
     }
   }
 }
@@ -168,7 +130,6 @@ impl Knockback {
       just_started: true,
       just_finished: false,
       accumulate: true,
-      applied: Vec2::ZERO,
     }
   }
 
@@ -203,7 +164,6 @@ impl Knockback {
       just_started: true,
       just_finished: false,
       accumulate: true,
-      applied: Vec2::ZERO,
     }
   }
 
@@ -373,6 +333,29 @@ impl Knockback {
       self.active = false;
       self.strength = 0.0;
       self.just_finished = true;
+    }
+  }
+
+  /// Drop the part of the push running into a surface whose normal (out of
+  /// the surface) is `normal`; a push straight into it stops.
+  pub(crate) fn clip(&mut self, normal: Vec2) {
+    if !self.active {
+      return;
+    }
+    let (vx, vy) = self.current_velocity();
+    let push = Vec2::new(vx, vy);
+    let into = push.dot(normal);
+    if into >= 0.0 {
+      return;
+    }
+    let rest = push - normal * into;
+    match rest.try_normalize() {
+      Some(direction) if rest.length() > 1e-3 => {
+        self.force *= rest.length() / push.length();
+        self.direction_x = direction.x;
+        self.direction_y = direction.y;
+      }
+      _ => self.stop(),
     }
   }
 
@@ -555,5 +538,16 @@ mod tests {
   fn decay_rate_has_minimum() {
     let kb = Knockback::new(Vec2::new(1.0, 0.0), 400.0).with_decay_rate(0.0);
     assert!(kb.decay_rate() >= 0.1);
+  }
+
+  #[test]
+  fn clipping_drops_the_part_running_into_a_surface() {
+    let mut kb = Knockback::new(Vec2::new(1.0, 1.0), 100.0);
+    kb.clip(Vec2::NEG_X); // a wall on the right, its normal pointing left
+    let (vx, vy) = kb.current_velocity();
+    assert!(vx.abs() < 1e-4 && vy > 0.0, "({vx}, {vy})");
+    let mut head_on = Knockback::new(Vec2::X, 100.0);
+    head_on.clip(Vec2::NEG_X);
+    assert!(head_on.is_finished());
   }
 }

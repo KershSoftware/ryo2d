@@ -36,6 +36,7 @@ use crate::core::ecs::{
   FallbackErrorHandler, IntoScheduleConfigs, Message, Resource, ScheduleSystem, World,
 };
 use crate::core::error::{EngineError, EngineResult};
+use crate::core::gameplay::register_gameplay_systems;
 use crate::core::graphics::camera_mut::{
   camera_shake_system, camera_view_system, spawn_main_camera,
 };
@@ -353,6 +354,7 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     scene_fixed_systems.in_set(FixedSet::Game),
   );
   register_physics_systems(schedules);
+  register_gameplay_systems(schedules);
   schedules.add_systems(
     Phase::FixedUpdate,
     propagate_transforms.in_set(FixedSet::Transforms),

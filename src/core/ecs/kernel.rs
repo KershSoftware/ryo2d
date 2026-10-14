@@ -25,6 +25,7 @@ pub use bevy_ecs::message::{Message, MessageCursor, MessageReader, MessageWriter
 pub use bevy_ecs::observer::{Observer, On};
 pub(crate) use bevy_ecs::query::QueryState;
 pub use bevy_ecs::query::{Added, Allow, Changed, Has, Or, With, Without};
+pub use bevy_ecs::system::Local;
 pub(crate) use bevy_ecs::system::{ParamSet, SystemChangeTick, SystemIdMarker};
 // Named apart from the public player-settings `SystemState` (config/save.rs)
 pub(crate) use bevy_ecs::system::SystemState as EcsSystemState;

@@ -119,12 +119,13 @@ In `bevy_ecs` 0.20 a resource is a component on a hidden entity marked `IsResour
 Engine systems are plain functions over `Query`, `Res`, `ResMut`, `MessageWriter`, `Commands`, or exclusive `fn(&mut World)` when they need the whole world (the scene systems, message updates, tracker clearing).
 
 ```rust
-/// Decay every active `Knockback` by one fixed step.
+/// Decay every active `Knockback` by one fixed step and apply it.
 pub fn update_knockback(
   time: Res<Time>,
-  mut query: Query<(Entity, &mut Knockback, Option<&mut Velocity>, Option<&RigidBody>, Option<&mut Transform>)>,
+  mut query: Query<Pushed>,
   mut started: MessageWriter<KnockbackStarted>,
   mut finished: MessageWriter<KnockbackFinished>,
+  mut warned: Local<EntityHashSet>,
 ) {
   let dt = time.fixed.timestep();
   // ...
@@ -132,7 +133,7 @@ pub fn update_knockback(
 ```
 
 - Fixed-step systems integrate with `time.fixed.timestep()`; per-frame systems that must run through pause use `time.real.delta()`.
-- Register in `register_juice_systems` (`systems/mod.rs`), `register_physics_systems` (`physics/sync.rs`) or `register_engine_systems` (`engine/mod.rs`), with `.in_set(..)` and `.chain()`/`.before()`/`.after()`. Every schedule runs on the single-threaded executor, but declare real access so a parallel executor stays possible.
+- Register in `register_juice_systems` (`systems/mod.rs`), `register_physics_systems` (`physics/sync.rs`), `register_gameplay_systems` (`gameplay/mod.rs`, `FixedSet::Movement`) or `register_engine_systems` (`engine/mod.rs`), with `.in_set(..)` and `.chain()`/`.before()`/`.after()`. Every schedule runs on the single-threaded executor, but declare real access so a parallel executor stays possible.
 - Errors: return `Result<(), SystemError>`; the installed `FallbackErrorHandler` panics in debug and logs in release.
 - Profile with `profile_scope!("name")` inside the system.
 

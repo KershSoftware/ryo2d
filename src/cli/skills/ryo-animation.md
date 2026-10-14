@@ -25,7 +25,7 @@ Every animation component here is driven by the engine in `FixedSet::Juice`, onc
 | `Tween`, `TweenSequence` | yes | `Transform` (position, rotation, scale), `Renderable` alpha and tint |
 | `PropertyTween<f32>`, `<Vec2>`, `<Color>` | yes | its own value |
 | `PropertyTween<T>` for other `Lerp` types | no: call `update(dt)` | its own value |
-| `Knockback` | yes | a dynamic body's `Velocity` (added on top), else `Transform.translation` |
+| `Knockback` | yes | a character's sweep, a dynamic body's `Velocity` (once), else `Transform.translation` |
 | `SquashStretch` | yes | `Transform.scale` |
 
 ## Sprite animation
@@ -245,7 +245,7 @@ if let Some(mut kb) = ctx.world.get_mut::<Knockback>(enemy) {
 }
 ```
 
-The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. A dynamic physics body gets the knockback added to its `Velocity` (gravity and collisions keep acting; the push is taken back as it decays, except what a wall or drag absorbed, and `stop()` or removing the component takes it back at once); anything else, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
+The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. What it does depends on the target. A character (`CharacterController`) is swept by it, so walls, floors and ceilings stop it and the part running into them is dropped. A dynamic body takes it as one change in velocity when it starts (the same speed whatever its mass) and physics slows it from there. A kinematic body without a controller and a fixed body ignore it (logged once). Anything without a body, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
 
 ## Squash and stretch
 

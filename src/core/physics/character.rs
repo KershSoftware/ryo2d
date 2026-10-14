@@ -19,7 +19,7 @@ use super::convert::{from_rapier, to_rapier};
 use super::world::Physics;
 use super::{one_way, sweep};
 use crate::core::ecs::{
-  Component, DetectChangesMut, Entity, Query, Res, ResMut, Transform, Vec2, Velocity,
+  Component, DetectChangesMut, Entity, Knockback, Query, Res, ResMut, Transform, Vec2, Velocity,
 };
 use crate::core::time::Time;
 
@@ -232,7 +232,6 @@ impl CharacterState {
 /// What `Physics::move_character` reports back to the system.
 pub(crate) struct CharacterMove {
   /// The normals of every surface the move touched (for clipping knockback)
-  #[expect(dead_code, reason = "read once knockback lands")]
   pub(crate) normals: Vec<Vec2>,
   /// A drop-through is over
   pub(crate) drop_done: bool,
@@ -697,13 +696,20 @@ pub(crate) fn move_characters(
     &mut CharacterController,
     &mut CharacterState,
     &mut Velocity,
+    Option<&mut Knockback>,
   )>,
 ) {
   let dt = time.fixed.timestep();
-  for (entity, mut controller, mut state, mut velocity) in &mut characters {
+  for (entity, mut controller, mut state, mut velocity, mut knockback) in &mut characters {
     let mut v = velocity.as_vec2();
-    let Some(moved) =
-      physics.move_character(entity, &controller, &mut state, &mut v, Vec2::ZERO, dt)
+    let extra = knockback
+      .as_ref()
+      .filter(|kb| kb.active)
+      .map_or(Vec2::ZERO, |kb| {
+        let (x, y) = kb.current_velocity();
+        Vec2::new(x, y)
+      });
+    let Some(moved) = physics.move_character(entity, &controller, &mut state, &mut v, extra, dt)
     else {
       // A teleport ends a drop (the state forgot it; the move did not run)
       if controller.drop_through && physics.was_teleported(entity) {
@@ -712,6 +718,11 @@ pub(crate) fn move_characters(
       continue;
     };
     velocity.set_if_neq(Velocity::from_vec2(v));
+    if let Some(knockback) = knockback.as_mut() {
+      for normal in &moved.normals {
+        knockback.clip(*normal);
+      }
+    }
     if moved.drop_done {
       controller.drop_through = false;
     }

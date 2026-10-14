@@ -26,10 +26,10 @@ Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports
 | Set | Systems |
 |-----|---------|
 | `Snapshot` | `snapshot_previous_transforms` |
-| `Juice` | animation, tweens, tween sequences, property tweens, knockback, squash/stretch, skeletons (`register_juice_systems`) |
+| `Juice` | animation, tweens, tween sequences, property tweens, squash/stretch, skeletons (`register_juice_systems`) |
 | `Scene` | transitions, `Scene::update` for the active scene and those below `updates_below` scenes, then the action |
 | `Game` | the scenes' own `FixedUpdate` schedules |
-| `Movement` | zone behaviours, tile rebuilds, movement input, knockback, presets |
+| `Movement` | zone behaviours, tile rebuilds, movement input, knockback, presets (`register_gameplay_systems`, `core/gameplay/`) |
 | `Physics` | one system running physics' own schedule (`PhysicsSchedule`): register, unregister, sync to Rapier, step, sync back, collision messages (`register_physics_systems`; skipped while `PhysicsPaused`) |
 | `Transforms` | `propagate_transforms` |
 | `Trails` | `record_trail_points` |

@@ -3,7 +3,9 @@
 //! This example demonstrates the knockback system for directional force effects:
 //! - Different decay rates (fast, normal, slow)
 //! - Accumulation behavior (blending vs replacing)
-//! - Physics bodies (knockback adds to their Velocity) vs plain Transform entities
+//! - Plain Transform entities, dynamic crates (the push is one change in velocity, so
+//!   crates of different mass leave at the same speed) and characters (swept by the
+//!   push, so walls stop it)
 //! - Messages (KnockbackStarted, KnockbackFinished)
 //!
 //! Runs on the demo-kit shell; the force is a setting.
@@ -14,9 +16,12 @@ use demo_kit::prelude::*;
 #[derive(Component, Debug)]
 struct SimpleEntity;
 
-/// Marker for physics entities (with Velocity)
+/// Marker for physics entities (crates and characters)
 #[derive(Component, Debug)]
 struct PhysicsEntity;
+
+/// Gravity the page adds to its characters' velocity, in px/s²
+const GRAVITY: f32 = 980.0;
 
 /// Tracks entity flash state for visual feedback
 #[derive(Debug, Default)]
@@ -28,8 +33,10 @@ struct FlashState {
 struct KnockbackDemoScene {
   /// Simple entities (top row)
   simple_entities: Vec<Entity>,
-  /// Physics entities (bottom row)
+  /// Physics entities (bottom row): two crates, then two characters
   physics_entities: Vec<Entity>,
+  /// The characters among them
+  characters: Vec<Entity>,
   /// Current force setting
   force: f32,
   /// Flash states for entities
@@ -43,6 +50,7 @@ impl KnockbackDemoScene {
     Self {
       simple_entities: Vec::new(),
       physics_entities: Vec::new(),
+      characters: Vec::new(),
       force: 400.0,
       flash_states: std::collections::HashMap::new(),
       rapid_fire_timer: 0.0,
@@ -80,22 +88,55 @@ impl KnockbackDemoScene {
         .id();
       self.simple_entities.push(simple_entity);
 
-      // Bottom row: Physics entities. Knockback adds to their Velocity and the
-      // physics step moves the (weightless) body.
+      // Bottom row: two dynamic crates of different density, then two
+      // characters, each with a pillar just to its right
       let physics_sprite = Self::create_square(40, 255, 140, 100); // Orange
-      let physics_entity = ctx
-        .world
-        .spawn((
-          PhysicsEntity,
-          Transform::from_xy(x, y_bottom),
-          Renderable::sprite(physics_sprite).with_z_order(10),
-          Velocity::new(0.0, 0.0),
-          RigidBody::dynamic().with_gravity_scale(0.0).lock_rotation(),
-          Collider::rect(40.0, 40.0),
-        ))
-        .id();
+      let character_sprite = Self::create_square(40, 120, 230, 120); // Green
+      let physics_entity = if col < 2 {
+        let density = if col == 0 { 0.5 } else { 4.0 };
+        ctx
+          .world
+          .spawn((
+            PhysicsEntity,
+            Transform::from_xy(x, y_bottom),
+            Renderable::sprite(physics_sprite).with_z_order(10),
+            RigidBody::dynamic()
+              .lock_rotation()
+              .with_linear_damping(4.0),
+            Collider::rect(40.0, 40.0).with_density(density),
+          ))
+          .id()
+      } else {
+        Self::spawn_wall(ctx, x + 46.0, y_bottom + 30.0, 12, 60);
+        let character = ctx
+          .world
+          .spawn((
+            PhysicsEntity,
+            Transform::from_xy(x, y_bottom),
+            Renderable::sprite(character_sprite).with_z_order(10),
+            CharacterController::platformer(),
+            Collider::rect(40.0, 40.0),
+          ))
+          .id();
+        self.characters.push(character);
+        character
+      };
       self.physics_entities.push(physics_entity);
     }
+
+    // The floor under the bottom row
+    Self::spawn_wall(ctx, screen_w / 2.0, y_bottom + 80.0, screen_w as u32, 20);
+  }
+
+  /// A fixed wall of `w` x `h` centred at (x, y)
+  fn spawn_wall(ctx: &mut SceneContext, x: f32, y: f32, w: u32, h: u32) {
+    let sprite = Sprite::solid_rect(w, h, 90, 90, 110, 255);
+    let handle = SpriteHandle::from_sprite(sprite, format!("wall_{w}_{h}"));
+    ctx.world.spawn((
+      Transform::from_xy(x, y),
+      Renderable::sprite(handle).with_z_order(5),
+      Collider::rect(w as f32, h as f32),
+    ));
   }
 
   /// Apply knockback to a specific column
@@ -218,7 +259,7 @@ impl DemoPage for KnockbackDemoScene {
   }
 
   fn description(&self) -> &str {
-    "Directional force with different decay rates, accumulation, and simple vs physics entities"
+    "Knockback on plain entities, crates of any mass, and characters walls stop"
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -247,6 +288,13 @@ impl DemoPage for KnockbackDemoScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    // Gravity for the characters: their Velocity is theirs to drive
+    for &character in &self.characters {
+      if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(character) {
+        velocity.dy += GRAVITY * dt;
+      }
+    }
+
     // Column 1: Fast decay (8.0)
     if ctx.input.key_pressed(KeyCode::Digit1) {
       self.knockback_column(ctx, 0, 8.0, true);
@@ -331,7 +379,14 @@ impl DemoPage for KnockbackDemoScene {
     ui.draw_text("(Transform)", 10.0, y_top + 10.0, text_muted);
 
     ui.draw_text("Physics", 10.0, y_bottom - 5.0, text_orange);
-    ui.draw_text("(Velocity)", 10.0, y_bottom + 10.0, text_muted);
+    ui.draw_text("(crates, characters)", 10.0, y_bottom + 10.0, text_muted);
+    for (col, label) in ["Light crate", "Heavy crate", "Character", "Character"]
+      .iter()
+      .enumerate()
+    {
+      let x = spacing_x * (col as f32 + 1.0) - 35.0;
+      ui.draw_text(label, x, y_bottom - 40.0, text_muted);
+    }
 
     // Colour key, above the shell's legend
     let bottom = area.y + area.height;
@@ -342,7 +397,7 @@ impl DemoPage for KnockbackDemoScene {
       text_blue,
     );
     ui.draw_text(
-      "Orange = Physics entities (Velocity-based movement)",
+      "Orange = crates (one change in velocity), green = characters (swept, stopped by walls)",
       10.0,
       bottom - 24.0,
       text_orange,

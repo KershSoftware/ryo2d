@@ -1,14 +1,12 @@
 //! The engine's built-in systems.
 
 mod animation;
-mod knockback;
 mod skeleton;
 mod squash_stretch;
 mod trail;
 mod tween;
 
 pub use animation::animate_sprites;
-pub use knockback::update_knockback;
 pub use skeleton::update_skeletons;
 pub use squash_stretch::update_squash_stretch;
 pub use trail::record_trail_points;
@@ -18,7 +16,7 @@ use crate::core::ecs::IntoScheduleConfigs;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
 
 /// Add the juice systems to `FixedSet::Juice`, in this order: animation,
-/// tweens, tween sequences, property tweens, knockback, squash and stretch.
+/// tweens, tween sequences, property tweens, squash and stretch.
 pub fn register_juice_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::FixedUpdate,
@@ -27,7 +25,6 @@ pub fn register_juice_systems(schedules: &mut EngineSchedules) {
       update_tweens,
       update_tween_sequences,
       update_property_tweens,
-      update_knockback,
       update_squash_stretch,
       update_skeletons,
     )

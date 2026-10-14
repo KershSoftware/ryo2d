@@ -30,6 +30,9 @@ pub mod window;
 // Physics
 pub mod physics;
 
+// Gameplay on top of physics
+pub mod gameplay;
+
 // Navigation & Pathfinding
 pub mod navigation;
 

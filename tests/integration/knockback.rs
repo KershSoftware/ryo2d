@@ -321,7 +321,7 @@ fn multiple_knockback_entities() {
 /// reports the impulse starting and finishing
 #[test]
 fn the_fixed_update_drives_knockback_and_reports_it() {
-  let (mut world, mut schedules) = crate::support::juice_world(60);
+  let (mut world, mut schedules) = crate::support::gameplay_world(60);
   let entity = world.spawn(Transform::from_xy(0.0, 0.0)).id();
   Knockback::apply(&mut world, entity, Vec2::new(1.0, 0.0), 300.0);
 
@@ -341,5 +341,41 @@ fn the_fixed_update_drives_knockback_and_reports_it() {
   assert_eq!(
     crate::support::messages::<KnockbackFinished>(&world),
     [KnockbackFinished { entity }]
+  );
+}
+
+/// A dynamic body takes the push once, as a change in velocity when it
+/// starts; nothing is taken back as it decays.
+#[test]
+fn a_dynamic_body_takes_the_push_once() {
+  let (mut world, mut schedules) = crate::support::gameplay_world(60);
+  let entity = world
+    .spawn((
+      Transform::from_xy(0.0, 0.0),
+      RigidBody::dynamic(),
+      Velocity::new(0.0, 50.0),
+      Knockback::new(Vec2::new(1.0, 0.0), 300.0),
+    ))
+    .id();
+
+  crate::support::run_fixed(&mut world, &mut schedules, 1);
+  assert_eq!(
+    *world.get::<Velocity>(entity).expect("velocity"),
+    Velocity::new(300.0, 50.0)
+  );
+
+  crate::support::run_fixed(&mut world, &mut schedules, 120);
+  assert_eq!(
+    *world.get::<Velocity>(entity).expect("velocity"),
+    Velocity::new(300.0, 50.0),
+    "physics slows it, not the knockback"
+  );
+  assert_eq!(
+    world
+      .get::<Transform>(entity)
+      .expect("transform")
+      .translation,
+    Vec2::ZERO,
+    "physics moves a body"
   );
 }

@@ -62,7 +62,7 @@ Engine::frame
 
 - Phases are `bevy_ecs` schedules owned by `EngineSchedules` (`schedule.rs`); sets are `FixedSet`, `UpdateSet`, `PostUpdateSet`. Every schedule uses the single-threaded executor.
 - The UI pass and render are not schedules; they are engine methods between phases.
-- Engine systems are registered in `register_engine_systems` (`engine/mod.rs`), `register_juice_systems` (`systems/mod.rs`) and `register_physics_systems` (`physics/sync.rs`). Games add theirs with `EngineBuilder::add_systems` or `SceneContext::add_systems`.
+- Engine systems are registered in `register_engine_systems` (`engine/mod.rs`), `register_juice_systems` (`systems/mod.rs`), `register_physics_systems` (`physics/sync.rs`) and `register_gameplay_systems` (`gameplay/mod.rs`). Games add theirs with `EngineBuilder::add_systems` or `SceneContext::add_systems`.
 - Three clocks (`time.rs`): `real` (wall), `game` (capped, scaled, pausable), `fixed` (constant steps fed by game time). Fixed-step code uses `time.fixed.timestep()`; real-time effects use `time.real`. Sprite shader globals carry game time in `x`.
 
 ## World and Engine State
