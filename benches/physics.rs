@@ -1,12 +1,27 @@
 //! Physics benchmark: 1,000 bodies bouncing in a closed box with no gravity
-//! and elastic, frictionless contacts, so nothing ever sleeps. One headless
-//! frame runs exactly one fixed step; the empty scene is the frame overhead.
+//! and elastic, frictionless contacts. One headless frame runs exactly one
+//! fixed step; the empty scene is the frame overhead.
+//!
+//! The bodies still lose a little energy at every contact, and over
+//! thousands of frames they slow down and fall asleep, after which a frame
+//! costs almost nothing. So no measurement lets the scene age: each one
+//! starts a fresh engine, runs 30 warm-up frames and times a window of at
+//! most 200 frames, as many windows as criterion asks frames for. After
+//! every bouncing window at most 1% of the bodies may be asleep, or the
+//! benchmark stops.
+
+use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 
 const SIZE: f32 = 600.0;
+const BODIES: usize = 1000;
+/// Frames run before a window is timed
+const WARM_UP: u32 = 30;
+/// The most frames one engine is timed for
+const WINDOW: u64 = 200;
 
 struct Bouncing;
 
@@ -26,7 +41,7 @@ impl Scene for Bouncing {
           .with_friction(0.0),
       ));
     }
-    for i in 0..1000usize {
+    for i in 0..BODIES {
       let (col, row) = ((i % 40) as f32, (i / 40) as f32);
       let angle = i as f32 * 2.399;
       let collider = if i % 2 == 0 {
@@ -51,26 +66,67 @@ struct Empty;
 
 impl Scene for Empty {}
 
-fn frame(c: &mut Criterion) {
-  for (name, builder) in [
-    (
-      "physics frame, 1000 bouncing bodies",
-      EngineBuilder::new()
-        .resolution(300, 300)
-        .start_scene(Bouncing),
-    ),
-    (
-      "physics frame, empty scene",
-      EngineBuilder::new().resolution(300, 300).start_scene(Empty),
-    ),
-  ] {
-    // Needs a GPU; without one this benchmark is skipped
-    let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
-      return;
-    };
-    engine.step_frames(30).expect("warm-up frames");
-    c.bench_function(name, |b| b.iter(|| engine.step().expect("frame")));
+fn bouncing() -> EngineBuilder {
+  EngineBuilder::new()
+    .resolution(300, 300)
+    .start_scene(Bouncing)
+}
+
+fn empty() -> EngineBuilder {
+  EngineBuilder::new().resolution(300, 300).start_scene(Empty)
+}
+
+/// Panic unless the bouncing scene's bodies are all there and at most 1% of
+/// them asleep.
+fn check_awake(engine: &mut HeadlessEngine) {
+  let world = engine.world_mut();
+  let bodies: Vec<Entity> = world
+    .query::<(Entity, &RigidBody)>()
+    .iter(world)
+    .filter(|(_, body)| body.kind == BodyKind::Dynamic)
+    .map(|(entity, _)| entity)
+    .collect();
+  let physics = world.resource::<Physics>();
+  let asleep = bodies.iter().filter(|e| physics.is_sleeping(**e)).count();
+  assert_eq!(bodies.len(), BODIES, "the scene's bodies");
+  assert!(
+    asleep * 100 <= BODIES,
+    "{asleep} of {BODIES} bodies asleep: the benchmark would time a sleeping world"
+  );
+}
+
+/// The time `iters` frames take, in windows on fresh engines.
+fn time_frames(builder: fn() -> EngineBuilder, iters: u64, live: bool) -> Duration {
+  let mut total = Duration::ZERO;
+  let mut done = 0;
+  while done < iters {
+    let mut engine = HeadlessEngine::new(builder()).expect("a headless engine");
+    engine.step_frames(WARM_UP).expect("warm-up frames");
+    let frames = WINDOW.min(iters - done);
+    let start = Instant::now();
+    for _ in 0..frames {
+      engine.step().expect("frame");
+    }
+    total += start.elapsed();
+    if live {
+      check_awake(&mut engine);
+    }
+    done += frames;
   }
+  total
+}
+
+fn frame(c: &mut Criterion) {
+  // Needs a GPU; without one this benchmark is skipped
+  if HeadlessEngine::new_or_skip(empty()).is_none() {
+    return;
+  }
+  c.bench_function("physics frame, 1000 bouncing bodies", |b| {
+    b.iter_custom(|iters| time_frames(bouncing, iters, true))
+  });
+  c.bench_function("physics frame, empty scene", |b| {
+    b.iter_custom(|iters| time_frames(empty, iters, false))
+  });
 }
 
 criterion_group!(benches, frame);
