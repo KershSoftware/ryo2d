@@ -273,7 +273,7 @@ pub(crate) fn forget_removed(
       physics.relink.insert(entity);
     }
     if has_body.contains(entity) {
-      physics.unparented.insert(entity);
+      physics.recheck.insert(entity);
     }
   }
 }
@@ -284,6 +284,11 @@ pub(crate) fn forget_removed(
 /// `RigidBody`, `Collider`, `Joint`) is applied as it comes back: bodies
 /// here, colliders by the next `sync_colliders` and joints by the next
 /// `sync_joints`.
+///
+/// It also records its tick as `Physics::chain_tick`: in the physics chain
+/// it runs just before propagation, so `read_back` can tell a `Transform`
+/// changed after it. (Its run in `Last` is overwritten by the next step's
+/// before `read_back` reads it.)
 #[allow(clippy::too_many_arguments)] // one query or removal reader per input
 pub(crate) fn track_disabled(
   mut physics: ResMut<Physics>,
@@ -294,7 +299,9 @@ pub(crate) fn track_disabled(
   mut bodies: Query<(&mut Velocity, &mut AngularVelocity, Ref<RigidBody>)>,
   colliders: Query<(), With<Collider>>,
   joints: Query<(), With<Joint>>,
+  ticks: SystemChangeTick,
 ) {
+  physics.chain_tick = Some(ticks.this_run());
   // Density depends on the unit: configure before anything registers
   physics.configure(&config);
   for entity in &disabled {
@@ -452,9 +459,10 @@ pub(crate) fn register_bodies(
 ///
 /// A root body's own collider that only the write-back moved (its
 /// `Transform` last changed at `Physics::write_tick`, its `Collider` not
-/// since) is skipped: it moved with its body, and its placement relative to
-/// the body depends only on the entity's scale and the `Collider`. Every
-/// other source (waiting, new bodies, reparenting, relinking) is visited.
+/// since, the body not in `Physics::recheck`) is skipped: it moved with its
+/// body, and its placement relative to the body depends only on the
+/// entity's scale and the `Collider`. Every other source (waiting, new
+/// bodies, reparenting, relinking) is visited.
 #[allow(clippy::too_many_arguments)] // one query per input
 pub(crate) fn sync_colliders(
   mut physics: ResMut<Physics>,
@@ -474,16 +482,19 @@ pub(crate) fn sync_colliders(
   let mut relink = std::mem::take(&mut physics.relink);
   todo.clear();
   let own = physics.write_tick;
+  let recheck = &physics.recheck;
+  let any_recheck = !recheck.is_empty();
   todo.extend(
     changed
       .iter()
-      .filter(|(_, collider, transform, body, child)| {
+      .filter(|(entity, collider, transform, body, child)| {
         let own_move = *body
           && !*child
           && !collider.is_changed()
           && transform
             .as_ref()
-            .is_some_and(|transform| Some(transform.last_changed()) == own);
+            .is_some_and(|transform| Some(transform.last_changed()) == own)
+          && !(any_recheck && recheck.contains(entity));
         !own_move
       })
       .map(|(entity, ..)| entity),
@@ -533,13 +544,17 @@ pub(crate) fn sync_colliders(
 /// apart in two ways:
 ///
 /// - By its tick. `read_back` records the tick it ran at
-///   (`Physics::write_tick`). A root body whose `Transform` last changed at
-///   that tick, and that has not lost a parent since (`unparented`), is
-///   where Rapier holds it; velocities last changed at that tick are
-///   Rapier's. These are skipped without a look at Rapier. A game write
-///   (in a system, by a command or between schedule runs) never has that
-///   tick, even when it writes the same value, and falls through to the
-///   comparison.
+///   (`Physics::write_tick`), a tick no other write has. A root body whose
+///   `Transform` last changed at that tick is where Rapier holds it, and
+///   velocities last changed at it are Rapier's; these are skipped without
+///   a look at Rapier, unless the body is in `Physics::recheck`. A game
+///   write between the write-back and this push (in a system, by a command
+///   or between schedule runs) has a later tick, even when it writes the
+///   same value. A game write inside the physics chain after its
+///   propagation is stamped by the write-back: the write-back overwrites
+///   its translation, rotation and velocities, as it always did, and
+///   `read_back` puts the body in `recheck` because its scale may be new.
+///   A body that lost its parent is in `recheck` too.
 /// - By value, for everything else: a pose or velocity equal to Rapier's
 ///   (within the sync tolerance) is not pushed, so untouched bodies stay
 ///   asleep. A nested body's world pose also depends on its ancestors, so it
@@ -556,12 +571,12 @@ pub(crate) fn push_changes(
 ) {
   physics.begin_push();
   let own = physics.write_tick;
-  let mut unparented = std::mem::take(&mut physics.unparented);
-  let any_unparented = !unparented.is_empty();
+  let mut recheck = std::mem::take(&mut physics.recheck);
+  let any_recheck = !recheck.is_empty();
   for (entity, global, transform, parent) in &moved {
     if parent.is_none()
       && Some(transform.last_changed()) == own
-      && !(any_unparented && unparented.contains(&entity))
+      && !(any_recheck && recheck.contains(&entity))
     {
       continue;
     }
@@ -576,13 +591,12 @@ pub(crate) fn push_changes(
     }
     physics.move_body(entity, translation, rotation);
   }
-  unparented.clear();
-  physics.unparented = unparented;
   // Unchanged since the last push, or changed by the write-back only
   let kept = |changed: bool, last: Tick| !changed || Some(last) == own;
   for (entity, velocity, angular) in &pushed {
     if kept(velocity.is_changed(), velocity.last_changed())
       && kept(angular.is_changed(), angular.last_changed())
+      && !(any_recheck && recheck.contains(&entity))
     {
       continue;
     }
@@ -592,6 +606,8 @@ pub(crate) fn push_changes(
     }
     physics.push_velocity(entity, velocity.as_vec2(), angular.0);
   }
+  recheck.clear();
+  physics.recheck = recheck;
   let dt = time.fixed.timestep();
   for (entity, body, velocity, angular) in &kinematic {
     let still = velocity.as_vec2() == Vec2::ZERO && angular.0 == 0.0;
@@ -693,12 +709,16 @@ fn world_after_step(
 /// world's current tick, which the next system is handed too. So this is an
 /// exclusive system that advances the tick before it fetches anything: no
 /// command, wherever the scheduler puts its sync point, lands at its tick.
+/// A game change made earlier, inside the chain after its propagation, is
+/// stamped by the write below; such bodies go into `Physics::recheck`.
 pub(crate) fn read_back(world: &mut World, state: &mut EcsSystemState<ReadBack<'static, 'static>>) {
   world.increment_change_tick();
   let Ok((mut physics, mut locals, nested, mut velocities, ticks)) = state.get_mut(world) else {
     return;
   };
-  physics.write_tick = Some(ticks.this_run());
+  let this_run = ticks.this_run();
+  physics.write_tick = Some(this_run);
+  let chain_tick = physics.chain_tick;
   let mut writes = std::mem::take(&mut physics.write_backs);
   writes.clear();
   let resting = nested
@@ -728,6 +748,12 @@ pub(crate) fn read_back(world: &mut World, state: &mut EcsSystemState<ReadBack<'
     if let Some((translation, rotation)) = write.local
       && let Ok((mut transform, _)) = locals.get_mut(write.entity)
     {
+      // Changed after the step's propagation (by a game system inside the
+      // chain): this step never saw it, and the write below stamps it with
+      // the write-back's tick, scale included, so the next step compares it
+      if chain_tick.is_some_and(|tick| transform.last_changed().is_newer_than(tick, this_run)) {
+        physics.recheck.insert(write.entity);
+      }
       if transform.translation != translation {
         transform.translation = translation;
       }
@@ -3128,5 +3154,81 @@ mod tests {
     assert!(!physics.is_sleeping(sleeper), "the new velocity wakes it");
     let moved = at(&world, sleeper).translation - before;
     assert!((moved - Vec2::new(1.0, 0.0)).length() < 1e-3, "{moved}");
+  }
+
+  /// What `write_in_chain` writes, once.
+  #[derive(Resource, Default)]
+  struct InChainWrites {
+    scale: Option<(Entity, f32)>,
+    velocity: Option<(Entity, Velocity)>,
+  }
+
+  /// A game system the scheduler put inside the physics chain, after its
+  /// propagation and collider sync: what it writes is not in this step's
+  /// world poses, and the write-back then stamps the same components.
+  fn write_in_chain(
+    mut writes: ResMut<InChainWrites>,
+    mut bodies: Query<(&mut Transform, &mut Velocity)>,
+  ) {
+    if let Some((e, scale)) = writes.scale.take()
+      && let Ok((mut transform, _)) = bodies.get_mut(e)
+    {
+      transform.scale = Vec2::splat(scale);
+    }
+    if let Some((e, velocity)) = writes.velocity.take()
+      && let Ok((_, mut v)) = bodies.get_mut(e)
+    {
+      *v = velocity;
+    }
+  }
+
+  /// Two flying balls; a system inside the chain doubles the first's scale
+  /// and sets the second's velocity. The first's mass before and after, and
+  /// both bodies' Rapier poses and velocities three steps on.
+  fn written_in_chain(skip_own_writes: bool) -> (f32, f32, Vec<(Vec2, Velocity)>) {
+    let (mut world, mut s, balls) = flying(2);
+    world.insert_resource(InChainWrites::default());
+    s.add_systems(
+      Phase::FixedUpdate,
+      write_in_chain.after(sync_colliders).before(read_back),
+    );
+    let steps = |world: &mut World, s: &mut EngineSchedules, count: usize| {
+      for _ in 0..count {
+        if !skip_own_writes {
+          world.resource_mut::<Physics>().write_tick = None;
+        }
+        run(world, s, 1);
+      }
+    };
+    steps(&mut world, &mut s, 3);
+    let before = world.resource::<Physics>().mass(balls[0]).unwrap();
+    *world.resource_mut::<InChainWrites>() = InChainWrites {
+      scale: Some((balls[0], 2.0)),
+      velocity: Some((balls[1], Velocity::new(-50.0, 0.0))),
+    };
+    steps(&mut world, &mut s, 3);
+    let physics = world.resource::<Physics>();
+    let after = physics.mass(balls[0]).unwrap();
+    let states = balls
+      .iter()
+      .map(|&e| {
+        (
+          physics.body_pose(e).unwrap().0,
+          *world.get::<Velocity>(e).unwrap(),
+        )
+      })
+      .collect();
+    (before, after, states)
+  }
+
+  #[test]
+  fn a_scale_written_inside_the_physics_chain_reaches_the_collider() {
+    let (before, after, _) = written_in_chain(true);
+    assert!((after - 4.0 * before).abs() < 1e-6, "{before} -> {after}");
+  }
+
+  #[test]
+  fn writes_inside_the_physics_chain_end_as_without_the_skip() {
+    assert_eq!(written_in_chain(true), written_in_chain(false));
   }
 }

@@ -275,16 +275,20 @@ pub struct Physics {
   departed: HashMap<ColliderHandle, Owner>,
   /// The change tick `read_back` last ran at. A `Transform`, `Velocity` or
   /// `AngularVelocity` last changed at this tick holds what the last step
-  /// left in Rapier: `push_changes` and `sync_colliders` skip a root body
-  /// and its own collider in that state without comparing. `read_back`
-  /// takes a tick no other write can have (it advances the world's tick
-  /// first), so a game write is always compared by value (`push_changes`
-  /// has the rules)
+  /// left in Rapier, unless the body is in `recheck`: `push_changes` and
+  /// `sync_colliders` skip a root body and its own collider in that state
+  /// without comparing (`push_changes` has the rules)
   pub(crate) write_tick: Option<Tick>,
-  /// Bodies that lost their parent since the last push: their local
-  /// `Transform` became their world pose, so a write-back tick on it no
-  /// longer means Rapier holds them there
-  pub(crate) unparented: EntityHashSet,
+  /// The change tick `track_disabled` last ran at: in the step's chain, just
+  /// before its propagation. A `Transform` changed after it is not in the
+  /// step's world poses
+  pub(crate) chain_tick: Option<Tick>,
+  /// Bodies the next push and collider sync compare by value whatever their
+  /// tick: bodies that lost their parent (their local `Transform` became
+  /// their world pose), and bodies whose `Transform` the game changed after
+  /// the step's propagation and the write-back then stamped with its tick
+  /// (their scale may be new). Cleared by `push_changes`
+  pub(crate) recheck: EntityHashSet,
   /// Bodies and colliders the sync compared with Rapier, for tests
   #[cfg(test)]
   pub(crate) compared: usize,
@@ -421,7 +425,8 @@ impl Physics {
       write_backs: Vec::new(),
       departed: HashMap::new(),
       write_tick: None,
-      unparented: EntityHashSet::default(),
+      chain_tick: None,
+      recheck: EntityHashSet::default(),
       #[cfg(test)]
       compared: 0,
       teleported: EntityHashSet::default(),
