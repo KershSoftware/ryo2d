@@ -192,13 +192,21 @@ type Mover = (
   Option<&'static Knockback>,
 );
 
+/// The entities `platformer_movement` already warned about, per warning
+/// (one warning does not silence another).
+#[derive(Default)]
+pub struct Warned {
+  mode: EntityHashSet,
+  velocity: EntityHashSet,
+}
+
 /// `FixedSet::Movement`: every platformer character's `Velocity` from its
 /// intent and its last move.
 pub fn platformer_movement(
   time: Res<Time>,
   mut movers: Query<Mover>,
   mut events: MessageWriter<MovementEvent>,
-  mut warned: Local<EntityHashSet>,
+  mut warned: Local<Warned>,
 ) {
   let dt = time.fixed.timestep();
   for (
@@ -213,7 +221,7 @@ pub fn platformer_movement(
   ) in &mut movers
   {
     if controller.mode != CharacterMode::Platformer {
-      if warned.insert(entity) {
+      if warned.mode.insert(entity) {
         crate::engine_warn!(
           module: "Gameplay",
           "{entity}: PlatformerMovement needs CharacterController::platformer()"
@@ -224,6 +232,12 @@ pub fn platformer_movement(
     let direction = intent.clamped_direction();
     let mut v = velocity.as_vec2();
     if !v.is_finite() {
+      if warned.velocity.insert(entity) {
+        crate::engine_warn!(
+          module: "Gameplay",
+          "{entity}: PlatformerMovement read a non-finite Velocity as zero"
+        );
+      }
       v = Vec2::ZERO;
     }
     let (gravity, jump_speed) = jump_physics(settings.jump_height, settings.time_to_apex, dt);
@@ -256,17 +270,24 @@ pub fn platformer_movement(
     let target = direction.x * settings.run_speed * control;
     let mut rate = run_rate(settings, v.x, target);
     if !character.on_floor {
-      rate *= settings.air_control;
+      // No air control is no steering, even with an instant (infinite) rate
+      rate = if settings.air_control > 0.0 {
+        rate * settings.air_control
+      } else {
+        0.0
+      };
     }
     v.x = approach(v.x, target, rate * dt);
     if direction.x.abs() > 0.01 {
       state.facing = direction.x.signum();
     }
 
-    // Dropping through, or jumping
+    // Dropping through (no coyote jump back up through the platform), or
+    // jumping
     if intent.jump_pressed && direction.y > 0.5 && character.on_floor && character.floor_one_way {
       controller.drop_through = true;
       state.buffer = 0.0;
+      state.coyote = 0.0;
     } else if state.buffer > 0.0 && state.coyote > 0.0 {
       v.y = -jump_speed;
       state.jumping = true;
@@ -530,5 +551,75 @@ mod tests {
     intent(&mut world, e).jump_pressed = true;
     run(&mut world, &mut s, 1);
     assert!(events(&world).contains(&MovementEventKind::Jumped));
+  }
+
+  #[test]
+  fn with_no_air_control_a_character_off_a_ledge_falls_and_keeps_its_speed() {
+    let (mut world, mut s) = world(60);
+    world.spawn((Transform::from_xy(0.0, 110.0), Collider::rect(200.0, 20.0)));
+    let settings = PlatformerMovement::default()
+      .with_run(180.0, 0.0, 0.0)
+      .with_air_control(0.0);
+    let e = runner(&mut world, settings);
+    settle(&mut world, &mut s);
+    let mut left = false;
+    for _ in 0..90 {
+      // Run to the edge, then let go: nothing steers in the air
+      intent(&mut world, e).direction = if left { Vec2::ZERO } else { Vec2::X };
+      run(&mut world, &mut s, 1);
+      left |= world.get::<CharacterState>(e).unwrap().left_floor;
+    }
+    assert!(left, "ran off the edge");
+    let v = world.get::<Velocity>(e).unwrap().as_vec2();
+    assert!((v.x - 180.0).abs() < 1e-3, "{v}");
+    assert!(at(&world, e).translation.y > 150.0, "fell");
+  }
+
+  #[test]
+  fn a_non_finite_velocity_is_read_as_zero_and_warned_once() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(&mut world, PlatformerMovement::default());
+    settle(&mut world, &mut s);
+    for _ in 0..3 {
+      world.get_mut::<Velocity>(e).unwrap().dx = f32::NAN;
+      intent(&mut world, e).direction = Vec2::X;
+      run(&mut world, &mut s, 1);
+    }
+    let x = at(&world, e).translation.x;
+    for _ in 0..10 {
+      intent(&mut world, e).direction = Vec2::X;
+      run(&mut world, &mut s, 1);
+    }
+    assert!(world.get::<Velocity>(e).unwrap().as_vec2().is_finite());
+    assert!(at(&world, e).translation.x > x + 20.0, "runs");
+    let prefix = format!("{e}: PlatformerMovement read a non-finite Velocity");
+    let warnings = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|entry| entry.message.starts_with(&prefix))
+      .count();
+    assert_eq!(warnings, 1);
+  }
+
+  #[test]
+  fn a_jump_just_after_dropping_through_does_not_jump() {
+    let (mut world, mut s) = world(60);
+    world.spawn((
+      Transform::from_xy(0.0, 105.0),
+      Collider::rect(200.0, 10.0).one_way(),
+    ));
+    let e = runner(&mut world, PlatformerMovement::default());
+    settle(&mut world, &mut s);
+    intent(&mut world, e).direction = Vec2::Y;
+    intent(&mut world, e).jump_pressed = true;
+    run(&mut world, &mut s, 1);
+    intent(&mut world, e).direction = Vec2::ZERO;
+    run(&mut world, &mut s, 1);
+    let y = at(&world, e).translation.y;
+    intent(&mut world, e).jump_pressed = true;
+    intent(&mut world, e).jump_held = true;
+    run(&mut world, &mut s, 1);
+    assert!(!events(&world).contains(&MovementEventKind::Jumped));
+    assert!(at(&world, e).translation.y > y, "keeps falling");
   }
 }
