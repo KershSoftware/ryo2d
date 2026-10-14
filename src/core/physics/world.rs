@@ -259,6 +259,8 @@ pub struct Physics {
   pub(crate) resync_joints: HashSet<Entity>,
   /// Colliders whose body is not simulated yet; retried every step
   pub(crate) waiting: HashSet<Entity>,
+  /// Bodies refused for a non-finite pose; retried every step
+  pub(crate) refused: HashSet<Entity>,
   /// Entities that lost their `RigidBody` or their parent since the last
   /// step: the colliders at and below them may belong to another body now
   pub(crate) relink: HashSet<Entity>,
@@ -397,6 +399,7 @@ impl Physics {
       joint_of: HashMap::new(),
       resync_joints: HashSet::new(),
       waiting: HashSet::new(),
+      refused: HashSet::new(),
       relink: HashSet::new(),
       sync_queue: Vec::new(),
       walk_stack: Vec::new(),
@@ -457,8 +460,9 @@ impl Physics {
     if !(translation.is_finite() && rotation.is_finite()) {
       self.warn_once(
         entity,
-        "a body with a non-finite Transform is not simulated",
+        "a body with a non-finite Transform is not simulated until it is finite",
       );
+      self.refused.insert(entity);
       return;
     }
     let linvel = if linvel.is_finite() {

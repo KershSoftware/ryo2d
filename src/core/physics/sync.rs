@@ -356,13 +356,16 @@ fn apply_edit(
 }
 
 /// Register new bodies at their world pose and apply edited ones in place.
+/// A body refused for a non-finite pose is tried again every step until its
+/// pose is finite.
 pub(crate) fn register_bodies(
   mut physics: ResMut<Physics>,
   config: Res<PhysicsConfig>,
-  mut bodies: Query<BodyRow, Changed<RigidBody>>,
+  mut bodies: Query<BodyRow>,
   globals: Globals,
 ) {
   physics.configure(&config);
+  let refused: Vec<Entity> = physics.refused.drain().collect();
   for (entity, place, mut velocity, mut angular, body) in &mut bodies {
     if body.is_added() {
       let (translation, rotation) = body_pose(place, &globals);
@@ -374,8 +377,22 @@ pub(crate) fn register_bodies(
         angular.0,
         &body,
       );
-    } else {
+    } else if body.is_changed() {
       apply_edit(&mut physics, entity, &body, &mut velocity, &mut angular);
+    }
+  }
+  // Already registered (re-added or re-enabled meanwhile) is a no-op
+  for entity in refused {
+    if let Ok((entity, place, velocity, angular, body)) = bodies.get(entity) {
+      let (translation, rotation) = body_pose(place, &globals);
+      physics.add_body(
+        entity,
+        translation,
+        rotation,
+        velocity.as_vec2(),
+        angular.0,
+        &body,
+      );
     }
   }
 }
@@ -1014,6 +1031,33 @@ mod tests {
       at(&world, e).translation.is_finite(),
       "the write-back restored it"
     );
+  }
+
+  #[test]
+  fn a_body_spawned_at_a_non_finite_pose_registers_once_it_is_fixed() {
+    let (mut world, mut s) = world(60);
+    let e = world
+      .spawn((
+        Transform::from_xy(f32::NAN, 0.0),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 2);
+    let physics = world.resource::<Physics>();
+    assert_eq!((physics.body_count(), physics.collider_count()), (0, 0));
+    world.get_mut::<Transform>(e).unwrap().translation = Vec2::ZERO;
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    assert_eq!((physics.body_count(), physics.collider_count()), (1, 1));
+    assert_eq!(
+      physics.collider_entries[&e].body,
+      Some(e),
+      "its collider waited for it"
+    );
+    run(&mut world, &mut s, 29);
+    assert!(at(&world, e).translation.y > 10.0, "it falls");
+    assert_eq!(world.resource::<Physics>().warnings, 1);
   }
 
   #[test]
