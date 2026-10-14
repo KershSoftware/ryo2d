@@ -139,7 +139,8 @@ pub mod prelude {
   // Physics
   pub use crate::core::physics::{
     AngularVelocity, BodyKind, Collider, ColliderShape, CollisionStarted, CollisionStopped,
-    Contact, ContactForce, JointBroken, Physics, PhysicsConfig, RigidBody,
+    Contact, ContactForce, Hit, JointBroken, Overlap, Physics, PhysicsConfig, PointHit,
+    QueryFilter, RigidBody,
   };
 
   // 2D lighting

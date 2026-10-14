@@ -17,4 +17,5 @@ pub use body::{AngularVelocity, BodyKind, RigidBody};
 pub use collider::{Collider, ColliderShape};
 pub use config::PhysicsConfig;
 pub use events::{CollisionStarted, CollisionStopped, Contact, ContactForce, JointBroken};
+pub use query::{Hit, Overlap, PointHit, QueryFilter};
 pub use world::Physics;
