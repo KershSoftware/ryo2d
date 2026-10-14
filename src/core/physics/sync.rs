@@ -29,7 +29,7 @@ use super::world::{Physics, Placement, WriteBack};
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
-  Entity, GlobalTransform, IntoScheduleConfigs, MessageWriter, Mut, Or, Query, Ref,
+  Entity, GlobalTransform, IntoScheduleConfigs, MessageWriter, Mut, Or, ParamSet, Query, Ref,
   RemovedComponents, Res, ResMut, Transform, Vec2, Velocity, With,
 };
 use crate::core::scene::PhysicsPaused;
@@ -55,6 +55,11 @@ type BodyRow<'a> = (
 );
 /// What places a body in the world (see `body_pose`)
 type BodyPlace<'a> = (&'a GlobalTransform, &'a Transform, Option<&'a ChildOf>);
+/// New or edited bodies, and every body (for the refused ones)
+type BodyRows<'a, 'w, 's> = (
+  Query<'w, 's, BodyRow<'a>, Changed<RigidBody>>,
+  Query<'w, 's, BodyRow<'a>>,
+);
 /// World transforms, disabled entities included
 type Globals<'a, 'w, 's> = Query<'w, 's, &'a GlobalTransform, Allow<Disabled>>;
 type HasPhysics = Or<(With<RigidBody>, With<Collider>, With<Joint>)>;
@@ -372,12 +377,12 @@ fn apply_edit(
 pub(crate) fn register_bodies(
   mut physics: ResMut<Physics>,
   config: Res<PhysicsConfig>,
-  mut bodies: Query<BodyRow>,
+  mut bodies: ParamSet<BodyRows>,
   globals: Globals,
 ) {
   physics.configure(&config);
   let refused: Vec<Entity> = physics.refused.drain().collect();
-  for (entity, place, mut velocity, mut angular, body) in &mut bodies {
+  for (entity, place, mut velocity, mut angular, body) in &mut bodies.p0() {
     if body.is_added() {
       let (translation, rotation) = body_pose(place, &globals);
       physics.add_body(
@@ -393,6 +398,7 @@ pub(crate) fn register_bodies(
     }
   }
   // Already registered (re-added or re-enabled meanwhile) is a no-op
+  let bodies = bodies.p1();
   for entity in refused {
     if let Ok((entity, place, velocity, angular, body)) = bodies.get(entity) {
       let (translation, rotation) = body_pose(place, &globals);
