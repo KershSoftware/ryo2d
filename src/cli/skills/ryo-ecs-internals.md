@@ -97,7 +97,7 @@ Propagation and physics sync are change-detected, so a spurious write costs work
 
 - Assign a component only when the value changed, or use `set_if_neq`.
 - Iterating `&mut T` does not mark anything; dereferencing `Mut<T>` mutably does.
-- Physics' write-back is an ordinary change (propagation must see bodies move); `sync_to_physics` therefore compares values with the body before pushing.
+- Physics' write-back is an ordinary change (propagation must see bodies move); `push_changes` therefore compares values (within a small tolerance) with the body before pushing.
 - `bypass_change_detection()` hides a write from propagation as well: do not use it on `Transform`.
 
 ## Resources Are Entities

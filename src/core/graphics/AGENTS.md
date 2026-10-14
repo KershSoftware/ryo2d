@@ -36,7 +36,7 @@ Renderers are engine-owned, not resources. `GpuRenderContext` is the only GPU ac
 ## Sprites and Anchors
 
 - `Renderable::anchor` (default `Anchor::Center`) picks the point of a single sprite that sits on the entity's position; rotation and scale happen about it. Things laid out as a grid or from a corner (backgrounds, tiles, panels) take `.with_anchor(Anchor::TopLeft)`; things that move, rotate or scale keep the default.
-- Tiled runs (`Renderable::tiled`) and composite parts ignore the anchor: they are laid out from the entity's position (the first tile's top-left), as are `GroupedCollider`s (see `src/core/physics/AGENTS.md`).
+- Tiled runs (`Renderable::tiled`) and composite parts ignore the anchor: they are laid out from the entity's position (the first tile's top-left), and `build_with_collider` returns a rect `Collider` already offset to cover them (see `src/core/physics/AGENTS.md`).
 - Colliders are centred on the origin, so a centred sprite and its collider line up with no offset maths.
 
 ## Camera Uniforms and Shader Time

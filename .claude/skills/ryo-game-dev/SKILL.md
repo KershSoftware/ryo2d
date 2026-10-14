@@ -375,14 +375,82 @@ fn show_paths(mut debug: ResMut<DebugDraw>, agents: Query<&Path>) {
 ```rust
 ctx.world.spawn((
   Transform::from_xy(200.0, 100.0),
-  Velocity::zero(),
   Renderable::sprite(sprite),
-  RigidBody::new(),
-  Collider::box_collider(32.0, 32.0),
+  RigidBody::dynamic(),
+  Collider::rect(32.0, 32.0),
 ));
 ```
 
-Colliders are centred on the entity's position plus `Collider.offset`, so they line up with a centre-anchored sprite. Bodies must be root entities (no `ChildOf`). Everything else: `ryo-physics`.
+Colliders are centred on the entity's position plus `Collider.offset`, so they line up with a centre-anchored sprite. Bodies are `dynamic()`, `fixed()` or `kinematic()`; a collider with no body is fixed. Bodies may sit anywhere in the hierarchy, and a collider attaches to the nearest body at or above it. Everything else: `ryo-physics`.
+
+### Recipe: a stack of crates on a fixed floor
+
+```rust
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+  // A bare collider is a fixed floor
+  ctx.world.spawn((Transform::from_xy(400.0, 580.0), Collider::rect(800.0, 40.0)));
+  for row in 0..5 {
+    ctx.world.spawn((
+      Transform::from_xy(400.0, 540.0 - 32.0 * row as f32 - 16.0),
+      Renderable::sprite(self.crate_sprite),
+      RigidBody::dynamic(),
+      Collider::rect(32.0, 32.0).with_friction(0.6),
+    ));
+  }
+}
+```
+
+The crates settle and fall asleep; a body nobody touches costs nothing. Raise `PhysicsConfig::solver_iterations` if tall stacks wobble.
+
+### Recipe: a rope bridge with a break force
+
+```rust
+let left = ctx.world.spawn((Transform::from_xy(100.0, 300.0), RigidBody::fixed())).id();
+let right = ctx.world.spawn((Transform::from_xy(700.0, 300.0), RigidBody::fixed())).id();
+let mut previous = left;
+for i in 1..=10 {
+  let plank = ctx.world.spawn((
+    Transform::from_xy(100.0 + 60.0 * i as f32, 300.0),
+    RigidBody::dynamic(),
+    Collider::rect(54.0, 8.0),
+  )).id();
+  // Hinge between planks at the gap, breaks under a sustained load
+  let hinge = Vec2::new(100.0 + 60.0 * i as f32 - 30.0, 300.0);
+  ctx.world.spawn(Joint::revolute(previous, plank).at(hinge).with_break_force(40_000.0));
+  previous = plank;
+}
+ctx.world.spawn(Joint::revolute(previous, right).at(Vec2::new(670.0, 300.0)));
+
+// in update
+for broken in ctx.messages::<JointBroken>() {
+  // play a snap, drop the planks' sprites, tell the player
+  let _ = broken.joint;
+}
+```
+
+`with_break_force` measures a sustained pull; a sudden jerk may break a joint early or not at all, so tune the number by loading the bridge. A broken joint is removed along with its `Joint` component.
+
+### Recipe: a line-of-sight check
+
+```rust
+fn can_see(ctx: &SceneContext, looker: Entity, target: Entity) -> bool {
+  let (Some(from), Some(to)) = (
+    ctx.world.get::<GlobalTransform>(looker),
+    ctx.world.get::<GlobalTransform>(target),
+  ) else {
+    return false;
+  };
+  let (from, to) = (from.translation(), to.translation());
+  // Exclude the looker so its own collider does not block the ray; triggers are skipped by default
+  let filter = QueryFilter::new().excluding(looker);
+  match ctx.physics().raycast(from, to - from, from.distance(to), &filter) {
+    Some(hit) => hit.body == target || hit.collider == target,
+    None => true,
+  }
+}
+```
+
+Queries see the world as the last step left it, so a wall spawned this tick does not block yet.
 
 ## Hierarchy and Interpolation
 

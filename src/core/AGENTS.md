@@ -16,7 +16,7 @@ Most subsystems have their own AGENTS.md or a skill in `.claude/skills/`. This f
 `Time` (`time.rs`) is a resource and `ctx.time` in scene callbacks, with three clocks:
 
 - `real`: wall clock, never scaled or paused. Camera shake, the console, UI animation (`ui.dt()`), timed post-process effects and the hitstop countdown use it.
-- `game`: real delta times `speed` (`0..=100`), zero while paused or in hitstop, then capped: one frame adds at most `max_delta` (default 250 ms, or one fixed timestep if that is longer) of game time, after speed scaling. A stall or a high speed runs at most 15 fixed steps at 60 Hz. Sprite effects animate on it.
+- `game`: real delta times `speed` (`0..=100`), zero while paused or in hitstop, then capped: one frame adds at most `max_delta` (default 250 ms, or one fixed timestep if that is longer) of game time, after speed scaling. A stall or a high speed runs about 15 fixed steps at 60 Hz (14 once the timestep's rounding to whole nanoseconds is counted; never more than 15). Sprite effects animate on it.
 - `fixed`: accumulates game time into constant steps (`EngineBuilder::fixed_hz`, default 60). Each step runs `FixedUpdate` once: `Scene::update` (its `dt` is the timestep), juice, scene fixed systems, physics. Slow motion runs fewer steps, pause and hitstop run none; the step length never changes.
 
 `time.delta()` is the fixed timestep inside `FixedUpdate` and the game delta elsewhere. Rapier steps by `fixed.timestep()`, so physics follows speed, pause and hitstop like everything else.

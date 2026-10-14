@@ -58,14 +58,14 @@ Engine::frame()
  │        Juice ........ animation, tweens, knockback, squash/stretch, skeletons
  │        Scene ........ Scene::update(ctx, timestep) unless a transition runs, its SceneAction
  │        Game ......... the scenes' own FixedUpdate systems; builder systems by default
- │        Physics ...... unregister, register (root bodies only; edits in place), sync to
- │                       Rapier, step, sync back, collision messages
+ │        Physics ...... forget removed, track disabled, propagate, register bodies, sync
+ │                       colliders, push changes, sync joints, step, read back, messages
  │        Transforms ... propagate GlobalTransform
  │        Trails ....... record trail points
  ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems; builder ones by default
  ├─ PostUpdate ... Transforms (propagation), Camera (shake, every camera's view), Extract (timed effects)
  ├─ render ....... Scene::render, query the world into the draw list, plan the cameras, run the RenderPipeline
- └─ Last ......... physics registration bookkeeping, forget despawned tilemaps, clear change trackers
+ └─ Last ......... physics removal and re-enable bookkeeping, forget despawned tilemaps, clear change trackers
 ```
 
 - Phases are bevy schedules labelled by `Phase`; the sets inside them are `FixedSet`, `UpdateSet` and `PostUpdateSet`, chained in the order shown. Every schedule uses the single-threaded executor.
@@ -101,7 +101,7 @@ Engine::frame()
 | Drawing | `Renderable` (sprite or tiled run, `Anchor` default `Center`, z order, tint, shadows, sprite shader), `Material`, `YSort`, `CompositeTile` |
 | Animation | `Animator`, `AnimationController`, `ValidatedAnimator`, `Skeleton`, `SkeletalAnimator`, `SkeletalController` |
 | Juice | `Tween`, `TweenSequence`, `PropertyTween<T>`, `Knockback`, `SquashStretch` |
-| Physics | `RigidBody`, `Collider`, `GroupedCollider`, `Velocity` |
+| Physics | `RigidBody`, `Collider`, `Joint`, `Velocity`, `AngularVelocity` |
 | Lights, trails, particles | `Light2D`, `LightOccluder2D`, `Trail2D`, `Line2D`, `ParticleEmitter`, `ParticleAttractor` |
 | Navigation | `NavAgent`, `NavTarget` |
 
@@ -138,16 +138,19 @@ winit / gilrs / RYO_INPUT / headless harness
 
 ## Physics
 
-Rapier2D behind the `Physics` resource, stepped in `FixedSet::Physics` with `dt = time.fixed.timestep()`, skipped while `PhysicsPaused`.
+Rapier2D 0.36 behind the public `Physics` resource, which mirrors the ECS: components describe bodies, colliders and joints, and the systems in `physics/sync.rs` keep Rapier's world in step with them. `rapier2d` is named only inside `src/core/physics/`. Stepped in `FixedSet::Physics` with `dt = time.fixed.timestep()`, skipped while `PhysicsPaused`; the chain is `forget_removed`, `track_disabled`, `propagate_transforms`, `register_bodies`, `sync_colliders`, `push_changes`, `sync_joints`, `step_simulation`, `read_back`, `emit_messages`.
 
-1. Register bodies that gained `RigidBody`, `Collider` or `GroupedCollider`, or were re-enabled; unregister removed and disabled ones (this bookkeeping also runs in `Last` every frame).
-2. Push a changed `Transform` or `Velocity` to its body (only when it differs from the body's, so untouched bodies sleep).
-3. Step.
-4. Write positions and velocities of awake dynamic bodies back to `Transform` / `Velocity`.
-5. Drain contacts into `CollisionStarted` / `CollisionStopped` messages.
+1. Forget what went away and what was disabled (also in `Last` every frame, so a despawn is never missed at high render rates); propagate transforms so world poses are current.
+2. Register bodies and colliders (a collider attaches to the nearest `RigidBody` at or above it; none above makes it a fixed collider), apply edits in place, make joints.
+3. Push a changed `Transform`, `Velocity` or `AngularVelocity` to its body, compared by value so untouched bodies sleep; a kinematic body travels to its written `Transform` over the step.
+4. Step, then break joints pulled past their break force.
+5. Write poses and velocities of awake dynamic bodies and velocity-driven kinematic bodies back into the local `Transform` (through the parent), `Velocity` and `AngularVelocity`.
+6. Send `CollisionStarted`, `CollisionStopped`, `ContactForce` and `JointBroken` messages.
 
+- Public surface: components `RigidBody`, `Collider`, `Joint`, `AngularVelocity`; resources `Physics` (queries: `raycast`, `shape_cast`, `overlap_*`, `nearest`; contact state: `contacts`, `overlaps`, `in_contact`; forces and impulses) and `PhysicsConfig`; reached as `ctx.physics()` / `ctx.physics_mut()`.
 - 100 pixels = 1 meter; gravity in pixels/s² (`PhysicsConfig`, default `(0, 980)`, +Y down).
-- Colliders are centred on the entity origin plus `offset`. Bodies are dynamic or kinematic, rotation locked, and must be root entities.
+- Time: one frame adds at most `max_delta` (250 ms) of game time after speed scaling, so a stall runs about 15 fixed steps at 60 Hz, not an unbounded number. Slow motion runs fewer steps; pause and hitstop run none.
+- Colliders follow the entity's world scale, mirroring and rotation. Details and decisions: `src/core/physics/AGENTS.md`.
 
 ## Rendering
 

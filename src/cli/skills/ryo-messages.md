@@ -101,7 +101,7 @@ A reader ordered after the writer in the same schedule sees the message the same
 
 | Writer | Runs | Readers see it |
 |--------|------|----------------|
-| Physics (`CollisionStarted`, `CollisionStopped`) | each fixed step, after `Scene::update` | the next step's `update` |
+| Physics (`CollisionStarted`, `CollisionStopped`, `ContactForce`, `JointBroken`) | each fixed step, after `Scene::update` | the next step's `update` |
 | Juice systems (tween, knockback, squash) | each fixed step, before `Scene::update` | the same step's `update` |
 | Hot reload (`AssetReloaded`, `AssetLoadFailed`) | `PreUpdate`, once a frame | this frame's `ui` and steps |
 | `ParticleSystem::update` (`ParticleCollision`) | where the scene calls it | after that call |

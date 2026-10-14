@@ -42,7 +42,7 @@ Engine::frame
 │   ├─ Juice          animation, tweens, sequences, property tweens, knockback, squash, skeletons
 │   ├─ Scene          transitions, Scene::update (active scene and those under updates_below), action
 │   ├─ Game           the scenes' own FixedUpdate schedules; builder systems by default
-│   ├─ Physics        register, unregister, sync to Rapier, step, sync back, collision messages
+│   ├─ Physics        forget, track disabled, propagate, register, sync colliders, push, sync joints, step, read back, messages
 │   ├─ Transforms     propagation
 │   └─ Trails         trail point recording; later debug shapes last one frame
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
@@ -56,7 +56,7 @@ Engine::frame
 │                     per camera: clear → world → lighting → unlit_world (Rgba16Float, linear)
 │                     per frame:  cameras → hdr_effects → tonemap → transition → post_process
 │                                 → ui → composite → capture   (tonemap writes the display image)
-└─ Last               physics registration bookkeeping, forget despawned tilemaps, clear_trackers,
+└─ Last               physics removal and re-enable bookkeeping, forget despawned tilemaps, clear_trackers,
                       check_change_ticks every 1024 frames
 ```
 

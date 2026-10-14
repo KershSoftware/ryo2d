@@ -431,8 +431,8 @@ impl Scene for Level {
       Transform::from_xy(320.0, 180.0),
       Renderable::sprite(sprite).with_z_order(10),
       Player { speed: 120.0 },
-      RigidBody::new(),
-      Collider::box_collider(16.0, 16.0),
+      RigidBody::dynamic(),
+      Collider::rect(16.0, 16.0),
       Velocity::zero(),
       Interpolated,
     )).id();
@@ -696,30 +696,60 @@ Parallax layers (components; spawn one entity per layer):
 
 Multi-part sprites laid out from the entity's position (parts at offsets from it, not anchored).
 
-- `CompositeTileBuilder`: `new()`, `cap(sprite, offset_x, offset_y)`, `cap_flipped_y(..)`, `cap_flipped(sprite, x, y, flip_x, flip_y)`, `static_part(..)`, `body_tiled(sprite, x, y, TileDirection, target_size)`, `body_tiled_flipped(..)`, `tiled_part(..)`, `z_order(i32)`, `visible(bool)`, `build() -> CompositeTile`, `build_with_collider() -> (CompositeTile, GroupedCollider)`.
+- `CompositeTileBuilder`: `new()`, `cap(sprite, offset_x, offset_y)`, `cap_flipped_y(..)`, `cap_flipped(sprite, x, y, flip_x, flip_y)`, `static_part(..)`, `body_tiled(sprite, x, y, TileDirection, target_size)`, `body_tiled_flipped(..)`, `tiled_part(..)`, `z_order(i32)`, `visible(bool)`, `build() -> CompositeTile`, `build_with_collider() -> (CompositeTile, Collider)` (a rect collider offset over all the parts).
 - `CompositeTile { parts: Vec<TilePart>, visible, z_order }` (component): `new()`, `add_part(TilePart)`, `with_visible`, `with_z_order`, `bounds() -> (f32, f32, f32, f32)`, `size()`.
 - `TilePart { sprite, offset_x, offset_y, tiling: Option<(TileDirection, f32)>, flip_x, flip_y }`: `static_part(sprite, x, y)`, `tiled_part(sprite, x, y, direction, target_size)`, `with_flip_x`, `with_flip_y`, `is_tiled()`, `bounds()`.
-- `GroupedCollider { width, height, offset_x, offset_y, is_trigger, restitution, friction }` (component; physics treats it like a box collider whose top-left is `offset` from the origin): `new(w, h)`, `from_composite(&CompositeTile)`, `with_offset(x, y)`, `as_trigger()`, `with_restitution(f32)`, `with_friction(f32)`.
 - `enum TileDirection { Up, Down, Left, Right }`: `offset(tile_size)`, `is_horizontal()`, `is_vertical()`.
 
 ---
 
 ## Physics
 
-Rapier2D. An entity is simulated when it has `RigidBody` + `Transform` + (`Collider` or `GroupedCollider`) and no parent. 100 px = 1 m; gravity is in px/s².
+Rapier2D 0.36. A `Collider` joins the simulation on its own (a fixed collider) or attaches to the nearest `RigidBody` at or above its entity. 100 px = 1 m; gravity is in px/s². Positions are pixels, +Y down. Everything below is in the prelude.
 
 | Type | API |
 |---|---|
-| `RigidBody` (component) `{ gravity_scale, drag, is_kinematic, ccd_enabled }` | `new()` (dynamic), `kinematic()` (moved by its `Transform`), `with_gravity_scale(f32)`, `with_drag(f32)`, `with_ccd()` |
-| `Collider` (component) `{ shape, offset: Vec2, is_trigger, layer: u32, mask: u32, restitution, friction }` | `box_collider(w, h)`, `circle_collider(r)`, `with_offset(x, y)`, `as_trigger()`, `with_layer(u32)`, `with_mask(u32)`, `with_restitution(f32)`, `with_friction(f32)`, `should_collide_with(&Collider)`, `world_center(position: Vec2) -> Vec2`, `world_bounds(position) -> (Vec2, Vec2)` |
-| `enum ColliderShape` | `Box { width, height }`, `Circle { radius }`; centred on the entity's origin plus `offset` |
+| `RigidBody` (component, brings `Transform`, `Velocity`, `AngularVelocity`) `{ kind: BodyKind, gravity_scale, linear_damping, angular_damping, lock_rotation, ccd, can_sleep, dominance: i8 }` | `dynamic()` (also `default()`), `fixed()`, `kinematic()`, `with_gravity_scale(f32)`, `with_linear_damping(f32)`, `with_angular_damping(f32)`, `lock_rotation()`, `with_ccd()`, `never_sleep()`, `with_dominance(i8)` |
+| `enum BodyKind { Dynamic, Fixed, Kinematic }` | |
+| `AngularVelocity(pub f32)` (component, rad/s, same sign as `Transform.rotation`) | written back from awake dynamic bodies; set it to spin one |
+| `Collider` (component) `{ shape: ColliderShape, offset: Vec2, rotation: f32, is_trigger, layer: u32 (default 1), mask: u32 (default all), density: f32 (1.0), mass: Option<f32>, friction (0.5), restitution (0.0), force_threshold: Option<f32> }` | `rect(w, h)`, `circle(r)`, `capsule(height, radius)`, `polygon(impl IntoIterator<Item = Vec2>)`, `segment(a, b)`, `polyline(points)`, `with_offset(x, y)`, `with_rotation(radians)`, `as_trigger()`, `with_layer(u32)`, `with_mask(u32)`, `with_density(f32)`, `with_mass(f32)`, `with_friction(f32)`, `with_restitution(f32)`, `with_force_events(threshold)`, `world_bounds(&GlobalTransform) -> (Vec2, Vec2)` |
+| `enum ColliderShape` | `Rect { size: Vec2 }`, `Circle { radius }`, `Capsule { height, radius }` (upright, `height` includes the ends), `Polygon { points }` (convex hull), `Segment { a, b }`, `Polyline { points }` (open chain) |
+| `Joint` (component) `{ a: Entity, b: Entity, kind: JointKind, anchor: JointAnchor, limits: Option<(f32, f32)>, motor: Option<JointMotor>, collisions: bool, break_force: Option<f32> }` | `revolute(a, b)`, `prismatic(a, b, axis: Vec2)`, `fixed(a, b)`, `rope(a, b, max_length)`, `spring(a, b, rest_length, stiffness, damping)`, `at(Vec2)`, `with_anchors(a: Vec2, b: Vec2)`, `with_limits(min, max)`, `with_motor_velocity(target, max_force)`, `with_motor_position(target, stiffness, damping)`, `with_collisions()`, `with_break_force(f32)` |
+| `enum JointKind` | `Revolute`, `Prismatic { axis }`, `Fixed`, `Rope { max_length }`, `Spring { rest_length, stiffness, damping }` |
+| `enum JointAnchor` | `Origins` (default), `World(Vec2)`, `Local { a: Vec2, b: Vec2 }` |
+| `enum JointMotor` | `Velocity { target, max_force }`, `Position { target, stiffness, damping }` |
 | `PhysicsConfig` (resource) `{ gravity: Vec2, pixels_per_meter: f32, solver_iterations: usize }` | `default()` ((0, 980), 100, 4), `with_gravity(Vec2)`, `zero_gravity()`, `with_pixels_per_meter(f32)`, `with_solver_iterations(usize)` |
-| `Physics` (resource; `ctx.physics()` / `ctx.physics_mut()`) | queries: `contacts(e) -> Vec<Touch>`, `overlaps(e) -> Vec<Overlap>`, `in_contact(a, b)`, `body_velocity(e)`, `body_position(e)`, `is_sleeping(e)`, `is_registered(e)`, `registered_entities()`, `body_count()`; the engine calls `register_entity`, `step(dt)`, `set_transform`, `set_velocity`, `read_back`, `drain_collision_events` |
-| `PhysicsCollisionEvent { entity_a, entity_b, event_type: CollisionEventType, is_sensor }`, `enum CollisionEventType { Started, Stopped }` | Rapier's raw events; the engine turns them into `CollisionStarted` / `CollisionStopped` messages each step |
+| `QueryFilter` | `new()` / `default()` (every layer, skips triggers), `with_mask(u32)`, `excluding(Entity)` (repeatable), `with_triggers()` |
+| `Hit { collider, body, point: Vec2, normal: Vec2, distance: f32 }` | a ray or shape cast's first contact |
+| `Overlap { collider, body }` | an overlap test result |
+| `PointHit { collider, body, point: Vec2, inside: bool }` | `nearest` result |
+| `Touch { collider, body, point, normal, impulse }` | a solid contact on an entity: the other side, the deepest point, the normal from the entity toward the other side (ground below is `(0, +1)`), the step's normal impulse |
+| `Contact { point: Vec2, normal: Vec2 }` | where two colliders first touched; the normal points from `a` to `b` |
 
-- Collider geometry is centred on the entity's origin, which is the sprite's centre with the default `Anchor::Center`.
-- Bodies do not rotate. Move a dynamic body through `Velocity`; a game write to `Transform` teleports it. Physics writes position and velocity back after each step.
-- Physics pauses while the top scene's `is_physics_paused()` is true. Read collisions with `ctx.messages::<CollisionStarted>()`. See `ryo-physics`.
+`Physics` (resource; `ctx.physics() -> &Physics`, `ctx.physics_mut() -> Mut<Physics>`). Queries see the world as the last step left it.
+
+| Group | Methods |
+|---|---|
+| Rays and casts | `raycast(origin, direction, max_distance, &QueryFilter) -> Option<Hit>`, `raycast_all(..) -> Vec<Hit>` (nearest first), `shape_cast(&ColliderShape, origin, rotation, direction, max_distance, &QueryFilter) -> Option<Hit>` |
+| Overlaps | `overlap_point(point, &QueryFilter) -> Vec<Overlap>`, `overlap_shape(&ColliderShape, position, rotation, &QueryFilter) -> Vec<Overlap>`, `nearest(point, max_distance, &QueryFilter) -> Option<PointHit>` |
+| Contact state | `contacts(entity) -> Vec<Touch>`, `overlaps(entity) -> Vec<Overlap>`, `in_contact(a, b) -> bool`, `is_sleeping(entity) -> bool`, `mass(body) -> Option<f32>` |
+| Forces | `apply_impulse(body, Vec2)`, `apply_impulse_at(body, impulse, point)`, `apply_angular_impulse(body, f32)`, `apply_force(body, Vec2)` (next step only), `apply_force_at(body, force, point)`, `apply_torque(body, f32)` (next step only) |
+
+An entity argument is a body (all its colliders) or one collider.
+
+Messages (read with `ctx.messages::<T>()`), all with `a, b` (colliders), `body_a, body_b` and the helpers `involves(e)`, `other(e) -> Option<Entity>`, `other_collider(e) -> Option<Entity>` except `JointBroken`:
+
+| Message | Fields |
+|---|---|
+| `CollisionStarted` | `trigger: bool`, `contact: Option<Contact>` (`None` for triggers) |
+| `CollisionStopped` | `trigger: bool`; either entity may already be despawned |
+| `ContactForce` | `force: f32`, `direction: Vec2`, `started: bool`; sent every step above the collider's `with_force_events` threshold |
+| `JointBroken` | `joint`, `a`, `b` (bodies); the `Joint` component is removed |
+
+- Collider geometry is centred on the entity's origin plus `offset`, which is the sprite's centre with the default `Anchor::Center`.
+- Move a dynamic body through `Velocity` / `AngularVelocity`, forces or impulses; a game write to `Transform` teleports it. A kinematic body travels to a written `Transform` over the step (it wins over `Velocity` when both are written; an unchanged pose does not count). Physics writes pose and velocities back after each step.
+- Physics pauses while the top scene's `is_physics_paused()` is true; queued forces and impulses wait and apply together at the next step. `time.game.max_delta()` / `set_max_delta` (250 ms) caps the game time a frame adds, after speed scaling. See `ryo-physics`.
+
 
 ---
 

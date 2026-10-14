@@ -206,7 +206,7 @@ impl DemoPage for ShapesPage {
     "Shapes"
   }
   fn description(&self) -> &str {
-    "Boxes, circles, capsules and polygons that tumble, stack and sleep (dimmed by F2 when asleep)."
+    "Boxes, circles, capsules and polygons that tumble, stack and sleep (F2 shows the engine overlay, where sleeping bodies are dimmed). Bounce and Friction apply to bodies dropped afterwards."
   }
   fn settings(&mut self, s: &mut Settings) {
     s.choice("Shape", &mut self.shape, &SHAPES);
@@ -619,7 +619,7 @@ impl DemoPage for LayersPage {
     "Layers"
   }
   fn description(&self) -> &str {
-    "Each shelf catches only its own colour; a trigger counts the balls in it; hard impacts flash."
+    "Each shelf catches only its own colour; a trigger counts the balls in it; hard impacts flash. Impact threshold applies to bodies dropped afterwards."
   }
   fn settings(&mut self, s: &mut Settings) {
     s.float("Impact threshold", &mut self.threshold, 50.0..=2000.0, 50.0);
