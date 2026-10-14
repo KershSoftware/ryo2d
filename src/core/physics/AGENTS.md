@@ -112,6 +112,17 @@ A `CharacterController` makes its entity a character: a kinematic body with lock
 - **Velocity:** `Velocity` is the game's wanted velocity going in and the real one coming out: each wall and ceiling normal takes out what runs into it, and the floor takes out the fall only (so standing on a gentle slope does not creep); leaving a floor adds its momentum (above). The carry is not part of `Velocity`. A slope too steep to climb stops a run into it rather than turning it into a climb (the clip may not make the character rise faster than it already did; `clip`). `velocity_before` keeps what was asked. A non-finite `Velocity` is not applied (the character stays, its velocity becomes zero). `move_characters` writes `Velocity` at its own tick, not the write-back's; the next `push_changes` sees a changed velocity on a kinematic body and ignores it.
 - **Warnings** (once per entity): a controller on a body that is not kinematic is not moved; a controller without a collider on its own entity is not moved; a non-finite velocity.
 
+## Tile Colliders
+
+`TileColliders` (requires `Transform`) is a grid of `TileCell`s that builds its own colliders as child entities marked `TilePart`; the pure geometry is `tiles.rs`.
+
+- **Outlines:** every filled cell adds its corners wound clockwise; an edge two cells share runs both ways and cancels, leaving the boundary, which is chained into closed loops (holes included) with straight runs merged. A long floor is one segment of a polyline, so there are no seams to snag on. Where two regions touch only at a corner the sharpest turn keeps their outlines apart. Slopes are 45 degree half-cells whose diagonal joins the floor without a seam. Characters sweep polylines through `StartFallback` (see Characters).
+- **Hollow:** an outline is a polyline, so a body that ends up inside a solid region is not pushed out. `solid_rects()` builds merged rectangles (and polygons for slopes) instead: solid interiors, but seams between rectangles.
+- **One-way:** each horizontal run of `OneWay` cells becomes one `Collider::segment(..).one_way()` along its top.
+- **Rebuild:** `rebuild_tile_colliders` (`FixedSet::Movement`) despawns and respawns all parts of any grid whose component changed (`Changed`, so `set` through `Mut` is enough). The grid's layer, mask, friction and restitution go on every part. A non-positive or non-finite tile size builds nothing (warned once). With a kinematic `RigidBody` on the map entity the parts move with it.
+- **Bounded:** the geometry functions clamp the scanned rows and columns to what `cells` can supply, and a grid over `MAX_CELLS` is empty, so a bad size costs nothing.
+- **Navigation:** `NavigationGrid::rebuild_from_world` skips `TilePart` colliders and blocks the grid's solid and slope cells exactly (`block_tiles`).
+
 ## Notes for AI Agents
 
 1. **Never name Rapier types outside this module** and never `unwrap` in library code; vectors cross `convert.rs`.

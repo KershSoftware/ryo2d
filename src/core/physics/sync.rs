@@ -910,6 +910,10 @@ pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
       .in_set(FixedSet::Physics)
       .run_if(physics_enabled),
   );
+  schedules.add_systems(
+    Phase::FixedUpdate,
+    super::tiles::rebuild_tile_colliders.in_set(FixedSet::Movement),
+  );
 }
 
 #[cfg(test)]

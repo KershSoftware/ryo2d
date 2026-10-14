@@ -1,6 +1,8 @@
 use super::TileId;
 use super::layer::TilemapLayer;
 use super::tileset::Tileset;
+use crate::core::ecs::Vec2;
+use crate::core::physics::{SlopeCorner, TileCell, TileColliders};
 
 /// Orientation of the tilemap grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -146,6 +148,52 @@ impl Tilemap {
     self.tilesets.push(tileset);
     index
   }
+
+  /// Tile colliders for this map, placed at the map's origin: tiles whose
+  /// properties are `solid` are solid, `platform` tiles are one-way, and a
+  /// `slope` custom property (`"bottom-left"`, `"bottom-right"`,
+  /// `"top-left"`, `"top-right"`) makes a 45° slope with that corner
+  /// filled. Layers combine: solid beats a slope, a slope beats one-way.
+  pub fn tile_colliders(&self) -> TileColliders {
+    let rank = |cell: TileCell| match cell {
+      TileCell::Empty => 0,
+      TileCell::OneWay => 1,
+      TileCell::Slope(_) => 2,
+      TileCell::Solid => 3,
+    };
+    let size = Vec2::new(self.tile_width as f32, self.tile_height as f32);
+    let mut tiles = TileColliders::new(self.map_width, self.map_height, size);
+    for layer in &self.layers {
+      let Some(tileset) = self.tilesets.get(layer.tileset_index) else {
+        continue;
+      };
+      for y in 0..self.map_height.min(layer.height) {
+        for x in 0..self.map_width.min(layer.width) {
+          let Some(id) = layer.get_tile(x, y) else {
+            continue;
+          };
+          let properties = tileset.get_properties(id);
+          let cell = if properties.solid {
+            TileCell::Solid
+          } else if let Some(corner) = properties
+            .custom
+            .get("slope")
+            .and_then(|name| SlopeCorner::from_name(name))
+          {
+            TileCell::Slope(corner)
+          } else if properties.platform {
+            TileCell::OneWay
+          } else {
+            continue;
+          };
+          if rank(cell) > rank(tiles.get(x, y)) {
+            tiles.set(x, y, cell);
+          }
+        }
+      }
+    }
+    tiles
+  }
 }
 
 #[cfg(test)]
@@ -153,6 +201,53 @@ mod tests {
   use super::*;
   use crate::core::tilemap::tileset::TileProperties;
   use std::collections::HashMap;
+
+  #[test]
+  fn a_tilemap_gives_tile_colliders_from_its_properties() {
+    use crate::core::physics::{SlopeCorner, TileCell};
+    let mut map = Tilemap::new(16, 16, 3, 1);
+    let mut tileset = Tileset {
+      name: "t".into(),
+      image_path: String::new(),
+      tile_width: 16,
+      tile_height: 16,
+      columns: 4,
+      tile_count: 4,
+      spacing: 0,
+      margin: 0,
+      image_width: 64,
+      image_height: 16,
+      properties: Default::default(),
+    };
+    tileset.properties.insert(
+      0,
+      TileProperties {
+        solid: true,
+        ..Default::default()
+      },
+    );
+    tileset.properties.insert(
+      1,
+      TileProperties {
+        platform: true,
+        ..Default::default()
+      },
+    );
+    let mut slope = TileProperties::default();
+    slope.custom.insert("slope".into(), "bottom-right".into());
+    tileset.properties.insert(2, slope);
+    map.add_tileset(tileset);
+    let mut layer = TilemapLayer::new("ground", 3, 1);
+    for (x, id) in [(0, 0), (1, 1), (2, 2)] {
+      layer.set_tile(x, 0, id);
+    }
+    map.add_layer(layer);
+    let tiles = map.tile_colliders();
+    assert_eq!(tiles.get(0, 0), TileCell::Solid);
+    assert_eq!(tiles.get(1, 0), TileCell::OneWay);
+    assert_eq!(tiles.get(2, 0), TileCell::Slope(SlopeCorner::BottomRight));
+    assert_eq!(tiles.tile_size, crate::core::ecs::Vec2::splat(16.0));
+  }
 
   fn test_tileset() -> Tileset {
     Tileset {

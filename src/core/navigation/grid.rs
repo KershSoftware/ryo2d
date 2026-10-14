@@ -2,8 +2,8 @@
 //!
 //! Provides a cell-based walkability map for A* pathfinding.
 
-use crate::core::ecs::{Entity, GlobalTransform, World};
-use crate::core::physics::Collider;
+use crate::core::ecs::{Entity, GlobalTransform, Vec2, Without, World};
+use crate::core::physics::{Collider, TileCell, TileColliders, TilePart};
 use std::collections::HashSet;
 
 /// Cell walkability state
@@ -289,16 +289,47 @@ impl NavigationGrid {
     }
   }
 
+  /// Block the cells under a tile grid's solid and slope cells, its cell
+  /// (0, 0)'s top-left at `origin` (its entity's position). One-way cells
+  /// stay walkable.
+  pub fn block_tiles(&mut self, tiles: &TileColliders, origin: Vec2) {
+    let size = tiles.tile_size;
+    if !(size.is_finite() && size.min_element() > 0.0) {
+      return;
+    }
+    for y in 0..tiles.height() {
+      for x in 0..tiles.width() {
+        if matches!(tiles.get(x, y), TileCell::Solid | TileCell::Slope(_)) {
+          let min = origin + Vec2::new(x as f32, y as f32) * size;
+          // Just inside the far edges, so a tile does not block its neighbours' cells
+          let max = min + size - Vec2::splat(1e-3);
+          self.block_rect(min.x, min.y, max.x, max.y);
+        }
+      }
+    }
+  }
+
   /// Rebuild the grid from entities with Collider components
   ///
-  /// Every solid (non-trigger) collider blocks the cells it covers.
+  /// Every solid (non-trigger) collider blocks the cells it covers. Tile
+  /// grids block exactly their solid and slope cells: their outline
+  /// colliders would block their whole bounding boxes, so those are skipped.
   pub fn rebuild_from_world(&mut self, world: &mut World) {
     self.clear();
-    let mut colliders = world.query::<(Entity, &GlobalTransform, &Collider)>();
+    let mut colliders =
+      world.query_filtered::<(Entity, &GlobalTransform, &Collider), Without<TilePart>>();
     for (entity, global, collider) in colliders.iter(world) {
       if !collider.is_trigger {
         self.block_collider(global, collider, entity);
       }
+    }
+    let mut maps = world.query::<(&GlobalTransform, &TileColliders)>();
+    let maps: Vec<_> = maps
+      .iter(world)
+      .map(|(global, tiles)| (tiles.clone(), global.translation()))
+      .collect();
+    for (tiles, origin) in &maps {
+      self.block_tiles(tiles, *origin);
     }
   }
 }
@@ -359,6 +390,61 @@ impl NavigationBuilder {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn block_tiles_blocks_exactly_the_solid_cells() {
+    use crate::core::physics::{TileCell, TileColliders};
+    let cells = vec![
+      TileCell::Solid,
+      TileCell::Empty,
+      TileCell::OneWay,
+      TileCell::Solid,
+    ];
+    let tiles = TileColliders::from_cells(2, 2, Vec2::splat(10.0), cells);
+    let mut grid = NavigationGrid::new(40.0, 40.0, 10.0);
+    grid.block_tiles(&tiles, Vec2::new(10.0, 10.0));
+    assert!(!grid.is_walkable(GridCoord::new(1, 1)));
+    assert!(grid.is_walkable(GridCoord::new(2, 1)));
+    assert!(
+      grid.is_walkable(GridCoord::new(1, 2)),
+      "one-way cells are walkable"
+    );
+    assert!(!grid.is_walkable(GridCoord::new(2, 2)));
+    assert!(grid.is_walkable(GridCoord::new(3, 3)));
+  }
+
+  #[test]
+  fn rebuilding_from_the_world_keeps_the_inside_of_a_tile_u_open() {
+    use crate::core::ecs::Transform;
+    use crate::core::physics::{TileCell, TileColliders, TilePart};
+    let (s, e) = (TileCell::Solid, TileCell::Empty);
+    let mut world = World::new();
+    let map = world
+      .spawn((
+        Transform::IDENTITY,
+        GlobalTransform::IDENTITY,
+        TileColliders::from_cells(3, 2, Vec2::splat(10.0), vec![s, e, s, s, s, s]),
+      ))
+      .id();
+    // As the engine would have built it: an outline collider child
+    world.spawn((
+      Transform::IDENTITY,
+      GlobalTransform::IDENTITY,
+      Collider::polyline([
+        Vec2::ZERO,
+        Vec2::new(30.0, 0.0),
+        Vec2::new(30.0, 20.0),
+        Vec2::ZERO,
+      ]),
+      TilePart,
+      crate::core::ecs::ChildOf(map),
+    ));
+    let mut grid = NavigationGrid::new(30.0, 20.0, 10.0);
+    grid.rebuild_from_world(&mut world);
+    assert!(grid.is_walkable(GridCoord::new(1, 0)), "the U's inside");
+    assert!(!grid.is_walkable(GridCoord::new(0, 0)));
+    assert!(!grid.is_walkable(GridCoord::new(1, 1)));
+  }
 
   #[test]
   fn grid_creation() {

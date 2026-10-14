@@ -29,6 +29,7 @@ pub use events::{
 };
 pub use joint::{Joint, JointAnchor, JointKind, JointMotor};
 pub use query::{Hit, Overlap, PointHit, QueryFilter, Touch};
-pub use tiles::{SlopeCorner, TileCell};
+pub(crate) use tiles::TilePart;
+pub use tiles::{SlopeCorner, TileCell, TileColliders};
 pub use triggers::TriggerContents;
 pub use world::Physics;

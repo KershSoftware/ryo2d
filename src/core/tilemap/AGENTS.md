@@ -7,6 +7,8 @@
 - `SceneCleanup::WORLD` despawns the tilemap entities and their manager entries go with them; so does any other despawn (by `Last`).
 - **Only orthogonal is implemented**: `Tilemap::orientation` stores `TilemapOrientation` (Isometric, Hexagonal*), but coordinate conversion ignores it.
 
+- `Tilemap::tile_colliders()` builds a `TileColliders` from tile properties (`solid`, `platform`, and a `slope` custom property naming the filled corner: `bottom-left`, `bottom-right`, `top-left`, `top-right`); spawn it with a `Transform` at the map's origin. `generate_collision_rects` stays for code that wants plain rectangles.
+
 ## Design Decisions
 
 ### Why Dense Grid (Not ECS Per-Tile)?
