@@ -297,13 +297,30 @@ impl NavigationGrid {
     if !(size.is_finite() && size.min_element() > 0.0) {
       return;
     }
+    // The cells a tile covers, worked out in cell units from the grid's
+    // origin in f64: the last cell is the one holding the far edge's inside,
+    // so a tile never blocks the neighbours it only touches, at any distance
+    let (cols, rows) = self.dimensions();
+    let cell = f64::from(self.cell_size);
+    let span = |from: f64, to: f64, count: u32| {
+      let first = (from / cell).floor().max(0.0) as i64;
+      let last = (((to / cell).ceil() - 1.0).min(f64::from(count) - 1.0)) as i64;
+      first..=last
+    };
     for y in 0..tiles.height() {
       for x in 0..tiles.width() {
-        if matches!(tiles.get(x, y), TileCell::Solid | TileCell::Slope(_)) {
-          let min = origin + Vec2::new(x as f32, y as f32) * size;
-          // Just inside the far edges, so a tile does not block its neighbours' cells
-          let max = min + size - Vec2::splat(1e-3);
-          self.block_rect(min.x, min.y, max.x, max.y);
+        if !matches!(tiles.get(x, y), TileCell::Solid | TileCell::Slope(_)) {
+          continue;
+        }
+        let min_x =
+          f64::from(origin.x) + f64::from(x) * f64::from(size.x) - f64::from(self.origin_x);
+        let min_y =
+          f64::from(origin.y) + f64::from(y) * f64::from(size.y) - f64::from(self.origin_y);
+        let xs = span(min_x, min_x + f64::from(size.x), cols);
+        for gy in span(min_y, min_y + f64::from(size.y), rows) {
+          for gx in xs.clone() {
+            self.set(GridCoord::new(gx as i32, gy as i32), CellState::Blocked);
+          }
         }
       }
     }
@@ -444,6 +461,22 @@ mod tests {
     assert!(grid.is_walkable(GridCoord::new(1, 0)), "the U's inside");
     assert!(!grid.is_walkable(GridCoord::new(0, 0)));
     assert!(!grid.is_walkable(GridCoord::new(1, 1)));
+  }
+
+  #[test]
+  fn a_far_tile_blocks_exactly_one_cell() {
+    use crate::core::physics::{TileCell, TileColliders};
+    for base in [32768.0_f32, 65536.0] {
+      let tiles = TileColliders::from_cells(1, 1, Vec2::splat(16.0), vec![TileCell::Solid]);
+      let mut grid = NavigationGrid::with_origin(96.0, 96.0, 16.0, base - 32.0, -32.0);
+      grid.block_tiles(&tiles, Vec2::new(base, 0.0));
+      let (w, h) = grid.dimensions();
+      let blocked: Vec<_> = (0..h as i32)
+        .flat_map(|y| (0..w as i32).map(move |x| GridCoord::new(x, y)))
+        .filter(|c| !grid.is_walkable(*c))
+        .collect();
+      assert_eq!(blocked, [GridCoord::new(2, 2)], "at {base}");
+    }
   }
 
   #[test]

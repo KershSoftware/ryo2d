@@ -154,6 +154,7 @@ impl Tilemap {
   /// `slope` custom property (`"bottom-left"`, `"bottom-right"`,
   /// `"top-left"`, `"top-right"`) makes a 45° slope with that corner
   /// filled. Layers combine: solid beats a slope, a slope beats one-way.
+  /// A map over 8192 × 8192 tiles is logged and gives an empty grid.
   pub fn tile_colliders(&self) -> TileColliders {
     let rank = |cell: TileCell| match cell {
       TileCell::Empty => 0,

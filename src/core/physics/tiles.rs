@@ -5,9 +5,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::collider::Collider;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use super::world::Physics;
 use crate::core::ecs::{
-  Changed, ChildOf, Children, Commands, Component, Entity, EntityHashSet, Local, Query, Transform,
-  Vec2, With,
+  Allow, ChildOf, Commands, Component, Disabled, Entity, EntityHashMap, Has, Or, Query, ResMut,
+  Transform, Vec2, With,
 };
 
 /// One cell of a tile collision grid.
@@ -217,7 +220,7 @@ pub(crate) fn solid_rects(width: u32, height: u32, cells: &[TileCell]) -> Vec<(C
   }
   rects
 }
-/// The most cells a grid holds (a 8192 x 8192 map); a larger size is empty.
+/// The most cells a grid holds (8192 × 8192); a larger size is empty.
 const MAX_CELLS: usize = 1 << 26;
 
 /// A grid of tile cells that builds its own colliders: seamless outlines
@@ -226,6 +229,10 @@ const MAX_CELLS: usize = 1 << 26;
 /// cell (0, 0)'s top-left; +Y is down. The colliders are child entities,
 /// rebuilt (all of them) on the next step after any change. With no body
 /// they are fixed; with a kinematic `RigidBody` the whole map moves.
+///
+/// Disabling the map entity (`Disabled`) removes its colliders and enabling
+/// it builds them again from the cells as they then are; so does removing
+/// the component. A grid over 8192 × 8192 cells is logged and empty.
 ///
 /// Outlines are hollow: a body that ends up inside a solid region is not
 /// pushed out. `solid_rects()` trades the seamless floors for solid
@@ -245,6 +252,15 @@ pub struct TileColliders {
   pub restitution: f32,
   /// Build merged rectangles instead of outlines
   pub solid_rects: bool,
+  /// Changes whenever the cells do (and is fresh for every new grid), so a
+  /// rebuild can tell what it has already built
+  generation: u64,
+}
+
+static GENERATIONS: AtomicU64 = AtomicU64::new(1);
+
+fn next_generation() -> u64 {
+  GENERATIONS.fetch_add(1, Ordering::Relaxed)
 }
 
 impl TileColliders {
@@ -254,8 +270,8 @@ impl TileColliders {
   }
 
   /// A grid from its cells, row by row from the top; missing cells are
-  /// empty and extra ones are dropped. A size over `MAX_CELLS` (a bad
-  /// size, not a map) makes a 0 x 0 grid.
+  /// empty and extra ones are dropped. A size over 8192 × 8192 cells (a bad
+  /// size, not a map) is logged and makes a 0 x 0 grid.
   pub fn from_cells(width: u32, height: u32, tile_size: Vec2, mut cells: Vec<TileCell>) -> Self {
     let (width, height) = match (width as usize).checked_mul(height as usize) {
       Some(count) if count <= MAX_CELLS => {
@@ -263,6 +279,10 @@ impl TileColliders {
         (width, height)
       }
       _ => {
+        crate::engine_warn!(
+          module: "Physics",
+          "a {width} x {height} TileColliders is over the limit of 8192 x 8192 cells; it is empty"
+        );
         cells.clear();
         (0, 0)
       }
@@ -277,6 +297,7 @@ impl TileColliders {
       friction: 0.5,
       restitution: 0.0,
       solid_rects: false,
+      generation: next_generation(),
     }
   }
 
@@ -297,12 +318,18 @@ impl TileColliders {
     }
   }
 
-  /// Change a cell (the colliders rebuild next step); false outside the grid.
+  /// Change a cell (the colliders rebuild next step). Returns false, and
+  /// changes nothing, for a cell outside the grid or one already `cell`.
   pub fn set(&mut self, x: u32, y: u32, cell: TileCell) -> bool {
     if x >= self.width || y >= self.height {
       return false;
     }
-    self.cells[y as usize * self.width as usize + x as usize] = cell;
+    let slot = &mut self.cells[y as usize * self.width as usize + x as usize];
+    if *slot == cell {
+      return false;
+    }
+    *slot = cell;
+    self.generation = next_generation();
     true
   }
 
@@ -379,23 +406,91 @@ impl TileColliders {
 #[derive(Component, Debug, Clone, Copy)]
 pub(crate) struct TilePart;
 
-/// `FixedSet::Movement`: rebuild the colliders of every grid that changed.
+/// What the colliders of a map were last built from, kept on the map entity.
+/// Floats compare by bits, so a NaN size does not rebuild every step.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TileRecord {
+  generation: u64,
+  tile_size: [u32; 2],
+  layer: u32,
+  mask: u32,
+  friction: u32,
+  restitution: u32,
+  solid_rects: bool,
+}
+
+impl TileRecord {
+  fn of(tiles: &TileColliders) -> Self {
+    Self {
+      generation: tiles.generation,
+      tile_size: [tiles.tile_size.x.to_bits(), tiles.tile_size.y.to_bits()],
+      layer: tiles.layer,
+      mask: tiles.mask,
+      friction: tiles.friction.to_bits(),
+      restitution: tiles.restitution.to_bits(),
+      solid_rects: tiles.solid_rects,
+    }
+  }
+}
+
+type Maps<'w, 's> = Query<
+  'w,
+  's,
+  (
+    Entity,
+    Option<&'static TileColliders>,
+    Option<&'static TileRecord>,
+    Has<Disabled>,
+  ),
+  (Or<(With<TileColliders>, With<TileRecord>)>, Allow<Disabled>),
+>;
+type Parts<'w, 's> = Query<'w, 's, (Entity, &'static ChildOf), (With<TilePart>, Allow<Disabled>)>;
+
+/// `FixedSet::Movement`: reconcile every map's colliders with its component
+/// each step. A map that is disabled or lost its `TileColliders` has no
+/// colliders; an enabled one whose cells or settings differ from its
+/// `TileRecord` has its colliders rebuilt (all of them).
 pub(crate) fn rebuild_tile_colliders(
-  maps: Query<(Entity, &TileColliders, Option<&Children>), Changed<TileColliders>>,
-  parts: Query<(), With<TilePart>>,
+  maps: Maps,
+  parts: Parts,
+  mut physics: ResMut<Physics>,
   mut commands: Commands,
-  mut warned: Local<EntityHashSet>,
 ) {
-  for (map, tiles, children) in &maps {
-    for child in children.into_iter().flat_map(|children| children.iter()) {
-      if parts.contains(*child) {
-        commands.entity(*child).despawn();
+  // Maps whose parts are cleared; Some(tiles) when they are then rebuilt
+  let mut stale: EntityHashMap<Option<&TileColliders>> = EntityHashMap::default();
+  for (map, tiles, record, disabled) in &maps {
+    match (tiles, disabled) {
+      (Some(tiles), false) => {
+        let now = TileRecord::of(tiles);
+        if record != Some(&now) {
+          stale.insert(map, Some(tiles));
+          commands.entity(map).insert(now);
+        }
+      }
+      _ => {
+        if record.is_some() {
+          commands.entity(map).remove::<TileRecord>();
+        }
+        stale.insert(map, None);
       }
     }
+  }
+  // Parts of cleared maps go, and so do orphans of entities that are not maps
+  for (part, child_of) in &parts {
+    let parent = child_of.parent();
+    if stale.contains_key(&parent) || !maps.contains(parent) {
+      commands.entity(part).despawn();
+    }
+  }
+  for (map, tiles) in stale {
+    let Some(tiles) = tiles else {
+      continue;
+    };
     if !(tiles.tile_size.is_finite() && tiles.tile_size.min_element() > 0.0) {
-      if warned.insert(map) {
-        crate::engine_warn!(module: "Physics", "{map}: TileColliders needs a positive tile size; no colliders built");
-      }
+      physics.warn_once(
+        map,
+        "TileColliders needs a positive tile size; no colliders built",
+      );
       continue;
     }
     for collider in tiles.colliders() {
@@ -500,9 +595,9 @@ mod tests {
 #[cfg(test)]
 mod with_physics {
   use super::*;
-  use crate::core::ecs::{ChildOf, Transform, Velocity, World};
+  use crate::core::ecs::{ChildOf, Disabled, Transform, Velocity, World};
   use crate::core::physics::test_util::*;
-  use crate::core::physics::{CharacterController, Collider, ColliderShape, RigidBody};
+  use crate::core::physics::{CharacterController, Collider, ColliderShape, Physics, RigidBody};
 
   fn parts(world: &mut World, map: Entity) -> Vec<Collider> {
     let mut query = world.query::<(&ChildOf, &Collider)>();
@@ -613,8 +708,23 @@ mod with_physics {
     assert!(travelled >= 0.99 * 300.0 * 4.0, "{travelled}");
   }
 
+  fn ids(world: &mut World, map: Entity) -> Vec<Entity> {
+    let mut query = world.query::<(Entity, &ChildOf, &Collider)>();
+    let mut found: Vec<Entity> = query
+      .iter(world)
+      .filter(|(_, child_of, _)| child_of.parent() == map)
+      .map(|(e, _, _)| e)
+      .collect();
+    found.sort();
+    found
+  }
+
+  fn row(n: usize) -> TileColliders {
+    TileColliders::from_cells(n as u32, 1, Vec2::splat(16.0), vec![TileCell::Solid; n])
+  }
+
   #[test]
-  fn a_bad_tile_size_builds_nothing() {
+  fn a_bad_tile_size_builds_nothing_and_warns_once() {
     let (mut world, mut s) = world(60);
     let map = world
       .spawn((
@@ -622,8 +732,105 @@ mod with_physics {
         TileColliders::from_cells(1, 1, Vec2::ZERO, vec![TileCell::Solid]),
       ))
       .id();
-    run(&mut world, &mut s, 1);
+    run(&mut world, &mut s, 5);
     assert!(parts(&mut world, map).is_empty());
+    assert_eq!(world.resource::<Physics>().warnings, 1);
+  }
+
+  #[test]
+  fn a_size_made_bad_after_a_build_removes_the_parts_and_warns_once() {
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, row(3))).id();
+    run(&mut world, &mut s, 1);
+    assert_eq!(parts(&mut world, map).len(), 1);
+    world.get_mut::<TileColliders>(map).unwrap().tile_size = Vec2::new(f32::NAN, 16.0);
+    run(&mut world, &mut s, 5);
+    assert!(parts(&mut world, map).is_empty());
+    assert_eq!(world.resource::<Physics>().warnings, 1);
+  }
+
+  #[test]
+  fn a_map_spawned_disabled_gets_colliders_when_enabled() {
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Disabled, Transform::IDENTITY, row(3))).id();
+    run(&mut world, &mut s, 2);
+    assert!(ids(&mut world, map).is_empty());
+    world.entity_mut(map).remove::<Disabled>();
+    run(&mut world, &mut s, 1);
+    assert_eq!(ids(&mut world, map).len(), 1);
+  }
+
+  #[test]
+  fn a_set_while_disabled_applies_on_enable() {
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Disabled, Transform::IDENTITY, row(4))).id();
+    run(&mut world, &mut s, 1);
+    let mut entity = world.entity_mut(map);
+    let mut tiles = entity.get_mut::<TileColliders>().unwrap();
+    tiles.set(1, 0, TileCell::Empty);
+    entity.remove::<Disabled>();
+    run(&mut world, &mut s, 1);
+    assert_eq!(ids(&mut world, map).len(), 2);
+  }
+
+  #[test]
+  fn disabling_a_map_drops_what_rests_on_it() {
+    let (mut world, mut s) = world(60);
+    let map = world
+      .spawn((
+        Transform::from_xy(0.0, 100.0),
+        TileColliders::from_cells(10, 1, Vec2::splat(16.0), vec![TileCell::Solid; 10]),
+      ))
+      .id();
+    let ball = ball(&mut world, 40.0, 85.0);
+    run(&mut world, &mut s, 60);
+    assert!(at(&world, ball).translation.y < 100.0);
+    world.entity_mut(map).insert(Disabled);
+    run(&mut world, &mut s, 60);
+    assert!(
+      at(&world, ball).translation.y > 150.0,
+      "{}",
+      at(&world, ball).translation.y
+    );
+    assert!(ids(&mut world, map).is_empty());
+  }
+
+  #[test]
+  fn removing_the_component_removes_its_parts() {
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, row(3))).id();
+    run(&mut world, &mut s, 1);
+    assert_eq!(ids(&mut world, map).len(), 1);
+    world.entity_mut(map).remove::<TileColliders>();
+    run(&mut world, &mut s, 1);
+    assert!(ids(&mut world, map).is_empty());
+  }
+
+  #[test]
+  fn only_a_real_change_rebuilds() {
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, row(3))).id();
+    run(&mut world, &mut s, 1);
+    let before = ids(&mut world, map);
+    assert!(
+      !world
+        .get_mut::<TileColliders>(map)
+        .unwrap()
+        .set(0, 0, TileCell::Solid)
+    );
+    assert!(
+      !world
+        .get_mut::<TileColliders>(map)
+        .unwrap()
+        .set(99, 0, TileCell::Solid)
+    );
+    run(&mut world, &mut s, 2);
+    assert_eq!(ids(&mut world, map), before);
+    world.get_mut::<TileColliders>(map).unwrap().layer = 4;
+    run(&mut world, &mut s, 1);
+    let after = ids(&mut world, map);
+    assert_eq!(after.len(), 1);
+    assert_ne!(after, before);
   }
 
   #[test]
