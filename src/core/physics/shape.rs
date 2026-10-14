@@ -44,8 +44,32 @@ fn arc(centre: Vec2, radius: f32, from: f32, to: f32, count: usize) -> impl Iter
   })
 }
 
+/// The largest coordinate a hull point may have: parry's dot products and
+/// squared lengths stay finite below it.
+const HULL_MAX_COORD: f32 = 1e18;
+/// The smallest width or height a hull may span: parry's squared lengths
+/// underflow to zero for points closer than about 1e-22.
+const HULL_MIN_EXTENT: f32 = 1e-6;
+
+/// The convex hull of the mapped points. parry panics instead of refusing
+/// on coincident points, clusters closer than its squared lengths can tell
+/// apart and coordinates near `f32::MAX`, so those are refused here.
 fn hull(points: impl IntoIterator<Item = Vec2>, map: Mat2) -> Option<SharedShape> {
-  let mapped: Vec<_> = points.into_iter().map(|p| to_rapier(map * p)).collect();
+  let mapped: Vec<Vec2> = points.into_iter().map(|p| map * p).collect();
+  let first = *mapped.first()?;
+  let mut min = first;
+  let mut max = first;
+  for p in &mapped {
+    if !p.is_finite() || p.abs().max_element() > HULL_MAX_COORD {
+      return None;
+    }
+    min = min.min(*p);
+    max = max.max(*p);
+  }
+  if (max - min).max_element() <= HULL_MIN_EXTENT {
+    return None;
+  }
+  let mapped: Vec<_> = mapped.into_iter().map(to_rapier).collect();
   SharedShape::convex_hull(&mapped)
 }
 
@@ -98,7 +122,7 @@ pub(crate) fn build(shape: &ColliderShape, map: Mat2) -> Option<SharedShape> {
       }
     }
     ColliderShape::Polygon { points } => {
-      if points.len() < 3 || !points.iter().all(|p| p.is_finite()) {
+      if points.len() < 3 {
         return None;
       }
       hull(points.iter().copied(), map)
@@ -182,6 +206,20 @@ mod tests {
         points: vec![Vec2::ZERO, Vec2::X],
       },
       ColliderShape::Polygon { points: line },
+      // Inputs parry's hull panics on instead of refusing
+      ColliderShape::Polygon {
+        points: vec![Vec2::splat(5.0); 3],
+      },
+      ColliderShape::Polygon {
+        points: vec![Vec2::ZERO, Vec2::new(1e-24, 0.0), Vec2::new(0.0, 1e-24)],
+      },
+      ColliderShape::Polygon {
+        points: vec![
+          Vec2::new(-f32::MAX, 0.0),
+          Vec2::new(-f32::MAX, 1.0),
+          Vec2::new(-f32::MAX, 2.0),
+        ],
+      },
       ColliderShape::Segment {
         a: Vec2::X,
         b: Vec2::X,

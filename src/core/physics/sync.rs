@@ -1200,6 +1200,42 @@ mod tests {
   }
 
   #[test]
+  fn a_polygon_of_one_repeated_point_is_skipped_without_panicking() {
+    let (mut world, mut s) = world(60);
+    world.spawn((
+      Transform::IDENTITY,
+      Collider::polygon(vec![Vec2::splat(5.0); 3]),
+    ));
+    run(&mut world, &mut s, 1);
+    assert_eq!(world.resource::<Physics>().collider_count(), 0);
+  }
+
+  #[test]
+  fn a_collider_edited_to_an_invalid_shape_leaves_until_it_is_fixed() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    run(&mut world, &mut s, 1);
+    world.get_mut::<Collider>(f).unwrap().shape = ColliderShape::Rect {
+      size: Vec2::new(0.0, 20.0),
+    };
+    let dropped = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 60);
+    assert_eq!(
+      world.resource::<Physics>().collider_count(),
+      1,
+      "only the ball"
+    );
+    assert!(at(&world, dropped).translation.y > 150.0, "fell through");
+    world.get_mut::<Collider>(f).unwrap().shape = ColliderShape::Rect {
+      size: Vec2::new(400.0, 20.0),
+    };
+    let caught = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 120);
+    assert_eq!(world.resource::<Physics>().collider_count(), 3);
+    assert!((at(&world, caught).translation.y - 90.0).abs() < 2.0);
+  }
+
+  #[test]
   fn an_invalid_shape_is_skipped_until_it_is_fixed() {
     let (mut world, mut s) = world(60);
     let e = world
