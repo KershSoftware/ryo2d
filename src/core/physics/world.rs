@@ -276,9 +276,10 @@ pub struct Physics {
   /// The change tick `read_back` last ran at. A `Transform`, `Velocity` or
   /// `AngularVelocity` last changed at this tick holds what the last step
   /// left in Rapier: `push_changes` and `sync_colliders` skip a root body
-  /// and its own collider in that state without comparing. Every system
-  /// runs at a tick of its own, so a game write after the write-back carries
-  /// a later tick and is compared by value (`push_changes` has the rules)
+  /// and its own collider in that state without comparing. `read_back`
+  /// takes a tick no other write can have (it advances the world's tick
+  /// first), so a game write is always compared by value (`push_changes`
+  /// has the rules)
   pub(crate) write_tick: Option<Tick>,
   /// Bodies that lost their parent since the last push: their local
   /// `Transform` became their world pose, so a write-back tick on it no

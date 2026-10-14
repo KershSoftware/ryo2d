@@ -30,7 +30,8 @@ use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
   Entity, GlobalTransform, Has, IntoScheduleConfigs, MessageWriter, Mut, Or, ParamSet, Query, Ref,
-  RemovedComponents, Res, ResMut, SystemChangeTick, Tick, Transform, Vec2, Velocity, With,
+  RemovedComponents, Res, ResMut, SystemChangeTick, SystemState, Tick, Transform, Vec2, Velocity,
+  With, World,
 };
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
@@ -98,6 +99,14 @@ type MovedRow<'a> = (
 type Relinkable = (Or<(With<Collider>, With<Children>)>, Allow<Disabled>);
 /// An entity's local `Transform` and parent link
 type LocalLink<'a> = (&'a mut Transform, Option<&'a ChildOf>);
+/// What `read_back` reads and writes, fetched at a tick of its own
+type ReadBack<'w, 's> = (
+  ResMut<'w, Physics>,
+  Query<'w, 's, LocalLink<'static>, Allow<Disabled>>,
+  Query<'w, 's, Entity, (With<RigidBody>, With<ChildOf>)>,
+  Query<'w, 's, (&'static mut Velocity, &'static mut AngularVelocity), With<RigidBody>>,
+  SystemChangeTick,
+);
 
 /// A body's world rotation: its local rotation turned through its parent's
 /// linear map. The entity's own scale, mirroring included, stays out (its
@@ -527,9 +536,10 @@ pub(crate) fn sync_colliders(
 ///   (`Physics::write_tick`). A root body whose `Transform` last changed at
 ///   that tick, and that has not lost a parent since (`unparented`), is
 ///   where Rapier holds it; velocities last changed at that tick are
-///   Rapier's. These are skipped without a look at Rapier. A game write in
-///   a system or between schedule runs always has a later tick, even when it
-///   writes the same value, and falls through to the comparison.
+///   Rapier's. These are skipped without a look at Rapier. A game write
+///   (in a system, by a command or between schedule runs) never has that
+///   tick, even when it writes the same value, and falls through to the
+///   comparison.
 /// - By value, for everything else: a pose or velocity equal to Rapier's
 ///   (within the sync tolerance) is not pushed, so untouched bodies stay
 ///   asleep. A nested body's world pose also depends on its ancestors, so it
@@ -678,17 +688,16 @@ fn world_after_step(
 /// Its tick is recorded as `Physics::write_tick`, and the next step's
 /// `push_changes` and `sync_colliders` skip what last changed at that tick
 /// (see `push_changes`). The invariant: nothing else changes a body's
-/// `Transform`, `Velocity` or `AngularVelocity` at this tick. Systems run
-/// at ticks of their own and nothing in the physics chain before this one
-/// is deferred; only commands applied at a sync point directly in front of
-/// it (they take the tick of the system that runs next) could share it.
-pub(crate) fn read_back(
-  mut physics: ResMut<Physics>,
-  mut locals: Query<LocalLink, Allow<Disabled>>,
-  nested: Query<Entity, (With<RigidBody>, With<ChildOf>)>,
-  mut velocities: Query<(&mut Velocity, &mut AngularVelocity), With<RigidBody>>,
-  ticks: SystemChangeTick,
-) {
+/// `Transform`, `Velocity` or `AngularVelocity` at this tick. Every system
+/// runs at a tick of its own, but commands applied at a sync point take the
+/// world's current tick, which the next system is handed too. So this is an
+/// exclusive system that advances the tick before it fetches anything: no
+/// command, wherever the scheduler puts its sync point, lands at its tick.
+pub(crate) fn read_back(world: &mut World, state: &mut SystemState<ReadBack<'static, 'static>>) {
+  world.increment_change_tick();
+  let Ok((mut physics, mut locals, nested, mut velocities, ticks)) = state.get_mut(world) else {
+    return;
+  };
   physics.write_tick = Some(ticks.this_run());
   let mut writes = std::mem::take(&mut physics.write_backs);
   writes.clear();
@@ -3068,5 +3077,56 @@ mod tests {
     run(&mut world, &mut s, 1);
     let after = world.resource::<Physics>().mass(body).unwrap();
     assert!((after - 4.0 * before).abs() < 1e-6, "{before} -> {after}");
+  }
+
+  /// What the game defers in `defer_writes`, once.
+  #[derive(Resource, Default)]
+  struct DeferredWrites {
+    transform: Option<(Entity, Transform)>,
+    velocity: Option<(Entity, Velocity)>,
+  }
+
+  /// A game system between the step and the write-back that defers its
+  /// writes: they land at the sync point right before `read_back`.
+  fn defer_writes(mut writes: ResMut<DeferredWrites>, mut commands: Commands) {
+    if let Some((e, transform)) = writes.transform.take() {
+      commands.entity(e).insert(transform);
+    }
+    if let Some((e, velocity)) = writes.velocity.take() {
+      commands.entity(e).insert(velocity);
+    }
+  }
+
+  #[test]
+  fn a_command_applied_right_before_the_write_back_is_pushed() {
+    let (mut world, mut s, sleeper) = sleeping_ball();
+    let platform = world
+      .spawn((
+        Transform::from_xy(200.0, 0.0),
+        RigidBody::kinematic(),
+        Collider::rect(10.0, 10.0),
+      ))
+      .id();
+    world.insert_resource(DeferredWrites::default());
+    s.add_systems(
+      Phase::FixedUpdate,
+      defer_writes.after(step_simulation).before(read_back),
+    );
+    run(&mut world, &mut s, 1);
+    // Neither body is written back: one is asleep, the other is not driven
+    *world.resource_mut::<DeferredWrites>() = DeferredWrites {
+      transform: Some((platform, Transform::from_xy(250.0, 0.0))),
+      velocity: Some((sleeper, Velocity::new(60.0, 0.0))),
+    };
+    run(&mut world, &mut s, 1);
+    assert_eq!(at(&world, platform).translation, Vec2::new(250.0, 0.0));
+    let before = at(&world, sleeper).translation;
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    let (position, _) = physics.body_pose(platform).unwrap();
+    assert!((position.x - 250.0).abs() < 1e-3, "{position}");
+    assert!(!physics.is_sleeping(sleeper), "the new velocity wakes it");
+    let moved = at(&world, sleeper).translation - before;
+    assert!((moved - Vec2::new(1.0, 0.0)).length() < 1e-3, "{moved}");
   }
 }
