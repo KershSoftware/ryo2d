@@ -1,0 +1,18 @@
+[project]
+name = "Physics Demo"
+
+[paths]
+entry_point = "main.rs"
+save_data = "data"
+assets = "assets"
+
+[system]
+resolution = "960x640"
+vsync = true
+display_mode = "windowed"
+show_fps = true
+
+[debug]
+show_colliders = false
+show_velocities = false
+show_origins = false

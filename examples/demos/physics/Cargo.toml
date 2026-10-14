@@ -1,0 +1,13 @@
+[package]
+name = "physics-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Shapes, joints, scene queries, layers and triggers demo for Ryo2D engine"
+
+[[bin]]
+name = "physics-demo"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }
