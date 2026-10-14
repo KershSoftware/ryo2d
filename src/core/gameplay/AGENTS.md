@@ -62,6 +62,15 @@ Invalid input is logged once per entity with a `Local<EntityHashSet>` and `crate
 | Kinematic body without a controller, fixed body | Ignored, warned once per entity |
 | No body | `Transform` moves by the current knockback velocity |
 
+## Trigger Behaviours
+
+`Pickup`, `KillZone`, `Checkpoint` (put on a trigger collider; a non-trigger is warned once) and `Respawn` (`zones.rs`) are `#[non_exhaustive]` components with builders. Their systems run first in the chain and read the previous step's `TriggerEntered` messages, so they act one step after the overlap: game rules stay out of the physics step, and a respawn's `Transform` write teleports at the next `push_changes`. What can set one off is the trigger's layer and mask.
+
+- `Pickup`: the first message per pickup per step wins (two collectors in one step give one `PickedUp`); it is then despawned, or disabled (`Disabled`) and re-enabled after `respawn_after` seconds.
+- `KillZone`: writes `Killed` for each entrant. With `Respawn` the entity goes back to its point with `Velocity` zeroed, `Knockback::stop()` (which also drops the unapplied hit) and the preset states `reset()`; without, nothing happens unless the zone `despawning()`.
+- `Checkpoint`: sets the entrant's `Respawn.point` to its `GlobalTransform` plus `offset` and writes `CheckpointReached` when the point moved more than half a pixel.
+- `Respawn::here()` takes the `Transform` when first seen by `place_respawn_points`. Put `Respawn` on root entities: it is a world position written to `Transform.translation`.
+
 ## Tests
 
 `test_util.rs`: `world(hz)` is the physics test world plus `Input` and the gameplay systems; `player(world, x, y)` spawns a 20x40 platformer character; `at`, `floor`, `no_gravity` and `run` come from the physics helpers. Single-system tests use `systems::test_util` (`world`, `run`, `messages`).

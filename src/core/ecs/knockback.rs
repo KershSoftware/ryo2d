@@ -336,6 +336,7 @@ impl Knockback {
 
   /// Stop the knockback immediately.
   pub fn stop(&mut self) {
+    self.pending = Vec2::ZERO;
     if self.active {
       self.active = false;
       self.strength = 0.0;
@@ -513,6 +514,13 @@ mod tests {
     assert!(!kb.active);
     assert!(kb.just_finished);
     assert_eq!(kb.strength(), 0.0);
+  }
+
+  #[test]
+  fn stop_clears_the_pending_hit() {
+    let mut kb = Knockback::new(Vec2::new(1.0, 0.0), 400.0);
+    kb.stop();
+    assert_eq!(kb.pending, Vec2::ZERO);
   }
 
   #[test]
