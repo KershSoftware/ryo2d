@@ -410,14 +410,14 @@ fn debug_colliders_draw() {
   };
   engine.step_frames(2).unwrap();
   let frame = engine.frame().unwrap();
-  let green = frame
+  let outline = frame
     .pixels()
-    .filter(|p| p.0[1] > 200 && p.0[0] < 80 && p.0[2] < 80)
+    .filter(|p| p.0 == [0x60, 0x90, 0xff, 0xff])
     .count();
   // The outline of a 30x20 box is about 96 pixels
-  assert!(green > 60, "collider outline pixels: {green}");
+  assert!(outline > 60, "collider outline pixels: {outline}");
   // Centred on (50, 40): the top edge runs along y = 30
-  assert_eq!(frame.get_pixel(60, 30).0, [0, 255, 0, 255]);
+  assert_eq!(frame.get_pixel(60, 30).0, [0x60, 0x90, 0xff, 0xff]);
 }
 
 /// Draws a green unlit line and a UI rect, and pushes a fade through magenta.

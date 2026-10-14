@@ -4,6 +4,7 @@ mod body;
 pub mod collision;
 mod config;
 pub(crate) mod convert;
+pub(crate) mod debug;
 mod query;
 pub(crate) mod sync;
 #[cfg(test)]

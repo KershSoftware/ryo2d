@@ -7,7 +7,7 @@
 //!
 //! | Option | Description |
 //! |--------|-------------|
-//! | `show_colliders` | Draw collision boundaries (green outlines) |
+//! | `show_colliders` | Draw the simulation's colliders, joints and contacts, coloured by body kind |
 //! | `show_velocities` | Draw velocity vectors on physics entities |
 //! | `show_origins` | Draw entity origin points (transform position) |
 //! | `enable_profiler` | Open flamegraph profiler window |
@@ -86,9 +86,9 @@
 //! Values set programmatically will override config file settings.
 
 use crate::core::ecs::{GlobalTransform, Vec2, Velocity, Without, World};
+use crate::core::graphics::Camera2d;
 use crate::core::graphics::camera_mut::main_view;
-use crate::core::graphics::{Camera2d, GroupedCollider};
-use crate::core::physics::{Collider, ColliderShape};
+use crate::core::physics::Physics;
 use crate::core::render::DebugDraw;
 use crate::core::ui::{Color, UiContext};
 
@@ -381,8 +381,18 @@ where
 
 /// Debug visualization colors
 pub mod colors {
-  /// Bright green for collision boundaries
-  pub const COLLIDER: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
+  /// Green for dynamic bodies' colliders
+  pub const DYNAMIC: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
+  /// Orange for kinematic bodies' colliders
+  pub const KINEMATIC: [u8; 4] = [0xff, 0xa0, 0x00, 0xff];
+  /// Blue for fixed bodies and bare colliders
+  pub const FIXED: [u8; 4] = [0x60, 0x90, 0xff, 0xff];
+  /// Yellow for triggers
+  pub const TRIGGER: [u8; 4] = [0xff, 0xff, 0x00, 0xff];
+  /// Magenta for joints
+  pub const JOINT: [u8; 4] = [0xff, 0x00, 0xff, 0xff];
+  /// Red for contact points and normals
+  pub const CONTACT: [u8; 4] = [0xff, 0x30, 0x30, 0xff];
   /// Cyan for velocity vectors
   pub const VELOCITY: [u8; 4] = [0x00, 0xff, 0xff, 0xff];
   /// Yellow for origin crosshairs
@@ -411,26 +421,10 @@ pub(crate) struct OverlayFlags {
 /// origin crosses (sized in the main camera's pixels).
 pub(crate) fn overlay_shapes(world: &mut World, flags: OverlayFlags, debug: &mut DebugDraw) {
   let color = |c: [u8; 4]| Color::new(c[0], c[1], c[2], c[3]);
-  if flags.colliders {
-    for (global, collider) in world.query::<(&GlobalTransform, &Collider)>().iter(world) {
-      let center = collider.world_center(global.translation());
-      match collider.shape {
-        ColliderShape::Box { width, height } => {
-          debug.rect(center, Vec2::new(width, height), color(colors::COLLIDER));
-        }
-        ColliderShape::Circle { radius } => debug.circle(center, radius, color(colors::COLLIDER)),
-      }
-    }
-    // A grouped collider spans `offset` to `offset + size` from its origin
-    for (global, grouped) in world
-      .query::<(&GlobalTransform, &GroupedCollider)>()
-      .iter(world)
-    {
-      let size = Vec2::new(grouped.width, grouped.height);
-      let center =
-        global.translation() + Vec2::new(grouped.offset_x, grouped.offset_y) + size / 2.0;
-      debug.rect(center, size, color(colors::COLLIDER));
-    }
+  if flags.colliders
+    && let Some(physics) = world.get_resource::<Physics>()
+  {
+    crate::core::physics::debug::draw(physics, debug);
   }
 
   if flags.velocities {
@@ -603,29 +597,37 @@ mod tests {
   use super::*;
 
   #[test]
-  fn collider_outlines_are_drawn_where_the_collider_is() {
+  fn collider_outlines_are_drawn_where_physics_has_them() {
     use crate::core::ecs::Transform;
-    let mut world = World::new();
+    use crate::core::physics::Collider;
+    use crate::core::physics::test_util::{run, world};
+    let (mut world, mut s) = world(60);
     world.spawn((
-      Transform::from_xy(100.0, 50.0),
+      Transform::from_xy(100.0, 50.0).with_rotation(std::f32::consts::FRAC_PI_2),
       Collider::box_collider(20.0, 10.0),
     ));
+    run(&mut world, &mut s, 1);
     let colliders = OverlayFlags {
       colliders: true,
       ..Default::default()
     };
     let mut debug = DebugDraw::default();
     overlay_shapes(&mut world, colliders, &mut debug);
-    let shapes: Vec<_> = debug
+    let points: Vec<Vec2> = debug
       .each()
-      .map(|(shape, points)| (shape.kind, points.to_vec()))
+      .flat_map(|(_, points)| points.to_vec())
       .collect();
-    assert_eq!(
-      shapes,
-      [(
-        crate::core::render::ShapeKind::Rect,
-        vec![Vec2::new(100.0, 50.0), Vec2::new(20.0, 10.0)]
-      )]
+    assert!(!points.is_empty());
+    let min = points.iter().fold(Vec2::MAX, |m, p| m.min(*p));
+    let max = points.iter().fold(Vec2::MIN, |m, p| m.max(*p));
+    // Turned a quarter: 10 wide and 20 high around (100, 50)
+    assert!(
+      (min - Vec2::new(95.0, 40.0)).abs().max_element() < 0.01,
+      "{min}"
+    );
+    assert!(
+      (max - Vec2::new(105.0, 60.0)).abs().max_element() < 0.01,
+      "{max}"
     );
     debug.end_frame();
     overlay_shapes(&mut world, OverlayFlags::default(), &mut debug);
