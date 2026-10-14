@@ -9,11 +9,14 @@ use crate::core::ecs::{Resource, Vec2};
 pub struct PhysicsConfig {
   /// Acceleration in pixels per second squared (+Y is down).
   pub gravity: Vec2,
-  /// How many pixels make a metre: Rapier's tolerances, sleep thresholds
-  /// and speed cap are tuned for objects about a metre across, and density
-  /// is per square metre. Set it before spawning: a change does not
-  /// re-weigh colliders already registered (until their density or mass is
-  /// edited).
+  /// How many pixels make a metre (default 100). Choose it so the game's
+  /// typical moving bodies are roughly 0.5 to 2 m: Rapier's tolerances,
+  /// contact padding and sleep thresholds are tuned for that. 100 suits
+  /// sprites of roughly 50 to 200 px; a pixel-art game with 16 to 32 px
+  /// characters should consider 32. Changing it changes masses (density is
+  /// per square metre) and those tolerances, not gravity (pixels per second
+  /// squared). Set it before spawning: a change does not re-weigh colliders
+  /// already registered (until their density or mass is edited).
   pub pixels_per_meter: f32,
   /// Constraint solver iterations per step: more is stiffer stacks and
   /// joints, at a cost.
@@ -35,7 +38,8 @@ impl PhysicsConfig {
     self
   }
 
-  /// How many pixels make a metre (default 100).
+  /// How many pixels make a metre (default 100; choosing it:
+  /// `pixels_per_meter`).
   pub fn with_pixels_per_meter(mut self, pixels: f32) -> Self {
     self.pixels_per_meter = pixels;
     self

@@ -27,7 +27,7 @@ Physics pauses while the top scene's `is_physics_paused()` returns `true`, and w
 
 One frame adds at most `max_delta` (250 ms) of game time after speed scaling, so a 250 ms stall at 60 Hz runs 14 fixed steps (at most 15), never a pile-up.
 
-Units are pixels (100 pixels = 1 Rapier metre, converted internally). +Y is down.
+Units are pixels (`PhysicsConfig::pixels_per_meter` pixels = 1 Rapier metre, default 100, converted internally). +Y is down.
 
 ## Which body kind
 
@@ -257,9 +257,11 @@ Builders: `at(point)`, `with_anchors(a_local, b_local)`, `with_limits(min, max)`
 
 ## Units and `PhysicsConfig`
 
-A resource: `ctx.resource_mut::<PhysicsConfig>()` edits it live, effective next step. `gravity` (default `(0, 980)` px/s², +Y down), `pixels_per_meter` (default 100: Rapier's tolerances and sleep thresholds are tuned for objects about a metre across, so keep pixel sizes in the range of 20 to 300 px per body or change the scale), `solver_iterations` (default 4; more is stiffer stacks and joints, at a cost). Builders: `with_gravity`, `zero_gravity()` (top-down and space games), `with_pixels_per_meter`, `with_solver_iterations`. Insert it before `run()` with `EngineBuilder::insert_resource`.
+A resource: `ctx.resource_mut::<PhysicsConfig>()` edits it live, effective next step. `gravity` (default `(0, 980)` px/s², +Y down), `pixels_per_meter` (default 100, see below), `solver_iterations` (default 4; more is stiffer stacks and joints, at a cost). Builders: `with_gravity`, `zero_gravity()` (top-down and space games), `with_pixels_per_meter`, `with_solver_iterations`. Insert it before `run()` with `EngineBuilder::insert_resource`.
 
-Density is per square metre: a 32x32 px box at density 1 weighs about 0.1.
+Choose `pixels_per_meter` so the game's typical moving bodies are roughly 0.5 to 2 m: Rapier's tolerances, contact padding and sleep thresholds are tuned for that. The default 100 suits sprites of roughly 50 to 200 px; a pixel-art game with 16 to 32 px characters should consider 32 (`PhysicsConfig::default().with_pixels_per_meter(32.0)`). Changing it changes masses (density is per square metre) and those tolerances, not gravity (px/s²).
+
+Density is per square metre: at 100 px/m a 32x32 px box at density 1 weighs about 0.1.
 
 ## The F2 overlay
 
