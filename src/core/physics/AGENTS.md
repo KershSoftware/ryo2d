@@ -6,35 +6,34 @@ Rapier2D behind `Physics` (a resource), driven by the systems in `src/core/physi
 
 Rapier uses meters, Ryo2D uses pixels:
 
-- **100 pixels = 1 meter** (`PIXELS_PER_METER`, a private const in `rapier.rs`)
+- **100 pixels = 1 meter** by default (`PhysicsConfig::pixels_per_meter`, Rapier's `length_unit`)
 - Conversion happens automatically in `Physics`
 - Gravity is specified in pixels/s² via the `PhysicsConfig` resource (default `(0.0, 980.0)`, +Y = down) with `pixels_per_meter` (default 100) and `solver_iterations` (default 4)
 
 ## Geometry
 
-- A `Collider` is centred on the entity's origin plus `Collider.offset`, unscaled, as Rapier simulates it. `Collider::world_center(position)` and `world_bounds(position)` give that geometry; particles, navigation and the collider overlay use them, so everything agrees with physics.
+- A `Collider` is placed by its entity's world transform (`GlobalTransform`) plus `Collider.offset` and `Collider.rotation`, and its shape follows the entity's world scale, mirroring and skew included. `Collider::world_bounds(global)` gives that geometry; particles, navigation and the collider overlay use it, so everything agrees with physics. A zero scale takes a collider out until it grows.
+- A visual scale effect (squash and stretch, a pulse) on an entity with a collider scales the hitbox too: put the sprite on a child entity and scale that instead.
 - A sprite drawn over a collider uses the default `Anchor::Center`; a top-left-anchored sprite needs the collider offset by half its size.
-- `GroupedCollider` (composite tiles, `graphics/tile.rs`) keeps `offset_x` / `offset_y` as the box's top-left relative to the origin, the way composite parts are laid out; its centre is `offset + size / 2`.
-- Rotation is locked: bodies never rotate and `Transform.rotation` is not synced.
 
 ## The Step
 
 `FixedSet::Physics`, every fixed step while `PhysicsPaused` is false (the scene manager sets it from the top scene's `is_physics_paused` and the stack shape), chained:
 
-1. `unregister_removed_bodies`: bodies whose `RigidBody` went away (despawn included) and entities that were just disabled.
-2. `drop_parented_bodies`: a body that gained a parent leaves the simulation, logged once.
-3. `register_restored_bodies`: bodies whose entity was re-enabled or detached from its parent.
-4. `register_new_bodies`: root entities that gained `RigidBody`, `Collider` or `GroupedCollider` (`Added<..>`); an edited `RigidBody` on a registered body is applied in place (`apply_body_settings`: body type, gravity scale, drag, CCD; only differing values are written, so contacts and sleep survive).
-5. `sync_to_physics`: a changed `Transform` teleports the body (a kinematic body moves there over the step); a changed `Velocity` sets its velocity.
-6. `step_physics`: `dt` is `time.fixed.timestep()`, so physics follows game speed, pause and hitstop.
-7. `sync_from_physics`: awake dynamic bodies write position and velocity back.
-8. `emit_collision_messages`: Rapier's contacts drained into `CollisionStarted` / `CollisionStopped`.
+1. `forget_removed`: colliders and bodies whose components went away (despawn included); entities that lost their `RigidBody` or their parent are queued so their colliders find a new owner.
+2. `track_disabled`: disabled entities leave the simulation, re-enabled ones come back with the edits made meanwhile.
+3. `propagate_transforms`: world poses are current before physics reads them.
+4. `register_bodies`: new bodies at their world pose; an edited `RigidBody` is applied in place.
+5. `sync_colliders`: colliders that changed, moved, scaled or changed owner (registered, reparented, reshaped, re-placed).
+6. `push_changes`: a body whose world pose changed is moved (a kinematic body travels there over the step); a changed `Velocity` sets its velocity.
+7. `step_simulation`: `dt` is `time.fixed.timestep()`, so physics follows game speed, pause and hitstop.
+8. `read_back`: simulated bodies write their pose into their local `Transform` (through their parent) and their velocities.
+9. `emit_messages`: Rapier's contacts drained into `CollisionStarted` / `CollisionStopped`.
 
 ## Notes for AI Agents
 
-1. **Sync is change-detected and compared by value.** Physics' write-back is an ordinary change (propagation must see bodies move), so `sync_to_physics` cannot tell it from a game write by change detection alone: it pushes a `Transform` or `Velocity` only when it differs from the body's. A body nobody touched stays asleep.
-2. **Removal bookkeeping also runs in `Last`** every frame, before the trackers are cleared: `unregister_removed_bodies` and `register_restored_bodies` only. Removal events survive two tracker clears, and at render rates above the fixed rate no fixed step may run in between; without it a despawned body would stay in Rapier. Added and edited bodies are tick-based and wait for the next fixed step (running them in `Last` too rebuilt bodies the step had already simulated).
-3. **Bodies must be root entities.** Physics reads and writes the local `Transform` as world space, so a `RigidBody` on an entity with `ChildOf` is not simulated: it is logged once and left out, and detaching the entity brings it back.
-4. **An entity is simulated only with `RigidBody` + `Transform` + (`Collider` or `GroupedCollider`).** A `Collider` without a `RigidBody` is never simulated, and there is no static body type (use a kinematic body).
+1. **Sync is change-detected and compared by value.** Physics' write-back is an ordinary change (propagation must see bodies move), so `push_changes` cannot tell it from a game write by change detection alone: it pushes a pose or `Velocity` only when it differs from the body's. A body nobody touched stays asleep.
+2. **Removal bookkeeping also runs in `Last`** every frame, before the trackers are cleared: `forget_removed` and `track_disabled` only. Removal events survive two tracker clears, and at render rates above the fixed rate no fixed step may run in between; without it a despawned body would stay in Rapier. Added and edited bodies are tick-based and wait for the next fixed step.
+3. **Bodies and colliders may sit anywhere in the hierarchy.** A collider belongs to the nearest `RigidBody` at or above its entity. Physics reads world poses from `GlobalTransform` and writes a body back into its local `Transform` through its parent. A body's rotation is its local direction through its parent's linear map; its own scale (mirroring included) stays with its shape.
+4. **A `Collider` without a `RigidBody` above it is a fixed collider.** `RigidBody::{dynamic, fixed, kinematic}` are the body types.
 5. **Collisions are messages.** The physics set drains `Physics`'s event list each step, so game code reads `ctx.messages::<CollisionStarted>()`, not `get_collision_events()`. Overlap queries (`are_intersecting`, `get_current_intersections`) read Rapier's narrow phase and still work.
-6. **GroupedCollider**: for composite tiles, use `GroupedCollider` from `graphics/tile.rs`.

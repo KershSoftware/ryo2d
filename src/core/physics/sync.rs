@@ -8,6 +8,13 @@
 //! nearest body at or above its entity. Physics reads world poses from
 //! `GlobalTransform` and writes a body back into its local `Transform`
 //! through its parent; a collider's shape follows its entity's world scale.
+//!
+//! A body's rotation is its local direction turned through its parent's
+//! linear map (`body_rotation`): the entity's own scale, mirroring included,
+//! stays with its shape. So a root body's rotation is its
+//! `Transform.rotation`, and the write-back (`local_pose`) maps the simulated
+//! direction back through the parent, which propagation turns into the same
+//! world angle under any parent scale.
 
 use glam::{Affine2, Mat2};
 
@@ -35,21 +42,19 @@ pub(crate) fn physics_enabled(paused: Res<PhysicsPaused>) -> bool {
 /// How deep a collider may sit below its body.
 const MAX_DEPTH: usize = 64;
 
-type BodyItem<'a> = (
-  Entity,
-  &'a GlobalTransform,
-  &'a Velocity,
-  &'a AngularVelocity,
-  &'a RigidBody,
-);
-/// A body whose velocities the system may reset (see `apply_edit`)
+/// A body as `register_bodies` reads it; its velocities may be reset (see
+/// `apply_edit`)
 type BodyRow<'a> = (
   Entity,
-  &'a GlobalTransform,
+  BodyPlace<'a>,
   &'a mut Velocity,
   &'a mut AngularVelocity,
   Ref<'a, RigidBody>,
 );
+/// What places a body in the world (see `body_pose`)
+type BodyPlace<'a> = (&'a GlobalTransform, &'a Transform, Option<&'a ChildOf>);
+/// World transforms, disabled entities included
+type Globals<'a, 'w, 's> = Query<'w, 's, &'a GlobalTransform, Allow<Disabled>>;
 type HasPhysics = Or<(With<RigidBody>, With<Collider>)>;
 /// A body whose `Velocity` or `AngularVelocity` changed
 type Pushed = (
@@ -65,32 +70,71 @@ type Resync = (
     Changed<ChildOf>,
   )>,
 );
-/// A body's world transform, with what `continuous` needs
-type Moved<'a> = (
-  Entity,
-  &'a GlobalTransform,
-  &'a Transform,
-  Option<&'a ChildOf>,
-);
 /// Entities whose subtree may hold colliders that change owner
 type Relinkable = (Or<(With<Collider>, With<Children>)>, Allow<Disabled>);
+/// An entity's local `Transform` and parent link
+type LocalLink<'a> = (&'a mut Transform, Option<&'a ChildOf>);
 
-fn add_body(physics: &mut Physics, (entity, global, velocity, angular, body): BodyItem) {
-  physics.add_body(
-    entity,
-    global.translation(),
-    global.rotation(),
-    velocity.as_vec2(),
-    angular.0,
-    body,
-  );
+/// A body's world rotation: its local rotation turned through its parent's
+/// linear map. The entity's own scale, mirroring included, stays out (its
+/// shape carries it), so a root body's rotation is its `Transform.rotation`.
+/// Under a parent it is kept continuous near the sum of the angles: the sync
+/// tolerance grows with an angle's magnitude (see `poses_differ`), which a
+/// wrapped angle loses, and a body turned thousands of radians would
+/// otherwise never sleep.
+fn body_rotation(transform: &Transform, parent: Option<&GlobalTransform>) -> f32 {
+  let Some(parent) = parent else {
+    return transform.rotation;
+  };
+  let direction = parent.affine().matrix2 * Vec2::from_angle(transform.rotation);
+  let near = parent.rotation() + transform.rotation;
+  near + angle_delta(near, direction.y.atan2(direction.x))
+}
+
+/// A body's world pose: its translation and `body_rotation`. A parent
+/// without a `GlobalTransform` places it from the identity, as propagation
+/// does.
+fn body_pose((global, transform, parent): BodyPlace, globals: &Globals) -> (Vec2, f32) {
+  let parent = parent.and_then(|parent| globals.get(parent.parent()).ok());
+  (global.translation(), body_rotation(transform, parent))
+}
+
+/// The local `Transform` (keeping `scale`) that puts a body at `pose` in the
+/// world under a parent whose world transform is `parent` (the identity when
+/// `None`): the inverse of `body_pose`. `None` when the parent's map cannot
+/// be inverted (a zero scale) or the result is not finite.
+fn local_pose(
+  parent: Option<Affine2>,
+  (translation, rotation): (Vec2, f32),
+  scale: Vec2,
+) -> Option<Transform> {
+  let local = match parent {
+    None => Transform {
+      translation,
+      rotation,
+      scale,
+    },
+    Some(parent) => {
+      if !parent.matrix2.determinant().is_normal() {
+        return None;
+      }
+      let inverse = parent.inverse();
+      let direction = inverse.matrix2 * Vec2::from_angle(rotation);
+      Transform {
+        translation: inverse.transform_point2(translation),
+        rotation: direction.y.atan2(direction.x),
+        scale,
+      }
+    }
+  };
+  (local.translation.is_finite() && local.rotation.is_finite()).then_some(local)
 }
 
 /// The nearest entity at or above `entity` with a `RigidBody`.
 fn owning_body(
   entity: Entity,
   parents: &Query<&ChildOf, Allow<Disabled>>,
-  bodies: &Query<(), (With<RigidBody>, Allow<Disabled>)>,
+  bodies: &Query<BodyPlace, (With<RigidBody>, Allow<Disabled>)>,
 ) -> Option<Entity> {
   let mut current = entity;
   for _ in 0..MAX_DEPTH {
@@ -102,9 +146,15 @@ fn owning_body(
   None
 }
 
-/// `root` and everything below it.
-fn subtree(root: Entity, children: &Query<&Children, Allow<Disabled>>, out: &mut Vec<Entity>) {
-  let mut stack = vec![(root, 0)];
+/// Push `root` and everything below it onto `out`; `stack` is scratch space.
+fn subtree(
+  root: Entity,
+  children: &Query<&Children, Allow<Disabled>>,
+  stack: &mut Vec<(Entity, usize)>,
+  out: &mut Vec<Entity>,
+) {
+  stack.clear();
+  stack.push((root, 0));
   while let Some((entity, depth)) = stack.pop() {
     out.push(entity);
     if depth < MAX_DEPTH
@@ -202,12 +252,19 @@ pub(crate) fn track_disabled(
     // comes back with a stale `GlobalTransform`: the body is placed from the
     // local transforms, and the changed mark has propagation refresh it (and
     // its subtree) before colliders sync
-    let (world, near) = world_transform(entity, &locals);
+    let Some((parent, world)) = world_transform(entity, &locals) else {
+      continue;
+    };
     if let Ok((mut transform, _)) = locals.get_mut(entity) {
       transform.set_changed();
     }
-    if let Ok((mut velocity, mut angular, body)) = bodies.get_mut(entity) {
-      let (translation, rotation) = (world.translation(), continuous(&world, near));
+    if let Ok((mut velocity, mut angular, body)) = bodies.get_mut(entity)
+      && let Ok((transform, _)) = locals.get(entity)
+    {
+      let (translation, rotation) = (
+        world.translation(),
+        body_rotation(transform, parent.as_ref()),
+      );
       physics.add_body(
         entity,
         translation,
@@ -230,45 +287,38 @@ pub(crate) fn track_disabled(
   }
 }
 
-/// An entity's local `Transform` and parent link
-type LocalLink<'a> = (&'a mut Transform, Option<&'a ChildOf>);
-
-/// An entity's world transform composed from the local `Transform`s up its
-/// hierarchy, as propagation computes it (an ancestor without a `Transform`
-/// places its children from the identity), and the sum of their rotations
-/// (see `continuous`).
+/// An entity's world transform and its parent's, composed from the local
+/// `Transform`s up the hierarchy as propagation computes them (an ancestor
+/// without a `Transform` places its children from the identity, so the
+/// parent's is `None` there and at a root). `None` without a `Transform`.
 fn world_transform(
   entity: Entity,
   locals: &Query<LocalLink, Allow<Disabled>>,
-) -> (GlobalTransform, f32) {
-  let mut chain = Vec::new();
-  let mut current = entity;
+) -> Option<(Option<GlobalTransform>, GlobalTransform)> {
+  let (transform, mut parent) = locals.get(entity).ok()?;
+  let mut ancestors = Vec::new();
   for _ in 0..MAX_DEPTH {
-    let Ok((transform, parent)) = locals.get(current) else {
+    let Some(link) = parent else {
       break;
     };
-    chain.push(*transform);
-    let Some(parent) = parent else {
+    let Ok((transform, next)) = locals.get(link.parent()) else {
       break;
     };
-    current = parent.parent();
+    ancestors.push(*transform);
+    parent = next;
   }
-  let near = chain.iter().map(|transform| transform.rotation).sum();
-  let world = chain
-    .iter()
-    .rev()
-    .fold(GlobalTransform::IDENTITY, |global, transform| {
-      global.mul_transform(transform)
-    });
-  (world, near)
-}
-
-/// The rotation `global` holds, kept continuous near `near` (the sum of the
-/// `Transform.rotation`s it comes from). `GlobalTransform` wraps the angle,
-/// and the sync tolerance grows with its magnitude (see `poses_differ`): a
-/// body turned thousands of radians would otherwise never sleep.
-fn continuous(global: &GlobalTransform, near: f32) -> f32 {
-  near + angle_delta(near, global.rotation())
+  let parent = (!ancestors.is_empty()).then(|| {
+    ancestors
+      .iter()
+      .rev()
+      .fold(GlobalTransform::IDENTITY, |global, transform| {
+        global.mul_transform(transform)
+      })
+  });
+  let world = parent
+    .unwrap_or(GlobalTransform::IDENTITY)
+    .mul_transform(transform);
+  Some((parent, world))
 }
 
 /// Apply an edited `RigidBody` in place. A dynamic body made kinematic or
@@ -296,11 +346,20 @@ pub(crate) fn register_bodies(
   mut physics: ResMut<Physics>,
   config: Res<PhysicsConfig>,
   mut bodies: Query<BodyRow, Changed<RigidBody>>,
+  globals: Globals,
 ) {
   physics.configure(&config);
-  for (entity, global, mut velocity, mut angular, body) in &mut bodies {
+  for (entity, place, mut velocity, mut angular, body) in &mut bodies {
     if body.is_added() {
-      add_body(&mut physics, (entity, global, &velocity, &angular, &body));
+      let (translation, rotation) = body_pose(place, &globals);
+      physics.add_body(
+        entity,
+        translation,
+        rotation,
+        velocity.as_vec2(),
+        angular.0,
+        &body,
+      );
     } else {
       apply_edit(&mut physics, entity, &body, &mut velocity, &mut angular);
     }
@@ -318,26 +377,39 @@ pub(crate) fn sync_colliders(
   reparented: Query<Entity, Changed<ChildOf>>,
   children: Query<&Children, Allow<Disabled>>,
   parents: Query<&ChildOf, Allow<Disabled>>,
-  bodies: Query<(), (With<RigidBody>, Allow<Disabled>)>,
+  bodies: Query<BodyPlace, (With<RigidBody>, Allow<Disabled>)>,
   colliders: Query<(&GlobalTransform, &Collider)>,
-  globals: Query<&GlobalTransform, Allow<Disabled>>,
+  globals: Globals,
 ) {
-  let mut todo: Vec<Entity> = changed.iter().collect();
+  // Buffers kept between steps: this runs every step over every moving
+  // collider
+  let mut todo = std::mem::take(&mut physics.sync_queue);
+  let mut stack = std::mem::take(&mut physics.walk_stack);
+  let mut relink = std::mem::take(&mut physics.relink);
+  todo.clear();
+  todo.extend(changed.iter());
+  // One query's entities are distinct; only other sources can repeat them
+  let distinct = todo.len();
   todo.extend(physics.waiting.drain());
-  let relink: Vec<Entity> = physics.relink.drain().collect();
-  for root in new_bodies.iter().chain(reparented.iter()).chain(relink) {
-    subtree(root, &children, &mut todo);
+  for root in new_bodies
+    .iter()
+    .chain(reparented.iter())
+    .chain(relink.drain())
+  {
+    subtree(root, &children, &mut stack, &mut todo);
   }
-  todo.sort_unstable();
-  todo.dedup();
-  for entity in todo {
+  if todo.len() > distinct {
+    todo.sort_unstable();
+    todo.dedup();
+  }
+  for &entity in &todo {
     let Ok((global, collider)) = colliders.get(entity) else {
       continue;
     };
     let body = owning_body(entity, &parents, &bodies);
-    let body_pose = body.map(|body| {
-      let global = globals.get(body).copied().unwrap_or_default();
-      (global.translation(), global.rotation())
+    let body_pose = body.map(|body| match bodies.get(body) {
+      Ok(place) => body_pose(place, &globals),
+      Err(_) => (Vec2::ZERO, 0.0),
     });
     physics.sync_collider(
       entity,
@@ -346,6 +418,10 @@ pub(crate) fn sync_colliders(
       collider,
     );
   }
+  todo.clear();
+  physics.sync_queue = todo;
+  physics.walk_stack = stack;
+  physics.relink = relink;
 }
 
 /// Push the game's writes since the last step. The write-back is an
@@ -355,18 +431,14 @@ pub(crate) fn sync_colliders(
 pub(crate) fn push_changes(
   mut physics: ResMut<Physics>,
   time: Res<Time>,
-  moved: Query<Moved, (With<RigidBody>, Changed<GlobalTransform>)>,
-  globals: Query<&GlobalTransform, Allow<Disabled>>,
+  moved: Query<(Entity, BodyPlace), (With<RigidBody>, Changed<GlobalTransform>)>,
+  globals: Globals,
   pushed: Query<(Entity, &Velocity, &AngularVelocity), Pushed>,
   kinematic: Query<(Entity, &RigidBody, &Velocity, &AngularVelocity)>,
 ) {
   physics.begin_push();
-  for (entity, global, transform, parent) in &moved {
-    let parent_rotation = parent
-      .and_then(|parent| globals.get(parent.parent()).ok())
-      .map_or(0.0, GlobalTransform::rotation);
-    let near = parent_rotation + transform.rotation;
-    let (translation, rotation) = (global.translation(), continuous(global, near));
+  for (entity, place) in &moved {
+    let (translation, rotation) = body_pose(place, &globals);
     if !(translation.is_finite() && rotation.is_finite()) {
       physics.warn_once(entity, "a non-finite Transform is not pushed to physics");
       continue;
@@ -392,54 +464,71 @@ pub(crate) fn step_simulation(mut physics: ResMut<Physics>, time: Res<Time>) {
   physics.step(time.fixed.timestep());
 }
 
+/// An entity's world transform once the write-back lands, as the next
+/// propagation will compute it: up its hierarchy, bodies whose pose the step
+/// owns are placed where Rapier holds them, other entities by their
+/// `Transform`. `None` for an entity without a `Transform` (its children are
+/// placed from the identity).
+fn world_after_step(
+  entity: Entity,
+  physics: &Physics,
+  locals: &Query<LocalLink, Allow<Disabled>>,
+  depth: usize,
+) -> Option<Affine2> {
+  let (transform, parent) = locals.get(entity).ok()?;
+  let parent = match parent {
+    Some(parent) if depth < MAX_DEPTH => {
+      world_after_step(parent.parent(), physics, locals, depth + 1)
+    }
+    _ => None,
+  };
+  let local = physics
+    .simulated_pose(entity)
+    .and_then(|pose| local_pose(parent, pose, transform.scale))
+    .unwrap_or(*transform);
+  Some(parent.unwrap_or(Affine2::IDENTITY) * local.to_affine())
+}
+
 /// Write the bodies the step moved back into their local `Transform`,
-/// through their parent's world transform. Rotation stays continuous: the
-/// turn is added instead of wrapping into (-PI, PI].
+/// through their parent's world transform after the step (an ancestor body
+/// may have moved too, however far up). Rotation stays continuous: the turn
+/// is added instead of wrapping into (-PI, PI]. Under a parent that cannot
+/// be inverted (a zero scale) the `Transform` is left as it is.
 ///
 /// A dynamic body asleep under a parent is written too (only where its
-/// local pose changed): Rapier holds it still, so when the parent moves its
+/// local pose changed): Rapier holds it still, so when an ancestor moves its
 /// local `Transform` must change for it to stay put.
 pub(crate) fn read_back(
   physics: Res<Physics>,
-  parents: Query<&ChildOf>,
-  globals: Query<&GlobalTransform, Allow<Disabled>>,
+  mut locals: Query<LocalLink, Allow<Disabled>>,
   nested: Query<Entity, (With<RigidBody>, With<ChildOf>)>,
-  mut bodies: Query<(&mut Transform, &mut Velocity, &mut AngularVelocity), With<RigidBody>>,
+  mut velocities: Query<(&mut Velocity, &mut AngularVelocity), With<RigidBody>>,
 ) {
   let resting = nested
     .iter()
     .filter_map(|entity| physics.resting_body(entity));
   for state in physics.moved_bodies().chain(resting) {
-    // Into the parent's space: a parent that is a body itself moved this
-    // step too, so its new pose is used (with its scale)
-    let parent = parents.get(state.entity).ok().map(|child_of| {
-      let parent = child_of.parent();
-      let global = globals.get(parent).copied().unwrap_or_default();
-      match physics.body_pose(parent) {
-        Some((translation, rotation)) => {
-          Affine2::from_scale_angle_translation(global.scale(), rotation, translation)
-        }
-        None => global.affine(),
-      }
-    });
-    let (translation, rotation) = match parent {
-      Some(parent) => (
-        parent.inverse().transform_point2(state.translation),
-        state.rotation - parent.matrix2.x_axis.y.atan2(parent.matrix2.x_axis.x),
-      ),
-      None => (state.translation, state.rotation),
-    };
-    let Ok((mut transform, mut velocity, mut angular)) = bodies.get_mut(state.entity) else {
+    let Ok((transform, parent)) = locals.get(state.entity) else {
       continue;
     };
-    if transform.translation != translation {
-      transform.translation = translation;
+    let scale = transform.scale;
+    let parent = parent
+      .map(ChildOf::parent)
+      .and_then(|parent| world_after_step(parent, &physics, &locals, 0));
+    if let Some(local) = local_pose(parent, (state.translation, state.rotation), scale)
+      && let Ok((mut transform, _)) = locals.get_mut(state.entity)
+    {
+      if transform.translation != local.translation {
+        transform.translation = local.translation;
+      }
+      let turn = angle_delta(transform.rotation, local.rotation);
+      if turn != 0.0 {
+        transform.rotation += turn;
+      }
     }
-    let turn = angle_delta(transform.rotation, rotation);
-    if turn != 0.0 {
-      transform.rotation += turn;
-    }
-    if state.dynamic {
+    if state.dynamic
+      && let Ok((mut velocity, mut angular)) = velocities.get_mut(state.entity)
+    {
       velocity.set_if_neq(Velocity::from_vec2(state.linvel));
       angular.set_if_neq(AngularVelocity(state.angvel));
     }
@@ -1609,6 +1698,180 @@ mod tests {
       "{local} vs {}",
       child_at - parent_at
     );
+  }
+
+  #[test]
+  fn a_body_two_levels_below_a_moving_body_stays_put() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let a = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Velocity::new(60.0, 0.0),
+        Collider::circle(5.0),
+      ))
+      .id();
+    let plain = world.spawn((Transform::IDENTITY, ChildOf(a))).id();
+    let b = world
+      .spawn((
+        Transform::from_xy(100.0, 0.0),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+        ChildOf(plain),
+      ))
+      .id();
+    run(&mut world, &mut s, 60);
+    let physics = world.resource::<Physics>();
+    let (at_b, _) = physics.body_pose(b).unwrap();
+    assert!(
+      (at_b - Vec2::new(100.0, 0.0)).length() < 1e-3,
+      "not dragged by the body two levels up: {at_b}"
+    );
+    assert!(physics.is_sleeping(b));
+  }
+
+  #[test]
+  fn a_mirrored_body_keeps_its_rotation_and_sleeps() {
+    for scale in [
+      Vec2::new(-1.0, 1.0),
+      Vec2::new(1.0, -1.0),
+      Vec2::new(-1.0, -1.0),
+    ] {
+      let (mut world, mut s) = world(60);
+      floor(&mut world, 100.0);
+      let e = world
+        .spawn((
+          Transform::from_xy(0.0, 90.0).with_scale(scale),
+          RigidBody::dynamic().lock_rotation(),
+          Collider::rect(20.0, 20.0),
+        ))
+        .id();
+      run(&mut world, &mut s, 600);
+      let physics = world.resource::<Physics>();
+      let (_, rotation) = physics.body_pose(e).unwrap();
+      assert!(rotation.abs() < 1e-4, "{scale}: simulated at {rotation}");
+      let local = at(&world, e).rotation;
+      assert!(local.abs() < 1e-4, "{scale}: written back as {local}");
+      assert!(physics.is_sleeping(e), "{scale}: never flipped back");
+    }
+  }
+
+  /// The simulated angle and the local rotation of a body spinning at
+  /// 3 rad/s for a second under a parent scaled by `scale`.
+  fn spun_under(scale: Vec2) -> (f32, f32) {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let parent = world.spawn(Transform::IDENTITY.with_scale(scale)).id();
+    let child = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        AngularVelocity(3.0),
+        Collider::circle(5.0),
+        ChildOf(parent),
+      ))
+      .id();
+    run(&mut world, &mut s, 60);
+    let (_, rotation) = world.resource::<Physics>().body_pose(child).unwrap();
+    (rotation, at(&world, child).rotation)
+  }
+
+  #[test]
+  fn a_turning_body_under_a_mirrored_parent_keeps_turning() {
+    // The mirror maps the local x axis to the world's -x: it starts at PI
+    let (rotation, local) = spun_under(Vec2::new(-1.0, 1.0));
+    assert!(
+      angle_delta(rotation, std::f32::consts::PI + 3.0).abs() < 0.05,
+      "{rotation}"
+    );
+    // Turning one way in the world is turning the other way in the mirror
+    assert!((local + 3.0).abs() < 0.05, "{local}");
+  }
+
+  #[test]
+  fn a_spinning_body_under_a_stretched_parent_is_not_pulled_back() {
+    let (rotation, _) = spun_under(Vec2::new(2.0, 1.0));
+    assert!(angle_delta(rotation, 3.0).abs() < 0.05, "{rotation}");
+  }
+
+  #[test]
+  fn a_turned_body_at_rest_under_a_stretched_parent_sleeps() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let parent = world
+      .spawn(Transform::IDENTITY.with_scale(Vec2::new(2.0, 1.0)))
+      .id();
+    let child = world
+      .spawn((
+        Transform::IDENTITY.with_rotation(0.7),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+        ChildOf(parent),
+      ))
+      .id();
+    run(&mut world, &mut s, 600);
+    assert!(world.resource::<Physics>().is_sleeping(child));
+    assert!((at(&world, child).rotation - 0.7).abs() < 1e-4);
+  }
+
+  #[test]
+  fn a_zero_scale_parent_never_writes_a_non_finite_transform() {
+    let (mut world, mut s) = world(60);
+    let parent = world
+      .spawn(Transform::from_xy(10.0, 0.0).with_scale(Vec2::ZERO))
+      .id();
+    let child = world
+      .spawn((
+        Transform::from_xy(5.0, 5.0),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+        ChildOf(parent),
+      ))
+      .id();
+    run(&mut world, &mut s, 10);
+    let local = at(&world, child);
+    assert!(
+      local.translation.is_finite() && local.rotation.is_finite(),
+      "{local:?}"
+    );
+  }
+
+  #[test]
+  fn a_collider_waiting_for_its_new_body_leaves_the_old_one() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let old = world
+      .spawn((Transform::IDENTITY, RigidBody::dynamic()))
+      .id();
+    let new = world
+      .spawn((
+        Transform::from_xy(200.0, 0.0),
+        RigidBody::dynamic(),
+        Disabled,
+      ))
+      .id();
+    let part = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(100.0, 100.0),
+        ChildOf(old),
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    world.entity_mut(part).insert(ChildOf(new));
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    assert!(physics.mass(old).unwrap() < 1e-3, "it left the old body");
+    assert_eq!(
+      physics.collider_count(),
+      0,
+      "and waits out of the simulation"
+    );
+    world.entity_mut(new).remove::<Disabled>();
+    run(&mut world, &mut s, 2);
+    let mass = world.resource::<Physics>().mass(new).unwrap();
+    assert!((mass - 1.0).abs() < 1e-3, "then joins the new one: {mass}");
   }
 
   #[test]

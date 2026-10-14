@@ -182,6 +182,10 @@ pub struct Physics {
   /// Entities that lost their `RigidBody` or their parent since the last
   /// step: the colliders at and below them may belong to another body now
   pub(crate) relink: HashSet<Entity>,
+  /// `sync_colliders`' work list and walk stack, kept between steps so the
+  /// hot path does not allocate
+  pub(crate) sync_queue: Vec<Entity>,
+  pub(crate) walk_stack: Vec<(Entity, usize)>,
   /// Owners of colliders removed since the last step: Rapier reports their
   /// `Stopped` events during the next one
   departed: HashMap<ColliderHandle, Owner>,
@@ -302,6 +306,8 @@ impl Physics {
       owners: HashMap::new(),
       waiting: HashSet::new(),
       relink: HashSet::new(),
+      sync_queue: Vec::new(),
+      walk_stack: Vec::new(),
       departed: HashMap::new(),
       teleported: HashSet::new(),
       driven: Vec::new(),
@@ -529,9 +535,9 @@ impl Physics {
   /// Bring a collider in line with its component, its body and its
   /// placement: register it, move it to another body (or none), rebuild its
   /// shape when the shape or scale changed, move it, and apply material
-  /// edits. A collider whose body is not simulated yet waits (retried every
-  /// step); a shape that becomes degenerate leaves the simulation until it is
-  /// valid again.
+  /// edits. A collider whose body is not simulated yet waits out of the
+  /// simulation (retried every step), leaving any body it was on; a shape
+  /// that becomes degenerate leaves the simulation until it is valid again.
   pub(crate) fn sync_collider(
     &mut self,
     entity: Entity,
@@ -543,6 +549,7 @@ impl Physics {
       Some(body) => match self.body_entries.get(&body) {
         Some(entry) => Some((body, entry.handle)),
         None => {
+          self.remove_collider(entity);
           self.waiting.insert(entity);
           return;
         }
@@ -662,8 +669,8 @@ impl Physics {
     }
   }
 
-  /// A collider's world pose (for tests and the overlay).
-  #[cfg_attr(not(test), allow(dead_code))]
+  /// A collider's world pose, for tests.
+  #[cfg(test)]
   pub(crate) fn collider_pose(&self, entity: Entity) -> Option<(Vec2, f32)> {
     let collider = self
       .colliders
@@ -933,6 +940,15 @@ impl Physics {
     dynamic.chain(driven)
   }
 
+  /// Where Rapier holds a body whose pose the last step owned: an enabled
+  /// dynamic body, or a kinematic one it drove by velocity. Other bodies are
+  /// where their `Transform` puts them.
+  pub(crate) fn simulated_pose(&self, entity: Entity) -> Option<(Vec2, f32)> {
+    let body = self.bodies.get(self.body_entries.get(&entity)?.handle)?;
+    let owned = (body.is_dynamic() && body.is_enabled()) || self.driven.contains(&entity);
+    owned.then(|| (from_rapier(body.translation()), body.rotation().angle()))
+  }
+
   /// A dynamic body asleep since before the last step, which `moved_bodies`
   /// leaves out, where Rapier holds it (no velocities to write back).
   pub(crate) fn resting_body(&self, entity: Entity) -> Option<BodyState> {
@@ -949,7 +965,8 @@ impl Physics {
     })
   }
 
-  /// A body's world pose after the last step.
+  /// A body's world pose after the last step, for tests.
+  #[cfg(test)]
   pub(crate) fn body_pose(&self, entity: Entity) -> Option<(Vec2, f32)> {
     let body = self.bodies.get(self.body_entries.get(&entity)?.handle)?;
     Some((from_rapier(body.translation()), body.rotation().angle()))
