@@ -32,7 +32,7 @@
 //! What the push does depends on the entity: a character
 //! (`CharacterController`) is swept by it, so walls, floors and ceilings
 //! stop it and the part running into them is dropped; a dynamic body takes
-//! it as one change in velocity when it starts, and physics slows it from
+//! each hit as one change in velocity of its own, and physics slows it from
 //! there; a kinematic body without a controller, or a fixed body, ignores
 //! it (logged once); an entity without a body moves through its `Transform`.
 
@@ -77,6 +77,9 @@ pub struct Knockback {
   pub just_finished: bool,
   /// Whether to accumulate with existing knockback (blend directions)
   pub accumulate: bool,
+  /// The change in velocity not yet given to a dynamic body: each hit's own
+  /// `direction * force`, taken by `update_knockback`
+  pub(crate) pending: Vec2,
 }
 
 impl Default for Knockback {
@@ -91,6 +94,7 @@ impl Default for Knockback {
       just_started: false,
       just_finished: false,
       accumulate: true,
+      pending: Vec2::ZERO,
     }
   }
 }
@@ -130,6 +134,7 @@ impl Knockback {
       just_started: true,
       just_finished: false,
       accumulate: true,
+      pending: Vec2::new(dir_x, dir_y) * force,
     }
   }
 
@@ -164,6 +169,7 @@ impl Knockback {
       just_started: true,
       just_finished: false,
       accumulate: true,
+      pending: Vec2::new(angle.cos(), angle.sin()) * force,
     }
   }
 
@@ -265,6 +271,7 @@ impl Knockback {
   /// Otherwise, it replaces the existing knockback entirely.
   pub fn push(&mut self, direction: Vec2, force: f32) {
     let (new_dir_x, new_dir_y) = normalize(direction.x, direction.y);
+    self.pending += Vec2::new(new_dir_x, new_dir_y) * force;
 
     if self.accumulate && self.active && self.strength > 0.0 {
       // Blend directions weighted by force
@@ -365,6 +372,7 @@ impl Knockback {
     self.active = true;
     self.just_started = true;
     self.just_finished = false;
+    self.pending += self.direction() * self.force;
   }
 }
 

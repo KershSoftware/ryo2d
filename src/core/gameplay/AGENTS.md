@@ -19,7 +19,7 @@ Invalid input is logged once per entity with a `Local<EntityHashSet>` and `crate
 | Target | Effect |
 |---|---|
 | `CharacterController` | Nothing here: `move_characters` (physics) passes the push as the sweep's `extra` velocity and clips it against every surface the move touched (`Knockback::clip`), so a wall absorbs the part running into it and a head-on push stops |
-| Dynamic body | One change in velocity when the push starts (`direction * force`), whatever the mass; physics slows it. Nothing is taken back |
+| Dynamic body | Each hit gives one change in velocity of its own (`direction * force` of that hit, kept in `Knockback::pending` until the system takes it; blending does not change what a hit gives), whatever the mass; physics slows it. Nothing is taken back |
 | Kinematic body without a controller, fixed body | Ignored, warned once per entity |
 | No body | `Transform` moves by the current knockback velocity |
 

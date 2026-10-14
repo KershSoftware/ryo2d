@@ -19,8 +19,7 @@ type Pushed = (
 
 /// `FixedSet::Movement`: decay every active `Knockback` by one fixed step
 /// and apply it. A character is swept by it during the physics step (see
-/// `Knockback`); a dynamic body gets it as one change in velocity when it
-/// starts; a kinematic body without a controller and a fixed body ignore it
+/// `Knockback`); a dynamic body gets each hit as one change in velocity; a kinematic body without a controller and a fixed body ignore it
 /// (logged once); anything else moves through its `Transform`.
 pub fn update_knockback(
   time: Res<Time>,
@@ -35,8 +34,7 @@ pub fn update_knockback(
       continue;
     }
     let just_started = knockback.just_started;
-    let direction = knockback.direction();
-    let force = knockback.force();
+    let pending = std::mem::take(&mut knockback.pending);
     knockback.update(dt);
     if just_started {
       started.write(KnockbackStarted { entity });
@@ -49,9 +47,11 @@ pub fn update_knockback(
     }
     match body.map(|body| body.kind) {
       Some(BodyKind::Dynamic) => {
-        if just_started && let Some(mut velocity) = velocity {
-          velocity.dx += direction.x * force;
-          velocity.dy += direction.y * force;
+        if pending != Vec2::ZERO
+          && let Some(mut velocity) = velocity
+        {
+          velocity.dx += pending.x;
+          velocity.dy += pending.y;
         }
       }
       Some(BodyKind::Kinematic | BodyKind::Fixed) => {
@@ -143,6 +143,58 @@ mod tests {
       Velocity::new(100.0, 300.0),
       "physics slows it from here"
     );
+  }
+
+  fn pushed_dynamic(world: &mut crate::core::ecs::World) -> Entity {
+    world
+      .spawn((Transform::IDENTITY, RigidBody::dynamic(), Velocity::zero()))
+      .id()
+  }
+
+  #[test]
+  fn a_second_hit_on_a_dynamic_body_adds_only_its_own_change_in_velocity() {
+    let mut world = world(60);
+    let entity = pushed_dynamic(&mut world);
+    Knockback::apply(&mut world, entity, Vec2::X, 400.0);
+    run(&mut world, update_knockback);
+    Knockback::apply(&mut world, entity, Vec2::Y, 400.0);
+    run(&mut world, update_knockback);
+    let v = *world.get::<Velocity>(entity).unwrap();
+    assert!(
+      (v.dx - 400.0).abs() < 1e-3 && (v.dy - 400.0).abs() < 1e-3,
+      "{v:?}"
+    );
+    run(&mut world, update_knockback);
+    assert_eq!(*world.get::<Velocity>(entity).unwrap(), v, "given once");
+  }
+
+  #[test]
+  fn a_replacing_hit_on_a_dynamic_body_adds_exactly_its_force() {
+    let mut world = world(60);
+    let entity = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Velocity::zero(),
+        Knockback::new(Vec2::X, 400.0).with_accumulate(false),
+      ))
+      .id();
+    run(&mut world, update_knockback);
+    Knockback::apply(&mut world, entity, Vec2::X, 300.0);
+    run(&mut world, update_knockback);
+    let v = *world.get::<Velocity>(entity).unwrap();
+    assert!((v.dx - 700.0).abs() < 1e-3 && v.dy.abs() < 1e-3, "{v:?}");
+  }
+
+  #[test]
+  fn two_hits_in_one_step_are_each_given_once() {
+    let mut world = world(60);
+    let entity = pushed_dynamic(&mut world);
+    Knockback::apply(&mut world, entity, Vec2::X, 400.0);
+    Knockback::apply(&mut world, entity, Vec2::X, 200.0);
+    run(&mut world, update_knockback);
+    let v = *world.get::<Velocity>(entity).unwrap();
+    assert!((v.dx - 600.0).abs() < 1e-3 && v.dy.abs() < 1e-3, "{v:?}");
   }
 
   #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -245,7 +245,7 @@ if let Some(mut kb) = ctx.world.get_mut::<Knockback>(enemy) {
 }
 ```
 
-The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. What it does depends on the target. A character (`CharacterController`) is swept by it, so walls, floors and ceilings stop it and the part running into them is dropped. A dynamic body takes it as one change in velocity when it starts (the same speed whatever its mass) and physics slows it from there. A kinematic body without a controller and a fixed body ignore it (logged once). Anything without a body, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
+The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. What it does depends on the target. A character (`CharacterController`) is swept by it, so walls, floors and ceilings stop it and the part running into them is dropped. A dynamic body takes each hit as one change in velocity of its own (the same speed whatever its mass) and physics slows it from there. A kinematic body without a controller and a fixed body ignore it (logged once). Anything without a body, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
 
 ## Squash and stretch
 
