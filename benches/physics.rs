@@ -2,6 +2,13 @@
 //! and elastic, frictionless contacts. One headless frame runs exactly one
 //! fixed step; the empty scene is the frame overhead.
 //!
+//! The scene runs at two sizes. The first has 8 to 10 px bodies in a 600 px
+//! box: at the default 100 px/m that is the worst case for Rapier 0.36,
+//! whose broad phase pads every collider by 0.04 m (4 px), so pairs are
+//! found long before bodies touch. The second is the same scene five times
+//! larger (40 to 50 px bodies, a 3,000 px box, five times the speed), the
+//! size of typical sprites.
+//!
 //! The bodies still lose a little energy at every contact, and over
 //! thousands of frames they slow down and fall asleep, after which a frame
 //! costs almost nothing. So no measurement lets the scene age: each one
@@ -18,21 +25,26 @@ use ryo2d::testing::HeadlessEngine;
 
 const SIZE: f32 = 600.0;
 const BODIES: usize = 1000;
+/// The typical-size scene's scale
+const TYPICAL: f32 = 5.0;
 /// Frames run before a window is timed
 const WARM_UP: u32 = 30;
 /// The most frames one engine is timed for
 const WINDOW: u64 = 200;
 
-struct Bouncing;
+/// The bouncing scene, every length and speed multiplied by its scale.
+struct Bouncing(f32);
 
 impl Scene for Bouncing {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let k = self.0;
     for (x, y, w, h) in [
       (SIZE / 2.0, -10.0, SIZE + 40.0, 20.0),
       (SIZE / 2.0, SIZE + 10.0, SIZE + 40.0, 20.0),
       (-10.0, SIZE / 2.0, 20.0, SIZE + 40.0),
       (SIZE + 10.0, SIZE / 2.0, 20.0, SIZE + 40.0),
     ] {
+      let (x, y, w, h) = (x * k, y * k, w * k, h * k);
       ctx.world.spawn((
         Transform::from_xy(x, y),
         RigidBody::fixed(),
@@ -45,15 +57,15 @@ impl Scene for Bouncing {
       let (col, row) = ((i % 40) as f32, (i / 40) as f32);
       let angle = i as f32 * 2.399;
       let collider = if i % 2 == 0 {
-        Collider::circle(5.0)
+        Collider::circle(5.0 * k)
       } else {
-        Collider::rect(8.0, 8.0)
+        Collider::rect(8.0 * k, 8.0 * k)
       };
       ctx.world.spawn((
-        Transform::from_xy(20.0 + col * 14.0, 20.0 + row * 14.0),
+        Transform::from_xy((20.0 + col * 14.0) * k, (20.0 + row * 14.0) * k),
         Velocity {
-          dx: angle.cos() * 120.0,
-          dy: angle.sin() * 120.0,
+          dx: angle.cos() * 120.0 * k,
+          dy: angle.sin() * 120.0 * k,
         },
         RigidBody::dynamic().with_gravity_scale(0.0).lock_rotation(),
         collider.with_restitution(1.0).with_friction(0.0),
@@ -69,14 +81,20 @@ impl Scene for Empty {}
 fn bouncing() -> EngineBuilder {
   EngineBuilder::new()
     .resolution(300, 300)
-    .start_scene(Bouncing)
+    .start_scene(Bouncing(1.0))
+}
+
+fn typical() -> EngineBuilder {
+  EngineBuilder::new()
+    .resolution(300, 300)
+    .start_scene(Bouncing(TYPICAL))
 }
 
 fn empty() -> EngineBuilder {
   EngineBuilder::new().resolution(300, 300).start_scene(Empty)
 }
 
-/// Panic unless the bouncing scene's bodies are all there and at most 1% of
+/// Panic unless a bouncing scene's bodies are all there and at most 1% of
 /// them asleep.
 fn check_awake(engine: &mut HeadlessEngine) {
   let world = engine.world_mut();
@@ -123,6 +141,9 @@ fn frame(c: &mut Criterion) {
   }
   c.bench_function("physics frame, 1000 bouncing bodies", |b| {
     b.iter_custom(|iters| time_frames(bouncing, iters, true))
+  });
+  c.bench_function("physics frame, 1000 bouncing 40-50 px bodies", |b| {
+    b.iter_custom(|iters| time_frames(typical, iters, true))
   });
   c.bench_function("physics frame, empty scene", |b| {
     b.iter_custom(|iters| time_frames(empty, iters, false))
