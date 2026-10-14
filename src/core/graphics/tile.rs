@@ -1,19 +1,15 @@
-//! Tiled rendering system with grouped collision support
-//!
-//! This module provides components for rendering repeating tile patterns
-//! and composite tiles (like pipes with cap + body), along with grouped
-//! colliders that cover the entire composite as a single physics body.
+//! Tiled rendering: repeating tile patterns and composite tiles (like pipes
+//! with cap + body), with a single rect `Collider` covering a whole composite.
 //!
 //! # Components
 //!
 //! - [`CompositeTile`] - Combines multiple parts (static + tiled) into one entity
-//! - [`GroupedCollider`] - Single collision box covering a composite tile
 //! - [`TileDirection`] - Direction for tiled rendering (Up, Down, Left, Right)
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! // Create a pipe with cap and tiled body
+//! // A pipe with a cap and a tiled body; the collider covers both
 //! let (composite, collider) = CompositeTileBuilder::new()
 //!     .cap(cap_sprite, 0.0, 0.0)
 //!     .body_tiled(body_sprite, 0.0, 32.0, TileDirection::Down, 128.0)
@@ -28,7 +24,8 @@
 //! ```
 
 use crate::core::asset::SpriteHandle;
-use crate::core::ecs::Component;
+use crate::core::ecs::{Component, Vec2};
+use crate::core::physics::Collider;
 
 /// Direction in which tiles are repeated
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -273,98 +270,6 @@ impl Default for CompositeTile {
   }
 }
 
-/// Grouped collider for composite tiles
-///
-/// A single collision box that covers an entire composite tile.
-/// This is more efficient than having separate colliders for each part
-/// and ensures consistent collision behavior.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let collider = GroupedCollider::new(32.0, 160.0);
-/// world.spawn((
-///     Transform::from_xy(100.0, 50.0),
-///     RigidBody::kinematic(),
-///     composite,
-///     collider,
-/// ));
-/// ```
-#[derive(Component, Debug, Clone)]
-pub struct GroupedCollider {
-  /// Width of the collision box
-  pub width: f32,
-  /// Height of the collision box
-  pub height: f32,
-  /// Offset from entity position (X)
-  pub offset_x: f32,
-  /// Offset from entity position (Y)
-  pub offset_y: f32,
-  /// Whether this collider is a trigger (no physics response, just collision messages)
-  pub is_trigger: bool,
-  /// Restitution (bounciness): 0.0 = no bounce, 1.0 = perfect bounce
-  pub restitution: f32,
-  /// Friction coefficient
-  pub friction: f32,
-}
-
-impl GroupedCollider {
-  /// Create a new grouped collider with the given dimensions
-  pub fn new(width: f32, height: f32) -> Self {
-    GroupedCollider {
-      width,
-      height,
-      offset_x: 0.0,
-      offset_y: 0.0,
-      is_trigger: false,
-      restitution: 0.0,
-      friction: 0.5,
-    }
-  }
-
-  /// Create a grouped collider from a composite tile's bounds
-  pub fn from_composite(composite: &CompositeTile) -> Self {
-    let (min_x, min_y, max_x, max_y) = composite.bounds();
-    let width = max_x - min_x;
-    let height = max_y - min_y;
-
-    GroupedCollider {
-      width,
-      height,
-      offset_x: min_x,
-      offset_y: min_y,
-      is_trigger: false,
-      restitution: 0.0,
-      friction: 0.5,
-    }
-  }
-
-  /// Set the offset from entity position
-  pub fn with_offset(mut self, x: f32, y: f32) -> Self {
-    self.offset_x = x;
-    self.offset_y = y;
-    self
-  }
-
-  /// Make this a trigger collider
-  pub fn as_trigger(mut self) -> Self {
-    self.is_trigger = true;
-    self
-  }
-
-  /// Set restitution (bounciness)
-  pub fn with_restitution(mut self, restitution: f32) -> Self {
-    self.restitution = restitution;
-    self
-  }
-
-  /// Set friction coefficient
-  pub fn with_friction(mut self, friction: f32) -> Self {
-    self.friction = friction;
-    self
-  }
-}
-
 /// Builder for creating composite tiles with colliders
 ///
 /// Provides a fluent API for constructing pipes, walls, and other
@@ -506,14 +411,17 @@ impl CompositeTileBuilder {
     }
   }
 
-  /// Build the composite tile with an auto-calculated collider
-  pub fn build_with_collider(self) -> (CompositeTile, GroupedCollider) {
+  /// Build the composite tile and a rect `Collider` covering all its parts.
+  pub fn build_with_collider(self) -> (CompositeTile, Collider) {
     let composite = CompositeTile {
       parts: self.parts,
       visible: self.visible,
       z_order: self.z_order,
     };
-    let collider = GroupedCollider::from_composite(&composite);
+    let (min_x, min_y, max_x, max_y) = composite.bounds();
+    let size = Vec2::new(max_x - min_x, max_y - min_y);
+    let collider =
+      Collider::rect(size.x, size.y).with_offset(min_x + size.x / 2.0, min_y + size.y / 2.0);
     (composite, collider)
   }
 }
@@ -528,6 +436,7 @@ impl Default for CompositeTileBuilder {
 mod tests {
   use super::*;
   use crate::core::graphics::Sprite;
+  use crate::core::physics::ColliderShape;
 
   fn test_sprite(w: u32, h: u32) -> SpriteHandle {
     let sprite = Sprite::solid_rect(w, h, 255, 0, 0, 255);
@@ -616,25 +525,20 @@ mod tests {
   }
 
   #[test]
-  fn grouped_collider_from_composite() {
-    let cap = test_sprite(32, 16);
-    let body = test_sprite(32, 8);
-
-    let composite = CompositeTile::new()
-      .add_part(TilePart::static_part(cap, 0.0, 0.0))
-      .add_part(TilePart::tiled_part(
-        body,
-        0.0,
-        16.0,
-        TileDirection::Down,
-        64.0,
-      ));
-
-    let collider = GroupedCollider::from_composite(&composite);
-    assert_eq!(collider.width, 32.0);
-    assert_eq!(collider.height, 80.0);
-    assert_eq!(collider.offset_x, 0.0);
-    assert_eq!(collider.offset_y, 0.0);
+  fn build_with_collider_returns_a_rect_over_the_parts() {
+    let sprite = test_sprite(32, 32);
+    let (composite, collider) = CompositeTileBuilder::new()
+      .cap(sprite.clone(), 0.0, 0.0)
+      .body_tiled(sprite, 0.0, 32.0, TileDirection::Down, 128.0)
+      .build_with_collider();
+    assert_eq!(composite.size(), (32.0, 160.0));
+    assert_eq!(
+      collider.shape,
+      ColliderShape::Rect {
+        size: Vec2::new(32.0, 160.0)
+      }
+    );
+    assert_eq!(collider.offset, Vec2::new(16.0, 80.0));
   }
 
   #[test]
@@ -650,7 +554,11 @@ mod tests {
 
     assert_eq!(composite.parts.len(), 2);
     assert_eq!(composite.z_order, 5);
-    assert_eq!(collider.width, 32.0);
-    assert_eq!(collider.height, 80.0);
+    assert_eq!(
+      collider.shape,
+      ColliderShape::Rect {
+        size: Vec2::new(32.0, 80.0)
+      }
+    );
   }
 }

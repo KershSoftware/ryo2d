@@ -224,7 +224,7 @@ impl Scene for GameScene {
             .with_ccd()
             .with_gravity_scale(0.0)
             .lock_rotation(),
-          Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
+          Collider::circle(BULLET_SIZE / 2.0).as_trigger(),
           Velocity::zero(),
           Bullet::new(0.0, 0.0),
           Trail2D::new(Color::new(255, 140, 30, 230), 3.5)

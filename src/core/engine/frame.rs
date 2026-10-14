@@ -592,12 +592,12 @@ mod tests {
           ctx.world.spawn((
             Transform::from_xy(0.0, 100.0),
             RigidBody::kinematic(),
-            Collider::box_collider(200.0, 20.0),
+            Collider::rect(200.0, 20.0),
           ));
           ctx.world.spawn((
             Transform::from_xy(0.0, 86.0),
             RigidBody::dynamic(),
-            Collider::box_collider(10.0, 10.0),
+            Collider::rect(10.0, 10.0),
           ));
         }
         let seen = ctx.messages::<CollisionStarted>().len() as u32;
@@ -1104,7 +1104,7 @@ mod tests {
       .spawn((
         Transform::IDENTITY,
         RigidBody::dynamic(),
-        Collider::circle_collider(4.0),
+        Collider::circle(4.0),
       ))
       .id();
     e.frame(Some(Duration::from_millis(20))); // one step registers it

@@ -23,7 +23,7 @@ impl GameScene {
         // Kinematic body - we handle movement manually for wall slides/custom gravity
         // Rapier still provides collision detection for events
         RigidBody::kinematic(),
-        Collider::box_collider(PLAYER_SIZE, PLAYER_SIZE),
+        Collider::rect(PLAYER_SIZE, PLAYER_SIZE),
         PlayerVelocity::default(),
         Player::new(PLAYER_MAX_LIVES),
       ))
@@ -48,7 +48,7 @@ impl GameScene {
           .with_shader(SpriteShader::platform_outline(2)),
         RigidBody::fixed(),
         // Colliders are not scaled with the sprite: give the final size
-        Collider::box_collider(sw, PLATFORM_THICKNESS),
+        Collider::rect(sw, PLATFORM_THICKNESS),
         Platform,
       ))
       .id();
@@ -99,7 +99,7 @@ impl GameScene {
             .with_shader(SpriteShader::platform_outline(2)),
           RigidBody::fixed(),
           // Colliders are not scaled with the sprite: give the final size
-          Collider::box_collider(width, PLATFORM_THICKNESS),
+          Collider::rect(width, PLATFORM_THICKNESS),
           Platform,
         ))
         .id();
@@ -130,7 +130,7 @@ impl GameScene {
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
-          Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
+          Collider::rect(TURRET_SIZE, TURRET_SIZE),
           Turret::new(TurretSide::Left),
         ))
         .id();
@@ -152,7 +152,7 @@ impl GameScene {
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
-          Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
+          Collider::rect(TURRET_SIZE, TURRET_SIZE),
           Turret::new(TurretSide::Right),
         ))
         .id();
@@ -182,7 +182,7 @@ impl GameScene {
           .with_z_order(Z_BARRIER)
           .with_shader(SpriteShader::white_outline(2)),
         RigidBody::kinematic(),
-        Collider::box_collider(BARRIER_WIDTH, BARRIER_HEIGHT),
+        Collider::rect(BARRIER_WIDTH, BARRIER_HEIGHT),
         Barrier::new(BARRIER_SPEED, min_y, max_y),
       ))
       .id();
@@ -197,7 +197,7 @@ impl GameScene {
           .with_z_order(Z_BARRIER)
           .with_shader(SpriteShader::white_outline(2)),
         RigidBody::kinematic(),
-        Collider::box_collider(BARRIER_WIDTH, BARRIER_HEIGHT),
+        Collider::rect(BARRIER_WIDTH, BARRIER_HEIGHT),
         Barrier::new(-BARRIER_SPEED, min_y, max_y),
       ))
       .id();
@@ -223,7 +223,7 @@ impl GameScene {
           .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(0, 0, 0))),
         Interpolated,
         RigidBody::kinematic(),
-        Collider::box_collider(DRONE_SIZE, DRONE_SIZE),
+        Collider::rect(DRONE_SIZE, DRONE_SIZE),
         Drone::new(spawn_x, spawn_y),
       ))
       .id();
@@ -301,7 +301,7 @@ impl GameScene {
           .with_ccd()
           .with_gravity_scale(0.0)
           .lock_rotation(),
-        Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
+        Collider::circle(BULLET_SIZE / 2.0).as_trigger(),
         Velocity::new(velocity_x, velocity_y),
         Bullet::new(velocity_x, velocity_y),
         Trail2D::new(Color::new(255, 140, 30, 230), 3.5)
@@ -331,7 +331,7 @@ impl GameScene {
         .spawn((
           Transform::from_xy(x, y),
           Renderable::sprite(sprite.clone()).with_z_order(Z_PARTICLE),
-          Collider::circle_collider(PARTICLE_SIZE / 2.0).as_trigger(),
+          Collider::circle(PARTICLE_SIZE / 2.0).as_trigger(),
           Particle::new(velocity_x, velocity_y, PARTICLE_LIFETIME),
         ))
         .id();
@@ -362,7 +362,7 @@ impl GameScene {
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
-          Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
+          Collider::rect(TURRET_SIZE, TURRET_SIZE),
           Turret::new(TurretSide::Left),
         ))
         .id();
@@ -382,7 +382,7 @@ impl GameScene {
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
-          Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
+          Collider::rect(TURRET_SIZE, TURRET_SIZE),
           Turret::new(TurretSide::Right),
         ))
         .id();

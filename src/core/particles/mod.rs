@@ -189,24 +189,23 @@ struct Contact {
 
 impl ParticleCollider {
   fn from_component(entity: Entity, global: &GlobalTransform, collider: &Collider) -> Self {
-    // Centred on the origin plus offset, unscaled, as physics simulates it
-    let position = global.translation();
     let geometry = match collider.shape {
-      ColliderShape::Box { .. } => {
-        let (min, max) = collider.world_bounds(position);
+      ColliderShape::Circle { radius } => {
+        let center = global.transform_point(collider.offset);
+        ColliderGeometry::Circle {
+          x: center.x,
+          y: center.y,
+          radius: radius * global.scale().max_element(),
+        }
+      }
+      // Every other shape collides by its world bounds until the particles rewrite
+      _ => {
+        let (min, max) = collider.world_bounds(global);
         ColliderGeometry::Box {
           min_x: min.x,
           min_y: min.y,
           max_x: max.x,
           max_y: max.y,
-        }
-      }
-      ColliderShape::Circle { radius } => {
-        let center = collider.world_center(position);
-        ColliderGeometry::Circle {
-          x: center.x,
-          y: center.y,
-          radius,
         }
       }
     };
@@ -1175,7 +1174,7 @@ mod tests {
         ))
         .id();
       let transform = Transform::from_xy(100.0, 60.0);
-      let (min, max) = collider.world_bounds(transform.translation);
+      let (min, max) = collider.world_bounds(&GlobalTransform::from_transform(&transform));
       let collider = world.spawn((transform, collider)).id();
       Self {
         system: ParticleSystem::new(),
@@ -1190,7 +1189,7 @@ mod tests {
 
     /// A 200x20 floor centred under the particle.
     fn floor(config: CollisionConfig) -> Self {
-      Self::new(config, Collider::box_collider(200.0, 20.0))
+      Self::new(config, Collider::rect(200.0, 20.0))
     }
 
     fn step(&mut self) {
@@ -1215,12 +1214,11 @@ mod tests {
   #[test]
   fn a_corner_hit_sends_one_bounce_event() {
     let config = CollisionConfig::bouncy(RADIUS, 0.5).with_events();
-    let mut scene = FallScene::with_motion(config, Collider::box_collider(200.0, 20.0), 0.0, DT);
+    let mut scene = FallScene::with_motion(config, Collider::rect(200.0, 20.0), 0.0, DT);
     // A wall rising from the floor, its left face at x = 150
-    scene.world.spawn((
-      Transform::from_xy(160.0, 50.0),
-      Collider::box_collider(20.0, 200.0),
-    ));
+    scene
+      .world
+      .spawn((Transform::from_xy(160.0, 50.0), Collider::rect(20.0, 200.0)));
     scene.step();
     // Heading into the corner fast enough to touch floor and wall in one update
     let top = scene.top;
@@ -1361,7 +1359,7 @@ mod tests {
 
   #[test]
   fn collision_mask_filters_colliders() {
-    let floor = || Collider::box_collider(200.0, 20.0).with_layer(0b10);
+    let floor = || Collider::rect(200.0, 20.0).with_layer(0b10);
 
     let mut masked = FallScene::new(CollisionConfig::die_on_hit(RADIUS).with_mask(0b01), floor());
     for _ in 0..120 {
@@ -1389,7 +1387,7 @@ mod tests {
 
   #[test]
   fn trigger_colliders_are_ignored() {
-    let trigger = Collider::box_collider(200.0, 20.0).as_trigger();
+    let trigger = Collider::rect(200.0, 20.0).as_trigger();
     let mut scene = FallScene::new(CollisionConfig::die_on_hit(RADIUS), trigger);
     for _ in 0..120 {
       scene.step();
@@ -1407,7 +1405,7 @@ mod tests {
   #[test]
   fn bounce_off_circle_collider() {
     // Centred 10px left of the particle, so it lands on the circle's right shoulder
-    let circle = Collider::circle_collider(20.0).with_offset(-10.0, 0.0);
+    let circle = Collider::circle(20.0).with_offset(-10.0, 0.0);
     let mut scene = FallScene::new(CollisionConfig::bouncy(RADIUS, 0.5), circle);
 
     let mut bounce_velocity = None;
@@ -1481,11 +1479,16 @@ mod tests {
   fn particles_ignore_their_own_emitters_collider() {
     let mut scene = FallScene::floor(CollisionConfig::die_on_hit(RADIUS));
     // A 20x20 box centred on the emitter, so particles spawn inside it
-    let own_box = Collider::box_collider(20.0, 20.0);
+    let own_box = Collider::rect(20.0, 20.0);
     let own_bottom = scene
       .world
       .get::<Transform>(scene.emitter)
-      .map(|transform| own_box.world_bounds(transform.translation).1.y)
+      .map(|transform| {
+        own_box
+          .world_bounds(&GlobalTransform::from_transform(transform))
+          .1
+          .y
+      })
       .expect("emitter has a transform");
     scene.world.entity_mut(scene.emitter).insert(own_box);
 
@@ -1515,7 +1518,7 @@ mod tests {
     let config = CollisionConfig::bouncy(RADIUS, 0.5).with_events();
     // ~17px per step: a 200px-thick floor (top still at 50) keeps deep first contacts from
     // resolving through the bottom face
-    let floor = Collider::box_collider(200.0, 200.0).with_offset(0.0, 90.0);
+    let floor = Collider::rect(200.0, 200.0).with_offset(0.0, 90.0);
     let mut scene = FallScene::with_motion(config, floor, 3000.0, 1.0 / 30.0);
     assert_eq!((scene.top, scene.bottom), (50.0, 250.0));
     for _ in 0..600 {
@@ -1542,9 +1545,12 @@ mod tests {
     if let Some(mut transform) = scene.world.get_mut::<Transform>(scene.emitter) {
       transform.translation.y = rest_y;
     }
-    let wall = Collider::box_collider(20.0, 100.0);
+    let wall = Collider::rect(20.0, 100.0);
     let wall_transform = Transform::from_xy(160.0, scene.top);
-    let wall_face = wall.world_bounds(wall_transform.translation).0.x;
+    let wall_face = wall
+      .world_bounds(&GlobalTransform::from_transform(&wall_transform))
+      .0
+      .x;
     scene.world.spawn((wall_transform, wall));
 
     scene.step();
@@ -1568,7 +1574,7 @@ mod tests {
   #[test]
   fn slow_bounce_emits_no_event() {
     let config = CollisionConfig::bouncy(RADIUS, 0.5).with_events();
-    let floor = Collider::box_collider(200.0, 20.0);
+    let floor = Collider::rect(200.0, 20.0);
     let mut scene = FallScene::with_motion(config, floor, 0.0, DT);
     // 8px above contact, drifting down well under MIN_BOUNCE_EVENT_SPEED
     if let Some(mut transform) = scene.world.get_mut::<Transform>(scene.emitter) {

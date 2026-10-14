@@ -425,7 +425,7 @@ fn performance_grid_rebuild() {
   for i in 0..50 {
     world.spawn((
       Transform::from_xy(100.0 + i as f32 * 10.0, 100.0 + i as f32 * 5.0),
-      Collider::box_collider(16.0, 16.0),
+      Collider::rect(16.0, 16.0),
     ));
   }
 

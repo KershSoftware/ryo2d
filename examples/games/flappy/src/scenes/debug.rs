@@ -54,7 +54,7 @@ impl DebugScene {
           .with_ccd()
           .with_gravity_scale(0.0)
           .lock_rotation(),
-        Collider::circle_collider(BIRD_SIZE / 2.0),
+        Collider::circle(BIRD_SIZE / 2.0),
         Renderable::sprite(bird_handle).with_z_order(10),
       ))
       .id();
@@ -63,7 +63,7 @@ impl DebugScene {
 
   fn spawn_test_pipes(&mut self, ctx: &mut SceneContext) {
     // Spawn a few static pipes at known positions for testing
-    // Uses CompositeTile with GroupedCollider (same as game scene)
+    // Uses CompositeTile with its covering Collider (same as game scene)
     // Format: (x, gap_center_y)
     let pipe_positions = [
       (200.0, 250.0), // x, gap_center_y (gap at y=175 to y=325)
@@ -149,7 +149,7 @@ impl DebugScene {
         Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, GROUND_Y + GROUND_HEIGHT / 2.0),
         Velocity::new(0.0, 0.0),
         RigidBody::fixed(),
-        Collider::box_collider(SCREEN_WIDTH as f32, GROUND_HEIGHT),
+        Collider::rect(SCREEN_WIDTH as f32, GROUND_HEIGHT),
         Renderable::sprite(ground_handle).with_z_order(15),
       ))
       .id();
@@ -178,20 +178,22 @@ impl DebugScene {
 
     self.is_colliding = false;
 
-    // Check against all pipes (now using GroupedCollider)
+    // Check against all pipes
     for &pipe_entity in &self.pipes {
       let Some(pipe_transform) = ctx.world.get::<Transform>(pipe_entity) else {
         continue;
       };
-      let Some(grouped_collider) = ctx.world.get::<GroupedCollider>(pipe_entity) else {
+      let Some(pipe_collider) = ctx.world.get::<Collider>(pipe_entity) else {
         continue;
       };
-
-      // GroupedCollider has a simple box covering the entire composite tile
-      let box_x = pipe_transform.translation.x + grouped_collider.offset_x;
-      let box_y = pipe_transform.translation.y + grouped_collider.offset_y;
-      let width = grouped_collider.width;
-      let height = grouped_collider.height;
+      // A rect covering the entire composite tile, centred on the pipe's
+      // origin plus its offset
+      let ColliderShape::Rect { size } = pipe_collider.shape else {
+        continue;
+      };
+      let (width, height) = (size.x, size.y);
+      let box_x = pipe_transform.translation.x + pipe_collider.offset.x - width / 2.0;
+      let box_y = pipe_transform.translation.y + pipe_collider.offset.y - height / 2.0;
 
       // Circle vs AABB collision check
       let closest_x = bird_cx.clamp(box_x, box_x + width);
@@ -208,13 +210,14 @@ impl DebugScene {
       }
     }
 
-    // Check against ground (still uses regular Collider)
+    // Check against ground
     if !self.is_colliding
       && let Some(ground_entity) = self.ground
       && let Some(ground_transform) = ctx.world.get::<Transform>(ground_entity)
       && let Some(ground_collider) = ctx.world.get::<Collider>(ground_entity)
-      && let ColliderShape::Box { width, height } = ground_collider.shape
+      && let ColliderShape::Rect { size } = ground_collider.shape
     {
+      let (width, height) = (size.x, size.y);
       // The box is centred on the ground's origin plus its offset
       let box_x = ground_transform.translation.x + ground_collider.offset.x - width / 2.0;
       let box_y = ground_transform.translation.y + ground_collider.offset.y - height / 2.0;

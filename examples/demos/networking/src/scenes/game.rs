@@ -196,7 +196,7 @@ impl Match {
         ))
         .with_anchor(Anchor::TopLeft)
         .with_z_order(Z_PLATFORM),
-        Collider::box_collider(PLATFORM_WIDTH, PLATFORM_HEIGHT)
+        Collider::rect(PLATFORM_WIDTH, PLATFORM_HEIGHT)
           .with_offset(PLATFORM_WIDTH / 2.0, PLATFORM_HEIGHT / 2.0),
       ))
       .id();
@@ -228,7 +228,7 @@ impl Match {
         ))
         .with_anchor(Anchor::TopLeft)
         .with_z_order(Z_PLAYER),
-        Collider::box_collider(PLAYER_WIDTH, PLAYER_HEIGHT)
+        Collider::rect(PLAYER_WIDTH, PLAYER_HEIGHT)
           .with_offset(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0),
         Player::new(slot),
         PlayerVelocity::zero(),

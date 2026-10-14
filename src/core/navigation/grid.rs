@@ -269,10 +269,10 @@ impl NavigationGrid {
     self.generation += 1;
   }
 
-  /// Block the cells under a collider: centred on the entity's origin plus
-  /// its offset, unscaled, as physics simulates it.
+  /// Block the cells under a collider: the collider's world bounds, as
+  /// physics places it.
   pub fn block_collider(&mut self, global: &GlobalTransform, collider: &Collider, entity: Entity) {
-    let (min, max) = collider.world_bounds(global.translation());
+    let (min, max) = collider.world_bounds(global);
     self.block_rect(min.x, min.y, max.x, max.y);
     self.blocking_entities.insert(entity);
   }
@@ -376,12 +376,12 @@ mod tests {
     world.spawn((
       transform,
       GlobalTransform::from_transform(&transform),
-      Collider::box_collider(18.0, 18.0),
+      Collider::rect(18.0, 18.0),
     ));
     world.spawn((
       Transform::from_xy(5.0, 5.0),
       GlobalTransform::from_transform(&Transform::from_xy(5.0, 5.0)),
-      Collider::box_collider(4.0, 4.0).as_trigger(),
+      Collider::rect(4.0, 4.0).as_trigger(),
     ));
     let mut grid = NavigationGrid::new(100.0, 100.0, 10.0);
     grid.rebuild_from_world(&mut world);

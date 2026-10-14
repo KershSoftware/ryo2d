@@ -225,7 +225,7 @@ impl GameScene {
         Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, PADDLE_Y),
         Velocity::zero(),
         RigidBody::kinematic(),
-        Collider::box_collider(PADDLE_WIDTH, PADDLE_HEIGHT)
+        Collider::rect(PADDLE_WIDTH, PADDLE_HEIGHT)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
@@ -266,7 +266,7 @@ impl GameScene {
           .with_gravity_scale(0.0)
           .with_linear_damping(0.0)
           .lock_rotation(), // CCD prevents tunneling
-        Collider::circle_collider(BALL_SIZE / 2.0)
+        Collider::circle(BALL_SIZE / 2.0)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
@@ -306,7 +306,7 @@ impl GameScene {
           .with_gravity_scale(0.0)
           .with_linear_damping(0.0)
           .lock_rotation(), // CCD prevents tunneling
-        Collider::circle_collider(BALL_SIZE / 2.0)
+        Collider::circle(BALL_SIZE / 2.0)
           .with_restitution(1.0)
           .with_friction(0.0),
         Renderable::sprite(SpriteHandle::from_sprite(
@@ -500,7 +500,7 @@ impl GameScene {
       .spawn((
         Transform::from_xy(-WALL_THICKNESS / 2.0, SCREEN_HEIGHT as f32 / 2.0),
         RigidBody::fixed(),
-        Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
+        Collider::rect(WALL_THICKNESS, SCREEN_HEIGHT as f32)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
@@ -522,7 +522,7 @@ impl GameScene {
           SCREEN_HEIGHT as f32 / 2.0,
         ),
         RigidBody::fixed(),
-        Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
+        Collider::rect(WALL_THICKNESS, SCREEN_HEIGHT as f32)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
@@ -541,7 +541,7 @@ impl GameScene {
       .spawn((
         Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, -WALL_THICKNESS / 2.0),
         RigidBody::fixed(),
-        Collider::box_collider(SCREEN_WIDTH as f32, WALL_THICKNESS)
+        Collider::rect(SCREEN_WIDTH as f32, WALL_THICKNESS)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
@@ -560,7 +560,7 @@ impl GameScene {
       .spawn((
         Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 + 100.0),
         RigidBody::fixed(),
-        Collider::box_collider(SCREEN_WIDTH as f32, 100.0).as_trigger(),
+        Collider::rect(SCREEN_WIDTH as f32, 100.0).as_trigger(),
         DeathZone,
       ))
       .id();
@@ -592,7 +592,7 @@ impl GameScene {
         .spawn((
           Transform::from_xy(x, y),
           RigidBody::fixed(),
-          Collider::box_collider(BLOCK_WIDTH, BLOCK_HEIGHT)
+          Collider::rect(BLOCK_WIDTH, BLOCK_HEIGHT)
             .with_restitution(1.0) // Perfect bounce
             .with_friction(0.0), // No friction
           Renderable::sprite(SpriteHandle::from_sprite(

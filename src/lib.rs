@@ -120,9 +120,7 @@ pub mod prelude {
   };
 
   // Tiled rendering
-  pub use crate::core::graphics::{
-    CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart,
-  };
+  pub use crate::core::graphics::{CompositeTile, CompositeTileBuilder, TileDirection, TilePart};
 
   // Sprite animation
   pub use crate::core::graphics::{

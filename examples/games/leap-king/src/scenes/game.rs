@@ -584,8 +584,7 @@ impl GameScene {
         ))
         .with_z_order(Z_PLATFORM)
         .with_anchor(Anchor::TopLeft),
-        Collider::box_collider(width, PLATFORM_HEIGHT)
-          .with_offset(width / 2.0, PLATFORM_HEIGHT / 2.0),
+        Collider::rect(width, PLATFORM_HEIGHT).with_offset(width / 2.0, PLATFORM_HEIGHT / 2.0),
         platform,
       ))
       .id();
@@ -1013,7 +1012,7 @@ impl GameScene {
       .world
       .spawn((
         Transform::from_xy(spawn_x, PLAYER_SPAWN_Y),
-        Collider::box_collider(PLAYER_WIDTH, PLAYER_HEIGHT)
+        Collider::rect(PLAYER_WIDTH, PLAYER_HEIGHT)
           .with_offset(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0),
         Player::new(slot),
         Velocity::zero(),
@@ -2155,7 +2154,7 @@ impl GameScene {
         let collider = ctx.world.get::<Collider>(entity)?;
         let vel = ctx.world.get::<Velocity>(entity)?;
         let player = ctx.world.get::<Player>(entity)?;
-        let bounds = collider.world_bounds(transform.translation);
+        let bounds = collider.world_bounds(&GlobalTransform::from_transform(transform));
         Some((entity, bounds, vel.dy, player.leap_state.is_airborne()))
       })
       .collect();

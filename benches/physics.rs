@@ -21,7 +21,7 @@ impl Scene for Bouncing {
       ctx.world.spawn((
         Transform::from_xy(x, y),
         RigidBody::fixed(),
-        Collider::box_collider(w, h)
+        Collider::rect(w, h)
           .with_restitution(1.0)
           .with_friction(0.0),
       ));
@@ -30,9 +30,9 @@ impl Scene for Bouncing {
       let (col, row) = ((i % 40) as f32, (i / 40) as f32);
       let angle = i as f32 * 2.399;
       let collider = if i % 2 == 0 {
-        Collider::circle_collider(5.0)
+        Collider::circle(5.0)
       } else {
-        Collider::box_collider(8.0, 8.0)
+        Collider::rect(8.0, 8.0)
       };
       ctx.world.spawn((
         Transform::from_xy(20.0 + col * 14.0, 20.0 + row * 14.0),

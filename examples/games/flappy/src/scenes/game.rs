@@ -63,7 +63,7 @@ impl GameScene {
           .with_gravity_scale(0.0)
           .lock_rotation(),
         // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
-        Collider::circle_collider(BIRD_SIZE * BIRD_COLLIDER_RATIO),
+        Collider::circle(BIRD_SIZE * BIRD_COLLIDER_RATIO),
         Renderable::sprite(initial_sprite).with_z_order(10),
         Interpolated,
         controller,

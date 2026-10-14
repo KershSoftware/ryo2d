@@ -83,7 +83,7 @@ impl TimeControlPage {
       ctx.world.spawn((
         Transform::from_xy(x, y),
         RigidBody::fixed(),
-        Collider::box_collider(width, height)
+        Collider::rect(width, height)
           .with_restitution(1.0)
           .with_friction(0.0),
       ));
@@ -118,7 +118,7 @@ impl TimeControlPage {
         Renderable::sprite(sprite).with_z_order(10),
         Velocity::new(angle.cos() * speed, angle.sin() * speed),
         RigidBody::dynamic().with_gravity_scale(0.5).lock_rotation(),
-        Collider::circle_collider(BALL_RADIUS as f32)
+        Collider::circle(BALL_RADIUS as f32)
           .with_restitution(1.0)
           .with_friction(0.0),
       ));

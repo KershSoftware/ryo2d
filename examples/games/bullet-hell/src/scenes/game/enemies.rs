@@ -484,7 +484,7 @@ impl GameScene {
             Color::rgb(80, 180, 80),
           )),
         RigidBody::kinematic(),
-        Collider::circle_collider(NEBULA_ORB_SIZE / 2.0),
+        Collider::circle(NEBULA_ORB_SIZE / 2.0),
         NebulaOrbMarker {
           parent: nebula_entity,
           index: i,
@@ -781,7 +781,7 @@ impl GameScene {
           .with_shader(SpriteShader::outline(Color::rgb(255, 190, 130), 2)),
         Interpolated,
         RigidBody::kinematic(),
-        Collider::circle_collider(ROCKET_SIZE / 2.0),
+        Collider::circle(ROCKET_SIZE / 2.0),
         rocket,
         trail,
       ))

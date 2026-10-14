@@ -5,7 +5,7 @@
 //! into messages.
 
 use super::body::{AngularVelocity, BodyKind, RigidBody};
-use super::collision::Collider;
+use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::angle_delta;
 use super::world::Physics;
@@ -14,7 +14,6 @@ use crate::core::ecs::{
   IntoScheduleConfigs, MessageWriter, Mut, Or, Query, Ref, RemovedComponents, Res, ResMut,
   Transform, Vec2, Velocity, With, Without,
 };
-use crate::core::graphics::GroupedCollider;
 use crate::core::messages::{CollisionStarted, CollisionStopped};
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
@@ -40,27 +39,10 @@ type BodyRow<'a> = (
   &'a mut AngularVelocity,
   Ref<'a, RigidBody>,
 );
-type ColliderItem<'a> = (
-  Entity,
-  &'a Transform,
-  Option<&'a Collider>,
-  Option<&'a GroupedCollider>,
-  Has<RigidBody>,
-);
+type ColliderItem<'a> = (Entity, &'a Transform, &'a Collider, Has<RigidBody>);
 /// A `ColliderItem` as a query yields it (`Has` reads as a `bool`).
-type ColliderRow<'a> = (
-  Entity,
-  &'a Transform,
-  Option<&'a Collider>,
-  Option<&'a GroupedCollider>,
-  bool,
-);
-type HasPhysics = Or<(With<RigidBody>, With<Collider>, With<GroupedCollider>)>;
-/// A root entity that gained a collider
-type NewCollider = (
-  Or<(Added<Collider>, Added<GroupedCollider>)>,
-  Without<ChildOf>,
-);
+type ColliderRow<'a> = (Entity, &'a Transform, &'a Collider, bool);
+type HasPhysics = Or<(With<RigidBody>, With<Collider>)>;
 /// A root body or collider whose `Transform` changed
 type Moved = (Changed<Transform>, HasPhysics, Without<ChildOf>);
 /// A body whose `Velocity` or `AngularVelocity` changed
@@ -80,34 +62,14 @@ fn add_body(physics: &mut Physics, (entity, transform, velocity, angular, body):
   );
 }
 
-fn add_collider(
-  physics: &mut Physics,
-  (entity, transform, collider, grouped, has_body): ColliderRow,
-) {
-  let collider = match (collider, grouped) {
-    (Some(collider), _) => collider.clone(),
-    (None, Some(grouped)) => grouped_collider(grouped),
-    (None, None) => return,
-  };
+fn add_collider(physics: &mut Physics, (entity, transform, collider, has_body): ColliderRow) {
   physics.add_collider(
     entity,
     has_body.then_some(entity),
     transform.translation,
     transform.rotation,
-    &collider,
+    collider,
   );
-}
-
-/// A composite tile's box as a `Collider`: its offset is the box's top-left.
-fn grouped_collider(grouped: &GroupedCollider) -> Collider {
-  let size = Vec2::new(grouped.width, grouped.height);
-  let center = Vec2::new(grouped.offset_x, grouped.offset_y) + size / 2.0;
-  let mut collider = Collider::box_collider(size.x, size.y)
-    .with_offset(center.x, center.y)
-    .with_restitution(grouped.restitution)
-    .with_friction(grouped.friction);
-  collider.is_trigger = grouped.is_trigger;
-  collider
 }
 
 /// Forget colliders and bodies whose components went away (despawn
@@ -115,10 +77,9 @@ fn grouped_collider(grouped: &GroupedCollider) -> Collider {
 pub(crate) fn forget_removed(
   mut physics: ResMut<Physics>,
   mut colliders: RemovedComponents<Collider>,
-  mut grouped: RemovedComponents<GroupedCollider>,
   mut bodies: RemovedComponents<RigidBody>,
 ) {
-  for entity in colliders.read().chain(grouped.read()) {
+  for entity in colliders.read() {
     physics.remove_collider(entity);
   }
   for entity in bodies.read() {
@@ -129,7 +90,7 @@ pub(crate) fn forget_removed(
 /// Disable the simulation of disabled entities; re-enable (or register, if
 /// they were spawned disabled) re-enabled ones. The steps skip a disabled
 /// entity, so what the game changed meanwhile (`Transform`, `Velocity`,
-/// `RigidBody`) is applied as it comes back.
+/// `RigidBody`, `Collider`) is applied as it comes back.
 pub(crate) fn track_disabled(
   mut physics: ResMut<Physics>,
   config: Res<PhysicsConfig>,
@@ -155,9 +116,16 @@ pub(crate) fn track_disabled(
       physics.place_body(entity, transform.translation, transform.rotation);
       physics.push_velocity(entity, velocity.as_vec2(), angular.0);
     }
-    if let Ok(item) = colliders.get(entity) {
-      add_collider(&mut physics, item);
-      physics.move_collider(entity, item.1.translation, item.1.rotation);
+    if let Ok((entity, transform, collider, has_body)) = colliders.get(entity) {
+      // Registers it, or applies edits made while it was disabled
+      physics.update_collider(
+        entity,
+        has_body.then_some(entity),
+        transform.translation,
+        transform.rotation,
+        collider,
+      );
+      physics.move_collider(entity, transform.translation, transform.rotation);
     }
     physics.set_enabled(entity, true);
   }
@@ -211,12 +179,12 @@ fn apply_edit(
 }
 
 /// Register new bodies, then new colliders (so a collider spawned with its
-/// body attaches to it), and apply edited bodies in place.
+/// body attaches to it), and apply edited bodies and colliders in place.
 pub(crate) fn register_new(
   mut physics: ResMut<Physics>,
   config: Res<PhysicsConfig>,
   mut bodies: Query<BodyRow, (Changed<RigidBody>, Without<ChildOf>)>,
-  colliders: Query<ColliderItem, NewCollider>,
+  colliders: Query<ColliderItem, (Changed<Collider>, Without<ChildOf>)>,
 ) {
   physics.configure(&config);
   for (entity, transform, mut velocity, mut angular, body) in &mut bodies {
@@ -229,8 +197,14 @@ pub(crate) fn register_new(
       apply_edit(&mut physics, entity, &body, &mut velocity, &mut angular);
     }
   }
-  for item in &colliders {
-    add_collider(&mut physics, item);
+  for (entity, transform, collider, has_body) in &colliders {
+    physics.update_collider(
+      entity,
+      has_body.then_some(entity),
+      transform.translation,
+      transform.rotation,
+      collider,
+    );
   }
 }
 
@@ -341,6 +315,7 @@ mod tests {
   use super::*;
   use crate::core::ecs::{Messages, World};
   use crate::core::messages::CollisionStarted;
+  use crate::core::physics::ColliderShape;
   use crate::core::physics::test_util::*;
   use crate::core::scene::PhysicsPaused;
   use crate::core::schedule::{EngineSchedules, Phase};
@@ -384,7 +359,7 @@ mod tests {
       .spawn((
         Transform::IDENTITY,
         RigidBody::dynamic(),
-        Collider::box_collider(100.0, 100.0),
+        Collider::rect(100.0, 100.0),
       ))
       .id();
     run(&mut world, &mut s, 1);
@@ -407,7 +382,7 @@ mod tests {
       .spawn((
         Transform::IDENTITY,
         RigidBody::dynamic(),
-        Collider::box_collider(100.0, 100.0),
+        Collider::rect(100.0, 100.0),
         Disabled,
       ))
       .id();
@@ -462,32 +437,13 @@ mod tests {
   }
 
   #[test]
-  fn a_grouped_collider_spans_its_offset_and_size() {
-    let (mut world, mut s) = world(60);
-    let e = world
-      .spawn((
-        Transform::from_xy(100.0, 100.0),
-        GroupedCollider::new(40.0, 20.0).with_offset(-20.0, 0.0),
-      ))
-      .id();
-    run(&mut world, &mut s, 1);
-    let physics = world.resource::<Physics>();
-    let collider = &physics.colliders[physics.collider_entries[&e].handle];
-    let center = Vec2::new(collider.translation().x, collider.translation().y);
-    assert!(
-      (center - Vec2::new(100.0, 110.0)).length() < 1e-3,
-      "{center}"
-    );
-  }
-
-  #[test]
   fn a_fixed_body_never_moves() {
     let (mut world, mut s) = world(60);
     let platform = world
       .spawn((
         Transform::from_xy(0.0, 110.0),
         RigidBody::fixed(),
-        Collider::box_collider(400.0, 20.0),
+        Collider::rect(400.0, 20.0),
       ))
       .id();
     ball(&mut world, 0.0, 0.0);
@@ -502,7 +458,7 @@ mod tests {
       .spawn((
         Transform::from_xy(0.0, 40.0).with_rotation(0.4),
         body,
-        Collider::box_collider(40.0, 40.0),
+        Collider::rect(40.0, 40.0),
       ))
       .id();
     let mut fastest_spin: f32 = 0.0;
@@ -549,7 +505,7 @@ mod tests {
         Transform::IDENTITY,
         RigidBody::kinematic(),
         Velocity::new(60.0, 0.0),
-        Collider::box_collider(10.0, 10.0),
+        Collider::rect(10.0, 10.0),
       ))
       .id();
     run(&mut world, &mut s, 60);
@@ -568,14 +524,14 @@ mod tests {
       .spawn((
         Transform::from_xy(0.0, 110.0),
         RigidBody::kinematic(),
-        Collider::box_collider(200.0, 20.0),
+        Collider::rect(200.0, 20.0),
       ))
       .id();
     let crate_ = world
       .spawn((
         Transform::from_xy(0.0, 80.0),
         RigidBody::dynamic().lock_rotation(),
-        Collider::box_collider(20.0, 20.0).with_friction(1.0),
+        Collider::rect(20.0, 20.0).with_friction(1.0),
       ))
       .id();
     run(&mut world, &mut s, 60);
@@ -596,7 +552,7 @@ mod tests {
         Transform::from_xy(0.0, 0.0),
         RigidBody::dynamic().lock_rotation().with_dominance(1),
         Velocity::new(100.0, 0.0),
-        Collider::box_collider(20.0, 20.0),
+        Collider::rect(20.0, 20.0),
       ))
       .id();
     let pushed = world
@@ -604,7 +560,7 @@ mod tests {
         Transform::from_xy(50.0, 0.0),
         RigidBody::dynamic().lock_rotation(),
         Velocity::new(-100.0, 0.0),
-        Collider::box_collider(20.0, 20.0),
+        Collider::rect(20.0, 20.0),
       ))
       .id();
     run(&mut world, &mut s, 60);
@@ -639,7 +595,7 @@ mod tests {
       .spawn((
         Transform::from_xy(0.0, 50.0),
         RigidBody::dynamic().never_sleep(),
-        Collider::circle_collider(10.0),
+        Collider::circle(10.0),
       ))
       .id();
     run(&mut world, &mut s, 600);
@@ -711,7 +667,7 @@ mod tests {
       .spawn((
         Transform::from_xy(0.0, 110.0),
         RigidBody::kinematic(),
-        Collider::box_collider(400.0, 20.0),
+        Collider::rect(400.0, 20.0),
       ))
       .id();
     run(&mut world, &mut s, 1);
@@ -857,7 +813,7 @@ mod tests {
         Transform::IDENTITY,
         RigidBody::dynamic(),
         Velocity::new(60.0, 0.0),
-        Collider::circle_collider(4.0),
+        Collider::circle(4.0),
       ))
       .id();
     run(&mut world, &mut s, 30);
@@ -905,7 +861,7 @@ mod tests {
       .spawn((
         Transform::IDENTITY.with_rotation(3000.0),
         RigidBody::dynamic(),
-        Collider::box_collider(10.0, 10.0),
+        Collider::rect(10.0, 10.0),
       ))
       .id();
     run(&mut world, &mut s, 600);
@@ -938,7 +894,7 @@ mod tests {
       .spawn((
         Transform::IDENTITY,
         RigidBody::dynamic(),
-        Collider::circle_collider(4.0),
+        Collider::circle(4.0),
         Disabled,
       ))
       .id();
@@ -957,7 +913,7 @@ mod tests {
       .id();
     run(&mut world, &mut s, 1);
     assert_eq!(world.resource::<Physics>().collider_count(), 0);
-    world.entity_mut(e).insert(Collider::circle_collider(4.0));
+    world.entity_mut(e).insert(Collider::circle(4.0));
     run(&mut world, &mut s, 1);
     assert_eq!(world.resource::<Physics>().collider_count(), 1);
   }
@@ -969,7 +925,7 @@ mod tests {
       .spawn((
         Transform::IDENTITY,
         RigidBody::kinematic(),
-        Collider::box_collider(4.0, 4.0),
+        Collider::rect(4.0, 4.0),
       ))
       .id();
     run(&mut world, &mut s, 1);
@@ -988,7 +944,7 @@ mod tests {
       .spawn((
         Transform::from_xy(5.0, 0.0),
         RigidBody::dynamic(),
-        Collider::box_collider(4.0, 4.0),
+        Collider::rect(4.0, 4.0),
         ChildOf(parent),
       ))
       .id();
@@ -1039,5 +995,252 @@ mod tests {
         .any(|m| m.involves(b) && m.other(b) == Some(f)),
       "{started:?}"
     );
+  }
+
+  #[test]
+  fn a_bouncy_ball_bounces_off_a_default_floor() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 200.0);
+    let b = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Collider::circle(10.0).with_restitution(1.0),
+      ))
+      .id();
+    // Down, bounce, and most of the way back up within two seconds
+    let mut lowest_after_bounce = f32::MAX;
+    let mut bounced = false;
+    for _ in 0..120 {
+      run(&mut world, &mut s, 1);
+      let v = world.get::<Velocity>(b).unwrap().dy;
+      bounced |= v < 0.0;
+      if bounced {
+        lowest_after_bounce = lowest_after_bounce.min(at(&world, b).translation.y);
+      }
+    }
+    assert!(
+      bounced && lowest_after_bounce < 30.0,
+      "{lowest_after_bounce}"
+    );
+  }
+
+  fn slid(friction: f32) -> f32 {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = world
+      .spawn((
+        Transform::from_xy(0.0, 90.0),
+        RigidBody::dynamic().lock_rotation(),
+        Velocity::new(100.0, 0.0),
+        Collider::rect(20.0, 20.0).with_friction(friction),
+      ))
+      .id();
+    run(&mut world, &mut s, 60);
+    world.get::<Velocity>(e).unwrap().dx
+  }
+
+  #[test]
+  fn zero_friction_on_either_side_slides() {
+    assert!(slid(0.0) > 95.0, "{}", slid(0.0));
+    assert!(slid(0.5) < 50.0, "{}", slid(0.5));
+  }
+
+  #[test]
+  fn layers_filter_contacts_both_ways() {
+    let fell = |collider: Collider| {
+      let (mut world, mut s) = world(60);
+      floor(&mut world, 100.0);
+      let e = world
+        .spawn((Transform::IDENTITY, RigidBody::dynamic(), collider))
+        .id();
+      run(&mut world, &mut s, 60);
+      at(&world, e).translation.y
+    };
+    assert!(fell(Collider::circle(10.0)) < 95.0, "lands by default");
+    assert!(
+      fell(Collider::circle(10.0).with_layer(0b10).with_mask(0b10)) > 150.0,
+      "its mask skips the floor"
+    );
+  }
+
+  #[test]
+  fn the_floor_s_mask_matters_too() {
+    let (mut world, mut s) = world(60);
+    world.spawn((
+      Transform::from_xy(0.0, 110.0),
+      Collider::rect(400.0, 20.0).with_mask(0b1),
+    ));
+    let e = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Collider::circle(10.0).with_layer(0b100),
+      ))
+      .id();
+    run(&mut world, &mut s, 60);
+    assert!(
+      at(&world, e).translation.y > 150.0,
+      "the floor does not collide with layer 3"
+    );
+  }
+
+  #[test]
+  fn a_kinematic_body_entering_a_fixed_trigger_is_detected() {
+    let (mut world, mut s) = world(60);
+    let zone = world
+      .spawn((
+        Transform::from_xy(100.0, 0.0),
+        Collider::rect(40.0, 40.0).as_trigger(),
+      ))
+      .id();
+    let mover = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::kinematic(),
+        Velocity::new(100.0, 0.0),
+        Collider::rect(10.0, 10.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 60);
+    let messages = world.resource::<Messages<CollisionStarted>>();
+    let started: Vec<_> = messages.get_cursor().read(messages).copied().collect();
+    assert!(
+      started
+        .iter()
+        .any(|m| m.involves(mover) && m.involves(zone)),
+      "{started:?}"
+    );
+  }
+
+  #[test]
+  fn density_and_mass_set_the_body_s_mass() {
+    let (mut world, mut s) = world(60);
+    let dense = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Collider::rect(100.0, 100.0).with_density(2.0),
+      ))
+      .id();
+    let heavy = world
+      .spawn((
+        Transform::from_xy(300.0, 0.0),
+        RigidBody::dynamic(),
+        Collider::rect(10.0, 10.0).with_mass(5.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    assert!((physics.mass(dense).unwrap() - 2.0).abs() < 1e-3);
+    assert!((physics.mass(heavy).unwrap() - 5.0).abs() < 1e-3);
+  }
+
+  #[test]
+  fn an_edited_collider_applies_in_place() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    let b = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 120);
+    // The floor grows 40 px upward: its top is now at 60
+    *world.get_mut::<Collider>(f).unwrap() = Collider::rect(400.0, 100.0);
+    world.get_mut::<Transform>(f).unwrap().translation.y = 110.0;
+    run(&mut world, &mut s, 120);
+    assert!(
+      (at(&world, b).translation.y - 50.0).abs() < 3.0,
+      "{:?}",
+      at(&world, b)
+    );
+  }
+
+  #[test]
+  fn editing_a_body_s_collider_updates_its_mass() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let e = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Collider::rect(100.0, 100.0),
+      ))
+      .id();
+    let mass_after = |world: &mut World, s: &mut EngineSchedules, edit: fn(&mut Collider)| {
+      edit(&mut world.get_mut::<Collider>(e).unwrap());
+      run(world, s, 1);
+      world.resource::<Physics>().mass(e).unwrap()
+    };
+    run(&mut world, &mut s, 1);
+    let denser = mass_after(&mut world, &mut s, |c| c.density = 3.0);
+    let wider = mass_after(&mut world, &mut s, |c| *c = Collider::rect(200.0, 100.0));
+    let fixed_mass = mass_after(&mut world, &mut s, |c| c.mass = Some(7.0));
+    for (mass, expected) in [(denser, 3.0), (wider, 2.0), (fixed_mass, 7.0)] {
+      assert!((mass - expected).abs() < 1e-3, "{mass} vs {expected}");
+    }
+  }
+
+  #[test]
+  fn a_collider_edited_while_disabled_applies_when_re_enabled() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    run(&mut world, &mut s, 1);
+    world.entity_mut(f).insert(Disabled);
+    run(&mut world, &mut s, 1);
+    // Grown and moved while out of the simulation, with steps in between:
+    // its top is now at 60
+    *world.get_mut::<Collider>(f).unwrap() = Collider::rect(400.0, 60.0).with_offset(0.0, -20.0);
+    run(&mut world, &mut s, 5);
+    world.entity_mut(f).remove::<Disabled>();
+    let b = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 120);
+    assert!(
+      (at(&world, b).translation.y - 50.0).abs() < 2.0,
+      "{:?}",
+      at(&world, b)
+    );
+  }
+
+  #[test]
+  fn an_invalid_shape_is_skipped_until_it_is_fixed() {
+    let (mut world, mut s) = world(60);
+    let e = world
+      .spawn((Transform::IDENTITY, Collider::rect(0.0, 10.0)))
+      .id();
+    run(&mut world, &mut s, 1);
+    assert_eq!(world.resource::<Physics>().collider_count(), 0);
+    world.get_mut::<Collider>(e).unwrap().shape = ColliderShape::Rect {
+      size: Vec2::splat(10.0),
+    };
+    run(&mut world, &mut s, 1);
+    assert_eq!(world.resource::<Physics>().collider_count(), 1);
+  }
+
+  #[test]
+  fn capsules_polygons_and_polylines_hold_things_up() {
+    let (mut world, mut s) = world(60);
+    world.spawn((
+      Transform::IDENTITY,
+      Collider::polyline([Vec2::new(-200.0, 100.0), Vec2::new(200.0, 100.0)]),
+    ));
+    let capsule = world
+      .spawn((
+        Transform::from_xy(-50.0, 0.0),
+        RigidBody::dynamic().lock_rotation(),
+        Collider::capsule(40.0, 10.0),
+      ))
+      .id();
+    let triangle = world
+      .spawn((
+        Transform::from_xy(50.0, 0.0),
+        RigidBody::dynamic().lock_rotation(),
+        Collider::polygon([
+          Vec2::new(-10.0, 10.0),
+          Vec2::new(10.0, 10.0),
+          Vec2::new(0.0, -10.0),
+        ]),
+      ))
+      .id();
+    run(&mut world, &mut s, 120);
+    assert!((at(&world, capsule).translation.y - 80.0).abs() < 2.0);
+    assert!((at(&world, triangle).translation.y - 90.0).abs() < 2.0);
   }
 }

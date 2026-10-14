@@ -53,11 +53,7 @@ mod tests {
 
   fn crate_100(world: &mut crate::core::ecs::World, body: RigidBody) -> crate::core::ecs::Entity {
     world
-      .spawn((
-        Transform::IDENTITY,
-        body,
-        Collider::box_collider(100.0, 100.0),
-      ))
+      .spawn((Transform::IDENTITY, body, Collider::rect(100.0, 100.0)))
       .id()
   }
 
@@ -69,7 +65,7 @@ mod tests {
       .spawn((
         Transform::from_xy(500.0, 0.0),
         RigidBody::dynamic(),
-        Collider::box_collider(200.0, 100.0),
+        Collider::rect(200.0, 100.0),
       ))
       .id();
     run(&mut world, &mut s, 1);
@@ -121,7 +117,7 @@ mod tests {
       .spawn((
         Transform::from_xy(500.0, 0.0),
         RigidBody::dynamic(),
-        Collider::box_collider(100.0, 100.0),
+        Collider::rect(100.0, 100.0),
       ))
       .id();
     run(&mut world, &mut s, 1);

@@ -435,12 +435,12 @@ impl Scene for PauseOnHit {
     ctx.world.spawn((
       Transform::from_xy(100.0, 100.0),
       RigidBody::dynamic(),
-      Collider::box_collider(20.0, 20.0),
+      Collider::rect(20.0, 20.0),
     ));
     ctx.world.spawn((
       Transform::from_xy(100.0, 105.0),
       RigidBody::fixed(),
-      Collider::box_collider(80.0, 20.0),
+      Collider::rect(80.0, 20.0),
     ));
   }
 

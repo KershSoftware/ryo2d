@@ -604,7 +604,7 @@ mod tests {
     let (mut world, mut s) = world(60);
     world.spawn((
       Transform::from_xy(100.0, 50.0).with_rotation(std::f32::consts::FRAC_PI_2),
-      Collider::box_collider(20.0, 10.0),
+      Collider::rect(20.0, 10.0),
     ));
     run(&mut world, &mut s, 1);
     let colliders = OverlayFlags {

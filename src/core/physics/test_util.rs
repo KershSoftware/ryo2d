@@ -38,7 +38,7 @@ pub(crate) fn floor(world: &mut World, top: f32) -> Entity {
   world
     .spawn((
       Transform::from_xy(0.0, top + 10.0),
-      Collider::box_collider(400.0, 20.0),
+      Collider::rect(400.0, 20.0),
     ))
     .id()
 }
@@ -48,7 +48,7 @@ pub(crate) fn ball(world: &mut World, x: f32, y: f32) -> Entity {
     .spawn((
       Transform::from_xy(x, y),
       RigidBody::dynamic(),
-      Collider::circle_collider(10.0),
+      Collider::circle(10.0),
     ))
     .id()
 }

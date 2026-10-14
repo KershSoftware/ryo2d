@@ -396,10 +396,9 @@ fn blob_shadow_under_its_entity() {
 #[test]
 fn debug_colliders_draw() {
   let scene = Fixture::new(|ctx| {
-    ctx.world.spawn((
-      Transform::from_xy(50.0, 40.0),
-      Collider::box_collider(30.0, 20.0),
-    ));
+    ctx
+      .world
+      .spawn((Transform::from_xy(50.0, 40.0), Collider::rect(30.0, 20.0)));
   });
   let builder = EngineBuilder::new()
     .resolution(120, 90)

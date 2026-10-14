@@ -55,7 +55,7 @@ pub use sprite_gpu::{
   BatchCollector, SpriteDraw, SpriteGpuRenderer, SpriteInstance, get_sprite_effect,
 };
 pub(crate) use texture_registry::{TextureId, TextureRegistry, TextureSource};
-pub use tile::{CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart};
+pub use tile::{CompositeTile, CompositeTileBuilder, TileDirection, TilePart};
 
 /// The GPU device and queue, shared by the renderers and the texture manager.
 #[derive(crate::core::ecs::Resource, Clone)]
