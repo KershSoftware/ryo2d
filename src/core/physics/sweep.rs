@@ -16,6 +16,8 @@
 //! - `sliding_down_slope` is set only for a slide down a surface that faces
 //!   up but is too steep to hold the character (Rapier sets it for any free
 //!   slide).
+//! - A slide within `LEVEL` of level neither climbs nor slips (Rapier tests
+//!   the sign exactly, so float noise in a flat floor's normal stopped runs).
 //!
 //! Push-out from a start inside something solid stays with Rapier
 //! (`move_shape` with no translation), which measures no angle.
@@ -31,6 +33,9 @@ pub(crate) const MIN_MOVE: f32 = 1.0e-5;
 /// A surface faces up when its normal is within about 89.9° of up
 /// (Rapier's grounded test).
 const FACING_UP: f32 = 1.0e-3;
+/// A tangent rising or falling by less than this share of its length
+/// (about 0.006°) is level: it neither climbs nor slips.
+const LEVEL: f32 = 1.0e-4;
 
 /// What a sweep did.
 pub(crate) struct Swept {
@@ -171,6 +176,20 @@ fn decompose(translation: Vector, normal: Vector) -> (Vector, Vector) {
   }
 }
 
+/// How far a tangent goes along `up`: positive climbing, negative slipping,
+/// zero within `LEVEL` of level. parry's normal for flat ground is
+/// sometimes off by float noise (`(0, -0.99999994)`, or an x of a few
+/// millionths), which tilts a run along it by as much; read as a slip down
+/// a surface that holds, that stopped the whole run.
+fn incline(up: Vector, tangent: Vector) -> f32 {
+  let rise = up.dot(tangent);
+  if rise.abs() <= LEVEL * tangent.length() {
+    0.0
+  } else {
+    rise
+  }
+}
+
 /// What is left of the move after hitting `surface` (Rapier's
 /// `handle_slopes`): a wall stops the climb a move would make up it, a
 /// surface that holds stops the slip a fall would make down it, and
@@ -185,10 +204,10 @@ fn slide(
   let up = kcc.up;
   let (leaving, along) = decompose(remaining, surface.normal);
   let (_, input_along) = decompose(input - up * up.dot(input), surface.normal);
-  let slipping_intent = up.dot(input_along) < 0.0;
-  let slipping = up.dot(along) < 0.0;
+  let slipping_intent = incline(up, input_along) < 0.0;
+  let slipping = incline(up, along) < 0.0;
   let climbing_intent = up.dot(input) > 0.0;
-  let climbing = up.dot(along) > 0.0;
+  let climbing = incline(up, along) > 0.0;
   let allowed = if (surface.wall && climbing && !climbing_intent)
     || (surface.holds && slipping && !slipping_intent)
   {

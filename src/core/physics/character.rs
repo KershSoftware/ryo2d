@@ -1902,4 +1902,34 @@ mod tests {
     let out = at(&world, e).translation.dot(up);
     assert!(out > 12.5, "blocked on the solid side: {out}");
   }
+
+  #[test]
+  fn a_run_along_flat_ground_never_stalls() {
+    // parry's normal for flat ground is sometimes (0, -0.99999994): a run
+    // along it must not be taken for a slip down it and stopped. (A cast
+    // starting near the skin can also get a normal a degree or two off,
+    // which moves the run by a few thousandths of a pixel.)
+    for gravity in [927.0, 980.0] {
+      let (mut world, mut s) = world(60);
+      world.spawn((Transform::from_xy(0.0, 110.0), Collider::rect(200.0, 20.0)));
+      let e = character(&mut world, 0.0, 79.0);
+      for _ in 0..30 {
+        step(&mut world, &mut s, e, gravity);
+      }
+      for _ in 0..60 {
+        if !state(&world, e).on_floor {
+          break;
+        }
+        let x = at(&world, e).translation.x;
+        world.get_mut::<Velocity>(e).unwrap().dx = 180.0;
+        step(&mut world, &mut s, e, gravity);
+        let ran = at(&world, e).translation.x - x;
+        assert!(
+          (ran - 3.0).abs() < 0.05,
+          "ran {ran} from x = {x} (gravity {gravity})"
+        );
+      }
+      assert!(!state(&world, e).on_floor, "ran off the end");
+    }
+  }
 }
