@@ -1,6 +1,7 @@
 //! Rapier physics: bodies, colliders and the simulation world.
 
 mod body;
+mod character;
 mod collider;
 mod config;
 pub(crate) mod convert;
@@ -10,6 +11,7 @@ mod joint;
 mod one_way;
 mod query;
 pub(crate) mod shape;
+mod sweep;
 pub(crate) mod sync;
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -17,6 +19,7 @@ mod triggers;
 mod world;
 
 pub use body::{AngularVelocity, BodyKind, RigidBody};
+pub use character::{CharacterController, CharacterHit, CharacterMode, CharacterState};
 pub use collider::{Collider, ColliderShape};
 pub use config::PhysicsConfig;
 pub use events::{

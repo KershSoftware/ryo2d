@@ -2,9 +2,9 @@
 //! `FixedSet::Physics` (one system running `PhysicsSchedule`) while
 //! `PhysicsPaused` is false: forget what went away,
 //! track disabled entities, propagate transforms, register new bodies, bring
-//! colliders in line, push the game's changes, bring joints in line, step,
-//! write the simulated bodies back and turn contacts and broken joints into
-//! messages.
+//! colliders in line, push the game's changes, sweep the characters, bring
+//! joints in line, step, write the simulated bodies back and turn contacts
+//! and broken joints into messages.
 //!
 //! Bodies may sit anywhere in the hierarchy, and a collider belongs to the
 //! nearest body at or above its entity. Physics reads world poses from
@@ -21,6 +21,7 @@
 use glam::{Affine2, Mat2};
 
 use super::body::{AngularVelocity, BodyKind, RigidBody};
+use super::character::{CharacterController, move_characters};
 use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::angle_delta;
@@ -37,7 +38,7 @@ use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
   EcsSystemState, Entity, GlobalTransform, Has, IntoScheduleConfigs, MessageWriter, Mut, Or,
   ParamSet, Query, Ref, RemovedComponents, Res, ResMut, Resource, SystemChangeTick, Tick,
-  Transform, Vec2, Velocity, With, World,
+  Transform, Vec2, Velocity, With, Without, World,
 };
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
@@ -573,7 +574,7 @@ pub(crate) fn push_changes(
   moved: Query<MovedRow, (With<RigidBody>, Changed<GlobalTransform>)>,
   globals: Globals,
   pushed: Query<(Entity, Ref<Velocity>, Ref<AngularVelocity>), Pushed>,
-  kinematic: Query<(Entity, &RigidBody, &Velocity, &AngularVelocity)>,
+  kinematic: Query<(Entity, &RigidBody, &Velocity, &AngularVelocity), Without<CharacterController>>,
 ) {
   physics.begin_push();
   let own = physics.write_tick;
@@ -866,6 +867,7 @@ impl PhysicsSchedule {
         register_bodies,
         sync_colliders,
         push_changes,
+        move_characters,
         sync_joints,
         step_simulation,
         read_back,

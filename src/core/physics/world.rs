@@ -1220,6 +1220,25 @@ impl Physics {
     self.driven.insert(entity);
   }
 
+  /// Whether the game moved this body through `Transform` this step.
+  pub(crate) fn was_teleported(&self, entity: Entity) -> bool {
+    self.teleported.contains(&entity)
+  }
+
+  /// Move a kinematic body to `translation` over the step (its rotation
+  /// kept), and have the write-back place it.
+  pub(crate) fn drive_to(&mut self, entity: Entity, translation: Vec2) {
+    let Some(entry) = self.body_entries.get(&entity) else {
+      return;
+    };
+    let Some(body) = self.bodies.get_mut(entry.handle) else {
+      return;
+    };
+    let rotation = body.rotation().angle();
+    body.set_next_kinematic_position(pose(translation, rotation));
+    self.driven.insert(entity);
+  }
+
   pub(crate) fn queue(&mut self, body: Entity, push: Push) {
     if push.is_finite() {
       self.queued.push((body, push));
