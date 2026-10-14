@@ -191,10 +191,12 @@ pub fn top_down_movement(
       } else {
         settings.decel_time
       };
-      // A zero time is instant: the target at once, never an infinite rate
+      // A zero time (or no speed to move at) is instant: the target at
+      // once, never an infinite or frozen rate
+      let step = settings.max_speed / time * dt;
       let gap = target - v;
-      v = if time > 0.0 && gap.length() > settings.max_speed / time * dt {
-        v + gap.normalize() * (settings.max_speed / time * dt)
+      v = if time > 0.0 && step > 0.0 && step.is_finite() && gap.length() > step {
+        v + gap.normalize() * step
       } else {
         target
       };
@@ -209,7 +211,7 @@ pub fn top_down_movement(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::ecs::{Transform, World};
+  use crate::core::ecs::{Messages, Transform, World};
   use crate::core::gameplay::test_util::*;
   use crate::core::physics::Collider;
 
@@ -364,6 +366,139 @@ mod tests {
       .filter(|entry| entry.message.starts_with(&prefix))
       .count();
     assert_eq!(warnings, 1);
+  }
+
+  fn dash_count(world: &World) -> usize {
+    let messages = world.resource::<Messages<MovementEvent>>();
+    messages
+      .get_cursor()
+      .read(messages)
+      .filter(|m| m.kind == MovementEventKind::Dashed)
+      .count()
+  }
+
+  /// Face right at rest, then press dash; the velocity of each of the next
+  /// `steps` steps, steering up the whole time when `steer_away`.
+  fn dash_run(steps: usize, steer_away: bool) -> (Vec<Vec2>, usize, bool) {
+    let (mut world, mut s) = world(60);
+    let e = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::circle(8.0),
+        TopDownMovement::default().with_dash(300.0, 0.1, 0.4),
+      ))
+      .id();
+    for _ in 0..20 {
+      steer(&mut world, e, Vec2::X);
+      run(&mut world, &mut s, 1);
+    }
+    steer(&mut world, e, Vec2::ZERO);
+    run(&mut world, &mut s, 20);
+    let mut speeds = Vec::new();
+    for i in 0..steps {
+      // The press itself faces the input; steer away after it
+      let away = steer_away && i > 0;
+      steer(&mut world, e, if away { Vec2::NEG_Y } else { Vec2::ZERO });
+      world.get_mut::<MoveIntent>(e).unwrap().dash_pressed = i == 0;
+      run(&mut world, &mut s, 1);
+      speeds.push(world.get::<Velocity>(e).unwrap().as_vec2());
+    }
+    let dashing = world.get::<TopDownState>(e).unwrap().dashing;
+    (speeds, dash_count(&world), dashing)
+  }
+
+  #[test]
+  fn a_dash_lasts_its_duration_at_speed_and_leaves_at_walking_speed() {
+    let (speeds, dashes, dashing) = dash_run(12, false);
+    // 0.1 s is 6 steps; the f32 timer may run one step over
+    let fast = speeds
+      .iter()
+      .take_while(|v| **v == Vec2::new(300.0, 0.0))
+      .count();
+    assert!(
+      (5..=6).contains(&fast),
+      "{fast} steps at dash speed: {speeds:?}"
+    );
+    assert_eq!(speeds[fast], Vec2::new(160.0, 0.0), "leaves at max_speed");
+    assert!(!dashing);
+    assert_eq!(dashes, 1, "one Dashed per dash");
+  }
+
+  #[test]
+  fn steering_is_ignored_while_dashing() {
+    let (speeds, _, _) = dash_run(5, true);
+    assert!(
+      speeds.iter().all(|v| *v == Vec2::new(300.0, 0.0)),
+      "{speeds:?}"
+    );
+  }
+
+  #[test]
+  fn the_cooldown_blocks_a_second_dash_and_then_allows_one() {
+    let (mut world, mut s) = world(60);
+    let e = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::circle(8.0),
+        TopDownMovement::default().with_dash(300.0, 0.1, 0.4),
+      ))
+      .id();
+    for step in 0..40 {
+      // Presses at step 0 (dashes), 12 (cooling down) and 30 (allowed again)
+      steer(&mut world, e, Vec2::X);
+      world.get_mut::<MoveIntent>(e).unwrap().dash_pressed = matches!(step, 0 | 12 | 30);
+      run(&mut world, &mut s, 1);
+      if step == 12 {
+        assert_eq!(dash_count(&world), 1, "blocked by the cooldown");
+      }
+    }
+    assert_eq!(dash_count(&world), 2);
+  }
+
+  /// Hold right with knockback pushing left and `control` steering kept.
+  fn steered_under_knockback(control: f32) -> f32 {
+    let (mut world, mut s) = world(60);
+    let e = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::circle(8.0),
+        TopDownMovement::default().with_knockback_control(control),
+      ))
+      .id();
+    for _ in 0..20 {
+      steer(&mut world, e, Vec2::X);
+      run(&mut world, &mut s, 1);
+    }
+    world
+      .entity_mut(e)
+      .insert(Knockback::new(Vec2::NEG_X, 200.0).with_decay_rate(1.0));
+    for _ in 0..10 {
+      steer(&mut world, e, Vec2::X);
+      run(&mut world, &mut s, 1);
+    }
+    world.get::<Velocity>(e).unwrap().dx
+  }
+
+  #[test]
+  fn knockback_control_scales_the_steering_target() {
+    assert!(steered_under_knockback(0.0).abs() < 1e-3, "no steering");
+    let half = steered_under_knockback(0.5);
+    assert!((half - 80.0).abs() < 1e-3, "{half}");
+  }
+
+  #[test]
+  fn a_moving_character_given_zero_speed_stops() {
+    let (mut world, mut s) = world(60);
+    let e = walker(&mut world);
+    for _ in 0..20 {
+      steer(&mut world, e, Vec2::X);
+      run(&mut world, &mut s, 1);
+    }
+    world.get_mut::<TopDownMovement>(e).unwrap().max_speed = 0.0;
+    for _ in 0..7 {
+      run(&mut world, &mut s, 1);
+    }
+    assert_eq!(world.get::<Velocity>(e).unwrap().as_vec2(), Vec2::ZERO);
   }
 
   #[test]
