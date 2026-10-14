@@ -304,9 +304,11 @@ impl Scene for GameScene {
       return SceneAction::Continue;
     }
 
-    // Update barriers FIRST so player can ride them at correct position
-    self.update_barriers(ctx, dt);
+    // The engine moves the player after this update (the platformer preset,
+    // then the physics step), so the barriers, turrets and drones moved here
+    // carry a player standing on them in the same step
     self.update_player(ctx, dt);
+    self.update_barriers(ctx, dt);
     self.update_turrets(ctx, dt);
     self.update_drones(ctx, dt);
     self.update_nebulas(ctx, dt);
@@ -319,6 +321,7 @@ impl Scene for GameScene {
     if self.check_game_over(ctx) {
       const DEATH_EFFECT_DURATION: f32 = 0.6;
       self.death_effect_timer = Some(DEATH_EFFECT_DURATION);
+      self.freeze_player(ctx);
       return SceneAction::Continue;
     }
 

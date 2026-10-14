@@ -4,21 +4,21 @@
 //! `ctx.screen_width()` and `ctx.screen_height()`. Configure resolution
 //! in Ryo.toml [system] section or via EngineBuilder::resolution().
 
-// Player configuration
+// Player configuration (movement is the engine's platformer preset)
 pub const PLAYER_SIZE: f32 = 24.0;
-pub const PLAYER_SPEED: f32 = 600.0; // 2x speed
-pub const PLAYER_JUMP_FORCE: f32 = 550.0; // Higher jump (~154px height)
+pub const PLAYER_SPEED: f32 = 600.0; // Running speed, reached at once
+pub const PLAYER_JUMP_HEIGHT: f32 = 154.0; // 550 px/s up under 980 px/s² of gravity...
+pub const PLAYER_JUMP_TIME: f32 = 0.56; // ...reaching its top after 0.56 s
+pub const PLAYER_MAX_FALL_SPEED: f32 = 2000.0;
 pub const PLAYER_MAX_LIVES: u32 = 3;
 pub const INVINCIBLE_DURATION: f32 = 1.5; // seconds of invincibility after hit
 
-// Physics
-pub const GRAVITY: f32 = 980.0; // pixels per second squared
+// Walls
 pub const WALL_SLIDE_MAX_SPEED: f32 = 150.0; // Max fall speed when wall sliding (less sticky)
-pub const WALL_SLIDE_GRAVITY_SCALE: f32 = 0.5; // Gravity multiplier during wall slide
-pub const WALL_SLIDE_GRACE_DURATION: f32 = 0.12; // Seconds to still wall jump after releasing wall
 pub const WALL_JUMP_FORCE_X: f32 = 450.0; // Horizontal push away from wall
 pub const WALL_JUMP_FORCE_Y: f32 = 500.0; // Vertical jump force (slightly less than normal)
 pub const WALL_JUMP_PUSH_DURATION: f32 = 0.2; // Seconds where player can't override horizontal push
+pub const WALL_THICKNESS: f32 = 100.0; // The colliders just outside the screen's sides
 
 // Turret configuration
 pub const TURRET_SIZE: f32 = 32.0;
@@ -49,6 +49,7 @@ pub const PARTICLE_LIFETIME: f32 = 1.0; // seconds
 
 // Platform configuration
 pub const PLATFORM_THICKNESS: f32 = 20.0;
+pub const GROUND_HEIGHT: f32 = 30.0; // The ground's top is this far above the screen's bottom
 
 // Barrier configuration (vertical moving obstacles)
 pub const BARRIER_WIDTH: f32 = 20.0;

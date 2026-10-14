@@ -2,13 +2,18 @@
 
 use ryo2d::prelude::*;
 
+/// A platform: the floating ones are one-way (landed on from above), the
+/// ground is solid
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Platform;
 
+/// A screen edge: a collider just outside the screen the player stops at
+/// and slides down
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Wall;
 
-/// Moving vertical barrier that blocks player and bullets
+/// Moving vertical barrier that blocks bullets; the player rides its top and
+/// slides down its sides. A kinematic body moved through its `Transform`
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Barrier {
   pub velocity_y: f32,

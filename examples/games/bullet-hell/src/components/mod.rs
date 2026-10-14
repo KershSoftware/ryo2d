@@ -16,6 +16,6 @@ pub use laser_tracer::LaserTracer;
 pub use nebula::{Nebula, NebulaState};
 pub use particle::Particle;
 pub use platform::{Barrier, Platform, Wall};
-pub use player::{Player, PlayerVelocity, WallSide};
+pub use player::Player;
 pub use rocket::{Rocket, RocketPhase};
 pub use turret::{Turret, TurretSide};

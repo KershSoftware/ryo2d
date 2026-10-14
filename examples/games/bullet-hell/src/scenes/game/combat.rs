@@ -93,7 +93,7 @@ impl GameScene {
       // Bounce off screen top and floor platform (limits for the turret's centre)
       let half_size = TURRET_SIZE / 2.0;
       let top_limit = TURRET_SIZE + half_size;
-      let floor_top = self.screen_height - 30.0; // Floor platform top edge
+      let floor_top = self.screen_height - GROUND_HEIGHT; // Floor platform top edge
       let bottom_limit = floor_top - half_size; // Turret can't go below this
 
       if transform.translation.y < top_limit || transform.translation.y > bottom_limit {
@@ -183,159 +183,53 @@ impl GameScene {
 
   pub(super) fn update_bullets(&mut self, ctx: &mut SceneContext, _dt: f32) {
     profile_scope!("bullets");
-    // Collect (index, entity) pairs to remove/release
-    let mut bullets_to_release: Vec<(usize, Entity)> = Vec::new();
-    let bullets_to_process: Vec<_> = self.bullets.iter().copied().enumerate().collect();
-
-    for (i, bullet_entity) in bullets_to_process {
-      // With Rapier integration, bullet position is updated by physics engine
-      let Some(transform) = ctx.world.get::<Transform>(bullet_entity) else {
-        bullets_to_release.push((i, bullet_entity));
+    // Bullets are dynamic triggers: the last physics step reported each one
+    // entering the player, a platform or a barrier (one-way platforms
+    // included: their one-way rule only shapes solid contacts)
+    let mut spent: Vec<Entity> = Vec::new();
+    for hit in ctx.messages::<TriggerEntered>() {
+      let (bullet, actor) = (hit.trigger, hit.actor());
+      if spent.contains(&bullet) || !self.bullets.contains(&bullet) {
         continue;
+      }
+      let hit_player = self.player == Some(actor);
+      if !hit_player && !self.platforms.contains(&actor) && !self.barriers.contains(&actor) {
+        continue;
+      }
+      if hit_player {
+        // The bullet bursts on the player even while it is invincible
+        self.apply_player_damage(ctx);
+      }
+      if let Some(transform) = ctx.world.get::<Transform>(bullet) {
+        let at = transform.translation;
+        self.create_explosion(ctx, at.x, at.y);
+      }
+      spent.push(bullet);
+    }
+
+    // Bullets that left the screen (or lost their components)
+    for &bullet in &self.bullets {
+      let out = match ctx.world.get::<Transform>(bullet) {
+        Some(transform) if ctx.world.get::<Bullet>(bullet).is_some() => {
+          let Vec2 { x, y } = transform.translation;
+          x < -50.0 || x > self.screen_width + 50.0 || y < -50.0 || y > self.screen_height + 50.0
+        }
+        _ => true,
       };
-      if ctx.world.get::<Bullet>(bullet_entity).is_none() {
-        bullets_to_release.push((i, bullet_entity));
-        continue;
-      }
-
-      let bx = transform.translation.x;
-      let by = transform.translation.y;
-
-      // Trail is automatically updated by the engine's trail system
-
-      // Check if out of bounds
-      if bx < -50.0 || bx > self.screen_width + 50.0 || by < -50.0 || by > self.screen_height + 50.0
-      {
-        bullets_to_release.push((i, bullet_entity));
-        continue;
-      }
-
-      // Check collision with player
-      if self.check_bullet_player_collision(ctx, bx, by) {
-        self.create_explosion(ctx, bx, by);
-        bullets_to_release.push((i, bullet_entity));
-        continue;
-      }
-
-      // Check collision with platforms
-      if self.check_bullet_platform_collision(ctx, bx, by) {
-        self.create_explosion(ctx, bx, by);
-        bullets_to_release.push((i, bullet_entity));
-        continue;
-      }
-
-      // Check collision with barriers
-      if self.check_bullet_barrier_collision(ctx, bx, by) {
-        self.create_explosion(ctx, bx, by);
-        bullets_to_release.push((i, bullet_entity));
+      if out && !spent.contains(&bullet) {
+        spent.push(bullet);
       }
     }
 
-    // Release bullets back to pool (or despawn if not pooled)
-    // Sort by index descending to safely swap_remove
-    bullets_to_release.sort_by_key(|&(i, _)| std::cmp::Reverse(i));
-    for (i, entity) in bullets_to_release {
-      self.bullets.swap_remove(i);
-      // Release to pool if available, otherwise despawn
+    // Release spent bullets back to the pool (or despawn them if not pooled)
+    self.bullets.retain(|bullet| !spent.contains(bullet));
+    for bullet in spent {
       if let Some(ref mut pool) = self.bullet_pool {
-        pool.release(ctx.world, entity);
+        pool.release(ctx.world, bullet);
       } else {
-        ctx.world.despawn(entity);
+        ctx.world.despawn(bullet);
       }
     }
-  }
-
-  pub(super) fn check_bullet_player_collision(
-    &mut self,
-    ctx: &mut SceneContext,
-    bx: f32,
-    by: f32,
-  ) -> bool {
-    let Some(player_entity) = self.player else {
-      return false;
-    };
-
-    let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
-      return false;
-    };
-
-    let dx = bx - player_transform.translation.x;
-    let dy = by - player_transform.translation.y;
-    let dist_sq = dx * dx + dy * dy;
-    let collision_dist = (PLAYER_SIZE + BULLET_SIZE) / 2.0;
-
-    if dist_sq < collision_dist * collision_dist {
-      self.apply_player_damage(ctx);
-      return true;
-    }
-
-    false
-  }
-
-  pub(super) fn check_bullet_platform_collision(
-    &self,
-    ctx: &mut SceneContext,
-    bx: f32,
-    by: f32,
-  ) -> bool {
-    let bullet_half = BULLET_SIZE / 2.0;
-
-    for &platform_entity in &self.platforms {
-      let Some(platform_transform) = ctx.world.get::<Transform>(platform_entity) else {
-        continue;
-      };
-
-      // Platform sprite is 800px base, scaled by transform.scale.x
-      let platform_width = 800.0 * platform_transform.scale.x;
-      let platform_half_width = platform_width / 2.0;
-      let platform_half_height = PLATFORM_THICKNESS / 2.0;
-
-      let platform_left = platform_transform.translation.x - platform_half_width;
-      let platform_right = platform_transform.translation.x + platform_half_width;
-      let platform_top = platform_transform.translation.y - platform_half_height;
-      let platform_bottom = platform_transform.translation.y + platform_half_height;
-
-      if bx + bullet_half > platform_left
-        && bx - bullet_half < platform_right
-        && by + bullet_half > platform_top
-        && by - bullet_half < platform_bottom
-      {
-        return true;
-      }
-    }
-
-    false
-  }
-
-  pub(super) fn check_bullet_barrier_collision(
-    &self,
-    ctx: &mut SceneContext,
-    bx: f32,
-    by: f32,
-  ) -> bool {
-    let bullet_half = BULLET_SIZE / 2.0;
-
-    for &barrier_entity in &self.barriers {
-      let Some(barrier_transform) = ctx.world.get::<Transform>(barrier_entity) else {
-        continue;
-      };
-
-      // Barrier centred on its position
-      let barrier_left = barrier_transform.translation.x - BARRIER_WIDTH / 2.0;
-      let barrier_right = barrier_transform.translation.x + BARRIER_WIDTH / 2.0;
-      let barrier_top = barrier_transform.translation.y - BARRIER_HEIGHT / 2.0;
-      let barrier_bottom = barrier_transform.translation.y + BARRIER_HEIGHT / 2.0;
-
-      if bx + bullet_half > barrier_left
-        && bx - bullet_half < barrier_right
-        && by + bullet_half > barrier_top
-        && by - bullet_half < barrier_bottom
-      {
-        return true;
-      }
-    }
-
-    false
   }
 
   pub(super) fn update_particles(&mut self, ctx: &mut SceneContext, dt: f32) {

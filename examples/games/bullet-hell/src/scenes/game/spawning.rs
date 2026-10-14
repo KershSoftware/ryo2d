@@ -17,11 +17,24 @@ impl GameScene {
       .spawn((
         Transform::from_xy(self.screen_width / 2.0, spawn_y),
         Interpolated,
-        // Kinematic body - we handle movement manually for wall slides/custom gravity
-        // Rapier still provides collision detection for events
-        RigidBody::kinematic(),
+        // The engine moves the player: the controller sweeps it through the
+        // level and the preset runs, jumps and slides down walls. Instant
+        // running at full air control, symmetric gravity and no shorter jump
+        // on an early release keep the game's original feel
+        CharacterController::platformer(),
         Collider::rect(PLAYER_SIZE, PLAYER_SIZE),
-        PlayerVelocity::default(),
+        PlatformerMovement::default()
+          .with_run(PLAYER_SPEED, 0.0, 0.0)
+          .with_air_control(1.0)
+          .with_jump(PLAYER_JUMP_HEIGHT, PLAYER_JUMP_TIME)
+          .with_fall(1.0, PLAYER_MAX_FALL_SPEED)
+          .with_jump_cut(1.0)
+          .with_wall_slide(WALL_SLIDE_MAX_SPEED)
+          .with_wall_jump(
+            Vec2::new(WALL_JUMP_FORCE_X, WALL_JUMP_FORCE_Y),
+            WALL_JUMP_PUSH_DURATION,
+          ),
+        MoveBindings::default().with_jump([KeyCode::Space, KeyCode::KeyW]),
         Player::new(PLAYER_MAX_LIVES),
       ))
       .id();
@@ -44,9 +57,12 @@ impl GameScene {
     let sw = self.screen_width;
     let sh = self.screen_height;
 
-    // Ground platform - full width, its top edge 30px above the bottom
-    let ground_transform = Transform::from_xy(sw / 2.0, sh - 30.0 + PLATFORM_THICKNESS / 2.0)
-      .with_scale(Vec2::new(sw / 800.0, 1.0)); // Scale from 800px base
+    // Ground platform - full width, its top edge GROUND_HEIGHT above the
+    // bottom. Solid, unlike the floating platforms: down + jump drops
+    // through a one-way platform, never out of the world
+    let ground_transform =
+      Transform::from_xy(sw / 2.0, sh - GROUND_HEIGHT + PLATFORM_THICKNESS / 2.0)
+        .with_scale(Vec2::new(sw / 800.0, 1.0)); // Scale from 800px base
     let ground = ctx
       .world
       .spawn((
@@ -62,6 +78,16 @@ impl GameScene {
       ))
       .id();
     self.platforms.push(ground);
+
+    // The screen's sides: walls just outside it, from well above the top to
+    // below the bottom, which stop the player and which it slides down
+    for x in [-WALL_THICKNESS / 2.0, sw + WALL_THICKNESS / 2.0] {
+      ctx.world.spawn((
+        Transform::from_xy(x, sh / 2.0),
+        Collider::rect(WALL_THICKNESS, sh * 3.0),
+        Wall,
+      ));
+    }
 
     // Floating platforms - scaled proportionally to screen size
     // Base design was for 2560x1440, scale positions accordingly
@@ -108,8 +134,9 @@ impl GameScene {
             .with_shader(SpriteShader::platform_outline(2)),
           RigidBody::fixed(),
           // The 800 px base sprite's size: the entity's scale stretches the
-          // collider with the sprite
-          Collider::rect(800.0, PLATFORM_THICKNESS),
+          // collider with the sprite. One-way: the player jumps up through
+          // it and lands on it from above
+          Collider::rect(800.0, PLATFORM_THICKNESS).one_way(),
           Platform,
         ))
         .id();
@@ -140,7 +167,9 @@ impl GameScene {
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
-          Collider::rect(TURRET_SIZE, TURRET_SIZE),
+          // One-way: the player can stand on a turret (and ride it) but
+          // passes through it from the side or below
+          Collider::rect(TURRET_SIZE, TURRET_SIZE).one_way(),
           Turret::new(TurretSide::Left),
         ))
         .id();
@@ -162,7 +191,7 @@ impl GameScene {
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
-          Collider::rect(TURRET_SIZE, TURRET_SIZE),
+          Collider::rect(TURRET_SIZE, TURRET_SIZE).one_way(),
           Turret::new(TurretSide::Right),
         ))
         .id();
@@ -233,7 +262,8 @@ impl GameScene {
           .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(0, 0, 0))),
         Interpolated,
         RigidBody::kinematic(),
-        Collider::rect(DRONE_SIZE, DRONE_SIZE),
+        // Like a turret, something to stand on and nothing more
+        Collider::rect(DRONE_SIZE, DRONE_SIZE).one_way(),
         Drone::new(spawn_x, spawn_y),
       ))
       .id();
@@ -372,7 +402,7 @@ impl GameScene {
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
-          Collider::rect(TURRET_SIZE, TURRET_SIZE),
+          Collider::rect(TURRET_SIZE, TURRET_SIZE).one_way(),
           Turret::new(TurretSide::Left),
         ))
         .id();
@@ -392,7 +422,7 @@ impl GameScene {
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
-          Collider::rect(TURRET_SIZE, TURRET_SIZE),
+          Collider::rect(TURRET_SIZE, TURRET_SIZE).one_way(),
           Turret::new(TurretSide::Right),
         ))
         .id();

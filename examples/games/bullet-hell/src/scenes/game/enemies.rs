@@ -484,7 +484,8 @@ impl GameScene {
             Color::rgb(80, 180, 80),
           )),
         RigidBody::kinematic(),
-        Collider::circle(NEBULA_ORB_SIZE / 2.0),
+        // A trigger: the player passes through the orbs
+        Collider::circle(NEBULA_ORB_SIZE / 2.0).as_trigger(),
         NebulaOrbMarker {
           parent: nebula_entity,
           index: i,
@@ -781,7 +782,9 @@ impl GameScene {
           .with_shader(SpriteShader::outline(Color::rgb(255, 190, 130), 2)),
         Interpolated,
         RigidBody::kinematic(),
-        Collider::circle(ROCKET_SIZE / 2.0),
+        // A trigger: the player passes through rockets (`update_rockets`
+        // measures a hit by distance)
+        Collider::circle(ROCKET_SIZE / 2.0).as_trigger(),
         rocket,
         trail,
       ))

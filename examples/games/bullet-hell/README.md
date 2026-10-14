@@ -9,13 +9,15 @@ A survival shooter stress-testing GPU sprite batching with hundreds of entities.
 - **GPU Sprite Batching** - Hundreds of sprites rendered in minimal draw calls
 - **Particle Systems** - Explosion effects with clustered particles
 - **Dynamic Spawning** - Procedural bullet patterns from wall turrets
-- **Collision Detection** - Player vs bullets, bullets vs platforms
+- **Platformer Movement** - The engine's character controller and platformer preset: one-way platforms, riding the moving barriers, wall slides and wall jumps
+- **Trigger Messages** - Bullets burst on the player, platforms and barriers
 - **Live Entity Counter** - Real-time bullet/particle counts for performance testing
 
 ## Controls
 
 - `WASD` / Arrow Keys - Move
-- `Space` / `W` - Jump
+- `Space` / `W` - Jump (off a wall too)
+- `S` + `Space` - Drop through a platform
 - `Escape` - Pause
 
 ## Run
