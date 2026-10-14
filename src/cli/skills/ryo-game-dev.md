@@ -392,7 +392,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
   for row in 0..5 {
     ctx.world.spawn((
       Transform::from_xy(400.0, 540.0 - 32.0 * row as f32 - 16.0),
-      Renderable::sprite(self.crate_sprite),
+      Renderable::sprite(self.crate_sprite.clone()),
       RigidBody::dynamic(),
       Collider::rect(32.0, 32.0).with_friction(0.6),
     ));
@@ -406,7 +406,7 @@ The crates settle and fall asleep; a body nobody touches costs nothing. Raise `P
 
 ```rust
 let left = ctx.world.spawn((Transform::from_xy(100.0, 300.0), RigidBody::fixed())).id();
-let right = ctx.world.spawn((Transform::from_xy(700.0, 300.0), RigidBody::fixed())).id();
+let right = ctx.world.spawn((Transform::from_xy(730.0, 300.0), RigidBody::fixed())).id();
 let mut previous = left;
 for i in 1..=10 {
   let plank = ctx.world.spawn((
@@ -414,12 +414,13 @@ for i in 1..=10 {
     RigidBody::dynamic(),
     Collider::rect(54.0, 8.0),
   )).id();
-  // Hinge between planks at the gap, breaks under a sustained load
+  // Hinge at the plank's left end, in the gap shared with the previous plank, breaks under a sustained load
   let hinge = Vec2::new(100.0 + 60.0 * i as f32 - 30.0, 300.0);
   ctx.world.spawn(Joint::revolute(previous, plank).at(hinge).with_break_force(40_000.0));
   previous = plank;
 }
-ctx.world.spawn(Joint::revolute(previous, right).at(Vec2::new(670.0, 300.0)));
+// The last plank ends at x = 727; the far anchor sits just beyond it
+ctx.world.spawn(Joint::revolute(previous, right).at(Vec2::new(730.0, 300.0)));
 
 // in update
 for broken in ctx.messages::<JointBroken>() {

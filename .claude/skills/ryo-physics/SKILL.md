@@ -21,6 +21,8 @@ An entity enters the simulation when it has a `Collider`, with or without a `Rig
 4. Write simulated bodies back into `Transform`, `Velocity` and `AngularVelocity` (ordinary component changes, so propagation and rendering see them move).
 5. Send `CollisionStarted` / `CollisionStopped` / `ContactForce` / `JointBroken` messages.
 
+Disabled bodies, colliders and joints (`Disabled`, used by `Pool`) leave the simulation; on re-enable they return with the `Transform`, `Velocity`, `RigidBody`, `Collider` and `Joint` edits made meanwhile.
+
 Physics pauses while the top scene's `is_physics_paused()` returns `true`, and while a pushed scene on top of another does not return `true` from `updates_below()`. Forces and impulses queued meanwhile accumulate and apply together at the next step.
 
 One frame adds at most `max_delta` (250 ms) of game time after speed scaling, so a 250 ms stall at 60 Hz runs 14 fixed steps (at most 15), never a pile-up.
@@ -118,14 +120,14 @@ ctx.world.spawn((Transform::from_xy(100.0, 50.0), RigidBody::fixed(), composite,
 | Collider | layer | mask | Meant to meet |
 |---|---|---|---|
 | player | `0b0001` | `0b0110` | enemies and walls |
-| enemy | `0b0010` | `0b0101` | player and walls |
+| enemy | `0b0010` | `0b1101` (with the bullet bit) | player, walls and player bullets |
 | wall | `0b0100` | `0b0011` | player and enemies |
-| player bullet | `0b1000` | `0b0010` | enemies only |
+| player bullet | `0b1000` | `0b0010` | enemies only (needs the enemy mask `0b1101`, see below) |
 
 Check each pair both ways:
 
-- Player and enemy meet: the enemy's layer `0b0010` is in the player's mask `0b0110`, and the player's layer `0b0001` is in the enemy's mask `0b0101`.
-- Player bullet and enemy do not meet as listed: the enemy's layer `0b0010` is in the bullet's mask, but the bullet's layer `0b1000` is not in the enemy's mask `0b0101`. Widen the enemy's mask to `0b1101` and they do.
+- Player and enemy meet: the enemy's layer `0b0010` is in the player's mask `0b0110`, and the player's layer `0b0001` is in the enemy's mask `0b1101`.
+- Player bullet and enemy meet because the enemy's mask is `0b1101`: the enemy's layer `0b0010` is in the bullet's mask and the bullet's layer `0b1000` is in the enemy's mask. With the enemy mask `0b0101` they would not, since both sides must agree.
 - Player bullet and wall never meet as listed: the wall's mask `0b0011` lacks `0b1000`, and the bullet's mask lacks the wall's `0b0100`. Both sides must agree.
 
 Use constants:
@@ -309,7 +311,7 @@ Write the `Transform`; the body teleports on the next physics step. Call `ctx.sk
 
 ## Pitfalls
 
-- Queries and contact state see the world as the last step left it, not the writes you made this tick.
+- Writes in `update` (`Transform`, `Velocity`, edits to components) reach Rapier in the same step's physics set, but what you read in `update` (positions, contacts, queries) is from the previous step: queries and contact state see the world as the last step left it.
 - Set `lock_rotation()` on characters, or they tip over on the first slope.
 - Despawned entities can still appear in `CollisionStopped`; check the entity still exists before using it.
 - Do not put a game's movement velocity in `Velocity` on a kinematic body (see above).
