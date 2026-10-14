@@ -18,17 +18,21 @@
 //!   slide).
 //! - A slide within `LEVEL` of level neither climbs nor slips (Rapier tests
 //!   the sign exactly, so float noise in a flat floor's normal stopped runs).
-//! - parry's fallback for a hit right at the start of a cast (`first_hit`)
-//!   is applied with its threshold in world units, as Rapier's nudge is.
+//! - parry's fallback for a hit right at the start of a cast is applied
+//!   with its threshold in world units, as Rapier's nudge is, to every pair
+//!   of support-mapped shapes, the parts of polylines and compounds
+//!   included (`StartFallback`).
 //!
 //! Push-out from a start inside something solid stays with Rapier
 //! (`move_shape` with no translation), which measures no angle.
 
 use rapier2d::control::{CharacterCollision, CharacterLength, KinematicCharacterController};
-use rapier2d::parry::query::{ShapeCastHit, ShapeCastOptions, ShapeCastStatus};
-use rapier2d::prelude::{
-  Collider, ColliderHandle, Pose, QueryFilterFlags, QueryPipeline, Shape, Vector,
+use rapier2d::parry::query::details::cast_shapes_composite_shape_shape;
+use rapier2d::parry::query::{
+  ClosestPoints, Contact, NonlinearRigidMotion, QueryDispatcher, ShapeCastHit, ShapeCastOptions,
+  ShapeCastStatus, ShapeDistance, ShapeIntersection, Unsupported,
 };
+use rapier2d::prelude::{ColliderHandle, Pose, QueryFilterFlags, QueryPipeline, Shape, Vector};
 
 /// Rapier's cap on the casts in one move.
 const MAX_CASTS: usize = 20;
@@ -174,20 +178,7 @@ pub(crate) fn move_shape(
 
 /// The first collider `shape` at `at` hits moving along `direction` (a unit
 /// vector), with parry's fallback for a hit right at the start of the cast
-/// applied up to `tolerance` px.
-///
-/// A cast that starts on the skin and runs nearly tangent to the surface
-/// (each slide after a hit does) gets an unreliable normal from parry's GJK,
-/// so for a hit within 1e-4 of the start parry takes the normal from a
-/// contact query instead, and reports no hit when the move leaves the
-/// surface. That 1e-4 is in world units, tuned for metres; in pixels the
-/// bad hits came at about 4e-4 px, past it, with normals 10° to 45° off: a
-/// slide down a 1000 px wall was pushed off it for a step every few steps,
-/// and a run along a 1000 px floor lost up to half a step's run. So the
-/// same fallback, for a convex collider (parry keeps its own for the parts
-/// of composite shapes), up to `tolerance` (1e-4 length units): the
-/// contact's normal, or a cast again past that collider when the move
-/// leaves it (parry's "no hit" for the pair).
+/// applied up to `tolerance` px (see `StartFallback`).
 fn first_hit(
   queries: &QueryPipeline,
   at: &Pose,
@@ -196,47 +187,149 @@ fn first_hit(
   options: ShapeCastOptions,
   tolerance: f32,
 ) -> Option<(ColliderHandle, ShapeCastHit)> {
-  let (handle, mut hit) = queries.cast_shape(at, direction, shape, options)?;
-  if hit.time_of_impact >= tolerance {
-    return Some((handle, hit));
+  let dispatcher = StartFallback {
+    inner: queries.dispatcher,
+    tolerance,
+  };
+  let queries = QueryPipeline {
+    dispatcher: &dispatcher,
+    ..*queries
+  };
+  queries.cast_shape(at, direction, shape, options)
+}
+
+/// parry's query dispatcher, with its fallback for a hit right at the start
+/// of a cast applied up to `tolerance` px.
+///
+/// A cast that starts on the skin and runs nearly tangent to the surface
+/// (each slide after a hit does) gets an unreliable normal from parry's GJK,
+/// so for a hit within 1e-4 of the start parry takes the normal from a
+/// contact query instead, and reports no hit for the pair when the move
+/// leaves the surface (`cast_shapes_support_map_support_map`). That 1e-4 is
+/// in world units, tuned for metres; in pixels the bad hits came at about
+/// 4e-4 px, past it, with normals 10° to 45° off: a slide down a 1000 px
+/// wall was pushed off it for a step every few steps, and a run along a
+/// 1000 px floor lost up to half a step's run (along a polyline outline it
+/// stopped). This applies the same fallback to every pair of support-mapped
+/// shapes up to `tolerance` (1e-4 length units), the parts of composite
+/// shapes (polylines, compounds) included: they are cast part by part
+/// through it, so a part the move leaves is no hit while the rest of the
+/// shape still counts. Everything else is parry's.
+struct StartFallback<'a> {
+  inner: &'a dyn QueryDispatcher,
+  tolerance: f32,
+}
+
+impl QueryDispatcher for StartFallback<'_> {
+  fn intersection_test(
+    &self,
+    pos12: &Pose,
+    g1: &dyn Shape,
+    g2: &dyn Shape,
+  ) -> Result<ShapeIntersection, Unsupported> {
+    self.inner.intersection_test(pos12, g1, g2)
   }
-  let Some(collider) = queries
-    .colliders
-    .get(handle)
-    .filter(|collider| collider.shape().is_convex())
-  else {
-    return Some((handle, hit));
-  };
-  let pose = collider.position();
-  let pos12 = pose.inv_mul(at);
-  let Ok(Some(contact)) = queries
-    .dispatcher
-    .contact(&pos12, collider.shape(), shape, f32::MAX)
-  else {
-    return Some((handle, hit));
-  };
-  let normal = pose.transform_vector(contact.normal1);
-  if normal.dot(direction) >= 0.0 {
-    let predicate = queries.filter.predicate;
-    let past = |other: ColliderHandle, collider: &Collider| {
-      other != handle && predicate.is_none_or(|keep| keep(other, collider))
-    };
-    let past_it = QueryPipeline {
-      filter: queries.filter.predicate(&past),
-      ..*queries
-    };
-    return first_hit(&past_it, at, direction, shape, options, tolerance);
+
+  fn distance(
+    &self,
+    pos12: &Pose,
+    g1: &dyn Shape,
+    g2: &dyn Shape,
+  ) -> Result<ShapeDistance, Unsupported> {
+    self.inner.distance(pos12, g1, g2)
   }
-  hit.normal1 = normal;
-  hit.normal2 = contact.normal2;
-  hit.witness1 = pose.transform_point(contact.point1);
-  hit.witness2 = contact.point2;
-  hit.status = if contact.dist < options.target_distance {
-    ShapeCastStatus::PenetratingOrWithinTargetDist
-  } else {
-    ShapeCastStatus::Converged
-  };
-  Some((handle, hit))
+
+  fn contact(
+    &self,
+    pos12: &Pose,
+    g1: &dyn Shape,
+    g2: &dyn Shape,
+    prediction: f32,
+  ) -> Result<Option<Contact>, Unsupported> {
+    self.inner.contact(pos12, g1, g2, prediction)
+  }
+
+  fn closest_points(
+    &self,
+    pos12: &Pose,
+    g1: &dyn Shape,
+    g2: &dyn Shape,
+    max_dist: f32,
+  ) -> Result<ClosestPoints, Unsupported> {
+    self.inner.closest_points(pos12, g1, g2, max_dist)
+  }
+
+  fn cast_shapes(
+    &self,
+    pos12: &Pose,
+    local_vel12: Vector,
+    g1: &dyn Shape,
+    g2: &dyn Shape,
+    options: ShapeCastOptions,
+  ) -> Result<Option<ShapeCastHit>, Unsupported> {
+    // Each part through this dispatcher, as parry casts them through its own
+    if let Some(composite) = g1.as_composite_shape() {
+      return Ok(cast_shapes_composite_shape_shape(
+        self,
+        pos12,
+        local_vel12,
+        composite,
+        g2,
+        options,
+      ));
+    }
+    let Some(mut hit) = self
+      .inner
+      .cast_shapes(pos12, local_vel12, g1, g2, options)?
+    else {
+      return Ok(None);
+    };
+    let fallback = (options.compute_impact_geometry_on_penetration || !options.stop_at_penetration)
+      && hit.time_of_impact < self.tolerance
+      && g1.as_support_map().is_some()
+      && g2.as_support_map().is_some();
+    if !fallback {
+      return Ok(Some(hit));
+    }
+    // From here as parry, in the pair's frame (g1's)
+    let Ok(Some(contact)) = self.inner.contact(pos12, g1, g2, f32::MAX) else {
+      return Ok(Some(hit));
+    };
+    if !options.stop_at_penetration && contact.normal1.dot(local_vel12) >= 0.0 {
+      return Ok(None);
+    }
+    hit.normal1 = contact.normal1;
+    hit.normal2 = contact.normal2;
+    hit.witness1 = contact.point1;
+    hit.witness2 = contact.point2;
+    hit.status = if contact.dist < options.target_distance {
+      ShapeCastStatus::PenetratingOrWithinTargetDist
+    } else {
+      ShapeCastStatus::Converged
+    };
+    Ok(Some(hit))
+  }
+
+  fn cast_shapes_nonlinear(
+    &self,
+    motion1: &NonlinearRigidMotion,
+    g1: &dyn Shape,
+    motion2: &NonlinearRigidMotion,
+    g2: &dyn Shape,
+    start_time: f32,
+    end_time: f32,
+    stop_at_penetration: bool,
+  ) -> Result<Option<ShapeCastHit>, Unsupported> {
+    self.inner.cast_shapes_nonlinear(
+      motion1,
+      g1,
+      motion2,
+      g2,
+      start_time,
+      end_time,
+      stop_at_penetration,
+    )
+  }
 }
 
 /// `translation` split against a surface: the part leaving it (zero when

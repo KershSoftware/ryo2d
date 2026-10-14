@@ -1137,38 +1137,54 @@ mod tests {
     }
   }
 
+  /// A `w`×`h` block two ways: a box, and its outline as a closed polyline
+  /// (what a tile map makes).
+  fn blocks(w: f32, h: f32) -> [(&'static str, Collider); 2] {
+    let (x, y) = (w / 2.0, h / 2.0);
+    let outline = [(-x, -y), (x, -y), (x, y), (-x, y), (-x, -y)];
+    [
+      ("box", Collider::rect(w, h)),
+      (
+        "outline",
+        Collider::polyline(outline.map(|(x, y)| Vec2::new(x, y))),
+      ),
+    ]
+  }
+
   // A slide along a wall casts from the skin, nearly tangent to the wall,
   // where parry's normal can be tens of degrees off (see `sweep.rs`): that
   // pushed the character off the wall for a step every few steps
   #[test]
   fn a_character_pressing_into_a_tall_wall_slides_down_it_on_either_side() {
-    for side in [1.0, -1.0] {
-      let (mut world, mut s) = world(60);
-      world.spawn((
-        Transform::from_xy(70.0 * side, 0.0),
-        Collider::rect(20.0, 1000.0),
-      ));
-      let e = character(&mut world, 40.0 * side, 0.0);
-      let mut against = None;
-      for i in 0..120 {
-        // A wall slide: pressing in a little, falling at a capped speed
-        *world.get_mut::<Velocity>(e).unwrap() = Velocity::new(24.375 * side, 80.0);
-        run(&mut world, &mut s, 1);
-        let st = state(&world, e);
-        let x = at(&world, e).translation.x;
-        let Some(wall_x) = against else {
-          against = st.on_wall.then_some(x);
-          continue;
-        };
-        assert!(st.on_wall, "side {side}, step {i}: off the wall");
-        assert!(
-          (st.wall_normal - Vec2::new(-side, 0.0)).length() < 1e-3,
-          "side {side}, step {i}: {:?}",
-          st.wall_normal
-        );
-        assert!((x - wall_x).abs() < 0.05, "side {side}, step {i}: {x}");
+    for (kind, wall) in blocks(20.0, 1000.0) {
+      for side in [1.0, -1.0] {
+        let (mut world, mut s) = world(60);
+        world.spawn((Transform::from_xy(70.0 * side, 0.0), wall.clone()));
+        let e = character(&mut world, 40.0 * side, 0.0);
+        let mut against = None;
+        for i in 0..120 {
+          // A wall slide: pressing in a little, falling at a capped speed
+          *world.get_mut::<Velocity>(e).unwrap() = Velocity::new(24.375 * side, 80.0);
+          run(&mut world, &mut s, 1);
+          let st = state(&world, e);
+          let x = at(&world, e).translation.x;
+          let Some(wall_x) = against else {
+            against = st.on_wall.then_some(x);
+            continue;
+          };
+          assert!(st.on_wall, "{kind}, side {side}, step {i}: off the wall");
+          assert!(
+            (st.wall_normal - Vec2::new(-side, 0.0)).length() < 1e-3,
+            "{kind}, side {side}, step {i}: {:?}",
+            st.wall_normal
+          );
+          assert!(
+            (x - wall_x).abs() < 0.05,
+            "{kind}, side {side}, step {i}: {x}"
+          );
+        }
+        assert!(against.is_some(), "{kind}, side {side}: reached the wall");
       }
-      assert!(against.is_some(), "side {side}: reached the wall");
     }
   }
 
@@ -1971,25 +1987,59 @@ mod tests {
   // Each step of a run casts along the floor from its skin, where parry's
   // normal can be tens of degrees off (see `sweep.rs`): along a 1000 px
   // floor some steps lost up to half their run
+  // A polyline is cast part by part through the start-of-cast fallback (see
+  // `sweep.rs`), which drops only a part the move leaves: the walls of a
+  // room's outline still stop a run along its floor
   #[test]
-  fn a_run_along_a_long_floor_keeps_its_pace() {
-    for x0 in [-470.0, -468.7, -452.1] {
+  fn a_run_inside_an_outline_room_stops_at_its_wall_on_either_side() {
+    let room = [
+      (-200.0, -100.0),
+      (200.0, -100.0),
+      (200.0, 100.0),
+      (-200.0, 100.0),
+    ];
+    for side in [1.0, -1.0] {
       let (mut world, mut s) = world(60);
-      world.spawn((Transform::from_xy(0.0, 110.0), Collider::rect(1000.0, 20.0)));
-      let e = character(&mut world, x0, 79.0);
-      for _ in 0..30 {
+      world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Collider::polyline(room.iter().chain(&room[..1]).map(|&(x, y)| Vec2::new(x, y))),
+      ));
+      let e = character(&mut world, 0.0, 79.0);
+      for _ in 0..120 {
+        world.get_mut::<Velocity>(e).unwrap().dx = 180.0 * side;
         step(&mut world, &mut s, e, 927.0);
       }
-      for i in 0..300 {
-        let x = at(&world, e).translation.x;
-        world.get_mut::<Velocity>(e).unwrap().dx = 180.0;
-        step(&mut world, &mut s, e, 927.0);
-        let ran = at(&world, e).translation.x - x;
-        assert!(
-          (ran - 3.0).abs() < 0.05,
-          "from {x0}, step {i}: ran {ran} from x = {x}"
-        );
-        assert!(!state(&world, e).on_wall, "from {x0}, step {i}: a wall");
+      let st = state(&world, e);
+      let x = at(&world, e).translation.x;
+      assert!(x.abs() + 10.0 <= 200.0, "side {side}: {x}");
+      assert!(st.on_floor && st.on_wall, "side {side}: {st:?}");
+    }
+  }
+
+  #[test]
+  fn a_run_along_a_long_floor_keeps_its_pace() {
+    for (kind, floor) in blocks(1000.0, 20.0) {
+      for x0 in [-470.0, -468.7, -452.1] {
+        let (mut world, mut s) = world(60);
+        world.spawn((Transform::from_xy(0.0, 110.0), floor.clone()));
+        let e = character(&mut world, x0, 79.0);
+        for _ in 0..30 {
+          step(&mut world, &mut s, e, 927.0);
+        }
+        for i in 0..300 {
+          let x = at(&world, e).translation.x;
+          world.get_mut::<Velocity>(e).unwrap().dx = 180.0;
+          step(&mut world, &mut s, e, 927.0);
+          let ran = at(&world, e).translation.x - x;
+          assert!(
+            (ran - 3.0).abs() < 0.05,
+            "{kind} from {x0}, step {i}: ran {ran} from x = {x}"
+          );
+          assert!(
+            !state(&world, e).on_wall,
+            "{kind} from {x0}, step {i}: a wall"
+          );
+        }
       }
     }
   }
