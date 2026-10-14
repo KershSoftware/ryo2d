@@ -182,6 +182,16 @@ pub(crate) struct BodyState {
   pub(crate) dynamic: bool,
 }
 
+/// What the write-back gives a body, worked out before any of it lands.
+pub(crate) struct WriteBack {
+  pub(crate) entity: Entity,
+  /// Its local translation and continuous rotation; `None` leaves its
+  /// `Transform` as it is
+  pub(crate) local: Option<(Vec2, f32)>,
+  /// A dynamic body's velocities
+  pub(crate) velocities: Option<(Vec2, f32)>,
+}
+
 /// A contact that started or stopped during the last step.
 pub(crate) struct RawCollision {
   pub(crate) a: Owner,
@@ -256,13 +266,15 @@ pub struct Physics {
   /// hot path does not allocate
   pub(crate) sync_queue: Vec<Entity>,
   pub(crate) walk_stack: Vec<(Entity, usize)>,
+  /// `read_back`'s work list, kept for the same reason
+  pub(crate) write_backs: Vec<WriteBack>,
   /// Owners of colliders removed since the last step: Rapier reports their
   /// `Stopped` events during the next one
   departed: HashMap<ColliderHandle, Owner>,
   /// Bodies the game moved through `Transform` this step
   teleported: HashSet<Entity>,
   /// Kinematic bodies the engine moves by velocity this step
-  driven: Vec<Entity>,
+  driven: HashSet<Entity>,
   warned: HashSet<Entity>,
   /// Warnings logged, for tests
   #[cfg(test)]
@@ -388,9 +400,10 @@ impl Physics {
       relink: HashSet::new(),
       sync_queue: Vec::new(),
       walk_stack: Vec::new(),
+      write_backs: Vec::new(),
       departed: HashMap::new(),
       teleported: HashSet::new(),
-      driven: Vec::new(),
+      driven: HashSet::new(),
       warned: HashSet::new(),
       #[cfg(test)]
       warnings: 0,
@@ -1064,7 +1077,7 @@ impl Physics {
     let translation = from_rapier(body.translation()) + linvel * dt;
     let rotation = body.rotation().angle() + angvel * dt;
     body.set_next_kinematic_position(pose(translation, rotation));
-    self.driven.push(entity);
+    self.driven.insert(entity);
   }
 
   pub(crate) fn queue(&mut self, body: Entity, push: Push) {
@@ -1247,13 +1260,18 @@ impl Physics {
     dynamic.chain(driven)
   }
 
-  /// Where Rapier holds a body whose pose the last step owned: an enabled
-  /// dynamic body, or a kinematic one it drove by velocity. Other bodies are
-  /// where their `Transform` puts them.
-  pub(crate) fn simulated_pose(&self, entity: Entity) -> Option<(Vec2, f32)> {
-    let body = self.bodies.get(self.body_entries.get(&entity)?.handle)?;
-    let owned = (body.is_dynamic() && body.is_enabled()) || self.driven.contains(&entity);
-    owned.then(|| (from_rapier(body.translation()), body.rotation().angle()))
+  /// Where Rapier holds a body the write-back places after the last step:
+  /// an enabled dynamic body that moved (`moved_bodies`) or, under a parent
+  /// (`nested`), rests (`resting_body`), or a kinematic body the step drove
+  /// by velocity. Every other body stays where its `Transform` puts it: a
+  /// root body asleep since before the step is not written.
+  pub(crate) fn written_pose(&self, entity: Entity, nested: bool) -> Option<(Vec2, f32)> {
+    let entry = self.body_entries.get(&entity)?;
+    let body = self.bodies.get(entry.handle)?;
+    let moved = nested || !body.is_sleeping() || entry.fell_asleep;
+    let written =
+      (body.is_dynamic() && body.is_enabled() && moved) || self.driven.contains(&entity);
+    written.then(|| (from_rapier(body.translation()), body.rotation().angle()))
   }
 
   /// A dynamic body asleep since before the last step, which `moved_bodies`

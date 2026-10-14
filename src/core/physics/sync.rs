@@ -25,7 +25,7 @@ use super::config::PhysicsConfig;
 use super::convert::angle_delta;
 use super::events::{CollisionStarted, CollisionStopped, Contact, ContactForce, JointBroken};
 use super::joint::Joint;
-use super::world::{Physics, Placement};
+use super::world::{Physics, Placement, WriteBack};
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
@@ -500,11 +500,23 @@ pub(crate) fn step_simulation(mut physics: ResMut<Physics>, time: Res<Time>) {
   physics.step(time.fixed.timestep());
 }
 
+/// The rotation the write-back gives a body at `current` that the step left
+/// at `simulated`: turned the short way, so it stays continuous (no jump at
+/// the wrap into (-PI, PI]).
+fn continued(current: f32, simulated: f32) -> f32 {
+  current + angle_delta(current, simulated)
+}
+
 /// An entity's world transform once the write-back lands, as the next
-/// propagation will compute it: up its hierarchy, bodies whose pose the step
-/// owns are placed where Rapier holds them, other entities by their
-/// `Transform`. `None` for an entity without a `Transform` (its children are
-/// placed from the identity).
+/// propagation will compute it: up its hierarchy, bodies the write-back
+/// places (`Physics::written_pose`) are where it puts them, other entities
+/// where their `Transform` puts them. `None` for an entity without a
+/// `Transform` (its children are placed from the identity).
+///
+/// Read before any write-back lands: the rotation is `continued` from the
+/// `Transform`'s, exactly as `read_back` writes it. A large continuous
+/// rotation and Rapier's wrapped angle round differently, and a child placed
+/// against the wrapped one would be moved by its own write-back every step.
 fn world_after_step(
   entity: Entity,
   physics: &Physics,
@@ -512,34 +524,44 @@ fn world_after_step(
   depth: usize,
 ) -> Option<Affine2> {
   let (transform, parent) = locals.get(entity).ok()?;
+  let written = physics.written_pose(entity, parent.is_some());
   let parent = match parent {
     Some(parent) if depth < MAX_DEPTH => {
       world_after_step(parent.parent(), physics, locals, depth + 1)
     }
     _ => None,
   };
-  let local = physics
-    .simulated_pose(entity)
+  let local = written
     .and_then(|pose| local_pose(parent, pose, transform.scale))
+    .map(|local| Transform {
+      rotation: continued(transform.rotation, local.rotation),
+      ..local
+    })
     .unwrap_or(*transform);
   Some(parent.unwrap_or(Affine2::IDENTITY) * local.to_affine())
 }
 
 /// Write the bodies the step moved back into their local `Transform`,
 /// through their parent's world transform after the step (an ancestor body
-/// may have moved too, however far up). Rotation stays continuous: the turn
-/// is added instead of wrapping into (-PI, PI]. Under a parent that cannot
-/// be inverted (a zero scale) the `Transform` is left as it is.
+/// may have moved too, however far up). Rotation stays `continued`. Under a
+/// parent that cannot be inverted (a zero scale) the `Transform` is left as
+/// it is.
 ///
 /// A dynamic body asleep under a parent is written too (only where its
 /// local pose changed): Rapier holds it still, so when an ancestor moves its
 /// local `Transform` must change for it to stay put.
+///
+/// Every write is worked out before the first lands, so `world_after_step`
+/// reads each ancestor's `Transform` as `read_back` found it whatever order
+/// the bodies come in.
 pub(crate) fn read_back(
-  physics: Res<Physics>,
+  mut physics: ResMut<Physics>,
   mut locals: Query<LocalLink, Allow<Disabled>>,
   nested: Query<Entity, (With<RigidBody>, With<ChildOf>)>,
   mut velocities: Query<(&mut Velocity, &mut AngularVelocity), With<RigidBody>>,
 ) {
+  let mut writes = std::mem::take(&mut physics.write_backs);
+  writes.clear();
   let resting = nested
     .iter()
     .filter_map(|entity| physics.resting_body(entity));
@@ -547,28 +569,41 @@ pub(crate) fn read_back(
     let Ok((transform, parent)) = locals.get(state.entity) else {
       continue;
     };
-    let scale = transform.scale;
     let parent = parent
       .map(ChildOf::parent)
       .and_then(|parent| world_after_step(parent, &physics, &locals, 0));
-    if let Some(local) = local_pose(parent, (state.translation, state.rotation), scale)
-      && let Ok((mut transform, _)) = locals.get_mut(state.entity)
+    let local =
+      local_pose(parent, (state.translation, state.rotation), transform.scale).map(|local| {
+        (
+          local.translation,
+          continued(transform.rotation, local.rotation),
+        )
+      });
+    writes.push(WriteBack {
+      entity: state.entity,
+      local,
+      velocities: state.dynamic.then_some((state.linvel, state.angvel)),
+    });
+  }
+  for write in writes.drain(..) {
+    if let Some((translation, rotation)) = write.local
+      && let Ok((mut transform, _)) = locals.get_mut(write.entity)
     {
-      if transform.translation != local.translation {
-        transform.translation = local.translation;
+      if transform.translation != translation {
+        transform.translation = translation;
       }
-      let turn = angle_delta(transform.rotation, local.rotation);
-      if turn != 0.0 {
-        transform.rotation += turn;
+      if transform.rotation != rotation {
+        transform.rotation = rotation;
       }
     }
-    if state.dynamic
-      && let Ok((mut velocity, mut angular)) = velocities.get_mut(state.entity)
+    if let Some((linvel, angvel)) = write.velocities
+      && let Ok((mut velocity, mut angular)) = velocities.get_mut(write.entity)
     {
-      velocity.set_if_neq(Velocity::from_vec2(state.linvel));
-      angular.set_if_neq(AngularVelocity(state.angvel));
+      velocity.set_if_neq(Velocity::from_vec2(linvel));
+      angular.set_if_neq(AngularVelocity(angvel));
     }
   }
+  physics.write_backs = writes;
 }
 
 /// Turn the step's contacts, forces and broken joints into messages; a
@@ -1900,6 +1935,62 @@ mod tests {
       "not dragged by the body two levels up: {at_b}"
     );
     assert!(physics.is_sleeping(b));
+  }
+
+  /// A body 100 px from a parent body turned from `start` radians at
+  /// `spin` rad/s for five seconds, then left to rest (a dynamic parent is
+  /// stopped, a kinematic one keeps turning): whether the child sleeps, and
+  /// how far it drifts in the world over the last ten seconds.
+  fn under_a_turned_parent(parent: RigidBody, start: f32, spin: f32) -> (bool, f32) {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let kinematic = parent.kind == BodyKind::Kinematic;
+    let parent = world
+      .spawn((
+        Transform::IDENTITY.with_rotation(start),
+        parent,
+        AngularVelocity(spin),
+        Collider::circle(5.0),
+      ))
+      .id();
+    let child = world
+      .spawn((
+        Transform::from_xy(100.0, 0.0),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+        ChildOf(parent),
+      ))
+      .id();
+    run(&mut world, &mut s, 300);
+    if !kinematic {
+      *world.get_mut::<AngularVelocity>(parent).unwrap() = AngularVelocity(0.0);
+    }
+    run(&mut world, &mut s, 120);
+    let before = world.resource::<Physics>().body_pose(child).unwrap().0;
+    run(&mut world, &mut s, 600);
+    let physics = world.resource::<Physics>();
+    let after = physics.body_pose(child).unwrap().0;
+    (physics.is_sleeping(child), (after - before).length())
+  }
+
+  #[test]
+  fn a_body_under_a_parent_stopped_after_thousands_of_radians_stays_put_and_sleeps() {
+    // f32 round-off of a large continuous rotation differs from Rapier's
+    // wrapped angle: the write-back must place the child against the same
+    // parent pose propagation computes. From 2010.234 the parent comes to
+    // rest at an angle where writing its rotation twice moves it one ulp
+    for start in [3000.0, 1000.0, 10000.0, -5000.0, 2010.234] {
+      let (asleep, drift) = under_a_turned_parent(RigidBody::dynamic(), start, 7.0);
+      assert!(drift < 1e-3, "from {start} rad: drifted {drift} px");
+      assert!(asleep, "from {start} rad: never slept");
+    }
+  }
+
+  #[test]
+  fn a_body_under_a_kinematic_parent_turning_past_thousands_of_radians_stays_put() {
+    let (asleep, drift) = under_a_turned_parent(RigidBody::kinematic(), 3000.0, 0.5);
+    assert!(drift < 1e-3, "drifted {drift} px");
+    assert!(asleep, "never slept");
   }
 
   #[test]
