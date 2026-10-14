@@ -141,7 +141,8 @@ pub mod prelude {
     AngularVelocity, BodyKind, CharacterController, CharacterHit, CharacterMode, CharacterState,
     Collider, ColliderShape, CollisionStarted, CollisionStopped, Contact, ContactForce, Hit, Joint,
     JointAnchor, JointBroken, JointKind, JointMotor, Overlap, Physics, PhysicsConfig, PointHit,
-    QueryFilter, RigidBody, Touch, TriggerContents, TriggerEntered, TriggerExited,
+    QueryFilter, RigidBody, SlopeCorner, TileCell, Touch, TriggerContents, TriggerEntered,
+    TriggerExited,
   };
 
   // Gameplay

@@ -15,6 +15,7 @@ mod sweep;
 pub(crate) mod sync;
 #[cfg(test)]
 pub(crate) mod test_util;
+mod tiles;
 mod triggers;
 mod world;
 
@@ -28,5 +29,6 @@ pub use events::{
 };
 pub use joint::{Joint, JointAnchor, JointKind, JointMotor};
 pub use query::{Hit, Overlap, PointHit, QueryFilter, Touch};
+pub use tiles::{SlopeCorner, TileCell};
 pub use triggers::TriggerContents;
 pub use world::Physics;
