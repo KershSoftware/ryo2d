@@ -12,16 +12,17 @@ use glam::Mat2;
 use rapier2d::prelude::{
   ActiveCollisionTypes, ActiveEvents, BroadPhaseBvh, CCDSolver, CoefficientCombineRule,
   ColliderBuilder, ColliderHandle, ColliderSet, CollisionEvent, ContactForceEvent, ContactPair,
-  EventHandler, Group, ImpulseJointSet, IntegrationParameters, InteractionGroups,
-  InteractionTestMode, IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline, Pose, Real,
-  RigidBodyActivation, RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType, SoftBodySet,
-  SoftBodyTearEvent,
+  EventHandler, Group, ImpulseJointHandle, ImpulseJointSet, IntegrationParameters,
+  InteractionGroups, InteractionTestMode, IslandManager, MultibodyJointSet, NarrowPhase,
+  PhysicsPipeline, Pose, Real, RigidBodyActivation, RigidBodyBuilder, RigidBodyHandle,
+  RigidBodySet, RigidBodyType, SoftBodySet, SoftBodyTearEvent,
 };
 
 use super::body::{BodyKind, RigidBody};
 use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::{from_rapier, pose, poses_differ, to_rapier};
+use super::joint::{Joint, generic_joint};
 use super::shape;
 use crate::core::ecs::{Entity, Resource, Vec2};
 
@@ -158,6 +159,17 @@ pub(crate) struct ColliderEntry {
   pub(crate) map: Mat2,
 }
 
+pub(crate) struct JointEntry {
+  /// `None` while inert (a body is missing)
+  pub(crate) handle: Option<ImpulseJointHandle>,
+  pub(crate) joint: Joint,
+  /// The bodies' world poses when it was made: anchors stay where they were put
+  pub(crate) poses: ((Vec2, f32), (Vec2, f32)),
+  /// Whether its entity is enabled: a joint made or remade while it is
+  /// disabled starts disabled
+  enabled: bool,
+}
+
 /// A body the step moved, for the write-back.
 pub(crate) struct BodyState {
   pub(crate) entity: Entity,
@@ -229,6 +241,8 @@ pub struct Physics {
   pub(crate) body_entries: HashMap<Entity, BodyEntry>,
   pub(crate) collider_entries: HashMap<Entity, ColliderEntry>,
   pub(crate) owners: HashMap<ColliderHandle, Owner>,
+  pub(crate) joint_entries: HashMap<Entity, JointEntry>,
+  joint_of: HashMap<ImpulseJointHandle, Entity>,
   /// Colliders whose body is not simulated yet; retried every step
   pub(crate) waiting: HashSet<Entity>,
   /// Entities that lost their `RigidBody` or their parent since the last
@@ -254,6 +268,8 @@ pub struct Physics {
   pub(crate) collisions: Vec<RawCollision>,
   /// The last step's contact forces
   pub(crate) forces: Vec<RawForce>,
+  /// Joints the last step broke: (joint, a, b)
+  pub(crate) broken: Vec<(Entity, Entity, Entity)>,
 }
 
 fn body_type(kind: BodyKind) -> RigidBodyType {
@@ -358,6 +374,8 @@ impl Physics {
       body_entries: HashMap::new(),
       collider_entries: HashMap::new(),
       owners: HashMap::new(),
+      joint_entries: HashMap::new(),
+      joint_of: HashMap::new(),
       waiting: HashSet::new(),
       relink: HashSet::new(),
       sync_queue: Vec::new(),
@@ -370,6 +388,7 @@ impl Physics {
       forced: Vec::new(),
       collisions: Vec::new(),
       forces: Vec::new(),
+      broken: Vec::new(),
     }
   }
 
@@ -478,7 +497,8 @@ impl Physics {
   }
 
   /// Remove a body. Its colliders stay, parentless: fixed colliders until
-  /// they join another body.
+  /// they join another body. Its joints go inert (Rapier removes them with
+  /// the body) until both their bodies are simulated again.
   pub(crate) fn remove_body(&mut self, entity: Entity) {
     let Some(entry) = self.body_entries.remove(&entity) else {
       return;
@@ -488,6 +508,18 @@ impl Physics {
       .get(entry.handle)
       .map(|body| body.colliders().to_vec())
       .unwrap_or_default();
+    let joints: Vec<ImpulseJointHandle> = self
+      .joints
+      .attached_joints(entry.handle)
+      .map(|(_, _, handle, _)| handle)
+      .collect();
+    for handle in joints {
+      if let Some(joint_entity) = self.joint_of.remove(&handle)
+        && let Some(joint) = self.joint_entries.get_mut(&joint_entity)
+      {
+        joint.handle = None;
+      }
+    }
     self.bodies.remove(
       entry.handle,
       &mut self.islands,
@@ -753,8 +785,8 @@ impl Physics {
     self.warned.remove(&entity);
   }
 
-  /// Disable or re-enable an entity's body and collider in Rapier; their
-  /// velocities, contacts and joints survive.
+  /// Disable or re-enable an entity's body, collider and joint in Rapier;
+  /// their velocities, contacts and joints survive.
   pub(crate) fn set_enabled(&mut self, entity: Entity, enabled: bool) {
     if let Some(entry) = self.body_entries.get(&entity)
       && let Some(body) = self.bodies.get_mut(entry.handle)
@@ -766,6 +798,139 @@ impl Physics {
     {
       collider.set_enabled(enabled);
     }
+    self.set_joint_enabled(entity, enabled);
+  }
+
+  /// Disable or re-enable the joint on an entity; an inert one is made
+  /// that way when its bodies come.
+  pub(crate) fn set_joint_enabled(&mut self, entity: Entity, enabled: bool) {
+    if let Some(entry) = self.joint_entries.get_mut(&entity) {
+      entry.enabled = enabled;
+      if let Some(handle) = entry.handle
+        && let Some(joint) = self.joints.get_mut(handle, true)
+      {
+        joint.data.set_enabled(enabled);
+      }
+    }
+  }
+
+  /// Register a new or edited joint. Motors, limits, collisions and the break
+  /// force change in place; new bodies, kind or anchors remake it.
+  pub(crate) fn sync_joint(&mut self, entity: Entity, joint: &Joint) {
+    let mut enabled = true;
+    if let Some(entry) = self.joint_entries.get(&entity) {
+      if entry.joint == *joint {
+        return;
+      }
+      enabled = entry.enabled;
+      let same_frame = entry.joint.a == joint.a
+        && entry.joint.b == joint.b
+        && entry.joint.kind == joint.kind
+        && entry.joint.anchor == joint.anchor;
+      if same_frame && let Some(handle) = entry.handle {
+        let (pose_a, pose_b) = entry.poses;
+        if let Some(mut data) = generic_joint(joint, pose_a, pose_b)
+          && let Some(rapier) = self.joints.get_mut(handle, true)
+        {
+          data.set_enabled(enabled);
+          rapier.data = data;
+        }
+        if let Some(entry) = self.joint_entries.get_mut(&entity) {
+          entry.joint = joint.clone();
+        }
+        return;
+      }
+      self.remove_joint(entity);
+    }
+    self.insert_joint(entity, joint, enabled);
+  }
+
+  fn insert_joint(&mut self, entity: Entity, joint: &Joint, enabled: bool) {
+    let made = (joint.a != joint.b)
+      .then(|| {
+        let a = self.body_entries.get(&joint.a)?.handle;
+        let b = self.body_entries.get(&joint.b)?.handle;
+        let poses = (
+          self.body_world_pose(joint.a)?,
+          self.body_world_pose(joint.b)?,
+        );
+        Some((a, b, poses, generic_joint(joint, poses.0, poses.1)?))
+      })
+      .flatten();
+    let Some((a, b, poses, mut data)) = made else {
+      self.warn_once(
+        entity,
+        "a joint needs two different simulated bodies and sane values; it waits",
+      );
+      self.joint_entries.insert(
+        entity,
+        JointEntry {
+          handle: None,
+          joint: joint.clone(),
+          poses: ((Vec2::ZERO, 0.0), (Vec2::ZERO, 0.0)),
+          enabled,
+        },
+      );
+      return;
+    };
+    data.set_enabled(enabled);
+    let handle = self.joints.insert(a, b, data, true);
+    self.joint_of.insert(handle, entity);
+    self.joint_entries.insert(
+      entity,
+      JointEntry {
+        handle: Some(handle),
+        joint: joint.clone(),
+        poses,
+        enabled,
+      },
+    );
+  }
+
+  /// Try inert joints again: their bodies may be simulated now.
+  pub(crate) fn retry_inert_joints(&mut self) {
+    let ready: Vec<(Entity, Joint, bool)> = self
+      .joint_entries
+      .iter()
+      .filter(|(_, entry)| {
+        entry.handle.is_none() && self.has_body(entry.joint.a) && self.has_body(entry.joint.b)
+      })
+      .map(|(&entity, entry)| (entity, entry.joint.clone(), entry.enabled))
+      .collect();
+    for (entity, joint, enabled) in ready {
+      self.joint_entries.remove(&entity);
+      self.insert_joint(entity, &joint, enabled);
+    }
+  }
+
+  pub(crate) fn remove_joint(&mut self, entity: Entity) {
+    if let Some(entry) = self.joint_entries.remove(&entity)
+      && let Some(handle) = entry.handle
+    {
+      self.joint_of.remove(&handle);
+      self.joints.remove(handle, true);
+    }
+    self.warned.remove(&entity);
+  }
+
+  /// Joints simulated now (inert ones left out), for tests.
+  #[cfg(test)]
+  pub(crate) fn joint_count(&self) -> usize {
+    self
+      .joint_entries
+      .values()
+      .filter(|entry| entry.handle.is_some())
+      .count()
+  }
+
+  fn has_body(&self, entity: Entity) -> bool {
+    self.body_entries.contains_key(&entity)
+  }
+
+  /// Where Rapier holds a registered body.
+  fn body_world_pose(&self, entity: Entity) -> Option<(Vec2, f32)> {
+    let body = self.bodies.get(self.body_entries.get(&entity)?.handle)?;
+    Some((from_rapier(body.translation()), body.rotation().angle()))
   }
 
   /// Whether `linvel`/`angvel` are what the simulation gave the entity's
@@ -978,6 +1143,7 @@ impl Physics {
       }
     }
     self.departed.clear();
+    self.break_joints(dt);
     for entry in self.body_entries.values_mut() {
       let asleep = self
         .bodies
@@ -986,6 +1152,39 @@ impl Physics {
       entry.fell_asleep = asleep && !entry.asleep;
       entry.asleep = asleep;
     }
+  }
+
+  /// Break the joints the step pulled past their break force. Rapier keeps a
+  /// joint's linear impulse in three places: locked axes (revolute, fixed,
+  /// a prismatic's cross axis) in `impulses`, limits (rope, a prismatic's
+  /// range) and motors (spring, a prismatic's motor) on the axis itself. Each
+  /// is the impulse of one solver substep (`dt / num_solver_iterations`).
+  fn break_joints(&mut self, dt: f32) {
+    self.broken.clear();
+    let substep = dt / self.params.num_solver_iterations.max(1) as f32;
+    if substep <= 0.0 {
+      return;
+    }
+    for (&entity, entry) in &self.joint_entries {
+      let (Some(handle), Some(limit), true) =
+        (entry.handle, entry.joint.break_force, entry.enabled)
+      else {
+        continue;
+      };
+      let Some(joint) = self.joints.get(handle) else {
+        continue;
+      };
+      let axis = |i: usize| joint.data.limits[i].impulse + joint.data.motors[i].impulse;
+      let impulse = Vec2::new(joint.impulses.x + axis(0), joint.impulses.y + axis(1));
+      if impulse.length() / substep > limit {
+        self.broken.push((entity, entry.joint.a, entry.joint.b));
+      }
+    }
+    let broken = std::mem::take(&mut self.broken);
+    for &(entity, _, _) in &broken {
+      self.remove_joint(entity);
+    }
+    self.broken = broken;
   }
 
   /// Bodies the step moved: awake dynamic bodies (and those that just fell
@@ -1042,8 +1241,7 @@ impl Physics {
   /// A body's world pose after the last step, for tests.
   #[cfg(test)]
   pub(crate) fn body_pose(&self, entity: Entity) -> Option<(Vec2, f32)> {
-    let body = self.bodies.get(self.body_entries.get(&entity)?.handle)?;
-    Some((from_rapier(body.translation()), body.rotation().angle()))
+    self.body_world_pose(entity)
   }
 
   #[cfg(test)]

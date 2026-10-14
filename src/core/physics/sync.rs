@@ -1,8 +1,9 @@
 //! Keep Rapier in step with the world. Each fixed step, in
 //! `FixedSet::Physics` while `PhysicsPaused` is false: forget what went away,
 //! track disabled entities, propagate transforms, register new bodies, bring
-//! colliders in line, push the game's changes, step, write the simulated
-//! bodies back and turn contacts into messages.
+//! colliders in line, push the game's changes, bring joints in line, step,
+//! write the simulated bodies back and turn contacts and broken joints into
+//! messages.
 //!
 //! Bodies may sit anywhere in the hierarchy, and a collider belongs to the
 //! nearest body at or above its entity. Physics reads world poses from
@@ -22,13 +23,14 @@ use super::body::{AngularVelocity, BodyKind, RigidBody};
 use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::angle_delta;
-use super::events::{CollisionStarted, CollisionStopped, Contact, ContactForce};
+use super::events::{CollisionStarted, CollisionStopped, Contact, ContactForce, JointBroken};
+use super::joint::Joint;
 use super::world::{Physics, Placement};
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
-  Added, Allow, Changed, ChildOf, Children, DetectChanges, DetectChangesMut, Disabled, Entity,
-  GlobalTransform, IntoScheduleConfigs, MessageWriter, Mut, Or, Query, Ref, RemovedComponents, Res,
-  ResMut, Transform, Vec2, Velocity, With,
+  Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
+  Entity, GlobalTransform, IntoScheduleConfigs, MessageWriter, Mut, Or, Query, Ref,
+  RemovedComponents, Res, ResMut, Transform, Vec2, Velocity, With,
 };
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
@@ -55,7 +57,7 @@ type BodyRow<'a> = (
 type BodyPlace<'a> = (&'a GlobalTransform, &'a Transform, Option<&'a ChildOf>);
 /// World transforms, disabled entities included
 type Globals<'a, 'w, 's> = Query<'w, 's, &'a GlobalTransform, Allow<Disabled>>;
-type HasPhysics = Or<(With<RigidBody>, With<Collider>)>;
+type HasPhysics = Or<(With<RigidBody>, With<Collider>, With<Joint>)>;
 /// A body whose `Velocity` or `AngularVelocity` changed
 type Pushed = (
   With<RigidBody>,
@@ -196,17 +198,22 @@ pub(crate) fn placement(
   }
 }
 
-/// Forget colliders and bodies whose components went away (despawn
-/// included); a body's colliders that stay become fixed. Entities that lost
-/// their `RigidBody` or their parent are remembered for `sync_colliders`,
-/// which finds the colliders at and below them a new owner.
+/// Forget joints, colliders and bodies whose components went away (despawn
+/// included); a body's colliders that stay become fixed and its joints
+/// inert. Entities that lost their `RigidBody` or their parent are
+/// remembered for `sync_colliders`, which finds the colliders at and below
+/// them a new owner.
 pub(crate) fn forget_removed(
   mut physics: ResMut<Physics>,
+  mut joints: RemovedComponents<Joint>,
   mut colliders: RemovedComponents<Collider>,
   mut bodies: RemovedComponents<RigidBody>,
   mut detached: RemovedComponents<ChildOf>,
   relinkable: Query<(), Relinkable>,
 ) {
+  for entity in joints.read() {
+    physics.remove_joint(entity);
+  }
   for entity in colliders.read() {
     physics.remove_collider(entity);
   }
@@ -226,8 +233,8 @@ pub(crate) fn forget_removed(
 /// Disable the simulation of disabled entities; re-enable (or register, if
 /// they were spawned disabled) re-enabled ones. The steps skip a disabled
 /// entity, so what the game changed meanwhile (`Transform`, `Velocity`,
-/// `RigidBody`, `Collider`) is applied as it comes back: bodies here,
-/// colliders by the next `sync_colliders`.
+/// `RigidBody`, `Collider`, `Joint`) is applied as it comes back: bodies and
+/// joints here, colliders by the next `sync_colliders`.
 #[allow(clippy::too_many_arguments)] // one query or removal reader per input
 pub(crate) fn track_disabled(
   mut physics: ResMut<Physics>,
@@ -237,6 +244,7 @@ pub(crate) fn track_disabled(
   mut locals: Query<LocalLink, Allow<Disabled>>,
   mut bodies: Query<(&mut Velocity, &mut AngularVelocity, Ref<RigidBody>)>,
   colliders: Query<(), With<Collider>>,
+  joints: Query<&Joint>,
 ) {
   // Density depends on the unit: configure before anything registers
   physics.configure(&config);
@@ -244,6 +252,10 @@ pub(crate) fn track_disabled(
     physics.set_enabled(entity, false);
   }
   for entity in enabled.read() {
+    if let Ok(joint) = joints.get(entity) {
+      physics.sync_joint(entity, joint);
+      physics.set_joint_enabled(entity, true);
+    }
     let has_collider = colliders.contains(entity);
     if !(has_collider || bodies.contains(entity)) {
       continue;
@@ -458,6 +470,19 @@ pub(crate) fn push_changes(
   physics.apply_queued();
 }
 
+/// Register new and edited joints, and retry inert ones. After
+/// `push_changes`: a joint made as the game moves one of its bodies anchors
+/// to where the body was moved.
+pub(crate) fn sync_joints(
+  mut physics: ResMut<Physics>,
+  joints: Query<(Entity, &Joint), Changed<Joint>>,
+) {
+  for (entity, joint) in &joints {
+    physics.sync_joint(entity, joint);
+  }
+  physics.retry_inert_joints();
+}
+
 /// Step the simulation by the fixed timestep.
 pub(crate) fn step_simulation(mut physics: ResMut<Physics>, time: Res<Time>) {
   crate::profile_scope!("cpu:physics");
@@ -535,12 +560,15 @@ pub(crate) fn read_back(
   }
 }
 
-/// Turn the step's contacts and forces into messages.
+/// Turn the step's contacts, forces and broken joints into messages; a
+/// broken joint's `Joint` component goes too.
 pub(crate) fn emit_messages(
   physics: Res<Physics>,
   mut started: MessageWriter<CollisionStarted>,
   mut stopped: MessageWriter<CollisionStopped>,
   mut forces: MessageWriter<ContactForce>,
+  mut broken_joints: MessageWriter<JointBroken>,
+  mut commands: Commands,
 ) {
   for c in &physics.collisions {
     let (a, b, body_a, body_b) = (c.a.collider, c.b.collider, c.a.body, c.b.body);
@@ -574,6 +602,12 @@ pub(crate) fn emit_messages(
       started: f.started,
     });
   }
+  for &(joint, a, b) in &physics.broken {
+    broken_joints.write(JointBroken { joint, a, b });
+    if let Ok(mut entity) = commands.get_entity(joint) {
+      entity.try_remove::<Joint>();
+    }
+  }
 }
 
 /// Add the physics systems to `FixedSet::Physics`, chained, running only
@@ -588,6 +622,7 @@ pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
       register_bodies,
       sync_colliders,
       push_changes,
+      sync_joints,
       step_simulation,
       read_back,
       emit_messages,
