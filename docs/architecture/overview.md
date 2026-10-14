@@ -296,7 +296,7 @@ a camera at the centre of its view       (0,0) at the top-left
 
 - +Y is down in both; rotation is clockwise. The main camera starts at the centre of the design area, so world (0, 0) is its top-left and one world unit is one design pixel. A sprite's `Anchor` (default `Center`) is the point placed at its entity's position; rotation and scale happen about it. Tiled runs and composite tiles are laid out from the position as their first tile's top-left.
 - Screen space is the window in logical pixels (resolution-independent) or the pixel-art target; the UI and the mouse live there. `CameraView::world_to_screen` / `screen_to_world` convert, shake and rotation included.
-- Rapier works in meters: 100 world units = 1 meter.
+- Physics positions are world units (pixels); `PhysicsConfig::pixels_per_meter` of them make a Rapier metre (default 100).
 
 ## Networking
 

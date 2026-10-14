@@ -705,7 +705,7 @@ Multi-part sprites laid out from the entity's position (parts at offsets from it
 
 ## Physics
 
-Rapier2D 0.36. A `Collider` joins the simulation on its own (a fixed collider) or attaches to the nearest `RigidBody` at or above its entity. 100 px = 1 m; gravity is in px/s². Positions are pixels, +Y down. Everything below is in the prelude.
+Rapier2D 0.36. A `Collider` joins the simulation on its own (a fixed collider) or attaches to the nearest `RigidBody` at or above its entity. `PhysicsConfig::pixels_per_meter` px = 1 m (default 100; choosing it: ryo-physics); gravity is in px/s². Positions are pixels, +Y down. Everything below is in the prelude.
 
 | Type | API |
 |---|---|
