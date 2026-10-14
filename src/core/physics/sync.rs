@@ -29,9 +29,9 @@ use super::world::{Physics, Placement, WriteBack};
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
-  Entity, GlobalTransform, Has, IntoScheduleConfigs, MessageWriter, Mut, Or, ParamSet, Query, Ref,
-  RemovedComponents, Res, ResMut, SystemChangeTick, SystemState, Tick, Transform, Vec2, Velocity,
-  With, World,
+  EcsSystemState, Entity, GlobalTransform, Has, IntoScheduleConfigs, MessageWriter, Mut, Or,
+  ParamSet, Query, Ref, RemovedComponents, Res, ResMut, SystemChangeTick, Tick, Transform, Vec2,
+  Velocity, With, World,
 };
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
@@ -693,7 +693,7 @@ fn world_after_step(
 /// world's current tick, which the next system is handed too. So this is an
 /// exclusive system that advances the tick before it fetches anything: no
 /// command, wherever the scheduler puts its sync point, lands at its tick.
-pub(crate) fn read_back(world: &mut World, state: &mut SystemState<ReadBack<'static, 'static>>) {
+pub(crate) fn read_back(world: &mut World, state: &mut EcsSystemState<ReadBack<'static, 'static>>) {
   world.increment_change_tick();
   let Ok((mut physics, mut locals, nested, mut velocities, ticks)) = state.get_mut(world) else {
     return;
