@@ -375,9 +375,10 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     ),
   );
   // Removal events last two tracker clears, and the fixed steps may not run
-  // that often: physics tracks removals and re-enables every frame too,
-  // before the trackers are cleared. Additions and edits are tick-based and
-  // wait for the next fixed step.
+  // that often: physics tracks removals (including lost bodies and parents,
+  // whose colliders the next step gives a new owner) and re-enables every
+  // frame too, before the trackers are cleared. Additions and edits are
+  // tick-based and wait for the next fixed step.
   schedules.add_systems(
     Phase::Last,
     (

@@ -58,6 +58,33 @@ impl EventHandler for EventCollector {
   fn handle_soft_body_tear_event(&self, _soft_bodies: &SoftBodySet, _event: &SoftBodyTearEvent) {}
 }
 
+/// Where a collider sits and how its shape is mapped: relative to its body
+/// when it has one, in the world otherwise.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Placement {
+  pub(crate) translation: Vec2,
+  pub(crate) rotation: f32,
+  /// The linear map from the shape's own space into this frame (scale,
+  /// mirroring, skew)
+  pub(crate) map: Mat2,
+}
+
+impl Placement {
+  fn is_finite(&self) -> bool {
+    self.translation.is_finite() && self.rotation.is_finite() && self.map.is_finite()
+  }
+
+  fn pose(&self) -> Pose {
+    pose(self.translation, self.rotation)
+  }
+}
+
+/// Whether two shape maps differ enough to rebuild the shape.
+fn maps_differ(a: Mat2, b: Mat2) -> bool {
+  let tolerance = 1e-4 * a.abs().to_cols_array().into_iter().fold(1.0, f32::max);
+  !a.abs_diff_eq(b, tolerance)
+}
+
 /// A collider's entity and its body's entity (its own when it has no body).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Owner {
@@ -82,6 +109,11 @@ pub(crate) struct ColliderEntry {
   pub(crate) body: Option<Entity>,
   /// The component last applied
   pub(crate) collider: Collider,
+  /// The pose last applied: relative to the body when attached, else world.
+  /// Updated only when applied, so drift below the tolerance never adds up
+  pub(crate) pose: (Vec2, f32),
+  /// The shape map last applied
+  pub(crate) map: Mat2,
 }
 
 /// A body the step moved, for the write-back.
@@ -145,6 +177,11 @@ pub struct Physics {
   pub(crate) body_entries: HashMap<Entity, BodyEntry>,
   pub(crate) collider_entries: HashMap<Entity, ColliderEntry>,
   pub(crate) owners: HashMap<ColliderHandle, Owner>,
+  /// Colliders whose body is not simulated yet; retried every step
+  pub(crate) waiting: HashSet<Entity>,
+  /// Entities that lost their `RigidBody` or their parent since the last
+  /// step: the colliders at and below them may belong to another body now
+  pub(crate) relink: HashSet<Entity>,
   /// Owners of colliders removed since the last step: Rapier reports their
   /// `Stopped` events during the next one
   departed: HashMap<ColliderHandle, Owner>,
@@ -188,19 +225,6 @@ fn body_builder(settings: &RigidBody) -> RigidBodyBuilder {
   }
 }
 
-/// A collider's pose relative to its body.
-fn local_pose(collider: &Collider) -> Pose {
-  pose(collider.offset, collider.rotation)
-}
-
-/// A collider's pose in the world when its entity is at `translation`, turned by `rotation`.
-fn world_pose(translation: Vec2, rotation: f32, collider: &Collider) -> Pose {
-  pose(
-    translation + Vec2::from_angle(rotation).rotate(collider.offset),
-    rotation + collider.rotation,
-  )
-}
-
 fn groups(collider: &Collider) -> InteractionGroups {
   InteractionGroups::new(
     Group::from(collider.layer),
@@ -221,12 +245,37 @@ fn active_types() -> ActiveCollisionTypes {
   ActiveCollisionTypes::all().difference(ActiveCollisionTypes::FIXED_FIXED)
 }
 
-/// Whether the collider's offset and rotation are finite.
-fn placeable(collider: &Collider) -> bool {
-  collider.offset.is_finite() && collider.rotation.is_finite()
+/// Apply the material half of an edited `Collider` (everything but its
+/// shape and placement): only fields that changed are written.
+fn apply_material(
+  rapier: &mut rapier2d::prelude::Collider,
+  old: &Collider,
+  new: &Collider,
+  density: f32,
+) {
+  if old.friction != new.friction {
+    rapier.set_friction(finite_or(new.friction, 0.5).max(0.0));
+  }
+  if old.restitution != new.restitution {
+    rapier.set_restitution(finite_or(new.restitution, 0.0).max(0.0));
+  }
+  if old.density != new.density || old.mass != new.mass {
+    match new.mass {
+      Some(mass) => rapier.set_mass(finite_or(mass, 0.0).max(0.0)),
+      None => rapier.set_density(density),
+    }
+  }
+  if old.layer != new.layer || old.mask != new.mask {
+    rapier.set_collision_groups(groups(new));
+  }
+  if old.is_trigger != new.is_trigger {
+    rapier.set_sensor(new.is_trigger);
+  }
+  if old.force_threshold != new.force_threshold {
+    rapier.set_active_events(events(new));
+    rapier.set_contact_force_event_threshold(finite_or(new.force_threshold.unwrap_or(0.0), 0.0));
+  }
 }
-
-const UNPLACEABLE: &str = "a collider with a non-finite offset or rotation is not simulated";
 
 impl Physics {
   /// An empty simulation at the default scale and gravity.
@@ -251,6 +300,8 @@ impl Physics {
       body_entries: HashMap::new(),
       collider_entries: HashMap::new(),
       owners: HashMap::new(),
+      waiting: HashSet::new(),
+      relink: HashSet::new(),
       departed: HashMap::new(),
       teleported: HashSet::new(),
       driven: Vec::new(),
@@ -323,21 +374,6 @@ impl Physics {
         fell_asleep: false,
       },
     );
-    // A collider already simulated on this entity joins its new body
-    if let Some(entry) = self.collider_entries.get_mut(&entity)
-      && entry.body.is_none()
-    {
-      self
-        .colliders
-        .set_parent(entry.handle, Some(handle), &mut self.bodies);
-      if let Some(collider) = self.colliders.get_mut(entry.handle) {
-        collider.set_position_wrt_parent(local_pose(&entry.collider));
-      }
-      entry.body = Some(entity);
-      if let Some(owner) = self.owners.get_mut(&entry.handle) {
-        owner.body = entity;
-      }
-    }
   }
 
   /// Apply an edited `RigidBody` in place: only fields that changed are written.
@@ -401,62 +437,64 @@ impl Physics {
       false,
     );
     for handle in attached {
-      if let Some(owner) = self.owners.get_mut(&handle) {
-        owner.body = owner.collider;
-        if let Some(collider) = self.collider_entries.get_mut(&owner.collider) {
-          collider.body = None;
+      let Some(owner) = self.owners.get_mut(&handle) else {
+        continue;
+      };
+      owner.body = owner.collider;
+      let world = self.colliders.get(handle).map(|collider| {
+        (
+          from_rapier(collider.translation()),
+          collider.rotation().angle(),
+        )
+      });
+      if let Some(entry) = self.collider_entries.get_mut(&owner.collider) {
+        entry.body = None;
+        // Where it stays: its pose is in the world now
+        if let Some(world) = world {
+          entry.pose = world;
         }
       }
     }
     self.warned.remove(&entity);
   }
 
-  pub(crate) fn add_collider(
+  fn add_collider(
     &mut self,
     entity: Entity,
-    body: Option<Entity>,
-    translation: Vec2,
-    rotation: f32,
+    body: Option<(Entity, RigidBodyHandle)>,
+    placement: Placement,
     collider: &Collider,
   ) {
-    if self.collider_entries.contains_key(&entity) {
+    if !placement.is_finite() {
+      self.warn_once(
+        entity,
+        "a collider with a non-finite transform is not simulated",
+      );
       return;
     }
-    if !placeable(collider) {
-      self.warn_once(entity, UNPLACEABLE);
-      return;
-    }
-    let Some(builder) = self.collider_builder(collider, Mat2::IDENTITY) else {
-      self.warn_once(entity, "an invalid collider shape is not simulated");
+    let Some(builder) = self.collider_builder(collider, placement.map) else {
+      self.warn_once(
+        entity,
+        "a degenerate collider shape (zero scale included) is not simulated",
+      );
       return;
     };
-    let parent = body.and_then(|body| Some((body, self.body_entries.get(&body)?.handle)));
-    let handle = match parent {
-      Some((_, handle)) => self.colliders.insert_with_parent(
-        builder.position(local_pose(collider)),
-        handle,
-        &mut self.bodies,
-      ),
-      None => {
-        if !(translation.is_finite() && rotation.is_finite()) {
-          self.warn_once(
-            entity,
-            "a collider with a non-finite Transform is not simulated",
-          );
-          return;
-        }
-        self
-          .colliders
-          .insert(builder.position(world_pose(translation, rotation, collider)))
-      }
+    let builder = builder.position(placement.pose());
+    let handle = match body {
+      Some((_, parent)) => self
+        .colliders
+        .insert_with_parent(builder, parent, &mut self.bodies),
+      None => self.colliders.insert(builder),
     };
-    let body = parent.map(|(body, _)| body);
+    let body = body.map(|(body, _)| body);
     self.collider_entries.insert(
       entity,
       ColliderEntry {
         handle,
         body,
         collider: collider.clone(),
+        pose: (placement.translation, placement.rotation),
+        map: placement.map,
       },
     );
     self.owners.insert(
@@ -488,77 +526,152 @@ impl Physics {
     })
   }
 
-  /// Apply an edited `Collider` in place; one not simulated yet (a shape that
-  /// was invalid) is registered instead. An edit to an invalid shape takes it
-  /// out of the simulation.
-  pub(crate) fn update_collider(
+  /// Bring a collider in line with its component, its body and its
+  /// placement: register it, move it to another body (or none), rebuild its
+  /// shape when the shape or scale changed, move it, and apply material
+  /// edits. A collider whose body is not simulated yet waits (retried every
+  /// step); a shape that becomes degenerate leaves the simulation until it is
+  /// valid again.
+  pub(crate) fn sync_collider(
     &mut self,
     entity: Entity,
     body: Option<Entity>,
-    translation: Vec2,
-    rotation: f32,
-    new: &Collider,
+    placement: Placement,
+    collider: &Collider,
   ) {
+    let parent = match body {
+      Some(body) => match self.body_entries.get(&body) {
+        Some(entry) => Some((body, entry.handle)),
+        None => {
+          self.waiting.insert(entity);
+          return;
+        }
+      },
+      None => None,
+    };
+    self.waiting.remove(&entity);
     let Some(entry) = self.collider_entries.get(&entity) else {
-      self.add_collider(entity, body, translation, rotation, new);
+      self.add_collider(entity, parent, placement, collider);
+      if let Some(entry) = self.collider_entries.get(&entity) {
+        self.follow_body(entry.handle);
+      }
       return;
     };
-    if entry.collider == *new {
+    let moved = poses_differ(entry.pose, (placement.translation, placement.rotation));
+    let reshape = entry.collider.shape != collider.shape || maps_differ(entry.map, placement.map);
+    let reparent = entry.body != body;
+    let follows = self.follows_body(entry.handle);
+    if !moved && !reshape && !reparent && follows && entry.collider == *collider {
       return;
     }
-    if !placeable(new) {
-      self.remove_collider(entity);
-      self.warn_once(entity, UNPLACEABLE);
+    if !placement.is_finite() {
+      self.warn_once(
+        entity,
+        "a collider with a non-finite transform is not moved",
+      );
       return;
     }
-    let (handle, attached, old) = (entry.handle, entry.body.is_some(), entry.collider.clone());
-    if old.shape != new.shape {
-      let Some(shape) = shape::build(&new.shape, Mat2::IDENTITY) else {
+    let (handle, old) = (entry.handle, entry.collider.clone());
+    if reshape {
+      let Some(shape) = shape::build(&collider.shape, placement.map) else {
         self.remove_collider(entity);
-        self.warn_once(entity, "an invalid collider shape is not simulated");
+        self.warn_once(
+          entity,
+          "a degenerate collider shape (zero scale included) is not simulated",
+        );
         return;
       };
-      if let Some(collider) = self.colliders.get_mut(handle) {
-        collider.set_shape(shape);
+      if let Some(rapier) = self.colliders.get_mut(handle) {
+        rapier.set_shape(shape);
       }
     }
-    let density = self.rapier_density(finite_or(new.density, 1.0).max(0.0));
-    let Some(collider) = self.colliders.get_mut(handle) else {
-      return;
-    };
-    if old.offset != new.offset || old.rotation != new.rotation {
-      if attached {
-        collider.set_position_wrt_parent(local_pose(new));
-      } else if translation.is_finite() && rotation.is_finite() {
-        collider.set_position(world_pose(translation, rotation, new));
+    if reparent {
+      self
+        .colliders
+        .set_parent(handle, parent.map(|(_, handle)| handle), &mut self.bodies);
+      if let Some(owner) = self.owners.get_mut(&handle) {
+        owner.body = body.unwrap_or(entity);
       }
     }
-    if old.friction != new.friction {
-      collider.set_friction(finite_or(new.friction, 0.5).max(0.0));
-    }
-    if old.restitution != new.restitution {
-      collider.set_restitution(finite_or(new.restitution, 0.0).max(0.0));
-    }
-    if old.density != new.density || old.mass != new.mass {
-      match new.mass {
-        Some(mass) => collider.set_mass(finite_or(mass, 0.0).max(0.0)),
-        None => collider.set_density(density),
+    let density = self.rapier_density(finite_or(collider.density, 1.0).max(0.0));
+    if let Some(rapier) = self.colliders.get_mut(handle) {
+      if moved || reparent {
+        if parent.is_some() {
+          rapier.set_position_wrt_parent(placement.pose());
+        } else {
+          rapier.set_position(placement.pose());
+        }
       }
-    }
-    if old.layer != new.layer || old.mask != new.mask {
-      collider.set_collision_groups(groups(new));
-    }
-    if old.is_trigger != new.is_trigger {
-      collider.set_sensor(new.is_trigger);
-    }
-    if old.force_threshold != new.force_threshold {
-      collider.set_active_events(events(new));
-      collider
-        .set_contact_force_event_threshold(finite_or(new.force_threshold.unwrap_or(0.0), 0.0));
+      apply_material(rapier, &old, collider, density);
     }
     if let Some(entry) = self.collider_entries.get_mut(&entity) {
-      entry.collider = new.clone();
+      entry.body = body;
+      entry.collider = collider.clone();
+      if moved || reparent {
+        entry.pose = (placement.translation, placement.rotation);
+      }
+      if reshape {
+        entry.map = placement.map;
+      }
     }
+    self.follow_body(handle);
+  }
+
+  /// Whether a collider is enabled exactly when its body is (always, with
+  /// no body).
+  fn follows_body(&self, handle: ColliderHandle) -> bool {
+    self
+      .colliders
+      .get(handle)
+      .is_none_or(|collider| collider.is_enabled() == self.parent_enabled(collider))
+  }
+
+  /// Whether a collider's body is enabled (true without one).
+  fn parent_enabled(&self, collider: &rapier2d::prelude::Collider) -> bool {
+    collider
+      .parent()
+      .and_then(|parent| self.bodies.get(parent))
+      .is_none_or(|body| body.is_enabled())
+  }
+
+  /// Rapier passes a body's enabled state to the colliders on it when the
+  /// state changes, not to colliders attached or taken off later: bring a
+  /// collider whose own entity is enabled in line with its body.
+  fn follow_body(&mut self, handle: ColliderHandle) {
+    let Some(collider) = self.colliders.get(handle) else {
+      return;
+    };
+    let (enabled, parent) = (collider.is_enabled(), collider.parent());
+    match (enabled, self.parent_enabled(collider)) {
+      // Attached to a disabled body: toggling the body has Rapier disable
+      // its colliders, as for any body turned off
+      (true, false) => {
+        if let Some(body) = parent.and_then(|parent| self.bodies.get_mut(parent)) {
+          body.set_enabled(true);
+          body.set_enabled(false);
+        }
+      }
+      // Left disabled by a disabled body it was taken off
+      (false, true) => {
+        if let Some(collider) = self.colliders.get_mut(handle) {
+          collider.set_enabled(false);
+          collider.set_enabled(true);
+        }
+      }
+      _ => {}
+    }
+  }
+
+  /// A collider's world pose (for tests and the overlay).
+  #[cfg_attr(not(test), allow(dead_code))]
+  pub(crate) fn collider_pose(&self, entity: Entity) -> Option<(Vec2, f32)> {
+    let collider = self
+      .colliders
+      .get(self.collider_entries.get(&entity)?.handle)?;
+    Some((
+      from_rapier(collider.translation()),
+      collider.rotation().angle(),
+    ))
   }
 
   pub(crate) fn remove_collider(&mut self, entity: Entity) {
@@ -651,32 +764,6 @@ impl Physics {
       body.set_position(pose(translation, rotation), true);
     }
     self.teleported.insert(entity);
-  }
-
-  /// Move a fixed collider that has no body.
-  pub(crate) fn move_collider(&mut self, entity: Entity, translation: Vec2, rotation: f32) {
-    if !(translation.is_finite() && rotation.is_finite()) {
-      self.warn_once(entity, "a non-finite Transform is not pushed to physics");
-      return;
-    }
-    let Some(entry) = self.collider_entries.get(&entity) else {
-      return;
-    };
-    if entry.body.is_some() {
-      return;
-    }
-    let target = world_pose(translation, rotation, &entry.collider);
-    let Some(collider) = self.colliders.get_mut(entry.handle) else {
-      return;
-    };
-    let current = (
-      from_rapier(collider.translation()),
-      collider.rotation().angle(),
-    );
-    let wanted = (from_rapier(target.translation), target.rotation.angle());
-    if poses_differ(current, wanted) {
-      collider.set_position(target);
-    }
   }
 
   /// Give a dynamic body the game's velocities where they differ from Rapier's.
@@ -846,7 +933,23 @@ impl Physics {
     dynamic.chain(driven)
   }
 
-  #[allow(dead_code)] // tests only until Task 9 places child colliders by it
+  /// A dynamic body asleep since before the last step, which `moved_bodies`
+  /// leaves out, where Rapier holds it (no velocities to write back).
+  pub(crate) fn resting_body(&self, entity: Entity) -> Option<BodyState> {
+    let entry = self.body_entries.get(&entity)?;
+    let body = self.bodies.get(entry.handle)?;
+    let resting = body.is_sleeping() && !entry.fell_asleep;
+    (body.is_dynamic() && body.is_enabled() && resting).then(|| BodyState {
+      entity,
+      translation: from_rapier(body.translation()),
+      rotation: body.rotation().angle(),
+      linvel: Vec2::ZERO,
+      angvel: 0.0,
+      dynamic: false,
+    })
+  }
+
+  /// A body's world pose after the last step.
   pub(crate) fn body_pose(&self, entity: Entity) -> Option<(Vec2, f32)> {
     let body = self.bodies.get(self.body_entries.get(&entity)?.handle)?;
     Some((from_rapier(body.translation()), body.rotation().angle()))
@@ -919,6 +1022,8 @@ impl Default for Physics {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::ecs::{GlobalTransform, Transform};
+  use crate::core::physics::sync::placement;
   use std::f32::consts::FRAC_PI_2;
 
   fn entity(index: u32) -> Entity {
@@ -926,14 +1031,29 @@ mod tests {
   }
 
   fn collider_center(physics: &Physics, entity: Entity) -> Vec2 {
-    let handle = physics.collider_entries[&entity].handle;
-    from_rapier(physics.colliders[handle].translation())
+    physics
+      .collider_pose(entity)
+      .map(|(translation, _)| translation)
+      .expect("a simulated collider")
+  }
+
+  /// The placement of `collider` on an unscaled entity at `at`, turned by
+  /// `rotation`, relative to `body` when given.
+  fn place(at: Vec2, rotation: f32, collider: &Collider, body: Option<(Vec2, f32)>) -> Placement {
+    let transform = Transform::from_translation(at).with_rotation(rotation);
+    placement(&GlobalTransform::from_transform(&transform), collider, body)
+  }
+
+  /// A collider without a body, on an entity at `at` turned by `rotation`.
+  fn bare(physics: &mut Physics, e: Entity, at: Vec2, rotation: f32, collider: &Collider) {
+    physics.sync_collider(e, None, place(at, rotation, collider, None), collider);
   }
 
   /// A body and its own collider at `at`.
   fn add(physics: &mut Physics, e: Entity, at: Vec2, body: RigidBody, collider: Collider) {
     physics.add_body(e, at, 0.0, Vec2::ZERO, 0.0, &body);
-    physics.add_collider(e, Some(e), at, 0.0, &collider);
+    let placement = place(at, 0.0, &collider, Some((at, 0.0)));
+    physics.sync_collider(e, Some(e), placement, &collider);
   }
 
   #[test]
@@ -993,9 +1113,15 @@ mod tests {
     let mut physics = Physics::new();
     let e = entity(1);
     let collider = Collider::rect(4.0, 4.0).with_offset(10.0, 0.0);
-    physics.add_collider(e, None, Vec2::new(100.0, 100.0), FRAC_PI_2, &collider);
+    bare(
+      &mut physics,
+      e,
+      Vec2::new(100.0, 100.0),
+      FRAC_PI_2,
+      &collider,
+    );
     assert!((collider_center(&physics, e) - Vec2::new(100.0, 110.0)).length() < 1e-3);
-    physics.move_collider(e, Vec2::ZERO, 0.0);
+    bare(&mut physics, e, Vec2::ZERO, 0.0, &collider);
     assert!((collider_center(&physics, e) - Vec2::new(10.0, 0.0)).length() < 1e-3);
   }
 
@@ -1004,7 +1130,7 @@ mod tests {
     let mut physics = Physics::new();
     let e = entity(1);
     let collider = Collider::circle(4.0).with_offset(5.0, 0.0);
-    physics.add_collider(e, None, Vec2::ZERO, 0.0, &collider);
+    bare(&mut physics, e, Vec2::ZERO, 0.0, &collider);
     let handle = physics.collider_entries[&e].handle;
     assert_eq!(
       physics.owners[&handle],
@@ -1014,13 +1140,13 @@ mod tests {
       }
     );
 
-    physics.add_body(
+    let at = Vec2::new(50.0, 0.0);
+    physics.add_body(e, at, 0.0, Vec2::ZERO, 0.0, &RigidBody::dynamic());
+    physics.sync_collider(
       e,
-      Vec2::new(50.0, 0.0),
-      0.0,
-      Vec2::ZERO,
-      0.0,
-      &RigidBody::dynamic(),
+      Some(e),
+      place(at, 0.0, &collider, Some((at, 0.0))),
+      &collider,
     );
     assert_eq!(physics.collider_entries[&e].body, Some(e));
     let body = physics.body_entries[&e].handle;
@@ -1041,23 +1167,102 @@ mod tests {
   }
 
   #[test]
+  fn a_collider_moves_to_another_body_and_back_to_none() {
+    let mut physics = Physics::new();
+    let (a, b, part) = (entity(1), entity(2), entity(3));
+    let collider = Collider::rect(100.0, 100.0);
+    physics.add_body(a, Vec2::ZERO, 0.0, Vec2::ZERO, 0.0, &RigidBody::dynamic());
+    let at = Vec2::new(200.0, 0.0);
+    physics.add_body(b, at, 0.0, Vec2::ZERO, 0.0, &RigidBody::dynamic());
+    physics.sync_collider(
+      part,
+      Some(a),
+      place(Vec2::ZERO, 0.0, &collider, Some((Vec2::ZERO, 0.0))),
+      &collider,
+    );
+    let handle = physics.collider_entries[&part].handle;
+    physics.sync_collider(
+      part,
+      Some(b),
+      place(at, 0.0, &collider, Some((at, 0.0))),
+      &collider,
+    );
+    assert_eq!(
+      physics.colliders[handle].parent(),
+      Some(physics.body_entries[&b].handle)
+    );
+    assert_eq!(physics.owners[&handle].body, b);
+    physics.sync_collider(part, None, place(at, 0.0, &collider, None), &collider);
+    assert_eq!(physics.colliders[handle].parent(), None);
+    assert_eq!(physics.owners[&handle].body, part);
+    assert!((collider_center(&physics, part) - at).length() < 1e-3);
+  }
+
+  #[test]
+  fn a_collider_whose_body_is_not_simulated_waits() {
+    let mut physics = Physics::new();
+    let (body, part) = (entity(1), entity(2));
+    let collider = Collider::circle(4.0);
+    let placement = place(Vec2::ZERO, 0.0, &collider, Some((Vec2::ZERO, 0.0)));
+    physics.sync_collider(part, Some(body), placement, &collider);
+    assert_eq!(physics.collider_count(), 0);
+    assert!(physics.waiting.contains(&part));
+    physics.add_body(
+      body,
+      Vec2::ZERO,
+      0.0,
+      Vec2::ZERO,
+      0.0,
+      &RigidBody::dynamic(),
+    );
+    physics.sync_collider(part, Some(body), placement, &collider);
+    assert_eq!(physics.collider_count(), 1);
+    assert!(physics.waiting.is_empty());
+  }
+
+  #[test]
+  fn drift_below_the_tolerance_never_adds_up() {
+    let mut physics = Physics::new();
+    let e = entity(1);
+    let collider = Collider::circle(4.0);
+    for x in [0.0, 0.0006, 0.0012] {
+      bare(&mut physics, e, Vec2::new(x, 0.0), 0.0, &collider);
+    }
+    // Each step was under the tolerance, the whole drift is not
+    let x = collider_center(&physics, e).x;
+    assert!((x - 0.0012).abs() < 1e-6, "{x}");
+  }
+
+  #[test]
   fn invalid_shapes_and_poses_are_skipped() {
     let mut physics = Physics::new();
-    physics.add_collider(entity(1), None, Vec2::ZERO, 0.0, &Collider::rect(0.0, 4.0));
-    physics.add_collider(
+    bare(
+      &mut physics,
+      entity(1),
+      Vec2::ZERO,
+      0.0,
+      &Collider::rect(0.0, 4.0),
+    );
+    bare(
+      &mut physics,
       entity(2),
-      None,
       Vec2::ZERO,
       0.0,
       &Collider::circle(f32::NAN),
     );
-    physics.add_collider(
+    bare(
+      &mut physics,
       entity(3),
-      None,
       Vec2::new(f32::INFINITY, 0.0),
       0.0,
       &Collider::circle(4.0),
     );
+    let flat = Collider::circle(4.0);
+    let squashed = Placement {
+      map: Mat2::from_diagonal(Vec2::new(1.0, 0.0)),
+      ..place(Vec2::ZERO, 0.0, &flat, None)
+    };
+    physics.sync_collider(entity(5), None, squashed, &flat);
     physics.add_body(
       entity(4),
       Vec2::ZERO,
@@ -1073,38 +1278,39 @@ mod tests {
   fn a_non_finite_offset_or_rotation_never_reaches_rapier() {
     let mut physics = Physics::new();
     let circle = || Collider::circle(4.0);
-    physics.add_collider(
+    bare(
+      &mut physics,
       entity(1),
-      None,
       Vec2::ZERO,
       0.0,
       &circle().with_offset(f32::NAN, 0.0),
     );
-    physics.add_collider(
+    bare(
+      &mut physics,
       entity(2),
-      None,
       Vec2::ZERO,
       0.0,
       &circle().with_rotation(f32::INFINITY),
     );
     assert_eq!(physics.collider_count(), 0);
-    // An edit to one takes it out of the simulation
+    // An edit to one is not applied: it stays where it was
     let edited = entity(3);
-    physics.add_collider(edited, None, Vec2::ZERO, 0.0, &circle());
-    physics.update_collider(
+    bare(&mut physics, edited, Vec2::ZERO, 0.0, &circle());
+    bare(
+      &mut physics,
       edited,
-      None,
       Vec2::ZERO,
       0.0,
       &circle().with_offset(0.0, f32::NAN),
     );
-    assert_eq!(physics.collider_count(), 0);
+    assert_eq!(physics.collider_count(), 1);
+    assert_eq!(collider_center(&physics, edited), Vec2::ZERO);
     // A bare collider's new offset is not placed from a non-finite Transform
     let moved = entity(4);
-    physics.add_collider(moved, None, Vec2::ZERO, 0.0, &circle());
-    physics.update_collider(
+    bare(&mut physics, moved, Vec2::ZERO, 0.0, &circle());
+    bare(
+      &mut physics,
       moved,
-      None,
       Vec2::new(f32::NAN, 0.0),
       0.0,
       &circle().with_offset(5.0, 0.0),

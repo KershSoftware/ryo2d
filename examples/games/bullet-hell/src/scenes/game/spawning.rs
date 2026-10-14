@@ -16,9 +16,6 @@ impl GameScene {
       .world
       .spawn((
         Transform::from_xy(self.screen_width / 2.0, spawn_y),
-        Renderable::sprite(sprite)
-          .with_z_order(Z_PLAYER)
-          .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 2)),
         Interpolated,
         // Kinematic body - we handle movement manually for wall slides/custom gravity
         // Rapier still provides collision detection for events
@@ -28,6 +25,17 @@ impl GameScene {
         Player::new(PLAYER_MAX_LIVES),
       ))
       .id();
+    // The sprite is a child, so the jump's squash and stretch (a scale)
+    // leaves the hitbox alone
+    ctx.spawn_child(
+      player_entity,
+      (
+        Transform::IDENTITY,
+        Renderable::sprite(sprite)
+          .with_z_order(Z_PLAYER)
+          .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 2)),
+      ),
+    );
     self.player = Some(player_entity);
   }
 
@@ -47,8 +55,9 @@ impl GameScene {
           .with_z_order(Z_PLATFORM)
           .with_shader(SpriteShader::platform_outline(2)),
         RigidBody::fixed(),
-        // Colliders are not scaled with the sprite: give the final size
-        Collider::rect(sw, PLATFORM_THICKNESS),
+        // The 800 px base sprite's size: the entity's scale stretches the
+        // collider with the sprite
+        Collider::rect(800.0, PLATFORM_THICKNESS),
         Platform,
       ))
       .id();
@@ -98,8 +107,9 @@ impl GameScene {
             .with_z_order(Z_PLATFORM)
             .with_shader(SpriteShader::platform_outline(2)),
           RigidBody::fixed(),
-          // Colliders are not scaled with the sprite: give the final size
-          Collider::rect(width, PLATFORM_THICKNESS),
+          // The 800 px base sprite's size: the entity's scale stretches the
+          // collider with the sprite
+          Collider::rect(800.0, PLATFORM_THICKNESS),
           Platform,
         ))
         .id();

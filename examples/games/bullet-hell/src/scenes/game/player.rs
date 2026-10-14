@@ -45,12 +45,16 @@ impl GameScene {
       let fade = (invincible_timer / INVINCIBLE_DURATION).min(1.0); // Fade out over time
       let intensity = pulse * fade * 0.8 + 0.2 * fade; // Range from 0.2*fade to 1.0*fade
 
-      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_entity) {
+      if let Some(visual) = player_visual(ctx.world, player_entity)
+        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(visual)
+      {
         renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 0, 0), intensity));
       }
     } else if was_invincible {
       // Restore outline shader when invincibility just ended
-      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_entity) {
+      if let Some(visual) = player_visual(ctx.world, player_entity)
+        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(visual)
+      {
         renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
       }
     }
@@ -97,14 +101,7 @@ impl GameScene {
         }
         // Add elastic squash-and-stretch effect on jump
         // First stretch the sprite, then tween back to normal with elastic bounce
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-          transform.scale.x = 0.7;
-          transform.scale.y = 1.4;
-        }
-        ctx
-          .world
-          .entity_mut(player_entity)
-          .insert(Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic));
+        stretch(ctx, player_entity);
       } else if can_perform_wall_jump && wall_jump_side.is_some() {
         // Wall jump - push away from wall with forced momentum
         // Works both when actively sliding AND during grace period after releasing wall direction
@@ -119,14 +116,7 @@ impl GameScene {
           player.wall_sliding = None;
         }
         // Add elastic squash-and-stretch effect on wall jump
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-          transform.scale.x = 0.7;
-          transform.scale.y = 1.4;
-        }
-        ctx
-          .world
-          .entity_mut(player_entity)
-          .insert(Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic));
+        stretch(ctx, player_entity);
       }
     }
 
@@ -654,4 +644,27 @@ impl GameScene {
       }
     }
   }
+}
+
+/// The player's sprite: a child of the player, so visual effects such as the
+/// squash and stretch (a scale) leave the hitbox alone.
+pub(super) fn player_visual(world: &World, player: Entity) -> Option<Entity> {
+  world
+    .get::<Children>(player)
+    .and_then(|children| children.first().copied())
+}
+
+/// Stretch the player's sprite, then tween it back with an elastic bounce.
+fn stretch(ctx: &mut SceneContext, player: Entity) {
+  let Some(visual) = player_visual(ctx.world, player) else {
+    return;
+  };
+  if let Some(mut transform) = ctx.world.get_mut::<Transform>(visual) {
+    transform.scale.x = 0.7;
+    transform.scale.y = 1.4;
+  }
+  ctx
+    .world
+    .entity_mut(visual)
+    .insert(Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic));
 }

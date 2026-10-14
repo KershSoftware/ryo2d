@@ -57,7 +57,7 @@ pub enum FixedSet {
   Scene,
   /// The scenes' fixed systems, and builder systems that name no other place
   Game,
-  /// Register, sync, step, sync back
+  /// Propagate, register, sync, step, write back
   Physics,
   /// Transform propagation
   Transforms,

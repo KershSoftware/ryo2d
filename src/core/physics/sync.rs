@@ -1,18 +1,26 @@
 //! Keep Rapier in step with the world. Each fixed step, in
 //! `FixedSet::Physics` while `PhysicsPaused` is false: forget what went away,
-//! track disabled and parented entities, register what is new, push the
-//! game's changes, step, write the simulated bodies back and turn contacts
-//! into messages.
+//! track disabled entities, propagate transforms, register new bodies, bring
+//! colliders in line, push the game's changes, step, write the simulated
+//! bodies back and turn contacts into messages.
+//!
+//! Bodies may sit anywhere in the hierarchy, and a collider belongs to the
+//! nearest body at or above its entity. Physics reads world poses from
+//! `GlobalTransform` and writes a body back into its local `Transform`
+//! through its parent; a collider's shape follows its entity's world scale.
+
+use glam::{Affine2, Mat2};
 
 use super::body::{AngularVelocity, BodyKind, RigidBody};
 use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::angle_delta;
-use super::world::Physics;
+use super::world::{Physics, Placement};
+use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
-  Added, Allow, Changed, ChildOf, DetectChanges, DetectChangesMut, Disabled, Entity, Has,
-  IntoScheduleConfigs, MessageWriter, Mut, Or, Query, Ref, RemovedComponents, Res, ResMut,
-  Transform, Vec2, Velocity, With, Without,
+  Added, Allow, Changed, ChildOf, Children, DetectChanges, DetectChangesMut, Disabled, Entity,
+  GlobalTransform, IntoScheduleConfigs, MessageWriter, Mut, Or, Query, Ref, RemovedComponents, Res,
+  ResMut, Transform, Vec2, Velocity, With,
 };
 use crate::core::messages::{CollisionStarted, CollisionStopped};
 use crate::core::scene::PhysicsPaused;
@@ -24,9 +32,12 @@ pub(crate) fn physics_enabled(paused: Res<PhysicsPaused>) -> bool {
   !paused.0
 }
 
+/// How deep a collider may sit below its body.
+const MAX_DEPTH: usize = 64;
+
 type BodyItem<'a> = (
   Entity,
-  &'a Transform,
+  &'a GlobalTransform,
   &'a Velocity,
   &'a AngularVelocity,
   &'a RigidBody,
@@ -34,70 +45,148 @@ type BodyItem<'a> = (
 /// A body whose velocities the system may reset (see `apply_edit`)
 type BodyRow<'a> = (
   Entity,
-  &'a Transform,
+  &'a GlobalTransform,
   &'a mut Velocity,
   &'a mut AngularVelocity,
   Ref<'a, RigidBody>,
 );
-type ColliderItem<'a> = (Entity, &'a Transform, &'a Collider, Has<RigidBody>);
-/// A `ColliderItem` as a query yields it (`Has` reads as a `bool`).
-type ColliderRow<'a> = (Entity, &'a Transform, &'a Collider, bool);
 type HasPhysics = Or<(With<RigidBody>, With<Collider>)>;
-/// A root body or collider whose `Transform` changed
-type Moved = (Changed<Transform>, HasPhysics, Without<ChildOf>);
 /// A body whose `Velocity` or `AngularVelocity` changed
 type Pushed = (
   With<RigidBody>,
   Or<(Changed<Velocity>, Changed<AngularVelocity>)>,
 );
+/// A collider edited, moved, scaled or reparented
+type Resync = (
+  With<Collider>,
+  Or<(
+    Changed<Collider>,
+    Changed<GlobalTransform>,
+    Changed<ChildOf>,
+  )>,
+);
+/// A body's world transform, with what `continuous` needs
+type Moved<'a> = (
+  Entity,
+  &'a GlobalTransform,
+  &'a Transform,
+  Option<&'a ChildOf>,
+);
+/// Entities whose subtree may hold colliders that change owner
+type Relinkable = (Or<(With<Collider>, With<Children>)>, Allow<Disabled>);
 
-fn add_body(physics: &mut Physics, (entity, transform, velocity, angular, body): BodyItem) {
+fn add_body(physics: &mut Physics, (entity, global, velocity, angular, body): BodyItem) {
   physics.add_body(
     entity,
-    transform.translation,
-    transform.rotation,
+    global.translation(),
+    global.rotation(),
     velocity.as_vec2(),
     angular.0,
     body,
   );
 }
 
-fn add_collider(physics: &mut Physics, (entity, transform, collider, has_body): ColliderRow) {
-  physics.add_collider(
-    entity,
-    has_body.then_some(entity),
-    transform.translation,
-    transform.rotation,
-    collider,
-  );
+/// The nearest entity at or above `entity` with a `RigidBody`.
+fn owning_body(
+  entity: Entity,
+  parents: &Query<&ChildOf, Allow<Disabled>>,
+  bodies: &Query<(), (With<RigidBody>, Allow<Disabled>)>,
+) -> Option<Entity> {
+  let mut current = entity;
+  for _ in 0..MAX_DEPTH {
+    if bodies.contains(current) {
+      return Some(current);
+    }
+    current = parents.get(current).ok()?.parent();
+  }
+  None
+}
+
+/// `root` and everything below it.
+fn subtree(root: Entity, children: &Query<&Children, Allow<Disabled>>, out: &mut Vec<Entity>) {
+  let mut stack = vec![(root, 0)];
+  while let Some((entity, depth)) = stack.pop() {
+    out.push(entity);
+    if depth < MAX_DEPTH
+      && let Ok(kids) = children.get(entity)
+    {
+      stack.extend(kids.iter().map(|&kid| (kid, depth + 1)));
+    }
+  }
+}
+
+/// A collider's placement: its frame is its entity's world transform, moved
+/// by `offset` and turned by `rotation`; relative to `body` (that body's world
+/// translation and rotation) when it has one.
+pub(crate) fn placement(
+  global: &GlobalTransform,
+  collider: &Collider,
+  body: Option<(Vec2, f32)>,
+) -> Placement {
+  let affine = global.affine();
+  let offset = affine.matrix2 * collider.offset;
+  let rotation = global.rotation() + collider.rotation;
+  // Shape points: turned by the collider's rotation, mapped by the entity's
+  // linear part, then turned back by the frame's rotation
+  let map = Mat2::from_angle(-rotation) * affine.matrix2 * Mat2::from_angle(collider.rotation);
+  match body {
+    Some((translation, body_rotation)) => Placement {
+      // The offset is added after the subtraction: on the body's own entity
+      // the two translations cancel exactly, however far out it is
+      translation: Vec2::from_angle(-body_rotation)
+        .rotate(affine.translation - translation + offset),
+      rotation: rotation - body_rotation,
+      map,
+    },
+    None => Placement {
+      translation: affine.translation + offset,
+      rotation,
+      map,
+    },
+  }
 }
 
 /// Forget colliders and bodies whose components went away (despawn
-/// included). Colliders run first; a body's colliders that stay become fixed.
+/// included); a body's colliders that stay become fixed. Entities that lost
+/// their `RigidBody` or their parent are remembered for `sync_colliders`,
+/// which finds the colliders at and below them a new owner.
 pub(crate) fn forget_removed(
   mut physics: ResMut<Physics>,
   mut colliders: RemovedComponents<Collider>,
   mut bodies: RemovedComponents<RigidBody>,
+  mut detached: RemovedComponents<ChildOf>,
+  relinkable: Query<(), Relinkable>,
 ) {
   for entity in colliders.read() {
     physics.remove_collider(entity);
   }
   for entity in bodies.read() {
     physics.remove_body(entity);
+    if relinkable.contains(entity) {
+      physics.relink.insert(entity);
+    }
+  }
+  for entity in detached.read() {
+    if relinkable.contains(entity) {
+      physics.relink.insert(entity);
+    }
   }
 }
 
 /// Disable the simulation of disabled entities; re-enable (or register, if
 /// they were spawned disabled) re-enabled ones. The steps skip a disabled
 /// entity, so what the game changed meanwhile (`Transform`, `Velocity`,
-/// `RigidBody`, `Collider`) is applied as it comes back.
+/// `RigidBody`, `Collider`) is applied as it comes back: bodies here,
+/// colliders by the next `sync_colliders`.
+#[allow(clippy::too_many_arguments)] // one query or removal reader per input
 pub(crate) fn track_disabled(
   mut physics: ResMut<Physics>,
   config: Res<PhysicsConfig>,
   disabled: Query<Entity, (Added<Disabled>, Allow<Disabled>, HasPhysics)>,
   mut enabled: RemovedComponents<Disabled>,
-  mut bodies: Query<BodyRow, Without<ChildOf>>,
-  colliders: Query<ColliderItem, Without<ChildOf>>,
+  mut locals: Query<LocalLink, Allow<Disabled>>,
+  mut bodies: Query<(&mut Velocity, &mut AngularVelocity, Ref<RigidBody>)>,
+  colliders: Query<(), With<Collider>>,
 ) {
   // Density depends on the unit: configure before anything registers
   physics.configure(&config);
@@ -105,57 +194,81 @@ pub(crate) fn track_disabled(
     physics.set_enabled(entity, false);
   }
   for entity in enabled.read() {
-    if let Ok((entity, transform, mut velocity, mut angular, body)) = bodies.get_mut(entity) {
-      add_body(
-        &mut physics,
-        (entity, transform, &velocity, &angular, &body),
+    let has_collider = colliders.contains(entity);
+    if !(has_collider || bodies.contains(entity)) {
+      continue;
+    }
+    // Propagation skips disabled entities, so one moved while disabled
+    // comes back with a stale `GlobalTransform`: the body is placed from the
+    // local transforms, and the changed mark has propagation refresh it (and
+    // its subtree) before colliders sync
+    let (world, near) = world_transform(entity, &locals);
+    if let Ok((mut transform, _)) = locals.get_mut(entity) {
+      transform.set_changed();
+    }
+    if let Ok((mut velocity, mut angular, body)) = bodies.get_mut(entity) {
+      let (translation, rotation) = (world.translation(), continuous(&world, near));
+      physics.add_body(
+        entity,
+        translation,
+        rotation,
+        velocity.as_vec2(),
+        angular.0,
+        &body,
       );
-      // Edits made while it was disabled; `register_new` applying a recent
-      // one again changes nothing
+      // Edits made while it was disabled; `register_bodies` applying a
+      // recent one again changes nothing
       apply_edit(&mut physics, entity, &body, &mut velocity, &mut angular);
-      physics.place_body(entity, transform.translation, transform.rotation);
+      physics.place_body(entity, translation, rotation);
       physics.push_velocity(entity, velocity.as_vec2(), angular.0);
     }
-    if let Ok((entity, transform, collider, has_body)) = colliders.get(entity) {
-      // Registers it, or applies edits made while it was disabled
-      physics.update_collider(
-        entity,
-        has_body.then_some(entity),
-        transform.translation,
-        transform.rotation,
-        collider,
-      );
-      physics.move_collider(entity, transform.translation, transform.rotation);
+    if has_collider {
+      // Registered, or brought up to date, by the next `sync_colliders`
+      physics.waiting.insert(entity);
     }
     physics.set_enabled(entity, true);
   }
 }
 
-/// Bodies and colliders on child entities are not simulated yet: one that
-/// gained a parent leaves (logged once), one that lost it comes back.
-pub(crate) fn track_parents(
-  mut physics: ResMut<Physics>,
-  parented: Query<Entity, (Added<ChildOf>, HasPhysics)>,
-  mut detached: RemovedComponents<ChildOf>,
-  bodies: Query<BodyItem, Without<ChildOf>>,
-  colliders: Query<ColliderItem, Without<ChildOf>>,
-) {
-  for entity in &parented {
-    physics.remove_collider(entity);
-    physics.remove_body(entity);
-    physics.warn_once(
-      entity,
-      "bodies and colliders on child entities are not simulated yet",
-    );
+/// An entity's local `Transform` and parent link
+type LocalLink<'a> = (&'a mut Transform, Option<&'a ChildOf>);
+
+/// An entity's world transform composed from the local `Transform`s up its
+/// hierarchy, as propagation computes it (an ancestor without a `Transform`
+/// places its children from the identity), and the sum of their rotations
+/// (see `continuous`).
+fn world_transform(
+  entity: Entity,
+  locals: &Query<LocalLink, Allow<Disabled>>,
+) -> (GlobalTransform, f32) {
+  let mut chain = Vec::new();
+  let mut current = entity;
+  for _ in 0..MAX_DEPTH {
+    let Ok((transform, parent)) = locals.get(current) else {
+      break;
+    };
+    chain.push(*transform);
+    let Some(parent) = parent else {
+      break;
+    };
+    current = parent.parent();
   }
-  for entity in detached.read() {
-    if let Ok(item) = bodies.get(entity) {
-      add_body(&mut physics, item);
-    }
-    if let Ok(item) = colliders.get(entity) {
-      add_collider(&mut physics, item);
-    }
-  }
+  let near = chain.iter().map(|transform| transform.rotation).sum();
+  let world = chain
+    .iter()
+    .rev()
+    .fold(GlobalTransform::IDENTITY, |global, transform| {
+      global.mul_transform(transform)
+    });
+  (world, near)
+}
+
+/// The rotation `global` holds, kept continuous near `near` (the sum of the
+/// `Transform.rotation`s it comes from). `GlobalTransform` wraps the angle,
+/// and the sync tolerance grows with its magnitude (see `poses_differ`): a
+/// body turned thousands of radians would otherwise never sleep.
+fn continuous(global: &GlobalTransform, near: f32) -> f32 {
+  near + angle_delta(near, global.rotation())
 }
 
 /// Apply an edited `RigidBody` in place. A dynamic body made kinematic or
@@ -178,31 +291,58 @@ fn apply_edit(
   physics.update_body(entity, body);
 }
 
-/// Register new bodies, then new colliders (so a collider spawned with its
-/// body attaches to it), and apply edited bodies and colliders in place.
-pub(crate) fn register_new(
+/// Register new bodies at their world pose and apply edited ones in place.
+pub(crate) fn register_bodies(
   mut physics: ResMut<Physics>,
   config: Res<PhysicsConfig>,
-  mut bodies: Query<BodyRow, (Changed<RigidBody>, Without<ChildOf>)>,
-  colliders: Query<ColliderItem, (Changed<Collider>, Without<ChildOf>)>,
+  mut bodies: Query<BodyRow, Changed<RigidBody>>,
 ) {
   physics.configure(&config);
-  for (entity, transform, mut velocity, mut angular, body) in &mut bodies {
+  for (entity, global, mut velocity, mut angular, body) in &mut bodies {
     if body.is_added() {
-      add_body(
-        &mut physics,
-        (entity, transform, &velocity, &angular, &body),
-      );
+      add_body(&mut physics, (entity, global, &velocity, &angular, &body));
     } else {
       apply_edit(&mut physics, entity, &body, &mut velocity, &mut angular);
     }
   }
-  for (entity, transform, collider, has_body) in &colliders {
-    physics.update_collider(
+}
+
+/// Bring every collider that changed, moved, scaled or changed owner in line
+/// with the simulation. Owners change when a `RigidBody` appears or goes
+/// above a collider, or when a collider or an ancestor is reparented.
+#[allow(clippy::too_many_arguments)] // one query per input
+pub(crate) fn sync_colliders(
+  mut physics: ResMut<Physics>,
+  changed: Query<Entity, Resync>,
+  new_bodies: Query<Entity, Added<RigidBody>>,
+  reparented: Query<Entity, Changed<ChildOf>>,
+  children: Query<&Children, Allow<Disabled>>,
+  parents: Query<&ChildOf, Allow<Disabled>>,
+  bodies: Query<(), (With<RigidBody>, Allow<Disabled>)>,
+  colliders: Query<(&GlobalTransform, &Collider)>,
+  globals: Query<&GlobalTransform, Allow<Disabled>>,
+) {
+  let mut todo: Vec<Entity> = changed.iter().collect();
+  todo.extend(physics.waiting.drain());
+  let relink: Vec<Entity> = physics.relink.drain().collect();
+  for root in new_bodies.iter().chain(reparented.iter()).chain(relink) {
+    subtree(root, &children, &mut todo);
+  }
+  todo.sort_unstable();
+  todo.dedup();
+  for entity in todo {
+    let Ok((global, collider)) = colliders.get(entity) else {
+      continue;
+    };
+    let body = owning_body(entity, &parents, &bodies);
+    let body_pose = body.map(|body| {
+      let global = globals.get(body).copied().unwrap_or_default();
+      (global.translation(), global.rotation())
+    });
+    physics.sync_collider(
       entity,
-      has_body.then_some(entity),
-      transform.translation,
-      transform.rotation,
+      body,
+      placement(global, collider, body_pose),
       collider,
     );
   }
@@ -210,25 +350,28 @@ pub(crate) fn register_new(
 
 /// Push the game's writes since the last step. The write-back is an
 /// ordinary change too, so values equal to Rapier's (within the sync
-/// tolerance) are skipped: untouched bodies stay asleep.
+/// tolerance) are skipped: untouched bodies stay asleep. Fixed colliders
+/// without a body are moved by `sync_colliders`.
 pub(crate) fn push_changes(
   mut physics: ResMut<Physics>,
   time: Res<Time>,
-  moved: Query<(Entity, &Transform, Has<RigidBody>), Moved>,
+  moved: Query<Moved, (With<RigidBody>, Changed<GlobalTransform>)>,
+  globals: Query<&GlobalTransform, Allow<Disabled>>,
   pushed: Query<(Entity, &Velocity, &AngularVelocity), Pushed>,
   kinematic: Query<(Entity, &RigidBody, &Velocity, &AngularVelocity)>,
 ) {
   physics.begin_push();
-  for (entity, transform, has_body) in &moved {
-    if !(transform.translation.is_finite() && transform.rotation.is_finite()) {
+  for (entity, global, transform, parent) in &moved {
+    let parent_rotation = parent
+      .and_then(|parent| globals.get(parent.parent()).ok())
+      .map_or(0.0, GlobalTransform::rotation);
+    let near = parent_rotation + transform.rotation;
+    let (translation, rotation) = (global.translation(), continuous(global, near));
+    if !(translation.is_finite() && rotation.is_finite()) {
       physics.warn_once(entity, "a non-finite Transform is not pushed to physics");
       continue;
     }
-    if has_body {
-      physics.move_body(entity, transform.translation, transform.rotation);
-    } else {
-      physics.move_collider(entity, transform.translation, transform.rotation);
-    }
+    physics.move_body(entity, translation, rotation);
   }
   for (entity, velocity, angular) in &pushed {
     physics.push_velocity(entity, velocity.as_vec2(), angular.0);
@@ -249,20 +392,50 @@ pub(crate) fn step_simulation(mut physics: ResMut<Physics>, time: Res<Time>) {
   physics.step(time.fixed.timestep());
 }
 
-/// Write the bodies the step moved back. Rotation stays continuous: the
+/// Write the bodies the step moved back into their local `Transform`,
+/// through their parent's world transform. Rotation stays continuous: the
 /// turn is added instead of wrapping into (-PI, PI].
+///
+/// A dynamic body asleep under a parent is written too (only where its
+/// local pose changed): Rapier holds it still, so when the parent moves its
+/// local `Transform` must change for it to stay put.
 pub(crate) fn read_back(
   physics: Res<Physics>,
+  parents: Query<&ChildOf>,
+  globals: Query<&GlobalTransform, Allow<Disabled>>,
+  nested: Query<Entity, (With<RigidBody>, With<ChildOf>)>,
   mut bodies: Query<(&mut Transform, &mut Velocity, &mut AngularVelocity), With<RigidBody>>,
 ) {
-  for state in physics.moved_bodies() {
+  let resting = nested
+    .iter()
+    .filter_map(|entity| physics.resting_body(entity));
+  for state in physics.moved_bodies().chain(resting) {
+    // Into the parent's space: a parent that is a body itself moved this
+    // step too, so its new pose is used (with its scale)
+    let parent = parents.get(state.entity).ok().map(|child_of| {
+      let parent = child_of.parent();
+      let global = globals.get(parent).copied().unwrap_or_default();
+      match physics.body_pose(parent) {
+        Some((translation, rotation)) => {
+          Affine2::from_scale_angle_translation(global.scale(), rotation, translation)
+        }
+        None => global.affine(),
+      }
+    });
+    let (translation, rotation) = match parent {
+      Some(parent) => (
+        parent.inverse().transform_point2(state.translation),
+        state.rotation - parent.matrix2.x_axis.y.atan2(parent.matrix2.x_axis.x),
+      ),
+      None => (state.translation, state.rotation),
+    };
     let Ok((mut transform, mut velocity, mut angular)) = bodies.get_mut(state.entity) else {
       continue;
     };
-    if transform.translation != state.translation {
-      transform.translation = state.translation;
+    if transform.translation != translation {
+      transform.translation = translation;
     }
-    let turn = angle_delta(transform.rotation, state.rotation);
+    let turn = angle_delta(transform.rotation, rotation);
     if turn != 0.0 {
       transform.rotation += turn;
     }
@@ -297,8 +470,9 @@ pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
     (
       forget_removed,
       track_disabled,
-      track_parents,
-      register_new,
+      propagate_transforms,
+      register_bodies,
+      sync_colliders,
       push_changes,
       step_simulation,
       read_back,
@@ -387,8 +561,11 @@ mod tests {
       ))
       .id();
     world.entity_mut(e).remove::<Disabled>();
-    // The frame's `Last` bookkeeping registers it before any fixed step runs
+    // The frame's `Last` bookkeeping registers the body before any fixed
+    // step runs; its collider joins it in the next step
     s.run(Phase::Last, &mut world);
+    assert_eq!(world.resource::<Physics>().body_count(), 1);
+    run(&mut world, &mut s, 1);
     let physics = world.resource::<Physics>();
     let mass = physics
       .bodies
@@ -936,26 +1113,6 @@ mod tests {
   }
 
   #[test]
-  fn a_body_on_a_child_is_not_simulated_until_detached() {
-    use crate::core::ecs::ChildOf;
-    let (mut world, mut s) = world(60);
-    let parent = world.spawn(Transform::IDENTITY).id();
-    let child = world
-      .spawn((
-        Transform::from_xy(5.0, 0.0),
-        RigidBody::dynamic(),
-        Collider::rect(4.0, 4.0),
-        ChildOf(parent),
-      ))
-      .id();
-    run(&mut world, &mut s, 1);
-    assert_eq!(world.resource::<Physics>().body_count(), 0);
-    world.entity_mut(child).remove::<ChildOf>();
-    run(&mut world, &mut s, 1);
-    assert_eq!(world.resource::<Physics>().body_count(), 1);
-  }
-
-  #[test]
   fn a_falling_body_s_global_transform_follows_it() {
     use crate::core::ecs::GlobalTransform;
     use crate::core::ecs::propagate::propagate_transforms;
@@ -1278,5 +1435,439 @@ mod tests {
     run(&mut world, &mut s, 120);
     assert!((at(&world, capsule).translation.y - 80.0).abs() < 2.0);
     assert!((at(&world, triangle).translation.y - 90.0).abs() < 2.0);
+  }
+
+  use crate::core::ecs::{ChildOf, GlobalTransform};
+  use std::f32::consts::FRAC_PI_2;
+
+  #[test]
+  fn placement_composes_offset_rotation_scale_and_body() {
+    let global = GlobalTransform::from_transform(
+      &Transform::from_xy(100.0, 0.0)
+        .with_rotation(FRAC_PI_2)
+        .with_scale(Vec2::new(2.0, 1.0)),
+    );
+    let collider = Collider::rect(10.0, 10.0).with_offset(10.0, 0.0);
+    let world = placement(&global, &collider, None);
+    // The offset is scaled (x2) and turned a quarter: 20 px down
+    assert!(
+      (world.translation - Vec2::new(100.0, 20.0)).length() < 1e-4,
+      "{:?}",
+      world
+    );
+    assert!((world.rotation - FRAC_PI_2).abs() < 1e-5);
+    assert!(
+      (world.map - glam::Mat2::from_diagonal(Vec2::new(2.0, 1.0)))
+        .abs_diff_eq(glam::Mat2::ZERO, 1e-5)
+    );
+    let relative = placement(&global, &collider, Some((Vec2::new(100.0, 0.0), FRAC_PI_2)));
+    assert!(
+      (relative.translation - Vec2::new(20.0, 0.0)).length() < 1e-4,
+      "{:?}",
+      relative
+    );
+    assert!(relative.rotation.abs() < 1e-5);
+  }
+
+  #[test]
+  fn a_far_body_s_own_collider_keeps_its_exact_offset() {
+    // f32 spacing at 20000 is about 0.002 px: adding then subtracting the
+    // body's translation would round the offset by more than the tolerance
+    let at = Vec2::new(20000.5, -20000.5);
+    let global = GlobalTransform::from_transform(&Transform::from_translation(at));
+    let collider = Collider::circle(4.0).with_offset(0.3, 0.7);
+    let relative = placement(&global, &collider, Some((at, 0.0)));
+    assert_eq!(relative.translation, Vec2::new(0.3, 0.7));
+  }
+
+  #[test]
+  fn child_colliders_add_mass_and_move_with_their_body() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let body = world
+      .spawn((Transform::IDENTITY, RigidBody::dynamic().lock_rotation()))
+      .id();
+    for x in [-30.0, 30.0] {
+      world.spawn((
+        Transform::from_xy(x, 0.0),
+        Collider::rect(20.0, 20.0),
+        ChildOf(body),
+      ));
+    }
+    run(&mut world, &mut s, 120);
+    let mass = world.resource::<Physics>().mass(body).unwrap();
+    assert!((mass - 0.08).abs() < 1e-4, "two 20x20 boxes: {mass}");
+    assert!(
+      (at(&world, body).translation.y - 90.0).abs() < 2.0,
+      "{:?}",
+      at(&world, body)
+    );
+  }
+
+  #[test]
+  fn a_collider_spawned_with_its_body_attaches_to_it() {
+    let (mut world, mut s) = world(60);
+    let body = world
+      .spawn((Transform::IDENTITY, RigidBody::dynamic()))
+      .id();
+    world.spawn((Transform::IDENTITY, Collider::circle(10.0), ChildOf(body)));
+    run(&mut world, &mut s, 30);
+    assert!(world.resource::<Physics>().mass(body).unwrap() > 0.0);
+    assert!(
+      at(&world, body).translation.y > 10.0,
+      "it falls with its body"
+    );
+  }
+
+  #[test]
+  fn a_kinematic_child_body_follows_its_moving_parent() {
+    let (mut world, mut s) = world(60);
+    let parent = world.spawn(Transform::IDENTITY).id();
+    let child = world
+      .spawn((
+        Transform::from_xy(0.0, 10.0),
+        RigidBody::kinematic(),
+        Collider::rect(10.0, 10.0),
+        ChildOf(parent),
+      ))
+      .id();
+    for _ in 0..60 {
+      world.get_mut::<Transform>(parent).unwrap().translation.x += 1.0;
+      run(&mut world, &mut s, 1);
+    }
+    let (position, _) = world.resource::<Physics>().body_pose(child).unwrap();
+    assert!(
+      (position - Vec2::new(60.0, 10.0)).length() < 1.01,
+      "{position}"
+    );
+  }
+
+  #[test]
+  fn a_falling_body_under_a_turned_parent_writes_its_local_transform() {
+    let (mut world, mut s) = world(60);
+    let parent = world
+      .spawn(Transform::from_xy(100.0, 0.0).with_rotation(FRAC_PI_2))
+      .id();
+    let child = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic().lock_rotation(),
+        Collider::circle(5.0),
+        ChildOf(parent),
+      ))
+      .id();
+    run(&mut world, &mut s, 30);
+    let (world_position, _) = world.resource::<Physics>().body_pose(child).unwrap();
+    assert!(
+      (world_position.x - 100.0).abs() < 1e-2,
+      "falls straight down in the world"
+    );
+    let local = at(&world, child);
+    // World +Y is the parent's +X once turned a quarter
+    assert!(
+      local.translation.x > 10.0 && local.translation.y.abs() < 1e-2,
+      "{local:?}"
+    );
+  }
+
+  #[test]
+  fn a_body_under_a_moving_body_writes_back_against_its_new_pose() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let parent = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic(),
+        Velocity::new(60.0, 0.0),
+        Collider::circle(5.0),
+      ))
+      .id();
+    let child = world
+      .spawn((
+        Transform::from_xy(100.0, 0.0),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+        ChildOf(parent),
+      ))
+      .id();
+    run(&mut world, &mut s, 60);
+    let physics = world.resource::<Physics>();
+    let (parent_at, _) = physics.body_pose(parent).unwrap();
+    let (child_at, _) = physics.body_pose(child).unwrap();
+    assert!((parent_at.x - 60.0).abs() < 0.5, "{parent_at}");
+    assert!(
+      (child_at - Vec2::new(100.0, 0.0)).length() < 1e-3,
+      "the child stayed put in the world: {child_at}"
+    );
+    assert!(
+      physics.is_sleeping(child),
+      "its parent's motion does not drag or wake it"
+    );
+    let local = at(&world, child).translation;
+    assert!(
+      (local - (child_at - parent_at)).length() < 1e-3,
+      "{local} vs {}",
+      child_at - parent_at
+    );
+  }
+
+  #[test]
+  fn a_scaled_entity_s_collider_scales() {
+    let (mut world, mut s) = world(60);
+    world.spawn((
+      Transform::from_xy(0.0, 110.0).with_scale(Vec2::new(1.0, 2.0)),
+      Collider::rect(400.0, 20.0),
+    ));
+    let b = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 120);
+    // 40 high now: its top is at 90, so the ball rests at 80
+    assert!(
+      (at(&world, b).translation.y - 80.0).abs() < 2.0,
+      "{:?}",
+      at(&world, b)
+    );
+  }
+
+  #[test]
+  fn a_turned_entity_turns_its_collider() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    world.spawn((
+      Transform::from_xy(100.0, 0.0).with_rotation(FRAC_PI_2),
+      Collider::rect(100.0, 10.0),
+    ));
+    let b = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::dynamic().lock_rotation(),
+        Velocity::new(200.0, 0.0),
+        Collider::circle(10.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 60);
+    assert!(
+      at(&world, b).translation.x < 86.0,
+      "the upright bar stopped it: {:?}",
+      at(&world, b)
+    );
+  }
+
+  #[test]
+  fn a_zero_scale_leaves_the_collider_out_until_it_grows() {
+    let (mut world, mut s) = world(60);
+    let e = world
+      .spawn((
+        Transform::IDENTITY.with_scale(Vec2::ZERO),
+        Collider::circle(10.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 2);
+    assert_eq!(world.resource::<Physics>().collider_count(), 0);
+    world.get_mut::<Transform>(e).unwrap().scale = Vec2::ONE;
+    run(&mut world, &mut s, 1);
+    assert_eq!(world.resource::<Physics>().collider_count(), 1);
+    world.get_mut::<Transform>(e).unwrap().scale = Vec2::ZERO;
+    run(&mut world, &mut s, 1);
+    assert_eq!(world.resource::<Physics>().collider_count(), 0);
+  }
+
+  #[test]
+  fn reparenting_a_collider_moves_its_mass() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let a = world
+      .spawn((Transform::IDENTITY, RigidBody::dynamic()))
+      .id();
+    let b = world
+      .spawn((Transform::from_xy(200.0, 0.0), RigidBody::dynamic()))
+      .id();
+    let part = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(100.0, 100.0),
+        ChildOf(a),
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    assert!((world.resource::<Physics>().mass(a).unwrap() - 1.0).abs() < 1e-3);
+    world.entity_mut(part).insert(ChildOf(b));
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    assert!(physics.mass(a).unwrap() < 1e-3);
+    assert!((physics.mass(b).unwrap() - 1.0).abs() < 1e-3);
+  }
+
+  #[test]
+  fn a_parent_losing_its_body_leaves_its_child_colliders_static() {
+    let (mut world, mut s) = world(60);
+    let platform = world
+      .spawn((Transform::from_xy(0.0, 110.0), RigidBody::kinematic()))
+      .id();
+    world.spawn((
+      Transform::IDENTITY,
+      Collider::rect(400.0, 20.0),
+      ChildOf(platform),
+    ));
+    run(&mut world, &mut s, 1);
+    world.entity_mut(platform).remove::<RigidBody>();
+    let b = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 120);
+    assert!((at(&world, b).translation.y - 90.0).abs() < 2.0);
+  }
+
+  #[test]
+  fn disabling_a_body_disables_its_child_colliders() {
+    let (mut world, mut s) = world(60);
+    let platform = world
+      .spawn((Transform::from_xy(0.0, 110.0), RigidBody::fixed()))
+      .id();
+    world.spawn((
+      Transform::IDENTITY,
+      Collider::rect(400.0, 20.0),
+      ChildOf(platform),
+    ));
+    run(&mut world, &mut s, 1);
+    world.entity_mut(platform).insert(Disabled);
+    let b = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 60);
+    assert!(at(&world, b).translation.y > 150.0, "fell through");
+  }
+
+  /// A frame that runs no fixed step (a high refresh rate, slow motion, a
+  /// pause): only the `Last` bookkeeping runs, then the trackers clear.
+  fn frame_without_a_step(world: &mut World, s: &mut EngineSchedules) {
+    s.run(Phase::Last, world);
+    world.clear_trackers();
+  }
+
+  #[test]
+  fn a_collider_whose_body_goes_between_steps_joins_the_body_above() {
+    let (mut world, mut s) = world(60);
+    s.add_systems(Phase::Last, (forget_removed, track_disabled).chain());
+    no_gravity(&mut world);
+    let outer = world
+      .spawn((Transform::IDENTITY, RigidBody::dynamic()))
+      .id();
+    let inner = world
+      .spawn((Transform::IDENTITY, RigidBody::dynamic(), ChildOf(outer)))
+      .id();
+    world.spawn((
+      Transform::IDENTITY,
+      Collider::rect(100.0, 100.0),
+      ChildOf(inner),
+    ));
+    run(&mut world, &mut s, 1);
+    assert!((world.resource::<Physics>().mass(inner).unwrap() - 1.0).abs() < 1e-3);
+    world.entity_mut(inner).remove::<RigidBody>();
+    // The removal events expire before the next step
+    for _ in 0..3 {
+      frame_without_a_step(&mut world, &mut s);
+    }
+    run(&mut world, &mut s, 1);
+    let mass = world.resource::<Physics>().mass(outer).unwrap();
+    assert!(
+      (mass - 1.0).abs() < 1e-3,
+      "the part joined the outer body: {mass}"
+    );
+  }
+
+  #[test]
+  fn a_collider_detached_between_steps_leaves_its_body() {
+    let (mut world, mut s) = world(60);
+    s.add_systems(Phase::Last, (forget_removed, track_disabled).chain());
+    no_gravity(&mut world);
+    let body = world
+      .spawn((Transform::IDENTITY, RigidBody::dynamic()))
+      .id();
+    let part = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(100.0, 100.0),
+        ChildOf(body),
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    world.entity_mut(part).remove::<ChildOf>();
+    for _ in 0..3 {
+      frame_without_a_step(&mut world, &mut s);
+    }
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    assert!(physics.mass(body).unwrap() < 1e-3, "the part left the body");
+    assert_eq!(
+      physics.collider_entries[&part].body, None,
+      "a fixed collider now"
+    );
+  }
+
+  /// A fixed platform 400 wide whose top is at 100, its collider on a child
+  /// (`(platform, part)`), disabled after a step.
+  fn disabled_platform(world: &mut World, s: &mut EngineSchedules) -> (Entity, Entity) {
+    let platform = world
+      .spawn((Transform::from_xy(0.0, 110.0), RigidBody::fixed()))
+      .id();
+    let part = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(400.0, 20.0),
+        ChildOf(platform),
+      ))
+      .id();
+    run(world, s, 1);
+    world.entity_mut(platform).insert(Disabled);
+    run(world, s, 1);
+    (platform, part)
+  }
+
+  #[test]
+  fn a_collider_attached_to_a_disabled_body_is_disabled_with_it() {
+    let (mut world, mut s) = world(60);
+    let (platform, _) = disabled_platform(&mut world, &mut s);
+    world.spawn((
+      Transform::from_xy(0.0, -200.0),
+      Collider::rect(400.0, 20.0),
+      ChildOf(platform),
+    ));
+    // Falls through both, the new one 200 px above the first
+    let dropped = ball(&mut world, 0.0, -300.0);
+    run(&mut world, &mut s, 90);
+    assert!(at(&world, dropped).translation.y > 150.0, "fell through");
+    world.entity_mut(platform).remove::<Disabled>();
+    let caught = ball(&mut world, 0.0, -300.0);
+    run(&mut world, &mut s, 120);
+    assert!(
+      (at(&world, caught).translation.y + 110.0).abs() < 2.0,
+      "{:?}",
+      at(&world, caught)
+    );
+  }
+
+  #[test]
+  fn a_collider_taken_off_a_disabled_body_is_simulated() {
+    let (mut world, mut s) = world(60);
+    let (_, part) = disabled_platform(&mut world, &mut s);
+    // Now a fixed collider at the origin: its top is at -10
+    world.entity_mut(part).remove::<ChildOf>();
+    let b = ball(&mut world, 0.0, -100.0);
+    run(&mut world, &mut s, 120);
+    assert!(
+      (at(&world, b).translation.y + 20.0).abs() < 2.0,
+      "{:?}",
+      at(&world, b)
+    );
+  }
+
+  #[test]
+  fn a_disabled_body_s_colliders_stay_when_it_loses_its_body() {
+    let (mut world, mut s) = world(60);
+    let (platform, _) = disabled_platform(&mut world, &mut s);
+    world.entity_mut(platform).remove::<RigidBody>();
+    let b = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 120);
+    assert!(
+      (at(&world, b).translation.y - 90.0).abs() < 2.0,
+      "{:?}",
+      at(&world, b)
+    );
   }
 }

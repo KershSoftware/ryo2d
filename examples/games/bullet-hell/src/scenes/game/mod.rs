@@ -471,7 +471,9 @@ impl GameScene {
     self.player_invincible = player.is_invincible();
 
     if !was_invincible {
-      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_e) {
+      if let Some(visual) = player::player_visual(ctx.world, player_e)
+        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(visual)
+      {
         renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 100, 100), 1.0));
       }
       ctx.camera().add_trauma(0.5);
