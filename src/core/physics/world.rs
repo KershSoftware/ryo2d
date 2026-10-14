@@ -11,10 +11,11 @@ use std::sync::{Mutex, PoisonError};
 use glam::Mat2;
 use rapier2d::prelude::{
   ActiveCollisionTypes, ActiveEvents, BroadPhaseBvh, CCDSolver, CoefficientCombineRule,
-  ColliderBuilder, ColliderHandle, ColliderSet, CollisionEvent, ContactPair, EventHandler, Group,
-  ImpulseJointSet, IntegrationParameters, InteractionGroups, InteractionTestMode, IslandManager,
-  MultibodyJointSet, NarrowPhase, PhysicsPipeline, Pose, Real, RigidBodyActivation,
-  RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType, SoftBodySet, SoftBodyTearEvent,
+  ColliderBuilder, ColliderHandle, ColliderSet, CollisionEvent, ContactForceEvent, ContactPair,
+  EventHandler, Group, ImpulseJointSet, IntegrationParameters, InteractionGroups,
+  InteractionTestMode, IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline, Pose, Real,
+  RigidBodyActivation, RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType, SoftBodySet,
+  SoftBodyTearEvent,
 };
 
 use super::body::{BodyKind, RigidBody};
@@ -24,38 +25,79 @@ use super::convert::{from_rapier, pose, poses_differ, to_rapier};
 use super::shape;
 use crate::core::ecs::{Entity, Resource, Vec2};
 
+/// A collision event with its first contact, captured during the step.
+struct Captured {
+  event: CollisionEvent,
+  contact: Option<(Vec2, Vec2)>,
+}
+
 /// Collects Rapier's events during a step; drained right after it.
 #[derive(Default)]
 struct EventCollector {
-  collisions: Mutex<Vec<CollisionEvent>>,
+  collisions: Mutex<Vec<Captured>>,
+  forces: Mutex<Vec<ContactForceEvent>>,
 }
 
 impl EventHandler for EventCollector {
   fn handle_collision_event(
     &self,
     _bodies: &RigidBodySet,
-    _colliders: &ColliderSet,
+    colliders: &ColliderSet,
     event: CollisionEvent,
-    _contact_pair: Option<&ContactPair>,
+    contact_pair: Option<&ContactPair>,
   ) {
+    let contact = contact_pair
+      .filter(|_| event.started() && !event.sensor())
+      .and_then(|pair| first_contact(colliders, pair, event.collider1()));
     self
       .collisions
       .lock()
       .unwrap_or_else(PoisonError::into_inner)
-      .push(event);
+      .push(Captured { event, contact });
   }
 
   fn handle_contact_force_event(
     &self,
-    _dt: Real,
+    dt: Real,
     _bodies: &RigidBodySet,
     _colliders: &ColliderSet,
-    _contact_pair: &ContactPair,
-    _total_force_magnitude: Real,
+    contact_pair: &ContactPair,
+    total_force_magnitude: Real,
   ) {
+    self
+      .forces
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .push(ContactForceEvent::from_contact_pair(
+        dt,
+        contact_pair,
+        total_force_magnitude,
+      ));
   }
 
   fn handle_soft_body_tear_event(&self, _soft_bodies: &SoftBodySet, _event: &SoftBodyTearEvent) {}
+}
+
+/// The deepest contact of `pair` as a world point, with the contact normal
+/// pointing away from collider `from`. Rapier picks which collider of a pair
+/// is first; its manifold normal points from `collider1` to `collider2`.
+pub(crate) fn first_contact(
+  colliders: &ColliderSet,
+  pair: &ContactPair,
+  from: ColliderHandle,
+) -> Option<(Vec2, Vec2)> {
+  let (manifold, contact) = pair.find_deepest_contact()?;
+  let collider1 = colliders.get(pair.collider1)?;
+  let point = from_rapier(*collider1.position() * contact.local_p1);
+  let normal = from_rapier(manifold.data.normal);
+  Some((
+    point,
+    if pair.collider1 == from {
+      normal
+    } else {
+      -normal
+    },
+  ))
 }
 
 /// Where a collider sits and how its shape is mapped: relative to its body
@@ -132,8 +174,18 @@ pub(crate) struct RawCollision {
   pub(crate) a: Owner,
   pub(crate) b: Owner,
   pub(crate) started: bool,
-  #[allow(dead_code)] // Task 10's collision messages report triggers
   pub(crate) sensor: bool,
+  /// World point and normal (pointing from `a` to `b`) of the first contact
+  pub(crate) contact: Option<(Vec2, Vec2)>,
+}
+
+/// A contact force above a collider's threshold during the last step.
+pub(crate) struct RawForce {
+  pub(crate) a: Owner,
+  pub(crate) b: Owner,
+  pub(crate) force: f32,
+  pub(crate) direction: Vec2,
+  pub(crate) started: bool,
 }
 
 /// A push queued for the next step.
@@ -200,6 +252,8 @@ pub struct Physics {
   forced: Vec<RigidBodyHandle>,
   /// The last step's started and stopped contacts
   pub(crate) collisions: Vec<RawCollision>,
+  /// The last step's contact forces
+  pub(crate) forces: Vec<RawForce>,
 }
 
 fn body_type(kind: BodyKind) -> RigidBodyType {
@@ -315,6 +369,7 @@ impl Physics {
       queued: Vec::new(),
       forced: Vec::new(),
       collisions: Vec::new(),
+      forces: Vec::new(),
     }
   }
 
@@ -881,12 +936,13 @@ impl Physics {
       }
     }
     self.collisions.clear();
+    self.forces.clear();
     let events = self
       .collector
       .collisions
       .get_mut()
       .unwrap_or_else(PoisonError::into_inner);
-    for event in events.drain(..) {
+    for Captured { event, contact } in events.drain(..) {
       let owner = |handle| {
         self
           .owners
@@ -900,6 +956,24 @@ impl Physics {
           b,
           started: event.started(),
           sensor: event.sensor(),
+          contact,
+        });
+      }
+    }
+    let events = self
+      .collector
+      .forces
+      .get_mut()
+      .unwrap_or_else(PoisonError::into_inner);
+    for event in events.drain(..) {
+      let owner = |handle| self.owners.get(&handle).copied();
+      if let (Some(a), Some(b)) = (owner(event.collider1), owner(event.collider2)) {
+        self.forces.push(RawForce {
+          a,
+          b,
+          force: event.total_force_magnitude,
+          direction: from_rapier(event.max_force_direction),
+          started: event.started,
         });
       }
     }

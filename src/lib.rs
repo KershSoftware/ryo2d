@@ -94,8 +94,8 @@ pub mod prelude {
 
   // Engine messages
   pub use crate::core::messages::{
-    AssetLoadFailed, AssetReloaded, CollisionStarted, CollisionStopped, KnockbackFinished,
-    KnockbackStarted, SquashStretchFinished, SquashStretchStarted, TweenCompleted, TweenStarted,
+    AssetLoadFailed, AssetReloaded, KnockbackFinished, KnockbackStarted, SquashStretchFinished,
+    SquashStretchStarted, TweenCompleted, TweenStarted,
   };
 
   // Input (with winit's key and mouse button types)
@@ -138,7 +138,8 @@ pub mod prelude {
 
   // Physics
   pub use crate::core::physics::{
-    AngularVelocity, BodyKind, Collider, ColliderShape, Physics, PhysicsConfig, RigidBody,
+    AngularVelocity, BodyKind, Collider, ColliderShape, CollisionStarted, CollisionStopped,
+    Contact, ContactForce, JointBroken, Physics, PhysicsConfig, RigidBody,
   };
 
   // 2D lighting

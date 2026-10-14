@@ -124,8 +124,10 @@ All are in the prelude and registered at engine build.
 
 | Message | Fields | Written when |
 |---------|--------|--------------|
-| `CollisionStarted` | `entity_a`, `entity_b`; `involves(e)`, `other(e) -> Option<Entity>` | two colliders start touching (triggers included) |
-| `CollisionStopped` | same | they stop touching |
+| `CollisionStarted` | `a`, `b`, `body_a`, `body_b`, `trigger`, `contact: Option<Contact>`; `involves(e)`, `other(e)`, `other_collider(e)` | two colliders start touching (triggers included) |
+| `CollisionStopped` | same without `contact` | they stop touching |
+| `ContactForce` | `a`, `b`, `body_a`, `body_b`, `force`, `direction`, `started` | a contact pushes above its collider's `with_force_events` threshold, each step |
+| `JointBroken` | `joint`, `a`, `b` | a joint breaks |
 | `TweenStarted` | `entity` | a `Tween`, `TweenSequence` or engine-driven `PropertyTween` starts |
 | `TweenCompleted` | `entity`, `finished` | an iteration ends; `finished` is `true` when the tween is done (`Once`, or the last of `Times(n)`) |
 | `KnockbackStarted` / `KnockbackFinished` | `entity` | a knockback starts / decays to nothing |

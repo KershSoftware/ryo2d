@@ -515,7 +515,9 @@ Engine messages (all `Message + Clone`):
 
 | Type | Fields | Written when |
 |---|---|---|
-| `CollisionStarted` / `CollisionStopped` | `entity_a: Entity, entity_b: Entity`; `involves(e) -> bool`, `other(e) -> Option<Entity>` | two colliders start/stop touching |
+| `CollisionStarted` / `CollisionStopped` | `a, b` (colliders), `body_a, body_b`, `trigger: bool`, and on started `contact: Option<Contact { point, normal }>`; `involves(e) -> bool`, `other(e)`, `other_collider(e) -> Option<Entity>` | two colliders start/stop touching |
+| `ContactForce` | `a, b, body_a, body_b, force: f32, direction: Vec2, started: bool` | a contact pushes above `with_force_events` |
+| `JointBroken` | `joint, a, b: Entity` | a joint breaks |
 | `TweenStarted` | `entity` | a `Tween` begins |
 | `TweenCompleted` | `entity, finished: bool` | each iteration; `finished` on the last |
 | `KnockbackStarted` / `KnockbackFinished` | `entity` | |

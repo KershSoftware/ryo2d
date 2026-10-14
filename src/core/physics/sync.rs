@@ -22,6 +22,7 @@ use super::body::{AngularVelocity, BodyKind, RigidBody};
 use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::angle_delta;
+use super::events::{CollisionStarted, CollisionStopped, Contact, ContactForce};
 use super::world::{Physics, Placement};
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
@@ -29,7 +30,6 @@ use crate::core::ecs::{
   GlobalTransform, IntoScheduleConfigs, MessageWriter, Mut, Or, Query, Ref, RemovedComponents, Res,
   ResMut, Transform, Vec2, Velocity, With,
 };
-use crate::core::messages::{CollisionStarted, CollisionStopped};
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
 use crate::core::time::Time;
@@ -535,19 +535,44 @@ pub(crate) fn read_back(
   }
 }
 
-/// Turn the step's contacts into messages.
+/// Turn the step's contacts and forces into messages.
 pub(crate) fn emit_messages(
   physics: Res<Physics>,
   mut started: MessageWriter<CollisionStarted>,
   mut stopped: MessageWriter<CollisionStopped>,
+  mut forces: MessageWriter<ContactForce>,
 ) {
-  for collision in &physics.collisions {
-    let (entity_a, entity_b) = (collision.a.collider, collision.b.collider);
-    if collision.started {
-      started.write(CollisionStarted { entity_a, entity_b });
+  for c in &physics.collisions {
+    let (a, b, body_a, body_b) = (c.a.collider, c.b.collider, c.a.body, c.b.body);
+    if c.started {
+      started.write(CollisionStarted {
+        a,
+        b,
+        body_a,
+        body_b,
+        trigger: c.sensor,
+        contact: c.contact.map(|(point, normal)| Contact { point, normal }),
+      });
     } else {
-      stopped.write(CollisionStopped { entity_a, entity_b });
+      stopped.write(CollisionStopped {
+        a,
+        b,
+        body_a,
+        body_b,
+        trigger: c.sensor,
+      });
     }
+  }
+  for f in &physics.forces {
+    forces.write(ContactForce {
+      a: f.a.collider,
+      b: f.b.collider,
+      body_a: f.a.body,
+      body_b: f.b.body,
+      force: f.force,
+      direction: f.direction,
+      started: f.started,
+    });
   }
 }
 
@@ -577,8 +602,8 @@ pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
 mod tests {
   use super::*;
   use crate::core::ecs::{Messages, World};
-  use crate::core::messages::CollisionStarted;
   use crate::core::physics::ColliderShape;
+  use crate::core::physics::CollisionStarted;
   use crate::core::physics::test_util::*;
   use crate::core::scene::PhysicsPaused;
   use crate::core::schedule::{EngineSchedules, Phase};
@@ -1225,6 +1250,106 @@ mod tests {
     world.resource_mut::<PhysicsPaused>().0 = true;
     run(&mut world, &mut s, 30);
     assert_eq!(at(&world, e).translation.y, 0.0);
+  }
+
+  use crate::core::physics::{CollisionStopped, ContactForce};
+
+  fn read<M: crate::core::ecs::Message + Copy>(world: &World) -> Vec<M> {
+    let messages = world.resource::<Messages<M>>();
+    messages.get_cursor().read(messages).copied().collect()
+  }
+
+  #[test]
+  fn started_carries_the_first_contact_from_a_to_b() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    let b = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 60);
+    let started = read::<CollisionStarted>(&world);
+    let hit = started
+      .iter()
+      .find(|m| m.involves(b) && m.involves(f))
+      .expect("ball hit floor");
+    let contact = hit.contact.expect("a solid contact has a point");
+    let down = if hit.a == b { Vec2::Y } else { -Vec2::Y };
+    assert!((contact.normal - down).length() < 1e-3, "{contact:?}");
+    assert!((contact.point.y - 100.0).abs() < 1.5, "{contact:?}");
+    assert!(!hit.trigger);
+  }
+
+  #[test]
+  fn a_trigger_reports_no_contact_point() {
+    let (mut world, mut s) = world(60);
+    let zone = world
+      .spawn((
+        Transform::from_xy(0.0, 100.0),
+        Collider::rect(100.0, 40.0).as_trigger(),
+      ))
+      .id();
+    let b = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 60);
+    let started = read::<CollisionStarted>(&world);
+    let hit = started
+      .iter()
+      .find(|m| m.involves(zone))
+      .expect("entered the zone");
+    assert!(hit.trigger && hit.contact.is_none());
+    assert_eq!(hit.other(zone), Some(b));
+  }
+
+  #[test]
+  fn messages_name_the_owning_body() {
+    use crate::core::ecs::ChildOf;
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    let body = world
+      .spawn((Transform::IDENTITY, RigidBody::dynamic()))
+      .id();
+    let part = world
+      .spawn((Transform::IDENTITY, Collider::circle(10.0), ChildOf(body)))
+      .id();
+    run(&mut world, &mut s, 60);
+    let started = read::<CollisionStarted>(&world);
+    let hit = started.iter().find(|m| m.involves(f)).expect("landed");
+    assert!(hit.involves(body) && hit.involves(part));
+    assert_eq!(hit.other(f), Some(body));
+    assert_eq!(hit.other_collider(f), Some(part));
+    assert_eq!(hit.other(body), Some(f));
+  }
+
+  #[test]
+  fn contact_force_fires_above_its_threshold_only() {
+    let forces = |threshold: f32| {
+      let (mut world, mut s) = world(60);
+      floor(&mut world, 100.0);
+      world.spawn((
+        Transform::from_xy(0.0, 60.0),
+        RigidBody::dynamic().lock_rotation(),
+        Collider::rect(20.0, 20.0)
+          .with_mass(10.0)
+          .with_force_events(threshold),
+      ));
+      run(&mut world, &mut s, 30);
+      read::<ContactForce>(&world)
+    };
+    let felt = forces(50.0);
+    assert!(
+      !felt.is_empty() && felt.iter().all(|m| m.force > 50.0),
+      "{felt:?}"
+    );
+    assert!(forces(1e9).is_empty());
+  }
+
+  #[test]
+  fn a_collider_despawned_while_touching_sends_collision_stopped() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let b = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 120);
+    world.despawn(b);
+    run(&mut world, &mut s, 1);
+    let stopped = read::<CollisionStopped>(&world);
+    assert!(stopped.iter().any(|m| m.involves(b)), "{stopped:?}");
   }
 
   #[test]

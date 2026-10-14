@@ -577,7 +577,7 @@ mod tests {
   #[test]
   fn a_body_spawned_on_a_floor_starts_one_collision_through_the_frame_loop() {
     use crate::core::ecs::DetectChangesMut;
-    use crate::core::messages::CollisionStarted;
+    use crate::core::physics::CollisionStarted;
     use crate::core::physics::{Collider, RigidBody};
 
     #[derive(Resource, Default)]

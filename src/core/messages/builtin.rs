@@ -4,54 +4,6 @@ use std::path::PathBuf;
 
 use crate::core::ecs::kernel::{Entity, Message};
 
-/// Two colliders started touching (sensor or solid).
-#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CollisionStarted {
-  pub entity_a: Entity,
-  pub entity_b: Entity,
-}
-
-impl CollisionStarted {
-  pub fn involves(&self, entity: Entity) -> bool {
-    self.entity_a == entity || self.entity_b == entity
-  }
-
-  /// The other entity in the pair, if `entity` is one of them.
-  pub fn other(&self, entity: Entity) -> Option<Entity> {
-    if self.entity_a == entity {
-      Some(self.entity_b)
-    } else if self.entity_b == entity {
-      Some(self.entity_a)
-    } else {
-      None
-    }
-  }
-}
-
-/// Two colliders stopped touching.
-#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CollisionStopped {
-  pub entity_a: Entity,
-  pub entity_b: Entity,
-}
-
-impl CollisionStopped {
-  pub fn involves(&self, entity: Entity) -> bool {
-    self.entity_a == entity || self.entity_b == entity
-  }
-
-  /// The other entity in the pair, if `entity` is one of them.
-  pub fn other(&self, entity: Entity) -> Option<Entity> {
-    if self.entity_a == entity {
-      Some(self.entity_b)
-    } else if self.entity_b == entity {
-      Some(self.entity_a)
-    } else {
-      None
-    }
-  }
-}
-
 /// A sprite, shader or other asset was reloaded from disk (dev builds).
 #[derive(Message, Debug, Clone, PartialEq, Eq)]
 pub struct AssetReloaded {

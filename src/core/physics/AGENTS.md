@@ -28,7 +28,7 @@ Rapier uses meters, Ryo2D uses pixels:
 6. `push_changes`: a body whose world pose changed is moved (a kinematic body travels there over the step); a changed `Velocity` sets its velocity.
 7. `step_simulation`: `dt` is `time.fixed.timestep()`, so physics follows game speed, pause and hitstop.
 8. `read_back`: simulated bodies write their pose into their local `Transform` (through their parent) and their velocities.
-9. `emit_messages`: Rapier's contacts drained into `CollisionStarted` / `CollisionStopped`.
+9. `emit_messages`: the step's contacts and forces become `CollisionStarted` / `CollisionStopped` (with collider and body entities, the trigger flag and the first contact point and normal, captured in the event handler while Rapier still holds the pair) and `ContactForce`.
 
 ## Notes for AI Agents
 

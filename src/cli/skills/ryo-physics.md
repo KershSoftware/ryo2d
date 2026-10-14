@@ -105,7 +105,7 @@ ctx.world.spawn((
 
 ## Collision messages
 
-`CollisionStarted` and `CollisionStopped` have `entity_a`, `entity_b`, `involves(entity)` and `other(entity) -> Option<Entity>`. A scene reads each message once with `ctx.messages::<T>()`:
+`CollisionStarted`, `CollisionStopped` and `ContactForce` have `a`, `b` (the colliders), `body_a`, `body_b` (their bodies; a collider with no body is its own), `involves(entity)` (collider or body), `other(entity) -> Option<Entity>` (the other body) and `other_collider(entity)`. `CollisionStarted` and `CollisionStopped` carry `trigger`; `CollisionStarted` also `contact: Option<Contact>` (`point` and `normal`, the normal pointing from `a` to `b`; `None` for triggers). `ContactForce { force, direction, started }` is sent every step a contact pushes above its collider's `with_force_events` threshold. `JointBroken { joint, a, b }` is registered for joints that break. The order of `a` and `b` is unspecified. A scene reads each message once with `ctx.messages::<T>()`:
 
 ```rust
 fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
