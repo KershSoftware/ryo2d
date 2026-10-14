@@ -1615,7 +1615,7 @@ mod tests {
     assert!(
       started
         .iter()
-        .any(|m| m.involves(mover) && m.involves(zone)),
+        .any(|m| m.involves(mover) && m.involves(zone) && m.trigger),
       "{started:?}"
     );
   }

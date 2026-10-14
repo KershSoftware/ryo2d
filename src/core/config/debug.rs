@@ -603,7 +603,9 @@ mod tests {
     use crate::core::physics::test_util::{run, world};
     let (mut world, mut s) = world(60);
     world.spawn((
-      Transform::from_xy(100.0, 50.0).with_rotation(std::f32::consts::FRAC_PI_2),
+      Transform::from_xy(100.0, 50.0)
+        .with_rotation(std::f32::consts::FRAC_PI_2)
+        .with_scale(Vec2::new(2.0, 3.0)),
       Collider::rect(20.0, 10.0),
     ));
     run(&mut world, &mut s, 1);
@@ -620,13 +622,14 @@ mod tests {
     assert!(!points.is_empty());
     let min = points.iter().fold(Vec2::MAX, |m, p| m.min(*p));
     let max = points.iter().fold(Vec2::MIN, |m, p| m.max(*p));
-    // Turned a quarter: 10 wide and 20 high around (100, 50)
+    // Scaled to 40 by 30, then turned a quarter: 30 wide and 40 high
+    // around (100, 50)
     assert!(
-      (min - Vec2::new(95.0, 40.0)).abs().max_element() < 0.01,
+      (min - Vec2::new(85.0, 30.0)).abs().max_element() < 0.01,
       "{min}"
     );
     assert!(
-      (max - Vec2::new(105.0, 60.0)).abs().max_element() < 0.01,
+      (max - Vec2::new(115.0, 70.0)).abs().max_element() < 0.01,
       "{max}"
     );
     debug.end_frame();
