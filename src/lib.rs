@@ -145,7 +145,10 @@ pub mod prelude {
   };
 
   // Gameplay
-  pub use crate::core::gameplay::{MoveBindings, MoveIntent, read_move_bindings};
+  pub use crate::core::gameplay::{
+    MoveBindings, MoveIntent, MovementEvent, MovementEventKind, PlatformerMovement,
+    PlatformerState, read_move_bindings,
+  };
 
   // 2D lighting
   pub use crate::core::lighting::{

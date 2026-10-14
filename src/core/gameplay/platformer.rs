@@ -1,0 +1,534 @@
+//! The platformer preset: run, jump and fall from `MoveIntent`, with the
+//! forgiveness that makes jumps feel fair.
+
+use super::events::{MovementEvent, MovementEventKind};
+use super::intent::MoveIntent;
+use crate::core::ecs::{
+  Component, DetectChangesMut, Entity, EntityHashSet, Knockback, Local, MessageWriter, Query, Res,
+  Vec2, Velocity,
+};
+use crate::core::physics::{CharacterController, CharacterMode, CharacterState};
+use crate::core::time::Time;
+
+fn platformer_controller() -> CharacterController {
+  CharacterController::platformer()
+}
+
+/// A side-view character's movement from its `MoveIntent`: running with
+/// acceleration, air control, a jump set by its height and the time to its
+/// top, a heavier fall, coyote time, jump buffering and a shorter jump when
+/// the button is released early. Down + jump on a one-way platform drops
+/// through it. It writes the character's `Velocity` every step, with its own
+/// gravity (characters are not dynamic bodies).
+#[derive(Component, Debug, Clone, PartialEq)]
+#[non_exhaustive]
+#[require(MoveIntent, PlatformerState, CharacterController = platformer_controller())]
+pub struct PlatformerMovement {
+  /// Top running speed, px/s
+  pub run_speed: f32,
+  /// Seconds from standing to full speed (0 is instant)
+  pub accel_time: f32,
+  /// Seconds from full speed to standing (0 is instant)
+  pub decel_time: f32,
+  /// The share of ground acceleration available in the air
+  pub air_control: f32,
+  /// Jump height, px
+  pub jump_height: f32,
+  /// Seconds from the jump to its top
+  pub time_to_apex: f32,
+  /// Gravity multiplier while falling
+  pub fall_multiplier: f32,
+  /// Fastest fall, px/s
+  pub max_fall_speed: f32,
+  /// Seconds after leaving a floor a jump still works
+  pub coyote_time: f32,
+  /// Seconds a jump pressed before landing is kept
+  pub jump_buffer: f32,
+  /// Upward speed kept when jump is released early (1 keeps full jumps)
+  pub jump_cut: f32,
+  /// The share of steering kept while knockback is active (0: none)
+  pub knockback_control: f32,
+}
+
+impl Default for PlatformerMovement {
+  fn default() -> Self {
+    Self {
+      run_speed: 180.0,
+      accel_time: 0.08,
+      decel_time: 0.06,
+      air_control: 0.65,
+      jump_height: 64.0,
+      time_to_apex: 0.38,
+      fall_multiplier: 1.5,
+      max_fall_speed: 600.0,
+      coyote_time: 0.1,
+      jump_buffer: 0.1,
+      jump_cut: 0.5,
+      knockback_control: 0.0,
+    }
+  }
+}
+
+impl PlatformerMovement {
+  pub fn with_run(mut self, speed: f32, accel_time: f32, decel_time: f32) -> Self {
+    (self.run_speed, self.accel_time, self.decel_time) = (speed, accel_time, decel_time);
+    self
+  }
+
+  pub fn with_air_control(mut self, fraction: f32) -> Self {
+    self.air_control = fraction;
+    self
+  }
+
+  pub fn with_jump(mut self, height: f32, time_to_apex: f32) -> Self {
+    (self.jump_height, self.time_to_apex) = (height, time_to_apex);
+    self
+  }
+
+  pub fn with_fall(mut self, multiplier: f32, max_speed: f32) -> Self {
+    (self.fall_multiplier, self.max_fall_speed) = (multiplier, max_speed);
+    self
+  }
+
+  pub fn with_coyote_time(mut self, seconds: f32) -> Self {
+    self.coyote_time = seconds;
+    self
+  }
+
+  pub fn with_jump_buffer(mut self, seconds: f32) -> Self {
+    self.jump_buffer = seconds;
+    self
+  }
+
+  pub fn with_jump_cut(mut self, factor: f32) -> Self {
+    self.jump_cut = factor;
+    self
+  }
+
+  pub fn with_knockback_control(mut self, fraction: f32) -> Self {
+    self.knockback_control = fraction;
+    self
+  }
+}
+
+/// A platformer character's movement state, written by the engine.
+#[derive(Component, Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct PlatformerState {
+  /// -1 facing left, 1 facing right
+  pub facing: f32,
+  /// Rising from a jump (releasing jump cuts it short)
+  pub jumping: bool,
+  pub(crate) coyote: f32,
+  pub(crate) buffer: f32,
+}
+
+impl Default for PlatformerState {
+  fn default() -> Self {
+    Self {
+      facing: 1.0,
+      jumping: false,
+      coyote: 0.0,
+      buffer: 0.0,
+    }
+  }
+}
+
+impl PlatformerState {
+  /// Forget jumps, timers and dashes in progress, keeping the facing (a respawn).
+  pub fn reset(&mut self) {
+    *self = Self {
+      facing: self.facing,
+      ..Self::default()
+    };
+  }
+}
+
+/// Gravity and launch speed for a jump `height` px high that reaches its
+/// top after `time` s, exact at the fixed step `dt`: with gravity added
+/// before each move, `height = (g / 2)(T² - T·dt)` at `T = v / g`.
+pub(crate) fn jump_physics(height: f32, time: f32, dt: f32) -> (f32, f32) {
+  let time = time.max(2.0 * dt);
+  let gravity = 2.0 * height.max(0.0) / (time * time - time * dt);
+  (gravity, gravity * time)
+}
+
+/// `value` moved toward `target` by at most `step` (straight there when the
+/// step is infinite).
+fn approach(value: f32, target: f32, step: f32) -> f32 {
+  if (target - value).abs() <= step {
+    target
+  } else {
+    value + step.copysign(target - value)
+  }
+}
+
+/// Speed change per second toward `target`: accelerating toward a faster
+/// speed the same way, decelerating otherwise. A zero time is instant.
+fn run_rate(settings: &PlatformerMovement, current: f32, target: f32) -> f32 {
+  let accelerating = target != 0.0
+    && (current == 0.0 || current.signum() == target.signum())
+    && target.abs() >= current.abs();
+  let time = if accelerating {
+    settings.accel_time
+  } else {
+    settings.decel_time
+  };
+  if time > 0.0 {
+    settings.run_speed / time
+  } else {
+    f32::INFINITY
+  }
+}
+
+type Mover = (
+  Entity,
+  &'static PlatformerMovement,
+  &'static mut PlatformerState,
+  &'static mut MoveIntent,
+  &'static CharacterState,
+  &'static mut CharacterController,
+  &'static mut Velocity,
+  Option<&'static Knockback>,
+);
+
+/// `FixedSet::Movement`: every platformer character's `Velocity` from its
+/// intent and its last move.
+pub fn platformer_movement(
+  time: Res<Time>,
+  mut movers: Query<Mover>,
+  mut events: MessageWriter<MovementEvent>,
+  mut warned: Local<EntityHashSet>,
+) {
+  let dt = time.fixed.timestep();
+  for (
+    entity,
+    settings,
+    mut state,
+    mut intent,
+    character,
+    mut controller,
+    mut velocity,
+    knockback,
+  ) in &mut movers
+  {
+    if controller.mode != CharacterMode::Platformer {
+      if warned.insert(entity) {
+        crate::engine_warn!(
+          module: "Gameplay",
+          "{entity}: PlatformerMovement needs CharacterController::platformer()"
+        );
+      }
+      continue;
+    }
+    let direction = intent.clamped_direction();
+    let mut v = velocity.as_vec2();
+    if !v.is_finite() {
+      v = Vec2::ZERO;
+    }
+    let (gravity, jump_speed) = jump_physics(settings.jump_height, settings.time_to_apex, dt);
+    if character.landed {
+      events.write(MovementEvent {
+        entity,
+        kind: MovementEventKind::Landed,
+      });
+    }
+
+    // At least a step each, so a zero coyote time or buffer still jumps
+    // from the floor at once
+    state.coyote = if character.on_floor {
+      settings.coyote_time.max(dt)
+    } else {
+      (state.coyote - dt).max(0.0)
+    };
+    state.buffer = if intent.jump_pressed {
+      settings.jump_buffer.max(dt)
+    } else {
+      (state.buffer - dt).max(0.0)
+    };
+
+    // Running; knockback takes the steering away
+    let control = if knockback.is_some_and(|knockback| knockback.active) {
+      settings.knockback_control
+    } else {
+      1.0
+    };
+    let target = direction.x * settings.run_speed * control;
+    let mut rate = run_rate(settings, v.x, target);
+    if !character.on_floor {
+      rate *= settings.air_control;
+    }
+    v.x = approach(v.x, target, rate * dt);
+    if direction.x.abs() > 0.01 {
+      state.facing = direction.x.signum();
+    }
+
+    // Dropping through, or jumping
+    if intent.jump_pressed && direction.y > 0.5 && character.on_floor && character.floor_one_way {
+      controller.drop_through = true;
+      state.buffer = 0.0;
+    } else if state.buffer > 0.0 && state.coyote > 0.0 {
+      v.y = -jump_speed;
+      state.jumping = true;
+      state.buffer = 0.0;
+      state.coyote = 0.0;
+      events.write(MovementEvent {
+        entity,
+        kind: MovementEventKind::Jumped,
+      });
+    }
+
+    // A jump released early is cut short, once
+    if state.jumping {
+      if v.y >= 0.0 {
+        state.jumping = false;
+      } else if !intent.jump_held {
+        v.y *= settings.jump_cut;
+        state.jumping = false;
+      }
+    }
+
+    // Falling, heavier on the way down
+    let pull = if v.y > 0.0 {
+      gravity * settings.fall_multiplier
+    } else {
+      gravity
+    };
+    v.y = (v.y + pull * dt).min(settings.max_fall_speed);
+
+    intent.jump_pressed = false;
+    intent.dash_pressed = false;
+    velocity.set_if_neq(Velocity::from_vec2(v));
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::ecs::{Messages, Transform, World};
+  use crate::core::gameplay::test_util::*;
+  use crate::core::physics::Collider;
+  use crate::core::schedule::EngineSchedules;
+
+  fn runner(world: &mut World, settings: PlatformerMovement) -> Entity {
+    let e = player(world, 0.0, 79.0);
+    world.entity_mut(e).insert(settings);
+    e
+  }
+
+  fn intent(world: &mut World, e: Entity) -> crate::core::ecs::Mut<'_, MoveIntent> {
+    world.get_mut::<MoveIntent>(e).unwrap()
+  }
+
+  fn events(world: &World) -> Vec<MovementEventKind> {
+    let messages = world.resource::<Messages<MovementEvent>>();
+    messages
+      .get_cursor()
+      .read(messages)
+      .map(|m| m.kind)
+      .collect()
+  }
+
+  fn settle(world: &mut World, s: &mut EngineSchedules) {
+    run(world, s, 30);
+  }
+
+  #[test]
+  fn the_jump_reaches_its_height_at_its_apex_time() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(
+      &mut world,
+      PlatformerMovement::default().with_jump(64.0, 0.38),
+    );
+    settle(&mut world, &mut s);
+    let start = at(&world, e).translation.y;
+    intent(&mut world, e).jump_pressed = true;
+    intent(&mut world, e).jump_held = true;
+    let (mut top, mut top_step) = (start, 0);
+    for i in 1..=60 {
+      intent(&mut world, e).jump_held = true;
+      run(&mut world, &mut s, 1);
+      let y = at(&world, e).translation.y;
+      if y < top {
+        (top, top_step) = (y, i);
+      }
+    }
+    assert!((start - top - 64.0).abs() <= 1.0, "height {}", start - top);
+    assert!(
+      (top_step as f32 - 0.38 * 60.0).abs() <= 1.0,
+      "apex at step {top_step}"
+    );
+  }
+
+  #[test]
+  fn running_reaches_full_speed_in_its_acceleration_time() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(
+      &mut world,
+      PlatformerMovement::default().with_run(180.0, 0.1, 0.05),
+    );
+    settle(&mut world, &mut s);
+    for _ in 0..6 {
+      intent(&mut world, e).direction = Vec2::X;
+      run(&mut world, &mut s, 1);
+    }
+    assert!((world.get::<Velocity>(e).unwrap().dx - 180.0).abs() < 1e-3);
+  }
+
+  /// Walk right off a platform ending at x = 100; press jump `late` steps
+  /// after leaving it. Whether it jumped.
+  fn coyote_jump(late: usize) -> bool {
+    let (mut world, mut s) = world(60);
+    world.spawn((Transform::from_xy(0.0, 110.0), Collider::rect(200.0, 20.0)));
+    let e = runner(&mut world, PlatformerMovement::default());
+    settle(&mut world, &mut s);
+    let mut since = None;
+    for _ in 0..120 {
+      intent(&mut world, e).direction = Vec2::X;
+      if since == Some(late) {
+        intent(&mut world, e).jump_pressed = true;
+        intent(&mut world, e).jump_held = true;
+      }
+      run(&mut world, &mut s, 1);
+      let st = world.get::<CharacterState>(e).unwrap();
+      if since.is_none() && st.left_floor {
+        since = Some(0);
+      } else if let Some(n) = since.as_mut() {
+        *n += 1;
+      }
+    }
+    events(&world).contains(&MovementEventKind::Jumped)
+  }
+
+  #[test]
+  fn coyote_time_allows_a_late_jump_within_its_window_only() {
+    assert!(coyote_jump(3), "0.05 s after the edge");
+    assert!(!coyote_jump(9), "0.15 s after the edge");
+  }
+
+  /// Drop onto the floor, pressing jump `early` steps before landing.
+  fn buffered_jump(early: usize) -> bool {
+    let landing = {
+      let (mut world, mut s) = world(60);
+      floor(&mut world, 100.0);
+      let e = player(&mut world, 0.0, -100.0);
+      world.entity_mut(e).insert(PlatformerMovement::default());
+      (1..200)
+        .find(|_| {
+          run(&mut world, &mut s, 1);
+          world.get::<CharacterState>(e).unwrap().landed
+        })
+        .unwrap_or(0)
+    };
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = player(&mut world, 0.0, -100.0);
+    world.entity_mut(e).insert(PlatformerMovement::default());
+    for step in 1..landing + 10 {
+      if step + early == landing {
+        intent(&mut world, e).jump_pressed = true;
+        intent(&mut world, e).jump_held = true;
+      }
+      run(&mut world, &mut s, 1);
+    }
+    events(&world).contains(&MovementEventKind::Jumped)
+  }
+
+  #[test]
+  fn a_jump_pressed_just_before_landing_is_kept() {
+    assert!(buffered_jump(3), "0.05 s early");
+    assert!(!buffered_jump(12), "0.2 s early");
+  }
+
+  #[test]
+  fn releasing_jump_early_cuts_it_short() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(
+      &mut world,
+      PlatformerMovement::default().with_jump(64.0, 0.38),
+    );
+    settle(&mut world, &mut s);
+    let start = at(&world, e).translation.y;
+    intent(&mut world, e).jump_pressed = true;
+    intent(&mut world, e).jump_held = true;
+    let mut top = start;
+    for i in 0..60 {
+      intent(&mut world, e).jump_held = i < 6;
+      run(&mut world, &mut s, 1);
+      top = top.min(at(&world, e).translation.y);
+    }
+    assert!(start - top < 0.7 * 64.0, "{}", start - top);
+  }
+
+  #[test]
+  fn a_jump_says_jumped_then_landed() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(&mut world, PlatformerMovement::default());
+    settle(&mut world, &mut s);
+    let before = events(&world).len();
+    intent(&mut world, e).jump_pressed = true;
+    run(&mut world, &mut s, 90);
+    let kinds = &events(&world)[before..];
+    assert_eq!(
+      kinds,
+      [MovementEventKind::Jumped, MovementEventKind::Landed]
+    );
+  }
+
+  #[test]
+  fn down_and_jump_on_a_one_way_platform_drops_through_instead() {
+    let (mut world, mut s) = world(60);
+    world.spawn((
+      Transform::from_xy(0.0, 105.0),
+      Collider::rect(200.0, 10.0).one_way(),
+    ));
+    let e = runner(&mut world, PlatformerMovement::default());
+    settle(&mut world, &mut s);
+    intent(&mut world, e).direction = Vec2::Y;
+    intent(&mut world, e).jump_pressed = true;
+    run(&mut world, &mut s, 1);
+    assert!(!events(&world).contains(&MovementEventKind::Jumped));
+    run(&mut world, &mut s, 30);
+    assert!(at(&world, e).translation.y > 120.0, "fell through");
+  }
+
+  // Review focus 5
+  #[test]
+  fn an_out_of_range_direction_is_clamped() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(&mut world, PlatformerMovement::default());
+    settle(&mut world, &mut s);
+    for _ in 0..30 {
+      intent(&mut world, e).direction = Vec2::new(5.0, 0.0);
+      run(&mut world, &mut s, 1);
+    }
+    let dx = world.get::<Velocity>(e).unwrap().dx;
+    assert!((dx - 180.0).abs() < 1e-3, "{dx}");
+    let x = at(&world, e).translation.x;
+    for _ in 0..10 {
+      intent(&mut world, e).direction = Vec2::new(f32::NAN, 0.0);
+      run(&mut world, &mut s, 1);
+    }
+    assert!(world.get::<Velocity>(e).unwrap().as_vec2().is_finite());
+    assert!(at(&world, e).translation.x.is_finite() && at(&world, e).translation.x >= x);
+  }
+
+  #[test]
+  fn no_coyote_time_still_jumps_from_the_floor() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(
+      &mut world,
+      PlatformerMovement::default().with_coyote_time(0.0),
+    );
+    settle(&mut world, &mut s);
+    intent(&mut world, e).jump_pressed = true;
+    run(&mut world, &mut s, 1);
+    assert!(events(&world).contains(&MovementEventKind::Jumped));
+  }
+}

@@ -8,13 +8,31 @@ Gameplay on top of physics: movement presets and the input that drives them, tri
 
 ## The `Movement` Set
 
-`register_gameplay_systems` (`mod.rs`) adds one chain to `FixedSet::Movement`, which runs after the scene's `update` and `FixedSet::Game` and before `FixedSet::Physics`. Systems join the chain in this order as they are written: `place_respawn_points`, `warn_untriggered`, `collect_pickups`, `respawn_pickups`, `apply_kill_zones`, `apply_checkpoints`, `read_move_bindings`, `update_knockback`, `platformer_movement`, `top_down_movement`. Today `read_move_bindings` and `update_knockback` are in it. Every gameplay system's resources are `Time`, `Input` and messages, so a world with those three (`tests/integration/support.rs::gameplay_world`) runs them without a simulation.
+`register_gameplay_systems` (`mod.rs`) adds one chain to `FixedSet::Movement`, which runs after the scene's `update` and `FixedSet::Game` and before `FixedSet::Physics`. Systems join the chain in this order as they are written: `place_respawn_points`, `warn_untriggered`, `collect_pickups`, `respawn_pickups`, `apply_kill_zones`, `apply_checkpoints`, `read_move_bindings`, `update_knockback`, `platformer_movement`, `top_down_movement`. Today `read_move_bindings`, `update_knockback` and `platformer_movement` are in it. Every gameplay system's resources are `Time`, `Input` and messages, so a world with those three (`tests/integration/support.rs::gameplay_world`) runs them without a simulation.
 
 Invalid input is logged once per entity with a `Local<EntityHashSet>` and `crate::engine_warn!(module: "Gameplay", ...)`; nothing panics.
 
 ## Movement Input
 
 `MoveIntent` (`intent.rs`) is what every movement preset reads: a clamped `direction`, `jump_held`, and the one-shot `jump_pressed` / `dash_pressed`. `MoveBindings` (requires `MoveIntent`) fills it from the keyboard and the first gamepad: `read_move_bindings` writes every bound intent each fixed step. Input is read from the fixed view, so a press is seen once, in the first fixed step after it, with no latch of its own. Code that writes `MoveIntent` directly (AI, networking) owns the one-shots: presets clear the pressed flags they act on. `direction` is not clamped on write; presets use `clamped_direction()`.
+
+## The Platformer Preset
+
+`PlatformerMovement` (`platformer.rs`) requires `MoveIntent`, `PlatformerState` and `CharacterController::platformer()` (a top-down controller already there is warned once and skipped). `platformer_movement` writes the character's `Velocity` every step, gravity included (characters are kinematic, so physics' gravity never reaches them); the controller sweeps it in the physics step and leaves the real velocity, so the preset starts each step from what actually happened (the fall zeroed on landing, a wall's clip). It reads `CharacterState` from the last move. A non-finite `Velocity` is read as zero. Each step, in this order:
+
+1. **Landed:** `CharacterState::landed` writes `MovementEvent { kind: Landed }`.
+2. **Timers:** coyote is reset to `coyote_time` while on the floor and counts down in the air; the jump buffer is set to `jump_buffer` by `jump_pressed` and counts down otherwise. Both are at least one step, so zero turns the grace off without stopping jumps from the floor.
+3. **Run:** `velocity.x` moves toward `direction.x * run_speed` by `run_speed / accel_time` per second when speeding up the same way, `run_speed / decel_time` otherwise (a zero time is instant), scaled by `air_control` off the floor. While `Knockback` is active the target is scaled by `knockback_control` (0 by default: no steering); the push itself is the controller's (see Knockback). `facing` follows the input.
+4. **Drop or jump:** down (`direction.y > 0.5`) + `jump_pressed` on a one-way floor sets `CharacterController::drop_through` and drops the buffered press. Otherwise a buffered press with coyote left jumps: `velocity.y = -launch`, both timers cleared, `jumping` set, `Jumped` written.
+5. **Cut:** while `jumping` and rising, releasing `jump_held` multiplies the rise by `jump_cut`, once; `jumping` ends at the top or at the cut.
+6. **Gravity:** added before the move, times `fall_multiplier` while falling, capped at `max_fall_speed`.
+7. **Clear the presses:** `jump_pressed` and `dash_pressed` are consumed (see Movement Input).
+
+**The jump:** `jump_physics(height, time_to_apex, dt)` gives gravity and the launch speed. Gravity is added before each move (semi-implicit Euler), so after `n = T / dt` steps the rise is `n·v·dt - g·dt²·n(n+1)/2`, which with `v = g·T` is `(g/2)(T² - T·dt)`. So `g = 2h / (T² - T·dt)` and `v = g·T` reach `h` at `T` at the fixed step; the continuous `g = 2h / T²` falls short by `g·T·dt/2` (2.8 px of the default 64 at 60 Hz). When `T` is not a whole number of steps the top is the last step that still rises: the default 0.38 s is 22.8 steps at 60 Hz, and the jump peaks at step 22, 64.02 px up (`the_jump_reaches_its_height_at_its_apex_time`). A jump is not snapped back to the floor: the controller snaps only moves that do not go up. `time_to_apex` is at least two steps.
+
+**Defaults:** run 180 px/s, 0.08 s to full speed, 0.06 s to stop, 65% air control; a 64 px jump peaking at 0.38 s (gravity about 927 px/s², launch about 352 px/s at 60 Hz), falls 1.5 times heavier up to 600 px/s; 0.1 s of coyote time and jump buffer; releasing jump keeps half the rise; no steering during knockback.
+
+`PlatformerState` keeps `facing`, `jumping` and the two timers; `reset()` forgets all but the facing (a respawn). `MovementEvent` (`events.rs`, `#[non_exhaustive]` kind: `Jumped`, `AirJumped`, `WallJumped`, `Dashed`, `Landed`) is registered with the engine's messages; written in `FixedSet::Movement`, after the scene's `update`, so `update` reads it the next step.
 
 ## Knockback
 
@@ -29,4 +47,4 @@ Invalid input is logged once per entity with a `Local<EntityHashSet>` and `crate
 
 ## Tests
 
-`test_util.rs`: `world(hz)` is the physics test world plus `Input` and the gameplay systems; `player(world, x, y)` spawns a 20x40 platformer character; `at`, `no_gravity` and `run` come from the physics helpers. Single-system tests use `systems::test_util` (`world`, `run`, `messages`).
+`test_util.rs`: `world(hz)` is the physics test world plus `Input` and the gameplay systems; `player(world, x, y)` spawns a 20x40 platformer character; `at`, `floor`, `no_gravity` and `run` come from the physics helpers. Single-system tests use `systems::test_util` (`world`, `run`, `messages`).

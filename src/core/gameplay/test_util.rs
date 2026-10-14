@@ -5,7 +5,7 @@ use crate::core::input::Input;
 use crate::core::physics::{CharacterController, Collider};
 use crate::core::schedule::EngineSchedules;
 
-pub(crate) use crate::core::physics::test_util::{at, no_gravity, run};
+pub(crate) use crate::core::physics::test_util::{at, floor, no_gravity, run};
 
 pub(crate) fn world(hz: u32) -> (World, EngineSchedules) {
   let (mut world, mut schedules) = crate::core::physics::test_util::world(hz);
