@@ -21,18 +21,58 @@
 
 use std::collections::HashMap;
 
-use crossbeam_channel as channel;
-use rapier2d::prelude::*;
+use std::sync::{Mutex, PoisonError};
+
+use rapier2d::prelude::{
+  ActiveEvents, BroadPhaseBvh, CCDSolver, ColliderBuilder, ColliderHandle, ColliderSet,
+  CollisionEvent, ContactPair, EventHandler, ImpulseJointSet, IntegrationParameters, IslandManager,
+  LockedAxes, MultibodyJointSet, NarrowPhase, PhysicsPipeline, Real, RigidBodyBuilder,
+  RigidBodyHandle, RigidBodySet, RigidBodyType, SoftBodySet, SoftBodyTearEvent,
+};
 
 use super::collision::{Collider, ColliderShape};
 use super::components::RigidBody;
+use super::convert::{from_rapier, to_rapier};
 use crate::core::ecs::{Entity, Resource, Transform, Vec2, Velocity};
 use crate::core::graphics::GroupedCollider;
 
-/// Pixels per meter conversion factor
-/// Rapier works in meters, games typically work in pixels.
-/// 100 pixels = 1 meter is a common convention.
-const PIXELS_PER_METER: f32 = 100.0;
+/// Rapier simulates in pixels; its tolerances and defaults are tuned for
+/// bodies about this many pixels across (one metre).
+const LENGTH_UNIT: f32 = 100.0;
+
+/// Collects Rapier's events during a step; drained right after it.
+#[derive(Default)]
+struct EventCollector {
+  collisions: Mutex<Vec<CollisionEvent>>,
+}
+
+impl EventHandler for EventCollector {
+  fn handle_collision_event(
+    &self,
+    _bodies: &RigidBodySet,
+    _colliders: &ColliderSet,
+    event: CollisionEvent,
+    _contact_pair: Option<&ContactPair>,
+  ) {
+    self
+      .collisions
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .push(event);
+  }
+
+  fn handle_contact_force_event(
+    &self,
+    _dt: Real,
+    _bodies: &RigidBodySet,
+    _colliders: &ColliderSet,
+    _contact_pair: &ContactPair,
+    _total_force_magnitude: Real,
+  ) {
+  }
+
+  fn handle_soft_body_tear_event(&self, _soft_bodies: &SoftBodySet, _event: &SoftBodyTearEvent) {}
+}
 
 /// Type of collision event
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,11 +152,13 @@ pub struct RapierPhysicsWorld {
   integration_parameters: IntegrationParameters,
   physics_pipeline: PhysicsPipeline,
   island_manager: IslandManager,
-  broad_phase: DefaultBroadPhase,
+  broad_phase: BroadPhaseBvh,
   narrow_phase: NarrowPhase,
   impulse_joint_set: ImpulseJointSet,
   multibody_joint_set: MultibodyJointSet,
+  soft_bodies: SoftBodySet,
   ccd_solver: CCDSolver,
+  collector: EventCollector,
 
   // Mapping between ECS entities and Rapier handles
   entity_to_body: HashMap<Entity, RigidBodyHandle>,
@@ -131,17 +173,23 @@ pub struct RapierPhysicsWorld {
 impl RapierPhysicsWorld {
   /// Create a new Rapier physics world
   pub fn new() -> Self {
+    let integration_parameters = IntegrationParameters {
+      length_unit: LENGTH_UNIT,
+      ..IntegrationParameters::default()
+    };
     Self {
       rigid_body_set: RigidBodySet::new(),
       collider_set: ColliderSet::new(),
-      integration_parameters: IntegrationParameters::default(),
+      integration_parameters,
       physics_pipeline: PhysicsPipeline::new(),
       island_manager: IslandManager::new(),
-      broad_phase: DefaultBroadPhase::new(),
+      broad_phase: BroadPhaseBvh::new(),
       narrow_phase: NarrowPhase::new(),
       impulse_joint_set: ImpulseJointSet::new(),
       multibody_joint_set: MultibodyJointSet::new(),
+      soft_bodies: SoftBodySet::new(),
       ccd_solver: CCDSolver::new(),
+      collector: EventCollector::default(),
       entity_to_body: HashMap::new(),
       body_to_entity: HashMap::new(),
       entity_to_collider: HashMap::new(),
@@ -160,10 +208,11 @@ impl RapierPhysicsWorld {
     self.rigid_body_set = RigidBodySet::new();
     self.collider_set = ColliderSet::new();
     self.island_manager = IslandManager::new();
-    self.broad_phase = DefaultBroadPhase::new();
+    self.broad_phase = BroadPhaseBvh::new();
     self.narrow_phase = NarrowPhase::new();
     self.impulse_joint_set = ImpulseJointSet::new();
     self.multibody_joint_set = MultibodyJointSet::new();
+    self.soft_bodies = SoftBodySet::new();
 
     // Clear entity mappings
     self.entity_to_body.clear();
@@ -208,21 +257,18 @@ impl RapierPhysicsWorld {
     let body_handle = self.rigid_body_set.insert(body);
 
     // The shape is centred on the entity's origin plus the collider's offset
-    let offset = collider.offset / PIXELS_PER_METER;
+    let offset = collider.offset;
 
     // Create Rapier collider based on shape
     // All colliders get COLLISION_EVENTS enabled to support event queries
     // NOTE: Collider dimensions should be the FINAL world-space sizes
     //       (already scaled by the game if needed)
     let rapier_collider = match collider.shape {
-      ColliderShape::Box { width, height } => {
-        let half_w = (width / 2.0) / PIXELS_PER_METER;
-        let half_h = (height / 2.0) / PIXELS_PER_METER;
-        ColliderBuilder::cuboid(half_w, half_h)
-      }
-      ColliderShape::Circle { radius } => ColliderBuilder::ball(radius / PIXELS_PER_METER),
+      ColliderShape::Box { width, height } => ColliderBuilder::cuboid(width / 2.0, height / 2.0),
+      ColliderShape::Circle { radius } => ColliderBuilder::ball(radius),
     }
-    .translation(vector![offset.x, offset.y])
+    .translation(to_rapier(offset))
+    .density(1.0 / (LENGTH_UNIT * LENGTH_UNIT))
     .restitution(collider.restitution)
     .friction(collider.friction)
     .sensor(collider.is_trigger)
@@ -274,16 +320,15 @@ impl RapierPhysicsWorld {
     velocity: Option<&Velocity>,
     rigid_body: &RigidBody,
   ) -> rapier2d::dynamics::RigidBody {
-    let position = transform.translation / PIXELS_PER_METER;
-    let (x_meters, y_meters) = (position.x, position.y);
+    let position = to_rapier(transform.translation);
     if rigid_body.is_kinematic {
       RigidBodyBuilder::kinematic_position_based()
-        .translation(vector![x_meters, y_meters])
+        .translation(position)
         .locked_axes(LockedAxes::ROTATION_LOCKED)
         .build()
     } else {
       let mut builder = RigidBodyBuilder::dynamic()
-        .translation(vector![x_meters, y_meters])
+        .translation(position)
         .gravity_scale(rigid_body.gravity_scale)
         .linear_damping(rigid_body.drag)
         .locked_axes(LockedAxes::ROTATION_LOCKED)
@@ -291,9 +336,7 @@ impl RapierPhysicsWorld {
 
       // Set initial velocity if present
       if let Some(vel) = velocity {
-        let vx_meters = vel.dx / PIXELS_PER_METER;
-        let vy_meters = vel.dy / PIXELS_PER_METER;
-        builder = builder.linvel(vector![vx_meters, vy_meters]);
+        builder = builder.linvel(to_rapier(Vec2::new(vel.dx, vel.dy)));
       }
 
       builder.build()
@@ -335,10 +378,11 @@ impl RapierPhysicsWorld {
     // The box spans `offset` to `offset + size` from the entity's origin, the
     // way composite tile parts are laid out
     let size = Vec2::new(grouped.width, grouped.height);
-    let center = (Vec2::new(grouped.offset_x, grouped.offset_y) + size / 2.0) / PIXELS_PER_METER;
-    let half = size / 2.0 / PIXELS_PER_METER;
+    let center = Vec2::new(grouped.offset_x, grouped.offset_y) + size / 2.0;
+    let half = size / 2.0;
     let rapier_collider = ColliderBuilder::cuboid(half.x, half.y)
-      .translation(vector![center.x, center.y])
+      .translation(to_rapier(center))
+      .density(1.0 / (LENGTH_UNIT * LENGTH_UNIT))
       .restitution(grouped.restitution)
       .friction(grouped.friction)
       .sensor(grouped.is_trigger)
@@ -365,6 +409,7 @@ impl RapierPhysicsWorld {
         &mut self.collider_set,
         &mut self.impulse_joint_set,
         &mut self.multibody_joint_set,
+        &mut self.soft_bodies,
         true,
       );
     }
@@ -381,15 +426,8 @@ impl RapierPhysicsWorld {
     self.collision_events.clear();
     self.integration_parameters.dt = dt;
 
-    let gravity_meters = vector![gravity.0 / PIXELS_PER_METER, gravity.1 / PIXELS_PER_METER];
-
-    // Create fresh channels for this step using crossbeam (required by Rapier)
-    let (collision_send, collision_recv) = channel::unbounded();
-    let (contact_force_send, contact_force_recv) = channel::unbounded();
-    let event_handler = ChannelEventCollector::new(collision_send, contact_force_send);
-
     self.physics_pipeline.step(
-      &gravity_meters,
+      to_rapier(Vec2::new(gravity.0, gravity.1)),
       &self.integration_parameters,
       &mut self.island_manager,
       &mut self.broad_phase,
@@ -398,18 +436,20 @@ impl RapierPhysicsWorld {
       &mut self.collider_set,
       &mut self.impulse_joint_set,
       &mut self.multibody_joint_set,
+      &mut self.soft_bodies,
       &mut self.ccd_solver,
-      None,
       &(),
-      &event_handler,
+      &self.collector,
     );
 
-    // Collect and convert Rapier events to our event type
-    while let Ok(event) = collision_recv.try_recv() {
-      let (collider1, collider2, started) = match event {
-        CollisionEvent::Started(c1, c2, _flags) => (c1, c2, true),
-        CollisionEvent::Stopped(c1, c2, _flags) => (c1, c2, false),
-      };
+    // Convert Rapier's events to ours; the drained Vec keeps its capacity
+    let collisions = self
+      .collector
+      .collisions
+      .get_mut()
+      .unwrap_or_else(PoisonError::into_inner);
+    for event in collisions.drain(..) {
+      let (collider1, collider2, started) = (event.collider1(), event.collider2(), event.started());
 
       // Look up entities from collider handles
       if let (Some(&entity_a), Some(&entity_b)) = (
@@ -438,9 +478,6 @@ impl RapierPhysicsWorld {
         });
       }
     }
-
-    // Contact force events channel is dropped here - no need to drain
-    drop(contact_force_recv);
   }
 
   fn body_mut(&mut self, entity: Entity) -> Option<&mut rapier2d::dynamics::RigidBody> {
@@ -458,11 +495,11 @@ impl RapierPhysicsWorld {
     let Some(body) = self.body_mut(entity) else {
       return;
     };
-    let p = transform.translation / PIXELS_PER_METER;
+    let p = to_rapier(transform.translation);
     if body.is_kinematic() {
-      body.set_next_kinematic_translation(vector![p.x, p.y]);
+      body.set_next_kinematic_translation(p);
     } else {
-      body.set_translation(vector![p.x, p.y], true);
+      body.set_translation(p, true);
     }
   }
 
@@ -473,8 +510,7 @@ impl RapierPhysicsWorld {
       return;
     };
     if body.is_kinematic() {
-      let p = transform.translation / PIXELS_PER_METER;
-      body.set_next_kinematic_translation(vector![p.x, p.y]);
+      body.set_next_kinematic_translation(to_rapier(transform.translation));
     }
   }
 
@@ -483,7 +519,7 @@ impl RapierPhysicsWorld {
     if let Some(body) = self.body_mut(entity)
       && !body.is_kinematic()
     {
-      body.set_linvel(vector![velocity.dx, velocity.dy] / PIXELS_PER_METER, true);
+      body.set_linvel(to_rapier(Vec2::new(velocity.dx, velocity.dy)), true);
     }
   }
 
@@ -494,20 +530,17 @@ impl RapierPhysicsWorld {
       if body.is_kinematic() || body.is_sleeping() {
         return None;
       }
-      let p = body.translation();
-      let v = body.linvel();
       Some((
         entity,
-        Vec2::new(p.x, p.y) * PIXELS_PER_METER,
-        Vec2::new(v.x, v.y) * PIXELS_PER_METER,
+        from_rapier(body.translation()),
+        from_rapier(body.linvel()),
       ))
     })
   }
 
   /// The entity's body velocity in pixels per second, if it is registered.
   pub fn body_velocity(&self, entity: Entity) -> Option<Vec2> {
-    let v = self.body(entity)?.linvel();
-    Some(Vec2::new(v.x, v.y) * PIXELS_PER_METER)
+    Some(from_rapier(self.body(entity)?.linvel()))
   }
 
   /// Whether the entity's body is asleep (at rest, skipped by the solver).
@@ -517,8 +550,7 @@ impl RapierPhysicsWorld {
 
   /// The entity's body position in pixels, if it is registered.
   pub fn body_position(&self, entity: Entity) -> Option<Vec2> {
-    let p = self.body(entity)?.translation();
-    Some(Vec2::new(p.x, p.y) * PIXELS_PER_METER)
+    Some(from_rapier(self.body(entity)?.translation()))
   }
 
   /// Get collision events from the last physics step
@@ -604,7 +636,7 @@ impl RapierPhysicsWorld {
 
       if let Some(&other_entity) = self.collider_to_entity.get(&other_handle) {
         // Check if there are actual contact points (not just AABB overlap)
-        if contact_pair.has_any_active_contact {
+        if contact_pair.has_any_active_contact() {
           intersecting.push(other_entity);
         }
       }
@@ -616,6 +648,12 @@ impl RapierPhysicsWorld {
   /// Get the number of collision events from the last step
   pub fn collision_event_count(&self) -> usize {
     self.collision_events.len()
+  }
+
+  /// The entity's body mass, if it is registered.
+  #[allow(dead_code)] // the characterization tests use it; later tasks too
+  pub(crate) fn body_mass(&self, entity: Entity) -> Option<f32> {
+    Some(self.body(entity)?.mass())
   }
 
   /// Get the number of registered physics bodies
@@ -661,8 +699,36 @@ mod tests {
 
   fn collider_center(physics: &RapierPhysicsWorld, entity: Entity) -> Vec2 {
     let handle = physics.entity_to_collider[&entity];
-    let t = physics.collider_set[handle].position().translation;
-    Vec2::new(t.x, t.y) * PIXELS_PER_METER
+    from_rapier(physics.collider_set[handle].position().translation)
+  }
+
+  #[test]
+  fn a_100_px_box_weighs_one() {
+    let mut world = RapierPhysicsWorld::new();
+    let e = entity(1);
+    world.register_entity(
+      e,
+      &Transform::from_xy(0.0, 0.0),
+      None,
+      &RigidBody::new(),
+      &Collider::box_collider(100.0, 100.0),
+    );
+    let mass = world.body_mass(e).unwrap();
+    assert!((mass - 1.0).abs() < 1e-3, "{mass}");
+  }
+
+  #[test]
+  fn positions_are_pixels() {
+    let mut world = RapierPhysicsWorld::new();
+    let e = entity(1);
+    world.register_entity(
+      e,
+      &Transform::from_xy(250.0, -40.0),
+      None,
+      &RigidBody::kinematic(),
+      &Collider::circle_collider(5.0),
+    );
+    assert_eq!(world.body_position(e), Some(Vec2::new(250.0, -40.0)));
   }
 
   #[test]

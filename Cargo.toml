@@ -38,7 +38,7 @@ bevy_ecs = { version = "0.20", default-features = false, features = ["std", "bac
 half = { version = "2", features = ["bytemuck"] }
 image = "0.25"
 kira = "0.11"
-rapier2d = "0.22"
+rapier2d = { version = "=0.36.1", features = ["debug-render"] }
 resvg = "0.44"
 ron = "0.10"
 serde = { version = "1.0.228", features = ["derive"] }

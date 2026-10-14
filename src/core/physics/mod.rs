@@ -2,6 +2,7 @@
 
 pub mod collision;
 pub mod components;
+pub(crate) mod convert;
 pub mod rapier;
 
 pub use collision::{Collider, ColliderShape};
