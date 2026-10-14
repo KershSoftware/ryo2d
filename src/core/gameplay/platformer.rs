@@ -24,7 +24,8 @@ fn platformer_controller() -> CharacterController {
 /// that holds the run input off for a moment (`with_wall_jump`), and a dash
 /// (`with_dash`, one in the air until landing). It writes the character's
 /// `Velocity` every step, with its own gravity (characters are not dynamic
-/// bodies).
+/// bodies). It reads each axis of the input on its own
+/// (`MoveIntent::clamped_axes`), so holding up or down does not slow the run.
 #[derive(Component, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 #[require(MoveIntent, PlatformerState, CharacterController = platformer_controller())]
@@ -320,7 +321,9 @@ pub fn platformer_movement(
       }
       continue;
     }
-    let direction = intent.clamped_direction();
+    // Each axis on its own: up or down held while running (W as up and
+    // jump) leaves the run at full speed
+    let direction = intent.clamped_axes();
     let mut v = velocity.as_vec2();
     if !v.is_finite() {
       if warned.velocity.insert(entity) {
@@ -710,6 +713,44 @@ mod tests {
     assert!(!events(&world).contains(&MovementEventKind::Jumped));
     run(&mut world, &mut s, 30);
     assert!(at(&world, e).translation.y > 120.0, "fell through");
+  }
+
+  /// The horizontal speed after one step on the floor with an instant run
+  /// of 180 px/s, pressing `direction`.
+  fn run_speed_pressing(direction: Vec2) -> f32 {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = runner(
+      &mut world,
+      PlatformerMovement::default().with_run(180.0, 0.0, 0.0),
+    );
+    settle(&mut world, &mut s);
+    intent(&mut world, e).direction = direction;
+    run(&mut world, &mut s, 1);
+    world.get::<Velocity>(e).unwrap().dx
+  }
+
+  #[test]
+  fn holding_up_or_down_while_running_keeps_full_speed() {
+    // W as both up and jump, or down held while running, is no slower
+    let speed = run_speed_pressing(Vec2::new(1.0, -1.0));
+    assert!((speed - 180.0).abs() < 1e-3, "right and up: {speed}");
+    let speed = run_speed_pressing(Vec2::new(-1.0, 1.0));
+    assert!((speed + 180.0).abs() < 1e-3, "left and down: {speed}");
+  }
+
+  #[test]
+  fn an_analog_stick_runs_at_its_share_of_the_speed() {
+    let speed = run_speed_pressing(Vec2::new(0.5, 0.5));
+    assert!((speed - 90.0).abs() < 1e-3, "half a stick: {speed}");
+    let speed = run_speed_pressing(Vec2::new(0.5, -1.0));
+    assert!((speed - 90.0).abs() < 1e-3, "half a stick with up: {speed}");
+  }
+
+  #[test]
+  fn a_non_finite_horizontal_input_reads_as_zero() {
+    assert_eq!(run_speed_pressing(Vec2::new(f32::NAN, -1.0)), 0.0);
+    assert_eq!(run_speed_pressing(Vec2::new(f32::INFINITY, 0.0)), 0.0);
   }
 
   // Review focus 5

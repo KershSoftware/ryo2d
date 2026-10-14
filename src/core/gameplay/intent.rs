@@ -11,8 +11,10 @@ use crate::core::input::{GamepadButton, Input};
 /// instead.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
 pub struct MoveIntent {
-  /// Where to move, -1 to 1 per axis (+Y down), analog from sticks.
-  /// Presets clamp it to length 1 and read a non-finite one as zero.
+  /// Where to move, -1 to 1 per axis (+Y down), analog from sticks. The
+  /// top-down preset clamps it to length 1 (`clamped_direction`), the
+  /// platformer each axis to -1..1 (`clamped_axes`), and a non-finite value
+  /// reads as zero.
   pub direction: Vec2,
   /// Jump is held (a jump released early is cut short)
   pub jump_held: bool,
@@ -23,13 +25,28 @@ pub struct MoveIntent {
 }
 
 impl MoveIntent {
-  /// The direction clamped to length 1; zero when it is not finite.
+  /// The direction clamped to length 1; zero when it is not finite. For
+  /// movement in any direction, where a diagonal must be no faster.
   pub fn clamped_direction(&self) -> Vec2 {
     if self.direction.is_finite() {
       self.direction.clamp_length_max(1.0)
     } else {
       Vec2::ZERO
     }
+  }
+
+  /// Each axis of the direction clamped to -1..1 on its own; an axis that is
+  /// not finite is zero. For side-view movement, where up or down held while
+  /// running must not slow the run.
+  pub fn clamped_axes(&self) -> Vec2 {
+    let axis = |value: f32| {
+      if value.is_finite() {
+        value.clamp(-1.0, 1.0)
+      } else {
+        0.0
+      }
+    };
+    Vec2::new(axis(self.direction.x), axis(self.direction.y))
   }
 }
 
@@ -217,6 +234,22 @@ mod tests {
     world.resource_mut::<Input>().set_fixed_step(0);
     run(&mut world, read_move_bindings);
     assert!(intent(&world, e).jump_pressed, "K does");
+  }
+
+  #[test]
+  fn each_axis_is_clamped_on_its_own_and_a_non_finite_axis_is_zero() {
+    let at = |direction| {
+      MoveIntent {
+        direction,
+        ..MoveIntent::default()
+      }
+      .clamped_axes()
+    };
+    assert_eq!(at(Vec2::new(1.0, -1.0)), Vec2::new(1.0, -1.0));
+    assert_eq!(at(Vec2::new(5.0, -3.0)), Vec2::new(1.0, -1.0));
+    assert_eq!(at(Vec2::new(0.5, 0.5)), Vec2::new(0.5, 0.5));
+    assert_eq!(at(Vec2::new(f32::NAN, 1.0)), Vec2::new(0.0, 1.0));
+    assert_eq!(at(Vec2::new(-0.25, f32::INFINITY)), Vec2::new(-0.25, 0.0));
   }
 
   #[test]
