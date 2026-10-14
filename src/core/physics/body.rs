@@ -14,7 +14,9 @@ pub enum BodyKind {
   /// Moved only by the game and never pushed. Write its `Transform` and it
   /// travels there over the step (carrying what rides it), or set its
   /// `Velocity`/`AngularVelocity` and the engine moves it; when both are
-  /// written in one step the `Transform` wins.
+  /// written in one step the `Transform` wins. Moving its parent counts as
+  /// a `Transform` write: under a parent the game moves, its velocity is not
+  /// applied that step.
   Kinematic,
 }
 
@@ -74,36 +76,43 @@ impl RigidBody {
     Self::of_kind(BodyKind::Kinematic)
   }
 
+  /// Multiply gravity by `scale` (0 floats).
   pub fn with_gravity_scale(mut self, scale: f32) -> Self {
     self.gravity_scale = scale;
     self
   }
 
+  /// Slow its motion by `damping` per second.
   pub fn with_linear_damping(mut self, damping: f32) -> Self {
     self.linear_damping = damping;
     self
   }
 
+  /// Slow its spin by `damping` per second.
   pub fn with_angular_damping(mut self, damping: f32) -> Self {
     self.angular_damping = damping;
     self
   }
 
+  /// Never rotate (characters, upright crates).
   pub fn lock_rotation(mut self) -> Self {
     self.lock_rotation = true;
     self
   }
 
+  /// Continuous collision detection, for fast bodies that must not tunnel.
   pub fn with_ccd(mut self) -> Self {
     self.ccd = true;
     self
   }
 
+  /// Stay awake at rest (a sleeping body costs nothing; an awake one does).
   pub fn never_sleep(mut self) -> Self {
     self.can_sleep = false;
     self
   }
 
+  /// Push bodies of lower dominance without being pushed back.
   pub fn with_dominance(mut self, dominance: i8) -> Self {
     self.dominance = dominance;
     self

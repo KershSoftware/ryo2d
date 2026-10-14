@@ -9,10 +9,9 @@ The engine's built-in systems are ordinary schedule systems: functions taking `Q
 | `knockback.rs` | `update_knockback` | `FixedSet::Juice` |
 | `squash_stretch.rs` | `update_squash_stretch` | `FixedSet::Juice` |
 | `skeleton.rs` | `update_skeletons` | `FixedSet::Juice` |
-| `physics.rs` | `register_new_bodies`, `unregister_removed_bodies`, `sync_to_physics`, `step_physics`, `sync_from_physics`, `emit_collision_messages` | `FixedSet::Physics` (the first two also in `Last`) |
 | `trail.rs` | `record_trail_points` | `FixedSet::Trails` |
 
-The juice systems run chained in the order above (`register_juice_systems`); physics registers through `register_physics_systems`. Everything else the engine schedules (clocks, input, messages, assets, propagation, camera shake, effects, tracker clearing, the scene systems) is added in `register_engine_systems` (`engine/mod.rs`).
+The juice systems run chained in the order above (`register_juice_systems`); physics registers through `register_physics_systems` (`core/physics/sync.rs`, listed in `core/physics/AGENTS.md`). Everything else the engine schedules (clocks, input, messages, assets, propagation, camera shake, effects, tracker clearing, the scene systems) is added in `register_engine_systems` (`engine/mod.rs`).
 
 ## Conventions
 

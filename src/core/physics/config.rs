@@ -11,7 +11,9 @@ pub struct PhysicsConfig {
   pub gravity: Vec2,
   /// How many pixels make a metre: Rapier's tolerances, sleep thresholds
   /// and speed cap are tuned for objects about a metre across, and density
-  /// is per square metre.
+  /// is per square metre. Set it before spawning: a change does not
+  /// re-weigh colliders already registered (until their density or mass is
+  /// edited).
   pub pixels_per_meter: f32,
   /// Constraint solver iterations per step: more is stiffer stacks and
   /// joints, at a cost.
@@ -21,6 +23,7 @@ pub struct PhysicsConfig {
 impl PhysicsConfig {
   pub const DEFAULT_PIXELS_PER_METER: f32 = 100.0;
 
+  /// Gravity in pixels per second squared (+Y is down).
   pub fn with_gravity(mut self, gravity: Vec2) -> Self {
     self.gravity = gravity;
     self
@@ -32,11 +35,13 @@ impl PhysicsConfig {
     self
   }
 
+  /// How many pixels make a metre (default 100).
   pub fn with_pixels_per_meter(mut self, pixels: f32) -> Self {
     self.pixels_per_meter = pixels;
     self
   }
 
+  /// Solver iterations per step (default 4): more is stiffer, at a cost.
   pub fn with_solver_iterations(mut self, iterations: usize) -> Self {
     self.solver_iterations = iterations;
     self

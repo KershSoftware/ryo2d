@@ -146,6 +146,7 @@ impl SceneContext<'_> {
     self.world.resource::<Physics>()
   }
 
+  /// The simulation, to apply forces and impulses (queued for the next step).
   pub fn physics_mut(&mut self) -> Mut<'_, Physics> {
     self.world.resource_mut::<Physics>()
   }

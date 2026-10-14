@@ -73,7 +73,7 @@ ctx.world.spawn((
 Moving bodies:
 
 - **Dynamic**: set `Velocity` / `AngularVelocity` (the body's own for a jump or a launch), or use forces and impulses. Writing `Transform` teleports it. Physics writes pose and velocities back every step the body is awake; asleep bodies write zero velocities on the step they fall asleep.
-- **Kinematic**: write `Transform` (it travels there over the step) or `Velocity` / `AngularVelocity` (input only, never read back). When both are written in one step the `Transform` wins, but a `Transform` write that leaves the pose unchanged does not count. So a game that keeps its own movement velocity must not store it in the engine's `Velocity` on a kinematic body; keep it in a game component and write `Transform` from it.
+- **Kinematic**: write `Transform` (it travels there over the step) or `Velocity` / `AngularVelocity` (input only, never read back). When both are written in one step the `Transform` wins, but a `Transform` write that leaves the pose unchanged does not count. Moving its parent counts as a `Transform` write: under a parent the game moves, its velocity is not applied that step. So a game that keeps its own movement velocity must not store it in the engine's `Velocity` on a kinematic body; keep it in a game component and write `Transform` from it.
 - Making a dynamic body kinematic or fixed drops the velocity physics wrote back; a velocity the game set in the same tick is kept.
 
 ## Colliders and shapes
@@ -216,6 +216,7 @@ let on_ground = physics
   .iter()
   .any(|touch| touch.normal.y > 0.7);          // normal points from the entity toward the other side: ground below is (0, +1)
 let inside = physics.overlaps(zone);            // Vec<Overlap>: colliders overlapping a trigger, or triggers the entity is inside
+                                                // (per collider: one overlapping two of a body's colliders is listed twice)
 let touching = physics.in_contact(player, platform); // any collider of `a` touches or overlaps any of `b`
 let asleep = physics.is_sleeping(crate_entity);
 ```

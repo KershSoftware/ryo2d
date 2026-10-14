@@ -84,12 +84,14 @@ impl Collider {
     }
   }
 
+  /// A box `width` by `height`.
   pub fn rect(width: f32, height: f32) -> Self {
     Self::new(ColliderShape::Rect {
       size: Vec2::new(width, height),
     })
   }
 
+  /// A circle of `radius`.
   pub fn circle(radius: f32) -> Self {
     Self::new(ColliderShape::Circle { radius })
   }
@@ -106,6 +108,7 @@ impl Collider {
     })
   }
 
+  /// One edge from `a` to `b`.
   pub fn segment(a: Vec2, b: Vec2) -> Self {
     Self::new(ColliderShape::Segment { a, b })
   }
@@ -117,46 +120,55 @@ impl Collider {
     })
   }
 
+  /// Place the shape `(x, y)` from the entity's origin.
   pub fn with_offset(mut self, x: f32, y: f32) -> Self {
     self.offset = Vec2::new(x, y);
     self
   }
 
+  /// Turn the shape `radians` relative to the entity.
   pub fn with_rotation(mut self, radians: f32) -> Self {
     self.rotation = radians;
     self
   }
 
+  /// Detect overlaps without pushing (pickups, zones).
   pub fn as_trigger(mut self) -> Self {
     self.is_trigger = true;
     self
   }
 
+  /// Put it on the `layer` bits.
   pub fn with_layer(mut self, layer: u32) -> Self {
     self.layer = layer;
     self
   }
 
+  /// Interact only with colliders on the `mask` bits.
   pub fn with_mask(mut self, mask: u32) -> Self {
     self.mask = mask;
     self
   }
 
+  /// Mass per square metre (default 1).
   pub fn with_density(mut self, density: f32) -> Self {
     self.density = density;
     self
   }
 
+  /// This collider's mass whatever its size, overriding the density.
   pub fn with_mass(mut self, mass: f32) -> Self {
     self.mass = Some(mass);
     self
   }
 
+  /// Friction, 0 for ice (default 0.5).
   pub fn with_friction(mut self, friction: f32) -> Self {
     self.friction = friction;
     self
   }
 
+  /// Bounciness, 0 to 1 (default 0).
   pub fn with_restitution(mut self, restitution: f32) -> Self {
     self.restitution = restitution;
     self

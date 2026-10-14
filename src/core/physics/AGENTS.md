@@ -30,10 +30,10 @@ The game works in pixels. `PhysicsConfig::pixels_per_meter` (default 100) is Rap
 3. `propagate_transforms`: world poses are current before physics reads them.
 4. `register_bodies`: new bodies at their world pose; an edited `RigidBody` is applied in place. A body refused for a non-finite pose (logged once) is retried every step until its pose is finite; its colliders wait for it. A dynamic body made kinematic or fixed drops the velocity physics wrote back; a velocity the game set in the same tick is kept.
 5. `sync_colliders`: colliders that changed, moved, scaled or changed owner (registered, reparented, reshaped, re-placed).
-6. `push_changes`: a body whose world pose changed is moved (a kinematic body travels there over the step); a changed `Velocity` or `AngularVelocity` sets its velocity.
+6. `push_changes`: a body whose world pose changed is moved (a kinematic body travels there over the step); a changed `Velocity` or `AngularVelocity` sets its velocity; velocity-driven kinematic bodies are driven; last, the queued forces and impulses are applied.
 7. `sync_joints`: new and re-enabled joints are made; edits apply in place or remake the joint (see Joints). After `push_changes`, so a joint made as the game moves its body anchors where the body was moved.
-8. `step_simulation`: queued forces and impulses are applied, then Rapier steps by `time.fixed.timestep()`, so physics follows game speed, pause and hitstop. Afterwards joints pulled past their break force are removed from Rapier.
-9. `read_back`: simulated bodies write their pose into their local `Transform` (through their parent) and their velocities.
+8. `step_simulation`: Rapier steps by `time.fixed.timestep()`, so physics follows game speed, pause and hitstop. Afterwards joints pulled past their break force are removed from Rapier.
+9. `read_back`: simulated bodies write their pose into their local `Transform` (through their parent) and their velocities. Every write is worked out before any lands, each parent placed where the write-back will leave it (its continuous rotation, not Rapier's wrapped angle, which rounds differently at large angles).
 10. `emit_messages`: the step's contacts and forces become `CollisionStarted` / `CollisionStopped` and `ContactForce`; broken joints send `JointBroken` and lose their `Joint` component.
 
 The order is the dependency order: removals and disables first so nothing below touches a stale handle, propagation before anything reads a world pose, registration before colliders (they need an owner) and colliders before pushes, joints after pushes, and messages last so they describe the step just taken.
@@ -46,9 +46,9 @@ The order is the dependency order: removals and disables first so nothing below 
 
 - **Change-detected and compared by value.** Physics' write-back is an ordinary change (propagation must see bodies move), so `push_changes` cannot tell it from a game write by change detection alone: it pushes a pose or velocity only when it differs from the body's, beyond `1e-3` px and `1e-4` rad (`convert.rs`). A body nobody touched stays asleep.
 - **Read back** only awake dynamic bodies and velocity-driven kinematic bodies' poses; a body writes zero velocities on the step it falls asleep. Rotation is written back continuously (no jump at the turn), unless the body locks its rotation.
-- **Kinematic bodies** are moved by writing `Transform` (the body travels there over the step, carrying what rides it) or by `Velocity` / `AngularVelocity` (input only, never read back). When both are written in one step the `Transform` wins, but a `Transform` write that leaves the pose unchanged does not count: a game that keeps its own movement velocity must not store it in the engine's `Velocity` on a kinematic body, or physics will keep integrating it (bullet-hell keeps it in a game component).
+- **Kinematic bodies** are moved by writing `Transform` (the body travels there over the step, carrying what rides it) or by `Velocity` / `AngularVelocity` (input only, never read back). When both are written in one step the `Transform` wins, but a `Transform` write that leaves the pose unchanged does not count. A parent's move counts too: a velocity-driven kinematic body under a parent the game moves does not integrate its velocity that step. A game that keeps its own movement velocity must not store it in the engine's `Velocity` on a kinematic body, or physics will keep integrating it (bullet-hell keeps it in a game component).
 - **Invalid input** (a non-finite pose, a degenerate shape, non-finite joint values) is logged once per entity for as long as it keeps a body, collider or joint: leaving the simulation and coming back (a pickup scaled from zero each time it respawns) does not log again. `forget_removed` forgets an entity's warnings when its last physics component goes, registered or not.
-- **Forces and impulses** are queued on `Physics` and applied at the start of the step. While physics is paused they accumulate and apply together at the next step. Forces last one step; impulses are instant. They are ignored for bodies that are not dynamic.
+- **Forces and impulses** are queued on `Physics` and applied at the end of `push_changes`, just before the step. While physics is paused they accumulate and apply together at the next step. Forces last one step; impulses are instant. They are ignored for bodies that are not dynamic.
 
 ## Hierarchy
 
@@ -66,7 +66,7 @@ The order is the dependency order: removals and disables first so nothing below 
 
 - An `EventCollector` handler captures the first contact point and normal during the step, while Rapier still holds the pair; `emit_messages` reads the collected list afterwards.
 - `Physics::departed` keeps removed colliders' owners until their `Stopped` is reported, so `CollisionStopped` still names entities that were just despawned (either may be gone from the world).
-- `contacts`, `overlaps` and `in_contact` read Rapier's narrow phase, so they see solid contacts and trigger overlaps as the last step left them.
+- `contacts`, `overlaps` and `in_contact` read Rapier's narrow phase, so they see solid contacts and trigger overlaps as the last step left them. They report per collider: a collider touching two of a body's colliders is listed for each.
 - Queries (`raycast`, `shape_cast`, `overlap_*`, `nearest`) also see the world as the last step left it; a body spawned or moved this tick is not in them until the next step. `QueryFilter` skips triggers by default. `nearest` reports the closest surface point and whether the query point is inside; a ray starting inside a collider hits at distance 0 with a zero normal.
 
 ## Joints

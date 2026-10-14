@@ -374,6 +374,8 @@ impl Physics {
   }
 
   /// The colliders overlapping `entity`'s triggers, or the triggers `entity` is inside.
+  /// Each of a body's colliders reports what it overlaps, so a collider
+  /// overlapping several of them is listed once for each.
   pub fn overlaps(&self, entity: Entity) -> Vec<Overlap> {
     let mut overlaps = Vec::new();
     for handle in self.handles_of(entity) {
