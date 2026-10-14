@@ -1,15 +1,18 @@
 //! The character controller: a kinematic body swept each step (Rapier's
 //! `KinematicCharacterController`, through the 2D port in `sweep.rs`), with
 //! floors, walls and ceilings told apart and `Velocity` left as the real
-//! velocity.
+//! velocity, carried by what it stands on and pushing dynamic bodies.
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
 use rapier2d::control::{
   CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
 };
-use rapier2d::parry::query::{QueryDispatcher, ShapeCastOptions, ShapeCastStatus};
-use rapier2d::prelude::{QueryFilter as RapierFilter, Vector};
+use rapier2d::parry::query::{QueryDispatcher, ShapeCastHit, ShapeCastOptions, ShapeCastStatus};
+use rapier2d::prelude::{
+  Collider as RapierCollider, ColliderHandle, QueryFilter as RapierFilter, QueryPipeline, Shape,
+  Vector,
+};
 
 use super::body::RigidBody;
 use super::convert::{from_rapier, to_rapier};
@@ -45,6 +48,11 @@ fn character_body() -> RigidBody {
 /// fall, a head bump stops the rise, a wall stops the run.
 /// `CharacterState` says what the move touched. Writing `Transform`
 /// teleports the character (no sweep), as for any kinematic body.
+///
+/// A character rides what it stands on: a platform moved by `Transform` or
+/// by velocity, a turning one, or a dynamic body. Leaving it (a jump, a step
+/// off the edge, the platform despawned) adds the platform's velocity to
+/// `Velocity`, so the momentum is kept.
 #[derive(Component, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 #[require(Transform, Velocity, CharacterState, RigidBody = character_body())]
@@ -155,7 +163,8 @@ pub struct CharacterState {
   pub floor: Option<Entity>,
   /// Whether the floor is a one-way platform
   pub floor_one_way: bool,
-  /// How fast the floor moves under the character, in px/s
+  /// How fast the floor moves where the character stands, in px/s (zero off
+  /// the floor); added to `Velocity` on the step it leaves the floor
   pub platform_velocity: Vec2,
   /// True on the step the character lands
   pub landed: bool,
@@ -167,7 +176,8 @@ pub struct CharacterState {
   pub velocity_before: Vec2,
   /// Everything the move touched
   pub hits: Vec<CharacterHit>,
-  /// Where the floor was touched, for carrying
+  /// Where the floor was touched, moved on by the floor's motion over the
+  /// step: where the next step's carry starts
   pub(crate) floor_point: Vec2,
   /// The collider underfoot (drop-through starts from it)
   pub(crate) floor_collider: Option<Entity>,
@@ -251,7 +261,44 @@ fn clip(velocity: Vec2, normal: Vec2, up: Option<Vec2>) -> Vec2 {
   }
 }
 
+/// The real velocity after a move: each wall and ceiling normal takes out
+/// what runs into it (a slope too steep to climb stops the run, see `clip`),
+/// and on a floor (`normals` holds up) the fall stops, the vertical part
+/// only, so standing on a gentle slope does not creep down it. `momentum` is
+/// the velocity of a floor just left, which the character keeps.
+fn real_velocity(wanted: Vec2, normals: &[Vec2], up: Option<Vec2>, momentum: Vec2) -> Vec2 {
+  normals
+    .iter()
+    .fold(wanted, |real, normal| clip(real, *normal, up))
+    + momentum
+}
+
 impl Physics {
+  /// How far the body under a character moves the point `at` this step:
+  /// a kinematic body from its pose to its next pose (moved by `Transform`
+  /// or velocity, turning included), a dynamic body by its velocity there,
+  /// anything else (fixed, gone, disabled) not at all.
+  pub(crate) fn floor_motion(&self, floor: Entity, at: Vec2, dt: f32) -> Vec2 {
+    let Some(body) = self
+      .body_entries
+      .get(&floor)
+      .and_then(|entry| self.bodies.get(entry.handle))
+      .filter(|body| body.is_enabled())
+    else {
+      return Vec2::ZERO;
+    };
+    if body.is_kinematic() {
+      let point = to_rapier(at);
+      let now = body.position();
+      let next = body.next_position();
+      from_rapier(next.transform_point(now.inverse_transform_point(point))) - at
+    } else if body.is_dynamic() {
+      from_rapier(body.velocity_at_point(to_rapier(at))) * dt
+    } else {
+      Vec2::ZERO
+    }
+  }
+
   /// Sweep one character by `velocity` plus `extra` (knockback) over `dt`;
   /// update its state and leave the real velocity in `velocity`. `None`
   /// when it is not moved: not registered yet, teleported this step, or
@@ -349,11 +396,29 @@ impl Physics {
     };
     let desired = (wanted + extra) * dt;
     let was_on_floor = state.on_floor;
+    // The floor it stood on carries it, by the floor's motion this step at
+    // the touched point. The queries see the floor where it is, not where
+    // the step takes it, so the character's own move is swept (and the floor
+    // probed) first, as if the floor stood still, and the carry after it:
+    // on a rising floor the fall still lands, above a sinking one the
+    // character does not float
+    let carry = match state.floor {
+      Some(floor) if was_on_floor => self.floor_motion(floor, state.floor_point, dt),
+      _ => Vec2::ZERO,
+    };
+    let carrier = state
+      .floor
+      .filter(|_| carry.length() > sweep::MIN_MOVE)
+      .and_then(|floor| self.body_entries.get(&floor))
+      .map(|entry| entry.handle);
 
+    // A collider disabled this tick stays in the broad phase until the step
+    let enabled = |_: ColliderHandle, collider: &RapierCollider| collider.is_enabled();
     let filter = RapierFilter::default()
       .exclude_rigid_body(body_handle)
       .exclude_sensors()
-      .groups(groups);
+      .groups(groups)
+      .predicate(&enabled);
     let dispatcher: &dyn QueryDispatcher = self.narrow_phase.query_dispatcher();
     let queries =
       self
@@ -394,15 +459,87 @@ impl Physics {
       })
       .flatten();
 
-    let cos = max_slope.cos() - ANGLE_SLACK;
+    // The carry, past everything but the floor (it moves with the character)
+    if let Some(carrier) = carrier {
+      let not_carrier = |handle: ColliderHandle, collider: &RapierCollider| {
+        enabled(handle, collider) && collider.parent() != Some(carrier)
+      };
+      let carrying = QueryPipeline {
+        filter: filter.predicate(&not_carrier),
+        ..queries
+      };
+      let ride = KinematicCharacterController {
+        autostep: None,
+        ..kcc
+      };
+      let carried = sweep::move_shape(
+        &ride,
+        &carrying,
+        &*shape,
+        &pose,
+        to_rapier(carry),
+        false,
+        |collision| collisions.push(collision),
+      );
+      pose.translation += carried.translation;
+    }
+
     let previous_platform = state.platform_velocity;
+    let (normals, stuck) =
+      self.read_surfaces(state, &collisions, floor_hit, platformer, max_slope, dt);
+    // Rapier's queries end here (they borrow the sets)
+
+    state.landed = state.on_floor && !was_on_floor;
+    state.left_floor = was_on_floor && !state.on_floor;
+    // Leaving a moving floor keeps its momentum
+    let momentum = if state.left_floor {
+      previous_platform
+    } else {
+      Vec2::ZERO
+    };
+    *velocity = real_velocity(wanted, &normals, platformer.then_some(up), momentum);
+    state.sliding_down_slope = platformer && moved.sliding_down_slope;
+    state.velocity_before = wanted;
+    // Registering this step, the queries saw nothing registered with it (a
+    // level spawned in the same tick): push out again once they do
+    state.stuck = stuck || pushing_out || self.is_registering(entity);
+
+    if controller.push && !collisions.is_empty() {
+      self.push_bodies(&kcc, collider_handle, filter, &*shape, &collisions, dt);
+    }
+
+    let delta = from_rapier(pose.translation - start.translation);
+    let body_translation = from_rapier(self.bodies.get(body_handle)?.translation());
+    self.drive_to(entity, body_translation + delta);
+    Some(CharacterMove {
+      normals,
+      drop_done: false,
+    })
+  }
+
+  /// Read what a move touched into `state`: the sweep's hits are walls or
+  /// ceilings (a floor is the probe's), and what the probe found is the
+  /// floor when its normal is within `max_slope` of up. Returns the normals
+  /// that clip the velocity (up for a floor) and whether the move ended
+  /// within the skin of something or inside it.
+  fn read_surfaces(
+    &self,
+    state: &mut CharacterState,
+    collisions: &[CharacterCollision],
+    floor_hit: Option<(ColliderHandle, ShapeCastHit)>,
+    platformer: bool,
+    max_slope: f32,
+    dt: f32,
+  ) -> (Vec<Vec2>, bool) {
+    let up = Vec2::NEG_Y;
+    let cos = max_slope.cos() - ANGLE_SLACK;
     state.hits.clear();
     state.on_wall = false;
     state.on_ceiling = false;
     state.wall_normal = Vec2::ZERO;
     let mut normals = Vec::with_capacity(collisions.len() + 1);
     let mut stuck = false;
-    for collision in &collisions {
+    for collision in collisions {
       let normal = from_rapier(collision.hit.normal1);
       stuck |= collision.hit.status == ShapeCastStatus::PenetratingOrWithinTargetDist;
       let Some(owner) = self.owners.get(&collision.handle).copied() else {
@@ -415,7 +552,7 @@ impl Physics {
         normal,
       });
       if platformer && normal.dot(up) >= cos {
-        // A floor: the probe below settles it
+        // A floor: the probe settles it
       } else if platformer && normal.dot(-up) >= cos {
         state.on_ceiling = true;
         normals.push(normal);
@@ -428,11 +565,19 @@ impl Physics {
     match floor_hit.filter(|(_, hit)| from_rapier(hit.normal1).dot(up) >= cos) {
       Some((handle, hit)) => {
         let owner = self.owners.get(&handle).copied();
+        let point = from_rapier(hit.witness1);
+        // How the floor moves there this step: its velocity, and where the
+        // touched point will be when the next step carries the character
+        let motion = match owner {
+          Some(owner) if dt > 0.0 => self.floor_motion(owner.body, point, dt),
+          _ => Vec2::ZERO,
+        };
         state.on_floor = true;
         state.floor_normal = from_rapier(hit.normal1);
         state.floor = owner.map(|owner| owner.body);
         state.floor_collider = owner.map(|owner| owner.collider);
-        state.floor_point = from_rapier(hit.witness1);
+        state.floor_point = point + motion;
+        state.platform_velocity = if dt > 0.0 { motion / dt } else { Vec2::ZERO };
         normals.push(up);
       }
       None => {
@@ -440,38 +585,38 @@ impl Physics {
         state.floor_normal = Vec2::ZERO;
         state.floor = None;
         state.floor_collider = None;
+        state.platform_velocity = Vec2::ZERO;
       }
     }
-    // Rapier's queries end here (they borrow the sets)
+    (normals, stuck)
+  }
 
-    // The real velocity: what runs into a wall or ceiling is removed (a slope
-    // too steep to climb stops the run, see `clip`), and on a floor the fall
-    // stops (the vertical part only, so standing on a gentle slope does not
-    // creep down it)
-    let lift = platformer.then_some(up);
-    let mut real = normals
-      .iter()
-      .fold(wanted, |real, normal| clip(real, *normal, lift));
-    state.platform_velocity = Vec2::ZERO;
-    if was_on_floor && !state.on_floor {
-      real += previous_platform;
-    }
-    state.landed = state.on_floor && !was_on_floor;
-    state.left_floor = was_on_floor && !state.on_floor;
-    state.sliding_down_slope = platformer && moved.sliding_down_slope;
-    state.velocity_before = wanted;
-    // Registering this step, the queries saw nothing registered with it (a
-    // level spawned in the same tick): push out again once they do
-    state.stuck = stuck || pushing_out || self.is_registering(entity);
-    *velocity = real;
-
-    let delta = from_rapier(pose.translation - start.translation);
-    let body_translation = from_rapier(self.bodies.get(body_handle)?.translation());
-    self.drive_to(entity, body_translation + delta);
-    Some(CharacterMove {
-      normals,
-      drop_done: false,
-    })
+  /// Push the dynamic bodies a character's move ran into: Rapier's
+  /// approximate impulses, with the mass of the character's collider.
+  /// Kinematic and fixed bodies are never pushed.
+  fn push_bodies(
+    &mut self,
+    kcc: &KinematicCharacterController,
+    collider: ColliderHandle,
+    filter: RapierFilter,
+    shape: &dyn Shape,
+    collisions: &[CharacterCollision],
+    dt: f32,
+  ) {
+    let mass = self
+      .colliders
+      .get(collider)
+      .map(|collider| collider.mass())
+      .filter(|mass| mass.is_finite() && *mass > 0.0)
+      .unwrap_or(1.0);
+    let dispatcher: &dyn QueryDispatcher = self.narrow_phase.query_dispatcher();
+    let mut queries = self.broad_phase.as_query_pipeline_mut(
+      dispatcher,
+      &mut self.bodies,
+      &mut self.colliders,
+      filter,
+    );
+    kcc.solve_character_collision_impulses(dt, &mut queries, shape, mass, collisions.iter());
   }
 }
 
@@ -501,9 +646,9 @@ pub(crate) fn move_characters(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::ecs::{ChildOf, Transform, Velocity, World};
+  use crate::core::ecs::{ChildOf, Disabled, Transform, Velocity, World};
   use crate::core::physics::test_util::*;
-  use crate::core::physics::{Collider, Physics, RigidBody};
+  use crate::core::physics::{AngularVelocity, Collider, Physics, RigidBody};
   use crate::core::schedule::EngineSchedules;
 
   /// A 20×40 platformer character centred at (x, y).
@@ -975,5 +1120,239 @@ mod tests {
       (risen - expected).abs() < 0.05,
       "rose {risen} of {expected}"
     );
+  }
+
+  /// A kinematic platform 200×20 whose top is at y = 100, and a character landed on it.
+  fn on_platform(world: &mut World, s: &mut EngineSchedules) -> (Entity, Entity) {
+    let platform = world
+      .spawn((
+        Transform::from_xy(0.0, 110.0),
+        RigidBody::kinematic(),
+        Collider::rect(200.0, 20.0),
+      ))
+      .id();
+    let e = character(world, 0.0, 70.0);
+    for _ in 0..30 {
+      step(world, s, e, 980.0);
+    }
+    assert!(state(world, e).on_floor);
+    (platform, e)
+  }
+
+  #[test]
+  fn a_character_rides_a_platform_moved_by_transform() {
+    let (mut world, mut s) = world(60);
+    let (platform, e) = on_platform(&mut world, &mut s);
+    let x0 = at(&world, e).translation.x;
+    for _ in 0..60 {
+      world.get_mut::<Transform>(platform).unwrap().translation.x += 2.0;
+      step(&mut world, &mut s, e, 980.0);
+      assert!(state(&world, e).on_floor);
+    }
+    let moved = at(&world, e).translation.x - x0;
+    assert!((moved - 120.0).abs() < 2.0, "{moved}");
+  }
+
+  #[test]
+  fn a_character_rides_a_platform_moving_up_and_down() {
+    let (mut world, mut s) = world(60);
+    let (platform, e) = on_platform(&mut world, &mut s);
+    let mut landings = 0;
+    for i in 0..120 {
+      let dy = if (i / 30) % 2 == 0 { -60.0 } else { 60.0 };
+      world.get_mut::<Velocity>(platform).unwrap().dy = dy;
+      step(&mut world, &mut s, e, 980.0);
+      let st = state(&world, e);
+      assert!(st.on_floor, "step {i}");
+      landings += usize::from(st.landed);
+    }
+    assert_eq!(landings, 0, "never left the platform");
+  }
+
+  #[test]
+  fn a_velocity_driven_platform_carries_a_character() {
+    let (mut world, mut s) = world(60);
+    let (platform, e) = on_platform(&mut world, &mut s);
+    world.get_mut::<Velocity>(platform).unwrap().dx = 60.0;
+    let x0 = at(&world, e).translation.x;
+    for _ in 0..60 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let moved = at(&world, e).translation.x - x0;
+    assert!((moved - 60.0).abs() < 2.0, "{moved}");
+    assert!((state(&world, e).platform_velocity.x - 60.0).abs() < 1.0);
+  }
+
+  #[test]
+  fn a_character_rides_a_turning_platform() {
+    let (mut world, mut s) = world(60);
+    let platform = world
+      .spawn((
+        Transform::from_xy(0.0, 110.0),
+        RigidBody::kinematic(),
+        Collider::rect(300.0, 20.0),
+      ))
+      .id();
+    let e = character(&mut world, 100.0, 70.0);
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let before = at(&world, e).translation;
+    world.get_mut::<AngularVelocity>(platform).unwrap().0 = 0.5;
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let after = at(&world, e).translation;
+    assert!(state(&world, e).on_floor);
+    assert!(
+      after.y > before.y + 5.0,
+      "carried down with the turning platform: {before:?} -> {after:?}"
+    );
+  }
+
+  #[test]
+  fn jumping_off_a_moving_platform_keeps_its_momentum() {
+    let (mut world, mut s) = world(60);
+    let (platform, e) = on_platform(&mut world, &mut s);
+    world.get_mut::<Velocity>(platform).unwrap().dx = 120.0;
+    for _ in 0..10 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    world.get_mut::<Velocity>(e).unwrap().dy = -400.0;
+    for _ in 0..5 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    assert!(!state(&world, e).on_floor);
+    assert!(
+      (velocity(&world, e).x - 120.0).abs() < 1.0,
+      "{:?}",
+      velocity(&world, e)
+    );
+  }
+
+  #[test]
+  fn a_character_pushes_a_dynamic_crate_unless_told_not_to() {
+    for push in [true, false] {
+      let (mut world, mut s) = world(60);
+      floor(&mut world, 100.0);
+      let crate_ = world
+        .spawn((
+          Transform::from_xy(60.0, 90.0),
+          RigidBody::dynamic().lock_rotation(),
+          Collider::rect(20.0, 20.0).with_friction(0.2),
+        ))
+        .id();
+      let e = world
+        .spawn((
+          Transform::from_xy(0.0, 79.0),
+          CharacterController::platformer().with_push(push),
+          Collider::rect(20.0, 40.0),
+        ))
+        .id();
+      for _ in 0..90 {
+        world.get_mut::<Velocity>(e).unwrap().dx = 150.0;
+        step(&mut world, &mut s, e, 980.0);
+      }
+      let moved = at(&world, crate_).translation.x - 60.0;
+      assert_eq!(moved > 20.0, push, "push {push}: crate moved {moved}");
+    }
+  }
+
+  // Review focus 2
+  #[test]
+  fn a_character_whose_floor_is_despawned_falls() {
+    let (mut world, mut s) = world(60);
+    let (platform, e) = on_platform(&mut world, &mut s);
+    world.despawn(platform);
+    let y0 = at(&world, e).translation.y;
+    for _ in 0..10 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    let st = state(&world, e);
+    assert!(!st.on_floor && st.floor.is_none());
+    assert!(at(&world, e).translation.y > y0 + 5.0);
+  }
+
+  // Review focus 2: a disabled floor goes at once, as a despawned one does
+  // (the broad phase keeps it until the step), and its momentum is kept
+  #[test]
+  fn a_character_whose_moving_floor_is_disabled_falls_at_once() {
+    let (mut world, mut s) = world(60);
+    let (platform, e) = on_platform(&mut world, &mut s);
+    world.get_mut::<Velocity>(platform).unwrap().dx = 120.0;
+    for _ in 0..5 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    world.entity_mut(platform).insert(Disabled);
+    step(&mut world, &mut s, e, 980.0);
+    let st = state(&world, e);
+    assert!(
+      st.left_floor && !st.on_floor && st.floor.is_none(),
+      "{st:?}"
+    );
+    assert!(
+      (velocity(&world, e).x - 120.0).abs() < 1.0,
+      "{:?}",
+      velocity(&world, e)
+    );
+  }
+
+  // The sweep sees the platform where it is, not where the step takes it:
+  // the character must neither sink into a rising one nor float above a
+  // sinking one, at any speed
+  #[test]
+  fn a_character_stays_on_top_of_a_rising_or_sinking_platform() {
+    for dy in [-60.0, -300.0, 60.0, 300.0] {
+      let (mut world, mut s) = world(60);
+      let (platform, e) = on_platform(&mut world, &mut s);
+      world.get_mut::<Velocity>(platform).unwrap().dy = dy;
+      for i in 0..60 {
+        step(&mut world, &mut s, e, 980.0);
+        let st = state(&world, e);
+        assert!(st.on_floor && !st.landed, "dy {dy}, step {i}: {st:?}");
+        let feet = at(&world, e).translation.y + 20.0;
+        let top = at(&world, platform).translation.y - 10.0;
+        assert!(
+          (0.0..=1.0).contains(&(top - feet)),
+          "dy {dy}, step {i}: feet {feet}, top {top}"
+        );
+      }
+    }
+  }
+
+  // An upright character on a tilting floor touches it with its high
+  // corner; the carry follows the touched point round, so that corner keeps
+  // its place on the platform
+  #[test]
+  fn a_character_keeps_its_place_on_a_turning_platform() {
+    for spin in [2.0f32, -2.0] {
+      let (mut world, mut s) = world(60);
+      let platform = world
+        .spawn((
+          Transform::from_xy(0.0, 110.0),
+          RigidBody::kinematic(),
+          Collider::rect(400.0, 20.0),
+        ))
+        .id();
+      let e = character(&mut world, 120.0, 70.0);
+      for _ in 0..30 {
+        step(&mut world, &mut s, e, 980.0);
+      }
+      world.get_mut::<AngularVelocity>(platform).unwrap().0 = spin;
+      for i in 0..12 {
+        step(&mut world, &mut s, e, 980.0);
+        assert!(state(&world, e).on_floor, "spin {spin}, step {i}");
+      }
+      let p = at(&world, platform);
+      let side = spin.signum();
+      let corner = at(&world, e).translation + Vec2::new(-10.0 * side, 20.0);
+      let local = Vec2::from_angle(-p.rotation).rotate(corner - p.translation);
+      let stood = 120.0 - 10.0 * side;
+      assert!(
+        (local.x - stood).abs() < 0.5,
+        "spin {spin}: the corner moved from {stood} to {} on the platform",
+        local.x
+      );
+    }
   }
 }
