@@ -12,6 +12,7 @@ Rapier2D 0.36 behind `Physics` (a resource), driven by the systems in `src/core/
 | `query.rs` | `QueryFilter`, `Hit`, `Overlap`, `PointHit`, `Touch`, and the `Physics` query, force and contact-state methods |
 | `world.rs` | `Physics`: the Rapier sets, the entity maps, the event collector, queued pushes |
 | `sync.rs` | The systems that keep the world and Rapier in step |
+| `one_way.rs` | One-way colliders: the direction encoding and Rapier's contact hook |
 | `shape.rs` | `ColliderShape` to a Rapier shape under a collider's linear map |
 | `convert.rs` | The glam 0.31 / 0.33 boundary, the sync tolerances |
 | `debug.rs` | The F2 overlay |
@@ -75,6 +76,10 @@ The order is the dependency order: removals and disables first so nothing below 
 - `Physics::departed` keeps removed colliders' owners until their `Stopped` is reported, so `CollisionStopped` still names entities that were just despawned (either may be gone from the world).
 - `contacts`, `overlaps` and `in_contact` read Rapier's narrow phase, so they see solid contacts and trigger overlaps as the last step left them. They report per collider: a collider touching two of a body's colliders is listed for each.
 - Queries (`raycast`, `shape_cast`, `overlap_*`, `nearest`) also see the world as the last step left it; a body spawned or moved this tick is not in them until the next step. `QueryFilter` skips triggers by default. `nearest` reports the closest surface point and whether the query point is inside; a ray starting inside a collider hits at distance 0 with a zero normal.
+
+## One-Way Colliders
+
+`Collider::one_way` holds the direction things arrive from, in the collider's own space (`one_way()` is `(0, -1)`, from above), so it turns with the collider. Rapier's collider `user_data` carries it (`one_way::encode`: a flag bit, then the unit direction's bits; zero or `None` is 0) and `ActiveHooks::MODIFY_SOLVER_CONTACTS` is set only on such colliders. `Physics::step` passes `OneWayHooks`, whose `modify_solver_contacts` calls `update_as_oneway_platform` with `ONE_WAY_ANGLE` (45°): a contact pushes only while its normal is within that angle of the direction. Rapier compares the normal leaving collider 1 in collider 1's space, so when the one-way collider is collider 2 the direction is reversed and re-expressed in collider 1's space. A zero direction is solid from every side (warned once). Characters meet one-way colliders through their own sweep rule (see the character section once it lands).
 
 ## Joints
 

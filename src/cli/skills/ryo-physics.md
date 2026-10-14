@@ -86,6 +86,8 @@ Collider::polygon([Vec2::new(0.0, -20.0), Vec2::new(20.0, 20.0), Vec2::new(-20.0
 Collider::segment(Vec2::ZERO, Vec2::new(100.0, 0.0))
 Collider::polyline([a, b, c, d])                 // open chain: terrain, outlines
 Collider::circle(32.0).as_trigger()              // detects overlaps, never pushes
+Collider::rect(96.0, 8.0).one_way()              // solid only from above (its own up); bodies pass up through it
+Collider::rect(8.0, 96.0).one_way_towards(Vec2::NEG_X) // solid only from the left; the direction turns with the collider
 Collider::rect(20.0, 8.0).with_offset(12.0, 0.0) // hitbox to the right of the origin
 Collider::rect(40.0, 8.0).with_rotation(0.3)     // turned relative to the entity
 ```

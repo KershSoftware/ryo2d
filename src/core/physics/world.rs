@@ -24,6 +24,7 @@ use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::{from_rapier, pose, poses_differ, to_rapier};
 use super::joint::{Joint, generic_joint, has_invalid_drive};
+use super::one_way::{self, OneWayHooks};
 use super::shape;
 use crate::core::ecs::{Entity, EntityHashMap, EntityHashSet, Resource, Tick, Vec2};
 
@@ -404,6 +405,10 @@ fn apply_material(
   if old.is_trigger != new.is_trigger {
     rapier.set_sensor(new.is_trigger);
   }
+  if old.one_way != new.one_way {
+    rapier.user_data = one_way::encode(new.one_way);
+    rapier.set_active_hooks(one_way::hooks(new.one_way));
+  }
   if old.force_threshold != new.force_threshold {
     rapier.set_active_events(events(new));
     rapier.set_contact_force_event_threshold(finite_or(new.force_threshold.unwrap_or(0.0), 0.0));
@@ -699,6 +704,8 @@ impl Physics {
       .collision_groups(groups(collider))
       .active_collision_types(active_types())
       .active_events(events(collider))
+      .user_data(one_way::encode(collider.one_way))
+      .active_hooks(one_way::hooks(collider.one_way))
       .contact_force_event_threshold(finite_or(collider.force_threshold.unwrap_or(0.0), 0.0));
     Some(match collider.mass {
       Some(mass) => builder.mass(finite_or(mass, 0.0).max(0.0)),
@@ -719,6 +726,15 @@ impl Physics {
     placement: Placement,
     collider: &Collider,
   ) {
+    if collider
+      .one_way
+      .is_some_and(|d| d.try_normalize().is_none())
+    {
+      self.warn_once(
+        entity,
+        "a one-way collider needs a non-zero direction; it is solid from every side",
+      );
+    }
     let parent = match body {
       Some(body) => match self.body_entries.get(&body) {
         Some(entry) => Some((body, entry.handle)),
@@ -1262,7 +1278,7 @@ impl Physics {
       &mut self.multibody_joints,
       &mut self.soft_bodies,
       &mut self.ccd_solver,
-      &(),
+      &OneWayHooks,
       &self.collector,
     );
     for handle in self.forced.drain(..) {

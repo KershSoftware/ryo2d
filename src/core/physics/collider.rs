@@ -65,6 +65,10 @@ pub struct Collider {
   pub restitution: f32,
   /// Send `ContactForce` messages while its contact force exceeds this.
   pub force_threshold: Option<f32>,
+  /// One-way: solid only against things arriving from this side, a
+  /// direction in the collider's own space (`one_way()` is `(0, -1)`: from
+  /// above), so it turns with the collider. `None` is solid from every side.
+  pub one_way: Option<Vec2>,
 }
 
 impl Collider {
@@ -81,6 +85,7 @@ impl Collider {
       friction: 0.5,
       restitution: 0.0,
       force_threshold: None,
+      one_way: None,
     }
   }
 
@@ -135,6 +140,22 @@ impl Collider {
   /// Detect overlaps without pushing (pickups, zones).
   pub fn as_trigger(mut self) -> Self {
     self.is_trigger = true;
+    self
+  }
+
+  /// A one-way platform: solid only against things arriving from above (its
+  /// own up). Things pass up through it and in from the sides; a character
+  /// drops through with `CharacterController::drop_through`.
+  pub fn one_way(self) -> Self {
+    self.one_way_towards(Vec2::NEG_Y)
+  }
+
+  /// Solid only against things arriving from `direction`'s side, in the
+  /// collider's own space: `Vec2::NEG_X` stops what comes from the left and
+  /// lets through what comes from the right. A zero direction is solid from
+  /// every side (logged once).
+  pub fn one_way_towards(mut self, direction: Vec2) -> Self {
+    self.one_way = Some(direction);
     self
   }
 

@@ -7,6 +7,7 @@ pub(crate) mod convert;
 pub(crate) mod debug;
 mod events;
 mod joint;
+mod one_way;
 mod query;
 pub(crate) mod shape;
 pub(crate) mod sync;
