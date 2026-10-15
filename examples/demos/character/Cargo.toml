@@ -1,0 +1,13 @@
+[package]
+name = "character-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Character controller, platformer and top-down presets, and custom movement demo for Ryo2D engine"
+
+[[bin]]
+name = "character-demo"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }
