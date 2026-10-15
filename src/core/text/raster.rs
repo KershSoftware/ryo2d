@@ -152,7 +152,11 @@ pub(crate) fn raster_size_step(px: f32) -> f32 {
   }
 }
 
-/// Makes glyph images; owns swash's scaling caches
+/// Makes glyph images; owns swash's scaling caches.
+///
+/// One rasterizer serves one `Fonts`: swash caches each font's parsed data
+/// under the id `[FontId, face index]`, and another registry's fonts reuse
+/// those ids for different files. The engine owns one of each.
 pub(crate) struct GlyphRasterizer {
   scale: ScaleContext,
 }
@@ -307,6 +311,26 @@ mod tests {
     assert_eq!(image.data.len(), (image.width * image.height) as usize);
     assert!(image.data.iter().any(|&c| c > 200), "solid coverage inside");
     assert!(image.top > 8, "an A stands above the baseline");
+  }
+
+  #[test]
+  fn every_builtin_font_keeps_its_notdef_box() {
+    // A character no font has draws glyph 0; a subset without
+    // `--notdef-outline` would draw nothing there
+    let fonts = Fonts::with_builtins();
+    let mut raster = GlyphRasterizer::new();
+    for role in [FontRole::Ui, FontRole::Mono, FontRole::Pixel] {
+      let font = fonts.role(role).unwrap();
+      for key in [
+        GlyphKey::fill(font, 0, 32.0, 0.0),
+        GlyphKey::msdf(font, 0, 32.0, 4.0),
+      ] {
+        assert!(
+          raster.rasterize(&fonts, None, &key).is_some(),
+          "{role:?} {key:?}"
+        );
+      }
+    }
   }
 
   #[test]

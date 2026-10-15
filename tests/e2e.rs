@@ -47,3 +47,6 @@ mod look;
 
 #[path = "e2e/lighting.rs"]
 mod lighting;
+
+#[path = "e2e/text.rs"]
+mod text;

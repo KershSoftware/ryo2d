@@ -19,7 +19,6 @@ pub(crate) enum DrawKind {
   /// An entity (with its shadows, tiles and composite parts) drawn on the GPU
   Entity,
   /// Text and UI shapes: after the entities at equal z
-  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
   Text,
   /// A `Scene::render`, particle or parallax sprite
   Sprite,
@@ -36,7 +35,6 @@ pub(crate) enum DrawPayload {
   /// Index into the list's triangle items (trails and lines)
   Triangles(usize),
   /// Index into the list's glyph items
-  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
   Glyph(usize),
   /// Index into the list's shape items
   #[allow(dead_code)] // drawn by the UI in a later task
@@ -255,6 +253,14 @@ impl DrawList {
     self.push_item(look.lit, z, kind, payload, only_camera);
   }
 
+  /// Clip the most recently pushed sprite to `scissor` (a no-op before any
+  /// sprite).
+  pub(crate) fn set_last_sprite_scissor(&mut self, scissor: Option<PixelRect>) {
+    if let Some(sprite) = self.sprites.last_mut() {
+      sprite.scissor = scissor;
+    }
+  }
+
   /// Add a trail or line at `z`, for `only_camera` or every camera; `lit`
   /// ones draw before lighting.
   pub(crate) fn push_triangles(
@@ -269,7 +275,6 @@ impl DrawList {
     self.push_item(lit, z, DrawKind::Trail, payload, only_camera);
   }
 
-  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
   /// Add a glyph at `z`, for `only_camera` or every camera.
   pub(crate) fn push_glyph(
     &mut self,

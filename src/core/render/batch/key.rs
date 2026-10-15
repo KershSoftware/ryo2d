@@ -91,13 +91,10 @@ pub(crate) enum BatchShader {
   /// A light (or its shadow) into a light buffer
   Light(LightStep),
   /// A raster glyph: its coverage times the tint
-  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
   TextMask,
   /// A colour glyph times the tint
-  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
   TextColor,
   /// An MSDF glyph, with outline or as a soft shadow or glow layer
-  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
   TextMsdf,
   /// An untextured UI rectangle with rounded corners and a border
   UiRect,

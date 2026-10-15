@@ -420,8 +420,8 @@ impl TextureAtlas {
     )
   }
 
-  /// The slot of a glyph image, rasterizing and uploading it on first use
-  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
+  /// The slot of a glyph image, rasterizing and uploading it on first use.
+  /// A key with no image (a space) is remembered and not rasterized again.
   pub(crate) fn glyph(
     &mut self,
     device: &wgpu::Device,
@@ -433,7 +433,13 @@ impl TextureAtlas {
     if let Some(slot) = self.glyphs.slot(&key, frame) {
       return Some(slot);
     }
-    let image = raster()?;
+    if self.glyphs.has_no_image(&key) {
+      return None;
+    }
+    let Some(image) = raster() else {
+      self.glyphs.mark_no_image(key);
+      return None;
+    };
     let (layout, nearest, linear) = (&self.bind_layout, &self.nearest, &self.linear);
     self
       .glyphs

@@ -589,14 +589,7 @@ impl SpriteGpuRenderer {
     Some((slot, (page.width(), page.height())))
   }
 
-  /// The current frame number (the atlas's least-recently-used clock)
-  #[allow(dead_code)] // read by text in a later task
-  pub(crate) fn frame(&self) -> u64 {
-    self.frame
-  }
-
   /// A glyph image's slot, rasterizing and uploading it on first use
-  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
   pub(crate) fn glyph(
     &mut self,
     device: &wgpu::Device,

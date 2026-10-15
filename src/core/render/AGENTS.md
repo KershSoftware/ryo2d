@@ -55,7 +55,7 @@ Everything is read from the world by query, every frame. There is no render cach
 2. Lights (`(&GlobalTransform, &Light2D)` with their `RenderLayers`, at their world translation; batch quads in the draw list when lighting is on) and occluders (`(&GlobalTransform, &LightOccluder2D)`, keeping rotation); `LightingSettings` is copied into the lighting renderer.
 3. Render targets' textures follow `RenderTargets`; the cameras are planned and their uniforms, bind groups and light targets synced.
 4. The `Scene::render` sprites join the draw list; each `ParallaxLayer` is laid out for every camera on its layers (items for that camera alone).
-5. `EntityDrawer::collect` (`entities.rs`): one query over the visible renderables (with their `RenderLayers`), then the composite tiles. Quads no camera on their layers can see are skipped before their texture uploads. Disabled entities are skipped by the queries themselves.
+5. `EntityDrawer::collect` (`entities.rs`): one query over the visible renderables (with their `RenderLayers`), then the composite tiles. Quads no camera on their layers can see are skipped before their texture uploads. Disabled entities are skipped by the queries themselves. Then world text (`text.rs`): the `Text2d`s whose text, style, options or fonts changed are laid out again (`layout_world_text`, which syncs the engine's `TextEngine` with `Fonts`), the glyphs `Fonts::prewarm` asked for are built, and each camera that sees a block gets its glyph quads (`emit_world_text`: glyph items for that camera alone, raster glyphs at the size it sees; bitmap cells and inline icons are sprite items). Positions are interpolated like entities'. `TextEngine::end_frame` runs after `Batch2D::prepare`.
 6. Trails (`&Trail2D`: world-space points) and lines (`(&GlobalTransform, &Line2D)`: at the entity's translation) become polylines on the batch's triangle stream, one item each. The debug overlays are added to `DebugDraw`, whose shapes are built for each camera in its own screen pixels (items for that camera alone).
 7. The list is sorted; `Batch2D::prepare` makes the frame's textures resident, lays each camera's lit and unlit items (on its layers, inside its `CameraView::bounds`, not showing its own target, `only_camera`), and a lit camera's lights (`DrawList::lights_for`), into draws and uploads the instances and triangles once; then the pipeline runs. `present_frame` clears the frame's debug shapes afterwards, drawn or skipped.
 
@@ -63,7 +63,7 @@ Everything is read from the world by query, every frame. There is no render cach
 
 ## The 2D Batch (`batch/`)
 
-One batch draws the world: sprites, shadows, tiles, composite parts, particles, `Scene::render` sprites, parallax tiles, trails, lines and debug shapes.
+One batch draws the world: sprites, shadows, tiles, composite parts, particles, `Scene::render` sprites, parallax tiles, world text, trails, lines and debug shapes.
 
 - **Two streams**, each uploaded once per frame into a buffer that doubles when a frame needs more: instanced quads (the 128-byte `SpriteInstance`, remapped into its atlas slot) and indexed triangles (`Vertex2D`, 72 bytes: position, uv, colour, params, across, the slot a textured line repeats).
 - **Keys and planning** (`key.rs`, `plan.rs`): every item resolves to a `DrawState` (page, `BatchShader`, `BlendMode`, `Sampling`, scissor). Per camera, `plan_draws` merges consecutive items with equal states (and, for triangles, adjacent index ranges) into `Draw`s; each camera's quads have a range of the instance buffer of their own, its lit and unlit draws in one range.
@@ -78,6 +78,8 @@ One batch draws the world: sprites, shadows, tiles, composite parts, particles, 
   | `TextColor` | multiplier (white keeps the glyph's colours) | unused | unused |
   | `TextMsdf` | fill colour, or the soft layer's colour | `[mode (0 fill/outline, 1 soft), width or spread (base px), softness (base px), range (base px)]` | outline colour |
   | `UiRect` (its quad extends one pixel in UI units past the rect on every side, and `uv_rect` extends by the same fraction past `[0, 1]`, so the outer edge keeps its anti-aliasing) | fill colour | `[corner radius, border width, width, height]` (UI units) | border colour |
+
+  The text emitter (`render/text.rs`) draws an MSDF outline as a quad of its own (mode 0, a transparent fill, the outline colour's alpha times the glyph's) in the outline pass, and the fill (mode 0, width 0) in the fill pass, so no glyph's outline covers a neighbour's fill. Glow and shadows are mode 1 quads in the shadow pass.
 
 - **Scissor.** `DrawState::scissor` is applied per draw and clamped to the image; `None` is the whole image (`draw` takes the image size and always sets the rect).
 - **Per-camera format.** World cameras draw in `SCENE_FORMAT`. A UI camera (`CameraDraw::ui`) draws in `UI_FORMAT` (`Rgba8Unorm`, gamma-encoded premultiplied, through the `UI_GAMMA` pipeline override and `ui_out` in `color.wgsl`) and sees only items drawn for it.

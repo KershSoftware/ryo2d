@@ -84,11 +84,8 @@ pub enum FontError {
 /// A grid of glyphs on a sprite sheet: `chars[i]` is cell `i`, row-major
 #[derive(Debug, Clone)]
 pub(crate) struct BitmapFace {
-  // The sheet and its columns are read when the cells are drawn (world text)
-  #[cfg_attr(not(test), allow(dead_code))]
   pub(crate) sprite: SpriteHandle,
   pub(crate) cell: (u32, u32),
-  #[cfg_attr(not(test), allow(dead_code))]
   pub(crate) columns: u32,
   pub(crate) chars: Vec<char>,
 }
@@ -305,8 +302,7 @@ impl Fonts {
       .map(|(i, face)| (FontId(i as u32), face))
   }
 
-  // The glyph cache takes these once world text draws (later tasks)
-  #[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))]
+  /// The glyphs asked for ahead, once (the renderer builds them)
   pub(crate) fn take_prewarm(&mut self) -> Vec<Prewarm> {
     std::mem::take(&mut self.prewarm)
   }

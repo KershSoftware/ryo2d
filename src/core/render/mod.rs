@@ -56,15 +56,17 @@ mod pass;
 mod passes;
 mod pipeline;
 pub(crate) mod scratch;
+pub(crate) mod text;
 
 pub use context::RenderContext;
 pub(crate) use context::{EffectStages, FrameTargets};
 pub use debug_draw::{DebugDraw, DebugPen};
 pub(crate) use debug_draw::{begin_debug_fixed_step, end_debug_fixed_step};
-#[allow(unused_imports)] // drawn by text and the UI in a later task
+#[allow(unused_imports)] // drawn by the UI in a later task
+pub(crate) use draw_list::DrawShape;
 pub(crate) use draw_list::{
-  DrawGlyph, DrawItem, DrawKind, DrawLight, DrawList, DrawPayload, DrawShape, DrawTriangles,
-  SpriteLook, SpriteShading,
+  DrawGlyph, DrawItem, DrawKind, DrawLight, DrawList, DrawPayload, DrawTriangles, SpriteLook,
+  SpriteShading,
 };
 pub(crate) use entities::EntityDrawer;
 pub use frame::FrameInfo;

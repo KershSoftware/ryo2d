@@ -16,17 +16,21 @@ use crate::core::graphics::camera_gpu::CameraGlobals;
 use crate::core::graphics::camera_mut::main_view;
 use crate::core::graphics::renderer::FrameError;
 use crate::core::graphics::{
-  Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers, RenderTargets,
+  Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers, RenderTargets, ScreenMapping,
 };
 use crate::core::graphics::{ParallaxLayer, parallax};
 use crate::core::lighting::{FrameLight, Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
 use crate::core::render::scratch::recycle;
+use crate::core::render::text::{
+  TextTargets, WorldTextFrame, emit_world_text, layout_world_text, prewarm,
+};
 use crate::core::render::{
   DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, SpriteLook, SpriteShading,
   plan_cameras,
 };
 use crate::core::shaders::EffectsManager;
+use crate::core::text::Fonts;
 use crate::core::time::Time;
 use crate::core::trail::{Line2D, Trail2D};
 use crate::profile_scope;
@@ -216,6 +220,33 @@ impl Engine {
         &mut self.draw_list,
       );
       self.parallax = quads;
+      // World text: lay out what changed, build the glyphs asked for ahead,
+      // then each camera's glyph quads
+      layout_world_text(&mut self.world, &mut self.text);
+      let render_scale = {
+        let mapping = self.world.resource::<ScreenMapping>();
+        mapping.render_size().0 as f32 / mapping.screen_size().x
+      };
+      let mut text_targets = TextTargets {
+        raster: &mut self.glyph_raster,
+        sprites: &mut gpu,
+        device: rend.device(),
+        queue: rend.queue(),
+        list: &mut self.draw_list,
+        warned: &mut self.text_warned,
+      };
+      {
+        let mut fonts = self.world.resource_mut::<Fonts>();
+        let fonts = fonts.bypass_change_detection();
+        prewarm(fonts, &self.text, &mut text_targets);
+      }
+      let text_frame = WorldTextFrame {
+        cameras: &self.camera_draws,
+        render_scale,
+        alpha,
+        game_time,
+      };
+      emit_world_text(&mut self.world, &self.text, &text_frame, &mut text_targets);
       // Trails (world-space points), lines (at their entity) and the debug
       // overlays become triangles, one draw-list item each
       let triangles = batch.triangles();
@@ -303,6 +334,7 @@ impl Engine {
         &self.camera_draws,
         &mut gpu,
       );
+      self.text.end_frame();
       (entity_sprites, lights)
     };
 

@@ -149,6 +149,11 @@ impl TextEngine {
     self.generation = Some(fonts.generation());
   }
 
+  /// The `Fonts::generation` the engine last synced to (0 before any sync)
+  pub(crate) fn generation(&self) -> u64 {
+    self.generation.unwrap_or(0)
+  }
+
   /// Lay out `text` (cached). `None` when the style, options or scale cannot
   /// be laid out (warned once).
   pub(crate) fn layout(
@@ -206,7 +211,11 @@ impl TextEngine {
     );
     Some(laid)
   }
+}
 
+// Measuring and hit-testing: the UI's (a later task)
+#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))]
+impl TextEngine {
   /// The block's size in text units (zero when it cannot be laid out)
   pub(crate) fn measure(
     &mut self,
@@ -327,8 +336,49 @@ impl TextEngine {
     }
   }
 
+  /// The bitmap face a style's own font is, if it is one
+  fn style_bitmap(&self, style: &TextStyle) -> Option<&BitmapFace> {
+    self.resolve(&style.font).and_then(|id| self.bitmap(id))
+  }
+
+  /// A plain one-line layout for carets and hit tests, cached
+  fn single_line(&mut self, text: &str, style: &TextStyle, scale: f32) -> Option<&Layout<u16>> {
+    let key = {
+      let mut h = DefaultHasher::new();
+      text.hash(&mut h);
+      style.hash_into(&mut h);
+      scale.to_bits().hash(&mut h);
+      self.generation.hash(&mut h);
+      h.finish()
+    };
+    if !self.lines.contains_key(&key) {
+      let stack = self.stack(style, None);
+      if stack.is_empty() {
+        return None;
+      }
+      let face = self.face_style(style);
+      let mut builder = self.lcx.ranged_builder(&mut self.fcx, text, scale, true);
+      push_defaults(&mut builder, &stack, style, face);
+      let mut line = builder.build(text);
+      line.break_all_lines(None);
+      line.align(Alignment::Start, AlignmentOptions::default());
+      self.lines.insert(key, (line, self.frame));
+    }
+    let frame = self.frame;
+    let (line, last_used) = self.lines.get_mut(&key)?;
+    *last_used = frame;
+    Some(&*line)
+  }
+
+  /// Cache counters (the tests')
+  pub(crate) fn stats(&self) -> CacheStats {
+    self.stats
+  }
+}
+
+impl TextEngine {
   /// The glyph a role's font draws `c` with
-  #[cfg(test)]
+  #[cfg(all(test, feature = "default-fonts"))]
   pub(crate) fn glyph_for(&mut self, role: FontRole, c: char) -> Option<u16> {
     let style = TextStyle::default().role(role);
     let laid = self.layout(
@@ -372,10 +422,6 @@ impl TextEngine {
     }
   }
 
-  pub(crate) fn stats(&self) -> CacheStats {
-    self.stats
-  }
-
   /// True the first time a warning's key is seen
   fn first_warning(&mut self, key: u64) -> bool {
     self.warned.insert(key)
@@ -383,11 +429,6 @@ impl TextEngine {
 
   fn bitmap(&self, font: FontId) -> Option<&BitmapFace> {
     self.faces.get(&font).and_then(|face| face.bitmap.as_ref())
-  }
-
-  /// The bitmap face a style's own font is, if it is one
-  fn style_bitmap(&self, style: &TextStyle) -> Option<&BitmapFace> {
-    self.resolve(&style.font).and_then(|id| self.bitmap(id))
   }
 
   fn resolve(&self, font: &TextFont) -> Option<FontId> {
@@ -914,35 +955,6 @@ impl TextEngine {
       punctuation,
       pixel: true,
     }
-  }
-
-  /// A plain one-line layout for carets and hit tests, cached
-  fn single_line(&mut self, text: &str, style: &TextStyle, scale: f32) -> Option<&Layout<u16>> {
-    let key = {
-      let mut h = DefaultHasher::new();
-      text.hash(&mut h);
-      style.hash_into(&mut h);
-      scale.to_bits().hash(&mut h);
-      self.generation.hash(&mut h);
-      h.finish()
-    };
-    if !self.lines.contains_key(&key) {
-      let stack = self.stack(style, None);
-      if stack.is_empty() {
-        return None;
-      }
-      let face = self.face_style(style);
-      let mut builder = self.lcx.ranged_builder(&mut self.fcx, text, scale, true);
-      push_defaults(&mut builder, &stack, style, face);
-      let mut line = builder.build(text);
-      line.break_all_lines(None);
-      line.align(Alignment::Start, AlignmentOptions::default());
-      self.lines.insert(key, (line, self.frame));
-    }
-    let frame = self.frame;
-    let (line, last_used) = self.lines.get_mut(&key)?;
-    *last_used = frame;
-    Some(&*line)
   }
 
   /// The key a glyph's variable-font coordinates are stored under (0: none)
@@ -1527,6 +1539,7 @@ fn first_char(source: &str, byte: usize) -> Option<char> {
 }
 
 /// Whether a bitmap font gives `c` a cell (its own, a blank or '?')
+#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))] // the UI's carets
 fn takes_cell(face: &BitmapFace, c: char) -> bool {
   if c == '\n' {
     return false;
@@ -1535,10 +1548,12 @@ fn takes_cell(face: &BitmapFace, c: char) -> bool {
 }
 
 /// A bitmap font's cell advance in text units at `size`
+#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))] // the UI's carets
 fn bitmap_advance(face: &BitmapFace, size: f32) -> f32 {
   face.cell.0 as f32 * size / face.cell.1 as f32
 }
 
+#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))] // the UI's carets
 fn bitmap_caret(face: &BitmapFace, text: &str, byte: usize, size: f32) -> f32 {
   let cells = text
     .char_indices()
@@ -1548,6 +1563,7 @@ fn bitmap_caret(face: &BitmapFace, text: &str, byte: usize, size: f32) -> f32 {
   cells as f32 * bitmap_advance(face, size)
 }
 
+#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))] // the UI's carets
 fn bitmap_byte_at(face: &BitmapFace, text: &str, x: f32, size: f32) -> usize {
   let advance = bitmap_advance(face, size);
   let mut pen = 0.0;

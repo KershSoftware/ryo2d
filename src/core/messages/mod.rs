@@ -117,6 +117,7 @@ pub fn register_engine_messages(world: &mut World) {
   register_message::<crate::core::gameplay::PickedUp>(world);
   register_message::<crate::core::gameplay::Killed>(world);
   register_message::<crate::core::gameplay::CheckpointReached>(world);
+  register_message::<crate::core::text::TextRevealed>(world);
 }
 
 #[cfg(test)]

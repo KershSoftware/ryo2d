@@ -80,7 +80,6 @@ impl Span {
   }
 
   /// This span laid over another (the markup parser nests tags with it)
-  #[cfg_attr(not(test), allow(dead_code))]
   pub(crate) fn over(&self, base: &Span) -> Span {
     Span {
       color: self.color.or(base.color),

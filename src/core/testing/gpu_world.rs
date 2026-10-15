@@ -464,7 +464,8 @@ fn despawned_cameras_free_their_gpu_state() {
   assert_eq!(calm, 1, "only the main camera's uniform remains");
 }
 
-/// Sprites, a line, a batch sprite and two effects (one of them bloom).
+/// Sprites, a line, world text, a batch sprite and two effects (one of
+/// them bloom).
 struct Busy;
 
 impl Scene for Busy {
@@ -476,6 +477,14 @@ impl Scene for Busy {
         Renderable::sprite(sprite.clone()),
       ));
     }
+    let style = TextStyle::new()
+      .size(12.0)
+      .outline(1.0, Color::BLACK)
+      .shadow(Vec2::new(1.0, 1.0), Color::BLACK, 0.0);
+    ctx.world.spawn((
+      Transform::from_xy(60.0, 75.0),
+      Text2d::markup("Busy [wave]text[/wave] 42").with_style(style),
+    ));
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
       Line2D::horizontal(50.0, 5.0, 100.0, Color::WHITE, 2.0),

@@ -28,6 +28,24 @@ pub struct GlyphContext {
   pub args: String,
 }
 
+impl GlyphContext {
+  /// One glyph's context; `TextEffects::apply` fills `args` from the effect
+  pub(crate) fn new(index: u32, cluster: u32, line: u32, time: f32, size: f32, seed: u64) -> Self {
+    Self {
+      index,
+      cluster,
+      line,
+      time,
+      size,
+      seed,
+      args: String::new(),
+    }
+  }
+}
+
+/// The largest `GlyphMod::scale` an effect can ask for
+const MAX_GLYPH_SCALE: f32 = 8.0;
+
 /// How an effect changes one glyph
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlyphMod {
@@ -99,9 +117,11 @@ impl TextEffects {
     self.effects.contains_key(name)
   }
 
-  /// Run `effect` (`name` or `name=args`); `None` for an unknown name,
-  /// warned once per name
-  pub(crate) fn apply(&self, effect: &str, ctx: &GlyphContext) -> Option<GlyphMod> {
+  /// Run `effect` (`name` or `name=args`) with its args put in `ctx` (its
+  /// buffer reused, so a glyph costs no allocation); `None` for an unknown
+  /// name, warned once per name. Alpha comes back in 0..=1 and scale in
+  /// 0..=8; a non-finite result is replaced by no change.
+  pub(crate) fn apply(&self, effect: &str, ctx: &mut GlyphContext) -> Option<GlyphMod> {
     let (name, args) = effect.split_once('=').unwrap_or((effect, ""));
     let Some(run) = self.effects.get(name) else {
       let first = self
@@ -114,11 +134,20 @@ impl TextEffects {
       }
       return None;
     };
-    let mut ctx = ctx.clone();
-    ctx.args = args.to_string();
-    let result = run(&ctx);
+    if ctx.args != args {
+      ctx.args.clear();
+      ctx.args.push_str(args);
+    }
+    let result = run(ctx);
     let finite = result.offset.is_finite() && result.scale.is_finite() && result.alpha.is_finite();
-    Some(if finite { result } else { GlyphMod::default() })
+    if !finite {
+      return Some(GlyphMod::default());
+    }
+    Some(GlyphMod {
+      alpha: result.alpha.clamp(0.0, 1.0),
+      scale: result.scale.clamp(0.0, MAX_GLYPH_SCALE),
+      ..result
+    })
   }
 }
 
@@ -214,8 +243,8 @@ mod tests {
   #[test]
   fn wave_moves_glyphs_up_and_down_over_time() {
     let effects = TextEffects::default();
-    let a = effects.apply("wave", &ctx(0, 0.0)).unwrap();
-    let b = effects.apply("wave", &ctx(0, 0.125)).unwrap();
+    let a = effects.apply("wave", &mut ctx(0, 0.0)).unwrap();
+    let b = effects.apply("wave", &mut ctx(0, 0.125)).unwrap();
     assert_ne!(a.offset.y, b.offset.y);
     assert!(a.offset.y.abs() <= 20.0 * 0.15 + 1e-4);
   }
@@ -224,9 +253,12 @@ mod tests {
   fn wave_reads_its_arguments() {
     let effects = TextEffects::default();
     let mut c = ctx(0, 0.125);
-    c.args = "5,1".into();
-    let m = effects.apply("wave", &c).unwrap();
+    let m = effects.apply("wave=5,1", &mut c).unwrap();
     assert!(m.offset.y.abs() <= 5.0 + 1e-4);
+    assert_eq!(c.args, "5,1");
+    // The next effect's args replace them in the same buffer
+    effects.apply("wave", &mut c).unwrap();
+    assert_eq!(c.args, "");
   }
 
   #[test]
@@ -234,12 +266,31 @@ mod tests {
     let effects = TextEffects::default();
     for cluster in 0..20 {
       let m = effects
-        .apply("shake", &ctx(cluster, cluster as f32 * 0.1))
+        .apply("shake", &mut ctx(cluster, cluster as f32 * 0.1))
         .unwrap();
       assert!(m.offset.length() <= 20.0 * 0.06 * 1.5);
     }
-    let c = effects.apply("rainbow", &ctx(3, 0.0)).unwrap();
+    let c = effects.apply("rainbow", &mut ctx(3, 0.0)).unwrap();
     assert!(c.color.is_some());
+  }
+
+  #[test]
+  fn an_effects_alpha_and_scale_are_clamped() {
+    let mut effects = TextEffects::default();
+    effects.register("loud", |_: &GlyphContext| GlyphMod {
+      alpha: 5.0,
+      scale: 100.0,
+      ..GlyphMod::default()
+    });
+    effects.register("gone", |_: &GlyphContext| GlyphMod {
+      alpha: -2.0,
+      scale: -1.0,
+      ..GlyphMod::default()
+    });
+    let loud = effects.apply("loud", &mut ctx(0, 0.0)).unwrap();
+    assert_eq!((loud.alpha, loud.scale), (1.0, 8.0));
+    let gone = effects.apply("gone", &mut ctx(0, 0.0)).unwrap();
+    assert_eq!((gone.alpha, gone.scale), (0.0, 0.0));
   }
 
   #[test]
@@ -249,9 +300,12 @@ mod tests {
       offset: glam::Vec2::new(0.0, -(ctx.cluster as f32)),
       ..GlyphMod::default()
     });
-    assert_eq!(effects.apply("lift", &ctx(4, 0.0)).unwrap().offset.y, -4.0);
-    assert!(effects.apply("nope-effect", &ctx(0, 0.0)).is_none());
-    assert!(effects.apply("nope-effect", &ctx(0, 0.0)).is_none());
+    assert_eq!(
+      effects.apply("lift", &mut ctx(4, 0.0)).unwrap().offset.y,
+      -4.0
+    );
+    assert!(effects.apply("nope-effect", &mut ctx(0, 0.0)).is_none());
+    assert!(effects.apply("nope-effect", &mut ctx(0, 0.0)).is_none());
     let warned = crate::core::dev_log::get_entries()
       .iter()
       .filter(|e| e.message.contains("nope-effect"))

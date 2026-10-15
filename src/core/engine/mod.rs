@@ -58,6 +58,7 @@ use crate::core::scene::{PhysicsPaused, Scene, SceneManager};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet, UpdateSet};
 use crate::core::shaders::EffectsManager;
 use crate::core::systems::{record_trail_points, register_juice_systems};
+use crate::core::text::{GlyphRasterizer, TextEngine, advance_text_reveal};
 use crate::core::time::Time;
 use crate::core::ui::{BitmapFont, create_debug_font};
 use crate::core::window::{WindowInfo, WindowRequest};
@@ -160,6 +161,11 @@ pub struct Engine {
   pub(crate) batch: Option<Batch2D>,
   lighting: Option<LightingRenderer>,
   entity_drawer: EntityDrawer,
+  // Text layout (synced with `Fonts`), the glyph rasterizer for that
+  // registry and the text warnings already given
+  text: TextEngine,
+  glyph_raster: GlyphRasterizer,
+  text_warned: std::collections::HashSet<u64>,
   // Each camera's uniform buffer, kept across frames
   camera_uniforms: crate::core::graphics::camera_gpu::CameraUniforms,
   // The frame's cameras in render order (reused across frames), the
@@ -376,7 +382,7 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
       (camera_shake_system, camera_view_system)
         .chain()
         .in_set(PostUpdateSet::Camera),
-      (advance_parallax, update_effects_system)
+      (advance_parallax, advance_text_reveal, update_effects_system)
         .chain()
         .in_set(PostUpdateSet::Extract),
     ),
@@ -534,6 +540,9 @@ impl Engine {
       batch: None,
       lighting: None,
       entity_drawer: EntityDrawer::default(),
+      text: TextEngine::new(),
+      glyph_raster: GlyphRasterizer::new(),
+      text_warned: Default::default(),
       camera_uniforms: Default::default(),
       camera_draws: Vec::new(),
       camera_globals: Vec::new(),

@@ -222,6 +222,8 @@ struct GpuPage {
 pub(crate) struct GlyphAtlas {
   shelves: GlyphShelves,
   pages: HashMap<GlyphFormat, Vec<GpuPage>>,
+  /// Keys that have no image (spaces, refused glyphs): not asked for again
+  empty: HashSet<GlyphKey>,
 }
 
 impl GlyphAtlas {
@@ -229,7 +231,18 @@ impl GlyphAtlas {
     Self {
       shelves: GlyphShelves::new(GLYPH_PAGE_SIZE, GLYPH_PAGES),
       pages: HashMap::new(),
+      empty: HashSet::new(),
     }
+  }
+
+  /// `key` was found to have no image
+  pub(crate) fn has_no_image(&self, key: &GlyphKey) -> bool {
+    self.empty.contains(key)
+  }
+
+  /// Remember that `key` has no image
+  pub(crate) fn mark_no_image(&mut self, key: GlyphKey) {
+    self.empty.insert(key);
   }
 
   fn slot_of(entry: &ShelfEntry) -> GlyphSlot {

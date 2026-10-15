@@ -78,3 +78,41 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   a millisecond each: `Fonts::prewarm` builds known text ahead.
 - Glyphs above 1024 px are refused. Bitmap fonts have no glyph images:
   the renderer draws their cells from the sprite sheet.
+- One `GlyphRasterizer` serves one `Fonts`: swash caches parsed fonts
+  under `[FontId, face index]`. The engine owns one of each.
+- The built-in fonts are subset with `--notdef-outline`, so a character no
+  font has draws a box (`hb-subset` empties `.notdef` by default).
+
+## World text
+
+- `Text2d` lays out (cached) when its text, style or options change or a
+  font changes (`TextLayoutState::key`; the anchor is in it too, since it
+  places the bounds); `TextBounds` holds the block's size and its top-left
+  offset from the position (unscaled).
+- Glyphs are emitted per camera (`only_camera`): raster glyphs are made at
+  the size that camera sees (snapped to `raster_size_step`) and land on
+  whole pixels when nothing is rotated; MSDF glyphs scale. Sorted with
+  sprites (`DrawKind::Text`, after entities at equal z); unlit by default.
+  The emitter (`render/text.rs`) is shared with the UI.
+- Shadows, outlines, fills are three passes over the block. Raster outlines
+  are stroke bands (twice the width, centred); MSDF outline/shadow/glow are
+  shader lanes, limited to half the font's range at its base size. Pixel
+  and bitmap outlines are four copies a whole number of render pixels away.
+- MSDF reach: the field and the image padding hold `range / 2` base pixels
+  around the glyph. Outlines are clamped to that less half a render pixel,
+  and a soft layer's spread and softness shrink together to fit, so an
+  over-wide effect degrades instead of clipping at the quad's edge. A wider
+  effect needs a bigger range (`FontRender::Msdf { range, .. }`).
+- MSDF fonts have no synthesized italic or bold: glyph quads cannot shear,
+  so MSDF keys leave skew and embolden out (one image per glyph) and the
+  text draws upright and regular, warned once per font. Add the real
+  italic or bold face to the registry.
+- Effects run per glyph per frame with one `GlyphContext` per block (its
+  `args` buffer reused, so a glyph allocates nothing); `TextEffects::apply`
+  clamps alpha to 0..=1 and scale to 0..=8.
+- `TextReveal` advances on game time (`PostUpdateSet::Extract`) from the
+  previous frame's layout and writes `TextRevealed` once. It starts over
+  when the text changes (not its style or a font). A finished reveal draws
+  every glyph at full alpha: its fade would leave the last ones partial.
+- The glyph atlas remembers keys with no image (spaces), so they are not
+  rasterized again every frame.
