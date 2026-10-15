@@ -61,7 +61,7 @@ Sub-project 4b (interaction) follows with its own spec. It covers:
 |---|---|---|
 | `src/core/text/` | `Fonts`, `FontId`, `FontRender`, `TextStyle`, `RichText`, `Span`, markup, `TextIcons`, `TextEffects`, layout and its cache, glyph rasterization (raster and MSDF) to bitmaps | `parley`, `swash`, `fdsm` (only here) |
 | `src/core/text/world.rs` | `Text2d`, `TextBounds`, `TextReveal`, `TextRevealed`, the layout system | none |
-| `src/core/render/batch/glyphs.rs` | the glyph atlas: pages, packing, eviction, uploads | `etagere` |
+| `src/core/graphics/glyph_atlas.rs` | the glyph atlas beside the sprite atlas: pages, packing, eviction, uploads | `etagere` |
 | `src/core/render/batch/` | `BatchShader::{TextMask, TextMsdf, UiRect}` and their WGSL | none |
 | `src/core/render/ui.rs` | the UI draw list laid into the batch with a screen-space camera and scissors | none |
 | `src/core/ui/` | `UiContext` records `UiCommand`s; widgets ported; `BitmapFont` and the CPU rasterizer removed | none |
@@ -89,11 +89,11 @@ The text core is GPU-free: it produces layouts (glyph ids, positions, styles, ic
 The binary-size cost is measured in the plan (target about 0.5 MB). Without the feature, the first text draws tofu boxes and warns once until a game loads a font.
 
 **Loading:**
-- `ctx.assets.load_font(path) -> AssetResult<FontId>` (beside `load_sprite`) and `Fonts::add_bytes(bytes)` register a font. Variable and collection files are allowed.
+- `ctx.fonts()` (a `Mut<Fonts>`) registers fonts: `Fonts::load(path) -> AssetResult<FontId>` (native; there is no file system on the web) and `Fonts::add_bytes(bytes)`. Variable and collection files are allowed. Fonts get their own registry until the asset rewrite (sub-project 5).
 - Families resolve by name.
-- A `TextStyle` names a family or a `FontId`. Its fallback chain is the style's fallbacks, then the built-in font of its role.
+- A `TextStyle` names a family or a `FontId`. Its fallback chain is the style's fallbacks, then the UI font, then the mono font (JetBrains Mono covers box drawing, arrows and shapes Inter lacks).
 - A missing glyph draws the font's `.notdef` (tofu) and is warned once per font and character.
-- `Font::bitmap(sprite, cell, chars)` makes a pixel font from a grid sprite sheet. Its glyphs are regions of the sprite in the existing sprite atlas.
+- `Fonts::add_bitmap(family, sprite, cell, chars)` makes a pixel font from a grid sprite sheet. Its glyphs are regions of the sprite in the existing sprite atlas, laid out on a monospace grid. A text uses bitmap or outline fonts, not both.
 - On the web there are no system fonts: only the built-in and loaded fonts.
 
 **`FontRender`, per font:**
@@ -143,7 +143,7 @@ If the spike finds swash's stroke rendering poor, raster outlines use a coverage
 **Markup.** `RichText::markup(&str)`:
 - Tags: `[color=#rrggbb|name]`, `[size=n]`, `[font=family]`, `[b]`, `[i]`, `[outline=width,color]`, `[icon=name]`, `[pause=seconds]`, and effect tags (`[wave]`, `[shake]`, `[rainbow]`, and any registered name).
 - `[[` escapes a bracket.
-- A malformed, unknown or unclosed tag renders as literal text and is warned once per markup string; it never panics.
+- Any tag other than the style tags is an effect tag, since games register effects at runtime. An effect name nobody registered is warned once when drawn, and the text draws without it. Malformed markup (an unclosed `[`, a close with no open, an unclosed tag, a bad value for a style tag) renders as literal text and is warned once per markup string; it never panics.
 - Parsed markup is cached with the layout.
 
 **Reveal.**
@@ -161,7 +161,7 @@ If the spike finds swash's stroke rendering poor, raster outlines use a coverage
 ## The glyph atlas and the batch
 
 **Keys.** A glyph key is: font, glyph id, physical pixel size, subpixel bin, and stroke width (outline entries).
-- UI text uses its exact physical size (logical size × `ui_scale`).
+- UI text uses its exact render-pixel size (size × the UI's render scale).
 - World text with a raster font uses the size the camera sees (size × zoom × entity scale × scale factor), snapped to size steps (1 px up to 32, 2 px up to 64, 4 px beyond) and drawn scaled by the remainder, so a zooming camera does not churn the atlas.
 - MSDF glyphs have one key per glyph.
 
@@ -200,31 +200,31 @@ Outline and shadow quads go just before their glyphs in the same item. Consecuti
 
 Its parts:
 - **Clipping** is a scissor stack with no depth limit; nested clips intersect. `pop_clip` on an empty stack is warned once, not asserted.
-- **Order:** commands draw in submission order, the painter's algorithm. A popup layer (dropdown lists, tooltips later) is flushed last, replacing the caller's `finish_dropdowns` step.
+- **Order:** commands draw in submission order, the painter's algorithm. A popup layer (dropdown lists, tooltips later) draws above it; the engine flushes open dropdown lists onto it after each scene's `ui`, replacing the caller's `finish_dropdowns` step.
 - **Measuring** (`ui.measure_text`) uses the same layout as drawing, so measured and drawn text always agree.
 
 **Scale and resolution:**
-- `ui_scale: f32` maps logical UI pixels to physical pixels. The default is the window's scale factor; `EngineBuilder::ui_scale(Option<f32>)` and `ctx.request_ui_scale(Option<f32>)` (both `u32` today) set it, `None` meaning the scale factor.
-- `ui.screen_size()` is in logical pixels.
-- Text rasterizes at physical pixels, so it is sharp at 1× and 2×.
-- `UiResolution { Window, Target }`:
-  - In the default presentation the UI is always at window resolution.
-  - In pixel-art mode the default is `Target`: the UI draws on the low-res display image before the composite, at scale 1 in target pixels, and is scaled with the art.
-  - `Window` draws it at window resolution over the scaled art instead.
+- `ui_scale: Option<f32>` is render pixels per UI unit. `None` (the default) is automatic and keeps UI units equal to screen units: the scale factor in the default presentation, the whole-pixel scale for window-resolution UI in pixel art, 1 on the pixel-art target. `EngineBuilder::ui_scale(Option<f32>)` and `ctx.request_ui_scale(Option<f32>)` (both `u32` today) set it. A `Some` scales rects as well as text (before, only glyphs scaled), and mouse positions are converted to match.
+- `ui.screen_size()` is in UI units.
+- Text rasterizes at render pixels, so it is sharp at 1× and 2×.
+- `UiResolution { Render, Window }` (default `Render`):
+  - `Render`: the UI image is the render size. That is window resolution in the default presentation, and the low-res target in pixel-art mode, so it scales with the art.
+  - `Window`: in pixel-art mode, the window's physical screen rectangle, crisp over the scaled art.
 
-**The `ui` pass:**
-- At window resolution, it draws onto the output after the composite places the scene image.
-- At `Target` resolution, it draws onto the display image before the composite.
+**The UI image and the `ui` pass.** The `ui` pass draws the commands into a UI image (`Rgba8Unorm`, gamma-encoded premultiplied colour; a `UI_GAMMA` pipeline override makes every batch shader encode its output).
+- The composite blends it over the frame in sRGB space, `ui + frame × (1 − ui.a)`, as the web, egui and the old CPU UI did.
+- So a 50% black panel over white is mid grey (128). In linear light, a 67%-opaque dark backing over white would come out about 157 instead of about 85.
+- Text anti-aliasing keeps its usual weight.
 
 It uses the batch's pipelines (built per format on first use) with a screen-space camera uniform and per-command scissors. Captures include the UI, as now.
 
 Removed:
-- the UI texture;
+- the CPU-written UI texture;
 - `Engine::ui_buffer` and its per-frame clear, scan and upload;
 - `Compositor::upload_ui` and the straight-alpha blend;
 - `BitmapFont`.
 
-**Widgets.** Button, styled button, label, slider, checkbox, toggle, text input, dropdown and both scroll views keep their behaviour and, where they still make sense, their signatures. They draw with the new commands, and their text calls take a `TextStyle` (or size and colour shorthands). The text input takes caret positions, selection rectangles and click hit-testing from the Parley layout (grapheme clusters), so non-ASCII and IME text edits correctly. Its focus model stays as it is until 4b.
+**Widgets.** Button, styled button, label, slider, checkbox, toggle, text input, dropdown and both scroll views keep their behaviour and, where they still make sense, their signatures. They draw with the new commands. The shorthand text calls keep their signatures and draw with the default UI style (14 px Inter); `draw_text_styled` and `ui.text(..)` take a `TextStyle`. The text input takes caret positions, selection rectangles and click hit-testing from the Parley layout (grapheme clusters), so non-ASCII and IME text edits correctly. Its focus model stays as it is until 4b.
 
 ## World text
 
@@ -262,14 +262,14 @@ Raster glyphs are keyed per camera at the size that camera sees.
 
 ## Public API changes
 
-- **New in the prelude:** `Fonts`, `FontId`, `FontRender`, `Font`, `TextStyle`, `Outline`, `Shadow`, `Glow`, `RichText`, `Span`, `TextIcons`, `TextEffects`, `GlyphContext`, `GlyphMod`, `TextLayoutOptions`, `TextAlign`, `TextOverflow`, `Text2d`, `TextBounds`, `TextReveal`, `TextRevealed`, `UiResolution`.
+- **New in the prelude:** `Fonts`, `FontId`, `FontRender`, `FontRole`, `TextStyle`, `Outline`, `Shadow`, `Glow`, `RichText`, `Span`, `TextIcons`, `TextEffects`, `GlyphContext`, `GlyphMod`, `TextLayoutOptions`, `TextAlign`, `TextOverflow`, `Text2d`, `TextBounds`, `TextReveal`, `TextRevealed`, `UiResolution`.
 - **`UiContext`:**
-  - The `draw_text*` family takes a `TextStyle` or shorthands.
+  - The `draw_text*` family keeps its signatures (the default UI style, 14 px); `draw_text_styled` and `ui.text(..)` take a `TextStyle`.
   - `ui.text(..)` returns a builder (reveal, effects, anchor, wrap).
-  - New: `draw_rounded_rect`, `draw_nine_slice`, `measure_text`.
+  - New: `draw_rounded_rect`, `draw_rect_bordered`, `draw_nine_slice`, `draw_line`, `draw_sprite_rect`, `measure_text`, `line_height`; `draw_sprite` takes a `SpriteHandle`.
   - `ui_scale()` is `f32`.
   - `push_clip` and `pop_clip` never panic.
-  - `finish_dropdowns` is removed (the popup layer).
+  - `finish_dropdowns` is no longer public (the engine flushes the popup layer).
 - **Removed:** `BitmapFont`, `create_debug_font` and the UI buffer; `ui_scale` arguments become `f32`.
 - **Console and overlays:** the console takes a font size and colours from its settings instead of a cell size.
 
@@ -279,7 +279,7 @@ Raster glyphs are keyed per camera at the size that camera sees.
 2. **The text core** (fonts, styles, layout, cache, markup, icons, effects), unit-tested without a GPU.
 3. **The glyph atlas and the batch entries,** pixel-tested headless.
 4. **World text,** then the `text` demo's world pages.
-5. **The GPU UI path** beside the CPU one (switched by an internal flag), the widgets ported, then the switch flipped and the CPU path deleted.
+5. **The GPU UI path** replaces the CPU one in one step. The shorthand signatures stay, so every example keeps compiling, and the widgets are ported in the same step.
 6. **Engine users:** the console, the debug overlays, the demo-kit chrome, the dev windows (swash-rasterized JetBrains Mono in their CPU buffers).
 7. **Examples:** every `ui` hook (78), the five games captured headless before and after, the `ui` demo updated.
 8. **Docs, benchmarks,** the `text` demo's web build in three browsers.
@@ -349,7 +349,7 @@ Raster glyphs are keyed per camera at the size that camera sees.
   - World text interleaves with sprites correctly.
   - The UI reuses the batch's bind groups and merging.
 - **Text core free of the GPU.** Layout and rasterization are testable without a device, and 4b's retained nodes reuse them.
-- **The UI draws after tonemapping, onto the output.** UI colours are what the game specified, unaffected by exposure, grading or post effects (as today). In pixel-art mode it goes on the low-res image by default, so it shares the art's pixels.
+- **The UI draws after tonemapping, into a UI image blended in sRGB space.** UI colours and alpha are what the game specified, unaffected by exposure, grading or post effects (as today), and translucency behaves as on the web. In pixel-art mode the image is the low-res target size by default, so the UI shares the art's pixels.
 - **Size steps for world text under zoom.** Exact sizes would rasterize a new glyph set every zoom frame; steps bound the atlas at a few percent of scaling.
 - **Immediate calls cached by content.** An immediate API redraws every frame. The layout cache makes that cost a hash lookup, so the immediate style stays cheap without a retained tree.
 
