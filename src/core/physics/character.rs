@@ -1937,6 +1937,49 @@ mod tests {
     assert!(at(&world, e).translation.x > 100.0, "stepped up");
   }
 
+  // A character that stops on the step it has just stepped up onto stays
+  // there: the step up puts it two skins onto the step at least. With only
+  // its remaining run (the nudge Rapier makes), it was a skin or less over
+  // the step's edge in most alignments, a corner, and it fell back down
+  #[test]
+  fn a_character_that_stops_just_after_a_step_up_stays_on_the_step() {
+    for v in [12.0, 30.0, 60.0, 90.0, 120.0, 150.0, 300.0] {
+      for x0 in [70.0, 70.13, 70.37, 70.61, 70.89] {
+        let (mut world, mut s) = world(60);
+        floor(&mut world, 100.0);
+        // The step: from x = 90, 8 px high
+        world.spawn((Transform::from_xy(140.0, 96.0), Collider::rect(100.0, 8.0)));
+        let e = world
+          .spawn((
+            Transform::from_xy(x0, 79.0),
+            CharacterController::platformer().with_step_height(12.0),
+            Collider::rect(20.0, 40.0),
+          ))
+          .id();
+        fall_together(&mut world, &mut s, &[e], 10);
+        let y0 = at(&world, e).translation.y;
+        let mut stepped = false;
+        for i in 0..400 {
+          world.get_mut::<Velocity>(e).unwrap().dx = if stepped { 0.0 } else { v };
+          fall_together(&mut world, &mut s, &[e], 1);
+          let st = state(&world, e);
+          if stepped {
+            assert!(
+              st.on_floor && !st.left_floor && !st.landed,
+              "{v} px/s from {x0}, step {i}: {st:?}"
+            );
+          }
+          stepped |= at(&world, e).translation.y < y0 - 2.0;
+        }
+        let t = at(&world, e).translation;
+        assert!(
+          stepped && y0 - t.y > 7.5,
+          "{v} px/s from {x0}: stepped {stepped}, at {t}"
+        );
+      }
+    }
+  }
+
   // Top-down characters have no floor to lose: touching side by side they
   // still block each other and slide along each other
   #[test]

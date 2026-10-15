@@ -18,6 +18,8 @@
 //!   slide).
 //! - A slide within `LEVEL` of level neither climbs nor slips (Rapier tests
 //!   the sign exactly, so float noise in a flat floor's normal stopped runs).
+//! - A step up moves the character on by at least three skins (`STEP_ONTO`),
+//!   not just by the run left, so it ends two skins over the step's top.
 //! - parry's fallback for a hit right at the start of a cast is applied
 //!   with its threshold in world units, as Rapier's nudge is, to every pair
 //!   of support-mapped shapes, the parts of polylines and compounds
@@ -41,6 +43,9 @@ pub(crate) const MIN_MOVE: f32 = 1.0e-5;
 /// A surface faces up when its normal is within about 89.9° of up
 /// (Rapier's grounded test).
 const FACING_UP: f32 = 1.0e-3;
+/// How far, in skins, a step up moves the character on at least: from a
+/// skin short of the step's side to two skins over its top.
+const STEP_ONTO: f32 = 3.0;
 /// A tangent rising or falling by less than this share of its length
 /// (about 0.006°) is level: it neither climbs nor slips.
 const LEVEL: f32 = 1.0e-4;
@@ -493,9 +498,15 @@ impl Ledge<'_> {
     }
     let height = max_height - below.map_or(max_height, |(_, hit)| hit.time_of_impact);
     *remaining -= up * height;
-    let nudge = across * across.dot(*remaining).min(min_width);
-    *remaining -= nudge;
-    swept.translation += up * height + nudge;
+    // Rapier moves on by what is left of the run; this puts the character
+    // two skins onto the step at least (it stopped a skin short of the
+    // step's side), within the room on top just checked. With only the run
+    // left it was often a skin or less over the step's edge, a corner the
+    // character slips off (see `Physics::corner_shift`) once it stops
+    let run = across.dot(*remaining).min(min_width);
+    let onto = run.max(STEP_ONTO * self.skin).min(min_width);
+    *remaining -= across * run;
+    swept.translation += up * height + across * onto;
     true
   }
 }
