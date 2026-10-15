@@ -90,7 +90,6 @@ Writing a character's `Transform` teleports it: it is put there without a sweep,
 - Logged once per entity and skipped: a controller on a dynamic (or fixed) body, a controller without a `Collider` on its own entity, a non-finite `Velocity`.
 - Spawned overlapping something solid, a character is pushed out within a few steps. So are two characters spawned or respawned on one point: they are split by entity order and pushed apart. Tile outlines are hollow, though: one that ends up wholly inside a solid region is not pushed out (see Tile colliders).
 - The sweep is continuous: a fast character does not tunnel through a thin wall, and a fast fall lands on a one-way segment.
-- Very large colliders lose sub-pixel precision: a run along a floor 4000 px or longer in one piece (a tile map's straight run is one edge) can sink into it by up to 0.16 px at times.
 - While physics is paused (`is_physics_paused`, or a pushed scene that does not `updates_below`) characters do not move.
 
 ## One-way platforms
@@ -678,4 +677,3 @@ The coins are drawn by their sprite; a level with art draws its tiles separately
 - `Respawn` on a child entity puts it at the point relative to its parent.
 - Messages from the movement presets, the behaviours and physics arrive in the next step's `update`.
 - Scale a child sprite for squash and stretch, never the character: its scale is its hitbox's.
-- A floor 4000 px or longer in one piece (one collider, or one straight run of tile edge) can let a runner sink into it by up to 0.16 px at times.
