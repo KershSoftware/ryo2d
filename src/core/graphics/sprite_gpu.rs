@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use super::glyph_atlas::GlyphSlot;
 use super::render_targets::RenderTargets;
 use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
 use super::{RenderLayers, RenderTarget};
@@ -24,6 +25,7 @@ use crate::core::ecs::{Material, ShaderHandle, ShaderParams, SpriteEffect, Sprit
 use crate::core::render::batch::{BlendMode, Filter, Sampling};
 use crate::core::render::{DrawKind, DrawList, SpriteLook, SpriteShading};
 use crate::core::shaders::custom::{self, CompiledShader, ShaderKind};
+use crate::core::text::{GlyphImage, GlyphKey};
 use crate::core::ui::Color;
 
 /// Per-instance data for GPU sprite rendering
@@ -585,6 +587,24 @@ impl SpriteGpuRenderer {
     let slot = self.atlas.lookup(texture)?;
     let page = self.atlas.texture(slot.page)?;
     Some((slot, (page.width(), page.height())))
+  }
+
+  /// The current frame number (the atlas's least-recently-used clock)
+  #[allow(dead_code)] // read by text in a later task
+  pub(crate) fn frame(&self) -> u64 {
+    self.frame
+  }
+
+  /// A glyph image's slot, rasterizing and uploading it on first use
+  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
+  pub(crate) fn glyph(
+    &mut self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    key: GlyphKey,
+    raster: impl FnOnce() -> Option<GlyphImage>,
+  ) -> Option<GlyphSlot> {
+    self.atlas.glyph(device, queue, key, self.frame, raster)
   }
 
   /// The bind group sampling atlas or target page `page` with `sampling`.

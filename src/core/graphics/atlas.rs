@@ -15,8 +15,10 @@ use std::collections::HashMap;
 use etagere::{AllocId, BucketedAtlasAllocator, size2};
 
 use super::RenderTarget;
+use super::glyph_atlas::{GlyphAtlas, GlyphPage, GlyphSlot};
 use super::texture_registry::TextureId;
 use crate::core::render::batch::Sampling;
+use crate::core::text::{GlyphImage, GlyphKey};
 
 /// Edge length of an atlas page in pixels.
 const PAGE_SIZE: u32 = 2048;
@@ -51,6 +53,9 @@ pub(crate) enum SlotPage {
   Standalone(usize),
   /// A render target's texture
   Target(RenderTarget),
+  /// A glyph page (placed by text in a later task)
+  #[cfg_attr(not(test), allow(dead_code))]
+  Glyph(GlyphPage),
 }
 
 /// Where an image lives: a page index and its rect in normalized page UVs.
@@ -309,13 +314,13 @@ struct Page {
 }
 
 /// A texture's bind groups, one per sampling.
-struct PageBindGroups {
+pub(crate) struct PageBindGroups {
   nearest: wgpu::BindGroup,
   linear: wgpu::BindGroup,
 }
 
 impl PageBindGroups {
-  fn get(&self, sampling: Sampling) -> &wgpu::BindGroup {
+  pub(crate) fn get(&self, sampling: Sampling) -> &wgpu::BindGroup {
     match sampling {
       Sampling::Nearest => &self.nearest,
       Sampling::Linear => &self.linear,
@@ -357,6 +362,7 @@ pub(crate) struct TextureAtlas {
   bind_layout: wgpu::BindGroupLayout,
   nearest: wgpu::Sampler,
   linear: wgpu::Sampler,
+  glyphs: GlyphAtlas,
 }
 
 impl TextureAtlas {
@@ -386,6 +392,7 @@ impl TextureAtlas {
       next_standalone: 0,
       targets: HashMap::new(),
       target_ids: HashMap::new(),
+      glyphs: GlyphAtlas::new(),
       bind_layout: layout,
       nearest: sampler(
         "Sprite Sampler (nearest)",
@@ -404,29 +411,36 @@ impl TextureAtlas {
 
   /// The bind groups sampling `view` with each sampler.
   fn bind(&self, device: &wgpu::Device, view: &wgpu::TextureView, label: &str) -> PageBindGroups {
-    let group = |sampler: &wgpu::Sampler| {
-      crate::core::graphics::bind_groups::create(
-        device,
-        &wgpu::BindGroupDescriptor {
-          label: Some(label),
-          layout: &self.bind_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(sampler),
-            },
-          ],
-        },
-      )
-    };
-    PageBindGroups {
-      nearest: group(&self.nearest),
-      linear: group(&self.linear),
+    bind_with(
+      device,
+      &self.bind_layout,
+      view,
+      &self.nearest,
+      &self.linear,
+      label,
+    )
+  }
+
+  /// The slot of a glyph image, rasterizing and uploading it on first use
+  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
+  pub(crate) fn glyph(
+    &mut self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    key: GlyphKey,
+    frame: u64,
+    raster: impl FnOnce() -> Option<GlyphImage>,
+  ) -> Option<GlyphSlot> {
+    if let Some(slot) = self.glyphs.slot(&key, frame) {
+      return Some(slot);
     }
+    let image = raster()?;
+    let (layout, nearest, linear) = (&self.bind_layout, &self.nearest, &self.linear);
+    self
+      .glyphs
+      .insert(device, queue, key, &image, frame, |view| {
+        bind_with(device, layout, view, nearest, linear, "Glyph Page")
+      })
   }
 
   /// Upload (if needed) and return where `rgba` (sRGB bytes) lives.
@@ -597,6 +611,7 @@ impl TextureAtlas {
       SlotPage::Atlas(i) => &self.pages.get(i)?.bind_groups,
       SlotPage::Standalone(i) => &self.standalone.get(&i)?.bind_groups,
       SlotPage::Target(target) => &self.targets.get(&target)?.bind_groups,
+      SlotPage::Glyph(page) => return self.glyphs.bind_group(page, sampling),
     };
     Some(groups.get(sampling))
   }
@@ -607,6 +622,7 @@ impl TextureAtlas {
       SlotPage::Atlas(i) => self.pages.get(i).map(|p| &p.texture),
       SlotPage::Standalone(i) => self.standalone.get(&i).map(|s| &s.texture),
       SlotPage::Target(target) => self.targets.get(&target).map(|t| &t.texture),
+      SlotPage::Glyph(page) => self.glyphs.texture(page),
     }
   }
 
@@ -859,6 +875,40 @@ fn write_mips(
         depth_or_array_layers: 1,
       },
     );
+  }
+}
+
+/// The bind groups sampling `view` with each sampler.
+fn bind_with(
+  device: &wgpu::Device,
+  layout: &wgpu::BindGroupLayout,
+  view: &wgpu::TextureView,
+  nearest: &wgpu::Sampler,
+  linear: &wgpu::Sampler,
+  label: &str,
+) -> PageBindGroups {
+  let group = |sampler: &wgpu::Sampler| {
+    crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(sampler),
+          },
+        ],
+      },
+    )
+  };
+  PageBindGroups {
+    nearest: group(nearest),
+    linear: group(linear),
   }
 }
 

@@ -652,3 +652,41 @@ fn a_reloaded_sprite_is_new_at_every_mip_level() {
     [30, 200, 60, 255]
   );
 }
+
+#[test]
+fn glyph_pages_bind_once_and_reuse_their_glyphs() {
+  let (device, queue) = crate::core::testing::shared_gpu().expect("this check needs a GPU");
+  let mut sprites = crate::core::graphics::SpriteGpuRenderer::new(&device, &queue);
+  let image = |w: u32, h: u32| crate::core::text::GlyphImage {
+    format: crate::core::text::GlyphFormat::Mask,
+    width: w,
+    height: h,
+    left: 0,
+    top: h as i32,
+    data: vec![255; (w * h) as usize],
+    base: 16.0,
+  };
+  let before = crate::core::graphics::bind_groups::created_on_this_thread();
+  let a = crate::core::text::GlyphKey::fill(crate::core::text::FontId(0), 1, 16.0, 0.0);
+  let b = crate::core::text::GlyphKey::fill(crate::core::text::FontId(0), 2, 16.0, 0.0);
+  let slot_a = sprites
+    .glyph(&device, &queue, a, || Some(image(8, 10)))
+    .expect("placed");
+  let _ = sprites
+    .glyph(&device, &queue, b, || Some(image(6, 9)))
+    .expect("placed");
+  let made = crate::core::graphics::bind_groups::created_on_this_thread() - before;
+  assert_eq!(made, 2, "one page, bound once per sampler");
+  let again = sprites
+    .glyph(&device, &queue, a, || panic!("no second raster"))
+    .expect("cached");
+  assert_eq!(again, slot_a);
+  assert!(
+    sprites
+      .page_bind_group(
+        crate::core::graphics::SlotPage::Glyph(slot_a.page),
+        crate::core::render::batch::Sampling::Linear
+      )
+      .is_some()
+  );
+}

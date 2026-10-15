@@ -19,6 +19,8 @@ pub(crate) mod camera_gpu;
 pub(crate) mod camera_images;
 pub mod camera_mut;
 mod compositor;
+#[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
+mod glyph_atlas;
 mod gpu_context;
 pub mod gpu_error;
 pub mod parallax;
