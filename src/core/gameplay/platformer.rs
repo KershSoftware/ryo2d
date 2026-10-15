@@ -1270,6 +1270,43 @@ mod tests {
     at(world, e).translation.x - at(world, platform).translation.x
   }
 
+  // A tapped jump off a lift rising at 300 px/s, faster than the cut jump
+  // rises above it for long: the lift catches it up and it lands back on
+  // it, once (it fell through it)
+  #[test]
+  fn a_tapped_jump_off_a_fast_lift_lands_back_on_it() {
+    use crate::core::physics::RigidBody;
+    let (mut world, mut s) = world(60);
+    let lift = world
+      .spawn((
+        Transform::from_xy(0.0, 110.0),
+        RigidBody::kinematic(),
+        Collider::rect(600.0, 20.0),
+      ))
+      .id();
+    let e = runner(&mut world, PlatformerMovement::default());
+    settle(&mut world, &mut s);
+    world.get_mut::<Velocity>(lift).unwrap().dy = -300.0;
+    run(&mut world, &mut s, 10);
+    assert!(world.get::<CharacterState>(e).unwrap().on_floor);
+    let before = events(&world).len();
+    intent(&mut world, e).jump_pressed = true;
+    run(&mut world, &mut s, 90);
+    let kinds = &events(&world)[before..];
+    assert_eq!(
+      kinds,
+      [MovementEventKind::Jumped, MovementEventKind::Landed]
+    );
+    let st = world.get::<CharacterState>(e).unwrap();
+    assert!(st.on_floor && st.floor == Some(lift), "{st:?}");
+    let feet = at(&world, e).translation.y + 20.0;
+    let top = at(&world, lift).translation.y - 10.0;
+    assert!(
+      (0.0..=1.0).contains(&(top - feet)),
+      "feet {feet}, top {top}"
+    );
+  }
+
   #[test]
   fn a_jump_off_a_moving_platform_lands_where_it_left() {
     let (mut world, mut s) = world(60);

@@ -54,7 +54,8 @@ fn character_body() -> RigidBody {
 /// A character rides what it stands on: a platform moved by `Transform` or
 /// by velocity, a turning one, or a dynamic body. Leaving it (a jump, a step
 /// off the edge, the platform despawned) adds the platform's velocity to
-/// `Velocity`, so the momentum is kept.
+/// `Velocity`, so the momentum is kept; landing on a rising platform takes
+/// its rise off again.
 #[derive(Component, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 #[require(Transform, Velocity, CharacterState, RigidBody = character_body())]
@@ -461,6 +462,8 @@ impl Physics {
       .filter(|_| carry.length() > sweep::MIN_MOVE)
       .and_then(|floor| self.body_entries.get(&floor))
       .map(|entry| entry.handle);
+    // The floor whose frame the own move is in (it carries the character)
+    let carried_by = state.floor.filter(|_| was_on_floor);
 
     // The move and the probe start where the step does
     let solid_from_start = solid(&*shape, start, dropping);
@@ -527,9 +530,20 @@ impl Physics {
       // probe still reaches it: rising past a ledge's top or a neighbour's
       // head would land it mid-jump. Measured along the floor's normal, so a
       // walk up a slope keeps it, and the push-out and the carry are not
-      // part of the move. A move kept to the ground (the snap) keeps it too:
-      // a step up rises onto its floor
-      .filter(|(_, hit)| snap || moved.translation.dot(hit.normal1) <= skin);
+      // part of the move; and against the floor, so a lift rising faster
+      // than the character catches it up (on the floor that carried it, the
+      // move is already the lift's own frame). A move kept to the ground
+      // (the snap) keeps it too: a step up rises onto its floor
+      .filter(|(handle, hit)| {
+        let floor = self.owners.get(handle).map(|owner| owner.body);
+        let frame = match floor {
+          Some(body) if carried_by != Some(body) => {
+            to_rapier(self.floor_motion(body, from_rapier(hit.witness1), dt))
+          }
+          _ => Vector::ZERO,
+        };
+        snap || (moved.translation - frame).dot(hit.normal1) <= skin
+      });
 
     // The carry, past everything but the floor (it moves with the character),
     // starting where the move left it
@@ -571,7 +585,15 @@ impl Physics {
     } else {
       Vec2::ZERO
     };
-    *velocity = real_velocity(wanted, &normals, platformer.then_some(up), momentum);
+    // Landing on a rising floor takes its rise off, as leaving it adds its
+    // momentum: the carry moves the character with it from here, and a
+    // velocity still holding the rise would lift it off again
+    let rise = if state.landed {
+      up * state.platform_velocity.dot(up).max(0.0)
+    } else {
+      Vec2::ZERO
+    };
+    *velocity = real_velocity(wanted - rise, &normals, platformer.then_some(up), momentum);
     state.sliding_down_slope = platformer && moved.sliding_down_slope;
     state.velocity_before = wanted;
     state.stuck = stuck || pushing_out;
@@ -2182,6 +2204,45 @@ mod tests {
         assert!(
           (0.0..=1.0).contains(&(top - feet)),
           "dy {dy}, step {i}: feet {feet}, top {top}"
+        );
+      }
+    }
+  }
+
+  // A jump off a lift keeps the lift's rise (momentum), so a lift rising
+  // faster than the jump's top speed catches the character up while it
+  // still rises in the world: against the lift it is falling onto it, and
+  // it lands, once, and rides on (it was taken for leaving the lift and
+  // fell through it, or landed and bounced off it)
+  #[test]
+  fn a_jump_off_a_fast_lift_lands_back_on_it() {
+    for lift in [200.0, 300.0, 600.0] {
+      for jump in [60.0, 150.0, 300.0] {
+        let (mut world, mut s) = world(60);
+        let (platform, e) = on_platform(&mut world, &mut s);
+        world.get_mut::<Velocity>(platform).unwrap().dy = -lift;
+        for _ in 0..10 {
+          step(&mut world, &mut s, e, 980.0);
+        }
+        assert!(state(&world, e).on_floor, "lift {lift}: riding");
+        world.get_mut::<Velocity>(e).unwrap().dy = -jump;
+        let (mut left, mut landings) = (0, 0);
+        for _ in 0..90 {
+          step(&mut world, &mut s, e, 980.0);
+          let st = state(&world, e);
+          left += usize::from(st.left_floor);
+          landings += usize::from(st.landed);
+        }
+        let st = state(&world, e);
+        assert!(
+          (left, landings) == (1, 1) && st.on_floor && st.floor == Some(platform),
+          "lift {lift}, jump {jump}: left {left}, landed {landings}: {st:?}"
+        );
+        let feet = at(&world, e).translation.y + 20.0;
+        let top = at(&world, platform).translation.y - 10.0;
+        assert!(
+          (0.0..=1.0).contains(&(top - feet)),
+          "lift {lift}, jump {jump}: feet {feet}, top {top}"
         );
       }
     }

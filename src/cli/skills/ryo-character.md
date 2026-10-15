@@ -76,12 +76,12 @@ Top-down characters report only walls. For contacts as messages (`CollisionStart
 
 ### Teleporting
 
-Writing a character's `Transform` teleports it: it is put there without a sweep, its `CharacterState` resets (in the air, touching nothing, any drop-through over), and it still moves by its `Velocity` from the new pose in that step, pushing out of whatever it was put into first. A rotation written with it is kept. So a respawn onto a floor reports `landed` on that step, and a correction mid-flight costs no step of motion. A write that leaves the pose where it was does not count. Zero `Velocity` too if it should arrive standing still, and call `ctx.skip_interpolation(entity)` if it is `Interpolated`.
+Writing a character's `Transform` teleports it: it is put there without a sweep, its `CharacterState` resets (in the air, touching nothing, any drop-through over), and it still moves by its `Velocity` from the new pose in that step, pushing out of whatever it was put into first. A rotation written with it is kept. So a respawn onto a floor reports `landed` on that step (unless its `Velocity` rises that step: a floor the character rises off, by more than its skin, is not its floor), and a correction mid-flight costs no step of motion. A write that leaves the pose where it was does not count. Zero `Velocity` too if it should arrive standing still, and call `ctx.skip_interpolation(entity)` if it is `Interpolated`.
 
 ### Riding and pushing
 
 - What it stands on carries it: a kinematic platform moved by `Transform` or by `Velocity` (turning ones too) or a dynamic body; fixed bodies do not move. Walls and ceilings still stop the ride. A lift carries its rider up through a one-way platform above it.
-- Leaving the floor (a jump, walking off, the platform despawned or disabled) adds `platform_velocity` to `Velocity`. A jump off a rising platform goes higher. The platformer preset keeps the horizontal part until it lands (see `PlatformerMovement`); a game's own movement code that steers toward a target speed in the air should aim past it the same way, or it slows the momentum away.
+- Leaving the floor (a jump, walking off, the platform despawned or disabled) adds `platform_velocity` to `Velocity`. A jump off a rising platform goes higher, and landing back on it takes the rise off again (a lift rising faster than the jump catches the character up and it lands on it). The platformer preset keeps the horizontal part until it lands (see `PlatformerMovement`); a game's own movement code that steers toward a target speed in the air should aim past it the same way, or it slows the momentum away.
 - A floor that is despawned or disabled is gone at once: the character falls on the next step.
 - With `push`, dynamic bodies it walks into are pushed, and one it stands on is weighed down.
 
