@@ -17,6 +17,7 @@ use crate::core::render::Look;
 use crate::core::render::{DebugDraw, RenderPipeline};
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
 use crate::core::shaders::EffectsManager;
+use crate::core::text::Fonts;
 use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
@@ -175,6 +176,12 @@ impl SceneContext<'_> {
   /// pops unless the scene removes it.
   pub fn render_pipeline(&mut self) -> Mut<'_, RenderPipeline> {
     self.world.resource_mut::<RenderPipeline>()
+  }
+
+  /// The fonts text can use ([`Fonts`]): add a font file or bytes, pick a
+  /// font's render mode, choose the fonts the built-in roles use
+  pub fn fonts(&mut self) -> Mut<'_, Fonts> {
+    self.world.resource_mut::<Fonts>()
   }
 
   /// Debug lines, rectangles, circles, arrows and crosses over the world

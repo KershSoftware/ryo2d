@@ -119,6 +119,9 @@ pub mod prelude {
     MainCamera, Projection, RenderLayers, RenderTarget, RenderTargets, Viewport,
   };
 
+  // Text
+  pub use crate::core::text::{FontError, FontId, FontRender, FontRole, Fonts};
+
   // Tiled rendering
   pub use crate::core::graphics::{CompositeTile, CompositeTileBuilder, TileDirection, TilePart};
 

@@ -313,6 +313,7 @@ pub(crate) fn init_world_resources(
     display_mode: config.display_mode,
   });
   world.insert_resource(RenderPipeline::default_2d());
+  world.insert_resource(crate::core::text::Fonts::with_builtins());
   world.insert_resource(PhysicsPaused(false));
   world.insert_resource(frame::PendingTickCheck::default());
   world.add_observer(frame::record_tick_check);

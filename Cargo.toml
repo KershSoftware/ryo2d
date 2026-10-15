@@ -52,6 +52,11 @@ winit = "0.30"
 gilrs = "0.11"
 rand = "0.8"
 etagere = "0.2"
+# Text: layout (no system fonts), glyph rasterization, MSDF generation.
+# Named only in src/core/text/.
+parley = { version = "0.12", default-features = false, features = ["std"] }
+swash = "0.2.10"
+fdsm = "0.8"
 ryo2d-derive = { path = "crates/ryo2d-derive" }
 
 web-time = "1.1"
@@ -85,7 +90,9 @@ wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [features]
-default = []
+default = ["default-fonts"]
+# Built-in fonts (Inter, JetBrains Mono, m5x7) embedded in the engine
+default-fonts = []
 profiler = ["puffin"]
 matchbox = ["matchbox_socket"]
 
@@ -100,6 +107,10 @@ harness = false
 
 [[bench]]
 name = "physics"
+harness = false
+
+[[bench]]
+name = "text"
 harness = false
 
 # Dev builds: optimize dependencies and engine for performance, keep game code light for fast iteration
