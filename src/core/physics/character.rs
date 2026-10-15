@@ -9,6 +9,7 @@ use rapier2d::control::{
   CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
 };
 use rapier2d::parry::query::{QueryDispatcher, ShapeCastHit, ShapeCastStatus};
+use rapier2d::parry::shape::Cuboid;
 use rapier2d::prelude::{
   Collider as RapierCollider, ColliderHandle, Pose, QueryFilter as RapierFilter, QueryPipeline,
   Shape, Vector,
@@ -559,41 +560,44 @@ impl Physics {
     };
     // A floor under no more than the skin of the character's bottom is a
     // corner it is held up on by its skin (a ledge's edge or a neighbour's
-    // head it is level with, or just past, or barely over): unless something
-    // else holds it there, it is moved off, away from the corner, and falls
-    // past it to what is beside it. Not when the move goes onto it: a step
-    // up, or a landing on a platform's near edge, has only begun to cross it
+    // head it is level with, or just past, or barely over): it is moved
+    // off, away from the corner, and falls past it to what is beside it.
+    // Whether anything holds it up by more than the skin is asked of the
+    // character narrowed by its skin on each side: if that finds a floor
+    // within reach (the platform past a polyline's corner vertex, the other
+    // side of a seam, a post under its middle), it stands. Not when the move
+    // goes onto the corner: a step up, or a landing on a platform's near
+    // edge, has only begun to cross it. A box only: a round character meets
+    // such a corner with a steep normal, a wall, and slides off it already
+    let narrowed = shape.as_cuboid().and_then(|cuboid| {
+      let half = cuboid.half_extents;
+      (half.x > skin).then(|| Cuboid::new(Vector::new(half.x - skin, half.y)))
+    });
     let corner = |(handle, hit): &(ColliderHandle, ShapeCastHit), pose: &Pose| {
+      let narrowed = narrowed.as_ref()?;
       if from_rapier(hit.normal1).dot(up) < floor_cos(max_slope) {
         return None;
       }
-      self
+      let shift = self
         .corner_shift(&*shape, pose, *handle, hit, skin)
-        .filter(|shift| to_rapier(desired).dot(*shift) >= 0.0)
+        .filter(|shift| to_rapier(desired).dot(*shift) >= 0.0)?;
+      let down = to_rapier(Vec2::Y);
+      let tolerance = kcc.normal_nudge_factor;
+      let reach = skin + FLOOR_PROBE;
+      let held = sweep::probe(&queries, pose, down, narrowed, 0.0, reach, tolerance)
+        .is_some_and(|(_, hit)| from_rapier(hit.normal1).dot(up) >= floor_cos(max_slope));
+      (!held).then_some(shift)
     };
     let mut floor_hit = find_floor(&queries, &pose);
-    if let Some((held_by, shift)) =
-      floor_hit.and_then(|hit| corner(&hit, &pose).map(|shift| (hit.0, shift)))
-    {
-      // Something else under it, at the seam of two floors?
-      let not_corner = |handle: ColliderHandle, collider: &RapierCollider| {
-        handle != held_by && solid_from_start(handle, collider)
+    if let Some(shift) = floor_hit.and_then(|hit| corner(&hit, &pose)) {
+      let aside = KinematicCharacterController {
+        autostep: None,
+        snap_to_ground: None,
+        ..kcc
       };
-      let others = QueryPipeline {
-        filter: filter.predicate(&not_corner),
-        ..queries
-      };
-      floor_hit = find_floor(&others, &pose).filter(|hit| corner(hit, &pose).is_none());
-      if floor_hit.is_none() {
-        let aside = KinematicCharacterController {
-          autostep: None,
-          snap_to_ground: None,
-          ..kcc
-        };
-        let off = sweep::move_shape(&aside, &queries, &*shape, &pose, shift, false, |_| {});
-        pose.translation += off.translation;
-        floor_hit = find_floor(&queries, &pose).filter(|hit| corner(hit, &pose).is_none());
-      }
+      let off = sweep::move_shape(&aside, &queries, &*shape, &pose, shift, false, |_| {});
+      pose.translation += off.translation;
+      floor_hit = find_floor(&queries, &pose).filter(|hit| corner(hit, &pose).is_none());
     }
 
     // The carry, past everything but the floor (it moves with the character),
@@ -709,11 +713,14 @@ impl Physics {
   }
 
   /// How far to move a character of `shape` at `pose` off the floor `hit`
-  /// found on `collider` when it is a corner: the floor (the part hit, for
-  /// a polyline or compound) overlaps the character's width, across up, by
-  /// no more than `skin`. Away from the floor, by that overlap plus the
-  /// skin, so the corner is a skin's width beside it. `None` for a floor,
-  /// or a shape whose extent is not known (no support map).
+  /// found on `collider` if it is a corner: away from the floor (the part
+  /// hit, for a polyline or compound), until the floor ends a skin past the
+  /// character's nearer side. `None` when that part overlaps the
+  /// character's width, across up, by more than `skin` (it holds it up, so
+  /// no narrowed probe is needed), or its extent is not known (no support
+  /// map). At a polyline's corner vertex the part hit can be the side run,
+  /// of no width, so a small overlap here only means "ask the narrowed
+  /// probe".
   fn corner_shift(
     &self,
     shape: &dyn Shape,
@@ -739,12 +746,12 @@ impl Physics {
     if overlap > skin {
       return None;
     }
-    let away = if floor_lo + floor_hi > lo + hi {
-      -1.0
+    let shift = if floor_lo + floor_hi > lo + hi {
+      floor_lo - hi - skin
     } else {
-      1.0
+      floor_hi - lo + skin
     };
-    Some(Vector::X * away * (overlap + skin))
+    Some(Vector::X * shift)
   }
 
   /// Keep a drop-through's bookkeeping after the move; true when the drop
@@ -1568,7 +1575,8 @@ mod tests {
 
   // A tile-aligned character beside a block of tiles, flush against it,
   // jumps over its top and comes down past its corner to the ground (the
-  // outline is one polyline: its top run is the part measured)
+  // block's outline is one polyline: narrowed by its skin, the character
+  // has nothing under it there)
   #[test]
   fn a_tile_aligned_character_jumping_beside_a_flush_block_lands_on_the_ground() {
     use crate::core::physics::{TileCell, TileColliders};
@@ -1605,6 +1613,155 @@ mod tests {
       assert!(
         st.on_floor && landings == 1 && (131.0..=132.0).contains(&feet),
         "side {side}: landed {landings} times, feet at {feet}: {st:?}"
+      );
+    }
+  }
+
+  /// A platform from x = 64 to 192, its top at 100, three ways: a box, a
+  /// row of 16 px tiles (an outline polyline), a closed polyline outline.
+  fn edge_platform(world: &mut World, kind: usize) {
+    use crate::core::physics::{TileCell, TileColliders};
+    match kind {
+      0 => {
+        world.spawn((
+          Transform::from_xy(128.0, 108.0),
+          Collider::rect(128.0, 16.0),
+        ));
+      }
+      1 => {
+        let mut cells = vec![TileCell::Empty; 16];
+        for cell in &mut cells[4..12] {
+          *cell = TileCell::Solid;
+        }
+        world.spawn((
+          Transform::from_xy(0.0, 100.0),
+          TileColliders::from_cells(16, 1, Vec2::splat(16.0), cells),
+        ));
+      }
+      _ => {
+        world.spawn((
+          Transform::IDENTITY,
+          Collider::polyline([
+            Vec2::new(64.0, 100.0),
+            Vec2::new(192.0, 100.0),
+            Vec2::new(192.0, 116.0),
+            Vec2::new(64.0, 116.0),
+            Vec2::new(64.0, 100.0),
+          ]),
+        ));
+      }
+    }
+  }
+
+  // A character with a few pixels over a platform's edge stands there, on
+  // a box, a tile row and a polyline outline alike. At an outline's corner
+  // the probe can report the side run (its width zero) with the top's
+  // normal: measured by the part hit, every tile and polyline edge was a
+  // corner, and the character fell off with up to 5 px over it, or was
+  // shoved back on with 8 to 12 px over
+  #[test]
+  fn a_character_stopped_at_a_platforms_edge_stands_there() {
+    for kind in 0..3 {
+      for over in [1.0, 3.0, 5.0, 8.0, 12.0] {
+        for side in [1.0, -1.0] {
+          let (mut world, mut s) = world(60);
+          edge_platform(&mut world, kind);
+          // 16 × 32, `over` px over the right (or left) edge, 1 px above
+          let x = if side > 0.0 {
+            192.0 + 8.0 - over
+          } else {
+            64.0 - 8.0 + over
+          };
+          let e = world
+            .spawn((
+              Transform::from_xy(x, 83.0),
+              CharacterController::platformer(),
+              Collider::rect(16.0, 32.0),
+            ))
+            .id();
+          let mut landings = 0;
+          for i in 0..60 {
+            fall_together(&mut world, &mut s, &[e], 1);
+            let st = state(&world, e);
+            landings += usize::from(st.landed);
+            assert!(
+              i < 2 || (st.on_floor && !st.left_floor),
+              "kind {kind}, {over} px over, side {side}, step {i}: {st:?}"
+            );
+          }
+          let drift = at(&world, e).translation.x - x;
+          assert!(
+            landings == 1 && drift.abs() < 1e-3,
+            "kind {kind}, {over} px over, side {side}: landed {landings}, moved {drift}"
+          );
+        }
+      }
+    }
+  }
+
+  // Standing over a vertex between two collinear runs of a polyline, or
+  // the seam of two boxes, its side just past it: a floor, and it stays put
+  #[test]
+  fn a_character_over_a_polyline_vertex_or_a_seam_stays_put() {
+    for seam in [false, true] {
+      for x in [-10.3, -10.1, -10.0, -9.9, -9.7, 9.7, 9.9, 10.0, 10.1, 10.3] {
+        let (mut world, mut s) = world(60);
+        if seam {
+          world.spawn((
+            Transform::from_xy(-100.0, 110.0),
+            Collider::rect(200.0, 20.0),
+          ));
+          world.spawn((
+            Transform::from_xy(100.0, 110.0),
+            Collider::rect(200.0, 20.0),
+          ));
+        } else {
+          world.spawn((
+            Transform::IDENTITY,
+            Collider::polyline([
+              Vec2::new(-200.0, 100.0),
+              Vec2::new(0.0, 100.0),
+              Vec2::new(200.0, 100.0),
+            ]),
+          ));
+        }
+        let e = character(&mut world, x, 79.0);
+        for i in 0..60 {
+          fall_together(&mut world, &mut s, &[e], 1);
+          let st = state(&world, e);
+          assert!(
+            i < 2 || (st.on_floor && !st.left_floor && !st.landed),
+            "seam {seam}, x {x}, step {i}: {st:?}"
+          );
+        }
+        let drift = at(&world, e).translation.x - x;
+        assert!(drift.abs() < 1e-3, "seam {seam}, x {x}: moved {drift}");
+      }
+    }
+  }
+
+  // A post thinner than the skin under the middle of the character holds
+  // it up: narrowed by its skin, the character still has it under it
+  #[test]
+  fn a_character_on_a_post_thinner_than_its_skin_stands_on_it() {
+    for width in [0.3, 2.0] {
+      let (mut world, mut s) = world(60);
+      floor(&mut world, 100.0);
+      // From y = 60 to the floor
+      let post = world
+        .spawn((Transform::from_xy(0.0, 80.0), Collider::rect(width, 40.0)))
+        .id();
+      let e = character(&mut world, 0.0, 30.0);
+      let landings = fall_watching(&mut world, &mut s, e, &[e], 90);
+      let st = state(&world, e);
+      let feet = at(&world, e).translation.y + 20.0;
+      assert!(
+        st.on_floor && st.floor == Some(post) && landings == 1 && (59.0..=60.0).contains(&feet),
+        "post {width}: landed {landings}, feet {feet}: {st:?}"
+      );
+      assert!(
+        at(&world, e).translation.x.abs() < 1e-3,
+        "post {width}: stayed"
       );
     }
   }

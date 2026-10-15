@@ -932,6 +932,60 @@ mod tests {
     }
   }
 
+  // A player walking to the edge of a tile platform and letting go stops
+  // with part of itself over the edge, and stands there: no fall, no
+  // landing (a tile outline's corner was measured by its side run, of no
+  // width, and the player fell off with up to half of itself on the
+  // platform)
+  #[test]
+  fn a_player_letting_go_at_a_tile_edge_stands_there() {
+    use crate::core::physics::{TileCell, TileColliders};
+    for release in [14.0, 10.0, 6.0] {
+      for side in [1.0, -1.0] {
+        let (mut world, mut s) = world(60);
+        floor(&mut world, 300.0);
+        // Tiles 4 to 11 of a 16 px row from (0, 100): x 64 to 192
+        let mut cells = vec![TileCell::Empty; 16];
+        for cell in &mut cells[4..12] {
+          *cell = TileCell::Solid;
+        }
+        world.spawn((
+          Transform::from_xy(0.0, 100.0),
+          TileColliders::from_cells(16, 1, Vec2::splat(16.0), cells),
+        ));
+        let e = player(&mut world, 128.0, 79.0);
+        world.entity_mut(e).insert(PlatformerMovement::default());
+        settle(&mut world, &mut s);
+        let before = events(&world).len();
+        // Walk out until only `release` px of its 20 are still over the
+        // platform, then let go
+        let mut going = true;
+        for i in 0..120 {
+          let x = at(&world, e).translation.x;
+          let over = if side > 0.0 {
+            192.0 - (x - 10.0)
+          } else {
+            (x + 10.0) - 64.0
+          };
+          going &= over > release;
+          intent(&mut world, e).direction = Vec2::new(if going { side } else { 0.0 }, 0.0);
+          run(&mut world, &mut s, 1);
+          let st = world.get::<CharacterState>(e).unwrap();
+          assert!(
+            st.on_floor && !st.left_floor,
+            "release {release}, side {side}, step {i}: {st:?}"
+          );
+        }
+        assert!(!going, "release {release}, side {side}: reached the edge");
+        assert!(
+          events(&world)[before..].is_empty(),
+          "release {release}, side {side}: {:?}",
+          &events(&world)[before..]
+        );
+      }
+    }
+  }
+
   // The player beside the one that jumped is not wedged under it: it walks
   // away, walks into it (blocked, still on the floor) and jumps. With the
   // jumper standing on its head corner it could not move or jump
