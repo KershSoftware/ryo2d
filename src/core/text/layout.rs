@@ -72,6 +72,10 @@ pub(crate) struct TextLayout {
   pub(crate) styles: Vec<GlyphStyle>,
   /// Character clusters in the block (the reveal's unit)
   pub(crate) clusters: u32,
+  /// Typewriter pauses: (cluster the pause comes before, seconds)
+  pub(crate) pauses: Vec<(u32, f32)>,
+  /// Clusters that are punctuation (`. , ! ? ; :` and their full-width forms)
+  pub(crate) punctuation: Vec<u32>,
   /// Every glyph is a pixel or bitmap font's
   pub(crate) pixel: bool,
 }

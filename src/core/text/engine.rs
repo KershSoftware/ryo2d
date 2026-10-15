@@ -565,6 +565,7 @@ impl TextEngine {
       None => width,
     };
     let clusters = placed.number_clusters();
+    let (pauses, punctuation) = placed.reveal_marks(text);
     let pixel = !placed.glyphs.is_empty()
       && placed
         .glyphs
@@ -578,6 +579,8 @@ impl TextEngine {
       lines: placed.lines,
       styles: glyph_styles(text, style),
       clusters,
+      pauses,
+      punctuation,
       pixel,
     }
   }
@@ -898,6 +901,7 @@ impl TextEngine {
       });
     }
 
+    let (pauses, punctuation) = bitmap_reveal_marks(text, clusters);
     TextLayout {
       size: Vec2::new(frame, rows.len() as f32 * line_height),
       scale,
@@ -906,6 +910,8 @@ impl TextEngine {
       lines,
       styles: glyph_styles(text, style),
       clusters,
+      pauses,
+      punctuation,
       pixel: true,
     }
   }
@@ -1122,6 +1128,31 @@ impl Placed {
     Some(pen + dots_width)
   }
 
+  /// The typewriter pauses and punctuation clusters. Call after
+  /// `number_clusters`, which sorts the cluster starts.
+  fn reveal_marks(&self, text: &RichText) -> (Vec<(u32, f32)>, Vec<u32>) {
+    let source = text.text.as_str();
+    let starts = &self.cluster_starts;
+    let mut pauses: Vec<(u32, f32)> = text
+      .pauses
+      .iter()
+      .map(|mark| {
+        (
+          to_u32(starts.partition_point(|&s| s < mark.at)),
+          mark.seconds,
+        )
+      })
+      .collect();
+    pauses.sort_by_key(|&(cluster, _)| cluster);
+    let punctuation = starts
+      .iter()
+      .enumerate()
+      .filter(|&(_, &start)| first_char(source, start).is_some_and(is_punctuation))
+      .map(|(cluster, _)| to_u32(cluster))
+      .collect();
+    (pauses, punctuation)
+  }
+
   /// Number the clusters in logical order, give each glyph and icon its
   /// cluster, and return the count. An icon shares the cluster after it; an
   /// icon with none after it gets a cluster of its own, so a reveal shows it.
@@ -1144,6 +1175,72 @@ impl Placed {
       }
     }
     to_u32(count)
+  }
+}
+
+/// Typewriter state: clusters shown (fractional), seconds of pause left
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct RevealClock {
+  pub(crate) shown: f32,
+  pub(crate) hold: f32,
+  pub(crate) done: bool,
+}
+
+impl RevealClock {
+  /// Advance by `dt` at `per_second` clusters a second, holding at pauses
+  /// and for `punctuation_pause` after punctuation; true on the step the
+  /// whole text becomes visible
+  pub(crate) fn step(
+    &mut self,
+    dt: f32,
+    per_second: f32,
+    punctuation_pause: f32,
+    layout: &TextLayout,
+  ) -> bool {
+    if self.done {
+      return false;
+    }
+    let total = layout.clusters as f32;
+    if !(per_second.is_finite() && per_second > 0.0) || !dt.is_finite() {
+      self.shown = total;
+      self.done = true;
+      return true;
+    }
+    let mut left = dt.max(0.0);
+    while left > 0.0 && self.shown < total {
+      if self.hold > 0.0 {
+        let spent = self.hold.min(left);
+        self.hold -= spent;
+        left -= spent;
+        continue;
+      }
+      let next = self.shown.floor() + 1.0;
+      let needed = (next - self.shown) / per_second;
+      if left < needed {
+        self.shown += left * per_second;
+        left = 0.0;
+      } else {
+        self.shown = next;
+        left -= needed;
+        let revealed = next as u32 - 1;
+        if layout.punctuation.contains(&revealed) {
+          self.hold += punctuation_pause.max(0.0);
+        }
+        // Every pause before the next cluster adds up
+        self.hold += layout
+          .pauses
+          .iter()
+          .filter(|(cluster, _)| *cluster == next as u32)
+          .map(|(_, seconds)| seconds)
+          .sum::<f32>();
+      }
+    }
+    if self.shown >= total {
+      self.shown = total;
+      self.done = true;
+      return true;
+    }
+    false
   }
 }
 
@@ -1381,6 +1478,37 @@ fn glyph_styles(text: &RichText, style: &TextStyle) -> Vec<GlyphStyle> {
     ..base.clone()
   }));
   styles
+}
+
+/// The characters that hold the typewriter reveal for a moment
+fn is_punctuation(c: char) -> bool {
+  ".,!?;:。、！？；：".contains(c)
+}
+
+/// The bitmap layouter's pauses and punctuation: its clusters are the
+/// characters, the first `clusters` of them
+fn bitmap_reveal_marks(text: &RichText, clusters: u32) -> (Vec<(u32, f32)>, Vec<u32>) {
+  let source = text.text.as_str();
+  let mut pauses: Vec<(u32, f32)> = text
+    .pauses
+    .iter()
+    .map(|mark| {
+      let before = source
+        .char_indices()
+        .take_while(|&(b, _)| b < mark.at)
+        .count();
+      (to_u32(before), mark.seconds)
+    })
+    .collect();
+  pauses.sort_by_key(|&(cluster, _)| cluster);
+  let punctuation = source
+    .chars()
+    .take(clusters as usize)
+    .enumerate()
+    .filter(|&(_, c)| is_punctuation(c))
+    .map(|(cluster, _)| to_u32(cluster))
+    .collect();
+  (pauses, punctuation)
 }
 
 fn first_char(source: &str, byte: usize) -> Option<char> {
@@ -2272,6 +2400,77 @@ mod tests {
       grid.is_some(),
       "the bitmap layouter does not slice the text"
     );
+  }
+
+  #[test]
+  fn the_reveal_clock_advances_pauses_and_finishes_once() {
+    let (mut engine, _) = engine();
+    let text = RichText::markup("ab[pause=1]cd");
+    let laid = engine
+      .layout(
+        &text,
+        &TextStyle::default(),
+        &TextLayoutOptions::default(),
+        1.0,
+      )
+      .unwrap();
+    assert_eq!(laid.pauses, vec![(2, 1.0)]);
+    let mut clock = RevealClock::default();
+    assert!(!clock.step(0.2, 10.0, 0.0, &laid));
+    assert!(
+      (clock.shown - 2.0).abs() < 1e-5,
+      "two clusters, then the pause holds"
+    );
+    assert!(!clock.step(0.5, 10.0, 0.0, &laid));
+    assert!((clock.shown - 2.0).abs() < 1e-5, "still paused");
+    assert!(clock.step(1.0, 10.0, 0.0, &laid), "finishes this step");
+    assert!(clock.done);
+    assert!(!clock.step(1.0, 10.0, 0.0, &laid), "finishes once");
+  }
+
+  #[test]
+  fn punctuation_holds_the_reveal() {
+    let (mut engine, _) = engine();
+    let laid = engine
+      .layout(
+        &"a, b".into(),
+        &TextStyle::default(),
+        &TextLayoutOptions::default(),
+        1.0,
+      )
+      .unwrap();
+    assert_eq!(laid.punctuation, vec![1]);
+    let mut clock = RevealClock::default();
+    clock.step(0.25, 10.0, 0.5, &laid);
+    assert!(
+      (clock.shown - 2.0).abs() < 1e-5,
+      "a and the comma, then a punctuation pause"
+    );
+  }
+
+  #[test]
+  fn a_bitmap_font_numbers_pauses_and_punctuation_too() {
+    let text = RichText::markup("A.[pause=0.5]B");
+    let laid = bitmap_engine()
+      .layout(&text, &grid_style(), &TextLayoutOptions::default(), 1.0)
+      .unwrap();
+    assert_eq!(laid.pauses, vec![(2, 0.5)]);
+    assert_eq!(laid.punctuation, vec![1]);
+  }
+
+  #[test]
+  fn a_different_pause_is_a_different_layout() {
+    let (mut engine, _) = engine();
+    let style = TextStyle::default();
+    let options = TextLayoutOptions::default();
+    let a = engine
+      .layout(&RichText::markup("ab[pause=1]cd"), &style, &options, 1.0)
+      .unwrap();
+    let b = engine
+      .layout(&RichText::markup("ab[pause=2]cd"), &style, &options, 1.0)
+      .unwrap();
+    assert_eq!(b.pauses, vec![(2, 2.0)]);
+    assert!(!Arc::ptr_eq(&a, &b));
   }
 
   #[test]

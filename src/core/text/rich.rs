@@ -267,7 +267,12 @@ impl RichText {
       mark.at.hash(h);
       mark.icon.hash_into(h);
     }
-    // Pauses only time the reveal; they never change the layout
+    // Pauses are part of the layout (it carries them for the reveal)
+    self.pauses.len().hash(h);
+    for mark in &self.pauses {
+      mark.at.hash(h);
+      mark.seconds.to_bits().hash(h);
+    }
   }
 }
 

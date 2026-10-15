@@ -47,3 +47,19 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 - `TextFont::Id` lays out that exact face: Parley picks faces by family,
   weight and slant, so the face's own weight and slant are pushed. A word
   wider than the wrap width breaks inside it (`OverflowWrap::Anywhere`).
+
+## Markup, icons, effects, reveal
+
+- Markup: `[color=..]`, `[size=..]`, `[font=..]`, `[b]`, `[i]`,
+  `[outline=width,color]`, `[icon=name]`, `[pause=seconds]`, `[[` for a
+  bracket. Any other tag is an effect (`[wave]`, `[sparkle=3]`). Nested tags
+  flatten into non-overlapping spans. Malformed markup (unclosed, unmatched,
+  a bad value) is drawn as written and warned once per string; nothing
+  panics.
+- `TextIcons` maps names to sprites or regions; `TextEffects` maps names to
+  `Fn(&GlyphContext) -> GlyphMod` (built in: wave, shake, rainbow). An
+  unknown effect name is warned once when drawn and ignored.
+- Reveal counts character clusters. `RevealClock` advances them, holding
+  at `[pause]` and after punctuation; effects and reveal never relayout.
+  Pauses live in the `TextLayout` (and in `RichText::hash_into`), so a
+  different pause is a different cached layout.

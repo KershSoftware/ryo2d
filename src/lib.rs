@@ -121,8 +121,9 @@ pub mod prelude {
 
   // Text
   pub use crate::core::text::{
-    FontError, FontId, FontRender, FontRole, Fonts, Glow, Icon, Outline, RichText, Shadow, Span,
-    TextAlign, TextFont, TextLayoutOptions, TextOverflow, TextStyle,
+    FontError, FontId, FontRender, FontRole, Fonts, Glow, GlyphContext, GlyphMod, Icon, Outline,
+    RichText, Shadow, Span, TextAlign, TextEffects, TextFont, TextIcons, TextLayoutOptions,
+    TextOverflow, TextStyle,
   };
 
   // Tiled rendering
