@@ -13,7 +13,7 @@ use glam::Vec2;
 use parley::fontique::{Blob, Collection, CollectionOptions, FontInfoOverride, SourceCache};
 use parley::{
   Affinity, Alignment, AlignmentOptions, Cursor, FontContext, FontFamily, FontFamilyName,
-  FontStyle, FontWeight, InlineBox, InlineBoxKind, Layout, LayoutContext, LineHeight,
+  FontStyle, FontWeight, InlineBox, InlineBoxKind, Layout, LayoutContext, LineHeight, OverflowWrap,
   PositionedLayoutItem, RangedBuilder, Selection, StyleProperty, VerticalAlign,
 };
 
@@ -408,6 +408,26 @@ impl TextEngine {
     }
   }
 
+  /// The weight and slant of an exact outline face (`TextFont::Id`): Parley
+  /// picks faces by family, weight and slant, so these select that face
+  fn exact_face(&self, font: &TextFont) -> Option<(f32, bool)> {
+    let TextFont::Id(id) = font else {
+      return None;
+    };
+    self
+      .faces
+      .get(id)
+      .filter(|face| face.bitmap.is_none())
+      .map(|face| (face.weight, face.italic))
+  }
+
+  /// The weight and slant to lay a style out with
+  fn face_style(&self, style: &TextStyle) -> (f32, bool) {
+    self
+      .exact_face(&style.font)
+      .unwrap_or((style.weight, style.italic))
+  }
+
   /// The family names Parley tries, in order: the span's or style's font,
   /// the style's fallbacks, the UI font, then the mono font (which has the
   /// box drawing, arrows and shapes the UI font lacks)
@@ -482,9 +502,10 @@ impl TextEngine {
     };
 
     let spans = self.span_runs(text, style);
+    let face = self.face_style(style);
     let wrap_px = options.wrap.map(|width| width * scale);
     let mut builder = self.lcx.ranged_builder(&mut self.fcx, source, scale, true);
-    push_defaults(&mut builder, &stack, style);
+    push_defaults(&mut builder, &stack, style, face);
     for span in &spans {
       span.push(&mut builder);
     }
@@ -512,11 +533,16 @@ impl TextEngine {
     let mut placed = self.place(&parley_layout, text, keep);
     self.warn_missing(&placed, source, &family);
 
-    // Parley lays empty text out as one space
+    // Without a wrap Parley aligns lines within the widest line of the whole
+    // text, dropped lines included: move the kept lines to their own left edge
+    if wrap_px.is_none() {
+      placed.shift_left(placed.left());
+    }
+    // The width is the kept lines'. Parley lays empty text out as one space.
     let mut width = if source.is_empty() {
       placed.icons_right(0)
     } else {
-      parley_layout.width()
+      placed.right()
     };
     if keep < parley_layout.len() && options.overflow == TextOverflow::Ellipsis {
       let dots = self.layout_parley(
@@ -530,8 +556,10 @@ impl TextEngine {
       }
     }
 
-    // Lines aligned within a wrap width sit in a frame that wide
+    // Lines aligned within a wrap width sit in a frame that wide; no lines
+    // (`max_lines(0)`) make an empty block
     let frame = match wrap_px {
+      _ if placed.lines.is_empty() => 0.0,
       Some(wrap) if options.align != TextAlign::Start || parley_layout.is_rtl() => wrap,
       Some(wrap) => width.min(wrap),
       None => width,
@@ -579,13 +607,22 @@ impl TextEngine {
         Some(font) => self.span_stack(style, font),
         None => None,
       };
+      // An exact face brings its own weight and slant
+      let exact = mark
+        .span
+        .font
+        .as_ref()
+        .filter(|_| stack.is_some())
+        .and_then(|font| self.exact_face(font));
       spans.push(SpanRun {
         range: mark.range.clone(),
         brush,
         size,
         stack,
-        weight: mark.span.weight.filter(|weight| weight.is_finite()),
-        italic: mark.span.italic,
+        weight: exact
+          .map(|(weight, _)| weight)
+          .or(mark.span.weight.filter(|weight| weight.is_finite())),
+        italic: exact.map(|(_, italic)| italic).or(mark.span.italic),
       });
     }
     spans
@@ -613,6 +650,11 @@ impl TextEngine {
         height: metrics.line_height,
         range: from..range.end.clamp(from, source.len()),
       });
+      // Where the line's content starts and ends (trailing spaces hang)
+      let left = metrics.offset + metrics.inline_min_coord;
+      placed
+        .extents
+        .push((left, left + metrics.advance - metrics.hanging_advance));
       placed.last_line = (placed.glyphs.len(), placed.icons.len());
 
       // A run's clusters yield their glyphs in the order its glyph runs
@@ -805,6 +847,7 @@ impl TextEngine {
     }
     let block = widths.iter().copied().fold(0.0, f32::max);
     let frame = match wrap_px {
+      _ if rows.is_empty() => 0.0,
       Some(wrap) if options.align != TextAlign::Start => wrap,
       Some(wrap) => block.min(wrap),
       None => block,
@@ -882,8 +925,9 @@ impl TextEngine {
       if stack.is_empty() {
         return None;
       }
+      let face = self.face_style(style);
       let mut builder = self.lcx.ranged_builder(&mut self.fcx, text, scale, true);
-      push_defaults(&mut builder, &stack, style);
+      push_defaults(&mut builder, &stack, style, face);
       let mut line = builder.build(text);
       line.break_all_lines(None);
       line.align(Alignment::Start, AlignmentOptions::default());
@@ -946,6 +990,8 @@ struct Placed {
   icons: Vec<PlacedIcon>,
   icon_at: Vec<usize>,
   lines: Vec<LineInfo>,
+  /// Each line's left and right content edge
+  extents: Vec<(f32, f32)>,
   /// The first byte of every cluster on the kept lines
   cluster_starts: Vec<usize>,
   /// Where the last line's glyphs and icons begin
@@ -963,6 +1009,42 @@ impl Placed {
     self.glyphs.pop();
     self.advances.pop();
     self.starts.pop();
+  }
+
+  /// The leftmost line start (0 for no lines)
+  fn left(&self) -> f32 {
+    self
+      .extents
+      .iter()
+      .map(|&(left, _)| left)
+      .reduce(f32::min)
+      .unwrap_or(0.0)
+  }
+
+  /// The rightmost line end (0 for no lines)
+  fn right(&self) -> f32 {
+    self
+      .extents
+      .iter()
+      .map(|&(_, right)| right)
+      .fold(0.0, f32::max)
+  }
+
+  /// Move everything placed `dx` to the left
+  fn shift_left(&mut self, dx: f32) {
+    if dx == 0.0 {
+      return;
+    }
+    for glyph in &mut self.glyphs {
+      glyph.pos.x -= dx;
+    }
+    for icon in &mut self.icons {
+      icon.rect.x -= dx;
+    }
+    for (left, right) in &mut self.extents {
+      *left -= dx;
+      *right -= dx;
+    }
   }
 
   /// The right edge of the icons from index `from`
@@ -1041,19 +1123,27 @@ impl Placed {
   }
 
   /// Number the clusters in logical order, give each glyph and icon its
-  /// cluster, and return the count
+  /// cluster, and return the count. An icon shares the cluster after it; an
+  /// icon with none after it gets a cluster of its own, so a reveal shows it.
   fn number_clusters(&mut self) -> u32 {
     self.cluster_starts.sort_unstable();
     self.cluster_starts.dedup();
     let starts = &self.cluster_starts;
-    let cluster_of = |byte: usize| to_u32(starts.partition_point(|&s| s < byte));
+    let cluster_of = |byte: usize| starts.partition_point(|&s| s < byte);
     for (glyph, &start) in self.glyphs.iter_mut().zip(&self.starts) {
-      glyph.cluster = cluster_of(start);
+      glyph.cluster = to_u32(cluster_of(start));
     }
+    let mut count = starts.len();
     for (icon, &at) in self.icons.iter_mut().zip(&self.icon_at) {
-      icon.cluster = cluster_of(at);
+      let cluster = cluster_of(at);
+      if cluster < starts.len() {
+        icon.cluster = to_u32(cluster);
+      } else {
+        icon.cluster = to_u32(count);
+        count += 1;
+      }
     }
-    to_u32(starts.len())
+    to_u32(count)
   }
 }
 
@@ -1138,7 +1228,8 @@ impl Cell {
 }
 
 /// One cell per character (each its own cluster) and icon, in logical
-/// order; the character count; the characters the font lacks
+/// order; the cluster count (an icon after the last character has a
+/// cluster of its own); the characters the font lacks
 fn grid_cells(
   grid: &Grid<'_>,
   text: &RichText,
@@ -1205,6 +1296,7 @@ fn grid_cells(
   }
   for i in pending {
     cells.push(Cell::icon(i, source.len(), count, icon_px(i)));
+    count += 1;
   }
   (cells, count, missing)
 }
@@ -1342,14 +1434,22 @@ fn font_context() -> FontContext {
   }
 }
 
-fn push_defaults(builder: &mut RangedBuilder<'_, u16>, stack: &[String], style: &TextStyle) {
+/// The base style's properties; `face` is the weight and slant to ask for
+fn push_defaults(
+  builder: &mut RangedBuilder<'_, u16>,
+  stack: &[String],
+  style: &TextStyle,
+  (weight, italic): (f32, bool),
+) {
   builder.push_default(family_list(stack));
   builder.push_default(StyleProperty::FontSize(style.size));
-  builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight)));
-  builder.push_default(StyleProperty::FontStyle(font_style(style.italic)));
+  builder.push_default(StyleProperty::FontWeight(FontWeight::new(weight)));
+  builder.push_default(StyleProperty::FontStyle(font_style(italic)));
   builder.push_default(StyleProperty::Brush(0u16));
   builder.push_default(LineHeight::FontSizeRelative(style.line_height));
   builder.push_default(StyleProperty::LetterSpacing(style.letter_spacing));
+  // A word wider than the wrap width breaks inside it, as on a bitmap grid
+  builder.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
 }
 
 fn family_list(names: &[String]) -> StyleProperty<'_, u16> {
@@ -1628,6 +1728,20 @@ mod tests {
       ),
       Vec2::ZERO
     );
+
+    // Each bad style (and the bad wrap and scale) warned once: laying them
+    // all out again adds no warning
+    assert_eq!(engine.warned.len(), 6);
+    for size in [0.0, -4.0, f32::NAN, f32::INFINITY] {
+      let style = TextStyle::default().size(size);
+      let _ = engine.layout(&"y".into(), &style, &TextLayoutOptions::default(), 1.0);
+    }
+    let _ = engine.layout(&"y".into(), &TextStyle::default(), &bad_wrap, 1.0);
+    assert_eq!(engine.warned.len(), 6);
+    assert!(crate::core::dev_log::get_entries().iter().any(|e| {
+      e.message
+        .contains("text style with size -4 cannot be laid out")
+    }));
   }
 
   #[test]
@@ -1734,5 +1848,461 @@ mod tests {
       !laid.glyphs[1].embolden,
       "a real bold face is not synthesized"
     );
+  }
+
+  fn bitmap_engine() -> TextEngine {
+    let mut fonts = Fonts::with_builtins();
+    let sheet = crate::core::asset::SpriteHandle::from_sprite(
+      crate::core::graphics::Sprite::solid_rect(40, 8, 255, 255, 255, 255),
+      "grid",
+    );
+    fonts.add_bitmap("Grid", sheet, (8, 8), "ABC.?").unwrap();
+    let mut engine = TextEngine::new();
+    engine.sync(&fonts);
+    engine
+  }
+
+  fn grid_style() -> TextStyle {
+    TextStyle::default().family("Grid").size(8.0)
+  }
+
+  #[test]
+  fn an_outline_and_a_glow_with_the_same_numbers_are_different_layouts() {
+    let (mut engine, _) = engine();
+    let outlined = layout(
+      &mut engine,
+      "fx",
+      &TextStyle::default().outline(2.0, Color::BLACK),
+    );
+    let glowing = layout(
+      &mut engine,
+      "fx",
+      &TextStyle::default().glow(2.0, Color::BLACK),
+    );
+    assert!(!Arc::ptr_eq(&outlined, &glowing));
+    assert!(outlined.styles[0].outline.is_some() && outlined.styles[0].glow.is_none());
+    assert!(glowing.styles[0].glow.is_some() && glowing.styles[0].outline.is_none());
+  }
+
+  #[test]
+  fn a_trailing_icon_has_its_own_cluster() {
+    let (mut engine, _) = engine();
+    let laid = layout(
+      &mut engine,
+      RichText::new("abc").icon_named("star"),
+      &TextStyle::default(),
+    );
+    assert_eq!(laid.clusters, 4);
+    assert_eq!(laid.icons[0].cluster, 3);
+
+    let alone = layout(
+      &mut engine,
+      RichText::new("").icon_named("star"),
+      &TextStyle::default(),
+    );
+    assert_eq!((alone.clusters, alone.icons[0].cluster), (1, 0));
+
+    let mut grid = bitmap_engine();
+    let laid = layout(
+      &mut grid,
+      RichText::new("ABC").icon_named("star"),
+      &grid_style(),
+    );
+    assert_eq!((laid.clusters, laid.icons[0].cluster), (4, 3));
+    let alone = layout(
+      &mut grid,
+      RichText::new("").icon_named("star"),
+      &grid_style(),
+    );
+    assert_eq!((alone.clusters, alone.icons[0].cluster), (1, 0));
+  }
+
+  #[test]
+  fn max_lines_measures_only_the_kept_lines() {
+    let (mut engine, _) = engine();
+    let text: RichText = "OK\nand a much longer second line that is dropped".into();
+    let options = TextLayoutOptions::default().max_lines(1);
+    let laid = engine
+      .layout(&text, &TextStyle::default(), &options, 1.0)
+      .unwrap();
+    let end = laid.glyphs.iter().map(|g| g.pos.x).fold(0.0, f32::max);
+    assert!(
+      laid.size.x < 30.0 && laid.size.x > end,
+      "width {}",
+      laid.size.x
+    );
+
+    // Centred without a wrap, the kept line still sits in its own block
+    let centred = engine
+      .layout(
+        &text,
+        &TextStyle::default(),
+        &options.align(TextAlign::Center),
+        1.0,
+      )
+      .unwrap();
+    assert_eq!(centred.glyphs[0].pos.x, 0.0);
+    assert!((centred.size.x - laid.size.x).abs() < 0.01);
+  }
+
+  #[test]
+  fn max_lines_zero_lays_out_an_empty_block() {
+    let (mut engine, _) = engine();
+    for options in [
+      TextLayoutOptions::default().max_lines(0),
+      TextLayoutOptions::default()
+        .wrap(60.0)
+        .align(TextAlign::Center)
+        .max_lines(0)
+        .overflow(TextOverflow::Ellipsis),
+    ] {
+      let laid = engine
+        .layout(&"some text".into(), &TextStyle::default(), &options, 1.0)
+        .unwrap();
+      assert_eq!(laid.size, Vec2::ZERO);
+      assert!(laid.glyphs.is_empty() && laid.lines.is_empty());
+      assert_eq!(laid.clusters, 0);
+      let grid = bitmap_engine()
+        .layout(&"AB CA".into(), &grid_style(), &options, 1.0)
+        .unwrap();
+      assert_eq!(grid.size, Vec2::ZERO);
+      assert!(grid.glyphs.is_empty() && grid.lines.is_empty());
+    }
+  }
+
+  #[test]
+  fn an_exact_face_lays_out_in_that_face() {
+    let (mut engine, fonts) = engine();
+    let bold = fonts
+      .faces()
+      .find(|(_, face)| face.family == "Inter" && face.weight == 700.0)
+      .map(|(id, _)| id)
+      .unwrap();
+    let laid = layout(
+      &mut engine,
+      "Bold",
+      &TextStyle::default().font(TextFont::Id(bold)),
+    );
+    assert!(laid.glyphs.iter().all(|g| g.font == bold));
+    let span = RichText::new("a").span("b", Span::font(TextFont::Id(bold)));
+    let laid = layout(&mut engine, span, &TextStyle::default());
+    assert_ne!(laid.glyphs[0].font, bold);
+    assert_eq!(laid.glyphs[1].font, bold);
+  }
+
+  #[test]
+  fn a_word_wider_than_the_wrap_breaks_inside_it() {
+    let (mut engine, _) = engine();
+    let text = "supercalifragilistic";
+    let style = TextStyle::default();
+    let laid = engine
+      .layout(
+        &text.into(),
+        &style,
+        &TextLayoutOptions::default().wrap(40.0),
+        1.0,
+      )
+      .unwrap();
+    assert!(laid.lines.len() >= 3);
+    for line in &laid.lines {
+      let width = engine
+        .measure(
+          &text[line.range.clone()].into(),
+          &style,
+          &TextLayoutOptions::default(),
+          1.0,
+        )
+        .x;
+      assert!(
+        width <= 40.5,
+        "line {:?} is {width} wide",
+        &text[line.range.clone()]
+      );
+    }
+  }
+
+  // Regression tests for what the layout probes found
+
+  #[test]
+  fn clusters_count_characters_in_logical_order() {
+    let (mut engine, _) = engine();
+    let laid = layout(&mut engine, "h\u{e9}llo w", &TextStyle::default());
+    let clusters: Vec<u32> = laid.glyphs.iter().map(|g| g.cluster).collect();
+    assert_eq!(clusters, vec![0, 1, 2, 3, 4, 5, 6]);
+    assert_eq!(laid.clusters, 7);
+
+    // An icon is revealed with the character after it
+    let text = RichText::new("ab").icon_named("star").plain("cd");
+    let laid = layout(&mut engine, text, &TextStyle::default());
+    let clusters: Vec<u32> = laid.glyphs.iter().map(|g| g.cluster).collect();
+    assert_eq!(clusters, vec![0, 1, 2, 3]);
+    assert_eq!((laid.icons[0].cluster, laid.clusters), (2, 4));
+  }
+
+  #[test]
+  fn the_ellipsis_shares_the_cluster_before_it_and_drops_the_rest() {
+    let (mut engine, _) = engine();
+    let options = TextLayoutOptions::default()
+      .wrap(60.0)
+      .max_lines(1)
+      .overflow(TextOverflow::Ellipsis);
+    let laid = engine
+      .layout(
+        &"one two three four".into(),
+        &TextStyle::default(),
+        &options,
+        1.0,
+      )
+      .unwrap();
+    let n = laid.glyphs.len();
+    let (dots, before) = (laid.glyphs[n - 1], laid.glyphs[n - 2]);
+    assert_eq!(dots.cluster, before.cluster);
+    assert_eq!(
+      laid.clusters,
+      before.cluster + 1,
+      "dropped characters do not count"
+    );
+    assert!(
+      laid.size.x > dots.pos.x + 5.0,
+      "the block covers the ellipsis"
+    );
+    assert!(laid.size.x <= 60.5);
+
+    // Without a wrap, the kept line's newline does not count either
+    let options = TextLayoutOptions::default()
+      .max_lines(2)
+      .overflow(TextOverflow::Ellipsis);
+    let laid = engine
+      .layout(
+        &"line one\nline two\nline three".into(),
+        &TextStyle::default(),
+        &options,
+        1.0,
+      )
+      .unwrap();
+    let dots = laid.glyphs.last().copied().unwrap();
+    assert_eq!(
+      (dots.cluster, laid.clusters),
+      (16, 17),
+      "\"line one\\nline two\""
+    );
+    assert!(
+      laid.size.x > dots.pos.x + 5.0,
+      "the block covers the ellipsis"
+    );
+  }
+
+  #[test]
+  fn a_wrapped_block_aligned_center_end_or_justify_is_the_wrap_width() {
+    let (mut engine, _) = engine();
+    let style = TextStyle::default();
+    let text = "one two three four five";
+    let wrapped = |align| TextLayoutOptions::default().wrap(60.0).align(align);
+    for align in [TextAlign::Center, TextAlign::End, TextAlign::Justify] {
+      let laid = engine
+        .layout(&text.into(), &style, &wrapped(align), 1.0)
+        .unwrap();
+      assert_eq!(laid.size.x, 60.0, "{align:?}");
+    }
+    for (align, share) in [(TextAlign::Center, 0.5), (TextAlign::End, 1.0)] {
+      let laid = engine
+        .layout(&text.into(), &style, &wrapped(align), 1.0)
+        .unwrap();
+      for line in &laid.lines {
+        let content = text[line.range.clone()].trim_end();
+        let width = engine
+          .measure(&content.into(), &style, &TextLayoutOptions::default(), 1.0)
+          .x;
+        let left = laid
+          .glyphs
+          .iter()
+          .filter(|g| (g.pos.y - line.baseline).abs() < 0.5)
+          .map(|g| g.pos.x)
+          .fold(f32::MAX, f32::min);
+        let expected = (60.0 - width) * share;
+        assert!(
+          (left - expected).abs() < 1.0,
+          "{align:?} {content:?}: {left} vs {expected}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn empty_text_is_one_empty_line_and_icon_only_text_is_its_icon() {
+    let (mut engine, _) = engine();
+    let empty = layout(&mut engine, "", &TextStyle::default());
+    assert_eq!(empty.size.x, 0.0, "not Parley's stand-in space");
+    assert!((empty.size.y - 14.0 * 1.2).abs() < 1.5);
+    assert_eq!(empty.lines.len(), 1);
+    assert_eq!(empty.lines[0].range, 0..0);
+    assert!(empty.glyphs.is_empty());
+    assert_eq!(empty.clusters, 0);
+
+    let icon = layout(
+      &mut engine,
+      RichText::new("").icon_named("star"),
+      &TextStyle::default(),
+    );
+    assert_eq!(icon.size.x, 14.0);
+    assert_eq!(
+      icon.lines[0].range,
+      0..0,
+      "Parley's range starts past its end"
+    );
+    let rect = icon.icons[0].rect;
+    assert_eq!((rect.x, rect.width, rect.height), (0.0, 14.0, 14.0));
+  }
+
+  #[test]
+  fn wrap_lines_cover_the_text_in_order() {
+    let (mut engine, _) = engine();
+    let style = TextStyle::default();
+    for text in ["alpha beta\ngamma", "a\n", "", "alpha beta gamma delta"] {
+      let lines = engine.wrap_lines(text, &style, 50.0, 1.0);
+      assert!(!lines.is_empty(), "{text:?}");
+      assert_eq!(lines[0].start, 0, "{text:?}");
+      assert_eq!(lines.last().map(|r| r.end), Some(text.len()), "{text:?}");
+      for pair in lines.windows(2) {
+        assert_eq!(pair[0].end, pair[1].start, "{text:?}: {lines:?}");
+      }
+    }
+    assert_eq!(
+      engine.wrap_lines("alpha beta\ngamma", &style, 1000.0, 1.0),
+      vec![0..11, 11..16]
+    );
+  }
+
+  #[test]
+  fn a_bitmap_font_wraps_at_a_space_and_inside_a_long_word() {
+    let mut engine = bitmap_engine();
+    let wrap = |width| TextLayoutOptions::default().wrap(width);
+    let laid = engine
+      .layout(&"AB CA BB".into(), &grid_style(), &wrap(40.0), 1.0)
+      .unwrap();
+    let ranges: Vec<Range<usize>> = laid.lines.iter().map(|l| l.range.clone()).collect();
+    assert_eq!(
+      ranges,
+      vec![0..6, 6..8],
+      "the space that overflows breaks the line"
+    );
+    let xs: Vec<f32> = laid.glyphs.iter().map(|g| g.pos.x).collect();
+    assert_eq!(xs, vec![0.0, 8.0, 24.0, 32.0, 0.0, 8.0]);
+
+    let long = engine
+      .layout(&"ABCABCABC".into(), &grid_style(), &wrap(20.0), 1.0)
+      .unwrap();
+    assert_eq!(long.lines.len(), 5);
+    assert!(long.glyphs.iter().all(|g| g.pos.x + 8.0 <= 20.0));
+    assert_eq!(long.size.x, 16.0);
+  }
+
+  #[test]
+  fn a_bitmap_font_ends_in_dots_and_aligns_its_lines() {
+    let mut engine = bitmap_engine();
+    let options = TextLayoutOptions::default()
+      .wrap(40.0)
+      .max_lines(1)
+      .overflow(TextOverflow::Ellipsis);
+    let laid = engine
+      .layout(&"AB CA BB".into(), &grid_style(), &options, 1.0)
+      .unwrap();
+    let ids: Vec<u16> = laid.glyphs.iter().map(|g| g.glyph).collect();
+    assert_eq!(
+      ids,
+      vec![0, 1, 3, 3, 3],
+      "\"AB...\": the sheet has '.', not '…'"
+    );
+    assert_eq!(laid.clusters, 2);
+
+    for (align, x) in [(TextAlign::Center, 12.0), (TextAlign::End, 24.0)] {
+      let options = TextLayoutOptions::default().wrap(40.0).align(align);
+      let laid = engine
+        .layout(&"AB CA BB".into(), &grid_style(), &options, 1.0)
+        .unwrap();
+      assert_eq!(laid.size.x, 40.0);
+      assert_eq!(
+        laid.glyphs[4].pos.x, x,
+        "{align:?}: \"BB\" on the second line"
+      );
+    }
+  }
+
+  #[test]
+  fn bitmap_carets_step_a_cell_at_any_scale() {
+    let mut engine = bitmap_engine();
+    let style = grid_style();
+    for scale in [1.0, 2.0] {
+      assert_eq!(engine.caret_x("AB C", &style, 2, scale), 16.0);
+      assert_eq!(engine.caret_x("AB C", &style, 4, scale), 32.0);
+      assert_eq!(engine.byte_at("AB C", &style, 11.0, scale), 1);
+      assert_eq!(engine.byte_at("AB C", &style, 13.0, scale), 2);
+      assert_eq!(engine.selection_x("AB C", &style, 1..3, scale), (8.0, 24.0));
+    }
+  }
+
+  #[test]
+  fn spans_and_icons_off_a_char_boundary_are_skipped() {
+    use crate::core::text::rich::{IconMark, SpanMark};
+    let text = RichText {
+      text: "h\u{e9}llo".into(),
+      spans: vec![SpanMark {
+        range: 0..2,
+        span: Span::color(Color::BLACK),
+      }],
+      icons: vec![IconMark {
+        at: 2,
+        icon: Icon::Named {
+          name: "star".into(),
+          size: None,
+        },
+      }],
+      pauses: Vec::new(),
+    };
+    let (mut engine, _) = engine();
+    let laid = layout(&mut engine, text.clone(), &TextStyle::default());
+    assert_eq!(laid.glyphs.len(), 5);
+    assert!(
+      laid.glyphs.iter().all(|g| g.style == 0),
+      "the span is skipped"
+    );
+    assert!(laid.icons.is_empty(), "the icon is skipped");
+    let grid = bitmap_engine().layout(&text, &grid_style(), &TextLayoutOptions::default(), 1.0);
+    assert!(
+      grid.is_some(),
+      "the bitmap layouter does not slice the text"
+    );
+  }
+
+  #[test]
+  fn carets_selections_and_hit_tests_hold_at_scale_two() {
+    let (mut engine, _) = engine();
+    let style = TextStyle::default();
+    let text = "h\u{e9}llo w\u{f6}rld";
+    for (byte, _) in text.char_indices() {
+      let one = engine.caret_x(text, &style, byte, 1.0);
+      let two = engine.caret_x(text, &style, byte, 2.0);
+      assert!((one - two).abs() < 1.0, "byte {byte}: {one} vs {two}");
+      assert_eq!(engine.byte_at(text, &style, two + 0.1, 2.0), byte);
+    }
+    let (a, b) = engine.selection_x(text, &style, 1..5, 1.0);
+    let (c, d) = engine.selection_x(text, &style, 1..5, 2.0);
+    assert!(c < d);
+    assert!((a - c).abs() < 1.0 && (b - d).abs() < 1.0);
+  }
+
+  #[test]
+  fn an_unknown_family_warns_once() {
+    let (mut engine, _) = engine();
+    let style = TextStyle::default().family("No Such Family Q7");
+    for text in ["abc", "abd", "abe"] {
+      let _ = layout(&mut engine, text, &style);
+    }
+    let _ = engine.caret_x("xyz", &style, 1, 1.0);
+    let warnings = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains("No Such Family Q7"))
+      .count();
+    assert_eq!(warnings, 1);
   }
 }

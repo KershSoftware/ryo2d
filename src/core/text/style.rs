@@ -14,7 +14,8 @@ pub enum TextFont {
   Role(FontRole),
   /// A family by name
   Family(String),
-  /// One exact face
+  /// One exact face: its family, at its own weight and slant (the style's
+  /// `weight` and `italic` do not apply)
   Id(FontId),
 }
 
@@ -54,8 +55,8 @@ pub struct Glow {
 #[non_exhaustive]
 pub struct TextStyle {
   pub font: TextFont,
-  /// Tried in order when the font lacks a character, before the built-in
-  /// font of the font's role
+  /// Tried in order when the font lacks a character; after them come the
+  /// UI font, then the mono font
   pub fallbacks: Vec<TextFont>,
   /// Size in text units: pixels in the UI, world units on entities
   pub size: f32,
@@ -176,28 +177,31 @@ impl TextStyle {
     }
     self.italic.hash(h);
     self.color.hash(h);
+    // Each effect hashes as an `Option`, so its presence is part of the key
+    // (an outline and a glow with the same numbers differ)
     hash_outline(&self.outline, h);
-    if let Some(shadow) = self.shadow {
-      (
-        shadow.offset.x.to_bits(),
-        shadow.offset.y.to_bits(),
-        shadow.softness.to_bits(),
-      )
-        .hash(h);
-      shadow.color.hash(h);
-    }
-    if let Some(glow) = self.glow {
-      glow.radius.to_bits().hash(h);
-      glow.color.hash(h);
-    }
+    self
+      .shadow
+      .map(|shadow| {
+        (
+          shadow.offset.x.to_bits(),
+          shadow.offset.y.to_bits(),
+          shadow.softness.to_bits(),
+          shadow.color,
+        )
+      })
+      .hash(h);
+    self
+      .glow
+      .map(|glow| (glow.radius.to_bits(), glow.color))
+      .hash(h);
   }
 }
 
 pub(crate) fn hash_outline(outline: &Option<Outline>, h: &mut impl Hasher) {
-  if let Some(outline) = outline {
-    outline.width.to_bits().hash(h);
-    outline.color.hash(h);
-  }
+  outline
+    .map(|outline| (outline.width.to_bits(), outline.color))
+    .hash(h);
 }
 
 /// Horizontal alignment of each line within the block
@@ -227,6 +231,8 @@ pub struct TextLayoutOptions {
   /// Wrap width in text units; `None` keeps each line whole
   pub wrap: Option<f32>,
   pub align: TextAlign,
+  /// Lines past this many are dropped (`overflow` says how the last kept
+  /// one ends); 0 lays out an empty block of size zero
   pub max_lines: Option<u32>,
   pub overflow: TextOverflow,
   /// The point of the block that sits on the text's position
@@ -277,5 +283,26 @@ impl TextLayoutOptions {
     self.max_lines.hash(h);
     self.overflow.hash(h);
     // The anchor only places the block; it never changes the layout
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::hash::DefaultHasher;
+
+  use super::*;
+
+  fn key(style: &TextStyle) -> u64 {
+    let mut h = DefaultHasher::new();
+    style.hash_into(&mut h);
+    h.finish()
+  }
+
+  #[test]
+  fn the_style_key_tells_an_outline_from_a_glow() {
+    let outline = TextStyle::default().outline(2.0, Color::BLACK);
+    let glow = TextStyle::default().glow(2.0, Color::BLACK);
+    assert_ne!(key(&outline), key(&glow));
+    assert_ne!(key(&outline), key(&TextStyle::default()));
   }
 }

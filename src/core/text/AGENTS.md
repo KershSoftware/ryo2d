@@ -39,4 +39,11 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 - Bitmap fonts (`Fonts::add_bitmap`) are laid out by a monospace grid
   layouter; a text uses bitmap or outline fonts, not both.
 - Clusters: each glyph and icon carries its character cluster in logical
-  order; reveal and per-glyph effects count clusters.
+  order; reveal and per-glyph effects count clusters. An icon shares the
+  cluster after it; an icon with no character after it gets a cluster of
+  its own, so a reveal reaches it.
+- `max_lines` keeps the first lines, and the block measures only those;
+  `max_lines(0)` gives an empty block of size zero.
+- `TextFont::Id` lays out that exact face: Parley picks faces by family,
+  weight and slant, so the face's own weight and slant are pushed. A word
+  wider than the wrap width breaks inside it (`OverflowWrap::Anywhere`).

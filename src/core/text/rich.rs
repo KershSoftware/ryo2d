@@ -107,7 +107,8 @@ impl Span {
 /// A picture inline with text
 #[derive(Debug, Clone)]
 pub enum Icon {
-  /// A sprite; `size` in text units, default a square the line's height
+  /// A sprite; `size` in text units, default a square as high as the font
+  /// size
   Sprite {
     sprite: SpriteHandle,
     size: Option<Vec2>,
@@ -216,7 +217,7 @@ impl RichText {
     self
   }
 
-  /// Append a sprite as big as the line is high
+  /// Append a sprite: a square as high as the font size
   pub fn icon(self, sprite: SpriteHandle) -> Self {
     self.push_icon(Icon::Sprite { sprite, size: None })
   }
@@ -256,6 +257,8 @@ impl RichText {
 
   pub(crate) fn hash_into(&self, h: &mut impl Hasher) {
     self.text.hash(h);
+    // Counts first, so the spans and icons cannot run into each other
+    (self.spans.len(), self.icons.len()).hash(h);
     for mark in &self.spans {
       (mark.range.start, mark.range.end).hash(h);
       mark.span.hash_into(h);
