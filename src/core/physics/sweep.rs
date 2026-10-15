@@ -18,6 +18,9 @@
 //!   slide).
 //! - A slide within `LEVEL` of level neither climbs nor slips (Rapier tests
 //!   the sign exactly, so float noise in a flat floor's normal stopped runs).
+//! - A cast parry misses although it starts within a hair of the target
+//!   distance (the move's first cast, from where the last step left the
+//!   character) is cast again with the target a hair further out.
 //! - A step up moves the character on by at least three skins (`STEP_ONTO`),
 //!   not just by the run left, so it ends two skins over the step's top.
 //! - parry's fallback for a hit right at the start of a cast is applied
@@ -131,7 +134,7 @@ pub(crate) fn move_shape(
   // by the length unit)
   let start_tolerance = kcc.normal_nudge_factor;
   let mut remaining = desired;
-  for _ in 0..MAX_CASTS {
+  for cast_index in 0..MAX_CASTS {
     let distance = remaining.length();
     if !distance.is_finite() || distance <= MIN_MOVE {
       break;
@@ -139,8 +142,22 @@ pub(crate) fn move_shape(
     let direction = remaining / distance;
     let at = Pose::from_translation(swept.translation) * *start;
     let options = cast(skin, distance);
-    let Some((handle, hit)) = first_hit(queries, &at, direction, shape, options, start_tolerance)
-    else {
+    // The move's first cast starts where the last step left the character,
+    // at its skin from what it stands on (a snap or a stop puts it there):
+    // parry's GJK misses about 9% of shallow casts that start exactly at
+    // the target distance, and the step's fall then sank the character into
+    // its skin, where the corner of the next floor at a seam, within that
+    // skin, was a wall. A first cast that finds nothing is cast again with
+    // the target a hair further out, so that start is inside it: a surface
+    // the move goes into is hit at the start (`StartFallback`), one it runs
+    // along or leaves is not
+    let hit = first_hit(queries, &at, direction, shape, options, start_tolerance).or_else(|| {
+      let inside = cast(skin + start_tolerance, distance);
+      (cast_index == 0)
+        .then(|| first_hit(queries, &at, direction, shape, inside, start_tolerance))
+        .flatten()
+    });
+    let Some((handle, hit)) = hit else {
       swept.translation += remaining;
       break;
     };

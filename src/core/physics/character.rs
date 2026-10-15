@@ -588,16 +588,36 @@ impl Physics {
         .is_some_and(|(_, hit)| from_rapier(hit.normal1).dot(up) >= floor_cos(max_slope));
       (!held).then_some(shift)
     };
+    // Settling moves (off a corner, back to the skin): swept, no step or snap
+    let aside = KinematicCharacterController {
+      autostep: None,
+      snap_to_ground: None,
+      ..kcc
+    };
     let mut floor_hit = find_floor(&queries, &pose);
     if let Some(shift) = floor_hit.and_then(|hit| corner(&hit, &pose)) {
-      let aside = KinematicCharacterController {
-        autostep: None,
-        snap_to_ground: None,
-        ..kcc
-      };
       let off = sweep::move_shape(&aside, &queries, &*shape, &pose, shift, false, |_| {});
       pose.translation += off.translation;
       floor_hit = find_floor(&queries, &pose).filter(|hit| corner(hit, &pose).is_none());
+    }
+    // Back to the skin from the floor. parry's shape cast is unreliable when
+    // it starts exactly at the target distance, as a run does after a snap:
+    // the sweep casts a first cast that misses again (`sweep::move_shape`),
+    // but some hit late, 0.15 px on, and the step's fall sinks the character
+    // into its skin by a few hundredths of a pixel. Left there, the slide's
+    // nudge gave it back at 1e-4 length units a step, and the corner of the
+    // next floor at a seam, within that skin, could be a wall
+    let sunk = floor_hit
+      .filter(|(_, hit)| from_rapier(hit.normal1).dot(up) >= floor_cos(max_slope))
+      .map(|(_, hit)| {
+        let apart = (pose.transform_point(hit.witness2) - hit.witness1).dot(hit.normal1);
+        (hit.normal1, skin - apart)
+      })
+      .filter(|(_, sunk)| *sunk > kcc.normal_nudge_factor);
+    if let Some((normal, sunk)) = sunk {
+      let lift = normal * sunk;
+      let up_by = sweep::move_shape(&aside, &queries, &*shape, &pose, lift, false, |_| {});
+      pose.translation += up_by.translation;
     }
 
     // The carry, past everything but the floor (it moves with the character),
@@ -1976,6 +1996,90 @@ mod tests {
           stepped && y0 - t.y > 7.5,
           "{v} px/s from {x0}: stepped {stepped}, at {t}"
         );
+      }
+    }
+  }
+
+  // A run keeps its skin from the floor. parry's shape cast misses about 9%
+  // of shallow casts that start exactly at the target distance (a run after
+  // a snap does) and hits others late, and a step's fall then sank the
+  // character into its skin: on a long box floor a run ended most of its
+  // steps inside its skin, down to 0.13 px over the floor
+  #[test]
+  fn a_run_on_a_long_floor_keeps_its_skin() {
+    for kind in 0..3 {
+      let (mut world, mut s) = world(60);
+      let f = match kind {
+        0 => world.spawn((Transform::from_xy(0.0, 110.0), Collider::rect(4000.0, 20.0))),
+        1 => world.spawn((
+          Transform::IDENTITY,
+          Collider::segment(Vec2::new(-2000.0, 100.0), Vec2::new(2000.0, 100.0)),
+        )),
+        _ => world.spawn((
+          Transform::IDENTITY,
+          Collider::polyline([Vec2::new(-2000.0, 100.0), Vec2::new(2000.0, 100.0)]),
+        )),
+      }
+      .id();
+      // 16 × 32: its skin is 0.32 px
+      let e = world
+        .spawn((
+          Transform::from_xy(-1500.0, 83.0),
+          CharacterController::platformer(),
+          Collider::rect(16.0, 32.0),
+        ))
+        .id();
+      fall_together(&mut world, &mut s, &[e], 10);
+      for i in 0..600 {
+        world.get_mut::<Velocity>(e).unwrap().dx = if (i / 50) % 2 == 0 { 60.0 } else { 137.0 };
+        fall_together(&mut world, &mut s, &[e], 1);
+        let st = state(&world, e);
+        let gap = 100.0 - (at(&world, e).translation.y + 16.0);
+        assert!(
+          st.on_floor && st.floor == Some(f) && gap > 0.32 - 0.02,
+          "kind {kind}, step {i}: {gap} above the floor: {st:?}"
+        );
+      }
+    }
+  }
+
+  // A run across the seam of two level boxes keeps its pace. Inside its
+  // skin (the cast that missed, above), the runner's leading corner came
+  // within the skin of the next box's corner, a wall at the start of each
+  // cast: up to 29 steps on the wall and 71 px lost at 150 px/s
+  #[test]
+  fn a_run_across_the_seam_of_two_floors_keeps_its_pace() {
+    for v in [-150.0f32, -90.0, -60.0, -30.0, 30.0, 60.0, 90.0, 150.0] {
+      for k in 0..12 {
+        let x0 = if v > 0.0 {
+          -100.0 + k as f32 * 0.37
+        } else {
+          100.0 - k as f32 * 0.37
+        };
+        let (mut world, mut s) = world(60);
+        world.spawn((
+          Transform::from_xy(-100.0, 110.0),
+          Collider::rect(200.0, 20.0),
+        ));
+        world.spawn((
+          Transform::from_xy(100.0, 110.0),
+          Collider::rect(200.0, 20.0),
+        ));
+        let e = character(&mut world, x0, 79.0);
+        fall_together(&mut world, &mut s, &[e], 10);
+        let mut lost = 0.0;
+        for i in 0..(170.0 * 60.0 / v.abs()) as usize {
+          let x = at(&world, e).translation.x;
+          world.get_mut::<Velocity>(e).unwrap().dx = v;
+          fall_together(&mut world, &mut s, &[e], 1);
+          let st = state(&world, e);
+          assert!(
+            st.on_floor && !st.on_wall,
+            "{v} px/s from {x0}, step {i} at {x}: {st:?}"
+          );
+          lost += (v / 60.0 - (at(&world, e).translation.x - x)).abs();
+        }
+        assert!(lost <= v.abs() / 60.0, "{v} px/s from {x0}: lost {lost}");
       }
     }
   }
