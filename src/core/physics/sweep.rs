@@ -195,6 +195,7 @@ fn first_hit(
   let dispatcher = StartFallback {
     inner: queries.dispatcher,
     tolerance,
+    polyline: None,
   };
   let queries = QueryPipeline {
     dispatcher: &dispatcher,
@@ -246,9 +247,28 @@ pub(crate) fn probe(
 /// shapes (polylines, compounds) included: they are cast part by part
 /// through it, so a part the move leaves is no hit while the rest of the
 /// shape still counts. Everything else is parry's.
+///
+/// A polyline's part measured alone has a rounded end at each vertex: a
+/// character over the next part's face, within its skin of the vertex, gets
+/// a contact from that end leaning toward it, a wall at the start of every
+/// cast it runs along (walking off a tile outline's step-down stalled at
+/// its edge for up to half a second). So a start contact at a part's end is
+/// the polyline's own contact (its closest part), as a convex shape's
+/// corner would be.
 struct StartFallback<'a> {
   inner: &'a dyn QueryDispatcher,
   tolerance: f32,
+  /// The polyline whose parts are being cast, in their frame
+  polyline: Option<&'a dyn Shape>,
+}
+
+impl StartFallback<'_> {
+  /// `point` (in `part`'s frame) is at one end of the segment `part`.
+  fn at_end(&self, part: &dyn Shape, point: Vector) -> bool {
+    part.as_segment().is_some_and(|segment| {
+      point.distance(segment.a) <= self.tolerance || point.distance(segment.b) <= self.tolerance
+    })
+  }
 }
 
 impl QueryDispatcher for StartFallback<'_> {
@@ -298,10 +318,16 @@ impl QueryDispatcher for StartFallback<'_> {
     g2: &dyn Shape,
     options: ShapeCastOptions,
   ) -> Result<Option<ShapeCastHit>, Unsupported> {
-    // Each part through this dispatcher, as parry casts them through its own
+    // Each part through this dispatcher, as parry casts them through its
+    // own (a polyline's parts in its frame, knowing the polyline)
     if let Some(composite) = g1.as_composite_shape() {
+      let parts = StartFallback {
+        inner: self.inner,
+        tolerance: self.tolerance,
+        polyline: g1.as_polyline().map(|_| g1),
+      };
       return Ok(cast_shapes_composite_shape_shape(
-        self,
+        &parts,
         pos12,
         local_vel12,
         composite,
@@ -319,25 +345,42 @@ impl QueryDispatcher for StartFallback<'_> {
       && hit.time_of_impact < self.tolerance
       && g1.as_support_map().is_some()
       && g2.as_support_map().is_some();
-    if !fallback {
-      return Ok(Some(hit));
+    if fallback {
+      // From here as parry, in the pair's frame (g1's)
+      let Ok(Some(contact)) = self.inner.contact(pos12, g1, g2, f32::MAX) else {
+        return Ok(Some(hit));
+      };
+      if !options.stop_at_penetration && contact.normal1.dot(local_vel12) >= 0.0 {
+        return Ok(None);
+      }
+      hit.normal1 = contact.normal1;
+      hit.normal2 = contact.normal2;
+      hit.witness1 = contact.point1;
+      hit.witness2 = contact.point2;
+      hit.status = if contact.dist < options.target_distance {
+        ShapeCastStatus::PenetratingOrWithinTargetDist
+      } else {
+        ShapeCastStatus::Converged
+      };
     }
-    // From here as parry, in the pair's frame (g1's)
-    let Ok(Some(contact)) = self.inner.contact(pos12, g1, g2, f32::MAX) else {
-      return Ok(Some(hit));
-    };
-    if !options.stop_at_penetration && contact.normal1.dot(local_vel12) >= 0.0 {
-      return Ok(None);
+    // At a part's end: the polyline's own contact there decides, its
+    // closest part at the time of impact
+    if let Some(polyline) = self.polyline.filter(|_| self.at_end(g1, hit.witness1)) {
+      let at = Pose::from_parts(
+        pos12.translation + local_vel12 * hit.time_of_impact,
+        pos12.rotation,
+      );
+      let reach = options.target_distance + self.tolerance;
+      if let Ok(Some(closest)) = self.inner.contact(&at, polyline, g2, reach) {
+        if !options.stop_at_penetration && closest.normal1.dot(local_vel12) >= 0.0 {
+          return Ok(None);
+        }
+        hit.normal1 = closest.normal1;
+        hit.normal2 = closest.normal2;
+        hit.witness1 = closest.point1;
+        hit.witness2 = closest.point2;
+      }
     }
-    hit.normal1 = contact.normal1;
-    hit.normal2 = contact.normal2;
-    hit.witness1 = contact.point1;
-    hit.witness2 = contact.point2;
-    hit.status = if contact.dist < options.target_distance {
-      ShapeCastStatus::PenetratingOrWithinTargetDist
-    } else {
-      ShapeCastStatus::Converged
-    };
     Ok(Some(hit))
   }
 

@@ -1980,6 +1980,65 @@ mod tests {
     }
   }
 
+  // Walking off a raised run of tiles down to the ground keeps its pace,
+  // either way. The run's outline is a polyline: riding a little inside its
+  // skin, the character's leading corner came within the skin of the side
+  // run's end at the edge, and that part, measured alone, read as a wall
+  // at the start of each cast; it stalled at the edge for up to half a
+  // second
+  #[test]
+  fn walking_off_a_tile_step_down_keeps_its_pace() {
+    use crate::core::physics::{TileCell, TileColliders};
+    for v in [30.0f32, 60.0, 90.0, 150.0, -30.0, -60.0, -90.0, -150.0] {
+      for x_off in [0.0, 0.13, 0.37, 0.71] {
+        let (mut world, mut s) = world(60);
+        let w = 20;
+        let mut cells = vec![TileCell::Empty; w * 3];
+        for cell in &mut cells[2 * w..] {
+          *cell = TileCell::Solid;
+        }
+        // The raised run, its top at 116: x 240 to 320 to walk off
+        // leftwards, 0 to 80 rightwards, down to the ground at 132
+        let run = if v < 0.0 { 15..w } else { 0..5 };
+        for cell in &mut cells[w + run.start..w + run.end] {
+          *cell = TileCell::Solid;
+        }
+        world.spawn((
+          Transform::from_xy(0.0, 100.0),
+          TileColliders::from_cells(w as u32, 3, Vec2::splat(16.0), cells),
+        ));
+        let x0 = if v < 0.0 { 296.0 } else { 24.0 } + x_off;
+        let e = world
+          .spawn((
+            Transform::from_xy(x0, 99.0),
+            CharacterController::platformer(),
+            Collider::rect(16.0, 32.0),
+          ))
+          .id();
+        fall_together(&mut world, &mut s, &[e], 20);
+        let start = at(&world, e).translation.x;
+        let steps = (100.0 * 60.0 / v.abs()) as usize;
+        for i in 0..steps {
+          let x = at(&world, e).translation.x;
+          world.get_mut::<Velocity>(e).unwrap().dx = v;
+          fall_together(&mut world, &mut s, &[e], 1);
+          let st = state(&world, e);
+          let ran = at(&world, e).translation.x - x;
+          assert!(
+            !st.on_wall && (ran - v / 60.0).abs() < 0.7,
+            "{v} px/s from {x0}, step {i}: ran {ran} at {x}: {st:?}"
+          );
+        }
+        let ran = at(&world, e).translation.x - start;
+        let expected = v * steps as f32 / 60.0;
+        assert!(
+          (ran - expected).abs() < 1.0 && state(&world, e).on_floor,
+          "{v} px/s from {x0}: ran {ran} of {expected}"
+        );
+      }
+    }
+  }
+
   // Top-down characters have no floor to lose: touching side by side they
   // still block each other and slide along each other
   #[test]
