@@ -516,7 +516,7 @@ Engine messages (all `Message + Clone`):
 | Type | Fields | Written when |
 |---|---|---|
 | `CollisionStarted` / `CollisionStopped` | `a, b` (colliders), `body_a, body_b`, and on started `contact: Option<Contact { point, normal }>`; `involves(e) -> bool`, `other(e)`, `other_collider(e) -> Option<Entity>` | two colliders start/stop touching (solid contact; triggers send the messages below) |
-| `TriggerEntered` / `TriggerExited` | `trigger, other, other_body: Entity`; `actor() -> Entity` (= `other_body`) | a body (or bare collider) enters/leaves a trigger, once per body |
+| `TriggerEntered` / `TriggerExited` | `trigger, other, other_body: Entity`; `actor() -> Entity` (= `other_body`) | a body (or bare collider) enters/leaves a trigger, once per body (its trigger colliders apart from its solid ones) |
 | `ContactForce` | `a, b, body_a, body_b, force: f32, direction: Vec2, started: bool` | a contact pushes above `with_force_events` |
 | `JointBroken` | `joint, a, b: Entity` | a joint breaks |
 | `MovementEvent` | `entity`, `kind: MovementEventKind` (`Jumped`, `AirJumped`, `WallJumped`, `Dashed`, `Landed`; `#[non_exhaustive]`) | a movement preset's character jumped, dashed or landed |
@@ -525,7 +525,7 @@ Engine messages (all `Message + Clone`):
 | `CheckpointReached` | `checkpoint, entity: Entity` | a `Checkpoint` moved `entity`'s `Respawn` point |
 | `TweenStarted` | `entity` | a `Tween` begins |
 | `TweenCompleted` | `entity, finished: bool` | each iteration; `finished` on the last |
-| `KnockbackStarted` / `KnockbackFinished` | `entity` | written in `FixedSet::Movement` |
+| `KnockbackStarted` / `KnockbackFinished` | `entity` | written in `FixedSet::Movement`; a finish once however it ends (decayed, `stop()`, a head-on hit) |
 | `SquashStretchStarted` / `SquashStretchFinished` | `entity` | |
 | `AssetReloaded` | `path: PathBuf` | hot reload (dev builds) |
 | `AssetLoadFailed` | `path: PathBuf, error: String` | |
@@ -785,7 +785,7 @@ The character controller and what is built on it: movement input, the platformer
 | `enum SlopeCorner { BottomLeft, BottomRight, TopLeft, TopRight }` | the filled corner of a 45° half-cell; `from_name(&str) -> Option<Self>` (`"bottom-left"` .. `"top-right"`, any case) |
 | `read_move_bindings` | the system that fills every bound `MoveIntent` (engine-registered) |
 
-`FixedSet::Movement` runs, chained: the zone behaviours (`Respawn::here` points, `Pickup`, pickup respawn timers, `KillZone`, `Checkpoint`, acting on the previous step's `TriggerEntered`), `read_move_bindings`, knockback, the platformer and top-down presets; `TileColliders` rebuilds run in the set too. Under `PhysicsPaused` the bindings, knockback, presets and pickup timers wait; the zone behaviours keep running. A game write to a character's `Transform` is a teleport: its `CharacterState` resets and it moves on by its `Velocity` from there that step.
+`FixedSet::Movement` runs, chained: the zone behaviours (`Respawn::here` points, `Pickup`, pickup respawn timers, `KillZone`, `Checkpoint`, acting on the previous step's `TriggerEntered` from solid colliders), `read_move_bindings`, knockback, the platformer and top-down presets; `TileColliders` rebuilds run in the set too. Under `PhysicsPaused` the bindings, knockback, presets and pickup timers wait; the zone behaviours keep running. A game write to a character's `Transform` is a teleport: its `CharacterState` resets and it moves on by its `Velocity` from there that step.
 
 
 ---

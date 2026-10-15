@@ -112,7 +112,7 @@ In `bevy_ecs` 0.20 a resource is a component on a hidden entity marked `IsResour
 
 - `Disabled` is the kernel's entity-disabling component: every query skips it unless it includes `Allow<Disabled>` (or names `Disabled`). Systems need no filter of their own for pooled entities.
 - Bookkeeping that must see disabled entities asks for them: physics' `(With<RigidBody>, Added<Disabled>, Allow<Disabled>)` unregisters a body as it is disabled.
-- `Pool<B: Bundle>` spawns its batches disabled; `acquire` removes `Disabled`, `release`/`release_all` insert it. `acquire` does not reset components and skips the entity's interpolation for this step. Acquire, release and `is_active` are O(1) plus the entity's children (release disables descendants, acquire restores the ones it disabled); a pool forgets entities the world no longer has (a cleanup sweep) when it meets them, and refills.
+- `Pool<B: Bundle>` spawns its batches disabled; `acquire` removes `Disabled`, `release`/`release_all` insert it. `acquire` does not reset components and skips the entity's interpolation for this step. Acquire, release and `is_active` are O(1) plus the entity's children (release disables descendants, acquire restores the ones it disabled: `pooling::disable_descendants` / `enable_descendants`, which a respawning pickup uses too); a pool forgets entities the world no longer has (a cleanup sweep) when it meets them, and refills.
 
 ## Engine Systems
 

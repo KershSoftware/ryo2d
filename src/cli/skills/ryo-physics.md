@@ -157,7 +157,7 @@ Queries use `QueryFilter::with_mask`, which is matched against the collider's la
 
 ## Triggers
 
-`as_trigger()` colliders detect but never push. A trigger overlap is not a collision: it sends `TriggerEntered` / `TriggerExited` (once per body, however many colliders it has; `actor()` is the body that entered or left) and shows in `physics.overlaps(zone)`; the engine also keeps a `TriggerContents` component on every trigger (added after its first step), listing the bodies inside in entry order (`entities()`, `contains(e)`, `len()`, `is_empty()`). Pickups, zones, pressure plates and sensors are triggers on a fixed body (or no body). Two overlapping triggers each get a message. What can set a trigger off is the layer and mask test, as for any pair.
+`as_trigger()` colliders detect but never push. A trigger overlap is not a collision: it sends `TriggerEntered` / `TriggerExited` (once per body, however many colliders it has, with its trigger colliders counted apart from its solid ones; `actor()` is the body that entered or left) and shows in `physics.overlaps(zone)`; the engine also keeps a `TriggerContents` component on every trigger (added after its first step), listing the bodies inside in entry order (`entities()`, `contains(e)`, `len()`, `is_empty()`). Pickups, zones, pressure plates and sensors are triggers on a fixed body (or no body). Two overlapping triggers each get a message. What can set a trigger off is the layer and mask test, as for any pair.
 
 Ready-made behaviours go on trigger colliders: `Pickup`, `KillZone` and `Checkpoint` with `Respawn` (`ryo-character`).
 

@@ -81,14 +81,14 @@ Writing a character's `Transform` teleports it: it is put there without a sweep,
 ### Riding and pushing
 
 - What it stands on carries it: a kinematic platform moved by `Transform` or by `Velocity` (turning ones too) or a dynamic body; fixed bodies do not move. Walls and ceilings still stop the ride. A lift carries its rider up through a one-way platform above it.
-- Leaving the floor (a jump, walking off, the platform despawned or disabled) adds `platform_velocity` to `Velocity`. A jump off a rising platform goes higher.
+- Leaving the floor (a jump, walking off, the platform despawned or disabled) adds `platform_velocity` to `Velocity`. A jump off a rising platform goes higher. The platformer preset keeps the horizontal part until it lands (see `PlatformerMovement`); a game's own movement code that steers toward a target speed in the air should aim past it the same way, or it slows the momentum away.
 - A floor that is despawned or disabled is gone at once: the character falls on the next step.
 - With `push`, dynamic bodies it walks into are pushed, and one it stands on is weighed down.
 
 ### Limits and warnings
 
 - Logged once per entity and skipped: a controller on a dynamic (or fixed) body, a controller without a `Collider` on its own entity, a non-finite `Velocity`.
-- Spawned overlapping something solid, a character is pushed out within a few steps. Tile outlines are hollow, though: one that ends up wholly inside a solid region is not pushed out (see Tile colliders).
+- Spawned overlapping something solid, a character is pushed out within a few steps. So are two characters spawned or respawned on one point: they are split by entity order and pushed apart. Tile outlines are hollow, though: one that ends up wholly inside a solid region is not pushed out (see Tile colliders).
 - The sweep is continuous: a fast character does not tunnel through a thin wall, and a fast fall lands on a one-way segment.
 - Very large colliders lose sub-pixel precision: a run along a floor 4000 px or longer in one piece (a tile map's straight run is one edge) can sink into it by up to 0.16 px at times.
 - While physics is paused (`is_physics_paused`, or a pushed scene that does not `updates_below`) characters do not move.
@@ -151,11 +151,12 @@ Brings `MoveIntent`, `PlatformerState` and `CharacterController::platformer()` (
 
 - **The jump** is set by its height and the time to its top: gravity and launch speed come from them, exact at the fixed step (the defaults give about 927 px/s² and 352 px/s at 60 Hz). That gravity is the preset's only gravity, so `jump_height` 0 means no gravity at all.
 - **Each step:** a landing writes `Landed` and refills the air jumps and the air dash. A dash (`dash_pressed`, cooldown over, the air dash unused in the air) goes along the input, or the facing when there is none, with no gravity or steering while it lasts, and leaves no faster than `run_speed`. Otherwise the run moves toward `direction.x * run_speed`; then, the first that applies: down + jump on a one-way floor drops through it; a buffered jump with coyote time left jumps; in the air, a buffered jump within `coyote_time` of touching a wall wall-jumps (away from it, the run held off for `lock_time`, the air jumps refilled); a press in the air with an air jump left air-jumps. Releasing jump while rising cuts the rise by `jump_cut`, once. Gravity is added (times `fall_multiplier` falling, capped at `max_fall_speed`), and a wall slide caps the fall while pressing into a wall in the air.
+- **Momentum:** a jump off a moving platform (or a step off its edge) keeps the platform's speed: in the air the run aims at `direction.x * run_speed` plus that speed, so with no input the character moves on with the platform and lands back where it took off, and steering is relative to it. It ends on landing (the ground run then slows any difference away), on running into a wall that way, and with a wall jump or a dash, whose launch replaces it.
 - The controller reports a wall only when the move runs into it, so a wall jump needs the input or the momentum pressing into the wall, and a wall slide needs the input itself pressing into it (momentum alone does not slide).
 - **Change settings at runtime** by writing the component (`ctx.world.get_mut::<PlatformerMovement>(player)`): a power-up's extra air jump, slower running in water.
 - **A launch of your own** (spring pad, explosion, bounce off an enemy): write `Velocity` in `update`; the preset carries on from it, adding gravity and steering toward the input. Such a launch is not cut short by releasing jump (only the preset's own jumps are).
 
-`PlatformerState` (engine-written): `facing` (-1 or 1), `jumping` (rising from a jump), `air_jumps_left`, `wall_sliding`, `dashing`, `dash_ready` (the air dash is unused). `reset()` forgets jumps, timers and dashes, keeping the facing (a kill zone's respawn calls it).
+`PlatformerState` (engine-written): `facing` (-1 or 1), `jumping` (rising from a jump), `air_jumps_left`, `wall_sliding`, `dashing`, `dash_ready` (the air dash is unused). `reset()` forgets jumps, timers, dashes and a platform's momentum, keeping the facing (a kill zone's respawn calls it).
 
 ## `TopDownMovement`
 
@@ -185,8 +186,8 @@ for event in ctx.messages::<MovementEvent>() {
 
 A trigger collider (any shape with `.as_trigger()`) detects overlaps without pushing; characters and other moving bodies set triggers off (two fixed colliders never meet). The engine sends:
 
-- `TriggerEntered { trigger, other, other_body }` and `TriggerExited { .. }`: `trigger` is the trigger collider's entity, `other` the collider that entered or left, `other_body` its body (the collider itself when it has none). `actor()` returns `other_body`: use it for "who". One message per body: a body with several colliders enters on its first and exits when its last leaves. On `TriggerExited` either entity may be gone.
-- `TriggerContents` on every trigger (added after its first step): the bodies inside now, in the order they entered: `entities()`, `contains(e)`, `len()`, `is_empty()`.
+- `TriggerEntered { trigger, other, other_body }` and `TriggerExited { .. }`: `trigger` is the trigger collider's entity, `other` the collider that entered or left, `other_body` its body (the collider itself when it has none). `actor()` returns `other_body`: use it for "who". One message per body: a body with several colliders enters on its first and exits when its last leaves. Its trigger colliders (an enemy's aggro radius) count apart from its solid ones, so such a body enters twice, once with each kind (`other` says which: `Collider::is_trigger`), and a sensor arriving first does not hide the body's own arrival. On `TriggerExited` either entity may be gone.
+- `TriggerContents` on every trigger (added after its first step, disabled triggers included): the bodies inside now, in the order they entered, each once: `entities()`, `contains(e)`, `len()`, `is_empty()`. A disabled trigger holds nothing.
 - What can set a trigger off is the usual layer and mask test, both ways.
 - Messages are written after the physics step, so `update` reads them on the next step.
 
@@ -197,10 +198,10 @@ let pressed = ctx.world.get::<TriggerContents>(plate).is_some_and(|inside| !insi
 
 ## Behaviours: `Pickup`, `KillZone`, `Checkpoint`, `Respawn`
 
-Put `Pickup`, `KillZone` or `Checkpoint` on an entity with a trigger collider (a non-trigger is warned about once and never fires); limit what sets it off with the trigger's layer and mask. They act on the previous step's `TriggerEntered` messages in `FixedSet::Movement`, one step after the overlap, and keep running while physics is paused, so an entry just before a pause is not lost.
+Put `Pickup`, `KillZone` or `Checkpoint` on an entity with a trigger collider (a non-trigger is warned about once and never fires); limit what sets it off with the trigger's layer and mask. They act on the previous step's `TriggerEntered` messages in `FixedSet::Movement`, one step after the overlap, and keep running while physics is paused, so an entry just before a pause is not lost. Only solid colliders set them off: an entry by a trigger (an enemy's aggro radius, a bullet that is a trigger) is ignored, and the body's solid collider entering later still counts.
 
-- **`Pickup::new()`**: collected by the first thing that enters (two collectors in one step collect it once): `PickedUp { pickup, by }` is written and the pickup despawned. `.respawn_after(seconds)` disables it instead (`Disabled`, so it is neither drawn nor simulated) and brings it back after that many seconds of fixed steps (the time waits while physics is paused); something still standing on it then collects it again at once.
-- **`KillZone::new()`**: writes `Killed { entity, zone }` for each entrant. An entrant with `Respawn` is put back at its point: `Transform.translation` set (a teleport), `Velocity` zeroed, `Knockback::stop()`, `PlatformerState` / `TopDownState` reset. Others only get the message, unless the zone is `.despawning()` (bullets, enemies falling out of the level).
+- **`Pickup::new()`**: collected by the first thing that enters (two collectors in one step collect it once): `PickedUp { pickup, by }` is written and the pickup despawned. `.respawn_after(seconds)` disables it instead (`Disabled`, with its children: neither it nor its sprite or light child is drawn or simulated; children the game disabled itself stay so) and brings it back after that many seconds of fixed steps (the time waits while physics is paused); something still standing on it then collects it again at once.
+- **`KillZone::new()`**: writes `Killed { entity, zone }` for each entrant, once a step however many zones it fell into (the seam of two). An entrant with `Respawn` is put back at its point: `Transform.translation` set (a teleport), `Velocity` and `AngularVelocity` zeroed, `Knockback::stop()`, `PlatformerState` / `TopDownState` reset. Others only get the message, unless the zone is `.despawning()` (bullets, enemies falling out of the level).
 - **`Checkpoint::new()`**: moves the entrant's `Respawn::point` to the checkpoint's position plus `.with_offset(v)` and writes `CheckpointReached { checkpoint, entity }` when the point moved (more than half a pixel).
 - **`Respawn::here()`** takes the entity's `Transform` the first time the engine sees it; **`Respawn::at(point)`** a given world point. `point` is a public field: set it yourself for a respawn of your own (`transform.translation = respawn.point`). Put it on root entities: it is written to `Transform.translation`.
 
@@ -251,7 +252,7 @@ let level = ctx.world.spawn((Transform::from_xy(0.0, 0.0), tiles)).id();
 - `TileColliders::new(width, height, tile_size)`, `from_cells(width, height, tile_size, cells)` (row by row from the top; missing cells are empty), `get(x, y)`, `set(x, y, cell) -> bool` (false, and nothing changes, outside the grid or when the cell already is that), `width()`, `height()`. Fields and builders: `tile_size`, `layer` / `with_layer` (default 1), `mask` / `with_mask` (default all bits), `friction` / `with_friction` (default 0.5), `restitution` / `with_restitution` (default 0), `solid_rects` / `solid_rects()` (default off: outlines).
 - Its `Transform` places cell (0, 0)'s top-left; +Y is down. With no body the colliders are fixed; with a kinematic `RigidBody` on the map entity the whole map moves.
 - **Outlines are hollow**: a body that ends up inside a solid region is not pushed out. `solid_rects()` builds merged rectangles instead (solid interiors, but seams between rectangles).
-- **Editing**: `ctx.world.get_mut::<TileColliders>(level)` and `set`. Only a real change rebuilds, all of the map's colliders at once, before that step's physics. Disabling the map entity removes its colliders and enabling it rebuilds them from the cells as they are then; removing the component removes them. A grid over 8192 × 8192 cells is refused (logged, empty), and so is a non-positive tile size.
+- **Editing**: `ctx.world.get_mut::<TileColliders>(level)` and `set`. Only a real change rebuilds, all of the map's colliders at once, before that step's physics; the new colliders are there for that step's characters, so one standing on the map keeps standing and one running at its wall still stops. Disabling the map entity removes its colliders and enabling it rebuilds them from the cells as they are then; removing the component removes them. A grid over 8192 × 8192 cells is refused (logged, empty), and so is a non-positive tile size.
 - **Which entity:** the colliders are child entities of the map. With no body on the map, collision messages and `CharacterState::floor` name such a part: follow `ChildOf` to the map (`ctx.world.get::<ChildOf>(part).map(|c| c.parent())`). A rebuild makes new parts, so it re-sends `CollisionStopped` / `CollisionStarted` for what touched the map, and `floor` names the new part.
 - From a Tiled map: `tilemap.tile_colliders()` reads tile properties (`solid`, `platform` for one-way, a `slope` custom property naming the corner); spawn it with a `Transform` at the map's origin.
 - Navigation: `NavigationGrid::rebuild_from_world` blocks a map's solid and slope cells exactly (one-way cells stay walkable) and skips its outline colliders; by hand, `grid.block_tiles(&tiles, origin)`. Only the map's position counts, not its rotation or scale.
@@ -267,7 +268,7 @@ let level = ctx.world.spawn((Transform::from_xy(0.0, 0.0), tiles)).id();
 | A kinematic body without a controller, a fixed body | ignored, logged once |
 | No body | `Transform` moves by the current knockback velocity |
 
-The knockback system runs in `FixedSet::Movement`, after `update`: a hit applied in `update` acts in that step's physics, and `KnockbackStarted` / `KnockbackFinished` reach `update` the next step. `Knockback::stop()` ends it and drops a hit not yet given to a dynamic body; a kill zone's respawn calls it.
+The knockback system runs in `FixedSet::Movement`, after `update`: a hit applied in `update` acts in that step's physics, and `KnockbackStarted` / `KnockbackFinished` reach `update` the next step. `Knockback::stop()` ends it and drops a hit not yet given to a dynamic body; a kill zone's respawn calls it. `KnockbackFinished` is written once however a knockback ends: decayed, `stop()` (yours or a kill zone's), or a push straight into a surface.
 
 ## One fixed step
 

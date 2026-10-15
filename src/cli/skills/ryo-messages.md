@@ -129,13 +129,13 @@ All are in the prelude and registered at engine build.
 |---------|--------|--------------|
 | `CollisionStarted` | `a`, `b` (colliders), `body_a`, `body_b`, `contact: Option<Contact { point, normal }>`; `involves(e)`, `other(e)` (the other side's body), `other_collider(e)` | two colliders start touching (solid contact only; triggers send the next pair) |
 | `CollisionStopped` | same without `contact` | they stop touching, or one went away (either may be despawned) |
-| `TriggerEntered` | `trigger` (the trigger collider), `other` (the collider that entered), `other_body` (its body, or itself); `actor()` = `other_body` | a body enters a trigger: once per body, on its first collider in |
+| `TriggerEntered` | `trigger` (the trigger collider), `other` (the collider that entered), `other_body` (its body, or itself); `actor()` = `other_body` | a body enters a trigger: once per body, on its first collider in (its trigger colliders, an aggro radius, count apart from its solid ones) |
 | `TriggerExited` | same | the body's last collider leaves, or one of them went away (either may be despawned) |
 | `ContactForce` | `a`, `b`, `body_a`, `body_b`, `force`, `direction`, `started` | a contact pushes above its collider's `with_force_events` threshold, each step |
 | `JointBroken` | `joint`, `a`, `b` | a joint breaks |
 | `TweenStarted` | `entity` | a `Tween`, `TweenSequence` or engine-driven `PropertyTween` starts |
 | `TweenCompleted` | `entity`, `finished` | an iteration ends; `finished` is `true` when the tween is done (`Once`, or the last of `Times(n)`) |
-| `KnockbackStarted` / `KnockbackFinished` | `entity` | a knockback starts / decays to nothing (written in `FixedSet::Movement`) |
+| `KnockbackStarted` / `KnockbackFinished` | `entity` | a knockback starts / ends, once each: decayed, `stop()` (a kill zone's respawn included) or pushed straight into a surface (written in `FixedSet::Movement`) |
 | `MovementEvent` | `entity`, `kind: MovementEventKind` (`Jumped`, `AirJumped`, `WallJumped`, `Dashed`, `Landed`; non-exhaustive) | a movement preset's character jumped, dashed or landed (see `ryo-character`) |
 | `PickedUp` | `pickup`, `by` (the body that collected it) | a `Pickup` was collected |
 | `Killed` | `entity`, `zone` | something entered a `KillZone` |
