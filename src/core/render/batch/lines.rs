@@ -137,6 +137,7 @@ pub(crate) fn push_polyline(
       max: max + reach,
       indices,
       vertices,
+      scissor: None,
     },
   );
 }

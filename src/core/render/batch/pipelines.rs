@@ -6,6 +6,7 @@ use std::collections::hash_map::Entry;
 use super::polyline::Vertex2D;
 use super::{BatchShader, BlendMode, LightStep, PageKind, Stream};
 use crate::core::graphics::SpriteInstance;
+use crate::core::render::UI_FORMAT;
 use crate::core::shaders::custom::{self, ShaderError};
 use crate::core::shaders::scope::Checked;
 
@@ -254,6 +255,12 @@ impl Pipelines {
         });
         return;
       }
+      (BatchShader::TextMask, Stream::Quads, _, _) => (&self.sprite, &self.layout, "fs_text_mask"),
+      (BatchShader::TextColor, Stream::Quads, _, _) => {
+        (&self.sprite, &self.layout, "fs_text_color")
+      }
+      (BatchShader::TextMsdf, Stream::Quads, _, _) => (&self.sprite, &self.layout, "fs_text_msdf"),
+      (BatchShader::UiRect, Stream::Quads, _, _) => (&self.sprite, &self.camera_only, "fs_ui_rect"),
       (BatchShader::Light(LightStep::Shadow), Stream::Triangles, _, _) => {
         (&self.shadow, &self.camera_only, "fs_shadow")
       }
@@ -313,6 +320,12 @@ fn batch_pipeline(
     BatchShader::Light(step) => light_blend(step),
     _ => (blend_state(key.blend), wgpu::ColorWrites::ALL),
   };
+  // The UI image holds gamma-encoded colour: its pipelines encode on output
+  let constants: &[(&str, f64)] = if key.format == UI_FORMAT {
+    &[("UI_GAMMA", 1.0)]
+  } else {
+    &[]
+  };
   device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
     label: Some(label),
     layout: Some(layout),
@@ -333,7 +346,10 @@ fn batch_pipeline(
         blend: Some(blend),
         write_mask,
       })],
-      compilation_options: Default::default(),
+      compilation_options: wgpu::PipelineCompilationOptions {
+        constants,
+        ..Default::default()
+      },
     }),
     primitive: wgpu::PrimitiveState {
       topology: wgpu::PrimitiveTopology::TriangleList,

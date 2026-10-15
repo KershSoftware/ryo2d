@@ -19,6 +19,8 @@ pub(crate) const SPRITE: &str = concat!(
   include_str!("include/sample.wgsl"),
   "\n",
   include_str!("core/sprite.wgsl"),
+  "\n",
+  include_str!("core/text.wgsl"),
 );
 
 /// Light accumulation

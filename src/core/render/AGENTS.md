@@ -70,11 +70,22 @@ One batch draws the world: sprites, shadows, tiles, composite parts, particles, 
 - **Pipelines** (`pipelines.rs`) are made on first use per `(BatchShader, BlendMode, Stream, format)`; a custom sprite shader gets one per blend mode it is drawn with, checked without blocking (`Checked`), and draws plain until its check passes. Every batch shader writes colour premultiplied by alpha, so each `BlendMode` is one fixed blend state (`blend_state`); `Premultiplied` picks the shader entries that take a texture's colour as it is.
 - **Bind groups are made with their resource:** one per camera (its uniform buffer) and one per texture page and sampler (made with the page); none per frame. Every bind group goes through `graphics::bind_groups::create`, which counts them in tests (`steady_frames_create_no_bind_groups`, and a guard test that fails on any other `create_bind_group`); passes that bind frame resources look them up in a `BindGroupCache` keyed by the resources themselves, cleared when those are recreated.
 - **Lines** (`lines.rs`, `polyline.rs`): trails and lines become polylines with miter, bevel or round joins (each corner one wedge, fanned from the corner point, so nothing is covered twice) and butt, square or round caps.
+- **Glyph and shape items.** Glyphs are `DrawPayload::Glyph`, already placed in their glyph page (the instance carries the atlas UVs) and drawn by `TextMask`, `TextColor` or `TextMsdf`. UI rects are `DrawPayload::Shape`, untextured, drawn by `UiRect` with an analytic rounded rect and border. Their instance lanes:
+
+  | Shader | `tint` | `effect_params` | `effect_extra` |
+  |---|---|---|---|
+  | `TextMask` | glyph colour (sRGB, straight alpha) | unused | unused |
+  | `TextColor` | multiplier (white keeps the glyph's colours) | unused | unused |
+  | `TextMsdf` | fill colour, or the soft layer's colour | `[mode (0 fill/outline, 1 soft), width or spread (base px), softness (base px), range (base px)]` | outline colour |
+  | `UiRect` | fill colour | `[corner radius, border width, width, height]` (UI units) | border colour |
+
+- **Scissor.** `DrawState::scissor` is applied per draw and clamped to the image; `None` is the whole image (`draw` takes the image size and always sets the rect).
+- **Per-camera format.** World cameras draw in `SCENE_FORMAT`. A UI camera (`CameraDraw::ui`) draws in `UI_FORMAT` (`Rgba8Unorm`, gamma-encoded premultiplied, through the `UI_GAMMA` pipeline override and `ui_out` in `color.wgsl`) and sees only items drawn for it.
 - **Debug draw** (`render/debug_draw.rs`): `DebugDraw` keeps world-space shapes in a fixed-step list (cleared when the next step begins) and a frame list (cleared after the frame); each camera builds them as polylines in its own screen pixels.
 
 ## Draw Order
 
-- Items sort by (z, kind, submission), once per frame; each camera draws the sorted items it sees. `z_order` picks the layer; at equal z entities draw first, then `Scene::render` sprites, then trails and lines (`DrawKind` order).
+- Items sort by (z, kind, submission), once per frame; each camera draws the sorted items it sees. `z_order` picks the layer; at equal z entities draw first, then text and UI shapes (`Text`), then `Scene::render` sprites, then trails and lines (`DrawKind` order).
 - Within a layer, plain entities keep query order and y-sorted ones follow, ordered by their sort key: the point `YSort.foot_offset` of the way down the sprite (default the feet), computed from the anchor, so the key is the same whichever `Anchor` places the sprite (`y_sort_key`).
 - Shadows draw just before their entity. Composite tiles draw at their own `z_order`, after the layer's entities.
 - Debug shapes (`DebugDraw`, the overlays, `draw_skeleton`) are unlit at `i32::MAX`.

@@ -60,6 +60,9 @@ fn replay(ctx: &mut RenderContext<'_>, lit: bool, label: &str) {
   if draws.is_empty() {
     return;
   }
+  let image = ctx
+    .current_camera()
+    .map_or(ctx.render_size(), |camera| camera.rect.size());
   let (encoder, view) = ctx.encoder_and_current_view();
   let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
     label: Some(label),
@@ -78,6 +81,6 @@ fn replay(ctx: &mut RenderContext<'_>, lit: bool, label: &str) {
     multiview_mask: None,
   });
   for draw in draws {
-    batch.draw(&mut pass, draw, camera, sprites);
+    batch.draw(&mut pass, draw, camera, sprites, image);
   }
 }

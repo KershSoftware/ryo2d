@@ -149,14 +149,14 @@ fn from_pixel(pixel: vec2<f32>) -> vec4<f32> {
 @fragment
 fn fs_base(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
-    return finish(sample_sprite(in.uv, in.uv_bounds), in.tint, in.emission);
+    return ui_out(finish(sample_sprite(in.uv, in.uv_bounds), in.tint, in.emission));
 }
 
 // Effect fragment shader
 @fragment
 fn fs_effect(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
-    return finish(effect_color(in), in.tint, in.emission);
+    return ui_out(finish(effect_color(in), in.tint, in.emission));
 }
 
 // The same for premultiplied textures (render targets): their colour is
@@ -165,13 +165,13 @@ fn fs_effect(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_base_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
     let color = sample_sprite(in.uv, in.uv_bounds);
-    return finish_premultiplied(color, in.tint, in.emission);
+    return ui_out(finish_premultiplied(color, in.tint, in.emission));
 }
 
 @fragment
 fn fs_effect_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
-    return finish_premultiplied(effect_color(in), in.tint, in.emission);
+    return ui_out(finish_premultiplied(effect_color(in), in.tint, in.emission));
 }
 
 // The same for render-target pages
@@ -179,7 +179,7 @@ fn fs_effect_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_base_linear(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
     let color = sample_masked(sprite_texture, sprite_sampler, in.uv, in.uv_bounds, uv_ddx, uv_ddy);
-    return finish_linear(color, in.tint, in.emission);
+    return ui_out(finish_linear(color, in.tint, in.emission));
 }
 
 // Effects work on straight sRGB, so the page reads back as it
@@ -187,7 +187,7 @@ fn fs_base_linear(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_effect_linear(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
     linear_page = true;
-    return finish(effect_color(in), in.tint, in.emission);
+    return ui_out(finish(effect_color(in), in.tint, in.emission));
 }
 
 // The sprite's colour with its built-in effect applied

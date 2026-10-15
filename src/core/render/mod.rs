@@ -40,6 +40,10 @@
 /// premultiplied by alpha, with values above 1.
 pub(crate) const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// The format of the UI image: gamma-encoded colour premultiplied by alpha,
+/// blended in gamma space as on the web (the `UI_GAMMA` shader override).
+pub(crate) const UI_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
 pub(crate) mod batch;
 mod context;
 mod debug_draw;
@@ -57,8 +61,10 @@ pub use context::RenderContext;
 pub(crate) use context::{EffectStages, FrameTargets};
 pub use debug_draw::{DebugDraw, DebugPen};
 pub(crate) use debug_draw::{begin_debug_fixed_step, end_debug_fixed_step};
+#[allow(unused_imports)] // drawn by text and the UI in a later task
 pub(crate) use draw_list::{
-  DrawItem, DrawKind, DrawLight, DrawList, DrawPayload, DrawTriangles, SpriteLook, SpriteShading,
+  DrawGlyph, DrawItem, DrawKind, DrawLight, DrawList, DrawPayload, DrawShape, DrawTriangles,
+  SpriteLook, SpriteShading,
 };
 pub(crate) use entities::EntityDrawer;
 pub use frame::FrameInfo;

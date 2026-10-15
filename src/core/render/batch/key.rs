@@ -90,6 +90,17 @@ pub(crate) enum BatchShader {
   LineTextured,
   /// A light (or its shadow) into a light buffer
   Light(LightStep),
+  /// A raster glyph: its coverage times the tint
+  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
+  TextMask,
+  /// A colour glyph times the tint
+  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
+  TextColor,
+  /// An MSDF glyph, with outline or as a soft shadow or glow layer
+  #[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
+  TextMsdf,
+  /// An untextured UI rectangle with rounded corners and a border
+  UiRect,
 }
 
 /// One draw of a light into a light buffer. A shadowed light draws, inside
@@ -145,7 +156,7 @@ pub(crate) struct DrawState {
   pub(crate) shader: BatchShader,
   pub(crate) blend: BlendMode,
   pub(crate) sampling: Sampling,
-  /// Pixels outside are not drawn (none of the world's drawables clip yet)
+  /// Pixels outside are not drawn (`None`: the whole image)
   pub(crate) scissor: Option<PixelRect>,
 }
 

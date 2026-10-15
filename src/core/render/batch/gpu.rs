@@ -15,9 +15,9 @@ use super::{
 use crate::core::ecs::Entity;
 use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
-  AtlasSlot, Presentation, SpriteGpuRenderer, SpriteInstance, TextureId, place_in_slot,
+  AtlasSlot, Presentation, SlotPage, SpriteGpuRenderer, SpriteInstance, TextureId, place_in_slot,
 };
-use crate::core::render::{CameraDraw, DrawItem, DrawList, DrawPayload, SpriteShading};
+use crate::core::render::{CameraDraw, DrawItem, DrawList, DrawPayload, SpriteShading, UI_FORMAT};
 
 /// Instances, vertices and indices the buffers hold at first; each doubles
 /// when a frame needs more.
@@ -90,6 +90,8 @@ impl GrowingBuffer {
 #[derive(Default)]
 struct CameraDraws {
   camera: Option<Entity>,
+  /// The format of the image it draws into
+  format: Option<wgpu::TextureFormat>,
   lit: Vec<Draw>,
   unlit: Vec<Draw>,
   lights: Vec<Draw>,
@@ -205,7 +207,7 @@ impl Batch2D {
       _ => true,
     });
 
-    let (format, presentation) = (self.format, self.presentation);
+    let (scene_format, presentation) = (self.format, self.presentation);
     let Self {
       pipelines,
       placed,
@@ -223,10 +225,58 @@ impl Batch2D {
     let mut ensured: Option<(PipelineKey, BatchShader)> = None;
     for (camera, drawn) in cameras.iter().zip(draws.iter_mut()) {
       drawn.camera = Some(camera.entity);
+      // A UI camera draws gamma-encoded colour into its own format
+      let format = if camera.ui { UI_FORMAT } else { scene_format };
+      drawn.format = Some(format);
       let first = placed.len() as u32;
       let mut place = |item: &DrawItem| {
         let index = match item.payload {
           DrawPayload::Sprite(index) => index,
+          DrawPayload::Glyph(index) => {
+            let glyph = list.glyph(index)?;
+            let key = PipelineKey {
+              shader: glyph.shader,
+              blend: glyph.blend,
+              stream: Stream::Quads,
+              page: PageKind::Srgb8,
+              format,
+            };
+            if ensured.is_none_or(|(last, _)| last != key) {
+              pipelines.ensure(device, key, None);
+              ensured = Some((key, glyph.shader));
+            }
+            // The instance already carries its glyph page's UVs
+            placed.push(glyph.instance);
+            return Some(Placed::Quad(DrawState {
+              page: Some(SlotPage::Glyph(glyph.page)),
+              shader: glyph.shader,
+              blend: glyph.blend,
+              sampling: glyph.sampling,
+              scissor: glyph.scissor,
+            }));
+          }
+          DrawPayload::Shape(index) => {
+            let shape = list.shape(index)?;
+            let key = PipelineKey {
+              shader: BatchShader::UiRect,
+              blend: shape.blend,
+              stream: Stream::Quads,
+              page: PageKind::Srgb8,
+              format,
+            };
+            if ensured.is_none_or(|(last, _)| last != key) {
+              pipelines.ensure(device, key, None);
+              ensured = Some((key, BatchShader::UiRect));
+            }
+            placed.push(shape.instance);
+            return Some(Placed::Quad(DrawState {
+              page: None,
+              shader: BatchShader::UiRect,
+              blend: shape.blend,
+              sampling: Sampling::Linear,
+              scissor: shape.scissor,
+            }));
+          }
           DrawPayload::Triangles(index) => {
             let line = list.triangles(index)?;
             // A textured one is told where its texture lives
@@ -258,7 +308,7 @@ impl Batch2D {
               shader,
               blend: line.blend,
               sampling,
-              scissor: None,
+              scissor: line.scissor,
             };
             let indices = line.indices.clone();
             return Some(Placed::Triangles { state, indices });
@@ -316,7 +366,7 @@ impl Batch2D {
           shader,
           blend: sprite.blend,
           sampling: sprite.filter.resolve(presentation),
-          scissor: None,
+          scissor: sprite.scissor,
         }))
       };
       let next = plan_draws(list.items_for(camera), &mut drawn.lit, first, &mut place);
@@ -424,7 +474,14 @@ impl Batch2D {
     draw: &Draw,
     camera: Entity,
     textures: &'a SpriteGpuRenderer,
+    image: (u32, u32),
   ) {
+    let format = self
+      .draws
+      .iter()
+      .find(|d| d.camera == Some(camera))
+      .and_then(|d| d.format)
+      .unwrap_or(self.format);
     let page = match draw.stream {
       Stream::Quads => PageKind::of(draw.state.page),
       Stream::Triangles => PageKind::Srgb8,
@@ -434,7 +491,7 @@ impl Batch2D {
       blend: draw.state.blend,
       stream: draw.stream,
       page,
-      format: self.format,
+      format,
     };
     let (Some(pipeline), Some(camera_group)) =
       (self.pipelines.get(&key), self.camera_groups.get(&camera))
@@ -449,12 +506,30 @@ impl Batch2D {
         None => return,
       },
       None
-        if draw.stream == Stream::Quads && !matches!(draw.state.shader, BatchShader::Light(_)) =>
+        if draw.stream == Stream::Quads
+          && !matches!(
+            draw.state.shader,
+            BatchShader::Light(_) | BatchShader::UiRect
+          ) =>
       {
         return;
       }
       None => None,
     };
+    // A scissor past the attachment is a validation error: clamp it
+    match draw.state.scissor {
+      Some(rect) => {
+        let x = rect.x.min(image.0);
+        let y = rect.y.min(image.1);
+        let width = rect.width.min(image.0 - x);
+        let height = rect.height.min(image.1 - y);
+        if width == 0 || height == 0 {
+          return;
+        }
+        pass.set_scissor_rect(x, y, width, height);
+      }
+      None => pass.set_scissor_rect(0, 0, image.0.max(1), image.1.max(1)),
+    }
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, camera_group, &[]);
     if let Some(group) = texture_group {
@@ -474,6 +549,27 @@ impl Batch2D {
         pass.draw_indexed(draw.range.clone(), 0, 0..1);
       }
     }
+  }
+
+  /// Build one pipeline and say whether it exists (tests)
+  #[cfg(test)]
+  pub(crate) fn ensure_pipeline_for_test(
+    &mut self,
+    device: &wgpu::Device,
+    shader: BatchShader,
+    blend: BlendMode,
+    stream: Stream,
+    format: wgpu::TextureFormat,
+  ) -> bool {
+    let key = PipelineKey {
+      shader,
+      blend,
+      stream,
+      page: PageKind::Srgb8,
+      format,
+    };
+    self.pipelines.ensure(device, key, None);
+    self.pipelines.get(&key).is_some()
   }
 
   /// How many instances the buffer holds.

@@ -147,7 +147,7 @@ fn styled(color_in: vec4<f32>, uv: vec2<f32>, params: vec4<f32>, aa: f32) -> vec
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let aa = fwidth(abs(in.uv.y - 0.5) * 2.0);
-    return styled(in.color, in.uv, in.params, aa);
+    return ui_out(styled(in.color, in.uv, in.params, aa));
 }
 
 @fragment
@@ -158,5 +158,5 @@ fn fs_textured(in: VertexOutput) -> @location(0) vec4<f32> {
     let aa = fwidth(abs(in.uv.y - 0.5) * 2.0);
     let texel = sample_wrapped(line_texture, line_sampler, in.uv, in.bounds, ddx, ddy);
     let texture = vec4<f32>(srgb_to_linear(texel.rgb), texel.a);
-    return styled(texture * in.color, in.uv, in.params, aa);
+    return ui_out(styled(texture * in.color, in.uv, in.params, aa));
 }

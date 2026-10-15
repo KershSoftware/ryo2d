@@ -19,7 +19,6 @@ pub(crate) mod camera_gpu;
 pub(crate) mod camera_images;
 pub mod camera_mut;
 mod compositor;
-#[cfg_attr(not(test), allow(dead_code))] // drawn by text in a later task
 mod glyph_atlas;
 mod gpu_context;
 pub mod gpu_error;
@@ -44,6 +43,7 @@ pub use camera2d::{
   RenderTarget, Viewport,
 };
 pub(crate) use compositor::{CompositeViewport, Compositor};
+pub(crate) use glyph_atlas::GlyphPage;
 pub use gpu_context::GpuRenderContext;
 pub use gpu_error::GpuError;
 pub use parallax::{ParallaxLayer, TileMode};

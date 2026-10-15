@@ -693,3 +693,36 @@ fn glyph_pages_bind_once_and_reuse_their_glyphs() {
       .is_some()
   );
 }
+
+#[test]
+fn the_text_and_ui_pipelines_build_in_both_formats() {
+  use crate::core::render::batch::{BatchShader, BlendMode, Stream};
+  use crate::core::render::{SCENE_FORMAT, UI_FORMAT};
+  let Ok((device, _queue)) = crate::core::testing::shared_gpu() else {
+    eprintln!("skipping: no GPU available");
+    return;
+  };
+  let mut batch =
+    crate::core::render::batch::Batch2D::new(&device, SCENE_FORMAT, Default::default());
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let shaders = [
+    (BatchShader::TextMask, Stream::Quads),
+    (BatchShader::TextColor, Stream::Quads),
+    (BatchShader::TextMsdf, Stream::Quads),
+    (BatchShader::UiRect, Stream::Quads),
+    (BatchShader::Sprite, Stream::Quads),
+    (BatchShader::Line, Stream::Triangles),
+  ];
+  for (shader, stream) in shaders {
+    for blend in [BlendMode::Alpha, BlendMode::Premultiplied] {
+      for format in [SCENE_FORMAT, UI_FORMAT] {
+        assert!(
+          batch.ensure_pipeline_for_test(&device, shader, blend, stream, format),
+          "{shader:?} {blend:?} {format:?}"
+        );
+      }
+    }
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+}

@@ -155,6 +155,9 @@ pub(crate) struct CameraDraw {
   pub(crate) rect: PixelRect,
   /// Lighting runs for it
   pub(crate) lit: bool,
+  /// A UI camera: sees only the items drawn for it, and draws in
+  /// `UI_FORMAT`
+  pub(crate) ui: bool,
 }
 
 /// One camera to plan, as the world holds it.
@@ -223,6 +226,7 @@ pub(crate) fn plan_cameras<'a>(
       own_image,
       rect,
       lit: lighting,
+      ui: false,
     });
   }
 }

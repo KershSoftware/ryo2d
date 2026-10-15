@@ -60,7 +60,7 @@ impl RenderPass for Lighting {
       });
       if let Some(batch) = scene.batch {
         for draw in batch.light_draws(entity) {
-          batch.draw(&mut pass, draw, entity, scene.sprites);
+          batch.draw(&mut pass, draw, entity, scene.sprites, camera.rect.size());
         }
       }
     }
