@@ -4,7 +4,7 @@
 //! - ListenServer for host-based multiplayer
 //! - NetworkClient for joining games
 //! - Entity replication and state synchronization
-//! - Simple platformer physics
+//! - Platformer movement on the engine's character controller
 //!
 //! Runs as a single page on the demo-kit shell.
 

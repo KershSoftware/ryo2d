@@ -18,6 +18,16 @@ pub const PLATFORM_WIDTH: f32 = 600.0;
 pub const PLATFORM_HEIGHT: f32 = 32.0;
 pub const PLATFORM_Y: f32 = 500.0;
 
+// Walls just off either side of the screen
+pub const WALL_THICKNESS: f32 = 20.0;
+
+// Collision layers (bits): players collide with the world, never each other
+pub const WORLD_LAYER: u32 = 1;
+pub const PLAYER_LAYER: u32 = 2;
+
+/// How close one player's feet must be to another's head to stand on it
+pub const HEAD_REST: f32 = 0.5;
+
 // Spawn positions
 pub const PLAYER_A_SPAWN_X: f32 = 150.0;
 pub const PLAYER_B_SPAWN_X: f32 = 650.0;

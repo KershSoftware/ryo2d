@@ -8,8 +8,13 @@ use serde::{Deserialize, Serialize};
 pub struct Player {
   /// Which player slot (0 = host/left, 1 = client/right)
   pub slot: u8,
-  /// Is this player on the ground?
+  /// Is this player on the ground (or on the other player's head)?
   pub grounded: bool,
+  /// The last horizontal input, -1 to 1: the host runs the player at it
+  /// every step, whether or not new input arrived
+  pub move_x: f32,
+  /// Jump pressed since the host's last step
+  pub jump: bool,
 }
 
 impl Player {
@@ -17,20 +22,9 @@ impl Player {
     Self {
       slot,
       grounded: false,
+      move_x: 0.0,
+      jump: false,
     }
-  }
-}
-
-/// Player velocity (custom because we handle physics manually)
-#[derive(Component, Debug, Clone, Copy, Default)]
-pub struct PlayerVelocity {
-  pub x: f32,
-  pub y: f32,
-}
-
-impl PlayerVelocity {
-  pub fn zero() -> Self {
-    Self { x: 0.0, y: 0.0 }
   }
 }
 

@@ -136,6 +136,36 @@ impl PlayerCheckpoint {
       last_synced_y: PLAYER_SPAWN_Y,
     }
   }
+
+  /// Slot 0's spot on the checkpoint platform, where its `Checkpoint`
+  /// trigger puts a player's `Respawn` point.
+  fn spawn_point(&self) -> Vec2 {
+    let left = self.center_x - self.platform_width / 2.0;
+    Vec2::new(left + slot_spawn_offset(0, self.platform_width), self.y)
+  }
+}
+
+/// How far from a platform's left edge a slot's player stands when spawned
+/// on it: the spawn platform's spots, scaled to the platform's width.
+fn slot_spawn_offset(slot: usize, platform_width: f32) -> f32 {
+  let idx = slot.min(PLAYER_SPAWN_OFFSETS.len() - 1);
+  PLAYER_SPAWN_OFFSETS[idx] * platform_width / SPAWN_PLATFORM_WIDTH
+}
+
+/// The checkpoint threshold a platform with its top at `platform_top`
+/// stands at: the highest threshold at or below its height (checkpoint
+/// platforms are generated exactly at the thresholds).
+fn checkpoint_height(platform_top: f32) -> f32 {
+  let height = (SPAWN_PLATFORM_Y - platform_top) / HEIGHT_SCALE;
+  let mut threshold = FIRST_CHECKPOINT_HEIGHT;
+  let mut interval = CHECKPOINT_INTERVAL;
+  let mut reached = 0.0;
+  while threshold <= height + 0.5 {
+    reached = threshold;
+    threshold += interval;
+    interval += CHECKPOINT_INTERVAL_GROWTH;
+  }
+  reached
 }
 
 pub struct GameScene {
@@ -239,6 +269,10 @@ pub struct GameScene {
 
   // Slot assignment (server/host only)
   client_slots: HashMap<ClientId, u8>,
+
+  /// Simulated players the game just moved, and how many more steps their
+  /// floor and wall checks wait (see `SETTLE_STEPS`)
+  settling: HashMap<Entity, u8>,
 }
 
 impl GameScene {
@@ -299,6 +333,7 @@ impl GameScene {
       ping_timer: 0.0,
       ping_send_time: None,
       client_slots: HashMap::new(),
+      settling: HashMap::new(),
     })
   }
 
@@ -368,6 +403,7 @@ impl GameScene {
       ping_timer: 0.0,
       ping_send_time: None,
       client_slots: HashMap::new(),
+      settling: HashMap::new(),
     })
   }
 
@@ -437,6 +473,7 @@ impl GameScene {
       ping_timer: 0.0,
       ping_send_time: None,
       client_slots: HashMap::new(),
+      settling: HashMap::new(),
     })
   }
 
@@ -519,7 +556,15 @@ impl GameScene {
       ping_timer: 0.0,
       ping_send_time: None,
       client_slots: HashMap::new(),
+      settling: HashMap::new(),
     })
+  }
+
+  /// Generate the tower from `seed` instead of a random one (a host sends
+  /// its seed to clients; tests use a fixed one).
+  pub fn with_seed(mut self, seed: u64) -> Self {
+    self.seed = seed;
+    self
   }
 
   /// Returns the lowest unused slot 0-3
@@ -533,8 +578,7 @@ impl GameScene {
   /// Compute spawn X position for a player slot, relative to the centered spawn platform
   fn spawn_x_for_slot(&self, slot: u8) -> f32 {
     let platform_left = self.screen_width / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0;
-    let idx = (slot as usize).min(PLAYER_SPAWN_OFFSETS.len() - 1);
-    platform_left + PLAYER_SPAWN_OFFSETS[idx]
+    platform_left + slot_spawn_offset(slot as usize, SPAWN_PLATFORM_WIDTH)
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -566,7 +610,8 @@ impl GameScene {
       Platform::new(width, chunk_y)
     };
 
-    // Platforms are placed and collided by their top-left corner
+    // Platforms are placed and collided by their top-left corner. They are
+    // one-way: players leap up through them and land on top
     let entity = ctx
       .world
       .spawn((
@@ -584,19 +629,29 @@ impl GameScene {
         ))
         .with_z_order(Z_PLATFORM)
         .with_anchor(Anchor::TopLeft),
-        Collider::rect(width, PLATFORM_HEIGHT).with_offset(width / 2.0, PLATFORM_HEIGHT / 2.0),
+        Collider::rect(width, PLATFORM_HEIGHT)
+          .with_offset(width / 2.0, PLATFORM_HEIGHT / 2.0)
+          .one_way(),
         platform,
       ))
       .id();
 
-    // Attach MovingPlatform component if this is a moving platform
+    // A moving platform is a kinematic body: `update_moving_platforms` moves
+    // its `Transform`, and the players standing on it ride along
     if is_moving {
       let phase_seed = self
         .seed
         .wrapping_add(chunk_y as u64 * 4919 + platform_index as u64);
       let phase = (phase_seed % 628) as f32 / 100.0;
       let moving = MovingPlatform::new(x, width, self.screen_width, MOVING_PLATFORM_SPEED, phase);
-      ctx.world.entity_mut(entity).insert(moving);
+      ctx
+        .world
+        .entity_mut(entity)
+        .insert((moving, RigidBody::kinematic()));
+    }
+
+    if is_checkpoint {
+      Self::spawn_checkpoint_zone(ctx, entity, width);
     }
 
     self.platforms.push(entity);
@@ -607,6 +662,38 @@ impl GameScene {
     }
 
     entity
+  }
+
+  /// A `Checkpoint` trigger standing on a checkpoint platform, as wide as
+  /// it and one and a half players tall. A player entering it gets its
+  /// `Respawn` point moved to slot 0's spot on the platform (the spawn rule
+  /// of `checkpoint_spawn_x`) and a `CheckpointReached`.
+  fn spawn_checkpoint_zone(ctx: &mut SceneContext, platform: Entity, width: f32) {
+    ctx.spawn_child(
+      platform,
+      (
+        Transform::IDENTITY,
+        Collider::rect(width, CHECKPOINT_ZONE_HEIGHT)
+          .with_offset(width / 2.0, -CHECKPOINT_ZONE_HEIGHT / 2.0)
+          .as_trigger()
+          .with_mask(PLAYER_LAYER),
+        Checkpoint::new().with_offset(Vec2::new(slot_spawn_offset(0, width), -PLAYER_HEIGHT)),
+      ),
+    );
+  }
+
+  /// Walls just off either side of the screen: players bounce off them.
+  fn spawn_walls(&self, ctx: &mut SceneContext) {
+    let center_y = WALL_BOTTOM - WALL_HEIGHT / 2.0;
+    for x in [
+      -WALL_THICKNESS / 2.0,
+      self.screen_width + WALL_THICKNESS / 2.0,
+    ] {
+      ctx.world.spawn((
+        Transform::from_xy(x, center_y),
+        Collider::rect(WALL_THICKNESS, WALL_HEIGHT),
+      ));
+    }
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -1007,18 +1094,33 @@ impl GameScene {
     };
 
     // The player's position is its top-left corner; the sprite is a child
-    // standing on the bottom-left corner so it can squish in place.
+    // standing on the bottom-left corner so it can squish in place. Players
+    // are on their own layer and collide only with the world, so they pass
+    // through each other and `check_player_collisions` decides what happens.
     let entity = ctx
       .world
       .spawn((
         Transform::from_xy(spawn_x, PLAYER_SPAWN_Y),
         Collider::rect(PLAYER_WIDTH, PLAYER_HEIGHT)
-          .with_offset(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0),
+          .with_offset(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0)
+          .with_layer(PLAYER_LAYER)
+          .with_mask(WORLD_LAYER),
         Player::new(slot),
         Velocity::zero(),
         predicted,
       ))
       .id();
+    // Whoever simulates a player gives it a controller: single player and
+    // the host simulate everyone, a client only its own player. A client's
+    // remote players stay bare colliders moved by the host's updates.
+    if self.mode != GameMode::Client || is_local {
+      self.make_controlled(ctx, entity);
+    }
+    // Checkpoints are decided where everyone is simulated; a client's
+    // respawn point comes from the host's checkpoint
+    if self.mode != GameMode::Client {
+      ctx.world.entity_mut(entity).insert(Respawn::here());
+    }
     ctx.spawn_child(
       entity,
       (
@@ -1073,6 +1175,54 @@ impl GameScene {
     self
       .local_client_id
       .and_then(|id| self.players.get(&id).copied())
+  }
+
+  /// The players this side simulates: everyone in single player and on the
+  /// host, only its own player on a client.
+  fn simulated_players(&self) -> Vec<Entity> {
+    if self.mode == GameMode::Client {
+      self.get_local_player_entity().into_iter().collect()
+    } else {
+      self.players.values().copied().collect()
+    }
+  }
+
+  /// Give a player the engine's character controller: the physics step
+  /// moves it by its `Velocity` and reports what it touched.
+  fn make_controlled(&mut self, ctx: &mut SceneContext, entity: Entity) {
+    ctx
+      .world
+      .entity_mut(entity)
+      .insert(CharacterController::platformer());
+    self.settle(entity);
+  }
+
+  /// The game just put this player somewhere: wait before trusting its
+  /// `CharacterState` (see `SETTLE_STEPS`).
+  fn settle(&mut self, entity: Entity) {
+    self.settling.insert(entity, SETTLE_STEPS);
+  }
+
+  /// Count one step of a player's wait; true while it is still waiting.
+  fn take_settle_step(&mut self, entity: Entity) -> bool {
+    let Some(steps) = self.settling.get_mut(&entity) else {
+      return false;
+    };
+    *steps = steps.saturating_sub(1);
+    if *steps == 0 {
+      self.settling.remove(&entity);
+    }
+    true
+  }
+
+  /// Put a simulated player at `to`. For its controller a `Transform` write
+  /// is a teleport, which resets its `CharacterState` to in the air: the
+  /// floor and wall checks wait for the controller to move it from there.
+  fn teleport(&mut self, ctx: &mut SceneContext, entity: Entity, to: Vec2) {
+    if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+      transform.translation = to;
+    }
+    self.settle(entity);
   }
 
   /// Get a clone of the local player's checkpoint (or a default if not yet set)
@@ -1144,162 +1294,116 @@ impl GameScene {
       }
     }
 
-    // Client relies on host for checkpoint detection — skip local detection
+    // The client relies on the host for checkpoints (its players have no
+    // `Respawn`, so its zones report nothing)
+    let reached = ctx.messages::<CheckpointReached>();
     if self.mode == GameMode::Client {
       return;
     }
 
-    // Host/SinglePlayer: check each player independently for checkpoint progression
-    let local_id = self.local_client_id;
-    let player_entries: Vec<(ClientId, Entity)> =
-      self.players.iter().map(|(&k, &v)| (k, v)).collect();
-
-    for (client_id, entity) in player_entries {
-      let (player_y, is_grounded) = {
-        let Some(transform) = ctx.world.get::<Transform>(entity) else {
-          continue;
-        };
-        let Some(player) = ctx.world.get::<Player>(entity) else {
-          continue;
-        };
-        (transform.translation.y, player.grounded)
+    // Host/SinglePlayer: a player entering a checkpoint platform's zone
+    for reached in reached {
+      let Some(client_id) = self
+        .players
+        .iter()
+        .find_map(|(&id, &entity)| (entity == reached.entity).then_some(id))
+      else {
+        continue;
       };
+      let Some(platform) = ctx
+        .world
+        .get::<ChildOf>(reached.checkpoint)
+        .map(|child_of| child_of.parent())
+      else {
+        continue;
+      };
+      let (Some(transform), Some(&Platform { width, .. })) = (
+        ctx.world.get::<Transform>(platform),
+        ctx.world.get::<Platform>(platform),
+      ) else {
+        continue;
+      };
+      let (left, top) = (transform.translation.x, transform.translation.y);
+      let height = checkpoint_height(top);
 
-      let height = ((PLAYER_SPAWN_Y - player_y) / HEIGHT_SCALE).max(0.0);
-
-      if !is_grounded || height < FIRST_CHECKPOINT_HEIGHT {
+      // Checkpoints only go up: a lower one (fallen onto on the way to the
+      // death line) puts the respawn point back
+      let current = self
+        .player_checkpoints
+        .get(&client_id)
+        .cloned()
+        .unwrap_or_else(|| PlayerCheckpoint::new(self.screen_width));
+      if height <= current.last_checkpoint_height {
+        if let Some(mut respawn) = ctx.world.get_mut::<Respawn>(reached.entity) {
+          respawn.point = current.spawn_point();
+        }
         continue;
       }
 
-      // Walk progressive checkpoint thresholds
-      let mut threshold = FIRST_CHECKPOINT_HEIGHT;
-      let mut interval = CHECKPOINT_INTERVAL;
-      let mut current_checkpoint_height = 0.0_f32;
-      while threshold <= height {
-        current_checkpoint_height = threshold;
-        threshold += interval;
-        interval += CHECKPOINT_INTERVAL_GROWTH;
+      // Only mark visuals (green color) for the local player
+      if Some(client_id) == self.local_client_id {
+        Self::mark_checkpoint_platform(ctx, current.platform_entity, platform);
       }
-
-      let last_height = self
-        .player_checkpoints
-        .get(&client_id)
-        .map(|cp| cp.last_checkpoint_height)
-        .unwrap_or(0.0);
-
-      if current_checkpoint_height > last_height {
-        // Find the designated is_checkpoint platform for this threshold
-        let checkpoint_plat_y =
-          PLAYER_SPAWN_Y + PLAYER_HEIGHT - current_checkpoint_height * HEIGHT_SCALE;
-
-        // Only mark visuals (green color) for the local player
-        let is_local = Some(client_id) == local_id;
-        let old_platform = self
-          .player_checkpoints
-          .get(&client_id)
-          .and_then(|cp| cp.platform_entity);
-
-        if let Some((plat_center_x, plat_top, plat_width, plat_entity)) =
-          self.find_checkpoint_platform_at_y(ctx, checkpoint_plat_y, is_local, old_platform)
-        {
-          let cp = self.get_or_init_checkpoint(client_id);
-          cp.center_x = plat_center_x;
-          cp.platform_width = plat_width;
-          cp.y = plat_top - PLAYER_HEIGHT;
-          cp.last_checkpoint_height = current_checkpoint_height;
-          cp.platform_entity = Some(plat_entity);
-        }
-      }
+      let cp = self.get_or_init_checkpoint(client_id);
+      cp.center_x = left + width / 2.0;
+      cp.platform_width = width;
+      cp.y = top - PLAYER_HEIGHT;
+      cp.last_checkpoint_height = height;
+      cp.platform_entity = Some(platform);
     }
   }
 
-  /// Find the designated checkpoint platform nearest to `target_y` and optionally color it green.
-  /// Only searches platforms with `is_checkpoint = true`.
-  /// Returns (platform center X, top Y, platform width, entity) if found.
-  fn find_checkpoint_platform_at_y(
-    &mut self,
-    ctx: &mut SceneContext,
-    target_y: f32,
-    mark_visual: bool,
-    old_platform: Option<Entity>,
-  ) -> Option<(f32, f32, f32, Entity)> {
-    // Revert old checkpoint platform to normal color (if it exists and isn't spawn platform)
-    if mark_visual && let Some(old_plat) = old_platform {
-      let platform_width = ctx
-        .world
-        .get::<Platform>(old_plat)
-        .filter(|p| !p.is_spawn)
-        .map(|p| p.width);
-
-      if let Some(width) = platform_width
-        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(old_plat)
-      {
-        // Checkpoint platforms revert to normal gray (they can't be moving)
-        let new_sprite = SpriteHandle::from_sprite(
-          Sprite::solid_rect(
-            width as u32,
-            PLATFORM_HEIGHT as u32,
-            PLATFORM_COLOR.0,
-            PLATFORM_COLOR.1,
-            PLATFORM_COLOR.2,
-            255,
-          ),
-          format!("platform_normal_{}", old_plat.to_bits()),
-        );
-        renderable.sprite = new_sprite;
-      }
-    }
-
-    // Find the is_checkpoint platform closest to target_y (within tolerance)
-    let max_dist = MIN_VERTICAL_GAP; // Don't match checkpoint platforms from different thresholds
-    let mut best: Option<(Entity, f32, f32, f32)> = None; // (entity, y, center_x, width)
-    for &platform_entity in &self.platforms {
-      let Some(platform_transform) = ctx.world.get::<Transform>(platform_entity) else {
-        continue;
-      };
-      let Some(platform) = ctx.world.get::<Platform>(platform_entity) else {
-        continue;
-      };
-
-      if !platform.is_checkpoint {
-        continue;
-      }
-
-      let dist = (platform_transform.translation.y - target_y).abs();
-      if dist > max_dist {
-        continue;
-      }
-      let is_closer = best.as_ref().is_none_or(|b| dist < (b.1 - target_y).abs());
-      if is_closer {
-        let center_x = platform_transform.translation.x + platform.width / 2.0;
-        best = Some((
-          platform_entity,
-          platform_transform.translation.y,
-          center_x,
-          platform.width,
-        ));
-      }
-    }
-
-    let (plat_entity, plat_top, center_x, plat_width) = best?;
-
-    // Color it green for local player
-    if mark_visual && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(plat_entity) {
-      let new_sprite = SpriteHandle::from_sprite(
+  /// Colour a platform's sprite (`kind` names the sprite).
+  fn paint_platform(ctx: &mut SceneContext, entity: Entity, color: (u8, u8, u8), kind: &str) {
+    let Some(width) = ctx.world.get::<Platform>(entity).map(|p| p.width) else {
+      return;
+    };
+    if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity) {
+      renderable.sprite = SpriteHandle::from_sprite(
         Sprite::solid_rect(
-          plat_width as u32,
+          width as u32,
           PLATFORM_HEIGHT as u32,
-          CHECKPOINT_PLATFORM_COLOR.0,
-          CHECKPOINT_PLATFORM_COLOR.1,
-          CHECKPOINT_PLATFORM_COLOR.2,
+          color.0,
+          color.1,
+          color.2,
           255,
         ),
-        format!("platform_checkpoint_{}", plat_entity.to_bits()),
+        format!("platform_{kind}_{}", entity.to_bits()),
       );
-      renderable.sprite = new_sprite;
     }
+  }
 
-    Some((center_x, plat_top, plat_width, plat_entity))
+  /// Turn the local player's checkpoint platform green, and its old one
+  /// back to grey (checkpoint platforms never move; the spawn platform
+  /// keeps its colour).
+  fn mark_checkpoint_platform(ctx: &mut SceneContext, old: Option<Entity>, new: Entity) {
+    if let Some(old) = old
+      && old != new
+      && ctx.world.get::<Platform>(old).is_some_and(|p| !p.is_spawn)
+    {
+      Self::paint_platform(ctx, old, PLATFORM_COLOR, "normal");
+    }
+    Self::paint_platform(ctx, new, CHECKPOINT_PLATFORM_COLOR, "checkpoint");
+  }
+
+  /// The checkpoint platform with its top nearest `top`, within a platform
+  /// gap (the client finds the platform of the checkpoint the host sent).
+  fn checkpoint_platform_at(&self, ctx: &SceneContext, top: f32) -> Option<Entity> {
+    self
+      .platforms
+      .iter()
+      .filter(|&&entity| {
+        ctx
+          .world
+          .get::<Platform>(entity)
+          .is_some_and(|p| p.is_checkpoint)
+      })
+      .filter_map(|&entity| {
+        let distance = (ctx.world.get::<Transform>(entity)?.translation.y - top).abs();
+        (distance <= MIN_VERTICAL_GAP).then_some((entity, distance))
+      })
+      .min_by(|a, b| a.1.total_cmp(&b.1))
+      .map(|(entity, _)| entity)
   }
 
   /// Sync checkpoint visual on the client side.
@@ -1310,19 +1414,15 @@ impl GameScene {
       return;
     }
 
-    let old_platform = cp.platform_entity;
-    let target_plat_y = cp.y + PLAYER_HEIGHT;
-
-    if let Some((_, _, _, plat_entity)) =
-      self.find_checkpoint_platform_at_y(ctx, target_plat_y, true, old_platform)
-    {
-      if let Some(local_id) = self.local_client_id {
-        let cp = self.get_or_init_checkpoint(local_id);
-        cp.platform_entity = Some(plat_entity);
-        cp.last_synced_y = cp.y;
-      }
-    } else if let Some(local_id) = self.local_client_id {
+    let platform = self.checkpoint_platform_at(ctx, cp.y + PLAYER_HEIGHT);
+    if let Some(platform) = platform {
+      Self::mark_checkpoint_platform(ctx, cp.platform_entity, platform);
+    }
+    if let Some(local_id) = self.local_client_id {
       let cp = self.get_or_init_checkpoint(local_id);
+      if platform.is_some() {
+        cp.platform_entity = platform;
+      }
       cp.last_synced_y = cp.y;
     }
   }
@@ -1384,48 +1484,17 @@ impl GameScene {
     // Skip if it's now the current checkpoint (already colored green)
     if let Some(old_entity) = self.future_checkpoint_platform
       && cp.platform_entity != Some(old_entity)
-    {
-      let platform_width = ctx
+      && ctx
         .world
         .get::<Platform>(old_entity)
-        .filter(|p| p.is_checkpoint)
-        .map(|p| p.width);
-
-      if let Some(width) = platform_width
-        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(old_entity)
-      {
-        let new_sprite = SpriteHandle::from_sprite(
-          Sprite::solid_rect(
-            width as u32,
-            PLATFORM_HEIGHT as u32,
-            PLATFORM_COLOR.0,
-            PLATFORM_COLOR.1,
-            PLATFORM_COLOR.2,
-            255,
-          ),
-          format!("platform_normal_{}", old_entity.to_bits()),
-        );
-        renderable.sprite = new_sprite;
-      }
+        .is_some_and(|p| p.is_checkpoint)
+    {
+      Self::paint_platform(ctx, old_entity, PLATFORM_COLOR, "normal");
     }
 
     // Color new future checkpoint platform yellow
-    if let Some(new_entity) = new_entity
-      && let Some(width) = ctx.world.get::<Platform>(new_entity).map(|p| p.width)
-      && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(new_entity)
-    {
-      let new_sprite = SpriteHandle::from_sprite(
-        Sprite::solid_rect(
-          width as u32,
-          PLATFORM_HEIGHT as u32,
-          FUTURE_CHECKPOINT_COLOR.0,
-          FUTURE_CHECKPOINT_COLOR.1,
-          FUTURE_CHECKPOINT_COLOR.2,
-          255,
-        ),
-        format!("platform_future_{}", new_entity.to_bits()),
-      );
-      renderable.sprite = new_sprite;
+    if let Some(new_entity) = new_entity {
+      Self::paint_platform(ctx, new_entity, FUTURE_CHECKPOINT_COLOR, "future");
     }
 
     self.future_checkpoint_platform = new_entity;
@@ -1438,9 +1507,8 @@ impl GameScene {
     let platform_left = cp.center_x - cp.platform_width / 2.0;
 
     // Compute 4 candidate positions scaled proportionally to the checkpoint platform width
-    let scale = cp.platform_width / SPAWN_PLATFORM_WIDTH;
     let positions: [f32; 4] =
-      std::array::from_fn(|i| platform_left + PLAYER_SPAWN_OFFSETS[i] * scale);
+      std::array::from_fn(|i| platform_left + slot_spawn_offset(i, cp.platform_width));
 
     let idx = (slot as usize).min(positions.len() - 1);
     let preferred_x = positions[idx];
@@ -1482,6 +1550,28 @@ impl GameScene {
     preferred_x
   }
 
+  /// Where a player comes back: its `Respawn` point, which its checkpoint's
+  /// trigger set to slot 0's spot on the platform (a client's players have
+  /// none: the host's checkpoint says where). In multiplayer each slot has
+  /// its own spot along the platform, or the first free one.
+  fn respawn_point(
+    &self,
+    ctx: &SceneContext,
+    entity: Entity,
+    slot: u8,
+    cp: &PlayerCheckpoint,
+  ) -> Vec2 {
+    let point = ctx
+      .world
+      .get::<Respawn>(entity)
+      .map_or_else(|| cp.spawn_point(), |respawn| respawn.point);
+    if self.mode == GameMode::SinglePlayer {
+      point
+    } else {
+      Vec2::new(self.checkpoint_spawn_x(ctx, slot, cp), point.y)
+    }
+  }
+
   /// Execute respawn using NetworkAction pattern
   /// - For clients: applies locally AND sends to server (dual execution)
   /// - For host/single player: applies locally only
@@ -1493,17 +1583,13 @@ impl GameScene {
     let slot = ctx.world.get::<Player>(entity).map(|p| p.slot).unwrap_or(0);
 
     let cp = self.local_checkpoint();
-    let spawn_x = self.checkpoint_spawn_x(ctx, slot, &cp);
-    let spawn_y = cp.y;
+    let point = self.respawn_point(ctx, entity, slot, &cp);
 
     // Apply respawn locally: reset position, velocity, and state.
     // Do NOT use RespawnAction (which calls force_correction) — the prediction
     // system preserves local positions for the local entity, so the respawn sticks
     // until the server catches up.
-    if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-      transform.translation.x = spawn_x;
-      transform.translation.y = spawn_y;
-    }
+    self.teleport(ctx, entity, point);
     if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
       vel.dx = 0.0;
       vel.dy = 0.0;
@@ -1538,17 +1624,18 @@ impl GameScene {
       .get(&client_id)
       .cloned()
       .unwrap_or_else(|| PlayerCheckpoint::new(self.screen_width));
-    let spawn_x = self.checkpoint_spawn_x(ctx, slot, &cp);
-    let spawn_y = cp.y;
+    let point = self.respawn_point(ctx, entity, slot, &cp);
 
     let action = RespawnAction {
       slot,
-      spawn_x,
-      spawn_y,
+      spawn_x: point.x,
+      spawn_y: point.y,
     };
 
     let mut action_ctx = ActionContext::new(ctx.world);
     action.apply(&mut action_ctx);
+    // The action wrote the player's `Transform`: a teleport
+    self.settle(entity);
   }
 
   fn handle_input(&mut self, ctx: &mut SceneContext, dt: f32) -> LeapInput {
@@ -1848,69 +1935,12 @@ impl GameScene {
       })
       .collect();
 
-    // Determine which player entities to move (same logic as update_physics)
-    let local_entity = self.get_local_player_entity();
-    let player_entities: Vec<Entity> = if self.mode == GameMode::Client {
-      local_entity.into_iter().collect()
-    } else {
-      self.players.values().copied().collect()
-    };
-
+    // Moving platforms are kinematic bodies: each travels to its new
+    // `Transform` over the physics step, carrying whoever stands on it
     for (plat_entity, moving) in &moving_platforms {
-      let old_x = ctx
-        .world
-        .get::<Transform>(*plat_entity)
-        .map(|t| t.translation.x)
-        .unwrap_or(0.0);
-
       let new_x = moving.x_at(self.elapsed_time);
-      let delta_x = new_x - old_x;
-
-      // Update platform position
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(*plat_entity) {
         transform.translation.x = new_x;
-      }
-
-      // Get platform dimensions for rider check
-      let plat_width = ctx
-        .world
-        .get::<Platform>(*plat_entity)
-        .map(|p| p.width)
-        .unwrap_or(0.0);
-      let plat_top = ctx
-        .world
-        .get::<Transform>(*plat_entity)
-        .map(|t| t.translation.y)
-        .unwrap_or(0.0);
-
-      // Move grounded players standing on this platform
-      if delta_x.abs() > 0.001 {
-        for &player_entity in &player_entities {
-          let is_grounded = ctx
-            .world
-            .get::<Player>(player_entity)
-            .map(|p| p.grounded)
-            .unwrap_or(false);
-          if !is_grounded {
-            continue;
-          }
-
-          if let Some(pt) = ctx.world.get::<Transform>(player_entity) {
-            let player_left = pt.translation.x;
-            let player_right = pt.translation.x + PLAYER_WIDTH;
-            let player_bottom = pt.translation.y + PLAYER_HEIGHT;
-
-            // Check if player is standing on this platform
-            let on_platform = player_right > new_x
-              && player_left < new_x + plat_width
-              && (player_bottom - plat_top).abs() < 5.0;
-
-            if on_platform && let Some(mut pt_mut) = ctx.world.get_mut::<Transform>(player_entity) {
-              pt_mut.translation.x =
-                (pt_mut.translation.x + delta_x).clamp(0.0, self.screen_width - PLAYER_WIDTH);
-            }
-          }
-        }
       }
     }
 
@@ -1948,186 +1978,60 @@ impl GameScene {
     }
   }
 
+  /// Leap physics for the players this side simulates. The engine's
+  /// character controller moves them by their `Velocity` after `update`
+  /// (in the fixed step, like this), so this reads what their last move
+  /// found and adds gravity while they are in the air.
   fn update_physics(&mut self, ctx: &mut SceneContext, dt: f32) {
-    // On client, only simulate the local player — remote entities get position from network.
-    // On host/single player, simulate all entities.
-    let local_entity = self.get_local_player_entity();
-    let player_entities: Vec<Entity> = if self.mode == GameMode::Client {
-      local_entity.into_iter().collect()
-    } else {
-      self.players.values().copied().collect()
-    };
+    for entity in self.simulated_players() {
+      let (Some(mut player), Some(mut vel)) = (
+        ctx.world.get::<Player>(entity).copied(),
+        ctx.world.get::<Velocity>(entity).copied(),
+      ) else {
+        continue;
+      };
 
-    for entity in player_entities {
-      // Check if airborne
-      let is_airborne = ctx
-        .world
-        .get::<Player>(entity)
-        .map(|p| p.leap_state.is_airborne())
-        .unwrap_or(false);
+      // Just spawned, respawned or corrected: the state still describes the
+      // old place (a teleport resets it to in the air, and the next move
+      // lands again, which must not read as a landing)
+      let settling = self.take_settle_step(entity);
+      if !settling && let Some(state) = ctx.world.get::<CharacterState>(entity) {
+        // Landing is the game's own state meeting the floor: on the floor
+        // while airborne and not rising. That is `landed` on the step it
+        // happens, and a landing during the wait above is not lost.
+        if state.on_floor && player.leap_state.is_airborne() && vel.dy >= 0.0 {
+          vel.dx = 0.0;
+          player.grounded = true;
+          player.leap_state = LeapState::Landing {
+            timer: LANDING_RECOVERY_TIME,
+          };
+          let _ = ctx
+            .audio
+            .play_sound_with("land", SoundOptions::new().volume(0.05));
+        }
+        // Off the floor without leaping: pushed or carried off an edge, or
+        // put in the air by a correction
+        else if !state.on_floor && !player.leap_state.is_airborne() {
+          player.grounded = false;
+          player.leap_state = LeapState::Airborne;
+        }
 
-      // Grounded players: verify they still have platform support.
-      // Knockback or moving platforms can push a player off an edge while
-      // they remain flagged as grounded, causing them to float.
-      if !is_airborne {
-        if let Some(transform) = ctx.world.get::<Transform>(entity) {
-          let player_left = transform.translation.x;
-          let player_right = transform.translation.x + PLAYER_WIDTH;
-          let player_bottom = transform.translation.y + PLAYER_HEIGHT;
-
-          let mut supported = false;
-          for &plat_entity in &self.platforms {
-            if let Some(pt) = ctx.world.get::<Transform>(plat_entity)
-              && let Some(plat) = ctx.world.get::<Platform>(plat_entity)
-            {
-              let plat_left = pt.translation.x;
-              let plat_right = pt.translation.x + plat.width;
-              let plat_top = pt.translation.y;
-
-              if player_right > plat_left
-                && player_left < plat_right
-                && (player_bottom - plat_top).abs() < 5.0
-              {
-                supported = true;
-                break;
-              }
-            }
-          }
-
-          if !supported {
-            if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
-              player.grounded = false;
-              player.leap_state = LeapState::Airborne;
-            }
-            // Don't skip — fall through to airborne physics below
-          } else {
-            continue;
-          }
-        } else {
-          continue;
+        // The wall stopped the run; bounce back off it
+        if state.on_wall && player.leap_state.is_airborne() {
+          vel.dx = -state.velocity_before.x * WALL_BOUNCE_FACTOR;
         }
       }
 
-      // Apply gravity
-      if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
+      if player.leap_state.is_airborne() {
         vel.dy += GRAVITY * dt;
       }
 
-      // Get velocity
-      let vel = ctx.world.get::<Velocity>(entity).map(|v| (v.dx, v.dy));
-
-      if let Some((vx, vy)) = vel {
-        // Store previous Y for sweep collision
-        let prev_y = ctx
-          .world
-          .get::<Transform>(entity)
-          .map(|t| t.translation.y)
-          .unwrap_or(0.0);
-
-        // Update position
-        let mut wall_hit = false;
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.translation.x += vx * dt;
-          transform.translation.y += vy * dt;
-
-          // Check wall collision
-          if transform.translation.x < 0.0 {
-            transform.translation.x = 0.0;
-            wall_hit = true;
-          } else if transform.translation.x > self.screen_width - PLAYER_WIDTH {
-            transform.translation.x = self.screen_width - PLAYER_WIDTH;
-            wall_hit = true;
-          }
-        }
-
-        // Bounce off walls — reflect horizontal velocity so player doesn't slide down
-        if wall_hit && let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
-          vel.dx = -vel.dx * WALL_BOUNCE_FACTOR;
-        }
-
-        // Check platform collisions (only when falling)
-        if vy > 0.0 {
-          self.check_platform_landing(ctx, entity, prev_y);
-        }
+      if let Some(mut stored) = ctx.world.get_mut::<Player>(entity) {
+        *stored = player;
       }
-    }
-  }
-
-  fn check_platform_landing(&mut self, ctx: &mut SceneContext, player_entity: Entity, prev_y: f32) {
-    let player_transform = match ctx.world.get::<Transform>(player_entity) {
-      Some(t) => (t.translation.x, t.translation.y),
-      None => return,
-    };
-
-    // Current and previous bottom positions for sweep test
-    let current_bottom = player_transform.1 + PLAYER_HEIGHT;
-    let prev_bottom = prev_y + PLAYER_HEIGHT;
-    let player_left = player_transform.0;
-    let player_right = player_transform.0 + PLAYER_WIDTH;
-
-    // Find the highest platform we should land on (in case we passed through multiple)
-    let mut best_landing: Option<(f32, Entity)> = None;
-
-    for &platform_entity in &self.platforms {
-      let platform = match ctx.world.get::<Platform>(platform_entity) {
-        Some(p) => *p,
-        None => continue,
-      };
-
-      let plat_transform = match ctx.world.get::<Transform>(platform_entity) {
-        Some(t) => (t.translation.x, t.translation.y),
-        None => continue,
-      };
-
-      let plat_top = plat_transform.1;
-      let plat_left = plat_transform.0;
-      let plat_right = plat_transform.0 + platform.width;
-
-      // Check horizontal overlap
-      let horizontally_overlapping = player_right > plat_left && player_left < plat_right;
-      if !horizontally_overlapping {
-        continue;
+      if let Some(mut stored) = ctx.world.get_mut::<Velocity>(entity) {
+        *stored = vel;
       }
-
-      // Sweep test: check if player's bottom crossed the platform top
-      // Player was above platform and is now at or below it
-      let was_above = prev_bottom <= plat_top + 1.0; // Small tolerance
-      let now_below_or_at = current_bottom >= plat_top;
-
-      if was_above && now_below_or_at {
-        // Found a valid landing - pick the highest one (smallest Y)
-        match best_landing {
-          None => best_landing = Some((plat_top, platform_entity)),
-          Some((best_y, _)) if plat_top < best_y => {
-            best_landing = Some((plat_top, platform_entity));
-          }
-          _ => {}
-        }
-      }
-    }
-
-    // Apply the landing if we found one
-    if let Some((plat_top, _)) = best_landing {
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-        transform.translation.y = plat_top - PLAYER_HEIGHT;
-      }
-
-      if let Some(mut vel) = ctx.world.get_mut::<Velocity>(player_entity) {
-        vel.dx = 0.0;
-        vel.dy = 0.0;
-      }
-
-      if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
-        player.grounded = true;
-        player.leap_state = LeapState::Landing {
-          timer: LANDING_RECOVERY_TIME,
-        };
-      }
-
-      // Play land sound
-      let _ = ctx
-        .audio
-        .play_sound_with("land", SoundOptions::new().volume(0.05));
     }
   }
 
@@ -2468,6 +2372,7 @@ impl GameScene {
           let slot = self.client_slots.remove(&client_id).unwrap_or(0);
 
           if let Some(entity) = self.players.remove(&client_id) {
+            self.settling.remove(&entity);
             let _ = ctx.world.despawn(entity);
           }
           if let Some(light_entity) = self.player_lights.remove(&client_id) {
@@ -2923,11 +2828,10 @@ impl GameScene {
           // grounded/airborne state (e.g. knocked off a platform by another
           // player, or landed on host but client hasn't detected it yet).
           // Trust the server — snap position, velocity, and state.
+          // (Each `Transform` write below teleports the local player's
+          // controller; `teleport` makes the landing checks wait for it.)
           if (server_airborne && client_grounded) || (server_grounded && client_airborne) {
-            if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-              transform.translation.x = update.x;
-              transform.translation.y = update.y;
-            }
+            self.teleport(ctx, entity, Vec2::new(update.x, update.y));
             if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
               vel.dx = update.vx;
               vel.dy = update.vy;
@@ -2951,10 +2855,7 @@ impl GameScene {
               let dist_sq = dx * dx + dy * dy;
               // Large discrepancy (>48px, ~1.5 player heights): snap
               if dist_sq > 48.0 * 48.0 {
-                if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-                  transform.translation.x = update.x;
-                  transform.translation.y = update.y;
-                }
+                self.teleport(ctx, entity, Vec2::new(update.x, update.y));
                 if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
                   vel.dx = update.vx;
                   vel.dy = update.vy;
@@ -2963,10 +2864,7 @@ impl GameScene {
               // Moderate discrepancy (>8px): smooth correction
               else if dist_sq > 8.0 * 8.0 {
                 let blend = 0.3; // Blend 30% toward server each update (20Hz)
-                if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-                  transform.translation.x += dx * blend;
-                  transform.translation.y += dy * blend;
-                }
+                self.teleport(ctx, entity, Vec2::new(cx + dx * blend, cy + dy * blend));
                 // Also nudge velocity toward server to prevent re-diverging
                 if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
                   vel.dx += (update.vx - vel.dx) * blend;
@@ -2978,6 +2876,15 @@ impl GameScene {
         }
         UpdateResult::Skipped => {}
       }
+    }
+
+    // A player spawned before the host said which client this is (its
+    // position can beat the init message) became a remote one: once it is
+    // known to be ours, simulate it
+    if let Some(entity) = self.get_local_player_entity()
+      && ctx.world.get::<CharacterController>(entity).is_none()
+    {
+      self.make_controlled(ctx, entity);
     }
 
     // Sync checkpoint visual after processing all position updates
@@ -3292,6 +3199,12 @@ impl Scene for GameScene {
     "GameScene"
   }
 
+  /// The quit dialog stops the game: `update` returns early while it is up,
+  /// and the physics step, which moves the players, stops with it.
+  fn is_physics_paused(&self) -> bool {
+    self.show_quit_dialog
+  }
+
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     self.screen_width = ctx.screen_width();
     self.screen_height = ctx.screen_height();
@@ -3337,8 +3250,9 @@ impl Scene for GameScene {
     let _ = ctx.audio.load_sound("land", "assets/land.wav");
     self.sounds_loaded = true;
 
-    // Spawn spawn platform
+    // Spawn spawn platform and the walls either side
     self.spawn_starting_platform(ctx);
+    self.spawn_walls(ctx);
 
     // Generate initial platforms above spawn (skip for client — wait for seed from host)
     if self.mode != GameMode::Client {

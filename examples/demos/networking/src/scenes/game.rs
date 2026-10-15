@@ -196,11 +196,31 @@ impl Match {
         ))
         .with_anchor(Anchor::TopLeft)
         .with_z_order(Z_PLATFORM),
+        // One-way, so players land on it only from above
         Collider::rect(PLATFORM_WIDTH, PLATFORM_HEIGHT)
-          .with_offset(PLATFORM_WIDTH / 2.0, PLATFORM_HEIGHT / 2.0),
+          .with_offset(PLATFORM_WIDTH / 2.0, PLATFORM_HEIGHT / 2.0)
+          .one_way(),
       ))
       .id();
     self.scenery.push(platform);
+  }
+
+  /// Walls just off either side of the screen keep the players on it
+  fn spawn_walls(&mut self, ctx: &mut SceneContext) {
+    let height = SCREEN_HEIGHT as f32 * 3.0;
+    for x in [
+      -WALL_THICKNESS / 2.0,
+      SCREEN_WIDTH as f32 + WALL_THICKNESS / 2.0,
+    ] {
+      let wall = ctx
+        .world
+        .spawn((
+          Transform::from_xy(x, SCREEN_HEIGHT as f32 / 2.0),
+          Collider::rect(WALL_THICKNESS, height),
+        ))
+        .id();
+      self.scenery.push(wall);
+    }
   }
 
   fn spawn_player(&mut self, ctx: &mut SceneContext, slot: u8, client_id: ClientId) -> Entity {
@@ -210,7 +230,9 @@ impl Match {
       (PLAYER_B_SPAWN_X, PLAYER_B_COLOR)
     };
 
-    // Positions are top-left corners: the platformer maths below works in them
+    // Positions are top-left corners: the collision rules below work in them.
+    // Players are on their own layer and collide only with the world: they
+    // pass through each other, and `check_player_collision` pushes them apart
     let entity = ctx
       .world
       .spawn((
@@ -229,11 +251,22 @@ impl Match {
         .with_anchor(Anchor::TopLeft)
         .with_z_order(Z_PLAYER),
         Collider::rect(PLAYER_WIDTH, PLAYER_HEIGHT)
-          .with_offset(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0),
+          .with_offset(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0)
+          .with_layer(PLAYER_LAYER)
+          .with_mask(WORLD_LAYER),
         Player::new(slot),
-        PlayerVelocity::zero(),
+        Velocity::zero(),
       ))
       .id();
+    // The host simulates both players: the engine's character controller
+    // moves them by their `Velocity`. A client only shows the host's
+    // positions, so its players stay bare colliders.
+    if self.role == Role::Host {
+      ctx
+        .world
+        .entity_mut(entity)
+        .insert(CharacterController::platformer());
+    }
 
     self.players.insert(client_id, entity);
     entity
@@ -407,103 +440,58 @@ impl Match {
     self.waiting_for_player = self.players.len() < 2;
   }
 
+  /// Record a player's input; `update_physics` acts on it.
   fn apply_input(&mut self, ctx: &mut SceneContext, entity: Entity, move_x: f32, jump: bool) {
-    // Get player grounded state
-    let grounded = ctx
-      .world
-      .get::<Player>(entity)
-      .map(|p| p.grounded)
-      .unwrap_or(false);
-
-    // Apply horizontal movement
-    if let Some(mut vel) = ctx.world.get_mut::<PlayerVelocity>(entity) {
-      vel.x = move_x * PLAYER_SPEED;
-
-      // Jump if grounded
-      if jump && grounded {
-        vel.y = -PLAYER_JUMP_FORCE;
-      }
-    }
-
-    // Update grounded state if jumped
-    if jump
-      && grounded
-      && let Some(mut player) = ctx.world.get_mut::<Player>(entity)
-    {
-      player.grounded = false;
+    if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
+      player.move_x = move_x;
+      player.jump |= jump;
     }
   }
 
+  /// The host's platformer rules. The engine's character controller moves
+  /// the players by their `Velocity` after `update` (in the fixed step, like
+  /// this), stopping them on the platform and at the walls; this sets the
+  /// run, jumps, adds gravity and settles overlapping players.
   fn update_physics(&mut self, ctx: &mut SceneContext, dt: f32) {
-    // Collect entities to update
     let player_entities: Vec<Entity> = self.players.values().copied().collect();
+    let mut jumped = Vec::new();
 
-    for entity in player_entities {
-      // Apply gravity
-      if let Some(mut vel) = ctx.world.get_mut::<PlayerVelocity>(entity) {
-        vel.y += GRAVITY * dt;
+    for &entity in &player_entities {
+      let Some(mut player) = ctx.world.get_mut::<Player>(entity) else {
+        continue;
+      };
+      let jump = std::mem::take(&mut player.jump) && player.grounded;
+      let move_x = player.move_x;
+      if jump {
+        jumped.push(entity);
       }
-
-      // Get velocity for position update
-      let vel = ctx.world.get::<PlayerVelocity>(entity).map(|v| (v.x, v.y));
-
-      if let Some((vx, vy)) = vel {
-        // Update position
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          let t = &mut transform.translation;
-          t.x += vx * dt;
-          t.y += vy * dt;
-
-          // Screen bounds
-          t.x = t.x.clamp(0.0, SCREEN_WIDTH as f32 - PLAYER_WIDTH);
-
-          // Check platform collision
-          let player_bottom = t.y + PLAYER_HEIGHT;
-          let platform_top = PLATFORM_Y;
-          let platform_left = (SCREEN_WIDTH as f32 - PLATFORM_WIDTH) / 2.0;
-          let platform_right = platform_left + PLATFORM_WIDTH;
-
-          // Check if landing on platform
-          if player_bottom >= platform_top
-            && t.x + PLAYER_WIDTH > platform_left
-            && t.x < platform_right
-            && vy > 0.0
-          {
-            t.y = platform_top - PLAYER_HEIGHT;
-          }
+      if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
+        vel.dx = move_x * PLAYER_SPEED;
+        if jump {
+          vel.dy = -PLAYER_JUMP_FORCE;
         }
+        vel.dy += GRAVITY * dt;
+      }
+    }
 
-        // Set grounded and stop velocity if on platform
-        let on_platform = ctx
-          .world
-          .get::<Transform>(entity)
-          .map(|t| {
-            let t = t.translation;
-            let player_bottom = t.y + PLAYER_HEIGHT;
-            let platform_top = PLATFORM_Y;
-            let platform_left = (SCREEN_WIDTH as f32 - PLATFORM_WIDTH) / 2.0;
-            let platform_right = platform_left + PLATFORM_WIDTH;
-            (player_bottom - platform_top).abs() < 1.0
-              && t.x + PLAYER_WIDTH > platform_left
-              && t.x < platform_right
-          })
-          .unwrap_or(false);
-
-        if on_platform && vy > 0.0 {
-          if let Some(mut vel) = ctx.world.get_mut::<PlayerVelocity>(entity) {
-            vel.y = 0.0;
-          }
-          if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
-            player.grounded = true;
-          }
-        }
+    // On the platform (as the last move found it) and not jumping off it
+    for &entity in &player_entities {
+      let on_floor = ctx
+        .world
+        .get::<CharacterState>(entity)
+        .is_some_and(|state| state.on_floor);
+      let falling = ctx
+        .world
+        .get::<Velocity>(entity)
+        .is_some_and(|v| v.dy >= 0.0);
+      if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
+        player.grounded = on_floor && falling;
       }
     }
 
     // Player-player collision
-    let entities: Vec<_> = self.players.values().copied().collect();
-    if entities.len() == 2 {
-      self.check_player_collision(ctx, entities[0], entities[1]);
+    if let [a, b] = player_entities[..] {
+      self.check_player_collision(ctx, a, b, &jumped, dt);
     }
   }
 
@@ -542,7 +530,19 @@ impl Match {
     }
   }
 
-  fn check_player_collision(&mut self, ctx: &mut SceneContext, a: Entity, b: Entity) {
+  /// Players pass through each other, so overlaps are settled here, through
+  /// their velocities for this step (writing a character's `Transform`
+  /// would teleport it, skipping its move): one on the other's head moves
+  /// onto it and stands there unless it `jumped` this step, and side by side
+  /// they are pushed apart.
+  fn check_player_collision(
+    &mut self,
+    ctx: &mut SceneContext,
+    a: Entity,
+    b: Entity,
+    jumped: &[Entity],
+    dt: f32,
+  ) {
     let (ax, ay) = {
       let t = ctx.world.get::<Transform>(a);
       match t {
@@ -559,9 +559,10 @@ impl Match {
       }
     };
 
-    // AABB collision
+    // AABB collision; standing exactly on the other's head counts, so a
+    // player resting there stays grounded
     let overlap_x = (ax < bx + PLAYER_WIDTH) && (ax + PLAYER_WIDTH > bx);
-    let overlap_y = (ay < by + PLAYER_HEIGHT) && (ay + PLAYER_HEIGHT > by);
+    let overlap_y = (ay < by + PLAYER_HEIGHT + HEAD_REST) && (ay + PLAYER_HEIGHT + HEAD_REST > by);
 
     if overlap_x && overlap_y {
       // Calculate overlap amounts
@@ -574,47 +575,30 @@ impl Match {
       let min_overlap_y = overlap_top.min(overlap_bottom);
 
       if min_overlap_y < min_overlap_x {
-        // Vertical collision (jumping on head)
-        if ay < by {
-          // A is on top of B
-          if let Some(mut t) = ctx.world.get_mut::<Transform>(a) {
-            t.translation.y = by - PLAYER_HEIGHT;
-          }
-          if let Some(mut v) = ctx.world.get_mut::<PlayerVelocity>(a) {
-            v.y = 0.0;
-          }
-          if let Some(mut p) = ctx.world.get_mut::<Player>(a) {
-            p.grounded = true;
-          }
+        // Vertical collision (jumping on head): the one on top moves onto
+        // the other's head this step and stands there
+        let (top, overlap) = if ay < by {
+          (a, overlap_top)
         } else {
-          // B is on top of A
-          if let Some(mut t) = ctx.world.get_mut::<Transform>(b) {
-            t.translation.y = ay - PLAYER_HEIGHT;
+          (b, overlap_bottom)
+        };
+        if !jumped.contains(&top) {
+          if let Some(mut v) = ctx.world.get_mut::<Velocity>(top) {
+            v.dy = -overlap / dt;
           }
-          if let Some(mut v) = ctx.world.get_mut::<PlayerVelocity>(b) {
-            v.y = 0.0;
-          }
-          if let Some(mut p) = ctx.world.get_mut::<Player>(b) {
+          if let Some(mut p) = ctx.world.get_mut::<Player>(top) {
             p.grounded = true;
           }
         }
       } else {
-        // Horizontal collision (push apart)
-        let push = min_overlap_x / 2.0 + 1.0;
-        if ax < bx {
-          if let Some(mut t) = ctx.world.get_mut::<Transform>(a) {
-            t.translation.x -= push;
-          }
-          if let Some(mut t) = ctx.world.get_mut::<Transform>(b) {
-            t.translation.x += push;
-          }
-        } else {
-          if let Some(mut t) = ctx.world.get_mut::<Transform>(a) {
-            t.translation.x += push;
-          }
-          if let Some(mut t) = ctx.world.get_mut::<Transform>(b) {
-            t.translation.x -= push;
-          }
+        // Horizontal collision (push apart), each by `push` this step
+        let push = (min_overlap_x / 2.0 + 1.0) / dt;
+        let (left, right) = if ax < bx { (a, b) } else { (b, a) };
+        if let Some(mut v) = ctx.world.get_mut::<Velocity>(left) {
+          v.dx -= push;
+        }
+        if let Some(mut v) = ctx.world.get_mut::<Velocity>(right) {
+          v.dx += push;
         }
       }
     }
@@ -630,6 +614,7 @@ impl Match {
 
     self.spawn_background(ctx);
     self.spawn_platform(ctx);
+    self.spawn_walls(ctx);
 
     if self.role == Role::Host {
       let host_id = self.server.as_ref().unwrap().host_id();

@@ -138,8 +138,22 @@ pub const PLAYER_BLOB_SHADOW_HEIGHT: f32 = 6.0;
 // Platform occluder
 pub const PLATFORM_OCCLUDER_HEIGHT: f32 = 10.0;
 
-// Wall bounce
+// Walls either side of the tower, just off screen
 pub const WALL_BOUNCE_FACTOR: f32 = 0.4; // Reflect 40% of horizontal velocity on wall hit
+pub const WALL_THICKNESS: f32 = 20.0;
+pub const WALL_HEIGHT: f32 = 200_000.0; // From below the spawn up past any climb
+pub const WALL_BOTTOM: f32 = SPAWN_PLATFORM_Y + 2.0 * DEATH_Y_OFFSET;
+
+// Collision layers (bits): players collide with the world, never each other
+pub const WORLD_LAYER: u32 = 1;
+pub const PLAYER_LAYER: u32 = 2;
+
+// Checkpoints: a trigger standing on each checkpoint platform
+pub const CHECKPOINT_ZONE_HEIGHT: f32 = PLAYER_HEIGHT * 1.5;
+/// Steps a player's floor and wall checks wait after the game moves it (a
+/// respawn, a server correction, a spawn): its `CharacterState` describes
+/// the old place until the controller has moved it once from the new one
+pub const SETTLE_STEPS: u8 = 3;
 
 // Player collision
 pub const PLAYER_PUSH_FORCE: f32 = 80.0; // Subtle horizontal push when overlapping
