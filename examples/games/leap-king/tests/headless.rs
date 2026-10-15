@@ -244,3 +244,122 @@ fn a_fall_respawns_the_player_at_its_checkpoint() {
   }
   assert!(player(&mut engine).on_floor);
 }
+
+/// Slot 0's spot on a checkpoint platform whose top-left is `platform`.
+fn spot(platform: Vec2) -> Vec2 {
+  Vec2::new(platform.x + 12.0, platform.y - 32.0)
+}
+
+/// Respawn now (the R key) and say where the player came back.
+fn respawn_now(engine: &mut HeadlessEngine) -> Vec2 {
+  engine.tap_key(KeyCode::KeyR);
+  engine.step().expect("frame");
+  player(engine).position
+}
+
+#[test]
+fn climbing_past_a_checkpoint_beside_its_platform_reaches_it() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  engine.step_frames(20).expect("frames");
+  let all = platforms(&mut engine);
+  let (_, checkpoint, size, _) = *all
+    .iter()
+    .find(|p| p.2.is_checkpoint)
+    .expect("a checkpoint platform");
+  // A platform a little above the checkpoint's height, clear of its sides
+  let (side, at, side_size, _) = *all
+    .iter()
+    .find(|(_, at, p, moving)| {
+      !p.is_checkpoint
+        && !moving
+        && (checkpoint.y - 250.0..checkpoint.y - 60.0).contains(&at.y)
+        && (at.x + p.width < checkpoint.x || at.x > checkpoint.x + size.width)
+    })
+    .expect("a side platform above the checkpoint's height");
+
+  // Leap from below the checkpoint's height up onto the side platform
+  let from = Vec2::new(at.x + side_size.width / 2.0 - 12.0, checkpoint.y + 40.0);
+  let rise = from.y + 32.0 - at.y + 20.0;
+  throw(
+    &mut engine,
+    from,
+    Vec2::new(0.0, -(2.0 * leap_king::constants::GRAVITY * rise).sqrt()),
+  );
+  engine.step_frames(90).expect("frames");
+  let landed = player(&mut engine);
+  assert!(
+    landed.on_floor && landed.floor == Some(side),
+    "on the side platform: {}",
+    landed.position
+  );
+
+  let back = respawn_now(&mut engine);
+  assert!(
+    (back - spot(checkpoint)).length() < 1.0,
+    "the checkpoint was reached: respawned at {back}, not {}",
+    spot(checkpoint)
+  );
+}
+
+#[test]
+fn falling_through_a_lower_checkpoint_keeps_the_higher_one() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  engine.step_frames(5).expect("frames");
+  // Climb (by teleport) so the second checkpoint platform exists
+  throw(&mut engine, Vec2::new(20.0, -1700.0), Vec2::ZERO);
+  engine.step_frames(2).expect("frames");
+  let checkpoints: Vec<Vec2> = platforms(&mut engine)
+    .into_iter()
+    .filter(|p| p.2.is_checkpoint)
+    .map(|p| p.1)
+    .collect();
+  let (lower, higher) = (checkpoints[0], checkpoints[1]);
+
+  // Reach the higher one
+  throw(
+    &mut engine,
+    Vec2::new(higher.x + 150.0, higher.y - 80.0),
+    Vec2::ZERO,
+  );
+  engine.step_frames(40).expect("frames");
+  assert!(player(&mut engine).on_floor);
+
+  // Fall through the lower one's zone, away from its platform, and respawn
+  // on the step after its zone moved the respawn point down
+  throw(&mut engine, Vec2::new(1100.0, lower.y - 120.0), Vec2::ZERO);
+  let entity = player(&mut engine).entity;
+  let mut entered = false;
+  for _ in 0..60 {
+    engine.step().expect("frame");
+    let point = engine
+      .world()
+      .get::<Respawn>(entity)
+      .expect("respawn")
+      .point;
+    if (point - spot(lower)).length() < 1.0 {
+      entered = true;
+      break;
+    }
+  }
+  assert!(entered, "fell through the lower checkpoint's zone");
+  let back = respawn_now(&mut engine);
+  assert!(
+    (back - spot(higher)).length() < 1.0,
+    "respawned at the higher checkpoint {}, not {back}",
+    spot(higher)
+  );
+
+  // And a fall past the death line comes back there too
+  throw(&mut engine, Vec2::new(1100.0, lower.y - 120.0), Vec2::ZERO);
+  engine.step_frames(120).expect("frames");
+  let back = player(&mut engine).position;
+  assert!(
+    (back - spot(higher)).length() < 1.0,
+    "after the fall: {back}, not {}",
+    spot(higher)
+  );
+}

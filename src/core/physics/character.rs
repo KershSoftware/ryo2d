@@ -47,7 +47,9 @@ fn character_body() -> RigidBody {
 /// preset's); after the step it is the real velocity: landing zeroes the
 /// fall, a head bump stops the rise, a wall stops the run.
 /// `CharacterState` says what the move touched. Writing `Transform`
-/// teleports the character (no sweep), as for any kinematic body.
+/// teleports the character: it is put there without a sweep, forgets what
+/// it stood on, and moves on by its `Velocity` from there in the same step
+/// (so a respawn onto a floor reports `landed` on that step).
 ///
 /// A character rides what it stands on: a platform moved by `Transform` or
 /// by velocity, a turning one, or a dynamic body. Leaving it (a jump, a step
@@ -216,8 +218,8 @@ impl Default for CharacterState {
 }
 
 impl CharacterState {
-  /// In the air, touching nothing, not dropping, and pushing out first on
-  /// the next move: the state after a teleport (that step has no sweep).
+  /// In the air, touching nothing, not dropping, and pushing out first: the
+  /// state a teleport's move starts from.
   fn teleported(&mut self) {
     let mut hits = std::mem::take(&mut self.hits);
     hits.clear();
@@ -320,9 +322,10 @@ impl Physics {
   }
 
   /// Sweep one character by `velocity` plus `extra` (knockback) over `dt`;
-  /// update its state and leave the real velocity in `velocity`. `None`
-  /// when it is not moved: not registered yet, teleported this step, or
-  /// refused (logged once).
+  /// update its state and leave the real velocity in `velocity`. A
+  /// character the game teleported this step starts from where it was put,
+  /// with its state reset. `None` when it is not moved: not registered yet,
+  /// disabled, or refused (logged once).
   pub(crate) fn move_character(
     &mut self,
     entity: Entity,
@@ -351,9 +354,11 @@ impl Physics {
       );
       return None;
     };
-    if self.was_teleported(entity) {
+    // A game write to its `Transform` put the body's next pose somewhere
+    // new: the character forgets where it was and moves on from there
+    let teleported = self.was_teleported(entity);
+    if teleported {
       state.teleported();
-      return None;
     }
     let mut wanted = *velocity;
     if !wanted.is_finite() {
@@ -371,10 +376,16 @@ impl Physics {
     } else {
       FRAC_PI_4
     };
+    // The body's next pose is the teleport's target; the collider still
+    // holds the old pose until the step
     let (start, shape, groups) = {
       let collider = self.colliders.get(collider_handle)?;
+      let start = match (teleported, collider.position_wrt_parent()) {
+        (true, Some(local)) => self.bodies.get(body_handle)?.next_position() * local,
+        _ => *collider.position(),
+      };
       (
-        *collider.position(),
+        start,
         collider.shared_shape().clone(),
         collider.collision_groups(),
       )
@@ -541,7 +552,12 @@ impl Physics {
     let drop_done = self.track_drop(state, controller.drop_through, &*shape, &pose);
 
     let delta = from_rapier(pose.translation - start.translation);
-    let body_translation = from_rapier(self.bodies.get(body_handle)?.translation());
+    let body = self.bodies.get(body_handle)?;
+    let body_translation = from_rapier(if teleported {
+      body.next_position().translation
+    } else {
+      body.translation()
+    });
     self.drive_to(entity, body_translation + delta);
     Some(CharacterMove { normals, drop_done })
   }
@@ -711,10 +727,6 @@ pub(crate) fn move_characters(
       });
     let Some(moved) = physics.move_character(entity, &controller, &mut state, &mut v, extra, dt)
     else {
-      // A teleport ends a drop (the state forgot it; the move did not run)
-      if controller.drop_through && physics.was_teleported(entity) {
-        controller.drop_through = false;
-      }
       continue;
     };
     velocity.set_if_neq(Velocity::from_vec2(v));
@@ -1079,6 +1091,51 @@ mod tests {
       landings += usize::from(st.landed);
     }
     assert_eq!(landings, 1, "landed once");
+    assert!(state(&world, e).on_floor);
+  }
+
+  // A correction (a game write to `Transform` mid-flight) must not stall the
+  // character: it moves on from where it was put, in the same step
+  #[test]
+  fn a_teleported_character_keeps_moving_that_step() {
+    let (mut world, mut s) = world(60);
+    let e = character(&mut world, 0.0, 0.0);
+    world.get_mut::<Velocity>(e).unwrap().dx = 300.0;
+    run(&mut world, &mut s, 3);
+    world.get_mut::<Transform>(e).unwrap().translation = Vec2::new(500.0, -200.0);
+    *world.get_mut::<Velocity>(e).unwrap() = Velocity::new(300.0, -60.0);
+    run(&mut world, &mut s, 1);
+    let position = at(&world, e).translation;
+    assert!(
+      (position - Vec2::new(505.0, -201.0)).length() < 1e-3,
+      "moved by v·dt from the teleport: {position}"
+    );
+    assert_eq!(velocity(&world, e), Vec2::new(300.0, -60.0));
+  }
+
+  #[test]
+  fn a_teleport_onto_a_floor_lands_once_on_that_step() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = character(&mut world, 0.0, -300.0);
+    for _ in 0..3 {
+      step(&mut world, &mut s, e, 980.0);
+    }
+    // Just above the floor, falling
+    world.get_mut::<Transform>(e).unwrap().translation = Vec2::new(0.0, 79.0);
+    step(&mut world, &mut s, e, 980.0);
+    let st = state(&world, e);
+    assert!(
+      st.on_floor && st.landed,
+      "landed on the teleport's step: {st:?}"
+    );
+    assert!(!st.left_floor);
+    let mut landings = 0;
+    for _ in 0..30 {
+      step(&mut world, &mut s, e, 980.0);
+      landings += usize::from(state(&world, e).landed);
+    }
+    assert_eq!(landings, 0, "and only then");
     assert!(state(&world, e).on_floor);
   }
 

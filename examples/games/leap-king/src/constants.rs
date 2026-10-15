@@ -150,10 +150,15 @@ pub const PLAYER_LAYER: u32 = 2;
 
 // Checkpoints: a trigger standing on each checkpoint platform
 pub const CHECKPOINT_ZONE_HEIGHT: f32 = PLAYER_HEIGHT * 1.5;
-/// Steps a player's floor and wall checks wait after the game moves it (a
-/// respawn, a server correction, a spawn): its `CharacterState` describes
-/// the old place until the controller has moved it once from the new one
-pub const SETTLE_STEPS: u8 = 3;
+/// Steps a player's floor checks wait after the game teleports it (a
+/// respawn, a server correction): the `update` that writes its `Transform`
+/// reads the `CharacterState` of where it was; the controller moves it from
+/// the new place in that step's physics
+pub const TELEPORT_SETTLE_STEPS: u8 = 1;
+/// Steps a new player's floor checks wait: that stale step, and the step
+/// its body registers, when a level spawned with it is not in the
+/// controller's queries yet
+pub const SPAWN_SETTLE_STEPS: u8 = 2;
 
 // Player collision
 pub const PLAYER_PUSH_FORCE: f32 = 80.0; // Subtle horizontal push when overlapping

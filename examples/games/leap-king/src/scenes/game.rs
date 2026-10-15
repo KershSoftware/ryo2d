@@ -270,8 +270,8 @@ pub struct GameScene {
   // Slot assignment (server/host only)
   client_slots: HashMap<ClientId, u8>,
 
-  /// Simulated players the game just moved, and how many more steps their
-  /// floor and wall checks wait (see `SETTLE_STEPS`)
+  /// Simulated players the game just spawned or moved, and how many more
+  /// steps their floor checks wait (see `TELEPORT_SETTLE_STEPS`)
   settling: HashMap<Entity, u8>,
 }
 
@@ -651,7 +651,7 @@ impl GameScene {
     }
 
     if is_checkpoint {
-      Self::spawn_checkpoint_zone(ctx, entity, width);
+      self.spawn_checkpoint_zone(ctx, entity, x, width);
     }
 
     self.platforms.push(entity);
@@ -664,17 +664,23 @@ impl GameScene {
     entity
   }
 
-  /// A `Checkpoint` trigger standing on a checkpoint platform, as wide as
-  /// it and one and a half players tall. A player entering it gets its
-  /// `Respawn` point moved to slot 0's spot on the platform (the spawn rule
-  /// of `checkpoint_spawn_x`) and a `CheckpointReached`.
-  fn spawn_checkpoint_zone(ctx: &mut SceneContext, platform: Entity, width: f32) {
+  /// A `Checkpoint` trigger at a checkpoint platform's height, one and a
+  /// half players tall and spanning the tower wall to wall: a player
+  /// reaches the checkpoint by climbing past its height anywhere, not only
+  /// on its platform. Its `Respawn` point moves to slot 0's spot on the
+  /// platform (the spawn rule of `checkpoint_spawn_x`) and a
+  /// `CheckpointReached` is written.
+  fn spawn_checkpoint_zone(&self, ctx: &mut SceneContext, platform: Entity, left: f32, width: f32) {
+    // The child sits at the platform's top-left corner
     ctx.spawn_child(
       platform,
       (
         Transform::IDENTITY,
-        Collider::rect(width, CHECKPOINT_ZONE_HEIGHT)
-          .with_offset(width / 2.0, -CHECKPOINT_ZONE_HEIGHT / 2.0)
+        Collider::rect(self.screen_width, CHECKPOINT_ZONE_HEIGHT)
+          .with_offset(
+            self.screen_width / 2.0 - left,
+            -CHECKPOINT_ZONE_HEIGHT / 2.0,
+          )
           .as_trigger()
           .with_mask(PLAYER_LAYER),
         Checkpoint::new().with_offset(Vec2::new(slot_spawn_offset(0, width), -PLAYER_HEIGHT)),
@@ -1194,13 +1200,15 @@ impl GameScene {
       .world
       .entity_mut(entity)
       .insert(CharacterController::platformer());
-    self.settle(entity);
+    self.settle(entity, SPAWN_SETTLE_STEPS);
   }
 
-  /// The game just put this player somewhere: wait before trusting its
-  /// `CharacterState` (see `SETTLE_STEPS`).
-  fn settle(&mut self, entity: Entity) {
-    self.settling.insert(entity, SETTLE_STEPS);
+  /// The game just put this player somewhere: wait `steps` before trusting
+  /// its `CharacterState` (see `TELEPORT_SETTLE_STEPS`).
+  fn settle(&mut self, entity: Entity, steps: u8) {
+    if steps > 0 {
+      self.settling.insert(entity, steps);
+    }
   }
 
   /// Count one step of a player's wait; true while it is still waiting.
@@ -1208,7 +1216,7 @@ impl GameScene {
     let Some(steps) = self.settling.get_mut(&entity) else {
       return false;
     };
-    *steps = steps.saturating_sub(1);
+    *steps -= 1;
     if *steps == 0 {
       self.settling.remove(&entity);
     }
@@ -1216,13 +1224,13 @@ impl GameScene {
   }
 
   /// Put a simulated player at `to`. For its controller a `Transform` write
-  /// is a teleport, which resets its `CharacterState` to in the air: the
-  /// floor and wall checks wait for the controller to move it from there.
+  /// is a teleport: it moves on from there in this step's physics, but this
+  /// step's floor checks would read where it was, so they wait.
   fn teleport(&mut self, ctx: &mut SceneContext, entity: Entity, to: Vec2) {
     if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
       transform.translation = to;
     }
-    self.settle(entity);
+    self.settle(entity, TELEPORT_SETTLE_STEPS);
   }
 
   /// Get a clone of the local player's checkpoint (or a default if not yet set)
@@ -1293,7 +1301,13 @@ impl GameScene {
         self.max_height = self.current_height;
       }
     }
+  }
 
+  /// Take in the checkpoints players reached last step. `update` calls this
+  /// before anything else (the quit dialog, R, the death check): a zone
+  /// fallen through moves a `Respawn` point down for a step, and this is
+  /// what puts it back. Respawns use `PlayerCheckpoint`, which only goes up.
+  fn read_checkpoints(&mut self, ctx: &mut SceneContext) {
     // The client relies on the host for checkpoints (its players have no
     // `Respawn`, so its zones report nothing)
     let reached = ctx.messages::<CheckpointReached>();
@@ -1301,7 +1315,7 @@ impl GameScene {
       return;
     }
 
-    // Host/SinglePlayer: a player entering a checkpoint platform's zone
+    // Host/SinglePlayer: a player entering a checkpoint's zone
     for reached in reached {
       let Some(client_id) = self
         .players
@@ -1550,26 +1564,14 @@ impl GameScene {
     preferred_x
   }
 
-  /// Where a player comes back: its `Respawn` point, which its checkpoint's
-  /// trigger set to slot 0's spot on the platform (a client's players have
-  /// none: the host's checkpoint says where). In multiplayer each slot has
-  /// its own spot along the platform, or the first free one.
-  fn respawn_point(
-    &self,
-    ctx: &SceneContext,
-    entity: Entity,
-    slot: u8,
-    cp: &PlayerCheckpoint,
-  ) -> Vec2 {
-    let point = ctx
-      .world
-      .get::<Respawn>(entity)
-      .map_or_else(|| cp.spawn_point(), |respawn| respawn.point);
-    if self.mode == GameMode::SinglePlayer {
-      point
-    } else {
-      Vec2::new(self.checkpoint_spawn_x(ctx, slot, cp), point.y)
-    }
+  /// Where a player comes back: on its checkpoint's platform, at slot 0's
+  /// spot in single player (`PlayerCheckpoint::spawn_point`, where the
+  /// checkpoint's trigger also puts the `Respawn` point), and at its slot's
+  /// own spot, or the first free one, in multiplayer. `PlayerCheckpoint`
+  /// only goes up, while the `Respawn` point can sit on a lower checkpoint
+  /// for the step after its zone is fallen through.
+  fn respawn_point(&self, ctx: &SceneContext, slot: u8, cp: &PlayerCheckpoint) -> Vec2 {
+    Vec2::new(self.checkpoint_spawn_x(ctx, slot, cp), cp.y)
   }
 
   /// Execute respawn using NetworkAction pattern
@@ -1583,7 +1585,7 @@ impl GameScene {
     let slot = ctx.world.get::<Player>(entity).map(|p| p.slot).unwrap_or(0);
 
     let cp = self.local_checkpoint();
-    let point = self.respawn_point(ctx, entity, slot, &cp);
+    let point = self.respawn_point(ctx, slot, &cp);
 
     // Apply respawn locally: reset position, velocity, and state.
     // Do NOT use RespawnAction (which calls force_correction) — the prediction
@@ -1624,7 +1626,7 @@ impl GameScene {
       .get(&client_id)
       .cloned()
       .unwrap_or_else(|| PlayerCheckpoint::new(self.screen_width));
-    let point = self.respawn_point(ctx, entity, slot, &cp);
+    let point = self.respawn_point(ctx, slot, &cp);
 
     let action = RespawnAction {
       slot,
@@ -1635,7 +1637,7 @@ impl GameScene {
     let mut action_ctx = ActionContext::new(ctx.world);
     action.apply(&mut action_ctx);
     // The action wrote the player's `Transform`: a teleport
-    self.settle(entity);
+    self.settle(entity, TELEPORT_SETTLE_STEPS);
   }
 
   fn handle_input(&mut self, ctx: &mut SceneContext, dt: f32) -> LeapInput {
@@ -1991,11 +1993,20 @@ impl GameScene {
         continue;
       };
 
-      // Just spawned, respawned or corrected: the state still describes the
-      // old place (a teleport resets it to in the air, and the next move
-      // lands again, which must not read as a landing)
-      let settling = self.take_settle_step(entity);
-      if !settling && let Some(state) = ctx.world.get::<CharacterState>(entity) {
+      let Some(state) = ctx.world.get::<CharacterState>(entity) else {
+        continue;
+      };
+
+      // The wall stopped the run; bounce back off it. A wall the last move
+      // hit was hit wherever the game has put the player since
+      if state.on_wall && player.leap_state.is_airborne() {
+        vel.dx = -state.velocity_before.x * WALL_BOUNCE_FACTOR;
+      }
+
+      // Just spawned, respawned or corrected: the floor checks would read
+      // the old place (a correction while standing would read as leaving
+      // the floor and landing again)
+      if !self.take_settle_step(entity) {
         // Landing is the game's own state meeting the floor: on the floor
         // while airborne and not rising. That is `landed` on the step it
         // happens, and a landing during the wait above is not lost.
@@ -2014,11 +2025,6 @@ impl GameScene {
         else if !state.on_floor && !player.leap_state.is_airborne() {
           player.grounded = false;
           player.leap_state = LeapState::Airborne;
-        }
-
-        // The wall stopped the run; bounce back off it
-        if state.on_wall && player.leap_state.is_airborne() {
-          vel.dx = -state.velocity_before.x * WALL_BOUNCE_FACTOR;
         }
       }
 
@@ -3278,6 +3284,10 @@ impl Scene for GameScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // First, so nothing below sees a respawn point a lower zone moved, and
+    // the quit dialog cannot let the messages age out unread
+    self.read_checkpoints(ctx);
+
     if self.pending_quit {
       if let Some(client) = self.client.as_mut() {
         client.disconnect();
