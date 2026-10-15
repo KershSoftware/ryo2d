@@ -8,7 +8,7 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use rapier2d::control::{
   CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
 };
-use rapier2d::parry::query::{QueryDispatcher, ShapeCastHit, ShapeCastOptions, ShapeCastStatus};
+use rapier2d::parry::query::{QueryDispatcher, ShapeCastHit, ShapeCastStatus};
 use rapier2d::prelude::{
   Collider as RapierCollider, ColliderHandle, Pose, QueryFilter as RapierFilter, QueryPipeline,
   Shape, Vector,
@@ -499,10 +499,17 @@ impl Physics {
       |collision| collisions.push(collision),
     );
     pose.translation += moved.translation;
+    // Past what it only touches (a neighbour flush against its side)
     let floor_hit = platformer
       .then(|| {
-        let options = ShapeCastOptions::with_max_time_of_impact(skin + FLOOR_PROBE);
-        queries.cast_shape(&pose, to_rapier(Vec2::Y), &*shape, options)
+        sweep::probe(
+          &queries,
+          &pose,
+          to_rapier(Vec2::Y),
+          &*shape,
+          skin + FLOOR_PROBE,
+          kcc.normal_nudge_factor,
+        )
       })
       .flatten();
 
@@ -1148,6 +1155,214 @@ mod tests {
       pa.distance(centre) < 20.0 && pb.distance(centre) < 20.0,
       "stayed put: {pa:?} and {pb:?}"
     );
+  }
+
+  /// One step of `all` falling, with `jumpers` jumping at 300 px/s from the
+  /// floor: each leaves it and rises by a step of the jump less gravity.
+  fn assert_jump(world: &mut World, s: &mut EngineSchedules, jumpers: &[Entity], all: &[Entity]) {
+    let ys: Vec<f32> = jumpers
+      .iter()
+      .map(|&e| at(world, e).translation.y)
+      .collect();
+    for &e in jumpers {
+      world.get_mut::<Velocity>(e).unwrap().dy = -300.0;
+    }
+    fall_together(world, s, all, 1);
+    for (&e, y) in jumpers.iter().zip(ys) {
+      let st = state(world, e);
+      assert!(st.left_floor && !st.on_floor, "{e} jumped: {st:?}");
+      let risen = y - at(world, e).translation.y;
+      let expected = (300.0 - 980.0 / 60.0) / 60.0;
+      assert!(
+        (risen - expected).abs() < 0.05,
+        "{e} rose {risen} of {expected}"
+      );
+    }
+  }
+
+  /// Every one of `all` stands on `floor`, step after step.
+  fn assert_standing(
+    world: &mut World,
+    s: &mut EngineSchedules,
+    all: &[Entity],
+    floor: Entity,
+    steps: usize,
+  ) {
+    for i in 0..steps {
+      fall_together(world, s, all, 1);
+      for &e in all {
+        let st = state(world, e);
+        assert!(
+          st.on_floor && st.floor == Some(floor) && !st.landed && !st.left_floor,
+          "{e}, step {i}: {st:?}"
+        );
+      }
+    }
+  }
+
+  // The floor probe casts down past what the character only touches: a
+  // neighbour flush against its side is no floor, and must not hide the
+  // floor below (the probe's first hit was the neighbour, at time zero)
+  #[test]
+  fn two_characters_standing_side_by_side_stay_on_the_floor_and_can_jump() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    // 20 wide each: their sides touch exactly
+    let both = [
+      character(&mut world, 0.0, 79.0),
+      character(&mut world, 20.0, 79.0),
+    ];
+    fall_together(&mut world, &mut s, &both, 10);
+    assert_standing(&mut world, &mut s, &both, f, 120);
+    for e in both {
+      assert!(!state(&world, e).on_wall, "{e}: standing is no wall");
+    }
+    let xs = both.map(|e| at(&world, e).translation.x);
+    assert!(xs[0].abs() < 1e-3 && (xs[1] - 20.0).abs() < 1e-3, "{xs:?}");
+    // One, the other staying put; then the other, a step behind
+    assert_jump(&mut world, &mut s, &both[..1], &both);
+    assert!(state(&world, both[1]).on_floor, "the other stays");
+    assert_jump(&mut world, &mut s, &both[1..], &both);
+    fall_together(&mut world, &mut s, &both, 60);
+    assert_standing(&mut world, &mut s, &both, f, 60);
+  }
+
+  // Rapier's push-out moves a character only out of an overlap, and at most
+  // a quarter of its height a step, so it can leave characters exactly
+  // touching: they stand all the same
+  #[test]
+  fn three_overlapping_characters_pushed_apart_stay_on_the_floor() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    let all = [-10.0, 0.0, 10.0].map(|x| character(&mut world, x, 79.0));
+    fall_together(&mut world, &mut s, &all, 30);
+    let mut xs = all.map(|e| at(&world, e).translation.x);
+    xs.sort_by(f32::total_cmp);
+    assert!(
+      xs[1] - xs[0] >= 19.99 && xs[2] - xs[1] >= 19.99,
+      "apart: {xs:?}"
+    );
+    assert!(xs[0] > -50.0 && xs[2] < 50.0, "stayed put: {xs:?}");
+    assert_standing(&mut world, &mut s, &all, f, 120);
+    assert_jump(&mut world, &mut s, &all, &all);
+    fall_together(&mut world, &mut s, &all, 60);
+    assert_standing(&mut world, &mut s, &all, f, 60);
+  }
+
+  // Walls are still walls: pressed into a neighbour flush against it, a
+  // character is on the floor and on the wall, stopped, and climbs nothing
+  #[test]
+  fn a_character_holding_into_a_touching_neighbour_keeps_its_footing() {
+    for side in [1.0, -1.0] {
+      let (mut world, mut s) = world(60);
+      floor(&mut world, 100.0);
+      let e = character(&mut world, 0.0, 79.0);
+      let other = character(&mut world, 20.0 * side, 79.0);
+      fall_together(&mut world, &mut s, &[e, other], 10);
+      let start = at(&world, e).translation;
+      for i in 0..120 {
+        world.get_mut::<Velocity>(e).unwrap().dx = 150.0 * side;
+        fall_together(&mut world, &mut s, &[e, other], 1);
+        let st = state(&world, e);
+        assert!(
+          st.on_floor && !st.landed && !st.left_floor && st.on_wall,
+          "side {side}, step {i}: {st:?}"
+        );
+        assert!(
+          (st.wall_normal - Vec2::new(-side, 0.0)).length() < 1e-3,
+          "side {side}, step {i}: {:?}",
+          st.wall_normal
+        );
+        assert!(velocity(&world, e).x.abs() < 1e-3, "side {side}: stopped");
+        // Against it (the sweep keeps its skin from what it hits, so it
+        // may back off by that), never into it or up it
+        let t = at(&world, e).translation;
+        let back = (start.x - t.x) * side;
+        assert!(
+          (-1e-3..0.5).contains(&back) && (t.y - start.y).abs() < 0.05,
+          "side {side}, step {i}: moved from {start} to {t}"
+        );
+        // Kinematic: never pushed (it may keep its own skin, as above)
+        let o = (at(&world, other).translation.x - 20.0 * side) * side;
+        assert!(
+          (-1e-3..0.5).contains(&o),
+          "side {side}, step {i}: the other moved by {o}"
+        );
+        assert!(state(&world, other).on_floor, "side {side}, step {i}");
+      }
+      // A jump while still holding into it
+      world.get_mut::<Velocity>(e).unwrap().dx = 150.0 * side;
+      assert_jump(&mut world, &mut s, &[e], &[e, other]);
+    }
+  }
+
+  // The same probe, against a wall it was put flush against
+  #[test]
+  fn a_character_flush_against_a_wall_stays_on_the_floor() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 100.0);
+    // The wall's left face at x = 90, the character's right side too
+    world.spawn((Transform::from_xy(100.0, 0.0), Collider::rect(20.0, 160.0)));
+    let e = character(&mut world, 80.0, 79.0);
+    fall_together(&mut world, &mut s, &[e], 10);
+    assert_standing(&mut world, &mut s, &[e], f, 30);
+    // Pressing into it: on the wall too, and no further
+    for i in 0..30 {
+      world.get_mut::<Velocity>(e).unwrap().dx = 150.0;
+      fall_together(&mut world, &mut s, &[e], 1);
+      let st = state(&world, e);
+      assert!(
+        st.on_floor && st.floor == Some(f) && st.on_wall,
+        "step {i}: {st:?}"
+      );
+      assert!(at(&world, e).translation.x + 10.0 <= 90.0 + 1e-3);
+    }
+    assert_jump(&mut world, &mut s, &[e], &[e]);
+  }
+
+  // Top-down characters have no floor to lose: touching side by side they
+  // still block each other and slide along each other
+  #[test]
+  fn two_top_down_characters_touching_side_by_side_block_each_other() {
+    let (mut world, mut s) = world(60);
+    let spawn = |world: &mut World, x: f32| {
+      world
+        .spawn((
+          Transform::from_xy(x, 0.0),
+          CharacterController::top_down(),
+          Collider::rect(20.0, 40.0),
+        ))
+        .id()
+    };
+    let a = spawn(&mut world, 0.0);
+    let b = spawn(&mut world, 20.0);
+    // Sliding down b's side, short of its end
+    for i in 0..30 {
+      *world.get_mut::<Velocity>(a).unwrap() = Velocity::new(150.0, 60.0);
+      run(&mut world, &mut s, 1);
+      let st = state(&world, a);
+      assert!(
+        !st.on_floor && !st.on_ceiling && st.on_wall,
+        "step {i}: {st:?}"
+      );
+      assert!(
+        (st.wall_normal - Vec2::NEG_X).length() < 1e-3,
+        "step {i}: {:?}",
+        st.wall_normal
+      );
+      let (ta, tb) = (at(&world, a).translation, at(&world, b).translation);
+      assert!(
+        (-0.5..=1e-3).contains(&ta.x) && (tb - Vec2::new(20.0, 0.0)).length() < 1e-3,
+        "step {i}: {ta} and {tb}"
+      );
+      assert!(
+        (ta.y - (i + 1) as f32).abs() < 0.05,
+        "step {i}: slid to {ta}"
+      );
+      let v = velocity(&world, a);
+      assert!((v - Vec2::new(0.0, 60.0)).length() < 1e-3, "step {i}: {v}");
+      assert!(!state(&world, b).on_floor);
+    }
   }
 
   // Review focus 1: a level spawned in the same tick as the character is in

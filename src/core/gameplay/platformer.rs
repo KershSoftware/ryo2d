@@ -823,6 +823,59 @@ mod tests {
     assert!(events(&world).contains(&MovementEventKind::Jumped));
   }
 
+  // Co-op players block each other: one standing flush against another, or
+  // running into it, keeps its footing, so its coyote time, and can jump
+  #[test]
+  fn a_player_against_another_can_jump() {
+    for hold in [false, true] {
+      for side in [1.0, -1.0] {
+        let (mut world, mut s) = world(60);
+        floor(&mut world, 100.0);
+        let e = runner(&mut world, PlatformerMovement::default());
+        // 20 wide each: their sides touch exactly
+        let other = player(&mut world, 20.0 * side, 79.0);
+        world
+          .entity_mut(other)
+          .insert(PlatformerMovement::default());
+        let direction = if hold {
+          Vec2::new(side, 0.0)
+        } else {
+          Vec2::ZERO
+        };
+        for _ in 0..60 {
+          intent(&mut world, e).direction = direction;
+          run(&mut world, &mut s, 1);
+        }
+        let st = world.get::<CharacterState>(e).unwrap();
+        assert!(
+          st.on_floor && st.on_wall == hold,
+          "hold {hold}, side {side}: {st:?}"
+        );
+        let y = at(&world, e).translation.y;
+        intent(&mut world, e).direction = direction;
+        intent(&mut world, e).jump_pressed = true;
+        intent(&mut world, e).jump_held = true;
+        run(&mut world, &mut s, 5);
+        let messages = world.resource::<Messages<MovementEvent>>();
+        let jumped = messages
+          .get_cursor()
+          .read(messages)
+          .any(|m| m.entity == e && m.kind == MovementEventKind::Jumped);
+        assert!(jumped, "hold {hold}, side {side}: no jump");
+        assert!(
+          y - at(&world, e).translation.y > 10.0,
+          "hold {hold}, side {side}: rose"
+        );
+        // Not pushed: at most it keeps its skin from the runner
+        let moved = (at(&world, other).translation.x - 20.0 * side) * side;
+        assert!(
+          (-1e-3..0.5).contains(&moved),
+          "hold {hold}, side {side}: the other moved by {moved}"
+        );
+      }
+    }
+  }
+
   #[test]
   fn with_no_air_control_a_character_off_a_ledge_falls_and_keeps_its_speed() {
     let (mut world, mut s) = world(60);

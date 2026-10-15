@@ -198,6 +198,31 @@ fn first_hit(
   queries.cast_shape(at, direction, shape, options)
 }
 
+/// The first collider `shape` at `at` meets within `distance` along
+/// `direction` (a unit vector), with no gap kept: the floor probe. Like the
+/// move's casts it passes what it starts touching or overlapping unless it
+/// goes into it (`StartFallback`), so a neighbour flush against the shape's
+/// side, which a probe down runs along, does not hide the floor below. A
+/// cast that stops at penetration (parry's default) found that neighbour
+/// first, at time zero, with its side's normal.
+pub(crate) fn probe(
+  queries: &QueryPipeline,
+  at: &Pose,
+  direction: Vector,
+  shape: &dyn Shape,
+  distance: f32,
+  tolerance: f32,
+) -> Option<(ColliderHandle, ShapeCastHit)> {
+  first_hit(
+    queries,
+    at,
+    direction,
+    shape,
+    cast(0.0, distance),
+    tolerance,
+  )
+}
+
 /// parry's query dispatcher, with its fallback for a hit right at the start
 /// of a cast applied up to `tolerance` px.
 ///
