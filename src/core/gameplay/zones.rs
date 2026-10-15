@@ -1,20 +1,23 @@
 //! Ready-made trigger behaviours. Each goes on a trigger collider and acts
-//! in `FixedSet::Movement` on the previous step's `TriggerEntered` messages;
-//! what can set it off is the collider's layer and mask.
+//! in `FixedSet::Movement` on the previous step's `TriggerEntered` messages
+//! from solid colliders (a trigger entering, such as an enemy's aggro
+//! radius, sets none off); what can set it off is the collider's layer and
+//! mask.
 
 use super::events::{CheckpointReached, Killed, PickedUp};
 use super::platformer::PlatformerState;
 use super::top_down::TopDownState;
+use crate::core::ecs::pooling::{disable_descendants, enable_descendants};
 use crate::core::ecs::{
   Added, Allow, Commands, Component, Disabled, Entity, EntityHashSet, GlobalTransform, Knockback,
-  Local, MessageReader, MessageWriter, Or, Query, Res, Transform, Vec2, Velocity, With,
+  Local, MessageReader, MessageWriter, Or, Query, Res, Transform, Vec2, Velocity, With, World,
 };
-use crate::core::physics::{Collider, TriggerEntered};
+use crate::core::physics::{AngularVelocity, Collider, TriggerEntered};
 use crate::core::time::Time;
 
 /// Collected by the first thing its mask lets in: `PickedUp` is written and
-/// the pickup despawned, or disabled and brought back after `respawn_after`
-/// seconds.
+/// the pickup despawned, or disabled with its children (a sprite, a light)
+/// and brought back with them after `respawn_after` seconds.
 #[derive(Component, Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct Pickup {
@@ -60,9 +63,10 @@ impl Respawn {
   }
 }
 
-/// Writes `Killed` for what enters. An entity with `Respawn` is put back at
-/// its point with its velocity, knockback and preset state cleared; others
-/// only get the message, unless the zone is `despawning()`.
+/// Writes `Killed` for what enters, once a step however many zones it
+/// entered. An entity with `Respawn` is put back at its point with its
+/// velocity, spin, knockback and preset state cleared; others only get the
+/// message, unless the zone is `despawning()`.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 #[non_exhaustive]
 pub struct KillZone {
@@ -129,9 +133,21 @@ pub(crate) fn warn_untriggered(
   }
 }
 
+/// Every collider, disabled ones included.
+type Colliders<'w, 's> = Query<'w, 's, &'static Collider, Allow<Disabled>>;
+
+/// Whether the collider that entered is itself a trigger (an enemy's aggro
+/// radius): the behaviours act on solid colliders only.
+fn sensed(message: &TriggerEntered, colliders: &Colliders) -> bool {
+  colliders
+    .get(message.other)
+    .is_ok_and(|collider| collider.is_trigger)
+}
+
 pub(crate) fn collect_pickups(
   mut entered: MessageReader<TriggerEntered>,
   mut pickups: Query<&mut Pickup>,
+  colliders: Colliders,
   mut picked: MessageWriter<PickedUp>,
   mut commands: Commands,
 ) {
@@ -140,6 +156,9 @@ pub(crate) fn collect_pickups(
     let Ok(mut pickup) = pickups.get_mut(message.trigger) else {
       continue;
     };
+    if sensed(message, &colliders) {
+      continue;
+    }
     if !collected.insert(message.trigger) {
       continue;
     }
@@ -149,8 +168,12 @@ pub(crate) fn collect_pickups(
     });
     match pickup.respawn_after {
       Some(seconds) => {
+        // Its children (a sprite, a light) go with it: `Disabled` is not
+        // hierarchical
+        let trigger = message.trigger;
         pickup.timer = Some(seconds);
-        commands.entity(message.trigger).insert(Disabled);
+        commands.entity(trigger).insert(Disabled);
+        commands.queue(move |world: &mut World| disable_descendants(world, trigger));
       }
       None => commands.entity(message.trigger).despawn(),
     }
@@ -173,6 +196,7 @@ pub(crate) fn respawn_pickups(
     if left <= dt {
       pickup.timer = None;
       commands.entity(entity).remove::<Disabled>();
+      commands.queue(move |world: &mut World| enable_descendants(world, entity));
     } else {
       pickup.timer = Some(left - dt);
     }
@@ -183,6 +207,7 @@ type Respawned = (
   &'static Respawn,
   &'static mut Transform,
   Option<&'static mut Velocity>,
+  Option<&'static mut AngularVelocity>,
   Option<&'static mut Knockback>,
   Option<&'static mut PlatformerState>,
   Option<&'static mut TopDownState>,
@@ -191,24 +216,36 @@ type Respawned = (
 pub(crate) fn apply_kill_zones(
   mut entered: MessageReader<TriggerEntered>,
   zones: Query<&KillZone>,
+  colliders: Colliders,
   mut actors: Query<Respawned>,
   mut killed: MessageWriter<Killed>,
   mut commands: Commands,
 ) {
+  // One death per actor per step, however many zones it fell into
+  let mut dead = EntityHashSet::default();
   for message in entered.read() {
     let Ok(zone) = zones.get(message.trigger) else {
       continue;
     };
+    if sensed(message, &colliders) {
+      continue;
+    }
     let entity = message.actor();
+    if !dead.insert(entity) {
+      continue;
+    }
     killed.write(Killed {
       entity,
       zone: message.trigger,
     });
     match actors.get_mut(entity) {
-      Ok((respawn, mut transform, velocity, knockback, platformer, top_down)) => {
+      Ok((respawn, mut transform, velocity, spin, knockback, platformer, top_down)) => {
         transform.translation = respawn.point;
         if let Some(mut velocity) = velocity {
           *velocity = Velocity::zero();
+        }
+        if let Some(mut spin) = spin {
+          *spin = AngularVelocity(0.0);
         }
         if let Some(mut knockback) = knockback {
           knockback.stop();
@@ -233,6 +270,7 @@ pub(crate) fn apply_kill_zones(
 pub(crate) fn apply_checkpoints(
   mut entered: MessageReader<TriggerEntered>,
   checkpoints: Query<(&Checkpoint, &GlobalTransform)>,
+  colliders: Colliders,
   mut respawns: Query<&mut Respawn>,
   mut reached: MessageWriter<CheckpointReached>,
 ) {
@@ -240,6 +278,9 @@ pub(crate) fn apply_checkpoints(
     let Ok((checkpoint, global)) = checkpoints.get(message.trigger) else {
       continue;
     };
+    if sensed(message, &colliders) {
+      continue;
+    }
     let entity = message.actor();
     let Ok(mut respawn) = respawns.get_mut(entity) else {
       continue;
@@ -333,6 +374,41 @@ mod tests {
   }
 
   #[test]
+  fn a_respawning_pickup_takes_its_children_with_it() {
+    use crate::core::ecs::{ChildOf, Disabled};
+    let (mut world, mut s) = world(60);
+    let coin = zone(&mut world, 60.0, Pickup::new().respawn_after(0.5));
+    let sprite = world.spawn((Transform::IDENTITY, ChildOf(coin))).id();
+    let glow = world.spawn((Transform::IDENTITY, ChildOf(sprite))).id();
+    // Disabled by the game: stays so after the respawn
+    let hidden = world
+      .spawn((Transform::IDENTITY, ChildOf(coin), Disabled))
+      .id();
+    mover(&mut world, 0.0, 300.0);
+    run(&mut world, &mut s, 20);
+    assert!(world.get::<Disabled>(coin).is_some(), "collected");
+    for child in [sprite, glow] {
+      assert!(
+        world.get::<Disabled>(child).is_some(),
+        "{child} hidden with it"
+      );
+    }
+    world.get_mut::<Transform>(coin).unwrap().translation.x = 1000.0;
+    run(&mut world, &mut s, 40);
+    assert!(world.get::<Disabled>(coin).is_none(), "back");
+    for child in [sprite, glow] {
+      assert!(
+        world.get::<Disabled>(child).is_none(),
+        "{child} back with it"
+      );
+    }
+    assert!(
+      world.get::<Disabled>(hidden).is_some(),
+      "the game's own stays"
+    );
+  }
+
+  #[test]
   fn a_pickup_the_game_disabled_stays_disabled() {
     use crate::core::ecs::Disabled;
     let (mut world, mut s) = world(60);
@@ -374,6 +450,160 @@ mod tests {
     );
     assert!(at(&world, player).translation.x < -150.0);
     assert_eq!(*world.get::<Velocity>(player).unwrap(), Velocity::zero());
+  }
+
+  /// A body moving right at 120 px/s with a 10 px solid collider and a
+  /// sensor 60 px round (an enemy's aggro radius): the sensor reaches a zone
+  /// at x 200 at step 60, the solid collider at step 88.
+  fn sensing_mover(world: &mut World) -> Entity {
+    use crate::core::ecs::ChildOf;
+    let body = world
+      .spawn((
+        Transform::from_xy(0.0, 0.0),
+        RigidBody::kinematic(),
+        Velocity::new(120.0, 0.0),
+      ))
+      .id();
+    world.spawn((
+      Transform::IDENTITY,
+      Collider::rect(10.0, 10.0),
+      ChildOf(body),
+    ));
+    world.spawn((
+      Transform::IDENTITY,
+      Collider::circle(60.0).as_trigger(),
+      ChildOf(body),
+    ));
+    body
+  }
+
+  #[test]
+  fn a_sensor_in_a_pickup_collects_nothing_until_its_body_arrives() {
+    let (mut world, mut s) = world(60);
+    let coin = zone(&mut world, 200.0, Pickup::new());
+    let body = sensing_mover(&mut world);
+    run(&mut world, &mut s, 75);
+    assert!(read::<PickedUp>(&world).is_empty(), "only the sensor is in");
+    run(&mut world, &mut s, 30);
+    assert_eq!(
+      read::<PickedUp>(&world),
+      [PickedUp {
+        pickup: coin,
+        by: body
+      }]
+    );
+  }
+
+  #[test]
+  fn a_sensor_in_a_kill_zone_or_checkpoint_does_not_set_it_off() {
+    let (mut world, mut s) = world(60);
+    let pit = zone(&mut world, 200.0, KillZone::new());
+    zone(&mut world, 120.0, Checkpoint::new());
+    let body = sensing_mover(&mut world);
+    let start = Vec2::new(-300.0, 0.0);
+    world.entity_mut(body).insert(Respawn::at(start));
+    // Sensor in the checkpoint from step 20 and the pit from step 60; the
+    // solid collider in the checkpoint from step 48
+    run(&mut world, &mut s, 40);
+    assert_eq!(world.get::<Respawn>(body).unwrap().point, start);
+    run(&mut world, &mut s, 35);
+    assert!(read::<Killed>(&world).is_empty(), "only the sensor is in");
+    assert_eq!(
+      world.get::<Respawn>(body).unwrap().point,
+      Vec2::new(120.0, 0.0),
+      "the solid collider reached the checkpoint"
+    );
+    run(&mut world, &mut s, 30);
+    assert_eq!(
+      read::<Killed>(&world),
+      [Killed {
+        entity: body,
+        zone: pit
+      }]
+    );
+  }
+
+  #[test]
+  fn a_fall_onto_the_seam_of_two_kill_zones_is_one_death() {
+    let (mut world, mut s) = world(60);
+    for x in [-20.0, 20.0] {
+      world.spawn((
+        Transform::from_xy(x, 100.0),
+        Collider::rect(40.0, 40.0).as_trigger(),
+        KillZone::new(),
+      ));
+    }
+    let body = world
+      .spawn((
+        Transform::from_xy(0.0, 0.0),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+        Respawn::at(Vec2::new(-300.0, 0.0)),
+      ))
+      .id();
+    run(&mut world, &mut s, 40);
+    let killed = read::<Killed>(&world);
+    assert_eq!(killed.len(), 1, "{killed:?}");
+    assert_eq!(killed[0].entity, body);
+    assert!(at(&world, body).translation.x < -250.0, "respawned");
+  }
+
+  #[test]
+  fn a_spinning_body_respawns_without_its_spin() {
+    use crate::core::physics::AngularVelocity;
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    zone(&mut world, 60.0, KillZone::new());
+    let body = world
+      .spawn((
+        Transform::from_xy(0.0, 0.0),
+        RigidBody::dynamic(),
+        Collider::circle(5.0),
+        Velocity::new(300.0, 0.0),
+        AngularVelocity(10.0),
+        Respawn::at(Vec2::new(-300.0, 0.0)),
+      ))
+      .id();
+    run(&mut world, &mut s, 30);
+    assert_eq!(read::<Killed>(&world).len(), 1);
+    let spin = world.get::<AngularVelocity>(body).unwrap().0;
+    assert!(spin.abs() < 1e-3, "still spinning at {spin} rad/s");
+  }
+
+  #[test]
+  fn two_characters_respawned_to_one_point_separate() {
+    use crate::core::gameplay::PlatformerMovement;
+    use crate::core::physics::CharacterState;
+    let (mut world, mut s) = world(60);
+    // A pit under the two, and a ledge to the left to come back to
+    world.spawn((
+      Transform::from_xy(0.0, 300.0),
+      Collider::rect(400.0, 40.0).as_trigger(),
+      KillZone::new(),
+    ));
+    world.spawn((
+      Transform::from_xy(-400.0, 110.0),
+      Collider::rect(200.0, 20.0),
+    ));
+    let point = Respawn::at(Vec2::new(-400.0, 79.0));
+    let pair = [-30.0, 30.0].map(|x| {
+      let e = player(&mut world, x, 200.0);
+      world
+        .entity_mut(e)
+        .insert((PlatformerMovement::default(), point));
+      e
+    });
+    run(&mut world, &mut s, 60);
+    assert_eq!(read::<Killed>(&world).len(), 2, "both fell in");
+    let [a, b] = pair.map(|e| at(&world, e).translation);
+    assert!((a.x - b.x).abs() >= 19.5, "apart: {a:?} and {b:?}");
+    for e in pair {
+      let t = at(&world, e).translation;
+      assert!(
+        world.get::<CharacterState>(e).unwrap().on_floor && (t.x + 400.0).abs() < 60.0,
+        "{e} on the ledge: {t:?}"
+      );
+    }
   }
 
   #[test]

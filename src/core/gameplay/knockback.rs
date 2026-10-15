@@ -21,6 +21,12 @@ type Pushed = (
 /// and apply it. A character is swept by it during the physics step (see
 /// `Knockback`); a dynamic body gets each hit as one change in velocity; a kinematic body without a controller and a fixed body ignore it
 /// (logged once); anything else moves through its `Transform`.
+///
+/// Every finish is reported once with `KnockbackFinished`: a decay as it
+/// happens, and a knockback stopped since the last run (by the game's
+/// `stop()`, or by the engine: a head-on hit, a kill zone's respawn) at this
+/// run. `just_finished` lasts until the run after the one that reported a
+/// decay, and is cleared as a stop is reported.
 pub fn update_knockback(
   time: Res<Time>,
   mut query: Query<Pushed>,
@@ -31,6 +37,19 @@ pub fn update_knockback(
   let dt = time.fixed.timestep();
   for (entity, mut knockback, velocity, body, character, transform) in &mut query {
     if !knockback.active {
+      if knockback.just_finished {
+        if !knockback.finish_reported {
+          // Stopped before this run saw it run: started (when this is its
+          // first run) and finished
+          if knockback.just_started {
+            started.write(KnockbackStarted { entity });
+            knockback.just_started = false;
+          }
+          finished.write(KnockbackFinished { entity });
+        }
+        knockback.just_finished = false;
+        knockback.finish_reported = true;
+      }
       continue;
     }
     let just_started = knockback.just_started;
@@ -41,6 +60,7 @@ pub fn update_knockback(
     }
     if knockback.just_finished {
       finished.write(KnockbackFinished { entity });
+      knockback.finish_reported = true;
     }
     if character {
       continue;
@@ -243,6 +263,35 @@ mod tests {
       [KnockbackFinished { entity }]
     );
     assert!(!world.get::<Knockback>(entity).unwrap().active);
+    for _ in 0..3 {
+      run(&mut world, update_knockback);
+    }
+    assert_eq!(
+      messages::<KnockbackFinished>(&world).len(),
+      1,
+      "reported once"
+    );
+    assert!(
+      !world.get::<Knockback>(entity).unwrap().just_finished,
+      "the flag lasts one step"
+    );
+  }
+
+  #[test]
+  fn a_knockback_stopped_by_the_game_says_so_once() {
+    let mut world = world(60);
+    let entity = world
+      .spawn((Transform::IDENTITY, Knockback::new(Vec2::X, 100.0)))
+      .id();
+    run(&mut world, update_knockback);
+    world.get_mut::<Knockback>(entity).unwrap().stop();
+    for _ in 0..3 {
+      run(&mut world, update_knockback);
+    }
+    assert_eq!(
+      messages::<KnockbackFinished>(&world),
+      [KnockbackFinished { entity }]
+    );
   }
 
   #[test]
@@ -285,9 +334,16 @@ mod tests {
 
 #[cfg(test)]
 mod with_physics {
-  use crate::core::ecs::{Knockback, Transform, Vec2};
+  use crate::core::ecs::{Knockback, Message, Messages, Transform, Vec2, World};
   use crate::core::gameplay::test_util::*;
+  use crate::core::gameplay::{KillZone, Respawn};
+  use crate::core::messages::{KnockbackFinished, KnockbackStarted};
   use crate::core::physics::Collider;
+
+  fn count<M: Message>(world: &World) -> usize {
+    let messages = world.resource::<Messages<M>>();
+    messages.get_cursor().read(messages).count()
+  }
 
   #[test]
   fn knockback_carries_a_character_in_the_open() {
@@ -317,5 +373,60 @@ mod with_physics {
       "clipped: {:?}",
       kb.direction()
     );
+  }
+
+  #[test]
+  fn a_knockback_the_floor_stops_head_on_starts_and_finishes_once() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let e = player(&mut world, 0.0, 79.0);
+    run(&mut world, &mut s, 10);
+    world
+      .entity_mut(e)
+      .insert(Knockback::new(Vec2::Y, 2000.0).with_decay_rate(1.0));
+    // A second of decay left: only the floor ends it this soon
+    run(&mut world, &mut s, 5);
+    assert!(
+      !world.get::<Knockback>(e).unwrap().active,
+      "stopped head-on"
+    );
+    run(&mut world, &mut s, 120);
+    assert_eq!(count::<KnockbackStarted>(&world), 1);
+    assert_eq!(count::<KnockbackFinished>(&world), 1);
+  }
+
+  #[test]
+  fn a_character_knocked_into_a_wall_starts_and_finishes_once() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    world.spawn((Transform::from_xy(60.0, 0.0), Collider::rect(20.0, 400.0)));
+    let e = player(&mut world, 0.0, 0.0);
+    world
+      .entity_mut(e)
+      .insert(Knockback::new(Vec2::X, 2000.0).with_decay_rate(1.0));
+    run(&mut world, &mut s, 120);
+    assert!(!world.get::<Knockback>(e).unwrap().active, "stopped");
+    assert_eq!(count::<KnockbackStarted>(&world), 1);
+    assert_eq!(count::<KnockbackFinished>(&world), 1);
+  }
+
+  #[test]
+  fn a_knockback_ended_by_a_respawn_finishes_once() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    world.spawn((
+      Transform::from_xy(100.0, 0.0),
+      Collider::rect(40.0, 400.0).as_trigger(),
+      KillZone::new(),
+    ));
+    let e = player(&mut world, 0.0, 0.0);
+    world.entity_mut(e).insert((
+      Respawn::at(Vec2::new(-200.0, 0.0)),
+      Knockback::new(Vec2::X, 600.0).with_decay_rate(0.25),
+    ));
+    run(&mut world, &mut s, 120);
+    assert!(at(&world, e).translation.x < -150.0, "respawned");
+    assert!(!world.get::<Knockback>(e).unwrap().active, "stopped");
+    assert_eq!(count::<KnockbackFinished>(&world), 1);
   }
 }

@@ -73,13 +73,17 @@ pub struct Knockback {
   pub active: bool,
   /// True for one fixed step when knockback starts
   pub just_started: bool,
-  /// True for one fixed step when knockback finishes
+  /// True for one fixed step when knockback finishes (decayed, stopped, or
+  /// stopped by the engine: a head-on hit, a kill zone's respawn)
   pub just_finished: bool,
   /// Whether to accumulate with existing knockback (blend directions)
   pub accumulate: bool,
   /// The change in velocity not yet given to a dynamic body: each hit's own
   /// `direction * force`, taken by `update_knockback`
   pub(crate) pending: Vec2,
+  /// `update_knockback` wrote this finish's `KnockbackFinished`; set when
+  /// it does, cleared whenever a knockback finishes
+  pub(crate) finish_reported: bool,
 }
 
 impl Default for Knockback {
@@ -95,6 +99,7 @@ impl Default for Knockback {
       just_finished: false,
       accumulate: true,
       pending: Vec2::ZERO,
+      finish_reported: false,
     }
   }
 }
@@ -135,6 +140,7 @@ impl Knockback {
       just_finished: false,
       accumulate: true,
       pending: Vec2::new(dir_x, dir_y) * force,
+      finish_reported: false,
     }
   }
 
@@ -170,6 +176,7 @@ impl Knockback {
       just_finished: false,
       accumulate: true,
       pending: Vec2::new(angle.cos(), angle.sin()) * force,
+      finish_reported: false,
     }
   }
 
@@ -331,16 +338,19 @@ impl Knockback {
     if self.strength <= 0.0 {
       self.active = false;
       self.just_finished = true;
+      self.finish_reported = false;
     }
   }
 
-  /// Stop the knockback immediately.
+  /// Stop the knockback immediately. `KnockbackFinished` is written at the
+  /// next `update_knockback`.
   pub fn stop(&mut self) {
     self.pending = Vec2::ZERO;
     if self.active {
       self.active = false;
       self.strength = 0.0;
       self.just_finished = true;
+      self.finish_reported = false;
     }
   }
 

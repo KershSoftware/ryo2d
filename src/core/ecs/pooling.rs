@@ -47,10 +47,11 @@ pub struct PoolStats {
   pub available: usize,
 }
 
-/// Marks a descendant the pool disabled along with its released root, so
-/// acquiring the root enables it again (and nothing the game disabled).
+/// Marks a descendant disabled along with its root (a released pooled
+/// entity, a collected pickup waiting to respawn), so enabling the root
+/// enables it again, and nothing the game disabled.
 #[derive(Component)]
-struct DisabledWithPool;
+struct DisabledWithRoot;
 
 fn descendants(world: &World, root: Entity) -> Vec<Entity> {
   let mut found = Vec::new();
@@ -66,12 +67,26 @@ fn descendants(world: &World, root: Entity) -> Vec<Entity> {
   found
 }
 
-fn disable_descendants(world: &mut World, root: Entity) {
+/// Disable `root`'s descendants with it (`Disabled` is not hierarchical),
+/// marking the ones that were enabled so `enable_descendants` brings back
+/// exactly those.
+pub(crate) fn disable_descendants(world: &mut World, root: Entity) {
   for entity in descendants(world, root) {
     if world.get::<Disabled>(entity).is_none() {
       world
         .entity_mut(entity)
-        .insert((Disabled, DisabledWithPool));
+        .insert((Disabled, DisabledWithRoot));
+    }
+  }
+}
+
+/// Enable what `disable_descendants` disabled under `root`.
+pub(crate) fn enable_descendants(world: &mut World, root: Entity) {
+  for entity in descendants(world, root) {
+    if world.get::<DisabledWithRoot>(entity).is_some() {
+      world
+        .entity_mut(entity)
+        .remove::<(Disabled, DisabledWithRoot)>();
     }
   }
 }
@@ -79,13 +94,9 @@ fn disable_descendants(world: &mut World, root: Entity) {
 /// Enable what the pool disabled under `root`; nothing in the tree slides
 /// from where it was released.
 fn enable_tree(world: &mut World, root: Entity) {
+  enable_descendants(world, root);
   world.skip_interpolation(root);
   for entity in descendants(world, root) {
-    if world.get::<DisabledWithPool>(entity).is_some() {
-      world
-        .entity_mut(entity)
-        .remove::<(Disabled, DisabledWithPool)>();
-    }
     world.skip_interpolation(entity);
   }
 }

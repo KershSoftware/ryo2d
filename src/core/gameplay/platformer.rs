@@ -24,8 +24,10 @@ fn platformer_controller() -> CharacterController {
 /// that holds the run input off for a moment (`with_wall_jump`), and a dash
 /// (`with_dash`, one in the air until landing). It writes the character's
 /// `Velocity` every step, with its own gravity (characters are not dynamic
-/// bodies). It reads each axis of the input on its own
-/// (`MoveIntent::clamped_axes`), so holding up or down does not slow the run.
+/// bodies). A jump off a moving platform keeps the platform's speed: in the
+/// air the run aims past it, until landing, a wall, a wall jump or a dash.
+/// It reads each axis of the input on its own (`MoveIntent::clamped_axes`),
+/// so holding up or down does not slow the run.
 #[derive(Component, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 #[require(MoveIntent, PlatformerState, CharacterController = platformer_controller())]
@@ -203,6 +205,12 @@ pub struct PlatformerState {
   pub(crate) dash_left: f32,
   pub(crate) dash_cooldown: f32,
   pub(crate) dash_direction: Vec2,
+  /// The floor's horizontal speed under the character, px/s, while on it
+  pub(crate) floor_speed: f32,
+  /// The horizontal momentum a floor left behind, px/s: kept in the air
+  /// (the run aims past it) until landing, a wall it runs into, a wall
+  /// jump or a dash
+  pub(crate) inherited: f32,
 }
 
 impl Default for PlatformerState {
@@ -222,12 +230,15 @@ impl Default for PlatformerState {
       dash_left: 0.0,
       dash_cooldown: 0.0,
       dash_direction: Vec2::ZERO,
+      floor_speed: 0.0,
+      inherited: 0.0,
     }
   }
 }
 
 impl PlatformerState {
-  /// Forget jumps, timers and dashes in progress, keeping the facing (a respawn).
+  /// Forget jumps, timers, dashes in progress and a platform's momentum,
+  /// keeping the facing (a respawn).
   pub fn reset(&mut self) {
     *self = Self {
       facing: self.facing,
@@ -348,6 +359,22 @@ pub fn platformer_movement(
       state.lock = 0.0;
     }
 
+    // A moving floor's momentum: the controller adds the floor's velocity
+    // to `Velocity` on the step the character leaves it, and in the air the
+    // run aims past it, so no input keeps it and steering is relative to it
+    if character.on_floor {
+      let speed = character.platform_velocity.x;
+      state.floor_speed = if speed.is_finite() { speed } else { 0.0 };
+      state.inherited = 0.0;
+    } else if character.left_floor {
+      state.inherited = state.floor_speed;
+      state.floor_speed = 0.0;
+    }
+    if character.on_wall && character.wall_normal.x * state.inherited < 0.0 {
+      // A wall it ran into took it
+      state.inherited = 0.0;
+    }
+
     // At least a step each, so a zero coyote time or buffer still jumps
     // from the floor (or a wall) at once
     state.coyote = if character.on_floor {
@@ -397,6 +424,8 @@ pub fn platformer_movement(
     if let Some(dash) = settings.dash
       && state.dash_left > 0.0
     {
+      // A dash replaces the momentum, and leaves no faster than running
+      state.inherited = 0.0;
       v = state.dash_direction * dash.speed;
       state.dash_left -= dt;
       if state.dash_left <= 0.0 {
@@ -422,7 +451,10 @@ pub fn platformer_movement(
       } else {
         1.0
       };
-      let target = direction.x * settings.run_speed * control;
+      let mut target = direction.x * settings.run_speed * control;
+      if !character.on_floor {
+        target += state.inherited;
+      }
       let mut rate = run_rate(settings, v.x, target);
       if !character.on_floor {
         // No air control is no steering, even with an instant (infinite) rate
@@ -460,6 +492,8 @@ pub fn platformer_movement(
     {
       v.x = state.wall_side * wall.launch.x;
       v.y = -wall.launch.y;
+      // The launch replaces the momentum
+      state.inherited = 0.0;
       state.lock = wall.lock_time;
       state.air_jumps_left = settings.air_jumps;
       state.facing = state.wall_side;
@@ -526,7 +560,7 @@ mod tests {
   use super::*;
   use crate::core::ecs::{Messages, Transform, World};
   use crate::core::gameplay::test_util::*;
-  use crate::core::physics::Collider;
+  use crate::core::physics::{CharacterState, Collider};
   use crate::core::schedule::EngineSchedules;
 
   fn runner(world: &mut World, settings: PlatformerMovement) -> Entity {
@@ -1050,6 +1084,126 @@ mod tests {
       world.get::<Velocity>(e).unwrap().as_vec2(),
       Vec2::new(-600.0, 0.0)
     );
+  }
+
+  /// A platform 600 wide moving right at `speed` px/s by velocity, its top
+  /// at y = 100, and a runner settled on it.
+  fn on_moving_platform(
+    world: &mut World,
+    s: &mut EngineSchedules,
+    speed: f32,
+  ) -> (Entity, Entity) {
+    on_moving_platform_with(world, s, speed, PlatformerMovement::default())
+  }
+
+  fn on_moving_platform_with(
+    world: &mut World,
+    s: &mut EngineSchedules,
+    speed: f32,
+    settings: PlatformerMovement,
+  ) -> (Entity, Entity) {
+    use crate::core::physics::RigidBody;
+    let platform = world
+      .spawn((
+        Transform::from_xy(0.0, 110.0),
+        RigidBody::kinematic(),
+        Collider::rect(600.0, 20.0),
+        Velocity::new(speed, 0.0),
+      ))
+      .id();
+    let e = runner(world, settings);
+    settle(world, s);
+    assert!(world.get::<CharacterState>(e).unwrap().on_floor);
+    (platform, e)
+  }
+
+  fn offset(world: &World, e: Entity, platform: Entity) -> f32 {
+    at(world, e).translation.x - at(world, platform).translation.x
+  }
+
+  #[test]
+  fn a_jump_off_a_moving_platform_lands_where_it_left() {
+    let (mut world, mut s) = world(60);
+    let (platform, e) = on_moving_platform(&mut world, &mut s, 120.0);
+    let before = offset(&world, e, platform);
+    intent(&mut world, e).jump_pressed = true;
+    let mut air = 0;
+    for _ in 0..90 {
+      intent(&mut world, e).jump_held = true;
+      run(&mut world, &mut s, 1);
+      air += usize::from(!world.get::<CharacterState>(e).unwrap().on_floor);
+    }
+    assert!(air > 30, "in the air for {air} steps");
+    let state = world.get::<CharacterState>(e).unwrap();
+    assert!(state.on_floor && state.floor == Some(platform));
+    let drift = offset(&world, e, platform) - before;
+    assert!(drift.abs() < 3.0, "landed {drift} px from where it left");
+  }
+
+  #[test]
+  fn steering_off_a_moving_platform_is_relative_to_it() {
+    let (mut world, mut s) = world(60);
+    let (_, e) = on_moving_platform(&mut world, &mut s, 120.0);
+    intent(&mut world, e).jump_pressed = true;
+    for _ in 0..20 {
+      let mut intent = intent(&mut world, e);
+      intent.jump_held = true;
+      intent.direction = Vec2::NEG_X;
+      run(&mut world, &mut s, 1);
+    }
+    assert!(!world.get::<CharacterState>(e).unwrap().on_floor);
+    let vx = world.get::<Velocity>(e).unwrap().dx;
+    assert!((vx - (120.0 - 180.0)).abs() < 1.0, "{vx}");
+  }
+
+  #[test]
+  fn a_wall_takes_the_momentum_a_jump_kept() {
+    let (mut world, mut s) = world(60);
+    let (_, e) = on_moving_platform(&mut world, &mut s, 120.0);
+    // Hanging over the platform's path 30 px ahead: clear of a character
+    // standing on it, in the way of one jumping
+    let x = at(&world, e).translation.x + 10.0 + 30.0;
+    world.spawn((
+      Transform::from_xy(x + 10.0, -100.0),
+      Collider::rect(20.0, 260.0),
+    ));
+    intent(&mut world, e).jump_pressed = true;
+    let mut hit = false;
+    let mut fastest_after: f32 = 0.0;
+    for _ in 0..40 {
+      intent(&mut world, e).jump_held = true;
+      run(&mut world, &mut s, 1);
+      let state = world.get::<CharacterState>(e).unwrap();
+      if hit && !state.on_floor {
+        fastest_after = fastest_after.max(world.get::<Velocity>(e).unwrap().dx);
+      }
+      hit |= state.on_wall;
+    }
+    assert!(hit, "it reached the wall");
+    assert!(
+      fastest_after < 1.0,
+      "pressed on into the wall at {fastest_after} px/s"
+    );
+  }
+
+  #[test]
+  fn a_dash_replaces_the_momentum_a_jump_kept() {
+    let (mut world, mut s) = world(60);
+    let settings = PlatformerMovement::default().with_dash(400.0, 0.1, 0.5);
+    let (_, e) = on_moving_platform_with(&mut world, &mut s, 120.0, settings);
+    intent(&mut world, e).jump_pressed = true;
+    for _ in 0..10 {
+      intent(&mut world, e).jump_held = true;
+      run(&mut world, &mut s, 1);
+    }
+    intent(&mut world, e).dash_pressed = true;
+    // Six steps of dash, then ten of falling with no input
+    for _ in 0..16 {
+      run(&mut world, &mut s, 1);
+    }
+    assert!(!world.get::<CharacterState>(e).unwrap().on_floor);
+    let vx = world.get::<Velocity>(e).unwrap().dx;
+    assert!(vx.abs() < 1.0, "{vx}");
   }
 
   #[test]
