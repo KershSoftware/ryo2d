@@ -114,6 +114,8 @@ let (raw_rx, raw_ry) = ctx.input.right_stick_raw();
 
 ### Combined Keyboard + Gamepad Movement
 
+For a character, `MoveBindings` does this for you (keys, the left stick and the d-pad into a `MoveIntent` the movement presets read; see `ryo-character`). By hand:
+
 ```rust
 fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     let mut move_x = 0.0;

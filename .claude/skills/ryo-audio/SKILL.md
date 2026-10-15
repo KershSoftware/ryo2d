@@ -141,14 +141,21 @@ ctx
   .ok();
 ```
 
-### Collision Sounds
+### Pickup and Collision Sounds
+
+A coin is a trigger, and triggers never send `CollisionStarted`: with a `Pickup` on it the engine writes `PickedUp` (a trigger of your own sends `TriggerEntered`, whose `actor()` is who entered). Solid contact sends `CollisionStarted`.
 
 ```rust
-for hit in ctx.messages::<CollisionStarted>() {
-  if let Some(other) = hit.other(self.player)
-    && ctx.world.get::<Coin>(other).is_some()
-  {
+// A coin collected (a trigger with a `Pickup`; see `ryo-character`)
+for picked in ctx.messages::<PickedUp>() {
+  if picked.by == self.player {
     ctx.audio.play_sound("coin").ok();
+  }
+}
+// The player bumping into something solid (a wall, a crate, the floor on landing)
+for hit in ctx.messages::<CollisionStarted>() {
+  if hit.involves(self.player) {
+    ctx.audio.play_sound("thud").ok();
   }
 }
 ```
