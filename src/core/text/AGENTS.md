@@ -64,3 +64,17 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   effects and reveal never relayout.
   Pauses live in the `TextLayout` (and in `RichText::hash_into`), so a
   different pause is a different cached layout.
+
+## Glyph images
+
+- `GlyphKey` names one image: font, glyph id, size (1/64 px fixed point),
+  a 4-bin subpixel position (raster fills and strokes only), kind (fill,
+  stroke band, pixel, MSDF), variable-font coordinates, synthesized italic
+  (a 14 degree skew) and bold.
+- Raster glyphs are hinted up to 48 px, unhinted above; pixel glyphs are
+  thresholded to on/off; strokes are a band centred on the outline (drawn
+  under the fill). MSDF glyphs are made once per glyph at the font's base
+  size (default 32 px, range 4 px) with error correction, about a third of
+  a millisecond each: `Fonts::prewarm` builds known text ahead.
+- Glyphs above 1024 px are refused. Bitmap fonts have no glyph images:
+  the renderer draws their cells from the sprite sheet.
