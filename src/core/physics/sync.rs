@@ -1684,6 +1684,70 @@ mod tests {
   }
 
   #[test]
+  fn a_body_s_sensor_and_its_solid_collider_enter_a_trigger_apart() {
+    use crate::core::ecs::ChildOf;
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let zone = world
+      .spawn((
+        Transform::from_xy(200.0, 0.0),
+        Collider::rect(40.0, 200.0).as_trigger(),
+      ))
+      .id();
+    let body = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::kinematic(),
+        Velocity::new(120.0, 0.0),
+      ))
+      .id();
+    let solid = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(10.0, 10.0),
+        ChildOf(body),
+      ))
+      .id();
+    let sensor = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::circle(60.0).as_trigger(),
+        ChildOf(body),
+      ))
+      .id();
+    run(&mut world, &mut s, 75);
+    let entered = |world: &World| -> Vec<Entity> {
+      read::<TriggerEntered>(world)
+        .iter()
+        .filter(|m| m.trigger == zone)
+        .map(|m| m.other)
+        .collect()
+    };
+    assert_eq!(entered(&world), [sensor], "the sensor arrives first");
+    run(&mut world, &mut s, 30);
+    assert_eq!(entered(&world), [sensor, solid], "then the body");
+    assert_eq!(
+      world.get::<TriggerContents>(zone).unwrap().entities(),
+      [body],
+      "listed once"
+    );
+    // The solid collider leaves at step 113, the sensor at step 140
+    run(&mut world, &mut s, 20);
+    assert_eq!(
+      world.get::<TriggerContents>(zone).unwrap().entities(),
+      [body]
+    );
+    run(&mut world, &mut s, 40);
+    assert!(world.get::<TriggerContents>(zone).unwrap().is_empty());
+    let exited: Vec<Entity> = read::<TriggerExited>(&world)
+      .iter()
+      .filter(|m| m.trigger == zone)
+      .map(|m| m.other)
+      .collect();
+    assert_eq!(exited, [solid, sensor]);
+  }
+
+  #[test]
   fn two_overlapping_triggers_each_report_the_other() {
     let (mut world, mut s) = world(60);
     let still = world
@@ -1780,6 +1844,82 @@ mod tests {
       world.get::<TriggerContents>(zone).unwrap().entities(),
       [second]
     );
+  }
+
+  #[test]
+  fn despawned_occupied_triggers_leave_no_contents_behind() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let zones: Vec<Entity> = (0..10)
+      .map(|i| {
+        let x = i as f32 * 100.0;
+        world
+          .spawn((
+            Transform::from_xy(x, 0.0),
+            Collider::rect(40.0, 40.0).as_trigger(),
+          ))
+          .id()
+      })
+      .collect();
+    for i in 0..10 {
+      ball(&mut world, i as f32 * 100.0, 0.0);
+    }
+    run(&mut world, &mut s, 2);
+    assert_eq!(world.resource::<Physics>().trigger_contents.len(), 10);
+    for zone in zones {
+      world.despawn(zone);
+    }
+    run(&mut world, &mut s, 3);
+    let left = world.resource::<Physics>().trigger_contents.len();
+    assert_eq!(left, 0, "{left} entries for despawned triggers");
+  }
+
+  #[test]
+  fn a_trigger_spawned_disabled_lists_what_enters_once_enabled() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let zone = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(200.0, 200.0).as_trigger(),
+        Disabled,
+      ))
+      .id();
+    run(&mut world, &mut s, 2);
+    world.entity_mut(zone).remove::<Disabled>();
+    run(&mut world, &mut s, 2);
+    let inside = ball(&mut world, 0.0, 0.0);
+    run(&mut world, &mut s, 2);
+    let contents = world
+      .get::<TriggerContents>(zone)
+      .map(|c| c.entities().to_vec());
+    assert_eq!(contents, Some(vec![inside]));
+  }
+
+  #[test]
+  fn what_leaves_a_disabled_trigger_is_gone_from_it_once_enabled() {
+    let (mut world, mut s) = world(60);
+    no_gravity(&mut world);
+    let zone = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(200.0, 200.0).as_trigger(),
+      ))
+      .id();
+    let leaving = ball(&mut world, 0.0, 0.0);
+    let despawned = ball(&mut world, 30.0, 0.0);
+    run(&mut world, &mut s, 2);
+    let inside = world.get::<TriggerContents>(zone).unwrap();
+    assert!(inside.contains(leaving) && inside.contains(despawned));
+    world.entity_mut(zone).insert(Disabled);
+    run(&mut world, &mut s, 2);
+    world.get_mut::<Transform>(leaving).unwrap().translation.x = 1000.0;
+    world.despawn(despawned);
+    run(&mut world, &mut s, 2);
+    world.entity_mut(zone).remove::<Disabled>();
+    run(&mut world, &mut s, 2);
+    let contents = world.get::<TriggerContents>(zone).unwrap().entities();
+    assert!(contents.is_empty(), "{contents:?}");
   }
 
   #[test]

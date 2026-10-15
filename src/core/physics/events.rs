@@ -35,8 +35,10 @@ pub struct CollisionStopped {
 
 /// A collider started overlapping a trigger (`Collider::as_trigger`). Sent
 /// once per body: a body with several colliders enters on its first and
-/// exits when its last one leaves. What can set a trigger off is the usual
-/// layer and mask test. Two overlapping triggers each get a message.
+/// exits when its last one leaves. A body's trigger colliders (an aggro
+/// radius) count apart from its solid ones, so a body with both enters once
+/// with each kind (`other` says which). What can set a trigger off is the
+/// usual layer and mask test. Two overlapping triggers each get a message.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TriggerEntered {
   /// The trigger collider's entity

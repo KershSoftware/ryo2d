@@ -305,9 +305,6 @@ pub struct Physics {
   pub(crate) compared: usize,
   /// Bodies the game moved through `Transform` this step
   teleported: EntityHashSet,
-  /// Bodies registered since the last step: their colliders, and those
-  /// registered with them, join the broad phase (and the queries) at the step
-  registered: EntityHashSet,
   /// Kinematic bodies the engine moves by velocity this step
   driven: EntityHashSet,
   warned: EntityHashSet,
@@ -320,9 +317,10 @@ pub struct Physics {
   forced: Vec<RigidBodyHandle>,
   /// The last step's started and stopped contacts
   pub(crate) collisions: Vec<RawCollision>,
-  /// Per (trigger collider, body inside it), how many of that body's
-  /// colliders overlap the trigger: entered at 1, exited at 0
-  trigger_overlaps: HashMap<(Entity, Entity), u32>,
+  /// Per (trigger collider, body inside it, whether those colliders are
+  /// triggers), how many of that body's solid colliders, or its triggers,
+  /// overlap the trigger: entered at 1, exited at 0
+  trigger_overlaps: HashMap<(Entity, Entity, bool), u32>,
   /// What each trigger holds now, in entry order (`TriggerContents`)
   pub(crate) trigger_contents: EntityHashMap<Vec<Entity>>,
   /// Triggers whose contents changed in the last step
@@ -461,7 +459,6 @@ impl Physics {
       #[cfg(test)]
       compared: 0,
       teleported: EntityHashSet::default(),
-      registered: EntityHashSet::default(),
       driven: EntityHashSet::default(),
       warned: EntityHashSet::default(),
       #[cfg(test)]
@@ -549,13 +546,6 @@ impl Physics {
         fell_asleep: false,
       },
     );
-    self.registered.insert(entity);
-  }
-
-  /// Whether the body was registered since the last step (queries cannot
-  /// see it, nor anything registered with it, until the step).
-  pub(crate) fn is_registering(&self, entity: Entity) -> bool {
-    self.registered.contains(&entity)
   }
 
   /// Apply an edited `RigidBody` in place: only fields that changed are written.
@@ -761,7 +751,9 @@ impl Physics {
     let Some(entry) = self.collider_entries.get(&entity) else {
       self.add_collider(entity, parent, placement, collider);
       if let Some(entry) = self.collider_entries.get(&entity) {
-        self.follow_body(entry.handle);
+        let handle = entry.handle;
+        self.follow_body(handle);
+        self.make_queryable(handle);
       }
       return;
     };
@@ -807,7 +799,7 @@ impl Physics {
       owner.trigger = collider.is_trigger;
       self
         .trigger_overlaps
-        .retain(|&(trigger, _), _| trigger != entity);
+        .retain(|&(trigger, _, _), _| trigger != entity);
       self.trigger_contents.remove(&entity);
       self.changed_triggers.insert(entity);
     }
@@ -833,6 +825,21 @@ impl Physics {
       }
     }
     self.follow_body(handle);
+  }
+
+  /// Put a new collider in the broad phase's tree now, so the queries made
+  /// before the step (the character sweep) see it: Rapier adds colliders at
+  /// the step, and a tile map rebuilt under a character would otherwise be
+  /// missing for that one sweep (its old parts are gone at once). The step's
+  /// broad-phase update then treats it as any collider updated this way.
+  fn make_queryable(&mut self, handle: ColliderHandle) {
+    let Some(collider) = self.colliders.get(handle).filter(|c| c.is_enabled()) else {
+      return;
+    };
+    let aabb = collider.compute_broad_phase_aabb(&self.params, &self.bodies);
+    if aabb.mins.is_finite() && aabb.maxs.is_finite() {
+      self.broad_phase.set_aabb(&self.params, handle, aabb);
+    }
   }
 
   /// Whether a collider is enabled exactly when its body is (always, with
@@ -909,20 +916,27 @@ impl Physics {
     );
   }
 
-  /// Count a trigger overlap starting or stopping, once per body: the body
-  /// enters at its first collider inside and exits when its last one leaves.
+  /// Count a trigger overlap starting or stopping, once per body and kind:
+  /// the body's solid colliders enter at the first one inside and exit when
+  /// the last one leaves, and its triggers (an aggro radius) the same apart
+  /// from them, so a sensor that arrives first does not hide its body's
+  /// arrival. The contents list the body while any of its colliders is in.
   fn record_trigger(&mut self, a: Owner, b: Owner, started: bool) {
     for (trigger, other) in [(a, b), (b, a)] {
       if !trigger.trigger {
         continue;
       }
-      let key = (trigger.collider, other.body);
+      let mut key = (trigger.collider, other.body, other.trigger);
       let changed = if started {
         let count = self.trigger_overlaps.entry(key).or_insert(0);
         *count += 1;
         *count == 1
       } else {
-        // A stop only counts for an overlap that was counted
+        // A stop only counts for an overlap that was counted, under the
+        // kind the collider had when it entered (it may have changed since)
+        if !self.trigger_overlaps.contains_key(&key) {
+          key.2 = !key.2;
+        }
         let Some(count) = self.trigger_overlaps.get_mut(&key) else {
           continue;
         };
@@ -936,10 +950,18 @@ impl Physics {
       if !changed {
         continue;
       }
-      let contents = self.trigger_contents.entry(trigger.collider).or_default();
-      if started {
-        contents.push(other.body);
-      } else {
+      let other_kind_inside = self.trigger_overlaps.contains_key(&(key.0, key.1, !key.2));
+      if other_kind_inside {
+        // Listed already, and stays listed
+      } else if started {
+        self
+          .trigger_contents
+          .entry(trigger.collider)
+          .or_default()
+          .push(other.body);
+      } else if let Some(contents) = self.trigger_contents.get_mut(&trigger.collider) {
+        // A removed trigger's entry is gone already: a stop must not make
+        // it again
         contents.retain(|&inside| inside != other.body);
       }
       self.changed_triggers.insert(trigger.collider);
@@ -1367,7 +1389,6 @@ impl Physics {
       }
     }
     self.departed.clear();
-    self.registered.clear();
     self.break_joints(dt);
     for entry in self.body_entries.values_mut() {
       let asleep = self

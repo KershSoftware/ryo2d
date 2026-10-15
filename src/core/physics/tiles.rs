@@ -708,6 +708,94 @@ mod with_physics {
     assert!(travelled >= 0.99 * 300.0 * 4.0, "{travelled}");
   }
 
+  fn standing_character(world: &mut World, x: f32) -> Entity {
+    world
+      .spawn((
+        Transform::from_xy(x, 79.0),
+        CharacterController::platformer(),
+        Collider::rect(12.0, 40.0),
+      ))
+      .id()
+  }
+
+  fn fall_step(world: &mut World, s: &mut crate::core::schedule::EngineSchedules, e: Entity) {
+    world.get_mut::<Velocity>(e).unwrap().dy += 980.0 / 60.0;
+    run(world, s, 1);
+  }
+
+  #[test]
+  fn a_character_keeps_standing_on_a_map_whose_outline_splits() {
+    use crate::core::physics::CharacterState;
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::from_xy(0.0, 100.0), row(40))).id();
+    let e = standing_character(&mut world, 40.0);
+    for _ in 0..30 {
+      fall_step(&mut world, &mut s, e);
+    }
+    assert!(world.get::<CharacterState>(e).unwrap().on_floor);
+    world
+      .get_mut::<TileColliders>(map)
+      .unwrap()
+      .set(35, 0, TileCell::Empty);
+    for step in 0..5 {
+      fall_step(&mut world, &mut s, e);
+      let state = world.get::<CharacterState>(e).unwrap();
+      assert!(
+        state.on_floor && !state.left_floor && !state.landed,
+        "step {step} after the rebuild: on_floor {}, left_floor {}, landed {}",
+        state.on_floor,
+        state.left_floor,
+        state.landed
+      );
+    }
+    assert_eq!(ids(&mut world, map).len(), 2, "the outline split");
+  }
+
+  #[test]
+  fn a_character_running_at_a_wall_on_a_map_rebuilt_every_step_stops_at_it() {
+    use crate::core::physics::CharacterState;
+    let (mut world, mut s) = world(60);
+    // A floor 40 cells long with a wall two cells high on its cell 20
+    let mut cells = vec![TileCell::Empty; 40 * 3];
+    for x in 0..40 {
+      cells[2 * 40 + x] = TileCell::Solid;
+    }
+    cells[20] = TileCell::Solid;
+    cells[40 + 20] = TileCell::Solid;
+    let map = world
+      .spawn((
+        Transform::from_xy(0.0, 68.0),
+        TileColliders::from_cells(40, 3, Vec2::splat(16.0), cells),
+      ))
+      .id();
+    let e = standing_character(&mut world, 40.0);
+    for _ in 0..30 {
+      fall_step(&mut world, &mut s, e);
+    }
+    assert!(world.get::<CharacterState>(e).unwrap().on_floor);
+    for step in 0..90 {
+      // A real change far from the character every step: every step rebuilds
+      let cell = if step % 2 == 0 {
+        TileCell::Solid
+      } else {
+        TileCell::Empty
+      };
+      world
+        .get_mut::<TileColliders>(map)
+        .unwrap()
+        .set(38, 0, cell);
+      world.get_mut::<Velocity>(e).unwrap().dx = 600.0;
+      fall_step(&mut world, &mut s, e);
+      let state = world.get::<CharacterState>(e).unwrap();
+      assert!(state.on_floor, "fell through the floor at step {step}");
+    }
+    let right = at(&world, e).translation.x + 6.0;
+    assert!(
+      right <= 320.5,
+      "the wall at 320 stopped it: right side {right}"
+    );
+  }
+
   fn ids(world: &mut World, map: Entity) -> Vec<Entity> {
     let mut query = world.query::<(Entity, &ChildOf, &Collider)>();
     let mut found: Vec<Entity> = query

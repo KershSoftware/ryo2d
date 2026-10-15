@@ -2,7 +2,7 @@
 
 use super::collider::Collider;
 use super::world::Physics;
-use crate::core::ecs::{Changed, Commands, Component, Entity, Has, Query, ResMut};
+use crate::core::ecs::{Allow, Changed, Commands, Component, Disabled, Entity, Has, Query, ResMut};
 
 /// The bodies (or bare colliders) inside a trigger now, in the order they
 /// entered. The engine adds it to every trigger collider and updates it
@@ -33,11 +33,20 @@ impl TriggerContents {
 
 /// After the step's messages: add `TriggerContents` to new triggers (and
 /// take it from colliders that stopped being one), and bring the changed
-/// ones up to date.
+/// ones up to date. Disabled triggers included: one spawned disabled has its
+/// contents when enabled, and one disabled (which empties it) is not left
+/// listing what was inside.
+type Edited<'w, 's> = Query<
+  'w,
+  's,
+  (Entity, &'static Collider, Has<TriggerContents>),
+  (Changed<Collider>, Allow<Disabled>),
+>;
+
 pub(crate) fn update_trigger_contents(
   mut physics: ResMut<Physics>,
-  edited: Query<(Entity, &Collider, Has<TriggerContents>), Changed<Collider>>,
-  mut contents: Query<&mut TriggerContents>,
+  edited: Edited,
+  mut contents: Query<&mut TriggerContents, Allow<Disabled>>,
   mut commands: Commands,
 ) {
   for (entity, collider, has) in &edited {

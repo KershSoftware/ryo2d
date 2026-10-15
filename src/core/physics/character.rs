@@ -186,9 +186,9 @@ pub struct CharacterState {
   /// The collider underfoot (drop-through starts from it)
   pub(crate) floor_collider: Option<Entity>,
   /// The last move ended inside or within the skin of something solid,
-  /// is still pushing out, or the character is new (until the first step
-  /// after it registers): the next move pushes out first. A teleport sets
-  /// it too, so the teleport step's own move pushes out first
+  /// is still pushing out, or the character is new: the next move pushes
+  /// out first. A teleport sets it too, so the teleport step's own move
+  /// pushes out first
   pub(crate) stuck: bool,
   /// The one-way collider a drop-through started from
   pub(crate) drop_from: Option<Entity>,
@@ -242,6 +242,11 @@ pub(crate) struct CharacterMove {
 
 /// How far below its feet a character looks for the floor, beyond its skin.
 const FLOOR_PROBE: f32 = 2.0;
+/// Colliders whose centres are closer than this, in px, are on one point.
+const COINCIDENT: f32 = 0.01;
+/// How far, in px along each axis, a push-out first moves a character off
+/// another one on its point.
+const NUDGE: f32 = 0.05;
 /// Slack on the floor and ceiling angle tests.
 const ANGLE_SLACK: f32 = 1e-4;
 
@@ -471,6 +476,8 @@ impl Physics {
     // the shape's height a call: a push-out that moved it goes again next step
     let mut pushing_out = false;
     if state.stuck || desired.length() <= sweep::MIN_MOVE {
+      let at = from_rapier(pose.translation);
+      pose.translation += to_rapier(self.coincident_nudge(entity, collider_handle, at));
       let push_out = KinematicCharacterController {
         snap_to_ground: None,
         ..kcc
@@ -542,9 +549,7 @@ impl Physics {
     *velocity = real_velocity(wanted, &normals, platformer.then_some(up), momentum);
     state.sliding_down_slope = platformer && moved.sliding_down_slope;
     state.velocity_before = wanted;
-    // Registering this step, the queries saw nothing registered with it (a
-    // level spawned in the same tick): push out again once they do
-    state.stuck = stuck || pushing_out || self.is_registering(entity);
+    state.stuck = stuck || pushing_out;
 
     if controller.push && !collisions.is_empty() {
       self.push_bodies(&kcc, collider_handle, filter, &*shape, &collisions, dt);
@@ -564,6 +569,45 @@ impl Physics {
     };
     self.drive_to(entity, body_translation + delta, rotation);
     Some(CharacterMove { normals, drop_done })
+  }
+
+  /// How far to move a character before its push-out, off the kinematic
+  /// bodies (other characters) centred on its point: two characters spawned
+  /// or respawned on one spot. The push-out gives two shapes on one point
+  /// the same normal, so both would be pushed the same way every step and
+  /// stay together; moved apart by entity order first (the lower one left
+  /// and down, the higher right and up, a few hundredths of a pixel), each
+  /// is pushed away from the other. Only what it touched at the last step
+  /// is looked at (the narrow phase's pairs), so this walks its contacts and
+  /// makes no query. `at` is where the collider starts the step.
+  fn coincident_nudge(&self, entity: Entity, collider: ColliderHandle, at: Vec2) -> Vec2 {
+    let mut side = 0.0;
+    for pair in self.narrow_phase.contact_pairs_with(collider) {
+      let other = if pair.collider1 == collider {
+        pair.collider2
+      } else {
+        pair.collider1
+      };
+      // On its point first: that rules out nearly every pair at once
+      let Some(rapier) = self
+        .colliders
+        .get(other)
+        .filter(|c| from_rapier(c.translation()).distance_squared(at) <= COINCIDENT * COINCIDENT)
+      else {
+        continue;
+      };
+      let kinematic = rapier
+        .parent()
+        .and_then(|body| self.bodies.get(body))
+        .is_some_and(|body| body.is_kinematic());
+      if !kinematic || !rapier.is_enabled() || rapier.is_sensor() {
+        continue;
+      }
+      if let Some(owner) = self.owners.get(&other) {
+        side += if entity < owner.collider { -1.0 } else { 1.0 };
+      }
+    }
+    Vec2::new(side, -side) * NUDGE
   }
 
   /// Keep a drop-through's bookkeeping after the move; true when the drop
@@ -1028,8 +1072,86 @@ mod tests {
     assert!(x.is_finite() && x + 10.0 <= 90.5, "{x}");
   }
 
-  // Review focus 1: a level spawned in the same tick as the character joins
-  // the broad phase at the step, so the first step's queries see none of it
+  /// Steps with gravity added to each of `characters` first.
+  fn fall_together(
+    world: &mut World,
+    s: &mut EngineSchedules,
+    characters: &[Entity],
+    steps: usize,
+  ) {
+    for _ in 0..steps {
+      for &e in characters {
+        world.get_mut::<Velocity>(e).unwrap().dy += 980.0 / 60.0;
+      }
+      run(world, s, 1);
+    }
+  }
+
+  // Review focus 1: two players spawned on one spot
+  #[test]
+  fn two_characters_spawned_on_one_point_separate_and_stay_on_the_floor() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let a = character(&mut world, 0.0, 79.0);
+    let b = character(&mut world, 0.0, 79.0);
+    fall_together(&mut world, &mut s, &[a, b], 10);
+    let (xa, xb) = (at(&world, a).translation.x, at(&world, b).translation.x);
+    assert!((xa - xb).abs() >= 19.5, "apart: {xa} and {xb}");
+    assert!(
+      xa.abs() < 30.0 && xb.abs() < 30.0,
+      "stayed put: {xa} and {xb}"
+    );
+    fall_together(&mut world, &mut s, &[a, b], 50);
+    for e in [a, b] {
+      let st = state(&world, e);
+      let t = at(&world, e).translation;
+      assert!(
+        st.on_floor && t.x.abs() < 30.0,
+        "{e}: {t:?} on floor {}",
+        st.on_floor
+      );
+    }
+  }
+
+  #[test]
+  fn two_characters_spawned_on_one_point_against_a_wall_separate() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    world.spawn((Transform::from_xy(100.0, 0.0), Collider::rect(20.0, 400.0)));
+    let a = character(&mut world, 80.0, 79.0);
+    let b = character(&mut world, 80.0, 79.0);
+    fall_together(&mut world, &mut s, &[a, b], 10);
+    let (xa, xb) = (at(&world, a).translation.x, at(&world, b).translation.x);
+    assert!((xa - xb).abs() >= 19.5, "apart: {xa} and {xb}");
+    assert!(xa.max(xb) + 10.0 <= 90.5, "out of the wall: {xa} and {xb}");
+  }
+
+  #[test]
+  fn two_top_down_characters_spawned_on_one_point_separate() {
+    let (mut world, mut s) = world(60);
+    let spawn = |world: &mut World| {
+      world
+        .spawn((
+          Transform::from_xy(50.0, 50.0),
+          CharacterController::top_down(),
+          Collider::circle(8.0),
+        ))
+        .id()
+    };
+    let a = spawn(&mut world);
+    let b = spawn(&mut world);
+    run(&mut world, &mut s, 10);
+    let (pa, pb) = (at(&world, a).translation, at(&world, b).translation);
+    assert!(pa.distance(pb) >= 15.5, "apart: {pa:?} and {pb:?}");
+    let centre = Vec2::splat(50.0);
+    assert!(
+      pa.distance(centre) < 20.0 && pb.distance(centre) < 20.0,
+      "stayed put: {pa:?} and {pb:?}"
+    );
+  }
+
+  // Review focus 1: a level spawned in the same tick as the character is in
+  // the first step's queries (`Physics::make_queryable`)
   #[test]
   fn a_falling_character_spawned_in_a_wall_with_the_level_is_pushed_out() {
     let (mut world, mut s) = world(60);
