@@ -60,7 +60,7 @@ pub enum FontRole {
 }
 
 impl FontRole {
-  fn index(self) -> usize {
+  pub(crate) fn index(self) -> usize {
     match self {
       Self::Ui => 0,
       Self::Mono => 1,
@@ -84,8 +84,11 @@ pub enum FontError {
 /// A grid of glyphs on a sprite sheet: `chars[i]` is cell `i`, row-major
 #[derive(Debug, Clone)]
 pub(crate) struct BitmapFace {
+  // The sheet and its columns are read when the cells are drawn (world text)
+  #[cfg_attr(not(test), allow(dead_code))]
   pub(crate) sprite: SpriteHandle,
   pub(crate) cell: (u32, u32),
+  #[cfg_attr(not(test), allow(dead_code))]
   pub(crate) columns: u32,
   pub(crate) chars: Vec<char>,
 }
@@ -302,6 +305,8 @@ impl Fonts {
       .map(|(i, face)| (FontId(i as u32), face))
   }
 
+  // The glyph cache takes these once world text draws (later tasks)
+  #[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))]
   pub(crate) fn take_prewarm(&mut self) -> Vec<Prewarm> {
     std::mem::take(&mut self.prewarm)
   }
@@ -434,8 +439,19 @@ mod tests {
       fonts.add_bitmap("Grid", sheet.clone(), (8, 8), ""),
       Err(FontError::EmptyBitmap)
     ));
-    let id = fonts.add_bitmap("Grid", sheet, (8, 8), "ABCDEFGH").unwrap();
+    let id = fonts
+      .add_bitmap("Grid", sheet.clone(), (8, 8), "ABCDEFGH")
+      .unwrap();
     assert!(matches!(fonts.render(id), FontRender::Pixel { design_size } if design_size == 8.0));
+    let Some(Face {
+      source: FaceSource::Bitmap(grid),
+      ..
+    }) = fonts.face(id)
+    else {
+      panic!("a bitmap face");
+    };
+    assert_eq!(grid.columns, 8, "a 64 wide sheet of 8 wide cells");
+    assert_eq!(grid.sprite.serial(), sheet.serial());
   }
 
   #[cfg(not(target_arch = "wasm32"))]

@@ -120,7 +120,10 @@ pub mod prelude {
   };
 
   // Text
-  pub use crate::core::text::{FontError, FontId, FontRender, FontRole, Fonts};
+  pub use crate::core::text::{
+    FontError, FontId, FontRender, FontRole, Fonts, Glow, Icon, Outline, RichText, Shadow, Span,
+    TextAlign, TextFont, TextLayoutOptions, TextOverflow, TextStyle,
+  };
 
   // Tiled rendering
   pub use crate::core::graphics::{CompositeTile, CompositeTileBuilder, TileDirection, TilePart};

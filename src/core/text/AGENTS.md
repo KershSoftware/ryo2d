@@ -15,3 +15,28 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   drops cached layouts when it changes.
 - There is no file system on the web: `Fonts::load` fails there, so games
   embed fonts with `add_bytes(include_bytes!(..))`.
+
+## Layout
+
+- `TextEngine` (engine-owned, crate-internal) holds one Parley
+  `FontContext` (no system fonts) and `LayoutContext`, rebuilt when
+  `Fonts::generation` changes. Layouts are cached by text, style, options,
+  scale and font generation, and dropped after 120 unused frames, so an
+  immediate-mode call every frame costs a hash lookup.
+- `scale` is layout pixels per text unit (the UI's render scale; 1 for
+  world text). Layouts are in layout pixels, y down; `measure` returns
+  text units.
+- A block's width is its widest line, except that with a wrap width a
+  block aligned `Center`, `End` or `Justify` is the wrap width wide: Parley
+  aligns lines within the wrap width, so that is the frame the glyphs sit in
+  and the anchor must place.
+- Styled spans never overlap (`RichText` appends); Parley's brush is the
+  span index, and `TextLayout::styles` resolves each to colour, outline,
+  shadow, glow and effect.
+- Fallback: a style's font, its fallbacks, then the UI font, then the mono font. A character no
+  font has draws glyph 0 (the font's box) and is warned once per family and
+  character.
+- Bitmap fonts (`Fonts::add_bitmap`) are laid out by a monospace grid
+  layouter; a text uses bitmap or outline fonts, not both.
+- Clusters: each glyph and icon carries its character cluster in logical
+  order; reveal and per-glyph effects count clusters.
