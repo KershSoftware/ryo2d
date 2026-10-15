@@ -187,7 +187,8 @@ pub struct CharacterState {
   pub(crate) floor_collider: Option<Entity>,
   /// The last move ended inside or within the skin of something solid,
   /// is still pushing out, or the character is new (until the first step
-  /// after it registers) or teleported: the next move pushes out first
+  /// after it registers): the next move pushes out first. A teleport sets
+  /// it too, so the teleport step's own move pushes out first
   pub(crate) stuck: bool,
   /// The one-way collider a drop-through started from
   pub(crate) drop_from: Option<Entity>,
@@ -552,13 +553,16 @@ impl Physics {
     let drop_done = self.track_drop(state, controller.drop_through, &*shape, &pose);
 
     let delta = from_rapier(pose.translation - start.translation);
+    // A teleport's pose (its turn included) is where the move started;
+    // otherwise the body moves on from where it is, keeping its rotation
     let body = self.bodies.get(body_handle)?;
-    let body_translation = from_rapier(if teleported {
-      body.next_position().translation
+    let (body_translation, rotation) = if teleported {
+      let next = body.next_position();
+      (from_rapier(next.translation), next.rotation.angle())
     } else {
-      body.translation()
-    });
-    self.drive_to(entity, body_translation + delta);
+      (from_rapier(body.translation()), body.rotation().angle())
+    };
+    self.drive_to(entity, body_translation + delta, rotation);
     Some(CharacterMove { normals, drop_done })
   }
 
@@ -1111,6 +1115,52 @@ mod tests {
       "moved by v·dt from the teleport: {position}"
     );
     assert_eq!(velocity(&world, e), Vec2::new(300.0, -60.0));
+  }
+
+  // The turn is part of the teleport: the move starts from it, so the body
+  // must end in it too (and keep it, or every step would be a teleport)
+  #[test]
+  fn a_teleport_that_turns_a_character_keeps_the_turn() {
+    for controller in [
+      CharacterController::platformer(),
+      CharacterController::top_down(),
+    ] {
+      let (mut world, mut s) = world(60);
+      let e = world
+        .spawn((
+          Transform::IDENTITY,
+          controller,
+          Collider::rect(20.0, 40.0),
+          Velocity::new(60.0, 0.0),
+        ))
+        .id();
+      run(&mut world, &mut s, 3);
+      let mut transform = world.get_mut::<Transform>(e).unwrap();
+      transform.translation = Vec2::new(100.0, 0.0);
+      transform.rotation = 1.0;
+      run(&mut world, &mut s, 1);
+      let after = at(&world, e);
+      assert!(
+        (after.translation - Vec2::new(101.0, 0.0)).length() < 1e-3,
+        "moved by v·dt from the teleport: {after:?}"
+      );
+      assert!(
+        (after.rotation - 1.0).abs() < 1e-5,
+        "kept the turn: {after:?}"
+      );
+      let (_, rotation) = world.resource::<Physics>().body_pose(e).unwrap();
+      assert!((rotation - 1.0).abs() < 1e-5, "the body too: {rotation}");
+      run(&mut world, &mut s, 3);
+      let later = at(&world, e);
+      assert!(
+        (later.translation - Vec2::new(104.0, 0.0)).length() < 1e-3,
+        "kept moving: {later:?}"
+      );
+      assert!(
+        (later.rotation - 1.0).abs() < 1e-5,
+        "still turned: {later:?}"
+      );
+    }
   }
 
   #[test]

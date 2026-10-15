@@ -1236,16 +1236,15 @@ impl Physics {
     self.teleported.contains(&entity)
   }
 
-  /// Move a kinematic body to `translation` over the step (its rotation
-  /// kept), and have the write-back place it.
-  pub(crate) fn drive_to(&mut self, entity: Entity, translation: Vec2) {
+  /// Move a kinematic body to `translation` and `rotation` over the step,
+  /// and have the write-back place it.
+  pub(crate) fn drive_to(&mut self, entity: Entity, translation: Vec2, rotation: f32) {
     let Some(entry) = self.body_entries.get(&entity) else {
       return;
     };
     let Some(body) = self.bodies.get_mut(entry.handle) else {
       return;
     };
-    let rotation = body.rotation().angle();
     body.set_next_kinematic_position(pose(translation, rotation));
     self.driven.insert(entity);
   }
