@@ -250,6 +250,11 @@ const NUDGE: f32 = 0.05;
 /// Slack on the floor and ceiling angle tests.
 const ANGLE_SLACK: f32 = 1e-4;
 
+/// The least `normal · up` of a floor (and of a ceiling, against down).
+fn floor_cos(max_slope: f32) -> f32 {
+  max_slope.cos() - ANGLE_SLACK
+}
+
 /// `velocity` without what runs into a surface with this normal. With an
 /// `up`, a slope too steep to climb stops the run into it instead of turning
 /// it into a climb: the clip may not make the character rise faster than it
@@ -499,17 +504,23 @@ impl Physics {
       |collision| collisions.push(collision),
     );
     pose.translation += moved.translation;
-    // Past what it only touches (a neighbour flush against its side)
+    // The floor: what the bare shape meets below, past what it only touches
+    // (a neighbour flush against its side); failing that, what the sweep
+    // stands it on, its skin kept (a corner or a ledge's edge the skin
+    // reaches but the shape does not overlap)
     let floor_hit = platformer
       .then(|| {
-        sweep::probe(
-          &queries,
-          &pose,
-          to_rapier(Vec2::Y),
-          &*shape,
-          skin + FLOOR_PROBE,
-          kcc.normal_nudge_factor,
-        )
+        let probe = |gap, reach| {
+          let down = to_rapier(Vec2::Y);
+          let tolerance = kcc.normal_nudge_factor;
+          sweep::probe(&queries, &pose, down, &*shape, gap, reach, tolerance)
+        };
+        let holds = |(_, hit): &(ColliderHandle, ShapeCastHit)| {
+          from_rapier(hit.normal1).dot(up) >= floor_cos(max_slope)
+        };
+        probe(0.0, skin + FLOOR_PROBE)
+          .filter(holds)
+          .or_else(|| probe(skin, FLOOR_PROBE))
       })
       .flatten();
 
@@ -665,7 +676,7 @@ impl Physics {
     dt: f32,
   ) -> (Vec<Vec2>, bool) {
     let up = Vec2::NEG_Y;
-    let cos = max_slope.cos() - ANGLE_SLACK;
+    let cos = floor_cos(max_slope);
     state.hits.clear();
     state.on_wall = false;
     state.on_ceiling = false;
@@ -1318,6 +1329,99 @@ mod tests {
       assert!(at(&world, e).translation.x + 10.0 <= 90.0 + 1e-3);
     }
     assert_jump(&mut world, &mut s, &[e], &[e]);
+  }
+
+  /// `steps` steps of `all` falling, watching `e`: off the floor it must be
+  /// moving, never held up in the air by something that is not its floor.
+  fn fall_watching(
+    world: &mut World,
+    s: &mut EngineSchedules,
+    e: Entity,
+    all: &[Entity],
+    steps: usize,
+  ) {
+    for i in 0..steps {
+      let y = at(world, e).translation.y;
+      fall_together(world, s, all, 1);
+      let st = state(world, e);
+      let moved = (at(world, e).translation.y - y).abs();
+      assert!(
+        st.on_floor || moved > 1e-3,
+        "{e}, step {i}: held in the air at {}, velocity {}: {st:?}",
+        at(world, e).translation,
+        velocity(world, e)
+      );
+    }
+  }
+
+  // A jump in place beside a neighbour clears its head and comes down on
+  // its corner when the two are flush or within the skin of each other: the
+  // sweep keeps its skin from that corner, as from a ledge's edge, so the
+  // character stands there (or slips off), rather than hanging in the air
+  // with its fall growing because the gapless probe saw no floor under it
+  #[test]
+  fn a_character_jumping_in_place_beside_a_flush_neighbour_lands_and_jumps_again() {
+    for gap in [0.0, 0.1] {
+      for jumper in [0, 1] {
+        let (mut world, mut s) = world(60);
+        let f = floor(&mut world, 100.0);
+        let both = [
+          character(&mut world, 0.0, 79.0),
+          character(&mut world, 20.0 + gap, 79.0),
+        ];
+        let (e, other) = (both[jumper], both[1 - jumper]);
+        fall_together(&mut world, &mut s, &both, 10);
+        assert_standing(&mut world, &mut s, &both, f, 10);
+        for jump in 0..2 {
+          // 46 px high: over the other's 40
+          assert_jump(&mut world, &mut s, &[e], &both);
+          fall_watching(&mut world, &mut s, e, &both, 120);
+          let st = state(&world, e);
+          let t = at(&world, e).translation;
+          assert!(
+            st.on_floor,
+            "gap {gap}, {jumper}, jump {jump}: at {t}: {st:?}"
+          );
+          let v = velocity(&world, e);
+          assert!(v.y.abs() < 1e-3, "gap {gap}, {jumper}, jump {jump}: {v}");
+          assert!(state(&world, other).on_floor, "the other stands");
+        }
+      }
+    }
+  }
+
+  // The same with a ledge: a character falling with its side level with the
+  // ledge's edge stands on it, one within the skin past it stands on the
+  // edge until it slips off, and one clear of it falls to the floor below
+  #[test]
+  fn a_character_falling_flush_past_a_ledge_corner_does_not_hang_in_the_air() {
+    for (past, on_ledge) in [
+      (-0.1, Some(true)),
+      (0.0, Some(true)),
+      (0.1, None),
+      (1.0, Some(false)),
+    ] {
+      let (mut world, mut s) = world(60);
+      // The ledge's right edge at x = 200, its top at 100
+      let ledge = floor(&mut world, 100.0);
+      let below = world
+        .spawn((Transform::from_xy(0.0, 310.0), Collider::rect(2000.0, 20.0)))
+        .id();
+      // Its left side `past` px right of the edge, 1 px above the top
+      let e = character(&mut world, 210.0 + past, 79.0);
+      fall_watching(&mut world, &mut s, e, &[e], 150);
+      let st = state(&world, e);
+      assert!(st.on_floor, "{past} past the edge: {st:?}");
+      assert!(
+        velocity(&world, e).y.abs() < 1e-3,
+        "{past}: {}",
+        velocity(&world, e)
+      );
+      if let Some(on_ledge) = on_ledge {
+        let expected = if on_ledge { ledge } else { below };
+        assert_eq!(st.floor, Some(expected), "{past} past the edge");
+      }
+    }
   }
 
   // Top-down characters have no floor to lose: touching side by side they

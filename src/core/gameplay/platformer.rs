@@ -876,6 +876,52 @@ mod tests {
     }
   }
 
+  // Jumping in place beside another player, flush or within the skin of
+  // it, clears its head and comes down on its corner, which the sweep keeps
+  // its skin from: it stands there (or slips off) and can jump again, where
+  // it hung in the air off the floor and could not
+  #[test]
+  fn a_player_jumping_in_place_beside_another_can_jump_again() {
+    for gap in [0.0, 0.02, 0.1] {
+      for side in [1.0, -1.0] {
+        let (mut world, mut s) = world(60);
+        floor(&mut world, 100.0);
+        let e = runner(&mut world, PlatformerMovement::default());
+        let other = player(&mut world, (20.0 + gap) * side, 79.0);
+        world
+          .entity_mut(other)
+          .insert(PlatformerMovement::default());
+        settle(&mut world, &mut s);
+        for jump in 0..2 {
+          intent(&mut world, e).jump_pressed = true;
+          for i in 0..150 {
+            // Held: the full 64 px, over the other's 40
+            intent(&mut world, e).jump_held = true;
+            let y = at(&world, e).translation.y;
+            run(&mut world, &mut s, 1);
+            let st = world.get::<CharacterState>(e).unwrap();
+            let moved = (at(&world, e).translation.y - y).abs();
+            assert!(
+              st.on_floor || moved > 1e-3,
+              "gap {gap}, side {side}, jump {jump}, step {i}: hanging: {st:?}"
+            );
+          }
+          let st = world.get::<CharacterState>(e).unwrap();
+          assert!(st.on_floor, "gap {gap}, side {side}, jump {jump}: {st:?}");
+          let dy = world.get::<Velocity>(e).unwrap().dy;
+          assert!(dy.abs() < 1e-3, "gap {gap}, side {side}: falling at {dy}");
+        }
+        let messages = world.resource::<Messages<MovementEvent>>();
+        let jumps = messages
+          .get_cursor()
+          .read(messages)
+          .filter(|m| m.entity == e && m.kind == MovementEventKind::Jumped)
+          .count();
+        assert_eq!(jumps, 2, "gap {gap}, side {side}");
+      }
+    }
+  }
+
   #[test]
   fn with_no_air_control_a_character_off_a_ledge_falls_and_keeps_its_speed() {
     let (mut world, mut s) = world(60);
