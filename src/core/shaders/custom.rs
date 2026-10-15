@@ -410,20 +410,20 @@ fn sprite_entry(layout: &ParamLayout) -> String {
 @fragment
 fn fs_custom(in: VertexOutput) -> @location(0) vec4<f32> {{
   take_derivatives(in.uv);
-  return finish(ry_custom(in), in.tint, in.emission);
+  return ui_out(finish(ry_custom(in), in.tint, in.emission));
 }}
 
 @fragment
 fn fs_custom_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {{
   take_derivatives(in.uv);
-  return finish_premultiplied(ry_custom(in), in.tint, in.emission);
+  return ui_out(finish_premultiplied(ry_custom(in), in.tint, in.emission));
 }}
 
 @fragment
 fn fs_custom_linear(in: VertexOutput) -> @location(0) vec4<f32> {{
   take_derivatives(in.uv);
   linear_page = true;
-  return finish(ry_custom(in), in.tint, in.emission);
+  return ui_out(finish(ry_custom(in), in.tint, in.emission));
 }}
 
 fn ry_custom(in: VertexOutput) -> vec4<f32> {{

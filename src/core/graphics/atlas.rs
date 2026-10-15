@@ -53,8 +53,7 @@ pub(crate) enum SlotPage {
   Standalone(usize),
   /// A render target's texture
   Target(RenderTarget),
-  /// A glyph page (placed by text in a later task)
-  #[cfg_attr(not(test), allow(dead_code))]
+  /// A glyph page
   Glyph(GlyphPage),
 }
 

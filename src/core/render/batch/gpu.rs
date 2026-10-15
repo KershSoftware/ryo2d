@@ -386,7 +386,7 @@ impl Batch2D {
           LightStep::Masked,
           LightStep::Coloured,
         ] {
-          pipelines.ensure(device, light_key(step, format), None);
+          pipelines.ensure(device, light_key(step, scene_format), None);
         }
         // Lights without shadow volumes add up in one draw
         let start = placed.len() as u32;
@@ -476,12 +476,16 @@ impl Batch2D {
     textures: &'a SpriteGpuRenderer,
     image: (u32, u32),
   ) {
-    let format = self
-      .draws
-      .iter()
-      .find(|d| d.camera == Some(camera))
-      .and_then(|d| d.format)
-      .unwrap_or(self.format);
+    // Light buffers are always in the scene format
+    let format = match draw.state.shader {
+      BatchShader::Light(_) => self.format,
+      _ => self
+        .draws
+        .iter()
+        .find(|d| d.camera == Some(camera))
+        .and_then(|d| d.format)
+        .unwrap_or(self.format),
+    };
     let page = match draw.stream {
       Stream::Quads => PageKind::of(draw.state.page),
       Stream::Triangles => PageKind::Srgb8,
@@ -569,6 +573,29 @@ impl Batch2D {
       format,
     };
     self.pipelines.ensure(device, key, None);
+    self.pipelines.get(&key).is_some()
+  }
+
+  /// Build a custom shader's pipeline, wait for the GPU's check and say
+  /// whether it passed (tests)
+  #[cfg(test)]
+  pub(crate) fn ensure_custom_for_test(
+    &mut self,
+    device: &wgpu::Device,
+    wgsl: &str,
+    blend: BlendMode,
+    format: wgpu::TextureFormat,
+  ) -> bool {
+    let key = PipelineKey {
+      shader: BatchShader::Custom(1),
+      blend,
+      stream: Stream::Quads,
+      page: PageKind::Srgb8,
+      format,
+    };
+    self.pipelines.ensure(device, key, Some(("test", wgsl)));
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    self.pipelines.settle();
     self.pipelines.get(&key).is_some()
   }
 

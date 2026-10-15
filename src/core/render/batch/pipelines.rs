@@ -320,12 +320,11 @@ fn batch_pipeline(
     BatchShader::Light(step) => light_blend(step),
     _ => (blend_state(key.blend), wgpu::ColorWrites::ALL),
   };
-  // The UI image holds gamma-encoded colour: its pipelines encode on output
-  let constants: &[(&str, f64)] = if key.format == UI_FORMAT {
-    &[("UI_GAMMA", 1.0)]
-  } else {
-    &[]
-  };
+  // The UI image holds gamma-encoded colour: its pipelines encode on output.
+  // Light modules do not compose color.wgsl (lights are always in the scene
+  // format)
+  let ui = key.format == UI_FORMAT && !matches!(key.shader, BatchShader::Light(_));
+  let constants: &[(&str, f64)] = if ui { &[("UI_GAMMA", 1.0)] } else { &[] };
   device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
     label: Some(label),
     layout: Some(layout),

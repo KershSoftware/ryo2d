@@ -77,7 +77,7 @@ One batch draws the world: sprites, shadows, tiles, composite parts, particles, 
   | `TextMask` | glyph colour (sRGB, straight alpha) | unused | unused |
   | `TextColor` | multiplier (white keeps the glyph's colours) | unused | unused |
   | `TextMsdf` | fill colour, or the soft layer's colour | `[mode (0 fill/outline, 1 soft), width or spread (base px), softness (base px), range (base px)]` | outline colour |
-  | `UiRect` | fill colour | `[corner radius, border width, width, height]` (UI units) | border colour |
+  | `UiRect` (its quad extends one pixel in UI units past the rect on every side, and `uv_rect` extends by the same fraction past `[0, 1]`, so the outer edge keeps its anti-aliasing) | fill colour | `[corner radius, border width, width, height]` (UI units) | border colour |
 
 - **Scissor.** `DrawState::scissor` is applied per draw and clamped to the image; `None` is the whole image (`draw` takes the image size and always sets the rect).
 - **Per-camera format.** World cameras draw in `SCENE_FORMAT`. A UI camera (`CameraDraw::ui`) draws in `UI_FORMAT` (`Rgba8Unorm`, gamma-encoded premultiplied, through the `UI_GAMMA` pipeline override and `ui_out` in `color.wgsl`) and sees only items drawn for it.

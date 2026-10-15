@@ -17,7 +17,7 @@ fn fs_text_color(in: VertexOutput) -> @location(0) vec4<f32> {
     return ui_out(vec4<f32>(srgb_to_linear(texel.rgb * in.tint.rgb) * a * in.emission, a));
 }
 
-fn median3(c: vec3<f32>) -> f32 {
+fn ryo_median3(c: vec3<f32>) -> f32 {
     return max(min(c.r, c.g), min(max(c.r, c.g), c.b));
 }
 
@@ -28,7 +28,7 @@ fn median3(c: vec3<f32>) -> f32 {
 @fragment
 fn fs_text_msdf(in: VertexOutput) -> @location(0) vec4<f32> {
     let range = max(in.effect_params.w, 1e-4);
-    let d = median3(textureSample(sprite_texture, sprite_sampler, in.uv).rgb) - 0.5;
+    let d = ryo_median3(textureSample(sprite_texture, sprite_sampler, in.uv).rgb) - 0.5;
     let texels = vec2<f32>(textureDimensions(sprite_texture, 0));
     let unit = vec2<f32>(range) / texels;
     let screen = vec2<f32>(1.0) / max(fwidth(in.uv), vec2<f32>(1e-6));
@@ -54,6 +54,9 @@ fn fs_text_msdf(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 // A UI rectangle: anti-aliased rounded corners and an optional border.
+// The quad extends one pixel (in UI units) past the rect on every side and
+// uv_rect extends by the same fraction past [0, 1], so the outer edge keeps
+// its anti-aliasing; p is measured from the rect's centre.
 // effect_params: x = corner radius, y = border width, zw = size (UI units).
 // effect_extra = border colour.
 @fragment
