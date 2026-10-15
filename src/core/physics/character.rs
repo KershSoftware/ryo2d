@@ -522,7 +522,14 @@ impl Physics {
           .filter(holds)
           .or_else(|| probe(skin, FLOOR_PROBE))
       })
-      .flatten();
+      .flatten()
+      // Not one its own move rose off by more than the skin, though the
+      // probe still reaches it: rising past a ledge's top or a neighbour's
+      // head would land it mid-jump. Measured along the floor's normal, so a
+      // walk up a slope keeps it, and the push-out and the carry are not
+      // part of the move. A move kept to the ground (the snap) keeps it too:
+      // a step up rises onto its floor
+      .filter(|(_, hit)| snap || moved.translation.dot(hit.normal1) <= skin);
 
     // The carry, past everything but the floor (it moves with the character),
     // starting where the move left it
@@ -1424,6 +1431,177 @@ mod tests {
     }
   }
 
+  /// Steps of `all` falling until `e` lands (at most `steps`): how many
+  /// times it landed, after asserting that it found no floor while rising.
+  fn rise_and_land(
+    world: &mut World,
+    s: &mut EngineSchedules,
+    e: Entity,
+    all: &[Entity],
+    steps: usize,
+  ) -> usize {
+    let mut landings = 0;
+    for i in 0..steps {
+      let y = at(world, e).translation.y;
+      fall_together(world, s, all, 1);
+      let st = state(world, e);
+      let rose = y - at(world, e).translation.y;
+      assert!(
+        rose < 0.05 || !st.on_floor,
+        "{e}, step {i}: on a floor while rising {rose}: {st:?}"
+      );
+      landings += usize::from(st.landed);
+      if st.on_floor && velocity(world, e).y >= 0.0 {
+        break;
+      }
+    }
+    landings
+  }
+
+  // A jump flush past a ledge's side or a neighbour's rises past its top
+  // corner, which the probe reaches (2 px beyond the skin) while the
+  // character is still rising: the floor its own move rises off is not its
+  // floor, or it landed mid-jump (and a preset refilled its coyote time)
+  #[test]
+  fn rising_flush_past_a_corner_does_not_land_on_it() {
+    for neighbour in [false, true] {
+      for side in [1.0, -1.0] {
+        let (mut world, mut s) = world(60);
+        let f = floor(&mut world, 100.0);
+        // Its side against the character's, its top 30 px up (or 40 for a
+        // neighbour): a 300 px/s jump rises 46 px
+        let other = if neighbour {
+          character(&mut world, 20.0 * side, 79.0)
+        } else {
+          world
+            .spawn((
+              Transform::from_xy(60.0 * side, 85.0),
+              Collider::rect(100.0, 30.0),
+            ))
+            .id()
+        };
+        let e = character(&mut world, 0.0, 79.0);
+        let all = if neighbour { vec![e, other] } else { vec![e] };
+        fall_together(&mut world, &mut s, &all, 10);
+        assert_standing(&mut world, &mut s, &all, f, 10);
+        assert_jump(&mut world, &mut s, &[e], &all);
+        let landings = rise_and_land(&mut world, &mut s, e, &all, 120);
+        let st = state(&world, e);
+        assert!(
+          st.on_floor && landings == 1,
+          "neighbour {neighbour}, side {side}: landed {landings} times: {st:?}"
+        );
+      }
+    }
+  }
+
+  // The same rising up through a one-way platform: once the feet clear it,
+  // it is under them while the character still rises
+  #[test]
+  fn a_jump_up_through_a_one_way_platform_lands_on_it_once() {
+    let (mut world, mut s) = world(60);
+    let f = floor(&mut world, 200.0);
+    let platform = one_way_platform(&mut world, 170.0);
+    let e = character(&mut world, 0.0, 179.0);
+    fall_together(&mut world, &mut s, &[e], 10);
+    assert_standing(&mut world, &mut s, &[e], f, 10);
+    assert_jump(&mut world, &mut s, &[e], &[e]);
+    let landings = rise_and_land(&mut world, &mut s, e, &[e], 120);
+    let st = state(&world, e);
+    assert!(
+      st.on_floor && st.floor == Some(platform) && landings == 1,
+      "landed {landings} times: {st:?}"
+    );
+  }
+
+  // A hop slow enough to stay within the probe's reach of the floor on its
+  // first step leaves it on that step, once
+  #[test]
+  fn the_take_off_step_leaves_the_floor_once() {
+    for speed in [60.0, 90.0, 300.0] {
+      let (mut world, mut s) = world(60);
+      let f = floor(&mut world, 100.0);
+      let e = character(&mut world, 0.0, 79.0);
+      fall_together(&mut world, &mut s, &[e], 10);
+      assert_standing(&mut world, &mut s, &[e], f, 10);
+      world.get_mut::<Velocity>(e).unwrap().dy = -speed;
+      fall_together(&mut world, &mut s, &[e], 1);
+      let st = state(&world, e);
+      assert!(
+        st.left_floor && !st.on_floor,
+        "{speed} px/s, the take-off: {st:?}"
+      );
+      let (mut left, mut landings) = (0, 0);
+      for _ in 0..60 {
+        fall_together(&mut world, &mut s, &[e], 1);
+        let st = state(&world, e);
+        left += usize::from(st.left_floor);
+        landings += usize::from(st.landed);
+      }
+      assert_eq!((left, landings), (0, 1), "{speed} px/s");
+      assert!(state(&world, e).on_floor);
+    }
+  }
+
+  // Walking up a slope moves along it, not off it: whether the game adds
+  // gravity (the move is kept to the ground) or moves along the slope
+  // (a move that goes up, so nothing keeps it to the ground)
+  #[test]
+  fn walking_up_a_slope_keeps_the_floor() {
+    for along in [false, true] {
+      let (mut world, mut s) = world(60);
+      ramp(&mut world, 30.0);
+      let e = character(&mut world, 150.0, 0.0);
+      fall_together(&mut world, &mut s, &[e], 60);
+      assert!(state(&world, e).on_floor);
+      let x = at(&world, e).translation.x;
+      for i in 0..30 {
+        let v = if along {
+          Vec2::from_angle(-30f32.to_radians()) * 120.0
+        } else {
+          Vec2::new(120.0, velocity(&world, e).y + 980.0 / 60.0)
+        };
+        *world.get_mut::<Velocity>(e).unwrap() = Velocity::from_vec2(v);
+        run(&mut world, &mut s, 1);
+        let st = state(&world, e);
+        assert!(
+          st.on_floor && !st.left_floor && !st.landed,
+          "along {along}, step {i}: {st:?}"
+        );
+      }
+      assert!(
+        at(&world, e).translation.x > x + 40.0,
+        "along {along}: climbed"
+      );
+    }
+  }
+
+  // A step up rises onto the floor: it stays on it
+  #[test]
+  fn stepping_up_a_ledge_keeps_the_floor() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    world.spawn((Transform::from_xy(140.0, 96.0), Collider::rect(100.0, 8.0)));
+    let e = world
+      .spawn((
+        Transform::from_xy(0.0, 79.0),
+        CharacterController::platformer().with_step_height(12.0),
+        Collider::rect(20.0, 40.0),
+      ))
+      .id();
+    fall_together(&mut world, &mut s, &[e], 10);
+    for i in 0..60 {
+      world.get_mut::<Velocity>(e).unwrap().dx = 150.0;
+      fall_together(&mut world, &mut s, &[e], 1);
+      let st = state(&world, e);
+      assert!(
+        st.on_floor && !st.left_floor && !st.landed,
+        "step {i}: {st:?}"
+      );
+    }
+    assert!(at(&world, e).translation.x > 100.0, "stepped up");
+  }
+
   // Top-down characters have no floor to lose: touching side by side they
   // still block each other and slide along each other
   #[test]
@@ -1994,7 +2172,11 @@ mod tests {
       for i in 0..60 {
         step(&mut world, &mut s, e, 980.0);
         let st = state(&world, e);
-        assert!(st.on_floor && !st.landed, "dy {dy}, step {i}: {st:?}");
+        // Its own move is a step's gravity into the platform, never off it
+        assert!(
+          st.on_floor && !st.landed && !st.left_floor,
+          "dy {dy}, step {i}: {st:?}"
+        );
         let feet = at(&world, e).translation.y + 20.0;
         let top = at(&world, platform).translation.y - 10.0;
         assert!(

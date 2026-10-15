@@ -922,6 +922,56 @@ mod tests {
     }
   }
 
+  // Rising past a ledge's top or a neighbour's head, flush against it,
+  // brings its corner within the floor probe's reach while the player still
+  // rises: that is no landing, and gives no coyote time for a second jump
+  #[test]
+  fn rising_past_a_ledge_gives_no_second_jump() {
+    for neighbour in [false, true] {
+      for side in [1.0, -1.0] {
+        let (mut world, mut s) = world(60);
+        floor(&mut world, 100.0);
+        let e = runner(&mut world, PlatformerMovement::default());
+        if neighbour {
+          let other = player(&mut world, 20.0 * side, 79.0);
+          world
+            .entity_mut(other)
+            .insert(PlatformerMovement::default());
+        } else {
+          // 30 px high, against the player's side
+          world.spawn((
+            Transform::from_xy(60.0 * side, 85.0),
+            Collider::rect(100.0, 30.0),
+          ));
+        }
+        settle(&mut world, &mut s);
+        let before = events(&world).len();
+        // Pressing jump all the way up (64 px, past the top)
+        for _ in 0..60 {
+          intent(&mut world, e).jump_pressed = true;
+          intent(&mut world, e).jump_held = true;
+          run(&mut world, &mut s, 1);
+          if world.get::<Velocity>(e).unwrap().dy >= 0.0 {
+            break;
+          }
+        }
+        let messages = world.resource::<Messages<MovementEvent>>();
+        let kinds: Vec<MovementEventKind> = messages
+          .get_cursor()
+          .read(messages)
+          .skip(before)
+          .filter(|m| m.entity == e)
+          .map(|m| m.kind)
+          .collect();
+        assert_eq!(
+          kinds,
+          [MovementEventKind::Jumped],
+          "neighbour {neighbour}, side {side}"
+        );
+      }
+    }
+  }
+
   #[test]
   fn with_no_air_control_a_character_off_a_ledge_falls_and_keeps_its_speed() {
     let (mut world, mut s) = world(60);
