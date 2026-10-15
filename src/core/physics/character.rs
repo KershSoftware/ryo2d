@@ -287,6 +287,17 @@ fn real_velocity(wanted: Vec2, normals: &[Vec2], up: Option<Vec2>, momentum: Vec
     + momentum
 }
 
+/// How far `shape` at `pose` reaches across up (along X): its least and
+/// greatest x. `None` for a shape with no support map (a polyline, a
+/// compound: their parts have one).
+fn across(shape: &dyn Shape, pose: &Pose) -> Option<(f32, f32)> {
+  let support = shape.as_support_map()?;
+  Some((
+    support.support_point(pose, -Vector::X).x,
+    support.support_point(pose, Vector::X).x,
+  ))
+}
+
 /// What a character's sweep of `shape` from `start` may hit: colliders
 /// enabled this tick (one disabled this tick stays in the broad phase until
 /// the step, and Rapier's filter never checks), one-way ones only when the
@@ -507,43 +518,83 @@ impl Physics {
       |collision| collisions.push(collision),
     );
     pose.translation += moved.translation;
-    // The floor: what the bare shape meets below, past what it only touches
-    // (a neighbour flush against its side); failing that, what the sweep
-    // stands it on, its skin kept (a corner or a ledge's edge the skin
-    // reaches but the shape does not overlap)
-    let floor_hit = platformer
-      .then(|| {
-        let probe = |gap, reach| {
-          let down = to_rapier(Vec2::Y);
-          let tolerance = kcc.normal_nudge_factor;
-          sweep::probe(&queries, &pose, down, &*shape, gap, reach, tolerance)
+    // The floor under `pose`: what the bare shape meets below, past what it
+    // only touches (a neighbour flush against its side); failing that, what
+    // the sweep stands it on, its skin kept (a corner or a ledge's edge the
+    // skin reaches but the shape does not overlap)
+    let find_floor = |queries: &QueryPipeline, pose: &Pose| {
+      if !platformer {
+        return None;
+      }
+      let probe = |gap, reach| {
+        let down = to_rapier(Vec2::Y);
+        let tolerance = kcc.normal_nudge_factor;
+        sweep::probe(queries, pose, down, &*shape, gap, reach, tolerance)
+      };
+      let holds = |(_, hit): &(ColliderHandle, ShapeCastHit)| {
+        from_rapier(hit.normal1).dot(up) >= floor_cos(max_slope)
+      };
+      probe(0.0, skin + FLOOR_PROBE)
+        .filter(holds)
+        .or_else(|| probe(skin, FLOOR_PROBE))
+        // Not one its own move rose off by more than the skin, though the
+        // probe still reaches it: rising past a ledge's top or a
+        // neighbour's head would land it mid-jump. Measured along the
+        // floor's normal, so a walk up a slope keeps it, and the push-out
+        // and the carry are not part of the move; and against the floor, so
+        // a lift rising faster than the character catches it up (on the
+        // floor that carried it, the move is already the lift's own frame).
+        // A move from the floor that does not go up (`snap`) keeps it too:
+        // a step up rises onto its floor
+        .filter(|(handle, hit)| {
+          let floor = self.owners.get(handle).map(|owner| owner.body);
+          let frame = match floor {
+            Some(body) if carried_by != Some(body) => {
+              to_rapier(self.floor_motion(body, from_rapier(hit.witness1), dt))
+            }
+            _ => Vector::ZERO,
+          };
+          snap || (moved.translation - frame).dot(hit.normal1) <= skin
+        })
+    };
+    // A floor under no more than the skin of the character's bottom is a
+    // corner it is held up on by its skin (a ledge's edge or a neighbour's
+    // head it is level with, or just past, or barely over): unless something
+    // else holds it there, it is moved off, away from the corner, and falls
+    // past it to what is beside it. Not when the move goes onto it: a step
+    // up, or a landing on a platform's near edge, has only begun to cross it
+    let corner = |(handle, hit): &(ColliderHandle, ShapeCastHit), pose: &Pose| {
+      if from_rapier(hit.normal1).dot(up) < floor_cos(max_slope) {
+        return None;
+      }
+      self
+        .corner_shift(&*shape, pose, *handle, hit, skin)
+        .filter(|shift| to_rapier(desired).dot(*shift) >= 0.0)
+    };
+    let mut floor_hit = find_floor(&queries, &pose);
+    if let Some((held_by, shift)) =
+      floor_hit.and_then(|hit| corner(&hit, &pose).map(|shift| (hit.0, shift)))
+    {
+      // Something else under it, at the seam of two floors?
+      let not_corner = |handle: ColliderHandle, collider: &RapierCollider| {
+        handle != held_by && solid_from_start(handle, collider)
+      };
+      let others = QueryPipeline {
+        filter: filter.predicate(&not_corner),
+        ..queries
+      };
+      floor_hit = find_floor(&others, &pose).filter(|hit| corner(hit, &pose).is_none());
+      if floor_hit.is_none() {
+        let aside = KinematicCharacterController {
+          autostep: None,
+          snap_to_ground: None,
+          ..kcc
         };
-        let holds = |(_, hit): &(ColliderHandle, ShapeCastHit)| {
-          from_rapier(hit.normal1).dot(up) >= floor_cos(max_slope)
-        };
-        probe(0.0, skin + FLOOR_PROBE)
-          .filter(holds)
-          .or_else(|| probe(skin, FLOOR_PROBE))
-      })
-      .flatten()
-      // Not one its own move rose off by more than the skin, though the
-      // probe still reaches it: rising past a ledge's top or a neighbour's
-      // head would land it mid-jump. Measured along the floor's normal, so a
-      // walk up a slope keeps it, and the push-out and the carry are not
-      // part of the move; and against the floor, so a lift rising faster
-      // than the character catches it up (on the floor that carried it, the
-      // move is already the lift's own frame). A move kept to the ground
-      // (the snap) keeps it too: a step up rises onto its floor
-      .filter(|(handle, hit)| {
-        let floor = self.owners.get(handle).map(|owner| owner.body);
-        let frame = match floor {
-          Some(body) if carried_by != Some(body) => {
-            to_rapier(self.floor_motion(body, from_rapier(hit.witness1), dt))
-          }
-          _ => Vector::ZERO,
-        };
-        snap || (moved.translation - frame).dot(hit.normal1) <= skin
-      });
+        let off = sweep::move_shape(&aside, &queries, &*shape, &pose, shift, false, |_| {});
+        pose.translation += off.translation;
+        floor_hit = find_floor(&queries, &pose).filter(|hit| corner(hit, &pose).is_none());
+      }
+    }
 
     // The carry, past everything but the floor (it moves with the character),
     // starting where the move left it
@@ -655,6 +706,45 @@ impl Physics {
       }
     }
     Vec2::new(side, -side) * NUDGE
+  }
+
+  /// How far to move a character of `shape` at `pose` off the floor `hit`
+  /// found on `collider` when it is a corner: the floor (the part hit, for
+  /// a polyline or compound) overlaps the character's width, across up, by
+  /// no more than `skin`. Away from the floor, by that overlap plus the
+  /// skin, so the corner is a skin's width beside it. `None` for a floor,
+  /// or a shape whose extent is not known (no support map).
+  fn corner_shift(
+    &self,
+    shape: &dyn Shape,
+    pose: &Pose,
+    collider: ColliderHandle,
+    hit: &ShapeCastHit,
+    skin: f32,
+  ) -> Option<Vector> {
+    let (lo, hi) = across(shape, pose)?;
+    let collider = self.colliders.get(collider)?;
+    let (floor_lo, floor_hi) = across(collider.shape(), collider.position()).or_else(|| {
+      let mut part = None;
+      collider
+        .shape()
+        .as_composite_shape()?
+        .map_part_at(hit.subshape1, &mut |at, shape, _| {
+          let pose = at.map_or(*collider.position(), |at| *collider.position() * *at);
+          part = across(shape, &pose);
+        });
+      part
+    })?;
+    let overlap = hi.min(floor_hi) - lo.max(floor_lo);
+    if overlap > skin {
+      return None;
+    }
+    let away = if floor_lo + floor_hi > lo + hi {
+      -1.0
+    } else {
+      1.0
+    };
+    Some(Vector::X * away * (overlap + skin))
   }
 
   /// Keep a drop-through's bookkeeping after the move; true when the drop
@@ -1362,13 +1452,15 @@ mod tests {
 
   /// `steps` steps of `all` falling, watching `e`: off the floor it must be
   /// moving, never held up in the air by something that is not its floor.
+  /// How many times it landed.
   fn fall_watching(
     world: &mut World,
     s: &mut EngineSchedules,
     e: Entity,
     all: &[Entity],
     steps: usize,
-  ) {
+  ) -> usize {
+    let mut landings = 0;
     for i in 0..steps {
       let y = at(world, e).translation.y;
       fall_together(world, s, all, 1);
@@ -1380,17 +1472,21 @@ mod tests {
         at(world, e).translation,
         velocity(world, e)
       );
+      landings += usize::from(st.landed);
     }
+    landings
   }
 
-  // A jump in place beside a neighbour clears its head and comes down on
-  // its corner when the two are flush or within the skin of each other: the
-  // sweep keeps its skin from that corner, as from a ledge's edge, so the
-  // character stands there (or slips off), rather than hanging in the air
-  // with its fall growing because the gapless probe saw no floor under it
+  // A jump in place beside a neighbour clears its head and comes down past
+  // its corner. Flush, or within the skin of it, the sweep (keeping its
+  // skin) stops the fall on that corner, which the character's bottom
+  // overlaps by no more than the skin: a corner, not a floor, so it is
+  // moved off it, away from the neighbour, and lands on the ground beside
+  // it, once. It hung in the air there, then stood on the corner (wedging
+  // the neighbour), or slipped off it and landed twice
   #[test]
-  fn a_character_jumping_in_place_beside_a_flush_neighbour_lands_and_jumps_again() {
-    for gap in [0.0, 0.1] {
+  fn a_character_jumping_in_place_beside_a_flush_neighbour_lands_beside_it() {
+    for gap in [0.0, 0.05, 0.1, 0.2, 0.28] {
       for jumper in [0, 1] {
         let (mut world, mut s) = world(60);
         let f = floor(&mut world, 100.0);
@@ -1404,31 +1500,35 @@ mod tests {
         for jump in 0..2 {
           // 46 px high: over the other's 40
           assert_jump(&mut world, &mut s, &[e], &both);
-          fall_watching(&mut world, &mut s, e, &both, 120);
+          let landings = fall_watching(&mut world, &mut s, e, &both, 120);
           let st = state(&world, e);
           let t = at(&world, e).translation;
           assert!(
-            st.on_floor,
-            "gap {gap}, {jumper}, jump {jump}: at {t}: {st:?}"
+            st.on_floor && st.floor == Some(f) && landings == 1,
+            "gap {gap}, {jumper}, jump {jump}: landed {landings} times, at {t}: {st:?}"
           );
           let v = velocity(&world, e);
           assert!(v.y.abs() < 1e-3, "gap {gap}, {jumper}, jump {jump}: {v}");
-          assert!(state(&world, other).on_floor, "the other stands");
+          let o = state(&world, other);
+          assert!(o.on_floor && o.floor == Some(f), "the other stands");
         }
       }
     }
   }
 
   // The same with a ledge: a character falling with its side level with the
-  // ledge's edge stands on it, one within the skin past it stands on the
-  // edge until it slips off, and one clear of it falls to the floor below
+  // ledge's edge, or overlapping it by no more than the skin, or past it
+  // within the skin, is moved off its corner and falls to the floor below;
+  // one overlapping it by a pixel stands on it
   #[test]
   fn a_character_falling_flush_past_a_ledge_corner_does_not_hang_in_the_air() {
     for (past, on_ledge) in [
-      (-0.1, Some(true)),
-      (0.0, Some(true)),
-      (0.1, None),
-      (1.0, Some(false)),
+      (-1.0, true),
+      (-0.3, false),
+      (-0.1, false),
+      (0.0, false),
+      (0.1, false),
+      (1.0, false),
     ] {
       let (mut world, mut s) = world(60);
       // The ledge's right edge at x = 200, its top at 100
@@ -1438,18 +1538,74 @@ mod tests {
         .id();
       // Its left side `past` px right of the edge, 1 px above the top
       let e = character(&mut world, 210.0 + past, 79.0);
-      fall_watching(&mut world, &mut s, e, &[e], 150);
+      let landings = fall_watching(&mut world, &mut s, e, &[e], 150);
       let st = state(&world, e);
-      assert!(st.on_floor, "{past} past the edge: {st:?}");
+      assert!(
+        st.on_floor && landings == 1,
+        "{past} past the edge: landed {landings} times: {st:?}"
+      );
       assert!(
         velocity(&world, e).y.abs() < 1e-3,
         "{past}: {}",
         velocity(&world, e)
       );
-      if let Some(on_ledge) = on_ledge {
-        let expected = if on_ledge { ledge } else { below };
-        assert_eq!(st.floor, Some(expected), "{past} past the edge");
+      let expected = if on_ledge { ledge } else { below };
+      assert_eq!(st.floor, Some(expected), "{past} past the edge");
+    }
+  }
+
+  // A pixel of a ledge under it is a floor, standing or walking to the edge
+  // and stopping there
+  #[test]
+  fn a_character_overlapping_a_ledge_by_a_pixel_stands_on_it() {
+    let (mut world, mut s) = world(60);
+    let ledge = floor(&mut world, 100.0);
+    let e = character(&mut world, 209.0, 79.0);
+    fall_together(&mut world, &mut s, &[e], 10);
+    assert_standing(&mut world, &mut s, &[e], ledge, 60);
+    assert!((at(&world, e).translation.x - 209.0).abs() < 1e-3);
+  }
+
+  // A tile-aligned character beside a block of tiles, flush against it,
+  // jumps over its top and comes down past its corner to the ground (the
+  // outline is one polyline: its top run is the part measured)
+  #[test]
+  fn a_tile_aligned_character_jumping_beside_a_flush_block_lands_on_the_ground() {
+    use crate::core::physics::{TileCell, TileColliders};
+    for side in [1.0, -1.0] {
+      let (mut world, mut s) = world(60);
+      // 16 px tiles from (0, 100): a 2 × 2 block on columns 10 and 11,
+      // over a ground row (its top at 132)
+      let mut cells = vec![TileCell::Empty; 20 * 3];
+      for x in 0..20 {
+        cells[2 * 20 + x] = TileCell::Solid;
       }
+      for (x, y) in [(10, 0), (11, 0), (10, 1), (11, 1)] {
+        cells[y * 20 + x] = TileCell::Solid;
+      }
+      world.spawn((
+        Transform::from_xy(0.0, 100.0),
+        TileColliders::from_cells(20, 3, Vec2::splat(16.0), cells),
+      ));
+      // 16 × 32, flush against the block's left (x = 160) or right (x = 192)
+      let x = if side > 0.0 { 152.0 } else { 200.0 };
+      let e = world
+        .spawn((
+          Transform::from_xy(x, 115.0),
+          CharacterController::platformer(),
+          Collider::rect(16.0, 32.0),
+        ))
+        .id();
+      fall_together(&mut world, &mut s, &[e], 20);
+      assert!(state(&world, e).on_floor, "side {side}: on the ground");
+      assert_jump(&mut world, &mut s, &[e], &[e]);
+      let landings = fall_watching(&mut world, &mut s, e, &[e], 120);
+      let st = state(&world, e);
+      let feet = at(&world, e).translation.y + 16.0;
+      assert!(
+        st.on_floor && landings == 1 && (131.0..=132.0).contains(&feet),
+        "side {side}: landed {landings} times, feet at {feet}: {st:?}"
+      );
     }
   }
 

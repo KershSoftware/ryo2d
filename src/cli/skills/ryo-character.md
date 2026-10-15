@@ -62,7 +62,7 @@ Written by the engine every step; reading it in `update` shows the last step's m
 
 | Field | |
 |---|---|
-| `on_floor`, `on_wall`, `on_ceiling` | what the move touched. A wall is reported only on a step the character moves into it |
+| `on_floor`, `on_wall`, `on_ceiling` | what the move touched. A wall is reported only on a step the character moves into it. A ledge or another character under no more than the skin of its bottom (an edge it is level with) is no floor: it slips off and lands beside it |
 | `floor_normal`, `wall_normal` | zero when not touching one |
 | `floor: Option<Entity>` | the body (or bare collider) underfoot |
 | `floor_one_way` | the floor is a one-way platform |

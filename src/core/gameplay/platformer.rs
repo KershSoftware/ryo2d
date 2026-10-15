@@ -877,15 +877,15 @@ mod tests {
   }
 
   // Jumping in place beside another player, flush or within the skin of
-  // it, clears its head and comes down on its corner, which the sweep keeps
-  // its skin from: it stands there (or slips off) and can jump again, where
-  // it hung in the air off the floor and could not
+  // it, clears its head and comes down past its corner, which it overlaps
+  // by no more than the skin: it lands on the ground beside it, once, and
+  // can jump again (it hung in the air, then stood on the corner)
   #[test]
   fn a_player_jumping_in_place_beside_another_can_jump_again() {
-    for gap in [0.0, 0.02, 0.1] {
+    for gap in [0.0, 0.02, 0.1, 0.2] {
       for side in [1.0, -1.0] {
         let (mut world, mut s) = world(60);
-        floor(&mut world, 100.0);
+        let f = floor(&mut world, 100.0);
         let e = runner(&mut world, PlatformerMovement::default());
         let other = player(&mut world, (20.0 + gap) * side, 79.0);
         world
@@ -893,6 +893,7 @@ mod tests {
           .insert(PlatformerMovement::default());
         settle(&mut world, &mut s);
         for jump in 0..2 {
+          let before = events(&world).len();
           intent(&mut world, e).jump_pressed = true;
           for i in 0..150 {
             // Held: the full 64 px, over the other's 40
@@ -907,17 +908,98 @@ mod tests {
             );
           }
           let st = world.get::<CharacterState>(e).unwrap();
-          assert!(st.on_floor, "gap {gap}, side {side}, jump {jump}: {st:?}");
+          assert!(
+            st.on_floor && st.floor == Some(f),
+            "gap {gap}, side {side}, jump {jump}: {st:?}"
+          );
           let dy = world.get::<Velocity>(e).unwrap().dy;
           assert!(dy.abs() < 1e-3, "gap {gap}, side {side}: falling at {dy}");
+          let messages = world.resource::<Messages<MovementEvent>>();
+          let kinds: Vec<MovementEventKind> = messages
+            .get_cursor()
+            .read(messages)
+            .skip(before)
+            .filter(|m| m.entity == e)
+            .map(|m| m.kind)
+            .collect();
+          assert_eq!(
+            kinds,
+            [MovementEventKind::Jumped, MovementEventKind::Landed],
+            "gap {gap}, side {side}, jump {jump}"
+          );
         }
+      }
+    }
+  }
+
+  // The player beside the one that jumped is not wedged under it: it walks
+  // away, walks into it (blocked, still on the floor) and jumps. With the
+  // jumper standing on its head corner it could not move or jump
+  #[test]
+  fn a_player_beside_one_that_jumped_in_place_moves_and_jumps() {
+    for side in [1.0, -1.0] {
+      for action in 0..3 {
+        let (mut world, mut s) = world(60);
+        floor(&mut world, 100.0);
+        let e = runner(&mut world, PlatformerMovement::default());
+        // 20 wide each: their sides touch exactly
+        let other = player(&mut world, 20.0 * side, 79.0);
+        world
+          .entity_mut(other)
+          .insert(PlatformerMovement::default());
+        settle(&mut world, &mut s);
+        intent(&mut world, e).jump_pressed = true;
+        for _ in 0..90 {
+          intent(&mut world, e).jump_held = true;
+          run(&mut world, &mut s, 1);
+        }
+        let start = at(&world, other).translation;
+        let before = events(&world).len();
+        let mut top = start.y;
+        for i in 0..30 {
+          match action {
+            0 => intent(&mut world, other).direction = Vec2::new(side, 0.0),
+            1 => intent(&mut world, other).direction = Vec2::new(-side, 0.0),
+            _ => {
+              intent(&mut world, other).jump_pressed = i == 0;
+              intent(&mut world, other).jump_held = true;
+            }
+          }
+          run(&mut world, &mut s, 1);
+          top = top.min(at(&world, other).translation.y);
+          if action == 1 {
+            let st = world.get::<CharacterState>(other).unwrap();
+            assert!(st.on_floor, "side {side}, step {i}: {st:?}");
+          }
+        }
+        let end = at(&world, other).translation;
         let messages = world.resource::<Messages<MovementEvent>>();
-        let jumps = messages
+        let jumped = messages
           .get_cursor()
           .read(messages)
-          .filter(|m| m.entity == e && m.kind == MovementEventKind::Jumped)
-          .count();
-        assert_eq!(jumps, 2, "gap {gap}, side {side}");
+          .skip(before)
+          .any(|m| m.entity == other && m.kind == MovementEventKind::Jumped);
+        match action {
+          0 => assert!(
+            (end.x - start.x) * side > 30.0,
+            "side {side}: {start} to {end}"
+          ),
+          1 => {
+            // Into the jumper, which keeps its skin from it
+            let toward = (start.x - end.x) * side;
+            assert!(
+              toward < 1.0 && (end.y - start.y).abs() < 0.05,
+              "side {side}: {start} to {end}"
+            );
+            let st = world.get::<CharacterState>(other).unwrap();
+            assert!(st.on_wall, "side {side}: blocked by the jumper: {st:?}");
+          }
+          _ => assert!(
+            jumped && start.y - top > 30.0,
+            "side {side}: jumped {jumped}, rose {}",
+            start.y - top
+          ),
+        }
       }
     }
   }
