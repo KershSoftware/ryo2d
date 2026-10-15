@@ -227,8 +227,8 @@ const MAX_CELLS: usize = 1 << 26;
 /// around solid and slope cells (or merged rectangles with `solid_rects()`)
 /// and one-way segments along runs of one-way cells. Its `Transform` places
 /// cell (0, 0)'s top-left; +Y is down. The colliders are child entities,
-/// rebuilt (all of them) on the next step after any change. With no body
-/// they are fixed; with a kinematic `RigidBody` the whole map moves.
+/// rebuilt (all of them) before the next physics step after a change. With
+/// no body they are fixed; with a kinematic `RigidBody` the whole map moves.
 ///
 /// Disabling the map entity (`Disabled`) removes its colliders and enabling
 /// it builds them again from the cells as they then are; so does removing

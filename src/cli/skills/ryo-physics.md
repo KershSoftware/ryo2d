@@ -1,22 +1,22 @@
 ---
 name: ryo-physics
-description: Rapier2D physics integration - bodies, colliders, joints, queries, contact state and collision messages.
+description: Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.
 metadata:
-  version: 3.0.0
+  version: 3.1.0
 ---
 
 # Ryo2D Physics Specialist
 
 You help users add Rapier2D physics to their games: rigid bodies, colliders, joints, spatial queries and collision messages.
 
-**For complete API signatures, see the `ryo-api` skill.**
+**For complete API signatures, see the `ryo-api` skill.** Players, enemies and anything that walks (the character controller, movement presets, pickups, kill zones, checkpoints and tile levels): the `ryo-character` skill.
 
 ## How it runs
 
-An entity enters the simulation when it has a `Collider`, with or without a `RigidBody` (a collider with no body above it is a fixed collider). The engine does the rest in `FixedSet::Physics`, once per fixed step, after the scene's `update` and the scene's fixed systems:
+An entity enters the simulation when it has a `Collider`, with or without a `RigidBody` (a collider with no body above it is a fixed collider). The engine does the rest in `FixedSet::Physics`, once per fixed step, after the scene's `update`, the scene's fixed systems and `FixedSet::Movement` (the gameplay systems: movement presets, knockback, trigger behaviours, tile collider rebuilds):
 
 1. Forget what went away (despawned or removed bodies, colliders, joints) and what was disabled.
-2. Register new bodies, bring colliders and the game's `Transform` / `Velocity` edits in line, make new joints.
+2. Register new bodies, bring colliders and the game's `Transform` / `Velocity` edits in line, sweep every character (`CharacterController`) by its `Velocity`, make new joints.
 3. Step by the fixed timestep (`EngineBuilder::fixed_hz`, default 60 Hz). Slow motion runs fewer steps; pause and hitstop run none.
 4. Write simulated bodies back into `Transform`, `Velocity` and `AngularVelocity` (ordinary component changes, so propagation and rendering see them move).
 5. Send `CollisionStarted` / `CollisionStopped` / `TriggerEntered` / `TriggerExited` / `ContactForce` / `JointBroken` messages, and update every trigger's `TriggerContents`.
@@ -36,7 +36,7 @@ Units are pixels (`PhysicsConfig::pixels_per_meter` pixels = 1 Rapier metre, def
 | Kind | Use it for | How it moves |
 |---|---|---|
 | Fixed | Walls, floors, level geometry | Never; writing its `Transform` teleports it but carries nothing. A bare `Collider` is fixed too |
-| Kinematic | Moving platforms, doors, characters with their own movement | Only by the game, never pushed by contacts |
+| Kinematic | Moving platforms, doors, lifts; characters (`CharacterController` makes one) | Only by the game, never pushed by contacts |
 | Dynamic | Crates, balls, debris, anything physics should push | Gravity, contacts, forces, impulses and joints |
 
 ```rust
@@ -60,11 +60,19 @@ let platform = ctx.world.spawn((
   Collider::rect(100.0, 20.0),
 )).id();
 
-// Character: dynamic, never tips over
+// A player: the character controller adds a kinematic body and sweeps it by
+// its Velocity (see ryo-character)
 ctx.world.spawn((
   Transform::from_xy(100.0, 100.0),
-  RigidBody::dynamic().lock_rotation().with_ccd(),
-  Collider::capsule(40.0, 10.0).with_friction(0.0),
+  CharacterController::platformer(),
+  Collider::rect(14.0, 26.0),
+));
+
+// A rolling, tumbling body that physics pushes around: dynamic
+ctx.world.spawn((
+  Transform::from_xy(100.0, 100.0),
+  RigidBody::dynamic().with_ccd(),
+  Collider::circle(12.0).with_friction(0.8),
 ));
 ```
 
@@ -73,7 +81,7 @@ ctx.world.spawn((
 Moving bodies:
 
 - **Dynamic**: set `Velocity` / `AngularVelocity` (the body's own for a jump or a launch), or use forces and impulses. Writing `Transform` teleports it. Physics writes pose and velocities back every step the body is awake; asleep bodies write zero velocities on the step they fall asleep.
-- **Kinematic**: write `Transform` (it travels there over the step) or `Velocity` / `AngularVelocity` (input only, never read back). When both are written in one step the `Transform` wins, but a `Transform` write that leaves the pose unchanged does not count. Moving its parent counts as a `Transform` write: under a parent the game moves, its velocity is not applied that step. So a game that keeps its own movement velocity must not store it in the engine's `Velocity` on a kinematic body; keep it in a game component and write `Transform` from it.
+- **Kinematic**: write `Transform` (it travels there over the step) or `Velocity` / `AngularVelocity` (input only, never read back). When both are written in one step the `Transform` wins, but a `Transform` write that leaves the pose unchanged does not count. Moving its parent counts as a `Transform` write: under a parent the game moves, its velocity is not applied that step. So a game that keeps its own movement velocity must not store it in the engine's `Velocity` on a kinematic body; keep it in a game component and write `Transform` from it. Characters are the exception: the controller sweeps their `Velocity` and writes the real velocity back (`ryo-character`).
 - Making a dynamic body kinematic or fixed drops the velocity physics wrote back; a velocity the game set in the same tick is kept.
 
 ## Colliders and shapes
@@ -97,6 +105,10 @@ Collider::rect(40.0, 8.0).with_rotation(0.3)     // turned relative to the entit
 - Concave shapes are several colliders. **Compound shapes**: give a body child entities that each carry a `Collider`; every collider attaches to the nearest body at or above it, and the body's mass is their sum. (Walls of a room: a fixed body with a collider child per wall.)
 - A degenerate shape (zero or negative size, a polygon with fewer than three points, a zero-length segment) or a zero scale takes the collider out of the simulation (logged once); it comes back when fixed or when the scale grows.
 - `Collider::world_bounds(&GlobalTransform) -> (min, max)` gives the box where physics simulates it.
+
+### One-way colliders
+
+`one_way()` is solid only against things arriving from above, `one_way_towards(direction)` from that side (a direction in the collider's own space, so it turns with the collider; zero is solid from every side, logged once). Dynamic bodies meet it through the solver's contacts: they pass up through it and rest on top. A character is held only when it starts its move entirely on the solid side, so it jumps up through and lands once clear, and `CharacterController::drop_through` drops it through the one underfoot. Tilt a one-way platform by turning the collider, not by sloping a polygon's top. Details: `ryo-character`.
 
 ### Composite tiles
 
@@ -145,7 +157,9 @@ Queries use `QueryFilter::with_mask`, which is matched against the collider's la
 
 ## Triggers
 
-`as_trigger()` colliders detect but never push. A trigger overlap is not a collision: it sends `TriggerEntered` / `TriggerExited` (once per body, however many colliders it has) and shows in `physics.overlaps(zone)`; the engine also keeps a `TriggerContents` component on every trigger, listing what is inside in entry order (`entities()`, `contains(e)`, `len()`, `is_empty()`). Pickups, zones, pressure plates and sensors are triggers on a fixed body (or no body). Two overlapping triggers each get a message.
+`as_trigger()` colliders detect but never push. A trigger overlap is not a collision: it sends `TriggerEntered` / `TriggerExited` (once per body, however many colliders it has; `actor()` is the body that entered or left) and shows in `physics.overlaps(zone)`; the engine also keeps a `TriggerContents` component on every trigger (added after its first step), listing the bodies inside in entry order (`entities()`, `contains(e)`, `len()`, `is_empty()`). Pickups, zones, pressure plates and sensors are triggers on a fixed body (or no body). Two overlapping triggers each get a message. What can set a trigger off is the layer and mask test, as for any pair.
+
+Ready-made behaviours go on trigger colliders: `Pickup`, `KillZone` and `Checkpoint` with `Respawn` (`ryo-character`).
 
 ## Messages
 
@@ -153,6 +167,7 @@ Read with `ctx.messages::<T>()` in a scene (`MessageReader<T>` in systems); a co
 
 - `CollisionStarted { a, b, body_a, body_b, contact: Option<Contact> }` and `CollisionStopped { a, b, body_a, body_b }`: solid contact only. `a`/`b` are the colliders, `body_a`/`body_b` their bodies (a collider with no body is its own). `contact` is `Contact { point, normal }`, the first contact, the normal pointing from `a` to `b`. The order of `a` and `b` is unspecified: use `involves(entity)` (collider or body), `other(entity) -> Option<Entity>` (the other side's body) and `other_collider(entity)`.
 - `TriggerEntered { trigger, other, other_body }` and `TriggerExited { .. }`: `trigger` is the trigger collider's entity, `other` the collider that entered or left and `other_body` its body (the collider itself when it has none). `actor()` is `other_body`. A body with several colliders enters on its first and exits when its last leaves. On `TriggerExited` either entity may already be despawned.
+- A `TileColliders` map's colliders are child entities of the map: with no body on the map, a message names such a part (follow `ChildOf` to the map), and a rebuild of the map re-sends `CollisionStopped` / `CollisionStarted` for what touched it.
 - `ContactForce { a, b, body_a, body_b, force, direction, started }`: sent every step a contact pushes above its collider's `with_force_events(threshold)`. Breakables, impact sounds.
 - `JointBroken { joint, a, b }`: a joint exceeded its break force and was removed (its `Joint` component too).
 
@@ -170,6 +185,10 @@ for force in ctx.messages::<ContactForce>() {
 ```
 
 On `CollisionStopped` either entity may already be despawned: check before you query it.
+
+## Knockback
+
+`Knockback::apply(ctx.world, entity, direction, force)` (see `ryo-animation`) acts by the target's kind: a character is swept by the push (walls stop the part running into them; it is never added to `Velocity`), a dynamic body gets each hit as one change in velocity (`direction * force`, whatever its mass) and physics slows it, a kinematic body without a controller or a fixed body ignores it (logged once), and an entity with no body moves through its `Transform`. It runs in `FixedSet::Movement`, before the step.
 
 ## Forces and impulses
 
@@ -281,6 +300,8 @@ F2 draws Rapier's geometry: green dynamic, orange kinematic, blue fixed (and bar
 
 ### Collectibles
 
+`Pickup` on a trigger does this for you (`ryo-character`). By hand:
+
 ```rust
 ctx.world.spawn((
   Transform::from_xy(x, y),
@@ -303,6 +324,8 @@ for entered in ctx.messages::<TriggerEntered>() {
 
 ### Jumping
 
+A player is best a character (`PlatformerMovement`, `ryo-character`). A dynamic body jumps by its velocity:
+
 ```rust
 let grounded = ctx.physics().contacts(self.player).iter().any(|t| t.normal.y > 0.7);
 if grounded
@@ -320,7 +343,7 @@ Write the `Transform`; the body teleports on the next physics step. Call `ctx.sk
 ## Pitfalls
 
 - Writes in `update` (`Transform`, `Velocity`, edits to components) reach Rapier in the same step's physics set, but what you read in `update` (positions, contacts, queries) is from the previous step: queries and contact state see the world as the last step left it.
-- Set `lock_rotation()` on characters, or they tip over on the first slope.
+- Set `lock_rotation()` on dynamic-body characters, or they tip over on the first slope. A `CharacterController` needs no body at all (it adds a kinematic one) and is not moved on a dynamic one.
 - Despawned entities can still appear in `CollisionStopped`; check the entity still exists before using it.
 - Do not put a game's movement velocity in `Velocity` on a kinematic body (see above).
 - Do not scale a body with a collider for a visual effect; scale a child sprite.

@@ -55,11 +55,14 @@ Engine::frame()
  ├─ while fixed.accumulator >= timestep            (0..N times; a quit ends the loop)
  │   └─ FixedUpdate
  │        Snapshot ..... GlobalTransform -> PreviousGlobalTransform
- │        Juice ........ animation, tweens, knockback, squash/stretch, skeletons
+ │        Juice ........ animation, tweens, squash/stretch, skeletons
  │        Scene ........ Scene::update(ctx, timestep) unless a transition runs, its SceneAction
  │        Game ......... the scenes' own FixedUpdate systems; builder systems by default
- │        Physics ...... forget removed, track disabled, propagate, register bodies, sync
- │                       colliders, push changes, sync joints, step, read back, messages
+ │        Movement ..... trigger behaviours, tile collider rebuilds, movement input, knockback,
+ │                       movement presets
+ │        Physics ...... one system: forget removed, track disabled, propagate, register bodies,
+ │                       sync colliders, push changes, move characters, sync joints, step,
+ │                       read back, messages, trigger contents
  │        Transforms ... propagate GlobalTransform
  │        Trails ....... record trail points
  ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems; builder ones by default
@@ -81,7 +84,7 @@ Engine::frame()
 |-------|-------|---------|
 | `time.real` | wall clock, never scaled or paused | camera shake, UI animation (`ui.dt()`), console, timed post-process effects, the hitstop countdown, lighting and trail animation |
 | `time.game` | real delta times `speed`, capped at `max_delta` (250 ms, or one fixed timestep if longer) per frame, zero while paused or in hitstop | feeds the fixed clock; sprite effects animate on its elapsed time |
-| `time.fixed` | constant `timestep` (`1 / fixed_hz`, default 60 Hz) | `FixedUpdate`: `Scene::update`, juice, physics, scene fixed systems |
+| `time.fixed` | constant `timestep` (`1 / fixed_hz`, default 60 Hz) | `FixedUpdate`: juice, `Scene::update`, scene fixed systems, gameplay, physics |
 
 - Slow motion runs fewer fixed steps, pause and hitstop run none; the step length never changes, so physics and tweens behave the same at any speed.
 - `time.delta()` is the timestep inside `FixedUpdate` and the game delta elsewhere.
@@ -101,7 +104,8 @@ Engine::frame()
 | Drawing | `Renderable` (sprite or tiled run, `Anchor` default `Center`, z order, tint, shadows, sprite shader), `Material`, `YSort`, `CompositeTile` |
 | Animation | `Animator`, `AnimationController`, `ValidatedAnimator`, `Skeleton`, `SkeletalAnimator`, `SkeletalController` |
 | Juice | `Tween`, `TweenSequence`, `PropertyTween<T>`, `Knockback`, `SquashStretch` |
-| Physics | `RigidBody`, `Collider`, `Joint`, `Velocity`, `AngularVelocity` |
+| Physics | `RigidBody`, `Collider`, `Joint`, `Velocity`, `AngularVelocity`, `CharacterController` (and the engine-written `CharacterState`), `TileColliders`, `TriggerContents` (engine-written) |
+| Gameplay | `MoveIntent`, `MoveBindings`, `PlatformerMovement`, `TopDownMovement` (and the engine-written `PlatformerState`, `TopDownState`), `Pickup`, `KillZone`, `Checkpoint`, `Respawn` |
 | Lights, trails, particles | `Light2D`, `LightOccluder2D`, `Trail2D`, `Line2D`, `ParticleEmitter`, `ParticleAttractor` |
 | Navigation | `NavAgent`, `NavTarget` |
 
@@ -120,7 +124,7 @@ SceneManager (engine-owned stack over the one shared world)
 
 ## Messages
 
-- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `AssetReloaded`, `AssetLoadFailed`) are registered at build; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
+- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TriggerEntered`/`Exited`, `ContactForce`, `JointBroken`, `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `AssetReloaded`, `AssetLoadFailed`, `ParticleCollision`) are registered at build; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
 - Buffers advance in `First`, but only once a fixed step has run since the last advance: a message stays readable until two fixed steps have run after it was written, so every reader, per-frame or fixed-step, sees it at any frame rate. While no fixed step runs (the game clock paused) nothing is dropped.
 - Systems use `MessageWriter<T>` / `MessageReader<T>`; scenes use `ctx.write_message(m)` and `ctx.messages::<T>()`, which keeps a cursor per scene so each scene sees each message once.
 - Modules define no message type they do not write; games define their own notifications.
@@ -138,19 +142,24 @@ winit / gilrs / RYO_INPUT / headless harness
 
 ## Physics
 
-Rapier2D 0.36 behind the public `Physics` resource, which mirrors the ECS: components describe bodies, colliders and joints, and the systems in `physics/sync.rs` keep Rapier's world in step with them. `rapier2d` is named only inside `src/core/physics/`. Stepped in `FixedSet::Physics` with `dt = time.fixed.timestep()`, skipped while `PhysicsPaused`; the chain is `forget_removed`, `track_disabled`, `propagate_transforms`, `register_bodies`, `sync_colliders`, `push_changes`, `sync_joints`, `step_simulation`, `read_back`, `emit_messages`.
+Rapier2D 0.36 behind the public `Physics` resource, which mirrors the ECS: components describe bodies, colliders and joints, and the systems in `physics/sync.rs` keep Rapier's world in step with them. `rapier2d` is named only inside `src/core/physics/`. Stepped in `FixedSet::Physics` with `dt = time.fixed.timestep()`, skipped while `PhysicsPaused`, by one exclusive system running physics' own schedule (`PhysicsSchedule`), so no game system can be ordered inside the step; the chain is `forget_removed`, `track_disabled`, `propagate_transforms`, `register_bodies`, `sync_colliders`, `push_changes`, `move_characters`, `sync_joints`, `step_simulation`, `read_back`, `emit_messages`, `update_trigger_contents`.
 
 1. Forget what went away and what was disabled (also in `Last` every frame, so a despawn is never missed at high render rates); propagate transforms so world poses are current.
 2. Register bodies and colliders (a collider attaches to the nearest `RigidBody` at or above it; none above makes it a fixed collider), apply edits in place, make joints.
 3. Push a changed `Transform`, `Velocity` or `AngularVelocity` to its body, compared by value so untouched bodies sleep (what the last write-back alone changed, recognised by its change tick, is skipped without comparing); a kinematic body travels to its written `Transform` over the step.
-4. Step, then break joints pulled past their break force.
-5. Write poses and velocities of awake dynamic bodies and velocity-driven kinematic bodies back into the local `Transform` (through the parent), `Velocity` and `AngularVelocity`.
-6. Send `CollisionStarted`, `CollisionStopped`, `ContactForce` and `JointBroken` messages.
+4. Sweep every character (`CharacterController`, a kinematic body) by its `Velocity` through Rapier's queries (a 2D port of Rapier's character controller): floors, walls and ceilings told apart into `CharacterState`, carried by what it stands on, pushing dynamic bodies, held by one-way colliders only from their solid side; the real velocity goes back into `Velocity`. A game write to its `Transform` is a teleport.
+5. Step, then break joints pulled past their break force. One-way colliders shape the solver's contacts through a contact hook.
+6. Write back the poses of awake dynamic bodies, velocity-driven kinematic bodies and characters into the local `Transform` (through the parent), and dynamic bodies' velocities into `Velocity` and `AngularVelocity`.
+7. Send `CollisionStarted`, `CollisionStopped`, `TriggerEntered`, `TriggerExited` (once per body), `ContactForce` and `JointBroken` messages, and keep every trigger's `TriggerContents`.
 
-- Public surface: components `RigidBody`, `Collider`, `Joint`, `AngularVelocity`; resources `Physics` (queries: `raycast`, `shape_cast`, `overlap_*`, `nearest`; contact state: `contacts`, `overlaps`, `in_contact`; forces and impulses) and `PhysicsConfig`; reached as `ctx.physics()` / `ctx.physics_mut()`.
+- Public surface: components `RigidBody`, `Collider` (with `one_way` and `as_trigger`), `Joint`, `AngularVelocity`, `CharacterController` / `CharacterState`, `TileColliders` (a grid of cells that builds seamless outline, one-way and slope colliders as child entities, rebuilt on a real change), `TriggerContents`; resources `Physics` (queries: `raycast`, `shape_cast`, `overlap_*`, `nearest`; contact state: `contacts`, `overlaps`, `in_contact`; forces and impulses) and `PhysicsConfig`; reached as `ctx.physics()` / `ctx.physics_mut()`.
 - `PhysicsConfig::pixels_per_meter` pixels make a Rapier metre (default 100; choose it so typical moving bodies are 0.5 to 2 m); gravity in pixels/s² (default `(0, 980)`, +Y down).
 - Time: one frame adds at most `max_delta` (250 ms) of game time after speed scaling, so a stall runs about 15 fixed steps at 60 Hz, not an unbounded number. Slow motion runs fewer steps; pause and hitstop run none.
 - Colliders follow the entity's world scale, mirroring and rotation. Details and decisions: `src/core/physics/AGENTS.md`.
+
+## Gameplay
+
+`src/core/gameplay/` builds on physics (never the reverse; the one component physics reads, `Knockback`, lives in `ecs/`) and runs in `FixedSet::Movement`, between the scene's fixed systems and the physics step, as one chain: the trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, with `Respawn`) act on the previous step's `TriggerEntered`; `MoveBindings` fill each `MoveIntent` from the keyboard and gamepad (AI and networking write it directly); knockback decays; and the movement presets (`PlatformerMovement`, `TopDownMovement`) turn the intent and the last move's `CharacterState` into each character's `Velocity`, which the physics step then sweeps. Physics adds the `TileColliders` rebuild to the same set. Under `PhysicsPaused` the input, knockback, presets and pickup timers wait, while the behaviours keep draining the trigger messages that arrived before the pause. The presets report `MovementEvent`, the behaviours `PickedUp`, `Killed` and `CheckpointReached`, read by `update` on the next step. Details: `src/core/gameplay/AGENTS.md`; usage: the `ryo-character` skill.
 
 ## Rendering
 
@@ -317,7 +326,8 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `render/` | The render pipeline, passes, the draw list, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, polylines) and debug drawing |
 | `shaders/` | The engine's WGSL and its shared includes, post-process effects and custom shaders |
 | `lighting/`, `trail/`, `particles/`, `skeleton/`, `tilemap/` | Feature renderers (lighting) and components (trails and lines, particles, skeletons, tilemaps) |
-| `physics/` | Rapier integration, colliders, bodies |
+| `physics/` | Rapier integration, colliders, bodies, joints, the character controller, one-way colliders, triggers, tile colliders |
+| `gameplay/` | Movement input and presets, knockback, trigger behaviours |
 | `navigation/` | Grids, A* pathfinding, agents, steering |
 | `state_machine/` | Generic state machines and stacks |
 | `asset/`, `audio.rs` | Asset loading and hot reload; audio |

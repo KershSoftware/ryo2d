@@ -2,7 +2,7 @@
 name: ryo-messages
 description: Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Messages
@@ -101,10 +101,13 @@ A reader ordered after the writer in the same schedule sees the message the same
 
 | Writer | Runs | Readers see it |
 |--------|------|----------------|
-| Physics (`CollisionStarted`, `CollisionStopped`, `ContactForce`, `JointBroken`) | each fixed step, after `Scene::update` | the next step's `update` |
-| Juice systems (tween, knockback, squash) | each fixed step, before `Scene::update` | the same step's `update` |
+| Physics (`CollisionStarted`, `CollisionStopped`, `TriggerEntered`, `TriggerExited`, `ContactForce`, `JointBroken`) | each fixed step, in `FixedSet::Physics` | the next step's `update` |
+| Gameplay (`MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `KnockbackStarted`, `KnockbackFinished`) | each fixed step, in `FixedSet::Movement`: after `Scene::update` and the scene's fixed systems, before physics | the next step's `update` |
+| Juice systems (tweens, squash and stretch) | each fixed step, before `Scene::update` | the same step's `update` |
 | Hot reload (`AssetReloaded`, `AssetLoadFailed`) | `PreUpdate`, once a frame | this frame's `ui` and steps |
 | `ParticleSystem::update` (`ParticleCollision`) | where the scene calls it | after that call |
+
+The trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`) read the previous step's `TriggerEntered` in `FixedSet::Movement`, so `PickedUp`, `Killed` and `CheckpointReached` come one step after the overlap, and `update` reads them one step after that. While physics is paused (`PhysicsPaused`) no collision or trigger messages are written; the behaviours keep running and still act on an entry that arrived just before the pause.
 
 No reader misses a message, whether it runs every frame (`ui`, systems in `Update` or `PostUpdate`) or in fixed steps (`Scene::update`, `FixedUpdate` systems), at any frame rate: buffers only advance after a fixed step. A game that writes a message every frame while the game clock is paused accumulates them until it resumes.
 
@@ -124,24 +127,37 @@ All are in the prelude and registered at engine build.
 
 | Message | Fields | Written when |
 |---------|--------|--------------|
-| `CollisionStarted` | `a`, `b`, `body_a`, `body_b`, `trigger`, `contact: Option<Contact>`; `involves(e)`, `other(e)`, `other_collider(e)` | two colliders start touching (triggers included) |
-| `CollisionStopped` | same without `contact` | they stop touching |
+| `CollisionStarted` | `a`, `b` (colliders), `body_a`, `body_b`, `contact: Option<Contact { point, normal }>`; `involves(e)`, `other(e)` (the other side's body), `other_collider(e)` | two colliders start touching (solid contact only; triggers send the next pair) |
+| `CollisionStopped` | same without `contact` | they stop touching, or one went away (either may be despawned) |
+| `TriggerEntered` | `trigger` (the trigger collider), `other` (the collider that entered), `other_body` (its body, or itself); `actor()` = `other_body` | a body enters a trigger: once per body, on its first collider in |
+| `TriggerExited` | same | the body's last collider leaves, or one of them went away (either may be despawned) |
 | `ContactForce` | `a`, `b`, `body_a`, `body_b`, `force`, `direction`, `started` | a contact pushes above its collider's `with_force_events` threshold, each step |
 | `JointBroken` | `joint`, `a`, `b` | a joint breaks |
 | `TweenStarted` | `entity` | a `Tween`, `TweenSequence` or engine-driven `PropertyTween` starts |
 | `TweenCompleted` | `entity`, `finished` | an iteration ends; `finished` is `true` when the tween is done (`Once`, or the last of `Times(n)`) |
-| `KnockbackStarted` / `KnockbackFinished` | `entity` | a knockback starts / decays to nothing |
+| `KnockbackStarted` / `KnockbackFinished` | `entity` | a knockback starts / decays to nothing (written in `FixedSet::Movement`) |
+| `MovementEvent` | `entity`, `kind: MovementEventKind` (`Jumped`, `AirJumped`, `WallJumped`, `Dashed`, `Landed`; non-exhaustive) | a movement preset's character jumped, dashed or landed (see `ryo-character`) |
+| `PickedUp` | `pickup`, `by` (the body that collected it) | a `Pickup` was collected |
+| `Killed` | `entity`, `zone` | something entered a `KillZone` |
+| `CheckpointReached` | `checkpoint`, `entity` | a `Checkpoint` moved `entity`'s `Respawn` point |
 | `SquashStretchStarted` / `SquashStretchFinished` | `entity` | a squash starts / recovers |
 | `AssetReloaded` | `path: PathBuf` | hot reload replaced an asset (dev builds) |
 | `AssetLoadFailed` | `path`, `error: String` | a hot reload failed (dev builds); an async load reports failure on its `AsyncSpriteHandle` (`state()`) instead |
 | `ParticleCollision` | `emitter_entity`, `collider_entity`, `position_x/y`, `normal_x/y`, `velocity_x/y` | a particle hits a collider (see `ryo-particles`) |
 
 ```rust
+// A coin is a trigger: who entered is `actor()`, the coin is `trigger`
+for entered in ctx.messages::<TriggerEntered>() {
+  if entered.actor() == self.player && ctx.world.get::<Coin>(entered.trigger).is_some() {
+    ctx.world.despawn(entered.trigger);
+  }
+}
+// Solid contact: the other side's body
 for hit in ctx.messages::<CollisionStarted>() {
   if let Some(other) = hit.other(self.player)
-    && ctx.world.get::<Coin>(other).is_some()
+    && ctx.world.get::<Spikes>(other).is_some()
   {
-    ctx.world.despawn(other);
+    self.health -= 1;
   }
 }
 ```

@@ -51,7 +51,7 @@ impl Phase {
 pub enum FixedSet {
   /// Remember where everything was, for interpolation
   Snapshot,
-  /// Animation, tweens, knockback, squash, skeletons
+  /// Animation, tweens, squash, skeletons
   Juice,
   /// The scene's `update`
   Scene,

@@ -12,7 +12,7 @@ Nothing in this module runs in the engine loop. No engine system reads `NavAgent
 Gotchas:
 - **Time-slicing** - with `PathfinderConfig::with_time_slicing(n)`, the game keeps the request ID from `start_pathfinding` and polls `continue_pathfinding` each frame until it stops returning `InProgress`. `NavAgent`'s request field is `pub(crate)`, so store the ID yourself.
 - **Stale paths** - grid edits (`set`, `clear`, `rebuild_from_world`) bump `grid.generation()`, but nothing checks it. Compare with `path.is_stale(grid.generation())` and re-path yourself.
-- `rebuild_from_world` blocks each non-trigger `Collider`'s bounds, centred on its entity's `GlobalTransform` plus the offset and unscaled, as physics simulates it. Disabled entities are skipped. Tile grids (`TileColliders`) block exactly their solid and slope cells through `block_tiles(tiles, origin)` (one-way cells stay walkable); the outline colliders they build (`TilePart`) are skipped, as they would block the grid's whole bounding box.
+- `rebuild_from_world` blocks each non-trigger `Collider`'s bounds, centred on its entity's `GlobalTransform` plus the offset and unscaled, as physics simulates it. Disabled entities are skipped. Tile grids (`TileColliders`) block exactly their solid and slope cells through `block_tiles(tiles, origin)` (one-way cells stay walkable; the origin is the map's translation, so a turned or scaled map is not followed); the outline colliders they build (`TilePart`) are skipped, as they would block the grid's whole bounding box.
 
 ## Design Decisions
 

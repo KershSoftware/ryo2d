@@ -13,10 +13,10 @@ You help users animate games: sprite frame animation, from simple loops to chara
 
 ## How it runs
 
-Every animation component here is driven by the engine in `FixedSet::Juice`, once per fixed step with the fixed timestep, before the scene's `update` in the same step. So:
+Every animation component here is driven by the engine once per fixed step with the fixed timestep, in `FixedSet::Juice`, before the scene's `update` in the same step. Knockback is the exception: it runs in `FixedSet::Movement`, after `update` and just before physics, since physics applies it. So:
 
 - Slow motion (`ctx.time.game.set_speed(0.5)`) slows them; pause and hitstop freeze them.
-- A flag such as `just_finished` set in a step is visible to that step's `update`.
+- A flag such as `just_finished` set in a step is visible to that step's `update` (knockback's, and its messages, to the next step's).
 - Start and finish are also reported as messages (`TweenStarted`, `TweenCompleted`, `KnockbackStarted`, ...), which a scene reads once with `ctx.messages::<T>()`.
 
 | Component | Driven by the engine | Writes |
@@ -25,7 +25,7 @@ Every animation component here is driven by the engine in `FixedSet::Juice`, onc
 | `Tween`, `TweenSequence` | yes | `Transform` (position, rotation, scale), `Renderable` alpha and tint |
 | `PropertyTween<f32>`, `<Vec2>`, `<Color>` | yes | its own value |
 | `PropertyTween<T>` for other `Lerp` types | no: call `update(dt)` | its own value |
-| `Knockback` | yes | a character's sweep, a dynamic body's `Velocity` (once), else `Transform.translation` |
+| `Knockback` | yes (in `FixedSet::Movement`) | a character's sweep, a dynamic body's `Velocity` (once), else `Transform.translation` |
 | `SquashStretch` | yes | `Transform.scale` |
 
 ## Sprite animation
@@ -245,7 +245,7 @@ if let Some(mut kb) = ctx.world.get_mut::<Knockback>(enemy) {
 }
 ```
 
-The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. What it does depends on the target. A character (`CharacterController`) is swept by it, so walls, floors and ceilings stop it and the part running into them is dropped. A dynamic body takes each hit as one change in velocity of its own (the same speed whatever its mass) and physics slows it from there. A kinematic body without a controller and a fixed body ignore it (logged once). Anything without a body, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
+The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. What it does depends on the target. A character (`CharacterController`) is swept by it, so walls, floors and ceilings stop it and the part running into them is dropped. A dynamic body takes each hit as one change in velocity of its own (the same speed whatever its mass) and physics slows it from there. A kinematic body without a controller and a fixed body ignore it (logged once). Anything without a body, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. The movement presets steer at their `knockback_control` (0 by default) while it lasts. Messages: `KnockbackStarted`, `KnockbackFinished`, readable in the next step's `update`. `stop()` ends it at once and drops a hit not yet given to a dynamic body. Per target in detail: `ryo-character`.
 
 ## Squash and stretch
 

@@ -51,6 +51,11 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
     include_str!("../skills/ryo-audio.md"),
   ),
   (
+    "ryo-character",
+    "Characters - the character controller, platformer and top-down movement presets, MoveIntent and key bindings, one-way platforms, triggers with pickups, kill zones, checkpoints and respawns, tile colliders and knockback.",
+    include_str!("../skills/ryo-character.md"),
+  ),
+  (
     "ryo-cli",
     "Using the ryo2d CLI for building, running, and developing games.",
     include_str!("../skills/ryo-cli.md"),
@@ -107,7 +112,7 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
   ),
   (
     "ryo-physics",
-    "Rapier2D physics integration - colliders, rigid bodies, collision messages.",
+    "Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.",
     include_str!("../skills/ryo-physics.md"),
   ),
   (

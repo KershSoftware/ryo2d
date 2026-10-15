@@ -39,10 +39,13 @@ Engine::frame
 │                     (a scene change redraws the UI once so the new scene shows)
 ├─ FixedUpdate × N    while the fixed clock holds a step; a quit ends the steps
 │   ├─ Snapshot       debug shapes of the last step cleared; GlobalTransform → PreviousGlobalTransform
-│   ├─ Juice          animation, tweens, sequences, property tweens, knockback, squash, skeletons
+│   ├─ Juice          animation, tweens, sequences, property tweens, squash, skeletons
 │   ├─ Scene          transitions, Scene::update (active scene and those under updates_below), action
 │   ├─ Game           the scenes' own FixedUpdate schedules; builder systems by default
-│   ├─ Physics        forget, track disabled, propagate, register, sync colliders, push, sync joints, step, read back, messages
+│   ├─ Movement       trigger behaviours, tile collider rebuilds, movement input, knockback, movement presets
+│   ├─ Physics        one system running PhysicsSchedule: forget, track disabled, propagate, register,
+│   │                 sync colliders, push, move characters, sync joints, step, read back, messages,
+│   │                 trigger contents
 │   ├─ Transforms     propagation
 │   └─ Trails         trail point recording; later debug shapes last one frame
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
@@ -92,7 +95,8 @@ Engine::frame
 | `graphics/` | wgpu renderer, sprite textures and game shader sources, cameras and render targets, the screen mapping, texture registry and mipmapped atlas, bind-group helper, compositor, sprite animation, tiles, `ParallaxLayer` |
 | `shaders/` | Post-process effects (`EffectsManager`) and sprite shaders |
 | `lighting/` | 2D lights, occluders, `LightingSettings` |
-| `physics/` | Rapier integration, `RigidBody`, `Collider`, `Physics` |
+| `physics/` | Rapier integration, `RigidBody`, `Collider`, `Physics`, the character controller, one-way colliders, triggers, tile colliders |
+| `gameplay/` | On top of physics: `MoveIntent` and bindings, the platformer and top-down presets, knockback, trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, `Respawn`) |
 | `particles/`, `trail/`, `skeleton/`, `tilemap/`, `navigation/`, `state_machine/` | Feature modules |
 | `ui/` | Immediate-mode and retained UI, `UiContext` |
 | `asset/` | `AssetManager`, async loads, hot reload |

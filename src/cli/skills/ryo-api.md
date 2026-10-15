@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D API Reference
@@ -15,7 +15,7 @@ Conventions: 2D with +Y down, units are pixels, rotation is radians unless a nam
 use ryo2d::prelude::*;
 ```
 
-Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Sprites](#sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
+Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Sprites](#sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
 
 ---
 
@@ -185,7 +185,7 @@ Shadows (all `Default`, builder style):
 
 ### Velocity, ZLayer, YSort
 
-- `Velocity { pub dx: f32, pub dy: f32 }` (pixels per second): `new(dx, dy)`, `zero()`, `from_vec2(Vec2)`, `as_vec2()`. Physics integrates it for `RigidBody` entities; nothing integrates it otherwise.
+- `Velocity { pub dx: f32, pub dy: f32 }` (pixels per second): `new(dx, dy)`, `zero()`, `from_vec2(Vec2)`, `as_vec2()`. Physics integrates it for `RigidBody` entities, and sweeps a character (`CharacterController`) by it, leaving the real velocity; nothing integrates it otherwise.
 - `ZLayer { Background = -1000, Default = 0, Foreground = 1000, UI = 2000 }`: `as_z_order(self) -> i32`.
 - `YSort { foot_offset, sort_offset, depth_scale_enabled, scale_min, scale_max, y_min, y_max }`: sort y-sorted entities by their feet, wherever the anchor is. `new()` (feet at the bottom, `foot_offset` 1.0), `with_foot_offset(0..1)`, `with_sort_offset(px)`, `with_depth_scale(scale_min, scale_max, y_min, y_max)`, `without_depth_scale()`, `calculate_sort_y(top_y, sprite_height)`, `calculate_depth_scale(y) -> (f32, f32)`. Order is by `z_order` first; within one `z_order`, plain sprites draw first, then y-sorted ones by sort y.
 
@@ -211,7 +211,7 @@ Shadows (all `Default`, builder style):
 
 ## Juice: tweens, knockback, squash
 
-All run in `FixedSet::Juice` on the fixed step and report through [messages](#messages).
+Tweens and squash and stretch run in `FixedSet::Juice` (before `Scene::update`), knockback in `FixedSet::Movement` (after it, before physics); all on the fixed step, reporting through [messages](#messages).
 
 ### Tween (component, Transform plus Renderable alpha/tint)
 
@@ -253,10 +253,10 @@ ctx.world.entity_mut(player).insert(
 | `Knockback::apply(world: &mut World, entity: Entity, direction: Vec2, force: f32)` | start one (adds the component if missing) |
 | `Knockback::apply_with_decay(world, entity, direction, force, decay_rate)` | higher decay recovers faster |
 | `new(direction: Vec2, force)`, `from_angle(radians, force)`, `with_decay_rate(f32)`, `with_accumulate(bool)` | build one |
-| `push(&mut self, direction, force)`, `push_with_decay(..)`, `stop`, `restart`, `update(dt)` | on a component value |
+| `push(&mut self, direction, force)`, `push_with_decay(..)`, `stop` (also drops a hit not yet given to a dynamic body), `restart`, `update(dt)` | on a component value |
 | `current_velocity() -> (f32, f32)`, `strength()`, `force()`, `direction() -> Vec2`, `decay_rate()`, `is_finished()` | state |
 
-A character (`CharacterController`) is swept by the push, so surfaces stop it and the part running into them is dropped. A dynamic body takes each hit as one change in velocity of its own (the same speed whatever its mass), and physics slows it from there. A kinematic body without a controller and a fixed body ignore it (logged once). An entity without a body is moved through its `Transform`. The system is `update_knockback` in `FixedSet::Movement` (`register_gameplay_systems`).
+A character (`CharacterController`) is swept by the push, so surfaces stop it and the part running into them is dropped. A dynamic body takes each hit as one change in velocity of its own (the same speed whatever its mass), and physics slows it from there. A kinematic body without a controller and a fixed body ignore it (logged once). An entity without a body is moved through its `Transform`. The system is `update_knockback` in `FixedSet::Movement` (`register_gameplay_systems`): a push applied in `update` acts in that step's physics, and `KnockbackStarted` / `KnockbackFinished` reach the next step's `update`.
 
 ### SquashStretch (component)
 
@@ -320,13 +320,13 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | `First` | advance clocks, publish `Input`, advance message buffers |
 | `PreUpdate` | async asset loads, hot reload |
 | UI pass | `Scene::ui` for visible scenes, bottom-up; input it consumes never reaches gameplay |
-| `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Physics` → `Transforms` → `Trails` |
+| `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Movement` (trigger behaviours, tile collider rebuilds, movement input, knockback, movement presets) → `Physics` (one system: the whole physics step) → `Transforms` → `Trails` |
 | `Update` | `UpdateSet::Game` (scene per-frame systems) |
 | `PostUpdate` | `PostUpdateSet::Transforms` → `Camera` (shake, then every camera's `CameraView`) → `Extract` |
 | render | draw list from the world, `Scene::render`, render pipeline |
 | `Last` | tracker clearing |
 
-- `enum FixedSet { Snapshot, Juice, Scene, Game, Physics, Transforms, Trails }`, `enum UpdateSet { Game }`, `enum PostUpdateSet { Transforms, Camera, Extract }`: order your systems with `.in_set(..)`, `.before(..)`, `.after(..)`.
+- `enum FixedSet { Snapshot, Juice, Scene, Game, Movement, Physics, Transforms, Trails }`, `enum UpdateSet { Game }`, `enum PostUpdateSet { Transforms, Camera, Extract }`: order your systems with `.in_set(..)`, `.before(..)`, `.after(..)`.
 - Game-wide systems: `EngineBuilder::add_systems(phase, systems)` (any phase; in `FixedUpdate`/`Update`, a call whose systems are not ordered against anything outside it runs in its `Game` set; one that names a set or another call's system (`.in_set`, `.before`, `.after`) keeps exactly that order). Scene-owned systems: `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)`, dropped when the scene leaves the stack.
 - Every schedule is single-threaded.
 
@@ -519,9 +519,13 @@ Engine messages (all `Message + Clone`):
 | `TriggerEntered` / `TriggerExited` | `trigger, other, other_body: Entity`; `actor() -> Entity` (= `other_body`) | a body (or bare collider) enters/leaves a trigger, once per body |
 | `ContactForce` | `a, b, body_a, body_b, force: f32, direction: Vec2, started: bool` | a contact pushes above `with_force_events` |
 | `JointBroken` | `joint, a, b: Entity` | a joint breaks |
+| `MovementEvent` | `entity`, `kind: MovementEventKind` (`Jumped`, `AirJumped`, `WallJumped`, `Dashed`, `Landed`; `#[non_exhaustive]`) | a movement preset's character jumped, dashed or landed |
+| `PickedUp` | `pickup, by: Entity` | a `Pickup` was collected (`by` is the body) |
+| `Killed` | `entity, zone: Entity` | something entered a `KillZone` |
+| `CheckpointReached` | `checkpoint, entity: Entity` | a `Checkpoint` moved `entity`'s `Respawn` point |
 | `TweenStarted` | `entity` | a `Tween` begins |
 | `TweenCompleted` | `entity, finished: bool` | each iteration; `finished` on the last |
-| `KnockbackStarted` / `KnockbackFinished` | `entity` | |
+| `KnockbackStarted` / `KnockbackFinished` | `entity` | written in `FixedSet::Movement` |
 | `SquashStretchStarted` / `SquashStretchFinished` | `entity` | |
 | `AssetReloaded` | `path: PathBuf` | hot reload (dev builds) |
 | `AssetLoadFailed` | `path: PathBuf, error: String` | |
@@ -751,6 +755,37 @@ Messages (read with `ctx.messages::<T>()`), all with `a, b` (colliders), `body_a
 - Collider geometry is centred on the entity's origin plus `offset`, which is the sprite's centre with the default `Anchor::Center`.
 - Move a dynamic body through `Velocity` / `AngularVelocity`, forces or impulses; a game write to `Transform` teleports it. A kinematic body travels to a written `Transform` over the step (it wins over `Velocity` when both are written; an unchanged pose does not count). Physics writes pose and velocities back after each step.
 - Physics pauses while the top scene's `is_physics_paused()` is true; queued forces and impulses wait and apply together at the next step. `time.game.max_delta()` / `set_max_delta` (250 ms) caps the game time a frame adds, after speed scaling. See `ryo-physics`.
+- Collision and trigger messages are written in the physics step, after `Scene::update`: `update` reads them on the next step. Triggers report through `TriggerEntered` / `TriggerExited` (see [Messages](#messages)), not the collision messages.
+
+---
+
+## Characters and gameplay
+
+The character controller and what is built on it: movement input, the platformer and top-down presets, trigger behaviours and tile colliders. All in the prelude; usage in `ryo-character`. Components marked non-exhaustive are built with their constructors and builders, never struct literals.
+
+| Type | API |
+|---|---|
+| `CharacterController` (component, non-exhaustive; brings `Transform`, `Velocity`, `CharacterState` and a kinematic `RigidBody` with locked rotation) `{ mode: CharacterMode, max_slope: f32 (radians), step_height: Option<f32>, snap_to_ground: Option<f32>, skin: Option<f32>, push: bool, drop_through: bool }` | `platformer()` (also `default()`), `top_down()`, `with_max_slope(degrees)` (default 45°), `with_step_height(px)` (default off), `with_snap_to_ground(px)` (default a fifth of the collider's height; 0 off), `with_skin(px)` (default 1% of the height), `with_push(bool)` (default true). Set `drop_through = true` to drop through the one-way platform underfoot; the engine clears it |
+| `enum CharacterMode { Platformer (default), TopDown }` | platformer: floors, walls, ceilings, snapping, steps; top-down: every surface a wall |
+| `CharacterState` (component, engine-written, non-exhaustive) `{ on_floor, on_wall, on_ceiling: bool, floor_normal, wall_normal: Vec2, floor: Option<Entity>, floor_one_way: bool, platform_velocity: Vec2, landed, left_floor, sliding_down_slope: bool, velocity_before: Vec2, hits: Vec<CharacterHit> }` | the last move: normals point out of the surface toward the character (flat ground `(0, -1)`); `floor` is a body or bare collider; `landed` / `left_floor` hold for one step; `velocity_before` is what the step asked for |
+| `CharacterHit { entity, body: Entity, point, normal: Vec2 }` | one collider the move touched |
+| `MoveIntent` (component) `{ direction: Vec2, jump_held, jump_pressed, dash_pressed: bool }` | `clamped_direction() -> Vec2` (length at most 1), `clamped_axes() -> Vec2` (each axis -1..1); both read non-finite as zero. The presets clear the pressed flags they act on |
+| `MoveBindings` (component, non-exhaustive, brings `MoveIntent`) `{ left, right, up, down, jump, dash: Vec<KeyCode>, gamepad: bool }` | `default()` (A/←, D/→, W/↑, S/↓, Space, both Shifts, and the first gamepad: left stick and d-pad move, South jumps, West dashes), `with_left(impl IntoIterator<Item = KeyCode>)`, `with_right`, `with_up`, `with_down`, `with_jump`, `with_dash`, `keyboard_only()` |
+| `PlatformerMovement` (component, non-exhaustive; brings `MoveIntent`, `PlatformerState`, `CharacterController::platformer()`) `{ run_speed, accel_time, decel_time, air_control, jump_height, time_to_apex, fall_multiplier, max_fall_speed, coyote_time, jump_buffer, jump_cut, knockback_control: f32, air_jumps: u32, wall_slide: Option<f32>, wall_jump: Option<WallJump>, dash: Option<Dash> }` | `default()` (180 px/s, 0.08 s, 0.06 s, 0.65, 64 px, 0.38 s, 1.5, 600 px/s, 0.1 s, 0.1 s, 0.5, 0, 0, off, off, off), `with_run(speed, accel_time, decel_time)`, `with_air_control(fraction)`, `with_jump(height, time_to_apex)`, `with_fall(multiplier, max_speed)`, `with_coyote_time(s)`, `with_jump_buffer(s)`, `with_jump_cut(factor)`, `with_knockback_control(fraction)`, `with_air_jumps(n)`, `with_wall_slide(max_speed)`, `with_wall_jump(launch: Vec2, lock_time)`, `with_dash(speed, duration, cooldown)` |
+| `WallJump { launch: Vec2, lock_time: f32 }`, `Dash { speed, duration, cooldown: f32 }` | the extras' settings (`Dash` is shared with the top-down preset) |
+| `PlatformerState` (component, engine-written, non-exhaustive) `{ facing: f32, jumping: bool, air_jumps_left: u32, wall_sliding, dashing, dash_ready: bool }` | `reset()` (forgets jumps, timers and dashes; keeps `facing`) |
+| `TopDownMovement` (component, non-exhaustive; brings `MoveIntent`, `TopDownState`, `CharacterController::top_down()`) `{ max_speed, accel_time, decel_time: f32, dash: Option<Dash>, knockback_control: f32 }` | `default()` (160 px/s, 0.08 s, 0.1 s, off, 0), `with_speed(max_speed, accel_time, decel_time)`, `with_dash(speed, duration, cooldown)`, `with_knockback_control(fraction)` |
+| `TopDownState` (component, engine-written, non-exhaustive) `{ facing: Vec2, dashing: bool }` | `reset()` |
+| `Pickup` (component, non-exhaustive) `{ respawn_after: Option<f32> }` | `new()`, `respawn_after(seconds)`; on a trigger collider |
+| `KillZone` (component, non-exhaustive) `{ despawn: bool }` | `new()`, `despawning()`; on a trigger collider |
+| `Checkpoint` (component, non-exhaustive) `{ offset: Vec2 }` | `new()`, `with_offset(Vec2)`; on a trigger collider |
+| `Respawn` (component, non-exhaustive) `{ point: Vec2 }` | `here()` (its `Transform` when the engine first sees it), `at(point)`; root entities only |
+| `TileColliders` (component, non-exhaustive, brings `Transform`) `{ tile_size: Vec2, layer, mask: u32, friction, restitution: f32, solid_rects: bool }` | `new(width, height, tile_size: Vec2)`, `from_cells(width, height, tile_size, Vec<TileCell>)` (row by row from the top), `width()`, `height()`, `get(x, y) -> TileCell` (`Empty` outside), `set(x, y, TileCell) -> bool` (true when the cell changed), `with_layer(u32)`, `with_mask(u32)`, `with_friction(f32)`, `with_restitution(f32)`, `solid_rects()`. Its `Transform` places cell (0, 0)'s top-left; the colliders are child entities, rebuilt on a real change; over 8192 × 8192 cells is refused |
+| `enum TileCell { Empty (default), Solid, OneWay, Slope(SlopeCorner) }` | |
+| `enum SlopeCorner { BottomLeft, BottomRight, TopLeft, TopRight }` | the filled corner of a 45° half-cell; `from_name(&str) -> Option<Self>` (`"bottom-left"` .. `"top-right"`, any case) |
+| `read_move_bindings` | the system that fills every bound `MoveIntent` (engine-registered) |
+
+`FixedSet::Movement` runs, chained: the zone behaviours (`Respawn::here` points, `Pickup`, pickup respawn timers, `KillZone`, `Checkpoint`, acting on the previous step's `TriggerEntered`), `read_move_bindings`, knockback, the platformer and top-down presets; `TileColliders` rebuilds run in the set too. Under `PhysicsPaused` the bindings, knockback, presets and pickup timers wait; the zone behaviours keep running. A game write to a character's `Transform` is a teleport: its `CharacterState` resets and it moves on by its `Velocity` from there that step.
 
 
 ---
@@ -924,6 +959,7 @@ Tile data, coordinates, collision and Tiled import; the renderer does not draw t
 - `TilemapLayer { name, tiles: Vec<Option<TileId>>, width, height, tileset_index, visible, opacity, z_order, parallax_x, parallax_y }`: `new(name, w, h)`, `in_bounds(x, y)`, `get_tile(x, y)`, `set_tile(x, y, TileId)`.
 - `Tileset { name, image_path, tile_width, tile_height, columns, tile_count, spacing, margin, image_width, image_height, properties }`: `tile_uv(id)`, `get_properties(id) -> TileProperties`. `TileProperties { solid, platform, animation: Option<TileAnimation>, custom }`, `TileAnimation { frames: Vec<(TileId, u32 /* ms */)> }`, `type TileId = u32`.
 - Auto-tiling: `AutoTileSet::new(name, terrain_id: u16, AutoTileMode, default_tile)`, `add_rule(bitmask: u8, TileId)`, `resolve(bitmask) -> TileId`; `enum AutoTileMode { Minimal, Full }`; `compute_bitmask_minimal(x, y, w, h, is_same: &dyn Fn(u32, u32) -> bool) -> u8`, `compute_bitmask_full(..)`.
+- Physics: `tilemap.tile_colliders() -> TileColliders` (tile properties `solid`, `platform` for one-way, a `slope` custom property naming the filled corner; solid beats a slope beats one-way); spawn it with a `Transform` at the map's origin.
 - Collision: `generate_collision_rects(&Tilemap) -> Vec<CollisionRect>`, `generate_collision_rects_region(&Tilemap, x0, y0, x1, y1)` (greedy-merged solid tiles); `CollisionRect { x, y, w, h }` (tiles), `to_world(tile_w, tile_h) -> (f32, f32, f32, f32)`.
 - Chunks: `ChunkCoord { chunk_x, chunk_y, layer_index }`, `ChunkState { coord, dirty, has_tiles }` (16×16 tiles).
 - Tiled: `load_tiled_map(path: &str) -> Result<(Tilemap, Vec<TiledObject>), TilemapError>`; `TiledObject { name, obj_type, x, y, width, height, rotation (deg), shape: TiledShape, properties }`; `enum TiledShape { Rect, Ellipse, Point, Polygon(Vec<(f32, f32)>), Polyline(..) }`; `enum TiledValue { Bool, Int, Float, String }`; `enum TilemapError { Io, Parse, MissingTileset, UnsupportedFeature }`.
@@ -1040,7 +1076,7 @@ All are `thiserror` enums (`Display`, `Error`); `SaveError` and `GpuError` conve
 
 Grid A* plus steering; the game moves its agents.
 
-- `NavigationGrid`: `new(world_w, world_h, cell_size)`, `with_origin(w, h, cell, ox, oy)`, `dimensions()`, `cell_size()`, `generation()`, `world_to_grid(x, y) -> GridCoord`, `grid_to_world(GridCoord)` (cell centre), `grid_to_world_corner(..)`, `in_bounds`, `get`/`set(GridCoord, CellState)`, `is_walkable`, `cost`, `neighbors`, `line_of_sight(a, b)`, `clear()`, `block_rect(min_x, min_y, max_x, max_y)`, `block_collider(&GlobalTransform, &Collider, Entity)`, `rebuild_from_world(&mut World)`.
+- `NavigationGrid`: `new(world_w, world_h, cell_size)`, `with_origin(w, h, cell, ox, oy)`, `dimensions()`, `cell_size()`, `generation()`, `world_to_grid(x, y) -> GridCoord`, `grid_to_world(GridCoord)` (cell centre), `grid_to_world_corner(..)`, `in_bounds`, `get`/`set(GridCoord, CellState)`, `is_walkable`, `cost`, `neighbors`, `line_of_sight(a, b)`, `clear()`, `block_rect(min_x, min_y, max_x, max_y)`, `block_collider(&GlobalTransform, &Collider, Entity)`, `block_tiles(&TileColliders, origin: Vec2)` (the solid and slope cells exactly; one-way cells stay walkable; the map's position only, not its rotation or scale), `rebuild_from_world(&mut World)` (every non-trigger collider, and tile maps through `block_tiles` instead of their outlines).
 - `NavigationBuilder::new(world_w, world_h).with_cell_size(f32).with_origin(x, y)`, then `build()` or `build_from_world(&mut World)` (blocks every collider's cells).
 - `enum CellState { Walkable, Blocked, Difficult(f32) }` (`cost()`, `is_walkable()`); `GridCoord { x: i32, y: i32 }` (`new`).
 - `Pathfinder`: `new()`, `with_config(PathfinderConfig)`, `config()`, `find_path(&self, &grid, sx, sy, gx, gy) -> PathResult`, `find_path_grid(&self, &grid, GridCoord, GridCoord)`, `start_pathfinding(&mut self, &grid, sx, sy, gx, gy) -> (u64, PathResult)`, `continue_pathfinding(&grid, id)`, `cancel_pathfinding(id)`, `active_request_count()`.

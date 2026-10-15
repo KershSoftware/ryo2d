@@ -2,14 +2,14 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Game Developer
 
 You help users build complete games with Ryo2D: scenes on a stack, entities in one shared ECS world, systems in the engine's phases.
 
-**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-animation`, `ryo-ui`, `ryo-audio`, `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
+**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-animation`, `ryo-ui`, `ryo-audio`, `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
 
 ## Project Setup
 
@@ -170,7 +170,7 @@ ctx.world.despawn(e); // bool; despawns its children too
 
 - `Transform`: `translation: Vec2`, `rotation` (radians), `scale: Vec2`. Build with `from_xy`, `from_translation`, `with_rotation`, `with_rotation_degrees`, `with_scale`, `with_uniform_scale`; `Transform::IDENTITY`.
 - `GlobalTransform` is the world-space result, written by the engine; read it for world positions (`global.translation()`), never write it.
-- `Velocity { dx, dy }` is integrated by physics for rigid bodies only; anything else moves itself.
+- `Velocity { dx, dy }` is integrated by physics for rigid bodies, and a character (`CharacterController`) is swept by it; anything else moves itself.
 - Draw order is `Renderable::with_z_order` (higher in front); `YSort` orders by y within a layer.
 
 ## Queries
@@ -262,15 +262,14 @@ fn add_score(mut coins: MessageReader<CoinCollected>, mut score: ResMut<Score>) 
 }
 ```
 
-- A message is readable from when it is written until the end of the next frame; each scene and each reader sees it once. Read a type in one place per scene.
-- Engine messages: `CollisionStarted`/`CollisionStopped` (physics), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `AssetReloaded`/`AssetLoadFailed`, `ParticleCollision`. Details: `ryo-messages`.
+- A message stays readable until two fixed steps have run after it was written, so per-frame and fixed-step readers both see it; each scene and each reader sees it once. Read a type in one place per scene.
+- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `AssetReloaded`/`AssetLoadFailed`, `ParticleCollision`. Details: `ryo-messages`.
 
 ```rust
-for hit in ctx.messages::<CollisionStarted>() {
-  if let Some(other) = hit.other(player)
-    && ctx.world.get::<Coin>(other).is_some()
-  {
-    ctx.world.despawn(other);
+// A coin is a trigger with a Pickup: the engine collects and despawns it
+for picked in ctx.messages::<PickedUp>() {
+  if picked.by == player {
+    self.score += 10;
   }
 }
 ```
@@ -381,7 +380,122 @@ ctx.world.spawn((
 ));
 ```
 
-Colliders are centred on the entity's position plus `Collider.offset`, so they line up with a centre-anchored sprite. Bodies are `dynamic()`, `fixed()` or `kinematic()`; a collider with no body is fixed. Bodies may sit anywhere in the hierarchy, and a collider attaches to the nearest body at or above it. Everything else: `ryo-physics`.
+Colliders are centred on the entity's position plus `Collider.offset`, so they line up with a centre-anchored sprite. Bodies are `dynamic()`, `fixed()` or `kinematic()`; a collider with no body is fixed. Bodies may sit anywhere in the hierarchy, and a collider attaches to the nearest body at or above it. Everything else: `ryo-physics`. Players and enemies are characters, moved by a preset or your own code: `ryo-character`.
+
+### Recipe: a platformer player
+
+```rust
+use ryo2d::prelude::*;
+
+#[derive(Default)]
+struct Level {
+  player: Option<Entity>,
+}
+
+impl Scene for Level {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // A bare collider is a fixed floor; a one-way shelf to jump up through
+    ctx.world.spawn((Transform::from_xy(400.0, 580.0), Collider::rect(800.0, 40.0)));
+    ctx.world.spawn((Transform::from_xy(400.0, 500.0), Collider::rect(160.0, 12.0).one_way()));
+    let player = ctx
+      .world
+      .spawn((
+        Transform::from_xy(100.0, 540.0),
+        Collider::rect(14.0, 26.0),
+        // The preset brings the character controller and runs, jumps and falls
+        PlatformerMovement::default().with_air_jumps(1),
+        // WASD and the arrows move, Space jumps, Shift dashes, plus the first gamepad
+        MoveBindings::default(),
+      ))
+      .id();
+    self.player = Some(player);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let Some(player) = self.player else {
+      return SceneAction::Continue;
+    };
+    // What the preset did in the last step
+    for event in ctx.messages::<MovementEvent>() {
+      if event.entity == player && event.kind == MovementEventKind::Jumped {
+        ctx.audio.play_sound("jump").ok();
+      }
+    }
+    if let Some(at) = ctx.world.get::<Transform>(player).map(|t| t.translation) {
+      ctx.camera().follow(at, 0.15);
+    }
+    SceneAction::Continue
+  }
+}
+```
+
+The preset writes the character's `Velocity` every step, its own gravity included; the controller sweeps it through the level and leaves the real velocity. Tune it with the builders (`with_run`, `with_jump(height, time_to_apex)`, `with_wall_jump`, `with_dash`, ...); a top-down game uses `TopDownMovement` the same way.
+
+### Recipe: coins, spikes and a checkpoint
+
+```rust
+use ryo2d::prelude::*;
+
+#[derive(Default)]
+struct Level {
+  player: Option<Entity>,
+  score: u32,
+  lives: u32,
+}
+
+impl Scene for Level {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.world.spawn((Transform::from_xy(400.0, 580.0), Collider::rect(800.0, 40.0)));
+    // Coins: collected (and despawned) by the first thing that touches them
+    for x in [250.0, 300.0, 350.0] {
+      ctx.world.spawn((
+        Transform::from_xy(x, 540.0),
+        Collider::circle(6.0).as_trigger(),
+        Pickup::new(),
+      ));
+    }
+    // Spikes on the floor send the player back to its Respawn point...
+    ctx.world.spawn((
+      Transform::from_xy(500.0, 556.0),
+      Collider::rect(48.0, 8.0).as_trigger(),
+      KillZone::new(),
+    ));
+    // ...and a flag past them moves that point
+    ctx.world.spawn((
+      Transform::from_xy(650.0, 540.0),
+      Collider::rect(16.0, 40.0).as_trigger(),
+      Checkpoint::new(),
+    ));
+    let player = ctx
+      .world
+      .spawn((
+        Transform::from_xy(100.0, 540.0),
+        Collider::rect(14.0, 26.0),
+        PlatformerMovement::default(),
+        MoveBindings::default(),
+        Respawn::here(),
+      ))
+      .id();
+    self.player = Some(player);
+    self.lives = 3;
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    self.score += 10 * ctx.messages::<PickedUp>().len() as u32;
+    for killed in ctx.messages::<Killed>() {
+      if Some(killed.entity) == self.player {
+        self.lives = self.lives.saturating_sub(1);
+      }
+    }
+    if self.lives == 0 {
+      return SceneAction::Reset(Box::new(Level::default()));
+    }
+    SceneAction::Continue
+  }
+}
+```
+
+The behaviours go on trigger colliders and act a step after the overlap; `PickedUp`, `Killed` and `CheckpointReached` reach `update` the step after that. A trigger's layer and mask decide what can set it off.
 
 ### Recipe: a stack of crates on a fixed floor
 
@@ -623,4 +737,4 @@ fn player_is_drawn_at_spawn() {
 - Do not change the world while iterating a query over it: collect entities first.
 - Keys the UI acts on: read and consume them in `ui`, or `update` sees them too.
 - No `update` runs while the game clock is paused.
-- Integrate your own `Velocity` for entities without a `RigidBody`.
+- Integrate your own `Velocity` for entities without a `RigidBody` or `CharacterController`.
