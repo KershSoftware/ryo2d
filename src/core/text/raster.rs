@@ -181,17 +181,20 @@ impl GlyphRasterizer {
       return None;
     };
     let font = FontRef::from_index(data, *index as usize)?;
+    // A stable id lets swash reuse its parsed font data between glyphs
+    let cache_id = [u64::from(key.font.0), u64::from(*index)];
     match key.kind {
       GlyphKind::Msdf { range64 } => crate::core::text::msdf::generate(
         &mut self.scale,
         font,
         coords,
+        cache_id,
         key.glyph,
         px,
         range64 as f32 / 64.0,
       ),
       GlyphKind::Fill | GlyphKind::Stroke { .. } | GlyphKind::Pixel => {
-        self.swash(font, coords, key, px)
+        self.swash(font, cache_id, coords, key, px)
       }
     }
   }
@@ -199,13 +202,18 @@ impl GlyphRasterizer {
   fn swash(
     &mut self,
     font: FontRef<'_>,
+    cache_id: [u64; 2],
     coords: Option<&[i16]>,
     key: &GlyphKey,
     px: f32,
   ) -> Option<GlyphImage> {
     let pixel = matches!(key.kind, GlyphKind::Pixel);
     let hint = !pixel && px <= HINT_UP_TO;
-    let mut builder = self.scale.builder(font).size(px).hint(hint);
+    let mut builder = self
+      .scale
+      .builder_with_id(font, cache_id)
+      .size(px)
+      .hint(hint);
     if let Some(coords) = coords {
       builder = builder.normalized_coords(coords);
     }
@@ -474,6 +482,76 @@ mod tests {
           .rasterize(&fonts, None, &GlyphKey::msdf(font, glyph, px, 4.0))
           .is_none(),
         "{px}"
+      );
+    }
+  }
+
+  /// Ink bounds (left, top, right, bottom) in pen/baseline pixels, y up
+  fn ink(image: &GlyphImage, inside: impl Fn(&[u8]) -> bool) -> (f32, f32, f32, f32) {
+    let bpp = if image.format == GlyphFormat::Mask {
+      1
+    } else {
+      4
+    };
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for y in 0..image.height {
+      for x in 0..image.width {
+        let i = ((y * image.width + x) as usize) * bpp;
+        if inside(&image.data[i..i + bpp]) {
+          x0 = x0.min(x);
+          y0 = y0.min(y);
+          x1 = x1.max(x + 1);
+          y1 = y1.max(y + 1);
+        }
+      }
+    }
+    let (l, t) = (image.left as f32, image.top as f32);
+    (l + x0 as f32, t - y0 as f32, l + x1 as f32, t - y1 as f32)
+  }
+
+  #[test]
+  fn msdf_ink_lands_where_the_fill_ink_does() {
+    let fonts = Fonts::with_builtins();
+    let font = ui(&fonts);
+    let mut raster = GlyphRasterizer::new();
+    for c in ['H', 'o', 'g'] {
+      let glyph = glyph_id(&fonts, font, c).unwrap();
+      // The fill is made unhinted (past the hinting limit) at twice the size
+      // and halved, so grid-fitting does not move its edges
+      let fill = raster
+        .rasterize(&fonts, None, &GlyphKey::fill(font, glyph, 64.0, 0.0))
+        .unwrap();
+      let msdf = raster
+        .rasterize(&fonts, None, &GlyphKey::msdf(font, glyph, 32.0, 4.0))
+        .unwrap();
+      let a = ink(&fill, |p| p[0] >= 128);
+      let a = (a.0 / 2.0, a.1 / 2.0, a.2 / 2.0, a.3 / 2.0);
+      let b = ink(&msdf, |p| {
+        p[0].min(p[1]).max(p[0].max(p[1]).min(p[2])) >= 128
+      });
+      for (x, y) in [(a.0, b.0), (a.1, b.1), (a.2, b.2), (a.3, b.3)] {
+        assert!((x - y).abs() <= 0.5, "{c}: fill {a:?} vs msdf {b:?}");
+      }
+    }
+  }
+
+  #[test]
+  fn repeated_rasterizing_is_identical() {
+    let fonts = Fonts::with_builtins();
+    let font = ui(&fonts);
+    let glyph = glyph_id(&fonts, font, 'g').unwrap();
+    let mut raster = GlyphRasterizer::new();
+    for key in [
+      GlyphKey::fill(font, glyph, 16.0, 0.25),
+      GlyphKey::msdf(font, glyph, 32.0, 4.0),
+    ] {
+      let first = raster.rasterize(&fonts, None, &key).unwrap();
+      assert_eq!(raster.rasterize(&fonts, None, &key).unwrap(), first);
+      assert_eq!(
+        GlyphRasterizer::new()
+          .rasterize(&fonts, None, &key)
+          .unwrap(),
+        first
       );
     }
   }

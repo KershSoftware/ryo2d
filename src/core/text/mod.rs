@@ -48,6 +48,7 @@ pub(crate) use raster::{
 pub(crate) use effects::reveal_alpha;
 #[allow(unused_imports)]
 pub(crate) use engine::RevealClock;
+
 #[cfg(test)]
 mod guard {
   /// parley, swash and fdsm stay inside src/core/text/
@@ -56,6 +57,7 @@ mod guard {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
     let mut stack = vec![root.clone()];
+    let mut scanned = 0;
     while let Some(dir) = stack.pop() {
       for entry in std::fs::read_dir(&dir).unwrap().flatten() {
         let path = entry.path();
@@ -64,6 +66,7 @@ mod guard {
         } else if path.extension().is_some_and(|e| e == "rs")
           && !path.starts_with(root.join("core/text"))
         {
+          scanned += 1;
           let source = std::fs::read_to_string(&path).unwrap();
           for name in ["parley::", "swash::", "fdsm::"] {
             if source.contains(name) {
@@ -73,6 +76,10 @@ mod guard {
         }
       }
     }
+    assert!(
+      scanned > 20,
+      "scanned only {scanned} files; is the root right?"
+    );
     assert!(offenders.is_empty(), "{offenders:#?}");
   }
 }

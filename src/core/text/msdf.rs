@@ -22,6 +22,7 @@ pub(crate) fn generate(
   scale_cx: &mut ScaleContext,
   font: FontRef<'_>,
   coords: Option<&[i16]>,
+  cache_id: [u64; 2],
   glyph: u16,
   base: f32,
   range: f32,
@@ -30,7 +31,10 @@ pub(crate) fn generate(
   if units <= 0.0 || !(range.is_finite() && range > 0.0 && range <= MAX_GLYPH_PX) {
     return None;
   }
-  let mut builder = scale_cx.builder(font).size(units).hint(false);
+  let mut builder = scale_cx
+    .builder_with_id(font, cache_id)
+    .size(units)
+    .hint(false);
   if let Some(coords) = coords {
     builder = builder.normalized_coords(coords);
   }
@@ -47,15 +51,22 @@ pub(crate) fn generate(
     f64::from(bounds.max.x),
     f64::from(bounds.max.y),
   );
-  let width = ((x1 - x0) * scale + 2.0 * pad).ceil() as u32;
-  let height = ((y1 - y0) * scale + 2.0 * pad).ceil() as u32;
-  if width == 0 || height == 0 || width > MAX_IMAGE || height > MAX_IMAGE {
+  // Whole-pixel placement first, then the outline is positioned from it:
+  // image x = pen x - left, image y = top - baseline-up y
+  let left = (x0 * scale - pad).floor();
+  let top = (y1 * scale + pad).ceil();
+  let width = ((x1 * scale + pad) - left).ceil();
+  let height = (top - (y0 * scale - pad)).ceil();
+  if !(width >= 1.0
+    && height >= 1.0
+    && width <= f64::from(MAX_IMAGE)
+    && height <= f64::from(MAX_IMAGE))
+  {
     return None;
   }
-  let ox = pad - x0 * scale;
-  let oy = pad + y1 * scale;
-  let shape = shape(&outline, |x, y| {
-    Point::new(f64::from(x) * scale + ox, oy - f64::from(y) * scale)
+  let (width, height) = (width as u32, height as u32);
+  let shape = shape(outline.verbs(), outline.points(), |x, y| {
+    Point::new(f64::from(x) * scale - left, top - f64::from(y) * scale)
   });
   let colored = Shape::edge_coloring_simple(shape, 0.03, 69_441_337_420);
   let prepared = colored.prepare();
@@ -79,8 +90,8 @@ pub(crate) fn generate(
     format: GlyphFormat::Msdf,
     width,
     height,
-    left: (x0 * scale - pad).floor() as i32,
-    top: (y1 * scale + pad).ceil() as i32,
+    left: left as i32,
+    top: top as i32,
     data,
     base,
   })
@@ -89,11 +100,11 @@ pub(crate) fn generate(
 /// swash's outline (font units, y up) as an fdsm shape, each point mapped
 /// by `to_image`
 fn shape(
-  outline: &swash::scale::outline::Outline,
+  verbs: &[Verb],
+  points: &[swash::zeno::Point],
   to_image: impl Fn(f32, f32) -> Point,
 ) -> Shape<Contour> {
   let mut shape = Shape::<Contour>::default();
-  let points = outline.points();
   let point = |i: usize| points.get(i).map(|p| to_image(p.x, p.y));
   let mut next = 0;
   let mut start = Point::new(0.0, 0.0);
@@ -104,7 +115,7 @@ fn shape(
       contour.segments.push(segment);
     }
   };
-  for verb in outline.verbs() {
+  for verb in verbs {
     match verb {
       Verb::MoveTo => {
         if open && (last - start).norm() > 1e-9 {
@@ -151,5 +162,38 @@ fn shape(
   if open && (last - start).norm() > 1e-9 {
     push(&mut shape, Segment::line(last, start));
   }
+  // A contour with no segments (a lone MoveTo) has no edges to colour
+  shape.contours.retain(|c| !c.segments.is_empty());
   shape
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use swash::zeno::Point as P;
+
+  #[test]
+  fn contours_without_segments_are_dropped() {
+    let verbs = [
+      Verb::MoveTo,
+      Verb::MoveTo,
+      Verb::LineTo,
+      Verb::LineTo,
+      Verb::Close,
+      Verb::MoveTo,
+      Verb::Close,
+    ];
+    let points = [
+      P::new(5.0, 5.0),
+      P::new(0.0, 0.0),
+      P::new(10.0, 0.0),
+      P::new(10.0, 10.0),
+      P::new(7.0, 7.0),
+    ];
+    let shape = shape(&verbs, &points, |x, y| {
+      Point::new(f64::from(x), f64::from(y))
+    });
+    assert_eq!(shape.contours.len(), 1);
+    assert!(shape.contours.iter().all(|c| !c.segments.is_empty()));
+  }
 }
