@@ -1184,6 +1184,8 @@ pub(crate) struct RevealClock {
   pub(crate) shown: f32,
   pub(crate) hold: f32,
   pub(crate) done: bool,
+  /// The pauses before the first cluster have been taken up
+  pub(crate) started: bool,
 }
 
 impl RevealClock {
@@ -1205,6 +1207,15 @@ impl RevealClock {
       self.shown = total;
       self.done = true;
       return true;
+    }
+    if !self.started {
+      self.started = true;
+      self.hold += layout
+        .pauses
+        .iter()
+        .filter(|(cluster, _)| *cluster == 0)
+        .map(|(_, seconds)| seconds)
+        .sum::<f32>();
     }
     let mut left = dt.max(0.0);
     while left > 0.0 && self.shown < total {
@@ -2426,6 +2437,39 @@ mod tests {
     assert!(clock.step(1.0, 10.0, 0.0, &laid), "finishes this step");
     assert!(clock.done);
     assert!(!clock.step(1.0, 10.0, 0.0, &laid), "finishes once");
+  }
+
+  #[test]
+  fn a_pause_at_the_start_delays_the_reveal() {
+    let (mut engine, _) = engine();
+    let style = TextStyle::default();
+    let options = TextLayoutOptions::default();
+    let laid = engine
+      .layout(&RichText::markup("[pause=1]ab"), &style, &options, 1.0)
+      .unwrap();
+    assert_eq!(laid.pauses, vec![(0, 1.0)]);
+    let mut clock = RevealClock::default();
+    assert!(!clock.step(0.5, 10.0, 0.0, &laid));
+    assert_eq!(clock.shown, 0.0);
+    assert!(!clock.step(0.4, 10.0, 0.0, &laid));
+    assert_eq!(clock.shown, 0.0);
+    assert!(
+      clock.step(0.5, 10.0, 0.0, &laid),
+      "0.1 s of hold left, then both clusters"
+    );
+    let twice = engine
+      .layout(
+        &RichText::markup("[pause=1][pause=0.5]ab"),
+        &style,
+        &options,
+        1.0,
+      )
+      .unwrap();
+    let mut clock = RevealClock::default();
+    clock.step(1.4, 10.0, 0.0, &twice);
+    assert_eq!(clock.shown, 0.0, "the two pauses sum to 1.5 s");
+    clock.step(0.2, 10.0, 0.0, &twice);
+    assert!(clock.shown > 0.0);
   }
 
   #[test]

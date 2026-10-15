@@ -60,6 +60,7 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   `Fn(&GlyphContext) -> GlyphMod` (built in: wave, shake, rainbow). An
   unknown effect name is warned once when drawn and ignored.
 - Reveal counts character clusters. `RevealClock` advances them, holding
-  at `[pause]` and after punctuation; effects and reveal never relayout.
+  at `[pause]` (a leading one delays the first cluster) and after punctuation;
+  effects and reveal never relayout.
   Pauses live in the `TextLayout` (and in `RichText::hash_into`), so a
   different pause is a different cached layout.
