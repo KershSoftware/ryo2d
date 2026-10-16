@@ -11,17 +11,8 @@ use super::immediate::UiContext;
 use super::layout::{Align, Edges, Flow, Justify, Length, Tracks, UiStyle};
 use super::memory::Flags;
 use super::response::Response;
-use super::tree::DrawKind;
-use super::{Anchor, Color, Rect};
-
-/// A panel's fill until the theme gives it one
-const PANEL_FILL: Color = Color::new(20, 20, 30, 200);
-/// A panel's border until the theme gives it one
-const PANEL_BORDER: Color = Color::new(80, 80, 100, 255);
-/// A panel's corner radius until the theme gives it one
-const PANEL_RADIUS: f32 = 4.0;
-/// A panel's padding until the theme gives it one
-const PANEL_PADDING: f32 = 8.0;
+use super::theme::{WidgetKind, WidgetState};
+use super::{Anchor, Rect};
 
 /// A container being set up: `.show(|ui| ..)` lays its contents out
 #[must_use = "call .show(|ui| ..) to draw the container"]
@@ -77,28 +68,35 @@ impl<'a> UiContext<'a> {
     Container::new(self, Location::caller(), Flow::Stack)
   }
 
-  /// A panel: a column with the panel look and padding. It blocks the
-  /// pointer from what is under it.
+  /// A panel: a column with the theme's panel look and padding. It blocks
+  /// the pointer from what is under it.
   #[track_caller]
   pub fn panel<'u>(&'u mut self) -> Container<'u, 'a> {
+    let padding = self.panel_padding();
     let mut panel = Container::new(self, Location::caller(), Flow::Column);
     panel.kind = ContainerKind::Panel;
-    panel.style.padding = Edges::all(PANEL_PADDING);
+    panel.style.padding = padding;
     panel.flags = Flags::BLOCKING;
     panel
   }
 
-  /// Draw the panel look on `node`
+  /// A panel's padding: its look's own, else the theme's panel padding
+  fn panel_padding(&self) -> Edges {
+    let theme = self.theme();
+    let look = &theme.widgets.panel.normal;
+    if look.padding == Edges::ZERO {
+      Edges::all(theme.metrics.sizes.panel_padding)
+    } else {
+      look.padding
+    }
+  }
+
+  /// Draw the theme's panel look on `node`
   pub(crate) fn panel_fill(&mut self, node: usize) {
-    self.push_draw(
-      node,
-      DrawKind::Fill {
-        inset: Edges::ZERO,
-        fill: PANEL_FILL,
-        radius: PANEL_RADIUS,
-        border: Some((1.0, PANEL_BORDER)),
-      },
-    );
+    let look = self
+      .theme()
+      .look(WidgetKind::Panel, None, WidgetState::Normal);
+    self.push_look_box(node, &look);
   }
 }
 
@@ -309,9 +307,9 @@ impl<'u, 'a> Container<'u, 'a> {
 mod tests {
   use super::*;
   use crate::core::text::TextStyle;
-  use crate::core::ui::Anchor;
   use crate::core::ui::immediate::{UiCommand, UiCommands};
   use crate::core::ui::test_util::{context, text_engine};
+  use crate::core::ui::{Anchor, Color};
 
   fn texts(commands: &UiCommands) -> Vec<(u32, Vec2)> {
     commands
@@ -508,5 +506,42 @@ mod tests {
         "{edge} is not on a render pixel"
       );
     }
+  }
+
+  #[test]
+  fn a_skinned_panel_draws_a_nine_slice_in_place_of_its_fill() {
+    use crate::core::asset::SpriteHandle;
+    use crate::core::graphics::Sprite;
+    use crate::core::render::batch::Filter;
+    use crate::core::ui::test_util::UiDriver;
+    use crate::core::ui::theme::{Skin, Theme};
+    let sprite =
+      SpriteHandle::from_sprite(Sprite::solid_rect(12, 12, 255, 255, 255, 255), "test-skin");
+    let mut theme = Theme::dark().skin(
+      "frame",
+      Skin::from_sprite(sprite, [4.0; 4], Filter::Nearest),
+    );
+    theme.widgets.panel.normal.skin = Some("frame".to_string());
+    let mut d = UiDriver::new((200.0, 100.0)).with_theme(theme);
+    d.frame(|ui| {
+      ui.panel()
+        .at(Rect::new(10.0, 10.0, 80.0, 40.0))
+        .show(|_| {});
+    });
+    let sprites = d
+      .commands
+      .iter()
+      .filter(|(_, c)| matches!(c, UiCommand::Sprite { .. }))
+      .count();
+    let rects = d
+      .commands
+      .iter()
+      .filter(|(_, c)| matches!(c, UiCommand::Rect { .. }))
+      .count();
+    assert_eq!(
+      (sprites, rects),
+      (9, 0),
+      "nine sprite pieces and no plain fill"
+    );
   }
 }

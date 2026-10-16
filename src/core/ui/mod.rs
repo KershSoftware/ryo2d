@@ -4,7 +4,7 @@
 //!
 //! - **Immediate mode** (`immediate/`): Stateless, per-frame drawing for HUDs and debug overlays
 //! - **Retained mode** (`retained/`): Stateful widgets with layout containers for complex UIs
-//! - **Theme system** (`theme.rs`): Centralized styling with hot-reload support
+//! - **Theme system** (`theme/`): Looks per widget kind and state, variants and skins, from RON files with hot reload
 //!
 //! # Architecture
 //!
@@ -24,7 +24,7 @@
 //! ├─────────────────────────────────────────────────────────┤
 //! │   Theme System                                          │
 //! │   ├─ Widget styles (colors, spacing, borders)           │
-//! │   └─ Hot-reload from JSON files                         │
+//! │   └─ Hot-reload from RON files                          │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -96,8 +96,8 @@ pub use retained::{DropdownState, FocusTrap, Focusable, TextInputState};
 
 // Re-export theme types
 pub use theme::{
-  ButtonStyle, CheckboxStyle, HotReloadTheme, LabelStyle, PanelStyle, ProgressBarStyle,
-  ScrollbarStyle, SliderStyle, TextInputStyle, Theme, ThemeError, ToggleStyle, TooltipStyle,
+  FocusRing, Look, LookPatch, Looks, Metrics, Palette, Sizes, Skin, TextLook, TextRoles, Theme,
+  ThemeError, ThemeFont, UiSounds, UiTheme, Variant, WidgetKind, WidgetLooks, WidgetState,
 };
 
 // Re-export tween types

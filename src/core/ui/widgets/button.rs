@@ -6,24 +6,17 @@ use glam::Vec2;
 
 use super::common::{WidgetOpts, widget_builders};
 use crate::core::asset::SpriteHandle;
-use crate::core::text::{RichText, TextLayoutOptions, TextStyle};
+use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::Color;
 use crate::core::ui::immediate::{UiContext, text_seed};
 use crate::core::ui::layout::{Edges, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
+use crate::core::ui::theme::WidgetKind;
 use crate::core::ui::tree::{DrawKind, Node, RecordSpec, TextLeaf};
 
-/// Room between a button's edges and its label, across and down
-const PADDING: Vec2 = Vec2::new(12.0, 6.0);
-/// The least a button is tall
-const MIN_HEIGHT: f32 = 28.0;
 /// Room between an icon and the label
 const ICON_GAP: f32 = 6.0;
-const RADIUS: f32 = 4.0;
-const BORDER_WIDTH: f32 = 1.0;
-/// A disabled button's alpha, fill, border and label alike
-const DISABLED_ALPHA: u8 = 120;
 
 /// A button being set up. It is drawn by [`show`](Self::show) (its
 /// [`Response`]), by [`clicked`](Self::clicked), or when it is dropped, so
@@ -85,8 +78,20 @@ impl Button<'_, '_> {
     let disabled = self.opts.disabled;
     let mut response = ui.response(id, Sense::click(), disabled);
 
+    let state = ui.widget_state(&response, disabled);
+    let look = ui.look_of(WidgetKind::Button, &self.opts, state);
+    let theme = ui.theme_arc();
+    let sizes = &theme.metrics.sizes;
+    // Its look's own padding, else the theme's button padding
+    let pad = if look.padding == Edges::ZERO {
+      Edges::xy(sizes.button_padding[0], sizes.button_padding[1])
+    } else {
+      look.padding
+    };
+    // The label is laid out opaque and faded through its opacity, so every
+    // look shares one cached layout
     let label = std::mem::take(&mut self.label);
-    let style = TextStyle::default();
+    let style = theme.text.button.style().color(look.text.with_alpha(255));
     let options = TextLayoutOptions::default();
     let text = ui.measure_rich(&label, &style, &options);
     let line = ui.line_height(&style);
@@ -96,13 +101,24 @@ impl Button<'_, '_> {
       0.0
     };
     let size = Vec2::new(
-      text.x + icon_room + 2.0 * PADDING.x,
-      (text.y.max(line) + 2.0 * PADDING.y).max(MIN_HEIGHT),
+      text.x + icon_room + pad.width(),
+      (text.y.max(line) + pad.height()).max(sizes.button_min_height),
     );
 
+    // The look's offset moves the contents: the centre shifts by half of what
+    // one side gains over the other
+    let [dx, dy] = look.offset;
+    let (left, right) = (
+      pad.left + (2.0 * dx).max(0.0),
+      pad.right + (-2.0 * dx).max(0.0),
+    );
+    let (top, bottom) = (
+      pad.top + (2.0 * dy).max(0.0),
+      pad.bottom + (-2.0 * dy).max(0.0),
+    );
     let mut style_of_node = self.opts.style.clone();
     // The icon's room is padding: the label centres in what is left
-    style_of_node.padding = Edges::new(PADDING.x + icon_room, PADDING.y, PADDING.x, PADDING.y);
+    style_of_node.padding = Edges::new(left + icon_room, top, right, bottom);
     let mut node = Node::new(id, style_of_node, Measure::Fixed(size));
     node.record = Some(RecordSpec {
       flags: self.opts.flags(Flags::CLICK, true),
@@ -110,33 +126,18 @@ impl Button<'_, '_> {
     });
     let index = ui.push_node(node, self.opts.at);
 
-    let (fill, border) = look(&response, disabled);
-    ui.push_draw(
-      index,
-      DrawKind::Fill {
-        inset: Edges::ZERO,
-        fill,
-        radius: RADIUS,
-        border: Some((BORDER_WIDTH, border)),
-      },
-    );
-    let alpha = if disabled { DISABLED_ALPHA } else { 255 };
+    ui.push_look_box(index, &look);
     if let Some(sprite) = self.icon.take() {
       // Centred with the label: its room is the content box but the label
       ui.push_draw(
         index,
         DrawKind::Sprite {
-          inset: Edges::new(
-            PADDING.x,
-            PADDING.y,
-            PADDING.x + ICON_GAP + text.x,
-            PADDING.y,
-          ),
+          inset: Edges::new(left, top, right + ICON_GAP + text.x, bottom),
           frac: Vec2::splat(0.5),
           size: Some(Vec2::splat(line)),
           sprite,
           uv: [0.0, 0.0, 1.0, 1.0],
-          tint: Color::WHITE.with_alpha(alpha),
+          tint: Color::WHITE.with_alpha(look.text.a),
         },
       );
     }
@@ -151,14 +152,13 @@ impl Button<'_, '_> {
         },
         frac: Vec2::splat(0.5),
         wrap: false,
-        // Faded through opacity, so both looks share one cached layout
-        opacity: f32::from(alpha) / 255.0,
+        opacity: f32::from(look.text.a) / 255.0,
         reveal: None,
         seed,
       },
     );
     if response.focused() && ui.focus_visible() {
-      ui.focus_ring(index, RADIUS);
+      ui.focus_ring(index, look.radius);
     }
     response.rect = ui.close_node(index).rect;
     Some(response)
@@ -169,22 +169,6 @@ impl Drop for Button<'_, '_> {
   /// A button not shown is drawn when it is dropped
   fn drop(&mut self) {
     self.run();
-  }
-}
-
-/// A button's fill and border for its state (the theme's from Task 9)
-fn look(response: &Response, disabled: bool) -> (Color, Color) {
-  if disabled {
-    (
-      Color::new(40, 40, 60, DISABLED_ALPHA),
-      Color::new(80, 80, 100, DISABLED_ALPHA),
-    )
-  } else if response.pressed() && response.hovered() {
-    (Color::rgb(60, 60, 80), Color::rgb(100, 100, 130))
-  } else if response.hovered() {
-    (Color::rgb(50, 50, 70), Color::rgb(100, 100, 130))
-  } else {
-    (Color::rgb(40, 40, 60), Color::rgb(80, 80, 100))
   }
 }
 
@@ -925,5 +909,117 @@ mod tests {
     d.stick(glam::Vec2::ZERO);
     let offset = d.frame(|ui| ui.scroll_offset(area));
     assert!(offset.y > 20.0, "{offset}");
+  }
+
+  #[test]
+  fn a_button_takes_its_colours_from_the_theme() {
+    use crate::core::ui::Color;
+    use crate::core::ui::immediate::UiCommand;
+    use crate::core::ui::theme::{LookPatch, Theme, Variant, WidgetKind};
+    let theme = Theme::dark().variant(
+      "go",
+      Variant::of(WidgetKind::Button).normal(LookPatch::default().fill(Color::GREEN)),
+    );
+    let mut d = UiDriver::new((200.0, 100.0)).with_theme(theme.clone());
+    let at = crate::core::ui::Rect::new(10.0, 10.0, 80.0, 30.0);
+    d.frame(|ui| {
+      ui.button("Plain").at(at).show();
+      ui.button("Go").at(at).variant("go").show();
+    });
+    let fills: Vec<Color> = d
+      .commands
+      .iter()
+      .filter_map(|(_, c)| match c {
+        UiCommand::Rect { fill, .. } => Some(*fill),
+        _ => None,
+      })
+      .collect();
+    let plain = theme
+      .look(
+        WidgetKind::Button,
+        None,
+        crate::core::ui::theme::WidgetState::Normal,
+      )
+      .fill;
+    assert_eq!(fills, vec![plain, Color::GREEN]);
+  }
+
+  #[test]
+  fn a_per_call_style_wins_in_every_state() {
+    use crate::core::ui::theme::LookPatch;
+    let mut d = UiDriver::new((200.0, 100.0));
+    let at = Rect::new(10.0, 10.0, 80.0, 30.0);
+    let draw = |ui: &mut UiContext<'_>| {
+      ui.button("A")
+        .at(at)
+        .variant("danger")
+        .style(LookPatch::default().fill(Color::BLUE))
+        .show();
+    };
+    d.frame(draw);
+    assert_eq!(fills(&d), vec![Color::BLUE]);
+    d.move_to(20.0, 20.0);
+    d.frame(draw);
+    assert_eq!(fills(&d), vec![Color::BLUE], "hovered");
+    d.press();
+    d.frame(draw);
+    assert_eq!(fills(&d), vec![Color::BLUE], "pressed");
+  }
+
+  #[test]
+  fn a_focused_button_shows_its_focused_look_only_with_the_ring() {
+    use crate::core::input::InputDevice;
+    use crate::core::ui::theme::{Theme, WidgetKind, WidgetState};
+    let focused = Theme::dark()
+      .look(WidgetKind::Button, None, WidgetState::Focused)
+      .fill;
+    let normal = Theme::dark()
+      .look(WidgetKind::Button, None, WidgetState::Normal)
+      .fill;
+    assert_ne!(focused, normal);
+    let mut d = UiDriver::new((200.0, 100.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      ui.column().focus_scope().show(|ui| {
+        ui.button("A").default_focus().show();
+      });
+    };
+    // Away from the button, so only focus can change its look
+    d.move_to(190.0, 90.0);
+    d.device(InputDevice::Keyboard);
+    d.frame(draw);
+    d.frame(draw);
+    d.frame(draw);
+    assert_eq!(fills(&d)[0], focused);
+    d.device(InputDevice::Mouse);
+    d.frame(draw);
+    assert_eq!(fills(&d)[0], normal, "no ring, no focused look");
+  }
+
+  #[test]
+  fn the_focus_ring_follows_the_themes_metrics() {
+    use crate::core::input::InputDevice;
+    use crate::core::ui::theme::Theme;
+    let mut theme = Theme::dark();
+    theme.metrics.focus_ring.width = 3.0;
+    theme.metrics.focus_ring.color = Color::YELLOW;
+    let mut d = UiDriver::new((200.0, 100.0)).with_theme(theme);
+    let draw = |ui: &mut UiContext<'_>| {
+      ui.column().focus_scope().show(|ui| {
+        ui.button("A").default_focus().show();
+      });
+    };
+    d.device(InputDevice::Keyboard);
+    for _ in 0..3 {
+      d.frame(draw);
+    }
+    let ring = d.commands.iter().find_map(|(_, c)| match c {
+      UiCommand::Rect {
+        border: Some((width, color)),
+        fill,
+        ..
+      } if fill.a == 0 => Some((*width, *color)),
+      _ => None,
+    });
+    assert_eq!(ring, Some((3.0, Color::YELLOW)));
   }
 }

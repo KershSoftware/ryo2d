@@ -2,7 +2,7 @@
 //! report a [`Response`](super::Response)
 
 mod button;
-mod common;
+pub(crate) mod common;
 mod custom;
 pub(crate) mod scroll;
 

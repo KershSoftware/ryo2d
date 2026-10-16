@@ -1,9 +1,15 @@
-//! Theme demo page - demonstrates the hot-reloadable theme system
+//! Theme demo page - the UI theme: built-in themes, variants, skins and a
+//! hot-reloaded theme file
 
 use demo_kit::prelude::*;
 
+/// The theme file the "File" theme loads, and reloads when it is saved
+const THEME_FILE: &str = "assets/ui/theme.ron";
+
+/// The themes the T key cycles through
+const THEME_NAMES: [&str; 5] = ["Dark", "Light", "Neon", "Pixel", "File"];
+
 pub struct ThemeDemo {
-  hot_theme: Option<HotReloadTheme>,
   theme_load_error: Option<String>,
   // Demo state
   slider_value: f32,
@@ -11,8 +17,8 @@ pub struct ThemeDemo {
   toggle_on: bool,
   progress_value: f32,
   progress_direction: f32,
-  // Theme variant selection
-  current_variant: usize,
+  /// Which of `THEME_NAMES` is in use
+  current_theme: usize,
   // Instructions visibility
   show_instructions: bool,
 }
@@ -20,143 +26,83 @@ pub struct ThemeDemo {
 impl ThemeDemo {
   pub fn new() -> Self {
     Self {
-      hot_theme: None,
       theme_load_error: None,
       slider_value: 0.5,
       checkbox_checked: false,
       toggle_on: true,
       progress_value: 0.3,
       progress_direction: 1.0,
-      current_variant: 0,
+      current_theme: 0,
       show_instructions: true,
     }
   }
 
-  fn get_theme_path() -> std::path::PathBuf {
-    std::path::PathBuf::from("assets/ui/theme.json")
-  }
-
-  fn initialize_theme(&mut self) {
-    let path = Self::get_theme_path();
-
-    // Ensure directory exists
-    if let Some(parent) = path.parent() {
-      let _ = std::fs::create_dir_all(parent);
-    }
-
-    match HotReloadTheme::new(&path) {
-      Ok(theme) => {
-        // Sync current_variant with the loaded theme's name
-        let loaded_theme = theme.get();
-        self.current_variant = match loaded_theme.name.as_str() {
-          "dark" => 0,
-          "light" => 1,
-          "neon" => 2,
-          _ => 0,
-        };
-        self.hot_theme = Some(theme);
-        self.theme_load_error = None;
-      }
-      Err(e) => {
-        self.theme_load_error = Some(format!("Failed to load theme: {}", e));
-      }
-    }
-  }
-
-  fn switch_theme_variant(&mut self) {
-    self.current_variant = (self.current_variant + 1) % 3;
-
-    let new_theme = match self.current_variant {
-      0 => Theme::default(),
+  /// Use the theme `index` of `THEME_NAMES` from the next frame
+  fn use_theme(&mut self, index: usize, ctx: &mut SceneContext) {
+    self.current_theme = index % THEME_NAMES.len();
+    self.theme_load_error = None;
+    let theme = match self.current_theme {
+      0 => Theme::dark(),
       1 => Theme::light(),
-      2 => create_neon_theme(),
-      _ => Theme::default(),
+      2 => neon_theme(),
+      3 => Theme::pixel(),
+      _ => match Theme::load(THEME_FILE) {
+        Ok(theme) => theme,
+        Err(error) => {
+          self.theme_load_error = Some(error.to_string());
+          Theme::dark()
+        }
+      },
     };
-
-    if let Some(ref hot_theme) = self.hot_theme {
-      let _ = hot_theme.set(new_theme);
-    }
-  }
-
-  fn set_theme_variant(&mut self, variant: usize) {
-    if variant != self.current_variant {
-      self.current_variant = variant;
-      let new_theme = match variant {
-        0 => Theme::default(),
-        1 => Theme::light(),
-        2 => create_neon_theme(),
-        _ => Theme::default(),
-      };
-      if let Some(ref hot_theme) = self.hot_theme {
-        let _ = hot_theme.set(new_theme);
-      }
-    }
+    ctx.ui_theme().set(theme);
   }
 }
 
-/// Create a neon/cyberpunk themed UI variant
-fn create_neon_theme() -> Theme {
-  Theme {
-    name: "neon".to_string(),
-    button: ryo2d::core::ui::ButtonStyle {
-      background: Color::rgb(30, 20, 50),
-      background_hovered: Color::rgb(50, 30, 80),
-      background_pressed: Color::rgb(80, 50, 120),
-      background_disabled: Color::rgb(20, 15, 30),
-      border: Color::rgb(150, 80, 255),
-      border_hovered: Color::rgb(200, 120, 255),
-      border_thickness: 2.0,
-      text: Color::rgb(200, 180, 255),
-      text_disabled: Color::rgb(80, 60, 100),
-      padding: (8.0, 4.0),
-    },
-    panel: ryo2d::core::ui::PanelStyle {
-      background: Color::new(20, 15, 35, 220),
-      border: Some(Color::rgb(100, 60, 180)),
-      border_thickness: 2.0,
-      padding: 12.0,
-    },
-    progress_bar: ryo2d::core::ui::ProgressBarStyle {
-      fill: Color::rgb(150, 80, 255),
-      background: Color::rgb(30, 20, 50),
-      border: Some(Color::rgb(100, 60, 180)),
-      border_thickness: 1.0,
-      height: 20.0,
-    },
-    slider: ryo2d::core::ui::SliderStyle {
-      track_background: Color::rgb(40, 25, 60),
-      track_fill: Color::rgb(150, 80, 255),
-      handle: Color::rgb(200, 140, 255),
-      handle_hovered: Color::rgb(220, 180, 255),
-      track_height: 8.0,
-      handle_width: 12.0,
-      handle_height: 16.0,
-    },
-    checkbox: ryo2d::core::ui::CheckboxStyle {
-      background: Color::rgb(30, 20, 50),
-      background_checked: Color::rgb(100, 50, 180),
-      background_hovered: Color::rgb(50, 35, 70),
-      border: Color::rgb(150, 80, 255),
-      checkmark: Color::rgb(220, 200, 255),
-      size: 20.0,
-      border_thickness: 2.0,
-    },
-    toggle: ryo2d::core::ui::ToggleStyle {
-      track_off: Color::rgb(40, 25, 60),
-      track_on: Color::rgb(100, 50, 180),
-      track_hovered: Color::rgb(50, 35, 70),
-      knob: Color::rgb(200, 140, 255),
-      width: 44.0,
-      height: 24.0,
-      knob_size: 20.0,
-    },
-    label: ryo2d::core::ui::LabelStyle {
-      text: Color::rgb(200, 180, 255),
-      text_muted: Color::rgb(120, 100, 160),
-      ..ryo2d::core::ui::LabelStyle::default()
-    },
-    ..Theme::default()
-  }
+/// A neon theme: the dark theme with a purple palette, looks for buttons,
+/// the panel and the progress bar, and a variant of its own
+fn neon_theme() -> Theme {
+  let purple = Color::rgb(150, 80, 255);
+  let mut theme = Theme::dark();
+  theme.name = "neon".to_string();
+  theme.palette.background = Color::rgb(16, 10, 28);
+  theme.palette.text = Color::rgb(200, 180, 255);
+  theme.palette.muted = Color::rgb(120, 100, 160);
+  theme.palette.accent = purple;
+
+  let button = &mut theme.widgets.button;
+  button.normal.fill = Color::rgb(30, 20, 50);
+  button.normal.border = purple;
+  button.normal.border_width = 2.0;
+  button.normal.text = Color::rgb(200, 180, 255);
+  button.hovered = LookPatch::default()
+    .fill(Color::rgb(50, 30, 80))
+    .border(Color::rgb(200, 120, 255));
+  button.pressed = LookPatch::default().fill(Color::rgb(80, 50, 120));
+  button.focused = LookPatch::default()
+    .fill(Color::rgb(50, 30, 80))
+    .border(Color::rgb(220, 180, 255));
+  button.disabled = LookPatch::default()
+    .fill(Color::new(30, 20, 50, 120))
+    .text(Color::new(200, 180, 255, 120));
+
+  let panel = &mut theme.widgets.panel;
+  panel.normal.fill = Color::new(20, 15, 35, 220);
+  panel.normal.border = Color::rgb(100, 60, 180);
+  panel.normal.border_width = 2.0;
+  theme.widgets.progress.normal.fill = Color::rgb(30, 20, 50);
+  theme.widgets.progress.normal.border = purple;
+
+  theme.metrics.focus_ring.color = Color::rgb(220, 180, 255);
+  theme.variant(
+    "glow",
+    Variant::of(WidgetKind::Button)
+      .normal(
+        LookPatch::default()
+          .fill(Color::rgb(90, 40, 160))
+          .border(Color::rgb(230, 150, 255)),
+      )
+      .hovered(LookPatch::default().fill(Color::rgb(120, 60, 200))),
+  )
 }
 
 impl Default for ThemeDemo {
@@ -171,28 +117,28 @@ impl DemoPage for ThemeDemo {
   }
 
   fn description(&self) -> &str {
-    "Buttons, sliders, toggles and a hot-reloaded theme (assets/ui/theme.json)."
+    "Buttons and panels in the dark, light, neon, pixel and file themes (assets/ui/theme.ron reloads when saved)."
   }
 
   fn controls(&self) -> Vec<Control> {
     vec![
-      Control::key(KeyCode::KeyT, "Next theme variant"),
+      Control::key(KeyCode::KeyT, "Next theme"),
       Control::key(KeyCode::KeyI, "Show or hide instructions"),
     ]
   }
 
-  fn enter(&mut self, _ctx: &mut SceneContext) {
-    self.initialize_theme();
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.use_theme(0, ctx);
+  }
+
+  /// The theme is global: the other pages draw in the dark theme again
+  fn exit(&mut self, ctx: &mut SceneContext) {
+    ctx.ui_theme().set(Theme::dark());
   }
 
   /// The whole page is UI: its keys and the progress bar's animation run in
   /// the UI pass, on real time
-  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
-    // Poll for theme hot-reload
-    if let Some(ref hot_theme) = self.hot_theme {
-      hot_theme.poll_reload();
-    }
-
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
     // Animate progress bar
     self.progress_value += ui.dt() * 0.2 * self.progress_direction;
     if self.progress_value >= 1.0 {
@@ -206,7 +152,7 @@ impl DemoPage for ThemeDemo {
     // Handle input
     if ui.input().key_pressed(KeyCode::KeyT) {
       ui.consume_key(KeyCode::KeyT);
-      self.switch_theme_variant();
+      self.use_theme(self.current_theme + 1, ctx);
     }
 
     if ui.input().key_pressed(KeyCode::KeyI) {
@@ -217,43 +163,29 @@ impl DemoPage for ThemeDemo {
     let (screen_w, screen_h) = ui.screen_size();
     let top = content_area(ui).y;
 
-    // Get current theme for colors
-    let theme = self.hot_theme.as_ref().map(|t| t.get());
-    let text_color = theme.as_ref().map(|t| t.label.text).unwrap_or(Color::WHITE);
-    let muted_color = theme
-      .as_ref()
-      .map(|t| t.label.text_muted)
-      .unwrap_or(Color::GRAY);
+    // This frame's theme (a change applies from the next frame)
+    let palette = ui.theme().palette.clone();
+    let sizes = ui.theme().metrics.sizes.clone();
+    let progress = ui
+      .theme()
+      .look(WidgetKind::Progress, None, WidgetState::Normal);
+    let theme_name = ui.theme().name.clone();
+    let (text_color, muted_color) = (palette.text, palette.muted);
 
-    // Background
-    let bg_color = theme
-      .as_ref()
-      .map(|t| {
-        Color::rgb(
-          (t.panel.background.r as u16 * 80 / 100) as u8,
-          (t.panel.background.g as u16 * 80 / 100) as u8,
-          (t.panel.background.b as u16 * 80 / 100) as u8,
-        )
-      })
-      .unwrap_or(Color::rgb(20, 20, 30));
     ui.draw_rect(
       Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32),
-      bg_color,
+      palette.background,
     );
 
-    let theme_name = theme
-      .as_ref()
-      .map(|t| t.name.as_str())
-      .unwrap_or("(no theme)");
     ui.draw_text_anchored(
-      &format!("Current theme: {}", theme_name),
+      &format!("Current theme: {theme_name}"),
       Anchor::TopCenter,
       0.0,
       top,
       muted_color,
     );
 
-    // Show error if theme failed to load
+    // Show error if the theme file failed to load
     if let Some(ref error) = self.theme_load_error {
       ui.draw_text_anchored(error, Anchor::TopCenter, 0.0, top + 20.0, Color::RED);
     }
@@ -263,17 +195,9 @@ impl DemoPage for ThemeDemo {
     let panel_height = 380.0;
     let panel_x = (screen_w as f32 - panel_width) / 2.0;
     let panel_y = top + 45.0;
-    let panel_rect = Rect::new(panel_x, panel_y, panel_width, panel_height);
-
-    // Draw themed panel
-    if let Some(ref theme) = theme {
-      ui.draw_rect(panel_rect, theme.panel.background);
-      if let Some(border) = theme.panel.border {
-        ui.draw_rect_outline(panel_rect, border, theme.panel.border_thickness);
-      }
-    } else {
-      ui.draw_themed_panel(panel_rect);
-    }
+    ui.panel()
+      .at(Rect::new(panel_x, panel_y, panel_width, panel_height))
+      .show(|_| {});
 
     // Content inside panel
     let content_x = panel_x + 20.0;
@@ -284,20 +208,24 @@ impl DemoPage for ThemeDemo {
     let value_x = widget_x + widget_width + 10.0; // Where value text goes
     let text_height = 8.0; // Approximate font height for centering
 
-    // Buttons section
+    // Buttons section: the plain look, then three variants
     ui.draw_text("Buttons:", content_x, y, text_color);
-
-    let button_rect = Rect::new(widget_x, y - 5.0, 120.0, 30.0);
-    let _ = ui.button("Click Me").at(button_rect).clicked();
-
-    let button2_rect = Rect::new(widget_x + 130.0, y - 5.0, 120.0, 30.0);
-    let _ = ui.button("Another").at(button2_rect).clicked();
+    let variants = [None, Some("accent"), Some("danger"), Some("tab")];
+    let labels = ["Plain", "Accent", "Danger", "Tab"];
+    for (i, (variant, label)) in variants.into_iter().zip(labels).enumerate() {
+      let rect = Rect::new(widget_x + i as f32 * 80.0, y - 5.0, 74.0, 30.0);
+      let button = ui.button(label).at(rect);
+      let _ = match variant {
+        Some(name) => button.variant(name).clicked(),
+        None => button.clicked(),
+      };
+    }
 
     y += label_spacing + 10.0;
 
     // Slider section
     ui.draw_text("Slider:", content_x, y, text_color);
-    let slider_height = theme.as_ref().map(|t| t.slider.track_height).unwrap_or(8.0);
+    let slider_height = sizes.slider[1];
     let slider_rect = Rect::new(widget_x, y + 2.0, widget_width, slider_height);
     ui.slider(slider_rect, &mut self.slider_value, 0.0, 1.0);
     // Center-align value text with slider
@@ -311,26 +239,16 @@ impl DemoPage for ThemeDemo {
 
     y += label_spacing;
 
-    // Progress bar section
+    // Progress bar section: the track is the look's fill, the filled part its border
     ui.draw_text("Progress:", content_x, y, text_color);
-    let progress_height = theme
-      .as_ref()
-      .map(|t| t.progress_bar.height)
-      .unwrap_or(20.0);
+    let progress_height = 20.0;
     let progress_rect = Rect::new(widget_x, y - 2.0, widget_width, progress_height);
-    if let Some(ref theme) = theme {
-      ui.draw_progress_bar(
-        progress_rect,
-        self.progress_value,
-        theme.progress_bar.fill,
-        theme.progress_bar.background,
-      );
-      if let Some(border) = theme.progress_bar.border {
-        ui.draw_rect_outline(progress_rect, border, theme.progress_bar.border_thickness);
-      }
-    } else {
-      ui.draw_themed_progress_bar(progress_rect, self.progress_value);
-    }
+    ui.draw_progress_bar(
+      progress_rect,
+      self.progress_value,
+      progress.border,
+      progress.fill,
+    );
     // Center-align value text with progress bar
     let progress_center_y = progress_rect.y + progress_height / 2.0 - text_height / 2.0;
     ui.draw_text(
@@ -344,77 +262,47 @@ impl DemoPage for ThemeDemo {
 
     // Checkbox section
     ui.draw_text("Checkbox:", content_x, y, text_color);
-    let checkbox_size = theme.as_ref().map(|t| t.checkbox.size).unwrap_or(20.0);
-    let checkbox_rect = Rect::new(widget_x, y - 2.0, checkbox_size, checkbox_size);
-    ui.checkbox(
-      checkbox_rect,
-      &mut self.checkbox_checked,
-      Some("Enable feature"),
+    let checkbox_rect = Rect::new(widget_x, y - 2.0, sizes.checkbox, sizes.checkbox);
+    ui.checkbox(checkbox_rect, &mut self.checkbox_checked, None);
+    ui.draw_text(
+      "Enable feature",
+      checkbox_rect.right() + 8.0,
+      checkbox_rect.y + 3.0,
+      text_color,
     );
 
     y += label_spacing;
 
     // Toggle section
     ui.draw_text("Toggle:", content_x, y, text_color);
-    let toggle_width = theme.as_ref().map(|t| t.toggle.width).unwrap_or(44.0);
-    let toggle_height = theme.as_ref().map(|t| t.toggle.height).unwrap_or(24.0);
-    let toggle_rect = Rect::new(widget_x, y - 2.0, toggle_width, toggle_height);
+    let toggle_rect = Rect::new(widget_x, y - 2.0, sizes.toggle[0], sizes.toggle[1]);
     ui.toggle(toggle_rect, &mut self.toggle_on);
     let toggle_label = if self.toggle_on { "ON" } else { "OFF" };
     // Center-align label with toggle
-    let toggle_center_y = toggle_rect.y + toggle_height / 2.0 - text_height / 2.0;
+    let toggle_center_y = toggle_rect.y + sizes.toggle[1] / 2.0 - text_height / 2.0;
     ui.draw_text(toggle_label, widget_x + 55.0, toggle_center_y, muted_color);
 
     y += label_spacing + 10.0;
 
-    // Themed panel preview - use a lighter variant for contrast
+    // A second panel, to see the panel look (and its skin) at another size
     ui.draw_text("Nested Panel:", content_x, y, text_color);
     let nested_panel_rect = Rect::new(widget_x, y - 5.0, widget_width, 60.0);
-    if let Some(ref theme) = theme {
-      // Make nested panel slightly lighter/more opaque for visibility
-      let nested_bg = Color::new(
-        theme.panel.background.r.saturating_add(15),
-        theme.panel.background.g.saturating_add(15),
-        theme.panel.background.b.saturating_add(15),
-        theme.panel.background.a.saturating_add(30),
-      );
-      ui.draw_rect(nested_panel_rect, nested_bg);
-      if let Some(border) = theme.panel.border {
-        // Make border slightly brighter too
-        let nested_border = Color::rgb(
-          border.r.saturating_add(20),
-          border.g.saturating_add(20),
-          border.b.saturating_add(20),
-        );
-        ui.draw_rect_outline(
-          nested_panel_rect,
-          nested_border,
-          theme.panel.border_thickness,
-        );
-      }
-    } else {
-      ui.draw_themed_panel(nested_panel_rect);
-    }
+    ui.panel().at(nested_panel_rect).show(|_| {});
     ui.draw_text_centered("Content goes here", nested_panel_rect, text_color);
 
     y += 80.0;
 
-    // Theme variant buttons
-    ui.draw_text("Theme Variants:", content_x, y, text_color);
-
-    let variants = ["Dark", "Light", "Neon"];
-    for (i, name) in variants.iter().enumerate() {
-      let btn_x = widget_x + (i as f32 * 95.0);
-      let btn_rect = Rect::new(btn_x, y - 5.0, 85.0, 28.0);
-
-      let is_selected = i == self.current_variant;
-      if is_selected {
-        // Highlight selected variant
-        ui.draw_rect_outline(btn_rect.expand(2.0), Color::rgb(100, 180, 255), 2.0);
-      }
-
-      if ui.button(*name).at(btn_rect).clicked() {
-        self.set_theme_variant(i);
+    // Theme buttons: the one in use is an accent button
+    ui.draw_text("Themes:", content_x, y, text_color);
+    for (i, name) in THEME_NAMES.iter().enumerate() {
+      let btn_rect = Rect::new(widget_x - 60.0 + i as f32 * 80.0, y - 5.0, 74.0, 28.0);
+      let variant = if i == self.current_theme {
+        "accent"
+      } else {
+        "tab"
+      };
+      if ui.button(*name).at(btn_rect).variant(variant).clicked() {
+        self.use_theme(i, ctx);
       }
     }
 
@@ -433,17 +321,12 @@ impl DemoPage for ThemeDemo {
 
       ui.draw_text("Instructions:", inst_x, inst_y, Color::WHITE);
       inst_y += inst_line_h + 5.0;
-      ui.draw_text(
-        "T - Cycle theme variants",
-        inst_x,
-        inst_y,
-        Color::LIGHT_GRAY,
-      );
+      ui.draw_text("T - Cycle themes", inst_x, inst_y, Color::LIGHT_GRAY);
       inst_y += inst_line_h;
       ui.draw_text("I - Toggle instructions", inst_x, inst_y, Color::LIGHT_GRAY);
       inst_y += inst_line_h + 5.0;
       ui.draw_text(
-        "Edit theme.json for hot-reload!",
+        "Edit theme.ron for hot-reload!",
         inst_x,
         inst_y,
         Color::rgb(150, 200, 255),
@@ -459,7 +342,7 @@ impl DemoPage for ThemeDemo {
     }
 
     // Theme file path info
-    let path_text = format!("Theme file: {}", Self::get_theme_path().display());
+    let path_text = format!("Theme file: {THEME_FILE}");
     ui.draw_text_anchored(&path_text, Anchor::BottomRight, -10.0, -34.0, muted_color);
   }
 }

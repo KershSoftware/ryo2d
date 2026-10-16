@@ -45,7 +45,9 @@ impl PageKind {
 }
 
 /// How a texture is sampled when drawn at other than its own pixel size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum Filter {
   /// Nearest for pixel-art presentation, linear otherwise
   #[default]

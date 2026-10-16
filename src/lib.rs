@@ -222,11 +222,14 @@ pub mod prelude {
 
   // UI
   pub use crate::core::render::UiResolution;
+  /// A widget's resolved look (the render pipeline's `Look` keeps its name)
+  pub use crate::core::ui::Look as UiLook;
   pub use crate::core::ui::{
-    Align, Anchor, Color, DropdownState, Edges, FocusTrap, Focusable, HAlign, HBox, HotReloadTheme,
-    Justify, Length, Painter, Rect, Response, Sense, Stack, TextInputState, Theme, ThemeError,
-    TweenColor, TweenFloat, TweenRect, TweenVec2, UiContext, UiId, UiInput, UiText, UiTween,
-    UiTweenLoop, VAlign, VBox,
+    Align, Anchor, Color, DropdownState, Edges, FocusRing, FocusTrap, Focusable, HAlign, HBox,
+    Justify, Length, LookPatch, Looks, Metrics, Painter, Palette, Rect, Response, Sense, Sizes,
+    Skin, Stack, TextInputState, TextLook, TextRoles, Theme, ThemeError, ThemeFont, TweenColor,
+    TweenFloat, TweenRect, TweenVec2, UiContext, UiId, UiInput, UiSounds, UiText, UiTheme, UiTween,
+    UiTweenLoop, VAlign, VBox, Variant, WidgetKind, WidgetLooks, WidgetState,
   };
 
   // Errors

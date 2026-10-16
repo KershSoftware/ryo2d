@@ -36,6 +36,24 @@ impl Scene for PauseScene {
       .iter()
       .position(|m| *m == ctx.display_mode())
       .unwrap_or(0);
+    ctx.ui_theme().modify(|theme| {
+      theme.variants.insert(
+        "pause-item".to_string(),
+        pause_variant(
+          Color::rgb(50, 50, 60),
+          Color::rgb(60, 60, 70),
+          Color::rgb(40, 40, 50),
+        ),
+      );
+      theme.variants.insert(
+        "pause-selected".to_string(),
+        pause_variant(
+          Color::rgb(60, 100, 60),
+          Color::rgb(70, 110, 70),
+          Color::rgb(50, 90, 50),
+        ),
+      );
+    });
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -291,32 +309,22 @@ impl PauseScene {
 
       let is_selected = i == self.selected_display_mode_idx;
       let is_focused = settings_focus == i;
-      let (bg, hover, pressed) = if is_selected {
-        (
-          Color::rgb(60, 100, 60),
-          Color::rgb(70, 110, 70),
-          Color::rgb(50, 90, 50),
-        )
+      let variant = if is_selected {
+        "pause-selected"
       } else {
-        (
-          Color::rgb(50, 50, 60),
-          Color::rgb(60, 60, 70),
-          Color::rgb(40, 40, 50),
-        )
+        "pause-item"
       };
 
       if is_focused {
         ui.draw_rect_outline(btn_rect, Color::rgb(255, 220, 100), 2.0);
       }
 
-      if ui.button_styled(
-        mode.display_name(),
-        btn_rect,
-        bg,
-        hover,
-        pressed,
-        Color::WHITE,
-      ) {
+      if ui
+        .button(mode.display_name())
+        .at(btn_rect)
+        .variant(variant)
+        .clicked()
+      {
         self.selected_display_mode_idx = i;
       }
     }
@@ -330,14 +338,12 @@ impl PauseScene {
       ui.draw_rect_outline(apply_rect, Color::rgb(255, 220, 100), 2.0);
     }
 
-    if ui.button_styled(
-      "Apply",
-      apply_rect,
-      Color::rgb(50, 80, 50),
-      Color::rgb(60, 100, 60),
-      Color::rgb(40, 70, 40),
-      Color::WHITE,
-    ) {
+    if ui
+      .button("Apply")
+      .at(apply_rect)
+      .variant("pause-selected")
+      .clicked()
+    {
       let display_mode = modes[self.selected_display_mode_idx];
       crate::save::save_display_mode(display_mode);
       // Flag for update() to call ctx.request_display_mode (needs SceneContext)
@@ -349,14 +355,7 @@ impl PauseScene {
       ui.draw_rect_outline(back_rect, Color::rgb(255, 220, 100), 2.0);
     }
 
-    if ui.button_styled(
-      "Back",
-      back_rect,
-      Color::rgb(70, 50, 50),
-      Color::rgb(90, 60, 60),
-      Color::rgb(60, 40, 40),
-      Color::WHITE,
-    ) {
+    if ui.button("Back").at(back_rect).variant("danger").clicked() {
       self.settings_open = false;
     }
 
@@ -384,74 +383,60 @@ impl PauseScene {
     let btn_x = center_x - btn_w / 2.0;
     let focus = self.pause_menu_focus;
 
-    let get_btn_colors = |base_r: u8, base_g: u8, base_b: u8, is_focused: bool| {
-      if is_focused {
-        (
-          Color::rgb(base_r + 60, base_g + 60, base_b + 30),
-          Color::rgb(base_r + 80, base_g + 80, base_b + 40),
-          Color::rgb(base_r + 40, base_g + 40, base_b + 20),
-        )
-      } else {
-        (
-          Color::rgb(base_r + 30, base_g + 30, base_b + 30),
-          Color::rgb(base_r + 50, base_g + 50, base_b + 50),
-          Color::rgb(base_r + 20, base_g + 20, base_b + 20),
-        )
-      }
-    };
-
     // Resume
     let resume_rect = Rect::new(btn_x, center_y - 50.0, btn_w, btn_h);
-    let (bg, hover, pressed) = get_btn_colors(40, 70, 40, focus == 0);
     if focus == 0 {
       ui.draw_rect_outline(resume_rect, Color::rgb(255, 220, 100), 2.0);
     }
-    if ui.button_styled("Resume", resume_rect, bg, hover, pressed, Color::WHITE) {
+    if ui
+      .button("Resume")
+      .at(resume_rect)
+      .variant("pause-item")
+      .clicked()
+    {
       return SceneAction::Pop;
     }
 
     // Settings
     let settings_rect = Rect::new(btn_x, center_y, btn_w, btn_h);
-    let (bg, hover, pressed) = get_btn_colors(40, 40, 70, focus == 1);
     if focus == 1 {
       ui.draw_rect_outline(settings_rect, Color::rgb(255, 220, 100), 2.0);
     }
-    if ui.button_styled("Settings", settings_rect, bg, hover, pressed, Color::WHITE) {
+    if ui
+      .button("Settings")
+      .at(settings_rect)
+      .variant("pause-item")
+      .clicked()
+    {
       self.settings_open = true;
       self.settings_menu_focus = 0;
     }
 
     // Quit to Menu
     let quit_menu_rect = Rect::new(btn_x, center_y + 50.0, btn_w, btn_h);
-    let (bg, hover, pressed) = get_btn_colors(70, 50, 30, focus == 2);
     if focus == 2 {
       ui.draw_rect_outline(quit_menu_rect, Color::rgb(255, 220, 100), 2.0);
     }
-    if ui.button_styled(
-      "Quit to Menu",
-      quit_menu_rect,
-      bg,
-      hover,
-      pressed,
-      Color::WHITE,
-    ) {
+    if ui
+      .button("Quit to Menu")
+      .at(quit_menu_rect)
+      .variant("pause-item")
+      .clicked()
+    {
       return SceneAction::Reset(Box::new(MenuScene::new()));
     }
 
     // Quit to Desktop
     let quit_desktop_rect = Rect::new(btn_x, center_y + 100.0, btn_w, btn_h);
-    let (bg, hover, pressed) = get_btn_colors(70, 40, 40, focus == 3);
     if focus == 3 {
       ui.draw_rect_outline(quit_desktop_rect, Color::rgb(255, 220, 100), 2.0);
     }
-    if ui.button_styled(
-      "Quit to Desktop",
-      quit_desktop_rect,
-      bg,
-      hover,
-      pressed,
-      Color::WHITE,
-    ) {
+    if ui
+      .button("Quit to Desktop")
+      .at(quit_desktop_rect)
+      .variant("danger")
+      .clicked()
+    {
       return SceneAction::Quit;
     }
 
@@ -471,3 +456,12 @@ impl PauseScene {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// A button variant with the given fills for its normal, hovered and
+/// pressed states
+fn pause_variant(normal: Color, hovered: Color, pressed: Color) -> Variant {
+  Variant::of(WidgetKind::Button)
+    .normal(LookPatch::default().fill(normal))
+    .hovered(LookPatch::default().fill(hovered))
+    .pressed(LookPatch::default().fill(pressed))
+}

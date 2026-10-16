@@ -45,7 +45,7 @@ The UI pass reads the frame's input through `ui.input()` (a `UiInput` snapshot: 
 
 | Consumed by | What |
 |-------------|------|
-| `button`, `button_styled`, `checkbox`, `toggle`, `text_input`, `dropdown` | the left click they act on |
+| `button`, `checkbox`, `toggle`, `text_input`, `dropdown` | the left click they act on |
 | `slider`, a `scroll_view`'s scrollbar (vertical or horizontal) | the press and drag |
 | A hovered `scroll_view` whose content overflows | the mouse wheel |
 | A focused text input | the whole keyboard and the typed text |
@@ -163,7 +163,7 @@ ui.draw_line(&[Vec2::new(10.0, 10.0), Vec2::new(90.0, 40.0)], 2.0, Color::WHITE)
 
 ```rust
 if ui.button("Start Game", Rect::new(100.0, 200.0, 150.0, 40.0)) { /* clicked */ }
-if ui.button_styled("Custom", rect, normal_bg, hover_bg, pressed_bg, text_color) { }
+if ui.button("Custom").at(rect).variant("danger").clicked() { }   // a theme variant (see Themes)
 if ui.slider(rect, &mut self.volume, 0.0, 1.0) { /* changed */ }
 if ui.checkbox(rect, &mut self.enabled, Some("Enable Sound")) { /* toggled */ }
 if ui.toggle(rect, &mut self.on) { /* toggled */ }
@@ -264,15 +264,24 @@ trap.focus_first();   // also focus_next, focus_prev, focus_last, is_capturing
 
 ## Themes
 
+The theme is the `UiTheme` world resource: a palette, metrics (radius, timings, widget sizes, the focus ring), text roles, a look for each widget kind and state (`Normal`, `Hovered`, `Pressed`, `Focused`, `Disabled`; a state changes only the fields it names), named variants, nine-slice skins and sounds. Widgets read it once per pass, so a change applies from the next frame.
+
 ```rust
-let theme = Theme::default();                     // also Theme::dark(), Theme::light()
-let theme = Theme::load("assets/theme.ron")?;
-let hot = HotReloadTheme::new("assets/theme.ron")?;   // created with defaults if missing
-hot.poll_reload();                                     // reloads in debug builds only
-let theme = hot.get();
+EngineBuilder::new().ui_theme(Theme::pixel());                // or Theme::dark() (the default), Theme::light()
+ctx.ui_theme().set(Theme::load("assets/ui/theme.ron")?);      // a RON file states only what it changes from dark
+ctx.ui_theme().modify(|t| t.palette.accent = Color::rgb(255, 120, 40));
+
+// A variant: a named change to a widget kind's look; builtin themes carry "danger", "accent" and "tab"
+ctx.ui_theme().modify(|t| {
+  t.variants.insert("gold".into(), Variant::of(WidgetKind::Button)
+    .normal(LookPatch::default().fill(Color::rgb(200, 160, 40)))
+    .hovered(LookPatch::default().fill(Color::rgb(220, 180, 60))));
+});
+if ui.button("Buy").variant("gold").clicked() { }
+ui.button("One-off").style(LookPatch::default().fill(Color::RED));   // changes only what it names, in every state
 ```
 
-The `UiContext` the engine passes to `ui` has no theme, so `draw_themed_panel`, `draw_themed_progress_bar` and `draw_focus_ring_themed` use the default colours there. Pass explicit colours (or colours read from your `Theme`) to the plain draw calls.
+A theme loaded from a file reloads when the file changes, in debug builds. A look that names a skin draws its nine-slice sprite (`Skin::from_path`, `Skin::from_sprite`) in place of its fill and border, the fill tinting it. Today the button, the panel, the scrollbar and the focus ring read the theme; the checkbox, toggle, slider, text input and dropdown calls keep their own colours until they are ported. Plain `ui.text(..)` and `draw_text*` keep the default text style.
 
 ## UI Tweens
 

@@ -244,7 +244,7 @@ Immediate mode for simple elements, retained state for stateful widgets, recorde
 
 | Immediate | Retained state | Layout and style |
 |-----------|----------------|------------------|
-| `button`, `label`, `slider`, `checkbox`, `toggle`, `text_input`, `dropdown`, `scroll_view`, `draw_progress_bar`, `draw_rect`/`draw_rounded_rect`/`draw_text`/`ui.text(..)`/`draw_sprite`/`draw_nine_slice`/`draw_line` | `TextInputState`, `DropdownState`, `ScrollViewState`, `FocusTrap` | `HBox`, `VBox`, `Stack`; `Theme` (hot-reloadable from JSON); `UiTween` / `TweenFloat`/`Vec2`/`Color`/`Rect` |
+| `button`, `label`, `slider`, `checkbox`, `toggle`, `text_input`, `dropdown`, `scroll_view`, `draw_progress_bar`, `draw_rect`/`draw_rounded_rect`/`draw_text`/`ui.text(..)`/`draw_sprite`/`draw_nine_slice`/`draw_line` | `TextInputState`, `DropdownState`, `ScrollViewState`, `FocusTrap` | `HBox`, `VBox`, `Stack`; `Theme` (looks, variants and skins; RON files, hot-reloaded in debug builds); `UiTween` / `TweenFloat`/`Vec2`/`Color`/`Rect` |
 
 - Widgets consume the input they use, so gameplay in `update` does not see it.
 - A clip stack of any depth clips nested views (a scissor per command); focus moves with Tab / Shift+Tab, and `FocusTrap` keeps it inside a modal.

@@ -1,0 +1,57 @@
+// A UI theme file. It states only what it changes from the dark theme, and
+// an option can be written without `Some(..)`.
+// While the demo shows the "File" theme, edit and save this file: debug
+// builds reload it within a second.
+(
+    name: "file",
+    palette: (
+        background: (r: 24, g: 16, b: 12, a: 255),
+        text: (r: 255, g: 236, b: 214, a: 255),
+        muted: (r: 170, g: 140, b: 110, a: 255),
+        accent: (r: 255, g: 150, b: 60, a: 255),
+    ),
+    widgets: (
+        button: (
+            normal: (
+                fill: (r: 70, g: 40, b: 24, a: 255),
+                border: (r: 200, g: 120, b: 50, a: 255),
+                border_width: 1.0,
+                radius: 8.0,
+                text: (r: 255, g: 236, b: 214, a: 255),
+                padding: (left: 14.0, top: 7.0, right: 14.0, bottom: 7.0),
+            ),
+            hovered: (
+                fill: (r: 95, g: 55, b: 30, a: 255),
+                border: (r: 255, g: 170, b: 80, a: 255),
+            ),
+            pressed: (fill: (r: 120, g: 70, b: 36, a: 255)),
+            focused: (
+                fill: (r: 95, g: 55, b: 30, a: 255),
+                border: (r: 255, g: 210, b: 150, a: 255),
+            ),
+            disabled: (
+                fill: (r: 70, g: 40, b: 24, a: 120),
+                text: (r: 255, g: 236, b: 214, a: 120),
+            ),
+        ),
+        panel: (
+            normal: (
+                fill: (r: 40, g: 26, b: 18, a: 220),
+                border: (r: 160, g: 100, b: 50, a: 255),
+                border_width: 2.0,
+                radius: 8.0,
+            ),
+        ),
+        progress: (
+            normal: (
+                fill: (r: 60, g: 38, b: 24, a: 255),
+                border: (r: 255, g: 150, b: 60, a: 255),
+            ),
+        ),
+    ),
+    metrics: (
+        focus_ring: (
+            color: (r: 255, g: 210, b: 150, a: 255),
+        ),
+    ),
+)

@@ -211,6 +211,11 @@ pub struct Engine {
   ui_memory: UiMemory,
   /// Lays the UI's containers out, kept between frames
   ui_layout: LayoutEngine,
+  /// The `UiTheme` generation whose skin sprites are loaded
+  theme_generation: u64,
+  /// Reloads the theme's file when it changes
+  #[cfg(debug_assertions)]
+  theme_watch: crate::core::ui::theme::ThemeWatch,
   /// UI passes run this frame (a scene switched from `ui` runs a second)
   ui_pass_index: u32,
   // Developer tools
@@ -339,6 +344,7 @@ pub(crate) fn init_world_resources(
   world.insert_resource(crate::core::text::Fonts::with_builtins());
   world.insert_resource(crate::core::text::TextIcons::default());
   world.insert_resource(crate::core::text::TextEffects::default());
+  world.insert_resource(crate::core::ui::UiTheme::default());
   world.insert_resource(PhysicsPaused(false));
   world.insert_resource(frame::PendingTickCheck::default());
   world.add_observer(frame::record_tick_check);
@@ -588,6 +594,10 @@ impl Engine {
       ui_mouse_capture: Vec::new(),
       ui_memory: UiMemory::new(),
       ui_layout: LayoutEngine::new(),
+      // The default theme has no skins to load
+      theme_generation: 0,
+      #[cfg(debug_assertions)]
+      theme_watch: Default::default(),
       ui_pass_index: 0,
       console_state: ConsoleState::new(),
       console_quit_requested: false,
@@ -1163,6 +1173,13 @@ impl EngineBuilder {
     // Read when the engine is built, so headless builds can skip it entirely
     self.user_preferences.push(filter.into());
     self
+  }
+
+  /// Start with `theme` as the UI theme (`ctx.ui_theme()` changes it later).
+  /// A theme loaded with `Theme::load` reloads when its file changes, in
+  /// debug builds.
+  pub fn ui_theme(self, theme: crate::core::ui::Theme) -> Self {
+    self.insert_resource(crate::core::ui::UiTheme::new(theme))
   }
 
   /// Insert a resource every scene and system can reach

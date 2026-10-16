@@ -1,5 +1,7 @@
 //! Recording UI contexts and a headless UI driver for tests (no GPU)
 
+use std::sync::Arc;
+
 use glam::Vec2;
 
 use crate::core::input::{Direction, InputDevice};
@@ -13,6 +15,7 @@ use crate::core::ui::interact::{
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
 use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
+use crate::core::ui::theme::Theme;
 
 /// A text engine over the built-in fonts
 pub(crate) fn text_engine() -> TextEngine {
@@ -60,7 +63,8 @@ pub(crate) fn context_in<'a>(
 ) -> UiContext<'a> {
   let memory = Box::leak(Box::new(UiMemory::new()));
   let layout = Box::leak(Box::new(LayoutEngine::new()));
-  let mut ui = UiContext::new(commands, text, memory, layout, space, input);
+  let theme = Arc::new(Theme::dark());
+  let mut ui = UiContext::new(commands, text, memory, layout, space, input, theme);
   ui.begin_scene(1, true);
   ui
 }
@@ -90,6 +94,8 @@ pub(crate) struct UiDriver {
   /// The outcome of the last frame that had navigation input
   outcome: NavOutcome,
   time: f64,
+  /// What the widgets and the interaction rules read
+  theme: Arc<Theme>,
 }
 
 impl UiDriver {
@@ -107,6 +113,7 @@ impl UiDriver {
         released: [false; 2],
         down: [false; 2],
         time: 0.0,
+        double_click: 0.3,
       },
       wheel: Vec2::ZERO,
       nav: NavInput::default(),
@@ -114,7 +121,14 @@ impl UiDriver {
       scene: 1,
       outcome: NavOutcome::default(),
       time: 0.0,
+      theme: Arc::new(Theme::dark()),
     }
+  }
+
+  /// Draw with `theme` (and take its interaction timings) from the next frame
+  pub(crate) fn with_theme(mut self, theme: Theme) -> UiDriver {
+    self.theme = Arc::new(theme);
+    self
   }
 
   /// Move the pointer to (x, y) in UI units
@@ -209,7 +223,15 @@ impl UiDriver {
     self.memory.begin_frame();
     self.layout.begin_frame();
     let scene = Some(self.scene);
-    resolve_pointer(&mut self.memory, &self.pointer, scene, &[], 4.0);
+    let metrics = self.theme.metrics.clone();
+    self.pointer.double_click = f64::from(metrics.double_click);
+    resolve_pointer(
+      &mut self.memory,
+      &self.pointer,
+      scene,
+      &[],
+      metrics.drag_threshold,
+    );
     apply_scroll_requests(&mut self.memory);
     route_wheel(
       &mut self.memory,
@@ -217,13 +239,15 @@ impl UiDriver {
       self.wheel,
       false,
       scene,
-      40.0,
+      metrics.scroll_line,
     );
     let mut nav = self.nav;
     for (held, holding) in nav.held.iter_mut().zip(self.holding) {
       *held |= holding;
     }
     nav.dt = FRAME as f32;
+    nav.repeat_delay = metrics.repeat_delay;
+    nav.repeat_rate = metrics.repeat_rate;
     let moved = self.memory.interact.pointer != self.memory.interact.prev_pointer;
     let outcome = resolve_focus(&mut self.memory, &nav, scene, moved);
     let scripted = nav.held.contains(&true)
@@ -249,6 +273,7 @@ impl UiDriver {
         &mut self.layout,
         space,
         UiInput::default(),
+        Arc::clone(&self.theme),
       );
       context.set_dt(FRAME as f32);
       context.begin_scene(self.scene, true);

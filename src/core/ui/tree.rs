@@ -146,6 +146,15 @@ pub(crate) enum DrawKind {
     uv: [f32; 4],
     tint: Color,
   },
+  /// A sprite stretched over the inset rect with its corners kept: the
+  /// corners reach `insets` (left, top, right, bottom, in sprite pixels and
+  /// drawn at that size in UI units), the edges and the middle stretch
+  NineSlice {
+    inset: Edges,
+    sprite: SpriteHandle,
+    insets: [f32; 4],
+    tint: Color,
+  },
   /// Geometry in node-local units, translated after layout
   Local(UiCommand),
 }
@@ -336,11 +345,92 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
       clip: clips[draw.node],
       layer: draw.layer,
     };
-    if let Some(command) = command_of(draw.kind, &place, text, scale) {
+    if let DrawKind::NineSlice {
+      inset,
+      sprite,
+      insets,
+      tint,
+    } = &draw.kind
+    {
+      let room = inset_rect(place.rect, *inset);
+      for command in nine_slice(room, sprite, *insets, *tint, place.clip, place.layer, scale) {
+        cx.commands.push(draw.order, command);
+      }
+    } else if let Some(command) = command_of(draw.kind, &place, text, scale) {
       cx.commands.push(draw.order, command);
     }
   }
   resolved
+}
+
+/// The pieces of `sprite` stretched over `room` with corners of `insets`
+/// (left, top, right, bottom): up to nine sprite commands, edges snapped to
+/// render pixels so the pieces meet without gaps. Corners shrink together
+/// when `room` is smaller than they are.
+fn nine_slice(
+  room: Rect,
+  sprite: &SpriteHandle,
+  insets: [f32; 4],
+  tint: Color,
+  clip: Option<Rect>,
+  layer: u8,
+  scale: f32,
+) -> Vec<UiCommand> {
+  let (width, height) = (sprite.width() as f32, sprite.height() as f32);
+  if !(drawable(room) && width > 0.0 && height > 0.0) {
+    return Vec::new();
+  }
+  let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+  let [left, top, right, bottom] = insets.map(clean);
+  // The two corners along an axis share the room if they do not fit it
+  let fit = |a: f32, b: f32, room: f32| {
+    let total = a + b;
+    if total > room && total > 0.0 {
+      (a * room / total, b * room / total)
+    } else {
+      (a, b)
+    }
+  };
+  let (l, r) = fit(left, right, room.width);
+  let (t, b) = fit(top, bottom, room.height);
+  let snap = |v: f32| (v * scale).round() / scale;
+  let xs = [room.x, room.x + l, room.right() - r, room.right()].map(snap);
+  let ys = [room.y, room.y + t, room.bottom() - b, room.bottom()].map(snap);
+  // The same cuts in the sprite, in fractions of it
+  let us = [
+    0.0,
+    left.min(width) / width,
+    1.0 - right.min(width) / width,
+    1.0,
+  ];
+  let vs = [
+    0.0,
+    top.min(height) / height,
+    1.0 - bottom.min(height) / height,
+    1.0,
+  ];
+  let mut commands = Vec::with_capacity(9);
+  for row in 0..3 {
+    for column in 0..3 {
+      let rect = Rect::new(
+        xs[column],
+        ys[row],
+        xs[column + 1] - xs[column],
+        ys[row + 1] - ys[row],
+      );
+      if drawable(rect) && !outside(clip, rect) {
+        commands.push(UiCommand::Sprite {
+          sprite: sprite.clone(),
+          rect,
+          uv: [us[column], vs[row], us[column + 1], vs[row + 1]],
+          tint,
+          clip,
+          layer,
+        });
+      }
+    }
+  }
+  commands
 }
 
 /// The size of a text node offered `known` or `avail` width: wrapped to the
@@ -494,6 +584,8 @@ fn command_of(
         layer,
       })
     }
+    // Placed as nine commands by the caller
+    DrawKind::NineSlice { .. } => None,
     DrawKind::Local(command) => {
       let by = Vec2::new(place.rect.x, place.rect.y);
       match command {

@@ -7,9 +7,6 @@ use super::memory::{Flags, Record, UiMemory};
 use super::widgets::scroll::ScrollState;
 use super::{Rect, UiId};
 
-/// Two clicks on one widget this close together (seconds) are a double click
-const DOUBLE_CLICK: f64 = 0.3;
-
 /// The pointer as the resolve reads it: in UI units, with the left (0) and
 /// right (1) buttons
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -23,6 +20,8 @@ pub(crate) struct PointerInput {
   pub(crate) down: [bool; 2],
   /// Real time in seconds (for double clicks)
   pub(crate) time: f64,
+  /// Two clicks this close (seconds) make a double click
+  pub(crate) double_click: f64,
 }
 
 /// What the resolve took from the frame's input
@@ -109,7 +108,7 @@ pub(crate) fn resolve_pointer(
       if button == 0 {
         i.clicked = i.active;
         let (last, at) = i.last_click;
-        if last == i.active && pointer.time - at <= DOUBLE_CLICK {
+        if last == i.active && pointer.time - at <= pointer.double_click {
           i.double = i.active;
           i.last_click = (UiId::NONE, 0.0);
         } else {
@@ -343,6 +342,7 @@ mod tests {
       released: [false; 2],
       down: [false; 2],
       time: 0.0,
+      double_click: 0.3,
     }
   }
 
@@ -476,6 +476,7 @@ mod tests {
         &mut m,
         &PointerInput {
           time: t,
+          double_click: 0.3,
           ..press(20.0, 20.0)
         },
         Some(1),
@@ -486,6 +487,7 @@ mod tests {
         &mut m,
         &PointerInput {
           time: t + 0.05,
+          double_click: 0.3,
           ..release(20.0, 20.0)
         },
         Some(1),

@@ -10,11 +10,6 @@ use super::widgets::scroll::ScrollState;
 use super::{Rect, UiId};
 use crate::core::input::{Direction, InputDevice};
 
-/// A held direction first repeats this long after its press (seconds; the
-/// theme's from Task 9)
-const REPEAT_DELAY: f32 = 0.35;
-/// Then it repeats this often (seconds)
-const REPEAT_INTERVAL: f32 = 0.1;
 /// Rounding slack on the repeat timers, so 21 frames of 1/60 s make 0.35 s
 const REPEAT_SLACK: f32 = 1e-4;
 /// The right stick scrolls past this deflection
@@ -35,7 +30,7 @@ const DIRECTIONS: [Direction; 4] = [
 const DIRECTION_ACTIONS: [&str; 4] = ["ui.up", "ui.down", "ui.left", "ui.right"];
 
 /// The frame's navigation input, read from the UI actions
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct NavInput {
   /// Up, Down, Left, Right went down this frame
   pub(crate) pressed: [bool; 4],
@@ -54,6 +49,31 @@ pub(crate) struct NavInput {
   pub(crate) device: InputDevice,
   /// The real frame time (seconds)
   pub(crate) dt: f32,
+  /// A held direction first repeats this long after its press (seconds)
+  pub(crate) repeat_delay: f32,
+  /// Then it repeats this often (seconds)
+  pub(crate) repeat_rate: f32,
+}
+
+impl Default for NavInput {
+  /// No input, with the theme's default repeat timing
+  fn default() -> NavInput {
+    NavInput {
+      pressed: [false; 4],
+      held: [false; 4],
+      confirm: false,
+      back: false,
+      next: false,
+      shift: false,
+      tab_next: false,
+      tab_prev: false,
+      right_stick: Vec2::ZERO,
+      device: InputDevice::default(),
+      dt: 0.0,
+      repeat_delay: 0.35,
+      repeat_rate: 0.1,
+    }
+  }
 }
 
 /// What the focus resolve took from the frame's input
@@ -536,7 +556,7 @@ pub(crate) fn resolve_focus(
         i.repeat[k] = None;
         true
       } else if input.held[k] && i.repeat[k].is_some() {
-        repeats(&mut i.repeat[k], dt)
+        repeats(&mut i.repeat[k], dt, input.repeat_rate)
       } else {
         i.repeat[k] = None;
         continue;
@@ -547,7 +567,7 @@ pub(crate) fn resolve_focus(
       }
       outcome.used.push(DIRECTION_ACTIONS[k]);
       if input.pressed[k] {
-        i.repeat[k] = Some(REPEAT_DELAY);
+        i.repeat[k] = Some(input.repeat_delay);
       }
       if !fire {
         continue;
@@ -644,7 +664,7 @@ pub(crate) fn resolve_focus(
 /// Whether a captured, held direction fires again this frame: after the
 /// repeat delay, then every interval. `timer` is the time left until it
 /// fires, armed by the press the UI used.
-fn repeats(timer: &mut Option<f32>, dt: f32) -> bool {
+fn repeats(timer: &mut Option<f32>, dt: f32, rate: f32) -> bool {
   let Some(left) = timer.as_mut() else {
     return false;
   };
@@ -652,7 +672,7 @@ fn repeats(timer: &mut Option<f32>, dt: f32) -> bool {
   if *left > REPEAT_SLACK {
     return false;
   }
-  *left = (*left + REPEAT_INTERVAL).max(0.0);
+  *left = (*left + rate).max(0.0);
   true
 }
 

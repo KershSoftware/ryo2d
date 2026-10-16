@@ -13,25 +13,18 @@ use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Edges, Flow, Length, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::Response;
+use crate::core::ui::theme::WidgetState;
 use crate::core::ui::tree::{DrawKind, Node, RecordSpec};
-use crate::core::ui::{Anchor, Color, Rect, UiId};
+use crate::core::ui::{Anchor, Rect, UiId};
 
 /// A scroll offset that was not finite was warned about
 static BAD_OFFSET_WARNED: AtomicBool = AtomicBool::new(false);
-/// The scrollbar's width until the theme owns it
-const BAR_WIDTH: f32 = 10.0;
-/// The thumb's width, centred in the track
-const THUMB_WIDTH: f32 = 6.0;
-const THUMB_RADIUS: f32 = 3.0;
+/// Room between the thumb and each edge of the track
+const THUMB_GAP: f32 = 2.0;
 /// The shortest a thumb gets
 const MIN_THUMB: f32 = 20.0;
-/// How fast the offset catches up with its target (seconds)
-const EASE_TIME: f32 = 0.08;
 /// An offset this close to its target is there
 const SNAP: f32 = 0.5;
-const TRACK: Color = Color::new(40, 40, 50, 180);
-const THUMB: Color = Color::new(90, 90, 110, 255);
-const THUMB_HOVERED: Color = Color::new(120, 120, 140, 255);
 
 /// What a scroll area remembers between frames
 #[derive(Debug, Clone, Copy, Default)]
@@ -54,15 +47,15 @@ impl ScrollState {
     (self.content - self.view).max(Vec2::ZERO)
   }
 
-  /// Ease `offset` toward `target` over `dt` seconds, keeping both inside
-  /// the contents once those are known
-  fn ease(&mut self, dt: f32) {
+  /// Ease `offset` toward `target` over `dt` seconds with the time constant
+  /// `smoothing`, keeping both inside the contents once those are known
+  fn ease(&mut self, dt: f32, smoothing: f32) {
     let known = self.view.x > 0.0 || self.view.y > 0.0;
     if known {
       self.target = self.target.clamp(Vec2::ZERO, self.max());
     }
     let step = if dt.is_finite() && dt > 0.0 {
-      1.0 - (-dt / EASE_TIME).exp()
+      1.0 - (-dt / smoothing.max(f32::EPSILON)).exp()
     } else {
       0.0
     };
@@ -130,7 +123,12 @@ impl Bar {
 }
 
 /// The bars `state` shows on the axes `enabled` (sideways, down)
-fn bars(state: &ScrollState, enabled: [bool; 2], visible: bool) -> [Option<Bar>; 2] {
+fn bars(
+  state: &ScrollState,
+  enabled: [bool; 2],
+  visible: bool,
+  bar_width: f32,
+) -> [Option<Bar>; 2] {
   let needs = |axis: usize| {
     visible && enabled[axis] && state.view[axis] > 0.0 && state.content[axis] > state.view[axis]
   };
@@ -140,7 +138,7 @@ fn bars(state: &ScrollState, enabled: [bool; 2], visible: bool) -> [Option<Bar>;
       return None;
     }
     // The corner is not shared when both bars show
-    let len = state.view[axis] - if needs(1 - axis) { BAR_WIDTH } else { 0.0 };
+    let len = state.view[axis] - if needs(1 - axis) { bar_width } else { 0.0 };
     let thumb_len = (state.view[axis] / state.content[axis] * len)
       .max(MIN_THUMB)
       .min(len);
@@ -150,9 +148,9 @@ fn bars(state: &ScrollState, enabled: [bool; 2], visible: bool) -> [Option<Bar>;
       0.0
     };
     let track = if axis == 1 {
-      Rect::new(state.view.x - BAR_WIDTH, 0.0, BAR_WIDTH, len)
+      Rect::new(state.view.x - bar_width, 0.0, bar_width, len)
     } else {
-      Rect::new(0.0, state.view.y - BAR_WIDTH, len, BAR_WIDTH)
+      Rect::new(0.0, state.view.y - bar_width, len, bar_width)
     };
     Some(Bar {
       axis,
@@ -429,6 +427,8 @@ impl<'a> Scroll<'_, 'a> {
     let id = ui.memory.scopes.make(site, key);
     let (scene, _) = ui.scene();
     let dt = ui.dt();
+    let theme = ui.theme_arc();
+    let bar_width = theme.metrics.sizes.scrollbar;
     let interact = ui.memory.interact;
     let origin = ui.memory.prev(id).map(|r| Vec2::new(r.rect.x, r.rect.y));
     let mut scratch = ScrollState::default();
@@ -438,19 +438,19 @@ impl<'a> Scroll<'_, 'a> {
       .unwrap_or(&mut scratch);
     drag_bar(
       state,
-      &bars(state, axes, bar),
+      &bars(state, axes, bar, bar_width),
       interact.active == id,
       origin,
       interact.press_pos,
       interact.pointer,
     );
-    state.ease(dt);
-    let shown = bars(state, axes, bar);
+    state.ease(dt, theme.metrics.scroll_smoothing);
+    let shown = bars(state, axes, bar, bar_width);
     let grabbed = state.grab.map(|(axis, _)| axis);
 
     // A scrollbar takes room, so contents never lie under it
-    style.padding.right += if shown[1].is_some() { BAR_WIDTH } else { 0.0 };
-    style.padding.bottom += if shown[0].is_some() { BAR_WIDTH } else { 0.0 };
+    style.padding.right += if shown[1].is_some() { bar_width } else { 0.0 };
+    style.padding.bottom += if shown[0].is_some() { bar_width } else { 0.0 };
     style.scroll_x = axes[0];
     style.scroll_y = axes[1];
     let mut node = Node::new(id, style, Measure::None);
@@ -465,25 +465,34 @@ impl<'a> Scroll<'_, 'a> {
     ui.memory.scopes.pop();
 
     let local = origin.map(|o| interact.pointer - o);
+    let looks = &theme.widgets.scroll;
+    let thumb_width = (bar_width - 2.0 * THUMB_GAP).max(0.0);
     for bar in shown.iter().flatten() {
-      let hovered =
-        grabbed == Some(bar.axis) || local.is_some_and(|p| bar.thumb().contains(p.x, p.y));
-      let gap = (BAR_WIDTH - THUMB_WIDTH) / 2.0;
+      let grabbed_bar = grabbed == Some(bar.axis);
+      let hovered = local.is_some_and(|p| bar.thumb().contains(p.x, p.y));
+      let state = if grabbed_bar {
+        WidgetState::Pressed
+      } else if hovered {
+        WidgetState::Hovered
+      } else {
+        WidgetState::Normal
+      };
+      let look = looks.resolve(state);
       let (track_frac, track_size, thumb_frac, thumb_size, thumb_inset) = if bar.axis == 1 {
         (
           Vec2::new(1.0, 0.0),
-          Vec2::new(BAR_WIDTH, bar.track.height),
+          Vec2::new(bar_width, bar.track.height),
           Vec2::new(1.0, 0.0),
-          Vec2::new(THUMB_WIDTH, bar.thumb_len),
-          Edges::new(0.0, bar.thumb_at, gap, 0.0),
+          Vec2::new(thumb_width, bar.thumb_len),
+          Edges::new(0.0, bar.thumb_at, THUMB_GAP, 0.0),
         )
       } else {
         (
           Vec2::new(0.0, 1.0),
-          Vec2::new(bar.track.width, BAR_WIDTH),
+          Vec2::new(bar.track.width, bar_width),
           Vec2::new(0.0, 1.0),
-          Vec2::new(bar.thumb_len, THUMB_WIDTH),
-          Edges::new(bar.thumb_at, 0.0, 0.0, gap),
+          Vec2::new(bar.thumb_len, thumb_width),
+          Edges::new(bar.thumb_at, 0.0, 0.0, THUMB_GAP),
         )
       };
       ui.push_draw(
@@ -492,7 +501,7 @@ impl<'a> Scroll<'_, 'a> {
           inset: Edges::ZERO,
           frac: track_frac,
           size: track_size,
-          fill: TRACK,
+          fill: look.fill,
           radius: 0.0,
           border: None,
         },
@@ -503,8 +512,8 @@ impl<'a> Scroll<'_, 'a> {
           inset: thumb_inset,
           frac: thumb_frac,
           size: thumb_size,
-          fill: if hovered { THUMB_HOVERED } else { THUMB },
-          radius: THUMB_RADIUS,
+          fill: look.border,
+          radius: look.radius,
           border: None,
         },
       );

@@ -1,5 +1,6 @@
 //! One frame: clocks, input, the UI pass, the fixed steps, then render.
 
+use std::sync::Arc;
 use std::time::Duration;
 use web_time::Instant;
 
@@ -25,13 +26,10 @@ use crate::core::ui::interact::{
   PointerInput, PointerOutcome, apply_scroll_requests, resolve_pointer, route_wheel,
 };
 use crate::core::ui::nav::{NavInput, resolve_focus};
-use crate::core::ui::{UiContext, UiInput};
+use crate::core::ui::theme::Theme;
+use crate::core::ui::{UiContext, UiInput, UiTheme};
 use crate::{engine_warn, profile_scope};
 
-/// How far (UI units) a press moves before it is a drag
-const DRAG_THRESHOLD: f32 = 4.0;
-/// UI units a scroll area moves per line of wheel
-const WHEEL_LINE: f32 = 40.0;
 /// The UI's direction actions: Up, Down, Left, Right
 const NAV_DIRECTIONS: [&str; 4] = ["ui.up", "ui.down", "ui.left", "ui.right"];
 
@@ -348,7 +346,7 @@ impl Engine {
 
   /// Resolve the frame's pointer (`input`, in UI units) against last
   /// frame's records of the top scene, the console blocking it while shown
-  fn resolve_pointer(&mut self, input: &UiInput) -> PointerOutcome {
+  fn resolve_pointer(&mut self, input: &UiInput, theme: &Theme) -> PointerOutcome {
     let buttons = [MouseButton::Left, MouseButton::Right];
     let (x, y) = input.mouse_position();
     let pointer = PointerInput {
@@ -357,6 +355,7 @@ impl Engine {
       released: buttons.map(|b| input.mouse_released(b)),
       down: buttons.map(|b| input.mouse_down(b)),
       time: f64::from(self.world.resource::<Time>().real.elapsed()),
+      double_click: f64::from(theme.metrics.double_click),
     };
     let top = with_host(&mut self.world, |_, host| host.scenes.top_scope());
     let console = self
@@ -368,7 +367,7 @@ impl Engine {
       &pointer,
       top,
       console.as_slice(),
-      DRAG_THRESHOLD,
+      theme.metrics.drag_threshold,
     );
     // Then the wheel: the scroll areas under the pointer take it, never
     // under the console
@@ -383,7 +382,7 @@ impl Engine {
         Vec2::new(wheel_x, wheel_y),
         shift,
         top,
-        WHEEL_LINE,
+        theme.metrics.scroll_line,
       );
     PointerOutcome {
       consume_wheel: taken,
@@ -393,7 +392,7 @@ impl Engine {
 
   /// Resolve the keyboard and gamepad focus from the UI actions, after the
   /// pointer, and hide the actions it used from gameplay
-  fn resolve_navigation(&mut self) {
+  fn resolve_navigation(&mut self, theme: &Theme) {
     let top = with_host(&mut self.world, |_, host| host.scenes.top_scope());
     let dt = self.world.resource::<Time>().real.delta();
     let input = self.world.resource::<Input>();
@@ -409,11 +408,41 @@ impl Engine {
       right_stick: Vec2::from(input.right_stick()),
       device: input.last_device(),
       dt,
+      repeat_delay: theme.metrics.repeat_delay,
+      repeat_rate: theme.metrics.repeat_rate,
     };
     let pointer = &self.ui_memory.interact;
     let moved = pointer.pointer != pointer.prev_pointer;
     let outcome = resolve_focus(&mut self.ui_memory, &nav, top, moved);
     consume_actions(&mut self.world.resource_mut::<Input>(), &outcome.used);
+  }
+
+  /// The theme for this UI pass: a watched theme file that changed is
+  /// reloaded (debug builds), and the sprites of new skins are loaded
+  fn refresh_ui_theme(&mut self) -> Arc<Theme> {
+    #[cfg(debug_assertions)]
+    let now = f64::from(self.world.resource::<Time>().real.elapsed());
+    let loaded = &mut self.theme_generation;
+    #[cfg(debug_assertions)]
+    let watch = &mut self.theme_watch;
+    self
+      .world
+      .resource_scope(|world, mut theme: crate::core::ecs::Mut<UiTheme>| {
+        #[cfg(debug_assertions)]
+        watch.poll(&mut theme, now);
+        if theme.generation() != *loaded {
+          *loaded = theme.generation();
+          let mut assets = world.resource_mut::<AssetManager>();
+          theme.load_skins(|path| match assets.load_sprite(path) {
+            Ok(sprite) => Some(sprite),
+            Err(error) => {
+              engine_warn!(module: "ui", "could not load the UI skin {path:?}: {error}");
+              None
+            }
+          });
+        }
+        theme.shared()
+      })
   }
 
   /// Record one UI pass into the frame's UI commands (replacing any earlier
@@ -428,6 +457,7 @@ impl Engine {
     for scope in with_host(&mut self.world, |_, host| host.scenes.take_exited()) {
       self.ui_memory.forget_scene(scope);
     }
+    let theme = self.refresh_ui_theme();
     let space = self.ui_space;
     let mut snapshot =
       UiInput::snapshot(self.world.resource::<Input>()).with_mouse_scale(space.mouse_scale);
@@ -436,7 +466,7 @@ impl Engine {
     if self.ui_pass_index == 0 {
       self.ui_memory.begin_frame();
       self.ui_layout.begin_frame();
-      let outcome = self.resolve_pointer(&snapshot);
+      let outcome = self.resolve_pointer(&snapshot, &theme);
       for (button, consume) in [MouseButton::Left, MouseButton::Right]
         .into_iter()
         .zip(outcome.consume_press)
@@ -448,7 +478,7 @@ impl Engine {
       if outcome.consume_wheel {
         snapshot.consume_scroll();
       }
-      self.resolve_navigation();
+      self.resolve_navigation(&theme);
     } else {
       self.ui_memory.restart_pass();
     }
@@ -464,6 +494,7 @@ impl Engine {
         &mut self.ui_layout,
         space,
         snapshot,
+        Arc::clone(&theme),
       );
       ui.set_dt(real_dt);
       // The console blocks the mouse for everything under it

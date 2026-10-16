@@ -48,11 +48,12 @@ use crate::core::ui::layout::{Edges, Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::retained::{DropdownState, Focusable, TextInputState};
-use crate::core::ui::theme::Theme;
+use crate::core::ui::theme::{Look, Skin, Theme, WidgetKind, WidgetState, warn_once};
 use crate::core::ui::tree::{
   self, Draw, DrawKind, Node, RecordSpec, ResolveCx, Resolved, Subtree, TextLeaf, align_fraction,
 };
 use crate::core::ui::types::{Anchor, Color, Rect};
+use crate::core::ui::widgets::common::WidgetOpts;
 
 /// `pop_clip` on an empty stack was warned about
 static EMPTY_POP_WARNED: AtomicBool = AtomicBool::new(false);
@@ -60,12 +61,6 @@ static EMPTY_POP_WARNED: AtomicBool = AtomicBool::new(false);
 static LEFT_OPEN_WARNED: AtomicBool = AtomicBool::new(false);
 /// A container placed at a rect that is not finite was warned about
 static BAD_AT_WARNED: AtomicBool = AtomicBool::new(false);
-
-/// The focus ring's width (the theme's from Task 9)
-const FOCUS_RING_WIDTH: f32 = 2.0;
-/// The room between a widget's edges and its focus ring
-const FOCUS_RING_OFFSET: f32 = 2.0;
-const FOCUS_RING_COLOR: Color = Color::rgb(100, 140, 200);
 
 /// Pending dropdown overlay to be drawn at the end of the frame.
 struct PendingDropdown {
@@ -349,8 +344,8 @@ pub struct UiContext<'a> {
   space: UiSpace,
   /// The frame's input; widgets consume what they use
   input: UiInput,
-  /// Optional theme for styled widgets
-  theme: Option<&'a Theme>,
+  /// The theme widgets read, taken from the world at the start of the pass
+  theme: Arc<Theme>,
   /// Stack of clip rects for nested clipping
   clip_stack: Vec<Rect>,
   /// Current effective clip rect (intersection of all stacked clips)
@@ -405,13 +400,14 @@ impl<'a> UiContext<'a> {
     layout: &'a mut LayoutEngine,
     space: UiSpace,
     input: UiInput,
+    theme: Arc<Theme>,
   ) -> Self {
     Self {
       commands,
       text: RefCell::new(text),
       space,
       input: input.with_mouse_scale(space.mouse_scale),
-      theme: None,
+      theme,
       clip_stack: Vec::new(),
       current_clip: None,
       layer: PAGE_LAYER,
@@ -430,15 +426,15 @@ impl<'a> UiContext<'a> {
     }
   }
 
-  /// Style the themed widgets with `theme`.
-  pub fn with_theme(mut self, theme: &'a Theme) -> Self {
-    self.theme = Some(theme);
-    self
+  /// The UI theme this pass draws with (`ctx.ui_theme()` changes it, from
+  /// the next frame).
+  pub fn theme(&self) -> &Theme {
+    &self.theme
   }
 
-  /// Get the current theme, if any.
-  pub fn theme(&self) -> Option<&Theme> {
-    self.theme
+  /// The theme, shared: for a widget that records while it reads
+  pub(crate) fn theme_arc(&self) -> Arc<Theme> {
+    Arc::clone(&self.theme)
   }
 
   /// Render pixels per UI unit: the display's scale factor with the
@@ -677,16 +673,88 @@ impl<'a> UiContext<'a> {
     }
   }
 
-  /// Draw the focus ring around `node`, a widget whose corners have
-  /// `radius`: 2 units wide, 2 outside its edges (the theme's from Task 9)
+  /// The state a widget is drawn in: disabled, else pressed, hovered,
+  /// focused with the ring showing, or normal
+  pub(crate) fn widget_state(&self, response: &Response, disabled: bool) -> WidgetState {
+    if disabled {
+      WidgetState::Disabled
+    } else if response.pressed() {
+      WidgetState::Pressed
+    } else if response.hovered() {
+      WidgetState::Hovered
+    } else if response.focused() && self.focus_visible() {
+      WidgetState::Focused
+    } else {
+      WidgetState::Normal
+    }
+  }
+
+  /// The look of a `kind` widget in `state`, as its options (`.variant`,
+  /// `.style`) change it
+  pub(crate) fn look_of(&self, kind: WidgetKind, opts: &WidgetOpts, state: WidgetState) -> Look {
+    let mut look = self.theme.look(kind, opts.variant.as_deref(), state);
+    if let Some(patch) = &opts.look_patch {
+      patch.apply(&mut look);
+    }
+    look
+  }
+
+  /// Draw `look`'s fill and border on `node`: its skin as a nine-slice,
+  /// tinted by the fill, when it names one the theme has a sprite for, else
+  /// a rounded rect
+  pub(crate) fn push_look_box(&mut self, node: usize, look: &Look) {
+    if let Some(name) = &look.skin {
+      match self.theme.skins.get(name) {
+        Some(Skin {
+          sprite: Some(sprite),
+          insets,
+          ..
+        }) => {
+          let kind = DrawKind::NineSlice {
+            inset: Edges::ZERO,
+            sprite: sprite.clone(),
+            insets: *insets,
+            tint: look.fill,
+          };
+          self.push_draw(node, kind);
+          return;
+        }
+        Some(_) => warn_once(format!("skin:{name}"), || {
+          format!(
+            "UI skin {name:?} has no sprite (give it a loadable path or a sprite); drawing the plain look"
+          )
+        }),
+        None => warn_once(format!("skin:{name}"), || {
+          format!("no UI skin named {name:?}; drawing the plain look")
+        }),
+      }
+    }
+    let border =
+      (look.border_width > 0.0 && look.border.a > 0).then_some((look.border_width, look.border));
+    if look.fill.a > 0 || border.is_some() {
+      self.push_draw(
+        node,
+        DrawKind::Fill {
+          inset: Edges::ZERO,
+          fill: look.fill,
+          radius: look.radius,
+          border,
+        },
+      );
+    }
+  }
+
+  /// Draw the theme's focus ring around `node`, a widget whose corners have
+  /// `radius`
   pub(crate) fn focus_ring(&mut self, node: usize, radius: f32) {
+    let ring = self.theme.metrics.focus_ring.clone();
     self.push_draw(
       node,
       DrawKind::Fill {
-        inset: Edges::all(-(FOCUS_RING_OFFSET + FOCUS_RING_WIDTH)),
+        inset: Edges::all(-(ring.offset + ring.width)),
         fill: Color::TRANSPARENT,
-        radius: radius + FOCUS_RING_OFFSET + FOCUS_RING_WIDTH,
-        border: Some((FOCUS_RING_WIDTH, FOCUS_RING_COLOR)),
+        radius: radius + ring.offset + ring.width,
+        border: Some((ring.width, ring.color)),
       },
     );
   }
@@ -1209,21 +1277,6 @@ impl<'a> UiContext<'a> {
     self.record_rect(rect, bg_color, 0.0, border_color.map(|c| (1.0, c)));
   }
 
-  /// Draw a themed panel using the current theme.
-  ///
-  /// Falls back to default colors if no theme is set.
-  pub fn draw_themed_panel(&mut self, rect: Rect) {
-    if let Some(theme) = self.theme {
-      let border = theme
-        .panel
-        .border
-        .map(|color| (theme.panel.border_thickness, color));
-      self.record_rect(rect, theme.panel.background, 0.0, border);
-    } else {
-      self.draw_panel(rect, Color::PANEL_BG, Some(Color::PANEL_BORDER));
-    }
-  }
-
   /// Draw a horizontal progress bar.
   ///
   /// # Arguments
@@ -1263,25 +1316,6 @@ impl<'a> UiContext<'a> {
   ) {
     self.draw_progress_bar(rect, progress, fill_color, bg_color);
     self.draw_rect_outline(rect, border_color, 1.0);
-  }
-
-  /// Draw a themed progress bar using the current theme.
-  ///
-  /// Falls back to default colors if no theme is set.
-  pub fn draw_themed_progress_bar(&mut self, rect: Rect, progress: f32) {
-    if let Some(theme) = self.theme {
-      self.draw_progress_bar(
-        rect,
-        progress,
-        theme.progress_bar.fill,
-        theme.progress_bar.background,
-      );
-      if let Some(border) = theme.progress_bar.border {
-        self.draw_rect_outline(rect, border, theme.progress_bar.border_thickness);
-      }
-    } else {
-      self.draw_progress_bar(rect, progress, Color::rgb(80, 150, 255), Color::DARK_GRAY);
-    }
   }
 
   // =========================================================================
@@ -1576,37 +1610,6 @@ impl<'a> UiContext<'a> {
     rect.contains(mx, my)
   }
 
-  /// Draw an interactive button with custom colors.
-  pub fn button_styled(
-    &mut self,
-    text: &str,
-    rect: Rect,
-    normal_bg: Color,
-    hover_bg: Color,
-    pressed_bg: Color,
-    text_color: Color,
-  ) -> bool {
-    let hovered = self.is_hovered(rect);
-    let held = self.is_held(rect);
-    let clicked = self.is_clicked(rect);
-    if clicked {
-      self.input.consume_mouse(MouseButton::Left);
-    }
-
-    let bg_color = if held {
-      pressed_bg
-    } else if hovered {
-      hover_bg
-    } else {
-      normal_bg
-    };
-
-    self.draw_rect(rect, bg_color);
-    self.draw_text_centered(text, rect, text_color);
-
-    clicked
-  }
-
   /// Draw a label with optional background panel.
   pub fn label(&mut self, text: &str, x: f32, y: f32, text_color: Color, bg_color: Option<Color>) {
     if let Some(bg) = bg_color {
@@ -1768,22 +1771,12 @@ impl<'a> UiContext<'a> {
   /// * `min` - Minimum value
   /// * `max` - Maximum value
   pub fn slider(&mut self, rect: Rect, value: &mut f32, min: f32, max: f32) -> bool {
-    // Get colors from theme or use defaults
-    let (track_color, fill_color, handle_color, hover_color) = if let Some(theme) = self.theme {
-      (
-        theme.slider.track_background,
-        theme.slider.track_fill,
-        theme.slider.handle,
-        theme.slider.handle_hovered,
-      )
-    } else {
-      (
-        Color::rgb(60, 60, 80),
-        Color::rgb(80, 150, 255),
-        Color::WHITE,
-        Color::rgb(200, 220, 255),
-      )
-    };
+    let (track_color, fill_color, handle_color, hover_color) = (
+      Color::rgb(60, 60, 80),
+      Color::rgb(80, 150, 255),
+      Color::WHITE,
+      Color::rgb(200, 220, 255),
+    );
 
     let mouse_pos = self.input.mouse_position();
 
@@ -1870,26 +1863,14 @@ impl<'a> UiContext<'a> {
       self.input.consume_mouse(MouseButton::Left);
     }
 
-    // Get colors from theme or use defaults
-    let (bg_color, border_color, checkmark_color) = if let Some(theme) = self.theme {
-      let bg = if *checked {
-        theme.checkbox.background_checked
-      } else if hovered {
-        theme.checkbox.background_hovered
-      } else {
-        theme.checkbox.background
-      };
-      (bg, theme.checkbox.border, theme.checkbox.checkmark)
+    let bg_color = if *checked {
+      Color::rgb(60, 120, 200)
+    } else if hovered {
+      Color::rgb(50, 50, 70)
     } else {
-      let bg = if *checked {
-        Color::rgb(60, 120, 200)
-      } else if hovered {
-        Color::rgb(50, 50, 70)
-      } else {
-        Color::rgb(40, 40, 60)
-      };
-      (bg, Color::rgb(80, 80, 100), Color::WHITE)
+      Color::rgb(40, 40, 60)
     };
+    let (border_color, checkmark_color) = (Color::rgb(80, 80, 100), Color::WHITE);
 
     // Toggle on click
     if clicked {
@@ -1908,7 +1889,7 @@ impl<'a> UiContext<'a> {
 
     // Draw label if provided
     if let Some(label_text) = label {
-      let text_color = self.theme.map(|t| t.label.text).unwrap_or(Color::WHITE);
+      let text_color = Color::WHITE;
       let text_x = rect.right() + 8.0;
       let (_, text_h) = self.text_size(label_text);
       let text_y = rect.y + (rect.height - text_h as f32) / 2.0;
@@ -1936,26 +1917,14 @@ impl<'a> UiContext<'a> {
       self.input.consume_mouse(MouseButton::Left);
     }
 
-    // Get colors from theme or use defaults
-    let (track_color, knob_color) = if let Some(theme) = self.theme {
-      let track = if *on {
-        theme.toggle.track_on
-      } else if hovered {
-        theme.toggle.track_hovered
-      } else {
-        theme.toggle.track_off
-      };
-      (track, theme.toggle.knob)
+    let track_color = if *on {
+      Color::rgb(60, 150, 80)
+    } else if hovered {
+      Color::rgb(70, 70, 90)
     } else {
-      let track = if *on {
-        Color::rgb(60, 150, 80)
-      } else if hovered {
-        Color::rgb(70, 70, 90)
-      } else {
-        Color::rgb(60, 60, 80)
-      };
-      (track, Color::WHITE)
+      Color::rgb(60, 60, 80)
     };
+    let knob_color = Color::WHITE;
 
     // Toggle on click
     if clicked {
@@ -2022,10 +1991,7 @@ impl<'a> UiContext<'a> {
     // The field's text is one line of the default UI style; every position in
     // it comes from the text engine
     let style = TextStyle::default();
-    let (pad_x, pad_y) = self
-      .theme
-      .map(|t| t.text_input.padding)
-      .unwrap_or((8.0, 4.0));
+    let (pad_x, pad_y) = (8.0, 4.0);
     let text_x = rect.x + pad_x;
 
     // Handle focus on click
@@ -2071,52 +2037,23 @@ impl<'a> UiContext<'a> {
       self.input.consume_keyboard();
     }
 
-    // Get colors from theme or use defaults
-    let (bg_color, border_color, text_color, placeholder_color, cursor_color, selection_color) =
-      if let Some(theme) = self.theme {
-        let bg = if state.is_focused() {
-          theme.text_input.background_focused
-        } else {
-          theme.text_input.background
-        };
-        let border = if state.is_focused() {
-          theme.text_input.border_focused
-        } else {
-          theme.text_input.border
-        };
-        (
-          bg,
-          border,
-          theme.text_input.text,
-          theme.text_input.placeholder,
-          theme.text_input.cursor,
-          theme.text_input.selection,
-        )
-      } else {
-        let bg = if state.is_focused() {
-          Color::rgb(35, 35, 50)
-        } else {
-          Color::rgb(30, 30, 45)
-        };
-        let border = if state.is_focused() {
-          Color::rgb(100, 140, 200)
-        } else {
-          Color::rgb(70, 70, 90)
-        };
-        (
-          bg,
-          border,
-          Color::WHITE,
-          Color::GRAY,
-          Color::WHITE,
-          Color::new(100, 140, 200, 100),
-        )
-      };
-
-    let border_thickness = self
-      .theme
-      .map(|t| t.text_input.border_thickness)
-      .unwrap_or(1.0);
+    let bg_color = if state.is_focused() {
+      Color::rgb(35, 35, 50)
+    } else {
+      Color::rgb(30, 30, 45)
+    };
+    let border_color = if state.is_focused() {
+      Color::rgb(100, 140, 200)
+    } else {
+      Color::rgb(70, 70, 90)
+    };
+    let (text_color, placeholder_color, cursor_color, selection_color) = (
+      Color::WHITE,
+      Color::GRAY,
+      Color::WHITE,
+      Color::new(100, 140, 200, 100),
+    );
+    let border_thickness = 1.0;
 
     // Background and border
     self.draw_rect_bordered(rect, bg_color, 0.0, border_thickness, border_color);
@@ -2257,25 +2194,13 @@ impl<'a> UiContext<'a> {
 
     let old_selected = state.selected();
 
-    // Get colors from theme or use defaults
-    let (bg_color, bg_hover, text_color, border_color, focus_color) =
-      if let Some(theme) = self.theme {
-        (
-          theme.button.background,
-          theme.button.background_hovered,
-          theme.button.text,
-          theme.panel.border.unwrap_or(Color::rgb(60, 60, 80)),
-          theme.text_input.border_focused,
-        )
-      } else {
-        (
-          Color::rgb(50, 50, 65),
-          Color::rgb(65, 65, 85),
-          Color::WHITE,
-          Color::rgb(80, 80, 100),
-          Color::rgb(100, 150, 255),
-        )
-      };
+    let (bg_color, bg_hover, text_color, border_color, focus_color) = (
+      Color::rgb(50, 50, 65),
+      Color::rgb(65, 65, 85),
+      Color::WHITE,
+      Color::rgb(80, 80, 100),
+      Color::rgb(100, 150, 255),
+    );
 
     let trigger_hovered = self.is_hovered(rect);
     let mouse_pressed = self.input.mouse_pressed(MouseButton::Left);
@@ -2538,22 +2463,12 @@ impl<'a> UiContext<'a> {
       return;
     }
 
-    // Get colors from theme
-    let (text_color, border_color, option_bg, option_hover) = if let Some(theme) = self.theme {
-      (
-        theme.button.text,
-        theme.panel.border.unwrap_or(Color::rgb(60, 60, 80)),
-        theme.panel.background,
-        theme.button.background_hovered,
-      )
-    } else {
-      (
-        Color::WHITE,
-        Color::rgb(80, 80, 100),
-        Color::rgb(40, 40, 55),
-        Color::rgb(60, 60, 80),
-      )
-    };
+    let (text_color, border_color, option_bg, option_hover) = (
+      Color::WHITE,
+      Color::rgb(80, 80, 100),
+      Color::rgb(40, 40, 55),
+      Color::rgb(60, 60, 80),
+    );
 
     let mouse_x = self.input.mouse_x();
     let mouse_y = self.input.mouse_y();
@@ -2776,17 +2691,6 @@ impl<'a> UiContext<'a> {
       Rect::new(inner.x + inner.width, inner.y, thickness, inner.height),
       color,
     );
-  }
-
-  /// Draw a focus ring using theme colors.
-  ///
-  /// Convenience method that uses the theme's text input focus color.
-  pub fn draw_focus_ring_themed(&mut self, rect: Rect) {
-    let color = self
-      .theme
-      .map(|t| t.text_input.border_focused)
-      .unwrap_or(Color::rgb(100, 150, 255));
-    self.draw_focus_ring(rect, color, 2.0, 1.0);
   }
 }
 
@@ -3322,31 +3226,6 @@ mod tests {
     d.frame(draw);
     d.release();
     assert_eq!(d.frame(draw), (false, true), "the one drawn last is on top");
-  }
-
-  #[test]
-  fn button_styled_consumes_click() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let clicked = ui.button_styled(
-      "Test",
-      rect,
-      Color::BLACK,
-      Color::GRAY,
-      Color::WHITE,
-      Color::WHITE,
-    );
-
-    assert!(clicked);
-    assert!(ui.click_consumed());
   }
 
   #[test]

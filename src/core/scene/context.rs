@@ -20,6 +20,7 @@ use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
 use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
+use crate::core::ui::UiTheme;
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
 
 #[cfg(test)]
@@ -167,6 +168,12 @@ impl SceneContext<'_> {
   /// Volumetric lighting is per light (`Light2D`).
   pub fn lighting(&mut self) -> Mut<'_, LightingSettings> {
     self.world.resource_mut::<LightingSettings>()
+  }
+
+  /// The UI theme every scene's UI draws with. `set` or `modify` it and the
+  /// change applies from the next frame.
+  pub fn ui_theme(&mut self) -> Mut<'_, UiTheme> {
+    self.world.resource_mut::<UiTheme>()
   }
 
   /// The scene's tilemaps: tile reads and writes, coordinate conversion and

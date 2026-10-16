@@ -3,6 +3,7 @@
 
 use crate::core::ui::layout::UiStyle;
 use crate::core::ui::memory::Flags;
+use crate::core::ui::theme::LookPatch;
 use crate::core::ui::{Rect, UiId};
 
 /// A widget's shared options, set by the `widget_builders!` methods
@@ -24,6 +25,10 @@ pub(crate) struct WidgetOpts {
   pub(crate) nav_skip: bool,
   /// `.focusable(..)`, when set: whether it takes focus, whatever its kind
   pub(crate) focusable: Option<bool>,
+  /// `.variant(name)`: the theme variant it is drawn in
+  pub(crate) variant: Option<String>,
+  /// `.style(patch)`: what this one widget changes in its look
+  pub(crate) look_patch: Option<LookPatch>,
 }
 
 impl WidgetOpts {
@@ -51,7 +56,8 @@ impl WidgetOpts {
 /// `opts: WidgetOpts` field: `id`, `enabled`, `at`, `width`, `height`,
 /// `fill_width`, `margin`, `anchor`, `offset`, `grow`, `min_width`,
 /// `max_width`, and for focus `default_focus`, `nav_up`, `nav_down`,
-/// `nav_left`, `nav_right`, `nav_skip` and `focusable`.
+/// `nav_left`, `nav_right`, `nav_skip` and `focusable`, and for looks
+/// `variant` and `style`.
 macro_rules! widget_builders {
   ($widget:ty) => {
     impl $widget {
@@ -176,6 +182,21 @@ macro_rules! widget_builders {
       /// and other controls do, custom widgets do not)
       pub fn focusable(mut self, focusable: bool) -> Self {
         self.opts.focusable = Some(focusable);
+        self
+      }
+
+      /// Draw it in the theme variant `name` (`"danger"`, `"accent"`, or
+      /// one the theme adds). An unknown name warns once and draws the plain
+      /// look.
+      pub fn variant(mut self, name: &str) -> Self {
+        self.opts.variant = Some(name.to_string());
+        self
+      }
+
+      /// Change what `patch` names in its look, in every state, after the
+      /// theme and the variant
+      pub fn style(mut self, patch: $crate::core::ui::LookPatch) -> Self {
+        self.opts.look_patch = Some(patch);
         self
       }
     }

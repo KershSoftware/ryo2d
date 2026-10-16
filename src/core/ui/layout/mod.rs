@@ -29,7 +29,8 @@ impl From<f32> for Length {
 }
 
 /// Padding or margin on each side
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Edges {
   /// Left side
   pub left: f32,
