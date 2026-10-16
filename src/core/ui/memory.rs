@@ -42,6 +42,8 @@ impl Flags {
   pub(crate) const DRAG_SOURCE: Flags = Flags(1 << 16);
   #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const NAV_SKIP: Flags = Flags(1 << 17);
+  /// Reports hovering only: never hot, blocks nothing
+  pub(crate) const HOVER: Flags = Flags(1 << 18);
 
   /// Every flag in `other` is set
   pub(crate) fn contains(self, other: Flags) -> bool {
@@ -94,6 +96,9 @@ pub(crate) struct Record {
 pub(crate) struct Interaction {
   /// The topmost sensing widget under the pointer (`NONE`)
   pub(crate) hot: UiId,
+  /// The topmost record under the pointer, hover-only widgets included:
+  /// what reports `hovered()` (`NONE`)
+  pub(crate) hovered: UiId,
   /// The widget a press started on, until that button's release (`NONE`)
   pub(crate) active: UiId,
   /// The button that made it active: 0 left, 1 right

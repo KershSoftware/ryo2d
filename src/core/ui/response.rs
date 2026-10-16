@@ -51,7 +51,9 @@ impl Response {
     self.states & state != 0
   }
 
-  /// The pointer is over it, and nothing drawn over it takes the pointer
+  /// It is the topmost widget under the pointer: nothing drawn over it (a
+  /// panel, a widget, a hover-only widget) covers it there. Whatever it
+  /// senses, [`Sense::hover`] included
   pub fn hovered(&self) -> bool {
     self.is(Self::HOVERED)
   }
@@ -149,7 +151,8 @@ pub struct Sense {
 }
 
 impl Sense {
-  /// Neither clicks nor drags: the pointer passes through to what is under it
+  /// Hovering only: it reports [`hovered`](Response::hovered), while
+  /// presses, clicks and drags pass through to what is under it
   pub fn hover() -> Sense {
     Sense {
       click: false,

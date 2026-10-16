@@ -45,13 +45,15 @@ pub(crate) fn resolve_pointer(
 ) -> PointerOutcome {
   let position = pointer.position;
   let blocked = blockers.iter().any(|b| b.contains(position.x, position.y));
-  let (hot, over_ui) = match top_scene {
+  let hit = match top_scene {
     Some(scene) if !blocked => hit_test(memory, position, scene),
-    _ => (UiId::NONE, false),
+    _ => Hit::default(),
   };
-  let active_exists = memory.prev(memory.interact.active).is_some();
+  let hot = hit.hot;
+  let over_ui = hit.over_ui;
 
-  let i = &mut memory.interact;
+  // Worked on as a copy, so last frame's records stay readable
+  let mut i = memory.interact;
   // One-frame results last until the next resolve
   i.clicked = UiId::NONE;
   i.secondary = UiId::NONE;
@@ -61,10 +63,11 @@ pub(crate) fn resolve_pointer(
   i.prev_pointer = i.pointer;
   i.pointer = position;
   i.hot = hot;
+  i.hovered = hit.hovered;
   i.over_ui = over_ui;
 
   // A widget gone since its press reports nothing more
-  if i.active != UiId::NONE && !active_exists {
+  if i.active != UiId::NONE && memory.prev(i.active).is_none() {
     i.active = UiId::NONE;
     i.dragging = false;
   }
@@ -84,7 +87,12 @@ pub(crate) fn resolve_pointer(
     }
   }
 
-  if i.active != UiId::NONE && !i.dragging && position.distance(i.press_pos) > drag_threshold {
+  // Only a widget that senses drags is dragged: a click-only one still
+  // clicks when released over itself, however far it moved within it
+  let drags = memory
+    .prev(i.active)
+    .is_some_and(|record| record.flags.contains(Flags::DRAG));
+  if drags && !i.dragging && position.distance(i.press_pos) > drag_threshold {
     i.dragging = true;
     i.drag_started = i.active;
   }
@@ -114,37 +122,55 @@ pub(crate) fn resolve_pointer(
     i.active = UiId::NONE;
     i.dragging = false;
   }
+  memory.interact = i;
   outcome
 }
 
-/// The hot widget at `at` among `scene`'s records from last frame, and
-/// whether any of them is under it. The topmost record (layer, then order)
-/// decides: one that senses and is enabled is hot; a panel, scroll area or
-/// disabled widget blocks what is under it.
-fn hit_test(memory: &UiMemory, at: Vec2, scene: u64) -> (UiId, bool) {
+/// What is under the pointer
+#[derive(Debug, Default)]
+struct Hit {
+  /// The topmost sensing, enabled widget, unless something above blocks it
+  hot: UiId,
+  /// The topmost record, hover-only ones included
+  hovered: UiId,
+  /// Any record that takes the pointer is under it
+  over_ui: bool,
+}
+
+/// What is under `at` among `scene`'s records from last frame. The topmost
+/// record (layer, then order) that takes the pointer decides what is hot:
+/// one that senses and is enabled is; a panel, scroll area or disabled
+/// widget blocks what is under it. Hover-only records take no part in that:
+/// they are only ever `hovered`, the topmost of everything under `at`.
+fn hit_test(memory: &UiMemory, at: Vec2, scene: u64) -> Hit {
   // What senses the pointer, or stops it
-  let hits = Flags::CLICK | Flags::DRAG | Flags::BLOCKING | Flags::SCROLLABLE | Flags::DROP_TARGET;
-  let top = memory
-    .prev_records()
-    .filter(|(_, r)| {
-      r.scene == scene
-        && r.flags.intersects(hits)
-        && r.rect.contains(at.x, at.y)
-        && r.clip.is_none_or(|clip| clip.contains(at.x, at.y))
-    })
-    // Depth and id only break ties, so the result never depends on map order
-    .max_by_key(|(id, r)| (r.layer, r.order, r.depth, *id));
-  match top {
-    Some((id, r)) => {
-      let senses = r.flags.intersects(Flags::CLICK | Flags::DRAG);
-      let hot = if senses && !r.flags.contains(Flags::DISABLED) {
-        id
-      } else {
-        UiId::NONE
-      };
-      (hot, true)
+  let takes = Flags::CLICK | Flags::DRAG | Flags::BLOCKING | Flags::SCROLLABLE | Flags::DROP_TARGET;
+  // Depth and id only break ties, so the result never depends on map order
+  let mut top: Option<((u8, u32, u16, UiId), Flags)> = None;
+  let mut hovered: Option<(u8, u32, u16, UiId)> = None;
+  for (id, r) in memory.prev_records() {
+    let under = r.scene == scene
+      && r.rect.contains(at.x, at.y)
+      && r.clip.is_none_or(|clip| clip.contains(at.x, at.y));
+    if !under {
+      continue;
     }
-    None => (UiId::NONE, false),
+    let key = (r.layer, r.order, r.depth, id);
+    if r.flags.intersects(takes) && top.is_none_or(|(above, _)| key > above) {
+      top = Some((key, r.flags));
+    }
+    if r.flags.intersects(takes | Flags::HOVER) && hovered.is_none_or(|above| key > above) {
+      hovered = Some(key);
+    }
+  }
+  let hot = top.and_then(|((.., id), flags)| {
+    let senses = flags.intersects(Flags::CLICK | Flags::DRAG);
+    (senses && !flags.contains(Flags::DISABLED)).then_some(id)
+  });
+  Hit {
+    hot: hot.unwrap_or(UiId::NONE),
+    hovered: hovered.map_or(UiId::NONE, |(.., id)| id),
+    over_ui: top.is_some(),
   }
 }
 
@@ -298,6 +324,21 @@ mod tests {
     resolve_pointer(&mut m, &held(25.0), Some(1), &[], 4.0);
     assert!(m.interact.dragging);
     assert_eq!(m.interact.drag_started, UiId(1));
+  }
+
+  #[test]
+  fn a_click_only_button_clicks_after_moving_within_it() {
+    let mut m = memory(&[(1, rec(BUTTON, 0, 1, Flags::CLICK, 1))]);
+    resolve_pointer(&mut m, &press(15.0, 15.0), Some(1), &[], 4.0);
+    let held = PointerInput {
+      down: [true, false],
+      ..at(25.0, 20.0)
+    };
+    resolve_pointer(&mut m, &held, Some(1), &[], 4.0);
+    assert!(!m.interact.dragging, "it does not sense drags");
+    assert_eq!(m.interact.drag_started, UiId::NONE);
+    resolve_pointer(&mut m, &release(30.0, 20.0), Some(1), &[], 4.0);
+    assert_eq!(m.interact.clicked, UiId(1), "released over itself");
   }
 
   #[test]

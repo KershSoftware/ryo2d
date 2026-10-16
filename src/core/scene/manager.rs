@@ -974,6 +974,7 @@ mod tests {
     for (i, id) in ids.iter().enumerate() {
       ui.memory.begin_frame();
       ui.memory.interact.hot = *id;
+      ui.memory.interact.hovered = *id;
       ui.memory.interact.clicked = *id;
       m.ui_pass(&mut world, &mut audio, &mut ui);
       let touched: Vec<bool> = seen.lock().unwrap().drain(..).map(|(_, t)| t).collect();

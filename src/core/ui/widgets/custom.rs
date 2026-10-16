@@ -28,7 +28,7 @@ pub struct Custom<'u, 'a> {
 impl<'a> UiContext<'a> {
   /// A widget `width` by `height` UI units that the game paints itself,
   /// in its own units: (0, 0) is its top-left wherever the layout puts it.
-  /// It senses nothing unless told ([`sense`](Custom::sense)).
+  /// It senses hovering only unless told ([`sense`](Custom::sense)).
   ///
   /// ```ignore
   /// let health = self.health;
@@ -55,8 +55,8 @@ impl<'a> UiContext<'a> {
 widget_builders!(Custom<'_, '_>);
 
 impl Custom<'_, '_> {
-  /// What it takes from the pointer (default [`Sense::hover`]: nothing, so
-  /// the pointer reaches what is under it)
+  /// What it takes from the pointer (default [`Sense::hover`]: it reports
+  /// hovering, and clicks reach what is under it)
   pub fn sense(mut self, sense: Sense) -> Self {
     self.sense = sense;
     self
@@ -109,6 +109,9 @@ impl Custom<'_, '_> {
     }
     if self.sense.drag {
       flags |= Flags::DRAG;
+    }
+    if self.sense == Sense::hover() {
+      flags |= Flags::HOVER;
     }
     if disabled {
       flags |= Flags::DISABLED;
@@ -327,6 +330,47 @@ mod tests {
     d.frame(click);
     d.release();
     assert!(d.frame(click).clicked());
+  }
+
+  #[test]
+  fn a_hover_only_widget_reports_hovered() {
+    let mut d = UiDriver::new((200.0, 100.0));
+    let at = Rect::new(10.0, 10.0, 40.0, 40.0);
+    let draw = |ui: &mut UiContext<'_>| {
+      let hovered = ui.custom(40.0, 40.0).at(at).show().hovered();
+      (hovered, ui.wants_pointer())
+    };
+    d.frame(draw);
+    d.move_to(20.0, 20.0);
+    assert_eq!(
+      d.frame(draw),
+      (true, false),
+      "hovered, and the pointer is still gameplay's"
+    );
+    d.move_to(100.0, 80.0);
+    assert_eq!(d.frame(draw), (false, false));
+  }
+
+  #[test]
+  fn a_hover_only_widget_over_a_button_does_not_take_its_click() {
+    let mut d = UiDriver::new((200.0, 100.0));
+    let at = Rect::new(10.0, 10.0, 80.0, 30.0);
+    let draw = |ui: &mut UiContext<'_>| {
+      let clicked = ui.button("Under").at(at).clicked();
+      let hovered = ui.custom(80.0, 30.0).at(at).show().hovered();
+      (clicked, hovered)
+    };
+    d.frame(draw);
+    d.move_to(20.0, 20.0);
+    assert_eq!(d.frame(draw), (false, true));
+    d.press();
+    d.frame(draw);
+    d.release();
+    assert_eq!(
+      d.frame(draw),
+      (true, true),
+      "the click reaches the button under it"
+    );
   }
 
   #[test]

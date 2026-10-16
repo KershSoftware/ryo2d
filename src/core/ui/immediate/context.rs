@@ -543,7 +543,7 @@ impl<'a> UiContext<'a> {
     let i = &self.memory.interact;
     let (hot, active) = (i.hot == id, i.active == id);
     let mut states = 0;
-    if hot {
+    if i.hovered == id {
       states |= Response::HOVERED;
     }
     if active {
@@ -3843,6 +3843,7 @@ mod tests {
       // As if the pointer had clicked it, with nothing occluding it
       ui.memory.begin_frame();
       ui.memory.interact.hot = id;
+      ui.memory.interact.hovered = id;
       ui.memory.interact.clicked = id;
       ui.begin_scene(2, top);
       let response = draw(&mut ui);
