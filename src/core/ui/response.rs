@@ -132,7 +132,6 @@ impl Response {
   }
 
   /// Its value changed this frame
-  #[allow(dead_code)] // Used from Task 10 (value widgets)
   pub(crate) fn mark_changed(&mut self) {
     self.states |= Self::CHANGED;
   }

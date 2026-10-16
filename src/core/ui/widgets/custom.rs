@@ -6,6 +6,7 @@ use glam::Vec2;
 
 use super::common::{WidgetOpts, widget_builders};
 use crate::core::asset::SpriteHandle;
+use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextEngine, TextLayoutOptions, TextStyle};
 use crate::core::ui::immediate::{UiCommand, UiContext, text_seed};
 use crate::core::ui::layout::{Length, Measure};
@@ -134,6 +135,7 @@ impl Custom<'_, '_> {
       }
     }
     response.rect = ui.close_node(index).rect;
+    ui.tooltip_tick(self.opts.tooltip.as_ref(), &response);
     Some(response)
   }
 }
@@ -229,6 +231,7 @@ impl Painter<'_> {
       rect,
       uv: [0.0, 0.0, 1.0, 1.0],
       tint,
+      filter: Filter::Default,
       clip: None,
       layer: 0,
     });

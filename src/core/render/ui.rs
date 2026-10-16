@@ -254,6 +254,7 @@ pub(crate) fn emit_ui(
         rect,
         uv,
         tint,
+        filter,
         ..
       } => {
         if tint.a == 0 || !drawable(*rect) {
@@ -268,7 +269,7 @@ pub(crate) fn emit_ui(
         let look = SpriteLook {
           shading: SpriteShading::Plain,
           blend: BlendMode::Alpha,
-          filter: Filter::Default,
+          filter: *filter,
           lit: false,
         };
         let list = &mut *targets.list;

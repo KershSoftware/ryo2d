@@ -14,6 +14,12 @@ impl UiId {
   /// No widget
   pub const NONE: UiId = UiId(0);
 
+  /// An id of its own derived from this one: for state or nodes that belong
+  /// to a widget but are not it
+  pub(crate) fn derived(self, salt: u64) -> UiId {
+    UiId(mix(self.0, &[salt]))
+  }
+
   /// The root scope of a scene's UI
   pub(crate) fn root(scene_scope: u64) -> UiId {
     UiId(mix(FNV_OFFSET, &[0x00ec_0e00, scene_scope]))

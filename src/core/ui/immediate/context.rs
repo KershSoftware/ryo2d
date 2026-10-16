@@ -38,13 +38,14 @@ use super::input::UiInput;
 use crate::core::asset::SpriteHandle;
 use crate::core::input::Direction;
 use crate::core::render::UiSpace;
+use crate::core::render::batch::Filter;
 use crate::core::text::{
   RichText, TextAlign, TextEngine, TextLayout, TextLayoutOptions, TextOverflow, TextReveal,
   TextStyle,
 };
 use crate::core::ui::id::{UiId, key_hash};
 use crate::core::ui::layout::engine::LayoutEngine;
-use crate::core::ui::layout::{Edges, Measure, UiStyle};
+use crate::core::ui::layout::{Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::retained::{DropdownState, Focusable, TextInputState};
@@ -379,6 +380,9 @@ pub struct UiContext<'a> {
   scene: u64,
   /// Whether that scene is the top one
   top: bool,
+  /// The tooltip a widget asked for this scene, with the rect of the widget
+  /// it belongs to: drawn when the scene's UI ends
+  pub(crate) pending_tooltip: Option<(RichText, Rect)>,
 }
 
 /// The draw layer a scene's page records on
@@ -423,6 +427,7 @@ impl<'a> UiContext<'a> {
       order: 0,
       scene: 0,
       top: false,
+      pending_tooltip: None,
     }
   }
 
@@ -441,6 +446,11 @@ impl<'a> UiContext<'a> {
   /// automatic scale, or the game's `ui_scale`.
   pub fn ui_scale(&self) -> f32 {
     self.space.px_scale
+  }
+
+  /// The UI's size in UI units
+  pub(crate) fn ui_size(&self) -> Vec2 {
+    self.space.size
   }
 
   /// The UI's size in UI units, rounded up.
@@ -513,6 +523,7 @@ impl<'a> UiContext<'a> {
       }
       self.finish_subtree(subtree);
     }
+    self.flush_tooltip();
     self.memory.scopes.enter_root(UiId::root(self.scene));
   }
 
@@ -665,7 +676,6 @@ impl<'a> UiContext<'a> {
 
   /// The direction focused widget `id` takes this frame (a slider stepping,
   /// an open list moving), when its record takes that axis
-  #[allow(dead_code)] // Read by the widgets that take directions (Task 10)
   pub(crate) fn nav_step_for(&self, id: UiId) -> Option<Direction> {
     match self.memory.interact.nav_step {
       Some((who, direction)) if self.top && who == id => Some(direction),
@@ -708,6 +718,7 @@ impl<'a> UiContext<'a> {
         Some(Skin {
           sprite: Some(sprite),
           insets,
+          filter,
           ..
         }) => {
           let kind = DrawKind::NineSlice {
@@ -715,6 +726,7 @@ impl<'a> UiContext<'a> {
             sprite: sprite.clone(),
             insets: *insets,
             tint: look.fill,
+            filter: *filter,
           };
           self.push_draw(node, kind);
           return;
@@ -864,6 +876,12 @@ impl<'a> UiContext<'a> {
     index
   }
 
+  /// How the open container places its children (`None` outside any)
+  pub(crate) fn open_flow(&self) -> Option<Flow> {
+    let subtree = self.subtree.as_ref()?;
+    Some(subtree.nodes.get(self.open?)?.style.flow.clone())
+  }
+
   /// The focus scope a node opened now sits in: the innermost open node
   /// that is a scope, or that node's scope (`NONE` outside any)
   fn focus_scope_here(&self) -> UiId {
@@ -913,7 +931,7 @@ impl<'a> UiContext<'a> {
   /// Record `leaf` as a text node: on its own when no container is open
   /// (laid out at once; its laid-out size), else in the open container
   /// (its `measured` size). `draw` is its opacity, reveal and seed.
-  fn text_leaf(
+  pub(crate) fn text_leaf(
     &mut self,
     site: &'static Location<'static>,
     leaf: TextLeaf,
@@ -1645,6 +1663,7 @@ impl<'a> UiContext<'a> {
         rect,
         uv,
         tint,
+        filter: Filter::Default,
         clip: self.current_clip,
         layer: self.layer,
       },
@@ -1755,196 +1774,6 @@ impl<'a> UiContext<'a> {
         layer: self.layer,
       },
     );
-  }
-
-  // =========================================================================
-  // Slider Widget
-  // =========================================================================
-
-  /// Draw an interactive horizontal slider.
-  ///
-  /// Returns true if the value was changed this frame.
-  ///
-  /// # Arguments
-  /// * `rect` - The bounding box for the slider track
-  /// * `value` - Mutable reference to the value being controlled (will be updated if dragged)
-  /// * `min` - Minimum value
-  /// * `max` - Maximum value
-  pub fn slider(&mut self, rect: Rect, value: &mut f32, min: f32, max: f32) -> bool {
-    let (track_color, fill_color, handle_color, hover_color) = (
-      Color::rgb(60, 60, 80),
-      Color::rgb(80, 150, 255),
-      Color::WHITE,
-      Color::rgb(200, 220, 255),
-    );
-
-    let mouse_pos = self.input.mouse_position();
-
-    // Interaction area - must click here to start dragging, and stay roughly here to continue
-    // Horizontal is generous (allow overshooting ends), vertical is tight (avoid other widgets)
-    let interaction_rect = Rect::new(
-      rect.x - 20.0,
-      rect.y - 15.0,
-      rect.width + 40.0,
-      rect.height + 30.0,
-    );
-    let mouse_in_interaction = interaction_rect.contains(mouse_pos.0, mouse_pos.1);
-
-    // Calculate handle position
-    let normalized = (*value - min) / (max - min).max(0.0001);
-    let handle_x = rect.x + normalized * rect.width;
-    let handle_width = 12.0;
-    let handle_height = rect.height + 8.0;
-    let handle_rect = Rect::new(
-      handle_x - handle_width / 2.0,
-      rect.y - 4.0,
-      handle_width,
-      handle_height,
-    );
-
-    let mut changed = false;
-
-    // Handle dragging - mouse must be within the interaction area
-    // (In pure immediate mode, we can't track "which widget started the drag",
-    // so we require staying near the slider to avoid affecting other widgets)
-    let is_dragging = self.input.mouse_down(MouseButton::Left) && mouse_in_interaction;
-    // The drag is the slider's, not the game's
-    if is_dragging {
-      self.input.consume_mouse(MouseButton::Left);
-    }
-
-    if is_dragging {
-      // Calculate new value based on mouse position (clamped to slider bounds)
-      let mouse_x = mouse_pos.0.clamp(rect.x, rect.right());
-      let new_normalized = (mouse_x - rect.x) / rect.width;
-      let new_value = min + new_normalized * (max - min);
-      let clamped_value = new_value.clamp(min, max);
-
-      if (*value - clamped_value).abs() > 0.001 {
-        *value = clamped_value;
-        changed = true;
-      }
-    }
-
-    // Draw track background
-    self.draw_rect(rect, track_color);
-
-    // Draw filled portion
-    let fill_rect = Rect::new(rect.x, rect.y, normalized * rect.width, rect.height);
-    self.draw_rect(fill_rect, fill_color);
-
-    // Draw handle
-    let handle_visual_color = if mouse_in_interaction || is_dragging {
-      hover_color
-    } else {
-      handle_color
-    };
-    self.draw_rect(handle_rect, handle_visual_color);
-
-    changed
-  }
-
-  // =========================================================================
-  // Checkbox Widget
-  // =========================================================================
-
-  /// Draw an interactive checkbox.
-  ///
-  /// Returns true if the checkbox was toggled this frame.
-  ///
-  /// # Arguments
-  /// * `rect` - The bounding box for the checkbox (typically square)
-  /// * `checked` - Mutable reference to the checked state
-  /// * `label` - Optional label text to display next to the checkbox
-  pub fn checkbox(&mut self, rect: Rect, checked: &mut bool, label: Option<&str>) -> bool {
-    let hovered = self.is_hovered(rect);
-    let clicked = self.is_clicked(rect);
-    if clicked {
-      self.input.consume_mouse(MouseButton::Left);
-    }
-
-    let bg_color = if *checked {
-      Color::rgb(60, 120, 200)
-    } else if hovered {
-      Color::rgb(50, 50, 70)
-    } else {
-      Color::rgb(40, 40, 60)
-    };
-    let (border_color, checkmark_color) = (Color::rgb(80, 80, 100), Color::WHITE);
-
-    // Toggle on click
-    if clicked {
-      *checked = !*checked;
-    }
-
-    // Draw checkbox background
-    self.draw_panel(rect, bg_color, Some(border_color));
-
-    // Draw checkmark if checked - simple filled inner square
-    if *checked {
-      let padding = (rect.width.min(rect.height) * 0.25).max(3.0);
-      let inner_rect = rect.shrink(padding);
-      self.draw_rect(inner_rect, checkmark_color);
-    }
-
-    // Draw label if provided
-    if let Some(label_text) = label {
-      let text_color = Color::WHITE;
-      let text_x = rect.right() + 8.0;
-      let (_, text_h) = self.text_size(label_text);
-      let text_y = rect.y + (rect.height - text_h as f32) / 2.0;
-      self.draw_text(label_text, text_x, text_y, text_color);
-    }
-
-    clicked
-  }
-
-  // =========================================================================
-  // Toggle Widget
-  // =========================================================================
-
-  /// Draw an interactive toggle switch.
-  ///
-  /// Returns true if the toggle was changed this frame.
-  ///
-  /// # Arguments
-  /// * `rect` - The bounding box for the toggle (width should be ~2x height)
-  /// * `on` - Mutable reference to the toggle state
-  pub fn toggle(&mut self, rect: Rect, on: &mut bool) -> bool {
-    let hovered = self.is_hovered(rect);
-    let clicked = self.is_clicked(rect);
-    if clicked {
-      self.input.consume_mouse(MouseButton::Left);
-    }
-
-    let track_color = if *on {
-      Color::rgb(60, 150, 80)
-    } else if hovered {
-      Color::rgb(70, 70, 90)
-    } else {
-      Color::rgb(60, 60, 80)
-    };
-    let knob_color = Color::WHITE;
-
-    // Toggle on click
-    if clicked {
-      *on = !*on;
-    }
-
-    // Draw track (rounded appearance via rect)
-    self.draw_rect(rect, track_color);
-
-    // Draw knob
-    let knob_size = rect.height - 4.0;
-    let knob_x = if *on {
-      rect.right() - knob_size - 2.0
-    } else {
-      rect.x + 2.0
-    };
-    let knob_rect = Rect::new(knob_x, rect.y + 2.0, knob_size, knob_size);
-    self.draw_rect(knob_rect, knob_color);
-
-    clicked
   }
 
   // =========================================================================
@@ -2448,9 +2277,9 @@ impl<'a> UiContext<'a> {
   }
 
   /// Record what follows on draw `layer` (the engine draws its overlays and
-  /// the console on `OVERLAY_LAYER`)
-  pub(crate) fn set_layer(&mut self, layer: u8) {
-    self.layer = layer;
+  /// the console on `OVERLAY_LAYER`); the layer it was on
+  pub(crate) fn set_layer(&mut self, layer: u8) -> u8 {
+    std::mem::replace(&mut self.layer, layer)
   }
 
   /// `finish_dropdowns` onto draw layer `layer`: a scene under others keeps
@@ -3229,46 +3058,6 @@ mod tests {
   }
 
   #[test]
-  fn checkbox_consumes_click() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let mut checked = false;
-    let toggled = ui.checkbox(rect, &mut checked, None);
-
-    assert!(toggled, "Checkbox should register click");
-    assert!(checked, "Checkbox should be checked");
-    assert!(ui.click_consumed(), "Click should be consumed");
-  }
-
-  #[test]
-  fn toggle_consumes_click() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let mut on = false;
-    let toggled = ui.toggle(rect, &mut on);
-
-    assert!(toggled, "Toggle should register click");
-    assert!(on, "Toggle should be on");
-    assert!(ui.click_consumed(), "Click should be consumed");
-  }
-
-  #[test]
   fn text_input_consumes_click() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut ui = context_with(
@@ -3295,26 +3084,6 @@ mod tests {
     assert!(!ui.escape_consumed());
     ui.consume_escape();
     assert!(ui.escape_consumed());
-  }
-
-  #[test]
-  fn checkbox_not_toggled_when_click_consumed() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
-    ui.consume_click();
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let mut checked = false;
-    let toggled = ui.checkbox(rect, &mut checked, None);
-
-    assert!(!toggled, "Checkbox should not toggle when click consumed");
-    assert!(!checked, "Checkbox state should be unchanged");
   }
 
   #[test]

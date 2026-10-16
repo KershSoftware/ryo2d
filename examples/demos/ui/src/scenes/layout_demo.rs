@@ -11,6 +11,17 @@ pub struct LayoutDemo {
   vbox_spacing: f32,
 }
 
+/// `rect` made `height` tall around its middle: a slider's handle is taller
+/// than the 8-unit slots this page lays out
+fn grown(rect: Rect, height: f32) -> Rect {
+  Rect::new(
+    rect.x,
+    rect.y + rect.height / 2.0 - height / 2.0,
+    rect.width,
+    height,
+  )
+}
+
 impl LayoutDemo {
   pub fn new() -> Self {
     Self {
@@ -78,9 +89,15 @@ impl DemoPage for LayoutDemo {
       row2.y() + 6.0,
       Color::WHITE,
     );
-    ui.slider(row2.next(150.0, 8.0), &mut self.slider_values[0], 0.0, 1.0);
-    ui.checkbox(row2.next(20.0, 20.0), &mut self.checkbox_states[0], None);
-    ui.toggle(row2.next(44.0, 24.0), &mut self.toggle_state);
+    ui.slider(&mut self.slider_values[0], 0.0..=1.0)
+      .at(grown(row2.next(150.0, 8.0), 16.0))
+      .show();
+    ui.checkbox(&mut self.checkbox_states[0], "")
+      .at(row2.next(20.0, 20.0))
+      .show();
+    ui.toggle(&mut self.toggle_state, "")
+      .at(row2.next(44.0, 24.0))
+      .show();
     ui.button("Action").at(row2.next(70.0, 28.0));
 
     // =====================================================================
@@ -102,12 +119,9 @@ impl DemoPage for LayoutDemo {
       label_rect.y + 4.0,
       Color::LIGHT_GRAY,
     );
-    ui.slider(
-      setting_row.next(150.0, 8.0),
-      &mut self.slider_values[1],
-      0.0,
-      1.0,
-    );
+    ui.slider(&mut self.slider_values[1], 0.0..=1.0)
+      .at(grown(setting_row.next(150.0, 8.0), 16.0))
+      .show();
     let pct_rect = setting_row.next(45.0, 24.0);
     ui.draw_text(
       &format!("{:.0}%", self.slider_values[1] * 100.0),
@@ -125,12 +139,9 @@ impl DemoPage for LayoutDemo {
       label_rect.y + 4.0,
       Color::LIGHT_GRAY,
     );
-    ui.slider(
-      setting_row.next(150.0, 8.0),
-      &mut self.slider_values[2],
-      0.0,
-      1.0,
-    );
+    ui.slider(&mut self.slider_values[2], 0.0..=1.0)
+      .at(grown(setting_row.next(150.0, 8.0), 16.0))
+      .show();
     let pct_rect = setting_row.next(45.0, 24.0);
     ui.draw_text(
       &format!("{:.0}%", self.slider_values[2] * 100.0),
@@ -140,18 +151,14 @@ impl DemoPage for LayoutDemo {
     );
 
     let row_rect = col.next(300.0, 24.0);
-    ui.checkbox(
-      Rect::new(row_rect.x, row_rect.y, 20.0, 20.0),
-      &mut self.checkbox_states[1],
-      Some("Enable Sound Effects"),
-    );
+    ui.checkbox(&mut self.checkbox_states[1], "Enable Sound Effects")
+      .at(Rect::new(row_rect.x, row_rect.y, 200.0, 24.0))
+      .show();
 
     let row_rect = col.next(300.0, 24.0);
-    ui.checkbox(
-      Rect::new(row_rect.x, row_rect.y, 20.0, 20.0),
-      &mut self.checkbox_states[2],
-      Some("Show FPS Counter"),
-    );
+    ui.checkbox(&mut self.checkbox_states[2], "Show FPS Counter")
+      .at(Rect::new(row_rect.x, row_rect.y, 200.0, 24.0))
+      .show();
 
     // Show bounds
     let vbox_bounds = col.bounds();
@@ -272,19 +279,13 @@ impl DemoPage for LayoutDemo {
     let mut control_row = HBox::new(20.0, controls_y, 16.0).with_valign(VAlign::Center);
     let lbl = control_row.next(100.0, 20.0);
     ui.draw_text("HBox spacing:", lbl.x, lbl.y, Color::LIGHT_GRAY);
-    ui.slider(
-      control_row.next(80.0, 8.0),
-      &mut self.hbox_spacing,
-      0.0,
-      20.0,
-    );
+    ui.slider(&mut self.hbox_spacing, 0.0..=20.0)
+      .at(grown(control_row.next(80.0, 8.0), 16.0))
+      .show();
     let lbl = control_row.next(100.0, 20.0);
     ui.draw_text("VBox spacing:", lbl.x, lbl.y, Color::LIGHT_GRAY);
-    ui.slider(
-      control_row.next(80.0, 8.0),
-      &mut self.vbox_spacing,
-      0.0,
-      20.0,
-    );
+    ui.slider(&mut self.vbox_spacing, 0.0..=20.0)
+      .at(grown(control_row.next(80.0, 8.0), 16.0))
+      .show();
   }
 }

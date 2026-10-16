@@ -200,10 +200,12 @@ impl TextEngine {
     let bitmap = self
       .resolve(&style.font)
       .filter(|id| self.bitmap(*id).is_some());
-    let laid = Arc::new(match bitmap {
+    let mut laid = match bitmap {
       Some(face) => self.layout_bitmap(face, text, style, options, scale),
       None => self.layout_parley(text, style, options, scale),
-    });
+    };
+    laid.text.clone_from(&text.text);
+    let laid = Arc::new(laid);
     self.cache.insert(
       key,
       Cached {
@@ -662,6 +664,7 @@ impl TextEngine {
         .iter()
         .all(|glyph| matches!(self.face_render(glyph.font), FontRender::Pixel { .. }));
     TextLayout {
+      text: String::new(),
       size: Vec2::new(frame, placed.lines.iter().map(|line| line.height).sum()),
       scale,
       glyphs: placed.glyphs,
@@ -1053,6 +1056,7 @@ impl TextEngine {
 
     let (pauses, punctuation) = bitmap_reveal_marks(text, clusters);
     TextLayout {
+      text: String::new(),
       size: Vec2::new(frame, rows.len() as f32 * line_height),
       scale,
       glyphs,

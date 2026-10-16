@@ -86,7 +86,9 @@ pub use id::UiId;
 pub use layout::{Align, Edges, Justify, Length};
 pub use response::{Response, Sense};
 pub use types::{Anchor, Color, Rect};
-pub use widgets::{Button, Custom, Painter, Scroll};
+pub use widgets::{
+  Button, Checkbox, Custom, Image, Painter, Progress, Radio, Scroll, Slider, Toggle,
+};
 
 // Re-export immediate mode API (stateless per-frame drawing)
 pub use immediate::{HAlign, HBox, Stack, UiConsumed, UiContext, UiInput, UiText, VAlign, VBox};

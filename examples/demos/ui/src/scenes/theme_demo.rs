@@ -166,9 +166,6 @@ impl DemoPage for ThemeDemo {
     // This frame's theme (a change applies from the next frame)
     let palette = ui.theme().palette.clone();
     let sizes = ui.theme().metrics.sizes.clone();
-    let progress = ui
-      .theme()
-      .look(WidgetKind::Progress, None, WidgetState::Normal);
     let theme_name = ui.theme().name.clone();
     let (text_color, muted_color) = (palette.text, palette.muted);
 
@@ -227,7 +224,16 @@ impl DemoPage for ThemeDemo {
     ui.draw_text("Slider:", content_x, y, text_color);
     let slider_height = sizes.slider[1];
     let slider_rect = Rect::new(widget_x, y + 2.0, widget_width, slider_height);
-    ui.slider(slider_rect, &mut self.slider_value, 0.0, 1.0);
+    // The handle is taller than the track: the widget is as tall as the handle
+    let handle_height = sizes.slider_handle[1].max(slider_height);
+    ui.slider(&mut self.slider_value, 0.0..=1.0)
+      .at(Rect::new(
+        slider_rect.x,
+        slider_rect.y + slider_height / 2.0 - handle_height / 2.0,
+        widget_width,
+        handle_height,
+      ))
+      .show();
     // Center-align value text with slider
     let slider_center_y = slider_rect.y + slider_height / 2.0 - text_height / 2.0;
     ui.draw_text(
@@ -243,12 +249,7 @@ impl DemoPage for ThemeDemo {
     ui.draw_text("Progress:", content_x, y, text_color);
     let progress_height = 20.0;
     let progress_rect = Rect::new(widget_x, y - 2.0, widget_width, progress_height);
-    ui.draw_progress_bar(
-      progress_rect,
-      self.progress_value,
-      progress.border,
-      progress.fill,
-    );
+    ui.progress(self.progress_value).at(progress_rect).show();
     // Center-align value text with progress bar
     let progress_center_y = progress_rect.y + progress_height / 2.0 - text_height / 2.0;
     ui.draw_text(
@@ -263,24 +264,29 @@ impl DemoPage for ThemeDemo {
     // Checkbox section
     ui.draw_text("Checkbox:", content_x, y, text_color);
     let checkbox_rect = Rect::new(widget_x, y - 2.0, sizes.checkbox, sizes.checkbox);
-    ui.checkbox(checkbox_rect, &mut self.checkbox_checked, None);
-    ui.draw_text(
-      "Enable feature",
-      checkbox_rect.right() + 8.0,
-      checkbox_rect.y + 3.0,
-      text_color,
-    );
+    ui.checkbox(&mut self.checkbox_checked, "Enable feature")
+      .at(Rect::new(
+        checkbox_rect.x,
+        checkbox_rect.y,
+        widget_width,
+        checkbox_rect.height,
+      ))
+      .show();
 
     y += label_spacing;
 
     // Toggle section
     ui.draw_text("Toggle:", content_x, y, text_color);
     let toggle_rect = Rect::new(widget_x, y - 2.0, sizes.toggle[0], sizes.toggle[1]);
-    ui.toggle(toggle_rect, &mut self.toggle_on);
     let toggle_label = if self.toggle_on { "ON" } else { "OFF" };
-    // Center-align label with toggle
-    let toggle_center_y = toggle_rect.y + sizes.toggle[1] / 2.0 - text_height / 2.0;
-    ui.draw_text(toggle_label, widget_x + 55.0, toggle_center_y, muted_color);
+    ui.toggle(&mut self.toggle_on, toggle_label)
+      .at(Rect::new(
+        toggle_rect.x,
+        toggle_rect.y,
+        widget_width,
+        toggle_rect.height,
+      ))
+      .show();
 
     y += label_spacing + 10.0;
 

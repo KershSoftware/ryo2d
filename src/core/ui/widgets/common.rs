@@ -1,6 +1,7 @@
 //! What every widget builder shares: its options and the builder methods
 //! that set them (`widget_builders!`)
 
+use crate::core::text::RichText;
 use crate::core::ui::layout::UiStyle;
 use crate::core::ui::memory::Flags;
 use crate::core::ui::theme::LookPatch;
@@ -29,6 +30,8 @@ pub(crate) struct WidgetOpts {
   pub(crate) variant: Option<String>,
   /// `.style(patch)`: what this one widget changes in its look
   pub(crate) look_patch: Option<LookPatch>,
+  /// `.tooltip(text)`: shown after the pointer or focus rests on it
+  pub(crate) tooltip: Option<RichText>,
 }
 
 impl WidgetOpts {
@@ -57,10 +60,11 @@ impl WidgetOpts {
 /// `fill_width`, `margin`, `anchor`, `offset`, `grow`, `min_width`,
 /// `max_width`, and for focus `default_focus`, `nav_up`, `nav_down`,
 /// `nav_left`, `nav_right`, `nav_skip` and `focusable`, and for looks
-/// `variant` and `style`.
+/// `variant` and `style`, and `tooltip`. A widget with type parameters passes
+/// them first: `widget_builders!([T: Copy] Radio<'_, '_, T>)`.
 macro_rules! widget_builders {
-  ($widget:ty) => {
-    impl $widget {
+  ([$($generics:tt)*] $widget:ty) => {
+    impl<$($generics)*> $widget {
       /// Its id from `key` instead of how often this line ran: for widgets
       /// made in a loop over items that can reorder or be filtered
       pub fn id(mut self, key: impl ::std::hash::Hash) -> Self {
@@ -199,7 +203,17 @@ macro_rules! widget_builders {
         self.opts.look_patch = Some(patch);
         self
       }
+
+      /// Show `text` in a tooltip once the pointer (or the focus ring) has
+      /// rested on it for the theme's tooltip delay
+      pub fn tooltip(mut self, text: impl Into<$crate::core::text::RichText>) -> Self {
+        self.opts.tooltip = Some(text.into());
+        self
+      }
     }
+  };
+  ($widget:ty) => {
+    $crate::core::ui::widgets::common::widget_builders!([] $widget);
   };
 }
 

@@ -6,6 +6,7 @@ use glam::Vec2;
 
 use super::common::{WidgetOpts, widget_builders};
 use crate::core::asset::SpriteHandle;
+use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::Color;
 use crate::core::ui::immediate::{UiContext, text_seed};
@@ -138,6 +139,7 @@ impl Button<'_, '_> {
           sprite,
           uv: [0.0, 0.0, 1.0, 1.0],
           tint: Color::WHITE.with_alpha(look.text.a),
+          filter: Filter::Default,
         },
       );
     }
@@ -161,6 +163,7 @@ impl Button<'_, '_> {
       ui.focus_ring(index, look.radius);
     }
     response.rect = ui.close_node(index).rect;
+    ui.tooltip_tick(self.opts.tooltip.as_ref(), &response);
     Some(response)
   }
 }

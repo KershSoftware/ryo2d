@@ -62,6 +62,8 @@ pub(crate) struct LineInfo {
 /// A text block ready to draw
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct TextLayout {
+  /// The source text it laid out
+  pub(crate) text: String,
   /// Layout pixels
   pub(crate) size: Vec2,
   /// Layout pixels per text unit
@@ -78,4 +80,12 @@ pub(crate) struct TextLayout {
   pub(crate) punctuation: Vec<u32>,
   /// Every glyph is a pixel or bitmap font's
   pub(crate) pixel: bool,
+}
+
+impl TextLayout {
+  /// The source text it laid out
+  #[allow(dead_code)] // Read by the UI's tests
+  pub(crate) fn text(&self) -> &str {
+    &self.text
+  }
 }

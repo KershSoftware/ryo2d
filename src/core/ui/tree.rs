@@ -14,6 +14,7 @@ use super::widgets::scroll::ScrollState;
 use super::{Color, Rect, UiId};
 use crate::core::asset::SpriteHandle;
 use crate::core::render::UiSpace;
+use crate::core::render::batch::Filter;
 use crate::core::render::ui::snap_rect;
 use crate::core::text::{RichText, TextAlign, TextEngine, TextLayoutOptions, TextStyle};
 
@@ -116,8 +117,14 @@ pub(crate) enum DrawKind {
     radius: f32,
     border: Option<(f32, Color)>,
   },
+  /// The left `to` (0 to 1) of the inset rect, full height: a bar's filled part
+  Fraction {
+    inset: Edges,
+    to: f32,
+    fill: Color,
+    radius: f32,
+  },
   /// A box of `size` at `frac` of the room left in the inset rect
-  #[allow(dead_code)] // Constructed from Task 10 (the slider's handle)
   Box {
     inset: Edges,
     frac: Vec2,
@@ -145,6 +152,7 @@ pub(crate) enum DrawKind {
     sprite: SpriteHandle,
     uv: [f32; 4],
     tint: Color,
+    filter: Filter,
   },
   /// A sprite stretched over the inset rect with its corners kept: the
   /// corners reach `insets` (left, top, right, bottom, in sprite pixels and
@@ -154,6 +162,7 @@ pub(crate) enum DrawKind {
     sprite: SpriteHandle,
     insets: [f32; 4],
     tint: Color,
+    filter: Filter,
   },
   /// Geometry in node-local units, translated after layout
   Local(UiCommand),
@@ -350,10 +359,17 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
       sprite,
       insets,
       tint,
+      filter,
     } = &draw.kind
     {
       let room = inset_rect(place.rect, *inset);
-      for command in nine_slice(room, sprite, *insets, *tint, place.clip, place.layer, scale) {
+      let slice = NineSlice {
+        sprite,
+        insets: *insets,
+        tint: *tint,
+        filter: *filter,
+      };
+      for command in nine_slice(room, &slice, place.clip, place.layer, scale) {
         cx.commands.push(draw.order, command);
       }
     } else if let Some(command) = command_of(draw.kind, &place, text, scale) {
@@ -363,19 +379,32 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
   resolved
 }
 
+/// A nine-slice sprite to place
+#[derive(Clone, Copy)]
+struct NineSlice<'s> {
+  sprite: &'s SpriteHandle,
+  insets: [f32; 4],
+  tint: Color,
+  filter: Filter,
+}
+
 /// The pieces of `sprite` stretched over `room` with corners of `insets`
 /// (left, top, right, bottom): up to nine sprite commands, edges snapped to
 /// render pixels so the pieces meet without gaps. Corners shrink together
 /// when `room` is smaller than they are.
 fn nine_slice(
   room: Rect,
-  sprite: &SpriteHandle,
-  insets: [f32; 4],
-  tint: Color,
+  slice: &NineSlice<'_>,
   clip: Option<Rect>,
   layer: u8,
   scale: f32,
 ) -> Vec<UiCommand> {
+  let NineSlice {
+    sprite,
+    insets,
+    tint,
+    filter,
+  } = *slice;
   let (width, height) = (sprite.width() as f32, sprite.height() as f32);
   if !(drawable(room) && width > 0.0 && height > 0.0) {
     return Vec::new();
@@ -424,6 +453,7 @@ fn nine_slice(
           rect,
           uv: [us[column], vs[row], us[column + 1], vs[row + 1]],
           tint,
+          filter,
           clip,
           layer,
         });
@@ -566,6 +596,7 @@ fn command_of(
       sprite,
       uv,
       tint,
+      filter,
     } => {
       let room = inset_rect(place.rect, inset);
       let rect = match size {
@@ -580,6 +611,32 @@ fn command_of(
         rect,
         uv,
         tint,
+        filter,
+        clip,
+        layer,
+      })
+    }
+    DrawKind::Fraction {
+      inset,
+      to,
+      fill,
+      radius,
+    } => {
+      let room = inset_rect(place.rect, inset);
+      let to = if to.is_finite() {
+        to.clamp(0.0, 1.0)
+      } else {
+        0.0
+      };
+      let rect = snap_rect(
+        Rect::new(room.x, room.y, room.width * to, room.height),
+        scale,
+      );
+      visible(rect).then_some(UiCommand::Rect {
+        rect,
+        fill,
+        radius,
+        border: None,
         clip,
         layer,
       })
@@ -611,6 +668,7 @@ fn command_of(
           rect,
           uv,
           tint,
+          filter,
           ..
         } => {
           let rect = moved(rect, by);
@@ -619,6 +677,7 @@ fn command_of(
             rect,
             uv,
             tint,
+            filter,
             clip,
             layer,
           })
@@ -1001,6 +1060,7 @@ mod tests {
         sprite: sprite.clone(),
         uv: [0.0, 0.0, 1.0, 1.0],
         tint: Color::WHITE,
+        filter: Filter::Default,
       },
     );
     ui.push_draw(
@@ -1012,6 +1072,7 @@ mod tests {
         sprite,
         uv: [0.0, 0.0, 1.0, 1.0],
         tint: Color::WHITE,
+        filter: Filter::Default,
       },
     );
     ui.push_draw(

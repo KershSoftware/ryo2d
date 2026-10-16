@@ -1092,12 +1092,9 @@ mod tests {
   fn a_slider_drag_is_the_ui_s() {
     let Some((mouse, _)) = gameplay_under(
       |ui, state| {
-        ui.slider(
-          crate::core::ui::Rect::new(10.0, 20.0, 40.0, 8.0),
-          &mut state.slider,
-          0.0,
-          1.0,
-        );
+        ui.slider(&mut state.slider, 0.0..=1.0)
+          .at(crate::core::ui::Rect::new(10.0, 20.0, 40.0, 8.0))
+          .show();
       },
       WidgetState::default(),
       press_hold_release_at(30.0, 24.0),

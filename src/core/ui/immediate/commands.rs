@@ -6,6 +6,7 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use crate::core::asset::SpriteHandle;
+use crate::core::render::batch::Filter;
 use crate::core::text::TextLayout;
 use crate::core::ui::{Color, Rect};
 
@@ -25,6 +26,8 @@ pub(crate) enum UiCommand {
     rect: Rect,
     uv: [f32; 4],
     tint: Color,
+    /// How the texture is sampled (`Filter::Default` for absolute draws)
+    filter: Filter,
     clip: Option<Rect>,
     layer: u8,
   },

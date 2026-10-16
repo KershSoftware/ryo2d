@@ -174,16 +174,12 @@ impl Scene for PauseScene {
       slider_y_start,
       Color::WHITE,
     );
-    let master_changed = ui.slider(
-      Rect::new(slider_x, slider_y_start + 20.0, slider_w, 8.0),
-      &mut self.settings.master_volume,
-      0.0,
-      1.0,
-    );
-    if master_changed {
-      // Round to 0.05 increments
-      self.settings.master_volume = (self.settings.master_volume * 20.0).round() / 20.0;
-    }
+    let master_changed = ui
+      .slider(&mut self.settings.master_volume, 0.0..=1.0)
+      .step(0.05)
+      .at(Rect::new(slider_x, slider_y_start + 16.0, slider_w, 16.0))
+      .show()
+      .changed();
 
     // Music Volume
     ui.draw_text(
@@ -192,21 +188,17 @@ impl Scene for PauseScene {
       slider_y_start + slider_spacing,
       Color::WHITE,
     );
-    let music_changed = ui.slider(
-      Rect::new(
+    let music_changed = ui
+      .slider(&mut self.settings.music_volume, 0.0..=1.0)
+      .step(0.05)
+      .at(Rect::new(
         slider_x,
-        slider_y_start + slider_spacing + 20.0,
+        slider_y_start + slider_spacing + 16.0,
         slider_w,
-        8.0,
-      ),
-      &mut self.settings.music_volume,
-      0.0,
-      1.0,
-    );
-    if music_changed {
-      // Round to 0.05 increments
-      self.settings.music_volume = (self.settings.music_volume * 20.0).round() / 20.0;
-    }
+        16.0,
+      ))
+      .show()
+      .changed();
 
     // SFX Volume
     ui.draw_text(
@@ -215,21 +207,17 @@ impl Scene for PauseScene {
       slider_y_start + slider_spacing * 2.0,
       Color::WHITE,
     );
-    let sfx_changed = ui.slider(
-      Rect::new(
+    let sfx_changed = ui
+      .slider(&mut self.settings.sfx_volume, 0.0..=1.0)
+      .step(0.05)
+      .at(Rect::new(
         slider_x,
-        slider_y_start + slider_spacing * 2.0 + 20.0,
+        slider_y_start + slider_spacing * 2.0 + 16.0,
         slider_w,
-        8.0,
-      ),
-      &mut self.settings.sfx_volume,
-      0.0,
-      1.0,
-    );
-    if sfx_changed {
-      // Round to 0.05 increments
-      self.settings.sfx_volume = (self.settings.sfx_volume * 20.0).round() / 20.0;
-    }
+        16.0,
+      ))
+      .show()
+      .changed();
 
     // Apply volume changes immediately for real-time feedback
     if master_changed || music_changed || sfx_changed {
