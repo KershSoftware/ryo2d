@@ -891,7 +891,6 @@ struct DrawingPage {
   /// Percent
   opacity: f32,
   panel: Option<SpriteHandle>,
-  scroll: ScrollViewState,
 }
 
 impl Default for DrawingPage {
@@ -901,7 +900,6 @@ impl Default for DrawingPage {
       border: 2.0,
       opacity: 100.0,
       panel: None,
-      scroll: ScrollViewState::new(),
     }
   }
 }
@@ -911,7 +909,7 @@ impl DemoPage for DrawingPage {
     "UI drawing"
   }
   fn description(&self) -> &str {
-    "The UI drawn on the GPU over a bright world: translucent rounded panels with borders, a nine-slice, a polyline and a clipped scroll view.\n\
+    "The UI drawn on the GPU over a bright world: translucent rounded panels with borders, a nine-slice, a polyline and a clipped scroll area.\n\
      Panel opacity scales the three panels' 25, 50 and 75%; translucent UI blends in sRGB space, as on the web."
   }
   fn settings(&mut self, s: &mut Settings) {
@@ -998,49 +996,35 @@ impl DemoPage for DrawingPage {
     ui.draw_line(&points, 6.0, Color::new(20, 24, 40, 230));
     ui.draw_line(&points, 2.0, Color::rgb(255, 255, 255));
 
-    // A scroll view: 30 rows, clipped to the view by a scissor
+    // A scroll area: 30 rows, clipped to the view
     y += 66.0;
     let view = Rect::new(x, y, 300.0, (area.bottom() - y - 8.0).max(60.0));
-    let dt = ui.dt();
     let row_style = TextStyle::new().size(14.0);
+    let index_style = row_style.clone().color(DIM);
+    let count_style = row_style.clone().color(ACCENT);
     let line_h = ui.line_height(&row_style);
-    ui.scroll_view(
-      &mut self.scroll,
-      view,
-      30.0 * ROW_HEIGHT,
-      dt,
-      |ui, scroll_y| {
-        for i in 0..30 {
-          let row_y = view.y + i as f32 * ROW_HEIGHT - scroll_y;
+    ui.scroll().at(view).show(|ui| {
+      for i in 0..30 {
+        let count = format!("x{}", 1 + (noise(i as u32) * 9.0) as u32);
+        let count_w = ui.measure_text(count.as_str(), &count_style).x;
+        ui.custom(view.width, ROW_HEIGHT).id(i).paint(|p, _| {
           if i % 2 == 1 {
-            ui.draw_rect(
-              Rect::new(view.x, row_y, view.width, ROW_HEIGHT),
+            p.rect(
+              Rect::new(0.0, 0.0, view.width, ROW_HEIGHT),
               Color::new(255, 255, 255, 14),
             );
           }
-          let text_y = row_y + (ROW_HEIGHT - line_h) / 2.0;
-          ui.text(format!("{:02}", i + 1))
-            .style(&row_style)
-            .color(DIM)
-            .at(view.x + 8.0, text_y)
-            .draw();
-          ui.text(ITEMS[i % ITEMS.len()])
-            .style(&row_style)
-            .at(view.x + 40.0, text_y)
-            .draw();
-          ui.text(format!("x{}", 1 + (noise(i as u32) * 9.0) as u32))
-            .style(&row_style)
-            .color(ACCENT)
-            .at(view.x + 250.0, text_y)
-            .anchor(Anchor::TopRight)
-            .draw();
-        }
-      },
-    );
+          let text_y = (ROW_HEIGHT - line_h) / 2.0;
+          p.text(format!("{:02}", i + 1), 8.0, text_y, &index_style);
+          p.text(ITEMS[i % ITEMS.len()], 40.0, text_y, &row_style);
+          p.text(count, 250.0 - count_w, text_y, &count_style);
+        });
+      }
+    });
     let note_x = view.right() + 16.0;
     let note = Rect::new(note_x - 8.0, view.y, RIGHT_EDGE - note_x + 8.0, 92.0);
     ui.draw_rounded_rect(note, 6.0, Color::new(16, 20, 40, 200));
-    ui.text("30 rows in a scroll view: rows wholly outside it are not drawn, and its scissor cuts the rows at its edges.")
+    ui.text("30 rows in a scroll view: rows wholly outside it are not drawn, and its clip cuts the rows at its edges.")
       .style(&caption)
       .at(note_x, view.y + 8.0)
       .wrap(note.width - 16.0)

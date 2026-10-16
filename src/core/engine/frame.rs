@@ -21,12 +21,16 @@ use crate::core::scene::SceneAction;
 use crate::core::schedule::Phase;
 use crate::core::shaders::EffectsManager;
 use crate::core::time::Time;
-use crate::core::ui::interact::{PointerInput, PointerOutcome, resolve_pointer};
+use crate::core::ui::interact::{
+  PointerInput, PointerOutcome, apply_scroll_requests, resolve_pointer, route_wheel,
+};
 use crate::core::ui::{UiContext, UiInput};
 use crate::{engine_warn, profile_scope};
 
 /// How far (UI units) a press moves before it is a drag
 const DRAG_THRESHOLD: f32 = 4.0;
+/// UI units a scroll area moves per line of wheel
+const WHEEL_LINE: f32 = 40.0;
 
 /// The real delta the loop chose for this frame: `Some` for headless runs
 /// and tests, `None` for the wall clock.
@@ -356,13 +360,32 @@ impl Engine {
       .console_state
       .visible
       .then(|| self.console_state.window_rect());
-    resolve_pointer(
+    let outcome = resolve_pointer(
       &mut self.ui_memory,
       &pointer,
       top,
       console.as_slice(),
       DRAG_THRESHOLD,
-    )
+    );
+    // Then the wheel: the scroll areas under the pointer take it, never
+    // under the console
+    apply_scroll_requests(&mut self.ui_memory);
+    let (wheel_x, wheel_y) = input.scroll_delta();
+    let shift = input.key_down(KeyCode::ShiftLeft) || input.key_down(KeyCode::ShiftRight);
+    let blocked = console.iter().any(|c| c.contains(x, y));
+    let taken = !blocked
+      && route_wheel(
+        &mut self.ui_memory,
+        pointer.position,
+        Vec2::new(wheel_x, wheel_y),
+        shift,
+        top,
+        WHEEL_LINE,
+      );
+    PointerOutcome {
+      consume_wheel: taken,
+      ..outcome
+    }
   }
 
   /// Record one UI pass into the frame's UI commands (replacing any earlier
@@ -393,6 +416,9 @@ impl Engine {
         if consume {
           snapshot.consume_mouse(button);
         }
+      }
+      if outcome.consume_wheel {
+        snapshot.consume_scroll();
       }
     } else {
       self.ui_memory.restart_pass();

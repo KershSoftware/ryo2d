@@ -4,6 +4,8 @@
 mod button;
 mod common;
 mod custom;
+pub(crate) mod scroll;
 
 pub use button::Button;
 pub use custom::{Custom, Painter};
+pub use scroll::Scroll;

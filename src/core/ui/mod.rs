@@ -14,7 +14,7 @@
 //! ├─────────────────────────────────────────────────────────┤
 //! │   Retained Mode Layer                                   │
 //! │   ├─ Layout Containers (HBox, VBox, Stack)              │
-//! │   ├─ Stateful Widgets (TextInput, Dropdown, ScrollView) │
+//! │   ├─ Stateful Widgets (TextInput, Dropdown) │
 //! │   └─ Automatic state management                         │
 //! ├─────────────────────────────────────────────────────────┤
 //! │   Immediate Mode Layer                                  │
@@ -85,13 +85,13 @@ pub use id::UiId;
 pub use layout::{Align, Edges, Justify, Length};
 pub use response::{Response, Sense};
 pub use types::{Anchor, Color, Rect};
-pub use widgets::{Button, Custom, Painter};
+pub use widgets::{Button, Custom, Painter, Scroll};
 
 // Re-export immediate mode API (stateless per-frame drawing)
 pub use immediate::{HAlign, HBox, Stack, UiConsumed, UiContext, UiInput, UiText, VAlign, VBox};
 
 // Re-export retained mode API (stateful widgets)
-pub use retained::{DropdownState, FocusTrap, Focusable, ScrollViewState, TextInputState};
+pub use retained::{DropdownState, FocusTrap, Focusable, TextInputState};
 
 // Re-export theme types
 pub use theme::{

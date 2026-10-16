@@ -4,6 +4,7 @@
 use glam::Vec2;
 
 use super::memory::{Flags, UiMemory};
+use super::widgets::scroll::ScrollState;
 use super::{Rect, UiId};
 
 /// Two clicks on one widget this close together (seconds) are a double click
@@ -29,6 +30,8 @@ pub(crate) struct PointerInput {
 pub(crate) struct PointerOutcome {
   /// The left (0) or right (1) press was over the UI: gameplay must not see it
   pub(crate) consume_press: [bool; 2],
+  /// A scroll area took the wheel: gameplay must not see it
+  pub(crate) consume_wheel: bool,
 }
 
 /// Resolve the frame's pointer against last frame's records of the top
@@ -124,6 +127,108 @@ pub(crate) fn resolve_pointer(
   }
   memory.interact = i;
   outcome
+}
+
+/// Give the frame's wheel (`wheel`, in lines, +y up) to the scroll areas of
+/// `top_scene` under `pointer`, from last frame's records. Per axis, the
+/// innermost area that can still move toward the wheel takes it (its
+/// `target` moves `line` units per line); an area at its edge passes the
+/// wheel to the one around it. Shift turns a vertical-only wheel sideways.
+/// Whether anything took the wheel, so gameplay must not see it.
+pub(crate) fn route_wheel(
+  memory: &mut UiMemory,
+  pointer: Vec2,
+  wheel: Vec2,
+  shift: bool,
+  top_scene: Option<u64>,
+  line: f32,
+) -> bool {
+  let Some(scene) = top_scene else {
+    return false;
+  };
+  let mut wheel = if shift && wheel.x == 0.0 {
+    Vec2::new(wheel.y, 0.0)
+  } else {
+    wheel
+  };
+  if !wheel.is_finite() || wheel == Vec2::ZERO {
+    return false;
+  }
+  // Innermost first; ids only break ties, so map order never decides
+  let mut areas: Vec<(u16, UiId)> = memory
+    .prev_records()
+    .filter(|(_, r)| {
+      r.scene == scene
+        && r.flags.contains(Flags::SCROLLABLE)
+        && r.rect.contains(pointer.x, pointer.y)
+        && r
+          .clip
+          .is_none_or(|clip| clip.contains(pointer.x, pointer.y))
+    })
+    .map(|(id, r)| (r.depth, id))
+    .collect();
+  areas.sort_by(|a, b| b.cmp(a));
+
+  let mut taken = false;
+  for (_, id) in areas {
+    let Some(state) = memory.state::<ScrollState>(id, scene) else {
+      continue;
+    };
+    let max = state.max();
+    for axis in 0..2 {
+      if wheel[axis] == 0.0 {
+        continue;
+      }
+      let delta = -wheel[axis] * line;
+      let room = if delta < 0.0 {
+        state.target[axis] > 0.0
+      } else {
+        state.target[axis] < max[axis]
+      };
+      if room {
+        state.target[axis] = (state.target[axis] + delta).clamp(0.0, max[axis]);
+        wheel[axis] = 0.0;
+        taken = true;
+      }
+    }
+    if wheel == Vec2::ZERO {
+      break;
+    }
+  }
+  taken
+}
+
+/// Carry out the `scroll_to` requests made last frame: each scroll area
+/// around a requested widget moves its `target` the least that brings the
+/// widget's rect (as last frame laid it out) into view.
+pub(crate) fn apply_scroll_requests(memory: &mut UiMemory) {
+  for id in memory.take_scroll_requests() {
+    let Some(record) = memory.prev(id).copied() else {
+      continue;
+    };
+    let Some(area) = memory.prev(record.scroll).copied() else {
+      continue;
+    };
+    let Some(state) = memory.state::<ScrollState>(record.scroll, area.scene) else {
+      continue;
+    };
+    let max = state.max();
+    // Last frame's rects were laid out at the offset the state still holds
+    let from = Vec2::new(record.rect.x - area.rect.x, record.rect.y - area.rect.y) + state.offset;
+    let size = Vec2::new(record.rect.width, record.rect.height);
+    for axis in 0..2 {
+      let (start, end) = (from[axis], from[axis] + size[axis]);
+      let (seen, view) = (state.offset[axis], state.view[axis]);
+      let wanted = if start < seen {
+        start
+      } else if end > seen + view {
+        end - view
+      } else {
+        continue;
+      };
+      state.target[axis] = wanted.clamp(0.0, max[axis]);
+    }
+  }
 }
 
 /// What is under the pointer
@@ -445,5 +550,145 @@ mod tests {
     );
     assert_eq!(m.interact.hot, UiId::NONE);
     assert!(!out.consume_press[0], "the console takes its own clicks");
+  }
+
+  fn scrollable(rect: Rect, depth: u16, id: u64, m: &mut UiMemory, content: Vec2) {
+    let mut r = rec(rect, 0, id as u32, Flags::SCROLLABLE, 1);
+    r.depth = depth;
+    r.content = content;
+    m.record(UiId(id), r);
+    let state = m
+      .state::<crate::core::ui::widgets::scroll::ScrollState>(UiId(id), 1)
+      .unwrap();
+    state.view = Vec2::new(rect.width, rect.height);
+    state.content = content;
+  }
+
+  fn target(m: &UiMemory, id: u64) -> Vec2 {
+    m.peek_state::<crate::core::ui::widgets::scroll::ScrollState>(UiId(id))
+      .unwrap()
+      .target
+  }
+
+  #[test]
+  fn the_innermost_scrollable_takes_the_wheel() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    scrollable(
+      Rect::new(0.0, 0.0, 200.0, 200.0),
+      0,
+      1,
+      &mut m,
+      Vec2::new(200.0, 1000.0),
+    );
+    scrollable(
+      Rect::new(10.0, 10.0, 100.0, 100.0),
+      3,
+      2,
+      &mut m,
+      Vec2::new(100.0, 500.0),
+    );
+    m.end_frame();
+    m.begin_frame();
+    assert!(route_wheel(
+      &mut m,
+      Vec2::new(20.0, 20.0),
+      Vec2::new(0.0, -1.0),
+      false,
+      Some(1),
+      40.0
+    ));
+    assert_eq!((target(&m, 2).y, target(&m, 1).y), (40.0, 0.0));
+  }
+
+  #[test]
+  fn a_scrollable_at_its_edge_passes_the_wheel_out() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    scrollable(
+      Rect::new(0.0, 0.0, 200.0, 200.0),
+      0,
+      1,
+      &mut m,
+      Vec2::new(200.0, 1000.0),
+    );
+    scrollable(
+      Rect::new(10.0, 10.0, 100.0, 100.0),
+      3,
+      2,
+      &mut m,
+      Vec2::new(100.0, 500.0),
+    );
+    m.end_frame();
+    m.begin_frame();
+    // The inner one is at its top; scrolling up goes to the outer one, which is at its top too
+    assert!(!route_wheel(
+      &mut m,
+      Vec2::new(20.0, 20.0),
+      Vec2::new(0.0, 1.0),
+      false,
+      Some(1),
+      40.0
+    ));
+    m.state::<crate::core::ui::widgets::scroll::ScrollState>(UiId(1), 1)
+      .unwrap()
+      .target
+      .y = 100.0;
+    assert!(route_wheel(
+      &mut m,
+      Vec2::new(20.0, 20.0),
+      Vec2::new(0.0, 1.0),
+      false,
+      Some(1),
+      40.0
+    ));
+    assert_eq!(target(&m, 1).y, 60.0);
+  }
+
+  #[test]
+  fn a_scrollable_whose_content_fits_leaves_the_wheel() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    scrollable(
+      Rect::new(0.0, 0.0, 200.0, 200.0),
+      0,
+      1,
+      &mut m,
+      Vec2::new(200.0, 150.0),
+    );
+    m.end_frame();
+    m.begin_frame();
+    assert!(!route_wheel(
+      &mut m,
+      Vec2::new(20.0, 20.0),
+      Vec2::new(0.0, -1.0),
+      false,
+      Some(1),
+      40.0
+    ));
+  }
+
+  #[test]
+  fn shift_turns_the_wheel_sideways() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    scrollable(
+      Rect::new(0.0, 0.0, 200.0, 50.0),
+      0,
+      1,
+      &mut m,
+      Vec2::new(800.0, 50.0),
+    );
+    m.end_frame();
+    m.begin_frame();
+    assert!(route_wheel(
+      &mut m,
+      Vec2::new(20.0, 20.0),
+      Vec2::new(0.0, -2.0),
+      true,
+      Some(1),
+      40.0
+    ));
+    assert_eq!(target(&m, 1).x, 80.0);
   }
 }

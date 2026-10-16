@@ -10,6 +10,7 @@ use super::immediate::{UiCommand, UiCommands};
 use super::layout::engine::{Avail, LayoutEngine, NodeDesc};
 use super::layout::{Edges, Flow, Length, Measure, UiStyle};
 use super::memory::{Flags, Record, UiMemory};
+use super::widgets::scroll::ScrollState;
 use super::{Color, Rect, UiId};
 use crate::core::asset::SpriteHandle;
 use crate::core::render::UiSpace;
@@ -246,7 +247,19 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
       if matches!(nodes[p].style.flow, Flow::Stack) {
         shift[i] += finite(node.style.offset);
       }
-      // Task 7 subtracts a scroll node's scroll offset from its children here
+      // A scroll area shows its contents moved up and left by its offset
+      let (scroll_x, scroll_y) = (nodes[p].style.scroll_x, nodes[p].style.scroll_y);
+      if let Some(state) = cx
+        .memory
+        .peek_state::<ScrollState>(nodes[p].id)
+        .filter(|_| scroll_x || scroll_y)
+      {
+        let by = Vec2::new(
+          if scroll_x { state.offset.x } else { 0.0 },
+          if scroll_y { state.offset.y } else { 0.0 },
+        );
+        shift[i] -= by;
+      }
       node_clip = clips[p];
       if nodes[p].clips {
         node_clip = Some(match node_clip {
@@ -266,6 +279,25 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
     rects,
     content: placed.iter().map(|p| p.content).collect(),
   };
+
+  // A scroll area keeps the size of its view and contents for next frame's
+  // wheel, scrollbar and `scroll_to`; an axis it does not scroll has no more
+  // contents than view
+  for (i, node) in nodes.iter().enumerate() {
+    let (x, y) = (node.style.scroll_x, node.style.scroll_y);
+    if !(x || y) {
+      continue;
+    }
+    if let Some(state) = cx.memory.state::<ScrollState>(node.id, cx.scene) {
+      let view = Vec2::new(resolved.rects[i].width, resolved.rects[i].height);
+      let content = resolved.content[i];
+      state.view = view;
+      state.content = Vec2::new(
+        if x { content.x.max(view.x) } else { view.x },
+        if y { content.y.max(view.y) } else { view.y },
+      );
+    }
+  }
 
   // Records, for next frame's hit tests and navigation
   for (i, node) in nodes.iter().enumerate() {

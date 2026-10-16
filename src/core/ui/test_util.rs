@@ -6,7 +6,9 @@ use crate::core::render::UiSpace;
 use crate::core::text::{Fonts, TextEngine};
 use crate::core::ui::UiInput;
 use crate::core::ui::immediate::{UiCommands, UiContext};
-use crate::core::ui::interact::{PointerInput, resolve_pointer};
+use crate::core::ui::interact::{
+  PointerInput, apply_scroll_requests, resolve_pointer, route_wheel,
+};
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
 
@@ -61,6 +63,9 @@ pub(crate) fn context_in<'a>(
   ui
 }
 
+/// How long each driven frame lasts (seconds)
+const FRAME: f64 = 1.0 / 30.0;
+
 /// A headless UI over several frames: it owns a memory, a layout engine, a
 /// text engine and the commands, scripts the pointer and resolves it before
 /// each frame, as the engine does
@@ -72,6 +77,8 @@ pub(crate) struct UiDriver {
   pub(crate) commands: UiCommands,
   size: (f32, f32),
   pointer: PointerInput,
+  /// A wheel step for the next frame, in lines
+  wheel: Vec2,
   time: f64,
 }
 
@@ -91,6 +98,7 @@ impl UiDriver {
         down: [false; 2],
         time: 0.0,
       },
+      wheel: Vec2::ZERO,
       time: 0.0,
     }
   }
@@ -112,14 +120,30 @@ impl UiDriver {
     self.pointer.down[0] = false;
   }
 
-  /// One frame: resolve the scripted pointer, run `ui` as the top scene (scope 1)
+  /// A wheel step of (dx, dy) lines in the next frame, routed without Shift
+  pub(crate) fn wheel(&mut self, dx: f32, dy: f32) {
+    self.wheel = Vec2::new(dx, dy);
+  }
+
+  /// One frame: resolve the scripted pointer and the wheel, run `ui` as the
+  /// top scene (scope 1), 1/30 s after the last. A frame that draws nothing leaves
+  /// the records and widget state of the last frame that did.
   pub(crate) fn frame<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>) -> R) -> R {
-    self.time += 1.0 / 60.0;
+    self.time += FRAME;
     self.pointer.time = self.time;
     self.commands.clear();
     self.memory.begin_frame();
     self.layout.begin_frame();
     resolve_pointer(&mut self.memory, &self.pointer, Some(1), &[], 4.0);
+    apply_scroll_requests(&mut self.memory);
+    route_wheel(
+      &mut self.memory,
+      self.pointer.position,
+      self.wheel,
+      false,
+      Some(1),
+      40.0,
+    );
     let space = UiSpace {
       size: Vec2::new(self.size.0, self.size.1),
       px_scale: 1.0,
@@ -135,16 +159,24 @@ impl UiDriver {
         space,
         UiInput::default(),
       );
+      context.set_dt(FRAME as f32);
       context.begin_scene(1, true);
       let result = ui(&mut context);
       context.end_scene();
       result
     };
-    self.memory.end_frame();
-    self.layout.end_frame();
+    // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
+    // the UI stays as the last drawn frame left it
+    if self.memory.drew_nothing() {
+      self.memory.rewind_frame();
+    } else {
+      self.memory.end_frame();
+      self.layout.end_frame();
+    }
     // A press and a release last one frame
     self.pointer.pressed = [false; 2];
     self.pointer.released = [false; 2];
+    self.wheel = Vec2::ZERO;
     result
   }
 }

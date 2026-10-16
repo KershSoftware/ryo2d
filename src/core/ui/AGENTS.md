@@ -10,7 +10,7 @@ The UI system combines two paradigms for game HUDs, menus, and interactive eleme
 - Ideal for HUDs, debug overlays, dynamic UI
 
 ### Retained Mode (`retained/`)
-- Caller-owned state structs (`DropdownState`, `TextInputState`, `ScrollViewState`) persisting across frames
+- Caller-owned state structs (`DropdownState`, `TextInputState`) persisting across frames
 - State includes cursor position, selection, scroll offset, focus
 - Rendered through `UiContext` (`immediate/context.rs`)
 - Ideal for forms, text input, complex menus
@@ -24,7 +24,7 @@ The UI system combines two paradigms for game HUDs, menus, and interactive eleme
 
 `Scene::ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction` runs once per frame for the visible scenes, bottom-up, **before** the fixed steps (`Engine::ui_pass`, `engine/frame.rs`). Engine stats/FPS overlays and the dev console are drawn into the same `UiContext` after the scenes, on the overlay layer, so they appear on top of the scenes' pages and open lists alike.
 
-- **Input**: `UiContext` reads a `UiInput` snapshot of `Input` (blocks and consumption carried over). What the UI consumes (`consume_click`, `consume_escape`, `consume_key`, `consume_scroll`, widget clicks, the wheel over a scrolling view and typed text) is applied to `Input` after the pass, so `update` and systems never see it: gameplay keys belong in `update` (`ctx.input`), keys the UI acts on in `ui` (`ui.input()`).
+- **Input**: `UiContext` reads a `UiInput` snapshot of `Input` (blocks and consumption carried over). What the UI consumes (`consume_click`, `consume_escape`, `consume_key`, `consume_scroll`, widget clicks, the wheel a scroll area took and typed text) is applied to `Input` after the pass, so `update` and systems never see it: gameplay keys belong in `update` (`ctx.input`), keys the UI acts on in `ui` (`ui.input()`).
 - **Time**: `ui.dt()` is real time, so UI animation runs through pause and slow motion.
 - **Scene actions**: only the top scene's returned action counts (scenes below a transparent one draw, but their actions are dropped). It applies at once, before the fixed steps. If it brings a different scene to the top, the UI pass runs once more so the new scene's UI shows this frame.
 
@@ -54,6 +54,16 @@ The pointer is resolved once per engine frame, before any scene's `ui` (`interac
 - **Presses over the UI are captured.** A press over any candidate is consumed in the UI's input snapshot before the context is built, so the existing consumption (`apply_consumed`, `ui_mouse_capture`) keeps the press, its held frames and its release from gameplay. `ui.wants_pointer()` is `over_ui || active != NONE`.
 - **Widgets** (`widgets/`) are builders that run on `show()`, a shorthand such as `clicked()`, or drop: `run` takes the context out of an `Option`, so it records once. `widget_builders!` (`widgets/common.rs`) gives every widget `id`, `enabled`, `at`, `width`, `height`, `fill_width`, `margin`, `anchor`, `offset`, `grow`, `min_width` and `max_width`. The button is a leaf of fixed size (label plus 12 × 6 padding, at least 28 tall) with a fill and a centred label (and an icon left of it, centred with it); `ui.custom(w, h)` is a fixed leaf whose `Painter` draws `DrawKind::Local` commands in the widget's own units, placed when its subtree is laid out.
 - **Tests** drive several frames without a GPU with `test_util::UiDriver` (scripted pointer, resolved before each frame as the engine does). A widget keeps its id only from one call site, so a test draws it from one closure.
+
+## Scrolling
+
+`ui.scroll()` (`widgets/scroll.rs`) is a container whose children are translated by its offset and clipped to its rect, for hits as well as drawing; `finish_subtree`'s resolution subtracts the scroll node's `ScrollState::offset` from every descendant and the clip is the node's rect. Its record has `SCROLLABLE | DRAG`; a `ScrollState` (offset, target, content, view) lives in `UiMemory` under its id.
+
+- **The wheel** is routed once a frame, right after the pointer resolve (`interact::route_wheel`, called by `Engine::draw_ui`): the innermost scroll area (highest `depth`) of the top scene under the pointer that can still move toward the wheel takes it, per axis, moving its `target` by 40 units a line. An area at its edge, or whose contents fit, passes the wheel outward to the one around it. Shift turns a vertical wheel sideways. When anything took it the snapshot's wheel is consumed, so gameplay never sees it. Not routed under the console.
+- **Offsets ease.** Each frame the area's `offset` moves toward `target` by `1 - exp(-dt / 0.08)` (snapping within 0.5); both are clamped to `content - view` once the area has been laid out. `content` and `view` are written when its subtree is laid out (an axis it does not scroll counts as fitting), so clamping, the scrollbar and the wheel use the previous frame's sizes.
+- **The scrollbar** is drawn over the area's right (or bottom) edge when the contents do not fit, and takes its width as padding so contents never lie under it. A press on its column makes the area active (the contents are above everything else) and the target follows the pointer; a press on the contents does nothing, because contents are never dragged.
+- **`scroll_to(id)`** stores a request in `UiMemory`; the next resolve (`interact::apply_scroll_requests`) finds the widget's record and its scroll ancestor and moves that area's `target` the least that brings the rect into view. `scroll_offset` reads and `set_scroll_offset` sets (no easing) an area's offset by the `Response::id` of its `show`.
+- **Tests** read an offset in a frame that draws nothing; `UiDriver` leaves the last drawn frame's records and state as they were for such a frame.
 
 ## Drawing on the GPU
 

@@ -140,6 +140,8 @@ pub(crate) struct UiMemory {
   next: HashMap<UiId, Record>,
   states: HashMap<UiId, Slot>,
   focus_memory: HashMap<UiId, (u64, UiId)>,
+  /// Widgets `scroll_to` asked to bring into view, applied by the next resolve
+  scroll_requests: Vec<UiId>,
   frame: u64,
   pub(crate) scopes: IdScopes,
   /// The pointer's hot, active, click and drag state
@@ -153,6 +155,7 @@ impl UiMemory {
       next: HashMap::new(),
       states: HashMap::new(),
       focus_memory: HashMap::new(),
+      scroll_requests: Vec::new(),
       frame: 0,
       scopes: IdScopes::default(),
       interact: Interaction::default(),
@@ -165,6 +168,19 @@ impl UiMemory {
     self.next.clear();
     self.frame += 1;
     self.scopes.begin_frame();
+  }
+
+  /// This frame wrote no records (tests only)
+  #[cfg(test)]
+  pub(crate) fn drew_nothing(&self) -> bool {
+    self.next.is_empty()
+  }
+
+  /// Make the frame that began never have been: last frame's records stay
+  /// last frame's (tests only)
+  #[cfg(test)]
+  pub(crate) fn rewind_frame(&mut self) {
+    std::mem::swap(&mut self.prev, &mut self.next);
   }
 
   /// The UI pass runs again this frame (a scene switched from `ui`): the
@@ -189,6 +205,18 @@ impl UiMemory {
     self.next.insert(id, record);
   }
 
+  /// Ask for `id` to be scrolled into view by the next resolve
+  pub(crate) fn request_scroll(&mut self, id: UiId) {
+    if !self.scroll_requests.contains(&id) {
+      self.scroll_requests.push(id);
+    }
+  }
+
+  /// The pending `scroll_to` requests, cleared
+  pub(crate) fn take_scroll_requests(&mut self) -> Vec<UiId> {
+    std::mem::take(&mut self.scroll_requests)
+  }
+
   /// A widget's record from last frame
   pub(crate) fn prev(&self, id: UiId) -> Option<&Record> {
     self.prev.get(&id)
@@ -206,7 +234,6 @@ impl UiMemory {
 
   /// A widget's own state, created with `T::default()` when absent or of
   /// another type. Always `Some`; the `Option` keeps library code panic-free
-  #[allow(dead_code)] // Used from Task 7 (scroll state)
   pub(crate) fn state<T: Default + 'static>(&mut self, id: UiId, scene: u64) -> Option<&mut T> {
     let frame = self.frame;
     let slot = self.states.entry(id).or_insert_with(|| Slot {
@@ -222,7 +249,6 @@ impl UiMemory {
     slot.value.downcast_mut::<T>()
   }
 
-  #[allow(dead_code)] // Used from Task 7 (scroll state)
   pub(crate) fn peek_state<T: 'static>(&self, id: UiId) -> Option<&T> {
     self.states.get(&id)?.value.downcast_ref::<T>()
   }
