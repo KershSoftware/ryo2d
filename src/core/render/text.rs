@@ -31,7 +31,7 @@ use crate::core::text::{
   TextEngine, TextIcons, TextLayout, TextLayoutState, TextReveal, glyph_id, raster_size_step,
   reveal_alpha,
 };
-use crate::core::ui::{Anchor, Color};
+use crate::core::ui::{Anchor, Color, Rect};
 use crate::engine_warn;
 
 /// What the text reads
@@ -109,15 +109,14 @@ pub(crate) fn emit_text(
     layout,
     place,
   };
-  // One context for the block: effects get their args in its buffer
-  let mut context = GlyphContext::new(0, 0, 0, place.time, 0.0, place.seed);
+  let mut effects = EffectRun::new(place);
   for layer in [Layer::Shadow, Layer::Outline, Layer::Fill] {
     for (index, glyph) in layout.glyphs.iter().enumerate() {
       let at = Glyph {
         index: u32::try_from(index).unwrap_or(u32::MAX),
         glyph,
       };
-      emit_glyph(&mut block, at, layer, &mut context);
+      emit_glyph(&mut block, at, layer, &mut effects);
     }
   }
   for icon in &layout.icons {
@@ -141,14 +140,31 @@ struct Glyph<'a> {
   glyph: &'a PlacedGlyph,
 }
 
+/// A block's effect state: one context, its args buffer reused for every
+/// glyph, and the last effect found unknown, not asked for again in the
+/// block (so an unknown name costs one lookup per block, not per glyph)
+struct EffectRun<'l> {
+  context: GlyphContext,
+  unknown: Option<&'l str>,
+}
+
+impl EffectRun<'_> {
+  fn new(place: &TextPlacement) -> Self {
+    Self {
+      context: GlyphContext::new(0, 0, 0, place.time, 0.0, place.seed),
+      unknown: None,
+    }
+  }
+}
+
 /// A glyph's effect and opacity; `None` when it is not seen
-fn modifier(
+fn modifier<'l>(
   sources: &TextSources<'_>,
   layout: &TextLayout,
   place: &TextPlacement,
   at: Glyph<'_>,
-  style: &GlyphStyle,
-  context: &mut GlyphContext,
+  style: &'l GlyphStyle,
+  effects: &mut EffectRun<'l>,
 ) -> Option<(GlyphMod, f32)> {
   let glyph = at.glyph;
   let mut alpha = place.opacity;
@@ -158,12 +174,23 @@ fn modifier(
   if alpha.is_nan() || alpha <= 0.0 {
     return None;
   }
-  let modified = match &style.effect {
+  let modified = match style.effect.as_deref() {
+    Some(effect)
+      if effects
+        .unknown
+        .is_some_and(|name| std::ptr::eq(name, effect)) =>
+    {
+      GlyphMod::default()
+    }
     Some(effect) => {
+      let context = &mut effects.context;
       context.index = at.index;
       context.cluster = glyph.cluster;
       context.size = glyph.size / layout.scale;
-      sources.effects.apply(effect, context).unwrap_or_default()
+      sources.effects.apply(effect, context).unwrap_or_else(|| {
+        effects.unknown = Some(effect);
+        GlyphMod::default()
+      })
     }
     None => GlyphMod::default(),
   };
@@ -228,14 +255,15 @@ struct GlyphLook {
   pen: Vec2,
 }
 
-fn emit_glyph(
-  block: &mut Block<'_, '_, '_>,
+fn emit_glyph<'b>(
+  block: &mut Block<'b, '_, '_>,
   at: Glyph<'_>,
   layer: Layer,
-  context: &mut GlyphContext,
+  effects: &mut EffectRun<'b>,
 ) {
   let glyph = at.glyph;
-  let Some(style) = block.layout.styles.get(usize::from(glyph.style)) else {
+  let layout: &'b TextLayout = block.layout;
+  let Some(style) = layout.styles.get(usize::from(glyph.style)) else {
     return;
   };
   // Nothing to draw in this layer: skip before running the effect
@@ -248,7 +276,7 @@ fn emit_glyph(
     return;
   }
   let (sources, layout, place) = (block.sources, block.layout, block.place);
-  let Some((modified, alpha)) = modifier(sources, layout, place, at, style, context) else {
+  let Some((modified, alpha)) = modifier(sources, layout, place, at, style, effects) else {
     return;
   };
   let look = GlyphLook {
@@ -817,15 +845,9 @@ fn emit_icon(block: &mut Block<'_, '_, '_>, icon: &PlacedIcon) {
         return;
       };
       let size = Vec2::new(source.sprite.width() as f32, source.sprite.height() as f32);
-      let uv = match source.region {
-        Some(region) if size.x > 0.0 && size.y > 0.0 => [
-          region.x / size.x,
-          region.y / size.y,
-          (region.x + region.width) / size.x,
-          (region.y + region.height) / size.y,
-        ],
-        _ => [0.0, 0.0, 1.0, 1.0],
-      };
+      let uv = source
+        .region
+        .map_or([0.0, 0.0, 1.0, 1.0], |region| region_uv(region, size));
       (&source.sprite, uv)
     }
   };
@@ -847,6 +869,23 @@ fn emit_icon(block: &mut Block<'_, '_, '_>, icon: &PlacedIcon) {
     .with_uv(uv[0], uv[1], uv[2], uv[3])
     .with_tint(Color::WHITE, alpha);
   push_sprite(block.targets, place, sprite, Filter::Default, instance);
+}
+
+/// A sprite region's UVs (a region in pixels on a `size` sprite), inset
+/// half a texel on each side so linear filtering never reads the texels
+/// around it (a region under a texel wide samples its middle)
+fn region_uv(region: Rect, size: Vec2) -> [f32; 4] {
+  if !(size.x > 0.0 && size.y > 0.0) {
+    return [0.0, 0.0, 1.0, 1.0];
+  }
+  let inset_x = (region.width.max(0.0) / 2.0).min(0.5);
+  let inset_y = (region.height.max(0.0) / 2.0).min(0.5);
+  [
+    (region.x + inset_x) / size.x,
+    (region.y + inset_y) / size.y,
+    (region.x + region.width - inset_x) / size.x,
+    (region.y + region.height - inset_y) / size.y,
+  ]
 }
 
 /// Lay out the `Text2d`s whose text, style, options or fonts changed, and
@@ -1071,19 +1110,10 @@ pub(crate) fn emit_world_text(
   }
 }
 
-/// The clusters a reveal shows and its fade in clusters; `None` once it is
-/// done, so every glyph is at full alpha (a fade would leave the last ones
-/// partial)
+/// The clusters a reveal draws and its fade in clusters; `None` once it has
+/// settled, so every glyph is at full alpha
 fn reveal_window(reveal: &TextReveal) -> Option<(f32, f32)> {
-  if reveal.is_done() {
-    return None;
-  }
-  let fade = if reveal.fade.is_finite() && reveal.fade > 0.0 {
-    reveal.fade * reveal.per_second
-  } else {
-    0.0
-  };
-  Some((reveal.shown(), fade))
+  (!reveal.settled()).then(|| reveal.drawn())
 }
 
 /// Build the glyphs `Fonts::prewarm` asked for: for each character, the
@@ -1228,6 +1258,29 @@ mod tests {
   }
 
   #[test]
+  fn icon_regions_keep_half_a_texel_off_their_neighbours() {
+    let size = Vec2::new(64.0, 32.0);
+    let uv = region_uv(Rect::new(16.0, 8.0, 16.0, 16.0), size);
+    let (du, dv) = (0.5 / size.x, 0.5 / size.y);
+    let expected = [
+      16.0 / 64.0 + du,
+      8.0 / 32.0 + dv,
+      32.0 / 64.0 - du,
+      24.0 / 32.0 - dv,
+    ];
+    for (got, want) in uv.iter().zip(expected) {
+      assert!((got - want).abs() < 1e-6, "{uv:?} vs {expected:?}");
+    }
+    // A region under a texel wide samples its middle
+    let thin = region_uv(Rect::new(4.0, 0.0, 0.5, 2.0), size);
+    assert_eq!(thin[0], thin[2]);
+    assert_eq!(
+      region_uv(Rect::new(0.0, 0.0, 1.0, 1.0), Vec2::ZERO),
+      [0.0, 0.0, 1.0, 1.0]
+    );
+  }
+
+  #[test]
   fn anchors_place_the_block() {
     assert_eq!(anchor_fraction(Anchor::TopLeft), Vec2::ZERO);
     assert_eq!(anchor_fraction(Anchor::Center), Vec2::splat(0.5));
@@ -1253,21 +1306,11 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_reveal_draws_its_last_glyph_at_full_alpha() {
+    fn a_fading_reveal_fades_its_last_glyph_in_smoothly() {
       let fonts = Fonts::with_builtins();
       let mut engine = TextEngine::new();
       engine.sync(&fonts);
       let layout = laid(&mut engine, "HHHHHH", &TextStyle::default());
-      // Six clusters a second, each fading in over half a second: the fade
-      // spans three clusters
-      let mut reveal = TextReveal::new(6.0).with_fade(0.5);
-      for _ in 0..100 {
-        if reveal.is_done() {
-          break;
-        }
-        reveal.clock.step(0.1, 6.0, 0.0, &layout);
-      }
-      assert!(reveal.is_done());
       let (effects, icons) = (TextEffects::default(), TextIcons::default());
       let sources = TextSources {
         fonts: &fonts,
@@ -1275,23 +1318,86 @@ mod tests {
         effects: &effects,
         icons: &icons,
       };
-      let place = placement(reveal_window(&reveal));
       let last = layout.glyphs.len() - 1;
       let at = Glyph {
         index: last as u32,
         glyph: &layout.glyphs[last],
       };
-      let mut context = GlyphContext::new(0, 0, 0, 0.0, 0.0, 0);
-      let (_, alpha) = modifier(
-        &sources,
-        &layout,
-        &place,
-        at,
-        &layout.styles[0],
-        &mut context,
-      )
-      .expect("the last glyph is seen");
-      assert_eq!(alpha, 1.0);
+      let alpha_of = |reveal: &TextReveal| {
+        let place = placement(reveal_window(reveal));
+        let mut effects = EffectRun::new(&place);
+        modifier(
+          &sources,
+          &layout,
+          &place,
+          at,
+          &layout.styles[0],
+          &mut effects,
+        )
+        .map_or(0.0, |(_, alpha)| alpha)
+      };
+      // Six clusters a second, each fading in over half a second: the fade
+      // spans three clusters, and a 60 Hz frame moves it a thirtieth
+      let mut reveal = TextReveal::new(6.0).with_fade(0.5);
+      let dt = 1.0 / 60.0;
+      let step = dt * 6.0 / 3.0;
+      let (mut revealed, mut alphas) = (0, Vec::new());
+      for _ in 0..200 {
+        if reveal.settled() {
+          break;
+        }
+        if reveal.advance(dt, &layout) {
+          revealed += 1;
+        }
+        alphas.push(alpha_of(&reveal));
+      }
+      assert!(reveal.settled() && reveal.is_done());
+      assert_eq!(revealed, 1, "TextRevealed once");
+      assert_eq!(alpha_of(&reveal), 1.0, "settled at full alpha");
+      alphas.push(alpha_of(&reveal));
+      for pair in alphas.windows(2) {
+        let rise = pair[1] - pair[0];
+        assert!(
+          (-1e-6..=step + 1e-4).contains(&rise),
+          "the last glyph rises smoothly: {pair:?} (a frame's step is {step})"
+        );
+      }
+    }
+
+    #[test]
+    fn an_unknown_effect_is_looked_up_once_per_block() {
+      let fonts = Fonts::with_builtins();
+      let mut engine = TextEngine::new();
+      engine.sync(&fonts);
+      let text = RichText::markup("[nope-block-effect]abc[/nope-block-effect]");
+      let layout = engine
+        .layout(
+          &text,
+          &TextStyle::default(),
+          &TextLayoutOptions::default(),
+          1.0,
+        )
+        .unwrap();
+      let (effects, icons) = (TextEffects::default(), TextIcons::default());
+      let sources = TextSources {
+        fonts: &fonts,
+        engine: &engine,
+        effects: &effects,
+        icons: &icons,
+      };
+      let place = placement(None);
+      let mut run = EffectRun::new(&place);
+      for (index, glyph) in layout.glyphs.iter().enumerate() {
+        let at = Glyph {
+          index: index as u32,
+          glyph,
+        };
+        let style = &layout.styles[usize::from(glyph.style)];
+        let (modified, _) = modifier(&sources, &layout, &place, at, style, &mut run).unwrap();
+        assert_eq!(modified, GlyphMod::default());
+        // From the first glyph on, the name is known to be unknown
+        assert_eq!(run.unknown, Some("nope-block-effect"));
+      }
     }
 
     #[test]

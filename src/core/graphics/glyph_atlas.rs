@@ -18,6 +18,8 @@ pub(crate) const GLYPH_PAGE_SIZE: u32 = 1024;
 pub(crate) const GLYPH_PAGES: usize = 8;
 /// Transparent texels around each glyph
 const PADDING: u32 = 1;
+/// Keys without an image (spaces) remembered at most
+const MAX_NO_IMAGE: usize = 4096;
 
 /// A glyph page: its format and index within that format
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -240,8 +242,13 @@ impl GlyphAtlas {
     self.empty.contains(key)
   }
 
-  /// Remember that `key` has no image
+  /// Remember that `key` has no image. The set is cleared when it is full
+  /// (sizes that animate make new keys forever); a forgotten key is only
+  /// rasterized again.
   pub(crate) fn mark_no_image(&mut self, key: GlyphKey) {
+    if self.empty.len() >= MAX_NO_IMAGE {
+      self.empty.clear();
+    }
     self.empty.insert(key);
   }
 
@@ -389,6 +396,20 @@ mod tests {
 
   fn key(glyph: u16) -> GlyphKey {
     GlyphKey::fill(FontId(0), glyph, 16.0, 0.0)
+  }
+
+  #[test]
+  fn the_keys_without_images_stay_bounded() {
+    let mut atlas = GlyphAtlas::new();
+    for glyph in 0..10_000 {
+      atlas.mark_no_image(key(glyph));
+      assert!(
+        atlas.empty.len() <= MAX_NO_IMAGE,
+        "{} keys",
+        atlas.empty.len()
+      );
+    }
+    assert!(atlas.has_no_image(&key(9_999)), "the newest is kept");
   }
 
   #[test]

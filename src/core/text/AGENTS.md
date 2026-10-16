@@ -109,10 +109,17 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   italic or bold face to the registry.
 - Effects run per glyph per frame with one `GlyphContext` per block (its
   `args` buffer reused, so a glyph allocates nothing); `TextEffects::apply`
-  clamps alpha to 0..=1 and scale to 0..=8.
+  clamps alpha to 0..=1 and scale to 0..=8. An effect runs once per pass
+  (shadow, outline, fill) and once per camera, so it must be a pure function
+  of its `GlyphContext` (documented on `TextEffects::register`). An unknown
+  name is looked up once per block, then skipped.
 - `TextReveal` advances on game time (`PostUpdateSet::Extract`) from the
-  previous frame's layout and writes `TextRevealed` once. It starts over
-  when the text changes (not its style or a font). A finished reveal draws
-  every glyph at full alpha: its fade would leave the last ones partial.
+  previous frame's layout and writes `TextRevealed` once, when every
+  character has started showing (`is_done`). With a fade, the clock then
+  runs on (`RevealClock::run_on`) until the last character has faded in, so
+  the end never pops; once settled the emitter draws without a reveal. It
+  starts over when the text changes (not its style or a font).
 - The glyph atlas remembers keys with no image (spaces), so they are not
-  rasterized again every frame.
+  rasterized again every frame; the set is cleared past 4096 keys.
+- Icon regions are inset half a texel on each side, so linear filtering
+  never reads their neighbours on the sheet.

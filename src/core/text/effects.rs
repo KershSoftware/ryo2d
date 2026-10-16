@@ -104,7 +104,12 @@ impl Default for TextEffects {
 }
 
 impl TextEffects {
-  /// Add or replace an effect; markup names it `[name]..[/name]`
+  /// Add or replace an effect; markup names it `[name]..[/name]`.
+  ///
+  /// The effect must be a pure function of its `GlyphContext`: it runs for
+  /// each glyph once per pass (shadow, outline, fill) and once per camera
+  /// that sees the text, every frame, and every run must agree. Animate
+  /// with `time`, vary with `seed`, `cluster` and `index`; keep no state.
   pub fn register(
     &mut self,
     name: impl Into<String>,
@@ -124,10 +129,12 @@ impl TextEffects {
   pub(crate) fn apply(&self, effect: &str, ctx: &mut GlyphContext) -> Option<GlyphMod> {
     let (name, args) = effect.split_once('=').unwrap_or((effect, ""));
     let Some(run) = self.effects.get(name) else {
+      // Allocates only for the first warning (the text emitter also stops
+      // asking for a name it found unknown in the same block)
       let first = self
         .warned
         .lock()
-        .map(|mut set| set.insert(name.to_string()))
+        .map(|mut set| !set.contains(name) && set.insert(name.to_string()))
         .unwrap_or(false);
       if first {
         crate::engine_warn!(module: "text", "no text effect named {name:?}; the text draws without it");

@@ -478,6 +478,71 @@ fn a_finished_fading_reveal_shows_its_last_glyph_fully() {
   );
 }
 
+/// The leftmost and rightmost inked x on row `y`
+fn row_span(frame: &image::RgbaImage, y: u32) -> (u32, u32) {
+  let xs: Vec<u32> = (0..frame.width())
+    .filter(|&x| frame.get_pixel(x, y).0[0] > 128)
+    .collect();
+  (xs[0], xs[xs.len() - 1])
+}
+
+#[test]
+fn glyphs_draw_upright_and_unmirrored() {
+  for msdf in [false, true] {
+    let drawn = |text: &'static str| {
+      frame_of(
+        (96, 96),
+        |b| b,
+        move |ctx| {
+          if msdf {
+            use_msdf(ctx);
+          }
+          ctx.world.spawn((
+            Transform::from_xy(0.0, 0.0),
+            Text2d::new(text).with_style(TextStyle::new().size(48.0)),
+          ));
+        },
+      )
+    };
+    let (Some(l), Some(t)) = (drawn("L"), drawn("T")) else {
+      return;
+    };
+    // Rows two pixels inside the ink, clear of the edges' anti-aliasing
+    let rows = |frame: &image::RgbaImage| {
+      let [_, top, _, bottom] = ink(frame, |p| p.0[0] > 128).unwrap();
+      (row_span(frame, top + 2), row_span(frame, bottom - 2))
+    };
+    let (l_top, l_bottom) = rows(&l);
+    assert!(
+      l_bottom.1 >= l_top.1 + 8 && l_bottom.0.abs_diff(l_top.0) <= 1,
+      "msdf {msdf}: an L's foot runs right from its stem, at the bottom: top {l_top:?}, bottom {l_bottom:?}"
+    );
+    let (t_top, t_bottom) = rows(&t);
+    assert!(
+      t_top.1 - t_top.0 >= t_bottom.1 - t_bottom.0 + 8,
+      "msdf {msdf}: a T's bar is at the top: top {t_top:?}, bottom {t_bottom:?}"
+    );
+  }
+}
+
+#[test]
+fn world_text_without_fonts_draws_nothing() {
+  let Some(frame) = frame_of(
+    (64, 64),
+    |b| b,
+    |ctx| {
+      ctx.world.remove_resource::<Fonts>();
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Text2d::new("HHH").with_style(TextStyle::new().size(24.0)),
+      ));
+    },
+  ) else {
+    return;
+  };
+  assert_eq!(count(&frame, bright), 0);
+}
+
 #[test]
 fn a_text_entity_scaled_to_zero_draws_nothing() {
   let Some(frame) = frame_of(

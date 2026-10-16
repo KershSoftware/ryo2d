@@ -34,7 +34,7 @@ const ROLES: [FontRole; 3] = [FontRole::Ui, FontRole::Mono, FontRole::Pixel];
 
 const ELLIPSIS: char = '\u{2026}';
 
-/// Cache counters (tests and the benchmark read them)
+/// Cache counters (the tests read them)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CacheStats {
   pub(crate) hits: u64,
@@ -369,11 +369,6 @@ impl TextEngine {
     *last_used = frame;
     Some(&*line)
   }
-
-  /// Cache counters (the tests')
-  pub(crate) fn stats(&self) -> CacheStats {
-    self.stats
-  }
 }
 
 impl TextEngine {
@@ -406,6 +401,12 @@ impl TextEngine {
   /// The family a face belongs to
   pub(crate) fn face_family(&self, font: FontId) -> Option<&str> {
     self.faces.get(&font).map(|face| face.family.as_str())
+  }
+
+  /// Cache counters
+  #[cfg(all(test, feature = "default-fonts"))]
+  pub(crate) fn stats(&self) -> CacheStats {
+    self.stats
   }
 
   /// Count a frame; every so often drop the layouts unused for a while
@@ -1198,9 +1199,48 @@ pub(crate) struct RevealClock {
   pub(crate) done: bool,
   /// The pauses before the first cluster have been taken up
   pub(crate) started: bool,
+  /// Clusters run on past the end once every cluster shows, so the last
+  /// ones finish fading in (`run_on`)
+  pub(crate) tail: f32,
 }
 
 impl RevealClock {
+  /// The run-on a fade of `fade_clusters` needs once every cluster shows:
+  /// the last cluster starts fading in one cluster before the end
+  pub(crate) fn run_on_needed(fade_clusters: f32) -> f32 {
+    if fade_clusters.is_finite() {
+      (fade_clusters - 1.0).max(0.0)
+    } else {
+      0.0
+    }
+  }
+
+  /// Once every cluster shows, keep counting at `per_second` until the last
+  /// cluster has faded in over `fade_clusters`
+  pub(crate) fn run_on(&mut self, dt: f32, per_second: f32, fade_clusters: f32) {
+    let needed = Self::run_on_needed(fade_clusters);
+    if !self.done || self.tail >= needed {
+      return;
+    }
+    let step = dt.max(0.0) * per_second;
+    // A speed that cannot be counted ends the fade at once
+    self.tail = if step.is_finite() && per_second > 0.0 {
+      (self.tail + step).min(needed)
+    } else {
+      needed
+    };
+  }
+
+  /// Every cluster shows and the last has faded in over `fade_clusters`
+  pub(crate) fn settled(&self, fade_clusters: f32) -> bool {
+    self.done && self.tail >= Self::run_on_needed(fade_clusters)
+  }
+
+  /// The clusters to draw: those shown, plus the run-on past the end
+  pub(crate) fn drawn(&self) -> f32 {
+    self.shown + self.tail
+  }
+
   /// Advance by `dt` at `per_second` clusters a second, holding at pauses
   /// and for `punctuation_pause` after punctuation; true on the step the
   /// whole text becomes visible
@@ -2453,6 +2493,39 @@ mod tests {
     assert!(clock.step(1.0, 10.0, 0.0, &laid), "finishes this step");
     assert!(clock.done);
     assert!(!clock.step(1.0, 10.0, 0.0, &laid), "finishes once");
+  }
+
+  #[test]
+  fn the_reveal_clock_runs_on_until_the_last_cluster_faded_in() {
+    let mut clock = RevealClock {
+      shown: 4.0,
+      done: true,
+      ..RevealClock::default()
+    };
+    // A three-cluster fade: the last cluster needs two more
+    assert!(!clock.settled(3.0));
+    clock.run_on(0.1, 10.0, 3.0);
+    assert!((clock.drawn() - 5.0).abs() < 1e-5 && !clock.settled(3.0));
+    clock.run_on(1.0, 10.0, 3.0);
+    assert_eq!((clock.drawn(), clock.settled(3.0)), (6.0, true), "capped");
+    // A fade of a cluster or less needs no run-on; a bad speed ends it
+    assert!(
+      RevealClock {
+        done: true,
+        ..RevealClock::default()
+      }
+      .settled(1.0)
+    );
+    let mut bad = RevealClock {
+      done: true,
+      ..RevealClock::default()
+    };
+    bad.run_on(0.1, f32::NAN, 3.0);
+    assert!(bad.settled(3.0));
+    // Nothing runs on before every cluster shows
+    let mut early = RevealClock::default();
+    early.run_on(1.0, 10.0, 3.0);
+    assert_eq!(early.tail, 0.0);
   }
 
   #[test]

@@ -134,7 +134,8 @@ impl TextReveal {
     self.clock = RevealClock::default();
   }
 
-  /// The whole text is shown
+  /// Every character has started showing (`TextRevealed` was written); with
+  /// a fade, the last ones finish fading in over the next moments
   pub fn is_done(&self) -> bool {
     self.clock.done
   }
@@ -142,6 +143,39 @@ impl TextReveal {
   /// Character clusters shown so far (fractional while fading)
   pub fn shown(&self) -> f32 {
     self.clock.shown
+  }
+
+  /// The fade in clusters (0 without one)
+  pub(crate) fn fade_clusters(&self) -> f32 {
+    let clusters = self.fade * self.per_second;
+    if self.fade > 0.0 && self.per_second > 0.0 && clusters.is_finite() {
+      clusters
+    } else {
+      0.0
+    }
+  }
+
+  /// Advance by `dt` game seconds over `layout`; true on the step every
+  /// character has started showing. After that it runs on until the last
+  /// characters have faded in.
+  pub(crate) fn advance(&mut self, dt: f32, layout: &TextLayout) -> bool {
+    let (per_second, pause) = (self.per_second, self.punctuation_pause);
+    if self.clock.done {
+      let fade = self.fade_clusters();
+      self.clock.run_on(dt, per_second, fade);
+      return false;
+    }
+    self.clock.step(dt, per_second, pause, layout)
+  }
+
+  /// Every character shows at full opacity: nothing left to advance
+  pub(crate) fn settled(&self) -> bool {
+    self.clock.settled(self.fade_clusters())
+  }
+
+  /// The clusters to draw and the fade in clusters (`reveal_alpha`)
+  pub(crate) fn drawn(&self) -> (f32, f32) {
+    (self.clock.drawn(), self.fade_clusters())
   }
 }
 
@@ -169,11 +203,11 @@ pub(crate) fn advance_text_reveal(
 ) {
   let dt = time.game.delta();
   for (entity, mut reveal, state) in &mut reveals {
-    if reveal.clock.done {
+    // Checked first, so a settled reveal is not marked changed
+    if reveal.settled() {
       continue;
     }
-    let (per_second, pause) = (reveal.per_second, reveal.punctuation_pause);
-    if reveal.clock.step(dt, per_second, pause, &state.layout) {
+    if reveal.advance(dt, &state.layout) {
       finished.write(TextRevealed { entity });
     }
   }

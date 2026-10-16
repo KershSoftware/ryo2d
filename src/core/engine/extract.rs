@@ -221,32 +221,38 @@ impl Engine {
       );
       self.parallax = quads;
       // World text: lay out what changed, build the glyphs asked for ahead,
-      // then each camera's glyph quads
-      layout_world_text(&mut self.world, &mut self.text);
-      let render_scale = {
-        let mapping = self.world.resource::<ScreenMapping>();
-        mapping.render_size().0 as f32 / mapping.screen_size().x
-      };
-      let mut text_targets = TextTargets {
-        raster: &mut self.glyph_raster,
-        sprites: &mut gpu,
-        device: rend.device(),
-        queue: rend.queue(),
-        list: &mut self.draw_list,
-        warned: &mut self.text_warned,
-      };
-      {
-        let mut fonts = self.world.resource_mut::<Fonts>();
-        let fonts = fonts.bypass_change_detection();
-        prewarm(fonts, &self.text, &mut text_targets);
+      // then each camera's glyph quads (none if the game removed `Fonts`)
+      if self.world.contains_resource::<Fonts>() {
+        layout_world_text(&mut self.world, &mut self.text);
+        let render_scale = self
+          .world
+          .get_resource::<ScreenMapping>()
+          .map_or(1.0, |mapping| {
+            mapping.render_size().0 as f32 / mapping.screen_size().x
+          });
+        let mut text_targets = TextTargets {
+          raster: &mut self.glyph_raster,
+          sprites: &mut gpu,
+          device: rend.device(),
+          queue: rend.queue(),
+          list: &mut self.draw_list,
+          warned: &mut self.text_warned,
+        };
+        if let Some(mut fonts) = self.world.get_resource_mut::<Fonts>() {
+          prewarm(
+            fonts.bypass_change_detection(),
+            &self.text,
+            &mut text_targets,
+          );
+        }
+        let text_frame = WorldTextFrame {
+          cameras: &self.camera_draws,
+          render_scale,
+          alpha,
+          game_time,
+        };
+        emit_world_text(&mut self.world, &self.text, &text_frame, &mut text_targets);
       }
-      let text_frame = WorldTextFrame {
-        cameras: &self.camera_draws,
-        render_scale,
-        alpha,
-        game_time,
-      };
-      emit_world_text(&mut self.world, &self.text, &text_frame, &mut text_targets);
       // Trails (world-space points), lines (at their entity) and the debug
       // overlays become triangles, one draw-list item each
       let triangles = batch.triangles();
