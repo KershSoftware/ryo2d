@@ -6,7 +6,7 @@ The UI system combines two paradigms for game HUDs, menus, and interactive eleme
 
 ### Immediate Mode (`immediate/`)
 - Stateless per-frame drawing (buttons, labels, progress bars) via `UiContext` in `Scene::ui`
-- Input detection at draw time (buttons return `true` when clicked)
+- Widgets report what the pointer did through a `Response` (`ui.button("Go").clicked()`), resolved before the scenes against last frame's layout (see Interaction)
 - Ideal for HUDs, debug overlays, dynamic UI
 
 ### Retained Mode (`retained/`)
@@ -41,6 +41,18 @@ Containers (`containers.rs`: `column`, `row`, `grid`, `stack`, `panel`) are laid
 - **Draws keep submission order through `order`.** Every draw takes `UiContext::next_order()` when it is recorded, inside a container or not; a container's draws reach `UiCommands` only when it is laid out, after absolute draws recorded later, and `emit_ui` orders by `ui_z(layer, order)`, never by position in the list.
 - **Records are written for next frame's hit tests.** Each container writes a `Record` (rect, clip, layer, order, depth, scene, flags, focus scope, scroll ancestor, content size) into `UiMemory` when its subtree is laid out. Hit testing and navigation read last frame's records (`UiMemory::prev`), so input lands on what was drawn. The memory and layout engine keep one frame per engine frame: a rerun UI pass (a scene switched from `ui`) discards the first pass's records and ids with `UiMemory::restart_pass`.
 - A container still open when a scene's `ui` ends (its contents panicked) is laid out by `end_scene`, warned once.
+
+## Interaction
+
+The pointer is resolved once per engine frame, before any scene's `ui` (`interact::resolve_pointer`, called by `Engine::draw_ui` on the frame's first UI pass, never on a rerun), against **last frame's records**: a click lands on what the player saw under the pointer, even if the widget moves or disappears this frame. The result is `UiMemory::interact` (`Interaction`); widgets read it through `UiContext::response(id, sense, disabled)`.
+
+- **Topmost wins.** The candidates are the top scene's records under the pointer, inside their clip, with `CLICK`, `DRAG`, `BLOCKING`, `SCROLLABLE` or `DROP_TARGET`; the highest by layer, then order, decides. If it senses (`CLICK`/`DRAG`) and is not `DISABLED` it is hot; otherwise nothing is: a panel, a scroll area or a disabled widget blocks what is under it. The console window (while shown) is a blocker rect: the pointer there is nobody's and is not counted as over the UI.
+- **Only the top scene.** Lower scenes' records are never candidates, and `response` reports nothing for a scene that is not the top one, for a disabled widget, or while the deprecated `mouse_occluded` is set.
+- **Click on release.** A left or right press on the hot widget makes it active. Released over it (still hot, not dragged) the left button clicks (`clicked`), the right one `secondary_clicked`; a second left click on the same widget within 0.3 s is a double click too. Moving past 4 UI units from the press starts a drag (`drag_started`, then `dragging` and `drag_delta`, then `drag_released`), which cancels the click. An active widget gone from last frame's records, or a release that was missed (the button no longer down), clears it. One-frame results last until the next resolve.
+- **`Sense`** masks the response: a widget reports only the clicks or drags it senses. Its record carries `CLICK`/`DRAG` to match, so a `Sense::hover()` custom widget is not a candidate at all: the pointer passes through it.
+- **Presses over the UI are captured.** A press over any candidate is consumed in the UI's input snapshot before the context is built, so the existing consumption (`apply_consumed`, `ui_mouse_capture`) keeps the press, its held frames and its release from gameplay. `ui.wants_pointer()` is `over_ui || active != NONE`.
+- **Widgets** (`widgets/`) are builders that run on `show()`, a shorthand such as `clicked()`, or drop: `run` takes the context out of an `Option`, so it records once. `widget_builders!` (`widgets/common.rs`) gives every widget `id`, `enabled`, `at`, `width`, `height`, `fill_width`, `margin`, `anchor`, `offset`, `grow`, `min_width` and `max_width`. The button is a leaf of fixed size (label plus 12 × 6 padding, at least 28 tall) with a fill and a centred label (and an icon left of it, centred with it); `ui.custom(w, h)` is a fixed leaf whose `Painter` draws `DrawKind::Local` commands in the widget's own units, placed when its subtree is laid out.
+- **Tests** drive several frames without a GPU with `test_util::UiDriver` (scripted pointer, resolved before each frame as the engine does). A widget keeps its id only from one call site, so a test draws it from one closure.
 
 ## Drawing on the GPU
 

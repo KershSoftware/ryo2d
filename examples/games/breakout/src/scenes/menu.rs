@@ -165,7 +165,7 @@ impl Scene for MenuScene {
     // Start button area
     let button_rect = Rect::new(screen_w as f32 / 2.0 - 100.0, 350.0, 200.0, 50.0);
 
-    if ui.button("START GAME", button_rect) {
+    if ui.button("START GAME").at(button_rect).clicked() {
       self.start_clicked = true;
     }
 

@@ -224,9 +224,9 @@ pub mod prelude {
   pub use crate::core::render::UiResolution;
   pub use crate::core::ui::{
     Align, Anchor, Color, DropdownState, Edges, FocusTrap, Focusable, HAlign, HBox, HotReloadTheme,
-    Justify, Length, Rect, Response, ScrollViewState, Stack, TextInputState, Theme, ThemeError,
-    TweenColor, TweenFloat, TweenRect, TweenVec2, UiContext, UiId, UiInput, UiText, UiTween,
-    UiTweenLoop, VAlign, VBox,
+    Justify, Length, Painter, Rect, Response, ScrollViewState, Sense, Stack, TextInputState, Theme,
+    ThemeError, TweenColor, TweenFloat, TweenRect, TweenVec2, UiContext, UiId, UiInput, UiText,
+    UiTween, UiTweenLoop, VAlign, VBox,
   };
 
   // Errors

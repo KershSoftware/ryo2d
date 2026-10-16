@@ -254,7 +254,11 @@ fn ui_units_and_mouse_hits_hold_at_scale_factor_two() {
   let scene = Ui {
     draw: move |ui: &mut UiContext| {
       ui.draw_rect(Rect::new(10.0, 10.0, 20.0, 20.0), Color::GREEN);
-      if ui.button("Go", Rect::new(80.0, 10.0, 30.0, 20.0)) {
+      if ui
+        .button("Go")
+        .at(Rect::new(80.0, 10.0, 30.0, 20.0))
+        .clicked()
+      {
         counted.set(counted.get() + 1);
       }
     },

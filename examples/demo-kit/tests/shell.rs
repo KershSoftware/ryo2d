@@ -611,7 +611,10 @@ impl DemoPage for Clicky {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
-    if ui.button("Press", Rect::new(10.0, 100.0, 120.0, 20.0))
+    if ui
+      .button("Press")
+      .at(Rect::new(10.0, 100.0, 120.0, 20.0))
+      .clicked()
       && let Ok(mut seen) = self.shared.lock()
     {
       seen.button_clicks += 1;

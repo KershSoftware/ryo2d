@@ -8,9 +8,9 @@
 //! ```ignore
 //! // Horizontal row of buttons
 //! let mut row = HBox::new(10.0, 10.0, 8.0);
-//! if ui.button("A", row.next(80.0, 30.0)) { /* ... */ }
-//! if ui.button("B", row.next(80.0, 30.0)) { /* ... */ }
-//! if ui.button("C", row.next(80.0, 30.0)) { /* ... */ }
+//! if ui.button("A").at(row.next(80.0, 30.0)).clicked() { /* ... */ }
+//! if ui.button("B").at(row.next(80.0, 30.0)).clicked() { /* ... */ }
+//! if ui.button("C").at(row.next(80.0, 30.0)).clicked() { /* ... */ }
 //!
 //! // Vertical column of controls
 //! let mut col = VBox::new(10.0, 50.0, 6.0);
@@ -55,9 +55,9 @@ pub enum VAlign {
 ///
 /// ```ignore
 /// let mut row = HBox::new(10.0, 10.0, 8.0);
-/// ui.button("A", row.next(80.0, 30.0));
-/// ui.button("B", row.next(80.0, 30.0));
-/// ui.button("C", row.next(80.0, 30.0));
+/// ui.button("A").at(row.next(80.0, 30.0));
+/// ui.button("B").at(row.next(80.0, 30.0));
+/// ui.button("C").at(row.next(80.0, 30.0));
 /// ```
 #[derive(Debug, Clone)]
 pub struct HBox {
@@ -305,7 +305,7 @@ impl VBox {
 ///
 /// // Centered element
 /// let centered = stack.centered(80.0, 30.0);
-/// ui.button("OK", centered);
+/// ui.button("OK").at(centered);
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Stack {

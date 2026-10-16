@@ -97,13 +97,13 @@ impl Scene for QuitConfirmScene {
 
     // Yes button
     let yes_rect = Rect::new(panel_x + 30.0, panel_y + 100.0, 140.0, 40.0);
-    if ui.button("YES (Y/A)", yes_rect) {
+    if ui.button("YES (Y/A)").at(yes_rect).clicked() {
       return SceneAction::Quit;
     }
 
     // No button
     let no_rect = Rect::new(panel_x + 180.0, panel_y + 100.0, 140.0, 40.0);
-    if ui.button("NO (N/B)", no_rect) {
+    if ui.button("NO (N/B)").at(no_rect).clicked() {
       return SceneAction::Pop;
     }
     SceneAction::Continue

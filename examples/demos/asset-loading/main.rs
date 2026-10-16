@@ -216,10 +216,11 @@ impl LoadingPage {
     let button_x = center_x + 60.0;
     let button_y = list_y + 80.0;
 
-    if ui.button(
-      "Load Assets",
-      Rect::new(button_x, button_y, button_w, button_h),
-    ) {
+    if ui
+      .button("Load Assets")
+      .at(Rect::new(button_x, button_y, button_w, button_h))
+      .clicked()
+    {
       self.load_clicked = true;
     }
   }
@@ -335,7 +336,11 @@ impl LoadingPage {
     let button_x = center_x - button_w / 2.0;
     let button_y = area.y + area.height - button_h - 10.0;
 
-    if ui.button("Reset", Rect::new(button_x, button_y, button_w, button_h)) {
+    if ui
+      .button("Reset")
+      .at(Rect::new(button_x, button_y, button_w, button_h))
+      .clicked()
+    {
       self.reset_clicked = true;
     }
   }

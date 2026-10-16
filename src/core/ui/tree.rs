@@ -133,16 +133,17 @@ pub(crate) enum DrawKind {
     reveal: Option<(f32, f32)>,
     seed: u64,
   },
-  /// A sprite over the inset rect
-  #[allow(dead_code)] // Constructed from Task 6 (a button's icon)
+  /// A sprite over the inset rect, or, with a `size`, a sprite that size at
+  /// `frac` of the room left in the inset rect
   Sprite {
     inset: Edges,
+    frac: Vec2,
+    size: Option<Vec2>,
     sprite: SpriteHandle,
     uv: [f32; 4],
     tint: Color,
   },
   /// Geometry in node-local units, translated after layout
-  #[allow(dead_code)] // Constructed from Task 6 (the custom widget's painter)
   Local(UiCommand),
 }
 
@@ -435,11 +436,20 @@ fn command_of(
     }
     DrawKind::Sprite {
       inset,
+      frac,
+      size,
       sprite,
       uv,
       tint,
     } => {
-      let rect = inset_rect(place.rect, inset);
+      let room = inset_rect(place.rect, inset);
+      let rect = match size {
+        Some(size) => {
+          let at = Vec2::new(room.x, room.y) + frac * (Vec2::new(room.width, room.height) - size);
+          snap_rect(Rect::new(at.x, at.y, size.x, size.y), scale)
+        }
+        None => room,
+      };
       visible(rect).then_some(UiCommand::Sprite {
         sprite,
         rect,
@@ -859,6 +869,19 @@ mod tests {
       node,
       DrawKind::Sprite {
         inset: Edges::xy(10.0, 0.0),
+        frac: Vec2::ZERO,
+        size: None,
+        sprite: sprite.clone(),
+        uv: [0.0, 0.0, 1.0, 1.0],
+        tint: Color::WHITE,
+      },
+    );
+    ui.push_draw(
+      node,
+      DrawKind::Sprite {
+        inset: Edges::all(5.0),
+        frac: Vec2::new(0.0, 1.0),
+        size: Some(Vec2::new(8.0, 6.0)),
         sprite,
         uv: [0.0, 0.0, 1.0, 1.0],
         tint: Color::WHITE,
@@ -878,11 +901,20 @@ mod tests {
     ui.close_node(node);
     drop(ui);
     assert_eq!(rects(&commands), vec![Rect::new(95.0, 35.0, 10.0, 10.0)]);
-    let sprite_rect = commands.commands().find_map(|c| match c {
-      UiCommand::Sprite { rect, .. } => Some(*rect),
-      _ => None,
-    });
-    assert_eq!(sprite_rect, Some(Rect::new(20.0, 20.0, 80.0, 40.0)));
+    let sprite_rects: Vec<Rect> = commands
+      .commands()
+      .filter_map(|c| match c {
+        UiCommand::Sprite { rect, .. } => Some(*rect),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(
+      sprite_rects,
+      vec![
+        Rect::new(20.0, 20.0, 80.0, 40.0),
+        Rect::new(15.0, 49.0, 8.0, 6.0)
+      ]
+    );
     let points = commands.commands().find_map(|c| match c {
       UiCommand::Line { points, .. } => Some(points.clone()),
       _ => None,

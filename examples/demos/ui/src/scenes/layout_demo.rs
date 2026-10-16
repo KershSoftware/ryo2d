@@ -55,10 +55,10 @@ impl DemoPage for LayoutDemo {
 
     // Simple row of buttons
     let mut row = HBox::new(20.0, section1_y + 25.0, self.hbox_spacing);
-    ui.button("Button A", row.next(80.0, 30.0));
-    ui.button("Button B", row.next(80.0, 30.0));
-    ui.button("Button C", row.next(80.0, 30.0));
-    ui.button("Button D", row.next(80.0, 30.0));
+    ui.button("Button A").at(row.next(80.0, 30.0));
+    ui.button("Button B").at(row.next(80.0, 30.0));
+    ui.button("Button C").at(row.next(80.0, 30.0));
+    ui.button("Button D").at(row.next(80.0, 30.0));
 
     // Show bounds
     let bounds = row.bounds();
@@ -81,7 +81,7 @@ impl DemoPage for LayoutDemo {
     ui.slider(row2.next(150.0, 8.0), &mut self.slider_values[0], 0.0, 1.0);
     ui.checkbox(row2.next(20.0, 20.0), &mut self.checkbox_states[0], None);
     ui.toggle(row2.next(44.0, 24.0), &mut self.toggle_state);
-    ui.button("Action", row2.next(70.0, 28.0));
+    ui.button("Action").at(row2.next(70.0, 28.0));
 
     // =====================================================================
     // Section 2: VBox Demo
@@ -214,7 +214,7 @@ impl DemoPage for LayoutDemo {
       VAlign::Bottom,
       8.0,
     );
-    ui.button("OK", btn_rect);
+    ui.button("OK").at(btn_rect);
 
     // =====================================================================
     // Section 4: Nested Layout Demo
@@ -246,9 +246,9 @@ impl DemoPage for LayoutDemo {
       r1.y + 4.0,
       Color::LIGHT_GRAY,
     );
-    ui.button("A", r1_row.next(40.0, 24.0));
-    ui.button("B", r1_row.next(40.0, 24.0));
-    ui.button("C", r1_row.next(40.0, 24.0));
+    ui.button("A").at(r1_row.next(40.0, 24.0));
+    ui.button("B").at(r1_row.next(40.0, 24.0));
+    ui.button("C").at(r1_row.next(40.0, 24.0));
 
     // Row 2: Progress bar
     let r2 = inner_col.next(200.0, 20.0);

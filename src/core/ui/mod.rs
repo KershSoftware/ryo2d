@@ -55,7 +55,7 @@
 //!     );
 //!
 //!     // Button returns true when clicked
-//!     if ui.button("Pause", Rect::new(700.0, 10.0, 80.0, 30.0)) {
+//!     if ui.button("Pause").at(Rect::new(700.0, 10.0, 80.0, 30.0)).clicked() {
 //!         return SceneAction::Push(Box::new(PauseMenu));
 //!     }
 //!     SceneAction::Continue
@@ -66,6 +66,7 @@
 mod containers;
 pub(crate) mod id;
 pub mod immediate;
+pub(crate) mod interact;
 pub(crate) mod layout;
 pub(crate) mod memory;
 mod response;
@@ -76,13 +77,15 @@ pub mod theme;
 pub(crate) mod tree;
 pub mod tween;
 mod types;
+mod widgets;
 
 // Re-export core types at module root for convenience
 pub use containers::Container;
 pub use id::UiId;
 pub use layout::{Align, Edges, Justify, Length};
-pub use response::Response;
+pub use response::{Response, Sense};
 pub use types::{Anchor, Color, Rect};
+pub use widgets::{Button, Custom, Painter};
 
 // Re-export immediate mode API (stateless per-frame drawing)
 pub use immediate::{HAlign, HBox, Stack, UiConsumed, UiContext, UiInput, UiText, VAlign, VBox};

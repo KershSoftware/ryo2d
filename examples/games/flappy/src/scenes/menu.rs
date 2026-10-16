@@ -204,7 +204,11 @@ impl Scene for MenuScene {
     let button_x = screen_w as f32 / 2.0 - button_w / 2.0;
     let button_y = screen_h as f32 / 2.0;
 
-    if ui.button("START", Rect::new(button_x, button_y, button_w, button_h)) {
+    if ui
+      .button("START")
+      .at(Rect::new(button_x, button_y, button_w, button_h))
+      .clicked()
+    {
       return SceneAction::SwitchWith(
         Box::new(GameScene::new(self.high_score)),
         Transition::fade(Duration::from_millis(300)),
@@ -218,15 +222,16 @@ impl Scene for MenuScene {
       let debug_button_x = screen_w as f32 / 2.0 - debug_button_w / 2.0;
       let debug_button_y = button_y + button_h + 20.0;
 
-      if ui.button(
-        "DEBUG",
-        Rect::new(
+      if ui
+        .button("DEBUG")
+        .at(Rect::new(
           debug_button_x,
           debug_button_y,
           debug_button_w,
           debug_button_h,
-        ),
-      ) {
+        ))
+        .clicked()
+      {
         return SceneAction::SwitchWith(
           Box::new(DebugScene::new()),
           Transition::fade(Duration::from_millis(300)),

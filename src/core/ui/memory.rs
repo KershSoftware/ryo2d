@@ -5,6 +5,8 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::ops::{BitOr, BitOrAssign};
 
+use glam::Vec2;
+
 use super::id::{IdScopes, UiId};
 use super::types::Rect;
 
@@ -13,17 +15,13 @@ use super::types::Rect;
 pub(crate) struct Flags(u32);
 
 impl Flags {
-  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) const CLICK: Flags = Flags(1 << 0);
-  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) const DRAG: Flags = Flags(1 << 1);
   #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const FOCUSABLE: Flags = Flags(1 << 2);
   pub(crate) const BLOCKING: Flags = Flags(1 << 3);
   pub(crate) const SCROLLABLE: Flags = Flags(1 << 4);
-  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) const DROP_TARGET: Flags = Flags(1 << 5);
-  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) const DISABLED: Flags = Flags(1 << 6);
   #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const TAKES_HORIZONTAL: Flags = Flags(1 << 7);
@@ -51,7 +49,6 @@ impl Flags {
   }
 
   /// At least one flag in `other` is set
-  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) fn intersects(self, other: Flags) -> bool {
     self.0 & other.0 != 0
   }
@@ -86,9 +83,43 @@ pub(crate) struct Record {
   /// Nearest scrollable ancestor (`NONE`)
   pub(crate) scroll: UiId,
   /// Scrollables: content size
-  pub(crate) content: glam::Vec2,
+  pub(crate) content: Vec2,
   /// Explicit Up, Down, Left, Right neighbours (`NONE`)
   pub(crate) nav: [UiId; 4],
+}
+
+/// The pointer's interaction, resolved once per engine frame against last
+/// frame's records (`interact::resolve_pointer`)
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct Interaction {
+  /// The topmost sensing widget under the pointer (`NONE`)
+  pub(crate) hot: UiId,
+  /// The widget a press started on, until that button's release (`NONE`)
+  pub(crate) active: UiId,
+  /// The button that made it active: 0 left, 1 right
+  pub(crate) active_button: u8,
+  /// Where that press was, in UI units
+  pub(crate) press_pos: Vec2,
+  /// The pointer this frame, in UI units
+  pub(crate) pointer: Vec2,
+  /// The pointer last frame
+  pub(crate) prev_pointer: Vec2,
+  /// The active widget's press moved past the drag threshold
+  pub(crate) dragging: bool,
+  /// This frame's left click (`NONE`)
+  pub(crate) clicked: UiId,
+  /// This frame's right click
+  pub(crate) secondary: UiId,
+  /// This frame's double click
+  pub(crate) double: UiId,
+  /// The last left click's widget and time, for double clicks
+  pub(crate) last_click: (UiId, f64),
+  /// The widget whose drag started this frame
+  pub(crate) drag_started: UiId,
+  /// The widget whose drag ended this frame
+  pub(crate) drag_released: UiId,
+  /// The pointer is over a widget or panel of the top scene
+  pub(crate) over_ui: bool,
 }
 
 struct Slot {
@@ -106,6 +137,8 @@ pub(crate) struct UiMemory {
   focus_memory: HashMap<UiId, (u64, UiId)>,
   frame: u64,
   pub(crate) scopes: IdScopes,
+  /// The pointer's hot, active, click and drag state
+  pub(crate) interact: Interaction,
 }
 
 impl UiMemory {
@@ -117,6 +150,7 @@ impl UiMemory {
       focus_memory: HashMap::new(),
       frame: 0,
       scopes: IdScopes::default(),
+      interact: Interaction::default(),
     }
   }
 
@@ -155,13 +189,12 @@ impl UiMemory {
     self.prev.get(&id)
   }
 
-  #[allow(dead_code)] // Used from Task 6 (hit testing)
+  /// Every record from last frame
   pub(crate) fn prev_records(&self) -> impl Iterator<Item = (UiId, &Record)> {
     self.prev.iter().map(|(id, record)| (*id, record))
   }
 
   /// A widget's record from this frame so far
-  #[allow(dead_code)] // Read outside tests from Task 6 (responses)
   pub(crate) fn current(&self, id: UiId) -> Option<&Record> {
     self.next.get(&id)
   }

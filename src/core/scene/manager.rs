@@ -936,6 +936,59 @@ mod tests {
     );
   }
 
+  /// A see-through scene drawing one button where the others do, keeping its
+  /// id and whether it reported the pointer
+  struct ButtonScene(Arc<Mutex<Vec<(crate::core::ui::UiId, bool)>>>);
+
+  impl Scene for ButtonScene {
+    fn is_transparent(&self) -> bool {
+      true
+    }
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      let response = ui
+        .button("Same")
+        .at(crate::core::ui::Rect::new(0.0, 0.0, 40.0, 20.0))
+        .show();
+      let touched = response.hovered() || response.clicked();
+      self.0.lock().unwrap().push((response.id, touched));
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn only_the_top_scenes_widgets_report_the_pointer() {
+    let (mut world, mut audio) = world();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut m = SceneManager::with_scene(Box::new(ButtonScene(seen.clone())));
+    m.enter_initial(&mut world, &mut audio);
+    m.push(Box::new(ButtonScene(seen.clone())), &mut world, &mut audio);
+    let (mut commands, mut text) = (
+      crate::core::ui::immediate::UiCommands::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (64.0, 64.0));
+    m.ui_pass(&mut world, &mut audio, &mut ui);
+    let ids: Vec<_> = seen.lock().unwrap().drain(..).map(|(id, _)| id).collect();
+    assert_eq!(ids.len(), 2);
+    // As if the pointer had clicked each scene's button in turn
+    for (i, id) in ids.iter().enumerate() {
+      ui.memory.begin_frame();
+      ui.memory.interact.hot = *id;
+      ui.memory.interact.clicked = *id;
+      m.ui_pass(&mut world, &mut audio, &mut ui);
+      let touched: Vec<bool> = seen.lock().unwrap().drain(..).map(|(_, t)| t).collect();
+      let expected = if i == 0 {
+        vec![false, false]
+      } else {
+        vec![false, true]
+      };
+      assert_eq!(
+        touched, expected,
+        "the lower scene's button reports nothing"
+      );
+    }
+  }
+
   #[test]
   fn scenes_that_exit_are_reported_once() {
     let log: Shared = Arc::default();

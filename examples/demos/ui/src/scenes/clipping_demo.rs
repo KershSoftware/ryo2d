@@ -382,7 +382,7 @@ impl ClippingDemo {
     );
 
     let modal_btn = Rect::new(modal_section_x, modal_section_y + 25.0, 150.0, 35.0);
-    if ui.button("Show Modal Dialog", modal_btn) {
+    if ui.button("Show Modal Dialog").at(modal_btn).clicked() {
       self.show_modal = true;
       self.modal_result = None;
     }
@@ -441,12 +441,12 @@ impl ClippingDemo {
       let confirm_btn = Rect::new(dialog.x + 30.0, btn_y, 100.0, 35.0);
       let cancel_btn = Rect::new(dialog.x + dialog_w - 130.0, btn_y, 100.0, 35.0);
 
-      if ui.button("Confirm", confirm_btn) {
+      if ui.button("Confirm").at(confirm_btn).clicked() {
         self.show_modal = false;
         self.modal_result = Some(true);
       }
 
-      if ui.button("Cancel", cancel_btn) {
+      if ui.button("Cancel").at(cancel_btn).clicked() {
         self.show_modal = false;
         self.modal_result = Some(false);
       }

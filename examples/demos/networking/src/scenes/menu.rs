@@ -128,7 +128,7 @@ impl Lobby {
     let button_x = center_x - button_width / 2.0;
 
     let create_rect = Rect::new(button_x, center_y - 30.0, button_width, button_height);
-    if ui.button("Create Room", create_rect) {
+    if ui.button("Create Room").at(create_rect).clicked() {
       self.try_create_room();
     }
 
@@ -166,7 +166,7 @@ impl Lobby {
 
     // Join button
     let join_rect = Rect::new(button_x, center_y + 125.0, button_width, button_height);
-    if ui.button("Join Room", join_rect) {
+    if ui.button("Join Room").at(join_rect).clicked() {
       self.try_join_room();
     }
 

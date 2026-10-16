@@ -361,7 +361,7 @@ pub trait Scene: 'static {
   /// ```rust,ignore
   /// fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
   ///     ui.draw_text("Press ENTER to start", 300.0, 400.0, Color::WHITE);
-  ///     if ui.button("Start", Rect::new(350.0, 450.0, 100.0, 30.0)) {
+  ///     if ui.button("Start").at(Rect::new(350.0, 450.0, 100.0, 30.0)).clicked() {
   ///         return SceneAction::Switch(Box::new(Level::new()));
   ///     }
   ///     SceneAction::Continue

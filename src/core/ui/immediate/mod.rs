@@ -26,15 +26,15 @@
 //!     ui.draw_text(&format!("Score: {}", self.score), 10.0, 40.0, Color::WHITE);
 //!
 //!     // Button returns true when clicked (immediate - no state persisted)
-//!     if ui.button("Pause", Rect::new(700.0, 10.0, 80.0, 30.0)) {
+//!     if ui.button("Pause").at(Rect::new(700.0, 10.0, 80.0, 30.0)).clicked() {
 //!         return SceneAction::Push(Box::new(PauseMenu));
 //!     }
 //!
 //!     // Layout containers for positioning (stateless helpers)
 //!     let mut row = HBox::new(10.0, 100.0, 8.0);
-//!     ui.button("A", row.next(60.0, 30.0));
-//!     ui.button("B", row.next(60.0, 30.0));
-//!     ui.button("C", row.next(60.0, 30.0));
+//!     ui.button("A").at(row.next(60.0, 30.0));
+//!     ui.button("B").at(row.next(60.0, 30.0));
+//!     ui.button("C").at(row.next(60.0, 30.0));
 //!     SceneAction::Continue
 //! }
 //! ```
@@ -45,7 +45,7 @@ mod input;
 mod layout;
 
 pub(crate) use commands::{UiCommand, UiCommands};
-pub(crate) use context::{OVERLAY_LAYER, PAGE_LAYER};
+pub(crate) use context::{OVERLAY_LAYER, PAGE_LAYER, text_seed};
 pub use context::{UiContext, UiText};
 pub use input::{UiConsumed, UiInput};
 pub use layout::{HAlign, HBox, Stack, VAlign, VBox};

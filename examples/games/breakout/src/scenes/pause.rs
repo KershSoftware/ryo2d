@@ -241,7 +241,7 @@ impl Scene for PauseScene {
 
     // Resume button
     let resume_rect = Rect::new(panel_x + 70.0, buttons_y_start, 200.0, 40.0);
-    if ui.button("RESUME", resume_rect) {
+    if ui.button("RESUME").at(resume_rect).clicked() {
       // Save settings if changed
       if self.settings_changed {
         if let Ok(workspace) = Workspace::discover()
@@ -256,7 +256,7 @@ impl Scene for PauseScene {
 
     // Quit to menu button
     let quit_rect = Rect::new(panel_x + 70.0, buttons_y_start + 50.0, 200.0, 40.0);
-    if ui.button("QUIT TO MENU", quit_rect) {
+    if ui.button("QUIT TO MENU").at(quit_rect).clicked() {
       save_high_score(self.high_score);
       return SceneAction::ResetWith(
         Box::new(MenuScene::new()),
@@ -266,7 +266,7 @@ impl Scene for PauseScene {
 
     // Quit to desktop button
     let quit_desktop_rect = Rect::new(panel_x + 70.0, buttons_y_start + 100.0, 200.0, 40.0);
-    if ui.button("QUIT TO DESKTOP", quit_desktop_rect) {
+    if ui.button("QUIT TO DESKTOP").at(quit_desktop_rect).clicked() {
       save_high_score(self.high_score);
       return SceneAction::Quit;
     }

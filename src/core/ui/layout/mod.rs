@@ -154,7 +154,6 @@ pub(crate) enum Measure {
   /// From its style and children
   None,
   /// A fixed content size, for the style's `Fit` axes
-  #[allow(dead_code)] // Constructed from Task 6 (fixed-size leaves)
   Fixed(Vec2),
   /// Sized by the measure callback (wrapped text)
   Text,

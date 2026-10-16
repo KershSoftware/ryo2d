@@ -288,10 +288,10 @@ impl DemoPage for ThemeDemo {
     ui.draw_text("Buttons:", content_x, y, text_color);
 
     let button_rect = Rect::new(widget_x, y - 5.0, 120.0, 30.0);
-    let _ = ui.button("Click Me", button_rect);
+    let _ = ui.button("Click Me").at(button_rect).clicked();
 
     let button2_rect = Rect::new(widget_x + 130.0, y - 5.0, 120.0, 30.0);
-    let _ = ui.button("Another", button2_rect);
+    let _ = ui.button("Another").at(button2_rect).clicked();
 
     y += label_spacing + 10.0;
 
@@ -413,7 +413,7 @@ impl DemoPage for ThemeDemo {
         ui.draw_rect_outline(btn_rect.expand(2.0), Color::rgb(100, 180, 255), 2.0);
       }
 
-      if ui.button(name, btn_rect) {
+      if ui.button(*name).at(btn_rect).clicked() {
         self.set_theme_variant(i);
       }
     }

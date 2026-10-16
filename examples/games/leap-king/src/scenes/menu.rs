@@ -461,7 +461,7 @@ impl Scene for MenuScene {
         None,
       );
     }
-    if ui.button("Single Player", single_rect) {
+    if ui.button("Single Player").at(single_rect).clicked() {
       self.try_single_player();
     }
 
@@ -502,7 +502,7 @@ impl Scene for MenuScene {
     } else {
       ui.draw_rect(lan_rect, inactive_color);
     }
-    if ui.button("LAN", lan_rect) {
+    if ui.button("LAN").at(lan_rect).clicked() {
       self.host_mode = HostMode::Lan;
     }
 
@@ -521,7 +521,7 @@ impl Scene for MenuScene {
     } else {
       ui.draw_rect(internet_rect, inactive_color);
     }
-    if ui.button("Internet", internet_rect) {
+    if ui.button("Internet").at(internet_rect).clicked() {
       self.host_mode = HostMode::Internet;
     }
 
@@ -575,7 +575,7 @@ impl Scene for MenuScene {
       HostMode::Lan => "Create Room (LAN)",
       HostMode::Internet => "Create Room (Net)",
     };
-    if ui.button(create_label, create_rect) {
+    if ui.button(create_label).at(create_rect).clicked() {
       self.try_create_room();
     }
 
@@ -664,7 +664,7 @@ impl Scene for MenuScene {
         None,
       );
     }
-    if ui.button("Join Room", join_rect) {
+    if ui.button("Join Room").at(join_rect).clicked() {
       self.try_join_room();
     }
 

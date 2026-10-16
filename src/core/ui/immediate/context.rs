@@ -45,7 +45,7 @@ use crate::core::ui::id::{UiId, key_hash};
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::layout::{Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory};
-use crate::core::ui::response::Response;
+use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::retained::{DropdownState, Focusable, ScrollViewState, TextInputState};
 use crate::core::ui::theme::Theme;
 use crate::core::ui::tree::{
@@ -75,7 +75,7 @@ struct PendingDropdown {
 /// A text's effect seed: a hash of the text, the style without its colours
 /// and the layout options, so it stays the same whatever else is drawn
 /// around it and when a hover changes its colour
-fn text_seed(text: &RichText, style: &TextStyle, options: &TextLayoutOptions) -> u64 {
+pub(crate) fn text_seed(text: &RichText, style: &TextStyle, options: &TextLayoutOptions) -> u64 {
   let mut h = DefaultHasher::new();
   text.hash_into(&mut h);
   let mut style = style.clone();
@@ -327,7 +327,7 @@ impl Drop for UiText<'_, '_> {
 ///     ui.draw_text("Score: 100", 10.0, 10.0, Color::WHITE);
 ///
 ///     // Draw a button that returns true when clicked
-///     if ui.button("Start", Rect::new(100.0, 100.0, 120.0, 40.0)) {
+///     if ui.button("Start").at(Rect::new(100.0, 100.0, 120.0, 40.0)).clicked() {
 ///         return SceneAction::Switch(Box::new(Level::default()));
 ///     }
 ///     SceneAction::Continue
@@ -515,9 +515,75 @@ impl<'a> UiContext<'a> {
 
   /// The scene whose UI is being recorded: its scope id and whether it is
   /// the top scene
-  #[allow(dead_code)] // Read from Task 6 (responses)
   pub(crate) fn scene(&self) -> (u64, bool) {
     (self.scene, self.top)
+  }
+
+  /// What the pointer did to widget `id` this frame, as resolved before the
+  /// scenes' UI (`interact::resolve_pointer`), keeping only what `sense`
+  /// takes. Nothing when this is not the top scene, the pointer is occluded
+  /// or the widget is `disabled`. Its rect is this frame's when it was laid
+  /// out already, else last frame's.
+  pub(crate) fn response(&mut self, id: UiId, sense: Sense, disabled: bool) -> Response {
+    let rect = self
+      .memory
+      .current(id)
+      .or_else(|| self.memory.prev(id))
+      .map(|record| record.rect)
+      .unwrap_or_default();
+    let mut response = Response {
+      id,
+      rect,
+      ..Response::default()
+    };
+    let (_, top) = self.scene();
+    if !top || self.mouse_occluded || disabled || id == UiId::NONE {
+      return response;
+    }
+    let i = &self.memory.interact;
+    let (hot, active) = (i.hot == id, i.active == id);
+    let mut states = 0;
+    if hot {
+      states |= Response::HOVERED;
+    }
+    if active {
+      states |= Response::PRESSED;
+    }
+    if sense.click {
+      for (who, state) in [
+        (i.clicked, Response::CLICKED),
+        (i.secondary, Response::SECONDARY),
+        (i.double, Response::DOUBLE),
+      ] {
+        if who == id {
+          states |= state;
+        }
+      }
+    }
+    if sense.drag {
+      if i.drag_started == id {
+        states |= Response::DRAG_STARTED;
+      }
+      if i.drag_released == id {
+        states |= Response::DRAG_RELEASED;
+      }
+      if active && i.dragging {
+        states |= Response::DRAGGING;
+        response.drag_delta = i.pointer - i.prev_pointer;
+      }
+    }
+    response.states = states;
+    response.pointer = (hot || active).then_some(i.pointer);
+    response
+  }
+
+  /// Whether the UI wants the pointer: it is over one of the top scene's
+  /// widgets or panels, or a widget holds it (a press that started on it,
+  /// until its release). Gameplay that reads the mouse can ignore it then.
+  /// A press over the UI is hidden from gameplay already, until its release.
+  pub fn wants_pointer(&self) -> bool {
+    let i = &self.memory.interact;
+    i.over_ui || i.active != UiId::NONE
   }
 
   /// The next draw's place in the painter's order
@@ -566,7 +632,11 @@ impl<'a> UiContext<'a> {
       Some(rect) => rect,
       None => self.memory.prev(id).map(|r| r.rect).unwrap_or_default(),
     };
-    Response { id, rect }
+    Response {
+      id,
+      rect,
+      ..Response::default()
+    }
   }
 
   /// Draw `kind` on `node` of the open subtree, in the painter's order of
@@ -586,8 +656,8 @@ impl<'a> UiContext<'a> {
 
   /// Push `node` into the open container, or start a subtree with it
   /// (placed at `at`, under the current clip). It becomes the innermost
-  /// open node.
-  fn push_node(&mut self, mut node: Node, at: Option<Rect>) -> usize {
+  /// open node: close it with [`close_node`](Self::close_node).
+  pub(crate) fn push_node(&mut self, mut node: Node, at: Option<Rect>) -> usize {
     node.layer = self.layer;
     node.order = self.next_order();
     let parent = self.open;
@@ -1187,6 +1257,24 @@ impl<'a> UiContext<'a> {
     })
   }
 
+  /// The size of `text` laid out with `options` in `style`, in UI units
+  pub(crate) fn measure_rich(
+    &self,
+    text: &RichText,
+    style: &TextStyle,
+    options: &TextLayoutOptions,
+  ) -> Vec2 {
+    let scale = self.space.px_scale;
+    self.engine().map_or(Vec2::ZERO, |mut engine| {
+      engine.measure(text, style, options, scale)
+    })
+  }
+
+  /// The text engine, for a widget's painter
+  pub(crate) fn text_engine(&mut self) -> &mut TextEngine {
+    self.text.get_mut()
+  }
+
   /// The height of one line of `style`, in UI units.
   pub fn line_height(&self, style: &TextStyle) -> f32 {
     let scale = self.space.px_scale;
@@ -1368,64 +1456,6 @@ impl<'a> UiContext<'a> {
     }
     let (mx, my) = self.input.mouse_position();
     rect.contains(mx, my)
-  }
-
-  /// Draw an interactive button and return whether it was clicked.
-  ///
-  /// Draws a button with hover/pressed states and returns `true` on click.
-  pub fn button(&mut self, text: &str, rect: Rect) -> bool {
-    let hovered = self.is_hovered(rect);
-    let held = self.is_held(rect);
-    let clicked = self.is_clicked(rect);
-    if clicked {
-      self.input.consume_mouse(MouseButton::Left);
-    }
-
-    // Use theme colors if available, otherwise use defaults
-    let (bg_color, border_color, text_color) = if let Some(theme) = self.theme {
-      let bg = if held {
-        theme.button.background_pressed
-      } else if hovered {
-        theme.button.background_hovered
-      } else {
-        theme.button.background
-      };
-      let border = if hovered {
-        theme.button.border_hovered
-      } else {
-        theme.button.border
-      };
-      let text = if held {
-        Color::LIGHT_GRAY
-      } else {
-        theme.button.text
-      };
-      (bg, border, text)
-    } else {
-      let bg = if held {
-        Color::rgb(60, 60, 80)
-      } else if hovered {
-        Color::rgb(50, 50, 70)
-      } else {
-        Color::rgb(40, 40, 60)
-      };
-      let border = if hovered {
-        Color::rgb(100, 100, 140)
-      } else {
-        Color::rgb(80, 80, 100)
-      };
-      let text = if held {
-        Color::LIGHT_GRAY
-      } else {
-        Color::WHITE
-      };
-      (bg, border, text)
-    };
-
-    self.draw_panel(rect, bg_color, Some(border_color));
-    self.draw_text_centered(text, rect, text_color);
-
-    clicked
   }
 
   /// Draw an interactive button with custom colors.
@@ -2910,7 +2940,7 @@ impl<'a> UiContext<'a> {
   /// if self.button_focused {
   ///     ui.draw_focus_ring(button_rect, Color::rgb(100, 150, 255), 2.0, 2.0);
   /// }
-  /// ui.button("Submit", button_rect);
+  /// ui.button("Submit").at(button_rect);
   /// ```
   pub fn draw_focus_ring(&mut self, rect: Rect, color: Color, thickness: f32, offset: f32) {
     let expanded = rect.expand(offset + thickness);
@@ -2974,7 +3004,7 @@ mod tests {
   use crate::core::render::UiSpace;
   use crate::core::text::{TextEngine, TextLayout, TextStyle};
   use crate::core::ui::immediate::{UiCommand, UiCommands};
-  use crate::core::ui::test_util::{context as ui_context, text_engine};
+  use crate::core::ui::test_util::{UiDriver, context as ui_context, text_engine};
 
   fn context<'a>(c: &'a mut UiCommands, t: &'a mut TextEngine) -> UiContext<'a> {
     ui_context(c, t, (320.0, 180.0))
@@ -3452,38 +3482,42 @@ mod tests {
   // ==========================================================================
 
   #[test]
-  fn button_consumes_click() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
+  fn the_pointer_over_or_held_by_a_button_is_the_uis() {
+    let mut d = UiDriver::new((200.0, 200.0));
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    assert!(ui.button("Test", rect), "Button should register click");
-    assert!(ui.click_consumed(), "Click should be consumed after button");
+    let draw = |ui: &mut UiContext<'_>| {
+      ui.button("Test").at(rect);
+      ui.wants_pointer()
+    };
+    d.move_to(150.0, 150.0);
+    d.frame(draw);
+    assert!(!d.frame(draw), "beside the button");
+    d.move_to(50.0, 50.0);
+    assert!(d.frame(draw), "over it");
+    d.press();
+    d.frame(draw);
+    d.move_to(150.0, 150.0);
+    assert!(d.frame(draw), "held by it, though the pointer left");
+    d.release();
+    d.frame(draw);
+    assert!(!d.frame(draw), "let go");
   }
 
   #[test]
-  fn second_button_does_not_fire_after_consumed() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
+  fn only_the_topmost_of_two_overlapping_buttons_clicks() {
+    let mut d = UiDriver::new((200.0, 200.0));
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    assert!(ui.button("First", rect), "First button should fire");
-    assert!(
-      !ui.button("Second", rect),
-      "Second overlapping button should NOT fire"
-    );
+    let draw = |ui: &mut UiContext<'_>| {
+      let first = ui.button("First").at(rect).clicked();
+      let second = ui.button("Second").at(rect).clicked();
+      (first, second)
+    };
+    d.move_to(50.0, 50.0);
+    d.frame(draw);
+    d.press();
+    d.frame(draw);
+    d.release();
+    assert_eq!(d.frame(draw), (false, true), "the one drawn last is on top");
   }
 
   #[test]
@@ -3568,25 +3602,6 @@ mod tests {
 
     assert!(state.is_focused(), "Text input should be focused");
     assert!(ui.click_consumed(), "Click should be consumed");
-  }
-
-  #[test]
-  fn consume_click_prevents_button() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
-    ui.consume_click();
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    assert!(
-      !ui.button("Test", rect),
-      "Button should not fire after consume_click"
-    );
   }
 
   #[test]
@@ -3816,26 +3831,45 @@ mod tests {
   }
 
   #[test]
-  fn mouse_occluded_prevents_button_click() {
+  fn a_widget_outside_the_top_scene_reports_nothing() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
-    ui.set_mouse_occluded();
+    let mut ui = context(&mut commands, &mut text);
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    assert!(
-      !ui.button("Test", rect),
-      "Button should not register click when occluded"
-    );
-    assert!(
-      !ui.click_consumed(),
-      "Click should not be consumed by occluded button"
-    );
+    let draw = |ui: &mut UiContext<'_>| ui.button("Test").at(rect).show();
+    ui.memory.begin_frame();
+    ui.begin_scene(2, true);
+    let id = draw(&mut ui).id;
+    for top in [true, false] {
+      // As if the pointer had clicked it, with nothing occluding it
+      ui.memory.begin_frame();
+      ui.memory.interact.hot = id;
+      ui.memory.interact.clicked = id;
+      ui.begin_scene(2, top);
+      let response = draw(&mut ui);
+      assert_eq!(response.id, id);
+      assert_eq!(
+        (response.hovered(), response.clicked()),
+        (top, top),
+        "top scene: {top}"
+      );
+    }
+  }
+
+  #[test]
+  fn mouse_occluded_prevents_button_click() {
+    let mut d = UiDriver::new((200.0, 200.0));
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let draw = |ui: &mut UiContext<'_>| {
+      ui.set_mouse_occluded();
+      let response = ui.button("Test").at(rect).show();
+      response.hovered() || response.pressed() || response.clicked()
+    };
+    d.move_to(50.0, 50.0);
+    d.frame(draw);
+    d.press();
+    assert!(!d.frame(draw), "no hover or press when occluded");
+    d.release();
+    assert!(!d.frame(draw), "no click when occluded");
   }
 
   #[test]

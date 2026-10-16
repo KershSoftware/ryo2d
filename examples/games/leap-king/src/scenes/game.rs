@@ -3558,7 +3558,7 @@ impl Scene for GameScene {
           highlight,
         );
       }
-      if ui.button("Yes, Leave", yes_rect) {
+      if ui.button("Yes, Leave").at(yes_rect).clicked() {
         self.pending_quit = true;
       }
 
@@ -3575,7 +3575,7 @@ impl Scene for GameScene {
           highlight,
         );
       }
-      if ui.button("Cancel", cancel_rect) {
+      if ui.button("Cancel").at(cancel_rect).clicked() {
         self.show_quit_dialog = false;
       }
     }

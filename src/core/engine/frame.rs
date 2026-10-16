@@ -3,6 +3,8 @@
 use std::time::Duration;
 use web_time::Instant;
 
+use glam::Vec2;
+use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use super::{Engine, FrameOutcome, PresentOutcome, QuitRequested, SceneHost};
@@ -19,8 +21,12 @@ use crate::core::scene::SceneAction;
 use crate::core::schedule::Phase;
 use crate::core::shaders::EffectsManager;
 use crate::core::time::Time;
+use crate::core::ui::interact::{PointerInput, PointerOutcome, resolve_pointer};
 use crate::core::ui::{UiContext, UiInput};
 use crate::{engine_warn, profile_scope};
+
+/// How far (UI units) a press moves before it is a drag
+const DRAG_THRESHOLD: f32 = 4.0;
 
 /// The real delta the loop chose for this frame: `Some` for headless runs
 /// and tests, `None` for the wall clock.
@@ -333,6 +339,32 @@ impl Engine {
     }
   }
 
+  /// Resolve the frame's pointer (`input`, in UI units) against last
+  /// frame's records of the top scene, the console blocking it while shown
+  fn resolve_pointer(&mut self, input: &UiInput) -> PointerOutcome {
+    let buttons = [MouseButton::Left, MouseButton::Right];
+    let (x, y) = input.mouse_position();
+    let pointer = PointerInput {
+      position: Vec2::new(x, y),
+      pressed: buttons.map(|b| input.mouse_pressed(b)),
+      released: buttons.map(|b| input.mouse_released(b)),
+      down: buttons.map(|b| input.mouse_down(b)),
+      time: f64::from(self.world.resource::<Time>().real.elapsed()),
+    };
+    let top = with_host(&mut self.world, |_, host| host.scenes.top_scope());
+    let console = self
+      .console_state
+      .visible
+      .then(|| self.console_state.window_rect());
+    resolve_pointer(
+      &mut self.ui_memory,
+      &pointer,
+      top,
+      console.as_slice(),
+      DRAG_THRESHOLD,
+    )
+  }
+
   /// Record one UI pass into the frame's UI commands (replacing any earlier
   /// pass's) and apply what it consumed; `None` before the GPU is up.
   fn draw_ui(&mut self) -> Option<SceneAction> {
@@ -345,17 +377,28 @@ impl Engine {
     for scope in with_host(&mut self.world, |_, host| host.scenes.take_exited()) {
       self.ui_memory.forget_scene(scope);
     }
-    // A rerun pass replaces the first pass's records
+    let space = self.ui_space;
+    let mut snapshot =
+      UiInput::snapshot(self.world.resource::<Input>()).with_mouse_scale(space.mouse_scale);
+    // A rerun pass replaces the first pass's records; the pointer is
+    // resolved once a frame, against last frame's records
     if self.ui_pass_index == 0 {
       self.ui_memory.begin_frame();
       self.ui_layout.begin_frame();
+      let outcome = self.resolve_pointer(&snapshot);
+      for (button, consume) in [MouseButton::Left, MouseButton::Right]
+        .into_iter()
+        .zip(outcome.consume_press)
+      {
+        if consume {
+          snapshot.consume_mouse(button);
+        }
+      }
     } else {
       self.ui_memory.restart_pass();
     }
     self.ui_pass_index += 1;
-    let snapshot = UiInput::snapshot(self.world.resource::<Input>());
     let real_dt = self.world.resource::<Time>().real.delta();
-    let space = self.ui_space;
     // Overlays and the console still lay out in whole UI units
     let (width, height) = (space.size.x.ceil() as u32, space.size.y.ceil() as u32);
     let (action, consumed) = {
@@ -900,7 +943,8 @@ mod tests {
   fn a_press_a_button_takes_stays_the_ui_s_until_released() {
     let Some((mouse, _)) = gameplay_under(
       |ui, _| {
-        ui.button("Go", crate::core::ui::Rect::new(0.0, 0.0, 32.0, 16.0));
+        ui.button("Go")
+          .at(crate::core::ui::Rect::new(0.0, 0.0, 32.0, 16.0));
       },
       WidgetState::default(),
       press_hold_release_at(8.0, 8.0),
@@ -908,6 +952,39 @@ mod tests {
       return;
     };
     assert_eq!(mouse, 0, "gameplay saw the button's press, hold or release");
+  }
+
+  #[test]
+  fn a_ui_button_clicks_on_release_and_the_press_never_reaches_gameplay() {
+    use std::cell::Cell;
+    thread_local! {
+      static CLICKS: Cell<u32> = const { Cell::new(0) };
+    }
+    fn counted(ui: &mut crate::core::ui::UiContext, _: &mut WidgetState) {
+      if ui
+        .button("Go")
+        .at(crate::core::ui::Rect::new(0.0, 0.0, 32.0, 16.0))
+        .clicked()
+      {
+        CLICKS.with(|clicks| clicks.set(clicks.get() + 1));
+      }
+    }
+    // Frames: move, press, held, held, release, after
+    let script = press_hold_release_at(8.0, 8.0);
+    CLICKS.with(|clicks| clicks.set(0));
+    let Some((mouse, _)) = gameplay_under(counted, WidgetState::default(), script[..2].to_vec())
+    else {
+      return;
+    };
+    assert_eq!(mouse, 0, "gameplay saw the press");
+    assert_eq!(CLICKS.with(Cell::get), 0, "after the press frame");
+    CLICKS.with(|clicks| clicks.set(0));
+    let Some((mouse, _)) = gameplay_under(counted, WidgetState::default(), script[..5].to_vec())
+    else {
+      return;
+    };
+    assert_eq!(mouse, 0, "gameplay saw the press, hold or release");
+    assert_eq!(CLICKS.with(Cell::get), 1, "after the release frame");
   }
 
   #[test]
@@ -981,7 +1058,11 @@ mod tests {
     }
     impl Scene for Below {
       fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-        if ui.button("Below", Rect::new(0.0, 0.0, 32.0, 16.0)) {
+        if ui
+          .button("Below")
+          .at(Rect::new(0.0, 0.0, 32.0, 16.0))
+          .clicked()
+        {
           ctx.world.resource_mut::<Clicks>().below += 1;
         }
         if !self.pushed {
@@ -994,7 +1075,11 @@ mod tests {
     struct Overlay;
     impl Scene for Overlay {
       fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-        if ui.button("Over", Rect::new(0.0, 0.0, 32.0, 16.0)) {
+        if ui
+          .button("Over")
+          .at(Rect::new(0.0, 0.0, 32.0, 16.0))
+          .clicked()
+        {
           ctx.world.resource_mut::<Clicks>().overlay += 1;
         }
         SceneAction::Continue
@@ -1024,6 +1109,14 @@ mod tests {
     ] {
       e.world_mut().resource_mut::<Input>().queue(event);
     }
+    e.frame(Some(frame));
+    // A click lands on release
+    e.world_mut()
+      .resource_mut::<Input>()
+      .queue(InputEvent::MouseButton {
+        button: MouseButton::Left,
+        pressed: false,
+      });
     e.frame(Some(frame));
     let clicks = e.world().resource::<Clicks>();
     assert_eq!((clicks.below, clicks.overlay), (0, 1));

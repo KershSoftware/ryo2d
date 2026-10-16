@@ -90,7 +90,11 @@ impl Scene for GameOverScene {
     let button_h = 50.0;
     let button_x = screen_w as f32 / 2.0 - button_w / 2.0;
 
-    if ui.button("RESTART", Rect::new(button_x, 350.0, button_w, button_h)) {
+    if ui
+      .button("RESTART")
+      .at(Rect::new(button_x, 350.0, button_w, button_h))
+      .clicked()
+    {
       return SceneAction::SwitchWith(
         Box::new(super::GameScene::new(self.high_score)),
         Transition::fade(Duration::from_millis(300)),
@@ -98,7 +102,11 @@ impl Scene for GameOverScene {
     }
 
     // Menu button
-    if ui.button("MENU", Rect::new(button_x, 420.0, button_w, button_h)) {
+    if ui
+      .button("MENU")
+      .at(Rect::new(button_x, 420.0, button_w, button_h))
+      .clicked()
+    {
       return SceneAction::SwitchWith(
         Box::new(MenuScene::new()),
         Transition::fade(Duration::from_millis(300)),
