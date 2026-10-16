@@ -6,6 +6,7 @@ use std::path::Path;
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
+use super::licenses::write_font_licenses;
 use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
 
 /// Execute the export command
@@ -219,8 +220,11 @@ fn sanitize_filename(name: &str) -> String {
     .collect()
 }
 
-/// Create a zip file from the release directory
+/// Create a zip file from the release directory, with the built-in fonts'
+/// licences in its `licenses/` (written into the release first, so a
+/// release made without them still ships them)
 fn create_zip(release_dir: &Path, zip_path: &Path, _project_name: &str) -> CliResult<()> {
+  write_font_licenses(release_dir)?;
   let file = File::create(zip_path)
     .map_err(|e| CliError::Other(format!("Failed to create zip file: {}", e)))?;
 
@@ -314,6 +318,9 @@ DESCRIPTION:
 
     Datestamp format: YYYYMMDD
 
+    The zip always carries licenses/ with the licences of the fonts
+    the engine builds in (written into release/ first if missing).
+
     If a zip with the same name already exists, an incremental suffix
     is appended: -001, -002, etc.
 
@@ -328,4 +335,31 @@ EXAMPLE:
     # Or:     MyGame-20260203.zip (if no version)
 "#
   );
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::cli::commands::licenses::{FONT_LICENSES, LICENSES_DIR};
+
+  #[test]
+  fn the_exported_zip_carries_the_font_licences() {
+    // A release made before builds wrote the licences
+    let dir = tempfile::tempdir().unwrap();
+    let release = dir.path().join("release");
+    fs::create_dir_all(&release).unwrap();
+    fs::write(release.join("g"), b"a game").unwrap();
+    let zip_path = dir.path().join("g.zip");
+    create_zip(&release, &zip_path, "g").unwrap();
+    let mut archive = zip::ZipArchive::new(File::open(&zip_path).unwrap()).unwrap();
+    for (name, text) in FONT_LICENSES {
+      let path = format!("{LICENSES_DIR}/{name}");
+      let mut read = String::new();
+      let found = archive
+        .by_name(&path)
+        .map(|mut entry| entry.read_to_string(&mut read));
+      assert!(found.is_ok(), "{path} is in the zip");
+      assert_eq!(read, text, "{path}");
+    }
+  }
 }

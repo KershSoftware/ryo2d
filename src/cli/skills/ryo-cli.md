@@ -59,7 +59,10 @@ show_colliders = false
 
 ## Release bundle
 
-`ryo2d build` writes `release/` with the game binary, `assets/`, `levels/` and `icon.png` (plus `data/` when `[release] portable = true`). The game runs from that folder wherever it's launched from, and saves to the OS user data folder unless portable - see the `ryo-config-save` skill.
+`ryo2d build` writes `release/` with the game binary, `assets/`, `levels/`, `icon.png` and `licenses/` (plus `data/` when `[release] portable = true`). The game runs from that folder wherever it's launched from, and saves to the OS user data folder unless portable - see the `ryo-config-save` skill.
+
+- **`licenses/` holds the licences of the fonts the engine builds into every game** (feature `default-fonts`): Inter and JetBrains Mono (SIL Open Font License 1.1, which asks that every copy of the fonts carries its notice and licence) and m5x7 (CC0), with a README naming them. Ship the folder with the game; `ryo2d export` always puts it in the zip. Add your own fonts' and assets' licences beside it.
+- The `ryo2d` command has no web build: a game you build for the web yourself must ship the same licence files (copy `release/licenses/` from a `ryo2d build`).
 
 ## Development Workflow
 

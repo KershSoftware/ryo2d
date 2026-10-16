@@ -12,6 +12,11 @@ geometric shapes (U+25A0-25FF). All layout features are kept.
 | `JetBrainsMono-Regular.ttf` | https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip, `fonts/ttf/JetBrainsMono-Regular.ttf` | JetBrains Mono 2.304 | `OFL-JetBrainsMono.txt` (SIL OFL 1.1) | 273,900 B | 145,840 B |
 | `m5x7.ttf` | https://commondatastorage.googleapis.com/leafo/fonts/m5x7-webfont.ttf (the webfont served by https://managore.itch.io/m5x7) | m5x7 (Daniel Linssen) | `m5x7-LICENSE.txt` (CC0 1.0) | 18,780 B | 17,596 B |
 
+`ryo2d build` and `ryo2d export` ship the three licence files and a README
+naming the fonts in every release's `licenses/` folder
+(`src/cli/commands/licenses.rs`); a font added here needs its licence
+added there.
+
 The m5x7 webfont is ASCII-only, so pixel text outside ASCII falls back to
 Inter.
 

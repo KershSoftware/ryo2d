@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use super::licenses::write_font_licenses;
 use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
 
 /// Execute the build command
@@ -344,6 +345,9 @@ fn create_release_bundle(
       .map_err(|e| CliError::Other(format!("Failed to copy icon: {}", e)))?;
   }
 
+  // The built-in fonts' licences travel with every copy of the game
+  write_font_licenses(&release_dir)?;
+
   Output::status(
     "Created",
     &format!("release bundle at {}", release_dir.display()),
@@ -486,6 +490,7 @@ DESCRIPTION:
     - Levels directory (if present)
     - Data directory (empty, for save files)
     - README.md (if present)
+    - licenses/ (the licences of the fonts the engine builds in)
 
     Note: Ryo.toml is NOT included in the release bundle. All
     configuration values (paths, env variables) are compiled into
@@ -739,6 +744,30 @@ mod tests {
     assert_eq!(config.env_int("lives"), Some(3));
     assert_eq!(config.env_bool("hard_mode"), Some(true));
     assert_eq!(config.env_float("speed"), Some(1.5));
+  }
+
+  #[test]
+  fn the_release_bundle_carries_the_font_licences() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Ryo.toml"), "[project]\nname = \"g\"\n").unwrap();
+    let binary = if cfg!(windows) { "g.exe" } else { "g" };
+    let target = dir.path().join("target").join("release");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join(binary), b"a game").unwrap();
+    let workspace = crate::core::config::Workspace::from_path(dir.path()).unwrap();
+    create_release_bundle(&workspace, "g", "g", &dir.path().join("no-icon.png")).unwrap();
+    let licenses = dir
+      .path()
+      .join("release")
+      .join(super::super::licenses::LICENSES_DIR);
+    for (name, text) in super::super::licenses::FONT_LICENSES {
+      let written = std::fs::read_to_string(licenses.join(name));
+      assert_eq!(
+        written.ok().as_deref(),
+        Some(text),
+        "release/licenses/{name}"
+      );
+    }
   }
 
   #[test]

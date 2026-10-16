@@ -7,6 +7,7 @@ mod dev;
 mod export;
 mod init;
 pub mod install_skills;
+mod licenses;
 mod netplay;
 mod run;
 
