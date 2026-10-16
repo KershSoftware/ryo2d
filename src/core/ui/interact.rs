@@ -239,8 +239,7 @@ const MAX_SCROLL_CHAIN: usize = 64;
 /// The topmost record of `scene` under `at` that takes the pointer (layer,
 /// then order; depth and id only break ties)
 fn topmost(memory: &UiMemory, at: Vec2, scene: u64) -> Option<(UiId, Record)> {
-  let takes =
-    Flags::CLICK | Flags::DRAG | Flags::BLOCKING | Flags::SCROLLABLE | Flags::DROP_TARGET;
+  let takes = Flags::CLICK | Flags::DRAG | Flags::BLOCKING | Flags::SCROLLABLE | Flags::DROP_TARGET;
   memory
     .prev_records()
     .filter(|(_, r)| {
