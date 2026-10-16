@@ -11,8 +11,17 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   default): Inter (UI and world), JetBrains Mono (console, overlays, dev
   windows), m5x7 (pixel, ASCII only). Sources, licences and the subset
   command are in `src/assets/fonts/README.md`.
-- Every change to `Fonts` bumps `generation`; the text engine re-syncs and
-  drops cached layouts when it changes.
+- Every real change to `Fonts` bumps `generation`; the text engine re-syncs
+  and drops cached layouts when it changes. Registering is idempotent: the
+  same bytes and face index (a hash of the bytes, then a byte compare), the
+  same canonical path (`load`) or the same bitmap family, sheet, cell and
+  characters return the existing id, and a `set_role` or `set_render` to
+  the current value bumps nothing, so a game calling them every frame costs
+  no relayout.
+- `Fonts` has no public constructor (`new` is crate-internal, no
+  `Default`): `FontId`s are registry indices that the glyph atlas and
+  swash's cache key on, so a replaced registry would alias them. Its
+  `Debug` (and `FaceSource`'s) leaves the font bytes out.
 - There is no file system on the web: `Fonts::load` fails there, so games
   embed fonts with `add_bytes(include_bytes!(..))`.
 

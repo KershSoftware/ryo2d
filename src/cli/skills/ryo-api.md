@@ -1033,14 +1033,15 @@ Fonts, styles, rich text, effects and world text. The guide is `ryo-text`.
 
 | `Fonts` (resource; `ctx.fonts()`) | |
 |---|---|
-| `new()`, `add_bytes(impl Into<Arc<[u8]>>) -> Result<FontId, FontError>`, `add_face(Arc<[u8]>, index: u32) -> Result<FontId, FontError>`, `load(impl AsRef<Path>) -> AssetResult<FontId>` | add fonts; `load` fails on the web (no file system), so embed with `add_bytes(include_bytes!(..))` there |
-| `add_bitmap(family: &str, SpriteHandle, cell: (u32, u32), chars: &str) -> Result<FontId, FontError>` | a grid of glyph cells on a sprite sheet (`chars` row-major) |
+| `add_bytes(impl Into<Arc<[u8]>>) -> Result<FontId, FontError>`, `add_face(Arc<[u8]>, index: u32) -> Result<FontId, FontError>`, `load(impl AsRef<Path>) -> AssetResult<FontId>` | add fonts (the same bytes and index, or the same canonical path, return the existing id); `load` fails on the web (no file system), so embed with `add_bytes(include_bytes!(..))` there |
+| `add_bitmap(family: &str, SpriteHandle, cell: (u32, u32), chars: &str) -> Result<FontId, FontError>` | a grid of glyph cells on a sprite sheet (`chars` row-major); the same family, handle, cell and characters return the existing id |
 | `find(&str) -> Option<FontId>` | the family's regular face (weight 400, upright) |
 | `find_face(family: &str, weight: f32, italic: bool) -> Option<FontId>` | the face nearest `weight` preferring the slant; on ties the face added first wins |
-| `family(FontId) -> Option<&str>`, `role(FontRole) -> Option<FontId>`, `set_role(FontRole, FontId)` | families and role fonts |
-| `set_render(FontId, FontRender)`, `render(FontId) -> FontRender` | how a font draws |
-| `prewarm(FontId, size: f32, chars: &str)`, `generation() -> u64` | build glyphs ahead (MSDF glyphs cost about 0.46 ms each); `generation` changes on every font change |
+| `family(FontId) -> Option<&str>`, `role(FontRole) -> Option<FontId>`, `set_role(FontRole, FontId)` | families and role fonts (setting the font a role already uses changes nothing) |
+| `set_render(FontId, FontRender)`, `render(FontId) -> FontRender` | how a font draws (the mode it already has changes nothing) |
+| `prewarm(FontId, size: f32, chars: &str)`, `generation() -> u64` | build glyphs ahead (MSDF glyphs cost about 0.46 ms each); `generation` changes on every real font change |
 
+- `Fonts` has no public constructor: the engine owns the one registry (the glyph caches key on its ids). Register fonts once, at startup or in the first scene's `on_enter`; re-registering is harmless. Without the `default-fonts` feature the registry starts empty.
 - `FontId` (`Copy`, `Eq`, `Hash`, `Ord`). `enum FontRole { Ui (default), Mono, Pixel }`: Inter, JetBrains Mono, m5x7 (feature `default-fonts`, on by default).
 - `enum FontRender { Raster (default), Pixel { design_size: f32 }, Msdf { base: f32, range: f32 } }` (`#[non_exhaustive]`); `FontRender::pixel(design_size)`; `FontRender::msdf()` is base 32, range 4. Pixel sizes snap to whole multiples of the design size. MSDF effect reach is `range / 2` base pixels; MSDF fonts get no synthesized italic or bold.
 - `enum FontError { Invalid, NoFace(u32), EmptyBitmap }`.

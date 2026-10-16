@@ -37,6 +37,9 @@ fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
 
 `Fonts` is a resource, reached with `ctx.fonts()` in scenes (`ResMut<Fonts>` in systems). Changes take effect at the start of the next frame; text using a changed font lays out again.
 
+- **Register fonts once**, at startup or in the first scene's `on_enter`, and keep the `FontId`s. Registering again is harmless: the same bytes and face index, the same file path or the same bitmap sheet, cell and characters return the id the font already has, and a `set_role` or `set_render` to what a font already is changes nothing, so no text lays out again.
+- There is no `Fonts::new()`: the engine owns the one registry, and the glyph caches key on its ids. For a registry without the built-in fonts, turn the `default-fonts` feature off (see Limits).
+
 ### The built-in fonts (feature `default-fonts`, on by default)
 
 | Role (`FontRole`) | Font | Used for |
@@ -58,6 +61,7 @@ let id: FontId = ctx.fonts().add_face(bytes_arc, 2)?;                    // face
 - `load` reads a file (relative to the working directory). **The web has no file system: `load` fails there, so embed fonts with `add_bytes(include_bytes!(..))`.**
 - `add_bytes(impl Into<Arc<[u8]>>)` and `add_face(Arc<[u8]>, index)` return `Result<FontId, FontError>` (`Invalid`, `NoFace(index)`, `EmptyBitmap`). Fonts are TrueType or OpenType.
 - A face is described by its family name, weight and slant, read from the file.
+- `load` reads a file once: the same file again (by its canonical path) returns its id without reading it.
 
 ### Finding fonts and roles
 
@@ -474,6 +478,7 @@ See section 6 (`bounce`). Register it once (on a scene's `on_enter`), then use `
 ### A game font: loaded on native, embedded on the web
 
 ```rust
+// Once, in the first scene's on_enter
 fn install_game_font(ctx: &mut SceneContext) {
   // Native reads the file; the web has no file system, so it embeds the bytes
   #[cfg(not(target_arch = "wasm32"))]

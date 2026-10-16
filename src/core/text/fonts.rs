@@ -2,7 +2,12 @@
 //! fonts, and each font's render mode. The text engine picks up changes at
 //! the start of the next frame (it compares `generation`).
 
+use std::collections::HashMap;
+use std::fmt;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use swash::{FontRef, StringId};
@@ -95,10 +100,24 @@ pub(crate) struct BitmapFace {
 }
 
 /// Where a face's glyphs come from
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) enum FaceSource {
   Outline { data: Arc<[u8]>, index: u32 },
   Bitmap(BitmapFace),
+}
+
+// The font bytes are left out: a font file is hundreds of kilobytes
+impl fmt::Debug for FaceSource {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::Outline { data, index } => f
+        .debug_struct("Outline")
+        .field("bytes", &data.len())
+        .field("index", index)
+        .finish(),
+      Self::Bitmap(bitmap) => f.debug_tuple("Bitmap").field(bitmap).finish(),
+    }
+  }
 }
 
 /// One registered face
@@ -121,18 +140,58 @@ pub(crate) struct Prewarm {
 
 /// The fonts text can use: built-in (feature `default-fonts`) and added by
 /// the game. A resource: `ctx.fonts()` in scenes, `ResMut<Fonts>` in systems.
-#[derive(Resource, Debug, Default)]
+///
+/// The engine makes the one registry: `FontId`s are its indices, and the
+/// glyph caches key on them, so there is no public constructor. A game that
+/// wants no built-in fonts turns the `default-fonts` feature off; the
+/// registry then starts empty.
+///
+/// Registering is idempotent: the same bytes and face index, the same file
+/// path, or the same bitmap sheet, cell and characters return the id the
+/// font already has, and a `set_role` or `set_render` that changes nothing
+/// bumps nothing.
+#[derive(Resource)]
 pub struct Fonts {
   faces: Vec<Face>,
   roles: [Option<FontId>; 3],
   generation: u64,
   prewarm: Vec<Prewarm>,
+  /// Outline faces by a hash of their bytes, and their face index
+  by_data: HashMap<(u64, u32), FontId>,
+  /// Fonts `load` read, by canonical path
+  #[cfg(not(target_arch = "wasm32"))]
+  by_path: HashMap<PathBuf, FontId>,
+}
+
+// Faces are listed by name: their font bytes are not printed
+impl fmt::Debug for Fonts {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let faces: Vec<_> = self
+      .faces
+      .iter()
+      .map(|face| (&face.family, face.weight, face.italic, face.render))
+      .collect();
+    f.debug_struct("Fonts")
+      .field("faces", &faces)
+      .field("roles", &self.roles)
+      .field("generation", &self.generation)
+      .field("prewarm", &self.prewarm.len())
+      .finish_non_exhaustive()
+  }
 }
 
 impl Fonts {
   /// An empty registry (no built-in fonts)
-  pub fn new() -> Self {
-    Self::default()
+  pub(crate) fn new() -> Self {
+    Self {
+      faces: Vec::new(),
+      roles: [None; 3],
+      generation: 0,
+      prewarm: Vec::new(),
+      by_data: HashMap::new(),
+      #[cfg(not(target_arch = "wasm32"))]
+      by_path: HashMap::new(),
+    }
   }
 
   /// The registry the engine starts with: the built-in fonts when the
@@ -145,13 +204,23 @@ impl Fonts {
     fonts
   }
 
-  /// Add a TrueType or OpenType font (face 0 of a collection)
+  /// Add a TrueType or OpenType font (face 0 of a collection). The same
+  /// bytes again return the id they already have.
   pub fn add_bytes(&mut self, bytes: impl Into<Arc<[u8]>>) -> Result<FontId, FontError> {
     self.add_face(bytes.into(), 0)
   }
 
-  /// Add face `index` of a font collection
+  /// Add face `index` of a font collection. The same bytes and index again
+  /// return the id that face already has.
   pub fn add_face(&mut self, data: Arc<[u8]>, index: u32) -> Result<FontId, FontError> {
+    let key = (hash_bytes(&data), index);
+    if let Some(&id) = self.by_data.get(&key)
+      && self.face(id).is_some_and(
+        |face| matches!(&face.source, FaceSource::Outline { data: known, .. } if **known == *data),
+      )
+    {
+      return Ok(id);
+    }
     let font = FontRef::from_index(&data, index as usize).ok_or(if index == 0 {
       FontError::Invalid
     } else {
@@ -166,12 +235,16 @@ impl Fonts {
       source: FaceSource::Outline { data, index },
       render: FontRender::Raster,
     };
-    Ok(self.push(face))
+    let id = self.push(face);
+    self.by_data.insert(key, id);
+    Ok(id)
   }
 
   /// Read a font file (relative paths are relative to the working
-  /// directory, as sprites load by default). There is no file system on
-  /// the web: embed fonts with `add_bytes(include_bytes!(..))` there.
+  /// directory, as sprites load by default). The same file again (by its
+  /// canonical path) returns the id it already has without reading it.
+  /// There is no file system on the web: embed fonts with
+  /// `add_bytes(include_bytes!(..))` there.
   pub fn load(&mut self, path: impl AsRef<Path>) -> AssetResult<FontId> {
     let path = path.as_ref();
     #[cfg(target_arch = "wasm32")]
@@ -183,6 +256,10 @@ impl Fonts {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+      let canonical = std::fs::canonicalize(path).ok();
+      if let Some(&id) = canonical.as_ref().and_then(|at| self.by_path.get(at)) {
+        return Ok(id);
+      }
       let bytes = std::fs::read(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
           AssetError::NotFound(path.to_path_buf())
@@ -193,17 +270,23 @@ impl Fonts {
           }
         }
       })?;
-      self
+      let id = self
         .add_bytes(bytes)
         .map_err(|error| AssetError::LoadError {
           path: path.to_path_buf(),
           reason: error.to_string(),
-        })
+        })?;
+      if let Some(canonical) = canonical {
+        self.by_path.insert(canonical, id);
+      }
+      Ok(id)
     }
   }
 
   /// A pixel font from a grid of `cell`-sized glyphs on a sprite sheet:
-  /// `chars` names the cells in order, left to right, then top to bottom
+  /// `chars` names the cells in order, left to right, then top to bottom.
+  /// The same family, sheet (handle), cell and characters again return the
+  /// id that font already has.
   pub fn add_bitmap(
     &mut self,
     family: &str,
@@ -213,6 +296,16 @@ impl Fonts {
   ) -> Result<FontId, FontError> {
     if cell.0 == 0 || cell.1 == 0 || chars.is_empty() {
       return Err(FontError::EmptyBitmap);
+    }
+    let known = self.faces().find(|(_, face)| {
+      face.family == family
+        && matches!(&face.source, FaceSource::Bitmap(bitmap)
+          if bitmap.sprite.serial() == sprite.serial()
+            && bitmap.cell == cell
+            && bitmap.chars.iter().copied().eq(chars.chars()))
+    });
+    if let Some((id, _)) = known {
+      return Ok(id);
     }
     let columns = (sprite.width() / cell.0).max(1);
     let face = Face {
@@ -230,9 +323,12 @@ impl Fonts {
     Ok(self.push(face))
   }
 
-  /// Change how a font draws; text using it lays out again
+  /// Change how a font draws; text using it lays out again (the mode it
+  /// already has changes nothing)
   pub fn set_render(&mut self, font: FontId, render: FontRender) {
-    if let Some(face) = self.faces.get_mut(font.0 as usize) {
+    if let Some(face) = self.faces.get_mut(font.0 as usize)
+      && !same_render(face.render, render)
+    {
       face.render = render;
       self.generation += 1;
     }
@@ -280,9 +376,10 @@ impl Fonts {
     self.roles[role.index()]
   }
 
-  /// Use `font` for a role (e.g. a game's own UI font)
+  /// Use `font` for a role (e.g. a game's own UI font); the font the role
+  /// already uses changes nothing
   pub fn set_role(&mut self, role: FontRole, font: FontId) {
-    if self.face(font).is_some() {
+    if self.face(font).is_some() && self.roles[role.index()] != Some(font) {
       self.roles[role.index()] = Some(font);
       self.generation += 1;
     }
@@ -326,6 +423,35 @@ impl Fonts {
     self.generation += 1;
     id
   }
+}
+
+/// Whether two render modes are the same, bit for bit (so a mode with a
+/// value that is not a number equals itself)
+fn same_render(a: FontRender, b: FontRender) -> bool {
+  match (a, b) {
+    (FontRender::Raster, FontRender::Raster) => true,
+    (FontRender::Pixel { design_size: x }, FontRender::Pixel { design_size: y }) => {
+      x.to_bits() == y.to_bits()
+    }
+    (
+      FontRender::Msdf {
+        base: b1,
+        range: r1,
+      },
+      FontRender::Msdf {
+        base: b2,
+        range: r2,
+      },
+    ) => (b1.to_bits(), r1.to_bits()) == (b2.to_bits(), r2.to_bits()),
+    _ => false,
+  }
+}
+
+/// A hash of a font's bytes, to find a font added before
+fn hash_bytes(data: &[u8]) -> u64 {
+  let mut h = DefaultHasher::new();
+  data.hash(&mut h);
+  h.finish()
 }
 
 /// The typographic family (name 16) if the font has one, else its family
@@ -451,6 +577,93 @@ mod tests {
     fonts.set_render(ui, FontRender::msdf());
     assert!(fonts.generation() > before);
     assert_eq!(fonts.render(ui), FontRender::msdf());
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn a_change_to_what_a_font_already_is_keeps_the_generation() {
+    let mut fonts = Fonts::with_builtins();
+    let ui = fonts.role(FontRole::Ui).unwrap();
+    let pixel = fonts.role(FontRole::Pixel).unwrap();
+    let before = fonts.generation();
+    fonts.set_role(FontRole::Ui, ui);
+    fonts.set_render(ui, FontRender::Raster);
+    fonts.set_render(pixel, fonts.render(pixel));
+    assert_eq!(fonts.generation(), before, "nothing changed");
+    fonts.set_role(FontRole::Mono, ui);
+    assert!(fonts.generation() > before, "a real change still counts");
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn debug_output_names_the_faces_without_their_bytes() {
+    let fonts = Fonts::with_builtins();
+    let printed = format!("{fonts:?}");
+    assert!(printed.contains("Inter") && printed.contains("JetBrains Mono"));
+    assert!(printed.len() < 1000, "{} bytes printed", printed.len());
+    let face = fonts.face(fonts.role(FontRole::Ui).unwrap()).unwrap();
+    assert!(
+      format!("{face:?}").len() < 1000,
+      "a face prints no bytes either"
+    );
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn the_same_font_bytes_twice_are_one_font() {
+    const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+    let mut fonts = Fonts::with_builtins();
+    let builtin = fonts.role(FontRole::Ui).unwrap();
+    let before = fonts.generation();
+    let first = fonts.add_bytes(INTER.to_vec()).unwrap();
+    let second = fonts.add_bytes(Arc::<[u8]>::from(INTER)).unwrap();
+    assert_eq!((first, second), (builtin, builtin), "the built-in face");
+    assert_eq!(fonts.add_face(Arc::from(INTER), 0).unwrap(), builtin);
+    assert_eq!(fonts.generation(), before, "nothing was added");
+    assert!(matches!(
+      fonts.add_face(Arc::from(INTER), 1),
+      Err(FontError::NoFace(1))
+    ));
+  }
+
+  #[cfg(all(feature = "default-fonts", not(target_arch = "wasm32")))]
+  #[test]
+  fn the_same_font_file_twice_is_one_font() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Mono.ttf");
+    std::fs::write(
+      &path,
+      include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"),
+    )
+    .unwrap();
+    let mut fonts = Fonts::new();
+    let first = fonts.load(&path).unwrap();
+    let generation = fonts.generation();
+    // The same file by another spelling of its path
+    let again = fonts.load(dir.path().join(".").join("Mono.ttf")).unwrap();
+    assert_eq!(again, first);
+    assert_eq!(fonts.generation(), generation);
+    assert_eq!(fonts.faces().count(), 1);
+  }
+
+  #[test]
+  fn the_same_bitmap_font_twice_is_one_font() {
+    let mut fonts = Fonts::new();
+    let sheet = crate::core::asset::SpriteHandle::from_sprite(
+      crate::core::graphics::Sprite::solid_rect(64, 16, 255, 255, 255, 255),
+      "sheet",
+    );
+    let first = fonts
+      .add_bitmap("Grid", sheet.clone(), (8, 8), "AB")
+      .unwrap();
+    let generation = fonts.generation();
+    let again = fonts
+      .add_bitmap("Grid", sheet.clone(), (8, 8), "AB")
+      .unwrap();
+    assert_eq!((again, fonts.generation()), (first, generation));
+    // Another cell size or character set is another font
+    let other = fonts.add_bitmap("Grid", sheet, (8, 16), "AB").unwrap();
+    assert_ne!(other, first);
   }
 
   #[test]
