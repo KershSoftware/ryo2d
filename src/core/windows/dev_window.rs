@@ -18,6 +18,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use crate::core::text::CpuText;
+
 /// Common colors for dev window UIs.
 pub mod colors {
   pub const BACKGROUND: [u8; 4] = [30, 30, 30, 255];
@@ -85,6 +87,8 @@ pub struct DevWindowRenderer {
   // Render throttling
   last_render_time: web_time::Instant,
   render_throttle_ms: u64,
+  // Monospace text for the pixel buffer (None without the default fonts)
+  text: Option<CpuText>,
 }
 
 impl DevWindowRenderer {
@@ -274,6 +278,7 @@ impl DevWindowRenderer {
       modifiers: ModifiersState::empty(),
       last_render_time: web_time::Instant::now(),
       render_throttle_ms: config.render_throttle_ms,
+      text: CpuText::mono(FONT_PX),
     })
   }
 
@@ -451,23 +456,30 @@ impl DevWindowRenderer {
     }
   }
 
-  /// Draw text using the built-in bitmap font.
+  /// Draw text in JetBrains Mono, its top-left at (x, y). Draws nothing
+  /// without the `default-fonts` feature.
   pub fn draw_text(&mut self, text: &str, x: i32, y: i32, color: [u8; 4]) {
-    let char_width = 7;
-    let mut cx = x;
-
-    for ch in text.chars() {
-      if let Some(glyph) = get_glyph(ch) {
-        for (row, bits) in glyph.iter().enumerate() {
-          for col in 0..7 {
-            if (bits >> (6 - col)) & 1 == 1 {
-              self.set_pixel(cx + col, y + row as i32, color);
-            }
-          }
-        }
-      }
-      cx += char_width;
+    if let Some(font) = &mut self.text {
+      font.draw(
+        &mut self.pixel_buffer,
+        self.width,
+        self.height,
+        text,
+        x,
+        y,
+        color,
+      );
     }
+  }
+
+  /// The width of `text` in pixels (characters, not bytes).
+  pub fn measure_text(&self, text: &str) -> i32 {
+    self
+      .text
+      .as_ref()
+      .map_or(text.chars().count() as i32 * CHAR_WIDTH, |font| {
+        font.measure(text)
+      })
   }
 
   /// Draw text with a dark shadow for better readability on colored backgrounds.
@@ -480,11 +492,9 @@ impl DevWindowRenderer {
   /// Draw a tooltip near a position.
   pub fn draw_tooltip(&mut self, text: &str, near_x: f32, near_y: f32) {
     let padding = 6;
-    let char_width = 7;
-    let char_height = 12;
-
-    let width = (text.len() as i32 * char_width) + padding * 2;
-    let height = char_height + padding * 2;
+    let width = self.measure_text(text) + padding * 2;
+    let line = self.text.as_ref().map_or(CHAR_HEIGHT, CpuText::line_height);
+    let height = line + padding * 2;
 
     let x = (near_x as i32 + 15).min(self.width as i32 - width - 5);
     let y = (near_y as i32 + 15).min(self.height as i32 - height - 5);
@@ -613,178 +623,131 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Simple bitmap font glyphs (7x12 pixels per character).
-/// Returns 12 bytes, each byte represents a row with 7 bits used.
-pub fn get_glyph(ch: char) -> Option<[u8; 12]> {
-  match ch {
-    ' ' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    '!' => Some([
-      0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x10, 0x10, 0, 0,
-    ]),
-    '"' => Some([0x28, 0x28, 0x28, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    '#' => Some([0x28, 0x28, 0x7C, 0x28, 0x28, 0x7C, 0x28, 0x28, 0, 0, 0, 0]),
-    '(' => Some([
-      0x08, 0x10, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x10, 0x08, 0, 0,
-    ]),
-    ')' => Some([
-      0x20, 0x10, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x10, 0x20, 0, 0,
-    ]),
-    '*' => Some([0, 0, 0x28, 0x10, 0x7C, 0x10, 0x28, 0, 0, 0, 0, 0]),
-    '+' => Some([0, 0, 0, 0x10, 0x10, 0x7C, 0x10, 0x10, 0, 0, 0, 0]),
-    ',' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0x18, 0x18, 0x10, 0x20]),
-    '-' => Some([0, 0, 0, 0, 0, 0x7C, 0, 0, 0, 0, 0, 0]),
-    '.' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0x18, 0x18, 0, 0]),
-    '/' => Some([
-      0x04, 0x04, 0x08, 0x08, 0x10, 0x10, 0x20, 0x20, 0x40, 0x40, 0, 0,
-    ]),
-    ':' => Some([0, 0, 0x18, 0x18, 0, 0, 0, 0x18, 0x18, 0, 0, 0]),
-    ';' => Some([0, 0, 0x18, 0x18, 0, 0, 0, 0x18, 0x18, 0x10, 0x20, 0]),
-    '<' => Some([
-      0x04, 0x08, 0x10, 0x20, 0x40, 0x20, 0x10, 0x08, 0x04, 0, 0, 0,
-    ]),
-    '=' => Some([0, 0, 0, 0x7C, 0, 0x7C, 0, 0, 0, 0, 0, 0]),
-    '>' => Some([
-      0x40, 0x20, 0x10, 0x08, 0x04, 0x08, 0x10, 0x20, 0x40, 0, 0, 0,
-    ]),
-    '?' => Some([
-      0x38, 0x44, 0x04, 0x08, 0x10, 0x10, 0x10, 0x00, 0x10, 0x10, 0, 0,
-    ]),
-    '@' => Some([
-      0x38, 0x44, 0x4C, 0x54, 0x54, 0x4C, 0x40, 0x40, 0x38, 0, 0, 0,
-    ]),
-    '[' => Some([
-      0x38, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x38, 0, 0,
-    ]),
-    '\\' => Some([
-      0x40, 0x40, 0x20, 0x20, 0x10, 0x10, 0x08, 0x08, 0x04, 0x04, 0, 0,
-    ]),
-    ']' => Some([
-      0x38, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x38, 0, 0,
-    ]),
-    '^' => Some([0x10, 0x28, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    '0' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    '1' => Some([
-      0x10, 0x30, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0,
-    ]),
-    '2' => Some([
-      0x38, 0x44, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x44, 0x7C, 0, 0,
-    ]),
-    '3' => Some([
-      0x38, 0x44, 0x04, 0x04, 0x18, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
-    ]),
-    '4' => Some([
-      0x08, 0x18, 0x28, 0x28, 0x48, 0x48, 0x7C, 0x08, 0x08, 0x08, 0, 0,
-    ]),
-    '5' => Some([
-      0x7C, 0x40, 0x40, 0x78, 0x04, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
-    ]),
-    '6' => Some([
-      0x38, 0x44, 0x40, 0x40, 0x78, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    '7' => Some([
-      0x7C, 0x44, 0x04, 0x08, 0x08, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
-    ]),
-    '8' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x38, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    '9' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x3C, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
-    ]),
-    'A' | 'a' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'B' | 'b' => Some([
-      0x78, 0x44, 0x44, 0x44, 0x78, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0,
-    ]),
-    'C' | 'c' => Some([
-      0x38, 0x44, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x44, 0x38, 0, 0,
-    ]),
-    'D' | 'd' => Some([
-      0x78, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0,
-    ]),
-    'E' | 'e' => Some([
-      0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0,
-    ]),
-    'F' | 'f' => Some([
-      0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0,
-    ]),
-    'G' | 'g' => Some([
-      0x38, 0x44, 0x40, 0x40, 0x4C, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    'H' | 'h' => Some([
-      0x44, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'I' | 'i' => Some([
-      0x38, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0,
-    ]),
-    'J' | 'j' => Some([
-      0x1C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x48, 0x48, 0x30, 0, 0,
-    ]),
-    'K' | 'k' => Some([
-      0x44, 0x48, 0x50, 0x60, 0x60, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'L' | 'l' => Some([
-      0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0,
-    ]),
-    'M' | 'm' => Some([
-      0x44, 0x6C, 0x54, 0x54, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'N' | 'n' => Some([
-      0x44, 0x64, 0x64, 0x54, 0x54, 0x4C, 0x4C, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'O' | 'o' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    'P' | 'p' => Some([
-      0x78, 0x44, 0x44, 0x44, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0,
-    ]),
-    'Q' | 'q' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x48, 0x44, 0x3A, 0, 0,
-    ]),
-    'R' | 'r' => Some([
-      0x78, 0x44, 0x44, 0x44, 0x78, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'S' | 's' => Some([
-      0x38, 0x44, 0x40, 0x40, 0x38, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
-    ]),
-    'T' | 't' => Some([
-      0x7C, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
-    ]),
-    'U' | 'u' => Some([
-      0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    'V' | 'v' => Some([
-      0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0, 0,
-    ]),
-    'W' | 'w' => Some([
-      0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x54, 0x6C, 0x44, 0, 0,
-    ]),
-    'X' | 'x' => Some([
-      0x44, 0x44, 0x28, 0x28, 0x10, 0x28, 0x28, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'Y' | 'y' => Some([
-      0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
-    ]),
-    'Z' | 'z' => Some([
-      0x7C, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x40, 0x40, 0x7C, 0, 0,
-    ]),
-    '_' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0x7C, 0, 0]),
-    '|' => Some([
-      0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
-    ]),
-    _ => None,
-  }
-}
+/// The pixel size the dev windows' text is drawn at.
+const FONT_PX: f32 = 12.0;
 
-/// Measure text width in pixels.
-pub fn measure_text(text: &str) -> i32 {
-  text.len() as i32 * 7
-}
-
-/// Character height in pixels.
+/// Character height in pixels (the font's ascent: a text's top to its baseline).
 pub const CHAR_HEIGHT: i32 = 12;
 
-/// Character width in pixels.
+/// Character width in pixels (the font's advance).
 pub const CHAR_WIDTH: i32 = 7;
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn the_char_constants_match_the_font() {
+    let text = CpuText::mono(FONT_PX).unwrap();
+    assert_eq!(text.advance(), CHAR_WIDTH);
+    assert!(
+      text.line_height() >= CHAR_HEIGHT,
+      "a row holds the ascent and descent"
+    );
+    assert_eq!(text.measure("\u{00E9}\u{2500}x"), 3 * CHAR_WIDTH);
+  }
+
+  /// Renders a logger-window-style layout with the real constants into
+  /// `target/dev-window-text.png` for looking at (the windows themselves
+  /// need an OS window)
+  #[test]
+  fn a_logger_layout_renders_to_a_png() {
+    let mut text = CpuText::mono(FONT_PX).unwrap();
+    let (w, h) = (640u32, 200u32);
+    let mut buffer: Vec<u8> = colors::BACKGROUND.repeat((w * h) as usize);
+    let fill = |buffer: &mut [u8], x0: i32, y0: i32, rw: i32, rh: i32, c: [u8; 4]| {
+      for y in y0..y0 + rh {
+        for x in x0..x0 + rw {
+          let i = ((y as u32 * w + x as u32) * 4) as usize;
+          buffer[i..i + 4].copy_from_slice(&c);
+        }
+      }
+    };
+    fill(&mut buffer, 0, 0, w as i32, 30, colors::HEADER_BG);
+    for (i, label) in ["All", "Trace", "Debug", "Info", "Warn", "Error"]
+      .iter()
+      .enumerate()
+    {
+      let x = 8 + i as i32 * 70;
+      fill(
+        &mut buffer,
+        x,
+        6,
+        text.measure(label) + 8,
+        18,
+        colors::DIVIDER,
+      );
+      text.draw(&mut buffer, w, h, label, x + 4, 8, colors::TEXT);
+    }
+    let rows = [
+      (
+        colors::LOG_INFO,
+        "INFO ",
+        "ryo2d::engine",
+        "Engine started \u{2014} 1280x720",
+      ),
+      (
+        colors::LOG_DEBUG,
+        "DEBUG",
+        "ryo2d::text",
+        "Loaded fonts: Inter, JetBrains Mono, m5x7",
+      ),
+      (
+        colors::LOG_WARN,
+        "WARN ",
+        "ryo2d::audio",
+        "No audio device; caf\u{00E9} muted \u{2500}\u{2500}",
+      ),
+      (
+        colors::LOG_ERROR,
+        "ERROR",
+        "game",
+        "Failed to load level 3: gjg(){}[]|~ 0Oo1lI",
+      ),
+      (
+        colors::LOG_TRACE,
+        "TRACE",
+        "game",
+        "pitch 14 rows, g y p q j descenders",
+      ),
+    ];
+    for (i, (color, level, module, message)) in rows.iter().enumerate() {
+      let y = 36 + i as i32 * (CHAR_HEIGHT + 2);
+      let mut x = 8;
+      text.draw(&mut buffer, w, h, "12:00:01.250", x, y, colors::TEXT_DIM);
+      x += 13 * CHAR_WIDTH;
+      text.draw(&mut buffer, w, h, level, x, y, *color);
+      x += 6 * CHAR_WIDTH;
+      text.draw(&mut buffer, w, h, module, x, y, colors::ENGINE_CONTEXT);
+      x += (module.len() as i32 + 1) * CHAR_WIDTH;
+      text.draw(&mut buffer, w, h, message, x, y, colors::TEXT);
+    }
+    // A profiler-style row of labels
+    for (i, label) in ["Frame 16.6 ms", "Update 2.1", "Render 4.8", "Freeze"]
+      .iter()
+      .enumerate()
+    {
+      text.draw(
+        &mut buffer,
+        w,
+        h,
+        label,
+        8 + i as i32 * 150,
+        140,
+        colors::TEXT,
+      );
+      text.draw(
+        &mut buffer,
+        w,
+        h,
+        label,
+        8 + i as i32 * 150,
+        160,
+        colors::TEXT_DIM,
+      );
+    }
+    assert!(buffer.as_chunks::<4>().0.iter().any(|p| p[0] > 200));
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/dev-window-text.png");
+    image::save_buffer(&path, &buffer, w, h, image::ColorType::Rgba8).unwrap();
+  }
+}

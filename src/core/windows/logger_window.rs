@@ -505,7 +505,7 @@ impl LoggerWindow {
       if instant.elapsed().as_millis() < 1500 {
         let width = self.renderer.width() as i32;
         let height = self.renderer.height() as i32;
-        let msg_width = (msg.len() as i32 * CHAR_WIDTH) + 16;
+        let msg_width = self.renderer.measure_text(msg) + 16;
         let x = (width - msg_width) / 2;
         let y = height / 2 - 20;
         self
@@ -594,7 +594,7 @@ impl LoggerWindow {
     self.hovered_button = None;
 
     for (idx, (label, active, color)) in buttons.iter().enumerate() {
-      let btn_width = (label.len() as i32 * CHAR_WIDTH) + 8;
+      let btn_width = self.renderer.measure_text(label) + 8;
       let btn_height = 18;
       let btn_y = 6;
 
@@ -840,8 +840,13 @@ impl LoggerWindow {
       // Draw message (truncate if needed)
       let available_width = width - x - padding;
       let max_chars = (available_width / CHAR_WIDTH) as usize;
-      let message = if entry.message.len() > max_chars {
-        format!("{}...", &entry.message[..max_chars.saturating_sub(3)])
+      let message = if entry.message.chars().count() > max_chars {
+        let kept: String = entry
+          .message
+          .chars()
+          .take(max_chars.saturating_sub(3))
+          .collect();
+        format!("{kept}...")
       } else {
         entry.message.clone()
       };

@@ -12,6 +12,10 @@ Dev windows are standalone winit windows that share GPU resources with the main 
 
 All dev windows receive `Arc<wgpu::Device>` / `Arc<wgpu::Queue>` from the game renderer. Each creates its own `wgpu::Surface` and draws into a CPU pixel buffer (`DevWindowRenderer`).
 
+## Text
+
+The windows draw JetBrains Mono through `text::CpuText`: swash rasterizes the glyphs into the window's CPU pixel buffer at `FONT_PX` (12), and each glyph image is cached per character. It owns its own `Fonts` and `GlyphRasterizer`, since the windows live apart from the engine's registry. Layouts measure text in characters (`measure_text`, `CHAR_WIDTH`), never bytes, and keep a row pitch of `CHAR_HEIGHT + 2` (`CHAR_HEIGHT` is the font's ascent; descenders fit in the 2). Without the `default-fonts` feature nothing is drawn. `CHAR_WIDTH` and `CHAR_HEIGHT` are pinned to the font by a test; the dev_window tests also write a sample layout to `target/dev-window-text.png` for looking at, since the windows themselves need an OS window.
+
 ## Opening Windows
 
 - **Logger**: `[debug] logger_window = true` opens it at startup. F9 toggles it.

@@ -43,10 +43,12 @@ pub use commands::{
   CommandContext, CommandFn, CommandInfo, CommandRegistry, CommandResult, ConsoleCommandBuilder,
 };
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 
 use super::cursor::CursorStyle;
 use super::input::Input;
+use super::text::{FontRole, TextStyle};
 use super::ui::{Color, Rect, UiContext};
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
@@ -65,14 +67,25 @@ const MIN_HEIGHT: f32 = 150.0;
 const DEFAULT_WIDTH: f32 = 600.0;
 const DEFAULT_HEIGHT: f32 = 400.0;
 
-/// Title bar height
+/// Title bar height, at least (it grows with the console font)
 const TITLE_BAR_HEIGHT: f32 = 24.0;
 
 /// Close button size
 const CLOSE_BUTTON_SIZE: f32 = 16.0;
 
-/// Input line height
+/// Input line height, at least (it grows with the console font)
 const INPUT_HEIGHT: f32 = 24.0;
+
+/// Room around a line of text in the title bar and input line
+const BAR_PADDING: f32 = 10.0;
+
+/// The line height assumed before the first render measures the font
+const DEFAULT_LINE_HEIGHT: f32 = 12.0;
+
+/// The console's text: JetBrains Mono, 13 px
+pub(crate) fn console_style() -> TextStyle {
+  TextStyle::new().role(FontRole::Mono).size(13.0)
+}
 
 /// Resize handle size (corner)
 const RESIZE_HANDLE_SIZE: f32 = 12.0;
@@ -204,6 +217,8 @@ pub struct ConsoleState {
   drag_state: DragState,
   /// Skip text input this frame (to avoid inserting toggle key)
   skip_text_input: bool,
+  /// The console font's line height as last measured by `render`
+  line_height: Cell<f32>,
 }
 
 impl Default for ConsoleState {
@@ -233,6 +248,7 @@ impl ConsoleState {
       total_time: 0.0,
       drag_state: DragState::None,
       skip_text_input: false,
+      line_height: Cell::new(DEFAULT_LINE_HEIGHT),
     };
 
     // Print welcome message
@@ -303,9 +319,19 @@ impl ConsoleState {
     }
   }
 
+  /// The title bar's height: one line of the console font plus padding
+  fn title_bar_height(&self) -> f32 {
+    TITLE_BAR_HEIGHT.max(self.line_height.get() + BAR_PADDING)
+  }
+
+  /// The input line's height
+  fn input_height(&self) -> f32 {
+    INPUT_HEIGHT.max(self.line_height.get() + BAR_PADDING)
+  }
+
   /// Get the title bar bounds
   fn title_bar_rect(&self) -> Rect {
-    Rect::new(self.x, self.y, self.width, TITLE_BAR_HEIGHT)
+    Rect::new(self.x, self.y, self.width, self.title_bar_height())
   }
 
   /// Get the resize handle bounds (bottom-right corner)
@@ -320,7 +346,7 @@ impl ConsoleState {
 
   /// Get the close button bounds (top-right corner of title bar)
   fn close_button_rect(&self) -> Rect {
-    let padding = (TITLE_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2.0;
+    let padding = (self.title_bar_height() - CLOSE_BUTTON_SIZE) / 2.0;
     Rect::new(
       self.x + self.width - CLOSE_BUTTON_SIZE - padding,
       self.y + padding,
@@ -374,8 +400,8 @@ impl ConsoleState {
   /// Get the output area bounds (between title bar and input line)
   fn output_area(&self) -> (f32, f32, f32, f32) {
     let padding = 8.0;
-    let input_y = self.y + self.height - INPUT_HEIGHT;
-    let output_top = self.y + TITLE_BAR_HEIGHT + padding;
+    let input_y = self.y + self.height - self.input_height();
+    let output_top = self.y + self.title_bar_height() + padding;
     let output_bottom = input_y - padding;
     let output_height = output_bottom - output_top;
     (output_top, output_bottom, output_height, padding)
@@ -434,51 +460,6 @@ impl ConsoleState {
     self.width - padding * 2.0 - scrollbar_margin
   }
 
-  /// Wrap text to fit within the given max width, returning wrapped lines
-  fn wrap_text<'a>(&self, text: &'a str, max_width: f32, ui: &UiContext) -> Vec<&'a str> {
-    let mut lines = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-      let (text_width, _) = ui.text_size(remaining);
-      if (text_width as f32) <= max_width {
-        lines.push(remaining);
-        break;
-      }
-
-      // Find break point - try to break at word boundary
-      let mut break_pos = remaining.len();
-      let mut last_space = None;
-
-      for (i, c) in remaining.char_indices() {
-        let prefix = &remaining[..i + c.len_utf8()];
-        let (prefix_width, _) = ui.text_size(prefix);
-        if prefix_width as f32 > max_width {
-          // Use last space if available, otherwise break here
-          break_pos = last_space.unwrap_or(i.max(1));
-          break;
-        }
-        if c == ' ' {
-          last_space = Some(i + 1); // Include space at end of previous line
-        }
-      }
-
-      // If we couldn't find a good break point, break at max width
-      if break_pos == remaining.len() && (ui.text_size(remaining).0 as f32) > max_width {
-        break_pos = 1; // At minimum, break after first char
-      }
-
-      let (line, rest) = remaining.split_at(break_pos);
-      lines.push(line.trim_end());
-      remaining = rest.trim_start();
-    }
-
-    if lines.is_empty() {
-      lines.push("");
-    }
-    lines
-  }
-
   /// Check if the console is currently focused
   pub fn is_focused(&self) -> bool {
     self.focused
@@ -497,7 +478,7 @@ impl ConsoleState {
     let window_rect = self.window_rect();
 
     // Calculate scrollbar info for interactions
-    let line_height = 12.0;
+    let line_height = self.line_height.get();
     let (_, _, output_height, _) = self.output_area();
     let visible_lines = (output_height / line_height) as usize;
     let total_lines = self.output_lines.len();
@@ -805,7 +786,11 @@ impl ConsoleState {
     }
 
     let padding = 8.0;
-    let line_height = 12.0;
+    let style = console_style();
+    let line_height = ui.line_height(&style).ceil();
+    self.line_height.set(line_height);
+    let title_height = self.title_bar_height();
+    let input_height = self.input_height();
 
     // Choose colors based on focus state
     let bg_color = if self.focused {
@@ -854,12 +839,18 @@ impl ConsoleState {
     ui.draw_rect_outline(bg_rect, border_color, 1.0);
 
     // Draw title bar
-    let title_rect = Rect::new(x, y, self.width, TITLE_BAR_HEIGHT);
+    let title_rect = Rect::new(x, y, self.width, title_height);
     ui.draw_rect(title_rect, title_bar_color);
-    ui.draw_text("Developer Console", x + padding, y + 6.0, text_color);
+    draw_line(
+      ui,
+      "Developer Console",
+      x + padding,
+      y + (title_height - line_height) / 2.0,
+      text_color,
+    );
 
     // Draw close button (X) in top-right corner
-    let close_padding = (TITLE_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2.0;
+    let close_padding = (title_height - CLOSE_BUTTON_SIZE) / 2.0;
     let close_x = x + self.width - CLOSE_BUTTON_SIZE - close_padding;
     let close_y = y + close_padding;
     let close_rect = Rect::new(close_x, close_y, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE);
@@ -873,42 +864,40 @@ impl ConsoleState {
     };
     ui.draw_rect(close_rect, close_btn_color);
     // Draw X centered in the button
-    let (x_width, x_height) = ui.text_size("X");
-    let x_text_x = close_x + (CLOSE_BUTTON_SIZE - x_width as f32) / 2.0;
-    let x_text_y = close_y + (CLOSE_BUTTON_SIZE - x_height as f32) / 2.0;
+    let x_size = ui.measure_text("X", &style);
+    let x_text_x = close_x + (CLOSE_BUTTON_SIZE - x_size.x) / 2.0;
+    let x_text_y = close_y + (CLOSE_BUTTON_SIZE - x_size.y) / 2.0;
     let close_text_color = if close_hovered && self.focused {
       Color::WHITE
     } else {
       text_color
     };
-    ui.draw_text("X", x_text_x, x_text_y, close_text_color);
+    draw_line(ui, "X", x_text_x, x_text_y, close_text_color);
 
     // Draw input line background
-    let input_y = y + self.height - INPUT_HEIGHT;
-    let input_rect = Rect::new(x, input_y, self.width, INPUT_HEIGHT);
+    let input_y = y + self.height - input_height;
+    let input_rect = Rect::new(x, input_y, self.width, input_height);
     ui.draw_rect(input_rect, input_bg_color);
 
     // Draw input prompt and text
     let prompt = "> ";
     let prompt_x = x + padding;
-    let input_text_y = input_y + 6.0;
+    let input_text_y = input_y + (input_height - line_height) / 2.0;
     let prompt_color = if self.focused {
       colors::SYSTEM
     } else {
       Color::new(colors::SYSTEM.r, colors::SYSTEM.g, colors::SYSTEM.b, 160)
     };
-    ui.draw_text(prompt, prompt_x, input_text_y, prompt_color);
+    draw_line(ui, prompt, prompt_x, input_text_y, prompt_color);
 
-    let (prompt_width, _) = ui.text_size(prompt);
-    let text_x = prompt_x + prompt_width as f32;
-    ui.draw_text(&self.input_buffer, text_x, input_text_y, text_color);
+    let text_x = prompt_x + ui.measure_text(prompt, &style).x;
+    draw_line(ui, &self.input_buffer, text_x, input_text_y, text_color);
 
     // Draw cursor (blinking) - only when focused
     if self.focused && self.cursor_blink_timer < 0.5 {
       let cursor_text = &self.input_buffer[..self.cursor_pos];
-      let (cursor_offset, _) = ui.text_size(cursor_text);
-      let cursor_x = text_x + cursor_offset as f32;
-      let cursor_rect = Rect::new(cursor_x, input_y + 4.0, 2.0, INPUT_HEIGHT - 8.0);
+      let cursor_x = text_x + ui.measure_text(cursor_text, &style).x;
+      let cursor_rect = Rect::new(cursor_x, input_y + 4.0, 2.0, input_height - 8.0);
       ui.draw_rect(cursor_rect, colors::CURSOR);
     }
 
@@ -932,24 +921,25 @@ impl ConsoleState {
     }
 
     // Calculate visible output area (leave room for scrollbar on right)
-    let output_top = y + TITLE_BAR_HEIGHT + padding;
+    let output_top = y + title_height + padding;
     let output_bottom = input_y - padding;
     let output_height = output_bottom - output_top;
     let visible_line_count = (output_height / line_height) as usize;
 
-    // First pass: calculate total wrapped lines to determine if scrollbar is needed
-    // We need to know if there's a scrollbar to calculate max text width correctly
-    let raw_line_count = self.output_lines.len();
-    let has_scrollbar_estimate = raw_line_count > visible_line_count;
-    let max_text_width = self.max_text_width(has_scrollbar_estimate);
-
-    // Build list of wrapped lines with their colors
-    let mut wrapped_lines: Vec<(String, Color)> = Vec::new();
-    for line in &self.output_lines {
-      let parts = self.wrap_text(&line.text, max_text_width, ui);
-      for part in parts {
-        wrapped_lines.push((part.to_string(), line.color));
+    // Wrap to the full width first; the scrollbar takes room from the text
+    // only when the wrapped rows overflow, so wrap again narrower then
+    let wrap_all = |width: f32| -> Vec<(String, Color)> {
+      let mut rows = Vec::new();
+      for line in &self.output_lines {
+        for part in ui.wrap_text_styled(&line.text, width, &style) {
+          rows.push((part, line.color));
+        }
       }
+      rows
+    };
+    let mut wrapped_lines = wrap_all(self.max_text_width(false));
+    if wrapped_lines.len() > visible_line_count {
+      wrapped_lines = wrap_all(self.max_text_width(true));
     }
 
     let total_lines = wrapped_lines.len();
@@ -1007,7 +997,7 @@ impl ConsoleState {
             (color.a as u16 * 160 / 255) as u8,
           )
         };
-        ui.draw_text(text, x + padding, text_y, line_color);
+        draw_line(ui, text, x + padding, text_y, line_color);
         text_y -= line_height;
       }
     }
@@ -1016,14 +1006,14 @@ impl ConsoleState {
     if self.scroll_offset > 0 && !has_scrollbar {
       // Only show text indicator if no scrollbar (few lines but scrolled)
       let indicator = format!("[{} more lines below]", self.scroll_offset);
-      let (indicator_width, _) = ui.text_size(&indicator);
-      let indicator_x = x + (self.width - indicator_width as f32) / 2.0;
+      let indicator_x = x + (self.width - ui.measure_text(indicator.as_str(), &style).x) / 2.0;
       let indicator_color = if self.focused {
         colors::SYSTEM
       } else {
         Color::new(colors::SYSTEM.r, colors::SYSTEM.g, colors::SYSTEM.b, 160)
       };
-      ui.draw_text(
+      draw_line(
+        ui,
         &indicator,
         indicator_x,
         output_bottom - line_height,
@@ -1033,6 +1023,16 @@ impl ConsoleState {
   }
 }
 
+/// One line of console text; `color`'s alpha fades it (layouts are cached
+/// per colour, so alpha rides as opacity)
+fn draw_line(ui: &mut UiContext, text: &str, x: f32, y: f32, color: Color) {
+  ui.text(text)
+    .style(&console_style().color(color.with_alpha(255)))
+    .at(x, y)
+    .opacity(f32::from(color.a) / 255.0)
+    .draw();
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1040,6 +1040,67 @@ mod tests {
   // ============================================================================
   // ConsoleState Basic Operations
   // ============================================================================
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn long_output_lines_wrap_to_the_console_width() {
+    use crate::core::ui::immediate::{UiCommand, UiCommands};
+    let mut console = ConsoleState::new();
+    console.toggle();
+    console.print("word ".repeat(400));
+    let (mut commands, mut text) = (
+      UiCommands::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
+    console.render(&mut ui, 1280, 720);
+    drop(ui);
+    let output_width = console.max_text_width(true);
+    let widths: Vec<f32> = commands
+      .iter()
+      .filter_map(|c| match c {
+        UiCommand::Text { layout, .. } => Some(layout.size.x / layout.scale),
+        _ => None,
+      })
+      .collect();
+    assert!(widths.len() > 3, "the long line became several rows");
+    assert!(
+      widths.iter().all(|&w| w <= output_width + 0.5),
+      "{widths:?} within {output_width}"
+    );
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn the_console_draws_in_monospace_and_sizes_rows_by_the_font() {
+    use crate::core::ui::immediate::{UiCommand, UiCommands};
+    let mut console = ConsoleState::new();
+    console.toggle();
+    console.clear();
+    console.print("iiiiiiiiii");
+    console.print("MMMMMMMMMM");
+    let (mut commands, mut text) = (
+      UiCommands::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
+    console.render(&mut ui, 1280, 720);
+    let expected = ui.line_height(&console_style()).ceil();
+    drop(ui);
+    let widths: Vec<f32> = commands
+      .iter()
+      .filter_map(|c| match c {
+        UiCommand::Text { layout, .. } if layout.size.x > 60.0 && layout.size.x < 100.0 => {
+          Some(layout.size.x)
+        }
+        _ => None,
+      })
+      .collect();
+    assert_eq!(widths.len(), 2, "{widths:?}");
+    assert!((widths[0] - widths[1]).abs() < 0.5, "monospace: {widths:?}");
+    assert_eq!(console.line_height.get(), expected);
+    assert!(console.title_bar_height() >= expected + 10.0);
+  }
 
   #[test]
   fn test_console_new_initial_state() {

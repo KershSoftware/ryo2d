@@ -2,6 +2,7 @@
 //! and world-space text. GPU-free: the renderer draws the glyph bitmaps
 //! this module produces. `parley`, `swash` and `fdsm` are named only here.
 
+mod cpu;
 mod effects;
 mod engine;
 mod fonts;
@@ -24,6 +25,7 @@ pub use style::{
 };
 pub use world::{Text2d, TextBounds, TextReveal, TextRevealed};
 
+pub(crate) use cpu::CpuText;
 pub(crate) use effects::reveal_alpha;
 pub(crate) use engine::{RevealClock, TextEngine};
 pub(crate) use layout::{GlyphStyle, PlacedGlyph, PlacedIcon, TextLayout};

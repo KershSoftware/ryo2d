@@ -445,7 +445,7 @@ impl ProfilerWindow {
 
     // Draw button text
     let btn_label = if self.paused { "Resume" } else { "Freeze" };
-    let label_x = btn_x + (btn_width - (btn_label.len() as i32 * 7)) / 2;
+    let label_x = btn_x + (btn_width - self.renderer.measure_text(btn_label)) / 2;
     self
       .renderer
       .draw_text(btn_label, label_x, btn_y + 4, btn_text);

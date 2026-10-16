@@ -1,6 +1,7 @@
 //! The shell's drawing: top bar, description, settings panel, legend and help
 //!
-//! Text is ASCII only: the bitmap font covers characters 32-126.
+//! Text is the default UI font, sized down on small screens so the shell
+//! leaves room for a page.
 
 use ryo2d::prelude::*;
 
@@ -88,12 +89,32 @@ fn panel_height(l: &Layout, rows: usize) -> f32 {
   ((rows as f32 + 2.0) * row_h + 2.0 * l.pad).min(l.content.height)
 }
 
+/// Shell text size at screen height `h`: the default 14 from 210 units up,
+/// shrinking with the screen to 8 at 120, where 14 would leave a page no room
+fn text_px(h: f32) -> f32 {
+  (h / 15.0).clamp(8.0, 14.0)
+}
+
+fn shell_style(ui: &UiContext) -> TextStyle {
+  TextStyle::new().size(text_px(ui.screen_size().1 as f32))
+}
+
 fn line_height(ui: &UiContext) -> f32 {
-  ui.text_size("Ag").1 as f32
+  ui.measure_text("Ag", &shell_style(ui)).y.ceil()
 }
 
 fn text_w(ui: &UiContext, text: &str) -> f32 {
-  ui.text_size(text).0 as f32
+  ui.measure_text(text, &shell_style(ui)).x.ceil()
+}
+
+/// Draw one line of shell text
+fn put(ui: &mut UiContext, text: &str, x: f32, y: f32, color: Color) {
+  let style = shell_style(ui).color(color.with_alpha(255));
+  ui.text(text)
+    .style(&style)
+    .at(x, y)
+    .opacity(f32::from(color.a) / 255.0)
+    .draw();
 }
 
 /// Group items, in order, into lines no wider than `available`
@@ -253,9 +274,9 @@ fn draw_top_bar(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
   let right_w = text_w(ui, right);
   let (left_max, show_right) = top_bar_fit(text_w(ui, &left), right_w, w - 2.0 * l.pad, l.pad);
   let left = truncate_to(&left, left_max, |s| text_w(ui, s));
-  ui.draw_text(&left, l.pad, y, Color::WHITE);
+  put(ui, &left, l.pad, y, Color::WHITE);
   if show_right {
-    ui.draw_text(right, w - l.pad - right_w, y, dim_text());
+    put(ui, right, w - l.pad - right_w, y, dim_text());
   }
 }
 
@@ -276,7 +297,7 @@ fn draw_description(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
     l.line_h + l.pad,
   );
   ui.draw_rect(backing, backing_color());
-  ui.draw_text(&line, l.pad, l.description_y, dim_text());
+  put(ui, &line, l.pad, l.description_y, dim_text());
 }
 
 /// Widths a row's label and value may use within `inner`, separated by `gap`.
@@ -309,7 +330,7 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<(Re
   }
   let panel = Rect::new(x, y, panel_w, panel_h);
   ui.draw_rect(panel, panel_color());
-  ui.draw_text("SETTINGS", x + l.pad, y + l.pad, Color::WHITE);
+  put(ui, "SETTINGS", x + l.pad, y + l.pad, Color::WHITE);
 
   let rows_fit = ((panel_h - 2.0 * l.pad) / row_h).floor() as usize;
   let visible = rows_fit.saturating_sub(2).min(view.rows.len());
@@ -335,7 +356,8 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<(Re
     let label = format!("{marker}{}", row.label);
     let (label_max, value_max) = row_widths(inner, text_w(ui, &row.value), gap);
     let label = truncate_to(&label, label_max, |s| text_w(ui, s));
-    ui.draw_text(
+    put(
+      ui,
       &label,
       x + l.pad,
       row_y,
@@ -343,11 +365,11 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<(Re
     );
     let value = truncate_to(&row.value, value_max, |s| text_w(ui, s));
     let value_x = x + panel_w - l.pad - text_w(ui, &value);
-    ui.draw_text(&value, value_x, row_y, Color::WHITE);
+    put(ui, &value, value_x, row_y, Color::WHITE);
   }
   let hint_y = y + panel_h - l.pad - l.line_h;
   let hint = truncate_to(hint, inner, |s| text_w(ui, s));
-  ui.draw_text(&hint, x + l.pad, hint_y, dim_text());
+  put(ui, &hint, x + l.pad, hint_y, dim_text());
   Some((panel, first))
 }
 
@@ -425,13 +447,13 @@ fn draw_legend(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
     );
     for &i in line {
       let (key, desc) = &items[i];
-      ui.draw_text(key, x, y, key_text());
+      put(ui, key, x, y, key_text());
       let desc_x = x + text_w(ui, key) + text_w(ui, " ");
-      ui.draw_text(desc, desc_x, y, dim_text());
+      put(ui, desc, desc_x, y, dim_text());
       x += widths[i] + gap;
     }
     if last && hidden > 0 {
-      ui.draw_text(&more(hidden), x, y, dim_text());
+      put(ui, &more(hidden), x, y, dim_text());
     }
   }
 }
@@ -508,13 +530,13 @@ fn draw_help(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
   let mut line_y = y + l.pad;
   for (text, color) in lines.into_iter().take(shown) {
     let text = truncate_to(&text, inner, |s| text_w(ui, s));
-    ui.draw_text(&text, x + l.pad, line_y, color);
+    put(ui, &text, x + l.pad, line_y, color);
     line_y += step;
   }
   if let Some(more) = more {
     let text = format!("... {more} more lines (enlarge the window)");
     let text = truncate_to(&text, inner, |s| text_w(ui, s));
-    ui.draw_text(&text, x + l.pad, line_y, dim_text());
+    put(ui, &text, x + l.pad, line_y, dim_text());
   }
 }
 

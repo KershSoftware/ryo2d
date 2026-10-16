@@ -90,7 +90,8 @@ use crate::core::graphics::Camera2d;
 use crate::core::graphics::camera_mut::main_view;
 use crate::core::physics::Physics;
 use crate::core::render::DebugDraw;
-use crate::core::ui::{Color, UiContext};
+use crate::core::text::{FontRole, TextStyle};
+use crate::core::ui::{Color, Rect, UiContext};
 
 // ============================================================================
 // Overlay Mode
@@ -459,8 +460,41 @@ pub(crate) fn overlay_shapes(world: &mut World, flags: OverlayFlags, debug: &mut
   }
 }
 
-/// Height of the frame timing overlay (5 lines + padding).
-pub const FRAME_TIMING_HEIGHT: f32 = 18.0 * 5.0 + 8.0;
+/// The overlays' text: JetBrains Mono, so `{:5}`-padded columns line up
+fn overlay_style() -> TextStyle {
+  TextStyle::new().role(FontRole::Mono).size(12.0)
+}
+
+/// Space below an overlay's rows
+const OVERLAY_MARGIN: f32 = 8.0;
+
+/// Distance between overlay rows: a line of text plus the label padding
+/// above and below, so the panels touch instead of overlapping
+fn row_pitch(ui: &UiContext) -> f32 {
+  ui.line_height(&overlay_style()) + 8.0
+}
+
+/// Height of the frame timing overlay (5 rows + margin)
+fn frame_timing_height(ui: &UiContext) -> f32 {
+  row_pitch(ui) * 5.0 + OVERLAY_MARGIN
+}
+
+/// A mono label on a translucent panel padded to fit the measured text
+fn overlay_label(ui: &mut UiContext, text: &str, x: f32, y: f32, color: Color) {
+  let style = overlay_style();
+  let size = ui.measure_text(text, &style);
+  let padding = 4.0;
+  ui.draw_rect(
+    Rect::new(
+      x - padding,
+      y - padding,
+      size.x + padding * 2.0,
+      size.y + padding * 2.0,
+    ),
+    Color::new(0, 0, 0, 180),
+  );
+  ui.text(text).style(&style.color(color)).at(x, y).draw();
+}
 
 /// Render FPS counter in the bottom-left corner.
 ///
@@ -472,19 +506,22 @@ pub fn render_fps_counter(
   frame_timing_below: bool,
 ) {
   let offset = if frame_timing_below {
-    FRAME_TIMING_HEIGHT
+    frame_timing_height(ui)
   } else {
     0.0
   };
-  let y = screen_height as f32 - 24.0 - offset;
-  ui.label(
+  let y = screen_height as f32 - row_pitch(ui) - offset;
+  overlay_label(
+    ui,
     &format!("FPS: {}", fps),
     4.0,
     y,
     Color::rgb(255, 255, 255),
-    Some(Color::new(0, 0, 0, 180)),
   );
 }
+
+/// The separator row under the overlays' columns
+const SEPARATOR: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
 
 /// Render frame timing breakdown in the bottom-left corner.
 ///
@@ -495,106 +532,105 @@ pub fn render_frame_timing(
   smoothed: &SmoothedFrameTimings,
   screen_height: u32,
 ) {
-  let line_height = 18.0;
-  let base_y = screen_height as f32 - (line_height * 5.0) - 8.0;
+  let pitch = row_pitch(ui);
+  let base_y = screen_height as f32 - frame_timing_height(ui);
   let x = 4.0;
-  let bg = Some(Color::new(0, 0, 0, 180));
   let white = Color::rgb(255, 255, 255);
   let dim = Color::rgb(180, 180, 180);
 
   // Note: Update time includes game logic + physics (combined in fixed timestep loop)
-  ui.label(
-    &format!("Update:  {:5.2}ms", smoothed.update_ms),
-    x,
-    base_y,
-    white,
-    bg,
-  );
-  ui.label(
-    &format!("Render:  {:5.2}ms", smoothed.render_ms),
-    x,
-    base_y + line_height,
-    white,
-    bg,
-  );
-  ui.label(
-    &format!("Present: {:5.2}ms", smoothed.present_ms),
-    x,
-    base_y + line_height * 2.0,
-    white,
-    bg,
-  );
-  ui.label(
-    "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-    x,
-    base_y + line_height * 3.0,
-    dim,
-    bg,
-  );
-  ui.label(
-    &format!(
-      "Total:   {:5.2}ms ({} FPS)",
-      smoothed.total_ms,
-      smoothed.fps.round() as u32
+  let rows = [
+    (format!("Update:  {:5.2}ms", smoothed.update_ms), white),
+    (format!("Render:  {:5.2}ms", smoothed.render_ms), white),
+    (format!("Present: {:5.2}ms", smoothed.present_ms), white),
+    (SEPARATOR.to_string(), dim),
+    (
+      format!(
+        "Total:   {:5.2}ms ({} FPS)",
+        smoothed.total_ms,
+        smoothed.fps.round() as u32
+      ),
+      white,
     ),
-    x,
-    base_y + line_height * 4.0,
-    white,
-    bg,
-  );
+  ];
+  for (i, (text, color)) in rows.iter().enumerate() {
+    overlay_label(ui, text, x, base_y + pitch * i as f32, *color);
+  }
 }
-
-/// Height of the FPS counter overlay (1 line + padding).
-pub const FPS_COUNTER_HEIGHT: f32 = 24.0;
-
-/// Height of the stats overlay (4 lines + padding).
-pub const STATS_HEIGHT: f32 = 18.0 * 4.0 + 8.0;
 
 /// Render debug stats (entity/sprite/batch counts) in the bottom-left corner.
 ///
 /// Positioned above the frame timing overlay (FPS counter is not shown when stats are visible).
 pub fn render_stats(ui: &mut UiContext, stats: &SmoothedDebugStats, screen_height: u32) {
-  let line_height = 18.0;
+  let pitch = row_pitch(ui);
   // Position above frame timing only (FPS counter not shown when frame timing is visible)
-  let base_y = screen_height as f32 - FRAME_TIMING_HEIGHT - (line_height * 4.0) - 8.0;
+  let base_y = screen_height as f32 - frame_timing_height(ui) - pitch * 4.0 - OVERLAY_MARGIN;
   let x = 4.0;
-  let bg = Some(Color::new(0, 0, 0, 180));
   let white = Color::rgb(255, 255, 255);
   let dim = Color::rgb(180, 180, 180);
 
-  ui.label(
-    &format!("Entities: {:5}", stats.entity_count.round() as u32),
-    x,
-    base_y,
-    white,
-    bg,
-  );
-  ui.label(
-    &format!("Sprites:  {:5}", stats.sprite_count.round() as u32),
-    x,
-    base_y + line_height,
-    white,
-    bg,
-  );
-  ui.label(
-    &format!("Batches:  {:5}", stats.draw_calls.round() as u32),
-    x,
-    base_y + line_height * 2.0,
-    white,
-    bg,
-  );
-  ui.label(
-    "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-    x,
-    base_y + line_height * 3.0,
-    dim,
-    bg,
-  );
+  let rows = [
+    (
+      format!("Entities: {:5}", stats.entity_count.round() as u32),
+      white,
+    ),
+    (
+      format!("Sprites:  {:5}", stats.sprite_count.round() as u32),
+      white,
+    ),
+    (
+      format!("Batches:  {:5}", stats.draw_calls.round() as u32),
+      white,
+    ),
+    (SEPARATOR.to_string(), dim),
+  ];
+  for (i, (text, color)) in rows.iter().enumerate() {
+    overlay_label(ui, text, x, base_y + pitch * i as f32, *color);
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn overlay_rows_are_monospace_and_clear_of_each_other() {
+    use crate::core::ui::immediate::{UiCommand, UiCommands};
+    let (mut commands, mut text) = (
+      UiCommands::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
+    let timings = SmoothedFrameTimings::default();
+    render_frame_timing(&mut ui, &timings, 720);
+    drop(ui);
+    let panels: Vec<Rect> = commands
+      .iter()
+      .filter_map(|c| match c {
+        UiCommand::Rect { rect, .. } => Some(*rect),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(panels.len(), 5);
+    // "Update: ", "Render: " and "Present:" columns have the same length
+    assert!(
+      (panels[0].width - panels[1].width).abs() < 0.01,
+      "{panels:?}"
+    );
+    assert!(
+      (panels[1].width - panels[2].width).abs() < 0.01,
+      "{panels:?}"
+    );
+    for pair in panels.windows(2) {
+      assert!(
+        pair[0].y + pair[0].height <= pair[1].y + 0.01,
+        "rows overlap: {pair:?}"
+      );
+    }
+    let last = panels[4];
+    assert!(last.y + last.height <= 720.0, "on screen");
+  }
 
   #[test]
   fn collider_outlines_are_drawn_where_physics_has_them() {
