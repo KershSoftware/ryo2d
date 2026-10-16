@@ -230,6 +230,43 @@ impl TextEngine {
       .map_or(Vec2::ZERO, |laid| laid.size / scale)
   }
 
+  /// The narrowest `text` wraps to without breaking inside a word (its
+  /// min-content width) in text units: its widest word or icon. Zero when it
+  /// cannot be laid out.
+  pub(crate) fn min_content_width(
+    &mut self,
+    text: &RichText,
+    style: &TextStyle,
+    scale: f32,
+  ) -> f32 {
+    if style.invalid_field().is_some() || !valid_scale(scale) {
+      return 0.0;
+    }
+    let snapped = self.snapped(style, scale);
+    let style: &TextStyle = &snapped;
+    let bitmap = self
+      .resolve(&style.font)
+      .and_then(|id| self.bitmap(id))
+      .cloned();
+    let px = match bitmap {
+      Some(face) => {
+        let grid = Grid::new(&face, style.size * scale);
+        widest_word(&grid_cells(&grid, text, style.size, scale).0)
+      }
+      None => {
+        let stack = self.stack(style, None);
+        if stack.is_empty() {
+          return 0.0;
+        }
+        self
+          .shape_parley(text, style, scale, &stack, OverflowWrap::Normal)
+          .calculate_content_widths()
+          .min
+      }
+    };
+    px / scale
+  }
+
   /// The height of one line in text units
   pub(crate) fn line_height(&self, style: &TextStyle, scale: f32) -> f32 {
     if !style.is_valid() || !valid_scale(scale) {
@@ -575,29 +612,8 @@ impl TextEngine {
       };
     };
 
-    let spans = self.span_runs(text, style, scale);
-    let face = self.face_style(style);
     let wrap_px = options.wrap.map(|width| width * scale);
-    let mut builder = self.lcx.ranged_builder(&mut self.fcx, source, scale, true);
-    push_defaults(&mut builder, &stack, style, face);
-    for span in &spans {
-      span.push(&mut builder);
-    }
-    for (i, mark) in text.icons.iter().enumerate() {
-      if mark.at <= source.len() && source.is_char_boundary(mark.at) {
-        let size = icon_size(&mark.icon, style.size) * scale;
-        builder.push_inline_box(InlineBox {
-          id: i as u64,
-          kind: InlineBoxKind::InFlow,
-          index: mark.at,
-          width: size.x,
-          height: size.y,
-          baseline: None,
-          vertical_align: VerticalAlign::BASELINE,
-        });
-      }
-    }
-    let mut parley_layout = builder.build(source);
+    let mut parley_layout = self.shape_parley(text, style, scale, &stack, OverflowWrap::Anywhere);
     parley_layout.break_all_lines(wrap_px);
     parley_layout.align(alignment(options.align), AlignmentOptions::default());
 
@@ -657,6 +673,42 @@ impl TextEngine {
       punctuation,
       pixel,
     }
+  }
+
+  /// `text` shaped in the family `stack` with its spans and icons, its lines
+  /// not yet broken. `overflow` says whether a word may break inside itself.
+  fn shape_parley(
+    &mut self,
+    text: &RichText,
+    style: &TextStyle,
+    scale: f32,
+    stack: &[String],
+    overflow: OverflowWrap,
+  ) -> Layout<u16> {
+    let source = text.text.as_str();
+    let spans = self.span_runs(text, style, scale);
+    let face = self.face_style(style);
+    let mut builder = self.lcx.ranged_builder(&mut self.fcx, source, scale, true);
+    push_defaults(&mut builder, stack, style, face);
+    builder.push_default(StyleProperty::OverflowWrap(overflow));
+    for span in &spans {
+      span.push(&mut builder);
+    }
+    for (i, mark) in text.icons.iter().enumerate() {
+      if mark.at <= source.len() && source.is_char_boundary(mark.at) {
+        let size = icon_size(&mark.icon, style.size) * scale;
+        builder.push_inline_box(InlineBox {
+          id: i as u64,
+          kind: InlineBoxKind::InFlow,
+          index: mark.at,
+          width: size.x,
+          height: size.y,
+          baseline: None,
+          vertical_align: VerticalAlign::BASELINE,
+        });
+      }
+    }
+    builder.build(source)
   }
 
   /// Each span's layout overrides. Brush `i + 1` is span `i`; brush 0 is the
@@ -1558,6 +1610,20 @@ fn break_rows(cells: &[Cell], wrap_px: Option<f32>) -> Vec<Range<usize>> {
   }
   rows.push(start..cells.len());
   rows
+}
+
+/// The widest run of cells between spaces and line breaks
+fn widest_word(cells: &[Cell]) -> f32 {
+  let (mut widest, mut run) = (0.0f32, 0.0);
+  for cell in cells {
+    if cell.space || matches!(cell.kind, CellKind::Break) {
+      run = 0.0;
+    } else {
+      run += cell.width;
+      widest = widest.max(run);
+    }
+  }
+  widest
 }
 
 /// Each row's byte range: it runs to where the next row starts
@@ -2462,6 +2528,22 @@ mod tests {
     assert_eq!(
       engine.wrap_lines("alpha beta\ngamma", &style, 1000.0, 1.0),
       vec![0..11, 11..16]
+    );
+  }
+
+  #[test]
+  fn the_min_content_width_is_the_widest_word() {
+    let (mut engine, _) = engine();
+    let style = TextStyle::default();
+    let options = TextLayoutOptions::default();
+    let word = engine.measure(&"wonderful".into(), &style, &options, 1.0).x;
+    let min = engine.min_content_width(&"hello wonderful world".into(), &style, 1.0);
+    assert!((min - word).abs() < 0.5, "{min} for the word {word}");
+    let mut grid = bitmap_engine();
+    assert_eq!(
+      grid.min_content_width(&"AB CAB\nA".into(), &grid_style(), 2.0),
+      24.0,
+      "three 8-unit cells"
     );
   }
 

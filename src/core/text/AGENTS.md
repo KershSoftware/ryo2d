@@ -63,6 +63,10 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 - `TextFont::Id` lays out that exact face: Parley picks faces by family,
   weight and slant, so the face's own weight and slant are pushed. A word
   wider than the wrap width breaks inside it (`OverflowWrap::Anywhere`).
+- `min_content_width` (UI layout's min-content measure) is the widest word
+  or icon: Parley's content widths shaped with `OverflowWrap::Normal`, since
+  `Anywhere` would make it the widest grapheme; on a bitmap grid, the widest
+  run of cells between spaces. Not cached: layout caches its measures.
 
 ## Markup, icons, effects, reveal
 

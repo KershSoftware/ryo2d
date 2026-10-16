@@ -296,7 +296,7 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
     let place = Placement {
       rect: resolved.rects[draw.node],
       exact: exact[draw.node],
-      padding: node.style.padding,
+      padding: clean_edges(node.style.padding),
       clip: clips[draw.node],
       layer: draw.layer,
     };
@@ -309,9 +309,8 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
 
 /// The size of a text node offered `known` or `avail` width: wrapped to the
 /// width it is given (and no wider than its own wrap), unwrapped for its
-/// max-content width, and wrapped at zero for its min-content width (the
-/// engine then reports a width of zero; text nodes may shrink to that
-/// anyway, as their minimum width is zero)
+/// max-content width, and wrapped at its widest word for its min-content
+/// width
 fn measure_text(
   text: &RefCell<&mut TextEngine>,
   leaf: &TextLeaf,
@@ -319,9 +318,14 @@ fn measure_text(
   avail: Avail,
   scale: f32,
 ) -> Vec2 {
+  let Ok(mut engine) = text.try_borrow_mut() else {
+    return Vec2::ZERO;
+  };
   let offered = match (known, avail) {
     (Some(w), _) | (None, Avail::Definite(w)) => Some(w + WRAP_SLACK),
-    (None, Avail::MinContent) => Some(0.0),
+    (None, Avail::MinContent) => {
+      Some(engine.min_content_width(&leaf.text, &leaf.style, scale) + WRAP_SLACK)
+    }
     (None, Avail::MaxContent) => None,
   };
   let mut options = leaf.options;
@@ -329,9 +333,6 @@ fn measure_text(
   // Measured left-aligned: an aligned block is as wide as its wrap width,
   // which would claim all the room offered
   options.align = TextAlign::Start;
-  let Ok(mut engine) = text.try_borrow_mut() else {
-    return Vec2::ZERO;
-  };
   engine.measure(&leaf.text, &leaf.style, &options, scale)
 }
 
@@ -535,6 +536,18 @@ fn finite(v: Vec2) -> Vec2 {
   Vec2::new(
     if v.x.is_finite() { v.x } else { 0.0 },
     if v.y.is_finite() { v.y } else { 0.0 },
+  )
+}
+
+/// `edges` as layout used them: a side that is not finite or is negative
+/// is 0 (layout warned about it)
+fn clean_edges(edges: Edges) -> Edges {
+  let clean = |v: f32| if v.is_finite() && v >= 0.0 { v } else { 0.0 };
+  Edges::new(
+    clean(edges.left),
+    clean(edges.top),
+    clean(edges.right),
+    clean(edges.bottom),
   )
 }
 
@@ -748,6 +761,68 @@ mod tests {
     drop(ui);
     assert!(column.width <= 80.5, "{column:?}");
     assert!(text_lines(&commands)[0] > 1);
+  }
+
+  #[test]
+  fn a_containers_min_content_is_its_longest_word() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text, (400.0, 300.0));
+    let word = ui.measure_text("wonderful", &TextStyle::default());
+    let line = ui.line_height(&TextStyle::default());
+    let mut column = UiId::NONE;
+    // A narrow grid's track is as wide as its column's min-content width
+    ui.grid(1).width(10.0).show(|ui| {
+      column = ui
+        .column()
+        .show(|ui| {
+          ui.text("hello wonderful world");
+        })
+        .id;
+    });
+    let rect = ui.memory_for_test().current(column).map(|r| r.rect);
+    let rect = rect.unwrap_or_default();
+    assert!(
+      (rect.width - word.x).abs() < 1.0,
+      "{rect:?} for the word {word}"
+    );
+    assert!(
+      (rect.height - 3.0 * line).abs() < 1.0,
+      "{rect:?} for three lines of {line}"
+    );
+  }
+
+  #[test]
+  fn text_drawn_on_a_node_with_bad_padding_stays_inside_it() {
+    for padding in [f32::NAN, -20.0] {
+      let (mut commands, mut text) = (UiCommands::default(), text_engine());
+      let mut ui = context(&mut commands, &mut text, (400.0, 300.0));
+      let style = UiStyle {
+        padding: Edges::all(padding),
+        ..UiStyle::default()
+      };
+      let at = Rect::new(10.0, 20.0, 100.0, 40.0);
+      let node = ui.open_node(UiId(5), style, Some(at), Flags::default());
+      ui.push_draw(
+        node,
+        DrawKind::Text {
+          leaf: TextLeaf {
+            text: RichText::new("Hi there"),
+            style: TextStyle::default(),
+            options: TextLayoutOptions::default(),
+          },
+          frac: Vec2::ZERO,
+          wrap: true,
+          opacity: 1.0,
+          reveal: None,
+          seed: 0,
+        },
+      );
+      ui.close_node(node);
+      drop(ui);
+      let origin = commands.commands().find_map(UiCommand::text_origin);
+      assert_eq!(origin, Some(Vec2::new(10.0, 20.0)), "padding {padding}");
+      assert_eq!(text_lines(&commands), vec![1], "padding {padding}");
+    }
   }
 
   #[test]
