@@ -912,4 +912,138 @@ mod tests {
     assert_eq!(placed[4].rect.x, 0.0);
     assert_eq!(placed[4].rect.y, 10.0);
   }
+
+  fn frame(
+    engine: &mut LayoutEngine,
+    nodes: &[NodeDesc<'_>],
+    measure: &mut MeasureFn<'_>,
+  ) -> Vec<Placed> {
+    engine.begin_frame();
+    let placed = engine.layout(nodes, Vec2::new(800.0, 600.0), measure);
+    engine.end_frame();
+    placed
+  }
+
+  #[test]
+  fn a_changed_width_is_laid_out_next_frame() {
+    let leaf = UiStyle {
+      height: Length::Px(10.0),
+      ..UiStyle::default()
+    };
+    let mut engine = LayoutEngine::new();
+    let mut none = |_, _, _| Vec2::ZERO;
+    for width in [100.0, 150.0] {
+      let column = UiStyle {
+        width: Length::Px(width),
+        ..UiStyle::default()
+      };
+      let nodes = [
+        node(1, &column, Measure::None, &[1]),
+        node(2, &leaf, Measure::None, &[]),
+      ];
+      let placed = frame(&mut engine, &nodes, &mut none);
+      assert_eq!(placed[1].rect.width, width);
+    }
+  }
+
+  #[test]
+  fn a_changed_content_key_measures_again() {
+    let column = UiStyle {
+      width: Length::Px(120.0),
+      ..UiStyle::default()
+    };
+    let leaf = UiStyle::default();
+    let calls = std::cell::Cell::new(0);
+    let mut text = measure_text(40.0);
+    let mut counting = |i, k, a| {
+      calls.set(calls.get() + 1);
+      text(i, k, a)
+    };
+    let mut engine = LayoutEngine::new();
+    let desc = |key: u64| {
+      [
+        node(1, &column, Measure::None, &[1]),
+        NodeDesc {
+          id: UiId(2),
+          style: &leaf,
+          measure: Measure::Text,
+          content_key: key,
+          children: &[],
+        },
+      ]
+    };
+    frame(&mut engine, &desc(1), &mut counting);
+    let first = calls.get();
+    frame(&mut engine, &desc(1), &mut counting);
+    assert_eq!(calls.get(), first, "same key: cached");
+    frame(&mut engine, &desc(2), &mut counting);
+    assert!(calls.get() > first, "new key: measured again");
+  }
+
+  #[test]
+  fn a_changed_child_list_is_laid_out() {
+    let column = UiStyle::default();
+    let leaf = UiStyle::default();
+    let mut engine = LayoutEngine::new();
+    let mut none = |_, _, _| Vec2::ZERO;
+    let fixed = Measure::Fixed(Vec2::new(10.0, 10.0));
+    let one = [
+      node(1, &column, Measure::None, &[1]),
+      node(2, &leaf, fixed, &[]),
+    ];
+    let placed = frame(&mut engine, &one, &mut none);
+    assert_eq!(placed[0].rect.height, 10.0);
+    let two = [
+      node(1, &column, Measure::None, &[1, 2]),
+      node(2, &leaf, fixed, &[]),
+      node(3, &leaf, fixed, &[]),
+    ];
+    let placed = frame(&mut engine, &two, &mut none);
+    assert_eq!(placed[0].rect.height, 20.0);
+    assert_eq!(placed[2].rect.y, 10.0);
+    let swapped = [
+      node(1, &column, Measure::None, &[2]),
+      node(2, &leaf, fixed, &[]),
+      node(3, &leaf, Measure::Fixed(Vec2::new(10.0, 30.0)), &[]),
+    ];
+    let placed = frame(&mut engine, &swapped, &mut none);
+    assert_eq!(placed[0].rect.height, 30.0);
+  }
+
+  #[test]
+  fn a_changed_parent_flow_moves_the_children() {
+    let leaf = UiStyle::default();
+    let fill = UiStyle {
+      width: Length::Fill,
+      ..UiStyle::default()
+    };
+    let mut engine = LayoutEngine::new();
+    let mut none = |_, _, _| Vec2::ZERO;
+    let fixed = Measure::Fixed(Vec2::new(50.0, 10.0));
+    let tall = Measure::Fixed(Vec2::new(0.0, 10.0));
+    let mut results = Vec::new();
+    for flow in [Flow::Column, Flow::Row] {
+      let parent = UiStyle {
+        flow,
+        width: Length::Px(300.0),
+        ..UiStyle::default()
+      };
+      let nodes = [
+        node(1, &parent, Measure::None, &[1, 2]),
+        node(2, &leaf, fixed, &[]),
+        node(3, &fill, tall, &[]),
+      ];
+      results.push(frame(&mut engine, &nodes, &mut none));
+    }
+    assert_eq!(
+      (results[0][2].rect.x, results[0][2].rect.width),
+      (0.0, 300.0),
+      "stretched in a column"
+    );
+    assert_eq!(
+      (results[1][2].rect.x, results[1][2].rect.width),
+      (50.0, 250.0),
+      "fills the rest of a row"
+    );
+  }
 }
