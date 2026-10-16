@@ -3,8 +3,8 @@
 //!
 //! `Scene::ui` records [`UiCommand`]s in UI units. Each frame [`emit_ui`]
 //! lays them into the draw list as unlit items for the UI camera alone,
-//! ordered by their layer, then by submission (one z per command, so the
-//! batch's sort keeps the painter's order). The `ui` pass draws the UI
+//! ordered by their layer, then by the order they were recorded in (one z
+//! per command, so the batch's sort keeps the painter's order). The `ui` pass draws the UI
 //! camera into the UI image, which the composite blends over the frame.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -102,13 +102,13 @@ impl UiSpace {
 }
 
 /// A command's place in the painter's order: its layer (0..=127, so the
-/// sign bit stays clear), then its submission index (saturating below
-/// 2^24, so it never reaches the layer bits)
-fn ui_z(layer: u8, index: usize) -> i32 {
-  const INDEX_BITS: u32 = 24;
+/// sign bit stays clear), then the order it was recorded in (saturating
+/// below 2^24, so it never reaches the layer bits)
+fn ui_z(layer: u8, order: u32) -> i32 {
+  const ORDER_BITS: u32 = 24;
   let layer = i32::from(layer.min(127));
-  let index = index.min((1 << INDEX_BITS) - 1) as i32;
-  (layer << INDEX_BITS) | index
+  let order = order.min((1 << ORDER_BITS) - 1) as i32;
+  (layer << ORDER_BITS) | order
 }
 
 /// `clip` (UI units) as a scissor on the UI image: `None` to skip the
@@ -135,8 +135,12 @@ fn scissor_of(clip: Option<Rect>, space: &UiSpace) -> Option<Option<PixelRect>> 
   }))
 }
 
-/// `rect` with its edges on whole pixels of a `px_scale` grid
-fn snapped(rect: Rect, px_scale: f32) -> Rect {
+/// `rect` with its edges on whole pixels of a `px_scale` grid (unchanged
+/// when the scale is not a positive number)
+pub(crate) fn snap_rect(rect: Rect, px_scale: f32) -> Rect {
+  if !(px_scale.is_finite() && px_scale > 0.0) {
+    return rect;
+  }
   let edge = |at: f32| (at * px_scale).round() / px_scale;
   let (x0, y0) = (edge(rect.x), edge(rect.y));
   Rect::new(x0, y0, edge(rect.right()) - x0, edge(rect.bottom()) - y0)
@@ -185,9 +189,9 @@ pub(crate) fn emit_ui(
   let only = Some(UI_CAMERA);
   let layers = RenderLayers::all();
   let mut points: Vec<PolyPoint> = Vec::new();
-  for (index, command) in commands.iter().enumerate() {
-    // Painter order: z orders the layer, then submission
-    let z = ui_z(command.draw_layer(), index);
+  for (order, command) in commands.iter() {
+    // Painter order: z orders the layer, then the recorded order
+    let z = ui_z(command.draw_layer(), order);
     let Some(scissor) = scissor_of(command.clip_rect(), space) else {
       continue;
     };
@@ -207,7 +211,7 @@ pub(crate) fn emit_ui(
           continue;
         }
         let rect = if pixel_art {
-          snapped(*rect, space.px_scale)
+          snap_rect(*rect, space.px_scale)
         } else {
           *rect
         };
@@ -437,9 +441,9 @@ mod tests {
     // Layers above 127 would reach the sign bit
     assert!(ui_z(255, 0) > 0);
     assert_eq!(ui_z(255, 0), ui_z(127, 0));
-    // An index past 2^24 would spill into the layer bits
-    assert_eq!(ui_z(0, usize::MAX), (1 << 24) - 1);
-    assert!(ui_z(0, usize::MAX) < ui_z(1, 0));
+    // An order past 2^24 would spill into the layer bits
+    assert_eq!(ui_z(0, u32::MAX), (1 << 24) - 1);
+    assert!(ui_z(0, u32::MAX) < ui_z(1, 0));
     assert!(ui_z(0, 3) < ui_z(0, 4));
     assert!(ui_z(1, 0) < ui_z(1, 1));
   }
@@ -487,9 +491,9 @@ mod tests {
 
   #[test]
   fn pixel_art_rects_snap_to_whole_pixels() {
-    let rect = snapped(Rect::new(10.3, 10.6, 5.3, 4.0), 1.0);
+    let rect = snap_rect(Rect::new(10.3, 10.6, 5.3, 4.0), 1.0);
     assert_eq!(rect, Rect::new(10.0, 11.0, 6.0, 4.0));
-    let rect = snapped(Rect::new(10.3, 0.0, 5.0, 1.0), 2.0);
+    let rect = snap_rect(Rect::new(10.3, 0.0, 5.0, 1.0), 2.0);
     assert_eq!(rect, Rect::new(10.5, 0.0, 5.0, 1.0));
   }
 }

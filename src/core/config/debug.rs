@@ -606,7 +606,7 @@ mod tests {
     render_frame_timing(&mut ui, &timings, 720);
     drop(ui);
     let panels: Vec<Rect> = commands
-      .iter()
+      .commands()
       .filter_map(|c| match c {
         UiCommand::Rect { rect, .. } => Some(*rect),
         _ => None,

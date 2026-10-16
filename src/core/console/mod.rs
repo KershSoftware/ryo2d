@@ -1057,7 +1057,7 @@ mod tests {
     drop(ui);
     let output_width = console.max_text_width(true);
     let widths: Vec<f32> = commands
-      .iter()
+      .commands()
       .filter_map(|c| match c {
         UiCommand::Text { layout, .. } => Some(layout.size.x / layout.scale),
         _ => None,
@@ -1088,7 +1088,7 @@ mod tests {
     let expected = ui.line_height(&console_style()).ceil();
     drop(ui);
     let widths: Vec<f32> = commands
-      .iter()
+      .commands()
       .filter_map(|c| match c {
         UiCommand::Text { layout, .. } if layout.size.x > 60.0 && layout.size.x < 100.0 => {
           Some(layout.size.x)

@@ -63,20 +63,25 @@
 //! ```
 
 // Submodules
+mod containers;
 pub(crate) mod id;
 pub mod immediate;
 pub(crate) mod layout;
 pub(crate) mod memory;
+mod response;
 pub mod retained;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod theme;
+pub(crate) mod tree;
 pub mod tween;
 mod types;
 
 // Re-export core types at module root for convenience
+pub use containers::Container;
 pub use id::UiId;
 pub use layout::{Align, Edges, Justify, Length};
+pub use response::Response;
 pub use types::{Anchor, Color, Rect};
 
 // Re-export immediate mode API (stateless per-frame drawing)

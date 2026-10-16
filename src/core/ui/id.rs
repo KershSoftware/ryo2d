@@ -10,7 +10,6 @@ use std::panic::Location;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct UiId(pub(crate) u64);
 
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 impl UiId {
   /// No widget
   pub const NONE: UiId = UiId(0);
@@ -21,14 +20,10 @@ impl UiId {
   }
 }
 
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 const KEYED: u64 = 0x006b_6579;
 
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 /// FNV-1a over little-endian words; never returns 0 (`UiId::NONE`)
 fn mix(mut hash: u64, words: &[u64]) -> u64 {
   for word in words {
@@ -40,12 +35,10 @@ fn mix(mut hash: u64, words: &[u64]) -> u64 {
   hash.max(1)
 }
 
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 /// A call site: the static file name's address, its length, line and column
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Site([u64; 4]);
 
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 impl Site {
   fn of(location: &'static Location<'static>) -> Site {
     let file = location.file();
@@ -58,7 +51,6 @@ impl Site {
   }
 }
 
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 /// The scopes and per-site counts of the frame being recorded
 #[derive(Debug, Default)]
 pub(crate) struct IdScopes {
@@ -68,7 +60,6 @@ pub(crate) struct IdScopes {
   warned: HashSet<UiId>,
 }
 
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 impl IdScopes {
   pub(crate) fn begin_frame(&mut self) {
     self.stack.clear();
@@ -134,7 +125,6 @@ impl IdScopes {
   }
 }
 
-#[allow(dead_code)] // Unused until the UI context (Task 5)
 /// A key's hash for `.id(key)`
 pub(crate) fn key_hash<K: Hash + ?Sized>(key: &K) -> u64 {
   let mut hasher = DefaultHasher::new();

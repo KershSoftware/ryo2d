@@ -127,7 +127,6 @@ pub enum Justify {
 
 /// How a container places its children
 #[derive(Debug, Clone, PartialEq, Default)]
-#[cfg_attr(not(test), allow(dead_code))] // Unused until Task 5
 pub(crate) enum Flow {
   /// Top to bottom
   #[default]
@@ -142,7 +141,6 @@ pub(crate) enum Flow {
 
 /// A grid's column widths
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))] // Unused until Task 5
 pub(crate) enum Tracks {
   /// This many columns sharing the width equally
   Equal(u16),
@@ -152,11 +150,11 @@ pub(crate) enum Tracks {
 
 /// Where a node's own size comes from
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))] // Unused until Task 5
 pub(crate) enum Measure {
   /// From its style and children
   None,
   /// A fixed content size, for the style's `Fit` axes
+  #[allow(dead_code)] // Constructed from Task 6 (fixed-size leaves)
   Fixed(Vec2),
   /// Sized by the measure callback (wrapped text)
   Text,
@@ -164,7 +162,6 @@ pub(crate) enum Measure {
 
 /// Everything layout reads from a node
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))] // Unused until Task 5
 pub(crate) struct UiStyle {
   pub(crate) flow: Flow,
   pub(crate) width: Length,

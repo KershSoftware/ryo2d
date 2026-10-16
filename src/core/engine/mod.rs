@@ -62,6 +62,8 @@ use crate::core::systems::{record_trail_points, register_juice_systems};
 use crate::core::text::{GlyphRasterizer, TextEngine, advance_text_reveal};
 use crate::core::time::Time;
 use crate::core::ui::immediate::UiCommands;
+use crate::core::ui::layout::engine::LayoutEngine;
+use crate::core::ui::memory::UiMemory;
 use crate::core::window::{WindowInfo, WindowRequest};
 use crate::{engine_info, engine_warn};
 
@@ -205,6 +207,12 @@ pub struct Engine {
   /// Mouse buttons whose press the UI took: until released, their held
   /// state and release are the UI's too
   ui_mouse_capture: Vec<winit::event::MouseButton>,
+  /// What the UI remembers between frames: records, widget state, focus
+  ui_memory: UiMemory,
+  /// Lays the UI's containers out, kept between frames
+  ui_layout: LayoutEngine,
+  /// UI passes run this frame (a scene switched from `ui` runs a second)
+  ui_pass_index: u32,
   // Developer tools
   console_state: ConsoleState,
   console_quit_requested: bool,
@@ -578,6 +586,9 @@ impl Engine {
       ui_camera: None,
       batch_cameras: Vec::new(),
       ui_mouse_capture: Vec::new(),
+      ui_memory: UiMemory::new(),
+      ui_layout: LayoutEngine::new(),
+      ui_pass_index: 0,
       console_state: ConsoleState::new(),
       console_quit_requested: false,
       capture: CaptureState::new(capture_config),

@@ -52,6 +52,7 @@ impl Engine {
     let update_start = Instant::now();
     {
       profile_scope!("cpu:update");
+      self.ui_pass_index = 0;
       self.ui_pass();
       let mut step = 0;
       // A quit (from the UI pass or a step) ends the steps
@@ -300,13 +301,16 @@ impl Engine {
   /// applies at once. When that action brings a new scene to the top, the UI
   /// is drawn again so the frame shows the new scene's UI, not none; once
   /// only, so a scene that switches on every call cannot loop.
+  ///
+  /// The UI memory and layout keep one frame per engine frame: they begin
+  /// with the first pass and end after the last.
   fn ui_pass(&mut self) {
     for _ in 0..2 {
       let Some(action) = self.draw_ui() else {
-        return;
+        break;
       };
       if matches!(action, SceneAction::Continue) {
-        return;
+        break;
       }
       let (keep_running, top_changed) = with_host(&mut self.world, |world, host| {
         let SceneHost { scenes, audio } = host;
@@ -317,11 +321,15 @@ impl Engine {
       });
       if !keep_running {
         self.world.insert_resource(QuitRequested);
-        return;
+        break;
       }
       if !top_changed {
-        return;
+        break;
       }
+    }
+    if self.ui_pass_index > 0 {
+      self.ui_memory.end_frame();
+      self.ui_layout.end_frame();
     }
   }
 
@@ -333,13 +341,32 @@ impl Engine {
     if let Some(fonts) = self.world.get_resource::<crate::core::text::Fonts>() {
       self.text.sync(fonts);
     }
+    // Scenes that exited leave nothing behind in the UI's memory
+    for scope in with_host(&mut self.world, |_, host| host.scenes.take_exited()) {
+      self.ui_memory.forget_scene(scope);
+    }
+    // A rerun pass replaces the first pass's records
+    if self.ui_pass_index == 0 {
+      self.ui_memory.begin_frame();
+      self.ui_layout.begin_frame();
+    } else {
+      self.ui_memory.restart_pass();
+    }
+    self.ui_pass_index += 1;
     let snapshot = UiInput::snapshot(self.world.resource::<Input>());
     let real_dt = self.world.resource::<Time>().real.delta();
     let space = self.ui_space;
     // Overlays and the console still lay out in whole UI units
     let (width, height) = (space.size.x.ceil() as u32, space.size.y.ceil() as u32);
     let (action, consumed) = {
-      let mut ui = UiContext::new(&mut self.ui_commands, &mut self.text, space, snapshot);
+      let mut ui = UiContext::new(
+        &mut self.ui_commands,
+        &mut self.text,
+        &mut self.ui_memory,
+        &mut self.ui_layout,
+        space,
+        snapshot,
+      );
       ui.set_dt(real_dt);
       // The console blocks the mouse for everything under it
       if self.console_state.visible {
@@ -355,7 +382,8 @@ impl Engine {
       });
 
       // Overlays draw over game UI, its open lists included: stats (top),
-      // FPS, frame timing (bottom)
+      // FPS, frame timing (bottom). They are the engine's, scene 0.
+      ui.begin_scene(0, false);
       ui.set_layer(crate::core::ui::immediate::OVERLAY_LAYER);
       let debug = &self.config.debug;
       if debug.show_stats {
@@ -374,6 +402,7 @@ impl Engine {
       }
       // The console over everything
       self.console_state.render(&mut ui, width, height);
+      ui.end_scene();
       (action, ui.into_input())
     };
 
@@ -1278,7 +1307,7 @@ mod tests {
     // the first pass's commands are gone
     let drawn: Vec<(Rect, Color)> = e
       .ui_commands
-      .iter()
+      .commands()
       .map(|command| match command {
         UiCommand::Rect { rect, fill, .. } => (*rect, *fill),
         other => panic!("only the new scene's rect: {other:?}"),
@@ -1314,7 +1343,11 @@ mod tests {
     e.frame(Some(Duration::from_millis(16)));
     // Layers sort before submission: every console command must be on a
     // layer above the open list's
-    let layers: Vec<u8> = e.ui_commands.iter().map(UiCommand::draw_layer).collect();
+    let layers: Vec<u8> = e
+      .ui_commands
+      .commands()
+      .map(UiCommand::draw_layer)
+      .collect();
     let popup = layers.iter().copied().max().unwrap_or(0);
     let last_popup = layers
       .iter()
@@ -1326,6 +1359,96 @@ mod tests {
       console.iter().all(|&layer| layer > 1) && popup > 1,
       "console layers {console:?}"
     );
+  }
+
+  type Ids = std::sync::Arc<std::sync::Mutex<Vec<crate::core::ui::UiId>>>;
+
+  /// Draws a panel, keeping its id; returns `action` from `ui` once, and
+  /// `from_update` from `update`
+  struct Panel {
+    ids: Ids,
+    action: Option<SceneAction>,
+    from_update: fn() -> SceneAction,
+  }
+
+  impl Scene for Panel {
+    fn ui(&mut self, ui: &mut crate::core::ui::UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      let id = ui.panel().width(20.0).height(20.0).show(|_| {}).id;
+      self.ids.lock().unwrap().push(id);
+      self.action.take().unwrap_or(SceneAction::Continue)
+    }
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      (self.from_update)()
+    }
+  }
+
+  fn panel(ids: &Ids, action: Option<SceneAction>, from_update: fn() -> SceneAction) -> Panel {
+    Panel {
+      ids: ids.clone(),
+      action,
+      from_update,
+    }
+  }
+
+  #[test]
+  fn a_rerun_ui_pass_keeps_only_its_own_records() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let (below, above) = (Ids::default(), Ids::default());
+    // The lower scene pushes an opaque one from `ui`: the second pass draws
+    // the new scene alone, so the first pass's record of the lower panel goes
+    let pushed = panel(&above, None, || SceneAction::Continue);
+    let base = panel(&below, Some(SceneAction::Push(Box::new(pushed))), || {
+      SceneAction::Continue
+    });
+    let mut e = EngineBuilder::new()
+      .resolution(64, 64)
+      .start_scene(base)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
+    e.frame(Some(Duration::from_millis(16)));
+    let below = below.lock().unwrap().clone();
+    let above = above.lock().unwrap().clone();
+    assert_eq!((below.len(), above.len()), (1, 1), "one pass each");
+    assert!(
+      e.ui_memory.current(below[0]).is_none(),
+      "the first pass's record is discarded"
+    );
+    let record = e.ui_memory.current(above[0]).copied();
+    assert_eq!(
+      record.map(|r| r.rect),
+      Some(crate::core::ui::Rect::new(0.0, 0.0, 20.0, 20.0))
+    );
+  }
+
+  #[test]
+  fn a_scene_that_exits_leaves_no_records_behind() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let ids = Ids::default();
+    struct Empty;
+    impl Scene for Empty {}
+    let mut e = EngineBuilder::new()
+      .resolution(64, 64)
+      .start_scene(Empty)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
+    with_host(&mut e.world, |world, host| {
+      let SceneHost { scenes, audio } = host;
+      // Draws once, then pops itself in its first fixed step
+      scenes.push(
+        Box::new(panel(&ids, None, || SceneAction::Pop)),
+        world,
+        audio,
+      );
+    });
+    e.frame(Some(Duration::from_millis(20)));
+    let id = ids.lock().unwrap()[0];
+    assert!(e.ui_memory.current(id).is_some(), "drawn before it popped");
+    e.frame(Some(Duration::from_millis(20)));
+    assert!(e.ui_memory.prev(id).is_none(), "forgotten once it exited");
   }
 
   #[test]

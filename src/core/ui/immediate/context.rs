@@ -23,7 +23,8 @@
 //! ```
 
 use std::cell::{RefCell, RefMut};
-use std::hash::{DefaultHasher, Hasher};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::panic::Location;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -40,12 +41,24 @@ use crate::core::text::{
   RichText, TextAlign, TextEngine, TextLayout, TextLayoutOptions, TextOverflow, TextReveal,
   TextStyle,
 };
+use crate::core::ui::id::{UiId, key_hash};
+use crate::core::ui::layout::engine::LayoutEngine;
+use crate::core::ui::layout::{Measure, UiStyle};
+use crate::core::ui::memory::{Flags, UiMemory};
+use crate::core::ui::response::Response;
 use crate::core::ui::retained::{DropdownState, Focusable, ScrollViewState, TextInputState};
 use crate::core::ui::theme::Theme;
+use crate::core::ui::tree::{
+  self, Draw, DrawKind, Node, RecordSpec, ResolveCx, Resolved, Subtree, TextLeaf, align_fraction,
+};
 use crate::core::ui::types::{Anchor, Color, Rect};
 
 /// `pop_clip` on an empty stack was warned about
 static EMPTY_POP_WARNED: AtomicBool = AtomicBool::new(false);
+/// A container still open at the end of a scene's UI was warned about
+static LEFT_OPEN_WARNED: AtomicBool = AtomicBool::new(false);
+/// A container placed at a rect that is not finite was warned about
+static BAD_AT_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Pending dropdown overlay to be drawn at the end of the frame.
 struct PendingDropdown {
@@ -81,12 +94,38 @@ fn text_seed(text: &RichText, style: &TextStyle, options: &TextLayoutOptions) ->
   h.finish()
 }
 
-/// A text draw being set up with [`UiContext::text`]; `draw()` records it
-#[must_use = "call .draw() to draw the text"]
+/// `rect` as layout can use it: a part that is not finite becomes 0 and a
+/// negative size 0 (warned once)
+fn clean_at(rect: Rect) -> Rect {
+  let parts = [rect.x, rect.y, rect.width, rect.height];
+  if parts.iter().all(|v| v.is_finite()) && rect.width >= 0.0 && rect.height >= 0.0 {
+    return rect;
+  }
+  if !BAD_AT_WARNED.swap(true, Ordering::Relaxed) {
+    crate::engine_warn!(module: "ui", "a UI container's at rect is not finite or has a negative size; using 0 there");
+  }
+  let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+  Rect::new(
+    finite(rect.x),
+    finite(rect.y),
+    finite(rect.width).max(0.0),
+    finite(rect.height).max(0.0),
+  )
+}
+
+/// A text draw being set up with [`UiContext::text`]. `draw()` records it
+/// and returns its size; a `UiText` dropped without `draw()` records it then.
+///
+/// Placed with [`at`](Self::at) it is drawn there. Without `at` it joins the
+/// layout as a leaf: inside a container it takes its place among the
+/// children and wraps to the width it gets; outside one it is placed in the
+/// UI by its [`anchor`](Self::anchor).
 pub struct UiText<'u, 'a> {
   ui: &'u mut UiContext<'a>,
+  /// Where `ui.text(..)` was called (a leaf's id)
+  site: &'static Location<'static>,
   text: RichText,
-  at: Vec2,
+  at: Option<Vec2>,
   style: TextStyle,
   options: TextLayoutOptions,
   /// The clusters shown (`None`: no reveal) and the fade over them
@@ -95,13 +134,15 @@ pub struct UiText<'u, 'a> {
   opacity: f32,
   /// A typewriter advanced by the UI's `dt` when the text is drawn
   typewriter: Option<&'u mut TextReveal>,
+  /// Recorded already (by `draw`)
+  recorded: bool,
 }
 
 impl<'u> UiText<'u, '_> {
-  /// Where the text goes, in UI units (its top-left unless `anchor` says
-  /// otherwise)
+  /// Draw the text here, in UI units (its top-left unless `anchor` says
+  /// otherwise), outside the layout
   pub fn at(mut self, x: f32, y: f32) -> Self {
-    self.at = Vec2::new(x, y);
+    self.at = Some(Vec2::new(x, y));
     self
   }
   /// The style (font, size, colour, effects); replaces earlier size and colour
@@ -120,7 +161,8 @@ impl<'u> UiText<'u, '_> {
     self.style.color = color;
     self
   }
-  /// Wrap lines at `width` UI units
+  /// Wrap lines at `width` UI units (in a layout: at most `width`, or
+  /// narrower when the text gets less room)
   pub fn wrap(mut self, width: f32) -> Self {
     self.options.wrap = Some(width);
     self
@@ -140,7 +182,9 @@ impl<'u> UiText<'u, '_> {
     self.options.overflow = TextOverflow::Ellipsis;
     self
   }
-  /// Which point of the block sits at `at` (default the top-left)
+  /// Which point of the block sits at `at` (default the top-left). In a
+  /// layout: where the text sits in a stack or, outside any container, in
+  /// the UI.
   pub fn anchor(mut self, anchor: Anchor) -> Self {
     self.options.anchor = anchor;
     self
@@ -203,21 +247,23 @@ impl<'u> UiText<'u, '_> {
     self
   }
 
-  /// Record the text; its size in UI units (zero when it cannot be laid out)
-  pub fn draw(self) -> Vec2 {
-    let Self {
-      ui,
-      text,
-      at,
-      style,
-      options,
-      shown,
-      fade,
-      opacity,
-      typewriter,
-    } = self;
+  /// Record the text; its size in UI units (zero when it cannot be laid
+  /// out). In a layout that is its laid-out size outside any container, and
+  /// its size unwrapped inside one (laid out when the container closes).
+  pub fn draw(mut self) -> Vec2 {
+    self.record()
+  }
+
+  fn record(&mut self) -> Vec2 {
+    self.recorded = true;
+    let text = std::mem::take(&mut self.text);
+    let style = std::mem::take(&mut self.style);
+    let options = self.options;
+    let typewriter = self.typewriter.take();
+    let ui = &mut *self.ui;
     let scale = ui.space.px_scale;
-    // Text that cannot be laid out records nothing and advances no reveal
+    // Text that cannot be laid out records nothing and advances no reveal.
+    // A leaf is laid out again at its width; its clusters stay the same.
     let Some(layout) = ui
       .engine()
       .and_then(|mut engine| engine.layout(&text, &style, &options, scale))
@@ -232,12 +278,33 @@ impl<'u> UiText<'u, '_> {
         }
         Some(reveal.drawn())
       }
-      None => shown.map(|shown| (shown, fade)),
+      None => self.shown.map(|shown| (shown, self.fade)),
     };
     let size = layout.size / scale;
-    let origin = at - options.anchor.fraction() * size;
     let seed = text_seed(&text, &style, &options);
-    ui.record_layout(layout, origin, opacity, reveal, seed)
+    match self.at {
+      Some(at) => {
+        let origin = at - options.anchor.fraction() * size;
+        ui.record_layout(layout, origin, self.opacity, reveal, seed)
+      }
+      None => {
+        let leaf = TextLeaf {
+          text,
+          style,
+          options,
+        };
+        ui.text_leaf(self.site, leaf, (self.opacity, reveal, seed), size)
+      }
+    }
+  }
+}
+
+impl Drop for UiText<'_, '_> {
+  /// A text not drawn with `draw()` is drawn when it is dropped
+  fn drop(&mut self) {
+    if !self.recorded {
+      self.record();
+    }
   }
 }
 
@@ -296,6 +363,20 @@ pub struct UiContext<'a> {
   /// Set by the engine from the actual frame time so render-phase animations stay
   /// correct regardless of the fixed-timestep update rate.
   dt: f32,
+  /// Records, widget state and the id scopes, kept between frames
+  pub(crate) memory: &'a mut UiMemory,
+  /// Lays out each top-level container when it closes
+  layout: &'a mut LayoutEngine,
+  /// The top-level container (or lone leaf) being recorded
+  subtree: Option<Subtree>,
+  /// The innermost open node of `subtree`: what a new node goes in
+  open: Option<usize>,
+  /// The next draw's place in the painter's order
+  order: u32,
+  /// The scope id of the scene whose UI is being recorded
+  scene: u64,
+  /// Whether that scene is the top one
+  top: bool,
 }
 
 /// The draw layer a scene's page records on
@@ -307,11 +388,14 @@ pub(crate) const POPUP_LAYER: u8 = 1;
 pub(crate) const OVERLAY_LAYER: u8 = 2;
 
 impl<'a> UiContext<'a> {
-  /// A context recording into `commands`, laying text out with `text`, over
+  /// A context recording into `commands`, laying text out with `text`,
+  /// remembering in `memory` and laying containers out with `layout`, over
   /// the UI `space`, reading `input` (its mouse converted to UI units).
   pub(crate) fn new(
     commands: &'a mut UiCommands,
     text: &'a mut TextEngine,
+    memory: &'a mut UiMemory,
+    layout: &'a mut LayoutEngine,
     space: UiSpace,
     input: UiInput,
   ) -> Self {
@@ -329,6 +413,13 @@ impl<'a> UiContext<'a> {
       keyboard_focus: false,
       mouse_occluded: false,
       dt: 0.0,
+      memory,
+      layout,
+      subtree: None,
+      open: None,
+      order: 0,
+      scene: 0,
+      top: false,
     }
   }
 
@@ -373,6 +464,240 @@ impl<'a> UiContext<'a> {
   /// use, which a single call never leaves it)
   fn engine(&self) -> Option<RefMut<'_, &'a mut TextEngine>> {
     self.text.try_borrow_mut().ok()
+  }
+
+  // =========================================================================
+  // Layout, ids and scenes
+  // =========================================================================
+
+  /// Run `contents` with ids keyed by `key` at this call site: a game's own
+  /// component salts its widgets' ids, so two of them (or one called in a
+  /// loop over keys) never share widget state, whatever order they are
+  /// called in. Adds no node, so layout is unaffected.
+  ///
+  /// ```ignore
+  /// for item in &self.items {
+  ///     ui.scope(item.id, |ui| item_row(ui, item));
+  /// }
+  /// ```
+  #[track_caller]
+  pub fn scope<R>(&mut self, key: impl Hash, contents: impl FnOnce(&mut UiContext<'a>) -> R) -> R {
+    let id = self
+      .memory
+      .scopes
+      .make(Location::caller(), Some(key_hash(&key)));
+    self.memory.scopes.push(id);
+    let result = contents(self);
+    self.memory.scopes.pop();
+    result
+  }
+
+  /// Start a scene's UI: its ids are made under its root scope, and its
+  /// records name it. `top` says whether it is the top scene.
+  pub(crate) fn begin_scene(&mut self, scope: u64, top: bool) {
+    self.scene = scope;
+    self.top = top;
+    self.memory.scopes.enter_root(UiId::root(scope));
+  }
+
+  /// End a scene's UI. A container still open (its contents panicked, or a
+  /// builder was leaked half way) is laid out as it is, warned once.
+  pub(crate) fn end_scene(&mut self) {
+    if let Some(subtree) = self.subtree.take() {
+      self.open = None;
+      if !LEFT_OPEN_WARNED.swap(true, Ordering::Relaxed) {
+        crate::engine_warn!(module: "ui", "a UI container was still open when the scene's ui ended; laid out as it was");
+      }
+      self.finish_subtree(subtree);
+    }
+    self.memory.scopes.enter_root(UiId::root(self.scene));
+  }
+
+  /// The scene whose UI is being recorded: its scope id and whether it is
+  /// the top scene
+  #[allow(dead_code)] // Read from Task 6 (responses)
+  pub(crate) fn scene(&self) -> (u64, bool) {
+    (self.scene, self.top)
+  }
+
+  /// The next draw's place in the painter's order
+  pub(crate) fn next_order(&mut self) -> u32 {
+    let order = self.order;
+    self.order = self.order.saturating_add(1);
+    order
+  }
+
+  /// The memory, for tests to read records
+  #[cfg(test)]
+  pub(crate) fn memory_for_test(&self) -> &UiMemory {
+    self.memory
+  }
+
+  /// Open a container node recording `flags`: inside the open container,
+  /// or as the root of a new subtree placed at `at` (when given). Its index
+  /// in the subtree.
+  pub(crate) fn open_node(
+    &mut self,
+    id: UiId,
+    style: UiStyle,
+    at: Option<Rect>,
+    flags: Flags,
+  ) -> usize {
+    let mut node = Node::new(id, style, Measure::None);
+    node.record = Some(RecordSpec {
+      flags,
+      nav: [UiId::NONE; 4],
+    });
+    self.push_node(node, at)
+  }
+
+  /// Close `node` (which must be the innermost open one). Closing a
+  /// subtree's root lays it out and writes its records and draws.
+  ///
+  /// Its `Response` carries this frame's rect when the subtree was laid
+  /// out, otherwise last frame's.
+  pub(crate) fn close_node(&mut self, node: usize) -> Response {
+    let id = self
+      .subtree
+      .as_ref()
+      .and_then(|subtree| subtree.nodes.get(node))
+      .map_or(UiId::NONE, |node| node.id);
+    let rect = match self.close(node) {
+      Some(rect) => rect,
+      None => self.memory.prev(id).map(|r| r.rect).unwrap_or_default(),
+    };
+    Response { id, rect }
+  }
+
+  /// Draw `kind` on `node` of the open subtree, in the painter's order of
+  /// this call
+  pub(crate) fn push_draw(&mut self, node: usize, kind: DrawKind) {
+    let order = self.next_order();
+    let layer = self.layer;
+    if let Some(subtree) = &mut self.subtree {
+      subtree.draws.push(Draw {
+        order,
+        layer,
+        node,
+        kind,
+      });
+    }
+  }
+
+  /// Push `node` into the open container, or start a subtree with it
+  /// (placed at `at`, under the current clip). It becomes the innermost
+  /// open node.
+  fn push_node(&mut self, mut node: Node, at: Option<Rect>) -> usize {
+    node.layer = self.layer;
+    node.order = self.next_order();
+    let parent = self.open;
+    let at = at.map(clean_at);
+    let clip = self.current_clip;
+    let subtree = self.subtree.get_or_insert_with(|| Subtree {
+      nodes: Vec::new(),
+      draws: Vec::new(),
+      at,
+      clip,
+    });
+    if let Some(p) = parent.and_then(|p| subtree.nodes.get(p)) {
+      let flags = p.record.map(|r| r.flags).unwrap_or_default();
+      node.parent = parent;
+      node.depth = p.depth.saturating_add(1);
+      node.scope = if flags.contains(Flags::FOCUS_SCOPE) {
+        p.id
+      } else {
+        p.scope
+      };
+      node.scroll = if flags.contains(Flags::SCROLLABLE) {
+        p.id
+      } else {
+        p.scroll
+      };
+    }
+    let index = subtree.nodes.len();
+    subtree.nodes.push(node);
+    if let Some(p) = parent.and_then(|p| subtree.nodes.get_mut(p)) {
+      p.children.push(index);
+    }
+    self.open = Some(index);
+    index
+  }
+
+  /// Close `node`: its parent is the innermost open node again. Closing the
+  /// root lays the subtree out; the root's rect this frame then.
+  fn close(&mut self, node: usize) -> Option<Rect> {
+    let parent = self
+      .subtree
+      .as_ref()
+      .and_then(|subtree| subtree.nodes.get(node))
+      .and_then(|node| node.parent);
+    self.open = parent;
+    if parent.is_some() {
+      return None;
+    }
+    let subtree = self.subtree.take()?;
+    self.finish_subtree(subtree).rects.first().copied()
+  }
+
+  /// Lay `subtree` out, write its records and turn its draws into commands
+  fn finish_subtree(&mut self, subtree: Subtree) -> Resolved {
+    tree::resolve(
+      subtree,
+      ResolveCx {
+        layout: &mut *self.layout,
+        text: &self.text,
+        memory: &mut *self.memory,
+        commands: &mut *self.commands,
+        space: self.space,
+        scene: self.scene,
+      },
+    )
+  }
+
+  /// Record `leaf` as a text node: on its own when no container is open
+  /// (laid out at once; its laid-out size), else in the open container
+  /// (its `measured` size). `draw` is its opacity, reveal and seed.
+  fn text_leaf(
+    &mut self,
+    site: &'static Location<'static>,
+    leaf: TextLeaf,
+    draw: (f32, Option<(f32, f32)>, u64),
+    measured: Vec2,
+  ) -> Vec2 {
+    let (opacity, reveal, seed) = draw;
+    let id = self.memory.scopes.make(site, None);
+    let style = UiStyle {
+      anchor: leaf.options.anchor,
+      ..UiStyle::default()
+    };
+    let frac = Vec2::new(align_fraction(leaf.options.align), 0.0);
+    let mut node = Node::new(id, style, Measure::Text);
+    // Measured again when the text, its look, the scale or the fonts change
+    let mut key = DefaultHasher::new();
+    seed.hash(&mut key);
+    self.space.px_scale.to_bits().hash(&mut key);
+    self
+      .engine()
+      .map_or(0, |engine| engine.generation())
+      .hash(&mut key);
+    node.content_key = key.finish();
+    node.text = Some(leaf.clone());
+    let index = self.push_node(node, None);
+    self.push_draw(
+      index,
+      DrawKind::Text {
+        leaf,
+        frac,
+        wrap: true,
+        opacity,
+        reveal,
+        seed,
+      },
+    );
+    match self.close(index) {
+      Some(rect) => Vec2::new(rect.width, rect.height),
+      None => measured,
+    }
   }
 
   // =========================================================================
@@ -647,14 +972,18 @@ impl<'a> UiContext<'a> {
     if !Self::drawable(rect) || self.outside_clip(rect) {
       return;
     }
-    self.commands.push(UiCommand::Rect {
-      rect,
-      fill,
-      radius,
-      border,
-      clip: self.current_clip,
-      layer: self.layer,
-    });
+    let order = self.next_order();
+    self.commands.push(
+      order,
+      UiCommand::Rect {
+        rect,
+        fill,
+        radius,
+        border,
+        clip: self.current_clip,
+        layer: self.layer,
+      },
+    );
   }
 
   /// Draw a filled rectangle.
@@ -812,15 +1141,19 @@ impl<'a> UiContext<'a> {
     if !origin.is_finite() || self.outside_clip(Rect::new(origin.x, origin.y, size.x, size.y)) {
       return size;
     }
-    self.commands.push(UiCommand::Text {
-      layout,
-      origin,
-      reveal,
-      opacity,
-      seed,
-      clip: self.current_clip,
-      layer: self.layer,
-    });
+    let order = self.next_order();
+    self.commands.push(
+      order,
+      UiCommand::Text {
+        layout,
+        origin,
+        reveal,
+        opacity,
+        seed,
+        clip: self.current_clip,
+        layer: self.layer,
+      },
+    );
     size
   }
 
@@ -932,19 +1265,23 @@ impl<'a> UiContext<'a> {
   }
 
   /// Draw text with every option: markup, wrapping, anchor, reveal, fade and
-  /// opacity. `ui.text("Hi").at(10.0, 10.0).size(24.0).draw()`; the
-  /// `draw_text*` family is the shorthand with the default style.
+  /// opacity. `ui.text("Hi").at(10.0, 10.0).size(24.0).draw()` draws it at a
+  /// point; without `at` it joins the layout (`ui.text("Hi");` in a column).
+  /// The `draw_text*` family is the shorthand with the default style.
+  #[track_caller]
   pub fn text<'u>(&'u mut self, text: impl Into<RichText>) -> UiText<'u, 'a> {
     UiText {
       ui: self,
+      site: Location::caller(),
       text: text.into(),
-      at: Vec2::ZERO,
+      at: None,
       style: TextStyle::default(),
       options: TextLayoutOptions::default(),
       shown: None,
       fade: 0.0,
       opacity: 1.0,
       typewriter: None,
+      recorded: false,
     }
   }
 
@@ -1149,14 +1486,18 @@ impl<'a> UiContext<'a> {
     if !Self::drawable(rect) || self.outside_clip(rect) {
       return;
     }
-    self.commands.push(UiCommand::Sprite {
-      sprite: sprite.clone(),
-      rect,
-      uv,
-      tint,
-      clip: self.current_clip,
-      layer: self.layer,
-    });
+    let order = self.next_order();
+    self.commands.push(
+      order,
+      UiCommand::Sprite {
+        sprite: sprite.clone(),
+        rect,
+        uv,
+        tint,
+        clip: self.current_clip,
+        layer: self.layer,
+      },
+    );
   }
 
   /// Draw a sprite with its top-left at (x, y), one UI unit per texel.
@@ -1251,14 +1592,18 @@ impl<'a> UiContext<'a> {
     if points.len() < 2 || !width.is_finite() || width <= 0.0 {
       return;
     }
-    self.commands.push(UiCommand::Line {
-      points: points.to_vec(),
-      width,
-      color,
-      closed: false,
-      clip: self.current_clip,
-      layer: self.layer,
-    });
+    let order = self.next_order();
+    self.commands.push(
+      order,
+      UiCommand::Line {
+        points: points.to_vec(),
+        width,
+        color,
+        closed: false,
+        clip: self.current_clip,
+        layer: self.layer,
+      },
+    );
   }
 
   // =========================================================================
@@ -2652,7 +2997,7 @@ mod tests {
       ),
       mouse_scale: 1.0,
     };
-    UiContext::new(commands, text, space, input)
+    crate::core::ui::test_util::context_in(commands, text, space, input)
   }
 
   /// Input with the mouse at (x, y) and, if `press`, the left button just
@@ -2669,7 +3014,7 @@ mod tests {
   /// The rect commands' rects, in order
   fn rects(commands: &UiCommands) -> Vec<Rect> {
     commands
-      .iter()
+      .commands()
       .filter_map(|command| match command {
         UiCommand::Rect { rect, .. } => Some(*rect),
         _ => None,
@@ -2688,7 +3033,7 @@ mod tests {
     ui.draw_rect(Rect::new(1.0, 2.0, 3.0, 4.0), Color::RED);
     ui.draw_text("hi", 5.0, 6.0, Color::WHITE);
     drop(ui);
-    let kinds: Vec<&str> = commands.iter().map(UiCommand::kind_name).collect();
+    let kinds: Vec<&str> = commands.commands().map(UiCommand::kind_name).collect();
     assert_eq!(kinds, vec!["rect", "text"]);
   }
 
@@ -2706,7 +3051,7 @@ mod tests {
     }
     drop(ui);
     assert_eq!(
-      commands.iter().next().and_then(UiCommand::clip),
+      commands.commands().next().and_then(UiCommand::clip),
       Some(Rect::new(39.0, 0.0, 161.0, 100.0))
     );
     let warned = crate::core::dev_log::get_entries()
@@ -2725,7 +3070,10 @@ mod tests {
     assert_eq!((w, h), (measured.x.ceil() as u32, measured.y.ceil() as u32));
     ui.draw_text_anchored("Measure me", Anchor::Center, 0.0, 0.0, Color::WHITE);
     drop(ui);
-    let origin = commands.iter().find_map(UiCommand::text_origin).unwrap();
+    let origin = commands
+      .commands()
+      .find_map(UiCommand::text_origin)
+      .unwrap();
     assert!((origin.x - (160.0 - measured.x / 2.0)).abs() < 0.01);
   }
 
@@ -2735,7 +3083,7 @@ mod tests {
     let mut ui = context(&mut commands, &mut text);
     ui.draw_rect_outline(Rect::new(0.0, 0.0, 20.0, 10.0), Color::WHITE, 2.0);
     drop(ui);
-    assert_eq!(commands.iter().count(), 1);
+    assert_eq!(commands.commands().count(), 1);
   }
 
   #[test]
@@ -2764,7 +3112,7 @@ mod tests {
     drop(ui);
     type Look = (Color, f32, Option<(f32, Color)>);
     let looks: Vec<Look> = commands
-      .iter()
+      .commands()
       .filter_map(|command| match command {
         UiCommand::Rect {
           fill,
@@ -2793,7 +3141,7 @@ mod tests {
     ui.draw_modal_overlay(Color::new(0, 0, 0, 128));
     assert_eq!(ui.clip_depth(), 1, "the clip comes back");
     drop(ui);
-    let overlay = commands.iter().next().unwrap();
+    let overlay = commands.commands().next().unwrap();
     assert_eq!(overlay.clip(), None);
     assert_eq!(rects(&commands), [Rect::new(0.0, 0.0, 320.0, 180.0)]);
   }
@@ -2808,7 +3156,7 @@ mod tests {
     ui.draw_sprite_rect(&sprite, Rect::new(0.0, 0.0, 5.0, 5.0), Color::RED);
     drop(ui);
     let sprites: Vec<(Rect, [f32; 4], Color)> = commands
-      .iter()
+      .commands()
       .filter_map(|command| match command {
         UiCommand::Sprite { rect, uv, tint, .. } => Some((*rect, *uv, *tint)),
         _ => None,
@@ -2834,7 +3182,7 @@ mod tests {
     );
     drop(ui);
     let pieces: Vec<(Rect, [f32; 4])> = commands
-      .iter()
+      .commands()
       .filter_map(|command| match command {
         UiCommand::Sprite { rect, uv, .. } => Some((*rect, *uv)),
         _ => None,
@@ -2868,7 +3216,7 @@ mod tests {
     ui.draw_line(&two, f32::NAN, Color::WHITE);
     ui.draw_line(&two, 2.0, Color::WHITE);
     drop(ui);
-    let kinds: Vec<&str> = commands.iter().map(UiCommand::kind_name).collect();
+    let kinds: Vec<&str> = commands.commands().map(UiCommand::kind_name).collect();
     assert_eq!(kinds, ["line"]);
   }
 
@@ -2880,7 +3228,7 @@ mod tests {
     ui.draw_text("fading", 0.0, 0.0, Color::new(255, 255, 255, 204));
     drop(ui);
     let drawn: Vec<(f32, Color, *const TextLayout)> = commands
-      .iter()
+      .commands()
       .filter_map(|command| match command {
         UiCommand::Text {
           layout, opacity, ..
@@ -2915,7 +3263,7 @@ mod tests {
     );
     ui.draw_text("Scale", 0.0, 0.0, Color::WHITE);
     drop(ui);
-    let scale = commands.iter().find_map(|command| match command {
+    let scale = commands.commands().find_map(|command| match command {
       UiCommand::Text { layout, .. } => Some(layout.scale),
       _ => None,
     });
@@ -3089,7 +3437,7 @@ mod tests {
       image: (320, 180),
       mouse_scale: 0.5,
     };
-    let ui = UiContext::new(
+    let ui = crate::core::ui::test_util::context_in(
       &mut commands,
       &mut text,
       space,
@@ -3731,7 +4079,7 @@ mod tests {
       reveal,
       opacity,
       ..
-    } = commands.iter().next().unwrap().clone()
+    } = commands.commands().next().unwrap().clone()
     else {
       panic!()
     };
@@ -3785,7 +4133,7 @@ mod tests {
     ui.draw_rect(Rect::new(0.0, 0.0, 300.0, 300.0), Color::RED); // the page draws on after
     ui.finish_dropdowns();
     drop(ui);
-    let layers: Vec<u8> = commands.iter().map(UiCommand::draw_layer).collect();
+    let layers: Vec<u8> = commands.commands().map(UiCommand::draw_layer).collect();
     let first_popup = layers
       .iter()
       .position(|&l| l == 1)
@@ -3822,7 +4170,10 @@ mod tests {
     let line = ui.line_height(&TextStyle::default());
     ui.dropdown(&mut state, Rect::new(10.0, 10.0, 100.0, 30.0), &["one"]);
     drop(ui);
-    let origin = commands.iter().find_map(UiCommand::text_origin).unwrap();
+    let origin = commands
+      .commands()
+      .find_map(UiCommand::text_origin)
+      .unwrap();
     assert!((origin.y - (10.0 + (30.0 - line) / 2.0)).abs() < 0.01);
   }
 
@@ -3857,7 +4208,7 @@ mod tests {
     ui.text(rich).reveal(clock.shown).fade(fade).draw();
     drop(ui);
     let revealed: Vec<(f32, f32)> = commands
-      .iter()
+      .commands()
       .filter_map(|c| match c {
         UiCommand::Text { reveal, .. } => *reveal,
         _ => None,
@@ -3885,7 +4236,7 @@ mod tests {
         .draw();
       drop(ui);
       commands
-        .iter()
+        .commands()
         .filter_map(|c| match c {
           UiCommand::Text { seed, .. } => Some(*seed),
           _ => None,
@@ -3903,7 +4254,7 @@ mod tests {
     ui.draw_nine_slice(sprite, rect, insets, Color::WHITE);
     drop(ui);
     commands
-      .iter()
+      .commands()
       .filter_map(|c| match c {
         UiCommand::Sprite { rect, uv, .. } => Some((*rect, *uv)),
         _ => None,
@@ -3962,7 +4313,7 @@ mod tests {
         .style(&style)
         .draw();
       drop(ui);
-      match commands.iter().next().unwrap() {
+      match commands.commands().next().unwrap() {
         UiCommand::Text { seed, .. } => *seed,
         _ => panic!(),
       }
@@ -3976,7 +4327,7 @@ mod tests {
     let mut ui = context(&mut commands, &mut text);
     build(ui.text("Hello")).draw();
     drop(ui);
-    commands.iter().next().unwrap().clone()
+    commands.commands().next().unwrap().clone()
   }
 
   #[test]
@@ -4054,7 +4405,7 @@ mod tests {
       .typewriter(reveal)
       .draw();
     drop(ui);
-    commands.iter().find_map(|c| match c {
+    commands.commands().find_map(|c| match c {
       UiCommand::Text { reveal, .. } => *reveal,
       _ => None,
     })
@@ -4152,7 +4503,7 @@ mod tests {
       .draw();
     drop(ui);
     let recorded: Vec<Option<(f32, f32)>> = commands
-      .iter()
+      .commands()
       .filter_map(|c| match c {
         UiCommand::Text { reveal, .. } => Some(*reveal),
         _ => None,
@@ -4203,7 +4554,7 @@ mod tests {
     let size = ui.text("Hello").size(0.0).typewriter(&mut reveal).draw();
     drop(ui);
     assert_eq!(size, Vec2::ZERO);
-    assert_eq!(commands.iter().count(), 0, "nothing recorded");
+    assert_eq!(commands.commands().count(), 0, "nothing recorded");
     assert_eq!(reveal.shown(), 0.0, "and the reveal is left alone");
   }
 }

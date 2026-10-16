@@ -314,3 +314,32 @@ fn ui_text_far_larger_than_a_glyph_page_draws_and_warns_once() {
     .count();
   assert_eq!(warnings, 1, "warned once over four frames");
 }
+
+#[test]
+fn a_centred_panel_draws_in_the_middle() {
+  let scene = Ui {
+    draw: |ui: &mut UiContext| {
+      ui.panel()
+        .width(40.0)
+        .height(30.0)
+        .anchor(Anchor::Center)
+        .show(|_| {});
+    },
+    world: None,
+  };
+  let Some(frame) = frame(None, |b| b, scene) else {
+    return;
+  };
+  // 128x96: the panel covers 44..84 x 33..63
+  let centre = frame.get_pixel(64, 48).0;
+  assert!(
+    centre[0] > 0 || centre[1] > 0 || centre[2] > 0,
+    "panel fill at the centre: {centre:?}"
+  );
+  assert_eq!(frame.get_pixel(10, 10).0, [0, 0, 0, 255], "black outside");
+  assert_eq!(
+    frame.get_pixel(40, 48).0,
+    [0, 0, 0, 255],
+    "left of the panel"
+  );
+}

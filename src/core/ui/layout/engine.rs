@@ -12,7 +12,6 @@ use crate::core::ui::{Rect, UiId};
 
 /// How much room a measured node is offered along one axis
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))] // Unused until Task 5
 pub(crate) enum Avail {
   /// This many units
   Definite(f32),
@@ -27,7 +26,6 @@ pub(crate) type MeasureFn<'a> =
   dyn FnMut(usize, (Option<f32>, Option<f32>), (Avail, Avail)) -> Vec2 + 'a;
 
 /// One node to lay out: the tree is a slice of these, node 0 the root
-#[cfg_attr(not(test), allow(dead_code))] // Unused until Task 5
 pub(crate) struct NodeDesc<'s> {
   pub(crate) id: UiId,
   pub(crate) style: &'s UiStyle,
@@ -41,7 +39,6 @@ pub(crate) struct NodeDesc<'s> {
 /// A node's result: its rect relative to node 0's origin, and the extent of
 /// its content (larger than the rect for a scroll node)
 #[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(not(test), allow(dead_code))] // Unused until Task 5
 pub(crate) struct Placed {
   pub(crate) rect: Rect,
   pub(crate) content: Vec2,
@@ -58,7 +55,6 @@ struct Entry {
 }
 
 /// Flexbox and grid layout over UI nodes, cached by widget id
-#[cfg_attr(not(test), allow(dead_code))] // Unused until Task 5
 pub(crate) struct LayoutEngine {
   taffy: TaffyTree<UiId>,
   entries: HashMap<UiId, Entry>,
@@ -66,11 +62,10 @@ pub(crate) struct LayoutEngine {
   warned: HashSet<&'static str>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Unused until Task 5
 impl LayoutEngine {
   pub(crate) fn new() -> LayoutEngine {
     let mut taffy = TaffyTree::new();
-    // Task 5 snaps rects to render pixels itself
+    // tree::resolve snaps rects to render pixels itself
     taffy.disable_rounding();
     LayoutEngine {
       taffy,

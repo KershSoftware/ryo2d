@@ -1,5 +1,5 @@
 //! What `UiContext` records: drawn by the engine's UI pass through the 2D
-//! batch, in submission order (popups last)
+//! batch, by layer, then in the order the draws were recorded
 
 use std::sync::Arc;
 
@@ -94,23 +94,38 @@ impl UiCommand {
   }
 }
 
-/// The frame's UI draws (cleared each UI pass)
+/// The frame's UI draws (cleared each UI pass), each with its place in the
+/// painter's order. A container's draws are pushed when it is laid out, after
+/// absolute draws recorded later, so the order (taken when a draw was
+/// recorded), not the position in the list, is what orders them.
 #[derive(Debug, Default)]
 pub(crate) struct UiCommands {
-  commands: Vec<UiCommand>,
+  commands: Vec<(u32, UiCommand)>,
 }
 
 impl UiCommands {
   pub(crate) fn clear(&mut self) {
     self.commands.clear();
   }
-  pub(crate) fn push(&mut self, command: UiCommand) {
-    self.commands.push(command);
+  pub(crate) fn push(&mut self, order: u32, command: UiCommand) {
+    self.commands.push((order, command));
   }
   pub(crate) fn is_empty(&self) -> bool {
     self.commands.is_empty()
   }
-  pub(crate) fn iter(&self) -> impl Iterator<Item = &UiCommand> {
-    self.commands.iter()
+  /// Each command with its order, in the order they were pushed
+  pub(crate) fn iter(&self) -> impl Iterator<Item = (u32, &UiCommand)> {
+    self
+      .commands
+      .iter()
+      .map(|(order, command)| (*order, command))
+  }
+}
+
+#[cfg(test)]
+impl UiCommands {
+  /// The commands without their orders, in the order they were pushed
+  pub(crate) fn commands(&self) -> impl Iterator<Item = &UiCommand> {
+    self.commands.iter().map(|(_, command)| command)
   }
 }

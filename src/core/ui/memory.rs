@@ -8,30 +8,41 @@ use std::ops::{BitOr, BitOrAssign};
 use super::id::{IdScopes, UiId};
 use super::types::Rect;
 
-#[allow(dead_code)]
 /// What a widget senses and how navigation treats it
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Flags(u32);
 
-#[allow(dead_code)]
 impl Flags {
+  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) const CLICK: Flags = Flags(1 << 0);
+  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) const DRAG: Flags = Flags(1 << 1);
+  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const FOCUSABLE: Flags = Flags(1 << 2);
   pub(crate) const BLOCKING: Flags = Flags(1 << 3);
   pub(crate) const SCROLLABLE: Flags = Flags(1 << 4);
+  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) const DROP_TARGET: Flags = Flags(1 << 5);
+  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) const DISABLED: Flags = Flags(1 << 6);
+  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const TAKES_HORIZONTAL: Flags = Flags(1 << 7);
+  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const TAKES_VERTICAL: Flags = Flags(1 << 8);
   pub(crate) const FOCUS_SCOPE: Flags = Flags(1 << 9);
   pub(crate) const TRAP: Flags = Flags(1 << 10);
   pub(crate) const WRAP: Flags = Flags(1 << 11);
+  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const MODAL: Flags = Flags(1 << 12);
+  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const TEXT_FIELD: Flags = Flags(1 << 13);
+  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const DEFAULT_FOCUS: Flags = Flags(1 << 14);
+  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const USES_BACK: Flags = Flags(1 << 15);
+  #[allow(dead_code)] // Used from Task 13 (drag and drop)
   pub(crate) const DRAG_SOURCE: Flags = Flags(1 << 16);
+  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const NAV_SKIP: Flags = Flags(1 << 17);
 
   /// Every flag in `other` is set
@@ -40,6 +51,7 @@ impl Flags {
   }
 
   /// At least one flag in `other` is set
+  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) fn intersects(self, other: Flags) -> bool {
     self.0 & other.0 != 0
   }
@@ -59,7 +71,6 @@ impl BitOrAssign for Flags {
   }
 }
 
-#[allow(dead_code)]
 /// One widget as laid out in a frame
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Record {
@@ -86,7 +97,6 @@ struct Slot {
   value: Box<dyn Any>,
 }
 
-#[allow(dead_code)]
 /// What the UI remembers between frames: last frame's laid-out records,
 /// widgets' own state (scroll offsets, carets, open lists) and focus
 pub(crate) struct UiMemory {
@@ -98,7 +108,6 @@ pub(crate) struct UiMemory {
   pub(crate) scopes: IdScopes,
 }
 
-#[allow(dead_code)]
 impl UiMemory {
   pub(crate) fn new() -> UiMemory {
     UiMemory {
@@ -119,12 +128,20 @@ impl UiMemory {
     self.scopes.begin_frame();
   }
 
+  /// The UI pass runs again this frame (a scene switched from `ui`): the
+  /// records it made so far are discarded and ids start over
+  pub(crate) fn restart_pass(&mut self) {
+    self.next.clear();
+    self.scopes.begin_frame();
+  }
+
   /// Widget state not touched this frame is dropped
   pub(crate) fn end_frame(&mut self) {
     let frame = self.frame;
     self.states.retain(|_, slot| slot.seen == frame);
   }
 
+  #[allow(dead_code)] // Part of Task 3's interface; no task reads it yet
   pub(crate) fn frame(&self) -> u64 {
     self.frame
   }
@@ -138,17 +155,20 @@ impl UiMemory {
     self.prev.get(&id)
   }
 
+  #[allow(dead_code)] // Used from Task 6 (hit testing)
   pub(crate) fn prev_records(&self) -> impl Iterator<Item = (UiId, &Record)> {
     self.prev.iter().map(|(id, record)| (*id, record))
   }
 
   /// A widget's record from this frame so far
+  #[allow(dead_code)] // Read outside tests from Task 6 (responses)
   pub(crate) fn current(&self, id: UiId) -> Option<&Record> {
     self.next.get(&id)
   }
 
   /// A widget's own state, created with `T::default()` when absent or of
   /// another type. Always `Some`; the `Option` keeps library code panic-free
+  #[allow(dead_code)] // Used from Task 7 (scroll state)
   pub(crate) fn state<T: Default + 'static>(&mut self, id: UiId, scene: u64) -> Option<&mut T> {
     let frame = self.frame;
     let slot = self.states.entry(id).or_insert_with(|| Slot {
@@ -164,14 +184,17 @@ impl UiMemory {
     slot.value.downcast_mut::<T>()
   }
 
+  #[allow(dead_code)] // Used from Task 7 (scroll state)
   pub(crate) fn peek_state<T: 'static>(&self, id: UiId) -> Option<&T> {
     self.states.get(&id)?.value.downcast_ref::<T>()
   }
 
+  #[allow(dead_code)] // Used from Task 8 (focus memory)
   pub(crate) fn remember_focus(&mut self, scope: UiId, scene: u64, focused: UiId) {
     self.focus_memory.insert(scope, (scene, focused));
   }
 
+  #[allow(dead_code)] // Used from Task 8 (focus memory)
   pub(crate) fn recall_focus(&self, scope: UiId) -> Option<UiId> {
     self.focus_memory.get(&scope).map(|(_, focused)| *focused)
   }
@@ -256,5 +279,27 @@ mod tests {
     assert_eq!(memory.recall_focus(UiId(100)), Some(UiId(7)));
     memory.forget_scene(3);
     assert_eq!(memory.recall_focus(UiId(100)), None);
+  }
+
+  #[test]
+  fn a_restarted_pass_drops_its_records_and_makes_the_same_ids() {
+    let site = std::panic::Location::caller();
+    let mut memory = UiMemory::new();
+    memory.begin_frame();
+    memory.record(UiId(5), record(1));
+    memory.end_frame();
+    memory.begin_frame();
+    memory.scopes.enter_root(UiId::root(1));
+    let first = memory.scopes.make(site, None);
+    memory.record(UiId(6), record(1));
+    memory.restart_pass();
+    memory.scopes.enter_root(UiId::root(1));
+    assert!(memory.current(UiId(6)).is_none(), "the first pass's record");
+    assert!(memory.prev(UiId(5)).is_some(), "last frame's stay");
+    assert_eq!(
+      memory.scopes.make(site, None),
+      first,
+      "ids start over, so the rerun's widgets keep theirs"
+    );
   }
 }

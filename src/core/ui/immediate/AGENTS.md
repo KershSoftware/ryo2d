@@ -7,6 +7,7 @@
 - `UiCommand` is `Rect` (fill, radius, border), `Sprite` (a sprite handle, a rect, UVs, a tint), `Line` (a polyline, width, colour) or `Text` (a cached `TextLayout`, origin, reveal, opacity, effect seed). All are in UI units, and each carries the clip it was drawn under and its draw layer.
 - Nine-slices are nine `Sprite` commands. Borders and rounded corners are the `Rect` command's, drawn analytically by the shader.
 - `UiCommands` is cleared at the start of each UI pass, so a pass that runs twice in a frame (a scene switch returned from `ui`) keeps only the second pass's commands.
+- Each command is stored with its `order`, taken when it was recorded (`next_order`). Absolute draws (`draw_*`, `ui.text(..).at(..)`) are pushed at once; a container's draws are pushed when it is laid out (`src/core/ui/AGENTS.md`, Layout and ids), so the list is not in painter's order: the order is.
 - Rects, sprites and text wholly outside the current clip are not recorded; so are non-finite or empty rects.
 
 ## Clipping Stack
@@ -23,7 +24,7 @@ ui.pop_clip();        // depth 0 (no clipping)
 
 ## Text
 
-- `ui.text(..)` (`UiText`) is the full call: markup, wrap, align, max lines, ellipsis, anchor, reveal, fade, typewriter and opacity; `draw()` returns the size in UI units. The `draw_text*` family and `label` are the shorthand with the default style (`FontRole::Ui`, 14 px).
+- `ui.text(..)` (`UiText`) is the full call: markup, wrap, align, max lines, ellipsis, anchor, reveal, fade, typewriter and opacity; `draw()` returns the size in UI units, and a `UiText` dropped without `draw()` draws then. With `.at(x, y)` it is drawn there; without it, it is a layout leaf (wrapped to its width in a container, placed by its anchor outside one). The `draw_text*` family and `label` are the shorthand with the default style (`FontRole::Ui`, 14 px).
 - Text is measured, wrapped and laid out through the text engine at the UI scale (`px_scale` render pixels per UI unit); layouts are cached, so an unchanged call is a hash lookup.
 - `draw_text_centered` (a button's label) measures in the style it draws in, so the draw is a cache hit.
 - **Fades go through opacity.** The layout cache keys on the style, colour included, so changing a style's colour every frame lays the text out again every frame. The shorthand helpers (`draw_text`, `label`, the wrapped and centred variants) lay the text out opaque and carry the colour's alpha as `UiCommand::Text { opacity }`, so one cached layout serves every alpha. `draw_text_styled` lays its style out as given (moving that colour's alpha to opacity would fade the style's outline and shadow too).
@@ -33,7 +34,7 @@ ui.pop_clip();        // depth 0 (no clipping)
 
 ## Popups and Layers
 
-- Every command has a draw layer; layers order before submission order (`ui_z`, which clamps layers to 127). The scene's page is `PAGE_LAYER` (0).
+- Every command has a draw layer; layers order before the recorded order (`ui_z`, which clamps layers to 127). The scene's page is `PAGE_LAYER` (0).
 - Open dropdown lists record on `POPUP_LAYER` (1). `finish_dropdowns` is crate-internal: `SceneManager::ui_pass` runs it after each scene's `ui`, so a scene never calls it.
 - Only the top scene's lists use layer 1. A lower scene's lists stay on layer 0, right after its own page, so the scenes above still cover them. The overlays and the console draw after the scenes on `OVERLAY_LAYER` (2), above every popup: `Engine::draw_ui` switches to it with the crate-internal `UiContext::set_layer`.
 

@@ -90,6 +90,8 @@ pub struct SceneManager {
   scenes: Vec<SceneSlot>,
   /// Active transition state
   transition_state: Option<TransitionState>,
+  /// Scope ids of the scenes that exited since `take_exited`
+  exited: Vec<u64>,
 }
 
 /// Internal state for an in-progress transition.
@@ -150,7 +152,14 @@ impl SceneManager {
     SceneManager {
       scenes: Vec::new(),
       transition_state: None,
+      exited: Vec::new(),
     }
+  }
+
+  /// The scope ids of the scenes that exited (popped, switched away, cleared
+  /// or reset) since the last call; the engine forgets their UI state
+  pub(crate) fn take_exited(&mut self) -> Vec<u64> {
+    std::mem::take(&mut self.exited)
   }
 
   /// Create a scene manager with an initial scene, entered by `enter_initial`.
@@ -252,6 +261,7 @@ impl SceneManager {
     let mut slot = self.scenes.pop()?;
     slot.call(world, audio, |scene, ctx| scene.on_exit(ctx));
     clear_console_scope(world, slot.scope_id);
+    self.exited.push(slot.scope_id);
     if let Some(top) = self.scenes.last_mut() {
       top.call(world, audio, |scene, ctx| scene.on_resume(ctx, returned));
     }
@@ -265,6 +275,7 @@ impl SceneManager {
       let cleanup = current.scene.cleanup_on_exit();
       current.call(world, audio, |scene, ctx| scene.on_exit(ctx));
       clear_console_scope(world, current.scope_id);
+      self.exited.push(current.scope_id);
       drop(current);
       execute_cleanup(cleanup, world, audio);
     }
@@ -277,6 +288,7 @@ impl SceneManager {
     while let Some(mut slot) = self.scenes.pop() {
       slot.call(world, audio, |scene, ctx| scene.on_exit(ctx));
       clear_console_scope(world, slot.scope_id);
+      self.exited.push(slot.scope_id);
     }
   }
 
@@ -502,7 +514,10 @@ impl SceneManager {
         ui.restore_mouse_occluded(occluded);
       }
       let slot = &mut self.scenes[i];
+      // Each scene's ids are made under its own root scope
+      ui.begin_scene(slot.scope_id, i == top);
       let result = slot.call(world, audio, |scene, ctx| scene.ui(ui, ctx));
+      ui.end_scene();
       // The scene's open lists draw above everything it drew. Only the
       // top scene's go on the popup layer; a lower scene's stay under the
       // scenes above it.
@@ -837,7 +852,7 @@ mod tests {
     m.ui_pass(&mut world, &mut audio, &mut ui);
     drop(ui);
     assert!(
-      commands.iter().any(|c| c.draw_layer() == 1),
+      commands.iter().any(|(_, c)| c.draw_layer() == 1),
       "popup commands are present after ui_pass"
     );
   }
@@ -870,10 +885,9 @@ mod tests {
     let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (320.0, 320.0));
     m.ui_pass(&mut world, &mut audio, &mut ui);
     drop(ui);
-    let keys: Vec<(u8, usize)> = commands
+    let keys: Vec<(u8, u32)> = commands
       .iter()
-      .enumerate()
-      .map(|(i, c)| (c.draw_layer(), i))
+      .map(|(order, c)| (c.draw_layer(), order))
       .collect();
     let (last, earlier) = keys.split_last().unwrap();
     assert!(earlier.len() > 1, "the lower scene drew its dropdown");
@@ -881,6 +895,68 @@ mod tests {
       earlier.iter().all(|key| key < last),
       "the upper scene's rect draws over the lower popups: {keys:?}"
     );
+  }
+
+  /// A see-through scene drawing one panel, keeping its id
+  struct PanelScene(Arc<Mutex<Vec<crate::core::ui::UiId>>>);
+
+  impl Scene for PanelScene {
+    fn is_transparent(&self) -> bool {
+      true
+    }
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      let id = ui.panel().width(8.0).height(8.0).show(|_| {}).id;
+      self.0.lock().unwrap().push(id);
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn each_scene_draws_its_ui_under_its_own_scope() {
+    let (mut world, mut audio) = world();
+    let ids = Arc::new(Mutex::new(Vec::new()));
+    let mut m = SceneManager::with_scene(Box::new(PanelScene(ids.clone())));
+    m.enter_initial(&mut world, &mut audio);
+    let lower = m.top_scope().unwrap();
+    m.push(Box::new(PanelScene(ids.clone())), &mut world, &mut audio);
+    let upper = m.top_scope().unwrap();
+    let (mut commands, mut text) = (
+      crate::core::ui::immediate::UiCommands::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (64.0, 64.0));
+    m.ui_pass(&mut world, &mut audio, &mut ui);
+    let ids = ids.lock().unwrap().clone();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "the same code in two scenes");
+    let scene_of = |id| ui.memory_for_test().current(id).map(|r| r.scene);
+    assert_eq!(
+      (scene_of(ids[0]), scene_of(ids[1])),
+      (Some(lower), Some(upper))
+    );
+  }
+
+  #[test]
+  fn scenes_that_exit_are_reported_once() {
+    let log: Shared = Arc::default();
+    let (mut world, mut audio) = world();
+    let mut m = SceneManager::with_scene(rec(&log, "a"));
+    m.enter_initial(&mut world, &mut audio);
+    let a = m.top_scope().unwrap();
+    m.push(rec(&log, "b"), &mut world, &mut audio);
+    let b = m.top_scope().unwrap();
+    assert!(m.take_exited().is_empty(), "a push exits nothing");
+    m.pop(&mut world, &mut audio, None);
+    assert_eq!(m.take_exited(), vec![b]);
+    assert!(m.take_exited().is_empty(), "taken once");
+    m.switch(rec(&log, "c"), &mut world, &mut audio);
+    let c = m.top_scope().unwrap();
+    m.push(rec(&log, "d"), &mut world, &mut audio);
+    let d = m.top_scope().unwrap();
+    m.reset(rec(&log, "e"), &mut world, &mut audio);
+    let e = m.top_scope().unwrap();
+    m.clear(&mut world, &mut audio);
+    assert_eq!(m.take_exited(), vec![a, d, c, e]);
   }
 
   #[test]
