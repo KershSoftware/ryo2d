@@ -80,8 +80,8 @@ macro_rules! widget_builders {
         self
       }
 
-      /// Placed at `rect`, its size too, outside the layout (inside a
-      /// container the layout places it)
+      /// Placed at `rect`, its size too, out of the layout: inside a
+      /// container it takes no room there (and stays in its focus scope)
       pub fn at(mut self, rect: $crate::core::ui::Rect) -> Self {
         self.opts.at = Some(rect);
         self

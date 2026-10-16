@@ -185,6 +185,8 @@ pub(crate) struct UiStyle {
   pub(crate) anchor: Anchor,
   /// Applied after layout, in a stack or the scene root
   pub(crate) offset: Vec2,
+  /// Out of its parent's flow: it takes no room and moves no sibling
+  pub(crate) absolute: bool,
 }
 
 impl Default for UiStyle {
@@ -210,6 +212,7 @@ impl Default for UiStyle {
       scroll_y: false,
       anchor: Anchor::TopLeft,
       offset: Vec2::ZERO,
+      absolute: false,
     }
   }
 }

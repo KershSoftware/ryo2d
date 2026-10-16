@@ -468,6 +468,9 @@ fn to_taffy(style: &UiStyle, parent: Option<&Flow>, measure: &Measure) -> taffy:
   };
   t.align_self = style.align_self.map(align_items);
   t.flex_grow = style.grow;
+  if style.absolute {
+    t.position = Position::Absolute;
+  }
   // Only text gives way, so it can wrap
   t.flex_shrink = 0.0;
 

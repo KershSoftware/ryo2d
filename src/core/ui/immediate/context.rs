@@ -867,6 +867,7 @@ impl<'a> UiContext<'a> {
         p.scroll
       };
     }
+    node.at = at.filter(|_| node.parent.is_some());
     let index = subtree.nodes.len();
     subtree.nodes.push(node);
     if let Some(p) = parent.and_then(|p| subtree.nodes.get_mut(p)) {

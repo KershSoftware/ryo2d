@@ -11,17 +11,6 @@ pub struct LayoutDemo {
   vbox_spacing: f32,
 }
 
-/// `rect` made `height` tall around its middle: a slider's handle is taller
-/// than the 8-unit slots this page lays out
-fn grown(rect: Rect, height: f32) -> Rect {
-  Rect::new(
-    rect.x,
-    rect.y + rect.height / 2.0 - height / 2.0,
-    rect.width,
-    height,
-  )
-}
-
 impl LayoutDemo {
   pub fn new() -> Self {
     Self {
@@ -50,6 +39,8 @@ impl DemoPage for LayoutDemo {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
+    // Sliders are as tall as their handle
+    let handle = ui.theme().metrics.sizes.slider_handle[1];
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background
@@ -90,7 +81,7 @@ impl DemoPage for LayoutDemo {
       Color::WHITE,
     );
     ui.slider(&mut self.slider_values[0], 0.0..=1.0)
-      .at(grown(row2.next(150.0, 8.0), 16.0))
+      .at(row2.next(150.0, handle))
       .show();
     ui.checkbox(&mut self.checkbox_states[0], "")
       .at(row2.next(20.0, 20.0))
@@ -120,7 +111,7 @@ impl DemoPage for LayoutDemo {
       Color::LIGHT_GRAY,
     );
     ui.slider(&mut self.slider_values[1], 0.0..=1.0)
-      .at(grown(setting_row.next(150.0, 8.0), 16.0))
+      .at(setting_row.next(150.0, handle))
       .show();
     let pct_rect = setting_row.next(45.0, 24.0);
     ui.draw_text(
@@ -140,7 +131,7 @@ impl DemoPage for LayoutDemo {
       Color::LIGHT_GRAY,
     );
     ui.slider(&mut self.slider_values[2], 0.0..=1.0)
-      .at(grown(setting_row.next(150.0, 8.0), 16.0))
+      .at(setting_row.next(150.0, handle))
       .show();
     let pct_rect = setting_row.next(45.0, 24.0);
     ui.draw_text(
@@ -280,12 +271,12 @@ impl DemoPage for LayoutDemo {
     let lbl = control_row.next(100.0, 20.0);
     ui.draw_text("HBox spacing:", lbl.x, lbl.y, Color::LIGHT_GRAY);
     ui.slider(&mut self.hbox_spacing, 0.0..=20.0)
-      .at(grown(control_row.next(80.0, 8.0), 16.0))
+      .at(control_row.next(80.0, handle))
       .show();
     let lbl = control_row.next(100.0, 20.0);
     ui.draw_text("VBox spacing:", lbl.x, lbl.y, Color::LIGHT_GRAY);
     ui.slider(&mut self.vbox_spacing, 0.0..=20.0)
-      .at(grown(control_row.next(80.0, 8.0), 16.0))
+      .at(control_row.next(80.0, handle))
       .show();
   }
 }

@@ -179,7 +179,7 @@ impl Slider<'_, '_> {
         ui.text_leaf(site, leaf, (dim, None, seed), Vec2::ZERO);
       }
       let track = self.track_node(ui, id, [sizes.slider[0], height], true);
-      draw_track(ui, track, &look, (handle_w, handle_h), t, height);
+      draw_track(ui, track, &look, (handle_w, handle_h), t);
       if response.focused() && ui.focus_visible() {
         ui.focus_ring(track, look.radius);
       }
@@ -202,7 +202,7 @@ impl Slider<'_, '_> {
       ui.close_node(row_index);
     } else {
       let track = self.track_node(ui, id, [sizes.slider[0], height], false);
-      draw_track(ui, track, &look, (handle_w, handle_h), t, height);
+      draw_track(ui, track, &look, (handle_w, handle_h), t);
       if response.focused() && ui.focus_visible() {
         ui.focus_ring(track, look.radius);
       }
@@ -254,25 +254,26 @@ fn draw_track(
   look: &crate::core::ui::Look,
   handle: (f32, f32),
   t: f32,
-  height: f32,
 ) {
   let (handle_w, handle_h) = handle;
-  let groove = ((height - TRACK) / 2.0).max(0.0);
   let radius = look.radius.min(TRACK / 2.0);
+  // The groove and its filled part are TRACK thick, centred, whatever the height
   ui.push_draw(
     node,
-    DrawKind::Fill {
-      inset: Edges::new(0.0, groove, 0.0, groove),
+    DrawKind::Fraction {
+      inset: Edges::ZERO,
+      to: 1.0,
+      band: Some(TRACK),
       fill: look.fill,
       radius,
-      border: None,
     },
   );
   ui.push_draw(
     node,
     DrawKind::Fraction {
-      inset: Edges::new(handle_w / 2.0, groove, handle_w / 2.0, groove),
+      inset: Edges::new(handle_w / 2.0, 0.0, handle_w / 2.0, 0.0),
       to: t,
+      band: Some(TRACK),
       fill: look.border,
       radius,
     },
@@ -322,12 +323,11 @@ mod tests {
 
   fn slider(ui: &mut UiContext<'_>, value: &mut f32) -> bool {
     let mut changed = false;
-    // `at` places a top-level widget only, so the column takes the rect and the slider its size
-    ui.column().focus_scope().at(TRACK).show(|ui| {
+    // `at` takes the slider out of its column's layout, but not out of its focus scope
+    ui.column().focus_scope().show(|ui| {
       changed = ui
         .slider(value, 0.0..=1.0)
-        .width(112.0)
-        .height(20.0)
+        .at(TRACK)
         .default_focus()
         .show()
         .changed();
@@ -404,6 +404,34 @@ mod tests {
     d.press();
     d.frame(|ui| draw(ui, &mut v));
     assert_eq!(v, 0.2);
+  }
+
+  #[test]
+  fn the_slider_groove_is_six_tall_at_any_height() {
+    use crate::core::ui::immediate::UiCommand;
+    for height in [20.0, 8.0] {
+      let mut d = UiDriver::new((300.0, 100.0));
+      let mut v = 0.5;
+      d.frame(|ui| {
+        ui.slider(&mut v, 0.0..=1.0)
+          .at(Rect::new(0.0, 10.0, 100.0, height))
+          .show();
+      });
+      let rects: Vec<Rect> = d
+        .commands
+        .iter()
+        .filter_map(|(_, c)| match c {
+          UiCommand::Rect { rect, .. } => Some(*rect),
+          _ => None,
+        })
+        .collect();
+      // The groove, the filled part, the handle
+      assert_eq!(rects.len(), 3, "{height}: {rects:?}");
+      for groove in &rects[..2] {
+        assert_eq!(groove.height, 6.0, "{height}: {rects:?}");
+        assert_eq!(groove.y + 3.0, 10.0 + height / 2.0, "centred: {rects:?}");
+      }
+    }
   }
 
   #[test]

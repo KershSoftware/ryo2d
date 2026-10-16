@@ -397,7 +397,7 @@ impl Scroll<'_, '_> {
     self
   }
 
-  /// Placed at `rect`, its size too (at the top level)
+  /// Placed at `rect`, its size too, out of the layout (inside a container too)
   pub fn at(mut self, rect: Rect) -> Self {
     self.at = Some(rect);
     self

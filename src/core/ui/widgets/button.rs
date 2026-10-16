@@ -1051,3 +1051,85 @@ mod tests {
     assert!(text.is_some_and(|o| o < 0.6), "{text:?}");
   }
 }
+
+/// `.at(rect)` on a widget or container inside another container
+#[cfg(all(test, feature = "default-fonts"))]
+mod at_tests {
+  use crate::core::input::Direction;
+  use crate::core::ui::test_util::UiDriver;
+  use crate::core::ui::{Rect, UiContext, UiId};
+
+  const AT: Rect = Rect::new(100.0, 50.0, 40.0, 20.0);
+
+  /// The rects of a column's buttons, the middle one placed at `AT` when `with_at`
+  fn column(ui: &mut UiContext<'_>, with_at: bool) -> (Rect, Rect, Rect) {
+    let (mut a, mut b, mut c) = (Rect::default(), Rect::default(), Rect::default());
+    ui.column().offset(10.0, 10.0).show(|ui| {
+      a = ui.button("A").show().rect;
+      if with_at {
+        b = ui.button("B").at(AT).show().rect;
+      }
+      c = ui.button("C").show().rect;
+    });
+    (a, b, c)
+  }
+
+  fn settled(with_at: bool) -> (Rect, Rect, Rect) {
+    let mut d = UiDriver::new((300.0, 200.0));
+    d.frame(|ui| column(ui, with_at));
+    d.frame(|ui| column(ui, with_at))
+  }
+
+  #[test]
+  fn an_at_widget_inside_a_column_is_placed_there_and_takes_no_space() {
+    let (_, b, c) = settled(true);
+    let (_, _, c_alone) = settled(false);
+    assert_eq!(b, AT);
+    assert_eq!(
+      c, c_alone,
+      "the sibling after it sits where it would without it"
+    );
+  }
+
+  #[test]
+  fn an_at_widget_stays_in_its_column_s_focus_scope() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      let mut id = UiId::NONE;
+      ui.column().focus_scope().show(|ui| {
+        ui.button("A").default_focus().show();
+        id = ui.button("B").at(AT).show().id;
+      });
+      id
+    };
+    d.frame(draw);
+    let b = d.frame(draw);
+    d.nav(Direction::Down);
+    d.frame(draw);
+    assert_eq!(d.memory.interact.focused, b);
+  }
+
+  #[test]
+  fn an_at_container_inside_a_column_is_placed_there() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      let (mut outer, mut inner) = (Rect::default(), Rect::default());
+      ui.column().show(|ui| {
+        ui.button("A").show();
+        outer = ui
+          .column()
+          .at(AT)
+          .show(|ui| inner = ui.button("In").show().rect)
+          .rect;
+      });
+      (outer, inner)
+    };
+    d.frame(draw);
+    let (outer, inner) = d.frame(draw);
+    assert_eq!(outer, AT);
+    assert!(
+      inner.x >= AT.x && inner.y >= AT.y && inner.y < AT.bottom(),
+      "{inner:?}"
+    );
+  }
+}

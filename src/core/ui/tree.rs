@@ -57,6 +57,8 @@ pub(crate) struct Node {
   pub(crate) scroll: UiId,
   /// Its children are clipped to its rect (scroll nodes)
   pub(crate) clips: bool,
+  /// Placed at this rect (UI units) out of its parent's flow
+  pub(crate) at: Option<Rect>,
 }
 
 impl Node {
@@ -78,6 +80,7 @@ impl Node {
       scope: UiId::NONE,
       scroll: UiId::NONE,
       clips: false,
+      at: None,
     }
   }
 }
@@ -117,10 +120,12 @@ pub(crate) enum DrawKind {
     radius: f32,
     border: Option<(f32, Color)>,
   },
-  /// The left `to` (0 to 1) of the inset rect, full height: a bar's filled part
+  /// The left `to` (0 to 1) of the inset rect: a bar's filled part, full
+  /// height, or a `band` that thick centred vertically
   Fraction {
     inset: Edges,
     to: f32,
+    band: Option<f32>,
     fill: Color,
     radius: f32,
   },
@@ -218,13 +223,26 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
     height: Length::Px(at.height),
     ..nodes[0].style.clone()
   });
+  // A nested node with an `at` rect leaves its parent's flow, at that size
+  let floating: Vec<Option<UiStyle>> = nodes
+    .iter()
+    .map(|node| {
+      node.at.filter(|_| node.parent.is_some()).map(|at| UiStyle {
+        width: Length::Px(at.width),
+        height: Length::Px(at.height),
+        absolute: true,
+        ..node.style.clone()
+      })
+    })
+    .collect();
   let descs: Vec<NodeDesc<'_>> = nodes
     .iter()
     .enumerate()
     .map(|(i, node)| NodeDesc {
       id: node.id,
-      style: match (&root_style, i) {
-        (Some(style), 0) => style,
+      style: match (&root_style, &floating[i], i) {
+        (Some(style), _, 0) => style,
+        (_, Some(style), _) => style,
         _ => &node.style,
       },
       measure: node.measure,
@@ -290,6 +308,10 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
       }
     }
     let r = placed[i].rect;
+    // A node placed at a rect goes there, wherever its parent is
+    if let Some(at) = node.at.filter(|_| node.parent.is_some()) {
+      shift[i] = Vec2::new(at.x, at.y) - origin - Vec2::new(r.x, r.y);
+    }
     let at = origin + Vec2::new(r.x, r.y) + shift[i];
     let rect = Rect::new(at.x, at.y, r.width, r.height);
     exact.push(rect);
@@ -619,10 +641,15 @@ fn command_of(
     DrawKind::Fraction {
       inset,
       to,
+      band,
       fill,
       radius,
     } => {
-      let room = inset_rect(place.rect, inset);
+      let mut room = inset_rect(place.rect, inset);
+      if let Some(band) = band.filter(|b| b.is_finite() && *b >= 0.0) {
+        room.y += (room.height - band) / 2.0;
+        room.height = band;
+      }
       let to = if to.is_finite() {
         to.clamp(0.0, 1.0)
       } else {

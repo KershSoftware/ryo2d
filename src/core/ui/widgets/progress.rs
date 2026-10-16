@@ -100,6 +100,7 @@ impl Progress<'_, '_> {
       DrawKind::Fraction {
         inset: Edges::ZERO,
         to: fraction,
+        band: None,
         fill: look.border,
         radius: look.radius,
       },
