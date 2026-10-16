@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// The Easing page's rows: below the settings panel, one per curve
 const EASING_TOP: f32 = 168.0;
 const EASING_ROW: f32 = 46.0;
+/// Width of the easing-name column at the left; the racers start right of it
+const LABEL_COL: f32 = 130.0;
 
 // ============================================================================
 // Scene 1: Easing Functions
@@ -91,7 +93,7 @@ impl EasingScene {
       ("OutElastic", Ease::OutElastic, (255, 100, 255)),
     ];
 
-    let start_x = 100.0;
+    let start_x = LABEL_COL;
     let target_x = screen_w - 100.0;
 
     for (i, (_name, ease, (r, g, b))) in easings.iter().enumerate() {
@@ -221,7 +223,7 @@ impl DemoPage for EasingScene {
     ];
     for (i, name) in easings.iter().enumerate() {
       let y = EASING_TOP + i as f32 * EASING_ROW;
-      ui.draw_text(name, screen_w - 90.0, y - 5.0, text_light);
+      ui.draw_text(name, 10.0, y - 9.0, text_light);
     }
 
     let bottom_y = screen_h - 80.0;
