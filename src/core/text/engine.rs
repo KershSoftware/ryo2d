@@ -163,11 +163,11 @@ impl TextEngine {
     options: &TextLayoutOptions,
     scale: f32,
   ) -> Option<Arc<TextLayout>> {
-    if !style.is_valid() {
+    if let Some((field, value)) = style.invalid_field() {
       let mut h = DefaultHasher::new();
       style.hash_into(&mut h);
       if self.first_warning(h.finish()) {
-        engine_warn!(module: "text", "text style with size {} cannot be laid out; nothing is drawn", style.size);
+        engine_warn!(module: "text", "text style with {field} {value} cannot be laid out; nothing is drawn");
       }
       return None;
     }
@@ -818,20 +818,41 @@ impl TextEngine {
   }
 
   /// A character no font has draws as glyph 0, the first font's box: warn
-  /// once per family and character
+  /// once per family, naming the first few such characters (a pasted
+  /// paragraph in another script would otherwise warn per character)
   fn warn_missing(&mut self, placed: &Placed, source: &str, family: &str) {
+    const NAMED: usize = 5;
+    let key = hash_of(&("tofu", family));
+    if self.warned.contains(&key) {
+      return;
+    }
+    let mut missing: Vec<char> = Vec::new();
+    let mut seen: HashSet<char> = HashSet::new();
     for (glyph, &start) in placed.glyphs.iter().zip(&placed.starts) {
       if glyph.glyph != 0 {
         continue;
       }
-      let Some(c) = first_char(source, start) else {
-        continue;
-      };
-      if !c.is_whitespace() && !c.is_control() && self.first_warning(hash_of(&("tofu", family, c)))
+      if let Some(c) = first_char(source, start)
+        && !c.is_whitespace()
+        && !c.is_control()
+        && seen.insert(c)
       {
-        engine_warn!(module: "text", "no font has {:?} (U+{:04X}); drawn as {}'s box", c, c as u32, family);
+        missing.push(c);
       }
     }
+    if missing.is_empty() || !self.first_warning(key) {
+      return;
+    }
+    let named: Vec<String> = missing
+      .iter()
+      .take(NAMED)
+      .map(|&c| format!("{c:?} (U+{:04X})", c as u32))
+      .collect();
+    let more = match missing.len().saturating_sub(NAMED) {
+      0 => String::new(),
+      rest => format!(" and {rest} more"),
+    };
+    engine_warn!(module: "text", "no font has {}{more}; drawn as {family}'s box (warned once per font: add a font that has them, e.g. as a fallback)", named.join(", "));
   }
 
   /// A monospace grid layout for a bitmap font: every character advances
@@ -1927,6 +1948,36 @@ mod tests {
   }
 
   #[test]
+  fn missing_characters_warn_once_per_font_naming_the_first_few() {
+    let (mut engine, _) = engine();
+    let style = TextStyle::default();
+    // A pasted Korean line, then Thai: no font has any of it
+    let korean = "\u{D55C}\u{AE00} \u{C548}\u{B155}\u{D558}\u{C138}\u{C694}";
+    let _ = layout(&mut engine, korean, &style);
+    let _ = layout(&mut engine, "\u{0E01}\u{0E02}", &style);
+    let entries = crate::core::dev_log::get_entries();
+    let naming = |c: u32| {
+      let code = format!("U+{c:04X}");
+      entries
+        .iter()
+        .filter(|e| e.message.contains(&code))
+        .map(|e| e.message.clone())
+        .collect::<Vec<_>>()
+    };
+    let first = naming(0xD55C);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(
+      first[0].contains("U+AE00") && first[0].contains("U+D558"),
+      "the first few in one warning: {first:?}"
+    );
+    assert!(naming(0xC694).is_empty(), "past the first few, not named");
+    assert!(
+      naming(0x0E01).is_empty(),
+      "the font was warned about already"
+    );
+  }
+
+  #[test]
   fn degenerate_sizes_lay_out_nothing() {
     let (mut engine, _) = engine();
     for size in [0.0, -4.0, f32::NAN, f32::INFINITY] {
@@ -1975,6 +2026,13 @@ mod tests {
     assert!(crate::core::dev_log::get_entries().iter().any(|e| {
       e.message
         .contains("text style with size -4 cannot be laid out")
+    }));
+    // The warning names the field that is wrong
+    let tall = TextStyle::default().line_height(-2.5);
+    let _ = engine.layout(&"y".into(), &tall, &TextLayoutOptions::default(), 1.0);
+    assert!(crate::core::dev_log::get_entries().iter().any(|e| {
+      e.message
+        .contains("text style with line height -2.5 cannot be laid out")
     }));
   }
 

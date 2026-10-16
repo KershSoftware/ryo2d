@@ -156,14 +156,16 @@ impl TextInputState {
     self.scroll_offset
   }
 
-  /// Keep the caret (`cursor_x`, pixels from the text's start) inside a field
-  /// `width` pixels wide, scrolling as little as possible
-  pub fn ensure_cursor_visible(&mut self, cursor_x: f32, width: f32) {
+  /// Keep the caret (`caret_x`, UI units from the text's start, as the
+  /// engine measures it) inside a field `width` UI units wide, scrolling as
+  /// little as possible. It takes a position, not a character index: the
+  /// UI's `text_input` calls it with the caret it measured.
+  pub fn ensure_caret_visible(&mut self, caret_x: f32, width: f32) {
     let margin = 2.0;
-    if cursor_x - self.scroll_offset > width - margin {
-      self.scroll_offset = cursor_x - width + margin;
-    } else if cursor_x < self.scroll_offset {
-      self.scroll_offset = (cursor_x - margin).max(0.0);
+    if caret_x - self.scroll_offset > width - margin {
+      self.scroll_offset = caret_x - width + margin;
+    } else if caret_x < self.scroll_offset {
+      self.scroll_offset = (caret_x - margin).max(0.0);
     }
   }
 
@@ -936,80 +938,80 @@ mod tests {
   }
 
   #[test]
-  fn ensure_cursor_visible_no_scroll_when_fits() {
+  fn ensure_caret_visible_no_scroll_when_fits() {
     let mut state = TextInputState::with_text("hello");
     // Caret at 40 px in a 100 px field
-    state.ensure_cursor_visible(caret_px(&state), 100.0);
+    state.ensure_caret_visible(caret_px(&state), 100.0);
     assert_eq!(state.scroll_offset(), 0.0);
   }
 
   #[test]
-  fn ensure_cursor_visible_scrolls_right_when_cursor_overflows() {
+  fn ensure_caret_visible_scrolls_right_when_cursor_overflows() {
     let mut state = TextInputState::with_text("hello world test");
     // Caret at 128 px in an 80 px field: just inside the right margin
-    state.ensure_cursor_visible(caret_px(&state), 80.0);
+    state.ensure_caret_visible(caret_px(&state), 80.0);
     assert_eq!(state.scroll_offset(), 128.0 - 80.0 + 2.0);
   }
 
   #[test]
-  fn ensure_cursor_visible_scrolls_left_when_cursor_before_view() {
+  fn ensure_caret_visible_scrolls_left_when_cursor_before_view() {
     let mut state = TextInputState::with_text("hello world test");
     state.scroll_offset = 80.0; // Scrolled far right
     state.cursor = 0; // Cursor at start
     state.selection_anchor = 0;
 
-    state.ensure_cursor_visible(caret_px(&state), 80.0);
+    state.ensure_caret_visible(caret_px(&state), 80.0);
     assert_eq!(state.scroll_offset(), 0.0);
   }
 
   #[test]
-  fn ensure_cursor_visible_tracks_cursor_movement() {
+  fn ensure_caret_visible_tracks_cursor_movement() {
     let mut state = TextInputState::with_text("abcdefghijklmnop");
     let width = 40.0; // Only 5 chars visible
 
     // Caret at the end (128 px)
-    state.ensure_cursor_visible(caret_px(&state), width);
+    state.ensure_caret_visible(caret_px(&state), width);
     let scroll_at_end = state.scroll_offset();
     assert!(scroll_at_end > 0.0);
 
     // Caret at 24 px, left of the view: scrolls back to show it
     state.cursor = 3;
     state.selection_anchor = 3;
-    state.ensure_cursor_visible(caret_px(&state), width);
+    state.ensure_caret_visible(caret_px(&state), width);
     assert!(state.scroll_offset() < scroll_at_end);
     assert!(state.scroll_offset() <= 24.0);
 
     // Caret at the start
     state.cursor = 0;
     state.selection_anchor = 0;
-    state.ensure_cursor_visible(caret_px(&state), width);
+    state.ensure_caret_visible(caret_px(&state), width);
     assert_eq!(state.scroll_offset(), 0.0);
   }
 
   #[test]
-  fn ensure_cursor_visible_scroll_never_negative() {
+  fn ensure_caret_visible_scroll_never_negative() {
     let mut state = TextInputState::with_text("hi");
     state.cursor = 0;
     state.selection_anchor = 0;
-    state.ensure_cursor_visible(caret_px(&state), 200.0);
+    state.ensure_caret_visible(caret_px(&state), 200.0);
     assert_eq!(state.scroll_offset(), 0.0);
   }
 
   #[test]
-  fn ensure_cursor_visible_with_insert_and_backspace() {
+  fn ensure_caret_visible_with_insert_and_backspace() {
     let mut state = TextInputState::new();
     state.set_focused(true);
     let width = 40.0; // 5 chars visible
 
     // Type 10 characters: the caret at 80 px scrolls the field
     state.insert("0123456789");
-    state.ensure_cursor_visible(caret_px(&state), width);
+    state.ensure_caret_visible(caret_px(&state), width);
     assert!(state.scroll_offset() > 0.0);
 
     // Backspace all the way back
     for _ in 0..10 {
       state.backspace();
-      state.ensure_cursor_visible(caret_px(&state), width);
+      state.ensure_caret_visible(caret_px(&state), width);
     }
     assert_eq!(state.text(), "");
     assert_eq!(state.scroll_offset(), 0.0);

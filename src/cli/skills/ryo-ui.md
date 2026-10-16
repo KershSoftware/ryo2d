@@ -27,7 +27,7 @@ impl Scene for Hud {
 - Runs **once per frame, before the fixed steps** (`update`), for every visible scene bottom-up (the top scene, plus the scenes under a chain of `is_transparent` scenes).
 - Only the top scene's returned `SceneAction` is applied, and it applies at once: when it brings a new scene to the top, the UI is drawn again so the new scene shows this frame, and no fixed step runs after a `Quit`.
 - `ctx` is the full `SceneContext`: read the world or resources for a HUD, write messages, request window changes.
-- Every call records a command; the UI camera draws them on the GPU into the UI image, which is composited last, above the world, lighting and post-processing. The UI is never lit. Engine overlays (FPS, stats) and the console draw over it.
+- Every call records a command; the UI camera draws them on the GPU into the UI image, which is composited last, above the world, lighting and post-processing. The UI is never lit. Engine overlays (FPS, stats) and the console draw over it, open dropdown lists included.
 - **Alpha blends in sRGB space, as on the web:** a 50% black panel over white is mid grey (128), not the lighter result linear blending would give.
 - Cameras never move, zoom, turn or shake the UI.
 
@@ -196,7 +196,7 @@ if ui.dropdown(&mut self.difficulty, rect, &["Easy", "Normal", "Hard"]) {
 }
 ```
 
-An open list draws on the **popup layer**, above everything else the scene drew, with nothing to call: the engine flushes it after each scene's `ui`. Only the top scene's lists use the popup layer; a lower scene's open lists stay below the scenes above it.
+An open list draws on the **popup layer**, above everything else the scenes drew (only the engine's overlays and the console draw above it), with nothing to call: the engine flushes it after each scene's `ui`. Only the top scene's lists use the popup layer; a lower scene's open lists stay below the scenes above it.
 
 ### Scroll View
 

@@ -718,6 +718,34 @@ fn glyph_pages_bind_once_and_reuse_their_glyphs() {
 }
 
 #[test]
+fn text_scaled_to_zero_is_quietly_skipped_and_a_broken_one_warned_once() {
+  let scene = Fixture {
+    setup: |ctx| {
+      // Pop-in tweens start at scale zero
+      for i in 0..10 {
+        ctx.world.spawn((
+          Transform::from_xy(i as f32 * 4.0, 0.0).with_scale(Vec2::ZERO),
+          Text2d::new("pop"),
+        ));
+      }
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0).with_scale(Vec2::splat(f32::NAN)),
+        Text2d::new("broken"),
+      ));
+    },
+  };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(64, 48).start_scene(scene)) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  assert_eq!(
+    engine.engine.text_warned.len(),
+    1,
+    "one warning, for the non-finite text alone"
+  );
+}
+
+#[test]
 fn a_glyph_too_big_for_a_page_is_rasterized_once() {
   use std::cell::Cell;
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {

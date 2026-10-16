@@ -62,7 +62,8 @@ pub(crate) struct TextTargets<'a> {
   pub(crate) device: &'a wgpu::Device,
   pub(crate) queue: &'a wgpu::Queue,
   pub(crate) list: &'a mut DrawList,
-  /// Warn-once keys (glow on a raster font, unknown icons, zero scale)
+  /// Warn-once keys (glow on a raster font, unknown icons, non-finite
+  /// transforms, capped glyphs)
   pub(crate) warned: &'a mut HashSet<u64>,
 }
 
@@ -551,6 +552,9 @@ fn emit_msdf(
       if let Some(glow) = style.glow {
         let radius = glow.radius * base_per_unit;
         let (spread, soft) = msdf_soft(radius, radius * 0.5, range, px_range);
+        if narrowed(radius, spread) || narrowed(radius * 0.5, soft) {
+          warn_msdf_reach(block.sources, block.targets.warned, glyph.font, range);
+        }
         let params = [1.0, spread, soft, range];
         let glow = to_quad(look.pen, glow.color, look.alpha, params, [0.0; 4]);
         push_glyph(block, glyph, look, glow);
@@ -559,6 +563,9 @@ fn emit_msdf(
         let pen = look.pen + shadow.offset * layout.scale;
         let softness = shadow.softness * base_per_unit;
         let (spread, soft) = msdf_soft(0.0, softness, range, px_range);
+        if narrowed(softness, soft) {
+          warn_msdf_reach(block.sources, block.targets.warned, glyph.font, range);
+        }
         let params = [1.0, spread, soft, range];
         let shadow = to_quad(pen, shadow.color, look.alpha, params, [0.0; 4]);
         push_glyph(block, glyph, look, shadow);
@@ -568,7 +575,11 @@ fn emit_msdf(
       // The outline lane under an invisible fill: the band alone, beneath
       // every fill of the block
       if let Some(outline) = style.outline {
-        let width = msdf_outline(outline.width * base_per_unit, range, px_range);
+        let asked = outline.width * base_per_unit;
+        let width = msdf_outline(asked, range, px_range);
+        if narrowed(asked, width) {
+          warn_msdf_reach(block.sources, block.targets.warned, glyph.font, range);
+        }
         if width > 0.0 {
           let (params, extra) = ([0.0, width, 0.0, range], rgba(outline.color, look.alpha));
           let band = to_quad(look.pen, outline.color, 0.0, params, extra);
@@ -586,6 +597,20 @@ fn emit_msdf(
       );
       push_glyph(block, glyph, look, fill);
     }
+  }
+}
+
+/// Whether an MSDF lane was made narrower than asked to fit the range
+fn narrowed(asked: f32, got: f32) -> bool {
+  asked.is_finite() && got < asked * (1.0 - 1e-4) - 1e-6
+}
+
+/// Warn once per font that an outline, shadow or glow reaches past an MSDF
+/// font's distance range and is drawn narrower
+fn warn_msdf_reach(sources: &TextSources<'_>, warned: &mut HashSet<u64>, font: FontId, range: f32) {
+  if warned.insert(hash_of(&("msdf reach", font))) {
+    let family = sources.engine.face_family(font).unwrap_or_default();
+    engine_warn!(module: "text", "MSDF font {family:?} (range {range} px) holds outlines, shadows and glow only to half its range; a wider one is drawn narrower (give the font a larger range: FontRender::Msdf {{ base, range }})");
   }
 }
 
@@ -1111,15 +1136,15 @@ pub(crate) fn emit_world_text(
     let drawn = render_global(global, previous, frame.alpha);
     let matrix = drawn.affine().matrix2;
     let (axis_x, axis_y, position) = (matrix.x_axis, matrix.y_axis, drawn.translation());
-    let usable = axis_x.is_finite()
-      && axis_y.is_finite()
-      && position.is_finite()
-      && axis_x.length_squared() > 0.0
-      && axis_y.length_squared() > 0.0;
-    if !usable {
-      if targets.warned.insert(hash_of(&("zero scale", entity))) {
-        engine_warn!(module: "text", "{entity:?}: Text2d scaled to zero or a non-finite size; not drawn");
+    if !(axis_x.is_finite() && axis_y.is_finite() && position.is_finite()) {
+      if targets.warned.insert(hash_of(&("non-finite", entity))) {
+        engine_warn!(module: "text", "{entity:?}: Text2d has a non-finite position, scale or rotation; not drawn");
       }
+      continue;
+    }
+    // Scaled to zero, as a pop-in tween starts: nothing to draw, and nothing
+    // wrong
+    if axis_x.length_squared() == 0.0 || axis_y.length_squared() == 0.0 {
       continue;
     }
     let layout = &state.layout;
@@ -1353,6 +1378,23 @@ mod tests {
   }
 
   #[test]
+  fn only_a_lane_cut_short_by_the_range_counts_as_narrowed() {
+    let (width, range, px_range) = (10.0, 4.0, 4.0);
+    assert!(narrowed(width, msdf_outline(width, range, px_range)));
+    assert!(!narrowed(1.0, msdf_outline(1.0, range, px_range)), "fits");
+    let (spread, soft) = msdf_soft(1.2, 0.6, 4.0, 5.0);
+    assert!(
+      !narrowed(1.2, spread) && !narrowed(0.6, soft),
+      "fits as asked"
+    );
+    assert!(
+      !narrowed(f32::NAN, 0.0),
+      "a bad value is not the range's doing"
+    );
+    assert!(!narrowed(0.0, 0.0));
+  }
+
+  #[test]
   fn the_msdf_px_range_allows_for_turns_squashes_and_tiny_text() {
     let mut place = placement(None);
     assert_eq!(msdf_px_range(4.0, 1.0, &place), 4.0, "on the grid");
@@ -1538,6 +1580,61 @@ mod tests {
         })
         .count();
       assert_eq!(warnings, 1);
+    }
+
+    #[test]
+    fn an_msdf_effect_past_the_range_warns_once_per_font() {
+      let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+      };
+      let mut fonts = Fonts::with_builtins();
+      let mono = fonts.role(FontRole::Mono).unwrap();
+      fonts.set_render(
+        mono,
+        FontRender::Msdf {
+          base: 32.0,
+          range: 6.0,
+        },
+      );
+      let mut engine = TextEngine::new();
+      engine.sync(&fonts);
+      // A 6 px outline on 32 px text: twice what a 6 px range reaches
+      let style = TextStyle::default()
+        .role(FontRole::Mono)
+        .size(32.0)
+        .outline(6.0, Color::BLACK)
+        .glow(12.0, Color::WHITE);
+      let layout = laid(&mut engine, "wide effects", &style);
+      let (effects, icons) = (TextEffects::default(), TextIcons::default());
+      let sources = TextSources {
+        fonts: &fonts,
+        engine: &engine,
+        effects: &effects,
+        icons: &icons,
+      };
+      let mut sprites = SpriteGpuRenderer::new(&device, &queue);
+      let (mut raster, mut list) = (GlyphRasterizer::new(), DrawList::default());
+      let mut warned = HashSet::new();
+      let mut targets = TextTargets {
+        raster: &mut raster,
+        sprites: &mut sprites,
+        device: &device,
+        queue: &queue,
+        list: &mut list,
+        warned: &mut warned,
+      };
+      for _ in 0..2 {
+        emit_text(&sources, &mut targets, &layout, &placement(None));
+      }
+      let warnings = crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| {
+          e.message
+            .contains("MSDF font \"JetBrains Mono\" (range 6 px)")
+        })
+        .count();
+      assert_eq!(warnings, 1, "once for the font, over every glyph and frame");
     }
 
     #[test]

@@ -89,7 +89,7 @@ let mode = ctx.fonts().render(id);
 | `Msdf { base, range }` | a multi-channel distance field made once per glyph at `base` px: scales freely, soft shadows and glow | text that scales a lot, or glow and soft shadow |
 
 - MSDF glyphs cost about half a millisecond each to build (0.46 ms measured in a release build). `ctx.fonts().prewarm(id, size, "0123456789 abc")` builds known glyphs ahead of their first use; call it in a loading scene.
-- **MSDF effect reach is limited to `range / 2` base pixels.** The default `FontRender::msdf()` (base 32, range 4) holds about 0.06 em, so a glow or a wide outline clips; use `Msdf { base: 32.0, range: 8.0 }` or more (the text demo uses 24 for glow). An over-wide effect degrades instead of clipping at the quad edge.
+- **MSDF effect reach is limited to `range / 2` base pixels.** The default `FontRender::msdf()` (base 32, range 4) holds about 0.06 em, so a glow or a wide outline clips; use `Msdf { base: 32.0, range: 8.0 }` or more (the text demo uses 24 for glow). An over-wide effect degrades instead of clipping at the quad edge, and the engine warns once per font that it was drawn narrower.
 - **MSDF fonts get no synthesized italic or bold** (glyph quads cannot shear). The text draws upright and regular and the engine warns once per font. Add the real italic or bold face as its own font.
 - Spans and `set_render` apply per face: Inter Bold can be MSDF while Inter Regular stays raster. Find the face with `find_face`.
 
@@ -105,7 +105,7 @@ ctx.fonts().set_role(FontRole::Ui, font);                                   // o
 
 ### Fallback
 
-A style's font, then its `fallbacks`, then the UI font, then the mono font. A character no font has draws the font's box and is warned once per family and character.
+A style's font, then its `fallbacks`, then the UI font, then the mono font. A character no font has draws the font's box and is warned once per font, naming the first few such characters (a pasted paragraph in another script warns once, not per character).
 
 ## 3. `TextStyle` and `TextLayoutOptions`
 
@@ -137,7 +137,7 @@ let style = TextStyle::new()
 | `shadow: Option<Shadow>` | none | `Shadow { offset, color, softness }`; `softness` only matters for MSDF fonts, raster shadows are hard |
 | `glow: Option<Glow>` | none | `Glow { radius, color }`; **MSDF fonts only** |
 
-`TextStyle` is `#[non_exhaustive]`: build it with the builders above (`new()`, then chain). A style with a non-positive or non-finite size is refused and warned once.
+`TextStyle` is `#[non_exhaustive]`: build it with the builders above (`new()`, then chain). A style with a size or line height that is not a positive number, or a weight or letter spacing that is not a number, is refused and warned once, naming the field.
 
 ```rust
 let options = TextLayoutOptions::default()
@@ -189,6 +189,7 @@ let parsed = RichText::markup("Deal [b][color=#f44]20[/color][/b] damage[pause=0
 - Tags nest and flatten into non-overlapping spans. Tag names are letters, digits, `_` and `-`. A lone `]` is plain text.
 - **Malformed markup is drawn as written and warned once per string; nothing panics.** That covers an unclosed tag, a close with no open, a bad or missing value (`[color=banana]`, `[size]`, `[b=1]`), a bad tag name, and a `[` with no `]`. Mis-nested tags still apply but warn.
 - Effect arguments are passed whole: `[wave=3,2]` gives the effect `args == "3,2"`.
+- **Put untrusted text inside markup with `RichText::escape(&str) -> Cow<str>`**, which doubles every `[`: a player named `xX[Sniper]Xx` would otherwise open a tag (and warn). `RichText::markup(&format!("[b]{}[/b] joined", RichText::escape(name)))` draws the name as written; text without a `[` is borrowed, not copied.
 
 ## 5. Icons
 
@@ -198,10 +199,11 @@ let parsed = RichText::markup("Deal [b][color=#f44]20[/color][/b] damage[pause=0
 let mut icons = ctx.world.resource_mut::<TextIcons>();
 icons.insert("jump", key_z_sprite);                                              // a whole sprite
 icons.insert_region("coin", icon_sheet, Rect::new(16.0, 0.0, 16.0, 16.0));      // a pixel region of a sheet
-let has_jump = icons.get("jump").is_some();
+let has_jump = icons.get("jump").is_some();                                    // Option<&IconSource>
 icons.remove("coin");
 ```
 
+- `get` returns an `IconSource { sprite: SpriteHandle, region: Option<Rect> }` (in the prelude).
 - An icon is a square as high as the font size by default; `icon_sized` and `Icon::Sprite { sprite, size }` set a size in text units.
 - **Swap a set by inserting the same names again** (keyboard keys for gamepad buttons): the text does not change, and the icons update on the next draw.
 - An unknown name leaves its space empty and is warned once. Icon regions are inset half a texel so linear filtering never reads the sheet's neighbours.
@@ -308,6 +310,7 @@ ctx.world.spawn((
 | `set_text(impl Into<RichText>)` | replace the text (a reveal starts over) |
 
 - Fields are public (`text`, `style`, `layout`, `lit`, `z_order`, `blend`, `opacity`); the type is `#[non_exhaustive]`, so build it with the builders.
+- A `Text2d` scaled to zero draws nothing and warns nothing, so a pop-in tween can start there; a non-finite transform is warned once per entity.
 - The component requires `Transform` and `TextBounds`. The entity's transform moves, turns and scales the text; make it a child (`ctx.spawn_child(parent, bundle)`) to follow a sprite.
 - **`TextBounds { size, offset }`** is the laid-out block in world units before the entity's scale and rotation; `offset` runs from the entity's position to the block's top-left. It is updated when the text is drawn, so read it a frame after spawning.
 - **Opacity is applied when the text is drawn and is not part of the layout.** Changing it every frame lays nothing out again. A tween's alpha target drives it: `Tween::fade_out(0.4)` or `.to_alpha(0.0)` on the entity, exactly as for a `Renderable`. Never fade through `style.color`.

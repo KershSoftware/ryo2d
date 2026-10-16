@@ -298,6 +298,14 @@ pub struct UiContext<'a> {
   dt: f32,
 }
 
+/// The draw layer a scene's page records on
+pub(crate) const PAGE_LAYER: u8 = 0;
+/// The top scene's open dropdown lists, above every scene's page
+pub(crate) const POPUP_LAYER: u8 = 1;
+/// The engine's overlays and the console, above the popups. Layers past
+/// 127 draw as 127 (`render::ui::ui_z`).
+pub(crate) const OVERLAY_LAYER: u8 = 2;
+
 impl<'a> UiContext<'a> {
   /// A context recording into `commands`, laying text out with `text`, over
   /// the UI `space`, reading `input` (its mouse converted to UI units).
@@ -315,7 +323,7 @@ impl<'a> UiContext<'a> {
       theme: None,
       clip_stack: Vec::new(),
       current_clip: None,
-      layer: 0,
+      layer: PAGE_LAYER,
       pending_dropdowns: Vec::new(),
       focused_dropdown_id: 0,
       keyboard_focus: false,
@@ -877,7 +885,8 @@ impl<'a> UiContext<'a> {
 
   /// Draw centered text within a rectangle (wrapped when it is wider).
   pub fn draw_text_centered(&mut self, text: &str, rect: Rect, color: Color) {
-    let size = self.measure_text(text, &TextStyle::default());
+    // Measured in the style it draws in, so the draw is a cache hit
+    let size = self.measure_text(text, &Self::plain_style(color).0);
     if size.x > rect.width {
       self.draw_text_wrapped_centered(text, rect, color);
       return;
@@ -1641,7 +1650,7 @@ impl<'a> UiContext<'a> {
       self.measure_text(preedit.as_str(), &style).x
     };
     let caret_x = self.caret_x(state.text(), &style, state.cursor());
-    state.ensure_cursor_visible(caret_x + preedit_width, text_width);
+    state.ensure_caret_visible(caret_x + preedit_width, text_width);
     let scroll = state.scroll_offset();
     let text = state.text();
 
@@ -2328,10 +2337,16 @@ impl<'a> UiContext<'a> {
     }
   }
 
-  /// Draw all pending dropdown lists on the popup layer, above everything
-  /// else. The engine calls this after each scene's `ui`.
+  /// Draw all pending dropdown lists on the popup layer, above every
+  /// scene's page. The engine calls this after each scene's `ui`.
   pub(crate) fn finish_dropdowns(&mut self) {
-    self.finish_dropdowns_on(1);
+    self.finish_dropdowns_on(POPUP_LAYER);
+  }
+
+  /// Record what follows on draw `layer` (the engine draws its overlays and
+  /// the console on `OVERLAY_LAYER`)
+  pub(crate) fn set_layer(&mut self, layer: u8) {
+    self.layer = layer;
   }
 
   /// `finish_dropdowns` onto draw layer `layer`: a scene under others keeps
@@ -3777,6 +3792,26 @@ mod tests {
       .expect("a popup command");
     assert!(layers[first_popup..].iter().all(|&l| l == 1));
     assert!(layers[..first_popup].contains(&0));
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn a_centred_label_lays_out_once() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let before = text.stats().misses;
+    let mut ui = context(&mut commands, &mut text);
+    // A button's label: measured to centre it, then drawn in its colour
+    ui.draw_text_centered(
+      "Play",
+      Rect::new(10.0, 10.0, 120.0, 30.0),
+      Color::rgb(200, 180, 90),
+    );
+    drop(ui);
+    assert_eq!(
+      text.stats().misses - before,
+      1,
+      "the draw reuses the measure"
+    );
   }
 
   #[test]

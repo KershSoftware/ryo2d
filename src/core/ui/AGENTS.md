@@ -22,7 +22,7 @@ The UI system combines two paradigms for game HUDs, menus, and interactive eleme
 
 ## Integration Point
 
-`Scene::ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction` runs once per frame for the visible scenes, bottom-up, **before** the fixed steps (`Engine::ui_pass`, `engine/frame.rs`). Engine stats/FPS overlays and the dev console are drawn into the same `UiContext` after the scenes, so they appear on top.
+`Scene::ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction` runs once per frame for the visible scenes, bottom-up, **before** the fixed steps (`Engine::ui_pass`, `engine/frame.rs`). Engine stats/FPS overlays and the dev console are drawn into the same `UiContext` after the scenes, on the overlay layer, so they appear on top of the scenes' pages and open lists alike.
 
 - **Input**: `UiContext` reads a `UiInput` snapshot of `Input` (blocks and consumption carried over). What the UI consumes (`consume_click`, `consume_escape`, `consume_key`, `consume_scroll`, widget clicks, the wheel over a scrolling view and typed text) is applied to `Input` after the pass, so `update` and systems never see it: gameplay keys belong in `update` (`ctx.input`), keys the UI acts on in `ui` (`ui.input()`).
 - **Time**: `ui.dt()` is real time, so UI animation runs through pause and slow motion.

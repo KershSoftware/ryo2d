@@ -44,7 +44,7 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   shadow, glow and effect.
 - Fallback: a style's font, its fallbacks, then the UI font, then the mono font.
   A character no font has draws glyph 0 (the font's box) and is warned once
-  per family and character.
+  per family, naming the first five such characters and how many more.
 - Bitmap fonts (`Fonts::add_bitmap`) are laid out by a monospace grid
   layouter; a text uses bitmap or outline fonts, not both.
 - Clusters: each glyph and icon carries its character cluster in logical
@@ -68,7 +68,8 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 
 - Markup: `[color=..]`, `[size=..]`, `[font=..]`, `[b]`, `[i]`,
   `[outline=width,color]`, `[icon=name]`, `[pause=seconds]`, `[[` for a
-  bracket. Any other tag is an effect (`[wave]`, `[sparkle=3]`). Nested tags
+  bracket (`RichText::escape` doubles every `[`, for untrusted text). Any
+  other tag is an effect (`[wave]`, `[sparkle=3]`). Nested tags
   flatten into non-overlapping spans. Malformed markup (unclosed, unmatched,
   a bad value) is drawn as written and warned once per string; nothing
   panics.
@@ -113,6 +114,8 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   font changes (`TextLayoutState::key`; the anchor is in it too, since it
   places the bounds); `TextBounds` holds the block's size and its top-left
   offset from the position (unscaled).
+- A `Text2d` scaled to zero is skipped without a warning (pop-in tweens
+  start there); a non-finite transform is warned once per entity.
 - `Text2d::opacity` fades the whole block when it is drawn
   (`TextPlacement::opacity`, clamped by `clean_opacity`); it is not in the
   layout key, so a fade never lays out again. A `Tween` alpha target drives
@@ -129,8 +132,9 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 - MSDF reach: the field and the image padding hold `range / 2` base pixels
   around the glyph. Outlines are clamped to that less half a render pixel,
   and a soft layer's spread and softness shrink together to fit, so an
-  over-wide effect degrades instead of clipping at the quad's edge. A wider
-  effect needs a bigger range (`FontRender::Msdf { range, .. }`).
+  over-wide effect degrades instead of clipping at the quad's edge, and is
+  warned once per font. A wider effect needs a bigger range
+  (`FontRender::Msdf { range, .. }`).
 - MSDF fonts have no synthesized italic or bold: glyph quads cannot shear,
   so MSDF keys leave skew and embolden out (one image per glyph) and the
   text draws upright and regular, warned once per font. Add the real

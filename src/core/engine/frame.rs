@@ -327,7 +327,9 @@ impl Engine {
         host.scenes.ui_pass(world, &mut host.audio, &mut ui)
       });
 
-      // Overlays draw over game UI: stats (top), FPS, frame timing (bottom)
+      // Overlays draw over game UI, its open lists included: stats (top),
+      // FPS, frame timing (bottom)
+      ui.set_layer(crate::core::ui::immediate::OVERLAY_LAYER);
       let debug = &self.config.debug;
       if debug.show_stats {
         overlays::render_stats(&mut ui, &self.smoothed_stats, height);
@@ -1258,6 +1260,44 @@ mod tests {
     assert_eq!(
       drawn,
       [(Rect::new(0.0, 0.0, 4.0, 4.0), Color::rgb(255, 0, 0))]
+    );
+  }
+
+  #[test]
+  fn the_console_draws_above_the_top_scenes_open_lists() {
+    use crate::core::ui::immediate::UiCommand;
+    use crate::core::ui::{DropdownState, Rect, UiContext};
+    struct OpenList(DropdownState);
+    impl Scene for OpenList {
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        self.0.open();
+        ui.dropdown(&mut self.0, Rect::new(4.0, 4.0, 60.0, 16.0), &["a", "b"]);
+        SceneAction::Continue
+      }
+    }
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(OpenList(DropdownState::new()))
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 320, 240), 1.0);
+    e.console_state.toggle();
+    e.frame(Some(Duration::from_millis(16)));
+    // Layers sort before submission: every console command must be on a
+    // layer above the open list's
+    let layers: Vec<u8> = e.ui_commands.iter().map(UiCommand::draw_layer).collect();
+    let popup = layers.iter().copied().max().unwrap_or(0);
+    let last_popup = layers
+      .iter()
+      .rposition(|&layer| layer == 1)
+      .expect("the open list is on the popup layer");
+    let console = &layers[last_popup + 1..];
+    assert!(!console.is_empty(), "the console drew");
+    assert!(
+      console.iter().all(|&layer| layer > 1) && popup > 1,
+      "console layers {console:?}"
     );
   }
 

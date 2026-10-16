@@ -155,12 +155,27 @@ impl TextStyle {
 
   /// Size and line height usable for layout
   pub(crate) fn is_valid(&self) -> bool {
-    self.size.is_finite()
-      && self.size > 0.0
-      && self.line_height.is_finite()
-      && self.line_height > 0.0
-      && self.weight.is_finite()
-      && self.letter_spacing.is_finite()
+    self.invalid_field().is_none()
+  }
+
+  /// The first field that keeps the style from being laid out, and its
+  /// value: a size or line height that is not a positive number, or a
+  /// weight or letter spacing that is not a number
+  pub(crate) fn invalid_field(&self) -> Option<(&'static str, f32)> {
+    let positive = |v: f32| v.is_finite() && v > 0.0;
+    [
+      ("size", self.size, positive(self.size)),
+      ("line height", self.line_height, positive(self.line_height)),
+      ("weight", self.weight, self.weight.is_finite()),
+      (
+        "letter spacing",
+        self.letter_spacing,
+        self.letter_spacing.is_finite(),
+      ),
+    ]
+    .into_iter()
+    .find(|&(_, _, ok)| !ok)
+    .map(|(field, value, _)| (field, value))
   }
 
   /// Feed everything that changes layout or look into a cache key

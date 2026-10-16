@@ -2,6 +2,7 @@
 //! Style tags: color, size, font, b, i, outline, icon, pause; any other tag
 //! is an effect. Malformed markup is drawn literally and warned once.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
@@ -46,6 +47,17 @@ impl RichText {
       warn_once(source, problem);
     }
     build(&resolved)
+  }
+
+  /// `text` made safe to put inside markup: every `[` doubled, so a player
+  /// name like `xX[Sniper]Xx` draws as written instead of opening a tag.
+  /// `RichText::markup(&format!("[b]{}[/b] joined", RichText::escape(name)))`
+  pub fn escape(text: &str) -> Cow<'_, str> {
+    if text.contains('[') {
+      Cow::Owned(text.replace('[', "[["))
+    } else {
+      Cow::Borrowed(text)
+    }
   }
 
   /// Hold the typewriter reveal here for `seconds`
@@ -367,6 +379,17 @@ mod tests {
     assert_eq!(rich.icons[0].at, 6);
     assert_eq!(rich.pauses.len(), 1);
     assert_eq!(rich.pauses[0].seconds, 0.5);
+  }
+
+  #[test]
+  fn escaped_text_goes_into_markup_as_written() {
+    let name = "xX[Sniper]Xx [b]on[/b] [[odd]";
+    let line = format!("[color=red]{}[/color] joined", RichText::escape(name));
+    let rich = RichText::markup(&line);
+    assert_eq!(rich.as_str(), format!("{name} joined"));
+    assert_eq!(rich.spans.len(), 1, "only the colour tag applies");
+    assert_eq!(rich.spans[0].range, 0..name.len());
+    assert!(matches!(RichText::escape("plain"), Cow::Borrowed("plain")));
   }
 
   #[test]

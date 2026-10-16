@@ -25,6 +25,7 @@ ui.pop_clip();        // depth 0 (no clipping)
 
 - `ui.text(..)` (`UiText`) is the full call: markup, wrap, align, max lines, ellipsis, anchor, reveal, fade, typewriter and opacity; `draw()` returns the size in UI units. The `draw_text*` family and `label` are the shorthand with the default style (`FontRole::Ui`, 14 px).
 - Text is measured, wrapped and laid out through the text engine at the UI scale (`px_scale` render pixels per UI unit); layouts are cached, so an unchanged call is a hash lookup.
+- `draw_text_centered` (a button's label) measures in the style it draws in, so the draw is a cache hit.
 - **Fades go through opacity.** The layout cache keys on the style, colour included, so changing a style's colour every frame lays the text out again every frame. The shorthand helpers (`draw_text`, `label`, the wrapped and centred variants) lay the text out opaque and carry the colour's alpha as `UiCommand::Text { opacity }`, so one cached layout serves every alpha. `draw_text_styled` lays its style out as given (moving that colour's alpha to opacity would fade the style's outline and shadow too).
 - **Typewriter.** A reveal with a fade wider than one cluster must be driven past the cluster count (`TextReveal::drawn_clusters`), or the last characters stay partly faded. `typewriter(&mut TextReveal)` does that for you: `draw()` advances the reveal by the UI's real `dt` over the text's own layout (so `[pause]` and punctuation pauses hold it) and records its drawn clusters and fade. One call a frame per reveal; no `TextRevealed` message for UI text (`is_done` says when it finished).
 - A text's effect seed is a hash of the text, the style without its colours and the options, so it does not move when other commands are drawn before it or when a hover changes a colour.
@@ -32,9 +33,9 @@ ui.pop_clip();        // depth 0 (no clipping)
 
 ## Popups and Layers
 
-- Every command has a draw layer; layers order before submission order (`ui_z`). The scene's page is layer 0.
-- Open dropdown lists record on the popup layer (1). `finish_dropdowns` is crate-internal: `SceneManager::ui_pass` runs it after each scene's `ui`, so a scene never calls it.
-- Only the top scene's lists use layer 1. A lower scene's lists stay on layer 0, right after its own page, so the scenes above still cover them. The console and overlays draw on layer 0 after the scenes, and the popup layer still covers them.
+- Every command has a draw layer; layers order before submission order (`ui_z`, which clamps layers to 127). The scene's page is `PAGE_LAYER` (0).
+- Open dropdown lists record on `POPUP_LAYER` (1). `finish_dropdowns` is crate-internal: `SceneManager::ui_pass` runs it after each scene's `ui`, so a scene never calls it.
+- Only the top scene's lists use layer 1. A lower scene's lists stay on layer 0, right after its own page, so the scenes above still cover them. The overlays and the console draw after the scenes on `OVERLAY_LAYER` (2), above every popup: `Engine::draw_ui` switches to it with the crate-internal `UiContext::set_layer`.
 
 ## Sprites and Shapes
 

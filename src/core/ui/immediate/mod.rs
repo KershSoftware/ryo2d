@@ -45,6 +45,7 @@ mod input;
 mod layout;
 
 pub(crate) use commands::{UiCommand, UiCommands};
+pub(crate) use context::{OVERLAY_LAYER, PAGE_LAYER};
 pub use context::{UiContext, UiText};
 pub use input::{UiConsumed, UiInput};
 pub use layout::{HAlign, HBox, Stack, VAlign, VBox};

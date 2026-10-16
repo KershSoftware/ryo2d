@@ -90,7 +90,9 @@ pub(crate) struct GlyphShelves {
   pages: HashMap<GlyphFormat, Vec<ShelfPage>>,
   entries: HashMap<GlyphKey, ShelfEntry>,
   warned: HashSet<(u32, u32)>,
-  warned_full: bool,
+  /// Formats found full of this frame's glyphs: warned once per run, as a
+  /// sustained overflow runs out every frame
+  warned_full: HashSet<GlyphFormat>,
 }
 
 impl GlyphShelves {
@@ -101,7 +103,7 @@ impl GlyphShelves {
       pages: HashMap::new(),
       entries: HashMap::new(),
       warned: HashSet::new(),
-      warned_full: false,
+      warned_full: HashSet::new(),
     }
   }
 
@@ -162,9 +164,8 @@ impl GlyphShelves {
       })
       .min();
     let Some((_, index)) = victim else {
-      if !self.warned_full {
-        self.warned_full = true;
-        engine_warn!(module: "text", "the glyph atlas is full of glyphs drawn this frame; some text is not drawn");
+      if self.warned_full.insert(format) {
+        engine_warn!(module: "text", "the {format:?} glyph pages are full of glyphs drawn this frame; some text is not drawn");
       }
       return Placement::Full;
     };
@@ -210,7 +211,6 @@ impl GlyphShelves {
         last_used: frame,
       },
     );
-    self.warned_full = false;
     Some(Placement::Placed { page: index, rect })
   }
 }
@@ -503,6 +503,29 @@ mod tests {
       Placement::Placed { .. }
     ));
     assert!(shelves.lookup(&key(placed[0]), 6).is_none());
+  }
+
+  #[test]
+  fn a_sustained_overflow_warns_once() {
+    // One page of four glyphs, and every frame draws six: each frame clears
+    // the page, fills it and runs out again
+    let mut shelves = GlyphShelves::new(32, 1);
+    shelves.add_page(GlyphFormat::Msdf);
+    for frame in 1..=10 {
+      for glyph in 0..6 {
+        let _ = shelves.place(
+          &key(frame * 10 + glyph),
+          GlyphFormat::Msdf,
+          (12, 12),
+          u64::from(frame),
+        );
+      }
+    }
+    let warnings = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains("Msdf glyph pages are full"))
+      .count();
+    assert_eq!(warnings, 1, "warned once, not once a frame");
   }
 
   #[test]

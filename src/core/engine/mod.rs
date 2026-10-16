@@ -168,7 +168,7 @@ pub struct Engine {
   // registry and the text warnings already given
   text: TextEngine,
   glyph_raster: GlyphRasterizer,
-  text_warned: std::collections::HashSet<u64>,
+  pub(crate) text_warned: std::collections::HashSet<u64>,
   // Each camera's uniform buffer, kept across frames
   camera_uniforms: crate::core::graphics::camera_gpu::CameraUniforms,
   // The frame's cameras in render order (reused across frames), the

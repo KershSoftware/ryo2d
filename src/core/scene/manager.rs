@@ -509,7 +509,7 @@ impl SceneManager {
       if i == top {
         ui.finish_dropdowns();
       } else {
-        ui.finish_dropdowns_on(0);
+        ui.finish_dropdowns_on(crate::core::ui::immediate::PAGE_LAYER);
       }
       if i == top {
         action = result;
