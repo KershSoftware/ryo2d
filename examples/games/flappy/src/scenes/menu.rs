@@ -50,8 +50,8 @@ impl PreloadedAssets {
 pub struct MenuScene {
   high_score: u32,
   debug_enabled: bool,
-  bird_flap_up: Sprite,
-  bird_flap_down: Sprite,
+  bird_flap_up: SpriteHandle,
+  bird_flap_down: SpriteHandle,
   anim_timer: f32,
   anim_frame: bool,
   background_entities: Vec<Entity>,
@@ -68,10 +68,15 @@ impl MenuScene {
       .unwrap_or(false);
 
     // Load bird sprites for animation (SVG - not cacheable via AssetManager)
-    let bird_flap_up =
-      Sprite::load_svg_fit("assets/bird-flap-up.svg", 64, 64).expect("Failed to load bird sprite");
-    let bird_flap_down = Sprite::load_svg_fit("assets/bird-flap-down.svg", 64, 64)
-      .expect("Failed to load bird sprite");
+    let bird_flap_up = SpriteHandle::from_sprite(
+      Sprite::load_svg_fit("assets/bird-flap-up.svg", 64, 64).expect("Failed to load bird sprite"),
+      "assets/bird-flap-up.svg",
+    );
+    let bird_flap_down = SpriteHandle::from_sprite(
+      Sprite::load_svg_fit("assets/bird-flap-down.svg", 64, 64)
+        .expect("Failed to load bird sprite"),
+      "assets/bird-flap-down.svg",
+    );
 
     // Pre-load all PNG assets before window appears (prevents long white flash)
     let preloaded_assets = PreloadedAssets::load();

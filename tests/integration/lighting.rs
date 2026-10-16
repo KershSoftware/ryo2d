@@ -48,8 +48,8 @@ fn regression_lighting_disabled_by_default() {
 #[test]
 fn regression_ui_unaffected_by_lighting_default() {
   // The UI is never lit. This test documents that invariant:
-  // - UI is rendered to a separate buffer
-  // - UI buffer is composited AFTER lighting is applied to the scene
+  // - UI is drawn into an image of its own (the UI camera)
+  // - the UI image is composited AFTER lighting is applied to the scene
   // - UI appears at full brightness regardless of ambient light level
 
   // This is a documentation test - actual rendering verification would
@@ -577,11 +577,11 @@ fn multiple_lights_coexist() {
 // 5. `unlit_world`, `transition`, `post_process` on the latest image
 // 6. `composite`: latest image -> screen, then blend ui_texture -> screen
 
-/// REGRESSION: UI must use dedicated ui_texture, not the game or lit texture
+/// REGRESSION: UI must use a dedicated image, not the game or lit texture
 ///
-/// The UI overlay MUST be uploaded to a dedicated texture because the game
-/// and lit textures are written by GPU commands in the same frame, and a
-/// write_texture into them would race those commands.
+/// The UI MUST be drawn into a dedicated image, composited last, so that
+/// lighting and post-processing never touch it and it never overwrites the
+/// world drawn into the game and lit textures in the same frame.
 ///
 /// BUG FIXED: sprites invisible when lighting enabled (2024-02)
 /// ROOT CAUSE: UI and sprite content shared one texture
@@ -589,8 +589,8 @@ fn multiple_lights_coexist() {
 #[test]
 fn regression_ui_uses_dedicated_texture() {
   // This is a documentation test.
-  // The `ui` render pass uploads the UI buffer with write_texture into the
-  // compositor's dedicated ui_texture, and the `composite` pass blends it last.
+  // The `ui` render pass draws the UI camera into the compositor's dedicated
+  // UI image, and the `composite` pass blends it last.
   //
   // If this invariant is violated, symptoms will be:
   // - Lighting or world content overwritten (if using the game or lit texture)
@@ -598,15 +598,15 @@ fn regression_ui_uses_dedicated_texture() {
 
 /// REGRESSION: Render flow must maintain texture isolation
 ///
-/// Only the UI buffer is uploaded with write_texture; everything else in the
-/// frame is drawn by GPU commands, all submitted together.
+/// Every image in the frame, the UI image included, is drawn by GPU
+/// commands, all submitted together.
 #[test]
 fn regression_render_flow_texture_isolation() {
   // This is a documentation test verifying the expected render flow.
   // The actual implementation is the `default_2d` render pipeline.
   //
   // Key invariants:
-  // - ui_texture receives ONLY ui_buffer data
+  // - the UI image is written ONLY by the ui pass (the UI camera's draws)
   // - game_texture is written ONLY by GPU commands (clear, world passes)
   // - lit_texture is written ONLY by lighting compose
   //

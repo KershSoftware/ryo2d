@@ -16,9 +16,9 @@ pub struct WindowRequest {
   pub height: Option<u32>,
   /// New display mode (None = no change)
   pub display_mode: Option<DisplayMode>,
-  /// New UI scale factor (None = no change)
-  /// Use Some(0) to reset to auto-detect mode
-  pub ui_scale: Option<u32>,
+  /// A new UI scale (`None`: no change): `Some(Some(s))` is `s` render
+  /// pixels per UI unit, `Some(None)` the automatic scale
+  pub ui_scale: Option<Option<f32>>,
 }
 
 impl WindowRequest {

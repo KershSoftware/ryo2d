@@ -90,8 +90,9 @@ fn the_settings_panel_appears_only_with_settings() {
   let Some(without) = frame_of(Backdrop::new(0, 0), (320, 240), &[]) else {
     return;
   };
-  assert!(red_at(&with, 312, 120) < 120, "panel in the right column");
-  assert!(red_at(&without, 312, 120) > 180);
+  // Well inside the panel's right edge, which is a pad (half a line) in
+  assert!(red_at(&with, 300, 120) < 120, "panel in the right column");
+  assert!(red_at(&without, 300, 120) > 180);
 }
 
 #[test]
@@ -104,29 +105,31 @@ fn help_dims_the_screen() {
 
 #[test]
 fn tiny_screen_keeps_the_panel_and_legend_in_their_places() {
-  let Some(image) = frame_of(Backdrop::new(30, 12), (160, 120), &[]) else {
+  // About fourteen lines of the default UI text tall
+  let Some(image) = frame_of(Backdrop::new(30, 12), (320, 240), &[]) else {
     return;
   };
   // Block averages, so glyphs don't decide it
   assert!(
-    mean_red(&image, 95..150, 45..75) < 120.0,
+    mean_red(&image, 190..300, 90..150) < 120.0,
     "the panel shows in the right column"
   );
   // A dozen long controls stay in a few lines at the bottom instead of
   // covering the page
   assert!(
-    mean_red(&image, 10..60, 40..70) > 180.0,
+    mean_red(&image, 20..120, 80..140) > 180.0,
     "the page shows above the legend"
   );
+  // Its last line, right-aligned: "+11 more (H)"
   assert!(
-    mean_red(&image, 10..150, 108..116) < 150.0,
+    mean_red(&image, 240..300, 216..232) < 150.0,
     "the legend shows at the bottom"
   );
-  let Some(help) = frame_of(Backdrop::new(30, 12), (160, 120), &[KeyCode::KeyH]) else {
+  let Some(help) = frame_of(Backdrop::new(30, 12), (320, 240), &[KeyCode::KeyH]) else {
     return;
   };
   assert!(
-    mean_red(&help, 20..140, 30..90) < 120.0,
+    mean_red(&help, 40..280, 60..180) < 120.0,
     "help covers the screen"
   );
 }

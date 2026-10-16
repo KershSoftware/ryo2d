@@ -2,6 +2,8 @@
 //!
 //! The `UiContext` provides a simple API for drawing shapes, text, and
 //! interactive elements. The engine builds one per frame for `Scene::ui`.
+//! Drawing records [`UiCommand`]s in UI units; the engine's `ui` pass draws
+//! them on the GPU, in the order they were recorded.
 //!
 //! # Clipping
 //!
@@ -20,18 +22,25 @@
 //! ui.pop_clip();
 //! ```
 
+use std::cell::{RefCell, RefMut};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use glam::Vec2;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
+use super::commands::{UiCommand, UiCommands};
 use super::input::UiInput;
 
-use super::font::BitmapFont;
+use crate::core::asset::SpriteHandle;
+use crate::core::render::UiSpace;
+use crate::core::text::{RichText, TextAlign, TextEngine, TextLayoutOptions, TextStyle};
 use crate::core::ui::retained::{DropdownState, Focusable, ScrollViewState, TextInputState};
 use crate::core::ui::theme::Theme;
 use crate::core::ui::types::{Anchor, Color, Rect};
 
-/// Maximum depth of nested clip rects.
-const MAX_CLIP_STACK_DEPTH: usize = 16;
+/// `pop_clip` on an empty stack was warned about
+static EMPTY_POP_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Pending dropdown overlay to be drawn at the end of the frame.
 struct PendingDropdown {
@@ -53,6 +62,8 @@ struct PendingDropdown {
 ///
 /// Provides methods for drawing shapes, text, and interactive elements.
 /// The engine builds one per frame and passes it to `Scene::ui`.
+/// Coordinates are UI units: with the automatic UI scale (the default) they
+/// are screen units, whatever the display's scale factor.
 ///
 /// # Example
 ///
@@ -69,30 +80,28 @@ struct PendingDropdown {
 /// }
 /// ```
 pub struct UiContext<'a> {
-  /// Frame buffer (RGBA, 4 bytes per pixel)
-  frame: &'a mut [u8],
-  /// Frame width in pixels
-  frame_width: u32,
-  /// Frame height in pixels
-  frame_height: u32,
+  /// Where the draws are recorded
+  commands: &'a mut UiCommands,
+  /// Text layout and measuring (a cell, so measuring works through `&self`)
+  text: RefCell<&'a mut TextEngine>,
+  /// UI units, the UI image and the scale between them
+  space: UiSpace,
   /// The frame's input; widgets consume what they use
   input: UiInput,
-  /// Font for text rendering
-  font: &'a BitmapFont,
   /// Optional theme for styled widgets
   theme: Option<&'a Theme>,
   /// Stack of clip rects for nested clipping
   clip_stack: Vec<Rect>,
   /// Current effective clip rect (intersection of all stacked clips)
   current_clip: Option<Rect>,
+  /// The layer draws are recorded on (higher layers draw over lower ones)
+  layer: u8,
   /// Pending dropdown overlays to draw at end of frame
   pending_dropdowns: Vec<PendingDropdown>,
   /// ID of the currently focused dropdown (0 = none)
   focused_dropdown_id: u32,
   /// Whether a focused text input or an open dropdown was drawn this frame
   keyboard_focus: bool,
-  /// UI scale factor for HiDPI displays (1 = normal, 2 = double size, etc.)
-  ui_scale: u32,
   /// Whether the mouse is occluded by an overlay (e.g. developer console).
   /// When true, `is_hovered`, `is_held`, and `is_clicked` all return false.
   mouse_occluded: bool,
@@ -103,115 +112,35 @@ pub struct UiContext<'a> {
 }
 
 impl<'a> UiContext<'a> {
-  /// Create a new UI context for the current frame.
-  pub fn new(
-    frame: &'a mut [u8],
-    frame_width: u32,
-    frame_height: u32,
+  /// A context recording into `commands`, laying text out with `text`, over
+  /// the UI `space`, reading `input` (its mouse converted to UI units).
+  pub(crate) fn new(
+    commands: &'a mut UiCommands,
+    text: &'a mut TextEngine,
+    space: UiSpace,
     input: UiInput,
-    font: &'a BitmapFont,
   ) -> Self {
     Self {
-      frame,
-      frame_width,
-      frame_height,
-      input,
-      font,
+      commands,
+      text: RefCell::new(text),
+      space,
+      input: input.with_mouse_scale(space.mouse_scale),
       theme: None,
-      clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
+      clip_stack: Vec::new(),
       current_clip: None,
+      layer: 0,
       pending_dropdowns: Vec::new(),
       focused_dropdown_id: 0,
       keyboard_focus: false,
-      ui_scale: 1,
       mouse_occluded: false,
       dt: 0.0,
     }
   }
 
-  /// Create a new UI context with a specific scale factor.
-  ///
-  /// Use this for HiDPI displays where UI should be scaled up for readability.
-  /// Scale of 1 = normal size, 2 = double size (crisp pixel scaling), etc.
-  pub fn new_scaled(
-    frame: &'a mut [u8],
-    frame_width: u32,
-    frame_height: u32,
-    input: UiInput,
-    font: &'a BitmapFont,
-    ui_scale: u32,
-  ) -> Self {
-    Self {
-      frame,
-      frame_width,
-      frame_height,
-      input,
-      font,
-      theme: None,
-      clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
-      current_clip: None,
-      pending_dropdowns: Vec::new(),
-      focused_dropdown_id: 0,
-      keyboard_focus: false,
-      ui_scale: ui_scale.max(1),
-      mouse_occluded: false,
-      dt: 0.0,
-    }
-  }
-
-  /// Create a new UI context with a theme.
-  pub fn with_theme(
-    frame: &'a mut [u8],
-    frame_width: u32,
-    frame_height: u32,
-    input: UiInput,
-    font: &'a BitmapFont,
-    theme: &'a Theme,
-  ) -> Self {
-    Self {
-      frame,
-      frame_width,
-      frame_height,
-      input,
-      font,
-      theme: Some(theme),
-      clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
-      current_clip: None,
-      pending_dropdowns: Vec::new(),
-      focused_dropdown_id: 0,
-      keyboard_focus: false,
-      ui_scale: 1,
-      mouse_occluded: false,
-      dt: 0.0,
-    }
-  }
-
-  /// Create a new UI context with both a theme and scale factor.
-  pub fn with_theme_scaled(
-    frame: &'a mut [u8],
-    frame_width: u32,
-    frame_height: u32,
-    input: UiInput,
-    font: &'a BitmapFont,
-    theme: &'a Theme,
-    ui_scale: u32,
-  ) -> Self {
-    Self {
-      frame,
-      frame_width,
-      frame_height,
-      input,
-      font,
-      theme: Some(theme),
-      clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
-      current_clip: None,
-      pending_dropdowns: Vec::new(),
-      focused_dropdown_id: 0,
-      keyboard_focus: false,
-      ui_scale: ui_scale.max(1),
-      mouse_occluded: false,
-      dt: 0.0,
-    }
+  /// Style the themed widgets with `theme`.
+  pub fn with_theme(mut self, theme: &'a Theme) -> Self {
+    self.theme = Some(theme);
+    self
   }
 
   /// Get the current theme, if any.
@@ -219,16 +148,16 @@ impl<'a> UiContext<'a> {
     self.theme
   }
 
-  /// Get the current UI scale factor.
-  ///
-  /// Returns 1 for normal size, 2 for double size (HiDPI), etc.
-  pub fn ui_scale(&self) -> u32 {
-    self.ui_scale
+  /// Render pixels per UI unit: the display's scale factor with the
+  /// automatic scale, or the game's `ui_scale`.
+  pub fn ui_scale(&self) -> f32 {
+    self.space.px_scale
   }
 
-  /// Get the screen dimensions.
+  /// The UI's size in UI units, rounded up.
   pub fn screen_size(&self) -> (u32, u32) {
-    (self.frame_width, self.frame_height)
+    let size = self.space.size.ceil();
+    (size.x as u32, size.y as u32)
   }
 
   /// Get the frame delta time used for UI animations (cursor blink, scroll momentum).
@@ -243,6 +172,12 @@ impl<'a> UiContext<'a> {
   /// fixed-timestep update rate.
   pub fn set_dt(&mut self, dt: f32) {
     self.dt = dt;
+  }
+
+  /// The text engine, for one measurement (`None` only if it is already in
+  /// use, which a single call never leaves it)
+  fn engine(&self) -> Option<RefMut<'_, &'a mut TextEngine>> {
+    self.text.try_borrow_mut().ok()
   }
 
   // =========================================================================
@@ -368,10 +303,7 @@ impl<'a> UiContext<'a> {
   ///
   /// All subsequent drawing will be clipped to the intersection of the
   /// current clip and this new rect. Use `pop_clip()` to restore the
-  /// previous clip state.
-  ///
-  /// # Panics
-  /// Panics if the clip stack exceeds `MAX_CLIP_STACK_DEPTH` (16 levels).
+  /// previous clip state. Clips nest without a limit.
   ///
   /// # Example
   ///
@@ -389,12 +321,6 @@ impl<'a> UiContext<'a> {
   /// ui.pop_clip();
   /// ```
   pub fn push_clip(&mut self, rect: Rect) {
-    assert!(
-      self.clip_stack.len() < MAX_CLIP_STACK_DEPTH,
-      "Clip stack overflow: exceeded {} nested clips",
-      MAX_CLIP_STACK_DEPTH
-    );
-
     self.clip_stack.push(rect);
     self.update_current_clip();
   }
@@ -402,17 +328,14 @@ impl<'a> UiContext<'a> {
   /// Pop the most recent clip rect from the stack.
   ///
   /// Restores the clip state to what it was before the corresponding
-  /// `push_clip()` call.
-  ///
-  /// # Panics
-  /// Panics if called when the clip stack is empty.
+  /// `push_clip()` call. Popping an empty stack does nothing (warned once).
   pub fn pop_clip(&mut self) {
-    assert!(
-      !self.clip_stack.is_empty(),
-      "Clip stack underflow: pop_clip() called with empty stack"
-    );
-
-    self.clip_stack.pop();
+    if self.clip_stack.pop().is_none() {
+      if !EMPTY_POP_WARNED.swap(true, Ordering::Relaxed) {
+        crate::engine_warn!(module: "ui", "pop_clip with no clip to pop; ignored");
+      }
+      return;
+    }
     self.update_current_clip();
   }
 
@@ -472,25 +395,16 @@ impl<'a> UiContext<'a> {
 
   /// Recalculate the current effective clip rect.
   fn update_current_clip(&mut self) {
-    if self.clip_stack.is_empty() {
-      self.current_clip = None;
-    } else {
-      // Start with first clip rect
-      let mut result = self.clip_stack[0];
-
-      // Intersect with all subsequent clips
-      for clip in &self.clip_stack[1..] {
-        result = Self::intersect_rects(result, *clip);
-      }
-
-      // Check if the intersection is valid (non-empty)
+    let mut clips = self.clip_stack.iter();
+    self.current_clip = clips.next().map(|first| {
+      let result = clips.fold(*first, |result, clip| Self::intersect_rects(result, *clip));
       if result.width > 0.0 && result.height > 0.0 {
-        self.current_clip = Some(result);
+        result
       } else {
         // Empty intersection - nothing visible
-        self.current_clip = Some(Rect::new(0.0, 0.0, 0.0, 0.0));
+        Rect::new(0.0, 0.0, 0.0, 0.0)
       }
-    }
+    });
   }
 
   /// Calculate the intersection of two rectangles.
@@ -506,111 +420,81 @@ impl<'a> UiContext<'a> {
     Rect::new(x, y, width, height)
   }
 
-  /// Apply clipping to a rectangle and return the visible portion.
-  ///
-  /// Returns `None` if the rect is completely outside the clip area.
-  fn clip_rect(&self, rect: Rect) -> Option<Rect> {
-    // First clip to screen bounds
-    let screen = Rect::new(0.0, 0.0, self.frame_width as f32, self.frame_height as f32);
-    let clipped = Self::intersect_rects(rect, screen);
+  /// Whether `rect` lies wholly outside the current clip (nothing of it
+  /// would show).
+  fn outside_clip(&self, rect: Rect) -> bool {
+    self.current_clip.is_some_and(|clip| {
+      clip.width <= 0.0
+        || clip.height <= 0.0
+        || rect.right() <= clip.x
+        || rect.x >= clip.right()
+        || rect.bottom() <= clip.y
+        || rect.y >= clip.bottom()
+    })
+  }
 
-    if clipped.width <= 0.0 || clipped.height <= 0.0 {
-      return None;
-    }
-
-    // Then clip to current clip rect if any
-    if let Some(clip) = self.current_clip {
-      let final_rect = Self::intersect_rects(clipped, clip);
-      if final_rect.width > 0.0 && final_rect.height > 0.0 {
-        Some(final_rect)
-      } else {
-        None
-      }
-    } else {
-      Some(clipped)
-    }
+  /// Whether `rect` has a finite position and a positive finite size
+  fn drawable(rect: Rect) -> bool {
+    rect.x.is_finite()
+      && rect.y.is_finite()
+      && rect.width.is_finite()
+      && rect.height.is_finite()
+      && rect.width > 0.0
+      && rect.height > 0.0
   }
 
   // =========================================================================
   // Shape Drawing
   // =========================================================================
 
-  /// Draw a filled rectangle.
-  ///
-  /// The rectangle is automatically clipped to the current clip rect if one
-  /// is active, and to screen bounds.
-  pub fn draw_rect(&mut self, rect: Rect, color: Color) {
-    // Apply clipping
-    let Some(clipped) = self.clip_rect(rect) else {
-      return; // Completely outside clip area
-    };
-
-    let x0 = clipped.x as i32;
-    let y0 = clipped.y as i32;
-    let x1 = clipped.right() as i32;
-    let y1 = clipped.bottom() as i32;
-
-    if x0 >= x1 || y0 >= y1 || color.a == 0 {
+  /// Record a rectangle: skipped when degenerate or outside the clip
+  fn record_rect(&mut self, rect: Rect, fill: Color, radius: f32, border: Option<(f32, Color)>) {
+    if !Self::drawable(rect) || self.outside_clip(rect) {
       return;
     }
-
-    if color.a == 255 {
-      // Opaque - direct write
-      for y in y0..y1 {
-        for x in x0..x1 {
-          let idx = (y as usize * self.frame_width as usize + x as usize) * 4;
-          self.frame[idx] = color.r;
-          self.frame[idx + 1] = color.g;
-          self.frame[idx + 2] = color.b;
-          self.frame[idx + 3] = 255;
-        }
-      }
-    } else {
-      // Alpha blending (Porter-Duff "over" operator)
-      let alpha = color.a as u16;
-      let inv_alpha = 255 - alpha;
-      for y in y0..y1 {
-        for x in x0..x1 {
-          let idx = (y as usize * self.frame_width as usize + x as usize) * 4;
-          let dst_alpha = self.frame[idx + 3] as u16;
-          self.frame[idx] =
-            ((color.r as u16 * alpha + self.frame[idx] as u16 * inv_alpha) / 255) as u8;
-          self.frame[idx + 1] =
-            ((color.g as u16 * alpha + self.frame[idx + 1] as u16 * inv_alpha) / 255) as u8;
-          self.frame[idx + 2] =
-            ((color.b as u16 * alpha + self.frame[idx + 2] as u16 * inv_alpha) / 255) as u8;
-          // Proper alpha: out_alpha = src_alpha + dst_alpha * (1 - src_alpha)
-          self.frame[idx + 3] = (alpha + dst_alpha * inv_alpha / 255).min(255) as u8;
-        }
-      }
-    }
+    self.commands.push(UiCommand::Rect {
+      rect,
+      fill,
+      radius,
+      border,
+      clip: self.current_clip,
+      layer: self.layer,
+    });
   }
 
-  /// Draw a rectangle outline (border only).
+  /// Draw a filled rectangle.
+  ///
+  /// The rectangle is clipped to the current clip rect if one is active.
+  pub fn draw_rect(&mut self, rect: Rect, color: Color) {
+    self.record_rect(rect, color, 0.0, None);
+  }
+
+  /// Draw a rectangle outline (border only), `thickness` inside the rect.
   pub fn draw_rect_outline(&mut self, rect: Rect, color: Color, thickness: f32) {
-    let t = thickness;
-    // Top
-    self.draw_rect(Rect::new(rect.x, rect.y, rect.width, t), color);
-    // Bottom
-    self.draw_rect(Rect::new(rect.x, rect.bottom() - t, rect.width, t), color);
-    // Left
-    self.draw_rect(
-      Rect::new(rect.x, rect.y + t, t, rect.height - t * 2.0),
-      color,
-    );
-    // Right
-    self.draw_rect(
-      Rect::new(rect.right() - t, rect.y + t, t, rect.height - t * 2.0),
-      color,
-    );
+    self.record_rect(rect, Color::TRANSPARENT, 0.0, Some((thickness, color)));
+  }
+
+  /// Draw a filled rectangle with corners rounded by `radius`.
+  pub fn draw_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+    self.record_rect(rect, color, radius, None);
+  }
+
+  /// Draw a filled rectangle, its corners rounded by `radius`, with a
+  /// `border_width` border inside it.
+  pub fn draw_rect_bordered(
+    &mut self,
+    rect: Rect,
+    fill: Color,
+    radius: f32,
+    border_width: f32,
+    border_color: Color,
+  ) {
+    self.record_rect(rect, fill, radius, Some((border_width, border_color)));
   }
 
   /// Draw a panel with background and optional border.
   pub fn draw_panel(&mut self, rect: Rect, bg_color: Color, border_color: Option<Color>) {
-    self.draw_rect(rect, bg_color);
-    if let Some(border) = border_color {
-      self.draw_rect_outline(rect, border, 1.0);
-    }
+    self.record_rect(rect, bg_color, 0.0, border_color.map(|c| (1.0, c)));
   }
 
   /// Draw a themed panel using the current theme.
@@ -618,10 +502,11 @@ impl<'a> UiContext<'a> {
   /// Falls back to default colors if no theme is set.
   pub fn draw_themed_panel(&mut self, rect: Rect) {
     if let Some(theme) = self.theme {
-      self.draw_rect(rect, theme.panel.background);
-      if let Some(border) = theme.panel.border {
-        self.draw_rect_outline(rect, border, theme.panel.border_thickness);
-      }
+      let border = theme
+        .panel
+        .border
+        .map(|color| (theme.panel.border_thickness, color));
+      self.record_rect(rect, theme.panel.background, 0.0, border);
     } else {
       self.draw_panel(rect, Color::PANEL_BG, Some(Color::PANEL_BORDER));
     }
@@ -691,53 +576,78 @@ impl<'a> UiContext<'a> {
   // Text Drawing
   // =========================================================================
 
-  /// Draw text at the given position.
-  ///
-  /// Text is clipped per-pixel to the current clip rect if one is active.
-  /// If UI scaling is enabled (ui_scale > 1), text is rendered at the scaled size
-  /// using nearest-neighbor interpolation for crisp pixel-art aesthetics.
-  pub fn draw_text(&mut self, text: &str, x: f32, y: f32, color: Color) {
-    // Quick bounds check if clip is active
-    if let Some(clip) = self.current_clip {
-      let (text_w, text_h) = self.text_size(text);
-      let text_rect = Rect::new(x, y, text_w as f32, text_h as f32);
+  /// The default UI style in `color`, laid out opaque, and the opacity that
+  /// carries the colour's alpha (so a fading colour reuses one cached layout)
+  fn plain_style(color: Color) -> (TextStyle, f32) {
+    (
+      TextStyle::default().color(color.with_alpha(255)),
+      f32::from(color.a) / 255.0,
+    )
+  }
 
-      // Skip if text is completely outside clip region
-      if text_rect.right() < clip.x
-        || text_rect.x > clip.right()
-        || text_rect.bottom() < clip.y
-        || text_rect.y > clip.bottom()
-      {
-        return;
-      }
-
-      // Use per-pixel clipped rendering with scaling
-      self.font.draw_text_scaled_clipped(
-        self.frame,
-        self.frame_width,
-        self.frame_height,
-        text,
-        x as i32,
-        y as i32,
-        color,
-        self.ui_scale,
-        clip.x as i32,
-        clip.y as i32,
-        clip.width as i32,
-        clip.height as i32,
-      );
-    } else {
-      self.font.draw_text_scaled(
-        self.frame,
-        self.frame_width,
-        self.frame_height,
-        text,
-        x as i32,
-        y as i32,
-        color,
-        self.ui_scale,
-      );
+  /// Lay `text` out and record it with its top-left at `origin`; its size in
+  /// UI units, or `None` when it cannot be laid out (warned once by the
+  /// engine). Text wholly outside the clip is not recorded.
+  fn record_text(
+    &mut self,
+    text: &RichText,
+    style: &TextStyle,
+    options: &TextLayoutOptions,
+    origin: Vec2,
+    opacity: f32,
+  ) -> Option<Vec2> {
+    let scale = self.space.px_scale;
+    let layout = self.engine()?.layout(text, style, options, scale)?;
+    let size = layout.size / scale;
+    if !origin.is_finite() || self.outside_clip(Rect::new(origin.x, origin.y, size.x, size.y)) {
+      return Some(size);
     }
+    self.commands.push(UiCommand::Text {
+      layout,
+      origin,
+      reveal: None,
+      opacity,
+      clip: self.current_clip,
+      layer: self.layer,
+    });
+    Some(size)
+  }
+
+  /// Draw text with its top-left at (x, y), in the default UI style
+  /// (`FontRole::Ui`, 14 px) and `color`. Newlines break lines.
+  pub fn draw_text(&mut self, text: &str, x: f32, y: f32, color: Color) {
+    let (style, opacity) = Self::plain_style(color);
+    let options = TextLayoutOptions::default();
+    self.record_text(
+      &RichText::new(text),
+      &style,
+      &options,
+      Vec2::new(x, y),
+      opacity,
+    );
+  }
+
+  /// Draw text in `style` with its top-left at (x, y).
+  pub fn draw_text_styled(&mut self, text: impl Into<RichText>, x: f32, y: f32, style: &TextStyle) {
+    let options = TextLayoutOptions::default();
+    self.record_text(&text.into(), style, &options, Vec2::new(x, y), 1.0);
+  }
+
+  /// The size of `text` in `style`, in UI units.
+  pub fn measure_text(&self, text: impl Into<RichText>, style: &TextStyle) -> Vec2 {
+    let options = TextLayoutOptions::default();
+    let scale = self.space.px_scale;
+    self.engine().map_or(Vec2::ZERO, |mut engine| {
+      engine.measure(&text.into(), style, &options, scale)
+    })
+  }
+
+  /// The height of one line of `style`, in UI units.
+  pub fn line_height(&self, style: &TextStyle) -> f32 {
+    let scale = self.space.px_scale;
+    self
+      .engine()
+      .map_or(0.0, |engine| engine.line_height(style, scale))
   }
 
   /// Draw text with anchor-based positioning.
@@ -749,65 +659,76 @@ impl<'a> UiContext<'a> {
     offset_y: f32,
     color: Color,
   ) {
-    let (text_w, text_h) = self.font.text_size(text);
+    let size = self.measure_text(text, &TextStyle::default());
     let (x, y) = anchor.calculate_position(
       offset_x,
       offset_y,
-      text_w as f32,
-      text_h as f32,
-      self.frame_width as f32,
-      self.frame_height as f32,
+      size.x,
+      size.y,
+      self.space.size.x,
+      self.space.size.y,
     );
     self.draw_text(text, x, y, color);
   }
 
-  /// Draw centered text within a rectangle.
+  /// Draw centered text within a rectangle (wrapped when it is wider).
   pub fn draw_text_centered(&mut self, text: &str, rect: Rect, color: Color) {
-    let (text_w, text_h) = self.font.text_size(text);
-    if text_w as f32 > rect.width {
+    let size = self.measure_text(text, &TextStyle::default());
+    if size.x > rect.width {
       self.draw_text_wrapped_centered(text, rect, color);
       return;
     }
-    let x = rect.x + (rect.width - text_w as f32) / 2.0;
-    let y = rect.y + (rect.height - text_h as f32) / 2.0;
-    self.draw_text(text, x, y, color);
+    let (cx, cy) = rect.center();
+    self.draw_text(text, cx - size.x / 2.0, cy - size.y / 2.0, color);
   }
 
-  /// Calculate the pixel size of text (accounting for UI scale).
+  /// The size of text in the default UI style, in UI units rounded up.
   pub fn text_size(&self, text: &str) -> (u32, u32) {
-    let (w, h) = self.font.text_size(text);
-    (w * self.ui_scale, h * self.ui_scale)
-  }
-
-  /// Calculate the pixel size of text at base scale (ignoring UI scale).
-  pub fn text_size_unscaled(&self, text: &str) -> (u32, u32) {
-    self.font.text_size(text)
+    let size = self.measure_text(text, &TextStyle::default()).ceil();
+    (size.x as u32, size.y as u32)
   }
 
   /// Wrap text to fit within a maximum width.
   ///
-  /// Returns a vector of lines that fit within `max_width` pixels.
+  /// Returns the lines (trailing spaces trimmed) that fit within `max_width`
+  /// UI units in the default UI style.
   pub fn wrap_text(&self, text: &str, max_width: u32) -> Vec<String> {
-    self.font.wrap_text(text, max_width)
+    let scale = self.space.px_scale;
+    let Some(mut engine) = self.engine() else {
+      return vec![text.to_string()];
+    };
+    engine
+      .wrap_lines(text, &TextStyle::default(), max_width as f32, scale)
+      .into_iter()
+      .map(|range| text.get(range).unwrap_or_default().trim_end().to_string())
+      .collect()
   }
 
-  /// Calculate the size of wrapped text.
+  /// The size of text wrapped to `max_width`, in UI units rounded up.
   pub fn wrapped_text_size(&self, text: &str, max_width: u32) -> (u32, u32) {
-    self.font.wrapped_text_size(text, max_width)
+    let options = TextLayoutOptions::default().wrap(max_width as f32);
+    let scale = self.space.px_scale;
+    let size = self.engine().map_or(Vec2::ZERO, |mut engine| {
+      engine.measure(&RichText::new(text), &TextStyle::default(), &options, scale)
+    });
+    let size = size.ceil();
+    (size.x as u32, size.y as u32)
   }
 
   /// Draw text with word wrapping within a maximum width.
   ///
-  /// Text is wrapped at word boundaries to fit within `max_width` pixels.
+  /// Text is wrapped at word boundaries to fit within `max_width` UI units.
   /// Long words that don't fit are broken across lines.
   pub fn draw_text_wrapped(&mut self, text: &str, x: f32, y: f32, max_width: u32, color: Color) {
-    let lines = self.font.wrap_text(text, max_width);
-    let line_height = self.font.char_height() as f32;
-
-    for (i, line) in lines.iter().enumerate() {
-      let line_y = y + (i as f32 * line_height);
-      self.draw_text(line, x, line_y, color);
-    }
+    let (style, opacity) = Self::plain_style(color);
+    let options = TextLayoutOptions::default().wrap(max_width as f32);
+    self.record_text(
+      &RichText::new(text),
+      &style,
+      &options,
+      Vec2::new(x, y),
+      opacity,
+    );
   }
 
   /// Draw wrapped text centered within a rectangle.
@@ -815,21 +736,18 @@ impl<'a> UiContext<'a> {
   /// Text is word-wrapped to fit the rectangle width, then centered both
   /// horizontally and vertically within the bounds.
   pub fn draw_text_wrapped_centered(&mut self, text: &str, rect: Rect, color: Color) {
-    let max_width = rect.width as u32;
-    let lines = self.font.wrap_text(text, max_width);
-    let line_height = self.font.char_height() as f32;
-    let line_spacing = 2.0;
-    let total_height =
-      lines.len() as f32 * line_height + (lines.len().saturating_sub(1)) as f32 * line_spacing;
-
-    let start_y = rect.y + (rect.height - total_height) / 2.0;
-
-    for (i, line) in lines.iter().enumerate() {
-      let line_width = self.font.text_width(line) as f32;
-      let line_x = rect.x + (rect.width - line_width) / 2.0;
-      let line_y = start_y + i as f32 * (line_height + line_spacing);
-      self.draw_text(line, line_x, line_y, color);
-    }
+    let (style, opacity) = Self::plain_style(color);
+    let options = TextLayoutOptions::default()
+      .wrap(rect.width)
+      .align(TextAlign::Center);
+    let text = RichText::new(text);
+    let scale = self.space.px_scale;
+    let size = self.engine().map_or(Vec2::ZERO, |mut engine| {
+      engine.measure(&text, &style, &options, scale)
+    });
+    // A centred block is as wide as its wrap width
+    let origin = Vec2::new(rect.x, rect.y + (rect.height - size.y) / 2.0);
+    self.record_text(&text, &style, &options, origin, opacity);
   }
 
   // =========================================================================
@@ -978,68 +896,98 @@ impl<'a> UiContext<'a> {
   }
 
   // =========================================================================
-  // Sprite Drawing
+  // Sprite and Line Drawing
   // =========================================================================
 
-  /// Draw a sprite at the given position.
-  pub fn draw_sprite(&mut self, sprite: &crate::core::graphics::Sprite, x: f32, y: f32) {
-    sprite.draw(
-      self.frame,
-      self.frame_width,
-      self.frame_height,
-      x as i32,
-      y as i32,
-    );
-  }
-
-  /// Draw a sprite scaled uniformly.
-  pub fn draw_sprite_scaled(
-    &mut self,
-    sprite: &crate::core::graphics::Sprite,
-    x: f32,
-    y: f32,
-    scale: f32,
-  ) {
-    sprite.draw_scaled(
-      self.frame,
-      self.frame_width,
-      self.frame_height,
-      x as i32,
-      y as i32,
-      scale,
-    );
-  }
-
-  /// Draw a sprite handle at the given position.
-  pub fn draw_sprite_handle(&mut self, handle: &crate::core::asset::SpriteHandle, x: f32, y: f32) {
-    handle.with_sprite(|sprite| {
-      sprite.draw(
-        self.frame,
-        self.frame_width,
-        self.frame_height,
-        x as i32,
-        y as i32,
-      );
+  /// Record part of a sprite (`uv`, fractions of it) stretched over `rect`
+  fn record_sprite(&mut self, sprite: &SpriteHandle, rect: Rect, uv: [f32; 4], tint: Color) {
+    if !Self::drawable(rect) || self.outside_clip(rect) {
+      return;
+    }
+    self.commands.push(UiCommand::Sprite {
+      sprite: sprite.clone(),
+      rect,
+      uv,
+      tint,
+      clip: self.current_clip,
+      layer: self.layer,
     });
   }
 
-  /// Draw a sprite handle scaled uniformly.
-  pub fn draw_sprite_handle_scaled(
+  /// Draw a sprite with its top-left at (x, y), one UI unit per texel.
+  pub fn draw_sprite(&mut self, sprite: &SpriteHandle, x: f32, y: f32) {
+    self.draw_sprite_scaled(sprite, x, y, 1.0);
+  }
+
+  /// Draw a sprite with its top-left at (x, y), scaled uniformly.
+  pub fn draw_sprite_scaled(&mut self, sprite: &SpriteHandle, x: f32, y: f32, scale: f32) {
+    let (w, h) = (sprite.width() as f32, sprite.height() as f32);
+    let rect = Rect::new(x, y, w * scale, h * scale);
+    self.record_sprite(sprite, rect, [0.0, 0.0, 1.0, 1.0], Color::WHITE);
+  }
+
+  /// Draw a sprite stretched over `rect`, tinted.
+  pub fn draw_sprite_rect(&mut self, sprite: &SpriteHandle, rect: Rect, tint: Color) {
+    self.record_sprite(sprite, rect, [0.0, 0.0, 1.0, 1.0], tint);
+  }
+
+  /// Draw a sprite as a nine-slice over `rect`: the corners at their texel
+  /// size, the edges stretched along one axis and the centre both ways.
+  /// `insets` are `[left, top, right, bottom]` in texels.
+  pub fn draw_nine_slice(
     &mut self,
-    handle: &crate::core::asset::SpriteHandle,
-    x: f32,
-    y: f32,
-    scale: f32,
+    sprite: &SpriteHandle,
+    rect: Rect,
+    insets: [f32; 4],
+    tint: Color,
   ) {
-    handle.with_sprite(|sprite| {
-      sprite.draw_scaled(
-        self.frame,
-        self.frame_width,
-        self.frame_height,
-        x as i32,
-        y as i32,
-        scale,
-      );
+    let size = Vec2::new(sprite.width() as f32, sprite.height() as f32);
+    if size.x <= 0.0 || size.y <= 0.0 || !Self::drawable(rect) {
+      return;
+    }
+    let clean = |inset: f32| {
+      if inset.is_finite() {
+        inset.max(0.0)
+      } else {
+        0.0
+      }
+    };
+    let [left, top, right, bottom] = insets.map(clean);
+    // Columns and rows: (start, length) in the rect, (start, end) in UVs
+    let span = |start: f32, length: f32, near: f32, far: f32, texels: f32| {
+      let middle = (length - near - far).max(0.0);
+      [
+        (start, near, 0.0, near / texels),
+        (start + near, middle, near / texels, 1.0 - far / texels),
+        (start + near + middle, far, 1.0 - far / texels, 1.0),
+      ]
+    };
+    let columns = span(rect.x, rect.width, left, right, size.x);
+    let rows = span(rect.y, rect.height, top, bottom, size.y);
+    for (y, height, v0, v1) in rows {
+      for (x, width, u0, u1) in columns {
+        self.record_sprite(
+          sprite,
+          Rect::new(x, y, width, height),
+          [u0, v0, u1, v1],
+          tint,
+        );
+      }
+    }
+  }
+
+  /// Draw a polyline through `points`, `width` UI units wide.
+  pub fn draw_line(&mut self, points: &[Vec2], width: f32, color: Color) {
+    if points.len() < 2 || !width.is_finite() || width <= 0.0 {
+      return;
+    }
+    self.commands.push(UiCommand::Line {
+      points: points.to_vec(),
+      width,
+      color,
+      closed: false,
+      clip: self.current_clip,
+      layer: self.layer,
     });
   }
 
@@ -1308,13 +1256,13 @@ impl<'a> UiContext<'a> {
     // Update blink timer using the real frame dt (not the user-passed dt which
     // may be the fixed-timestep dt, causing too-fast blink at high render FPS)
     state.update_blink(self.dt);
-
-    // Get padding for click position calculation
-    let (pad_x, _pad_y) = self
+    // The field's text is one line of the default UI style; every position in
+    // it comes from the text engine
+    let style = TextStyle::default();
+    let (pad_x, pad_y) = self
       .theme
       .map(|t| t.text_input.padding)
       .unwrap_or((8.0, 4.0));
-    let char_width = self.font.char_width() as f32;
     let text_x = rect.x + pad_x;
 
     // Handle focus on click
@@ -1324,34 +1272,18 @@ impl<'a> UiContext<'a> {
     if clicked {
       self.input.consume_mouse(MouseButton::Left);
       state.set_focused(true);
-
-      // Calculate which character was clicked, accounting for scroll offset
-      let mouse_x = self.input.mouse_x();
-      let relative_x = mouse_x - text_x + state.scroll_offset();
-
-      if relative_x <= 0.0 {
-        // Click before text - position at start
-        state.set_cursor_char(0, false);
-      } else {
-        // Calculate character position from click
-        let char_index = (relative_x / char_width).round() as usize;
-        let text_char_count = state.text().chars().count();
-        state.set_cursor_char(char_index.min(text_char_count), false);
-      }
+      // The character boundary nearest the click, scroll included
+      let x = self.input.mouse_x() - text_x + state.scroll_offset();
+      let byte = self.byte_at(state.text(), &style, x);
+      state.set_cursor(byte, false);
     } else if state.is_focused()
       && self.input.mouse_down(MouseButton::Left)
       && !self.input.mouse_pressed(MouseButton::Left)
     {
       // Drag-to-select: mouse held after initial click, extend selection
-      let mouse_x = self.input.mouse_x();
-      let relative_x = mouse_x - text_x + state.scroll_offset();
-      let char_index = if relative_x <= 0.0 {
-        0
-      } else {
-        let idx = (relative_x / char_width).round() as usize;
-        idx.min(state.text().chars().count())
-      };
-      state.set_cursor_char(char_index, true); // true = extend selection from anchor
+      let x = self.input.mouse_x() - text_x + state.scroll_offset();
+      let byte = self.byte_at(state.text(), &style, x);
+      state.set_cursor(byte, true); // true = extend selection from anchor
     } else if self.input.mouse_went_down(MouseButton::Left) && !hovered {
       // Click outside always unfocuses, even if click was consumed by another widget.
       // This prevents dual-focus when clicking between text inputs rendered in any order.
@@ -1418,23 +1350,17 @@ impl<'a> UiContext<'a> {
         )
       };
 
-    // Get padding from theme or default
-    let (pad_x, pad_y) = self
-      .theme
-      .map(|t| t.text_input.padding)
-      .unwrap_or((8.0, 4.0));
     let border_thickness = self
       .theme
       .map(|t| t.text_input.border_thickness)
       .unwrap_or(1.0);
 
-    // Draw background and border
-    self.draw_rect(rect, bg_color);
-    self.draw_rect_outline(rect, border_color, border_thickness);
+    // Background and border
+    self.draw_rect_bordered(rect, bg_color, 0.0, border_thickness, border_color);
 
-    // Calculate text area (inside padding)
-    let text_x = rect.x + pad_x;
-    let text_y = rect.y + (rect.height - self.font.char_height() as f32) / 2.0;
+    // The text line, centred vertically
+    let line_height = self.line_height(&style);
+    let text_y = rect.y + (rect.height - line_height) / 2.0;
     let text_width = rect.width - pad_x * 2.0;
 
     // Clip to text area for overflow handling
@@ -1446,21 +1372,22 @@ impl<'a> UiContext<'a> {
     );
     self.push_clip(text_area);
 
-    let char_width = self.font.char_width() as f32;
-
-    // Ensure cursor is visible (adjusts scroll offset for overflow)
-    state.ensure_cursor_visible(text_width, char_width);
+    // The caret, after any IME preedit being composed at it, kept in view
+    let preedit = self.input.ime_preedit().to_owned();
+    let preedit_width = if preedit.is_empty() {
+      0.0
+    } else {
+      self.measure_text(preedit.as_str(), &style).x
+    };
+    let caret_x = self.caret_x(state.text(), &style, state.cursor());
+    state.ensure_cursor_visible(caret_x + preedit_width, text_width);
     let scroll = state.scroll_offset();
     let text = state.text();
 
     // Draw selection highlight if any
     if let Some((sel_start, sel_end)) = state.selection_range() {
-      // Calculate pixel positions for selection
-      let start_chars = text[..sel_start].chars().count();
-      let end_chars = text[..sel_end].chars().count();
-      let sel_x = text_x + start_chars as f32 * char_width - scroll;
-      let sel_width = (end_chars - start_chars) as f32 * char_width;
-      let sel_rect = Rect::new(sel_x, text_y, sel_width, self.font.char_height() as f32);
+      let (left, right) = self.selection_x(text, &style, sel_start..sel_end);
+      let sel_rect = Rect::new(text_x + left - scroll, text_y, right - left, line_height);
       self.draw_rect(sel_rect, selection_color);
     }
 
@@ -1471,22 +1398,12 @@ impl<'a> UiContext<'a> {
       // Draw the text content, shifted by scroll offset
       self.draw_text(text, text_x - scroll, text_y, text_color);
 
-      // Draw IME preedit text at cursor if composing
-      let preedit = self.input.ime_preedit().to_owned();
+      // Draw IME preedit text at the caret, underlined
       if !preedit.is_empty() {
-        let cursor_chars = text[..state.cursor()].chars().count();
-        let preedit_x = text_x + cursor_chars as f32 * char_width - scroll;
-        // Draw preedit with underline-style indicator
+        let preedit_x = text_x + caret_x - scroll;
         self.draw_text(&preedit, preedit_x, text_y, text_color);
-        // Draw underline for preedit text
-        let preedit_width = preedit.chars().count() as f32 * char_width;
         self.draw_rect(
-          Rect::new(
-            preedit_x,
-            text_y + self.font.char_height() as f32 - 1.0,
-            preedit_width,
-            1.0,
-          ),
+          Rect::new(preedit_x, text_y + line_height - 1.0, preedit_width, 1.0),
           cursor_color,
         );
       }
@@ -1494,17 +1411,43 @@ impl<'a> UiContext<'a> {
 
     // Draw cursor if focused and visible (blinking)
     if state.should_draw_cursor() && !state.has_selection() {
-      let cursor_chars = text[..state.cursor()].chars().count();
-      // Account for preedit text when positioning cursor
-      let preedit_chars = self.input.ime_preedit().chars().count();
-      let cursor_x = text_x + (cursor_chars + preedit_chars) as f32 * char_width - scroll;
-      let cursor_rect = Rect::new(cursor_x, text_y, 2.0, self.font.char_height() as f32);
+      let cursor_x = text_x + caret_x + preedit_width - scroll;
+      let cursor_rect = Rect::new(cursor_x, text_y, 2.0, line_height);
       self.draw_rect(cursor_rect, cursor_color);
     }
 
     self.pop_clip();
 
     modified
+  }
+
+  /// The caret's x before `byte` of one line of `text`, in UI units
+  fn caret_x(&self, text: &str, style: &TextStyle, byte: usize) -> f32 {
+    let scale = self.space.px_scale;
+    self
+      .engine()
+      .map_or(0.0, |mut engine| engine.caret_x(text, style, byte, scale))
+  }
+
+  /// The character boundary nearest `x` (UI units) on one line of `text`
+  fn byte_at(&self, text: &str, style: &TextStyle, x: f32) -> usize {
+    let scale = self.space.px_scale;
+    self
+      .engine()
+      .map_or(0, |mut engine| engine.byte_at(text, style, x, scale))
+  }
+
+  /// The left and right x (UI units) of a selection on one line of `text`
+  fn selection_x(
+    &self,
+    text: &str,
+    style: &TextStyle,
+    range: std::ops::Range<usize>,
+  ) -> (f32, f32) {
+    let scale = self.space.px_scale;
+    self.engine().map_or((0.0, 0.0), |mut engine| {
+      engine.selection_x(text, style, range, scale)
+    })
   }
 
   // =========================================================================
@@ -2246,8 +2189,8 @@ impl<'a> UiContext<'a> {
   /// ```
   pub fn draw_modal_overlay(&mut self, dim_color: Color) {
     self.with_no_clip(|ui| {
-      let (w, h) = ui.screen_size();
-      ui.draw_rect(Rect::new(0.0, 0.0, w as f32, h as f32), dim_color);
+      let size = ui.space.size;
+      ui.draw_rect(Rect::new(0.0, 0.0, size.x, size.y), dim_color);
     });
   }
 
@@ -2259,7 +2202,7 @@ impl<'a> UiContext<'a> {
       Some(clip) => clip.contains(x, y),
       None => {
         // Check screen bounds
-        x >= 0.0 && y >= 0.0 && x < self.frame_width as f32 && y < self.frame_height as f32
+        x >= 0.0 && y >= 0.0 && x < self.space.size.x && y < self.space.size.y
       }
     }
   }
@@ -2406,21 +2349,328 @@ impl<'a> UiContext<'a> {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use crate::core::input::Input;
+  use std::sync::Arc;
+
+  use glam::Vec2;
   use winit::event::ElementState;
 
-  fn create_test_context(width: u32, height: u32, frame: &mut [u8]) -> UiContext<'_> {
-    let font = super::super::font::create_debug_font();
-    let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
+  use super::*;
+  use crate::core::asset::SpriteHandle;
+  use crate::core::graphics::Sprite;
+  use crate::core::input::Input;
+  use crate::core::render::UiSpace;
+  use crate::core::text::{TextEngine, TextLayout, TextStyle};
+  use crate::core::ui::immediate::{UiCommand, UiCommands};
+  use crate::core::ui::test_util::{context as ui_context, text_engine};
 
-    UiContext::new(frame, width, height, UiInput::default(), font_ref)
+  fn context<'a>(c: &'a mut UiCommands, t: &'a mut TextEngine) -> UiContext<'a> {
+    ui_context(c, t, (320.0, 180.0))
+  }
+
+  /// A context `size` UI units at `px_scale`, reading `input`
+  fn context_with<'a>(
+    commands: &'a mut UiCommands,
+    text: &'a mut TextEngine,
+    size: (f32, f32),
+    px_scale: f32,
+    input: UiInput,
+  ) -> UiContext<'a> {
+    let space = UiSpace {
+      size: Vec2::new(size.0, size.1),
+      px_scale,
+      image: (
+        (size.0 * px_scale).ceil() as u32,
+        (size.1 * px_scale).ceil() as u32,
+      ),
+      mouse_scale: 1.0,
+    };
+    UiContext::new(commands, text, space, input)
+  }
+
+  /// Input with the mouse at (x, y) and, if `press`, the left button just
+  /// pressed
+  fn mouse_at(x: f32, y: f32, press: bool) -> UiInput {
+    let mut input = Input::new();
+    input.handle_mouse_move(x as f64, y as f64);
+    if press {
+      input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    }
+    UiInput::snapshot(&input)
+  }
+
+  /// The rect commands' rects, in order
+  fn rects(commands: &UiCommands) -> Vec<Rect> {
+    commands
+      .iter()
+      .filter_map(|command| match command {
+        UiCommand::Rect { rect, .. } => Some(*rect),
+        _ => None,
+      })
+      .collect()
+  }
+
+  // ==========================================================================
+  // Recording
+  // ==========================================================================
+
+  #[test]
+  fn drawing_records_commands_in_order() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    ui.draw_rect(Rect::new(1.0, 2.0, 3.0, 4.0), Color::RED);
+    ui.draw_text("hi", 5.0, 6.0, Color::WHITE);
+    drop(ui);
+    let kinds: Vec<&str> = commands.iter().map(UiCommand::kind_name).collect();
+    assert_eq!(kinds, vec!["rect", "text"]);
   }
 
   #[test]
+  fn clips_nest_without_a_limit_and_an_empty_pop_warns_once() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    for i in 0..40 {
+      ui.push_clip(Rect::new(i as f32, 0.0, 200.0, 100.0));
+    }
+    // Inside the nested clip (a rect wholly outside it is skipped)
+    ui.draw_rect(Rect::new(50.0, 0.0, 10.0, 10.0), Color::RED);
+    for _ in 0..42 {
+      ui.pop_clip();
+    }
+    drop(ui);
+    assert_eq!(
+      commands.iter().next().and_then(UiCommand::clip),
+      Some(Rect::new(39.0, 0.0, 161.0, 100.0))
+    );
+    let warned = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains("pop_clip with no clip"))
+      .count();
+    assert_eq!(warned, 1);
+  }
+
+  #[test]
+  fn measured_and_drawn_text_agree() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    let (w, h) = ui.text_size("Measure me");
+    let measured = ui.measure_text("Measure me", &TextStyle::default());
+    assert_eq!((w, h), (measured.x.ceil() as u32, measured.y.ceil() as u32));
+    ui.draw_text_anchored("Measure me", Anchor::Center, 0.0, 0.0, Color::WHITE);
+    drop(ui);
+    let origin = commands.iter().find_map(UiCommand::text_origin).unwrap();
+    assert!((origin.x - (160.0 - measured.x / 2.0)).abs() < 0.01);
+  }
+
+  #[test]
+  fn draw_rect_outline_is_one_bordered_command() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    ui.draw_rect_outline(Rect::new(0.0, 0.0, 20.0, 10.0), Color::WHITE, 2.0);
+    drop(ui);
+    assert_eq!(commands.iter().count(), 1);
+  }
+
+  #[test]
+  fn degenerate_rects_and_rects_outside_the_clip_are_skipped() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    ui.draw_rect(Rect::new(0.0, 0.0, 0.0, 10.0), Color::RED);
+    ui.draw_rect(Rect::new(0.0, 0.0, -5.0, 10.0), Color::RED);
+    ui.draw_rect(Rect::new(f32::NAN, 0.0, 5.0, 10.0), Color::RED);
+    ui.draw_rect(Rect::new(0.0, 0.0, f32::INFINITY, 10.0), Color::RED);
+    ui.push_clip(Rect::new(100.0, 100.0, 50.0, 50.0));
+    ui.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), Color::RED);
+    ui.draw_rect(Rect::new(140.0, 140.0, 20.0, 20.0), Color::GREEN);
+    drop(ui);
+    assert_eq!(rects(&commands), [Rect::new(140.0, 140.0, 20.0, 20.0)]);
+  }
+
+  #[test]
+  fn panels_and_rounded_rects_record_their_radius_and_border() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    let rect = Rect::new(10.0, 10.0, 40.0, 20.0);
+    ui.draw_panel(rect, Color::BLUE, Some(Color::WHITE));
+    ui.draw_rounded_rect(rect, 6.0, Color::RED);
+    ui.draw_rect_bordered(rect, Color::GREEN, 4.0, 2.0, Color::BLACK);
+    drop(ui);
+    type Look = (Color, f32, Option<(f32, Color)>);
+    let looks: Vec<Look> = commands
+      .iter()
+      .filter_map(|command| match command {
+        UiCommand::Rect {
+          fill,
+          radius,
+          border,
+          ..
+        } => Some((*fill, *radius, *border)),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(
+      looks,
+      [
+        (Color::BLUE, 0.0, Some((1.0, Color::WHITE))),
+        (Color::RED, 6.0, None),
+        (Color::GREEN, 4.0, Some((2.0, Color::BLACK))),
+      ]
+    );
+  }
+
+  #[test]
+  fn the_modal_overlay_covers_the_whole_ui_whatever_the_clip() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    ui.push_clip(Rect::new(10.0, 10.0, 20.0, 20.0));
+    ui.draw_modal_overlay(Color::new(0, 0, 0, 128));
+    assert_eq!(ui.clip_depth(), 1, "the clip comes back");
+    drop(ui);
+    let overlay = commands.iter().next().unwrap();
+    assert_eq!(overlay.clip(), None);
+    assert_eq!(rects(&commands), [Rect::new(0.0, 0.0, 320.0, 180.0)]);
+  }
+
+  #[test]
+  fn sprites_record_their_rect_and_a_nine_slice_records_nine() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(16, 8, 255, 255, 255, 255), "s");
+    ui.draw_sprite(&sprite, 1.0, 2.0);
+    ui.draw_sprite_scaled(&sprite, 1.0, 2.0, 2.0);
+    ui.draw_sprite_rect(&sprite, Rect::new(0.0, 0.0, 5.0, 5.0), Color::RED);
+    drop(ui);
+    let sprites: Vec<(Rect, [f32; 4], Color)> = commands
+      .iter()
+      .filter_map(|command| match command {
+        UiCommand::Sprite { rect, uv, tint, .. } => Some((*rect, *uv, *tint)),
+        _ => None,
+      })
+      .collect();
+    let full = [0.0, 0.0, 1.0, 1.0];
+    assert_eq!(
+      sprites,
+      [
+        (Rect::new(1.0, 2.0, 16.0, 8.0), full, Color::WHITE),
+        (Rect::new(1.0, 2.0, 32.0, 16.0), full, Color::WHITE),
+        (Rect::new(0.0, 0.0, 5.0, 5.0), full, Color::RED),
+      ]
+    );
+
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    ui.draw_nine_slice(
+      &sprite,
+      Rect::new(0.0, 0.0, 100.0, 50.0),
+      [4.0, 2.0, 4.0, 2.0],
+      Color::WHITE,
+    );
+    drop(ui);
+    let pieces: Vec<(Rect, [f32; 4])> = commands
+      .iter()
+      .filter_map(|command| match command {
+        UiCommand::Sprite { rect, uv, .. } => Some((*rect, *uv)),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(pieces.len(), 9);
+    // Corners at their pixel size, the centre stretched both ways
+    assert_eq!(
+      pieces[0],
+      (Rect::new(0.0, 0.0, 4.0, 2.0), [0.0, 0.0, 0.25, 0.25])
+    );
+    assert_eq!(
+      pieces[4],
+      (Rect::new(4.0, 2.0, 92.0, 46.0), [0.25, 0.25, 0.75, 0.75])
+    );
+    assert_eq!(
+      pieces[8],
+      (Rect::new(96.0, 48.0, 4.0, 2.0), [0.75, 0.75, 1.0, 1.0])
+    );
+    let area: f32 = pieces.iter().map(|(r, _)| r.width * r.height).sum();
+    assert_eq!(area, 100.0 * 50.0, "the pieces tile the rect");
+  }
+
+  #[test]
+  fn lines_need_two_points_and_a_positive_width() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    let two = [Vec2::ZERO, Vec2::new(10.0, 10.0)];
+    ui.draw_line(&two[..1], 2.0, Color::WHITE);
+    ui.draw_line(&two, 0.0, Color::WHITE);
+    ui.draw_line(&two, f32::NAN, Color::WHITE);
+    ui.draw_line(&two, 2.0, Color::WHITE);
+    drop(ui);
+    let kinds: Vec<&str> = commands.iter().map(UiCommand::kind_name).collect();
+    assert_eq!(kinds, ["line"]);
+  }
+
+  #[test]
+  fn translucent_shorthand_text_fades_through_opacity() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    ui.draw_text("fading", 0.0, 0.0, Color::new(255, 255, 255, 51));
+    ui.draw_text("fading", 0.0, 0.0, Color::new(255, 255, 255, 204));
+    drop(ui);
+    let drawn: Vec<(f32, Color, *const TextLayout)> = commands
+      .iter()
+      .filter_map(|command| match command {
+        UiCommand::Text {
+          layout, opacity, ..
+        } => Some((*opacity, layout.styles[0].color, Arc::as_ptr(layout))),
+        _ => None,
+      })
+      .collect();
+    assert!((drawn[0].0 - 0.2).abs() < 1e-6 && (drawn[1].0 - 0.8).abs() < 1e-6);
+    assert_eq!(drawn[0].1, Color::WHITE, "laid out opaque");
+    assert_eq!(drawn[0].2, drawn[1].2, "one cached layout for every alpha");
+  }
+
+  #[test]
+  fn text_is_laid_out_at_the_ui_scale_and_measured_in_ui_units() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let at_one = {
+      let ui = context(&mut commands, &mut text);
+      ui.measure_text("Scale", &TextStyle::default())
+    };
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (320.0, 180.0),
+      2.0,
+      UiInput::default(),
+    );
+    assert_eq!(ui.ui_scale(), 2.0);
+    let at_two = ui.measure_text("Scale", &TextStyle::default());
+    assert!(
+      (at_one - at_two).abs().max_element() < 1.0,
+      "{at_one} vs {at_two}"
+    );
+    ui.draw_text("Scale", 0.0, 0.0, Color::WHITE);
+    drop(ui);
+    let scale = commands.iter().find_map(|command| match command {
+      UiCommand::Text { layout, .. } => Some(layout.scale),
+      _ => None,
+    });
+    assert_eq!(scale, Some(2.0), "glyphs at render pixels");
+  }
+
+  #[test]
+  fn newlines_break_lines() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let ui = context(&mut commands, &mut text);
+    let one = ui.text_size("a");
+    let two = ui.text_size("a\nb");
+    assert!(two.1 + 1 >= one.1 * 2, "{one:?} {two:?}");
+  }
+
+  // ==========================================================================
+  // Clipping
+  // ==========================================================================
+
+  #[test]
   fn clip_stack_push_pop() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let mut ui = create_test_context(100, 100, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
 
     assert_eq!(ui.clip_depth(), 0);
     assert!(!ui.has_clip());
@@ -2437,26 +2687,19 @@ mod tests {
 
   #[test]
   fn nested_clips_intersect() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let mut ui = create_test_context(100, 100, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
 
-    // First clip: 10,10 to 60,60
     ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
-    // Second clip: 30,30 to 80,80
     ui.push_clip(Rect::new(30.0, 30.0, 50.0, 50.0));
 
-    // Intersection should be: 30,30 to 60,60 (30x30)
-    let clip = ui.current_clip().unwrap();
-    assert_eq!(clip.x, 30.0);
-    assert_eq!(clip.y, 30.0);
-    assert_eq!(clip.width, 30.0);
-    assert_eq!(clip.height, 30.0);
+    assert_eq!(ui.current_clip(), Some(Rect::new(30.0, 30.0, 30.0, 30.0)));
   }
 
   #[test]
   fn clear_clips_resets_stack() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let mut ui = create_test_context(100, 100, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
 
     ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
     ui.push_clip(Rect::new(20.0, 20.0, 30.0, 30.0));
@@ -2469,8 +2712,8 @@ mod tests {
 
   #[test]
   fn with_no_clip_restores_state() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let mut ui = create_test_context(100, 100, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
 
     ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
     let original_clip = ui.current_clip();
@@ -2487,8 +2730,8 @@ mod tests {
 
   #[test]
   fn point_in_clip_checks_bounds() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let mut ui = create_test_context(100, 100, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
 
     // No clip - check screen bounds
     assert!(ui.point_in_clip(50.0, 50.0));
@@ -2497,125 +2740,146 @@ mod tests {
 
     // With clip
     ui.push_clip(Rect::new(20.0, 20.0, 40.0, 40.0));
-    assert!(ui.point_in_clip(30.0, 30.0)); // Inside clip
-    assert!(!ui.point_in_clip(10.0, 30.0)); // Left of clip
-    assert!(!ui.point_in_clip(70.0, 30.0)); // Right of clip
+    assert!(ui.point_in_clip(30.0, 30.0));
+    assert!(!ui.point_in_clip(10.0, 30.0));
+    assert!(!ui.point_in_clip(70.0, 30.0));
   }
 
   #[test]
   fn empty_clip_intersection() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let mut ui = create_test_context(100, 100, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
 
-    // Two non-overlapping clips
-    ui.push_clip(Rect::new(10.0, 10.0, 20.0, 20.0)); // 10,10 to 30,30
-    ui.push_clip(Rect::new(50.0, 50.0, 20.0, 20.0)); // 50,50 to 70,70
+    ui.push_clip(Rect::new(10.0, 10.0, 20.0, 20.0));
+    ui.push_clip(Rect::new(50.0, 50.0, 20.0, 20.0));
 
-    // Intersection is empty
     let clip = ui.current_clip().unwrap();
     assert!(clip.width == 0.0 || clip.height == 0.0);
   }
 
   #[test]
   fn rect_intersection_calculation() {
-    // Overlapping rects
     let a = Rect::new(10.0, 10.0, 50.0, 50.0);
     let b = Rect::new(30.0, 30.0, 50.0, 50.0);
-    let result = UiContext::intersect_rects(a, b);
-    assert_eq!(result.x, 30.0);
-    assert_eq!(result.y, 30.0);
-    assert_eq!(result.width, 30.0);
-    assert_eq!(result.height, 30.0);
+    assert_eq!(
+      UiContext::intersect_rects(a, b),
+      Rect::new(30.0, 30.0, 30.0, 30.0)
+    );
 
-    // Non-overlapping rects
     let c = Rect::new(0.0, 0.0, 10.0, 10.0);
     let d = Rect::new(20.0, 20.0, 10.0, 10.0);
-    let result2 = UiContext::intersect_rects(c, d);
-    assert!(result2.width == 0.0 || result2.height == 0.0);
+    let result = UiContext::intersect_rects(c, d);
+    assert!(result.width == 0.0 || result.height == 0.0);
+  }
+
+  // ==========================================================================
+  // Measuring and wrapping
+  // ==========================================================================
+
+  #[test]
+  fn wrap_text_breaks_between_words() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
+    assert_eq!(ui.wrap_text("Hello World", 50), ["Hello", "World"]);
   }
 
   #[test]
-  fn wrap_text_delegates_to_font() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let ui = create_test_context(100, 100, &mut frame);
-
-    // Basic wrapping test
-    let lines = ui.wrap_text("Hello World", 50);
-    assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0], "Hello");
-    assert_eq!(lines[1], "World");
-  }
-
-  #[test]
-  fn wrapped_text_size_delegates_to_font() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let ui = create_test_context(100, 100, &mut frame);
-
-    // 8px char width, "Hello" = 40px, wraps to 2 lines at 50px width
+  fn wrapped_text_size_is_narrow_and_two_lines_tall() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
     let (w, h) = ui.wrapped_text_size("Hello World", 50);
-    assert_eq!(w, 40); // "Hello" or "World" width
-    assert_eq!(h, 16); // 2 lines * 8px
+    let line = ui.line_height(&TextStyle::default());
+    assert!(w > 0 && w <= 50, "{w}");
+    assert!((h as f32 - 2.0 * line).abs() <= 1.0, "{h} vs {line}");
   }
 
   #[test]
-  fn text_size_calculates_correctly() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let ui = create_test_context(100, 100, &mut frame);
-
+  fn text_size_is_the_measured_size_rounded_up() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
     let (w, h) = ui.text_size("Test");
-    assert_eq!(w, 32); // 4 chars * 8px
-    assert_eq!(h, 8); // 1 line * 8px
+    let size = ui.measure_text("Test", &TextStyle::default());
+    assert_eq!((w, h), (size.x.ceil() as u32, size.y.ceil() as u32));
+    assert!(w > 0);
+    assert_eq!(h, ui.line_height(&TextStyle::default()).ceil() as u32);
+  }
+
+  #[test]
+  fn ui_context_default_scale_is_1() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let ui = ui_context(&mut commands, &mut text, (100.0, 100.0));
+    assert_eq!(ui.ui_scale(), 1.0);
+    assert_eq!(ui.screen_size(), (100, 100));
+  }
+
+  #[test]
+  fn the_mouse_is_read_in_ui_units() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let space = UiSpace {
+      size: Vec2::new(160.0, 90.0),
+      px_scale: 2.0,
+      image: (320, 180),
+      mouse_scale: 0.5,
+    };
+    let ui = UiContext::new(
+      &mut commands,
+      &mut text,
+      space,
+      mouse_at(100.0, 60.0, false),
+    );
+    assert_eq!(ui.input().mouse_position(), (50.0, 30.0));
+    assert!(ui.is_hovered(Rect::new(45.0, 25.0, 10.0, 10.0)));
   }
 
   // ==========================================================================
-  // Click Consumption Tests
+  // Click consumption
   // ==========================================================================
-
-  /// Create a test context with a mouse click at the given position.
-  fn create_test_context_with_click(
-    width: u32,
-    height: u32,
-    frame: &mut [u8],
-    click_x: f32,
-    click_y: f32,
-  ) -> UiContext<'_> {
-    let mut input = Input::new();
-    input.handle_mouse_move(click_x as f64, click_y as f64);
-    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
-    let font = super::super::font::create_debug_font();
-    let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
-    UiContext::new(frame, width, height, UiInput::snapshot(&input), font_ref)
-  }
 
   #[test]
   fn button_consumes_click() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let clicked = ui.button("Test", rect);
-
-    assert!(clicked, "Button should register click");
+    assert!(ui.button("Test", rect), "Button should register click");
     assert!(ui.click_consumed(), "Click should be consumed after button");
   }
 
   #[test]
   fn second_button_does_not_fire_after_consumed() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let first = ui.button("First", rect);
-    let second = ui.button("Second", rect);
-
-    assert!(first, "First button should fire");
-    assert!(!second, "Second overlapping button should NOT fire");
+    assert!(ui.button("First", rect), "First button should fire");
+    assert!(
+      !ui.button("Second", rect),
+      "Second overlapping button should NOT fire"
+    );
   }
 
   #[test]
   fn button_styled_consumes_click() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
     let clicked = ui.button_styled(
@@ -2633,8 +2897,14 @@ mod tests {
 
   #[test]
   fn checkbox_consumes_click() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
     let mut checked = false;
@@ -2647,8 +2917,14 @@ mod tests {
 
   #[test]
   fn toggle_consumes_click() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
     let mut on = false;
@@ -2661,8 +2937,14 @@ mod tests {
 
   #[test]
   fn text_input_consumes_click() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
     let mut state = TextInputState::new();
@@ -2674,21 +2956,27 @@ mod tests {
 
   #[test]
   fn consume_click_prevents_button() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     ui.consume_click();
-
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let clicked = ui.button("Test", rect);
-
-    assert!(!clicked, "Button should not fire after consume_click");
+    assert!(
+      !ui.button("Test", rect),
+      "Button should not fire after consume_click"
+    );
   }
 
   #[test]
   fn consume_escape_sets_flag() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context(200, 200, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (200.0, 200.0));
 
     assert!(!ui.escape_consumed());
     ui.consume_escape();
@@ -2697,12 +2985,16 @@ mod tests {
 
   #[test]
   fn checkbox_not_toggled_when_click_consumed() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
-    // First widget consumes the click
     ui.consume_click();
-
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
     let mut checked = false;
     let toggled = ui.checkbox(rect, &mut checked, None);
@@ -2713,20 +3005,25 @@ mod tests {
 
   #[test]
   fn text_input_unfocuses_even_when_click_consumed() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    // Click at position outside the text input rect
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 180.0, 180.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    // Click outside the text input rect
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(180.0, 180.0, true),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 30.0);
     let mut state = TextInputState::new();
     state.set_focused(true);
 
-    // First, consume the click (simulating another widget handled it)
+    // Another widget handled the click first
     ui.consume_click();
 
-    // Text input should STILL unfocus — clicking outside always unfocuses,
-    // regardless of consumption. This prevents dual-focus when clicking
-    // between text inputs rendered in any order.
+    // Clicking outside always unfocuses, consumed or not, so two fields
+    // drawn in any order are never both focused
     ui.text_input(&mut state, rect, "placeholder", 0.016);
     assert!(
       !state.is_focused(),
@@ -2736,20 +3033,23 @@ mod tests {
 
   #[test]
   fn clicking_second_text_input_unfocuses_first() {
-    // Simulate two text inputs where field B is rendered before field A.
-    // Clicking on field B should focus B and unfocus A.
-    let mut frame = vec![0u8; 400 * 200 * 4];
-    // Click at position inside field B (right side)
-    let mut ui = create_test_context_with_click(400, 200, &mut frame, 250.0, 20.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    // A click inside field B, which is drawn before field A
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (400.0, 200.0),
+      1.0,
+      mouse_at(250.0, 20.0, true),
+    );
 
     let rect_a = Rect::new(10.0, 10.0, 150.0, 30.0);
     let rect_b = Rect::new(200.0, 10.0, 150.0, 30.0);
 
     let mut state_a = TextInputState::new();
     let mut state_b = TextInputState::new();
-    state_a.set_focused(true); // A was previously focused
+    state_a.set_focused(true);
 
-    // Render B first (it gets the click), then A
     ui.text_input(&mut state_b, rect_b, "Field B", 0.016);
     ui.text_input(&mut state_a, rect_a, "Field A", 0.016);
 
@@ -2758,118 +3058,96 @@ mod tests {
   }
 
   // ==========================================================================
-  // DPI/UI Scale Tests
+  // The text input's geometry
   // ==========================================================================
 
-  fn create_test_context_scaled(
-    width: u32,
-    height: u32,
-    frame: &mut [u8],
-    scale: u32,
-  ) -> UiContext<'_> {
-    let font = super::super::font::create_debug_font();
-    let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
-
-    UiContext::new_scaled(frame, width, height, UiInput::default(), font_ref, scale)
-  }
+  /// Where a text input's text starts: the theme-less padding
+  const PAD_X: f32 = 8.0;
 
   #[test]
-  fn ui_context_default_scale_is_1() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let ui = create_test_context(100, 100, &mut frame);
-
-    assert_eq!(ui.ui_scale(), 1, "Default UI scale should be 1");
-  }
-
-  #[test]
-  fn ui_context_scaled_stores_scale() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let ui = create_test_context_scaled(100, 100, &mut frame, 2);
-
-    assert_eq!(ui.ui_scale(), 2, "UI scale should be 2");
-  }
-
-  #[test]
-  fn ui_context_scaled_3x() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let ui = create_test_context_scaled(100, 100, &mut frame, 3);
-
-    assert_eq!(ui.ui_scale(), 3, "UI scale should be 3");
-  }
-
-  #[test]
-  fn text_size_respects_ui_scale_2x() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let ui = create_test_context_scaled(200, 200, &mut frame, 2);
-
-    let (w, h) = ui.text_size("Test");
-    // At 2x scale, text should be 2x larger
-    assert_eq!(w, 64); // 4 chars * 8px * 2 = 64
-    assert_eq!(h, 16); // 1 line * 8px * 2 = 16
-  }
-
-  #[test]
-  fn text_size_respects_ui_scale_1x() {
-    let mut frame = vec![0u8; 100 * 100 * 4];
-    let ui = create_test_context_scaled(100, 100, &mut frame, 1);
-
-    let (w, h) = ui.text_size("Test");
-    // At 1x scale, text should be normal size
-    assert_eq!(w, 32); // 4 chars * 8px = 32
-    assert_eq!(h, 8); // 1 line * 8px = 8
-  }
-
-  #[test]
-  fn draw_text_at_2x_scale_draws_larger() {
-    let mut frame_1x = vec![0u8; 100 * 100 * 4];
-    let mut frame_2x = vec![0u8; 100 * 100 * 4];
-
-    {
-      let mut ui_1x = create_test_context_scaled(100, 100, &mut frame_1x, 1);
-      ui_1x.draw_text("A", 10.0, 10.0, Color::WHITE);
+  fn a_click_puts_the_caret_at_the_nearest_character_boundary() {
+    let mut text = text_engine();
+    let style = TextStyle::default();
+    let field = Rect::new(10.0, 10.0, 200.0, 30.0);
+    for content in ["hello world", "héllo wörld"] {
+      // The caret x before the 5th character
+      let byte = content.char_indices().nth(5).unwrap().0;
+      let x = text.caret_x(content, &style, byte, 1.0);
+      let mut commands = UiCommands::default();
+      let mut ui = context_with(
+        &mut commands,
+        &mut text,
+        (320.0, 180.0),
+        1.0,
+        mouse_at(field.x + PAD_X + x + 0.4, 20.0, true),
+      );
+      let mut state = TextInputState::with_text(content);
+      ui.text_input(&mut state, field, "", 0.0);
+      assert_eq!(state.cursor(), byte, "{content}");
+      assert!(content.is_char_boundary(state.cursor()));
     }
-    {
-      let mut ui_2x = create_test_context_scaled(100, 100, &mut frame_2x, 2);
-      ui_2x.draw_text("A", 10.0, 10.0, Color::WHITE);
-    }
+  }
 
-    // Count non-zero pixels
-    let pixels_1x = frame_1x.iter().filter(|&&p| p != 0).count();
-    let pixels_2x = frame_2x.iter().filter(|&&p| p != 0).count();
-
-    // 2x scale should have approximately 4x the pixels (2x width * 2x height)
-    assert!(pixels_2x > pixels_1x, "2x scale should draw more pixels");
-    // Approximately 4x, give some tolerance for anti-aliasing
-    let ratio = pixels_2x as f64 / pixels_1x as f64;
+  #[test]
+  fn the_caret_is_drawn_at_the_text_engines_caret_x() {
+    let mut text = text_engine();
+    let style = TextStyle::default();
+    let field = Rect::new(10.0, 10.0, 200.0, 30.0);
+    let content = "Wide caret";
+    let expected = text.caret_x(content, &style, 4, 1.0);
+    let line = text.line_height(&style, 1.0);
+    let mut commands = UiCommands::default();
+    let mut ui = context(&mut commands, &mut text);
+    let mut state = TextInputState::with_text(content);
+    state.set_cursor(4, false);
+    state.set_focused(true);
+    ui.text_input(&mut state, field, "", 0.0);
+    drop(ui);
+    // The caret: the last rect, 2 wide, a line tall
+    let caret = *rects(&commands).last().unwrap();
     assert!(
-      ratio > 3.0 && ratio < 5.0,
-      "2x scale should have ~4x pixels, got {}",
-      ratio
+      (caret.x - (field.x + PAD_X + expected)).abs() < 0.01,
+      "{caret:?}"
     );
+    assert_eq!((caret.width, caret.height), (2.0, line));
+    assert!((caret.y - (field.y + (field.height - line) / 2.0)).abs() < 0.01);
   }
 
-  // =========================================================================
-  // Mouse Occlusion Tests
-  // =========================================================================
-
-  fn create_test_context_with_hover(
-    width: u32,
-    height: u32,
-    frame: &mut [u8],
-    hover_x: f32,
-    hover_y: f32,
-  ) -> UiContext<'_> {
-    let mut input = Input::new();
-    input.handle_mouse_move(hover_x as f64, hover_y as f64);
-    let font = super::super::font::create_debug_font();
-    let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
-    UiContext::new(frame, width, height, UiInput::snapshot(&input), font_ref)
+  #[test]
+  fn a_selection_spans_the_text_engines_selection_x() {
+    let mut text = text_engine();
+    let style = TextStyle::default();
+    let field = Rect::new(0.0, 0.0, 300.0, 30.0);
+    let content = "select these words";
+    let (left, right) = text.selection_x(content, &style, 7..12, 1.0);
+    let mut commands = UiCommands::default();
+    let mut ui = context(&mut commands, &mut text);
+    let mut state = TextInputState::with_text(content);
+    state.set_cursor(7, false);
+    state.set_cursor(12, true);
+    ui.text_input(&mut state, field, "", 0.0);
+    drop(ui);
+    let selection = rects(&commands)
+      .into_iter()
+      .find(|r| (r.width - (right - left)).abs() < 0.01)
+      .expect("a selection rect");
+    assert!((selection.x - (field.x + PAD_X + left)).abs() < 0.01);
   }
+
+  // ==========================================================================
+  // Mouse occlusion
+  // ==========================================================================
 
   #[test]
   fn mouse_occluded_blocks_hover() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_hover(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, false),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
     assert!(ui.is_hovered(rect), "Should be hovered before occlusion");
@@ -2883,8 +3161,14 @@ mod tests {
 
   #[test]
   fn mouse_occluded_blocks_click() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
     assert!(ui.is_clicked(rect), "Should be clicked before occlusion");
@@ -2898,9 +3182,15 @@ mod tests {
 
   #[test]
   fn mouse_occluded_blocks_held() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    // Use click helper — mouse_pressed implies mouse_down
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    // A press is also a hold
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
     assert!(ui.is_held(rect), "Should be held before occlusion");
@@ -2911,16 +3201,21 @@ mod tests {
 
   #[test]
   fn mouse_occluded_prevents_button_click() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, true),
+    );
 
     ui.set_mouse_occluded();
-
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let clicked = ui.button("Test", rect);
-
-    assert!(!clicked, "Button should not register click when occluded");
-    // click_consumed should still be false (button didn't fire)
+    assert!(
+      !ui.button("Test", rect),
+      "Button should not register click when occluded"
+    );
     assert!(
       !ui.click_consumed(),
       "Click should not be consumed by occluded button"
@@ -2929,8 +3224,14 @@ mod tests {
 
   #[test]
   fn mouse_not_occluded_by_default() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let ui = create_test_context_with_hover(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, false),
+    );
 
     let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
     assert!(
@@ -2941,27 +3242,35 @@ mod tests {
 
   #[test]
   fn mouse_occluded_does_not_affect_rects_outside_mouse() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_hover(200, 200, &mut frame, 50.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 50.0, false),
+    );
 
     ui.set_mouse_occluded();
-
-    // Rect that doesn't contain the mouse — is_hovered is false regardless
     let far_rect = Rect::new(150.0, 150.0, 30.0, 30.0);
     assert!(!ui.is_hovered(far_rect));
   }
 
+  // ==========================================================================
+  // Keyboard focus and scrolling
+  // ==========================================================================
+
   #[test]
   fn wants_keyboard_is_false_without_widgets() {
-    let mut frame = vec![0u8; 200 * 100 * 4];
-    let ui = create_test_context(200, 100, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let ui = ui_context(&mut commands, &mut text, (200.0, 100.0));
     assert!(!ui.wants_keyboard());
   }
 
   #[test]
   fn wants_keyboard_while_a_focused_text_input_is_drawn() {
-    let mut frame = vec![0u8; 200 * 100 * 4];
-    let mut ui = create_test_context(200, 100, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (200.0, 100.0));
     let mut unfocused = TextInputState::new();
     ui.text_input(&mut unfocused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
     assert!(!ui.wants_keyboard());
@@ -2976,9 +3285,14 @@ mod tests {
     let mut input = Input::new();
     input.handle_mouse_move(50.0, 50.0);
     input.handle_scroll(winit::event::MouseScrollDelta::LineDelta(0.0, -1.0));
-    let font: &'static BitmapFont = Box::leak(Box::new(super::super::font::create_debug_font()));
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = UiContext::new(&mut frame, 200, 200, UiInput::snapshot(&input), font);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      UiInput::snapshot(&input),
+    );
     let mut list = ScrollViewState::new();
     ui.scroll_view(
       &mut list,
@@ -2998,9 +3312,15 @@ mod tests {
 
   #[test]
   fn a_press_on_a_horizontal_scrollbar_is_taken() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
     // The scrollbar is a strip along the bottom of the view
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 97.0);
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 97.0, true),
+    );
     let mut strip = ScrollViewState::new();
     ui.scroll_view_horizontal(
       &mut strip,
@@ -3015,8 +3335,14 @@ mod tests {
   #[test]
   fn a_scroll_view_whose_content_fits_leaves_clicks_beside_it() {
     // Without a scrollbar, its strip lies just outside the view
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 105.0, 50.0);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(105.0, 50.0, true),
+    );
     let mut list = ScrollViewState::new();
     ui.scroll_view(
       &mut list,
@@ -3026,9 +3352,16 @@ mod tests {
       |_, _| {},
     );
     assert!(!ui.click_consumed(), "right of a vertical view");
+    drop(ui);
 
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 105.0);
+    let mut commands = UiCommands::default();
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 200.0),
+      1.0,
+      mouse_at(50.0, 105.0, true),
+    );
     let mut strip = ScrollViewState::new();
     ui.scroll_view_horizontal(
       &mut strip,
@@ -3052,9 +3385,14 @@ mod tests {
       winit::keyboard::KeyCode::Escape,
       winit::event::ElementState::Pressed,
     );
-    let font: &'static BitmapFont = Box::leak(Box::new(super::super::font::create_debug_font()));
-    let mut frame = vec![0u8; 200 * 100 * 4];
-    let mut ui = UiContext::new(&mut frame, 200, 100, UiInput::snapshot(&input), font);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context_with(
+      &mut commands,
+      &mut text,
+      (200.0, 100.0),
+      1.0,
+      UiInput::snapshot(&input),
+    );
     let mut field = TextInputState::new();
     field.set_focused(true);
 
@@ -3070,8 +3408,8 @@ mod tests {
 
   #[test]
   fn wants_keyboard_while_a_dropdown_is_open() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context(200, 200, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (200.0, 200.0));
     let mut closed = DropdownState::with_id(1);
     ui.dropdown(&mut closed, Rect::new(0.0, 0.0, 100.0, 20.0), &["a", "b"]);
     assert!(!ui.wants_keyboard());
@@ -3084,8 +3422,8 @@ mod tests {
 
   #[test]
   fn wants_keyboard_ignores_a_focused_but_closed_dropdown() {
-    let mut frame = vec![0u8; 200 * 200 * 4];
-    let mut ui = create_test_context(200, 200, &mut frame);
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = ui_context(&mut commands, &mut text, (200.0, 200.0));
     let mut focused = DropdownState::with_id(1);
     focused.set_focused(true);
     ui.dropdown(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), &["a", "b"]);
@@ -3094,17 +3432,17 @@ mod tests {
 
   #[test]
   fn wants_keyboard_resets_with_each_frame() {
-    let mut frame = vec![0u8; 200 * 100 * 4];
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut focused = TextInputState::new();
     focused.set_focused(true);
     {
-      let mut ui = create_test_context(200, 100, &mut frame);
+      let mut ui = ui_context(&mut commands, &mut text, (200.0, 100.0));
       ui.text_input(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
       assert!(ui.wants_keyboard());
     }
     // Focus lost before the next frame: the next context starts clear
     focused.set_focused(false);
-    let mut ui = create_test_context(200, 100, &mut frame);
+    let mut ui = ui_context(&mut commands, &mut text, (200.0, 100.0));
     ui.text_input(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
     assert!(!ui.wants_keyboard());
   }

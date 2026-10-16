@@ -19,9 +19,9 @@ use ryo2d::prelude::*;
 /// scene is in complete darkness (ambient = 0.0).
 ///
 /// The fix for this was:
-/// 1. UI renders to a separate buffer
-/// 2. Lighting is applied only to the scene buffer
-/// 3. UI buffer is composited on top after lighting
+/// 1. UI is drawn into an image of its own
+/// 2. Lighting is applied only to the scene
+/// 3. The UI image is composited on top after lighting
 #[test]
 fn regression_ui_visible_in_darkness() {
   // This documents the expected behavior:
@@ -354,7 +354,7 @@ fn engine_builder_ui_scale_config() {
   let _builder = EngineBuilder::new()
     .title("Test")
     .resolution(800, 600)
-    .ui_scale(Some(2));
+    .ui_scale(Some(2.0));
   // Builder pattern works - can't easily test build() without a window
 }
 
@@ -365,21 +365,21 @@ fn engine_builder_ui_scale_auto() {
   let _builder = EngineBuilder::new()
     .title("Test")
     .resolution(800, 600)
-    .ui_scale(None); // Auto-detect from DPI
+    .ui_scale(None); // UI units equal screen units at any display scale
   // Builder pattern works
 }
 
 /// Test that various ui_scale values are valid
 #[test]
 fn ui_scale_values_valid() {
-  // Scale 1 (normal)
-  let _builder1 = EngineBuilder::new().ui_scale(Some(1));
+  // One render pixel per UI unit
+  let _builder1 = EngineBuilder::new().ui_scale(Some(1.0));
 
-  // Scale 2 (HiDPI)
-  let _builder2 = EngineBuilder::new().ui_scale(Some(2));
+  // Two (a big UI)
+  let _builder2 = EngineBuilder::new().ui_scale(Some(2.0));
 
-  // Scale 3 (very high DPI)
-  let _builder3 = EngineBuilder::new().ui_scale(Some(3));
+  // Fractional
+  let _builder3 = EngineBuilder::new().ui_scale(Some(1.5));
 
   // All configurations accepted by builder
 }

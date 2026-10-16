@@ -52,7 +52,7 @@ impl Engine {
     mut renderer: WgpuRenderer,
   ) {
     // Present a first frame before showing the window, to avoid a white flash
-    let _ = renderer.render_blank_frame(&mut RenderPipeline::default_2d(), &[]);
+    let _ = renderer.render_blank_frame(&mut RenderPipeline::default_2d());
     window.set_visible(true);
 
     let scale_factor = window.scale_factor();
@@ -97,15 +97,10 @@ impl Engine {
     }
   }
 
-  /// Apply a requested UI scale (0 means detect it from the DPI).
-  fn apply_ui_scale(&mut self, scale: u32) {
-    if scale == 0 {
-      self.ui_scale = (self.scale_factor.round() as u32).max(1);
-      self.config.ui_scale = None;
-    } else {
-      self.ui_scale = scale.max(1);
-      self.config.ui_scale = Some(scale);
-    }
+  /// Apply a requested UI scale (`None`: the automatic scale).
+  fn apply_ui_scale(&mut self, scale: Option<f32>) {
+    self.config.ui_scale = scale;
+    self.refresh_ui_space();
   }
 
   /// Apply the window requests that still make sense without a window.
@@ -554,9 +549,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
         // A resize event follows; screen space changes with the factor now
         self.scale_factor = *scale_factor;
         self.world.resource_mut::<WindowInfo>().scale_factor = *scale_factor;
-        if self.config.ui_scale.is_none() {
-          self.ui_scale = (self.scale_factor.round() as u32).max(1);
-        }
+        // The new mapping brings a new UI space
         let (width, height) = self.last_window_size;
         self.resize_window(width, height);
       }

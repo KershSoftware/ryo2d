@@ -507,6 +507,20 @@ impl Scene for Busy {
     let instance = SpriteInstance::new().with_transform(60.0, 60.0, 0.0, 4.0, 4.0);
     gpu.add_sprite(&sprite, instance, SpriteDraw::default());
   }
+
+  /// A UI of every kind: a bordered panel, clipped text, a sprite and a line
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let panel = Rect::new(4.0, 4.0, 50.0, 20.0);
+    ui.draw_rect_bordered(panel, Color::new(0, 0, 0, 160), 4.0, 1.0, Color::WHITE);
+    ui.push_clip(Rect::new(4.0, 4.0, 40.0, 20.0));
+    ui.draw_text("UI 42", 8.0, 6.0, Color::WHITE);
+    ui.pop_clip();
+    let icon = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 255, 0, 255), "busy-ui");
+    ui.draw_sprite(&icon, 60.0, 6.0);
+    let points = [Vec2::new(70.0, 6.0), Vec2::new(90.0, 16.0)];
+    ui.draw_line(&points, 2.0, Color::WHITE);
+    SceneAction::Continue
+  }
 }
 
 #[test]

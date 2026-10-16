@@ -298,25 +298,21 @@ impl Engine {
     }
   }
 
-  /// Draw one UI pass into the UI buffer and apply what it consumed; `None`
-  /// before the GPU is up.
+  /// Record one UI pass into the frame's UI commands (replacing any earlier
+  /// pass's) and apply what it consumed; `None` before the GPU is up.
   fn draw_ui(&mut self) -> Option<SceneAction> {
-    let (width, height) = self
-      .renderer
-      .as_ref()
-      .map(crate::core::graphics::WgpuRenderer::ui_size)?;
-    self.ui_buffer.fill(0);
+    self.renderer.as_ref()?;
+    self.ui_commands.clear();
+    if let Some(fonts) = self.world.get_resource::<crate::core::text::Fonts>() {
+      self.text.sync(fonts);
+    }
     let snapshot = UiInput::snapshot(self.world.resource::<Input>());
     let real_dt = self.world.resource::<Time>().real.delta();
+    let space = self.ui_space;
+    // Overlays and the console still lay out in whole UI units
+    let (width, height) = (space.size.x.ceil() as u32, space.size.y.ceil() as u32);
     let (action, consumed) = {
-      let mut ui = UiContext::new_scaled(
-        &mut self.ui_buffer,
-        width,
-        height,
-        snapshot,
-        &self.ui_font,
-        self.ui_scale,
-      );
+      let mut ui = UiContext::new(&mut self.ui_commands, &mut self.text, space, snapshot);
       ui.set_dt(real_dt);
       // The console blocks the mouse for everything under it
       if self.console_state.visible {
@@ -1224,10 +1220,12 @@ mod tests {
 
   #[test]
   fn a_scene_switched_from_ui_draws_its_ui_the_same_frame() {
+    use crate::core::ui::immediate::UiCommand;
     use crate::core::ui::{Color, Rect, UiContext};
     struct Leaves;
     impl Scene for Leaves {
-      fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        ui.draw_rect(Rect::new(8.0, 8.0, 4.0, 4.0), Color::rgb(0, 0, 255));
         SceneAction::Switch(Box::new(Arrives))
       }
     }
@@ -1247,10 +1245,19 @@ mod tests {
       .build_headless();
     e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 16, 16), 1.0);
     e.frame(Some(Duration::from_millis(16)));
+    // The arriving scene's UI is in the switching frame, and only its own:
+    // the first pass's commands are gone
+    let drawn: Vec<(Rect, Color)> = e
+      .ui_commands
+      .iter()
+      .map(|command| match command {
+        UiCommand::Rect { rect, fill, .. } => (*rect, *fill),
+        other => panic!("only the new scene's rect: {other:?}"),
+      })
+      .collect();
     assert_eq!(
-      &e.ui_buffer[..4],
-      &[255, 0, 0, 255],
-      "the arriving scene's UI is in the switching frame"
+      drawn,
+      [(Rect::new(0.0, 0.0, 4.0, 4.0), Color::rgb(255, 0, 0))]
     );
   }
 

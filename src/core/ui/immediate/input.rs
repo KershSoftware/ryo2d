@@ -15,13 +15,28 @@ use crate::core::input::{GamepadButton, Input, InputView};
 /// typed text); the engine then applies the consumption to `Input`, so
 /// gameplay never sees input the UI took. A consumed key or button reads as
 /// not pressed, held or released for the rest of the frame.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct UiInput {
   view: InputView,
   consumed_keys: HashSet<KeyCode>,
   consumed_mouse: HashSet<MouseButton>,
   text_consumed: Cell<bool>,
   scroll_consumed: bool,
+  /// UI units per screen unit (1 unless the game set a UI scale)
+  mouse_scale: f32,
+}
+
+impl Default for UiInput {
+  fn default() -> Self {
+    Self {
+      view: InputView::default(),
+      consumed_keys: HashSet::new(),
+      consumed_mouse: HashSet::new(),
+      text_consumed: Cell::new(false),
+      scroll_consumed: false,
+      mouse_scale: 1.0,
+    }
+  }
 }
 
 /// What a UI pass consumed.
@@ -42,18 +57,28 @@ impl UiInput {
     }
   }
 
+  /// Read mouse positions in UI units: screen positions times `scale` (UI
+  /// units per screen unit). A non-finite or non-positive scale is ignored.
+  pub fn with_mouse_scale(mut self, scale: f32) -> Self {
+    if scale.is_finite() && scale > 0.0 {
+      self.mouse_scale = scale;
+    }
+    self
+  }
+
   // --- mouse ---
 
+  /// The pointer, in UI units
   pub fn mouse_position(&self) -> (f32, f32) {
-    self.view.mouse
+    (self.mouse_x(), self.mouse_y())
   }
 
   pub fn mouse_x(&self) -> f32 {
-    self.view.mouse.0
+    self.view.mouse.0 * self.mouse_scale
   }
 
   pub fn mouse_y(&self) -> f32 {
-    self.view.mouse.1
+    self.view.mouse.1 * self.mouse_scale
   }
 
   pub fn mouse_down(&self, button: MouseButton) -> bool {
@@ -261,6 +286,19 @@ mod tests {
     assert_eq!(ui.text_input(), "", "the first read consumes");
     ui.apply_consumed(&mut input);
     assert_eq!(input.text_input(), "");
+  }
+
+  #[test]
+  fn a_mouse_scale_converts_positions_to_ui_units() {
+    let mut input = Input::new();
+    input.queue(InputEvent::MouseMove { x: 100.0, y: 40.0 });
+    input.begin_frame();
+    let ui = UiInput::snapshot(&input);
+    assert_eq!(ui.mouse_position(), (100.0, 40.0));
+    let ui = ui.with_mouse_scale(0.5);
+    assert_eq!(ui.mouse_position(), (50.0, 20.0));
+    assert_eq!((ui.mouse_x(), ui.mouse_y()), (50.0, 20.0));
+    assert_eq!(ui.with_mouse_scale(f32::NAN).mouse_x(), 50.0, "ignored");
   }
 
   #[test]

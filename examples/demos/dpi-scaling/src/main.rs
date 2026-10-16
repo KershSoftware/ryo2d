@@ -3,8 +3,9 @@
 //! This example shows how the engine handles high-DPI displays and allows
 //! you to compare different UI scale factors in real-time.
 //!
-//! The UI scale setting picks 1x, 2x, 3x or Auto (detected from the DPI).
-//! Runs on the demo-kit shell, whose own text scales with it.
+//! The UI scale setting picks 1x, 2x, 3x render pixels per UI unit, or Auto
+//! (UI units equal to screen units at any DPI). Runs on the demo-kit shell,
+//! which scales with it.
 
 use demo_kit::prelude::*;
 
@@ -38,7 +39,7 @@ impl DpiScalingPage {
     }
     let scale = match self.scale_choice {
       AUTO => None,
-      choice => Some(choice as u32 + 1),
+      choice => Some(choice as f32 + 1.0),
     };
     ctx.request_ui_scale(scale);
     self.applied = Some(self.scale_choice);
@@ -51,7 +52,7 @@ impl DemoPage for DpiScalingPage {
   }
 
   fn description(&self) -> &str {
-    "Compare UI scale factors: text scales, shapes stay at game resolution"
+    "Compare UI scale factors: the whole UI, text and shapes, scales"
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -86,7 +87,7 @@ impl DemoPage for DpiScalingPage {
     let margin = area.x;
     let bottom = area.y + area.height;
     // Beside the settings panel at 1x; below it, full width, when larger
-    let beside = current_scale == 1;
+    let beside = current_scale <= 1.0;
     let panel_w = if beside {
       area.width * 0.68
     } else {
@@ -180,13 +181,13 @@ impl DemoPage for DpiScalingPage {
     let footer_y = bottom - line_height * 2.0;
     if footer_y > box_y + 64.0 + 4.0 {
       ui.draw_text(
-        "Note: Text scales with ui_scale,",
+        "Note: ui_scale scales the whole UI,",
         text_x,
         footer_y,
         Color::GRAY,
       );
       ui.draw_text(
-        "shapes remain at game resolution",
+        "text and shapes alike",
         text_x,
         footer_y + line_height,
         Color::GRAY,
@@ -199,7 +200,7 @@ fn main() {
   Demo::new("DPI Scaling")
     .resolution(800, 600)
     .configure(|b| {
-      b.ui_scale(None) // Auto-detect from DPI
+      b.ui_scale(None) // UI units equal screen units at any DPI
     })
     .page(DpiScalingPage::new)
     .run();

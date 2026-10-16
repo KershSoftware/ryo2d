@@ -3,7 +3,7 @@
 //! This module provides a renderer that:
 //! 1. Runs the render pipeline: the world is drawn on the GPU into the game texture
 //! 2. Applies lighting and post-processing effects (optional)
-//! 3. Composites the CPU-drawn UI layer last
+//! 3. Composites the UI image (drawn on the GPU by the `ui` pass) last
 //! 4. Presents the result with proper letterboxing/scaling
 
 use std::path::PathBuf;
@@ -168,7 +168,6 @@ pub struct WgpuRenderer {
   // Lighting output, kept between frames and recreated with the game texture
   lit_texture: wgpu::Texture,
   lit_texture_view: wgpu::TextureView,
-  bind_group: wgpu::BindGroup,
   // Screen space and the window: the scene renders at `render_size()`
   mapping: ScreenMapping,
   // The display effect stage; its buffer A is the display image
@@ -417,7 +416,8 @@ impl WgpuRenderer {
     } = parts;
     let target_format = target.format();
     let (game_width, game_height) = mapping.render_size();
-    let (ui_width, ui_height) = mapping.ui_size();
+    // The engine sets the UI image's size with the mapping (`set_mapping`)
+    let (ui_width, ui_height) = mapping.render_size();
 
     // Create the game texture (where the world is drawn)
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -443,29 +443,6 @@ impl WgpuRenderer {
     let compositor = Compositor::new(&device, target_format, ui_width, ui_height);
     let camera_images = CameraImages::new(&device, crate::core::render::SCENE_FORMAT);
     let (lit_texture, lit_texture_view) = create_lit_texture(&device, game_width, game_height);
-
-    // Create bind group for main game texture
-    let bind_group = crate::core::graphics::bind_groups::create(
-      &device,
-      &wgpu::BindGroupDescriptor {
-        label: Some("Texture Bind Group"),
-        layout: &compositor.bind_group_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&texture_view),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&compositor.sampler),
-          },
-          wgpu::BindGroupEntry {
-            binding: 2,
-            resource: compositor.uniform_buffer.as_entire_binding(),
-          },
-        ],
-      },
-    );
 
     // Fill the game texture with a dark charcoal background, which is presented
     // immediately to prevent a flash on startup
@@ -525,7 +502,6 @@ impl WgpuRenderer {
       camera_images,
       lit_texture,
       lit_texture_view,
-      bind_group,
       mapping,
       display_effects,
       hdr_effects,
@@ -558,11 +534,6 @@ impl WgpuRenderer {
   /// The size of screen space (what the world's projection and the UI span).
   pub fn screen_size(&self) -> glam::Vec2 {
     self.mapping.screen_size()
-  }
-
-  /// The UI's size in pixels: the screen size rounded up.
-  pub fn ui_size(&self) -> (u32, u32) {
-    self.mapping.ui_size()
   }
 
   /// Check if presentation blocks until vsync (Fifo mode).
@@ -632,20 +603,25 @@ impl WgpuRenderer {
     crate::core::render::SCENE_FORMAT
   }
 
-  /// Resize the window target, keeping the presentation and scale factor.
-  /// A zero side (a minimised window) is ignored.
+  /// Resize the window target, keeping the presentation, scale factor and
+  /// UI image (the engine sizes that with the next mapping). A zero side (a
+  /// minimised window) is ignored.
   pub fn resize(&mut self, new_width: u32, new_height: u32) {
     if new_width == 0 || new_height == 0 {
       return;
     }
-    self.set_mapping(self.mapping.with_physical((new_width, new_height)));
+    let ui_image = self.compositor.ui_size();
+    self.set_mapping(
+      self.mapping.with_physical((new_width, new_height)),
+      ui_image,
+    );
   }
 
-  /// Follow a new mapping: reconfigure the window target when its physical
-  /// size changed, recreate the scene-sized textures when the render size
-  /// changed and the UI texture when the UI size changed, and move the
-  /// composite rectangle.
-  pub fn set_mapping(&mut self, mapping: ScreenMapping) {
+  /// Follow a new mapping with a UI image of `ui_image` pixels: reconfigure
+  /// the window target when its physical size changed, recreate the
+  /// scene-sized textures when the render size changed and the UI image
+  /// when its size changed, and move the composite rectangle.
+  pub fn set_mapping(&mut self, mapping: ScreenMapping, ui_image: (u32, u32)) {
     let (width, height) = mapping.physical_size();
     if mapping.physical_size() != self.mapping.physical_size() {
       match &mut self.target {
@@ -668,9 +644,11 @@ impl WgpuRenderer {
       let (width, height) = mapping.render_size();
       self.recreate_scene_targets(width, height);
     }
-    if old.ui_size() != mapping.ui_size() {
-      let (width, height) = mapping.ui_size();
-      self.compositor.resize_ui(&self.device, width, height);
+    let ui_image = (ui_image.0.max(1), ui_image.1.max(1));
+    if self.compositor.ui_size() != ui_image {
+      self
+        .compositor
+        .resize_ui(&self.device, ui_image.0, ui_image.1);
     }
     self.update_viewport_transform();
   }
@@ -699,29 +677,6 @@ impl WgpuRenderer {
     self.texture_view = self
       .texture
       .create_view(&wgpu::TextureViewDescriptor::default());
-
-    // Recreate bind group with new texture view
-    self.bind_group = crate::core::graphics::bind_groups::create(
-      &self.device,
-      &wgpu::BindGroupDescriptor {
-        label: Some("Texture Bind Group"),
-        layout: &self.compositor.bind_group_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&self.texture_view),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&self.compositor.sampler),
-          },
-          wgpu::BindGroupEntry {
-            binding: 2,
-            resource: self.compositor.uniform_buffer.as_entire_binding(),
-          },
-        ],
-      },
-    );
 
     (self.lit_texture, self.lit_texture_view) =
       create_lit_texture(&self.device, new_width, new_height);
@@ -782,10 +737,16 @@ impl WgpuRenderer {
       lighting: scene.lighting.is_some(),
       hdr_effects: scene.effects.has_active_effects_in(EffectStage::Hdr),
       effects: scene.effects.has_active_effects_in(EffectStage::Display),
-      ui: scene.ui_buffer.iter().any(|&b| b != 0),
+      ui: scene.ui_camera.is_some(),
       transition: scene.overlay.1 > TRANSITION_VISIBLE,
       capture: capture_path.is_some() || self.keep_scene,
     };
+    // The UI image matches what the UI camera drew for (a renderer resized
+    // on its own keeps its old UI image until the engine's next mapping)
+    if scene.ui_camera.is_some() && self.compositor.ui_size() != scene.ui_size {
+      let (width, height) = scene.ui_size;
+      self.compositor.resize_ui(&self.device, width, height);
+    }
     let sprites = scene.sprites;
     self
       .camera_images
@@ -842,13 +803,12 @@ impl WgpuRenderer {
     Ok(())
   }
 
-  /// Render a frame with no sprites, trails, lights or effects, and the given UI.
+  /// Render a frame with no sprites, trails, lights, effects or UI.
   ///
   /// Used to put something on screen before the engine's renderers exist.
   pub(crate) fn render_blank_frame(
     &mut self,
     pipeline: &mut RenderPipeline,
-    ui_buffer: &[u8],
   ) -> Result<(), FrameError> {
     let sprites = SpriteGpuRenderer::new(&self.device, &self.queue);
     let effects = EffectsManager::new();
@@ -861,7 +821,8 @@ impl WgpuRenderer {
       lighting: None,
       effects: &effects,
       look: &look,
-      ui_buffer,
+      ui_camera: None,
+      ui_size: self.compositor.ui_size(),
       cameras: &[],
       time: 0.0,
       overlay: ([0; 3], 0.0),
@@ -963,7 +924,10 @@ mod tests {
     let size = |t: &wgpu::Texture| (t.width(), t.height());
     assert_eq!(size(&renderer.texture), (96, 80));
     assert_eq!(size(&renderer.lit_texture), (96, 80));
-    assert_eq!(size(renderer.compositor.ui_texture()), (96, 80));
+    // The UI image is the engine's to size, with the mapping
+    assert_eq!(renderer.compositor.ui_size(), (64, 48));
+    renderer.set_mapping(renderer.mapping(), (100, 40));
+    assert_eq!(renderer.compositor.ui_size(), (100, 40));
     let post = &renderer.display_effects;
     assert_eq!(size(post.texture_a()), (96, 80));
     assert_eq!(size(post.texture_b()), (96, 80));
@@ -982,9 +946,8 @@ mod tests {
         .contains(wgpu::TextureUsages::COPY_SRC)
     );
 
-    let ui = vec![255u8; 96 * 80 * 4];
     renderer
-      .render_blank_frame(&mut RenderPipeline::default_2d(), &ui)
+      .render_blank_frame(&mut RenderPipeline::default_2d())
       .expect("render after resize");
   }
 
@@ -1006,41 +969,6 @@ mod tests {
   }
 
   #[test]
-  fn offscreen_frame_matches_ui_pixels() {
-    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
-      return; // no GPU on this machine
-    };
-    let (width, height) = (37, 9);
-    let mut renderer = WgpuRenderer::new_offscreen(device, queue, width, height);
-
-    // Opaque UI pattern: each pixel encodes its position
-    let mut expected = vec![0u8; (width * height * 4) as usize];
-    for (i, px) in expected.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-      let (x, y) = ((i as u32 % width) as u8, (i as u32 / width) as u8);
-      px.copy_from_slice(&[x * 6, y * 20, 128, 255]);
-    }
-
-    renderer
-      .render_blank_frame(&mut RenderPipeline::default_2d(), &expected)
-      .expect("render");
-    let frame = renderer.read_frame().expect("read frame");
-
-    assert_eq!(frame.dimensions(), (width, height));
-    for (got, want) in frame
-      .as_raw()
-      .as_chunks::<4>()
-      .0
-      .iter()
-      .zip(expected.as_chunks::<4>().0)
-    {
-      assert!(
-        got.iter().zip(want).all(|(g, w)| g.abs_diff(*w) <= 1),
-        "got {got:?}, want {want:?}"
-      );
-    }
-  }
-
-  #[test]
   fn capture_without_the_capture_pass_reports_an_error() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return; // no GPU on this machine
@@ -1052,9 +980,7 @@ mod tests {
       .expect("capture pass exists");
 
     renderer.request_capture(std::env::temp_dir().join("ryo2d-capture-disabled.png"));
-    renderer
-      .render_blank_frame(&mut pipeline, &[])
-      .expect("render");
+    renderer.render_blank_frame(&mut pipeline).expect("render");
 
     let result = renderer.take_capture_result().expect("a capture result");
     assert!(

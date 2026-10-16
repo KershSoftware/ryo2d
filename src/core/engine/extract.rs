@@ -23,14 +23,15 @@ use crate::core::lighting::{FrameLight, Light2D, LightOccluder2D, LightingSettin
 use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
 use crate::core::render::scratch::recycle;
 use crate::core::render::text::{
-  TextTargets, WorldTextFrame, emit_world_text, layout_world_text, prewarm,
+  TextSources, TextTargets, WorldTextFrame, emit_world_text, layout_world_text, prewarm,
 };
+use crate::core::render::ui::emit_ui;
 use crate::core::render::{
   DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, SpriteLook, SpriteShading,
   plan_cameras,
 };
 use crate::core::shaders::EffectsManager;
-use crate::core::text::Fonts;
+use crate::core::text::{Fonts, TextEffects, TextIcons};
 use crate::core::time::Time;
 use crate::core::trail::{Line2D, Trail2D};
 use crate::profile_scope;
@@ -163,19 +164,16 @@ impl Engine {
       if let Some(lighting) = lighting.as_mut() {
         lighting.sync_cameras(rend.device(), &self.camera_draws);
       }
-      let snap = matches!(self.config.presentation, Presentation::PixelArt { .. });
+      let pixel_art = matches!(self.config.presentation, Presentation::PixelArt { .. });
+      // Their uniforms are synced once the UI camera is known (below)
       self.camera_globals.clear();
       self
         .camera_globals
         .extend(self.camera_draws.iter().map(|camera| {
           let size = camera.rect.size();
-          let globals = CameraGlobals::new(&camera.view, size, game_time, real_time, snap);
+          let globals = CameraGlobals::new(&camera.view, size, game_time, real_time, pixel_art);
           (camera.entity, globals)
         }));
-      self
-        .camera_uniforms
-        .sync(rend.device(), rend.queue(), &self.camera_globals);
-      batch.sync_cameras(rend.device(), &self.camera_uniforms);
 
       self.draw_list.clear();
       self
@@ -332,12 +330,66 @@ impl Engine {
         debug.push_for_camera(camera, &mut self.draw_list, triangles, &mut points);
       }
       self.poly_points = points;
+      // The UI, last: the frame's UI commands through the UI camera. On the
+      // pixel-art target it snaps like the world; at window resolution it
+      // does not
+      let ui_on_target = pixel_art && self.ui_space.image == rend.render_size();
+      let sources = match (
+        self.world.get_resource::<Fonts>(),
+        self.world.get_resource::<TextEffects>(),
+        self.world.get_resource::<TextIcons>(),
+      ) {
+        (Some(fonts), Some(effects), Some(icons)) => Some(TextSources {
+          fonts,
+          engine: &self.text,
+          effects,
+          icons,
+        }),
+        // A game that removed the text resources draws its UI without text
+        _ => None,
+      };
+      let mut text_targets = TextTargets {
+        raster: &mut self.glyph_raster,
+        sprites: &mut gpu,
+        device: rend.device(),
+        queue: rend.queue(),
+        list: &mut self.draw_list,
+        warned: &mut self.text_warned,
+      };
+      self.ui_camera = emit_ui(
+        &self.ui_commands,
+        &self.ui_space,
+        ui_on_target,
+        sources.as_ref(),
+        &mut text_targets,
+        triangles,
+        real_time,
+      );
+      if let Some(ui) = &self.ui_camera {
+        let globals = CameraGlobals::new(
+          &ui.view,
+          self.ui_space.image,
+          game_time,
+          real_time,
+          ui_on_target,
+        );
+        self.camera_globals.push((ui.entity, globals));
+      }
+      self
+        .camera_uniforms
+        .sync(rend.device(), rend.queue(), &self.camera_globals);
+      batch.sync_cameras(rend.device(), &self.camera_uniforms);
+      // The batch lays out the world's cameras, then the UI camera; the
+      // camera passes run for the world's alone
+      self.batch_cameras.clear();
+      self.batch_cameras.extend(self.camera_draws.iter().copied());
+      self.batch_cameras.extend(self.ui_camera);
       self.draw_list.sorted();
       batch.prepare(
         rend.device(),
         rend.queue(),
         &self.draw_list,
-        &self.camera_draws,
+        &self.batch_cameras,
         &mut gpu,
       );
       self.text.end_frame();
@@ -366,7 +418,8 @@ impl Engine {
           lighting: lighting.map(|renderer| LightingFrame { renderer }),
           effects: world.resource::<EffectsManager>(),
           look: world.resource::<crate::core::render::Look>(),
-          ui_buffer: &self.ui_buffer,
+          ui_camera: self.ui_camera.as_ref(),
+          ui_size: self.ui_space.image,
           cameras: &self.camera_draws,
           time: real_time,
           overlay,

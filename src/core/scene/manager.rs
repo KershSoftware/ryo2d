@@ -785,10 +785,11 @@ mod tests {
     let mut m = SceneManager::with_scene(Box::new(UiQuitter));
     m.enter_initial(&mut world, &mut audio);
     m.push(Box::new(Glass), &mut world, &mut audio);
-    let font: &'static crate::core::ui::BitmapFont =
-      Box::leak(Box::new(crate::core::ui::create_debug_font()));
-    let mut frame = vec![0u8; 16 * 16 * 4];
-    let mut ui = UiContext::new(&mut frame, 16, 16, Default::default(), font);
+    let (mut commands, mut text) = (
+      Default::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (16.0, 16.0));
     for _ in 0..3 {
       let action = m.ui_pass(&mut world, &mut audio, &mut ui);
       assert!(matches!(action, SceneAction::Continue));

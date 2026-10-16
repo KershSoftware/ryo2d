@@ -52,7 +52,8 @@ use crate::core::physics::sync::register_physics_systems;
 use crate::core::physics::{Physics, PhysicsConfig};
 use crate::core::render::batch::Batch2D;
 use crate::core::render::{
-  DrawList, EntityDrawer, RenderPipeline, begin_debug_fixed_step, end_debug_fixed_step,
+  DrawList, EntityDrawer, RenderPipeline, UiResolution, UiSpace, begin_debug_fixed_step,
+  end_debug_fixed_step,
 };
 use crate::core::scene::{PhysicsPaused, Scene, SceneManager};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet, UpdateSet};
@@ -60,7 +61,7 @@ use crate::core::shaders::EffectsManager;
 use crate::core::systems::{record_trail_points, register_juice_systems};
 use crate::core::text::{GlyphRasterizer, TextEngine, advance_text_reveal};
 use crate::core::time::Time;
-use crate::core::ui::{BitmapFont, create_debug_font};
+use crate::core::ui::immediate::UiCommands;
 use crate::core::window::{WindowInfo, WindowRequest};
 use crate::{engine_info, engine_warn};
 
@@ -100,11 +101,12 @@ pub struct EngineConfig {
   pub display_mode: DisplayMode,
   /// Path to window icon (PNG). If None, uses embedded Ryo2D logo.
   pub icon_path: Option<std::path::PathBuf>,
-  /// UI scale factor for HiDPI displays.
-  /// - `None` = auto-detect from DPI (rounds scale_factor to nearest integer)
-  /// - `Some(1)` = normal size (default for standard displays)
-  /// - `Some(2)` = double size (good for HiDPI/Retina)
-  pub ui_scale: Option<u32>,
+  /// Render pixels per UI unit. `None` (the default) keeps UI units equal to
+  /// screen units at any display scale; `Some(2.0)` draws the UI twice as
+  /// big as one render pixel per unit would.
+  pub ui_scale: Option<f32>,
+  /// What resolution the UI image has (default `UiResolution::Render`)
+  pub ui_resolution: UiResolution,
   /// Target FPS when the window is unfocused. 0 = use target_fps. Default: 0.
   pub target_background_fps: u32,
   /// Whether to keep drawing when the window is unfocused (the game keeps
@@ -127,7 +129,8 @@ impl Default for EngineConfig {
       resizable: true,
       display_mode: DisplayMode::default(),
       icon_path: None,
-      ui_scale: Some(1), // Normal size (good for standard displays)
+      ui_scale: None,
+      ui_resolution: UiResolution::default(),
       target_background_fps: 0,
       background_rendering: true,
     }
@@ -189,9 +192,13 @@ pub struct Engine {
   warned_targetless: std::collections::HashSet<crate::core::ecs::Entity>,
   draw_list: DrawList,
   batch_collector: BatchCollector,
-  // UI
-  ui_font: BitmapFont,
-  ui_buffer: Vec<u8>,
+  // UI: the frame's recorded draws, the UI space they are in, the UI
+  // camera they draw through (when any were recorded) and the cameras the
+  // batch lays out (the world's, then the UI's; refilled each frame)
+  ui_commands: UiCommands,
+  ui_space: UiSpace,
+  ui_camera: Option<crate::core::render::CameraDraw>,
+  batch_cameras: Vec<crate::core::render::CameraDraw>,
   /// Mouse buttons whose press the UI took: until released, their held
   /// state and release are the UI's too
   ui_mouse_capture: Vec<winit::event::MouseButton>,
@@ -224,7 +231,6 @@ pub struct Engine {
   cursor_locked: bool,
   surface_needs_reconfigure: bool,
   scale_factor: f64,
-  ui_scale: u32,
   // Why the window's GPU setup failed, returned from `run`
   startup_error: Option<crate::core::graphics::GpuError>,
   // Delivers the web's asynchronous GPU setup to the event loop
@@ -423,9 +429,7 @@ impl Engine {
 
     #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut assets = AssetManager::new();
-    let ui_font = create_debug_font();
     let initial_size = (config.width, config.height);
-    let ui_buffer_size = (config.width * config.height * 4) as usize;
 
     // Tell players and developers where settings and saves are kept
     if !headless && let Ok(workspace) = crate::core::config::Workspace::discover() {
@@ -499,7 +503,11 @@ impl Engine {
       config.debug.show_frame_timing,
       config.debug.show_stats,
     );
-    let initial_ui_scale = config.ui_scale.unwrap_or(1);
+    let initial_ui_space = UiSpace::of(
+      &ScreenMapping::new(config.presentation, initial_size, 1.0),
+      config.ui_scale,
+      config.ui_resolution,
+    );
 
     let mut command_registry = CommandRegistry::new();
     register_builtins(&mut command_registry);
@@ -554,8 +562,10 @@ impl Engine {
       warned_targetless: Default::default(),
       draw_list: DrawList::default(),
       batch_collector: BatchCollector::new(),
-      ui_font,
-      ui_buffer: vec![0; ui_buffer_size],
+      ui_commands: UiCommands::default(),
+      ui_space: initial_ui_space,
+      ui_camera: None,
+      batch_cameras: Vec::new(),
       ui_mouse_capture: Vec::new(),
       console_state: ConsoleState::new(),
       console_quit_requested: false,
@@ -584,7 +594,6 @@ impl Engine {
       cursor_locked: false,
       surface_needs_reconfigure: false,
       scale_factor: 1.0,
-      ui_scale: initial_ui_scale,
       startup_error: None,
       #[cfg(target_arch = "wasm32")]
       proxy: None,
@@ -760,20 +769,25 @@ impl Engine {
     self.apply_mapping(mapping);
   }
 
-  /// Follow a new screen mapping: the renderer's targets, the UI buffer, the
-  /// lighting projection and the camera's viewport (position, zoom and
-  /// shake are kept).
+  /// Follow a new screen mapping: the UI space, the renderer's targets
+  /// (the UI image among them), the lighting projection and the camera's
+  /// viewport (position, zoom and shake are kept).
   fn apply_mapping(&mut self, mapping: ScreenMapping) {
     let Some(renderer) = &mut self.renderer else {
       return;
     };
-    renderer.set_mapping(mapping);
-    let (ui_width, ui_height) = mapping.ui_size();
-    let ui_len = (ui_width * ui_height * 4) as usize;
-    if self.ui_buffer.len() != ui_len {
-      self.ui_buffer = vec![0; ui_len];
-    }
+    self.ui_space = UiSpace::of(&mapping, self.config.ui_scale, self.config.ui_resolution);
+    renderer.set_mapping(mapping, self.ui_space.image);
     self.world.insert_resource(mapping);
+  }
+
+  /// Recompute the UI space for the current mapping (after a UI-scale
+  /// change; the UI image keeps its size)
+  pub(super) fn refresh_ui_space(&mut self) {
+    if let Some(renderer) = &self.renderer {
+      let mapping = renderer.mapping();
+      self.ui_space = UiSpace::of(&mapping, self.config.ui_scale, self.config.ui_resolution);
+    }
   }
 
   /// How the world reaches the window.
@@ -856,10 +870,6 @@ impl Engine {
     let mapping = renderer.mapping();
 
     self.scale_factor = scale_factor;
-    self.ui_scale = self
-      .config
-      .ui_scale
-      .unwrap_or_else(|| (self.scale_factor.round() as u32).max(1));
     self.world.resource_mut::<WindowInfo>().scale_factor = scale_factor;
     self.world.insert_resource(Gpu {
       device: renderer.device_arc(),
@@ -1063,10 +1073,21 @@ impl EngineBuilder {
     self
   }
 
-  /// Set the UI scale factor for HiDPI displays: `None` detects it from the
-  /// window's DPI, `Some(n)` scales UI by `n` (default `Some(1)`).
-  pub fn ui_scale(mut self, scale: Option<u32>) -> Self {
+  /// Render pixels per UI unit; `None` (the default) keeps UI units equal
+  /// to screen units at any display scale. `Some(2.0)` draws the UI, rects
+  /// and text alike, twice as big as one render pixel per unit would; mouse
+  /// positions are converted to match. A value that is not a positive
+  /// number is warned about and treated as `None`.
+  pub fn ui_scale(mut self, scale: Option<f32>) -> Self {
     self.config.ui_scale = scale;
+    self
+  }
+
+  /// What resolution the UI image has: `UiResolution::Render` (the default)
+  /// draws the UI at the render size, so in pixel-art mode it is pixel art
+  /// too; `UiResolution::Window` draws it at the window's resolution.
+  pub fn ui_resolution(mut self, resolution: UiResolution) -> Self {
+    self.config.ui_resolution = resolution;
     self
   }
 

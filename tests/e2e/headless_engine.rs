@@ -310,13 +310,14 @@ fn engine_debug_keys_are_inert_headless() {
   );
 }
 
-/// Requests UI scale 2 and draws a rect sized by the live UI scale, since
-/// `draw_rect` coordinates are not scaled by the engine (only text is).
+/// Requests UI scale 2 and draws a rect sized by the live UI scale. The
+/// scale is render pixels per UI unit, so the rect's coordinates are scaled
+/// too: 20 UI units are 40 pixels.
 struct WantsUiScale;
 
 impl Scene for WantsUiScale {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.request_ui_scale(Some(2));
+    ctx.request_ui_scale(Some(2.0));
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -324,7 +325,7 @@ impl Scene for WantsUiScale {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    let side = 10.0 * ui.ui_scale() as f32;
+    let side = 10.0 * ui.ui_scale();
     ui.draw_rect(Rect::new(0.0, 0.0, side, side), Color::rgb(0, 255, 255));
     SceneAction::Continue
   }
@@ -338,10 +339,9 @@ fn requested_ui_scale_applies_headless() {
 
   engine.step_frames(3).unwrap();
 
-  assert_eq!(
-    engine.frame().unwrap().get_pixel(15, 15).0,
-    [0, 255, 255, 255]
-  );
+  let frame = engine.frame().unwrap();
+  assert_eq!(frame.get_pixel(35, 35).0, [0, 255, 255, 255]);
+  assert_ne!(frame.get_pixel(45, 45).0, [0, 255, 255, 255]);
 }
 
 #[test]

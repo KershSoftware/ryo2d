@@ -20,7 +20,7 @@
 //! │   Immediate Mode Layer                                  │
 //! │   ├─ UiContext drawing API                              │
 //! │   ├─ Stateless widgets (Button, Label, ProgressBar)     │
-//! │   └─ Direct frame buffer rendering                      │
+//! │   └─ Draw commands, drawn by the GPU                    │
 //! ├─────────────────────────────────────────────────────────┤
 //! │   Theme System                                          │
 //! │   ├─ Widget styles (colors, spacing, borders)           │
@@ -65,6 +65,8 @@
 // Submodules
 pub mod immediate;
 pub mod retained;
+#[cfg(test)]
+pub(crate) mod test_util;
 pub mod theme;
 pub mod tween;
 mod types;
@@ -73,9 +75,7 @@ mod types;
 pub use types::{Anchor, Color, Rect};
 
 // Re-export immediate mode API (stateless per-frame drawing)
-pub use immediate::{
-  BitmapFont, HAlign, HBox, Stack, UiConsumed, UiContext, UiInput, VAlign, VBox, create_debug_font,
-};
+pub use immediate::{HAlign, HBox, Stack, UiConsumed, UiContext, UiInput, VAlign, VBox};
 
 // Re-export retained mode API (stateful widgets)
 pub use retained::{DropdownState, FocusTrap, Focusable, ScrollViewState, TextInputState};

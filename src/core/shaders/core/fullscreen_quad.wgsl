@@ -1,16 +1,18 @@
 // Fullscreen quad shader for rendering the game texture to screen
-// with letterboxing/pillarboxing support.
+// with letterboxing/pillarboxing support, the UI image blended over it.
 
 struct ViewportUniform {
     // x: scale_x, y: scale_y, z: offset_x (unused), w: offset_y (unused)
     transform: vec4<f32>,
     // x: 1.0 when the target is not sRGB and the output must be encoded
+    // y: 1.0 when the UI image is blended over the frame
     flags: vec4<f32>,
 };
 
 @group(0) @binding(0) var t_game: texture_2d<f32>;
 @group(0) @binding(1) var s_game: sampler;
 @group(0) @binding(2) var<uniform> viewport: ViewportUniform;
+@group(0) @binding(3) var t_ui: texture_2d<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -65,9 +67,24 @@ fn encode_srgb(c: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(select(hi, lo, c.rgb <= vec3<f32>(0.0031308)), c.a);
 }
 
+fn decode_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let color = textureSample(t_game, s_game, in.tex_coord);
+    var color = textureSample(t_game, s_game, in.tex_coord);
+    if viewport.flags.y > 0.5 {
+        // The UI image holds gamma-encoded premultiplied colour: blend it
+        // over the frame in sRGB space, as the web does
+        let ui = textureSample(t_ui, s_game, in.tex_coord);
+        if ui.a > 0.0 {
+            let frame = encode_srgb(vec4<f32>(color.rgb, 1.0)).rgb;
+            color = vec4<f32>(decode_srgb(ui.rgb + frame * (1.0 - ui.a)), 1.0);
+        }
+    }
     if viewport.flags.x > 0.5 {
         return encode_srgb(color);
     }

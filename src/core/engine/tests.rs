@@ -44,14 +44,14 @@ fn builder_only_fields_survive_resolve() {
     .fixed_hz(120)
     .resizable(false)
     .window_size(800, 600)
-    .ui_scale(Some(2))
+    .ui_scale(Some(2.0))
     .start_scene(EmptyScene)
     .resolve_in(None, false);
   assert_eq!(r.config.target_fps, 144);
   assert_eq!(r.config.fixed_hz, 120);
   assert!(!r.config.resizable);
   assert_eq!(r.config.window_size, Some((800, 600)));
-  assert_eq!(r.config.ui_scale, Some(2));
+  assert_eq!(r.config.ui_scale, Some(2.0));
 }
 
 #[test]

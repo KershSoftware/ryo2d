@@ -316,7 +316,7 @@ impl LoadingPage {
       let draw_h = sprite.height() as f32 * scale;
 
       // Draw sprite preview
-      ui.draw_sprite_handle_scaled(sprite, x, y, scale);
+      ui.draw_sprite_scaled(sprite, x, y, scale);
 
       // Draw size info below
       let size_text = format!("{}x{}", sprite.width(), sprite.height());

@@ -213,8 +213,7 @@ impl TextEngine {
   }
 }
 
-// Measuring and hit-testing: the UI's (a later task)
-#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))]
+// Measuring and hit-testing: the UI's
 impl TextEngine {
   /// The block's size in text units (zero when it cannot be laid out)
   pub(crate) fn measure(
@@ -1579,7 +1578,6 @@ fn first_char(source: &str, byte: usize) -> Option<char> {
 }
 
 /// Whether a bitmap font gives `c` a cell (its own, a blank or '?')
-#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))] // the UI's carets
 fn takes_cell(face: &BitmapFace, c: char) -> bool {
   if c == '\n' {
     return false;
@@ -1588,12 +1586,10 @@ fn takes_cell(face: &BitmapFace, c: char) -> bool {
 }
 
 /// A bitmap font's cell advance in text units at `size`
-#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))] // the UI's carets
 fn bitmap_advance(face: &BitmapFace, size: f32) -> f32 {
   face.cell.0 as f32 * size / face.cell.1 as f32
 }
 
-#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))] // the UI's carets
 fn bitmap_caret(face: &BitmapFace, text: &str, byte: usize, size: f32) -> f32 {
   let cells = text
     .char_indices()
@@ -1603,7 +1599,6 @@ fn bitmap_caret(face: &BitmapFace, text: &str, byte: usize, size: f32) -> f32 {
   cells as f32 * bitmap_advance(face, size)
 }
 
-#[cfg_attr(not(all(test, feature = "default-fonts")), allow(dead_code))] // the UI's carets
 fn bitmap_byte_at(face: &BitmapFace, text: &str, x: f32, size: f32) -> usize {
   let advance = bitmap_advance(face, size);
   let mut pen = 0.0;

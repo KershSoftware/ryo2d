@@ -39,7 +39,7 @@ pub struct FrameInfo {
   pub hdr_effects: bool,
   /// Display-stage effects are active
   pub effects: bool,
-  /// The UI buffer has something to draw
+  /// The UI recorded something to draw
   pub ui: bool,
   /// A scene transition's fade overlay is visible
   pub transition: bool,
@@ -86,7 +86,11 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) effects: &'a EffectsManager,
   /// The frame's look (the tonemap pass reads it)
   pub(crate) look: &'a Look,
-  pub(crate) ui_buffer: &'a [u8],
+  /// The UI camera, when the frame's UI recorded anything (the batch laid
+  /// out its draws; no camera pass runs for it)
+  pub(crate) ui_camera: Option<&'a CameraDraw>,
+  /// The UI image's size in pixels
+  pub(crate) ui_size: (u32, u32),
   /// The cameras the camera passes run for, in render order
   pub(crate) cameras: &'a [CameraDraw],
   pub(crate) time: f32,

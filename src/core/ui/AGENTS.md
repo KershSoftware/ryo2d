@@ -22,7 +22,7 @@ The UI system combines two paradigms for game HUDs, menus, and interactive eleme
 
 ## Integration Point
 
-`Scene::ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction` runs once per frame for the visible scenes, bottom-up, **before** the fixed steps (`Engine::ui_pass`, `engine/frame.rs`). It draws into a separate UI buffer that is composited **last**, above the world, lighting and post-processing. Engine stats/FPS overlays and the dev console are drawn into the same `UiContext` after the scenes, so they appear on top.
+`Scene::ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction` runs once per frame for the visible scenes, bottom-up, **before** the fixed steps (`Engine::ui_pass`, `engine/frame.rs`). Engine stats/FPS overlays and the dev console are drawn into the same `UiContext` after the scenes, so they appear on top.
 
 - **Input**: `UiContext` reads a `UiInput` snapshot of `Input` (blocks and consumption carried over). What the UI consumes (`consume_click`, `consume_escape`, `consume_key`, `consume_scroll`, widget clicks, the wheel over a scrolling view and typed text) is applied to `Input` after the pass, so `update` and systems never see it: gameplay keys belong in `update` (`ctx.input`), keys the UI acts on in `ui` (`ui.input()`).
 - **Time**: `ui.dt()` is real time, so UI animation runs through pause and slow motion.
@@ -30,9 +30,18 @@ The UI system combines two paradigms for game HUDs, menus, and interactive eleme
 
 API usage is covered by the `ryo-ui` skill.
 
+## Drawing on the GPU
+
+- **Recording.** `UiContext` draws nothing itself: every primitive records a `UiCommand` (`immediate/commands.rs`: `Rect`, `Sprite`, `Line`, `Text`) in UI units into the engine's `UiCommands`, with the clip and layer it was drawn under. A pass that runs twice in a frame (a scene switch returned from `ui`) clears the first pass's commands.
+- **The UI pass.** At present time `render::ui::emit_ui` lays the commands into the 2D batch for the UI camera (`UI_CAMERA`, `CameraDraw::ui`): one z per command (layer, then submission), so the painter's order holds. The `ui` render pass draws that camera into the UI image: `Rgba8Unorm`, gamma-encoded colour premultiplied by alpha (`UI_FORMAT`, the `UI_GAMMA` override). The composite blends it over the frame in sRGB space, so a 50% black panel over white is 128, as on the web. Rects are analytic (`BatchShader::UiRect`: rounded corners, inner border, anti-aliased edges); nine-slices are nine sprite commands.
+- **UI units and scale** (`render/ui.rs`, `UiSpace`). With the automatic scale (`ui_scale: None`, the default) UI units are screen units at any display scale; text is laid out at render pixels, so it is sharp on HiDPI displays. `EngineBuilder::ui_scale(Some(s))` / `ctx.request_ui_scale` make it `s` render pixels per UI unit, rects and text alike; mouse positions are converted to UI units (`UiInput::with_mouse_scale`). `UiResolution::Render` (default) draws the UI at the render size (pixel art: the low-res target, snapped like the world); `Window` draws it at window resolution.
+- **Clipping** is a scissor per command (the clip in image pixels, rounded outward); the stack has no depth limit.
+- **Text** goes through the text engine (`TextEngine`): measured, wrapped and laid out at the UI scale. The shorthand helpers (`draw_text`, `label`, ...) use the default UI style (`FontRole::Ui`, 14 px). The text input's click, caret, selection and scroll positions come from the engine (`byte_at`, `caret_x`, `selection_x`), never a fixed character width.
+- **Fades go through opacity.** The layout cache keys on the style, colour included, so changing a style's colour every frame lays the text out again every frame. Widgets and helpers fade text through the text command's `opacity` (`UiCommand::Text { opacity }`), never through the style's colour. The shorthand helpers (`draw_text`, `label`, the wrapped and centred variants) do this for the colour they are given: they lay the text out opaque and carry the colour's alpha as opacity, so one cached layout serves every alpha. `draw_text_styled` lays its style out as given: moving that colour's alpha to opacity would fade the style's outline and shadow too.
+
 ## Notes for AI Agents
 
 1. **State ownership**: retained widget state is owned by the caller, not `UiContext`.
-2. **Screen space**: all coordinates are in screen pixels.
-3. **Alpha blending**: colors with alpha < 255 blend with the background.
+2. **UI units**: all coordinates are UI units (screen units with the automatic scale), never render pixels.
+3. **Alpha blending**: colours with alpha < 255 blend with what is below in sRGB space, as designers expect.
 4. **The UI is never lit** and never post-processed.

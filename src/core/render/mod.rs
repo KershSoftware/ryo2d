@@ -57,16 +57,15 @@ mod passes;
 mod pipeline;
 pub(crate) mod scratch;
 pub(crate) mod text;
+pub(crate) mod ui;
 
 pub use context::RenderContext;
 pub(crate) use context::{EffectStages, FrameTargets};
 pub use debug_draw::{DebugDraw, DebugPen};
 pub(crate) use debug_draw::{begin_debug_fixed_step, end_debug_fixed_step};
-#[allow(unused_imports)] // drawn by the UI in a later task
-pub(crate) use draw_list::DrawShape;
 pub(crate) use draw_list::{
-  DrawGlyph, DrawItem, DrawKind, DrawLight, DrawList, DrawPayload, DrawTriangles, SpriteLook,
-  SpriteShading,
+  DrawGlyph, DrawItem, DrawKind, DrawLight, DrawList, DrawPayload, DrawShape, DrawTriangles,
+  SpriteLook, SpriteShading,
 };
 pub(crate) use entities::EntityDrawer;
 pub use frame::FrameInfo;
@@ -76,6 +75,8 @@ pub(crate) use frame::{
 pub use look::{AutoExposure, ColorGrading, ColorLut, Look, LutError, Tonemap};
 pub use pass::{PassScope, RenderPass};
 pub use pipeline::{RenderPipeline, RenderPipelineError};
+pub use ui::UiResolution;
+pub(crate) use ui::UiSpace;
 
 /// Ids of the built-in passes, in the order `RenderPipeline::default_2d` runs them.
 pub mod pass_ids {
@@ -100,7 +101,7 @@ pub mod pass_ids {
   pub const TRANSITION: &str = "transition";
   /// Display effects (fade, tint, vignette, flash, CRT, chromatic aberration, display custom effects) on the display image
   pub const POST_PROCESS: &str = "post_process";
-  /// UI upload
+  /// The frame's UI, drawn into the UI image
   pub const UI: &str = "ui";
   /// Final composite to the window or offscreen target
   pub const COMPOSITE: &str = "composite";

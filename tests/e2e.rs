@@ -50,3 +50,6 @@ mod lighting;
 
 #[path = "e2e/text.rs"]
 mod text;
+
+#[path = "e2e/ui_drawing.rs"]
+mod ui_drawing;

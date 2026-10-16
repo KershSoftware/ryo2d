@@ -37,7 +37,6 @@ pub(crate) enum DrawPayload {
   /// Index into the list's glyph items
   Glyph(usize),
   /// Index into the list's shape items
-  #[allow(dead_code)] // drawn by the UI in a later task
   Shape(usize),
 }
 
@@ -275,6 +274,19 @@ impl DrawList {
     self.push_item(lit, z, DrawKind::Trail, payload, only_camera);
   }
 
+  /// Clip the most recently pushed trail or line to `scissor` (a no-op
+  /// before any).
+  pub(crate) fn set_last_triangles_scissor(&mut self, scissor: Option<PixelRect>) {
+    if let Some(triangles) = self.triangles.last_mut() {
+      triangles.scissor = scissor;
+    }
+  }
+
+  /// How many trails and lines the frame holds.
+  pub(crate) fn triangles_count(&self) -> usize {
+    self.triangles.len()
+  }
+
   /// Add a glyph at `z`, for `only_camera` or every camera.
   pub(crate) fn push_glyph(
     &mut self,
@@ -289,7 +301,6 @@ impl DrawList {
     self.push_item(lit, z, kind, payload, only_camera);
   }
 
-  #[allow(dead_code)] // drawn by the UI in a later task
   /// Add a UI rectangle at `z`, for `only_camera` or every camera.
   pub(crate) fn push_shape(
     &mut self,

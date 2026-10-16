@@ -294,10 +294,11 @@ impl SceneContext<'_> {
     window.display_mode = Some(mode);
   }
 
-  /// Request a UI scale, or `None` to detect it from the display's DPI.
-  pub fn request_ui_scale(&mut self, scale: Option<u32>) {
-    // 0 means auto-detect
-    self.window().ui_scale = Some(scale.unwrap_or(0));
+  /// Request a UI scale in render pixels per UI unit, or `None` for the
+  /// automatic scale (UI units equal to screen units at any display
+  /// scale). Applied after the frame.
+  pub fn request_ui_scale(&mut self, scale: Option<f32>) {
+    self.window().ui_scale = Some(scale);
   }
 
   // --- cursor ---

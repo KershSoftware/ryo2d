@@ -47,8 +47,8 @@ pub struct RenderContext<'a> {
   /// cameras), and the scene image to go back to after them
   camera: Option<usize>,
   scene_image: FrameImage,
-  /// Whether the `ui` pass uploaded this frame's UI (the composite only blends it then)
-  pub(crate) ui_uploaded: bool,
+  /// Whether the `ui` pass drew this frame's UI (the composite only blends it then)
+  pub(crate) ui_drawn: bool,
   /// Whether the `capture` pass drew into the capture texture this frame
   pub(crate) captured: bool,
 }
@@ -75,7 +75,7 @@ impl<'a> RenderContext<'a> {
       image: FrameImage::Game,
       camera: None,
       scene_image: FrameImage::Game,
-      ui_uploaded: false,
+      ui_drawn: false,
       captured: false,
     }
   }
@@ -110,12 +110,6 @@ impl<'a> RenderContext<'a> {
   /// The size of screen space, which the world's projection and the UI span.
   pub fn screen_size(&self) -> glam::Vec2 {
     glam::Vec2::new(self.frame.screen_width, self.frame.screen_height)
-  }
-
-  /// The UI image's size in pixels: the screen size rounded up.
-  pub(crate) fn ui_size(&self) -> (u32, u32) {
-    let size = self.screen_size().ceil();
-    ((size.x as u32).max(1), (size.y as u32).max(1))
   }
 
   /// The format of [`current_view`](Self::current_view), for the render

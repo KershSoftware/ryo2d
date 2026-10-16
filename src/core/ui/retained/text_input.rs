@@ -156,25 +156,15 @@ impl TextInputState {
     self.scroll_offset
   }
 
-  /// Adjust scroll offset so the cursor is visible within the given text width.
-  ///
-  /// Call this after any operation that might move the cursor. The `text_width` is
-  /// the available width for text (input rect width minus padding), and `char_width`
-  /// is the width of a single character in the monospace font.
-  pub fn ensure_cursor_visible(&mut self, text_width: f32, char_width: f32) {
-    let cursor_chars = self.text[..self.cursor].chars().count();
-    let cursor_px = cursor_chars as f32 * char_width;
-
-    // Scroll right if cursor is past the visible area
-    if cursor_px - self.scroll_offset > text_width {
-      self.scroll_offset = cursor_px - text_width + char_width;
+  /// Keep the caret (`cursor_x`, pixels from the text's start) inside a field
+  /// `width` pixels wide, scrolling as little as possible
+  pub fn ensure_cursor_visible(&mut self, cursor_x: f32, width: f32) {
+    let margin = 2.0;
+    if cursor_x - self.scroll_offset > width - margin {
+      self.scroll_offset = cursor_x - width + margin;
+    } else if cursor_x < self.scroll_offset {
+      self.scroll_offset = (cursor_x - margin).max(0.0);
     }
-    // Scroll left if cursor is before the visible area
-    if cursor_px < self.scroll_offset {
-      self.scroll_offset = (cursor_px - char_width).max(0.0);
-    }
-    // Don't scroll past the start
-    self.scroll_offset = self.scroll_offset.max(0.0);
   }
 
   /// Select all text.
@@ -355,6 +345,23 @@ impl TextInputState {
   /// Move cursor to end of text.
   pub fn move_end(&mut self, select: bool) {
     self.cursor = self.text.len();
+    if !select {
+      self.selection_anchor = self.cursor;
+    }
+    self.reset_blink();
+  }
+
+  /// Set the cursor to a byte index (snapped back to a character boundary,
+  /// and to the text's end).
+  ///
+  /// If `select` is true, extends the selection from the current anchor;
+  /// otherwise moves both cursor and anchor (no selection).
+  pub fn set_cursor(&mut self, byte: usize, select: bool) {
+    let mut byte = byte.min(self.text.len());
+    while !self.text.is_char_boundary(byte) {
+      byte -= 1;
+    }
+    self.cursor = byte;
     if !select {
       self.selection_anchor = self.cursor;
     }
@@ -923,22 +930,25 @@ mod tests {
     assert_eq!(state.scroll_offset(), 0.0);
   }
 
+  /// Where the caret is, in pixels, at 8 px a character
+  fn caret_px(state: &TextInputState) -> f32 {
+    state.text()[..state.cursor()].chars().count() as f32 * 8.0
+  }
+
   #[test]
   fn ensure_cursor_visible_no_scroll_when_fits() {
     let mut state = TextInputState::with_text("hello");
-    // 5 chars * 8px = 40px, text_width = 100px — fits easily
-    state.ensure_cursor_visible(100.0, 8.0);
+    // Caret at 40 px in a 100 px field
+    state.ensure_cursor_visible(caret_px(&state), 100.0);
     assert_eq!(state.scroll_offset(), 0.0);
   }
 
   #[test]
   fn ensure_cursor_visible_scrolls_right_when_cursor_overflows() {
     let mut state = TextInputState::with_text("hello world test");
-    // cursor at end = 16 chars * 8px = 128px, text_width = 80px
-    state.ensure_cursor_visible(80.0, 8.0);
-    // Should scroll so cursor (128px) is within visible area
-    // scroll_offset = cursor_px - text_width + char_width = 128 - 80 + 8 = 56
-    assert_eq!(state.scroll_offset(), 56.0);
+    // Caret at 128 px in an 80 px field: just inside the right margin
+    state.ensure_cursor_visible(caret_px(&state), 80.0);
+    assert_eq!(state.scroll_offset(), 128.0 - 80.0 + 2.0);
   }
 
   #[test]
@@ -948,33 +958,31 @@ mod tests {
     state.cursor = 0; // Cursor at start
     state.selection_anchor = 0;
 
-    state.ensure_cursor_visible(80.0, 8.0);
-    // cursor_px = 0, which is < scroll_offset (80)
-    // scroll_offset = max(cursor_px - char_width, 0) = max(0 - 8, 0) = 0
+    state.ensure_cursor_visible(caret_px(&state), 80.0);
     assert_eq!(state.scroll_offset(), 0.0);
   }
 
   #[test]
   fn ensure_cursor_visible_tracks_cursor_movement() {
     let mut state = TextInputState::with_text("abcdefghijklmnop");
-    let char_width = 8.0;
-    let text_width = 40.0; // Only 5 chars visible
+    let width = 40.0; // Only 5 chars visible
 
-    // Cursor at end (16 chars * 8 = 128px)
-    state.ensure_cursor_visible(text_width, char_width);
+    // Caret at the end (128 px)
+    state.ensure_cursor_visible(caret_px(&state), width);
     let scroll_at_end = state.scroll_offset();
     assert!(scroll_at_end > 0.0);
 
-    // Move cursor to position 3 (24px) — should scroll left
+    // Caret at 24 px, left of the view: scrolls back to show it
     state.cursor = 3;
     state.selection_anchor = 3;
-    state.ensure_cursor_visible(text_width, char_width);
+    state.ensure_cursor_visible(caret_px(&state), width);
     assert!(state.scroll_offset() < scroll_at_end);
+    assert!(state.scroll_offset() <= 24.0);
 
-    // Move cursor to start
+    // Caret at the start
     state.cursor = 0;
     state.selection_anchor = 0;
-    state.ensure_cursor_visible(text_width, char_width);
+    state.ensure_cursor_visible(caret_px(&state), width);
     assert_eq!(state.scroll_offset(), 0.0);
   }
 
@@ -983,7 +991,7 @@ mod tests {
     let mut state = TextInputState::with_text("hi");
     state.cursor = 0;
     state.selection_anchor = 0;
-    state.ensure_cursor_visible(200.0, 8.0);
+    state.ensure_cursor_visible(caret_px(&state), 200.0);
     assert_eq!(state.scroll_offset(), 0.0);
   }
 
@@ -991,21 +999,35 @@ mod tests {
   fn ensure_cursor_visible_with_insert_and_backspace() {
     let mut state = TextInputState::new();
     state.set_focused(true);
-    let char_width = 8.0;
-    let text_width = 40.0; // 5 chars visible
+    let width = 40.0; // 5 chars visible
 
-    // Type 10 characters
+    // Type 10 characters: the caret at 80 px scrolls the field
     state.insert("0123456789");
-    state.ensure_cursor_visible(text_width, char_width);
-    // cursor at 10*8=80px, scroll should make it visible
+    state.ensure_cursor_visible(caret_px(&state), width);
     assert!(state.scroll_offset() > 0.0);
 
     // Backspace all the way back
     for _ in 0..10 {
       state.backspace();
-      state.ensure_cursor_visible(text_width, char_width);
+      state.ensure_cursor_visible(caret_px(&state), width);
     }
     assert_eq!(state.text(), "");
     assert_eq!(state.scroll_offset(), 0.0);
+  }
+
+  #[test]
+  fn set_cursor_takes_a_byte_and_snaps_to_a_char_boundary() {
+    let mut state = TextInputState::with_text("héllo");
+    // Inside 'é' (bytes 1..3): back to its start
+    state.set_cursor(2, false);
+    assert_eq!(state.cursor(), 1);
+    assert!(!state.has_selection());
+    // Past the end: the end
+    state.set_cursor(100, false);
+    assert_eq!(state.cursor(), "héllo".len());
+    // Extending selects from the anchor
+    state.set_cursor(1, false);
+    state.set_cursor(3, true);
+    assert_eq!(state.selected_text(), Some("é"));
   }
 }
