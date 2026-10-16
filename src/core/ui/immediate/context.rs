@@ -57,11 +57,23 @@ struct PendingDropdown {
   options: Vec<String>,
 }
 
-/// A text's effect seed: a hash of the text, style and layout options, so it
-/// stays the same whatever else is drawn around it
+/// A text's effect seed: a hash of the text, the style without its colours
+/// and the layout options, so it stays the same whatever else is drawn
+/// around it and when a hover changes its colour
 fn text_seed(text: &RichText, style: &TextStyle, options: &TextLayoutOptions) -> u64 {
   let mut h = DefaultHasher::new();
   text.hash_into(&mut h);
+  let mut style = style.clone();
+  style.color = Color::WHITE;
+  if let Some(outline) = &mut style.outline {
+    outline.color = Color::WHITE;
+  }
+  if let Some(shadow) = &mut style.shadow {
+    shadow.color = Color::WHITE;
+  }
+  if let Some(glow) = &mut style.glow {
+    glow.color = Color::WHITE;
+  }
   style.hash_into(&mut h);
   options.hash_into(&mut h);
   h.finish()
@@ -75,7 +87,9 @@ pub struct UiText<'u, 'a> {
   at: Vec2,
   style: TextStyle,
   options: TextLayoutOptions,
-  reveal: Option<(f32, f32)>,
+  /// The clusters shown (`None`: no reveal) and the fade over them
+  shown: Option<f32>,
+  fade: f32,
   opacity: f32,
 }
 
@@ -86,10 +100,12 @@ impl UiText<'_, '_> {
     self.at = Vec2::new(x, y);
     self
   }
+  /// The style (font, size, colour, effects); replaces earlier size and colour
   pub fn style(mut self, style: &TextStyle) -> Self {
     self.style = style.clone();
     self
   }
+  /// The font size in UI units
   pub fn size(mut self, size: f32) -> Self {
     self.style.size = size;
     self
@@ -105,14 +121,17 @@ impl UiText<'_, '_> {
     self.options.wrap = Some(width);
     self
   }
+  /// How each line sits in the block (needs a width from `wrap`)
   pub fn align(mut self, align: TextAlign) -> Self {
     self.options.align = align;
     self
   }
+  /// Stop after this many lines
   pub fn max_lines(mut self, lines: u32) -> Self {
     self.options.max_lines = Some(lines);
     self
   }
+  /// End a text cut by `max_lines` with an ellipsis
   pub fn ellipsis(mut self) -> Self {
     self.options.overflow = TextOverflow::Ellipsis;
     self
@@ -129,19 +148,29 @@ impl UiText<'_, '_> {
   /// a typewriter must keep counting past the end to finish: pass
   /// [`TextReveal::drawn_clusters`](crate::core::text::TextReveal::drawn_clusters),
   /// or any value of at least the cluster count plus `fade`.
+  /// A shown count that is not a number means no reveal.
   pub fn reveal(mut self, shown: f32) -> Self {
-    let fade = self.reveal.map_or(0.0, |(_, fade)| fade);
-    self.reveal = Some((shown, fade));
+    self.shown = shown.is_finite().then_some(shown);
     self
   }
-  /// Revealed characters fade in over this many clusters
+  /// Revealed characters fade in over this many clusters (a negative or
+  /// non-numeric count means none; it needs a [`reveal`](Self::reveal))
   pub fn fade(mut self, clusters: f32) -> Self {
-    let shown = self.reveal.map_or(f32::MAX, |(shown, _)| shown);
-    self.reveal = Some((shown, clusters));
+    self.fade = if clusters.is_finite() {
+      clusters.max(0.0)
+    } else {
+      0.0
+    };
     self
   }
+  /// Fade the whole text, 0 (clear) to 1; clamped, and a non-numeric value
+  /// is opaque
   pub fn opacity(mut self, opacity: f32) -> Self {
-    self.opacity = opacity;
+    self.opacity = if opacity.is_finite() {
+      opacity.clamp(0.0, 1.0)
+    } else {
+      1.0
+    };
     self
   }
 
@@ -160,7 +189,7 @@ impl UiText<'_, '_> {
         &self.options,
         origin,
         self.opacity,
-        self.reveal,
+        self.shown.map(|shown| (shown, self.fade)),
       )
       .unwrap_or(Vec2::ZERO)
   }
@@ -843,7 +872,8 @@ impl<'a> UiContext<'a> {
       at: Vec2::ZERO,
       style: TextStyle::default(),
       options: TextLayoutOptions::default(),
-      reveal: None,
+      shown: None,
+      fade: 0.0,
       opacity: 1.0,
     }
   }
@@ -2240,6 +2270,12 @@ impl<'a> UiContext<'a> {
   /// Draw all pending dropdown lists on the popup layer, above everything
   /// else. The engine calls this after each scene's `ui`.
   pub(crate) fn finish_dropdowns(&mut self) {
+    self.finish_dropdowns_on(1);
+  }
+
+  /// `finish_dropdowns` onto draw layer `layer`: a scene under others keeps
+  /// its lists on layer 0 so the scenes above still cover them
+  pub(crate) fn finish_dropdowns_on(&mut self, layer: u8) {
     // Take pending dropdowns to avoid borrow issues
     let dropdowns = std::mem::take(&mut self.pending_dropdowns);
 
@@ -2267,7 +2303,7 @@ impl<'a> UiContext<'a> {
     let mouse_x = self.input.mouse_x();
     let mouse_y = self.input.mouse_y();
     let line = self.line_height(&TextStyle::default());
-    let page_layer = std::mem::replace(&mut self.layer, 1);
+    let page_layer = std::mem::replace(&mut self.layer, layer);
 
     // Draw each pending dropdown list
     for dropdown in dropdowns {
@@ -3815,5 +3851,94 @@ mod tests {
     assert!((area - rect.width * rect.height).abs() < 1e-3);
     let left = pieces.iter().find(|(r, _)| r.x == rect.x).unwrap();
     assert!((left.0.width - 3.0).abs() < 1e-4, "{left:?}");
+  }
+  #[test]
+  fn a_texts_effect_seed_ignores_its_colour() {
+    let seed_of = |color: Color| {
+      let (mut commands, mut text) = (UiCommands::default(), text_engine());
+      let mut ui = context(&mut commands, &mut text);
+      let style = TextStyle::new()
+        .color(color)
+        .outline(1.0, color)
+        .shadow(Vec2::new(1.0, 1.0), color, 0.0)
+        .glow(2.0, color);
+      ui.text(RichText::markup("[shake]label[/shake]"))
+        .style(&style)
+        .draw();
+      drop(ui);
+      match commands.iter().next().unwrap() {
+        UiCommand::Text { seed, .. } => *seed,
+        _ => panic!(),
+      }
+    };
+    assert_eq!(seed_of(Color::WHITE), seed_of(Color::RED));
+  }
+
+  /// The one text command a builder call records
+  fn built(build: impl for<'u, 'a> FnOnce(UiText<'u, 'a>) -> UiText<'u, 'a>) -> UiCommand {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    build(ui.text("Hello")).draw();
+    drop(ui);
+    commands.iter().next().unwrap().clone()
+  }
+
+  #[test]
+  fn text_opacity_is_clamped_and_a_nan_is_opaque() {
+    let opacity = |value: f32| match built(|t| t.opacity(value)) {
+      UiCommand::Text { opacity, .. } => opacity,
+      _ => panic!(),
+    };
+    assert_eq!(opacity(f32::NAN), 1.0);
+    assert_eq!(opacity(f32::INFINITY), 1.0);
+    assert_eq!(opacity(5.0), 1.0);
+    assert_eq!(opacity(-2.0), 0.0);
+    assert_eq!(opacity(0.25), 0.25);
+  }
+
+  #[test]
+  fn text_reveal_and_fade_ignore_values_that_are_not_numbers() {
+    fn reveal(
+      build: impl for<'u, 'a> FnOnce(UiText<'u, 'a>) -> UiText<'u, 'a>,
+    ) -> Option<(f32, f32)> {
+      match built(build) {
+        UiCommand::Text { reveal, .. } => reveal,
+        _ => panic!(),
+      }
+    }
+    assert_eq!(reveal(|t| t.reveal(f32::NAN)), None);
+    assert_eq!(reveal(|t| t.reveal(f32::NAN).fade(2.0)), None);
+    assert_eq!(reveal(|t| t.reveal(f32::INFINITY)), None);
+    assert_eq!(reveal(|t| t.reveal(2.0).fade(f32::NAN)), Some((2.0, 0.0)));
+    assert_eq!(reveal(|t| t.fade(-3.0).reveal(2.0)), Some((2.0, 0.0)));
+    assert_eq!(reveal(|t| t.fade(2.0).reveal(3.0)), Some((3.0, 2.0)));
+  }
+
+  #[test]
+  fn a_public_text_reveal_settles_with_its_fade_at_full_alpha() {
+    use crate::core::text::{TextLayoutOptions, TextReveal, reveal_alpha};
+    let mut text = text_engine();
+    let layout = text
+      .layout(
+        &RichText::new("Hello there"),
+        &TextStyle::default(),
+        &TextLayoutOptions::default(),
+        1.0,
+      )
+      .unwrap();
+    // 20 clusters a second with a 0.15 s fade is a 3 cluster fade
+    let mut reveal = TextReveal::new(20.0).with_fade(0.15);
+    for _ in 0..1000 {
+      if reveal.settled() {
+        break;
+      }
+      reveal.advance(0.05, &layout);
+    }
+    assert!(reveal.settled());
+    let (drawn, fade) = reveal.drawn();
+    assert!((fade - 3.0).abs() < 1e-4);
+    assert_eq!(drawn, reveal.drawn_clusters());
+    assert!(drawn >= layout.clusters as f32 + fade - 1.0);
+    assert!((0..layout.clusters).all(|c| reveal_alpha(c, drawn, fade) == 1.0));
   }
 }

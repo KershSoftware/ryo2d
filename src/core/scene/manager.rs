@@ -503,8 +503,14 @@ impl SceneManager {
       }
       let slot = &mut self.scenes[i];
       let result = slot.call(world, audio, |scene, ctx| scene.ui(ui, ctx));
-      // The scene's open lists draw above everything it drew
-      ui.finish_dropdowns();
+      // The scene's open lists draw above everything it drew. Only the
+      // top scene's go on the popup layer; a lower scene's stay under the
+      // scenes above it.
+      if i == top {
+        ui.finish_dropdowns();
+      } else {
+        ui.finish_dropdowns_on(0);
+      }
       if i == top {
         action = result;
       } else {
@@ -833,6 +839,47 @@ mod tests {
     assert!(
       commands.iter().any(|c| c.draw_layer() == 1),
       "popup commands are present after ui_pass"
+    );
+  }
+
+  struct DrawsRect;
+
+  impl Scene for DrawsRect {
+    fn is_transparent(&self) -> bool {
+      true
+    }
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      ui.draw_rect(
+        crate::core::ui::Rect::new(0.0, 0.0, 300.0, 300.0),
+        crate::core::ui::Color::RED,
+      );
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn a_lower_scene_s_popups_stay_below_an_upper_scene() {
+    let (mut world, mut audio) = world();
+    let mut m = SceneManager::with_scene(Box::new(OpensDropdown));
+    m.enter_initial(&mut world, &mut audio);
+    m.push(Box::new(DrawsRect), &mut world, &mut audio);
+    let (mut commands, mut text) = (
+      crate::core::ui::immediate::UiCommands::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (320.0, 320.0));
+    m.ui_pass(&mut world, &mut audio, &mut ui);
+    drop(ui);
+    let keys: Vec<(u8, usize)> = commands
+      .iter()
+      .enumerate()
+      .map(|(i, c)| (c.draw_layer(), i))
+      .collect();
+    let (last, earlier) = keys.split_last().unwrap();
+    assert!(earlier.len() > 1, "the lower scene drew its dropdown");
+    assert!(
+      earlier.iter().all(|key| key < last),
+      "the upper scene's rect draws over the lower popups: {keys:?}"
     );
   }
 
