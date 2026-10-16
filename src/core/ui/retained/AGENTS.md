@@ -13,8 +13,7 @@ ui.dropdown(&mut self.dropdown2, rect2, &options2);
 // 2. Then Tab navigation, with states in tab order
 ui.handle_dropdown_tab_navigation(&mut [&mut self.dropdown1, &mut self.dropdown2]);
 
-// 3. Last: draw open dropdown lists on top of all other UI
-ui.finish_dropdowns();
+// Open lists draw on the popup layer; the engine flushes them after the scene's `ui`
 ```
 
 `Focusable`/`FocusTrap` (`focus.rs`) handle focus for other widgets and modals.

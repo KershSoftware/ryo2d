@@ -244,3 +244,42 @@ fn later_ui_draws_over_earlier_ui() {
   );
   assert_eq!(frame.get_pixel(50, 50).0, [0, 255, 0, 255]);
 }
+
+#[test]
+fn ui_units_and_mouse_hits_hold_at_scale_factor_two() {
+  use std::cell::Cell;
+  use std::rc::Rc;
+  let clicks = Rc::new(Cell::new(0u32));
+  let counted = clicks.clone();
+  let scene = Ui {
+    draw: move |ui: &mut UiContext| {
+      ui.draw_rect(Rect::new(10.0, 10.0, 20.0, 20.0), Color::GREEN);
+      if ui.button("Go", Rect::new(80.0, 10.0, 30.0, 20.0)) {
+        counted.set(counted.get() + 1);
+      }
+    },
+    world: None,
+  };
+  let Some(mut engine) = engine(Some(2.0), |b| b, scene) else {
+    return;
+  };
+  let frame = engine.frame().unwrap();
+  assert_eq!(frame.dimensions(), (256, 192));
+  // UI (10, 10, 20, 20) covers render pixels 20..60
+  assert_eq!(frame.get_pixel(20, 20).0, [0, 255, 0, 255]);
+  assert_eq!(frame.get_pixel(59, 59).0, [0, 255, 0, 255]);
+  assert_ne!(frame.get_pixel(18, 40).0, [0, 255, 0, 255]);
+  assert_ne!(frame.get_pixel(61, 40).0, [0, 255, 0, 255]);
+  // Mouse positions are screen units, which are the UI's units
+  let click = |engine: &mut HeadlessEngine, x: f32, y: f32| {
+    engine.mouse_move(x, y);
+    engine.press_mouse(MouseButton::Left);
+    let _ = engine.step();
+    engine.release_mouse(MouseButton::Left);
+    let _ = engine.step();
+  };
+  click(&mut engine, 40.0, 20.0);
+  assert_eq!(clicks.get(), 0, "beside the button");
+  click(&mut engine, 95.0, 20.0);
+  assert_eq!(clicks.get(), 1, "on the button");
+}

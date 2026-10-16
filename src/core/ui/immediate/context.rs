@@ -23,6 +23,7 @@
 //! ```
 
 use std::cell::{RefCell, RefMut};
+use std::hash::{DefaultHasher, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec2;
@@ -34,7 +35,9 @@ use super::input::UiInput;
 
 use crate::core::asset::SpriteHandle;
 use crate::core::render::UiSpace;
-use crate::core::text::{RichText, TextAlign, TextEngine, TextLayoutOptions, TextStyle};
+use crate::core::text::{
+  RichText, TextAlign, TextEngine, TextLayoutOptions, TextOverflow, TextStyle,
+};
 use crate::core::ui::retained::{DropdownState, Focusable, ScrollViewState, TextInputState};
 use crate::core::ui::theme::Theme;
 use crate::core::ui::types::{Anchor, Color, Rect};
@@ -52,6 +55,115 @@ struct PendingDropdown {
   hover_index: usize,
   /// Options to display (stored as owned strings for lifetime management)
   options: Vec<String>,
+}
+
+/// A text's effect seed: a hash of the text, style and layout options, so it
+/// stays the same whatever else is drawn around it
+fn text_seed(text: &RichText, style: &TextStyle, options: &TextLayoutOptions) -> u64 {
+  let mut h = DefaultHasher::new();
+  text.hash_into(&mut h);
+  style.hash_into(&mut h);
+  options.hash_into(&mut h);
+  h.finish()
+}
+
+/// A text draw being set up with [`UiContext::text`]; `draw()` records it
+#[must_use = "call .draw() to draw the text"]
+pub struct UiText<'u, 'a> {
+  ui: &'u mut UiContext<'a>,
+  text: RichText,
+  at: Vec2,
+  style: TextStyle,
+  options: TextLayoutOptions,
+  reveal: Option<(f32, f32)>,
+  opacity: f32,
+}
+
+impl UiText<'_, '_> {
+  /// Where the text goes, in UI units (its top-left unless `anchor` says
+  /// otherwise)
+  pub fn at(mut self, x: f32, y: f32) -> Self {
+    self.at = Vec2::new(x, y);
+    self
+  }
+  pub fn style(mut self, style: &TextStyle) -> Self {
+    self.style = style.clone();
+    self
+  }
+  pub fn size(mut self, size: f32) -> Self {
+    self.style.size = size;
+    self
+  }
+  /// The base colour. Fade through [`opacity`](Self::opacity), not the
+  /// colour's alpha: layouts are cached per colour.
+  pub fn color(mut self, color: Color) -> Self {
+    self.style.color = color;
+    self
+  }
+  /// Wrap lines at `width` UI units
+  pub fn wrap(mut self, width: f32) -> Self {
+    self.options.wrap = Some(width);
+    self
+  }
+  pub fn align(mut self, align: TextAlign) -> Self {
+    self.options.align = align;
+    self
+  }
+  pub fn max_lines(mut self, lines: u32) -> Self {
+    self.options.max_lines = Some(lines);
+    self
+  }
+  pub fn ellipsis(mut self) -> Self {
+    self.options.overflow = TextOverflow::Ellipsis;
+    self
+  }
+  /// Which point of the block sits at `at` (default the top-left)
+  pub fn anchor(mut self, anchor: Anchor) -> Self {
+    self.options.anchor = anchor;
+    self
+  }
+  /// Show the first `shown` character clusters (fractional while fading).
+  ///
+  /// With a [`fade`](Self::fade) wider than one cluster the last characters
+  /// are still partly transparent when `shown` reaches the cluster count, so
+  /// a typewriter must keep counting past the end to finish: pass
+  /// [`TextReveal::drawn_clusters`](crate::core::text::TextReveal::drawn_clusters),
+  /// or any value of at least the cluster count plus `fade`.
+  pub fn reveal(mut self, shown: f32) -> Self {
+    let fade = self.reveal.map_or(0.0, |(_, fade)| fade);
+    self.reveal = Some((shown, fade));
+    self
+  }
+  /// Revealed characters fade in over this many clusters
+  pub fn fade(mut self, clusters: f32) -> Self {
+    let shown = self.reveal.map_or(f32::MAX, |(shown, _)| shown);
+    self.reveal = Some((shown, clusters));
+    self
+  }
+  pub fn opacity(mut self, opacity: f32) -> Self {
+    self.opacity = opacity;
+    self
+  }
+
+  /// Record the text; its size in UI units (zero when it cannot be laid out)
+  pub fn draw(self) -> Vec2 {
+    let scale = self.ui.space.px_scale;
+    let size = self.ui.engine().map_or(Vec2::ZERO, |mut engine| {
+      engine.measure(&self.text, &self.style, &self.options, scale)
+    });
+    let origin = self.at - self.options.anchor.fraction() * size;
+    self
+      .ui
+      .record_text(
+        &self.text,
+        &self.style,
+        &self.options,
+        origin,
+        self.opacity,
+        self.reveal,
+      )
+      .unwrap_or(Vec2::ZERO)
+  }
 }
 
 // ============================================================================
@@ -595,6 +707,7 @@ impl<'a> UiContext<'a> {
     options: &TextLayoutOptions,
     origin: Vec2,
     opacity: f32,
+    reveal: Option<(f32, f32)>,
   ) -> Option<Vec2> {
     let scale = self.space.px_scale;
     let layout = self.engine()?.layout(text, style, options, scale)?;
@@ -605,8 +718,9 @@ impl<'a> UiContext<'a> {
     self.commands.push(UiCommand::Text {
       layout,
       origin,
-      reveal: None,
+      reveal,
       opacity,
+      seed: text_seed(text, style, options),
       clip: self.current_clip,
       layer: self.layer,
     });
@@ -624,13 +738,14 @@ impl<'a> UiContext<'a> {
       &options,
       Vec2::new(x, y),
       opacity,
+      None,
     );
   }
 
   /// Draw text in `style` with its top-left at (x, y).
   pub fn draw_text_styled(&mut self, text: impl Into<RichText>, x: f32, y: f32, style: &TextStyle) {
     let options = TextLayoutOptions::default();
-    self.record_text(&text.into(), style, &options, Vec2::new(x, y), 1.0);
+    self.record_text(&text.into(), style, &options, Vec2::new(x, y), 1.0, None);
   }
 
   /// The size of `text` in `style`, in UI units.
@@ -704,6 +819,35 @@ impl<'a> UiContext<'a> {
       .collect()
   }
 
+  /// Wrap text to fit within `width` UI units in `style`, like
+  /// [`wrap_text`](Self::wrap_text) (the console wraps in its own font).
+  pub fn wrap_text_styled(&self, text: &str, width: f32, style: &TextStyle) -> Vec<String> {
+    let scale = self.space.px_scale;
+    let Some(mut engine) = self.engine() else {
+      return vec![text.to_string()];
+    };
+    engine
+      .wrap_lines(text, style, width, scale)
+      .into_iter()
+      .map(|range| text.get(range).unwrap_or_default().trim_end().to_string())
+      .collect()
+  }
+
+  /// Draw text with every option: markup, wrapping, anchor, reveal, fade and
+  /// opacity. `ui.text("Hi").at(10.0, 10.0).size(24.0).draw()`; the
+  /// `draw_text*` family is the shorthand with the default style.
+  pub fn text<'u>(&'u mut self, text: impl Into<RichText>) -> UiText<'u, 'a> {
+    UiText {
+      ui: self,
+      text: text.into(),
+      at: Vec2::ZERO,
+      style: TextStyle::default(),
+      options: TextLayoutOptions::default(),
+      reveal: None,
+      opacity: 1.0,
+    }
+  }
+
   /// The size of text wrapped to `max_width`, in UI units rounded up.
   pub fn wrapped_text_size(&self, text: &str, max_width: u32) -> (u32, u32) {
     let options = TextLayoutOptions::default().wrap(max_width as f32);
@@ -728,6 +872,7 @@ impl<'a> UiContext<'a> {
       &options,
       Vec2::new(x, y),
       opacity,
+      None,
     );
   }
 
@@ -747,7 +892,7 @@ impl<'a> UiContext<'a> {
     });
     // A centred block is as wide as its wrap width
     let origin = Vec2::new(rect.x, rect.y + (rect.height - size.y) / 2.0);
-    self.record_text(&text, &style, &options, origin, opacity);
+    self.record_text(&text, &style, &options, origin, opacity, None);
   }
 
   // =========================================================================
@@ -945,6 +1090,8 @@ impl<'a> UiContext<'a> {
     if size.x <= 0.0 || size.y <= 0.0 || !Self::drawable(rect) {
       return;
     }
+    // Insets are texels: finite, not negative, and together no more than
+    // the texture (scaled down proportionally when they are)
     let clean = |inset: f32| {
       if inset.is_finite() {
         inset.max(0.0)
@@ -952,14 +1099,37 @@ impl<'a> UiContext<'a> {
         0.0
       }
     };
+    let fit = |near: f32, far: f32, limit: f32| {
+      let (near, far) = (near.min(limit), far.min(limit));
+      let sum = near + far;
+      if sum > limit {
+        (near * limit / sum, far * limit / sum)
+      } else {
+        (near, far)
+      }
+    };
     let [left, top, right, bottom] = insets.map(clean);
-    // Columns and rows: (start, length) in the rect, (start, end) in UVs
+    let (left, right) = fit(left, right, size.x);
+    let (top, bottom) = fit(top, bottom, size.y);
+    // Columns and rows: (start, length) in the rect, (start, end) in UVs.
+    // The corners shrink with the rect when it is smaller than their sum.
     let span = |start: f32, length: f32, near: f32, far: f32, texels: f32| {
-      let middle = (length - near - far).max(0.0);
+      let shrink = if near + far > length {
+        length.max(0.0) / (near + far)
+      } else {
+        1.0
+      };
+      let (rect_near, rect_far) = (near * shrink, far * shrink);
+      let middle = (length - rect_near - rect_far).max(0.0);
       [
-        (start, near, 0.0, near / texels),
-        (start + near, middle, near / texels, 1.0 - far / texels),
-        (start + near + middle, far, 1.0 - far / texels, 1.0),
+        (start, rect_near, 0.0, near / texels),
+        (start + rect_near, middle, near / texels, 1.0 - far / texels),
+        (
+          start + rect_near + middle,
+          rect_far,
+          1.0 - far / texels,
+          1.0,
+        ),
       ]
     };
     let columns = span(rect.x, rect.width, left, right, size.x);
@@ -1791,8 +1961,8 @@ impl<'a> UiContext<'a> {
   /// Space or Enter opens a focused dropdown.
   ///
   /// # Note
-  /// Call `finish_dropdowns()` at the end of your `Scene::ui` to draw all open
-  /// dropdown lists on top of other content.
+  /// Open dropdown lists draw on the popup layer, above everything the scene
+  /// drew; the engine flushes them after each scene's `ui`.
   ///
   /// # Example
   /// ```ignore
@@ -1800,9 +1970,6 @@ impl<'a> UiContext<'a> {
   /// if ui.dropdown(&mut self.difficulty, rect, &options) {
   ///     println!("Selected: {}", options[self.difficulty.selected()]);
   /// }
-  ///
-  /// // At the end of Scene::ui:
-  /// ui.finish_dropdowns();
   /// ```
   pub fn dropdown(&mut self, state: &mut DropdownState, rect: Rect, options: &[&str]) -> bool {
     if options.is_empty() {
@@ -1880,7 +2047,8 @@ impl<'a> UiContext<'a> {
       ""
     };
     let text_x = rect.x + 8.0;
-    let text_y = rect.y + (rect.height - 8.0) / 2.0; // Center vertically (assuming ~8px font)
+    let line = self.line_height(&TextStyle::default());
+    let text_y = rect.y + (rect.height - line) / 2.0;
     self.draw_text(selected_text, text_x, text_y, text_color);
 
     // Draw dropdown arrow
@@ -2069,24 +2237,9 @@ impl<'a> UiContext<'a> {
     }
   }
 
-  /// Draw all pending dropdown lists on top of other content.
-  ///
-  /// Call this at the end of your `Scene::ui` to ensure dropdown lists
-  /// appear above other UI elements.
-  ///
-  /// # Example
-  /// ```ignore
-  /// fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-  ///     // Draw all your UI...
-  ///     ui.dropdown(&mut self.dropdown1, rect1, &options1);
-  ///     ui.dropdown(&mut self.dropdown2, rect2, &options2);
-  ///
-  ///     // Draw dropdown overlays last
-  ///     ui.finish_dropdowns();
-  ///     SceneAction::Continue
-  /// }
-  /// ```
-  pub fn finish_dropdowns(&mut self) {
+  /// Draw all pending dropdown lists on the popup layer, above everything
+  /// else. The engine calls this after each scene's `ui`.
+  pub(crate) fn finish_dropdowns(&mut self) {
     // Take pending dropdowns to avoid borrow issues
     let dropdowns = std::mem::take(&mut self.pending_dropdowns);
 
@@ -2113,6 +2266,8 @@ impl<'a> UiContext<'a> {
 
     let mouse_x = self.input.mouse_x();
     let mouse_y = self.input.mouse_y();
+    let line = self.line_height(&TextStyle::default());
+    let page_layer = std::mem::replace(&mut self.layer, 1);
 
     // Draw each pending dropdown list
     for dropdown in dropdowns {
@@ -2140,10 +2295,11 @@ impl<'a> UiContext<'a> {
         }
 
         // Draw option text
-        let opt_text_y = option_rect.y + (option_rect.height - 8.0) / 2.0;
+        let opt_text_y = option_rect.y + (option_rect.height - line) / 2.0;
         self.draw_text(option, option_rect.x + 8.0, opt_text_y, text_color);
       }
     }
+    self.layer = page_layer;
   }
 
   /// Draw a dropdown arrow indicator.
@@ -3445,5 +3601,219 @@ mod tests {
     let mut ui = ui_context(&mut commands, &mut text, (200.0, 100.0));
     ui.text_input(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
     assert!(!ui.wants_keyboard());
+  }
+  #[test]
+  fn the_text_builder_records_its_options() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    let size = ui
+      .text(RichText::markup("[b]Hi[/b] there"))
+      .at(100.0, 50.0)
+      .anchor(Anchor::Center)
+      .reveal(3.0)
+      .opacity(0.5)
+      .draw();
+    drop(ui);
+    let UiCommand::Text {
+      origin,
+      reveal,
+      opacity,
+      ..
+    } = commands.iter().next().unwrap().clone()
+    else {
+      panic!()
+    };
+    assert!((origin - (Vec2::new(100.0, 50.0) - size / 2.0)).length() < 0.01);
+    assert_eq!(reveal, Some((3.0, 0.0)));
+    assert_eq!(opacity, 0.5);
+  }
+
+  #[test]
+  fn wrapped_text_through_the_builder_fits_its_width() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    let size = ui
+      .text("a few words that need to wrap")
+      .at(0.0, 0.0)
+      .wrap(60.0)
+      .draw();
+    assert!(size.x <= 60.5);
+    assert!(size.y > 30.0, "more than one line");
+  }
+
+  #[test]
+  fn wrap_text_styled_wraps_in_the_given_style() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let ui = context(&mut commands, &mut text);
+    let small = ui.wrap_text_styled(
+      "a few words that need to wrap",
+      80.0,
+      &TextStyle::new().size(10.0),
+    );
+    let big = ui.wrap_text_styled(
+      "a few words that need to wrap",
+      80.0,
+      &TextStyle::new().size(24.0),
+    );
+    assert!(small.len() < big.len(), "{small:?} vs {big:?}");
+    assert_eq!(big.join(" "), "a few words that need to wrap");
+  }
+
+  #[test]
+  fn open_dropdown_lists_draw_on_the_popup_layer_after_the_page() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    let mut state = DropdownState::new();
+    state.open();
+    ui.dropdown(
+      &mut state,
+      Rect::new(10.0, 10.0, 100.0, 20.0),
+      &["one", "two"],
+    );
+    ui.draw_rect(Rect::new(0.0, 0.0, 300.0, 300.0), Color::RED); // the page draws on after
+    ui.finish_dropdowns();
+    drop(ui);
+    let layers: Vec<u8> = commands.iter().map(UiCommand::draw_layer).collect();
+    let first_popup = layers
+      .iter()
+      .position(|&l| l == 1)
+      .expect("a popup command");
+    assert!(layers[first_popup..].iter().all(|&l| l == 1));
+    assert!(layers[..first_popup].contains(&0));
+  }
+
+  #[test]
+  fn dropdown_text_is_centred_by_the_real_line_height() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    let mut state = DropdownState::new();
+    let line = ui.line_height(&TextStyle::default());
+    ui.dropdown(&mut state, Rect::new(10.0, 10.0, 100.0, 30.0), &["one"]);
+    drop(ui);
+    let origin = commands.iter().find_map(UiCommand::text_origin).unwrap();
+    assert!((origin.y - (10.0 + (30.0 - line) / 2.0)).abs() < 0.01);
+  }
+
+  #[test]
+  fn a_ui_reveal_driven_by_the_clock_finishes_its_fade() {
+    use crate::core::text::{RevealClock, TextLayoutOptions, reveal_alpha};
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let rich = RichText::new("Hello there");
+    let layout = text
+      .layout(
+        &rich,
+        &TextStyle::default(),
+        &TextLayoutOptions::default(),
+        1.0,
+      )
+      .unwrap();
+    let fade = 3.0;
+    let mut clock = RevealClock::default();
+    for _ in 0..1000 {
+      if clock.settled(fade) {
+        break;
+      }
+      clock.step(0.05, 20.0, 0.0, &layout);
+      clock.run_on(0.05, 20.0, fade);
+    }
+    assert!(clock.settled(fade));
+    let mut ui = context(&mut commands, &mut text);
+    ui.text(rich.clone())
+      .reveal(clock.drawn())
+      .fade(fade)
+      .draw();
+    ui.text(rich).reveal(clock.shown).fade(fade).draw();
+    drop(ui);
+    let revealed: Vec<(f32, f32)> = commands
+      .iter()
+      .filter_map(|c| match c {
+        UiCommand::Text { reveal, .. } => *reveal,
+        _ => None,
+      })
+      .collect();
+    let (shown, fade) = revealed[0];
+    assert!((0..layout.clusters).all(|c| reveal_alpha(c, shown, fade) == 1.0));
+    // Driven by `shown` alone the last clusters stay partial: the drawn
+    // value is the one to pass
+    let (shown, fade) = revealed[1];
+    assert!(reveal_alpha(layout.clusters - 1, shown, fade) < 1.0);
+  }
+
+  #[test]
+  fn a_texts_effect_seed_ignores_what_was_drawn_before_it() {
+    let seed_of = |before: bool| {
+      let (mut commands, mut text) = (UiCommands::default(), text_engine());
+      let mut ui = context(&mut commands, &mut text);
+      if before {
+        ui.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), Color::RED);
+        ui.draw_text("other", 0.0, 0.0, Color::WHITE);
+      }
+      ui.text(RichText::markup("[shake]label[/shake]"))
+        .at(5.0, 5.0)
+        .draw();
+      drop(ui);
+      commands
+        .iter()
+        .filter_map(|c| match c {
+          UiCommand::Text { seed, .. } => Some(*seed),
+          _ => None,
+        })
+        .last()
+        .unwrap()
+    };
+    assert_eq!(seed_of(false), seed_of(true));
+  }
+
+  /// The sprite pieces of a nine-slice: (rect, uv)
+  fn slice_pieces(sprite: &SpriteHandle, rect: Rect, insets: [f32; 4]) -> Vec<(Rect, [f32; 4])> {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    ui.draw_nine_slice(sprite, rect, insets, Color::WHITE);
+    drop(ui);
+    commands
+      .iter()
+      .filter_map(|c| match c {
+        UiCommand::Sprite { rect, uv, .. } => Some((*rect, *uv)),
+        _ => None,
+      })
+      .collect()
+  }
+
+  #[test]
+  fn nine_slice_insets_clamp_to_the_texture() {
+    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(16, 8, 255, 255, 255, 255), "s");
+    let pieces = slice_pieces(
+      &sprite,
+      Rect::new(0.0, 0.0, 100.0, 50.0),
+      [20.0, 0.0, 20.0, 0.0],
+    );
+    assert!(!pieces.is_empty());
+    for (rect, uv) in &pieces {
+      assert!(uv[0] <= uv[2] && uv[1] <= uv[3], "no inverted UVs: {uv:?}");
+      assert!(rect.width >= 0.0);
+    }
+    let left = pieces.iter().find(|(r, _)| r.x == 0.0).unwrap();
+    assert!(left.0.width <= 8.0 + 1e-4, "{left:?}");
+  }
+
+  #[test]
+  fn nine_slice_corners_shrink_to_fit_a_small_rect() {
+    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, 255, 255, 255, 255), "s");
+    let rect = Rect::new(10.0, 10.0, 6.0, 20.0);
+    let pieces = slice_pieces(&sprite, rect, [4.0, 2.0, 4.0, 2.0]);
+    for (piece, _) in &pieces {
+      assert!(
+        piece.x >= rect.x - 1e-4 && piece.right() <= rect.right() + 1e-4,
+        "{piece:?}"
+      );
+      assert!(
+        piece.y >= rect.y - 1e-4 && piece.bottom() <= rect.bottom() + 1e-4,
+        "{piece:?}"
+      );
+    }
+    let area: f32 = pieces.iter().map(|(r, _)| r.width * r.height).sum();
+    assert!((area - rect.width * rect.height).abs() < 1e-3);
+    let left = pieces.iter().find(|(r, _)| r.x == rect.x).unwrap();
+    assert!((left.0.width - 3.0).abs() < 1e-4, "{left:?}");
   }
 }

@@ -45,6 +45,6 @@ mod input;
 mod layout;
 
 pub(crate) use commands::{UiCommand, UiCommands};
-pub use context::UiContext;
+pub use context::{UiContext, UiText};
 pub use input::{UiConsumed, UiInput};
 pub use layout::{HAlign, HBox, Stack, VAlign, VBox};

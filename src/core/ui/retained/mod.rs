@@ -34,7 +34,6 @@
 //!     ui.scroll_view(&mut self.settings_scroll, rect, content_height, dt, |ui, offset| {
 //!         // Draw scrollable content
 //!     });
-//!     ui.finish_dropdowns(); // Render dropdown overlays on top
 //!     SceneAction::Continue
 //! }
 //! ```

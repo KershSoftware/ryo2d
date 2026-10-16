@@ -31,7 +31,7 @@ use crate::core::text::{
   TextEngine, TextIcons, TextLayout, TextLayoutState, TextReveal, glyph_id, raster_size_step,
   reveal_alpha,
 };
-use crate::core::ui::{Anchor, Color, Rect};
+use crate::core::ui::{Color, Rect};
 use crate::engine_warn;
 
 /// What the text reads
@@ -922,7 +922,7 @@ pub(crate) fn layout_world_text(world: &mut World, engine: &mut TextEngine) {
           .is_some_and(|state| state.text != text_key);
         let bounds = TextBounds {
           size: layout.size,
-          offset: -anchor_fraction(anchor) * layout.size,
+          offset: -anchor.fraction() * layout.size,
         };
         entity.insert((
           bounds,
@@ -963,21 +963,6 @@ fn hash_of_rich(text: &Text2d) -> u64 {
   let mut h = DefaultHasher::new();
   text.text.hash_into(&mut h);
   h.finish()
-}
-
-/// Where an anchor sits in a block, as a fraction of its size
-pub(crate) fn anchor_fraction(anchor: Anchor) -> Vec2 {
-  match anchor {
-    Anchor::TopLeft => Vec2::new(0.0, 0.0),
-    Anchor::TopCenter => Vec2::new(0.5, 0.0),
-    Anchor::TopRight => Vec2::new(1.0, 0.0),
-    Anchor::CenterLeft => Vec2::new(0.0, 0.5),
-    Anchor::Center => Vec2::new(0.5, 0.5),
-    Anchor::CenterRight => Vec2::new(1.0, 0.5),
-    Anchor::BottomLeft => Vec2::new(0.0, 1.0),
-    Anchor::BottomCenter => Vec2::new(0.5, 1.0),
-    Anchor::BottomRight => Vec2::new(1.0, 1.0),
-  }
 }
 
 /// A `Text2d` as world text draws it
@@ -1160,6 +1145,7 @@ fn hash_of(value: &impl Hash) -> u64 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::ui::Anchor;
 
   /// An unrotated block at the origin, one target unit and one render
   /// pixel per layout pixel
@@ -1282,10 +1268,10 @@ mod tests {
 
   #[test]
   fn anchors_place_the_block() {
-    assert_eq!(anchor_fraction(Anchor::TopLeft), Vec2::ZERO);
-    assert_eq!(anchor_fraction(Anchor::Center), Vec2::splat(0.5));
-    assert_eq!(anchor_fraction(Anchor::BottomRight), Vec2::ONE);
-    assert_eq!(anchor_fraction(Anchor::CenterRight), Vec2::new(1.0, 0.5));
+    assert_eq!(Anchor::TopLeft.fraction(), Vec2::ZERO);
+    assert_eq!(Anchor::Center.fraction(), Vec2::splat(0.5));
+    assert_eq!(Anchor::BottomRight.fraction(), Vec2::ONE);
+    assert_eq!(Anchor::CenterRight.fraction(), Vec2::new(1.0, 0.5));
   }
 
   #[cfg(feature = "default-fonts")]

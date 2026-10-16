@@ -319,6 +319,7 @@ pub(crate) fn emit_ui(
         origin,
         reveal,
         opacity,
+        seed,
         ..
       } => {
         let Some(sources) = sources else {
@@ -347,7 +348,7 @@ pub(crate) fn emit_ui(
           },
           time: real_time,
           reveal: *reveal,
-          seed: index as u64,
+          seed: *seed,
           opacity: *opacity,
         };
         emit_text(sources, targets, layout, &place);

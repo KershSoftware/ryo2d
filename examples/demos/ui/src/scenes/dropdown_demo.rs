@@ -178,8 +178,5 @@ impl DemoPage for DropdownDemo {
       &mut self.audio_device,
       &mut self.language,
     ]);
-
-    // Draw dropdown lists on top of all other content
-    ui.finish_dropdowns();
   }
 }

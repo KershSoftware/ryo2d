@@ -145,6 +145,13 @@ impl TextReveal {
     self.clock.shown
   }
 
+  /// The clusters to draw: [`shown`](Self::shown) plus the run-on past the
+  /// end that lets the last characters finish fading in. Pass this (not
+  /// `shown`) to a UI text's `reveal` so a faded reveal ends at full opacity.
+  pub fn drawn_clusters(&self) -> f32 {
+    self.clock.drawn()
+  }
+
   /// The fade in clusters (0 without one)
   pub(crate) fn fade_clusters(&self) -> f32 {
     let clusters = self.fade * self.per_second;

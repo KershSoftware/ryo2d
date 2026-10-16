@@ -23,6 +23,21 @@ pub enum Anchor {
 }
 
 impl Anchor {
+  /// Where this anchor sits in a block, as a fraction of its size
+  pub fn fraction(self) -> Vec2 {
+    match self {
+      Anchor::TopLeft => Vec2::new(0.0, 0.0),
+      Anchor::TopCenter => Vec2::new(0.5, 0.0),
+      Anchor::TopRight => Vec2::new(1.0, 0.0),
+      Anchor::CenterLeft => Vec2::new(0.0, 0.5),
+      Anchor::Center => Vec2::new(0.5, 0.5),
+      Anchor::CenterRight => Vec2::new(1.0, 0.5),
+      Anchor::BottomLeft => Vec2::new(0.0, 1.0),
+      Anchor::BottomCenter => Vec2::new(0.5, 1.0),
+      Anchor::BottomRight => Vec2::new(1.0, 1.0),
+    }
+  }
+
   /// The top-left corner of an element of the given size placed by this
   /// anchor relative to a screen of the given size, plus an offset.
   pub fn calculate_position(

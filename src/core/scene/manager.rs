@@ -503,6 +503,8 @@ impl SceneManager {
       }
       let slot = &mut self.scenes[i];
       let result = slot.call(world, audio, |scene, ctx| scene.ui(ui, ctx));
+      // The scene's open lists draw above everything it drew
+      ui.finish_dropdowns();
       if i == top {
         action = result;
       } else {
@@ -799,6 +801,39 @@ mod tests {
       .filter(|entry| entry.message.contains("UiQuitter"))
       .count();
     assert_eq!(warnings, 1);
+  }
+
+  struct OpensDropdown;
+
+  impl Scene for OpensDropdown {
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      let mut state = crate::core::ui::DropdownState::new();
+      state.open();
+      ui.dropdown(
+        &mut state,
+        crate::core::ui::Rect::new(0.0, 0.0, 80.0, 20.0),
+        &["one", "two"],
+      );
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn a_scene_s_open_dropdown_is_drawn_without_finish_dropdowns() {
+    let (mut world, mut audio) = world();
+    let mut m = SceneManager::with_scene(Box::new(OpensDropdown));
+    m.enter_initial(&mut world, &mut audio);
+    let (mut commands, mut text) = (
+      crate::core::ui::immediate::UiCommands::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (160.0, 120.0));
+    m.ui_pass(&mut world, &mut audio, &mut ui);
+    drop(ui);
+    assert!(
+      commands.iter().any(|c| c.draw_layer() == 1),
+      "popup commands are present after ui_pass"
+    );
   }
 
   #[test]

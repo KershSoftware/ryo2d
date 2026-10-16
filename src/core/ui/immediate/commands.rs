@@ -41,6 +41,9 @@ pub(crate) enum UiCommand {
     origin: Vec2,
     reveal: Option<(f32, f32)>,
     opacity: f32,
+    /// Seeds the text's effects; made from the text alone, so it does not
+    /// change with what else was drawn
+    seed: u64,
     clip: Option<Rect>,
     layer: u8,
   },
