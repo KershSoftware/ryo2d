@@ -12,7 +12,7 @@ use crate::core::ui::layout::{Length, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::tree::{DrawKind, Node, RecordSpec};
-use crate::core::ui::{Color, Rect, UiId};
+use crate::core::ui::{Color, Rect};
 
 /// A custom widget being set up: a box of its own size that the game
 /// paints with [`paint`](Self::paint). It is drawn by `paint`, by
@@ -113,13 +113,11 @@ impl Custom<'_, '_> {
     if self.sense == Sense::hover() {
       flags |= Flags::HOVER;
     }
-    if disabled {
-      flags |= Flags::DISABLED;
-    }
+    // Focusable only when asked
     let mut node = Node::new(id, style, Measure::Fixed(self.size));
     node.record = Some(RecordSpec {
-      flags,
-      nav: [UiId::NONE; 4],
+      flags: self.opts.flags(flags, false),
+      nav: self.opts.nav,
     });
     let index = ui.push_node(node, self.opts.at);
     if let Some(paint) = paint {

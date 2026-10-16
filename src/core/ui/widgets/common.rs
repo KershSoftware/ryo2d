@@ -1,8 +1,9 @@
 //! What every widget builder shares: its options and the builder methods
 //! that set them (`widget_builders!`)
 
-use crate::core::ui::Rect;
 use crate::core::ui::layout::UiStyle;
+use crate::core::ui::memory::Flags;
+use crate::core::ui::{Rect, UiId};
 
 /// A widget's shared options, set by the `widget_builders!` methods
 #[derive(Debug, Clone, Default)]
@@ -15,12 +16,42 @@ pub(crate) struct WidgetOpts {
   pub(crate) style: UiStyle,
   /// Placed at this rect, outside any container
   pub(crate) at: Option<Rect>,
+  /// `.default_focus()`: its scope focuses it first
+  pub(crate) default_focus: bool,
+  /// `.nav_up(..)` and the rest: its Up, Down, Left, Right neighbours (`NONE`)
+  pub(crate) nav: [UiId; 4],
+  /// `.nav_skip()`: directions pass it by
+  pub(crate) nav_skip: bool,
+  /// `.focusable(..)`, when set: whether it takes focus, whatever its kind
+  pub(crate) focusable: Option<bool>,
+}
+
+impl WidgetOpts {
+  /// `flags` with the focus options: `FOCUSABLE` when the widget takes
+  /// focus (`focusable` by default for its kind, unless `.focusable(..)`
+  /// said otherwise), `DEFAULT_FOCUS`, `NAV_SKIP` and `DISABLED`
+  pub(crate) fn flags(&self, mut flags: Flags, focusable: bool) -> Flags {
+    if self.focusable.unwrap_or(focusable) {
+      flags |= Flags::FOCUSABLE;
+    }
+    if self.default_focus {
+      flags |= Flags::DEFAULT_FOCUS;
+    }
+    if self.nav_skip {
+      flags |= Flags::NAV_SKIP;
+    }
+    if self.disabled {
+      flags |= Flags::DISABLED;
+    }
+    flags
+  }
 }
 
 /// The builder methods every widget shares, for a widget type with an
 /// `opts: WidgetOpts` field: `id`, `enabled`, `at`, `width`, `height`,
-/// `fill_width`, `margin`, `anchor`, `offset`, `grow`, `min_width` and
-/// `max_width`.
+/// `fill_width`, `margin`, `anchor`, `offset`, `grow`, `min_width`,
+/// `max_width`, and for focus `default_focus`, `nav_up`, `nav_down`,
+/// `nav_left`, `nav_right`, `nav_skip` and `focusable`.
 macro_rules! widget_builders {
   ($widget:ty) => {
     impl $widget {
@@ -100,6 +131,51 @@ macro_rules! widget_builders {
       /// At most this wide
       pub fn max_width(mut self, width: f32) -> Self {
         self.opts.style.max_width = Some(width);
+        self
+      }
+
+      /// Focus it first when its focus scope appears (unless the scope
+      /// remembers another widget)
+      pub fn default_focus(mut self) -> Self {
+        self.opts.default_focus = true;
+        self
+      }
+
+      /// Up from it goes to `id`, wherever that is
+      pub fn nav_up(mut self, id: $crate::core::ui::UiId) -> Self {
+        self.opts.nav[0] = id;
+        self
+      }
+
+      /// Down from it goes to `id`, wherever that is
+      pub fn nav_down(mut self, id: $crate::core::ui::UiId) -> Self {
+        self.opts.nav[1] = id;
+        self
+      }
+
+      /// Left from it goes to `id`, wherever that is
+      pub fn nav_left(mut self, id: $crate::core::ui::UiId) -> Self {
+        self.opts.nav[2] = id;
+        self
+      }
+
+      /// Right from it goes to `id`, wherever that is
+      pub fn nav_right(mut self, id: $crate::core::ui::UiId) -> Self {
+        self.opts.nav[3] = id;
+        self
+      }
+
+      /// The arrows and the D-pad pass it by; Tab and the pointer still
+      /// reach it
+      pub fn nav_skip(mut self) -> Self {
+        self.opts.nav_skip = true;
+        self
+      }
+
+      /// Whether it takes the keyboard and gamepad focus (default: buttons
+      /// and other controls do, custom widgets do not)
+      pub fn focusable(mut self, focusable: bool) -> Self {
+        self.opts.focusable = Some(focusable);
         self
       }
     }

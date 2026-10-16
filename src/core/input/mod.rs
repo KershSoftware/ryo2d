@@ -525,9 +525,8 @@ impl Input {
     self.consumed_gamepad.insert(button);
   }
 
-  /// Hide whatever a binding reads for the rest of the frame.
-  // The UI's navigation consumes the bindings it uses
-  #[cfg_attr(not(test), allow(dead_code))]
+  /// Hide whatever a binding reads for the rest of the frame (the UI's
+  /// navigation consumes the bindings it uses).
   pub(crate) fn consume_binding(&mut self, binding: &Binding) {
     match *binding {
       Binding::Key(key) => self.consume_key(key),

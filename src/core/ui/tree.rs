@@ -30,6 +30,8 @@ pub(crate) struct Subtree {
   pub(crate) at: Option<Rect>,
   /// The clip in force when the subtree started
   pub(crate) clip: Option<Rect>,
+  /// The focus scope the subtree started in (`NONE`): its root's scope
+  pub(crate) scope: UiId,
 }
 
 /// One container or leaf in a subtree
@@ -184,6 +186,7 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
     draws,
     at,
     clip,
+    ..
   } = subtree;
   if nodes.is_empty() {
     return Resolved::default();

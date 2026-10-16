@@ -69,6 +69,7 @@ pub mod immediate;
 pub(crate) mod interact;
 pub(crate) mod layout;
 pub(crate) mod memory;
+pub(crate) mod nav;
 mod response;
 pub mod retained;
 #[cfg(test)]

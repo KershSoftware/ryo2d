@@ -9,6 +9,7 @@ use glam::Vec2;
 
 use super::id::{IdScopes, UiId};
 use super::types::Rect;
+use crate::core::input::Direction;
 
 /// What a widget senses and how navigation treats it
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -17,30 +18,22 @@ pub(crate) struct Flags(u32);
 impl Flags {
   pub(crate) const CLICK: Flags = Flags(1 << 0);
   pub(crate) const DRAG: Flags = Flags(1 << 1);
-  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const FOCUSABLE: Flags = Flags(1 << 2);
   pub(crate) const BLOCKING: Flags = Flags(1 << 3);
   pub(crate) const SCROLLABLE: Flags = Flags(1 << 4);
   pub(crate) const DROP_TARGET: Flags = Flags(1 << 5);
   pub(crate) const DISABLED: Flags = Flags(1 << 6);
-  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const TAKES_HORIZONTAL: Flags = Flags(1 << 7);
-  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const TAKES_VERTICAL: Flags = Flags(1 << 8);
   pub(crate) const FOCUS_SCOPE: Flags = Flags(1 << 9);
   pub(crate) const TRAP: Flags = Flags(1 << 10);
   pub(crate) const WRAP: Flags = Flags(1 << 11);
-  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const MODAL: Flags = Flags(1 << 12);
-  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const TEXT_FIELD: Flags = Flags(1 << 13);
-  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const DEFAULT_FOCUS: Flags = Flags(1 << 14);
-  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const USES_BACK: Flags = Flags(1 << 15);
   #[allow(dead_code)] // Used from Task 13 (drag and drop)
   pub(crate) const DRAG_SOURCE: Flags = Flags(1 << 16);
-  #[allow(dead_code)] // Used from Task 8 (navigation)
   pub(crate) const NAV_SKIP: Flags = Flags(1 << 17);
   /// Reports hovering only: never hot, blocks nothing
   pub(crate) const HOVER: Flags = Flags(1 << 18);
@@ -125,6 +118,37 @@ pub(crate) struct Interaction {
   pub(crate) drag_released: UiId,
   /// The pointer is over a widget or panel of the top scene
   pub(crate) over_ui: bool,
+  /// A left or right press went down this frame (wherever it was)
+  pub(crate) pressed: bool,
+
+  // Focus and navigation (`nav::resolve_focus`)
+  /// The widget with the keyboard and gamepad focus (`NONE`)
+  pub(crate) focused: UiId,
+  /// The widget that took the focus this frame (`NONE`)
+  pub(crate) gained: UiId,
+  /// The widget that lost the focus this frame (`NONE`)
+  pub(crate) lost: UiId,
+  /// The widget Confirm activated this frame: it reports `clicked()`
+  pub(crate) activated: UiId,
+  /// A direction the focused widget takes this frame (a slider, an open list)
+  pub(crate) nav_step: Option<(UiId, Direction)>,
+  /// Back was pressed this frame
+  pub(crate) back_pressed: bool,
+  /// The focused widget used this frame's Back (`USES_BACK`)
+  pub(crate) back_used: bool,
+  /// A scene took this frame's Back with `ui.back()`
+  pub(crate) back_taken: bool,
+  /// The focus ring shows: the last device is the keyboard or a gamepad
+  pub(crate) focus_visible: bool,
+  /// -1, 0 or 1 from `ui.tab_prev` / `ui.tab_next` while a scope is shown
+  pub(crate) tab_step: i8,
+  /// A tabs widget took `tab_step` this frame
+  pub(crate) tab_taken: bool,
+  /// Per direction (Up, Down, Left, Right), the seconds until a held
+  /// direction fires again; `None` until it is pressed
+  pub(crate) repeat: [Option<f32>; 4],
+  /// The top scene the last focus resolve ran for
+  pub(crate) nav_scene: Option<u64>,
 }
 
 struct Slot {
@@ -142,9 +166,16 @@ pub(crate) struct UiMemory {
   focus_memory: HashMap<UiId, (u64, UiId)>,
   /// Widgets `scroll_to` asked to bring into view, applied by the next resolve
   scroll_requests: Vec<UiId>,
+  /// The widget `request_focus` asked for, applied by the next resolve
+  focus_request: Option<UiId>,
+  /// The focus scopes the last focus resolve saw, to tell which appeared
+  pub(crate) known_scopes: Vec<UiId>,
+  /// Open modal and trapping scopes, innermost last, each with the focus
+  /// to restore when it closes
+  pub(crate) modal_stack: Vec<(UiId, UiId)>,
   frame: u64,
   pub(crate) scopes: IdScopes,
-  /// The pointer's hot, active, click and drag state
+  /// The pointer's hot, active, click and drag state, and the focus
   pub(crate) interact: Interaction,
 }
 
@@ -156,6 +187,9 @@ impl UiMemory {
       states: HashMap::new(),
       focus_memory: HashMap::new(),
       scroll_requests: Vec::new(),
+      focus_request: None,
+      known_scopes: Vec::new(),
+      modal_stack: Vec::new(),
       frame: 0,
       scopes: IdScopes::default(),
       interact: Interaction::default(),
@@ -217,6 +251,16 @@ impl UiMemory {
     std::mem::take(&mut self.scroll_requests)
   }
 
+  /// Ask for `id` to be focused by the next resolve (the last request wins)
+  pub(crate) fn request_focus(&mut self, id: UiId) {
+    self.focus_request = Some(id);
+  }
+
+  /// The pending `request_focus`, cleared
+  pub(crate) fn take_focus_request(&mut self) -> Option<UiId> {
+    self.focus_request.take()
+  }
+
   /// A widget's record from last frame
   pub(crate) fn prev(&self, id: UiId) -> Option<&Record> {
     self.prev.get(&id)
@@ -253,12 +297,10 @@ impl UiMemory {
     self.states.get(&id)?.value.downcast_ref::<T>()
   }
 
-  #[allow(dead_code)] // Used from Task 8 (focus memory)
   pub(crate) fn remember_focus(&mut self, scope: UiId, scene: u64, focused: UiId) {
     self.focus_memory.insert(scope, (scene, focused));
   }
 
-  #[allow(dead_code)] // Used from Task 8 (focus memory)
   pub(crate) fn recall_focus(&self, scope: UiId) -> Option<UiId> {
     self.focus_memory.get(&scope).map(|(_, focused)| *focused)
   }

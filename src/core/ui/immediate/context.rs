@@ -36,6 +36,7 @@ use super::commands::{UiCommand, UiCommands};
 use super::input::UiInput;
 
 use crate::core::asset::SpriteHandle;
+use crate::core::input::Direction;
 use crate::core::render::UiSpace;
 use crate::core::text::{
   RichText, TextAlign, TextEngine, TextLayout, TextLayoutOptions, TextOverflow, TextReveal,
@@ -43,7 +44,7 @@ use crate::core::text::{
 };
 use crate::core::ui::id::{UiId, key_hash};
 use crate::core::ui::layout::engine::LayoutEngine;
-use crate::core::ui::layout::{Measure, UiStyle};
+use crate::core::ui::layout::{Edges, Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::retained::{DropdownState, Focusable, TextInputState};
@@ -59,6 +60,12 @@ static EMPTY_POP_WARNED: AtomicBool = AtomicBool::new(false);
 static LEFT_OPEN_WARNED: AtomicBool = AtomicBool::new(false);
 /// A container placed at a rect that is not finite was warned about
 static BAD_AT_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// The focus ring's width (the theme's from Task 9)
+const FOCUS_RING_WIDTH: f32 = 2.0;
+/// The room between a widget's edges and its focus ring
+const FOCUS_RING_OFFSET: f32 = 2.0;
+const FOCUS_RING_COLOR: Color = Color::rgb(100, 140, 200);
 
 /// Pending dropdown overlay to be drawn at the end of the frame.
 struct PendingDropdown {
@@ -519,11 +526,12 @@ impl<'a> UiContext<'a> {
     (self.scene, self.top)
   }
 
-  /// What the pointer did to widget `id` this frame, as resolved before the
-  /// scenes' UI (`interact::resolve_pointer`), keeping only what `sense`
-  /// takes. Nothing when this is not the top scene, the pointer is occluded
-  /// or the widget is `disabled`. Its rect is this frame's when it was laid
-  /// out already, else last frame's.
+  /// What the pointer, the keyboard and the pad did to widget `id` this
+  /// frame, as resolved before the scenes' UI (`interact::resolve_pointer`,
+  /// `nav::resolve_focus`), keeping only the pointer input `sense` takes.
+  /// Nothing when this is not the top scene or the widget is `disabled`,
+  /// and no pointer input while the pointer is occluded. Its rect is this
+  /// frame's when it was laid out already, else last frame's.
   pub(crate) fn response(&mut self, id: UiId, sense: Sense, disabled: bool) -> Response {
     let rect = self
       .memory
@@ -537,12 +545,27 @@ impl<'a> UiContext<'a> {
       ..Response::default()
     };
     let (_, top) = self.scene();
-    if !top || self.mouse_occluded || disabled || id == UiId::NONE {
+    if !top || disabled || id == UiId::NONE {
       return response;
     }
     let i = &self.memory.interact;
-    let (hot, active) = (i.hot == id, i.active == id);
     let mut states = 0;
+    // Focus and Confirm, from the keyboard and pad
+    for (who, state) in [
+      (i.focused, Response::FOCUSED),
+      (i.gained, Response::GAINED_FOCUS),
+      (i.lost, Response::LOST_FOCUS),
+      (i.activated, Response::CLICKED),
+    ] {
+      if who == id {
+        states |= state;
+      }
+    }
+    if self.mouse_occluded {
+      response.states = states;
+      return response;
+    }
+    let (hot, active) = (i.hot == id, i.active == id);
     if i.hovered == id {
       states |= Response::HOVERED;
     }
@@ -584,6 +607,72 @@ impl<'a> UiContext<'a> {
   pub fn wants_pointer(&self) -> bool {
     let i = &self.memory.interact;
     i.over_ui || i.active != UiId::NONE
+  }
+
+  /// Give `id` the keyboard and gamepad focus, from the next frame (when it
+  /// can take it: focusable, enabled, shown, in the top scene)
+  pub fn request_focus(&mut self, id: UiId) {
+    self.memory.request_focus(id);
+  }
+
+  /// Whether `id` has the keyboard and gamepad focus (in the top scene)
+  pub fn is_focused(&self, id: UiId) -> bool {
+    self.focused() == Some(id)
+  }
+
+  /// The widget with the keyboard and gamepad focus: `None` when nothing
+  /// has it, or in a scene that is not the top one
+  pub fn focused(&self) -> Option<UiId> {
+    let focused = self.memory.interact.focused;
+    (self.top && focused != UiId::NONE).then_some(focused)
+  }
+
+  /// Whether Back (Escape, or B on a pad) was pressed this frame and no
+  /// widget used it (closing a list, leaving a field). `true` takes it
+  /// from gameplay. Only the top scene gets it.
+  ///
+  /// ```ignore
+  /// if ui.back() {
+  ///     return SceneAction::Pop;
+  /// }
+  /// ```
+  pub fn back(&mut self) -> bool {
+    let i = &mut self.memory.interact;
+    let free = self.top && i.back_pressed && !i.back_used;
+    if free {
+      i.back_taken = true;
+    }
+    free
+  }
+
+  /// Whether the focus ring shows: the player's last device is the keyboard
+  /// or a gamepad (with the mouse, focus follows the pointer unseen)
+  pub fn focus_visible(&self) -> bool {
+    self.memory.interact.focus_visible
+  }
+
+  /// The direction focused widget `id` takes this frame (a slider stepping,
+  /// an open list moving), when its record takes that axis
+  #[allow(dead_code)] // Read by the widgets that take directions (Task 10)
+  pub(crate) fn nav_step_for(&self, id: UiId) -> Option<Direction> {
+    match self.memory.interact.nav_step {
+      Some((who, direction)) if self.top && who == id => Some(direction),
+      _ => None,
+    }
+  }
+
+  /// Draw the focus ring around `node`, a widget whose corners have
+  /// `radius`: 2 units wide, 2 outside its edges (the theme's from Task 9)
+  pub(crate) fn focus_ring(&mut self, node: usize, radius: f32) {
+    self.push_draw(
+      node,
+      DrawKind::Fill {
+        inset: Edges::all(-(FOCUS_RING_OFFSET + FOCUS_RING_WIDTH)),
+        fill: Color::TRANSPARENT,
+        radius: radius + FOCUS_RING_OFFSET + FOCUS_RING_WIDTH,
+        border: Some((FOCUS_RING_WIDTH, FOCUS_RING_COLOR)),
+      },
+    );
   }
 
   /// The next draw's place in the painter's order
@@ -663,21 +752,19 @@ impl<'a> UiContext<'a> {
     let parent = self.open;
     let at = at.map(clean_at);
     let clip = self.current_clip;
+    // The nearest open scope, or the scope the subtree started in
+    node.scope = self.focus_scope_here();
     let subtree = self.subtree.get_or_insert_with(|| Subtree {
       nodes: Vec::new(),
       draws: Vec::new(),
       at,
       clip,
+      scope: node.scope,
     });
     if let Some(p) = parent.and_then(|p| subtree.nodes.get(p)) {
       let flags = p.record.map(|r| r.flags).unwrap_or_default();
       node.parent = parent;
       node.depth = p.depth.saturating_add(1);
-      node.scope = if flags.contains(Flags::FOCUS_SCOPE) {
-        p.id
-      } else {
-        p.scope
-      };
       node.scroll = if flags.contains(Flags::SCROLLABLE) {
         p.id
       } else {
@@ -691,6 +778,21 @@ impl<'a> UiContext<'a> {
     }
     self.open = Some(index);
     index
+  }
+
+  /// The focus scope a node opened now sits in: the innermost open node
+  /// that is a scope, or that node's scope (`NONE` outside any)
+  fn focus_scope_here(&self) -> UiId {
+    let Some(subtree) = &self.subtree else {
+      return UiId::NONE;
+    };
+    let Some(open) = self.open.and_then(|open| subtree.nodes.get(open)) else {
+      return subtree.scope;
+    };
+    let is_scope = open
+      .record
+      .is_some_and(|r| r.flags.contains(Flags::FOCUS_SCOPE));
+    if is_scope { open.id } else { open.scope }
   }
 
   /// Close `node`: its parent is the innermost open node again. Closing the

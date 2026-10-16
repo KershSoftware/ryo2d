@@ -2,6 +2,7 @@
 
 use glam::Vec2;
 
+use crate::core::input::{Direction, InputDevice};
 use crate::core::render::UiSpace;
 use crate::core::text::{Fonts, TextEngine};
 use crate::core::ui::UiInput;
@@ -11,6 +12,7 @@ use crate::core::ui::interact::{
 };
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
+use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
 
 /// A text engine over the built-in fonts
 pub(crate) fn text_engine() -> TextEngine {
@@ -67,8 +69,8 @@ pub(crate) fn context_in<'a>(
 const FRAME: f64 = 1.0 / 60.0;
 
 /// A headless UI over several frames: it owns a memory, a layout engine, a
-/// text engine and the commands, scripts the pointer and resolves it before
-/// each frame, as the engine does
+/// text engine and the commands, scripts the pointer and the navigation
+/// actions and resolves them before each frame, as the engine does
 pub(crate) struct UiDriver {
   pub(crate) memory: UiMemory,
   pub(crate) layout: LayoutEngine,
@@ -79,6 +81,14 @@ pub(crate) struct UiDriver {
   pointer: PointerInput,
   /// A wheel step for the next frame, in lines
   wheel: Vec2,
+  /// The navigation input for the next frame
+  nav: NavInput,
+  /// Directions held until `release_nav`
+  holding: [bool; 4],
+  /// The scene `frame` runs as the top scene
+  scene: u64,
+  /// The outcome of the last frame that had navigation input
+  outcome: NavOutcome,
   time: f64,
 }
 
@@ -99,6 +109,10 @@ impl UiDriver {
         time: 0.0,
       },
       wheel: Vec2::ZERO,
+      nav: NavInput::default(),
+      holding: [false; 4],
+      scene: 1,
+      outcome: NavOutcome::default(),
       time: 0.0,
     }
   }
@@ -125,25 +139,102 @@ impl UiDriver {
     self.wheel = Vec2::new(dx, dy);
   }
 
-  /// One frame: resolve the scripted pointer and the wheel, run `ui` as the
-  /// top scene (scope 1), 1/60 s after the last. A frame that draws nothing leaves
-  /// the records and widget state of the last frame that did.
+  /// Press `direction` for the next frame (and release it after)
+  pub(crate) fn nav(&mut self, direction: Direction) {
+    let k = direction_index(direction);
+    self.nav.pressed[k] = true;
+    self.nav.held[k] = true;
+  }
+
+  /// Press `direction` in the next frame and hold it until `release_nav`
+  pub(crate) fn hold(&mut self, direction: Direction) {
+    self.nav(direction);
+    self.holding[direction_index(direction)] = true;
+  }
+
+  /// Let go of every held direction
+  pub(crate) fn release_nav(&mut self) {
+    self.holding = [false; 4];
+    self.nav.pressed = [false; 4];
+    self.nav.held = [false; 4];
+  }
+
+  /// Press Confirm in the next frame
+  pub(crate) fn confirm(&mut self) {
+    self.nav.confirm = true;
+  }
+
+  /// Press Back in the next frame
+  pub(crate) fn back(&mut self) {
+    self.nav.back = true;
+  }
+
+  /// Press Tab in the next frame, with Shift when `shift`
+  pub(crate) fn tab(&mut self, shift: bool) {
+    self.nav.next = true;
+    self.nav.shift = shift;
+  }
+
+  /// Hold the right stick at `at` (+y up) until it is moved again
+  pub(crate) fn stick(&mut self, at: Vec2) {
+    self.nav.right_stick = at;
+  }
+
+  /// The player's last device, from the next frame on
+  pub(crate) fn device(&mut self, device: InputDevice) {
+    self.nav.device = device;
+  }
+
+  /// Run the next frames as scene `scene` (its scope id; 1 by default), the
+  /// top scene
+  pub(crate) fn set_scene(&mut self, scene: u64) {
+    self.scene = scene;
+  }
+
+  /// What the navigation took of the input in the last frame that had any
+  /// (a direction pressed or held, Confirm, Back, Tab or a tab switch); a
+  /// frame without navigation input leaves it
+  pub(crate) fn last_outcome(&self) -> &NavOutcome {
+    &self.outcome
+  }
+
+  /// One frame: resolve the scripted pointer, the wheel and navigation, run
+  /// `ui` as the top scene (scope 1, or `set_scene`'s), 1/60 s after the
+  /// last. A frame that draws nothing leaves the records and widget state
+  /// of the last frame that did.
   pub(crate) fn frame<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>) -> R) -> R {
     self.time += FRAME;
     self.pointer.time = self.time;
     self.commands.clear();
     self.memory.begin_frame();
     self.layout.begin_frame();
-    resolve_pointer(&mut self.memory, &self.pointer, Some(1), &[], 4.0);
+    let scene = Some(self.scene);
+    resolve_pointer(&mut self.memory, &self.pointer, scene, &[], 4.0);
     apply_scroll_requests(&mut self.memory);
     route_wheel(
       &mut self.memory,
       self.pointer.position,
       self.wheel,
       false,
-      Some(1),
+      scene,
       40.0,
     );
+    let mut nav = self.nav;
+    for (held, holding) in nav.held.iter_mut().zip(self.holding) {
+      *held |= holding;
+    }
+    nav.dt = FRAME as f32;
+    let moved = self.memory.interact.pointer != self.memory.interact.prev_pointer;
+    let outcome = resolve_focus(&mut self.memory, &nav, scene, moved);
+    let scripted = nav.held.contains(&true)
+      || nav.confirm
+      || nav.back
+      || nav.next
+      || nav.tab_next
+      || nav.tab_prev;
+    if scripted {
+      self.outcome = outcome;
+    }
     let space = UiSpace {
       size: Vec2::new(self.size.0, self.size.1),
       px_scale: 1.0,
@@ -160,7 +251,7 @@ impl UiDriver {
         UiInput::default(),
       );
       context.set_dt(FRAME as f32);
-      context.begin_scene(1, true);
+      context.begin_scene(self.scene, true);
       let result = ui(&mut context);
       context.end_scene();
       result
@@ -173,10 +264,25 @@ impl UiDriver {
       self.memory.end_frame();
       self.layout.end_frame();
     }
-    // A press and a release last one frame
+    // A press and a release last one frame, and so do navigation presses
     self.pointer.pressed = [false; 2];
     self.pointer.released = [false; 2];
     self.wheel = Vec2::ZERO;
+    self.nav = NavInput {
+      right_stick: self.nav.right_stick,
+      device: self.nav.device,
+      ..NavInput::default()
+    };
     result
+  }
+}
+
+/// A direction's place in `NavInput`'s arrays
+fn direction_index(direction: Direction) -> usize {
+  match direction {
+    Direction::Up => 0,
+    Direction::Down => 1,
+    Direction::Left => 2,
+    Direction::Right => 3,
   }
 }

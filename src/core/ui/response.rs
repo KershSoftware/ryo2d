@@ -14,7 +14,8 @@ use super::{Rect, UiId};
 ///
 /// The pointer is resolved against what was drawn last frame, and only the
 /// top scene's widgets report it: a click lands on the widget the player saw
-/// under the pointer.
+/// under the pointer. Focus and Confirm, from the keyboard and pad, are
+/// resolved the same way.
 ///
 /// ```ignore
 /// if ui.button("Play").show().clicked() {
@@ -63,7 +64,8 @@ impl Response {
     self.is(Self::PRESSED)
   }
 
-  /// The left button was pressed on it and released over it this frame
+  /// The left button was pressed on it and released over it this frame, or
+  /// Confirm (Enter, Space, A on a pad) was pressed while it had the focus
   pub fn clicked(&self) -> bool {
     self.is(Self::CLICKED)
   }
@@ -104,7 +106,7 @@ impl Response {
     self.is(Self::CHANGED)
   }
 
-  /// It has the keyboard and gamepad focus
+  /// It has the keyboard and gamepad focus (only in the top scene)
   pub fn focused(&self) -> bool {
     self.is(Self::FOCUSED)
   }

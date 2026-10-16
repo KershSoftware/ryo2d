@@ -24,6 +24,7 @@ use crate::core::time::Time;
 use crate::core::ui::interact::{
   PointerInput, PointerOutcome, apply_scroll_requests, resolve_pointer, route_wheel,
 };
+use crate::core::ui::nav::{NavInput, resolve_focus};
 use crate::core::ui::{UiContext, UiInput};
 use crate::{engine_warn, profile_scope};
 
@@ -31,6 +32,8 @@ use crate::{engine_warn, profile_scope};
 const DRAG_THRESHOLD: f32 = 4.0;
 /// UI units a scroll area moves per line of wheel
 const WHEEL_LINE: f32 = 40.0;
+/// The UI's direction actions: Up, Down, Left, Right
+const NAV_DIRECTIONS: [&str; 4] = ["ui.up", "ui.down", "ui.left", "ui.right"];
 
 /// The real delta the loop chose for this frame: `Some` for headless runs
 /// and tests, `None` for the wall clock.
@@ -388,6 +391,31 @@ impl Engine {
     }
   }
 
+  /// Resolve the keyboard and gamepad focus from the UI actions, after the
+  /// pointer, and hide the actions it used from gameplay
+  fn resolve_navigation(&mut self) {
+    let top = with_host(&mut self.world, |_, host| host.scenes.top_scope());
+    let dt = self.world.resource::<Time>().real.delta();
+    let input = self.world.resource::<Input>();
+    let nav = NavInput {
+      pressed: NAV_DIRECTIONS.map(|action| input.action_pressed(action)),
+      held: NAV_DIRECTIONS.map(|action| input.action_held(action)),
+      confirm: input.action_pressed("ui.confirm"),
+      back: input.action_pressed("ui.back"),
+      next: input.action_pressed("ui.next"),
+      shift: input.key_down(KeyCode::ShiftLeft) || input.key_down(KeyCode::ShiftRight),
+      tab_next: input.action_pressed("ui.tab_next"),
+      tab_prev: input.action_pressed("ui.tab_prev"),
+      right_stick: Vec2::from(input.right_stick()),
+      device: input.last_device(),
+      dt,
+    };
+    let pointer = &self.ui_memory.interact;
+    let moved = pointer.pointer != pointer.prev_pointer;
+    let outcome = resolve_focus(&mut self.ui_memory, &nav, top, moved);
+    consume_actions(&mut self.world.resource_mut::<Input>(), &outcome.used);
+  }
+
   /// Record one UI pass into the frame's UI commands (replacing any earlier
   /// pass's) and apply what it consumed; `None` before the GPU is up.
   fn draw_ui(&mut self) -> Option<SceneAction> {
@@ -420,6 +448,7 @@ impl Engine {
       if outcome.consume_wheel {
         snapshot.consume_scroll();
       }
+      self.resolve_navigation();
     } else {
       self.ui_memory.restart_pass();
     }
@@ -477,6 +506,14 @@ impl Engine {
 
     let mut input = self.world.resource_mut::<Input>();
     consumed.apply_consumed(&mut input);
+    // Back a scene took with `ui.back()`, and the tab keys a tabs widget took
+    let interact = &self.ui_memory.interact;
+    if interact.back_taken {
+      consume_actions(&mut input, &["ui.back"]);
+    }
+    if interact.tab_taken {
+      consume_actions(&mut input, &["ui.tab_next", "ui.tab_prev"]);
+    }
     // A press the UI took stays the UI's until the button is released: its
     // held frames and the release are hidden from gameplay as well
     for button in consumed.mouse_presses_taken() {
@@ -515,6 +552,16 @@ impl Engine {
     }
     while start.elapsed() < target {
       std::hint::spin_loop();
+    }
+  }
+}
+
+/// Hide every binding of the `actions` from the rest of the frame
+fn consume_actions(input: &mut Input, actions: &[&str]) {
+  for action in actions {
+    let bindings = input.actions().bindings(action).to_vec();
+    for binding in &bindings {
+      input.consume_binding(binding);
     }
   }
 }
@@ -1568,6 +1615,67 @@ mod tests {
     assert!(e.ui_memory.current(id).is_some(), "drawn before it popped");
     e.frame(Some(Duration::from_millis(20)));
     assert!(e.ui_memory.prev(id).is_none(), "forgotten once it exited");
+  }
+
+  #[test]
+  fn a_menu_takes_the_arrow_it_uses_and_gameplay_keeps_it_without_one() {
+    use crate::core::input::InputEvent;
+    use crate::core::ui::UiContext;
+    use winit::keyboard::KeyCode;
+
+    #[derive(Resource, Default)]
+    struct Downs(u32);
+    struct Menu {
+      scoped: bool,
+    }
+    impl Scene for Menu {
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        let mut column = ui.column();
+        if self.scoped {
+          column = column.focus_scope();
+        }
+        column.show(|ui| {
+          ui.button("A");
+          ui.button("B");
+        });
+        SceneAction::Continue
+      }
+      fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+        if ctx.input.key_pressed(KeyCode::ArrowDown) || ctx.input.key_down(KeyCode::ArrowDown) {
+          ctx.world.resource_mut::<Downs>().0 += 1;
+        }
+        SceneAction::Continue
+      }
+    }
+
+    for scoped in [true, false] {
+      let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+        return;
+      };
+      let mut e = EngineBuilder::new()
+        .resolution(64, 64)
+        .fixed_hz(60)
+        .insert_resource(Downs::default())
+        .start_scene(Menu { scoped })
+        .build_headless();
+      e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
+      let frame = Duration::from_micros(16_667);
+      // Drawn, then its scope takes focus
+      for _ in 0..3 {
+        e.frame(Some(frame));
+      }
+      for pressed in [true, false] {
+        e.world_mut()
+          .resource_mut::<Input>()
+          .queue(InputEvent::Key {
+            key: KeyCode::ArrowDown,
+            pressed,
+          });
+        e.frame(Some(frame));
+      }
+      let downs = e.world().resource::<Downs>().0;
+      assert_eq!(downs == 0, scoped, "scoped: {scoped}, gameplay saw {downs}");
+    }
   }
 
   #[test]

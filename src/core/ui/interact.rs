@@ -68,6 +68,7 @@ pub(crate) fn resolve_pointer(
   i.hot = hot;
   i.hovered = hit.hovered;
   i.over_ui = over_ui;
+  i.pressed = !blocked && (pointer.pressed[0] || pointer.pressed[1]);
 
   // A widget gone since its press reports nothing more
   if i.active != UiId::NONE && memory.prev(i.active).is_none() {
