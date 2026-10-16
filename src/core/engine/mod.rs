@@ -155,6 +155,9 @@ pub(crate) struct QuitRequested;
 /// The main engine struct
 pub struct Engine {
   config: EngineConfig,
+  /// Saves the player's changed input bindings (see `UserPreference::Bindings`)
+  bindings_saver: Option<crate::core::config::SaveManager>,
+  bindings_save_warned: bool,
   window: Option<Arc<Window>>,
   renderer: Option<WgpuRenderer>,
   world: World,
@@ -425,6 +428,8 @@ impl Engine {
       console_builder,
       pending_resources,
       mut schedules,
+      saved_bindings,
+      bindings_saver,
     } = resolved;
 
     #[cfg_attr(not(debug_assertions), allow(unused_mut))]
@@ -532,6 +537,12 @@ impl Engine {
     for insert in pending_resources {
       insert(&mut world);
     }
+    if let Some(saved) = &saved_bindings {
+      world
+        .resource_mut::<Input>()
+        .actions_mut()
+        .load_saved(saved);
+    }
     world.insert_non_send(SceneHost {
       scenes: SceneManager::with_scene(initial_scene),
       audio: Audio::new(audio),
@@ -605,6 +616,8 @@ impl Engine {
       offscreen_refused: false,
       game_name,
       game_version,
+      bindings_saver,
+      bindings_save_warned: false,
     }
   }
 
@@ -1271,13 +1284,22 @@ impl EngineBuilder {
     };
 
     let mut settings = resolve_settings(&project, &self.overrides, None);
+    let mut saved_bindings = None;
+    let mut bindings_saver = None;
     if !headless
       && !self.user_preferences.is_empty()
       && let Some(ws) = workspace
     {
       let filter = combined_filter(&self.user_preferences);
+      let bindings_enabled = filter.contains(crate::core::config::UserPreference::Bindings);
       if let Some(prefs) = load_user_preferences(ws, &filter, &settings) {
+        if bindings_enabled {
+          saved_bindings = prefs.bindings.clone();
+        }
         settings = resolve_settings(&project, &self.overrides, Some((&prefs, &filter)));
+      }
+      if bindings_enabled {
+        bindings_saver = ws.create_save_manager().ok();
       }
     }
 
@@ -1321,6 +1343,8 @@ impl EngineBuilder {
       console_builder: self.console_builder,
       pending_resources: self.pending_resources,
       schedules: self.schedules,
+      saved_bindings,
+      bindings_saver,
     }
   }
 }
@@ -1339,6 +1363,10 @@ struct ResolvedBuild {
   console_builder: Option<ConsoleCommandBuilder>,
   pending_resources: Vec<WorldSetup>,
   schedules: EngineSchedules,
+  /// The player's saved input bindings, when bindings are a user preference
+  saved_bindings: Option<std::collections::BTreeMap<String, Vec<String>>>,
+  /// Where changed bindings are saved (`None`: headless, web or not enabled)
+  bindings_saver: Option<crate::core::config::SaveManager>,
 }
 
 impl Default for EngineBuilder {

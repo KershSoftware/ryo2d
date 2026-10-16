@@ -86,6 +86,8 @@ pub(crate) struct StoredPreferences {
   pub music_volume: Option<f32>,
   pub sfx_volume: Option<f32>,
   pub show_fps: Option<bool>,
+  /// The player's changed input bindings (action name to binding texts)
+  pub bindings: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 /// Final value of every layered setting.
@@ -174,6 +176,7 @@ impl ResolvedSettings {
       vsync: Some(self.vsync),
       show_fps: Some(self.show_fps),
       env,
+      bindings: Default::default(),
     }
   }
 }
@@ -481,6 +484,7 @@ mod tests {
       music_volume: Some(0.2),
       sfx_volume: Some(0.9),
       show_fps: Some(false),
+      bindings: None,
     }
   }
 

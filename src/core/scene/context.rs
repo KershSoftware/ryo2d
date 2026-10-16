@@ -9,7 +9,7 @@ use crate::core::ecs::{
   World, WorldExt,
 };
 use crate::core::graphics::{CameraMut, RenderTargets, ScreenMapping};
-use crate::core::input::Input;
+use crate::core::input::{Actions, Input};
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::{SceneMessages, register_message};
 use crate::core::physics::Physics;
@@ -135,6 +135,12 @@ impl SceneContext<'_> {
 
   pub fn insert_resource<T: Resource>(&mut self, value: T) {
     self.world.insert_resource(value);
+  }
+
+  /// The game's actions and their bindings ([`Actions`]): bind "jump" here and
+  /// read it with `ctx.input.action_pressed("jump")`
+  pub fn actions(&mut self) -> &mut Actions {
+    self.input.actions_mut()
   }
 
   /// Screen-wide post-process effects.

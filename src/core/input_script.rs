@@ -28,134 +28,8 @@
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
+use crate::core::input::actions::{key_from_name, pad_button_from_name};
 use crate::core::input::{GamepadButton, Input, InputEvent, Stick};
-
-macro_rules! key_table {
-  ($($key:ident),* $(,)?) => {
-    &[$((stringify!($key), KeyCode::$key)),*]
-  };
-}
-
-/// The keys `RYO_INPUT` can name, by winit `KeyCode` name
-const KEYS: &[(&str, KeyCode)] = key_table![
-  KeyA,
-  KeyB,
-  KeyC,
-  KeyD,
-  KeyE,
-  KeyF,
-  KeyG,
-  KeyH,
-  KeyI,
-  KeyJ,
-  KeyK,
-  KeyL,
-  KeyM,
-  KeyN,
-  KeyO,
-  KeyP,
-  KeyQ,
-  KeyR,
-  KeyS,
-  KeyT,
-  KeyU,
-  KeyV,
-  KeyW,
-  KeyX,
-  KeyY,
-  KeyZ,
-  Digit0,
-  Digit1,
-  Digit2,
-  Digit3,
-  Digit4,
-  Digit5,
-  Digit6,
-  Digit7,
-  Digit8,
-  Digit9,
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  Space,
-  Enter,
-  Tab,
-  Escape,
-  Backspace,
-  Delete,
-  Insert,
-  Home,
-  End,
-  PageUp,
-  PageDown,
-  Minus,
-  Equal,
-  BracketLeft,
-  BracketRight,
-  Backslash,
-  Semicolon,
-  Quote,
-  Backquote,
-  Comma,
-  Period,
-  Slash,
-  ShiftLeft,
-  ShiftRight,
-  ControlLeft,
-  ControlRight,
-  AltLeft,
-  AltRight,
-  F1,
-  F2,
-  F3,
-  F4,
-  F5,
-  F6,
-  F7,
-  F8,
-  F9,
-  F10,
-  F11,
-  F12,
-  Numpad0,
-  Numpad1,
-  Numpad2,
-  Numpad3,
-  Numpad4,
-  Numpad5,
-  Numpad6,
-  Numpad7,
-  Numpad8,
-  Numpad9,
-  NumpadAdd,
-  NumpadSubtract,
-  NumpadMultiply,
-  NumpadDivide,
-  NumpadDecimal,
-  NumpadEnter,
-];
-
-/// Gamepad buttons `RYO_INPUT` can name after `Pad`, by `GamepadButton` variant name
-const PAD_BUTTONS: &[(&str, GamepadButton)] = &[
-  ("South", GamepadButton::South),
-  ("East", GamepadButton::East),
-  ("West", GamepadButton::West),
-  ("North", GamepadButton::North),
-  ("LeftBumper", GamepadButton::LeftBumper),
-  ("RightBumper", GamepadButton::RightBumper),
-  ("LeftTrigger", GamepadButton::LeftTrigger),
-  ("RightTrigger", GamepadButton::RightTrigger),
-  ("LeftStick", GamepadButton::LeftStick),
-  ("RightStick", GamepadButton::RightStick),
-  ("Select", GamepadButton::Select),
-  ("Start", GamepadButton::Start),
-  ("Guide", GamepadButton::Guide),
-  ("DPadUp", GamepadButton::DPadUp),
-  ("DPadDown", GamepadButton::DPadDown),
-  ("DPadLeft", GamepadButton::DPadLeft),
-  ("DPadRight", GamepadButton::DPadRight),
-];
 
 /// When a scripted press comes back up
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,16 +257,10 @@ fn parse_entry(token: &str) -> Option<Entry> {
       if at.is_some() {
         return None;
       }
-      let button = PAD_BUTTONS
-        .iter()
-        .find(|(known, _)| known.eq_ignore_ascii_case(pad))?
-        .1;
+      let button = pad_button_from_name(pad)?;
       Control::Pad(button)
     } else if at.is_none() {
-      let key = KEYS
-        .iter()
-        .find(|(known, _)| known.eq_ignore_ascii_case(name))?
-        .1;
+      let key = key_from_name(name)?;
       Control::Key(key)
     } else {
       return None;

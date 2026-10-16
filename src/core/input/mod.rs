@@ -6,6 +6,10 @@ use winit::keyboard::KeyCode;
 use crate::core::ecs::kernel::Resource;
 use crate::engine_info;
 
+pub(crate) mod actions;
+
+pub use actions::{Actions, Binding, Direction, StickDirection};
+
 /// Standard gamepad buttons (mapped from gilrs).
 ///
 /// Uses positional names (South, East, West, North) that work across controllers.
@@ -82,6 +86,9 @@ impl GamepadButton {
 
 /// Deadzone for analog sticks (radial deadzone).
 const STICK_DEADZONE: f32 = 0.15;
+/// A stick direction goes down past this deflection and up below the release one
+const STICK_DIGITAL_PRESS: f32 = 0.5;
+const STICK_DIGITAL_RELEASE: f32 = 0.4;
 
 /// Apply radial deadzone to stick input and rescale to use full range.
 fn apply_deadzone(x: f32, y: f32) -> (f32, f32) {
@@ -244,6 +251,13 @@ pub struct Input {
   gamepad_buttons_pressed_fixed: HashSet<GamepadButton>,
   gamepad_buttons_released_fixed: HashSet<GamepadButton>,
   consumed_gamepad: HashSet<GamepadButton>,
+  /// Stick directions held past the digital threshold
+  stick_dirs_down: HashSet<StickDirection>,
+  stick_dirs_pressed: HashSet<StickDirection>,
+  stick_dirs_released: HashSet<StickDirection>,
+  stick_dirs_pressed_fixed: HashSet<StickDirection>,
+  stick_dirs_released_fixed: HashSet<StickDirection>,
+  consumed_stick_dirs: HashSet<StickDirection>,
   left_stick_x: f32,
   left_stick_y: f32,
   right_stick_x: f32,
@@ -261,6 +275,8 @@ pub struct Input {
 
   /// Input hidden from queries until `unblock` or the next frame
   block: InputBlock,
+
+  actions: Actions,
 }
 
 /// What `Input::block_pointer` / `block_all` hide
@@ -282,7 +298,10 @@ enum OneShots {
 
 impl Input {
   pub fn new() -> Self {
-    Input::default()
+    Input {
+      actions: Actions::with_ui_defaults(),
+      ..Input::default()
+    }
   }
 
   /// Queue an event; it takes effect at the next `begin_frame`.
@@ -312,6 +331,9 @@ impl Input {
     self.gamepad_buttons_pressed.clear();
     self.gamepad_buttons_released.clear();
     self.consumed_gamepad.clear();
+    self.stick_dirs_pressed.clear();
+    self.stick_dirs_released.clear();
+    self.consumed_stick_dirs.clear();
     self.fixed_step = None;
     self.block = InputBlock::None;
     let pending = std::mem::take(&mut self.pending);
@@ -385,6 +407,8 @@ impl Input {
       self.mouse_buttons_released_fixed.clear();
       self.gamepad_buttons_pressed_fixed.clear();
       self.gamepad_buttons_released_fixed.clear();
+      self.stick_dirs_pressed_fixed.clear();
+      self.stick_dirs_released_fixed.clear();
       self.scroll_fixed_x = 0.0;
       self.scroll_fixed_y = 0.0;
     }
@@ -501,6 +525,25 @@ impl Input {
     self.consumed_gamepad.insert(button);
   }
 
+  /// Hide whatever a binding reads for the rest of the frame.
+  // The UI's navigation consumes the bindings it uses
+  #[cfg_attr(not(test), allow(dead_code))]
+  pub(crate) fn consume_binding(&mut self, binding: &Binding) {
+    match *binding {
+      Binding::Key(key) => self.consume_key(key),
+      Binding::Mouse(button) => self.consume_mouse(button),
+      Binding::Pad(button) => self.consume_gamepad_button(button),
+      Binding::Stick(dir) => {
+        if self.keys_blocked() {
+          return;
+        }
+        self.stick_dirs_pressed.remove(&dir);
+        self.stick_dirs_pressed_fixed.remove(&dir);
+        self.consumed_stick_dirs.insert(dir);
+      }
+    }
+  }
+
   /// Hide this frame's mouse wheel for the rest of the frame.
   pub fn consume_scroll(&mut self) {
     if self.pointer_blocked() {
@@ -573,6 +616,74 @@ impl Input {
     self.keys_released_fixed.clear();
     self.keys_down.clear();
     self.text_input.clear();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Actions
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /// The named actions and their bindings
+  pub fn actions(&self) -> &Actions {
+    &self.actions
+  }
+
+  /// Bind, rebind and reset actions
+  pub fn actions_mut(&mut self) -> &mut Actions {
+    &mut self.actions
+  }
+
+  /// Whether any binding of the action was just pressed (a one-shot)
+  pub fn action_pressed(&self, name: &str) -> bool {
+    self
+      .actions
+      .bindings(name)
+      .iter()
+      .any(|binding| self.binding_pressed(binding))
+  }
+
+  /// Whether any binding of the action is held
+  pub fn action_held(&self, name: &str) -> bool {
+    self
+      .actions
+      .bindings(name)
+      .iter()
+      .any(|binding| self.binding_held(binding))
+  }
+
+  /// Whether any binding of the action was just released (a one-shot)
+  pub fn action_released(&self, name: &str) -> bool {
+    self
+      .actions
+      .bindings(name)
+      .iter()
+      .any(|binding| self.binding_released(binding))
+  }
+
+  pub(crate) fn binding_pressed(&self, binding: &Binding) -> bool {
+    match *binding {
+      Binding::Key(key) => self.key_pressed(key),
+      Binding::Mouse(button) => self.mouse_pressed(button),
+      Binding::Pad(button) => self.gamepad_button_pressed(button),
+      Binding::Stick(dir) => self.stick_direction_pressed(dir),
+    }
+  }
+
+  pub(crate) fn binding_held(&self, binding: &Binding) -> bool {
+    match *binding {
+      Binding::Key(key) => self.key_down(key),
+      Binding::Mouse(button) => self.mouse_down(button),
+      Binding::Pad(button) => self.gamepad_button_down(button),
+      Binding::Stick(dir) => self.stick_direction_down(dir),
+    }
+  }
+
+  fn binding_released(&self, binding: &Binding) -> bool {
+    match *binding {
+      Binding::Key(key) => self.key_released(key),
+      Binding::Mouse(button) => self.mouse_released(button),
+      Binding::Pad(button) => self.gamepad_button_released(button),
+      Binding::Stick(dir) => self.stick_direction_released(dir),
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -945,6 +1056,35 @@ impl Input {
     )
   }
 
+  /// Whether a stick is held past the digital threshold in a direction
+  /// (down past 0.5 deflection, up again below 0.4)
+  pub fn stick_direction_down(&self, direction: StickDirection) -> bool {
+    !self.keys_blocked()
+      && !self.consumed_stick_dirs.contains(&direction)
+      && self.stick_dirs_down.contains(&direction)
+  }
+
+  /// Whether a stick direction just went down (a one-shot like a button press)
+  pub fn stick_direction_pressed(&self, direction: StickDirection) -> bool {
+    if self.keys_blocked() || self.consumed_stick_dirs.contains(&direction) {
+      return false;
+    }
+    self.one_shot(
+      &self.stick_dirs_pressed,
+      &self.stick_dirs_pressed_fixed,
+      &direction,
+    )
+  }
+
+  /// Whether a stick direction just came up
+  pub fn stick_direction_released(&self, direction: StickDirection) -> bool {
+    self.one_shot(
+      &self.stick_dirs_released,
+      &self.stick_dirs_released_fixed,
+      &direction,
+    )
+  }
+
   /// Get the left stick position as (x, y) with deadzone applied.
   pub fn left_stick(&self) -> (f32, f32) {
     if self.keys_blocked() {
@@ -1030,6 +1170,11 @@ impl Input {
       self.gamepad_buttons_released.clear();
       self.gamepad_buttons_pressed_fixed.clear();
       self.gamepad_buttons_released_fixed.clear();
+      self.stick_dirs_down.clear();
+      self.stick_dirs_pressed.clear();
+      self.stick_dirs_released.clear();
+      self.stick_dirs_pressed_fixed.clear();
+      self.stick_dirs_released_fixed.clear();
       self.left_stick_x = 0.0;
       self.left_stick_y = 0.0;
       self.right_stick_x = 0.0;
@@ -1098,6 +1243,35 @@ impl Input {
     }
     if dx.hypot(dy) > 0.5 {
       self.last_device = InputDevice::Gamepad;
+    }
+    // Digital directions read the raw position, gated by the deadzone, so the
+    // 0.5 and 0.4 thresholds are the stick's real deflection
+    let (rx, ry) = if dx == 0.0 && dy == 0.0 {
+      (0.0, 0.0)
+    } else {
+      (x, y)
+    };
+    for (direction, value) in [
+      (Direction::Up, ry),
+      (Direction::Down, -ry),
+      (Direction::Right, rx),
+      (Direction::Left, -rx),
+    ] {
+      self.set_stick_direction(StickDirection { stick, direction }, value);
+    }
+  }
+
+  /// Update one stick direction's digital state: down past 0.5, up below 0.4
+  fn set_stick_direction(&mut self, dir: StickDirection, value: f32) {
+    let down = self.stick_dirs_down.contains(&dir);
+    if !down && value > STICK_DIGITAL_PRESS {
+      self.stick_dirs_down.insert(dir);
+      self.stick_dirs_pressed.insert(dir);
+      self.stick_dirs_pressed_fixed.insert(dir);
+    } else if down && value < STICK_DIGITAL_RELEASE {
+      self.stick_dirs_down.remove(&dir);
+      self.stick_dirs_released.insert(dir);
+      self.stick_dirs_released_fixed.insert(dir);
     }
   }
 
@@ -2884,5 +3058,104 @@ mod tests {
     let (x, y) = input.right_stick();
     assert!((x - 1.0).abs() < 1e-5 && y.abs() < 1e-5);
     assert_eq!(input.right_stick_raw(), (1.0, 0.0));
+  }
+
+  #[test]
+  fn actions_read_through_their_bindings() {
+    let mut input = Input::new();
+    input.actions_mut().bind(
+      "jump",
+      [
+        Binding::Key(KeyCode::Space),
+        Binding::Pad(GamepadButton::South),
+      ],
+    );
+    frame(
+      &mut input,
+      vec![InputEvent::PadButton {
+        button: GamepadButton::South,
+        pressed: true,
+      }],
+    );
+    assert!(input.action_pressed("jump"));
+    assert!(input.action_held("jump"));
+    input.set_fixed_step(0);
+    assert!(input.action_pressed("jump"), "the first fixed step sees it");
+    input.set_fixed_step(1);
+    assert!(!input.action_pressed("jump"));
+    assert!(input.action_held("jump"), "held is not a one-shot");
+    input.end_fixed_steps(true);
+    frame(
+      &mut input,
+      vec![InputEvent::PadButton {
+        button: GamepadButton::South,
+        pressed: false,
+      }],
+    );
+    assert!(input.action_released("jump"));
+    assert!(!input.action_pressed("nothing bound"));
+  }
+
+  #[test]
+  fn stick_directions_press_past_half_and_release_below_forty_percent() {
+    let mut input = Input::new();
+    let up = StickDirection {
+      stick: Stick::Left,
+      direction: Direction::Up,
+    };
+    let push = |y| InputEvent::PadStick {
+      stick: Stick::Left,
+      x: 0.0,
+      y,
+    };
+    frame(&mut input, vec![push(0.45)]);
+    assert!(!input.stick_direction_down(up));
+    frame(&mut input, vec![push(0.7)]);
+    assert!(input.stick_direction_pressed(up) && input.stick_direction_down(up));
+    frame(&mut input, vec![push(0.45)]);
+    assert!(
+      input.stick_direction_down(up),
+      "hysteresis: still down above 0.4"
+    );
+    assert!(!input.stick_direction_pressed(up));
+    frame(&mut input, vec![push(0.3)]);
+    assert!(!input.stick_direction_down(up));
+    assert!(!input.action_held("ui.up"));
+  }
+
+  #[test]
+  fn the_ui_actions_are_bound_from_the_start() {
+    let mut input = Input::new();
+    frame(
+      &mut input,
+      vec![InputEvent::Key {
+        key: KeyCode::Enter,
+        pressed: true,
+      }],
+    );
+    assert!(input.action_pressed("ui.confirm"));
+    frame(
+      &mut input,
+      vec![InputEvent::PadButton {
+        button: GamepadButton::East,
+        pressed: true,
+      }],
+    );
+    assert!(input.action_pressed("ui.back"));
+  }
+
+  #[test]
+  fn consuming_a_binding_hides_it() {
+    let mut input = Input::new();
+    frame(
+      &mut input,
+      vec![InputEvent::Key {
+        key: KeyCode::ArrowDown,
+        pressed: true,
+      }],
+    );
+    input.consume_binding(&Binding::Key(KeyCode::ArrowDown));
+    assert!(!input.action_pressed("ui.down"));
+    assert!(!input.key_pressed(KeyCode::ArrowDown));
   }
 }

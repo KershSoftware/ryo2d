@@ -20,7 +20,7 @@ use crate::core::schedule::Phase;
 use crate::core::shaders::EffectsManager;
 use crate::core::time::Time;
 use crate::core::ui::{UiContext, UiInput};
-use crate::profile_scope;
+use crate::{engine_warn, profile_scope};
 
 /// The real delta the loop chose for this frame: `Some` for headless runs
 /// and tests, `None` for the wall clock.
@@ -73,6 +73,7 @@ impl Engine {
         .world
         .resource_mut::<Input>()
         .end_fixed_steps(step > 0 || paused);
+      self.save_changed_bindings();
     }
     self.frame_timings.update = update_start.elapsed();
 
@@ -99,6 +100,32 @@ impl Engine {
       .input_script
       .after_frame(&mut self.world.resource_mut::<Input>());
     outcome
+  }
+
+  /// Write the player's bindings to `system.json` when they changed this frame
+  /// (only with `UserPreference::Bindings`). A failure warns once.
+  fn save_changed_bindings(&mut self) {
+    if self.bindings_saver.is_none() {
+      return;
+    }
+    let mut input = self.world.resource_mut::<Input>();
+    if !input.actions_mut().take_dirty() {
+      return;
+    }
+    let bindings = input.actions().saved_map();
+    let Some(saver) = &self.bindings_saver else {
+      return;
+    };
+    let result = saver.load_system().and_then(|mut state| {
+      state.bindings = bindings;
+      saver.save_system(&state)
+    });
+    if let Err(e) = result
+      && !self.bindings_save_warned
+    {
+      self.bindings_save_warned = true;
+      engine_warn!(module: "input", "could not save bindings: {e}");
+    }
   }
 
   /// Queue gamepad connections, buttons, triggers and sticks from gilrs.

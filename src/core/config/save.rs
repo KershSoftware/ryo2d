@@ -80,7 +80,7 @@ use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -119,6 +119,8 @@ pub enum UserPreference {
   Vsync,
   /// Show FPS counter
   ShowFps,
+  /// Input action bindings the player changed
+  Bindings,
 }
 
 impl UserPreference {
@@ -132,6 +134,7 @@ impl UserPreference {
       UserPreference::DisplayMode,
       UserPreference::Vsync,
       UserPreference::ShowFps,
+      UserPreference::Bindings,
     ]
   }
 }
@@ -323,6 +326,10 @@ pub struct SystemState {
   /// Seeded from `Ryo.toml [env]` when creating a new `system.json`.
   /// Values preserve their native types (bool, int, float, string) from TOML/JSON.
   pub env: HashMap<String, serde_json::Value>,
+
+  /// Input bindings the player changed: action name to binding texts such as
+  /// "Key:Space" or "Pad:South". Written only when not empty.
+  pub bindings: BTreeMap<String, Vec<String>>,
 }
 
 /// Display/window mode for the game.
@@ -449,6 +456,9 @@ impl Serialize for SystemState {
     if !self.env.is_empty() {
       map.serialize_entry("env", &self.env)?;
     }
+    if !self.bindings.is_empty() {
+      map.serialize_entry("bindings", &self.bindings)?;
+    }
     map.end()
   }
 }
@@ -467,6 +477,7 @@ struct RawSystemFile {
   show_fps: Option<bool>,
   #[serde(default)]
   env: HashMap<String, serde_json::Value>,
+  bindings: Option<BTreeMap<String, Vec<String>>>,
   display: Option<LegacyDisplay>,
 }
 
@@ -528,6 +539,7 @@ impl RawSystemFile {
       music_volume: self.music_volume,
       sfx_volume: self.sfx_volume,
       show_fps: self.show_fps,
+      bindings: self.bindings.clone(),
     }
   }
 
@@ -546,6 +558,7 @@ impl RawSystemFile {
       vsync,
       show_fps: self.show_fps,
       env: self.env,
+      bindings: self.bindings.unwrap_or_default(),
     }
   }
 }
@@ -570,6 +583,7 @@ impl Default for SystemState {
       vsync: None,
       show_fps: None,
       env: HashMap::new(),
+      bindings: BTreeMap::new(),
     }
   }
 }
@@ -594,6 +608,7 @@ impl SystemState {
       vsync: Some(defaults.vsync),
       show_fps: Some(defaults.show_fps),
       env: defaults.env.clone(),
+      bindings: BTreeMap::new(),
     }
   }
 
@@ -932,6 +947,7 @@ impl SaveManager {
         "vsync" => filter.contains(UserPreference::Vsync),
         "show_fps" => filter.contains(UserPreference::ShowFps),
         "env" => include_env,
+        "bindings" => filter.contains(UserPreference::Bindings),
         _ => false,
       })
       .collect();
@@ -1655,6 +1671,46 @@ mod tests {
   }
 
   #[test]
+  fn bindings_round_trip_through_the_system_file() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    let mut state = SystemState::new();
+    state.bindings.insert(
+      "jump".to_string(),
+      vec!["Key:KeyJ".to_string(), "Pad:South".to_string()],
+    );
+    manager.save_system(&state).unwrap();
+    let loaded = manager.load_system().unwrap();
+    assert_eq!(loaded.bindings, state.bindings);
+    let text = std::fs::read_to_string(dir.path().join("system.json")).unwrap();
+    assert!(text.contains("\"bindings\""));
+  }
+
+  #[test]
+  fn an_empty_binding_table_is_not_written() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    manager.save_system(&SystemState::new()).unwrap();
+    let text = std::fs::read_to_string(dir.path().join("system.json")).unwrap();
+    assert!(!text.contains("bindings"));
+  }
+
+  #[test]
+  fn clearing_the_bindings_removes_the_key() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    let mut state = SystemState::new();
+    state
+      .bindings
+      .insert("jump".to_string(), vec!["Key:KeyJ".to_string()]);
+    manager.save_system(&state).unwrap();
+    state.bindings.clear();
+    manager.save_system(&state).unwrap();
+    let text = std::fs::read_to_string(dir.path().join("system.json")).unwrap();
+    assert!(!text.contains("bindings"));
+  }
+
+  #[test]
   fn stored_preferences_report_only_present_keys() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
@@ -2217,7 +2273,8 @@ mod tests {
     assert!(filter.contains(UserPreference::DisplayMode));
     assert!(filter.contains(UserPreference::Vsync));
     assert!(filter.contains(UserPreference::ShowFps));
-    assert_eq!(filter.len(), 7);
+    assert!(filter.contains(UserPreference::Bindings));
+    assert_eq!(filter.len(), 8);
     assert!(!filter.is_empty());
   }
 
@@ -2280,7 +2337,7 @@ mod tests {
   fn user_preference_filter_default_is_all() {
     let filter = UserPreferenceFilter::default();
 
-    assert_eq!(filter.len(), 7);
+    assert_eq!(filter.len(), 8);
     assert!(filter.contains(UserPreference::MasterVolume));
     assert!(filter.contains(UserPreference::Resolution));
   }
@@ -2289,7 +2346,7 @@ mod tests {
   fn user_preference_all_returns_all_variants() {
     let all = UserPreference::all();
 
-    assert_eq!(all.len(), 7);
+    assert_eq!(all.len(), 8);
     assert!(all.contains(&UserPreference::MasterVolume));
     assert!(all.contains(&UserPreference::MusicVolume));
     assert!(all.contains(&UserPreference::SfxVolume));
