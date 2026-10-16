@@ -63,7 +63,9 @@
 //! ```
 
 // Submodules
+pub(crate) mod id;
 pub mod immediate;
+pub(crate) mod memory;
 pub mod retained;
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -72,6 +74,7 @@ pub mod tween;
 mod types;
 
 // Re-export core types at module root for convenience
+pub use id::UiId;
 pub use types::{Anchor, Color, Rect};
 
 // Re-export immediate mode API (stateless per-frame drawing)
