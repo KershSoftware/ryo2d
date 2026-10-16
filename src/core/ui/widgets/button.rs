@@ -1022,4 +1022,29 @@ mod tests {
     });
     assert_eq!(ring, Some((3.0, Color::YELLOW)));
   }
+
+  #[test]
+  fn a_disabled_variant_button_draws_the_disabled_look() {
+    let mut d = UiDriver::new((200.0, 100.0));
+    let at = Rect::new(10.0, 10.0, 80.0, 30.0);
+    d.frame(|ui| {
+      ui.button("A").at(at).variant("danger").show();
+    });
+    let enabled = fills(&d);
+    d.frame(|ui| {
+      ui.button("A")
+        .at(at)
+        .variant("danger")
+        .enabled(false)
+        .show();
+    });
+    let disabled = fills(&d);
+    assert_ne!(disabled, enabled);
+    assert_eq!(disabled[0].a, 120, "dimmed like any disabled button");
+    let text = d.commands.iter().find_map(|(_, c)| match c {
+      UiCommand::Text { opacity, .. } => Some(*opacity),
+      _ => None,
+    });
+    assert!(text.is_some_and(|o| o < 0.6), "{text:?}");
+  }
 }

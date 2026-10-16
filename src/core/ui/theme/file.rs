@@ -34,9 +34,12 @@ impl std::fmt::Display for ThemeError {
 impl std::error::Error for ThemeError {}
 
 impl Theme {
-  /// Load a theme from the RON file `path`. The file states only what it
-  /// changes from the dark theme, and a field that is an option can be
-  /// written without `Some(..)`. The theme remembers `path` as its source.
+  /// Load a theme from the RON file `path`. The file is merged over the dark
+  /// theme map by map (a struct, or the variants and skins), so it states
+  /// only what it changes; a list or an option replaces whole, and an
+  /// option can be written without `Some(..)`. A variant's `base`, a text
+  /// role's `font` and a skin's `filter` are strings with the variant's name
+  /// (`"Button"`, `"Pixel"`, `"Nearest"`); an unknown name is an error. The theme remembers `path` as its source.
   ///
   /// # Errors
   /// The file cannot be read, or is not a valid theme.
@@ -46,13 +49,19 @@ impl Theme {
       path: path.to_path_buf(),
       error: e.to_string(),
     })?;
-    let mut theme: Theme = ron::Options::default()
+    let parse = |error: String| ThemeError::Parse {
+      path: path.to_path_buf(),
+      error,
+    };
+    // The file is read as plain data and merged over the dark theme's, map
+    // by map, so it states only what it changes
+    let changes: serde_json::Value = ron::Options::default()
       .with_default_extension(Extensions::IMPLICIT_SOME)
       .from_str(&text)
-      .map_err(|e| ThemeError::Parse {
-        path: path.to_path_buf(),
-        error: e.to_string(),
-      })?;
+      .map_err(|e| parse(e.to_string()))?;
+    let mut merged = serde_json::to_value(Theme::dark()).map_err(|e| parse(e.to_string()))?;
+    merge(&mut merged, changes);
+    let mut theme: Theme = serde_json::from_value(merged).map_err(|e| parse(e.to_string()))?;
     theme.source = Some(path.to_path_buf());
     Ok(theme)
   }
@@ -73,6 +82,23 @@ impl Theme {
       path: path.to_path_buf(),
       error: e.to_string(),
     })
+  }
+}
+
+/// Lay `changes` over `base`: maps merge key by key, anything else replaces
+fn merge(base: &mut serde_json::Value, changes: serde_json::Value) {
+  match (base, changes) {
+    (serde_json::Value::Object(base), serde_json::Value::Object(changes)) => {
+      for (key, change) in changes {
+        match base.get_mut(&key) {
+          Some(slot) => merge(slot, change),
+          None => {
+            base.insert(key, change);
+          }
+        }
+      }
+    }
+    (slot, change) => *slot = change,
   }
 }
 
@@ -169,6 +195,39 @@ mod tests {
     assert_eq!(theme.name, "mine");
     assert_eq!(theme.palette.accent, Color::new(1, 2, 3, 255));
     assert_eq!(theme.widgets, Theme::dark().widgets);
+  }
+
+  #[test]
+  fn a_file_changing_one_button_colour_keeps_dark_s_other_looks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("theme.ron");
+    let text = "(widgets: (button: (normal: (fill: (r: 1, g: 2, b: 3, a: 255)))), \
+      variants: {\"gold\": (base: \"Button\", normal: (fill: (r: 9, g: 9, b: 9, a: 255)))})";
+    std::fs::write(&path, text).unwrap();
+    let theme = Theme::load(&path).unwrap();
+    let dark = Theme::dark();
+    let (got, want) = (&theme.widgets.button, &dark.widgets.button);
+    assert_eq!(got.normal.fill, Color::new(1, 2, 3, 255));
+    assert_eq!(got.normal.border, want.normal.border);
+    assert_eq!(got.normal.radius, want.normal.radius);
+    assert_eq!(got.hovered, want.hovered);
+    assert_eq!(got.pressed, want.pressed);
+    assert!(theme.variants.contains_key("gold"));
+    assert_eq!(theme.variants["danger"], dark.variants["danger"]);
+  }
+
+  #[test]
+  fn an_unknown_enum_name_in_a_file_is_an_error_naming_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad-enum.ron");
+    std::fs::write(&path, "(variants: {\"x\": (base: \"Buton\")})").unwrap();
+    let error = Theme::load(&path).unwrap_err();
+    assert!(matches!(error, ThemeError::Parse { .. }), "{error}");
+    let text = error.to_string();
+    assert!(
+      text.contains("bad-enum.ron") && text.contains("Buton") && text.contains("WidgetKind"),
+      "{text}"
+    );
   }
 
   #[test]

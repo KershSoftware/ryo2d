@@ -212,7 +212,7 @@ pub struct Engine {
   /// Lays the UI's containers out, kept between frames
   ui_layout: LayoutEngine,
   /// The `UiTheme` generation whose skin sprites are loaded
-  theme_generation: u64,
+  theme_generation: Option<u64>,
   /// Reloads the theme's file when it changes
   #[cfg(debug_assertions)]
   theme_watch: crate::core::ui::theme::ThemeWatch,
@@ -594,8 +594,8 @@ impl Engine {
       ui_mouse_capture: Vec::new(),
       ui_memory: UiMemory::new(),
       ui_layout: LayoutEngine::new(),
-      // The default theme has no skins to load
-      theme_generation: 0,
+      // None: the starting theme's skins load on the first pass
+      theme_generation: None,
       #[cfg(debug_assertions)]
       theme_watch: Default::default(),
       ui_pass_index: 0,

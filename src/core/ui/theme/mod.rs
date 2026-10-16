@@ -4,7 +4,10 @@
 //! The theme is the [`UiTheme`] world resource (`ctx.ui_theme()`); the UI
 //! reads it once a pass, so a change applies from the next frame. A theme is
 //! plain data: it loads from and saves to RON, and a file states only what it
-//! changes from the dark theme.
+//! changes: it is merged over the dark theme map by map (a file's `variants`
+//! add to dark's). Three enum fields are written as strings holding their
+//! variant names: `base: "Button"` (a variant's kind), `font: "Pixel"` and
+//! `filter: "Nearest"`.
 //!
 //! ```ignore
 //! let theme = Theme::dark().variant(
@@ -37,6 +40,92 @@ pub use file::ThemeError;
 pub(crate) use file::ThemeWatch;
 pub(crate) use look::warn_once;
 pub use look::{Look, LookPatch, Looks, Variant, WidgetKind, WidgetLooks, WidgetState};
+
+/// An enum a theme file writes as a string holding its variant name
+pub(crate) trait Named: Sized + Copy + 'static {
+  /// The type's name, for errors
+  const TYPE: &'static str;
+  /// Every variant with its name
+  const ALL: &'static [(&'static str, Self)];
+}
+
+impl Named for WidgetKind {
+  const TYPE: &'static str = "WidgetKind";
+  const ALL: &'static [(&'static str, Self)] = &[
+    ("Button", WidgetKind::Button),
+    ("Panel", WidgetKind::Panel),
+    ("Checkbox", WidgetKind::Checkbox),
+    ("Toggle", WidgetKind::Toggle),
+    ("Radio", WidgetKind::Radio),
+    ("Slider", WidgetKind::Slider),
+    ("TextInput", WidgetKind::TextInput),
+    ("Dropdown", WidgetKind::Dropdown),
+    ("Tab", WidgetKind::Tab),
+    ("Choice", WidgetKind::Choice),
+    ("Tooltip", WidgetKind::Tooltip),
+    ("Scroll", WidgetKind::Scroll),
+    ("Slot", WidgetKind::Slot),
+    ("Progress", WidgetKind::Progress),
+    ("Rebind", WidgetKind::Rebind),
+    ("Modal", WidgetKind::Modal),
+    ("Prompt", WidgetKind::Prompt),
+  ];
+}
+
+impl Named for ThemeFont {
+  const TYPE: &'static str = "ThemeFont";
+  const ALL: &'static [(&'static str, Self)] = &[
+    ("Ui", ThemeFont::Ui),
+    ("Mono", ThemeFont::Mono),
+    ("Pixel", ThemeFont::Pixel),
+  ];
+}
+
+impl Named for Filter {
+  const TYPE: &'static str = "Filter";
+  const ALL: &'static [(&'static str, Self)] = &[
+    ("Default", Filter::Default),
+    ("Nearest", Filter::Nearest),
+    ("Linear", Filter::Linear),
+  ];
+}
+
+/// Field-level serde (`#[serde(with = "names")]`) that writes a [`Named`]
+/// enum as its variant name in a string, so a file can be merged as plain
+/// data (RON loses the names of bare unit variants)
+pub(crate) mod names {
+  use serde::de::Error;
+  use serde::{Deserialize, Deserializer, Serializer};
+
+  use super::Named;
+
+  pub(crate) fn serialize<T: Named + PartialEq, S: Serializer>(
+    value: &T,
+    serializer: S,
+  ) -> Result<S::Ok, S::Error> {
+    match T::ALL.iter().find(|(_, v)| v == value) {
+      Some((name, _)) => serializer.serialize_str(name),
+      None => Err(serde::ser::Error::custom("an enum with no name")),
+    }
+  }
+
+  pub(crate) fn deserialize<'de, T: Named, D: Deserializer<'de>>(
+    deserializer: D,
+  ) -> Result<T, D::Error> {
+    let name = String::deserialize(deserializer)?;
+    match T::ALL.iter().find(|(n, _)| *n == name) {
+      Some((_, value)) => Ok(*value),
+      None => {
+        let all: Vec<&str> = T::ALL.iter().map(|(n, _)| *n).collect();
+        Err(D::Error::custom(format!(
+          "unknown {} name {name:?} (one of {})",
+          T::TYPE,
+          all.join(", ")
+        )))
+      }
+    }
+  }
+}
 
 /// A complete UI theme
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -222,6 +311,8 @@ impl Default for TextRoles {
 pub struct TextLook {
   pub size: f32,
   pub color: Color,
+  /// Written as a string in files: `"Pixel"`
+  #[serde(with = "names")]
   pub font: ThemeFont,
   pub bold: bool,
 }
@@ -279,6 +370,8 @@ pub struct Skin {
   pub path: Option<String>,
   /// How far in the corners reach, in sprite pixels: left, top, right, bottom
   pub insets: [f32; 4],
+  /// Written as a string in files: `"Nearest"`
+  #[serde(with = "names")]
   pub filter: Filter,
   /// The loaded sprite
   #[serde(skip)]
@@ -351,6 +444,20 @@ impl Default for UiSounds {
       error: None,
       volume: 1.0,
     }
+  }
+}
+
+/// Load the skin sprites of `theme` through `load` when its generation is not
+/// the one in `loaded` (`None` before the first pass, so a starting theme's
+/// skins load on the first frame), and remember it
+pub(crate) fn refresh_skins(
+  theme: &mut UiTheme,
+  loaded: &mut Option<u64>,
+  load: impl FnMut(&str) -> Option<SpriteHandle>,
+) {
+  if *loaded != Some(theme.generation()) {
+    *loaded = Some(theme.generation());
+    theme.load_skins(load);
   }
 }
 
@@ -476,5 +583,22 @@ mod tests {
     }
     assert_eq!(asked, ["ui/frame.png"]);
     assert!(theme.get().skins["frame"].sprite.is_some());
+  }
+
+  #[test]
+  fn a_starting_theme_with_path_skins_loads_them_on_the_first_frame() {
+    let skin = Skin::from_path("ui/start.png", [2.0; 4], Filter::Linear);
+    let mut theme = UiTheme::new(Theme::dark().skin("start", skin));
+    let mut loaded = None;
+    let mut asked = 0;
+    let mut load = |path: &str| {
+      asked += 1;
+      let sprite = crate::core::graphics::Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+      Some(SpriteHandle::from_sprite(sprite, path))
+    };
+    refresh_skins(&mut theme, &mut loaded, &mut load);
+    refresh_skins(&mut theme, &mut loaded, &mut load);
+    assert_eq!(asked, 1, "loaded on the first pass, not again");
+    assert!(theme.get().skins["start"].sprite.is_some());
   }
 }

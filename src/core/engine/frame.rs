@@ -26,7 +26,7 @@ use crate::core::ui::interact::{
   PointerInput, PointerOutcome, apply_scroll_requests, resolve_pointer, route_wheel,
 };
 use crate::core::ui::nav::{NavInput, resolve_focus};
-use crate::core::ui::theme::Theme;
+use crate::core::ui::theme::{Theme, refresh_skins};
 use crate::core::ui::{UiContext, UiInput, UiTheme};
 use crate::{engine_warn, profile_scope};
 
@@ -430,17 +430,14 @@ impl Engine {
       .resource_scope(|world, mut theme: crate::core::ecs::Mut<UiTheme>| {
         #[cfg(debug_assertions)]
         watch.poll(&mut theme, now);
-        if theme.generation() != *loaded {
-          *loaded = theme.generation();
-          let mut assets = world.resource_mut::<AssetManager>();
-          theme.load_skins(|path| match assets.load_sprite(path) {
-            Ok(sprite) => Some(sprite),
-            Err(error) => {
-              engine_warn!(module: "ui", "could not load the UI skin {path:?}: {error}");
-              None
-            }
-          });
-        }
+        let mut assets = world.resource_mut::<AssetManager>();
+        refresh_skins(&mut theme, loaded, |path| match assets.load_sprite(path) {
+          Ok(sprite) => Some(sprite),
+          Err(error) => {
+            engine_warn!(module: "ui", "could not load the UI skin {path:?}: {error}");
+            None
+          }
+        });
         theme.shared()
       })
   }

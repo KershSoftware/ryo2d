@@ -268,7 +268,7 @@ The theme is the `UiTheme` world resource: a palette, metrics (radius, timings, 
 
 ```rust
 EngineBuilder::new().ui_theme(Theme::pixel());                // or Theme::dark() (the default), Theme::light()
-ctx.ui_theme().set(Theme::load("assets/ui/theme.ron")?);      // a RON file states only what it changes from dark
+ctx.ui_theme().set(Theme::load("assets/ui/theme.ron")?);      // a RON file is merged over dark, so it states only what it changes; a variant's `base`, a text role's `font` and a skin's `filter` are strings there (`base: "Button"`)
 ctx.ui_theme().modify(|t| t.palette.accent = Color::rgb(255, 120, 40));
 
 // A variant: a named change to a widget kind's look; builtin themes carry "danger", "accent" and "tab"

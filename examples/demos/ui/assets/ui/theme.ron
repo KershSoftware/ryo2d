@@ -1,5 +1,7 @@
-// A UI theme file. It states only what it changes from the dark theme, and
-// an option can be written without `Some(..)`.
+// A UI theme file. It is merged over the dark theme, so it states only what
+// it changes (a nested struct keeps dark's other fields), and an option can be
+// written without `Some(..)`. A variant's `base`, a text role's `font` and a
+// skin's `filter` are strings, e.g. `base: "Button"`.
 // While the demo shows the "File" theme, edit and save this file: debug
 // builds reload it within a second.
 (

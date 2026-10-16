@@ -270,7 +270,8 @@ impl Default for WidgetLooks {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Variant {
-  /// The kind it is made for
+  /// The kind it is made for (written as a string in files: `"Button"`)
+  #[serde(with = "super::names")]
   pub base: WidgetKind,
   pub normal: LookPatch,
   pub hovered: LookPatch,
@@ -311,12 +312,21 @@ impl Variant {
     self.focused = patch;
     self
   }
+
+  /// What it changes when disabled; without one it takes its kind's
+  /// disabled look
+  pub fn disabled(mut self, patch: LookPatch) -> Self {
+    self.disabled = patch;
+    self
+  }
 }
 
 impl Theme {
   /// The look of a `kind` widget in `state`, in `variant` when named.
   /// A variant's `normal` patch applies in every state, then its patch for
-  /// the state. An unknown variant name warns once and gives the plain look.
+  /// the state (hovered, pressed and focused over the kind's resolved state;
+  /// disabled is the variant's own patch, or the kind's disabled patch when
+  /// the variant has none). An unknown variant name warns once and gives the plain look.
   pub fn look(&self, kind: WidgetKind, variant: Option<&str>, state: WidgetState) -> Look {
     let mut look = self.widgets.get(kind).resolve(state);
     let Some(name) = variant else {
@@ -325,16 +335,28 @@ impl Theme {
     match self.variants.get(name) {
       Some(variant) => {
         variant.normal.apply(&mut look);
-        apply_state(
-          &mut look,
-          state,
-          [
-            &variant.hovered,
-            &variant.pressed,
-            &variant.focused,
-            &variant.disabled,
-          ],
-        );
+        if state == WidgetState::Disabled {
+          // A variant without a disabled patch is dimmed like its kind, so
+          // every disabled widget reads the same
+          let own = variant.disabled != LookPatch::default();
+          let patch = if own {
+            &variant.disabled
+          } else {
+            &self.widgets.get(kind).disabled
+          };
+          patch.apply(&mut look);
+        } else {
+          apply_state(
+            &mut look,
+            state,
+            [
+              &variant.hovered,
+              &variant.pressed,
+              &variant.focused,
+              &variant.disabled,
+            ],
+          );
+        }
       }
       None => warn_once(format!("variant:{name}"), || {
         format!("no UI variant named {name:?}; using the plain look")
