@@ -65,10 +65,11 @@ Sub-project 4c follows with its own spec: retained UI nodes (entities) on 4b's i
 | `interact` | Pointer hit testing, hot/active/click/drag, wheel routing, text routing |
 | `nav` | Focus, scopes, spatial navigation, default focus, focus memory |
 | `widgets/` | One file per widget |
+| `containers`, `popup` | Container builders; popups built where they are called and drawn at the scene's end |
 | `theme/` | `Theme`, looks, variants, skins, sounds, RON load and hot reload |
-| `draw` | The 4a `UiCommand` recording, which is unchanged in substance |
+| `immediate/` | `UiContext`, the absolute `draw_*` calls and 4a's `UiCommand` recording, unchanged in substance |
 
-The action map lives in `src/core/input/actions.rs`.
+The action map lives in `src/core/input/actions.rs`: `src/core/input.rs` becomes `src/core/input/mod.rs`. `src/core/ui/theme.rs` becomes `src/core/ui/theme/`. The old `retained/` module and `immediate/layout.rs` are deleted once nothing uses them.
 
 ### One UI pass per frame
 
@@ -82,21 +83,23 @@ The pass runs where today's UI pass runs: after `PreUpdate` and the console tick
    - Drag state advances.
    
    The results are stored per id in `UiMemory`.
-2. **Record.** Scenes' `ui` hooks run bottom-up. Each widget call:
+2. **Record.** Scenes' `ui` hooks run bottom-up. Each widget builder, when it finishes (on `.show()`, a shorthand such as `.clicked()`, or on drop, so `ui.slider(&mut volume, 0.0..=1.0);` works as a statement):
    - registers a node in this frame's tree, with its id, style and draw recipe;
    - reads its id's results;
    - applies value edits to the caller's data immediately (a slider drag, typed text, a toggled bool, a picked index);
    - returns a `Response`.
-3. **Lay out and emit.** After the hooks:
-   - Taffy lays the tree out. Text is measured through the text engine, and the measured layout is the one drawn.
+3. **Lay out and emit.** Each top-level container (one with no open parent) is laid out when its `.show()` returns, inside the hook; a widget called outside any container is its own one-node subtree, laid out at the call:
+   - Taffy lays the subtree out. Text is measured through the text engine, and the measured layout is the one drawn.
    - Rects snap to whole render pixels.
-   - The draw recipes become 4a's `UiCommand`s at the resolved rects.
+   - The draw recipes become 4a's `UiCommand`s at the resolved rects, in submission order.
    - Rects, clips, layers, order, focusables, scrollables and drop targets are saved as next frame's records.
-   - State for ids not seen this frame is dropped (see Memory).
+   - State for ids not seen this frame is dropped at the frame's end (see Memory).
+   
+   Draws are therefore placed exactly in the frame they are recorded, and a custom widget's paint closure runs inside the hook, where it may borrow the scene's data. Only hit testing uses last frame's records.
 4. **Consume.** What the UI took is removed from `Input` through the existing consume path before the fixed steps:
    - the pointer, while it is over a blocking UI node or a button is captured;
    - the keyboard, while a field is focused;
-   - navigation actions, while a focus scope is active;
+   - navigation actions, while a focus scope is shown (tab switching only when a `tabs` widget took it);
    - the wheel, when a scrollable took it.
 
 **Timing:**
@@ -105,12 +108,13 @@ The pass runs where today's UI pass runs: after `PreUpdate` and the console tick
 
 ### Scenes and layers
 
-- Each scene's UI is a root scope: a stack the size of the UI. The scene's id seeds the root, so two scenes never share ids.
+- Each scene's UI is a root id scope seeded by the scene's id, so two scenes never share ids. The root is not a layout node: each top-level subtree is laid out with the UI size as its available space and placed by its anchor and offset (`origin = anchor.fraction() * (ui_size - subtree_size) + offset`), with `Anchor::TopLeft` as the default.
 - Only the top scene's UI receives input. Lower scenes record and draw, but resolve no pointer, keyboard, navigation or wheel input. This fixes the lower-scene key leak.
 - Layers stay as in 4a: page 0, popup 1, overlay 2.
-  - Tooltips, open dropdown lists, modals and drag ghosts use the popup and overlay layers.
-  - The engine's console and debug overlays stay above the popup layer.
-- If the UI pass reruns in the same frame, because the top scene changed, the resolve step does not run again. Results are delivered once per frame.
+  - Tooltips, open dropdown lists, popups, modals and drag ghosts use the popup layer, drawn after everything their scene drew; a lower scene's popups stay on its page layer.
+  - The engine's console and debug overlays stay above the popup layer, on the overlay layer.
+- If the UI pass reruns in the same frame, because the top scene changed, the resolve step does not run again and the first pass's records are discarded. `UiMemory` begins one frame per engine frame, and results are delivered once per frame.
+- When a scene exits (pop, switch, clear, reset), the engine forgets its memory.
 
 ## Identity and memory
 
@@ -149,7 +153,7 @@ The label is never part of the id. Renaming a button, or animating its text, kee
 
 **Dropping:**
 - A widget's record and typed state are dropped after one frame unseen.
-- Focus memory lasts for the scene's lifetime and is cleared when the scene exits, so a pause menu reopens on the button the player left.
+- Focus memory lasts for the scene's lifetime and is cleared when the scene exits. A panel hidden and shown again, or a menu returning from a scene pushed over it, reopens on the button the player left. A pause scene popped and pushed again is a new scene, and starts at its default.
 
 **Game data stays with the game.** Widgets take `&mut bool`, `&mut f32`, `&mut String` or `&mut usize`. `TextInputState`, `DropdownState`, `ScrollViewState`, `Focusable` and `FocusTrap` are removed. Their logic moves into the widgets, including the text-editing code and its tests.
 
@@ -159,7 +163,7 @@ The label is never part of the id. Renaming a button, or animating its text, kee
 - `ui.is_focused(id)`;
 - `ui.focused()`.
 
-The console command `ui_debug` outlines every widget rect with its id, and marks the hot, active and focused widgets.
+The console command `debug:ui` (after the console's other `debug:` commands) outlines every widget rect with its id, and marks the hot, active and focused widgets.
 
 ## Layout
 
@@ -174,9 +178,9 @@ The console command `ui_debug` outlines every widget rect with its id, and marks
 | `ui.stack()` | children overlap, placed by anchor (a count badge on an icon) |
 | `ui.panel()` | a column with the theme's panel look (fill or skin) and padding; blocks the pointer |
 | `ui.scroll()` | `.vertical()` (default), `.horizontal()`, `.both()`; a column inside; clipped by a scissor |
-| `ui.popup(anchor_id)` / `ui.modal()` | out of flow, on the popup layer; a modal dims and blocks everything below and traps focus |
+| `ui.popup(anchor_id)` / `ui.modal()` | out of flow, on the popup layer; a popup sits below its anchor and traps focus; a modal dims and blocks everything below and traps focus |
 
-**The scene root** is a stack the size of the UI. Its children place by anchor, so `ui.column().anchor(Anchor::Center).show(..)` centres a menu. A HUD can use `.anchor(Anchor::TopRight).offset(-16.0, 16.0)`.
+**The scene root** places each top-level container by its anchor (default top-left), so `ui.column().anchor(Anchor::Center).show(..)` centres a menu. A HUD can use `.anchor(Anchor::TopRight).offset(-16.0, 16.0)`.
 
 **Style builders** apply to containers and widgets:
 
@@ -186,7 +190,7 @@ The console command `ui_debug` outlines every widget rect with its id, and marks
 | Min and max | `min_width`, `max_width`, `min_height`, `max_height` |
 | Spacing | `padding(..)`, `margin(..)`, `gap(..)` |
 | Alignment | `align(Align)` (cross axis), `justify(Justify)` (main axis) |
-| Flex | `grow(f32)`, `wrap()`, `aspect(f32)` |
+| Flex | `grow(f32)`, `wrap_items()`, `aspect(f32)` |
 | Placement (stacks and root) | `anchor(Anchor)`, `offset(..)` |
 
 All sizes are in UI units (4a's `UiSpace`).
@@ -255,7 +259,7 @@ All sizes are in UI units (4a's `UiSpace`).
 
 **Game input.**
 - `ui.wants_pointer()` is true while the pointer is over a blocking UI node or captured.
-- `ui.wants_keyboard()` is true while a text field is focused or a modal is open.
+- `ui.wants_keyboard()` is true while a text field is focused or a list or popup is open (a trapping scope that is not a modal). A modal does not make it true: the game decides when its modal closes, typically on `ui.back()`.
 - Gameplay never sees what the UI took (see step 4).
 
 ## Focus and navigation
@@ -267,15 +271,15 @@ All sizes are in UI units (4a's `UiSpace`).
 - dropdowns and text fields;
 - radio items, tabs, choice items and slots;
 - rebind rows;
-- any custom widget with `.focusable()`.
+- any custom widget with `.focusable(true)`.
 
-**Scopes.** `.focus_scope()` on any container makes it a focus scope. Panels, popups and modals are scopes by default.
-- Each scope remembers its last focused child.
-- Entering a scope by navigation restores that child. Otherwise focus goes to the child marked `.default_focus()`, otherwise to the first focusable child in order.
-- `.trap()` keeps navigation inside the scope; modals and popups trap.
-- `.wrap()` makes navigation wrap at the scope's edges; vertical menus usually want it.
+**Scopes.** Keyboard and gamepad navigation, Tab and Confirm work only inside focus scopes: containers marked `.focus_scope()`, popups (dropdown lists, `ui.popup`) and modals (including `ui.confirm`). Panels are not scopes unless marked, and the scene root is never one. So a HUD panel with a button in a gameplay scene is mouse-only and never takes the arrows, Space or A from gameplay; a menu marks its container `.focus_scope()`. Text fields outside a scope still take focus by click.
+- Each scope remembers its last focused child, for the scene's lifetime.
+- Entering a scope restores that child. Otherwise focus goes to the child marked `.default_focus()`, otherwise to the first focusable child in order.
+- `.trap()` keeps navigation inside the scope; modals and popups trap. A trapping scope with nothing focusable keeps focus empty: the page under it is never a target.
+- `.wrap_focus()` makes navigation wrap at the scope's edges; vertical menus usually want it.
 
-**Default focus.** When a scene's UI first appears, focus goes to its default, as it does when a modal or popup opens. When a modal closes, focus returns to where it was. Godot, Unity and Bevy all require code for this; here it is automatic, and `ui.request_focus(id)` overrides it.
+**Default focus.** When a scope first appears and nothing is focused, focus goes to its default; when a modal or popup opens, focus moves into it. When it closes, focus returns to where it was. Godot, Unity and Bevy all require code for this; here it is automatic, and `ui.request_focus(id)` overrides it.
 
 **Spatial navigation.** For a direction `d`, a candidate qualifies when its centre lies beyond the focused rect's centre along `d`. Each qualifying candidate is scored:
 - `p` is the gap along `d` between the focused rect's leading edge and the candidate's near edge, or 0 if they overlap.
@@ -285,19 +289,25 @@ All sizes are in UI units (4a's `UiSpace`).
 
 The search covers the current scope first. If nothing qualifies, it steps out to the parent scope, unless the scope traps or wraps.
 
+Candidates are the visible focusables: never disabled, and never clipped out. A widget inside a scroll area counts as visible when its scroll area is, so the pad can walk a long list, and moving focus to it scrolls it into view.
+
 **Overrides:**
 - `.nav_up(id)`, `.nav_down(id)`, `.nav_left(id)` and `.nav_right(id)` set explicit neighbours.
 - `.nav_skip()` keeps a focusable widget out of directional navigation.
-- Tab and Shift+Tab always follow submission order.
+- Tab (`ui.next`) follows submission order, and goes backwards while Shift is held.
 
 **Widgets that take directions:**
 - A focused slider takes Left and Right to step its value.
-- An open dropdown or choice list takes Up and Down to move its highlight.
+- An open dropdown list traps focus, so Up and Down move between its options.
 - A focused text field takes Left and Right as caret movement.
+- A custom widget can take either axis (`.takes_horizontal()`, `.takes_vertical()`) and read `ui.nav_step(id)`.
+- A rebind row that is capturing takes everything, so arrows and Confirm can be bound.
 
 Directions a widget doesn't take go to navigation.
 
-**Back.** `ui.back()` is true when the Back action was pressed this frame and no focused widget used it (closing a dropdown, leaving a text field, cancelling a drag or a rebind). A menu writes `if ui.back() { return SceneAction::Pop; }`.
+**Back.** `ui.back()` is true when the Back action was pressed this frame and no focused widget used it (closing a dropdown, leaving a text field, cancelling a drag). A menu writes `if ui.back() { return SceneAction::Pop; }`.
+
+**Held directions** repeat after 0.35 s, then every 0.1 s. A repeat is armed only by a press, so a direction still held when the top scene changes does nothing until pressed again.
 
 **The device and the focus ring.** The engine tracks the last-used device (`InputDevice::{Mouse, Keyboard, Gamepad}`, `ctx.input.last_device()`):
 - pointer motion, clicks and the wheel mean the mouse;
@@ -324,9 +334,9 @@ ctx.input.action_held("jump");
 ctx.input.action_released("jump");
 ```
 
-- `StickDirection` is a left- or right-stick direction, read as digital past half deflection.
+- `StickDirection` is a left- or right-stick direction, pressed past half deflection and released below 40%.
 - Actions follow the same fixed-step one-shot rule as keys.
-- Bindings save in the player settings (`SystemState`, `system.json`, under `bindings`) and load at startup.
+- Bindings save in the player settings (`SystemState`, `system.json`, under `bindings`). A game that enables `UserPreference::Bindings` (`EngineBuilder::with_user_preferences(..)`) has them loaded at startup and saved whenever they change; otherwise they last for the session.
 - `Actions::reset_defaults()` restores what the game bound in code.
 - Analog axes stay on the existing raw API.
 - It is still the first gamepad only.
@@ -338,31 +348,34 @@ ctx.input.action_released("jump");
 | `ui.up` / `ui.down` / `ui.left` / `ui.right` | arrow keys, D-pad, left stick |
 | `ui.confirm` | Enter, Space, pad South |
 | `ui.back` | Escape, pad East |
-| `ui.next` / `ui.prev` | Tab / Shift+Tab |
-| `ui.tab_next` / `ui.tab_prev` | PageDown / PageUp, pad RightShoulder / LeftShoulder |
+| `ui.next` | Tab (backwards while Shift is held: bindings carry no modifiers) |
+| `ui.tab_next` / `ui.tab_prev` | E / Q, pad RightBumper / LeftBumper (demo-kit reserves PageUp/PageDown) |
 
 Held directions repeat: the first repeat after 0.35 s, then every 0.1 s, set in the theme. The stick repeats the same way.
+
+**Scripted and headless pad input.** gilrs gamepad ids cannot be constructed, so scripted and headless pad input uses virtual events (`InputEvent::PadButton`, `InputEvent::PadStick`) applied to the tracked pad, or to a virtual pad when none is connected.
 
 **Prompts:**
 - `ui.prompt("ui.confirm")`, and the markup tag `[prompt=jump]` in any `RichText`, draw the binding of an action for the last-used device.
 - **Built-in look.** Key-cap chips: a rounded rect with the key's or button's label in the theme's caption style.
 - **Pad labels by family.** The family comes from the gamepad name gilrs reports:
   - Xbox labels by default;
-  - names containing "PS", "DualShock", "DualSense" or "Sony" get Cross/Circle/Square/Triangle;
-  - names containing "Nintendo", "Switch" or "Pro Controller" get Nintendo labels, with South labelled B.
-- **Glyph sprites.** A game registers glyph sprites per binding in `TextIcons` (for example `prompt.pad.xbox.south` or `prompt.key.Enter`), and these replace the chips.
+  - names containing "DualSense", "DualShock", "PlayStation", "Sony", "PS4" or "PS5" get Cross/Circle/Square/Triangle (a bare "PS" matched unrelated names);
+  - names containing "Nintendo", "Switch", "Pro Controller" or "Joy-Con" get Nintendo labels, with South labelled B.
+- **Glyph sprites.** A game registers glyph sprites per binding in `TextIcons`, named with the `KeyCode` or `GamepadButton` variant (for example `prompt.pad.xbox.South` or `prompt.key.Enter`), and these replace the chips.
+- **In markup,** `[prompt=jump]` is resolved before layout against the actions, the last-used device and `TextIcons`: a registered glyph becomes an inline icon, otherwise a short label such as `[A]` in the accent colour. Chips are drawn by the `ui.prompt(action)` widget.
 
 **Rebinding.** `ui.rebind("jump")` is a settings row: the action's display name and its current bindings as prompts.
-- Confirm or click starts capture ("Press a key or button…"). The next key or pad button binds it, Escape or Back cancels, and capture times out after 5 s.
-- If the new binding already belongs to another action in the same group (`ui.*` or the game's), the two are swapped and the row shows a short note.
-- Changes save immediately.
-- `ui.rebind(..).group(..)` and `.slot(n)` choose the group and which of several bindings is edited.
+- Confirm or click starts capture ("Press a key or button…"). The next key or pad button binds it, East included, so Back is not a cancel. Escape cancels, and capture times out after 5 s. While capturing, navigation stands aside, so arrows and Confirm can be bound.
+- If the new binding already belongs to another action in the same group (`ui.*` or the game's, from the action's name), the two are swapped and the row shows a short note.
+- Changes save immediately (when saved bindings are enabled).
+- `.slot(n)` chooses which of several bindings is edited.
 
 ## Widgets
 
-Every widget is a builder that returns a `Response`. Every widget builder has:
+Every widget is a builder that returns a `Response` and records itself on drop when `.show()` is not called. Every widget builder has:
 - `.id(key)`, `.enabled(bool)`, `.tooltip(..)`;
-- `.variant(name)`, `.style(Look)`;
+- `.variant(name)`, `.style(LookPatch)` (only the fields it names);
 - `.default_focus()`, `.nav_*()`;
 - the size and placement builders, including `.at(rect)`;
 - `.drag_source(payload)` and `.drop_target::<T>()`.
@@ -370,30 +383,30 @@ Every widget is a builder that returns a `Response`. Every widget builder has:
 | Widget | Signature | Notes |
 |---|---|---|
 | Text | `ui.text(text)` | 4a's builder, now a layout leaf; `.at()` keeps absolute placement; `.typewriter(&mut TextReveal)` as in 4a |
-| Image | `ui.image(&sprite)` | `.tint`, `.size`; nearest filtering follows the sprite's own filter (4a's pixel-art follow-up) |
+| Image | `ui.image(&sprite)` | `.tint`, `.size`, `.uv`, `.filter(Filter)`; sprites carry no filter in this engine, so the filter is chosen here (default `Filter::Default`), which is 4a's pixel-art follow-up |
 | Button | `ui.button(label)` | `.icon(&sprite)`; text, icon or both |
 | Checkbox | `ui.checkbox(&mut bool, label)` | |
 | Toggle | `ui.toggle(&mut bool, label)` | |
 | Slider | `ui.slider(&mut f32, range)` | `.step(f32)`, `.show_value()`, `.label(..)`; Left/Right step when focused |
-| Text field | `ui.text_input(&mut String)` | `.placeholder`, `.max_len`, `.password`, `.multiline(false)` |
-| Dropdown | `ui.dropdown(&mut usize, &[..])` | options as `&str` or `RichText` |
+| Text field | `ui.text_input(&mut String)` | `.placeholder`, `.max_len`, `.password`; single-line |
+| Dropdown | `ui.dropdown(&mut usize, &[&str])` | |
 | Radio | `ui.radio(&mut T, value, label)` | `T: PartialEq + Copy` |
-| Tabs | `ui.tabs(&mut usize, &[..])` | LB/RB and PageUp/Down switch from anywhere in the tabbed scope |
-| Choice list | `ui.choice_list(&[..]) -> Option<usize>` | dialogue choices; number keys 1-9 pick directly |
+| Tabs | `ui.tabs(&mut usize, &[&str])` | the bumpers and Q/E switch the first tabs drawn in the top scene; with no tabs on screen those keys stay the game's |
+| Choice list | `ui.choice_list(&[&str]).show() -> Option<usize>` | dialogue choices; number keys 1-9 pick directly |
 | Progress | `ui.progress(fraction)` | `.label(..)`; not focusable |
 | Separator, spacer | `ui.separator()`, `ui.spacer()` | |
-| Slot | `ui.slot()` | `.icon(&sprite)`, `.count(n)`, `.selected(bool)`, `.empty()`; inventory cell |
+| Slot | `ui.slot()` | `.icon(&sprite)`, `.count(n)`, `.selected(bool)`, `.filter(Filter)`; inventory cell, empty without an icon |
 | Prompt | `ui.prompt(action)` | see Actions |
 | Rebind row | `ui.rebind(action)` | see Actions |
 | Modal | `ui.modal().show(..)` | dims, blocks, traps focus |
 | Confirm dialog | `ui.confirm(title, message) -> Option<bool>` | a modal with Yes/No; Back means No |
-| Custom | `ui.custom(width, height)` | `.focusable()`, `.sense(Sense)`, `.show(\|ui, rect, response\| ..)`; for game-made widgets, drawn with the `draw_*` calls inside `rect` |
+| Custom | `ui.custom(width, height)` | `.focusable(true)`, `.sense(Sense)`, `.takes_horizontal()`/`.takes_vertical()`, `.paint(\|painter, response\| ..)`; for game-made widgets, drawn with a `Painter` in the widget's own units |
 
 The `draw_text*`, `draw_rect*`, `draw_sprite*`, `draw_nine_slice` and `draw_line` calls stay. They are absolute drawing that does not take part in layout or interaction, for HUDs.
 
 **Drag and drop:**
 - **Sources and targets.** Any widget or container can be a drag source with `.drag_source(payload)`, for any `T: Clone + 'static`. A drop target reads the drop with `if let Some(item) = resp.dropped::<ItemId>() { .. }`. `resp.drag_hover::<T>()` tells a target that a compatible payload is over it, for highlighting.
-- **The ghost.** While dragging, a ghost of the source follows the pointer on the overlay layer: its draw recipe at 80% opacity. `.drag_ghost(|ui| ..)` customises it.
+- **The ghost.** While dragging, a ghost follows the pointer on the popup layer, above the popups, at 80% opacity: the `.drag_ghost(&sprite)` sprite, else the slot's icon, else a box in the accent colour.
 - **Gamepad:**
   1. Confirm on a focused drag source picks the payload up, and the ghost rides the focus.
   2. The player navigates.
@@ -403,14 +416,14 @@ The `draw_text*`, `draw_rect*`, `draw_sprite*`, `draw_nine_slice` and `draw_line
 
 ## Theme, skins and sounds
 
-**The resource.** `Theme` is an engine-held resource. Every widget reads it each frame. Set it with `EngineBuilder::ui_theme(Theme)` or `ctx.ui_theme().set(..)`.
+**The resource.** `UiTheme` is a world resource holding an `Arc<Theme>`. Every widget reads it; the UI context takes the `Arc` at the start of each pass, so a change applies from the next frame. Set it with `EngineBuilder::ui_theme(Theme)` or `ctx.ui_theme()` (`get`, `set`, `modify`).
 
 ```text
 Theme
   palette:   background, surface, text, muted, accent, danger, success, warning
   metrics:   radius, spacing, border, focus_ring (width, offset, colour), scroll (line, smoothing),
              nav (repeat_delay, repeat_rate), tooltip_delay, drag_threshold
-  text:      TextStyle per role: body, heading, button, caption, mono
+  text:      TextLook per role (size, colour, font, bold): body, heading, button, caption, mono
   widgets:   per WidgetKind: Looks { normal, hovered, pressed, focused, disabled } plus kind metrics
              (slider track/handle, toggle size, checkbox box, scrollbar width, slot size)
   variants:  name -> { base: WidgetKind, overrides: Looks }
@@ -420,12 +433,12 @@ Theme
 
 **`Look`:**
 - fill, border colour and width, radius;
-- text colour (or a `TextStyle` override);
+- text colour;
 - padding;
 - pressed offset;
 - `skin: Option<String>`, a nine-slice used in place of fill and border.
 
-Every state's `Look` inherits from `normal` field by field, so a theme writes only the differences. A variant inherits from its base kind's looks.
+Every state's look is a `LookPatch` over `normal`, applied field by field, so a theme writes only the differences. A variant patches its base kind's looks. Looks switch per state without transition timers. Skins name a sprite path and their sampling filter.
 
 **Built-in themes:**
 - `Theme::dark()` is the default and matches today's look.
@@ -450,7 +463,8 @@ No sound plays when none are named.
 - **Actions:** `Actions`, `Binding`, `StickDirection`; `Input::{action_pressed, action_held, action_released, last_device}`; `SceneContext::{actions, ui_theme}`.
 - **Theme:** the new `Theme` structure with `Look`, `Skin` and `UiSounds`; `EngineBuilder::ui_theme`.
 - **Widgets and containers:** every widget and container in the tables above.
-- **`UiContext` methods:** `scope`, `request_focus`, `scroll_to`, `is_focused`, `focused`, `back`, `wants_pointer`, `wants_keyboard`, `prompt`.
+- **`UiContext` methods:** `scope`, `request_focus`, `scroll_to`, `is_focused`, `focused`, `focus_visible`, `nav_step`, `back`, `wants_pointer`, `wants_keyboard`, `prompt`.
+- **Testing:** `ryo2d::testing::UiHarness` (UI frames over scripted input, no GPU) and `HeadlessEngine::{ui_focused, ui_focusables, focus_ui}` and pad helpers.
 
 **Changed:**
 - Every interactive widget drops its rect argument (use layout or `.at(rect)`) and returns `Response` instead of `bool`.
@@ -465,7 +479,7 @@ No sound plays when none are named.
 - **Old hit and occlusion calls:**
   - `is_clicked`/`is_hovered`/`is_held` (use `ui.custom(..)`);
   - `set_mouse_occluded`/`is_mouse_occluded` (layering is automatic; a scene that needs to block uses a modal);
-  - `consume_click`/`click_consumed`/`escape_consumed` (use `ui.back()` and the blocking flags).
+  - `consume_click`/`click_consumed`/`escape_consumed`/`consume_escape` (use `ui.back()` and the blocking flags).
 - **Theme types:** the old flat `ButtonStyle`/`PanelStyle`/… types.
 
 ## Migration (in place, every step green)
@@ -474,7 +488,7 @@ No sound plays when none are named.
    - the one-shot wheel in fixed steps;
    - device tracking;
    - the action map with save and load;
-   - `RYO_INPUT` gains wheel (`Wheel@dy`, `Wheel@dx,dy`) and gamepad (`Pad:South`, `Pad:DPadDown`, `Stick:L@x,y`) events.
+   - `RYO_INPUT` gains wheel steps (`N:Wheel@DXxDY`, in lines), pad buttons (`N:PadSouth`, `A-B:PadDPadDown`: `Pad` plus a `GamepadButton` variant) and held stick positions (`A-B:LeftStick@XxY`, `A-B:RightStick@XxY`, back to centre at `B`).
 2. **The new core beside the old widgets:**
    - ids, memory, the tree;
    - the resolve and lay-out steps;
@@ -491,7 +505,7 @@ No sound plays when none are named.
    - slots and drag-and-drop;
    - prompts and rebinding;
    - sounds.
-4. **Port, then delete.** The examples are ported (below). Then the old widgets, state structs and layout helpers are deleted.
+4. **Port, then delete.** Each widget-family step replaces the old widget of that name and ports its call sites mechanically (`ui.button("X", rect)` becomes `ui.button("X").at(rect).clicked()`), so every step builds and passes. The games, demo-kit and the `ui` demo are then restructured onto layout and navigation (below), and the remaining old API is deleted.
 5. **Docs and benches.**
 
 ## Games and demos
@@ -507,7 +521,8 @@ No sound plays when none are named.
   - **ui-animations:** `is_hovered` becomes responses.
   - **text:** its scroll view.
 - **demo-kit:**
-  - The settings panel moves onto the real widgets: the same keys, plus the mouse and the pad.
+  - The settings panel becomes a focus scope holding one focusable widget that takes all four directions (so its own row window keeps working): the same keys, plus the D-pad and stick, and a click selects a row.
+  - Pages with their own focus scope keep the arrows, and reach the panel with Tab or a click.
   - Help becomes a modal.
   - The reserved-key rules and `tests/shell.rs` still hold.
 - **The `ui` demo is the acceptance showcase,** with four new pages:
@@ -516,8 +531,8 @@ No sound plays when none are named.
   - **Inventory:** a 6×4 grid of slots, drag and drop with the mouse and the pad, tooltips, and an equipment row.
   - **Dialogue:** a typewriter line in a box, a choice list, and a HUD with a health bar and counters that size to their text.
   
-  The existing pages are updated or folded into these.
-- **Captures.** The demo tour drives each page with scripted pad input (`RYO_INPUT`).
+  The acceptance pages declare no settings rows, so every widget on them is reachable by the D-pad alone. The existing pages are updated: Layout and Clipping are rebuilt on containers, scroll areas and modals.
+- **Captures.** The acceptance pages are captured with scripted pad input (`RYO_INPUT`). The demo tour itself stays input-free.
 
 ## Testing
 
@@ -532,19 +547,19 @@ No sound plays when none are named.
   - **Actions:** bind, rebind with a conflict swap, save and load round trip, the fixed-step one-shot rule.
   - **Theme:** state inheritance; variants; RON round trip; hot-reload re-apply.
   - **Text editing:** the existing text-editing tests, kept on the new field.
-- **A headless UI driver** (`ui::test_util`). It runs a scene's `ui` closure for N frames with scripted pointer, keyboard, pad and wheel input. It asserts responses, focus and values, with no GPU.
+- **A headless UI driver** (`ui::test_util`). It runs a scene's `ui` closure for N frames with scripted pointer, keyboard, pad and wheel input. It asserts responses, focus and values, with no GPU. A public subset, `ryo2d::testing::UiHarness`, lets games test their UI the same way and carries the benchmarks.
+- **Pinned without a GPU** through the driver: a grid that sizes to text, crisp rects at 1.25×, the focus ring shown for the pad and hidden for the mouse, a skinned panel, a modal blocking a button under it, a scroll view clipping hits.
 - **e2e (GPU) tests:**
-  - a centred menu column;
-  - a grid that sizes to text;
-  - crisp borders at 1.25×;
-  - focus ring shown for the pad and hidden for the mouse;
-  - a skinned panel;
-  - a modal blocking a button under it;
-  - a scroll view clipping hits.
+  - a centred panel;
+  - the console blocking the pointer;
+  - a lower scene's button ignoring the pointer;
+  - the `debug:ui` overlay;
+  - reading and setting UI focus headlessly.
 - **Headless engine tests:**
   - an existing game's pause menu navigated by pad from start to quit;
+  - every widget on each acceptance page reachable by the D-pad;
   - demo-kit `shell.rs` still green.
-- **Benches:** a 200-widget settings screen (layout plus resolve) under 0.25 ms; the HUD frame not regressed.
+- **Benches:** a 200-widget settings screen (layout plus resolve) under 0.25 ms; a 1,000-row list; the HUD frame not regressed.
 
 ## Documentation
 
