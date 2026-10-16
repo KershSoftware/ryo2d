@@ -1,0 +1,13 @@
+[package]
+name = "text-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Fonts, rich text, the typewriter, world text and UI drawing demo for Ryo2D engine"
+
+[[bin]]
+name = "text-demo"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }
