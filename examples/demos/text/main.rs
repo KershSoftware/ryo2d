@@ -1003,14 +1003,15 @@ impl DemoPage for DrawingPage {
     let index_style = row_style.clone().color(DIM);
     let count_style = row_style.clone().color(ACCENT);
     let line_h = ui.line_height(&row_style);
+    ui.draw_rect(view, Color::rgb(30, 30, 40));
     ui.scroll().at(view).show(|ui| {
       for i in 0..30 {
         let count = format!("x{}", 1 + (noise(i as u32) * 9.0) as u32);
         let count_w = ui.measure_text(count.as_str(), &count_style).x;
-        ui.custom(view.width, ROW_HEIGHT).id(i).paint(|p, _| {
+        ui.custom(0.0, ROW_HEIGHT).id(i).fill_width().paint(|p, _| {
           if i % 2 == 1 {
             p.rect(
-              Rect::new(0.0, 0.0, view.width, ROW_HEIGHT),
+              Rect::new(0.0, 0.0, p.size().x, ROW_HEIGHT),
               Color::new(255, 255, 255, 14),
             );
           }

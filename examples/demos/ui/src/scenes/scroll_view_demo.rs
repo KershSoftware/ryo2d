@@ -87,6 +87,7 @@ impl DemoPage for ScrollViewDemo {
     let text_content = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.\n\nDuis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.\n\nCurabitur pretium tincidunt lacus. Nulla gravida orci a odio. Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus magna felis sollicitudin mauris. Integer in mauris eu nibh euismod gravida.\n\nDuis ac tellus et risus vulputate vehicula. Donec lobortis risus a elit. Etiam tempor. Ut ullamcorper, ligula eu tempor congue, eros est euismod turpis, id tincidunt sapien risus a quam.\n\nMaecenas fermentum consequat mi. Donec fermentum. Pellentesque malesuada nulla a mi. Duis sapien sem, aliquet sed, vulputate eget, feugiat non, lacus. Morbi interdum mollis sapien. Sed ac risus.\n\nPraesent nec nisl a purus blandit viverra. Praesent ac massa at ligula laoreet iaculis. Nulla neque dolor, sagittis eget, iaculis quis, molestie non, velit.";
 
     let text_rect = Rect::new(20.0, top + 18.0, 350.0, 250.0);
+    ui.draw_rect(text_rect, Color::rgb(30, 30, 40));
     self.content_scroll = ui
       .scroll()
       .at(text_rect)
@@ -109,10 +110,12 @@ impl DemoPage for ScrollViewDemo {
     let selected = self.selected_item;
     let mut clicked = None;
     let label = TextStyle::default();
+    ui.draw_rect(list_rect, Color::rgb(30, 30, 40));
     self.list_scroll = ui
       .scroll()
       .at(list_rect)
       .padding(padding)
+      .gap(2.0)
       .show(|ui| {
         for i in 0..item_count {
           let response = ui
@@ -159,6 +162,7 @@ impl DemoPage for ScrollViewDemo {
     let card_height = horiz_rect.height - padding * 2.0 - 10.0;
     let card_title = TextStyle::default();
     let card_note = TextStyle::default().color(Color::LIGHT_GRAY);
+    ui.draw_rect(horiz_rect, Color::rgb(30, 30, 40));
     self.horizontal_scroll = ui
       .scroll()
       .horizontal()
