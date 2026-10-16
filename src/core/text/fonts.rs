@@ -249,12 +249,19 @@ impl Fonts {
   /// A face of `family`, the regular (weight 400, upright) one if there
   /// is one
   pub fn find(&self, family: &str) -> Option<FontId> {
+    self.find_face(family, 400.0, false)
+  }
+
+  /// The face of `family` nearest `weight` (100 to 900), preferring the
+  /// slant asked for: `find_face("Inter", 700.0, false)` is Inter Bold
+  pub fn find_face(&self, family: &str, weight: f32, italic: bool) -> Option<FontId> {
     let mut best: Option<(FontId, f32)> = None;
     for (id, face) in self.faces() {
       if face.family != family {
         continue;
       }
-      let distance = (face.weight - 400.0).abs() + if face.italic { 1000.0 } else { 0.0 };
+      let slant = if face.italic == italic { 0.0 } else { 1000.0 };
+      let distance = (face.weight - weight).abs() + slant;
       if best.is_none_or(|(_, d)| distance < d) {
         best = Some((id, distance));
       }
@@ -397,6 +404,21 @@ mod tests {
     let id = fonts.find("Inter").unwrap();
     assert_eq!(fonts.face(id).unwrap().weight, 400.0);
     assert!(fonts.find("No Such Family").is_none());
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn find_face_picks_the_nearest_weight_and_slant() {
+    let fonts = Fonts::with_builtins();
+    let bold = fonts.find_face("Inter", 700.0, false).unwrap();
+    assert_eq!(fonts.face(bold).unwrap().weight, 700.0);
+    assert_eq!(fonts.find_face("Inter", 600.0, false), Some(bold));
+    assert_eq!(
+      fonts.find_face("Inter", 400.0, true),
+      fonts.find("Inter"),
+      "no italic face: the upright one of that weight"
+    );
+    assert!(fonts.find_face("No Such Family", 400.0, false).is_none());
   }
 
   #[test]
