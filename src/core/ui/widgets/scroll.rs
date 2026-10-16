@@ -4,6 +4,7 @@
 
 use std::hash::Hash;
 use std::panic::Location;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec2;
 
@@ -15,6 +16,8 @@ use crate::core::ui::response::Response;
 use crate::core::ui::tree::{DrawKind, Node, RecordSpec};
 use crate::core::ui::{Anchor, Color, Rect, UiId};
 
+/// A scroll offset that was not finite was warned about
+static BAD_OFFSET_WARNED: AtomicBool = AtomicBool::new(false);
 /// The scrollbar's width until the theme owns it
 const BAR_WIDTH: f32 = 10.0;
 /// The thumb's width, centred in the track
@@ -261,13 +264,19 @@ impl<'a> UiContext<'a> {
   /// Show the scroll area `scroll` from `offset` at once, without easing
   /// (clamped to its contents once they are laid out)
   pub fn set_scroll_offset(&mut self, scroll: UiId, offset: Vec2) {
+    // Nothing is named, or nothing can be shown from there
+    if scroll == UiId::NONE {
+      return;
+    }
+    if !offset.is_finite() {
+      if !BAD_OFFSET_WARNED.swap(true, Ordering::Relaxed) {
+        crate::engine_warn!(module: "ui", "set_scroll_offset got a scroll offset that is not finite; ignored");
+      }
+      return;
+    }
     let (scene, _) = self.scene();
     if let Some(state) = self.memory.state::<ScrollState>(scroll, scene) {
-      let offset = if offset.is_finite() {
-        offset.max(Vec2::ZERO)
-      } else {
-        Vec2::ZERO
-      };
+      let offset = offset.max(Vec2::ZERO);
       state.offset = offset;
       state.target = offset;
     }
@@ -605,7 +614,7 @@ mod tests {
       scroll = list(ui, 10_000, &mut Vec::new(), &mut None);
       ui.scroll_to(last);
     });
-    for _ in 0..40 {
+    for _ in 0..70 {
       d.frame(|ui| scroll = list(ui, 10_000, &mut Vec::new(), &mut None));
     }
     let offset = d.frame(|ui| ui.scroll_offset(scroll));
@@ -780,5 +789,94 @@ mod tests {
     d.wheel(0.0, -1.0);
     strip(&mut d);
     assert_eq!(target(&d, scroll), Vec2::ZERO);
+  }
+
+  fn rows(ui: &mut UiContext<'_>) {
+    for i in 0..10 {
+      ui.custom(100.0, 30.0).id(i).show();
+    }
+  }
+
+  #[test]
+  fn a_panel_over_a_scroll_area_keeps_the_wheel_from_it() {
+    let view = Rect::new(0.0, 0.0, 120.0, 100.0);
+    let mut d = UiDriver::new((300.0, 300.0));
+    let draw = |d: &mut UiDriver| {
+      d.frame(|ui| {
+        let list = ui.scroll().at(view).show(rows).id;
+        ui.panel().block_pointer().at(view).show(|_| {});
+        list
+      })
+    };
+    let mut list = UiId::NONE;
+    for _ in 0..3 {
+      list = draw(&mut d);
+    }
+    d.move_to(50.0, 50.0);
+    d.wheel(0.0, -1.0);
+    draw(&mut d);
+    assert_eq!(target(&d, list), Vec2::ZERO);
+  }
+
+  #[test]
+  fn a_popup_list_on_a_higher_layer_takes_the_wheel_over_a_deeper_page_list() {
+    use crate::core::ui::immediate::{PAGE_LAYER, POPUP_LAYER};
+    let view = Rect::new(0.0, 0.0, 120.0, 100.0);
+    let mut d = UiDriver::new((300.0, 300.0));
+    let draw = |d: &mut UiDriver| {
+      d.frame(|ui| {
+        let mut page = UiId::NONE;
+        ui.column().at(view).show(|ui| {
+          ui.column().show(|ui| {
+            page = ui.scroll().height(100.0).show(rows).id;
+          });
+        });
+        ui.set_layer(POPUP_LAYER);
+        let popup = ui.scroll().at(view).show(rows).id;
+        ui.set_layer(PAGE_LAYER);
+        (page, popup)
+      })
+    };
+    let mut ids = (UiId::NONE, UiId::NONE);
+    for _ in 0..3 {
+      ids = draw(&mut d);
+    }
+    d.move_to(50.0, 50.0);
+    d.wheel(0.0, -1.0);
+    draw(&mut d);
+    assert_eq!(target(&d, ids.0), Vec2::ZERO);
+    assert_eq!(target(&d, ids.1).y, 40.0);
+  }
+
+  #[test]
+  fn a_bad_scroll_offset_is_ignored_and_warned_once() {
+    let mut d = UiDriver::new((300.0, 300.0));
+    let mut list = UiId::NONE;
+    for _ in 0..3 {
+      list = list_of_rows(&mut d);
+    }
+    d.frame(|ui| {
+      ui.set_scroll_offset(list, Vec2::new(0.0, 50.0));
+      ui.set_scroll_offset(list, Vec2::new(f32::NAN, 0.0));
+      ui.set_scroll_offset(list, Vec2::new(0.0, f32::INFINITY));
+      // Before anything is drawn there is no area to name
+      ui.set_scroll_offset(UiId::NONE, Vec2::new(0.0, 10.0));
+    });
+    assert_eq!(d.frame(|ui| ui.scroll_offset(list)).y, 50.0);
+    assert!(d.memory.peek_state::<ScrollState>(UiId::NONE).is_none());
+    let warnings = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains("scroll offset that is not finite"))
+      .count();
+    assert_eq!(warnings, 1);
+  }
+
+  fn list_of_rows(d: &mut UiDriver) -> UiId {
+    d.frame(|ui| {
+      ui.scroll()
+        .at(Rect::new(0.0, 0.0, 120.0, 100.0))
+        .show(rows)
+        .id
+    })
   }
 }

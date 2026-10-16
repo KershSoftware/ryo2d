@@ -3,7 +3,7 @@
 
 use glam::Vec2;
 
-use super::memory::{Flags, UiMemory};
+use super::memory::{Flags, Record, UiMemory};
 use super::widgets::scroll::ScrollState;
 use super::{Rect, UiId};
 
@@ -154,23 +154,25 @@ pub(crate) fn route_wheel(
   if !wheel.is_finite() || wheel == Vec2::ZERO {
     return false;
   }
-  // Innermost first; ids only break ties, so map order never decides
-  let mut areas: Vec<(u16, UiId)> = memory
-    .prev_records()
-    .filter(|(_, r)| {
-      r.scene == scene
-        && r.flags.contains(Flags::SCROLLABLE)
-        && r.rect.contains(pointer.x, pointer.y)
-        && r
-          .clip
-          .is_none_or(|clip| clip.contains(pointer.x, pointer.y))
-    })
-    .map(|(id, r)| (r.depth, id))
-    .collect();
-  areas.sort_by(|a, b| b.cmp(a));
+  // The topmost thing under the pointer decides, as for clicks, so a panel
+  // or popup over a scroll area keeps the wheel from it. Its scroll chain,
+  // innermost area first, takes the wheel in turn.
+  let Some((top, record)) = topmost(memory, pointer, scene) else {
+    return false;
+  };
+  let mut chain = Vec::new();
+  let mut next = if record.flags.contains(Flags::SCROLLABLE) {
+    top
+  } else {
+    record.scroll
+  };
+  while next != UiId::NONE && chain.len() < MAX_SCROLL_CHAIN && !chain.contains(&next) {
+    chain.push(next);
+    next = memory.prev(next).map_or(UiId::NONE, |r| r.scroll);
+  }
 
   let mut taken = false;
-  for (_, id) in areas {
+  for id in chain {
     let Some(state) = memory.state::<ScrollState>(id, scene) else {
       continue;
     };
@@ -229,6 +231,26 @@ pub(crate) fn apply_scroll_requests(memory: &mut UiMemory) {
       state.target[axis] = wanted.clamp(0.0, max[axis]);
     }
   }
+}
+
+/// The longest scroll chain the wheel walks
+const MAX_SCROLL_CHAIN: usize = 64;
+
+/// The topmost record of `scene` under `at` that takes the pointer (layer,
+/// then order; depth and id only break ties)
+fn topmost(memory: &UiMemory, at: Vec2, scene: u64) -> Option<(UiId, Record)> {
+  let takes =
+    Flags::CLICK | Flags::DRAG | Flags::BLOCKING | Flags::SCROLLABLE | Flags::DROP_TARGET;
+  memory
+    .prev_records()
+    .filter(|(_, r)| {
+      r.scene == scene
+        && r.flags.intersects(takes)
+        && r.rect.contains(at.x, at.y)
+        && r.clip.is_none_or(|clip| clip.contains(at.x, at.y))
+    })
+    .max_by_key(|(id, r)| (r.layer, r.order, r.depth, *id))
+    .map(|(id, r)| (id, *r))
 }
 
 /// What is under the pointer
@@ -555,6 +577,10 @@ mod tests {
   fn scrollable(rect: Rect, depth: u16, id: u64, m: &mut UiMemory, content: Vec2) {
     let mut r = rec(rect, 0, id as u32, Flags::SCROLLABLE, 1);
     r.depth = depth;
+    // A deeper area sits inside the one with the id before it
+    if depth > 0 {
+      r.scroll = UiId(id - 1);
+    }
     r.content = content;
     m.record(UiId(id), r);
     let state = m

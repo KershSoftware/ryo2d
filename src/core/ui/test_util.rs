@@ -64,7 +64,7 @@ pub(crate) fn context_in<'a>(
 }
 
 /// How long each driven frame lasts (seconds)
-const FRAME: f64 = 1.0 / 30.0;
+const FRAME: f64 = 1.0 / 60.0;
 
 /// A headless UI over several frames: it owns a memory, a layout engine, a
 /// text engine and the commands, scripts the pointer and resolves it before
@@ -126,7 +126,7 @@ impl UiDriver {
   }
 
   /// One frame: resolve the scripted pointer and the wheel, run `ui` as the
-  /// top scene (scope 1), 1/30 s after the last. A frame that draws nothing leaves
+  /// top scene (scope 1), 1/60 s after the last. A frame that draws nothing leaves
   /// the records and widget state of the last frame that did.
   pub(crate) fn frame<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>) -> R) -> R {
     self.time += FRAME;
