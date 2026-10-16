@@ -36,7 +36,7 @@ use super::input::UiInput;
 use crate::core::asset::SpriteHandle;
 use crate::core::render::UiSpace;
 use crate::core::text::{
-  RichText, TextAlign, TextEngine, TextLayoutOptions, TextOverflow, TextStyle,
+  RichText, TextAlign, TextEngine, TextLayoutOptions, TextOverflow, TextReveal, TextStyle,
 };
 use crate::core::ui::retained::{DropdownState, Focusable, ScrollViewState, TextInputState};
 use crate::core::ui::theme::Theme;
@@ -91,9 +91,11 @@ pub struct UiText<'u, 'a> {
   shown: Option<f32>,
   fade: f32,
   opacity: f32,
+  /// A typewriter advanced by the UI's `dt` when the text is drawn
+  typewriter: Option<&'u mut TextReveal>,
 }
 
-impl UiText<'_, '_> {
+impl<'u> UiText<'u, '_> {
   /// Where the text goes, in UI units (its top-left unless `anchor` says
   /// otherwise)
   pub fn at(mut self, x: f32, y: f32) -> Self {
@@ -149,6 +151,8 @@ impl UiText<'_, '_> {
   /// [`TextReveal::drawn_clusters`](crate::core::text::TextReveal::drawn_clusters),
   /// or any value of at least the cluster count plus `fade`.
   /// A shown count that is not a number means no reveal.
+  /// [`typewriter`](Self::typewriter) drives a `TextReveal` for you, pauses
+  /// included.
   pub fn reveal(mut self, shown: f32) -> Self {
     self.shown = shown.is_finite().then_some(shown);
     self
@@ -173,24 +177,62 @@ impl UiText<'_, '_> {
     };
     self
   }
+  /// Reveal the text with `reveal`, the typewriter world text uses: when
+  /// the text is drawn, `reveal` advances by the UI's real time
+  /// ([`dt`](UiContext::dt)) over this text's layout, so `[pause]` markup
+  /// and the punctuation pause hold it and a fade ends at full opacity. It
+  /// replaces [`reveal`](Self::reveal) and [`fade`](Self::fade).
+  ///
+  /// Draw each reveal through one call a frame: every call advances it.
+  /// It does not notice a new text, so call [`TextReveal::restart`] when the
+  /// line changes. UI text writes no `TextRevealed` message: check
+  /// [`TextReveal::is_done`] to know the line has finished.
+  ///
+  /// ```ignore
+  /// ui.text(RichText::markup("Hello.[pause=0.5] Welcome!"))
+  ///   .at(40.0, 420.0)
+  ///   .wrap(400.0)
+  ///   .typewriter(&mut self.reveal)
+  ///   .draw();
+  /// if self.reveal.is_done() { /* show the next-line prompt */ }
+  /// ```
+  pub fn typewriter(mut self, reveal: &'u mut TextReveal) -> Self {
+    self.typewriter = Some(reveal);
+    self
+  }
 
   /// Record the text; its size in UI units (zero when it cannot be laid out)
   pub fn draw(self) -> Vec2 {
-    let scale = self.ui.space.px_scale;
-    let size = self.ui.engine().map_or(Vec2::ZERO, |mut engine| {
-      engine.measure(&self.text, &self.style, &self.options, scale)
-    });
-    let origin = self.at - self.options.anchor.fraction() * size;
-    self
-      .ui
-      .record_text(
-        &self.text,
-        &self.style,
-        &self.options,
-        origin,
-        self.opacity,
-        self.shown.map(|shown| (shown, self.fade)),
-      )
+    let Self {
+      ui,
+      text,
+      at,
+      style,
+      options,
+      shown,
+      fade,
+      opacity,
+      typewriter,
+    } = self;
+    let scale = ui.space.px_scale;
+    let layout = ui
+      .engine()
+      .and_then(|mut engine| engine.layout(&text, &style, &options, scale));
+    let size = layout.as_ref().map_or(Vec2::ZERO, |laid| laid.size / scale);
+    let reveal = match typewriter {
+      Some(reveal) => {
+        // Checked first, as world text does: a settled reveal stays put
+        if let Some(layout) = &layout
+          && !reveal.settled()
+        {
+          reveal.advance(ui.dt, layout);
+        }
+        Some(reveal.drawn())
+      }
+      None => shown.map(|shown| (shown, fade)),
+    };
+    let origin = at - options.anchor.fraction() * size;
+    ui.record_text(&text, &style, &options, origin, opacity, reveal)
       .unwrap_or(Vec2::ZERO)
   }
 }
@@ -875,6 +917,7 @@ impl<'a> UiContext<'a> {
       shown: None,
       fade: 0.0,
       opacity: 1.0,
+      typewriter: None,
     }
   }
 
@@ -3940,5 +3983,100 @@ mod tests {
     assert_eq!(drawn, reveal.drawn_clusters());
     assert!(drawn >= layout.clusters as f32 + fade - 1.0);
     assert!((0..layout.clusters).all(|c| reveal_alpha(c, drawn, fade) == 1.0));
+  }
+
+  /// One UI frame of `dt` seconds drawing `markup` through `reveal`; the
+  /// reveal its text command recorded
+  fn typewriter_frame(
+    text: &mut TextEngine,
+    markup: &str,
+    reveal: &mut TextReveal,
+    dt: f32,
+  ) -> Option<(f32, f32)> {
+    let mut commands = UiCommands::default();
+    let mut ui = context(&mut commands, text);
+    ui.set_dt(dt);
+    ui.text(RichText::markup(markup))
+      .at(10.0, 10.0)
+      .typewriter(reveal)
+      .draw();
+    drop(ui);
+    commands.iter().find_map(|c| match c {
+      UiCommand::Text { reveal, .. } => *reveal,
+      _ => None,
+    })
+  }
+
+  #[test]
+  fn a_ui_typewriter_holds_at_an_inline_pause() {
+    let mut text = text_engine();
+    let mut reveal = TextReveal::new(10.0);
+    let line = "ab[pause=0.5]cd";
+    let recorded = typewriter_frame(&mut text, line, &mut reveal, 0.2);
+    assert_eq!(recorded, Some((2.0, 0.0)), "a and b, then the pause");
+    typewriter_frame(&mut text, line, &mut reveal, 0.4);
+    assert!((reveal.shown() - 2.0).abs() < 1e-5, "still paused");
+    let recorded = typewriter_frame(&mut text, line, &mut reveal, 0.2);
+    let (shown, _) = recorded.unwrap();
+    assert!(
+      (shown - 3.0).abs() < 1e-4,
+      "0.1 s of pause left, then c: {shown}"
+    );
+    assert!(!reveal.is_done());
+  }
+
+  #[test]
+  fn a_ui_typewriter_pauses_after_punctuation() {
+    let mut text = text_engine();
+    let mut paused = TextReveal::new(10.0).with_punctuation_pause(0.5);
+    let mut plain = TextReveal::new(10.0);
+    typewriter_frame(&mut text, "a, b", &mut paused, 0.25);
+    typewriter_frame(&mut text, "a, b", &mut plain, 0.25);
+    assert!(
+      (paused.shown() - 2.0).abs() < 1e-5,
+      "a and the comma, then the hold: {}",
+      paused.shown()
+    );
+    assert!((plain.shown() - 2.5).abs() < 1e-4, "{}", plain.shown());
+    typewriter_frame(&mut text, "a, b", &mut paused, 0.3);
+    assert!((paused.shown() - 2.0).abs() < 1e-5, "0.35 s of 0.5 held");
+  }
+
+  #[test]
+  fn a_ui_typewriter_with_a_fade_settles_at_full_alpha() {
+    use crate::core::text::reveal_alpha;
+    let mut text = text_engine();
+    let line = "Hello there";
+    // 20 clusters a second with a 0.15 s fade is a 3 cluster fade
+    let mut reveal = TextReveal::new(20.0).with_fade(0.15);
+    let mut recorded = None;
+    for _ in 0..200 {
+      recorded = typewriter_frame(&mut text, line, &mut reveal, 0.05);
+    }
+    assert!(reveal.is_done());
+    let (shown, fade) = recorded.expect("a reveal is recorded");
+    assert!((fade - 3.0).abs() < 1e-4, "the reveal's fade: {fade}");
+    assert_eq!(shown, reveal.drawn_clusters());
+    let clusters = text
+      .layout(
+        &RichText::new(line),
+        &TextStyle::default(),
+        &TextLayoutOptions::default(),
+        1.0,
+      )
+      .unwrap()
+      .clusters;
+    assert!((0..clusters).all(|c| reveal_alpha(c, shown, fade) == 1.0));
+  }
+
+  #[test]
+  fn a_ui_typewriter_advances_by_each_frames_dt() {
+    let mut text = text_engine();
+    let mut reveal = TextReveal::new(10.0);
+    typewriter_frame(&mut text, "Hello there", &mut reveal, 0.1);
+    assert!((reveal.shown() - 1.0).abs() < 1e-4, "{}", reveal.shown());
+    let recorded = typewriter_frame(&mut text, "Hello there", &mut reveal, 0.15);
+    assert!((reveal.shown() - 2.5).abs() < 1e-4, "{}", reveal.shown());
+    assert_eq!(recorded, Some((reveal.shown(), 0.0)));
   }
 }
