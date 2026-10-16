@@ -33,6 +33,7 @@ bytemuck = { version = "1.21", features = ["derive"] }
 crossbeam-channel = "0.5"
 flate2 = "1.1"
 glam = { version = "0.31", features = ["serde"] }
+taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
 bitflags = "2"
 bevy_ecs = { version = "0.20", default-features = false, features = ["std", "backtrace"] }
 half = { version = "2", features = ["bytemuck"] }
