@@ -16,7 +16,7 @@ The juice systems run chained in the order above (`register_juice_systems`); phy
 
 - **Fixed-step systems integrate with `time.fixed.timestep()`** (`Res<Time>`). The step is constant; slow motion, pause and hitstop change how many steps run, not their length. Per-frame systems that must keep running through pause use `time.real.delta()`.
 - **No filter for pooled entities**: queries skip `Disabled` entities by default. Ask with `Allow<Disabled>` only when the system must see them (physics' unregister bookkeeping does).
-- **Write only real changes**: assign a component only when the value changed (or use `set_if_neq`), so change detection downstream (propagation, physics sync) sees real changes only. The tween system writes `Transform` only for tweens with transform targets; animation reassigns the sprite only when the frame changed.
+- **Write only real changes**: assign a component only when the value changed (or use `set_if_neq`), so change detection downstream (propagation, physics sync) sees real changes only. The tween system writes `Transform` only for tweens with transform targets, and a `Text2d`'s opacity only for tweens with an alpha target; animation reassigns the sprite only when the frame changed.
 - **Report through messages**: a system that has something to tell games writes an engine message type (`core/messages/builtin.rs`) with `MessageWriter`; define a type only when a system writes it.
 - **World-level helpers stay in the component's module**: `Knockback::apply(world, entity, dir, force)` and `SquashStretch::apply(world, entity, intensity)` start an effect; the system only advances it.
 

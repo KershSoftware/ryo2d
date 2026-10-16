@@ -330,7 +330,7 @@ pub struct Tween {
   pub target_rotation: Option<f32>,
   pub target_scale_x: Option<f32>,
   pub target_scale_y: Option<f32>,
-  /// Target alpha (0.0-1.0) - requires Renderable component
+  /// Target alpha (0.0-1.0): a `Renderable`'s alpha, or a `Text2d`'s opacity
   pub target_alpha: Option<f32>,
   /// Target tint color - requires Renderable component
   pub target_tint: Option<Color>,
@@ -503,7 +503,8 @@ impl Tween {
     self
   }
 
-  /// Set target alpha (requires Renderable component on entity).
+  /// Set target alpha: a `Renderable`'s alpha, or a `Text2d`'s opacity
+  /// (world text fades without being laid out again).
   ///
   /// Alpha will be clamped to 0.0-1.0 range.
   pub fn to_alpha(mut self, alpha: f32) -> Self {

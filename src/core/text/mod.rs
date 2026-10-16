@@ -32,7 +32,7 @@ pub(crate) use layout::{GlyphStyle, PlacedGlyph, PlacedIcon, TextLayout};
 pub(crate) use raster::{
   GlyphFormat, GlyphImage, GlyphKey, GlyphRasterizer, glyph_id, raster_size_step,
 };
-pub(crate) use world::{TextLayoutState, advance_text_reveal};
+pub(crate) use world::{TextLayoutState, advance_text_reveal, clean_opacity};
 
 #[cfg(test)]
 mod guard {

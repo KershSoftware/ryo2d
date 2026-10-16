@@ -96,6 +96,10 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   font changes (`TextLayoutState::key`; the anchor is in it too, since it
   places the bounds); `TextBounds` holds the block's size and its top-left
   offset from the position (unscaled).
+- `Text2d::opacity` fades the whole block when it is drawn
+  (`TextPlacement::opacity`, clamped by `clean_opacity`); it is not in the
+  layout key, so a fade never lays out again. A `Tween` alpha target drives
+  it (`systems/tween.rs`), as it drives a sprite's alpha.
 - Glyphs are emitted per camera (`only_camera`): raster glyphs are made at
   the size that camera sees (snapped to `raster_size_step`) and land on
   whole pixels when nothing is rotated; MSDF glyphs scale. Sorted with

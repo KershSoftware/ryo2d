@@ -34,6 +34,11 @@ pub struct Text2d {
   pub lit: bool,
   pub z_order: i32,
   pub blend: BlendMode,
+  /// Fades the whole text, 0 (clear) to 1, when it is drawn: not part of
+  /// the layout, so changing it every frame lays nothing out again. A
+  /// `Tween` alpha target (`Tween::fade_out`, `to_alpha`) drives it.
+  /// Clamped when drawn; a non-numeric value is opaque.
+  pub opacity: f32,
 }
 
 impl Text2d {
@@ -46,6 +51,7 @@ impl Text2d {
       lit: false,
       z_order: 0,
       blend: BlendMode::Alpha,
+      opacity: 1.0,
     }
   }
 
@@ -80,9 +86,25 @@ impl Text2d {
     self
   }
 
+  /// Fade the whole text, 0 (clear) to 1; clamped, and a non-numeric value
+  /// is opaque
+  pub fn with_opacity(mut self, opacity: f32) -> Self {
+    self.opacity = clean_opacity(opacity);
+    self
+  }
+
   /// Replace the text (a reveal on the entity starts over)
   pub fn set_text(&mut self, text: impl Into<RichText>) {
     self.text = text.into();
+  }
+}
+
+/// An opacity in 0..=1, opaque when it is not a number
+pub(crate) fn clean_opacity(opacity: f32) -> f32 {
+  if opacity.is_finite() {
+    opacity.clamp(0.0, 1.0)
+  } else {
+    1.0
   }
 }
 
@@ -220,6 +242,22 @@ pub(crate) fn advance_text_reveal(
   }
 }
 
+#[cfg(test)]
+mod opacity_tests {
+  use super::*;
+
+  #[test]
+  fn text_opacity_is_clamped_and_a_non_number_is_opaque() {
+    let opacity = |value: f32| Text2d::new("a").with_opacity(value).opacity;
+    assert_eq!(Text2d::new("a").opacity, 1.0);
+    assert_eq!(opacity(0.25), 0.25);
+    assert_eq!(opacity(2.0), 1.0);
+    assert_eq!(opacity(-1.0), 0.0);
+    assert_eq!(opacity(f32::NAN), 1.0);
+    assert_eq!(opacity(f32::INFINITY), 1.0);
+  }
+}
+
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
   use super::*;
@@ -264,5 +302,21 @@ mod tests {
       after > before + 5.0,
       "monospace i is wider: {before} then {after}"
     );
+  }
+
+  #[test]
+  fn a_new_opacity_keeps_the_layout() {
+    let mut world = World::new();
+    world.insert_resource(Fonts::with_builtins());
+    let mut engine = TextEngine::new();
+    let e = world
+      .spawn((Transform::default(), Text2d::new("Fading")))
+      .id();
+    crate::core::render::text::layout_world_text(&mut world, &mut engine);
+    let before = Arc::clone(&world.get::<TextLayoutState>(e).unwrap().layout);
+    world.get_mut::<Text2d>(e).unwrap().opacity = 0.3;
+    crate::core::render::text::layout_world_text(&mut world, &mut engine);
+    let after = &world.get::<TextLayoutState>(e).unwrap().layout;
+    assert!(Arc::ptr_eq(&before, after), "no relayout for an opacity");
   }
 }

@@ -122,7 +122,8 @@ const UI_SCALES: [Option<f32>; 5] = [None, Some(1.0), Some(1.5), Some(2.0), Some
 const UI_SCALE_NAMES: [&str; 5] = ["Auto", "1", "1.5", "2", "3"];
 const WEIGHTS: [f32; 2] = [400.0, 700.0];
 const SIZES: [f32; 7] = [10.0, 12.0, 14.0, 18.0, 24.0, 32.0, 48.0];
-const SENTENCE: &str = "Sharp text at every size";
+/// Short enough that its 48 px row stays left of the panel in every font
+const SENTENCE: &str = "Sharp, any size";
 const PANGRAM: &str = "The quick brown fox jumps over the lazy dog";
 
 #[derive(Default)]
@@ -140,7 +141,7 @@ impl DemoPage for FontsPage {
   }
   fn description(&self) -> &str {
     "The built-in fonts at real pixel sizes; the UI scale makes the whole UI bigger, and text stays sharp at any display scale.\n\
-     m5x7 is a pixel font designed at 16 px: draw it at 16, 32 or 48 px so every pixel is whole."
+     Pixel fonts snap to whole multiples of their design size: m5x7 (16 px) draws 10 to 18 px at 16, and 24 px at 32."
   }
   fn settings(&mut self, s: &mut Settings) {
     s.choice("Font", &mut self.font, &ROLE_NAMES);
@@ -172,7 +173,13 @@ impl DemoPage for FontsPage {
         .style(&label)
         .at(area.x, y + (line - label_h) / 2.0)
         .draw();
-      ui.text(SENTENCE).style(&style).at(area.x + 44.0, y).draw();
+      ui.text(SENTENCE)
+        .style(&style)
+        .at(area.x + 44.0, y)
+        .wrap(RIGHT_EDGE - area.x - 44.0)
+        .max_lines(1)
+        .ellipsis()
+        .draw();
       y += line;
     }
 
@@ -560,20 +567,9 @@ const MSDF: FontRender = FontRender::Msdf {
 };
 /// The world point that stays put on screen while zooming
 const FOCUS: Vec2 = Vec2::new(260.0, 440.0);
-/// Seconds a damage number rises and fades
-const DAMAGE_LIFE: f32 = 0.8;
-
-/// A damage number's fade: `[expire=born]`, `born` the game time it was
-/// spawned. World text has no opacity for a tween to fade, and an effect
-/// must be pure, so its start rides in the tag's value.
-fn expire(glyph: &GlyphContext) -> GlyphMod {
-  let born = glyph.args.parse::<f32>().unwrap_or(glyph.time);
-  let t = ((glyph.time - born) / DAMAGE_LIFE).clamp(0.0, 1.0);
-  GlyphMod {
-    alpha: 1.0 - t * t,
-    ..GlyphMod::default()
-  }
-}
+/// Seconds a damage number pops up, then seconds it drifts and fades out
+const DAMAGE_RISE: f32 = 0.35;
+const DAMAGE_FADE: f32 = 0.45;
 
 struct WorldPage {
   zoom: usize,
@@ -641,7 +637,6 @@ impl WorldPage {
     };
     let value = 5 + (noise(i) * 120.0) as u32;
     let critical = value > 100;
-    let born = ctx.time.game.elapsed();
     let style = TextStyle::new()
       .bold()
       .size(if critical { 24.0 } else { 18.0 })
@@ -652,17 +647,23 @@ impl WorldPage {
       })
       .outline(2.0, Color::rgb(150, 20, 40));
     let text = if critical {
-      format!("[expire={born:.3}]{value}![/expire]")
+      format!("{value}!")
     } else {
-      format!("[expire={born:.3}]{value}[/expire]")
+      value.to_string()
     };
     let start = at + Vec2::new((noise(i + 5) - 0.5) * 20.0, -12.0);
+    // It pops up 30 units, then drifts 10 more while its opacity goes to
+    // zero: a tween's alpha target fades a Text2d without laying it out again
     let number = ctx
       .world
       .spawn((
         Transform::from_translation(start),
-        Text2d::markup(&text).with_style(style).with_z(10),
-        Tween::to_position(start.x, start.y - 40.0, DAMAGE_LIFE).with_easing(Ease::OutCubic),
+        Text2d::new(text).with_style(style).with_z(10),
+        TweenSequence::new()
+          .then(
+            Tween::to_position(start.x, start.y - 30.0, DAMAGE_RISE).with_easing(Ease::OutCubic),
+          )
+          .then(Tween::to_position(start.x, start.y - 40.0, DAMAGE_FADE).to_alpha(0.0)),
       ))
       .id();
     self.numbers.push(number);
@@ -694,10 +695,9 @@ impl DemoPage for WorldPage {
   }
   fn enter(&mut self, ctx: &mut SceneContext) {
     self.home = ctx.camera().position();
-    ctx
-      .world
-      .resource_mut::<TextEffects>()
-      .register("expire", expire);
+    self.walkers.clear();
+    self.tags.clear();
+    self.numbers.clear();
     let mut dot = Canvas::new(32, 32);
     dot.rounded(16.0, |_| Some(Color::WHITE));
     let dot = dot.into_handle("walker");

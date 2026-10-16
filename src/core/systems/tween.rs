@@ -3,60 +3,90 @@
 use glam::Vec2;
 
 use crate::core::ecs::{
-  Entity, Lerp, MessageWriter, PropertyTween, Query, Renderable, Res, Transform, Tween,
+  Entity, Lerp, MessageWriter, Mut, PropertyTween, Query, Renderable, Res, Transform, Tween,
   TweenSequence, Without,
 };
 use crate::core::messages::{TweenCompleted, TweenStarted};
+use crate::core::text::Text2d;
 use crate::core::time::Time;
 use crate::core::ui::Color;
 
+/// A tweened entity with a `Transform`: its tween (`T`), where it is, and
+/// what the alpha and tint targets write
+type Placed<T> = (
+  Entity,
+  &'static mut T,
+  &'static mut Transform,
+  Option<&'static mut Renderable>,
+  Option<&'static mut Text2d>,
+);
+
+/// A tweened entity without a `Transform`
+type Unplaced<T> = (
+  Entity,
+  &'static mut T,
+  Option<&'static mut Renderable>,
+  Option<&'static mut Text2d>,
+);
+
 /// Advance every playing `Tween` by one fixed step, writing its `Transform`
-/// and `Renderable` targets. A tween on an entity without a `Transform`
-/// still runs its alpha and tint targets.
+/// and `Renderable` targets, and its alpha target to a `Text2d`'s opacity.
+/// A tween on an entity without a `Transform` still runs its alpha and tint
+/// targets.
 pub fn update_tweens(
   time: Res<Time>,
-  mut placed: Query<(Entity, &mut Tween, &mut Transform, Option<&mut Renderable>)>,
-  mut unplaced: Query<(Entity, &mut Tween, Option<&mut Renderable>), Without<Transform>>,
+  mut placed: Query<Placed<Tween>>,
+  mut unplaced: Query<Unplaced<Tween>, Without<Transform>>,
   mut started: MessageWriter<TweenStarted>,
   mut completed: MessageWriter<TweenCompleted>,
 ) {
   let dt = time.fixed.timestep();
-  for (entity, mut tween, mut transform, renderable) in &mut placed {
+  for (entity, mut tween, mut transform, renderable, text) in &mut placed {
     if !tween.playing {
       continue;
     }
     // Touch the Transform only when the tween moves it, so change detection
     // (and propagation) does not see every colour tween
     let transform = tween.has_transform_targets().then_some(&mut *transform);
-    drive_tween(
-      &mut tween,
-      dt,
-      transform,
-      renderable.map(|r| r.into_inner()),
-    );
+    drive_tween(&mut tween, dt, transform, Looks::new(renderable, text));
     report(entity, &tween, &mut started, &mut completed);
   }
-  for (entity, mut tween, renderable) in &mut unplaced {
+  for (entity, mut tween, renderable, text) in &mut unplaced {
     if !tween.playing {
       continue;
     }
-    drive_tween(&mut tween, dt, None, renderable.map(|r| r.into_inner()));
+    drive_tween(&mut tween, dt, None, Looks::new(renderable, text));
     report(entity, &tween, &mut started, &mut completed);
   }
 }
 
+/// What a tween's alpha and tint targets write: a sprite's alpha and tint,
+/// and a `Text2d`'s opacity (not in its layout, so fading lays nothing out)
+struct Looks<'a> {
+  renderable: Option<&'a mut Renderable>,
+  text: Option<Mut<'a, Text2d>>,
+}
+
+impl<'a> Looks<'a> {
+  fn new(renderable: Option<Mut<'a, Renderable>>, text: Option<Mut<'a, Text2d>>) -> Self {
+    Self {
+      renderable: renderable.map(Mut::into_inner),
+      text,
+    }
+  }
+}
+
 /// One step of a tween: capture the colour start, advance, write colour.
-fn drive_tween(
-  tween: &mut Tween,
-  dt: f32,
-  transform: Option<&mut Transform>,
-  renderable: Option<&mut Renderable>,
-) {
-  if tween.has_color_targets()
-    && !tween.has_started()
-    && let Some(renderable) = renderable.as_deref()
-  {
-    tween.capture_start_renderable(renderable.alpha, renderable.tint);
+/// The text is written only while the tween has an alpha target, so other
+/// tweens leave its change detection alone.
+fn drive_tween(tween: &mut Tween, dt: f32, transform: Option<&mut Transform>, looks: Looks<'_>) {
+  let Looks { renderable, text } = looks;
+  if tween.has_color_targets() && !tween.has_started() {
+    if let Some(renderable) = renderable.as_deref() {
+      tween.capture_start_renderable(renderable.alpha, renderable.tint);
+    } else if let Some(text) = text.as_deref() {
+      tween.capture_start_renderable(text.opacity, Color::WHITE);
+    }
   }
   match transform {
     Some(transform) => tween.update(dt, transform),
@@ -64,6 +94,11 @@ fn drive_tween(
   }
   if let Some(renderable) = renderable {
     tween.apply_color(renderable);
+  }
+  if let Some(mut text) = text
+    && let Some(alpha) = tween.current_alpha()
+  {
+    text.opacity = alpha;
   }
 }
 
@@ -88,35 +123,30 @@ fn report(
 /// when one finishes.
 pub fn update_tween_sequences(
   time: Res<Time>,
-  mut placed: Query<(
-    Entity,
-    &mut TweenSequence,
-    &mut Transform,
-    Option<&mut Renderable>,
-  )>,
-  mut unplaced: Query<(Entity, &mut TweenSequence, Option<&mut Renderable>), Without<Transform>>,
+  mut placed: Query<Placed<TweenSequence>>,
+  mut unplaced: Query<Unplaced<TweenSequence>, Without<Transform>>,
   mut started: MessageWriter<TweenStarted>,
   mut completed: MessageWriter<TweenCompleted>,
 ) {
   let dt = time.fixed.timestep();
-  for (entity, mut sequence, mut transform, renderable) in &mut placed {
+  for (entity, mut sequence, mut transform, renderable, text) in &mut placed {
     drive_sequence(
       entity,
       &mut sequence,
       dt,
       Some(&mut *transform),
-      renderable.map(|r| r.into_inner()),
+      Looks::new(renderable, text),
       &mut started,
       &mut completed,
     );
   }
-  for (entity, mut sequence, renderable) in &mut unplaced {
+  for (entity, mut sequence, renderable, text) in &mut unplaced {
     drive_sequence(
       entity,
       &mut sequence,
       dt,
       None,
-      renderable.map(|r| r.into_inner()),
+      Looks::new(renderable, text),
       &mut started,
       &mut completed,
     );
@@ -128,7 +158,7 @@ fn drive_sequence(
   sequence: &mut TweenSequence,
   dt: f32,
   transform: Option<&mut Transform>,
-  renderable: Option<&mut Renderable>,
+  looks: Looks<'_>,
   started: &mut MessageWriter<TweenStarted>,
   completed: &mut MessageWriter<TweenCompleted>,
 ) {
@@ -145,7 +175,7 @@ fn drive_sequence(
     return;
   };
   let transform = transform.filter(|_| tween.has_transform_targets());
-  drive_tween(tween, dt * speed, transform, renderable);
+  drive_tween(tween, dt * speed, transform, looks);
   let sequence_started = at_start && tween.just_started;
   let tween_finished = tween.just_finished;
   if tween_finished {
@@ -233,6 +263,29 @@ mod tests {
       Sprite::solid_rect(4, 4, 255, 255, 255, 255),
       "white",
     ))
+  }
+
+  #[test]
+  fn a_fading_tween_fades_world_text_to_nothing() {
+    use crate::core::text::Text2d;
+    let mut world = world(60);
+    let entity = world
+      .spawn((
+        Transform::IDENTITY,
+        Text2d::new("12").with_opacity(0.8),
+        Tween::to_position(0.0, -40.0, 0.5).to_alpha(0.0),
+      ))
+      .id();
+    all(&mut world);
+    let early = world.get::<Text2d>(entity).unwrap().opacity;
+    assert!(
+      early < 0.8 && early > 0.7,
+      "starts from its own 0.8: {early}"
+    );
+    for _ in 0..40 {
+      all(&mut world);
+    }
+    assert_eq!(world.get::<Text2d>(entity).unwrap().opacity, 0.0);
   }
 
   #[test]

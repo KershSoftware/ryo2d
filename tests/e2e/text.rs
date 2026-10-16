@@ -325,6 +325,34 @@ fn pixel_hello_ink(size: f32) -> Option<[u32; 4]> {
   ink(&frame, |p| p.0[0] >= 245)
 }
 
+/// The brightest red value of white "HH" world text at `opacity`
+fn brightest_at(opacity: f32) -> Option<u8> {
+  let frame = frame_of(
+    (96, 64),
+    |b| b,
+    move |ctx| {
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Text2d::new("HH")
+          .with_style(TextStyle::new().size(24.0).color(Color::WHITE))
+          .with_opacity(opacity),
+      ));
+    },
+  )?;
+  frame.pixels().map(|p| p.0[0]).max()
+}
+
+#[test]
+fn text_opacity_scales_the_drawn_alpha() {
+  let (Some(full), Some(half)) = (brightest_at(1.0), brightest_at(0.5)) else {
+    return;
+  };
+  assert_eq!(full, 255);
+  // Half coverage of white over black is 0.5 in linear light, 188 in sRGB
+  assert!((180..=196).contains(&half), "half opacity: {half}");
+  assert_eq!(brightest_at(0.0), Some(0), "fully clear draws nothing");
+}
+
 #[test]
 fn a_pixel_font_between_sizes_draws_at_its_snapped_size() {
   let (Some(at_16), Some(at_12)) = (pixel_hello_ink(16.0), pixel_hello_ink(12.0)) else {

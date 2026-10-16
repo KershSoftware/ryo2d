@@ -28,8 +28,8 @@ use crate::core::render::{
 use crate::core::text::{
   BitmapFace, FaceSource, FontRender, Fonts, GlyphContext, GlyphFormat, GlyphKey, GlyphMod,
   GlyphRasterizer, GlyphStyle, Icon, PlacedGlyph, PlacedIcon, Text2d, TextBounds, TextEffects,
-  TextEngine, TextIcons, TextLayout, TextLayoutState, TextReveal, glyph_id, raster_size_step,
-  reveal_alpha,
+  TextEngine, TextIcons, TextLayout, TextLayoutState, TextReveal, clean_opacity, glyph_id,
+  raster_size_step, reveal_alpha,
 };
 use crate::core::ui::{Color, Rect};
 use crate::engine_warn;
@@ -1093,7 +1093,7 @@ pub(crate) fn emit_world_text(
         time: frame.game_time,
         reveal,
         seed: entity.to_bits(),
-        opacity: 1.0,
+        opacity: clean_opacity(text.opacity),
       };
       emit_text(&sources, targets, layout, &place);
     }

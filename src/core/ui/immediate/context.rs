@@ -24,6 +24,7 @@
 
 use std::cell::{RefCell, RefMut};
 use std::hash::{DefaultHasher, Hasher};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec2;
@@ -36,7 +37,8 @@ use super::input::UiInput;
 use crate::core::asset::SpriteHandle;
 use crate::core::render::UiSpace;
 use crate::core::text::{
-  RichText, TextAlign, TextEngine, TextLayoutOptions, TextOverflow, TextReveal, TextStyle,
+  RichText, TextAlign, TextEngine, TextLayout, TextLayoutOptions, TextOverflow, TextReveal,
+  TextStyle,
 };
 use crate::core::ui::retained::{DropdownState, Focusable, ScrollViewState, TextInputState};
 use crate::core::ui::theme::Theme;
@@ -215,25 +217,27 @@ impl<'u> UiText<'u, '_> {
       typewriter,
     } = self;
     let scale = ui.space.px_scale;
-    let layout = ui
+    // Text that cannot be laid out records nothing and advances no reveal
+    let Some(layout) = ui
       .engine()
-      .and_then(|mut engine| engine.layout(&text, &style, &options, scale));
-    let size = layout.as_ref().map_or(Vec2::ZERO, |laid| laid.size / scale);
+      .and_then(|mut engine| engine.layout(&text, &style, &options, scale))
+    else {
+      return Vec2::ZERO;
+    };
     let reveal = match typewriter {
       Some(reveal) => {
         // Checked first, as world text does: a settled reveal stays put
-        if let Some(layout) = &layout
-          && !reveal.settled()
-        {
-          reveal.advance(ui.dt, layout);
+        if !reveal.settled() {
+          reveal.advance(ui.dt, &layout);
         }
         Some(reveal.drawn())
       }
       None => shown.map(|shown| (shown, fade)),
     };
+    let size = layout.size / scale;
     let origin = at - options.anchor.fraction() * size;
-    ui.record_text(&text, &style, &options, origin, opacity, reveal)
-      .unwrap_or(Vec2::ZERO)
+    let seed = text_seed(&text, &style, &options);
+    ui.record_layout(layout, origin, opacity, reveal, seed)
   }
 }
 
@@ -782,20 +786,34 @@ impl<'a> UiContext<'a> {
   ) -> Option<Vec2> {
     let scale = self.space.px_scale;
     let layout = self.engine()?.layout(text, style, options, scale)?;
-    let size = layout.size / scale;
+    let seed = text_seed(text, style, options);
+    Some(self.record_layout(layout, origin, opacity, reveal, seed))
+  }
+
+  /// Record laid-out text with its top-left at `origin`; its size in UI
+  /// units. Text wholly outside the clip is not recorded.
+  fn record_layout(
+    &mut self,
+    layout: Arc<TextLayout>,
+    origin: Vec2,
+    opacity: f32,
+    reveal: Option<(f32, f32)>,
+    seed: u64,
+  ) -> Vec2 {
+    let size = layout.size / self.space.px_scale;
     if !origin.is_finite() || self.outside_clip(Rect::new(origin.x, origin.y, size.x, size.y)) {
-      return Some(size);
+      return size;
     }
     self.commands.push(UiCommand::Text {
       layout,
       origin,
       reveal,
       opacity,
-      seed: text_seed(text, style, options),
+      seed,
       clip: self.current_clip,
       layer: self.layer,
     });
-    Some(size)
+    size
   }
 
   /// Draw text with its top-left at (x, y), in the default UI style
@@ -4078,5 +4096,79 @@ mod tests {
     let recorded = typewriter_frame(&mut text, "Hello there", &mut reveal, 0.15);
     assert!((reveal.shown() - 2.5).abs() < 1e-4, "{}", reveal.shown());
     assert_eq!(recorded, Some((reveal.shown(), 0.0)));
+  }
+
+  #[test]
+  fn a_ui_typewriter_wins_over_reveal_and_fade() {
+    let mut text = text_engine();
+    let mut reveal = TextReveal::new(10.0);
+    let mut commands = UiCommands::default();
+    let mut ui = context(&mut commands, &mut text);
+    ui.set_dt(0.2);
+    ui.text("Hello")
+      .reveal(4.0)
+      .fade(3.0)
+      .typewriter(&mut reveal)
+      .draw();
+    ui.text("Hello")
+      .typewriter(&mut reveal)
+      .reveal(4.0)
+      .fade(3.0)
+      .draw();
+    drop(ui);
+    let recorded: Vec<Option<(f32, f32)>> = commands
+      .iter()
+      .filter_map(|c| match c {
+        UiCommand::Text { reveal, .. } => Some(*reveal),
+        _ => None,
+      })
+      .collect();
+    // Two 0.2 s draws of the same reveal: 2 then 4 clusters, no fade
+    assert_eq!(recorded, vec![Some((2.0, 0.0)), Some((4.0, 0.0))]);
+  }
+
+  #[test]
+  fn a_settled_ui_typewriter_stays_put() {
+    let mut text = text_engine();
+    let mut reveal = TextReveal::new(20.0).with_fade(0.15);
+    for _ in 0..100 {
+      typewriter_frame(&mut text, "Hi there", &mut reveal, 0.05);
+    }
+    let settled = (reveal.shown(), reveal.drawn_clusters());
+    for _ in 0..10 {
+      let recorded = typewriter_frame(&mut text, "Hi there", &mut reveal, 0.5);
+      assert_eq!(recorded, Some((settled.1, 3.0)));
+    }
+    assert_eq!((reveal.shown(), reveal.drawn_clusters()), settled);
+  }
+
+  #[test]
+  fn a_ui_typewriter_waits_out_a_leading_pause() {
+    let mut text = text_engine();
+    let mut reveal = TextReveal::new(10.0);
+    let line = "[pause=0.5]ab";
+    assert_eq!(
+      typewriter_frame(&mut text, line, &mut reveal, 0.3),
+      Some((0.0, 0.0))
+    );
+    let (shown, _) = typewriter_frame(&mut text, line, &mut reveal, 0.3).unwrap();
+    assert!(
+      (shown - 1.0).abs() < 1e-4,
+      "0.2 s of pause, then a: {shown}"
+    );
+  }
+
+  #[test]
+  fn a_ui_typewriter_on_text_that_cannot_be_laid_out_records_nothing() {
+    let mut text = text_engine();
+    let mut reveal = TextReveal::new(10.0);
+    let mut commands = UiCommands::default();
+    let mut ui = context(&mut commands, &mut text);
+    ui.set_dt(0.5);
+    let size = ui.text("Hello").size(0.0).typewriter(&mut reveal).draw();
+    drop(ui);
+    assert_eq!(size, Vec2::ZERO);
+    assert_eq!(commands.iter().count(), 0, "nothing recorded");
+    assert_eq!(reveal.shown(), 0.0, "and the reveal is left alone");
   }
 }
