@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.1.0
+  version: 2.2.0
 ---
 
 # Ryo2D API Reference
@@ -15,7 +15,7 @@ Conventions: 2D with +Y down, units are pixels, rotation is radians unless a nam
 use ryo2d::prelude::*;
 ```
 
-Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Sprites](#sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
+Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Sprites](#sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [Text](#text) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
 
 ---
 
@@ -213,7 +213,7 @@ Shadows (all `Default`, builder style):
 
 Tweens and squash and stretch run in `FixedSet::Juice` (before `Scene::update`), knockback in `FixedSet::Movement` (after it, before physics); all on the fixed step, reporting through [messages](#messages).
 
-### Tween (component, Transform plus Renderable alpha/tint)
+### Tween (component, Transform plus Renderable or Text2d alpha/tint)
 
 ```rust
 pub struct Tween {
@@ -233,6 +233,7 @@ pub struct Tween {
 | `pause`, `resume`, `stop`, `restart`, `set_speed`, `is_finished`, `progress`, `has_started`, `current_alpha`, `current_tint`, `has_transform_targets`, `has_color_targets` | control |
 | `update(&mut self, dt, &mut Transform)`, `update_without_transform(dt)`, `apply_color(&mut Renderable)`, `capture_start_renderable(alpha, tint)` | what the engine calls |
 
+- The alpha target (`to_alpha`, `fade_to`, `fade_out`, `fade_in`) fades a `Renderable`'s alpha, or a `Text2d`'s `opacity` (not part of its layout, so a fade never lays text out again). The tint target applies to `Renderable` only.
 - `enum TweenLoop { Once, Loop, PingPong, Times(u32) }`.
 - `enum Ease { Linear, In/Out/InOut × Quad, Cubic, Quart, Sine, Expo, Back, Elastic, Bounce }` (e.g. `Ease::OutBack`); `apply(&self, t) -> f32`.
 - `TweenSequence { pub playing, pub just_finished, pub loop_sequence, pub speed }`: `new()`, `then(Tween)`, `then_all(iter)`, `with_loop()`, `with_speed(f32)`, `set_speed`, `current()`, `current_mut()`, `current_index()`, `len()`, `is_empty()`, `is_finished()`, `pause`, `resume`, `stop`, `restart`, `advance`. Engine-driven.
@@ -402,6 +403,7 @@ pub struct SceneContext<'a> {
 | `look(&mut self) -> Mut<'_, Look>` | exposure, tonemap curve, colour grading (see [The look](#the-look)) |
 | `tilemaps(&mut self) -> Mut<'_, TilemapManager>` | |
 | `render_pipeline(&mut self) -> Mut<'_, RenderPipeline>` | toggle or insert passes (persist across scenes) |
+| `fonts(&mut self) -> Mut<'_, Fonts>` | add fonts, pick render modes and role fonts (see [Text](#text)) |
 | `debug_draw(&mut self) -> Mut<'_, DebugDraw>` | debug lines and shapes over the world (see [Debug drawing](#debug-drawing)) |
 | `camera(&mut self) -> CameraMut<'_>` | the main camera (respawned over the design area if the game despawned it) |
 | `render_targets(&mut self) -> Mut<'_, RenderTargets>` | textures cameras render into and sprites show |
@@ -411,7 +413,7 @@ pub struct SceneContext<'a> {
 | `skip_interpolation(&mut self, entity: Entity)` | |
 | `screen_size() -> (f32, f32)`, `screen_width()`, `screen_height()` | screen space: the window in logical pixels, or the pixel-art target |
 | `scale_factor() -> f64`, `display_mode() -> DisplayMode` | from `WindowInfo` |
-| `request_display_mode(DisplayMode)`, `request_resolution(w, h)`, `request_display_change(w, h, DisplayMode)`, `request_ui_scale(Option<u32>)` | window changes |
+| `request_display_mode(DisplayMode)`, `request_resolution(w, h)`, `request_display_change(w, h, DisplayMode)`, `request_ui_scale(Option<f32>)` | window changes; the UI scale is render pixels per UI unit, `None` for automatic |
 | `set_cursor(CursorStyle)`, `set_cursor_visible(bool)`, `show_cursor()`, `hide_cursor()`, `set_cursor_confined(bool)`, `set_cursor_locked(bool)`, `set_custom_cursor(&SpriteHandle, hot_x: u16, hot_y: u16)`, `set_custom_cursor_centered(&SpriteHandle)` | cursor |
 
 Helpers that return `Mut<..>` borrow the context: chain one call (`ctx.effects().set_bloom(0.6)`) or bind `let mut fx = ctx.effects();` for several.
@@ -491,7 +493,7 @@ EngineBuilder::new()
 | `target_fps(u32)` | cap when vsync is off |
 | `vsync(bool)` | default `true` |
 | `background_fps(u32)`, `background_rendering(bool)` | unfocused behaviour |
-| `pixel_art(w: u32, h: u32)`, `window_size(w: u32, h: u32)`, `resizable(bool)`, `display_mode(DisplayMode)`, `ui_scale(Option<u32>)` | presentation |
+| `pixel_art(w: u32, h: u32)`, `window_size(w: u32, h: u32)`, `resizable(bool)`, `display_mode(DisplayMode)`, `ui_scale(Option<f32>)`, `ui_resolution(UiResolution)` | presentation; `ui_scale(None)` (default) keeps UI units equal to screen units, `Some(s)` is `s` render pixels per UI unit; `UiResolution::Render` (default) or `Window` |
 | `show_colliders(bool)`, `show_fps(bool)`, `show_velocities(bool)`, `show_origins(bool)` | debug overlays |
 | `with_user_preferences(impl Into<UserPreferenceFilter>)` | let saved `system.json` values override |
 | `insert_resource(impl Resource)` | resource for every scene and system |
@@ -851,7 +853,7 @@ ctx.look().tonemap = Tonemap::Aces;
 
 ## Window and cursor
 
-- `WindowRequest { width, height, display_mode, ui_scale: Option<..> }` (resource, `ctx.window()`): `new()`, `with_resolution(w, h)`, `with_display_mode(DisplayMode)`, `has_changes()`, `clear()`. Prefer the `ctx.request_*` helpers.
+- `WindowRequest { width, height, display_mode, ui_scale: Option<Option<f32>> }` (resource, `ctx.window()`): `new()`, `with_resolution(w, h)`, `with_display_mode(DisplayMode)`, `has_changes()`, `clear()`. Prefer the `ctx.request_*` helpers.
 - `WindowInfo { scale_factor: f64, display_mode: DisplayMode }` (resource kept current by the engine).
 - `CursorRequest { cursor, custom_cursor, visible, confined, locked }` (resource, `ctx.cursor()`): `has_changes()`. Prefer the `ctx.set_cursor*` helpers.
 - `enum CursorStyle { Default, Text, Crosshair, Pointer, ResizeHorizontal, ResizeVertical, ResizeNeSw, ResizeNwSe, Move, NotAllowed, Grab, Grabbing, Wait, Progress, Help, Cell, ZoomIn, ZoomOut }`.
@@ -1025,6 +1027,66 @@ See `ryo-config-save`.
 
 ---
 
+## Text
+
+Fonts, styles, rich text, effects and world text. The guide is `ryo-text`.
+
+| `Fonts` (resource; `ctx.fonts()`) | |
+|---|---|
+| `new()`, `add_bytes(impl Into<Arc<[u8]>>) -> Result<FontId, FontError>`, `add_face(Arc<[u8]>, index: u32) -> Result<FontId, FontError>`, `load(impl AsRef<Path>) -> AssetResult<FontId>` | add fonts; `load` fails on the web (no file system), so embed with `add_bytes(include_bytes!(..))` there |
+| `add_bitmap(family: &str, SpriteHandle, cell: (u32, u32), chars: &str) -> Result<FontId, FontError>` | a grid of glyph cells on a sprite sheet (`chars` row-major) |
+| `find(&str) -> Option<FontId>` | the family's regular face (weight 400, upright) |
+| `find_face(family: &str, weight: f32, italic: bool) -> Option<FontId>` | the face nearest `weight` preferring the slant; on ties the face added first wins |
+| `family(FontId) -> Option<&str>`, `role(FontRole) -> Option<FontId>`, `set_role(FontRole, FontId)` | families and role fonts |
+| `set_render(FontId, FontRender)`, `render(FontId) -> FontRender` | how a font draws |
+| `prewarm(FontId, size: f32, chars: &str)`, `generation() -> u64` | build glyphs ahead (MSDF glyphs cost about 0.46 ms each); `generation` changes on every font change |
+
+- `FontId` (`Copy`, `Eq`, `Hash`, `Ord`). `enum FontRole { Ui (default), Mono, Pixel }`: Inter, JetBrains Mono, m5x7 (feature `default-fonts`, on by default).
+- `enum FontRender { Raster (default), Pixel { design_size: f32 }, Msdf { base: f32, range: f32 } }` (`#[non_exhaustive]`); `FontRender::pixel(design_size)`; `FontRender::msdf()` is base 32, range 4. Pixel sizes snap to whole multiples of the design size. MSDF effect reach is `range / 2` base pixels; MSDF fonts get no synthesized italic or bold.
+- `enum FontError { Invalid, NoFace(u32), EmptyBitmap }`.
+
+| `TextStyle` (`#[non_exhaustive]`) | |
+|---|---|
+| fields | `font: TextFont` (default `Role(Ui)`), `fallbacks: Vec<TextFont>`, `size: f32` (14.0), `weight: f32` (400.0), `italic: bool`, `color: Color` (white), `line_height: f32` (1.2), `letter_spacing: f32` (0.0), `outline: Option<Outline>`, `shadow: Option<Shadow>`, `glow: Option<Glow>` |
+| builders | `new()`, `font(TextFont)`, `role(FontRole)`, `family(impl Into<String>)`, `size(f32)`, `weight(f32)`, `bold()`, `italic()`, `color(Color)`, `line_height(f32)`, `letter_spacing(f32)`, `outline(width, Color)`, `shadow(offset: Vec2, Color, softness)`, `glow(radius, Color)`, `fallback(TextFont)` |
+
+- `enum TextFont { Role(FontRole), Family(String), Id(FontId) }`. `Outline { width, color }`, `Shadow { offset: Vec2, color, softness }`, `Glow { radius, color }`. Glow needs an MSDF font; shadow softness only applies to MSDF fonts.
+- `TextLayoutOptions` (`#[non_exhaustive]`, `Default`): fields `wrap: Option<f32>`, `align: TextAlign`, `max_lines: Option<u32>`, `overflow: TextOverflow`, `anchor: Anchor` (default `TopLeft`); builders `wrap(f32)`, `align(TextAlign)`, `max_lines(u32)`, `overflow(TextOverflow)`, `anchor(Anchor)`. `enum TextAlign { Start, Center, End, Justify }`, `enum TextOverflow { Clip, Ellipsis }`.
+
+| Rich text | |
+|---|---|
+| `RichText` | `new(impl Into<String>)`, `markup(&str)`, `plain(&str)`, `span(&str, Span)`, `icon(SpriteHandle)`, `icon_sized(SpriteHandle, Vec2)`, `icon_named(impl Into<String>)`, `pause(seconds)`, `as_str()`, `is_empty()`; `From<&str>` and `From<String>` (plain, no markup) |
+| `Span` (`#[non_exhaustive]`, `Default`) | fields `color`, `size`, `font`, `weight`, `italic`, `outline`, `effect` (all `Option`); constructors `new()`, `color(Color)`, `size(f32)`, `font(TextFont)`, `bold()`, `italic()`, `outline(width, Color)`, `effect(impl Into<String>)`; builders `with_color`, `with_size`, `with_font`, `with_weight`, `with_italic`, `with_outline`, `with_effect` |
+| `Icon` | `enum Icon { Sprite { sprite: SpriteHandle, size: Option<Vec2> }, Named { name: String, size: Option<Vec2> } }` |
+| `TextIcons` (resource) | `insert(name, SpriteHandle)`, `insert_region(name, SpriteHandle, Rect)`, `get(&str)`, `remove(&str)` (re-insert a name to swap an icon set) |
+| `TextEffects` (resource) | `register(name, Fn(&GlyphContext) -> GlyphMod + Send + Sync + 'static)` (a pure function of the context: it runs per glyph per pass per camera), `contains(&str)`; built in `wave`, `shake`, `rainbow` |
+| `GlyphContext` (`#[non_exhaustive]`) | `index: u32`, `cluster: u32`, `line: u32`, `time: f32` (real time in the UI, game time in the world), `size: f32`, `seed: u64`, `args: String` |
+| `GlyphMod` | `offset: Vec2`, `scale: f32`, `color: Option<Color>`, `alpha: f32`; `Default` is no change |
+
+- Markup tags: `[color=..]`, `[size=..]`, `[font=..]`, `[b]`, `[i]`, `[outline=width,color]`, `[icon=name]`, `[pause=seconds]`, `[[` for a bracket; any other tag is an effect (`[wave=3,2]`). Malformed markup is drawn as written and warned once.
+
+| World text | |
+|---|---|
+| `Text2d` (component, `#[non_exhaustive]`, requires `Transform` and `TextBounds`) | fields `text: RichText`, `style: TextStyle`, `layout: TextLayoutOptions` (anchor `Center`), `lit: bool` (false), `z_order: i32`, `blend: BlendMode`, `opacity: f32` (1.0; applied when drawn, not in the layout cache key) |
+| `Text2d` builders | `new(impl Into<RichText>)`, `markup(&str)`, `with_style(TextStyle)`, `with_layout(TextLayoutOptions)`, `with_lighting(bool)`, `with_z(i32)`, `with_blend(BlendMode)`, `with_opacity(f32)` (clamped 0 to 1, a non-number is opaque), `set_text(impl Into<RichText>)` |
+| `TextBounds` (component) | `size: Vec2`, `offset: Vec2` (the position to the block's top-left), updated when drawn |
+| `TextReveal` (component, `#[non_exhaustive]`) | fields `per_second`, `punctuation_pause`, `fade`; `new(per_second)`, `with_punctuation_pause(f32)`, `with_fade(f32)`, `restart()`, `is_done() -> bool`, `shown() -> f32`, `drawn_clusters() -> f32` (`shown` plus the run-on that lets a fade finish) |
+| `TextRevealed` (message) | `{ entity: Entity }`, written once when a world `TextReveal` has shown every character |
+
+`UiText` (from `ui.text(..)`, `#[must_use]`; end with `draw() -> Vec2`, the size in UI units):
+
+| | |
+|---|---|
+| `at(x, y)`, `style(&TextStyle)`, `size(f32)`, `color(Color)` | position (UI units) and style |
+| `wrap(width)`, `align(TextAlign)`, `max_lines(u32)`, `ellipsis()`, `anchor(Anchor)` | layout |
+| `reveal(shown: f32)`, `fade(clusters: f32)` | manual reveal: the first `shown` clusters, fading in over `clusters`; pass `TextReveal::drawn_clusters()` so a fade finishes |
+| `typewriter(&mut TextReveal)` | advances the reveal by the UI's real `dt` over this text's layout (`[pause]` and punctuation pauses hold it), once per frame per reveal; sends no message, check `is_done()`; call `restart()` on a new line |
+| `opacity(f32)` | fades the whole text, 0 to 1, without a relayout |
+
+Fade text through `opacity` (`UiText::opacity`, `Text2d::opacity`, a tween's alpha target), never through the style colour: colour is in the layout cache key.
+
+---
+
 ## UI
 
 Immediate-mode UI drawn in `Scene::ui` with `UiContext`; retained state structs hold widget state between frames. Full guide: `ryo-ui`.
@@ -1034,13 +1096,16 @@ Immediate-mode UI drawn in `Scene::ui` with `UiContext`; retained state structs 
 | `button(text, Rect) -> bool`, `button_styled(text, Rect, normal, hover, pressed, text_color) -> bool`, `label(text, x, y, Color, bg: Option<Color>)` | |
 | `slider(Rect, &mut f32, min, max) -> bool`, `checkbox(Rect, &mut bool, label: Option<&str>) -> bool`, `toggle(Rect, &mut bool) -> bool` | value widgets |
 | `text_input(&mut TextInputState, Rect, placeholder, dt) -> bool`, `dropdown(&mut DropdownState, Rect, &[&str]) -> bool`, `scroll_view(&mut ScrollViewState, Rect, content_height, dt, \|ui, scroll_y\| ..) -> bool`, `scroll_view_horizontal(..)` | stateful widgets |
-| `draw_text(text, x, y, Color)`, `draw_text_anchored(text, Anchor, ox, oy, Color)`, `draw_text_centered(text, Rect, Color)`, `draw_text_wrapped(..)`, `draw_text_wrapped_centered(..)`, `text_size(text)`, `wrap_text(..)` | text (bitmap font) |
-| `draw_rect(Rect, Color)`, `draw_rect_outline(Rect, Color, thickness)`, `draw_panel(Rect, bg, border: Option<Color>)`, `draw_themed_panel(Rect)`, `draw_progress_bar(Rect, progress, fill, bg)`, `draw_progress_bar_with_border(..)`, `draw_themed_progress_bar(Rect, progress)`, `draw_sprite(&Sprite, x, y)`, `draw_sprite_scaled(..)`, `draw_sprite_handle(&SpriteHandle, x, y)`, `draw_sprite_handle_scaled(..)`, `draw_modal_overlay(Color)`, `draw_focus_ring(..)`, `draw_focus_ring_themed(Rect)` | drawing |
+| `draw_text(&str, x, y, Color)`, `draw_text_styled(impl Into<RichText>, x, y, &TextStyle)`, `draw_text_anchored(&str, Anchor, ox, oy, Color)`, `draw_text_centered(&str, Rect, Color)`, `draw_text_wrapped(&str, x, y, max_width: u32, Color)`, `draw_text_wrapped_centered(&str, Rect, Color)` | text shorthand (default style: `FontRole::Ui`, 14 px; `draw_text*` carry the colour's alpha as opacity) |
+| `text(impl Into<RichText>) -> UiText` | text with every option (see [Text](#text)) |
+| `measure_text(impl Into<RichText>, &TextStyle) -> Vec2`, `line_height(&TextStyle) -> f32`, `text_size(&str) -> (u32, u32)`, `wrapped_text_size(&str, max_width: u32) -> (u32, u32)`, `wrap_text(&str, max_width: u32) -> Vec<String>`, `wrap_text_styled(&str, width: f32, &TextStyle) -> Vec<String>` | measuring and wrapping, in UI units |
+| `draw_rect(Rect, Color)`, `draw_rect_outline(Rect, Color, thickness)`, `draw_rounded_rect(Rect, radius, Color)`, `draw_rect_bordered(Rect, fill, radius, border_width, border_color)`, `draw_panel(Rect, bg, border: Option<Color>)`, `draw_themed_panel(Rect)`, `draw_progress_bar(Rect, progress, fill, bg)`, `draw_progress_bar_with_border(..)`, `draw_themed_progress_bar(Rect, progress)`, `draw_modal_overlay(Color)`, `draw_focus_ring(..)`, `draw_focus_ring_themed(Rect)` | shapes; rects are analytic (rounded, bordered, anti-aliased) |
+| `draw_sprite(&SpriteHandle, x, y)`, `draw_sprite_scaled(&SpriteHandle, x, y, scale)`, `draw_sprite_rect(&SpriteHandle, Rect, tint: Color)`, `draw_nine_slice(&SpriteHandle, Rect, insets: [f32; 4], tint: Color)` (insets `[left, top, right, bottom]` in texels), `draw_line(&[Vec2], width, Color)` | sprites (linear filtering in the default presentation) and polylines |
 | `is_clicked(Rect)`, `is_hovered(Rect)`, `is_held(Rect)` | hit tests |
 | `input() -> &UiInput`, `consume_key(KeyCode)`, `consume_click()`, `consume_escape()`, `consume_scroll()`, `click_consumed()`, `escape_consumed()`, `wants_keyboard()`, `set_mouse_occluded()` | input; consumption carries over to gameplay |
 | `push_clip(Rect)`, `pop_clip()`, `with_no_clip(f)`, `current_clip()`, `has_clip()`, `clip_depth()`, `clear_clips()`, `point_in_clip(x, y)` | clipping |
-| `handle_tab_navigation(&mut [&mut dyn Focusable])`, `handle_dropdown_tab_navigation(..)`, `finish_dropdowns()`, `any_dropdown_open()`, `focused_dropdown()`, `set_focused_dropdown(id)` | focus |
-| `dt()` (real time), `screen_size()`, `ui_scale()`, `theme()` | |
+| `handle_tab_navigation(&mut [&mut dyn Focusable])`, `handle_dropdown_tab_navigation(..)`, `any_dropdown_open()`, `focused_dropdown()`, `set_focused_dropdown(id)` | focus |
+| `dt()` (real time), `screen_size() -> (u32, u32)` (UI units), `ui_scale() -> f32` (render pixels per UI unit), `theme()` | |
 
 - `Color { r, g, b, a: u8 }`: `new(r, g, b, a)`, `rgb(r, g, b)`, `hex(0xRRGGBB | 0xRRGGBBAA)`, `with_alpha(a)`, `to_array()`, `to_normalized()`, `to_linear()` (sRGB decoded to linear light); constants `TRANSPARENT`, `BLACK`, `WHITE`, `RED`, `GREEN`, `BLUE`, `YELLOW`, `CYAN`, `MAGENTA`, `GRAY`, `DARK_GRAY`, `LIGHT_GRAY`, `HEALTH_RED`, `MANA_BLUE`, `STAMINA_GREEN`, `XP_GOLD`, `PANEL_BG`, `PANEL_BORDER`.
 - `Rect { x, y, width, height }`: `new(x, y, w, h)`, `from_pos_size`, `centered_at(cx, cy, w, h)`, `right()`, `bottom()`, `center()`, `contains(x, y)`, `shrink(p)`, `expand(p)`.
@@ -1049,7 +1114,8 @@ Immediate-mode UI drawn in `Scene::ui` with `UiContext`; retained state structs 
 - `UiInput`: the frame's input as the UI sees it (`mouse_position`, `mouse_pressed`, `key_pressed`, `key_repeat`, `text_input`, `gamepad_button_pressed`, `left_stick`, `consume_key`, `consume_mouse`, `consume_scroll`, ...).
 - UI tweens (driven by the owner with `update(ui.dt())`): `UiTween<T: Lerp>` with `new(start, end, duration)`, `with_ease(Ease)`, `with_delay`, `with_loop(UiTweenLoop)`, `on_start`, `on_complete`, `update(dt)`, `value()`, `progress()`, `is_finished()`, `is_playing()`, `restart`, `pause`, `resume`, `stop`, `retarget(target)`; aliases `TweenFloat`, `TweenVec2` (`(f32, f32)`), `TweenColor`, `TweenRect`; `enum UiTweenLoop { Once, Loop, PingPong, Times(u32) }`.
 - Themes: `Theme` (`new()`, `dark()`, `light()`, `load(path)`, `save(path)`), `HotReloadTheme` (`new(path)`, `poll_reload()`, `force_reload()`, `get()`, `set(Theme)`, `path()`), `ThemeError`.
-- Fonts: `BitmapFont` (`load(path, char_w, char_h)`, `from_rgba(..)`, `with_spacing`, `with_char_range`, `text_width`, ...), `create_debug_font() -> BitmapFont` (the built-in 8×8 font).
+- Open dropdown lists draw on the popup layer, flushed by the engine after each scene's `ui`; only the top scene's lists use it. There is no `finish_dropdowns` to call.
+- UI alpha blends in sRGB space (a 50% black panel over white is mid grey). Fonts are in [Text](#text).
 - `Anchor` is the same type as the sprite anchor.
 
 ---

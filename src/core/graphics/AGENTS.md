@@ -10,16 +10,17 @@ World (queried each frame):
   Scene::render(gpu) ─→ BatchCollector ──────────────┤
   ParallaxLayer ─→ laid out per camera ──────────────┼→ DrawList (z-sorted, world space)
   Trail2D / Line2D ─→ polylines (triangles) ─────────┤        │
+  Text2d ─→ glyph quads per camera (glyph pages) ────┤        │
   DebugDraw ─→ polylines per camera ─────────────────┘        │
 Cameras (Camera2d + CameraView) ─→ plan_cameras ──→ per camera: Batch2D draws (layers, bounds)
                                                      → its image → cameras pass → scene image
 UI:
-  Scene::ui(ui, ctx) ─→ UiContext ─→ UiCommands ─→ UI camera (batch) ─→ UI image ─→ composited last
+  Scene::ui(ui, ctx) ─→ UiContext ─→ UiCommands ─→ UI camera (batch; glyphs from the same pages) ─→ UI image ─→ composited last
 ```
 
-Everything draws on the GPU, the UI included: `UiContext` records commands, and the batch draws them through the UI camera into the compositor's UI image (`render/AGENTS.md`).
+Everything draws on the GPU, the UI included: `UiContext` records commands, and the batch draws them through the UI camera into the compositor's UI image (`render/AGENTS.md`). Text is laid out by the text module (`src/core/text/AGENTS.md`); this module keeps the glyph pages its bitmaps are placed in.
 
-**Draw order:** entities, `Scene::render` sprites (particles, parallax) and trails/lines sort together by `z_order`. Equal z: entity, then `render` sprite, then trail/line; within a kind, in submission order. Lighting, the transition fade, post-processing and the UI follow; the UI is composited last, untouched by effects. Parallax layers need a negative z to sit behind entities at z 0.
+**Draw order:** entities, world text, `Scene::render` sprites (particles, parallax) and trails/lines sort together by `z_order`. Equal z: entity, then world text, then `render` sprite, then trail/line; within a kind, in submission order. Lighting, the transition fade, post-processing and the UI follow; the UI is composited last, untouched by effects. Parallax layers need a negative z to sit behind entities at z 0.
 
 ## Resources
 

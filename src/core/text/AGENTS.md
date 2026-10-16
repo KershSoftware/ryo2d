@@ -33,9 +33,9 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 - Styled spans never overlap (`RichText` appends); Parley's brush is the
   span index, and `TextLayout::styles` resolves each to colour, outline,
   shadow, glow and effect.
-- Fallback: a style's font, its fallbacks, then the UI font, then the mono font. A character no
-  font has draws glyph 0 (the font's box) and is warned once per family and
-  character.
+- Fallback: a style's font, its fallbacks, then the UI font, then the mono font.
+  A character no font has draws glyph 0 (the font's box) and is warned once
+  per family and character.
 - Bitmap fonts (`Fonts::add_bitmap`) are laid out by a monospace grid
   layouter; a text uses bitmap or outline fonts, not both.
 - Clusters: each glyph and icon carries its character cluster in logical
@@ -81,8 +81,8 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 - Raster glyphs are hinted up to 48 px, unhinted above; pixel glyphs are
   thresholded to on/off; strokes are a band centred on the outline (drawn
   under the fill). MSDF glyphs are made once per glyph at the font's base
-  size (default 32 px, range 4 px) with error correction, about a third of
-  a millisecond each: `Fonts::prewarm` builds known text ahead.
+  size (default 32 px, range 4 px) with error correction, about half a
+  millisecond each: `Fonts::prewarm` builds known text ahead.
 - Glyphs above 1024 px are refused. Bitmap fonts have no glyph images:
   the renderer draws their cells from the sprite sheet.
 - One `GlyphRasterizer` serves one `Fonts`: swash caches parsed fonts
@@ -134,3 +134,14 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   rasterized again every frame; the set is cleared past 4096 keys.
 - Icon regions are inset half a texel on each side, so linear filtering
   never reads their neighbours on the sheet.
+
+## CpuText
+
+`CpuText` (`cpu.rs`) is the dev windows' text: monospace glyphs from the
+built-in mono font, rasterized by swash into the window's CPU pixel buffer and
+cached per character. The dev windows are separate OS windows with pixel
+buffers of their own, so it owns a `Fonts` and a `GlyphRasterizer` apart from
+the engine's registry. It never lays out or wraps: callers measure in
+characters. Without `default-fonts` there is no mono font and nothing is
+drawn (`CpuText::mono` is `None`). `src/core/windows/AGENTS.md` has the layout
+constants.

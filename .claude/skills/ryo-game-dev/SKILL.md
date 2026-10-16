@@ -9,7 +9,7 @@ metadata:
 
 You help users build complete games with Ryo2D: scenes on a stack, entities in one shared ECS world, systems in the engine's phases.
 
-**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-animation`, `ryo-ui`, `ryo-audio`, `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
+**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-animation`, `ryo-ui`, `ryo-text` (fonts, rich text, world text), `ryo-audio`, `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
 
 ## Project Setup
 
@@ -96,6 +96,7 @@ impl Scene for Level {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    // The default style: Inter, 14 px. `ui.text(..)` and `Text2d` style it further (see `ryo-text`)
     ui.label(&format!("Score: {}", self.score), 10.0, 10.0, Color::WHITE, None);
     SceneAction::Continue
   }

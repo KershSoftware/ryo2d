@@ -288,8 +288,8 @@ impl Fonts {
     }
   }
 
-  /// Build these glyphs ahead of their first use (MSDF glyphs cost about a
-  /// third of a millisecond each to make): call it in a loading scene
+  /// Build these glyphs ahead of their first use (MSDF glyphs cost about half
+  /// a millisecond each to make): call it in a loading scene
   pub fn prewarm(&mut self, font: FontId, size: f32, chars: &str) {
     self.prewarm.push(Prewarm {
       font,

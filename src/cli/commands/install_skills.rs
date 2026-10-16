@@ -131,6 +131,11 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
     include_str!("../skills/ryo-renderer.md"),
   ),
   (
+    "ryo-text",
+    "Text: fonts, styles, rich text and markup, inline icons, typewriter reveal and glyph effects, world text (Text2d) and the damage-number recipe.",
+    include_str!("../skills/ryo-text.md"),
+  ),
+  (
     "ryo-ui",
     "Build game UI in the Scene::ui hook with immediate-mode and retained-mode widgets including buttons, sliders, checkboxes, text inputs, dropdowns, scroll views, and layout containers, and consume the input the UI uses. Use when creating HUDs, menus, settings screens, or any in-game interface.",
     include_str!("../skills/ryo-ui.md"),

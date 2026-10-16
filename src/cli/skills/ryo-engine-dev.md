@@ -50,10 +50,12 @@ Engine::frame
 │   └─ Trails         trail point recording; later debug shapes last one frame
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
 ├─ PostUpdate         Transforms (propagation) → Camera (shake on real time, every CameraView)
-│                     → Extract (parallax auto-scroll, timed effects)
+│                     → Extract (parallax auto-scroll, timed effects, text reveals)
 ├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
 │                     the world into the draw list (world space, sorted once: sprites, entities,
-│                     trails and lines as polylines; parallax and debug shapes per camera),
+│                     trails and lines as polylines, world text; parallax and debug shapes per camera),
+│                     the UI: UI commands, then the UI camera through the batch, then the UI image,
+│                     then the composite,
 │                     plans the cameras, lays each camera's items into the 2D batch's draws
 │                     (Batch2D::prepare, uploaded once), runs the RenderPipeline:
 │                     per camera: clear → world → lighting → unlit_world (Rgba16Float, linear)
@@ -72,7 +74,7 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the text engine (layout cache) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (scene stack + Kira `Audio`), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
@@ -98,7 +100,8 @@ Engine::frame
 | `physics/` | Rapier integration, `RigidBody`, `Collider`, `Physics`, the character controller, one-way colliders, triggers, tile colliders |
 | `gameplay/` | On top of physics: `MoveIntent` and bindings, the platformer and top-down presets, knockback, trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, `Respawn`) |
 | `particles/`, `trail/`, `skeleton/`, `tilemap/`, `navigation/`, `state_machine/` | Feature modules |
-| `ui/` | Immediate-mode and retained UI, `UiContext` |
+| `text/` | Fonts (`Fonts`), `TextStyle`, rich text and markup, layout (Parley), glyph rasterization (swash, fdsm), effects, reveal, `Text2d` and `CpuText` for the dev windows; GPU-free |
+| `ui/` | Immediate-mode and retained UI, `UiContext`, the recorded UI commands |
 | `asset/` | `AssetManager`, async loads, hot reload |
 | `audio.rs` | Kira audio (`Audio`, `AudioManager`) |
 | `config/` | `Ryo.toml` workspace, user preferences (`system.json`), saves |
@@ -106,7 +109,7 @@ Engine::frame
 | `capture/` | Frame capture to PNG (`RYO_CAPTURE_*`) |
 | `testing/` | `HeadlessEngine`, `shared_gpu` |
 | `network/` | Client/server, replication, RPC (`ryo-network`) |
-| `windows/` | Dev tool windows (profiler, logger) |
+| `windows/` | Dev tool windows (profiler, logger); they draw `CpuText` (JetBrains Mono through the text module), with no hand-made font |
 | `window.rs`, `cursor.rs` | Window modes and requests, cursor requests |
 | `profiler.rs`, `dev_log.rs`, `error.rs` | Puffin macros, logging, error types |
 

@@ -9,9 +9,10 @@
 //! - Texture reuse caused write_texture ordering issues (sprite content overwritten by UI)
 //!
 //! CRITICAL INVARIANT (2024-02):
-//! The UI overlay is uploaded with write_texture into its own ui_texture; the
-//! game texture is written only by GPU commands. Sharing a texture between a
-//! write_texture upload and the frame's GPU commands causes visual corruption.
+//! The UI is drawn by the GPU into its own UI image (the `ui` pass), and the
+//! composite blends that image last; the game texture is written only by the
+//! world passes. Sharing one image between the world and the UI would let
+//! lighting and post-processing touch the UI, or the UI overwrite the world.
 
 use ryo2d::prelude::*;
 
@@ -563,19 +564,20 @@ fn multiple_lights_coexist() {
 // ============================================================================
 //
 // These tests document critical invariants about texture usage in the renderer.
-// The UI layer uses its own texture so its write_texture never races the GPU passes.
+// The UI layer has its own image, so lighting and post-processing never touch it.
 //
-// Background: wgpu's write_texture operations are NOT ordered with respect to
-// command buffer execution. If a write_texture targeted a texture the frame's
-// commands also draw into, it could land before or after those commands.
+// Background: the UI used to be drawn on the CPU and uploaded with
+// write_texture, which is NOT ordered with respect to command buffer
+// execution; sharing a texture with the frame's GPU commands corrupted it.
+// The UI is now drawn by the GPU, but it still has an image of its own.
 //
 // Render flow (the `default_2d` pipeline):
-// 1. UI content -> ui_texture (write_texture) - the only CPU upload per frame
-// 2. Clear game_texture
-// 3. `world`: entities, sprites, particles, trails -> game_texture (GPU)
-// 4. `lighting`: game_texture -> lit_texture
-// 5. `unlit_world`, `transition`, `post_process` on the latest image
-// 6. `composite`: latest image -> screen, then blend ui_texture -> screen
+// 1. Clear game_texture
+// 2. `world`: entities, sprites, particles, trails -> game_texture (GPU)
+// 3. `lighting`: game_texture -> lit_texture
+// 4. `unlit_world`, `transition`, `post_process` on the latest image
+// 5. `ui`: the UI camera's draws -> the UI image (GPU)
+// 6. `composite`: latest image -> screen, then blend the UI image -> screen
 
 /// REGRESSION: UI must use a dedicated image, not the game or lit texture
 ///
@@ -585,7 +587,7 @@ fn multiple_lights_coexist() {
 ///
 /// BUG FIXED: sprites invisible when lighting enabled (2024-02)
 /// ROOT CAUSE: UI and sprite content shared one texture
-/// FIX: Added dedicated ui_texture for UI overlay content
+/// FIX: Gave the UI overlay a dedicated image
 #[test]
 fn regression_ui_uses_dedicated_texture() {
   // This is a documentation test.

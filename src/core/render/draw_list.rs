@@ -18,7 +18,8 @@ use crate::core::graphics::{GlyphPage, RenderLayers, RenderTarget, SpriteInstanc
 pub(crate) enum DrawKind {
   /// An entity (with its shadows, tiles and composite parts) drawn on the GPU
   Entity,
-  /// Text and UI shapes: after the entities at equal z
+  /// World text: after the entities at equal z (UI items are `Sprite`, or
+  /// `Trail` for lines; each UI command has a z of its own)
   Text,
   /// A `Scene::render`, particle or parallax sprite
   Sprite,

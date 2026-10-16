@@ -1,10 +1,18 @@
 # AGENTS.md - Immediate Mode UI
 
+`UiContext` (`context.rs`) is what `Scene::ui` draws with. It draws nothing itself: every primitive records a `UiCommand` (`commands.rs`) that the engine's UI pass later lays into the 2D batch (`render/ui.rs`; the pass and the UI image are in `src/core/ui/AGENTS.md` and `src/core/render/AGENTS.md`). `input.rs` is the `UiInput` snapshot, `layout.rs` the `HBox`/`VBox`/`Stack` helpers.
+
+## Commands
+
+- `UiCommand` is `Rect` (fill, radius, border), `Sprite` (a sprite handle, a rect, UVs, a tint), `Line` (a polyline, width, colour) or `Text` (a cached `TextLayout`, origin, reveal, opacity, effect seed). All are in UI units, and each carries the clip it was drawn under and its draw layer.
+- Nine-slices are nine `Sprite` commands. Borders and rounded corners are the `Rect` command's, drawn analytically by the shader.
+- `UiCommands` is cleared at the start of each UI pass, so a pass that runs twice in a frame (a scene switch returned from `ui`) keeps only the second pass's commands.
+- Rects, sprites and text wholly outside the current clip are not recorded; so are non-finite or empty rects.
+
 ## Clipping Stack
 
 - `push_clip()`/`pop_clip()` nest without a depth limit; nested clips intersect with their parents. Each recorded command carries the clip it was drawn under, drawn as a scissor.
 - `pop_clip()` on an empty stack does nothing and is warned once. Always pair every `push_clip` with a `pop_clip`.
-- Rects and text wholly outside the current clip are not recorded.
 
 ```rust
 ui.push_clip(outer);  // depth 1
@@ -12,3 +20,24 @@ ui.push_clip(inner);  // depth 2, intersected with outer
 ui.pop_clip();        // depth 1
 ui.pop_clip();        // depth 0 (no clipping)
 ```
+
+## Text
+
+- `ui.text(..)` (`UiText`) is the full call: markup, wrap, align, max lines, ellipsis, anchor, reveal, fade, typewriter and opacity; `draw()` returns the size in UI units. The `draw_text*` family and `label` are the shorthand with the default style (`FontRole::Ui`, 14 px).
+- Text is measured, wrapped and laid out through the text engine at the UI scale (`px_scale` render pixels per UI unit); layouts are cached, so an unchanged call is a hash lookup.
+- **Fades go through opacity.** The layout cache keys on the style, colour included, so changing a style's colour every frame lays the text out again every frame. The shorthand helpers (`draw_text`, `label`, the wrapped and centred variants) lay the text out opaque and carry the colour's alpha as `UiCommand::Text { opacity }`, so one cached layout serves every alpha. `draw_text_styled` lays its style out as given (moving that colour's alpha to opacity would fade the style's outline and shadow too).
+- **Typewriter.** A reveal with a fade wider than one cluster must be driven past the cluster count (`TextReveal::drawn_clusters`), or the last characters stay partly faded. `typewriter(&mut TextReveal)` does that for you: `draw()` advances the reveal by the UI's real `dt` over the text's own layout (so `[pause]` and punctuation pauses hold it) and records its drawn clusters and fade. One call a frame per reveal; no `TextRevealed` message for UI text (`is_done` says when it finished).
+- A text's effect seed is a hash of the text, the style without its colours and the options, so it does not move when other commands are drawn before it or when a hover changes a colour.
+- The text input's click, caret, selection and scroll positions come from the engine (`byte_at`, `caret_x`, `selection_x`), never a fixed character width, so it edits any script the fonts have. Vertical centring uses the font's real line height (`line_height`), never a fixed cell.
+
+## Popups and Layers
+
+- Every command has a draw layer; layers order before submission order (`ui_z`). The scene's page is layer 0.
+- Open dropdown lists record on the popup layer (1). `finish_dropdowns` is crate-internal: `SceneManager::ui_pass` runs it after each scene's `ui`, so a scene never calls it.
+- Only the top scene's lists use layer 1. A lower scene's lists stay on layer 0, right after its own page, so the scenes above still cover them. The console and overlays draw on layer 0 after the scenes, and the popup layer still covers them.
+
+## Sprites and Shapes
+
+- `draw_sprite*`, `draw_nine_slice` take `&SpriteHandle`s. UI sprites use linear filtering in the default presentation. Nine-slice insets clamp to the texture, and the corners shrink with a rect smaller than their sum.
+- `draw_line` records one polyline command, drawn as a mitered strip with butt caps by the batch's polyline builder.
+- `draw_modal_overlay` dims the whole UI area, ignoring the current clip (`with_no_clip`).

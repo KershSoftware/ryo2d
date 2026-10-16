@@ -22,7 +22,7 @@ Every animation component here is driven by the engine once per fixed step with 
 | Component | Driven by the engine | Writes |
 |-----------|----------------------|--------|
 | `Animator`, `AnimationController`, `ValidatedAnimator` | yes | `Renderable.sprite` |
-| `Tween`, `TweenSequence` | yes | `Transform` (position, rotation, scale), `Renderable` alpha and tint |
+| `Tween`, `TweenSequence` | yes | `Transform` (position, rotation, scale), `Renderable` alpha and tint, `Text2d` opacity (the alpha target) |
 | `PropertyTween<f32>`, `<Vec2>`, `<Color>` | yes | its own value |
 | `PropertyTween<T>` for other `Lerp` types | no: call `update(dt)` | its own value |
 | `Knockback` | yes (in `FixedSet::Movement`) | a character's sweep, a dynamic body's `Velocity` (once), else `Transform.translation` |
@@ -125,7 +125,7 @@ if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(self.player) {
 
 ## Tween: transform and colour
 
-`Tween` animates `Transform` translation, rotation (radians) and scale, and `Renderable` alpha and tint. Start values are captured when the tween starts.
+`Tween` animates `Transform` translation, rotation (radians) and scale, and `Renderable` alpha and tint. Its alpha target (`to_alpha`, `fade_to`, `fade_out`, `fade_in`) also drives a `Text2d`'s `opacity`. Start values are captured when the tween starts.
 
 ```rust
 use std::f32::consts::PI;
@@ -158,8 +158,16 @@ ctx.world.spawn((
     .with_delay(0.5),
 ));
 
-// Fade out (needs a Renderable; works without a Transform too)
+// Fade out (needs a Renderable or a Text2d; works without a Transform too)
 ctx.world.entity_mut(ghost).insert(Tween::fade_out(0.4));
+
+// Fade world text: the alpha target drives Text2d::opacity, which is not part of the
+// text's layout, so nothing lays out again. Never fade text through its style colour.
+ctx.world.spawn((
+  Transform::from_xy(120.0, 80.0),
+  Text2d::new("12"),
+  Tween::to_position(120.0, 40.0, 0.8).to_alpha(0.0),
+));
 ```
 
 Constructors: `new(duration)`, `to_position(x, y, d)`, `to_rotation(radians, d)`, `to_scale(sx, sy, d)`, `to_uniform_scale(s, d)`, `fade_to(alpha, d)`, `fade_in(d)`, `fade_out(d)`, `tint_to(color, d)`. Builders: `to_x`, `to_y`, `to_rotation_value`, `to_scale_x`, `to_scale_y`, `to_alpha`, `to_tint`, `with_easing`, `with_delay`, `with_loop`, `with_speed`. Control: `pause`, `resume`, `stop`, `restart`, `set_speed`; read `progress()`, `is_finished()`.

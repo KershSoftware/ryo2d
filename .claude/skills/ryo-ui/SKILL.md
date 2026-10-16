@@ -2,12 +2,12 @@
 name: ryo-ui
 description: Build game UI in the Scene::ui hook with immediate-mode and retained-mode widgets including buttons, sliders, checkboxes, text inputs, dropdowns, scroll views, and layout containers, and consume the input the UI uses. Use when creating HUDs, menus, settings screens, or any in-game interface.
 metadata:
-  version: 2.0.0
+  version: 3.0.0
 ---
 
 # Ryo2D UI Specialist
 
-Build game UI with `UiContext` inside `Scene::ui`. Complete signatures are in `ryo-api`.
+Build game UI with `UiContext` inside `Scene::ui`. Complete signatures are in `ryo-api`. Text in depth (fonts, markup, effects, the typewriter) is in `ryo-text`.
 
 ## The `ui` Hook
 
@@ -27,8 +27,16 @@ impl Scene for Hud {
 - Runs **once per frame, before the fixed steps** (`update`), for every visible scene bottom-up (the top scene, plus the scenes under a chain of `is_transparent` scenes).
 - Only the top scene's returned `SceneAction` is applied, and it applies at once: when it brings a new scene to the top, the UI is drawn again so the new scene shows this frame, and no fixed step runs after a `Quit`.
 - `ctx` is the full `SceneContext`: read the world or resources for a HUD, write messages, request window changes.
-- The UI is drawn into its own buffer and composited last, above the world, lighting and post-processing; it is never lit. Engine overlays (FPS, stats) and the console draw over it.
-- Coordinates are screen space: the window in logical pixels (resolution-independent) or the pixel-art target; `ui.screen_size()` is `(u32, u32)`. Cameras never move, zoom, turn or shake the UI.
+- Every call records a command; the UI camera draws them on the GPU into the UI image, which is composited last, above the world, lighting and post-processing. The UI is never lit. Engine overlays (FPS, stats) and the console draw over it.
+- **Alpha blends in sRGB space, as on the web:** a 50% black panel over white is mid grey (128), not the lighter result linear blending would give.
+- Cameras never move, zoom, turn or shake the UI.
+
+## UI Units and Scale
+
+- Every coordinate and size is in **UI units**. With the automatic scale (the default) a UI unit is a screen unit at any display scale: the window in logical pixels, or the pixel-art target. Existing `draw_rect` / `draw_text` coordinates keep their meaning, and text is laid out at render pixels, so it is sharp on HiDPI displays.
+- `ui.screen_size()` is the UI's size in UI units `(u32, u32)`; `ui.ui_scale()` is render pixels per UI unit (`f32`).
+- **`ui_scale` is `Option<f32>`.** `None` (the default) is automatic. `Some(2.0)` draws the whole UI, rects and text alike, twice as big, and mouse positions are converted to match. Set it with `EngineBuilder::ui_scale(Some(2.0))` or at runtime with `ctx.request_ui_scale(Some(2.0))` (applied after the frame; `None` goes back to automatic). A value that is not a positive number is warned about and treated as `None`.
+- **`UiResolution`** (`EngineBuilder::ui_resolution`): `Render` (the default) draws the UI at the render size, so in pixel-art mode the UI is pixel art too; `Window` draws it at the window's resolution (smooth text and shapes over pixel art).
 - `ui.dt()` is the **real** frame delta (it keeps running through pause, slow motion and hitstop). Animate UI with it.
 
 ## Input and Consumption
@@ -86,30 +94,70 @@ Anchor::TopLeft, TopCenter, TopRight, CenterLeft, Center, CenterRight, BottomLef
 
 ## Immediate Mode Drawing
 
+### Text
+
+Text is laid out and drawn by the text engine (Inter by default, 14 px). The shorthand family uses the default style; `ui.text(..)` takes every option. See `ryo-text` for fonts, `TextStyle`, markup, effects and the typewriter.
+
 ```rust
-// Text (bitmap font)
+// Shorthand: default style (FontRole::Ui, 14 px), colour as given
 ui.draw_text("Hello", x, y, Color::WHITE);
 ui.draw_text_anchored("Score: 100", Anchor::TopRight, -10.0, 10.0, Color::YELLOW);
 ui.draw_text_centered("Title", rect, Color::WHITE);
 ui.draw_text_wrapped("Long text...", x, y, max_width, Color::WHITE);   // max_width: u32
 ui.draw_text_wrapped_centered("Long text...", rect, Color::WHITE);
 ui.label("Paused", x, y, Color::WHITE, Some(Color::PANEL_BG));
-let (w, h) = ui.text_size("Hello");                                    // (u32, u32)
-let lines = ui.wrap_text("Long text...", max_width);                    // Vec<String>
 
-// Shapes
+// Styled
+let style = TextStyle::new().bold().size(24.0).outline(2.0, Color::BLACK);
+ui.draw_text_styled("Level 3", x, y, &style);
+
+// Every option
+let size = ui.text(RichText::markup("Deal [color=#f44]20[/color] damage"))
+  .style(&style)             // or .size(..) / .color(..)
+  .at(x, y)
+  .wrap(300.0)
+  .align(TextAlign::Center)
+  .max_lines(3)
+  .ellipsis()
+  .anchor(Anchor::TopLeft)
+  .opacity(0.8)              // fades without a relayout
+  .draw();                   // -> Vec2, the size in UI units
+
+// Measure
+let size: Vec2 = ui.measure_text("Hello", &style);
+let line: f32 = ui.line_height(&style);
+let (w, h) = ui.text_size("Hello");                                    // default style, (u32, u32)
+let lines = ui.wrap_text("Long text...", max_width);                    // Vec<String>
+let lines = ui.wrap_text_styled("Long text...", 300.0, &style);
+```
+
+- **Fade text through opacity** (`ui.text(..).opacity(a)`, or the alpha of the colour you give `draw_text`), never by changing a style's colour each frame: colour is part of the layout cache key, so that lays the text out again every frame.
+- `.typewriter(&mut TextReveal)` reveals a text over time on the UI's real `dt` (call it once per frame per reveal; check `reveal.is_done()`); `.reveal(shown)` and `.fade(..)` are the manual controls.
+
+### Shapes, sprites and lines
+
+```rust
 ui.draw_rect(rect, Color::RED);
-ui.draw_rect_outline(rect, Color::WHITE, 2.0);
+ui.draw_rect_outline(rect, Color::WHITE, 2.0);                          // thickness inside the rect
+ui.draw_rounded_rect(rect, 8.0, Color::DARK_GRAY);                      // radius in UI units
+ui.draw_rect_bordered(rect, fill, 8.0, 2.0, border_color);              // fill, radius, border width, border colour
 ui.draw_panel(rect, Color::DARK_GRAY, Some(Color::WHITE));
 ui.draw_progress_bar(rect, 0.75, Color::HEALTH_RED, Color::DARK_GRAY);
 ui.draw_progress_bar_with_border(rect, 0.75, fill, bg, border);
 
-// Sprites (uniform scale)
-ui.draw_sprite(&sprite, x, y);
-ui.draw_sprite_scaled(&sprite, x, y, 2.0);
-ui.draw_sprite_handle(&handle, x, y);
-ui.draw_sprite_handle_scaled(&handle, x, y, 2.0);
+// Sprites are SpriteHandles
+ui.draw_sprite(&handle, x, y);                                          // one UI unit per texel
+ui.draw_sprite_scaled(&handle, x, y, 2.0);
+ui.draw_sprite_rect(&handle, rect, Color::WHITE);                       // stretched over a rect, tinted
+ui.draw_nine_slice(&handle, rect, [8.0, 8.0, 8.0, 8.0], Color::WHITE);  // insets [left, top, right, bottom] in texels
+
+// Lines
+ui.draw_line(&[Vec2::new(10.0, 10.0), Vec2::new(90.0, 40.0)], 2.0, Color::WHITE);   // a polyline, width in UI units
 ```
+
+- Rects are drawn analytically (rounded corners, an inner border, anti-aliased edges). Nine-slice insets clamp to the texture, and the corners shrink when the rect is smaller than their sum.
+- UI sprites use linear filtering in the default presentation.
+- Text, rects and sprites are drawn in submission order (later on top).
 
 ## Interactive Widgets
 
@@ -137,7 +185,7 @@ if ui.text_input(&mut self.name, rect, "Name", ui.dt()) {
 let text = self.name.text();
 ```
 
-Cursor, selection, clipboard (Ctrl+C/V/X), Shift+arrows, Home/End, IME. A click anywhere else unfocuses it.
+Cursor, selection, clipboard (Ctrl+C/V/X), Shift+arrows, Home/End, IME. A click anywhere else unfocuses it. The text engine places the caret and the selection, so editing works in any script (the fonts must have the characters; see `ryo-text`).
 
 ### Dropdown
 
@@ -146,9 +194,9 @@ Cursor, selection, clipboard (Ctrl+C/V/X), Shift+arrows, Home/End, IME. A click 
 if ui.dropdown(&mut self.difficulty, rect, &["Easy", "Normal", "Hard"]) {
   let index = self.difficulty.selected();
 }
-// Last in `ui`: draws open lists over everything else
-ui.finish_dropdowns();
 ```
+
+An open list draws on the **popup layer**, above everything else the scene drew, with nothing to call: the engine flushes it after each scene's `ui`. Only the top scene's lists use the popup layer; a lower scene's open lists stay below the scenes above it.
 
 ### Scroll View
 
@@ -196,7 +244,7 @@ ui.with_no_clip(|ui| ui.draw_rect(full_screen, Color::BLACK));
 ui.has_clip(); ui.clip_depth(); ui.current_clip();
 ```
 
-Nested clips intersect; the stack is 16 deep and pushing past it panics. Pair every `push_clip` with `pop_clip`.
+Nested clips intersect, with no depth limit; popping an empty stack does nothing (warned once). Pair every `push_clip` with `pop_clip`. A clip is a scissor per command, in UI units.
 
 ## Focus
 
@@ -294,14 +342,13 @@ fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
 
   ui.handle_tab_navigation(&mut [&mut self.name]);
   self.typing = ui.wants_keyboard();
-  ui.finish_dropdowns();
   SceneAction::Continue
 }
 ```
 
 ## Tips
 
-- Call `finish_dropdowns()` last in `ui` when the scene has dropdowns.
-- `draw_modal_overlay(color)` dims the screen and clears the clip stack.
+- Open dropdown lists draw on the popup layer by themselves; there is no call to make.
+- `draw_modal_overlay(color)` dims the whole UI area, ignoring the current clip.
 - Retained widget state is owned by the scene, never by `UiContext`.
 - Many-sprite or world-space visuals belong in `Scene::render` (GPU batches) or in entities, not the UI.

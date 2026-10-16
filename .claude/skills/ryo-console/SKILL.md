@@ -218,7 +218,9 @@ Handlers are `Fn(&[&str], &mut CommandContext) -> CommandResult + Send + Sync + 
 - Semi-transparent dark background
 - Color-coded output (white, blue, red, gray)
 - Blinking cursor
-- Word wrapping for long lines
+- JetBrains Mono (the `FontRole::Mono` font), so a game that points that role at its own font changes the console too
+- Rows are sized by the font's real line height, not a fixed cell
+- Word wrapping for long lines, in any script (the fonts must have the characters; see `ryo-text`)
 
 ## Game Version in Console
 

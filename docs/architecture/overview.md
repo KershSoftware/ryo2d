@@ -163,7 +163,7 @@ Rapier2D 0.36 behind the public `Physics` resource, which mirrors the ECS: compo
 
 ## Rendering
 
-`present_frame` builds each frame from the world by query; there is no render cache. Drawables are gathered once, in world space, and sorted once: the scenes' `Scene::render` sprites, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails and lines (as joined polylines), lights and occluders; parallax layers and debug shapes are laid out per camera. Then each camera keeps what it sees (its `RenderLayers`, its view's bounds) and one 2D batch (`render/batch`) lays it into draws, and the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`) runs on one command encoder with one submit: the camera passes once per camera, then the frame passes once. The world is drawn on the GPU through each camera's view-projection matrix; only the UI is drawn on the CPU, into a buffer composited last.
+`present_frame` builds each frame from the world by query; there is no render cache. Drawables are gathered once, in world space, and sorted once: the scenes' `Scene::render` sprites, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails and lines (as joined polylines), lights and occluders; parallax layers and debug shapes are laid out per camera. Then each camera keeps what it sees (its `RenderLayers`, its view's bounds) and one 2D batch (`render/batch`) lays it into draws, and the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`) runs on one command encoder with one submit: the camera passes once per camera, then the frame passes once. Everything is drawn on the GPU through each camera's view-projection matrix, the UI included: it is recorded as commands, drawn by a UI camera through the same batch into an image of its own, and composited last.
 
 ```
 gather once (world space, sorted) ──→ cameras in render order: texture cameras, then window cameras (by order)
@@ -192,8 +192,8 @@ The world is drawn in linear HDR: every colour in the API is sRGB and is decoded
 | `tonemap` | frame | The look: the scene image into the display image (exposure, curve, grading) |
 | `transition` | frame | Scene transition fade over the frame |
 | `post_process` | frame | Fade, tint, vignette, flash, CRT, chromatic aberration and display custom effects on the display image |
-| `ui` | frame | Uploads the UI layer |
-| `composite` | frame | To the window through `ScreenMapping` (bars for pixel art), UI blended last |
+| `ui` | frame | Draws the UI camera (rects, sprites, lines and text) into the UI image |
+| `composite` | frame | To the window through `ScreenMapping` (bars for pixel art), the UI image blended last in sRGB space |
 | `capture` | frame | Frame capture readback |
 
 Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in passes or insert their own (`RenderPass::scope` picks once per frame or once per camera). See `src/core/render/AGENTS.md`.
@@ -202,6 +202,7 @@ Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in pass
 - **Textures:** every texture has one `TextureId` in the texture registry (sprites by handle, named pixel textures, render targets). Sprite images live in shared atlas pages with four mip levels (8-pixel borders on an 8-pixel grid, levels averaged in linear light); large images get textures of their own with full mip chains; render targets are `Rgba16Float` pages of their own (linear light). Two samplers (nearest; trilinear) and a bind group per page and sampler, made with the page.
 - **Batching:** one batch with two streams: instanced quads (128 bytes: affine world transform, UV rect, tint, effect parameters, UV bounds) and indexed triangles (trails, lines and debug shapes). Consecutive drawables with equal draw states (page, shader, blend mode, sampling) merge into one draw; at equal z an entity draws before a `Scene::render` sprite, then trails and lines. Each camera's visible quads get a range of the instance buffer.
 - **Blend and filter modes:** `BlendMode::{Alpha, Premultiplied, Additive, Multiply, Screen}` and `Filter::{Default, Nearest, Linear}` on sprites, particles, batch sprites, parallax layers, trails and lines. Every batch shader writes premultiplied colour, so each mode is one fixed blend state; `Filter::Default` is nearest for pixel art and linear otherwise.
+- **Text and UI draws** are batch items too: glyphs from the glyph pages (`TextMask`, `TextColor`, `TextMsdf`) and UI rects (`UiRect`) share the batch's streams, sorting and merging. See [Text and UI](#text-and-ui).
 - **Bind groups** are made with the resources they bind (per camera, per texture page and sampler, or cached by the frame resources a pass binds), never per frame; tests count them.
 - **Debug drawing:** `ctx.debug_draw()` (`DebugDraw`) draws world-space lines, rectangles, circles, arrows and crosses one screen pixel wide in every camera, for a fixed step or a frame; the engine's overlays and `draw_skeleton` use it.
 - **Time in shaders:** sprite effects and custom sprite shaders animate on game elapsed time, so they stop with the game clock; post-process effects (built-in and custom), lighting, trail effects and transitions animate on real time. Parallax auto-scroll runs on game time. Custom shader errors are collected asynchronously and never block a frame.
@@ -211,9 +212,19 @@ Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in pass
 - **Lighting:** `ctx.lighting()` (`LightingSettings`: ambient, atmosphere, forced on or off); lighting turns on by itself once a `Light2D` exists and then lights every camera. Lights and shadow volumes are batch draws into each camera's light buffer, with no light cap; each shadow darkens only its own light. The UI is never lit.
 - **Surface and GPU errors:** a suboptimal surface draws and then reconfigures; timeout and occlusion skip the frame; outdated reconfigures; lost recreates; a validation error or a lost device is fatal. GPU setup failures are `GpuError`s. Vsync uses `Fifo`; without it `Mailbox`, else `Immediate`, with the frame limiter at `target_fps`.
 
+### Text and UI
+
+- **The text core** is `src/core/text/`, GPU-free: `Fonts` (a resource; Inter, JetBrains Mono and m5x7 are built in behind the `default-fonts` feature), `TextStyle`, rich text and markup, effects and the reveal clock. Parley lays text out (no system fonts), swash rasterizes glyphs and fdsm makes distance fields; **those three crates are named only in `src/core/text/`** (a test guards it), and the renderer receives `GlyphImage` bitmaps, never a font type. Layouts are cached by text, style, options, scale and font generation, so an unchanged immediate-mode call is a hash lookup.
+- **The glyph atlas** holds glyph bitmaps in glyph pages beside the sprite atlas: raster coverage, colour glyphs and MSDF fields, each placed on first use; when a format is full its least recently used page is cleared. Raster glyphs are made at the size the camera sees, so text stays sharp at any zoom.
+- **World text** is a `Text2d` entity: laid out when its text, style or fonts change, its glyphs emitted per camera into the same z-sorted draw list as sprites (unlit by default, lit with `with_lighting`). Effects and the typewriter run on game time; opacity is applied at draw time, so fades never lay text out again.
+- **The UI** is commands: `Scene::ui` records rects, sprites, lines and text in UI units. A UI camera lays them into the batch, the `ui` pass draws it into a gamma-encoded UI image, and the composite blends that image over the finished frame in sRGB space (a 50% black panel over white is mid grey, as on the web). Effects, lighting and post-processing never touch it. UI units equal screen units with the automatic scale and are sharp on HiDPI; `ui_scale` makes the whole UI bigger. Open dropdown lists draw on a popup layer above the scene's page.
+- The dev windows are separate OS windows with CPU pixel buffers; they draw text with `CpuText` (the mono font through swash).
+
+Details: `src/core/text/AGENTS.md`, `src/core/ui/AGENTS.md`, `src/core/render/AGENTS.md`.
+
 ### Resolution and the window
 
-`ScreenMapping` (a resource) is the one mapping between window pixels and screen space, used by the compositor, the mouse and the tests. In the default resolution-independent presentation the world renders at the window's physical size (sharp on HiDPI), screen space is the window in logical pixels, and the resolution is a design area that the main camera's `Projection::Fit` keeps in view at any window size. With `pixel_art(w, h)` (or `pixel_art = true` in `Ryo.toml`) the world renders into a `w`x`h` target scaled by a whole number to fit the window, centred with bars, sampled nearest, with sprites snapped to whole target pixels; screen space is the target. The UI is drawn in screen space and composited over the scene.
+`ScreenMapping` (a resource) is the one mapping between window pixels and screen space, used by the compositor, the mouse and the tests. In the default resolution-independent presentation the world renders at the window's physical size (sharp on HiDPI), screen space is the window in logical pixels, and the resolution is a design area that the main camera's `Projection::Fit` keeps in view at any window size. With `pixel_art(w, h)` (or `pixel_art = true` in `Ryo.toml`) the world renders into a `w`x`h` target scaled by a whole number to fit the window, centred with bars, sampled nearest, with sprites snapped to whole target pixels; screen space is the target. The UI is in UI units (screen units with the automatic scale) and is composited over the scene.
 
 ### The web build
 
@@ -229,14 +240,14 @@ The engine builds for `wasm32-unknown-unknown` and runs in browsers with WebGPU:
 
 ## UI
 
-Immediate mode for simple elements, retained state for stateful widgets, drawn on the CPU in `Scene::ui(ui, ctx)` once a frame.
+Immediate mode for simple elements, retained state for stateful widgets, recorded as draw commands in `Scene::ui(ui, ctx)` once a frame and drawn on the GPU (see [Text and UI](#text-and-ui)).
 
 | Immediate | Retained state | Layout and style |
 |-----------|----------------|------------------|
-| `button`, `label`, `slider`, `checkbox`, `toggle`, `text_input`, `dropdown`, `scroll_view`, `draw_progress_bar`, `draw_rect`/`draw_text`/`draw_sprite` | `TextInputState`, `DropdownState`, `ScrollViewState`, `FocusTrap` | `HBox`, `VBox`, `Stack`; `Theme` (hot-reloadable from JSON); `UiTween` / `TweenFloat`/`Vec2`/`Color`/`Rect` |
+| `button`, `label`, `slider`, `checkbox`, `toggle`, `text_input`, `dropdown`, `scroll_view`, `draw_progress_bar`, `draw_rect`/`draw_rounded_rect`/`draw_text`/`ui.text(..)`/`draw_sprite`/`draw_nine_slice`/`draw_line` | `TextInputState`, `DropdownState`, `ScrollViewState`, `FocusTrap` | `HBox`, `VBox`, `Stack`; `Theme` (hot-reloadable from JSON); `UiTween` / `TweenFloat`/`Vec2`/`Color`/`Rect` |
 
 - Widgets consume the input they use, so gameplay in `update` does not see it.
-- A scissor stack clips nested views; focus moves with Tab / Shift+Tab, and `FocusTrap` keeps it inside a modal.
+- A clip stack of any depth clips nested views (a scissor per command); focus moves with Tab / Shift+Tab, and `FocusTrap` keeps it inside a modal.
 
 ## Saves and Settings
 
@@ -331,6 +342,7 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `navigation/` | Grids, A* pathfinding, agents, steering |
 | `state_machine/` | Generic state machines and stacks |
 | `asset/`, `audio.rs` | Asset loading and hot reload; audio |
+| `text/` | Fonts, text styles, rich text and markup, layout, glyph rasterization, effects and reveal, world text (`Text2d`), `CpuText` for the dev windows |
 | `ui/` | Immediate and retained UI, themes, layout, UI tweens |
 | `config/` | Workspace (`Ryo.toml`), settings, saves |
 | `console/`, `windows/`, `capture/`, `dev_log.rs`, `profiler.rs` | Developer tools |
@@ -352,6 +364,7 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `gilrs` | Gamepads |
 | `renet` | Networking transport |
 | `puffin` | Profiling (optional) |
+| `parley`, `swash`, `fdsm` | Text layout, glyph rasterization and MSDF generation (named only in `src/core/text/`) |
 | `image`, `resvg` | Image and SVG loading |
 | `notify` | File watching for hot reload |
 | `ron`, `serde_json`, `flate2`, `toml` | Saves, settings and configuration |

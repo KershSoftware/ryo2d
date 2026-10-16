@@ -15,6 +15,9 @@ geometric shapes (U+25A0-25FF). All layout features are kept.
 The m5x7 webfont is ASCII-only, so pixel text outside ASCII falls back to
 Inter.
 
+The m5x7 webfont has no capital shapes of its own: it draws capital letters
+with its lowercase shapes. That is the font file, not the engine.
+
 ## Subset command
 
 `hb-subset` from HarfBuzz (Homebrew `harfbuzz`), run on each original.

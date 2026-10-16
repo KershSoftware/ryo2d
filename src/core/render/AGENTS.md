@@ -89,7 +89,8 @@ One batch draws the world: sprites, shadows, tiles, composite parts, particles, 
 
 ## Draw Order
 
-- Items sort by (z, kind, submission), once per frame; each camera draws the sorted items it sees. `z_order` picks the layer; at equal z entities draw first, then text and UI shapes (`Text`), then `Scene::render` sprites, then trails and lines (`DrawKind` order).
+- Items sort by (z, kind, submission), once per frame; each camera draws the sorted items it sees. `z_order` picks the layer; at equal z entities draw first, then world text (`Text`), then `Scene::render` sprites, then trails and lines (`DrawKind` order).
+- UI items sort the same way, but each UI command gets a z of its own (layer, then submission), so `DrawKind` never decides between two of them. UI lines are `DrawKind::Trail` items (their z orders them); every other UI item (rects, sprites, glyphs) is `DrawKind::Sprite`.
 - Within a layer, plain entities keep query order and y-sorted ones follow, ordered by their sort key: the point `YSort.foot_offset` of the way down the sprite (default the feet), computed from the anchor, so the key is the same whichever `Anchor` places the sprite (`y_sort_key`).
 - Shadows draw just before their entity. Composite tiles draw at their own `z_order`, after the layer's entities.
 - Debug shapes (`DebugDraw`, the overlays, `draw_skeleton`) are unlit at `i32::MAX`.
