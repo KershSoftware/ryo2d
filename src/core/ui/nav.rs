@@ -190,6 +190,16 @@ fn shows_in(rect: Rect, clip: Option<Rect>) -> bool {
   clip.is_none_or(|clip| overlap(rect, clip))
 }
 
+/// The part of `rect` inside `clip`
+fn clipped(rect: Rect, clip: Rect) -> Rect {
+  let (x, y) = (rect.x.max(clip.x), rect.y.max(clip.y));
+  let (right, bottom) = (
+    rect.right().min(clip.right()),
+    rect.bottom().min(clip.bottom()),
+  );
+  Rect::new(x, y, (right - x).max(0.0), (bottom - y).max(0.0))
+}
+
 /// Whether two rects share positive area
 fn overlap(a: Rect, b: Rect) -> bool {
   a.x.max(b.x) < a.right().min(b.right()) && a.y.max(b.y) < a.bottom().min(b.bottom())
@@ -326,10 +336,23 @@ impl<'m> Nav<'m> {
       .map(|(id, _)| *id)
   }
 
+  /// The scroll areas around `record`, innermost first
+  fn scroll_chain(&self, record: &Record) -> Vec<UiId> {
+    let mut chain = Vec::new();
+    let mut at = record.scroll;
+    while at != UiId::NONE && chain.len() < MAX_SCOPE_DEPTH && !chain.contains(&at) {
+      chain.push(at);
+      at = self.record(at).map_or(UiId::NONE, |r| r.scroll);
+    }
+    chain
+  }
+
   /// The widget a move in `direction` from `from` lands on: its explicit
   /// neighbour, else the nearest that way in its scope, else (in a wrapping
   /// scope) the far end, else the same in each scope around it, until a
-  /// trapping one
+  /// trapping one. Rows scrolled out of view are candidates only from
+  /// inside their own scroll area, so a move from outside a list never
+  /// lands on (or past) one it cannot see.
   fn step(&self, from: UiId, direction: Direction) -> Option<UiId> {
     let record = self.record(from)?;
     let explicit = DIRECTIONS
@@ -339,13 +362,22 @@ impl<'m> Nav<'m> {
     if explicit != from && self.focusable(explicit, Via::Nav) {
       return Some(explicit);
     }
+    // A candidate in a scroll area `from` is not inside counts by the part
+    // of it that shows
+    let inside = self.scroll_chain(record);
+    let seen = |r: &Record| match r.clip {
+      Some(clip) if r.scroll != UiId::NONE && !inside.contains(&r.scroll) => {
+        shows_in(r.rect, Some(clip)).then(|| clipped(r.rect, clip))
+      }
+      _ => Some(r.rect),
+    };
     let mut scope = record.scope;
     for _ in 0..MAX_SCOPE_DEPTH {
       let candidates = || {
         self
           .members(scope)
           .filter(|(id, r)| *id != from && !r.flags.contains(Flags::NAV_SKIP))
-          .map(|(id, r)| (*id, r.rect))
+          .filter_map(|(id, r)| Some((*id, seen(r)?)))
       };
       if let Some(id) = spatial(record.rect, direction, candidates()) {
         return Some(id);
@@ -494,16 +526,32 @@ pub(crate) fn resolve_focus(
       }
     }
 
-    // Directions: on press, then repeating while held
+    // Directions: on press, then repeating while held. A press the UI uses
+    // captures its direction until it is released: every held frame is the
+    // UI's, so gameplay never sees it between repeats. A direction held from
+    // before (gameplay's press) is never captured and never repeats.
     let scoped = !nav.scopes.is_empty();
     for (k, direction) in DIRECTIONS.into_iter().enumerate() {
-      if !fires(&mut i.repeat[k], input.pressed[k], input.held[k], dt) {
+      let fire = if input.pressed[k] {
+        i.repeat[k] = None;
+        true
+      } else if input.held[k] && i.repeat[k].is_some() {
+        repeats(&mut i.repeat[k], dt)
+      } else {
+        i.repeat[k] = None;
         continue;
-      }
+      };
       if i.focused == UiId::NONE && !scoped {
+        i.repeat[k] = None;
         continue;
       }
       outcome.used.push(DIRECTION_ACTIONS[k]);
+      if input.pressed[k] {
+        i.repeat[k] = Some(REPEAT_DELAY);
+      }
+      if !fire {
+        continue;
+      }
       let Some(record) = nav.record(i.focused) else {
         // Nothing focused: the innermost modal's default, or the first
         // scope's; a modal with nothing to focus keeps focus off the page
@@ -593,18 +641,10 @@ pub(crate) fn resolve_focus(
   outcome
 }
 
-/// Whether a direction fires this frame: on its press, then while held
-/// after the repeat delay and every interval. `timer` is the time left
-/// until it fires again, armed only by a press.
-fn fires(timer: &mut Option<f32>, pressed: bool, held: bool, dt: f32) -> bool {
-  if pressed {
-    *timer = Some(REPEAT_DELAY);
-    return true;
-  }
-  if !held {
-    *timer = None;
-    return false;
-  }
+/// Whether a captured, held direction fires again this frame: after the
+/// repeat delay, then every interval. `timer` is the time left until it
+/// fires, armed by the press the UI used.
+fn repeats(timer: &mut Option<f32>, dt: f32) -> bool {
   let Some(left) = timer.as_mut() else {
     return false;
   };

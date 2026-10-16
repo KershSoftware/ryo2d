@@ -629,7 +629,9 @@ impl<'a> UiContext<'a> {
 
   /// Whether Back (Escape, or B on a pad) was pressed this frame and no
   /// widget used it (closing a list, leaving a field). `true` takes it
-  /// from gameplay. Only the top scene gets it.
+  /// from gameplay, once: a press goes to the first call that gets it, so
+  /// a scene brought up by the popped one's action does not pop too. Only
+  /// the top scene gets it.
   ///
   /// ```ignore
   /// if ui.back() {
@@ -638,11 +640,25 @@ impl<'a> UiContext<'a> {
   /// ```
   pub fn back(&mut self) -> bool {
     let i = &mut self.memory.interact;
-    let free = self.top && i.back_pressed && !i.back_used;
+    let free = self.top && i.back_pressed && !i.back_used && !i.back_taken;
     if free {
       i.back_taken = true;
     }
     free
+  }
+
+  /// This frame's tab switch, -1, 0 or 1 (`ui.tab_prev` / `ui.tab_next`
+  /// while a scope is shown), for the first tabs widget of the top scene
+  /// to take: a step taken (`tab_taken`) is 0 for every later call, in a
+  /// rerun pass too
+  #[allow(dead_code)] // Read by the tabs widget (Task 12)
+  pub(crate) fn take_tab_step(&mut self) -> i8 {
+    let i = &mut self.memory.interact;
+    if !self.top || i.tab_taken || i.tab_step == 0 {
+      return 0;
+    }
+    i.tab_taken = true;
+    i.tab_step
   }
 
   /// Whether the focus ring shows: the player's last device is the keyboard
@@ -3642,6 +3658,24 @@ mod tests {
         "top scene: {top}"
       );
     }
+  }
+
+  #[test]
+  fn back_and_the_tab_step_go_to_their_first_taker() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    ui.memory.interact.back_pressed = true;
+    ui.memory.interact.tab_step = 1;
+    ui.begin_scene(2, false);
+    assert!(!ui.back(), "not below the top scene");
+    assert_eq!(ui.take_tab_step(), 0);
+    ui.begin_scene(1, true);
+    assert!(ui.back());
+    // A scene the first one's action brought up, drawn in a rerun pass
+    ui.begin_scene(3, true);
+    assert!(!ui.back(), "one press, one taker");
+    assert_eq!(ui.take_tab_step(), 1);
+    assert_eq!(ui.take_tab_step(), 0, "taken");
   }
 
   #[test]

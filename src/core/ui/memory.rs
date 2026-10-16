@@ -145,7 +145,8 @@ pub(crate) struct Interaction {
   /// A tabs widget took `tab_step` this frame
   pub(crate) tab_taken: bool,
   /// Per direction (Up, Down, Left, Right), the seconds until a held
-  /// direction fires again; `None` until it is pressed
+  /// direction fires again; `Some` while the UI has it captured (its press
+  /// was used and it is still held), `None` otherwise
   pub(crate) repeat: [Option<f32>; 4],
   /// The top scene the last focus resolve ran for
   pub(crate) nav_scene: Option<u64>,

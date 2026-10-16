@@ -645,15 +645,109 @@ mod tests {
     d.frame(|ui| menu(ui, &items, &mut None));
     d.nav(Direction::Down);
     d.frame(|ui| menu(ui, &items, &mut None));
+    // The menu is hidden: only a HUD button outside any scope is drawn
+    let hidden = |ui: &mut UiContext<'_>| {
+      ui.button("HUD").at(Rect::new(250.0, 250.0, 40.0, 20.0));
+      ui.focused()
+    };
     for _ in 0..3 {
-      d.frame(|_| ()); // the menu is hidden
+      d.frame(hidden);
     }
+    assert_eq!(
+      d.frame(hidden),
+      None,
+      "nothing has focus while it is hidden"
+    );
     d.frame(|ui| menu(ui, &items, &mut None));
     d.frame(|ui| menu(ui, &items, &mut None));
     assert_eq!(
       d.frame(|ui| ui.focused()),
       Some(ids[2]),
       "back on C, not the default B"
+    );
+  }
+
+  #[test]
+  fn a_direction_held_from_before_a_scope_appears_does_not_move_in_it() {
+    let mut d = UiDriver::new((300.0, 600.0));
+    let items = ["0", "1", "2", "3", "4", "5"];
+    let hud = |ui: &mut UiContext<'_>| {
+      ui.button("HUD").at(Rect::new(250.0, 550.0, 40.0, 20.0));
+    };
+    d.frame(hud);
+    d.hold(Direction::Down); // pressed for gameplay: no scope is shown
+    d.frame(hud);
+    let ids = d.frame(|ui| menu(ui, &items, &mut None));
+    for _ in 0..40 {
+      d.frame(|ui| menu(ui, &items, &mut None));
+    }
+    assert_eq!(
+      d.frame(|ui| {
+        menu(ui, &items, &mut None);
+        ui.focused()
+      }),
+      Some(ids[1]),
+      "still on the default"
+    );
+    assert!(
+      d.last_outcome().used.is_empty(),
+      "the held key stays the game's: {:?}",
+      d.last_outcome().used
+    );
+  }
+
+  #[test]
+  fn navigation_leaves_a_scroll_list_and_skips_its_hidden_rows() {
+    // Ten 50-tall rows in a 100-tall view, then a Back button
+    let draw = |wrap: bool| {
+      move |ui: &mut UiContext<'_>| {
+        let mut ids = Vec::new();
+        let mut scope = ui.column().gap(10.0).focus_scope();
+        if wrap {
+          scope = scope.wrap_focus();
+        }
+        scope.show(|ui| {
+          ui.scroll().height(100.0).show(|ui| {
+            for i in 0..10 {
+              ids.push(ui.button("Row").id(i).height(50.0).show().id);
+            }
+          });
+          ids.push(ui.button("Back").height(30.0).default_focus().show().id);
+        });
+        ids
+      }
+    };
+    for wrap in [false, true] {
+      let mut d = UiDriver::new((300.0, 300.0));
+      let ids = d.frame(draw(wrap));
+      d.frame(draw(wrap));
+      let back = ids[10];
+      assert_eq!(d.frame(|ui| ui.focused()), Some(back));
+      d.nav(Direction::Down);
+      d.frame(draw(wrap));
+      let expect = if wrap { ids[0] } else { back };
+      assert_eq!(
+        d.frame(|ui| ui.focused()),
+        Some(expect),
+        "wrap: {wrap}: the hidden rows below Back are not targets"
+      );
+    }
+    let mut d = UiDriver::new((300.0, 300.0));
+    let ids = d.frame(draw(false));
+    d.frame(draw(false));
+    d.nav(Direction::Up);
+    d.frame(draw(false));
+    assert_eq!(
+      d.frame(|ui| ui.focused()),
+      Some(ids[1]),
+      "the last row shown"
+    );
+    d.nav(Direction::Down);
+    d.frame(draw(false));
+    assert_eq!(
+      d.frame(|ui| ui.focused()),
+      Some(ids[2]),
+      "from inside the list, its hidden rows are reachable"
     );
   }
 

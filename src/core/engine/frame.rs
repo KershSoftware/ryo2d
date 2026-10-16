@@ -1664,18 +1664,89 @@ mod tests {
       for _ in 0..3 {
         e.frame(Some(frame));
       }
-      for pressed in [true, false] {
-        e.world_mut()
-          .resource_mut::<Input>()
-          .queue(InputEvent::Key {
-            key: KeyCode::ArrowDown,
-            pressed,
-          });
+      // Pressed, held for a few frames (no repeat yet), released
+      for pressed in [Some(true), None, None, None, None, Some(false)] {
+        if let Some(pressed) = pressed {
+          e.world_mut()
+            .resource_mut::<Input>()
+            .queue(InputEvent::Key {
+              key: KeyCode::ArrowDown,
+              pressed,
+            });
+        }
         e.frame(Some(frame));
       }
       let downs = e.world().resource::<Downs>().0;
       assert_eq!(downs == 0, scoped, "scoped: {scoped}, gameplay saw {downs}");
     }
+  }
+
+  #[test]
+  fn one_back_press_pops_one_scene() {
+    use crate::core::input::InputEvent;
+    use crate::core::ui::UiContext;
+    use winit::keyboard::KeyCode;
+
+    /// A menu that pops on Back and pushes the next of `rest` once
+    struct Menu {
+      name: &'static str,
+      rest: &'static [&'static str],
+    }
+    impl Scene for Menu {
+      fn name(&self) -> &str {
+        self.name
+      }
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        if ui.back() {
+          return SceneAction::Pop;
+        }
+        SceneAction::Continue
+      }
+      fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+        let Some((next, rest)) = self.rest.split_first() else {
+          return SceneAction::Continue;
+        };
+        self.rest = &[];
+        SceneAction::Push(Box::new(Menu { name: next, rest }))
+      }
+    }
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(64, 64)
+      .fixed_hz(60)
+      .start_scene(Menu {
+        name: "A",
+        rest: &["B", "C"],
+      })
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
+    let frame = Duration::from_micros(16_667);
+    for _ in 0..5 {
+      e.frame(Some(frame));
+    }
+    let names = |e: &Engine| {
+      let host = e.world().non_send::<SceneHost>();
+      host
+        .scenes
+        .scene_names()
+        .iter()
+        .map(|name| name.to_string())
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&e), ["A", "B", "C"]);
+    for pressed in [true, false] {
+      e.world_mut()
+        .resource_mut::<Input>()
+        .queue(InputEvent::Key {
+          key: KeyCode::Escape,
+          pressed,
+        });
+      e.frame(Some(frame));
+    }
+    assert_eq!(names(&e), ["A", "B"], "C popped, and only C");
   }
 
   #[test]
