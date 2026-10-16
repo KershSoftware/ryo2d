@@ -16,14 +16,19 @@
 //!   `RightClick` press a mouse button like a key, after moving to `@XxY` if
 //!   given; a range (`A-B:Click@XxY`) holds it, so a `Mouse` entry inside the
 //!   range drags.
+//! - `N:Wheel@DXxDY` scrolls the wheel by `DX`,`DY` lines on frame `N`.
+//! - `Pad<Button>` (`PadSouth`, `PadDPadDown`, `PadLeftBumper`...) presses a
+//!   gamepad button on a virtual pad, like a key (tap or `A-B` hold).
+//! - `A-B:LeftStick@XxY` and `A-B:RightStick@XxY` hold a stick position (-1..1,
+//!   +y up) from frame `A` and centre it before frame `B`.
 //! - Entries are separated by spaces or commas.
 //!
 //! Read in dev builds only; `HeadlessEngine` tests ignore it.
 
-use winit::event::{ElementState, MouseButton};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
-use crate::core::input::{Input, InputEvent};
+use crate::core::input::{GamepadButton, Input, InputEvent, Stick};
 
 macro_rules! key_table {
   ($($key:ident),* $(,)?) => {
@@ -131,6 +136,27 @@ const KEYS: &[(&str, KeyCode)] = key_table![
   NumpadEnter,
 ];
 
+/// Gamepad buttons `RYO_INPUT` can name after `Pad`, by `GamepadButton` variant name
+const PAD_BUTTONS: &[(&str, GamepadButton)] = &[
+  ("South", GamepadButton::South),
+  ("East", GamepadButton::East),
+  ("West", GamepadButton::West),
+  ("North", GamepadButton::North),
+  ("LeftBumper", GamepadButton::LeftBumper),
+  ("RightBumper", GamepadButton::RightBumper),
+  ("LeftTrigger", GamepadButton::LeftTrigger),
+  ("RightTrigger", GamepadButton::RightTrigger),
+  ("LeftStick", GamepadButton::LeftStick),
+  ("RightStick", GamepadButton::RightStick),
+  ("Select", GamepadButton::Select),
+  ("Start", GamepadButton::Start),
+  ("Guide", GamepadButton::Guide),
+  ("DPadUp", GamepadButton::DPadUp),
+  ("DPadDown", GamepadButton::DPadDown),
+  ("DPadLeft", GamepadButton::DPadLeft),
+  ("DPadRight", GamepadButton::DPadRight),
+];
+
 /// When a scripted press comes back up
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Release {
@@ -141,10 +167,13 @@ enum Release {
 }
 
 /// Something the script can hold down
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Control {
   Key(KeyCode),
   Button(MouseButton),
+  Pad(GamepadButton),
+  /// A stick held at a position
+  Stick(Stick, f32, f32),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -157,6 +186,8 @@ enum Action {
   },
   /// Move the mouse to game coordinates
   MoveMouse(f32, f32),
+  /// Scroll the wheel by lines
+  Wheel(f32, f32),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -203,7 +234,7 @@ impl InputScript {
     for token in tokens {
       let entry = parse_entry(token).ok_or_else(|| {
         format!(
-          "RYO_INPUT entry {token:?} is invalid (expected FRAME:Input or FROM-TO:Input, where Input is a winit KeyCode name, Click[@XxY], RightClick[@XxY] or Mouse@XxY, e.g. \"60:Digit2\", \"60-90:ArrowUp\" or \"60:Click@320x180\"); scripted input disabled"
+          "RYO_INPUT entry {token:?} is invalid (expected FRAME:Input or FROM-TO:Input, where Input is a winit KeyCode name, Click[@XxY], RightClick[@XxY], Mouse@XxY, Wheel@DXxDY, Pad<Button> (e.g. PadSouth, PadDPadDown), LeftStick@XxY or RightStick@XxY, e.g. \"60:Digit2\", \"60-90:ArrowUp\", \"60:Click@320x180\" or \"90:Wheel@0x-1\"); scripted input disabled"
         )
       })?;
       entries.push(entry);
@@ -249,6 +280,7 @@ impl InputScript {
         x: f64::from(x),
         y: f64::from(y),
       }),
+      Action::Wheel(dx, dy) => input.queue(InputEvent::Scroll(MouseScrollDelta::LineDelta(dx, dy))),
       Action::Press {
         control,
         at,
@@ -293,6 +325,11 @@ fn set(input: &mut Input, control: Control, state: ElementState) {
   input.queue(match control {
     Control::Key(key) => InputEvent::Key { key, pressed },
     Control::Button(button) => InputEvent::MouseButton { button, pressed },
+    Control::Pad(button) => InputEvent::PadButton { button, pressed },
+    Control::Stick(stick, x, y) => {
+      let (x, y) = if pressed { (x, y) } else { (0.0, 0.0) };
+      InputEvent::PadStick { stick, x, y }
+    }
   });
 }
 
@@ -300,6 +337,9 @@ fn press_pending(input: &Input, control: Control) -> bool {
   match control {
     Control::Key(key) => input.key_press_pending(key),
     Control::Button(button) => input.mouse_press_pending(button),
+    Control::Pad(button) => input.gamepad_press_pending(button),
+    // A stick has no press to wait for: a tap centres before the next frame
+    Control::Stick(..) => false,
   }
 }
 
@@ -320,7 +360,11 @@ fn parse_entry(token: &str) -> Option<Entry> {
     Some((name, point)) => (name, Some(parse_point(point)?)),
     None => (input, None),
   };
-  let action = if name.eq_ignore_ascii_case("Mouse") {
+  let action = if name.eq_ignore_ascii_case("Wheel") {
+    // A wheel step happens once, so it takes a delta and no range
+    let (dx, dy) = at?;
+    (release == Release::Seen).then_some(Action::Wheel(dx, dy))?
+  } else if name.eq_ignore_ascii_case("Mouse") {
     // A move happens once, so it takes no range
     let (x, y) = at?;
     (release == Release::Seen).then_some(Action::MoveMouse(x, y))?
@@ -329,6 +373,21 @@ fn parse_entry(token: &str) -> Option<Entry> {
       Control::Button(MouseButton::Left)
     } else if name.eq_ignore_ascii_case("RightClick") {
       Control::Button(MouseButton::Right)
+    } else if name.eq_ignore_ascii_case("LeftStick") {
+      let (x, y) = at?;
+      Control::Stick(Stick::Left, x, y)
+    } else if name.eq_ignore_ascii_case("RightStick") {
+      let (x, y) = at?;
+      Control::Stick(Stick::Right, x, y)
+    } else if let Some(pad) = pad_prefix(name) {
+      if at.is_some() {
+        return None;
+      }
+      let button = PAD_BUTTONS
+        .iter()
+        .find(|(known, _)| known.eq_ignore_ascii_case(pad))?
+        .1;
+      Control::Pad(button)
     } else if at.is_none() {
       let key = KEYS
         .iter()
@@ -338,6 +397,12 @@ fn parse_entry(token: &str) -> Option<Entry> {
     } else {
       return None;
     };
+    // A stick's position is its own, not a mouse move
+    let at = if matches!(control, Control::Stick(..)) {
+      None
+    } else {
+      at
+    };
     Action::Press {
       control,
       at,
@@ -345,6 +410,12 @@ fn parse_entry(token: &str) -> Option<Entry> {
     }
   };
   Some(Entry { frame, action })
+}
+
+/// The part of `name` after a case-insensitive `Pad` prefix
+fn pad_prefix(name: &str) -> Option<&str> {
+  let head = name.get(..3)?;
+  head.eq_ignore_ascii_case("Pad").then(|| &name[3..])
 }
 
 /// `XxY` in game coordinates, e.g. `320x180`
@@ -576,7 +647,6 @@ mod tests {
       "1:Click@1x",
       "1:Click@ax2",
       "1:Click@1x2x3",
-      "1:Wheel@1x2",
     ] {
       let err = InputScript::parse(raw)
         .err()
@@ -593,5 +663,72 @@ mod tests {
     s.after_frame(&mut input);
     input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
     assert!(input.key_down(KeyCode::Space));
+  }
+
+  #[test]
+  fn wheel_entries_scroll_on_their_frame() {
+    let mut s = script("3:Wheel@0x-2");
+    let mut input = Input::new();
+    start(&mut s, &mut input, 2);
+    assert_eq!(input.scroll_delta(), (0.0, 0.0));
+    finish(&mut s, &mut input, true);
+    start(&mut s, &mut input, 3);
+    assert_eq!(input.scroll_delta(), (0.0, -2.0));
+  }
+
+  #[test]
+  fn pad_taps_and_holds_press_the_virtual_pad() {
+    let mut s = script("1:PadSouth 2-4:PadDPadDown");
+    let mut input = Input::new();
+    start(&mut s, &mut input, 1);
+    assert!(input.gamepad_button_pressed(GamepadButton::South));
+    finish(&mut s, &mut input, true);
+    start(&mut s, &mut input, 2);
+    assert!(
+      !input.gamepad_button_down(GamepadButton::South),
+      "a tap comes up once an update saw it"
+    );
+    assert!(input.gamepad_button_down(GamepadButton::DPadDown));
+    finish(&mut s, &mut input, true);
+    start(&mut s, &mut input, 3);
+    assert!(input.gamepad_button_down(GamepadButton::DPadDown));
+    finish(&mut s, &mut input, true);
+    start(&mut s, &mut input, 4);
+    assert!(
+      !input.gamepad_button_down(GamepadButton::DPadDown),
+      "held until just before frame 4"
+    );
+  }
+
+  #[test]
+  fn stick_ranges_hold_a_position_then_centre() {
+    let mut s = script("1-3:LeftStick@0x1");
+    let mut input = Input::new();
+    start(&mut s, &mut input, 1);
+    assert_eq!(input.left_stick_raw(), (0.0, 1.0));
+    finish(&mut s, &mut input, true);
+    start(&mut s, &mut input, 3);
+    assert_eq!(input.left_stick_raw(), (0.0, 0.0));
+  }
+
+  #[test]
+  fn pad_and_wheel_names_are_checked() {
+    for bad in [
+      "1:PadNope",
+      "1:Wheel",
+      "1-3:Wheel@0x1",
+      "1:LeftStick",
+      "1:PadSouth@1x1",
+    ] {
+      assert!(InputScript::parse(bad).is_err(), "{bad} must be rejected");
+    }
+    for good in [
+      "1:padsouth",
+      "1:PadDPadUp",
+      "1:Wheel@1x0",
+      "1:RightStick@-1x0",
+    ] {
+      assert!(InputScript::parse(good).is_ok(), "{good} must parse");
+    }
   }
 }

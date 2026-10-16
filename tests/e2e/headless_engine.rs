@@ -668,3 +668,39 @@ fn a_minimised_window_skips_frames_and_comes_back() {
     [220, 30, 40, 255]
   );
 }
+
+#[test]
+fn pad_and_wheel_helpers_reach_input() {
+  #[derive(Default)]
+  struct Watch;
+  impl Scene for Watch {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+  let Some(mut engine) =
+    HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(64, 64).start_scene(Watch))
+  else {
+    return;
+  };
+  engine.tap_pad(GamepadButton::North);
+  engine.set_stick(Stick::Left, 0.0, 1.0);
+  engine.wheel(0.0, 1.0);
+  engine.step().unwrap();
+  let input = engine.world().resource::<Input>();
+  assert!(input.gamepad_button_down(GamepadButton::North));
+  assert_eq!(input.left_stick_raw(), (0.0, 1.0));
+  assert_eq!(
+    input.last_device(),
+    InputDevice::Mouse,
+    "the wheel came last"
+  );
+  engine.step().unwrap();
+  assert!(
+    !engine
+      .world()
+      .resource::<Input>()
+      .gamepad_button_down(GamepadButton::North),
+    "a tap is released after one step"
+  );
+}

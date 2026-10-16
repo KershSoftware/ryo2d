@@ -99,7 +99,7 @@ pub mod prelude {
   };
 
   // Input (with winit's key and mouse button types)
-  pub use crate::core::input::{GamepadButton, Input, InputEvent};
+  pub use crate::core::input::{GamepadButton, Input, InputDevice, InputEvent, Stick};
   pub use winit::event::MouseButton;
   pub use winit::keyboard::KeyCode;
 

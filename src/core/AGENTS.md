@@ -1,6 +1,6 @@
 # AGENTS.md - Core Engine Modules
 
-Most subsystems have their own AGENTS.md or a skill in `.claude/skills/` (`physics/`, `gameplay/`, `ecs/`, `systems/`, ...). This file covers cross-cutting design and the root-level files and folders without one: `engine/`, `scene/`, `schedule.rs`, `time.rs`, `input.rs`, `messages/`, `window.rs`, `cursor.rs`.
+Most subsystems have their own AGENTS.md or a skill in `.claude/skills/` (`physics/`, `gameplay/`, `ecs/`, `systems/`, ...). This file covers cross-cutting design and the root-level files and folders without one: `engine/`, `scene/`, `schedule.rs`, `time.rs`, `input/`, `messages/`, `window.rs`, `cursor.rs`.
 
 ## Design Philosophy
 
@@ -27,7 +27,7 @@ Bevy clamps the change ticks of the systems in its own `Schedules` resource only
 
 ## Input
 
-`Input` (`input.rs`) is rebuilt in `First` from queued `InputEvent`s (window events, gamepads, `RYO_INPUT`, the headless harness).
+`Input` (`input/`, see its AGENTS.md) is rebuilt in `First` from queued `InputEvent`s (window events, gamepads, `RYO_INPUT`, the headless harness).
 
 - One-shots (`key_pressed`, `mouse_pressed`, ...) are visible in the first fixed step of a frame only; a press in a frame that runs no fixed step waits for the next step (two views: the frame view and the fixed view, `end_fixed_steps`), except while the game clock is paused, when the fixed view is cleared so presses are not replayed on resume.
 - `consume_key` / `consume_mouse` / `consume_text` / `consume_scroll` hide the input, held state included, for the rest of the frame. The UI pass runs before the fixed steps and consumes what it uses, so `update` never sees a click the UI took.

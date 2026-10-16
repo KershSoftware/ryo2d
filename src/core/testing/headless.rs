@@ -1,14 +1,14 @@
 //! `HeadlessEngine`: a real engine without a window.
 
 use image::RgbaImage;
-use winit::event::MouseButton;
+use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
 use super::{HeadlessError, shared_gpu};
 use crate::core::ecs::World;
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::{ScreenMapping, WgpuRenderer};
-use crate::core::input::InputEvent;
+use crate::core::input::{GamepadButton, InputEvent, Stick};
 
 /// Largest supported render target side, in pixels.
 const MAX_DIMENSION: u32 = 8192;
@@ -48,6 +48,7 @@ pub struct HeadlessEngine {
   presented: u64,
   quit: bool,
   pending_releases: Vec<KeyCode>,
+  pending_pad_releases: Vec<GamepadButton>,
 }
 
 impl HeadlessEngine {
@@ -110,6 +111,7 @@ impl HeadlessEngine {
       presented: 0,
       quit: false,
       pending_releases: Vec::new(),
+      pending_pad_releases: Vec::new(),
     })
   }
 
@@ -146,6 +148,12 @@ impl HeadlessEngine {
     for key in self.pending_releases.drain(..) {
       self.engine.input_mut().queue(InputEvent::Key {
         key,
+        pressed: false,
+      });
+    }
+    for button in self.pending_pad_releases.drain(..) {
+      self.engine.input_mut().queue(InputEvent::PadButton {
+        button,
         pressed: false,
       });
     }
@@ -272,5 +280,43 @@ impl HeadlessEngine {
       x: f64::from(x),
       y: f64::from(y),
     });
+  }
+
+  /// Hold a gamepad button down from the next step (a virtual pad connects if none is).
+  pub fn press_pad(&mut self, button: GamepadButton) {
+    self.engine.input_mut().queue(InputEvent::PadButton {
+      button,
+      pressed: true,
+    });
+  }
+
+  /// Release a gamepad button.
+  pub fn release_pad(&mut self, button: GamepadButton) {
+    self.engine.input_mut().queue(InputEvent::PadButton {
+      button,
+      pressed: false,
+    });
+  }
+
+  /// Press a gamepad button for the next step only; it is released after that step.
+  pub fn tap_pad(&mut self, button: GamepadButton) {
+    self.press_pad(button);
+    self.pending_pad_releases.push(button);
+  }
+
+  /// Hold a stick at `(x, y)` (-1..1 each axis, +y up) until set again.
+  pub fn set_stick(&mut self, stick: Stick, x: f32, y: f32) {
+    self
+      .engine
+      .input_mut()
+      .queue(InputEvent::PadStick { stick, x, y });
+  }
+
+  /// Turn the mouse wheel by `(dx, dy)` lines in the next step.
+  pub fn wheel(&mut self, dx: f32, dy: f32) {
+    self
+      .engine
+      .input_mut()
+      .queue(InputEvent::Scroll(MouseScrollDelta::LineDelta(dx, dy)));
   }
 }

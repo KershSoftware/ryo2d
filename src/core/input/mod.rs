@@ -95,6 +95,22 @@ fn apply_deadzone(x: f32, y: f32) -> (f32, f32) {
   }
 }
 
+/// The kind of device the player used last: prompts and the focus ring follow it
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum InputDevice {
+  #[default]
+  Mouse,
+  Keyboard,
+  Gamepad,
+}
+
+/// A gamepad stick
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Stick {
+  Left,
+  Right,
+}
+
 /// A window or gamepad event, applied at the next `begin_frame`.
 #[derive(Debug, Clone)]
 pub enum InputEvent {
@@ -143,6 +159,18 @@ pub enum InputEvent {
     axis: gilrs::Axis,
     value: f32,
   },
+  /// A gamepad button with no gilrs id: scripted and headless input. Applies
+  /// to the tracked pad, or connects a virtual one
+  PadButton {
+    button: GamepadButton,
+    pressed: bool,
+  },
+  /// A stick position (-1..1 each axis, +y up) with no gilrs id
+  PadStick {
+    stick: Stick,
+    x: f32,
+    y: f32,
+  },
 }
 
 /// Input state for the frame, a resource and `SceneContext::input`.
@@ -183,6 +211,12 @@ pub struct Input {
   // Mouse scroll
   scroll_delta_x: f32,
   scroll_delta_y: f32,
+  /// The wheel for the fixed steps: kept until a step has seen it
+  scroll_fixed_x: f32,
+  scroll_fixed_y: f32,
+
+  /// The device behind the newest input
+  last_device: InputDevice,
 
   // Text input (from IME or keyboard)
   /// Text committed this frame (ready to insert)
@@ -323,6 +357,14 @@ impl Input {
         self.handle_gamepad_trigger(id, button, value)
       }
       InputEvent::GamepadAxis { id, axis, value } => self.handle_gamepad_axis(id, axis, value),
+      InputEvent::PadButton { button, pressed } => {
+        self.connect_virtual_pad();
+        self.set_gamepad_button(button, pressed);
+      }
+      InputEvent::PadStick { stick, x, y } => {
+        self.connect_virtual_pad();
+        self.set_stick_raw(stick, x, y);
+      }
     }
   }
 
@@ -343,6 +385,8 @@ impl Input {
       self.mouse_buttons_released_fixed.clear();
       self.gamepad_buttons_pressed_fixed.clear();
       self.gamepad_buttons_released_fixed.clear();
+      self.scroll_fixed_x = 0.0;
+      self.scroll_fixed_y = 0.0;
     }
   }
 
@@ -464,6 +508,8 @@ impl Input {
     }
     self.scroll_delta_x = 0.0;
     self.scroll_delta_y = 0.0;
+    self.scroll_fixed_x = 0.0;
+    self.scroll_fixed_y = 0.0;
   }
 
   /// Hide this frame's text from later readers.
@@ -579,6 +625,7 @@ impl Input {
         if !self.keys_down.contains(&key) {
           self.keys_pressed.insert(key);
           self.keys_pressed_fixed.insert(key);
+          self.last_device = InputDevice::Keyboard;
         }
         self.keys_down.insert(key);
         // Always register in keys_repeated (includes initial press and repeats)
@@ -637,6 +684,7 @@ impl Input {
           self.mouse_buttons_pressed.insert(button);
           self.mouse_buttons_pressed_fixed.insert(button);
         }
+        self.last_device = InputDevice::Mouse;
         self.mouse_buttons_down.insert(button);
       }
       ElementState::Released => {
@@ -681,6 +729,9 @@ impl Input {
   pub(crate) fn handle_mouse_move(&mut self, x: f64, y: f64) {
     let new_x = x as f32;
     let new_y = y as f32;
+    if (new_x - self.mouse_x).hypot(new_y - self.mouse_y) >= 2.0 {
+      self.last_device = InputDevice::Mouse;
+    }
     self.mouse_delta_x += new_x - self.mouse_x;
     self.mouse_delta_y += new_y - self.mouse_y;
     self.mouse_x = new_x;
@@ -697,28 +748,46 @@ impl Input {
   // Mouse Scroll
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /// Get the scroll wheel delta this frame (x, y)
+  /// Get the scroll wheel delta (x, y) in lines.
   /// Positive y = scroll up, negative y = scroll down
+  ///
+  /// Outside the fixed steps this is the frame's wheel. Inside them the first
+  /// step sees the frame's wheel and later steps see none, so a step never
+  /// counts it twice; a frame with no step carries its wheel to the next
+  /// first step, and a pause drops it.
   pub fn scroll_delta(&self) -> (f32, f32) {
     if self.pointer_blocked() {
       return (0.0, 0.0);
     }
-    (self.scroll_delta_x, self.scroll_delta_y)
+    match self.oneshots() {
+      OneShots::Frame => (self.scroll_delta_x, self.scroll_delta_y),
+      OneShots::Fixed => (self.scroll_fixed_x, self.scroll_fixed_y),
+      OneShots::Suppressed => (0.0, 0.0),
+    }
+  }
+
+  /// The player's last-used device (keyboard, mouse or gamepad)
+  pub fn last_device(&self) -> InputDevice {
+    self.last_device
+  }
+
+  /// A pad press waiting for the next fixed step (scripted input)
+  pub(crate) fn gamepad_press_pending(&self, button: GamepadButton) -> bool {
+    self.gamepad_buttons_pressed_fixed.contains(&button)
   }
 
   /// Handle mouse scroll (applied at once)
   pub(crate) fn handle_scroll(&mut self, delta: MouseScrollDelta) {
-    match delta {
-      MouseScrollDelta::LineDelta(x, y) => {
-        self.scroll_delta_x += x;
-        self.scroll_delta_y += y;
-      }
-      MouseScrollDelta::PixelDelta(pos) => {
-        // Convert pixel delta to approximate line delta
-        self.scroll_delta_x += pos.x as f32 / 120.0;
-        self.scroll_delta_y += pos.y as f32 / 120.0;
-      }
-    }
+    let (x, y) = match delta {
+      MouseScrollDelta::LineDelta(x, y) => (x, y),
+      // Convert pixel delta to approximate line delta
+      MouseScrollDelta::PixelDelta(pos) => (pos.x as f32 / 120.0, pos.y as f32 / 120.0),
+    };
+    self.scroll_delta_x += x;
+    self.scroll_delta_y += y;
+    self.scroll_fixed_x += x;
+    self.scroll_fixed_y += y;
+    self.last_device = InputDevice::Mouse;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -986,16 +1055,49 @@ impl Input {
     let Some(btn) = GamepadButton::from_gilrs(button) else {
       return;
     };
+    self.set_gamepad_button(btn, pressed);
+  }
+
+  /// Apply a button change to the tracked pad's state (press sets, release clears)
+  fn set_gamepad_button(&mut self, btn: GamepadButton, pressed: bool) {
     if pressed {
       if !self.gamepad_buttons_down.contains(&btn) {
         self.gamepad_buttons_pressed.insert(btn);
         self.gamepad_buttons_pressed_fixed.insert(btn);
       }
       self.gamepad_buttons_down.insert(btn);
+      self.last_device = InputDevice::Gamepad;
     } else {
       self.gamepad_buttons_down.remove(&btn);
       self.gamepad_buttons_released.insert(btn);
       self.gamepad_buttons_released_fixed.insert(btn);
+    }
+  }
+
+  /// Track a pad when a virtual event arrives and none is connected
+  fn connect_virtual_pad(&mut self) {
+    if !self.gamepad_connected {
+      self.gamepad_connected = true;
+      self.gamepad_name = "Virtual pad".to_string();
+      self.gamepad_id = None;
+    }
+  }
+
+  /// Store one stick's raw position and recompute its deadzoned value
+  fn set_stick_raw(&mut self, stick: Stick, x: f32, y: f32) {
+    let (dx, dy) = apply_deadzone(x, y);
+    match stick {
+      Stick::Left => {
+        (self.left_stick_x_raw, self.left_stick_y_raw) = (x, y);
+        (self.left_stick_x, self.left_stick_y) = (dx, dy);
+      }
+      Stick::Right => {
+        (self.right_stick_x_raw, self.right_stick_y_raw) = (x, y);
+        (self.right_stick_x, self.right_stick_y) = (dx, dy);
+      }
+    }
+    if dx.hypot(dy) > 0.5 {
+      self.last_device = InputDevice::Gamepad;
     }
   }
 
@@ -1010,30 +1112,10 @@ impl Input {
     }
     use gilrs::Axis;
     match axis {
-      Axis::LeftStickX => {
-        self.left_stick_x_raw = value;
-        let (x, y) = apply_deadzone(value, self.left_stick_y_raw);
-        self.left_stick_x = x;
-        self.left_stick_y = y;
-      }
-      Axis::LeftStickY => {
-        self.left_stick_y_raw = value;
-        let (x, y) = apply_deadzone(self.left_stick_x_raw, value);
-        self.left_stick_x = x;
-        self.left_stick_y = y;
-      }
-      Axis::RightStickX => {
-        self.right_stick_x_raw = value;
-        let (x, y) = apply_deadzone(value, self.right_stick_y_raw);
-        self.right_stick_x = x;
-        self.right_stick_y = y;
-      }
-      Axis::RightStickY => {
-        self.right_stick_y_raw = value;
-        let (x, y) = apply_deadzone(self.right_stick_x_raw, value);
-        self.right_stick_x = x;
-        self.right_stick_y = y;
-      }
+      Axis::LeftStickX => self.set_stick_raw(Stick::Left, value, self.left_stick_y_raw),
+      Axis::LeftStickY => self.set_stick_raw(Stick::Left, self.left_stick_x_raw, value),
+      Axis::RightStickX => self.set_stick_raw(Stick::Right, value, self.right_stick_y_raw),
+      Axis::RightStickY => self.set_stick_raw(Stick::Right, self.right_stick_x_raw, value),
       // Triggers arrive as LeftTrigger2/RightTrigger2 button-changed events
       _ => {}
     }
@@ -2626,5 +2708,181 @@ mod tests {
     assert!(input.key_pressed(KeyCode::KeyH));
     assert!(input.key_released(KeyCode::KeyH));
     assert!(!input.key_down(KeyCode::KeyH));
+  }
+
+  fn frame(input: &mut Input, events: Vec<InputEvent>) {
+    for event in events {
+      input.queue(event);
+    }
+    input.begin_frame();
+  }
+
+  #[test]
+  fn the_last_device_follows_the_newest_input() {
+    let mut input = Input::new();
+    assert_eq!(input.last_device(), InputDevice::Mouse);
+    frame(
+      &mut input,
+      vec![InputEvent::Key {
+        key: KeyCode::KeyA,
+        pressed: true,
+      }],
+    );
+    assert_eq!(input.last_device(), InputDevice::Keyboard);
+    frame(
+      &mut input,
+      vec![InputEvent::PadButton {
+        button: GamepadButton::South,
+        pressed: true,
+      }],
+    );
+    assert_eq!(input.last_device(), InputDevice::Gamepad);
+    // A one-unit nudge is jitter, not the mouse
+    frame(&mut input, vec![InputEvent::MouseMove { x: 1.0, y: 0.0 }]);
+    assert_eq!(input.last_device(), InputDevice::Gamepad);
+    frame(&mut input, vec![InputEvent::MouseMove { x: 40.0, y: 30.0 }]);
+    assert_eq!(input.last_device(), InputDevice::Mouse);
+    frame(
+      &mut input,
+      vec![InputEvent::PadStick {
+        stick: Stick::Left,
+        x: 0.9,
+        y: 0.0,
+      }],
+    );
+    assert_eq!(input.last_device(), InputDevice::Gamepad);
+    frame(
+      &mut input,
+      vec![InputEvent::Scroll(MouseScrollDelta::LineDelta(0.0, 1.0))],
+    );
+    assert_eq!(input.last_device(), InputDevice::Mouse);
+  }
+
+  #[test]
+  fn the_wheel_shows_in_the_first_fixed_step_only() {
+    let mut input = Input::new();
+    frame(
+      &mut input,
+      vec![InputEvent::Scroll(MouseScrollDelta::LineDelta(0.0, 2.0))],
+    );
+    assert_eq!(
+      input.scroll_delta(),
+      (0.0, 2.0),
+      "the frame view, as the UI pass reads it"
+    );
+    input.set_fixed_step(0);
+    assert_eq!(input.scroll_delta(), (0.0, 2.0));
+    input.set_fixed_step(1);
+    assert_eq!(
+      input.scroll_delta(),
+      (0.0, 0.0),
+      "a second step must not count it again"
+    );
+    input.end_fixed_steps(true);
+    input.begin_frame();
+    input.set_fixed_step(0);
+    assert_eq!(input.scroll_delta(), (0.0, 0.0), "seen once, gone");
+  }
+
+  #[test]
+  fn a_wheel_with_no_fixed_step_waits_for_the_next_frame() {
+    let mut input = Input::new();
+    frame(
+      &mut input,
+      vec![InputEvent::Scroll(MouseScrollDelta::LineDelta(0.0, -1.0))],
+    );
+    input.end_fixed_steps(false);
+    frame(
+      &mut input,
+      vec![InputEvent::Scroll(MouseScrollDelta::LineDelta(0.0, -1.0))],
+    );
+    input.set_fixed_step(0);
+    assert_eq!(
+      input.scroll_delta(),
+      (0.0, -2.0),
+      "both frames' steps reach the first step that runs"
+    );
+  }
+
+  #[test]
+  fn a_paused_frame_drops_the_wheel() {
+    let mut input = Input::new();
+    frame(
+      &mut input,
+      vec![InputEvent::Scroll(MouseScrollDelta::LineDelta(0.0, 3.0))],
+    );
+    // The engine passes `step > 0 || paused`: a pause clears what no step saw
+    input.end_fixed_steps(true);
+    input.begin_frame();
+    input.set_fixed_step(0);
+    assert_eq!(input.scroll_delta(), (0.0, 0.0));
+  }
+
+  #[test]
+  fn consuming_the_wheel_hides_it_from_the_fixed_steps() {
+    let mut input = Input::new();
+    frame(
+      &mut input,
+      vec![InputEvent::Scroll(MouseScrollDelta::LineDelta(0.0, 1.0))],
+    );
+    input.consume_scroll();
+    input.set_fixed_step(0);
+    assert_eq!(input.scroll_delta(), (0.0, 0.0));
+  }
+
+  #[test]
+  fn a_virtual_pad_button_reads_like_a_real_one() {
+    let mut input = Input::new();
+    frame(
+      &mut input,
+      vec![InputEvent::PadButton {
+        button: GamepadButton::South,
+        pressed: true,
+      }],
+    );
+    assert!(input.gamepad_connected());
+    assert_eq!(input.gamepad_name(), "Virtual pad");
+    assert!(input.gamepad_button_pressed(GamepadButton::South));
+    assert!(input.gamepad_button_down(GamepadButton::South));
+    input.set_fixed_step(0);
+    assert!(
+      input.gamepad_button_pressed(GamepadButton::South),
+      "the fixed view sees the press too"
+    );
+    input.end_fixed_steps(true);
+    frame(
+      &mut input,
+      vec![InputEvent::PadButton {
+        button: GamepadButton::South,
+        pressed: false,
+      }],
+    );
+    assert!(input.gamepad_button_released(GamepadButton::South));
+    assert!(!input.gamepad_button_down(GamepadButton::South));
+  }
+
+  #[test]
+  fn a_virtual_stick_is_deadzoned() {
+    let mut input = Input::new();
+    frame(
+      &mut input,
+      vec![InputEvent::PadStick {
+        stick: Stick::Right,
+        x: 0.1,
+        y: 0.05,
+      }],
+    );
+    assert_eq!(input.right_stick(), (0.0, 0.0));
+    frame(
+      &mut input,
+      vec![InputEvent::PadStick {
+        stick: Stick::Right,
+        x: 1.0,
+        y: 0.0,
+      }],
+    );
+    let (x, y) = input.right_stick();
+    assert!((x - 1.0).abs() < 1e-5 && y.abs() < 1e-5);
+    assert_eq!(input.right_stick_raw(), (1.0, 0.0));
   }
 }
