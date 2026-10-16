@@ -676,6 +676,17 @@ impl Input {
     }
   }
 
+  /// Whether a binding's key, button or stick direction is physically
+  /// down, consumed or not
+  pub(crate) fn binding_down_raw(&self, binding: &Binding) -> bool {
+    match *binding {
+      Binding::Key(key) => self.keys_down.contains(&key),
+      Binding::Mouse(button) => self.mouse_buttons_down.contains(&button),
+      Binding::Pad(button) => self.gamepad_buttons_down.contains(&button),
+      Binding::Stick(dir) => self.stick_dirs_down.contains(&dir),
+    }
+  }
+
   fn binding_released(&self, binding: &Binding) -> bool {
     match *binding {
       Binding::Key(key) => self.key_released(key),

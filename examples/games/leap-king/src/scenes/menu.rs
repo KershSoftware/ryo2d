@@ -61,9 +61,11 @@ struct MenuFairyLight {
 }
 
 pub struct MenuScene {
-  room_code_input: TextInputState,
-  address_input: TextInputState,
-  signal_url_input: TextInputState,
+  room_code: String,
+  address: String,
+  signal_url: String,
+  /// A text field had the keyboard on the last UI pass
+  typing: bool,
   error_message: Option<String>,
   pending_scene: Option<Box<dyn Scene>>,
 
@@ -89,14 +91,11 @@ pub struct MenuScene {
 
 impl MenuScene {
   pub fn new() -> Self {
-    let mut address_input = TextInputState::new();
-    address_input.set_text(DEFAULT_ADDRESS);
-    let mut signal_url_input = TextInputState::new();
-    signal_url_input.set_text(DEFAULT_SIGNAL_URL);
     Self {
-      room_code_input: TextInputState::new(),
-      address_input,
-      signal_url_input,
+      room_code: String::new(),
+      address: DEFAULT_ADDRESS.to_string(),
+      signal_url: DEFAULT_SIGNAL_URL.to_string(),
+      typing: false,
       error_message: None,
       pending_scene: None,
       host_mode: HostMode::Lan,
@@ -188,7 +187,7 @@ impl MenuScene {
     let result = match self.host_mode {
       HostMode::Lan => GameScene::new_host(room_code),
       HostMode::Internet => {
-        let signal_url = self.signal_url_input.text().trim().to_string();
+        let signal_url = self.signal_url.trim().to_string();
         if signal_url.is_empty() {
           self.error_message = Some("Enter signal server URL".to_string());
           return;
@@ -207,8 +206,8 @@ impl MenuScene {
   }
 
   fn try_join_room(&mut self) {
-    let room_code = self.room_code_input.text().trim().to_uppercase();
-    let address = self.address_input.text().trim().to_string();
+    let room_code = self.room_code.trim().to_uppercase();
+    let address = self.address.trim().to_string();
 
     if room_code.len() != ROOM_CODE_LENGTH {
       self.error_message = Some(format!("Room code must be {} characters", ROOM_CODE_LENGTH));
@@ -349,10 +348,8 @@ impl Scene for MenuScene {
       return SceneAction::Quit;
     }
 
-    // Check if text inputs are focused
-    let text_input_focused = self.room_code_input.is_focused()
-      || self.address_input.is_focused()
-      || self.signal_url_input.is_focused();
+    // A text field has the keys (as this frame's UI pass, which runs first, left it)
+    let text_input_focused = self.typing;
 
     // Navigation (only when text inputs not focused)
     if !text_input_focused && self.input_cooldown <= 0.0 {
@@ -402,21 +399,13 @@ impl Scene for MenuScene {
       self.activate_selected();
     }
 
-    // Special case: Enter while in text input tries to join
-    if ctx.input.key_pressed(KeyCode::Enter) && text_input_focused {
-      let has_code = self.room_code_input.text().len() == ROOM_CODE_LENGTH;
-      let has_address = !self.address_input.text().trim().is_empty();
-      if has_code && has_address {
-        self.try_join_room();
-      }
-    }
-
     SceneAction::Continue
   }
 
-  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-    let dt = ctx.time.real.delta();
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let (sw, sh) = ui.screen_size();
+    // Enter in any field tries to join
+    let mut submitted = false;
     let center_x = sw as f32 / 2.0;
     let center_y = sh as f32 / 2.0;
 
@@ -536,12 +525,12 @@ impl Scene for MenuScene {
         signal_input_width,
         28.0,
       );
-      ui.text_input(
-        &mut self.signal_url_input,
-        signal_input_rect,
-        "wss://...trycloudflare.com",
-        dt,
-      );
+      submitted |= ui
+        .text_input(&mut self.signal_url)
+        .at(signal_input_rect)
+        .placeholder("wss://...trycloudflare.com")
+        .show()
+        .submitted();
       extra_offset = 37.0;
     }
 
@@ -604,7 +593,12 @@ impl Scene for MenuScene {
       code_input_width,
       32.0,
     );
-    ui.text_input(&mut self.room_code_input, code_input_rect, "XXXXX", dt);
+    submitted |= ui
+      .text_input(&mut self.room_code)
+      .at(code_input_rect)
+      .placeholder("XXXXX")
+      .show()
+      .submitted();
 
     // Join section - Server Address
     ui.draw_text_anchored(
@@ -622,12 +616,17 @@ impl Scene for MenuScene {
       addr_input_width,
       32.0,
     );
-    ui.text_input(
-      &mut self.address_input,
-      addr_input_rect,
-      DEFAULT_ADDRESS,
-      dt,
-    );
+    submitted |= ui
+      .text_input(&mut self.address)
+      .at(addr_input_rect)
+      .placeholder(DEFAULT_ADDRESS)
+      .show()
+      .submitted();
+    let has_code = self.room_code.len() == ROOM_CODE_LENGTH;
+    let has_address = !self.address.trim().is_empty();
+    if submitted && has_code && has_address {
+      self.try_join_room();
+    }
 
     // Hint for join: address format
     ui.draw_text_anchored(
@@ -690,6 +689,7 @@ impl Scene for MenuScene {
       -20.0,
       Color::DARK_GRAY,
     );
+    self.typing = ui.wants_keyboard();
     SceneAction::Continue
   }
 

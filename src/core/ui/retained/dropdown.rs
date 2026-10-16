@@ -18,8 +18,6 @@
 //! }
 //! ```
 
-use super::focus::Focusable;
-
 /// State for a dropdown widget.
 ///
 /// This is a retained-mode widget - you store this in your scene/game and
@@ -182,32 +180,6 @@ impl DropdownState {
   pub fn select_hovered(&mut self) {
     self.selected = self.hover_index;
     self.close();
-  }
-}
-
-// ============================================================================
-// Focusable implementation
-// ============================================================================
-
-impl Focusable for DropdownState {
-  fn is_focused(&self) -> bool {
-    self.focused
-  }
-
-  fn set_focused(&mut self, focused: bool) {
-    self.focused = focused;
-  }
-
-  fn is_capturing(&self) -> bool {
-    // When open, dropdown captures input for arrow key navigation
-    self.open
-  }
-
-  fn on_blur(&mut self) {
-    // Close dropdown when it loses focus
-    if self.open {
-      self.close();
-    }
   }
 }
 

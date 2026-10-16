@@ -48,7 +48,7 @@ use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::layout::{Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory};
 use crate::core::ui::response::{Response, Sense};
-use crate::core::ui::retained::{DropdownState, Focusable, TextInputState};
+use crate::core::ui::retained::DropdownState;
 use crate::core::ui::theme::{Look, Skin, Theme, WidgetKind, WidgetState, warn_once};
 use crate::core::ui::tree::{
   self, Draw, DrawKind, Node, RecordSpec, ResolveCx, Resolved, Subtree, TextLeaf, align_fraction,
@@ -357,7 +357,7 @@ pub struct UiContext<'a> {
   pending_dropdowns: Vec<PendingDropdown>,
   /// ID of the currently focused dropdown (0 = none)
   focused_dropdown_id: u32,
-  /// Whether a focused text input or an open dropdown was drawn this frame
+  /// Whether an open dropdown was drawn this frame
   keyboard_focus: bool,
   /// Whether the mouse is occluded by an overlay (e.g. developer console).
   /// When true, `is_hovered`, `is_held`, and `is_clicked` all return false.
@@ -632,6 +632,18 @@ impl<'a> UiContext<'a> {
   pub fn focused(&self) -> Option<UiId> {
     let focused = self.memory.interact.focused;
     (self.top && focused != UiId::NONE).then_some(focused)
+  }
+
+  /// Take the focus from `id` now, if it has it (a text field Escape leaves)
+  pub(crate) fn release_focus(&mut self, id: UiId) {
+    let i = &mut self.memory.interact;
+    if id != UiId::NONE && i.focused == id {
+      i.focused = UiId::NONE;
+      i.lost = id;
+      if i.gained == id {
+        i.gained = UiId::NONE;
+      }
+    }
   }
 
   /// Whether Back (Escape, or B on a pad) was pressed this frame and no
@@ -1033,6 +1045,12 @@ impl<'a> UiContext<'a> {
     self.input.consume_key(key);
   }
 
+  /// Consume every key and the typed text for this frame, from other
+  /// widgets and from gameplay (a focused text field takes them)
+  pub(crate) fn consume_keyboard(&mut self) {
+    self.input.consume_keyboard();
+  }
+
   /// The frame's input as the UI sees it.
   pub fn input(&self) -> &UiInput {
     &self.input
@@ -1074,15 +1092,31 @@ impl<'a> UiContext<'a> {
     self.focused_dropdown_id
   }
 
-  /// Whether a widget drawn this frame wants the keyboard: a focused text
-  /// input, or an open dropdown. A dropdown that is merely focused does not
-  /// count, since its focus is only cleared when another dropdown takes it.
+  /// Whether the UI wants the keyboard: a text field of the top scene has
+  /// the focus (from the frame's start, so before the field is drawn too),
+  /// or an open dropdown was drawn this frame. A dropdown that is merely
+  /// focused does not count.
   ///
-  /// Scenes with their own key bindings can check it after drawing their UI
-  /// and ignore those keys on the next update, so typing into a field never
-  /// triggers them.
+  /// A focused field takes every key, so gameplay never sees typing; scenes
+  /// that read keys in `ui` (through `ui.input()`) can check this to leave
+  /// them alone while the player types.
   pub fn wants_keyboard(&self) -> bool {
-    self.keyboard_focus
+    self.keyboard_focus || self.text_field_focused()
+  }
+
+  /// Whether the focus is on a text field of the top scene
+  fn text_field_focused(&self) -> bool {
+    let i = &self.memory.interact;
+    if i.focused == UiId::NONE {
+      return false;
+    }
+    self
+      .memory
+      .current(i.focused)
+      .or_else(|| self.memory.prev(i.focused))
+      .is_some_and(|record| {
+        record.flags.contains(Flags::TEXT_FIELD) && Some(record.scene) == i.nav_scene
+      })
   }
 
   /// Set the currently focused dropdown ID.
@@ -1778,181 +1812,11 @@ impl<'a> UiContext<'a> {
   }
 
   // =========================================================================
-  // Text Input Widget
+  // Text field measuring
   // =========================================================================
 
-  /// Draw an interactive text input field.
-  ///
-  /// This is a retained-mode widget - the `state` persists across frames and
-  /// holds the text buffer, cursor position, and selection state.
-  ///
-  /// Returns `true` if the text was modified this frame.
-  ///
-  /// # Arguments
-  /// * `state` - Mutable reference to the text input state
-  /// * `rect` - The bounding box for the text field
-  /// * `placeholder` - Text to show when the field is empty
-  /// * `dt` - Delta time for cursor blinking
-  ///
-  /// # Example
-  ///
-  /// ```ignore
-  /// // In your scene struct:
-  /// struct MyScene {
-  ///     username: TextInputState,
-  /// }
-  ///
-  /// // Each frame:
-  /// let rect = Rect::new(100.0, 100.0, 200.0, 30.0);
-  /// if ui.text_input(&mut self.username, rect, "Enter name...", dt) {
-  ///     println!("Text changed: {}", self.username.text());
-  /// }
-  /// ```
-  pub fn text_input(
-    &mut self,
-    state: &mut TextInputState,
-    rect: Rect,
-    placeholder: &str,
-    #[allow(unused_variables)] dt: f32,
-  ) -> bool {
-    // Update blink timer using the real frame dt (not the user-passed dt which
-    // may be the fixed-timestep dt, causing too-fast blink at high render FPS)
-    state.update_blink(self.dt);
-    // The field's text is one line of the default UI style; every position in
-    // it comes from the text engine
-    let style = TextStyle::default();
-    let (pad_x, pad_y) = (8.0, 4.0);
-    let text_x = rect.x + pad_x;
-
-    // Handle focus on click
-    let clicked = self.is_clicked(rect);
-    let hovered = self.is_hovered(rect);
-
-    if clicked {
-      self.input.consume_mouse(MouseButton::Left);
-      state.set_focused(true);
-      // The character boundary nearest the click, scroll included
-      let x = self.input.mouse_x() - text_x + state.scroll_offset();
-      let byte = self.byte_at(state.text(), &style, x);
-      state.set_cursor(byte, false);
-    } else if state.is_focused()
-      && self.input.mouse_down(MouseButton::Left)
-      && !self.input.mouse_pressed(MouseButton::Left)
-    {
-      // Drag-to-select: mouse held after initial click, extend selection
-      let x = self.input.mouse_x() - text_x + state.scroll_offset();
-      let byte = self.byte_at(state.text(), &style, x);
-      state.set_cursor(byte, true); // true = extend selection from anchor
-    } else if self.input.mouse_went_down(MouseButton::Left) && !hovered {
-      // Click outside always unfocuses, even if click was consumed by another widget.
-      // This prevents dual-focus when clicking between text inputs rendered in any order.
-      state.set_focused(false);
-    }
-
-    // Escape leaves the field, used up so the scene does not also act on it
-    if state.is_focused() && self.input.key_pressed(KeyCode::Escape) {
-      state.set_focused(false);
-      self.input.consume_key(KeyCode::Escape);
-    }
-
-    if state.is_focused() {
-      self.keyboard_focus = true;
-    }
-
-    // Handle keyboard input
-    let modified = state.handle_input(&self.input);
-    // A focused field owns the keyboard: what is typed into it is not also
-    // gameplay input
-    if state.is_focused() {
-      self.input.consume_keyboard();
-    }
-
-    let bg_color = if state.is_focused() {
-      Color::rgb(35, 35, 50)
-    } else {
-      Color::rgb(30, 30, 45)
-    };
-    let border_color = if state.is_focused() {
-      Color::rgb(100, 140, 200)
-    } else {
-      Color::rgb(70, 70, 90)
-    };
-    let (text_color, placeholder_color, cursor_color, selection_color) = (
-      Color::WHITE,
-      Color::GRAY,
-      Color::WHITE,
-      Color::new(100, 140, 200, 100),
-    );
-    let border_thickness = 1.0;
-
-    // Background and border
-    self.draw_rect_bordered(rect, bg_color, 0.0, border_thickness, border_color);
-
-    // The text line, centred vertically
-    let line_height = self.line_height(&style);
-    let text_y = rect.y + (rect.height - line_height) / 2.0;
-    let text_width = rect.width - pad_x * 2.0;
-
-    // Clip to text area for overflow handling
-    let text_area = Rect::new(
-      text_x,
-      rect.y + pad_y,
-      text_width,
-      rect.height - pad_y * 2.0,
-    );
-    self.push_clip(text_area);
-
-    // The caret, after any IME preedit being composed at it, kept in view
-    let preedit = self.input.ime_preedit().to_owned();
-    let preedit_width = if preedit.is_empty() {
-      0.0
-    } else {
-      self.measure_text(preedit.as_str(), &style).x
-    };
-    let caret_x = self.caret_x(state.text(), &style, state.cursor());
-    state.ensure_caret_visible(caret_x + preedit_width, text_width);
-    let scroll = state.scroll_offset();
-    let text = state.text();
-
-    // Draw selection highlight if any
-    if let Some((sel_start, sel_end)) = state.selection_range() {
-      let (left, right) = self.selection_x(text, &style, sel_start..sel_end);
-      let sel_rect = Rect::new(text_x + left - scroll, text_y, right - left, line_height);
-      self.draw_rect(sel_rect, selection_color);
-    }
-
-    // Draw text or placeholder
-    if text.is_empty() {
-      self.draw_text(placeholder, text_x, text_y, placeholder_color);
-    } else {
-      // Draw the text content, shifted by scroll offset
-      self.draw_text(text, text_x - scroll, text_y, text_color);
-
-      // Draw IME preedit text at the caret, underlined
-      if !preedit.is_empty() {
-        let preedit_x = text_x + caret_x - scroll;
-        self.draw_text(&preedit, preedit_x, text_y, text_color);
-        self.draw_rect(
-          Rect::new(preedit_x, text_y + line_height - 1.0, preedit_width, 1.0),
-          cursor_color,
-        );
-      }
-    }
-
-    // Draw cursor if focused and visible (blinking)
-    if state.should_draw_cursor() && !state.has_selection() {
-      let cursor_x = text_x + caret_x + preedit_width - scroll;
-      let cursor_rect = Rect::new(cursor_x, text_y, 2.0, line_height);
-      self.draw_rect(cursor_rect, cursor_color);
-    }
-
-    self.pop_clip();
-
-    modified
-  }
-
   /// The caret's x before `byte` of one line of `text`, in UI units
-  fn caret_x(&self, text: &str, style: &TextStyle, byte: usize) -> f32 {
+  pub(crate) fn caret_x(&self, text: &str, style: &TextStyle, byte: usize) -> f32 {
     let scale = self.space.px_scale;
     self
       .engine()
@@ -1960,7 +1824,7 @@ impl<'a> UiContext<'a> {
   }
 
   /// The character boundary nearest `x` (UI units) on one line of `text`
-  fn byte_at(&self, text: &str, style: &TextStyle, x: f32) -> usize {
+  pub(crate) fn byte_at(&self, text: &str, style: &TextStyle, x: f32) -> usize {
     let scale = self.space.px_scale;
     self
       .engine()
@@ -1968,7 +1832,7 @@ impl<'a> UiContext<'a> {
   }
 
   /// The left and right x (UI units) of a selection on one line of `text`
-  fn selection_x(
+  pub(crate) fn selection_x(
     &self,
     text: &str,
     style: &TextStyle,
@@ -2400,78 +2264,8 @@ impl<'a> UiContext<'a> {
   }
 
   // =========================================================================
-  // Focus Management
+  // Focus ring
   // =========================================================================
-
-  /// Handle Tab/Shift+Tab navigation between focusable widgets.
-  ///
-  /// Call this once per frame after all widgets to enable Tab navigation
-  /// across different widget types (text inputs, dropdowns, etc.).
-  ///
-  /// # Arguments
-  /// * `widgets` - Slice of focusable widgets in tab order
-  ///
-  /// # Example
-  /// ```ignore
-  /// ui.text_input(&mut self.username, rect1, "Username", dt);
-  /// ui.text_input(&mut self.password, rect2, "Password", dt);
-  /// ui.dropdown(&mut self.role, rect3, &roles);
-  ///
-  /// // Enable tab navigation across all widgets
-  /// ui.handle_tab_navigation(&mut [
-  ///     &mut self.username,
-  ///     &mut self.password,
-  ///     &mut self.role,
-  /// ]);
-  /// ```
-  pub fn handle_tab_navigation(&mut self, widgets: &mut [&mut dyn Focusable]) {
-    if widgets.is_empty() {
-      return;
-    }
-
-    // Don't do keyboard navigation if any widget is capturing input
-    // (e.g., open dropdown handling arrow keys)
-    if widgets.iter().any(|w| w.is_capturing()) {
-      return;
-    }
-
-    let tab_pressed = self.input.key_pressed(winit::keyboard::KeyCode::Tab);
-    if !tab_pressed {
-      return;
-    }
-
-    let shift_held = self.input.key_down(winit::keyboard::KeyCode::ShiftLeft)
-      || self.input.key_down(winit::keyboard::KeyCode::ShiftRight);
-
-    // Find currently focused widget index
-    let current_idx = widgets.iter().position(|w| w.is_focused());
-
-    let next_idx = match current_idx {
-      Some(idx) => {
-        if shift_held {
-          // Shift+Tab: go backwards (wrap around)
-          if idx == 0 { widgets.len() - 1 } else { idx - 1 }
-        } else {
-          // Tab: go forwards (wrap around)
-          (idx + 1) % widgets.len()
-        }
-      }
-      None => {
-        // Nothing focused, start at first (or last if shift)
-        if shift_held { widgets.len() - 1 } else { 0 }
-      }
-    };
-
-    // Blur current widget
-    if let Some(idx) = current_idx {
-      widgets[idx].set_focused(false);
-      widgets[idx].on_blur();
-    }
-
-    // Focus next widget
-    widgets[next_idx].set_focused(true);
-    widgets[next_idx].on_focus();
-  }
 
   /// Draw a focus ring (outline) around a rectangle.
   ///
@@ -3059,25 +2853,6 @@ mod tests {
   }
 
   #[test]
-  fn text_input_consumes_click() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let mut state = TextInputState::new();
-    ui.text_input(&mut state, rect, "placeholder", 0.016);
-
-    assert!(state.is_focused(), "Text input should be focused");
-    assert!(ui.click_consumed(), "Click should be consumed");
-  }
-
-  #[test]
   fn consume_escape_sets_flag() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut ui = ui_context(&mut commands, &mut text, (200.0, 200.0));
@@ -3085,137 +2860,6 @@ mod tests {
     assert!(!ui.escape_consumed());
     ui.consume_escape();
     assert!(ui.escape_consumed());
-  }
-
-  #[test]
-  fn text_input_unfocuses_even_when_click_consumed() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    // Click outside the text input rect
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(180.0, 180.0, true),
-    );
-
-    let rect = Rect::new(10.0, 10.0, 100.0, 30.0);
-    let mut state = TextInputState::new();
-    state.set_focused(true);
-
-    // Another widget handled the click first
-    ui.consume_click();
-
-    // Clicking outside always unfocuses, consumed or not, so two fields
-    // drawn in any order are never both focused
-    ui.text_input(&mut state, rect, "placeholder", 0.016);
-    assert!(
-      !state.is_focused(),
-      "Text input should unfocus when clicked outside, even if click was consumed"
-    );
-  }
-
-  #[test]
-  fn clicking_second_text_input_unfocuses_first() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    // A click inside field B, which is drawn before field A
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (400.0, 200.0),
-      1.0,
-      mouse_at(250.0, 20.0, true),
-    );
-
-    let rect_a = Rect::new(10.0, 10.0, 150.0, 30.0);
-    let rect_b = Rect::new(200.0, 10.0, 150.0, 30.0);
-
-    let mut state_a = TextInputState::new();
-    let mut state_b = TextInputState::new();
-    state_a.set_focused(true);
-
-    ui.text_input(&mut state_b, rect_b, "Field B", 0.016);
-    ui.text_input(&mut state_a, rect_a, "Field A", 0.016);
-
-    assert!(state_b.is_focused(), "Field B should be focused");
-    assert!(!state_a.is_focused(), "Field A should be unfocused");
-  }
-
-  // ==========================================================================
-  // The text input's geometry
-  // ==========================================================================
-
-  /// Where a text input's text starts: the theme-less padding
-  const PAD_X: f32 = 8.0;
-
-  #[test]
-  fn a_click_puts_the_caret_at_the_nearest_character_boundary() {
-    let mut text = text_engine();
-    let style = TextStyle::default();
-    let field = Rect::new(10.0, 10.0, 200.0, 30.0);
-    for content in ["hello world", "héllo wörld"] {
-      // The caret x before the 5th character
-      let byte = content.char_indices().nth(5).unwrap().0;
-      let x = text.caret_x(content, &style, byte, 1.0);
-      let mut commands = UiCommands::default();
-      let mut ui = context_with(
-        &mut commands,
-        &mut text,
-        (320.0, 180.0),
-        1.0,
-        mouse_at(field.x + PAD_X + x + 0.4, 20.0, true),
-      );
-      let mut state = TextInputState::with_text(content);
-      ui.text_input(&mut state, field, "", 0.0);
-      assert_eq!(state.cursor(), byte, "{content}");
-      assert!(content.is_char_boundary(state.cursor()));
-    }
-  }
-
-  #[test]
-  fn the_caret_is_drawn_at_the_text_engines_caret_x() {
-    let mut text = text_engine();
-    let style = TextStyle::default();
-    let field = Rect::new(10.0, 10.0, 200.0, 30.0);
-    let content = "Wide caret";
-    let expected = text.caret_x(content, &style, 4, 1.0);
-    let line = text.line_height(&style, 1.0);
-    let mut commands = UiCommands::default();
-    let mut ui = context(&mut commands, &mut text);
-    let mut state = TextInputState::with_text(content);
-    state.set_cursor(4, false);
-    state.set_focused(true);
-    ui.text_input(&mut state, field, "", 0.0);
-    drop(ui);
-    // The caret: the last rect, 2 wide, a line tall
-    let caret = *rects(&commands).last().unwrap();
-    assert!(
-      (caret.x - (field.x + PAD_X + expected)).abs() < 0.01,
-      "{caret:?}"
-    );
-    assert_eq!((caret.width, caret.height), (2.0, line));
-    assert!((caret.y - (field.y + (field.height - line) / 2.0)).abs() < 0.01);
-  }
-
-  #[test]
-  fn a_selection_spans_the_text_engines_selection_x() {
-    let mut text = text_engine();
-    let style = TextStyle::default();
-    let field = Rect::new(0.0, 0.0, 300.0, 30.0);
-    let content = "select these words";
-    let (left, right) = text.selection_x(content, &style, 7..12, 1.0);
-    let mut commands = UiCommands::default();
-    let mut ui = context(&mut commands, &mut text);
-    let mut state = TextInputState::with_text(content);
-    state.set_cursor(7, false);
-    state.set_cursor(12, true);
-    ui.text_input(&mut state, field, "", 0.0);
-    drop(ui);
-    let selection = rects(&commands)
-      .into_iter()
-      .find(|r| (r.width - (right - left)).abs() < 0.01)
-      .expect("a selection rect");
-    assert!((selection.x - (field.x + PAD_X + left)).abs() < 0.01);
   }
 
   // ==========================================================================
@@ -3390,48 +3034,6 @@ mod tests {
   }
 
   #[test]
-  fn wants_keyboard_while_a_focused_text_input_is_drawn() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = ui_context(&mut commands, &mut text, (200.0, 100.0));
-    let mut unfocused = TextInputState::new();
-    ui.text_input(&mut unfocused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
-    assert!(!ui.wants_keyboard());
-
-    let mut focused = TextInputState::new();
-    focused.set_focused(true);
-    ui.text_input(&mut focused, Rect::new(0.0, 30.0, 100.0, 20.0), "", 0.0);
-    assert!(ui.wants_keyboard());
-  }
-
-  #[test]
-  fn escape_leaves_a_focused_text_input_and_is_consumed() {
-    let mut input = Input::new();
-    input.handle_keyboard(
-      winit::keyboard::KeyCode::Escape,
-      winit::event::ElementState::Pressed,
-    );
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 100.0),
-      1.0,
-      UiInput::snapshot(&input),
-    );
-    let mut field = TextInputState::new();
-    field.set_focused(true);
-
-    ui.text_input(&mut field, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
-
-    assert!(!field.is_focused());
-    assert!(
-      ui.escape_consumed(),
-      "the scene must not also act on this Esc"
-    );
-    assert!(!ui.wants_keyboard());
-  }
-
-  #[test]
   fn wants_keyboard_while_a_dropdown_is_open() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut ui = ui_context(&mut commands, &mut text, (200.0, 200.0));
@@ -3455,22 +3057,6 @@ mod tests {
     assert!(!ui.wants_keyboard());
   }
 
-  #[test]
-  fn wants_keyboard_resets_with_each_frame() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut focused = TextInputState::new();
-    focused.set_focused(true);
-    {
-      let mut ui = ui_context(&mut commands, &mut text, (200.0, 100.0));
-      ui.text_input(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
-      assert!(ui.wants_keyboard());
-    }
-    // Focus lost before the next frame: the next context starts clear
-    focused.set_focused(false);
-    let mut ui = ui_context(&mut commands, &mut text, (200.0, 100.0));
-    ui.text_input(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
-    assert!(!ui.wants_keyboard());
-  }
   #[test]
   fn the_text_builder_records_its_options() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());

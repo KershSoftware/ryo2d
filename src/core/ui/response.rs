@@ -137,9 +137,13 @@ impl Response {
   }
 
   /// It was submitted this frame
-  #[allow(dead_code)] // Used from Task 11 (the text field)
   pub(crate) fn mark_submitted(&mut self) {
     self.states |= Self::SUBMITTED;
+  }
+
+  /// It gave the focus up this frame (a text field Escape left)
+  pub(crate) fn mark_lost_focus(&mut self) {
+    self.states = (self.states & !(Self::FOCUSED | Self::GAINED_FOCUS)) | Self::LOST_FOCUS;
   }
 }
 

@@ -15,5 +15,3 @@ ui.handle_dropdown_tab_navigation(&mut [&mut self.dropdown1, &mut self.dropdown2
 
 // Open lists draw on the popup layer; the engine flushes them after the scene's `ui`
 ```
-
-`Focusable`/`FocusTrap` (`focus.rs`) handle focus for other widgets and modals.

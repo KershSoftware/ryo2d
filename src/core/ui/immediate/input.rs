@@ -51,8 +51,14 @@ pub struct UiConsumed {
 impl UiInput {
   /// The frame's input, read without consuming anything.
   pub fn snapshot(input: &Input) -> Self {
+    Self::from_view(input.ui_view())
+  }
+
+  /// The input `view` describes, nothing consumed (the UI test driver
+  /// scripts its frames with it)
+  pub(crate) fn from_view(view: InputView) -> Self {
     Self {
-      view: input.ui_view(),
+      view,
       ..Self::default()
     }
   }
@@ -91,12 +97,6 @@ impl UiInput {
 
   pub fn mouse_released(&self, button: MouseButton) -> bool {
     !self.consumed_mouse.contains(&button) && self.view.mouse_released.contains(&button)
-  }
-
-  /// Whether `button` went down this frame, consumed or not (a click
-  /// anywhere unfocuses a text field even when another widget took it).
-  pub(crate) fn mouse_went_down(&self, button: MouseButton) -> bool {
-    self.view.mouse_pressed.contains(&button)
   }
 
   pub fn scroll_delta(&self) -> (f32, f32) {

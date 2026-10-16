@@ -16,22 +16,18 @@ fn generate_room_code() -> String {
 
 /// Room creation and joining; hands a `Match` to the page when one starts
 pub struct Lobby {
-  room_code_input: TextInputState,
-  address_input: TextInputState,
+  room_code: String,
+  address: String,
   error_message: Option<String>,
-  last_dt: f32,
   pending_match: Option<Match>,
 }
 
 impl Lobby {
   pub fn new() -> Self {
-    let mut address_input = TextInputState::new();
-    address_input.set_text(DEFAULT_ADDRESS);
     Self {
-      room_code_input: TextInputState::new(),
-      address_input,
+      room_code: String::new(),
+      address: DEFAULT_ADDRESS.to_string(),
       error_message: None,
-      last_dt: 0.016,
       pending_match: None,
     }
   }
@@ -49,8 +45,8 @@ impl Lobby {
   }
 
   fn try_join_room(&mut self) {
-    let room_code = self.room_code_input.text().trim().to_uppercase();
-    let address = self.address_input.text().trim().to_string();
+    let room_code = self.room_code.trim().to_uppercase();
+    let address = self.address.trim().to_string();
 
     if room_code.len() != ROOM_CODE_LENGTH {
       self.error_message = Some(format!("Room code must be {} characters", ROOM_CODE_LENGTH));
@@ -79,22 +75,7 @@ impl Lobby {
     self.pending_match.take()
   }
 
-  pub fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
-    self.last_dt = dt;
-
-    // Enter to join if either input is focused and both have content
-    let enter_pressed = ctx.input.key_pressed(KeyCode::Enter);
-    let either_focused = self.room_code_input.is_focused() || self.address_input.is_focused();
-    let has_code = self.room_code_input.text().len() == ROOM_CODE_LENGTH;
-    let has_address = !self.address_input.text().trim().is_empty();
-
-    if enter_pressed && either_focused && has_code && has_address {
-      self.try_join_room();
-    }
-  }
-
   pub fn ui(&mut self, ui: &mut UiContext) {
-    let dt = self.last_dt;
     let area = content_area(ui);
     let (sw, sh) = ui.screen_size();
     let center_x = sw as f32 / 2.0;
@@ -145,7 +126,11 @@ impl Lobby {
       code_input_width,
       32.0,
     );
-    ui.text_input(&mut self.room_code_input, code_input_rect, "XXXXX", dt);
+    let code = ui
+      .text_input(&mut self.room_code)
+      .at(code_input_rect)
+      .placeholder("XXXXX")
+      .show();
 
     // Join section - Server Address
     ui.draw_text_anchored("Address:", Anchor::Center, 80.0, 55.0, Color::WHITE);
@@ -157,12 +142,18 @@ impl Lobby {
       addr_input_width,
       32.0,
     );
-    ui.text_input(
-      &mut self.address_input,
-      addr_input_rect,
-      "127.0.0.1:7777",
-      dt,
-    );
+    let address = ui
+      .text_input(&mut self.address)
+      .at(addr_input_rect)
+      .placeholder("127.0.0.1:7777")
+      .show();
+
+    // Enter in either field joins once both are filled in
+    let has_code = self.room_code.len() == ROOM_CODE_LENGTH;
+    let has_address = !self.address.trim().is_empty();
+    if (code.submitted() || address.submitted()) && has_code && has_address {
+      self.try_join_room();
+    }
 
     // Join button
     let join_rect = Rect::new(button_x, center_y + 125.0, button_width, button_height);

@@ -53,7 +53,6 @@ impl DemoPage for NetplayPage {
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     match &mut self.state {
       State::Lobby(lobby) => {
-        lobby.update(ctx, dt);
         if let Some(mut game) = lobby.take_match() {
           game.enter(ctx);
           self.state = State::Match(game);

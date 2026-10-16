@@ -3,8 +3,10 @@
 use std::sync::Arc;
 
 use glam::Vec2;
+use winit::event::MouseButton;
+use winit::keyboard::KeyCode;
 
-use crate::core::input::{Direction, InputDevice};
+use crate::core::input::{Direction, InputDevice, InputView};
 use crate::core::render::UiSpace;
 use crate::core::text::{Fonts, TextEngine};
 use crate::core::ui::UiInput;
@@ -87,6 +89,14 @@ pub(crate) struct UiDriver {
   wheel: Vec2,
   /// The navigation input for the next frame
   nav: NavInput,
+  /// Keys pressed in the next frame
+  keys: Vec<KeyCode>,
+  /// Text typed in the next frame
+  typed: String,
+  /// The IME's composition in the next frame
+  preedit: String,
+  /// Shift is held until `shift(false)`
+  shift: bool,
   /// Directions held until `release_nav`
   holding: [bool; 4],
   /// The scene `frame` runs as the top scene
@@ -117,6 +127,10 @@ impl UiDriver {
       },
       wheel: Vec2::ZERO,
       nav: NavInput::default(),
+      keys: Vec::new(),
+      typed: String::new(),
+      preedit: String::new(),
+      shift: false,
       holding: [false; 4],
       scene: 1,
       outcome: NavOutcome::default(),
@@ -151,6 +165,26 @@ impl UiDriver {
   /// A wheel step of (dx, dy) lines in the next frame, routed without Shift
   pub(crate) fn wheel(&mut self, dx: f32, dy: f32) {
     self.wheel = Vec2::new(dx, dy);
+  }
+
+  /// Press `key` in the next frame (and release it after)
+  pub(crate) fn key(&mut self, key: KeyCode) {
+    self.keys.push(key);
+  }
+
+  /// Type `text` in the next frame
+  pub(crate) fn type_text(&mut self, text: &str) {
+    self.typed.push_str(text);
+  }
+
+  /// Show `text` as the IME's composition in the next frame
+  pub(crate) fn preedit(&mut self, text: &str) {
+    self.preedit = text.to_string();
+  }
+
+  /// Hold Shift from the next frame (`true`) or let it go
+  pub(crate) fn shift(&mut self, held: bool) {
+    self.shift = held;
   }
 
   /// Press `direction` for the next frame (and release it after)
@@ -214,8 +248,8 @@ impl UiDriver {
 
   /// One frame: resolve the scripted pointer, the wheel and navigation, run
   /// `ui` as the top scene (scope 1, or `set_scene`'s), 1/60 s after the
-  /// last. A frame that draws nothing leaves the records and widget state
-  /// of the last frame that did.
+  /// last, reading the scripted keys, text and pointer. A frame that draws
+  /// nothing leaves the records and widget state of the last frame that did.
   pub(crate) fn frame<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>) -> R) -> R {
     self.time += FRAME;
     self.pointer.time = self.time;
@@ -225,7 +259,7 @@ impl UiDriver {
     let scene = Some(self.scene);
     let metrics = self.theme.metrics.clone();
     self.pointer.double_click = f64::from(metrics.double_click);
-    resolve_pointer(
+    let pointer = resolve_pointer(
       &mut self.memory,
       &self.pointer,
       scene,
@@ -245,6 +279,7 @@ impl UiDriver {
     for (held, holding) in nav.held.iter_mut().zip(self.holding) {
       *held |= holding;
     }
+    nav.shift |= self.shift;
     nav.dt = FRAME as f32;
     nav.repeat_delay = metrics.repeat_delay;
     nav.repeat_rate = metrics.repeat_rate;
@@ -265,6 +300,17 @@ impl UiDriver {
       image: (self.size.0.ceil() as u32, self.size.1.ceil() as u32),
       mouse_scale: 1.0,
     };
+    // The keys, text and pointer as the UI reads them; a press over the UI
+    // is the UI's, as in the engine
+    let mut input = UiInput::from_view(self.view());
+    for (button, consume) in [MouseButton::Left, MouseButton::Right]
+      .into_iter()
+      .zip(pointer.consume_press)
+    {
+      if consume {
+        input.consume_mouse(button);
+      }
+    }
     let result = {
       let mut context = UiContext::new(
         &mut self.commands,
@@ -272,7 +318,7 @@ impl UiDriver {
         &mut self.memory,
         &mut self.layout,
         space,
-        UiInput::default(),
+        input,
         Arc::clone(&self.theme),
       );
       context.set_dt(FRAME as f32);
@@ -293,12 +339,51 @@ impl UiDriver {
     self.pointer.pressed = [false; 2];
     self.pointer.released = [false; 2];
     self.wheel = Vec2::ZERO;
+    self.keys.clear();
+    self.typed.clear();
+    self.preedit.clear();
     self.nav = NavInput {
       right_stick: self.nav.right_stick,
       device: self.nav.device,
       ..NavInput::default()
     };
     result
+  }
+}
+
+impl UiDriver {
+  /// The next frame's scripted keys, text and pointer as the input sees them
+  fn view(&self) -> InputView {
+    let mut view = InputView {
+      mouse: (self.pointer.position.x, self.pointer.position.y),
+      text: self.typed.clone(),
+      ime_preedit: self.preedit.clone(),
+      ime_composing: !self.preedit.is_empty(),
+      ..InputView::default()
+    };
+    for (k, button) in [MouseButton::Left, MouseButton::Right]
+      .into_iter()
+      .enumerate()
+    {
+      if self.pointer.down[k] {
+        view.mouse_down.insert(button);
+      }
+      if self.pointer.pressed[k] {
+        view.mouse_pressed.insert(button);
+      }
+      if self.pointer.released[k] {
+        view.mouse_released.insert(button);
+      }
+    }
+    for &key in &self.keys {
+      view.keys_down.insert(key);
+      view.keys_pressed.insert(key);
+      view.keys_repeated.insert(key);
+    }
+    if self.shift {
+      view.keys_down.insert(KeyCode::ShiftLeft);
+    }
+    view
   }
 }
 

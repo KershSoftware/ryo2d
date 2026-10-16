@@ -43,7 +43,7 @@ struct Probe {
   count: i32,
   mode: usize,
   on: bool,
-  text: Option<TextInputState>,
+  text: Option<String>,
   dropdown: Option<DropdownState>,
 }
 
@@ -105,7 +105,9 @@ impl DemoPage for Probe {
       seen.content = Some(content_area(ui));
     }
     if let Some(text) = &mut self.text {
-      ui.text_input(text, Rect::new(10.0, 100.0, 120.0, 20.0), "", 0.0);
+      ui.text_input(text)
+        .at(Rect::new(10.0, 100.0, 120.0, 20.0))
+        .show();
     }
     if let Some(dropdown) = &mut self.dropdown {
       ui.dropdown(dropdown, Rect::new(10.0, 130.0, 120.0, 20.0), &["x", "y"]);
@@ -402,15 +404,15 @@ fn shell_keys_are_ignored_while_typing() {
   let typing = shared.clone();
   let demo = Demo::new("Typing").resolution(320, 240).page(move || {
     let mut page = Probe::new("typing", &typing);
-    let mut text = TextInputState::new();
-    text.set_focused(true);
-    page.text = Some(text);
+    page.text = Some(String::new());
     page
   });
   let Some(mut engine) = start(demo) else {
     return;
   };
   engine.step_frames(2).unwrap();
+  // Focus the field
+  click(&mut engine, 20.0, 110.0);
   for key in [
     KeyCode::KeyR,
     KeyCode::BracketRight,
@@ -526,19 +528,17 @@ fn the_page_sees_no_input_while_help_is_open() {
   assert!(seen(&shared).w_down);
 }
 
-/// A page whose text field starts focused, like the ui demo's Text Input page
+/// A page with one text field at (10, 100)-(130, 120), focused by a click
 struct Typing {
   shared: Shared,
-  field: TextInputState,
+  field: String,
 }
 
 impl Typing {
   fn new(shared: &Shared) -> Self {
-    let mut field = TextInputState::new();
-    field.set_focused(true);
     Self {
       shared: shared.clone(),
-      field,
+      field: String::new(),
     }
   }
 }
@@ -549,15 +549,13 @@ impl DemoPage for Typing {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
-    ui.text_input(
-      &mut self.field,
-      Rect::new(10.0, 100.0, 120.0, 20.0),
-      "",
-      0.0,
-    );
+    let field = ui
+      .text_input(&mut self.field)
+      .at(Rect::new(10.0, 100.0, 120.0, 20.0))
+      .show();
     if let Ok(mut seen) = self.shared.lock() {
-      seen.typed = Some(self.field.text().to_string());
-      seen.field_focused = self.field.is_focused();
+      seen.typed = Some(self.field.clone());
+      seen.field_focused = field.focused();
     }
   }
 }
@@ -591,6 +589,7 @@ fn escape_leaves_a_focused_field_before_it_quits() {
     return;
   };
   engine.step_frames(2).unwrap();
+  click(&mut engine, 20.0, 110.0);
   assert!(seen(&shared).field_focused);
   assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
   assert!(

@@ -16,7 +16,7 @@ use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::cursor::CursorRequest;
 use crate::core::ecs::kernel::CheckChangeTicks;
 use crate::core::ecs::{MessageWriter, On, Res, ResMut, Resource, World};
-use crate::core::input::{Input, InputEvent};
+use crate::core::input::{Binding, Input, InputEvent};
 use crate::core::messages::{AssetLoadFailed, AssetReloaded, update_messages};
 use crate::core::scene::SceneAction;
 use crate::core::schedule::Phase;
@@ -414,7 +414,11 @@ impl Engine {
     let pointer = &self.ui_memory.interact;
     let moved = pointer.pointer != pointer.prev_pointer;
     let outcome = resolve_focus(&mut self.ui_memory, &nav, top, moved);
-    consume_actions(&mut self.world.resource_mut::<Input>(), &outcome.used);
+    take_actions(
+      &mut self.world.resource_mut::<Input>(),
+      &outcome.used,
+      &mut self.ui_binding_capture,
+    );
   }
 
   /// The theme for this UI pass: a watched theme file that changed is
@@ -536,12 +540,20 @@ impl Engine {
     consumed.apply_consumed(&mut input);
     // Back a scene took with `ui.back()`, and the tab keys a tabs widget took
     let interact = &self.ui_memory.interact;
+    let capture = &mut self.ui_binding_capture;
     if interact.back_taken {
-      consume_actions(&mut input, &["ui.back"]);
+      take_actions(&mut input, &["ui.back"], capture);
     }
     if interact.tab_taken {
-      consume_actions(&mut input, &["ui.tab_next", "ui.tab_prev"]);
+      take_actions(&mut input, &["ui.tab_next", "ui.tab_prev"], capture);
     }
+    // A binding of an action the UI used stays the UI's until it is
+    // released, even once the UI that used it is gone (a Confirm held after
+    // Resume closed the menu)
+    for binding in capture.iter() {
+      input.consume_binding(binding);
+    }
+    capture.retain(|binding| input.binding_down_raw(binding));
     // A press the UI took stays the UI's until the button is released: its
     // held frames and the release are hidden from gameplay as well
     for button in consumed.mouse_presses_taken() {
@@ -584,12 +596,16 @@ impl Engine {
   }
 }
 
-/// Hide every binding of the `actions` from the rest of the frame
-fn consume_actions(input: &mut Input, actions: &[&str]) {
+/// Hide every binding of the `actions` from the rest of the frame, and add
+/// each one that is down to `capture`, which hides it until its release
+fn take_actions(input: &mut Input, actions: &[&str], capture: &mut Vec<Binding>) {
   for action in actions {
     let bindings = input.actions().bindings(action).to_vec();
     for binding in &bindings {
       input.consume_binding(binding);
+      if input.binding_down_raw(binding) && !capture.contains(binding) {
+        capture.push(*binding);
+      }
     }
   }
 }
@@ -973,7 +989,7 @@ mod tests {
   #[derive(Default)]
   struct WidgetState {
     slider: f32,
-    text: crate::core::ui::TextInputState,
+    text: String,
   }
 
   impl Scene for WidgetOverGameplay {
@@ -1107,37 +1123,40 @@ mod tests {
   #[test]
   fn typing_into_a_focused_field_is_the_ui_s() {
     use crate::core::input::InputEvent;
+    use std::cell::RefCell;
+    use winit::event::MouseButton;
     use winit::keyboard::KeyCode;
-    let mut state = WidgetState::default();
-    state.text.set_focused(true);
-    let Some((_, w)) = gameplay_under(
-      |ui, state| {
-        ui.text_input(
-          &mut state.text,
-          crate::core::ui::Rect::new(0.0, 0.0, 60.0, 16.0),
-          "",
-          0.0,
-        );
-      },
-      state,
-      vec![
-        vec![
-          InputEvent::Key {
-            key: KeyCode::KeyW,
-            pressed: true,
-          },
-          InputEvent::Text("w".into()),
-        ],
-        vec![],
-        vec![InputEvent::Key {
-          key: KeyCode::KeyW,
-          pressed: false,
-        }],
-      ],
-    ) else {
+    thread_local! {
+      static TYPED: RefCell<String> = const { RefCell::new(String::new()) };
+    }
+    fn field(ui: &mut crate::core::ui::UiContext, state: &mut WidgetState) {
+      ui.text_input(&mut state.text)
+        .at(crate::core::ui::Rect::new(0.0, 0.0, 60.0, 16.0))
+        .show();
+      TYPED.with(|typed| typed.replace(state.text.clone()));
+    }
+    let key = |pressed| InputEvent::Key {
+      key: KeyCode::KeyW,
+      pressed,
+    };
+    let button = |pressed| InputEvent::MouseButton {
+      button: MouseButton::Left,
+      pressed,
+    };
+    // A click focuses the field, then W is typed into it, held and released
+    let script = vec![
+      vec![InputEvent::MouseMove { x: 8.0, y: 8.0 }],
+      vec![button(true)],
+      vec![button(false)],
+      vec![key(true), InputEvent::Text("w".into())],
+      vec![],
+      vec![key(false)],
+    ];
+    let Some((_, w)) = gameplay_under(field, WidgetState::default(), script) else {
       return;
     };
     assert_eq!(w, 0, "gameplay saw W typed into the field");
+    assert_eq!(TYPED.with(|typed| typed.borrow().clone()), "w");
   }
 
   #[test]
@@ -1772,6 +1791,137 @@ mod tests {
       e.frame(Some(frame));
     }
     assert_eq!(names(&e), ["A", "B"], "C popped, and only C");
+  }
+
+  /// Frames gameplay saw its key held or pressed
+  #[derive(Resource, Default)]
+  struct KeySeen(u32);
+
+  /// Gameplay that pushes `menu` on its first update, then counts the
+  /// frames it sees `key`
+  struct UnderMenu {
+    key: winit::keyboard::KeyCode,
+    menu: Option<Box<dyn Scene>>,
+  }
+
+  impl Scene for UnderMenu {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      if let Some(menu) = self.menu.take() {
+        return SceneAction::Push(menu);
+      }
+      if ctx.input.key_down(self.key) || ctx.input.key_pressed(self.key) {
+        ctx.world.resource_mut::<KeySeen>().0 += 1;
+      }
+      SceneAction::Continue
+    }
+  }
+
+  /// Run `menu` over gameplay watching `key`: press `key` once the menu has
+  /// its focus and hold it six frames, release it, then press it again.
+  /// What gameplay saw while it was held, the scenes left then, and what
+  /// gameplay saw of the second press.
+  fn key_held_through_a_menu(
+    key: winit::keyboard::KeyCode,
+    menu: Box<dyn Scene>,
+  ) -> Option<(u32, usize, u32)> {
+    use crate::core::input::InputEvent;
+    let (device, queue) = crate::core::testing::shared_gpu().ok()?;
+    let mut e = EngineBuilder::new()
+      .resolution(64, 64)
+      .fixed_hz(60)
+      .insert_resource(KeySeen::default())
+      .start_scene(UnderMenu {
+        key,
+        menu: Some(menu),
+      })
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
+    let frame = Duration::from_micros(16_667);
+    // Pushed, drawn, then its scope takes the focus
+    for _ in 0..4 {
+      e.frame(Some(frame));
+    }
+    let step = |e: &mut Engine, pressed: Option<bool>| {
+      if let Some(pressed) = pressed {
+        e.world_mut()
+          .resource_mut::<Input>()
+          .queue(InputEvent::Key { key, pressed });
+      }
+      e.frame(Some(frame));
+    };
+    step(&mut e, Some(true));
+    for _ in 0..5 {
+      step(&mut e, None);
+    }
+    step(&mut e, Some(false));
+    let held = e.world().resource::<KeySeen>().0;
+    let scenes = e.world().non_send::<SceneHost>().scenes.scene_names().len();
+    step(&mut e, Some(true));
+    step(&mut e, None);
+    let again = e.world().resource::<KeySeen>().0 - held;
+    Some((held, scenes, again))
+  }
+
+  #[test]
+  fn a_confirm_held_after_a_button_closes_its_menu_never_reaches_gameplay() {
+    use crate::core::ui::UiContext;
+    use winit::keyboard::KeyCode;
+
+    /// A pause menu whose Resume pops it
+    struct Pause;
+    impl Scene for Pause {
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        let mut resume = false;
+        ui.column().focus_scope().show(|ui| {
+          resume = ui.button("Resume").clicked();
+        });
+        if resume {
+          SceneAction::Pop
+        } else {
+          SceneAction::Continue
+        }
+      }
+    }
+
+    // Space is `ui.confirm`
+    let Some((held, scenes, again)) = key_held_through_a_menu(KeyCode::Space, Box::new(Pause))
+    else {
+      return;
+    };
+    assert_eq!(scenes, 1, "Resume closed the menu");
+    assert_eq!(held, 0, "gameplay saw the Confirm that closed the menu");
+    assert!(again > 0, "a fresh press is gameplay's");
+  }
+
+  #[test]
+  fn a_direction_held_as_a_menu_closes_stays_the_ui_s() {
+    use crate::core::ui::UiContext;
+    use winit::keyboard::KeyCode;
+
+    /// A menu that closes once Down moves its focus to B
+    struct Menu;
+    impl Scene for Menu {
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        let mut moved = false;
+        ui.column().focus_scope().show(|ui| {
+          ui.button("A").default_focus();
+          moved = ui.button("B").show().gained_focus();
+        });
+        if moved {
+          SceneAction::Pop
+        } else {
+          SceneAction::Continue
+        }
+      }
+    }
+
+    let Some((held, scenes, again)) = key_held_through_a_menu(KeyCode::ArrowDown, Box::new(Menu))
+    else {
+      return;
+    };
+    assert_eq!(scenes, 1, "the move closed the menu");
+    assert_eq!(held, 0, "gameplay saw the Down the menu used");
+    assert!(again > 0, "a fresh press is gameplay's");
   }
 
   #[test]

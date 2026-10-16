@@ -1,19 +1,19 @@
 //! Text input demo page - demonstrates the text input widget
 //!
-//! This demo showcases the unified focus system with Tab/Shift+Tab navigation
-//! across multiple TextInputState widgets using handle_tab_navigation().
+//! Four fields editing the page's strings, in one focus scope: a click or
+//! Tab / Shift+Tab moves between them, Escape leaves one.
 
 use demo_kit::prelude::*;
 
 pub struct TextInputDemo {
-  /// Username text input state
-  username: TextInputState,
-  /// Password text input state
-  password: TextInputState,
-  /// Bio/description text input (multiline-style display)
-  bio: TextInputState,
-  /// Search field
-  search: TextInputState,
+  /// Username text
+  username: String,
+  /// Password text (shown masked)
+  password: String,
+  /// Bio/description text
+  bio: String,
+  /// Search text
+  search: String,
   /// Track if form was "submitted"
   submitted: bool,
   /// Last submitted username
@@ -22,17 +22,14 @@ pub struct TextInputDemo {
 
 impl TextInputDemo {
   pub fn new() -> Self {
-    let mut demo = Self {
-      username: TextInputState::new(),
-      password: TextInputState::new(),
-      bio: TextInputState::with_text("Type your bio here..."),
-      search: TextInputState::new(),
+    Self {
+      username: String::new(),
+      password: String::new(),
+      bio: "Type your bio here...".to_string(),
+      search: String::new(),
       submitted: false,
       last_submitted_username: String::new(),
-    };
-    // Focus first field by default
-    demo.username.set_focused(true);
-    demo
+    }
   }
 }
 
@@ -53,17 +50,6 @@ impl DemoPage for TextInputDemo {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
-    // Cursor blink runs on the UI's real frame time
-    let dt = ui.dt();
-
-    // Check for Enter key to "submit" the form when username is focused
-    if self.username.is_focused() && ui.input().key_pressed(KeyCode::Enter) {
-      ui.consume_key(KeyCode::Enter);
-      self.submitted = true;
-      self.last_submitted_username = self.username.text().to_string();
-      self.username.set_focused(false);
-    }
-
     // Get screen dimensions
     let (sw, _sh) = ui.screen_size();
     let top = content_area(ui).y;
@@ -75,98 +61,83 @@ impl DemoPage for TextInputDemo {
     let field_width = 300.0;
     let field_height = 28.0;
 
-    // Username field
-    ui.draw_text("Username:", form_x, y, label_color);
-    y += 20.0;
-    let username_rect = Rect::new(form_x, y, field_width, field_height);
-    if ui.text_input(&mut self.username, username_rect, "Enter username...", dt) {
-      // Text changed - could validate here
-    }
-    y += field_height + 15.0;
-
-    // Password field (note: we can't mask characters yet, this is for demo)
-    ui.draw_text("Password:", form_x, y, label_color);
-    y += 20.0;
-    let password_rect = Rect::new(form_x, y, field_width, field_height);
-    ui.text_input(&mut self.password, password_rect, "Enter password...", dt);
-    y += field_height + 15.0;
-
+    // Each field's label above it
+    let mut field_at = |ui: &mut UiContext, label: &str, width: f32| {
+      ui.draw_text(label, form_x, y, label_color);
+      let rect = Rect::new(form_x, y + 20.0, width, field_height);
+      y += 20.0 + field_height + 15.0;
+      rect
+    };
+    let username_rect = field_at(ui, "Username:", field_width);
+    let password_rect = field_at(ui, "Password:", field_width);
     // Bio field (wider)
-    ui.draw_text("Bio:", form_x, y, label_color);
-    y += 20.0;
-    let bio_rect = Rect::new(form_x, y, field_width + 100.0, field_height);
-    ui.text_input(&mut self.bio, bio_rect, "Tell us about yourself...", dt);
-    y += field_height + 15.0;
+    let bio_rect = field_at(ui, "Bio:", field_width + 100.0);
+    let search_rect = field_at(ui, "Search:", 200.0);
+    y += 10.0;
 
-    // Search field with icon-style label
-    ui.draw_text("Search:", form_x, y, label_color);
-    y += 20.0;
-    let search_rect = Rect::new(form_x, y, 200.0, field_height);
-    ui.text_input(&mut self.search, search_rect, "Search...", dt);
-    y += field_height + 25.0;
+    // One focus scope, so Tab walks the fields; each keeps its rect
+    let mut focused = "None";
+    let mut submitted = false;
+    ui.column().focus_scope().show(|ui| {
+      let username = ui
+        .text_input(&mut self.username)
+        .at(username_rect)
+        .placeholder("Enter username...")
+        .default_focus()
+        .show();
+      submitted = username.submitted();
+      let password = ui
+        .text_input(&mut self.password)
+        .at(password_rect)
+        .placeholder("Enter password...")
+        .password()
+        .show();
+      let bio = ui
+        .text_input(&mut self.bio)
+        .at(bio_rect)
+        .placeholder("Tell us about yourself...")
+        .show();
+      let search = ui
+        .text_input(&mut self.search)
+        .at(search_rect)
+        .placeholder("Search...")
+        .show();
+      for (name, field) in [
+        ("Username", &username),
+        ("Password", &password),
+        ("Bio", &bio),
+        ("Search", &search),
+      ] {
+        if field.focused() {
+          focused = name;
+        }
+      }
+    });
 
-    // Tab navigation between all text inputs (uses the new unified focus system!)
-    ui.handle_tab_navigation(&mut [
-      &mut self.username,
-      &mut self.password,
-      &mut self.bio,
-      &mut self.search,
-    ]);
+    // Enter in the username "submits" the form
+    if submitted {
+      self.submitted = true;
+      self.last_submitted_username = self.username.clone();
+    }
 
     // Instructions
     ui.draw_text("Instructions:", form_x, y, Color::rgb(100, 180, 255));
     y += 20.0;
-    ui.draw_text(
+    for line in [
       "- Click a field to focus it",
-      form_x + 10.0,
-      y,
-      Color::LIGHT_GRAY,
-    );
-    y += 16.0;
-    ui.draw_text(
       "- Tab / Shift+Tab to navigate",
-      form_x + 10.0,
-      y,
-      Color::LIGHT_GRAY,
-    );
-    y += 16.0;
-    ui.draw_text("- Type to enter text", form_x + 10.0, y, Color::LIGHT_GRAY);
-    y += 16.0;
-    ui.draw_text(
+      "- Type to enter text",
       "- Arrow keys to move cursor",
-      form_x + 10.0,
-      y,
-      Color::LIGHT_GRAY,
-    );
-    y += 16.0;
-    ui.draw_text(
       "- Shift+Arrow to select text",
-      form_x + 10.0,
-      y,
-      Color::LIGHT_GRAY,
-    );
-    y += 16.0;
-    ui.draw_text(
       "- Ctrl+C/X/V for clipboard",
-      form_x + 10.0,
-      y,
-      Color::LIGHT_GRAY,
-    );
-    y += 16.0;
-    ui.draw_text(
       "- Ctrl+A to select all",
-      form_x + 10.0,
-      y,
-      Color::LIGHT_GRAY,
-    );
-    y += 16.0;
-    ui.draw_text(
+      "- Escape to leave a field",
       "- Enter in username to 'submit'",
-      form_x + 10.0,
-      y,
-      Color::LIGHT_GRAY,
-    );
-    y += 25.0;
+    ] {
+      ui.draw_text(line, form_x + 10.0, y, Color::LIGHT_GRAY);
+      y += 16.0;
+    }
+    y += 9.0;
 
     // Show submitted message if applicable
     if self.submitted {
@@ -176,8 +147,6 @@ impl DemoPage for TextInputDemo {
         y,
         Color::rgb(80, 200, 80),
       );
-      // Silence unused assignment warning
-      let _ = y;
     }
 
     // Debug panel on the right showing current state
@@ -188,50 +157,26 @@ impl DemoPage for TextInputDemo {
     debug_y += 25.0;
 
     // Show which field is focused
-    let focused_name = if self.username.is_focused() {
-      "Username"
-    } else if self.password.is_focused() {
-      "Password"
-    } else if self.bio.is_focused() {
-      "Bio"
-    } else if self.search.is_focused() {
-      "Search"
-    } else {
-      "None"
-    };
     ui.draw_text(
-      &format!("Focused: {}", focused_name),
+      &format!("Focused: {}", focused),
       debug_x,
       debug_y,
       Color::WHITE,
     );
-    debug_y += 20.0;
-
-    // Show cursor position for username
-    ui.draw_text(
-      &format!("Username cursor: {}", self.username.cursor()),
-      debug_x,
-      debug_y,
-      Color::WHITE,
-    );
-    debug_y += 20.0;
-
-    // Show selection info
-    if let Some((start, end)) = self.username.selection_range() {
-      ui.draw_text(
-        &format!("Selection: {}..{}", start, end),
-        debug_x,
-        debug_y,
-        Color::WHITE,
-      );
-    } else {
-      ui.draw_text("Selection: None", debug_x, debug_y, Color::WHITE);
-    }
     debug_y += 20.0;
 
     // Show username text length
     ui.draw_text(
-      &format!("Text length: {}", self.username.text().len()),
+      &format!("Username length: {}", self.username.chars().count()),
+      debug_x,
+      debug_y,
+      Color::WHITE,
+    );
+    debug_y += 20.0;
+
+    // The password's length: the field shows only bullets
+    ui.draw_text(
+      &format!("Password length: {}", self.password.chars().count()),
       debug_x,
       debug_y,
       Color::WHITE,
@@ -239,10 +184,11 @@ impl DemoPage for TextInputDemo {
     debug_y += 20.0;
 
     // Show current text content
-    let text_preview = if self.username.text().len() > 20 {
-      format!("{}...", &self.username.text()[..20])
+    let text_preview = if self.username.chars().count() > 20 {
+      let cut: String = self.username.chars().take(20).collect();
+      format!("{}...", cut)
     } else {
-      self.username.text().to_string()
+      self.username.clone()
     };
     ui.draw_text(
       &format!("Text: \"{}\"", text_preview),

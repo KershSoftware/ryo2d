@@ -207,6 +207,9 @@ pub struct Engine {
   /// Mouse buttons whose press the UI took: until released, their held
   /// state and release are the UI's too
   ui_mouse_capture: Vec<winit::event::MouseButton>,
+  /// Bindings of the UI actions the UI used (a direction, Confirm, Back,
+  /// Tab, a tab switch): until released, gameplay never sees them
+  ui_binding_capture: Vec<crate::core::input::Binding>,
   /// What the UI remembers between frames: records, widget state, focus
   ui_memory: UiMemory,
   /// Lays the UI's containers out, kept between frames
@@ -592,6 +595,7 @@ impl Engine {
       ui_camera: None,
       batch_cameras: Vec::new(),
       ui_mouse_capture: Vec::new(),
+      ui_binding_capture: Vec::new(),
       ui_memory: UiMemory::new(),
       ui_layout: LayoutEngine::new(),
       // None: the starting theme's skins load on the first pass

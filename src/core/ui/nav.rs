@@ -525,9 +525,13 @@ pub(crate) fn resolve_focus(
       i.focused = id;
     }
 
-    // Focus follows the pointer; a press focuses what it lands on, and a
-    // press elsewhere leaves a text field
-    if pointer_moved && i.hot != i.focused && nav.focusable(i.hot, Via::Nav) {
+    // Focus follows the pointer, except away from a text field being typed
+    // in; a press focuses what it lands on, and a press elsewhere leaves a
+    // text field
+    let typing = nav
+      .record(i.focused)
+      .is_some_and(|r| r.flags.contains(Flags::TEXT_FIELD));
+    if pointer_moved && !typing && i.hot != i.focused && nav.focusable(i.hot, Via::Nav) {
       i.focused = i.hot;
       by_pointer = true;
     }
@@ -591,14 +595,18 @@ pub(crate) fn resolve_focus(
       };
       if record.flags.contains(takes) {
         i.nav_step = Some((i.focused, direction));
+      } else if record.scope == UiId::NONE {
+        // A text field outside any scope has no neighbours to move to
       } else if let Some(id) = nav.step(i.focused, direction) {
         i.focused = id;
         by_pointer = false;
       }
     }
 
-    // Tab walks every focusable in order, Shift+Tab back
-    if input.next && (i.focused != UiId::NONE || scoped) {
+    // Tab walks every focusable in order, Shift+Tab back; a text field
+    // outside any scope has no order to walk, so it keeps the focus
+    let scope_less = nav.record(i.focused).is_some_and(|r| r.scope == UiId::NONE);
+    if input.next && !scope_less && (i.focused != UiId::NONE || scoped) {
       outcome.used.push("ui.next");
       if let Some(id) = nav.tab(i.focused, input.shift, &stack)
         && id != i.focused
