@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The Easing page's rows: below the settings panel, one per curve
-const EASING_TOP: f32 = 110.0;
-const EASING_ROW: f32 = 50.0;
+const EASING_TOP: f32 = 168.0;
+const EASING_ROW: f32 = 46.0;
 
 // ============================================================================
 // Scene 1: Easing Functions

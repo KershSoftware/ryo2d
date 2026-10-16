@@ -281,7 +281,7 @@ impl DemoPage for ControllerPage {
     ui.draw_text(
       "D-Pad",
       dpad_x - 10.0,
-      buttons_y + 30.0,
+      buttons_y + 4.0,
       Color::hex(0xAAAAAA),
     );
 

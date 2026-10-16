@@ -241,40 +241,40 @@ impl DemoPage for PropertyDemo {
     let mut rect = self.rect_tween.value();
     rect.y += oy;
     ui.draw_rect(rect, Color::rgb(255, 150, 50));
-    ui.draw_text("TweenRect", 520.0, 480.0 + oy, text_muted);
-    ui.draw_text("(pos + size)", 520.0, 500.0 + oy, Color::GRAY);
+    ui.draw_text("TweenRect", 710.0, 400.0 + oy, text_muted);
+    ui.draw_text("(pos + size)", 710.0, 418.0 + oy, Color::GRAY);
 
     // ==========================================
     // Labels for animation types
     // ==========================================
-    let panel_y = area.y + area.height - 90.0;
+    let panel_y = area.y + area.height - 80.0;
     ui.draw_panel(
-      Rect::new(10.0, panel_y, 780.0, 90.0),
+      Rect::new(10.0, panel_y, 780.0, 80.0),
       Color::rgb(30, 30, 40),
       Some(Color::rgb(60, 60, 80)),
     );
     ui.draw_text(
       "Animation Types Demonstrated:",
       20.0,
-      panel_y + 10.0,
+      panel_y + 4.0,
       text_accent,
     );
     ui.draw_text(
       "TweenFloat: Single value (position offset, alpha, scale)",
       20.0,
-      panel_y + 30.0,
+      panel_y + 23.0,
       Color::WHITE,
     );
     ui.draw_text(
       "TweenVec2: Two values (position coordinates)",
       20.0,
-      panel_y + 50.0,
+      panel_y + 41.0,
       Color::WHITE,
     );
     ui.draw_text(
       "TweenColor: RGBA color | TweenRect: Position + Size combined",
       20.0,
-      panel_y + 70.0,
+      panel_y + 59.0,
       Color::WHITE,
     );
   }

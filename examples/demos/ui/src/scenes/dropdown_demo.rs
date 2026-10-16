@@ -90,9 +90,9 @@ impl DemoPage for DropdownDemo {
       "Español",
       "Français",
       "Deutsch",
-      "日本語",
-      "한국어",
-      "中文",
+      "Ελληνικά",
+      "Русский",
+      "Čeština",
     ];
     let language_rect = Rect::new(140.0, 245.0 + oy, 200.0, 28.0);
     ui.dropdown(&mut self.language, language_rect, &language_options);

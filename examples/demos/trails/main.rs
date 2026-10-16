@@ -786,7 +786,7 @@ impl DemoPage for TrailsPage {
       }
       Variant::FadeModes => {
         let spacing = sw / 4.0;
-        let label_y = 100.0; // below the settings panel
+        let label_y = content_area(ui).y + settings_panel_height(ui, 2) + 8.0; // below the settings panel
         let colors = [
           Color::rgb(100, 200, 255),
           Color::rgb(255, 200, 80),
@@ -825,19 +825,20 @@ impl DemoPage for TrailsPage {
       }
       Variant::CapsJoins => {
         // LEFT HALF: Cap labels beside each line
-        ui.draw_text("CAPS", 10.0, 55.0, gray);
-        ui.draw_text("(magenta lines = true endpoints)", 50.0, 55.0, muted);
+        let heading_y = content_area(ui).y + 4.0;
+        ui.draw_text("CAPS", 10.0, heading_y, gray);
+        ui.draw_text("(magenta lines = true endpoints)", 50.0, heading_y, muted);
         let cap_labels = [
           ("Butt", sh * 0.20),
           ("Round", sh * 0.35),
           ("Square", sh * 0.50),
         ];
         for (label, y) in &cap_labels {
-          ui.draw_text(label, sw * 0.05, y - 20.0, white);
+          ui.draw_text(label, sw * 0.035, y - 20.0, white);
         }
 
         // RIGHT HALF: Join labels beside each shape
-        ui.draw_text("JOINS (35° angle)", sw * 0.50, 55.0, gray);
+        ui.draw_text("JOINS (35° angle)", sw * 0.50, heading_y, gray);
         let join_labels = [
           ("Miter", sh * 0.20),
           ("Bevel", sh * 0.45),

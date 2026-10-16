@@ -105,7 +105,7 @@ impl DemoPage for TextDemo {
     let debug_y = demo_y + wrapped_h as f32 + 40.0;
     ui.draw_text("Wrapped lines:", demo_x, debug_y, Color::GRAY);
     for (i, line) in lines.iter().enumerate() {
-      let line_y = debug_y + 20.0 + (i as f32 * 15.0);
+      let line_y = debug_y + 22.0 + (i as f32 * 18.0);
       let display = if line.is_empty() { "(empty)" } else { line };
       ui.draw_text(
         &format!("  {}: \"{}\"", i + 1, display),
