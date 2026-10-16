@@ -23,8 +23,12 @@ pub enum FontRender {
   /// Hinted and anti-aliased, rasterized at the exact pixel size
   #[default]
   Raster,
-  /// No anti-aliasing: sizes snap to whole multiples of `design_size` and
-  /// glyphs land on whole pixels
+  /// No anti-aliasing: glyphs land on whole pixels. Text in a pixel face
+  /// is laid out at the whole multiple of `design_size` (in layout pixels,
+  /// at least one) nearest the size asked for: with a 16 px design, sizes
+  /// under 24 px draw at 16 and 24 to 39 px at 32. Spans that set a pixel
+  /// face, or a size in one, snap too. Measuring, carets and line heights
+  /// use the snapped size.
   Pixel { design_size: f32 },
   /// A multi-channel signed distance field made once at `base` pixels with
   /// a distance `range` (pixels at that size): scales freely, and the

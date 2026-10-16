@@ -370,6 +370,14 @@ fn emit_raster(
   }
 }
 
+/// The render pixel size a pixel font's glyph image is made at: the whole
+/// multiple of `design_size` nearest `size_px`, at least one. The layout
+/// snaps pixel text to these sizes, so the image maps texel for texel onto
+/// its advance at the layout's own scale (`k` is one).
+pub(crate) fn pixel_raster_px(size_px: f32, design_size: f32) -> f32 {
+  design_size * (size_px / design_size).round().max(1.0)
+}
+
 /// A pixel font's glyph: on/off coverage at a whole multiple of its design
 /// size, its outline four copies and its shadow a hard copy
 fn emit_pixel(
@@ -381,10 +389,7 @@ fn emit_pixel(
   design_size: f32,
 ) {
   let (layout, place) = (block.layout, block.place);
-  let n = (glyph.size * place.px_per_layout / design_size)
-    .round()
-    .max(1.0);
-  let r = design_size * n;
+  let r = pixel_raster_px(glyph.size * place.px_per_layout, design_size);
   if !(r.is_finite() && r > 0.0) {
     return;
   }
@@ -1119,8 +1124,7 @@ pub(crate) fn prewarm(fonts: &mut Fonts, engine: &TextEngine, targets: &mut Text
       let key = match render {
         FontRender::Raster => GlyphKey::fill(font, glyph, size, 0.0),
         FontRender::Pixel { design_size } => {
-          let n = (size / design_size).round().max(1.0);
-          GlyphKey::pixel(font, glyph, design_size * n)
+          GlyphKey::pixel(font, glyph, pixel_raster_px(size, design_size))
         }
         FontRender::Msdf { base, range } => GlyphKey::msdf(font, glyph, base, range),
       };

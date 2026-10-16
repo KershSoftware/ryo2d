@@ -195,6 +195,8 @@ impl TextEngine {
     }
 
     self.stats.misses += 1;
+    let snapped = self.snapped(style, scale);
+    let style: &TextStyle = &snapped;
     let bitmap = self
       .resolve(&style.font)
       .filter(|id| self.bitmap(*id).is_some());
@@ -233,6 +235,7 @@ impl TextEngine {
     if !style.is_valid() || !valid_scale(scale) {
       return 0.0;
     }
+    let style = &*self.snapped(style, scale);
     match self.style_bitmap(style) {
       Some(bitmap) => {
         let ch = bitmap.cell.1 as f32;
@@ -248,6 +251,7 @@ impl TextEngine {
     if !style.is_valid() || !valid_scale(scale) {
       return 0.0;
     }
+    let style = &*self.snapped(style, scale);
     if let Some(bitmap) = self.style_bitmap(style) {
       return bitmap_caret(bitmap, text, byte, style.size);
     }
@@ -266,6 +270,7 @@ impl TextEngine {
       return 0;
     }
     let x = if x.is_nan() { 0.0 } else { x.clamp(-1e9, 1e9) };
+    let style = &*self.snapped(style, scale);
     if let Some(bitmap) = self.style_bitmap(style) {
       return bitmap_byte_at(bitmap, text, x, style.size);
     }
@@ -291,6 +296,7 @@ impl TextEngine {
       return (0.0, 0.0);
     }
     let end = range.end.min(text.len());
+    let style = &*self.snapped(style, scale);
     if let Some(bitmap) = self.style_bitmap(style) {
       return (
         bitmap_caret(bitmap, text, range.start, style.size),
@@ -338,6 +344,33 @@ impl TextEngine {
   /// The bitmap face a style's own font is, if it is one
   fn style_bitmap(&self, style: &TextStyle) -> Option<&BitmapFace> {
     self.resolve(&style.font).and_then(|id| self.bitmap(id))
+  }
+
+  /// The design size of the pixel face `font` names, if it names one
+  fn pixel_design(&self, font: &TextFont) -> Option<f32> {
+    let id = self.resolve(font)?;
+    match self.face_render(id) {
+      FontRender::Pixel { design_size } if design_size.is_finite() && design_size > 0.0 => {
+        Some(design_size)
+      }
+      _ => None,
+    }
+  }
+
+  /// The style text lays out with: in a pixel font, its size snapped to a
+  /// whole multiple of the design size at `scale` (`snap_pixel_size`)
+  fn snapped<'s>(&self, style: &'s TextStyle, scale: f32) -> Cow<'s, TextStyle> {
+    let Some(design) = self.pixel_design(&style.font) else {
+      return Cow::Borrowed(style);
+    };
+    let size = snap_pixel_size(style.size, design, scale);
+    if size == style.size {
+      Cow::Borrowed(style)
+    } else {
+      let mut snapped = style.clone();
+      snapped.size = size;
+      Cow::Owned(snapped)
+    }
   }
 
   /// A plain one-line layout for carets and hit tests, cached
@@ -542,7 +575,7 @@ impl TextEngine {
       };
     };
 
-    let spans = self.span_runs(text, style);
+    let spans = self.span_runs(text, style, scale);
     let face = self.face_style(style);
     let wrap_px = options.wrap.map(|width| width * scale);
     let mut builder = self.lcx.ranged_builder(&mut self.fcx, source, scale, true);
@@ -628,7 +661,7 @@ impl TextEngine {
 
   /// Each span's layout overrides. Brush `i + 1` is span `i`; brush 0 is the
   /// base style.
-  fn span_runs(&mut self, text: &RichText, style: &TextStyle) -> Vec<SpanRun> {
+  fn span_runs(&mut self, text: &RichText, style: &TextStyle, scale: f32) -> Vec<SpanRun> {
     let mut spans = Vec::with_capacity(text.spans.len());
     for (i, mark) in text.spans.iter().enumerate() {
       let Ok(brush) = u16::try_from(i + 1) else {
@@ -652,12 +685,15 @@ impl TextEngine {
         None => None,
       };
       // An exact face brings its own weight and slant
-      let exact = mark
-        .span
-        .font
-        .as_ref()
-        .filter(|_| stack.is_some())
-        .and_then(|font| self.exact_face(font));
+      let font = mark.span.font.as_ref().filter(|_| stack.is_some());
+      let exact = font.and_then(|font| self.exact_face(font));
+      // A span that sets its size or font in a pixel face snaps its size
+      let size = match self.pixel_design(font.unwrap_or(&style.font)) {
+        Some(design) if size.is_some() || font.is_some() => {
+          Some(snap_pixel_size(size.unwrap_or(style.size), design, scale))
+        }
+        _ => size,
+      };
       spans.push(SpanRun {
         range: mark.range.clone(),
         brush,
@@ -1622,6 +1658,14 @@ fn font_context() -> FontContext {
     }),
     source_cache: SourceCache::default(),
   }
+}
+
+/// A pixel font's size (text units) snapped so it is a whole multiple of
+/// its `design` size in layout pixels at `scale`, at least one: the size its
+/// glyph images are made at, so advances and images agree
+fn snap_pixel_size(size: f32, design: f32, scale: f32) -> f32 {
+  let n = (size * scale / design).round().max(1.0);
+  n * design / scale
 }
 
 /// The base style's properties; `face` is the weight and slant to ask for
@@ -2631,5 +2675,129 @@ mod tests {
       .filter(|e| e.message.contains("No Such Family Q7"))
       .count();
     assert_eq!(warnings, 1);
+  }
+
+  /// The pixel role's font (m5x7, designed at 16 px) at `size`
+  fn pixel_style(size: f32) -> TextStyle {
+    TextStyle::default().role(FontRole::Pixel).size(size)
+  }
+
+  fn sizes(laid: &TextLayout) -> Vec<f32> {
+    laid.glyphs.iter().map(|glyph| glyph.size).collect()
+  }
+
+  #[test]
+  fn pixel_font_sizes_snap_to_whole_multiples_of_the_design_size() {
+    let (mut engine, _) = engine();
+    let options = TextLayoutOptions::default();
+    let text = RichText::new("Hello");
+    for (size, snapped) in [
+      (10.0, 16.0),
+      (12.0, 16.0),
+      (14.0, 16.0),
+      (16.0, 16.0),
+      (24.0, 32.0),
+      (40.0, 48.0),
+    ] {
+      let style = pixel_style(size);
+      let laid = engine.layout(&text, &style, &options, 1.0).unwrap();
+      assert!(
+        sizes(&laid).iter().all(|&s| s == snapped),
+        "{size} px lays out at {snapped}: {:?}",
+        sizes(&laid)
+      );
+      // The emitter makes the image at exactly that size: k is one
+      assert_eq!(
+        crate::core::render::text::pixel_raster_px(snapped, 16.0),
+        snapped
+      );
+      let line = snapped * style.line_height;
+      assert!((engine.line_height(&style, 1.0) - line).abs() < 1e-4);
+      let measured = engine.measure(&text, &style, &options, 1.0);
+      assert!(
+        (measured.y - line).abs() < 0.01,
+        "{size} px measures {measured}"
+      );
+    }
+    // The snap is in render pixels: at UI scale 2, 10 units are 20 px and
+    // snap to 16 px (8 units); 12 units are 24 px and round up to 32 px
+    for (size, units) in [(10.0, 8.0), (12.0, 16.0)] {
+      let style = pixel_style(size);
+      let laid = engine.layout(&text, &style, &options, 2.0).unwrap();
+      assert!(
+        sizes(&laid).iter().all(|&s| s == units * 2.0),
+        "{size} units at scale 2: {:?}",
+        sizes(&laid)
+      );
+      assert!((engine.line_height(&style, 2.0) - units * style.line_height).abs() < 1e-4);
+    }
+    // Outline fonts keep their size
+    let inter = layout(&mut engine, "Hello", &TextStyle::default().size(10.0));
+    assert!(sizes(&inter).iter().all(|&s| s == 10.0));
+  }
+
+  #[test]
+  fn pixel_spans_snap_too() {
+    let (mut engine, _) = engine();
+    // A sized span in pixel text
+    let text = RichText::new("ab").span("cd", Span::size(12.0));
+    let laid = layout(&mut engine, text, &pixel_style(32.0));
+    assert_eq!(sizes(&laid), vec![32.0, 32.0, 16.0, 16.0]);
+    // A pixel span in outline text
+    let text = RichText::new("ab").span("cd", Span::font(TextFont::Role(FontRole::Pixel)));
+    let laid = layout(&mut engine, text, &TextStyle::default().size(10.0));
+    assert_eq!(sizes(&laid), vec![10.0, 10.0, 16.0, 16.0]);
+  }
+
+  #[test]
+  fn pixel_carets_follow_the_snapped_layout() {
+    let (mut engine, _) = engine();
+    let style = pixel_style(10.0);
+    let laid = layout(&mut engine, "HHHH", &style);
+    let third = laid.glyphs[2].pos.x;
+    // 10 px is laid out at 16, so its carets are 16 px advances apart
+    let at_16 = layout(&mut engine, "HHHH", &pixel_style(16.0));
+    let caret = engine.caret_x("HHHH", &style, 2, 1.0);
+    assert!(
+      (caret - at_16.glyphs[2].pos.x).abs() < 0.01,
+      "caret {caret} vs {}",
+      at_16.glyphs[2].pos.x
+    );
+    assert!((caret - third).abs() < 0.01);
+    assert_eq!(engine.byte_at("HHHH", &style, third + 0.5, 1.0), 2);
+    let (left, _) = engine.selection_x("HHHH", &style, 2..3, 1.0);
+    assert!((left - third).abs() < 0.01);
+  }
+
+  #[test]
+  fn adjacent_pixel_glyphs_do_not_overlap() {
+    use crate::core::render::text::pixel_raster_px;
+    use crate::core::text::{GlyphKey, GlyphRasterizer};
+    let (mut engine, fonts) = engine();
+    let mut raster = GlyphRasterizer::new();
+    for size in [10.0, 12.0, 14.0, 18.0, 24.0, 32.0] {
+      let laid = layout(&mut engine, "HHMMWW", &pixel_style(size));
+      // Each glyph's ink as the emitter draws it at UI scale 1: the image
+      // made at its pixel raster size, texel for texel from the pen
+      let ink: Vec<(f32, f32)> = laid
+        .glyphs
+        .iter()
+        .map(|glyph| {
+          let r = pixel_raster_px(glyph.size, 16.0);
+          let key = GlyphKey::pixel(glyph.font, glyph.glyph, r);
+          let image = raster.rasterize(&fonts, None, &key).unwrap();
+          let left = glyph.pos.x + image.left as f32;
+          (left, left + image.width as f32)
+        })
+        .collect();
+      for pair in ink.windows(2) {
+        assert!(
+          pair[0].1 <= pair[1].0,
+          "{size} px: glyph ink {:?} runs into {:?}",
+          pair[0],
+          pair[1]
+        );
+      }
+    }
   }
 }

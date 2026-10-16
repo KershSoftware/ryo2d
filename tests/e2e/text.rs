@@ -300,6 +300,46 @@ fn a_pixel_font_lands_on_whole_pixels() {
   assert!(count(&frame, |p| p.0[0] >= 245) > 20);
 }
 
+/// The ink box of "HELLO" in the pixel font at `size`, after checking every
+/// pixel is background or text colour
+fn pixel_hello_ink(size: f32) -> Option<[u32; 4]> {
+  let frame = frame_of(
+    (160, 90),
+    |b| b.pixel_art(160, 90),
+    move |ctx| {
+      let style = TextStyle::new()
+        .role(FontRole::Pixel)
+        .size(size)
+        .color(Color::WHITE);
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Text2d::new("HELLO").with_style(style),
+      ));
+    },
+  )?;
+  let mid = count(&frame, |p| p.0[0] > 10 && p.0[0] < 245);
+  assert_eq!(
+    mid, 0,
+    "{size} px: every pixel is background or text colour"
+  );
+  ink(&frame, |p| p.0[0] >= 245)
+}
+
+#[test]
+fn a_pixel_font_between_sizes_draws_at_its_snapped_size() {
+  let (Some(at_16), Some(at_12)) = (pixel_hello_ink(16.0), pixel_hello_ink(12.0)) else {
+    return;
+  };
+  let width = |ink: [u32; 4]| ink[2] - ink[0];
+  assert_eq!(width(at_12), width(at_16), "12 px is laid out at 16");
+  let at_24 = pixel_hello_ink(24.0).unwrap();
+  assert_eq!(
+    width(at_24),
+    2 * width(at_16) + 1,
+    "24 px is laid out at 32"
+  );
+}
+
 #[test]
 fn the_reveal_shows_text_over_time_and_says_so_once() {
   struct Reveal {

@@ -44,6 +44,13 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   its own, so a reveal reaches it.
 - `max_lines` keeps the first lines, and the block measures only those;
   `max_lines(0)` gives an empty block of size zero.
+- Pixel faces (`FontRender::Pixel`, bitmap fonts included) lay out at a
+  snapped size: the whole multiple of the design size, in layout pixels,
+  nearest the size asked for (at least one), so a glyph's image (made at
+  that size, `pixel_raster_px`) maps texel for texel onto its advance.
+  `TextEngine::snapped` applies it to the style before layout, line height
+  and the caret queries; `span_runs` to spans that set a size or a pixel
+  font. The cache key keeps the size as asked.
 - `TextFont::Id` lays out that exact face: Parley picks faces by family,
   weight and slant, so the face's own weight and slant are pushed. A word
   wider than the wrap width breaks inside it (`OverflowWrap::Anywhere`).
