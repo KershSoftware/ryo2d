@@ -80,7 +80,7 @@ let mode = ctx.fonts().render(id);
 
 | Mode | Glyphs | Choose it for |
 |------|--------|---------------|
-| `Raster` (default) | hinted, anti-aliased, made at the exact pixel size the text is drawn at (per camera in the world) | almost everything; sharpest text at any size |
+| `Raster` (default) | hinted, anti-aliased, made at the exact pixel size the text is drawn at (per camera in the world), up to 512 px in the UI and 256 px in the world; larger text draws that image scaled up | almost everything; sharpest text at any size up to the cap |
 | `Pixel { design_size }` | no anti-aliasing, on whole pixels | pixel fonts. Sizes snap to whole multiples of the design size at the layout's scale: `n = max(1, round(size * scale / design))`, drawn at `n * design`. A 16 px design draws sizes under 24 px at 16 and 24 to 39 px at 32. Layout, measuring and drawing all use the snapped size |
 | `Msdf { base, range }` | a multi-channel distance field made once per glyph at `base` px: scales freely, soft shadows and glow | text that scales a lot, or glow and soft shadow |
 
@@ -497,6 +497,7 @@ Embedding on every target (`add_bytes` only) is simpler and always works; `load`
 - **Glow needs MSDF.** A raster or pixel font draws no glow (warned once). Turn a face to MSDF with enough range (`Msdf { base: 32.0, range: 8.0 }` or more).
 - **MSDF outline, glow and shadow reach is limited to `range / 2` base pixels.** The default range 4 is about 0.06 em.
 - **MSDF fonts have no synthesized italic or bold.** Ship a real italic or bold face.
+- **Very large text: use MSDF.** Raster and pixel glyph images are capped at 512 render pixels in the UI and 256 in the world (a zooming camera reaches huge sizes fast). Larger raster text draws the capped image scaled up, so it softens, and the engine warns once per font. Pixel fonts stay crisp: past the cap their image is a smaller multiple of the design size, scaled by a whole number. An MSDF font scales freely; MSDF bases above 256 px are made at 256 (warned once).
 - **m5x7 is ASCII-only** and draws capitals with lowercase shapes; other characters fall back to Inter.
 - **CJK, emoji and other scripts need a font that has them.** The built-in fonts cover Latin, Latin Extended, Greek and Cyrillic. Add a font and put it in `TextStyle::fallback(..)` or `set_role`.
 - **Binary size.** The built-in fonts are about 0.58 MB in the binary. A game that ships its own fonts can turn the `default-fonts` cargo feature off (`ryo2d = { default-features = false }`); the registry then starts empty: add a font and assign it to each role you use (`set_role`), or no text draws.

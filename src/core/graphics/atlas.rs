@@ -421,7 +421,8 @@ impl TextureAtlas {
   }
 
   /// The slot of a glyph image, rasterizing and uploading it on first use.
-  /// A key with no image (a space) is remembered and not rasterized again.
+  /// A key with no image (a space) or one too big for a glyph page is
+  /// remembered and not rasterized again.
   pub(crate) fn glyph(
     &mut self,
     device: &wgpu::Device,

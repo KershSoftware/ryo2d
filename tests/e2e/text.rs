@@ -627,3 +627,63 @@ fn a_text_entity_scaled_to_zero_draws_nothing() {
   };
   assert_eq!(count(&frame, bright), 0);
 }
+
+/// The ink box of a pixel-font "l" seen at `zoom`, after checking every
+/// pixel is background or text colour
+fn pixel_l_ink(zoom: f32) -> Option<[u32; 4]> {
+  let frame = frame_of(
+    (256, 192),
+    |b| b,
+    move |ctx| {
+      ctx.camera().set_zoom(zoom);
+      let style = TextStyle::new().role(FontRole::Pixel).size(16.0);
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Text2d::new("l").with_style(style),
+      ));
+    },
+  )?;
+  let mid = count(&frame, |p| p.0[0] > 10 && p.0[0] < 245);
+  assert_eq!(mid, 0, "zoom {zoom}: every pixel is background or text");
+  ink(&frame, |p| p.0[0] >= 245)
+}
+
+#[test]
+fn a_pixel_glyph_past_the_cap_scales_by_a_whole_number() {
+  // At zoom 5 the glyph image is 80 px, drawn 1:1; at zoom 20 it would be
+  // 320 px, past the 256 px cap: a 160 px image is drawn twice its size
+  let (Some(near), Some(far)) = (pixel_l_ink(5.0), pixel_l_ink(20.0)) else {
+    return;
+  };
+  let size = |ink: [u32; 4]| (ink[2] - ink[0] + 1, ink[3] - ink[1] + 1);
+  let (near, far) = (size(near), size(far));
+  assert_eq!(
+    (far.0, far.1),
+    (near.0 * 4, near.1 * 4),
+    "{near:?} -> {far:?}"
+  );
+}
+
+#[test]
+fn world_text_seen_at_zoom_30_draws() {
+  // A 64 unit 'I' seen 30 times larger: its stem covers the frame
+  let Some(frame) = frame_of(
+    (128, 96),
+    |b| b,
+    |ctx| {
+      ctx.camera().set_zoom(30.0);
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Text2d::new("I").with_style(TextStyle::new().size(64.0)),
+      ));
+    },
+  ) else {
+    return;
+  };
+  let lit = count(&frame, bright);
+  // Drawn from a capped image at 1:1, the stem would be a narrow band
+  assert!(
+    lit > 128 * 96 * 9 / 10,
+    "the glyph draws, scaled up: {lit} lit pixels"
+  );
+}

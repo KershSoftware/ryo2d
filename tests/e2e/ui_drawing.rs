@@ -283,3 +283,34 @@ fn ui_units_and_mouse_hits_hold_at_scale_factor_two() {
   click(&mut engine, 95.0, 20.0);
   assert_eq!(clicks.get(), 1, "on the button");
 }
+
+#[test]
+fn ui_text_far_larger_than_a_glyph_page_draws_and_warns_once() {
+  use ryo2d::core::dev_log;
+  // An 'I' 3000 px tall, centred: its stem covers the frame
+  let scene = Ui {
+    draw: |ui: &mut UiContext| {
+      ui.text("I")
+        .size(3000.0)
+        .at(64.0, 48.0)
+        .anchor(Anchor::Center)
+        .draw();
+    },
+    world: None,
+  };
+  let Some(mut engine) = engine(None, |b| b, scene) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let lit = frame.pixels().filter(|p| p.0[0] > 200).count();
+  assert!(
+    lit > 128 * 96 * 9 / 10,
+    "the huge glyph draws, scaled up: {lit} lit pixels"
+  );
+  let warnings = dev_log::get_entries()
+    .iter()
+    .filter(|e| e.message.contains("larger than 512 px") && e.message.contains("Inter"))
+    .count();
+  assert_eq!(warnings, 1, "warned once over four frames");
+}

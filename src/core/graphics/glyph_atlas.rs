@@ -284,8 +284,9 @@ impl GlyphAtlas {
     self.shelves.lookup(key, frame).map(Self::slot_of)
   }
 
-  /// Place and upload `image`; `None` when it does not fit or the atlas is
-  /// full of glyphs drawn this frame
+  /// Place and upload `image`; `None` when it is bigger than a page (the
+  /// key is then remembered as having no image) or the atlas is full of
+  /// glyphs drawn this frame
   pub(crate) fn insert(
     &mut self,
     device: &wgpu::Device,
@@ -325,8 +326,14 @@ impl GlyphAtlas {
       self.shelves.add_page(format);
       placement = self.shelves.place(&key, format, size, frame);
     }
-    let Placement::Placed { page, rect } = placement else {
-      return None;
+    let (page, rect) = match placement {
+      Placement::Placed { page, rect } => (page, rect),
+      // Refused for good: remembered, so it is never rasterized again
+      Placement::TooBig => {
+        self.mark_no_image(key);
+        return None;
+      }
+      Placement::NeedPage | Placement::Full => return None,
     };
     let texture = &self.pages.get(&format)?.get(page)?.texture;
 

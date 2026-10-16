@@ -83,8 +83,16 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   under the fill). MSDF glyphs are made once per glyph at the font's base
   size (default 32 px, range 4 px) with error correction, about half a
   millisecond each: `Fonts::prewarm` builds known text ahead.
-- Glyphs above 1024 px are refused. Bitmap fonts have no glyph images:
-  the renderer draws their cells from the sprite sheet.
+- Glyph images are capped (`render/text.rs`): raster and pixel images at
+  256 render pixels for world text (`WORLD_GLYPH_PX`) and 512 for the UI
+  (`UI_GLYPH_PX`), MSDF bases at 256 (`MSDF_MAX_BASE`). Larger raster text
+  draws the capped image scaled up, off the pixel grid; a pixel glyph past
+  the cap is made at the largest multiple of its design size within the
+  cap that divides its own, drawn a whole number of render pixels per
+  texel. A capped raster font and a capped MSDF base are warned once per
+  font. The rasterizer itself refuses sizes above 1024 px. Bitmap fonts
+  have no glyph images: the renderer draws their cells from the sprite
+  sheet.
 - One `GlyphRasterizer` serves one `Fonts`: swash caches parsed fonts
   under `[FontId, face index]`. The engine owns one of each.
 - The built-in fonts are subset with `--notdef-outline`, so a character no
@@ -130,8 +138,9 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   runs on (`RevealClock::run_on`) until the last character has faded in, so
   the end never pops; once settled the emitter draws without a reveal. It
   starts over when the text changes (not its style or a font).
-- The glyph atlas remembers keys with no image (spaces), so they are not
-  rasterized again every frame; the set is cleared past 4096 keys.
+- The glyph atlas remembers keys with no image (spaces) and keys whose
+  image is bigger than a page, so they are not rasterized again every
+  frame; the set is cleared past 4096 keys.
 - Icon regions are inset half a texel on each side, so linear filtering
   never reads their neighbours on the sheet.
 

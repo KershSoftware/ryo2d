@@ -26,13 +26,26 @@ use crate::core::render::{
   CameraDraw, DrawGlyph, DrawKind, DrawList, PixelRect, SpriteLook, SpriteShading,
 };
 use crate::core::text::{
-  BitmapFace, FaceSource, FontRender, Fonts, GlyphContext, GlyphFormat, GlyphKey, GlyphMod,
+  BitmapFace, FaceSource, FontId, FontRender, Fonts, GlyphContext, GlyphFormat, GlyphKey, GlyphMod,
   GlyphRasterizer, GlyphStyle, Icon, PlacedGlyph, PlacedIcon, Text2d, TextBounds, TextEffects,
   TextEngine, TextIcons, TextLayout, TextLayoutState, TextReveal, clean_opacity, glyph_id,
   raster_size_step, reveal_alpha,
 };
 use crate::core::ui::{Color, Rect};
 use crate::engine_warn;
+
+/// The largest raster or pixel glyph image world text makes, in render
+/// pixels: text seen larger draws this image scaled up. A quarter of a glyph
+/// page, so even wide glyphs fit and a zooming camera's sizes stay cheap.
+pub(crate) const WORLD_GLYPH_PX: f32 = 256.0;
+
+/// The UI's largest glyph image. UI text is mostly still, so a bigger image
+/// is one upload, and big titles on HiDPI displays stay sharp.
+pub(crate) const UI_GLYPH_PX: f32 = 512.0;
+
+/// The largest MSDF base size: a font asking for more is made at this size
+/// (a field scales freely, and a page must hold every glyph)
+const MSDF_MAX_BASE: f32 = 256.0;
 
 /// What the text reads
 pub(crate) struct TextSources<'a> {
@@ -75,6 +88,9 @@ pub(crate) struct TextPlacement {
   /// Raster sizes snap to `raster_size_step` (world text, so a zooming
   /// camera reuses glyphs); the UI's are exact
   pub(crate) size_steps: bool,
+  /// The largest raster or pixel glyph image made, in render pixels: larger
+  /// text draws that image scaled up (`WORLD_GLYPH_PX`, `UI_GLYPH_PX`)
+  pub(crate) max_glyph_px: f32,
   /// Target point of render pixel (0, 0) and render pixels per target unit
   pub(crate) pixel_grid: Option<(Vec2, f32)>,
   pub(crate) draw: TextDraw,
@@ -238,8 +254,10 @@ struct GlyphQuad {
   pen: Vec2,
   /// Layout pixels per image pixel
   k: f32,
-  /// Snap to whole render pixels (raster and pixel glyphs)
-  snap: bool,
+  /// Render pixels per image pixel, on whole render pixels when the block
+  /// is on the pixel grid (raster and pixel glyphs); `None` scales by `k`
+  /// (MSDF glyphs, and raster glyphs drawn from a capped image)
+  texel: Option<f32>,
   /// Moved by this many render pixels (pixel-font outlines)
   nudge: Vec2,
   shade: Shade,
@@ -330,6 +348,19 @@ fn emit_raster(
   if !(r.is_finite() && r > 0.0) {
     return;
   }
+  // Larger text draws a capped image scaled up, off the pixel grid
+  let capped = r > place.max_glyph_px;
+  if capped {
+    r = place.max_glyph_px;
+    warn_capped(block.sources, block.targets.warned, glyph.font, r);
+  }
+  let fraction = |pen: Vec2| {
+    if capped {
+      0.0
+    } else {
+      pen_fraction(place, pen)
+    }
+  };
   let to_quad = |mut key: GlyphKey, pen: Vec2, tint: Color| {
     key.coords = glyph.coords;
     key.skew = glyph.skew;
@@ -338,7 +369,7 @@ fn emit_raster(
       key,
       pen,
       k: glyph.size / r,
-      snap: true,
+      texel: (!capped).then_some(1.0),
       nudge: Vec2::ZERO,
       shade: Shade::tinted(tint, look.alpha, Sampling::Linear),
     }
@@ -349,7 +380,7 @@ fn emit_raster(
       warn_glow(block.targets.warned, style);
       if let Some(shadow) = style.shadow {
         let pen = look.pen + shadow.offset * layout.scale;
-        let key = GlyphKey::fill(font, id, r, pen_fraction(place, pen));
+        let key = GlyphKey::fill(font, id, r, fraction(pen));
         push_glyph(block, glyph, look, to_quad(key, pen, shadow.color));
       }
     }
@@ -358,15 +389,23 @@ fn emit_raster(
         // The band is centred on the outline: twice the width puts `width`
         // outside the glyph
         let width = 2.0 * outline.width * r * layout.scale / glyph.size;
-        let fraction = pen_fraction(place, look.pen);
-        let key = GlyphKey::stroke(font, id, r, fraction, width);
+        let key = GlyphKey::stroke(font, id, r, fraction(look.pen), width);
         push_glyph(block, glyph, look, to_quad(key, look.pen, outline.color));
       }
     }
     Layer::Fill => {
-      let key = GlyphKey::fill(font, id, r, pen_fraction(place, look.pen));
+      let key = GlyphKey::fill(font, id, r, fraction(look.pen));
       push_glyph(block, glyph, look, to_quad(key, look.pen, look.color));
     }
+  }
+}
+
+/// Warn once per font and cap that its text is drawn from a capped glyph
+/// image, scaled up
+fn warn_capped(sources: &TextSources<'_>, warned: &mut HashSet<u64>, font: FontId, cap: f32) {
+  if warned.insert(hash_of(&("glyph cap", font, cap.to_bits()))) {
+    let family = sources.engine.face_family(font).unwrap_or_default();
+    engine_warn!(module: "text", "text in {family:?} larger than {cap} px is drawn from a {cap} px glyph, scaled up; use an MSDF font (FontRender::Msdf) for very large text");
   }
 }
 
@@ -376,6 +415,26 @@ fn emit_raster(
 /// its advance at the layout's own scale (`k` is one).
 pub(crate) fn pixel_raster_px(size_px: f32, design_size: f32) -> f32 {
   design_size * (size_px / design_size).round().max(1.0)
+}
+
+/// A pixel glyph's image size and render pixels per image pixel, the image
+/// at most `cap` pixels: the `n`th multiple of `design_size` that
+/// `pixel_raster_px` picks, drawn 1:1, or, when that passes the cap, the
+/// largest multiple `m` within it that divides `n`, drawn `n / m` render
+/// pixels per image pixel (a whole number, so the glyph stays crisp)
+pub(crate) fn pixel_image_px(size_px: f32, design_size: f32, cap: f32) -> (f32, f32) {
+  let full = pixel_raster_px(size_px, design_size);
+  let n = (full / design_size).round();
+  let most = (cap / design_size).floor().clamp(1.0, cap.max(1.0));
+  if n <= most {
+    return (full, 1.0);
+  }
+  let m = (1..=most as u32)
+    .rev()
+    .map(|m| m as f32)
+    .find(|&m| n % m == 0.0)
+    .unwrap_or(1.0);
+  (design_size * m, n / m)
 }
 
 /// A pixel font's glyph: on/off coverage at a whole multiple of its design
@@ -389,8 +448,13 @@ fn emit_pixel(
   design_size: f32,
 ) {
   let (layout, place) = (block.layout, block.place);
-  let r = pixel_raster_px(glyph.size * place.px_per_layout, design_size);
-  if !(r.is_finite() && r > 0.0) {
+  // Past the cap the image is a smaller multiple, scaled by a whole number
+  let (r, texel) = pixel_image_px(
+    glyph.size * place.px_per_layout,
+    design_size,
+    place.max_glyph_px,
+  );
+  if !(r.is_finite() && r > 0.0 && texel.is_finite()) {
     return;
   }
   let mut key = GlyphKey::pixel(glyph.font, glyph.glyph, r);
@@ -401,7 +465,7 @@ fn emit_pixel(
     key,
     pen,
     k: glyph.size / r,
-    snap: true,
+    texel: Some(texel),
     nudge,
     shade: Shade::tinted(tint, look.alpha, Sampling::Nearest),
   };
@@ -456,6 +520,7 @@ fn emit_msdf(
 ) {
   let (layout, place) = (block.layout, block.place);
   warn_msdf_synthesis(block.sources, block.targets.warned, glyph);
+  let base = msdf_base(block.sources, block.targets.warned, glyph.font, base);
   let key = msdf_key(glyph, base, range);
   // Layout pixels per base pixel, base pixels per text unit and render
   // pixels per base pixel
@@ -470,7 +535,7 @@ fn emit_msdf(
     key,
     pen,
     k,
-    snap: false,
+    texel: None,
     nudge: Vec2::ZERO,
     shade: Shade {
       tint,
@@ -531,6 +596,28 @@ fn msdf_key(glyph: &PlacedGlyph, base: f32, range: f32) -> GlyphKey {
   let mut key = GlyphKey::msdf(glyph.font, glyph.glyph, base, range);
   key.coords = glyph.coords;
   key
+}
+
+/// An MSDF font's base size, capped at `MSDF_MAX_BASE` so a glyph page holds
+/// its glyphs (warned once per font)
+fn msdf_base(sources: &TextSources<'_>, warned: &mut HashSet<u64>, font: FontId, base: f32) -> f32 {
+  if base <= MSDF_MAX_BASE {
+    return base;
+  }
+  if warned.insert(hash_of(&("msdf base", font))) {
+    let family = sources.engine.face_family(font).unwrap_or_default();
+    engine_warn!(module: "text", "MSDF font {family:?} has a base of {base} px; its glyphs are made at {MSDF_MAX_BASE} px (a distance field scales freely)");
+  }
+  capped_msdf_base(base)
+}
+
+/// `base` within `MSDF_MAX_BASE` (a base that is not a number is the cap)
+fn capped_msdf_base(base: f32) -> f32 {
+  if base <= MSDF_MAX_BASE {
+    base
+  } else {
+    MSDF_MAX_BASE
+  }
 }
 
 /// Warn once per font that an MSDF font's text asked for a synthesized
@@ -642,7 +729,7 @@ fn push_glyph(
     width: slot.width as f32,
     height: slot.height as f32,
   };
-  let texel = glyph_quad.snap.then_some(1.0);
+  let texel = glyph_quad.texel;
   let (centre, size, rotation) = quad(
     place,
     glyph_quad.pen,
@@ -1080,6 +1167,7 @@ pub(crate) fn emit_world_text(
         axis_y,
         px_per_layout,
         size_steps: true,
+        max_glyph_px: WORLD_GLYPH_PX,
         pixel_grid,
         draw: TextDraw {
           kind: DrawKind::Text,
@@ -1121,12 +1209,16 @@ pub(crate) fn prewarm(fonts: &mut Fonts, engine: &TextEngine, targets: &mut Text
       let Some(glyph) = glyph_id(fonts, font, c) else {
         continue;
       };
+      // The images text at this size draws from (the UI's caps)
       let key = match render {
-        FontRender::Raster => GlyphKey::fill(font, glyph, size, 0.0),
+        FontRender::Raster => GlyphKey::fill(font, glyph, size.min(UI_GLYPH_PX), 0.0),
         FontRender::Pixel { design_size } => {
-          GlyphKey::pixel(font, glyph, pixel_raster_px(size, design_size))
+          let (r, _) = pixel_image_px(size, design_size, UI_GLYPH_PX);
+          GlyphKey::pixel(font, glyph, r)
         }
-        FontRender::Msdf { base, range } => GlyphKey::msdf(font, glyph, base, range),
+        FontRender::Msdf { base, range } => {
+          GlyphKey::msdf(font, glyph, capped_msdf_base(base), range)
+        }
       };
       let TextTargets {
         raster,
@@ -1160,6 +1252,7 @@ mod tests {
       axis_y: Vec2::Y,
       px_per_layout: 1.0,
       size_steps: false,
+      max_glyph_px: UI_GLYPH_PX,
       pixel_grid: Some((Vec2::ZERO, 1.0)),
       draw: TextDraw {
         kind: DrawKind::Text,
@@ -1202,6 +1295,30 @@ mod tests {
     let (centre, size, _) = quad(&place, pen, image, 0.5, Some(1.0), Vec2::ZERO);
     assert_eq!(size, Vec2::new(3.5, 4.5));
     assert_eq!(centre - size / 2.0, Vec2::new(10.9 + 0.5, 17.6 - 4.5));
+  }
+
+  #[test]
+  fn capped_pixel_glyphs_scale_a_smaller_multiple_by_a_whole_number() {
+    // Within the cap: the nearest multiple, drawn 1:1
+    assert_eq!(pixel_image_px(40.0, 16.0, 256.0), (48.0, 1.0));
+    // 3008 px is 188 x 16; within 256 px the largest multiple dividing 188
+    // is 4 (64 px), drawn 47 render pixels per image pixel
+    assert_eq!(pixel_image_px(3000.0, 16.0, 256.0), (64.0, 47.0));
+    // A prime multiple past the cap falls back to the design size
+    assert_eq!(pixel_image_px(16.0 * 37.0, 16.0, 256.0), (16.0, 37.0));
+    for (r, texel) in [
+      pixel_image_px(5000.0, 7.0, 512.0),
+      pixel_image_px(1.0e9, 16.0, 256.0),
+    ] {
+      assert!(r <= 512.0 && texel.fract() == 0.0, "{r} x {texel}");
+    }
+  }
+
+  #[test]
+  fn msdf_bases_past_the_cap_are_made_at_it() {
+    assert_eq!(capped_msdf_base(32.0), 32.0);
+    assert_eq!(capped_msdf_base(2000.0), MSDF_MAX_BASE);
+    assert_eq!(capped_msdf_base(f32::NAN), MSDF_MAX_BASE);
   }
 
   #[test]

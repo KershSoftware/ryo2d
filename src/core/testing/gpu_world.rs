@@ -718,6 +718,37 @@ fn glyph_pages_bind_once_and_reuse_their_glyphs() {
 }
 
 #[test]
+fn a_glyph_too_big_for_a_page_is_rasterized_once() {
+  use std::cell::Cell;
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    eprintln!("skipping: no GPU available");
+    return;
+  };
+  let mut sprites = crate::core::graphics::SpriteGpuRenderer::new(&device, &queue);
+  let key = crate::core::text::GlyphKey::fill(crate::core::text::FontId(7), 3, 900.0, 0.0);
+  let rasterized = Cell::new(0);
+  // Wider than a 1024 px page with its border
+  let wide = || {
+    rasterized.set(rasterized.get() + 1);
+    Some(crate::core::text::GlyphImage {
+      format: crate::core::text::GlyphFormat::Mask,
+      width: 1100,
+      height: 10,
+      left: 0,
+      top: 10,
+      data: vec![255; 11_000],
+      base: 900.0,
+    })
+  };
+  let list = crate::core::render::DrawList::default();
+  for _ in 0..2 {
+    assert!(sprites.glyph(&device, &queue, key, wide).is_none());
+    sprites.prepare_textures(&device, &queue, &list);
+  }
+  assert_eq!(rasterized.get(), 1, "refused once, then remembered");
+}
+
+#[test]
 fn the_text_and_ui_pipelines_build_in_both_formats() {
   use crate::core::render::batch::{BatchShader, BlendMode, LightStep, Stream};
   use crate::core::render::{SCENE_FORMAT, UI_FORMAT};

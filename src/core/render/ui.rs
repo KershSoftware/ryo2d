@@ -18,7 +18,9 @@ use crate::core::graphics::{
 use crate::core::render::batch::{
   BlendMode, Filter, LineLook, PolyPoint, PolyStyle, Triangles, line_color, push_polyline,
 };
-use crate::core::render::text::{TextDraw, TextPlacement, TextSources, TextTargets, emit_text};
+use crate::core::render::text::{
+  TextDraw, TextPlacement, TextSources, TextTargets, UI_GLYPH_PX, emit_text,
+};
 use crate::core::render::{CameraDraw, DrawKind, DrawShape, PixelRect, SpriteLook, SpriteShading};
 use crate::core::trail::{LineCap, LineJoin};
 use crate::core::ui::immediate::{UiCommand, UiCommands};
@@ -336,6 +338,7 @@ pub(crate) fn emit_ui(
           axis_y: Vec2::new(0.0, k),
           px_per_layout: space.px_scale * k,
           size_steps: false,
+          max_glyph_px: UI_GLYPH_PX,
           pixel_grid: Some((Vec2::ZERO, space.px_scale)),
           draw: TextDraw {
             kind: DrawKind::Sprite,
