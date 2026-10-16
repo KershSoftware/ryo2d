@@ -18,6 +18,25 @@ macro_rules! key_table {
 
 /// The keys that bindings and `RYO_INPUT` can name, by winit `KeyCode` name
 pub(crate) const KEY_NAMES: &[(&str, KeyCode)] = key_table![
+  Backquote,
+  Backslash,
+  BracketLeft,
+  BracketRight,
+  Comma,
+  Digit0,
+  Digit1,
+  Digit2,
+  Digit3,
+  Digit4,
+  Digit5,
+  Digit6,
+  Digit7,
+  Digit8,
+  Digit9,
+  Equal,
+  IntlBackslash,
+  IntlRo,
+  IntlYen,
   KeyA,
   KeyB,
   KeyC,
@@ -44,48 +63,120 @@ pub(crate) const KEY_NAMES: &[(&str, KeyCode)] = key_table![
   KeyX,
   KeyY,
   KeyZ,
-  Digit0,
-  Digit1,
-  Digit2,
-  Digit3,
-  Digit4,
-  Digit5,
-  Digit6,
-  Digit7,
-  Digit8,
-  Digit9,
-  ArrowUp,
+  Minus,
+  Period,
+  Quote,
+  Semicolon,
+  Slash,
+  AltLeft,
+  AltRight,
+  Backspace,
+  CapsLock,
+  ContextMenu,
+  ControlLeft,
+  ControlRight,
+  Enter,
+  SuperLeft,
+  SuperRight,
+  ShiftLeft,
+  ShiftRight,
+  Space,
+  Tab,
+  Convert,
+  KanaMode,
+  Lang1,
+  Lang2,
+  Lang3,
+  Lang4,
+  Lang5,
+  NonConvert,
+  Delete,
+  End,
+  Help,
+  Home,
+  Insert,
+  PageDown,
+  PageUp,
   ArrowDown,
   ArrowLeft,
   ArrowRight,
-  Space,
-  Enter,
-  Tab,
+  ArrowUp,
+  NumLock,
+  Numpad0,
+  Numpad1,
+  Numpad2,
+  Numpad3,
+  Numpad4,
+  Numpad5,
+  Numpad6,
+  Numpad7,
+  Numpad8,
+  Numpad9,
+  NumpadAdd,
+  NumpadBackspace,
+  NumpadClear,
+  NumpadClearEntry,
+  NumpadComma,
+  NumpadDecimal,
+  NumpadDivide,
+  NumpadEnter,
+  NumpadEqual,
+  NumpadHash,
+  NumpadMemoryAdd,
+  NumpadMemoryClear,
+  NumpadMemoryRecall,
+  NumpadMemoryStore,
+  NumpadMemorySubtract,
+  NumpadMultiply,
+  NumpadParenLeft,
+  NumpadParenRight,
+  NumpadStar,
+  NumpadSubtract,
   Escape,
-  Backspace,
-  Delete,
-  Insert,
-  Home,
-  End,
-  PageUp,
-  PageDown,
-  Minus,
-  Equal,
-  BracketLeft,
-  BracketRight,
-  Backslash,
-  Semicolon,
-  Quote,
-  Backquote,
-  Comma,
-  Period,
-  Slash,
-  ShiftLeft,
-  ShiftRight,
-  ControlLeft,
-  ControlRight,
-  AltLeft,
-  AltRight,
+  Fn,
+  FnLock,
+  PrintScreen,
+  ScrollLock,
+  Pause,
+  BrowserBack,
+  BrowserFavorites,
+  BrowserForward,
+  BrowserHome,
+  BrowserRefresh,
+  BrowserSearch,
+  BrowserStop,
+  Eject,
+  LaunchApp1,
+  LaunchApp2,
+  LaunchMail,
+  MediaPlayPause,
+  MediaSelect,
+  MediaStop,
+  MediaTrackNext,
+  MediaTrackPrevious,
+  Power,
+  Sleep,
+  AudioVolumeDown,
+  AudioVolumeMute,
+  AudioVolumeUp,
+  WakeUp,
+  Meta,
+  Hyper,
+  Turbo,
+  Abort,
+  Resume,
+  Suspend,
+  Again,
+  Copy,
+  Cut,
+  Find,
+  Open,
+  Paste,
+  Props,
+  Select,
+  Undo,
+  Hiragana,
+  Katakana,
   F1,
   F2,
   F3,
@@ -98,22 +189,29 @@ pub(crate) const KEY_NAMES: &[(&str, KeyCode)] = key_table![
   F10,
   F11,
   F12,
-  Numpad0,
-  Numpad1,
-  Numpad2,
-  Numpad3,
-  Numpad4,
-  Numpad5,
-  Numpad6,
-  Numpad7,
-  Numpad8,
-  Numpad9,
-  NumpadAdd,
-  NumpadSubtract,
-  NumpadMultiply,
-  NumpadDivide,
-  NumpadDecimal,
-  NumpadEnter,
+  F13,
+  F14,
+  F15,
+  F16,
+  F17,
+  F18,
+  F19,
+  F20,
+  F21,
+  F22,
+  F23,
+  F24,
+  F25,
+  F26,
+  F27,
+  F28,
+  F29,
+  F30,
+  F31,
+  F32,
+  F33,
+  F34,
+  F35,
 ];
 
 /// Gamepad buttons by `GamepadButton` variant name
@@ -236,6 +334,11 @@ impl Binding {
     }
   }
 
+  /// Whether the binding survives being saved and loaded again
+  pub fn is_saveable(&self) -> bool {
+    Binding::parse(&self.to_config()) == Some(*self)
+  }
+
   /// The binding as config text, the form [`parse`](Self::parse) reads
   pub fn to_config(&self) -> String {
     match self {
@@ -284,25 +387,35 @@ pub struct Actions {
 }
 
 impl Actions {
-  /// Bind `name` to `bindings` as its defaults, replacing earlier defaults. A
-  /// saved override (the player's settings) takes precedence
+  /// Bind `name` to `bindings` as its defaults, replacing earlier defaults.
+  /// Bindings the player changed this session stay, and a saved override (the
+  /// player's settings) takes precedence over the new defaults
   pub fn bind(&mut self, name: &str, bindings: impl IntoIterator<Item = Binding>) -> &mut Self {
     let defaults: Vec<Binding> = bindings.into_iter().collect();
-    let current = self
-      .saved
-      .get(name)
-      .cloned()
-      .unwrap_or_else(|| defaults.clone());
     match self.entries.iter_mut().find(|entry| entry.name == name) {
       Some(entry) => {
+        // Bindings changed this session (rebound, set or loaded) stay
+        if entry.current == entry.defaults {
+          entry.current = self
+            .saved
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| defaults.clone());
+        }
         entry.defaults = defaults;
-        entry.current = current;
       }
-      None => self.entries.push(Entry {
-        name: name.to_string(),
-        defaults,
-        current,
-      }),
+      None => {
+        let current = self
+          .saved
+          .get(name)
+          .cloned()
+          .unwrap_or_else(|| defaults.clone());
+        self.entries.push(Entry {
+          name: name.to_string(),
+          defaults,
+          current,
+        });
+      }
     }
     self
   }
@@ -604,5 +717,60 @@ mod tests {
         );
       }
     }
+  }
+
+  #[test]
+  fn binding_again_keeps_a_rebind() {
+    let mut actions = Actions::default();
+    actions.bind("jump", [Binding::Key(KeyCode::Space)]);
+    actions.rebind("jump", 0, Binding::Key(KeyCode::KeyJ));
+    actions.bind("jump", [Binding::Key(KeyCode::Space)]);
+    assert_eq!(actions.bindings("jump"), &[Binding::Key(KeyCode::KeyJ)]);
+    assert_eq!(
+      actions.saved_map().get("jump"),
+      Some(&vec!["Key:KeyJ".to_string()])
+    );
+  }
+
+  #[test]
+  fn binding_new_defaults_applies_when_the_player_never_rebound() {
+    let mut actions = Actions::default();
+    actions.bind("jump", [Binding::Key(KeyCode::Space)]);
+    actions.bind("jump", [Binding::Key(KeyCode::KeyZ)]);
+    assert_eq!(actions.bindings("jump"), &[Binding::Key(KeyCode::KeyZ)]);
+  }
+
+  #[test]
+  fn every_named_key_round_trips() {
+    for &(_, key) in KEY_NAMES {
+      let binding = Binding::Key(key);
+      assert_eq!(Binding::parse(&binding.to_config()), Some(binding));
+    }
+  }
+
+  #[test]
+  fn previously_unnamed_keys_round_trip() {
+    for key in [
+      KeyCode::CapsLock,
+      KeyCode::IntlBackslash,
+      KeyCode::F13,
+      KeyCode::F24,
+      KeyCode::ContextMenu,
+      KeyCode::NumpadEnter,
+      KeyCode::MediaPlayPause,
+    ] {
+      let binding = Binding::Key(key);
+      assert!(binding.is_saveable(), "{key:?}");
+      assert_eq!(Binding::parse(&binding.to_config()), Some(binding));
+    }
+  }
+
+  #[test]
+  fn extra_mouse_buttons_are_saveable() {
+    // winit's KeyCode has no Unidentified variant (that lives on PhysicalKey), so
+    // every key is nameable; other buttons keep their number
+    let binding = Binding::Mouse(MouseButton::Other(7));
+    assert!(binding.is_saveable());
+    assert_eq!(binding.to_config(), "Mouse:Other7");
   }
 }
