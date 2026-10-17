@@ -6,7 +6,30 @@ use demo_kit::prelude::*;
 const TABS: [&str; 3] = ["Audio", "Video", "Controls"];
 const OUTPUTS: [&str; 3] = ["Default", "Headphones", "Speakers"];
 const WINDOWS: [&str; 3] = ["Windowed", "Borderless", "Fullscreen"];
-const RESOLUTIONS: [&str; 4] = ["1280×720", "1600×900", "1920×1080", "2560×1440"];
+/// A display's modes: more than fit under the dropdown, so its list scrolls
+const RESOLUTIONS: [&str; 21] = [
+  "640×480",
+  "800×600",
+  "1024×768",
+  "1152×864",
+  "1280×720",
+  "1280×800",
+  "1280×1024",
+  "1360×768",
+  "1366×768",
+  "1440×900",
+  "1536×864",
+  "1600×900",
+  "1680×1050",
+  "1920×1080",
+  "1920×1200",
+  "2048×1152",
+  "2560×1080",
+  "2560×1440",
+  "2560×1600",
+  "3440×1440",
+  "3840×2160",
+];
 /// The page's actions and their labels, for the Controls tab
 const ACTIONS: [(&str, &str); 7] = [
   ("move_left", "Move left"),
@@ -57,7 +80,8 @@ impl SettingsPage {
       mute_in_background: true,
       output: 0,
       window: 0,
-      resolution: 2,
+      // 1920×1080
+      resolution: 13,
       vsync: true,
       ui_scale: UiScale::Medium,
       brightness: 1.0,
