@@ -765,6 +765,24 @@ impl<'a> UiContext<'a> {
     self.memory.interact.focus_visible
   }
 
+  /// The direction the focused widget `id` took this frame, with the UI's
+  /// hold-to-repeat: a direction pressed, or repeating while held, that its
+  /// record takes (`Custom::takes_horizontal` / `takes_vertical`) instead of
+  /// moving the focus. `None` when `id` is not focused, in a scene that is
+  /// not the top one, or took nothing.
+  ///
+  /// ```ignore
+  /// let panel = ui.custom(200.0, 120.0).focusable(true).takes_vertical().show();
+  /// match ui.nav_step(panel.id) {
+  ///     Some(Direction::Down) => self.row += 1,
+  ///     Some(Direction::Up) => self.row = self.row.saturating_sub(1),
+  ///     _ => {}
+  /// }
+  /// ```
+  pub fn nav_step(&self, id: UiId) -> Option<Direction> {
+    self.nav_step_for(id)
+  }
+
   /// The direction focused widget `id` takes this frame (a slider stepping,
   /// an open list moving), when its record takes that axis
   pub(crate) fn nav_step_for(&self, id: UiId) -> Option<Direction> {

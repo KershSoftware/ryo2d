@@ -31,6 +31,10 @@ pub(crate) struct Drawn {
   pub panel: Option<Rect>,
   /// The first settings row shown
   pub scroll: usize,
+  /// The settings panel's focusable widget, if it was drawn
+  pub panel_id: Option<UiId>,
+  /// The row a click on the panel picked this frame
+  pub clicked_row: Option<usize>,
 }
 
 /// Where the shell's parts go on a screen
@@ -240,15 +244,17 @@ pub(crate) fn draw(ui: &mut UiContext, view: &View) -> Drawn {
   let l = layout(w, h, line_height(ui));
   draw_top_bar(ui, view, &l, w);
   draw_description(ui, view, &l, w);
-  let (panel, scroll) = draw_panel(ui, view, &l, w).unzip();
+  let drawn = draw_panel(ui, view, &l, w).unwrap_or(Drawn {
+    panel: None,
+    scroll: view.scroll,
+    panel_id: None,
+    clicked_row: None,
+  });
   draw_legend(ui, view, &l, w, h);
   if view.help_open {
     draw_help(ui, view, &l, w, h);
   }
-  Drawn {
-    panel,
-    scroll: scroll.unwrap_or(view.scroll),
-  }
+  drawn
 }
 
 fn draw_top_bar(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
@@ -308,8 +314,22 @@ pub(crate) fn row_widths(inner: f32, value_w: f32, gap: f32) -> (f32, f32) {
   (label_max, value_max)
 }
 
-/// The panel and the first row it shows, if it was drawn
-fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<(Rect, usize)> {
+/// The row whose rect holds (x, y), from the visible rows' (index, rect)
+pub(crate) fn row_at(rows: &[(usize, Rect)], x: f32, y: f32) -> Option<usize> {
+  rows
+    .iter()
+    .find(|(_, rect)| rect.contains(x, y))
+    .map(|(i, _)| *i)
+}
+
+/// The panel, the first row it shows, its widget and the row a click
+/// picked, if it was drawn.
+///
+/// The panel is one focusable widget over its rect, in a focus scope of its
+/// own: it takes all four directions (read by the shell with
+/// `ui.nav_step`), so its rows and scroll window stay the shell's. It draws
+/// nothing itself.
+fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<Drawn> {
   if view.rows.is_empty() {
     return None;
   }
@@ -336,6 +356,8 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<(Re
   let visible = rows_fit.saturating_sub(2).min(view.rows.len());
   let first = scroll_rows(view.scroll, view.selected, visible, view.rows.len());
   let inner = panel_w - 2.0 * l.pad;
+  // Each visible row's highlight rect, for the row a click picks
+  let mut row_rects = Vec::with_capacity(visible);
   for (slot, (i, row)) in view
     .rows
     .iter()
@@ -346,11 +368,10 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<(Re
   {
     let row_y = y + l.pad + row_h * (slot as f32 + 1.0);
     let selected = i == view.selected;
+    let highlight = Rect::new(x + 2.0, row_y - l.pad * 0.25, panel_w - 4.0, row_h);
+    row_rects.push((i, highlight));
     if selected {
-      ui.draw_rect(
-        Rect::new(x + 2.0, row_y - l.pad * 0.25, panel_w - 4.0, row_h),
-        highlight_color(),
-      );
+      ui.draw_rect(highlight, highlight_color());
     }
     let marker = if selected { "> " } else { "  " };
     let label = format!("{marker}{}", row.label);
@@ -370,7 +391,36 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<(Re
   let hint_y = y + panel_h - l.pad - l.line_h;
   let hint = truncate_to(hint, inner, |s| text_w(ui, s));
   put(ui, &hint, x + l.pad, hint_y, dim_text());
-  Some((panel, first))
+
+  let mut id = None;
+  let mut clicked_row = None;
+  ui.stack().focus_scope().at(panel).show(|ui| {
+    let response = ui
+      .custom(panel.width, panel.height)
+      .id(0)
+      .sense(Sense::click())
+      .focusable(true)
+      .takes_horizontal()
+      .takes_vertical()
+      .default_focus()
+      // Arrows from the page's own menu never land on it (Tab and a click
+      // do), and Space, Enter and A stay the page's
+      .nav_skip()
+      .takes_confirm(false)
+      .show();
+    if response.clicked() {
+      clicked_row = response
+        .pointer()
+        .and_then(|at| row_at(&row_rects, at.x, at.y));
+    }
+    id = Some(response.id);
+  });
+  Some(Drawn {
+    panel: Some(panel),
+    scroll: first,
+    panel_id: id,
+    clicked_row,
+  })
 }
 
 /// The first of `visible` rows to show out of `len`, moving the window from
@@ -458,12 +508,14 @@ fn draw_legend(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
   }
 }
 
+/// Help: a modal holding one box the size of the screen less a margin,
+/// painted with the page's description, every control and setting. The
+/// modal's dim covers the page and takes the pointer; it has nothing to
+/// focus, so the arrows go nowhere while it shows, and the focus goes back
+/// to where it was when it closes.
 fn draw_help(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
-  ui.draw_modal_overlay(Color::new(0, 0, 0, 170));
   let box_w = (w - 4.0 * l.pad).max(0.0);
   let box_h = (h - 4.0 * l.pad).max(0.0);
-  let (x, y) = (2.0 * l.pad, 2.0 * l.pad);
-  ui.draw_rect(Rect::new(x, y, box_w, box_h), panel_color());
 
   let mut lines: Vec<(String, Color)> = Vec::new();
   let page = if view.count > 1 {
@@ -487,7 +539,7 @@ fn draw_help(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
     lines.push(("  [ ]  previous / next page".to_string(), Color::WHITE));
   }
   lines.push((
-    "  Up/Down  pick a setting   Left/Right  change it".to_string(),
+    "  Up/Down  pick a setting   Left/Right  change it   Tab  to the page and back".to_string(),
     Color::WHITE,
   ));
   let escape = if view.escape_quits {
@@ -527,17 +579,29 @@ fn draw_help(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
     ((room - l.line_h) / step).floor() as usize + 1
   };
   let (shown, more) = help_fit(lines.len(), capacity);
-  let mut line_y = y + l.pad;
+  // Measured and cut to fit now, in the box's units: the painter only draws
+  let mut placed: Vec<(String, Color, f32, f32)> = Vec::with_capacity(shown + 1);
+  let mut line_y = l.pad;
   for (text, color) in lines.into_iter().take(shown) {
     let text = truncate_to(&text, inner, |s| text_w(ui, s));
-    put(ui, &text, x + l.pad, line_y, color);
+    placed.push((text, color, l.pad, line_y));
     line_y += step;
   }
   if let Some(more) = more {
     let text = format!("... {more} more lines (enlarge the window)");
     let text = truncate_to(&text, inner, |s| text_w(ui, s));
-    put(ui, &text, x + l.pad, line_y, dim_text());
+    placed.push((text, dim_text(), l.pad, line_y));
   }
+
+  let style = shell_style(ui);
+  ui.modal().padding(0.0).show(|ui| {
+    ui.custom(box_w, box_h).paint(|p, _| {
+      p.rect(Rect::new(0.0, 0.0, box_w, box_h), panel_color());
+      for (text, color, x, y) in &placed {
+        p.text(text.as_str(), *x, *y, &style.clone().color(*color));
+      }
+    });
+  });
 }
 
 #[cfg(test)]
@@ -648,6 +712,18 @@ mod tests {
     assert_eq!(scroll_rows(6, 6, 4, 8), 4);
     assert_eq!(scroll_rows(3, 5, 10, 8), 0);
     assert_eq!(scroll_rows(3, 5, 0, 8), 0);
+  }
+
+  #[test]
+  fn row_at_finds_the_row_under_a_point() {
+    let rows = [
+      (3, Rect::new(0.0, 20.0, 100.0, 18.0)),
+      (4, Rect::new(0.0, 38.0, 100.0, 18.0)),
+    ];
+    assert_eq!(row_at(&rows, 10.0, 40.0), Some(4));
+    assert_eq!(row_at(&rows, 10.0, 21.0), Some(3));
+    assert_eq!(row_at(&rows, 10.0, 80.0), None);
+    assert_eq!(row_at(&[], 10.0, 40.0), None);
   }
 
   #[test]

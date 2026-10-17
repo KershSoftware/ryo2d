@@ -45,6 +45,9 @@ impl Flags {
   /// A rebinding row waiting for a press: navigation stands aside while it
   /// has the focus, so the arrows, Confirm and Back can be captured
   pub(crate) const CAPTURING: Flags = Flags(1 << 20);
+  /// Declines Confirm (`Custom::takes_confirm(false)`): while it has the
+  /// focus, Confirm activates nothing and its keys stay gameplay's
+  pub(crate) const NO_CONFIRM: Flags = Flags(1 << 21);
 
   /// Every flag in `other` is set
   pub(crate) fn contains(self, other: Flags) -> bool {

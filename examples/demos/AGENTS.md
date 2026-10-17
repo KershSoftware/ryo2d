@@ -7,21 +7,25 @@ Every demo in this folder follows one standard, provided by `examples/demo-kit`.
 | Key | Meaning |
 |---|---|
 | `[` / `]` (PageUp / PageDown) | Previous / next page, wrapping |
-| Up / Down | Pick a row in the settings panel |
-| Left / Right | Change it (hold to repeat) |
+| Up / Down (D-pad, left stick) | Pick a row in the settings panel |
+| Left / Right (D-pad, left stick) | Change it (hold to repeat) |
+| Tab | Between the page's own menu, if any, and the panel |
 | `R` | Reset the page (values back to defaults, scene rebuilt) |
 | `H` | Help: the page's description, every control and setting |
 | `Esc` | Close help, otherwise quit |
 | `Space` | The page's main action, if any (convention) |
 | WASD / mouse | Movement, camera, pointing (convention) |
 
-- Arrow keys always belong to the panel; pages move with WASD.
-- Presets and variants are `choice` settings, not number keys. Digits, other letters and Tab are free for the page and listed in its controls.
+- The settings panel is one focusable widget in a focus scope of its own (`ui.custom(..).takes_horizontal().takes_vertical()`, read with `ui.nav_step`), so the arrows, the D-pad and the left stick reach it through UI navigation, with the UI's hold-to-repeat (0.35 s, then every 0.1 s). It takes the focus when it appears; a click on it focuses it and selects the row under the pointer. It declines Confirm (`takes_confirm(false)`), so Space, Enter and A stay the page's while it has the focus.
+- A page with its own `.focus_scope()` (a menu) comes first and keeps the arrows: directions never land on the panel (it is `nav_skip`), and Tab, or a click, moves between the page and the panel.
+- The arrows stay reserved: pages use them only through UI focus (their own focus scopes), and move with WASD.
+- Presets and variants are `choice` settings, not number keys. Digits and other letters are free for the page and listed in its controls. Tab is the UI's (the next focusable); a page may list what it reaches there ("Next field").
+- Help is a modal (`ui.modal()`): its dim covers the page and takes the pointer, it has nothing to focus (so the arrows go nowhere while it shows), and the focus goes back to where it was when it closes.
 - A page listing a reserved key (`[ ] PageUp PageDown`, arrows, `H R Esc`, F1-F5, F9, F10, F12, backquote) makes the demo panic at startup.
-- While a text field has focus or a dropdown is open the shell ignores all of its keys. Esc first leaves the field or closes the dropdown; the next Esc quits. Keys the shell acts on are not typed into a field.
+- While a text field is focused or a list is open (`ui.wants_keyboard()`) the shell ignores all of its keys. Esc first leaves the field or closes the dropdown; the next Esc quits. Keys the shell acts on are not typed into a field.
 - A page with its own use for Esc right now (closing its dialog) returns true from `DemoPage::wants_escape`: the shell then leaves Esc to the page's `update` instead of quitting (open help still takes it first), drops `Esc quit` from the top bar, and lets the page list Esc in its controls. The ui demo's Clipping & Modals page does this.
-- The shell handles its keys in the scene's `ui` (the UI pass, once a frame before the fixed updates) and consumes the ones it acts on, so neither the page's widgets nor its `update` see them. The arrows are consumed while held, not only on the press.
-- While help is open the page's `update` sees no input (`Input::block_all`) and its widgets take no clicks or hover (`UiContext::set_mouse_occluded`); a pointer over the settings panel never reaches the page's `update` (`Input::block_pointer`). Both follow what this frame's UI pass drew. The page keeps animating.
+- The shell handles its keys (H, Esc, `[ ]`, PageUp, PageDown, R) in the scene's `ui` (the UI pass, once a frame before the fixed updates) and consumes the ones it acts on, so neither the page's widgets nor its `update` see them. The directions the panel takes are the UI's while held (the engine hides them from gameplay until released).
+- While help is open the page's `update` sees no input (`Input::block_all`) and its widgets take no clicks or hover (the modal's dim); a pointer over the settings panel never reaches the page's `update` (`Input::block_pointer`). Both follow what this frame's UI pass drew. The page keeps animating.
 
 ## Writing a demo
 
@@ -80,7 +84,7 @@ impl DemoPage for Glow {
 | `enter(ctx)` / `exit(ctx)` | page shown / left or reset | spawn, configure camera, lighting, effects; undo what cleanup does not |
 | `settings(s)` | every frame, before `update` | declare the panel's rows; rows may change with other values |
 | `update(ctx, dt)` | every fixed step (`dt` is the timestep) | gameplay: read settings fields and `ctx.input` |
-| `ui(ui, ctx)` | once a frame, in the UI pass before the fixed steps | page UI under the shell's; read keys for it with `ui.input()`, and `ui.consume_key(key)` keys `update` must not also see |
+| `ui(ui, ctx)` | once a frame, in the UI pass before the fixed steps | page UI under the shell's; read keys for it with `ui.input()` or actions (`ui.consume_key(key)` keys `update` must not also see), and use `ui.back()` for the page's own Back |
 | `render(gpu)` | once a frame | GPU batches: `particles.collect_for_render(gpu.world, gpu.camera, gpu.batch)` for a page-owned `ParticleSystem` (updated in `update`) |
 
 - `Settings`: `float(label, &mut f32, range, step)`, `int(label, &mut i32, range)`, `choice(label, &mut usize, &[&str])`, `toggle(label, &mut bool)`, `angle(label, &mut f32, step)` (degrees, wrapping round past 0 and 360).

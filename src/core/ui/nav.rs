@@ -683,7 +683,12 @@ pub(crate) fn resolve_focus(
     // focused target that takes it (a drag source turns its activation into
     // a pick-up itself).
     let typing = is_field(i.focused);
-    if input.confirm && !capturing && i.focused != UiId::NONE {
+    // A focused widget that declines Confirm leaves it, and its keys, to
+    // gameplay: nothing activates and nothing is used
+    let declines = nav
+      .record(i.focused)
+      .is_some_and(|r| r.flags.contains(Flags::NO_CONFIRM));
+    if input.confirm && !capturing && !declines && i.focused != UiId::NONE {
       if let Some(drag) = i.drag.take() {
         let takes = drag.pad
           && nav.record(i.focused).is_some_and(|r| {

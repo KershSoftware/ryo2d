@@ -7,7 +7,6 @@
 mod chrome;
 mod controls;
 mod demo;
-mod hold;
 mod page;
 mod scene;
 mod settings;

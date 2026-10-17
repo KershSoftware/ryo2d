@@ -19,6 +19,9 @@ struct Seen {
   w_down: bool,
   /// The page's content area, from its last UI frame
   content: Option<Rect>,
+  /// The settings panel's height with one and with two rows, from the
+  /// page's last UI frame
+  panel_heights: (f32, f32),
   /// Clicks the Clicky page's button saw
   button_clicks: u32,
   /// The Typing page's field text, once drawn, and whether it has focus
@@ -26,6 +29,11 @@ struct Seen {
   field_focused: bool,
   /// The Dialog page's dialog is open, as its last update saw it
   dialog_open: bool,
+  /// The Menu page's buttons that were clicked, in order
+  menu_clicks: Vec<usize>,
+  /// Space and pad South presses the Jumpy page's updates saw
+  spaces: u32,
+  pad_souths: u32,
 }
 
 type Shared = Arc<Mutex<Seen>>;
@@ -106,6 +114,7 @@ impl DemoPage for Probe {
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     if let Ok(mut seen) = self.shared.lock() {
       seen.content = Some(content_area(ui));
+      seen.panel_heights = (settings_panel_height(ui, 1), settings_panel_height(ui, 2));
     }
     if let Some(text) = &mut self.text {
       ui.text_input(text)
@@ -513,6 +522,30 @@ fn a_click_on_the_settings_panel_does_not_reach_the_page() {
 }
 
 #[test]
+fn a_click_on_a_settings_row_selects_it() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let s = seen(&shared);
+  let Some(content) = s.content else {
+    panic!("the page drew no UI frame");
+  };
+  // A panel is a header, its rows and a hint, a row apart, inside a pad
+  let (one, two) = s.panel_heights;
+  let row_h = two - one;
+  let pad = (one - 3.0 * row_h) / 2.0;
+  // Count's row (the second) sits under the header
+  let count_y = content.y + pad + 2.0 * row_h + row_h / 2.0 - pad * 0.25;
+  click(&mut engine, content.right() - 10.0, count_y);
+  tap(&mut engine, KeyCode::ArrowRight);
+  let s = seen(&shared);
+  assert_eq!(s.count, 4, "the click picked Count: {s:?}");
+  assert_eq!(s.level, 0.5, "{s:?}");
+}
+
+#[test]
 fn the_page_sees_no_input_while_help_is_open() {
   let shared = Shared::default();
   let Some(mut engine) = start(three_pages(&shared)) else {
@@ -707,4 +740,174 @@ fn a_reserved_key_listed_later_is_caught_in_debug_builds() {
 #[should_panic(expected = "reserved")]
 fn a_page_listing_a_reserved_key_is_rejected() {
   let _ = Demo::new("Greedy").page(|| Greedy).engine_builder();
+}
+
+/// A page with its own menu (a focus scope of two buttons) and one setting
+struct MenuProbe {
+  shared: Shared,
+  level: f32,
+}
+
+impl DemoPage for MenuProbe {
+  fn name(&self) -> &str {
+    "menu"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.float("Level", &mut self.level, 0.0..=1.0, 0.1);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) {
+    if let Ok(mut seen) = self.shared.lock() {
+      seen.level = self.level;
+    }
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
+    let area = content_area(ui);
+    let mut clicked = None;
+    ui.column()
+      .focus_scope()
+      .at(Rect::new(area.x + 10.0, area.y + 10.0, 100.0, 80.0))
+      .show(|ui| {
+        if ui.button("First").default_focus().clicked() {
+          clicked = Some(0);
+        }
+        if ui.button("Second").clicked() {
+          clicked = Some(1);
+        }
+      });
+    if let (Some(i), Ok(mut seen)) = (clicked, self.shared.lock()) {
+      seen.menu_clicks.push(i);
+    }
+  }
+}
+
+fn menu_page(shared: &Shared) -> Demo {
+  let shared = shared.clone();
+  Demo::new("Menu")
+    .resolution(320, 240)
+    .page(move || MenuProbe {
+      shared: shared.clone(),
+      level: 0.5,
+    })
+}
+
+/// Tap a pad button, then run two frames
+fn tap_pad(engine: &mut HeadlessEngine, button: GamepadButton) {
+  engine.tap_pad(button);
+  let _ = engine.step();
+  let _ = engine.step();
+}
+
+#[test]
+fn the_d_pad_drives_the_settings_panel() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  tap_pad(&mut engine, GamepadButton::DPadRight); // Level 0.5 -> 0.6
+  tap_pad(&mut engine, GamepadButton::DPadDown); // Count
+  tap_pad(&mut engine, GamepadButton::DPadRight); // 3 -> 4
+  let s = seen(&shared);
+  assert!((s.level - 0.6).abs() < 1e-6, "{s:?}");
+  assert_eq!(s.count, 4, "{s:?}");
+}
+
+#[test]
+fn a_page_with_its_own_menu_keeps_the_arrows_and_tab_reaches_the_panel() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(menu_page(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  tap(&mut engine, KeyCode::ArrowDown); // the menu: First -> Second
+  tap(&mut engine, KeyCode::ArrowRight); // nothing to the right in the menu
+  tap(&mut engine, KeyCode::Enter);
+  let s = seen(&shared);
+  assert_eq!(s.menu_clicks, vec![1], "{s:?}");
+  assert_eq!(s.level, 0.5, "the panel did not see the arrows");
+  tap(&mut engine, KeyCode::Tab); // Second -> the panel
+  tap(&mut engine, KeyCode::ArrowRight);
+  assert!((seen(&shared).level - 0.6).abs() < 1e-6);
+}
+
+#[test]
+fn closing_help_gives_the_panel_its_arrows_back() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  tap(&mut engine, KeyCode::KeyH);
+  tap(&mut engine, KeyCode::ArrowRight);
+  assert_eq!(seen(&shared).level, 0.5, "help is modal");
+  tap(&mut engine, KeyCode::KeyH);
+  tap(&mut engine, KeyCode::ArrowRight);
+  assert!((seen(&shared).level - 0.6).abs() < 1e-6);
+}
+
+#[test]
+fn right_from_a_page_menu_never_lands_on_the_panel() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(menu_page(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  tap(&mut engine, KeyCode::ArrowDown); // Second, the menu's last button
+  // The panel lies to the right, but directions pass it by
+  tap(&mut engine, KeyCode::ArrowRight);
+  tap_pad(&mut engine, GamepadButton::DPadRight);
+  tap(&mut engine, KeyCode::ArrowUp); // still the menu's: Second -> First
+  tap(&mut engine, KeyCode::Enter);
+  let s = seen(&shared);
+  assert_eq!(s.menu_clicks, vec![0], "{s:?}");
+  assert_eq!(s.level, 0.5, "the panel never had the focus");
+}
+
+/// A page with one setting whose main action is Space (or A on a pad)
+struct Jumpy {
+  shared: Shared,
+  level: f32,
+}
+
+impl DemoPage for Jumpy {
+  fn name(&self) -> &str {
+    "Jumpy"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.float("Level", &mut self.level, 0.0..=1.0, 0.1);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Jump")]
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    if let Ok(mut seen) = self.shared.lock() {
+      seen.spaces += u32::from(ctx.input.key_pressed(KeyCode::Space));
+      seen.pad_souths += u32::from(ctx.input.gamepad_button_pressed(GamepadButton::South));
+    }
+  }
+}
+
+#[test]
+fn space_reaches_a_settings_page_s_update() {
+  let shared = Shared::default();
+  let page = shared.clone();
+  let demo = Demo::new("Jumpy").resolution(320, 240).page(move || Jumpy {
+    shared: page.clone(),
+    level: 0.5,
+  });
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  // The settings panel has the focus, but Confirm's keys stay the page's
+  tap(&mut engine, KeyCode::Space);
+  tap_pad(&mut engine, GamepadButton::South);
+  let s = seen(&shared);
+  assert_eq!((s.spaces, s.pad_souths), (1, 1), "{s:?}");
 }

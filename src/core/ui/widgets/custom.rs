@@ -25,6 +25,11 @@ pub struct Custom<'u, 'a> {
   site: &'static Location<'static>,
   size: Vec2,
   sense: Sense,
+  /// `TAKES_HORIZONTAL` / `TAKES_VERTICAL`: the directions it takes while
+  /// focused
+  takes: Flags,
+  /// Confirm activates it while it is focused (`takes_confirm`)
+  confirm: bool,
   opts: WidgetOpts,
 }
 
@@ -42,6 +47,28 @@ impl<'a> UiContext<'a> {
   /// });
   /// if bar.clicked() { /* ... */ }
   /// ```
+  ///
+  /// In a focus scope, `.focusable(true)` lets it take the focus.
+  /// [`takes_horizontal`](Custom::takes_horizontal) and
+  /// [`takes_vertical`](Custom::takes_vertical) keep those directions for
+  /// it while focused, read with [`nav_step`](UiContext::nav_step) (with the
+  /// UI's hold-to-repeat), and [`takes_confirm(false)`](Custom::takes_confirm)
+  /// leaves Confirm (Enter, Space, A) to gameplay while it has the focus: a
+  /// list the game draws itself, moved by the arrows and the D-pad.
+  ///
+  /// ```ignore
+  /// let list = ui
+  ///     .custom(200.0, 120.0)
+  ///     .focusable(true)
+  ///     .takes_vertical()
+  ///     .takes_confirm(false)
+  ///     .paint(|p, _| { /* rows, the selected one highlighted */ });
+  /// match ui.nav_step(list.id) {
+  ///     Some(Direction::Down) => self.row += 1,
+  ///     Some(Direction::Up) => self.row = self.row.saturating_sub(1),
+  ///     _ => {}
+  /// }
+  /// ```
   #[track_caller]
   pub fn custom<'u>(&'u mut self, width: f32, height: f32) -> Custom<'u, 'a> {
     let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
@@ -50,6 +77,8 @@ impl<'a> UiContext<'a> {
       site: Location::caller(),
       size: Vec2::new(clean(width), clean(height)),
       sense: Sense::hover(),
+      takes: Flags::default(),
+      confirm: true,
       opts: WidgetOpts::default(),
     }
   }
@@ -62,6 +91,29 @@ impl Custom<'_, '_> {
   /// hovering, and clicks reach what is under it)
   pub fn sense(mut self, sense: Sense) -> Self {
     self.sense = sense;
+    self
+  }
+
+  /// Left and Right go to this widget while it is focused, instead of
+  /// moving focus: read them with [`UiContext::nav_step`]
+  pub fn takes_horizontal(mut self) -> Self {
+    self.takes |= Flags::TAKES_HORIZONTAL;
+    self
+  }
+
+  /// Up and Down go to this widget while it is focused, instead of moving
+  /// focus: read them with [`UiContext::nav_step`]
+  pub fn takes_vertical(mut self) -> Self {
+    self.takes |= Flags::TAKES_VERTICAL;
+    self
+  }
+
+  /// Whether Confirm (Enter, Space, A on a pad) activates it while it is
+  /// focused (default `true`). With `false` Confirm does nothing here and
+  /// its keys stay gameplay's, so a focused panel that only takes the
+  /// directions leaves Space to the game.
+  pub fn takes_confirm(mut self, takes: bool) -> Self {
+    self.confirm = takes;
     self
   }
 
@@ -105,7 +157,10 @@ impl Custom<'_, '_> {
       ),
     };
 
-    let mut flags = Flags::default();
+    let mut flags = self.takes;
+    if !self.confirm {
+      flags |= Flags::NO_CONFIRM;
+    }
     if self.sense.click {
       flags |= Flags::CLICK;
     }
@@ -397,6 +452,81 @@ mod tests {
       sizes,
       vec![Vec2::new(10.0, 8.0), Vec2::new(120.0, 8.0)],
       "its own size, then last frame's laid-out size"
+    );
+  }
+
+  #[test]
+  fn a_custom_widget_can_take_directions() {
+    use crate::core::input::Direction;
+    use crate::core::ui::UiId;
+    let mut d = UiDriver::new((200.0, 100.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      let mut id = UiId::NONE;
+      ui.column().focus_scope().show(|ui| {
+        id = ui
+          .custom(80.0, 40.0)
+          .focusable(true)
+          .takes_horizontal()
+          .takes_vertical()
+          .default_focus()
+          .show()
+          .id;
+      });
+      id
+    };
+    let id = d.frame(draw);
+    d.frame(draw);
+    // `nav_step` reads, so the id is drawn first
+    let step = |ui: &mut UiContext<'_>| {
+      let id = draw(ui);
+      ui.nav_step(id)
+    };
+    d.nav(Direction::Up);
+    assert_eq!(d.frame(step), Some(Direction::Up));
+    d.nav(Direction::Right);
+    assert_eq!(d.frame(step), Some(Direction::Right));
+    assert_eq!(
+      d.frame(|ui| {
+        draw(ui);
+        ui.focused()
+      }),
+      Some(id)
+    );
+  }
+
+  #[test]
+  fn confirm_on_a_widget_that_declines_it_is_left_unused() {
+    use crate::core::ui::UiId;
+    let mut d = UiDriver::new((200.0, 100.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      let mut response = None;
+      ui.column().focus_scope().show(|ui| {
+        response = Some(
+          ui.custom(80.0, 40.0)
+            .sense(Sense::click())
+            .focusable(true)
+            .takes_confirm(false)
+            .default_focus()
+            .show(),
+        );
+      });
+      response.map_or((UiId::NONE, false), |r| (r.id, r.clicked()))
+    };
+    let (id, _) = d.frame(draw);
+    d.frame(draw);
+    assert_eq!(
+      d.frame(|ui| {
+        draw(ui);
+        ui.focused()
+      }),
+      Some(id)
+    );
+    d.confirm();
+    assert!(!d.frame(draw).1, "Confirm does not click it");
+    assert!(
+      !d.last_outcome().used.contains(&"ui.confirm"),
+      "Confirm is left to gameplay: {:?}",
+      d.last_outcome()
     );
   }
 

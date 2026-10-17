@@ -7,7 +7,6 @@ use ryo2d::prelude::*;
 use crate::chrome::{self, View};
 use crate::controls::reserved_key;
 use crate::demo::DemoDef;
-use crate::hold::HoldRepeat;
 use crate::page::DemoPage;
 use crate::settings::{Row, Settings};
 
@@ -21,13 +20,13 @@ pub(crate) struct PageScene {
   /// The first settings row the panel showed on the last UI frame
   scroll: usize,
   rows: Vec<Row>,
-  left: HoldRepeat,
-  right: HoldRepeat,
   /// A widget had keyboard focus on the last UI frame (the shell ignores its
   /// keys while one does)
   keyboard_wanted: bool,
   /// Where the settings panel was drawn on the last UI frame
   panel: Option<Rect>,
+  /// The settings panel's focusable widget on the last UI frame
+  panel_id: Option<UiId>,
 }
 
 impl PageScene {
@@ -41,10 +40,9 @@ impl PageScene {
       selected: 0,
       scroll: 0,
       rows: Vec::new(),
-      left: HoldRepeat::default(),
-      right: HoldRepeat::default(),
       keyboard_wanted: false,
       panel: None,
+      panel_id: None,
     }
   }
 
@@ -70,10 +68,10 @@ impl PageScene {
     self.selected = self.selected.min(self.rows.len().saturating_sub(1));
   }
 
-  /// Handle the shell's keys; returns the adjustment steps for the panel, or
-  /// a scene action to return instead of drawing the page. The keys it acts
-  /// on are consumed, so neither the page's widgets nor its update see them.
-  fn shell_keys(&mut self, ui: &mut UiContext) -> Result<i32, SceneAction> {
+  /// Handle the shell's keys, or return a scene action to return instead of
+  /// drawing the page. The keys it acts on are consumed, so neither the
+  /// page's widgets nor its update see them.
+  fn shell_keys(&mut self, ui: &mut UiContext) -> Result<(), SceneAction> {
     let help = take(ui, KeyCode::KeyH);
     // Escape closes help first; otherwise a page that wants it gets it
     let escape = (self.help_open || !self.page.wants_escape()) && take(ui, KeyCode::Escape);
@@ -107,26 +105,7 @@ impl PageScene {
     if reset {
       return Err(self.reset());
     }
-
-    if self.help_open {
-      // Help is modal: arrows change neither selection nor values
-      self.left = HoldRepeat::default();
-      self.right = HoldRepeat::default();
-      return Ok(0);
-    }
-    if take(ui, KeyCode::ArrowDown) && !self.rows.is_empty() {
-      self.selected = (self.selected + 1).min(self.rows.len() - 1);
-    }
-    if take(ui, KeyCode::ArrowUp) {
-      self.selected = self.selected.saturating_sub(1);
-    }
-    // Hold-to-repeat runs on real time, like the rest of the UI
-    let dt = ui.dt();
-    let (right_pressed, right_down) = take_held(ui, KeyCode::ArrowRight);
-    let (left_pressed, left_down) = take_held(ui, KeyCode::ArrowLeft);
-    let right = self.right.steps(right_pressed, right_down, dt);
-    let left = self.left.steps(left_pressed, left_down, dt);
-    Ok(right as i32 - left as i32)
+    Ok(())
   }
 }
 
@@ -137,16 +116,6 @@ fn take(ui: &mut UiContext, key: KeyCode) -> bool {
     ui.consume_key(key);
   }
   pressed
-}
-
-/// Whether `key` was pressed this frame and whether it is down, consuming it
-/// while down: the panel's arrows never reach the page.
-fn take_held(ui: &mut UiContext, key: KeyCode) -> (bool, bool) {
-  let (pressed, down) = (ui.input().key_pressed(key), ui.input().key_down(key));
-  if pressed || down {
-    ui.consume_key(key);
-  }
-  (pressed, down)
 }
 
 impl Scene for PageScene {
@@ -181,24 +150,33 @@ impl Scene for PageScene {
   }
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-    let adjust = if self.keyboard_wanted {
-      // Typing into a widget: the shell's keys belong to it
-      self.left = HoldRepeat::default();
-      self.right = HoldRepeat::default();
-      0
-    } else {
-      match self.shell_keys(ui) {
-        Ok(adjust) => adjust,
-        Err(action) => return action,
+    // Typing into a widget, or picking from an open list: the shell's keys
+    // belong to it
+    if !self.keyboard_wanted
+      && let Err(action) = self.shell_keys(ui)
+    {
+      return action;
+    }
+    // The panel takes the arrows and the D-pad through UI focus, with the
+    // UI's hold-to-repeat
+    let last = self.rows.len().saturating_sub(1);
+    let adjust = match self.panel_id.and_then(|id| ui.nav_step(id)) {
+      Some(Direction::Down) => {
+        self.selected = (self.selected + 1).min(last);
+        0
       }
+      Some(Direction::Up) => {
+        self.selected = self.selected.saturating_sub(1);
+        0
+      }
+      Some(Direction::Right) => 1,
+      Some(Direction::Left) => -1,
+      None => 0,
     };
     self.read_rows(adjust);
 
-    // Help covers the page: its widgets take no clicks or hover. The shell's
-    // own chrome uses no mouse.
-    if self.help_open {
-      ui.set_mouse_occluded();
-    }
+    // Help is a modal over the page: its dim takes the pointer from the
+    // page's widgets
     self.page.ui(ui, ctx);
     self.keyboard_wanted = ui.wants_keyboard();
     let controls = self.page.controls();
@@ -229,7 +207,12 @@ impl Scene for PageScene {
     };
     let drawn = chrome::draw(ui, &view);
     self.panel = drawn.panel;
+    self.panel_id = drawn.panel_id;
     self.scroll = drawn.scroll;
+    // A click on a row picks it from the next frame
+    if let Some(row) = drawn.clicked_row {
+      self.selected = row;
+    }
     SceneAction::Continue
   }
 
