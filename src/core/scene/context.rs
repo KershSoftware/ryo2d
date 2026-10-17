@@ -20,7 +20,7 @@ use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
 use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
-use crate::core::ui::UiTheme;
+use crate::core::ui::{UiNode, UiTheme, nodes};
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
 
 #[cfg(test)]
@@ -227,6 +227,42 @@ impl SceneContext<'_> {
       registry: self.world.resource_mut::<CommandRegistry>().into_inner(),
       scope_id: self.scope_id,
     }
+  }
+
+  // --- UI nodes ---
+
+  /// Spawn a UI node tree as a root owned by this scene; it is despawned when
+  /// the scene leaves the stack.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn open_menu(ctx: &mut SceneContext<'_>) {
+  ///   let menu = ctx.spawn_ui(
+  ///     UiNode::column().child(UiNode::button("Play").name("play")).child(UiNode::button("Quit")),
+  ///   );
+  ///   let play = ctx.find_ui_in(menu, "play");
+  ///   # let _ = play;
+  /// }
+  /// ```
+  pub fn spawn_ui(&mut self, tree: UiNode) -> Entity {
+    nodes::spawn_ui(self.world, self.scope_id, tree)
+  }
+
+  /// Spawn a UI node tree under `parent`, after its last child; `None`
+  /// (and a warning) if `parent` is not a container node.
+  pub fn spawn_ui_in(&mut self, parent: Entity, tree: UiNode) -> Option<Entity> {
+    nodes::spawn_ui_in(self.world, parent, tree)
+  }
+
+  /// The first node named `name` in this scene's UI trees.
+  pub fn find_ui(&self, name: &str) -> Option<Entity> {
+    nodes::find_ui(self.world, self.scope_id, name)
+  }
+
+  /// The first node named `name` in the tree under `root` (included).
+  pub fn find_ui_in(&self, root: Entity, name: &str) -> Option<Entity> {
+    nodes::find_ui_in(self.world, root, name)
   }
 
   // --- hierarchy and interpolation ---

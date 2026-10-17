@@ -6,7 +6,9 @@ use glam::Vec2;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
+use crate::core::ecs::kernel::{Entity, World};
 use crate::core::input::{Direction, GamepadButton, InputView};
+use crate::core::messages::register_message;
 use crate::core::render::UiSpace;
 use crate::core::text::{Fonts, TextEngine};
 use crate::core::ui::immediate::{PendingRebind, PromptContext, UiCommands};
@@ -17,7 +19,7 @@ use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
 use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
 use crate::core::ui::theme::warn_once;
-use crate::core::ui::{Theme, UiContext, UiId, UiInput};
+use crate::core::ui::{Theme, UiContext, UiEvent, UiId, UiInput, UiNode, nodes};
 
 /// How long each frame lasts (seconds)
 const FRAME: f64 = 1.0 / 60.0;
@@ -89,6 +91,8 @@ pub struct UiHarness {
   pub(crate) prompts: Arc<PromptContext>,
   /// The presses rebinding rows captured in the last frame
   pub(crate) rebinds: Vec<PendingRebind>,
+  /// The entities of spawned UI nodes
+  world: World,
 }
 
 impl UiHarness {
@@ -97,6 +101,8 @@ impl UiHarness {
   pub fn new(width: f32, height: f32) -> UiHarness {
     let mut text = TextEngine::new();
     text.sync(&Fonts::with_builtins());
+    let mut world = World::new();
+    register_message::<UiEvent>(&mut world);
     UiHarness {
       memory: UiMemory::new(),
       layout: LayoutEngine::new(),
@@ -125,7 +131,28 @@ impl UiHarness {
       theme: Arc::new(Theme::dark()),
       prompts: Arc::new(PromptContext::default()),
       rebinds: Vec::new(),
+      world,
     }
+  }
+
+  /// Spawn a UI node tree as a root of the harness's scene
+  pub fn spawn_ui(&mut self, tree: UiNode) -> Entity {
+    nodes::spawn_ui(&mut self.world, self.scene, tree)
+  }
+
+  /// The world UI nodes live in
+  pub fn world(&self) -> &World {
+    &self.world
+  }
+
+  /// The world UI nodes live in, to change
+  pub fn world_mut(&mut self) -> &mut World {
+    &mut self.world
+  }
+
+  /// The first node named `name` in the harness's UI trees
+  pub fn find_ui(&self, name: &str) -> Option<Entity> {
+    nodes::find_ui(&self.world, self.scene, name)
   }
 
   /// Draw with `theme` (and take its interaction timings) from the next frame

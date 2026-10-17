@@ -10,6 +10,7 @@
 mod components;
 mod events;
 mod node;
+mod spawn;
 
 pub use components::{
   UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName, UiOptions,
@@ -25,3 +26,5 @@ pub(crate) use node::{
   ButtonOpts, ImageOpts, Insert, Kind, NodeFlags, NodeLayout, NodeState, RebindOpts, ScrollOpts,
   SliderOpts, TextInputOpts, TextOpts,
 };
+
+pub(crate) use spawn::*;

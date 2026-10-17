@@ -233,7 +233,8 @@ pub struct UiNodeKind {
   pub(crate) flags: NodeFlags,
   pub(crate) variant: Option<String>,
   pub(crate) action: Option<String>,
-  pub(crate) nav: [Option<String>; 4],
+  /// Neighbours up, down, left, right, resolved from the names at spawn
+  pub(crate) nav: [Option<Entity>; 4],
   pub(crate) anchor_node: Option<Entity>,
 }
 
