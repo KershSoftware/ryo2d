@@ -66,6 +66,9 @@ struct CursorDemoScene {
   // Settings
   cursor_visible: bool,
   cursor_confined: bool,
+  /// The platform can confine the cursor (not macOS or the web): only then
+  /// is Confined offered
+  confine_supported: bool,
   // Last values handed to the engine
   applied_visible: bool,
   applied_confined: bool,
@@ -87,6 +90,7 @@ impl CursorDemoScene {
       status_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
       cursor_visible: true,
       cursor_confined: false,
+      confine_supported: true,
       applied_visible: true,
       applied_confined: false,
     }
@@ -223,7 +227,9 @@ impl DemoPage for CursorDemoScene {
 
   fn settings(&mut self, s: &mut Settings) {
     s.toggle("Visible", &mut self.cursor_visible);
-    s.toggle("Confined", &mut self.cursor_confined);
+    if self.confine_supported {
+      s.toggle("Confined", &mut self.cursor_confined);
+    }
   }
 
   fn controls(&self) -> Vec<Control> {
@@ -242,6 +248,7 @@ impl DemoPage for CursorDemoScene {
     // scene cleanup does not reset, so a rebuilt page restores the defaults here
     ctx.set_cursor(CursorStyle::Default);
     ctx.set_cursor_visible(self.cursor_visible);
+    self.confine_supported = ctx.cursor_confinement_supported();
     ctx.set_cursor_confined(self.cursor_confined);
   }
 
@@ -461,10 +468,14 @@ impl DemoPage for CursorDemoScene {
     };
     ui.draw_text(&visible_text, panel_x, panel_y + 44.0, visible_color);
 
-    let confined_text = format!(
-      "Confined: {}",
-      if self.cursor_confined { "On" } else { "Off" }
-    );
+    let confined_text = if !self.confine_supported {
+      "Confined: not on this platform".to_string()
+    } else {
+      format!(
+        "Confined: {}",
+        if self.cursor_confined { "On" } else { "Off" }
+      )
+    };
     let confined_color = if self.cursor_confined {
       Color::rgb(255, 200, 100)
     } else {
