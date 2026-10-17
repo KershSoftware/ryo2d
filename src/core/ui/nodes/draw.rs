@@ -210,25 +210,31 @@ fn answer(
     ui.request_focus(response.id);
     walk.pending_focus = None;
   }
+  for kind in event_kinds(response, sends).into_iter().flatten() {
+    push_event(world, walk, node, kind);
+  }
+}
+
+/// The events a `response` reports, in a node's order: `Clicked` or
+/// `Changed`, `Submitted`, `Dropped`, `SecondaryClicked`, `FocusLost`,
+/// `FocusGained`
+fn event_kinds(response: &Response, sends: Sends) -> [Option<UiEventKind>; 6] {
   let sent = match sends {
     Sends::Clicks => response.clicked().then_some(UiEventKind::Clicked),
     Sends::Changes => response.changed().then_some(UiEventKind::Changed),
   };
-  let kinds = [
+  [
     sent,
+    response.submitted().then_some(UiEventKind::Submitted),
+    response
+      .dropped::<Entity>()
+      .map(|source| UiEventKind::Dropped { source }),
     response
       .secondary_clicked()
       .then_some(UiEventKind::SecondaryClicked),
     response.lost_focus().then_some(UiEventKind::FocusLost),
     response.gained_focus().then_some(UiEventKind::FocusGained),
-    response.submitted().then_some(UiEventKind::Submitted),
-  ];
-  for kind in kinds.into_iter().flatten() {
-    push_event(world, walk, node, kind);
-  }
-  if let Some(source) = response.dropped::<Entity>() {
-    push_event(world, walk, node, UiEventKind::Dropped { source });
-  }
+  ]
 }
 
 /// Write `now` as `node`'s `UiInteraction` if it differs
@@ -1879,10 +1885,12 @@ mod lists {
 
 #[cfg(all(test, feature = "default-fonts"))]
 mod drag {
+  use super::{Sends, event_kinds};
   use crate::core::asset::SpriteHandle;
   use crate::core::ecs::kernel::{Children, Entity, World};
   use crate::core::graphics::Sprite;
   use crate::core::input::Direction;
+  use crate::core::ui::Response;
   use crate::core::ui::nodes::*;
   use crate::core::ui::test_util::UiDriver;
 
@@ -1976,5 +1984,34 @@ mod drag {
     d.nav(Direction::Right);
     d.frame(|_| {});
     assert!(d.focused().is_some(), "navigation lands back in the row");
+  }
+
+  #[test]
+  fn a_nodes_events_keep_the_documented_order() {
+    let source = Entity::from_raw_u32(7).expect("a valid index");
+    let response = Response {
+      states: Response::CLICKED
+        | Response::SUBMITTED
+        | Response::SECONDARY
+        | Response::LOST_FOCUS
+        | Response::GAINED_FOCUS,
+      dropped: Some(std::sync::Arc::new(source)),
+      ..Response::default()
+    };
+    let kinds: Vec<_> = event_kinds(&response, Sends::Clicks)
+      .into_iter()
+      .flatten()
+      .collect();
+    assert_eq!(
+      kinds,
+      [
+        UiEventKind::Clicked,
+        UiEventKind::Submitted,
+        UiEventKind::Dropped { source },
+        UiEventKind::SecondaryClicked,
+        UiEventKind::FocusLost,
+        UiEventKind::FocusGained,
+      ]
+    );
   }
 }
