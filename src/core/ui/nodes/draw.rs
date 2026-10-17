@@ -9,14 +9,16 @@
 use glam::Vec2;
 
 use crate::core::ecs::kernel::{
-  Children, Entity, EntityWorldMut, Has, Mut, ReleaseStateQueryData, SingleEntityQueryData, World,
+  Children, DetectChangesMut, Entity, EntityWorldMut, Has, Mut, ReleaseStateQueryData,
+  SingleEntityQueryData, World,
 };
 use crate::core::text::{RichText, TextReveal, TextStyle};
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::{Anchor, Rect, Response, Theme, UiContext};
 
 use super::components::{
-  UiDisabled, UiHidden, UiImage, UiInteraction, UiLabel, UiName, UiNodes, UiRoot, UiTooltip,
+  UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName, UiNodes,
+  UiOptions, UiRoot, UiTextValue, UiTooltip, UiValue,
 };
 use super::events::{UiEvent, UiEventKind};
 use super::node::{Kind, NodeLayout, TextRole, UiNodeKind};
@@ -142,6 +144,16 @@ fn draw_node(
     }
     Kind::Button(_) => (draw_button(entity, ui, place), Sends::Clicks),
     Kind::Image(_) => (draw_image(entity, ui, place), Sends::Clicks),
+    Kind::Checkbox | Kind::Toggle => (draw_check(entity, ui, place), Sends::Changes),
+    Kind::RadioGroup { .. } => {
+      if let Some(group) = draw_radio_group(entity, ui, place) {
+        answer_group(world, node, &group, walk);
+      }
+      return;
+    }
+    Kind::Slider(_) => (draw_slider(entity, ui, place), Sends::Changes),
+    Kind::Progress { .. } => (draw_progress(entity, ui, place), Sends::Clicks),
+    Kind::TextInput(_) => (draw_text_input(entity, ui, place), Sends::Changes),
     Kind::Separator => {
       ui.scope(node, |ui| ui.separator());
       return;
@@ -150,7 +162,7 @@ fn draw_node(
       ui.scope(node, |ui| ui.spacer());
       return;
     }
-    // Not drawn yet: value widgets, lists, slots, prompts, rebinds, popups
+    // Not drawn yet: lists, slots, prompts, rebinds, popups
     _ => return,
   };
   if let Some(response) = response {
@@ -160,7 +172,6 @@ fn draw_node(
 
 /// Which of `Clicked` and `Changed` a kind sends
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // `Changes` is sent once value widgets are drawn
 enum Sends {
   Clicks,
   Changes,
@@ -176,23 +187,15 @@ fn answer(
   sends: Sends,
   walk: &mut Walk,
 ) {
-  let now = UiInteraction {
-    id: response.id,
-    hovered: response.hovered(),
-    focused: response.focused(),
-  };
-  match world.get_mut::<UiInteraction>(node) {
-    Some(mut state) => {
-      if *state != now {
-        *state = now;
-      }
-    }
-    None => {
-      if let Ok(mut entity) = world.get_entity_mut(node) {
-        entity.insert(now);
-      }
-    }
-  }
+  set_interaction(
+    world,
+    node,
+    UiInteraction {
+      id: response.id,
+      hovered: response.hovered(),
+      focused: response.focused(),
+    },
+  );
   if walk.pending_focus == Some(node) {
     ui.request_focus(response.id);
     walk.pending_focus = None;
@@ -208,18 +211,40 @@ fn answer(
       .then_some(UiEventKind::SecondaryClicked),
     response.lost_focus().then_some(UiEventKind::FocusLost),
     response.gained_focus().then_some(UiEventKind::FocusGained),
+    response.submitted().then_some(UiEventKind::Submitted),
   ];
   for kind in kinds.into_iter().flatten() {
-    walk.events.push(UiEvent {
-      node,
-      name: world.get::<UiName>(node).map(|name| name.0.clone()),
-      action: world
-        .get::<UiNodeKind>(node)
-        .and_then(|kind| kind.action.clone()),
-      kind,
-      scene: walk.scene,
-    });
+    push_event(world, walk, node, kind);
   }
+}
+
+/// Write `now` as `node`'s `UiInteraction` if it differs
+fn set_interaction(world: &mut World, node: Entity, now: UiInteraction) {
+  match world.get_mut::<UiInteraction>(node) {
+    Some(mut state) => {
+      if *state != now {
+        *state = now;
+      }
+    }
+    None => {
+      if let Ok(mut entity) = world.get_entity_mut(node) {
+        entity.insert(now);
+      }
+    }
+  }
+}
+
+/// Queue an event of `kind` from `node`
+fn push_event(world: &World, walk: &mut Walk, node: Entity, kind: UiEventKind) {
+  walk.events.push(UiEvent {
+    node,
+    name: world.get::<UiName>(node).map(|name| name.0.clone()),
+    action: world
+      .get::<UiNodeKind>(node)
+      .and_then(|kind| kind.action.clone()),
+    kind,
+    scene: walk.scene,
+  });
 }
 
 /// Draw `parent`'s children in order
@@ -585,6 +610,248 @@ fn draw_image(
     builder = builder.uv(uv);
   }
   Some(builder.show())
+}
+
+/// Draw a checkbox or toggle node
+fn draw_check(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<Response> {
+  let entity = node.id();
+  let (kind, label, mut checked, tooltip, disabled) = components::<(
+    &UiNodeKind,
+    &UiLabel,
+    &mut UiChecked,
+    Option<&UiTooltip>,
+    Has<UiDisabled>,
+  )>(&mut node, "checkbox or toggle")?;
+  let extras = Extras {
+    entity,
+    place,
+    tooltip,
+    disabled,
+  };
+  let mut on = checked.0;
+  let response = if matches!(kind.kind, Kind::Toggle) {
+    widget_opts!(ui.toggle(&mut on, label.0.as_str()), kind, extras).show()
+  } else {
+    widget_opts!(ui.checkbox(&mut on, label.0.as_str()), kind, extras).show()
+  };
+  if on != checked.0 {
+    checked.0 = on;
+  }
+  Some(response)
+}
+
+/// Draw a slider node
+fn draw_slider(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<Response> {
+  let entity = node.id();
+  let (kind, mut value, tooltip, disabled) = components::<(
+    &UiNodeKind,
+    &mut UiValue,
+    Option<&UiTooltip>,
+    Has<UiDisabled>,
+  )>(&mut node, "slider")?;
+  let Kind::Slider(opts) = &kind.kind else {
+    return None;
+  };
+  let extras = Extras {
+    entity,
+    place,
+    tooltip,
+    disabled,
+  };
+  let (lo, hi) = opts.range;
+  let start = if value.0.is_finite() { value.0 } else { lo };
+  let drawn = start.clamp(lo.min(hi), hi.max(lo));
+  let mut v = drawn;
+  let mut slider = widget_opts!(ui.slider(&mut v, lo..=hi), kind, extras);
+  if let Some(step) = opts.step {
+    slider = slider.step(step);
+  }
+  if opts.show_value {
+    slider = slider.show_value();
+  }
+  if let Some(label) = &opts.label {
+    slider = slider.label(label.as_str());
+  }
+  let response = slider.show();
+  if v != drawn {
+    value.0 = v;
+  }
+  Some(response)
+}
+
+/// Draw a progress node
+fn draw_progress(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<Response> {
+  let entity = node.id();
+  let (kind, value, tooltip, disabled) =
+    components::<(&UiNodeKind, &UiValue, Option<&UiTooltip>, Has<UiDisabled>)>(
+      &mut node, "progress",
+    )?;
+  let Kind::Progress { label } = &kind.kind else {
+    return None;
+  };
+  let extras = Extras {
+    entity,
+    place,
+    tooltip,
+    disabled,
+  };
+  let fraction = if value.0.is_nan() {
+    0.0
+  } else {
+    value.0.clamp(0.0, 1.0)
+  };
+  let mut progress = widget_opts!(ui.progress(fraction), kind, extras);
+  if let Some(label) = label {
+    progress = progress.label(label.as_str());
+  }
+  Some(progress.show())
+}
+
+/// Draw a text field node
+fn draw_text_input(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<Response> {
+  let entity = node.id();
+  let (kind, mut text, tooltip, disabled) = components::<(
+    &UiNodeKind,
+    &mut UiTextValue,
+    Option<&UiTooltip>,
+    Has<UiDisabled>,
+  )>(&mut node, "text field")?;
+  let Kind::TextInput(opts) = &kind.kind else {
+    return None;
+  };
+  let extras = Extras {
+    entity,
+    place,
+    tooltip,
+    disabled,
+  };
+  // Typing edits the string in place; the component is marked changed only
+  // when the field says it changed
+  let response = {
+    let mut field = widget_opts!(
+      ui.text_input(&mut text.bypass_change_detection().0),
+      kind,
+      extras
+    );
+    if let Some(placeholder) = &opts.placeholder {
+      field = field.placeholder(placeholder.as_str());
+    }
+    if let Some(max) = opts.max_len {
+      field = field.max_len(max);
+    }
+    if opts.password {
+      field = field.password();
+    }
+    field.show()
+  };
+  if response.changed() {
+    text.set_changed();
+  }
+  Some(response)
+}
+
+/// What a radio group reports once drawn
+struct GroupAnswer {
+  interaction: UiInteraction,
+  changed: bool,
+}
+
+/// Draw a radio group node: a row or column of radios
+fn draw_radio_group(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<GroupAnswer> {
+  let entity = node.id();
+  let (kind, options, mut index, disabled) =
+    components::<(&UiNodeKind, &UiOptions, &mut UiIndex, Has<UiDisabled>)>(
+      &mut node,
+      "radio group",
+    )?;
+  let Kind::RadioGroup { horizontal } = kind.kind else {
+    return None;
+  };
+  let layout = &kind.layout;
+  let gap = gap_of(layout, ui);
+  let mut container = if horizontal { ui.row() } else { ui.column() }.id(entity);
+  sized!(container, layout);
+  if let Some(gap) = gap {
+    container = container.gap(gap);
+  }
+  if let Some(align) = layout.align {
+    container = container.align(align);
+  }
+  if let Some(justify) = layout.justify {
+    container = container.justify(justify);
+  }
+  if let Some(grow) = layout.grow {
+    container = container.grow(grow);
+  }
+  placed!(container, placement(place, layout));
+  if let Some(color) = layout.background {
+    container = container.background(color);
+  }
+  let drawn = index.0.min(options.0.len().saturating_sub(1));
+  let mut chosen = drawn;
+  let (mut hovered, mut focused) = (false, false);
+  let response = container.show(|ui| {
+    for (k, option) in options.0.iter().enumerate() {
+      let mut radio = ui.radio(&mut chosen, k, option.as_str()).id(k as u64);
+      if disabled {
+        radio = radio.enabled(false);
+      }
+      let response = radio.show();
+      hovered |= response.hovered();
+      focused |= response.focused();
+    }
+  });
+  let changed = chosen != drawn;
+  if changed {
+    index.0 = chosen;
+  }
+  Some(GroupAnswer {
+    interaction: UiInteraction {
+      id: response.id,
+      hovered,
+      focused,
+    },
+    changed,
+  })
+}
+
+/// Record a radio group's interaction and send its events
+fn answer_group(world: &mut World, node: Entity, group: &GroupAnswer, walk: &mut Walk) {
+  let was_focused = world
+    .get::<UiInteraction>(node)
+    .is_some_and(|state| state.focused);
+  set_interaction(world, node, group.interaction);
+  if group.changed {
+    push_event(world, walk, node, UiEventKind::Changed);
+  }
+  if group.interaction.focused != was_focused {
+    let kind = if group.interaction.focused {
+      UiEventKind::FocusGained
+    } else {
+      UiEventKind::FocusLost
+    };
+    push_event(world, walk, node, kind);
+  }
 }
 
 /// The style of a theme text role
@@ -1107,5 +1374,162 @@ mod tests {
     h.frame(|_| {});
     let id = h.ui_id(second).unwrap();
     assert_eq!(h.frame(|ui| ui.scroll_offset(id)).y, 0.0);
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod values {
+  use winit::keyboard::KeyCode;
+
+  use crate::core::ecs::kernel::{Children, DetectChanges, Entity, World};
+  use crate::core::input::Direction;
+  use crate::core::ui::nodes::*;
+  use crate::core::ui::test_util::UiDriver;
+
+  fn kids(world: &World, of: Entity) -> Vec<Entity> {
+    world
+      .get::<Children>(of)
+      .map(|c| c.to_vec())
+      .unwrap_or_default()
+  }
+
+  fn changes(d: &UiDriver) -> Vec<Entity> {
+    d.events()
+      .iter()
+      .filter(|e| e.kind == UiEventKind::Changed)
+      .map(|e| e.node)
+      .collect()
+  }
+
+  /// `node` alone in a focus scope, focused, drawn twice
+  fn focused(node: UiNode) -> (UiDriver, Entity) {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let root = d.spawn_ui(UiNode::column().focus_scope().child(node.default_focus()));
+    d.frame(|_| {});
+    d.frame(|_| {});
+    let node = kids(d.world(), root)[0];
+    (d, node)
+  }
+
+  #[test]
+  fn a_checkbox_writes_its_component_and_sends_changed() {
+    let (mut d, node) = focused(UiNode::checkbox("Mute", false));
+    d.confirm();
+    d.frame(|_| {});
+    assert_eq!(d.world().get::<UiChecked>(node), Some(&UiChecked(true)));
+    assert_eq!(changes(&d), [node]);
+  }
+
+  #[test]
+  fn a_slider_reads_what_the_game_wrote() {
+    let (mut d, node) = focused(UiNode::slider(0.0..=1.0, 0.5).step(0.05));
+    if let Some(mut value) = d.world_mut().get_mut::<UiValue>(node) {
+      value.0 = 0.75;
+    }
+    d.frame(|_| {});
+    d.nav(Direction::Right);
+    d.frame(|_| {});
+    let value = d
+      .world()
+      .get::<UiValue>(node)
+      .map(|v| v.0)
+      .unwrap_or_default();
+    assert!(
+      (value - 0.8).abs() < 1e-5,
+      "stepped from the game's 0.75: {value}"
+    );
+    assert_eq!(changes(&d), [node]);
+  }
+
+  #[test]
+  fn a_frame_without_input_changes_no_component() {
+    let (mut d, node) = focused(UiNode::slider(0.0..=1.0, 0.5));
+    d.world_mut().clear_trackers();
+    d.frame(|_| {});
+    let changed = d
+      .world()
+      .entity(node)
+      .get_ref::<UiValue>()
+      .is_some_and(|v| v.is_changed());
+    assert!(!changed, "drawing alone marks nothing changed");
+    assert!(changes(&d).is_empty());
+  }
+
+  #[test]
+  fn a_value_outside_the_range_draws_clamped() {
+    let (mut d, node) = focused(UiNode::slider(0.0..=1.0, 0.5).step(0.05));
+    for wrote in [3.0, f32::NAN] {
+      if let Some(mut value) = d.world_mut().get_mut::<UiValue>(node) {
+        value.0 = wrote;
+      }
+      d.frame(|_| {});
+      let kept = d
+        .world()
+        .get::<UiValue>(node)
+        .map(|v| v.0)
+        .unwrap_or_default();
+      assert!(
+        kept == wrote || (kept.is_nan() && wrote.is_nan()),
+        "the game's value stays until the player moves it"
+      );
+    }
+    d.nav(Direction::Right);
+    d.frame(|_| {});
+    let value = d
+      .world()
+      .get::<UiValue>(node)
+      .map(|v| v.0)
+      .unwrap_or_default();
+    assert!(
+      (value - 0.05).abs() < 1e-5,
+      "NaN drew as the start, and a step moved it: {value}"
+    );
+  }
+
+  #[test]
+  fn a_radio_group_writes_its_index_and_sends_one_change() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let root = d.spawn_ui(
+      UiNode::column().focus_scope().child(
+        UiNode::radio_group(&["Small", "Medium", "Large"], 0)
+          .horizontal()
+          .gap(16.0),
+      ),
+    );
+    d.frame(|_| {});
+    d.frame(|_| {});
+    let group = kids(d.world(), root)[0];
+    d.nav(Direction::Right);
+    d.frame(|_| {});
+    d.confirm();
+    d.frame(|_| {});
+    assert_eq!(d.world().get::<UiIndex>(group), Some(&UiIndex(1)));
+    assert_eq!(changes(&d), [group]);
+    assert!(
+      d.world()
+        .get::<UiInteraction>(group)
+        .is_some_and(|i| i.focused())
+    );
+  }
+
+  #[test]
+  fn a_text_field_sends_changed_and_submitted() {
+    let (mut d, node) = focused(UiNode::text_input("").placeholder("Name"));
+    d.confirm();
+    d.frame(|_| {});
+    d.type_text("Ryo");
+    d.frame(|_| {});
+    assert_eq!(
+      d.world().get::<UiTextValue>(node),
+      Some(&UiTextValue("Ryo".into()))
+    );
+    assert_eq!(changes(&d), [node]);
+    d.key(KeyCode::Enter);
+    d.frame(|_| {});
+    assert!(
+      d.events()
+        .iter()
+        .any(|e| e.node == node && e.kind == UiEventKind::Submitted)
+    );
   }
 }

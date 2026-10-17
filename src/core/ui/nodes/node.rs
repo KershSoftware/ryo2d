@@ -95,7 +95,6 @@ pub(crate) struct ImageOpts {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SliderOpts {
-  #[allow(dead_code)] // read once sliders are drawn
   pub(crate) range: (f32, f32),
   pub(crate) step: Option<f32>,
   pub(crate) show_value: bool,
