@@ -103,7 +103,8 @@ get_display_names() {
                             local display_name="$name"
 
                             if [[ -n "$ryo_toml" ]]; then
-                                local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
+                                # POSIX classes: macOS's sed has no \s
+                                local parsed_name=$(grep -E '^name[[:space:]]*=' "$ryo_toml" | sed -E 's/^name[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/' | head -1)
                                 if [[ -n "$parsed_name" ]]; then
                                     display_name="$parsed_name"
                                 fi

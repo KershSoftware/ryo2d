@@ -1,0 +1,15 @@
+# Inventory Demo - Ryo2D Engine Project Configuration
+# Items, inventories, equipment and loot with ryo2d-inventory
+
+[project]
+name = "Inventory Demo"
+
+[paths]
+entry_point = "main.rs"
+assets = "assets"
+
+[system]
+resolution = "1024x700"
+vsync = true
+display_mode = "windowed"
+show_fps = true
