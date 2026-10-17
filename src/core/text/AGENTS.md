@@ -160,7 +160,9 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   starts over when the text changes (not its style or a font).
   `TextReveal::finish` sets `RevealClock::finishing`: the next advance
   shows every cluster with the fade's run-on done (writing `TextRevealed`
-  if it was not done yet).
+  if it was not done yet). `TextReveal::pause` holds the clock (the run-on
+  too) until `resume`; a pending `finish` still applies, and the world
+  system skips a paused reveal so it is not marked changed.
 - The glyph atlas remembers keys with no image (spaces) and keys whose
   image is bigger than a page, so they are not rasterized again every
   frame; the set is cleared past 4096 keys.

@@ -2987,6 +2987,17 @@ mod tests {
   }
 
   #[test]
+  fn a_paused_ui_typewriter_draws_what_it_had_shown() {
+    let mut text = text_engine();
+    let mut reveal = TextReveal::new(10.0);
+    typewriter_frame(&mut text, "Hello there", &mut reveal, 0.2);
+    reveal.pause();
+    let recorded = typewriter_frame(&mut text, "Hello there", &mut reveal, 0.5);
+    assert!((reveal.shown() - 2.0).abs() < 1e-4, "{}", reveal.shown());
+    assert_eq!(recorded, Some((reveal.shown(), 0.0)));
+  }
+
+  #[test]
   fn a_ui_typewriter_wins_over_reveal_and_fade() {
     let mut text = text_engine();
     let mut reveal = TextReveal::new(10.0);

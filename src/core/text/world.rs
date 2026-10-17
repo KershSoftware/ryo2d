@@ -129,6 +129,8 @@ pub struct TextReveal {
   /// Seconds each character takes to fade in (0: appears at once)
   pub fade: f32,
   pub(crate) clock: RevealClock,
+  /// Held where it is: `advance` makes no progress (`pause`)
+  pub(crate) paused: bool,
 }
 
 impl TextReveal {
@@ -138,6 +140,7 @@ impl TextReveal {
       punctuation_pause: 0.0,
       fade: 0.0,
       clock: RevealClock::default(),
+      paused: false,
     }
   }
 
@@ -151,7 +154,7 @@ impl TextReveal {
     self
   }
 
-  /// Start the reveal over
+  /// Start the reveal over (a paused reveal stays paused)
   pub fn restart(&mut self) {
     self.clock = RevealClock::default();
   }
@@ -161,6 +164,24 @@ impl TextReveal {
   /// at full opacity.
   pub fn finish(&mut self) {
     self.clock.finishing = true;
+  }
+
+  /// Hold the reveal where it is: the characters shown stay shown, and no
+  /// more appear (or fade in) until [`resume`](Self::resume). A dialogue
+  /// pauses its line under a question. [`finish`](Self::finish) still shows
+  /// the rest while paused.
+  pub fn pause(&mut self) {
+    self.paused = true;
+  }
+
+  /// Carry on from where [`pause`](Self::pause) held the reveal
+  pub fn resume(&mut self) {
+    self.paused = false;
+  }
+
+  /// The reveal is held by [`pause`](Self::pause)
+  pub fn is_paused(&self) -> bool {
+    self.paused
   }
 
   /// Every character has started showing (`TextRevealed` was written); with
@@ -193,7 +214,8 @@ impl TextReveal {
 
   /// Advance by `dt` game seconds over `layout`; true on the step every
   /// character has started showing. After that it runs on until the last
-  /// characters have faded in.
+  /// characters have faded in. A paused reveal stays put, unless it was
+  /// asked to finish.
   pub(crate) fn advance(&mut self, dt: f32, layout: &TextLayout) -> bool {
     let (per_second, pause) = (self.per_second, self.punctuation_pause);
     if std::mem::take(&mut self.clock.finishing) {
@@ -207,6 +229,9 @@ impl TextReveal {
       };
       return finished;
     }
+    if self.paused {
+      return false;
+    }
     if self.clock.done {
       let fade = self.fade_clusters();
       self.clock.run_on(dt, per_second, fade);
@@ -218,6 +243,12 @@ impl TextReveal {
   /// Every character shows at full opacity: nothing left to advance
   pub(crate) fn settled(&self) -> bool {
     self.clock.settled(self.fade_clusters())
+  }
+
+  /// An advance would change nothing: settled, or paused with no finish
+  /// asked for
+  pub(crate) fn idle(&self) -> bool {
+    self.settled() || (self.paused && !self.clock.finishing)
   }
 
   /// The clusters to draw and the fade in clusters (`reveal_alpha`)
@@ -250,8 +281,8 @@ pub(crate) fn advance_text_reveal(
 ) {
   let dt = time.game.delta();
   for (entity, mut reveal, state) in &mut reveals {
-    // Checked first, so a settled reveal is not marked changed
-    if reveal.settled() {
+    // Checked first, so a settled or paused reveal is not marked changed
+    if reveal.idle() {
       continue;
     }
     if reveal.advance(dt, &state.layout) {
@@ -350,6 +381,114 @@ mod tests {
     prompts.device = InputDevice::Gamepad;
     crate::core::render::text::layout_world_text(&mut world, &mut engine, &prompts);
     assert_eq!(text(&world), "Press [A]", "laid out again for the pad");
+  }
+
+  /// "Hello there" laid out with the default style
+  fn hello_layout() -> Arc<TextLayout> {
+    let fonts = Fonts::with_builtins();
+    let mut engine = TextEngine::new();
+    engine.sync(&fonts);
+    engine
+      .layout(
+        &RichText::new("Hello there"),
+        &TextStyle::default(),
+        &TextLayoutOptions::default(),
+        1.0,
+      )
+      .unwrap()
+  }
+
+  #[test]
+  fn a_paused_reveal_does_not_advance() {
+    let layout = hello_layout();
+    let mut reveal = TextReveal::new(10.0);
+    reveal.advance(0.2, &layout);
+    let shown = reveal.shown();
+    assert!((shown - 2.0).abs() < 1e-5, "two clusters: {shown}");
+    reveal.pause();
+    assert!(reveal.is_paused());
+    for _ in 0..10 {
+      assert!(!reveal.advance(0.5, &layout));
+    }
+    assert_eq!(reveal.shown(), shown, "held where it was");
+    assert!(!reveal.is_done());
+  }
+
+  #[test]
+  fn a_resumed_reveal_continues_from_where_it_paused() {
+    let layout = hello_layout();
+    let mut reveal = TextReveal::new(10.0);
+    reveal.advance(0.2, &layout);
+    reveal.pause();
+    reveal.advance(1.0, &layout);
+    reveal.resume();
+    assert!(!reveal.is_paused());
+    reveal.advance(0.1, &layout);
+    assert!(
+      (reveal.shown() - 3.0).abs() < 1e-4,
+      "one more cluster: {}",
+      reveal.shown()
+    );
+  }
+
+  #[test]
+  fn finish_applies_while_paused() {
+    let layout = hello_layout();
+    let mut reveal = TextReveal::new(10.0).with_fade(0.3);
+    reveal.advance(0.2, &layout);
+    reveal.pause();
+    reveal.finish();
+    assert!(reveal.advance(0.0, &layout), "finished on this advance");
+    assert!(reveal.is_done() && reveal.settled());
+    assert_eq!(reveal.shown(), layout.clusters as f32);
+  }
+
+  #[test]
+  fn a_paused_world_reveal_holds_and_is_not_marked_changed() {
+    use std::time::Duration;
+
+    use crate::core::ecs::kernel::{DetectChanges, Schedule, ScheduleLabel};
+    use crate::core::messages::register_message;
+
+    #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    struct Step;
+
+    let mut world = World::new();
+    world.insert_resource(Fonts::with_builtins());
+    world.insert_resource(Time::new(60));
+    register_message::<TextRevealed>(&mut world);
+    let mut engine = TextEngine::new();
+    let e = world
+      .spawn((
+        Transform::default(),
+        Text2d::new("Hello there"),
+        TextReveal::new(10.0),
+      ))
+      .id();
+    crate::core::render::text::layout_world_text(&mut world, &mut engine, &Default::default());
+    let mut schedule = Schedule::new(Step);
+    schedule.add_systems(advance_text_reveal);
+    let mut frame = |world: &mut World| {
+      world
+        .resource_mut::<Time>()
+        .advance(Duration::from_millis(100));
+      world.clear_trackers();
+      schedule.run(world);
+    };
+    frame(&mut world);
+    let shown = world.get::<TextReveal>(e).unwrap().shown();
+    assert!(shown > 0.0, "advanced: {shown}");
+    world.get_mut::<TextReveal>(e).unwrap().pause();
+    frame(&mut world);
+    let reveal = world.entity(e).get_ref::<TextReveal>().unwrap();
+    assert_eq!(reveal.shown(), shown, "held");
+    assert!(!reveal.is_changed(), "a paused reveal is left alone");
+    world.get_mut::<TextReveal>(e).unwrap().resume();
+    frame(&mut world);
+    assert!(
+      world.get::<TextReveal>(e).unwrap().shown() > shown,
+      "resumed"
+    );
   }
 
   #[test]
