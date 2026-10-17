@@ -31,8 +31,26 @@ pub(crate) struct Subtree {
   pub(crate) at: Option<Rect>,
   /// The clip in force when the subtree started
   pub(crate) clip: Option<Rect>,
-  /// The focus scope the subtree started in (`NONE`): its root's scope
+  /// The focus scope the subtree started in (`NONE`): its root's scope. A
+  /// popup's is the scope it was opened in.
   pub(crate) scope: UiId,
+  /// Placed below this rect once its size is known (a popup's anchor),
+  /// unless it has an `at` rect
+  pub(crate) below: Option<Rect>,
+}
+
+impl Subtree {
+  /// An empty subtree started under `clip`, in focus scope `scope`
+  pub(crate) fn new(at: Option<Rect>, clip: Option<Rect>, scope: UiId) -> Subtree {
+    Subtree {
+      nodes: Vec::new(),
+      draws: Vec::new(),
+      at,
+      clip,
+      scope,
+      below: None,
+    }
+  }
 }
 
 /// One container or leaf in a subtree
@@ -209,6 +227,7 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
     draws,
     at,
     clip,
+    below,
     ..
   } = subtree;
   if nodes.is_empty() {
@@ -262,13 +281,15 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
   };
   let placed = cx.layout.layout(&descs, available, &mut measure);
 
-  // Place the root: at its rect, or by its anchor and offset in the UI
+  // Place the root: at its rect, below its popup anchor, or by its anchor
+  // and offset in the UI
   let root = placed[0].rect;
-  let origin = match at {
-    Some(at) => Vec2::new(at.x, at.y),
-    None => {
-      nodes[0].style.anchor.fraction() * (ui_size - Vec2::new(root.width, root.height))
-        + finite(nodes[0].style.offset)
+  let root_size = Vec2::new(root.width, root.height);
+  let origin = match (at, below) {
+    (Some(at), _) => Vec2::new(at.x, at.y),
+    (None, Some(anchor)) => super::popup::below(anchor, root_size, ui_size),
+    (None, None) => {
+      nodes[0].style.anchor.fraction() * (ui_size - root_size) + finite(nodes[0].style.offset)
     }
   };
 

@@ -1,9 +1,9 @@
 //! Hybrid UI System
 //!
-//! A two-layer UI system combining immediate-mode and retained-mode approaches:
+//! A UI built each frame in `Scene::ui`, laid out and resolved by the engine:
 //!
 //! - **Immediate mode** (`immediate/`): Stateless, per-frame drawing for HUDs and debug overlays
-//! - **Retained mode** (`retained/`): Stateful widgets with layout containers for complex UIs
+//! - **Widgets and containers** (`widgets/`, `containers.rs`, `popup.rs`): Laid out with flexbox and grid; widget state (open lists, carets, scroll offsets) lives in the UI's memory
 //! - **Theme system** (`theme/`): Looks per widget kind and state, variants and skins, from RON files with hot reload
 //!
 //! # Architecture
@@ -12,10 +12,10 @@
 //! ┌─────────────────────────────────────────────────────────┐
 //! │              Game Code (Scene::ui callback)             │
 //! ├─────────────────────────────────────────────────────────┤
-//! │   Retained Mode Layer                                   │
-//! │   ├─ Layout Containers (HBox, VBox, Stack)              │
-//! │   ├─ Stateful Widgets (Dropdown)                        │
-//! │   └─ Automatic state management                         │
+//! │   Widgets and Layout                                    │
+//! │   ├─ Containers (column, row, grid, stack, panel)       │
+//! │   ├─ Widgets (button, slider, dropdown, tabs, ...)      │
+//! │   └─ Popups and modals, drawn above the page            │
 //! ├─────────────────────────────────────────────────────────┤
 //! │   Immediate Mode Layer                                  │
 //! │   ├─ UiContext drawing API                              │
@@ -28,19 +28,17 @@
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! # When to Use Each Mode
+//! # When to Use Each
 //!
-//! ## Immediate Mode
+//! ## Absolute drawing (`draw_*`)
 //! - Simple HUDs (health bars, score displays)
 //! - Debug overlays
-//! - Dynamic UI that changes frequently
 //! - Prototyping
 //!
-//! ## Retained Mode
-//! - Complex forms with text input
-//! - Menus with many options
-//! - Inventory screens
-//! - Settings screens
+//! ## Widgets in containers
+//! - Menus and pause screens, with keyboard and gamepad navigation
+//! - Settings screens (tabs, dropdowns, sliders)
+//! - Dialogs (`ui.modal`, `ui.confirm`) and dialogue choices
 //!
 //! # Example
 //!
@@ -70,8 +68,8 @@ pub(crate) mod interact;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod nav;
+pub(crate) mod popup;
 mod response;
-pub mod retained;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod theme;
@@ -87,14 +85,12 @@ pub use layout::{Align, Edges, Justify, Length};
 pub use response::{Response, Sense};
 pub use types::{Anchor, Color, Rect};
 pub use widgets::{
-  Button, Checkbox, Custom, Image, Painter, Progress, Radio, Scroll, Slider, TextInput, Toggle,
+  Button, Checkbox, ChoiceList, Custom, Dropdown, Image, Modal, Painter, Progress, Radio, Scroll,
+  Slider, Tabs, TextInput, Toggle,
 };
 
 // Re-export immediate mode API (stateless per-frame drawing)
 pub use immediate::{HAlign, HBox, Stack, UiConsumed, UiContext, UiInput, UiText, VAlign, VBox};
-
-// Re-export retained mode API (stateful widgets)
-pub use retained::DropdownState;
 
 // Re-export theme types
 pub use theme::{

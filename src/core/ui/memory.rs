@@ -120,6 +120,9 @@ pub(crate) struct Interaction {
   pub(crate) over_ui: bool,
   /// A left or right press went down this frame (wherever it was)
   pub(crate) pressed: bool,
+  /// What this frame's press landed on: the topmost record under it that
+  /// takes the pointer, hot or not (`NONE` without a press, or over nothing)
+  pub(crate) press_target: UiId,
 
   // Focus and navigation (`nav::resolve_focus`)
   /// The widget with the keyboard and gamepad focus (`NONE`)

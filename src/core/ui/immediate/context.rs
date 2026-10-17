@@ -47,8 +47,8 @@ use crate::core::ui::id::{UiId, key_hash};
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::layout::{Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory};
+use crate::core::ui::popup::{Popup, SetAside};
 use crate::core::ui::response::{Response, Sense};
-use crate::core::ui::retained::DropdownState;
 use crate::core::ui::theme::{Look, Skin, Theme, WidgetKind, WidgetState, warn_once};
 use crate::core::ui::tree::{
   self, Draw, DrawKind, Node, RecordSpec, ResolveCx, Resolved, Subtree, TextLeaf, align_fraction,
@@ -62,18 +62,6 @@ static EMPTY_POP_WARNED: AtomicBool = AtomicBool::new(false);
 static LEFT_OPEN_WARNED: AtomicBool = AtomicBool::new(false);
 /// A container placed at a rect that is not finite was warned about
 static BAD_AT_WARNED: AtomicBool = AtomicBool::new(false);
-
-/// Pending dropdown overlay to be drawn at the end of the frame.
-struct PendingDropdown {
-  /// The trigger button rect
-  trigger_rect: Rect,
-  /// The dropdown list rect
-  list_rect: Rect,
-  /// Currently hovered index (for keyboard navigation)
-  hover_index: usize,
-  /// Options to display (stored as owned strings for lifetime management)
-  options: Vec<String>,
-}
 
 /// A text's effect seed: a hash of the text, the style without its colours
 /// and the layout options, so it stays the same whatever else is drawn
@@ -353,12 +341,6 @@ pub struct UiContext<'a> {
   current_clip: Option<Rect>,
   /// The layer draws are recorded on (higher layers draw over lower ones)
   layer: u8,
-  /// Pending dropdown overlays to draw at end of frame
-  pending_dropdowns: Vec<PendingDropdown>,
-  /// ID of the currently focused dropdown (0 = none)
-  focused_dropdown_id: u32,
-  /// Whether an open dropdown was drawn this frame
-  keyboard_focus: bool,
   /// Whether the mouse is occluded by an overlay (e.g. developer console).
   /// When true, `is_hovered`, `is_held`, and `is_clicked` all return false.
   mouse_occluded: bool,
@@ -370,10 +352,15 @@ pub struct UiContext<'a> {
   pub(crate) memory: &'a mut UiMemory,
   /// Lays out each top-level container when it closes
   layout: &'a mut LayoutEngine,
-  /// The top-level container (or lone leaf) being recorded
+  /// The top-level container (or lone leaf), or the popup, being recorded
   subtree: Option<Subtree>,
   /// The innermost open node of `subtree`: what a new node goes in
   open: Option<usize>,
+  /// The subtrees set aside by the popups being recorded, innermost last
+  /// (`popup.rs`)
+  pub(crate) subtree_stack: Vec<SetAside>,
+  /// The scene's popups, recorded and drawn when its UI ends
+  pub(crate) popups: Vec<Popup>,
   /// The next draw's place in the painter's order
   order: u32,
   /// The scope id of the scene whose UI is being recorded
@@ -387,7 +374,8 @@ pub struct UiContext<'a> {
 
 /// The draw layer a scene's page records on
 pub(crate) const PAGE_LAYER: u8 = 0;
-/// The top scene's open dropdown lists, above every scene's page
+/// The top scene's popups (open lists, modals) and tooltips, above every
+/// scene's page
 pub(crate) const POPUP_LAYER: u8 = 1;
 /// The engine's overlays and the console, above the popups. Layers past
 /// 127 draw as 127 (`render::ui::ui_z`).
@@ -415,15 +403,14 @@ impl<'a> UiContext<'a> {
       clip_stack: Vec::new(),
       current_clip: None,
       layer: PAGE_LAYER,
-      pending_dropdowns: Vec::new(),
-      focused_dropdown_id: 0,
-      keyboard_focus: false,
       mouse_occluded: false,
       dt: 0.0,
       memory,
       layout,
       subtree: None,
       open: None,
+      subtree_stack: Vec::new(),
+      popups: Vec::new(),
       order: 0,
       scene: 0,
       top: false,
@@ -513,16 +500,22 @@ impl<'a> UiContext<'a> {
     self.memory.scopes.enter_root(UiId::root(scope));
   }
 
-  /// End a scene's UI. A container still open (its contents panicked, or a
-  /// builder was leaked half way) is laid out as it is, warned once.
+  /// End a scene's UI: its popups are drawn over its page, then its tooltip
+  /// over them. A container or popup still open (its contents panicked, or
+  /// a builder was leaked half way) is laid out as it is, warned once.
   pub(crate) fn end_scene(&mut self) {
+    let left_open = self.in_popup() || self.subtree.is_some();
+    while self.in_popup() {
+      self.end_popup();
+    }
     if let Some(subtree) = self.subtree.take() {
       self.open = None;
-      if !LEFT_OPEN_WARNED.swap(true, Ordering::Relaxed) {
-        crate::engine_warn!(module: "ui", "a UI container was still open when the scene's ui ended; laid out as it was");
-      }
       self.finish_subtree(subtree);
     }
+    if left_open && !LEFT_OPEN_WARNED.swap(true, Ordering::Relaxed) {
+      crate::engine_warn!(module: "ui", "a UI container was still open when the scene's ui ended; laid out as it was");
+    }
+    self.flush_popups();
     self.flush_tooltip();
     self.memory.scopes.enter_root(UiId::root(self.scene));
   }
@@ -670,7 +663,6 @@ impl<'a> UiContext<'a> {
   /// while a scope is shown), for the first tabs widget of the top scene
   /// to take: a step taken (`tab_taken`) is 0 for every later call, in a
   /// rerun pass too
-  #[allow(dead_code)] // Read by the tabs widget (Task 12)
   pub(crate) fn take_tab_step(&mut self) -> i8 {
     let i = &mut self.memory.interact;
     if !self.top || i.tab_taken || i.tab_step == 0 {
@@ -862,13 +854,13 @@ impl<'a> UiContext<'a> {
     let clip = self.current_clip;
     // The nearest open scope, or the scope the subtree started in
     node.scope = self.focus_scope_here();
-    let subtree = self.subtree.get_or_insert_with(|| Subtree {
-      nodes: Vec::new(),
-      draws: Vec::new(),
-      at,
-      clip,
-      scope: node.scope,
-    });
+    let subtree = self
+      .subtree
+      .get_or_insert_with(|| Subtree::new(at, clip, node.scope));
+    // A popup's subtree starts empty: its root's `at` places it
+    if parent.is_none() && subtree.nodes.is_empty() {
+      subtree.at = at;
+    }
     if let Some(p) = parent.and_then(|p| subtree.nodes.get(p)) {
       let flags = p.record.map(|r| r.flags).unwrap_or_default();
       node.parent = parent;
@@ -896,8 +888,9 @@ impl<'a> UiContext<'a> {
   }
 
   /// The focus scope a node opened now sits in: the innermost open node
-  /// that is a scope, or that node's scope (`NONE` outside any)
-  fn focus_scope_here(&self) -> UiId {
+  /// that is a scope, or that node's scope, or the scope its subtree (a
+  /// popup's included) started in (`NONE` outside any)
+  pub(crate) fn focus_scope_here(&self) -> UiId {
     let Some(subtree) = &self.subtree else {
       return UiId::NONE;
     };
@@ -911,7 +904,8 @@ impl<'a> UiContext<'a> {
   }
 
   /// Close `node`: its parent is the innermost open node again. Closing the
-  /// root lays the subtree out; the root's rect this frame then.
+  /// root lays the subtree out (the root's rect this frame then), unless it
+  /// is a popup's, which waits for the scene's UI to end.
   fn close(&mut self, node: usize) -> Option<Rect> {
     let parent = self
       .subtree
@@ -919,15 +913,28 @@ impl<'a> UiContext<'a> {
       .and_then(|subtree| subtree.nodes.get(node))
       .and_then(|node| node.parent);
     self.open = parent;
-    if parent.is_some() {
+    if parent.is_some() || self.in_popup() {
       return None;
     }
     let subtree = self.subtree.take()?;
     self.finish_subtree(subtree).rects.first().copied()
   }
 
+  /// Make `subtree` (with `open` its innermost open node) the one being
+  /// recorded; the one that was, with its open node
+  pub(crate) fn swap_subtree(
+    &mut self,
+    subtree: Option<Subtree>,
+    open: Option<usize>,
+  ) -> (Option<Subtree>, Option<usize>) {
+    (
+      std::mem::replace(&mut self.subtree, subtree),
+      std::mem::replace(&mut self.open, open),
+    )
+  }
+
   /// Lay `subtree` out, write its records and turn its draws into commands
-  fn finish_subtree(&mut self, subtree: Subtree) -> Resolved {
+  pub(crate) fn finish_subtree(&mut self, subtree: Subtree) -> Resolved {
     tree::resolve(
       subtree,
       ResolveCx {
@@ -995,17 +1002,19 @@ impl<'a> UiContext<'a> {
   ///
   /// The UI pass runs before gameplay and what it consumes is hidden from
   /// `Input`, so `update` never sees an Escape a widget took. Use this in
-  /// `Scene::ui`, after the widgets, to tell the cases apart there.
+  /// `Scene::ui`, after the widgets, to tell the cases apart there. For Back
+  /// (Escape or B), [`back`](Self::back) is simpler: it is false when an open
+  /// list or a focused field used it.
   ///
   /// # Example
   /// ```ignore
   /// // In Scene::ui:
-  /// ui.dropdown(&mut self.dropdown, rect, &options);
+  /// ui.text_input(&mut self.name).show();
   /// if !ui.escape_consumed() && ui.input().key_pressed(KeyCode::Escape) {
   ///     return SceneAction::Pop;
   /// }
   ///
-  /// // Or in update(): an Escape the dropdown took reads as not pressed
+  /// // Or in update(): an Escape the field took reads as not pressed
   /// if ctx.input.key_pressed(KeyCode::Escape) {
   ///     return SceneAction::Pop;
   /// }
@@ -1080,28 +1089,34 @@ impl<'a> UiContext<'a> {
     self.mouse_occluded = true;
   }
 
-  /// Check if any dropdown is currently open.
-  ///
-  /// Useful for knowing whether to handle scene-level input.
-  pub fn any_dropdown_open(&self) -> bool {
-    !self.pending_dropdowns.is_empty()
-  }
-
-  /// Get the currently focused dropdown ID (0 = none focused).
-  pub fn focused_dropdown(&self) -> u32 {
-    self.focused_dropdown_id
-  }
-
   /// Whether the UI wants the keyboard: a text field of the top scene has
-  /// the focus (from the frame's start, so before the field is drawn too),
-  /// or an open dropdown was drawn this frame. A dropdown that is merely
-  /// focused does not count.
+  /// the focus, or the top scene has an open dropdown list or `ui.popup`
+  /// (a trapping scope that is not a modal). Both count from the frame's
+  /// start (so before the widget is drawn too), and a list counts from the
+  /// frame it opens. A dropdown that is merely focused does not count, nor
+  /// does a modal: the game closes its modal itself, on `ui.back()` or a
+  /// button.
   ///
   /// A focused field takes every key, so gameplay never sees typing; scenes
   /// that read keys in `ui` (through `ui.input()`) can check this to leave
-  /// them alone while the player types.
+  /// them alone while the player types or picks from a list.
   pub fn wants_keyboard(&self) -> bool {
-    self.keyboard_focus || self.text_field_focused()
+    self.text_field_focused() || self.list_open()
+  }
+
+  /// Whether an open list or popup of the top scene traps the focus: one on
+  /// the modal stack (a trapping scope that is not a modal), or one its UI
+  /// queued this pass
+  fn list_open(&self) -> bool {
+    let scene = self.memory.interact.nav_scene;
+    let stacked = self.memory.modal_stack.iter().any(|(scope, _)| {
+      self.memory.prev(*scope).is_some_and(|record| {
+        record.flags.contains(Flags::TRAP)
+          && !record.flags.contains(Flags::MODAL)
+          && Some(record.scene) == scene
+      })
+    });
+    stacked || self.popup_queued()
   }
 
   /// Whether the focus is on a text field of the top scene
@@ -1117,11 +1132,6 @@ impl<'a> UiContext<'a> {
       .is_some_and(|record| {
         record.flags.contains(Flags::TEXT_FIELD) && Some(record.scene) == i.nav_scene
       })
-  }
-
-  /// Set the currently focused dropdown ID.
-  pub fn set_focused_dropdown(&mut self, id: u32) {
-    self.focused_dropdown_id = id;
   }
 
   // =========================================================================
@@ -1844,380 +1854,10 @@ impl<'a> UiContext<'a> {
     })
   }
 
-  // =========================================================================
-  // Dropdown Widget
-  // =========================================================================
-
-  /// A dropdown selector widget for choosing from a list of options.
-  ///
-  /// This is a retained-mode widget - the state persists between frames.
-  /// When open, the dropdown draws above other content using the modal overlay.
-  ///
-  /// # Arguments
-  /// * `state` - The retained dropdown state (must be stored between frames)
-  /// * `rect` - The trigger button rectangle (closed dropdown size)
-  /// * `options` - Slice of option labels to display
-  ///
-  /// # Returns
-  /// `true` if the selection changed this frame
-  ///
-  /// # Input Consumption
-  /// When a dropdown is open:
-  /// - Escape key is consumed (check `ui.escape_consumed()` afterwards)
-  /// - Clicks on the dropdown list are consumed (check `ui.click_consumed()`)
-  ///
-  /// # Tab Navigation
-  /// If the dropdown has an ID > 0, Tab/Shift+Tab can navigate between dropdowns.
-  /// Space or Enter opens a focused dropdown.
-  ///
-  /// # Note
-  /// Open dropdown lists draw on the popup layer, above everything the scene
-  /// drew; the engine flushes them after each scene's `ui`.
-  ///
-  /// # Example
-  /// ```ignore
-  /// let options = ["Easy", "Medium", "Hard"];
-  /// if ui.dropdown(&mut self.difficulty, rect, &options) {
-  ///     println!("Selected: {}", options[self.difficulty.selected()]);
-  /// }
-  /// ```
-  pub fn dropdown(&mut self, state: &mut DropdownState, rect: Rect, options: &[&str]) -> bool {
-    if options.is_empty() {
-      return false;
-    }
-
-    let old_selected = state.selected();
-
-    let (bg_color, bg_hover, text_color, border_color, focus_color) = (
-      Color::rgb(50, 50, 65),
-      Color::rgb(65, 65, 85),
-      Color::WHITE,
-      Color::rgb(80, 80, 100),
-      Color::rgb(100, 150, 255),
-    );
-
-    let trigger_hovered = self.is_hovered(rect);
-    let mouse_pressed = self.input.mouse_pressed(MouseButton::Left);
-    let mouse_x = self.input.mouse_x();
-    let mouse_y = self.input.mouse_y();
-
-    // Handle focus via click on trigger - this dropdown becomes focused
-    if trigger_hovered && mouse_pressed {
-      state.set_focused(true);
-      // Track this as the focused dropdown so we can unfocus others
-      if state.id() > 0 {
-        self.focused_dropdown_id = state.id();
-      }
-    }
-
-    // Sync focus: if another dropdown was clicked this frame, unfocus this one
-    // This ensures only one dropdown has focus at a time
-    if state.id() > 0 && self.focused_dropdown_id > 0 && self.focused_dropdown_id != state.id() {
-      state.set_focused(false);
-    }
-
-    if state.is_open() {
-      self.keyboard_focus = true;
-    }
-
-    // Determine if we should show focus ring
-    let show_focus = state.is_focused();
-
-    // Draw the trigger button
-    let trigger_bg = if trigger_hovered || state.is_open() {
-      bg_hover
-    } else {
-      bg_color
-    };
-    self.draw_rect(rect, trigger_bg);
-
-    // Draw focus ring if focused
-    if show_focus {
-      self.draw_rect_outline(rect, focus_color, 2.0);
-    } else {
-      self.draw_rect_outline(rect, border_color, 1.0);
-    }
-
-    // Draw selected option text
-    let selected_text = if state.selected() < options.len() {
-      options[state.selected()]
-    } else {
-      ""
-    };
-    let text_x = rect.x + 8.0;
-    let line = self.line_height(&TextStyle::default());
-    let text_y = rect.y + (rect.height - line) / 2.0;
-    self.draw_text(selected_text, text_x, text_y, text_color);
-
-    // Draw dropdown arrow
-    let arrow_size = 6.0;
-    let arrow_x = rect.x + rect.width - 16.0;
-    let arrow_y = rect.y + rect.height / 2.0;
-    self.draw_dropdown_arrow(arrow_x, arrow_y, arrow_size, text_color, state.is_open());
-
-    // Handle trigger click to toggle dropdown
-    if trigger_hovered && mouse_pressed {
-      state.toggle();
-      self.input.consume_mouse(MouseButton::Left);
-    }
-
-    // Note: Space/Enter to open focused dropdown is handled in handle_dropdown_tab_navigation()
-    // which runs after all dropdowns are processed, ensuring focus state is correct.
-
-    // Handle keyboard when open
-    if state.is_open() {
-      let max_index = options.len().saturating_sub(1);
-
-      if self.input.key_pressed(winit::keyboard::KeyCode::ArrowUp) {
-        state.hover_up();
-      }
-      if self.input.key_pressed(winit::keyboard::KeyCode::ArrowDown) {
-        state.hover_down(max_index);
-      }
-      // Both Enter and Space select the hovered item
-      if self.input.key_pressed(winit::keyboard::KeyCode::Enter)
-        || self.input.key_pressed(winit::keyboard::KeyCode::Space)
-      {
-        state.select_hovered();
-      }
-      if self.input.key_pressed(winit::keyboard::KeyCode::Escape) {
-        state.close();
-        self.input.consume_key(KeyCode::Escape);
-      }
-
-      // Calculate list rect for click-outside detection
-      let item_height = rect.height;
-      let list_height = options.len() as f32 * item_height;
-      let list_rect = Rect::new(rect.x, rect.y + rect.height, rect.width, list_height);
-
-      // Check if click is outside the dropdown entirely
-      let full_dropdown = Rect::new(rect.x, rect.y, rect.width, rect.height + list_height);
-      if mouse_pressed && !full_dropdown.contains(mouse_x, mouse_y) {
-        state.close();
-      }
-
-      // Handle clicks on options (must be done here for state mutation)
-      for (i, _) in options.iter().enumerate() {
-        let option_rect = Rect::new(
-          rect.x,
-          rect.y + rect.height + i as f32 * item_height,
-          rect.width,
-          item_height,
-        );
-        let option_hovered = option_rect.contains(mouse_x, mouse_y);
-
-        if option_hovered && mouse_pressed {
-          state.set_selected(i);
-          state.close();
-          self.input.consume_mouse(MouseButton::Left);
-        }
-      }
-
-      // Consume click if anywhere on the dropdown to prevent passthrough
-      if mouse_pressed && full_dropdown.contains(mouse_x, mouse_y) {
-        self.input.consume_mouse(MouseButton::Left);
-      }
-
-      // Queue the dropdown list to be drawn later (on top of everything)
-      // Only add if still open after handling clicks
-      if state.is_open() {
-        self.pending_dropdowns.push(PendingDropdown {
-          trigger_rect: rect,
-          list_rect,
-          hover_index: state.hover_index(),
-          options: options.iter().map(|s| s.to_string()).collect(),
-        });
-      }
-    }
-
-    state.selected() != old_selected
-  }
-
-  /// Handle Tab navigation between multiple dropdowns.
-  ///
-  /// Call this once per frame after all dropdowns to enable Tab/Shift+Tab
-  /// navigation. Provide all dropdown states in tab order.
-  ///
-  /// # Example
-  /// ```ignore
-  /// ui.dropdown(&mut self.dropdown1, rect1, &options1);
-  /// ui.dropdown(&mut self.dropdown2, rect2, &options2);
-  /// ui.dropdown(&mut self.dropdown3, rect3, &options3);
-  ///
-  /// // Enable tab navigation
-  /// ui.handle_dropdown_tab_navigation(&mut [
-  ///     &mut self.dropdown1,
-  ///     &mut self.dropdown2,
-  ///     &mut self.dropdown3,
-  /// ]);
-  /// ```
-  pub fn handle_dropdown_tab_navigation(&mut self, dropdowns: &mut [&mut DropdownState]) {
-    if dropdowns.is_empty() {
-      return;
-    }
-
-    // Clear just_closed flags at the start of each frame's handling
-    // This must happen BEFORE we check for open key, so a dropdown closed
-    // on a previous frame doesn't block opening on this frame
-    for dropdown in dropdowns.iter_mut() {
-      if dropdown.was_just_closed() {
-        // Don't clear yet - we'll use this to prevent re-open this frame
-      }
-    }
-
-    // If a dropdown was clicked this frame (focused_dropdown_id was set),
-    // ensure only that one has focus
-    if self.focused_dropdown_id > 0 {
-      for dropdown in dropdowns.iter_mut() {
-        let should_focus = dropdown.id() == self.focused_dropdown_id;
-        dropdown.set_focused(should_focus);
-      }
-    }
-
-    // Don't do keyboard navigation if any dropdown is open
-    if dropdowns.iter().any(|d| d.is_open()) {
-      return;
-    }
-
-    // Handle Space/Enter to open the focused dropdown
-    // This must be done HERE because focus may have been set by Tab on a previous frame
-    let open_key = self.input.key_pressed(winit::keyboard::KeyCode::Space)
-      || self.input.key_pressed(winit::keyboard::KeyCode::Enter);
-    if open_key {
-      for dropdown in dropdowns.iter_mut() {
-        // Don't re-open if this dropdown was just closed this frame (by selecting an item)
-        if dropdown.is_focused() && !dropdown.was_just_closed() {
-          dropdown.open();
-          return; // Only open one
-        }
-      }
-    }
-
-    // Clear just_closed flags at the END so they persist for one frame
-    for dropdown in dropdowns.iter_mut() {
-      dropdown.clear_just_closed();
-    }
-
-    let tab_pressed = self.input.key_pressed(winit::keyboard::KeyCode::Tab);
-    if !tab_pressed {
-      return;
-    }
-
-    let shift_held = self.input.key_down(winit::keyboard::KeyCode::ShiftLeft)
-      || self.input.key_down(winit::keyboard::KeyCode::ShiftRight);
-
-    // Find currently focused dropdown index
-    let current_idx = dropdowns.iter().position(|d| d.is_focused());
-
-    let next_idx = match current_idx {
-      Some(idx) => {
-        if shift_held {
-          // Shift+Tab: go backwards
-          if idx == 0 {
-            dropdowns.len() - 1
-          } else {
-            idx - 1
-          }
-        } else {
-          // Tab: go forwards
-          (idx + 1) % dropdowns.len()
-        }
-      }
-      None => {
-        // Nothing focused, start at first (or last if shift)
-        if shift_held { dropdowns.len() - 1 } else { 0 }
-      }
-    };
-
-    // Update focus
-    for (i, dropdown) in dropdowns.iter_mut().enumerate() {
-      dropdown.set_focused(i == next_idx);
-    }
-  }
-
-  /// Draw all pending dropdown lists on the popup layer, above every
-  /// scene's page. The engine calls this after each scene's `ui`.
-  pub(crate) fn finish_dropdowns(&mut self) {
-    self.finish_dropdowns_on(POPUP_LAYER);
-  }
-
   /// Record what follows on draw `layer` (the engine draws its overlays and
   /// the console on `OVERLAY_LAYER`); the layer it was on
   pub(crate) fn set_layer(&mut self, layer: u8) -> u8 {
     std::mem::replace(&mut self.layer, layer)
-  }
-
-  /// `finish_dropdowns` onto draw layer `layer`: a scene under others keeps
-  /// its lists on layer 0 so the scenes above still cover them
-  pub(crate) fn finish_dropdowns_on(&mut self, layer: u8) {
-    // Take pending dropdowns to avoid borrow issues
-    let dropdowns = std::mem::take(&mut self.pending_dropdowns);
-
-    if dropdowns.is_empty() {
-      return;
-    }
-
-    let (text_color, border_color, option_bg, option_hover) = (
-      Color::WHITE,
-      Color::rgb(80, 80, 100),
-      Color::rgb(40, 40, 55),
-      Color::rgb(60, 60, 80),
-    );
-
-    let mouse_x = self.input.mouse_x();
-    let mouse_y = self.input.mouse_y();
-    let line = self.line_height(&TextStyle::default());
-    let page_layer = std::mem::replace(&mut self.layer, layer);
-
-    // Draw each pending dropdown list
-    for dropdown in dropdowns {
-      let item_height = dropdown.trigger_rect.height;
-
-      // Draw list background
-      self.draw_rect(dropdown.list_rect, option_bg);
-      self.draw_rect_outline(dropdown.list_rect, border_color, 1.0);
-
-      // Draw options
-      for (i, option) in dropdown.options.iter().enumerate() {
-        let option_rect = Rect::new(
-          dropdown.trigger_rect.x,
-          dropdown.trigger_rect.y + dropdown.trigger_rect.height + i as f32 * item_height,
-          dropdown.trigger_rect.width,
-          item_height,
-        );
-
-        let option_hovered = option_rect.contains(mouse_x, mouse_y);
-        let is_keyboard_hover = i == dropdown.hover_index;
-
-        // Highlight hovered or keyboard-selected option
-        if option_hovered || is_keyboard_hover {
-          self.draw_rect(option_rect, option_hover);
-        }
-
-        // Draw option text
-        let opt_text_y = option_rect.y + (option_rect.height - line) / 2.0;
-        self.draw_text(option, option_rect.x + 8.0, opt_text_y, text_color);
-      }
-    }
-    self.layer = page_layer;
-  }
-
-  /// Draw a dropdown arrow indicator.
-  fn draw_dropdown_arrow(&mut self, x: f32, y: f32, size: f32, color: Color, pointing_up: bool) {
-    // Draw a simple triangle arrow
-    // For now, we'll draw it using small rectangles (since we don't have triangle primitives)
-    let half = size / 2.0;
-    if pointing_up {
-      // Arrow pointing up (dropdown is open)
-      self.draw_rect(Rect::new(x - half, y, size, 2.0), color);
-      self.draw_rect(Rect::new(x - half + 1.0, y - 2.0, size - 2.0, 2.0), color);
-      self.draw_rect(Rect::new(x - half + 2.0, y - 4.0, size - 4.0, 2.0), color);
-    } else {
-      // Arrow pointing down (dropdown is closed)
-      self.draw_rect(Rect::new(x - half, y - 2.0, size, 2.0), color);
-      self.draw_rect(Rect::new(x - half + 1.0, y, size - 2.0, 2.0), color);
-      self.draw_rect(Rect::new(x - half + 2.0, y + 2.0, size - 4.0, 2.0), color);
-    }
   }
 
   // =========================================================================
@@ -3034,30 +2674,6 @@ mod tests {
   }
 
   #[test]
-  fn wants_keyboard_while_a_dropdown_is_open() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = ui_context(&mut commands, &mut text, (200.0, 200.0));
-    let mut closed = DropdownState::with_id(1);
-    ui.dropdown(&mut closed, Rect::new(0.0, 0.0, 100.0, 20.0), &["a", "b"]);
-    assert!(!ui.wants_keyboard());
-
-    let mut open = DropdownState::with_id(2);
-    open.open();
-    ui.dropdown(&mut open, Rect::new(0.0, 40.0, 100.0, 20.0), &["a", "b"]);
-    assert!(ui.wants_keyboard());
-  }
-
-  #[test]
-  fn wants_keyboard_ignores_a_focused_but_closed_dropdown() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = ui_context(&mut commands, &mut text, (200.0, 200.0));
-    let mut focused = DropdownState::with_id(1);
-    focused.set_focused(true);
-    ui.dropdown(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), &["a", "b"]);
-    assert!(!ui.wants_keyboard());
-  }
-
-  #[test]
   fn the_text_builder_records_its_options() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut ui = context(&mut commands, &mut text);
@@ -3114,29 +2730,6 @@ mod tests {
     assert_eq!(big.join(" "), "a few words that need to wrap");
   }
 
-  #[test]
-  fn open_dropdown_lists_draw_on_the_popup_layer_after_the_page() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context(&mut commands, &mut text);
-    let mut state = DropdownState::new();
-    state.open();
-    ui.dropdown(
-      &mut state,
-      Rect::new(10.0, 10.0, 100.0, 20.0),
-      &["one", "two"],
-    );
-    ui.draw_rect(Rect::new(0.0, 0.0, 300.0, 300.0), Color::RED); // the page draws on after
-    ui.finish_dropdowns();
-    drop(ui);
-    let layers: Vec<u8> = commands.commands().map(UiCommand::draw_layer).collect();
-    let first_popup = layers
-      .iter()
-      .position(|&l| l == 1)
-      .expect("a popup command");
-    assert!(layers[first_popup..].iter().all(|&l| l == 1));
-    assert!(layers[..first_popup].contains(&0));
-  }
-
   #[cfg(feature = "default-fonts")]
   #[test]
   fn a_centred_label_lays_out_once() {
@@ -3155,21 +2748,6 @@ mod tests {
       1,
       "the draw reuses the measure"
     );
-  }
-
-  #[test]
-  fn dropdown_text_is_centred_by_the_real_line_height() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context(&mut commands, &mut text);
-    let mut state = DropdownState::new();
-    let line = ui.line_height(&TextStyle::default());
-    ui.dropdown(&mut state, Rect::new(10.0, 10.0, 100.0, 30.0), &["one"]);
-    drop(ui);
-    let origin = commands
-      .commands()
-      .find_map(UiCommand::text_origin)
-      .unwrap();
-    assert!((origin.y - (10.0 + (30.0 - line) / 2.0)).abs() < 0.01);
   }
 
   #[test]

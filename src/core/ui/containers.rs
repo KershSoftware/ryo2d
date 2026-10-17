@@ -12,7 +12,8 @@ use super::layout::{Align, Edges, Flow, Justify, Length, Tracks, UiStyle};
 use super::memory::Flags;
 use super::response::Response;
 use super::theme::{WidgetKind, WidgetState};
-use super::{Anchor, Rect};
+use super::tree::DrawKind;
+use super::{Anchor, Rect, UiId};
 
 /// A container being set up: `.show(|ui| ..)` lays its contents out
 #[must_use = "call .show(|ui| ..) to draw the container"]
@@ -26,11 +27,18 @@ pub struct Container<'u, 'a> {
   at: Option<Rect>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum ContainerKind {
   Plain,
   Panel,
+  /// A panel in a popup below this rect (centred when `None`)
+  Popup(Option<Rect>),
+  /// A panel centred in a popup that dims and blocks the whole UI
+  Modal,
 }
+
+/// Separates a modal's dim from its dialog
+const DIM_SALT: u64 = 0x0064_696d;
 
 impl<'a> UiContext<'a> {
   /// A column: its children top to bottom, as wide as the widest (and
@@ -89,6 +97,36 @@ impl<'a> UiContext<'a> {
     } else {
       look.padding
     }
+  }
+
+  /// A panel being set up as a popup below `anchor` (centred when `None`):
+  /// a focus scope that traps, blocking the pointer
+  pub(crate) fn popup_panel<'u>(
+    &'u mut self,
+    site: &'static Location<'static>,
+    anchor: Option<Rect>,
+  ) -> Container<'u, 'a> {
+    let padding = self.panel_padding();
+    let mut popup = Container::new(self, site, Flow::Column);
+    popup.kind = ContainerKind::Popup(anchor);
+    popup.style.padding = padding;
+    popup.flags = Flags::BLOCKING | Flags::FOCUS_SCOPE | Flags::TRAP;
+    popup
+  }
+
+  /// A panel being set up as a modal dialog: centred over a dim of the
+  /// whole UI, a focus scope that traps
+  pub(crate) fn modal_panel<'u>(
+    &'u mut self,
+    site: &'static Location<'static>,
+  ) -> Container<'u, 'a> {
+    let padding = self.panel_padding();
+    let mut modal = Container::new(self, site, Flow::Column);
+    modal.kind = ContainerKind::Modal;
+    modal.style.padding = padding;
+    modal.style.anchor = Anchor::Center;
+    modal.flags = Flags::BLOCKING | Flags::FOCUS_SCOPE | Flags::TRAP | Flags::MODAL;
+    modal
   }
 
   /// Draw the theme's panel look on `node`
@@ -280,7 +318,9 @@ impl<'u, 'a> Container<'u, 'a> {
   }
 
   /// Draw the container with `contents` inside. A top-level container is
-  /// laid out when this returns; its response has this frame's rect.
+  /// laid out when this returns; its response has this frame's rect. A
+  /// popup or modal is drawn when the scene's UI ends; its response has
+  /// last frame's rect.
   pub fn show(self, contents: impl FnOnce(&mut UiContext<'a>)) -> Response {
     let Container {
       ui,
@@ -292,8 +332,59 @@ impl<'u, 'a> Container<'u, 'a> {
       at,
     } = self;
     let id = ui.memory.scopes.make(site, key);
+    match kind {
+      ContainerKind::Plain | ContainerKind::Panel => Self::record(
+        ui,
+        (id, style, at, flags),
+        kind == ContainerKind::Panel,
+        contents,
+      ),
+      ContainerKind::Popup(anchor) => {
+        ui.begin_popup(anchor, false);
+        let response = Self::record(ui, (id, style, at, flags), true, contents);
+        ui.end_popup();
+        response
+      }
+      ContainerKind::Modal => {
+        ui.begin_popup(None, true);
+        // The dim covers the UI and takes the pointer; the dialog is placed
+        // in it by its anchor
+        let dim_style = UiStyle {
+          flow: Flow::Stack,
+          ..UiStyle::default()
+        };
+        let dim = ui.open_node(id.derived(DIM_SALT), dim_style, None, Flags::BLOCKING);
+        let fill = ui
+          .theme()
+          .look(WidgetKind::Modal, None, WidgetState::Normal)
+          .fill;
+        ui.push_draw(
+          dim,
+          DrawKind::Fill {
+            inset: Edges::ZERO,
+            fill,
+            radius: 0.0,
+            border: None,
+          },
+        );
+        let response = Self::record(ui, (id, style, at, flags), true, contents);
+        ui.close_node(dim);
+        ui.end_popup();
+        response
+      }
+    }
+  }
+
+  /// Record the container's node (with the panel look when `panel`) and
+  /// `contents` inside it
+  fn record(
+    ui: &mut UiContext<'a>,
+    (id, style, at, flags): (UiId, UiStyle, Option<Rect>, Flags),
+    panel: bool,
+    contents: impl FnOnce(&mut UiContext<'a>),
+  ) -> Response {
     let node = ui.open_node(id, style, at, flags);
-    if kind == ContainerKind::Panel {
+    if panel {
       ui.panel_fill(node);
     }
     ui.memory.scopes.push(id);

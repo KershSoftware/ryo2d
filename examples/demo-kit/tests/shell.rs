@@ -35,7 +35,7 @@ fn seen(shared: &Shared) -> Seen {
 }
 
 /// A page with one row of each kind (Level, Count, Mode, On); Mode "C" hides
-/// the On toggle row. Optional text input and dropdown are drawn in `ui`.
+/// the On toggle row. An optional text input and dropdown are drawn in `ui`.
 struct Probe {
   name: &'static str,
   shared: Shared,
@@ -44,7 +44,9 @@ struct Probe {
   mode: usize,
   on: bool,
   text: Option<String>,
-  dropdown: Option<DropdownState>,
+  /// Draw the dropdown, choosing into `choice`
+  dropdown: bool,
+  choice: usize,
 }
 
 impl Probe {
@@ -57,7 +59,8 @@ impl Probe {
       mode: 0,
       on: false,
       text: None,
-      dropdown: None,
+      dropdown: false,
+      choice: 0,
     }
   }
 }
@@ -109,8 +112,10 @@ impl DemoPage for Probe {
         .at(Rect::new(10.0, 100.0, 120.0, 20.0))
         .show();
     }
-    if let Some(dropdown) = &mut self.dropdown {
-      ui.dropdown(dropdown, Rect::new(10.0, 130.0, 120.0, 20.0), &["x", "y"]);
+    if self.dropdown {
+      ui.dropdown(&mut self.choice, &["x", "y"])
+        .at(Rect::new(10.0, 130.0, 120.0, 20.0))
+        .show();
     }
   }
 }
@@ -433,29 +438,29 @@ fn escape_with_an_open_dropdown_does_not_quit() {
   let picking = shared.clone();
   let demo = Demo::new("Dropdown").resolution(320, 240).page(move || {
     let mut page = Probe::new("dropdown", &picking);
-    let mut dropdown = DropdownState::with_id(7);
-    dropdown.open();
-    page.dropdown = Some(dropdown);
+    page.dropdown = true;
     page
   });
   let Some(mut engine) = start(demo) else {
     return;
   };
   engine.step_frames(2).unwrap();
+  // Open it: the shell leaves Escape to the list, which closes on it
+  click(&mut engine, 20.0, 140.0);
   assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
+  // Closed now: the next Escape quits
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Quit);
 }
 
 #[test]
-fn a_focused_but_closed_dropdown_does_not_block_the_shell_keys() {
+fn a_closed_dropdown_does_not_block_the_shell_keys() {
   let shared = Shared::default();
   let (a, b) = (shared.clone(), shared.clone());
   let demo = Demo::new("Dropdown")
     .resolution(320, 240)
     .page(move || {
       let mut page = Probe::new("one", &a);
-      let mut dropdown = DropdownState::with_id(7);
-      dropdown.set_focused(true);
-      page.dropdown = Some(dropdown);
+      page.dropdown = true;
       page
     })
     .page(move || Probe::new("two", &b));

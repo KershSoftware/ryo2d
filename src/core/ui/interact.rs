@@ -68,6 +68,7 @@ pub(crate) fn resolve_pointer(
   i.hovered = hit.hovered;
   i.over_ui = over_ui;
   i.pressed = !blocked && (pointer.pressed[0] || pointer.pressed[1]);
+  i.press_target = if i.pressed { hit.top } else { UiId::NONE };
 
   // A widget gone since its press reports nothing more
   if i.active != UiId::NONE && memory.prev(i.active).is_none() {
@@ -255,6 +256,8 @@ fn topmost(memory: &UiMemory, at: Vec2, scene: u64) -> Option<(UiId, Record)> {
 /// What is under the pointer
 #[derive(Debug, Default)]
 struct Hit {
+  /// The topmost record that takes the pointer (`NONE`)
+  top: UiId,
   /// The topmost sensing, enabled widget, unless something above blocks it
   hot: UiId,
   /// The topmost record, hover-only ones included
@@ -294,6 +297,7 @@ fn hit_test(memory: &UiMemory, at: Vec2, scene: u64) -> Hit {
     (senses && !flags.contains(Flags::DISABLED)).then_some(id)
   });
   Hit {
+    top: top.map_or(UiId::NONE, |((.., id), _)| id),
     hot: hot.unwrap_or(UiId::NONE),
     hovered: hovered.map_or(UiId::NONE, |(.., id)| id),
     over_ui: top.is_some(),
@@ -397,6 +401,27 @@ mod tests {
     assert_eq!(m.interact.hot, UiId::NONE);
     resolve_pointer(&mut m, &at(12.0, 12.0), Some(1), &[], 4.0);
     assert_eq!(m.interact.hot, UiId(1));
+  }
+
+  #[test]
+  fn a_press_lands_on_the_topmost_record_hot_or_not() {
+    let panel = Rect::new(0.0, 0.0, 100.0, 100.0);
+    let mut m = memory(&[
+      (1, rec(BUTTON, 0, 1, Flags::CLICK, 1)),
+      (2, rec(panel, 0, 0, Flags::BLOCKING, 1)),
+    ]);
+    resolve_pointer(&mut m, &press(20.0, 20.0), Some(1), &[], 4.0);
+    assert_eq!(m.interact.press_target, UiId(1));
+    resolve_pointer(&mut m, &press(80.0, 80.0), Some(1), &[], 4.0);
+    assert_eq!(
+      m.interact.press_target,
+      UiId(2),
+      "a panel, though nothing is hot"
+    );
+    resolve_pointer(&mut m, &at(80.0, 80.0), Some(1), &[], 4.0);
+    assert_eq!(m.interact.press_target, UiId::NONE, "no press");
+    resolve_pointer(&mut m, &press(150.0, 150.0), Some(1), &[], 4.0);
+    assert_eq!(m.interact.press_target, UiId::NONE, "over nothing");
   }
 
   #[test]

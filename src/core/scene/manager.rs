@@ -514,18 +514,12 @@ impl SceneManager {
         ui.restore_mouse_occluded(occluded);
       }
       let slot = &mut self.scenes[i];
-      // Each scene's ids are made under its own root scope
+      // Each scene's ids are made under its own root scope. Ending its UI
+      // draws its popups above everything it drew: the top scene's on the
+      // popup layer, a lower scene's under the scenes above it.
       ui.begin_scene(slot.scope_id, i == top);
       let result = slot.call(world, audio, |scene, ctx| scene.ui(ui, ctx));
       ui.end_scene();
-      // The scene's open lists draw above everything it drew. Only the
-      // top scene's go on the popup layer; a lower scene's stay under the
-      // scenes above it.
-      if i == top {
-        ui.finish_dropdowns();
-      } else {
-        ui.finish_dropdowns_on(crate::core::ui::immediate::PAGE_LAYER);
-      }
       if i == top {
         action = result;
       } else {
@@ -824,36 +818,103 @@ mod tests {
     assert_eq!(warnings, 1);
   }
 
-  struct OpensDropdown;
+  /// Draws a closed dropdown, keeping its trigger's id; a test opens it
+  /// with Confirm (`ui_frame`'s `activate`)
+  struct OpensDropdown {
+    selected: usize,
+    trigger: Arc<Mutex<crate::core::ui::UiId>>,
+  }
+
+  impl OpensDropdown {
+    fn new(trigger: &Arc<Mutex<crate::core::ui::UiId>>) -> Box<OpensDropdown> {
+      Box::new(OpensDropdown {
+        selected: 0,
+        trigger: trigger.clone(),
+      })
+    }
+  }
 
   impl Scene for OpensDropdown {
     fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-      let mut state = crate::core::ui::DropdownState::new();
-      state.open();
-      ui.dropdown(
-        &mut state,
-        crate::core::ui::Rect::new(0.0, 0.0, 80.0, 20.0),
-        &["one", "two"],
-      );
+      let id = ui
+        .dropdown(&mut self.selected, &["one", "two"])
+        .at(crate::core::ui::Rect::new(0.0, 0.0, 80.0, 20.0))
+        .show()
+        .id;
+      if let Ok(mut trigger) = self.trigger.lock() {
+        *trigger = id;
+      }
       SceneAction::Continue
     }
   }
 
+  /// One frame of `m`'s UI over `memory`, as the top scene's Confirm on
+  /// `activate` would see it; its commands
+  fn ui_frame(
+    m: &mut SceneManager,
+    (world, audio): (&mut World, &mut Audio),
+    memory: &mut crate::core::ui::memory::UiMemory,
+    activate: crate::core::ui::UiId,
+  ) -> crate::core::ui::immediate::UiCommands {
+    let mut commands = crate::core::ui::immediate::UiCommands::default();
+    let mut text = crate::core::ui::test_util::text_engine();
+    let mut layout = crate::core::ui::layout::engine::LayoutEngine::new();
+    let space = crate::core::render::UiSpace {
+      size: glam::Vec2::new(320.0, 320.0),
+      px_scale: 1.0,
+      image: (320, 320),
+      mouse_scale: 1.0,
+    };
+    memory.begin_frame();
+    memory.interact.activated = activate;
+    {
+      let mut ui = UiContext::new(
+        &mut commands,
+        &mut text,
+        memory,
+        &mut layout,
+        space,
+        crate::core::ui::UiInput::default(),
+        Arc::new(crate::core::ui::Theme::dark()),
+      );
+      m.ui_pass(world, audio, &mut ui);
+    }
+    memory.interact.activated = crate::core::ui::UiId::NONE;
+    memory.end_frame();
+    commands
+  }
+
+  /// The texts `commands` draw
+  fn texts(commands: &crate::core::ui::immediate::UiCommands) -> Vec<String> {
+    commands
+      .iter()
+      .filter_map(|(_, c)| match c {
+        crate::core::ui::immediate::UiCommand::Text { layout, .. } => {
+          Some(layout.text().to_string())
+        }
+        _ => None,
+      })
+      .collect()
+  }
+
   #[test]
-  fn a_scene_s_open_dropdown_is_drawn_without_finish_dropdowns() {
+  fn a_top_scene_s_open_dropdown_list_draws_on_the_popup_layer() {
     let (mut world, mut audio) = world();
-    let mut m = SceneManager::with_scene(Box::new(OpensDropdown));
+    let trigger = Arc::default();
+    let mut m = SceneManager::with_scene(OpensDropdown::new(&trigger));
     m.enter_initial(&mut world, &mut audio);
-    let (mut commands, mut text) = (
-      crate::core::ui::immediate::UiCommands::default(),
-      crate::core::ui::test_util::text_engine(),
+    let mut memory = crate::core::ui::memory::UiMemory::new();
+    let none = crate::core::ui::UiId::NONE;
+    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, none);
+    let id = *trigger.lock().unwrap();
+    let commands = ui_frame(&mut m, (&mut world, &mut audio), &mut memory, id);
+    assert!(
+      texts(&commands).contains(&"two".to_string()),
+      "the list opened"
     );
-    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (160.0, 120.0));
-    m.ui_pass(&mut world, &mut audio, &mut ui);
-    drop(ui);
     assert!(
       commands.iter().any(|(_, c)| c.draw_layer() == 1),
-      "popup commands are present after ui_pass"
+      "the open list is on the popup layer after ui_pass"
     );
   }
 
@@ -875,16 +936,21 @@ mod tests {
   #[test]
   fn a_lower_scene_s_popups_stay_below_an_upper_scene() {
     let (mut world, mut audio) = world();
-    let mut m = SceneManager::with_scene(Box::new(OpensDropdown));
+    let trigger = Arc::default();
+    let mut m = SceneManager::with_scene(OpensDropdown::new(&trigger));
     m.enter_initial(&mut world, &mut audio);
+    let mut memory = crate::core::ui::memory::UiMemory::new();
+    let none = crate::core::ui::UiId::NONE;
+    // Opened while it is the top scene, then covered by another
+    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, none);
+    let id = *trigger.lock().unwrap();
+    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, id);
     m.push(Box::new(DrawsRect), &mut world, &mut audio);
-    let (mut commands, mut text) = (
-      crate::core::ui::immediate::UiCommands::default(),
-      crate::core::ui::test_util::text_engine(),
+    let commands = ui_frame(&mut m, (&mut world, &mut audio), &mut memory, none);
+    assert!(
+      texts(&commands).contains(&"two".to_string()),
+      "the lower scene drew its open list"
     );
-    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (320.0, 320.0));
-    m.ui_pass(&mut world, &mut audio, &mut ui);
-    drop(ui);
     let keys: Vec<(u8, u32)> = commands
       .iter()
       .map(|(order, c)| (c.draw_layer(), order))

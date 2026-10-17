@@ -28,6 +28,13 @@ pub struct Button<'u, 'a> {
   label: RichText,
   icon: Option<SpriteHandle>,
   opts: WidgetOpts,
+  /// The looks it is drawn in (a tab, a choice and a dropdown's option are
+  /// buttons in their own looks)
+  kind: WidgetKind,
+  /// Recorded besides `CLICK` and the focus options
+  flags: Flags,
+  /// Where the label sits across the content box, 0 (left) to 1
+  label_x: f32,
 }
 
 impl<'a> UiContext<'a> {
@@ -49,6 +56,9 @@ impl<'a> UiContext<'a> {
       label: label.into(),
       icon: None,
       opts: WidgetOpts::default(),
+      kind: WidgetKind::Button,
+      flags: Flags::default(),
+      label_x: 0.5,
     }
   }
 }
@@ -59,6 +69,24 @@ impl Button<'_, '_> {
   /// A sprite left of the label, as tall as a line of it
   pub fn icon(mut self, sprite: &SpriteHandle) -> Self {
     self.icon = Some(sprite.clone());
+    self
+  }
+
+  /// Drawn in `kind`'s looks
+  pub(crate) fn kind(mut self, kind: WidgetKind) -> Self {
+    self.kind = kind;
+    self
+  }
+
+  /// Also records `flags`
+  pub(crate) fn also(mut self, flags: Flags) -> Self {
+    self.flags |= flags;
+    self
+  }
+
+  /// Its label at the left of its content box
+  pub(crate) fn label_left(mut self) -> Self {
+    self.label_x = 0.0;
     self
   }
 
@@ -80,7 +108,7 @@ impl Button<'_, '_> {
     let mut response = ui.response(id, Sense::click(), disabled);
 
     let state = ui.widget_state(&response, disabled);
-    let look = ui.look_of(WidgetKind::Button, &self.opts, state);
+    let look = ui.look_of(self.kind, &self.opts, state);
     let theme = ui.theme_arc();
     let sizes = &theme.metrics.sizes;
     // Its look's own padding, else the theme's button padding
@@ -122,7 +150,7 @@ impl Button<'_, '_> {
     style_of_node.padding = Edges::new(left + icon_room, top, right, bottom);
     let mut node = Node::new(id, style_of_node, Measure::Fixed(size));
     node.record = Some(RecordSpec {
-      flags: self.opts.flags(Flags::CLICK, true),
+      flags: self.opts.flags(Flags::CLICK | self.flags, true),
       nav: self.opts.nav,
     });
     let index = ui.push_node(node, self.opts.at);
@@ -152,7 +180,7 @@ impl Button<'_, '_> {
           style,
           options,
         },
-        frac: Vec2::splat(0.5),
+        frac: Vec2::new(self.label_x, 0.5),
         wrap: false,
         opacity: f32::from(look.text.a) / 255.0,
         reveal: None,

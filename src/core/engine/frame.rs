@@ -1532,12 +1532,16 @@ mod tests {
   #[test]
   fn the_console_draws_above_the_top_scenes_open_lists() {
     use crate::core::ui::immediate::UiCommand;
-    use crate::core::ui::{DropdownState, Rect, UiContext};
-    struct OpenList(DropdownState);
+    use crate::core::ui::{Rect, UiContext};
+    /// A menu button with its popup list open
+    struct OpenList;
     impl Scene for OpenList {
       fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-        self.0.open();
-        ui.dropdown(&mut self.0, Rect::new(4.0, 4.0, 60.0, 16.0), &["a", "b"]);
+        let anchor = ui.button("Menu").at(Rect::new(4.0, 4.0, 60.0, 16.0)).show();
+        ui.popup(anchor.id).show(|ui| {
+          ui.button("a");
+          ui.button("b");
+        });
         SceneAction::Continue
       }
     }
@@ -1546,7 +1550,7 @@ mod tests {
     };
     let mut e = EngineBuilder::new()
       .resolution(320, 240)
-      .start_scene(OpenList(DropdownState::new()))
+      .start_scene(OpenList)
       .build_headless();
     e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 320, 240), 1.0);
     e.console_state.toggle();

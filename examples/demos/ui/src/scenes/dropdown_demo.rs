@@ -2,24 +2,49 @@
 
 use demo_kit::prelude::*;
 
+const DIFFICULTY: [&str; 4] = ["Easy", "Medium", "Hard", "Nightmare"];
+const RESOLUTION: [&str; 5] = [
+  "1280x720",
+  "1600x900",
+  "1920x1080",
+  "2560x1440",
+  "3840x2160",
+];
+const AUDIO: [&str; 5] = [
+  "Default Device",
+  "Speakers",
+  "Headphones",
+  "USB Audio",
+  "HDMI Audio",
+];
+const LANGUAGE: [&str; 7] = [
+  "English",
+  "Español",
+  "Français",
+  "Deutsch",
+  "Ελληνικά",
+  "Русский",
+  "Čeština",
+];
+
 pub struct DropdownDemo {
-  /// Difficulty dropdown
-  difficulty: DropdownState,
-  /// Resolution dropdown
-  resolution: DropdownState,
-  /// Audio device dropdown
-  audio_device: DropdownState,
-  /// Language dropdown
-  language: DropdownState,
+  /// Index into `DIFFICULTY`
+  difficulty: usize,
+  /// Index into `RESOLUTION`
+  resolution: usize,
+  /// Index into `AUDIO`
+  audio_device: usize,
+  /// Index into `LANGUAGE`
+  language: usize,
 }
 
 impl DropdownDemo {
   pub fn new() -> Self {
     Self {
-      difficulty: DropdownState::with_id_and_selected(1, 1), // ID 1, Medium by default
-      resolution: DropdownState::with_id_and_selected(2, 2), // ID 2, 1920x1080 by default
-      audio_device: DropdownState::with_id(3),               // ID 3
-      language: DropdownState::with_id(4),                   // ID 4
+      difficulty: 1, // Medium
+      resolution: 2, // 1920x1080
+      audio_device: 0,
+      language: 0,
     }
   }
 }
@@ -50,52 +75,28 @@ impl DemoPage for DropdownDemo {
     ui.draw_rect_outline(panel_rect, Color::rgb(60, 60, 80), 1.0);
 
     ui.draw_text("Game Settings", 35.0, 80.0 + oy, Color::rgb(100, 180, 255));
-
-    // Difficulty dropdown
     ui.draw_text("Difficulty:", 35.0, 115.0 + oy, Color::LIGHT_GRAY);
-    let difficulty_options = ["Easy", "Medium", "Hard", "Nightmare"];
-    let difficulty_rect = Rect::new(140.0, 110.0 + oy, 200.0, 28.0);
-    if ui.dropdown(&mut self.difficulty, difficulty_rect, &difficulty_options) {
-      // Selection changed - could trigger game logic here
-    }
-
-    // Resolution dropdown
     ui.draw_text("Resolution:", 35.0, 160.0 + oy, Color::LIGHT_GRAY);
-    let resolution_options = [
-      "1280x720",
-      "1600x900",
-      "1920x1080",
-      "2560x1440",
-      "3840x2160",
-    ];
-    let resolution_rect = Rect::new(140.0, 155.0 + oy, 200.0, 28.0);
-    ui.dropdown(&mut self.resolution, resolution_rect, &resolution_options);
-
-    // Audio device dropdown
     ui.draw_text("Audio:", 35.0, 205.0 + oy, Color::LIGHT_GRAY);
-    let audio_options = [
-      "Default Device",
-      "Speakers",
-      "Headphones",
-      "USB Audio",
-      "HDMI Audio",
-    ];
-    let audio_rect = Rect::new(140.0, 200.0 + oy, 200.0, 28.0);
-    ui.dropdown(&mut self.audio_device, audio_rect, &audio_options);
-
-    // Language dropdown
     ui.draw_text("Language:", 35.0, 250.0 + oy, Color::LIGHT_GRAY);
-    let language_options = [
-      "English",
-      "Español",
-      "Français",
-      "Deutsch",
-      "Ελληνικά",
-      "Русский",
-      "Čeština",
-    ];
-    let language_rect = Rect::new(140.0, 245.0 + oy, 200.0, 28.0);
-    ui.dropdown(&mut self.language, language_rect, &language_options);
+
+    // The dropdowns share one focus scope: the arrows and Tab move between
+    // them, Enter or Space opens one, and an open list keeps the focus
+    ui.column().focus_scope().show(|ui| {
+      ui.dropdown(&mut self.difficulty, &DIFFICULTY)
+        .at(Rect::new(140.0, 110.0 + oy, 200.0, 28.0))
+        .default_focus()
+        .show();
+      ui.dropdown(&mut self.resolution, &RESOLUTION)
+        .at(Rect::new(140.0, 155.0 + oy, 200.0, 28.0))
+        .show();
+      ui.dropdown(&mut self.audio_device, &AUDIO)
+        .at(Rect::new(140.0, 200.0 + oy, 200.0, 28.0))
+        .show();
+      ui.dropdown(&mut self.language, &LANGUAGE)
+        .at(Rect::new(140.0, 245.0 + oy, 200.0, 28.0))
+        .show();
+    });
 
     // --- Current Selections Display ---
     let info_x = 450.0;
@@ -105,78 +106,38 @@ impl DemoPage for DropdownDemo {
       80.0 + oy,
       Color::rgb(100, 180, 255),
     );
-
-    ui.draw_text(
-      &format!(
-        "Difficulty: {}",
-        difficulty_options[self.difficulty.selected()]
-      ),
-      info_x + 10.0,
-      110.0 + oy,
-      Color::WHITE,
-    );
-    ui.draw_text(
-      &format!(
-        "Resolution: {}",
-        resolution_options[self.resolution.selected()]
-      ),
-      info_x + 10.0,
-      130.0 + oy,
-      Color::WHITE,
-    );
-    ui.draw_text(
-      &format!("Audio: {}", audio_options[self.audio_device.selected()]),
-      info_x + 10.0,
-      150.0 + oy,
-      Color::WHITE,
-    );
-    ui.draw_text(
-      &format!("Language: {}", language_options[self.language.selected()]),
-      info_x + 10.0,
-      170.0 + oy,
-      Color::WHITE,
-    );
+    let selections = [
+      ("Difficulty", DIFFICULTY[self.difficulty]),
+      ("Resolution", RESOLUTION[self.resolution]),
+      ("Audio", AUDIO[self.audio_device]),
+      ("Language", LANGUAGE[self.language]),
+    ];
+    for (i, (name, value)) in selections.iter().enumerate() {
+      ui.draw_text(
+        &format!("{name}: {value}"),
+        info_x + 10.0,
+        110.0 + oy + i as f32 * 20.0,
+        Color::WHITE,
+      );
+    }
 
     // --- Usage Notes ---
     let notes_y = 390.0 + oy;
     ui.draw_text("Features:", 20.0, notes_y, Color::rgb(100, 180, 255));
-    ui.draw_text(
-      "- Click trigger to open/close dropdown",
-      30.0,
-      notes_y + 20.0,
-      Color::LIGHT_GRAY,
-    );
-    ui.draw_text(
-      "- Arrow Up/Down to navigate options",
-      30.0,
-      notes_y + 38.0,
-      Color::LIGHT_GRAY,
-    );
-    ui.draw_text(
-      "- Enter to select, Escape to cancel",
-      30.0,
-      notes_y + 56.0,
-      Color::LIGHT_GRAY,
-    );
-    ui.draw_text(
-      "- Tab/Shift+Tab to navigate between dropdowns",
-      30.0,
-      notes_y + 74.0,
-      Color::LIGHT_GRAY,
-    );
-    ui.draw_text(
-      "- Space or Enter to open focused dropdown",
-      30.0,
-      notes_y + 92.0,
-      Color::LIGHT_GRAY,
-    );
-
-    // Handle tab navigation between dropdowns
-    ui.handle_dropdown_tab_navigation(&mut [
-      &mut self.difficulty,
-      &mut self.resolution,
-      &mut self.audio_device,
-      &mut self.language,
-    ]);
+    let notes = [
+      "- Click a dropdown to open or close its list",
+      "- Arrow Up/Down move through an open list",
+      "- Enter or Space picks, Escape closes the list",
+      "- Tab/Shift+Tab or the arrows move between dropdowns",
+      "- Space or Enter opens the focused dropdown",
+    ];
+    for (i, note) in notes.iter().enumerate() {
+      ui.draw_text(
+        note,
+        30.0,
+        notes_y + 20.0 + i as f32 * 18.0,
+        Color::LIGHT_GRAY,
+      );
+    }
   }
 }

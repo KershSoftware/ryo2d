@@ -178,6 +178,24 @@ fn field_looks(
   }
 }
 
+/// The looks of a choice (a dropdown's option, a choice list's entry): a
+/// plain row whose label sits on its list, filled when hovered, pressed or
+/// focused
+fn choice_looks(hover: Color, press: Color, text: Color, off_text: Color) -> Looks {
+  Looks {
+    normal: Look {
+      radius: 4.0,
+      text,
+      padding: Edges::xy(10.0, 4.0),
+      ..Look::default()
+    },
+    hovered: LookPatch::default().fill(hover),
+    pressed: LookPatch::default().fill(press),
+    focused: LookPatch::default().fill(hover),
+    disabled: LookPatch::default().text(off_text),
+  }
+}
+
 /// The dark theme's looks for every widget kind
 fn dark_widgets() -> WidgetLooks {
   let button = dark_button_colors();
@@ -253,7 +271,12 @@ fn dark_widgets() -> WidgetLooks {
     ),
     dropdown: list.looks(4.0),
     tab: tab.looks(4.0),
-    choice: list.looks(4.0),
+    choice: choice_looks(
+      Color::rgb(50, 50, 70),
+      Color::rgb(60, 60, 80),
+      Color::WHITE,
+      Color::new(255, 255, 255, DISABLED_ALPHA),
+    ),
     tooltip: Looks {
       normal: Look {
         fill: Color::new(30, 30, 40, 240),
@@ -301,12 +324,10 @@ fn dark_widgets() -> WidgetLooks {
       ..Looks::default()
     },
     rebind: dark_button_colors().looks(4.0),
+    // The dim over the UI behind a modal; its dialog has the panel look
     modal: Looks {
       normal: Look {
-        fill: Color::new(20, 20, 30, 240),
-        border: Color::rgb(80, 80, 100),
-        border_width: 1.0,
-        radius: 6.0,
+        fill: Color::new(0, 0, 0, 160),
         ..Look::default()
       },
       ..Looks::default()
@@ -325,7 +346,8 @@ fn dark_widgets() -> WidgetLooks {
 }
 
 /// The variants every built-in theme carries: `danger` and `accent`
-/// buttons, and `tab` for a button that reads as a tab
+/// buttons, `tab` for a button that reads as a tab, and `selected` for the
+/// selected tab of `ui.tabs`
 fn standard_variants() -> BTreeMap<String, Variant> {
   let button = |normal: LookPatch, hovered: LookPatch, pressed: LookPatch| {
     Variant::of(WidgetKind::Button)
@@ -372,6 +394,19 @@ fn standard_variants() -> BTreeMap<String, Variant> {
       LookPatch::default().fill(Color::new(60, 60, 80, 200)),
     ),
   );
+  variants.insert(
+    "selected".to_string(),
+    Variant::of(WidgetKind::Tab)
+      .normal(
+        LookPatch::default()
+          .fill(Color::rgb(50, 100, 180))
+          .border(Color::rgb(80, 150, 255))
+          .text(Color::WHITE),
+      )
+      .hovered(LookPatch::default().fill(Color::rgb(60, 115, 200)))
+      .pressed(LookPatch::default().fill(Color::rgb(45, 90, 165)))
+      .focused(LookPatch::default().fill(Color::rgb(60, 115, 200))),
+  );
   variants
 }
 
@@ -410,7 +445,12 @@ pub(super) fn light() -> Theme {
   widgets.checkbox = button.looks(3.0);
   widgets.radio = button.looks(10.0);
   widgets.dropdown = button.looks(4.0);
-  widgets.choice = button.looks(4.0);
+  widgets.choice = choice_looks(
+    Color::rgb(215, 215, 225),
+    Color::rgb(200, 200, 210),
+    Color::rgb(30, 30, 40),
+    Color::rgb(150, 150, 160),
+  );
   widgets.rebind = button.looks(4.0);
   widgets.tab = Colors {
     fill: Color::rgb(235, 235, 240),
@@ -447,8 +487,6 @@ pub(super) fn light() -> Theme {
   widgets.scroll.pressed = LookPatch::default().border(Color::rgb(110, 110, 130));
   widgets.progress.normal.fill = Color::rgb(200, 200, 210);
   widgets.progress.normal.border = palette.accent;
-  widgets.modal.normal.fill = Color::new(245, 245, 250, 245);
-  widgets.modal.normal.border = Color::rgb(200, 200, 210);
   widgets.prompt.normal.fill = Color::rgb(225, 225, 235);
   widgets.prompt.normal.border = Color::rgb(170, 170, 185);
   widgets.prompt.normal.text = Color::rgb(30, 30, 40);

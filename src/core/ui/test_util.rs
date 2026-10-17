@@ -223,6 +223,11 @@ impl UiDriver {
     self.nav.shift = shift;
   }
 
+  /// Press `ui.tab_next` (E, the right shoulder) in the next frame
+  pub(crate) fn tab_next(&mut self) {
+    self.nav.tab_next = true;
+  }
+
   /// Hold the right stick at `at` (+y up) until it is moved again
   pub(crate) fn stick(&mut self, at: Vec2) {
     self.nav.right_stick = at;
