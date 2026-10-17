@@ -25,7 +25,7 @@ pub const BIRD_HURT_FRAME_TIME: f32 = 0.1; // 100ms per frame (10 FPS hurt anima
 
 // Pipe configuration
 pub const PIPE_WIDTH: f32 = 52.0;
-pub const PIPE_GAP: f32 = 200.0; // Gap between top and bottom pipes
+pub const PIPE_GAP: f32 = 175.0; // Gap between top and bottom pipes
 pub const PIPE_SPAWN_DISTANCE: f32 = 250.0;
 pub const PIPE_SCROLL_SPEED: f32 = 120.0;
 pub const PIPE_MIN_HEIGHT: f32 = 100.0;

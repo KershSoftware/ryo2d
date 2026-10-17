@@ -116,7 +116,7 @@ impl Scene for MenuScene {
     }
 
     // Start background music (persists across scenes)
-    ctx.audio.set_music_volume(0.75);
+    ctx.audio.set_music_volume(0.4);
     ctx.audio.set_sfx_volume(0.5);
 
     let options = MusicOptions::new().looping(true);
