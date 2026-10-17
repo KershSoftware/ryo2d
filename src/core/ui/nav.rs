@@ -525,13 +525,21 @@ pub(crate) fn resolve_focus(
       i.focused = id;
     }
 
-    // Focus follows the pointer, except away from a text field being typed
-    // in; a press focuses what it lands on, and a press elsewhere leaves a
-    // text field
-    let typing = nav
-      .record(i.focused)
-      .is_some_and(|r| r.flags.contains(Flags::TEXT_FIELD));
-    if pointer_moved && !typing && i.hot != i.focused && nav.focusable(i.hot, Via::Nav) {
+    // Focus follows the pointer, but never onto or away from a text field:
+    // a field takes the keys only by a press, the keys or the pad, and keeps
+    // them while the pointer wanders. A press focuses what it lands on, and
+    // a press elsewhere leaves a text field.
+    let is_field = |id: UiId| {
+      nav
+        .record(id)
+        .is_some_and(|r| r.flags.contains(Flags::TEXT_FIELD))
+    };
+    if pointer_moved
+      && !is_field(i.focused)
+      && !is_field(i.hot)
+      && i.hot != i.focused
+      && nav.focusable(i.hot, Via::Nav)
+    {
       i.focused = i.hot;
       by_pointer = true;
     }
@@ -616,8 +624,13 @@ pub(crate) fn resolve_focus(
       }
     }
 
+    // Confirm activates the focused widget; in a text field it is typing
+    // (a space, Enter's own submit), so it activates nothing but stays used
+    let typing = is_field(i.focused);
     if input.confirm && i.focused != UiId::NONE {
-      i.activated = i.focused;
+      if !typing {
+        i.activated = i.focused;
+      }
       outcome.used.push("ui.confirm");
     }
 
@@ -629,8 +642,8 @@ pub(crate) fn resolve_focus(
     }
 
     // Taken only by a tabs widget (`tab_taken`), so the keys stay the game's
-    // with no tabs on screen
-    if scoped {
+    // with no tabs on screen; E or Q typed into a field switches nothing
+    if scoped && !typing {
       i.tab_step = i8::from(input.tab_next) - i8::from(input.tab_prev);
     }
 
@@ -932,6 +945,38 @@ mod tests {
     resolve(&mut m, NavInput::default());
     assert_eq!(m.interact.focused, UiId(2), "back where it was");
     assert_eq!(m.interact.gained, UiId(2));
+  }
+
+  #[test]
+  fn a_focused_text_field_switches_no_tabs_and_is_not_activated() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    let field = Flags::CLICK | FOCUSABLE | Flags::TEXT_FIELD | Flags::DEFAULT_FOCUS;
+    draw(&mut m, &menu(&[field, FOCUSABLE]));
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(1));
+    // E (or Q) typed into the field is not a tab switch
+    let tab_next = NavInput {
+      tab_next: true,
+      ..NavInput::default()
+    };
+    resolve(&mut m, tab_next);
+    assert_eq!(m.interact.tab_step, 0, "typing E switches no tab");
+    // Confirm (Space, Enter) is typing too: used, but no click
+    let confirm = NavInput {
+      confirm: true,
+      ..NavInput::default()
+    };
+    let out = resolve(&mut m, confirm);
+    assert_eq!(m.interact.activated, UiId::NONE);
+    assert!(out.used.contains(&"ui.confirm"));
+    // Off the field, both work again
+    resolve(&mut m, press(1));
+    assert_eq!(m.interact.focused, UiId(2));
+    resolve(&mut m, tab_next);
+    assert_eq!(m.interact.tab_step, 1);
+    resolve(&mut m, confirm);
+    assert_eq!(m.interact.activated, UiId(2));
   }
 
   #[test]

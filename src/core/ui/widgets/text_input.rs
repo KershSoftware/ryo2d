@@ -41,7 +41,8 @@ impl<'a> UiContext<'a> {
   /// unless told. A click focuses it (outside any focus scope too), and so
   /// does navigation inside a scope; while it has the focus it takes every
   /// key: typing, the arrows, Home, End, Backspace, Delete, and with Ctrl
-  /// (Cmd) A, C, X and V. Enter submits, Escape leaves it and Tab moves on.
+  /// (Cmd) A, C, X and V. Enter submits, Escape (B on a pad) leaves it and
+  /// Tab moves on.
   ///
   /// ```ignore
   /// let name = ui.text_input(&mut self.name).placeholder("Name").max_len(16).show();
@@ -176,8 +177,9 @@ impl TextInput<'_, '_> {
         }
       }
       edit.tick(ui.dt());
-      if ui.input().key_pressed(KeyCode::Escape) {
-        // Leaving the field: Escape is its, not the scene's
+      // Escape, or Back from a pad (the field uses it: `USES_BACK`)
+      if ui.input().key_pressed(KeyCode::Escape) || ui.memory.interact.back_used {
+        // Leaving the field: Back is its, not the scene's
         ui.release_focus(id);
         response.mark_lost_focus();
       } else {
@@ -877,6 +879,73 @@ mod tests {
       d.frame(|ui| field_over_a_menu(ui, &mut name));
       assert_eq!(d.frame(|ui| ui.focused()), Some(id), "{direction:?}");
     }
+  }
+
+  #[test]
+  fn pad_back_leaves_the_field_and_is_not_offered() {
+    let mut d = UiDriver::new((300.0, 100.0));
+    let mut name = String::from("x");
+    focus(&mut d, &mut name);
+    // B on a pad: `ui.back` without the Escape key
+    d.back();
+    let (focused, back) = d.frame(|ui| {
+      let response = field(ui, &mut name);
+      (response.focused(), ui.back())
+    });
+    assert!(!focused, "B leaves the field");
+    assert!(!back, "the field used it");
+    assert!(!d.frame(|ui| {
+      field(ui, &mut name);
+      ui.wants_keyboard()
+    }));
+  }
+
+  #[test]
+  fn hovering_a_field_does_not_take_the_focus() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let mut name = String::new();
+    let draw = |ui: &mut UiContext<'_>, name: &mut String| {
+      let mut out = (UiId::NONE, Rect::default());
+      ui.column().focus_scope().show(|ui| {
+        out.0 = ui.button("Go").default_focus().show().id;
+        out.1 = ui.text_input(name).show().rect;
+      });
+      out
+    };
+    d.frame(|ui| draw(ui, &mut name));
+    let (go, at) = d.frame(|ui| draw(ui, &mut name));
+    assert_eq!(d.frame(|ui| ui.focused()), Some(go));
+    // The pointer crosses the field: the button keeps the keys
+    d.move_to(at.x + 5.0, at.y + 5.0);
+    d.frame(|ui| draw(ui, &mut name));
+    d.move_to(at.x + 20.0, at.y + 8.0);
+    d.type_text(" ");
+    d.frame(|ui| draw(ui, &mut name));
+    assert_eq!(d.frame(|ui| ui.focused()), Some(go));
+    assert_eq!(name, "", "nothing typed into it");
+  }
+
+  #[test]
+  fn a_space_or_enter_typed_in_the_field_never_clicks_it() {
+    let mut d = UiDriver::new((300.0, 100.0));
+    let mut name = String::new();
+    focus(&mut d, &mut name);
+    // Space and Enter are Confirm too
+    d.confirm();
+    d.key(KeyCode::Space);
+    d.type_text(" ");
+    let space = d.frame(|ui| field(ui, &mut name));
+    assert!(!space.clicked());
+    assert_eq!(name, " ");
+    d.confirm();
+    d.key(KeyCode::Enter);
+    let enter = d.frame(|ui| field(ui, &mut name));
+    assert!(!enter.clicked());
+    assert!(enter.submitted());
+    assert!(
+      d.last_outcome().used.contains(&"ui.confirm"),
+      "still the UI's"
+    );
   }
 
   #[test]

@@ -716,75 +716,59 @@ mod tests {
     assert!(!edit.paste_guard);
   }
 
-  #[test]
-  fn paste_guard_blocks_second_paste() {
-    // Simulate: paste fires, then handle_input runs again (second render)
-    // First render: paste fires, guard is set
-    let edit = TextEdit {
+  /// A frame's input with V held from an earlier frame (not pressed in
+  /// this one) when `v_held`, typed text and an IME commit
+  fn after_a_paste(v_held: bool, typed: &str, committed: &str) -> UiInput {
+    use winit::event::ElementState;
+    use winit::keyboard::KeyCode;
+    let mut input = crate::core::input::Input::new();
+    if v_held {
+      input.handle_keyboard(KeyCode::KeyV, ElementState::Pressed);
+    }
+    // A new frame: V stays down, its press is over
+    input.begin_frame();
+    input.handle_text_input(typed);
+    if !committed.is_empty() {
+      input.handle_ime_commit(committed.to_string());
+    }
+    UiInput::snapshot(&input)
+  }
+
+  /// An edit whose paste just fired (its guard is set)
+  fn pasted() -> TextEdit {
+    TextEdit {
       paste_guard: true,
       ..TextEdit::default()
-    };
-
-    // Second render: key_pressed(KeyV) would still be true, but guard blocks
-    let ctrl = true;
-    let key_v_pressed = true;
-    if ctrl && key_v_pressed && !edit.paste_guard {
-      panic!("paste should NOT fire when guard is active");
     }
   }
 
   #[test]
-  fn paste_guard_blocks_ime_text_insertion() {
-    let (mut text, mut edit) = (String::new(), TextEdit::default());
-    edit.paste_guard = true;
-
-    // Simulate IME committing clipboard text while paste_guard is active
-    let typed = "clipboard content";
-    let ctrl = false; // Ctrl may be released by now
-    if !typed.is_empty() && !ctrl && !edit.paste_guard {
-      edit.insert(&mut text, typed, None);
+  fn the_paste_guard_blocks_typed_and_committed_text_while_v_is_held() {
+    // On Windows an IME may commit the clipboard alongside Ctrl+V
+    for (typed, committed) in [("abc", ""), ("", "clipboard content")] {
+      let (mut text, mut edit) = (String::new(), pasted());
+      let input = after_a_paste(true, typed, committed);
+      let out = edit.handle_input(&mut text, &input, None);
+      assert_eq!(text, "", "{typed:?} {committed:?} was not inserted");
+      assert!(!out.changed);
+      assert!(edit.paste_guard, "V is still held");
     }
-
-    assert_eq!(text, ""); // Text was NOT inserted
   }
 
   #[test]
-  fn paste_guard_resets_when_v_released() {
-    let mut edit = TextEdit {
-      paste_guard: true,
-      ..TextEdit::default()
-    };
-
-    // Simulate: V is no longer held (key_down returns false)
-    let v_key_down = false;
-    if !v_key_down {
-      edit.paste_guard = false;
-    }
-
+  fn releasing_v_clears_the_paste_guard() {
+    let (mut text, mut edit) = (String::new(), pasted());
+    edit.handle_input(&mut text, &after_a_paste(false, "", ""), None);
     assert!(!edit.paste_guard);
   }
 
   #[test]
-  fn paste_guard_allows_next_paste_after_release() {
-    // First paste: guard set
-    let mut edit = TextEdit {
-      paste_guard: true,
-      ..TextEdit::default()
-    };
-
-    // V released: guard cleared
-    edit.paste_guard = false;
-
-    // Second paste: guard is false, paste allowed
-    let ctrl = true;
-    let key_v_pressed = true;
-    let mut paste_fired = false;
-    if ctrl && key_v_pressed && !edit.paste_guard {
-      paste_fired = true;
-      edit.paste_guard = true;
-    }
-    assert!(paste_fired);
-    assert!(edit.paste_guard);
+  fn once_v_is_released_the_guard_no_longer_blocks() {
+    let (mut text, mut edit) = (String::new(), pasted());
+    edit.handle_input(&mut text, &after_a_paste(false, "", ""), None);
+    let out = edit.handle_input(&mut text, &after_a_paste(false, "abc", ""), None);
+    assert_eq!(text, "abc");
+    assert!(out.changed);
   }
 
   // =========================================================================
