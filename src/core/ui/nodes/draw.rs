@@ -2251,6 +2251,61 @@ mod dialogs {
     );
   }
 
+  /// The rects the pad can land on, top to bottom, left to right
+  fn target_rects(d: &UiDriver) -> Vec<Rect> {
+    let mut rects: Vec<Rect> = nav_targets(&d.memory, Some(d.scene))
+      .into_iter()
+      .map(|(_, rect)| rect)
+      .collect();
+    rects.sort_by(|a, b| (a.y, a.x).partial_cmp(&(b.y, b.x)).unwrap());
+    rects
+  }
+
+  #[test]
+  fn a_modal_root_opens_centred_as_ui_modal_does() {
+    let mut nodes = UiDriver::new((400.0, 300.0));
+    let confirm = nodes.spawn_ui(UiNode::confirm(
+      "Quit?",
+      "Your progress is saved.",
+      "Yes",
+      "No",
+    ));
+    settle(&mut nodes);
+    let mut closure = UiDriver::new((400.0, 300.0));
+    for _ in 0..3 {
+      closure.frame(|ui| ui.confirm("Quit?", "Your progress is saved."));
+    }
+    let rects = target_rects(&nodes);
+    assert_eq!(rects.len(), 2, "Yes and No");
+    assert_eq!(rects, target_rects(&closure), "where ui.confirm puts them");
+    assert_eq!(
+      nodes.world().get::<UiRoot>(confirm).map(|root| root.anchor),
+      Some(Anchor::Center),
+      "its UiRoot says so"
+    );
+  }
+
+  #[test]
+  fn a_modal_root_keeps_the_anchor_it_was_given() {
+    let mut nodes = UiDriver::new((400.0, 300.0));
+    let root = nodes.spawn_ui(dialog("options").anchor(Anchor::TopRight));
+    settle(&mut nodes);
+    let mut closure = UiDriver::new((400.0, 300.0));
+    for _ in 0..3 {
+      closure.frame(|ui| {
+        ui.modal().anchor(Anchor::TopRight).show(|ui| {
+          ui.button("Inside").default_focus().show();
+          ui.button("Also").show();
+        });
+      });
+    }
+    assert_eq!(target_rects(&nodes), target_rects(&closure));
+    assert_eq!(
+      nodes.world().get::<UiRoot>(root).map(|root| root.anchor),
+      Some(Anchor::TopRight)
+    );
+  }
+
   #[test]
   fn a_popup_hangs_below_its_named_anchor() {
     let mut d = UiDriver::new((400.0, 300.0));

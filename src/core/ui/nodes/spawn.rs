@@ -24,7 +24,13 @@ struct Pending {
 
 /// Spawn `tree` as a root owned by `scene`
 pub(crate) fn spawn_ui(world: &mut World, scene: u64, tree: UiNode) -> Entity {
-  let anchor = tree.layout.anchor.unwrap_or(Anchor::TopLeft);
+  // A modal root opens centred, as `ui.modal()` does, unless told otherwise
+  let default = if tree.flags.modal {
+    Anchor::Center
+  } else {
+    Anchor::TopLeft
+  };
+  let anchor = tree.layout.anchor.unwrap_or(default);
   let offset = tree.layout.offset.unwrap_or(Vec2::ZERO);
   let (at, embedded) = (tree.layout.at, tree.embedded);
   let mut pending = Vec::new();

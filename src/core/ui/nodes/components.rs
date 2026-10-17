@@ -14,7 +14,9 @@ use super::events::UiEvent;
 /// the entity and the tree moves.
 #[derive(Component, Debug, Clone)]
 pub struct UiRoot {
-  /// Which point of the screen the tree is placed against
+  /// Which point of the screen the tree is placed against: the root's
+  /// `.anchor(..)`, else the top-left (the centre for a modal root, as
+  /// `ui.modal()`)
   pub anchor: Anchor,
   /// Shift from the anchor, in UI units
   pub offset: Vec2,

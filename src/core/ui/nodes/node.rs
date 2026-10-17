@@ -805,7 +805,8 @@ impl UiNode {
     self.given("drop_target")
   }
 
-  /// A modal: it dims and blocks what is behind it
+  /// A modal: it dims and blocks what is behind it. A modal root opens
+  /// centred, as `ui.modal()` does, unless it is given an anchor.
   pub fn modal(mut self) -> UiNode {
     self.flags.modal = true;
     self.given("modal")
