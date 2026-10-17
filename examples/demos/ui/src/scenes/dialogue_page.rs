@@ -5,83 +5,23 @@
 use demo_kit::prelude::*;
 
 use super::art;
-
-/// Where a choice leads
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Next {
-  To(usize),
-  End,
-}
-
-/// One node of the conversation. A line with no choices continues to the
-/// next node.
-struct Line {
-  speaker: &'static str,
-  text: &'static str,
-  choices: &'static [(&'static str, Next)],
-}
-
-const GEM_PRICE: u32 = 30;
-const POTION_PRICE: u32 = 20;
-/// The nodes buying leads to: they take the gold as they open
-const GEM_NODE: usize = 1;
-const POTION_NODE: usize = 2;
-
-const TREE: [Line; 5] = [
-  Line {
-    speaker: "Shopkeeper",
-    text: "Welcome to the [color=#ffd166]Rusty Lantern[/color], traveller! Potions, gems and the finest goods this side of the river.",
-    choices: &[
-      ("Buy a gem (30 gold)", Next::To(GEM_NODE)),
-      ("Buy a potion (20 gold)", Next::To(POTION_NODE)),
-      ("What's that smell?", Next::To(3)),
-      ("Goodbye", Next::End),
-    ],
-  },
-  Line {
-    speaker: "Shopkeeper",
-    text: "One [color=#7fdbff]sapphire gem[/color], polished this very morning. Anything else?",
-    choices: &[("Show me the rest", Next::To(0)), ("That's all", Next::End)],
-  },
-  Line {
-    speaker: "Shopkeeper",
-    text: "A [color=#ff6b6b]healing potion[/color]. Drink it slowly, or don't. I'm not your mother.",
-    choices: &[("Show me the rest", Next::To(0)), ("That's all", Next::End)],
-  },
-  Line {
-    speaker: "Shopkeeper",
-    text: "That would be the [color=#b8e986]troll cheese[/color].[pause=0.4] Nobody buys the troll cheese.",
-    choices: &[],
-  },
-  Line {
-    speaker: "Shopkeeper",
-    text: "Nobody.[pause=0.3] Now, are you buying, or just breathing?",
-    choices: &[("Show me the rest", Next::To(0)), ("Goodbye", Next::End)],
-  },
-];
+use super::dialogue_data::{Next, Shop, TREE};
 
 pub struct DialoguePage {
   portrait: SpriteHandle,
-  /// The line shown; `None` once the conversation is over
-  node: Option<usize>,
+  shop: Shop,
   reveal: TextReveal,
   /// The leave-the-conversation question is open
   leaving: bool,
-  health: f32,
-  gold: u32,
-  gems: u32,
 }
 
 impl DialoguePage {
   pub fn new() -> Self {
     Self {
       portrait: art::shopkeeper(),
-      node: Some(0),
+      shop: Shop::new(),
       reveal: Self::new_reveal(),
       leaving: false,
-      health: 0.45,
-      gold: 100,
-      gems: 0,
     }
   }
 
@@ -89,43 +29,11 @@ impl DialoguePage {
     TextReveal::new(40.0).with_punctuation_pause(0.15)
   }
 
-  /// Show `next`: a node takes the price of what it sells as it opens. A
-  /// node past the tree's end ends the conversation.
+  /// Show `next`, its line revealed from the start
   fn go(&mut self, next: Next) {
-    let node = match next {
-      Next::To(node) if node < TREE.len() => node,
-      _ => {
-        self.node = None;
-        return;
-      }
-    };
-    match node {
-      GEM_NODE => {
-        self.gold = self.gold.saturating_sub(GEM_PRICE);
-        self.gems += 1;
-      }
-      POTION_NODE => {
-        self.gold = self.gold.saturating_sub(POTION_PRICE);
-        self.health = (self.health + 0.35).min(1.0);
-      }
-      _ => {}
+    if self.shop.go(next) {
+      self.reveal = Self::new_reveal();
     }
-    self.node = Some(node);
-    self.reveal = Self::new_reveal();
-  }
-
-  /// The choices the player can afford
-  fn choices(&self, line: &Line) -> Vec<(&'static str, Next)> {
-    line
-      .choices
-      .iter()
-      .copied()
-      .filter(|(_, next)| match next {
-        Next::To(GEM_NODE) => self.gold >= GEM_PRICE,
-        Next::To(POTION_NODE) => self.gold >= POTION_PRICE,
-        _ => true,
-      })
-      .collect()
   }
 
   /// Health and the purse, top-left: no focus scope, so it is the mouse's
@@ -138,12 +46,15 @@ impl DialoguePage {
       .gap(12.0)
       .align(Align::Center)
       .show(|ui| {
-        ui.progress(self.health).label("HP").width(160.0).show();
+        ui.progress(self.shop.health)
+          .label("HP")
+          .width(160.0)
+          .show();
         ui.panel().padding(6.0).show(|ui| {
-          ui.text(format!("Gold {}", self.gold));
+          ui.text(format!("Gold {}", self.shop.gold));
         });
         ui.panel().padding(6.0).show(|ui| {
-          ui.text(format!("Gems {}", self.gems));
+          ui.text(format!("Gems {}", self.shop.gems));
         });
       });
   }
@@ -155,8 +66,10 @@ impl DialoguePage {
     let body = ui.theme().text.body.style();
     let mut next = None;
     // The line shown; `None` once the conversation is over
-    let node = self.node.and_then(|n| Some((n, TREE.get(n)?)));
-    let choices = node.map(|(_, line)| self.choices(line)).unwrap_or_default();
+    let node = self.shop.node.and_then(|n| Some((n, TREE.get(n)?)));
+    let choices = node
+      .map(|(_, line)| self.shop.choices(line))
+      .unwrap_or_default();
     let labels: Vec<&str> = choices.iter().map(|(label, _)| *label).collect();
     let (portrait, reveal, leaving) = (&self.portrait, &mut self.reveal, self.leaving);
     ui.panel()
@@ -254,7 +167,7 @@ impl DemoPage for DialoguePage {
 
   /// Escape asks to leave, until the conversation is over
   fn wants_escape(&self) -> bool {
-    self.node.is_some()
+    self.shop.node.is_some()
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
@@ -264,12 +177,12 @@ impl DemoPage for DialoguePage {
       match ui.confirm("Leave the conversation?", "The shopkeeper will remember.") {
         Some(true) => {
           self.leaving = false;
-          self.node = None;
+          self.shop.node = None;
         }
         Some(false) => self.leaving = false,
         None => {}
       }
-    } else if self.node.is_some() && ui.back() {
+    } else if self.shop.node.is_some() && ui.back() {
       self.leaving = true;
     }
   }

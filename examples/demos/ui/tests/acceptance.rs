@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use demo_kit::prelude::*;
 use ryo2d::testing::{HeadlessEngine, StepOutcome};
-use ui_demo::scenes::{InventoryPage, Item, ItemKind, SlotRef};
+use ui_demo::scenes::{InventoryPage, Item, ItemKind, NodeInventoryPage, SlotRef};
 
 const DPAD: [GamepadButton; 4] = [
   GamepadButton::DPadUp,
@@ -16,8 +16,8 @@ const DPAD: [GamepadButton; 4] = [
 
 const MENUS: [usize; 2] = [0, 11];
 const SETTINGS: [usize; 2] = [1, 12];
-const INVENTORY: [usize; 1] = [2];
-const DIALOGUE: [usize; 1] = [3];
+const INVENTORY: [usize; 2] = [2, 13];
+const DIALOGUE: [usize; 2] = [3, 14];
 
 fn start(page: usize) -> Option<HeadlessEngine> {
   let mut engine = HeadlessEngine::new_or_skip(ui_demo::demo().start_page(page).engine_builder())?;
@@ -260,51 +260,59 @@ fn the_clipping_pages_strip_of_cards_is_reached_from_its_rows() {
 
 #[test]
 fn the_pad_moves_an_item_into_its_equipment_slot() {
-  let Some(mut engine) = start(2) else {
-    return;
-  };
-  let rect_of = |engine: &HeadlessEngine, id: UiId| {
-    engine
-      .ui_focusables()
-      .into_iter()
-      .find(|(t, _)| *t == id)
-      .map(|(_, r)| r)
-  };
-  let route = [
-    GamepadButton::DPadLeft,
-    GamepadButton::DPadDown,
-    GamepadButton::DPadDown,
-  ];
-  // The Sword's bag slot has the first focus; Left reaches Head, then Body and Weapon below it
-  let Some(sword) = engine.ui_focused() else {
-    panic!("nothing focused");
-  };
-  for button in route {
-    pad(&mut engine, button);
+  for page in INVENTORY {
+    let Some(mut engine) = start(page) else {
+      return;
+    };
+    let rect_of = |engine: &HeadlessEngine, id: UiId| {
+      engine
+        .ui_focusables()
+        .into_iter()
+        .find(|(t, _)| *t == id)
+        .map(|(_, r)| r)
+    };
+    let route = [
+      GamepadButton::DPadLeft,
+      GamepadButton::DPadDown,
+      GamepadButton::DPadDown,
+    ];
+    // The Sword's bag slot has the first focus; Left reaches Head, then Body and Weapon below it
+    let Some(sword) = engine.ui_focused() else {
+      panic!("nothing focused (page {page})");
+    };
+    for button in route {
+      pad(&mut engine, button);
+    }
+    let Some(weapon) = engine.ui_focused() else {
+      panic!("focus left the page (page {page})");
+    };
+    let (Some(sword_rect), Some(weapon_rect)) = (rect_of(&engine, sword), rect_of(&engine, weapon))
+    else {
+      panic!("the slots are not focusable (page {page})");
+    };
+    let before = engine.frame().unwrap();
+    engine.focus_ui(sword);
+    engine.step_frames(2).unwrap();
+    pad(&mut engine, GamepadButton::South); // pick up the Sword
+    for button in route {
+      pad(&mut engine, button);
+    }
+    pad(&mut engine, GamepadButton::South); // put it down on Weapon
+    let after = engine.frame().unwrap();
+    let differs = |r: Rect| {
+      (r.x as u32..r.right() as u32).any(|x| {
+        (r.y as u32..r.bottom() as u32).any(|y| before.get_pixel(x, y) != after.get_pixel(x, y))
+      })
+    };
+    assert!(
+      differs(weapon_rect),
+      "the Weapon slot shows the Sword now (page {page})"
+    );
+    assert!(
+      differs(sword_rect),
+      "the Sword's bag slot is empty now (page {page})"
+    );
   }
-  let Some(weapon) = engine.ui_focused() else {
-    panic!("focus left the page");
-  };
-  let (Some(sword_rect), Some(weapon_rect)) = (rect_of(&engine, sword), rect_of(&engine, weapon))
-  else {
-    panic!("the slots are not focusable");
-  };
-  let before = engine.frame().unwrap();
-  engine.focus_ui(sword);
-  engine.step_frames(2).unwrap();
-  pad(&mut engine, GamepadButton::South); // pick up the Sword
-  for button in route {
-    pad(&mut engine, button);
-  }
-  pad(&mut engine, GamepadButton::South); // put it down on Weapon
-  let after = engine.frame().unwrap();
-  let differs = |r: Rect| {
-    (r.x as u32..r.right() as u32).any(|x| {
-      (r.y as u32..r.bottom() as u32).any(|y| before.get_pixel(x, y) != after.get_pixel(x, y))
-    })
-  };
-  assert!(differs(weapon_rect), "the Weapon slot shows the Sword now");
-  assert!(differs(sword_rect), "the Sword's bag slot is empty now");
 }
 
 /// What the watched Inventory page showed on its last UI frame
@@ -314,13 +322,37 @@ struct Shown {
   first_slot: Option<Item>,
 }
 
-/// The Inventory page, with what it shows copied out after each UI frame
-struct WatchedInventory {
-  page: InventoryPage,
+/// A page whose status and first bag slot the test reads
+trait Watchable: DemoPage {
+  fn status(&self) -> &str;
+  fn first_slot(&self) -> Option<Item>;
+}
+
+impl Watchable for InventoryPage {
+  fn status(&self) -> &str {
+    InventoryPage::status(self)
+  }
+  fn first_slot(&self) -> Option<Item> {
+    self.item(SlotRef::Bag(0))
+  }
+}
+
+impl Watchable for NodeInventoryPage {
+  fn status(&self) -> &str {
+    NodeInventoryPage::status(self)
+  }
+  fn first_slot(&self) -> Option<Item> {
+    self.item(SlotRef::Bag(0))
+  }
+}
+
+/// An Inventory page, with what it shows copied out after each UI frame
+struct WatchedInventory<P: Watchable> {
+  page: P,
   shown: Arc<Mutex<Shown>>,
 }
 
-impl DemoPage for WatchedInventory {
+impl<P: Watchable> DemoPage for WatchedInventory<P> {
   fn name(&self) -> &str {
     self.page.name()
   }
@@ -333,23 +365,31 @@ impl DemoPage for WatchedInventory {
     self.page.wants_escape()
   }
 
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.page.enter(ctx);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    self.page.update(ctx, dt);
+  }
+
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
     self.page.ui(ui, ctx);
     if let Ok(mut shown) = self.shown.lock() {
       shown.status = self.page.status().to_string();
-      shown.first_slot = self.page.item(SlotRef::Bag(0));
+      shown.first_slot = self.page.first_slot();
     }
   }
 }
 
-#[test]
-fn escape_puts_back_an_item_the_pad_holds_over_a_button() {
+/// Escape puts back an item the pad holds over a button, on the page `page` makes
+fn escape_puts_back<P: Watchable>(page: impl Fn() -> P + 'static) {
   let shown = Arc::new(Mutex::new(Shown::default()));
   let watched = Arc::clone(&shown);
   let demo = Demo::new("Inventory")
     .resolution(1024, 768)
     .page(move || WatchedInventory {
-      page: InventoryPage::new(),
+      page: page(),
       shown: Arc::clone(&watched),
     });
   let Some(mut engine) = HeadlessEngine::new_or_skip(demo.engine_builder()) else {
@@ -387,4 +427,10 @@ fn escape_puts_back_an_item_the_pad_holds_over_a_button() {
   // And nothing is held: A on Sort sorts
   pad(&mut engine, GamepadButton::South);
   assert_eq!(shown().status, "Sorted the backpack.");
+}
+
+#[test]
+fn escape_puts_back_an_item_the_pad_holds_over_a_button() {
+  escape_puts_back(InventoryPage::new);
+  escape_puts_back(NodeInventoryPage::new);
 }

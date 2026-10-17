@@ -4,147 +4,11 @@
 
 use demo_kit::prelude::*;
 
-use super::art;
-
-/// The slots' gap: the bag's grid and the equipment column share it, so
-/// the equipment slots line up with the bag's rows
-const GAP: f32 = 6.0;
-const BAG: usize = 24;
-/// The status line with nothing to report
-const IDLE: &str = "Drag an item to move it, or pick it up and put it down with the pad.";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EquipSlot {
-  Head,
-  Body,
-  Weapon,
-}
-
-impl EquipSlot {
-  const ALL: [EquipSlot; 3] = [EquipSlot::Head, EquipSlot::Body, EquipSlot::Weapon];
-
-  fn name(self) -> &'static str {
-    match self {
-      EquipSlot::Head => "Head",
-      EquipSlot::Body => "Body",
-      EquipSlot::Weapon => "Weapon",
-    }
-  }
-
-  fn index(self) -> usize {
-    self as usize
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemKind {
-  Sword,
-  Shield,
-  Helmet,
-  Armor,
-  Potion,
-  Gem,
-  Key,
-  Bread,
-}
-
-impl ItemKind {
-  fn name(self) -> &'static str {
-    match self {
-      ItemKind::Sword => "Sword",
-      ItemKind::Shield => "Shield",
-      ItemKind::Helmet => "Helmet",
-      ItemKind::Armor => "Armor",
-      ItemKind::Potion => "Potion",
-      ItemKind::Gem => "Gem",
-      ItemKind::Key => "Key",
-      ItemKind::Bread => "Bread",
-    }
-  }
-
-  fn description(self) -> &'static str {
-    match self {
-      ItemKind::Sword => "A plain blade, sharp on both edges. Goes in the Weapon slot.",
-      ItemKind::Shield => "Painted blue, dented once or twice. Goes in the Weapon slot.",
-      ItemKind::Helmet => "Keeps the rain off and the arrows out. Goes in the Head slot.",
-      ItemKind::Armor => "Red leather over chain. Goes in the Body slot.",
-      ItemKind::Potion => "Restores a little health. Tastes of cherries.",
-      ItemKind::Gem => "A blue gem. Shopkeepers love these.",
-      ItemKind::Key => "Opens one door, somewhere.",
-      ItemKind::Bread => "Yesterday's loaf, still good.",
-    }
-  }
-
-  /// The equipment slot it goes in, if any
-  fn equips(self) -> Option<EquipSlot> {
-    match self {
-      ItemKind::Sword | ItemKind::Shield => Some(EquipSlot::Weapon),
-      ItemKind::Helmet => Some(EquipSlot::Head),
-      ItemKind::Armor => Some(EquipSlot::Body),
-      _ => None,
-    }
-  }
-
-  /// Several of it share one slot
-  fn stacks(self) -> bool {
-    self.equips().is_none()
-  }
-
-  /// "A Potion", "An Armor"
-  fn with_article(self) -> String {
-    let name = self.name();
-    let vowel = name.starts_with(['A', 'E', 'I', 'O', 'U']);
-    format!("{} {name}", if vowel { "An" } else { "A" })
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Item {
-  pub kind: ItemKind,
-  pub count: u32,
-}
-
-impl Item {
-  fn new(kind: ItemKind, count: u32) -> Self {
-    Self { kind, count }
-  }
-}
-
-/// Where an item is: the drag payload
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SlotRef {
-  Bag(usize),
-  Equip(EquipSlot),
-}
-
-/// The icon of each kind, in `ItemKind` order
-struct Icons([SpriteHandle; 8]);
-
-impl Icons {
-  fn new() -> Self {
-    Icons([
-      art::sword(),
-      art::shield(),
-      art::helmet(),
-      art::armor(),
-      art::potion(),
-      art::gem(),
-      art::key(),
-      art::bread(),
-    ])
-  }
-
-  fn of(&self, kind: ItemKind) -> &SpriteHandle {
-    &self.0[kind as usize]
-  }
-}
+use super::inventory_model::{BAG, EquipSlot, GAP, IDLE, Icons, Inventory, Item, SlotRef};
 
 pub struct InventoryPage {
-  bag: [Option<Item>; BAG],
-  /// Head, Body, Weapon
-  equipment: [Option<Item>; 3],
+  model: Inventory,
   icons: Icons,
-  status: String,
   /// An item was held (by the pad or a mouse drag) on the last frame
   /// (`ui.held`): Escape is the UI's Back then, which puts it back
   holding: bool,
@@ -152,118 +16,21 @@ pub struct InventoryPage {
 
 impl InventoryPage {
   pub fn new() -> Self {
-    let mut bag = [None; BAG];
-    let start = [
-      Item::new(ItemKind::Sword, 1),
-      Item::new(ItemKind::Helmet, 1),
-      Item::new(ItemKind::Armor, 1),
-      Item::new(ItemKind::Potion, 5),
-      Item::new(ItemKind::Gem, 12),
-      Item::new(ItemKind::Key, 1),
-      Item::new(ItemKind::Bread, 3),
-    ];
-    for (slot, item) in bag.iter_mut().zip(start) {
-      *slot = Some(item);
-    }
     Self {
-      bag,
-      equipment: [None; 3],
+      model: Inventory::new(),
       icons: Icons::new(),
-      status: IDLE.to_string(),
       holding: false,
     }
   }
 
   /// The status line: what the last pick-up, move or refusal did
   pub fn status(&self) -> &str {
-    &self.status
+    self.model.status()
   }
 
   /// What slot `at` holds
   pub fn item(&self, at: SlotRef) -> Option<Item> {
-    match at {
-      SlotRef::Bag(i) => self.bag.get(i).copied().flatten(),
-      SlotRef::Equip(slot) => self.equipment[slot.index()],
-    }
-  }
-
-  fn put(&mut self, at: SlotRef, item: Option<Item>) {
-    match at {
-      SlotRef::Bag(i) => {
-        if let Some(slot) = self.bag.get_mut(i) {
-          *slot = item;
-        }
-      }
-      SlotRef::Equip(slot) => self.equipment[slot.index()] = item,
-    }
-  }
-
-  /// Why `item` cannot go to `to`, if it cannot
-  fn refusal(item: Item, to: SlotRef) -> Option<String> {
-    match to {
-      SlotRef::Equip(slot) if item.kind.equips() != Some(slot) => Some(format!(
-        "{} doesn't go in the {} slot.",
-        item.kind.with_article(),
-        slot.name()
-      )),
-      _ => None,
-    }
-  }
-
-  /// Move the item at `from` to `to`, swapping with what is there; an
-  /// equipment slot refuses an item of the wrong kind, and nothing moves.
-  /// Whether it said what happened (not for an item put down where it was)
-  fn move_item(&mut self, from: SlotRef, to: SlotRef) -> bool {
-    let Some(moving) = self.item(from).filter(|_| from != to) else {
-      return false;
-    };
-    let there = self.item(to);
-    let refused = Self::refusal(moving, to).or_else(|| there.and_then(|t| Self::refusal(t, from)));
-    if let Some(reason) = refused {
-      self.status = reason;
-      return true;
-    }
-    self.put(to, Some(moving));
-    self.put(from, there);
-    self.status = match there {
-      Some(other) => format!(
-        "Swapped the {} and the {}.",
-        moving.kind.name(),
-        other.kind.name()
-      ),
-      None => format!("Moved the {}.", moving.kind.name()),
-    };
-    true
-  }
-
-  /// Throw away the item at `from`; whether there was one
-  fn discard(&mut self, from: SlotRef) -> bool {
-    let Some(item) = self.item(from) else {
-      return false;
-    };
-    self.put(from, None);
-    self.status = format!("Discarded the {}.", item.kind.name());
-    true
-  }
-
-  /// The bag by kind, stacks of a kind merged into one
-  fn sort(&mut self) {
-    let mut items: Vec<Item> = Vec::new();
-    for item in self.bag.iter().flatten() {
-      match items
-        .iter_mut()
-        .find(|held| held.kind == item.kind && item.kind.stacks())
-      {
-        Some(held) => held.count += item.count,
-        None => items.push(*item),
-      }
-    }
-    items.sort_by_key(|item| item.kind as usize);
-    self.bag = [None; BAG];
-    for (slot, item) in self.bag.iter_mut().zip(items) {
-      *slot = Some(item);
-    }
-    self.status = "Sorted the backpack.".to_string();
+    self.model.item(at)
   }
 
   /// One slot: a target for any item, the source of the one it holds
@@ -434,7 +201,7 @@ impl DemoPage for InventoryPage {
             }
           });
 
-        ui.text(self.status.as_str()).style(&body);
+        ui.text(self.model.status()).style(&body);
         ui.text(RichText::markup(
           "[prompt=ui.confirm] Pick up / put down    [prompt=ui.back] Cancel",
         ))
@@ -442,12 +209,12 @@ impl DemoPage for InventoryPage {
       });
 
     let mut told = match seen.drop {
-      Some((from, Some(to))) => self.move_item(from, to),
-      Some((from, None)) => self.discard(from),
+      Some((from, Some(to))) => self.model.move_item(from, to),
+      Some((from, None)) => self.model.discard(from),
       None => false,
     };
     if sort {
-      self.sort();
+      self.model.sort();
       told = true;
     }
     // What is held now, after this frame's pick-ups; once it is put back,
@@ -455,8 +222,10 @@ impl DemoPage for InventoryPage {
     // saying it is held
     let held = ui.held::<SlotRef>().and_then(|at| self.item(at));
     match held {
-      Some(item) => self.status = format!("Holding the {}.", item.kind.name()),
-      None if self.holding && !told => self.status = IDLE.to_string(),
+      Some(item) => self
+        .model
+        .set_status(format!("Holding the {}.", item.kind.name())),
+      None if self.holding && !told => self.model.set_status(IDLE),
       None => {}
     }
     self.holding = held.is_some();
