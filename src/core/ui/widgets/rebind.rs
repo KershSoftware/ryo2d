@@ -11,7 +11,7 @@ use crate::core::ui::immediate::{PendingRebind, UiContext, text_seed};
 use crate::core::ui::layout::{Align, Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory};
 use crate::core::ui::response::{Response, Sense};
-use crate::core::ui::theme::{WidgetKind, WidgetState};
+use crate::core::ui::theme::{WidgetKind, WidgetState, warn_once};
 use crate::core::ui::tree::{Node, TextLeaf};
 
 /// A capture with no press cancels after this long (seconds)
@@ -109,6 +109,14 @@ impl Rebind<'_, '_> {
     let mut response = ui.widget_response(id, Sense::click(), &self.opts);
     let (scene, top) = ui.scene();
     let now = ui.memory.interact.now;
+    // An action the game never bound has nothing to rebind
+    let known = ui.prompts().bindings.contains_key(&self.action);
+    if !known {
+      let action = &self.action;
+      warn_once(format!("rebind:{action}"), || {
+        format!("no action named {action:?} to rebind; its row shows \"?\" and captures nothing")
+      });
+    }
     let mut state = ui
       .memory
       .state::<RebindState>(id, scene)
@@ -119,6 +127,7 @@ impl Rebind<'_, '_> {
     // (never the click or Confirm that started it)
     if state.capturing {
       let cancelled = disabled
+        || !known
         || !top
         || response.lost_focus()
         || response.clicked()
@@ -144,7 +153,7 @@ impl Rebind<'_, '_> {
         state.capturing = false;
         response.mark_changed();
       }
-    } else if response.clicked() && !disabled {
+    } else if response.clicked() && !disabled && known {
       state.capturing = true;
       state.since = now;
     }
@@ -521,5 +530,35 @@ mod tests {
       d.frame(row);
     }
     assert!(!texts(&d).contains(&"Swapped with fire".to_string()));
+  }
+
+  #[test]
+  fn a_rebind_row_for_an_unknown_action_warns_once_and_never_captures() {
+    let mut d = driver();
+    let unknown = |ui: &mut UiContext<'_>| {
+      let mut changed = false;
+      ui.column().focus_scope().show(|ui| {
+        changed = ui
+          .rebind("t14_unknown_rebind_action")
+          .default_focus()
+          .show()
+          .changed()
+      });
+      changed
+    };
+    for _ in 0..2 {
+      d.frame(unknown);
+    }
+    d.confirm();
+    d.frame(unknown);
+    assert!(!texts(&d).contains(&"Press a key or button…".to_string()));
+    d.key(KeyCode::KeyJ);
+    assert!(!d.frame(unknown));
+    assert!(d.pending_rebinds().is_empty());
+    let warnings = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains("t14_unknown_rebind_action"))
+      .count();
+    assert_eq!(warnings, 1);
   }
 }

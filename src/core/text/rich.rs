@@ -179,6 +179,36 @@ pub(crate) struct PauseMark {
   pub(crate) seconds: f32,
 }
 
+/// An input prompt before a byte: its action, and the style of the markup
+/// span it was written in, which its label takes even at the span's edge
+/// (where no span covers the empty prompt)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PromptMark {
+  pub(crate) at: usize,
+  pub(crate) action: String,
+  /// The span around it in markup (`None` in the base style)
+  pub(crate) span: Option<Span>,
+}
+
+impl PromptMark {
+  fn hash_into(&self, h: &mut impl Hasher) {
+    self.at.hash(h);
+    self.action.hash(h);
+    self.span.is_some().hash(h);
+    if let Some(span) = &self.span {
+      span.hash_into(h);
+    }
+  }
+}
+
+/// In tests a mark in the base style reads as its (byte, action)
+#[cfg(test)]
+impl PartialEq<(usize, String)> for PromptMark {
+  fn eq(&self, (at, action): &(usize, String)) -> bool {
+    self.at == *at && self.action == *action && self.span.is_none()
+  }
+}
+
 /// Text with styled spans, inline icons, typewriter pauses and input prompts
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RichText {
@@ -186,10 +216,10 @@ pub struct RichText {
   pub(crate) spans: Vec<SpanMark>,
   pub(crate) icons: Vec<IconMark>,
   pub(crate) pauses: Vec<PauseMark>,
-  /// Input prompts: the byte each sits before and its action, replaced by
-  /// the action's binding before the text is laid out (`resolve_prompts`).
-  /// At the same byte, icons come before prompts.
-  pub(crate) prompts: Vec<(usize, String)>,
+  /// Input prompts, replaced by their action's binding before the text is
+  /// laid out (`resolve_prompts`). At the same byte, icons come before
+  /// prompts.
+  pub(crate) prompts: Vec<PromptMark>,
 }
 
 impl RichText {
@@ -245,7 +275,11 @@ impl RichText {
   /// the player's last device, as a registered glyph or a label such as
   /// `[A]` (the `[prompt=action]` markup tag)
   pub fn prompt(mut self, action: &str) -> Self {
-    self.prompts.push((self.text.len(), action.to_string()));
+    self.prompts.push(PromptMark {
+      at: self.text.len(),
+      action: action.to_string(),
+      span: None,
+    });
     self
   }
 
@@ -326,9 +360,9 @@ impl RichText {
         mark.at += len;
       }
     }
-    for (byte, _) in &mut self.prompts {
-      if *byte > at {
-        *byte += len;
+    for mark in &mut self.prompts {
+      if mark.at > at {
+        mark.at += len;
       }
     }
   }
@@ -360,7 +394,10 @@ impl RichText {
       mark.seconds.to_bits().hash(h);
     }
     // Prompts too, so texts differing only in their prompts never share
-    self.prompts.hash(h);
+    self.prompts.len().hash(h);
+    for mark in &self.prompts {
+      mark.hash_into(h);
+    }
   }
 }
 

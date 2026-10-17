@@ -67,12 +67,12 @@ pub(crate) fn resolve_prompts<'t>(
   let mut out = text.clone();
   let mut marks = std::mem::take(&mut out.prompts);
   // Stable, so prompts at one byte keep their order
-  marks.sort_by_key(|(at, _)| *at);
+  marks.sort_by_key(|mark| mark.at);
   // What the labels inserted so far moved the later marks by
   let mut moved = 0;
-  for (at, action) in marks {
-    let at = at + moved;
-    let binding = prompt_binding(prompts, &action);
+  for mark in marks {
+    let at = mark.at + moved;
+    let binding = prompt_binding(prompts, &mark.action);
     if let Some(binding) = binding {
       let name = binding.glyph_name(prompts.family);
       if prompts.icons.get(&name).is_some() {
@@ -81,8 +81,14 @@ pub(crate) fn resolve_prompts<'t>(
       }
     }
     let label = binding.map_or_else(|| "?".to_string(), |b| b.label(prompts.family));
+    // Bold in the accent, over the style the prompt was written in
+    let label_span = Span::bold().with_color(accent);
+    let label_span = match &mark.span {
+      Some(around) => label_span.over(around),
+      None => label_span,
+    };
     let before = out.text.len();
-    out.insert_text(at, &format!("[{label}]"), Span::bold().with_color(accent));
+    out.insert_text(at, &format!("[{label}]"), label_span);
     moved += out.text.len() - before;
   }
   Cow::Owned(out)
@@ -356,6 +362,48 @@ mod tests {
         (3, "prompt.key.KeyC".to_string()),
       ]
     );
+  }
+
+  /// `markup` resolved on the keyboard with `jump` on Space, and the span
+  /// over the `[Space]` label
+  fn label_span(markup: &str) -> (String, Span) {
+    let jump = ("jump", vec![Binding::Key(KeyCode::Space)]);
+    let context = prompts_with(InputDevice::Keyboard, &[jump]);
+    let text = RichText::markup(markup);
+    let resolved = resolve_prompts(&text, &context, Color::YELLOW);
+    let start = resolved.as_str().find("[Space]").expect("the label");
+    let span = resolved
+      .spans
+      .iter()
+      .find(|mark| mark.range == (start..start + "[Space]".len()))
+      .map(|mark| mark.span.clone())
+      .expect("a span over the label");
+    (resolved.as_str().to_string(), span)
+  }
+
+  #[test]
+  fn a_prompt_at_the_end_of_a_span_keeps_its_style() {
+    let (text, span) = label_span("[size=32]Press [prompt=jump][/size]");
+    assert_eq!(text, "Press [Space]");
+    assert_eq!(span.size, Some(32.0));
+    assert_eq!(span.color, Some(Color::YELLOW));
+    assert_eq!(span.weight, Some(700.0));
+  }
+
+  #[test]
+  fn a_prompt_at_the_start_of_a_span_keeps_its_style() {
+    let (text, span) = label_span("[size=24][prompt=jump] Jump[/size]");
+    assert_eq!(text, "[Space] Jump");
+    assert_eq!(span.size, Some(24.0));
+    assert_eq!(span.color, Some(Color::YELLOW));
+  }
+
+  #[test]
+  fn a_prompt_alone_in_an_effect_carries_the_effect() {
+    let (text, span) = label_span("Hop [wave][prompt=jump][/wave]!");
+    assert_eq!(text, "Hop [Space]!");
+    assert_eq!(span.effect.as_deref(), Some("wave"));
+    assert_eq!(span.weight, Some(700.0));
   }
 
   #[test]

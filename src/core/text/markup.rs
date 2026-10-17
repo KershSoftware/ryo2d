@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
-use crate::core::text::rich::{PauseMark, RichText, Span};
+use crate::core::text::rich::{PauseMark, PromptMark, RichText, Span};
 use crate::core::text::style::TextFont;
 use crate::core::ui::Color;
 
@@ -289,7 +289,12 @@ fn build(resolved: &[Resolved]) -> RichText {
       }
       Resolved::Icon(name) => rich = rich.icon_named(name.clone()),
       Resolved::Pause(seconds) => rich = rich.pause(*seconds),
-      Resolved::Prompt(action) => rich = rich.prompt(action),
+      // Its label takes the style around it, even at the span's edge
+      Resolved::Prompt(action) => rich.prompts.push(PromptMark {
+        at: rich.text.len(),
+        action: action.clone(),
+        span: (top != base).then_some(top),
+      }),
     }
   }
   rich
