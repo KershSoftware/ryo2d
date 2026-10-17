@@ -324,7 +324,8 @@ fn dark_widgets() -> WidgetLooks {
       ..Looks::default()
     },
     rebind: dark_button_colors().looks(4.0),
-    // The dim over the UI behind a modal; its dialog has the panel look
+    // The dim over the UI behind a modal; its dialog has the panel look,
+    // made opaque
     modal: Looks {
       normal: Look {
         fill: Color::new(0, 0, 0, 160),

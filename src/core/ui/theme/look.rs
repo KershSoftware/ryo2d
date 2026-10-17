@@ -44,6 +44,7 @@ pub enum WidgetKind {
   /// A progress bar: `fill` is the track, `border` the filled part
   Progress,
   Rebind,
+  /// The dim behind a modal (its dialog draws the panel look, made opaque)
   Modal,
   Prompt,
 }

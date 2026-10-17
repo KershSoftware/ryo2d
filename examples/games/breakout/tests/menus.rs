@@ -20,6 +20,13 @@ impl Scene for Under {
 
 #[test]
 fn the_pause_menu_is_navigable_by_pad() {
+  // QUIT TO DESKTOP saves the high score, with a timestamp: run from an
+  // empty folder, so the save is written there and the player's is never
+  // touched (the working directory is the process's; this file has one test)
+  let folder = std::env::temp_dir().join(format!("breakout-menus-{}", std::process::id()));
+  std::fs::create_dir_all(&folder).unwrap();
+  std::env::set_current_dir(&folder).unwrap();
+
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(800, 600)
@@ -36,4 +43,6 @@ fn the_pause_menu_is_navigable_by_pad() {
   engine.tap_pad(GamepadButton::South);
   let outcome = engine.step_frames(3).unwrap();
   assert_eq!(outcome, ryo2d::testing::StepOutcome::Quit);
+  drop(engine);
+  let _ = std::fs::remove_dir_all(&folder);
 }

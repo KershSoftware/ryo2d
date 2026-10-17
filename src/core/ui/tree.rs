@@ -1187,7 +1187,7 @@ mod tests {
     };
     // As if its contents had panicked: opened, never closed
     let node = ui.open_node(UiId(9), style, None, Flags::BLOCKING);
-    ui.panel_fill(node);
+    ui.panel_fill(node, false);
     ui.end_scene();
     assert!(ui.memory_for_test().current(UiId(9)).is_some());
     // The next container starts a subtree of its own

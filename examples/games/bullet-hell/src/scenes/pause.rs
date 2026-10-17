@@ -78,17 +78,17 @@ impl Scene for PauseScene {
       return action;
     }
 
-    // Instructions
-    ui.draw_text_anchored(
-      "D-Pad/Arrows: Navigate | A/Enter: Select | B/ESC: Resume",
-      Anchor::TopCenter,
-      0.0,
-      screen_h / 2.0 + 170.0,
-      Color::rgb(150, 150, 150),
-    );
-
+    // Instructions: the menu's, or the settings dialog's inside it
     if self.settings_open {
       self.settings(ui, ctx);
+    } else {
+      ui.draw_text_anchored(
+        "D-Pad/Arrows: Navigate | A/Enter: Select | B/ESC: Resume",
+        Anchor::TopCenter,
+        0.0,
+        screen_h / 2.0 + 170.0,
+        HINT,
+      );
     }
 
     // Back (Escape, B) closes settings, else resumes
@@ -206,6 +206,9 @@ impl PauseScene {
           .variant("danger")
           .clicked();
       });
+      ui.text("D-Pad: Navigate | A: Select | B: Back")
+        .color(HINT)
+        .align(TextAlign::Center);
     });
 
     if apply {
@@ -223,6 +226,9 @@ impl PauseScene {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The colour of the control hints
+const HINT: Color = Color::rgb(150, 150, 150);
 
 /// A button variant with the given fills for its normal, hovered and
 /// pressed states

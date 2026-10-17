@@ -492,7 +492,9 @@ impl SceneManager {
   }
 
   /// Run `Scene::ui` for the visible scenes, bottom-up. Returns the top
-  /// scene's action.
+  /// scene's action, except a scene change while a transition runs: the
+  /// UI still draws during a fade, and a second click there would restart
+  /// the transition with a new change, so only `Quit` gets through.
   pub fn ui_pass(
     &mut self,
     world: &mut World,
@@ -527,6 +529,9 @@ impl SceneManager {
       }
     }
     ui.restore_mouse_occluded(occluded);
+    if self.is_transitioning() && !matches!(action, SceneAction::Continue | SceneAction::Quit) {
+      return SceneAction::Continue;
+    }
     action
   }
 

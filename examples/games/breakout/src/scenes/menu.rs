@@ -15,6 +15,9 @@ pub struct MenuScene {
   high_score: u32,
   /// Background music
   music: Option<MusicHandle>,
+  /// The game is starting: the menu still shows while it fades out, and a
+  /// second press then must not play the intro again
+  starting: bool,
 }
 
 impl MenuScene {
@@ -23,12 +26,17 @@ impl MenuScene {
     Self {
       high_score: load_high_score(),
       music: None,
+      starting: false,
     }
   }
 
   /// Play the intro and switch to the game, handing it the music to
   /// crossfade
   fn start_game(&mut self, ctx: &mut SceneContext) -> SceneAction {
+    if self.starting {
+      return SceneAction::Continue;
+    }
+    self.starting = true;
     let _ = ctx
       .audio
       .play_sound_with("intro_sfx", SoundOptions::new().volume(0.5));

@@ -40,6 +40,16 @@ enum ContainerKind {
   Modal,
 }
 
+/// What a container draws under its contents
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Backing {
+  None,
+  /// The panel look
+  Panel,
+  /// The panel look, opaque: a modal's dialog
+  Dialog,
+}
+
 /// Separates a modal's dim from its dialog
 const DIM_SALT: u64 = 0x0064_696d;
 
@@ -132,11 +142,15 @@ impl<'a> UiContext<'a> {
     modal
   }
 
-  /// Draw the theme's panel look on `node`
-  pub(crate) fn panel_fill(&mut self, node: usize) {
-    let look = self
+  /// Draw the theme's panel look on `node`; a dialog's with its fill made
+  /// opaque, so the page under a modal does not show through it
+  pub(crate) fn panel_fill(&mut self, node: usize, dialog: bool) {
+    let mut look = self
       .theme()
       .look(WidgetKind::Panel, None, WidgetState::Normal);
+    if dialog {
+      look.fill = look.fill.with_alpha(255);
+    }
     self.push_look_box(node, &look);
   }
 }
@@ -345,15 +359,11 @@ impl<'u, 'a> Container<'u, 'a> {
       accepts: drag.accepts,
     };
     let mut response = match kind {
-      ContainerKind::Plain | ContainerKind::Panel => Self::record(
-        ui,
-        (id, style, at, record),
-        kind == ContainerKind::Panel,
-        contents,
-      ),
+      ContainerKind::Plain => Self::record(ui, (id, style, at, record), Backing::None, contents),
+      ContainerKind::Panel => Self::record(ui, (id, style, at, record), Backing::Panel, contents),
       ContainerKind::Popup(anchor) => {
         ui.begin_popup(anchor, false);
-        let response = Self::record(ui, (id, style, at, record), true, contents);
+        let response = Self::record(ui, (id, style, at, record), Backing::Panel, contents);
         ui.end_popup();
         response
       }
@@ -379,7 +389,7 @@ impl<'u, 'a> Container<'u, 'a> {
             border: None,
           },
         );
-        let response = Self::record(ui, (id, style, at, record), true, contents);
+        let response = Self::record(ui, (id, style, at, record), Backing::Dialog, contents);
         ui.close_node(dim);
         ui.end_popup();
         response
@@ -389,17 +399,19 @@ impl<'u, 'a> Container<'u, 'a> {
     response
   }
 
-  /// Record the container's node (with the panel look when `panel`) and
-  /// `contents` inside it
+  /// Record the container's node (drawing its `backing`) and `contents`
+  /// inside it
   fn record(
     ui: &mut UiContext<'a>,
     (id, style, at, record): (UiId, UiStyle, Option<Rect>, RecordSpec),
-    panel: bool,
+    backing: Backing,
     contents: impl FnOnce(&mut UiContext<'a>),
   ) -> Response {
     let node = ui.open_node_with(id, style, at, record);
-    if panel {
-      ui.panel_fill(node);
+    match backing {
+      Backing::None => {}
+      Backing::Panel => ui.panel_fill(node, false),
+      Backing::Dialog => ui.panel_fill(node, true),
     }
     ui.memory.scopes.push(id);
     contents(ui);

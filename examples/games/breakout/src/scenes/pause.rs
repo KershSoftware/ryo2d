@@ -93,6 +93,13 @@ impl Scene for PauseScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    // Start, which paused the game on a pad, resumes it
+    if ctx
+      .input
+      .gamepad_button_pressed_and_consume(GamepadButton::Start)
+    {
+      return self.resume();
+    }
     // Q is a keyboard shortcut back to the menu
     if ctx.input.key_pressed_and_consume(KeyCode::KeyQ) {
       return self.quit_to_menu();

@@ -63,8 +63,8 @@ impl<'a> UiContext<'a> {
     self.modal_panel(Location::caller())
   }
 
-  /// A yes/no modal: `title`, `message` and Yes and No buttons, No focused
-  /// first. `Some(true)` or `Some(false)` when one is chosen, `Some(false)`
+  /// A yes/no modal: `title`, `message` (left out when empty) and Yes and
+  /// No buttons, No focused first.`Some(true)` or `Some(false)` when one is chosen, `Some(false)`
   /// on Back, `None` otherwise. The game shows it while it waits for an
   /// answer.
   ///
@@ -96,7 +96,10 @@ impl<'a> UiContext<'a> {
     let key = (title, message, yes, no);
     self.modal().id(key).gap(gap).show(|ui| {
       ui.text(title).style(&heading);
-      ui.text(message).style(&body).wrap(MESSAGE_WIDTH);
+      // No message, no empty line: the buttons sit under the title
+      if !message.is_empty() {
+        ui.text(message).style(&body).wrap(MESSAGE_WIDTH);
+      }
       ui.row().gap(gap).justify(Justify::End).show(|ui| {
         if ui.button(yes).clicked() {
           answer = Some(true);
@@ -277,6 +280,74 @@ mod tests {
     assert!(
       (cx - 150.0).abs() < 1.0 && (cy - 100.0).abs() < 1.0,
       "centred: {dialog:?}"
+    );
+  }
+
+  #[test]
+  fn a_modal_s_dialog_is_opaque_over_a_translucent_panel_look() {
+    use crate::core::ui::immediate::UiCommand;
+    let mut d = UiDriver::new((300.0, 200.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      ui.modal().show(|ui| {
+        ui.button("Close").show();
+      })
+    };
+    d.frame(draw);
+    let dialog = d.frame(draw).rect;
+    let near = |a: Rect, b: Rect| {
+      [a.x - b.x, a.y - b.y, a.width - b.width, a.height - b.height]
+        .iter()
+        .all(|v| v.abs() < 0.5)
+    };
+    let fill = d.commands.iter().find_map(|(_, c)| match c {
+      UiCommand::Rect {
+        rect, fill, layer, ..
+      } if *layer == 1 && near(*rect, dialog) => Some(*fill),
+      _ => None,
+    });
+    let page_panel = d.frame(|ui| ui.theme().widgets.panel.normal.fill);
+    assert!(page_panel.a < 255, "the dark theme's panel is translucent");
+    assert_eq!(
+      fill.map(|f| f.a),
+      Some(255),
+      "the dialog {dialog:?}: {fill:?}"
+    );
+  }
+
+  /// The height of the dialog of a confirm with `message`: the tallest
+  /// popup-layer rect but the dim
+  fn confirm_height(message: &str) -> f32 {
+    use crate::core::ui::immediate::UiCommand;
+    let mut d = UiDriver::new((400.0, 300.0));
+    for _ in 0..2 {
+      d.frame(|ui| ui.confirm("Quit?", message));
+    }
+    d.commands
+      .iter()
+      .filter_map(|(_, c)| match c {
+        UiCommand::Rect { rect, layer, .. } if *layer == 1 && rect.width < 400.0 => {
+          Some(rect.height)
+        }
+        _ => None,
+      })
+      .fold(0.0, f32::max)
+  }
+
+  #[test]
+  fn a_confirm_with_no_message_has_its_buttons_under_the_title() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let (line, gap) = d.frame(|ui| {
+      let theme = ui.theme_arc();
+      (
+        ui.line_height(&theme.text.body.style()),
+        theme.metrics.spacing,
+      )
+    });
+    let with = confirm_height("Unsaved progress is lost.");
+    let without = confirm_height("");
+    assert!(
+      with - without > line + gap - 1.0,
+      "an empty message takes no line: {with} with a message, {without} without (line {line}, gap {gap})"
     );
   }
 

@@ -704,3 +704,67 @@ fn pad_and_wheel_helpers_reach_input() {
     "a tap is released after one step"
   );
 }
+
+/// A menu whose button switches, with a fade, to a scene that records which
+/// click asked for it
+struct FadingMenu {
+  clicks: u32,
+  entered: std::rc::Rc<std::cell::Cell<u32>>,
+}
+
+/// Records, when it enters, which click of the menu made it
+struct Entered {
+  click: u32,
+  entered: std::rc::Rc<std::cell::Cell<u32>>,
+}
+
+impl Scene for FadingMenu {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    if ui
+      .button("Go")
+      .at(Rect::new(10.0, 10.0, 60.0, 30.0))
+      .clicked()
+    {
+      self.clicks += 1;
+      return SceneAction::SwitchWith(
+        Box::new(Entered {
+          click: self.clicks,
+          entered: self.entered.clone(),
+        }),
+        Transition::fade(std::time::Duration::from_millis(300)),
+      );
+    }
+    SceneAction::Continue
+  }
+}
+
+impl Scene for Entered {
+  fn on_enter(&mut self, _ctx: &mut SceneContext) {
+    self.entered.set(self.click);
+  }
+}
+
+#[test]
+fn a_click_during_a_fade_starts_no_second_switch() {
+  let entered = std::rc::Rc::new(std::cell::Cell::new(0));
+  let Some(mut engine) = engine(FadingMenu {
+    clicks: 0,
+    entered: entered.clone(),
+  }) else {
+    return;
+  };
+  let click = |engine: &mut HeadlessEngine| {
+    engine.mouse_move(40.0, 25.0);
+    engine.press_mouse(MouseButton::Left);
+    engine.step().unwrap();
+    engine.release_mouse(MouseButton::Left);
+    engine.step().unwrap();
+  };
+  engine.step_frames(2).unwrap();
+  // The switch starts: 300 ms fading out (18 frames at 60 Hz), then in
+  click(&mut engine);
+  // Clicked again while it fades out and the menu still shows
+  click(&mut engine);
+  engine.step_frames(60).unwrap();
+  assert_eq!(entered.get(), 1, "the first click's switch, not a second");
+}
