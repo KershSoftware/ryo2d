@@ -334,9 +334,9 @@ impl SceneContext<'_> {
   }
 
   /// Keep the cursor inside the window. macOS cannot confine a cursor, so
-  /// there the engine locks it and moves it itself from the raw mouse
-  /// motion, clamped to the window; it lets go while the window is not
-  /// focused. The web cannot confine at all: the engine warns instead.
+  /// there it moves as usual and is warped back in when it leaves the window
+  /// (while the window has focus). The web cannot confine at all: the
+  /// engine warns instead.
   pub fn set_cursor_confined(&mut self, confined: bool) {
     self.cursor().confined = Some(confined);
   }

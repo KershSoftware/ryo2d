@@ -280,13 +280,11 @@ pub struct Engine {
   last_scene_entries: u64,
   /// A slow frame's warning, held until the window is known to have stayed up
   slow_frame: slow_frame::SlowFrameHold,
-  /// macOS has no confined grab: the cursor is locked and moved by hand
-  /// from raw motion, and this is where it is, in physical window pixels
-  /// (`None` when not confining that way)
-  confine_emulation: Option<(f64, f64)>,
+  /// macOS has no confined grab: the cursor is confined by warping it back
+  /// when it leaves the window
+  confine_by_warp: bool,
   /// The cursor's last position over the window, in physical pixels: where
-  /// an emulated confinement starts
-  #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+  /// a cursor confined by warping goes back to
   last_cursor_position: (f64, f64),
   surface_needs_reconfigure: bool,
   scale_factor: f64,
@@ -677,7 +675,7 @@ impl Engine {
       frames_run: 0,
       last_scene_entries: 0,
       slow_frame: slow_frame::SlowFrameHold::default(),
-      confine_emulation: None,
+      confine_by_warp: false,
       last_cursor_position: (0.0, 0.0),
       surface_needs_reconfigure: false,
       scale_factor: 1.0,
