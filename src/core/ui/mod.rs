@@ -86,7 +86,7 @@ pub use response::{Response, Sense};
 pub use types::{Anchor, Color, Rect};
 pub use widgets::{
   Button, Checkbox, ChoiceList, Custom, Dropdown, Image, Modal, Painter, Progress, Radio, Scroll,
-  Slider, Tabs, TextInput, Toggle,
+  Slider, Slot, Tabs, TextInput, Toggle,
 };
 
 // Re-export immediate mode API (stateless per-frame drawing)

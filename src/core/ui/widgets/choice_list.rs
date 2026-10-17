@@ -6,10 +6,12 @@ use std::panic::Location;
 use winit::keyboard::KeyCode;
 
 use super::common::{WidgetOpts, widget_builders};
+use crate::core::render::batch::Filter;
 use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Flow, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::theme::WidgetKind;
+use crate::core::ui::tree::RecordSpec;
 
 /// Room between choices
 const GAP: f32 = 2.0;
@@ -103,7 +105,11 @@ impl ChoiceList<'_, '_> {
       gap: GAP,
       ..self.opts.style.clone()
     };
-    let node = ui.open_node(id, style, self.opts.at, Flags::FOCUS_SCOPE);
+    let record = RecordSpec {
+      accepts: self.opts.drag.accepts,
+      ..RecordSpec::flags(Flags::FOCUS_SCOPE | self.opts.drag.flags())
+    };
+    let node = ui.open_node_with(id, style, self.opts.at, record);
     ui.memory.scopes.push(id);
     let first = if self.first < self.options.len() {
       self.first
@@ -132,7 +138,13 @@ impl ChoiceList<'_, '_> {
       }
     }
     ui.memory.scopes.pop();
-    ui.close_node(node);
+    let mut response = ui.close_node(node);
+    ui.drag_tick(
+      &mut response,
+      &self.opts.drag,
+      disabled,
+      (None, Filter::Default),
+    );
     Some(picked)
   }
 }

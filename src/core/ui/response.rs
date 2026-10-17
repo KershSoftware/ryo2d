@@ -1,6 +1,9 @@
 //! What a widget or container reports back when it is shown, and what a
 //! widget senses of the pointer
 
+use std::any::{Any, TypeId};
+use std::sync::Arc;
+
 use glam::Vec2;
 
 use super::{Rect, UiId};
@@ -31,6 +34,11 @@ pub struct Response {
   pub(crate) states: u16,
   pub(crate) drag_delta: Vec2,
   pub(crate) pointer: Option<Vec2>,
+  /// The payload dropped on it this frame (a drop target)
+  pub(crate) dropped: Option<Arc<dyn Any + Send + Sync>>,
+  /// The type of the payload being dragged over it now (a drop target the
+  /// pointer or the pad's focus is on)
+  pub(crate) drag_over: Option<TypeId>,
 }
 
 impl Response {
@@ -47,6 +55,7 @@ impl Response {
   pub(crate) const GAINED_FOCUS: u16 = 1 << 10;
   pub(crate) const LOST_FOCUS: u16 = 1 << 11;
   pub(crate) const SUBMITTED: u16 = 1 << 12;
+  pub(crate) const DRAG_STARTED_HERE: u16 = 1 << 13;
 
   fn is(&self, state: u16) -> bool {
     self.states & state != 0
@@ -129,6 +138,32 @@ impl Response {
   /// The pointer in UI units while this widget is hot or active
   pub fn pointer(&self) -> Option<Vec2> {
     self.pointer
+  }
+
+  /// The payload dropped on this drop target this frame, when it is a `T`:
+  /// released over it by the mouse, or put down on it with Confirm. What a
+  /// drop means (a move, a swap, a merge) is the game's to decide.
+  ///
+  /// ```ignore
+  /// if let Some(from) = ui.slot().drop_target::<usize>().show().dropped::<usize>() {
+  ///     self.bag.swap(from, here);
+  /// }
+  /// ```
+  pub fn dropped<T: Clone + 'static>(&self) -> Option<T> {
+    let payload: &(dyn Any + Send + Sync) = self.dropped.as_deref()?;
+    payload.downcast_ref::<T>().cloned()
+  }
+
+  /// A payload of type `T` is being dragged over this drop target now:
+  /// under the pointer, or on it with the pad's focus
+  pub fn drag_hover<T: 'static>(&self) -> bool {
+    self.drag_over == Some(TypeId::of::<T>())
+  }
+
+  /// This drag source's payload was picked up this frame: dragged past the
+  /// drag threshold, or Confirm on the pad (which is then not a click)
+  pub fn drag_started_here(&self) -> bool {
+    self.is(Self::DRAG_STARTED_HERE)
   }
 
   /// Its value changed this frame

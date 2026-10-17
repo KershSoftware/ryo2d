@@ -13,7 +13,7 @@ use crate::core::ui::layout::{Align, Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, warn_once};
-use crate::core::ui::tree::{DrawKind, Node, RecordSpec, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
 
 /// The track's thickness inside the slider's node
 const TRACK: f32 = 6.0;
@@ -109,7 +109,7 @@ impl Slider<'_, '_> {
     } else {
       (None, ui.memory.scopes.make(site, self.opts.key))
     };
-    let mut response = ui.response(id, Sense::click_and_drag(), disabled);
+    let mut response = ui.widget_response(id, Sense::click_and_drag(), &self.opts);
 
     // The value: repaired, then moved by the pointer or the keys
     if !self.value.is_finite() {
@@ -228,12 +228,11 @@ impl Slider<'_, '_> {
       self.opts.style.clone()
     };
     let mut node = Node::new(id, style, Measure::Fixed(Vec2::new(size[0], size[1])));
-    node.record = Some(RecordSpec {
-      flags: self
+    node.record = Some(
+      self
         .opts
-        .flags(Flags::CLICK | Flags::DRAG | Flags::TAKES_HORIZONTAL, true),
-      nav: self.opts.nav,
-    });
+        .record(Flags::CLICK | Flags::DRAG | Flags::TAKES_HORIZONTAL, true),
+    );
     ui.push_node(node, if in_row { None } else { self.opts.at })
   }
 }

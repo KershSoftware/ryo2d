@@ -1,6 +1,9 @@
 //! The pointer resolve: once per engine frame, before any scene's `ui`, the
 //! pointer is hit-tested against last frame's laid-out records
 
+use std::any::TypeId;
+use std::sync::Arc;
+
 use glam::Vec2;
 
 use super::memory::{Flags, Record, UiMemory};
@@ -55,13 +58,25 @@ pub(crate) fn resolve_pointer(
   let over_ui = hit.over_ui;
 
   // Worked on as a copy, so last frame's records stay readable
-  let mut i = memory.interact;
+  let mut i = memory.interact.clone();
   // One-frame results last until the next resolve
   i.clicked = UiId::NONE;
   i.secondary = UiId::NONE;
   i.double = UiId::NONE;
   i.drag_started = UiId::NONE;
   i.drag_released = UiId::NONE;
+  i.dropped = None;
+  i.drop_hover = UiId::NONE;
+  // A payload whose source is gone, or not in the top scene, is dropped
+  // nowhere: nothing is left holding it
+  let orphaned = i.drag.as_ref().is_some_and(|drag| {
+    memory
+      .prev(drag.source)
+      .is_none_or(|source| Some(source.scene) != top_scene)
+  });
+  if orphaned {
+    i.drag = None;
+  }
   i.prev_pointer = i.pointer;
   i.pointer = position;
   i.hot = hot;
@@ -126,8 +141,63 @@ pub(crate) fn resolve_pointer(
     i.active = UiId::NONE;
     i.dragging = false;
   }
+
+  // A mouse drag ends when the left button is released: on the drop target
+  // under the pointer that takes its payload, or on nothing
+  if let Some(drag) = i.drag.as_ref().filter(|drag| !drag.pad) {
+    let target = match top_scene {
+      Some(scene) if !blocked => drop_target_at(memory, position, scene, drag.type_id),
+      _ => UiId::NONE,
+    };
+    if pointer.released[0] {
+      if target != UiId::NONE {
+        i.dropped = Some((target, Arc::clone(&drag.payload)));
+      }
+      i.drag = None;
+    } else if !pointer.down[0] {
+      // The release was missed
+      i.drag = None;
+    } else {
+      i.drop_hover = target;
+    }
+  }
   memory.interact = i;
   outcome
+}
+
+/// The drop target for a payload of `type_id` under `at`, among `scene`'s
+/// records from last frame (`NONE` when there is none): the topmost record
+/// inside its clip that takes the type (`DROP_TARGET`, enabled), unless a
+/// blocking record that does not take it lies over it there (a modal's dim,
+/// a panel over it). A widget over a target that is not one itself (a label
+/// or button in a target panel) lets the drop through to it.
+fn drop_target_at(memory: &UiMemory, at: Vec2, scene: u64, type_id: TypeId) -> UiId {
+  let takes = Flags::CLICK | Flags::DRAG | Flags::BLOCKING | Flags::SCROLLABLE | Flags::DROP_TARGET;
+  // Depth and id only break ties, as in the hit test
+  let mut target: Option<(u8, u32, u16, UiId)> = None;
+  let mut blocker: Option<(u8, u32, u16, UiId)> = None;
+  for (id, r) in memory.prev_records() {
+    let under = r.scene == scene
+      && r.flags.intersects(takes)
+      && r.rect.contains(at.x, at.y)
+      && r.clip.is_none_or(|clip| clip.contains(at.x, at.y));
+    if !under {
+      continue;
+    }
+    let key = (r.layer, r.order, r.depth, id);
+    let accepts = r.flags.contains(Flags::DROP_TARGET)
+      && !r.flags.contains(Flags::DISABLED)
+      && r.accepts == Some(type_id);
+    if accepts {
+      target = target.max(Some(key));
+    } else if r.flags.contains(Flags::BLOCKING) {
+      blocker = blocker.max(Some(key));
+    }
+  }
+  match target {
+    Some(key) if blocker.is_none_or(|above| key > above) => key.3,
+    _ => UiId::NONE,
+  }
 }
 
 /// Give the frame's wheel (`wheel`, in lines, +y up) to the scroll areas of
@@ -324,6 +394,7 @@ mod tests {
       scroll: UiId::NONE,
       content: Vec2::ZERO,
       nav: [UiId::NONE; 4],
+      accepts: None,
     }
   }
 

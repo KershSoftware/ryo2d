@@ -12,7 +12,7 @@ use crate::core::ui::layout::{Align, Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::WidgetKind;
-use crate::core::ui::tree::{DrawKind, Node, RecordSpec, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
 
 /// The mark at the row's start
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,7 @@ impl UiContext<'_> {
     let MarkRow { kind, mark, label } = spec;
     let id = self.memory.scopes.make(site, opts.key);
     let disabled = opts.disabled;
-    let mut response = self.response(id, Sense::click(), disabled);
+    let mut response = self.widget_response(id, Sense::click(), opts);
     let (on, changed) = apply(response.clicked());
     if changed {
       response.mark_changed();
@@ -74,10 +74,7 @@ impl UiContext<'_> {
       ..opts.style.clone()
     };
     let mut row = Node::new(id, style, Measure::None);
-    row.record = Some(RecordSpec {
-      flags: opts.flags(Flags::CLICK, true),
-      nav: opts.nav,
-    });
+    row.record = Some(opts.record(Flags::CLICK, true));
     let row = self.push_node(row, opts.at);
     self.memory.scopes.push(id);
 

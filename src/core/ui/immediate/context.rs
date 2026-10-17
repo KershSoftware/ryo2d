@@ -501,8 +501,9 @@ impl<'a> UiContext<'a> {
   }
 
   /// End a scene's UI: its popups are drawn over its page, then its tooltip
-  /// over them. A container or popup still open (its contents panicked, or
-  /// a builder was leaked half way) is laid out as it is, warned once.
+  /// over them, then the ghost of a payload being dragged from it. A
+  /// container or popup still open (its contents panicked, or a builder was
+  /// leaked half way) is laid out as it is, warned once.
   pub(crate) fn end_scene(&mut self) {
     let left_open = self.in_popup() || self.subtree.is_some();
     while self.in_popup() {
@@ -517,6 +518,7 @@ impl<'a> UiContext<'a> {
     }
     self.flush_popups();
     self.flush_tooltip();
+    self.flush_ghost();
     self.memory.scopes.enter_root(UiId::root(self.scene));
   }
 
@@ -798,11 +800,20 @@ impl<'a> UiContext<'a> {
     at: Option<Rect>,
     flags: Flags,
   ) -> usize {
+    self.open_node_with(id, style, at, RecordSpec::flags(flags))
+  }
+
+  /// [`open_node`](Self::open_node) with the whole of its record (a drop
+  /// target's accepted type too)
+  pub(crate) fn open_node_with(
+    &mut self,
+    id: UiId,
+    style: UiStyle,
+    at: Option<Rect>,
+    record: RecordSpec,
+  ) -> usize {
     let mut node = Node::new(id, style, Measure::None);
-    node.record = Some(RecordSpec {
-      flags,
-      nav: [UiId::NONE; 4],
-    });
+    node.record = Some(record);
     self.push_node(node, at)
   }
 

@@ -12,7 +12,7 @@ use crate::core::ui::immediate::{UiCommand, UiContext, text_seed};
 use crate::core::ui::layout::{Length, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
-use crate::core::ui::tree::{DrawKind, Node, RecordSpec};
+use crate::core::ui::tree::{DrawKind, Node};
 use crate::core::ui::{Color, Rect};
 
 /// A custom widget being set up: a box of its own size that the game
@@ -80,8 +80,7 @@ impl Custom<'_, '_> {
   fn run(&mut self, paint: Option<impl FnOnce(&mut Painter<'_>, &Response)>) -> Option<Response> {
     let ui = self.ui.take()?;
     let id = ui.memory.scopes.make(self.site, self.opts.key);
-    let disabled = self.opts.disabled;
-    let mut response = ui.response(id, self.sense, disabled);
+    let mut response = ui.widget_response(id, self.sense, &self.opts);
 
     let style = self.opts.style.clone();
     // The size it paints at: its own, its `at` rect's, or, when its style
@@ -116,10 +115,7 @@ impl Custom<'_, '_> {
     }
     // Focusable only when asked
     let mut node = Node::new(id, style, Measure::Fixed(self.size));
-    node.record = Some(RecordSpec {
-      flags: self.opts.flags(flags, false),
-      nav: self.opts.nav,
-    });
+    node.record = Some(self.opts.record(flags, false));
     let index = ui.push_node(node, self.opts.at);
     if let Some(paint) = paint {
       let scale = ui.ui_scale();

@@ -12,8 +12,10 @@ use super::layout::{Align, Edges, Flow, Justify, Length, Tracks, UiStyle};
 use super::memory::Flags;
 use super::response::Response;
 use super::theme::{WidgetKind, WidgetState};
-use super::tree::DrawKind;
+use super::tree::{DrawKind, RecordSpec};
+use super::widgets::drag::{DragOpts, drag_builders};
 use super::{Anchor, Rect, UiId};
+use crate::core::render::batch::Filter;
 
 /// A container being set up: `.show(|ui| ..)` lays its contents out
 #[must_use = "call .show(|ui| ..) to draw the container"]
@@ -25,6 +27,7 @@ pub struct Container<'u, 'a> {
   key: Option<u64>,
   flags: Flags,
   at: Option<Rect>,
+  drag: DragOpts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -151,6 +154,7 @@ impl<'u, 'a> Container<'u, 'a> {
       key: None,
       flags: Flags::default(),
       at: None,
+      drag: DragOpts::default(),
     }
   }
 
@@ -317,6 +321,8 @@ impl<'u, 'a> Container<'u, 'a> {
     self
   }
 
+  drag_builders!(drag);
+
   /// Draw the container with `contents` inside. A top-level container is
   /// laid out when this returns; its response has this frame's rect. A
   /// popup or modal is drawn when the scene's UI ends; its response has
@@ -330,18 +336,24 @@ impl<'u, 'a> Container<'u, 'a> {
       key,
       flags,
       at,
+      drag,
     } = self;
     let id = ui.memory.scopes.make(site, key);
-    match kind {
+    let record = RecordSpec {
+      flags: flags | drag.flags(),
+      nav: [UiId::NONE; 4],
+      accepts: drag.accepts,
+    };
+    let mut response = match kind {
       ContainerKind::Plain | ContainerKind::Panel => Self::record(
         ui,
-        (id, style, at, flags),
+        (id, style, at, record),
         kind == ContainerKind::Panel,
         contents,
       ),
       ContainerKind::Popup(anchor) => {
         ui.begin_popup(anchor, false);
-        let response = Self::record(ui, (id, style, at, flags), true, contents);
+        let response = Self::record(ui, (id, style, at, record), true, contents);
         ui.end_popup();
         response
       }
@@ -367,23 +379,25 @@ impl<'u, 'a> Container<'u, 'a> {
             border: None,
           },
         );
-        let response = Self::record(ui, (id, style, at, flags), true, contents);
+        let response = Self::record(ui, (id, style, at, record), true, contents);
         ui.close_node(dim);
         ui.end_popup();
         response
       }
-    }
+    };
+    ui.drag_tick(&mut response, &drag, false, (None, Filter::Default));
+    response
   }
 
   /// Record the container's node (with the panel look when `panel`) and
   /// `contents` inside it
   fn record(
     ui: &mut UiContext<'a>,
-    (id, style, at, flags): (UiId, UiStyle, Option<Rect>, Flags),
+    (id, style, at, record): (UiId, UiStyle, Option<Rect>, RecordSpec),
     panel: bool,
     contents: impl FnOnce(&mut UiContext<'a>),
   ) -> Response {
-    let node = ui.open_node(id, style, at, flags);
+    let node = ui.open_node_with(id, style, at, record);
     if panel {
       ui.panel_fill(node);
     }

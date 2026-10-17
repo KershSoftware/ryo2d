@@ -14,7 +14,7 @@ use crate::core::ui::layout::{Edges, Flow, Length, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, WidgetState};
-use crate::core::ui::tree::{DrawKind, Node, RecordSpec};
+use crate::core::ui::tree::{DrawKind, Node};
 use crate::core::ui::{Color, Rect};
 
 /// The caret's width in UI units
@@ -97,7 +97,7 @@ impl TextInput<'_, '_> {
     let ui = self.ui.take()?;
     let id = ui.memory.scopes.make(self.site, self.opts.key);
     let disabled = self.opts.disabled;
-    let mut response = ui.response(id, Sense::click_and_drag(), disabled);
+    let mut response = ui.widget_response(id, Sense::click_and_drag(), &self.opts);
     let (scene, _) = ui.scene();
     let theme = ui.theme_arc();
     let sizes = &theme.metrics.sizes;
@@ -208,10 +208,7 @@ impl TextInput<'_, '_> {
       },
       Measure::None,
     );
-    node.record = Some(RecordSpec {
-      flags: self.opts.flags(flags, true),
-      nav: self.opts.nav,
-    });
+    node.record = Some(self.opts.record(flags, true));
     let field = ui.push_node(node, self.opts.at);
     ui.push_look_box(field, &look);
 

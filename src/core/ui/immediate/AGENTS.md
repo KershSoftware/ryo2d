@@ -35,7 +35,7 @@ ui.pop_clip();        // depth 0 (no clipping)
 ## Popups and Layers
 
 - Every command has a draw layer; layers order before the recorded order (`ui_z`, which clamps layers to 127). The scene's page is `PAGE_LAYER` (0).
-- Popups (open dropdown lists, `ui.popup`, modals) and tooltips record on `POPUP_LAYER` (1): `end_scene`, which `SceneManager::ui_pass` runs after each scene's `ui`, lays the scene's popups out after its page (`src/core/ui/AGENTS.md`, Popups and dialogs), so a scene never flushes them.
+- Popups (open dropdown lists, `ui.popup`, modals), tooltips and the drag ghost record on `POPUP_LAYER` (1): `end_scene`, which `SceneManager::ui_pass` runs after each scene's `ui`, lays the scene's popups out after its page (`src/core/ui/AGENTS.md`, Popups and dialogs), so a scene never flushes them.
 - Only the top scene's popups use layer 1. A lower scene's stay on layer 0, right after its own page, so the scenes above still cover them. The overlays and the console draw after the scenes on `OVERLAY_LAYER` (2), above every popup: `Engine::draw_ui` switches to it with the crate-internal `UiContext::set_layer`.
 
 ## Sprites and Shapes

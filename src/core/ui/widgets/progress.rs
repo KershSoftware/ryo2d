@@ -11,7 +11,7 @@ use crate::core::ui::layout::{Edges, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, WidgetState};
-use crate::core::ui::tree::{DrawKind, Node, RecordSpec, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
 
 /// A bar's size unless `.width()` and `.height()` say otherwise
 const SIZE: Vec2 = Vec2::new(160.0, 12.0);
@@ -64,7 +64,7 @@ impl Progress<'_, '_> {
     let ui = self.ui.take()?;
     let id = ui.memory.scopes.make(self.site, self.opts.key);
     let disabled = self.opts.disabled;
-    let mut response = ui.response(id, Sense::hover(), disabled);
+    let mut response = ui.widget_response(id, Sense::hover(), &self.opts);
     let state = if disabled {
       WidgetState::Disabled
     } else {
@@ -79,11 +79,8 @@ impl Progress<'_, '_> {
     };
 
     let mut node = Node::new(id, self.opts.style.clone(), Measure::Fixed(SIZE));
-    if self.opts.tooltip.is_some() {
-      node.record = Some(RecordSpec {
-        flags: self.opts.flags(Flags::HOVER, false),
-        nav: self.opts.nav,
-      });
+    if self.opts.tooltip.is_some() || self.opts.drag.is_set() {
+      node.record = Some(self.opts.record(Flags::HOVER, false));
     }
     let index = ui.push_node(node, self.opts.at);
     ui.push_draw(

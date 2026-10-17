@@ -486,7 +486,7 @@ pub(crate) fn resolve_focus(
   };
 
   // Worked on as a copy, so last frame's records stay readable
-  let mut i = memory.interact;
+  let mut i = memory.interact.clone();
   let old = i.focused;
   i.gained = UiId::NONE;
   i.lost = UiId::NONE;
@@ -656,18 +656,38 @@ pub(crate) fn resolve_focus(
     }
 
     // Confirm activates the focused widget; in a text field it is typing
-    // (a space, Enter's own submit), so it activates nothing but stays used
+    // (a space, Enter's own submit), so it activates nothing but stays used.
+    // While a payload is held it does nothing, but put a pad's down on a
+    // focused target that takes it (a drag source turns its activation into
+    // a pick-up itself).
     let typing = is_field(i.focused);
     if input.confirm && i.focused != UiId::NONE {
-      if !typing {
+      if let Some(drag) = i.drag.take() {
+        let takes = drag.pad
+          && nav.record(i.focused).is_some_and(|r| {
+            r.flags.contains(Flags::DROP_TARGET) && r.accepts == Some(drag.type_id)
+          });
+        if takes {
+          i.dropped = Some((i.focused, drag.payload));
+        } else {
+          i.drag = Some(drag);
+        }
+      } else if !typing {
         i.activated = i.focused;
       }
       outcome.used.push("ui.confirm");
     }
 
+    // Back is used when a payload is held (it cancels the drag) or the
+    // focused widget uses it; otherwise it is left for `ui.back()`
     let record = nav.record(i.focused);
+    let dragging = i.drag.is_some();
+    if input.back && dragging {
+      i.drag = None;
+    }
     i.back_pressed = input.back;
-    i.back_used = input.back && record.is_some_and(|r| r.flags.contains(Flags::USES_BACK));
+    i.back_used =
+      input.back && (dragging || record.is_some_and(|r| r.flags.contains(Flags::USES_BACK)));
     if i.back_used {
       outcome.used.push("ui.back");
     }
@@ -826,6 +846,7 @@ mod tests {
       scroll: UiId::NONE,
       content: Vec2::ZERO,
       nav: [UiId::NONE; 4],
+      accepts: None,
     }
   }
 

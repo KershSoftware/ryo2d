@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec2;
 
+use crate::core::render::batch::Filter;
 use crate::core::ui::id::key_hash;
 use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Edges, Flow, Length, Measure, UiStyle};
@@ -15,6 +16,7 @@ use crate::core::ui::memory::Flags;
 use crate::core::ui::response::Response;
 use crate::core::ui::theme::WidgetState;
 use crate::core::ui::tree::{DrawKind, Node, RecordSpec};
+use crate::core::ui::widgets::drag::{DragOpts, drag_builders};
 use crate::core::ui::{Anchor, Rect, UiId};
 
 /// A scroll offset that was not finite was warned about
@@ -216,6 +218,7 @@ pub struct Scroll<'u, 'a> {
   /// Scrolls sideways, down
   axes: [bool; 2],
   bar: bool,
+  drag: DragOpts,
 }
 
 impl<'a> UiContext<'a> {
@@ -241,6 +244,7 @@ impl<'a> UiContext<'a> {
       at: None,
       axes: [false, true],
       bar: true,
+      drag: DragOpts::default(),
     }
   }
 
@@ -408,6 +412,8 @@ impl Scroll<'_, '_> {
     self.key = Some(key_hash(&key));
     self
   }
+
+  drag_builders!(drag);
 }
 
 impl<'a> Scroll<'_, 'a> {
@@ -423,13 +429,15 @@ impl<'a> Scroll<'_, 'a> {
       at,
       axes,
       bar,
+      drag,
     } = self;
     let id = ui.memory.scopes.make(site, key);
     let (scene, _) = ui.scene();
     let dt = ui.dt();
     let theme = ui.theme_arc();
     let bar_width = theme.metrics.sizes.scrollbar;
-    let interact = ui.memory.interact;
+    let interact = &ui.memory.interact;
+    let (active, press_pos, pointer) = (interact.active, interact.press_pos, interact.pointer);
     let origin = ui.memory.prev(id).map(|r| Vec2::new(r.rect.x, r.rect.y));
     let mut scratch = ScrollState::default();
     let state = ui
@@ -439,10 +447,10 @@ impl<'a> Scroll<'_, 'a> {
     drag_bar(
       state,
       &bars(state, axes, bar, bar_width),
-      interact.active == id,
+      active == id,
       origin,
-      interact.press_pos,
-      interact.pointer,
+      press_pos,
+      pointer,
     );
     state.ease(dt, theme.metrics.scroll_smoothing);
     let shown = bars(state, axes, bar, bar_width);
@@ -455,8 +463,8 @@ impl<'a> Scroll<'_, 'a> {
     style.scroll_y = axes[1];
     let mut node = Node::new(id, style, Measure::None);
     node.record = Some(RecordSpec {
-      flags: Flags::SCROLLABLE | Flags::DRAG,
-      nav: [UiId::NONE; 4],
+      accepts: drag.accepts,
+      ..RecordSpec::flags(Flags::SCROLLABLE | Flags::DRAG | drag.flags())
     });
     node.clips = true;
     let index = ui.push_node(node, at);
@@ -464,7 +472,7 @@ impl<'a> Scroll<'_, 'a> {
     contents(ui);
     ui.memory.scopes.pop();
 
-    let local = origin.map(|o| interact.pointer - o);
+    let local = origin.map(|o| pointer - o);
     let looks = &theme.widgets.scroll;
     let thumb_width = (bar_width - 2.0 * THUMB_GAP).max(0.0);
     for bar in shown.iter().flatten() {
@@ -518,7 +526,9 @@ impl<'a> Scroll<'_, 'a> {
         },
       );
     }
-    ui.close_node(index)
+    let mut response = ui.close_node(index);
+    ui.drag_tick(&mut response, &drag, false, (None, Filter::Default));
+    response
   }
 }
 

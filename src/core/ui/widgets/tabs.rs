@@ -4,12 +4,13 @@
 use std::panic::Location;
 
 use super::common::{WidgetOpts, widget_builders};
+use crate::core::render::batch::Filter;
 use crate::core::ui::Length;
 use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Flow, UiStyle};
-use crate::core::ui::memory::Flags;
 use crate::core::ui::response::Response;
 use crate::core::ui::theme::WidgetKind;
+use crate::core::ui::tree::RecordSpec;
 
 /// The theme variant the selected tab is drawn in
 const SELECTED: &str = "selected";
@@ -85,7 +86,11 @@ impl Tabs<'_, '_> {
       flow: Flow::Row,
       ..self.opts.style.clone()
     };
-    let row = ui.open_node(id, style, self.opts.at, Flags::default());
+    let record = RecordSpec {
+      accepts: self.opts.drag.accepts,
+      ..RecordSpec::flags(self.opts.drag.flags())
+    };
+    let row = ui.open_node_with(id, style, self.opts.at, record);
     ui.memory.scopes.push(id);
     let mut clicked = None;
     for (i, label) in self.labels.iter().enumerate() {
@@ -115,6 +120,12 @@ impl Tabs<'_, '_> {
     }
     ui.memory.scopes.pop();
     let mut response = ui.close_node(row);
+    ui.drag_tick(
+      &mut response,
+      &self.opts.drag,
+      disabled,
+      (None, Filter::Default),
+    );
     if let Some(i) = clicked {
       *self.selected = i;
     }

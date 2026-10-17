@@ -13,7 +13,7 @@ use crate::core::ui::layout::{Edges, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, WidgetState};
-use crate::core::ui::tree::{DrawKind, Node, RecordSpec};
+use crate::core::ui::tree::{DrawKind, Node};
 
 /// An image being set up. It is drawn by [`show`](Self::show) or when it is
 /// dropped.
@@ -88,7 +88,7 @@ impl Image<'_, '_> {
     let ui = self.ui.take()?;
     let id = ui.memory.scopes.make(self.site, self.opts.key);
     let disabled = self.opts.disabled;
-    let mut response = ui.response(id, Sense::hover(), disabled);
+    let mut response = ui.widget_response(id, Sense::hover(), &self.opts);
     let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     let size = self
       .size
@@ -96,11 +96,8 @@ impl Image<'_, '_> {
       .unwrap_or_else(|| Vec2::new(self.sprite.width() as f32, self.sprite.height() as f32));
 
     let mut node = Node::new(id, self.opts.style.clone(), Measure::Fixed(size));
-    if self.opts.tooltip.is_some() {
-      node.record = Some(RecordSpec {
-        flags: self.opts.flags(Flags::HOVER, false),
-        nav: self.opts.nav,
-      });
+    if self.opts.tooltip.is_some() || self.opts.drag.is_set() {
+      node.record = Some(self.opts.record(Flags::HOVER, false));
     }
     let mut tint = self.tint;
     if disabled {

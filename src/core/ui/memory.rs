@@ -1,14 +1,16 @@
 //! What the UI remembers between frames: last frame's laid-out records (for
 //! hit testing and navigation), widgets' own state and per-scope focus
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::ops::{BitOr, BitOrAssign};
+use std::sync::Arc;
 
 use glam::Vec2;
 
 use super::id::{IdScopes, UiId};
 use super::types::Rect;
+use super::widgets::drag::DragState;
 use crate::core::input::Direction;
 
 /// What a widget senses and how navigation treats it
@@ -32,7 +34,7 @@ impl Flags {
   pub(crate) const TEXT_FIELD: Flags = Flags(1 << 13);
   pub(crate) const DEFAULT_FOCUS: Flags = Flags(1 << 14);
   pub(crate) const USES_BACK: Flags = Flags(1 << 15);
-  #[allow(dead_code)] // Used from Task 13 (drag and drop)
+  /// Carries a drag payload: Confirm picks it up rather than clicking it
   pub(crate) const DRAG_SOURCE: Flags = Flags(1 << 16);
   pub(crate) const NAV_SKIP: Flags = Flags(1 << 17);
   /// Reports hovering only: never hot, blocks nothing
@@ -84,11 +86,13 @@ pub(crate) struct Record {
   pub(crate) content: Vec2,
   /// Explicit Up, Down, Left, Right neighbours (`NONE`)
   pub(crate) nav: [UiId; 4],
+  /// A drop target: the payload type it takes (`None` otherwise)
+  pub(crate) accepts: Option<TypeId>,
 }
 
 /// The pointer's interaction, resolved once per engine frame against last
 /// frame's records (`interact::resolve_pointer`)
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Interaction {
   /// The topmost sensing widget under the pointer (`NONE`)
   pub(crate) hot: UiId,
@@ -156,6 +160,16 @@ pub(crate) struct Interaction {
   pub(crate) repeat: [Option<f32>; 4],
   /// The top scene the last focus resolve ran for
   pub(crate) nav_scene: Option<u64>,
+
+  // Drag and drop (`widgets/drag.rs`)
+  /// The payload being dragged, from its source's pick-up until it is
+  /// dropped or cancelled
+  pub(crate) drag: Option<DragState>,
+  /// This frame's drop: the target and the payload (cleared by the next
+  /// pointer resolve)
+  pub(crate) dropped: Option<(UiId, Arc<dyn Any + Send + Sync>)>,
+  /// The drop target a mouse drag would land on if released now (`NONE`)
+  pub(crate) drop_hover: UiId,
 }
 
 struct Slot {
@@ -338,6 +352,7 @@ mod tests {
       scroll: UiId::NONE,
       content: glam::Vec2::ZERO,
       nav: [UiId::NONE; 4],
+      accepts: None,
     }
   }
 

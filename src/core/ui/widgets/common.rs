@@ -1,10 +1,12 @@
 //! What every widget builder shares: its options and the builder methods
 //! that set them (`widget_builders!`)
 
+use super::drag::DragOpts;
 use crate::core::text::RichText;
 use crate::core::ui::layout::UiStyle;
 use crate::core::ui::memory::Flags;
 use crate::core::ui::theme::LookPatch;
+use crate::core::ui::tree::RecordSpec;
 use crate::core::ui::{Rect, UiId};
 
 /// A widget's shared options, set by the `widget_builders!` methods
@@ -32,13 +34,28 @@ pub(crate) struct WidgetOpts {
   pub(crate) look_patch: Option<LookPatch>,
   /// `.tooltip(text)`: shown after the pointer or focus rests on it
   pub(crate) tooltip: Option<RichText>,
+  /// `.drag_source(..)`, `.drop_target::<T>()`, `.drag_ghost(..)`
+  pub(crate) drag: DragOpts,
 }
 
 impl WidgetOpts {
+  /// The widget's record: `flags` with its options
+  /// ([`flags`](Self::flags)), its explicit neighbours and the payload type
+  /// it takes drops of
+  pub(crate) fn record(&self, flags: Flags, focusable: bool) -> RecordSpec {
+    RecordSpec {
+      flags: self.flags(flags, focusable),
+      nav: self.nav,
+      accepts: self.drag.accepts,
+    }
+  }
+
   /// `flags` with the focus options: `FOCUSABLE` when the widget takes
   /// focus (`focusable` by default for its kind, unless `.focusable(..)`
-  /// said otherwise), `DEFAULT_FOCUS`, `NAV_SKIP` and `DISABLED`
+  /// said otherwise), `DEFAULT_FOCUS`, `NAV_SKIP` and `DISABLED`, and its
+  /// drag and drop (`DRAG_SOURCE | DRAG`, `DROP_TARGET`)
   pub(crate) fn flags(&self, mut flags: Flags, focusable: bool) -> Flags {
+    flags |= self.drag.flags();
     if self.focusable.unwrap_or(focusable) {
       flags |= Flags::FOCUSABLE;
     }
@@ -60,8 +77,10 @@ impl WidgetOpts {
 /// `fill_width`, `margin`, `anchor`, `offset`, `grow`, `min_width`,
 /// `max_width`, and for focus `default_focus`, `nav_up`, `nav_down`,
 /// `nav_left`, `nav_right`, `nav_skip` and `focusable`, and for looks
-/// `variant` and `style`, and `tooltip`. A widget with type parameters passes
-/// them first: `widget_builders!([T: Copy] Radio<'_, '_, T>)`.
+/// `variant` and `style`, `tooltip`, and for drag and drop `drag_source`,
+/// `drop_target` and `drag_ghost` (`drag::drag_builders!`). A widget with
+/// type parameters passes them first:
+/// `widget_builders!([T: Copy] Radio<'_, '_, T>)`.
 macro_rules! widget_builders {
   ([$($generics:tt)*] $widget:ty) => {
     impl<$($generics)*> $widget {
@@ -210,6 +229,8 @@ macro_rules! widget_builders {
         self.opts.tooltip = Some(text.into());
         self
       }
+
+      $crate::core::ui::widgets::drag::drag_builders!(opts.drag);
     }
   };
   ($widget:ty) => {

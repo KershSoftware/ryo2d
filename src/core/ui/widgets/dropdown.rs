@@ -12,7 +12,7 @@ use crate::core::ui::layout::{Align, Edges, Flow, Justify, Length, Measure, UiSt
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{LookPatch, WidgetKind, WidgetState};
-use crate::core::ui::tree::{DrawKind, Node, RecordSpec, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
 use crate::core::ui::{Rect, UiId};
 
 /// Separates the list's id (the scope of its options) from the trigger's
@@ -90,7 +90,7 @@ impl Dropdown<'_, '_> {
       *self.selected = (*self.selected).min(last);
     }
     let before = *self.selected;
-    let mut response = ui.response(id, Sense::click(), disabled);
+    let mut response = ui.widget_response(id, Sense::click(), &self.opts);
 
     let was_open = ui
       .memory
@@ -204,15 +204,12 @@ impl Dropdown<'_, '_> {
     if self.opts.at.is_none() && style.height == Length::Fit {
       style.min_height = Some(sizes.button_min_height);
     }
-    let mut flags = self.opts.flags(Flags::CLICK, true);
+    let mut record = self.opts.record(Flags::CLICK, true);
     if open {
-      flags |= Flags::USES_BACK;
+      record.flags |= Flags::USES_BACK;
     }
     let mut row = Node::new(id, style, Measure::None);
-    row.record = Some(RecordSpec {
-      flags,
-      nav: self.opts.nav,
-    });
+    row.record = Some(record);
     let row = ui.push_node(row, self.opts.at);
     ui.push_look_box(row, &look);
     ui.memory.scopes.push(id);

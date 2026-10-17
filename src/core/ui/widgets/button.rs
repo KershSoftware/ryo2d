@@ -14,7 +14,7 @@ use crate::core::ui::layout::{Edges, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::WidgetKind;
-use crate::core::ui::tree::{DrawKind, Node, RecordSpec, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
 
 /// Room between an icon and the label
 const ICON_GAP: f32 = 6.0;
@@ -105,7 +105,7 @@ impl Button<'_, '_> {
     let ui = self.ui.take()?;
     let id = ui.memory.scopes.make(self.site, self.opts.key);
     let disabled = self.opts.disabled;
-    let mut response = ui.response(id, Sense::click(), disabled);
+    let mut response = ui.widget_response(id, Sense::click(), &self.opts);
 
     let state = ui.widget_state(&response, disabled);
     let look = ui.look_of(self.kind, &self.opts, state);
@@ -149,10 +149,7 @@ impl Button<'_, '_> {
     // The icon's room is padding: the label centres in what is left
     style_of_node.padding = Edges::new(left + icon_room, top, right, bottom);
     let mut node = Node::new(id, style_of_node, Measure::Fixed(size));
-    node.record = Some(RecordSpec {
-      flags: self.opts.flags(Flags::CLICK | self.flags, true),
-      nav: self.opts.nav,
-    });
+    node.record = Some(self.opts.record(Flags::CLICK | self.flags, true));
     let index = ui.push_node(node, self.opts.at);
 
     ui.push_look_box(index, &look);

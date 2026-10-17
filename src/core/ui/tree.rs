@@ -109,6 +109,19 @@ pub(crate) struct RecordSpec {
   pub(crate) flags: Flags,
   /// Explicit Up, Down, Left, Right neighbours (`NONE`)
   pub(crate) nav: [UiId; 4],
+  /// A drop target: the payload type it takes
+  pub(crate) accepts: Option<std::any::TypeId>,
+}
+
+impl RecordSpec {
+  /// A record of `flags` with no neighbours and no drops
+  pub(crate) fn flags(flags: Flags) -> RecordSpec {
+    RecordSpec {
+      flags,
+      nav: [UiId::NONE; 4],
+      accepts: None,
+    }
+  }
 }
 
 /// A text to measure and draw
@@ -382,6 +395,7 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
         scroll: node.scroll,
         content: resolved.content[i],
         nav: spec.nav,
+        accepts: spec.accepts,
       },
     );
   }
