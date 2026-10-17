@@ -2,7 +2,7 @@
 name: ryo-text
 description: "Text: fonts, styles, rich text and markup, inline icons, typewriter reveal and glyph effects, world text (Text2d) and the damage-number recipe."
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # Ryo2D Text Specialist
@@ -16,6 +16,7 @@ Text is drawn on the GPU, in the UI and in the world, with one text engine behin
 | A label, a score, a quick line in the default style | `ui.draw_text(text, x, y, color)` and its family (`draw_text_anchored`, `draw_text_centered`, `draw_text_wrapped`, `draw_text_wrapped_centered`, `label`) |
 | Any style, markup, wrapping, alignment, ellipsis, reveal, fade or opacity in the UI | `ui.text(..)...draw()` (`UiText`), or `ui.draw_text_styled(text, x, y, &style)` for a styled line |
 | Text that lives in the world (name tags, signs, damage numbers) | a `Text2d` component on an entity |
+| The key or button for an action ("Press [A] to jump") | `[prompt=jump]` in markup, `RichText::prompt("jump")`, or the `ui.prompt("jump")` widget (`ryo-ui`) |
 
 ```rust
 fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
@@ -167,7 +168,7 @@ let rich = RichText::new("Press ")
 let parsed = RichText::markup("Deal [b][color=#f44]20[/color][/b] damage[pause=0.4]!");
 ```
 
-- Builders: `new`, `plain(&str)`, `span(&str, Span)`, `icon(SpriteHandle)`, `icon_sized(SpriteHandle, Vec2)`, `icon_named(name)`, `pause(seconds)`, `markup(&str)`; read with `as_str()` (characters only) and `is_empty()`.
+- Builders: `new`, `plain(&str)`, `span(&str, Span)`, `icon(SpriteHandle)`, `icon_sized(SpriteHandle, Vec2)`, `icon_named(name)`, `pause(seconds)`, `prompt(action)`, `markup(&str)`; read with `as_str()` (characters only) and `is_empty()`.
 - `Span` overrides (all optional, unset keeps the base style): `color`, `size`, `font`, `weight`, `italic`, `outline`, `effect`. Constructors `Span::color(c)`, `size(s)`, `font(TextFont)`, `bold()`, `italic()`, `outline(width, color)`, `effect(name)`; chain with `with_color`, `with_size`, `with_font`, `with_weight`, `with_italic`, `with_outline`, `with_effect`.
 - Spans never overlap (`RichText` appends); a text uses a span's size and pixel face with the same snapping as a style.
 
@@ -183,6 +184,7 @@ let parsed = RichText::markup("Deal [b][color=#f44]20[/color][/b] damage[pause=0
 | `[outline=width,color]..[/outline]` | positive width, then a colour as above | outline |
 | `[icon=name]` | a `TextIcons` name | an inline icon; no closing tag |
 | `[pause=seconds]` | positive number | holds the typewriter; no closing tag |
+| `[prompt=action]` | an action name (`jump`, `ui.confirm`) | the key or button that triggers it on the player's last device; no closing tag |
 | `[name]..[/name]` or `[name=args]..[/name]` | anything | any other tag is an effect (`wave`, `shake`, `rainbow`, or one you registered) |
 | `[[` | | a literal `[` |
 
@@ -190,6 +192,20 @@ let parsed = RichText::markup("Deal [b][color=#f44]20[/color][/b] damage[pause=0
 - **Malformed markup is drawn as written and warned once per string; nothing panics.** That covers an unclosed tag, a close with no open, a bad or missing value (`[color=banana]`, `[size]`, `[b=1]`), a bad tag name, and a `[` with no `]`. Mis-nested tags still apply but warn.
 - Effect arguments are passed whole: `[wave=3,2]` gives the effect `args == "3,2"`.
 - **Put untrusted text inside markup with `RichText::escape(&str) -> Cow<str>`**, which doubles every `[`: a player named `xX[Sniper]Xx` would otherwise open a tag (and warn). `RichText::markup(&format!("[b]{}[/b] joined", RichText::escape(name)))` draws the name as written; text without a `[` is borrowed, not copied.
+
+### Prompts
+
+`[prompt=jump]` (or `RichText::prompt("jump")`) shows what triggers the action `jump` right now: the first keyboard or mouse binding while the player uses the keyboard or mouse, the first pad or stick binding on a gamepad (labelled for the pad's family: South is "A" on Xbox, "×" on PlayStation, "B" on Nintendo).
+
+```rust
+ui.text(RichText::markup("Press [prompt=jump] to jump, [prompt=ui.back] to go back"));
+ctx.world.spawn((Transform::from_xy(0.0, -40.0), Text2d::markup("[prompt=interact] Open")));
+let hint = RichText::new("Hold ").prompt("dash").plain(" to dash");
+```
+
+- Prompts are resolved before layout, in the UI and on world text alike, and change when the player's device does.
+- A glyph registered in `TextIcons` under the binding's name draws as an inline icon: `prompt.key.<KeyCode>` (`prompt.key.Space`), `prompt.mouse.<Button>` (`prompt.mouse.Left`), `prompt.pad.<xbox|playstation|nintendo>.<GamepadButton>` (`prompt.pad.xbox.South`), `prompt.stick.<Stick><Direction>` (`prompt.stick.LeftUp`). Without one, a short label such as `[A]` or `[Space]` is drawn bold in the theme's accent colour, at the size and effects of the span it was written in (`[size=32]Press [prompt=start][/size]`).
+- An action with no binding shows `[?]`. Bind actions with `ctx.actions()` (`ryo-controller`).
 
 ## 5. Icons
 
@@ -260,6 +276,7 @@ if self.reveal.is_done() { /* show the "next" prompt */ }
 
 - Call it **once per frame per reveal**: every call advances it.
 - It sends no message: check `reveal.is_done()`. It does not notice a new text: call `reveal.restart()` when the line changes.
+- `reveal.finish()` skips to the end: the whole line shows at the next draw, fully faded in.
 - It replaces `.reveal(..)` and `.fade(..)` on the same text.
 
 ### Manual control in the UI
@@ -282,7 +299,7 @@ for done in ctx.messages::<TextRevealed>() {
 }
 ```
 
-`TextReveal`: `new(per_second)`, `with_punctuation_pause(seconds)`, `with_fade(seconds)`, `restart()`, `is_done()`, `shown()`, `drawn_clusters()`; fields `per_second`, `punctuation_pause`, `fade` are public and can be changed live. With a fade, `is_done()` is true as soon as the last character starts showing; the clock runs on until it has faded in.
+`TextReveal`: `new(per_second)`, `with_punctuation_pause(seconds)`, `with_fade(seconds)`, `restart()`, `finish()` (a Skip: the rest shows at the next advance, a fade ended too), `is_done()`, `shown()`, `drawn_clusters()`; fields `per_second`, `punctuation_pause`, `fade` are public and can be changed live. With a fade, `is_done()` is true as soon as the last character starts showing; the clock runs on until it has faded in.
 
 ## 8. World Text: `Text2d`
 
@@ -395,20 +412,24 @@ impl Scene for Dialogue {
         .at(panel.right() - 14.0, panel.bottom() - 10.0)
         .anchor(Anchor::BottomRight)
         .draw();
-      if ui.input().key_pressed(KeyCode::Space) {
-        ui.consume_key(KeyCode::Space);
-        if self.line + 1 < self.lines.len() {
-          self.line += 1;
-          self.reveal.restart();
-        } else {
-          return SceneAction::Pop;
-        }
+    }
+    if ui.input().key_pressed(KeyCode::Space) {
+      ui.consume_key(KeyCode::Space);
+      if !self.reveal.is_done() {
+        self.reveal.finish(); // Skip: the rest of the line shows at the next draw
+      } else if self.line + 1 < self.lines.len() {
+        self.line += 1;
+        self.reveal.restart();
+      } else {
+        return SceneAction::Pop;
       }
     }
     SceneAction::Continue
   }
 }
 ```
+
+For a conversation with choices, a Skip button and a leave confirmation played with the pad, see `ryo-ui`'s dialogue recipe.
 
 ### A sign with an outline
 

@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Engine Developer
@@ -34,9 +34,12 @@ Engine::frame
 │                     then the engine's debug keys consume their presses
 ├─ PreUpdate          async asset loads, hot reload (AssetReloaded / AssetLoadFailed)
 │                     then the console (animation, input, commands)
-├─ UI pass            Scene::ui for visible scenes bottom-up, debug overlays, console;
-│                     consumption applied to Input; a SceneAction applies at once
-│                     (a scene change redraws the UI once so the new scene shows)
+├─ UI pass            resolve first, once a frame, against last frame's UI records: the
+│                     pointer, the wheel, then focus and navigation from the ui.* actions;
+│                     then Scene::ui for visible scenes bottom-up (each top-level container
+│                     laid out by Taffy when its show() returns, popups at the scene's end),
+│                     debug overlays, console; consumption and used actions applied to Input;
+│                     a SceneAction applies at once (a scene change redraws the UI once)
 ├─ FixedUpdate × N    while the fixed clock holds a step; a quit ends the steps
 │   ├─ Snapshot       debug shapes of the last step cleared; GlobalTransform → PreviousGlobalTransform
 │   ├─ Juice          animation, tweens, sequences, property tweens, squash, skeletons
@@ -88,7 +91,7 @@ Engine::frame
 | `engine/` | `Engine`, `EngineBuilder`, `EngineConfig`; `frame.rs` the loop, `extract.rs` world-to-draw-list and present, `window.rs` the winit handler |
 | `schedule.rs` | `Phase`, the sets, `EngineSchedules`, `SceneSchedules` |
 | `time.rs` | `Time` and the three clocks |
-| `input.rs`, `input_script.rs` | `Input` rebuilt each frame from `InputEvent`s; `RYO_INPUT` scripting |
+| `input/`, `input_script.rs` | `Input` rebuilt each frame from `InputEvent`s (virtual pad events included), the last-used device; `actions.rs` named actions with bindings, groups, rebinding with swaps and saved overrides; `labels.rs` prompt labels and `PadFamily`; `RYO_INPUT` scripting (keys, mouse, wheel, pad buttons, sticks) |
 | `ecs/` | Kernel re-exports, `Transform`/`GlobalTransform`, propagation, interpolation, pooling, the engine's components |
 | `systems/` | The built-in systems (juice, physics, trails) |
 | `messages/` | Engine message types, registration, per-scene cursors |
@@ -101,13 +104,13 @@ Engine::frame
 | `gameplay/` | On top of physics: `MoveIntent` and bindings, the platformer and top-down presets, knockback, trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, `Respawn`) |
 | `particles/`, `trail/`, `skeleton/`, `tilemap/`, `navigation/`, `state_machine/` | Feature modules |
 | `text/` | Fonts (`Fonts`), `TextStyle`, rich text and markup, layout (Parley), glyph rasterization (swash, fdsm), effects, reveal, `Text2d` and `CpuText` for the dev windows; GPU-free |
-| `ui/` | Immediate-mode and retained UI, `UiContext`, the recorded UI commands |
+| `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), the `debug:ui` overlay |
 | `asset/` | `AssetManager`, async loads, hot reload |
 | `audio.rs` | Kira audio (`Audio`, `AudioManager`) |
 | `config/` | `Ryo.toml` workspace, user preferences (`system.json`), saves |
 | `console/` | Developer console and commands |
 | `capture/` | Frame capture to PNG (`RYO_CAPTURE_*`) |
-| `testing/` | `HeadlessEngine`, `shared_gpu` |
+| `testing/` | `HeadlessEngine` (pad, wheel and UI-focus helpers), `UiHarness` (UI frames without a GPU), `shared_gpu` |
 | `network/` | Client/server, replication, RPC (`ryo-network`) |
 | `windows/` | Dev tool windows (profiler, logger); they draw `CpuText` (JetBrains Mono through the text module), with no hand-made font |
 | `window.rs`, `cursor.rs` | Window modes and requests, cursor requests |
@@ -145,8 +148,10 @@ See `ryo-ecs-internals` and `src/core/systems/AGENTS.md`. In short: derive `Comp
 | Integration | `tests/integration/` (target `integration`) | `cargo test --test integration` |
 | End-to-end, GPU | `tests/e2e/` with `HeadlessEngine` (target `e2e`) | `cargo test --test e2e`, `./dev.sh test:e2e` |
 | Demo tour | every page of every demo, headless | `./dev.sh demos:tour [demo...]` → `target/demo-tour/<demo>/page-N.png` |
+| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 0.25 ms, a 1,000-row list, an empty frame; no GPU) | `cargo bench --bench ui` |
 
 - Rendering regressions: write the failing pixel assertion in `tests/e2e/` first (see `src/core/testing/AGENTS.md`).
+- UI behaviour: unit tests drive frames with `ui::test_util::UiDriver` (a `UiHarness` plus keys, text, pad buttons, held directions and scenes); games use the public `ryo2d::testing::UiHarness`.
 - `cargo test` takes one name filter; several go after `--`: `cargo test --lib -- core::scene core::audio`.
 - Verify a rendering change from captures, not guesses: `RYO_CAPTURE_FRAMES=<n> RYO_CAPTURE_EXIT=1 RYO_CAPTURE_DIR=<abs dir>`, plus `RYO_HEADLESS=1` (no window) and `RYO_INPUT="60:Digit2 120:ArrowRight"` to reach pages behind keys (`ryo-cli`).
 

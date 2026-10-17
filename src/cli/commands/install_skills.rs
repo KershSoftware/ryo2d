@@ -72,7 +72,7 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
   ),
   (
     "ryo-controller",
-    "Gamepad/controller input handling with gilrs - buttons, sticks, triggers.",
+    "Gamepad/controller input with gilrs - buttons, sticks, triggers, actions and stick directions, pad families and button prompts, the last-used device, and scripted or headless pad input.",
     include_str!("../skills/ryo-controller.md"),
   ),
   (
@@ -137,7 +137,7 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
   ),
   (
     "ryo-ui",
-    "Build game UI in the Scene::ui hook with immediate-mode and retained-mode widgets including buttons, sliders, checkboxes, text inputs, dropdowns, scroll views, and layout containers, and consume the input the UI uses. Use when creating HUDs, menus, settings screens, or any in-game interface.",
+    "Build game UI in the Scene::ui hook - widgets as builders laid out in rows, columns and grids, focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.",
     include_str!("../skills/ryo-ui.md"),
   ),
 ];

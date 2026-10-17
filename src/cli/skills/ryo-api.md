@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.2.0
+  version: 2.3.0
 ---
 
 # Ryo2D API Reference
@@ -407,6 +407,8 @@ pub struct SceneContext<'a> {
 | `debug_draw(&mut self) -> Mut<'_, DebugDraw>` | debug lines and shapes over the world (see [Debug drawing](#debug-drawing)) |
 | `camera(&mut self) -> CameraMut<'_>` | the main camera (respawned over the design area if the game despawned it) |
 | `render_targets(&mut self) -> Mut<'_, RenderTargets>` | textures cameras render into and sprites show |
+| `actions(&mut self) -> &mut Actions` | bind, rebind and reset the game's actions (read them with `ctx.input.action_pressed(..)`; see [Input](#input)) |
+| `ui_theme(&mut self) -> Mut<'_, UiTheme>` | the UI theme (`get`, `set`, `modify`), from the next frame (see [UI](#ui)) |
 | `window(&mut self) -> Mut<'_, WindowRequest>`, `cursor(&mut self) -> Mut<'_, CursorRequest>` | requests applied after the frame |
 | `console(&mut self) -> ConsoleScope<'_>` | scene-scoped console handlers |
 | `spawn_child(&mut self, parent: Entity, bundle: impl Bundle) -> Entity` | |
@@ -456,7 +458,7 @@ impl Scene for Level {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    if ui.button("Quit", Rect::new(8.0, 8.0, 80.0, 20.0)) {
+    if ui.button("Quit").at(Rect::new(8.0, 8.0, 80.0, 20.0)).clicked() {
       return SceneAction::Quit;
     }
     SceneAction::Continue
@@ -494,6 +496,7 @@ EngineBuilder::new()
 | `vsync(bool)` | default `true` |
 | `background_fps(u32)`, `background_rendering(bool)` | unfocused behaviour |
 | `pixel_art(w: u32, h: u32)`, `window_size(w: u32, h: u32)`, `resizable(bool)`, `display_mode(DisplayMode)`, `ui_scale(Option<f32>)`, `ui_resolution(UiResolution)` | presentation; `ui_scale(None)` (default) keeps UI units equal to screen units, `Some(s)` is `s` render pixels per UI unit; `UiResolution::Render` (default) or `Window` |
+| `ui_theme(Theme)` | the starting UI theme (default `Theme::dark()`) |
 | `show_colliders(bool)`, `show_fps(bool)`, `show_velocities(bool)`, `show_origins(bool)` | debug overlays |
 | `with_user_preferences(impl Into<UserPreferenceFilter>)` | let saved `system.json` values override |
 | `insert_resource(impl Resource)` | resource for every scene and system |
@@ -546,18 +549,31 @@ Engine messages (all `Message + Clone`):
 
 | Area | Methods |
 |---|---|
+| actions | `actions() -> &Actions`, `actions_mut() -> &mut Actions` (`ctx.actions()` in a scene), `action_pressed(&str)`, `action_held(&str)`, `action_released(&str)` |
 | keyboard | `key_down(KeyCode)`, `key_pressed(KeyCode)`, `key_released(KeyCode)`, `key_repeat(KeyCode)` (press or OS repeat) |
-| mouse | `mouse_down(MouseButton)`, `mouse_pressed(..)`, `mouse_released(..)`, `mouse_x()`, `mouse_y()`, `mouse_position() -> (f32, f32)` (screen space: logical pixels or the pixel-art target, outside `0..screen_size` over the bars; `ctx.camera().screen_to_world(Vec2::new(x, y))` for world), `mouse_delta()`, `scroll_delta()` |
+| mouse | `mouse_down(MouseButton)`, `mouse_pressed(..)`, `mouse_released(..)`, `mouse_x()`, `mouse_y()`, `mouse_position() -> (f32, f32)` (screen space: logical pixels or the pixel-art target, outside `0..screen_size` over the bars; `ctx.camera().screen_to_world(Vec2::new(x, y))` for world), `mouse_delta()`, `scroll_delta()` (lines, +y up) |
+| devices | `last_device() -> InputDevice` (the newest key press, mouse press, wheel or motion, or pad press or stick past 0.5), `pad_family() -> PadFamily` |
 | text and IME | `text_input() -> &str`, `has_text_input()`, `consume_text_input()`, `ime_preedit()`, `ime_preedit_cursor()`, `ime_composing()`, `ime_enabled()` |
-| gamepad | `gamepad_connected()`, `gamepad_name()`, `gamepad_button_down/pressed/released(GamepadButton)`, `left_stick()`, `right_stick()` (deadzoned, plus `_x`/`_y`), `left_stick_raw()`, `right_stick_raw()`, `left_trigger()`, `right_trigger()` (0..1) |
+| gamepad | `gamepad_connected()`, `gamepad_name()`, `gamepad_button_down/pressed/released(GamepadButton)`, `stick_direction_down/pressed/released(StickDirection)` (digital past 0.5, released below 0.4), `left_stick()`, `right_stick()` (deadzoned, plus `_x`/`_y`), `left_stick_raw()`, `right_stick_raw()`, `left_trigger()`, `right_trigger()` (0..1) |
 | consumption | `consume_key(KeyCode)`, `consume_mouse(MouseButton)`, `consume_gamepad_button(..)`, `consume_text()`, `consume_scroll()`, `key_pressed_and_consume(..) -> bool`, `mouse_pressed_and_consume(..)`, `gamepad_button_pressed_and_consume(..)`, `consume_key_press`, `consume_mouse_press`, `consume_gamepad_button_press`, `clear_keyboard_state()` |
 | gating | `block_pointer()`, `block_all()`, `unblock()` |
 | engine plumbing | `new()`, `queue(InputEvent)`, `begin_frame()`, `set_fixed_step(u32)`, `end_fixed_steps(bool)`, `fixed_step()` |
 
-- One-shots (`*_pressed`, `*_released`) are seen once per frame by per-frame code and by the first fixed step of a frame; a press in a frame that runs no step (except while the game clock is paused, when it is dropped) waits for the next step.
-- A consumed input reads as not pressed (held state included) for the rest of the frame. The UI pass consumes what widgets use before `update` runs.
+- One-shots (`*_pressed`, `*_released`, action presses) are seen once per frame by per-frame code and by the first fixed step of a frame; a press in a frame that runs no step (except while the game clock is paused, when it is dropped) waits for the next step.
+- A consumed input reads as not pressed (held state included) for the rest of the frame. The UI pass consumes what widgets and navigation use before `update` runs; an action binding the UI used stays hidden until it is released.
+
+| Actions | |
+|---|---|
+| `Actions` (in `Input`) | `bind(name, impl IntoIterator<Item = Binding>) -> &mut Self` (the defaults; bindings the player changed, or saved, stay), `bindings(name) -> &[Binding]`, `set_bindings(name, Vec<Binding>)`, `rebind(name, slot, Binding) -> Option<String>` (appends past the end; another action of the same group with that binding swaps, its name returned), `reset_defaults()`, `names()`, `Actions::group(name) -> &str` (`"ui"` for `ui.*`, else `"game"`) |
+| `enum Binding { Key(KeyCode), Mouse(MouseButton), Pad(GamepadButton), Stick(StickDirection) }` | `parse(&str) -> Option<Binding>` and `to_config() -> String` (`"Key:Space"`, `"Mouse:Left"`, `"Pad:South"`, `"Stick:LeftUp"`), `is_saveable() -> bool`, `label(PadFamily) -> String` (what a prompt shows: `"J"`, `"Enter"`, `"↑"`, `"LMB"`, `"A"`/`"×"`/`"B"` for South, `"L↑"`) |
+| `StickDirection { stick: Stick, direction: Direction }` | `enum Stick { Left, Right }`, `enum Direction { Up, Down, Left, Right }` |
+| `enum InputDevice { Mouse (default), Keyboard, Gamepad }` | prompts and the focus ring follow it |
+| `enum PadFamily { Xbox (default), PlayStation, Nintendo }` | `from_name(&str)`: PlayStation for "dualsense", "dualshock", "playstation", "sony", "ps4", "ps5"; Nintendo for "nintendo", "switch", "pro controller", "joy-con" |
+
+- The UI's actions are bound by the engine and may be rebound: `ui.up`, `ui.down`, `ui.left`, `ui.right` (arrows, D-pad, left stick), `ui.confirm` (Enter, numpad Enter, Space, South), `ui.back` (Escape, East), `ui.next` (Tab; Shift goes back), `ui.tab_next` (E, right bumper), `ui.tab_prev` (Q, left bumper).
+- Saved bindings: with `EngineBuilder::with_user_preferences([UserPreference::Bindings])` the bindings that differ from the defaults are kept in `system.json`, loaded at startup and saved when they change.
 - `enum GamepadButton { South, East, West, North, LeftBumper, RightBumper, LeftTrigger, RightTrigger, LeftStick, RightStick, Select, Start, Guide, DPadUp, DPadDown, DPadLeft, DPadRight }`.
-- `enum InputEvent { Key { key, pressed }, Text(String), MouseButton { button, pressed }, MouseMove { x, y }, RawMouseMotion { dx, dy }, Scroll(..), ImeEnabled, ImeDisabled, ImePreedit { text, cursor }, ImeCommit(String), GamepadConnected { id, name }, GamepadDisconnected(id), GamepadButton { id, button, pressed }, GamepadTrigger { id, button, value } }`: what the window, gamepads, `RYO_INPUT` scripts and the headless harness queue.
+- `enum InputEvent { Key { key, pressed }, Text(String), MouseButton { button, pressed }, MouseMove { x, y }, RawMouseMotion { dx, dy }, Scroll(..), ImeEnabled, ImeDisabled, ImePreedit { text, cursor }, ImeCommit(String), GamepadConnected { id, name }, GamepadDisconnected(id), GamepadButton { id, button, pressed }, GamepadTrigger { id, button, value }, GamepadAxis { id, axis, value }, PadButton { button: GamepadButton, pressed }, PadStick { stick: Stick, x, y } }`: what the window, gamepads, `RYO_INPUT` scripts and the headless harness queue. `PadButton` and `PadStick` carry no gilrs id (scripted and headless input): they drive the tracked pad, or a virtual pad named "Virtual pad" when none is connected.
 
 ---
 
@@ -1010,9 +1026,9 @@ Two persistence tiers: player settings in `system.json` (`SystemState`) and game
 | `save_raw(filename, &T)`, `load_raw(filename)` | arbitrary files |
 | `save_dir()`, `set_save_dir(path)`, `set_compression_level(0..9)` | |
 
-- `SystemState { master_volume, music_volume, sfx_volume, width, height, display_mode, vsync: Option<bool>, show_fps: Option<bool>, env }`: `new()`, `from_defaults(&SystemDefaults)`, `merge_defaults(..)`, `set_env(key, value)`, `get_env`, `get_env_str`, `get_env_bool`, `get_env_i64`, `get_env_f64`.
+- `SystemState { master_volume, music_volume, sfx_volume, width, height, display_mode, vsync: Option<bool>, show_fps: Option<bool>, bindings: BTreeMap<String, Vec<String>>, env }` (`bindings`: action name to binding texts such as `"Key:Space"`, only those the player changed): `new()`, `from_defaults(&SystemDefaults)`, `merge_defaults(..)`, `set_env(key, value)`, `get_env`, `get_env_str`, `get_env_bool`, `get_env_i64`, `get_env_f64`.
 - `GameSaveData<T> { data, timestamp, name, play_time, metadata }`: `new(data)`, `with_name`, `with_play_time(secs)`, `with_metadata(k, v)`.
-- `enum UserPreference { MasterVolume, MusicVolume, SfxVolume, Resolution, DisplayMode, Vsync, ShowFps }` (`all()`); `UserPreferenceFilter`: `all()`, `none()`, `only(iter)`, `contains`, `is_empty`, `len`.
+- `enum UserPreference { MasterVolume, MusicVolume, SfxVolume, Resolution, DisplayMode, Vsync, ShowFps, Bindings }` (`all()`; with `Bindings` enabled the engine loads the saved bindings at startup and saves them when they change); `UserPreferenceFilter`: `all()`, `none()`, `only(iter)`, `contains`, `is_empty`, `len`.
 - `enum DisplayMode { Windowed, ExclusiveFullscreen, BorderlessFullscreen }` (`all()`, `display_name()`); `Resolution { width, height }` (`new`, `common()`, `display_name()`); `parse_resolution("1280x720") -> Option<(u32, u32)>`; `compress_data(&[u8])`, `decompress_data(&[u8])`.
 - `Workspace` (`Ryo.toml` project): `discover()`, `discover_from(dir)`, `from_path(root)`, `root()`, `name()`, `config() -> &WorkspaceConfig`, `entry_point()`, `assets_dir()`, `save_location()`, `save_data_dir()`, `set_save_data_path(p)`, `create_save_manager()`, `env_str/env_bool/env_int/env_float(key)`, `has_env(key)`, `has_config_file()`.
 - `WorkspaceConfig { name, title, description, version, entry_point, save_data, assets, debug, system: SystemDefaults, release, env }`; `SystemDefaults { resolution, vsync, display_mode, master_volume, music_volume, sfx_volume, show_fps, dev_console, target_background_fps, background_rendering, env }`.
@@ -1056,7 +1072,7 @@ Fonts, styles, rich text, effects and world text. The guide is `ryo-text`.
 
 | Rich text | |
 |---|---|
-| `RichText` | `new(impl Into<String>)`, `markup(&str)`, `escape(&str) -> Cow<str>` (doubles every `[`, so untrusted text can go inside markup), `plain(&str)`, `span(&str, Span)`, `icon(SpriteHandle)`, `icon_sized(SpriteHandle, Vec2)`, `icon_named(impl Into<String>)`, `pause(seconds)`, `as_str()`, `is_empty()`; `From<&str>` and `From<String>` (plain, no markup) |
+| `RichText` | `new(impl Into<String>)`, `markup(&str)`, `escape(&str) -> Cow<str>` (doubles every `[`, so untrusted text can go inside markup), `plain(&str)`, `span(&str, Span)`, `icon(SpriteHandle)`, `icon_sized(SpriteHandle, Vec2)`, `icon_named(impl Into<String>)`, `pause(seconds)`, `prompt(action: &str)` (the key or button that triggers `action` on the last device, as a registered glyph or a label such as `[A]` in the accent colour), `as_str()`, `is_empty()`; `From<&str>` and `From<String>` (plain, no markup) |
 | `Span` (`#[non_exhaustive]`, `Default`) | fields `color`, `size`, `font`, `weight`, `italic`, `outline`, `effect` (all `Option`); constructors `new()`, `color(Color)`, `size(f32)`, `font(TextFont)`, `bold()`, `italic()`, `outline(width, Color)`, `effect(impl Into<String>)`; builders `with_color`, `with_size`, `with_font`, `with_weight`, `with_italic`, `with_outline`, `with_effect` |
 | `Icon` | `enum Icon { Sprite { sprite: SpriteHandle, size: Option<Vec2> }, Named { name: String, size: Option<Vec2> } }` |
 | `TextIcons` (resource) | `insert(name, SpriteHandle)`, `insert_region(name, SpriteHandle, Rect)`, `get(&str) -> Option<&IconSource>`, `remove(&str)` (re-insert a name to swap an icon set) |
@@ -1065,14 +1081,14 @@ Fonts, styles, rich text, effects and world text. The guide is `ryo-text`.
 | `GlyphContext` (`#[non_exhaustive]`) | `index: u32`, `cluster: u32`, `line: u32`, `time: f32` (real time in the UI, game time in the world), `size: f32`, `seed: u64`, `args: String` |
 | `GlyphMod` | `offset: Vec2`, `scale: f32`, `color: Option<Color>`, `alpha: f32`; `Default` is no change |
 
-- Markup tags: `[color=..]`, `[size=..]`, `[font=..]`, `[b]`, `[i]`, `[outline=width,color]`, `[icon=name]`, `[pause=seconds]`, `[[` for a bracket; any other tag is an effect (`[wave=3,2]`). Malformed markup is drawn as written and warned once.
+- Markup tags: `[color=..]`, `[size=..]`, `[font=..]`, `[b]`, `[i]`, `[outline=width,color]`, `[icon=name]`, `[pause=seconds]`, `[prompt=action]` (a glyph `TextIcons` has as `prompt.key.Space`, `prompt.pad.xbox.South`, `prompt.stick.LeftUp`, else a label like `[A]`), `[[` for a bracket; any other tag is an effect (`[wave=3,2]`). Malformed markup is drawn as written and warned once.
 
 | World text | |
 |---|---|
 | `Text2d` (component, `#[non_exhaustive]`, requires `Transform` and `TextBounds`) | fields `text: RichText`, `style: TextStyle`, `layout: TextLayoutOptions` (anchor `Center`), `lit: bool` (false), `z_order: i32`, `blend: BlendMode`, `opacity: f32` (1.0; applied when drawn, not in the layout cache key) |
 | `Text2d` builders | `new(impl Into<RichText>)`, `markup(&str)`, `with_style(TextStyle)`, `with_layout(TextLayoutOptions)`, `with_lighting(bool)`, `with_z(i32)`, `with_blend(BlendMode)`, `with_opacity(f32)` (clamped 0 to 1, a non-number is opaque), `set_text(impl Into<RichText>)` |
 | `TextBounds` (component) | `size: Vec2`, `offset: Vec2` (the position to the block's top-left), updated when drawn |
-| `TextReveal` (component, `#[non_exhaustive]`) | fields `per_second`, `punctuation_pause`, `fade`; `new(per_second)`, `with_punctuation_pause(f32)`, `with_fade(f32)`, `restart()`, `is_done() -> bool`, `shown() -> f32`, `drawn_clusters() -> f32` (`shown` plus the run-on that lets a fade finish) |
+| `TextReveal` (component, `#[non_exhaustive]`) | fields `per_second`, `punctuation_pause`, `fade`; `new(per_second)`, `with_punctuation_pause(f32)`, `with_fade(f32)`, `restart()`, `finish()` (shows the rest at the next advance, a fade ended too: a dialogue's Skip), `is_done() -> bool`, `shown() -> f32`, `drawn_clusters() -> f32` (`shown` plus the run-on that lets a fade finish) |
 | `TextRevealed` (message) | `{ entity: Entity }`, written once when a world `TextReveal` has shown every character |
 
 `UiText` (from `ui.text(..)`, `#[must_use]`; end with `draw() -> Vec2`, the size in UI units):
@@ -1091,34 +1107,99 @@ Fade text through `opacity` (`UiText::opacity`, `Text2d::opacity`, a tween's alp
 
 ## UI
 
-Immediate-mode UI drawn in `Scene::ui` with `UiContext`; retained state structs hold widget state between frames. Full guide: `ryo-ui`.
+Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out by containers (flexbox and grid), answering from the UI's memory through a `Response`; keyboard and pad navigation work inside focus scopes; the theme is a world resource. The guide is `ryo-ui`. The builder types (`Container`, `Scroll`, `Button`, `Slider`, ...) live in `ryo2d::core::ui`; games rarely name them.
+
+**Containers** (`.show(|ui| ..) -> Response`; a top-level one is laid out when `show` returns, so its `Response` has this frame's rect, a nested one last frame's):
 
 | `UiContext` | |
 |---|---|
-| `button(text, Rect) -> bool`, `label(text, x, y, Color, bg: Option<Color>)` | |
-| `slider(Rect, &mut f32, min, max) -> bool`, `checkbox(Rect, &mut bool, label: Option<&str>) -> bool`, `toggle(Rect, &mut bool) -> bool` | value widgets |
-| `text_input(&mut TextInputState, Rect, placeholder, dt) -> bool`, `dropdown(&mut DropdownState, Rect, &[&str]) -> bool`, `scroll_view(&mut ScrollViewState, Rect, content_height, dt, \|ui, scroll_y\| ..) -> bool`, `scroll_view_horizontal(..)` | stateful widgets |
-| `draw_text(&str, x, y, Color)`, `draw_text_styled(impl Into<RichText>, x, y, &TextStyle)`, `draw_text_anchored(&str, Anchor, ox, oy, Color)`, `draw_text_centered(&str, Rect, Color)`, `draw_text_wrapped(&str, x, y, max_width: u32, Color)`, `draw_text_wrapped_centered(&str, Rect, Color)` | text shorthand (default style: `FontRole::Ui`, 14 px; `draw_text*` carry the colour's alpha as opacity) |
-| `text(impl Into<RichText>) -> UiText` | text with every option (see [Text](#text)) |
-| `measure_text(impl Into<RichText>, &TextStyle) -> Vec2`, `line_height(&TextStyle) -> f32`, `text_size(&str) -> (u32, u32)`, `wrapped_text_size(&str, max_width: u32) -> (u32, u32)`, `wrap_text(&str, max_width: u32) -> Vec<String>`, `wrap_text_styled(&str, width: f32, &TextStyle) -> Vec<String>` | measuring and wrapping, in UI units |
-| `draw_rect(Rect, Color)`, `draw_rect_outline(Rect, Color, thickness)`, `draw_rounded_rect(Rect, radius, Color)`, `draw_rect_bordered(Rect, fill, radius, border_width, border_color)`, `draw_panel(Rect, bg, border: Option<Color>)`, `draw_progress_bar(Rect, progress, fill, bg)`, `draw_progress_bar_with_border(..)`, `draw_modal_overlay(Color)`, `draw_focus_ring(..)` | shapes; rects are analytic (rounded, bordered, anti-aliased) |
-| `draw_sprite(&SpriteHandle, x, y)`, `draw_sprite_scaled(&SpriteHandle, x, y, scale)`, `draw_sprite_rect(&SpriteHandle, Rect, tint: Color)`, `draw_nine_slice(&SpriteHandle, Rect, insets: [f32; 4], tint: Color)` (insets `[left, top, right, bottom]` in texels), `draw_line(&[Vec2], width, Color)` | sprites (linear filtering in the default presentation) and polylines |
-| `is_clicked(Rect)`, `is_hovered(Rect)`, `is_held(Rect)` | hit tests |
-| `input() -> &UiInput`, `consume_key(KeyCode)`, `consume_click()`, `consume_escape()`, `consume_scroll()`, `click_consumed()`, `escape_consumed()`, `wants_keyboard()`, `set_mouse_occluded()` | input; consumption carries over to gameplay |
-| `push_clip(Rect)`, `pop_clip()`, `with_no_clip(f)`, `current_clip()`, `has_clip()`, `clip_depth()`, `clear_clips()`, `point_in_clip(x, y)` | clipping |
-| `handle_tab_navigation(&mut [&mut dyn Focusable])`, `handle_dropdown_tab_navigation(..)`, `any_dropdown_open()`, `focused_dropdown()`, `set_focused_dropdown(id)` | focus |
-| `dt()` (real time), `screen_size() -> (u32, u32)` (UI units), `ui_scale() -> f32` (render pixels per UI unit), `theme() -> &Theme` | |
+| `column()`, `row()`, `grid(columns: u16)`, `stack()`, `panel()` `-> Container` | top to bottom; left to right; equal columns filled row by row; overlapping, placed by anchor and offset; a column with the panel look and padding that blocks the pointer |
+| `scroll() -> Scroll` | a column (or row) seen through a view, clipped, scrolled by the wheel, the scrollbar, the right stick and navigation |
+| `modal() -> Modal` (`= Container`) | a dialog (panel column, opaque) centred over a dim of the UI, on the popup layer: blocks the pointer, traps focus, returns it when it goes; the game closes it |
+| `popup(anchor: UiId) -> Container` | a panel column below `anchor`'s rect (above it when only that fits; centred when unknown), on the popup layer; a trapping focus scope; the game decides when it shows |
+| `confirm(title: &str, message: &str) -> Option<bool>`, `confirm_with(title, message, yes: &str, no: &str) -> Option<bool>` | a yes/no modal, No focused first; `Some(false)` on Back; `None` while open; keyed by its texts |
+| `scope<R>(key: impl Hash, contents: impl FnOnce(&mut UiContext) -> R) -> R` | key the ids inside without a layout node |
+| `scroll_to(UiId)`, `scroll_offset(scroll: UiId) -> Vec2`, `set_scroll_offset(scroll: UiId, Vec2)` | scroll a widget into view from the next frame; read or set (no easing) an area's offset by its `Response::id` |
 
+- `Container`: `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `fill_height()`, `fill()`, `min_width(f32)`, `max_width(f32)`, `min_height(f32)`, `max_height(f32)`, `padding(impl Into<Edges>)`, `margin(impl Into<Edges>)`, `gap(f32)`, `align(Align)`, `justify(Justify)`, `center()`, `grow(f32)`, `wrap_items()`, `aspect(ratio)`, `tracks(&[f32])` (grid column widths), `anchor(Anchor)` and `offset(x, y)` (at the top level or in a stack; default `TopLeft`), `at(Rect)` (absolute, even inside a container, keeping its parent's ids, scope and clip), `id(impl Hash)`, `focus_scope()`, `trap()`, `wrap_focus()`, `block_pointer()`, `drag_source::<P>(P)`, `drop_target::<P>()`, `drag_ghost(&SpriteHandle)`, `show(impl FnOnce(&mut UiContext)) -> Response`.
+- `Scroll`: `vertical()` (default), `horizontal()`, `both()`, `no_bar()`, and `width`, `height`, `fill_width`, `fill_height`, `fill`, `min_width`, `max_width`, `min_height`, `max_height`, `padding`, `margin`, `gap`, `grow`, `anchor`, `offset`, `at`, `id`, the drag methods and `show(..) -> Response` as on `Container`.
+- `enum Length { Px(f32), Pct(f32), Fill, Fit }` (default `Fit`; `From<f32>` is `Px`). A fixed-size widget that fills keeps its own size (or its `max_width`/`max_height`, when smaller) as a floor.
+- `Edges { left, top, right, bottom }`: `Edges::ZERO`, `all(v)`, `xy(x, y)`, `new(left, top, right, bottom)`, `width()`, `height()`; `From<f32>`, `From<(f32, f32)>`.
+- `enum Align { Start, Center, End, Stretch }` (default `Stretch`), `enum Justify { Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly }` (default `Start`).
+
+**Widgets** (each records on its ending call, or when dropped, so `ui.toggle(&mut on, "Sound");` is a statement):
+
+| `UiContext` | Own builder methods | Ends with |
+|---|---|---|
+| `button(impl Into<RichText>) -> Button` | `icon(&SpriteHandle)` | `show() -> Response`, `clicked() -> bool` |
+| `text(impl Into<RichText>) -> UiText` | see [Text](#text); without `at` it is a layout leaf | `draw() -> Vec2` |
+| `image(&SpriteHandle) -> Image` | `size(w, h)`, `tint(Color)`, `filter(Filter)` (`Filter::Default`: nearest in pixel art, else linear), `uv([l, t, r, b])` | `show() -> Response` |
+| `checkbox(&mut bool, impl Into<RichText>) -> Checkbox`, `toggle(&mut bool, impl Into<RichText>) -> Toggle` | | `show()` |
+| `radio<T: PartialEq + Copy>(&mut T, value: T, impl Into<RichText>) -> Radio<T>` | | `show()` |
+| `slider(&mut f32, RangeInclusive<f32>) -> Slider` | `step(f32)`, `show_value()`, `label(impl Into<RichText>)` | `show()` |
+| `progress(fraction: f32) -> Progress` | `label(impl Into<RichText>)` | `show()` |
+| `text_input(&mut String) -> TextInput` | `placeholder(impl Into<String>)`, `max_len(chars: usize)`, `password()` | `show()` (`changed`, `submitted` on Enter, `focused`) |
+| `dropdown(&mut usize, &[&str]) -> Dropdown`, `tabs(&mut usize, &[&str]) -> Tabs` | | `show()` |
+| `choice_list(&[&str]) -> ChoiceList` | `default(index)` | `show() -> Option<usize>` |
+| `slot() -> Slot` | `icon(&SpriteHandle)`, `count(u32)`, `selected(bool)`, `filter(Filter)` | `show()` |
+| `prompt(action: &str) -> Prompt` | | `show()` |
+| `rebind(action: &str) -> Rebind` | `label(impl Into<RichText>)`, `slot(usize)` | `show()` (`changed()` the frame it captured) |
+| `custom(width: f32, height: f32) -> Custom` | `sense(Sense)` (default `hover`), `takes_horizontal()`, `takes_vertical()`, `takes_confirm(bool)` | `paint(impl FnOnce(&mut Painter, &Response)) -> Response`, `show()` |
+| `separator() -> Response`, `spacer() -> Response` | | |
+
+- Shared builder methods (every widget above but `text`): `id(impl Hash)`, `enabled(bool)`, `at(Rect)`, `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `margin(impl Into<Edges>)`, `anchor(Anchor)`, `offset(x, y)`, `grow(f32)`, `min_width(f32)`, `max_width(f32)`, `default_focus()`, `nav_up(UiId)`, `nav_down(UiId)`, `nav_left(UiId)`, `nav_right(UiId)`, `nav_skip()`, `focusable(bool)`, `variant(&str)`, `style(LookPatch)`, `tooltip(impl Into<RichText>)`, `drag_source::<P: Clone + Send + Sync + 'static>(P)`, `drop_target::<P: 'static>()`, `drag_ghost(&SpriteHandle)`.
+- `Painter` (a custom widget's own units, (0, 0) its top-left): `size() -> Vec2`, `rect(Rect, Color)`, `rounded_rect(Rect, radius, Color)`, `bordered_rect(Rect, fill, radius, border_width, border_color)`, `text(impl Into<RichText>, x, y, &TextStyle)`, `sprite(&SpriteHandle, Rect, tint: Color)`, `line(&[Vec2], width, Color)`.
+- `Response { pub id: UiId, pub rect: Rect, .. }`: `hovered()`, `pressed()`, `clicked()` (released over it, or Confirm while focused), `secondary_clicked()`, `double_clicked()` (within 0.3 s), `drag_started()`, `dragging()`, `drag_released()`, `drag_delta() -> Vec2`, `changed()`, `focused()`, `gained_focus()`, `lost_focus()`, `submitted()`, `pointer() -> Option<Vec2>`, `dropped::<T: Clone + 'static>() -> Option<T>`, `drag_hover::<T: 'static>() -> bool`, `drag_started_here()`.
+- `Sense`: `hover()`, `click()`, `drag()`, `click_and_drag()`. `UiId` (`Copy`, `Eq`, `Hash`, `Ord`, `Default`): `UiId::NONE`; made from the call site and how often it ran in its container, or `.id(key)`.
+
+**Focus, input and drawing:**
+
+| `UiContext` | |
+|---|---|
+| `focused() -> Option<UiId>`, `is_focused(UiId) -> bool`, `request_focus(UiId)` (from the next frame), `focus_visible() -> bool` (last device keyboard or pad) | focus (top scene only) |
+| `back() -> bool` | Back (Escape, B) pressed and no widget used it; true for the first caller only, in the top scene |
+| `nav_step(UiId) -> Option<Direction>` | the direction a focused custom widget that takes it got this frame (with repeat) |
+| `held::<P: Clone + 'static>() -> Option<P>` | the drag payload held now |
+| `wants_pointer() -> bool` | the pointer is over the top scene's UI, or a widget holds a press |
+| `wants_keyboard() -> bool` | a text field or a capturing rebind row has the focus, or an open dropdown list or `ui.popup` is up (not a modal) |
+| `input() -> &UiInput`, `consume_key(KeyCode)`, `consume_scroll()`, `into_input() -> UiInput` | the frame's input; consumption carries over to gameplay |
+| `draw_rect(Rect, Color)`, `draw_rect_outline(Rect, Color, thickness)`, `draw_rounded_rect(Rect, radius, Color)`, `draw_rect_bordered(Rect, fill, radius, border_width, border_color)`, `draw_panel(Rect, bg, border: Option<Color>)`, `draw_progress_bar(Rect, progress, fill, bg)`, `draw_progress_bar_with_border(Rect, progress, fill, bg, border)`, `draw_modal_overlay(Color)` | absolute shapes; rects are analytic (rounded, bordered, anti-aliased) |
+| `draw_sprite(&SpriteHandle, x, y)`, `draw_sprite_scaled(&SpriteHandle, x, y, scale)`, `draw_sprite_rect(&SpriteHandle, Rect, tint)`, `draw_nine_slice(&SpriteHandle, Rect, insets: [f32; 4], tint)` (insets `[left, top, right, bottom]` in texels), `draw_line(&[Vec2], width, Color)` | sprites and polylines |
+| `draw_text(&str, x, y, Color)`, `draw_text_styled(impl Into<RichText>, x, y, &TextStyle)`, `draw_text_anchored(&str, Anchor, offset_x, offset_y, Color)`, `draw_text_centered(&str, Rect, Color)`, `draw_text_wrapped(&str, x, y, max_width: u32, Color)`, `draw_text_wrapped_centered(&str, Rect, Color)`, `label(&str, x, y, Color, bg: Option<Color>)` | text shorthand (default style: `FontRole::Ui`, 14 px; carry the colour's alpha as opacity) |
+| `measure_text(impl Into<RichText>, &TextStyle) -> Vec2`, `line_height(&TextStyle) -> f32`, `text_size(&str) -> (u32, u32)`, `wrapped_text_size(&str, max_width: u32) -> (u32, u32)`, `wrap_text(&str, max_width: u32) -> Vec<String>`, `wrap_text_styled(&str, width: f32, &TextStyle) -> Vec<String>` | measuring and wrapping, in UI units |
+| `push_clip(Rect)`, `pop_clip()`, `with_no_clip(f) -> R`, `current_clip() -> Option<Rect>`, `has_clip()`, `clip_depth()`, `clear_clips()`, `point_in_clip(x, y)` | the clip stack (nests and intersects; an empty pop warns once) |
+| `dt()` (real time), `set_dt(f32)`, `screen_size() -> (u32, u32)` (UI units), `ui_scale() -> f32` (render pixels per UI unit), `theme() -> &Theme` | |
+
+- Navigation reads the `ui.*` actions (see [Input](#input)) and works only inside focus scopes (`.focus_scope()`, open lists, popups, modals): with no scope on screen the arrows, Space and A stay gameplay's. The engine hides the bindings of every UI action navigation used until they are released. Only the top scene's widgets take input; lower scenes draw and report nothing.
+- `UiInput` (the frame's input as the UI sees it): `snapshot(&Input)`, `with_mouse_scale(f32)`, `mouse_position()`, `mouse_x()`, `mouse_y()`, `mouse_down/pressed/released(MouseButton)`, `scroll_delta()`, `key_down/pressed/released(KeyCode)`, `key_repeat(KeyCode)`, `text_input()`, `ime_preedit()`, `ime_preedit_cursor()`, `ime_composing()`, `ime_enabled()`, `gamepad_button_pressed(GamepadButton)`, `left_stick()`, `consume_key`, `consume_mouse`, `consume_gamepad`, `consume_text()`, `consume_scroll()`, `consume_keyboard()`, `is_key_consumed`, `is_mouse_consumed`, `consumed() -> UiConsumed { keys, mouse, gamepad, text, scroll }`, `apply_consumed(&mut Input)`.
+- UI tweens (driven by the owner with `update(ui.dt())`): `UiTween<T: Lerp>` with `new(start, end, duration)`, `with_ease(Ease)`, `with_delay`, `with_loop(UiTweenLoop)`, `on_start`, `on_complete`, `update(dt)`, `value()`, `progress()`, `is_finished()`, `is_playing()`, `restart`, `pause`, `resume`, `stop`, `retarget(target)`, `start_value()`, `target_value()`; aliases `TweenFloat`, `TweenVec2` (`(f32, f32)`), `TweenColor`, `TweenRect`; `enum UiTweenLoop { Once, Loop, PingPong, Times(u32) }`.
 - `Color { r, g, b, a: u8 }`: `new(r, g, b, a)`, `rgb(r, g, b)`, `hex(0xRRGGBB | 0xRRGGBBAA)`, `with_alpha(a)`, `to_array()`, `to_normalized()`, `to_linear()` (sRGB decoded to linear light); constants `TRANSPARENT`, `BLACK`, `WHITE`, `RED`, `GREEN`, `BLUE`, `YELLOW`, `CYAN`, `MAGENTA`, `GRAY`, `DARK_GRAY`, `LIGHT_GRAY`, `HEALTH_RED`, `MANA_BLUE`, `STAMINA_GREEN`, `XP_GOLD`, `PANEL_BG`, `PANEL_BORDER`.
-- `Rect { x, y, width, height }`: `new(x, y, w, h)`, `from_pos_size`, `centered_at(cx, cy, w, h)`, `right()`, `bottom()`, `center()`, `contains(x, y)`, `shrink(p)`, `expand(p)`.
-- Layout: `VBox::new(x, y, spacing)` / `HBox::new(x, y, spacing)` with `next(w, h) -> Rect`, `with_halign(HAlign)` / `with_valign(VAlign)`, `bounds()`, `reset()`; `Stack::new(x, y, w, h)` / `from_rect` with `centered(w, h)`, `aligned(w, h, HAlign, VAlign)`, `padded(p)`, `split_horizontal(w)`, `split_vertical(h)`. `enum HAlign { Left, Center, Right }`, `enum VAlign { Top, Center, Bottom }`.
-- Retained state: `TextInputState` (`new()`, `with_text`, `text()`, `set_text`, `is_focused`, `set_focused`, selection and clipboard methods, `scroll_offset()`, `ensure_caret_visible(caret_x, width)` (UI units: the caret's x from the text's start; `text_input` calls it)), `DropdownState` (`new()`, `with_selected(i)`, `with_id(u32)`, `selected()`, `set_selected`, `is_open`, `open`, `close`, `toggle`), `ScrollViewState` (`new()`, `scroll_y()`, `set_scroll_y`, `scroll_to_top`, `scroll_to_bottom(content_h, view_h)`), `FocusTrap::new(&mut [&mut dyn Focusable])` (`focus_next`, `focus_prev`, ...), `trait Focusable { fn is_focused(&self) -> bool; fn set_focused(&mut self, bool); .. }`.
-- `UiInput`: the frame's input as the UI sees it (`mouse_position`, `mouse_pressed`, `key_pressed`, `key_repeat`, `text_input`, `gamepad_button_pressed`, `left_stick`, `consume_key`, `consume_mouse`, `consume_scroll`, ...).
-- UI tweens (driven by the owner with `update(ui.dt())`): `UiTween<T: Lerp>` with `new(start, end, duration)`, `with_ease(Ease)`, `with_delay`, `with_loop(UiTweenLoop)`, `on_start`, `on_complete`, `update(dt)`, `value()`, `progress()`, `is_finished()`, `is_playing()`, `restart`, `pause`, `resume`, `stop`, `retarget(target)`; aliases `TweenFloat`, `TweenVec2` (`(f32, f32)`), `TweenColor`, `TweenRect`; `enum UiTweenLoop { Once, Loop, PingPong, Times(u32) }`.
-- Themes: `Theme { name, palette: Palette, metrics: Metrics, text: TextRoles, widgets: WidgetLooks, variants: BTreeMap<String, Variant>, skins: BTreeMap<String, Skin>, sounds: UiSounds }` with `dark()` (default), `light()`, `pixel()`, `load(path)` / `save(path)` (RON; a file is merged over dark, so it states only what it changes; `Variant::base`, `TextLook::font` and `Skin::filter` are strings in files, e.g. `base: "Button"`), `look(WidgetKind, Option<&str>, WidgetState) -> UiLook`, `variant(name, Variant)`, `skin(name, Skin)`, `source()`. `Looks { normal: UiLook, hovered, pressed, focused, disabled: LookPatch }` (a patch changes only the fields it names; pressed builds on hovered); `LookPatch` (`fill`, `border`, `text`, `radius`, `skin`); `Variant::of(WidgetKind)` (`normal`, `hovered`, `pressed`, `focused`); `Skin::from_path(path, insets, Filter)` / `from_sprite(..)`; `Metrics` (`radius`, `spacing`, `focus_ring`, `scroll_line`, `scroll_smoothing`, `repeat_delay`, `repeat_rate`, `tooltip_delay`, `drag_threshold`, `double_click`, `sizes: Sizes`); `TextRoles` of `TextLook { size, color, font: ThemeFont, bold }`. `UiTheme` is the world resource (`get`, `set`, `modify`): `ctx.ui_theme()` in a scene, `EngineBuilder::ui_theme(Theme)` at startup; a theme loaded from a file hot-reloads in debug builds. Widget builders take `.variant(name)` and `.style(LookPatch)`. `UiLook` is the UI's `Look` (the render pipeline's `Look` keeps its name). `ThemeError`.
-- Open dropdown lists draw on the popup layer, flushed by the engine after each scene's `ui`; only the top scene's lists use it. There is no `finish_dropdowns` to call.
-- UI alpha blends in sRGB space (a 50% black panel over white is mid grey). Fonts are in [Text](#text).
-- `Anchor` is the same type as the sprite anchor.
+- `Rect { x, y, width, height }`: `new(x, y, w, h)`, `from_pos_size`, `centered_at(cx, cy, w, h)`, `right()`, `bottom()`, `center()`, `contains(x, y)`, `shrink(p)`, `expand(p)`. `Anchor` is the sprite anchor type (`TopLeft` ... `BottomRight`).
+
+**Theme:**
+
+| | |
+|---|---|
+| `UiTheme` (resource; `ctx.ui_theme()`, `EngineBuilder::ui_theme(Theme)`) | `new(Theme)`, `get() -> &Theme`, `set(Theme)`, `modify(impl FnOnce(&mut Theme))`; a change applies from the next frame; a theme from `Theme::load` reloads when its file changes, in debug builds |
+| `Theme { name, palette: Palette, metrics: Metrics, text: TextRoles, widgets: WidgetLooks, variants: BTreeMap<String, Variant>, skins: BTreeMap<String, Skin>, sounds: UiSounds }` | `dark()` (default), `light()`, `pixel()`, `load(impl AsRef<Path>) -> Result<Theme, ThemeError>`, `save(impl AsRef<Path>) -> Result<(), ThemeError>`, `look(WidgetKind, variant: Option<&str>, WidgetState) -> UiLook`, `variant(name, Variant) -> Theme`, `skin(name, Skin) -> Theme`, `source() -> Option<&Path>` |
+| `Palette` | `background`, `surface`, `text`, `muted`, `accent`, `danger`, `success`, `warning` |
+| `Metrics` | `radius`, `spacing`, `border`, `focus_ring: FocusRing { width, offset, color }` (2, 2), `scroll_line` (40), `scroll_smoothing` (0.08), `repeat_delay` (0.35), `repeat_rate` (0.1), `tooltip_delay` (0.5), `drag_threshold` (4), `double_click` (0.3), `sizes: Sizes` |
+| `Sizes` | `button_padding: [f32; 2]`, `button_min_height`, `panel_padding`, `slider: [f32; 2]`, `slider_handle: [f32; 2]`, `toggle: [f32; 2]`, `checkbox`, `scrollbar`, `slot`, `text_input: [f32; 2]` |
+| `TextRoles { body, heading, button, caption, mono }` of `TextLook { size, color, font: ThemeFont, bold }` | `TextLook::style() -> TextStyle`; `enum ThemeFont { Ui, Mono, Pixel }` |
+| `WidgetLooks` | a `Looks` per kind: `button`, `panel`, `checkbox`, `toggle`, `radio`, `slider`, `text_input`, `dropdown`, `tab`, `choice`, `tooltip`, `scroll`, `slot`, `progress`, `rebind`, `modal`, `prompt`; `get(WidgetKind) -> &Looks` |
+| `Looks { normal: UiLook, hovered, pressed, focused, disabled: LookPatch }` | `resolve(WidgetState) -> UiLook`; a patch changes only what it names; pressed builds on hovered |
+| `UiLook` (the UI's `Look`) | `fill`, `border`, `border_width`, `radius`, `text`, `padding: Edges`, `offset: [f32; 2]`, `skin: Option<String>` |
+| `LookPatch` (each field an `Option`) | `fill(Color)`, `border(Color)`, `text(Color)`, `radius(f32)`, `skin(&str)` |
+| `Variant { base: WidgetKind, normal, hovered, pressed, focused, disabled: LookPatch }` | `of(WidgetKind)`, `normal(LookPatch)`, `hovered(..)`, `pressed(..)`, `focused(..)`, `disabled(..)` (without one, a disabled widget takes its kind's disabled look); built in: `danger`, `accent`, `tab` (buttons), `selected` (tabs) |
+| `Skin { path: Option<String>, insets: [f32; 4], filter: Filter, sprite: Option<SpriteHandle> }` | `from_path(&str, insets, Filter)`, `from_sprite(SpriteHandle, insets, Filter)`: a nine-slice drawn in place of a look's fill and border, the fill tinting it |
+| `UiSounds { focus, confirm, back, tick, error: Option<String>, volume: f32 }` | files the engine plays (one of each per frame at most); none by default |
+| `enum WidgetKind` | `Button`, `Panel`, `Checkbox`, `Toggle`, `Radio`, `Slider`, `TextInput`, `Dropdown`, `Tab`, `Choice`, `Tooltip`, `Scroll`, `Slot`, `Progress`, `Rebind`, `Modal`, `Prompt` |
+| `enum WidgetState` | `Normal`, `Hovered`, `Pressed`, `Focused` (ring showing), `Disabled` |
+| `ThemeError` | why a theme file could not be read, parsed or written (names the path) |
+
+- A RON theme file is merged over `Theme::dark()` map by map, so it states only what it changes; `Variant::base`, `TextLook::font` and `Skin::filter` are strings there (`base: "Button"`, `font: "Pixel"`, `filter: "Nearest"`).
+- `ui.theme()` reads the theme while drawing (`ui.theme().text.heading.style()`, `ui.theme().palette.accent`). Widgets take `.variant(name)` and `.style(LookPatch)`; an unknown variant or skin warns once and draws the plain look.
+- UI alpha blends in sRGB space (a 50% black panel over white is mid grey). The console command `debug:ui` outlines every widget with its id.
 
 ---
 
@@ -1236,6 +1317,12 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `press_key` / `release_key` / `tap_key` / `type_text(&str)` | keyboard input (`KeyCode`) |
 | `press_mouse` / `release_mouse` / `mouse_move(x, y)` | mouse input (screen space) |
 | `mouse_move_window(x, y)` | the pointer at physical window pixels, mapped like a real cursor |
+| `press_pad(GamepadButton)` / `release_pad` / `tap_pad`, `set_stick(Stick, x, y)` (-1..1, +y up, held until set again), `wheel(dx, dy)` (lines) | pad and wheel input; a virtual pad connects if none is |
+| `ui_focused() -> Option<UiId>`, `ui_focusables() -> Vec<(UiId, Rect)>`, `focus_ui(UiId)` | the focus the last step resolved; what the D-pad can land on in the top scene (focusable, enabled, shown, in a scope, not `nav_skip`, inside the innermost trap; rects in UI units); a focus request for the next step |
 | `StepOutcome` | `Running` \| `Quit` |
 | `HeadlessError` | `NoGpu` \| `Render(String)` \| `Capture(CaptureError)` |
 | `shared_gpu()` | one GPU device shared across tests |
+| `UiHarness::new(width, height)` | a UI with no window or GPU (built-in fonts, scale 1, the dark theme) for unit-testing game UI; `with_theme(Theme)` |
+| `UiHarness::frame(\|ui\| ..) -> R` | one 60 fps frame: resolve the scripted input against the last frame, run the closure as the top scene's `ui`, finish the frame |
+| `UiHarness::move_to(x, y)`, `press()`, `release()`, `wheel(dx, dy)`, `action(&str)` | script the next frame: the pointer (UI units), the left button (held from `press` to `release`), the wheel (lines), a UI action (`ui.up`/`down`/`left`/`right`/`confirm`/`back`/`next`/`tab_next`/`tab_prev`; another name warns once and does nothing) |
+| `UiHarness::focused() -> Option<UiId>`, `command_count() -> usize` | the focus after the last frame; the UI commands it recorded |

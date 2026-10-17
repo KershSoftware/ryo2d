@@ -1,36 +1,47 @@
-//! Hybrid UI System
+//! Game UI, built each frame in `Scene::ui`
 //!
-//! A UI built each frame in `Scene::ui`, laid out and resolved by the engine:
+//! [`UiContext`] is what a scene's `ui` hook draws with:
 //!
-//! - **Drawing** (`immediate/`): the `UiContext`, absolute `draw_*` calls for HUDs and debug overlays
-//! - **Widgets and containers** (`widgets/`, `containers.rs`, `popup.rs`): Laid out with flexbox and grid; widget state (open lists, carets, scroll offsets) lives in the UI's memory
-//! - **Theme system** (`theme/`): Looks per widget kind and state, variants and skins, from RON files with hot reload
+//! - **Widgets are builders** (`ui.button("Play").clicked()`): each answers,
+//!   through a [`Response`], from what the player did to what was drawn last
+//!   frame, resolved once a frame before any scene's `ui`. The game's values
+//!   stay with the game; what a widget remembers of itself (an open list, a
+//!   caret, a scroll offset, the focus) lives in the UI's memory under its
+//!   [`UiId`].
+//! - **Containers** (`column`, `row`, `grid`, `stack`, `panel`, `scroll`)
+//!   lay their children out with flexbox and grid; popups, modals and
+//!   `confirm` draw above the page.
+//! - **Focus scopes** (`.focus_scope()` containers, open lists, popups and
+//!   modals) carry keyboard and gamepad navigation from the `ui.*` actions,
+//!   so a HUD outside any scope never takes the arrows from gameplay.
+//! - **The theme** ([`UiTheme`], a world resource) gives each widget kind its
+//!   looks per state, with variants, skins and sounds, from code or RON
+//!   files reloaded in debug builds.
+//! - **Absolute drawing** (`draw_*`, `ui.text(..).at(..)`, `immediate/`)
+//!   remains for HUDs, overlays and custom shapes.
 //!
-//! # Overview
-//!
-//! - Widgets are builders that answer from the UI's memory: `ui.button("Play").clicked()`.
-//! - Containers are laid out by Taffy (flexbox and grid).
-//! - Focus lives in scopes, and keyboard and gamepad navigation move through them.
-//! - Absolute `draw_*` calls remain for HUDs and custom drawing.
-//! - The theme is a world resource.
+//! The `ryo-ui` skill is the guide; `ryo2d::testing::UiHarness` runs UI
+//! frames without a GPU.
 //!
 //! # Example
 //!
 //! ```ignore
 //! fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-//!     // Immediate mode: draw directly
-//!     ui.draw_progress_bar(
-//!         Rect::new(10.0, 10.0, 200.0, 20.0),
-//!         self.health / 100.0,
-//!         Color::HEALTH_RED,
-//!         Color::DARK_GRAY,
-//!     );
-//!
-//!     // Button returns true when clicked
-//!     if ui.button("Pause").at(Rect::new(700.0, 10.0, 80.0, 30.0)).clicked() {
-//!         return SceneAction::Push(Box::new(PauseMenu));
+//!     let mut action = SceneAction::Continue;
+//!     ui.panel().focus_scope().anchor(Anchor::Center).gap(8.0).show(|ui| {
+//!         if ui.button("Resume").default_focus().clicked() {
+//!             action = SceneAction::Pop;
+//!         }
+//!         ui.slider(&mut self.volume, 0.0..=1.0).label("Volume").show_value();
+//!         if ui.button("Quit").variant("danger").clicked() {
+//!             action = SceneAction::Quit;
+//!         }
+//!     });
+//!     // Back (Escape, or B on a pad) closes the menu
+//!     if ui.back() {
+//!         action = SceneAction::Pop;
 //!     }
-//!     SceneAction::Continue
+//!     action
 //! }
 //! ```
 
@@ -64,7 +75,7 @@ pub use widgets::{
   Rebind, Scroll, Slider, Slot, Tabs, TextInput, Toggle,
 };
 
-// Re-export immediate mode API (stateless per-frame drawing)
+// The context, its absolute drawing and its input snapshot
 pub use immediate::{UiConsumed, UiContext, UiInput, UiText};
 
 // Re-export theme types

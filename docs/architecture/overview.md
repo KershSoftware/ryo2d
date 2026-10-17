@@ -47,10 +47,11 @@ Engine::frame()
  ├─ First ........ advance the clocks, publish Input, advance message buffers (after a fixed step)
  ├─ debug keys ... F1-F5, `, F9, F10, F12 consume their presses
  ├─ PreUpdate .... async asset loads, hot reload, scene transitions (real time); then the console
- ├─ UI pass ...... Scene::ui for visible scenes (bottom-up; scenes under the top one
- │                 get no pointer), debug overlays, console
- │                 what the UI consumed is hidden from Input for the rest of the frame;
- │                 a press it took stays hidden until released
+ ├─ UI pass ...... resolve the pointer, the wheel and focus against last frame's UI records;
+ │                 Scene::ui for visible scenes (bottom-up; only the top scene's widgets take
+ │                 input), debug overlays, console
+ │                 what the UI consumed (and the actions navigation used) is hidden from Input
+ │                 for the rest of the frame; a press or binding it took stays hidden until released
  │                 a returned SceneAction applies at once (a new scene draws its UI this frame)
  ├─ while fixed.accumulator >= timestep            (0..N times; a quit ends the loop)
  │   └─ FixedUpdate
@@ -137,7 +138,9 @@ winit / gilrs / RYO_INPUT / headless harness
 ```
 
 - One-shots (`key_pressed`, `mouse_pressed`, ...) are seen by the first fixed step of a frame only; a press in a frame that runs no step waits for the next step, except while the game clock is paused, when it is dropped (gameplay never saw it).
-- `consume_key` / `consume_mouse` / `consume_text` hide an input, held state included, for the rest of the frame. The UI pass consumes what its widgets use.
+- **Actions** (`Actions` in `Input`, `ctx.actions()`): named bindings to keys, mouse buttons, pad buttons and stick directions (digital past 0.5 deflection), read with `action_pressed` / `action_held` / `action_released`. Rebinding swaps a collision inside a group (`ui.*` or the game's); with `UserPreference::Bindings` the player's bindings are saved in `system.json`. The UI navigates with the `ui.*` actions, which the engine binds and games may rebind.
+- `last_device()` follows the newest key, mouse or pad input; prompts and the UI's focus ring follow it, and `PadFamily` (from the pad's name) labels the buttons. Scripted and headless pad input arrives as id-less `PadButton` / `PadStick` events on the tracked pad, or a virtual one.
+- `consume_key` / `consume_mouse` / `consume_text` hide an input, held state included, for the rest of the frame. The UI pass consumes what its widgets and navigation use.
 - `block_pointer` / `block_all` / `unblock` gate input for gameplay.
 
 ## Physics
@@ -217,7 +220,7 @@ Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in pass
 - **The text core** is `src/core/text/`, GPU-free: `Fonts` (a resource; Inter, JetBrains Mono and m5x7 are built in behind the `default-fonts` feature), `TextStyle`, rich text and markup, effects and the reveal clock. Parley lays text out (no system fonts), swash rasterizes glyphs and fdsm makes distance fields; **those three crates are named only in `src/core/text/`** (a test guards it), and the renderer receives `GlyphImage` bitmaps, never a font type. Layouts are cached by text, style, options, scale and font generation, so an unchanged immediate-mode call is a hash lookup.
 - **The glyph atlas** holds glyph bitmaps in glyph pages beside the sprite atlas: raster coverage, colour glyphs and MSDF fields, each placed on first use; when a format is full its least recently used page is cleared. Raster glyphs are made at the size the camera sees, so text stays sharp at any zoom.
 - **World text** is a `Text2d` entity: laid out when its text, style or fonts change, its glyphs emitted per camera into the same z-sorted draw list as sprites (unlit by default, lit with `with_lighting`). Effects and the typewriter run on game time; opacity is applied at draw time, so fades never lay text out again.
-- **The UI** is commands: `Scene::ui` records rects, sprites, lines and text in UI units. A UI camera lays them into the batch, the `ui` pass draws it into a gamma-encoded UI image, and the composite blends that image over the finished frame in sRGB space (a 50% black panel over white is mid grey, as on the web). Effects, lighting and post-processing never touch it. UI units equal screen units with the automatic scale and are sharp on HiDPI; `ui_scale` makes the whole UI bigger. Open dropdown lists draw on a popup layer above the scene's page.
+- **The UI** is commands: `Scene::ui` records rects, sprites, lines and text in UI units. A UI camera lays them into the batch, the `ui` pass draws it into a gamma-encoded UI image, and the composite blends that image over the finished frame in sRGB space (a 50% black panel over white is mid grey, as on the web). Effects, lighting and post-processing never touch it. UI units equal screen units with the automatic scale and are sharp on HiDPI; `ui_scale` makes the whole UI bigger. Popups (open lists, `ui.popup`, modals), tooltips and the drag ghost draw on a popup layer above the scene's page, and the engine's overlays and the console above that. The UI's model is in [UI](#ui).
 - The dev windows are separate OS windows with CPU pixel buffers; they draw text with `CpuText` (the mono font through swash).
 
 Details: `src/core/text/AGENTS.md`, `src/core/ui/AGENTS.md`, `src/core/render/AGENTS.md`.
@@ -240,20 +243,40 @@ The engine builds for `wasm32-unknown-unknown` and runs in browsers with WebGPU:
 
 ## UI
 
-Immediate mode for simple elements, retained state for stateful widgets, recorded as draw commands in `Scene::ui(ui, ctx)` once a frame and drawn on the GPU (see [Text and UI](#text-and-ui)).
+Built every frame in `Scene::ui(ui, ctx)` through `UiContext`, laid out with flexbox and grid, and drawn as commands on the GPU (see [Text and UI](#text-and-ui)). Widgets are builders (`ui.button("Play").clicked()`); the game's values stay in the game, passed as `&mut bool`, `&mut f32`, `&mut usize` or `&mut String`.
 
-| Immediate | Retained state | Layout and style |
-|-----------|----------------|------------------|
-| `button`, `label`, `slider`, `checkbox`, `toggle`, `text_input`, `dropdown`, `scroll_view`, `draw_progress_bar`, `draw_rect`/`draw_rounded_rect`/`draw_text`/`ui.text(..)`/`draw_sprite`/`draw_nine_slice`/`draw_line` | `TextInputState`, `DropdownState`, `ScrollViewState`, `FocusTrap` | `HBox`, `VBox`, `Stack`; `Theme` (looks, variants and skins; RON files, hot-reloaded in debug builds); `UiTween` / `TweenFloat`/`Vec2`/`Color`/`Rect` |
+**The frame.**
 
-- Widgets consume the input they use, so gameplay in `update` does not see it.
-- A clip stack of any depth clips nested views (a scissor per command); focus moves with Tab / Shift+Tab, and `FocusTrap` keeps it inside a modal.
+```
+resolve (once a frame, before any ui hook, against last frame's records)
+  pointer: hit test (topmost by layer, then order; top scene only) -> hot, active, clicks, drags, drops
+  wheel:   the scroll areas under the pointer, innermost first
+  focus:   the ui.* actions -> spatial navigation inside focus scopes, Confirm, Back, tab switching
+     |
+hooks (each visible scene bottom-up, under its own root id scope)
+  builders record nodes, draws and records; each answers from the resolve (Response)
+  each top-level container is laid out by Taffy when its show() returns; popups when the scene's ui ends
+     |
+commands (UiCommand per draw, ordered by layer then recording order) -> UI camera -> UI image -> composite
+```
+
+- **Clicks land on what was drawn.** Hit testing and navigation read the records the last frame wrote (rect, clip, layer, order, scene, flags, focus scope, scroll area), so a click goes to what the player saw under the pointer, even if the widget moves or disappears this frame. Only the top scene's records are candidates: lower scenes draw, and their widgets report nothing.
+- **Ids.** A widget's `UiId` is a hash of its enclosing scope, its call site (`#[track_caller]`) and how often that site ran in the scope this frame; `.id(key)` replaces the count for lists that reorder, and `ui.scope(key, ..)` keys a group without a node. Each scene is a root scope, so the same code in two scenes makes two ids.
+- **Memory.** `UiMemory` holds last frame's and this frame's records, typed widget state (an open list, a caret, a scroll offset, a tooltip timer) keyed by id and dropped when a widget is not drawn for a frame, and focus memory per scope for the scene's lifetime; a scene's entries are forgotten when it exits. Interaction state (hot, active, focused, drag) lives beside it.
+- **Layout.** `src/core/ui/layout/` is the only code that names Taffy: a persistent tree keyed by `UiId`, text measured through the text engine's cache. A top-level subtree is placed by its anchor and offset in the UI (or at its `at` rect), and its rects are snapped to render pixels. A 200-widget settings screen is a frame of well under 0.25 ms (`benches/ui.rs`).
+- **Focus scopes.** Keyboard and pad navigation, Tab and Confirm work only inside explicit scopes (`.focus_scope()` containers, open lists, popups and modals), so a HUD never takes the arrows, Space or A from gameplay. A scope focuses its remembered or default widget when it appears; traps (modals, lists, `.trap()`) hold the focus until they close and give it back. Directions move spatially to the nearest focusable, scrolling long lists; Back is offered to the focused widget, then to the first `ui.back()` caller.
+- **The theme** is the `UiTheme` world resource holding an `Arc<Theme>` (`ctx.ui_theme()`): a palette, metrics (timings, sizes, the focus ring), text roles, a look per widget kind and state, named variants, nine-slice skins and sounds; RON files merge over the dark theme and hot-reload in debug builds. `UiContext` takes the `Arc` once per pass, so a change applies from the next frame.
+- **Actions.** Navigation reads the `ui.*` actions (arrows, D-pad, left stick; Enter, Space, A; Escape, B; Tab; Q/E and the bumpers). The engine hides the bindings of every action the UI used until they are released, so a menu's Confirm never jumps in gameplay. Prompts (`ui.prompt`, `[prompt=..]` markup) show the binding for the last device.
+- **Absolute drawing** (`draw_rect`, `draw_text`, `ui.text(..).at(..)`, sprites, nine-slices, lines) records at once for HUDs and overlays; a clip stack of any depth clips it (a scissor per command).
+- **Testing.** `ryo2d::testing::UiHarness` runs UI frames with no window or GPU over scripted input; `HeadlessEngine` adds pad input and reads the focus (`ui_focused`, `ui_focusables`). The console's `debug:ui` outlines every record with its id.
+
+Details: `src/core/ui/AGENTS.md`; the design: `docs/specs/2026-10-16-ui-interaction-design.md`.
 
 ## Saves and Settings
 
 | What | File | API |
 |------|------|-----|
-| Player settings (resolution, display mode, vsync, volumes, FPS, console) | `system.json`, uncompressed JSON | `SystemState`, `UserPreference`, `EngineBuilder::with_user_preferences` |
+| Player settings (resolution, display mode, vsync, volumes, FPS, console, input bindings) | `system.json`, uncompressed JSON | `SystemState`, `UserPreference`, `EngineBuilder::with_user_preferences` |
 | Game data | `{slot}.ryo-save`: magic `RYO2`, version, DEFLATE-compressed RON | `SaveManager`, `GameSaveData<T>` |
 
 Settings resolve in order: engine defaults, `Ryo.toml`, `EngineBuilder` calls, then the saved `system.json` preferences the game asks for. Saves go to the OS user data folder, or `data/` beside the game with `[release] portable`. The engine does not snapshot the world; a game saves the state it needs as its own data.
@@ -331,7 +354,7 @@ Client-server multiplayer with listen-server support. See [the network architect
 | Module | Purpose |
 |--------|---------|
 | `ecs/` | Kernel re-exports, `Transform`, propagation, interpolation, pooling, `Renderable`, juice components |
-| `engine/`, `scene/`, `schedule.rs`, `time.rs`, `input.rs`, `messages/` | The loop, scenes, phases, clocks, input, messages |
+| `engine/`, `scene/`, `schedule.rs`, `time.rs`, `input/`, `messages/` | The loop, scenes, phases, clocks, input and actions, messages |
 | `systems/` | The engine's built-in schedule systems |
 | `graphics/` | Sprites, animation, cameras and shake, render targets, render layers, the screen mapping, parallax, tiled and composite rendering, the texture registry and atlas, the sprite renderer |
 | `render/` | The render pipeline, passes, the draw list, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, polylines) and debug drawing |
@@ -343,12 +366,12 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `state_machine/` | Generic state machines and stacks |
 | `asset/`, `audio.rs` | Asset loading and hot reload; audio |
 | `text/` | Fonts, text styles, rich text and markup, layout, glyph rasterization, effects and reveal, world text (`Text2d`), `CpuText` for the dev windows |
-| `ui/` | Immediate and retained UI, themes, layout, UI tweens |
+| `ui/` | `UiContext` and absolute drawing, ids, memory, layout (Taffy), containers and widgets, popups and modals, the pointer and focus resolve, the theme, UI tweens |
 | `config/` | Workspace (`Ryo.toml`), settings, saves |
 | `console/`, `windows/`, `capture/`, `dev_log.rs`, `profiler.rs` | Developer tools |
 | `window.rs`, `cursor.rs` | Window and cursor requests |
 | `network/` | Networking |
-| `testing/` | `HeadlessEngine` and the shared GPU for tests |
+| `testing/` | `HeadlessEngine`, `UiHarness` and the shared GPU for tests |
 
 ## Key Dependencies
 
@@ -365,6 +388,7 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `renet` | Networking transport |
 | `puffin` | Profiling (optional) |
 | `parley`, `swash`, `fdsm` | Text layout, glyph rasterization and MSDF generation (named only in `src/core/text/`) |
+| `taffy` | UI layout: flexbox and grid (named only in `src/core/ui/layout/`) |
 | `image`, `resvg` | Image and SVG loading |
 | `notify` | File watching for hot reload |
 | `ron`, `serde_json`, `flate2`, `toml` | Saves, settings and configuration |

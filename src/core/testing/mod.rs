@@ -34,6 +34,10 @@
 //! scene uses if you compare frames exactly: `ParticleSystem::new()` seeds
 //! from entropy, so use `ParticleSystem::with_seed` for frames containing
 //! particles.
+//!
+//! [`UiHarness`] runs UI frames with no window or GPU at all: a UI function
+//! of `&mut UiContext` over scripted pointer, wheel and `ui.*` action input,
+//! for unit-testing game UI.
 
 #[cfg(test)]
 mod atlas_bleeding;

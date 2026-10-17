@@ -2,7 +2,7 @@
 name: ryo-config-save
 description: Project configuration (Ryo.toml), player settings (system.json, SystemState) and game saves (SaveManager, GameSaveData).
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Configuration and Saves
@@ -41,7 +41,7 @@ EngineBuilder::new()
   .run()
 ```
 
-`UserPreferenceFilter::all()`, `none()`, `only(..)`, or an array/`Vec`/slice of `UserPreference` (`MasterVolume`, `MusicVolume`, `SfxVolume`, `Resolution`, `DisplayMode`, `Vsync`, `ShowFps`). A saved `Resolution` sizes the window; the game's own resolution (the pixel-art target or design area) comes from `Ryo.toml` and the builder. Repeated calls combine.
+`UserPreferenceFilter::all()`, `none()`, `only(..)`, or an array/`Vec`/slice of `UserPreference` (`MasterVolume`, `MusicVolume`, `SfxVolume`, `Resolution`, `DisplayMode`, `Vsync`, `ShowFps`, `Bindings`). A saved `Resolution` sizes the window; the game's own resolution (the pixel-art target or design area) comes from `Ryo.toml` and the builder. Repeated calls combine.
 
 The fixed update rate is builder-only: `EngineBuilder::fixed_hz(hz)` (default 60). There is no Ryo.toml key for it.
 
@@ -122,7 +122,7 @@ let saves = workspace.create_save_manager()?;  // SaveManager over the save fold
 
 ## System State
 
-`SystemState` holds `master_volume`, `music_volume`, `sfx_volume`, `width`, `height`, `display_mode: DisplayMode`, `vsync: Option<bool>`, `show_fps: Option<bool>` and `env` (typed JSON values). In the file the resolution is one `"1280x720"` key.
+`SystemState` holds `master_volume`, `music_volume`, `sfx_volume`, `width`, `height`, `display_mode: DisplayMode`, `vsync: Option<bool>`, `show_fps: Option<bool>`, `bindings` (the player's input bindings, below) and `env` (typed JSON values). In the file the resolution is one `"1280x720"` key.
 
 ```rust
 let mut settings = saves.load_or_create_system(&workspace.config().system)?;
@@ -136,6 +136,23 @@ saves.save_system(&settings)?;
 - `save_system` updates keys already in the file and adds a missing key only when its value differs, so a narrow file keeps its shape.
 - `DisplayMode::all()` and `display_name()`, `Resolution::common()` and `display_name()` feed settings menus.
 - Applying a change at runtime is separate from saving it: `ctx.request_display_mode(mode)`, `ctx.request_resolution(w, h)` (resizes the window), `ctx.request_display_change(w, h, mode)`, `ctx.request_ui_scale(..)` (applied after the frame), and `ctx.audio.set_master_volume(v)` / `set_music_volume` / `set_sfx_volume`.
+
+## Saved Bindings
+
+Input actions (`ctx.actions().bind(..)`, `ryo-controller`) are rebound by the player with `ui.rebind(action)` rows in a settings screen (`ryo-ui`) or `ctx.actions().rebind(..)`. To keep them between runs, enable `UserPreference::Bindings`:
+
+```rust
+EngineBuilder::new()
+  .with_user_preferences([UserPreference::MasterVolume, UserPreference::Bindings])
+  .start_scene(Menu::new())
+  .build()
+  .run()
+```
+
+- At startup the engine loads the saved bindings: actions already bound switch to them at once, the rest when the game binds them (so `bind` in a scene's `on_enter` keeps the player's choice).
+- Whenever the bindings change, the engine writes those that differ from the defaults to `system.json`, as action name to binding texts: `"bindings": { "jump": ["Key:KeyK", "Pad:South"] }`. `ctx.actions().reset_defaults()` empties the key, and the key is left out when nothing differs.
+- A rebind row captures only bindings that survive a save and load (`Binding::is_saveable()`); a saved text that no longer parses is skipped with a warning.
+- `SystemState::bindings` is a `BTreeMap<String, Vec<String>>` if a game wants to read or edit the file itself. Without `Bindings` in the filter, bindings last for the session. Headless runs never read or write them.
 
 ## Game Data
 
@@ -170,23 +187,45 @@ struct Settings {
 
 impl Scene for Settings {
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-    let track = Rect::new(100.0, 100.0, 200.0, 20.0);
-    if ui.slider(track, &mut self.state.master_volume, 0.0, 1.0) {
+    let mut volume_changed = false;
+    let mut picked = None;
+    ui.panel()
+      .focus_scope()
+      .anchor(Anchor::Center)
+      .width(300.0)
+      .gap(8.0)
+      .show(|ui| {
+        volume_changed = ui
+          .slider(&mut self.state.master_volume, 0.0..=1.0)
+          .step(0.05)
+          .label("Volume")
+          .show_value()
+          .show()
+          .changed();
+        for (i, mode) in DisplayMode::all().iter().enumerate() {
+          if ui.button(mode.display_name()).id(i).fill_width().clicked() {
+            picked = Some(*mode);
+          }
+        }
+      });
+    if volume_changed {
       ctx.audio.set_master_volume(self.state.master_volume);
       self.saves.save_system(&self.state).ok();
     }
-    for (i, mode) in DisplayMode::all().iter().enumerate() {
-      let rect = Rect::new(100.0, 140.0 + i as f32 * 36.0, 240.0, 30.0);
-      if ui.button(mode.display_name(), rect) {
-        self.state.display_mode = *mode;
-        ctx.request_display_mode(*mode);
-        self.saves.save_system(&self.state).ok();
-      }
+    if let Some(mode) = picked {
+      self.state.display_mode = mode;
+      ctx.request_display_mode(mode);
+      self.saves.save_system(&self.state).ok();
+    }
+    if ui.back() {
+      return SceneAction::Pop;
     }
     SceneAction::Continue
   }
 }
 ```
+
+A tabbed settings screen with rebinding rows is `ryo-ui`'s settings recipe.
 
 ### Autosave
 

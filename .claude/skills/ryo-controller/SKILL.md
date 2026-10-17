@@ -1,13 +1,13 @@
 ---
 name: ryo-controller
-description: Gamepad/controller input handling with gilrs - buttons, sticks, triggers.
+description: Gamepad/controller input with gilrs - buttons, sticks, triggers, actions and stick directions, pad families and button prompts, the last-used device, and scripted or headless pad input.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
 # Ryo2D Gamepad/Controller Specialist
 
-You help users implement gamepad and controller input in their Ryo2D games. This covers buttons, analog sticks, triggers, and common input patterns.
+You help users implement gamepad and controller input in their Ryo2D games. This covers actions (one name for a key, a button and a stick direction), buttons, analog sticks, triggers, button prompts, menus played with the pad, and testing with a virtual pad.
 
 **For complete API signatures, see the `ryo-api` skill.**
 
@@ -40,6 +40,55 @@ Uses positional naming that works across controllers:
 | `Start` | Options | Menu |
 | `Guide` | PS Button | Xbox Button |
 | `DPadUp/Down/Left/Right` | D-pad | D-pad |
+
+## Actions: Keys, Buttons and Stick Directions Under One Name
+
+Bind an action once and read it, instead of checking keys and buttons side by side. The player can rebind it (`ui.rebind` in a settings screen, see `ryo-ui`), and prompts show the binding for the device in use.
+
+```rust
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+    use Binding::{Key, Pad};
+    let stick = |direction| Binding::Stick(StickDirection { stick: Stick::Left, direction });
+    ctx.actions()
+        .bind("jump", [Key(KeyCode::Space), Pad(GamepadButton::South)])
+        .bind("left", [Key(KeyCode::KeyA), Pad(GamepadButton::DPadLeft), stick(Direction::Left)])
+        .bind("right", [Key(KeyCode::KeyD), Pad(GamepadButton::DPadRight), stick(Direction::Right)])
+        .bind("pause", [Key(KeyCode::Escape), Pad(GamepadButton::Start)]);
+}
+
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if ctx.input.action_pressed("jump") && self.on_ground {
+        self.jump();
+    }
+    if ctx.input.action_held("left") { /* walk left */ }
+    if ctx.input.action_pressed("pause") {
+        return SceneAction::Push(Box::new(PauseMenu::default()));
+    }
+    SceneAction::Continue
+}
+```
+
+- `action_pressed` / `action_held` / `action_released` follow the one-shot rules of what they bind (seen by the first fixed step of a frame).
+- **Stick directions** are digital: `StickDirection { stick: Stick::Left | Stick::Right, direction: Direction::Up | Down | Left | Right }` goes down past 0.5 deflection and comes up below 0.4, so a stick flick is one press. Read one directly with `ctx.input.stick_direction_pressed(dir)` (`_down`, `_released`).
+- **Rebinding:** `ctx.actions().rebind("jump", 0, Binding::Pad(GamepadButton::North))` replaces slot 0 (past the end it adds one); if another action of the same group (`ui.*` or the game's) had that binding, the two swap and the other's name is returned. `reset_defaults()` puts every action back. `Binding::to_config()` / `parse` are the saved text (`"Pad:South"`, `"Stick:LeftUp"`). With `EngineBuilder::with_user_preferences([UserPreference::Bindings])` the player's bindings are saved in `system.json` (`ryo-config-save`).
+- **The UI's actions** are pre-bound: `ui.up/down/left/right` (arrows, D-pad, left stick), `ui.confirm` (Enter, Space, South), `ui.back` (Escape, East), `ui.next` (Tab), `ui.tab_next` / `ui.tab_prev` (E / Q and the bumpers). Menus inside a focus scope are played with them; with no scope on screen the D-pad, the stick and A stay gameplay's (`ryo-ui`, Focus and Navigation).
+
+## Prompts and Pad Families
+
+```rust
+ui.prompt("jump");                                        // a chip or glyph for the action on the last device
+ui.text(RichText::markup("Press [prompt=jump] to jump")); // the same inside text (world text too)
+```
+
+- `ctx.input.last_device()` is the device the player used last (`InputDevice::Keyboard`, `Mouse` or `Gamepad`): a key press, a mouse press, wheel or motion, or a pad press or stick past 0.5. Prompts follow it, and so does the UI's focus ring (shown for the keyboard and the pad only).
+- `ctx.input.pad_family()` is `PadFamily::Xbox` (the default), `PlayStation` or `Nintendo`, from the pad's name (`PadFamily::from_name`: "dualsense", "dualshock", "playstation", "sony", "ps4", "ps5"; "nintendo", "switch", "pro controller", "joy-con"). `Binding::label(family)` is what a prompt shows: South is "A" on Xbox, "×" on PlayStation, "B" on Nintendo; a stick direction is "L↑".
+- **Glyphs:** register a sprite per button in `TextIcons` under `prompt.pad.<xbox|playstation|nintendo>.<GamepadButton>` (`prompt.pad.xbox.South`), `prompt.key.<KeyCode>` (`prompt.key.Space`) or `prompt.stick.<Stick><Direction>` (`prompt.stick.LeftUp`), and prompts draw it instead of the text label.
+
+```rust
+if let Ok(a_button) = ctx.assets.load_sprite("assets/prompts/xbox_a.png") {
+    ctx.world.resource_mut::<TextIcons>().insert("prompt.pad.xbox.South", a_button);
+}
+```
 
 ## Basic Usage
 
@@ -154,28 +203,9 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
 }
 ```
 
-### Jump with Multiple Inputs
+### Jump and Pause
 
-```rust
-let jump_pressed = ctx.input.key_pressed(KeyCode::Space)
-    || ctx.input.key_pressed(KeyCode::KeyW)
-    || ctx.input.gamepad_button_pressed(GamepadButton::South);
-
-if jump_pressed && self.on_ground {
-    self.jump();
-}
-```
-
-### Pause Menu Toggle
-
-```rust
-let pause_pressed = ctx.input.key_pressed(KeyCode::Escape)
-    || ctx.input.gamepad_button_pressed(GamepadButton::Start);
-
-if pause_pressed {
-    return SceneAction::Push(Box::new(PauseMenu::new()));
-}
-```
+Use actions (above): `ctx.input.action_pressed("jump")` covers Space and A, and `action_pressed("pause")` covers Escape and Start, with the player's own bindings.
 
 ### Analog Aim Direction
 
@@ -243,6 +273,31 @@ if ctx.input.gamepad_connected() {
 if !ctx.input.gamepad_connected() && self.was_using_gamepad {
     return SceneAction::Push(Box::new(ReconnectPrompt::new()));
 }
+```
+
+## Testing and Scripting Pad Input
+
+Headless tests and scripted runs drive a **virtual pad** ("Virtual pad"), connected on first use when no real pad is (`InputEvent::PadButton` and `InputEvent::PadStick`, which carry no gilrs id).
+
+```rust
+use ryo2d::testing::HeadlessEngine;
+
+let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else { return };
+engine.step_frames(3).unwrap();
+engine.tap_pad(GamepadButton::DPadDown);    // pressed for the next step only
+engine.step_frames(2).unwrap();
+engine.press_pad(GamepadButton::South);     // held until release_pad
+engine.set_stick(Stick::Left, 0.0, 1.0);    // held at (x, y), +y up, until set again
+engine.step_frames(2).unwrap();
+assert!(engine.ui_focused().is_some());     // the UI's focus after the last step
+```
+
+- `ui_focusables()` lists what the D-pad can reach now and `focus_ui(id)` moves the focus, so a test can walk every widget of a menu with the pad (`ryo-ui`, Testing UI).
+- `RYO_INPUT` scripts the pad in dev runs (`ryo-cli`): `N:PadSouth` taps a button (`Pad` + a `GamepadButton` name), `A-B:PadDPadDown` holds one, `A-B:LeftStick@0x-1` / `A-B:RightStick@XxY` hold a stick and centre it before frame B.
+
+```bash
+RYO_HEADLESS=1 RYO_INPUT="60:PadDPadDown 90:PadSouth 120-180:LeftStick@0x-1" \
+  RYO_CAPTURE_FRAMES=100,200 RYO_CAPTURE_EXIT=1 ryo2d dev
 ```
 
 ## Controller Demo

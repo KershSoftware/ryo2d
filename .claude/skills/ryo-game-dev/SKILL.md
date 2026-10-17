@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.1.0
+  version: 2.2.0
 ---
 
 # Ryo2D Game Developer
@@ -125,7 +125,7 @@ Every method has a default; implement what the scene needs.
 | `render(gpu)` | Once per frame for visible scenes: GPU-batched extras (particles, many-sprite effects) |
 | `on_pause(ctx)` / `on_resume(ctx, returned)` | Another scene is pushed on top / the one above popped |
 | `on_exit(ctx)` | The scene leaves the stack |
-| `is_transparent()` | Scenes below are still drawn and still get `ui` (overlays, HUDs) |
+| `is_transparent()` | Scenes below are still drawn and still get `ui` (overlays, HUDs), but only the top scene's widgets take input |
 | `updates_below()` | Scenes below still update and run their systems; only the top scene's returned `SceneAction` is applied (a lower scene's is dropped with a warning) |
 | `is_physics_paused()` | Pause physics while this scene is on top |
 | `cleanup_on_exit()` | Which engine state `Switch`/`Reset` resets (default `SceneCleanup::DEFAULT`) |
@@ -142,7 +142,7 @@ Entities are not drawn by `render`: anything with `Transform` + `Renderable` is 
 | `ctx.assets` | `&mut AssetManager` | Sprites (`load_sprite`, `create_sprite`) |
 | `ctx.audio` | `&mut Audio` | Sounds and music (calls return `AudioError::Unavailable` without a device) |
 
-Helpers: `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
+Helpers: `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
 
 **`time`, `input` and `assets` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
 
@@ -288,18 +288,36 @@ for picked in ctx.messages::<PickedUp>() {
 
 ## Input
 
+Bind **actions** and read them, rather than raw keys: one name covers the keyboard, the mouse and the pad, the player can rebind it, and prompts show the right key or button.
+
 ```rust
-if ctx.input.key_pressed(KeyCode::Space) {}  // this step only
-if ctx.input.key_down(KeyCode::KeyW) {}      // held
-if ctx.input.mouse_pressed(MouseButton::Left) {}
-let (mx, my) = ctx.input.mouse_position();
-let world = ctx.camera().screen_to_world(Vec2::new(mx, my)); // mouse is in screen space
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+  use Binding::{Key, Pad};
+  let stick_left = Binding::Stick(StickDirection { stick: Stick::Left, direction: Direction::Left });
+  ctx.actions()
+    .bind("jump", [Key(KeyCode::Space), Pad(GamepadButton::South)])
+    .bind("left", [Key(KeyCode::KeyA), Key(KeyCode::ArrowLeft), stick_left])
+    .bind("pause", [Key(KeyCode::KeyP), Pad(GamepadButton::Start)]);
+}
+
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+  if ctx.input.action_pressed("jump") {}     // this step only
+  if ctx.input.action_held("left") {}        // held
+  if ctx.input.action_pressed("pause") {
+    return SceneAction::Push(Box::new(PauseMenu::default()));
+  }
+  SceneAction::Continue
+}
 ```
 
-- One-shots (`key_pressed`, `key_released`, `mouse_pressed`, ...) are seen by the first fixed step of a frame; a press in a frame with no step reaches the next step. Handle a press once, in `update` or in a system.
-- The UI pass runs before the fixed steps and consumes what it uses: a click on a button never reaches `update`. In `ui`, read input through `ui.input()` and claim keys with `ui.consume_key(key)` / `ui.consume_escape()`.
+- `bind` sets an action's defaults; bindings the player changed (a `ui.rebind` row, `ctx.actions().rebind(..)`) stay, and binding again is harmless. `ctx.actions().reset_defaults()` puts them back. With `EngineBuilder::with_user_preferences([UserPreference::Bindings])` they are saved between runs.
+- Show what triggers an action with `ui.prompt("jump")` or `[prompt=jump]` in markup: a key on the keyboard, the right button for the pad's family.
+- Raw input is still there: `ctx.input.key_pressed(KeyCode::Space)`, `key_down`, `mouse_pressed(MouseButton::Left)`, `mouse_position()` (screen space: `ctx.camera().screen_to_world(Vec2::new(mx, my))` for the world).
+- One-shots (`action_pressed`, `key_pressed`, `mouse_pressed`, ...) are seen by the first fixed step of a frame; a press in a frame with no step reaches the next step. Handle a press once, in `update` or in a system.
+- The UI pass runs before the fixed steps and consumes what it uses: a click on a button never reaches `update`, a focused text field takes the keyboard, and the arrows, Space and A are the UI's only while a focus scope (a menu) is on screen. Under a HUD with no scope they stay gameplay's.
 - A consumed key reads as not pressed and not held for the rest of the frame. `ctx.input.key_pressed_and_consume(key)` reads and consumes in one call.
-- Gamepads: `ryo-controller`.
+- **Menus** (title screen, pause menu, settings with rebinding, inventory, dialogue, quit confirmation): build them from the `ryo-ui` recipes, which handle the pad, the keys, the mouse and Back.
+- Gamepads, sticks and pad families: `ryo-controller`.
 
 ## Scene Stack
 
@@ -325,7 +343,7 @@ return SceneAction::SwitchWith(
 - Transitions run on real time, once a frame, so a fade finishes even with the game clock paused or slowed.
 - While one runs, `update` is not called and a scene change returned from `ui` is ignored (only `Quit` applies): a second click during a fade does not start another.
 - A pushed scene that does not `updates_below` stops the scenes below and pauses physics; engine animation and tweens keep running (pause the game clock to freeze them too).
-- A pause menu: a transparent pushed scene that handles its buttons in `ui` and returns `SceneAction::Pop`. Scenes under it get no pointer in their `ui`, so its buttons win the clicks.
+- A pause menu: a transparent pushed scene whose `ui` draws a focus-scoped menu and returns `SceneAction::Pop` on Resume or `ui.back()` (`ryo-ui`'s pause menu recipe). Scenes under it still draw, but only the top scene's widgets take input, so its buttons win the clicks.
 - Cleanup on `Switch`/`Reset` (not on `Push`/`Pop`): `SceneCleanup` flags `WORLD`, `CAMERA`, `EFFECTS`, `LIGHTING`, `TIME`, `MUSIC`, `MESSAGES`; `DEFAULT` is all but `MUSIC`, plus `NONE` and `ALL`. Combine with `|`, remove with `-`: `SceneCleanup::DEFAULT - SceneCleanup::WORLD` keeps the entities.
 - A scene's console commands and systems leave with it.
 
@@ -729,7 +747,8 @@ fn player_is_drawn_at_spawn() {
 ```
 
 - Same scene, steps and input give identical frames: seed your RNG and use `ParticleSystem::with_seed(n)`.
-- Headless runs have no audio device, gamepads or user preferences; `Ryo.toml` is honoured. `engine.world()` / `world_mut()` reach the world between steps.
+- Pads and menus: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`; `ui_focused()`, `ui_focusables()` and `focus_ui(id)` check pad navigation. `ryo2d::testing::UiHarness` tests a UI function without a GPU (`ryo-ui`, Testing UI).
+- Headless runs have no audio device, real gamepads (the pad methods drive a virtual one) or user preferences; `Ryo.toml` is honoured. `engine.world()` / `world_mut()` reach the world between steps.
 
 ## Pitfalls
 
@@ -737,6 +756,7 @@ fn player_is_drawn_at_spawn() {
 - Positions are `t.translation.x`, not `t.x`; rotation is radians.
 - A sprite placed by its top-left corner needs `.with_anchor(Anchor::TopLeft)`; otherwise it is centred on its position.
 - Do not change the world while iterating a query over it: collect entities first.
-- Keys the UI acts on: read and consume them in `ui`, or `update` sees them too.
+- Keys the UI acts on: read and consume them in `ui`, or `update` sees them too. Prefer `ui.back()` for Escape and B: it is true once, for the innermost thing that should close.
+- A menu without `.focus_scope()` cannot be played with the pad or the arrows.
 - No `update` runs while the game clock is paused.
 - Integrate your own `Velocity` for entities without a `RigidBody` or `CharacterController`.
