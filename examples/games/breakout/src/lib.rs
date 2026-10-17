@@ -7,6 +7,7 @@
 //! - `levels/` - Level loading utilities
 //! - `save/` - Save data management
 //! - `constants.rs` - Game configuration values
+//! - `look.rs` - The game's font and panel spacing
 //!
 //! ## Project Structure
 //!
@@ -30,6 +31,7 @@
 pub mod components;
 pub mod constants;
 pub mod levels;
+pub mod look;
 pub mod save;
 pub mod scenes;
 
@@ -38,6 +40,7 @@ pub mod prelude {
   pub use super::components::*;
   pub use super::constants::*;
   pub use super::levels::{LevelData, level_path, load_level};
+  pub use super::look::use_game_look;
   pub use super::save::{HighScoreData, load_high_score, save_high_score};
   pub use super::scenes::*;
 }

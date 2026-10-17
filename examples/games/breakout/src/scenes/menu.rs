@@ -8,6 +8,7 @@ use ryo2d::prelude::*;
 
 use super::{GameScene, QuitConfirmScene};
 use crate::constants::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use crate::look::use_game_look;
 use crate::save::load_high_score;
 
 /// Main menu scene
@@ -56,6 +57,8 @@ impl Default for MenuScene {
 
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    use_game_look(ctx);
+
     ctx
       .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);

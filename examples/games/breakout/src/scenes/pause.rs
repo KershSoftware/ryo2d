@@ -69,7 +69,8 @@ impl PauseScene {
 fn volume_row(ui: &mut UiContext, label: &str, volume: &mut f32) -> bool {
   let mut changed = false;
   ui.row().gap(8.0).align(Align::Center).show(|ui| {
-    ui.column().width(64.0).show(|ui| {
+    // Wide enough for "Master" and "100%" in the game's 16 px font
+    ui.column().width(96.0).show(|ui| {
       ui.text(label).color(Color::WHITE);
     });
     changed = ui
@@ -78,7 +79,7 @@ fn volume_row(ui: &mut UiContext, label: &str, volume: &mut f32) -> bool {
       .fill_width()
       .show()
       .changed();
-    ui.column().width(40.0).show(|ui| {
+    ui.column().width(64.0).show(|ui| {
       ui.text(format!("{:.0}%", *volume * 100.0))
         .color(Color::WHITE)
         .align(TextAlign::End);
@@ -122,7 +123,7 @@ impl Scene for PauseScene {
     ui.panel()
       .focus_scope()
       .anchor(Anchor::Center)
-      .width(340.0)
+      .width(400.0)
       .padding(16.0)
       .gap(12.0)
       .show(|ui| {

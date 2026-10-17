@@ -1241,7 +1241,7 @@ impl Scene for GameScene {
 
     // High score
     let high_text = format!("High: {}", self.high_score);
-    ui.draw_text_anchored(&high_text, Anchor::TopRight, -20.0, 25.0, Color::YELLOW);
+    ui.draw_text_anchored(&high_text, Anchor::TopRight, -20.0, 34.0, Color::YELLOW);
 
     // Lives (top left)
     let lives_text = format!("Lives: {}", self.lives);
@@ -1251,7 +1251,7 @@ impl Scene for GameScene {
     if self.plus_one_timer > 0.0 {
       // Animation: starts at Lives position, moves right and fades out
       let progress = 1.0 - (self.plus_one_timer / PLUS_ONE_DURATION);
-      let x_offset = 80.0 + progress * 60.0; // Starts at 80, moves right to 140
+      let x_offset = 160.0 + progress * 60.0; // Starts past "Lives: N", moves right 60
       let y_offset = 10.0 - progress * 15.0; // Starts at 10, floats up to -5
 
       // Fade: full opacity in first third, then fade out
@@ -1272,7 +1272,7 @@ impl Scene for GameScene {
 
     // Level
     let level_text = format!("Level: {}", self.level);
-    ui.draw_text_anchored(&level_text, Anchor::TopLeft, 20.0, 25.0, Color::CYAN);
+    ui.draw_text_anchored(&level_text, Anchor::TopLeft, 20.0, 34.0, Color::CYAN);
 
     // "Press any key to launch" prompt
     if !self.game_started {
