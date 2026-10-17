@@ -171,6 +171,33 @@ fn brackets_and_page_keys_change_pages_and_wrap() {
 }
 
 #[test]
+fn page_keys_do_nothing_with_one_page() {
+  let shared = Shared::default();
+  let only = shared.clone();
+  let demo = Demo::new("Single")
+    .resolution(320, 240)
+    .page(move || Probe::new("only", &only));
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  for key in [
+    KeyCode::BracketRight,
+    KeyCode::BracketLeft,
+    KeyCode::PageDown,
+    KeyCode::PageUp,
+  ] {
+    tap(&mut engine, key);
+  }
+  assert_eq!(
+    seen(&shared).enters,
+    ["only"],
+    "the page is never re-entered"
+  );
+  assert!(seen(&shared).exits.is_empty(), "the page is never left");
+}
+
+#[test]
 fn a_page_exits_when_it_is_left_or_reset() {
   let shared = Shared::default();
   let Some(mut engine) = start(three_pages(&shared)) else {

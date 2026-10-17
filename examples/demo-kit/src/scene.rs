@@ -95,11 +95,13 @@ impl PageScene {
       self.help_open = false;
     }
 
+    // One page has no other page to go to: its keys are still taken, but
+    // switching to itself would reset it
     let count = self.def.pages.len();
-    if next {
+    if next && count > 1 {
       return Err(self.switch_to((self.index + 1) % count));
     }
-    if prev {
+    if prev && count > 1 {
       return Err(self.switch_to((self.index + count - 1) % count));
     }
     if reset {
