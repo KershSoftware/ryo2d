@@ -89,11 +89,15 @@ impl DialoguePage {
     TextReveal::new(40.0).with_punctuation_pause(0.15)
   }
 
-  /// Show `next`: a node takes the price of what it sells as it opens
+  /// Show `next`: a node takes the price of what it sells as it opens. A
+  /// node past the tree's end ends the conversation.
   fn go(&mut self, next: Next) {
-    let Next::To(node) = next else {
-      self.node = None;
-      return;
+    let node = match next {
+      Next::To(node) if node < TREE.len() => node,
+      _ => {
+        self.node = None;
+        return;
+      }
     };
     match node {
       GEM_NODE => {
@@ -150,8 +154,9 @@ impl DialoguePage {
     let heading = ui.theme().text.heading.style();
     let body = ui.theme().text.body.style();
     let mut next = None;
-    let node = self.node;
-    let choices = node.map(|n| self.choices(&TREE[n])).unwrap_or_default();
+    // The line shown; `None` once the conversation is over
+    let node = self.node.and_then(|n| Some((n, TREE.get(n)?)));
+    let choices = node.map(|(_, line)| self.choices(line)).unwrap_or_default();
     let labels: Vec<&str> = choices.iter().map(|(label, _)| *label).collect();
     let (portrait, reveal, leaving) = (&self.portrait, &mut self.reveal, self.leaving);
     ui.panel()
@@ -166,13 +171,12 @@ impl DialoguePage {
             .filter(Filter::Nearest)
             .show();
           ui.column().gap(10.0).grow(1.0).show(|ui| {
-            let Some(n) = node else {
+            let Some((n, line)) = node else {
               ui.text("Shopkeeper").style(&heading);
               ui.text("The shopkeeper waves goodbye. R starts again.")
                 .style(&body);
               return;
             };
-            let line = &TREE[n];
             ui.text(line.speaker).style(&heading);
             ui.column().max_width(600.0).show(|ui| {
               let text = ui.text(RichText::markup(line.text)).style(&body);

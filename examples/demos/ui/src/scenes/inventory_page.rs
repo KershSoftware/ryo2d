@@ -10,6 +10,8 @@ use super::art;
 /// the equipment slots line up with the bag's rows
 const GAP: f32 = 6.0;
 const BAG: usize = 24;
+/// The status line with nothing to report
+const IDLE: &str = "Drag an item to move it, or pick it up and put it down with the pad.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EquipSlot {
@@ -143,8 +145,8 @@ pub struct InventoryPage {
   equipment: [Option<Item>; 3],
   icons: Icons,
   status: String,
-  /// An item is held (by the pad or a mouse drag), as the last frame
-  /// showed: Escape is the UI's Back then, which puts it back
+  /// An item was held (by the pad or a mouse drag) on the last frame
+  /// (`ui.held`): Escape is the UI's Back then, which puts it back
   holding: bool,
 }
 
@@ -167,12 +169,18 @@ impl InventoryPage {
       bag,
       equipment: [None; 3],
       icons: Icons::new(),
-      status: "Drag an item to move it, or pick it up and put it down with the pad.".to_string(),
+      status: IDLE.to_string(),
       holding: false,
     }
   }
 
-  fn get(&self, at: SlotRef) -> Option<Item> {
+  /// The status line: what the last pick-up, move or refusal did
+  pub fn status(&self) -> &str {
+    &self.status
+  }
+
+  /// What slot `at` holds
+  pub fn item(&self, at: SlotRef) -> Option<Item> {
     match at {
       SlotRef::Bag(i) => self.bag.get(i).copied().flatten(),
       SlotRef::Equip(slot) => self.equipment[slot.index()],
@@ -203,16 +211,17 @@ impl InventoryPage {
   }
 
   /// Move the item at `from` to `to`, swapping with what is there; an
-  /// equipment slot refuses an item of the wrong kind, and nothing moves
-  fn move_item(&mut self, from: SlotRef, to: SlotRef) {
-    let Some(moving) = self.get(from).filter(|_| from != to) else {
-      return;
+  /// equipment slot refuses an item of the wrong kind, and nothing moves.
+  /// Whether it said what happened (not for an item put down where it was)
+  fn move_item(&mut self, from: SlotRef, to: SlotRef) -> bool {
+    let Some(moving) = self.item(from).filter(|_| from != to) else {
+      return false;
     };
-    let there = self.get(to);
+    let there = self.item(to);
     let refused = Self::refusal(moving, to).or_else(|| there.and_then(|t| Self::refusal(t, from)));
     if let Some(reason) = refused {
       self.status = reason;
-      return;
+      return true;
     }
     self.put(to, Some(moving));
     self.put(from, there);
@@ -224,13 +233,17 @@ impl InventoryPage {
       ),
       None => format!("Moved the {}.", moving.kind.name()),
     };
+    true
   }
 
-  fn discard(&mut self, from: SlotRef) {
-    if let Some(item) = self.get(from) {
-      self.put(from, None);
-      self.status = format!("Discarded the {}.", item.kind.name());
-    }
+  /// Throw away the item at `from`; whether there was one
+  fn discard(&mut self, from: SlotRef) -> bool {
+    let Some(item) = self.item(from) else {
+      return false;
+    };
+    self.put(from, None);
+    self.status = format!("Discarded the {}.", item.kind.name());
+    true
   }
 
   /// The bag by kind, stacks of a kind merged into one
@@ -264,7 +277,7 @@ impl InventoryPage {
     if at == SlotRef::Bag(0) {
       slot = slot.default_focus();
     }
-    match self.get(at) {
+    match self.item(at) {
       Some(item) => {
         slot = slot
           .icon(self.icons.of(item.kind))
@@ -287,14 +300,10 @@ impl InventoryPage {
 struct Seen {
   /// A drop: from, to (`None` for Discard)
   drop: Option<(SlotRef, Option<SlotRef>)>,
-  /// The slot the pad or a drag picked an item up from
-  picked: Option<SlotRef>,
   /// The slot under the pointer, and the focused one: the details show the
   /// first
   hovered: Option<SlotRef>,
   focused: Option<SlotRef>,
-  /// An item is held over a slot, or dragged by the mouse
-  holding: bool,
 }
 
 impl Seen {
@@ -302,16 +311,12 @@ impl Seen {
     if let Some(from) = response.dropped::<SlotRef>() {
       self.drop = Some((from, Some(at)));
     }
-    if response.drag_started_here() {
-      self.picked = Some(at);
-    }
     if response.hovered() {
       self.hovered = Some(at);
     }
     if response.focused() {
       self.focused = Some(at);
     }
-    self.holding |= response.drag_hover::<SlotRef>() || response.dragging();
   }
 }
 
@@ -397,7 +402,7 @@ impl DemoPage for InventoryPage {
 
         // What the slot under the pointer, or the focused one, holds
         ui.panel().fill_width().height(76.0).gap(4.0).show(|ui| {
-          match seen.hovered.or(seen.focused).and_then(|at| self.get(at)) {
+          match seen.hovered.or(seen.focused).and_then(|at| self.item(at)) {
             Some(item) => {
               ui.text(item.kind.name()).style(&heading);
               ui.text(item.kind.description()).style(&body);
@@ -427,7 +432,6 @@ impl DemoPage for InventoryPage {
             if let Some(from) = discard.dropped::<SlotRef>() {
               seen.drop = Some((from, None));
             }
-            seen.holding |= discard.drag_hover::<SlotRef>();
           });
 
         ui.text(self.status.as_str()).style(&body);
@@ -437,19 +441,24 @@ impl DemoPage for InventoryPage {
         .color(muted);
       });
 
-    if let Some(at) = seen.picked
-      && let Some(item) = self.get(at)
-    {
-      self.status = format!("Holding the {}.", item.kind.name());
-    }
-    match seen.drop {
+    let mut told = match seen.drop {
       Some((from, Some(to))) => self.move_item(from, to),
       Some((from, None)) => self.discard(from),
-      None => {}
-    }
+      None => false,
+    };
     if sort {
       self.sort();
+      told = true;
     }
-    self.holding = seen.holding || seen.picked.is_some();
+    // What is held now, after this frame's pick-ups; once it is put back,
+    // released over nothing or put down where it was, the status stops
+    // saying it is held
+    let held = ui.held::<SlotRef>().and_then(|at| self.item(at));
+    match held {
+      Some(item) => self.status = format!("Holding the {}.", item.kind.name()),
+      None if self.holding && !told => self.status = IDLE.to_string(),
+      None => {}
+    }
+    self.holding = held.is_some();
   }
 }

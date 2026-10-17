@@ -138,6 +138,24 @@ macro_rules! drag_builders {
 pub(crate) use drag_builders;
 
 impl UiContext<'_> {
+  /// The payload being dragged, when it is a `P`: from the frame a source
+  /// is picked up (a mouse drag starting, or Confirm on the pad) until it is
+  /// dropped, put back with Back or released over nothing. `None` when
+  /// nothing is held, the payload is another type, or this is not the top
+  /// scene. It shows what the player carries, and tells a game that Back
+  /// (Escape) is the drag's while it is `Some`.
+  ///
+  /// ```ignore
+  /// if let Some(from) = ui.held::<SlotRef>() {
+  ///     self.status = format!("Holding the {}.", self.item(from).name());
+  /// }
+  /// ```
+  pub fn held<P: Clone + 'static>(&self) -> Option<P> {
+    let (_, top) = self.scene();
+    let drag = self.memory.interact.drag.as_ref().filter(|_| top)?;
+    drag.payload.downcast_ref::<P>().cloned()
+  }
+
   /// A widget's [`response`](UiContext::response), sensing drags too when
   /// it is a drag source, with its drag and drop applied
   /// ([`drag_tick`](Self::drag_tick))
@@ -383,6 +401,36 @@ mod tests {
     d.frame(slots);
     d.confirm(); // put down on slot 1
     assert_eq!(d.frame(slots), [None, Some(Item(7))]);
+  }
+
+  #[test]
+  fn held_is_the_payload_from_pick_up_until_the_drag_ends() {
+    let mut d = UiDriver::new((200.0, 100.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      slots(ui);
+      (ui.held::<Item>(), ui.held::<u8>())
+    };
+    for _ in 0..2 {
+      assert_eq!(d.frame(draw), (None, None), "nothing held yet");
+    }
+    d.confirm(); // pick up slot 0
+    assert_eq!(
+      d.frame(draw),
+      (Some(Item(7)), None),
+      "held from the pick-up"
+    );
+    d.nav(Direction::Right);
+    assert_eq!(d.frame(draw).0, Some(Item(7)), "still held as it moves");
+    d.back(); // put it back
+    assert_eq!(d.frame(draw), (None, None), "Back ended it");
+    // A mouse drag holds it too, until its release
+    d.move_to(10.0, 10.0);
+    d.press();
+    d.frame(draw);
+    d.move_to(150.0, 80.0);
+    assert_eq!(d.frame(draw).0, Some(Item(7)), "the mouse holds it");
+    d.release();
+    assert_eq!(d.frame(draw).0, None, "released over nothing");
   }
 
   #[test]

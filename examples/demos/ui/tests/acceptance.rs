@@ -1,9 +1,11 @@
 //! The acceptance pages, driven by a gamepad alone
 
 use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
-use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use demo_kit::prelude::*;
+use ryo2d::testing::{HeadlessEngine, StepOutcome};
+use ui_demo::scenes::{InventoryPage, Item, ItemKind, SlotRef};
 
 const DPAD: [GamepadButton; 4] = [
   GamepadButton::DPadUp,
@@ -14,13 +16,22 @@ const DPAD: [GamepadButton; 4] = [
 
 fn start(page: usize) -> Option<HeadlessEngine> {
   let mut engine = HeadlessEngine::new_or_skip(ui_demo::demo().start_page(page).engine_builder())?;
-  engine.step_frames(4).ok()?;
+  engine.step_frames(4).unwrap();
   Some(engine)
 }
 
 fn pad(engine: &mut HeadlessEngine, button: GamepadButton) {
   engine.tap_pad(button);
   engine.step_frames(3).unwrap();
+}
+
+/// What the D-pad can land on now
+fn ids(engine: &HeadlessEngine) -> BTreeSet<UiId> {
+  engine
+    .ui_focusables()
+    .into_iter()
+    .map(|(id, _)| id)
+    .collect()
 }
 
 /// The focusables reached from the current focus by D-pad presses alone
@@ -45,16 +56,12 @@ fn reachable(engine: &mut HeadlessEngine) -> BTreeSet<UiId> {
   seen
 }
 
+/// Every target the D-pad had before the walk is reached by it
 fn assert_all_reachable(engine: &mut HeadlessEngine, what: &str) {
-  let all: BTreeSet<UiId> = engine
-    .ui_focusables()
-    .into_iter()
-    .map(|(id, _)| id)
-    .collect();
+  let all = engine.ui_focusables();
   assert!(!all.is_empty(), "{what}: nothing to focus");
   let reached = reachable(engine);
-  let missed: Vec<Rect> = engine
-    .ui_focusables()
+  let missed: Vec<Rect> = all
     .into_iter()
     .filter(|(id, _)| !reached.contains(id))
     .map(|(_, r)| r)
@@ -73,6 +80,12 @@ fn every_acceptance_page_is_fully_reachable_by_pad() {
       return;
     };
     assert_all_reachable(&mut engine, name);
+    if name == "Dialogue" {
+      // Skip shows the whole line, then its choices
+      pad(&mut engine, GamepadButton::South);
+      assert!(engine.ui_focusables().len() > 1, "Skip showed the choices");
+      assert_all_reachable(&mut engine, "Dialogue, choices");
+    }
   }
   // Settings, on each tab in turn
   let Some(mut engine) = start(1) else {
@@ -80,6 +93,21 @@ fn every_acceptance_page_is_fully_reachable_by_pad() {
   };
   for tab in ["Audio", "Video", "Controls"] {
     assert_all_reachable(&mut engine, &format!("Settings, {tab}"));
+    if tab == "Video" {
+      // The Window dropdown's list: all of it reachable, and Back closes it
+      let page = ids(&engine);
+      let window = engine.ui_focusables()[3].0;
+      engine.focus_ui(window);
+      engine.step_frames(2).unwrap();
+      pad(&mut engine, GamepadButton::South);
+      assert!(
+        ids(&engine).is_disjoint(&page),
+        "the Window list opened over the page"
+      );
+      assert_all_reachable(&mut engine, "Settings, Video, the Window list");
+      pad(&mut engine, GamepadButton::East);
+      assert_eq!(ids(&engine), page, "Back closed the list");
+    }
     pad(&mut engine, GamepadButton::RightBumper);
   }
 }
@@ -88,13 +116,6 @@ fn every_acceptance_page_is_fully_reachable_by_pad() {
 fn every_menu_dialog_is_reachable_and_closes_on_back() {
   let Some(mut engine) = start(0) else {
     return;
-  };
-  let ids = |engine: &HeadlessEngine| -> BTreeSet<UiId> {
-    engine
-      .ui_focusables()
-      .into_iter()
-      .map(|(id, _)| id)
-      .collect()
   };
   let page = ids(&engine);
   let Some(new_game) = engine.ui_focused() else {
@@ -165,4 +186,86 @@ fn the_pad_moves_an_item_into_its_equipment_slot() {
   };
   assert!(differs(weapon_rect), "the Weapon slot shows the Sword now");
   assert!(differs(sword_rect), "the Sword's bag slot is empty now");
+}
+
+/// What the watched Inventory page showed on its last UI frame
+#[derive(Debug, Clone, Default)]
+struct Shown {
+  status: String,
+  first_slot: Option<Item>,
+}
+
+/// The Inventory page, with what it shows copied out after each UI frame
+struct WatchedInventory {
+  page: InventoryPage,
+  shown: Arc<Mutex<Shown>>,
+}
+
+impl DemoPage for WatchedInventory {
+  fn name(&self) -> &str {
+    self.page.name()
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    self.page.controls()
+  }
+
+  fn wants_escape(&self) -> bool {
+    self.page.wants_escape()
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
+    self.page.ui(ui, ctx);
+    if let Ok(mut shown) = self.shown.lock() {
+      shown.status = self.page.status().to_string();
+      shown.first_slot = self.page.item(SlotRef::Bag(0));
+    }
+  }
+}
+
+#[test]
+fn escape_puts_back_an_item_the_pad_holds_over_a_button() {
+  let shown = Arc::new(Mutex::new(Shown::default()));
+  let watched = Arc::clone(&shown);
+  let demo = Demo::new("Inventory")
+    .resolution(1024, 768)
+    .page(move || WatchedInventory {
+      page: InventoryPage::new(),
+      shown: Arc::clone(&watched),
+    });
+  let Some(mut engine) = HeadlessEngine::new_or_skip(demo.engine_builder()) else {
+    return;
+  };
+  engine.step_frames(4).unwrap();
+  let shown = || shown.lock().map(|s| s.clone()).unwrap_or_default();
+  let sword = shown().first_slot;
+  assert_eq!(sword.map(|item| item.kind), Some(ItemKind::Sword));
+
+  pad(&mut engine, GamepadButton::South); // pick up the Sword
+  assert!(shown().status.contains("Holding"), "{:?}", shown().status);
+  // Down the bag's rows to the Sort button under them
+  for _ in 0..4 {
+    pad(&mut engine, GamepadButton::DPadDown);
+  }
+  let focused = engine.ui_focused();
+  let on = engine
+    .ui_focusables()
+    .into_iter()
+    .find(|(id, _)| Some(*id) == focused);
+  assert!(
+    on.is_some_and(|(_, rect)| rect.height < 40.0),
+    "the focus is on Sort, a button, not a slot: {on:?}"
+  );
+
+  engine.tap_key(KeyCode::Escape);
+  assert_eq!(
+    engine.step_frames(3).unwrap(),
+    StepOutcome::Running,
+    "Escape put the item back instead of quitting the demo"
+  );
+  assert!(!shown().status.contains("Holding"), "{:?}", shown().status);
+  assert_eq!(shown().first_slot, sword, "the Sword is still in its slot");
+  // And nothing is held: A on Sort sorts
+  pad(&mut engine, GamepadButton::South);
+  assert_eq!(shown().status, "Sorted the backpack.");
 }
