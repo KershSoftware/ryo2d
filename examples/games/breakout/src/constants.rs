@@ -22,7 +22,10 @@ pub const PADDLE_LAUNCH_INFLUENCE: f32 = 0.5;
 
 /// Ball configuration
 pub const BALL_SIZE: f32 = 12.0;
-pub const BALL_SPEED: f32 = 400.0;
+/// The ball's speed in pixels per second. The ball's speeds are 2.4 times
+/// what they were before the physics overhaul, which stepped Rapier 1/60 s
+/// at 144 updates a second: the ball really moved this fast then.
+pub const BALL_SPEED: f32 = 960.0;
 
 /// Block configuration
 pub const BLOCK_WIDTH: f32 = 80.0;
@@ -41,9 +44,9 @@ pub const STARTING_LIVES: u32 = 3;
 pub const MAX_LEVEL: u32 = 10;
 
 /// Ball physics
-pub const BALL_MIN_VERTICAL_SPEED: f32 = 50.0; // Prevents horizontal-only motion
+pub const BALL_MIN_VERTICAL_SPEED: f32 = 120.0; // Prevents horizontal-only motion
 pub const BALL_MAX_HORIZONTAL_RATIO: f32 = 0.7; // Max horizontal as ratio of total speed
-pub const PADDLE_SPIN_EFFECT: f32 = 200.0; // Horizontal velocity added based on hit position
+pub const PADDLE_SPIN_EFFECT: f32 = 480.0; // Horizontal velocity added based on hit position
 
 /// Multi-ball spawning
 pub const MULTIBALL_COOLDOWN: f32 = 5.0; // Seconds between multiball block spawns
