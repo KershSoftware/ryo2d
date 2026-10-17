@@ -82,6 +82,62 @@ pub(crate) fn begin_pass(world: &mut World) {
   }
 }
 
+impl<'a> UiContext<'a> {
+  /// Draw an embedded node tree (spawned with `.embedded()`) here, inside the
+  /// open container: in its flow, focus scope and clip. Its events reach
+  /// `ctx.ui_events()` after this scene's `ui` returns. Drawing one root
+  /// twice in a frame draws it once and warns.
+  ///
+  /// A modal or popup inside an embedded tree takes Back only through the
+  /// closure's own `ui.back()`.
+  pub fn node(&mut self, root: Entity, world: &mut World) -> Response {
+    let embedded = world.get::<UiRoot>(root).is_some_and(|r| r.embedded);
+    if !embedded {
+      warn_once("ui-node:embed-not-embedded".to_string(), || {
+        "ui.node draws a root spawned with .embedded()".to_string()
+      });
+      return Response::default();
+    }
+    let Some(mut nodes) = world.get_resource_mut::<UiNodes>() else {
+      return Response::default();
+    };
+    if nodes.embedded_drawn.contains(&root) {
+      warn_once("ui-node:embed-twice".to_string(), || {
+        "an embedded node tree was drawn twice in one frame; drawn once".to_string()
+      });
+      return Response::default();
+    }
+    nodes.embedded_drawn.push(root);
+    let pending_focus = nodes.pending_focus.take();
+    let scene = self.scene().0;
+    let mut walk = Walk {
+      scene,
+      events: Vec::new(),
+      back: None,
+      pending_focus,
+    };
+    let response = draw_node(world, self, root, None, &mut walk);
+    if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
+      if let Some(node) = walk.pending_focus {
+        nodes.pending_focus = Some(node);
+      }
+      nodes.pending.append(&mut walk.events);
+    }
+    response.unwrap_or_default()
+  }
+}
+
+/// Deliver the events embedded trees queued during the scene's `ui`, and
+/// return a copy
+pub(crate) fn deliver_pending(world: &mut World) -> Vec<UiEvent> {
+  let events = world
+    .get_resource_mut::<UiNodes>()
+    .map(|mut nodes| std::mem::take(&mut nodes.pending))
+    .unwrap_or_default();
+  super::events::deliver(world, events.clone());
+  events
+}
+
 /// Draw `scene`'s node trees through the builders, in spawn order (a later
 /// root over an earlier one), and return their events in walk order
 pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) -> Vec<UiEvent> {
@@ -128,18 +184,18 @@ fn draw_node(
   node: Entity,
   place: Option<Place>,
   walk: &mut Walk,
-) {
+) -> Option<Response> {
   let Ok(entity) = world.get_entity_mut(node) else {
-    return;
+    return None;
   };
   if entity.contains::<UiHidden>() {
-    return;
+    return None;
   }
   let Some(kind) = entity.get::<UiNodeKind>() else {
     warn_once("ui-node:not-a-node".to_string(), || {
       "an entity under a UI node is not a node; it is skipped".to_string()
     });
-    return;
+    return None;
   };
   let (response, sends) = match kind.kind {
     Kind::Column | Kind::Row | Kind::Grid(_) | Kind::Stack | Kind::Panel | Kind::Popup { .. } => {
@@ -148,7 +204,7 @@ fn draw_node(
     Kind::Scroll(_) => (draw_scroll(entity, ui, place, walk), Sends::Clicks),
     Kind::Text(_) => {
       draw_text(entity, ui);
-      return;
+      return None;
     }
     Kind::Button(_) => (draw_button(entity, ui, place), Sends::Clicks),
     Kind::Image(_) => (draw_image(entity, ui, place), Sends::Clicks),
@@ -157,7 +213,7 @@ fn draw_node(
       if let Some(group) = draw_radio_group(entity, ui, place) {
         answer_group(world, node, &group, walk);
       }
-      return;
+      return None;
     }
     Kind::Slider(_) => (draw_slider(entity, ui, place), Sends::Changes),
     Kind::Progress { .. } => (draw_progress(entity, ui, place), Sends::Clicks),
@@ -167,23 +223,24 @@ fn draw_node(
       if draw_choice_list(entity, ui, place).is_some() {
         push_event(world, walk, node, UiEventKind::Clicked);
       }
-      return;
+      return None;
     }
     Kind::Separator => {
       ui.scope(node, |ui| ui.separator());
-      return;
+      return None;
     }
     Kind::Spacer => {
       ui.scope(node, |ui| ui.spacer());
-      return;
+      return None;
     }
     Kind::Slot { .. } => (draw_slot(entity, ui, place), Sends::Clicks),
     Kind::Prompt { .. } => (draw_prompt(entity, ui, place), Sends::Clicks),
     Kind::Rebind(_) => (draw_rebind(entity, ui, place), Sends::Changes),
   };
-  if let Some(response) = response {
-    answer(world, ui, node, &response, sends, walk);
+  if let Some(response) = &response {
+    answer(world, ui, node, response, sends, walk);
   }
+  response
 }
 
 /// Which of `Clicked` and `Changed` a kind sends
@@ -2237,5 +2294,120 @@ mod dialogs {
     d.nav(Direction::Down);
     d.frame(|_| {});
     assert_eq!(d.focused(), d.ui_id(quit), "past Options to Quit");
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod embedding {
+  use crate::core::ecs::kernel::{Children, Entity, World};
+  use crate::core::input::Direction;
+  use crate::core::ui::nav::nav_targets;
+  use crate::core::ui::nodes::*;
+  use crate::core::ui::test_util::UiDriver;
+  use crate::core::ui::{Rect, UiContext};
+
+  fn kids(world: &World, of: Entity) -> Vec<Entity> {
+    world
+      .get::<Children>(of)
+      .map(|c| c.to_vec())
+      .unwrap_or_default()
+  }
+
+  fn grid() -> UiNode {
+    UiNode::grid(2)
+      .gap(4.0)
+      .embedded()
+      .children((0..4).map(|i| UiNode::button(format!("Cell {i}")).action("cell")))
+  }
+
+  /// Before, the embedded grid, After: one focus scope
+  fn screen(ui: &mut UiContext<'_>, world: &mut World, root: Entity) {
+    ui.column().focus_scope().gap(8.0).show(|ui| {
+      ui.button("Before").default_focus();
+      ui.node(root, world);
+      ui.button("After");
+    });
+  }
+
+  fn rects(d: &UiDriver) -> Vec<Rect> {
+    nav_targets(&d.memory, Some(d.scene))
+      .into_iter()
+      .map(|(_, r)| r)
+      .collect()
+  }
+
+  #[test]
+  fn an_embedded_tree_draws_in_the_closures_flow_and_focus_path() {
+    let mut d = UiDriver::new((400.0, 400.0));
+    let root = d.spawn_ui(grid());
+    for _ in 0..3 {
+      d.frame_with_world(|ui, world| screen(ui, world, root));
+    }
+    let r = rects(&d);
+    assert_eq!(r.len(), 6, "Before, four cells, After");
+    assert!(r[0].y < r[1].y && r[4].y < r[5].y, "in the column's order");
+    let first_cell = kids(d.world(), root)[0];
+    d.nav(Direction::Down);
+    d.frame_with_world(|ui, world| screen(ui, world, root));
+    assert_eq!(
+      d.focused(),
+      d.ui_id(first_cell),
+      "down from Before into the grid"
+    );
+  }
+
+  #[test]
+  fn an_embedded_root_is_not_drawn_on_its_own() {
+    let mut d = UiDriver::new((400.0, 400.0));
+    d.spawn_ui(grid());
+    d.frame(|_| {});
+    d.frame(|_| {});
+    assert_eq!(d.command_count(), 0);
+  }
+
+  #[test]
+  fn drawing_an_embedded_tree_twice_warns_once_and_draws_it_once() {
+    let mut d = UiDriver::new((400.0, 400.0));
+    let root = d.spawn_ui(grid());
+    for _ in 0..3 {
+      d.frame_with_world(|ui, world| {
+        ui.column().focus_scope().show(|ui| {
+          ui.node(root, world);
+          ui.node(root, world);
+        });
+      });
+    }
+    assert_eq!(rects(&d).len(), 4, "four cells, not eight");
+    let warned = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|w| w.message.contains("drawn twice in one frame"))
+      .count();
+    assert_eq!(warned, 1);
+  }
+
+  #[test]
+  fn embedded_events_arrive_after_the_closure() {
+    let mut d = UiDriver::new((400.0, 400.0));
+    let root = d.spawn_ui(grid());
+    for _ in 0..3 {
+      d.frame_with_world(|ui, world| screen(ui, world, root));
+    }
+    d.nav(Direction::Down);
+    d.frame_with_world(|ui, world| screen(ui, world, root));
+    d.confirm();
+    let during = d.frame_with_world(|ui, world| {
+      screen(ui, world, root);
+      world.resource::<UiNodes>().pending.len()
+    });
+    assert_eq!(during, 1, "queued while the closure runs");
+    assert!(
+      d.events()
+        .iter()
+        .any(|e| e.kind == UiEventKind::Clicked && e.action.as_deref() == Some("cell"))
+    );
+    assert!(
+      d.world().resource::<UiNodes>().pending.is_empty(),
+      "delivered after it"
+    );
   }
 }

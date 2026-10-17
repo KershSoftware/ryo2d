@@ -530,6 +530,7 @@ impl SceneManager {
       let events = crate::core::ui::nodes::draw_nodes(world, ui, slot.scope_id);
       crate::core::ui::nodes::deliver(world, events);
       let result = slot.call(world, audio, |scene, ctx| scene.ui(ui, ctx));
+      crate::core::ui::nodes::deliver_pending(world);
       ui.end_scene();
       if i == top {
         action = result;

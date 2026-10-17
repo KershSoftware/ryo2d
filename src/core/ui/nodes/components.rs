@@ -120,7 +120,6 @@ pub(crate) struct UiNodes {
   pub(crate) seq: u64,
   pub(crate) pending_focus: Option<Entity>,
   /// Embedded trees' events, delivered after the scene's ui
-  #[allow(dead_code)] // read once trees can be embedded
   pub(crate) pending: Vec<UiEvent>,
   /// Embedded roots drawn this pass
   pub(crate) embedded_drawn: Vec<Entity>,

@@ -18,6 +18,6 @@ pub use events::{UiEvent, UiEventKind};
 pub use node::{TextRole, UiNode, UiNodeKind};
 
 pub(crate) use components::UiNodes;
-pub(crate) use draw::{begin_pass, draw_nodes};
+pub(crate) use draw::{begin_pass, deliver_pending, draw_nodes};
 pub(crate) use events::deliver;
 pub(crate) use spawn::*;

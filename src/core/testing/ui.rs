@@ -337,6 +337,8 @@ impl UiHarness {
     };
     self.last_events.clone_from(&events);
     nodes::deliver(&mut self.world, events);
+    let late = nodes::deliver_pending(&mut self.world);
+    self.last_events.extend(late);
     // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
     // the UI stays as the last drawn frame left it
     if self.memory.drew_nothing() {
