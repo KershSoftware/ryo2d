@@ -12,7 +12,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::frame::should_pace_frames;
-use super::{Engine, EngineEvent, FrameOutcome};
+use super::{Engine, EngineEvent, FrameOutcome, SceneHost};
 use crate::core::config::DisplayMode;
 use crate::core::cursor::CursorRequest;
 use crate::core::graphics::WgpuRenderer;
@@ -57,6 +57,38 @@ fn confined_step(
     (at.0 + delta.0 * scale_factor).clamp(0.0, max_x),
     (at.1 + delta.1 * scale_factor).clamp(0.0, max_y),
   )
+}
+
+/// Whether a frame is drawn: not while the window is hidden, nor while the
+/// engine is throttled in the background without background rendering
+fn should_present(occluded: bool, throttled: bool, background_rendering: bool) -> bool {
+  !occluded && !(throttled && !background_rendering)
+}
+
+/// Why a frame ran long: only a steady frame of a visible, focused window
+/// says the game cannot keep up
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameKind {
+  /// The first frames build the GPU pipelines and upload the first assets
+  Startup,
+  /// A scene was entered: it loaded its assets
+  SceneLoad,
+  /// The window is hidden or unfocused: the system decides when it draws
+  Background,
+  Steady,
+}
+
+/// The kind of frame number `frame` (from 0) is
+fn frame_kind(frame: u64, scene_entered: bool, visible_and_focused: bool) -> FrameKind {
+  if frame < 2 {
+    FrameKind::Startup
+  } else if scene_entered {
+    FrameKind::SceneLoad
+  } else if !visible_and_focused {
+    FrameKind::Background
+  } else {
+    FrameKind::Steady
+  }
 }
 
 impl Engine {
@@ -286,21 +318,43 @@ impl Engine {
     self.frame_timings.total = frame_start.elapsed();
     self.smoothed_timings.update(&self.frame_timings);
 
-    // Log when a frame takes too long (>33ms = <30fps)
+    let frame = self.frames_run;
+    self.frames_run += 1;
+    let entries = self
+      .world
+      .get_non_send::<SceneHost>()
+      .map_or(self.last_scene_entries, |host| host.scenes.entries());
+    let scene_entered = entries != self.last_scene_entries;
+    self.last_scene_entries = entries;
+
+    // A frame over 33 ms (under 30 fps) warns only in steady play; startup,
+    // scene loads and a hidden or unfocused window are expected to run long
     #[cfg(debug_assertions)]
     {
       let total_ms = self.frame_timings.total.as_secs_f64() * 1000.0;
       if total_ms > 33.0 {
-        engine_warn!(
-          module: "Perf",
-          "SLOW FRAME - Total: {:.1}ms | Update: {:.1}ms | Render: {:.1}ms | Present: {:.1}ms",
-          total_ms,
-          self.frame_timings.update.as_secs_f64() * 1000.0,
-          self.frame_timings.render.as_secs_f64() * 1000.0,
-          self.frame_timings.present.as_secs_f64() * 1000.0,
-        );
+        let visible_and_focused = self.game_window_focused && !self.window_occluded;
+        match frame_kind(frame, scene_entered, visible_and_focused) {
+          FrameKind::Steady => engine_warn!(
+            module: "Perf",
+            "SLOW FRAME - Total: {:.1}ms | Update: {:.1}ms | Render: {:.1}ms | Present: {:.1}ms",
+            total_ms,
+            self.frame_timings.update.as_secs_f64() * 1000.0,
+            self.frame_timings.render.as_secs_f64() * 1000.0,
+            self.frame_timings.present.as_secs_f64() * 1000.0,
+          ),
+          FrameKind::Startup => {
+            engine_debug!(module: "Perf", "Startup frame took {:.1}ms", total_ms)
+          }
+          FrameKind::SceneLoad => {
+            engine_debug!(module: "Perf", "Scene load frame took {:.1}ms", total_ms)
+          }
+          FrameKind::Background => {}
+        }
       }
     }
+    #[cfg(not(debug_assertions))]
+    let _ = (frame, scene_entered);
 
     if self.last_fps_log.elapsed() >= Duration::from_secs(1) {
       self.last_fps_log = Instant::now();
@@ -333,7 +387,11 @@ impl Engine {
       crate::core::profiler::new_frame();
     }
 
-    self.skip_present = throttle && !self.config.background_rendering;
+    self.skip_present = !should_present(
+      self.window_occluded,
+      throttle,
+      self.config.background_rendering,
+    );
     let outcome = self.frame(None);
     self.skip_present = false;
     if matches!(outcome, FrameOutcome::Quit | FrameOutcome::Fatal(_)) {
@@ -578,6 +636,12 @@ impl ApplicationHandler<EngineEvent> for Engine {
           window.request_redraw();
         }
       }
+      WindowEvent::Occluded(occluded) => {
+        // Hidden: frames run but are not drawn, so presenting cannot wait
+        // on a drawable the system will not give
+        self.window_occluded = *occluded;
+        engine_debug!(module: "Window", "Occluded: {}", occluded);
+      }
       WindowEvent::Focused(focused) => {
         self.game_window_focused = *focused;
         // Release the grab on Alt-Tab and restore it on return
@@ -634,10 +698,10 @@ impl ApplicationHandler<EngineEvent> for Engine {
         }
 
         let frame_start = Instant::now();
-        if matches!(
-          self.frame(None),
-          FrameOutcome::Quit | FrameOutcome::Fatal(_)
-        ) {
+        self.skip_present = !should_present(self.window_occluded, false, true);
+        let outcome = self.frame(None);
+        self.skip_present = false;
+        if matches!(outcome, FrameOutcome::Quit | FrameOutcome::Fatal(_)) {
           event_loop.exit();
           return;
         }
@@ -661,7 +725,8 @@ impl ApplicationHandler<EngineEvent> for Engine {
           .renderer
           .as_ref()
           .is_some_and(WgpuRenderer::presentation_blocks);
-        if should_pace_frames(presentation_blocks) {
+        let presented = matches!(outcome, FrameOutcome::Presented);
+        if should_pace_frames(presentation_blocks, presented) {
           self.pace_frame();
         }
       }
@@ -852,6 +917,29 @@ mod tests {
       cursor_grab_for_focus(true, true),
       Some((CursorGrabMode::Confined, false))
     );
+  }
+
+  #[test]
+  fn a_hidden_window_draws_nothing() {
+    assert!(should_present(false, false, true));
+    assert!(!should_present(true, false, true), "occluded");
+    assert!(
+      !should_present(false, true, false),
+      "throttled without background rendering"
+    );
+    assert!(
+      should_present(false, true, true),
+      "throttled with background rendering"
+    );
+  }
+
+  #[test]
+  fn slow_frames_warn_only_in_steady_play() {
+    assert_eq!(frame_kind(0, false, true), FrameKind::Startup);
+    assert_eq!(frame_kind(1, false, true), FrameKind::Startup);
+    assert_eq!(frame_kind(500, true, true), FrameKind::SceneLoad);
+    assert_eq!(frame_kind(500, false, false), FrameKind::Background);
+    assert_eq!(frame_kind(500, false, true), FrameKind::Steady);
   }
 
   #[test]

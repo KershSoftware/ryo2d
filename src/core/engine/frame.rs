@@ -717,10 +717,11 @@ fn take_actions(input: &mut Input, actions: &[&str], capture: &mut Vec<Binding>)
   }
 }
 
-/// Frames are paced in software only when presenting does not wait for the
-/// display already (vsync off).
-pub(super) fn should_pace_frames(presentation_blocks: bool) -> bool {
-  !presentation_blocks
+/// Frames are paced in software when presenting did not wait for the
+/// display: vsync off, or no frame was presented (a hidden window, or a
+/// surface with nothing to give), which would otherwise spin.
+pub(super) fn should_pace_frames(presentation_blocks: bool, presented: bool) -> bool {
+  !presentation_blocks || !presented
 }
 
 // =============================================================================
@@ -2069,8 +2070,18 @@ mod tests {
 
   #[test]
   fn frames_are_paced_only_when_presenting_does_not_wait() {
-    assert!(should_pace_frames(false), "vsync off: pace to target_fps");
-    assert!(!should_pace_frames(true), "vsync on: the display paces");
+    assert!(
+      should_pace_frames(false, true),
+      "vsync off: pace to target_fps"
+    );
+    assert!(
+      !should_pace_frames(true, true),
+      "vsync on: the display paces"
+    );
+    assert!(
+      should_pace_frames(true, false),
+      "nothing presented waited for the display: pace to target_fps"
+    );
   }
 
   #[test]

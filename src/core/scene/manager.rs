@@ -92,6 +92,8 @@ pub struct SceneManager {
   transition_state: Option<TransitionState>,
   /// Scope ids of the scenes that exited since `take_exited`
   exited: Vec<u64>,
+  /// Scenes entered so far (each `on_enter`)
+  entries: u64,
 }
 
 /// Internal state for an in-progress transition.
@@ -153,7 +155,14 @@ impl SceneManager {
       scenes: Vec::new(),
       transition_state: None,
       exited: Vec::new(),
+      entries: 0,
     }
+  }
+
+  /// How many scenes have been entered so far: a frame that raises it
+  /// loaded a scene
+  pub(crate) fn entries(&self) -> u64 {
+    self.entries
   }
 
   /// The scope ids of the scenes that exited (popped, switched away, cleared
@@ -180,6 +189,7 @@ impl SceneManager {
       return;
     };
     top.messages = SceneMessages::starting_now(world);
+    self.entries += 1;
     #[cfg(debug_assertions)]
     let start = web_time::Instant::now();
     top.call(world, audio, |scene, ctx| scene.on_enter(ctx));

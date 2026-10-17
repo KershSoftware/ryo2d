@@ -270,6 +270,13 @@ pub struct Engine {
   gilrs: Option<Gilrs>,
   custom_cursor_cache: HashMap<String, winit::window::CustomCursor>,
   cursor_locked: bool,
+  /// The game window is hidden (covered, on another space, minimised):
+  /// frames run but are not drawn
+  window_occluded: bool,
+  /// Frames run since the engine started, to tell the startup frames apart
+  frames_run: u64,
+  /// The scene manager's entry count after the last frame
+  last_scene_entries: u64,
   /// macOS has no confined grab: the cursor is locked and moved by hand
   /// from raw motion, and this is where it is, in physical window pixels
   /// (`None` when not confining that way)
@@ -663,6 +670,9 @@ impl Engine {
       gilrs,
       custom_cursor_cache: HashMap::new(),
       cursor_locked: false,
+      window_occluded: false,
+      frames_run: 0,
+      last_scene_entries: 0,
       confine_emulation: None,
       last_cursor_position: (0.0, 0.0),
       surface_needs_reconfigure: false,

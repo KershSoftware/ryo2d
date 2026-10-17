@@ -136,7 +136,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 ## Presenting
 
-- Present mode: vsync on (the default) is `Fifo`; vsync off is `Mailbox`, else `Immediate`, else `Fifo`. The engine paces frames to `target_fps` (sleep, then spin) only when presenting does not block (`should_pace_frames`), which is vsync off unless the surface fell back to `Fifo`.
+- Present mode: vsync on (the default) is `Fifo`; vsync off is `Mailbox`, else `Immediate`, else `Fifo`. The engine paces frames to `target_fps` (sleep, then spin) when presenting does not block or nothing was presented (`should_pace_frames`): vsync off unless the surface fell back to `Fifo`, or a hidden window. A hidden window (winit's `Occluded`) runs its frames without drawing them, so presenting never waits on a drawable the system will not give.
 - Surface states (`gpu_error.rs`): `Suboptimal` draws, then reconfigures; `Timeout` and `Occluded` skip the frame; `Outdated` reconfigures; `Lost` recreates the surface; a validation error is fatal and ends the run, as is a lost device. A skipped frame still ran its update; it just presented nothing.
 
 ## Gotchas
