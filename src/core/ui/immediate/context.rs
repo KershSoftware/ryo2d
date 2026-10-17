@@ -595,9 +595,9 @@ impl<'a> UiContext<'a> {
   /// What the pointer, the keyboard and the pad did to widget `id` this
   /// frame, as resolved before the scenes' UI (`interact::resolve_pointer`,
   /// `nav::resolve_focus`), keeping only the pointer input `sense` takes.
-  /// Nothing when this is not the top scene or the widget is `disabled`,
-  /// and no pointer input while the pointer is occluded. Its rect is this
-  /// frame's when it was laid out already, else last frame's.
+  /// Nothing when this is not the top scene or the widget is `disabled`.
+  /// Its rect is this frame's when it was laid out already, else last
+  /// frame's.
   pub(crate) fn response(&mut self, id: UiId, sense: Sense, disabled: bool) -> Response {
     let rect = self
       .memory

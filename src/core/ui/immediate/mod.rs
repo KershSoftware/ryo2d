@@ -1,14 +1,15 @@
-//! Immediate-mode UI system
+//! The UI context and its absolute drawing
 //!
-//! This module provides stateless, per-frame UI drawing. Every frame you
-//! call draw functions to render UI elements - no widget state is persisted.
+//! [`UiContext`] is what `Scene::ui` draws with. Widgets and containers are
+//! builders on it (`ui.button("Play").clicked()`), laid out by the UI's layout
+//! and answering from the UI's memory; this module holds the context itself,
+//! the absolute `draw_*` calls, the clip stack and the input snapshot.
 //!
-//! # When to Use Immediate Mode
+//! # When to draw absolutely
 //!
-//! - Simple HUDs (health bars, score displays, ammo counters)
+//! - HUD bars, counters and markers at fixed places
 //! - Debug overlays and developer tools
-//! - Dynamic UI that changes frequently
-//! - Prototyping new UI elements
+//! - Custom shapes a widget does not cover
 //!
 //! # Example
 //!
@@ -25,7 +26,8 @@
 //!     // Draw score text
 //!     ui.draw_text(&format!("Score: {}", self.score), 10.0, 40.0, Color::WHITE);
 //!
-//!     // Button returns true when clicked (immediate - no state persisted)
+//!     // Widgets are builders: this one is placed at a rect and says
+//!     // whether it was clicked
 //!     if ui.button("Pause").at(Rect::new(700.0, 10.0, 80.0, 30.0)).clicked() {
 //!         return SceneAction::Push(Box::new(PauseMenu));
 //!     }
