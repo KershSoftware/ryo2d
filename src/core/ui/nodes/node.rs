@@ -526,7 +526,10 @@ impl UiNode {
     UiNode::options(Kind::Tabs, options, selected)
   }
 
-  /// A list of options, the first highlighted
+  /// A list of options, the first highlighted. Picking one sends `Clicked`
+  /// and writes the choice to its `UiIndex`. The builder gives a choice list
+  /// no `Response`, so it has no `ui_id` and its `UiInteraction` is never
+  /// updated.
   pub fn choice_list(options: &[&str]) -> UiNode {
     UiNode::options(Kind::ChoiceList { default: None }, options, 0)
   }

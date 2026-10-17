@@ -154,6 +154,13 @@ fn draw_node(
     Kind::Slider(_) => (draw_slider(entity, ui, place), Sends::Changes),
     Kind::Progress { .. } => (draw_progress(entity, ui, place), Sends::Clicks),
     Kind::TextInput(_) => (draw_text_input(entity, ui, place), Sends::Changes),
+    Kind::Dropdown | Kind::Tabs => (draw_pick(entity, ui, place), Sends::Changes),
+    Kind::ChoiceList { .. } => {
+      if draw_choice_list(entity, ui, place).is_some() {
+        push_event(world, walk, node, UiEventKind::Clicked);
+      }
+      return;
+    }
     Kind::Separator => {
       ui.scope(node, |ui| ui.separator());
       return;
@@ -162,7 +169,7 @@ fn draw_node(
       ui.scope(node, |ui| ui.spacer());
       return;
     }
-    // Not drawn yet: lists, slots, prompts, rebinds, popups
+    // Not drawn yet: slots, prompts, rebinds, popups
     _ => return,
   };
   if let Some(response) = response {
@@ -854,6 +861,76 @@ fn answer_group(world: &mut World, node: Entity, group: &GroupAnswer, walk: &mut
   }
 }
 
+/// Draw a dropdown or tabs node
+fn draw_pick(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<Response> {
+  let entity = node.id();
+  let (kind, options, mut index, tooltip, disabled) = components::<(
+    &UiNodeKind,
+    &UiOptions,
+    &mut UiIndex,
+    Option<&UiTooltip>,
+    Has<UiDisabled>,
+  )>(&mut node, "dropdown or tabs")?;
+  let extras = Extras {
+    entity,
+    place,
+    tooltip,
+    disabled,
+  };
+  let list: Vec<&str> = options.0.iter().map(String::as_str).collect();
+  let drawn = index.0.min(list.len().saturating_sub(1));
+  let mut chosen = drawn;
+  let response = if matches!(kind.kind, Kind::Tabs) {
+    widget_opts!(ui.tabs(&mut chosen, &list), kind, extras).show()
+  } else {
+    widget_opts!(ui.dropdown(&mut chosen, &list), kind, extras).show()
+  };
+  if chosen != drawn {
+    index.0 = chosen;
+  }
+  Some(response)
+}
+
+/// Draw a choice list node; the choice picked this frame, already written to
+/// its `UiIndex`
+fn draw_choice_list(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<usize> {
+  let entity = node.id();
+  let (kind, options, mut index, tooltip, disabled) = components::<(
+    &UiNodeKind,
+    &UiOptions,
+    &mut UiIndex,
+    Option<&UiTooltip>,
+    Has<UiDisabled>,
+  )>(&mut node, "choice list")?;
+  let Kind::ChoiceList { default } = kind.kind else {
+    return None;
+  };
+  let extras = Extras {
+    entity,
+    place,
+    tooltip,
+    disabled,
+  };
+  let list: Vec<&str> = options.0.iter().map(String::as_str).collect();
+  let mut choices = widget_opts!(ui.choice_list(&list), kind, extras);
+  if let Some(first) = default {
+    choices = choices.default(first);
+  }
+  let picked = choices.show()?;
+  if index.0 != picked {
+    index.0 = picked;
+  }
+  Some(picked)
+}
+
 /// The style of a theme text role
 fn role_style(theme: &Theme, role: TextRole) -> TextStyle {
   let roles = &theme.text;
@@ -1531,5 +1608,164 @@ mod values {
         .iter()
         .any(|e| e.node == node && e.kind == UiEventKind::Submitted)
     );
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod lists {
+  use crate::core::ecs::kernel::{Children, Entity, World};
+  use crate::core::input::Direction;
+  use crate::core::text::TextReveal;
+  use crate::core::ui::nodes::*;
+  use crate::core::ui::test_util::UiDriver;
+
+  fn kids(world: &World, of: Entity) -> Vec<Entity> {
+    world
+      .get::<Children>(of)
+      .map(|c| c.to_vec())
+      .unwrap_or_default()
+  }
+
+  fn focused(node: UiNode) -> (UiDriver, Entity) {
+    let mut d = UiDriver::new((400.0, 400.0));
+    let root = d.spawn_ui(UiNode::column().focus_scope().child(node.default_focus()));
+    d.frame(|_| {});
+    d.frame(|_| {});
+    let node = kids(d.world(), root)[0];
+    (d, node)
+  }
+
+  #[test]
+  fn a_dropdown_picks_and_sends_changed() {
+    let (mut d, node) = focused(UiNode::dropdown(
+      &["Windowed", "Borderless", "Fullscreen"],
+      0,
+    ));
+    d.confirm();
+    d.frame(|_| {});
+    d.frame(|_| {});
+    d.nav(Direction::Down);
+    d.frame(|_| {});
+    d.confirm();
+    d.frame(|_| {});
+    assert_eq!(d.world().get::<UiIndex>(node), Some(&UiIndex(1)));
+    assert!(
+      d.events()
+        .iter()
+        .any(|e| e.node == node && e.kind == UiEventKind::Changed)
+    );
+  }
+
+  #[test]
+  fn an_index_past_the_options_draws_clamped() {
+    let (mut d, node) = focused(UiNode::dropdown(&["A", "B"], 0));
+    if let Some(mut index) = d.world_mut().get_mut::<UiIndex>(node) {
+      index.0 = 5;
+    }
+    d.frame(|_| {});
+    assert_eq!(
+      d.world().get::<UiIndex>(node),
+      Some(&UiIndex(5)),
+      "kept until the player picks"
+    );
+    if let Some(mut options) = d.world_mut().get_mut::<UiOptions>(node) {
+      options.0.clear();
+    }
+    d.frame(|_| {});
+    d.confirm();
+    d.frame(|_| {});
+    d.frame(|_| {});
+  }
+
+  #[test]
+  fn tabs_switch_on_the_tab_keys_and_send_changed() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let root = d.spawn_ui(
+      UiNode::column()
+        .focus_scope()
+        .child(UiNode::tabs(&["Audio", "Video", "Controls"], 0))
+        .child(UiNode::button("In the tab").default_focus()),
+    );
+    d.frame(|_| {});
+    d.frame(|_| {});
+    let tabs = kids(d.world(), root)[0];
+    d.tab_next();
+    d.frame(|_| {});
+    assert_eq!(d.world().get::<UiIndex>(tabs), Some(&UiIndex(1)));
+    assert!(
+      d.events()
+        .iter()
+        .any(|e| e.node == tabs && e.kind == UiEventKind::Changed)
+    );
+  }
+
+  #[test]
+  fn a_choice_list_sends_clicked_with_its_index() {
+    let (mut d, node) = focused(UiNode::choice_list(&[
+      "Buy a gem",
+      "Buy a potion",
+      "Goodbye",
+    ]));
+    d.nav(Direction::Down);
+    d.frame(|_| {});
+    d.confirm();
+    d.frame(|_| {});
+    assert_eq!(d.world().get::<UiIndex>(node), Some(&UiIndex(1)));
+    let clicked: Vec<_> = d
+      .events()
+      .iter()
+      .filter(|e| e.kind == UiEventKind::Clicked)
+      .map(|e| e.node)
+      .collect();
+    assert_eq!(clicked, [node]);
+  }
+
+  #[test]
+  fn a_typewriter_reveals_finishes_and_holds() {
+    let mut d = UiDriver::new((400.0, 200.0));
+    let text = d.spawn_ui(
+      UiNode::text("Welcome to the Rusty Lantern, traveller.").typewriter(TextReveal::new(20.0)),
+    );
+    for _ in 0..15 {
+      d.frame(|_| {});
+    }
+    let reveal = |d: &UiDriver| {
+      d.world()
+        .get::<TextReveal>(text)
+        .copied()
+        .unwrap_or(TextReveal::new(1.0))
+    };
+    let shown = reveal(&d).shown();
+    assert!(
+      shown > 0.0 && !reveal(&d).is_done(),
+      "part of the line: {shown}"
+    );
+    // The engine reads a rate of 0 as "show everything", not as a hold
+    if let Some(mut r) = d.world_mut().get_mut::<TextReveal>(text) {
+      r.per_second = 0.0;
+    }
+    for _ in 0..15 {
+      d.frame(|_| {});
+    }
+    assert!(
+      reveal(&d).is_done() && reveal(&d).shown() > shown,
+      "shown whole"
+    );
+    let whole = reveal(&d).shown();
+    for _ in 0..15 {
+      d.frame(|_| {});
+    }
+    assert_eq!(reveal(&d).shown(), whole, "held");
+    if let Some(mut r) = d.world_mut().get_mut::<TextReveal>(text) {
+      r.restart();
+      r.per_second = 20.0;
+    }
+    d.frame(|_| {});
+    assert!(!reveal(&d).is_done(), "restarted");
+    if let Some(mut r) = d.world_mut().get_mut::<TextReveal>(text) {
+      r.finish();
+    }
+    d.frame(|_| {});
+    assert!(reveal(&d).is_done());
   }
 }
