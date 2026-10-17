@@ -86,6 +86,7 @@ fn mode_size_refresh(mode: &winit::monitor::VideoModeHandle) -> ((u32, u32), u32
 /// Why a frame ran long: only a steady frame of a visible, focused window
 /// says the game cannot keep up
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 enum FrameKind {
   /// The first frames build the GPU pipelines and upload the first assets
   Startup,
@@ -97,6 +98,7 @@ enum FrameKind {
 }
 
 /// The kind of frame number `frame` (from 0) is
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 fn frame_kind(frame: u64, scene_entered: bool, visible_and_focused: bool) -> FrameKind {
   if frame < 2 {
     FrameKind::Startup
@@ -346,21 +348,31 @@ impl Engine {
     self.last_scene_entries = entries;
 
     // A frame over 33 ms (under 30 fps) warns only in steady play; startup,
-    // scene loads and a hidden or unfocused window are expected to run long
+    // scene loads and a hidden or unfocused window are expected to run long.
+    // The warning is held a moment: a window macOS is hiding stalls its last
+    // frame before it says so.
     #[cfg(debug_assertions)]
     {
+      let now = Instant::now();
+      if let Some(warning) = self.slow_frame.due(now) {
+        engine_warn!(module: "Perf", "{warning}");
+      }
       let total_ms = self.frame_timings.total.as_secs_f64() * 1000.0;
       if total_ms > 33.0 {
         let visible_and_focused = self.game_window_focused && !self.window_occluded;
         match frame_kind(frame, scene_entered, visible_and_focused) {
-          FrameKind::Steady => engine_warn!(
-            module: "Perf",
-            "SLOW FRAME - Total: {:.1}ms | Update: {:.1}ms | Render: {:.1}ms | Present: {:.1}ms",
-            total_ms,
-            self.frame_timings.update.as_secs_f64() * 1000.0,
-            self.frame_timings.render.as_secs_f64() * 1000.0,
-            self.frame_timings.present.as_secs_f64() * 1000.0,
-          ),
+          FrameKind::Steady => {
+            let warning = format!(
+              "SLOW FRAME - Total: {:.1}ms | Update: {:.1}ms | Render: {:.1}ms | Present: {:.1}ms",
+              total_ms,
+              self.frame_timings.update.as_secs_f64() * 1000.0,
+              self.frame_timings.render.as_secs_f64() * 1000.0,
+              self.frame_timings.present.as_secs_f64() * 1000.0,
+            );
+            if let Some(earlier) = self.slow_frame.hold(now, warning) {
+              engine_warn!(module: "Perf", "{earlier}");
+            }
+          }
           FrameKind::Startup => {
             engine_debug!(module: "Perf", "Startup frame took {:.1}ms", total_ms)
           }
@@ -387,6 +399,14 @@ impl Engine {
           self.frame_timings.total.as_secs_f64() * 1000.0,
         );
       }
+    }
+  }
+
+  /// The window just hid or lost focus: a slow frame still held was the
+  /// system holding the window's last frame, not the game
+  fn drop_hidden_slow_frame(&mut self) {
+    if self.slow_frame.window_hidden() {
+      engine_debug!(module: "Perf", "A slow frame was the window being hidden");
     }
   }
 
@@ -659,9 +679,15 @@ impl ApplicationHandler<EngineEvent> for Engine {
         // on a drawable the system will not give
         self.window_occluded = *occluded;
         engine_debug!(module: "Window", "Occluded: {}", occluded);
+        if *occluded {
+          self.drop_hidden_slow_frame();
+        }
       }
       WindowEvent::Focused(focused) => {
         self.game_window_focused = *focused;
+        if !*focused {
+          self.drop_hidden_slow_frame();
+        }
         // Release the grab on Alt-Tab and restore it on return
         if let Some((grab, visible)) = cursor_grab_for_focus(self.cursor_locked, *focused)
           && let Some(window) = &self.window
