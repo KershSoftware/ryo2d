@@ -345,7 +345,8 @@ mod tests {
   use super::EMBEDDED_SKILLS;
 
   /// Each embedded skill is its `.claude/skills/<name>/SKILL.md` byte for
-  /// byte, listed with the description its frontmatter gives
+  /// byte, listed with the description its frontmatter gives, and every
+  /// skill folder there is embedded
   #[test]
   fn embedded_skills_are_their_sources() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".claude/skills");
@@ -363,6 +364,18 @@ mod tests {
         frontmatter.trim_matches('"'),
         *description,
         "{name}'s listed description"
+      );
+    }
+    // And every skill is embedded: a new skill folder needs an entry
+    for entry in std::fs::read_dir(&root).unwrap() {
+      let entry = entry.unwrap();
+      if !entry.file_type().unwrap().is_dir() {
+        continue;
+      }
+      let name = entry.file_name().to_string_lossy().into_owned();
+      assert!(
+        EMBEDDED_SKILLS.iter().any(|(listed, ..)| *listed == name),
+        ".claude/skills/{name}/ is not in EMBEDDED_SKILLS"
       );
     }
   }

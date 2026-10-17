@@ -185,10 +185,11 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Kira Backend** — Music and sound effects with volume control
 
 ### UI
-- **Hybrid System** — Immediate mode for HUDs, retained mode for forms
-- **Widgets** — Buttons, text input, dropdowns, sliders, checkboxes, scroll views
-- **Layout** — HBox, VBox, Stack containers with alignment
-- **Theming** — Centralized styles with hot-reload support
+- **Builders in `Scene::ui`** — Widgets drawn each frame from the game's own values, with absolute drawing for HUDs
+- **Widgets** — Buttons, text input, dropdowns, sliders, checkboxes, toggles, tabs, scroll views, slots, prompts and rebinding rows
+- **Layout** — Columns, rows, grids, stacks and panels laid out as flexbox and grid
+- **Gamepad navigation** — Focus scopes, modals and popups played with the D-pad, A and B alone
+- **Theming** — Palettes, looks per widget state, variants, nine-slice skins and sounds, from RON files that hot-reload in debug builds
 
 ### Gameplay Systems
 - **Pathfinding** — A* with nav agents and grid-based navigation

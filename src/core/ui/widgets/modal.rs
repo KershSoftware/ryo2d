@@ -64,9 +64,9 @@ impl<'a> UiContext<'a> {
   }
 
   /// A yes/no modal: `title`, `message` (left out when empty) and Yes and
-  /// No buttons, No focused first.`Some(true)` or `Some(false)` when one is chosen, `Some(false)`
-  /// on Back, `None` otherwise. The game shows it while it waits for an
-  /// answer.
+  /// No buttons, No focused first. `Some(true)` or `Some(false)` when one is
+  /// chosen, `Some(false)` on Back, `None` otherwise. The game shows it while
+  /// it waits for an answer.
   ///
   /// Its ids come from its texts, not the line that calls it: it is the same
   /// dialog wherever it is drawn from, and a different question is a new

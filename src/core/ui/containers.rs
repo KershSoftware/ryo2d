@@ -317,15 +317,17 @@ impl<'u, 'a> Container<'u, 'a> {
     self
   }
 
-  /// Navigation cannot leave it
+  /// Navigation cannot leave it (a focus scope, as with
+  /// [`focus_scope`](Self::focus_scope))
   pub fn trap(mut self) -> Self {
-    self.flags |= Flags::TRAP;
+    self.flags |= Flags::FOCUS_SCOPE | Flags::TRAP;
     self
   }
 
-  /// Navigation past its last widget wraps to its first
+  /// Navigation past its last widget wraps to its first (a focus scope, as
+  /// with [`focus_scope`](Self::focus_scope))
   pub fn wrap_focus(mut self) -> Self {
-    self.flags |= Flags::WRAP;
+    self.flags |= Flags::FOCUS_SCOPE | Flags::WRAP;
     self
   }
 
@@ -569,6 +571,27 @@ mod tests {
       record(menu.id)
         .flags
         .contains(Flags::FOCUS_SCOPE | Flags::TRAP)
+    );
+  }
+
+  #[test]
+  fn trap_and_wrap_focus_make_a_focus_scope() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text, (400.0, 300.0));
+    let trapped = ui.column().trap().show(|_| {});
+    let wrapping = ui.row().wrap_focus().show(|_| {});
+    let record = |id| ui.memory_for_test().current(id).copied().unwrap();
+    assert!(
+      record(trapped.id)
+        .flags
+        .contains(Flags::FOCUS_SCOPE | Flags::TRAP),
+      "a trap is a scope"
+    );
+    assert!(
+      record(wrapping.id)
+        .flags
+        .contains(Flags::FOCUS_SCOPE | Flags::WRAP),
+      "so is a scope that wraps"
     );
   }
 

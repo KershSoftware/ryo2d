@@ -65,10 +65,19 @@ ui.button("Delete").variant("danger");           // a statement: a builder recor
   }
   ```
 
+- **Helper functions** that draw widgets run one call site many times, so their widgets are told apart by occurrence, which holds only while the calls before them in the same container are not conditional. Mark the helper `#[track_caller]` (its widgets' ids then come from the helper's caller, one per call line), or key its widgets with `.id(key)` or the call with `ui.scope(key, ..)`, so ids stay stable.
+
+  ```rust
+  #[track_caller]
+  fn menu_button(ui: &mut UiContext, label: &str) -> bool {
+    ui.button(label).fill_width().clicked()
+  }
+  ```
+
 - **Containers need `.show(|ui| ..)`**; widgets record on `.show()`, on a shorthand (`.clicked()`, a choice list's `.show() -> Option<usize>`), or on drop.
 - **`Response`** (from `.show()`): `id`, `rect`, `hovered()`, `pressed()`, `clicked()` (released over it, or Confirm while focused), `secondary_clicked()`, `double_clicked()`, `drag_started()`, `dragging()`, `drag_delta()`, `drag_released()`, `changed()` (a value widget changed your data), `focused()`, `gained_focus()`, `lost_focus()`, `submitted()` (Enter in a text field), `pointer()`, plus drag and drop's `dropped::<T>()`, `drag_hover::<T>()`, `drag_started_here()`.
 - **Clicks land on what was drawn.** The pointer is resolved once a frame, before any `ui`, against last frame's rects: a click hits what the player saw under the pointer, a widget not drawn this frame never reports `clicked()`, and the topmost widget wins (a panel blocks what is under it). A click is the release over the widget it was pressed on.
-- **Shared options on every widget:** `.id(key)`, `.enabled(bool)` (dimmed, reports nothing, still blocks the pointer), `.at(rect)`, `.width(..)`, `.height(..)`, `.fill_width()`, `.margin(..)`, `.anchor(..)`, `.offset(x, y)`, `.grow(w)`, `.min_width(w)`, `.max_width(w)`, `.tooltip(text)`, `.variant(name)`, `.style(LookPatch)`, the focus options (section 7) and drag and drop (section 9).
+- **Shared options on every widget** (but `text`, `separator` and `spacer`): `.id(key)`, `.enabled(bool)` (dimmed, reports nothing, still blocks the pointer), `.at(rect)`, `.width(..)`, `.height(..)`, `.fill_width()`, `.margin(..)`, `.anchor(..)`, `.offset(x, y)`, `.grow(w)`, `.min_width(w)`, `.max_width(w)`, `.tooltip(text)`, `.variant(name)`, `.style(LookPatch)`, the focus options (section 7) and drag and drop (section 9).
 
 ## 4. Layout
 
@@ -185,7 +194,7 @@ ui.panel().focus_scope().wrap_focus().anchor(Anchor::Center).show(|ui| {
 - **Explicit scopes.** The arrows, the D-pad (and left stick), Tab, Confirm (Enter, Space, A) and Back (Escape, B) navigate only inside **focus scopes**: containers marked `.focus_scope()`, open dropdown lists, `ui.popup`s and modals. With no scope on screen they stay gameplay's, so a HUD button is mouse-only and never takes the arrows, Space or A. Every menu marks its container `.focus_scope()`. (A text field outside any scope still takes focus by click.)
 - **Where focus starts.** When a scope appears and nothing is focused, focus goes to the widget it remembers, else its `.default_focus()` widget, else its first. Focus memory lasts for the scene's lifetime and covers the scopes around the focused widget too, so a menu returning from a scene pushed over it (a quit confirm answered No) restores its focus, nested scopes reopen where they were, and a page a dialog's answer shows, or a scene it switches to, takes its default.
 - **Moving.** A direction goes to the explicit neighbour (`.nav_up(id)`, `.nav_down(id)`, `.nav_left(id)`, `.nav_right(id)`), else the nearest widget that way inside the scope, then out to the scope around it. `.wrap_focus()` wraps at a scope's edges; `.nav_skip()` lets directions pass a widget by (Tab and the pointer still reach it); `.focusable(false)` takes a widget out of navigation. Holding a direction repeats after 0.35 s, every 0.1 s. Tab moves in order through every focusable (Shift+Tab back).
-- **Traps.** `.trap()` keeps focus inside a scope; modals, open lists and `ui.popup`s are traps. A trap opens on its `.default_focus()` widget, gives the focus back when it closes, and while it is open nothing outside it (pointer, request or press) takes the focus.
+- **Traps.** `.trap()` keeps focus inside a scope (it makes the container one, as `.wrap_focus()` does); modals, open lists and `ui.popup`s are traps. A trap opens on its `.default_focus()` widget, gives the focus back when it closes, and while it is open nothing outside it (pointer, request or press) takes the focus.
 - **Focus never lands** on a disabled, hidden or clipped-out widget. Focus follows the pointer onto widgets, but never onto (or off) a text field: a field takes the keys only by a click, navigation or a request.
 - **`ui.back()`** is true when Back was pressed and no widget used it (closing a list, leaving a text field, cancelling a drag or a rebind). It is true for the first caller only, and only in the top scene, so close the innermost thing first: `if ui.back() { return SceneAction::Pop; }`.
 - **Reading and setting:** `ui.focused() -> Option<UiId>`, `ui.is_focused(id)`, `ui.request_focus(id)` (from the next frame), `response.focused()` / `gained_focus()` / `lost_focus()`. `ui.focus_visible()` is true when the last device was the keyboard or a pad; the focus ring (2 units wide, 2 outside the widget) shows only then.

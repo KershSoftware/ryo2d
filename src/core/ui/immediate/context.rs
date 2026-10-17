@@ -327,25 +327,34 @@ impl Drop for UiText<'_, '_> {
 }
 
 // ============================================================================
-// UiContext - Immediate Mode Drawing
+// UiContext
 // ============================================================================
 
-/// Context for immediate-mode UI rendering.
+/// What `Scene::ui` builds the frame's UI with: widgets and containers laid
+/// out as flexbox and grid, focus and pad navigation inside focus scopes,
+/// popups and modals, and absolute drawing for HUDs and overlays.
 ///
-/// Provides methods for drawing shapes, text, and interactive elements.
-/// The engine builds one per frame and passes it to `Scene::ui`.
-/// Coordinates are UI units: with the automatic UI scale (the default) they
-/// are screen units, whatever the display's scale factor.
+/// The engine builds one per frame and passes it to `Scene::ui`. Widgets are
+/// builders that record themselves on `show()`, on a shorthand such as
+/// `clicked()`, or when dropped; the game's values stay the game's, passed
+/// as `&mut`. Coordinates are UI units: with the automatic UI scale (the
+/// default) they are screen units, whatever the display's scale factor.
 ///
 /// # Example
 ///
 /// ```ignore
 /// fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-///     // Draw a simple label
+///     // A HUD label, drawn where it is put
 ///     ui.draw_text("Score: 100", 10.0, 10.0, Color::WHITE);
 ///
-///     // Draw a button that returns true when clicked
-///     if ui.button("Start").at(Rect::new(100.0, 100.0, 120.0, 40.0)).clicked() {
+///     // A menu in the middle, a focus scope so the pad moves in it;
+///     // `clicked()` draws the button and says whether it was clicked or
+///     // confirmed this frame
+///     let mut start = false;
+///     ui.column().focus_scope().anchor(Anchor::Center).gap(8.0).show(|ui| {
+///         start = ui.button("Start").default_focus().clicked();
+///     });
+///     if start {
 ///         return SceneAction::Switch(Box::new(Level::default()));
 ///     }
 ///     SceneAction::Continue

@@ -334,11 +334,6 @@ impl UiMemory {
     self.states.retain(|_, slot| slot.seen == frame);
   }
 
-  #[allow(dead_code)] // Part of Task 3's interface; no task reads it yet
-  pub(crate) fn frame(&self) -> u64 {
-    self.frame
-  }
-
   pub(crate) fn record(&mut self, id: UiId, record: Record) {
     self.next.insert(id, record);
   }

@@ -33,11 +33,14 @@ impl Settings {
     }
   }
 
-  /// One panel, a focus scope, holding tabs and a scroll area of 50 rows:
-  /// a label, a slider, checkbox, dropdown or toggle (cycling) and a value
+  /// One panel, a focus scope that wraps (so a step down past the last row
+  /// goes back to the top, and every step moves the focus and scrolls),
+  /// holding tabs and a scroll area of 50 rows: a label, a slider,
+  /// checkbox, dropdown or toggle (cycling) and a value
   fn ui(&mut self, ui: &mut UiContext<'_>) {
     ui.panel()
       .focus_scope()
+      .wrap_focus()
       .anchor(Anchor::Center)
       .width(600.0)
       .height(460.0)
@@ -102,11 +105,15 @@ fn settings_frame(c: &mut Criterion) {
   for _ in 0..3 {
     harness.frame(|ui| settings.ui(ui));
   }
-  let start = harness.focused();
-  assert!(start.is_some(), "the screen's scope took focus");
-  harness.action("ui.down");
-  harness.frame(|ui| settings.ui(ui));
-  assert_ne!(harness.focused(), start, "ui.down moved the focus");
+  assert!(harness.focused().is_some(), "the screen's scope took focus");
+  // The panel wraps, so every step down moves the focus, past the last row
+  // too: the measured steps keep moving it and scrolling
+  for _ in 0..ROWS + 5 {
+    let before = harness.focused();
+    harness.action("ui.down");
+    harness.frame(|ui| settings.ui(ui));
+    assert_ne!(harness.focused(), before, "ui.down moved the focus");
+  }
   let mut frame = 0u64;
   c.bench_function("ui frame, a 200-widget settings screen", |b| {
     b.iter(|| {
