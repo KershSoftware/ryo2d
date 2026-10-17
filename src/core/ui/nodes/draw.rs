@@ -15,8 +15,10 @@ use crate::core::text::{RichText, TextReveal, TextStyle};
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::{Anchor, Rect, Response, Theme, UiContext};
 
-use super::components::{UiDisabled, UiHidden, UiImage, UiLabel, UiNodes, UiRoot, UiTooltip};
-use super::events::UiEvent;
+use super::components::{
+  UiDisabled, UiHidden, UiImage, UiInteraction, UiLabel, UiName, UiNodes, UiRoot, UiTooltip,
+};
+use super::events::{UiEvent, UiEventKind};
 use super::node::{Kind, NodeLayout, TextRole, UiNodeKind};
 
 /// A root's placement, from its `UiRoot`
@@ -42,7 +44,6 @@ fn placement(
 /// One walk over node trees: what it collects on the way
 pub(crate) struct Walk {
   /// The scene the trees belong to
-  #[allow(dead_code)] // read once the walk sends events
   pub(crate) scene: u64,
   pub(crate) events: Vec<UiEvent>,
   /// The last modal or popup node drawn: Back goes to it
@@ -132,28 +133,94 @@ fn draw_node(
     });
     return;
   };
-  match kind.kind {
+  let (response, sends) = match kind.kind {
     Kind::Column | Kind::Row | Kind::Grid(_) | Kind::Stack | Kind::Panel => {
-      draw_container(entity, ui, place, walk);
+      (draw_container(entity, ui, place, walk), Sends::Clicks)
     }
-    Kind::Scroll(_) => {
-      draw_scroll(entity, ui, place, walk);
+    Kind::Scroll(_) => (draw_scroll(entity, ui, place, walk), Sends::Clicks),
+    Kind::Text(_) => {
+      draw_text(entity, ui);
+      return;
     }
-    Kind::Text(_) => draw_text(entity, ui),
-    Kind::Button(_) => {
-      draw_button(entity, ui, place);
-    }
-    Kind::Image(_) => {
-      draw_image(entity, ui, place);
-    }
+    Kind::Button(_) => (draw_button(entity, ui, place), Sends::Clicks),
+    Kind::Image(_) => (draw_image(entity, ui, place), Sends::Clicks),
     Kind::Separator => {
       ui.scope(node, |ui| ui.separator());
+      return;
     }
     Kind::Spacer => {
       ui.scope(node, |ui| ui.spacer());
+      return;
     }
     // Not drawn yet: value widgets, lists, slots, prompts, rebinds, popups
-    _ => {}
+    _ => return,
+  };
+  if let Some(response) = response {
+    answer(world, ui, node, &response, sends, walk);
+  }
+}
+
+/// Which of `Clicked` and `Changed` a kind sends
+#[derive(Clone, Copy)]
+#[allow(dead_code)] // `Changes` is sent once value widgets are drawn
+enum Sends {
+  Clicks,
+  Changes,
+}
+
+/// Turn a drawn node's `response` into its `UiInteraction`, a focus request
+/// that was waiting for it, and the events it sends
+fn answer(
+  world: &mut World,
+  ui: &mut UiContext<'_>,
+  node: Entity,
+  response: &Response,
+  sends: Sends,
+  walk: &mut Walk,
+) {
+  let now = UiInteraction {
+    id: response.id,
+    hovered: response.hovered(),
+    focused: response.focused(),
+  };
+  match world.get_mut::<UiInteraction>(node) {
+    Some(mut state) => {
+      if *state != now {
+        *state = now;
+      }
+    }
+    None => {
+      if let Ok(mut entity) = world.get_entity_mut(node) {
+        entity.insert(now);
+      }
+    }
+  }
+  if walk.pending_focus == Some(node) {
+    ui.request_focus(response.id);
+    walk.pending_focus = None;
+  }
+  let sent = match sends {
+    Sends::Clicks => response.clicked().then_some(UiEventKind::Clicked),
+    Sends::Changes => response.changed().then_some(UiEventKind::Changed),
+  };
+  let kinds = [
+    sent,
+    response
+      .secondary_clicked()
+      .then_some(UiEventKind::SecondaryClicked),
+    response.lost_focus().then_some(UiEventKind::FocusLost),
+    response.gained_focus().then_some(UiEventKind::FocusGained),
+  ];
+  for kind in kinds.into_iter().flatten() {
+    walk.events.push(UiEvent {
+      node,
+      name: world.get::<UiName>(node).map(|name| name.0.clone()),
+      action: world
+        .get::<UiNodeKind>(node)
+        .and_then(|kind| kind.action.clone()),
+      kind,
+      scene: walk.scene,
+    });
   }
 }
 
@@ -597,7 +664,9 @@ fn draw_text(mut node: EntityWorldMut<'_>, ui: &mut UiContext<'_>) {
 
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
-  use crate::core::ecs::kernel::{ChildOf, Children, Entity, World};
+  use std::sync::{Arc, Mutex};
+
+  use crate::core::ecs::kernel::{ChildOf, Children, Entity, On, World};
   use crate::core::testing::UiHarness;
   use crate::core::ui::nav::nav_targets;
   use crate::core::ui::nodes::*;
@@ -854,5 +923,191 @@ mod tests {
     h.frame(|_| {});
     h.frame(|_| {});
     assert_eq!(h.focused(), on_c, "C kept the focus and its id");
+  }
+
+  /// A column of Play (the default) and Quit, named and with actions
+  fn menu() -> UiNode {
+    UiNode::column()
+      .focus_scope()
+      .child(
+        UiNode::button("Play")
+          .action("play")
+          .name("play")
+          .default_focus()
+          .width(100.0),
+      )
+      .child(
+        UiNode::button("Quit")
+          .action("quit")
+          .name("quit")
+          .width(100.0),
+      )
+  }
+
+  #[test]
+  fn a_click_sends_clicked_with_the_nodes_action_and_name() {
+    let mut h = UiHarness::new(300.0, 300.0);
+    let root = h.spawn_ui(menu());
+    h.frame(|_| {});
+    let quit = kids(h.world(), root)[1];
+    let rect = targets(&h)[1];
+    h.move_to(rect.x + 5.0, rect.y + 5.0);
+    h.press();
+    h.frame(|_| {});
+    h.release();
+    h.frame(|_| {});
+    let clicks: Vec<_> = h
+      .events()
+      .iter()
+      .filter(|e| e.kind == UiEventKind::Clicked)
+      .cloned()
+      .collect();
+    assert_eq!(clicks.len(), 1);
+    assert_eq!(
+      (
+        clicks[0].node,
+        clicks[0].action.as_deref(),
+        clicks[0].name.as_deref()
+      ),
+      (quit, Some("quit"), Some("quit"))
+    );
+    h.frame(|_| {});
+    assert!(
+      h.events().iter().all(|e| e.kind != UiEventKind::Clicked),
+      "once"
+    );
+  }
+
+  #[test]
+  fn moving_the_focus_sends_lost_then_gained_in_walk_order() {
+    let mut h = UiHarness::new(300.0, 300.0);
+    let root = h.spawn_ui(menu());
+    h.frame(|_| {});
+    h.frame(|_| {});
+    let [play, quit] = [kids(h.world(), root)[0], kids(h.world(), root)[1]];
+    h.action("ui.down");
+    h.frame(|_| {});
+    let focus: Vec<_> = h.events().iter().map(|e| (e.node, e.kind)).collect();
+    assert_eq!(
+      focus,
+      [
+        (play, UiEventKind::FocusLost),
+        (quit, UiEventKind::FocusGained)
+      ]
+    );
+    assert!(h.world().get::<UiInteraction>(quit).unwrap().focused());
+    assert!(!h.world().get::<UiInteraction>(play).unwrap().focused());
+  }
+
+  #[test]
+  fn an_observer_on_a_node_hears_its_events() {
+    let mut h = UiHarness::new(300.0, 300.0);
+    let root = h.spawn_ui(menu());
+    let play = kids(h.world(), root)[0];
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&heard);
+    h.world_mut()
+      .entity_mut(play)
+      .observe(move |event: On<UiEvent>| {
+        if let Ok(mut log) = log.lock() {
+          log.push(event.kind);
+        }
+      });
+    h.frame(|_| {});
+    h.frame(|_| {});
+    h.action("ui.confirm");
+    h.frame(|_| {});
+    assert!(heard.lock().unwrap().contains(&UiEventKind::Clicked));
+  }
+
+  #[test]
+  fn ui_id_is_known_once_drawn_and_focus_ui_moves_the_focus() {
+    let mut h = UiHarness::new(300.0, 300.0);
+    let root = h.spawn_ui(menu());
+    let quit = kids(h.world(), root)[1];
+    assert_eq!(h.ui_id(quit), None, "not drawn yet");
+    h.frame(|_| {});
+    h.frame(|_| {});
+    let id = h.ui_id(quit);
+    assert!(id.is_some());
+    assert_ne!(h.focused(), id);
+    h.world_mut().resource_mut::<UiNodes>().pending_focus = Some(quit);
+    for _ in 0..2 {
+      h.frame(|_| {});
+    }
+    assert_eq!(h.focused(), id);
+  }
+
+  #[test]
+  fn a_later_root_is_drawn_over_an_earlier_one() {
+    let mut h = UiHarness::new(300.0, 300.0);
+    let at = Rect::new(10.0, 10.0, 80.0, 30.0);
+    h.spawn_ui(UiNode::button("Under").at(at).action("under"));
+    h.spawn_ui(UiNode::button("Over").at(at).action("over"));
+    h.frame(|_| {});
+    h.move_to(20.0, 20.0);
+    h.press();
+    h.frame(|_| {});
+    h.release();
+    h.frame(|_| {});
+    let clicked: Vec<_> = h
+      .events()
+      .iter()
+      .filter(|e| e.kind == UiEventKind::Clicked)
+      .filter_map(|e| e.action.clone())
+      .collect();
+    assert_eq!(clicked, ["over"]);
+  }
+
+  #[test]
+  fn despawning_the_focused_node_leaves_no_dangling_focus() {
+    let mut h = UiHarness::new(300.0, 300.0);
+    let root = h.spawn_ui(menu());
+    h.frame(|_| {});
+    h.frame(|_| {});
+    let play_id = h.focused();
+    h.action("ui.down");
+    h.frame(|_| {});
+    let quit = kids(h.world(), root)[1];
+    let quit_id = h.ui_id(quit);
+    assert_ne!(quit_id, play_id);
+    assert_eq!(h.focused(), quit_id);
+    h.world_mut().despawn(quit);
+    for _ in 0..3 {
+      h.frame(|_| {});
+    }
+    assert_eq!(h.focused(), None, "as for a widget a closure stops drawing");
+    h.action("ui.down");
+    h.frame(|_| {});
+    assert_eq!(h.focused(), play_id, "navigation lands on what is left");
+  }
+
+  #[test]
+  fn a_new_node_in_a_despawned_ones_place_starts_fresh() {
+    let mut h = UiHarness::new(300.0, 300.0);
+    let rows = || {
+      UiNode::scroll()
+        .height(60.0)
+        .width(120.0)
+        .children((0..20).map(|i| UiNode::button(format!("{i}")).fill_width()))
+    };
+    let first = h.spawn_ui(rows());
+    h.frame(|_| {});
+    h.move_to(20.0, 20.0);
+    h.wheel(0.0, -3.0);
+    for _ in 0..30 {
+      h.frame(|_| {});
+    }
+    let id = h.ui_id(first).unwrap();
+    assert!(
+      h.frame(|ui| ui.scroll_offset(id)).y > 0.0,
+      "the wheel scrolled it"
+    );
+    h.world_mut().despawn(first);
+    let second = h.spawn_ui(rows());
+    h.frame(|_| {});
+    h.frame(|_| {});
+    let id = h.ui_id(second).unwrap();
+    assert_eq!(h.frame(|ui| ui.scroll_offset(id)).y, 0.0);
   }
 }

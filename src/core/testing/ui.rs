@@ -6,7 +6,7 @@ use glam::Vec2;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-use crate::core::ecs::kernel::{Entity, World};
+use crate::core::ecs::kernel::{Entity, Messages, World};
 use crate::core::input::{Direction, GamepadButton, InputView};
 use crate::core::messages::register_message;
 use crate::core::render::UiSpace;
@@ -93,6 +93,8 @@ pub struct UiHarness {
   pub(crate) rebinds: Vec<PendingRebind>,
   /// The entities of spawned UI nodes
   world: World,
+  /// The last frame's node events
+  last_events: Vec<UiEvent>,
 }
 
 impl UiHarness {
@@ -132,6 +134,7 @@ impl UiHarness {
       prompts: Arc::new(PromptContext::default()),
       rebinds: Vec::new(),
       world,
+      last_events: Vec::new(),
     }
   }
 
@@ -153,6 +156,19 @@ impl UiHarness {
   /// The first node named `name` in the harness's UI trees
   pub fn find_ui(&self, name: &str) -> Option<Entity> {
     nodes::find_ui(&self.world, self.scene, name)
+  }
+
+  /// The events the node trees sent in the last frame, in walk order
+  pub fn events(&self) -> &[UiEvent] {
+    &self.last_events
+  }
+
+  /// A node's id once it has been drawn: what `ctx.ui_id` returns
+  pub fn ui_id(&self, node: Entity) -> Option<UiId> {
+    self
+      .world
+      .get::<nodes::UiInteraction>(node)
+      .and_then(nodes::UiInteraction::id)
   }
 
   /// Draw with `theme` (and take its interaction timings) from the next frame
@@ -236,6 +252,9 @@ impl UiHarness {
   /// in too. The harness scene's node trees draw before `ui`, as a scene's
   /// do before its `ui`.
   pub fn frame_with_world<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>, &mut World) -> R) -> R {
+    if let Some(mut messages) = self.world.get_resource_mut::<Messages<UiEvent>>() {
+      messages.update();
+    }
     self.time += FRAME;
     self.pointer.time = self.time;
     self.commands.clear();
@@ -296,7 +315,7 @@ impl UiHarness {
         input.consume_mouse(button);
       }
     }
-    let result = {
+    let (result, events) = {
       let mut context = UiContext::new(
         &mut self.commands,
         &mut self.text,
@@ -310,12 +329,14 @@ impl UiHarness {
       context.set_prompts(Arc::clone(&self.prompts));
       context.begin_scene(self.scene, true);
       nodes::begin_pass(&mut self.world);
-      nodes::draw_nodes(&mut self.world, &mut context, self.scene);
+      let events = nodes::draw_nodes(&mut self.world, &mut context, self.scene);
       let result = ui(&mut context, &mut self.world);
       context.end_scene();
       self.rebinds = context.take_rebinds();
-      result
+      (result, events)
     };
+    self.last_events.clone_from(&events);
+    nodes::deliver(&mut self.world, events);
     // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
     // the UI stays as the last drawn frame left it
     if self.memory.drew_nothing() {

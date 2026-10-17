@@ -1,6 +1,7 @@
 //! What a node's widget reports
 
-use crate::core::ecs::kernel::{Entity, EntityEvent, Message};
+use crate::core::ecs::kernel::{Entity, EntityEvent, Message, Messages, World};
+use crate::core::messages::register_message;
 
 /// Something a UI node reported: a click, a change, a drop
 ///
@@ -43,6 +44,25 @@ pub enum UiEventKind {
   FocusGained,
   /// The node lost focus
   FocusLost,
+}
+
+/// Write `events` as messages, in order, and trigger each on its node (a
+/// node an earlier observer despawned gets its message and no trigger)
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only the harness calls it yet
+pub(crate) fn deliver(world: &mut World, events: Vec<UiEvent>) {
+  if events.is_empty() {
+    return;
+  }
+  register_message::<UiEvent>(world);
+  for event in events {
+    let node = event.node;
+    if let Some(mut messages) = world.get_resource_mut::<Messages<UiEvent>>() {
+      messages.write(event.clone());
+    }
+    if world.get_entity(node).is_ok() {
+      world.trigger(event);
+    }
+  }
 }
 
 #[cfg(test)]

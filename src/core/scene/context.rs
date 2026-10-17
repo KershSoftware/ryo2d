@@ -20,7 +20,7 @@ use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
 use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
-use crate::core::ui::{UiNode, UiTheme, nodes};
+use crate::core::ui::{UiId, UiNode, UiTheme, nodes};
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
 
 #[cfg(test)]
@@ -253,6 +253,25 @@ impl SceneContext<'_> {
   /// (and a warning) if `parent` is not a container node.
   pub fn spawn_ui_in(&mut self, parent: Entity, tree: UiNode) -> Option<Entity> {
     nodes::spawn_ui_in(self.world, parent, tree)
+  }
+
+  /// A UI node's id once it has been drawn, to read its `ctx.ui().scroll_offset`
+  /// and the like; `None` before that.
+  pub fn ui_id(&self, node: Entity) -> Option<UiId> {
+    self
+      .world
+      .get::<nodes::UiInteraction>(node)
+      .and_then(nodes::UiInteraction::id)
+  }
+
+  /// Give a UI node the keyboard and gamepad focus once it is drawn (next
+  /// frame, if it can take focus). A request for a node not drawn yet waits
+  /// for it.
+  pub fn focus_ui(&mut self, node: Entity) {
+    self
+      .world
+      .get_resource_or_insert_with(nodes::UiNodes::default)
+      .pending_focus = Some(node);
   }
 
   /// The first node named `name` in this scene's UI trees.

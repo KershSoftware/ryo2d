@@ -17,6 +17,9 @@ pub use components::{
 pub use events::{UiEvent, UiEventKind};
 pub use node::{TextRole, UiNode, UiNodeKind};
 
+pub(crate) use components::UiNodes;
 #[cfg_attr(target_arch = "wasm32", allow(unused_imports))] // only the harness uses them yet
 pub(crate) use draw::{begin_pass, draw_nodes};
+#[cfg_attr(target_arch = "wasm32", allow(unused_imports))] // only the harness uses it yet
+pub(crate) use events::deliver;
 pub(crate) use spawn::*;
