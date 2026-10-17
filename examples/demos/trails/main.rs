@@ -307,10 +307,13 @@ impl TrailsPage {
       (360.0, -0.5, Color::rgb(200, 100, 255)),
     ];
 
+    // The radii suit a 1080-tall canvas: scale them to this one, so the
+    // outer orbit clears the top bar
+    let scale = self.screen_height / 1080.0;
     for (i, (radius, speed, color)) in configs.iter().enumerate() {
       let angle = i as f32 * std::f32::consts::FRAC_PI_2;
       let trail = self.preset().create(*color, 8.0);
-      self.spawn_orbit(ctx, cx, cy, *radius, *speed, angle, *color, trail);
+      self.spawn_orbit(ctx, cx, cy, radius * scale, *speed, angle, *color, trail);
     }
   }
 
@@ -422,12 +425,15 @@ impl TrailsPage {
   fn setup_caps_joins(&mut self, ctx: &mut SceneContext) {
     let sw = self.screen_width;
     let sh = self.screen_height;
+    // Rows sit at fractions of the canvas; the sizes suit a 1080-tall one, so
+    // they scale with it
+    let unit = sh / 1080.0;
 
     // ---- LEFT HALF: Caps stacked vertically with aligned endpoints ----
     // All three lines share the same start/end x, so the cap extension is directly comparable.
     // 40px wide so the Square cap's 20px extension is clearly visible.
-    let cap_width = 40.0;
-    let cap_len = 120.0;
+    let cap_width = 40.0 * unit;
+    let cap_len = 120.0 * unit;
     let cap_x0 = sw * 0.08;
     let cap_x1 = cap_x0 + cap_len;
     let caps = [
@@ -459,8 +465,8 @@ impl TrailsPage {
     // ---- RIGHT HALF: Joins with acute angle (35°) ----
     // At 35°, miter extends ~3.3x the half-width = a huge visible spike.
     // Bevel/Round stay compact. The difference is unmistakable.
-    let join_width = 30.0;
-    let arm = 120.0;
+    let join_width = 30.0 * unit;
+    let arm = 120.0 * unit;
     let angle_rad = 35.0_f32.to_radians();
     let joins = [
       (LineJoin::Miter, sh * 0.20),
@@ -491,11 +497,11 @@ impl TrailsPage {
     let (zig_x, zig_y, zig_w) = (sw * 0.08, sh * 0.82, sw * 0.32);
     let zigzag: Vec<Vec2> = (0..5)
       .map(|i| {
-        let rise = if i % 2 == 0 { 0.0 } else { -150.0 };
+        let rise = if i % 2 == 0 { 0.0 } else { -150.0 * unit };
         Vec2::new(zig_x + zig_w * i as f32 / 4.0, zig_y + rise)
       })
       .collect();
-    let line = Line2D::new(zigzag, Color::rgb(200, 255, 200), 24.0)
+    let line = Line2D::new(zigzag, Color::rgb(200, 255, 200), 24.0 * unit)
       .with_cap(self.cap())
       .with_join(self.join())
       .with_style(TrailStyle::Solid);
@@ -914,8 +920,9 @@ impl DemoPage for TrailsPage {
 }
 
 fn main() {
+  // Smooth trails, not pixel art: a canvas that fills any window
   Demo::new("Trails")
-    .resolution(1920, 1080)
+    .fit(1280, 720)
     .configure(|b| b.target_fps(144).fixed_hz(144))
     .page(|| TrailsPage::new(Variant::Presets))
     .page(|| TrailsPage::new(Variant::FadeModes))
