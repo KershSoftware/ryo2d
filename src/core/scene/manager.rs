@@ -514,6 +514,7 @@ impl SceneManager {
     if self.scenes.is_empty() {
       return SceneAction::Continue;
     }
+    crate::core::ui::nodes::begin_pass(world);
     let top = self.scenes.len() - 1;
     let mut action = SceneAction::Continue;
     // Scenes under the top one draw first; their widgets answer nothing, as
@@ -524,6 +525,10 @@ impl SceneManager {
       // draws its popups above everything it drew: the top scene's on the
       // popup layer, a lower scene's under the scenes above it.
       ui.begin_scene(slot.scope_id, i == top);
+      // The scene's node trees draw first, so its `ui` draws above them and
+      // reads their events this frame
+      let events = crate::core::ui::nodes::draw_nodes(world, ui, slot.scope_id);
+      crate::core::ui::nodes::deliver(world, events);
       let result = slot.call(world, audio, |scene, ctx| scene.ui(ui, ctx));
       ui.end_scene();
       if i == top {

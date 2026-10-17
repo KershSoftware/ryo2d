@@ -48,7 +48,6 @@ pub enum UiEventKind {
 
 /// Write `events` as messages, in order, and trigger each on its node (a
 /// node an earlier observer despawned gets its message and no trigger)
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only the harness calls it yet
 pub(crate) fn deliver(world: &mut World, events: Vec<UiEvent>) {
   if events.is_empty() {
     return;

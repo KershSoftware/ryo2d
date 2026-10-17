@@ -541,6 +541,7 @@ impl Engine {
     // Scenes that exited leave nothing behind in the UI's memory
     for scope in with_host(&mut self.world, |_, host| host.scenes.take_exited()) {
       self.ui_memory.forget_scene(scope);
+      crate::core::ui::nodes::despawn_scene_roots(&mut self.world, scope);
     }
     let theme = self.refresh_ui_theme();
     self.load_ui_sounds(&theme);

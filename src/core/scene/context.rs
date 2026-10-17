@@ -113,6 +113,15 @@ impl SceneContext<'_> {
     self.messages.read::<T>(self.world)
   }
 
+  /// The UI events of this scene's own nodes since it last read them. It
+  /// shares `messages::<UiEvent>()`'s cursor: read one or the other.
+  pub fn ui_events(&mut self) -> Vec<nodes::UiEvent> {
+    let scene = self.scope_id;
+    let mut events = self.messages::<nodes::UiEvent>();
+    events.retain(|event| event.scene == scene);
+    events
+  }
+
   /// Write a message for systems and scenes to read; registers `T` on first use.
   pub fn write_message<T: Message>(&mut self, message: T) {
     register_message::<T>(self.world);

@@ -284,7 +284,6 @@ pub(crate) fn root_of(world: &World, node: Entity) -> Option<Entity> {
 }
 
 /// Despawn every tree `scene` owns
-#[allow(dead_code)] // called once scenes own their trees
 pub(crate) fn despawn_scene_roots(world: &mut World, scene: u64) {
   let Some(mut nodes) = world.get_resource_mut::<UiNodes>() else {
     return;

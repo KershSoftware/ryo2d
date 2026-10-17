@@ -66,7 +66,6 @@ impl Walk {
 }
 
 /// Start a UI pass: embedded trees may be drawn again
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only the harness calls it yet
 pub(crate) fn begin_pass(world: &mut World) {
   if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
     nodes.embedded_drawn.clear();
@@ -75,7 +74,6 @@ pub(crate) fn begin_pass(world: &mut World) {
 
 /// Draw `scene`'s node trees through the builders, in spawn order (a later
 /// root over an earlier one), and return their events in walk order
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only the harness calls it yet
 pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) -> Vec<UiEvent> {
   let Some(pending_focus) = world.try_resource_scope(|world, mut nodes: Mut<UiNodes>| {
     nodes
