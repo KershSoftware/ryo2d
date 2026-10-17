@@ -43,8 +43,10 @@ mod gpu;
 #[cfg(test)]
 mod gpu_world;
 mod headless;
+pub(crate) mod ui;
 
 pub use headless::{HeadlessEngine, OffscreenOptions, StepOutcome, offscreen_with_format};
+pub use ui::UiHarness;
 
 pub use crate::core::error::HeadlessError;
 pub use gpu::shared_gpu;

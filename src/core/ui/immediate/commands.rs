@@ -116,6 +116,11 @@ impl UiCommands {
   pub(crate) fn is_empty(&self) -> bool {
     self.commands.is_empty()
   }
+  /// How many commands there are (the UI harness)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn len(&self) -> usize {
+    self.commands.len()
+  }
   /// Each command with its order, in the order they were pushed
   pub(crate) fn iter(&self) -> impl Iterator<Item = (u32, &UiCommand)> {
     self

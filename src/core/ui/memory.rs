@@ -306,15 +306,15 @@ impl UiMemory {
     self.interact.sounds.clear();
   }
 
-  /// This frame wrote no records (tests only)
-  #[cfg(test)]
+  /// This frame wrote no records (the UI harness)
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn drew_nothing(&self) -> bool {
     self.next.is_empty()
   }
 
   /// Make the frame that began never have been: last frame's records stay
-  /// last frame's (tests only)
-  #[cfg(test)]
+  /// last frame's (the UI harness)
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn rewind_frame(&mut self) {
     std::mem::swap(&mut self.prev, &mut self.next);
     self.drawing = false;
