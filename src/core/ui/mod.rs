@@ -54,6 +54,7 @@ pub(crate) mod interact;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod nav;
+pub mod nodes;
 pub(crate) mod popup;
 mod response;
 #[cfg(test)]
@@ -77,6 +78,12 @@ pub use widgets::{
 
 // The context, its absolute drawing and its input snapshot
 pub use immediate::{UiConsumed, UiContext, UiInput, UiText};
+
+// Retained nodes
+pub use nodes::{
+  TextRole, UiChecked, UiDisabled, UiEvent, UiEventKind, UiHidden, UiImage, UiIndex, UiInteraction,
+  UiLabel, UiName, UiNode, UiNodeKind, UiOptions, UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
+};
 
 // Re-export theme types
 pub use theme::{

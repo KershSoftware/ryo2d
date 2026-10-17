@@ -9,7 +9,7 @@ use crate::core::ui::immediate::UiContext;
 use crate::core::ui::{Justify, UiId};
 
 /// The widest a confirm dialog's message grows before it wraps
-const MESSAGE_WIDTH: f32 = 320.0;
+pub(in crate::core::ui) const MESSAGE_WIDTH: f32 = 320.0;
 
 /// A modal being set up: a [`Container`] (the dialog, a column with the
 /// panel look) whose `.show(|ui| ..)` dims the whole UI under it

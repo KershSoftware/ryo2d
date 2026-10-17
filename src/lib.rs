@@ -226,9 +226,11 @@ pub mod prelude {
   pub use crate::core::ui::Look as UiLook;
   pub use crate::core::ui::{
     Align, Anchor, Color, Edges, FocusRing, Justify, Length, LookPatch, Looks, Metrics, Painter,
-    Palette, Rect, Response, Sense, Sizes, Skin, TextLook, TextRoles, Theme, ThemeError, ThemeFont,
-    TweenColor, TweenFloat, TweenRect, TweenVec2, UiContext, UiId, UiInput, UiSounds, UiText,
-    UiTheme, UiTween, UiTweenLoop, Variant, WidgetKind, WidgetLooks, WidgetState,
+    Palette, Rect, Response, Sense, Sizes, Skin, TextLook, TextRole, TextRoles, Theme, ThemeError,
+    ThemeFont, TweenColor, TweenFloat, TweenRect, TweenVec2, UiChecked, UiContext, UiDisabled,
+    UiEvent, UiEventKind, UiHidden, UiId, UiImage, UiIndex, UiInput, UiInteraction, UiLabel,
+    UiName, UiNode, UiNodeKind, UiOptions, UiRoot, UiSlot, UiSounds, UiText, UiTextValue, UiTheme,
+    UiTooltip, UiTween, UiTweenLoop, UiValue, Variant, WidgetKind, WidgetLooks, WidgetState,
   };
 
   // Errors

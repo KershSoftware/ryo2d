@@ -10,7 +10,7 @@ pub(crate) mod drag;
 pub(crate) mod dropdown;
 mod image;
 mod mark_row;
-mod modal;
+pub(super) mod modal;
 mod progress;
 pub(crate) mod prompt;
 mod radio;
