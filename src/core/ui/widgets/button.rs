@@ -1158,6 +1158,29 @@ mod at_tests {
   }
 
   #[test]
+  fn a_fill_width_button_alone_in_a_fit_column_is_its_max_width_wide() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      let mut rect = Rect::default();
+      ui.column().show(|ui| {
+        rect = ui
+          .button("A label wider than forty")
+          .fill_width()
+          .max_width(40.0)
+          .show()
+          .rect;
+      });
+      rect
+    };
+    d.frame(draw);
+    let button = d.frame(draw);
+    assert_eq!(
+      button.width, 40.0,
+      "its floor is its max, not zero: {button:?}"
+    );
+  }
+
+  #[test]
   fn an_at_container_inside_a_column_is_placed_there() {
     let mut d = UiDriver::new((300.0, 200.0));
     let draw = |ui: &mut UiContext<'_>| {

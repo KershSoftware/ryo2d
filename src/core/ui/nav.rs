@@ -515,8 +515,9 @@ pub(crate) fn resolve_focus(
 
     // Scopes that appeared take focus: a modal or trap always (into it,
     // even when it has nothing to focus), another only when nothing has it
-    // and no trap is open (a modal holding only text keeps the page under
-    // it unfocused)
+    // and it is inside the innermost open trap, if any (a modal holding
+    // only text keeps the page under it unfocused, and its own choices take
+    // the focus when they appear)
     for (scope, record) in &nav.scopes {
       if known.contains(scope) {
         continue;
@@ -525,7 +526,9 @@ pub(crate) fn resolve_focus(
         stack.push((*scope, i.focused));
         i.focused = nav.trap_default_in(*scope).unwrap_or(UiId::NONE);
       } else if i.focused == UiId::NONE
-        && stack.is_empty()
+        && stack
+          .last()
+          .is_none_or(|(trap, _)| nav.inside(record, *trap))
         && let Some(id) = nav.default_in(*scope)
       {
         i.focused = id;
@@ -1032,6 +1035,52 @@ mod tests {
       m.interact.activated,
       UiId::NONE,
       "Confirm acts on nothing under it"
+    );
+  }
+
+  #[test]
+  fn a_scope_appearing_inside_an_open_modal_takes_its_default() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    let modal = Flags::FOCUS_SCOPE | Flags::TRAP | Flags::MODAL;
+    // A dialogue modal showing only its text at first
+    let dialog = (
+      200,
+      rec(Rect::new(50.0, 50.0, 200.0, 200.0), 10, modal, UiId::NONE),
+    );
+    draw(&mut m, &[dialog]);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.modal_stack.len(), 1, "the modal is open");
+    assert_eq!(m.interact.focused, UiId::NONE);
+    // Its choices appear inside it once the text is shown
+    let choices = (
+      300,
+      rec(
+        Rect::new(60.0, 60.0, 180.0, 100.0),
+        11,
+        Flags::FOCUS_SCOPE,
+        UiId(200),
+      ),
+    );
+    let first = (
+      7,
+      rec(Rect::new(60.0, 60.0, 180.0, 30.0), 12, FOCUSABLE, UiId(300)),
+    );
+    let second = (
+      8,
+      rec(
+        Rect::new(60.0, 100.0, 180.0, 30.0),
+        13,
+        FOCUSABLE | Flags::DEFAULT_FOCUS,
+        UiId(300),
+      ),
+    );
+    draw(&mut m, &[dialog, choices, first, second]);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(
+      m.interact.focused,
+      UiId(8),
+      "the choices inside the modal take their default"
     );
   }
 
