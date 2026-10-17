@@ -43,7 +43,7 @@ use ryo2d::prelude::*;
 
 fn main() {
   let engine = EngineBuilder::new()
-    .pixel_art(1280, 720)
+    .resolution(1280, 720)
     .target_fps(144)
     .fixed_hz(120)
     .start_scene(MenuScene::new())
