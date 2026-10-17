@@ -156,6 +156,13 @@ impl TextReveal {
     self.clock = RevealClock::default();
   }
 
+  /// Show the rest of the text at the next advance, and be done: a
+  /// dialogue's Skip. A fade ends at once too, so every character shows
+  /// at full opacity.
+  pub fn finish(&mut self) {
+    self.clock.finishing = true;
+  }
+
   /// Every character has started showing (`TextRevealed` was written); with
   /// a fade, the last ones finish fading in over the next moments
   pub fn is_done(&self) -> bool {
@@ -189,6 +196,17 @@ impl TextReveal {
   /// characters have faded in.
   pub(crate) fn advance(&mut self, dt: f32, layout: &TextLayout) -> bool {
     let (per_second, pause) = (self.per_second, self.punctuation_pause);
+    if std::mem::take(&mut self.clock.finishing) {
+      let finished = !self.clock.done;
+      self.clock = RevealClock {
+        shown: layout.clusters as f32,
+        done: true,
+        started: true,
+        tail: RevealClock::run_on_needed(self.fade_clusters()),
+        ..RevealClock::default()
+      };
+      return finished;
+    }
     if self.clock.done {
       let fade = self.fade_clusters();
       self.clock.run_on(dt, per_second, fade);

@@ -33,6 +33,12 @@ impl TextInputDemo {
   }
 }
 
+impl Default for TextInputDemo {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl DemoPage for TextInputDemo {
   fn name(&self) -> &str {
     "Text Input"

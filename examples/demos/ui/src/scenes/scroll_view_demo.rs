@@ -35,6 +35,12 @@ impl ScrollViewDemo {
   }
 }
 
+impl Default for ScrollViewDemo {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl DemoPage for ScrollViewDemo {
   fn name(&self) -> &str {
     "Scroll Views"

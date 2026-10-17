@@ -7,7 +7,7 @@ use demo_kit::prelude::*;
 const THEME_FILE: &str = "assets/ui/theme.ron";
 
 /// The themes the T key cycles through
-const THEME_NAMES: [&str; 5] = ["Dark", "Light", "Neon", "Pixel", "File"];
+const THEME_NAMES: [&str; 5] = ["Dark", "Light", "Pixel", "Neon", "File"];
 
 pub struct ThemeDemo {
   theme_load_error: Option<String>,
@@ -44,8 +44,8 @@ impl ThemeDemo {
     let theme = match self.current_theme {
       0 => Theme::dark(),
       1 => Theme::light(),
-      2 => neon_theme(),
-      3 => Theme::pixel(),
+      2 => Theme::pixel(),
+      3 => neon_theme(),
       _ => match Theme::load(THEME_FILE) {
         Ok(theme) => theme,
         Err(error) => {
@@ -117,7 +117,7 @@ impl DemoPage for ThemeDemo {
   }
 
   fn description(&self) -> &str {
-    "Buttons and panels in the dark, light, neon, pixel and file themes (assets/ui/theme.ron reloads when saved)."
+    "Buttons and panels in the dark, light, pixel, neon and file themes (assets/ui/theme.ron reloads when saved)."
   }
 
   fn controls(&self) -> Vec<Control> {

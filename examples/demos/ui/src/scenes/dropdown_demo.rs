@@ -49,6 +49,12 @@ impl DropdownDemo {
   }
 }
 
+impl Default for DropdownDemo {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl DemoPage for DropdownDemo {
   fn name(&self) -> &str {
     "Dropdowns"

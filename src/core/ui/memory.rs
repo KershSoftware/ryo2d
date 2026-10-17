@@ -271,6 +271,8 @@ pub(crate) struct UiMemory {
   /// to restore when it closes
   pub(crate) modal_stack: Vec<(UiId, UiId)>,
   frame: u64,
+  /// A frame is being drawn: between `begin_frame` and `end_frame`
+  drawing: bool,
   pub(crate) scopes: IdScopes,
   /// The pointer's hot, active, click and drag state, and the focus
   pub(crate) interact: Interaction,
@@ -288,6 +290,7 @@ impl UiMemory {
       known_scopes: Vec::new(),
       modal_stack: Vec::new(),
       frame: 0,
+      drawing: false,
       scopes: IdScopes::default(),
       interact: Interaction::default(),
     }
@@ -298,6 +301,7 @@ impl UiMemory {
     std::mem::swap(&mut self.prev, &mut self.next);
     self.next.clear();
     self.frame += 1;
+    self.drawing = true;
     self.scopes.begin_frame();
     self.interact.sounds.clear();
   }
@@ -313,6 +317,7 @@ impl UiMemory {
   #[cfg(test)]
   pub(crate) fn rewind_frame(&mut self) {
     std::mem::swap(&mut self.prev, &mut self.next);
+    self.drawing = false;
   }
 
   /// The UI pass runs again this frame (a scene switched from `ui`): the
@@ -324,6 +329,7 @@ impl UiMemory {
 
   /// Widget state not touched this frame is dropped
   pub(crate) fn end_frame(&mut self) {
+    self.drawing = false;
     let frame = self.frame;
     self.states.retain(|_, slot| slot.seen == frame);
   }
@@ -367,6 +373,23 @@ impl UiMemory {
   /// Every record from last frame
   pub(crate) fn prev_records(&self) -> impl Iterator<Item = (UiId, &Record)> {
     self.prev.iter().map(|(id, record)| (*id, record))
+  }
+
+  /// A widget's record from the last frame drawn to its end: last frame's
+  /// while a frame is being drawn (what the resolves read), this frame's
+  /// once it has ended (what the headless engine reads between frames)
+  pub(crate) fn drawn(&self, id: UiId) -> Option<&Record> {
+    if self.drawing {
+      self.prev.get(&id)
+    } else {
+      self.next.get(&id)
+    }
+  }
+
+  /// Every record from the last frame drawn to its end (see [`drawn`](Self::drawn))
+  pub(crate) fn drawn_records(&self) -> impl Iterator<Item = (UiId, &Record)> {
+    let records = if self.drawing { &self.prev } else { &self.next };
+    records.iter().map(|(id, record)| (*id, record))
   }
 
   /// A widget's record from this frame so far

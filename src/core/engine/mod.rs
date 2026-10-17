@@ -889,6 +889,26 @@ impl Engine {
     self.world.resource_mut::<Input>()
   }
 
+  /// The UI's memory: its records, focus and widget state
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn ui_memory(&self) -> &UiMemory {
+    &self.ui_memory
+  }
+
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn ui_memory_mut(&mut self) -> &mut UiMemory {
+    &mut self.ui_memory
+  }
+
+  /// The top scene's scope id (`None` with no scene)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn top_scope(&self) -> Option<u64> {
+    self
+      .world
+      .get_non_send::<SceneHost>()
+      .and_then(|host| host.scenes.top_scope())
+  }
+
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn read_frame(&self) -> crate::core::error::CaptureResult<image::RgbaImage> {
     match &self.renderer {

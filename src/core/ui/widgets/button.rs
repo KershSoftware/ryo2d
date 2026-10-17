@@ -964,6 +964,67 @@ mod tests {
     assert!(offset.y > 20.0, "{offset}");
   }
 
+  /// A focus scope holding a scroll area of 10 rows nothing can focus, and
+  /// a button outside the area; with `apart`, the button is in a scope of
+  /// its own. The scroll area's id.
+  fn stick_page(ui: &mut UiContext<'_>, apart: bool) -> UiId {
+    let mut area = UiId::NONE;
+    let lines = |ui: &mut UiContext<'_>| {
+      ui.scroll()
+        .height(100.0)
+        .show(|ui| {
+          for i in 0..10 {
+            ui.custom(100.0, 50.0).id(i).show();
+          }
+        })
+        .id
+    };
+    ui.column().focus_scope().show(|ui| {
+      area = lines(ui);
+      if !apart {
+        ui.button("Close").default_focus().show();
+      }
+    });
+    if apart {
+      ui.column().focus_scope().show(|ui| {
+        ui.button("Close").default_focus().show();
+      });
+    }
+    area
+  }
+
+  #[test]
+  fn the_right_stick_scrolls_the_area_in_the_focused_widgets_scope() {
+    let mut d = UiDriver::new((300.0, 300.0));
+    let area = d.frame(|ui| stick_page(ui, false));
+    d.frame(|ui| stick_page(ui, false));
+    d.stick(glam::Vec2::new(0.0, -1.0)); // pushed down
+    for _ in 0..10 {
+      d.frame(|ui| stick_page(ui, false));
+    }
+    d.stick(glam::Vec2::ZERO);
+    let offset = d.frame(|ui| ui.scroll_offset(area));
+    assert!(offset.y > 20.0, "{offset}");
+  }
+
+  #[test]
+  fn the_right_stick_leaves_an_area_in_another_scope_alone() {
+    let mut d = UiDriver::new((300.0, 300.0));
+    let area = d.frame(|ui| stick_page(ui, true));
+    d.frame(|ui| stick_page(ui, true));
+    assert!(
+      d.frame(|ui| ui.focused()).is_some(),
+      "the button has the focus"
+    );
+    d.stick(glam::Vec2::new(0.0, -1.0));
+    for _ in 0..10 {
+      d.frame(|ui| stick_page(ui, true));
+    }
+    d.stick(glam::Vec2::ZERO);
+    let offset = d.frame(|ui| ui.scroll_offset(area));
+    assert_eq!(offset.y, 0.0);
+  }
+
   #[test]
   fn a_button_takes_its_colours_from_the_theme() {
     use crate::core::ui::Color;

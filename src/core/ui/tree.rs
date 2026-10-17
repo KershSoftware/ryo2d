@@ -368,7 +368,10 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
     }
     if let Some(state) = cx.memory.state::<ScrollState>(node.id, cx.scene) {
       let view = Vec2::new(resolved.rects[i].width, resolved.rects[i].height);
-      let content = resolved.content[i];
+      // The contents overflow by what they pass the unsnapped view: an area
+      // snapped a fraction smaller than its layout still fits them
+      let snapping = view - Vec2::new(exact[i].width, exact[i].height);
+      let content = resolved.content[i] + snapping;
       state.view = view;
       state.content = Vec2::new(
         if x { content.x.max(view.x) } else { view.x },

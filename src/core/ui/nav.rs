@@ -238,7 +238,8 @@ enum Via {
   Nav,
 }
 
-/// The top scene's records from last frame, as navigation sees them
+/// The top scene's records from the last frame drawn (last frame's, during
+/// a resolve), as navigation sees them
 struct Nav<'m> {
   memory: &'m UiMemory,
   scene: Option<u64>,
@@ -259,7 +260,7 @@ impl<'m> Nav<'m> {
     let Some(scene) = scene else {
       return nav;
     };
-    for (id, record) in memory.prev_records() {
+    for (id, record) in memory.drawn_records() {
       if record.scene != scene {
         continue;
       }
@@ -281,7 +282,7 @@ impl<'m> Nav<'m> {
     if id == UiId::NONE {
       return None;
     }
-    self.memory.prev(id).filter(|r| r.scene == scene)
+    self.memory.drawn(id).filter(|r| r.scene == scene)
   }
 
   /// Whether a record can take the focus `via` a click or navigation: it
@@ -304,7 +305,7 @@ impl<'m> Nav<'m> {
       && record.rect.height > 0.0
       && self
         .memory
-        .prev(record.scroll)
+        .drawn(record.scroll)
         .is_some_and(|area| shows_in(area.rect, record.clip))
   }
 
@@ -332,6 +333,15 @@ impl<'m> Nav<'m> {
       at = self.parent_scope(at);
     }
     false
+  }
+
+  /// What directional navigation can land on: the focusables that are not
+  /// `NAV_SKIP`, inside `trap` (the innermost open trapping scope) when
+  /// one is open, by order
+  fn targets(&self, trap: Option<UiId>) -> impl Iterator<Item = &(UiId, Record)> {
+    self.focusables.iter().filter(move |(_, record)| {
+      !record.flags.contains(Flags::NAV_SKIP) && trap.is_none_or(|scope| self.inside(record, scope))
+    })
   }
 
   /// The focusables inside `scope`, by order
@@ -376,6 +386,20 @@ impl<'m> Nav<'m> {
       .map(|(id, _)| *id)
   }
 
+  /// The first scroll area by order inside `scope`: what the right stick
+  /// scrolls for a focused widget in no scroll area
+  fn first_scroll_in(&self, scope: UiId) -> Option<UiId> {
+    let scene = self.scene?;
+    self
+      .memory
+      .drawn_records()
+      .filter(|(_, r)| {
+        r.scene == scene && r.flags.contains(Flags::SCROLLABLE) && self.inside(r, scope)
+      })
+      .min_by_key(|(id, r)| (r.order, *id))
+      .map(|(id, _)| id)
+  }
+
   /// The scroll areas around `record`, innermost first
   fn scroll_chain(&self, record: &Record) -> Vec<UiId> {
     let mut chain = Vec::new();
@@ -390,10 +414,11 @@ impl<'m> Nav<'m> {
   /// The widget a move in `direction` from `from` lands on: its explicit
   /// neighbour, else the nearest that way in its scope, else (in a wrapping
   /// scope) the far end, else the same in each scope around it, until a
-  /// trapping one. Rows scrolled out of view are candidates only from
-  /// inside their own scroll area, so a move from outside a list never
-  /// lands on (or past) one it cannot see.
-  fn step(&self, from: UiId, direction: Direction) -> Option<UiId> {
+  /// trapping one. The candidates are the `targets` (`trap` is the
+  /// innermost open trapping scope). Rows scrolled out of view are
+  /// candidates only from inside their own scroll area, so a move from
+  /// outside a list never lands on (or past) one it cannot see.
+  fn step(&self, from: UiId, direction: Direction, trap: Option<UiId>) -> Option<UiId> {
     let record = self.record(from)?;
     let explicit = DIRECTIONS
       .iter()
@@ -415,8 +440,8 @@ impl<'m> Nav<'m> {
     for _ in 0..MAX_SCOPE_DEPTH {
       let candidates = || {
         self
-          .members(scope)
-          .filter(|(id, r)| *id != from && !r.flags.contains(Flags::NAV_SKIP))
+          .targets(trap)
+          .filter(|(id, r)| *id != from && self.inside(r, scope))
           .filter_map(|(id, r)| Some((*id, seen(r)?)))
       };
       if let Some(id) = spatial(record.rect, direction, candidates()) {
@@ -463,6 +488,23 @@ impl<'m> Nav<'m> {
   }
 }
 
+/// What directional navigation can target now in the top scene
+/// (`top_scene`, its scope id): the focusables (focusable, enabled, shown,
+/// in a scope) that are not `NAV_SKIP`, only those inside the innermost
+/// open trapping scope (`modal_stack`'s last, as the last resolve left it)
+/// when one is open, by order, with their rects. Read from the last frame
+/// drawn to its end, so between frames it is the frame just drawn. The
+/// directions in `resolve_focus` choose among the same targets.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn nav_targets(memory: &UiMemory, top_scene: Option<u64>) -> Vec<(UiId, Rect)> {
+  let nav = Nav::new(memory, top_scene);
+  let trap = memory.modal_stack.last().map(|&(scope, _)| scope);
+  nav
+    .targets(trap)
+    .map(|(id, record)| (*id, record.rect))
+    .collect()
+}
+
 /// Resolve the frame's keyboard and gamepad focus against last frame's
 /// records of the top scene (`top_scene`, its scope id), after the pointer
 /// resolve: scopes that appeared and closed, requests, the pointer, held
@@ -506,6 +548,8 @@ pub(crate) fn resolve_focus(
   let mut by_pointer = false;
   // Moved by a direction or Tab: the only moves that sound
   let mut by_keys = false;
+  let stick = input.right_stick;
+  let tilted = stick.is_finite() && stick.length() > STICK_SCROLL_THRESHOLD;
 
   let (scope, scroll) = {
     let nav = Nav::new(memory, top_scene);
@@ -656,7 +700,7 @@ pub(crate) fn resolve_focus(
         i.nav_step = Some((i.focused, direction));
       } else if record.scope == UiId::NONE {
         // A text field outside any scope has no neighbours to move to
-      } else if let Some(id) = nav.step(i.focused, direction) {
+      } else if let Some(id) = nav.step(i.focused, direction, trap) {
         i.focused = id;
         by_pointer = false;
         by_keys = true;
@@ -740,10 +784,17 @@ pub(crate) fn resolve_focus(
       i.tab_step = i8::from(input.tab_next) - i8::from(input.tab_prev);
     }
 
-    (
-      record.map_or(UiId::NONE, |r| r.scope),
-      record.map_or(UiId::NONE, |r| r.scroll),
-    )
+    // The right stick scrolls the area the focused widget is in, else the
+    // first area in its focus scope (a dialog's text above its button);
+    // never one outside that scope
+    let scroll = match record {
+      Some(r) if r.scroll != UiId::NONE => r.scroll,
+      Some(r) if tilted && r.scope != UiId::NONE => {
+        nav.first_scroll_in(r.scope).unwrap_or(UiId::NONE)
+      }
+      _ => UiId::NONE,
+    };
+    (record.map_or(UiId::NONE, |r| r.scope), scroll)
   };
 
   if i.focused != old {
@@ -765,9 +816,7 @@ pub(crate) fn resolve_focus(
   memory.known_scopes = known;
   memory.modal_stack = stack;
 
-  // The right stick scrolls the area around the focused widget
-  let stick = input.right_stick;
-  let tilted = stick.is_finite() && stick.length() > STICK_SCROLL_THRESHOLD;
+  // The right stick scrolls the area found above
   if let Some(scene) = top_scene.filter(|_| tilted && scroll != UiId::NONE)
     && let Some(state) = memory.state::<ScrollState>(scroll, scene)
   {

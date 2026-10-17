@@ -91,7 +91,7 @@ impl DemoPage for Glow {
 - `Control::key(KeyCode, desc)`, `Control::keys("WASD", &[..], desc)`, `Control::mouse(desc)`.
 - Draw page UI inside `content_area(ui)`: below the top bar and description, above the legend. The settings panel covers the right of it when the page has settings, so keep important content left of about 55% of the width on those pages (`settings_panel_height(ui, rows)` says how far down it reaches).
 - The fixed rate defaults to 60 Hz; set another with `.configure(|b| b.fixed_hz(..))`.
-- Headless tests build the engine from the demo: `HeadlessEngine::new_or_skip(demo.engine_builder())` (see `examples/demo-kit/tests/shell.rs`).
+- Headless tests build the engine from the demo: `HeadlessEngine::new_or_skip(demo.engine_builder())` (see `examples/demo-kit/tests/shell.rs`). A demo whose own pages are tested is a library and a binary: the ui demo's `ui_demo::demo()` (`src/lib.rs`) is what `main` runs and what `tests/acceptance.rs` drives by pad alone, reading the focus with `HeadlessEngine::ui_focused`/`ui_focusables` and setting it with `focus_ui`.
 
 ## Layout
 

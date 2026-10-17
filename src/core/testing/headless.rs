@@ -9,6 +9,8 @@ use crate::core::ecs::World;
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::{ScreenMapping, WgpuRenderer};
 use crate::core::input::{GamepadButton, InputEvent, Stick};
+use crate::core::ui::nav::nav_targets;
+use crate::core::ui::{Rect, UiId};
 
 /// Largest supported render target side, in pixels.
 const MAX_DIMENSION: u32 = 8192;
@@ -318,5 +320,26 @@ impl HeadlessEngine {
       .engine
       .input_mut()
       .queue(InputEvent::Scroll(MouseScrollDelta::LineDelta(dx, dy)));
+  }
+
+  /// The UI widget with the keyboard and gamepad focus, as the last step
+  /// resolved it (`None` when nothing has it).
+  pub fn ui_focused(&self) -> Option<UiId> {
+    let focused = self.engine.ui_memory().interact.focused;
+    (focused != UiId::NONE).then_some(focused)
+  }
+
+  /// What directional navigation can reach in the top scene, as last drawn:
+  /// each focusable widget (enabled, shown, in a focus scope, not
+  /// `nav_skip`) and its rect in UI units, by draw order. While a modal or
+  /// another trapping scope is open, only the widgets inside it.
+  pub fn ui_focusables(&self) -> Vec<(UiId, Rect)> {
+    nav_targets(self.engine.ui_memory(), self.engine.top_scope())
+  }
+
+  /// Give widget `id` the focus at the next step's focus resolve, as
+  /// `UiContext::request_focus` does (when it can take it then).
+  pub fn focus_ui(&mut self, id: UiId) {
+    self.engine.ui_memory_mut().request_focus(id);
   }
 }

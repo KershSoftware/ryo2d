@@ -768,3 +768,29 @@ fn a_click_during_a_fade_starts_no_second_switch() {
   engine.step_frames(60).unwrap();
   assert_eq!(entered.get(), 1, "the first click's switch, not a second");
 }
+
+#[test]
+fn ui_focus_can_be_read_and_set_headlessly() {
+  struct Menu;
+  impl Scene for Menu {
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      ui.column().focus_scope().show(|ui| {
+        ui.button("A").default_focus().show();
+        ui.button("B").show();
+      });
+      SceneAction::Continue
+    }
+  }
+  let Some(mut engine) =
+    HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(200, 150).start_scene(Menu))
+  else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let targets = engine.ui_focusables();
+  assert_eq!(targets.len(), 2);
+  assert_eq!(engine.ui_focused(), Some(targets[0].0));
+  engine.focus_ui(targets[1].0);
+  engine.step_frames(1).unwrap();
+  assert_eq!(engine.ui_focused(), Some(targets[1].0));
+}

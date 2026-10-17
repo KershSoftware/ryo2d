@@ -1,42 +1,216 @@
-//! Clipping demo page - demonstrates scissor rect clipping and modal overlays
+//! Clipping demo page - scroll areas (one nested in another), nested clips
+//! for absolute drawing, and modal dialogs
 
 use demo_kit::prelude::*;
 
+const ROWS: usize = 40;
+const CARDS: usize = 12;
+/// The list's row the card strip follows
+const STRIP_AFTER: usize = 9;
+
+/// The dialog open over the page
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dialog {
+  Modal,
+  Ask,
+}
+
 pub struct ClippingDemo {
-  // Scroll state
-  scroll_offset: f32,
-  scroll_velocity: f32,
-  // Scroll region focus/interaction
-  scroll_focused: bool,
-  scroll_dragging: bool,
-  drag_start_y: f32,
-  drag_start_offset: f32,
-  // Modal state
-  show_modal: bool,
-  modal_result: Option<bool>,
-  // Demo items
-  items: Vec<String>,
-  // Scroll area rects (set while drawing, read by the next frame's input)
-  scroll_area: Rect,
-  content_area: Rect,
+  dialog: Option<Dialog>,
+  /// What the last dialog was answered with
+  result: Option<(&'static str, bool)>,
+  /// The list's row last clicked or confirmed
+  selected: Option<usize>,
 }
 
 impl ClippingDemo {
   pub fn new() -> Self {
     Self {
-      scroll_offset: 0.0,
-      scroll_velocity: 0.0,
-      scroll_focused: false,
-      scroll_dragging: false,
-      drag_start_y: 0.0,
-      drag_start_offset: 0.0,
-      show_modal: false,
-      modal_result: None,
-      items: (1..=20)
-        .map(|i| format!("Item {} - This is a scrollable list item", i))
-        .collect(),
-      scroll_area: Rect::new(30.0, 90.0, 280.0, 150.0),
-      content_area: Rect::new(35.0, 95.0, 270.0, 140.0),
+      dialog: None,
+      result: None,
+      selected: None,
+    }
+  }
+
+  /// The list: 40 rows with a strip of 12 cards in it, each a scroll area;
+  /// the wheel scrolls the innermost one under the pointer that can move
+  fn list(&mut self, ui: &mut UiContext, rect: Rect) {
+    let ring = ui.focus_visible();
+    let accent = ui.theme().palette.accent;
+    let label = TextStyle::default();
+    let note = TextStyle::default().color(Color::LIGHT_GRAY);
+    let selected = self.selected;
+    let mut clicked = None;
+    ui.draw_rect(rect, Color::rgb(30, 30, 40));
+    ui.scroll().at(rect).padding(6.0).gap(2.0).show(|ui| {
+      for i in 0..ROWS {
+        let response = ui
+          .custom(0.0, 26.0)
+          .id(i)
+          .fill_width()
+          .sense(Sense::click())
+          .focusable(true)
+          .paint(|p, response| {
+            let size = p.size();
+            let fill = if Some(i) == selected {
+              Color::rgb(60, 100, 160)
+            } else if response.hovered() {
+              Color::rgb(55, 55, 75)
+            } else if i % 2 == 0 {
+              Color::rgb(40, 40, 55)
+            } else {
+              Color::rgb(35, 35, 48)
+            };
+            let row = Rect::new(0.0, 0.0, size.x, size.y);
+            if response.focused() && ring {
+              p.bordered_rect(row, fill, 3.0, 2.0, accent);
+            } else {
+              p.rect(row, fill);
+            }
+            p.text(format!("Item {:02}", i + 1), 8.0, 5.0, &label);
+          });
+        if response.clicked() {
+          clicked = Some(i);
+        }
+        if i == STRIP_AFTER {
+          // A strip inside the list: the wheel over it scrolls it while it
+          // can, then the list; Shift turns the wheel sideways
+          ui.scroll()
+            .horizontal()
+            .fill_width()
+            .height(84.0)
+            .gap(8.0)
+            .padding(4.0)
+            .show(|ui| {
+              for card in 0..CARDS {
+                ui.custom(110.0, 64.0)
+                  .id(card)
+                  .focusable(true)
+                  .paint(|p, response| {
+                    let size = p.size();
+                    let hue = card as f32 / CARDS as f32;
+                    let fill = Color::rgb(
+                      (60.0 + hue * 120.0) as u8,
+                      (70.0 + (1.0 - hue) * 80.0) as u8,
+                      140,
+                    );
+                    let border = if response.focused() && ring {
+                      accent
+                    } else {
+                      Color::rgb(100, 100, 120)
+                    };
+                    let width = if response.focused() && ring { 2.0 } else { 1.0 };
+                    p.bordered_rect(
+                      Rect::new(0.0, 0.0, size.x, size.y),
+                      fill,
+                      4.0,
+                      width,
+                      border,
+                    );
+                    p.text(format!("Card {}", card + 1), 8.0, 8.0, &label);
+                    p.text("Shift + wheel", 8.0, 30.0, &note);
+                  });
+              }
+            });
+        }
+      }
+    });
+    if clicked.is_some() {
+      self.selected = clicked;
+    }
+  }
+
+  /// Absolute drawing under two clips: only their intersection shows
+  fn nested_clips(&self, ui: &mut UiContext, x: f32, y: f32) {
+    ui.draw_text("Nested clips:", x, y - 20.0, Color::WHITE);
+    let outer_rect = Rect::new(x, y, 200.0, 150.0);
+    ui.draw_panel(
+      outer_rect,
+      Color::rgb(35, 35, 45),
+      Some(Color::rgb(60, 60, 80)),
+    );
+    ui.push_clip(outer_rect.shrink(10.0));
+    ui.draw_text(
+      &format!("Outer clip depth: {}", ui.clip_depth()),
+      x + 10.0,
+      y + 10.0,
+      Color::rgb(150, 150, 180),
+    );
+    let inner_rect = Rect::new(x + 50.0, y + 30.0, 200.0, 150.0);
+    ui.draw_panel(
+      inner_rect,
+      Color::rgb(45, 35, 55),
+      Some(Color::rgb(80, 60, 100)),
+    );
+    ui.push_clip(inner_rect.shrink(10.0));
+    ui.draw_text(
+      &format!("Inner clip depth: {}", ui.clip_depth()),
+      inner_rect.x + 10.0,
+      inner_rect.y + 10.0,
+      Color::rgb(180, 150, 200),
+    );
+    for (i, line) in [
+      "This text is clipped",
+      "to the intersection",
+      "of both clip rects",
+    ]
+    .iter()
+    .enumerate()
+    {
+      ui.draw_text(
+        line,
+        inner_rect.x + 10.0,
+        inner_rect.y + 30.0 + i as f32 * 18.0,
+        Color::WHITE,
+      );
+    }
+    ui.draw_rect(
+      Rect::new(inner_rect.x + 50.0, inner_rect.y + 90.0, 200.0, 100.0),
+      Color::new(100, 150, 255, 100),
+    );
+    ui.pop_clip();
+    ui.pop_clip();
+    let dim = Color::rgb(110, 110, 130);
+    ui.draw_text("The blue box reaches past both clips:", x, y + 170.0, dim);
+    ui.draw_text("only their intersection shows.", x, y + 188.0, dim);
+  }
+
+  /// The open dialog; its buttons or Back answer it
+  fn dialog(&mut self, ui: &mut UiContext) {
+    let Some(dialog) = self.dialog else {
+      return;
+    };
+    let heading = ui.theme().text.heading.style();
+    let mut answer = None;
+    match dialog {
+      Dialog::Modal => {
+        ui.modal().width(320.0).gap(12.0).show(|ui| {
+          ui.text("Confirm Action").style(&heading);
+          ui.text("Are you sure you want to proceed?");
+          ui.row().gap(8.0).justify(Justify::End).show(|ui| {
+            if ui.button("Confirm").variant("accent").clicked() {
+              answer = Some(true);
+            }
+            if ui.button("Cancel").default_focus().clicked() {
+              answer = Some(false);
+            }
+          });
+        });
+        if answer.is_none() && ui.back() {
+          answer = Some(false);
+        }
+      }
+      Dialog::Ask => {
+        answer = ui.confirm("Delete the save?", "This cannot be undone.");
+      }
+    }
+    if let Some(yes) = answer {
+      let name = match dialog {
+        Dialog::Modal => "Modal",
+        Dialog::Ask => "Ask",
+      };
+      self.result = Some((name, yes));
+      self.dialog = None;
     }
   }
 }
@@ -53,15 +227,16 @@ impl DemoPage for ClippingDemo {
   }
 
   fn description(&self) -> &str {
-    "Scissor clipping for scroll regions, and modal overlays."
+    "Scroll areas clip their contents, for hits as well as drawing; the wheel scrolls the innermost one it can.\n\
+     Absolute drawing clips with push_clip. The modal and Ask block the page until they are answered; Back cancels them."
   }
 
   fn controls(&self) -> Vec<Control> {
     let mut controls = vec![
-      Control::mouse("Click the list to focus it, wheel to scroll"),
-      Control::mouse("Drag the scrollbar"),
+      Control::mouse("Wheel or drag the bar to scroll"),
+      Control::mouse("Shift + wheel over the cards"),
     ];
-    if self.show_modal {
+    if self.dialog.is_some() {
       controls.push(Control::key(KeyCode::Escape, "Cancel the dialog"));
     }
     controls
@@ -69,387 +244,54 @@ impl DemoPage for ClippingDemo {
 
   /// Escape cancels the open dialog instead of quitting
   fn wants_escape(&self) -> bool {
-    self.show_modal
+    self.dialog.is_some()
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
-    if self.show_modal && ui.input().key_pressed(KeyCode::Escape) {
-      ui.consume_key(KeyCode::Escape);
-      self.show_modal = false;
-      self.modal_result = Some(false);
-    }
-    self.handle_scroll(ui);
-    self.draw(ui);
-  }
-}
-
-impl ClippingDemo {
-  /// Focus, scrollbar dragging, wheel and momentum for the scroll region.
-  /// `is_hovered` / `is_clicked` / `is_held` respect the shell's help
-  /// overlay, which hides the mouse from the page.
-  fn handle_scroll(&mut self, ui: &mut UiContext) {
-    let dt = ui.dt();
-    let my = ui.input().mouse_y();
-    let mouse_in_scroll_area = ui.is_hovered(self.scroll_area);
-    let (screen_w, screen_h) = ui.screen_size();
-    let screen = Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32);
-    let content_height = self.items.len() as f32 * 25.0;
-    // max_scroll = total content height - visible area height
-    let max_scroll = (content_height - self.content_area.height).max(0.0);
-
-    // Handle focus - click to focus, click outside to unfocus
-    if ui.is_clicked(screen) {
-      self.scroll_focused = mouse_in_scroll_area;
-    }
-
-    // Scrollbar dimensions
-    let visible_ratio = self.content_area.height / content_height;
-    let scrollbar_height = (visible_ratio * self.content_area.height).max(20.0);
-    let track_height = self.content_area.height - scrollbar_height;
-    let scroll_ratio = if max_scroll > 0.0 {
-      self.scroll_offset / max_scroll
-    } else {
-      0.0
-    };
-    let scrollbar_y = self.content_area.y + scroll_ratio * track_height;
-    let scrollbar_rect = Rect::new(
-      self.scroll_area.right() - 10.0,
-      scrollbar_y,
-      8.0,
-      scrollbar_height,
-    );
-
-    // Handle scrollbar dragging
-    if ui.is_clicked(scrollbar_rect) {
-      self.scroll_dragging = true;
-      self.drag_start_y = my;
-      self.drag_start_offset = self.scroll_offset;
-      self.scroll_focused = true;
+    let area = content_area(ui);
+    let top = area.y + 24.0;
+    let list = Rect::new(30.0, top, 320.0, 300.0);
+    let mut open = None;
+    // One focus scope over the list and the buttons, so the arrows walk them
+    ui.stack().focus_scope().at(area).show(|ui| {
+      self.list(ui, list);
+      ui.column()
+        .at(Rect::new(420.0, top + 20.0, 220.0, 80.0))
+        .gap(8.0)
+        .show(|ui| {
+          if ui
+            .button("Show Modal Dialog")
+            .fill_width()
+            .default_focus()
+            .clicked()
+          {
+            open = Some(Dialog::Modal);
+          }
+          if ui.button("Ask").fill_width().clicked() {
+            open = Some(Dialog::Ask);
+          }
+        });
+    });
+    if open.is_some() {
+      self.dialog = open;
     }
 
-    if self.scroll_dragging {
-      if ui.input().mouse_down(MouseButton::Left) {
-        // Calculate new scroll based on drag distance
-        let drag_delta = my - self.drag_start_y;
-        let scroll_ratio = drag_delta / (self.content_area.height - scrollbar_height);
-        self.scroll_offset =
-          (self.drag_start_offset + scroll_ratio * max_scroll).clamp(0.0, max_scroll);
-        self.scroll_velocity = 0.0; // Stop momentum while dragging
-      } else {
-        self.scroll_dragging = false;
-      }
-    }
-
-    // Apply scroll velocity with friction (only when not dragging)
-    if !self.scroll_dragging {
-      self.scroll_offset += self.scroll_velocity * dt;
-      // Friction: 8% per 60th of a second, whatever the frame rate
-      self.scroll_velocity *= 0.92_f32.powf(dt * 60.0);
-
-      // Stop very small velocities
-      if self.scroll_velocity.abs() < 1.0 {
-        self.scroll_velocity = 0.0;
-      }
-    }
-
-    // Clamp scroll offset
-    self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
-
-    // Mouse wheel scrolling - only when hovering over scroll area
-    if mouse_in_scroll_area {
-      let scroll_delta = ui.input().scroll_delta();
-      if scroll_delta.1.abs() > 0.01 {
-        // Much higher multiplier for better responsiveness
-        self.scroll_velocity = -scroll_delta.1 * 400.0;
-      }
-    }
-  }
-
-  fn draw(&mut self, ui: &mut UiContext) {
-    let (screen_w, screen_h) = ui.screen_size();
-
-    // Background
-    ui.draw_rect(
-      Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32),
-      Color::rgb(25, 25, 35),
-    );
-
-    // =====================================================================
-    // Section 1: Clipped Scroll Region
-    // =====================================================================
-    let scroll_x = 30.0;
-    let scroll_y = 90.0;
     ui.draw_text(
-      "Clipped Scroll Region:",
-      scroll_x,
-      scroll_y - 20.0,
+      "A scroll area, with one inside it:",
+      list.x,
+      list.y - 20.0,
       Color::WHITE,
     );
-
-    // Update stored rects for use in update()
-    self.scroll_area = Rect::new(scroll_x, scroll_y, 280.0, 150.0);
-    self.content_area = self.scroll_area.shrink(5.0);
-
-    // Draw focus indicator if focused
-    let border_color = if self.scroll_focused {
-      Color::rgb(100, 150, 255)
-    } else {
-      Color::rgb(60, 60, 80)
-    };
-    ui.draw_panel(self.scroll_area, Color::rgb(35, 35, 45), Some(border_color));
-
-    // Push clip for scroll content
-    ui.push_clip(self.content_area);
-
-    // Draw scrollable items
-    for (i, item) in self.items.iter().enumerate() {
-      let item_y = self.content_area.y + 5.0 + (i as f32 * 25.0) - self.scroll_offset;
-
-      // Alternate row colors for visibility
-      let row_color = if i % 2 == 0 {
-        Color::rgb(40, 40, 55)
+    ui.draw_text("Modals:", 420.0, top - 20.0, Color::WHITE);
+    if let Some((name, yes)) = self.result {
+      let (text, color) = if yes {
+        (format!("{name}: confirmed"), Color::rgb(80, 200, 80))
       } else {
-        Color::rgb(35, 35, 50)
+        (format!("{name}: cancelled"), Color::rgb(200, 80, 80))
       };
-
-      ui.draw_rect(
-        Rect::new(
-          self.content_area.x,
-          item_y,
-          self.content_area.width - 12.0,
-          23.0,
-        ),
-        row_color,
-      );
-      ui.draw_text(
-        item,
-        self.content_area.x + 5.0,
-        item_y + 5.0,
-        Color::LIGHT_GRAY,
-      );
+      ui.draw_text(&text, 420.0, top + 120.0, color);
     }
-
-    ui.pop_clip();
-
-    // Scrollbar track
-    let track_rect = Rect::new(
-      self.scroll_area.right() - 10.0,
-      self.content_area.y,
-      8.0,
-      self.content_area.height,
-    );
-    ui.draw_rect(track_rect, Color::rgb(30, 30, 40));
-
-    // Scrollbar thumb
-    let content_height = self.items.len() as f32 * 25.0;
-    let max_scroll = (content_height - self.content_area.height).max(0.0);
-    let visible_ratio = self.content_area.height / content_height;
-    let scrollbar_height = (visible_ratio * self.content_area.height).max(20.0);
-    let track_height = self.content_area.height - scrollbar_height;
-    let scroll_ratio = if max_scroll > 0.0 {
-      self.scroll_offset / max_scroll
-    } else {
-      0.0
-    };
-    let scrollbar_y = self.content_area.y + scroll_ratio * track_height;
-
-    let scrollbar_rect = Rect::new(
-      self.scroll_area.right() - 10.0,
-      scrollbar_y,
-      8.0,
-      scrollbar_height,
-    );
-
-    // Scrollbar color based on state
-    let scrollbar_color = if self.scroll_dragging {
-      Color::rgb(150, 150, 180) // Dragging - bright
-    } else if ui.is_hovered(scrollbar_rect) {
-      Color::rgb(130, 130, 160) // Hovered
-    } else {
-      Color::rgb(100, 100, 120) // Normal
-    };
-    ui.draw_rect(scrollbar_rect, scrollbar_color);
-
-    // Scroll instructions
-    let instruction = if self.scroll_focused {
-      "Drag the scrollbar, or use the scroll wheel"
-    } else {
-      "Click to focus, scroll wheel to scroll"
-    };
-    ui.draw_text(
-      instruction,
-      scroll_x,
-      self.scroll_area.bottom() + 10.0,
-      Color::rgb(80, 80, 100),
-    );
-
-    // =====================================================================
-    // Section 2: Nested Clips Demo
-    // =====================================================================
-    let nested_x = 30.0;
-    let nested_y = 310.0;
-    ui.draw_text("Nested Clips:", nested_x, nested_y - 20.0, Color::WHITE);
-
-    // Outer clip region
-    let outer_rect = Rect::new(nested_x, nested_y, 200.0, 150.0);
-    ui.draw_panel(
-      outer_rect,
-      Color::rgb(35, 35, 45),
-      Some(Color::rgb(60, 60, 80)),
-    );
-
-    ui.push_clip(outer_rect.shrink(10.0));
-
-    // Show clip depth while inside first clip
-    ui.draw_text(
-      &format!("Outer clip depth: {}", ui.clip_depth()),
-      nested_x + 10.0,
-      nested_y + 10.0,
-      Color::rgb(150, 150, 180),
-    );
-
-    // Inner clip region (partially overlapping)
-    let inner_rect = Rect::new(nested_x + 50.0, nested_y + 30.0, 200.0, 150.0);
-    ui.draw_panel(
-      inner_rect,
-      Color::rgb(45, 35, 55),
-      Some(Color::rgb(80, 60, 100)),
-    );
-
-    ui.push_clip(inner_rect.shrink(10.0));
-
-    // Show depth during nested clips
-    ui.draw_text(
-      &format!("Inner clip depth: {}", ui.clip_depth()),
-      inner_rect.x + 10.0,
-      inner_rect.y + 10.0,
-      Color::rgb(180, 150, 200),
-    );
-
-    // Content that will be clipped to intersection
-    ui.draw_text(
-      "This text is clipped",
-      inner_rect.x + 10.0,
-      inner_rect.y + 30.0,
-      Color::WHITE,
-    );
-    ui.draw_text(
-      "to the intersection",
-      inner_rect.x + 10.0,
-      inner_rect.y + 48.0,
-      Color::WHITE,
-    );
-    ui.draw_text(
-      "of both clip rects",
-      inner_rect.x + 10.0,
-      inner_rect.y + 66.0,
-      Color::WHITE,
-    );
-
-    // Draw a rect that extends beyond clips
-    ui.draw_rect(
-      Rect::new(inner_rect.x + 50.0, inner_rect.y + 90.0, 200.0, 100.0),
-      Color::new(100, 150, 255, 100),
-    );
-
-    ui.pop_clip();
-    ui.pop_clip();
-
-    // Explanation text (outside clips)
-    ui.draw_text(
-      "The purple box extends beyond both clips.",
-      nested_x,
-      nested_y + 170.0,
-      Color::rgb(80, 80, 100),
-    );
-    ui.draw_text(
-      "Only the intersection region is visible.",
-      nested_x,
-      nested_y + 188.0,
-      Color::rgb(80, 80, 100),
-    );
-
-    // =====================================================================
-    // Section 3: Modal Button
-    // =====================================================================
-    let modal_section_x = 300.0;
-    let modal_section_y = 310.0;
-    ui.draw_text(
-      "Modal Overlay:",
-      modal_section_x,
-      modal_section_y,
-      Color::WHITE,
-    );
-
-    let modal_btn = Rect::new(modal_section_x, modal_section_y + 25.0, 150.0, 35.0);
-    if ui.button("Show Modal Dialog").at(modal_btn).clicked() {
-      self.show_modal = true;
-      self.modal_result = None;
-    }
-
-    // Show result of last modal
-    if let Some(confirmed) = self.modal_result {
-      let result_text = if confirmed { "Confirmed!" } else { "Cancelled" };
-      let result_color = if confirmed {
-        Color::rgb(80, 200, 80)
-      } else {
-        Color::rgb(200, 80, 80)
-      };
-      ui.draw_text(
-        &format!("Last result: {}", result_text),
-        modal_section_x,
-        modal_section_y + 70.0,
-        result_color,
-      );
-    }
-
-    // =====================================================================
-    // Modal Overlay (drawn on top of everything)
-    // =====================================================================
-    if self.show_modal {
-      // Dim the background
-      ui.draw_modal_overlay(Color::new(0, 0, 0, 180));
-
-      // Dialog box
-      let dialog_w = 300.0;
-      let dialog_h = 150.0;
-      let dialog = Rect::centered_at(
-        screen_w as f32 / 2.0,
-        screen_h as f32 / 2.0,
-        dialog_w,
-        dialog_h,
-      );
-
-      ui.draw_panel(dialog, Color::rgb(45, 45, 60), Some(Color::WHITE));
-
-      // Dialog title
-      ui.draw_text_centered(
-        "Confirm Action",
-        Rect::new(dialog.x, dialog.y + 15.0, dialog_w, 20.0),
-        Color::WHITE,
-      );
-
-      // Dialog message
-      ui.draw_text_centered(
-        "Are you sure you want to proceed?",
-        Rect::new(dialog.x, dialog.y + 50.0, dialog_w, 20.0),
-        Color::LIGHT_GRAY,
-      );
-
-      // Buttons
-      let btn_y = dialog.y + dialog_h - 50.0;
-      let confirm_btn = Rect::new(dialog.x + 30.0, btn_y, 100.0, 35.0);
-      let cancel_btn = Rect::new(dialog.x + dialog_w - 130.0, btn_y, 100.0, 35.0);
-
-      if ui.button("Confirm").at(confirm_btn).clicked() {
-        self.show_modal = false;
-        self.modal_result = Some(true);
-      }
-
-      if ui.button("Cancel").at(cancel_btn).clicked() {
-        self.show_modal = false;
-        self.modal_result = Some(false);
-      }
-    }
+    self.nested_clips(ui, 30.0, list.bottom() + 50.0);
+    self.dialog(ui);
   }
 }

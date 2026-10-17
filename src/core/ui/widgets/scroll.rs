@@ -796,6 +796,40 @@ mod tests {
   }
 
   #[test]
+  fn an_area_snapped_shorter_than_its_layout_still_fits_its_contents() {
+    // A 30.6 high header leaves the area 99.4 high, snapped to 99 (31 to
+    // 130); its two 20 high rows fit either way
+    let mut d = UiDriver::new((300.0, 300.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      let mut area = UiId::NONE;
+      ui.column()
+        .at(Rect::new(0.0, 0.0, 200.0, 130.0))
+        .show(|ui| {
+          ui.custom(100.0, 30.6).show();
+          area = ui
+            .scroll()
+            .grow(1.0)
+            .show(|ui| {
+              for i in 0..2 {
+                ui.custom(100.0, 20.0).id(i).show();
+              }
+            })
+            .id;
+        });
+      area
+    };
+    let mut area = UiId::NONE;
+    for _ in 0..3 {
+      area = d.frame(draw);
+    }
+    let state = *d.memory.peek_state::<ScrollState>(area).unwrap();
+    assert!(
+      state.content.y <= state.view.y,
+      "no overflow, so no scrollbar: {state:?}"
+    );
+  }
+
+  #[test]
   fn a_horizontal_area_flows_in_a_row_and_ignores_a_vertical_wheel() {
     let mut d = UiDriver::new((300.0, 300.0));
     let mut scroll = UiId::NONE;

@@ -3290,4 +3290,23 @@ mod tests {
     assert_eq!(commands.commands().count(), 0, "nothing recorded");
     assert_eq!(reveal.shown(), 0.0, "and the reveal is left alone");
   }
+
+  #[test]
+  fn finishing_a_reveal_shows_the_whole_line() {
+    let mut d = crate::core::ui::test_util::UiDriver::new((300.0, 100.0));
+    let mut reveal = crate::core::text::TextReveal::new(1.0);
+    d.frame(|ui| {
+      ui.text("A long line to reveal")
+        .typewriter(&mut reveal)
+        .draw();
+    });
+    assert!(!reveal.is_done());
+    reveal.finish();
+    d.frame(|ui| {
+      ui.text("A long line to reveal")
+        .typewriter(&mut reveal)
+        .draw();
+    });
+    assert!(reveal.is_done());
+  }
 }

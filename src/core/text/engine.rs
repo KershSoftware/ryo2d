@@ -1314,6 +1314,8 @@ pub(crate) struct RevealClock {
   /// Clusters run on past the end once every cluster shows, so the last
   /// ones finish fading in (`run_on`)
   pub(crate) tail: f32,
+  /// Show the rest at the next advance (`TextReveal::finish`)
+  pub(crate) finishing: bool,
 }
 
 impl RevealClock {

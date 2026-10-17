@@ -158,6 +158,9 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   runs on (`RevealClock::run_on`) until the last character has faded in, so
   the end never pops; once settled the emitter draws without a reveal. It
   starts over when the text changes (not its style or a font).
+  `TextReveal::finish` sets `RevealClock::finishing`: the next advance
+  shows every cluster with the fade's run-on done (writing `TextRevealed`
+  if it was not done yet).
 - The glyph atlas remembers keys with no image (spaces) and keys whose
   image is bigger than a page, so they are not rasterized again every
   frame; the set is cleared past 4096 keys.
