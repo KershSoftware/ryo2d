@@ -41,6 +41,7 @@ console = true  # Works in both debug and release builds
 | `debug:colliders` | F2 | Toggle collision shape visualization |
 | `debug:velocities` | F3 | Toggle velocity vectors |
 | `debug:origins` | F4 | Toggle entity origin points |
+| `debug:ui` | | Outline every UI widget with its id: hot yellow, active orange, focused green |
 | `debug:capture [path]` | F12 | Save the next frame as a PNG |
 | `system:version` | | Show engine and game version |
 | `system:timescale <n>` | | Set the game clock's speed (`ctx.time.game.speed()`, 0.0-10.0) |

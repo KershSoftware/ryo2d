@@ -392,6 +392,11 @@ impl UiMemory {
     records.iter().map(|(id, record)| (*id, record))
   }
 
+  /// Every record written this frame so far
+  pub(crate) fn current_records(&self) -> impl Iterator<Item = (UiId, &Record)> {
+    self.next.iter().map(|(id, record)| (*id, record))
+  }
+
   /// A widget's record from this frame so far
   pub(crate) fn current(&self, id: UiId) -> Option<&Record> {
     self.next.get(&id)

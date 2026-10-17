@@ -109,6 +109,9 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         ctx
           .console
           .print("  debug:origins       - Toggle entity origin points (F4)");
+        ctx
+          .console
+          .print("  debug:ui            - Toggle the UI widget rect and id overlay");
         ctx.console.print_system("");
         ctx.console.print_system("system:");
         ctx
@@ -299,6 +302,21 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         ctx.console.print("Entity origins visible");
       } else {
         ctx.console.print("Entity origins hidden");
+      }
+      CommandResult::Ok
+    },
+  );
+
+  // UI debug overlay
+  registry.register(
+    "debug:ui",
+    "Toggle the UI debug overlay (widget rects and ids)",
+    |_args, ctx| {
+      ctx.debug_config.show_ui_debug = !ctx.debug_config.show_ui_debug;
+      if ctx.debug_config.show_ui_debug {
+        ctx.console.print("UI debug overlay enabled");
+      } else {
+        ctx.console.print("UI debug overlay disabled");
       }
       CommandResult::Ok
     },
@@ -562,5 +580,19 @@ mod tests {
     assert!(registry.has_command("system:ip:wan"));
     assert!(registry.remove_builtin("system:ip:wan"));
     assert!(!registry.has_command("system:ip:wan"));
+  }
+
+  #[test]
+  fn debug_ui_toggles_the_overlay() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+    let mut console = super::super::ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+    assert_eq!(registry.execute("debug:ui", &mut ctx), CommandResult::Ok);
+    assert!(ctx.debug_config.show_ui_debug);
+    registry.execute("debug:ui", &mut ctx);
+    assert!(!ctx.debug_config.show_ui_debug);
   }
 }

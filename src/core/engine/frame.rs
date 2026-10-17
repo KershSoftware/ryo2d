@@ -615,6 +615,9 @@ impl Engine {
       if debug.show_frame_timing {
         overlays::render_frame_timing(&mut ui, &self.smoothed_timings, height);
       }
+      if debug.show_ui_debug {
+        crate::core::ui::debug::draw_debug_overlay(&mut ui);
+      }
       // The console over everything
       self.console_state.render(&mut ui, width, height);
       ui.end_scene();
@@ -2170,6 +2173,41 @@ mod tests {
     }
     click(&mut e, at.x + 10.0, at.y + 10.0);
     assert_eq!(e.world().resource::<Seen>().button, 1);
+  }
+
+  #[test]
+  fn the_ui_debug_overlay_outlines_each_widget() {
+    use crate::core::ui::immediate::{OVERLAY_LAYER, UiCommand};
+    use crate::core::ui::{Rect, UiContext};
+    const AT: Rect = Rect::new(20.0, 20.0, 80.0, 30.0);
+    struct OneButton;
+    impl Scene for OneButton {
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        ui.button("Outlined").at(AT).show();
+        SceneAction::Continue
+      }
+    }
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(OneButton)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 320, 240), 1.0);
+    let outlined = |e: &Engine| {
+      e.ui_commands.iter().any(|(_, c)| {
+        matches!(c, UiCommand::Rect { rect, layer, border: Some(_), .. } if *layer == OVERLAY_LAYER && *rect == AT)
+      })
+    };
+    e.frame(Some(Duration::from_millis(16)));
+    assert!(!outlined(&e), "off by default");
+    e.config.debug.show_ui_debug = true;
+    e.frame(Some(Duration::from_millis(16)));
+    assert!(
+      outlined(&e),
+      "the button's rect is outlined on the overlay layer"
+    );
   }
 }
 

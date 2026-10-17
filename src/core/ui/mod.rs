@@ -36,6 +36,7 @@
 
 // Submodules
 mod containers;
+pub(crate) mod debug;
 pub(crate) mod id;
 pub mod immediate;
 pub(crate) mod interact;
