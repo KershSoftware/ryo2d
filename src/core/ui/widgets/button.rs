@@ -10,7 +10,7 @@ use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::Color;
 use crate::core::ui::immediate::{UiContext, text_seed};
-use crate::core::ui::layout::{Edges, Measure};
+use crate::core::ui::layout::{Edges, Length, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::WidgetKind;
@@ -148,6 +148,12 @@ impl Button<'_, '_> {
     let mut style_of_node = self.opts.style.clone();
     // The icon's room is padding: the label centres in what is left
     style_of_node.padding = Edges::new(left + icon_room, top, right, bottom);
+    // Filling its parent's width, it is still at least as wide as its label
+    // (it has no width of its own then, so a column sized to its contents
+    // would make it zero wide)
+    if style_of_node.width == Length::Fill && style_of_node.min_width.is_none() {
+      style_of_node.min_width = Some(size.x);
+    }
     let mut node = Node::new(id, style_of_node, Measure::Fixed(size));
     node.record = Some(RecordSpec {
       flags: self.opts.flags(Flags::CLICK | self.flags, true),

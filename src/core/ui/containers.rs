@@ -110,7 +110,7 @@ impl<'a> UiContext<'a> {
     let mut popup = Container::new(self, site, Flow::Column);
     popup.kind = ContainerKind::Popup(anchor);
     popup.style.padding = padding;
-    popup.flags = Flags::BLOCKING | Flags::FOCUS_SCOPE | Flags::TRAP;
+    popup.flags = Flags::BLOCKING | Flags::FOCUS_SCOPE | Flags::TRAP | Flags::POPUP;
     popup
   }
 

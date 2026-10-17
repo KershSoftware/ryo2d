@@ -68,9 +68,10 @@ impl<'a> UiContext<'a> {
   /// on Back, `None` otherwise. The game shows it while it waits for an
   /// answer.
   ///
-  /// Its ids come from its own code, not the line that calls it, so it is
-  /// the same dialog wherever it is drawn from; two drawn in one frame are
-  /// told apart by their order, as a helper called twice is.
+  /// Its ids come from its texts, not the line that calls it: it is the same
+  /// dialog wherever it is drawn from, and a different question is a new
+  /// dialog that opens on No (two with the same texts in one frame share a
+  /// key, warned once).
   ///
   /// ```ignore
   /// if self.quitting {
@@ -92,7 +93,8 @@ impl<'a> UiContext<'a> {
     let body = theme.text.body.style();
     let gap = theme.metrics.spacing;
     let mut answer = None;
-    self.modal().gap(gap).show(|ui| {
+    let key = (title, message, yes, no);
+    self.modal().id(key).gap(gap).show(|ui| {
       ui.text(title).style(&heading);
       ui.text(message).style(&body).wrap(MESSAGE_WIDTH);
       ui.row().gap(gap).justify(Justify::End).show(|ui| {
@@ -303,6 +305,75 @@ mod tests {
     };
     for _ in 0..3 {
       assert!(d.frame(popup));
+    }
+  }
+
+  /// Draws a page widget (so no frame is a read), and the confirm while
+  /// `show`; its answer
+  fn ask(ui: &mut UiContext<'_>, show: bool) -> Option<bool> {
+    ui.button("Page").at(Rect::new(0.0, 0.0, 40.0, 20.0)).show();
+    if show {
+      ui.confirm("Quit?", "Unsaved progress is lost.")
+    } else {
+      None
+    }
+  }
+
+  #[test]
+  fn a_confirm_shown_again_opens_on_no() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    for _ in 0..2 {
+      d.frame(|ui| ask(ui, true));
+    }
+    d.nav(Direction::Left);
+    d.frame(|ui| ask(ui, true));
+    d.confirm();
+    assert_eq!(d.frame(|ui| ask(ui, true)), Some(true));
+    for _ in 0..2 {
+      d.frame(|ui| ask(ui, false));
+    }
+    for _ in 0..2 {
+      d.frame(|ui| ask(ui, true));
+    }
+    d.confirm();
+    assert_eq!(
+      d.frame(|ui| ask(ui, true)),
+      Some(false),
+      "No has the focus again"
+    );
+  }
+
+  #[test]
+  fn a_different_confirm_the_next_frame_opens_on_no() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let ask = |ui: &mut UiContext<'_>, first: bool| {
+      if first {
+        ui.confirm("Quit?", "Unsaved progress is lost.")
+      } else {
+        ui.confirm("Delete?", "The save is gone for good.")
+      }
+    };
+    for _ in 0..2 {
+      d.frame(|ui| ask(ui, true));
+    }
+    d.nav(Direction::Left);
+    d.frame(|ui| ask(ui, true));
+    d.frame(|ui| ask(ui, false));
+    d.confirm();
+    assert_eq!(d.frame(|ui| ask(ui, false)), Some(false));
+  }
+
+  #[test]
+  fn a_trapped_page_column_does_not_want_the_keyboard() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      ui.column().focus_scope().trap().show(|ui| {
+        ui.button("Only").show();
+      });
+      ui.wants_keyboard()
+    };
+    for _ in 0..3 {
+      assert!(!d.frame(draw));
     }
   }
 }

@@ -68,8 +68,9 @@ impl Tabs<'_, '_> {
       *self.selected = (*self.selected).min(last);
     }
     let before = *self.selected;
-    // The shoulder buttons, for the first tabs to take them
-    let step = if count > 0 && !disabled {
+    // The shoulder buttons, for the first tabs to take them, unless a modal
+    // or an open list they are not in is on top
+    let step = if count > 0 && !disabled && ui.shortcuts_reach_here() {
       ui.take_tab_step()
     } else {
       0
@@ -180,6 +181,66 @@ mod tests {
     d.release();
     d.frame(|ui| draw(ui, &mut sel));
     assert_eq!(sel, 1, "a click selects");
+  }
+
+  #[test]
+  fn tabs_under_a_modal_ignore_tab_switching() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let mut sel = 0;
+    let draw = |ui: &mut UiContext<'_>, sel: &mut usize| {
+      ui.column().focus_scope().show(|ui| {
+        ui.tabs(sel, &LABELS)
+          .at(Rect::new(0.0, 0.0, 300.0, 30.0))
+          .show();
+      });
+      let mut close = None;
+      ui.modal()
+        .show(|ui| close = Some(ui.button("Close").show().id));
+      close
+    };
+    for _ in 0..2 {
+      d.frame(|ui| draw(ui, &mut sel));
+    }
+    d.tab_next();
+    let close = d.frame(|ui| draw(ui, &mut sel));
+    assert_eq!(sel, 0, "the modal is on top");
+    d.frame(|ui| draw(ui, &mut sel));
+    assert_eq!(
+      d.frame(|ui| ui.focused()),
+      close,
+      "focus stays in the modal"
+    );
+  }
+
+  #[test]
+  fn tabs_inside_a_modal_still_switch() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let mut sel = 0;
+    let draw = |ui: &mut UiContext<'_>, sel: &mut usize| {
+      let mut row = Rect::default();
+      ui.modal().show(|ui| {
+        row = ui.tabs(sel, &LABELS).show().rect;
+        ui.button("Close").default_focus().show();
+      });
+      row
+    };
+    for _ in 0..2 {
+      d.frame(|ui| draw(ui, &mut sel));
+    }
+    d.tab_next();
+    d.frame(|ui| draw(ui, &mut sel));
+    assert_eq!(sel, 1);
+    let row = d.frame(|ui| draw(ui, &mut sel));
+    // The middle third of the row
+    let second = Rect::new(row.x + row.width / 3.0, row.y, row.width / 3.0, row.height);
+    let tab = focus_rect(&d);
+    assert!(
+      tab.is_some_and(|r| {
+        let (x, y) = r.center();
+        r.width > 0.0 && second.contains(x, y)
+      }),
+      "the second tab has the focus: {tab:?} in {row:?}"
+    );
   }
 
   #[test]

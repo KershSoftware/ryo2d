@@ -345,14 +345,34 @@ impl<'m> Nav<'m> {
   /// Where focus goes in `scope`: its remembered focus, else its member
   /// marked default, else its first member by order
   fn default_in(&self, scope: UiId) -> Option<UiId> {
+    self
+      .recalled_in(scope)
+      .or_else(|| self.marked_default_in(scope))
+      .or_else(|| self.members(scope).next().map(|(id, _)| *id))
+  }
+
+  /// Where focus goes in a modal or trapping scope that opens: its member
+  /// marked default, else its remembered focus, else its first member. A
+  /// dialog or list opens on its default (a confirm on No, a list on its
+  /// selection) whatever had the focus when it last closed.
+  fn trap_default_in(&self, scope: UiId) -> Option<UiId> {
+    self
+      .marked_default_in(scope)
+      .or_else(|| self.recalled_in(scope))
+      .or_else(|| self.members(scope).next().map(|(id, _)| *id))
+  }
+
+  /// `scope`'s remembered focus, while it is still one of its members
+  fn recalled_in(&self, scope: UiId) -> Option<UiId> {
     let recalled = self.memory.recall_focus(scope);
-    if let Some(id) = recalled.filter(|id| self.members(scope).any(|(m, _)| m == id)) {
-      return Some(id);
-    }
+    recalled.filter(|id| self.members(scope).any(|(m, _)| m == id))
+  }
+
+  /// `scope`'s first member marked `.default_focus()`
+  fn marked_default_in(&self, scope: UiId) -> Option<UiId> {
     self
       .members(scope)
       .find(|(_, r)| r.flags.contains(Flags::DEFAULT_FOCUS))
-      .or_else(|| self.members(scope).next())
       .map(|(id, _)| *id)
   }
 
@@ -501,7 +521,7 @@ pub(crate) fn resolve_focus(
       }
       if traps(record.flags) {
         stack.push((*scope, i.focused));
-        i.focused = nav.default_in(*scope).unwrap_or(UiId::NONE);
+        i.focused = nav.trap_default_in(*scope).unwrap_or(UiId::NONE);
       } else if i.focused == UiId::NONE
         && let Some(id) = nav.default_in(*scope)
       {
@@ -521,7 +541,14 @@ pub(crate) fn resolve_focus(
     known.clear();
     known.extend(nav.scopes.iter().map(|(id, _)| *id));
 
-    if let Some(id) = request.filter(|id| nav.focusable(*id, Via::Click)) {
+    // While a modal or trapping scope is open, neither a request nor the
+    // pointer takes the focus out of the innermost one (a press outside an
+    // open list closes it by its own rule)
+    let trap = stack.last().map(|&(scope, _)| scope);
+    let in_trap =
+      |id: UiId| trap.is_none_or(|scope| nav.record(id).is_some_and(|r| nav.inside(r, scope)));
+
+    if let Some(id) = request.filter(|id| nav.focusable(*id, Via::Click) && in_trap(*id)) {
       i.focused = id;
     }
 
@@ -539,12 +566,13 @@ pub(crate) fn resolve_focus(
       && !is_field(i.hot)
       && i.hot != i.focused
       && nav.focusable(i.hot, Via::Nav)
+      && in_trap(i.hot)
     {
       i.focused = i.hot;
       by_pointer = true;
     }
     if i.pressed {
-      if nav.focusable(i.hot, Via::Click) {
+      if nav.focusable(i.hot, Via::Click) && in_trap(i.hot) {
         if i.hot != i.focused {
           i.focused = i.hot;
           by_pointer = true;
@@ -588,7 +616,7 @@ pub(crate) fn resolve_focus(
         // Nothing focused: the innermost modal's default, or the first
         // scope's; a modal with nothing to focus keeps focus off the page
         let target = match stack.last() {
-          Some(&(scope, _)) => nav.default_in(scope),
+          Some(&(scope, _)) => nav.trap_default_in(scope),
           None => nav.scopes.iter().find_map(|(id, _)| nav.default_in(*id)),
         };
         if let Some(id) = target {
@@ -945,6 +973,79 @@ mod tests {
     resolve(&mut m, NavInput::default());
     assert_eq!(m.interact.focused, UiId(2), "back where it was");
     assert_eq!(m.interact.gained, UiId(2));
+  }
+
+  #[test]
+  fn an_open_trap_keeps_requests_presses_and_the_pointer_inside() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    let mut open = menu(&[FOCUSABLE, FOCUSABLE | Flags::DEFAULT_FOCUS]);
+    let trap = Flags::FOCUS_SCOPE | Flags::TRAP;
+    open.push((
+      200,
+      rec(Rect::new(150.0, 0.0, 100.0, 100.0), 10, trap, UiId::NONE),
+    ));
+    open.push((
+      7,
+      rec(Rect::new(160.0, 10.0, 80.0, 30.0), 11, FOCUSABLE, UiId(200)),
+    ));
+    draw(&mut m, &open);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(7), "into the trap");
+    m.request_focus(UiId(1));
+    draw(&mut m, &open);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(7), "a request outside is refused");
+    m.interact.hot = UiId(1);
+    draw(&mut m, &open);
+    resolve_focus(&mut m, &NavInput::default(), Some(1), true);
+    assert_eq!(
+      m.interact.focused,
+      UiId(7),
+      "the pointer does not pull it out"
+    );
+    m.interact.pressed = true;
+    draw(&mut m, &open);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(7), "nor does a press");
+  }
+
+  #[test]
+  fn a_trap_opens_on_its_default_not_its_memory() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    let page = menu(&[FOCUSABLE]);
+    let mut open = page.clone();
+    let trap = Flags::FOCUS_SCOPE | Flags::TRAP;
+    open.push((
+      200,
+      rec(Rect::new(150.0, 0.0, 100.0, 100.0), 10, trap, UiId::NONE),
+    ));
+    for (id, y, flags) in [
+      (7, 10.0, FOCUSABLE),
+      (8, 50.0, FOCUSABLE | Flags::DEFAULT_FOCUS),
+    ] {
+      open.push((
+        id,
+        rec(
+          Rect::new(160.0, y, 80.0, 30.0),
+          id as u32 + 10,
+          flags,
+          UiId(200),
+        ),
+      ));
+    }
+    draw(&mut m, &open);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(8));
+    draw(&mut m, &open);
+    resolve(&mut m, press(0));
+    assert_eq!(m.interact.focused, UiId(7), "remembered");
+    draw(&mut m, &page);
+    resolve(&mut m, NavInput::default());
+    draw(&mut m, &open);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(8), "opened again on its default");
   }
 
   #[test]

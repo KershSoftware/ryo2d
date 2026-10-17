@@ -147,7 +147,7 @@ impl Dropdown<'_, '_> {
       padding: Edges::all(LIST_PADDING),
       ..UiStyle::default()
     };
-    let flags = Flags::FOCUS_SCOPE | Flags::TRAP | Flags::BLOCKING;
+    let flags = Flags::FOCUS_SCOPE | Flags::TRAP | Flags::BLOCKING | Flags::POPUP;
     let node = ui.open_node(list, style, None, flags);
     let look = ui.look_of(WidgetKind::Dropdown, &self.opts, WidgetState::Normal);
     ui.push_look_box(node, &look);
@@ -465,5 +465,61 @@ mod tests {
     d.release();
     assert!(d.frame(|ui| draw(ui, &mut sel)), "opened this frame");
     assert!(d.frame(|ui| draw(ui, &mut sel)), "and still open");
+  }
+
+  #[test]
+  fn back_closes_the_list_after_the_pointer_left_it() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let mut sel = 0;
+    let draw = |ui: &mut UiContext<'_>, sel: &mut usize| {
+      ui.column().focus_scope().show(|ui| {
+        ui.dropdown(sel, &OPTIONS)
+          .at(TRIGGER)
+          .default_focus()
+          .show();
+        ui.button("Other")
+          .at(Rect::new(180.0, 10.0, 80.0, 28.0))
+          .show();
+      });
+      ui.back()
+    };
+    d.frame(|ui| draw(ui, &mut sel));
+    d.move_to(20.0, 20.0);
+    d.press();
+    d.frame(|ui| draw(ui, &mut sel));
+    d.release();
+    d.frame(|ui| draw(ui, &mut sel));
+    d.frame(|ui| draw(ui, &mut sel));
+    // The pointer wanders onto a widget outside the list: focus stays in it
+    d.move_to(200.0, 20.0);
+    d.frame(|ui| draw(ui, &mut sel));
+    d.back();
+    assert!(!d.frame(|ui| draw(ui, &mut sel)), "the list used Back");
+    assert!(!list_shown(&d), "and closed");
+  }
+
+  #[test]
+  fn a_list_reopens_on_the_selected_option() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let mut sel = 1;
+    for _ in 0..2 {
+      d.frame(|ui| drop_down(ui, &mut sel));
+    }
+    d.confirm();
+    d.frame(|ui| drop_down(ui, &mut sel));
+    d.frame(|ui| drop_down(ui, &mut sel));
+    // The mouse brushes option 2, so the list remembers it
+    d.move_to(20.0, 40.0 + 4.0 + 28.0 * 2.0 + 10.0);
+    d.frame(|ui| drop_down(ui, &mut sel));
+    d.back();
+    d.frame(|ui| drop_down(ui, &mut sel));
+    d.frame(|ui| drop_down(ui, &mut sel));
+    // Opened again, Confirm picks what has the focus
+    d.confirm();
+    d.frame(|ui| drop_down(ui, &mut sel));
+    d.frame(|ui| drop_down(ui, &mut sel));
+    d.confirm();
+    d.frame(|ui| drop_down(ui, &mut sel));
+    assert_eq!(sel, 1, "it reopened on the selected option");
   }
 }

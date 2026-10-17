@@ -1090,12 +1090,11 @@ impl<'a> UiContext<'a> {
   }
 
   /// Whether the UI wants the keyboard: a text field of the top scene has
-  /// the focus, or the top scene has an open dropdown list or `ui.popup`
-  /// (a trapping scope that is not a modal). Both count from the frame's
-  /// start (so before the widget is drawn too), and a list counts from the
-  /// frame it opens. A dropdown that is merely focused does not count, nor
-  /// does a modal: the game closes its modal itself, on `ui.back()` or a
-  /// button.
+  /// the focus, or the top scene has an open dropdown list or `ui.popup`.
+  /// Both count from the frame's start (so before the widget is drawn too),
+  /// and a list counts from the frame it opens. A dropdown that is merely
+  /// focused does not count, nor does a modal (the game closes its modal
+  /// itself, on `ui.back()` or a button) or a page column marked `.trap()`.
   ///
   /// A focused field takes every key, so gameplay never sees typing; scenes
   /// that read keys in `ui` (through `ui.input()`) can check this to leave
@@ -1104,19 +1103,42 @@ impl<'a> UiContext<'a> {
     self.text_field_focused() || self.list_open()
   }
 
-  /// Whether an open list or popup of the top scene traps the focus: one on
-  /// the modal stack (a trapping scope that is not a modal), or one its UI
-  /// queued this pass
+  /// Whether an open list or popup of the top scene traps the focus: a
+  /// popup root on the modal stack, or one its UI queued this pass
   fn list_open(&self) -> bool {
     let scene = self.memory.interact.nav_scene;
     let stacked = self.memory.modal_stack.iter().any(|(scope, _)| {
       self.memory.prev(*scope).is_some_and(|record| {
-        record.flags.contains(Flags::TRAP)
+        record.flags.contains(Flags::POPUP | Flags::TRAP)
           && !record.flags.contains(Flags::MODAL)
           && Some(record.scene) == scene
       })
     });
     stacked || self.popup_queued()
+  }
+
+  /// Whether the keyboard and pad shortcuts (tab switching, a choice list's
+  /// number keys) reach a widget opened here: no modal or trapping scope is
+  /// open, or the widget is inside the innermost one
+  pub(crate) fn shortcuts_reach_here(&self) -> bool {
+    let Some(&(trap, _)) = self.memory.modal_stack.last() else {
+      return true;
+    };
+    let mut at = self.focus_scope_here();
+    // Up the scopes around it, as last frame recorded them
+    for _ in 0..64 {
+      if at == trap {
+        return true;
+      }
+      if at == UiId::NONE {
+        return false;
+      }
+      at = self
+        .memory
+        .prev(at)
+        .map_or(UiId::NONE, |record| record.scope);
+    }
+    false
   }
 
   /// Whether the focus is on a text field of the top scene

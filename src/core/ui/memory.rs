@@ -37,6 +37,9 @@ impl Flags {
   pub(crate) const NAV_SKIP: Flags = Flags(1 << 17);
   /// Reports hovering only: never hot, blocks nothing
   pub(crate) const HOVER: Flags = Flags(1 << 18);
+  /// The root of a popup that is not a modal (a dropdown's list, a
+  /// `ui.popup`): while it traps the focus, the UI wants the keyboard
+  pub(crate) const POPUP: Flags = Flags(1 << 19);
 
   /// Every flag in `other` is set
   pub(crate) fn contains(self, other: Flags) -> bool {

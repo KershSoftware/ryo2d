@@ -85,8 +85,9 @@ impl ChoiceList<'_, '_> {
     let (_, top) = ui.scene();
     let disabled = self.opts.disabled;
     let mut picked = None;
-    // Number keys, unless a field or an open list has the keyboard
-    if top && !disabled && !ui.wants_keyboard() {
+    // Number keys, unless a field or an open list has the keyboard, or a
+    // modal the list is not in is on top
+    if top && !disabled && !ui.wants_keyboard() && ui.shortcuts_reach_here() {
       for (n, keys) in NUMBER_KEYS.iter().enumerate().take(self.options.len()) {
         for &key in keys {
           if ui.input().key_pressed(key) {
@@ -198,5 +199,36 @@ mod tests {
     assert_eq!(d.frame(draw), (Some(2), false));
     d.key(KeyCode::Numpad1);
     assert_eq!(d.frame(draw), (Some(0), false), "picked and taken");
+  }
+
+  #[test]
+  fn a_choice_list_under_a_modal_ignores_number_keys() {
+    let mut d = UiDriver::new((300.0, 200.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      let picked = choices(ui);
+      ui.modal().show(|ui| {
+        ui.button("Close").show();
+      });
+      picked
+    };
+    for _ in 0..2 {
+      d.frame(draw);
+    }
+    d.key(KeyCode::Digit1);
+    assert_eq!(d.frame(draw), None);
+  }
+
+  #[test]
+  fn a_choice_list_without_a_width_is_as_wide_as_its_longest_choice() {
+    use crate::core::text::TextStyle;
+    let mut d = UiDriver::new((300.0, 200.0));
+    let (list, longest) = d.frame(|ui| {
+      let longest = ui.measure_text("A much longer answer", &TextStyle::default());
+      let list = ui.column().show(|ui| {
+        ui.choice_list(&["Yes", "A much longer answer"]).show();
+      });
+      (list.rect, longest)
+    });
+    assert!(list.width >= longest.x, "{list:?} for {longest}");
   }
 }
