@@ -225,8 +225,17 @@ impl UiHarness {
 
   /// One frame at 60 fps: resolve the scripted input (the pointer, the wheel
   /// and navigation) against the last frame, run `ui` as the top scene,
-  /// reading the scripted keys, text and pointer, and finish the frame
+  /// reading the scripted keys, text and pointer, and finish the frame. The
+  /// harness scene's node trees draw before `ui`, as a scene's do before its
+  /// `ui`.
   pub fn frame<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>) -> R) -> R {
+    self.frame_with_world(|context, _| ui(context))
+  }
+
+  /// [`frame`](Self::frame), with `ui` given the world the node trees live
+  /// in too. The harness scene's node trees draw before `ui`, as a scene's
+  /// do before its `ui`.
+  pub fn frame_with_world<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>, &mut World) -> R) -> R {
     self.time += FRAME;
     self.pointer.time = self.time;
     self.commands.clear();
@@ -300,7 +309,9 @@ impl UiHarness {
       context.set_dt(FRAME as f32);
       context.set_prompts(Arc::clone(&self.prompts));
       context.begin_scene(self.scene, true);
-      let result = ui(&mut context);
+      nodes::begin_pass(&mut self.world);
+      nodes::draw_nodes(&mut self.world, &mut context, self.scene);
+      let result = ui(&mut context, &mut self.world);
       context.end_scene();
       self.rebinds = context.take_rebinds();
       result

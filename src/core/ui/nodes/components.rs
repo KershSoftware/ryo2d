@@ -3,10 +3,12 @@
 use glam::Vec2;
 
 use crate::core::asset::SpriteHandle;
-use crate::core::ecs::kernel::{Component, Entity, Resource};
+use crate::core::ecs::kernel::{Component, Entity, Resource, World};
+use crate::core::text::TextReveal;
 use crate::core::ui::{Anchor, Rect, UiId};
 
 use super::events::UiEvent;
+use super::node::UiNodeKind;
 
 /// The root of a spawned tree
 ///
@@ -20,7 +22,9 @@ pub struct UiRoot {
   pub offset: Vec2,
   /// An exact rectangle, instead of the anchor
   pub at: Option<Rect>,
+  #[allow(dead_code)] // recorded at spawn; nothing reads it yet
   pub(crate) scene: u64,
+  #[allow(dead_code)] // recorded at spawn; nothing reads it yet
   pub(crate) seq: u64,
   pub(crate) embedded: bool,
 }
@@ -107,6 +111,7 @@ impl UiInteraction {
 
 /// A confirm's No button: the node Back answers as if it were clicked
 #[derive(Component)]
+#[allow(dead_code)] // read once node dialogs answer Back
 pub(crate) struct BackAnswer(pub(crate) Entity);
 
 /// The trees the engine is walking this frame
@@ -117,9 +122,33 @@ pub(crate) struct UiNodes {
   pub(crate) seq: u64,
   pub(crate) pending_focus: Option<Entity>,
   /// Embedded trees' events, delivered after the scene's ui
+  #[allow(dead_code)] // read once trees can be embedded
   pub(crate) pending: Vec<UiEvent>,
   /// Embedded roots drawn this pass
   pub(crate) embedded_drawn: Vec<Entity>,
+}
+
+/// Register every component a node may carry. The walk reads a node's
+/// optional components in one tuple, which fails for a component type the
+/// world has never registered.
+pub(crate) fn register_node_components(world: &mut World) {
+  world.register_component::<UiNodeKind>();
+  world.register_component::<UiRoot>();
+  world.register_component::<UiName>();
+  world.register_component::<UiLabel>();
+  world.register_component::<UiImage>();
+  world.register_component::<UiChecked>();
+  world.register_component::<UiValue>();
+  world.register_component::<UiIndex>();
+  world.register_component::<UiOptions>();
+  world.register_component::<UiTextValue>();
+  world.register_component::<UiSlot>();
+  world.register_component::<UiTooltip>();
+  world.register_component::<UiHidden>();
+  world.register_component::<UiDisabled>();
+  world.register_component::<UiInteraction>();
+  world.register_component::<BackAnswer>();
+  world.register_component::<TextReveal>();
 }
 
 #[cfg(test)]

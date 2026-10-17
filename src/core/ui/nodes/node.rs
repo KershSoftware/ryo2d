@@ -30,6 +30,7 @@ pub enum TextRole {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // a prompt's action is read once prompts are drawn
 pub(crate) enum Kind {
   Column,
   Row,
@@ -94,6 +95,7 @@ pub(crate) struct ImageOpts {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SliderOpts {
+  #[allow(dead_code)] // read once sliders are drawn
   pub(crate) range: (f32, f32),
   pub(crate) step: Option<f32>,
   pub(crate) show_value: bool,
@@ -109,6 +111,7 @@ pub(crate) struct TextInputOpts {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RebindOpts {
+  #[allow(dead_code)] // read once rebind rows are drawn
   pub(crate) action: String,
   pub(crate) label: Option<String>,
   pub(crate) slot: Option<usize>,

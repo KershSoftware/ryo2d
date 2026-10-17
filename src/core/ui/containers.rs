@@ -11,10 +11,10 @@ use super::immediate::UiContext;
 use super::layout::{Align, Edges, Flow, Justify, Length, Tracks, UiStyle};
 use super::memory::Flags;
 use super::response::Response;
-use super::theme::{WidgetKind, WidgetState};
+use super::theme::{Look, WidgetKind, WidgetState};
 use super::tree::{DrawKind, RecordSpec};
 use super::widgets::drag::{DragOpts, drag_builders};
-use super::{Anchor, Rect, UiId};
+use super::{Anchor, Color, Rect, UiId};
 use crate::core::render::batch::Filter;
 
 /// A container being set up: `.show(|ui| ..)` lays its contents out
@@ -28,6 +28,8 @@ pub struct Container<'u, 'a> {
   flags: Flags,
   at: Option<Rect>,
   drag: DragOpts,
+  /// A fill behind its children (`.background`)
+  background: Option<Color>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -169,6 +171,7 @@ impl<'u, 'a> Container<'u, 'a> {
       flags: Flags::default(),
       at: None,
       drag: DragOpts::default(),
+      background: None,
     }
   }
 
@@ -337,6 +340,12 @@ impl<'u, 'a> Container<'u, 'a> {
     self
   }
 
+  /// Fill the container's rect with `color` behind its children
+  pub fn background(mut self, color: Color) -> Self {
+    self.background = Some(color);
+    self
+  }
+
   drag_builders!(drag);
 
   /// Draw the container with `contents` inside. A top-level container is
@@ -353,6 +362,7 @@ impl<'u, 'a> Container<'u, 'a> {
       flags,
       at,
       drag,
+      background,
     } = self;
     let id = ui.memory.scopes.make(site, key);
     let record = RecordSpec {
@@ -361,11 +371,18 @@ impl<'u, 'a> Container<'u, 'a> {
       accepts: drag.accepts,
     };
     let mut response = match kind {
-      ContainerKind::Plain => Self::record(ui, (id, style, at, record), Backing::None, contents),
-      ContainerKind::Panel => Self::record(ui, (id, style, at, record), Backing::Panel, contents),
+      ContainerKind::Plain => {
+        let backing = (Backing::None, background);
+        Self::record(ui, (id, style, at, record), backing, contents)
+      }
+      ContainerKind::Panel => {
+        let backing = (Backing::Panel, background);
+        Self::record(ui, (id, style, at, record), backing, contents)
+      }
       ContainerKind::Popup(anchor) => {
         ui.begin_popup(anchor, false);
-        let response = Self::record(ui, (id, style, at, record), Backing::Panel, contents);
+        let backing = (Backing::Panel, background);
+        let response = Self::record(ui, (id, style, at, record), backing, contents);
         ui.end_popup();
         response
       }
@@ -391,7 +408,8 @@ impl<'u, 'a> Container<'u, 'a> {
             border: None,
           },
         );
-        let response = Self::record(ui, (id, style, at, record), Backing::Dialog, contents);
+        let backing = (Backing::Dialog, background);
+        let response = Self::record(ui, (id, style, at, record), backing, contents);
         ui.close_node(dim);
         ui.end_popup();
         response
@@ -401,12 +419,12 @@ impl<'u, 'a> Container<'u, 'a> {
     response
   }
 
-  /// Record the container's node (drawing its `backing`) and `contents`
-  /// inside it
+  /// Record the container's node (drawing its `backing`, then its
+  /// background over that) and `contents` inside it
   fn record(
     ui: &mut UiContext<'a>,
     (id, style, at, record): (UiId, UiStyle, Option<Rect>, RecordSpec),
-    backing: Backing,
+    (backing, background): (Backing, Option<Color>),
     contents: impl FnOnce(&mut UiContext<'a>),
   ) -> Response {
     let node = ui.open_node_with(id, style, at, record);
@@ -414,6 +432,15 @@ impl<'u, 'a> Container<'u, 'a> {
       Backing::None => {}
       Backing::Panel => ui.panel_fill(node, false),
       Backing::Dialog => ui.panel_fill(node, true),
+    }
+    if let Some(fill) = background {
+      ui.push_look_box(
+        node,
+        &Look {
+          fill,
+          ..Look::default()
+        },
+      );
     }
     ui.memory.scopes.push(id);
     contents(ui);
@@ -427,7 +454,7 @@ mod tests {
   use super::*;
   use crate::core::text::TextStyle;
   use crate::core::ui::immediate::{UiCommand, UiCommands};
-  use crate::core::ui::test_util::{context, text_engine};
+  use crate::core::ui::test_util::{UiDriver, context, text_engine};
   use crate::core::ui::{Anchor, Color};
 
   fn texts(commands: &UiCommands) -> Vec<(u32, Vec2)> {
@@ -454,6 +481,32 @@ mod tests {
     assert_eq!(t.len(), 2);
     assert_eq!(t[0].1, Vec2::ZERO);
     assert!((t[1].1.y - (line + 10.0)).abs() < 1.0, "{t:?}");
+  }
+
+  #[test]
+  fn a_background_fills_the_container_behind_its_children() {
+    use crate::core::ui::immediate::UiCommand;
+    let mut d = UiDriver::new((200.0, 200.0));
+    let rect = Rect::new(10.0, 20.0, 50.0, 40.0);
+    let color = Color::rgb(1, 2, 3);
+    d.frame(|ui| {
+      ui.stack().at(rect).background(color).show(|ui| {
+        ui.text("on top");
+      })
+    });
+    let fills: Vec<_> = d
+      .commands
+      .commands()
+      .filter_map(|c| match c {
+        UiCommand::Rect { rect, fill, .. } => Some((*rect, *fill)),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(
+      fills.first(),
+      Some(&(rect, color)),
+      "the fill comes first, under the text"
+    );
   }
 
   #[test]
@@ -653,7 +706,6 @@ mod tests {
     use crate::core::asset::SpriteHandle;
     use crate::core::graphics::Sprite;
     use crate::core::render::batch::Filter;
-    use crate::core::ui::test_util::UiDriver;
     use crate::core::ui::theme::{Skin, Theme};
     let sprite =
       SpriteHandle::from_sprite(Sprite::solid_rect(12, 12, 255, 255, 255, 255), "test-skin");
