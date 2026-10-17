@@ -727,30 +727,10 @@ impl GameScene {
     }
   }
 
-  fn handle_block_hit(&mut self, ctx: &mut SceneContext, ball: Entity, block: Entity) {
-    // Bounce the ball off the block
-    if let (Some(ball_transform), Some(block_transform)) = (
-      ctx.world.get::<Transform>(ball),
-      ctx.world.get::<Transform>(block),
-    ) {
-      // Determine bounce direction based on collision position (both are centres)
-      let dx = (ball_transform.translation.x - block_transform.translation.x).abs();
-      let dy = (ball_transform.translation.y - block_transform.translation.y).abs();
-
-      // Calculate overlap to determine which side was hit
-      let overlap_x = (BALL_SIZE / 2.0 + BLOCK_WIDTH / 2.0) - dx;
-      let overlap_y = (BALL_SIZE / 2.0 + BLOCK_HEIGHT / 2.0) - dy;
-
-      if let Some(mut vel) = ctx.world.get_mut::<Velocity>(ball) {
-        // Reflect based on which axis has less penetration
-        if overlap_x < overlap_y {
-          vel.dx = -vel.dx; // Side hit - reflect horizontally
-        } else {
-          vel.dy = -vel.dy; // Top/bottom hit - reflect vertically
-        }
-      }
-    }
-
+  /// Score and break a block the ball hit. Rapier has already bounced the
+  /// ball off it (restitution 1.0); reflecting it here as well would send
+  /// it back into the bricks.
+  fn handle_block_hit(&mut self, ctx: &mut SceneContext, block: Entity) {
     // Get block position FIRST (before any mutation) for multiball spawn:
     // the new ball's centre sits just below the block
     let block_position = ctx.world.get::<Transform>(block).map(|t| {
@@ -1229,7 +1209,7 @@ impl Scene for GameScene {
 
       // Ball hit block
       if self.blocks.contains(&other) {
-        self.handle_block_hit(ctx, ball, other);
+        self.handle_block_hit(ctx, other);
         continue;
       }
     }
