@@ -53,3 +53,6 @@ mod text;
 
 #[path = "e2e/ui_drawing.rs"]
 mod ui_drawing;
+
+#[path = "e2e/ui_focus.rs"]
+mod ui_focus;

@@ -400,6 +400,22 @@ impl<'m> Nav<'m> {
       .map(|(id, _)| id)
   }
 
+  /// The scopes that remember a focus on `record`: its own and each around
+  /// it, out to the first trapping one, so nested scopes reopen where they
+  /// were (what is outside a modal or list keeps the focus it gives back)
+  fn remembering(&self, record: &Record) -> Vec<UiId> {
+    let mut chain = Vec::new();
+    let mut at = record.scope;
+    while at != UiId::NONE && chain.len() < MAX_SCOPE_DEPTH && !chain.contains(&at) {
+      chain.push(at);
+      if self.record(at).is_some_and(|r| traps(r.flags)) {
+        break;
+      }
+      at = self.parent_scope(at);
+    }
+    chain
+  }
+
   /// The scroll areas around `record`, innermost first
   fn scroll_chain(&self, record: &Record) -> Vec<UiId> {
     let mut chain = Vec::new();
@@ -551,12 +567,35 @@ pub(crate) fn resolve_focus(
   let stick = input.right_stick;
   let tilted = stick.is_finite() && stick.length() > STICK_SCROLL_THRESHOLD;
 
-  let (scope, scroll) = {
+  let (remembering, scroll) = {
     let nav = Nav::new(memory, top_scene);
 
     // Focus on what is gone, disabled or clipped out is lost
     if !nav.focusable(i.focused, Via::Click) {
       i.focused = UiId::NONE;
+    }
+
+    // Modals and traps that closed come first, so a scope that appears as
+    // one closes (a dialog's answer shows another page, or brings another
+    // scene up) is not taken for one under it: every entry whose scope the
+    // top scene no longer shows goes, one another scene left open too. The
+    // innermost of them whose saved focus can still take it (inside the
+    // innermost trap still open) gives it back.
+    let mut closed = Vec::new();
+    stack.retain(|&(scope, saved)| {
+      let open = nav.scopes.iter().any(|(id, _)| *id == scope);
+      if !open {
+        closed.push(saved);
+      }
+      open
+    });
+    let still_open = stack.last().map(|&(scope, _)| scope);
+    let back = closed.iter().rev().copied().find(|&saved| {
+      nav.focusable(saved, Via::Click)
+        && still_open.is_none_or(|scope| nav.record(saved).is_some_and(|r| nav.inside(r, scope)))
+    });
+    if let Some(saved) = back {
+      i.focused = saved;
     }
 
     // Scopes that appeared take focus: a modal or trap always (into it,
@@ -578,16 +617,6 @@ pub(crate) fn resolve_focus(
         && let Some(id) = nav.default_in(*scope)
       {
         i.focused = id;
-      }
-    }
-    // A modal that closed gives focus back to where it was
-    while let Some(&(scope, saved)) = stack.last() {
-      if nav.scopes.iter().any(|(id, _)| *id == scope) {
-        break;
-      }
-      stack.pop();
-      if nav.focusable(saved, Via::Click) {
-        i.focused = saved;
       }
     }
     known.clear();
@@ -794,14 +823,16 @@ pub(crate) fn resolve_focus(
       }
       _ => UiId::NONE,
     };
-    (record.map_or(UiId::NONE, |r| r.scope), scroll)
+    (record.map_or_else(Vec::new, |r| nav.remembering(r)), scroll)
   };
 
   if i.focused != old {
     i.gained = i.focused;
     i.lost = old;
-    if let Some(scene) = top_scene.filter(|_| scope != UiId::NONE) {
-      memory.remember_focus(scope, scene, i.focused);
+    if let Some(scene) = top_scene {
+      for scope in remembering {
+        memory.remember_focus(scope, scene, i.focused);
+      }
     }
     // Navigation scrolls what it reaches into view; the pointer is on it
     if !by_pointer && i.focused != UiId::NONE {
@@ -1091,6 +1122,130 @@ mod tests {
     resolve(&mut m, NavInput::default());
     assert_eq!(m.interact.focused, UiId(2), "back where it was");
     assert_eq!(m.interact.gained, UiId(2));
+  }
+
+  #[test]
+  fn a_scope_that_appears_as_a_modal_closes_takes_the_focus() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    let mut open = menu(&[FOCUSABLE | Flags::DEFAULT_FOCUS]);
+    let modal = Flags::FOCUS_SCOPE | Flags::TRAP | Flags::MODAL;
+    open.push((
+      200,
+      rec(Rect::new(50.0, 50.0, 100.0, 100.0), 10, modal, UiId::NONE),
+    ));
+    open.push((
+      7,
+      rec(Rect::new(60.0, 60.0, 80.0, 30.0), 11, FOCUSABLE, UiId(200)),
+    ));
+    draw(&mut m, &open);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(7), "into the modal");
+    // Its answer shows another page: a scope of its own, and no modal
+    let page = [
+      (
+        300,
+        rec(
+          Rect::new(0.0, 0.0, 200.0, 400.0),
+          20,
+          Flags::FOCUS_SCOPE,
+          UiId::NONE,
+        ),
+      ),
+      (
+        9,
+        rec(
+          Rect::new(0.0, 0.0, 100.0, 30.0),
+          21,
+          FOCUSABLE | Flags::DEFAULT_FOCUS,
+          UiId(300),
+        ),
+      ),
+    ];
+    draw(&mut m, &page);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(9), "the new page's default");
+    assert!(m.modal_stack.is_empty());
+  }
+
+  #[test]
+  fn a_modal_left_open_by_another_scene_keeps_no_focus_from_the_top_one() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    let modal = Flags::FOCUS_SCOPE | Flags::TRAP | Flags::MODAL;
+    let mut dialog = rec(Rect::new(50.0, 50.0, 100.0, 100.0), 10, modal, UiId::NONE);
+    dialog.scene = 2;
+    let mut yes = rec(Rect::new(60.0, 60.0, 80.0, 30.0), 11, FOCUSABLE, UiId(200));
+    yes.scene = 2;
+    draw(&mut m, &[(200, dialog), (7, yes)]);
+    resolve_focus(&mut m, &NavInput::default(), Some(2), false);
+    assert_eq!(m.interact.focused, UiId(7));
+    // Its scene switched to scene 1's menu: the dialog is never drawn again
+    draw(
+      &mut m,
+      &menu(&[FOCUSABLE, FOCUSABLE | Flags::DEFAULT_FOCUS]),
+    );
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(2), "the menu's default");
+    assert!(m.modal_stack.is_empty(), "the other scene's dialog is gone");
+  }
+
+  #[test]
+  fn nested_scopes_reopen_where_they_were() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    // A page scope with a button over a nested scope of two choices
+    let mut page = menu(&[FOCUSABLE | Flags::DEFAULT_FOCUS]);
+    page.push((
+      300,
+      rec(
+        Rect::new(0.0, 40.0, 200.0, 80.0),
+        5,
+        Flags::FOCUS_SCOPE,
+        SCOPE,
+      ),
+    ));
+    for (id, y) in [(7, 40.0), (8, 80.0)] {
+      page.push((
+        id,
+        rec(
+          Rect::new(0.0, y, 100.0, 30.0),
+          id as u32,
+          FOCUSABLE,
+          UiId(300),
+        ),
+      ));
+    }
+    draw(&mut m, &page);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(1));
+    for _ in 0..2 {
+      draw(&mut m, &page);
+      resolve(&mut m, press(1));
+    }
+    assert_eq!(m.interact.focused, UiId(8), "down into the nested choices");
+    // Another page shows, then this one again
+    let other = [
+      (
+        400,
+        rec(
+          Rect::new(0.0, 0.0, 200.0, 400.0),
+          20,
+          Flags::FOCUS_SCOPE,
+          UiId::NONE,
+        ),
+      ),
+      (
+        9,
+        rec(Rect::new(0.0, 0.0, 100.0, 30.0), 21, FOCUSABLE, UiId(400)),
+      ),
+    ];
+    draw(&mut m, &other);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(9));
+    draw(&mut m, &page);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.interact.focused, UiId(8), "back on the nested choice");
   }
 
   #[test]

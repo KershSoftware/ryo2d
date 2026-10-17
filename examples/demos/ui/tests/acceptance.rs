@@ -140,6 +140,49 @@ fn every_menu_dialog_is_reachable_and_closes_on_back() {
 }
 
 #[test]
+fn the_quit_confirm_gives_the_focus_back_to_quit_by_pad_alone() {
+  let Some(mut engine) = start(0) else {
+    return;
+  };
+  let page = ids(&engine);
+  // A focus at every step, and never one from outside the walk
+  let step = |engine: &mut HeadlessEngine, button: GamepadButton, what: &str| {
+    pad(engine, button);
+    match engine.ui_focused() {
+      Some(id) => id,
+      None => panic!("nothing has the focus after {what}"),
+    }
+  };
+  let Some(mut at) = engine.ui_focused() else {
+    panic!("the menu focused nothing by itself");
+  };
+  // New Game first (Continue is disabled); Options, Credits, then Quit
+  for what in ["Down to Options", "Down to Credits", "Down to Quit"] {
+    let next = step(&mut engine, GamepadButton::DPadDown, what);
+    assert_ne!(next, at, "{what} moved the focus");
+    at = next;
+  }
+  let quit = at;
+  for (answer, route) in [
+    ("Back", &[GamepadButton::East][..]),
+    ("No", &[GamepadButton::South][..]),
+    ("Yes", &[GamepadButton::DPadLeft, GamepadButton::South][..]),
+  ] {
+    let open = step(&mut engine, GamepadButton::South, "A on Quit");
+    assert!(!page.contains(&open), "the confirm has the focus");
+    for &button in route {
+      step(&mut engine, button, answer);
+    }
+    assert_eq!(
+      engine.ui_focused(),
+      Some(quit),
+      "{answer} gave it back to Quit"
+    );
+    assert_eq!(ids(&engine), page, "{answer} closed the confirm");
+  }
+}
+
+#[test]
 fn the_pad_moves_an_item_into_its_equipment_slot() {
   let Some(mut engine) = start(2) else {
     return;
