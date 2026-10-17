@@ -42,6 +42,23 @@ fn cursor_grab_for_focus(
   }
 }
 
+/// Where an emulated confined cursor goes: `at` moved by `delta` (raw
+/// motion, in points as macOS reports it, so scaled by `scale_factor`), kept
+/// inside a window of `size` physical pixels
+fn confined_step(
+  at: (f64, f64),
+  delta: (f64, f64),
+  scale_factor: f64,
+  size: (u32, u32),
+) -> (f64, f64) {
+  let max_x = (f64::from(size.0) - 1.0).max(0.0);
+  let max_y = (f64::from(size.1) - 1.0).max(0.0);
+  (
+    (at.0 + delta.0 * scale_factor).clamp(0.0, max_x),
+    (at.1 + delta.1 * scale_factor).clamp(0.0, max_y),
+  )
+}
+
 impl Engine {
   /// Show the window and start the engine on its new renderer (native at
   /// once, the web when its async GPU setup arrives).
@@ -208,21 +225,38 @@ impl Engine {
         let _ = window.set_cursor_grab(CursorGrabMode::Confined);
         window.set_cursor_visible(false);
         self.cursor_locked = true;
+        self.confine_emulation = None;
       } else {
         let _ = window.set_cursor_grab(CursorGrabMode::None);
         window.set_cursor_visible(true);
         self.cursor_locked = false;
       }
     } else if let Some(confined) = request.confined {
-      let mode = if confined {
-        CursorGrabMode::Confined
-      } else {
-        CursorGrabMode::None
-      };
-      if window.set_cursor_grab(mode).is_err() {
-        let _ = window.set_cursor_grab(CursorGrabMode::None);
-      }
+      self.set_cursor_confined(window, confined);
     }
+  }
+
+  /// Keep the cursor inside the window, or free it. macOS has no confined
+  /// grab, so there the cursor is locked and moved by hand: `device_event`
+  /// moves it by the raw motion, clamped to the window.
+  fn set_cursor_confined(&mut self, window: &Window, confined: bool) {
+    use winit::window::CursorGrabMode;
+    self.confine_emulation = None;
+    if !confined {
+      let _ = window.set_cursor_grab(CursorGrabMode::None);
+      return;
+    }
+    if window.set_cursor_grab(CursorGrabMode::Confined).is_ok() {
+      return;
+    }
+    #[cfg(target_os = "macos")]
+    if window.set_cursor_grab(CursorGrabMode::Locked).is_ok() {
+      // Start where the cursor is, so it does not jump
+      self.confine_emulation = Some(self.last_cursor_position);
+      return;
+    }
+    let _ = window.set_cursor_grab(CursorGrabMode::None);
+    engine_warn!(module: "Cursor", "Confining the cursor is not supported on this platform");
   }
 
   /// Load a window icon from a file path or use the embedded default logo.
@@ -506,6 +540,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
           });
       }
       WindowEvent::CursorMoved { position, .. } => {
+        self.last_cursor_position = (position.x, position.y);
         // While locked, motion comes from DeviceEvent::MouseMotion instead
         if !self.cursor_locked {
           self.cursor_moved(position.x, position.y);
@@ -543,6 +578,17 @@ impl ApplicationHandler<EngineEvent> for Engine {
         {
           let _ = window.set_cursor_grab(grab);
           window.set_cursor_visible(visible);
+        }
+        // An emulated confinement lets go too, and takes the cursor back
+        if self.confine_emulation.is_some()
+          && let Some(window) = &self.window
+        {
+          let grab = if *focused {
+            winit::window::CursorGrabMode::Locked
+          } else {
+            winit::window::CursorGrabMode::None
+          };
+          let _ = window.set_cursor_grab(grab);
         }
       }
       WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -632,6 +678,22 @@ impl ApplicationHandler<EngineEvent> for Engine {
           dx: delta.0,
           dy: delta.1,
         });
+    }
+    // An emulated confinement moves the cursor itself, inside the window.
+    // Warping it re-attaches the mouse on macOS, so it is locked again.
+    if let Some(at) = self.confine_emulation
+      && self.game_window_focused
+      && let winit::event::DeviceEvent::MouseMotion { delta } = event
+    {
+      let next = confined_step(at, delta, self.scale_factor, self.last_window_size);
+      if next != at {
+        self.confine_emulation = Some(next);
+        if let Some(window) = &self.window {
+          let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(next.0, next.1));
+          let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+        }
+        self.cursor_moved(next.0, next.1);
+      }
     }
   }
 
@@ -781,6 +843,33 @@ mod tests {
     assert_eq!(
       cursor_grab_for_focus(true, true),
       Some((CursorGrabMode::Confined, false))
+    );
+  }
+
+  #[test]
+  fn a_confined_cursor_moves_by_raw_motion_in_physical_pixels() {
+    // Raw motion is in points: at scale 2, 10 points are 20 pixels
+    assert_eq!(
+      confined_step((100.0, 50.0), (10.0, -5.0), 2.0, (800, 600)),
+      (120.0, 40.0)
+    );
+  }
+
+  #[test]
+  fn a_confined_cursor_stays_inside_the_window() {
+    let size = (800, 600);
+    assert_eq!(
+      confined_step((790.0, 595.0), (50.0, 50.0), 1.0, size),
+      (799.0, 599.0)
+    );
+    assert_eq!(
+      confined_step((5.0, 5.0), (-50.0, -50.0), 1.0, size),
+      (0.0, 0.0)
+    );
+    // A minimised window has no pixels: the cursor rests at the origin
+    assert_eq!(
+      confined_step((5.0, 5.0), (1.0, 1.0), 1.0, (0, 0)),
+      (0.0, 0.0)
     );
   }
 }

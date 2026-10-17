@@ -260,6 +260,14 @@ pub struct Engine {
   gilrs: Option<Gilrs>,
   custom_cursor_cache: HashMap<String, winit::window::CustomCursor>,
   cursor_locked: bool,
+  /// macOS has no confined grab: the cursor is locked and moved by hand
+  /// from raw motion, and this is where it is, in physical window pixels
+  /// (`None` when not confining that way)
+  confine_emulation: Option<(f64, f64)>,
+  /// The cursor's last position over the window, in physical pixels: where
+  /// an emulated confinement starts
+  #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+  last_cursor_position: (f64, f64),
   surface_needs_reconfigure: bool,
   scale_factor: f64,
   // Why the window's GPU setup failed, returned from `run`
@@ -645,6 +653,8 @@ impl Engine {
       gilrs,
       custom_cursor_cache: HashMap::new(),
       cursor_locked: false,
+      confine_emulation: None,
+      last_cursor_position: (0.0, 0.0),
       surface_needs_reconfigure: false,
       scale_factor: 1.0,
       startup_error: None,
