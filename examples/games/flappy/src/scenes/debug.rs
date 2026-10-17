@@ -6,6 +6,7 @@
 use ryo2d::prelude::*;
 
 use crate::constants::*;
+use crate::look::use_game_look;
 
 /// Debug scene for testing collision boundaries
 pub struct DebugScene {
@@ -269,6 +270,8 @@ impl DebugScene {
 
 impl Scene for DebugScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    use_game_look(ctx);
+
     ctx
       .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
@@ -323,7 +326,7 @@ impl Scene for DebugScene {
     // Combine results for display
     self.is_colliding = manual_result || physics_result;
     self.collision_info = format!(
-      "Manual: {} | Physics: {}",
+      "Manual: {}\nPhysics: {}",
       if manual_result { &manual_info } else { "NO" },
       if physics_result { &physics_info } else { "NO" }
     );
@@ -337,12 +340,10 @@ impl Scene for DebugScene {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    let (screen_w, _screen_h) = ui.screen_size();
-
-    // Title
-    ui.draw_text("DEBUG MODE (Physics Enabled)", 10.0, 10.0, Color::WHITE);
-    ui.draw_text("WASD/Arrows to move", 10.0, 30.0, Color::WHITE);
-    ui.draw_text("ESC to exit", 10.0, 50.0, Color::WHITE);
+    // Title, one item per row: the screen is narrow
+    ui.draw_text("DEBUG (physics on)", 10.0, 10.0, Color::WHITE);
+    ui.draw_text("WASD/Arrows to move", 10.0, 34.0, Color::WHITE);
+    ui.draw_text("ESC to exit", 10.0, 58.0, Color::WHITE);
 
     // Collision indicator
     let indicator_text = if self.is_colliding {
@@ -356,16 +357,11 @@ impl Scene for DebugScene {
       Color::new(50, 255, 50, 255) // Green
     };
 
-    // Draw collision status prominently at top-right
-    ui.draw_text(
-      indicator_text,
-      screen_w as f32 - 120.0,
-      10.0,
-      indicator_color,
-    );
+    // Collision status, prominently under the title
+    ui.draw_text(indicator_text, 10.0, 90.0, indicator_color);
 
-    // Draw detailed collision info
-    ui.draw_text(&self.collision_info, 10.0, 70.0, Color::rgb(200, 200, 200));
+    // Detailed collision info, one check per line
+    ui.draw_text(&self.collision_info, 10.0, 114.0, Color::rgb(200, 200, 200));
     SceneAction::Continue
   }
 }

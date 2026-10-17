@@ -9,6 +9,7 @@
 pub mod components;
 pub mod constants;
 pub mod generation;
+pub mod look;
 pub mod network;
 pub mod scenes;
 

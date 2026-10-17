@@ -3,6 +3,7 @@
 use ryo2d::prelude::*;
 
 use crate::constants::*;
+use crate::look::use_game_look;
 
 use super::GameScene;
 
@@ -31,7 +32,7 @@ enum Pressed {
 }
 
 /// The menu buttons' size
-const BUTTON_WIDTH: f32 = 200.0;
+const BUTTON_WIDTH: f32 = 320.0;
 const BUTTON_HEIGHT: f32 = 40.0;
 
 /// Fairy light data for menu background
@@ -179,6 +180,8 @@ impl MenuScene {
 
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    use_game_look(ctx);
+
     self.screen_width = ctx.screen_width();
     self.screen_height = ctx.screen_height();
 

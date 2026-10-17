@@ -5,6 +5,8 @@
 
 use ryo2d::prelude::*;
 
+use crate::look::use_game_look;
+
 // Default (uncharged) state
 const BASE_RADIUS: f32 = 50.0;
 const BASE_INTENSITY: f32 = 0.4;
@@ -92,6 +94,8 @@ impl MainMenuScene {
 
 impl Scene for MainMenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    use_game_look(ctx);
+
     // Set ambient light to zero for pitch black darkness
     let ambient_color = ctx.lighting().ambient().color;
     ctx

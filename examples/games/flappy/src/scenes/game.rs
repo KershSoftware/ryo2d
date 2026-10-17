@@ -578,7 +578,7 @@ impl Scene for GameScene {
     if !self.game_started {
       let (_, screen_h) = ui.screen_size();
       ui.draw_text_anchored(
-        "Press SPACE or CLICK to start",
+        "SPACE or CLICK to start",
         Anchor::TopCenter,
         0.0,
         screen_h as f32 / 2.0,

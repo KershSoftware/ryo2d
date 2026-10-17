@@ -6,6 +6,7 @@ use std::time::Duration;
 use super::{DebugScene, GameScene};
 use crate::components::Scrolling;
 use crate::constants::*;
+use crate::look::use_game_look;
 use crate::save::load_high_score;
 
 /// Pre-loaded sprite handles for game assets.
@@ -102,6 +103,8 @@ impl Default for MenuScene {
 
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    use_game_look(ctx);
+
     ctx
       .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
@@ -226,19 +229,13 @@ impl Scene for MenuScene {
       );
     }
 
-    // Instructions
-    let instructions = if self.debug_enabled {
-      "Press SPACE or CLICK to flap | D for debug"
-    } else {
-      "Press SPACE or CLICK to flap"
-    };
-    ui.draw_text_anchored(
-      instructions,
-      Anchor::TopCenter,
-      0.0,
-      screen_h as f32 - 100.0,
-      Color::rgb(100, 100, 100),
-    );
+    // Instructions, one short line each so they fit the narrow screen
+    let grey = Color::rgb(100, 100, 100);
+    let top = screen_h as f32 - 100.0;
+    ui.draw_text_anchored("SPACE or CLICK to flap", Anchor::TopCenter, 0.0, top, grey);
+    if self.debug_enabled {
+      ui.draw_text_anchored("D for debug", Anchor::TopCenter, 0.0, top + 24.0, grey);
+    }
     SceneAction::Continue
   }
 }

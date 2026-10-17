@@ -9,6 +9,7 @@
 
 pub mod components;
 pub mod constants;
+pub mod look;
 pub mod save;
 pub mod scenes;
 

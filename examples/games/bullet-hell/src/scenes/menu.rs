@@ -1,5 +1,6 @@
 //! Menu scene
 
+use crate::look::use_game_look;
 use crate::save::load_best_time;
 use crate::shared;
 use ryo2d::prelude::*;
@@ -26,6 +27,8 @@ impl MenuScene {
 
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    use_game_look(ctx);
+
     self.best_time = load_best_time();
 
     // Declare game commands (idempotent - can be called multiple times)

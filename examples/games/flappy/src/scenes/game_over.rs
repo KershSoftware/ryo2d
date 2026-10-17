@@ -97,14 +97,10 @@ impl Scene for GameOverScene {
       );
     }
 
-    // Keyboard hints
-    ui.draw_text_anchored(
-      "SPACE to restart  |  ESC for menu",
-      Anchor::TopCenter,
-      0.0,
-      500.0,
-      Color::rgb(150, 150, 150),
-    );
+    // Keyboard hints, one per line so they fit the narrow screen
+    let grey = Color::rgb(150, 150, 150);
+    ui.draw_text_anchored("SPACE to restart", Anchor::TopCenter, 0.0, 500.0, grey);
+    ui.draw_text_anchored("ESC for menu", Anchor::TopCenter, 0.0, 524.0, grey);
     SceneAction::Continue
   }
 }

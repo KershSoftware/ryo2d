@@ -7,6 +7,7 @@
 
 use ryo2d::prelude::*;
 
+mod look;
 mod scenes;
 use scenes::MainMenuScene;
 
