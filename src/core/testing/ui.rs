@@ -315,7 +315,7 @@ impl UiHarness {
         input.consume_mouse(button);
       }
     }
-    let (result, events) = {
+    let result = {
       let mut context = UiContext::new(
         &mut self.commands,
         &mut self.text,
@@ -330,15 +330,15 @@ impl UiHarness {
       context.begin_scene(self.scene, true);
       nodes::begin_pass(&mut self.world);
       let events = nodes::draw_nodes(&mut self.world, &mut context, self.scene);
+      self.last_events.clone_from(&events);
+      nodes::deliver(&mut self.world, events);
       let result = ui(&mut context, &mut self.world);
+      let late = nodes::deliver_pending(&mut self.world);
+      self.last_events.extend(late);
       context.end_scene();
       self.rebinds = context.take_rebinds();
-      (result, events)
+      result
     };
-    self.last_events.clone_from(&events);
-    nodes::deliver(&mut self.world, events);
-    let late = nodes::deliver_pending(&mut self.world);
-    self.last_events.extend(late);
     // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
     // the UI stays as the last drawn frame left it
     if self.memory.drew_nothing() {

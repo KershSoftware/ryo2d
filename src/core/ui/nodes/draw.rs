@@ -2386,6 +2386,28 @@ mod embedding {
   }
 
   #[test]
+  fn the_harness_delivers_walk_events_before_its_closure() {
+    let mut d = UiDriver::new((400.0, 400.0));
+    let root = d.spawn_ui(UiNode::button("Go").action("go"));
+    for _ in 0..3 {
+      d.frame(|_| {});
+    }
+    d.move_to(5.0, 5.0);
+    d.frame(|_| {});
+    d.press();
+    d.frame(|_| {});
+    d.release();
+    let seen = d.frame_with_world(|_, world| {
+      let messages = world.resource::<crate::core::ecs::kernel::Messages<UiEvent>>();
+      let mut cursor = messages.get_cursor();
+      cursor
+        .read(messages)
+        .any(|e| e.kind == UiEventKind::Clicked && e.node == root)
+    });
+    assert!(seen, "the closure sees this frame's walk events");
+  }
+
+  #[test]
   fn embedded_events_arrive_after_the_closure() {
     let mut d = UiDriver::new((400.0, 400.0));
     let root = d.spawn_ui(grid());
