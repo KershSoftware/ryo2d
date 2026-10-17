@@ -177,8 +177,10 @@ impl Scene for PageScene {
     };
     self.read_rows(adjust);
 
-    // Help is a modal over the page: its dim takes the pointer from the
-    // page's widgets
+    // The legend's lines are measured first, so the page's content_area ends
+    // above them all. Help is a modal over the page: its dim takes the
+    // pointer from the page's widgets
+    chrome::measure_legend(ui, &self.page.controls());
     self.page.ui(ui, ctx);
     self.keyboard_wanted = ui.wants_keyboard();
     let controls = self.page.controls();

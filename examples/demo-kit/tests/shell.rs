@@ -170,6 +170,67 @@ fn brackets_and_page_keys_change_pages_and_wrap() {
   );
 }
 
+/// A page with more controls than one legend line holds, recording its
+/// content area
+struct Wordy {
+  shared: Shared,
+}
+
+impl DemoPage for Wordy {
+  fn name(&self) -> &str {
+    "Wordy"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    [
+      KeyCode::KeyA,
+      KeyCode::KeyB,
+      KeyCode::KeyC,
+      KeyCode::KeyD,
+      KeyCode::KeyE,
+    ]
+    .iter()
+    .map(|&key| Control::key(key, "Does a fairly wordy thing"))
+    .collect()
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
+    if let Ok(mut seen) = self.shared.lock() {
+      seen.content = Some(content_area(ui));
+    }
+  }
+}
+
+#[test]
+fn the_content_area_ends_above_a_legend_that_wraps() {
+  let content_bottom = |demo: Demo, shared: &Shared| {
+    let mut engine = start(demo)?;
+    engine.step_frames(2).unwrap();
+    seen(shared).content.map(|c| c.y + c.height)
+  };
+  let (plain, wordy) = (Shared::default(), Shared::default());
+  let (p, w) = (plain.clone(), wordy.clone());
+  let one_line = content_bottom(
+    Demo::new("Plain")
+      .resolution(320, 240)
+      .page(move || Probe::new("plain", &p)),
+    &plain,
+  );
+  let wrapped = content_bottom(
+    Demo::new("Wordy")
+      .resolution(320, 240)
+      .page(move || Wordy { shared: w.clone() }),
+    &wordy,
+  );
+  let (Some(one_line), Some(wrapped)) = (one_line, wrapped) else {
+    return;
+  };
+  assert!(
+    wrapped < one_line,
+    "a wrapped legend's upper lines are not the page's: {wrapped} vs {one_line}"
+  );
+}
+
 #[test]
 fn a_fit_demo_scales_its_canvas_to_any_window() {
   let shared = Shared::default();

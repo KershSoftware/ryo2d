@@ -48,12 +48,15 @@ pub(crate) struct Layout {
   pub content: Rect,
 }
 
-pub(crate) fn layout(screen_w: f32, screen_h: f32, line_h: f32) -> Layout {
+/// The layout of a screen whose legend takes `legend_lines` lines (at
+/// least one): the content ends above the top one
+pub(crate) fn layout(screen_w: f32, screen_h: f32, line_h: f32, legend_lines: usize) -> Layout {
   let pad = (line_h * 0.5).round().max(2.0);
   let bar_h = line_h + 2.0 * pad;
   let description_y = bar_h + pad;
   let content_y = description_y + line_h + pad;
-  let legend_y = screen_h - pad - line_h;
+  let legend_step = line_h + pad * 0.5;
+  let legend_y = screen_h - pad - line_h - legend_lines.saturating_sub(1) as f32 * legend_step;
   Layout {
     line_h,
     pad,
@@ -68,11 +71,33 @@ pub(crate) fn layout(screen_w: f32, screen_h: f32, line_h: f32) -> Layout {
   }
 }
 
+thread_local! {
+  /// How many lines the current page's legend takes, measured before the
+  /// page draws ([`measure_legend`]), so [`content_area`] ends above them all
+  static LEGEND_LINES: std::cell::Cell<usize> = const { std::cell::Cell::new(1) };
+}
+
+/// Measure the legend a page with `controls` gets, for this frame's
+/// [`content_area`]
+pub(crate) fn measure_legend(ui: &UiContext, controls: &[Control]) {
+  let (w, h) = ui.screen_size();
+  let (w, h) = (w as f32, h as f32);
+  let l = layout(w, h, line_height(ui), 1);
+  let lines = fit_legend_items(ui, controls, &l, w).lines.len().max(1);
+  LEGEND_LINES.with(|cell| cell.set(lines));
+}
+
+/// The lines [`measure_legend`] last measured
+fn legend_lines() -> usize {
+  LEGEND_LINES.with(std::cell::Cell::get)
+}
+
 /// The area a page can use: below the shell's top bar and description and
-/// above its legend. The settings panel, when shown, covers its right side.
+/// above its legend, however many lines it takes. The settings panel, when
+/// shown, covers its right side.
 pub fn content_area(ui: &UiContext) -> Rect {
   let (w, h) = ui.screen_size();
-  layout(w as f32, h as f32, line_height(ui)).content
+  layout(w as f32, h as f32, line_height(ui), legend_lines()).content
 }
 
 /// How far the settings panel reaches below the top of [`content_area`] on a
@@ -83,7 +108,10 @@ pub fn settings_panel_height(ui: &UiContext, rows: usize) -> f32 {
     return 0.0;
   }
   let (w, h) = ui.screen_size();
-  panel_height(&layout(w as f32, h as f32, line_height(ui)), rows)
+  panel_height(
+    &layout(w as f32, h as f32, line_height(ui), legend_lines()),
+    rows,
+  )
 }
 
 /// The settings panel's height: a header, the rows and a hint line, within
@@ -241,7 +269,7 @@ fn key_text() -> Color {
 pub(crate) fn draw(ui: &mut UiContext, view: &View) -> Drawn {
   let (w, h) = ui.screen_size();
   let (w, h) = (w as f32, h as f32);
-  let l = layout(w, h, line_height(ui));
+  let l = layout(w, h, line_height(ui), legend_lines());
   draw_top_bar(ui, view, &l, w);
   draw_description(ui, view, &l, w);
   let drawn = draw_panel(ui, view, &l, w).unwrap_or(Drawn {
@@ -440,9 +468,8 @@ pub(crate) fn scroll_rows(first: usize, selected: usize, visible: usize, len: us
 }
 
 /// Legend items: the page's controls, then `R reset`
-fn legend_items(view: &View) -> Vec<(String, String)> {
-  let mut items: Vec<(String, String)> = view
-    .controls
+fn legend_items(controls: &[Control]) -> Vec<(String, String)> {
+  let mut items: Vec<(String, String)> = controls
     .iter()
     .map(|control| (control.label.clone(), control.description.clone()))
     .collect();
@@ -450,13 +477,29 @@ fn legend_items(view: &View) -> Vec<(String, String)> {
   items
 }
 
-fn draw_legend(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
+/// The legend's items, their widths, and how they fit into lines
+struct LegendFit {
+  items: Vec<(String, String)>,
+  widths: Vec<f32>,
+  gap: f32,
+  lines: Vec<Vec<usize>>,
+  /// Items left out, shown as "+N more (H)"
+  hidden: usize,
+}
+
+/// The "+N more" item for `n` hidden items
+fn more(n: usize) -> String {
+  format!("+{n} more (H)")
+}
+
+/// Fit the legend of a page with `controls` into a screen `w` wide
+fn fit_legend_items(ui: &UiContext, controls: &[Control], l: &Layout, w: f32) -> LegendFit {
   let gap = l.pad * 3.0;
   // Leave the bottom-left corner to the engine's FPS counter
   let fps_reserve = text_w(ui, "FPS: 0000") + 2.0 * l.pad;
   let available = (w - 2.0 * l.pad - fps_reserve).max(1.0);
   // An item wider than the screen is shortened rather than run off it
-  let items: Vec<(String, String)> = legend_items(view)
+  let items: Vec<(String, String)> = legend_items(controls)
     .into_iter()
     .map(|(key, desc)| {
       let room = available - text_w(ui, &key) - text_w(ui, " ");
@@ -468,10 +511,26 @@ fn draw_legend(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
     .iter()
     .map(|(key, desc)| text_w(ui, key) + text_w(ui, " ") + text_w(ui, desc))
     .collect();
-  let more = |n: usize| format!("+{n} more (H)");
   let (lines, hidden) = fit_legend(&widths, gap, available, MAX_LEGEND_LINES, |n| {
     text_w(ui, &more(n))
   });
+  LegendFit {
+    items,
+    widths,
+    gap,
+    lines,
+    hidden,
+  }
+}
+
+fn draw_legend(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
+  let LegendFit {
+    items,
+    widths,
+    gap,
+    lines,
+    hidden,
+  } = fit_legend_items(ui, view.controls, l, w);
   let line_step = l.line_h + l.pad * 0.5;
   for (n, line) in lines.iter().enumerate() {
     let last = n + 1 == lines.len();
@@ -625,7 +684,7 @@ mod tests {
 
   #[test]
   fn layout_stacks_bar_description_content_and_legend() {
-    let l = layout(800.0, 600.0, 10.0);
+    let l = layout(800.0, 600.0, 10.0, 1);
     assert_eq!(l.top_bar, Rect::new(0.0, 0.0, 800.0, 20.0));
     assert_eq!(l.description_y, 25.0);
     assert_eq!(l.content.y, 40.0);
@@ -635,8 +694,16 @@ mod tests {
   }
 
   #[test]
+  fn layout_ends_the_content_above_every_legend_line() {
+    // Two legend lines: the upper one sits a line step (10 + 2.5) above
+    // the bottom one at 585, and the content ends a pad above it
+    let l = layout(800.0, 600.0, 10.0, 2);
+    assert_eq!(l.content.y + l.content.height, 567.5);
+  }
+
+  #[test]
   fn layout_never_goes_negative_on_a_tiny_screen() {
-    let l = layout(40.0, 30.0, 10.0);
+    let l = layout(40.0, 30.0, 10.0, 1);
     assert!(l.content.width >= 0.0 && l.content.height >= 0.0);
   }
 
@@ -657,7 +724,7 @@ mod tests {
 
   #[test]
   fn the_panel_is_a_header_rows_and_a_hint_tall() {
-    let l = layout(800.0, 600.0, 10.0);
+    let l = layout(800.0, 600.0, 10.0, 1);
     // pad 5, rows 12.5 apart: three rows plus header and hint, plus padding
     assert_eq!(panel_height(&l, 3), 5.0 * 12.5 + 10.0);
     // Never past the content area
