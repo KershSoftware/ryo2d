@@ -47,6 +47,71 @@ impl MenuScene {
       Transition::fade(Duration::from_millis(300)),
     )
   }
+
+  /// The title screen's nodes, each text line in its own root
+  fn spawn_nodes(&self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(UiNode::stack().fill().background(Color::rgb(20, 20, 35)));
+
+    let line = |text: String, color: Color, y: f32| {
+      UiNode::column()
+        .anchor(Anchor::TopCenter)
+        .offset(0.0, y)
+        .child(UiNode::text(text).style(text_style(color)))
+    };
+    ctx.spawn_ui(line("BREAKOUT".into(), Color::WHITE, 100.0));
+    ctx.spawn_ui(line("A Ryo2D Engine Demo".into(), Color::GRAY, 130.0));
+    ctx.spawn_ui(line(
+      format!("High Score: {}", self.high_score),
+      Color::YELLOW,
+      180.0,
+    ));
+
+    let blocks = [
+      Color::hex(0xff4444),
+      Color::hex(0xff8800),
+      Color::hex(0xffff00),
+      Color::hex(0x00cc44),
+      Color::hex(0x4488ff),
+      Color::hex(0xaa44ff),
+    ];
+    ctx.spawn_ui(
+      UiNode::row()
+        .anchor(Anchor::TopCenter)
+        .offset(0.0, 250.0)
+        .gap(5.0)
+        .children(
+          blocks
+            .iter()
+            .map(|color| UiNode::stack().width(60.0).height(25.0).background(*color)),
+        ),
+    );
+
+    ctx.spawn_ui(
+      UiNode::column()
+        .focus_scope()
+        .anchor(Anchor::TopCenter)
+        .offset(0.0, 350.0)
+        .child(
+          UiNode::button("START GAME")
+            .action("start")
+            .width(200.0)
+            .height(50.0)
+            .default_focus(),
+        ),
+    );
+
+    ctx.spawn_ui(line(
+      "Press ENTER, SPACE, or A to Start".into(),
+      Color::LIGHT_GRAY,
+      450.0,
+    ));
+    ctx.spawn_ui(
+      UiNode::column()
+        .anchor(Anchor::BottomCenter)
+        .offset(0.0, -30.0)
+        .child(UiNode::text("ESC or B to Quit").style(text_style(Color::DARK_GRAY))),
+    );
+  }
 }
 
 impl Default for MenuScene {
@@ -85,94 +150,19 @@ impl Scene for MenuScene {
         self.music = Some(music);
       }
     }
+
+    self.spawn_nodes(ctx);
   }
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-    let (screen_w, screen_h) = ui.screen_size();
-
-    // Background
-    ui.draw_rect(
-      Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32),
-      Color::rgb(20, 20, 35),
-    );
-
-    // Title
-    ui.draw_text_anchored_styled(
-      "BREAKOUT",
-      Anchor::TopCenter,
-      0.0,
-      100.0,
-      &text_style(Color::WHITE),
-    );
-
-    // Subtitle
-    ui.draw_text_anchored_styled(
-      "A Ryo2D Engine Demo",
-      Anchor::TopCenter,
-      0.0,
-      130.0,
-      &text_style(Color::GRAY),
-    );
-
-    // High score
-    let high_score_text = format!("High Score: {}", self.high_score);
-    ui.draw_text_anchored_styled(
-      &high_score_text,
-      Anchor::TopCenter,
-      0.0,
-      180.0,
-      &text_style(Color::YELLOW),
-    );
-
-    // Decorative blocks
-    let colors = [
-      Color::hex(0xff4444),
-      Color::hex(0xff8800),
-      Color::hex(0xffff00),
-      Color::hex(0x00cc44),
-      Color::hex(0x4488ff),
-      Color::hex(0xaa44ff),
-    ];
-
-    for (i, color) in colors.iter().enumerate() {
-      let x = screen_w as f32 / 2.0 - 180.0 + i as f32 * 65.0;
-      ui.draw_rect(Rect::new(x, 250.0, 60.0, 25.0), *color);
-    }
-
     // Start button: Confirm (Enter, Space, A) on it starts too
-    let mut start = false;
-    ui.column()
-      .focus_scope()
-      .anchor(Anchor::TopCenter)
-      .offset(0.0, 350.0)
-      .show(|ui| {
-        start = ui
-          .button("START GAME")
-          .width(200.0)
-          .height(50.0)
-          .default_focus()
-          .clicked();
-      });
+    let start = ctx
+      .ui_events()
+      .iter()
+      .any(|e| e.kind == UiEventKind::Clicked && e.action.as_deref() == Some("start"));
     if start {
       return self.start_game(ctx);
     }
-
-    // Instructions
-    ui.draw_text_anchored_styled(
-      "Press ENTER, SPACE, or A to Start",
-      Anchor::TopCenter,
-      0.0,
-      450.0,
-      &text_style(Color::LIGHT_GRAY),
-    );
-
-    ui.draw_text_anchored_styled(
-      "ESC or B to Quit",
-      Anchor::BottomCenter,
-      0.0,
-      -30.0,
-      &text_style(Color::DARK_GRAY),
-    );
 
     // Back (Escape, B) asks before quitting
     if ui.back() {

@@ -21,17 +21,23 @@ impl Default for QuitConfirmScene {
 }
 
 impl Scene for QuitConfirmScene {
-  fn on_enter(&mut self, _ctx: &mut SceneContext) {
-    // Overlay - no world changes needed
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Opens on NO; Back (Escape, B) answers no
+    ctx.spawn_ui(UiNode::confirm("Quit to Desktop?", "", "YES", "NO"));
   }
 
-  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    // Opens on NO; Back (Escape, B) answers no
-    match ui.confirm_with("Quit to Desktop?", "", "YES", "NO") {
-      Some(true) => SceneAction::Quit,
-      Some(false) => SceneAction::Pop,
-      None => SceneAction::Continue,
+  fn ui(&mut self, _ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    for event in ctx.ui_events() {
+      if event.kind != UiEventKind::Clicked {
+        continue;
+      }
+      match event.action.as_deref() {
+        Some("yes") => return SceneAction::Quit,
+        Some("no") => return SceneAction::Pop,
+        _ => {}
+      }
     }
+    SceneAction::Continue
   }
 
   fn is_transparent(&self) -> bool {

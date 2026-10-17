@@ -65,34 +65,76 @@ impl PauseScene {
   }
 }
 
-/// A row of a label, a volume slider and its percentage; whether the slider
-/// changed the volume
-fn volume_row(ui: &mut UiContext, label: &str, volume: &mut f32) -> bool {
-  let mut changed = false;
-  ui.row().gap(8.0).align(Align::Center).show(|ui| {
-    // Wide enough for "Master" and "100%" in the game's 16 px font
-    ui.column().width(96.0).show(|ui| {
-      ui.text(label).size(TEXT_SIZE).color(Color::WHITE);
-    });
-    changed = ui
-      .slider(volume, 0.0..=1.0)
-      .step(0.05)
-      .fill_width()
-      .show()
-      .changed();
-    ui.column().width(64.0).show(|ui| {
-      ui.text(format!("{:.0}%", *volume * 100.0))
-        .size(TEXT_SIZE)
-        .color(Color::WHITE)
-        .align(TextAlign::End);
-    });
-  });
-  changed
+/// A row of a label, a volume slider and its percentage
+fn volume_row(label: &str, name: &str, value: f32) -> UiNode {
+  UiNode::row()
+    .gap(8.0)
+    .align(Align::Center)
+    // Wide enough for "Master" and "100%" in the game's 12 unit font
+    .child(
+      UiNode::column()
+        .width(96.0)
+        .child(UiNode::text(label).size(TEXT_SIZE).color(Color::WHITE)),
+    )
+    .child(
+      UiNode::slider(0.0..=1.0, value)
+        .step(0.05)
+        .fill_width()
+        .name(name),
+    )
+    .child(
+      UiNode::column().width(64.0).child(
+        UiNode::text(percent(value))
+          .size(TEXT_SIZE)
+          .color(Color::WHITE)
+          .text_align(TextAlign::End)
+          .name(format!("{name}-percent")),
+      ),
+    )
+}
+
+fn percent(value: f32) -> String {
+  format!("{:.0}%", value * 100.0)
+}
+
+fn menu_button(label: &str, action: &str) -> UiNode {
+  UiNode::button(label)
+    .action(action)
+    .fill_width()
+    .height(40.0)
 }
 
 impl Scene for PauseScene {
-  fn on_enter(&mut self, _ctx: &mut SceneContext) {
-    // Pause overlay - no world changes needed
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(UiNode::stack().fill().background(Color::new(0, 0, 0, 180)));
+    let s = &self.settings;
+    ctx.spawn_ui(
+      UiNode::panel()
+        .focus_scope()
+        .anchor(Anchor::Center)
+        .width(400.0)
+        .padding(16.0)
+        .gap(12.0)
+        .child(
+          UiNode::text("PAUSED")
+            .size(TEXT_SIZE)
+            .color(Color::WHITE)
+            .text_align(TextAlign::Center),
+        )
+        .child(
+          UiNode::text(format!("Score: {}", self.score))
+            .size(TEXT_SIZE)
+            .color(Color::YELLOW)
+            .text_align(TextAlign::Center),
+        )
+        // Volumes, applied as they change for real-time feedback
+        .child(volume_row("Master", "master", s.master_volume))
+        .child(volume_row("Music", "music", s.music_volume))
+        .child(volume_row("SFX", "sfx", s.sfx_volume))
+        .child(menu_button("RESUME", "resume").default_focus())
+        .child(menu_button("QUIT TO MENU", "menu"))
+        .child(menu_button("QUIT TO DESKTOP", "desktop")),
+    );
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -111,76 +153,39 @@ impl Scene for PauseScene {
   }
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-    let (screen_w, screen_h) = ui.screen_size();
-
-    // Dim overlay
-    ui.draw_rect(
-      Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32),
-      Color::new(0, 0, 0, 180),
-    );
-
     let mut action = None;
-    let settings = &mut self.settings;
-    let (mut master, mut music, mut sfx) = (false, false, false);
-    ui.panel()
-      .focus_scope()
-      .anchor(Anchor::Center)
-      .width(400.0)
-      .padding(16.0)
-      .gap(12.0)
-      .show(|ui| {
-        ui.text("PAUSED")
-          .size(TEXT_SIZE)
-          .color(Color::WHITE)
-          .align(TextAlign::Center);
-        ui.text(format!("Score: {}", self.score))
-          .size(TEXT_SIZE)
-          .color(Color::YELLOW)
-          .align(TextAlign::Center);
-
-        // Volumes, applied as they change for real-time feedback
-        master = volume_row(ui, "Master", &mut settings.master_volume);
-        music = volume_row(ui, "Music", &mut settings.music_volume);
-        sfx = volume_row(ui, "SFX", &mut settings.sfx_volume);
-
-        if ui
-          .button("RESUME")
-          .fill_width()
-          .height(40.0)
-          .default_focus()
-          .clicked()
-        {
-          action = Some(Choice::Resume);
+    for event in ctx.ui_events() {
+      match (event.kind, event.name.as_deref(), event.action.as_deref()) {
+        (UiEventKind::Changed, Some(name @ ("master" | "music" | "sfx")), _) => {
+          let Some(value) = ctx.world.get::<UiValue>(event.node).map(|v| v.0) else {
+            continue;
+          };
+          match name {
+            "master" => {
+              self.settings.master_volume = value;
+              ctx.audio.set_master_volume(value);
+            }
+            "music" => {
+              self.settings.music_volume = value;
+              ctx.audio.set_music_volume(value);
+            }
+            _ => {
+              self.settings.sfx_volume = value;
+              ctx.audio.set_sfx_volume(value);
+            }
+          }
+          if let Some(label) = ctx.find_ui(&format!("{name}-percent"))
+            && let Some(mut label) = ctx.world.get_mut::<UiLabel>(label)
+          {
+            label.0 = percent(value);
+          }
+          self.settings_changed = true;
         }
-        if ui
-          .button("QUIT TO MENU")
-          .fill_width()
-          .height(40.0)
-          .clicked()
-        {
-          action = Some(Choice::Menu);
-        }
-        if ui
-          .button("QUIT TO DESKTOP")
-          .fill_width()
-          .height(40.0)
-          .clicked()
-        {
-          action = Some(Choice::Desktop);
-        }
-      });
-
-    if master {
-      ctx.audio.set_master_volume(self.settings.master_volume);
-    }
-    if music {
-      ctx.audio.set_music_volume(self.settings.music_volume);
-    }
-    if sfx {
-      ctx.audio.set_sfx_volume(self.settings.sfx_volume);
-    }
-    if master || music || sfx {
-      self.settings_changed = true;
+        (UiEventKind::Clicked, _, Some("resume")) => action = Some(Choice::Resume),
+        (UiEventKind::Clicked, _, Some("menu")) => action = Some(Choice::Menu),
+        (UiEventKind::Clicked, _, Some("desktop")) => action = Some(Choice::Desktop),
+        _ => {}
+      }
     }
 
     // Back (Escape, B) resumes
