@@ -382,6 +382,8 @@ struct Entry {
 #[derive(Debug, Clone, Default)]
 pub struct Actions {
   entries: Vec<Entry>,
+  /// The player's overrides: every action whose bindings differ from its
+  /// defaults, including saved ones for actions the game has not bound yet
   saved: BTreeMap<String, Vec<Binding>>,
   dirty: bool,
 }
@@ -392,8 +394,9 @@ impl Actions {
   /// player's settings) takes precedence over the new defaults
   pub fn bind(&mut self, name: &str, bindings: impl IntoIterator<Item = Binding>) -> &mut Self {
     let defaults: Vec<Binding> = bindings.into_iter().collect();
-    match self.entries.iter_mut().find(|entry| entry.name == name) {
-      Some(entry) => {
+    let index = match self.entries.iter().position(|entry| entry.name == name) {
+      Some(index) => {
+        let entry = &mut self.entries[index];
         // Bindings changed this session (rebound, set or loaded) stay
         if entry.current == entry.defaults {
           entry.current = self
@@ -403,6 +406,7 @@ impl Actions {
             .unwrap_or_else(|| defaults.clone());
         }
         entry.defaults = defaults;
+        index
       }
       None => {
         let current = self
@@ -415,9 +419,24 @@ impl Actions {
           defaults,
           current,
         });
+        self.entries.len() - 1
       }
-    }
+    };
+    self.sync_saved(index);
     self
+  }
+
+  /// Keep the overrides in step with entry `index`: its bindings while they
+  /// differ from its defaults, nothing once they are the defaults again
+  fn sync_saved(&mut self, index: usize) {
+    let Some(entry) = self.entries.get(index) else {
+      return;
+    };
+    if entry.current == entry.defaults {
+      self.saved.remove(&entry.name);
+    } else {
+      self.saved.insert(entry.name.clone(), entry.current.clone());
+    }
   }
 
   /// What triggers `name`; empty for an unknown action
@@ -432,8 +451,9 @@ impl Actions {
   /// Replace all of `name`'s current bindings (saved if they differ from the
   /// defaults)
   pub fn set_bindings(&mut self, name: &str, bindings: Vec<Binding>) {
-    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.name == name) {
-      entry.current = bindings;
+    if let Some(index) = self.entries.iter().position(|entry| entry.name == name) {
+      self.entries[index].current = bindings;
+      self.sync_saved(index);
       self.dirty = true;
     }
   }
@@ -456,7 +476,7 @@ impl Actions {
             entry.current.remove(at);
           }
         }
-        swapped = Some(entry.name.clone());
+        swapped = Some((other, entry.name.clone()));
         break;
       }
     }
@@ -466,8 +486,12 @@ impl Actions {
     } else {
       current.push(binding);
     }
+    self.sync_saved(index);
+    if let Some((other, _)) = swapped {
+      self.sync_saved(other);
+    }
     self.dirty = true;
-    swapped
+    swapped.map(|(_, name)| name)
   }
 
   /// Put every action back to its defaults and forget the saved overrides
@@ -556,7 +580,9 @@ impl Actions {
   }
 
   /// Take saved bindings (action name to binding texts) as overrides. Actions
-  /// already bound switch to them at once; the rest when the game binds them
+  /// already bound switch to them at once; the rest when the game binds them.
+  /// A text that does not parse is skipped, and an override none of whose
+  /// texts parse is ignored, so the action keeps its defaults.
   pub(crate) fn load_saved(&mut self, saved: &BTreeMap<String, Vec<String>>) {
     for (name, texts) in saved {
       let mut bindings = Vec::with_capacity(texts.len());
@@ -569,24 +595,33 @@ impl Actions {
           ),
         }
       }
-      if let Some(entry) = self.entries.iter_mut().find(|entry| entry.name == *name) {
-        entry.current = bindings.clone();
+      if bindings.is_empty() && !texts.is_empty() {
+        continue;
       }
-      self.saved.insert(name.clone(), bindings);
+      self.saved.insert(name.clone(), bindings.clone());
+      if let Some(index) = self.entries.iter().position(|entry| entry.name == *name) {
+        self.entries[index].current = bindings;
+        self.sync_saved(index);
+      }
     }
   }
 
-  /// The actions whose bindings differ from their defaults, as binding texts
+  /// What to save, as binding texts: the overrides of actions not bound yet,
+  /// kept as they were loaded, and every bound action whose bindings differ
+  /// from its defaults
   pub(crate) fn saved_map(&self) -> BTreeMap<String, Vec<String>> {
-    self
+    let texts = |bindings: &[Binding]| bindings.iter().map(Binding::to_config).collect();
+    let unbound = self
+      .saved
+      .iter()
+      .filter(|(name, _)| !self.entries.iter().any(|entry| entry.name == **name))
+      .map(|(name, bindings)| (name.clone(), texts(bindings)));
+    let changed = self
       .entries
       .iter()
       .filter(|entry| entry.current != entry.defaults)
-      .map(|entry| {
-        let texts = entry.current.iter().map(Binding::to_config).collect();
-        (entry.name.clone(), texts)
-      })
-      .collect()
+      .map(|entry| (entry.name.clone(), texts(&entry.current)));
+    unbound.chain(changed).collect()
   }
 
   /// Whether bindings changed since the last call
@@ -763,6 +798,70 @@ mod tests {
       assert!(binding.is_saveable(), "{key:?}");
       assert_eq!(Binding::parse(&binding.to_config()), Some(binding));
     }
+  }
+
+  #[test]
+  fn a_save_keeps_the_saved_bindings_of_actions_not_bound_yet() {
+    // Last session the player rebound "jump"; this session the game has
+    // not bound it yet (its level binds it) when the player rebinds a UI
+    // action from the title screen, which saves
+    let mut saved = BTreeMap::new();
+    saved.insert("jump".to_string(), vec!["Key:KeyJ".to_string()]);
+    let mut actions = Actions::with_ui_defaults();
+    actions.load_saved(&saved);
+    actions.rebind("ui.confirm", 0, Binding::Key(KeyCode::KeyK));
+    let written = actions.saved_map();
+    assert_eq!(
+      written.get("jump"),
+      Some(&vec!["Key:KeyJ".to_string()]),
+      "the player's jump binding survives the save: {written:?}"
+    );
+    assert!(written.contains_key("ui.confirm"), "{written:?}");
+  }
+
+  #[test]
+  fn rebinding_back_to_the_defaults_drops_the_saved_override() {
+    let mut saved = BTreeMap::new();
+    saved.insert("jump".to_string(), vec!["Key:KeyJ".to_string()]);
+    let mut actions = Actions::default();
+    actions.load_saved(&saved);
+    actions.bind("jump", [Binding::Key(KeyCode::Space)]);
+    assert_eq!(actions.bindings("jump"), &[Binding::Key(KeyCode::KeyJ)]);
+    // The player puts Space back, then the game binds jump again (a level
+    // entered once more)
+    actions.rebind("jump", 0, Binding::Key(KeyCode::Space));
+    actions.bind("jump", [Binding::Key(KeyCode::Space)]);
+    assert_eq!(
+      actions.bindings("jump"),
+      &[Binding::Key(KeyCode::Space)],
+      "the startup override is not applied again"
+    );
+    assert!(
+      !actions.saved_map().contains_key("jump"),
+      "defaults are not saved"
+    );
+  }
+
+  #[test]
+  fn an_override_that_does_not_parse_keeps_the_defaults() {
+    let mut saved = BTreeMap::new();
+    saved.insert("jump".to_string(), vec!["Nope".to_string()]);
+    saved.insert("fire".to_string(), vec!["Key:Nope".to_string()]);
+    let mut actions = Actions::default();
+    actions.bind("fire", [Binding::Key(KeyCode::KeyF)]);
+    actions.load_saved(&saved);
+    actions.bind("jump", [Binding::Key(KeyCode::Space)]);
+    assert_eq!(
+      actions.bindings("jump"),
+      &[Binding::Key(KeyCode::Space)],
+      "bound after the load"
+    );
+    assert_eq!(
+      actions.bindings("fire"),
+      &[Binding::Key(KeyCode::KeyF)],
+      "bound before it"
+    );
+    assert!(actions.saved_map().is_empty());
   }
 
   #[test]

@@ -150,8 +150,8 @@ EngineBuilder::new()
 ```
 
 - At startup the engine loads the saved bindings: actions already bound switch to them at once, the rest when the game binds them (so `bind` in a scene's `on_enter` keeps the player's choice).
-- Whenever the bindings change, the engine writes those that differ from the defaults to `system.json`, as action name to binding texts: `"bindings": { "jump": ["Key:KeyK", "Pad:South"] }`. `ctx.actions().reset_defaults()` empties the key, and the key is left out when nothing differs.
-- A rebind row captures only bindings that survive a save and load (`Binding::is_saveable()`); a saved text that no longer parses is skipped with a warning.
+- Whenever the bindings change, the engine writes those that differ from the defaults to `system.json`, as action name to binding texts: `"bindings": { "jump": ["Key:KeyK", "Pad:South"] }`. Saved bindings of actions the game has not bound yet (a level's, while the player rebinds from the title screen) are written back as they were loaded, and an action the player rebinds back to its defaults leaves the file. `ctx.actions().reset_defaults()` empties the key, and the key is left out when nothing differs.
+- A rebind row captures only bindings that survive a save and load (`Binding::is_saveable()`); a saved text that no longer parses is skipped with a warning, and an action none of whose saved texts parse keeps its defaults.
 - `SystemState::bindings` is a `BTreeMap<String, Vec<String>>` if a game wants to read or edit the file itself. Without `Bindings` in the filter, bindings last for the session. Headless runs never read or write them.
 
 ## Game Data
