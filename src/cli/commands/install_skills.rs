@@ -337,3 +337,33 @@ EXAMPLES:
 "#
   );
 }
+
+#[cfg(test)]
+mod tests {
+  use std::path::Path;
+
+  use super::EMBEDDED_SKILLS;
+
+  /// Each embedded skill is its `.claude/skills/<name>/SKILL.md` byte for
+  /// byte, listed with the description its frontmatter gives
+  #[test]
+  fn embedded_skills_are_their_sources() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".claude/skills");
+    for (name, description, content) in EMBEDDED_SKILLS {
+      let source = std::fs::read_to_string(root.join(name).join("SKILL.md")).unwrap();
+      assert!(
+        source == *content,
+        "src/cli/skills/{name}.md is not a copy of .claude/skills/{name}/SKILL.md"
+      );
+      let frontmatter = source
+        .lines()
+        .find_map(|line| line.strip_prefix("description: "))
+        .unwrap();
+      assert_eq!(
+        frontmatter.trim_matches('"'),
+        *description,
+        "{name}'s listed description"
+      );
+    }
+  }
+}
