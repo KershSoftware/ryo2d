@@ -6,8 +6,8 @@ pub mod scenes;
 
 use demo_kit::prelude::*;
 use scenes::{
-  ClippingDemo, DialoguePage, DropdownDemo, InventoryPage, LayoutDemo, MenuPage, ScrollViewDemo,
-  SettingsPage, TextDemo, TextInputDemo, ThemeDemo,
+  ClippingDemo, DialoguePage, DropdownDemo, InventoryPage, LayoutDemo, MenuPage, NodeMenuPage,
+  NodeSettingsPage, ScrollViewDemo, SettingsPage, TextDemo, TextInputDemo, ThemeDemo,
 };
 
 /// The demo: Menus, Settings, Inventory, Dialogue, Theme, Layout, Clipping &
@@ -26,4 +26,6 @@ pub fn demo() -> Demo {
     .page(TextInputDemo::new)
     .page(ScrollViewDemo::new)
     .page(DropdownDemo::new)
+    .page(NodeMenuPage::new)
+    .page(NodeSettingsPage::new)
 }

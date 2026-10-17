@@ -14,6 +14,11 @@ const DPAD: [GamepadButton; 4] = [
   GamepadButton::DPadRight,
 ];
 
+const MENUS: [usize; 2] = [0, 11];
+const SETTINGS: [usize; 2] = [1, 12];
+const INVENTORY: [usize; 1] = [2];
+const DIALOGUE: [usize; 1] = [3];
+
 fn start(page: usize) -> Option<HeadlessEngine> {
   let mut engine = HeadlessEngine::new_or_skip(ui_demo::demo().start_page(page).engine_builder())?;
   engine.step_frames(4).unwrap();
@@ -75,110 +80,134 @@ fn assert_all_reachable(engine: &mut HeadlessEngine, what: &str) {
 #[test]
 fn every_acceptance_page_is_fully_reachable_by_pad() {
   // Menus, Inventory and Dialogue as they open
-  for (page, name) in [(0, "Menus"), (2, "Inventory"), (3, "Dialogue")] {
+  let pages = MENUS
+    .iter()
+    .map(|&p| (p, "Menus"))
+    .chain(INVENTORY.iter().map(|&p| (p, "Inventory")))
+    .chain(DIALOGUE.iter().map(|&p| (p, "Dialogue")));
+  for (page, name) in pages {
     let Some(mut engine) = start(page) else {
       return;
     };
-    assert_all_reachable(&mut engine, name);
+    assert_all_reachable(&mut engine, &format!("{name} (page {page})"));
     if name == "Dialogue" {
       // Skip shows the whole line, then its choices
       pad(&mut engine, GamepadButton::South);
-      assert!(engine.ui_focusables().len() > 1, "Skip showed the choices");
-      assert_all_reachable(&mut engine, "Dialogue, choices");
+      assert!(
+        engine.ui_focusables().len() > 1,
+        "Skip showed the choices (page {page})"
+      );
+      assert_all_reachable(&mut engine, &format!("Dialogue, choices (page {page})"));
     }
   }
   // Settings, on each tab in turn
-  let Some(mut engine) = start(1) else {
-    return;
-  };
-  for tab in ["Audio", "Video", "Controls"] {
-    assert_all_reachable(&mut engine, &format!("Settings, {tab}"));
-    if tab == "Video" {
-      // The Window dropdown's list: all of it reachable, and Back closes it
-      let page = ids(&engine);
-      let window = engine.ui_focusables()[3].0;
-      engine.focus_ui(window);
-      engine.step_frames(2).unwrap();
-      pad(&mut engine, GamepadButton::South);
-      assert!(
-        ids(&engine).is_disjoint(&page),
-        "the Window list opened over the page"
-      );
-      assert_all_reachable(&mut engine, "Settings, Video, the Window list");
-      pad(&mut engine, GamepadButton::East);
-      assert_eq!(ids(&engine), page, "Back closed the list");
+  for page in SETTINGS {
+    let Some(mut engine) = start(page) else {
+      return;
+    };
+    for tab in ["Audio", "Video", "Controls"] {
+      assert_all_reachable(&mut engine, &format!("Settings, {tab} (page {page})"));
+      if tab == "Video" {
+        // The Window dropdown's list: all of it reachable, and Back closes it
+        let list = ids(&engine);
+        let window = engine.ui_focusables()[3].0;
+        engine.focus_ui(window);
+        engine.step_frames(2).unwrap();
+        pad(&mut engine, GamepadButton::South);
+        assert!(
+          ids(&engine).is_disjoint(&list),
+          "the Window list opened over the page (page {page})"
+        );
+        assert_all_reachable(
+          &mut engine,
+          &format!("Settings, Video, the Window list (page {page})"),
+        );
+        pad(&mut engine, GamepadButton::East);
+        assert_eq!(ids(&engine), list, "Back closed the list (page {page})");
+      }
+      pad(&mut engine, GamepadButton::RightBumper);
     }
-    pad(&mut engine, GamepadButton::RightBumper);
   }
 }
 
 #[test]
 fn every_menu_dialog_is_reachable_and_closes_on_back() {
-  let Some(mut engine) = start(0) else {
-    return;
-  };
-  let page = ids(&engine);
-  let Some(new_game) = engine.ui_focused() else {
-    panic!("the menu focused nothing");
-  };
-  // Continue starts disabled, so New Game is first: Options is one down, Credits two, Quit three
-  for (downs, name) in [(1, "Options"), (2, "Credits"), (3, "Quit")] {
-    engine.focus_ui(new_game);
-    engine.step_frames(2).unwrap();
-    for _ in 0..downs {
-      pad(&mut engine, GamepadButton::DPadDown);
+  for page in MENUS {
+    let Some(mut engine) = start(page) else {
+      return;
+    };
+    let menu = ids(&engine);
+    let Some(new_game) = engine.ui_focused() else {
+      panic!("the menu focused nothing (page {page})");
+    };
+    // Continue starts disabled, so New Game is first: Options is one down, Credits two, Quit three
+    for (downs, name) in [(1, "Options"), (2, "Credits"), (3, "Quit")] {
+      engine.focus_ui(new_game);
+      engine.step_frames(2).unwrap();
+      for _ in 0..downs {
+        pad(&mut engine, GamepadButton::DPadDown);
+      }
+      pad(&mut engine, GamepadButton::South);
+      assert!(
+        ids(&engine).is_disjoint(&menu),
+        "{name} opened a modal over the menu (page {page})"
+      );
+      assert_all_reachable(&mut engine, &format!("{name} (page {page})"));
+      pad(&mut engine, GamepadButton::East);
+      assert_eq!(ids(&engine), menu, "{name} closed on Back (page {page})");
     }
-    pad(&mut engine, GamepadButton::South);
-    assert!(
-      ids(&engine).is_disjoint(&page),
-      "{name} opened a modal over the menu"
-    );
-    assert_all_reachable(&mut engine, name);
-    pad(&mut engine, GamepadButton::East);
-    assert_eq!(ids(&engine), page, "{name} closed on Back");
   }
 }
 
 #[test]
 fn the_quit_confirm_gives_the_focus_back_to_quit_by_pad_alone() {
-  let Some(mut engine) = start(0) else {
-    return;
-  };
-  let page = ids(&engine);
-  // A focus at every step, and never one from outside the walk
-  let step = |engine: &mut HeadlessEngine, button: GamepadButton, what: &str| {
-    pad(engine, button);
-    match engine.ui_focused() {
-      Some(id) => id,
-      None => panic!("nothing has the focus after {what}"),
+  for page in MENUS {
+    let Some(mut engine) = start(page) else {
+      return;
+    };
+    let menu = ids(&engine);
+    // A focus at every step, and never one from outside the walk
+    let step = |engine: &mut HeadlessEngine, button: GamepadButton, what: &str| {
+      pad(engine, button);
+      match engine.ui_focused() {
+        Some(id) => id,
+        None => panic!("nothing has the focus after {what} (page {page})"),
+      }
+    };
+    let Some(mut at) = engine.ui_focused() else {
+      panic!("the menu focused nothing by itself (page {page})");
+    };
+    // New Game first (Continue is disabled); Options, Credits, then Quit
+    for what in ["Down to Options", "Down to Credits", "Down to Quit"] {
+      let next = step(&mut engine, GamepadButton::DPadDown, what);
+      assert_ne!(next, at, "{what} moved the focus (page {page})");
+      at = next;
     }
-  };
-  let Some(mut at) = engine.ui_focused() else {
-    panic!("the menu focused nothing by itself");
-  };
-  // New Game first (Continue is disabled); Options, Credits, then Quit
-  for what in ["Down to Options", "Down to Credits", "Down to Quit"] {
-    let next = step(&mut engine, GamepadButton::DPadDown, what);
-    assert_ne!(next, at, "{what} moved the focus");
-    at = next;
-  }
-  let quit = at;
-  for (answer, route) in [
-    ("Back", &[GamepadButton::East][..]),
-    ("No", &[GamepadButton::South][..]),
-    ("Yes", &[GamepadButton::DPadLeft, GamepadButton::South][..]),
-  ] {
-    let open = step(&mut engine, GamepadButton::South, "A on Quit");
-    assert!(!page.contains(&open), "the confirm has the focus");
-    for &button in route {
-      step(&mut engine, button, answer);
+    let quit = at;
+    for (answer, route) in [
+      ("Back", &[GamepadButton::East][..]),
+      ("No", &[GamepadButton::South][..]),
+      ("Yes", &[GamepadButton::DPadLeft, GamepadButton::South][..]),
+    ] {
+      let open = step(&mut engine, GamepadButton::South, "A on Quit");
+      assert!(
+        !menu.contains(&open),
+        "the confirm has the focus (page {page})"
+      );
+      for &button in route {
+        step(&mut engine, button, answer);
+      }
+      assert_eq!(
+        engine.ui_focused(),
+        Some(quit),
+        "{answer} gave it back to Quit (page {page})"
+      );
+      assert_eq!(
+        ids(&engine),
+        menu,
+        "{answer} closed the confirm (page {page})"
+      );
     }
-    assert_eq!(
-      engine.ui_focused(),
-      Some(quit),
-      "{answer} gave it back to Quit"
-    );
-    assert_eq!(ids(&engine), page, "{answer} closed the confirm");
   }
 }
 

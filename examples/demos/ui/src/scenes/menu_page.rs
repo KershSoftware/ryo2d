@@ -3,32 +3,7 @@
 
 use demo_kit::prelude::*;
 
-/// The dialog open over the menu
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Dialog {
-  Options,
-  Credits,
-  Quit,
-}
-
-/// The credits: 15 roles and who filled them, 30 lines
-const CREDITS: [(&str, &str); 15] = [
-  ("Game design", "The Wandering Studio"),
-  ("Programming", "Ryo2D and its UI"),
-  ("Art", "Pixels drawn in code"),
-  ("Music", "The sound of silence"),
-  ("Sound", "A click, a tick and a whoosh"),
-  ("Quest writing", "A shopkeeper who remembers"),
-  ("Level design", "One menu, many dialogs"),
-  ("Interface", "Containers, scopes and modals"),
-  ("Navigation", "The D-pad and nothing else"),
-  ("Localisation", "Ελληνικά, Čeština, Русский"),
-  ("Fonts", "Inter, JetBrains Mono and m5x7"),
-  ("Testing", "A gamepad and two buttons"),
-  ("Accessibility", "Every widget within reach"),
-  ("Special thanks", "Everyone who plays with a pad"),
-  ("Made with", "Ryo2D"),
-];
+use super::menu_data::{CONTINUES, CREDITS, Dialog, NEW_GAME, NO_SAVE, QUIT_CHOSEN};
 
 pub struct MenuPage {
   /// A game was started, so Continue works
@@ -44,7 +19,7 @@ impl MenuPage {
   pub fn new() -> Self {
     Self {
       has_save: false,
-      status: "No saved game yet: start a New Game.".to_string(),
+      status: NO_SAVE.to_string(),
       dialog: None,
       volume: 0.8,
       fullscreen: false,
@@ -78,11 +53,11 @@ impl MenuPage {
           .enabled(has_save)
           .clicked()
         {
-          *status = "Your journey continues.".to_string();
+          *status = CONTINUES.to_string();
         }
         if ui.button("New Game").fill_width().default_focus().clicked() {
           started = true;
-          *status = "A new game begins.".to_string();
+          *status = NEW_GAME.to_string();
         }
         for (label, dialog) in [
           ("Options", Dialog::Options),
@@ -163,7 +138,7 @@ impl MenuPage {
       }
       Dialog::Quit => match ui.confirm("Quit to desktop?", "Your progress is saved.") {
         Some(true) => {
-          self.status = "Quit chosen (the demo stays open).".to_string();
+          self.status = QUIT_CHOSEN.to_string();
           close = true;
         }
         Some(false) => close = true,
