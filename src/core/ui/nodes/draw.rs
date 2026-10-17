@@ -14,11 +14,11 @@ use crate::core::ecs::kernel::{
 };
 use crate::core::text::{RichText, TextReveal, TextStyle};
 use crate::core::ui::theme::warn_once;
-use crate::core::ui::{Anchor, Rect, Response, Theme, UiContext};
+use crate::core::ui::{Anchor, Rect, Response, Theme, UiContext, UiId};
 
 use super::components::{
-  UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName, UiNodes,
-  UiOptions, UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
+  BackAnswer, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName,
+  UiNodes, UiOptions, UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
 };
 use super::events::{UiEvent, UiEventKind};
 use super::node::{Kind, NodeLayout, TextRole, UiNodeKind};
@@ -49,7 +49,6 @@ pub(crate) struct Walk {
   pub(crate) scene: u64,
   pub(crate) events: Vec<UiEvent>,
   /// The last modal or popup node drawn: Back goes to it
-  #[allow(dead_code)] // read once node dialogs answer Back
   pub(crate) back: Option<Entity>,
   /// A focus request waiting for its node to be drawn
   pub(crate) pending_focus: Option<Entity>,
@@ -57,7 +56,16 @@ pub(crate) struct Walk {
 
 impl Walk {
   /// Keep an unused focus request for a later frame; the walk's events
-  pub(crate) fn finish(self, world: &mut World, _ui: &mut UiContext<'_>) -> Vec<UiEvent> {
+  pub(crate) fn finish(mut self, world: &mut World, ui: &mut UiContext<'_>) -> Vec<UiEvent> {
+    if let Some(target) = self.back
+      && ui.back()
+    {
+      let answer = world.get::<BackAnswer>(target).map(|answer| answer.0);
+      match answer {
+        Some(no) => push_event(world, &mut self, no, UiEventKind::Clicked),
+        None => push_event(world, &mut self, target, UiEventKind::Back),
+      }
+    }
     if let Some(node) = self.pending_focus
       && let Some(mut nodes) = world.get_resource_mut::<UiNodes>()
     {
@@ -134,7 +142,7 @@ fn draw_node(
     return;
   };
   let (response, sends) = match kind.kind {
-    Kind::Column | Kind::Row | Kind::Grid(_) | Kind::Stack | Kind::Panel => {
+    Kind::Column | Kind::Row | Kind::Grid(_) | Kind::Stack | Kind::Panel | Kind::Popup { .. } => {
       (draw_container(entity, ui, place, walk), Sends::Clicks)
     }
     Kind::Scroll(_) => (draw_scroll(entity, ui, place, walk), Sends::Clicks),
@@ -172,8 +180,6 @@ fn draw_node(
     Kind::Slot { .. } => (draw_slot(entity, ui, place), Sends::Clicks),
     Kind::Prompt { .. } => (draw_prompt(entity, ui, place), Sends::Clicks),
     Kind::Rebind(_) => (draw_rebind(entity, ui, place), Sends::Changes),
-    // Not drawn yet: popups
-    _ => return,
   };
   if let Some(response) = response {
     answer(world, ui, node, &response, sends, walk);
@@ -356,7 +362,11 @@ fn draw_container(
   warn_disabled(&node, kind);
   let (layout, flags) = (&kind.layout, kind.flags);
   let gap = gap_of(layout, ui);
+  let anchor = anchor_id(node.world(), entity);
+  let dialog = flags.modal || matches!(kind.kind, Kind::Popup { .. });
   let mut container = match kind.kind {
+    _ if flags.modal => ui.modal(),
+    Kind::Popup { .. } => ui.popup(anchor),
     Kind::Column => ui.column(),
     Kind::Row => ui.row(),
     Kind::Grid(columns) => ui.grid(columns),
@@ -410,7 +420,11 @@ fn draw_container(
     container = container.drop_target::<Entity>();
   }
   let world = node.into_world_mut();
-  Some(container.show(|ui| walk_children(world, ui, entity, walk)))
+  let response = container.show(|ui| walk_children(world, ui, entity, walk));
+  if dialog {
+    walk.back = Some(entity);
+  }
+  Some(response)
 }
 
 /// Draw a scroll node, its children inside: only the options `Scroll` has
@@ -459,6 +473,34 @@ struct Extras<'w> {
   tooltip: Option<&'w UiTooltip>,
   /// `UiDisabled`
   disabled: bool,
+  /// The ids of the nodes up, down, left and right go to
+  nav: [UiId; 4],
+}
+
+/// The recorded id of each of `node`'s named neighbours (`NONE` for none, or
+/// one not drawn yet)
+fn neighbour_ids(world: &World, node: Entity) -> [UiId; 4] {
+  let mut ids = [UiId::NONE; 4];
+  if let Some(kind) = world.get::<UiNodeKind>(node) {
+    for (id, target) in ids.iter_mut().zip(kind.nav) {
+      *id = target.map_or(UiId::NONE, |target| recorded_id(world, target));
+    }
+  }
+  ids
+}
+
+/// The id of the popup's anchor node, `NONE` when it has none yet
+fn anchor_id(world: &World, node: Entity) -> UiId {
+  world
+    .get::<UiNodeKind>(node)
+    .and_then(|kind| kind.anchor_node)
+    .map_or(UiId::NONE, |anchor| recorded_id(world, anchor))
+}
+
+fn recorded_id(world: &World, node: Entity) -> UiId {
+  world
+    .get::<UiInteraction>(node)
+    .map_or(UiId::NONE, |state| state.id)
 }
 
 /// The options every widget kind shares, applied to `$builder` (the
@@ -502,6 +544,18 @@ macro_rules! widget_opts {
     }
     if node.flags.default_focus {
       builder = builder.default_focus();
+    }
+    if extras.nav[0] != UiId::NONE {
+      builder = builder.nav_up(extras.nav[0]);
+    }
+    if extras.nav[1] != UiId::NONE {
+      builder = builder.nav_down(extras.nav[1]);
+    }
+    if extras.nav[2] != UiId::NONE {
+      builder = builder.nav_left(extras.nav[2]);
+    }
+    if extras.nav[3] != UiId::NONE {
+      builder = builder.nav_right(extras.nav[3]);
     }
     if node.flags.nav_skip {
       builder = builder.nav_skip();
@@ -577,6 +631,7 @@ fn draw_button(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, label, tooltip, disabled) = components::<(
     &UiNodeKind,
     Option<&UiLabel>,
@@ -592,6 +647,7 @@ fn draw_button(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -610,6 +666,7 @@ fn draw_image(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, image, tooltip, disabled) = components::<(
     &UiNodeKind,
     Option<&UiImage>,
@@ -625,6 +682,7 @@ fn draw_image(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -651,6 +709,7 @@ fn draw_slot(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, slot, tooltip, disabled) =
     components::<(&UiNodeKind, &UiSlot, Option<&UiTooltip>, Has<UiDisabled>)>(&mut node, "slot")?;
   let Kind::Slot { filter } = &kind.kind else {
@@ -659,6 +718,7 @@ fn draw_slot(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -684,6 +744,7 @@ fn draw_prompt(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, tooltip, disabled) =
     components::<(&UiNodeKind, Option<&UiTooltip>, Has<UiDisabled>)>(&mut node, "prompt")?;
   let Kind::Prompt { action } = &kind.kind else {
@@ -692,6 +753,7 @@ fn draw_prompt(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -705,6 +767,7 @@ fn draw_rebind(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, tooltip, disabled) =
     components::<(&UiNodeKind, Option<&UiTooltip>, Has<UiDisabled>)>(&mut node, "rebind")?;
   let Kind::Rebind(opts) = &kind.kind else {
@@ -713,6 +776,7 @@ fn draw_rebind(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -733,6 +797,7 @@ fn draw_check(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, label, mut checked, tooltip, disabled) = components::<(
     &UiNodeKind,
     &UiLabel,
@@ -743,6 +808,7 @@ fn draw_check(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -765,6 +831,7 @@ fn draw_slider(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, mut value, tooltip, disabled) = components::<(
     &UiNodeKind,
     &mut UiValue,
@@ -777,6 +844,7 @@ fn draw_slider(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -808,6 +876,7 @@ fn draw_progress(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, value, tooltip, disabled) =
     components::<(&UiNodeKind, &UiValue, Option<&UiTooltip>, Has<UiDisabled>)>(
       &mut node, "progress",
@@ -818,6 +887,7 @@ fn draw_progress(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -840,6 +910,7 @@ fn draw_text_input(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, mut text, tooltip, disabled) = components::<(
     &UiNodeKind,
     &mut UiTextValue,
@@ -852,6 +923,7 @@ fn draw_text_input(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -981,6 +1053,7 @@ fn draw_pick(
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, options, mut index, tooltip, disabled) = components::<(
     &UiNodeKind,
     &UiOptions,
@@ -991,6 +1064,7 @@ fn draw_pick(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -1016,6 +1090,7 @@ fn draw_choice_list(
   place: Option<Place>,
 ) -> Option<usize> {
   let entity = node.id();
+  let nav = neighbour_ids(node.world(), entity);
   let (kind, options, mut index, tooltip, disabled) = components::<(
     &UiNodeKind,
     &UiOptions,
@@ -1029,6 +1104,7 @@ fn draw_choice_list(
   let extras = Extras {
     entity,
     place,
+    nav,
     tooltip,
     disabled,
   };
@@ -2013,5 +2089,153 @@ mod drag {
         UiEventKind::FocusGained,
       ]
     );
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod dialogs {
+  use crate::core::ecs::kernel::{Children, Entity, World};
+  use crate::core::input::Direction;
+  use crate::core::ui::nav::nav_targets;
+  use crate::core::ui::nodes::*;
+  use crate::core::ui::test_util::UiDriver;
+  use crate::core::ui::{Anchor, Rect};
+
+  fn kids(world: &World, of: Entity) -> Vec<Entity> {
+    world
+      .get::<Children>(of)
+      .map(|c| c.to_vec())
+      .unwrap_or_default()
+  }
+
+  fn settle(d: &mut UiDriver) {
+    for _ in 0..3 {
+      d.frame(|_| {});
+    }
+  }
+
+  fn page() -> UiNode {
+    UiNode::column()
+      .focus_scope()
+      .child(UiNode::button("Page").default_focus())
+  }
+
+  fn dialog(action: &str) -> UiNode {
+    UiNode::panel()
+      .modal()
+      .action(action)
+      .child(UiNode::button("Inside").default_focus())
+      .child(UiNode::button("Also"))
+  }
+
+  #[test]
+  fn a_modal_node_traps_the_focus() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    d.spawn_ui(page());
+    let modal = d.spawn_ui(dialog("options"));
+    settle(&mut d);
+    let inside = kids(d.world(), modal);
+    let reachable: Vec<_> = nav_targets(&d.memory, Some(d.scene))
+      .into_iter()
+      .map(|(id, _)| id)
+      .collect();
+    let ids: Vec<_> = inside.iter().filter_map(|e| d.ui_id(*e)).collect();
+    assert_eq!(reachable, ids, "only the dialog's buttons");
+  }
+
+  #[test]
+  fn back_goes_to_the_innermost_dialog() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    d.spawn_ui(page());
+    d.spawn_ui(dialog("outer"));
+    let inner = d.spawn_ui(dialog("inner"));
+    settle(&mut d);
+    d.back();
+    d.frame(|_| {});
+    let backs: Vec<_> = d
+      .events()
+      .iter()
+      .filter(|e| e.kind == UiEventKind::Back)
+      .map(|e| (e.node, e.action.clone()))
+      .collect();
+    assert_eq!(backs, [(inner, Some("inner".to_string()))]);
+  }
+
+  #[test]
+  fn a_confirm_opens_on_no_and_back_answers_no() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let confirm = d.spawn_ui(UiNode::confirm(
+      "Quit?",
+      "Your progress is saved.",
+      "Yes",
+      "No",
+    ));
+    settle(&mut d);
+    let buttons = kids(d.world(), *kids(d.world(), confirm).last().unwrap());
+    let no = buttons[1];
+    assert_eq!(d.focused(), d.ui_id(no), "opens on No");
+    d.back();
+    d.frame(|_| {});
+    let answers: Vec<_> = d
+      .events()
+      .iter()
+      .filter(|e| e.kind == UiEventKind::Clicked)
+      .map(|e| (e.node, e.action.clone()))
+      .collect();
+    assert_eq!(answers, [(no, Some("no".to_string()))]);
+    d.nav(Direction::Left);
+    d.frame(|_| {});
+    d.confirm();
+    d.frame(|_| {});
+    assert!(
+      d.events()
+        .iter()
+        .any(|e| e.kind == UiEventKind::Clicked && e.action.as_deref() == Some("yes"))
+    );
+  }
+
+  #[test]
+  fn a_popup_hangs_below_its_named_anchor() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let root = d.spawn_ui(
+      UiNode::column()
+        .focus_scope()
+        .child(
+          UiNode::button("More")
+            .name("more")
+            .at(Rect::new(20.0, 20.0, 80.0, 24.0)),
+        )
+        .child(
+          UiNode::popup("more").child(UiNode::button("Rename").name("rename").default_focus()),
+        ),
+    );
+    settle(&mut d);
+    let rename = d.find_ui("rename").unwrap();
+    let rect = nav_targets(&d.memory, Some(d.scene))
+      .into_iter()
+      .find(|(id, _)| Some(*id) == d.ui_id(rename))
+      .map(|(_, r)| r);
+    let Some(rect) = rect else {
+      panic!("the popup's button is not focusable: {root:?}")
+    };
+    assert!(rect.y >= 44.0, "below the anchor's bottom edge: {rect:?}");
+  }
+
+  #[test]
+  fn a_named_neighbour_is_where_the_pad_goes() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let root = d.spawn_ui(
+      UiNode::column()
+        .focus_scope()
+        .anchor(Anchor::Center)
+        .child(UiNode::button("Play").default_focus().nav_down("quit"))
+        .child(UiNode::button("Options"))
+        .child(UiNode::button("Quit").name("quit")),
+    );
+    settle(&mut d);
+    let quit = kids(d.world(), root)[2];
+    d.nav(Direction::Down);
+    d.frame(|_| {});
+    assert_eq!(d.focused(), d.ui_id(quit), "past Options to Quit");
   }
 }

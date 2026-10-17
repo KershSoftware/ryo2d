@@ -242,3 +242,60 @@ fn a_popped_scenes_roots_are_despawned() {
   );
   assert!(engine.world().get_entity(game).is_ok(), "Game's stayed");
 }
+
+/// A scene showing one modal root, which closes (despawns) on Back
+struct Dialog {
+  backs: Arc<Mutex<Vec<Option<String>>>>,
+  root: Option<Entity>,
+}
+
+impl Scene for Dialog {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    self.root = Some(
+      ctx.spawn_ui(
+        UiNode::panel()
+          .modal()
+          .action("options")
+          .child(UiNode::button("Done").action("done").default_focus()),
+      ),
+    );
+  }
+
+  fn ui(&mut self, _ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    for event in ctx.ui_events() {
+      if event.kind == UiEventKind::Back {
+        if let Ok(mut backs) = self.backs.lock() {
+          backs.push(event.action.clone());
+        }
+        if let Some(root) = self.root.take() {
+          ctx.world.despawn(root);
+        }
+      }
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_modal_root_traps_focus_and_back_sends_back() {
+  let backs = Arc::new(Mutex::new(Vec::new()));
+  let scene = Dialog {
+    backs: Arc::clone(&backs),
+    root: None,
+  };
+  let Some(mut engine) =
+    HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(320, 240).start_scene(scene))
+  else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  assert_eq!(engine.ui_focusables().len(), 1, "only Done");
+  press(&mut engine, GamepadButton::East);
+  assert_eq!(*backs.lock().unwrap(), [Some("options".to_string())]);
+  assert!(engine.ui_focusables().is_empty(), "the dialog closed");
+  assert_eq!(
+    engine.step_frames(2).unwrap(),
+    ryo2d::testing::StepOutcome::Running,
+    "Back did not quit"
+  );
+}
