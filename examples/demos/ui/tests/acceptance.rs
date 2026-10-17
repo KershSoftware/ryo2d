@@ -434,3 +434,41 @@ fn escape_puts_back_an_item_the_pad_holds_over_a_button() {
   escape_puts_back(InventoryPage::new);
   escape_puts_back(NodeInventoryPage::new);
 }
+
+#[test]
+fn the_mixed_pages_focus_path_runs_through_the_node_grid() {
+  let Some(mut engine) = start(15) else { return };
+  let Some(add) = engine.ui_focused() else {
+    panic!("nothing focused")
+  };
+  assert_all_reachable(&mut engine, "Mixed");
+  engine.focus_ui(add);
+  engine.step_frames(2).unwrap();
+  let rect_of = |engine: &HeadlessEngine, id| {
+    engine
+      .ui_focusables()
+      .into_iter()
+      .find(|(t, _)| *t == id)
+      .map(|(_, r)| r)
+  };
+  let mut steps = 0;
+  let done_y = engine
+    .ui_focusables()
+    .last()
+    .map(|(_, r)| r.y)
+    .unwrap_or_default();
+  while let Some(at) = engine.ui_focused().and_then(|id| rect_of(&engine, id)) {
+    if at.y >= done_y || steps > 10 {
+      break;
+    }
+    pad(&mut engine, GamepadButton::DPadDown);
+    steps += 1;
+  }
+  assert_eq!(steps, 3, "Add, the grid's two rows, then Done");
+  pad(&mut engine, GamepadButton::DPadUp);
+  let back = engine.ui_focused().and_then(|id| rect_of(&engine, id));
+  assert!(
+    back.is_some_and(|r| r.y < done_y),
+    "Up from Done goes back into the grid"
+  );
+}

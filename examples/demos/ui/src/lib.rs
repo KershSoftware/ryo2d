@@ -6,14 +6,14 @@ pub mod scenes;
 
 use demo_kit::prelude::*;
 use scenes::{
-  ClippingDemo, DialoguePage, DropdownDemo, InventoryPage, LayoutDemo, MenuPage, NodeDialoguePage,
-  NodeInventoryPage, NodeMenuPage, NodeSettingsPage, ScrollViewDemo, SettingsPage, TextDemo,
-  TextInputDemo, ThemeDemo,
+  ClippingDemo, DialoguePage, DropdownDemo, InventoryPage, LayoutDemo, MenuPage, MixedPage,
+  NodeDialoguePage, NodeInventoryPage, NodeMenuPage, NodeSettingsPage, ScrollViewDemo,
+  SettingsPage, TextDemo, TextInputDemo, ThemeDemo,
 };
 
 /// The demo: Menus, Settings, Inventory, Dialogue, Theme, Layout, Clipping &
 /// Modals, Text, Text Input, Scroll Views and Dropdowns, then the node
-/// versions of Menus, Settings, Inventory and Dialogue
+/// versions of Menus, Settings, Inventory and Dialogue, and the Mixed page
 pub fn demo() -> Demo {
   Demo::new("UI")
     .resolution(1024, 768)
@@ -32,4 +32,5 @@ pub fn demo() -> Demo {
     .page(NodeSettingsPage::new)
     .page(NodeInventoryPage::new)
     .page(NodeDialoguePage::new)
+    .page(MixedPage::new)
 }
