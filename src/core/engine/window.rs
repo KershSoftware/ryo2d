@@ -65,6 +65,24 @@ fn should_present(occluded: bool, throttled: bool, background_rendering: bool) -
   !occluded && !(throttled && !background_rendering)
 }
 
+/// The monitor's native mode for exclusive fullscreen: the largest, at its
+/// fastest refresh. `size_refresh` gives a mode's size and refresh rate (mHz).
+fn native_mode<T>(
+  modes: impl Iterator<Item = T>,
+  size_refresh: impl Fn(&T) -> ((u32, u32), u32),
+) -> Option<T> {
+  modes.max_by_key(|mode| {
+    let ((width, height), refresh) = size_refresh(mode);
+    (u64::from(width) * u64::from(height), refresh)
+  })
+}
+
+/// A video mode's size and refresh rate (mHz), for [`native_mode`]
+fn mode_size_refresh(mode: &winit::monitor::VideoModeHandle) -> ((u32, u32), u32) {
+  let size = mode.size();
+  ((size.width, size.height), mode.refresh_rate_millihertz())
+}
+
 /// Why a frame ran long: only a steady frame of a visible, focused window
 /// says the game cannot keep up
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,7 +199,7 @@ impl Engine {
         DisplayMode::ExclusiveFullscreen => {
           // The current monitor's native resolution
           if let Some(monitor) = window.current_monitor()
-            && let Some(video_mode) = monitor.video_modes().next()
+            && let Some(video_mode) = native_mode(monitor.video_modes(), mode_size_refresh)
           {
             window.set_fullscreen(Some(winit::window::Fullscreen::Exclusive(video_mode)));
           }
@@ -467,7 +485,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
       DisplayMode::Windowed => {}
       DisplayMode::ExclusiveFullscreen => {
         if let Some(monitor) = window.current_monitor()
-          && let Some(video_mode) = monitor.video_modes().next()
+          && let Some(video_mode) = native_mode(monitor.video_modes(), mode_size_refresh)
         {
           window.set_fullscreen(Some(winit::window::Fullscreen::Exclusive(video_mode)));
         }
@@ -930,6 +948,24 @@ mod tests {
     assert!(
       should_present(false, true, true),
       "throttled with background rendering"
+    );
+  }
+
+  #[test]
+  fn exclusive_fullscreen_takes_the_largest_mode_at_its_fastest_refresh() {
+    let modes = [
+      ((1920, 1080), 144_000),
+      ((3456, 2234), 60_000),
+      ((3456, 2234), 120_000),
+      ((1280, 720), 120_000),
+    ];
+    assert_eq!(
+      native_mode(modes.into_iter(), |mode| *mode),
+      Some(((3456, 2234), 120_000))
+    );
+    assert_eq!(
+      native_mode(std::iter::empty::<((u32, u32), u32)>(), |mode| *mode),
+      None
     );
   }
 
