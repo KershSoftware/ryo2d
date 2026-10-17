@@ -9,6 +9,9 @@ pub const BIRD_GRAVITY: f32 = 800.0;
 pub const BIRD_FLAP_VELOCITY: f32 = -300.0;
 pub const BIRD_MAX_FALL_SPEED: f32 = 400.0;
 pub const BIRD_SIZE: f32 = 64.0;
+/// The bird's SVGs are rasterised this many times larger than they show and
+/// drawn scaled down, so they stay sharp however far the window scales up
+pub const BIRD_RASTER_SCALE: f32 = 4.0;
 pub const BIRD_COLLIDER_RATIO: f32 = 0.35; // Collision circle is 35% of sprite size (forgiving for wings)
 /// Bird start position (its centre)
 pub const BIRD_START_X: f32 = 132.0;

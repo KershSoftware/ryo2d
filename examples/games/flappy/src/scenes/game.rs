@@ -19,6 +19,9 @@ pub struct GameScene {
 
   // Entity tracking
   bird: Option<Entity>,
+  /// The bird's sprite: a child of the bird, scaled down from its larger
+  /// raster (the bird's own scale would scale its collider too)
+  bird_sprite: Option<Entity>,
   pipes: Vec<Entity>,
   ground_entities: Vec<Entity>,
   ground_border_entities: Vec<Entity>,
@@ -35,6 +38,7 @@ impl GameScene {
       game_started: false,
       death_timer: None,
       bird: None,
+      bird_sprite: None,
       pipes: Vec::new(),
       ground_entities: Vec::new(),
       ground_border_entities: Vec::new(),
@@ -64,12 +68,19 @@ impl GameScene {
           .lock_rotation(),
         // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
         Collider::circle(BIRD_SIZE * BIRD_COLLIDER_RATIO),
-        Renderable::sprite(initial_sprite).with_z_order(10),
         Interpolated,
-        controller,
         Bird::new(),
       ))
       .id();
+    let sprite = ctx.world.spawn_child(
+      bird,
+      (
+        Transform::from_xy(0.0, 0.0).with_uniform_scale(1.0 / BIRD_RASTER_SCALE),
+        Renderable::sprite(initial_sprite).with_z_order(10),
+        controller,
+      ),
+    );
+    self.bird_sprite = Some(sprite);
     self.bird = Some(bird);
   }
 
@@ -380,7 +391,8 @@ impl GameScene {
 
     // Switch to hurt animation when dead
     if !is_alive
-      && let Some(mut controller) = ctx.world.get_mut::<AnimationController>(bird_entity)
+      && let Some(sprite) = self.bird_sprite
+      && let Some(mut controller) = ctx.world.get_mut::<AnimationController>(sprite)
       && controller.current_state() != Some("hurt")
     {
       controller.set_state("hurt");

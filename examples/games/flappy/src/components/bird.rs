@@ -4,9 +4,11 @@ use ryo2d::prelude::*;
 
 use crate::constants::*;
 
-/// Create an AnimationController for the bird with flap and hurt animations
+/// Create an AnimationController for the bird with flap and hurt animations.
+/// Its frames are `BIRD_RASTER_SCALE` times the bird's size: draw them on an
+/// entity scaled by its inverse.
 pub fn create_bird_animation_controller() -> AnimationController {
-  let size = BIRD_SIZE as u32;
+  let size = (BIRD_SIZE * BIRD_RASTER_SCALE) as u32;
 
   // Load sprite frames
   let flap_up = SpriteHandle::from_sprite(
