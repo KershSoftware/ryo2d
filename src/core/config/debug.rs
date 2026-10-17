@@ -315,8 +315,12 @@ pub struct SmoothedFrameTimings {
   pub present_ms: f64,
   /// Smoothed total work time in milliseconds (excludes sleep/vsync wait)
   pub total_ms: f64,
-  /// Smoothed FPS from wall-clock frame-to-frame time (includes sleep/vsync)
+  /// FPS from the smoothed wall-clock time between frames (includes
+  /// sleep/vsync)
   pub fps: f64,
+  /// Smoothed wall-clock time between frames, in seconds (0 before the
+  /// second frame)
+  frame_secs: f64,
   /// Smoothing factor (0.0 = no change, 1.0 = instant update)
   alpha: f64,
   /// Tracks wall-clock time between update() calls for real FPS measurement
@@ -331,6 +335,7 @@ impl Default for SmoothedFrameTimings {
       present_ms: 0.0,
       total_ms: 0.0,
       fps: 0.0,
+      frame_secs: 0.0,
       alpha: 0.02, // Smooth over ~50 frames for stable display
       last_update: None,
     }
@@ -344,6 +349,11 @@ impl SmoothedFrameTimings {
   /// FPS is measured from wall-clock time between consecutive `update()` calls,
   /// so it includes sleep/vsync wait and reflects actual rendered frames per second.
   pub fn update(&mut self, raw: &FrameTimings) {
+    self.update_at(raw, Instant::now());
+  }
+
+  /// [`update`](Self::update) with the frame ending at `now`
+  fn update_at(&mut self, raw: &FrameTimings, now: Instant) {
     let update_ms = raw.update.as_secs_f64() * 1000.0;
     let render_ms = raw.render.as_secs_f64() * 1000.0;
     let present_ms = raw.present.as_secs_f64() * 1000.0;
@@ -355,13 +365,19 @@ impl SmoothedFrameTimings {
     self.present_ms = self.alpha * present_ms + (1.0 - self.alpha) * self.present_ms;
     self.total_ms = self.alpha * total_ms + (1.0 - self.alpha) * self.total_ms;
 
-    // FPS from real wall-clock time between frames (includes sleep/vsync)
-    let now = Instant::now();
+    // FPS from the real wall-clock time between frames (includes
+    // sleep/vsync). The time is averaged, not the rate: vsync often hands
+    // out frames in bursts, and averaging 1/dt over a short gap and a long
+    // one counts far more frames than were drawn.
     if let Some(last) = self.last_update {
       let real_dt = now.duration_since(last).as_secs_f64();
-      if real_dt > 0.0 {
-        let instantaneous_fps = 1.0 / real_dt;
-        self.fps = self.alpha * instantaneous_fps + (1.0 - self.alpha) * self.fps;
+      self.frame_secs = if self.frame_secs > 0.0 {
+        self.alpha * real_dt + (1.0 - self.alpha) * self.frame_secs
+      } else {
+        real_dt
+      };
+      if self.frame_secs > 0.0 {
+        self.fps = 1.0 / self.frame_secs;
       }
     }
     self.last_update = Some(now);
@@ -595,6 +611,22 @@ pub fn render_stats(ui: &mut UiContext, stats: &SmoothedDebugStats, screen_heigh
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn fps_averages_the_frame_time_not_the_frame_rate() {
+    // Vsync often hands frames out in pairs: one 1 ms after the last, the
+    // next 15.67 ms later. That is two frames every 16.67 ms: 120 a second.
+    let mut timings = SmoothedFrameTimings::default();
+    let raw = FrameTimings::default();
+    let mut now = Instant::now();
+    for frame in 0..2000 {
+      let gap = if frame % 2 == 0 { 1_000 } else { 15_667 };
+      now += Duration::from_micros(gap);
+      timings.update_at(&raw, now);
+    }
+    // The average ripples a little (about 2%) as the gaps alternate
+    assert!((timings.fps - 120.0).abs() < 3.0, "fps {}", timings.fps);
+  }
 
   #[cfg(feature = "default-fonts")]
   #[test]
