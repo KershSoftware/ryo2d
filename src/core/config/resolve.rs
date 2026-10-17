@@ -94,8 +94,11 @@ pub(crate) struct StoredPreferences {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedSettings {
   pub title: String,
-  /// The pixel-art target, or the main camera's design area
+  /// The fit or pixel-art resolution, or (when no layer set one) the main
+  /// camera's design area
   pub resolution: (u32, u32),
+  /// Whether a layer set `resolution`: the game then fits it to the window
+  pub resolution_set: bool,
   /// Whether `resolution` is a pixel-art target
   pub pixel_art: bool,
   /// The window's logical size, when a layer or the player picked one
@@ -126,6 +129,7 @@ impl ResolvedSettings {
     ResolvedSettings {
       title: DEFAULT_TITLE.to_string(),
       resolution: DEFAULT_RESOLUTION,
+      resolution_set: false,
       pixel_art: false,
       window_size: None,
       display_mode: DisplayMode::Windowed,
@@ -149,13 +153,14 @@ impl ResolvedSettings {
     }
   }
 
-  /// How the world reaches the window.
+  /// How the world reaches the window: pixel art, a fit of the resolution a
+  /// layer set, or resolution independent.
   pub(crate) fn presentation(&self) -> Presentation {
+    let (width, height) = self.resolution;
     if self.pixel_art {
-      Presentation::PixelArt {
-        width: self.resolution.0,
-        height: self.resolution.1,
-      }
+      Presentation::PixelArt { width, height }
+    } else if self.resolution_set {
+      Presentation::Fit { width, height }
     } else {
       Presentation::ResolutionIndependent
     }
@@ -215,6 +220,7 @@ pub(crate) fn resolve_settings(
 
   set(&mut s.title, builder.title.clone());
   set(&mut s.resolution, builder.resolution);
+  s.resolution_set = project.resolution.is_some() || builder.resolution.is_some();
   set(&mut s.pixel_art, builder.pixel_art);
   if builder.window_size.is_some() {
     s.window_size = builder.window_size;

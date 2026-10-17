@@ -261,7 +261,7 @@ assets = "assets"
 # =============================================================================
 
 [system]
-resolution = "1280x720"
+resolution = "1280x720"   # the game's canvas, scaled to fit the window
 # pixel_art = true    # render into the resolution, scaled by a whole number (crisp pixel art)
 vsync = true
 display_mode = "windowed"
@@ -370,9 +370,9 @@ impl Scene for GameScene {
 }
 
 fn main() {
-  // Resolution-independent: the world renders at the window's size and the
-  // camera keeps 1280x720 world units in view. For pixel art, use
-  // `.pixel_art(320, 180)` instead: a fixed target scaled by whole numbers.
+  // A 1280x720 canvas, drawn at the window's resolution and scaled to fit
+  // it. For pixel art, use `.pixel_art(320, 180)` instead: a fixed target
+  // scaled by whole numbers.
   let engine = EngineBuilder::new()
     .resolution(1280, 720)
     .fixed_hz(60)

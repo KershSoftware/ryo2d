@@ -70,7 +70,8 @@ impl Filter {
   pub(crate) fn resolve(self, presentation: Presentation) -> Sampling {
     match (self, presentation) {
       (Filter::Nearest, _) | (Filter::Default, Presentation::PixelArt { .. }) => Sampling::Nearest,
-      (Filter::Linear, _) | (Filter::Default, Presentation::ResolutionIndependent) => {
+      (Filter::Linear, _)
+      | (Filter::Default, Presentation::ResolutionIndependent | Presentation::Fit { .. }) => {
         Sampling::Linear
       }
     }
@@ -186,6 +187,11 @@ mod tests {
     let independent = Presentation::ResolutionIndependent;
     assert_eq!(Filter::Default.resolve(pixel_art), Sampling::Nearest);
     assert_eq!(Filter::Default.resolve(independent), Sampling::Linear);
+    let fit = Presentation::Fit {
+      width: 320,
+      height: 180,
+    };
+    assert_eq!(Filter::Default.resolve(fit), Sampling::Linear);
     assert_eq!(Filter::Linear.resolve(pixel_art), Sampling::Linear);
     assert_eq!(Filter::Nearest.resolve(independent), Sampling::Nearest);
   }

@@ -504,6 +504,30 @@ fn the_default_is_resolution_independent_and_resizable() {
 }
 
 #[test]
+fn a_resolution_fits_the_window() {
+  let r = EngineBuilder::new()
+    .resolution(1920, 1080)
+    .start_scene(EmptyScene)
+    .resolve_in(None, false);
+  assert_eq!(
+    r.config.presentation,
+    Presentation::Fit {
+      width: 1920,
+      height: 1080
+    }
+  );
+  assert_eq!((r.config.width, r.config.height), (1920, 1080));
+}
+
+#[test]
+fn without_a_resolution_the_game_is_resolution_independent() {
+  let r = EngineBuilder::new()
+    .start_scene(EmptyScene)
+    .resolve_in(None, false);
+  assert_eq!(r.config.presentation, Presentation::ResolutionIndependent);
+}
+
+#[test]
 fn pixel_art_sets_the_presentation_and_the_resolution() {
   let r = EngineBuilder::new()
     .pixel_art(320, 180)

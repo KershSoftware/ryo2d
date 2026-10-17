@@ -16,7 +16,7 @@ The engine draws every frame through one `RenderPipeline` (a resource, `RenderPi
 | 8 | `TRANSITION` | frame | a transition fade is visible | scene transition fade over the whole frame (not the UI) |
 | 9 | `POST_PROCESS` | frame | display effects are active | fade, tint, vignette, flash, CRT, chromatic aberration and display custom effects on the display image |
 | 10 | `UI` | frame | the UI recorded something | draws the frame's UI commands into the UI image (the UI camera, `UI_FORMAT`) |
-| 11 | `COMPOSITE` | frame | always | to the window or offscreen target through `ScreenMapping` (bars for pixel art), UI blended last in sRGB space |
+| 11 | `COMPOSITE` | frame | always | to the window or offscreen target through `ScreenMapping` (bars for fit and pixel art), UI blended last in sRGB space |
 | 12 | `CAPTURE` | frame | a capture was requested | frame capture readback copy |
 
 ## Images and Formats
@@ -130,7 +130,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 - **The UI is composited only if the `ui` pass drew this frame** (`RenderContext::ui_drawn`). The UI image is persistent; without that flag a disabled or skipped `ui` pass would blend the previous frame's UI. Otherwise the composite binds a transparent 1x1 image and its uniform says no UI.
 - **The UI draws in gamma space, after everything else.** The `ui` pass draws the UI camera into its own image, after tonemapping and post-processing, so effects never touch it and its alpha blends in sRGB space, as designers expect.
 - **A capture is read back only if the `capture` pass ran.** Otherwise `render_frame` reports `CaptureError::Readback` rather than returning a stale image.
-- **Scene images follow the render size** (`ScreenMapping::render_size`: the window's physical size, or the pixel-art target); the lit texture is persistent. Camera images and light targets follow their camera's image size.
+- **Scene images follow the render size** (`ScreenMapping::render_size`: the window's physical size, the fit's scaled size, or the pixel-art target); the lit texture is persistent. Camera images and light targets follow their camera's image size.
 - **Images are premultiplied.** A camera image clears to a premultiplied colour (transparent for `CameraClear::None`) and sprites blend over it, so the `cameras` pass places images with premultiplied blending.
 - **The fade** is the `transition` pass (colour and opacity from `FrameScene::overlay`): it copies the frame and mixes toward the colour in sRGB; blending in linear light held bright areas back and then snapped at the end.
 

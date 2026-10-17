@@ -92,8 +92,8 @@ pub struct EngineConfig {
   pub fixed_hz: u32,
   pub physics: PhysicsConfig,
   pub debug: DebugConfig,
-  /// How the world reaches the window (`width`x`height` is the pixel-art
-  /// target in [`Presentation::PixelArt`])
+  /// How the world reaches the window (`width`x`height` is the canvas in
+  /// [`Presentation::Fit`] and the target in [`Presentation::PixelArt`])
   pub presentation: Presentation,
   /// The window's initial logical size; `None` picks one from the resolution
   pub window_size: Option<(u32, u32)>,
@@ -1076,8 +1076,11 @@ impl EngineBuilder {
     self
   }
 
-  /// Set the game resolution (with `pixel_art = true` in Ryo.toml, the
-  /// pixel-art target). Overrides Ryo.toml.
+  /// Set the game's resolution: screen space is `width`x`height`, drawn at
+  /// the window's resolution and scaled by any factor to fit it, centred
+  /// with bars where the aspect ratios differ ([`Presentation::Fit`]; with
+  /// `pixel_art = true` in Ryo.toml, the pixel-art target). Without one the
+  /// game is resolution independent. Overrides Ryo.toml.
   pub fn resolution(mut self, width: u32, height: u32) -> Self {
     self.overrides.resolution = Some((width, height));
     self
@@ -1134,8 +1137,9 @@ impl EngineBuilder {
     self
   }
 
-  /// The window's initial logical size (by default the resolution, or for
-  /// pixel art the largest whole multiple that fits 1280x720). A saved
+  /// The window's initial logical size (by default the resolution, shrunk to
+  /// fit 1280x720 when larger, or for pixel art the largest whole multiple
+  /// that fits 1280x720). A saved
   /// resolution preference overrides it when the `with_user_preferences`
   /// filter includes it.
   pub fn window_size(mut self, width: u32, height: u32) -> Self {

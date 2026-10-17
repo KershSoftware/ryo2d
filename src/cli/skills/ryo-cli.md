@@ -45,7 +45,7 @@ title = "My Game"
 version = "0.1.0"
 
 [system]
-resolution = "1280x720"   # the design area (resolution-independent) or, with pixel_art, the target
+resolution = "1280x720"   # the game's canvas, scaled to fit the window (with pixel_art, the target)
 # pixel_art = true         # render into the resolution, scaled by a whole number with bars
 
 [debug]

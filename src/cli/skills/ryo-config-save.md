@@ -59,7 +59,7 @@ save_data = "data"          # dev save folder
 assets = "assets"
 
 [system]                    # defaults for player settings
-resolution = "1280x720"
+resolution = "1280x720"    # the game's canvas, scaled to fit the window
 pixel_art = false           # true: resolution is a pixel-art target, scaled by whole numbers
 vsync = true
 display_mode = "windowed"   # windowed | exclusive_fullscreen | borderless_fullscreen

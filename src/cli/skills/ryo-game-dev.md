@@ -669,10 +669,11 @@ Resolution comes from `Ryo.toml` (`[system] resolution`) or `EngineBuilder::reso
 
 | `Presentation` | Behaviour |
 |--------------|-----------|
-| `ResolutionIndependent` (default) | Renders at the window's physical resolution (sharp on HiDPI); the resolution is the design area the main camera keeps in view (`Projection::Fit`), so a wider window shows more world at the sides; screen space (UI, mouse) is the window in logical pixels |
+| `Fit { width, height }` (a resolution is set) | Screen space (world view, UI, mouse) is the resolution; the frame renders at the window's physical resolution, scaled by any factor to fit and centred with bars where the aspect ratios differ, so it fills a full-screen window and stays sharp |
 | `PixelArt { width, height }` | Renders into that target, scaled by a whole number and centred with bars, nearest sampling, sprites snapped to whole target pixels (`EngineBuilder::pixel_art(w, h)` or `pixel_art = true` in `[system]`); screen space is the target |
+| `ResolutionIndependent` (no resolution set) | Renders at the window's physical resolution; the main camera keeps 1280x720 world units in view (`Projection::Fit`), so a wider window shows more world at the sides; screen space (UI, mouse) is the window in logical pixels |
 
-Choose pixel art for low-resolution art that must stay crisp and grid-aligned (every pixel the same size); choose resolution-independent for everything else (smooth scaling, rotation and zoom at any window size).
+Choose a resolution (fit) for most games: one fixed canvas, laid out once, filling any window. Choose pixel art for low-resolution art that must stay crisp and grid-aligned (every pixel the same size). Leave the resolution unset when screen space should be the window's own pixels (a UI that reflows, a tool).
 
 `EngineBuilder::window_size(w, h)` sets the window's initial size and `resizable(bool)` whether the player can resize it. A saved `resolution` preference picks the window size, not the game's. `DisplayMode` (`Windowed`, `ExclusiveFullscreen`, `BorderlessFullscreen`) is how the window appears: `ctx.request_display_mode(DisplayMode::BorderlessFullscreen)`. Builder overrides (`resolution`, `pixel_art`, `window_size`, `target_fps`, `vsync`, `fixed_hz`) beat `Ryo.toml`; saved player preferences beat both when `with_user_preferences` includes them (`ryo-config-save`).
 
