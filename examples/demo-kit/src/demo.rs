@@ -28,6 +28,8 @@ pub(crate) struct DemoDef {
 pub struct Demo {
   title: String,
   resolution: Option<(u32, u32)>,
+  /// The resolution fits the window by any factor rather than whole numbers
+  fit: bool,
   configure: Vec<Configure>,
   pages: Vec<PageFactory>,
   start: usize,
@@ -38,6 +40,7 @@ impl Demo {
     Self {
       title: title.into(),
       resolution: None,
+      fit: false,
       configure: Vec::new(),
       pages: Vec::new(),
       start: 0,
@@ -48,6 +51,16 @@ impl Demo {
   /// the window)
   pub fn resolution(mut self, width: u32, height: u32) -> Self {
     self.resolution = Some((width, height));
+    self.fit = false;
+    self
+  }
+
+  /// The canvas the demo draws on, at the window's resolution and scaled by
+  /// any factor to fill it (for demos that are not pixel art, or whose
+  /// canvas is larger than the window)
+  pub fn fit(mut self, width: u32, height: u32) -> Self {
+    self.resolution = Some((width, height));
+    self.fit = true;
     self
   }
 
@@ -104,7 +117,11 @@ impl Demo {
     });
     let mut builder = EngineBuilder::new().title(format!("Ryo2D - {}", def.title));
     if let Some((width, height)) = self.resolution {
-      builder = builder.pixel_art(width, height);
+      builder = if self.fit {
+        builder.resolution(width, height)
+      } else {
+        builder.pixel_art(width, height)
+      };
     }
     for configure in self.configure {
       builder = configure(builder);

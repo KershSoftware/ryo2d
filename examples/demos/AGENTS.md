@@ -34,7 +34,7 @@ use demo_kit::prelude::*;
 
 fn main() {
   Demo::new("Bloom")
-    .resolution(960, 640)
+    .resolution(960, 640) // pixel art: whole-number scaling; `.fit(w, h)` scales by any factor
     .configure(|b| b.fixed_hz(144)) // any other EngineBuilder setting
     .page(Glow::default)
     .run();

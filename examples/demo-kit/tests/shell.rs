@@ -171,6 +171,26 @@ fn brackets_and_page_keys_change_pages_and_wrap() {
 }
 
 #[test]
+fn a_fit_demo_scales_its_canvas_to_any_window() {
+  let shared = Shared::default();
+  let only = shared.clone();
+  let demo = Demo::new("Fit")
+    .fit(640, 360)
+    .page(move || Probe::new("only", &only));
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  assert_eq!(
+    engine.world().resource::<ScreenMapping>().presentation(),
+    Presentation::Fit {
+      width: 640,
+      height: 360
+    }
+  );
+}
+
+#[test]
 fn page_keys_do_nothing_with_one_page() {
   let shared = Shared::default();
   let only = shared.clone();
