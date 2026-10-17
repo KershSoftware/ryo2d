@@ -504,6 +504,15 @@ fn the_default_is_resolution_independent_and_resizable() {
 }
 
 #[test]
+fn the_banner_says_what_sets_the_frame_rate() {
+  assert_eq!(
+    frame_rate_summary(true, 144),
+    "vsync on: frames follow the display's refresh rate"
+  );
+  assert_eq!(frame_rate_summary(false, 144), "vsync off: up to 144 fps");
+}
+
+#[test]
 fn a_resolution_fits_the_window() {
   let r = EngineBuilder::new()
     .resolution(1920, 1080)

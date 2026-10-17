@@ -154,6 +154,16 @@ type WorldSetup = Box<dyn FnOnce(&mut World)>;
 #[derive(Resource)]
 pub(crate) struct QuitRequested;
 
+/// What sets the frame rate: with vsync on the display's refresh rate
+/// (`target_fps` is not used), with it off `target_fps`
+pub(crate) fn frame_rate_summary(vsync: bool, target_fps: u32) -> String {
+  if vsync {
+    "vsync on: frames follow the display's refresh rate".to_string()
+  } else {
+    format!("vsync off: up to {target_fps} fps")
+  }
+}
+
 /// The main engine struct
 pub struct Engine {
   config: EngineConfig,
@@ -687,11 +697,15 @@ impl Engine {
       return self.run_offscreen();
     }
 
-    Self::print_startup_banner(&self.config);
+    Self::print_startup_banner(&self.config, self.vsync);
 
     engine_info!(module: "Init", "Initializing {}...", self.config.title);
     engine_info!(module: "Init", "Resolution: {}x{}", self.config.width, self.config.height);
-    engine_info!(module: "Init", "Target FPS: {}", self.config.target_fps);
+    engine_info!(
+      module: "Init",
+      "Frame rate: {}",
+      frame_rate_summary(self.vsync, self.config.target_fps)
+    );
 
     let event_loop = EventLoop::<EngineEvent>::with_user_event()
       .build()
@@ -796,14 +810,16 @@ impl Engine {
   }
 
   /// Print startup banner to console with useful info.
-  fn print_startup_banner(config: &EngineConfig) {
+  fn print_startup_banner(config: &EngineConfig, vsync: bool) {
     let version = env!("CARGO_PKG_VERSION");
 
     println!();
     println!("  {} | Ryo2D v{}", config.title, version);
     println!(
-      "  {}x{} @ {}fps",
-      config.width, config.height, config.target_fps
+      "  {}x{} | {}",
+      config.width,
+      config.height,
+      frame_rate_summary(vsync, config.target_fps)
     );
     println!();
     println!("  `      Developer console");

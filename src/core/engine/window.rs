@@ -421,6 +421,14 @@ impl ApplicationHandler<EngineEvent> for Engine {
       }
     }
 
+    // With vsync on this is the frame rate, whatever target_fps says
+    if let Some(refresh) = window
+      .current_monitor()
+      .and_then(|monitor| monitor.refresh_rate_millihertz())
+    {
+      engine_info!(module: "Init", "Display refresh: {:.0} Hz", f64::from(refresh) / 1000.0);
+    }
+
     window.set_ime_allowed(true);
     if let Some(icon) = Self::load_window_icon(self.config.icon_path.as_deref()) {
       window.set_window_icon(Some(icon));
