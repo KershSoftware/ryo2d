@@ -55,7 +55,12 @@ Module layout: `src/core/ui/nodes/`:
 - `draw.rs` holds the walk;
 - `events.rs` holds `UiEvent`.
 
-Nothing outside `nodes/` changes except the call in `ui_pass`, the scene-exit despawn, `ui.node` (Mixing) and the prelude.
+Nothing outside `nodes/` changes except:
+- the call in `ui_pass`;
+- the scene-exit despawn;
+- the `SceneContext` and `UiHarness` methods;
+- one container option, `.background(Color)` (Drawing);
+- the prelude.
 
 ## The tree value
 
@@ -80,24 +85,39 @@ Nothing outside `nodes/` changes except the call in `ui_pass`, the scene-exit de
 | `UiNode::confirm(title, message, yes, no)` | `ui.confirm_with` | a modal root (Modals and dialogs) |
 | `UiNode::popup(anchor_name)` | `ui.popup` | a popup root (Modals and dialogs) |
 
-- **Kind options** are the closure builders' own: a column's `gap`, `padding` and `align`; a grid's `tracks`; a scroll's axes; a slider's `step`, `show_value` and `label`; a text field's `placeholder`, `max_len` and `password`; a slot's `icon`, `count`, `selected` and `filter`; a text's `typewriter(TextReveal)`, which inserts the `TextReveal` component so the game can `finish()` a line; a rebind row's `label` and `slot`; a choice list's `default`; a button's `icon` and `variant`.
+- **Kind options** are the closure builders' own:
+  - a column's `gap`, `padding` and `align`; a grid's `tracks`; a scroll's axes;
+  - a slider's `step`, `show_value` and `label`;
+  - a text field's `placeholder`, `max_len` and `password`;
+  - a slot's `icon`, `count`, `selected` and `filter`;
+  - a text's `typewriter(TextReveal)`, which inserts the `TextReveal` component so the game can `finish()` a line;
+  - a rebind row's `label` and slot; a choice list's default; a button's `icon` and `variant`.
+- **Names that mean two things.** `UiNode` is one type, so where a closure name means two things, the node option is renamed:
+  - a text's `.text_align(TextAlign)` (`.align` is a container's);
+  - an image's `.image_size(w, h)` (`.size` is a text's);
+  - a rebind row's `.binding_slot(n)` (`slot` is a constructor);
+  - a choice list's `.default_choice(i)`.
+  Text is plain unless `.markup()`. Theme text roles (`.role(TextRole)`, `.heading()`) and the palette's muted colour (`.muted()`) are read when the text is drawn.
 - **Shared options** are 4b's `widget_builders!` and container options under the same names:
-  - layout: `width`, `height`, `fill_width`, `margin`, `anchor`, `offset`, `grow`, `min_width`, `max_width`, `at`;
+  - layout: `width`, `height`, `fill_width`, `margin`, `anchor`, `offset`, `grow`, `min_width`, `max_width`, `at`, and on containers `padding`, `gap`, `align`, `justify` and `background(Color)`;
   - focus: `focus_scope`, `trap`, `wrap_focus`, `default_focus`, `nav_skip`, `focusable`;
   - drag and drop: `drag_source`, `drop_target`;
-  - other: `tooltip` and `enabled`.
+  - other: `tooltip` (a `UiTooltip` component, so the game can change it) and `enabled`.
+  An option the node's kind does not take is warned once at spawn.
 - **Node-only options:**
   - `action("play")`: the action name its events carry;
   - `name("gold-label")`: a `UiName` to find it by;
   - `hidden()`: spawns it hidden;
-  - on a root, `modal()` and `embedded()` (Modals and dialogs, Mixing);
+  - `modal()` on any container node, and `embedded()` on a root (Modals and dialogs, Mixing);
   - `insert(component)`: attaches any game component to that node's entity;
   - `child(node)` and `children(iter)`.
-- **Explicit neighbours.** 4b's `nav_up(UiId)` and the other neighbour options take ids, which a node does not have before it is spawned. They take a node name instead (`nav_down("quit")`), resolved within the same root when the tree is spawned.
+- **Explicit neighbours.** 4b's `nav_up(UiId)` and the other neighbour options take ids, which a node does not have before it is spawned. They take a node name instead (`nav_down("quit")`), resolved within the same root when the tree is spawned, and drawn with the named node's last id (from the tree's second frame).
 
 ## Spawning and ownership
 
-`ctx.spawn_ui(tree) -> Entity` spawns the tree at once and returns the root entity. The root carries a `UiRoot` component and the placement a top-level closure container takes: `anchor` and `offset`, or `at(rect)`. Every node is an entity with `ChildOf` its parent, its `UiNodeKind`, its options and its state components. Children keep the order they were given in, and the walk follows `Children`.
+`ctx.spawn_ui(tree) -> Entity` spawns the tree at once and returns the root entity. The root carries a `UiRoot` component with the placement a top-level closure container takes, as public fields the game may change: `anchor` and `offset`, or `at(rect)`. Every node is an entity with `ChildOf` its parent, its `UiNodeKind`, its options and its state components. Children keep the order they were given in, and the walk follows `Children`.
+
+`ctx.spawn_ui_in(parent, tree)` adds a subtree as the last child of an existing node. A dialogue swaps its choices this way.
 
 - **A root belongs to the scene that spawned it.** `UiRoot` holds the scene's scope id (from `SceneContext`), and only that scene's UI pass draws it, by the same top-scene rules as closure UI: a lower scene's nodes draw but get no input.
 - **Exit despawns.** When a scene exits, `Engine::draw_ui` already drains `SceneManager::take_exited` into `UiMemory::forget_scene`. It also despawns every root owned by an exited scene, recursively, so a popped pause menu's nodes leave with it. A `Switch` with `SceneCleanup::WORLD` despawns them anyway, as game entities.
@@ -106,11 +126,11 @@ Nothing outside `nodes/` changes except the call in `ui_pass`, the scene-exit de
 
 ## Ids and widget state
 
-A node's `UiId` is made from its entity under its scene's root scope: a hash of the scene scope and the entity's index and generation, the same way `.id(key)` keys a closure widget. So:
+A node's `UiId` is made by its builder keyed by its entity (`.id(entity)`, or `ui.scope(entity, ..)` for text, separators and spacers), under its parent's id, the way `.id(key)` keys a closure widget. The walk records it in the node's `UiInteraction`. So:
 
 - **State persists.** Focus memory, a scroll offset, an open list, a text field's caret, a tooltip timer and the other `UiMemory` state persist for the node's lifetime. They survive siblings being added, removed or reordered, because the entity, not the position, is the key.
 - **Forgotten on despawn.** A despawned node's state is forgotten like any widget that stops being drawn. A new entity in the same slot has a new generation, so it never inherits it.
-- **Ids from code.** `ctx.ui_id(entity) -> Option<UiId>` gives a node's id, so code can `request_focus`, `scroll_to` or name it as a neighbour in closure UI. `ctx.focus_ui(entity)` is the shorthand for focusing a node.
+- **Ids from code.** `ctx.ui_id(entity) -> Option<UiId>` gives a node's id once it has been drawn, so code can `request_focus`, `scroll_to` or name it as a neighbour in closure UI. `ctx.focus_ui(entity)` is the shorthand for focusing a node; it applies when the node is next drawn. Re-parenting a node changes its id.
 - **Respawns lose state.** Ids that survive a respawn are 4d's concern: a file's node keys will key their nodes, as `.id(key)` does.
 
 ## Drawing (the walk)
@@ -119,21 +139,27 @@ For each of the scene's roots, `draw_nodes` places the root by its placement and
 
 - **Containers.** A container node opens its builder with its options (an `.at` root, an anchored root, or a child inside its parent's flow), walks its children inside the builder's closure, and closes it. Focus scopes, traps, clips and scroll areas are therefore the builders' own.
 - **Widgets.** A widget node calls its widget with its state components. A checkbox borrows `UiChecked`'s `bool`, a slider `UiValue`'s `f32`, a dropdown `UiIndex`'s `usize` with its `UiOptions`, and a text field `UiTextValue`'s `String`, just as a closure passes `&mut` game data.
-- **Hidden and disabled.** A node with `UiHidden` is skipped with its subtree, and records nothing, so it takes no input and leaves the focus chain. A node with `UiDisabled` is drawn with `enabled(false)`.
+- **Hidden and disabled.** A node with `UiHidden` is skipped with its subtree, and records nothing, so it takes no input and leaves the focus chain. A widget with `UiDisabled` is drawn with `enabled(false)` (containers have no `enabled`).
+- **Backgrounds.** A scene's nodes draw before its closure, so a closure's full-screen `draw_rect` would cover them. Containers therefore gain `.background(Color)` in both styles: a plain fill of the container's rect behind its children.
 
 The walk reads and writes components while the builders hold the UI context. Both are available in `ui_pass` (`world`, `ui`). For a widget, the walk takes the node's state components out, calls the builder, and puts them back. Containers hold no state components, so nothing is borrowed while a container's children are walked.
 
 ## Mixing with closure UI
 
 - **Side by side.** A scene's roots draw before its `ui` closure runs, so closure UI draws above them in the same layer, and the two share the scene's focus, layout memory and hit testing. A HUD closure around a node-built menu, or the reverse, just works.
-- **Embedded.** A root spawned with `.embedded()` is not drawn on its own. Instead, `ui.node(root, ctx)` draws it at that point, inside the closure's open container, in that container's flow, focus scope and clip. A closure screen can hold a reusable node subtree, such as an inventory grid, with one focus path through both. Drawing an embedded root twice in a frame warns once and draws it once.
+- **Embedded.** A root spawned with `.embedded()` is not drawn on its own. Instead, `ui.node(root, ctx.world)` draws it at that point, inside the closure's open container, in that container's flow, focus scope and clip. It takes the world rather than the context so it works in `UiHarness` too. A closure screen can hold a reusable node subtree, such as an inventory grid, with one focus path through both. Drawing an embedded root twice in a frame warns once and draws it once. An embedded tree's events are delivered after the scene's `ui` returns: `update` reads them that frame, and `ui` the next.
 
 ## State components (the data)
 
-A node's state is a set of public components, all prefixed `Ui` so they never clash with a game's own names. That covers the state components above: `UiLabel`, `UiImage`, `UiChecked`, `UiValue`, `UiIndex`, `UiOptions`, `UiTextValue` and `UiSlot`, plus the markers `UiName`, `UiHidden` and `UiDisabled`. They hold the data both ways:
+A node's state is a set of public components, all prefixed `Ui` so they never clash with a game's own names. That covers:
+- the state components above: `UiLabel`, `UiImage`, `UiChecked`, `UiValue`, `UiIndex`, `UiOptions`, `UiTextValue`, `UiSlot` and `UiTooltip`;
+- the markers `UiName`, `UiHidden` and `UiDisabled`;
+- `UiInteraction`, which the walk keeps current: the node's id, and whether it is hovered or focused. An inventory's details panel follows the hovered slot with it.
+
+They hold the data both ways:
 
 - **Game to UI:** a system or `update` changes a node's component (`ctx.world.get_mut::<UiLabel>(gold)` and set the text), and the next UI pass draws the new value. Inserting or removing `UiHidden` or `UiDisabled` hides or disables a node.
-- **UI to game:** when a widget changes its value (the player ticks a box, drags a slider, picks an option, types), the walk writes the new value into the component and sends a `Changed` event. The game can react to the event or just read the component when it needs it.
+- **UI to game:** when a widget changes its value (the player ticks a box, drags a slider, picks an option, types), the walk writes the new value into the component and sends a `Changed` event. The game can react to the event or just read the component when it needs it. The walk writes a component only when it changed, so `Changed<UiValue>` filters mean a real change. A value the game sets outside a widget's range is drawn clamped and kept until the player changes it.
 - **Finding nodes:**
   - `ctx.find_ui(name) -> Option<Entity>` finds a node by `UiName` under the scene's roots;
   - `ctx.find_ui_in(root, name)` searches within one tree;
@@ -149,6 +175,7 @@ pub struct UiEvent {
   pub name: Option<String>,   // the node's UiName
   pub action: Option<String>, // the node's action
   pub kind: UiEventKind,
+  // and a crate-private scene, for ctx.ui_events(); patterns use `..`
 }
 
 pub enum UiEventKind {
@@ -163,7 +190,12 @@ pub enum UiEventKind {
 }
 ```
 
-- **As a message.** `UiEvent` is a message, read with `ctx.messages::<UiEvent>()`. The UI pass runs before the frame's fixed steps, so `update` reads a frame's events in the same frame. A game matches on `action` for menus (`"resume"`, `"quit"`), on `node` or a game component for instances, or on `name`.
+- **As a message.** `UiEvent` is a message. `ctx.ui_events()` reads the events of the scene's own nodes. `ctx.messages::<UiEvent>()` reads every scene's, and shares its cursor, so a scene uses one or the other. The UI pass runs before the frame's fixed steps, so `update` reads a frame's events in the same frame, and so does the scene's `ui`, which runs after its trees are walked. A game matches on `action` for menus (`"resume"`, `"quit"`), on `node` or a game component for instances, or on `name`.
+- **Which kinds send what:**
+  - value widgets (checkbox, toggle, radio group, slider, text field, dropdown, tabs) send `Changed`;
+  - buttons, images, slots and containers send `Clicked`;
+  - a text field also sends `Submitted`;
+  - any node sends `SecondaryClicked`, and any focusable one `FocusGained` and `FocusLost`.
 - **As an entity event.** The same event triggers on the node (`EntityEvent`, which the ECS kernel exports), for games that attach an observer to one node: `ctx.world.entity_mut(button).observe(|event: On<UiEvent>, ..| ..)`.
 - **Drag and drop.** A node's drag payload is its own entity. A drop target node's `Dropped` event names the source node, and the game maps it to its item. `ui.held::<Entity>()` reads the node being dragged. Nodes use 4b's drag and drop as it is: ghost, refusal, gamepad pick-up and drop.
 - **Choice lists** send `Clicked` with the chosen index in `UiIndex` (spawned with the list), so a dialogue reads the choice from the component.
@@ -188,35 +220,40 @@ It takes parameters, tags its nodes with game components or names, and is placed
 
 ## Modals and dialogs
 
-- **A `.modal()` root** draws through `ui.modal()`: the dim over the whole UI, the trap, opening on its `default_focus`, and Back. Back sends a `UiEvent` of kind `Back` with the root as its node and the root's action.
+- **A `.modal()` node** (any container node) draws through `ui.modal()`: the dim over the whole UI, the trap, opening on its `default_focus`, and Back. After a scene's trees are walked, Back goes to the last modal or popup node drawn, the innermost, as a `UiEvent` of kind `Back` with that node and its action. Node dialogs therefore answer Back before the scene's closure calls `ui.back()`.
 - **A ready-made confirm.** `UiNode::confirm(title, message, yes, no)` builds the same dialog as `ui.confirm_with`: a modal root, title, message, and buttons with the actions `"yes"` and `"no"`. It opens on No, and Back sends `Clicked` with the action `"no"`, as if No were pressed.
 - **Popups:** a `UiNode::popup(anchor_name)` root opens below the named node, as `ui.popup` does.
 
 ## Public API changes
 
-All additive; nothing in 4b's API changes.
+All additive. The only change to 4b's API is one new container option, `.background(Color)`.
 
 - **New types:**
-  - `UiNode` and its builders, including `UiNode::confirm` and `UiNode::popup`;
+  - `UiNode` and its builders, including `UiNode::confirm` and `UiNode::popup`, and `TextRole`;
   - `UiRoot`, `UiNodeKind`;
-  - the state components (`UiLabel`, `UiImage`, `UiChecked`, `UiValue`, `UiIndex`, `UiOptions`, `UiTextValue`, `UiSlot`) and the markers (`UiName`, `UiHidden`, `UiDisabled`);
+  - the state components (`UiLabel`, `UiImage`, `UiChecked`, `UiValue`, `UiIndex`, `UiOptions`, `UiTextValue`, `UiSlot`, `UiTooltip`), the markers (`UiName`, `UiHidden`, `UiDisabled`) and `UiInteraction`;
   - `UiEvent`, `UiEventKind`.
-- **`SceneContext`:** `spawn_ui(UiNode) -> Entity`, `find_ui(&str) -> Option<Entity>`, `find_ui_in(Entity, &str) -> Option<Entity>`, `ui_id(Entity) -> Option<UiId>`, `focus_ui(Entity)`.
-- **`UiContext`:** `node(root: Entity, ctx: &mut SceneContext) -> Response` (embedding).
-- **Testing:** `UiHarness` gains a world for node tests (Testing).
+- **`SceneContext`:**
+  - `spawn_ui(UiNode) -> Entity` and `spawn_ui_in(Entity, UiNode) -> Option<Entity>`;
+  - `find_ui(&str) -> Option<Entity>` and `find_ui_in(Entity, &str) -> Option<Entity>`;
+  - `ui_id(Entity) -> Option<UiId>` and `focus_ui(Entity)`;
+  - `ui_events() -> Vec<UiEvent>`.
+- **`UiContext`:** `node(root: Entity, world: &mut World) -> Response` (embedding).
+- **Containers:** `background(Color)`.
+- **Testing:** `UiHarness` gains a world: `spawn_ui`, `world`, `world_mut`, `find_ui`, `ui_id`, `events` and `frame_with_world` (Testing).
 - **Prelude:** all of the above.
 
 ## Games and demos
 
 - **The `ui` demo** gains five pages:
-  - **Node Menus, Node Settings, Node Inventory and Node Dialogue:** the four 4b acceptance pages built from node trees, with the same layout, behaviour and look. Each goes through the same acceptance walks as its closure version: mouse, keyboard and pad, with no `focus_ui` before a step.
+  - **Node Menus, Node Settings, Node Inventory and Node Dialogue:** the four 4b acceptance pages built from node trees, with the same layout, behaviour and look. Each goes through the same acceptance walks as its closure version: mouse, keyboard and pad, with no `focus_ui` before a step. They follow the eleven existing pages (indices 11 to 15 with Mixed), so the existing tests' page indices stand.
   - **Mixed:** a closure HUD around an embedded node grid, with one focus path from the closure's buttons into the grid and back.
-- **Breakout:** the menu, pause and quit-confirm screens move to node trees. The pause screen's volume sliders are slider nodes whose `UiValue` the game applies on `Changed`. Its HUD stays closure UI. Its pad menu test and the headless tests keep passing unchanged.
+- **Breakout:** the menu, pause and quit-confirm screens move to node trees, the menu's backdrop and colour blocks as containers with backgrounds. The pause screen's volume sliders are slider nodes whose `UiValue` the game applies on `Changed`. Its HUD stays closure UI. Its pad menu test and the headless tests keep passing unchanged.
 
 ## Testing
 
 - **Unit tests** (`nodes/`):
-  - `UiHarness` gains a world, so `draw_nodes` runs over spawned trees without a GPU.
+  - `UiHarness` gains a world, so `draw_nodes` runs over spawned trees without a GPU: its `frame` draws the harness scene's trees before the closure.
   - Every node kind: what it records (rect, flags, focus), its component write on a change, and its events (kind, action, name, order).
   - Hidden and disabled nodes.
   - Explicit neighbours by name.
@@ -226,7 +263,7 @@ All additive; nothing in 4b's API changes.
   - a popped scene's roots are despawned and a lower scene's nodes get no input;
   - `update` reads the frame's `UiEvent`s;
   - an observer on a node runs;
-  - a modal root traps focus and Back sends `"back"`.
+  - a modal root traps focus and Back sends a `Back` event with its action.
 - **Acceptance walks:** the four node pages with the 4b walks, and the Mixed page's focus path.
 - **Breakout:** the existing menu and pause tests, now driving nodes.
 - **A guard bench** (`benches/ui.rs`): the 200-widget settings screen built as nodes against the same screen as a closure. The node version stays within 10% of the closure version, and the number is 4e's baseline.
