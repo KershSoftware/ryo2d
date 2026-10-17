@@ -7,6 +7,12 @@ use ryo2d::prelude::*;
 
 use super::MenuScene;
 
+/// The pause menu's buttons: wide enough for "Quit to Desktop" in the
+/// game's font
+const MENU_BUTTON_WIDTH: f32 = 280.0;
+/// The settings dialog's Apply and Back buttons
+const DIALOG_BUTTON_WIDTH: f32 = 120.0;
+
 #[derive(Default)]
 pub struct PauseScene {
   settings_open: bool,
@@ -132,7 +138,7 @@ impl PauseScene {
           .align(TextAlign::Center);
         if ui
           .button("Resume")
-          .width(200.0)
+          .width(MENU_BUTTON_WIDTH)
           .height(40.0)
           .variant("pause-item")
           .default_focus()
@@ -142,7 +148,7 @@ impl PauseScene {
         }
         if ui
           .button("Settings")
-          .width(200.0)
+          .width(MENU_BUTTON_WIDTH)
           .height(40.0)
           .variant("pause-item")
           .clicked()
@@ -151,7 +157,7 @@ impl PauseScene {
         }
         if ui
           .button("Quit to Menu")
-          .width(200.0)
+          .width(MENU_BUTTON_WIDTH)
           .height(40.0)
           .variant("pause-item")
           .clicked()
@@ -160,7 +166,7 @@ impl PauseScene {
         }
         if ui
           .button("Quit to Desktop")
-          .width(200.0)
+          .width(MENU_BUTTON_WIDTH)
           .height(40.0)
           .variant("danger")
           .clicked()
@@ -195,13 +201,13 @@ impl PauseScene {
       ui.row().gap(10.0).justify(Justify::Center).show(|ui| {
         apply = ui
           .button("Apply")
-          .width(100.0)
+          .width(DIALOG_BUTTON_WIDTH)
           .height(35.0)
           .variant("pause-selected")
           .clicked();
         back = ui
           .button("Back")
-          .width(100.0)
+          .width(DIALOG_BUTTON_WIDTH)
           .height(35.0)
           .variant("danger")
           .clicked();
