@@ -168,7 +168,7 @@ let area = ui.scroll().height(300.0).fill_width().gap(4.0).show(|ui| {
 ```
 
 - Contents are laid out as a column (`.horizontal()` for a row, `.both()` for both ways) and shown through the view you size; they are clipped for drawing and for hits. `.no_bar()` hides the scrollbar.
-- **The wheel** goes to the scroll area under the pointer (the topmost thing there decides, so a panel or popup over a list keeps the wheel from it), innermost first: an area at its edge passes the wheel to the one around it. Shift scrolls sideways. Scrolling eases (0.08 s). A wheel a scroll area took never reaches gameplay.
+- **The wheel** goes to the scroll area under the pointer (the topmost thing there decides, so a panel or popup over a list keeps the wheel from it), innermost first: an area at its edge passes the wheel to the one around it. Shift scrolls sideways. Scrolling eases (0.08 s). The wheel over any of the top scene's UI never reaches gameplay, whether it scrolled anything or not (over a panel, a modal, or a list at its edge); over nothing it is the game's.
 - **The pad** walks a long list: focus moves onto rows scrolled out of view and scrolls them in, through nested areas too (a strip of cards inside a list is reached from the rows around it, and every area around the focused widget scrolls to show it). The right stick scrolls the focused widget's area, or the first area in its focus scope (a dialog's text above its Close button).
 - `ui.scroll_to(id)` brings a widget into view from the next frame; `ui.scroll_offset(area.id)` reads where an area shows from; `ui.set_scroll_offset(area.id, Vec2::new(0.0, 0.0))` jumps there without easing.
 
@@ -297,7 +297,7 @@ The UI pass runs before gameplay and consumes what it uses. What it consumed rea
 | Consumed | When |
 |---|---|
 | A mouse press, its held frames and its release | it landed on any top-scene widget, panel, popup or modal (`ui.wants_pointer()` is true) |
-| The wheel | a scroll area took it |
+| The wheel | the pointer is over any top-scene widget, panel, popup or modal, whether a scroll area moved or not |
 | The whole keyboard and the typed text | a text field has the focus |
 | The bindings of a UI action, until released | navigation used it: a direction or Tab while a scope is on screen, Confirm with a focus, Back a widget used or `ui.back()` returned |
 | Q/E and the bumpers | a drawn `tabs` widget took them |

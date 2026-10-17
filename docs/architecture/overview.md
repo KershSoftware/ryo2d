@@ -250,7 +250,7 @@ Built every frame in `Scene::ui(ui, ctx)` through `UiContext`, laid out with fle
 ```
 resolve (once a frame, before any ui hook, against last frame's records)
   pointer: hit test (topmost by layer, then order; top scene only) -> hot, active, clicks, drags, drops
-  wheel:   the scroll areas under the pointer, innermost first
+  wheel:   the scroll areas under the pointer, innermost first; over any UI, never gameplay's
   focus:   the ui.* actions -> spatial navigation inside focus scopes, Confirm, Back, tab switching
      |
 hooks (each visible scene bottom-up, under its own root id scope)

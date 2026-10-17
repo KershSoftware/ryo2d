@@ -869,3 +869,104 @@ fn a_lower_scenes_button_ignores_the_pointer() {
   click(&mut engine);
   assert_eq!(*clicks.lock().unwrap(), 1, "on top again, the button works");
 }
+
+/// What a wheel scene draws over its left half
+#[derive(Clone, Copy)]
+enum WheelOver {
+  /// A panel with a label in it
+  Panel,
+  /// A modal, its dim over the whole UI
+  Modal,
+  /// A scroll list of 30 rows at its top, so a wheel up cannot move it
+  ListAtItsTop,
+}
+
+/// Draws `over` in the left half of a 200 x 150 UI, nothing in the right
+/// half; gameplay adds up the wheel it sees in `update`
+struct Wheel {
+  over: WheelOver,
+  seen: std::sync::Arc<std::sync::Mutex<f32>>,
+}
+
+impl Scene for Wheel {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let (_, y) = ctx.input.scroll_delta();
+    if let Ok(mut seen) = self.seen.lock() {
+      *seen += y.abs();
+    }
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let half = Rect::new(0.0, 0.0, 100.0, 150.0);
+    match self.over {
+      WheelOver::Panel => {
+        ui.panel().at(half).show(|ui| {
+          ui.text("A panel");
+        });
+      }
+      WheelOver::Modal => {
+        ui.modal().show(|ui| {
+          ui.text("A modal");
+        });
+      }
+      WheelOver::ListAtItsTop => {
+        ui.scroll().at(half).show(|ui| {
+          for i in 0..30 {
+            ui.button(format!("Row {i}")).id(i).fill_width().show();
+          }
+        });
+      }
+    }
+    SceneAction::Continue
+  }
+}
+
+/// How much wheel gameplay saw after one line of wheel up with the pointer
+/// at `(x, y)` over `over`
+fn wheel_seen(over: WheelOver, x: f32, y: f32) -> Option<f32> {
+  let seen = std::sync::Arc::new(std::sync::Mutex::new(0.0));
+  let scene = Wheel {
+    over,
+    seen: std::sync::Arc::clone(&seen),
+  };
+  let mut engine =
+    HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(200, 150).start_scene(scene))?;
+  engine.mouse_move(x, y);
+  engine.step_frames(3).unwrap();
+  engine.wheel(0.0, 1.0);
+  engine.step_frames(2).unwrap();
+  let seen = *seen.lock().unwrap();
+  Some(seen)
+}
+
+#[test]
+fn the_wheel_over_a_panel_or_a_modal_never_reaches_gameplay() {
+  for (over, what) in [(WheelOver::Panel, "panel"), (WheelOver::Modal, "modal")] {
+    let Some(seen) = wheel_seen(over, 50.0, 75.0) else {
+      return;
+    };
+    assert_eq!(seen, 0.0, "the wheel over the {what} is the UI's");
+  }
+}
+
+#[test]
+fn the_wheel_over_a_list_at_its_edge_never_reaches_gameplay() {
+  let Some(seen) = wheel_seen(WheelOver::ListAtItsTop, 50.0, 75.0) else {
+    return;
+  };
+  assert_eq!(
+    seen, 0.0,
+    "the list does not move, and gameplay sees nothing"
+  );
+}
+
+#[test]
+fn the_wheel_over_no_ui_reaches_gameplay() {
+  for over in [WheelOver::Panel, WheelOver::ListAtItsTop] {
+    let Some(seen) = wheel_seen(over, 150.0, 75.0) else {
+      return;
+    };
+    assert_eq!(seen, 1.0, "the wheel beside the UI is the game's");
+  }
+}

@@ -32,7 +32,9 @@ pub(crate) struct PointerInput {
 pub(crate) struct PointerOutcome {
   /// The left (0) or right (1) press was over the UI: gameplay must not see it
   pub(crate) consume_press: [bool; 2],
-  /// A scroll area took the wheel: gameplay must not see it
+  /// The pointer was over the UI (or a scroll area took the wheel): the
+  /// wheel is the UI's whether anything scrolled or not, so gameplay must
+  /// not see it
   pub(crate) consume_wheel: bool,
 }
 
@@ -92,7 +94,13 @@ pub(crate) fn resolve_pointer(
     i.dragging = false;
   }
 
-  let mut outcome = PointerOutcome::default();
+  // The wheel over the UI is the UI's, as presses are: over a panel, a
+  // modal's dim or a list at its edge it moves nothing, and still never
+  // reaches gameplay
+  let mut outcome = PointerOutcome {
+    consume_wheel: over_ui,
+    ..PointerOutcome::default()
+  };
   for button in 0..2 {
     if !pointer.pressed[button] {
       continue;
@@ -519,6 +527,18 @@ mod tests {
     assert_eq!(m.interact.press_target, UiId::NONE, "no press");
     resolve_pointer(&mut m, &press(150.0, 150.0), Some(1), &[], 4.0);
     assert_eq!(m.interact.press_target, UiId::NONE, "over nothing");
+  }
+
+  #[test]
+  fn the_wheel_over_the_ui_is_the_uis() {
+    let panel = Rect::new(0.0, 0.0, 100.0, 100.0);
+    let mut m = memory(&[(1, rec(panel, 0, 1, Flags::BLOCKING, 1))]);
+    let wheel = |m: &mut UiMemory, x: f32, y: f32, blockers: &[Rect]| {
+      resolve_pointer(m, &at(x, y), Some(1), blockers, 4.0).consume_wheel
+    };
+    assert!(wheel(&mut m, 20.0, 20.0, &[]), "over a panel");
+    assert!(!wheel(&mut m, 150.0, 150.0, &[]), "over nothing");
+    assert!(!wheel(&mut m, 20.0, 20.0, &[panel]), "under the console");
   }
 
   #[test]

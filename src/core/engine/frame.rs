@@ -374,7 +374,8 @@ impl Engine {
       theme.metrics.drag_threshold,
     );
     // Then the wheel: the scroll areas under the pointer take it, never
-    // under the console
+    // under the console. The wheel over the UI is consumed whether or not
+    // an area moved (`outcome.consume_wheel`), as a press over it is.
     apply_scroll_requests(&mut self.ui_memory);
     let (wheel_x, wheel_y) = input.scroll_delta();
     let shift = input.key_down(KeyCode::ShiftLeft) || input.key_down(KeyCode::ShiftRight);
@@ -389,7 +390,7 @@ impl Engine {
         theme.metrics.scroll_line,
       );
     PointerOutcome {
-      consume_wheel: taken,
+      consume_wheel: outcome.consume_wheel || taken,
       ..outcome
     }
   }
