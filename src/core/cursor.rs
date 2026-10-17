@@ -162,6 +162,17 @@ impl CursorRequest {
   }
 }
 
+/// Whether the cursor can be confined to the window here: winit cannot on
+/// macOS, iOS, Android or the web
+pub(crate) fn confinement_supported() -> bool {
+  !cfg!(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+    target_arch = "wasm32"
+  ))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -199,6 +210,17 @@ mod tests {
     req = CursorRequest::default();
     req.locked = Some(false);
     assert!(req.has_changes());
+  }
+
+  #[test]
+  fn macos_and_the_web_cannot_confine_the_cursor() {
+    let unsupported = cfg!(any(
+      target_os = "macos",
+      target_os = "ios",
+      target_os = "android",
+      target_arch = "wasm32"
+    ));
+    assert_eq!(confinement_supported(), !unsupported);
   }
 
   #[test]

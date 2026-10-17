@@ -333,12 +333,18 @@ impl SceneContext<'_> {
     self.set_cursor_visible(false);
   }
 
-  /// Keep the cursor inside the window. macOS cannot confine a cursor, so
-  /// there it moves as usual and is warped back in when it leaves the window
-  /// (while the window has focus). The web cannot confine at all: the
-  /// engine warns instead.
+  /// Keep the cursor inside the window. macOS and the web cannot confine a
+  /// cursor: there it stays free and the engine warns once (see
+  /// [`cursor_confinement_supported`](Self::cursor_confinement_supported)).
   pub fn set_cursor_confined(&mut self, confined: bool) {
     self.cursor().confined = Some(confined);
+  }
+
+  /// Whether [`set_cursor_confined`](Self::set_cursor_confined) can keep the
+  /// cursor in the window here (not on macOS, iOS, Android or the web), for
+  /// offering the option only where it works
+  pub fn cursor_confinement_supported(&self) -> bool {
+    crate::core::cursor::confinement_supported()
   }
 
   /// Lock the cursor in place for FPS-style mouse look; motion arrives as

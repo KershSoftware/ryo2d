@@ -42,16 +42,8 @@ fn cursor_grab_for_focus(
   }
 }
 
-/// Where a cursor that left a confined window goes back to: its last
-/// position over the window, kept a pixel inside a window of `size`
-/// physical pixels (so it is over the window, not on its edge)
-fn warp_back_point(last: (f64, f64), size: (u32, u32)) -> (f64, f64) {
-  let inside = |at: f64, side: u32| {
-    let hi = (f64::from(side) - 2.0).max(0.0);
-    at.clamp(1.0_f64.min(hi), hi)
-  };
-  (inside(last.0, size.0), inside(last.1, size.1))
-}
+/// The platform's inability to confine the cursor was warned about
+static CONFINE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Whether a frame is drawn: not while the window is hidden, nor while the
 /// engine is throttled in the background without background rendering
@@ -271,7 +263,6 @@ impl Engine {
         let _ = window.set_cursor_grab(CursorGrabMode::Confined);
         window.set_cursor_visible(false);
         self.cursor_locked = true;
-        self.confine_by_warp = false;
       } else {
         let _ = window.set_cursor_grab(CursorGrabMode::None);
         window.set_cursor_visible(true);
@@ -282,25 +273,20 @@ impl Engine {
     }
   }
 
-  /// Keep the cursor inside the window, or free it. macOS has no confined
-  /// grab, so there the cursor moves as it always does and is warped back
-  /// in when it leaves the window (`CursorLeft`), as SDL does.
+  /// Keep the cursor inside the window, or free it. Where the platform
+  /// cannot confine a cursor (macOS, the web) it stays free, warned once.
   fn set_cursor_confined(&mut self, window: &Window, confined: bool) {
     use winit::window::CursorGrabMode;
-    self.confine_by_warp = false;
-    if !confined {
-      let _ = window.set_cursor_grab(CursorGrabMode::None);
-      return;
-    }
-    if window.set_cursor_grab(CursorGrabMode::Confined).is_ok() {
+    if confined
+      && crate::core::cursor::confinement_supported()
+      && window.set_cursor_grab(CursorGrabMode::Confined).is_ok()
+    {
       return;
     }
     let _ = window.set_cursor_grab(CursorGrabMode::None);
-    if cfg!(target_os = "macos") {
-      self.confine_by_warp = true;
-      return;
+    if confined && !CONFINE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+      engine_warn!(module: "Cursor", "This platform cannot confine the cursor; it stays free");
     }
-    engine_warn!(module: "Cursor", "Confining the cursor is not supported on this platform");
   }
 
   /// Load a window icon from a file path or use the embedded default logo.
@@ -635,20 +621,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
             pressed: *state == winit::event::ElementState::Pressed,
           });
       }
-      WindowEvent::CursorLeft { .. } => {
-        // Confining by warping (macOS): the cursor comes back where it left,
-        // while the game has focus. winit's warp re-attaches the mouse
-        // straight after, so the cursor does not stall.
-        if self.confine_by_warp
-          && self.game_window_focused
-          && let Some(window) = &self.window
-        {
-          let (x, y) = warp_back_point(self.last_cursor_position, self.last_window_size);
-          let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(x, y));
-        }
-      }
       WindowEvent::CursorMoved { position, .. } => {
-        self.last_cursor_position = (position.x, position.y);
         // While locked, motion comes from DeviceEvent::MouseMotion instead
         if !self.cursor_locked {
           self.cursor_moved(position.x, position.y);
@@ -979,22 +952,5 @@ mod tests {
     assert_eq!(frame_kind(500, true, true), FrameKind::SceneLoad);
     assert_eq!(frame_kind(500, false, false), FrameKind::Background);
     assert_eq!(frame_kind(500, false, true), FrameKind::Steady);
-  }
-
-  #[test]
-  fn a_cursor_leaving_a_confined_window_comes_back_one_pixel_inside() {
-    let size = (800, 600);
-    assert_eq!(
-      warp_back_point((400.0, 300.0), size),
-      (400.0, 300.0),
-      "inside stays"
-    );
-    assert_eq!(warp_back_point((799.6, -3.0), size), (798.0, 1.0));
-    assert_eq!(warp_back_point((-10.0, 650.0), size), (1.0, 598.0));
-    assert_eq!(
-      warp_back_point((5.0, 5.0), (0, 0)),
-      (0.0, 0.0),
-      "a minimised window has no inside, and nothing panics"
-    );
   }
 }
