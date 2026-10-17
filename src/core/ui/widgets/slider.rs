@@ -249,7 +249,8 @@ impl Drop for Slider<'_, '_> {
 
 /// The track's draws: the groove, the filled part up to the handle, and the
 /// handle. The handle's centre runs from half its width in from the left
-/// edge to half its width in from the right.
+/// edge to half its width in from the right. The filled part starts at the
+/// groove's left edge and ends under the handle.
 fn draw_track(
   ui: &mut UiContext<'_>,
   node: usize,
@@ -273,7 +274,9 @@ fn draw_track(
   ui.push_draw(
     node,
     DrawKind::Fraction {
-      inset: Edges::new(handle_w / 2.0, 0.0, handle_w / 2.0, 0.0),
+      // Its end, t of the way along (width - handle_w / 2), lies between
+      // the handle's left edge and its centre for every t
+      inset: Edges::new(0.0, 0.0, handle_w / 2.0, 0.0),
       to: t,
       band: Some(TRACK),
       fill: look.border,
@@ -433,6 +436,37 @@ mod tests {
         assert_eq!(groove.height, 6.0, "{height}: {rects:?}");
         assert_eq!(groove.y + 3.0, 10.0 + height / 2.0, "centred: {rects:?}");
       }
+    }
+  }
+
+  #[test]
+  fn the_filled_part_starts_at_the_groove_and_ends_under_the_handle() {
+    use crate::core::ui::immediate::UiCommand;
+    for value in [0.25, 0.5, 1.0] {
+      let mut d = UiDriver::new((300.0, 100.0));
+      let mut v = value;
+      d.frame(|ui| {
+        ui.slider(&mut v, 0.0..=1.0)
+          .at(Rect::new(0.0, 10.0, 100.0, 20.0))
+          .show();
+      });
+      let rects: Vec<Rect> = d
+        .commands
+        .iter()
+        .filter_map(|(_, c)| match c {
+          UiCommand::Rect { rect, .. } => Some(*rect),
+          _ => None,
+        })
+        .collect();
+      let [groove, fill, handle] = rects[..] else {
+        panic!("{value}: the groove, the filled part, the handle: {rects:?}");
+      };
+      assert_eq!(fill.x, groove.x, "{value}: no gap before the fill");
+      let end = fill.x + fill.width;
+      assert!(
+        end >= handle.x && end <= handle.x + handle.width,
+        "{value}: the fill ends under the handle: {rects:?}"
+      );
     }
   }
 
