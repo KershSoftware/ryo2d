@@ -225,11 +225,10 @@ pub mod prelude {
   /// A widget's resolved look (the render pipeline's `Look` keeps its name)
   pub use crate::core::ui::Look as UiLook;
   pub use crate::core::ui::{
-    Align, Anchor, Color, Edges, FocusRing, HAlign, HBox, Justify, Length, LookPatch, Looks,
-    Metrics, Painter, Palette, Rect, Response, Sense, Sizes, Skin, Stack, TextLook, TextRoles,
-    Theme, ThemeError, ThemeFont, TweenColor, TweenFloat, TweenRect, TweenVec2, UiContext, UiId,
-    UiInput, UiSounds, UiText, UiTheme, UiTween, UiTweenLoop, VAlign, VBox, Variant, WidgetKind,
-    WidgetLooks, WidgetState,
+    Align, Anchor, Color, Edges, FocusRing, Justify, Length, LookPatch, Looks, Metrics, Painter,
+    Palette, Rect, Response, Sense, Sizes, Skin, TextLook, TextRoles, Theme, ThemeError, ThemeFont,
+    TweenColor, TweenFloat, TweenRect, TweenVec2, UiContext, UiId, UiInput, UiSounds, UiText,
+    UiTheme, UiTween, UiTweenLoop, Variant, WidgetKind, WidgetLooks, WidgetState,
   };
 
   // Errors

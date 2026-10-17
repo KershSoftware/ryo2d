@@ -189,7 +189,6 @@ impl UiContext<'_> {
     if !top || disabled || id == UiId::NONE || !drag.is_set() {
       return;
     }
-    let occluded = self.is_mouse_occluded();
     let i = &mut self.memory.interact;
     if drag.accepts.is_some() {
       if let Some((target, payload)) = &i.dropped
@@ -217,7 +216,7 @@ impl UiContext<'_> {
     if i.drag.is_some() {
       return;
     }
-    let mouse = i.drag_started == id && i.active_button == 0 && !occluded;
+    let mouse = i.drag_started == id && i.active_button == 0;
     if !mouse && i.activated != id {
       return;
     }
@@ -603,7 +602,7 @@ mod tests {
   }
 
   #[test]
-  fn a_payload_whose_source_is_gone_is_held_no_more() {
+  fn a_payload_whose_source_is_gone_is_kept_no_more() {
     let mut d = UiDriver::new((200.0, 100.0));
     for _ in 0..2 {
       d.frame(slots);

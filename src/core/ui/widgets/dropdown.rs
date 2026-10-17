@@ -26,7 +26,7 @@ const EMPTY: &str = "-";
 
 /// Whether a dropdown's list is open, kept under its id
 #[derive(Debug, Default)]
-pub(crate) struct DropdownState {
+pub(crate) struct DropdownMemory {
   pub(crate) open: bool,
 }
 
@@ -94,7 +94,7 @@ impl Dropdown<'_, '_> {
 
     let was_open = ui
       .memory
-      .peek_state::<DropdownState>(id)
+      .peek_state::<DropdownMemory>(id)
       .is_some_and(|state| state.open);
     let mut open = was_open && count > 0 && !disabled;
     if count > 0 && !disabled && response.clicked() {
@@ -127,7 +127,7 @@ impl Dropdown<'_, '_> {
     if *self.selected != before {
       response.mark_changed();
     }
-    if let Some(state) = ui.memory.state::<DropdownState>(id, scene) {
+    if let Some(state) = ui.memory.state::<DropdownMemory>(id, scene) {
       state.open = open;
     }
 

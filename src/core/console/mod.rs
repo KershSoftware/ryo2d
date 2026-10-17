@@ -854,7 +854,8 @@ impl ConsoleState {
     let close_x = x + self.width - CLOSE_BUTTON_SIZE - close_padding;
     let close_y = y + close_padding;
     let close_rect = Rect::new(close_x, close_y, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE);
-    let close_hovered = ui.is_hovered(close_rect);
+    let (mouse_x, mouse_y) = ui.input().mouse_position();
+    let close_hovered = close_rect.contains(mouse_x, mouse_y);
     let close_btn_color = if close_hovered && self.focused {
       Color::new(140, 50, 50, 255)
     } else if self.focused {

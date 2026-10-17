@@ -323,13 +323,13 @@ impl DemoPage for CursorDemoScene {
 
     // Draw style buttons
     for button in &self.buttons {
-      let is_hovered = button.contains(mx, my);
+      let hovered = button.contains(mx, my);
       let is_active = !self.custom_cursor_enabled && self.current_style == button.style;
       let btn_rect = Rect::new(button.x, button.y, button.width, button.height);
 
       let bg_color = if is_active {
         Color::rgb(80, 140, 200)
-      } else if is_hovered {
+      } else if hovered {
         Color::rgb(70, 75, 85)
       } else {
         Color::rgb(55, 60, 70)

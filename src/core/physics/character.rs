@@ -3241,7 +3241,7 @@ mod tests {
   }
 
   #[test]
-  fn a_round_character_is_held_by_a_one_way_wall_turned_30_degrees() {
+  fn a_round_character_stays_on_a_one_way_wall_turned_30_degrees() {
     let (mut world, mut s) = world(60);
     let angle = 30f32.to_radians();
     world.spawn((

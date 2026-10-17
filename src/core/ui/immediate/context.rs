@@ -31,7 +31,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec2;
-use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use super::commands::{UiCommand, UiCommands};
@@ -369,9 +368,6 @@ pub struct UiContext<'a> {
   current_clip: Option<Rect>,
   /// The layer draws are recorded on (higher layers draw over lower ones)
   layer: u8,
-  /// Whether the mouse is occluded by an overlay (e.g. developer console).
-  /// When true, `is_hovered`, `is_held`, and `is_clicked` all return false.
-  mouse_occluded: bool,
   /// Real frame delta time (seconds) for UI animations (cursor blink, scroll momentum).
   /// Set by the engine from the actual frame time so render-phase animations stay
   /// correct regardless of the fixed-timestep update rate.
@@ -436,7 +432,6 @@ impl<'a> UiContext<'a> {
       clip_stack: Vec::new(),
       current_clip: None,
       layer: PAGE_LAYER,
-      mouse_occluded: false,
       dt: 0.0,
       memory,
       layout,
@@ -631,10 +626,6 @@ impl<'a> UiContext<'a> {
       if who == id {
         states |= state;
       }
-    }
-    if self.mouse_occluded {
-      response.states = states;
-      return response;
     }
     let (hot, active) = (i.hot == id, i.active == id);
     if i.hovered == id {
@@ -1124,55 +1115,10 @@ impl<'a> UiContext<'a> {
   // Input Consumption
   // =========================================================================
 
-  /// Check if the Escape key was consumed by a widget this frame.
-  ///
-  /// The UI pass runs before gameplay and what it consumes is hidden from
-  /// `Input`, so `update` never sees an Escape a widget took. Use this in
-  /// `Scene::ui`, after the widgets, to tell the cases apart there. For Back
-  /// (Escape or B), [`back`](Self::back) is simpler: it is false when an open
-  /// list or a focused field used it.
-  ///
-  /// # Example
-  /// ```ignore
-  /// // In Scene::ui:
-  /// ui.text_input(&mut self.name).show();
-  /// if !ui.escape_consumed() && ui.input().key_pressed(KeyCode::Escape) {
-  ///     return SceneAction::Pop;
-  /// }
-  ///
-  /// // Or in update(): an Escape the field took reads as not pressed
-  /// if ctx.input.key_pressed(KeyCode::Escape) {
-  ///     return SceneAction::Pop;
-  /// }
-  /// ```
-  pub fn escape_consumed(&self) -> bool {
-    self.input.is_key_consumed(KeyCode::Escape)
-  }
-
-  /// Check if a mouse click was consumed by a widget this frame.
-  ///
-  /// Use this to avoid processing clicks on game elements when UI
-  /// handled the click.
-  pub fn click_consumed(&self) -> bool {
-    self.input.is_mouse_consumed(MouseButton::Left)
-  }
-
-  /// Consume the mouse click for this frame, from other widgets and from
-  /// gameplay.
-  pub fn consume_click(&mut self) {
-    self.input.consume_mouse(MouseButton::Left);
-  }
-
   /// Consume the mouse wheel for this frame, from other widgets and from
   /// gameplay (scroll views that scroll take it themselves).
   pub fn consume_scroll(&mut self) {
     self.input.consume_scroll();
-  }
-
-  /// Consume the escape key for this frame, from other widgets and from
-  /// gameplay.
-  pub fn consume_escape(&mut self) {
-    self.input.consume_key(KeyCode::Escape);
   }
 
   /// Consume `key` for this frame, from other widgets and from gameplay.
@@ -1200,25 +1146,6 @@ impl<'a> UiContext<'a> {
   /// End the pass, handing back the input with what was consumed.
   pub fn into_input(self) -> UiInput {
     self.input
-  }
-
-  /// Whether the pointer is occluded for the widgets drawn from here on.
-  pub fn is_mouse_occluded(&self) -> bool {
-    self.mouse_occluded
-  }
-
-  /// Restore occlusion saved with [`is_mouse_occluded`](Self::is_mouse_occluded).
-  pub(crate) fn restore_mouse_occluded(&mut self, occluded: bool) {
-    self.mouse_occluded = occluded;
-  }
-
-  /// Mark the mouse as occluded by an overlay (e.g. developer console).
-  ///
-  /// When set, `is_hovered`, `is_held`, and `is_clicked` all return false,
-  /// preventing widgets underneath the overlay from responding to the mouse.
-  /// Scenes under the top scene run their `ui` with the mouse occluded.
-  pub fn set_mouse_occluded(&mut self) {
-    self.mouse_occluded = true;
   }
 
   /// Whether the UI wants the keyboard: a text field or a rebinding row
@@ -1799,40 +1726,6 @@ impl<'a> UiContext<'a> {
   // Interactive Widgets
   // =========================================================================
 
-  /// Check if a rectangle is being clicked this frame.
-  ///
-  /// Returns `true` if the mouse button was just pressed while over the rectangle.
-  /// Returns `false` if the mouse is occluded by an overlay.
-  pub fn is_clicked(&self, rect: Rect) -> bool {
-    if self.mouse_occluded || !self.input.mouse_pressed(MouseButton::Left) {
-      return false;
-    }
-    let (mx, my) = self.input.mouse_position();
-    rect.contains(mx, my)
-  }
-
-  /// Check if a rectangle is being hovered.
-  ///
-  /// Returns `false` if the mouse is occluded by an overlay.
-  pub fn is_hovered(&self, rect: Rect) -> bool {
-    if self.mouse_occluded {
-      return false;
-    }
-    let (mx, my) = self.input.mouse_position();
-    rect.contains(mx, my)
-  }
-
-  /// Check if a rectangle is being held (mouse down while hovering).
-  ///
-  /// Returns `false` if the mouse is occluded by an overlay.
-  pub fn is_held(&self, rect: Rect) -> bool {
-    if self.mouse_occluded || !self.input.mouse_down(MouseButton::Left) {
-      return false;
-    }
-    let (mx, my) = self.input.mouse_position();
-    rect.contains(mx, my)
-  }
-
   /// Draw a label with optional background panel.
   pub fn label(&mut self, text: &str, x: f32, y: f32, text_color: Color, bg_color: Option<Color>) {
     if let Some(bg) = bg_color {
@@ -2062,60 +1955,6 @@ impl<'a> UiContext<'a> {
       }
     }
   }
-
-  // =========================================================================
-  // Focus ring
-  // =========================================================================
-
-  /// Draw a focus ring (outline) around a rectangle.
-  ///
-  /// Use this to indicate which widget currently has keyboard focus.
-  /// The ring is drawn outside the widget bounds.
-  ///
-  /// # Arguments
-  /// * `rect` - The widget bounds to draw around
-  /// * `color` - The focus ring color (typically a bright accent color)
-  /// * `thickness` - Ring thickness in pixels (typically 2.0)
-  /// * `offset` - Gap between widget and ring (typically 1.0-2.0)
-  ///
-  /// # Example
-  /// ```ignore
-  /// if self.button_focused {
-  ///     ui.draw_focus_ring(button_rect, Color::rgb(100, 150, 255), 2.0, 2.0);
-  /// }
-  /// ui.button("Submit").at(button_rect);
-  /// ```
-  pub fn draw_focus_ring(&mut self, rect: Rect, color: Color, thickness: f32, offset: f32) {
-    let expanded = rect.expand(offset + thickness);
-    let inner = rect.expand(offset);
-
-    // Draw the four sides of the ring
-    // Top
-    self.draw_rect(
-      Rect::new(expanded.x, expanded.y, expanded.width, thickness),
-      color,
-    );
-    // Bottom
-    self.draw_rect(
-      Rect::new(
-        expanded.x,
-        inner.y + inner.height,
-        expanded.width,
-        thickness,
-      ),
-      color,
-    );
-    // Left
-    self.draw_rect(
-      Rect::new(expanded.x, inner.y, thickness, inner.height),
-      color,
-    );
-    // Right
-    self.draw_rect(
-      Rect::new(inner.x + inner.width, inner.y, thickness, inner.height),
-      color,
-    );
-  }
 }
 
 // ============================================================================
@@ -2127,7 +1966,7 @@ mod tests {
   use std::sync::Arc;
 
   use glam::Vec2;
-  use winit::event::ElementState;
+  use winit::event::{ElementState, MouseButton};
 
   use super::*;
   use crate::core::asset::SpriteHandle;
@@ -2606,7 +2445,8 @@ mod tests {
       mouse_at(100.0, 60.0, false),
     );
     assert_eq!(ui.input().mouse_position(), (50.0, 30.0));
-    assert!(ui.is_hovered(Rect::new(45.0, 25.0, 10.0, 10.0)));
+    let (x, y) = ui.input().mouse_position();
+    assert!(Rect::new(45.0, 25.0, 10.0, 10.0).contains(x, y));
   }
 
   // ==========================================================================
@@ -2653,81 +2493,6 @@ mod tests {
   }
 
   #[test]
-  fn consume_escape_sets_flag() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = ui_context(&mut commands, &mut text, (200.0, 200.0));
-
-    assert!(!ui.escape_consumed());
-    ui.consume_escape();
-    assert!(ui.escape_consumed());
-  }
-
-  // ==========================================================================
-  // Mouse occlusion
-  // ==========================================================================
-
-  #[test]
-  fn mouse_occluded_blocks_hover() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, false),
-    );
-
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    assert!(ui.is_hovered(rect), "Should be hovered before occlusion");
-
-    ui.set_mouse_occluded();
-    assert!(
-      !ui.is_hovered(rect),
-      "Should not be hovered after occlusion"
-    );
-  }
-
-  #[test]
-  fn mouse_occluded_blocks_click() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    assert!(ui.is_clicked(rect), "Should be clicked before occlusion");
-
-    ui.set_mouse_occluded();
-    assert!(
-      !ui.is_clicked(rect),
-      "Should not be clicked after occlusion"
-    );
-  }
-
-  #[test]
-  fn mouse_occluded_blocks_held() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    // A press is also a hold
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, true),
-    );
-
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    assert!(ui.is_held(rect), "Should be held before occlusion");
-
-    ui.set_mouse_occluded();
-    assert!(!ui.is_held(rect), "Should not be held after occlusion");
-  }
-
-  #[test]
   fn a_widget_outside_the_top_scene_reports_nothing() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut ui = context(&mut commands, &mut text);
@@ -2769,57 +2534,6 @@ mod tests {
     assert!(!ui.back(), "one press, one taker");
     assert_eq!(ui.take_tab_step(), 1);
     assert_eq!(ui.take_tab_step(), 0, "taken");
-  }
-
-  #[test]
-  fn mouse_occluded_prevents_button_click() {
-    let mut d = UiDriver::new((200.0, 200.0));
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    let draw = |ui: &mut UiContext<'_>| {
-      ui.set_mouse_occluded();
-      let response = ui.button("Test").at(rect).show();
-      response.hovered() || response.pressed() || response.clicked()
-    };
-    d.move_to(50.0, 50.0);
-    d.frame(draw);
-    d.press();
-    assert!(!d.frame(draw), "no hover or press when occluded");
-    d.release();
-    assert!(!d.frame(draw), "no click when occluded");
-  }
-
-  #[test]
-  fn mouse_not_occluded_by_default() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, false),
-    );
-
-    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
-    assert!(
-      ui.is_hovered(rect),
-      "Mouse should not be occluded by default"
-    );
-  }
-
-  #[test]
-  fn mouse_occluded_does_not_affect_rects_outside_mouse() {
-    let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context_with(
-      &mut commands,
-      &mut text,
-      (200.0, 200.0),
-      1.0,
-      mouse_at(50.0, 50.0, false),
-    );
-
-    ui.set_mouse_occluded();
-    let far_rect = Rect::new(150.0, 150.0, 30.0, 30.0);
-    assert!(!ui.is_hovered(far_rect));
   }
 
   // ==========================================================================

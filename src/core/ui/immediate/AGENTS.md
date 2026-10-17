@@ -1,6 +1,6 @@
 # AGENTS.md - Immediate Mode UI
 
-`UiContext` (`context.rs`) is what `Scene::ui` draws with. It draws nothing itself: every primitive records a `UiCommand` (`commands.rs`) that the engine's UI pass later lays into the 2D batch (`render/ui.rs`; the pass and the UI image are in `src/core/ui/AGENTS.md` and `src/core/render/AGENTS.md`). `input.rs` is the `UiInput` snapshot, `layout.rs` the `HBox`/`VBox`/`Stack` helpers.
+`UiContext` (`context.rs`) is what `Scene::ui` draws with. It draws nothing itself: every primitive records a `UiCommand` (`commands.rs`) that the engine's UI pass later lays into the 2D batch (`render/ui.rs`; the pass and the UI image are in `src/core/ui/AGENTS.md` and `src/core/render/AGENTS.md`). `input.rs` is the `UiInput` snapshot.
 
 ## Commands
 

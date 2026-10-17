@@ -2,43 +2,17 @@
 //!
 //! A UI built each frame in `Scene::ui`, laid out and resolved by the engine:
 //!
-//! - **Immediate mode** (`immediate/`): Stateless, per-frame drawing for HUDs and debug overlays
+//! - **Drawing** (`immediate/`): the `UiContext`, absolute `draw_*` calls for HUDs and debug overlays
 //! - **Widgets and containers** (`widgets/`, `containers.rs`, `popup.rs`): Laid out with flexbox and grid; widget state (open lists, carets, scroll offsets) lives in the UI's memory
 //! - **Theme system** (`theme/`): Looks per widget kind and state, variants and skins, from RON files with hot reload
 //!
-//! # Architecture
+//! # Overview
 //!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────┐
-//! │              Game Code (Scene::ui callback)             │
-//! ├─────────────────────────────────────────────────────────┤
-//! │   Widgets and Layout                                    │
-//! │   ├─ Containers (column, row, grid, stack, panel)       │
-//! │   ├─ Widgets (button, slider, dropdown, tabs, ...)      │
-//! │   └─ Popups and modals, drawn above the page            │
-//! ├─────────────────────────────────────────────────────────┤
-//! │   Immediate Mode Layer                                  │
-//! │   ├─ UiContext drawing API                              │
-//! │   ├─ Stateless widgets (Button, Label, ProgressBar)     │
-//! │   └─ Draw commands, drawn by the GPU                    │
-//! ├─────────────────────────────────────────────────────────┤
-//! │   Theme System                                          │
-//! │   ├─ Widget styles (colors, spacing, borders)           │
-//! │   └─ Hot-reload from RON files                          │
-//! └─────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! # When to Use Each
-//!
-//! ## Absolute drawing (`draw_*`)
-//! - Simple HUDs (health bars, score displays)
-//! - Debug overlays
-//! - Prototyping
-//!
-//! ## Widgets in containers
-//! - Menus and pause screens, with keyboard and gamepad navigation
-//! - Settings screens (tabs, dropdowns, sliders)
-//! - Dialogs (`ui.modal`, `ui.confirm`) and dialogue choices
+//! - Widgets are builders that answer from the UI's memory: `ui.button("Play").clicked()`.
+//! - Containers are laid out by Taffy (flexbox and grid).
+//! - Focus lives in scopes, and keyboard and gamepad navigation move through them.
+//! - Absolute `draw_*` calls remain for HUDs and custom drawing.
+//! - The theme is a world resource.
 //!
 //! # Example
 //!
@@ -90,7 +64,7 @@ pub use widgets::{
 };
 
 // Re-export immediate mode API (stateless per-frame drawing)
-pub use immediate::{HAlign, HBox, Stack, UiConsumed, UiContext, UiInput, UiText, VAlign, VBox};
+pub use immediate::{UiConsumed, UiContext, UiInput, UiText};
 
 // Re-export theme types
 pub use theme::{

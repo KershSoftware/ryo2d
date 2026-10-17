@@ -170,7 +170,7 @@ impl Custom<'_, '_> {
     if self.sense == Sense::hover() {
       flags |= Flags::HOVER;
     }
-    // Focusable only when asked
+    // Takes focus only when asked
     let mut node = Node::new(id, style, Measure::Fixed(self.size));
     node.record = Some(self.opts.record(flags, false));
     let index = ui.push_node(node, self.opts.at);

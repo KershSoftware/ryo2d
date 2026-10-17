@@ -780,7 +780,10 @@ mod tests {
     d.key(KeyCode::Escape);
     let (focused, consumed) = d.frame(|ui| {
       let response = field(ui, &mut name);
-      (response.focused(), ui.escape_consumed())
+      (
+        response.focused(),
+        ui.input().is_key_consumed(KeyCode::Escape),
+      )
     });
     assert!(!focused, "it reports leaving at once");
     assert!(consumed);

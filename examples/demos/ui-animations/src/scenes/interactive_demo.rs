@@ -36,17 +36,17 @@ impl AnimatedButton {
     self.glow_alpha.update(dt);
     self.click_scale.update(dt);
 
-    let is_hovered = response.hovered();
-    if is_hovered && !self.was_hovered {
+    let over = response.hovered();
+    if over && !self.was_hovered {
       // Mouse entered
       self.scale = TweenFloat::new(self.scale.value(), 1.08, 0.15).with_ease(Ease::OutBack);
       self.glow_alpha = TweenFloat::new(self.glow_alpha.value(), 0.4, 0.2).with_ease(Ease::OutQuad);
-    } else if !is_hovered && self.was_hovered {
+    } else if !over && self.was_hovered {
       // Mouse left
       self.scale = TweenFloat::new(self.scale.value(), 1.0, 0.2).with_ease(Ease::OutQuad);
       self.glow_alpha = TweenFloat::new(self.glow_alpha.value(), 0.0, 0.3).with_ease(Ease::OutQuad);
     }
-    self.was_hovered = is_hovered;
+    self.was_hovered = over;
 
     let is_pressed = response.pressed();
     if is_pressed && !self.was_pressed {
@@ -109,7 +109,7 @@ impl AnimatedButton {
       })
   }
 
-  fn is_hovered(&self) -> bool {
+  fn hovered(&self) -> bool {
     self.was_hovered
   }
 }
@@ -301,7 +301,7 @@ impl DemoPage for InteractiveDemo {
     // shell's help covers the page) drives its tweens.
     for (i, button) in self.buttons.iter_mut().enumerate() {
       let response = button.show(ui, i, top);
-      let was_hovered = button.is_hovered();
+      let was_hovered = button.hovered();
       button.update(dt, &response);
 
       if response.clicked() {
@@ -328,7 +328,7 @@ impl DemoPage for InteractiveDemo {
       }
 
       // Track hover changes for indicator
-      if button.is_hovered() && !was_hovered {
+      if button.hovered() && !was_hovered {
         self.last_hovered = Some(i);
       }
     }

@@ -570,6 +570,13 @@ impl Engine {
       self.ui_memory.restart_pass();
     }
     self.ui_pass_index += 1;
+    // A click on the console is the console's: gameplay never sees it
+    if self.console_state.visible {
+      let (mouse_x, mouse_y) = snapshot.mouse_position();
+      if self.console_state.window_rect().contains(mouse_x, mouse_y) {
+        snapshot.consume_mouse(MouseButton::Left);
+      }
+    }
     let real_dt = self.world.resource::<Time>().real.delta();
     // Overlays and the console still lay out in whole UI units
     let (width, height) = (space.size.x.ceil() as u32, space.size.y.ceil() as u32);
@@ -585,15 +592,6 @@ impl Engine {
       );
       ui.set_dt(real_dt);
       ui.set_prompts(Arc::clone(&self.prompts));
-      // The console blocks the mouse for everything under it
-      if self.console_state.visible {
-        let (mouse_x, mouse_y) = ui.input().mouse_position();
-        if self.console_state.window_rect().contains(mouse_x, mouse_y) {
-          ui.set_mouse_occluded();
-          ui.consume_click();
-        }
-      }
-
       let action = with_host(&mut self.world, |world, host| {
         host.scenes.ui_pass(world, &mut host.audio, &mut ui)
       });
@@ -2086,6 +2084,92 @@ mod tests {
       .filter(|w| w.message.contains("missing-confirm.ogg"))
       .count();
     assert_eq!(warnings, 1, "a warning naming the sound, once");
+  }
+
+  #[test]
+  fn a_click_on_the_console_reaches_neither_widgets_nor_gameplay() {
+    use crate::core::input::{Input, InputEvent};
+    use crate::core::ui::{Rect, UiContext};
+    use winit::event::MouseButton;
+
+    #[derive(Resource, Default)]
+    struct Seen {
+      at: Rect,
+      button: u32,
+      gameplay: u32,
+    }
+    struct UnderConsole;
+    impl Scene for UnderConsole {
+      fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+        let at = ctx.world.resource::<Seen>().at;
+        if ui.button("Under").at(at).clicked() {
+          ctx.world.resource_mut::<Seen>().button += 1;
+        }
+        SceneAction::Continue
+      }
+      fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+        let pressed = ctx.input.mouse_pressed(MouseButton::Left);
+        ctx.world.resource_mut::<Seen>().gameplay += u32::from(pressed);
+        SceneAction::Continue
+      }
+    }
+    fn click(e: &mut Engine, x: f32, y: f32) {
+      let frames = [
+        vec![InputEvent::MouseMove {
+          x: f64::from(x),
+          y: f64::from(y),
+        }],
+        vec![InputEvent::MouseButton {
+          button: MouseButton::Left,
+          pressed: true,
+        }],
+        vec![InputEvent::MouseButton {
+          button: MouseButton::Left,
+          pressed: false,
+        }],
+        vec![],
+      ];
+      for events in frames {
+        for event in events {
+          e.world_mut().resource_mut::<Input>().queue(event);
+        }
+        e.frame(Some(Duration::from_micros(16_667)));
+      }
+    }
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(320, 240)
+      .fixed_hz(60)
+      .insert_resource(Seen::default())
+      .start_scene(UnderConsole)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 320, 240), 1.0);
+    e.console_state.toggle();
+    // Let the console finish opening, then put the button under its window
+    for _ in 0..60 {
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    let window = e.console_state.window_rect();
+    let at = Rect::new(window.x + 20.0, window.y + 40.0, 60.0, 20.0);
+    e.world_mut().resource_mut::<Seen>().at = at;
+    e.frame(Some(Duration::from_micros(16_667)));
+    click(&mut e, at.x + 10.0, at.y + 10.0);
+    let seen = e.world().resource::<Seen>();
+    assert_eq!(
+      (seen.button, seen.gameplay),
+      (0, 0),
+      "the console took the click"
+    );
+    // With the console closed, the same click is the button's
+    e.console_state.toggle();
+    for _ in 0..60 {
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    click(&mut e, at.x + 10.0, at.y + 10.0);
+    assert_eq!(e.world().resource::<Seen>().button, 1);
   }
 }
 

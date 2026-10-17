@@ -30,11 +30,6 @@
 //!         return SceneAction::Push(Box::new(PauseMenu));
 //!     }
 //!
-//!     // Layout containers for positioning (stateless helpers)
-//!     let mut row = HBox::new(10.0, 100.0, 8.0);
-//!     ui.button("A").at(row.next(60.0, 30.0));
-//!     ui.button("B").at(row.next(60.0, 30.0));
-//!     ui.button("C").at(row.next(60.0, 30.0));
 //!     SceneAction::Continue
 //! }
 //! ```
@@ -42,7 +37,6 @@
 mod commands;
 mod context;
 mod input;
-mod layout;
 
 pub(crate) use commands::{UiCommand, UiCommands};
 pub(crate) use context::{
@@ -50,4 +44,3 @@ pub(crate) use context::{
 };
 pub use context::{UiContext, UiText};
 pub use input::{UiConsumed, UiInput};
-pub use layout::{HAlign, HBox, Stack, VAlign, VBox};

@@ -794,3 +794,78 @@ fn ui_focus_can_be_read_and_set_headlessly() {
   engine.step_frames(1).unwrap();
   assert_eq!(engine.ui_focused(), Some(targets[1].0));
 }
+
+#[test]
+fn a_lower_scenes_button_ignores_the_pointer() {
+  use std::sync::{Arc, Mutex};
+  type Clicks = Arc<Mutex<u32>>;
+
+  struct Lower {
+    clicks: Clicks,
+    pushed: bool,
+  }
+  impl Scene for Lower {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      if self.pushed {
+        return SceneAction::Continue;
+      }
+      self.pushed = true;
+      SceneAction::Push(Box::new(Upper))
+    }
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      if ui
+        .button("Under")
+        .at(Rect::new(10.0, 10.0, 80.0, 30.0))
+        .clicked()
+        && let Ok(mut n) = self.clicks.lock()
+      {
+        *n += 1;
+      }
+      SceneAction::Continue
+    }
+  }
+  /// Transparent, so the scene under it still draws; P pops it
+  struct Upper;
+  impl Scene for Upper {
+    fn is_transparent(&self) -> bool {
+      true
+    }
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      if ctx.input.key_pressed(KeyCode::KeyP) {
+        SceneAction::Pop
+      } else {
+        SceneAction::Continue
+      }
+    }
+  }
+  fn click(engine: &mut HeadlessEngine) {
+    engine.mouse_move(20.0, 20.0);
+    engine.press_mouse(MouseButton::Left);
+    engine.step().unwrap();
+    engine.release_mouse(MouseButton::Left);
+    engine.step_frames(2).unwrap();
+  }
+
+  let clicks = Clicks::default();
+  let lower = Lower {
+    clicks: clicks.clone(),
+    pushed: false,
+  };
+  let Some(mut engine) =
+    HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(200, 150).start_scene(lower))
+  else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  click(&mut engine);
+  click(&mut engine);
+  assert_eq!(
+    *clicks.lock().unwrap(),
+    0,
+    "the scene above has the pointer"
+  );
+  engine.tap_key(KeyCode::KeyP);
+  engine.step_frames(3).unwrap();
+  click(&mut engine);
+  assert_eq!(*clicks.lock().unwrap(), 1, "on top again, the button works");
+}

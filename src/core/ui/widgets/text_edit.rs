@@ -743,7 +743,7 @@ mod tests {
   }
 
   #[test]
-  fn the_paste_guard_blocks_typed_and_committed_text_while_v_is_held() {
+  fn the_paste_guard_blocks_typed_and_committed_text_while_v_is_down() {
     // On Windows an IME may commit the clipboard alongside Ctrl+V
     for (typed, committed) in [("abc", ""), ("", "clipboard content")] {
       let (mut text, mut edit) = (String::new(), pasted());

@@ -506,15 +506,9 @@ impl SceneManager {
     }
     let top = self.scenes.len() - 1;
     let mut action = SceneAction::Continue;
-    // Scenes under the top one draw first but must not take the pointer the
-    // top scene's widgets sit over: they run with it occluded
-    let occluded = ui.is_mouse_occluded();
+    // Scenes under the top one draw first; their widgets answer nothing, as
+    // only the top scene's are hit
     for i in self.render_from()..=top {
-      if i < top {
-        ui.set_mouse_occluded();
-      } else {
-        ui.restore_mouse_occluded(occluded);
-      }
       let slot = &mut self.scenes[i];
       // Each scene's ids are made under its own root scope. Ending its UI
       // draws its popups above everything it drew: the top scene's on the
@@ -528,7 +522,6 @@ impl SceneManager {
         slot.warn_if_dropped(&result, "ui");
       }
     }
-    ui.restore_mouse_occluded(occluded);
     if self.is_transitioning() && !matches!(action, SceneAction::Continue | SceneAction::Quit) {
       return SceneAction::Continue;
     }
