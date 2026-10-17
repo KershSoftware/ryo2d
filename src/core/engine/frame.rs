@@ -10,6 +10,7 @@ use winit::keyboard::KeyCode;
 
 use super::{Engine, FrameOutcome, PresentOutcome, QuitRequested, SceneHost};
 use crate::core::asset::AssetManager;
+use crate::core::audio::SoundOptions;
 use crate::core::capture::CaptureTarget;
 use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
@@ -26,6 +27,7 @@ use crate::core::time::Time;
 use crate::core::ui::interact::{
   PointerInput, PointerOutcome, apply_scroll_requests, resolve_pointer, route_wheel,
 };
+use crate::core::ui::memory::UiSound;
 use crate::core::ui::nav::{NavInput, resolve_focus};
 use crate::core::ui::theme::{Theme, refresh_skins};
 use crate::core::ui::widgets::rebind::note_swap;
@@ -448,6 +450,50 @@ impl Engine {
       })
   }
 
+  /// Load the theme's UI sounds when its generation changed (so a starting
+  /// theme's load on the first pass). Audio that is missing or a file that
+  /// will not load leaves that sound silent, warned about once per path.
+  fn load_ui_sounds(&mut self, theme: &Theme) {
+    let generation = self.world.resource::<UiTheme>().generation();
+    if self.sounds_generation == Some(generation) {
+      return;
+    }
+    self.sounds_generation = Some(generation);
+    let warned = &mut self.sounds_warned;
+    with_host(&mut self.world, |_, host| {
+      for sound in UiSound::ALL {
+        let Some(path) = theme.sounds.path(sound) else {
+          continue;
+        };
+        if let Err(error) = host.audio.load_sound(sound.name(), path)
+          && warned.insert(path.to_string())
+        {
+          engine_warn!(module: "ui", "could not load UI sound {path}: {error}");
+        }
+      }
+    });
+  }
+
+  /// Play the theme's sound for each event this frame's UI raised, at the
+  /// theme's volume; errors (no device, not loaded) are ignored
+  fn play_ui_sounds(&mut self, theme: &Theme) {
+    let raised = &self.ui_memory.interact.sounds;
+    let from = self.sounds_played.min(raised.len());
+    let options = SoundOptions::new().volume(theme.sounds.volume);
+    let fresh = &raised[from..];
+    self.sounds_played = raised.len();
+    if fresh.is_empty() {
+      return;
+    }
+    with_host(&mut self.world, |_, host| {
+      for &sound in fresh {
+        if theme.sounds.path(sound).is_some() {
+          let _ = host.audio.play_sound_with(sound.name(), options.clone());
+        }
+      }
+    });
+  }
+
   /// Bring what prompts read up to date: the last device and pad family,
   /// every action's bindings (copied again only when they changed) and the
   /// game's glyphs (when `TextIcons` changed)
@@ -496,6 +542,7 @@ impl Engine {
       self.ui_memory.forget_scene(scope);
     }
     let theme = self.refresh_ui_theme();
+    self.load_ui_sounds(&theme);
     self.refresh_prompts();
     let space = self.ui_space;
     let mut snapshot =
@@ -503,6 +550,7 @@ impl Engine {
     // A rerun pass replaces the first pass's records; the pointer is
     // resolved once a frame, against last frame's records
     if self.ui_pass_index == 0 {
+      self.sounds_played = 0;
       self.ui_memory.begin_frame();
       self.ui_layout.begin_frame();
       let outcome = self.resolve_pointer(&snapshot, &theme);
@@ -623,6 +671,7 @@ impl Engine {
     self
       .ui_mouse_capture
       .retain(|&button| consumed.mouse_held_raw(button));
+    self.play_ui_sounds(&theme);
     Some(action)
   }
 
@@ -2020,6 +2069,23 @@ mod tests {
   fn frames_are_paced_only_when_presenting_does_not_wait() {
     assert!(should_pace_frames(false), "vsync off: pace to target_fps");
     assert!(!should_pace_frames(true), "vsync on: the display paces");
+  }
+
+  #[test]
+  fn a_ui_sound_that_cannot_load_warns_once_and_the_frames_run() {
+    use crate::core::ui::theme::{Theme, UiTheme};
+    let mut e = engine();
+    let mut theme = Theme::dark();
+    theme.sounds.confirm = Some("sounds/missing-confirm.ogg".to_string());
+    e.world_mut().resource_mut::<UiTheme>().set(theme);
+    for _ in 0..3 {
+      e.frame(Some(Duration::from_millis(16)));
+    }
+    let warnings = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|w| w.message.contains("missing-confirm.ogg"))
+      .count();
+    assert_eq!(warnings, 1, "a warning naming the sound, once");
   }
 }
 

@@ -93,6 +93,47 @@ pub(crate) struct Record {
   pub(crate) accepts: Option<TypeId>,
 }
 
+/// A sound the UI raises; the engine plays the theme's sound of that kind
+/// after the UI pass
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum UiSound {
+  /// Focus moved by navigation
+  Focus,
+  /// Confirm activated a widget, or a button was clicked
+  Confirm,
+  /// Back closed or cancelled something
+  Back,
+  /// A slider stepped
+  Tick,
+  /// A drop was refused, or a rebind cancelled
+  Error,
+}
+
+impl UiSound {
+  /// Every kind
+  pub(crate) const ALL: [UiSound; 5] = [
+    UiSound::Focus,
+    UiSound::Confirm,
+    UiSound::Back,
+    UiSound::Tick,
+    UiSound::Error,
+  ];
+
+  /// The name its sound is loaded and played under
+  pub(crate) fn name(self) -> &'static str {
+    match self {
+      UiSound::Focus => "ryo2d.ui.focus",
+      UiSound::Confirm => "ryo2d.ui.confirm",
+      UiSound::Back => "ryo2d.ui.back",
+      UiSound::Tick => "ryo2d.ui.tick",
+      UiSound::Error => "ryo2d.ui.error",
+    }
+  }
+}
+
+/// The least time between two slider ticks, in seconds
+const TICK_INTERVAL: f64 = 0.05;
+
 /// The pointer's interaction, resolved once per engine frame against last
 /// frame's records (`interact::resolve_pointer`)
 #[derive(Debug, Clone, Default)]
@@ -176,6 +217,32 @@ pub(crate) struct Interaction {
   pub(crate) dropped: Option<(UiId, Arc<dyn Any + Send + Sync>)>,
   /// The drop target a mouse drag would land on if released now (`NONE`)
   pub(crate) drop_hover: UiId,
+
+  // Sounds (`UiSounds`)
+  /// This frame's sound events, at most one of each kind
+  pub(crate) sounds: Vec<UiSound>,
+  /// When the last slider tick sounded (`now`)
+  pub(crate) last_tick: Option<f64>,
+}
+
+impl Interaction {
+  /// Raise `sound` for this frame (once per kind)
+  pub(crate) fn play(&mut self, sound: UiSound) {
+    if !self.sounds.contains(&sound) {
+      self.sounds.push(sound);
+    }
+  }
+
+  /// Raise a slider tick, unless one sounded in the last 0.05 s
+  pub(crate) fn tick(&mut self) {
+    if self
+      .last_tick
+      .is_none_or(|last| self.now - last >= TICK_INTERVAL || self.now < last)
+    {
+      self.last_tick = Some(self.now);
+      self.play(UiSound::Tick);
+    }
+  }
 }
 
 struct Slot {
@@ -229,6 +296,7 @@ impl UiMemory {
     self.next.clear();
     self.frame += 1;
     self.scopes.begin_frame();
+    self.interact.sounds.clear();
   }
 
   /// This frame wrote no records (tests only)

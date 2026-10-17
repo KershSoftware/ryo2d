@@ -26,6 +26,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::Color;
+use super::memory::UiSound;
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Resource;
 use crate::core::render::batch::Filter;
@@ -422,7 +423,12 @@ impl Skin {
   }
 }
 
-/// The sound files the UI plays (named as the audio manager loads them)
+/// The sound files the UI plays, by event: focus moved by navigation, a
+/// confirm or click, back, a slider step (at most every 0.05 s) and an error
+/// (a refused drop, a cancelled rebind). The engine loads them when the
+/// theme changes and plays at most one of each kind per frame at `volume`.
+/// The default names none, so a game is silent until it sets some; a file
+/// that will not load (or no audio device) leaves that sound silent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiSounds {
@@ -432,6 +438,20 @@ pub struct UiSounds {
   pub tick: Option<String>,
   pub error: Option<String>,
   pub volume: f32,
+}
+
+impl UiSounds {
+  /// The file named for `sound`
+  pub(crate) fn path(&self, sound: UiSound) -> Option<&str> {
+    match sound {
+      UiSound::Focus => &self.focus,
+      UiSound::Confirm => &self.confirm,
+      UiSound::Back => &self.back,
+      UiSound::Tick => &self.tick,
+      UiSound::Error => &self.error,
+    }
+    .as_deref()
+  }
 }
 
 impl Default for UiSounds {

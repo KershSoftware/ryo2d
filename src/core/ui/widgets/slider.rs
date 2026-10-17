@@ -142,6 +142,9 @@ impl Slider<'_, '_> {
         Some(Direction::Right) => value = snap(value + by),
         _ => {}
       }
+      if value != before && ui.nav_step_for(id).is_some() {
+        ui.play_tick();
+      }
     }
     if value != before {
       *self.value = value;
@@ -475,5 +478,25 @@ mod tests {
       })
       .collect();
     assert_eq!(texts, vec!["Volume".to_string(), "0.50".to_string()]);
+  }
+
+  #[test]
+  fn slider_ticks_are_rate_limited() {
+    use crate::core::ui::memory::UiSound;
+    let mut d = UiDriver::new((200.0, 100.0));
+    let mut v = 0.0;
+    d.frame(|ui| slider(ui, &mut v));
+    d.frame(|ui| slider(ui, &mut v));
+    let mut ticks = 0;
+    for _ in 0..20 {
+      d.nav(Direction::Right);
+      d.frame(|ui| slider(ui, &mut v));
+      ticks += usize::from(d.last_sounds().contains(&UiSound::Tick));
+    }
+    assert!((v - 1.0).abs() < 1e-5, "every press stepped: {v}");
+    assert!(
+      (1..=7).contains(&ticks),
+      "one tick per 0.05 s at most, every third frame: {ticks}"
+    );
   }
 }

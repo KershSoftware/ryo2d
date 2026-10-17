@@ -48,7 +48,7 @@ use crate::core::text::{
 use crate::core::ui::id::{UiId, key_hash};
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::layout::{Edges, Flow, Measure, UiStyle};
-use crate::core::ui::memory::{Flags, UiMemory};
+use crate::core::ui::memory::{Flags, UiMemory, UiSound};
 use crate::core::ui::popup::{Popup, SetAside};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{Look, Skin, Theme, WidgetKind, WidgetState, warn_once};
@@ -686,6 +686,21 @@ impl<'a> UiContext<'a> {
     self.memory.request_focus(id);
   }
 
+  /// Raise `sound` for the top scene's frame (once per kind); the engine
+  /// plays the theme's sound of that kind after the UI pass
+  pub(crate) fn play(&mut self, sound: UiSound) {
+    if self.top {
+      self.memory.interact.play(sound);
+    }
+  }
+
+  /// Raise a slider tick for the top scene, at most every 0.05 s
+  pub(crate) fn play_tick(&mut self) {
+    if self.top {
+      self.memory.interact.tick();
+    }
+  }
+
   /// Whether `id` has the keyboard and gamepad focus (in the top scene)
   pub fn is_focused(&self, id: UiId) -> bool {
     self.focused() == Some(id)
@@ -726,6 +741,7 @@ impl<'a> UiContext<'a> {
     let free = self.top && i.back_pressed && !i.back_used && !i.back_taken;
     if free {
       i.back_taken = true;
+      i.play(UiSound::Back);
     }
     free
   }

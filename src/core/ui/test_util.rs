@@ -15,7 +15,7 @@ use crate::core::ui::interact::{
   PointerInput, apply_scroll_requests, resolve_pointer, route_wheel,
 };
 use crate::core::ui::layout::engine::LayoutEngine;
-use crate::core::ui::memory::UiMemory;
+use crate::core::ui::memory::{UiMemory, UiSound};
 use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
 use crate::core::ui::theme::Theme;
 
@@ -295,6 +295,11 @@ impl UiDriver {
   /// What the navigation took of the input in the last frame that had any
   /// (a direction pressed or held, Confirm, Back, Tab or a tab switch); a
   /// frame without navigation input leaves it
+  pub(crate) fn last_sounds(&self) -> Vec<UiSound> {
+    self.memory.interact.sounds.clone()
+  }
+
+  /// The navigation outcome of the last frame
   pub(crate) fn last_outcome(&self) -> &NavOutcome {
     &self.outcome
   }

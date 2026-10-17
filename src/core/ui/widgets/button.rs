@@ -11,7 +11,7 @@ use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::Color;
 use crate::core::ui::immediate::{UiContext, text_seed};
 use crate::core::ui::layout::{Edges, Measure};
-use crate::core::ui::memory::Flags;
+use crate::core::ui::memory::{Flags, UiSound};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::WidgetKind;
 use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
@@ -188,6 +188,9 @@ impl Button<'_, '_> {
       ui.focus_ring(index, look.radius);
     }
     response.rect = ui.close_node(index).rect;
+    if response.clicked() {
+      ui.play(UiSound::Confirm);
+    }
     ui.tooltip_tick(self.opts.tooltip.as_ref(), &response);
     Some(response)
   }
@@ -392,6 +395,28 @@ mod tests {
       }
     });
     ids
+  }
+
+  #[test]
+  fn navigation_and_activation_raise_sounds_once_a_frame() {
+    use crate::core::ui::memory::UiSound;
+    let mut d = UiDriver::new((300.0, 300.0));
+    let items = ["A", "B", "C"];
+    for _ in 0..2 {
+      d.frame(|ui| menu(ui, &items, &mut None));
+    }
+    d.nav(Direction::Down);
+    d.frame(|ui| menu(ui, &items, &mut None));
+    assert_eq!(d.last_sounds(), vec![UiSound::Focus]);
+    d.confirm();
+    d.frame(|ui| menu(ui, &items, &mut None));
+    assert_eq!(d.last_sounds(), vec![UiSound::Confirm]);
+    d.move_to(10.0, 5.0);
+    d.frame(|ui| menu(ui, &items, &mut None));
+    assert!(
+      d.last_sounds().is_empty(),
+      "focus that follows the mouse is silent"
+    );
   }
 
   #[test]

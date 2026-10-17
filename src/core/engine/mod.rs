@@ -221,6 +221,13 @@ pub struct Engine {
   ui_layout: LayoutEngine,
   /// The `UiTheme` generation whose skin sprites are loaded
   theme_generation: Option<u64>,
+  /// The `UiTheme` generation whose sounds are loaded
+  sounds_generation: Option<u64>,
+  /// UI sound paths that failed to load (each warned about once)
+  sounds_warned: std::collections::HashSet<String>,
+  /// How many of this frame's UI sounds were played already (a rerun pass
+  /// appends to the frame's list)
+  sounds_played: usize,
   /// Reloads the theme's file when it changes
   #[cfg(debug_assertions)]
   theme_watch: crate::core::ui::theme::ThemeWatch,
@@ -607,6 +614,9 @@ impl Engine {
       ui_layout: LayoutEngine::new(),
       // None: the starting theme's skins load on the first pass
       theme_generation: None,
+      sounds_generation: None,
+      sounds_warned: Default::default(),
+      sounds_played: 0,
       #[cfg(debug_assertions)]
       theme_watch: Default::default(),
       ui_pass_index: 0,

@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 
 use glam::Vec2;
 
-use super::memory::{Flags, Record, UiMemory};
+use super::memory::{Flags, Record, UiMemory, UiSound};
 use super::widgets::scroll::ScrollState;
 use super::{Rect, UiId};
 use crate::core::input::{Direction, InputDevice};
@@ -504,6 +504,8 @@ pub(crate) fn resolve_focus(
   }
   // Moved by the pointer (no scrolling into view), else by navigation
   let mut by_pointer = false;
+  // Moved by a direction or Tab: the only moves that sound
+  let mut by_keys = false;
 
   let (scope, scroll) = {
     let nav = Nav::new(memory, top_scene);
@@ -642,6 +644,7 @@ pub(crate) fn resolve_focus(
         if let Some(id) = target {
           i.focused = id;
           by_pointer = false;
+          by_keys = true;
         }
         continue;
       };
@@ -656,6 +659,7 @@ pub(crate) fn resolve_focus(
       } else if let Some(id) = nav.step(i.focused, direction) {
         i.focused = id;
         by_pointer = false;
+        by_keys = true;
       }
     }
 
@@ -669,6 +673,7 @@ pub(crate) fn resolve_focus(
       {
         i.focused = id;
         by_pointer = false;
+        by_keys = true;
       }
     }
 
@@ -684,13 +689,25 @@ pub(crate) fn resolve_focus(
           && nav.record(i.focused).is_some_and(|r| {
             r.flags.contains(Flags::DROP_TARGET) && r.accepts == Some(drag.type_id)
           });
+        // A target that refuses the payload leaves it held
+        let refused = drag.pad
+          && !takes
+          && nav
+            .record(i.focused)
+            .is_some_and(|r| r.flags.contains(Flags::DROP_TARGET));
         if takes {
           i.dropped = Some((i.focused, drag.payload));
+          i.play(UiSound::Confirm);
         } else {
           i.drag = Some(drag);
+          if refused {
+            i.play(UiSound::Error);
+          }
         }
       } else if !typing {
         i.activated = i.focused;
+        // A pad's pick-up of a drag source sounds as the confirm it is
+        i.play(UiSound::Confirm);
       }
       outcome.used.push("ui.confirm");
     }
@@ -709,6 +726,7 @@ pub(crate) fn resolve_focus(
       input.back && (dragging || record.is_some_and(|r| r.flags.contains(Flags::USES_BACK)));
     if i.back_used && !capturing {
       outcome.used.push("ui.back");
+      i.play(UiSound::Back);
     }
 
     // Taken only by a tabs widget (`tab_taken`), so the keys stay the game's
@@ -732,6 +750,9 @@ pub(crate) fn resolve_focus(
     // Navigation scrolls what it reaches into view; the pointer is on it
     if !by_pointer && i.focused != UiId::NONE {
       memory.request_scroll(i.focused);
+    }
+    if by_keys && !by_pointer && i.focused != UiId::NONE {
+      i.play(UiSound::Focus);
     }
   }
   i.focus_visible = matches!(input.device, InputDevice::Keyboard | InputDevice::Gamepad);

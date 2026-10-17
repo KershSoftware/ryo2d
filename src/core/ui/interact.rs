@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use super::memory::{Flags, Record, UiMemory};
+use super::memory::{Flags, Record, UiMemory, UiSound};
 use super::widgets::scroll::ScrollState;
 use super::{Rect, UiId};
 
@@ -153,6 +153,8 @@ pub(crate) fn resolve_pointer(
     if pointer.released[0] {
       if target != UiId::NONE {
         i.dropped = Some((target, Arc::clone(&drag.payload)));
+      } else if !blocked && top_scene.is_some_and(|scene| refuses_at(memory, position, scene)) {
+        i.play(UiSound::Error);
       }
       i.drag = None;
     } else if !pointer.down[0] {
@@ -164,6 +166,18 @@ pub(crate) fn resolve_pointer(
   }
   memory.interact = i;
   outcome
+}
+
+/// Whether an enabled drop target of `scene` lies under `at` (the one that
+/// would take the payload was not found, so it refuses the type)
+fn refuses_at(memory: &UiMemory, at: Vec2, scene: u64) -> bool {
+  memory.prev_records().any(|(_, r)| {
+    r.scene == scene
+      && r.flags.contains(Flags::DROP_TARGET)
+      && !r.flags.contains(Flags::DISABLED)
+      && r.rect.contains(at.x, at.y)
+      && r.clip.is_none_or(|clip| clip.contains(at.x, at.y))
+  })
 }
 
 /// The drop target for a payload of `type_id` under `at`, among `scene`'s

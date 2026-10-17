@@ -9,7 +9,7 @@ use crate::core::input::Binding;
 use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::immediate::{PendingRebind, UiContext, text_seed};
 use crate::core::ui::layout::{Align, Edges, Flow, Measure, UiStyle};
-use crate::core::ui::memory::{Flags, UiMemory};
+use crate::core::ui::memory::{Flags, UiMemory, UiSound};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, WidgetState, warn_once};
 use crate::core::ui::tree::{Node, TextLeaf};
@@ -134,9 +134,14 @@ impl Rebind<'_, '_> {
         || now - state.since >= CAPTURE_TIMEOUT;
       if cancelled {
         state.capturing = false;
+        // A row that cannot capture any more is no one's cancel
+        if !disabled && known && top {
+          ui.play(UiSound::Error);
+        }
       } else if ui.input().key_pressed(KeyCode::Escape) {
         ui.consume_key(KeyCode::Escape);
         state.capturing = false;
+        ui.play(UiSound::Error);
       } else if let Some(binding) = captured_press(ui) {
         match binding {
           Binding::Key(key) => ui.consume_key(key),
@@ -386,6 +391,11 @@ mod tests {
     d.key(KeyCode::Escape);
     assert!(!d.frame(row));
     assert!(d.pending_rebinds().is_empty());
+    assert!(
+      d.last_sounds()
+        .contains(&crate::core::ui::memory::UiSound::Error),
+      "a cancelled capture sounds an error"
+    );
     d.confirm();
     d.frame(row);
     for _ in 0..(5 * 60 + 2) {
