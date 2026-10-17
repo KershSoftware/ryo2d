@@ -515,6 +515,8 @@ pub(crate) fn resolve_focus(
 
     // Scopes that appeared take focus: a modal or trap always (into it,
     // even when it has nothing to focus), another only when nothing has it
+    // and no trap is open (a modal holding only text keeps the page under
+    // it unfocused)
     for (scope, record) in &nav.scopes {
       if known.contains(scope) {
         continue;
@@ -523,6 +525,7 @@ pub(crate) fn resolve_focus(
         stack.push((*scope, i.focused));
         i.focused = nav.trap_default_in(*scope).unwrap_or(UiId::NONE);
       } else if i.focused == UiId::NONE
+        && stack.is_empty()
         && let Some(id) = nav.default_in(*scope)
       {
         i.focused = id;
@@ -973,6 +976,42 @@ mod tests {
     resolve(&mut m, NavInput::default());
     assert_eq!(m.interact.focused, UiId(2), "back where it was");
     assert_eq!(m.interact.gained, UiId(2));
+  }
+
+  #[test]
+  fn a_page_scope_appearing_under_an_empty_modal_takes_no_focus() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    let modal = Flags::FOCUS_SCOPE | Flags::TRAP | Flags::MODAL;
+    // A modal holding only text: nothing in it takes the focus
+    let dialog = (
+      200,
+      rec(Rect::new(50.0, 50.0, 100.0, 100.0), 10, modal, UiId::NONE),
+    );
+    draw(&mut m, &[dialog]);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(m.modal_stack.len(), 1, "the modal is open");
+    assert_eq!(m.interact.focused, UiId::NONE);
+    let mut both = menu(&[FOCUSABLE | Flags::DEFAULT_FOCUS, FOCUSABLE]);
+    both.push(dialog);
+    draw(&mut m, &both);
+    resolve(&mut m, NavInput::default());
+    assert_eq!(
+      m.interact.focused,
+      UiId::NONE,
+      "the page appearing under the modal takes no focus"
+    );
+    draw(&mut m, &both);
+    let confirm = NavInput {
+      confirm: true,
+      ..NavInput::default()
+    };
+    resolve(&mut m, confirm);
+    assert_eq!(
+      m.interact.activated,
+      UiId::NONE,
+      "Confirm acts on nothing under it"
+    );
   }
 
   #[test]

@@ -522,6 +522,16 @@ fn to_taffy(style: &UiStyle, parent: Option<&Flow>, measure: &Measure) -> taffy:
       if style.height == Length::Fit {
         t.size.height = length(s.y);
       }
+      // Filling, it has no size of its own, so a parent sized to its
+      // contents would make it zero: its fixed size is its floor, unless the
+      // caller capped it below that (a min would beat the cap)
+      let below = |max: Option<f32>, size: f32| max.is_some_and(|max| max < size);
+      if style.width == Length::Fill && !below(style.max_width, s.x) {
+        t.min_size.width = length(s.x);
+      }
+      if style.height == Length::Fill && !below(style.max_height, s.y) {
+        t.min_size.height = length(s.y);
+      }
     }
     Measure::Text => {
       t.flex_shrink = 1.0;

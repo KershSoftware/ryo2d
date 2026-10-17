@@ -435,6 +435,26 @@ mod tests {
   }
 
   #[test]
+  fn a_fill_width_slider_in_a_fit_column_keeps_its_width() {
+    use crate::core::ui::Theme;
+    let width = Theme::dark().metrics.sizes.slider[0];
+    let mut d = UiDriver::new((300.0, 100.0));
+    let mut v = 0.5;
+    let mut draw = |ui: &mut UiContext<'_>| {
+      let mut track = Rect::default();
+      let column = ui
+        .column()
+        .show(|ui| track = ui.slider(&mut v, 0.0..=1.0).fill_width().show().rect)
+        .rect;
+      (column, track)
+    };
+    d.frame(&mut draw);
+    let (column, track) = d.frame(&mut draw);
+    assert_eq!(column.width, width, "the column fits the slider");
+    assert_eq!(track.width, width, "the slider keeps its own width");
+  }
+
+  #[test]
   fn a_slider_can_show_its_label_and_value() {
     use crate::core::ui::immediate::UiCommand;
     let mut d = UiDriver::new((300.0, 100.0));

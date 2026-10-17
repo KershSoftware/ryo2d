@@ -15,7 +15,9 @@ pub enum Length {
   Px(f32),
   /// A fraction of the parent, 0.0 to 1.0
   Pct(f32),
-  /// Take what the parent has left (the rest of the main axis, all of the cross axis)
+  /// Take what the parent has left (the rest of the main axis, all of the
+  /// cross axis). A widget of its own size (a button, a slider) is never
+  /// smaller than that size, unless a `max_width`/`max_height` caps it below
   Fill,
   /// Fit the content
   #[default]
