@@ -169,7 +169,7 @@ let area = ui.scroll().height(300.0).fill_width().gap(4.0).show(|ui| {
 
 - Contents are laid out as a column (`.horizontal()` for a row, `.both()` for both ways) and shown through the view you size; they are clipped for drawing and for hits. `.no_bar()` hides the scrollbar.
 - **The wheel** goes to the scroll area under the pointer (the topmost thing there decides, so a panel or popup over a list keeps the wheel from it), innermost first: an area at its edge passes the wheel to the one around it. Shift scrolls sideways. Scrolling eases (0.08 s). A wheel a scroll area took never reaches gameplay.
-- **The pad** walks a long list: focus moves onto rows scrolled out of view and scrolls them in. The right stick scrolls the focused widget's area, or the first area in its focus scope (a dialog's text above its Close button).
+- **The pad** walks a long list: focus moves onto rows scrolled out of view and scrolls them in, through nested areas too (a strip of cards inside a list is reached from the rows around it, and every area around the focused widget scrolls to show it). The right stick scrolls the focused widget's area, or the first area in its focus scope (a dialog's text above its Close button).
 - `ui.scroll_to(id)` brings a widget into view from the next frame; `ui.scroll_offset(area.id)` reads where an area shows from; `ui.set_scroll_offset(area.id, Vec2::new(0.0, 0.0))` jumps there without easing.
 
 ## 7. Focus and Navigation

@@ -296,17 +296,26 @@ impl<'m> Nav<'m> {
     if record.scope == UiId::NONE && !(via == Via::Click && flags.contains(Flags::TEXT_FIELD)) {
       return false;
     }
-    if record.scroll == UiId::NONE {
-      return shows_in(record.rect, record.clip);
+    self.shows(record)
+  }
+
+  /// Whether a record shows: inside its clip, or for one in a scroll area,
+  /// when it has a size and its area shows by the same rule. Rows scrolled
+  /// out of view stay reachable, so the pad can walk a list, and so do the
+  /// contents of an area nested in a list that has scrolled it out of view.
+  fn shows(&self, record: &Record) -> bool {
+    let mut at = record;
+    for _ in 0..MAX_SCOPE_DEPTH {
+      if at.scroll == UiId::NONE {
+        return shows_in(at.rect, at.clip);
+      }
+      let sized = finite(at.rect) && at.rect.width > 0.0 && at.rect.height > 0.0;
+      match self.memory.drawn(at.scroll) {
+        Some(area) if sized => at = area,
+        _ => return false,
+      }
     }
-    // Rows scrolled out of view stay reachable, so the pad can walk a list
-    finite(record.rect)
-      && record.rect.width > 0.0
-      && record.rect.height > 0.0
-      && self
-        .memory
-        .drawn(record.scroll)
-        .is_some_and(|area| shows_in(area.rect, record.clip))
+    false
   }
 
   fn focusable(&self, id: UiId, via: Via) -> bool {
@@ -427,13 +436,44 @@ impl<'m> Nav<'m> {
     chain
   }
 
+  /// The part of candidate `r` a move from inside the scroll areas
+  /// `inside` (innermost first) counts, or `None` when none of it does. A
+  /// candidate sharing an area with the move's start is inside that list:
+  /// it counts whole, clipped only by the areas nested in the shared one
+  /// (a card in a strip in the list, by the strip), since moving to it
+  /// scrolls the list. One in no shared area counts by the part that
+  /// shows, so a move never jumps into a list to a row the player cannot
+  /// see.
+  fn seen_from(&self, r: &Record, inside: &[UiId]) -> Option<Rect> {
+    if r.scroll == UiId::NONE {
+      return Some(r.rect);
+    }
+    let chain = self.scroll_chain(r);
+    let Some(shared) = chain.iter().position(|area| inside.contains(area)) else {
+      return match r.clip {
+        Some(clip) => shows_in(r.rect, Some(clip)).then(|| clipped(r.rect, clip)),
+        None => Some(r.rect),
+      };
+    };
+    let mut rect = r.rect;
+    for area in &chain[..shared] {
+      let view = self.record(*area)?.rect;
+      if !shows_in(rect, Some(view)) {
+        return None;
+      }
+      rect = clipped(rect, view);
+    }
+    Some(rect)
+  }
+
   /// The widget a move in `direction` from `from` lands on: its explicit
   /// neighbour, else the nearest that way in its scope, else (in a wrapping
   /// scope) the far end, else the same in each scope around it, until a
   /// trapping one. The candidates are the `targets` (`trap` is the
   /// innermost open trapping scope). Rows scrolled out of view are
-  /// candidates only from inside their own scroll area, so a move from
-  /// outside a list never lands on (or past) one it cannot see.
+  /// candidates only from inside a scroll area they are in (`seen_from`),
+  /// so a move from outside a list never lands on (or past) one it cannot
+  /// see.
   fn step(&self, from: UiId, direction: Direction, trap: Option<UiId>) -> Option<UiId> {
     let record = self.record(from)?;
     let explicit = DIRECTIONS
@@ -443,15 +483,8 @@ impl<'m> Nav<'m> {
     if explicit != from && self.focusable(explicit, Via::Nav) {
       return Some(explicit);
     }
-    // A candidate in a scroll area `from` is not inside counts by the part
-    // of it that shows
     let inside = self.scroll_chain(record);
-    let seen = |r: &Record| match r.clip {
-      Some(clip) if r.scroll != UiId::NONE && !inside.contains(&r.scroll) => {
-        shows_in(r.rect, Some(clip)).then(|| clipped(r.rect, clip))
-      }
-      _ => Some(r.rect),
-    };
+    let seen = |r: &Record| self.seen_from(r, &inside);
     let mut scope = record.scope;
     for _ in 0..MAX_SCOPE_DEPTH {
       let candidates = || {

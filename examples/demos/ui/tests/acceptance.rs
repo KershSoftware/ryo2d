@@ -183,6 +183,53 @@ fn the_quit_confirm_gives_the_focus_back_to_quit_by_pad_alone() {
 }
 
 #[test]
+fn the_clipping_pages_strip_of_cards_is_reached_from_its_rows() {
+  // Clipping & Modals: 40 rows of 26 with a strip of 64-tall cards in them
+  let Some(mut engine) = start(6) else {
+    return;
+  };
+  let height = |engine: &HeadlessEngine| {
+    let focused = engine.ui_focused();
+    engine
+      .ui_focusables()
+      .into_iter()
+      .find(|(id, _)| Some(*id) == focused)
+      .map(|(_, rect)| rect.height)
+  };
+  let is_card = |engine: &HeadlessEngine| height(engine).is_some_and(|h| h > 40.0);
+  // A press, then time for the list to scroll there
+  let settle = |engine: &mut HeadlessEngine, button: GamepadButton| {
+    pad(engine, button);
+    engine.step_frames(20).unwrap();
+  };
+  // From the Show Modal Dialog button, Left into the list
+  settle(&mut engine, GamepadButton::DPadLeft);
+  assert_eq!(height(&engine), Some(26.0), "a row has the focus");
+  let mut downs = 0;
+  while !is_card(&engine) {
+    downs += 1;
+    assert!(downs <= 12, "Down from row to row never reaches a card");
+    settle(&mut engine, GamepadButton::DPadDown);
+  }
+  // On to the last row, then back up from row to row
+  let mut last = engine.ui_focused();
+  loop {
+    settle(&mut engine, GamepadButton::DPadDown);
+    if engine.ui_focused() == last {
+      break;
+    }
+    last = engine.ui_focused();
+  }
+  assert_eq!(height(&engine), Some(26.0), "the last row");
+  let mut ups = 0;
+  while !is_card(&engine) {
+    ups += 1;
+    assert!(ups <= 40, "Up from row to row never reaches a card");
+    settle(&mut engine, GamepadButton::DPadUp);
+  }
+}
+
+#[test]
 fn the_pad_moves_an_item_into_its_equipment_slot() {
   let Some(mut engine) = start(2) else {
     return;

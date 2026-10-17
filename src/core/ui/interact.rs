@@ -286,35 +286,46 @@ pub(crate) fn route_wheel(
   taken
 }
 
-/// Carry out the `scroll_to` requests made last frame: each scroll area
-/// around a requested widget moves its `target` the least that brings the
-/// widget's rect (as last frame laid it out) into view.
+/// Carry out the `scroll_to` requests made last frame: every scroll area
+/// around a requested widget, innermost first, moves its `target` the least
+/// that brings the widget's rect (as last frame laid it out, moved by what
+/// the areas inside already scroll) into view, so a card in a strip nested
+/// in a list is brought into view in the strip and in the list.
 pub(crate) fn apply_scroll_requests(memory: &mut UiMemory) {
   for id in memory.take_scroll_requests() {
     let Some(record) = memory.prev(id).copied() else {
       continue;
     };
-    let Some(area) = memory.prev(record.scroll).copied() else {
-      continue;
-    };
-    let Some(state) = memory.state::<ScrollState>(record.scroll, area.scene) else {
-      continue;
-    };
-    let max = state.max();
-    // Last frame's rects were laid out at the offset the state still holds
-    let from = Vec2::new(record.rect.x - area.rect.x, record.rect.y - area.rect.y) + state.offset;
     let size = Vec2::new(record.rect.width, record.rect.height);
-    for axis in 0..2 {
-      let (start, end) = (from[axis], from[axis] + size[axis]);
-      let (seen, view) = (state.offset[axis], state.view[axis]);
-      let wanted = if start < seen {
-        start
-      } else if end > seen + view {
-        end - view
-      } else {
-        continue;
+    // Where the widget will be once the areas inside the next one settle
+    let mut at = Vec2::new(record.rect.x, record.rect.y);
+    let mut next = record.scroll;
+    let mut seen = Vec::new();
+    while next != UiId::NONE && seen.len() < MAX_SCROLL_CHAIN && !seen.contains(&next) {
+      seen.push(next);
+      let Some(area) = memory.prev(next).copied() else {
+        break;
       };
-      state.target[axis] = wanted.clamp(0.0, max[axis]);
+      let Some(state) = memory.state::<ScrollState>(next, area.scene) else {
+        break;
+      };
+      let max = state.max();
+      // Last frame's rects were laid out at the offset the state still holds
+      let from = at - Vec2::new(area.rect.x, area.rect.y) + state.offset;
+      for axis in 0..2 {
+        let (start, end) = (from[axis], from[axis] + size[axis]);
+        let (shown, view) = (state.offset[axis], state.view[axis]);
+        let wanted = if start < shown {
+          start
+        } else if end > shown + view {
+          end - view
+        } else {
+          continue;
+        };
+        state.target[axis] = wanted.clamp(0.0, max[axis]);
+      }
+      at += state.offset - state.target;
+      next = area.scroll;
     }
   }
 }
