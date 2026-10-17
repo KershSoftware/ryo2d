@@ -13,7 +13,7 @@ use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{LookPatch, WidgetKind, WidgetState};
 use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
-use crate::core::ui::{Rect, UiId};
+use crate::core::ui::{Rect, UiId, popup};
 
 /// Separates the list's id (the scope of its options) from the trigger's
 const LIST_SALT: u64 = 0x6c69_7374;
@@ -139,8 +139,11 @@ impl Dropdown<'_, '_> {
   /// Record the open list below `anchor` (the trigger's rect): a popup
   /// column in the dropdown's normal look (opaque in the built-in themes,
   /// so the page does not show through), a focus scope that traps, of one
-  /// option per entry. The option picked this frame, if any.
+  /// option per entry in a scroll area no taller than the room on the side
+  /// it opens on, so a long list stays inside the UI and the wheel and
+  /// navigation scroll it. The option picked this frame, if any.
   fn list(&self, ui: &mut UiContext<'_>, list: UiId, anchor: Option<Rect>) -> Option<usize> {
+    let room = popup::room(anchor, ui.ui_size()) - 2.0 * LIST_PADDING;
     ui.begin_popup(anchor, false);
     let style = UiStyle {
       flow: Flow::Column,
@@ -154,23 +157,28 @@ impl Dropdown<'_, '_> {
     ui.memory.scopes.push(list);
     let current = ui.theme().palette.accent;
     let mut picked = None;
-    for (i, option) in self.options.iter().enumerate() {
-      let mut row = ui
-        .button(*option)
-        .id(i)
-        .kind(WidgetKind::Choice)
-        .also(Flags::USES_BACK)
-        .label_left()
-        .fill_width();
-      if i == *self.selected {
-        row = row
-          .default_focus()
-          .style(LookPatch::default().text(current));
-      }
-      if row.show().clicked() {
-        picked = Some(i);
-      }
-    }
+    ui.scroll()
+      .fill_width()
+      .max_height(room.max(0.0))
+      .show(|ui| {
+        for (i, option) in self.options.iter().enumerate() {
+          let mut row = ui
+            .button(*option)
+            .id(i)
+            .kind(WidgetKind::Choice)
+            .also(Flags::USES_BACK)
+            .label_left()
+            .fill_width();
+          if i == *self.selected {
+            row = row
+              .default_focus()
+              .style(LookPatch::default().text(current));
+          }
+          if row.show().clicked() {
+            picked = Some(i);
+          }
+        }
+      });
     ui.memory.scopes.pop();
     ui.close_node(node);
     ui.end_popup();
@@ -493,6 +501,83 @@ mod tests {
     d.back();
     assert!(!d.frame(|ui| draw(ui, &mut sel)), "the list used Back");
     assert!(!list_shown(&d), "and closed");
+  }
+
+  /// Whether `inner` lies inside `outer` (to a hair, for rounding)
+  fn within(inner: Rect, outer: Rect) -> bool {
+    inner.x >= outer.x - 0.5
+      && inner.y >= outer.y - 0.5
+      && inner.right() <= outer.right() + 0.5
+      && inner.bottom() <= outer.bottom() + 0.5
+  }
+
+  #[test]
+  fn a_long_list_stays_inside_the_ui_and_scrolls_to_its_last_option() {
+    use crate::core::ui::memory::Flags;
+
+    let labels: Vec<String> = (0..40).map(|i| format!("Option {i}")).collect();
+    let options: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let ui_rect = Rect::new(0.0, 0.0, 320.0, 180.0);
+    let mut d = UiDriver::new((320.0, 180.0));
+    let mut sel = 0;
+    // The trigger's id
+    let draw = |d: &mut UiDriver, sel: &mut usize| {
+      d.frame(|ui| {
+        let mut trigger = crate::core::ui::UiId::NONE;
+        ui.column().focus_scope().show(|ui| {
+          trigger = ui
+            .dropdown(sel, &options)
+            .at(Rect::new(10.0, 60.0, 120.0, 28.0))
+            .default_focus()
+            .show()
+            .id;
+        });
+        trigger
+      })
+    };
+    for _ in 0..2 {
+      draw(&mut d, &mut sel);
+    }
+    d.confirm();
+    let mut trigger = draw(&mut d, &mut sel);
+    for _ in 0..2 {
+      trigger = draw(&mut d, &mut sel);
+    }
+    let list = trigger.derived(super::LIST_SALT);
+    let Some(shown) = d.memory.drawn(list).map(|r| r.rect) else {
+      panic!("the list opened");
+    };
+    assert!(
+      within(shown, ui_rect),
+      "the list {shown:?} stays inside the UI"
+    );
+    // The options, by order
+    let mut rows: Vec<_> = d
+      .memory
+      .drawn_records()
+      .filter(|(_, r)| r.scope == list && r.flags.contains(Flags::FOCUSABLE))
+      .map(|(id, r)| (r.order, id))
+      .collect();
+    rows.sort_unstable();
+    assert_eq!(rows.len(), 40);
+    let last = rows[39].1;
+    for _ in 0..39 {
+      d.nav(Direction::Down);
+      draw(&mut d, &mut sel);
+    }
+    for _ in 0..30 {
+      draw(&mut d, &mut sel);
+    }
+    assert_eq!(d.focused(), Some(last), "Down reaches the last option");
+    let Some(row) = d.memory.drawn(last).copied() else {
+      panic!("the last option is drawn");
+    };
+    assert!(
+      within(row.rect, ui_rect) && row.clip.is_some_and(|clip| within(row.rect, clip)),
+      "the last option {:?} is scrolled into view (clip {:?})",
+      row.rect,
+      row.clip
+    );
   }
 
   #[test]

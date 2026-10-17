@@ -123,7 +123,7 @@ ui.panel()                       // a column with the panel look and padding; it
 | Slider | `ui.slider(&mut self.volume, 0.0..=1.0).step(0.05).label("Volume").show_value();` | drag or click the track; Left/Right step it (a twentieth of the range without `.step`) |
 | Progress | `ui.progress(self.health).label("HP").width(160.0);` | 0..1, clamped |
 | Text field | `let r = ui.text_input(&mut self.name).placeholder("Name").max_len(16).show();` | one line; `.password()`; `r.submitted()` on Enter; caret, selection, clipboard, IME |
-| Dropdown | `if ui.dropdown(&mut self.quality, &["Low", "High"]).width(160.0).show().changed() {}` | the list opens on the popup layer and traps focus; Back closes it |
+| Dropdown | `if ui.dropdown(&mut self.quality, &["Low", "High"]).width(160.0).show().changed() {}` | the list opens on the popup layer and traps focus; Back closes it; a long list scrolls, no taller than the room below or above it |
 | Tabs | `ui.tabs(&mut self.tab, &["Audio", "Video"]);` | share their row's width; Q/E and the shoulder buttons switch them |
 | Choice list | `if let Some(i) = ui.choice_list(&["Yes", "No"]).show() {}` | a focus scope of choices; keys 1-9 pick; `.default(i)` |
 | Slot | `ui.slot().icon(&sprite).count(3).selected(true);` | a square for inventories; no icon is an empty slot; `.filter(..)` |

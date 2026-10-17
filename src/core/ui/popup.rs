@@ -57,6 +57,18 @@ pub(crate) fn below(anchor: Rect, size: Vec2, ui: Vec2) -> Vec2 {
   Vec2::new(x, y)
 }
 
+/// The tallest a popup opened at `anchor` in a UI of `ui` can be and stay
+/// inside it: the room on the roomier side, below or above. Capped at that,
+/// [`below`] puts it on the side it chooses anyway (below or above when it
+/// fits there, else that roomier side) without moving it over the anchor.
+/// The whole UI without an anchor.
+pub(crate) fn room(anchor: Option<Rect>, ui: Vec2) -> f32 {
+  let room = anchor.map_or(ui.y, |anchor| {
+    (ui.y - anchor.bottom() - GAP).max(anchor.y - GAP)
+  });
+  if room.is_finite() { room.max(0.0) } else { 0.0 }
+}
+
 impl UiContext<'_> {
   /// Start recording a popup: the nodes that follow go into a subtree of
   /// their own, opened in the focus scope here, until
@@ -187,7 +199,7 @@ impl UiContext<'_> {
 mod tests {
   use glam::Vec2;
 
-  use super::below;
+  use super::{below, room};
   use crate::core::ui::Rect;
 
   const UI: Vec2 = Vec2::new(300.0, 200.0);
@@ -217,6 +229,25 @@ mod tests {
       below(anchor, Vec2::new(100.0, 50.0), UI),
       Vec2::new(200.0, 32.0)
     );
+  }
+
+  #[test]
+  fn a_popup_capped_at_its_room_stays_inside_on_the_roomier_side() {
+    // Near the top the room is below, near the bottom above
+    for (anchor, below_it) in [
+      (Rect::new(10.0, 10.0, 120.0, 28.0), true),
+      (Rect::new(10.0, 150.0, 120.0, 28.0), false),
+    ] {
+      let height = room(Some(anchor), UI);
+      let at = below(anchor, Vec2::new(120.0, height), UI);
+      assert!(at.y >= 0.0 && at.y + height <= UI.y, "{anchor:?}: inside");
+      if below_it {
+        assert_eq!(at.y, anchor.bottom() + 2.0, "{anchor:?}: below it");
+      } else {
+        assert!(at.y + height <= anchor.y, "{anchor:?}: above it");
+      }
+    }
+    assert_eq!(room(None, UI), UI.y, "without an anchor, the whole UI");
   }
 
   #[test]
