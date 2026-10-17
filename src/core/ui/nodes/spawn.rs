@@ -8,7 +8,7 @@ use crate::core::ui::theme::warn_once;
 
 use super::components::{
   BackAnswer, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName,
-  UiNodes, UiOptions, UiRoot, UiTextValue, UiTooltip, UiValue, register_node_components,
+  UiNodes, UiOptions, UiRoot, UiTextValue, UiTooltip, UiValue,
 };
 use super::node::{Kind, UiNode, UiNodeKind};
 
@@ -27,7 +27,6 @@ pub(crate) fn spawn_ui(world: &mut World, scene: u64, tree: UiNode) -> Entity {
   let anchor = tree.layout.anchor.unwrap_or(Anchor::TopLeft);
   let offset = tree.layout.offset.unwrap_or(Vec2::ZERO);
   let (at, embedded) = (tree.layout.at, tree.embedded);
-  register_node_components(world);
   let mut pending = Vec::new();
   let top = spawn_node(world, None, true, tree, &mut pending);
 
@@ -65,7 +64,6 @@ pub(crate) fn spawn_ui_in(world: &mut World, parent: Entity, tree: UiNode) -> Op
     });
     return None;
   }
-  register_node_components(world);
   let mut pending = Vec::new();
   let top = spawn_node(world, Some(parent), false, tree, &mut pending);
   finish(world, top, pending);

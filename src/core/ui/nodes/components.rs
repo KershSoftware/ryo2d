@@ -3,12 +3,10 @@
 use glam::Vec2;
 
 use crate::core::asset::SpriteHandle;
-use crate::core::ecs::kernel::{Component, Entity, Resource, World};
-use crate::core::text::TextReveal;
+use crate::core::ecs::kernel::{Component, Entity, Resource};
 use crate::core::ui::{Anchor, Rect, UiId};
 
 use super::events::UiEvent;
-use super::node::UiNodeKind;
 
 /// The root of a spawned tree
 ///
@@ -126,29 +124,6 @@ pub(crate) struct UiNodes {
   pub(crate) pending: Vec<UiEvent>,
   /// Embedded roots drawn this pass
   pub(crate) embedded_drawn: Vec<Entity>,
-}
-
-/// Register every component a node may carry. The walk reads a node's
-/// optional components in one tuple, which fails for a component type the
-/// world has never registered.
-pub(crate) fn register_node_components(world: &mut World) {
-  world.register_component::<UiNodeKind>();
-  world.register_component::<UiRoot>();
-  world.register_component::<UiName>();
-  world.register_component::<UiLabel>();
-  world.register_component::<UiImage>();
-  world.register_component::<UiChecked>();
-  world.register_component::<UiValue>();
-  world.register_component::<UiIndex>();
-  world.register_component::<UiOptions>();
-  world.register_component::<UiTextValue>();
-  world.register_component::<UiSlot>();
-  world.register_component::<UiTooltip>();
-  world.register_component::<UiHidden>();
-  world.register_component::<UiDisabled>();
-  world.register_component::<UiInteraction>();
-  world.register_component::<BackAnswer>();
-  world.register_component::<TextReveal>();
 }
 
 #[cfg(test)]

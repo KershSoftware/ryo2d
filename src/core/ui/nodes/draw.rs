@@ -8,7 +8,9 @@
 
 use glam::Vec2;
 
-use crate::core::ecs::kernel::{Children, Entity, EntityWorldMut, Has, Mut, World};
+use crate::core::ecs::kernel::{
+  Children, Entity, EntityWorldMut, Has, Mut, ReleaseStateQueryData, SingleEntityQueryData, World,
+};
 use crate::core::text::{RichText, TextReveal, TextStyle};
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::{Anchor, Rect, Response, Theme, UiContext};
@@ -405,6 +407,30 @@ macro_rules! widget_opts {
   }};
 }
 
+/// Read a node's components as one tuple. A component type in it that the
+/// world has never registered (an optional one nothing has inserted yet) is
+/// registered first, so each tuple registers what it reads. A node whose
+/// components still cannot be read is warned once and not drawn.
+fn components<'a, Q: ReleaseStateQueryData + SingleEntityQueryData>(
+  node: &'a mut EntityWorldMut<'_>,
+  kind: &str,
+) -> Option<Q::Item<'a, 'static>> {
+  if Q::get_state(node.world().components()).is_none() {
+    node.world_scope(|world| {
+      Q::init_state(world);
+    });
+  }
+  match node.get_components_mut::<Q>() {
+    Ok(items) => Some(items),
+    Err(err) => {
+      warn_once(format!("ui-node:read:{kind}"), || {
+        format!("could not read a {kind} node's components ({err}); it is not drawn")
+      });
+      None
+    }
+  }
+}
+
 /// Warn once that a `kind` node has no `component`; it is not drawn
 fn missing(kind: &str, component: &str) -> Option<Response> {
   warn_once(format!("ui-node:missing:{kind}:{component}"), || {
@@ -424,19 +450,17 @@ fn rich(text: &str, markup: bool) -> RichText {
 
 /// Draw a button node
 fn draw_button(
-  node: EntityWorldMut<'_>,
+  mut node: EntityWorldMut<'_>,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
-  let (kind, label, tooltip, disabled) = node
-    .get_components::<(
-      &UiNodeKind,
-      Option<&UiLabel>,
-      Option<&UiTooltip>,
-      Has<UiDisabled>,
-    )>()
-    .ok()?;
+  let (kind, label, tooltip, disabled) = components::<(
+    &UiNodeKind,
+    Option<&UiLabel>,
+    Option<&UiTooltip>,
+    Has<UiDisabled>,
+  )>(&mut node, "button")?;
   let Kind::Button(opts) = &kind.kind else {
     return None;
   };
@@ -459,19 +483,17 @@ fn draw_button(
 
 /// Draw an image node
 fn draw_image(
-  node: EntityWorldMut<'_>,
+  mut node: EntityWorldMut<'_>,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
-  let (kind, image, tooltip, disabled) = node
-    .get_components::<(
-      &UiNodeKind,
-      Option<&UiImage>,
-      Option<&UiTooltip>,
-      Has<UiDisabled>,
-    )>()
-    .ok()?;
+  let (kind, image, tooltip, disabled) = components::<(
+    &UiNodeKind,
+    Option<&UiImage>,
+    Option<&UiTooltip>,
+    Has<UiDisabled>,
+  )>(&mut node, "image")?;
   let Kind::Image(opts) = &kind.kind else {
     return None;
   };
@@ -516,8 +538,8 @@ fn role_style(theme: &Theme, role: TextRole) -> TextStyle {
 /// its `TextReveal` if it has one; it has no response
 fn draw_text(mut node: EntityWorldMut<'_>, ui: &mut UiContext<'_>) {
   let entity = node.id();
-  let Ok((kind, label, reveal)) =
-    node.get_components_mut::<(&UiNodeKind, Option<&UiLabel>, Option<&mut TextReveal>)>()
+  let Some((kind, label, reveal)) =
+    components::<(&UiNodeKind, Option<&UiLabel>, Option<&mut TextReveal>)>(&mut node, "text")
   else {
     return;
   };
@@ -775,6 +797,28 @@ mod tests {
     h.frame(|_| {});
     assert_eq!(targets(&h).len(), 1);
     assert_eq!(warnings("a button node has no UiLabel"), 1);
+  }
+
+  #[test]
+  fn a_node_draws_though_its_optional_components_were_never_registered() {
+    use crate::core::text::TextReveal;
+    let mut h = UiHarness::new(300.0, 300.0);
+    h.spawn_ui(UiNode::column().focus_scope().child(UiNode::button("A")));
+    let mut text = UiHarness::new(300.0, 300.0);
+    text.spawn_ui(UiNode::text("Title"));
+    for world in [h.world(), text.world()] {
+      let components = world.components();
+      assert!(
+        components.component_id::<UiTooltip>().is_none()
+          && components.component_id::<UiDisabled>().is_none()
+          && components.component_id::<TextReveal>().is_none(),
+        "a fresh world has never seen them"
+      );
+    }
+    h.frame(|_| {});
+    text.frame(|_| {});
+    assert_eq!(targets(&h).len(), 1, "the button drew");
+    assert_eq!(text.command_count(), 1, "the text drew");
   }
 
   #[test]
