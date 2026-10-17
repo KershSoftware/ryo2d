@@ -99,11 +99,11 @@ impl UiContext<'_> {
       ui.push_draw(
         index,
         DrawKind::Text {
-          leaf: TextLeaf {
+          leaf: Box::new(TextLeaf {
             text,
             style,
             options,
-          },
+          }),
           frac: Vec2::ZERO,
           wrap: false,
           opacity: f32::from(look.text.a) / 255.0,

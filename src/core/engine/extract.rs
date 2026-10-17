@@ -221,7 +221,7 @@ impl Engine {
       // World text: lay out what changed, build the glyphs asked for ahead,
       // then each camera's glyph quads (none if the game removed `Fonts`)
       if self.world.contains_resource::<Fonts>() {
-        layout_world_text(&mut self.world, &mut self.text);
+        layout_world_text(&mut self.world, &mut self.text, &self.prompts);
         let render_scale = self
           .world
           .get_resource::<ScreenMapping>()

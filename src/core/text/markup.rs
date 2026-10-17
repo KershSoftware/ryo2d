@@ -1,6 +1,6 @@
 //! The markup syntax: `[tag]`, `[tag=value]`, `[/tag]`, `[[` for a bracket.
-//! Style tags: color, size, font, b, i, outline, icon, pause; any other tag
-//! is an effect. Malformed markup is drawn literally and warned once.
+//! Style tags: color, size, font, b, i, outline, icon, pause, prompt; any
+//! other tag is an effect. Malformed markup is drawn literally and warned once.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -35,10 +35,13 @@ enum Resolved {
   Pop,
   Icon(String),
   Pause(f32),
+  Prompt(String),
 }
 
 impl RichText {
-  /// Parse markup: `"Deal [color=#f44]20[/color] [icon=a_button]"`
+  /// Parse markup: `"Deal [color=#f44]20[/color] [icon=a_button]"`.
+  /// `[prompt=jump]` shows what triggers the `jump` action on the player's
+  /// last device (a registered glyph, or a label such as `[A]`)
   pub fn markup(source: &str) -> Self {
     let tokens = tokenize(source);
     let mut problems = Vec::new();
@@ -120,6 +123,7 @@ enum Open {
   Span(Span),
   Icon(String),
   Pause(f32),
+  Prompt(String),
 }
 
 fn classify(name: &str, value: Option<&str>, source: &str) -> Open {
@@ -134,6 +138,10 @@ fn classify(name: &str, value: Option<&str>, source: &str) -> Open {
   match name {
     "icon" => match value {
       Some(v) if !v.is_empty() => Open::Icon(v.to_string()),
+      _ => bad,
+    },
+    "prompt" => match value {
+      Some(v) if !v.is_empty() => Open::Prompt(v.to_string()),
       _ => bad,
     },
     "pause" => match value.and_then(parse_positive) {
@@ -245,6 +253,7 @@ fn resolve(tokens: &[Token<'_>], problems: &mut Vec<&'static str>) -> Vec<Resolv
         Some(Open::Span(span)) => out.push(Resolved::Push(span.clone())),
         Some(Open::Icon(name)) => out.push(Resolved::Icon(name.clone())),
         Some(Open::Pause(seconds)) => out.push(Resolved::Pause(*seconds)),
+        Some(Open::Prompt(action)) => out.push(Resolved::Prompt(action.clone())),
         _ => {}
       },
       Token::Close { .. } => out.extend(std::iter::repeat_n(Resolved::Pop, pops[i])),
@@ -280,6 +289,7 @@ fn build(resolved: &[Resolved]) -> RichText {
       }
       Resolved::Icon(name) => rich = rich.icon_named(name.clone()),
       Resolved::Pause(seconds) => rich = rich.pause(*seconds),
+      Resolved::Prompt(action) => rich = rich.prompt(action),
     }
   }
   rich
@@ -419,6 +429,13 @@ mod tests {
     assert_eq!(rich.as_str(), "[color=red]never closed");
     let rich = RichText::markup("[size=huge]bad value[/size]");
     assert_eq!(rich.as_str(), "[size=huge]bad value[/size]");
+  }
+
+  #[test]
+  fn a_prompt_tag_marks_its_byte() {
+    let text = RichText::markup("Press [prompt=jump] to jump");
+    assert_eq!(text.as_str(), "Press  to jump");
+    assert_eq!(text.prompts, vec![(6, "jump".to_string())]);
   }
 
   #[test]

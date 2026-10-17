@@ -7,8 +7,10 @@ use crate::core::ecs::kernel::Resource;
 use crate::engine_info;
 
 pub(crate) mod actions;
+mod labels;
 
 pub use actions::{Actions, Binding, Direction, StickDirection};
+pub use labels::PadFamily;
 
 /// Standard gamepad buttons (mapped from gilrs).
 ///
@@ -1036,6 +1038,12 @@ impl Input {
   /// Returns the name of the connected gamepad, or empty string if none.
   pub fn gamepad_name(&self) -> &str {
     &self.gamepad_name
+  }
+
+  /// The connected pad's family (from its name), which prompts label its
+  /// buttons for: Xbox when none is connected or the name says nothing
+  pub fn pad_family(&self) -> PadFamily {
+    PadFamily::from_name(&self.gamepad_name)
   }
 
   /// Returns true if the gamepad button is currently held down.

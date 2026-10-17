@@ -172,11 +172,11 @@ impl Button<'_, '_> {
     ui.push_draw(
       index,
       DrawKind::Text {
-        leaf: TextLeaf {
+        leaf: Box::new(TextLeaf {
           text: label,
           style,
           options,
-        },
+        }),
         frac: Vec2::new(self.label_x, 0.5),
         wrap: false,
         opacity: f32::from(look.text.a) / 255.0,

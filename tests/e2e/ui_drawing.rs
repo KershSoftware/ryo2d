@@ -347,3 +347,66 @@ fn a_centred_panel_draws_in_the_middle() {
     "left of the panel"
   );
 }
+
+/// A controls page: a rebinding row for "jump" (Space), with "fire" on J;
+/// gameplay counts the frames it sees "jump" held
+struct Controls {
+  jump_held: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl Scene for Controls {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx
+      .actions()
+      .bind("jump", [Binding::Key(KeyCode::Space)])
+      .bind("fire", [Binding::Key(KeyCode::KeyJ)]);
+  }
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if ctx.input.action_held("jump") {
+      self
+        .jump_held
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    SceneAction::Continue
+  }
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    ui.column().focus_scope().show(|ui| {
+      ui.rebind("jump").default_focus().show();
+    });
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_rebind_row_binds_the_next_key_swaps_and_keeps_it_from_gameplay() {
+  let jump_held = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+  let scene = Controls {
+    jump_held: jump_held.clone(),
+  };
+  let Some(mut engine) = engine(None, |b| b, scene) else {
+    return;
+  };
+  // Enter starts the capture on the focused row; J, held, is captured
+  engine.tap_key(KeyCode::Enter);
+  engine.step_frames(2).unwrap();
+  engine.press_key(KeyCode::KeyJ);
+  engine.step_frames(3).unwrap();
+  let actions = engine.world().resource::<Input>().actions().clone();
+  assert_eq!(actions.bindings("jump"), &[Binding::Key(KeyCode::KeyJ)]);
+  assert_eq!(
+    actions.bindings("fire"),
+    &[Binding::Key(KeyCode::Space)],
+    "J came from fire, which takes Space"
+  );
+  let held = |held: &std::sync::atomic::AtomicU32| held.load(std::sync::atomic::Ordering::Relaxed);
+  assert_eq!(
+    held(&jump_held),
+    0,
+    "the captured J stays the UI's while held"
+  );
+  engine.release_key(KeyCode::KeyJ);
+  engine.step_frames(1).unwrap();
+  engine.press_key(KeyCode::KeyJ);
+  engine.step_frames(1).unwrap();
+  assert!(held(&jump_held) > 0, "pressed again, J jumps");
+}

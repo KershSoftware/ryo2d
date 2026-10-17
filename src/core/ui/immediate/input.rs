@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
+use crate::core::input::actions::{KEY_NAMES, PAD_NAMES};
 use crate::core::input::{GamepadButton, Input, InputView};
 
 /// The frame's input as the UI sees it.
@@ -20,6 +21,7 @@ pub struct UiInput {
   view: InputView,
   consumed_keys: HashSet<KeyCode>,
   consumed_mouse: HashSet<MouseButton>,
+  consumed_gamepad: HashSet<GamepadButton>,
   text_consumed: Cell<bool>,
   scroll_consumed: bool,
   /// UI units per screen unit (1 unless the game set a UI scale)
@@ -32,6 +34,7 @@ impl Default for UiInput {
       view: InputView::default(),
       consumed_keys: HashSet::new(),
       consumed_mouse: HashSet::new(),
+      consumed_gamepad: HashSet::new(),
       text_consumed: Cell::new(false),
       scroll_consumed: false,
       mouse_scale: 1.0,
@@ -44,6 +47,7 @@ impl Default for UiInput {
 pub struct UiConsumed {
   pub keys: Vec<KeyCode>,
   pub mouse: Vec<MouseButton>,
+  pub gamepad: Vec<GamepadButton>,
   pub text: bool,
   pub scroll: bool,
 }
@@ -126,6 +130,24 @@ impl UiInput {
     !self.consumed_keys.contains(&key) && self.view.keys_repeated.contains(&key)
   }
 
+  /// A key pressed this frame and not consumed: the first in `KEY_NAMES`
+  /// order when several are (a rebinding row captures it)
+  pub(crate) fn key_pressed_any(&self) -> Option<KeyCode> {
+    let rank = |key: &KeyCode| {
+      KEY_NAMES
+        .iter()
+        .position(|(_, known)| known == key)
+        .unwrap_or(usize::MAX)
+    };
+    self
+      .view
+      .keys_pressed
+      .iter()
+      .filter(|key| !self.consumed_keys.contains(key))
+      .min_by_key(|key| rank(key))
+      .copied()
+  }
+
   /// The frame's typed text. The first non-empty read consumes it.
   pub fn text_input(&self) -> &str {
     if self.text_consumed.get() {
@@ -156,7 +178,16 @@ impl UiInput {
   // --- gamepad ---
 
   pub fn gamepad_button_pressed(&self, button: GamepadButton) -> bool {
-    self.view.gamepad_pressed.contains(&button)
+    !self.consumed_gamepad.contains(&button) && self.view.gamepad_pressed.contains(&button)
+  }
+
+  /// A pad button pressed this frame and not consumed: the first in
+  /// `PAD_NAMES` order when several are (a rebinding row captures it)
+  pub(crate) fn gamepad_pressed_any(&self) -> Option<GamepadButton> {
+    PAD_NAMES
+      .iter()
+      .map(|&(_, button)| button)
+      .find(|button| self.gamepad_button_pressed(*button))
   }
 
   pub fn left_stick(&self) -> (f32, f32) {
@@ -173,6 +204,12 @@ impl UiInput {
   /// Take `button` for the rest of the frame, from the UI and from gameplay.
   pub fn consume_mouse(&mut self, button: MouseButton) {
     self.consumed_mouse.insert(button);
+  }
+
+  /// Take a pad `button` for the rest of the frame, from the UI and from
+  /// gameplay.
+  pub fn consume_gamepad(&mut self, button: GamepadButton) {
+    self.consumed_gamepad.insert(button);
   }
 
   /// Take the frame's typed text.
@@ -198,6 +235,7 @@ impl UiInput {
     UiConsumed {
       keys: self.consumed_keys.iter().copied().collect(),
       mouse: self.consumed_mouse.iter().copied().collect(),
+      gamepad: self.consumed_gamepad.iter().copied().collect(),
       text: self.text_consumed.get(),
       scroll: self.scroll_consumed,
     }
@@ -240,6 +278,9 @@ impl UiInput {
     for &button in &self.consumed_mouse {
       input.consume_mouse(button);
     }
+    for &button in &self.consumed_gamepad {
+      input.consume_gamepad_button(button);
+    }
     if self.text_consumed.get() {
       input.consume_text();
     }
@@ -274,6 +315,39 @@ mod tests {
       !input.key_pressed(KeyCode::Escape),
       "gameplay no longer sees it"
     );
+  }
+
+  #[test]
+  fn a_pad_press_the_ui_takes_is_gone_for_gameplay() {
+    let mut input = Input::new();
+    for button in [GamepadButton::East, GamepadButton::South] {
+      input.queue(InputEvent::PadButton {
+        button,
+        pressed: true,
+      });
+    }
+    input.begin_frame();
+    let mut ui = UiInput::snapshot(&input);
+    assert_eq!(ui.gamepad_pressed_any(), Some(GamepadButton::South));
+    ui.consume_gamepad(GamepadButton::South);
+    assert!(!ui.gamepad_button_pressed(GamepadButton::South));
+    assert_eq!(ui.gamepad_pressed_any(), Some(GamepadButton::East));
+    ui.apply_consumed(&mut input);
+    assert!(!input.gamepad_button_pressed(GamepadButton::South));
+    assert!(input.gamepad_button_pressed(GamepadButton::East));
+  }
+
+  #[test]
+  fn the_first_key_pressed_is_by_name_order() {
+    let mut input = Input::new();
+    for key in [KeyCode::KeyZ, KeyCode::KeyB] {
+      input.queue(InputEvent::Key { key, pressed: true });
+    }
+    input.begin_frame();
+    let mut ui = UiInput::snapshot(&input);
+    assert_eq!(ui.key_pressed_any(), Some(KeyCode::KeyB));
+    ui.consume_key(KeyCode::KeyB);
+    assert_eq!(ui.key_pressed_any(), Some(KeyCode::KeyZ));
   }
 
   #[test]

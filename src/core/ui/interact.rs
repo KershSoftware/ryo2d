@@ -79,6 +79,7 @@ pub(crate) fn resolve_pointer(
   }
   i.prev_pointer = i.pointer;
   i.pointer = position;
+  i.now = pointer.time;
   i.hot = hot;
   i.hovered = hit.hovered;
   i.over_ui = over_ui;

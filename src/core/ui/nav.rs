@@ -567,7 +567,16 @@ pub(crate) fn resolve_focus(
         .record(id)
         .is_some_and(|r| r.flags.contains(Flags::TEXT_FIELD))
     };
+    // A rebinding row waiting for a press keeps the focus from the pointer
+    // passing over, and every key and button is its own: no direction,
+    // Tab, Confirm, Back or tab switch is navigation's, and none is used
+    let is_capturing = |id: UiId| {
+      nav
+        .record(id)
+        .is_some_and(|r| r.flags.contains(Flags::CAPTURING))
+    };
     if pointer_moved
+      && !is_capturing(i.focused)
       && !is_field(i.focused)
       && !is_field(i.hot)
       && i.hot != i.focused
@@ -596,8 +605,13 @@ pub(crate) fn resolve_focus(
     // captures its direction until it is released: every held frame is the
     // UI's, so gameplay never sees it between repeats. A direction held from
     // before (gameplay's press) is never captured and never repeats.
-    let scoped = !nav.scopes.is_empty();
-    for (k, direction) in DIRECTIONS.into_iter().enumerate() {
+    let capturing = is_capturing(i.focused);
+    let scoped = !nav.scopes.is_empty() && !capturing;
+    if capturing {
+      i.repeat = [None; 4];
+    }
+    let directions = DIRECTIONS.into_iter().enumerate();
+    for (k, direction) in directions.filter(|_| !capturing) {
       let fire = if input.pressed[k] {
         i.repeat[k] = None;
         true
@@ -648,7 +662,7 @@ pub(crate) fn resolve_focus(
     // Tab walks every focusable in order, Shift+Tab back; a text field
     // outside any scope has no order to walk, so it keeps the focus
     let scope_less = nav.record(i.focused).is_some_and(|r| r.scope == UiId::NONE);
-    if input.next && !scope_less && (i.focused != UiId::NONE || scoped) {
+    if input.next && !capturing && !scope_less && (i.focused != UiId::NONE || scoped) {
       outcome.used.push("ui.next");
       if let Some(id) = nav.tab(i.focused, input.shift, &stack)
         && id != i.focused
@@ -664,7 +678,7 @@ pub(crate) fn resolve_focus(
     // focused target that takes it (a drag source turns its activation into
     // a pick-up itself).
     let typing = is_field(i.focused);
-    if input.confirm && i.focused != UiId::NONE {
+    if input.confirm && !capturing && i.focused != UiId::NONE {
       if let Some(drag) = i.drag.take() {
         let takes = drag.pad
           && nav.record(i.focused).is_some_and(|r| {
@@ -682,16 +696,18 @@ pub(crate) fn resolve_focus(
     }
 
     // Back is used when a payload is held (it cancels the drag) or the
-    // focused widget uses it; otherwise it is left for `ui.back()`
+    // focused widget uses it; otherwise it is left for `ui.back()`. A
+    // capturing row uses it too (so `ui.back()` stays false), as a press to
+    // bind, not as navigation's
     let record = nav.record(i.focused);
-    let dragging = i.drag.is_some();
+    let dragging = i.drag.is_some() && !capturing;
     if input.back && dragging {
       i.drag = None;
     }
     i.back_pressed = input.back;
     i.back_used =
       input.back && (dragging || record.is_some_and(|r| r.flags.contains(Flags::USES_BACK)));
-    if i.back_used {
+    if i.back_used && !capturing {
       outcome.used.push("ui.back");
     }
 

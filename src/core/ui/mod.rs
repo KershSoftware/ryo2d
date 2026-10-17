@@ -76,7 +76,7 @@ pub mod theme;
 pub(crate) mod tree;
 pub mod tween;
 mod types;
-mod widgets;
+pub(crate) mod widgets;
 
 // Re-export core types at module root for convenience
 pub use containers::Container;
@@ -85,8 +85,8 @@ pub use layout::{Align, Edges, Justify, Length};
 pub use response::{Response, Sense};
 pub use types::{Anchor, Color, Rect};
 pub use widgets::{
-  Button, Checkbox, ChoiceList, Custom, Dropdown, Image, Modal, Painter, Progress, Radio, Scroll,
-  Slider, Slot, Tabs, TextInput, Toggle,
+  Button, Checkbox, ChoiceList, Custom, Dropdown, Image, Modal, Painter, Progress, Prompt, Radio,
+  Rebind, Scroll, Slider, Slot, Tabs, TextInput, Toggle,
 };
 
 // Re-export immediate mode API (stateless per-frame drawing)

@@ -1,6 +1,7 @@
 //! `ui.custom`: a widget the game paints itself with a `Painter`
 
 use std::panic::Location;
+use std::sync::Arc;
 
 use glam::Vec2;
 
@@ -8,11 +9,12 @@ use super::common::{WidgetOpts, widget_builders};
 use crate::core::asset::SpriteHandle;
 use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextEngine, TextLayoutOptions, TextStyle};
-use crate::core::ui::immediate::{UiCommand, UiContext, text_seed};
+use crate::core::ui::immediate::{PromptContext, UiCommand, UiContext, text_seed};
 use crate::core::ui::layout::{Length, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::tree::{DrawKind, Node};
+use crate::core::ui::widgets::prompt::resolve_prompts;
 use crate::core::ui::{Color, Rect};
 
 /// A custom widget being set up: a box of its own size that the game
@@ -119,8 +121,12 @@ impl Custom<'_, '_> {
     let index = ui.push_node(node, self.opts.at);
     if let Some(paint) = paint {
       let scale = ui.ui_scale();
+      let prompts = ui.prompts_arc();
+      let accent = ui.theme().palette.accent;
       let mut painter = Painter {
         text: ui.text_engine(),
+        prompts,
+        accent,
         scale,
         size,
         commands: Vec::new(),
@@ -148,6 +154,9 @@ impl Drop for Custom<'_, '_> {
 /// when the layout is done.
 pub struct Painter<'p> {
   text: &'p mut TextEngine,
+  /// What `[prompt=..]` marks in painted text resolve against
+  prompts: Arc<PromptContext>,
+  accent: Color,
   /// Render pixels per UI unit
   scale: f32,
   size: Vec2,
@@ -205,6 +214,7 @@ impl Painter<'_> {
   /// Draw `text` in `style` with its top-left at (x, y)
   pub fn text(&mut self, text: impl Into<RichText>, x: f32, y: f32, style: &TextStyle) {
     let text = text.into();
+    let text = resolve_prompts(&text, &self.prompts, self.accent);
     let options = TextLayoutOptions::default();
     let Some(layout) = self.text.layout(&text, style, &options, self.scale) else {
       return;

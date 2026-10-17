@@ -164,11 +164,11 @@ impl Slot<'_, '_> {
       ui.push_draw(
         index,
         DrawKind::Text {
-          leaf: TextLeaf {
+          leaf: Box::new(TextLeaf {
             text,
             style,
             options,
-          },
+          }),
           frac: Vec2::ONE,
           wrap: false,
           opacity: f32::from(alpha) / 255.0,

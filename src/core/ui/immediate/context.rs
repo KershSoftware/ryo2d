@@ -22,7 +22,9 @@
 //! ui.pop_clip();
 //! ```
 
+use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
+use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::Location;
 use std::sync::Arc;
@@ -36,12 +38,12 @@ use super::commands::{UiCommand, UiCommands};
 use super::input::UiInput;
 
 use crate::core::asset::SpriteHandle;
-use crate::core::input::Direction;
+use crate::core::input::{Binding, Direction, InputDevice, PadFamily};
 use crate::core::render::UiSpace;
 use crate::core::render::batch::Filter;
 use crate::core::text::{
-  RichText, TextAlign, TextEngine, TextLayout, TextLayoutOptions, TextOverflow, TextReveal,
-  TextStyle,
+  RichText, TextAlign, TextEngine, TextIcons, TextLayout, TextLayoutOptions, TextOverflow,
+  TextReveal, TextStyle,
 };
 use crate::core::ui::id::{UiId, key_hash};
 use crate::core::ui::layout::engine::LayoutEngine;
@@ -55,6 +57,7 @@ use crate::core::ui::tree::{
 };
 use crate::core::ui::types::{Anchor, Color, Rect};
 use crate::core::ui::widgets::common::WidgetOpts;
+use crate::core::ui::widgets::prompt::resolve_prompts;
 
 /// `pop_clip` on an empty stack was warned about
 static EMPTY_POP_WARNED: AtomicBool = AtomicBool::new(false);
@@ -83,6 +86,29 @@ pub(crate) fn text_seed(text: &RichText, style: &TextStyle, options: &TextLayout
   style.hash_into(&mut h);
   options.hash_into(&mut h);
   h.finish()
+}
+
+/// What input prompts read: the player's last device and pad family, every
+/// action's bindings and the glyphs the game registered in `TextIcons`.
+/// The engine builds it each frame from `Input` and `TextIcons`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PromptContext {
+  pub(crate) device: InputDevice,
+  pub(crate) family: PadFamily,
+  pub(crate) bindings: BTreeMap<String, Vec<Binding>>,
+  pub(crate) icons: TextIcons,
+}
+
+/// A press a rebinding row captured this pass: the engine binds it to the
+/// action after the pass, and notes a swap on the row's state
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PendingRebind {
+  /// The row, and the scene it is in
+  pub(crate) id: UiId,
+  pub(crate) scene: u64,
+  pub(crate) action: String,
+  pub(crate) slot: usize,
+  pub(crate) binding: Binding,
 }
 
 /// `rect` as layout can use it: a part that is not finite becomes 0 and a
@@ -247,11 +273,13 @@ impl<'u> UiText<'u, '_> {
 
   fn record(&mut self) -> Vec2 {
     self.recorded = true;
-    let text = std::mem::take(&mut self.text);
     let style = std::mem::take(&mut self.style);
     let options = self.options;
     let typewriter = self.typewriter.take();
     let ui = &mut *self.ui;
+    // Prompts become the device's glyphs or labels before anything is laid
+    // out, so a leaf is measured as it is drawn
+    let text = ui.with_prompts(std::mem::take(&mut self.text));
     let scale = ui.space.px_scale;
     // Text that cannot be laid out records nothing and advances no reveal.
     // A leaf is laid out again at its width; its clusters stay the same.
@@ -370,6 +398,11 @@ pub struct UiContext<'a> {
   /// The tooltip a widget asked for this scene, with the rect of the widget
   /// it belongs to: drawn when the scene's UI ends
   pub(crate) pending_tooltip: Option<(RichText, Rect)>,
+  /// What prompts read: the device, the bindings and the glyphs
+  prompts: Arc<PromptContext>,
+  /// The presses rebinding rows captured this pass, for the engine to bind
+  /// after it
+  pub(crate) pending_rebinds: Vec<PendingRebind>,
 }
 
 /// The draw layer a scene's page records on
@@ -415,7 +448,43 @@ impl<'a> UiContext<'a> {
       scene: 0,
       top: false,
       pending_tooltip: None,
+      prompts: Arc::new(PromptContext::default()),
+      pending_rebinds: Vec::new(),
     }
+  }
+
+  /// Prompts read `prompts` this pass (the engine's, built from `Input`
+  /// and `TextIcons`)
+  pub(crate) fn set_prompts(&mut self, prompts: Arc<PromptContext>) {
+    self.prompts = prompts;
+  }
+
+  /// What prompts read: the device, the bindings and the glyphs
+  pub(crate) fn prompts(&self) -> &PromptContext {
+    &self.prompts
+  }
+
+  /// The prompts' context, shared: for a painter that lays text out
+  pub(crate) fn prompts_arc(&self) -> Arc<PromptContext> {
+    Arc::clone(&self.prompts)
+  }
+
+  /// The presses rebinding rows captured this pass, taken
+  pub(crate) fn take_rebinds(&mut self) -> Vec<PendingRebind> {
+    std::mem::take(&mut self.pending_rebinds)
+  }
+
+  /// `text` with its prompts resolved for the device (unchanged without any)
+  pub(crate) fn resolved<'t>(&self, text: &'t RichText) -> Cow<'t, RichText> {
+    resolve_prompts(text, &self.prompts, self.theme.palette.accent)
+  }
+
+  /// [`resolved`](Self::resolved), owned
+  pub(crate) fn with_prompts(&self, text: RichText) -> RichText {
+    if text.prompts.is_empty() {
+      return text;
+    }
+    self.resolved(&text).into_owned()
   }
 
   /// The UI theme this pass draws with (`ctx.ui_theme()` changes it, from
@@ -841,7 +910,14 @@ impl<'a> UiContext<'a> {
 
   /// Draw `kind` on `node` of the open subtree, in the painter's order of
   /// this call
-  pub(crate) fn push_draw(&mut self, node: usize, kind: DrawKind) {
+  pub(crate) fn push_draw(&mut self, node: usize, mut kind: DrawKind) {
+    // A label's prompts are resolved before layout measures or draws it
+    if let DrawKind::Text { leaf, seed, .. } = &mut kind
+      && !leaf.text.prompts.is_empty()
+    {
+      leaf.text = self.with_prompts(std::mem::take(&mut leaf.text));
+      *seed = text_seed(&leaf.text, &leaf.style, &leaf.options);
+    }
     let order = self.next_order();
     let layer = self.layer;
     if let Some(subtree) = &mut self.subtree {
@@ -965,11 +1041,16 @@ impl<'a> UiContext<'a> {
   pub(crate) fn text_leaf(
     &mut self,
     site: &'static Location<'static>,
-    leaf: TextLeaf,
+    mut leaf: TextLeaf,
     draw: (f32, Option<(f32, f32)>, u64),
     measured: Vec2,
   ) -> Vec2 {
-    let (opacity, reveal, seed) = draw;
+    let (opacity, reveal, mut seed) = draw;
+    // Measured as it is drawn: with its prompts resolved, keyed by that
+    if !leaf.text.prompts.is_empty() {
+      leaf.text = self.with_prompts(leaf.text);
+      seed = text_seed(&leaf.text, &leaf.style, &leaf.options);
+    }
     let id = self.memory.scopes.make(site, None);
     let style = UiStyle {
       anchor: leaf.options.anchor,
@@ -991,7 +1072,7 @@ impl<'a> UiContext<'a> {
     self.push_draw(
       index,
       DrawKind::Text {
-        leaf,
+        leaf: Box::new(leaf),
         frac,
         wrap: true,
         opacity,
@@ -1065,6 +1146,12 @@ impl<'a> UiContext<'a> {
     self.input.consume_key(key);
   }
 
+  /// Consume a pad `button` for this frame, from other widgets and from
+  /// gameplay
+  pub(crate) fn consume_gamepad(&mut self, button: crate::core::input::GamepadButton) {
+    self.input.consume_gamepad(button);
+  }
+
   /// Consume every key and the typed text for this frame, from other
   /// widgets and from gameplay (a focused text field takes them)
   pub(crate) fn consume_keyboard(&mut self) {
@@ -1100,8 +1187,9 @@ impl<'a> UiContext<'a> {
     self.mouse_occluded = true;
   }
 
-  /// Whether the UI wants the keyboard: a text field of the top scene has
-  /// the focus, or the top scene has an open dropdown list or `ui.popup`.
+  /// Whether the UI wants the keyboard: a text field or a rebinding row
+  /// waiting for a press has the focus in the top scene, or the top scene
+  /// has an open dropdown list or `ui.popup`.
   /// Both count from the frame's start (so before the widget is drawn too),
   /// and a list counts from the frame it opens. A dropdown that is merely
   /// focused does not count, nor does a modal (the game closes its modal
@@ -1111,7 +1199,9 @@ impl<'a> UiContext<'a> {
   /// that read keys in `ui` (through `ui.input()`) can check this to leave
   /// them alone while the player types or picks from a list.
   pub fn wants_keyboard(&self) -> bool {
-    self.text_field_focused() || self.list_open()
+    self.focused_record_has(Flags::TEXT_FIELD)
+      || self.focused_record_has(Flags::CAPTURING)
+      || self.list_open()
   }
 
   /// Whether an open list or popup of the top scene traps the focus: a
@@ -1152,8 +1242,10 @@ impl<'a> UiContext<'a> {
     false
   }
 
-  /// Whether the focus is on a text field of the top scene
-  fn text_field_focused(&self) -> bool {
+  /// Whether the focus is on a record of the top scene with `flag` (a
+  /// text field, a capturing row): this frame's record once it is drawn,
+  /// else last frame's
+  fn focused_record_has(&self, flag: Flags) -> bool {
     let i = &self.memory.interact;
     if i.focused == UiId::NONE {
       return false;
@@ -1162,9 +1254,7 @@ impl<'a> UiContext<'a> {
       .memory
       .current(i.focused)
       .or_else(|| self.memory.prev(i.focused))
-      .is_some_and(|record| {
-        record.flags.contains(Flags::TEXT_FIELD) && Some(record.scene) == i.nav_scene
-      })
+      .is_some_and(|record| record.flags.contains(flag) && Some(record.scene) == i.nav_scene)
   }
 
   // =========================================================================
@@ -1440,8 +1530,9 @@ impl<'a> UiContext<'a> {
     reveal: Option<(f32, f32)>,
   ) -> Option<Vec2> {
     let scale = self.space.px_scale;
-    let layout = self.engine()?.layout(text, style, options, scale)?;
-    let seed = text_seed(text, style, options);
+    let text = self.resolved(text);
+    let layout = self.engine()?.layout(&text, style, options, scale)?;
+    let seed = text_seed(&text, style, options);
     Some(self.record_layout(layout, origin, opacity, reveal, seed))
   }
 
@@ -1500,8 +1591,9 @@ impl<'a> UiContext<'a> {
   pub fn measure_text(&self, text: impl Into<RichText>, style: &TextStyle) -> Vec2 {
     let options = TextLayoutOptions::default();
     let scale = self.space.px_scale;
+    let text = self.with_prompts(text.into());
     self.engine().map_or(Vec2::ZERO, |mut engine| {
-      engine.measure(&text.into(), style, &options, scale)
+      engine.measure(&text, style, &options, scale)
     })
   }
 
@@ -1513,8 +1605,9 @@ impl<'a> UiContext<'a> {
     options: &TextLayoutOptions,
   ) -> Vec2 {
     let scale = self.space.px_scale;
+    let text = self.resolved(text);
     self.engine().map_or(Vec2::ZERO, |mut engine| {
-      engine.measure(text, style, options, scale)
+      engine.measure(&text, style, options, scale)
     })
   }
 

@@ -27,11 +27,13 @@ use crate::core::render::{
 };
 use crate::core::text::{
   BitmapFace, FaceSource, FontId, FontRender, Fonts, GlyphContext, GlyphFormat, GlyphKey, GlyphMod,
-  GlyphRasterizer, GlyphStyle, Icon, PlacedGlyph, PlacedIcon, Text2d, TextBounds, TextEffects,
-  TextEngine, TextIcons, TextLayout, TextLayoutState, TextReveal, clean_opacity, glyph_id,
-  raster_size_step, reveal_alpha,
+  GlyphRasterizer, GlyphStyle, Icon, PlacedGlyph, PlacedIcon, RichText, Text2d, TextBounds,
+  TextEffects, TextEngine, TextIcons, TextLayout, TextLayoutState, TextReveal, clean_opacity,
+  glyph_id, raster_size_step, reveal_alpha,
 };
-use crate::core::ui::{Color, Rect};
+use crate::core::ui::immediate::PromptContext;
+use crate::core::ui::widgets::prompt::resolve_prompts;
+use crate::core::ui::{Color, Palette, Rect, UiTheme};
 use crate::engine_warn;
 
 /// The largest raster or pixel glyph image world text makes, in render
@@ -1006,17 +1008,29 @@ fn region_uv(region: Rect, size: Vec2) -> [f32; 4] {
 }
 
 /// Lay out the `Text2d`s whose text, style, options or fonts changed, and
-/// set their `TextBounds`. Syncs the engine with `Fonts` first.
-pub(crate) fn layout_world_text(world: &mut World, engine: &mut TextEngine) {
+/// set their `TextBounds`. Syncs the engine with `Fonts` first. Prompts
+/// (`[prompt=jump]`) resolve against `prompts`, labels in the UI theme's
+/// accent, and a text whose resolved form changed (a new device, a glyph
+/// registered) is laid out again.
+pub(crate) fn layout_world_text(
+  world: &mut World,
+  engine: &mut TextEngine,
+  prompts: &PromptContext,
+) {
   let Some(fonts) = world.get_resource::<Fonts>() else {
     return;
   };
   engine.sync(fonts);
   let generation = engine.generation();
+  let accent = world.get_resource::<UiTheme>().map_or_else(
+    || Palette::default().accent,
+    |theme| theme.get().palette.accent,
+  );
   let mut stale: Vec<(Entity, u64)> = Vec::new();
   let mut query = world.query::<(Entity, &Text2d, Option<&TextLayoutState>)>();
   for (entity, text, state) in query.iter(world) {
-    let key = world_key(text, generation);
+    let resolved = resolve_prompts(&text.text, prompts, accent);
+    let key = world_key(text, &resolved, generation);
     if state.is_none_or(|state| state.key != key) {
       stale.push((entity, key));
     }
@@ -1025,9 +1039,11 @@ pub(crate) fn layout_world_text(world: &mut World, engine: &mut TextEngine) {
     let Some(text) = world.get::<Text2d>(entity) else {
       continue;
     };
+    // The reveal starts over for a new text, not for a new device
     let text_key = hash_of_rich(text);
     let anchor = text.layout.anchor;
-    let laid = engine.layout(&text.text, &text.style, &text.layout, 1.0);
+    let resolved = resolve_prompts(&text.text, prompts, accent);
+    let laid = engine.layout(&resolved, &text.style, &text.layout, 1.0);
     let Ok(mut entity) = world.get_entity_mut(entity) else {
       continue;
     };
@@ -1064,10 +1080,11 @@ pub(crate) fn layout_world_text(world: &mut World, engine: &mut TextEngine) {
   }
 }
 
-/// What a `Text2d`'s layout and bounds depend on
-fn world_key(text: &Text2d, generation: u64) -> u64 {
+/// What a `Text2d`'s layout and bounds depend on: its text with its
+/// prompts resolved (`resolved`), its style and options, and the fonts
+fn world_key(text: &Text2d, resolved: &RichText, generation: u64) -> u64 {
   let mut h = DefaultHasher::new();
-  text.text.hash_into(&mut h);
+  resolved.hash_into(&mut h);
   text.style.hash_into(&mut h);
   text.layout.hash_into(&mut h);
   // The anchor never changes the layout, but it places the bounds
@@ -1649,14 +1666,14 @@ mod tests {
           TextReveal::new(10.0),
         ))
         .id();
-      layout_world_text(&mut world, &mut engine);
+      layout_world_text(&mut world, &mut engine, &PromptContext::default());
       let shown = |world: &World| world.get::<TextReveal>(e).unwrap().shown();
       world.get_mut::<TextReveal>(e).unwrap().clock.shown = 3.0;
       world.get_mut::<Text2d>(e).unwrap().style.color = Color::rgb(255, 0, 0);
-      layout_world_text(&mut world, &mut engine);
+      layout_world_text(&mut world, &mut engine, &PromptContext::default());
       assert_eq!(shown(&world), 3.0, "a new colour keeps the reveal");
       world.get_mut::<Text2d>(e).unwrap().set_text("Goodbye");
-      layout_world_text(&mut world, &mut engine);
+      layout_world_text(&mut world, &mut engine, &PromptContext::default());
       assert_eq!(shown(&world), 0.0, "a new text starts it over");
     }
 
@@ -1668,10 +1685,10 @@ mod tests {
       let e = world
         .spawn((Transform::default(), Text2d::new("Hello")))
         .id();
-      layout_world_text(&mut world, &mut engine);
+      layout_world_text(&mut world, &mut engine, &PromptContext::default());
       let size = world.get::<TextBounds>(e).unwrap().size;
       world.get_mut::<Text2d>(e).unwrap().layout.anchor = Anchor::BottomRight;
-      layout_world_text(&mut world, &mut engine);
+      layout_world_text(&mut world, &mut engine, &PromptContext::default());
       assert_eq!(world.get::<TextBounds>(e).unwrap().offset, -size);
     }
   }

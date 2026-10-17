@@ -210,6 +210,11 @@ pub struct Engine {
   /// Bindings of the UI actions the UI used (a direction, Confirm, Back,
   /// Tab, a tab switch): until released, gameplay never sees them
   ui_binding_capture: Vec<crate::core::input::Binding>,
+  /// What input prompts read (the last device, the bindings, the game's
+  /// glyphs), refreshed before each UI pass and read by world text
+  prompts: std::sync::Arc<crate::core::ui::immediate::PromptContext>,
+  /// When `TextIcons` last changed as `prompts` copied it
+  prompt_icons: Option<crate::core::ecs::kernel::Tick>,
   /// What the UI remembers between frames: records, widget state, focus
   ui_memory: UiMemory,
   /// Lays the UI's containers out, kept between frames
@@ -596,6 +601,8 @@ impl Engine {
       batch_cameras: Vec::new(),
       ui_mouse_capture: Vec::new(),
       ui_binding_capture: Vec::new(),
+      prompts: Default::default(),
+      prompt_icons: None,
       ui_memory: UiMemory::new(),
       ui_layout: LayoutEngine::new(),
       // None: the starting theme's skins load on the first pass

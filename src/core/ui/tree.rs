@@ -172,7 +172,8 @@ pub(crate) enum DrawKind {
   /// Text at `frac` of the room left in the node's content box, wrapped to
   /// its width when `wrap`
   Text {
-    leaf: TextLeaf,
+    /// Boxed: a text is far larger than the other draws
+    leaf: Box<TextLeaf>,
     frac: Vec2,
     wrap: bool,
     opacity: f32,
@@ -1063,11 +1064,11 @@ mod tests {
       ui.push_draw(
         node,
         DrawKind::Text {
-          leaf: TextLeaf {
+          leaf: Box::new(TextLeaf {
             text: RichText::new("Hi there"),
             style: TextStyle::default(),
             options: TextLayoutOptions::default(),
-          },
+          }),
           frac: Vec2::ZERO,
           wrap: true,
           opacity: 1.0,

@@ -71,9 +71,12 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 ## Markup, icons, effects, reveal
 
 - Markup: `[color=..]`, `[size=..]`, `[font=..]`, `[b]`, `[i]`,
-  `[outline=width,color]`, `[icon=name]`, `[pause=seconds]`, `[[` for a
-  bracket (`RichText::escape` doubles every `[`, for untrusted text). Any
-  other tag is an effect (`[wave]`, `[sparkle=3]`). Nested tags
+  `[outline=width,color]`, `[icon=name]`, `[pause=seconds]`,
+  `[prompt=action]`, `[[` for a bracket (`RichText::escape` doubles every
+  `[`, for untrusted text). Any other tag is an effect (`[wave]`,
+  `[sparkle=3]`). A prompt is a mark (`RichText::prompts`) the UI and world
+  text resolve to a glyph or a label before layout (`src/core/ui/AGENTS.md`,
+  Prompts and rebinding). Nested tags
   flatten into non-overlapping spans. Malformed markup (unclosed, unmatched,
   a bad value) is drawn as written and warned once per string; nothing
   panics.

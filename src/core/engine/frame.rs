@@ -14,19 +14,21 @@ use crate::core::capture::CaptureTarget;
 use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::cursor::CursorRequest;
-use crate::core::ecs::kernel::CheckChangeTicks;
+use crate::core::ecs::kernel::{CheckChangeTicks, DetectChanges};
 use crate::core::ecs::{MessageWriter, On, Res, ResMut, Resource, World};
 use crate::core::input::{Binding, Input, InputEvent};
 use crate::core::messages::{AssetLoadFailed, AssetReloaded, update_messages};
 use crate::core::scene::SceneAction;
 use crate::core::schedule::Phase;
 use crate::core::shaders::EffectsManager;
+use crate::core::text::TextIcons;
 use crate::core::time::Time;
 use crate::core::ui::interact::{
   PointerInput, PointerOutcome, apply_scroll_requests, resolve_pointer, route_wheel,
 };
 use crate::core::ui::nav::{NavInput, resolve_focus};
 use crate::core::ui::theme::{Theme, refresh_skins};
+use crate::core::ui::widgets::rebind::note_swap;
 use crate::core::ui::{UiContext, UiInput, UiTheme};
 use crate::{engine_warn, profile_scope};
 
@@ -446,6 +448,41 @@ impl Engine {
       })
   }
 
+  /// Bring what prompts read up to date: the last device and pad family,
+  /// every action's bindings (copied again only when they changed) and the
+  /// game's glyphs (when `TextIcons` changed)
+  fn refresh_prompts(&mut self) {
+    let input = self.world.resource::<Input>();
+    let prompts = Arc::make_mut(&mut self.prompts);
+    prompts.device = input.last_device();
+    prompts.family = input.pad_family();
+    let actions = input.actions();
+    let same = prompts.bindings.len() == actions.names().count()
+      && actions.names().all(|name| {
+        prompts
+          .bindings
+          .get(name)
+          .is_some_and(|bindings| bindings.as_slice() == actions.bindings(name))
+      });
+    if !same {
+      prompts.bindings = actions
+        .names()
+        .map(|name| (name.to_string(), actions.bindings(name).to_vec()))
+        .collect();
+    }
+    match self.world.get_resource_ref::<TextIcons>() {
+      Some(icons) if self.prompt_icons != Some(icons.last_changed()) => {
+        prompts.icons = TextIcons::clone(&icons);
+        self.prompt_icons = Some(icons.last_changed());
+      }
+      Some(_) => {}
+      None => {
+        prompts.icons = TextIcons::default();
+        self.prompt_icons = None;
+      }
+    }
+  }
+
   /// Record one UI pass into the frame's UI commands (replacing any earlier
   /// pass's) and apply what it consumed; `None` before the GPU is up.
   fn draw_ui(&mut self) -> Option<SceneAction> {
@@ -459,6 +496,7 @@ impl Engine {
       self.ui_memory.forget_scene(scope);
     }
     let theme = self.refresh_ui_theme();
+    self.refresh_prompts();
     let space = self.ui_space;
     let mut snapshot =
       UiInput::snapshot(self.world.resource::<Input>()).with_mouse_scale(space.mouse_scale);
@@ -487,7 +525,7 @@ impl Engine {
     let real_dt = self.world.resource::<Time>().real.delta();
     // Overlays and the console still lay out in whole UI units
     let (width, height) = (space.size.x.ceil() as u32, space.size.y.ceil() as u32);
-    let (action, consumed) = {
+    let (action, consumed, rebinds) = {
       let mut ui = UiContext::new(
         &mut self.ui_commands,
         &mut self.text,
@@ -498,6 +536,7 @@ impl Engine {
         Arc::clone(&theme),
       );
       ui.set_dt(real_dt);
+      ui.set_prompts(Arc::clone(&self.prompts));
       // The console blocks the mouse for everything under it
       if self.console_state.visible {
         let (mouse_x, mouse_y) = ui.input().mouse_position();
@@ -533,7 +572,8 @@ impl Engine {
       // The console over everything
       self.console_state.render(&mut ui, width, height);
       ui.end_scene();
-      (action, ui.into_input())
+      let rebinds = ui.take_rebinds();
+      (action, ui.into_input(), rebinds)
     };
 
     let mut input = self.world.resource_mut::<Input>();
@@ -546,6 +586,22 @@ impl Engine {
     }
     if interact.tab_taken {
       take_actions(&mut input, &["ui.tab_next", "ui.tab_prev"], capture);
+    }
+    // The presses rebinding rows captured are bound now (and saved, through
+    // the bindings' dirty flag); each stays the UI's until it is released,
+    // and a row whose binding came from another action says so
+    let now = interact.now;
+    for rebind in &rebinds {
+      let swapped = input
+        .actions_mut()
+        .rebind(&rebind.action, rebind.slot, rebind.binding);
+      input.consume_binding(&rebind.binding);
+      if input.binding_down_raw(&rebind.binding) && !capture.contains(&rebind.binding) {
+        capture.push(rebind.binding);
+      }
+      if let Some(other) = swapped {
+        note_swap(&mut self.ui_memory, rebind, &other, now);
+      }
     }
     // A binding of an action the UI used stays the UI's until it is
     // released, even once the UI that used it is gone (a Confirm held after

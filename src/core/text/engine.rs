@@ -2636,6 +2636,7 @@ mod tests {
         },
       }],
       pauses: Vec::new(),
+      prompts: Vec::new(),
     };
     let (mut engine, _) = engine();
     let laid = layout(&mut engine, text.clone(), &TextStyle::default());

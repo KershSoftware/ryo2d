@@ -179,13 +179,17 @@ pub(crate) struct PauseMark {
   pub(crate) seconds: f32,
 }
 
-/// Text with styled spans, inline icons and typewriter pauses
+/// Text with styled spans, inline icons, typewriter pauses and input prompts
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RichText {
   pub(crate) text: String,
   pub(crate) spans: Vec<SpanMark>,
   pub(crate) icons: Vec<IconMark>,
   pub(crate) pauses: Vec<PauseMark>,
+  /// Input prompts: the byte each sits before and its action, replaced by
+  /// the action's binding before the text is laid out (`resolve_prompts`).
+  /// At the same byte, icons come before prompts.
+  pub(crate) prompts: Vec<(usize, String)>,
 }
 
 impl RichText {
@@ -237,13 +241,96 @@ impl RichText {
     })
   }
 
+  /// Append a prompt for `action`: the key or button that triggers it on
+  /// the player's last device, as a registered glyph or a label such as
+  /// `[A]` (the `[prompt=action]` markup tag)
+  pub fn prompt(mut self, action: &str) -> Self {
+    self.prompts.push((self.text.len(), action.to_string()));
+    self
+  }
+
   /// The characters (icons and markup excluded)
   pub fn as_str(&self) -> &str {
     &self.text
   }
 
   pub fn is_empty(&self) -> bool {
-    self.text.is_empty() && self.icons.is_empty()
+    self.text.is_empty() && self.icons.is_empty() && self.prompts.is_empty()
+  }
+
+  /// Insert `icon` before byte `at`, after the icons already there.
+  /// Skipped when `at` is not a character boundary.
+  pub(crate) fn insert_icon(&mut self, at: usize, icon: Icon) {
+    if !self.text.is_char_boundary(at) {
+      return;
+    }
+    let place = self
+      .icons
+      .iter()
+      .position(|mark| mark.at > at)
+      .unwrap_or(self.icons.len());
+    self.icons.insert(place, IconMark { at, icon });
+  }
+
+  /// Insert `text` at byte `at` with `span` (laid over a span it falls
+  /// inside, which splits around it). Marks after `at` move with the text;
+  /// marks at `at` stay before it. Skipped when `at` is not a character
+  /// boundary.
+  pub(crate) fn insert_text(&mut self, at: usize, text: &str, span: Span) {
+    if text.is_empty() || !self.text.is_char_boundary(at) {
+      return;
+    }
+    self.text.insert_str(at, text);
+    let len = text.len();
+    let mut inserted = SpanMark {
+      range: at..at + len,
+      span,
+    };
+    let mut spans = Vec::with_capacity(self.spans.len() + 2);
+    for mark in self.spans.drain(..) {
+      let Range { start, end } = mark.range;
+      if end <= at {
+        spans.push(mark);
+      } else if start >= at {
+        spans.push(SpanMark {
+          range: start + len..end + len,
+          span: mark.span,
+        });
+      } else {
+        // `at` falls inside: the span goes on either side of the text,
+        // which takes what the span sets and it does not
+        inserted.span = inserted.span.over(&mark.span);
+        spans.push(SpanMark {
+          range: start..at,
+          span: mark.span.clone(),
+        });
+        spans.push(SpanMark {
+          range: at + len..end + len,
+          span: mark.span,
+        });
+      }
+    }
+    let place = spans
+      .iter()
+      .position(|mark| mark.range.start > at)
+      .unwrap_or(spans.len());
+    spans.insert(place, inserted);
+    self.spans = spans;
+    for mark in &mut self.icons {
+      if mark.at > at {
+        mark.at += len;
+      }
+    }
+    for mark in &mut self.pauses {
+      if mark.at > at {
+        mark.at += len;
+      }
+    }
+    for (byte, _) in &mut self.prompts {
+      if *byte > at {
+        *byte += len;
+      }
+    }
   }
 
   fn push_icon(mut self, icon: Icon) -> Self {
@@ -272,6 +359,8 @@ impl RichText {
       mark.at.hash(h);
       mark.seconds.to_bits().hash(h);
     }
+    // Prompts too, so texts differing only in their prompts never share
+    self.prompts.hash(h);
   }
 }
 
@@ -314,5 +403,44 @@ mod tests {
     assert_eq!(text.spans[0].range, 3..8);
     assert_eq!(text.icons[0].at, 8);
     assert!(!RichText::new("").icon_named("star").is_empty());
+  }
+
+  #[test]
+  fn inserted_text_moves_the_marks_after_it() {
+    let mut text = RichText::new("ab")
+      .icon_named("at")
+      .pause(1.0)
+      .prompt("p")
+      .span("cd", Span::italic())
+      .icon_named("after");
+    text.insert_text(2, "XY", Span::bold());
+    assert_eq!(text.as_str(), "abXYcd");
+    let ranges: Vec<_> = text.spans.iter().map(|m| m.range.clone()).collect();
+    assert_eq!(ranges, vec![2..4, 4..6], "in order, the italic moved");
+    assert_eq!(text.spans[0].span.weight, Some(700.0));
+    assert_eq!(text.icons[0].at, 2, "a mark at the byte stays before");
+    assert_eq!(text.icons[1].at, 6);
+    assert_eq!(text.pauses[0].at, 2);
+    assert_eq!(text.prompts, vec![(2, "p".to_string())]);
+    text.insert_text(1, "\u{e9}", Span::bold());
+    text.insert_text(2, "z", Span::bold());
+    assert_eq!(
+      text.as_str(),
+      "a\u{e9}bXYcd",
+      "off a char boundary: skipped"
+    );
+  }
+
+  #[test]
+  fn prompts_count_in_the_hash_and_emptiness() {
+    let hash = |text: &RichText| {
+      let mut h = std::hash::DefaultHasher::new();
+      text.hash_into(&mut h);
+      h.finish()
+    };
+    let jump = RichText::new("Press ").prompt("jump");
+    let fire = RichText::new("Press ").prompt("fire");
+    assert_ne!(hash(&jump), hash(&fire));
+    assert!(!RichText::new("").prompt("jump").is_empty());
   }
 }

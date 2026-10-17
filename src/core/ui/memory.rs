@@ -42,6 +42,9 @@ impl Flags {
   /// The root of a popup that is not a modal (a dropdown's list, a
   /// `ui.popup`): while it traps the focus, the UI wants the keyboard
   pub(crate) const POPUP: Flags = Flags(1 << 19);
+  /// A rebinding row waiting for a press: navigation stands aside while it
+  /// has the focus, so the arrows, Confirm and Back can be captured
+  pub(crate) const CAPTURING: Flags = Flags(1 << 20);
 
   /// Every flag in `other` is set
   pub(crate) fn contains(self, other: Flags) -> bool {
@@ -109,6 +112,9 @@ pub(crate) struct Interaction {
   pub(crate) pointer: Vec2,
   /// The pointer last frame
   pub(crate) prev_pointer: Vec2,
+  /// The real time of this frame's resolve, in seconds: what widgets time
+  /// their own state by (a rebinding row's capture)
+  pub(crate) now: f64,
   /// The active widget's press moved past the drag threshold
   pub(crate) dragging: bool,
   /// This frame's left click (`NONE`)

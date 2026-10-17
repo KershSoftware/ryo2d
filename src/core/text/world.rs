@@ -275,7 +275,7 @@ mod tests {
         Text2d::new("Hello").with_style(crate::core::text::TextStyle::new().size(20.0)),
       ))
       .id();
-    crate::core::render::text::layout_world_text(&mut world, &mut engine);
+    crate::core::render::text::layout_world_text(&mut world, &mut engine, &Default::default());
     let bounds = world.get::<TextBounds>(e).unwrap();
     assert!(bounds.size.x > 30.0 && bounds.size.y > 20.0);
     assert!(
@@ -292,16 +292,46 @@ mod tests {
     let e = world
       .spawn((Transform::default(), Text2d::new("iiii")))
       .id();
-    crate::core::render::text::layout_world_text(&mut world, &mut engine);
+    crate::core::render::text::layout_world_text(&mut world, &mut engine, &Default::default());
     let before = world.get::<TextBounds>(e).unwrap().size.x;
     let mono = world.resource::<Fonts>().role(FontRole::Mono).unwrap();
     world.resource_mut::<Fonts>().set_role(FontRole::Ui, mono);
-    crate::core::render::text::layout_world_text(&mut world, &mut engine);
+    crate::core::render::text::layout_world_text(&mut world, &mut engine, &Default::default());
     let after = world.get::<TextBounds>(e).unwrap().size.x;
     assert!(
       after > before + 5.0,
       "monospace i is wider: {before} then {after}"
     );
+  }
+
+  #[test]
+  fn world_text_prompts_follow_the_device() {
+    use crate::core::input::{Binding, GamepadButton, InputDevice};
+    use crate::core::ui::test_util::prompts_with;
+    use winit::keyboard::KeyCode;
+    let mut world = World::new();
+    world.insert_resource(Fonts::with_builtins());
+    let mut engine = TextEngine::new();
+    let e = world
+      .spawn((Transform::default(), Text2d::markup("Press [prompt=jump]")))
+      .id();
+    let jump = (
+      "jump",
+      vec![
+        Binding::Key(KeyCode::Space),
+        Binding::Pad(GamepadButton::South),
+      ],
+    );
+    let mut prompts = prompts_with(InputDevice::Keyboard, &[jump]);
+    crate::core::render::text::layout_world_text(&mut world, &mut engine, &prompts);
+    let text = |world: &World| {
+      let state = world.get::<TextLayoutState>(e).unwrap();
+      state.layout.text().to_string()
+    };
+    assert_eq!(text(&world), "Press [Space]");
+    prompts.device = InputDevice::Gamepad;
+    crate::core::render::text::layout_world_text(&mut world, &mut engine, &prompts);
+    assert_eq!(text(&world), "Press [A]", "laid out again for the pad");
   }
 
   #[test]
@@ -312,10 +342,10 @@ mod tests {
     let e = world
       .spawn((Transform::default(), Text2d::new("Fading")))
       .id();
-    crate::core::render::text::layout_world_text(&mut world, &mut engine);
+    crate::core::render::text::layout_world_text(&mut world, &mut engine, &Default::default());
     let before = Arc::clone(&world.get::<TextLayoutState>(e).unwrap().layout);
     world.get_mut::<Text2d>(e).unwrap().opacity = 0.3;
-    crate::core::render::text::layout_world_text(&mut world, &mut engine);
+    crate::core::render::text::layout_world_text(&mut world, &mut engine, &Default::default());
     let after = &world.get::<TextLayoutState>(e).unwrap().layout;
     assert!(Arc::ptr_eq(&before, after), "no relayout for an opacity");
   }

@@ -6,11 +6,11 @@ use glam::Vec2;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-use crate::core::input::{Direction, InputDevice, InputView};
+use crate::core::input::{Binding, Direction, GamepadButton, InputDevice, InputView};
 use crate::core::render::UiSpace;
 use crate::core::text::{Fonts, TextEngine};
 use crate::core::ui::UiInput;
-use crate::core::ui::immediate::{UiCommands, UiContext};
+use crate::core::ui::immediate::{PendingRebind, PromptContext, UiCommands, UiContext};
 use crate::core::ui::interact::{
   PointerInput, apply_scroll_requests, resolve_pointer, route_wheel,
 };
@@ -71,6 +71,19 @@ pub(crate) fn context_in<'a>(
   ui
 }
 
+/// A prompt context for `device` with `actions` bound (Xbox labels, no
+/// glyphs)
+pub(crate) fn prompts_with(device: InputDevice, actions: &[(&str, Vec<Binding>)]) -> PromptContext {
+  PromptContext {
+    device,
+    bindings: actions
+      .iter()
+      .map(|(name, bindings)| ((*name).to_string(), bindings.clone()))
+      .collect(),
+    ..PromptContext::default()
+  }
+}
+
 /// How long each driven frame lasts (seconds)
 const FRAME: f64 = 1.0 / 60.0;
 
@@ -91,6 +104,8 @@ pub(crate) struct UiDriver {
   nav: NavInput,
   /// Keys pressed in the next frame
   keys: Vec<KeyCode>,
+  /// Pad buttons pressed in the next frame
+  pads: Vec<GamepadButton>,
   /// Text typed in the next frame
   typed: String,
   /// The IME's composition in the next frame
@@ -106,6 +121,10 @@ pub(crate) struct UiDriver {
   time: f64,
   /// What the widgets and the interaction rules read
   theme: Arc<Theme>,
+  /// What prompts read
+  prompts: Arc<PromptContext>,
+  /// The presses rebinding rows captured in the last frame
+  rebinds: Vec<PendingRebind>,
 }
 
 impl UiDriver {
@@ -128,6 +147,7 @@ impl UiDriver {
       wheel: Vec2::ZERO,
       nav: NavInput::default(),
       keys: Vec::new(),
+      pads: Vec::new(),
       typed: String::new(),
       preedit: String::new(),
       shift: false,
@@ -136,7 +156,35 @@ impl UiDriver {
       outcome: NavOutcome::default(),
       time: 0.0,
       theme: Arc::new(Theme::dark()),
+      prompts: Arc::new(PromptContext::default()),
+      rebinds: Vec::new(),
     }
+  }
+
+  /// Prompts read `prompts` from the next frame
+  pub(crate) fn prompts(mut self, prompts: PromptContext) -> UiDriver {
+    self.prompts = Arc::new(prompts);
+    self
+  }
+
+  /// Press a pad `button` in the next frame (and release it after)
+  pub(crate) fn pad(&mut self, button: GamepadButton) {
+    self.pads.push(button);
+  }
+
+  /// The presses rebinding rows captured in the last frame, whole
+  pub(crate) fn rebinds(&self) -> &[PendingRebind] {
+    &self.rebinds
+  }
+
+  /// The presses rebinding rows captured in the last frame, as (action,
+  /// slot, binding)
+  pub(crate) fn pending_rebinds(&self) -> Vec<(String, usize, Binding)> {
+    self
+      .rebinds
+      .iter()
+      .map(|r| (r.action.clone(), r.slot, r.binding))
+      .collect()
   }
 
   /// Draw with `theme` (and take its interaction timings) from the next frame
@@ -327,9 +375,11 @@ impl UiDriver {
         Arc::clone(&self.theme),
       );
       context.set_dt(FRAME as f32);
+      context.set_prompts(Arc::clone(&self.prompts));
       context.begin_scene(self.scene, true);
       let result = ui(&mut context);
       context.end_scene();
+      self.rebinds = context.take_rebinds();
       result
     };
     // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
@@ -345,6 +395,7 @@ impl UiDriver {
     self.pointer.released = [false; 2];
     self.wheel = Vec2::ZERO;
     self.keys.clear();
+    self.pads.clear();
     self.typed.clear();
     self.preedit.clear();
     self.nav = NavInput {
@@ -388,6 +439,7 @@ impl UiDriver {
     if self.shift {
       view.keys_down.insert(KeyCode::ShiftLeft);
     }
+    view.gamepad_pressed.extend(self.pads.iter().copied());
     view
   }
 }
