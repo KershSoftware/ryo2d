@@ -40,7 +40,7 @@ pub mod prelude {
   pub use super::components::*;
   pub use super::constants::*;
   pub use super::levels::{LevelData, level_path, load_level};
-  pub use super::look::use_game_look;
+  pub use super::look::{TEXT_SIZE, text_style, use_game_look};
   pub use super::save::{HighScoreData, load_high_score, save_high_score};
   pub use super::scenes::*;
 }

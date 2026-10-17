@@ -7,6 +7,7 @@ use std::time::Duration;
 use ryo2d::prelude::*;
 
 use super::MenuScene;
+use crate::look::TEXT_SIZE;
 use crate::save::save_high_score;
 
 /// Pause menu overlay
@@ -71,7 +72,7 @@ fn volume_row(ui: &mut UiContext, label: &str, volume: &mut f32) -> bool {
   ui.row().gap(8.0).align(Align::Center).show(|ui| {
     // Wide enough for "Master" and "100%" in the game's 16 px font
     ui.column().width(96.0).show(|ui| {
-      ui.text(label).color(Color::WHITE);
+      ui.text(label).size(TEXT_SIZE).color(Color::WHITE);
     });
     changed = ui
       .slider(volume, 0.0..=1.0)
@@ -81,6 +82,7 @@ fn volume_row(ui: &mut UiContext, label: &str, volume: &mut f32) -> bool {
       .changed();
     ui.column().width(64.0).show(|ui| {
       ui.text(format!("{:.0}%", *volume * 100.0))
+        .size(TEXT_SIZE)
         .color(Color::WHITE)
         .align(TextAlign::End);
     });
@@ -128,9 +130,11 @@ impl Scene for PauseScene {
       .gap(12.0)
       .show(|ui| {
         ui.text("PAUSED")
+          .size(TEXT_SIZE)
           .color(Color::WHITE)
           .align(TextAlign::Center);
         ui.text(format!("Score: {}", self.score))
+          .size(TEXT_SIZE)
           .color(Color::YELLOW)
           .align(TextAlign::Center);
 

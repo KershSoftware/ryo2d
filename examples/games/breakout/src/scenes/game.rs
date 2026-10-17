@@ -11,6 +11,7 @@ use super::{MenuScene, PauseScene};
 use crate::components::{Ball, Block, DeathZone, Paddle, Wall};
 use crate::constants::*;
 use crate::levels::{level_path, load_level};
+use crate::look::text_style;
 use crate::save::save_high_score;
 
 /// Main gameplay scene
@@ -1237,51 +1238,73 @@ impl Scene for GameScene {
 
     // Score (top right)
     let score_text = format!("Score: {}", self.score);
-    ui.draw_text_anchored(&score_text, Anchor::TopRight, -20.0, 10.0, Color::WHITE);
+    ui.draw_text_anchored_styled(
+      &score_text,
+      Anchor::TopRight,
+      -20.0,
+      10.0,
+      &text_style(Color::WHITE),
+    );
 
     // High score
     let high_text = format!("High: {}", self.high_score);
-    ui.draw_text_anchored(&high_text, Anchor::TopRight, -20.0, 34.0, Color::YELLOW);
+    ui.draw_text_anchored_styled(
+      &high_text,
+      Anchor::TopRight,
+      -20.0,
+      28.0,
+      &text_style(Color::YELLOW),
+    );
 
     // Lives (top left)
     let lives_text = format!("Lives: {}", self.lives);
-    ui.draw_text_anchored(&lives_text, Anchor::TopLeft, 20.0, 10.0, Color::WHITE);
+    ui.draw_text_anchored_styled(
+      &lives_text,
+      Anchor::TopLeft,
+      20.0,
+      10.0,
+      &text_style(Color::WHITE),
+    );
 
     // "+1" fly-by animation when gaining a life
     if self.plus_one_timer > 0.0 {
       // Animation: starts at Lives position, moves right and fades out
       let progress = 1.0 - (self.plus_one_timer / PLUS_ONE_DURATION);
-      let x_offset = 160.0 + progress * 60.0; // Starts past "Lives: N", moves right 60
+      let x_offset = 128.0 + progress * 60.0; // Starts past "Lives: N", moves right 60
       let y_offset = 10.0 - progress * 15.0; // Starts at 10, floats up to -5
 
       // Fade: full opacity in first third, then fade out
-      let alpha = if progress < 0.3 {
-        (progress / 0.3 * 255.0) as u8 // Fade in
+      let opacity = if progress < 0.3 {
+        progress / 0.3 // Fade in
       } else {
-        ((1.0 - (progress - 0.3) / 0.7) * 255.0) as u8 // Fade out
+        1.0 - (progress - 0.3) / 0.7 // Fade out
       };
 
-      ui.draw_text_anchored(
-        "+1",
-        Anchor::TopLeft,
-        x_offset,
-        y_offset,
-        Color::new(0x44, 0xff, 0x44, alpha), // Green "+1"
-      );
+      // Green "+1"
+      ui.text("+1")
+        .style(&text_style(Color::new(0x44, 0xff, 0x44, 255)))
+        .opacity(opacity)
+        .at(x_offset, y_offset);
     }
 
     // Level
     let level_text = format!("Level: {}", self.level);
-    ui.draw_text_anchored(&level_text, Anchor::TopLeft, 20.0, 34.0, Color::CYAN);
+    ui.draw_text_anchored_styled(
+      &level_text,
+      Anchor::TopLeft,
+      20.0,
+      28.0,
+      &text_style(Color::CYAN),
+    );
 
     // "Press any key to launch" prompt
     if !self.game_started {
-      ui.draw_text_anchored(
+      ui.draw_text_anchored_styled(
         "Press any key to launch!",
         Anchor::Center,
         0.0,
         100.0,
-        Color::WHITE,
+        &text_style(Color::WHITE),
       );
     }
 
@@ -1291,19 +1314,43 @@ impl Scene for GameScene {
         Rect::new(0.0, 0.0, screen_w as f32, 720.0),
         Color::new(0, 0, 0, 180),
       );
-      ui.draw_text_anchored("YOU WIN!", Anchor::Center, 0.0, -70.0, Color::YELLOW);
-      ui.draw_text_anchored("Congratulations!", Anchor::Center, 0.0, -30.0, Color::GREEN);
+      ui.draw_text_anchored_styled(
+        "YOU WIN!",
+        Anchor::Center,
+        0.0,
+        -70.0,
+        &text_style(Color::YELLOW),
+      );
+      ui.draw_text_anchored_styled(
+        "Congratulations!",
+        Anchor::Center,
+        0.0,
+        -30.0,
+        &text_style(Color::GREEN),
+      );
       let final_score = format!("Final Score: {}", self.score);
-      ui.draw_text_anchored(&final_score, Anchor::Center, 0.0, 10.0, Color::WHITE);
+      ui.draw_text_anchored_styled(
+        &final_score,
+        Anchor::Center,
+        0.0,
+        10.0,
+        &text_style(Color::WHITE),
+      );
       if self.score >= self.high_score {
-        ui.draw_text_anchored("NEW HIGH SCORE!", Anchor::Center, 0.0, 50.0, Color::CYAN);
+        ui.draw_text_anchored_styled(
+          "NEW HIGH SCORE!",
+          Anchor::Center,
+          0.0,
+          50.0,
+          &text_style(Color::CYAN),
+        );
       }
-      ui.draw_text_anchored(
+      ui.draw_text_anchored_styled(
         "Press any key to continue",
         Anchor::Center,
         0.0,
         90.0,
-        Color::LIGHT_GRAY,
+        &text_style(Color::LIGHT_GRAY),
       );
     }
 
@@ -1313,33 +1360,45 @@ impl Scene for GameScene {
         Rect::new(0.0, 0.0, screen_w as f32, 720.0),
         Color::new(0, 0, 0, 180),
       );
-      ui.draw_text_anchored("GAME OVER", Anchor::Center, 0.0, -50.0, Color::RED);
+      ui.draw_text_anchored_styled(
+        "GAME OVER",
+        Anchor::Center,
+        0.0,
+        -50.0,
+        &text_style(Color::RED),
+      );
       let final_score = format!("Final Score: {}", self.score);
-      ui.draw_text_anchored(&final_score, Anchor::Center, 0.0, -10.0, Color::WHITE);
-      ui.draw_text_anchored(
+      ui.draw_text_anchored_styled(
+        &final_score,
+        Anchor::Center,
+        0.0,
+        -10.0,
+        &text_style(Color::WHITE),
+      );
+      ui.draw_text_anchored_styled(
         "Press any key to continue",
         Anchor::Center,
         0.0,
         30.0,
-        Color::LIGHT_GRAY,
+        &text_style(Color::LIGHT_GRAY),
       );
     }
 
     // Debug mode UI
     if self.debug_mode {
-      ui.draw_text_anchored(
+      ui.draw_text_anchored_styled(
         "[DEBUG MODE]",
         Anchor::BottomLeft,
         20.0,
         -10.0,
-        Color::new(255, 255, 0, 180),
+        &text_style(Color::new(255, 255, 0, 180)),
       );
-      ui.draw_text_anchored(
+      ui.draw_text_anchored_styled(
         "Q: Prev Level | E: Next Level",
         Anchor::BottomLeft,
         20.0,
         -25.0,
-        Color::new(200, 200, 200, 180),
+        &text_style(Color::new(200, 200, 200, 180)),
       );
     }
     SceneAction::Continue

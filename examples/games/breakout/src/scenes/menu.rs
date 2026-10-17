@@ -8,7 +8,7 @@ use ryo2d::prelude::*;
 
 use super::{GameScene, QuitConfirmScene};
 use crate::constants::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use crate::look::use_game_look;
+use crate::look::{text_style, use_game_look};
 use crate::save::load_high_score;
 
 /// Main menu scene
@@ -97,25 +97,31 @@ impl Scene for MenuScene {
     );
 
     // Title
-    ui.draw_text_anchored("BREAKOUT", Anchor::TopCenter, 0.0, 100.0, Color::WHITE);
+    ui.draw_text_anchored_styled(
+      "BREAKOUT",
+      Anchor::TopCenter,
+      0.0,
+      100.0,
+      &text_style(Color::WHITE),
+    );
 
     // Subtitle
-    ui.draw_text_anchored(
+    ui.draw_text_anchored_styled(
       "A Ryo2D Engine Demo",
       Anchor::TopCenter,
       0.0,
       130.0,
-      Color::GRAY,
+      &text_style(Color::GRAY),
     );
 
     // High score
     let high_score_text = format!("High Score: {}", self.high_score);
-    ui.draw_text_anchored(
+    ui.draw_text_anchored_styled(
       &high_score_text,
       Anchor::TopCenter,
       0.0,
       180.0,
-      Color::YELLOW,
+      &text_style(Color::YELLOW),
     );
 
     // Decorative blocks
@@ -152,20 +158,20 @@ impl Scene for MenuScene {
     }
 
     // Instructions
-    ui.draw_text_anchored(
+    ui.draw_text_anchored_styled(
       "Press ENTER, SPACE, or A to Start",
       Anchor::TopCenter,
       0.0,
       450.0,
-      Color::LIGHT_GRAY,
+      &text_style(Color::LIGHT_GRAY),
     );
 
-    ui.draw_text_anchored(
+    ui.draw_text_anchored_styled(
       "ESC or B to Quit",
       Anchor::BottomCenter,
       0.0,
       -30.0,
-      Color::DARK_GRAY,
+      &text_style(Color::DARK_GRAY),
     );
 
     // Back (Escape, B) asks before quitting
