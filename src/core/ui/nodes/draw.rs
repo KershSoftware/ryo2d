@@ -18,7 +18,7 @@ use crate::core::ui::{Anchor, Rect, Response, Theme, UiContext};
 
 use super::components::{
   UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName, UiNodes,
-  UiOptions, UiRoot, UiTextValue, UiTooltip, UiValue,
+  UiOptions, UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
 };
 use super::events::{UiEvent, UiEventKind};
 use super::node::{Kind, NodeLayout, TextRole, UiNodeKind};
@@ -169,7 +169,10 @@ fn draw_node(
       ui.scope(node, |ui| ui.spacer());
       return;
     }
-    // Not drawn yet: slots, prompts, rebinds, popups
+    Kind::Slot { .. } => (draw_slot(entity, ui, place), Sends::Clicks),
+    Kind::Prompt { .. } => (draw_prompt(entity, ui, place), Sends::Clicks),
+    Kind::Rebind(_) => (draw_rebind(entity, ui, place), Sends::Changes),
+    // Not drawn yet: popups
     _ => return,
   };
   if let Some(response) = response {
@@ -222,6 +225,9 @@ fn answer(
   ];
   for kind in kinds.into_iter().flatten() {
     push_event(world, walk, node, kind);
+  }
+  if let Some(source) = response.dropped::<Entity>() {
+    push_event(world, walk, node, UiEventKind::Dropped { source });
   }
 }
 
@@ -391,6 +397,12 @@ fn draw_container(
   if flags.block_pointer {
     container = container.block_pointer();
   }
+  if flags.drag_source {
+    container = container.drag_source(entity);
+  }
+  if flags.drop_target {
+    container = container.drop_target::<Entity>();
+  }
   let world = node.into_world_mut();
   Some(container.show(|ui| walk_children(world, ui, entity, walk)))
 }
@@ -499,6 +511,13 @@ macro_rules! widget_opts {
     }
     if extras.disabled {
       builder = builder.enabled(false);
+    }
+    // A slot is a source only when it holds something: `draw_slot` decides
+    if node.flags.drag_source && !matches!(node.kind, Kind::Slot { .. }) {
+      builder = builder.drag_source(extras.entity);
+    }
+    if node.flags.drop_target {
+      builder = builder.drop_target::<Entity>();
     }
     builder
   }};
@@ -615,6 +634,88 @@ fn draw_image(
   }
   if let Some(uv) = opts.uv {
     builder = builder.uv(uv);
+  }
+  Some(builder.show())
+}
+
+/// Draw a slot node: a drag source only while it holds an icon
+fn draw_slot(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<Response> {
+  let entity = node.id();
+  let (kind, slot, tooltip, disabled) =
+    components::<(&UiNodeKind, &UiSlot, Option<&UiTooltip>, Has<UiDisabled>)>(&mut node, "slot")?;
+  let Kind::Slot { filter } = &kind.kind else {
+    return None;
+  };
+  let extras = Extras {
+    entity,
+    place,
+    tooltip,
+    disabled,
+  };
+  let mut builder = widget_opts!(ui.slot(), kind, extras)
+    .count(slot.count)
+    .selected(slot.selected);
+  if let Some(icon) = &slot.icon {
+    builder = builder.icon(icon);
+    if kind.flags.drag_source {
+      builder = builder.drag_source(entity);
+    }
+  }
+  if let Some(filter) = filter {
+    builder = builder.filter(*filter);
+  }
+  Some(builder.show())
+}
+
+/// Draw a prompt node: the glyph for an action's input
+fn draw_prompt(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<Response> {
+  let entity = node.id();
+  let (kind, tooltip, disabled) =
+    components::<(&UiNodeKind, Option<&UiTooltip>, Has<UiDisabled>)>(&mut node, "prompt")?;
+  let Kind::Prompt { action } = &kind.kind else {
+    return None;
+  };
+  let extras = Extras {
+    entity,
+    place,
+    tooltip,
+    disabled,
+  };
+  Some(widget_opts!(ui.prompt(action), kind, extras).show())
+}
+
+/// Draw a rebind node: a row that rebinds an action's input
+fn draw_rebind(
+  mut node: EntityWorldMut<'_>,
+  ui: &mut UiContext<'_>,
+  place: Option<Place>,
+) -> Option<Response> {
+  let entity = node.id();
+  let (kind, tooltip, disabled) =
+    components::<(&UiNodeKind, Option<&UiTooltip>, Has<UiDisabled>)>(&mut node, "rebind")?;
+  let Kind::Rebind(opts) = &kind.kind else {
+    return None;
+  };
+  let extras = Extras {
+    entity,
+    place,
+    tooltip,
+    disabled,
+  };
+  let mut builder = widget_opts!(ui.rebind(&opts.action), kind, extras);
+  if let Some(label) = &opts.label {
+    builder = builder.label(label.as_str());
+  }
+  if let Some(slot) = opts.slot {
+    builder = builder.slot(slot);
   }
   Some(builder.show())
 }
@@ -813,6 +914,12 @@ fn draw_radio_group(
   placed!(container, placement(place, layout));
   if let Some(color) = layout.background {
     container = container.background(color);
+  }
+  if kind.flags.drag_source {
+    container = container.drag_source(entity);
+  }
+  if kind.flags.drop_target {
+    container = container.drop_target::<Entity>();
   }
   let drawn = index.0.min(options.0.len().saturating_sub(1));
   let mut chosen = drawn;
@@ -1767,5 +1874,107 @@ mod lists {
     }
     d.frame(|_| {});
     assert!(reveal(&d).is_done());
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod drag {
+  use crate::core::asset::SpriteHandle;
+  use crate::core::ecs::kernel::{Children, Entity, World};
+  use crate::core::graphics::Sprite;
+  use crate::core::input::Direction;
+  use crate::core::ui::nodes::*;
+  use crate::core::ui::test_util::UiDriver;
+
+  fn kids(world: &World, of: Entity) -> Vec<Entity> {
+    world
+      .get::<Children>(of)
+      .map(|c| c.to_vec())
+      .unwrap_or_default()
+  }
+
+  fn icon() -> SpriteHandle {
+    SpriteHandle::from_sprite(
+      Sprite::solid_rect(16, 16, 200, 50, 50, 255),
+      "node-slot-icon",
+    )
+  }
+
+  /// A row of three slots: the first holds an item, the second is empty,
+  /// the third is empty and refuses drops
+  fn bag() -> (UiDriver, [Entity; 3]) {
+    let mut d = UiDriver::new((400.0, 200.0));
+    let root = d.spawn_ui(
+      UiNode::row()
+        .focus_scope()
+        .gap(6.0)
+        .child(
+          UiNode::slot()
+            .icon(icon())
+            .count(3)
+            .drag_source()
+            .drop_target()
+            .default_focus(),
+        )
+        .child(UiNode::slot().drag_source().drop_target())
+        .child(UiNode::slot().drag_source()),
+    );
+    d.frame(|_| {});
+    d.frame(|_| {});
+    let k = kids(d.world(), root);
+    (d, [k[0], k[1], k[2]])
+  }
+
+  fn held(d: &mut UiDriver) -> Option<Entity> {
+    d.frame(|ui| ui.held::<Entity>())
+  }
+
+  #[test]
+  fn carrying_a_slot_to_another_sends_dropped_naming_the_source() {
+    let (mut d, [full, empty, _]) = bag();
+    d.confirm();
+    d.frame(|_| {});
+    assert_eq!(held(&mut d), Some(full));
+    d.nav(Direction::Right);
+    d.frame(|_| {});
+    d.confirm();
+    d.frame(|_| {});
+    let dropped: Vec<_> = d
+      .events()
+      .iter()
+      .filter_map(|e| match e.kind {
+        UiEventKind::Dropped { source } => Some((e.node, source)),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(dropped, [(empty, full)]);
+    assert_eq!(held(&mut d), None);
+  }
+
+  #[test]
+  fn an_empty_slot_does_not_drag() {
+    let (mut d, [_, empty, _]) = bag();
+    d.nav(Direction::Right);
+    d.frame(|_| {});
+    d.confirm();
+    d.frame(|_| {});
+    assert_eq!(held(&mut d), None, "nothing to pick up in {empty:?}");
+  }
+
+  #[test]
+  fn despawning_a_held_slot_cancels_the_drag() {
+    let (mut d, [full, _, _]) = bag();
+    d.confirm();
+    d.frame(|_| {});
+    assert_eq!(held(&mut d), Some(full));
+    d.world_mut().despawn(full);
+    for _ in 0..3 {
+      d.frame(|_| {});
+    }
+    assert_eq!(held(&mut d), None);
+    assert_eq!(d.focused(), None, "as for any node that stops being drawn");
+    d.nav(Direction::Right);
+    d.frame(|_| {});
+    assert!(d.focused().is_some(), "navigation lands back in the row");
   }
 }
