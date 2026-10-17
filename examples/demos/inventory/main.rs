@@ -387,7 +387,13 @@ impl DemoPage for InventoryDemoScene {
         ],
         "Select slot",
       ),
-      Control::keys("W/S", &[KeyCode::KeyW, KeyCode::KeyS], "Move selection"),
+      // The arrows are the shell's to list; this page, with no settings,
+      // reads them too
+      Control::keys(
+        "W/S Up/Down",
+        &[KeyCode::KeyW, KeyCode::KeyS],
+        "Move selection",
+      ),
       Control::key(KeyCode::Space, "Equip / unequip"),
       Control::key(KeyCode::KeyE, "Equip"),
       Control::key(KeyCode::KeyD, "Drop"),
@@ -582,8 +588,11 @@ impl DemoPage for InventoryDemoScene {
       KeyCode::Digit8,
     ];
 
-    // W/S: navigate between equipment (3 slots) and inventory (8 slots)
-    if ctx.input.key_pressed(KeyCode::KeyW) {
+    // W/S or Up/Down: navigate between equipment (3 slots) and inventory
+    // (8 slots). The page has no settings, so the shell leaves it the arrows.
+    let up = ctx.input.key_pressed(KeyCode::KeyW) || ctx.input.key_pressed(KeyCode::ArrowUp);
+    let down = ctx.input.key_pressed(KeyCode::KeyS) || ctx.input.key_pressed(KeyCode::ArrowDown);
+    if up {
       if self.focus_equipment {
         if self.selected_slot > 0 {
           self.selected_slot -= 1;
@@ -596,7 +605,7 @@ impl DemoPage for InventoryDemoScene {
         self.selected_slot = 2;
       }
     }
-    if ctx.input.key_pressed(KeyCode::KeyS) {
+    if down {
       if self.focus_equipment {
         if self.selected_slot < 2 {
           self.selected_slot += 1;
