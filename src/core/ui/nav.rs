@@ -856,7 +856,11 @@ pub(crate) fn resolve_focus(
       }
       _ => UiId::NONE,
     };
-    (record.map_or_else(Vec::new, |r| nav.remembering(r)), scroll)
+    // The scopes that remember the focus, when it moved
+    let remembering = record
+      .filter(|_| i.focused != old)
+      .map_or_else(Vec::new, |r| nav.remembering(r));
+    (remembering, scroll)
   };
 
   if i.focused != old {
