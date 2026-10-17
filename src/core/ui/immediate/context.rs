@@ -1603,16 +1603,43 @@ impl<'a> UiContext<'a> {
     offset_y: f32,
     color: Color,
   ) {
-    let size = self.measure_text(text, &TextStyle::default());
-    let (x, y) = anchor.calculate_position(
+    let (x, y) = self.anchored_origin(text, &TextStyle::default(), anchor, offset_x, offset_y);
+    self.draw_text(text, x, y, color);
+  }
+
+  /// [`draw_text_anchored`](Self::draw_text_anchored) in `style`: placed by
+  /// its size in that style.
+  pub fn draw_text_anchored_styled(
+    &mut self,
+    text: &str,
+    anchor: Anchor,
+    offset_x: f32,
+    offset_y: f32,
+    style: &TextStyle,
+  ) {
+    let (x, y) = self.anchored_origin(text, style, anchor, offset_x, offset_y);
+    self.draw_text_styled(text, x, y, style);
+  }
+
+  /// The top-left that puts `text`, measured in `style`, at `anchor` of the
+  /// UI moved by the offset
+  fn anchored_origin(
+    &self,
+    text: &str,
+    style: &TextStyle,
+    anchor: Anchor,
+    offset_x: f32,
+    offset_y: f32,
+  ) -> (f32, f32) {
+    let size = self.measure_text(text, style);
+    anchor.calculate_position(
       offset_x,
       offset_y,
       size.x,
       size.y,
       self.space.size.x,
       self.space.size.y,
-    );
-    self.draw_text(text, x, y, color);
+    )
   }
 
   /// Draw centered text within a rectangle (wrapped when it is wider).
@@ -2085,6 +2112,25 @@ mod tests {
       .find_map(UiCommand::text_origin)
       .unwrap();
     assert!((origin.x - (160.0 - measured.x / 2.0)).abs() < 0.01);
+  }
+
+  #[test]
+  fn anchored_styled_text_is_placed_by_its_own_size() {
+    let (mut commands, mut text) = (UiCommands::default(), text_engine());
+    let mut ui = context(&mut commands, &mut text);
+    let style = TextStyle::default().size(28.0);
+    let measured = ui.measure_text("Score: 10", &style);
+    ui.draw_text_anchored_styled("Score: 10", Anchor::TopRight, -20.0, 10.0, &style);
+    drop(ui);
+    let origin = commands
+      .commands()
+      .find_map(UiCommand::text_origin)
+      .unwrap();
+    assert!(
+      (origin.x - (320.0 - 20.0 - measured.x)).abs() < 0.01,
+      "{origin:?}"
+    );
+    assert!((origin.y - 10.0).abs() < 0.01, "{origin:?}");
   }
 
   #[test]
