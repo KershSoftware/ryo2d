@@ -59,3 +59,25 @@ fn the_player_runs_jumps_and_lands() {
     "back on the ground, at {end} from {start}"
   );
 }
+
+#[test]
+fn the_pause_menu_resumes_by_pad() {
+  use ryo2d::core::scene::PhysicsPaused;
+  let builder = EngineBuilder::new()
+    .pixel_art(1920, 1080)
+    .fixed_hz(144)
+    .start_scene(GameScene::new());
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(10).expect("frames");
+  let paused = |engine: &HeadlessEngine| engine.world().resource::<PhysicsPaused>().0;
+  assert!(!paused(&engine));
+  engine.tap_pad(GamepadButton::Start);
+  engine.step_frames(4).expect("frames");
+  assert!(paused(&engine), "Start pushed the pause menu");
+  // Resume is the default focus
+  engine.tap_pad(GamepadButton::South);
+  engine.step_frames(4).expect("frames");
+  assert!(!paused(&engine), "South on Resume popped it");
+}

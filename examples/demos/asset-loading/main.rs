@@ -216,13 +216,21 @@ impl LoadingPage {
     let button_x = center_x + 60.0;
     let button_y = list_y + 80.0;
 
-    if ui
-      .button("Load Assets")
+    let load_clicked = &mut self.load_clicked;
+    ui.column()
+      .focus_scope()
       .at(Rect::new(button_x, button_y, button_w, button_h))
-      .clicked()
-    {
-      self.load_clicked = true;
-    }
+      .show(|ui| {
+        if ui
+          .button("Load Assets")
+          .width(button_w)
+          .height(button_h)
+          .default_focus()
+          .clicked()
+        {
+          *load_clicked = true;
+        }
+      });
   }
 
   fn render_loading_state(&mut self, ui: &mut UiContext, area: Rect) {
@@ -336,12 +344,19 @@ impl LoadingPage {
     let button_x = center_x - button_w / 2.0;
     let button_y = area.y + area.height - button_h - 10.0;
 
-    if ui
-      .button("Reset")
+    let reset_clicked = &mut self.reset_clicked;
+    ui.column()
+      .focus_scope()
       .at(Rect::new(button_x, button_y, button_w, button_h))
-      .clicked()
-    {
-      self.reset_clicked = true;
-    }
+      .show(|ui| {
+        if ui
+          .button("Reset")
+          .width(button_w)
+          .height(button_h)
+          .clicked()
+        {
+          *reset_clicked = true;
+        }
+      });
   }
 }

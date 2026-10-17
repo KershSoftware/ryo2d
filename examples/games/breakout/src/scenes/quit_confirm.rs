@@ -5,17 +5,12 @@
 use ryo2d::prelude::*;
 
 /// Quit confirmation overlay
-pub struct QuitConfirmScene {
-  /// Wait for escape to be released before accepting input
-  escape_was_released: bool,
-}
+pub struct QuitConfirmScene;
 
 impl QuitConfirmScene {
   /// Create a new quit confirmation scene
   pub fn new() -> Self {
-    Self {
-      escape_was_released: false,
-    }
+    Self
   }
 }
 
@@ -30,83 +25,13 @@ impl Scene for QuitConfirmScene {
     // Overlay - no world changes needed
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Wait for Escape/B to be released before accepting new presses
-    if !self.escape_was_released
-      && !ctx.input.key_down(KeyCode::Escape)
-      && !ctx.input.gamepad_button_down(GamepadButton::East)
-    {
-      self.escape_was_released = true;
-    }
-
-    // N or B to cancel (B only after released once)
-    // Use consume to prevent input from cascading to underlying scene
-    if ctx.input.key_pressed_and_consume(KeyCode::KeyN) {
-      return SceneAction::Pop;
-    }
-
-    // ESC or B to cancel (only after released once)
-    if self.escape_was_released
-      && (ctx.input.key_pressed_and_consume(KeyCode::Escape)
-        || ctx
-          .input
-          .gamepad_button_pressed_and_consume(GamepadButton::East))
-    {
-      return SceneAction::Pop;
-    }
-
-    // Y or A to confirm quit
-    if ctx.input.key_pressed_and_consume(KeyCode::KeyY)
-      || ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::South)
-    {
-      return SceneAction::Quit;
-    }
-
-    SceneAction::Continue
-  }
-
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    let (screen_w, screen_h) = ui.screen_size();
-
-    // Dim overlay
-    ui.draw_rect(
-      Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32),
-      Color::new(0, 0, 0, 180),
-    );
-
-    // Confirmation panel
-    let panel_w = 350.0;
-    let panel_h = 180.0;
-    let panel_x = (screen_w as f32 - panel_w) / 2.0;
-    let panel_y = (screen_h as f32 - panel_h) / 2.0;
-
-    ui.draw_panel(
-      Rect::new(panel_x, panel_y, panel_w, panel_h),
-      Color::rgb(30, 30, 50),
-      Some(Color::WHITE),
-    );
-
-    // Title
-    ui.draw_text_centered(
-      "Quit to Desktop?",
-      Rect::new(panel_x, panel_y + 30.0, panel_w, 30.0),
-      Color::WHITE,
-    );
-
-    // Yes button
-    let yes_rect = Rect::new(panel_x + 30.0, panel_y + 100.0, 140.0, 40.0);
-    if ui.button("YES (Y/A)").at(yes_rect).clicked() {
-      return SceneAction::Quit;
+    // Opens on NO; Back (Escape, B) answers no
+    match ui.confirm_with("Quit to Desktop?", "", "YES", "NO") {
+      Some(true) => SceneAction::Quit,
+      Some(false) => SceneAction::Pop,
+      None => SceneAction::Continue,
     }
-
-    // No button
-    let no_rect = Rect::new(panel_x + 180.0, panel_y + 100.0, 140.0, 40.0);
-    if ui.button("NO (N/B)").at(no_rect).clicked() {
-      return SceneAction::Pop;
-    }
-    SceneAction::Continue
   }
 
   fn is_transparent(&self) -> bool {

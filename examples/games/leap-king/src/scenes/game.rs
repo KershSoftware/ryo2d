@@ -242,8 +242,6 @@ pub struct GameScene {
 
   // UI state
   show_quit_dialog: bool,
-  quit_dialog_selection: usize, // 0 = Yes, 1 = Cancel
-  quit_input_cooldown: f32,
   pending_quit: bool,
 
   // Input delay to prevent menu button from triggering charge
@@ -320,8 +318,6 @@ impl GameScene {
       client_to_session: HashMap::new(),
       notifications: Vec::new(),
       show_quit_dialog: false,
-      quit_dialog_selection: 1, // Default to Cancel
-      quit_input_cooldown: 0.0,
       pending_quit: false,
       input_delay: 0.2, // Prevent menu button from triggering charge
       charge_indicator: ChargeIndicatorState::default(),
@@ -390,8 +386,6 @@ impl GameScene {
       client_to_session: HashMap::new(),
       notifications: Vec::new(),
       show_quit_dialog: false,
-      quit_dialog_selection: 1, // Default to Cancel
-      quit_input_cooldown: 0.0,
       pending_quit: false,
       input_delay: 0.2, // Prevent menu button from triggering charge
       charge_indicator: ChargeIndicatorState::default(),
@@ -460,8 +454,6 @@ impl GameScene {
       client_to_session: HashMap::new(),
       notifications: Vec::new(),
       show_quit_dialog: false,
-      quit_dialog_selection: 1,
-      quit_input_cooldown: 0.0,
       pending_quit: false,
       input_delay: 0.2,
       charge_indicator: ChargeIndicatorState::default(),
@@ -543,8 +535,6 @@ impl GameScene {
       client_to_session: HashMap::new(),
       notifications: Vec::new(),
       show_quit_dialog: false,
-      quit_dialog_selection: 1, // Default to Cancel
-      quit_input_cooldown: 0.0,
       pending_quit: false,
       input_delay: 0.2, // Prevent menu button from triggering charge
       charge_indicator: ChargeIndicatorState::default(),
@@ -3295,55 +3285,14 @@ impl Scene for GameScene {
       return SceneAction::Switch(Box::new(MenuScene::new()));
     }
 
+    // Escape or Start opens the leave dialog (Start closes it again); while
+    // it is up, the UI answers it
     if ctx.input.key_pressed(KeyCode::Escape)
       || ctx.input.gamepad_button_pressed(GamepadButton::Start)
     {
       self.show_quit_dialog = !self.show_quit_dialog;
-      self.quit_dialog_selection = 1; // Default to Cancel when opening
-      self.quit_input_cooldown = 0.2;
     }
-
-    // Handle quit dialog input
     if self.show_quit_dialog {
-      self.quit_input_cooldown = (self.quit_input_cooldown - dt).max(0.0);
-
-      // B button cancels
-      if ctx.input.gamepad_button_pressed(GamepadButton::East) {
-        self.show_quit_dialog = false;
-        self.input_delay = 0.15; // Prevent button from triggering charge
-      }
-
-      // Navigation
-      if self.quit_input_cooldown <= 0.0 {
-        let nav_left = ctx.input.key_pressed(KeyCode::ArrowLeft)
-          || ctx.input.key_pressed(KeyCode::KeyA)
-          || ctx.input.gamepad_button_pressed(GamepadButton::DPadLeft)
-          || ctx.input.left_stick_x() < -0.5;
-        let nav_right = ctx.input.key_pressed(KeyCode::ArrowRight)
-          || ctx.input.key_pressed(KeyCode::KeyD)
-          || ctx.input.gamepad_button_pressed(GamepadButton::DPadRight)
-          || ctx.input.left_stick_x() > 0.5;
-
-        if nav_left || nav_right {
-          self.quit_dialog_selection = 1 - self.quit_dialog_selection;
-          self.quit_input_cooldown = 0.15;
-        }
-      }
-
-      // Confirm with Enter, Space, or A button
-      let confirm = ctx.input.key_pressed(KeyCode::Enter)
-        || ctx.input.key_pressed(KeyCode::Space)
-        || ctx.input.gamepad_button_pressed(GamepadButton::South);
-
-      if confirm {
-        if self.quit_dialog_selection == 0 {
-          self.pending_quit = true;
-        } else {
-          self.show_quit_dialog = false;
-          self.input_delay = 0.15; // Prevent button from triggering charge
-        }
-      }
-
       return SceneAction::Continue;
     }
 
@@ -3513,70 +3462,12 @@ impl Scene for GameScene {
       notif_y += 25.0;
     }
 
-    // Quit dialog
+    // Leave dialog: opens on Cancel; Back (Escape, B) cancels too
     if self.show_quit_dialog {
-      let center_x = sw as f32 / 2.0;
-      let center_y = sh as f32 / 2.0;
-
-      ui.draw_rect(
-        Rect::new(0.0, 0.0, sw as f32, sh as f32),
-        Color::new(0, 0, 0, 180),
-      );
-
-      let dialog_w = 300.0;
-      let dialog_h = 150.0;
-      let dialog_x = center_x - dialog_w / 2.0;
-      let dialog_y = center_y - dialog_h / 2.0;
-
-      ui.draw_rect(
-        Rect::new(dialog_x, dialog_y, dialog_w, dialog_h),
-        Color::rgb(40, 40, 50),
-      );
-      ui.draw_rect_outline(
-        Rect::new(dialog_x, dialog_y, dialog_w, dialog_h),
-        Color::WHITE,
-        2.0,
-      );
-
-      ui.draw_text_anchored("Leave Game?", Anchor::Center, 0.0, -30.0, Color::WHITE);
-
-      let btn_w = 100.0;
-      let btn_h = 36.0;
-      let btn_y = center_y + 25.0;
-      let highlight = Color::rgb(PLAYER_COLORS[0].0, PLAYER_COLORS[0].1, PLAYER_COLORS[0].2);
-
-      // Yes button
-      let yes_rect = Rect::new(center_x - btn_w - 20.0, btn_y, btn_w, btn_h);
-      if self.quit_dialog_selection == 0 {
-        ui.draw_rect(
-          Rect::new(
-            yes_rect.x - 3.0,
-            yes_rect.y - 3.0,
-            yes_rect.width + 6.0,
-            yes_rect.height + 6.0,
-          ),
-          highlight,
-        );
-      }
-      if ui.button("Yes, Leave").at(yes_rect).clicked() {
-        self.pending_quit = true;
-      }
-
-      // Cancel button
-      let cancel_rect = Rect::new(center_x + 20.0, btn_y, btn_w, btn_h);
-      if self.quit_dialog_selection == 1 {
-        ui.draw_rect(
-          Rect::new(
-            cancel_rect.x - 3.0,
-            cancel_rect.y - 3.0,
-            cancel_rect.width + 6.0,
-            cancel_rect.height + 6.0,
-          ),
-          highlight,
-        );
-      }
-      if ui.button("Cancel").at(cancel_rect).clicked() {
-        self.show_quit_dialog = false;
+      match ui.confirm_with("Leave Game?", "", "Yes, Leave", "Cancel") {
+        Some(true) => self.pending_quit = true,
+        Some(false) => self.show_quit_dialog = false,
+        None => {}
       }
     }
     SceneAction::Continue

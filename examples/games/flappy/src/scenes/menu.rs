@@ -150,14 +150,6 @@ impl Scene for MenuScene {
       self.anim_frame = !self.anim_frame;
     }
 
-    // Start game on Space or Enter
-    if ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::Enter) {
-      return SceneAction::SwitchWith(
-        Box::new(GameScene::new(self.high_score)),
-        Transition::fade(Duration::from_millis(300)),
-      );
-    }
-
     // Debug mode on D key (only if enabled)
     if self.debug_enabled && ctx.input.key_pressed(KeyCode::KeyD) {
       return SceneAction::SwitchWith(
@@ -198,45 +190,40 @@ impl Scene for MenuScene {
     let bird_y = 180.0;
     ui.draw_sprite(bird_sprite, bird_x, bird_y);
 
-    // Start button
-    let button_w = 200.0;
-    let button_h = 60.0;
-    let button_x = screen_w as f32 / 2.0 - button_w / 2.0;
-    let button_y = screen_h as f32 / 2.0;
-
-    if ui
-      .button("START")
-      .at(Rect::new(button_x, button_y, button_w, button_h))
-      .clicked()
-    {
+    // Start (and debug) buttons below the bird; Confirm (Space, Enter, A)
+    // presses the focused one
+    let mut start = false;
+    let mut debug = false;
+    let debug_enabled = self.debug_enabled;
+    ui.column()
+      .focus_scope()
+      .anchor(Anchor::TopCenter)
+      .offset(0.0, screen_h as f32 / 2.0)
+      .gap(20.0)
+      .align(Align::Center)
+      .show(|ui| {
+        start = ui
+          .button("START")
+          .width(200.0)
+          .height(60.0)
+          .default_focus()
+          .clicked();
+        // Smaller, below start - only if debug mode enabled
+        if debug_enabled {
+          debug = ui.button("DEBUG").width(120.0).height(40.0).clicked();
+        }
+      });
+    if start {
       return SceneAction::SwitchWith(
         Box::new(GameScene::new(self.high_score)),
         Transition::fade(Duration::from_millis(300)),
       );
     }
-
-    // Debug button (smaller, below start) - only if debug mode enabled
-    if self.debug_enabled {
-      let debug_button_w = 120.0;
-      let debug_button_h = 40.0;
-      let debug_button_x = screen_w as f32 / 2.0 - debug_button_w / 2.0;
-      let debug_button_y = button_y + button_h + 20.0;
-
-      if ui
-        .button("DEBUG")
-        .at(Rect::new(
-          debug_button_x,
-          debug_button_y,
-          debug_button_w,
-          debug_button_h,
-        ))
-        .clicked()
-      {
-        return SceneAction::SwitchWith(
-          Box::new(DebugScene::new()),
-          Transition::fade(Duration::from_millis(300)),
-        );
-      }
+    if debug {
+      return SceneAction::SwitchWith(
+        Box::new(DebugScene::new()),
+        Transition::fade(Duration::from_millis(300)),
+      );
     }
 
     // Instructions

@@ -363,3 +363,28 @@ fn falling_through_a_lower_checkpoint_keeps_the_higher_one() {
     spot(higher)
   );
 }
+
+#[test]
+fn the_leave_dialog_cancels_with_back_and_defaults_to_cancel() {
+  use ryo2d::core::scene::PhysicsPaused;
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  engine.step_frames(30).expect("frames");
+  let before = player(&mut engine).entity;
+  // The dialog stops the physics while it is up
+  let open = |engine: &HeadlessEngine| engine.world().resource::<PhysicsPaused>().0;
+  engine.tap_key(KeyCode::Escape); // open the dialog
+  engine.step_frames(3).expect("frames");
+  assert!(open(&engine), "Escape opened the dialog");
+  engine.tap_pad(GamepadButton::East); // Back: No
+  engine.step_frames(3).expect("frames");
+  assert!(!open(&engine), "Back closed the dialog");
+  engine.tap_key(KeyCode::Escape); // open it again
+  engine.step_frames(3).expect("frames");
+  assert!(open(&engine), "Escape opened it again");
+  engine.tap_pad(GamepadButton::South); // Confirm on the default, Cancel
+  engine.step_frames(10).expect("frames");
+  assert!(!open(&engine), "Confirm on Cancel closed it");
+  assert_eq!(player(&mut engine).entity, before, "still in the same game");
+}

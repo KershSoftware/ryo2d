@@ -2,7 +2,8 @@
 
 use demo_kit::prelude::*;
 
-/// An animated button with hover and click effects
+/// An animated button with hover and click effects, drawn as a custom
+/// widget whose response drives its tweens
 struct AnimatedButton {
   label: &'static str,
   base_rect: Rect,
@@ -11,7 +12,7 @@ struct AnimatedButton {
   click_scale: TweenFloat,
   color: Color,
   was_hovered: bool,
-  was_clicked: bool,
+  was_pressed: bool,
 }
 
 impl AnimatedButton {
@@ -24,26 +25,18 @@ impl AnimatedButton {
       click_scale: TweenFloat::new(1.0, 1.0, 0.1).with_ease(Ease::OutQuad),
       color,
       was_hovered: false,
-      was_clicked: false,
+      was_pressed: false,
     }
   }
 
-  /// `mouse_pos` is `None` while the mouse is hidden from the page
-  fn update(
-    &mut self,
-    dt: f32,
-    mouse_pos: Option<(f32, f32)>,
-    mouse_down: bool,
-    mouse_pressed: bool,
-  ) {
+  /// Run the tweens, starting new ones when the pointer enters or leaves
+  /// the button, or a press on it starts or ends
+  fn update(&mut self, dt: f32, response: &Response) {
     self.scale.update(dt);
     self.glow_alpha.update(dt);
     self.click_scale.update(dt);
 
-    let current_rect = self.current_rect();
-    let is_hovered = mouse_pos.is_some_and(|(x, y)| current_rect.contains(x, y));
-
-    // Handle hover state change
+    let is_hovered = response.hovered();
     if is_hovered && !self.was_hovered {
       // Mouse entered
       self.scale = TweenFloat::new(self.scale.value(), 1.08, 0.15).with_ease(Ease::OutBack);
@@ -55,17 +48,16 @@ impl AnimatedButton {
     }
     self.was_hovered = is_hovered;
 
-    // Handle click animation
-    if is_hovered && mouse_pressed && !self.was_clicked {
+    let is_pressed = response.pressed();
+    if is_pressed && !self.was_pressed {
       // Click down - squish effect
       self.click_scale = TweenFloat::new(1.0, 0.92, 0.05).with_ease(Ease::OutQuad);
-      self.was_clicked = true;
-    } else if self.was_clicked && !mouse_down {
+    } else if !is_pressed && self.was_pressed {
       // Release - bounce back
       self.click_scale =
         TweenFloat::new(self.click_scale.value(), 1.0, 0.15).with_ease(Ease::OutBack);
-      self.was_clicked = false;
     }
+    self.was_pressed = is_pressed;
   }
 
   fn current_rect(&self) -> Rect {
@@ -77,23 +69,44 @@ impl AnimatedButton {
     Rect::centered_at(cx, cy, w, h)
   }
 
-  /// Draw with the layout's origin at `top` on screen
-  fn render(&self, ui: &mut UiContext, top: f32) {
+  /// Draw it at its current rect, with the layout's origin at `top` on
+  /// screen; what the pointer did to it
+  fn show(&self, ui: &mut UiContext, index: usize, top: f32) -> Response {
     let rect = self.current_rect();
     let rect = Rect::new(rect.x, rect.y + top, rect.width, rect.height);
     let glow_alpha = (self.glow_alpha.value() * 255.0) as u8;
-
-    // Glow effect (larger background rect)
-    if glow_alpha > 0 {
-      let glow_rect = rect.expand(6.0);
-      ui.draw_rect(glow_rect, self.color.with_alpha(glow_alpha));
-    }
-
-    // Button background
-    ui.draw_panel(rect, self.color, Some(Color::WHITE.with_alpha(80)));
-
-    // Label
-    ui.draw_text_centered(self.label, rect, Color::WHITE);
+    let style = TextStyle::default().color(Color::WHITE);
+    // The painter does not measure, so the label is measured first
+    let label = ui.measure_text(self.label, &style);
+    ui.custom(rect.width, rect.height)
+      .id(index)
+      .at(rect)
+      .sense(Sense::click())
+      .paint(|painter, _| {
+        let size = painter.size();
+        // Glow effect (larger background rect)
+        if glow_alpha > 0 {
+          painter.rect(
+            Rect::new(-6.0, -6.0, size.x + 12.0, size.y + 12.0),
+            self.color.with_alpha(glow_alpha),
+          );
+        }
+        // Button background
+        painter.bordered_rect(
+          Rect::new(0.0, 0.0, size.x, size.y),
+          self.color,
+          0.0,
+          1.0,
+          Color::WHITE.with_alpha(80),
+        );
+        // Label
+        painter.text(
+          self.label,
+          (size.x - label.x) / 2.0,
+          (size.y - label.y) / 2.0,
+          &style,
+        );
+      })
   }
 
   fn is_hovered(&self) -> bool {
@@ -262,60 +275,6 @@ impl DemoPage for InteractiveDemo {
     let screen_h = screen_h as f32;
     let top = content_area(ui).y;
 
-    // Buttons live in layout coordinates, with y measured from the content
-    // area's top. `is_hovered` is false while the shell's help overlay hides
-    // the mouse from the page.
-    let (mx, my) = ui.input().mouse_position();
-    let mouse_pos = ui
-      .is_hovered(Rect::new(0.0, 0.0, screen_w, screen_h))
-      .then_some((mx, my - top));
-    let mouse_down = ui.input().mouse_down(MouseButton::Left);
-    let mouse_pressed = ui.input().mouse_pressed(MouseButton::Left);
-    let mouse_released = ui.input().mouse_released(MouseButton::Left);
-
-    // Update buttons
-    for (i, button) in self.buttons.iter_mut().enumerate() {
-      let was_hovered = button.is_hovered();
-      button.update(dt, mouse_pos, mouse_down, mouse_pressed);
-
-      // Check for click
-      if button.is_hovered() && mouse_released {
-        self.click_count += 1;
-
-        // Find an inactive notification slot, or recycle the oldest active one
-        let idx = self
-          .notifications
-          .iter()
-          .position(|n| !n.active)
-          .unwrap_or_else(|| {
-            // Pool full — recycle the one closest to finishing (lowest alpha)
-            self
-              .notifications
-              .iter()
-              .enumerate()
-              .min_by(|(_, a), (_, b)| a.alpha.value().partial_cmp(&b.alpha.value()).unwrap())
-              .map(|(i, _)| i)
-              .unwrap_or(0)
-          });
-        let rect = button.current_rect();
-        let (cx, cy) = rect.center();
-        self.notifications[idx].show(&format!("Clicked! ({})", self.click_count), cx, cy);
-      }
-
-      // Track hover changes for indicator
-      if button.is_hovered() && !was_hovered {
-        self.last_hovered = Some(i);
-      }
-    }
-
-    // Update hover indicator
-    self.hover_indicator.update(dt);
-
-    // Update notifications
-    for notif in &mut self.notifications {
-      notif.update(dt);
-    }
-
     // Dark background
     ui.draw_rect(
       Rect::new(0.0, 0.0, screen_w, screen_h),
@@ -337,12 +296,50 @@ impl DemoPage for InteractiveDemo {
       Color::WHITE,
     );
 
-    // Render buttons
-    for button in &self.buttons {
-      button.render(ui, top);
+    // Buttons live in layout coordinates, with y measured from the content
+    // area's top. Each is a custom widget whose response (none while the
+    // shell's help covers the page) drives its tweens.
+    for (i, button) in self.buttons.iter_mut().enumerate() {
+      let response = button.show(ui, i, top);
+      let was_hovered = button.is_hovered();
+      button.update(dt, &response);
+
+      if response.clicked() {
+        self.click_count += 1;
+
+        // Find an inactive notification slot, or recycle the oldest active one
+        let idx = self
+          .notifications
+          .iter()
+          .position(|n| !n.active)
+          .unwrap_or_else(|| {
+            // Pool full — recycle the one closest to finishing (lowest alpha)
+            self
+              .notifications
+              .iter()
+              .enumerate()
+              .min_by(|(_, a), (_, b)| a.alpha.value().total_cmp(&b.alpha.value()))
+              .map(|(i, _)| i)
+              .unwrap_or(0)
+          });
+        let rect = button.current_rect();
+        let (cx, cy) = rect.center();
+        self.notifications[idx].show(&format!("Clicked! ({})", self.click_count), cx, cy);
+      }
+
+      // Track hover changes for indicator
+      if button.is_hovered() && !was_hovered {
+        self.last_hovered = Some(i);
+      }
     }
 
-    // Render notifications
+    // Update hover indicator
+    self.hover_indicator.update(dt);
+
+    // Update and render notifications
+    for notif in &mut self.notifications {
+      notif.update(dt);
+    }
     for notif in &self.notifications {
       notif.render(ui, top);
     }

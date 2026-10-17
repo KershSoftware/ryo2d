@@ -29,26 +29,6 @@ impl Scene for GameOverScene {
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Space or Enter to restart
-    if ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::Enter) {
-      return SceneAction::SwitchWith(
-        Box::new(super::GameScene::new(self.high_score)),
-        Transition::fade(Duration::from_millis(300)),
-      );
-    }
-
-    // Escape to return to menu
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::SwitchWith(
-        Box::new(MenuScene::new()),
-        Transition::fade(Duration::from_millis(300)),
-      );
-    }
-
-    SceneAction::Continue
-  }
-
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
@@ -85,28 +65,32 @@ impl Scene for GameOverScene {
       );
     }
 
-    // Restart button
-    let button_w = 200.0;
-    let button_h = 50.0;
-    let button_x = screen_w as f32 / 2.0 - button_w / 2.0;
-
-    if ui
-      .button("RESTART")
-      .at(Rect::new(button_x, 350.0, button_w, button_h))
-      .clicked()
-    {
+    // Restart and menu buttons; Confirm (Space, Enter, A) presses the
+    // focused one
+    let mut restart = false;
+    let mut menu = false;
+    ui.column()
+      .focus_scope()
+      .anchor(Anchor::TopCenter)
+      .offset(0.0, 350.0)
+      .gap(20.0)
+      .show(|ui| {
+        restart = ui
+          .button("RESTART")
+          .width(200.0)
+          .height(50.0)
+          .default_focus()
+          .clicked();
+        menu = ui.button("MENU").width(200.0).height(50.0).clicked();
+      });
+    if restart {
       return SceneAction::SwitchWith(
         Box::new(super::GameScene::new(self.high_score)),
         Transition::fade(Duration::from_millis(300)),
       );
     }
-
-    // Menu button
-    if ui
-      .button("MENU")
-      .at(Rect::new(button_x, 420.0, button_w, button_h))
-      .clicked()
-    {
+    // Back (Escape, B) goes to the menu too
+    if menu || ui.back() {
       return SceneAction::SwitchWith(
         Box::new(MenuScene::new()),
         Transition::fade(Duration::from_millis(300)),

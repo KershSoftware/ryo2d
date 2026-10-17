@@ -78,8 +78,6 @@ impl Lobby {
   pub fn ui(&mut self, ui: &mut UiContext) {
     let area = content_area(ui);
     let (sw, sh) = ui.screen_size();
-    let center_x = sw as f32 / 2.0;
-    let center_y = sh as f32 / 2.0;
 
     // Background
     ui.draw_rect(
@@ -103,73 +101,61 @@ impl Lobby {
       Color::GRAY,
     );
 
-    // Create Room button
-    let button_width = 200.0;
-    let button_height = 40.0;
-    let button_x = center_x - button_width / 2.0;
+    // Create a room, or join one; Enter in either field joins
+    let mut create = false;
+    let mut join = false;
+    let (room_code, address) = (&mut self.room_code, &mut self.address);
+    let error = self.error_message.as_deref();
+    ui.column()
+      .focus_scope()
+      .anchor(Anchor::Center)
+      .offset(0.0, 60.0)
+      .gap(12.0)
+      .align(Align::Center)
+      .show(|ui| {
+        create = ui
+          .button("Create Room")
+          .width(200.0)
+          .height(40.0)
+          .default_focus()
+          .clicked();
 
-    let create_rect = Rect::new(button_x, center_y - 30.0, button_width, button_height);
-    if ui.button("Create Room").at(create_rect).clicked() {
+        ui.text("- or -").color(Color::GRAY);
+
+        ui.row().gap(20.0).show(|ui| {
+          ui.column().gap(6.0).show(|ui| {
+            ui.text("Room Code:").color(Color::WHITE);
+            join |= ui
+              .text_input(room_code)
+              .placeholder("XXXXX")
+              .width(100.0)
+              .height(32.0)
+              .show()
+              .submitted();
+          });
+          ui.column().gap(6.0).show(|ui| {
+            ui.text("Address:").color(Color::WHITE);
+            join |= ui
+              .text_input(address)
+              .placeholder("127.0.0.1:7777")
+              .width(160.0)
+              .height(32.0)
+              .show()
+              .submitted();
+          });
+        });
+
+        join |= ui.button("Join Room").width(200.0).height(40.0).clicked();
+
+        if let Some(err) = error {
+          ui.text(err).color(Color::RED);
+        }
+      });
+
+    if create {
       self.try_create_room();
-    }
-
-    // Separator
-    ui.draw_text_anchored("- or -", Anchor::Center, 0.0, 25.0, Color::GRAY);
-
-    // Join section - Room Code
-    ui.draw_text_anchored("Room Code:", Anchor::Center, -80.0, 55.0, Color::WHITE);
-
-    let code_input_width = 100.0;
-    let code_input_rect = Rect::new(
-      center_x - 80.0 - code_input_width / 2.0,
-      center_y + 75.0,
-      code_input_width,
-      32.0,
-    );
-    let code = ui
-      .text_input(&mut self.room_code)
-      .at(code_input_rect)
-      .placeholder("XXXXX")
-      .show();
-
-    // Join section - Server Address
-    ui.draw_text_anchored("Address:", Anchor::Center, 80.0, 55.0, Color::WHITE);
-
-    let addr_input_width = 160.0;
-    let addr_input_rect = Rect::new(
-      center_x + 80.0 - addr_input_width / 2.0,
-      center_y + 75.0,
-      addr_input_width,
-      32.0,
-    );
-    let address = ui
-      .text_input(&mut self.address)
-      .at(addr_input_rect)
-      .placeholder("127.0.0.1:7777")
-      .show();
-
-    // Enter in either field joins once both are filled in
-    let has_code = self.room_code.len() == ROOM_CODE_LENGTH;
-    let has_address = !self.address.trim().is_empty();
-    if (code.submitted() || address.submitted()) && has_code && has_address {
+    } else if join {
       self.try_join_room();
-    }
-
-    // Join button
-    let join_rect = Rect::new(button_x, center_y + 125.0, button_width, button_height);
-    if ui.button("Join Room").at(join_rect).clicked() {
-      self.try_join_room();
-    }
-
-    // Error message
-    if let Some(ref err) = self.error_message {
-      ui.draw_text_anchored(
-        err,
-        Anchor::TopCenter,
-        0.0,
-        join_rect.y + join_rect.height + 10.0,
-        Color::RED,
-      );
     }
   }
 }

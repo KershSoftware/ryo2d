@@ -13,10 +13,6 @@ use crate::save::load_high_score;
 /// Main menu scene
 pub struct MenuScene {
   high_score: u32,
-  /// Pending action from button click (set in ui, consumed in update)
-  start_clicked: bool,
-  /// Wait for escape to be released before accepting input
-  escape_was_released: bool,
   /// Background music
   music: Option<MusicHandle>,
 }
@@ -26,10 +22,21 @@ impl MenuScene {
   pub fn new() -> Self {
     Self {
       high_score: load_high_score(),
-      start_clicked: false,
-      escape_was_released: false,
       music: None,
     }
+  }
+
+  /// Play the intro and switch to the game, handing it the music to
+  /// crossfade
+  fn start_game(&mut self, ctx: &mut SceneContext) -> SceneAction {
+    let _ = ctx
+      .audio
+      .play_sound_with("intro_sfx", SoundOptions::new().volume(0.5));
+    let music = self.music.take();
+    SceneAction::SwitchWith(
+      Box::new(GameScene::new(self.high_score, music)),
+      Transition::fade(Duration::from_millis(300)),
+    )
   }
 }
 
@@ -69,54 +76,7 @@ impl Scene for MenuScene {
     }
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Wait for Escape/B to be released before accepting new presses
-    if !self.escape_was_released
-      && !ctx.input.key_down(KeyCode::Escape)
-      && !ctx.input.gamepad_button_down(GamepadButton::East)
-      && !ctx.input.gamepad_button_down(GamepadButton::Select)
-    {
-      self.escape_was_released = true;
-    }
-
-    // Start game on Enter, Space, button click, or gamepad A/Start
-    // Use consume to prevent input from cascading to the next scene
-    if ctx.input.key_pressed_and_consume(KeyCode::Enter)
-      || ctx.input.key_pressed_and_consume(KeyCode::Space)
-      || ctx.input.gamepad_button_pressed_and_consume(GamepadButton::South) // A button
-      || ctx.input.gamepad_button_pressed_and_consume(GamepadButton::Start)
-      || self.start_clicked
-    {
-      self.start_clicked = false;
-
-      // Play intro sound effect
-      let _ = ctx
-        .audio
-        .play_sound_with("intro_sfx", SoundOptions::new().volume(0.5));
-
-      // Take music handle to pass to game for crossfading
-      let music = self.music.take();
-      return SceneAction::SwitchWith(
-        Box::new(GameScene::new(self.high_score, music)),
-        Transition::fade(Duration::from_millis(300)),
-      );
-    }
-
-    // ESC or gamepad B/Select to open quit confirmation (only after released once)
-    // Use consume to prevent input from cascading to the overlay
-    if self.escape_was_released
-      && (ctx.input.key_pressed_and_consume(KeyCode::Escape)
-        || ctx.input.gamepad_button_pressed_and_consume(GamepadButton::East) // B button
-        || ctx.input.gamepad_button_pressed_and_consume(GamepadButton::Select))
-    {
-      self.escape_was_released = false; // Reset for when we return from overlay
-      return SceneAction::Push(Box::new(QuitConfirmScene::new()));
-    }
-
-    SceneAction::Continue
-  }
-
-  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background
@@ -162,11 +122,22 @@ impl Scene for MenuScene {
       ui.draw_rect(Rect::new(x, 250.0, 60.0, 25.0), *color);
     }
 
-    // Start button area
-    let button_rect = Rect::new(screen_w as f32 / 2.0 - 100.0, 350.0, 200.0, 50.0);
-
-    if ui.button("START GAME").at(button_rect).clicked() {
-      self.start_clicked = true;
+    // Start button: Confirm (Enter, Space, A) on it starts too
+    let mut start = false;
+    ui.column()
+      .focus_scope()
+      .anchor(Anchor::TopCenter)
+      .offset(0.0, 350.0)
+      .show(|ui| {
+        start = ui
+          .button("START GAME")
+          .width(200.0)
+          .height(50.0)
+          .default_focus()
+          .clicked();
+      });
+    if start {
+      return self.start_game(ctx);
     }
 
     // Instructions
@@ -185,6 +156,11 @@ impl Scene for MenuScene {
       -30.0,
       Color::DARK_GRAY,
     );
+
+    // Back (Escape, B) asks before quitting
+    if ui.back() {
+      return SceneAction::Push(Box::new(QuitConfirmScene::new()));
+    }
     SceneAction::Continue
   }
 

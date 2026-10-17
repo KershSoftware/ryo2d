@@ -15,42 +15,24 @@ fn generate_room_code() -> String {
     .collect()
 }
 
-/// Menu items that can be selected
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MenuItem {
-  SinglePlayer,
-  CreateRoom,
-  JoinRoom,
-}
-
-impl MenuItem {
-  fn count() -> usize {
-    3
-  }
-
-  fn from_index(i: usize) -> Self {
-    match i % 3 {
-      0 => MenuItem::SinglePlayer,
-      1 => MenuItem::CreateRoom,
-      _ => MenuItem::JoinRoom,
-    }
-  }
-
-  fn index(self) -> usize {
-    match self {
-      MenuItem::SinglePlayer => 0,
-      MenuItem::CreateRoom => 1,
-      MenuItem::JoinRoom => 2,
-    }
-  }
-}
-
 /// Host mode: LAN (UDP) or Internet (WebRTC)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostMode {
   Lan,
   Internet,
 }
+
+/// The menu button pressed this frame
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pressed {
+  SinglePlayer,
+  CreateRoom,
+  JoinRoom,
+}
+
+/// The menu buttons' size
+const BUTTON_WIDTH: f32 = 200.0;
+const BUTTON_HEIGHT: f32 = 40.0;
 
 /// Fairy light data for menu background
 #[derive(Debug, Clone, Copy)]
@@ -64,17 +46,11 @@ pub struct MenuScene {
   room_code: String,
   address: String,
   signal_url: String,
-  /// A text field had the keyboard on the last UI pass
-  typing: bool,
   error_message: Option<String>,
   pending_scene: Option<Box<dyn Scene>>,
 
   // Host mode toggle
   host_mode: HostMode,
-
-  // Navigation
-  selected: MenuItem,
-  input_cooldown: f32, // Prevent rapid navigation
 
   rain_emitter: Option<Entity>,
   rain_sprite: Option<SpriteHandle>,
@@ -95,12 +71,9 @@ impl MenuScene {
       room_code: String::new(),
       address: DEFAULT_ADDRESS.to_string(),
       signal_url: DEFAULT_SIGNAL_URL.to_string(),
-      typing: false,
       error_message: None,
       pending_scene: None,
       host_mode: HostMode::Lan,
-      selected: MenuItem::SinglePlayer,
-      input_cooldown: 0.0,
       rain_emitter: None,
       rain_sprite: None,
       particle_system: ParticleSystem::new(),
@@ -108,32 +81,6 @@ impl MenuScene {
       elapsed_time: 0.0,
       screen_width: 0.0,
       screen_height: 0.0,
-    }
-  }
-
-  fn navigate_up(&mut self) {
-    let idx = self.selected.index();
-    let new_idx = if idx == 0 {
-      MenuItem::count() - 1
-    } else {
-      idx - 1
-    };
-    self.selected = MenuItem::from_index(new_idx);
-    self.input_cooldown = 0.15;
-  }
-
-  fn navigate_down(&mut self) {
-    let idx = self.selected.index();
-    let new_idx = (idx + 1) % MenuItem::count();
-    self.selected = MenuItem::from_index(new_idx);
-    self.input_cooldown = 0.15;
-  }
-
-  fn activate_selected(&mut self) {
-    match self.selected {
-      MenuItem::SinglePlayer => self.try_single_player(),
-      MenuItem::CreateRoom => self.try_create_room(),
-      MenuItem::JoinRoom => self.try_join_room(),
     }
   }
 
@@ -304,11 +251,6 @@ impl Scene for MenuScene {
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     self.elapsed_time += dt;
 
-    // Update cooldown
-    if self.input_cooldown > 0.0 {
-      self.input_cooldown -= dt;
-    }
-
     // Animate fairy lights
     let t = self.elapsed_time;
     for (entity, light) in &self.fairy_lights {
@@ -341,335 +283,115 @@ impl Scene for MenuScene {
       return SceneAction::Switch(scene);
     }
 
-    // ESC or gamepad B to quit
-    if ctx.input.key_pressed(KeyCode::Escape)
-      || ctx.input.gamepad_button_pressed(GamepadButton::East)
-    {
-      return SceneAction::Quit;
-    }
-
-    // A text field has the keys (as this frame's UI pass, which runs first, left it)
-    let text_input_focused = self.typing;
-
-    // Navigation (only when text inputs not focused)
-    if !text_input_focused && self.input_cooldown <= 0.0 {
-      // Up navigation
-      let nav_up = ctx.input.key_pressed(KeyCode::ArrowUp)
-        || ctx.input.key_pressed(KeyCode::KeyW)
-        || ctx.input.gamepad_button_pressed(GamepadButton::DPadUp)
-        || ctx.input.left_stick_y() > 0.5;
-
-      // Down navigation
-      let nav_down = ctx.input.key_pressed(KeyCode::ArrowDown)
-        || ctx.input.key_pressed(KeyCode::KeyS)
-        || ctx.input.gamepad_button_pressed(GamepadButton::DPadDown)
-        || ctx.input.left_stick_y() < -0.5;
-
-      // Left/right navigation (toggle host mode when on CreateRoom)
-      let nav_left = ctx.input.key_pressed(KeyCode::ArrowLeft)
-        || ctx.input.key_pressed(KeyCode::KeyA)
-        || ctx.input.gamepad_button_pressed(GamepadButton::DPadLeft)
-        || ctx.input.left_stick_x() < -0.5;
-
-      let nav_right = ctx.input.key_pressed(KeyCode::ArrowRight)
-        || ctx.input.key_pressed(KeyCode::KeyD)
-        || ctx.input.gamepad_button_pressed(GamepadButton::DPadRight)
-        || ctx.input.left_stick_x() > 0.5;
-
-      if nav_up {
-        self.navigate_up();
-      } else if nav_down {
-        self.navigate_down();
-      } else if self.selected == MenuItem::CreateRoom && (nav_left || nav_right) {
-        self.host_mode = match self.host_mode {
-          HostMode::Lan => HostMode::Internet,
-          HostMode::Internet => HostMode::Lan,
-        };
-        self.input_cooldown = 0.15;
-      }
-    }
-
-    // Activation (Enter, Space, or gamepad A/X)
-    let activate = ctx.input.key_pressed(KeyCode::Enter)
-      || ctx.input.key_pressed(KeyCode::Space)
-      || ctx.input.gamepad_button_pressed(GamepadButton::South)
-      || ctx.input.gamepad_button_pressed(GamepadButton::Start);
-
-    if activate && !text_input_focused {
-      self.activate_selected();
-    }
-
     SceneAction::Continue
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    let (sw, sh) = ui.screen_size();
-    // Enter in any field tries to join
-    let mut submitted = false;
-    let center_x = sw as f32 / 2.0;
-    let center_y = sh as f32 / 2.0;
-
     // No background rect - let the world (rain particles + lighting) show through
 
-    // Title (with extra top padding)
-    ui.draw_text_anchored("LEAP KING", Anchor::TopCenter, 0.0, 100.0, Color::WHITE);
-    ui.draw_text_anchored(
-      "Charge. Aim. Release.",
-      Anchor::TopCenter,
-      0.0,
-      130.0,
-      Color::GRAY,
-    );
+    let mut pressed = None;
+    // Enter in either join field tries to join
+    let mut submitted = false;
+    let host_mode = &mut self.host_mode;
+    let (signal_url, room_code, address) =
+      (&mut self.signal_url, &mut self.room_code, &mut self.address);
+    let error = self.error_message.as_deref();
+    ui.column()
+      .focus_scope()
+      .anchor(Anchor::Center)
+      .gap(10.0)
+      .align(Align::Center)
+      .show(|ui| {
+        ui.column().gap(6.0).align(Align::Center).show(|ui| {
+          ui.text("LEAP KING").color(Color::WHITE);
+          ui.text("Charge. Aim. Release.").color(Color::GRAY);
+        });
 
-    // Button dimensions
-    let button_width = 200.0;
-    let button_height = 40.0;
-    let button_x = center_x - button_width / 2.0;
-    let highlight_color = Color::rgb(PLAYER_COLORS[0].0, PLAYER_COLORS[0].1, PLAYER_COLORS[0].2);
+        if ui
+          .button("Single Player")
+          .width(BUTTON_WIDTH)
+          .height(BUTTON_HEIGHT)
+          .default_focus()
+          .clicked()
+        {
+          pressed = Some(Pressed::SinglePlayer);
+        }
 
-    // Single Player button
-    let single_rect = Rect::new(button_x, center_y - 80.0, button_width, button_height);
-    let single_selected = self.selected == MenuItem::SinglePlayer;
-    if single_selected {
-      // Draw selection indicator
-      ui.draw_rect(
-        Rect::new(
-          single_rect.x - 4.0,
-          single_rect.y - 4.0,
-          single_rect.width + 8.0,
-          single_rect.height + 8.0,
-        ),
-        highlight_color,
-      );
-      // Draw selector arrow (vertically centered in button)
-      ui.label(
-        ">",
-        single_rect.x - 20.0,
-        single_rect.y + button_height / 2.0 - 4.0,
-        highlight_color,
-        None,
-      );
-    }
-    if ui.button("Single Player").at(single_rect).clicked() {
-      self.try_single_player();
-    }
+        // Host mode: LAN (UDP) or Internet (WebRTC), for Create Room
+        ui.row().gap(24.0).show(|ui| {
+          ui.radio(&mut *host_mode, HostMode::Lan, "LAN").show();
+          ui.radio(&mut *host_mode, HostMode::Internet, "Internet")
+            .show();
+        });
+        // The signal server, in Internet mode only
+        if *host_mode == HostMode::Internet {
+          ui.text_input(signal_url)
+            .placeholder("wss://...trycloudflare.com")
+            .fill_width()
+            .show();
+        }
 
-    // Host mode toggle (LAN / Internet) - above Create Room
-    let toggle_y = center_y - 18.0;
-    let toggle_width = 90.0;
-    let toggle_height = 24.0;
-    let toggle_gap = 24.0;
-    let total_toggle_width = toggle_width * 2.0 + toggle_gap;
-    let toggle_x = center_x - total_toggle_width / 2.0;
+        let create_label = match *host_mode {
+          HostMode::Lan => "Create Room (LAN)",
+          HostMode::Internet => "Create Room (Net)",
+        };
+        if ui
+          .button(create_label)
+          .width(BUTTON_WIDTH)
+          .height(BUTTON_HEIGHT)
+          .clicked()
+        {
+          pressed = Some(Pressed::CreateRoom);
+        }
 
-    let lan_rect = Rect::new(toggle_x, toggle_y, toggle_width, toggle_height);
-    let internet_rect = Rect::new(
-      toggle_x + toggle_width + toggle_gap,
-      toggle_y,
-      toggle_width,
-      toggle_height,
-    );
+        ui.text("- or join -").color(Color::GRAY);
 
-    let active_color = highlight_color;
-    let inactive_color = Color::new(60, 60, 70, 255);
+        ui.row().gap(20.0).show(|ui| {
+          ui.column().gap(6.0).show(|ui| {
+            ui.text("Room Code:").color(Color::WHITE);
+            submitted |= ui
+              .text_input(room_code)
+              .placeholder("XXXXX")
+              .max_len(ROOM_CODE_LENGTH)
+              .width(100.0)
+              .height(32.0)
+              .show()
+              .submitted();
+          });
+          ui.column().gap(6.0).show(|ui| {
+            ui.text("Address:").color(Color::WHITE);
+            submitted |= ui
+              .text_input(address)
+              .placeholder(DEFAULT_ADDRESS)
+              .width(160.0)
+              .height(32.0)
+              .show()
+              .submitted();
+          });
+        });
 
-    // Draw arrow indicator on the active toggle when CreateRoom is selected
-    let show_toggle_arrow = self.selected == MenuItem::CreateRoom;
+        if ui
+          .button("Join Room")
+          .width(BUTTON_WIDTH)
+          .height(BUTTON_HEIGHT)
+          .clicked()
+        {
+          pressed = Some(Pressed::JoinRoom);
+        }
 
-    // LAN toggle button
-    if self.host_mode == HostMode::Lan {
-      ui.draw_rect(lan_rect, active_color);
-      if show_toggle_arrow {
-        ui.label(
-          ">",
-          lan_rect.x - 16.0,
-          lan_rect.y + toggle_height / 2.0 - 4.0,
-          highlight_color,
-          None,
-        );
-      }
-    } else {
-      ui.draw_rect(lan_rect, inactive_color);
-    }
-    if ui.button("LAN").at(lan_rect).clicked() {
-      self.host_mode = HostMode::Lan;
-    }
+        ui.text("Use ws:// or wss:// URL for internet, IP for LAN")
+          .color(Color::new(100, 180, 255, 150));
+        if let Some(err) = error {
+          ui.text(err).color(Color::RED);
+        }
+      });
 
-    // Internet toggle button
-    if self.host_mode == HostMode::Internet {
-      ui.draw_rect(internet_rect, active_color);
-      if show_toggle_arrow {
-        ui.label(
-          ">",
-          internet_rect.x - 16.0,
-          internet_rect.y + toggle_height / 2.0 - 4.0,
-          highlight_color,
-          None,
-        );
-      }
-    } else {
-      ui.draw_rect(internet_rect, inactive_color);
-    }
-    if ui.button("Internet").at(internet_rect).clicked() {
-      self.host_mode = HostMode::Internet;
-    }
-
-    // Signal URL input (only visible in Internet mode)
-    let mut extra_offset = 0.0;
-    if self.host_mode == HostMode::Internet {
-      let signal_input_y = center_y + 14.0;
-      let signal_input_width = 240.0;
-      let signal_input_rect = Rect::new(
-        center_x - signal_input_width / 2.0,
-        signal_input_y,
-        signal_input_width,
-        28.0,
-      );
-      submitted |= ui
-        .text_input(&mut self.signal_url)
-        .at(signal_input_rect)
-        .placeholder("wss://...trycloudflare.com")
-        .show()
-        .submitted();
-      extra_offset = 37.0;
-    }
-
-    // Create Room button (below toggle or signal URL input)
-    let create_rect = Rect::new(
-      button_x,
-      center_y + 14.0 + extra_offset,
-      button_width,
-      button_height,
-    );
-    let create_selected = self.selected == MenuItem::CreateRoom;
-    if create_selected {
-      ui.draw_rect(
-        Rect::new(
-          create_rect.x - 4.0,
-          create_rect.y - 4.0,
-          create_rect.width + 8.0,
-          create_rect.height + 8.0,
-        ),
-        highlight_color,
-      );
-      ui.label(
-        ">",
-        create_rect.x - 20.0,
-        create_rect.y + button_height / 2.0 - 4.0,
-        highlight_color,
-        None,
-      );
-    }
-    let create_label = match self.host_mode {
-      HostMode::Lan => "Create Room (LAN)",
-      HostMode::Internet => "Create Room (Net)",
-    };
-    if ui.button(create_label).at(create_rect).clicked() {
-      self.try_create_room();
-    }
-
-    // Separator
-    ui.draw_text_anchored(
-      "- or join -",
-      Anchor::Center,
-      0.0,
-      69.0 + extra_offset,
-      Color::GRAY,
-    );
-
-    // Join section - Room Code
-    ui.draw_text_anchored(
-      "Room Code:",
-      Anchor::Center,
-      -80.0,
-      99.0 + extra_offset,
-      Color::WHITE,
-    );
-
-    let code_input_width = 100.0;
-    let code_input_rect = Rect::new(
-      center_x - 80.0 - code_input_width / 2.0,
-      center_y + 119.0 + extra_offset,
-      code_input_width,
-      32.0,
-    );
-    submitted |= ui
-      .text_input(&mut self.room_code)
-      .at(code_input_rect)
-      .placeholder("XXXXX")
-      .show()
-      .submitted();
-
-    // Join section - Server Address
-    ui.draw_text_anchored(
-      "Address:",
-      Anchor::Center,
-      80.0,
-      99.0 + extra_offset,
-      Color::WHITE,
-    );
-
-    let addr_input_width = 160.0;
-    let addr_input_rect = Rect::new(
-      center_x + 80.0 - addr_input_width / 2.0,
-      center_y + 119.0 + extra_offset,
-      addr_input_width,
-      32.0,
-    );
-    submitted |= ui
-      .text_input(&mut self.address)
-      .at(addr_input_rect)
-      .placeholder(DEFAULT_ADDRESS)
-      .show()
-      .submitted();
-    let has_code = self.room_code.len() == ROOM_CODE_LENGTH;
-    let has_address = !self.address.trim().is_empty();
-    if submitted && has_code && has_address {
-      self.try_join_room();
-    }
-
-    // Hint for join: address format
-    ui.draw_text_anchored(
-      "Use ws:// or wss:// URL for internet, IP for LAN",
-      Anchor::Center,
-      0.0,
-      162.0 + extra_offset,
-      Color::new(100, 180, 255, 150),
-    );
-
-    // Join button
-    let join_rect = Rect::new(
-      button_x,
-      center_y + 180.0 + extra_offset,
-      button_width,
-      button_height,
-    );
-    let join_selected = self.selected == MenuItem::JoinRoom;
-    if join_selected {
-      ui.draw_rect(
-        Rect::new(
-          join_rect.x - 4.0,
-          join_rect.y - 4.0,
-          join_rect.width + 8.0,
-          join_rect.height + 8.0,
-        ),
-        highlight_color,
-      );
-      ui.label(
-        ">",
-        join_rect.x - 20.0,
-        join_rect.y + button_height / 2.0 - 4.0,
-        highlight_color,
-        None,
-      );
-    }
-    if ui.button("Join Room").at(join_rect).clicked() {
-      self.try_join_room();
-    }
-
-    // Error message
-    if let Some(ref err) = self.error_message {
-      ui.draw_text_anchored(err, Anchor::Center, 0.0, 234.0 + extra_offset, Color::RED);
+    match pressed {
+      Some(Pressed::SinglePlayer) => self.try_single_player(),
+      Some(Pressed::CreateRoom) => self.try_create_room(),
+      Some(Pressed::JoinRoom) => self.try_join_room(),
+      None if submitted => self.try_join_room(),
+      None => {}
     }
 
     // Controls hint
@@ -689,7 +411,11 @@ impl Scene for MenuScene {
       -20.0,
       Color::DARK_GRAY,
     );
-    self.typing = ui.wants_keyboard();
+
+    // Back (Escape, B) quits; a focused field takes it first, to leave it
+    if ui.back() {
+      return SceneAction::Quit;
+    }
     SceneAction::Continue
   }
 

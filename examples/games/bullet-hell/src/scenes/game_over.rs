@@ -21,18 +21,14 @@ impl GameOverScene {
 
 impl Scene for GameOverScene {
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Restart game (keyboard or gamepad)
-    if ctx.input.key_pressed(KeyCode::Space)
-      || ctx.input.key_pressed(KeyCode::Enter)
-      || ctx.input.gamepad_button_pressed(GamepadButton::South)
+    // Restart game: Confirm (Space, Enter, A), or Start on a pad
+    if ctx.input.action_pressed("ui.confirm")
       || ctx.input.gamepad_button_pressed(GamepadButton::Start)
     {
       return SceneAction::Switch(Box::new(GameScene::new()));
     }
-    // Return to menu (keyboard or gamepad)
-    if ctx.input.key_pressed(KeyCode::Escape)
-      || ctx.input.gamepad_button_pressed(GamepadButton::East)
-    {
+    // Return to menu: Back (Escape, B)
+    if ctx.input.action_pressed("ui.back") {
       return SceneAction::Switch(Box::new(super::MenuScene::new()));
     }
     SceneAction::Continue

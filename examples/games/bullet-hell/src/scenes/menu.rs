@@ -48,10 +48,8 @@ impl Scene for MenuScene {
     // The shared parallax time carries the backdrop into the next scene
     shared::add_parallax_time(dt);
 
-    // Start game (keyboard or gamepad)
-    if ctx.input.key_pressed(KeyCode::Space)
-      || ctx.input.key_pressed(KeyCode::Enter)
-      || ctx.input.gamepad_button_pressed(GamepadButton::South)
+    // Start game: Confirm (Space, Enter, A), or Start on a pad
+    if ctx.input.action_pressed("ui.confirm")
       || ctx.input.gamepad_button_pressed(GamepadButton::Start)
     {
       return SceneAction::Switch(Box::new(GameScene::new()));
