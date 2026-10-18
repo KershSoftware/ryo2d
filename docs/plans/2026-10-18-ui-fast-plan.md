@@ -604,17 +604,18 @@ git commit -m "docs: the cheap UI frame's numbers and the new node guard
   // crate
   pub(crate) struct ListState { pub(crate) stride: f32, pub(crate) rows: usize, pub(crate) columns: u16, pub(crate) count: usize,
     pub(crate) focused: Option<usize>, pub(crate) pending_focus: Option<usize>, pub(crate) focus_ids: Vec<UiId> }   // in UiMemory under the list's id (Task 8 uses the focus fields)
-  pub(crate) fn built_rows(rows: usize, stride: f32, view: f32, from: f32, to: f32, overscan: usize) -> Range<usize>;
+  pub(crate) fn built_rows(rows: usize, stride: f32, view: f32, offset: f32, overscan: usize) -> Range<usize>;
   ```
 
 Rules (the spec's "Shared shape" and "Closure UI"):
 - `stride = row_height + gap`; `rows = count.div_ceil(columns)`; the content length is `rows × stride − gap` (0 for no rows), computed in `f64` and given to layout as `f32`.
-- **Built rows:** `built_rows` returns the visual rows covering `[min(offset, target), max(offset, target) + view]` widened by `overscan` rows each side, clamped to `0..rows`. Before the list has a view (its first frame, `view == 0`), the screen's height stands in.
+- **Exact length:** the scroll area takes this length as its content whatever the rows hold, so a row whose contents overflow `row_height` never changes the scroll length.
+- **Built rows:** `built_rows` returns the visual rows covering `[offset, offset + view]` (the offset the frame is drawn at: the scroll area eases its offset before it builds its contents) widened by `overscan` rows each side, clamped to `0..rows`. Before the list has a view (its first frame, `view == 0`), the screen's height stands in.
 - **Placement:** inside the scroll area (gap 0 between its children is not assumed: use the column gap = `gap`): a leading spacer of height `first × stride − gap` (when `first > 0`), the built rows in order, and a trailing spacer of height `(rows − end) × stride − gap` (when `end < rows`). Spacers record nothing (no hit, focus or hover record). Each built visual row is a container of height `row_height`: with one column, the item's own container `ui.column().id(index).height(row_height).fill_width()`; with several, `ui.row().id(row).height(row_height).gap(gap)` holding one `ui.column().id(index).grow(1.0)` per item and an empty `grow(1.0)` cell for each missing item of the last row, so cells keep equal widths. The row closure builds inside the item's container.
 - **Ids follow the index** (the item container is keyed by `index`).
 - **Hostile sizes:** a `row_height` that is not finite or not above 0 warns once (`warn_once("ui-list-row-height".into(), ..)`, the message containing "row height") and the list draws as an empty scroll area; `columns(0)` is 1; `overscan` is at least 1; huge counts stay finite (no overflow in `rows × stride`).
-- **`list_scroll_to(list, index)`:** reads the `ListState` under `list` and sets the scroll area's `target` by the least movement that shows the item's row (to the row's top if above the view, to its bottom minus the view if below), clamped to the content; an index past the end is clamped to the last item; a list never drawn ignores it.
-- `ListResponse.range` is the range of item indices built this frame (`first × columns .. min(end × columns, count)`).
+- **`list_scroll_to(list, index)`:** reads the `ListState` under `list` and sets the scroll area's `target` by the least movement that shows the item's row (to the row's top if above the view, to its bottom minus the view if below), clamped to the content; when the new target is more than one view from the current offset, the offset first moves to one view short of the target (on the side it comes from), so the ease never sweeps through the rows between; an index past the end is clamped to the last item; a list never drawn ignores it.
+- `ListResponse.range` is the range of item indices built for the view this frame (`first × columns .. min(end × columns, count)`); rows kept built only for focus (Task 8) are not in it.
 
 - [ ] **Step 1: Write the failing tests** in `src/core/ui/widgets/list.rs`:
 
@@ -634,11 +635,10 @@ mod tests {
 
   #[test]
   fn the_built_rows_cover_the_view_and_the_overscan() {
-    assert_eq!(built_rows(1000, 22.0, 200.0, 0.0, 0.0, 2), 0..12);       // 200/22 = 9.1 -> 10 rows, + 2
-    assert_eq!(built_rows(1000, 22.0, 200.0, 2200.0, 2200.0, 2), 98..112);
-    assert_eq!(built_rows(1000, 22.0, 200.0, 21_800.0, 21_800.0, 2), 988..1000);
-    assert_eq!(built_rows(1000, 22.0, 200.0, 0.0, 2200.0, 2), 0..112, "spans offset to target");
-    assert_eq!(built_rows(0, 22.0, 200.0, 0.0, 0.0, 2), 0..0);
+    assert_eq!(built_rows(1000, 22.0, 200.0, 0.0, 2), 0..12);       // 200/22 = 9.1 -> 10 rows, + 2
+    assert_eq!(built_rows(1000, 22.0, 200.0, 2200.0, 2), 98..112);
+    assert_eq!(built_rows(1000, 22.0, 200.0, 21_800.0, 2), 988..1000);
+    assert_eq!(built_rows(0, 22.0, 200.0, 0.0, 2), 0..0);
   }
 
   #[test]
@@ -765,7 +765,7 @@ git commit -m "feat: ui.list builds only the rows of a long list that are in vie
 
 Rules (the spec's focus bullets and Rulings 1-2):
 - **Which row holds the focus:** while building each item, the list checks whether the id that had the focus last frame (`memory.interact.focused`) is made inside that item (compare the set of ids made before and after the item: `IdScopes`' `used` set, or the capture). The item that made it is `ListState.focused`.
-- **The focused item stays built:** the built set is the built rows plus the focused item's row (from last frame's `ListState.focused`), with spacers filling the gaps between non-contiguous runs, so the focused row keeps its true place and is clipped when out of view.
+- **The focused item stays built:** the built set is the built rows plus the focused item's row (from last frame's `ListState.focused`) and, while `pending_focus` is set, the pending item's row (so `list_focus` lands within two frames however far the ease has to go), with spacers filling the gaps between non-contiguous runs, so the focused row keeps its true place and is clipped when out of view.
 - **Count shrink:** if `ListState.focused` is at or past the new count, it is cleared; if the count is above 0 and the list held the focus, `pending_focus` becomes the new last item (Review Focus 1).
 - **`list_focus(list, index)`:** scrolls to the item (as `list_scroll_to`) and sets `pending_focus`. When the item's row is next built, the ids made while building it are captured into `ListState.focus_ids`; on the next frame the list requests focus (`ui.request_focus`) for the first of those ids whose last-frame record is focusable, and clears the pending state. It can take two frames.
 - **Pad walking** needs nothing new: overscan rows are built, so moving the focus onto the row past the edge works and 4b's scroll-into-view follows.
@@ -932,10 +932,10 @@ Rules (the spec's "Node trees: the pooled `List`", and Rulings 1, 3, 4, 5):
 - **Spawn:** inserts `UiList { count, .. }` and `UiListShape` (when given); the count goes through `NodeState.list_count` so `UiApplied` gets it (three-way: a reconcile writes `UiList.count` only when the tree's count changed).
 - **`update_lists`** runs once a frame (UI pass 0) after the pointer, wheel, scroll requests and navigation are resolved and before any node tree is drawn: in `Engine::draw_ui` right after `resolve_navigation`, and at the same point in `UiHarness::frame_with_world`. For each `UiList`:
   - its scroll state comes from the list entity's last drawn id (`UiInteraction::id`); before the first draw, the screen height stands in for the view;
-  - the needed items are those of `built_rows(..)` (spanning offset and target) plus `focused` plus a pending `jump` index, within `0..count`;
+  - the needed items are those of `built_rows(..)` at the current offset and at the target (and every row between when the two are within two views of each other), plus `focused` plus a pending `jump` index, within `0..count`: at most about four views of rows, however far the jump;
   - rows whose index is still needed keep their entity; the others are reused for needed indices without a row; when short, new rows are spawned from the shape as children of the list (with `UiListRow`, `UiAdded` and the row's own binding scope); extra rows are despawned;
   - every row given an index this frame (new or reused) gets `bound_frame = frame` and a `UiListBind { list, row, index }` is written as a message and triggered as an entity event on the row;
-  - a pending `jump` sets the scroll area's target (least movement, as Task 7) and is cleared once its row exists (focus is Task 10).
+  - a pending `jump` sets the scroll area's target (least movement and the near-first move, as Task 7) and is cleared once its row exists (focus is Task 10).
 - **Drawing** (`Kind::List` arm): the list draws as the closure list does (same placement helper: spacers and item containers keyed by index), and for each row of `UiList.rows` in index order draws the row entity with `draw_node` inside its item container **only if `bound_frame < frame`** (a row bound this frame shows next frame); otherwise its item container is drawn empty at full size. After drawing each row, if any node in its subtree reports focus (`UiInteraction::focused`), `UiList.focused = Some(index)`.
 - **Binding scope:** `bindings`' root lookup (used by `set`, `get`, `sync_root`, `apply_subtree`) stops at the nearest ancestor that is a `UiRoot` **or** a `UiListRow`; `ctx.ui_set(row, ..)` fills only that row.
 - **Reconcile:** a list's rows are never matched against a tree's children (they carry `UiAdded`); `update_ui` on a list or its reload updates its settings, keeps its rows, and (when the count changed in the tree) writes the count. The row shape changing is Task 11.
