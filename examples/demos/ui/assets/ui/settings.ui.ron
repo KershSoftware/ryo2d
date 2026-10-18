@@ -4,6 +4,18 @@
 (
   imports: ["assets/ui/common.ui.ron"],
   templates: {
+    // A row that gives its label the room the widget leaves
+    "Labelled": (
+      params: ["label", "widget"],
+      node: Row(
+        gap: 12, align: Center,
+        children: [
+          Column(grow: 1, children: [Text(label)]),
+          widget,
+        ],
+      ),
+    ),
+
     // A slider with its value as text after it, in a labelled row: `bind` names
     // the value and `shows` is the text pattern that shows it
     "SliderRow": (
@@ -39,6 +51,8 @@
           Column(
             fill_width: true, gap: 10, name: "tab-0",
             children: [
+              // `bind` and `shows` both name the binding: a template cannot build a
+              // "{name}" pattern from a parameter, so the pattern is passed in
               SliderRow(label: "Master", bind: "master", shows: "{master:.2}", range: (0, 1), value: 0.8),
               SliderRow(label: "Music", bind: "music", shows: "{music:.2}", range: (0, 1), value: 0.6),
               SliderRow(label: "Effects", bind: "effects", shows: "{effects:.2}", range: (0, 1), value: 0.7),
@@ -54,12 +68,12 @@
               DropdownRow(
                 label: "Resolution", selected: 13,
                 options: [
-      "640×480", "800×600", "1024×768", "1152×864",
-      "1280×720", "1280×800", "1280×1024", "1360×768",
-      "1366×768", "1440×900", "1536×864", "1600×900",
-      "1680×1050", "1920×1080", "1920×1200", "2048×1152",
-      "2560×1080", "2560×1440", "2560×1600", "3440×1440",
-      "3840×2160",
+                  "640×480", "800×600", "1024×768", "1152×864",
+                  "1280×720", "1280×800", "1280×1024", "1360×768",
+                  "1366×768", "1440×900", "1536×864", "1600×900",
+                  "1680×1050", "1920×1080", "1920×1200", "2048×1152",
+                  "2560×1080", "2560×1440", "2560×1600", "3440×1440",
+                  "3840×2160",
                 ],
               ),
               Toggle(label: "VSync", on: true),
@@ -74,13 +88,13 @@
           Column(
             fill_width: true, gap: 10, name: "tab-2", hidden: true,
             children: [
-          Rebind(input: "move_left", label: "Move left"),
-          Rebind(input: "move_right", label: "Move right"),
-          Rebind(input: "jump", label: "Jump"),
-          Rebind(input: "attack", label: "Attack"),
-          Rebind(input: "interact", label: "Interact"),
-          Rebind(input: "inventory", label: "Inventory"),
-          Rebind(input: "pause", label: "Pause"),
+              Rebind(input: "move_left", label: "Move left"),
+              Rebind(input: "move_right", label: "Move right"),
+              Rebind(input: "jump", label: "Jump"),
+              Rebind(input: "attack", label: "Attack"),
+              Rebind(input: "interact", label: "Interact"),
+              Rebind(input: "inventory", label: "Inventory"),
+              Rebind(input: "pause", label: "Pause"),
               ButtonRow(label: "Reset controls", action: "reset"),
             ],
           ),

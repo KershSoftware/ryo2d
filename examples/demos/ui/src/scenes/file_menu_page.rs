@@ -33,8 +33,11 @@ impl FileMenuPage {
   }
 
   fn fail(&mut self, error: UiFileError) {
-    game_error!("{error}");
-    self.error = Some(error.to_string());
+    let text = error.to_string();
+    if self.error.as_deref() != Some(text.as_str()) {
+      game_error!("{error}");
+      self.error = Some(text);
+    }
   }
 
   /// The dialog's tree, built from the file's template of its name
@@ -55,14 +58,17 @@ impl FileMenuPage {
   /// Spawn the dialog, and fill the credits' placeholder with a line each
   fn spawn_dialog(&self, ctx: &mut SceneContext, dialog: Dialog) -> Result<Entity, UiFileError> {
     let tree = self.dialog_tree(ctx, dialog)?;
-    let root = ctx.spawn_ui(tree);
-    if dialog == Dialog::Credits
-      && let Some(lines) = ctx.find_ui_in(root, "credit-lines")
-    {
+    let mut lines = Vec::new();
+    if dialog == Dialog::Credits {
       for (role, name) in CREDITS {
         let args = UiArgs::new().with("role", role).with("name", name);
-        let line = ctx.ui_template(MENU, "CreditLine", &args)?;
-        ctx.spawn_ui_in(lines, line);
+        lines.push(ctx.ui_template(MENU, "CreditLine", &args)?);
+      }
+    }
+    let root = ctx.spawn_ui(tree);
+    if let Some(placeholder) = ctx.find_ui_in(root, "credit-lines") {
+      for line in lines {
+        ctx.spawn_ui_in(placeholder, line);
       }
     }
     Ok(root)
@@ -81,9 +87,10 @@ impl FileMenuPage {
   /// The title screen: its title, the menu, and the status line
   fn spawn_screen(ctx: &mut SceneContext) -> Result<(), UiFileError> {
     let title = ctx.ui_template(MENU, "Title", &UiArgs::new())?;
-    ctx.spawn_ui(title);
-    ctx.spawn_ui_file(MENU)?;
+    let menu = ctx.assets.load_ui(MENU)?.root(ctx.assets)?;
     let status = ctx.ui_template(MENU, "Status", &UiArgs::new().with("status", NO_SAVE))?;
+    ctx.spawn_ui(title);
+    ctx.spawn_ui(menu);
     ctx.spawn_ui(status);
     Ok(())
   }

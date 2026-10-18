@@ -40,6 +40,10 @@ fn every_ui_file_is_valid_ron_and_a_valid_ui_file() {
   ui_files(&root.join("examples"), &mut files);
   ui_files(&root.join("tests"), &mut files);
   files.sort();
+  assert!(
+    !files.is_empty(),
+    "no *.ui.ron files found under examples/ and tests/"
+  );
 
   let mut problems = Vec::new();
   for file in &files {
