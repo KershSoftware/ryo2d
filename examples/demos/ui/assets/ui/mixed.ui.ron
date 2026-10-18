@@ -1,0 +1,11 @@
+// The Mixed page's embedded grid; the page adds a Cell for each cell it shows.
+// Debug builds reload this file when it is saved.
+(
+  templates: {
+    "Cell": (
+      params: ["n"],
+      node: Button(label: "Cell {n}", action: "cell", width: 80),
+    ),
+  },
+  root: Grid(columns: 4, gap: 6, embedded: true),
+)

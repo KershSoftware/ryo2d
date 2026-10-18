@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use demo_kit::prelude::*;
 use ryo2d::testing::{HeadlessEngine, StepOutcome};
-use ui_demo::scenes::{InventoryPage, Item, ItemKind, NodeInventoryPage, SlotRef};
+use ui_demo::scenes::{FileInventoryPage, InventoryPage, Item, ItemKind, SlotRef};
 
 const DPAD: [GamepadButton; 4] = [
   GamepadButton::DPadUp,
@@ -337,9 +337,9 @@ impl Watchable for InventoryPage {
   }
 }
 
-impl Watchable for NodeInventoryPage {
+impl Watchable for FileInventoryPage {
   fn status(&self) -> &str {
-    NodeInventoryPage::status(self)
+    FileInventoryPage::status(self)
   }
   fn first_slot(&self) -> Option<Item> {
     self.item(SlotRef::Bag(0))
@@ -432,7 +432,7 @@ fn escape_puts_back<P: Watchable>(page: impl Fn() -> P + 'static) {
 #[test]
 fn escape_puts_back_an_item_the_pad_holds_over_a_button() {
   escape_puts_back(InventoryPage::new);
-  escape_puts_back(NodeInventoryPage::new);
+  escape_puts_back(FileInventoryPage::new);
 }
 
 #[test]

@@ -1,0 +1,65 @@
+// The Dialogue page: the conversation panel is the root. The page fills the
+// portrait, and rebuilds the "choices" column when what the player can do
+// next changes. Debug builds reload this file when it is saved.
+(
+  templates: {
+    // Health and the purse, top-left: the page sets hp, gold and gems
+    "Hud": (
+      node: Row(
+        anchor: TopLeft, offset: (16, 0), gap: 12, align: Center,
+        children: [
+          Progress(fraction: 1, label: "HP", width: 160, bind: "hp"),
+          Panel(padding: 6, children: [Text("Gold {gold}")]),
+          Panel(padding: 6, children: [Text("Gems {gems}")]),
+        ],
+      ),
+    ),
+
+    "Skip": (
+      node: Button(label: "Skip", action: "skip", default_focus: true, name: "pick"),
+    ),
+
+    "Continue": (
+      node: Button(label: "Continue", action: "continue", default_focus: true, name: "pick"),
+    ),
+
+    "Choices": (
+      params: ["options"],
+      node: ChoiceList(options: options, action: "choose", name: "pick"),
+    ),
+
+    "LeaveConfirm": (
+      node: Confirm(
+        title: "Leave the conversation?", message: "The shopkeeper will remember.",
+        yes: "Yes", no: "No",
+      ),
+    ),
+  },
+  root: Panel(
+    focus_scope: true, anchor: BottomCenter, offset: (0, -48), width: 760,
+    children: [
+      Row(
+        gap: 16,
+        children: [
+          Column(name: "portrait"),
+          Column(
+            gap: 10, grow: 1,
+            children: [
+              Text(text: "", heading: true, name: "speaker"),
+              Column(
+                max_width: 600,
+                children: [
+                  Text(
+                    text: "", markup: true, role: Body, name: "line",
+                    typewriter: (per_second: 40, punctuation_pause: 0.15),
+                  ),
+                ],
+              ),
+              Column(focus_scope: true, name: "choices"),
+            ],
+          ),
+        ],
+      ),
+    ],
+  ),
+)

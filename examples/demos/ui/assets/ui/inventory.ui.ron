@@ -1,0 +1,81 @@
+// The Inventory page: the layout is the root, and the page builds the slots
+// from the templates into the "equipment" and "bag" placeholders. Debug builds
+// reload this file when it is saved.
+(
+  templates: {
+    // A slot the page marks with the place it shows
+    "InvSlot": (
+      node: Slot(filter: Nearest, drag_source: true, drop_target: true),
+    ),
+
+    // An equipment place's label and spacer; the page adds its slot after them
+    "EquipRow": (
+      params: ["label"],
+      node: Row(
+        gap: 12, align: Center,
+        children: [Text(text: label, role: Body, muted: true), Spacer()],
+      ),
+    ),
+  },
+  root: Column(
+    focus_scope: true, anchor: Center, gap: 12, align: Center,
+    children: [
+      Row(
+        gap: 16,
+        children: [
+          Panel(
+            gap: 10,
+            children: [
+              Text(text: "Equipment", heading: true),
+              Column(gap: 6, name: "equipment"),
+            ],
+          ),
+          Panel(
+            gap: 10,
+            children: [
+              Text(text: "Backpack", heading: true),
+              Grid(columns: 6, gap: 6, name: "bag"),
+            ],
+          ),
+        ],
+      ),
+      // What the slot under the pointer, or the focused one, holds
+      Panel(
+        fill_width: true, height: 76, gap: 4,
+        children: [
+          Column(
+            gap: 4, hidden: true, name: "item",
+            children: [
+              Text(text: "", heading: true, name: "item-name"),
+              Text(text: "", role: Body, name: "item-text"),
+            ],
+          ),
+          Column(
+            gap: 4, name: "empty",
+            children: [
+              Text(text: "Nothing here", heading: true, muted: true),
+              Text(
+                text: "Point at a slot, or move the focus to one, to see what it holds.",
+                role: Body, muted: true,
+              ),
+            ],
+          ),
+        ],
+      ),
+      Row(
+        fill_width: true, gap: 12, align: Center,
+        children: [
+          Button(label: "Sort", action: "sort"),
+          Spacer(),
+          Text(text: "Discard", role: Body, muted: true),
+          Slot(drop_target: true, tooltip: "Drop an item here to throw it away", name: "discard"),
+        ],
+      ),
+      Text(text: "", role: Body, name: "status"),
+      Text(
+        text: "[prompt=ui.confirm] Pick up / put down    [prompt=ui.back] Cancel",
+        markup: true, muted: true,
+      ),
+    ],
+  ),
+)

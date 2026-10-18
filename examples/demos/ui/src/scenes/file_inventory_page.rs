@@ -1,28 +1,35 @@
-//! The Inventory page built from node trees: each slot is a node whose drag
-//! payload is the node itself, and the page writes what the slots show
-//! whenever an item moves
+//! The Inventory page built from a UI file: the layout is the file's root and
+//! each slot a template the page builds into it; a slot's drag payload is the
+//! node itself, and the page writes what the slots show whenever an item moves
 
 use demo_kit::prelude::*;
 
-use super::inventory_model::{
-  BAG, EquipSlot, GAP, IDLE, Icons, Inventory, Item, ItemKind, SlotRef,
-};
+use super::inventory_model::{BAG, EquipSlot, IDLE, Icons, Inventory, Item, ItemKind, SlotRef};
+
+/// The page's file, relative to the working directory
+const INVENTORY: &str = "assets/ui/inventory.ui.ron";
 
 /// Which bag or equipment place a slot node shows
 #[derive(Component, Debug, Clone, Copy)]
 struct SlotAt(SlotRef);
 
-fn slot(at: SlotRef) -> UiNode {
-  let slot = UiNode::slot()
-    .filter(Filter::Nearest)
-    .drag_source()
-    .drop_target()
+/// A slot node of the file's template, marked with the place it shows
+fn slot(ctx: &mut SceneContext, at: SlotRef) -> Result<UiNode, UiFileError> {
+  let slot = ctx
+    .ui_template(INVENTORY, "InvSlot", &UiArgs::new())?
     .insert(SlotAt(at));
-  if at == SlotRef::Bag(0) {
+  Ok(if at == SlotRef::Bag(0) {
     slot.default_focus()
   } else {
     slot
-  }
+  })
+}
+
+/// The page's trees, all built before any is spawned
+struct Built {
+  root: UiNode,
+  equipment: Vec<UiNode>,
+  bag: Vec<UiNode>,
 }
 
 /// Every slot node under `root`, in tree order, with the place it shows
@@ -63,7 +70,7 @@ impl Details {
   }
 }
 
-pub struct NodeInventoryPage {
+pub struct FileInventoryPage {
   model: Inventory,
   icons: Icons,
   /// An item was held (by the pad or a mouse drag) on the last frame
@@ -74,9 +81,11 @@ pub struct NodeInventoryPage {
   discard: Option<Entity>,
   status: Option<Entity>,
   details: Option<Details>,
+  /// Why the file did not load, drawn in place of the page
+  error: Option<String>,
 }
 
-impl NodeInventoryPage {
+impl FileInventoryPage {
   pub fn new() -> Self {
     Self {
       model: Inventory::new(),
@@ -86,6 +95,15 @@ impl NodeInventoryPage {
       discard: None,
       status: None,
       details: None,
+      error: None,
+    }
+  }
+
+  fn fail(&mut self, error: UiFileError) {
+    let text = error.to_string();
+    if self.error.as_deref() != Some(text.as_str()) {
+      game_error!("{error}");
+      self.error = Some(text);
     }
   }
 
@@ -99,84 +117,22 @@ impl NodeInventoryPage {
     self.model.item(at)
   }
 
-  fn tree() -> UiNode {
-    let equipment = EquipSlot::ALL.map(|equip| {
-      UiNode::row()
-        .gap(12.0)
-        .align(Align::Center)
-        .child(UiNode::text(equip.name()).role(TextRole::Body).muted())
-        .child(UiNode::spacer())
-        .child(slot(SlotRef::Equip(equip)))
-    });
-    let bag = (0..BAG).map(|i| slot(SlotRef::Bag(i)));
-    UiNode::column()
-      .focus_scope()
-      .anchor(Anchor::Center)
-      .gap(12.0)
-      .align(Align::Center)
-      .child(
-        UiNode::row()
-          .gap(16.0)
-          .child(
-            UiNode::panel()
-              .gap(10.0)
-              .child(UiNode::text("Equipment").heading())
-              .child(UiNode::column().gap(GAP).children(equipment)),
-          )
-          .child(
-            UiNode::panel()
-              .gap(10.0)
-              .child(UiNode::text("Backpack").heading())
-              .child(UiNode::grid(6).gap(GAP).children(bag)),
-          ),
-      )
-      // What the slot under the pointer, or the focused one, holds
-      .child(
-        UiNode::panel()
-          .fill_width()
-          .height(76.0)
-          .gap(4.0)
-          .child(
-            UiNode::column()
-              .gap(4.0)
-              .hidden()
-              .name("item")
-              .child(UiNode::text("").heading().name("item-name"))
-              .child(UiNode::text("").role(TextRole::Body).name("item-text")),
-          )
-          .child(
-            UiNode::column()
-              .gap(4.0)
-              .name("empty")
-              .child(UiNode::text("Nothing here").heading().muted())
-              .child(
-                UiNode::text("Point at a slot, or move the focus to one, to see what it holds.")
-                  .role(TextRole::Body)
-                  .muted(),
-              ),
-          ),
-      )
-      .child(
-        UiNode::row()
-          .fill_width()
-          .gap(12.0)
-          .align(Align::Center)
-          .child(UiNode::button("Sort").action("sort"))
-          .child(UiNode::spacer())
-          .child(UiNode::text("Discard").role(TextRole::Body).muted())
-          .child(
-            UiNode::slot()
-              .drop_target()
-              .tooltip("Drop an item here to throw it away")
-              .name("discard"),
-          ),
-      )
-      .child(UiNode::text(IDLE).role(TextRole::Body).name("status"))
-      .child(
-        UiNode::text("[prompt=ui.confirm] Pick up / put down    [prompt=ui.back] Cancel")
-          .markup()
-          .muted(),
-      )
+  fn build(ctx: &mut SceneContext) -> Result<Built, UiFileError> {
+    let root = ctx.assets.load_ui(INVENTORY)?.root(ctx.assets)?;
+    let mut equipment = Vec::new();
+    for equip in EquipSlot::ALL {
+      let args = UiArgs::new().with("label", equip.name());
+      let row = ctx.ui_template(INVENTORY, "EquipRow", &args)?;
+      equipment.push(row.child(slot(ctx, SlotRef::Equip(equip))?));
+    }
+    let bag = (0..BAG)
+      .map(|i| slot(ctx, SlotRef::Bag(i)))
+      .collect::<Result<_, _>>()?;
+    Ok(Built {
+      root,
+      equipment,
+      bag,
+    })
   }
 
   /// Write what every slot holds, its tooltip, and the status line
@@ -259,20 +215,20 @@ impl NodeInventoryPage {
   }
 }
 
-impl Default for NodeInventoryPage {
+impl Default for FileInventoryPage {
   fn default() -> Self {
     Self::new()
   }
 }
 
-impl DemoPage for NodeInventoryPage {
+impl DemoPage for FileInventoryPage {
   fn name(&self) -> &str {
-    "Node Inventory"
+    "File Inventory"
   }
 
   fn description(&self) -> &str {
-    "The Inventory page built from node trees: the same backpack and equipment, played the same way.\n\
-     Each slot is a node whose drag payload is the node itself; the page writes what the slots show when an item moves."
+    "The Inventory page built from a UI file: the same backpack and equipment, played the same way.\n\
+     Each slot is a template of the file whose drag payload is the node itself; the page writes what the slots show when an item moves."
   }
 
   fn controls(&self) -> Vec<Control> {
@@ -296,7 +252,21 @@ impl DemoPage for NodeInventoryPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    let root = ctx.spawn_ui(Self::tree());
+    let built = match Self::build(ctx) {
+      Ok(built) => built,
+      Err(error) => return self.fail(error),
+    };
+    let root = ctx.spawn_ui(built.root);
+    if let Some(column) = ctx.find_ui_in(root, "equipment") {
+      for row in built.equipment {
+        ctx.spawn_ui_in(column, row);
+      }
+    }
+    if let Some(grid) = ctx.find_ui_in(root, "bag") {
+      for slot in built.bag {
+        ctx.spawn_ui_in(grid, slot);
+      }
+    }
     self.slots = slots_under(ctx.world, root);
     self.discard = ctx.find_ui_in(root, "discard");
     self.status = ctx.find_ui_in(root, "status");
@@ -305,6 +275,9 @@ impl DemoPage for NodeInventoryPage {
   }
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
+    if let Some(error) = &self.error {
+      ui.text(error.as_str());
+    }
     let slot_at = |ctx: &SceneContext, node: Entity| ctx.world.get::<SlotAt>(node).map(|at| at.0);
     let (mut told, mut changed) = (false, false);
     for event in ctx.ui_events() {

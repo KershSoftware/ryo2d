@@ -1,7 +1,10 @@
-//! A closure screen around an embedded node grid: one focus path runs from
-//! the closure's buttons through the grid and back
+//! A closure screen around an embedded node grid built from a UI file: one
+//! focus path runs from the closure's buttons through the grid and back
 
 use demo_kit::prelude::*;
+
+/// The grid's file, relative to the working directory
+const MIXED: &str = "assets/ui/mixed.ui.ron";
 
 const START_CELLS: u32 = 8;
 const MAX_CELLS: u32 = 16;
@@ -13,6 +16,8 @@ struct Cell(u32);
 pub struct MixedPage {
   grid: Option<Entity>,
   status: String,
+  /// Why the file did not load, drawn in place of the grid
+  error: Option<String>,
 }
 
 impl MixedPage {
@@ -20,14 +25,21 @@ impl MixedPage {
     Self {
       grid: None,
       status: "Add a cell, or pick one.".to_string(),
+      error: None,
     }
   }
 
-  fn cell(n: u32) -> UiNode {
-    UiNode::button(format!("Cell {n}"))
-      .action("cell")
-      .width(80.0)
-      .insert(Cell(n))
+  fn fail(&mut self, error: UiFileError) {
+    let text = error.to_string();
+    if self.error.as_deref() != Some(text.as_str()) {
+      game_error!("{error}");
+      self.error = Some(text);
+    }
+  }
+
+  fn cell(ctx: &mut SceneContext, n: u32) -> Result<UiNode, UiFileError> {
+    let args = UiArgs::new().with("n", n);
+    Ok(ctx.ui_template(MIXED, "Cell", &args)?.insert(Cell(n)))
   }
 
   fn cells(&self, ctx: &SceneContext) -> Vec<Entity> {
@@ -46,8 +58,13 @@ impl MixedPage {
       return;
     }
     let n = count + 1;
-    ctx.spawn_ui_in(grid, Self::cell(n));
-    self.status = format!("Added cell {n}.");
+    match Self::cell(ctx, n) {
+      Ok(cell) => {
+        ctx.spawn_ui_in(grid, cell);
+        self.status = format!("Added cell {n}.");
+      }
+      Err(error) => self.fail(error),
+    }
   }
 
   fn clear(&mut self, ctx: &mut SceneContext) {
@@ -55,6 +72,22 @@ impl MixedPage {
       ctx.world.despawn(cell);
     }
     self.status = "Cleared.".to_string();
+  }
+}
+
+impl MixedPage {
+  /// Build the grid and its first cells, then spawn them
+  fn spawn_grid(&mut self, ctx: &mut SceneContext) -> Result<(), UiFileError> {
+    let root = ctx.assets.load_ui(MIXED)?.root(ctx.assets)?;
+    let cells = (1..=START_CELLS)
+      .map(|n| Self::cell(ctx, n))
+      .collect::<Result<Vec<_>, _>>()?;
+    let grid = ctx.spawn_ui(root);
+    for cell in cells {
+      ctx.spawn_ui_in(grid, cell);
+    }
+    self.grid = Some(grid);
+    Ok(())
   }
 }
 
@@ -76,8 +109,9 @@ impl DemoPage for MixedPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    let cells = (1..=START_CELLS).map(Self::cell);
-    self.grid = Some(ctx.spawn_ui(UiNode::grid(4).gap(6.0).embedded().children(cells)));
+    if let Err(error) = self.spawn_grid(ctx) {
+      self.fail(error);
+    }
   }
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
@@ -88,6 +122,9 @@ impl DemoPage for MixedPage {
       {
         self.status = format!("Picked cell {n}.");
       }
+    }
+    if let Some(error) = &self.error {
+      ui.text(error.as_str());
     }
     let Some(grid) = self.grid else { return };
     let heading = ui.theme().text.heading.style();
