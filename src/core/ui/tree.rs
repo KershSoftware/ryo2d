@@ -900,7 +900,7 @@ fn finite(v: Vec2) -> Vec2 {
 
 /// `edges` as layout used them: a side that is not finite or is negative
 /// is 0 (layout warned about it)
-fn clean_edges(edges: Edges) -> Edges {
+pub(crate) fn clean_edges(edges: Edges) -> Edges {
   let clean = |v: f32| if v.is_finite() && v >= 0.0 { v } else { 0.0 };
   Edges::new(
     clean(edges.left),

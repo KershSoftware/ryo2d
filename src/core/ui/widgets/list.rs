@@ -1247,6 +1247,33 @@ mod tests {
   }
 
   #[test]
+  fn a_count_that_drops_below_the_view_draws_its_new_end_that_frame() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = board(&mut h, 10_000, 1);
+    board(&mut h, 10_000, 1);
+    h.frame(|ui| ui.set_scroll_offset(list.id, Vec2::new(0.0, 210_000.0)));
+    board(&mut h, 10_000, 1);
+    let shrunk = board(&mut h, 100, 1);
+    let content = 100.0 * 22.0 - 2.0;
+    let offset = h.scroll_offset(list.id).y;
+    assert!(
+      offset >= 0.0 && offset + 200.0 <= content,
+      "offset {offset} inside the new contents"
+    );
+    assert!(
+      !shrunk.range.is_empty() && shrunk.range.end == 100,
+      "{:?}",
+      shrunk.range
+    );
+    let top = shrunk.range.start as f32 * 22.0;
+    assert!(
+      top <= offset,
+      "the built rows cover the view: {:?} at {offset}",
+      shrunk.range
+    );
+  }
+
+  #[test]
   fn spacers_record_nothing() {
     let mut h = UiHarness::new(640.0, 480.0);
     let list = board(&mut h, 1000, 1);
@@ -1448,15 +1475,91 @@ mod focus_tests {
     for _ in 0..4 {
       scope_list(&mut h, 300);
     }
-    for _ in 0..4 {
+    // The frame the count falls is drawn from the new end, not past it
+    let shrunk = scope_list(&mut h, 100);
+    let offset = h.scroll_offset(list.id).y;
+    assert!(offset <= 100.0 * 20.0 - 100.0, "offset {offset}");
+    assert!(
+      !shrunk.range.is_empty() && shrunk.range.end == 100,
+      "{:?}",
+      shrunk.range
+    );
+    for _ in 0..3 {
       scope_list(&mut h, 100);
     }
     assert_eq!(h.list_state(list.id).unwrap().focused, Some(99));
   }
 
   #[test]
+  fn a_shrink_under_a_focus_that_moved_off_the_list_leaves_it_there() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    // A Delete button beside the list; `ask` gives it the focus next frame
+    let draw = |h: &mut UiHarness, count: usize, ask: bool| {
+      h.frame(|ui| {
+        let mut out = None;
+        ui.row().focus_scope().show(|ui| {
+          let list = ui
+            .list(count)
+            .row_height(20.0)
+            .height(100.0)
+            .width(200.0)
+            .id("l")
+            .show(|ui, i| {
+              let b = ui.button(format!("Item {i}")).id(i);
+              if i == 0 {
+                b.default_focus().show();
+              } else {
+                b.show();
+              }
+            });
+          let delete = ui.button("Delete").show();
+          if ask {
+            ui.request_focus(delete.id);
+          }
+          out = Some((list, delete.id));
+        });
+        out.expect("drawn")
+      })
+    };
+    let (list, delete) = draw(&mut h, 300, false);
+    draw(&mut h, 300, false);
+    h.frame(|ui| ui.list_focus(list.id, 250));
+    for _ in 0..4 {
+      draw(&mut h, 300, false);
+    }
+    assert_eq!(h.list_state(list.id).expect("drawn").focused, Some(250));
+    // The focus moves to Delete in the frame the count falls under item 250
+    draw(&mut h, 300, true);
+    for _ in 0..5 {
+      draw(&mut h, 100, false);
+    }
+    assert_eq!(h.focused(), Some(delete), "the focus stays on Delete");
+    let state = h.list_state(list.id).expect("drawn");
+    assert_eq!((state.focused, state.pending_focus), (None, None));
+  }
+
+  #[test]
+  fn a_count_that_drops_to_zero_under_the_focus_clears_it() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = scope_list(&mut h, 300);
+    scope_list(&mut h, 300);
+    assert_eq!(h.list_state(list.id).expect("drawn").focused, Some(0));
+    // A jump on its way too
+    h.frame(|ui| ui.list_focus(list.id, 250));
+    for _ in 0..4 {
+      let empty = scope_list(&mut h, 0);
+      assert_eq!(empty.range, 0..0);
+    }
+    let state = h.list_state(list.id).expect("drawn");
+    assert_eq!((state.focused, state.pending_focus), (None, None));
+    assert!(state.focus_ids.is_empty() && !state.focus_asked);
+    assert_eq!(h.focused(), None, "nothing in the list to keep it");
+  }
+
+  #[test]
   fn a_list_in_a_modal_inside_a_scroll_area_takes_the_wheel_and_the_pad() {
     let mut h = UiHarness::new(640.0, 480.0);
+    // The modal holds a button above the list and one below it
     let draw = |h: &mut UiHarness| {
       h.frame(|ui| {
         let mut out = None;
@@ -1466,27 +1569,29 @@ mod focus_tests {
           .id("outer")
           .show(|ui| {
             ui.modal().show(|ui| {
-              out = Some(
-                ui.list(500)
-                  .row_height(20.0)
-                  .height(100.0)
-                  .width(200.0)
-                  .id("inner")
-                  .show(|ui, i| {
-                    let b = ui.button(format!("{i}")).id(i);
-                    if i == 0 {
-                      b.default_focus().show();
-                    } else {
-                      b.show();
-                    }
-                  }),
-              );
+              let above = ui.button("Above").show().id;
+              let list = ui
+                .list(500)
+                .row_height(20.0)
+                .height(100.0)
+                .width(200.0)
+                .id("inner")
+                .show(|ui, i| {
+                  let b = ui.button(format!("{i}")).id(i);
+                  if i == 0 {
+                    b.default_focus().show();
+                  } else {
+                    b.show();
+                  }
+                });
+              let below = ui.button("Below").show().id;
+              out = Some((list, above, below));
             });
           });
         out.unwrap()
       })
     };
-    let list = draw(&mut h);
+    let (list, above, below) = draw(&mut h);
     draw(&mut h);
     let rect = h.record_of(list.id).unwrap().rect;
     h.move_to(rect.x + 10.0, rect.y + 10.0);
@@ -1504,5 +1609,28 @@ mod focus_tests {
       draw(&mut h);
     }
     assert_eq!(h.list_state(list.id).unwrap().focused, Some(10));
+    // The pad leaves the list at its ends for the modal's other buttons
+    for _ in 0..10 {
+      h.action("ui.up");
+      draw(&mut h);
+      draw(&mut h);
+    }
+    for _ in 0..30 {
+      draw(&mut h);
+    }
+    assert_eq!(h.list_state(list.id).unwrap().focused, Some(0));
+    h.action("ui.up");
+    draw(&mut h);
+    draw(&mut h);
+    assert_eq!(h.focused(), Some(above), "up from the first item");
+    h.frame(|ui| ui.list_focus(list.id, 499));
+    for _ in 0..60 {
+      draw(&mut h);
+    }
+    assert_eq!(h.list_state(list.id).unwrap().focused, Some(499));
+    h.action("ui.down");
+    draw(&mut h);
+    draw(&mut h);
+    assert_eq!(h.focused(), Some(below), "down from the last item");
   }
 }

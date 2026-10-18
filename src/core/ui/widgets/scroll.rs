@@ -15,7 +15,7 @@ use crate::core::ui::layout::{Edges, Flow, Length, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::Response;
 use crate::core::ui::theme::WidgetState;
-use crate::core::ui::tree::{DrawKind, Node, RecordSpec};
+use crate::core::ui::tree::{DrawKind, Node, RecordSpec, clean_edges};
 use crate::core::ui::widgets::drag::{DragOpts, drag_builders};
 use crate::core::ui::{Anchor, Rect, UiId};
 
@@ -488,6 +488,12 @@ impl<'a> Scroll<'_, 'a> {
       press_pos,
       pointer,
     );
+    // A given height is known now: the offset and the thumb take a list that
+    // got shorter this frame, not last frame's layout
+    if let Some(h) = content_height.filter(|_| axes[1] && state.view.y > 0.0) {
+      let padding = clean_edges(style.padding);
+      state.content.y = h + padding.top + padding.bottom;
+    }
     state.ease(dt, theme.metrics.scroll_smoothing);
     state.content_height = content_height;
     let shown = bars(state, axes, bar, bar_width);
