@@ -42,21 +42,62 @@ Left for later:
 - A visual editor and a JSON schema for files.
 - Animations and transitions in files.
 
-## 4e: Fast Big UIs
+## 4e: Fast Big UIs (done)
 
-- Subtree caching: skip the walk and the builders for subtrees whose components did not change. For 4c's walk, each node costs:
-  - a few ECS component reads (about 8 to 10 ns each, some 560 a frame on the settings screen);
-  - one or two ids;
-  - the builder's work.
-- Virtualised lists for node and closure UI: record only the rows in view. The 1,000-row scroll list bench shows the need.
-- Baseline: the node settings screen at 112 µs, closure 104 µs (above).
+Spec: `docs/specs/2026-10-18-ui-fast-design.md`.
 
-Part 1 numbers (`cargo bench --bench ui`, load about 2.5; before 4e against after Part 1):
-- closure settings screen: 100.1 µs, now 50.7 µs (target under 60);
-- node settings screen: 116.0 µs, now 59.0 µs (guard: within `max(10%, 10 µs)` of the closure, a gap of 8.4 µs);
-- 1,000-row scroll list: 597.3 µs, now 314.3 µs (target under 350);
-- empty frame: about 0.18 µs, now 0.176 µs (target under 250 ns);
-- the demo tour is pixel-identical to the pre-4e baseline, apart from the text demo's shake line (its phase seed follows the new text hash) and pages that vary run to run (particles, steering).
+What landed:
+- The cheap frame, profile first: a word-wise hasher for the engine's own keys (SipHash had been about 40% of a frame), text cache keys, reused buffers in place of per-frame allocation, a layout diff that skips unchanged nodes, cheaper looks, a leaner node walk, and the hot-reload query moved out of the world.
+- Virtual lists in both styles, recording only the rows in view inside the scroll area (so clipping, wheel, scrollbar and scroll-into-view are shared), ids keyed by item index, rows bound by message. The `ui` demo has a Big list page.
+
+Numbers (`cargo bench --bench ui`, load about 2.5):
+
+| Bench | Before 4e | After 4e |
+|--|--|--|
+| closure settings screen | 100.1 µs | 52.3 µs |
+| node settings screen | 116.0 µs | 60.2 µs |
+| 1,000-row scroll list | 597.3 µs | 325.0 µs |
+| 10,000-row virtual list (closure) | - | 7.6 µs |
+| 100-row virtual list (closure) | - | 7.6 µs |
+| 10,000-row node list | - | 8.6 µs |
+| empty frame | 0.18 µs | 0.188 µs |
+| `update_ui`, settings tree unchanged | 39.0 µs | 38.8 µs |
+| spawn, settings tree | 125.4 µs | 122.1 µs |
+
+The virtual lists cost the same for 100 or 10,000 items. The node screen is 7.9 µs (15%) over the closure one.
+
+The new profile (xctrace Time Profiler, 10 s each; exclusive time charged to the nearest engine function, so hashing and allocation land on their callers):
+
+| Bucket | Node settings frame | Closure settings frame |
+|--|--|--|
+| (a) node walk (`draw_node`, component reads, `update_lists`, bindings sync) | 8.5 µs (14%) | 0.1 µs |
+| (b) builders the walk drives (widgets, containers, ids, command push) | 28.1 µs (47%) | 29.3 µs (56%) |
+| (c) layout (taffy and the diff) | 10.6 µs (18%) | 10.7 µs (20%) |
+| (d) text (shaping, cache keys and lookups) | 9.5 µs (16%) | 8.9 µs (17%) |
+| (e) records, input, navigation, memory | 3.0 µs (5%) | 2.9 µs (6%) |
+| (f) other | 0.5 µs (1%) | 0.4 µs (1%) |
+| total | 60.2 µs | 52.3 µs |
+
+Hashing is now about 6% of the node frame (it was about 40%); allocation about 10% (it was 7 to 12%). The node walk's own cost is the 7.9 µs difference between the two columns. Subtree caching could skip (a) and (b), at most 36.6 µs (61%) of the node frame, and that is a ceiling: `finish_subtree` and `push_node`, the biggest builder costs, record the tree that layout and drawing read, so a cached subtree would have to replay or share its recorded nodes and commands. It would not remove layout above the subtree or the text lookups unless those are cached too.
+
+What subtree caching would have to track to be correct (all under `src/core/ui/`):
+- Component changes on any node in the subtree: the public state components (`UiLabel`, `UiChecked`, `UiValue`, `UiIndex`, `UiOptions`, `UiTextValue`, `UiSlot`, `UiTooltip`, `UiHidden`, `UiDisabled`, `UiImage`; `nodes/components.rs`) and the `UiNodeKind` itself; reconcile (`nodes/reconcile.rs`) writes only on a change, so bevy change ticks could drive it, as `Changed<..>` already does in `nodes/bindings.rs:988`.
+- Interaction state, per frame: hover, press, focus, drag (`memory.rs:146` `Interaction`; `interact.rs:46` `resolve_pointer`; `nav.rs:563` `resolve_focus`; `nodes/draw.rs:424` writes `UiInteraction`). The looks follow it, so any subtree under the pointer or focus is dirty each frame it changes.
+- Animation and clocks: text reveal and typewriter (`immediate/context.rs`, `fade` at 203), the tooltip delay (`widgets/tooltip.rs:32`), the scroll ease (`widgets/scroll.rs:56`). Looks themselves are chosen by state, not tweened.
+- Theme changes (`theme/mod.rs:134` `Theme`, read through `immediate/context.rs:477` and `nodes/draw.rs:548`, `1328`): any change dirties everything.
+- Bindings: `ui_set` values per root and patterns in labels (`nodes/bindings.rs:530` `set`, `546` `store`, `654` `sync_root`); a changed name dirties every widget that uses it.
+- Layout above the subtree: the available size and the parent's flow (`layout/engine.rs:149` `layout`), including the screen size (`nodes/list.rs:278` `update_lists` takes it).
+- Popups and tooltips opened from inside (`popup.rs:77` `begin_popup`, `widgets/tooltip.rs`): they escape the subtree's clip and order.
+- Scroll offsets and list views (`widgets/scroll.rs`, `nodes/list.rs`): a scrolled area moves its rows each frame it eases, and a virtual list rebuilds its rows by index.
+
+**Recommendation: not now.** The 200-widget node screen costs 60 µs, under 1% of a 60 Hz frame and under 1% of a 120 Hz one, and the walk itself is only 7.9 µs of that. Caching's ceiling is 36.6 µs, and a real frame gets less: the subtrees under the pointer or the focus, any that scroll or animate, and every subtree after a theme or binding change still rebuild. To earn that, caching would need all eight kinds of tracking above, plus replaying recorded nodes and commands for layout, drawing and navigation (navigation reads last frame's records of every focusable). Each missed case is a stale-UI bug, the hardest kind for a game author to see. The case that motivated caching, very long screens, is already solved by virtual lists: 10,000 rows cost 8.6 µs a frame as nodes. Revisit when a real game screen measures its UI pass above about 1 ms, or a profile shows unchanged subtrees' builders above half of its frame. Even then, look first at cheaper steps: skipping hidden and off-screen subtrees, and reusing a static leaf's draw commands.
+
+Left for later:
+- Measured rows (variable height) in virtual lists.
+- Horizontal virtual lists.
+- Node subtree caching (pending the owner's decision above).
+- The dropdown and choice lists virtualised (they stay short).
+- Touch flinging and momentum.
 
 ## Left for Later
 
