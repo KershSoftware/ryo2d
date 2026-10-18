@@ -2,9 +2,11 @@
 //!
 //! Each node is drawn by the builder a closure would call, given `.id(entity)`
 //! (text, separators and spacers are drawn inside `ui.scope(entity, ..)`), so
-//! its id depends only on its entity and its parent's id. `draw_node`
-//! dispatches on the node's kind. A container's builder is configured from
-//! the node first; its `.show` then walks the children with the world free.
+//! its id depends only on its entity and its parent's id. `draw_node` reads a
+//! node's kind once and dispatches on it. A widget is drawn from shared reads
+//! of its components, and a value the player changed is written back after
+//! the builder returns. A container's builder is configured from the node
+//! first; its `.show` then walks the children with the world free.
 
 use glam::Vec2;
 
@@ -12,16 +14,20 @@ use crate::core::ecs::kernel::{
   Children, DetectChangesMut, Entity, EntityWorldMut, Has, Mut, ReleaseStateQueryData,
   SingleEntityQueryData, World,
 };
+use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextReveal, TextStyle};
 use crate::core::ui::theme::warn_once;
-use crate::core::ui::{Anchor, Rect, Response, Theme, UiContext, UiId};
+use crate::core::ui::{Anchor, Container, Rect, Response, Scroll, Theme, UiContext, UiId};
 
 use super::components::{
   BackAnswer, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName,
   UiNodes, UiOptions, UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
 };
 use super::events::{UiEvent, UiEventKind};
-use super::node::{Kind, NodeLayout, TextRole, UiNodeKind};
+use super::node::{
+  ButtonOpts, ImageOpts, Kind, NodeLayout, RebindOpts, ScrollOpts, SliderOpts, TextOpts, TextRole,
+  UiNodeKind,
+};
 
 /// A root's placement, from its `UiRoot`
 #[derive(Clone, Copy)]
@@ -52,9 +58,22 @@ pub(crate) struct Walk {
   pub(crate) back: Option<Entity>,
   /// A focus request waiting for its node to be drawn
   pub(crate) pending_focus: Option<Entity>,
+  /// The children of the containers being walked, innermost last: each
+  /// container's list is copied here once, not read again per child
+  children: Vec<Entity>,
 }
 
 impl Walk {
+  fn new(scene: u64, pending_focus: Option<Entity>) -> Walk {
+    Walk {
+      scene,
+      events: Vec::new(),
+      back: None,
+      pending_focus,
+      children: Vec::new(),
+    }
+  }
+
   /// Keep an unused focus request for a later frame; the walk's events
   pub(crate) fn finish(mut self, world: &mut World, ui: &mut UiContext<'_>) -> Vec<UiEvent> {
     if let Some(target) = self.back
@@ -109,13 +128,7 @@ impl<'a> UiContext<'a> {
     }
     nodes.embedded_drawn.push(root);
     let pending_focus = nodes.pending_focus.take();
-    let scene = self.scene().0;
-    let mut walk = Walk {
-      scene,
-      events: Vec::new(),
-      back: None,
-      pending_focus,
-    };
+    let mut walk = Walk::new(self.scene().0, pending_focus);
     let response = draw_node(world, self, root, None, &mut walk);
     if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
       if let Some(node) = walk.pending_focus {
@@ -149,12 +162,7 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
   }) else {
     return Vec::new();
   };
-  let mut walk = Walk {
-    scene,
-    events: Vec::new(),
-    back: None,
-    pending_focus,
-  };
+  let mut walk = Walk::new(scene, pending_focus);
   let mut i = 0;
   while let Some((owner, root)) = world
     .get_resource::<UiNodes>()
@@ -177,7 +185,8 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
   walk.finish(world, ui)
 }
 
-/// Draw `node` and its subtree by its kind; `place` is a root's placement
+/// Draw `node` and its subtree by its kind; `place` is a root's placement.
+/// The node is looked up once, and its `UiNodeKind` read once.
 fn draw_node(
   world: &mut World,
   ui: &mut UiContext<'_>,
@@ -185,7 +194,7 @@ fn draw_node(
   place: Option<Place>,
   walk: &mut Walk,
 ) -> Option<Response> {
-  let Ok(entity) = world.get_entity_mut(node) else {
+  let Ok(mut entity) = world.get_entity_mut(node) else {
     return None;
   };
   if entity.contains::<UiHidden>() {
@@ -197,31 +206,28 @@ fn draw_node(
     });
     return None;
   };
-  let (response, sends) = match kind.kind {
+  let (response, write, sends) = match &kind.kind {
     Kind::Column | Kind::Row | Kind::Grid(_) | Kind::Stack | Kind::Panel | Kind::Popup { .. } => {
-      (draw_container(entity, ui, place, walk), Sends::Clicks)
-    }
-    Kind::Scroll(_) => (draw_scroll(entity, ui, place, walk), Sends::Clicks),
-    Kind::Text(_) => {
-      draw_text(entity, ui);
-      return None;
-    }
-    Kind::Button(_) => (draw_button(entity, ui, place), Sends::Clicks),
-    Kind::Image(_) => (draw_image(entity, ui, place), Sends::Clicks),
-    Kind::Checkbox | Kind::Toggle => (draw_check(entity, ui, place), Sends::Changes),
-    Kind::RadioGroup { .. } => {
-      if let Some(group) = draw_radio_group(entity, ui, place) {
-        answer_group(world, node, &group, walk);
+      let dialog = kind.flags.modal || matches!(kind.kind, Kind::Popup { .. });
+      let container = container_builder(&entity, kind, ui, place)?;
+      let world = entity.into_world_mut();
+      let response = container.show(|ui| walk_children(world, ui, node, walk));
+      if dialog {
+        walk.back = Some(node);
       }
-      return None;
+      return answer_container(world, ui, node, response, walk);
     }
-    Kind::Slider(_) => (draw_slider(entity, ui, place), Sends::Changes),
-    Kind::Progress { .. } => (draw_progress(entity, ui, place), Sends::Clicks),
-    Kind::TextInput(_) => (draw_text_input(entity, ui, place), Sends::Changes),
-    Kind::Dropdown | Kind::Tabs => (draw_pick(entity, ui, place), Sends::Changes),
-    Kind::ChoiceList { .. } => {
-      if draw_choice_list(entity, ui, place).is_some() {
-        push_event(world, walk, node, UiEventKind::Clicked);
+    Kind::Scroll(opts) => {
+      let scroll = scroll_builder(&entity, kind, opts, ui, place);
+      let world = entity.into_world_mut();
+      let response = scroll.show(|ui| walk_children(world, ui, node, walk));
+      return answer_container(world, ui, node, response, walk);
+    }
+    Kind::Text(opts) => {
+      if let Some(advanced) = draw_text(&entity, opts, ui)
+        && let Some(mut reveal) = entity.get_mut::<TextReveal>()
+      {
+        *reveal = advanced;
       }
       return None;
     }
@@ -233,12 +239,78 @@ fn draw_node(
       ui.scope(node, |ui| ui.spacer());
       return None;
     }
-    Kind::Slot { .. } => (draw_slot(entity, ui, place), Sends::Clicks),
-    Kind::Prompt { .. } => (draw_prompt(entity, ui, place), Sends::Clicks),
-    Kind::Rebind(_) => (draw_rebind(entity, ui, place), Sends::Changes),
+    Kind::RadioGroup { horizontal } => {
+      if let Some(group) = draw_radio_group(&entity, kind, *horizontal, ui, place) {
+        if group.changed {
+          Write::Index(group.chosen).apply(&mut entity);
+        }
+        answer_group(&mut entity, &group, walk);
+      }
+      return None;
+    }
+    Kind::ChoiceList { default } => {
+      let (picked, write) = draw_choice_list(&entity, kind, *default, ui, place);
+      if let Some(write) = write {
+        write.apply(&mut entity);
+      }
+      if picked.is_some() {
+        push_event(entity.world(), walk, node, UiEventKind::Clicked);
+      }
+      return None;
+    }
+    Kind::TextInput(_) => (
+      draw_text_input(&mut entity, ui, place),
+      None,
+      Sends::Changes,
+    ),
+    Kind::Button(opts) => (
+      draw_button(&entity, kind, opts, ui, place),
+      None,
+      Sends::Clicks,
+    ),
+    Kind::Image(opts) => (
+      draw_image(&entity, kind, opts, ui, place),
+      None,
+      Sends::Clicks,
+    ),
+    Kind::Checkbox | Kind::Toggle => {
+      let (response, write) = draw_check(&entity, kind, ui, place);
+      (response, write, Sends::Changes)
+    }
+    Kind::Slider(opts) => {
+      let (response, write) = draw_slider(&entity, kind, opts, ui, place);
+      (response, write, Sends::Changes)
+    }
+    Kind::Progress { label } => (
+      draw_progress(&entity, kind, label.as_deref(), ui, place),
+      None,
+      Sends::Clicks,
+    ),
+    Kind::Dropdown | Kind::Tabs => {
+      let (response, write) = draw_pick(&entity, kind, ui, place);
+      (response, write, Sends::Changes)
+    }
+    Kind::Slot { filter } => (
+      draw_slot(&entity, kind, *filter, ui, place),
+      None,
+      Sends::Clicks,
+    ),
+    Kind::Prompt { action } => (
+      draw_prompt(&entity, kind, action, ui, place),
+      None,
+      Sends::Clicks,
+    ),
+    Kind::Rebind(opts) => (
+      draw_rebind(&entity, kind, opts, ui, place),
+      None,
+      Sends::Changes,
+    ),
   };
+  if let Some(write) = write {
+    write.apply(&mut entity);
+  }
   if let Some(response) = &response {
-    answer(world, ui, node, response, sends, walk);
+    answer(&mut entity, ui, response, sends, walk);
   }
   response
 }
@@ -250,18 +322,46 @@ enum Sends {
   Changes,
 }
 
+/// A value a widget changed, written to the node once its reads are done:
+/// only on a change, so `Changed<..>` filters see real changes
+enum Write {
+  Checked(bool),
+  Value(f32),
+  Index(usize),
+}
+
+impl Write {
+  fn apply(self, node: &mut EntityWorldMut<'_>) {
+    match self {
+      Write::Checked(on) => {
+        if let Some(mut checked) = node.get_mut::<UiChecked>() {
+          checked.0 = on;
+        }
+      }
+      Write::Value(value) => {
+        if let Some(mut slot) = node.get_mut::<UiValue>() {
+          slot.0 = value;
+        }
+      }
+      Write::Index(index) => {
+        if let Some(mut slot) = node.get_mut::<UiIndex>() {
+          slot.0 = index;
+        }
+      }
+    }
+  }
+}
+
 /// Turn a drawn node's `response` into its `UiInteraction`, a focus request
 /// that was waiting for it, and the events it sends
 fn answer(
-  world: &mut World,
+  node: &mut EntityWorldMut<'_>,
   ui: &mut UiContext<'_>,
-  node: Entity,
   response: &Response,
   sends: Sends,
   walk: &mut Walk,
 ) {
   set_interaction(
-    world,
     node,
     UiInteraction {
       id: response.id,
@@ -269,13 +369,29 @@ fn answer(
       focused: response.focused(),
     },
   );
-  if walk.pending_focus == Some(node) {
+  let entity = node.id();
+  if walk.pending_focus == Some(entity) {
     ui.request_focus(response.id);
     walk.pending_focus = None;
   }
   for kind in event_kinds(response, sends).into_iter().flatten() {
-    push_event(world, walk, node, kind);
+    push_event(node.world(), walk, entity, kind);
   }
+}
+
+/// [`answer`] for a container whose children have been drawn: the walk may
+/// have moved the world on, so the node is looked up again
+fn answer_container(
+  world: &mut World,
+  ui: &mut UiContext<'_>,
+  node: Entity,
+  response: Response,
+  walk: &mut Walk,
+) -> Option<Response> {
+  if let Ok(mut entity) = world.get_entity_mut(node) {
+    answer(&mut entity, ui, &response, Sends::Clicks, walk);
+  }
+  Some(response)
 }
 
 /// The events a `response` reports, in a node's order: `Clicked` or
@@ -300,18 +416,20 @@ fn event_kinds(response: &Response, sends: Sends) -> [Option<UiEventKind>; 6] {
   ]
 }
 
-/// Write `now` as `node`'s `UiInteraction` if it differs
-fn set_interaction(world: &mut World, node: Entity, now: UiInteraction) {
-  match world.get_mut::<UiInteraction>(node) {
+/// Write `now` as the node's `UiInteraction` if it differs. It is read
+/// first, which is cheaper than a mutable borrow when nothing changed.
+fn set_interaction(node: &mut EntityWorldMut<'_>, now: UiInteraction) {
+  if node.get::<UiInteraction>() == Some(&now) {
+    return;
+  }
+  match node.get_mut::<UiInteraction>() {
     Some(mut state) => {
       if *state != now {
         *state = now;
       }
     }
     None => {
-      if let Ok(mut entity) = world.get_entity_mut(node) {
-        entity.insert(now);
-      }
+      node.insert(now);
     }
   }
 }
@@ -329,17 +447,19 @@ fn push_event(world: &World, walk: &mut Walk, node: Entity, kind: UiEventKind) {
   });
 }
 
-/// Draw `parent`'s children in order
+/// Draw `parent`'s children in order. Its list is copied to the walk's
+/// stack once, so it is not read again for each child.
 fn walk_children(world: &mut World, ui: &mut UiContext<'_>, parent: Entity, walk: &mut Walk) {
-  // By index, so the list of children is never copied
-  let mut i = 0;
-  while let Some(child) = world
-    .get::<Children>(parent)
-    .and_then(|children| children.get(i).copied())
-  {
-    i += 1;
+  let start = walk.children.len();
+  if let Some(children) = world.get::<Children>(parent) {
+    walk.children.extend_from_slice(children);
+  }
+  let end = walk.children.len();
+  for i in start..end {
+    let child = walk.children[i];
     draw_node(world, ui, child, None, walk);
   }
+  walk.children.truncate(start);
 }
 
 /// Warn once that `UiDisabled` on a container does nothing
@@ -407,20 +527,21 @@ macro_rules! placed {
   }};
 }
 
-/// Draw a column, row, grid, stack or panel node, its children inside
-fn draw_container(
-  node: EntityWorldMut<'_>,
-  ui: &mut UiContext<'_>,
+/// A column, row, grid, stack, panel, modal or popup node's builder,
+/// configured from the node; `None` for another kind
+fn container_builder<'u, 'a>(
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  ui: &'u mut UiContext<'a>,
   place: Option<Place>,
-  walk: &mut Walk,
-) -> Option<Response> {
+) -> Option<Container<'u, 'a>> {
   let entity = node.id();
-  let kind = node.get::<UiNodeKind>()?;
-  warn_disabled(&node, kind);
+  warn_disabled(node, kind);
   let (layout, flags) = (&kind.layout, kind.flags);
   let gap = gap_of(layout, ui);
-  let anchor = anchor_id(node.world(), entity);
-  let dialog = flags.modal || matches!(kind.kind, Kind::Popup { .. });
+  let anchor = kind
+    .anchor_node
+    .map_or(UiId::NONE, |anchor| recorded_id(node.world(), anchor));
   let mut container = match kind.kind {
     _ if flags.modal => ui.modal(),
     Kind::Popup { .. } => ui.popup(anchor),
@@ -476,30 +597,22 @@ fn draw_container(
   if flags.drop_target {
     container = container.drop_target::<Entity>();
   }
-  let world = node.into_world_mut();
-  let response = container.show(|ui| walk_children(world, ui, entity, walk));
-  if dialog {
-    walk.back = Some(entity);
-  }
-  Some(response)
+  Some(container)
 }
 
-/// Draw a scroll node, its children inside: only the options `Scroll` has
-fn draw_scroll(
-  node: EntityWorldMut<'_>,
-  ui: &mut UiContext<'_>,
+/// A scroll node's builder, configured from the node: only the options
+/// `Scroll` has
+fn scroll_builder<'u, 'a>(
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  opts: &ScrollOpts,
+  ui: &'u mut UiContext<'a>,
   place: Option<Place>,
-  walk: &mut Walk,
-) -> Option<Response> {
-  let entity = node.id();
-  let kind = node.get::<UiNodeKind>()?;
-  let Kind::Scroll(opts) = &kind.kind else {
-    return None;
-  };
-  warn_disabled(&node, kind);
+) -> Scroll<'u, 'a> {
+  warn_disabled(node, kind);
   let layout = &kind.layout;
   let gap = gap_of(layout, ui);
-  let mut scroll = ui.scroll().id(entity);
+  let mut scroll = ui.scroll().id(node.id());
   if opts.horizontal {
     scroll = scroll.horizontal();
   }
@@ -517,8 +630,7 @@ fn draw_scroll(
     scroll = scroll.grow(grow);
   }
   placed!(scroll, placement(place, layout));
-  let world = node.into_world_mut();
-  Some(scroll.show(|ui| walk_children(world, ui, entity, walk)))
+  scroll
 }
 
 /// What a widget's shared options come from besides its `UiNodeKind`
@@ -534,24 +646,23 @@ struct Extras<'w> {
   nav: [UiId; 4],
 }
 
-/// The recorded id of each of `node`'s named neighbours (`NONE` for none, or
-/// one not drawn yet)
-fn neighbour_ids(world: &World, node: Entity) -> [UiId; 4] {
-  let mut ids = [UiId::NONE; 4];
-  if let Some(kind) = world.get::<UiNodeKind>(node) {
-    for (id, target) in ids.iter_mut().zip(kind.nav) {
-      *id = target.map_or(UiId::NONE, |target| recorded_id(world, target));
+impl<'w> Extras<'w> {
+  /// A widget node's shared options, read from the node
+  fn of(node: &'w EntityWorldMut<'_>, kind: &UiNodeKind, place: Option<Place>) -> Extras<'w> {
+    Extras {
+      entity: node.id(),
+      place,
+      tooltip: node.get::<UiTooltip>(),
+      disabled: node.contains::<UiDisabled>(),
+      nav: neighbour_ids(node.world(), kind.nav),
     }
   }
-  ids
 }
 
-/// The id of the popup's anchor node, `NONE` when it has none yet
-fn anchor_id(world: &World, node: Entity) -> UiId {
-  world
-    .get::<UiNodeKind>(node)
-    .and_then(|kind| kind.anchor_node)
-    .map_or(UiId::NONE, |anchor| recorded_id(world, anchor))
+/// The recorded id of each named neighbour (`NONE` for none, or one not
+/// drawn yet)
+fn neighbour_ids(world: &World, nav: [Option<Entity>; 4]) -> [UiId; 4] {
+  nav.map(|target| target.map_or(UiId::NONE, |target| recorded_id(world, target)))
 }
 
 fn recorded_id(world: &World, node: Entity) -> UiId {
@@ -640,10 +751,11 @@ macro_rules! widget_opts {
   }};
 }
 
-/// Read a node's components as one tuple. A component type in it that the
-/// world has never registered (an optional one nothing has inserted yet) is
-/// registered first, so each tuple registers what it reads. A node whose
-/// components still cannot be read is warned once and not drawn.
+/// Read a node's components as one tuple, some of them mutably. A component
+/// type in it that the world has never registered (an optional one nothing
+/// has inserted yet) is registered first, so each tuple registers what it
+/// reads. A node whose components still cannot be read is warned once and
+/// not drawn.
 fn components<'a, Q: ReleaseStateQueryData + SingleEntityQueryData>(
   node: &'a mut EntityWorldMut<'_>,
   kind: &str,
@@ -665,7 +777,7 @@ fn components<'a, Q: ReleaseStateQueryData + SingleEntityQueryData>(
 }
 
 /// Warn once that a `kind` node has no `component`; it is not drawn
-fn missing(kind: &str, component: &str) -> Option<Response> {
+fn missing<T>(kind: &str, component: &str) -> Option<T> {
   warn_once(format!("ui-node:missing:{kind}:{component}"), || {
     format!("a {kind} node has no {component}; it is not drawn")
   });
@@ -683,31 +795,16 @@ fn rich(text: &str, markup: bool) -> RichText {
 
 /// Draw a button node
 fn draw_button(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  opts: &ButtonOpts,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, label, tooltip, disabled) = components::<(
-    &UiNodeKind,
-    Option<&UiLabel>,
-    Option<&UiTooltip>,
-    Has<UiDisabled>,
-  )>(&mut node, "button")?;
-  let Kind::Button(opts) = &kind.kind else {
-    return None;
-  };
-  let Some(label) = label else {
+  let Some(label) = node.get::<UiLabel>() else {
     return missing("button", "UiLabel");
   };
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
-  };
+  let extras = Extras::of(node, kind, place);
   let label = rich(&label.0, opts.markup);
   let mut button = widget_opts!(ui.button(label), kind, extras);
   if let Some(icon) = &opts.icon {
@@ -718,31 +815,16 @@ fn draw_button(
 
 /// Draw an image node
 fn draw_image(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  opts: &ImageOpts,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, image, tooltip, disabled) = components::<(
-    &UiNodeKind,
-    Option<&UiImage>,
-    Option<&UiTooltip>,
-    Has<UiDisabled>,
-  )>(&mut node, "image")?;
-  let Kind::Image(opts) = &kind.kind else {
-    return None;
-  };
-  let Some(image) = image else {
+  let Some(image) = node.get::<UiImage>() else {
     return missing("image", "UiImage");
   };
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
-  };
+  let extras = Extras::of(node, kind, place);
   let mut builder = widget_opts!(ui.image(&image.0), kind, extras);
   if let Some(size) = opts.size {
     builder = builder.size(size.x, size.y);
@@ -761,82 +843,52 @@ fn draw_image(
 
 /// Draw a slot node: a drag source only while it holds an icon
 fn draw_slot(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  filter: Option<Filter>,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, slot, tooltip, disabled) =
-    components::<(&UiNodeKind, &UiSlot, Option<&UiTooltip>, Has<UiDisabled>)>(&mut node, "slot")?;
-  let Kind::Slot { filter } = &kind.kind else {
-    return None;
+  let Some(slot) = node.get::<UiSlot>() else {
+    return missing("slot", "UiSlot");
   };
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
-  };
+  let extras = Extras::of(node, kind, place);
   let mut builder = widget_opts!(ui.slot(), kind, extras)
     .count(slot.count)
     .selected(slot.selected);
   if let Some(icon) = &slot.icon {
     builder = builder.icon(icon);
     if kind.flags.drag_source {
-      builder = builder.drag_source(entity);
+      builder = builder.drag_source(extras.entity);
     }
   }
   if let Some(filter) = filter {
-    builder = builder.filter(*filter);
+    builder = builder.filter(filter);
   }
   Some(builder.show())
 }
 
 /// Draw a prompt node: the glyph for an action's input
 fn draw_prompt(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  action: &str,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, tooltip, disabled) =
-    components::<(&UiNodeKind, Option<&UiTooltip>, Has<UiDisabled>)>(&mut node, "prompt")?;
-  let Kind::Prompt { action } = &kind.kind else {
-    return None;
-  };
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
-  };
+  let extras = Extras::of(node, kind, place);
   Some(widget_opts!(ui.prompt(action), kind, extras).show())
 }
 
 /// Draw a rebind node: a row that rebinds an action's input
 fn draw_rebind(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  opts: &RebindOpts,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, tooltip, disabled) =
-    components::<(&UiNodeKind, Option<&UiTooltip>, Has<UiDisabled>)>(&mut node, "rebind")?;
-  let Kind::Rebind(opts) = &kind.kind else {
-    return None;
-  };
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
-  };
+  let extras = Extras::of(node, kind, place);
   let mut builder = widget_opts!(ui.rebind(&opts.action), kind, extras);
   if let Some(label) = &opts.label {
     builder = builder.label(label.as_str());
@@ -847,64 +899,44 @@ fn draw_rebind(
   Some(builder.show())
 }
 
-/// Draw a checkbox or toggle node
+/// Draw a checkbox or toggle node; its new `UiChecked`, if the player
+/// changed it
 fn draw_check(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
-) -> Option<Response> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, label, mut checked, tooltip, disabled) = components::<(
-    &UiNodeKind,
-    &UiLabel,
-    &mut UiChecked,
-    Option<&UiTooltip>,
-    Has<UiDisabled>,
-  )>(&mut node, "checkbox or toggle")?;
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
+) -> (Option<Response>, Option<Write>) {
+  let name = kind.name();
+  let Some(label) = node.get::<UiLabel>() else {
+    return (missing(name, "UiLabel"), None);
   };
+  let Some(checked) = node.get::<UiChecked>() else {
+    return (missing(name, "UiChecked"), None);
+  };
+  let extras = Extras::of(node, kind, place);
   let mut on = checked.0;
   let response = if matches!(kind.kind, Kind::Toggle) {
     widget_opts!(ui.toggle(&mut on, label.0.as_str()), kind, extras).show()
   } else {
     widget_opts!(ui.checkbox(&mut on, label.0.as_str()), kind, extras).show()
   };
-  if on != checked.0 {
-    checked.0 = on;
-  }
-  Some(response)
+  let write = (on != checked.0).then_some(Write::Checked(on));
+  (Some(response), write)
 }
 
-/// Draw a slider node
+/// Draw a slider node; its new `UiValue`, if the player changed it
 fn draw_slider(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  opts: &SliderOpts,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
-) -> Option<Response> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, mut value, tooltip, disabled) = components::<(
-    &UiNodeKind,
-    &mut UiValue,
-    Option<&UiTooltip>,
-    Has<UiDisabled>,
-  )>(&mut node, "slider")?;
-  let Kind::Slider(opts) = &kind.kind else {
-    return None;
+) -> (Option<Response>, Option<Write>) {
+  let Some(value) = node.get::<UiValue>() else {
+    return (missing("slider", "UiValue"), None);
   };
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
-  };
+  let extras = Extras::of(node, kind, place);
   let (lo, hi) = opts.range;
   let start = if value.0.is_finite() { value.0 } else { lo };
   let drawn = start.clamp(lo.min(hi), hi.max(lo));
@@ -920,34 +952,22 @@ fn draw_slider(
     slider = slider.label(label.as_str());
   }
   let response = slider.show();
-  if v != drawn {
-    value.0 = v;
-  }
-  Some(response)
+  let write = (v != drawn).then_some(Write::Value(v));
+  (Some(response), write)
 }
 
 /// Draw a progress node
 fn draw_progress(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  label: Option<&str>,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, value, tooltip, disabled) =
-    components::<(&UiNodeKind, &UiValue, Option<&UiTooltip>, Has<UiDisabled>)>(
-      &mut node, "progress",
-    )?;
-  let Kind::Progress { label } = &kind.kind else {
-    return None;
+  let Some(value) = node.get::<UiValue>() else {
+    return missing("progress", "UiValue");
   };
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
-  };
+  let extras = Extras::of(node, kind, place);
   let fraction = if value.0.is_nan() {
     0.0
   } else {
@@ -955,25 +975,28 @@ fn draw_progress(
   };
   let mut progress = widget_opts!(ui.progress(fraction), kind, extras);
   if let Some(label) = label {
-    progress = progress.label(label.as_str());
+    progress = progress.label(label);
   }
   Some(progress.show())
 }
 
-/// Draw a text field node
+/// Draw a text field node. The field edits its `UiTextValue` in place, so
+/// this kind reads its components mutably.
 fn draw_text_input(
-  mut node: EntityWorldMut<'_>,
+  node: &mut EntityWorldMut<'_>,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
   let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
+  let nav = node.get::<UiNodeKind>().map_or([UiId::NONE; 4], |kind| {
+    neighbour_ids(node.world(), kind.nav)
+  });
   let (kind, mut text, tooltip, disabled) = components::<(
     &UiNodeKind,
     &mut UiTextValue,
     Option<&UiTooltip>,
     Has<UiDisabled>,
-  )>(&mut node, "text field")?;
+  )>(node, "text field")?;
   let Kind::TextInput(opts) = &kind.kind else {
     return None;
   };
@@ -1013,23 +1036,26 @@ fn draw_text_input(
 struct GroupAnswer {
   interaction: UiInteraction,
   changed: bool,
+  /// The option chosen now
+  chosen: usize,
 }
 
 /// Draw a radio group node: a row or column of radios
 fn draw_radio_group(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  horizontal: bool,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<GroupAnswer> {
   let entity = node.id();
-  let (kind, options, mut index, disabled) =
-    components::<(&UiNodeKind, &UiOptions, &mut UiIndex, Has<UiDisabled>)>(
-      &mut node,
-      "radio group",
-    )?;
-  let Kind::RadioGroup { horizontal } = kind.kind else {
-    return None;
+  let Some(options) = node.get::<UiOptions>() else {
+    return missing("radio_group", "UiOptions");
   };
+  let Some(index) = node.get::<UiIndex>() else {
+    return missing("radio_group", "UiIndex");
+  };
+  let disabled = node.contains::<UiDisabled>();
   let layout = &kind.layout;
   let gap = gap_of(layout, ui);
   let mut container = if horizontal { ui.row() } else { ui.column() }.id(entity);
@@ -1070,28 +1096,26 @@ fn draw_radio_group(
       focused |= response.focused();
     }
   });
-  let changed = chosen != drawn;
-  if changed {
-    index.0 = chosen;
-  }
   Some(GroupAnswer {
     interaction: UiInteraction {
       id: response.id,
       hovered,
       focused,
     },
-    changed,
+    changed: chosen != drawn,
+    chosen,
   })
 }
 
 /// Record a radio group's interaction and send its events
-fn answer_group(world: &mut World, node: Entity, group: &GroupAnswer, walk: &mut Walk) {
-  let was_focused = world
-    .get::<UiInteraction>(node)
+fn answer_group(node: &mut EntityWorldMut<'_>, group: &GroupAnswer, walk: &mut Walk) {
+  let was_focused = node
+    .get::<UiInteraction>()
     .is_some_and(|state| state.focused);
-  set_interaction(world, node, group.interaction);
+  set_interaction(node, group.interaction);
+  let entity = node.id();
   if group.changed {
-    push_event(world, walk, node, UiEventKind::Changed);
+    push_event(node.world(), walk, entity, UiEventKind::Changed);
   }
   if group.interaction.focused != was_focused {
     let kind = if group.interaction.focused {
@@ -1099,82 +1123,102 @@ fn answer_group(world: &mut World, node: Entity, group: &GroupAnswer, walk: &mut
     } else {
       UiEventKind::FocusLost
     };
-    push_event(world, walk, node, kind);
+    push_event(node.world(), walk, entity, kind);
   }
 }
 
-/// Draw a dropdown or tabs node
+/// The longest option list passed to a builder from the stack
+const SHORT_LIST: usize = 16;
+
+/// A node's options as the builders take them, `&[&str]`: on the stack for
+/// a short list, so drawing a dropdown, tabs or choices does not allocate
+struct OptionList<'s> {
+  short: [&'s str; SHORT_LIST],
+  /// How many of `short` are the options; a longer list is in `long`
+  len: usize,
+  long: Vec<&'s str>,
+}
+
+impl<'s> OptionList<'s> {
+  fn of(options: &'s [String]) -> OptionList<'s> {
+    let mut list = OptionList {
+      short: [""; SHORT_LIST],
+      len: options.len(),
+      long: Vec::new(),
+    };
+    if options.len() <= SHORT_LIST {
+      for (slot, option) in list.short.iter_mut().zip(options) {
+        *slot = option.as_str();
+      }
+    } else {
+      list.long = options.iter().map(String::as_str).collect();
+    }
+    list
+  }
+
+  fn as_slice(&self) -> &[&'s str] {
+    if self.len <= SHORT_LIST {
+      self.short.get(..self.len).unwrap_or(&[])
+    } else {
+      &self.long
+    }
+  }
+}
+
+/// Draw a dropdown or tabs node; its new `UiIndex`, if the player changed it
 fn draw_pick(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
-) -> Option<Response> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, options, mut index, tooltip, disabled) = components::<(
-    &UiNodeKind,
-    &UiOptions,
-    &mut UiIndex,
-    Option<&UiTooltip>,
-    Has<UiDisabled>,
-  )>(&mut node, "dropdown or tabs")?;
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
+) -> (Option<Response>, Option<Write>) {
+  let name = kind.name();
+  let Some(options) = node.get::<UiOptions>() else {
+    return (missing(name, "UiOptions"), None);
   };
-  let list: Vec<&str> = options.0.iter().map(String::as_str).collect();
+  let Some(index) = node.get::<UiIndex>() else {
+    return (missing(name, "UiIndex"), None);
+  };
+  let extras = Extras::of(node, kind, place);
+  let list = OptionList::of(&options.0);
+  let list = list.as_slice();
   let drawn = index.0.min(list.len().saturating_sub(1));
   let mut chosen = drawn;
   let response = if matches!(kind.kind, Kind::Tabs) {
-    widget_opts!(ui.tabs(&mut chosen, &list), kind, extras).show()
+    widget_opts!(ui.tabs(&mut chosen, list), kind, extras).show()
   } else {
-    widget_opts!(ui.dropdown(&mut chosen, &list), kind, extras).show()
+    widget_opts!(ui.dropdown(&mut chosen, list), kind, extras).show()
   };
-  if chosen != drawn {
-    index.0 = chosen;
-  }
-  Some(response)
+  let write = (chosen != drawn).then_some(Write::Index(chosen));
+  (Some(response), write)
 }
 
-/// Draw a choice list node; the choice picked this frame, already written to
-/// its `UiIndex`
+/// Draw a choice list node: the choice picked this frame, and its new
+/// `UiIndex` if that differs
 fn draw_choice_list(
-  mut node: EntityWorldMut<'_>,
+  node: &EntityWorldMut<'_>,
+  kind: &UiNodeKind,
+  default: Option<usize>,
   ui: &mut UiContext<'_>,
   place: Option<Place>,
-) -> Option<usize> {
-  let entity = node.id();
-  let nav = neighbour_ids(node.world(), entity);
-  let (kind, options, mut index, tooltip, disabled) = components::<(
-    &UiNodeKind,
-    &UiOptions,
-    &mut UiIndex,
-    Option<&UiTooltip>,
-    Has<UiDisabled>,
-  )>(&mut node, "choice list")?;
-  let Kind::ChoiceList { default } = kind.kind else {
-    return None;
+) -> (Option<usize>, Option<Write>) {
+  let Some(options) = node.get::<UiOptions>() else {
+    return (missing("choice_list", "UiOptions"), None);
   };
-  let extras = Extras {
-    entity,
-    place,
-    nav,
-    tooltip,
-    disabled,
+  let Some(index) = node.get::<UiIndex>() else {
+    return (missing("choice_list", "UiIndex"), None);
   };
-  let list: Vec<&str> = options.0.iter().map(String::as_str).collect();
-  let mut choices = widget_opts!(ui.choice_list(&list), kind, extras);
+  let extras = Extras::of(node, kind, place);
+  let list = OptionList::of(&options.0);
+  let mut choices = widget_opts!(ui.choice_list(list.as_slice()), kind, extras);
   if let Some(first) = default {
     choices = choices.default(first);
   }
-  let picked = choices.show()?;
-  if index.0 != picked {
-    index.0 = picked;
-  }
-  Some(picked)
+  let Some(picked) = choices.show() else {
+    return (None, None);
+  };
+  let write = (index.0 != picked).then_some(Write::Index(picked));
+  (Some(picked), write)
 }
 
 /// The style of a theme text role
@@ -1189,24 +1233,19 @@ fn role_style(theme: &Theme, role: TextRole) -> TextStyle {
   }
 }
 
-/// Draw a text node inside its entity's scope (text has no `.id`), advancing
-/// its `TextReveal` if it has one; it has no response
-fn draw_text(mut node: EntityWorldMut<'_>, ui: &mut UiContext<'_>) {
-  let entity = node.id();
-  let Some((kind, label, reveal)) =
-    components::<(&UiNodeKind, Option<&UiLabel>, Option<&mut TextReveal>)>(&mut node, "text")
-  else {
-    return;
+/// Draw a text node inside its entity's scope (text has no `.id`); it has no
+/// response. Its `TextReveal` advanced, if it has one that moved.
+fn draw_text(
+  node: &EntityWorldMut<'_>,
+  opts: &TextOpts,
+  ui: &mut UiContext<'_>,
+) -> Option<TextReveal> {
+  let Some(label) = node.get::<UiLabel>() else {
+    return missing("text", "UiLabel");
   };
-  let Kind::Text(opts) = &kind.kind else {
-    return;
-  };
-  let Some(label) = label else {
-    missing("text", "UiLabel");
-    return;
-  };
-  let mut advanced = reveal.as_deref().copied();
-  ui.scope(entity, |ui| {
+  let reveal = node.get::<TextReveal>().copied();
+  let mut advanced = reveal;
+  ui.scope(node.id(), |ui| {
     // The text builder borrows the context, so the theme is read first
     let role = opts
       .role
@@ -1243,11 +1282,7 @@ fn draw_text(mut node: EntityWorldMut<'_>, ui: &mut UiContext<'_>) {
     }
     text.draw();
   });
-  if let (Some(mut reveal), Some(advanced)) = (reveal, advanced)
-    && *reveal != advanced
-  {
-    *reveal = advanced;
-  }
+  advanced.filter(|advanced| Some(*advanced) != reveal)
 }
 
 #[cfg(all(test, feature = "default-fonts"))]
