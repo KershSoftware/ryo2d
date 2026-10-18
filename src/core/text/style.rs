@@ -178,8 +178,15 @@ impl TextStyle {
     .map(|(field, value, _)| (field, value))
   }
 
-  /// Feed everything that changes layout or look into a cache key
+  /// Feed everything that changes layout or look into a cache key: the
+  /// shape, then the colours
   pub(crate) fn hash_into(&self, h: &mut impl Hasher) {
+    self.hash_shape_into(h);
+    self.hash_colours_into(h);
+  }
+
+  /// Feed everything but the colours into a key
+  pub(crate) fn hash_shape_into(&self, h: &mut impl Hasher) {
     self.font.hash(h);
     self.fallbacks.hash(h);
     for value in [
@@ -191,10 +198,9 @@ impl TextStyle {
       value.to_bits().hash(h);
     }
     self.italic.hash(h);
-    self.color.hash(h);
     // Each effect hashes as an `Option`, so its presence is part of the key
     // (an outline and a glow with the same numbers differ)
-    hash_outline(&self.outline, h);
+    self.outline.map(|outline| outline.width.to_bits()).hash(h);
     self
       .shadow
       .map(|shadow| {
@@ -202,14 +208,18 @@ impl TextStyle {
           shadow.offset.x.to_bits(),
           shadow.offset.y.to_bits(),
           shadow.softness.to_bits(),
-          shadow.color,
         )
       })
       .hash(h);
-    self
-      .glow
-      .map(|glow| (glow.radius.to_bits(), glow.color))
-      .hash(h);
+    self.glow.map(|glow| glow.radius.to_bits()).hash(h);
+  }
+
+  /// Feed the colours into a key: the text's and its effects'
+  pub(crate) fn hash_colours_into(&self, h: &mut impl Hasher) {
+    self.color.hash(h);
+    self.outline.map(|outline| outline.color).hash(h);
+    self.shadow.map(|shadow| shadow.color).hash(h);
+    self.glow.map(|glow| glow.color).hash(h);
   }
 }
 
@@ -298,6 +308,14 @@ impl TextLayoutOptions {
     self.max_lines.hash(h);
     self.overflow.hash(h);
     // The anchor only places the block; it never changes the layout
+  }
+
+  /// Equal in everything `hash_into` hashes (all but the anchor)
+  pub(crate) fn same_layout(&self, other: &Self) -> bool {
+    self.wrap.map(f32::to_bits) == other.wrap.map(f32::to_bits)
+      && self.align == other.align
+      && self.max_lines == other.max_lines
+      && self.overflow == other.overflow
   }
 }
 

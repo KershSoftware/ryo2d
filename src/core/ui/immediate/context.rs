@@ -25,7 +25,7 @@
 use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
 use std::collections::BTreeMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::Hash;
 use std::panic::Location;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,11 +37,12 @@ use super::commands::{UiCommand, UiCommands};
 use super::input::UiInput;
 
 use crate::core::asset::SpriteHandle;
+use crate::core::hash::fast_hash;
 use crate::core::input::{Binding, Direction, InputDevice, PadFamily};
 use crate::core::render::UiSpace;
 use crate::core::render::batch::Filter;
 use crate::core::text::{
-  RichText, TextAlign, TextEngine, TextIcons, TextLayout, TextLayoutOptions, TextOverflow,
+  RichText, TextAlign, TextEngine, TextIcons, TextKey, TextLayout, TextLayoutOptions, TextOverflow,
   TextReveal, TextStyle,
 };
 use crate::core::ui::id::{UiId, key_hash};
@@ -64,28 +65,6 @@ static EMPTY_POP_WARNED: AtomicBool = AtomicBool::new(false);
 static LEFT_OPEN_WARNED: AtomicBool = AtomicBool::new(false);
 /// A container placed at a rect that is not finite was warned about
 static BAD_AT_WARNED: AtomicBool = AtomicBool::new(false);
-
-/// A text's effect seed: a hash of the text, the style without its colours
-/// and the layout options, so it stays the same whatever else is drawn
-/// around it and when a hover changes its colour
-pub(crate) fn text_seed(text: &RichText, style: &TextStyle, options: &TextLayoutOptions) -> u64 {
-  let mut h = DefaultHasher::new();
-  text.hash_into(&mut h);
-  let mut style = style.clone();
-  style.color = Color::WHITE;
-  if let Some(outline) = &mut style.outline {
-    outline.color = Color::WHITE;
-  }
-  if let Some(shadow) = &mut style.shadow {
-    shadow.color = Color::WHITE;
-  }
-  if let Some(glow) = &mut style.glow {
-    glow.color = Color::WHITE;
-  }
-  style.hash_into(&mut h);
-  options.hash_into(&mut h);
-  h.finish()
-}
 
 /// What input prompts read: the player's last device and pad family, every
 /// action's bindings and the glyphs the game registered in `TextIcons`.
@@ -280,11 +259,13 @@ impl<'u> UiText<'u, '_> {
     // out, so a leaf is measured as it is drawn
     let text = ui.with_prompts(std::mem::take(&mut self.text));
     let scale = ui.space.px_scale;
+    // Hashed once: every engine call on this text uses the key
+    let key = TextKey::of(&text, &style, &options);
     // Text that cannot be laid out records nothing and advances no reveal.
     // A leaf is laid out again at its width; its clusters stay the same.
     let Some(layout) = ui
       .engine()
-      .and_then(|mut engine| engine.layout(&text, &style, &options, scale))
+      .and_then(|mut engine| engine.layout_keyed(key, &text, &style, &options, scale))
     else {
       return Vec2::ZERO;
     };
@@ -299,19 +280,19 @@ impl<'u> UiText<'u, '_> {
       None => self.shown.map(|shown| (shown, self.fade)),
     };
     let size = layout.size / scale;
-    let seed = text_seed(&text, &style, &options);
     match self.at {
       Some(at) => {
         let origin = at - options.anchor.fraction() * size;
-        ui.record_layout(layout, origin, self.opacity, reveal, seed)
+        ui.record_layout(layout, origin, self.opacity, reveal, key.seed())
       }
       None => {
         let leaf = TextLeaf {
           text,
           style,
           options,
+          key,
         };
-        ui.text_leaf(self.site, leaf, (self.opacity, reveal, seed), size)
+        ui.text_leaf(self.site, leaf, (self.opacity, reveal), size)
       }
     }
   }
@@ -946,11 +927,11 @@ impl<'a> UiContext<'a> {
   /// this call
   pub(crate) fn push_draw(&mut self, node: usize, mut kind: DrawKind) {
     // A label's prompts are resolved before layout measures or draws it
-    if let DrawKind::Text { leaf, seed, .. } = &mut kind
+    if let DrawKind::Text { leaf, .. } = &mut kind
       && !leaf.text.prompts.is_empty()
     {
       leaf.text = self.with_prompts(std::mem::take(&mut leaf.text));
-      *seed = text_seed(&leaf.text, &leaf.style, &leaf.options);
+      leaf.key = TextKey::of(&leaf.text, &leaf.style, &leaf.options);
     }
     let order = self.next_order();
     let layer = self.layer;
@@ -1071,19 +1052,19 @@ impl<'a> UiContext<'a> {
 
   /// Record `leaf` as a text node: on its own when no container is open
   /// (laid out at once; its laid-out size), else in the open container
-  /// (its `measured` size). `draw` is its opacity, reveal and seed.
+  /// (its `measured` size). `draw` is its opacity and reveal.
   pub(crate) fn text_leaf(
     &mut self,
     site: &'static Location<'static>,
     mut leaf: TextLeaf,
-    draw: (f32, Option<(f32, f32)>, u64),
+    draw: (f32, Option<(f32, f32)>),
     measured: Vec2,
   ) -> Vec2 {
-    let (opacity, reveal, mut seed) = draw;
+    let (opacity, reveal) = draw;
     // Measured as it is drawn: with its prompts resolved, keyed by that
     if !leaf.text.prompts.is_empty() {
       leaf.text = self.with_prompts(leaf.text);
-      seed = text_seed(&leaf.text, &leaf.style, &leaf.options);
+      leaf.key = TextKey::of(&leaf.text, &leaf.style, &leaf.options);
     }
     let id = self.memory.scopes.make(site, None);
     let style = UiStyle {
@@ -1092,15 +1073,10 @@ impl<'a> UiContext<'a> {
     };
     let frac = Vec2::new(align_fraction(leaf.options.align), 0.0);
     let mut node = Node::new(id, style, Measure::Text);
-    // Measured again when the text, its look, the scale or the fonts change
-    let mut key = DefaultHasher::new();
-    seed.hash(&mut key);
-    self.space.px_scale.to_bits().hash(&mut key);
-    self
-      .engine()
-      .map_or(0, |engine| engine.generation())
-      .hash(&mut key);
-    node.content_key = key.finish();
+    // Measured again when the text, its shape, its options, the scale or the
+    // fonts change (not its colours)
+    let generation = self.engine().map_or(0, |engine| engine.generation());
+    node.content_key = fast_hash(&(leaf.key.seed(), self.space.px_scale.to_bits(), generation));
     node.text = Some(leaf.clone());
     let index = self.push_node(node, None);
     self.push_draw(
@@ -1111,7 +1087,6 @@ impl<'a> UiContext<'a> {
         wrap: true,
         opacity,
         reveal,
-        seed,
       },
     );
     match self.close(index) {
@@ -1501,9 +1476,11 @@ impl<'a> UiContext<'a> {
   ) -> Option<Vec2> {
     let scale = self.space.px_scale;
     let text = self.resolved(text);
-    let layout = self.engine()?.layout(&text, style, options, scale)?;
-    let seed = text_seed(&text, style, options);
-    Some(self.record_layout(layout, origin, opacity, reveal, seed))
+    let key = TextKey::of(&text, style, options);
+    let layout = self
+      .engine()?
+      .layout_keyed(key, &text, style, options, scale)?;
+    Some(self.record_layout(layout, origin, opacity, reveal, key.seed()))
   }
 
   /// Record laid-out text with its top-left at `origin`; its size in UI
@@ -1567,17 +1544,22 @@ impl<'a> UiContext<'a> {
     })
   }
 
-  /// The size of `text` laid out with `options` in `style`, in UI units
-  pub(crate) fn measure_rich(
+  /// A widget's text leaf: its prompts resolved, then keyed once for every
+  /// engine call on it this frame
+  pub(crate) fn leaf_of(
     &self,
-    text: &RichText,
-    style: &TextStyle,
-    options: &TextLayoutOptions,
-  ) -> Vec2 {
+    text: RichText,
+    style: TextStyle,
+    options: TextLayoutOptions,
+  ) -> TextLeaf {
+    TextLeaf::new(self.with_prompts(text), style, options)
+  }
+
+  /// The size of `leaf` laid out with its options, in UI units (by its key)
+  pub(crate) fn measure_leaf(&self, leaf: &TextLeaf) -> Vec2 {
     let scale = self.space.px_scale;
-    let text = self.resolved(text);
     self.engine().map_or(Vec2::ZERO, |mut engine| {
-      engine.measure(&text, style, options, scale)
+      engine.measure_keyed(leaf.key, &leaf.text, &leaf.style, &leaf.options, scale)
     })
   }
 
@@ -3088,5 +3070,35 @@ mod tests {
         .draw();
     });
     assert!(reveal.is_done());
+  }
+
+  #[test]
+  fn a_label_is_hashed_once_per_frame() {
+    let mut h = crate::core::testing::UiHarness::new(400.0, 300.0);
+    h.frame(|ui| {
+      ui.text("Settings");
+    });
+    let before = crate::core::text::key::KEYS_MADE.with(|n| n.get());
+    h.frame(|ui| {
+      ui.text("Settings");
+    });
+    let made = crate::core::text::key::KEYS_MADE.with(|n| n.get()) - before;
+    assert_eq!(made, 1, "one TextKey for one label in one frame");
+  }
+
+  #[test]
+  fn a_button_label_is_hashed_once_per_frame() {
+    let mut h = crate::core::testing::UiHarness::new(400.0, 300.0);
+    let column = |ui: &mut UiContext<'_>| {
+      ui.column().show(|ui| {
+        ui.button("Save");
+        ui.text("Wrapped in a column").wrap(80.0);
+      });
+    };
+    h.frame(column);
+    let before = crate::core::text::key::KEYS_MADE.with(|n| n.get());
+    h.frame(column);
+    let made = crate::core::text::key::KEYS_MADE.with(|n| n.get()) - before;
+    assert_eq!(made, 2, "one TextKey per text leaf in one frame");
   }
 }

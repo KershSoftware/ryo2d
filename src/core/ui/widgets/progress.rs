@@ -6,12 +6,12 @@ use glam::Vec2;
 
 use super::common::{WidgetOpts, widget_builders};
 use crate::core::text::{RichText, TextLayoutOptions};
-use crate::core::ui::immediate::{UiContext, text_seed};
+use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Edges, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, WidgetState};
-use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node};
 
 /// A bar's size unless `.width()` and `.height()` say otherwise
 const SIZE: Vec2 = Vec2::new(160.0, 12.0);
@@ -105,20 +105,15 @@ impl Progress<'_, '_> {
     if let Some(label) = self.label.take() {
       let style = theme.text.body.style();
       let options = TextLayoutOptions::default();
-      let seed = text_seed(&label, &style, &options);
+      let leaf = ui.leaf_of(label, style, options);
       ui.push_draw(
         index,
         DrawKind::Text {
-          leaf: Box::new(TextLeaf {
-            text: label,
-            style,
-            options,
-          }),
+          leaf: Box::new(leaf),
           frac: Vec2::splat(0.5),
           wrap: false,
           opacity: f32::from(look.text.a) / 255.0,
           reveal: None,
-          seed,
         },
       );
     }

@@ -11,12 +11,12 @@ use crate::core::input::{Binding, InputDevice};
 use crate::core::render::batch::Filter;
 use crate::core::text::{Icon, RichText, Span, TextLayoutOptions};
 use crate::core::ui::id::UiId;
-use crate::core::ui::immediate::{PromptContext, UiContext, text_seed};
+use crate::core::ui::immediate::{PromptContext, UiContext};
 use crate::core::ui::layout::{Edges, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, WidgetState, warn_once};
-use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node};
 use crate::core::ui::{Color, Rect};
 
 /// A chip's padding when its look has none
@@ -194,7 +194,8 @@ impl<'a> UiContext<'a> {
 
     let label = RichText::new(binding.map_or_else(|| "?".to_string(), |b| b.label(family)));
     let options = TextLayoutOptions::default();
-    let text = self.measure_rich(&label, &caption, &options);
+    let leaf = self.leaf_of(label, caption, options);
+    let text = self.measure_leaf(&leaf);
     let pad = if look.padding == Edges::ZERO {
       CHIP_PADDING
     } else {
@@ -207,20 +208,14 @@ impl<'a> UiContext<'a> {
     node.record = record;
     let index = self.push_node(node, opts.at);
     self.push_look_box(index, &look);
-    let seed = text_seed(&label, &caption, &options);
     self.push_draw(
       index,
       DrawKind::Text {
-        leaf: Box::new(TextLeaf {
-          text: label,
-          style: caption,
-          options,
-        }),
+        leaf: Box::new(leaf),
         frac: Vec2::splat(0.5),
         wrap: false,
         opacity: f32::from(look.text.a) / 255.0,
         reveal: None,
-        seed,
       },
     );
     self.close_node(index).rect

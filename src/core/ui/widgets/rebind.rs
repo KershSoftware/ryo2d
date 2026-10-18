@@ -7,12 +7,12 @@ use winit::keyboard::KeyCode;
 use super::common::{WidgetOpts, widget_builders};
 use crate::core::input::Binding;
 use crate::core::text::{RichText, TextLayoutOptions};
-use crate::core::ui::immediate::{PendingRebind, UiContext, text_seed};
+use crate::core::ui::immediate::{PendingRebind, UiContext};
 use crate::core::ui::layout::{Align, Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory, UiSound};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, WidgetState, warn_once};
-use crate::core::ui::tree::{Node, TextLeaf};
+use crate::core::ui::tree::Node;
 
 /// A capture with no press cancels after this long (seconds)
 const CAPTURE_TIMEOUT: f64 = 5.0;
@@ -301,14 +301,8 @@ fn push_text(
   style: crate::core::text::TextStyle,
   opacity: f32,
 ) {
-  let options = TextLayoutOptions::default();
-  let seed = text_seed(&text, &style, &options);
-  let leaf = TextLeaf {
-    text,
-    style,
-    options,
-  };
-  ui.text_leaf(site, leaf, (opacity, None, seed), glam::Vec2::ZERO);
+  let leaf = ui.leaf_of(text, style, TextLayoutOptions::default());
+  ui.text_leaf(site, leaf, (opacity, None), glam::Vec2::ZERO);
 }
 
 #[cfg(all(test, feature = "default-fonts"))]

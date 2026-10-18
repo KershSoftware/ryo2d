@@ -16,7 +16,7 @@ use crate::core::asset::SpriteHandle;
 use crate::core::render::UiSpace;
 use crate::core::render::batch::Filter;
 use crate::core::render::ui::snap_rect;
-use crate::core::text::{RichText, TextAlign, TextEngine, TextLayoutOptions, TextStyle};
+use crate::core::text::{RichText, TextAlign, TextEngine, TextKey, TextLayoutOptions, TextStyle};
 
 /// Added to every wrap width a text node is measured and drawn at, so float
 /// rounding in layout never wraps a text at its own width
@@ -131,6 +131,22 @@ pub(crate) struct TextLeaf {
   pub(crate) style: TextStyle,
   /// Its wrap, when set, is the widest it is laid out
   pub(crate) options: TextLayoutOptions,
+  /// The text, style and options hashed once, for every engine call on the
+  /// leaf: made again whenever they change
+  pub(crate) key: TextKey,
+}
+
+impl TextLeaf {
+  /// A leaf of `text` in `style`, keyed
+  pub(crate) fn new(text: RichText, style: TextStyle, options: TextLayoutOptions) -> TextLeaf {
+    let key = TextKey::of(&text, &style, &options);
+    TextLeaf {
+      text,
+      style,
+      options,
+      key,
+    }
+  }
 }
 
 /// A draw on a node, placed when the subtree is laid out
@@ -170,7 +186,7 @@ pub(crate) enum DrawKind {
     border: Option<(f32, Color)>,
   },
   /// Text at `frac` of the room left in the node's content box, wrapped to
-  /// its width when `wrap`
+  /// its width when `wrap`; its effect seed is its key's
   Text {
     /// Boxed: a text is far larger than the other draws
     leaf: Box<TextLeaf>,
@@ -178,7 +194,6 @@ pub(crate) enum DrawKind {
     wrap: bool,
     opacity: f32,
     reveal: Option<(f32, f32)>,
-    seed: u64,
   },
   /// A sprite over the inset rect, or, with a `size`, a sprite that size at
   /// `frac` of the room left in the inset rect
@@ -550,7 +565,8 @@ fn measure_text(
   // Measured left-aligned: an aligned block is as wide as its wrap width,
   // which would claim all the room offered
   options.align = TextAlign::Start;
-  engine.measure(&leaf.text, &leaf.style, &options, scale)
+  let key = leaf.key.with_options(&options);
+  engine.measure_keyed(key, &leaf.text, &leaf.style, &options, scale)
 }
 
 /// The narrower of two optional widths
@@ -624,18 +640,19 @@ fn command_of(
       wrap,
       opacity,
       reveal,
-      seed,
     } => {
       let content = inset_rect(place.rect, place.padding);
       let mut options = leaf.options;
+      let mut key = leaf.key;
       if wrap {
         let width = (place.exact.width - place.padding.width()).max(0.0) + WRAP_SLACK;
         options.wrap = narrowest(Some(width), leaf.options.wrap);
+        key = key.with_options(&options);
       }
-      let layout = text
-        .try_borrow_mut()
-        .ok()?
-        .layout(&leaf.text, &leaf.style, &options, scale)?;
+      let layout = {
+        let mut engine = text.try_borrow_mut().ok()?;
+        engine.layout_keyed(key, &leaf.text, &leaf.style, &options, scale)?
+      };
       let size = layout.size / scale;
       let origin =
         Vec2::new(content.x, content.y) + frac * (Vec2::new(content.width, content.height) - size);
@@ -645,7 +662,7 @@ fn command_of(
         origin,
         reveal,
         opacity,
-        seed,
+        seed: leaf.key.seed(),
         clip,
         layer,
       })
@@ -1067,16 +1084,15 @@ mod tests {
       ui.push_draw(
         node,
         DrawKind::Text {
-          leaf: Box::new(TextLeaf {
-            text: RichText::new("Hi there"),
-            style: TextStyle::default(),
-            options: TextLayoutOptions::default(),
-          }),
+          leaf: Box::new(TextLeaf::new(
+            RichText::new("Hi there"),
+            TextStyle::default(),
+            TextLayoutOptions::default(),
+          )),
           frac: Vec2::ZERO,
           wrap: true,
           opacity: 1.0,
           reveal: None,
-          seed: 0,
         },
       );
       ui.close_node(node);

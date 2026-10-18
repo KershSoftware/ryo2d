@@ -7,6 +7,7 @@ mod effects;
 mod engine;
 mod fonts;
 mod icons;
+pub(crate) mod key;
 mod layout;
 mod markup;
 mod msdf;
@@ -28,6 +29,7 @@ pub use world::{Text2d, TextBounds, TextReveal, TextRevealed};
 pub(crate) use cpu::CpuText;
 pub(crate) use effects::reveal_alpha;
 pub(crate) use engine::{RevealClock, TextEngine};
+pub(crate) use key::TextKey;
 pub(crate) use layout::{GlyphStyle, PlacedGlyph, PlacedIcon, TextLayout};
 pub(crate) use raster::{
   GlyphFormat, GlyphImage, GlyphKey, GlyphRasterizer, glyph_id, raster_size_step,

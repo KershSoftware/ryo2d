@@ -7,12 +7,12 @@ use glam::Vec2;
 use super::common::WidgetOpts;
 use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::Color;
-use crate::core::ui::immediate::{UiCommand, UiContext, text_seed};
+use crate::core::ui::immediate::{UiCommand, UiContext};
 use crate::core::ui::layout::{Align, Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::WidgetKind;
-use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node};
 
 /// The mark at the row's start
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,14 +148,9 @@ impl UiContext<'_> {
     // The label, in the body role
     if has_label {
       let text_style = theme.text.body.style();
-      let seed = text_seed(&label, &text_style, &TextLayoutOptions::default());
-      let leaf = TextLeaf {
-        text: label,
-        style: text_style,
-        options: TextLayoutOptions::default(),
-      };
+      let leaf = self.leaf_of(label, text_style, TextLayoutOptions::default());
       let opacity = f32::from(look.text.a) / 255.0;
-      self.text_leaf(site, leaf, (opacity, None, seed), Vec2::ZERO);
+      self.text_leaf(site, leaf, (opacity, None), Vec2::ZERO);
     }
 
     self.memory.scopes.pop();

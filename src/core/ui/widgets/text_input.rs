@@ -8,8 +8,8 @@ use winit::keyboard::KeyCode;
 
 use super::common::{WidgetOpts, widget_builders};
 use super::text_edit::TextEdit;
-use crate::core::text::{RichText, TextLayoutOptions, TextStyle};
-use crate::core::ui::immediate::{UiCommand, UiContext, text_seed};
+use crate::core::text::{RichText, TextKey, TextLayoutOptions, TextStyle};
+use crate::core::ui::immediate::{UiCommand, UiContext};
 use crate::core::ui::layout::{Edges, Flow, Length, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
@@ -347,10 +347,13 @@ fn push_text(
   let text = RichText::new(text);
   let options = TextLayoutOptions::default();
   let scale = ui.ui_scale();
-  let Some(layout) = ui.text_engine().layout(&text, style, &options, scale) else {
+  let key = TextKey::of(&text, style, &options);
+  let Some(layout) = ui
+    .text_engine()
+    .layout_keyed(key, &text, style, &options, scale)
+  else {
     return;
   };
-  let seed = text_seed(&text, style, &options);
   ui.push_draw(
     node,
     DrawKind::Local(UiCommand::Text {
@@ -358,7 +361,7 @@ fn push_text(
       origin: at,
       reveal: None,
       opacity,
-      seed,
+      seed: key.seed(),
       clip: None,
       layer: 0,
     }),

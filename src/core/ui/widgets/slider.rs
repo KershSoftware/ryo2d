@@ -8,12 +8,12 @@ use glam::Vec2;
 use super::common::{WidgetOpts, widget_builders};
 use crate::core::input::Direction;
 use crate::core::text::{RichText, TextLayoutOptions};
-use crate::core::ui::immediate::{UiContext, text_seed};
+use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Align, Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, warn_once};
-use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node};
 
 /// The track's thickness inside the slider's node
 const TRACK: f32 = 6.0;
@@ -173,13 +173,8 @@ impl Slider<'_, '_> {
       let body = theme.text.body.style();
       let options = TextLayoutOptions::default();
       if let Some(label) = self.label.take() {
-        let seed = text_seed(&label, &body, &options);
-        let leaf = TextLeaf {
-          text: label,
-          style: body.clone(),
-          options,
-        };
-        ui.text_leaf(site, leaf, (dim, None, seed), Vec2::ZERO);
+        let leaf = ui.leaf_of(label, body.clone(), options);
+        ui.text_leaf(site, leaf, (dim, None), Vec2::ZERO);
       }
       let track = self.track_node(ui, id, [sizes.slider[0], height], true);
       draw_track(ui, track, &look, (handle_w, handle_h), t);
@@ -193,13 +188,8 @@ impl Slider<'_, '_> {
           decimals(step.unwrap_or((max - min) / 20.0)),
           value
         ));
-        let seed = text_seed(&text, &body, &options);
-        let leaf = TextLeaf {
-          text,
-          style: body,
-          options,
-        };
-        ui.text_leaf(site, leaf, (dim, None, seed), Vec2::ZERO);
+        let leaf = ui.leaf_of(text, body, options);
+        ui.text_leaf(site, leaf, (dim, None), Vec2::ZERO);
       }
       ui.memory.scopes.pop();
       ui.close_node(row_index);

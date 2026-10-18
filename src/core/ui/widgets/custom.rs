@@ -8,8 +8,8 @@ use glam::Vec2;
 use super::common::{WidgetOpts, widget_builders};
 use crate::core::asset::SpriteHandle;
 use crate::core::render::batch::Filter;
-use crate::core::text::{RichText, TextEngine, TextLayoutOptions, TextStyle};
-use crate::core::ui::immediate::{PromptContext, UiCommand, UiContext, text_seed};
+use crate::core::text::{RichText, TextEngine, TextKey, TextLayoutOptions, TextStyle};
+use crate::core::ui::immediate::{PromptContext, UiCommand, UiContext};
 use crate::core::ui::layout::{Length, Measure};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
@@ -271,7 +271,11 @@ impl Painter<'_> {
     let text = text.into();
     let text = resolve_prompts(&text, &self.prompts, self.accent);
     let options = TextLayoutOptions::default();
-    let Some(layout) = self.text.layout(&text, style, &options, self.scale) else {
+    let key = TextKey::of(&text, style, &options);
+    let Some(layout) = self
+      .text
+      .layout_keyed(key, &text, style, &options, self.scale)
+    else {
       return;
     };
     self.commands.push(UiCommand::Text {
@@ -279,7 +283,7 @@ impl Painter<'_> {
       origin: Vec2::new(x, y),
       reveal: None,
       opacity: 1.0,
-      seed: text_seed(&text, style, &options),
+      seed: key.seed(),
       clip: None,
       layer: 0,
     });

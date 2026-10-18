@@ -18,6 +18,7 @@ use parley::{
 };
 
 use crate::core::hash::{FastMap, FastSet};
+use crate::core::text::key::TextKey;
 use crate::core::text::layout::{GlyphStyle, LineInfo, PlacedGlyph, PlacedIcon, TextLayout};
 use crate::core::text::rich::{Icon, RichText};
 use crate::core::text::style::{TextAlign, TextFont, TextLayoutOptions, TextOverflow, TextStyle};
@@ -44,7 +45,32 @@ pub(crate) struct CacheStats {
 
 struct Cached {
   layout: Arc<TextLayout>,
+  /// What it was laid out from: a hit must match it, so a key collision is
+  /// a miss, never another text's layout
+  source: Source,
   last_used: u64,
+}
+
+struct Source {
+  text: RichText,
+  style: TextStyle,
+  options: TextLayoutOptions,
+  scale: f32,
+}
+
+impl Source {
+  fn matches(
+    &self,
+    text: &RichText,
+    style: &TextStyle,
+    options: &TextLayoutOptions,
+    scale: f32,
+  ) -> bool {
+    self.scale.to_bits() == scale.to_bits()
+      && self.options.same_layout(options)
+      && self.style == *style
+      && self.text == *text
+  }
 }
 
 /// What the engine knows about one registered face
@@ -164,6 +190,20 @@ impl TextEngine {
     options: &TextLayoutOptions,
     scale: f32,
   ) -> Option<Arc<TextLayout>> {
+    let key = TextKey::of(text, style, options);
+    self.layout_keyed(key, text, style, options, scale)
+  }
+
+  /// [`layout`](Self::layout) with the text's key made by the caller, who
+  /// hashed it once for every call: `key` must be `TextKey::of` these
+  pub(crate) fn layout_keyed(
+    &mut self,
+    key: TextKey,
+    text: &RichText,
+    style: &TextStyle,
+    options: &TextLayoutOptions,
+    scale: f32,
+  ) -> Option<Arc<TextLayout>> {
     if let Some((field, value)) = style.invalid_field() {
       let mut h = DefaultHasher::new();
       style.hash_into(&mut h);
@@ -180,22 +220,22 @@ impl TextEngine {
       return None;
     }
 
-    let key = {
-      let mut h = DefaultHasher::new();
-      text.hash_into(&mut h);
-      style.hash_into(&mut h);
-      options.hash_into(&mut h);
-      scale.to_bits().hash(&mut h);
-      self.generation.hash(&mut h);
-      h.finish()
-    };
-    if let Some(cached) = self.cache.get_mut(&key) {
+    let key = key.cache_key(scale, self.generation());
+    if let Some(cached) = self.cache.get_mut(&key)
+      && cached.source.matches(text, style, options, scale)
+    {
       cached.last_used = self.frame;
       self.stats.hits += 1;
       return Some(Arc::clone(&cached.layout));
     }
 
     self.stats.misses += 1;
+    let source = Source {
+      text: text.clone(),
+      style: style.clone(),
+      options: *options,
+      scale,
+    };
     let snapped = self.snapped(style, scale);
     let style: &TextStyle = &snapped;
     let bitmap = self
@@ -211,6 +251,7 @@ impl TextEngine {
       key,
       Cached {
         layout: Arc::clone(&laid),
+        source,
         last_used: self.frame,
       },
     );
@@ -228,8 +269,21 @@ impl TextEngine {
     options: &TextLayoutOptions,
     scale: f32,
   ) -> Vec2 {
+    let key = TextKey::of(text, style, options);
+    self.measure_keyed(key, text, style, options, scale)
+  }
+
+  /// [`measure`](Self::measure) with the text's key made by the caller
+  pub(crate) fn measure_keyed(
+    &mut self,
+    key: TextKey,
+    text: &RichText,
+    style: &TextStyle,
+    options: &TextLayoutOptions,
+    scale: f32,
+  ) -> Vec2 {
     self
-      .layout(text, style, options, scale)
+      .layout_keyed(key, text, style, options, scale)
       .map_or(Vec2::ZERO, |laid| laid.size / scale)
   }
 
@@ -1897,6 +1951,68 @@ mod tests {
     assert!(
       !Arc::ptr_eq(&a, &c),
       "a different style is a different layout"
+    );
+  }
+
+  #[test]
+  fn a_keyed_hit_is_confirmed_against_its_source() {
+    let (mut engine, _) = engine();
+    let style = TextStyle::default();
+    let options = TextLayoutOptions::default();
+    let a = RichText::from("first");
+    let b = RichText::from("second");
+    let key = TextKey::of(&a, &style, &options);
+    let first = engine.layout_keyed(key, &a, &style, &options, 1.0).unwrap();
+    // The same key with other text (a forced collision) must not return the first layout
+    let second = engine.layout_keyed(key, &b, &style, &options, 1.0).unwrap();
+    assert_eq!(first.text, "first");
+    assert_eq!(second.text, "second");
+    let again = engine.layout_keyed(key, &b, &style, &options, 1.0).unwrap();
+    assert!(Arc::ptr_eq(&second, &again), "the replaced entry hits");
+  }
+
+  #[test]
+  fn a_font_generation_change_relays_out() {
+    let (mut engine, mut fonts) = engine();
+    let text = RichText::from("Hello");
+    let style = TextStyle::default();
+    let options = TextLayoutOptions::default();
+    let key = TextKey::of(&text, &style, &options);
+    let before = engine
+      .layout_keyed(key, &text, &style, &options, 1.0)
+      .unwrap();
+    // Pointing the mono role at the UI font is a new generation
+    let ui_font = fonts.role(FontRole::Ui).unwrap();
+    fonts.set_role(FontRole::Mono, ui_font);
+    engine.sync(&fonts);
+    let after = engine
+      .layout_keyed(key, &text, &style, &options, 1.0)
+      .unwrap();
+    assert!(
+      !Arc::ptr_eq(&before, &after),
+      "a new font generation is a new layout"
+    );
+  }
+
+  #[test]
+  fn requests_differing_only_in_anchor_share_a_layout() {
+    let (mut engine, _) = engine();
+    let text = RichText::from("Anchored");
+    let style = TextStyle::default();
+    let top_left = TextLayoutOptions::default();
+    let centre = TextLayoutOptions::default().anchor(crate::core::ui::Anchor::Center);
+    let a = engine.layout(&text, &style, &top_left, 1.0).unwrap();
+    let b = engine.layout(&text, &style, &centre, 1.0).unwrap();
+    assert!(Arc::ptr_eq(&a, &b), "the anchor only places the block");
+    assert_eq!(
+      engine.measure_keyed(
+        TextKey::of(&text, &style, &centre),
+        &text,
+        &style,
+        &centre,
+        2.0
+      ),
+      engine.measure(&text, &style, &top_left, 2.0)
     );
   }
 

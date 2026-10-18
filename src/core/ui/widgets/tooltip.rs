@@ -4,11 +4,11 @@
 use glam::Vec2;
 
 use crate::core::text::{RichText, TextLayoutOptions};
-use crate::core::ui::immediate::{POPUP_LAYER, UiContext, text_seed};
+use crate::core::ui::immediate::{POPUP_LAYER, UiContext};
 use crate::core::ui::layout::{Edges, Measure, UiStyle};
 use crate::core::ui::response::Response;
 use crate::core::ui::theme::{WidgetKind, WidgetState};
-use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node};
 use crate::core::ui::{Rect, UiId};
 
 /// The widest a tooltip grows before its text wraps
@@ -69,7 +69,8 @@ impl UiContext<'_> {
     };
     let style = theme.text.caption.style().color(look.text.with_alpha(255));
     let options = TextLayoutOptions::default().wrap((MAX_WIDTH - pad.width()).max(1.0));
-    let inner = self.measure_rich(&text, &style, &options);
+    let leaf = self.leaf_of(text, style, options);
+    let inner = self.measure_leaf(&leaf);
     let size = Vec2::new(inner.x + pad.width(), inner.y + pad.height());
     if !size.is_finite() {
       return;
@@ -86,7 +87,6 @@ impl UiContext<'_> {
     let at = Rect::new(x.max(0.0), y.max(0.0), size.x, size.y);
 
     let id = UiId::root(scene).derived(SALT);
-    let seed = text_seed(&text, &style, &options);
     let page = self.set_layer(POPUP_LAYER);
     self.with_no_clip(|ui| {
       let node_style = UiStyle {
@@ -99,16 +99,11 @@ impl UiContext<'_> {
       ui.push_draw(
         index,
         DrawKind::Text {
-          leaf: Box::new(TextLeaf {
-            text,
-            style,
-            options,
-          }),
+          leaf: Box::new(leaf),
           frac: Vec2::ZERO,
           wrap: false,
           opacity: f32::from(look.text.a) / 255.0,
           reveal: None,
-          seed,
         },
       );
       ui.close_node(index);

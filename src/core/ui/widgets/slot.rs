@@ -10,12 +10,12 @@ use crate::core::asset::SpriteHandle;
 use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::Color;
-use crate::core::ui::immediate::{UiContext, text_seed};
+use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Edges, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{WidgetKind, WidgetState};
-use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node};
 
 /// The icon's inset from the slot's edges
 const ICON_INSET: f32 = 6.0;
@@ -160,20 +160,15 @@ impl Slot<'_, '_> {
       let text = RichText::new(self.count.to_string());
       let style = theme.text.caption.style();
       let options = TextLayoutOptions::default();
-      let seed = text_seed(&text, &style, &options);
+      let leaf = ui.leaf_of(text, style, options);
       ui.push_draw(
         index,
         DrawKind::Text {
-          leaf: Box::new(TextLeaf {
-            text,
-            style,
-            options,
-          }),
+          leaf: Box::new(leaf),
           frac: Vec2::ONE,
           wrap: false,
           opacity: f32::from(alpha) / 255.0,
           reveal: None,
-          seed,
         },
       );
     }

@@ -1,9 +1,9 @@
 //! A fast hasher for the engine's internal maps
 //!
-//! Words are folded a time with a folded multiply. The maps that use it are
-//! keyed by ids and hashes the engine made, not by player input, so a hash
-//! built for speed rather than flood resistance is safe. Values may change
-//! between versions: never save them.
+//! Words are folded one at a time with a folded multiply. The maps that use
+//! it are keyed by ids and hashes the engine made, not by player input, so a
+//! hash built for speed rather than flood resistance is safe. Values may
+//! change between versions: never save them.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hash, Hasher};

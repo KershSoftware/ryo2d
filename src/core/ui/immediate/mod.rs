@@ -41,8 +41,6 @@ mod context;
 mod input;
 
 pub(crate) use commands::{UiCommand, UiCommands};
-pub(crate) use context::{
-  OVERLAY_LAYER, PAGE_LAYER, POPUP_LAYER, PendingRebind, PromptContext, text_seed,
-};
+pub(crate) use context::{OVERLAY_LAYER, PAGE_LAYER, POPUP_LAYER, PendingRebind, PromptContext};
 pub use context::{UiContext, UiText};
 pub use input::{UiConsumed, UiInput};

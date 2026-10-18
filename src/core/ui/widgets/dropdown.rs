@@ -7,12 +7,12 @@ use glam::Vec2;
 
 use super::common::{WidgetOpts, widget_builders};
 use crate::core::text::{RichText, TextLayoutOptions, TextOverflow};
-use crate::core::ui::immediate::{UiCommand, UiContext, text_seed};
+use crate::core::ui::immediate::{UiCommand, UiContext};
 use crate::core::ui::layout::{Align, Edges, Flow, Justify, Length, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{LookPatch, WidgetKind, WidgetState};
-use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node};
 use crate::core::ui::{Rect, UiId, popup};
 
 /// Separates the list's id (the scope of its options) from the trigger's
@@ -229,14 +229,9 @@ impl Dropdown<'_, '_> {
     let options = TextLayoutOptions::default()
       .max_lines(1)
       .overflow(TextOverflow::Ellipsis);
-    let seed = text_seed(&text, &text_style, &options);
-    let leaf = TextLeaf {
-      text,
-      style: text_style,
-      options,
-    };
+    let leaf = ui.leaf_of(text, text_style, options);
     let opacity = f32::from(look.text.a) / 255.0;
-    ui.text_leaf(self.site, leaf, (opacity, None, seed), Vec2::ZERO);
+    ui.text_leaf(self.site, leaf, (opacity, None), Vec2::ZERO);
 
     // The chevron: down while closed, up while open
     let chevron = ui.memory.scopes.make(self.site, None);

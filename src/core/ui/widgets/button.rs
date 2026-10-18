@@ -9,12 +9,12 @@ use crate::core::asset::SpriteHandle;
 use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::Color;
-use crate::core::ui::immediate::{UiContext, text_seed};
+use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Edges, Measure};
 use crate::core::ui::memory::{Flags, UiSound};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::WidgetKind;
-use crate::core::ui::tree::{DrawKind, Node, TextLeaf};
+use crate::core::ui::tree::{DrawKind, Node};
 
 /// Room between an icon and the label
 const ICON_GAP: f32 = 6.0;
@@ -122,8 +122,9 @@ impl Button<'_, '_> {
     let label = std::mem::take(&mut self.label);
     let style = theme.text.button.style().color(look.text.with_alpha(255));
     let options = TextLayoutOptions::default();
-    let text = ui.measure_rich(&label, &style, &options);
     let line = ui.line_height(&style);
+    let leaf = ui.leaf_of(label, style, options);
+    let text = ui.measure_leaf(&leaf);
     let icon_room = if self.icon.is_some() {
       line + ICON_GAP
     } else {
@@ -168,20 +169,14 @@ impl Button<'_, '_> {
         },
       );
     }
-    let seed = text_seed(&label, &style, &options);
     ui.push_draw(
       index,
       DrawKind::Text {
-        leaf: Box::new(TextLeaf {
-          text: label,
-          style,
-          options,
-        }),
+        leaf: Box::new(leaf),
         frac: Vec2::new(self.label_x, 0.5),
         wrap: false,
         opacity: f32::from(look.text.a) / 255.0,
         reveal: None,
-        seed,
       },
     );
     if response.focused() && ui.focus_visible() {
