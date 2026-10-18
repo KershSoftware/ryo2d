@@ -73,8 +73,8 @@ pub use layout::{Align, Edges, Justify, Length};
 pub use response::{Response, Sense};
 pub use types::{Anchor, Color, Rect};
 pub use widgets::{
-  Button, Checkbox, ChoiceList, Custom, Dropdown, Image, Modal, Painter, Progress, Prompt, Radio,
-  Rebind, Scroll, Slider, Slot, Tabs, TextInput, Toggle,
+  Button, Checkbox, ChoiceList, Custom, Dropdown, Image, List, ListResponse, Modal, Painter,
+  Progress, Prompt, Radio, Rebind, Scroll, Slider, Slot, Tabs, TextInput, Toggle,
 };
 
 // The context, its absolute drawing and its input snapshot

@@ -25,6 +25,12 @@ use crate::core::ui::theme::warn_once;
 use crate::core::ui::{
   BindValue, Theme, UiContext, UiEvent, UiFileError, UiId, UiInput, UiNode, UiReloaded, nodes,
 };
+#[cfg(test)]
+use crate::core::ui::{
+  memory::Record,
+  widgets::list::{ListState, item_id, state_id},
+  widgets::scroll::ScrollState,
+};
 
 /// How long each frame lasts (seconds)
 const FRAME: f64 = 1.0 / 60.0;
@@ -299,6 +305,34 @@ impl UiHarness {
   #[cfg(test)]
   pub(crate) fn layout_stats(&self) -> crate::core::ui::layout::engine::LayoutStats {
     self.layout.stats()
+  }
+
+  /// Where the scroll area `scroll` shows its contents from after the last
+  /// frame, as `ui.scroll_offset` (zero for an area never drawn)
+  #[cfg(test)]
+  pub(crate) fn scroll_offset(&self, scroll: UiId) -> Vec2 {
+    self
+      .memory
+      .peek_state::<ScrollState>(scroll)
+      .map_or(Vec2::ZERO, |state| state.offset)
+  }
+
+  /// The size of the scroll area `scroll`'s contents as the last frame laid
+  /// them out (never less than its view)
+  #[cfg(test)]
+  pub(crate) fn scroll_content(&self, scroll: UiId) -> Vec2 {
+    self
+      .memory
+      .peek_state::<ScrollState>(scroll)
+      .expect("a scroll area drawn in the last frame")
+      .content
+  }
+
+  /// The last frame's record of item `key`'s container in the list `list`
+  #[cfg(test)]
+  pub(crate) fn record_of_key(&self, list: UiId, key: usize) -> Option<Record> {
+    let columns = self.memory.peek_state::<ListState>(state_id(list))?.columns;
+    self.memory.drawn(item_id(list, columns, key)).copied()
   }
 
   /// Press `direction` for the next frame (and release it after)
