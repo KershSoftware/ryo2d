@@ -2,9 +2,12 @@
 //! engine that lays containers out with flexbox and grid. Only `engine.rs`
 //! names the layout crate.
 
+use std::hash::{Hash, Hasher};
+
 use glam::Vec2;
 
 use crate::core::ecs::Anchor;
+use crate::core::hash::FastHasher;
 
 pub(crate) mod engine;
 
@@ -98,7 +101,7 @@ impl From<(f32, f32)> for Edges {
 }
 
 /// Where children sit across a container's flow
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Align {
   /// At the start
   Start,
@@ -112,7 +115,7 @@ pub enum Align {
 }
 
 /// How children are spread along a container's flow
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Justify {
   /// Packed at the start
   #[default]
@@ -190,6 +193,102 @@ pub(crate) struct UiStyle {
   pub(crate) offset: Vec2,
   /// Out of its parent's flow: it takes no room and moves no sibling
   pub(crate) absolute: bool,
+}
+
+impl Flow {
+  /// Feeds the flow and its tracks to `h`
+  pub(crate) fn hash_into(&self, h: &mut FastHasher) {
+    match self {
+      Flow::Column => h.write_u8(0),
+      Flow::Row => h.write_u8(1),
+      Flow::Stack => h.write_u8(2),
+      Flow::Grid(Tracks::Equal(n)) => {
+        h.write_u8(3);
+        h.write_u16(*n);
+      }
+      Flow::Grid(Tracks::Fixed(widths)) => {
+        h.write_u8(4);
+        h.write_usize(widths.len());
+        for w in widths {
+          h.write_u32(w.to_bits());
+        }
+      }
+    }
+  }
+}
+
+impl UiStyle {
+  /// A hash of every field, floats by their bits
+  pub(crate) fn shape_hash(&self) -> u64 {
+    let mut h = FastHasher::default();
+    self.hash_into(&mut h);
+    h.finish()
+  }
+
+  fn hash_into(&self, h: &mut FastHasher) {
+    fn float(h: &mut FastHasher, v: f32) {
+      h.write_u32(v.to_bits());
+    }
+    fn opt(h: &mut FastHasher, v: Option<f32>) {
+      match v {
+        Some(v) => {
+          h.write_u8(1);
+          h.write_u32(v.to_bits());
+        }
+        None => h.write_u8(0),
+      }
+    }
+    fn length(h: &mut FastHasher, l: Length) {
+      match l {
+        Length::Px(v) => {
+          h.write_u8(0);
+          h.write_u32(v.to_bits());
+        }
+        Length::Pct(v) => {
+          h.write_u8(1);
+          h.write_u32(v.to_bits());
+        }
+        Length::Fill => h.write_u8(2),
+        Length::Fit => h.write_u8(3),
+      }
+    }
+    fn edges(h: &mut FastHasher, e: Edges) {
+      for v in [e.left, e.top, e.right, e.bottom] {
+        h.write_u32(v.to_bits());
+      }
+    }
+    self.flow.hash_into(h);
+    length(h, self.width);
+    length(h, self.height);
+    opt(h, self.min_width);
+    opt(h, self.max_width);
+    opt(h, self.min_height);
+    opt(h, self.max_height);
+    edges(h, self.padding);
+    edges(h, self.margin);
+    float(h, self.gap);
+    self.align.hash(h);
+    self.justify.hash(h);
+    match self.align_self {
+      Some(a) => {
+        h.write_u8(1);
+        a.hash(h);
+      }
+      None => h.write_u8(0),
+    }
+    float(h, self.grow);
+    opt(h, self.aspect);
+    // The booleans share one word
+    h.write_u8(
+      u8::from(self.wrap)
+        | u8::from(self.scroll_x) << 1
+        | u8::from(self.scroll_y) << 2
+        | u8::from(self.absolute) << 3,
+    );
+    self.anchor.hash(h);
+    float(h, self.offset.x);
+    float(h, self.offset.y);
+  }
 }
 
 impl Default for UiStyle {

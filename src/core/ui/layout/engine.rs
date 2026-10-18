@@ -7,8 +7,10 @@ use glam::Vec2;
 use taffy::prelude::*;
 use taffy::{Overflow, Point, TaffyResult, compute_leaf_layout};
 
+use std::hash::Hasher;
+
 use super::{Align, Flow, Justify, Length, Measure, Tracks, UiStyle};
-use crate::core::hash::FastMap;
+use crate::core::hash::{FastHasher, FastMap};
 use crate::core::ui::{Rect, UiId};
 
 /// How much room a measured node is offered along one axis
@@ -47,9 +49,8 @@ pub(crate) struct Placed {
 
 struct Entry {
   node: NodeId,
-  style: UiStyle,
-  parent_flow: Option<Flow>,
-  measure: Measure,
+  /// Hash of the node's raw style, its parent's raw flow and its measure kind
+  hash: u64,
   children: Vec<NodeId>,
   content_key: u64,
   frame: u64,
@@ -69,8 +70,6 @@ struct Buffers {
   kid_range: Vec<(usize, usize)>,
   /// The nodes that count, parents before children
   order: Vec<usize>,
-  /// Each node's style made safe for layout
-  clean: Vec<Option<UiStyle>>,
   stack: Vec<usize>,
   child_ids: Vec<NodeId>,
   /// The result
@@ -84,6 +83,18 @@ pub(crate) struct LayoutEngine {
   frame: u64,
   warned: HashSet<&'static str>,
   buffers: Buffers,
+  stats: LayoutStats,
+}
+
+/// What the last frame did to taffy's tree
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LayoutStats {
+  /// Nodes whose style was converted and sent
+  pub(crate) restyled: u64,
+  /// Nodes whose child list was replaced
+  pub(crate) rechildren: u64,
+  /// Nodes added
+  pub(crate) created: u64,
 }
 
 impl LayoutEngine {
@@ -97,12 +108,20 @@ impl LayoutEngine {
       frame: 0,
       warned: HashSet::new(),
       buffers: Buffers::default(),
+      stats: LayoutStats::default(),
     }
   }
 
   /// Starts a frame: nodes laid out from here on are kept by `end_frame`
   pub(crate) fn begin_frame(&mut self) {
     self.frame += 1;
+    self.stats = LayoutStats::default();
+  }
+
+  #[cfg(test)]
+  /// What the layout calls since `begin_frame` changed in taffy's tree
+  pub(crate) fn stats(&self) -> LayoutStats {
+    self.stats
   }
 
   /// Removes the nodes that were not laid out since `begin_frame`
@@ -166,7 +185,6 @@ impl LayoutEngine {
       kids,
       kid_range,
       order,
-      clean,
       stack,
       child_ids,
       placed,
@@ -184,15 +202,12 @@ impl LayoutEngine {
     kid_range.clear();
     kid_range.resize(count, (0, 0));
     order.clear();
-    clean.clear();
-    clean.resize(count, None);
     stack.clear();
     stack.push(0);
     visited[0] = true;
     index_of.insert(nodes[0].id, 0);
     while let Some(i) = stack.pop() {
       order.push(i);
-      clean[i] = Some(self.sanitize(nodes[i].style));
       let start = kids.len();
       for &c in nodes[i].children {
         if c >= nodes.len() || visited[c] || index_of.contains_key(&nodes[c].id) {
@@ -210,11 +225,11 @@ impl LayoutEngine {
     // Children before parents
     for &i in order.iter().rev() {
       let desc = &nodes[i];
-      let Some(style) = clean[i].as_ref() else {
-        continue;
-      };
-      let parent_flow = parents[i].and_then(|p| clean[p].as_ref()).map(|s| &s.flow);
-      let measure_kind = clean_measure(desc.measure);
+      let hash = node_hash(
+        desc.style,
+        parents[i].map(|p| &nodes[p].style.flow),
+        desc.measure,
+      );
       child_ids.clear();
       let (start, end) = kid_range[i];
       for &c in &kids[start..end] {
@@ -223,23 +238,32 @@ impl LayoutEngine {
         }
       }
 
+      // Only a node whose hash changed is cleaned and converted
+      let unchanged = self.entries.get(&desc.id).is_some_and(|e| e.hash == hash);
+      let converted = if unchanged {
+        None
+      } else {
+        let style = self.sanitize(desc.style);
+        let parent_flow = parents[i].map(|p| self.sanitize(nodes[p].style).flow);
+        Some(to_taffy(
+          &style,
+          parent_flow.as_ref(),
+          &clean_measure(desc.measure),
+        ))
+      };
+
       match self.entries.get_mut(&desc.id) {
         Some(entry) => {
           entry.frame = self.frame;
-          if entry.style != *style
-            || entry.parent_flow.as_ref() != parent_flow
-            || entry.measure != measure_kind
-          {
-            self
-              .taffy
-              .set_style(entry.node, to_taffy(style, parent_flow, &measure_kind))?;
-            entry.style = style.clone();
-            entry.parent_flow = parent_flow.cloned();
-            entry.measure = measure_kind;
+          if let Some(converted) = converted {
+            self.taffy.set_style(entry.node, converted)?;
+            entry.hash = hash;
+            self.stats.restyled += 1;
           }
           if entry.children != *child_ids {
             self.taffy.set_children(entry.node, child_ids)?;
             entry.children.clone_from(child_ids);
+            self.stats.rechildren += 1;
           }
           if entry.content_key != desc.content_key {
             self.taffy.mark_dirty(entry.node)?;
@@ -247,19 +271,19 @@ impl LayoutEngine {
           }
         }
         None => {
-          let node = self
-            .taffy
-            .new_leaf_with_context(to_taffy(style, parent_flow, &measure_kind), desc.id)?;
+          let Some(converted) = converted else {
+            continue;
+          };
+          let node = self.taffy.new_leaf_with_context(converted, desc.id)?;
           if !child_ids.is_empty() {
             self.taffy.set_children(node, child_ids)?;
           }
+          self.stats.created += 1;
           self.entries.insert(
             desc.id,
             Entry {
               node,
-              style: style.clone(),
-              parent_flow: parent_flow.cloned(),
-              measure: measure_kind,
+              hash,
               children: child_ids.clone(),
               content_key: desc.content_key,
               frame: self.frame,
@@ -324,7 +348,7 @@ impl LayoutEngine {
         finite(layout.size.width),
         finite(layout.size.height),
       );
-      let scrolls = clean[i].as_ref().is_some_and(|s| s.scroll_x || s.scroll_y);
+      let scrolls = nodes[i].style.scroll_x || nodes[i].style.scroll_y;
       let content = if scrolls {
         let overflow = layout.scrollable_overflow_rect;
         Vec2::new(
@@ -420,6 +444,30 @@ fn warn_bad(field: &str) {
     module: "ui",
     "a UI style has a non-finite or negative {field}; ignored"
   );
+}
+
+/// One hash of everything `to_taffy` reads: the raw style, the parent's raw
+/// flow and the raw measure kind
+fn node_hash(style: &UiStyle, parent_flow: Option<&Flow>, measure: Measure) -> u64 {
+  let mut h = FastHasher::default();
+  h.write_u64(style.shape_hash());
+  match parent_flow {
+    Some(flow) => {
+      h.write_u8(1);
+      flow.hash_into(&mut h);
+    }
+    None => h.write_u8(0),
+  }
+  match measure {
+    Measure::None => h.write_u8(0),
+    Measure::Fixed(size) => {
+      h.write_u8(1);
+      h.write_u32(size.x.to_bits());
+      h.write_u32(size.y.to_bits());
+    }
+    Measure::Text => h.write_u8(2),
+  }
+  h.finish()
 }
 
 fn clean_measure(measure: Measure) -> Measure {
@@ -1102,6 +1150,42 @@ mod tests {
       (results[1][2].rect.x, results[1][2].rect.width),
       (50.0, 250.0),
       "fills the rest of a row"
+    );
+  }
+
+  #[test]
+  fn an_unchanged_tree_restyles_nothing() {
+    let mut h = crate::core::testing::UiHarness::new(400.0, 300.0);
+    let screen = |ui: &mut crate::core::ui::UiContext<'_>| {
+      ui.column().gap(4.0).show(|ui| {
+        for i in 0..20 {
+          ui.button(format!("B{i}")).id(i).fill_width();
+        }
+      });
+    };
+    h.frame(screen);
+    h.frame(screen);
+    let stats = h.layout_stats();
+    assert_eq!(stats.restyled, 0);
+    assert_eq!(stats.created, 0);
+  }
+
+  #[test]
+  fn one_changed_style_restyles_one_node() {
+    let mut h = crate::core::testing::UiHarness::new(400.0, 300.0);
+    let screen = |ui: &mut crate::core::ui::UiContext<'_>, gap: f32| {
+      ui.column().gap(gap).show(|ui| {
+        for i in 0..5 {
+          ui.button(format!("B{i}")).id(i);
+        }
+      });
+    };
+    h.frame(|ui| screen(ui, 4.0));
+    h.frame(|ui| screen(ui, 8.0));
+    assert_eq!(
+      h.layout_stats().restyled,
+      1,
+      "only the column's style changed"
     );
   }
 }

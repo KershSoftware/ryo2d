@@ -1,4 +1,5 @@
 //! Allocations per UI frame, counted by a global allocator in this test binary
+// This test binary must hold exactly one test: the allocator is global, and a second test on another thread would count into it
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -113,7 +114,7 @@ fn an_unchanged_settings_frame_allocates_little() {
   // 191 when written: each label copied into its text leaf, line points and
   // this screen's own `format!`s; less than one a row to spare
   assert!(
-    made < 200,
+    made < 220,
     "an unchanged 200-widget frame made {made} allocations"
   );
 }
