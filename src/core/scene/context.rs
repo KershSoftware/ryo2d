@@ -264,6 +264,32 @@ impl SceneContext<'_> {
     nodes::spawn_ui_in(self.world, parent, tree)
   }
 
+  /// Bring a spawned UI tree in line with `tree`, in place: children are
+  /// matched by key (`UiNode::key`, else the name, else the kind and
+  /// position), new ones spawned and missing ones despawned. Matched nodes
+  /// keep their entities, components, focus and widget state, and a value the
+  /// game or the player wrote stays unless `tree` changes it. Subtrees added
+  /// with `spawn_ui_in` stay where they were. Returns `node`, or the node that
+  /// replaced it if `tree` is a different kind. A node not spawned from a tree
+  /// warns once and is returned as it is.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn choices(lines: &[&str]) -> UiNode {
+  ///   UiNode::column().focus_scope().children(lines.iter().map(|l| UiNode::button(*l).name(*l)))
+  /// }
+  ///
+  /// // `choices` was spawned from `choices(&["Ask more", "Bye"])`: "Bye" keeps
+  /// // its entity (and the focus), "Ask more" is despawned, "Trade" spawned
+  /// fn next_line(ctx: &mut SceneContext<'_>, choices_node: Entity) {
+  ///   ctx.update_ui(choices_node, choices(&["Trade", "Bye"]));
+  /// }
+  /// ```
+  pub fn update_ui(&mut self, node: Entity, tree: UiNode) -> Entity {
+    nodes::update_ui(self.world, node, tree)
+  }
+
   /// A UI node's id once it has been drawn, to read its `ctx.ui().scroll_offset`
   /// and the like; `None` before that.
   pub fn ui_id(&self, node: Entity) -> Option<UiId> {

@@ -1,9 +1,9 @@
 //! UI frame costs without a GPU: a 200-widget settings screen (as a closure
 //! and as a node tree), a 1,000-row scroll list and an empty frame, each one
 //! `UiHarness` frame (resolve, the node walk, the widgets, layout and
-//! commands).
+//! commands); and the settings tree updated unchanged against spawning it.
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use ryo2d::prelude::*;
 use ryo2d::testing::UiHarness;
 
@@ -235,11 +235,45 @@ fn empty_frame(c: &mut Criterion) {
   });
 }
 
+fn settings_update_unchanged(c: &mut Criterion) {
+  let settings = Settings::new();
+  let mut harness = UiHarness::new(640.0, 480.0);
+  let root = harness.spawn_ui(settings_nodes(&settings));
+  harness.frame(|_| {});
+  c.bench_function("ui update, the 200-widget settings tree unchanged", |b| {
+    b.iter_batched(
+      || settings_nodes(&settings),
+      |tree| harness.update_ui(root, tree),
+      BatchSize::SmallInput,
+    )
+  });
+}
+
+fn settings_spawn(c: &mut Criterion) {
+  let settings = Settings::new();
+  let mut harness = UiHarness::new(640.0, 480.0);
+  c.bench_function(
+    "ui spawn, the 200-widget settings tree (and despawn)",
+    |b| {
+      b.iter_batched(
+        || settings_nodes(&settings),
+        |tree| {
+          let root = harness.spawn_ui(tree);
+          harness.world_mut().despawn(root);
+        },
+        BatchSize::SmallInput,
+      )
+    },
+  );
+}
+
 criterion_group!(
   benches,
   settings_frame,
   settings_nodes_frame,
   list_frame,
-  empty_frame
+  empty_frame,
+  settings_update_unchanged,
+  settings_spawn
 );
 criterion_main!(benches);

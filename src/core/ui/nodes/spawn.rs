@@ -1,6 +1,7 @@
 //! Spawning a node tree as entities, finding nodes by name, and despawning a scene's trees
 
-use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt;
 
 use glam::Vec2;
 
@@ -17,32 +18,113 @@ use super::node::{Kind, UiNode, UiNodeKind};
 
 const NAV_OPTIONS: [&str; 4] = ["nav_up", "nav_down", "nav_left", "nav_right"];
 
-/// What a spawned node still needs once its whole tree exists
-struct Pending {
-  entity: Entity,
-  nav: [Option<String>; 4],
-  popup: Option<String>,
-  modal: bool,
+/// What a spawned or updated node still needs once its whole tree exists
+pub(crate) struct Pending {
+  pub(crate) entity: Entity,
+  pub(crate) nav: [Option<String>; 4],
+  pub(crate) popup: Option<String>,
+  pub(crate) modal: bool,
+}
+
+/// A child's key, borrowed from its tree rather than written out
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Key<'a> {
+  /// Its `key`, else its name
+  Given(&'a str),
+  /// Its label (the template, else the kind) and its index among the
+  /// siblings of that label that have neither
+  Nth(&'a str, usize),
+}
+
+impl Key<'_> {
+  /// Whether `key` is this key written out
+  pub(crate) fn is(self, key: &str) -> bool {
+    match self {
+      Key::Given(given) => given == key,
+      Key::Nth(label, n) => key
+        .strip_prefix(label)
+        .and_then(|rest| rest.strip_prefix('#'))
+        .is_some_and(|digits| is_decimal(digits, n)),
+    }
+  }
+}
+
+/// Whether `digits` is `n` written in decimal, as `Display` writes it
+fn is_decimal(digits: &str, n: usize) -> bool {
+  digits.bytes().all(|b| b.is_ascii_digit())
+    && (digits.len() == 1 || !digits.starts_with('0'))
+    && digits.parse() == Ok(n)
+}
+
+impl fmt::Display for Key<'_> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Key::Given(key) => f.write_str(key),
+      Key::Nth(label, n) => write!(f, "{label}#{n}"),
+    }
+  }
+}
+
+/// The keys of a node's children in order; `nth` is scratch, kept by the
+/// caller so walking many lists allocates once
+pub(crate) struct Keys<'a, 's> {
+  children: &'a [UiNode],
+  nth: &'s mut Vec<usize>,
+}
+
+impl<'a, 's> Keys<'a, 's> {
+  pub(crate) fn new(children: &'a [UiNode], nth: &'s mut Vec<usize>) -> Keys<'a, 's> {
+    nth.clear();
+    Keys { children, nth }
+  }
+}
+
+impl<'a> Iterator for Keys<'a, '_> {
+  type Item = Key<'a>;
+
+  fn next(&mut self) -> Option<Key<'a>> {
+    let children = self.children;
+    let i = self.nth.len();
+    let child = children.get(i)?;
+    let given = |node: &'a UiNode| node.key.as_deref().or(node.name.as_deref());
+    let label = |node: &'a UiNode| node.template.as_deref().unwrap_or(node.kind.name());
+    if let Some(key) = given(child) {
+      self.nth.push(0);
+      return Some(Key::Given(key));
+    }
+    let own = label(child);
+    // One more than the nearest earlier sibling of the label with neither
+    let n = (0..i)
+      .rev()
+      .find(|&j| given(&children[j]).is_none() && label(&children[j]) == own)
+      .map_or(0, |j| self.nth[j] + 1);
+    self.nth.push(n);
+    Some(Key::Nth(own, n))
+  }
 }
 
 /// The keys of a node's children: a child's key, else its name, else its
 /// label (the template, else the kind) and its index among the siblings of
 /// that label that have neither
 pub(crate) fn child_keys(children: &[UiNode]) -> Vec<String> {
-  let mut seen: HashMap<&str, usize> = HashMap::new();
-  children
-    .iter()
-    .map(|child| {
-      if let Some(key) = child.key.as_ref().or(child.name.as_ref()) {
-        return key.clone();
-      }
-      let label = child.template.as_deref().unwrap_or(child.kind.name());
-      let index = seen.entry(label).or_insert(0);
-      let key = format!("{label}#{index}");
-      *index += 1;
-      key
-    })
+  Keys::new(children, &mut Vec::new())
+    .map(|key| key.to_string())
     .collect()
+}
+
+/// Warn once for each key two siblings share
+pub(crate) fn warn_repeated_keys(keys: &[String]) {
+  if keys.len() < 2 {
+    return;
+  }
+  let mut seen = HashSet::with_capacity(keys.len());
+  for key in keys {
+    if !seen.insert(key.as_str()) {
+      warn_once(format!("ui-key-twice:{key}"), || {
+        format!("two UI nodes under one parent are keyed \"{key}\"; they match in order")
+      });
+    }
+  }
 }
 
 /// The key of a tree's top node
@@ -58,6 +140,30 @@ pub(crate) fn root_key(node: &UiNode) -> String {
 /// Spawn `tree` as a root owned by `scene`
 pub(crate) fn spawn_ui(world: &mut World, scene: u64, mut tree: UiNode) -> Entity {
   let seeds = std::mem::take(&mut tree.seeds);
+  let mut pending = Vec::new();
+  let key = root_key(&tree);
+  let mut nodes = world.get_resource_or_insert_with(UiNodes::default);
+  let seq = nodes.seq;
+  nodes.seq += 1;
+  let top = spawn_root(world, scene, seq, tree, key, &mut pending);
+  world.resource_mut::<UiNodes>().roots.push((scene, top));
+
+  finish(world, top, pending);
+  bindings::invalidate(world, top);
+  bindings::apply_subtree(world, top, seeds);
+  top
+}
+
+/// Spawn `tree` as a root of `scene`, placed as it says; the caller lists it
+/// in `UiNodes::roots` and finishes it
+pub(crate) fn spawn_root(
+  world: &mut World,
+  scene: u64,
+  seq: u64,
+  tree: UiNode,
+  key: String,
+  pending: &mut Vec<Pending>,
+) -> Entity {
   // A modal root opens centred, as `ui.modal()` does, unless told otherwise
   let default = if tree.flags.modal {
     Anchor::Center
@@ -67,14 +173,7 @@ pub(crate) fn spawn_ui(world: &mut World, scene: u64, mut tree: UiNode) -> Entit
   let anchor = tree.layout.anchor.unwrap_or(default);
   let offset = tree.layout.offset.unwrap_or(Vec2::ZERO);
   let (at, embedded) = (tree.layout.at, tree.embedded);
-  let mut pending = Vec::new();
-  let key = root_key(&tree);
-  let top = spawn_node(world, None, true, tree, key, &mut pending);
-
-  let mut nodes = world.get_resource_or_insert_with(UiNodes::default);
-  let seq = nodes.seq;
-  nodes.seq += 1;
-  nodes.roots.push((scene, top));
+  let top = spawn_node(world, None, true, tree, key, pending);
   world.entity_mut(top).insert(UiRoot {
     anchor,
     offset,
@@ -86,10 +185,6 @@ pub(crate) fn spawn_ui(world: &mut World, scene: u64, mut tree: UiNode) -> Entit
   if let Some(mut applied) = world.get_mut::<UiApplied>(top) {
     applied.place = Some((anchor, offset, at));
   }
-
-  finish(world, top, pending);
-  bindings::invalidate(world, top);
-  bindings::apply_subtree(world, top, seeds);
   top
 }
 
@@ -122,7 +217,7 @@ pub(crate) fn spawn_ui_in(world: &mut World, parent: Entity, mut tree: UiNode) -
 }
 
 /// Spawn one node and, depth first, its children
-fn spawn_node(
+pub(crate) fn spawn_node(
   world: &mut World,
   parent: Option<Entity>,
   is_root: bool,
@@ -169,13 +264,7 @@ fn spawn_node(
   }
 
   let child_keys = child_keys(&children);
-  for (i, key) in child_keys.iter().enumerate() {
-    if child_keys[..i].contains(key) {
-      warn_once(format!("ui-key-twice:{key}"), || {
-        format!("two UI nodes under one parent are keyed \"{key}\"; they match in order")
-      });
-    }
-  }
+  warn_repeated_keys(&child_keys);
   let applied = UiApplied {
     state: state.clone(),
     tooltip: tooltip.clone(),
@@ -275,13 +364,15 @@ fn spawn_node(
   id
 }
 
-/// Resolve names, duplicates and confirms once a tree exists
-fn finish(world: &mut World, top: Entity, pending: Vec<Pending>) {
+/// Resolve names, duplicates and confirms once a tree exists, or once an
+/// update has brought it in line; each written only on a difference
+pub(crate) fn finish(world: &mut World, top: Entity, pending: Vec<Pending>) {
   let root = root_of(world, top).unwrap_or(top);
   for node in &pending {
-    if let Some(name) = world.get::<UiName>(node.entity).map(|name| name.0.clone())
-      && find_ui_in(world, root, &name) != Some(node.entity)
+    if let Some(name) = world.get::<UiName>(node.entity)
+      && find_ui_in(world, root, &name.0) != Some(node.entity)
     {
+      let name = &name.0;
       warn_once(format!("ui-name:twice:{name}"), || {
         format!("two UI nodes are named \"{name}\"; find_ui finds the first")
       });
@@ -297,15 +388,25 @@ fn finish(world: &mut World, top: Entity, pending: Vec<Pending>) {
       .popup
       .as_deref()
       .and_then(|name| resolve(world, root, name, "popup"));
-    if let Some(mut kind) = world.get_mut::<UiNodeKind>(node.entity) {
+    if let Some(mut kind) = world.get_mut::<UiNodeKind>(node.entity)
+      && (kind.nav != nav || kind.anchor_node != anchor)
+    {
       kind.nav = nav;
       kind.anchor_node = anchor;
     }
   }
 
-  for node in pending.iter().filter(|node| node.modal) {
-    if let Some(answer) = first_answering_descendant(world, node.entity) {
-      world.entity_mut(node.entity).insert(BackAnswer(answer));
+  for node in &pending {
+    let answer = node
+      .modal
+      .then(|| first_answering_descendant(world, node.entity))
+      .flatten();
+    let held = world.get::<BackAnswer>(node.entity).map(|answer| answer.0);
+    if held != answer {
+      match answer {
+        Some(answer) => world.entity_mut(node.entity).insert(BackAnswer(answer)),
+        None => world.entity_mut(node.entity).remove::<BackAnswer>(),
+      };
     }
   }
 }
@@ -557,6 +658,39 @@ mod tests {
     let w = h.world();
     assert!(w.get_entity(a).is_err() && w.get_entity(b).is_err() && w.get_entity(kid).is_err());
     assert!(w.resource::<UiNodes>().roots.is_empty());
+  }
+
+  #[test]
+  fn a_borrowed_key_compares_as_written_out() {
+    let nth = Key::Nth("button", 12);
+    assert_eq!(nth.to_string(), "button#12");
+    assert!(nth.is("button#12"));
+    for other in [
+      "button#012",
+      "button#+12",
+      "button#1",
+      "buttons#12",
+      "button#",
+      "button12",
+    ] {
+      assert!(!nth.is(other), "{other}");
+    }
+    assert!(Key::Nth("text", 0).is("text#0"));
+    assert!(Key::Given("ok").is("ok") && !Key::Given("ok").is("ok#0"));
+  }
+
+  #[test]
+  fn siblings_keyed_the_same_warn_once() {
+    let mut h = UiHarness::new(320.0, 240.0);
+    for _ in 0..2 {
+      h.spawn_ui(
+        UiNode::column()
+          .child(UiNode::button("A").key("twice-4d"))
+          .child(UiNode::button("B").key("twice-4d"))
+          .child(UiNode::button("C").key("twice-4d")),
+      );
+    }
+    assert_eq!(warnings("keyed \"twice-4d\""), 1);
   }
 
   #[test]

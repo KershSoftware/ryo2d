@@ -143,6 +143,11 @@ impl UiHarness {
     nodes::spawn_ui(&mut self.world, self.scene, tree)
   }
 
+  /// Bring a spawned tree in line with `tree` in place, as `ctx.update_ui`
+  pub fn update_ui(&mut self, node: Entity, tree: UiNode) -> Entity {
+    nodes::update_ui(&mut self.world, node, tree)
+  }
+
   /// The world UI nodes live in
   pub fn world(&self) -> &World {
     &self.world

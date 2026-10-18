@@ -24,9 +24,7 @@ pub struct UiRoot {
   pub offset: Vec2,
   /// An exact rectangle, instead of the anchor
   pub at: Option<Rect>,
-  #[allow(dead_code)] // recorded at spawn; nothing reads it yet
   pub(crate) scene: u64,
-  #[allow(dead_code)] // recorded at spawn; nothing reads it yet
   pub(crate) seq: u64,
   pub(crate) embedded: bool,
 }
@@ -125,7 +123,6 @@ pub(crate) struct UiAdded;
 
 /// What a node's tree last gave it, so an update writes only what the tree
 /// changed and leaves what the game or the player wrote
-#[allow(dead_code)] // read by the node update, which nothing calls yet
 #[derive(Component, Debug, Clone, Default)]
 pub(crate) struct UiApplied {
   pub(crate) state: NodeState,
