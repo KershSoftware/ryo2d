@@ -356,23 +356,30 @@ fn update_list(
   }
 
   // The view's rows at the offset and at the target, at most the cap
-  // together; within two views of each other, the rows the ease passes too
+  // together, the offset's (drawn this frame) first; within two views of
+  // each other, the rows the ease passes too, when they fit
   let cap = shape.row_cap();
   let (at, cut_at) = shape.built(view, offset);
   let (to, cut_to) = shape.built(view, target);
   let near = (f64::from(target) - f64::from(offset)).abs() <= 2.0 * f64::from(view);
-  let (at, to, cut) = if near {
-    let (both, cut) = cut_rows(at.start.min(to.start)..at.end.max(to.end), cap);
-    (both, 0..0, cut)
+  let both = at.start.min(to.start)..at.end.max(to.end);
+  let (at, to, cut) = if near && both.len() <= cap {
+    (both, 0..0, false)
   } else {
     let (to, cut) = cut_rows(to, cap.saturating_sub(at.len()));
-    (at, to, cut)
+    (at, to, cut || near)
   };
   if cut || cut_at || cut_to {
-    warn_cut(list, || match world.get::<UiName>(list) {
-      Some(name) => format!("the list node \"{}\"", name.0),
-      None => format!("the list node {list}"),
-    });
+    // Once per list, by its entity and name (another world's list may have
+    // the same entity)
+    let name = world.get::<UiName>(list).map(|name| name.0.as_str());
+    warn_cut(
+      format_args!("{list}:{}", name.unwrap_or_default()),
+      || match name {
+        Some(name) => format!("the list node \"{name}\""),
+        None => format!("the list node {list}"),
+      },
+    );
   }
   let one = |index: usize| row_of(index)..row_of(index).saturating_add(1).min(rows);
   // The focused item's row and one either side, so the pad steps off it
@@ -398,11 +405,13 @@ fn update_list(
     }
     keep
   });
+  // The items given a row now join the pool sorted once, after the loop
+  let mut added = Vec::new();
   for items in &needed {
     for index in items.clone() {
-      let Err(at) = held.binary_search_by_key(&index, |&(item, _)| item) else {
+      if held.binary_search_by_key(&index, |&(item, _)| item).is_ok() {
         continue;
-      };
+      }
       let row = match free.pop() {
         Some(row) => {
           if let Some(mut pooled) = world.get_mut::<UiListRow>(row) {
@@ -420,9 +429,13 @@ fn update_list(
           spawn_list_row(world, list, shape.build(), index, frame)
         }
       };
-      held.insert(at, (index, row));
+      added.push((index, row));
       binds.push(UiListBind { list, row, index });
     }
+  }
+  if !added.is_empty() {
+    held.append(&mut added);
+    held.sort_unstable_by_key(|&(item, _)| item);
   }
   for row in free {
     if world.get_entity(row).is_ok() {
@@ -662,7 +675,7 @@ pub(super) fn draw_list(
     };
     let list = ui.memory.scopes.current();
     let frame = ui.memory.frame();
-    first_now = first_focus(world, ui, &rows, frame, first, asking, walk);
+    first_now = first_focus(world, ui, &rows, shape.count, first, asking, walk);
     let runs = PoolRuns {
       items: &rows,
       per_row: usize::from(shape.columns),
@@ -699,17 +712,21 @@ pub(super) fn draw_list(
 /// could not take when it appeared without them, as a scope's default: the
 /// first row node marked `.default_focus()`, else the first focusable node
 /// of the first row shown. It is decided at the list's first draw (nothing to
-/// show yet, in a focus scope that appears with it) and given at its next,
-/// never over a focus that is already somewhere or asked for.
+/// show yet, in a focus scope that appears with it) and given at the first
+/// draw that shows rows (the second, or the third for a list drawn before its
+/// pool's first update, as a rerun UI pass draws a new scene's), never over a
+/// focus that is already somewhere or asked for. A list of `count` 0 gives
+/// none.
 fn first_focus(
   world: &World,
   ui: &UiContext<'_>,
   rows: &[(usize, Entity)],
-  frame: u64,
+  count: usize,
   state: FirstFocus,
   asking: bool,
   walk: &mut Walk,
 ) -> FirstFocus {
+  let frame = ui.memory.frame();
   let shown = || {
     rows
       .iter()
@@ -722,6 +739,14 @@ fn first_focus(
       let scope = ui.focus_scope_here();
       let appearing = scope != UiId::NONE && !ui.memory.known_scopes.contains(&scope);
       if appearing && shown().next().is_none() {
+        FirstFocus::Waiting
+      } else {
+        FirstFocus::Done
+      }
+    }
+    // Its rows are still to come
+    FirstFocus::Waiting if shown().next().is_none() => {
+      if count > 0 {
         FirstFocus::Waiting
       } else {
         FirstFocus::Done
@@ -1459,6 +1484,72 @@ mod api_tests {
   }
 
   #[test]
+  fn a_shrink_under_a_focus_that_left_the_list_leaves_it_where_it_went() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(
+      UiNode::column()
+        .focus_scope()
+        .child(
+          UiNode::list(1000, 20.0)
+            .height(100.0)
+            .width(200.0)
+            .row_shape(row)
+            .name("list"),
+        )
+        .child(UiNode::button("Delete").name("delete")),
+    );
+    let list = h.find_ui("list").unwrap();
+    let delete = h.find_ui("delete").unwrap();
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    h.ui_list_focus(list, 900);
+    for _ in 0..5 {
+      step(&mut h);
+    }
+    assert_eq!(focused_index(&h, list), Some(900));
+    // Delete asks for the focus, which moves there in the frame the count
+    // falls under item 900
+    h.world_mut().resource_mut::<UiNodes>().pending_focus = Some(delete);
+    step(&mut h);
+    h.ui_list_count(list, 50);
+    for _ in 0..5 {
+      step(&mut h);
+    }
+    assert!(h.focused().is_some());
+    assert_eq!(h.focused(), h.ui_id(delete), "the focus stays on Delete");
+    let pool = h.world().get::<UiList>(list).unwrap();
+    assert_eq!((pool.focused, pool.pending, pool.jump), (None, None, None));
+  }
+
+  #[test]
+  fn ui_list_index_of_a_widget_in_a_nested_list_s_row_is_the_inner_row_s() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let outer = h.spawn_ui(
+      UiNode::list(10, 120.0)
+        .height(400.0)
+        .width(300.0)
+        .row_shape(|| {
+          UiNode::column().child(
+            UiNode::list(50, 20.0)
+              .height(100.0)
+              .row_shape(|| UiNode::row().child(UiNode::button("x").name("b")))
+              .name("inner"),
+          )
+        }),
+    );
+    for _ in 0..4 {
+      h.frame(|_| {});
+    }
+    let outer_row = row_of(&h, outer, 1).expect("outer item 1 pooled");
+    let inner = find_ui_in(h.world(), outer_row, "inner").expect("its list");
+    let inner_row = row_of(&h, inner, 3).expect("inner item 3 pooled");
+    let b = find_ui_in(h.world(), inner_row, "b").expect("its button");
+    assert_eq!(h.ui_list_index(b), Some(3));
+    assert_eq!(h.ui_list_index(inner), Some(1));
+  }
+
+  #[test]
   fn refresh_rebinds_rows() {
     let mut h = UiHarness::new(640.0, 480.0);
     let list = setup(&mut h, 10);
@@ -1609,6 +1700,35 @@ mod api_tests {
   }
 
   #[test]
+  fn a_list_drawn_before_its_first_update_gives_its_new_scope_the_default_focus() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = setup(&mut h, 100);
+    // As a scene pushed from `ui` is drawn by the rerun pass: no pool yet
+    h.skip_list_update = true;
+    step(&mut h);
+    assert!(h.world().get::<UiList>(list).unwrap().rows.is_empty());
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    assert!(has_focus(&h, list, 0), "item 0's button has the focus");
+  }
+
+  #[test]
+  fn an_empty_new_list_gives_no_first_focus_when_it_fills_later() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = setup(&mut h, 0);
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    // As a closure list's scope that appeared empty: nothing to give then
+    h.ui_list_count(list, 5);
+    for _ in 0..4 {
+      step(&mut h);
+    }
+    assert_eq!(h.focused(), None);
+  }
+
+  #[test]
   fn a_row_node_marked_default_focus_takes_it_and_maps_to_its_item() {
     let mut h = UiHarness::new(640.0, 480.0);
     h.spawn_ui(
@@ -1737,6 +1857,33 @@ mod api_tests {
     assert!(row != dead && h.world().get_entity(row).is_ok());
     assert!(has_focus(&h, list, index), "the focus lands on the new row");
     assert_eq!(warnings_containing(&format!("{dead}")), 0);
+  }
+
+  #[test]
+  fn a_capped_list_pools_and_draws_the_rows_in_view_first() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = h.spawn_ui(
+      UiNode::list(1_000_000, 20.0)
+        .height(200.0)
+        .width(640.0)
+        .columns(64)
+        .overscan(64)
+        .row_shape(UiNode::column),
+    );
+    h.frame(|_| {});
+    let id = h.ui_id(list).unwrap();
+    h.frame(|ui| ui.set_scroll_offset(id, Vec2::new(0.0, 20_000.0)));
+    for _ in 0..2 {
+      h.frame(|_| {});
+    }
+    assert!(h.world().get::<UiList>(list).unwrap().rows.len() <= BUILT_ITEMS);
+    for index in 1000 * 64..1010 * 64 {
+      let row = row_of(&h, list, index);
+      let drawn = row
+        .and_then(|row| h.ui_id(row))
+        .and_then(|id| h.record_of(id));
+      assert!(drawn.is_some(), "item {index} pooled and drawn");
+    }
   }
 
   #[test]

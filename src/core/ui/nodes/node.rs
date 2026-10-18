@@ -491,8 +491,9 @@ impl UiNode {
   /// A list of `count` items in rows `row_height` tall, in a scroll area as
   /// long as the whole list. It keeps about a screenful of row entities,
   /// spawned from its [`row_shape`](Self::row_shape) (required) and reused
-  /// as it scrolls, so 10,000 items cost what a screenful does (however
-  /// short its rows, at most 4,096 items' rows for the view, warned once).
+  /// as it scrolls, so 10,000 items cost what a screenful does; however
+  /// short its rows, a frame builds at most 4,096 items for the view, warned
+  /// once.
   ///
   /// Each row given an item sends a [`UiListBind`](super::UiListBind)
   /// naming the row and the item's index, and the game fills the row from
@@ -506,6 +507,11 @@ impl UiNode {
   /// `ui_list_scroll_to` and `ui_list_focus`, and maps an event from a
   /// row's widget to its item with `ui_list_index`. The focused row stays
   /// pooled wherever the list scrolls, so the pad walks the whole list.
+  ///
+  /// Its rows show from the list's second frame, so other focusables in its
+  /// focus scope take the scope's default focus (a scope holding only the
+  /// list gives it to the first row once the rows show). To start on a row,
+  /// call `ctx.ui_list_focus(list, 0)` after spawning.
   ///
   /// ```
   /// use ryo2d::prelude::*;

@@ -110,6 +110,10 @@ pub struct UiHarness {
   sources: nodes::SourceQuery,
   /// The last frame's node events
   last_events: Vec<UiEvent>,
+  /// The next frame draws before the list pools are updated, as a rerun UI
+  /// pass does (a scene switched from `ui` draws its new lists so)
+  #[cfg(test)]
+  pub(crate) skip_list_update: bool,
 }
 
 impl UiHarness {
@@ -155,6 +159,8 @@ impl UiHarness {
       world,
       sources: Default::default(),
       last_events: Vec::new(),
+      #[cfg(test)]
+      skip_list_update: false,
     }
   }
 
@@ -470,9 +476,11 @@ impl UiHarness {
       self.outcome = outcome;
     }
     // List pools follow this frame's scrolling before any tree is drawn
-    let frame = self.memory.frame();
-    let screen = Vec2::new(self.size.0, self.size.1);
-    nodes::update_lists(&mut self.world, &mut self.memory, frame, screen);
+    if !self.skips_list_update() {
+      let frame = self.memory.frame();
+      let screen = Vec2::new(self.size.0, self.size.1);
+      nodes::update_lists(&mut self.world, &mut self.memory, frame, screen);
+    }
     let space = UiSpace {
       size: Vec2::new(self.size.0, self.size.1),
       px_scale: 1.0,
@@ -537,6 +545,17 @@ impl UiHarness {
       ..NavInput::default()
     };
     result
+  }
+
+  /// Whether this frame skips the list update (a test's rerun pass)
+  #[cfg(test)]
+  fn skips_list_update(&mut self) -> bool {
+    std::mem::take(&mut self.skip_list_update)
+  }
+
+  #[cfg(not(test))]
+  fn skips_list_update(&mut self) -> bool {
+    false
   }
 
   /// The next frame's scripted keys, text and pointer as the input sees them

@@ -299,3 +299,79 @@ fn a_modal_root_traps_focus_and_back_sends_back() {
     "Back did not quit"
   );
 }
+
+/// A menu that pushes `Board` from its `ui` on its second frame
+struct Menu {
+  frames: u32,
+  list: Arc<Mutex<Option<Entity>>>,
+}
+
+impl Scene for Menu {
+  fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    self.frames += 1;
+    if self.frames == 2 {
+      return SceneAction::Push(Box::new(Board {
+        list: Arc::clone(&self.list),
+      }));
+    }
+    SceneAction::Continue
+  }
+}
+
+/// A focus scope holding only a node list, spawned on enter: the rerun UI
+/// pass draws it before its pool's first update
+struct Board {
+  list: Arc<Mutex<Option<Entity>>>,
+}
+
+impl Scene for Board {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(
+      UiNode::column().focus_scope().anchor(Anchor::Center).child(
+        UiNode::list(100, 20.0)
+          .height(100.0)
+          .width(200.0)
+          .row_shape(|| UiNode::button("{name}").bound())
+          .name("board"),
+      ),
+    );
+    if let Ok(mut list) = self.list.lock() {
+      *list = ctx.find_ui("board");
+    }
+  }
+
+  fn ui(&mut self, _ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    for bind in ctx.messages::<UiListBind>() {
+      ctx.ui_set(bind.row, "name", format!("Player {}", bind.index + 1));
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_list_pushed_from_ui_gives_its_new_scope_the_default_focus() {
+  let list = Arc::new(Mutex::new(None));
+  let menu = Menu {
+    frames: 0,
+    list: Arc::clone(&list),
+  };
+  let Some(mut engine) =
+    HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(320, 240).start_scene(menu))
+  else {
+    return;
+  };
+  engine.step_frames(6).unwrap();
+  let Some(list) = *list.lock().unwrap() else {
+    panic!("Board was not pushed")
+  };
+  let world = engine.world();
+  let first = world
+    .get::<Children>(list)
+    .into_iter()
+    .flatten()
+    .find(|&&row| world.get::<UiListRow>(row).is_some_and(|r| r.index() == 0))
+    .copied();
+  let id = first.and_then(|row| world.get::<UiInteraction>(row).and_then(UiInteraction::id));
+  assert!(id.is_some(), "item 0's row is drawn");
+  assert_eq!(engine.ui_focused(), id, "item 0's button has the focus");
+}

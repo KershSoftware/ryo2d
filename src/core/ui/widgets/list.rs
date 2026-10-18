@@ -459,17 +459,25 @@ impl Shape {
   }
 
   /// The rows to build for a view `view` tall shown from `offset` (the
-  /// scroll area's offset), with the overscan, cut to [`row_cap`](Self::row_cap)
-  /// rows from the first; whether the cap cut them
+  /// scroll area's offset), with the overscan, at most
+  /// [`row_cap`](Self::row_cap); whether the cap cut them. Cut, the rows in
+  /// view come first (from the top, should they alone pass the cap), and the
+  /// overscan each side gets what they leave.
   pub(crate) fn built(&self, view: f32, offset: f32) -> (Range<usize>, bool) {
-    let rows = built_rows(
-      self.rows(),
-      self.stride(),
-      view,
-      offset - self.top,
-      self.overscan,
-    );
-    cut_rows(rows, self.row_cap())
+    let (rows, stride, offset) = (self.rows(), self.stride(), offset - self.top);
+    let cap = self.row_cap();
+    let all = built_rows(rows, stride, view, offset, self.overscan);
+    if all.len() <= cap {
+      return (all, false);
+    }
+    let (seen, _) = cut_rows(built_rows(rows, stride, view, offset, 0), cap);
+    let left = cap - seen.len();
+    let room_before = self.overscan.min(seen.start);
+    let room_after = self.overscan.min(rows.saturating_sub(seen.end));
+    // Half each side, and what one side has no room for to the other
+    let before = room_before.min((left / 2).max(left.saturating_sub(room_after)));
+    let after = room_after.min(left - before);
+    (seen.start - before..seen.end + after, true)
   }
 
   /// Rows of `columns` items, the last one perhaps short
@@ -1450,6 +1458,39 @@ mod tests {
       2 * middle.range.len(),
       "each item's container and button, nothing else"
     );
+  }
+
+  #[test]
+  fn a_capped_list_builds_the_rows_in_view_first() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    // 64 rows of 64 items is the cap: the overscan gets what the view leaves
+    let draw = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        ui.list(1_000_000)
+          .row_height(20.0)
+          .columns(64)
+          .overscan(64)
+          .height(200.0)
+          .id("capped")
+          .show(|_, _| {})
+      })
+    };
+    let first = draw(&mut h);
+    h.frame(|ui| ui.set_scroll_offset(first.id, Vec2::new(0.0, 20_000.0)));
+    let r = draw(&mut h);
+    let view = 1000 * 64..1010 * 64;
+    assert!(
+      r.range.start < view.start && view.end < r.range.end,
+      "the view's rows and some overscan each side: {:?}",
+      r.range
+    );
+    assert_eq!(r.range.len(), BUILT_ITEMS);
+    for index in view {
+      assert!(
+        h.record_of_key(first.id, index).is_some(),
+        "item {index} drawn"
+      );
+    }
   }
 
   #[test]
