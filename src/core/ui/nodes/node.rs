@@ -79,10 +79,20 @@ pub(crate) struct TextOpts {
   pub(crate) ellipsis: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default)]
 pub(crate) struct ButtonOpts {
   pub(crate) markup: bool,
   pub(crate) icon: Option<SpriteHandle>,
+}
+
+// By path: a handle's own Debug prints its serial and reference count
+impl fmt::Debug for ButtonOpts {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("ButtonOpts")
+      .field("markup", &self.markup)
+      .field("icon", &self.icon.as_ref().map(|icon| icon.path()))
+      .finish()
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1227,6 +1237,53 @@ impl UiNode {
     }
     self.given("binding_slot")
   }
+}
+
+/// Everything a node was given, as text, for comparing a file-built node with
+/// a code-built one; sprites by path, since each handle has its own serial
+#[cfg(test)]
+pub(crate) fn fingerprint(node: &UiNode) -> String {
+  let sprite =
+    |handle: &Option<SpriteHandle>| handle.as_ref().map(|h| h.path().display().to_string());
+  let state = &node.state;
+  format!(
+    "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{:?}|label={:?} image={:?} checked={:?} value={:?} index={:?} options={:?} text={:?} slot={:?} reveal={:?}|key={:?} bind={:?} bound={}|[{}]",
+    node.kind,
+    node.layout,
+    node.flags,
+    node.variant,
+    node.action,
+    node.name,
+    node.tooltip,
+    node.hidden,
+    node.disabled,
+    node.embedded,
+    node.nav,
+    state.label,
+    sprite(&state.image),
+    state.checked,
+    state.value,
+    state.index,
+    state.options,
+    state.text,
+    state
+      .slot
+      .as_ref()
+      .map(|s| (sprite(&s.icon), s.count, s.selected)),
+    state
+      .reveal
+      .as_ref()
+      .map(|r| (r.per_second, r.punctuation_pause, r.fade)),
+    node.key,
+    node.bind,
+    node.bound,
+    node
+      .children
+      .iter()
+      .map(fingerprint)
+      .collect::<Vec<_>>()
+      .join(", "),
+  )
 }
 
 #[cfg(test)]

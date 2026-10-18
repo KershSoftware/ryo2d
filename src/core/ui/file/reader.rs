@@ -1,6 +1,3 @@
-// Used by the vocabulary and documents (Tasks 5 and 6)
-#![allow(dead_code)]
-
 //! The reader: RON syntax into values that know their line and column
 //!
 //! It reads the part of RON a UI file uses and refuses the rest with a
@@ -48,6 +45,8 @@ pub(crate) enum ValueKind {
   },
   /// Never read: stands for a template parameter whose value is unknown
   /// while a template is checked
+  // Built by template checks (Task 6)
+  #[allow(dead_code)]
   Any,
 }
 
@@ -73,7 +72,11 @@ pub(crate) struct Issue {
 }
 
 /// Read a whole file's text: one value, with blanks and comments around it
+// Called by the loader (Task 6)
+#[allow(dead_code)]
 pub(crate) fn read(text: &str) -> Result<Value, Issue> {
+  // A byte-order mark some editors write takes no column
+  let text = text.strip_prefix('\u{feff}').unwrap_or(text);
   let mut reader = Reader {
     chars: text.chars().peekable(),
     pos: Pos { line: 1, column: 1 },
@@ -778,5 +781,11 @@ line"]"##,
     let f = fields(&top);
     assert_eq!(named(&f[0].value), ("label", &Body::Unit));
     assert_eq!(named(&f[1].value), ("Center", &Body::Unit));
+  }
+
+  #[test]
+  fn a_byte_order_mark_is_skipped_and_takes_no_column() {
+    let value = read("\u{feff}(a: 1)").unwrap();
+    assert_eq!(fields(&value)[0].pos, Pos { line: 1, column: 2 });
   }
 }

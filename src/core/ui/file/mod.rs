@@ -5,3 +5,10 @@
 //! build `UiNode`s from them.
 
 pub(crate) mod reader;
+// Built from the loader (Task 6)
+#[allow(dead_code)]
+pub(crate) mod build;
+#[allow(dead_code)]
+pub(crate) mod error;
+#[allow(dead_code)]
+pub(crate) mod vocab;
