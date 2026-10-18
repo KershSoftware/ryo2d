@@ -99,6 +99,8 @@ pub struct UiHarness {
   /// The entities of spawned UI nodes, and the asset manager UI files load
   /// through
   world: World,
+  /// The query `reload_trees` keeps over the trees built from UI files
+  sources: nodes::SourceQuery,
   /// The last frame's node events
   last_events: Vec<UiEvent>,
 }
@@ -143,6 +145,7 @@ impl UiHarness {
       prompts: Arc::new(PromptContext::default()),
       rebinds: Vec::new(),
       world,
+      sources: Default::default(),
       last_events: Vec::new(),
     }
   }
@@ -319,7 +322,7 @@ impl UiHarness {
   /// do before its `ui`.
   pub fn frame_with_world<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>, &mut World) -> R) -> R {
     update_messages(&mut self.world);
-    nodes::reload_trees(&mut self.world);
+    nodes::reload_trees(&mut self.world, &mut self.sources);
     self.time += FRAME;
     self.pointer.time = self.time;
     self.commands.clear();

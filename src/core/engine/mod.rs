@@ -230,6 +230,8 @@ pub struct Engine {
   ui_memory: UiMemory,
   /// Lays the UI's containers out, kept between frames
   ui_layout: LayoutEngine,
+  /// The query `reload_trees` keeps over the trees built from UI files
+  ui_sources: crate::core::ui::nodes::SourceQuery,
   /// The `UiTheme` generation whose skin sprites are loaded
   theme_generation: Option<u64>,
   /// The `UiTheme` generation whose sounds are loaded
@@ -632,6 +634,7 @@ impl Engine {
       prompt_icons: None,
       ui_memory: UiMemory::new(),
       ui_layout: LayoutEngine::new(),
+      ui_sources: Default::default(),
       // None: the starting theme's skins load on the first pass
       theme_generation: None,
       sounds_generation: None,

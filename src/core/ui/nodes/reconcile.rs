@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::core::asset::AssetManager;
 use crate::core::ecs::kernel::{
   ChildOf, Children, Component, DetectChangesMut, Entity, EntityWorldMut, Messages, Mut,
-  QueryState, Resource, World,
+  QueryState, World, WorldId,
 };
 use crate::core::messages::register_message;
 use crate::core::text::TextReveal;
@@ -90,31 +90,31 @@ pub(crate) fn reconcile(world: &mut World, entity: Entity, mut tree: UiNode, mod
   top
 }
 
-/// The query over the trees' sources, kept between frames
-#[derive(Resource, Default)]
-struct SourceQuery(Option<QueryState<(Entity, &'static UiSource)>>);
+/// The query over the trees' sources, kept between frames by what owns the
+/// world (the engine, the UI harness) rather than in it: a resource is an
+/// entity, and a UI pass that spawned one would shift the game's entity and
+/// archetype ids
+#[derive(Default)]
+pub(crate) struct SourceQuery(Option<(WorldId, QueryState<(Entity, &'static UiSource)>)>);
 
-/// The trees whose file moved since they were built, with the generation seen
-fn stale_sources(world: &mut World) -> Vec<(Entity, Arc<TreeSource>, u64)> {
-  if world.get_resource::<SourceQuery>().is_none() {
-    world.init_resource::<SourceQuery>();
+/// The trees whose file moved since they were built, with the generation seen.
+/// The query is made once `UiSource` is registered, and again for another world.
+fn stale_sources(world: &World, cache: &mut SourceQuery) -> Vec<(Entity, Arc<TreeSource>, u64)> {
+  if cache.0.as_ref().is_none_or(|(id, _)| *id != world.id()) {
+    cache.0 = world
+      .try_query::<(Entity, &UiSource)>()
+      .map(|query| (world.id(), query));
   }
-  world
-    .resource_scope(|world, mut cached: Mut<SourceQuery>| {
-      if cached.0.is_none() {
-        cached.0 = world.try_query::<(Entity, &UiSource)>();
-      }
-      cached.0.as_mut().map(|sources| {
-        sources
-          .iter(world)
-          .filter_map(|(entity, held)| {
-            let now = held.source.file.generation();
-            (now != held.generation).then(|| (entity, Arc::clone(&held.source), now))
-          })
-          .collect()
-      })
+  let Some((_, sources)) = cache.0.as_mut() else {
+    return Vec::new();
+  };
+  sources
+    .iter(world)
+    .filter_map(|(entity, held)| {
+      let now = held.source.file.generation();
+      (now != held.generation).then(|| (entity, Arc::clone(&held.source), now))
     })
-    .unwrap_or_default()
+    .collect()
 }
 
 /// Bring every tree built from a UI file that changed since in line with the
@@ -124,8 +124,8 @@ fn stale_sources(world: &mut World) -> Vec<(Entity, Arc<TreeSource>, u64)> {
 ///
 /// Runs every frame before the UI pass; with no tree from a file it is one
 /// query, and none at all until one has been spawned.
-pub(crate) fn reload_trees(world: &mut World) {
-  let mut stale = stale_sources(world);
+pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
+  let mut stale = stale_sources(world, sources);
   if stale.is_empty() {
     return;
   }
@@ -1441,6 +1441,36 @@ mod reload_tests {
     }
     assert_eq!(reloads, 1);
     assert_eq!(h.world().get::<UiLabel>(title).unwrap().0, "Game wrote");
+  }
+
+  #[test]
+  fn reloading_leaves_a_world_with_no_tree_from_a_file_as_it_was() {
+    // Nothing spawned, so the game's entities and archetypes keep the ids
+    // they would have had
+    let mut untouched = World::new();
+    let mut world = World::new();
+    let mut sources = SourceQuery::default();
+    reload_trees(&mut world, &mut sources);
+    reload_trees(&mut world, &mut sources);
+    assert_eq!(world.spawn_empty().id(), untouched.spawn_empty().id());
+    assert_eq!(world.archetypes().len(), untouched.archetypes().len());
+  }
+
+  #[test]
+  fn ui_passes_over_trees_from_files_spawn_nothing() {
+    // The same tree in two worlds, one of them never drawn: the next entity
+    // spawned in each takes the same id
+    let (_dir, mut h) = harness(&[("pause.ui.ron", PAUSE)]);
+    let (_still_dir, mut still) = harness(&[("pause.ui.ron", PAUSE)]);
+    h.spawn_ui_file("pause.ui.ron").unwrap();
+    still.spawn_ui_file("pause.ui.ron").unwrap();
+    for _ in 0..3 {
+      h.frame(|_| {});
+    }
+    assert_eq!(
+      h.world_mut().spawn_empty().id(),
+      still.world_mut().spawn_empty().id()
+    );
   }
 
   #[test]

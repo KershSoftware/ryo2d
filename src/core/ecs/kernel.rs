@@ -41,5 +41,5 @@ pub use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, Syste
 pub use bevy_ecs::system::{
   Commands, EntityCommands, IntoSystem, Query, Res, ResMut, ScheduleSystem, System,
 };
-pub(crate) use bevy_ecs::world::DeferredWorld;
+pub(crate) use bevy_ecs::world::{DeferredWorld, WorldId};
 pub use bevy_ecs::world::{EntityWorldMut, World};
