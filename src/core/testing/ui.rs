@@ -318,7 +318,8 @@ impl UiHarness {
   }
 
   /// The size of the scroll area `scroll`'s contents as the last frame laid
-  /// them out (never less than its view)
+  /// them out: never less than its view, unless it was given its height (a
+  /// list's is its length)
   #[cfg(test)]
   pub(crate) fn scroll_content(&self, scroll: UiId) -> Vec2 {
     self

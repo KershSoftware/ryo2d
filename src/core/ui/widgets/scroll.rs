@@ -39,6 +39,10 @@ pub(crate) struct ScrollState {
   pub(crate) content: Vec2,
   /// The size of its view, as last laid out
   pub(crate) view: Vec2,
+  /// The contents' height inside the padding, when the area's owner knows it
+  /// (`Scroll::content_height`): laid out, it is the contents' height
+  /// whatever they measure
+  pub(crate) content_height: Option<f32>,
   /// A scrollbar drag in progress: the axis and where in the thumb it holds
   grab: Option<(usize, f32)>,
 }
@@ -63,15 +67,35 @@ impl ScrollState {
     };
     for axis in 0..2 {
       let left = self.target[axis] - self.offset[axis];
-      self.offset[axis] = if self.grab.is_some() || left.abs() < SNAP {
+      let next = self.offset[axis] + left * step;
+      // Far down a long list a step can be smaller than a float can move
+      let stalled = step > 0.0 && next == self.offset[axis];
+      self.offset[axis] = if self.grab.is_some() || left.abs() < SNAP || stalled {
         self.target[axis]
       } else {
-        self.offset[axis] + left * step
+        next
       };
     }
     if known {
       self.offset = self.offset.clamp(Vec2::ZERO, self.max());
     }
+  }
+
+  /// Bring the offset along `axis` to within `reach` of the target, from the
+  /// side it is on, so a far jump eases only its last `reach`
+  pub(crate) fn approach(&mut self, axis: usize, reach: f32) {
+    let (offset, target) = (self.offset[axis], self.target[axis]);
+    if !reach.is_finite() || (target - offset).abs() <= reach {
+      return;
+    }
+    let near = if offset < target {
+      target - reach
+    } else {
+      target + reach
+    };
+    let known = self.view.x > 0.0 || self.view.y > 0.0;
+    let max = if known { self.max()[axis] } else { f32::MAX };
+    self.offset[axis] = near.min(max).max(0.0);
   }
 }
 
@@ -219,6 +243,8 @@ pub struct Scroll<'u, 'a> {
   axes: [bool; 2],
   bar: bool,
   drag: DragOpts,
+  /// The contents' height, given rather than measured
+  content_height: Option<f32>,
 }
 
 impl<'a> UiContext<'a> {
@@ -245,6 +271,7 @@ impl<'a> UiContext<'a> {
       axes: [false, true],
       bar: true,
       drag: DragOpts::default(),
+      content_height: None,
     }
   }
 
@@ -413,6 +440,14 @@ impl Scroll<'_, '_> {
     self
   }
 
+  /// Its contents are `height` tall inside its padding, whatever they
+  /// measure: the scroll length, the scrollbar and the wheel use it (a list
+  /// knows its length before it builds its rows)
+  pub(crate) fn content_height(mut self, height: f32) -> Self {
+    self.content_height = Some(height).filter(|h| h.is_finite() && *h >= 0.0);
+    self
+  }
+
   drag_builders!(drag);
 }
 
@@ -430,6 +465,7 @@ impl<'a> Scroll<'_, 'a> {
       axes,
       bar,
       drag,
+      content_height,
     } = self;
     let id = ui.memory.scopes.make(site, key);
     let (scene, _) = ui.scene();
@@ -453,6 +489,7 @@ impl<'a> Scroll<'_, 'a> {
       pointer,
     );
     state.ease(dt, theme.metrics.scroll_smoothing);
+    state.content_height = content_height;
     let shown = bars(state, axes, bar, bar_width);
     let grabbed = state.grab.map(|(axis, _)| axis);
 
@@ -922,6 +959,42 @@ mod tests {
       .filter(|e| e.message.contains("scroll offset that is not finite"))
       .count();
     assert_eq!(warnings, 1);
+  }
+
+  #[test]
+  fn an_area_given_its_content_height_takes_it_whatever_it_holds() {
+    let mut d = UiDriver::new((300.0, 300.0));
+    let draw = |ui: &mut UiContext<'_>| {
+      ui.scroll()
+        .width(100.0)
+        .height(100.0)
+        .padding(5.0)
+        .content_height(500.0)
+        .show(|ui| {
+          ui.custom(50.0, 30.0).show();
+        })
+        .id
+    };
+    let area = d.frame(draw);
+    d.frame(draw);
+    let state = *d.memory.peek_state::<ScrollState>(area).unwrap();
+    assert_eq!(state.content.y, 510.0, "the height given and the padding");
+    assert_eq!(state.max().y, 410.0);
+  }
+
+  #[test]
+  fn an_ease_far_down_a_long_list_arrives() {
+    // Floats a million rows down are 64 apart: a fraction of what is left
+    // can be too small to move by
+    let mut state = ScrollState {
+      offset: Vec2::new(0.0, 1.0e9),
+      target: Vec2::new(0.0, 1.0e9 + 150.0),
+      ..ScrollState::default()
+    };
+    for _ in 0..120 {
+      state.ease(1.0 / 60.0, 0.08);
+    }
+    assert_eq!(state.offset, state.target);
   }
 
   fn list_of_rows(d: &mut UiDriver) -> UiId {

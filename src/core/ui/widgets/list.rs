@@ -44,6 +44,9 @@ pub(crate) struct ListState {
   pub(crate) columns: u16,
   /// Items
   pub(crate) count: usize,
+  /// `list_scroll_to` moved the target: the next build brings the offset to
+  /// within a view of it first
+  pub(crate) jump: bool,
   /// The item whose row holds the focus
   #[expect(dead_code, reason = "kept for the list's focus handling")]
   pub(crate) focused: Option<usize>,
@@ -60,16 +63,15 @@ pub(crate) fn state_id(list: UiId) -> UiId {
   list.derived(STATE_SALT)
 }
 
-/// The rows to build: those covering the view from wherever the area shows
-/// to wherever it is heading (`from` and `to`, the offset and the target,
-/// in the rows' own units), widened by `overscan` rows each side and kept
-/// to `0..rows`
+/// The rows to build: those covering the view shown from `offset` (the
+/// offset the frame is drawn at, in the rows' own units), widened by
+/// `overscan` rows each side and kept to `0..rows`. However far the area
+/// is heading, a frame builds a view's worth.
 pub(crate) fn built_rows(
   rows: usize,
   stride: f32,
   view: f32,
-  from: f32,
-  to: f32,
+  offset: f32,
   overscan: usize,
 ) -> Range<usize> {
   if rows == 0 || !stride.is_finite() || stride <= 0.0 {
@@ -82,11 +84,10 @@ pub(crate) fn built_rows(
       0.0
     }
   };
-  let stride = f64::from(stride);
-  let (from, to) = (clean(from), clean(to));
+  let (stride, offset) = (f64::from(stride), clean(offset));
   // Float-to-integer casts saturate, so a far offset stays a far row
-  let first = (from.min(to) / stride).floor() as usize;
-  let end = ((from.max(to) + clean(view)) / stride).ceil() as usize;
+  let first = (offset / stride).floor() as usize;
+  let end = ((offset + clean(view)) / stride).ceil() as usize;
   let first = first.saturating_sub(overscan).min(rows);
   let end = end.saturating_add(overscan).min(rows).max(first);
   first..end
@@ -111,7 +112,8 @@ pub struct ListResponse {
   /// The list's id, for [`list_scroll_to`](UiContext::list_scroll_to) and
   /// the scroll area calls ([`scroll_offset`](UiContext::scroll_offset))
   pub id: UiId,
-  /// The items built this frame
+  /// The items built for the view this frame: the rows in view and the
+  /// overscan either side
   pub range: Range<usize>,
   /// The scroll area's response
   pub response: Response,
@@ -153,8 +155,10 @@ impl<'a> UiContext<'a> {
   }
 
   /// Scroll the list `list` (its [`ListResponse::id`]) by the least that
-  /// shows item `index`'s row, from the next frame. An index past the end
-  /// is the last item; a list not drawn yet ignores it.
+  /// shows item `index`'s row. A jump further than the view lands one view
+  /// short at the list's next draw and eases the rest, so it never sweeps
+  /// through the rows between. An index past the end is the last item; a
+  /// list not drawn yet ignores it.
   pub fn list_scroll_to(&mut self, list: UiId, index: usize) {
     let Some(target) = row_target(self.memory, list, index) else {
       return;
@@ -162,6 +166,11 @@ impl<'a> UiContext<'a> {
     let (scene, _) = self.scene();
     if let Some(state) = self.memory.state::<ScrollState>(list, scene) {
       state.target.y = target;
+    }
+    // The offset moves when the list next builds, never between its build
+    // and its layout (a call after the list in the same container)
+    if let Some(state) = self.memory.state::<ListState>(state_id(list), scene) {
+      state.jump = true;
     }
   }
 }
@@ -335,6 +344,25 @@ struct Shape {
   top: f32,
 }
 
+impl Shape {
+  /// Rows of `columns` items, the last one perhaps short
+  fn rows(&self) -> usize {
+    self.count.div_ceil(usize::from(self.columns))
+  }
+
+  /// The whole list's height: every row and the gaps between
+  fn length(&self) -> f32 {
+    let rows = self.rows() as f64;
+    let length = rows * f64::from(self.row_height + self.gap) - f64::from(self.gap);
+    to_units(length)
+  }
+}
+
+/// A length in `f64` as the layout takes it: finite, never negative
+fn to_units(length: f64) -> f32 {
+  length.clamp(0.0, f64::from(f32::MAX)) as f32
+}
+
 impl<'a> List<'_, 'a> {
   /// Draw the list, calling `row(ui, index)` for each item built this frame
   /// inside its own container. The [`ListResponse`] names the list and the
@@ -349,23 +377,31 @@ impl<'a> List<'_, 'a> {
       overscan,
       top,
     } = self;
-    let sized = row_height.is_finite() && row_height > 0.0;
+    // The layout cleans the gap it is given the same way, and warns
+    let clean_gap = if gap.is_finite() { gap.max(0.0) } else { 0.0 };
+    let stride = row_height + clean_gap;
+    let sized = row_height.is_finite() && row_height > 0.0 && stride.is_finite();
     if !sized {
       warn_once("ui-list-row-height".into(), || {
-        format!("a list's row height must be finite and above 0 (got {row_height}); drawn empty")
+        format!(
+          "a list's row height must be finite and above 0, and its row height and gap finite together (got {row_height} and {gap}); drawn empty"
+        )
       });
     }
     let shape = Shape {
       count,
       row_height,
       columns: columns.max(1),
-      // The layout cleans the gap it is given the same way, and warns
-      gap: if gap.is_finite() { gap.max(0.0) } else { 0.0 },
+      gap: clean_gap,
       overscan: overscan.max(1),
       top,
     };
     let mut range = 0..0;
-    let response = scroll.gap(gap).show(|ui| {
+    let mut scroll = scroll.gap(gap);
+    if sized {
+      scroll = scroll.content_height(shape.length());
+    }
+    let response = scroll.show(|ui| {
       if sized {
         range = build(ui, shape, &mut row);
       }
@@ -396,15 +432,28 @@ fn build<'a>(
     top,
   } = shape;
   let per_row = usize::from(columns);
-  let rows = count.div_ceil(per_row);
+  let rows = shape.rows();
   let stride = row_height + gap;
-  let (from, to, view) = ui
+  let view = ui
     .memory
     .peek_state::<ScrollState>(list)
-    .map_or((0.0, 0.0, 0.0), |s| (s.offset.y, s.target.y, s.view.y));
+    .map_or(0.0, |s| s.view.y);
   // Before its first layout the list has no view: the screen's stands in
   let view = if view > 0.0 { view } else { ui.ui_size().y };
-  let built = built_rows(rows, stride, view, from - top, to - top, overscan);
+  let jump = ui
+    .memory
+    .peek_state::<ListState>(state_id(list))
+    .is_some_and(|s| s.jump);
+  // The area has eased this frame's offset already; a jump moves it on
+  // before the rows are chosen, so the frame draws at the offset built for
+  let mut offset = 0.0;
+  if let Some(state) = ui.memory.state::<ScrollState>(list, scene) {
+    if jump {
+      state.approach(1, view);
+    }
+    offset = state.offset.y;
+  }
+  let built = built_rows(rows, stride, view, offset - top, overscan);
   if let Some(state) = ui.memory.state::<ListState>(state_id(list), scene) {
     state.stride = stride;
     state.row_height = row_height;
@@ -412,6 +461,7 @@ fn build<'a>(
     state.rows = rows;
     state.columns = columns;
     state.count = count;
+    state.jump = false;
   }
 
   // The area's gap is the list's, so a spacer is a gap short of the rows it
@@ -432,8 +482,10 @@ fn build<'a>(
       ..item_style(row_height)
     };
     cell(ui, row_site(), r, style, |ui| {
+      // No floor of their contents' width: the cells stay equal
       let cells = UiStyle {
         width: Length::Fill,
+        min_width: Some(0.0),
         ..UiStyle::default()
       };
       for c in 0..per_row {
@@ -464,10 +516,10 @@ fn item_style(row_height: f32) -> UiStyle {
   }
 }
 
-/// A spacer's style: `height` tall, kept finite for the layout
+/// A spacer's style: `height` tall
 fn height_style(height: f64) -> UiStyle {
   UiStyle {
-    height: Length::Px(height.clamp(0.0, f64::from(f32::MAX)) as f32),
+    height: Length::Px(to_units(height)),
     ..UiStyle::default()
   }
 }
@@ -521,7 +573,7 @@ pub(crate) fn item_id(list: UiId, columns: u16, index: usize) -> UiId {
   keyed(keyed(list, row_site(), index / columns), item_site(), index)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "default-fonts"))]
 mod tests {
   use super::*;
   use crate::core::testing::UiHarness;
@@ -543,18 +595,10 @@ mod tests {
 
   #[test]
   fn the_built_rows_cover_the_view_and_the_overscan() {
-    assert_eq!(built_rows(1000, 22.0, 200.0, 0.0, 0.0, 2), 0..12); // 200/22 = 9.1 -> 10 rows, + 2
-    assert_eq!(built_rows(1000, 22.0, 200.0, 2200.0, 2200.0, 2), 98..112);
-    assert_eq!(
-      built_rows(1000, 22.0, 200.0, 21_800.0, 21_800.0, 2),
-      988..1000
-    );
-    assert_eq!(
-      built_rows(1000, 22.0, 200.0, 0.0, 2200.0, 2),
-      0..112,
-      "spans offset to target"
-    );
-    assert_eq!(built_rows(0, 22.0, 200.0, 0.0, 0.0, 2), 0..0);
+    assert_eq!(built_rows(1000, 22.0, 200.0, 0.0, 2), 0..12); // 200/22 = 9.1 -> 10 rows, + 2
+    assert_eq!(built_rows(1000, 22.0, 200.0, 2200.0, 2), 98..112);
+    assert_eq!(built_rows(1000, 22.0, 200.0, 21_800.0, 2), 988..1000);
+    assert_eq!(built_rows(0, 22.0, 200.0, 0.0, 2), 0..0);
   }
 
   #[test]
@@ -585,24 +629,87 @@ mod tests {
   }
 
   #[test]
+  fn a_far_jump_builds_a_view_a_frame_and_lands_in_view() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = board(&mut h, 10_000, 1);
+    board(&mut h, 10_000, 1);
+    h.frame(|ui| ui.list_scroll_to(list.id, 5000));
+    let views = (3.0 * 200.0 / 22.0) as usize;
+    for frame in 0..60 {
+      let r = board(&mut h, 10_000, 1);
+      assert!(r.range.len() < views, "frame {frame}: {:?}", r.range);
+      assert!(
+        r.range.start > 4900,
+        "frame {frame} swept through {:?}",
+        r.range
+      );
+      // The rows built cover the offset the frame was drawn at
+      let offset = h.scroll_offset(list.id).y;
+      let (top, bottom) = (r.range.start as f32 * 22.0, r.range.end as f32 * 22.0);
+      assert!(
+        top <= offset && offset + 200.0 <= bottom,
+        "frame {frame}: {offset} in {:?}",
+        r.range
+      );
+    }
+    let row = h
+      .record_of_key(list.id, 5000)
+      .expect("item 5000 is drawn")
+      .rect;
+    assert!(
+      row.y >= 0.0 && row.y + row.height <= 200.0,
+      "item 5000 in view: {row:?}"
+    );
+  }
+
+  #[test]
+  fn a_jump_to_the_end_of_a_huge_list_settles() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let huge = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        ui.list(usize::MAX)
+          .row_height(20.0)
+          .height(200.0)
+          .show(|ui, i| {
+            ui.text(format!("{i}"));
+          })
+      })
+    };
+    let list = huge(&mut h);
+    huge(&mut h);
+    h.frame(|ui| ui.list_scroll_to(list.id, usize::MAX));
+    for _ in 0..30 {
+      huge(&mut h);
+    }
+    let end = huge(&mut h);
+    let state = *h.memory.peek_state::<ScrollState>(list.id).expect("drawn");
+    assert!(
+      state.offset.y.is_finite() && state.offset.y > 1e20,
+      "{state:?}"
+    );
+    assert_eq!(state.offset.y, state.target.y, "the ease has arrived");
+    assert_eq!(end.range.end, usize::MAX, "the last items are built");
+    assert!(end.range.len() < 20, "{:?}", end.range);
+  }
+
+  #[test]
   fn the_content_length_is_exact() {
     let mut h = UiHarness::new(640.0, 480.0);
     let list = board(&mut h, 100, 1);
     board(&mut h, 100, 1);
     assert_eq!(h.scroll_content(list.id).y, 100.0 * 22.0 - 2.0);
+    // One call site, so one list across the two frames
     let grid = |h: &mut UiHarness| {
       h.frame(|ui| {
-        // Shorter than its rows: an area's contents are never less than its view
         ui.list(10)
           .row_height(20.0)
           .gap(2.0)
           .columns(3)
-          .height(50.0)
+          .height(200.0)
           .width(300.0)
           .id("grid")
-          // A button is 28 tall at least; one taller than its row overflows it
           .show(|ui, i| {
-            ui.button(format!("{i}")).id(i).height(20.0);
+            ui.button(format!("{i}")).id(i);
           })
       })
     };
@@ -613,6 +720,22 @@ mod tests {
       4.0 * 22.0 - 2.0,
       "10 items in 3 columns are 4 rows"
     );
+  }
+
+  #[test]
+  fn rows_taller_than_their_height_leave_the_length_exact() {
+    // A button is at least 28 tall, so the board's rows of 20 overflow
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = board(&mut h, 100, 1);
+    board(&mut h, 100, 1);
+    h.frame(|ui| ui.list_scroll_to(list.id, 99));
+    for _ in 0..60 {
+      board(&mut h, 100, 1);
+    }
+    let end = board(&mut h, 100, 1);
+    assert_eq!(end.range.end, 100, "the last row is built");
+    assert_eq!(h.scroll_content(list.id).y, 100.0 * 22.0 - 2.0);
+    assert_eq!(h.scroll_offset(list.id).y, 100.0 * 22.0 - 2.0 - 200.0);
   }
 
   #[test]
@@ -658,6 +781,16 @@ mod tests {
       });
       assert_eq!(r.range, 0..0);
     }
+    // A row height and gap that overflow together are as bad
+    let r = h.frame(|ui| {
+      ui.list(10)
+        .row_height(f32::MAX)
+        .gap(f32::MAX)
+        .show(|ui, i| {
+          ui.text(format!("{i}"));
+        })
+    });
+    assert_eq!(r.range, 0..0);
     assert_eq!(
       crate::core::ui::test_util::warnings_containing("row height"),
       1
@@ -676,17 +809,35 @@ mod tests {
     assert!(first.range.end > 0);
     huge(&mut h);
     assert!(h.scroll_content(first.id).y.is_finite());
-    let zero = h.frame(|ui| {
-      ui.list(5)
-        .row_height(20.0)
-        .columns(0)
-        .height(200.0)
-        .id("z")
-        .show(|ui, i| {
-          ui.text(format!("{i}"));
-        })
-    });
-    assert_eq!(zero.range, 0..5, "columns(0) is one column");
+    let zero = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        ui.list(5)
+          .row_height(20.0)
+          .columns(0)
+          .height(200.0)
+          .id("z")
+          .show(|ui, i| {
+            ui.text(format!("{i}"));
+          })
+      })
+    };
+    let first = zero(&mut h);
+    assert_eq!(first.range, 0..5, "columns(0) is one column");
+    zero(&mut h);
+    assert_eq!(
+      h.scroll_content(first.id).y,
+      5.0 * 20.0,
+      "five rows of one item"
+    );
+    let (a, b) = (
+      h.record_of_key(first.id, 0).expect("built"),
+      h.record_of_key(first.id, 1).expect("built"),
+    );
+    assert_eq!(
+      (b.rect.x, b.rect.y),
+      (a.rect.x, a.rect.y + 20.0),
+      "item 1 is under item 0"
+    );
   }
 
   #[test]
@@ -735,6 +886,52 @@ mod tests {
   }
 
   #[test]
+  fn a_jump_after_the_list_in_its_container_draws_no_empty_frame() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let page = |h: &mut UiHarness, jump: bool| {
+      h.frame(|ui| {
+        let mut list = None;
+        ui.row().show(|ui| {
+          let drawn = ui
+            .list(10_000)
+            .row_height(20.0)
+            .gap(2.0)
+            .height(200.0)
+            .width(300.0)
+            .show(|ui, i| {
+              ui.button(format!("Item {i}")).id(i).fill_width();
+            });
+          // A jump button beside the list, still inside the row
+          if jump {
+            ui.list_scroll_to(drawn.id, 5000);
+          }
+          list = Some(drawn);
+        });
+        list.expect("drawn")
+      })
+    };
+    let list = page(&mut h, false);
+    page(&mut h, false);
+    let jumped = page(&mut h, true);
+    let offset = h.scroll_offset(list.id).y;
+    let (top, bottom) = (
+      jumped.range.start as f32 * 22.0,
+      jumped.range.end as f32 * 22.0,
+    );
+    assert!(
+      top <= offset && offset + 200.0 <= bottom,
+      "drawn at {offset}, built {:?}",
+      jumped.range
+    );
+    let next = page(&mut h, false);
+    assert!(
+      next.range.start > 4900,
+      "the next frame lands near: {:?}",
+      next.range
+    );
+  }
+
+  #[test]
   fn a_grid_fills_equal_cells_row_by_row() {
     let mut h = UiHarness::new(640.0, 480.0);
     let list = board(&mut h, 10, 3);
@@ -749,6 +946,41 @@ mod tests {
       "the short last row keeps its cells' width"
     );
     assert_eq!(cell(9).height, 20.0);
+  }
+
+  #[test]
+  fn a_wide_item_leaves_its_row_s_cells_equal() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let draw = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        ui.list(6)
+          .row_height(20.0)
+          .gap(2.0)
+          .columns(3)
+          .height(200.0)
+          .width(300.0)
+          .show(|ui, i| {
+            let label = if i == 1 {
+              "An item with a label far wider than its cell".to_string()
+            } else {
+              format!("{i}")
+            };
+            ui.button(label).id(i);
+          })
+      })
+    };
+    let list = draw(&mut h);
+    draw(&mut h);
+    let width = |i: usize| h.record_of_key(list.id, i).expect("built").rect.width;
+    // Snapped to pixels, cells of 98.67 are 98 or 99 wide
+    for i in 1..6 {
+      assert!(
+        (width(i) - width(0)).abs() <= 1.0,
+        "item {i}: {} against {}",
+        width(i),
+        width(0)
+      );
+    }
   }
 
   #[test]

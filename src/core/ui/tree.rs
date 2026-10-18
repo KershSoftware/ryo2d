@@ -385,10 +385,18 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       // snapped a fraction smaller than its layout still fits them
       let snapping = view - Vec2::new(exact[i].width, exact[i].height);
       let content = placed[i].content + snapping;
+      // A height its owner gave stands, whatever the contents measure
+      let height = match state.content_height {
+        Some(h) => {
+          let padding = clean_edges(node.style.padding);
+          h + padding.top + padding.bottom + snapping.y
+        }
+        None => content.y.max(view.y),
+      };
       state.view = view;
       state.content = Vec2::new(
         if x { content.x.max(view.x) } else { view.x },
-        if y { content.y.max(view.y) } else { view.y },
+        if y { height } else { view.y },
       );
     }
   }
