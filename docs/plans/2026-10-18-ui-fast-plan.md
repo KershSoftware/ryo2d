@@ -612,7 +612,7 @@ Rules (the spec's "Shared shape" and "Closure UI"):
 - **Built rows:** `built_rows` returns the visual rows covering `[min(offset, target), max(offset, target) + view]` widened by `overscan` rows each side, clamped to `0..rows`. Before the list has a view (its first frame, `view == 0`), the screen's height stands in.
 - **Placement:** inside the scroll area (gap 0 between its children is not assumed: use the column gap = `gap`): a leading spacer of height `first × stride − gap` (when `first > 0`), the built rows in order, and a trailing spacer of height `(rows − end) × stride − gap` (when `end < rows`). Spacers record nothing (no hit, focus or hover record). Each built visual row is a container of height `row_height`: with one column, the item's own container `ui.column().id(index).height(row_height).fill_width()`; with several, `ui.row().id(row).height(row_height).gap(gap)` holding one `ui.column().id(index).grow(1.0)` per item and an empty `grow(1.0)` cell for each missing item of the last row, so cells keep equal widths. The row closure builds inside the item's container.
 - **Ids follow the index** (the item container is keyed by `index`).
-- **Hostile sizes:** a `row_height` that is not finite or not above 0 warns once (`warn_once("ui-list-row-height", ..)`) and the list draws as an empty scroll area; `columns(0)` is 1; `overscan` is at least 1; huge counts stay finite (no overflow in `rows × stride`).
+- **Hostile sizes:** a `row_height` that is not finite or not above 0 warns once (`warn_once("ui-list-row-height".into(), ..)`, the message containing "row height") and the list draws as an empty scroll area; `columns(0)` is 1; `overscan` is at least 1; huge counts stay finite (no overflow in `rows × stride`).
 - **`list_scroll_to(list, index)`:** reads the `ListState` under `list` and sets the scroll area's `target` by the least movement that shows the item's row (to the row's top if above the view, to its bottom minus the view if below), clamped to the content; an index past the end is clamped to the last item; a list never drawn ignores it.
 - `ListResponse.range` is the range of item indices built this frame (`first × columns .. min(end × columns, count)`).
 
@@ -636,7 +636,7 @@ mod tests {
   fn the_built_rows_cover_the_view_and_the_overscan() {
     assert_eq!(built_rows(1000, 22.0, 200.0, 0.0, 0.0, 2), 0..12);       // 200/22 = 9.1 -> 10 rows, + 2
     assert_eq!(built_rows(1000, 22.0, 200.0, 2200.0, 2200.0, 2), 98..112);
-    assert_eq!(built_rows(1000, 22.0, 200.0, 21_800.0, 21_800.0, 2), 989..1000);
+    assert_eq!(built_rows(1000, 22.0, 200.0, 21_800.0, 21_800.0, 2), 988..1000);
     assert_eq!(built_rows(1000, 22.0, 200.0, 0.0, 2200.0, 2), 0..112, "spans offset to target");
     assert_eq!(built_rows(0, 22.0, 200.0, 0.0, 0.0, 2), 0..0);
   }
@@ -1113,7 +1113,7 @@ git commit -m "feat: a pooled node List bound by UiListBind
 
 Rules:
 - `ui_list_count` writes `UiList.count`; rows past the end are released at the next `update_lists`; if `focused` is at or past the new count and the count is above 0, the focus moves to the new last item (a pending focus jump), else it is dropped (Review Focus 1); the scroll is clamped by the scroll area as usual.
-- `ui_list_refresh` marks every pooled row for rebinding: at the next `update_lists` each gets `bound_frame = frame` and a `UiListBind` (so it draws its new data the frame after); `ui_list_refresh_row` does it for the row holding `index`, if pooled.
+- `ui_list_refresh` marks every pooled row for rebinding (add a field to `UiList` for pending rebinds, e.g. `rebind: Rebind { None, All, Rows(Vec<usize>) }`): at the next `update_lists` each gets `bound_frame = frame` and a `UiListBind` (so it draws its new data the frame after); `ui_list_refresh_row` does it for the row holding `index`, if pooled.
 - `ui_list_scroll_to` sets `UiList.jump = Some((index, false))`; `ui_list_focus` sets `Some((index, true))`. A focus jump, once the row exists and has been drawn bound, gives the focus to the row's first focusable node (depth first: a node whose kind is a focusable widget, not hidden or disabled) through 4c's `pending_focus`.
 - `ui_list_index(node)` walks up from `node` to the nearest `UiListRow` and returns its index.
 - The focused row stays pooled: `update_lists` always keeps the row of `UiList.focused`.
