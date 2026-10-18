@@ -68,7 +68,7 @@ A UI file is `assets/<path>.ui.ron` and is valid RON. Its top level is an unname
 ```ron
 // assets/ui/pause.ui.ron
 (
-  imports: ["ui/common.ui.ron"],
+  imports: ["assets/ui/common.ui.ron"],
   templates: {
     "MenuButton": (
       params: ["label", "action"],
@@ -156,7 +156,7 @@ Every node has a key, used to match nodes across reloads and updates (The reconc
 
 - its `key` option, else
 - its `name`, else
-- its kind (or template name) and its index among the siblings of that kind: the third `Button` among its siblings is `Button#2`.
+- its kind (or template name) and its index among the siblings of that kind that have no `key` or `name`: the third such `Button` is `Button#2`. Naming one node does not change its siblings' keys.
 
 Two siblings with the same key are an error in a file. In a code tree they are a warning, and they match in order.
 
@@ -182,7 +182,7 @@ templates: {
 
 - `imports` lists files by asset path; their templates become usable in this file. Their `root`s are ignored.
 - A template name defined twice across a file and its imports is an error, as is an import cycle.
-- Paths, in imports and for images, are relative to the assets directory, as `load_sprite` takes them.
+- Paths, in imports and for images, resolve as `load_sprite` resolves them: relative to the asset manager's base path, which is the game's working directory. Games write `assets/ui/common.ui.ron`.
 
 ### Placeholders
 
@@ -197,7 +197,7 @@ An empty named container, such as `Column(name: "extras")`, is where code adds n
   - imports: missing files, duplicate names and cycles;
   - sibling keys;
   - `bind` only on value widgets (Bindings).
-- **`UiFileError`** lists every error found, each with the file, line, column and a message, and suggests the nearest name for an unknown kind, option, enum value, template or parameter: `ui/pause.ui.ron:12:5: Button has no option "fil_width"; did you mean "fill_width"?`. Its `Display` prints one error per line. `AssetError` gains a variant carrying it.
+- **`UiFileError`** lists every error found, each with the file, line, column and a message, and suggests the nearest name for an unknown kind, option, enum value, template or parameter: `assets/ui/pause.ui.ron:12:5: Button has no option "fil_width"; did you mean "fill_width"?`. Its `Display` prints one error per line. `AssetError` gains a variant carrying it.
 - **`ctx.assets.add_ui(path, text) -> Result<UiFile, UiFileError>`** checks text the game embedded (with `include_str!`, for the web or a single binary) and caches it under `path`, so later loads and imports of that path use it. Such files are not watched.
 - **`UiFile::parse(name, text) -> Result<UiFile, UiFileError>`** checks text without an asset manager, for tests and tools. A file read this way cannot import.
 - **`UiFile`** is a cheap, cloneable handle (shared document and a `generation()`), like `SpriteHandle`; a reload replaces its document in place.
@@ -220,9 +220,9 @@ Building turns a file into a `UiNode`:
   - a key only in `tree`: spawned;
   - a key only in the spawned tree: despawned with its subtree;
   - the tree's own children end in `tree`'s order.
-- **What the tree owns.** Its own settings are rewritten from `tree`: kind options, layout, flags, placement (`anchor`, `at`, `offset`, `modal`), variant, action, name, key, neighbours, tooltip patterns and label patterns, and `bind`.
+- **What the tree owns.** Its own settings are rewritten from `tree`: kind options, layout, flags, `modal`, variant, action, name, key, neighbours, tooltip patterns and label patterns, and `bind`.
 - **What three-way merging protects.** The state the game and the player write is compared against the value the tree last applied, stored per node (two exceptions below):
-  - `UiLabel`, `UiChecked`, `UiValue`, `UiIndex`, `UiOptions`, `UiTextValue`, `UiSlot`, `UiImage`, `UiTooltip`, `UiHidden`, `UiDisabled`.
+  - `UiLabel`, `UiChecked`, `UiValue`, `UiIndex`, `UiOptions`, `UiTextValue`, `UiSlot`, `UiImage`, `UiTooltip`, `UiHidden`, `UiDisabled`, and a root's placement (`UiRoot`'s `anchor`, `offset` and `at`, which `UiRoot` documents as the game's to change).
   - One is written only when `tree`'s value differs from the last applied one. Otherwise the live value stays, whoever wrote it.
   - So a reload that moves a button keeps the score the game wrote into a label and the slider the player dragged, while a reload that changes a label's text in the file replaces it.
   - **A bound widget's value belongs to its binding.** The tree's value only seeds the name (Bindings); the reconcile never writes it.
@@ -246,7 +246,7 @@ Building turns a file into a `UiNode`:
   A value of the wrong type for a bound widget (a bool on a slider) warns once, naming the binding and the node, and leaves the widget as it is.
 - **Reading.** `ctx.ui_get::<T>(node, name) -> Option<T>` for `f32`, `f64`, `i32`, `u32`, `usize`, `bool` and `String`.
 - **The components stay the truth.** Each frame the walk syncs a bound widget's name from its component, whoever wrote it: the player, `ui_set`, or game code writing `UiValue` directly as in 4c. When a bound widget's value changes, its name changes, and so does every other widget and pattern bound to that name. A pattern drawn after the widget shows the new value in the same frame; one drawn before it shows it the next. The widget's `Changed` `UiEvent` fires as in 4c.
-- **Patterns.** In a file, every string that becomes a label or tooltip is a pattern: `Text`'s `text`, any kind's `label`, `tooltip`, and `Confirm`'s `title`, `message`, `yes` and `no`. `{name}` is replaced by the value: whole numbers print without a decimal point, other numbers in their shortest form, bools as `true` or `false`. `{name:.N}` gives a number N decimals, and `{{` and `}}` print braces. A `TextInput`'s `text` and `placeholder` are not patterns.
+- **Patterns.** In a file, every string that becomes a label or tooltip is a pattern: `Text`'s `text`, the `label` of `Button`, `Checkbox` and `Toggle`, `tooltip`, and `Confirm`'s `title`, `message`, `yes` and `no`. A `Slider`'s, `Progress`'s or `Rebind`'s `label` is a kind option, not a component, and stays literal. `{name}` is replaced by the value: whole numbers print without a decimal point, other numbers in their shortest form, bools as `true` or `false`. `{name:.N}` gives a number N decimals, and `{{` and `}}` print braces. A `TextInput`'s `text` and `placeholder` are not patterns.
 - **Starting values.** A bound value widget's file value (its `value`, `checked`, `on`, `selected` or `text`) seeds its name (`value: 0.8` seeds `volume`); a file's top-level `bindings` seeds names that only text uses. Seeds apply only to names with no value yet, so a reload never resets a score. A name never set shows as nothing, and debug builds warn once per name.
 - **Code trees.** `UiNode::bind(name)` binds a value widget; `UiNode::bound()` makes a node's label and tooltip patterns (code text is literal unless marked). A `bind` on a kind that holds no value is an error in a file and a warning in code.
 - **Reloads** keep the values, pick up new and removed bindings, and format new patterns with the current values.
