@@ -1,0 +1,45 @@
+// The pause menu: a dim stack over the game holding the panel. The sliders run
+// 0-100 and the scene sets "master", "music", "sfx" and "score". Debug builds
+// reload this file when it is saved.
+(
+  templates: {
+    // A label, a volume slider and its percentage: `name` is the binding the
+    // slider writes and `shown` the pattern that shows it (a template cannot
+    // build a "{name}" pattern from a parameter)
+    "VolumeRow": (
+      params: ["label", "name", "shown"],
+      node: Row(
+        gap: 8, align: Center,
+        children: [
+          Column(width: 96, children: [Text(text: label, color: "#ffffff")]),
+          Slider(range: (0, 100), step: 5, fill_width: true, bind: name, name: name),
+          Column(width: 64, children: [Text(text: shown, color: "#ffffff", text_align: End)]),
+        ],
+      ),
+    ),
+
+    "MenuButton": (
+      params: ["label", "action"],
+      defaults: { "focus": false },
+      node: Button(label: label, action: action, fill_width: true, height: 40, default_focus: focus),
+    ),
+  },
+  root: Stack(
+    fill: true, background: "#000000b4",
+    children: [
+      Panel(
+        focus_scope: true, anchor: Center, width: 400, padding: 16, gap: 12,
+        children: [
+          Text(text: "PAUSED", color: "#ffffff", text_align: Center),
+          Text(text: "Score: {score}", color: "#ffff00", text_align: Center),
+          VolumeRow(label: "Master", name: "master", shown: "{master:.0}%"),
+          VolumeRow(label: "Music", name: "music", shown: "{music:.0}%"),
+          VolumeRow(label: "SFX", name: "sfx", shown: "{sfx:.0}%"),
+          MenuButton(label: "RESUME", action: "resume", focus: true),
+          MenuButton(label: "QUIT TO MENU", action: "menu"),
+          MenuButton(label: "QUIT TO DESKTOP", action: "desktop"),
+        ],
+      ),
+    ],
+  ),
+)

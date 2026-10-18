@@ -11,8 +11,11 @@ use super::{MenuScene, PauseScene};
 use crate::components::{Ball, Block, DeathZone, Paddle, Wall};
 use crate::constants::*;
 use crate::levels::{level_path, load_level};
-use crate::look::text_style;
+use crate::look::{spawn_ui_file, text_style};
 use crate::save::save_high_score;
+
+const HUD: &str = "assets/ui/hud.ui.ron";
+const HUD_EMBEDDED: &str = include_str!("../../assets/ui/hud.ui.ron");
 
 /// Main gameplay scene
 pub struct GameScene {
@@ -24,6 +27,9 @@ pub struct GameScene {
   game_started: bool,
   game_over: bool,
   game_won: bool,
+
+  /// The HUD's tree, when its file loaded
+  hud: Option<Entity>,
 
   // Entity tracking
   paddle: Option<Entity>,
@@ -89,6 +95,7 @@ impl GameScene {
       game_started: false,
       game_over: false,
       game_won: false,
+      hud: None,
       paddle: None,
       balls: Vec::new(),
       blocks: Vec::new(),
@@ -839,6 +846,19 @@ impl GameScene {
   }
 }
 
+impl GameScene {
+  /// Set the HUD's bindings (nothing is written for a value that has not
+  /// changed)
+  fn show_hud(&self, ctx: &mut SceneContext) {
+    if let Some(hud) = self.hud {
+      ctx.ui_set(hud, "score", self.score);
+      ctx.ui_set(hud, "high", self.high_score);
+      ctx.ui_set(hud, "lives", self.lives);
+      ctx.ui_set(hud, "level", self.level);
+    }
+  }
+}
+
 impl Scene for GameScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     // Check for debug mode from workspace config
@@ -902,6 +922,8 @@ impl Scene for GameScene {
     self.spawn_paddle(ctx);
     self.spawn_ball(ctx);
     self.spawn_blocks(ctx);
+    self.hud = spawn_ui_file(ctx, HUD, HUD_EMBEDDED);
+    self.show_hud(ctx);
   }
 
   fn on_exit(&mut self, _ctx: &mut SceneContext) {
@@ -1238,38 +1260,10 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, _screen_h) = ui.screen_size();
 
-    // Score (top right)
-    let score_text = format!("Score: {}", self.score);
-    ui.draw_text_anchored_styled(
-      &score_text,
-      Anchor::TopRight,
-      -20.0,
-      10.0,
-      &text_style(Color::WHITE),
-    );
-
-    // High score
-    let high_text = format!("High: {}", self.high_score);
-    ui.draw_text_anchored_styled(
-      &high_text,
-      Anchor::TopRight,
-      -20.0,
-      28.0,
-      &text_style(Color::YELLOW),
-    );
-
-    // Lives (top left)
-    let lives_text = format!("Lives: {}", self.lives);
-    ui.draw_text_anchored_styled(
-      &lives_text,
-      Anchor::TopLeft,
-      20.0,
-      10.0,
-      &text_style(Color::WHITE),
-    );
+    self.show_hud(ctx);
 
     // "+1" fly-by animation when gaining a life
     if self.plus_one_timer > 0.0 {
@@ -1291,16 +1285,6 @@ impl Scene for GameScene {
         .opacity(opacity)
         .at(x_offset, y_offset);
     }
-
-    // Level
-    let level_text = format!("Level: {}", self.level);
-    ui.draw_text_anchored_styled(
-      &level_text,
-      Anchor::TopLeft,
-      20.0,
-      28.0,
-      &text_style(Color::CYAN),
-    );
 
     // "Press any key to launch" prompt
     if !self.game_started {

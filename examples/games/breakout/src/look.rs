@@ -39,3 +39,25 @@ pub fn use_game_look(ctx: &mut SceneContext) {
     theme.text.heading.size = TITLE_SIZE;
   });
 }
+
+/// A UI file of the game: from disk when `path` is there (debug builds reload
+/// it when it is saved), else the copy embedded in the binary, which is what
+/// the web build and the tests have
+pub fn ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Result<UiFile, UiFileError> {
+  match ctx.assets.load_ui(path) {
+    Err(AssetError::NotFound(_)) => ctx.assets.add_ui(path, embedded),
+    loaded => Ok(loaded?),
+  }
+}
+
+/// Spawn the UI file's tree, or log why it could not be and go on without it
+pub fn spawn_ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Option<Entity> {
+  let tree = ui_file(ctx, path, embedded).and_then(|file| file.root(ctx.assets));
+  match tree {
+    Ok(tree) => Some(ctx.spawn_ui(tree)),
+    Err(error) => {
+      game_error!("{path}: {error}");
+      None
+    }
+  }
+}

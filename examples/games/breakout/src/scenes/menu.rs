@@ -8,8 +8,11 @@ use ryo2d::prelude::*;
 
 use super::{GameScene, QuitConfirmScene};
 use crate::constants::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use crate::look::{text_style, use_game_look};
+use crate::look::{spawn_ui_file, use_game_look};
 use crate::save::load_high_score;
+
+const MENU: &str = "assets/ui/menu.ui.ron";
+const MENU_EMBEDDED: &str = include_str!("../../assets/ui/menu.ui.ron");
 
 /// Main menu scene
 pub struct MenuScene {
@@ -19,6 +22,8 @@ pub struct MenuScene {
   /// The game is starting: the menu still shows while it fades out, and a
   /// second press then must not play the intro again
   starting: bool,
+  /// The title screen's tree, when its file loaded
+  root: Option<Entity>,
 }
 
 impl MenuScene {
@@ -28,6 +33,7 @@ impl MenuScene {
       high_score: load_high_score(),
       music: None,
       starting: false,
+      root: None,
     }
   }
 
@@ -48,69 +54,12 @@ impl MenuScene {
     )
   }
 
-  /// The title screen's nodes, each text line in its own root
-  fn spawn_nodes(&self, ctx: &mut SceneContext) {
-    ctx.spawn_ui(UiNode::stack().fill().background(Color::rgb(20, 20, 35)));
-
-    let line = |text: String, color: Color, y: f32| {
-      UiNode::column()
-        .anchor(Anchor::TopCenter)
-        .offset(0.0, y)
-        .child(UiNode::text(text).style(text_style(color)))
-    };
-    ctx.spawn_ui(line("BREAKOUT".into(), Color::WHITE, 100.0));
-    ctx.spawn_ui(line("A Ryo2D Engine Demo".into(), Color::GRAY, 130.0));
-    ctx.spawn_ui(line(
-      format!("High Score: {}", self.high_score),
-      Color::YELLOW,
-      180.0,
-    ));
-
-    let blocks = [
-      Color::hex(0xff4444),
-      Color::hex(0xff8800),
-      Color::hex(0xffff00),
-      Color::hex(0x00cc44),
-      Color::hex(0x4488ff),
-      Color::hex(0xaa44ff),
-    ];
-    ctx.spawn_ui(
-      UiNode::row()
-        .anchor(Anchor::TopCenter)
-        .offset(0.0, 250.0)
-        .gap(5.0)
-        .children(
-          blocks
-            .iter()
-            .map(|color| UiNode::stack().width(60.0).height(25.0).background(*color)),
-        ),
-    );
-
-    ctx.spawn_ui(
-      UiNode::column()
-        .focus_scope()
-        .anchor(Anchor::TopCenter)
-        .offset(0.0, 350.0)
-        .child(
-          UiNode::button("START GAME")
-            .action("start")
-            .width(200.0)
-            .height(50.0)
-            .default_focus(),
-        ),
-    );
-
-    ctx.spawn_ui(line(
-      "Press ENTER, SPACE, or A to Start".into(),
-      Color::LIGHT_GRAY,
-      450.0,
-    ));
-    ctx.spawn_ui(
-      UiNode::column()
-        .anchor(Anchor::BottomCenter)
-        .offset(0.0, -30.0)
-        .child(UiNode::text("ESC or B to Quit").style(text_style(Color::DARK_GRAY))),
-    );
+  /// The title screen, from its file
+  fn spawn_nodes(&mut self, ctx: &mut SceneContext) {
+    self.root = spawn_ui_file(ctx, MENU, MENU_EMBEDDED);
+    if let Some(root) = self.root {
+      ctx.ui_set(root, "high", self.high_score);
+    }
   }
 }
 

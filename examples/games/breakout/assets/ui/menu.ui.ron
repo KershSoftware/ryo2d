@@ -1,0 +1,50 @@
+// The title menu: one full-screen stack holding the title lines, the row of
+// blocks and the start button. The scene sets "high". Debug builds reload this
+// file when it is saved.
+(
+  templates: {
+    // A line of text centred at the top, `y` units down
+    "Line": (
+      params: ["text", "color", "y"],
+      node: Column(
+        anchor: TopCenter, offset: (0, y),
+        children: [Text(text: text, color: color)],
+      ),
+    ),
+
+    "Block": (
+      params: ["color"],
+      node: Stack(width: 60, height: 25, background: color),
+    ),
+  },
+  root: Stack(
+    fill: true, background: "#141423",
+    children: [
+      Line(text: "BREAKOUT", color: "#ffffff", y: 100),
+      Line(text: "A Ryo2D Engine Demo", color: "#808080", y: 130),
+      Line(text: "High Score: {high}", color: "#ffff00", y: 180),
+      Row(
+        anchor: TopCenter, offset: (0, 250), gap: 5,
+        children: [
+          Block(color: "#ff4444"),
+          Block(color: "#ff8800"),
+          Block(color: "#ffff00"),
+          Block(color: "#00cc44"),
+          Block(color: "#4488ff"),
+          Block(color: "#aa44ff"),
+        ],
+      ),
+      Column(
+        focus_scope: true, anchor: TopCenter, offset: (0, 350),
+        children: [
+          Button(label: "START GAME", action: "start", width: 200, height: 50, default_focus: true),
+        ],
+      ),
+      Line(text: "Press ENTER, SPACE, or A to Start", color: "#c0c0c0", y: 450),
+      Column(
+        anchor: BottomCenter, offset: (0, -30),
+        children: [Text(text: "ESC or B to Quit", color: "#404040")],
+      ),
+    ],
+  ),
+)

@@ -1,4 +1,7 @@
-use breakout::scenes::PauseScene;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+use breakout::scenes::{GameScene, PauseScene};
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 
@@ -18,14 +21,43 @@ impl Scene for Under {
   }
 }
 
+/// An empty folder to run from, so saves are written there and the player's
+/// are never touched, and no UI file is on disk, so the embedded copies load.
+/// The working directory is the process's, so both tests share one folder.
+fn empty_folder() {
+  static FOLDER: OnceLock<PathBuf> = OnceLock::new();
+  FOLDER.get_or_init(|| {
+    let folder = std::env::temp_dir().join(format!("breakout-menus-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    std::env::set_current_dir(&folder).unwrap();
+    folder
+  });
+}
+
+#[test]
+fn the_hud_shows_the_score_through_its_bindings() {
+  empty_folder();
+  let Some(mut engine) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(800, 600)
+      .start_scene(GameScene::new(0, None)),
+  ) else {
+    return;
+  };
+  engine.step_frames(5).unwrap();
+  let world = engine.world_mut();
+  let mut labels = world.query::<&UiLabel>();
+  let hud: Vec<String> = labels
+    .iter(world)
+    .map(|label| label.0.clone())
+    .filter(|text| text.starts_with("Score:"))
+    .collect();
+  assert_eq!(hud, ["Score: 0"]);
+}
+
 #[test]
 fn the_pause_menu_is_navigable_by_pad() {
-  // QUIT TO DESKTOP saves the high score, with a timestamp: run from an
-  // empty folder, so the save is written there and the player's is never
-  // touched (the working directory is the process's; this file has one test)
-  let folder = std::env::temp_dir().join(format!("breakout-menus-{}", std::process::id()));
-  std::fs::create_dir_all(&folder).unwrap();
-  std::env::set_current_dir(&folder).unwrap();
+  empty_folder();
 
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
@@ -43,6 +75,4 @@ fn the_pause_menu_is_navigable_by_pad() {
   engine.tap_pad(GamepadButton::South);
   let outcome = engine.step_frames(3).unwrap();
   assert_eq!(outcome, ryo2d::testing::StepOutcome::Quit);
-  drop(engine);
-  let _ = std::fs::remove_dir_all(&folder);
 }

@@ -7,8 +7,11 @@ use std::time::Duration;
 use ryo2d::prelude::*;
 
 use super::MenuScene;
-use crate::look::TEXT_SIZE;
+use crate::look::spawn_ui_file;
 use crate::save::save_high_score;
+
+const PAUSE: &str = "assets/ui/pause.ui.ron";
+const PAUSE_EMBEDDED: &str = include_str!("../../assets/ui/pause.ui.ron");
 
 /// Pause menu overlay
 pub struct PauseScene {
@@ -18,6 +21,8 @@ pub struct PauseScene {
   settings: SystemState,
   /// Track if we need to save settings
   settings_changed: bool,
+  /// The menu's tree, when its file loaded
+  root: Option<Entity>,
 }
 
 impl PauseScene {
@@ -39,6 +44,7 @@ impl PauseScene {
       high_score,
       settings,
       settings_changed: false,
+      root: None,
     }
   }
 
@@ -65,76 +71,18 @@ impl PauseScene {
   }
 }
 
-/// A row of a label, a volume slider and its percentage
-fn volume_row(label: &str, name: &str, value: f32) -> UiNode {
-  UiNode::row()
-    .gap(8.0)
-    .align(Align::Center)
-    // Wide enough for "Master" and "100%" in the game's 12 unit font
-    .child(
-      UiNode::column()
-        .width(96.0)
-        .child(UiNode::text(label).size(TEXT_SIZE).color(Color::WHITE)),
-    )
-    .child(
-      UiNode::slider(0.0..=1.0, value)
-        .step(0.05)
-        .fill_width()
-        .name(name),
-    )
-    .child(
-      UiNode::column().width(64.0).child(
-        UiNode::text(percent(value))
-          .size(TEXT_SIZE)
-          .color(Color::WHITE)
-          .text_align(TextAlign::End)
-          .name(format!("{name}-percent")),
-      ),
-    )
-}
-
-fn percent(value: f32) -> String {
-  format!("{:.0}%", value * 100.0)
-}
-
-fn menu_button(label: &str, action: &str) -> UiNode {
-  UiNode::button(label)
-    .action(action)
-    .fill_width()
-    .height(40.0)
-}
-
 impl Scene for PauseScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.spawn_ui(UiNode::stack().fill().background(Color::new(0, 0, 0, 180)));
+    self.root = spawn_ui_file(ctx, PAUSE, PAUSE_EMBEDDED);
+    let Some(root) = self.root else {
+      return;
+    };
+    // The sliders run 0-100; the volumes are applied as they change
     let s = &self.settings;
-    ctx.spawn_ui(
-      UiNode::panel()
-        .focus_scope()
-        .anchor(Anchor::Center)
-        .width(400.0)
-        .padding(16.0)
-        .gap(12.0)
-        .child(
-          UiNode::text("PAUSED")
-            .size(TEXT_SIZE)
-            .color(Color::WHITE)
-            .text_align(TextAlign::Center),
-        )
-        .child(
-          UiNode::text(format!("Score: {}", self.score))
-            .size(TEXT_SIZE)
-            .color(Color::YELLOW)
-            .text_align(TextAlign::Center),
-        )
-        // Volumes, applied as they change for real-time feedback
-        .child(volume_row("Master", "master", s.master_volume))
-        .child(volume_row("Music", "music", s.music_volume))
-        .child(volume_row("SFX", "sfx", s.sfx_volume))
-        .child(menu_button("RESUME", "resume").default_focus())
-        .child(menu_button("QUIT TO MENU", "menu"))
-        .child(menu_button("QUIT TO DESKTOP", "desktop")),
-    );
+    ctx.ui_set(root, "master", s.master_volume * 100.0);
+    ctx.ui_set(root, "music", s.music_volume * 100.0);
+    ctx.ui_set(root, "sfx", s.sfx_volume * 100.0);
+    ctx.ui_set(root, "score", self.score);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -157,7 +105,10 @@ impl Scene for PauseScene {
     for event in ctx.ui_events() {
       match (event.kind, event.name.as_deref(), event.action.as_deref()) {
         (UiEventKind::Changed, Some(name @ ("master" | "music" | "sfx")), _) => {
-          let Some(value) = ctx.world.get::<UiValue>(event.node).map(|v| v.0) else {
+          let Some(root) = self.root else {
+            continue;
+          };
+          let Some(value) = ctx.ui_get::<f32>(root, name).map(|v| v / 100.0) else {
             continue;
           };
           match name {
@@ -173,11 +124,6 @@ impl Scene for PauseScene {
               self.settings.sfx_volume = value;
               ctx.audio.set_sfx_volume(value);
             }
-          }
-          if let Some(label) = ctx.find_ui(&format!("{name}-percent"))
-            && let Some(mut label) = ctx.world.get_mut::<UiLabel>(label)
-          {
-            label.0 = percent(value);
           }
           self.settings_changed = true;
         }

@@ -1,0 +1,30 @@
+// The HUD: lives and level top-left, score and the high score top-right. The
+// game sets "lives", "level", "score" and "high" each frame. Debug builds
+// reload this file when it is saved.
+(
+  templates: {
+    // A line of text in a 18 unit row
+    "Line": (
+      params: ["text", "color"],
+      node: Column(height: 18, children: [Text(text: text, color: color)]),
+    ),
+  },
+  root: Row(
+    anchor: TopLeft, width: Pct(1), padding: (20, 10), justify: SpaceBetween,
+    children: [
+      Column(
+        children: [
+          Line(text: "Lives: {lives}", color: "#ffffff"),
+          Line(text: "Level: {level}", color: "#00ffff"),
+        ],
+      ),
+      Column(
+        align: End,
+        children: [
+          Line(text: "Score: {score}", color: "#ffffff"),
+          Line(text: "High: {high}", color: "#ffff00"),
+        ],
+      ),
+    ],
+  ),
+)

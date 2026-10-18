@@ -1,0 +1,2 @@
+// The quit dialog, opened on NO. Debug builds reload this file when it is saved.
+(root: Confirm(title: "Quit to Desktop?", yes: "YES", no: "NO"))

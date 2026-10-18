@@ -4,6 +4,11 @@
 
 use ryo2d::prelude::*;
 
+use crate::look::spawn_ui_file;
+
+const QUIT_CONFIRM: &str = "assets/ui/quit_confirm.ui.ron";
+const QUIT_CONFIRM_EMBEDDED: &str = include_str!("../../assets/ui/quit_confirm.ui.ron");
+
 /// Quit confirmation overlay
 pub struct QuitConfirmScene;
 
@@ -23,7 +28,7 @@ impl Default for QuitConfirmScene {
 impl Scene for QuitConfirmScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     // Opens on NO; Back (Escape, B) answers no
-    ctx.spawn_ui(UiNode::confirm("Quit to Desktop?", "", "YES", "NO"));
+    spawn_ui_file(ctx, QUIT_CONFIRM, QUIT_CONFIRM_EMBEDDED);
   }
 
   fn ui(&mut self, _ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
