@@ -145,7 +145,7 @@ All are in the prelude and registered at engine build.
 | `AssetLoadFailed` | `path`, `error: String` | a hot reload failed (dev builds); an async load reports failure on its `AsyncSpriteHandle` (`state()`) instead |
 | `ParticleCollision` | `emitter_entity`, `collider_entity`, `position_x/y`, `normal_x/y`, `velocity_x/y` | a particle hits a collider (see `ryo-particles`) |
 | `UiEvent` | `node`, `name`, `action`, `kind: UiEventKind` (`Clicked`, `SecondaryClicked`, `Changed`, `Submitted`, `Dropped { source }`, `Back`, `FocusGained`, `FocusLost`) | a UI node reported something, during the UI pass, before the fixed steps (see `ryo-ui`, Nodes). A scene reads its own nodes' with `ctx.ui_events()`, which shares this message's cursor |
-| `UiReloaded` | `root: Entity` | a UI node tree was brought in line with its changed `.ui.ron` file (dev builds, or `ctx.assets.reload_ui`), once per root, before that frame's UI pass. Nodes the file gave a new kind are new entities, so a game that filled a placeholder fills it again here (see `ryo-ui`, Files) |
+| `UiReloaded` | `root: Entity`, `replaced: Option<Entity>` | a UI node tree was brought in line with its changed `.ui.ron` file (dev builds, or `ctx.assets.reload_ui`), once per root, before that frame's UI pass. `replaced` is the old root when the file gave the root a new kind, so a game holding it swaps in `root`. Nodes the file gave a new kind are new entities, so a game that filled a placeholder fills it again here (see `ryo-ui`, Files) |
 
 ```rust
 // A coin is a trigger: who entered is `actor()`, the coin is `trigger`

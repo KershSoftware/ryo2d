@@ -254,8 +254,8 @@ Building turns a file into a `UiNode`:
 ## Hot reload
 
 - **The watch.** The asset manager's existing watcher (debug builds with an assets directory, never headless) also watches `.ui.ron` files. When a UI file changes, it is read and checked again, and so is every loaded file that imports it.
-- **Applying.** If the new document is clean, every tree built from it is reconciled before that frame's UI pass: roots and code-built template instances, in every scene, with the file's new tree or the template expanded again with the instance's arguments. Then a `UiReloaded { root }` message goes out for each root touched, so a game whose filled placeholder was respawned can fill it again.
-- **Errors.** On an error, the old document and trees stay, and the errors are warned once per change with their positions, as theme reloads behave. A file that lost its `root`, or a template that code-built instances use, keeps the old document too and warns.
+- **Applying.** If the new document is clean, every tree built from it is reconciled before that frame's UI pass: roots and code-built template instances, in every scene, with the file's new tree or the template expanded again with the instance's arguments. Then a `UiReloaded { root, replaced }` message goes out for each root touched, so a game whose filled placeholder was respawned can fill it again; `replaced` names the old root when the root itself was given a new kind, so a game holding it can swap in the new one.
+- **Errors.** On an error, the old document and trees stay, and the errors are warned once per change with their positions, as theme reloads behave. A file that still checks but lost its `root`, or a template that trees were built from, replaces the document like any clean file: the trees that can no longer be built are kept as they were and warned about once, the rest are brought in line, and new builds of the lost template fail.
 - **Without the watcher.** `ctx.assets.reload_ui(path)` asks for the same reload directly; tests and headless runs use it.
 - **Release builds** read files once and never watch them.
 

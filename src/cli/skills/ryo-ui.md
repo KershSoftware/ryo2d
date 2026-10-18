@@ -1859,6 +1859,7 @@ templates: {
 ```
 
 - **Used like a kind:** `ItemSlot(icon: "assets/items/sword.png", count: 3)`. A use's fields are the template's parameters first, then any option of its root node, applied over the template's own: `MenuButton(label: "Resume", action: "resume", default_focus: true)`. A parameter is either required (in `params`) or has a default (in `defaults`), never both: listing a name in both is a load error. A missing required parameter or an unknown field is an error at the use.
+- **`false` cannot turn off a flag the template's body sets.** A flag option (`fill_width`, `default_focus`, ..) given `false` is just not applied, so it never turns off what the template's node sets: `MenuButton(fill_width: false)` does nothing when `MenuButton`'s node says `fill_width: true`. Make a flag optional with a parameter that has a default: `defaults: { "wide": true }` and `node: Button(label: label, fill_width: wide)`, then `MenuButton(label: "Back", wide: false)`.
 - **A bare lowercase name that is a parameter** stands for the argument's value wherever a value can go (`icon: icon`). Kinds, templates and enum values are CamelCase, so a lowercase name is always a parameter reference.
 - **A parameter can stand for a node:** `Labelled(label: "Volume", widget: Slider(range: (0, 1), bind: "volume"))` with `node: Row(children: [Text(label), widget])`. A bare template name works as the argument too (`widget: VolumeSlider`).
 - **`{param}` in a string** is replaced by the argument's text when the template expands: `Text("Hello {who}")`; `{param:.1}` gives a number argument one decimal. A `{name}` that is not a parameter stays a binding pattern (Bindings), so inside a template a parameter shadows a binding of the same name.
@@ -1885,9 +1886,10 @@ An empty named container, `Column(name: "extras")`, is where code adds nodes wit
 | `file.template(name, &args, ctx.assets)` | the same, on a file you hold |
 | `ctx.assets.add_ui(path, text) -> Result<UiFile, UiFileError>` | check text the game embedded and cache it under `path`; never reloaded |
 | `UiFile::parse(name, text)` | check text with no asset manager (tests, tools); such a file cannot import |
-| `UiArgs::new().with("label", "Resume").with("count", 3)` | a template's arguments: text, numbers, bools and lists |
+| `UiArgs::new().with("label", "Resume").with("count", 3)` | a template's arguments: text, numbers, bools and lists; its parameters, and any option of its root node (`.with("default_focus", true)`) |
 
-- The built `UiNode` is ordinary. Add `.insert(MyComponent)`, `.child(..)`ren or `.default_focus()` in code, spawn it with `spawn_ui`, `spawn_ui_in`, or put it in a code tree.
+- The built `UiNode` is ordinary: spawn it with `spawn_ui` or `spawn_ui_in`, or put it in a code tree.
+- **Give a template instance its options in `UiArgs`, not as methods on the built node.** An argument may be any option of the template's root node, as in a file: `UiArgs::new().with("default_focus", true)`, `.with("name", "slot-3")`. A reload builds the instance again from its template and its arguments, so options passed this way are applied again, while an option set in code on the result (`.default_focus()`, `.name(..)`) is gone after the next reload. What code adds that a reload keeps is `.insert(MyComponent)` components and `.child(..)` nodes.
 - Images are loaded while building; a missing one is an error at the `sprite` or `icon` value.
 - `UiFileError` lists every mistake, each with `path`, `line`, `column` and `message`; `Display` prints one per line. Log it with `game_error!("{error}")`. A game that cannot load a file should show something, not panic.
 - **Build every tree before spawning any.** A template that fails to build then leaves nothing half on screen: build the root and every template instance first, then `spawn_ui` and `spawn_ui_in`.
@@ -1899,7 +1901,7 @@ A binding is a name whose value text shows and value widgets read and write.
 - **Patterns.** In a file, every string that becomes a label or tooltip is a pattern: `Text`'s `text`, the `label` of `Button`, `Checkbox` and `Toggle`, `tooltip`, and `Confirm`'s `title`, `message`, `yes` and `no`. `{name}` shows the value (whole numbers without a decimal point, other numbers in their shortest form, bools as `true` or `false`); `{name:.1}` gives one decimal; `{{` and `}}` print braces. **A literal brace in any of these strings is `{{`.** A `Slider`'s, `Progress`'s or `Rebind`'s `label` is a kind option, not a component: it is literal, with no patterns. A `TextInput`'s `text` and `placeholder` are not patterns.
 - **`bind: "volume"`** on a value widget ties it to the name: `Slider`, `Progress`, `Checkbox`, `Toggle`, `RadioGroup`, `Dropdown`, `Tabs`, `ChoiceList` and `TextInput`. Any other kind is an error. The widget and `"Volume: {volume:.1}"` then follow each other with no game code, and so does every other widget and pattern bound to the name.
 - **Values** are `BindValue`s: numbers, strings and bools (`From` for the usual types). A bound `Slider` or `Progress` takes a number; `Checkbox` and `Toggle` a bool; `RadioGroup`, `Dropdown`, `Tabs` and `ChoiceList` a whole, non-negative number (the index); `TextInput` text (a number or bool is formatted). A value of the wrong type warns once, naming the binding and the node, and leaves the widget as it is.
-- **`ctx.ui_set(node, "score", 120)`** sets the name on `node`'s root: it writes every bound widget (`UiValue`, `UiChecked`, `UiIndex` or `UiTextValue`), formats every label and tooltip that uses the name, and writes nothing when the value is unchanged, so setting a value every frame is fine. **`ctx.ui_get::<f32>(node, "volume")`** reads it back (`f32`, `f64`, `i32`, `u32`, `usize`, `bool`, `String`).
+- **`ctx.ui_set(node, "score", 120)`** sets the name on `node`'s root: it writes every bound widget (`UiValue`, `UiChecked`, `UiIndex` or `UiTextValue`) and formats every label and tooltip that uses the name. A value equal to the one held does nothing at all (no write, no formatting), so setting a value every frame is cheap. **`ctx.ui_get::<f32>(node, "volume")`** reads it back (`f32`, `f64`, `i32`, `u32`, `usize`, `bool`, `String`).
 - **One set of values per spawned root.** Two HUDs from one file never share values, and nodes code adds under a root use that root's. Pass any node of the tree: `ui_set(hud, ..)`.
 - **Starting values.** A bound widget's file value (`value`, `checked`, `on`, `selected`, `text`) seeds its name (`value: 0.8` seeds `volume`); the top-level `bindings` seeds names only text uses. A seed applies only to a name with no value yet, so a reload never resets a score. A name never set shows as nothing, and debug builds warn once per name.
 - **The components stay the truth.** The player moving a bound slider, `ui_set`, and game code writing `UiValue` directly all change the name, and the `Changed` `UiEvent` fires as usual. A pattern drawn after the widget shows the new value in the same frame; one drawn before it shows it the next.
@@ -1913,19 +1915,37 @@ A binding is a name whose value text shows and value widgets read and write.
 - **The tree owns its settings** (layout, flags, variant, action, name, key, neighbours, kind options, `bind`) and rewrites them every update.
 - **The game and the player own the state they wrote.** `UiLabel`, `UiChecked`, `UiValue`, `UiIndex`, `UiOptions`, `UiTextValue`, `UiSlot`, `UiImage`, `UiTooltip`, `UiHidden`, `UiDisabled` and a root's placement are written only when the tree's value differs from what the tree last applied. So an update that moves a button keeps the score the game wrote into a label and the slider the player dragged, while one that changes a label's text in the tree replaces it. Two exceptions: **a bound widget's value belongs to its binding** (the tree's value only seeds the name; an update never writes it), and **a root's placement** (`UiRoot`'s `anchor`, `offset`, `at`) is the game's to change.
 - **The game's additions stay.** Components the game inserted on matched nodes stay, and a tree's `.insert` bundles apply only when a node is spawned. Subtrees added with `spawn_ui_in` stay, each after the sibling it followed, until their parent despawns. `ctx.update_ui` replaces everything else in the tree it is given; a reload replaces only what came from the file, so nodes the game put in with `.child(..)` before spawning are left too.
+- **A placeholder stays the file's.** `ctx.update_ui` on a node of a file's tree that is not its root (a placeholder whose contents code rebuilds) leaves the node the file's: a reload still updates the node itself, and leaves the children `update_ui` gave it.
 - **Quiet.** Components are written only on a real change, so `Changed<..>` filters stay truthful, and an update sends no `UiEvent`s.
 - **Focus after an update.** An updated focus scope is not a newly opened one, so it does not take the focus again. When the update adds a widget that should have it, call `ctx.focus_ui(entity)` (find it with `ctx.find_ui_in(root, name)`; it waits until the node is drawn). A `ChoiceList` takes the focus by its scope's own rule, so `focus_ui` is not needed for it. A despawned focused node leaves the focus empty, and the next navigation lands on the scope's default.
 - **Cost.** One walk over both trees. An unchanged update of the 200-widget settings tree costs about a third of spawning it.
 
 #### Hot reload
 
-In debug builds with an assets directory (never headless), the asset manager watches `.ui.ron` files. When one changes, it is read and checked again, and so is every loaded file that imports it. A clean file replaces the old one, and every tree built from it is reconciled before that frame's UI pass: roots and code-built template instances, in every scene. Then a `UiReloaded { root }` message goes out for each root touched.
+In debug builds with an assets directory (never headless), the asset manager watches `.ui.ron` files. When one changes, it is read and checked again, and so is every loaded file that imports it. A clean file replaces the old one, and every tree built from it is reconciled before that frame's UI pass: roots and code-built template instances, in every scene. Then a `UiReloaded { root, replaced }` message goes out for each root touched: `replaced` is the old root when the file gave the root a new kind (so the root is a new entity), and `None` when it was updated in place.
 
 - **What a reload keeps:** entities and their ids, focus, scroll, widget state, and what the game and the player wrote, unless the file changed that same value (the update rules above). Bindings keep their values and pick up new and removed names.
-- **What it leaves:** components the game inserted, `spawn_ui_in` subtrees and `.child(..)` additions (a template instance among them is rebuilt from its template with its arguments and updated in place). A node the file gives a new kind is a new entity, so a game that filled a placeholder or looked up a node by entity listens for `UiReloaded` and fills or looks it up again.
-- **A broken file** keeps the old document and trees. The errors are warned once per broken text, with positions. A file that lost its `root`, or a template that code-built instances use, also keeps the old version and warns.
+- **What it leaves:** components the game inserted, `spawn_ui_in` subtrees and `.child(..)` additions (a template instance among them is rebuilt from its template with its arguments and updated in place). An option set in code on a template instance's built node is lost; pass it in `UiArgs` (Loading and building). A node the file gives a new kind is a new entity, so a game that holds a root, filled a placeholder or looked up a node by entity listens for `UiReloaded`: it swaps a held root when `replaced` names it, and looks nodes up again by name (and fills them again) when `root` is its tree.
+- **A broken file** keeps the old document and trees. The errors are warned once per broken text, with positions; saving a mistake again after the file was fixed or reverted warns again.
+- **A file that checks but lost its `root` or a template** replaces the old document like any clean file. Trees that can no longer be built (from the lost root, or instances of the lost template) are kept as they were and warned about once, everything else is brought in line, and new `ctx.ui_template` calls for the lost template fail.
 - `ctx.assets.reload_ui(path)` asks for the same reload directly (tests, headless runs). A file added with `add_ui` is never reloaded. Release builds read files once and never watch them.
 - `ryo2d check-ui [files]` (`ryo-cli`) checks files without running the game: syntax, vocabulary, templates, imports, keys and image paths, with the same messages.
+
+A game that holds a root or a node of a file's tree follows what a reload replaced:
+
+```rust
+// In `ui` or `update`: follow what a reload replaced
+for reloaded in ctx.messages::<UiReloaded>() {
+  if self.hud.is_some() && self.hud == reloaded.replaced {
+    self.hud = Some(reloaded.root);                         // the root is a new entity
+  }
+  if self.hud == Some(reloaded.root) {
+    self.extras = ctx.find_ui_in(reloaded.root, "extras");  // held nodes, by name again
+  }
+}
+```
+
+Read held nodes with `ctx.world.get_mut::<C>(node)` or `ctx.world.get_entity_mut(node)`, never `entity_mut`, which panics on an entity a reload has replaced.
 
 #### Recipes
 
@@ -2029,10 +2049,17 @@ The file's buttons carry `action` strings; the game matches them, as for any nod
 // on_enter
 self.hud = ctx.spawn_ui_file("assets/ui/hud.ui.ron").ok();
 
-// update, every frame: ui_set writes nothing when a value is unchanged
+// update, every frame: ui_set does nothing when a value is unchanged
 if let Some(hud) = self.hud {
   ctx.ui_set(hud, "lives", self.lives);
   ctx.ui_set(hud, "score", self.score);
+}
+
+// ui: a saved file that gave the root a new kind replaced it (values move with it)
+for reloaded in ctx.messages::<UiReloaded>() {
+  if self.hud.is_some() && self.hud == reloaded.replaced {
+    self.hud = Some(reloaded.root);
+  }
 }
 ```
 
@@ -2102,17 +2129,20 @@ fn choices_tree(ctx: &mut SceneContext, labels: Vec<String>) -> Result<UiNode, U
 }
 // "Choices" in the file: params: ["options"], node: ChoiceList(options: options, action: "choose", name: "pick")
 
-fn show_choices(ctx: &mut SceneContext, column: Entity, labels: Vec<String>) {
+/// The column after the update: `column`, or the node that replaced it if the tree is another kind
+fn show_choices(ctx: &mut SceneContext, column: Entity, labels: Vec<String>) -> Entity {
   match choices_tree(ctx, labels) {
-    Ok(tree) => {
-      ctx.update_ui(column, tree);   // only the differences are applied; focus and scroll survive
+    // Only the differences are applied; focus and scroll survive
+    Ok(tree) => ctx.update_ui(column, tree),
+    Err(error) => {
+      game_error!("{error}");
+      column
     }
-    Err(error) => game_error!("{error}"),
   }
 }
 ```
 
-If the column's content can be a `Button` (a Skip, a Continue) rather than a `ChoiceList`, call `ctx.focus_ui(pick)` after the update for the new button: an updated scope is not newly opened. The `ChoiceList` takes the focus by its scope's own rule.
+If `choices` is a placeholder in a file (`Column(focus_scope: true, name: "choices")`), it stays the file's: a reload of the file updates the column and leaves the choices in it. If the column's content can be a `Button` (a Skip, a Continue) rather than a `ChoiceList`, call `ctx.focus_ui(pick)` after the update for the new button: an updated scope is not newly opened. The `ChoiceList` takes the focus by its scope's own rule.
 
 ##### Loading with an embedded fallback
 

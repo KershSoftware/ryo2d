@@ -1274,10 +1274,10 @@ A screen written in a `.ui.ron` file loads into the same `UiNode`. The guide is 
 | `UiFile` | a cheap, cloneable handle to a checked file: `parse(name: &str, text: &str) -> Result<UiFile, UiFileError>` (no imports), `path() -> &str`, `generation() -> u64` (counts reloads), `root(&self, assets: &mut AssetManager) -> Result<UiNode, UiFileError>`, `template(&self, name: &str, args: &UiArgs, assets: &mut AssetManager) -> Result<UiNode, UiFileError>` |
 | `UiFileError { pub issues: Vec<UiFileIssue> }` | every mistake found; `Display` prints one `path:line:column: message` per line |
 | `UiFileIssue { pub path: String, pub line: u32, pub column: u32, pub message: String }` | one mistake; lines and columns count from 1, line 0 means no place in the text |
-| `UiArgs` | a template's arguments: `new()`, `with(self, name: &str, value: impl Into<UiArg>) -> UiArgs`; giving a name again replaces it |
-| `enum UiArg { Number(f64), Text(String), Bool(bool), List(Vec<UiArg>) }` | `From` for `f32`, `f64`, `i32`, `u32`, `usize`, `bool`, `&str`, `String`, `Vec<T: Into<UiArg>>` and `&[&str]` |
+| `UiArgs` | a template's arguments: `new()`, `with(self, name: &str, value: impl Into<UiArg>) -> UiArgs`; giving a name again replaces it. A name is a parameter or any option of the template's root node (`.with("default_focus", true)`); a reload applies them again, while options set in code on the built node are lost |
+| `enum UiArg { Number(f64), Text(String), Bool(bool), List(Vec<UiArg>) }` | `From` for `f32`, `f64`, `i32`, `i64`, `u32`, `u64`, `usize`, `bool`, `&str`, `String`, `Vec<T: Into<UiArg>>` and `&[&str]` |
 | `enum BindValue { Number(f64), Text(String), Bool(bool) }` | a binding's value; `From` for `f32`, `f64`, `i32`, `i64`, `u32`, `u64`, `usize`, `bool`, `&str` and `String`, `TryFrom` back out |
-| `UiReloaded { pub root: Entity }` | a `Message`, sent once per root whose tree a reload brought in line, before that frame's UI pass |
+| `UiReloaded { pub root: Entity, pub replaced: Option<Entity> }` | a `Message`, sent once per root whose tree a reload brought in line, before that frame's UI pass; `replaced` is the old root when the reload gave the root a new kind (a new entity), `None` when it was updated in place |
 
 - A scene's trees are walked before its `ui`, so `ui` and `update` read their events in the same frame. An embedded tree's events are delivered after `ui` returns.
 - Ids are keyed by entity under the parent's id: widget state survives sibling changes and is forgotten on despawn.
