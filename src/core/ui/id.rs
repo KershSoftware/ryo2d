@@ -1,8 +1,12 @@
 //! Widget ids: a hash of the enclosing scope, the call site, and how often
 //! that site ran in the scope this frame (or an explicit key in its place)
+//!
+//! Ids are hashed a word at a time with a folded multiply, and `.id(key)`
+//! keys with the same mix (`IdHasher`). Ids live only in memory, never in a
+//! save, so their values may change between versions.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::panic::Location;
 
 /// A widget's identity across frames. Made from where the widget is called;
@@ -22,24 +26,95 @@ impl UiId {
 
   /// The root scope of a scene's UI
   pub(crate) fn root(scene_scope: u64) -> UiId {
-    UiId(mix(FNV_OFFSET, &[0x00ec_0e00, scene_scope]))
+    UiId(mix(SEED, &[0x00ec_0e00, scene_scope]))
   }
 }
 
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+/// Where a hash starts (the fractional part of the golden ratio)
+const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+/// The odd multiplier each word is folded with (splitmix64's)
+const MULTIPLIER: u64 = 0xbf58_476d_1ce4_e5b9;
+/// The multiplier a key's hash is finished with (splitmix64's other)
+const FINISH: u64 = 0x94d0_49bb_1331_11eb;
 const KEYED: u64 = 0x006b_6579;
 
-/// FNV-1a over little-endian words; never returns 0 (`UiId::NONE`)
+/// `a * b` as 128 bits, the halves xor'd together: every bit of `a` reaches
+/// the high half, so one multiply mixes a whole word
+fn fold(a: u64, b: u64) -> u64 {
+  let full = u128::from(a) * u128::from(b);
+  (full as u64) ^ ((full >> 64) as u64)
+}
+
+/// `words` folded into `hash` one at a time; never returns 0 (`UiId::NONE`)
 fn mix(mut hash: u64, words: &[u64]) -> u64 {
-  for word in words {
-    for byte in word.to_le_bytes() {
-      hash ^= u64::from(byte);
-      hash = hash.wrapping_mul(FNV_PRIME);
-    }
+  for &word in words {
+    hash = fold(hash ^ word, MULTIPLIER);
   }
   hash.max(1)
 }
+
+/// A hasher for the keys of `.id(key)`: words folded as `mix` folds them.
+/// The id maps here (`counts`, `used`) use it too: their keys are ids, not
+/// player input, so a hash built for speed rather than flood resistance is
+/// safe.
+#[derive(Debug, Clone, Copy)]
+struct IdHasher(u64);
+
+impl Default for IdHasher {
+  fn default() -> Self {
+    IdHasher(SEED)
+  }
+}
+
+impl Hasher for IdHasher {
+  fn write(&mut self, bytes: &[u8]) {
+    let (words, rest) = bytes.as_chunks::<8>();
+    for word in words {
+      self.0 = fold(self.0 ^ u64::from_le_bytes(*word), MULTIPLIER);
+    }
+    if !rest.is_empty() {
+      let mut tail = [0u8; 8];
+      for (to, from) in tail.iter_mut().zip(rest) {
+        *to = *from;
+      }
+      // The length tells "a\0" from "a"
+      let word = u64::from_le_bytes(tail) ^ ((rest.len() as u64) << 56);
+      self.0 = fold(self.0 ^ word, MULTIPLIER);
+    }
+  }
+
+  fn write_u8(&mut self, n: u8) {
+    self.write_u64(u64::from(n));
+  }
+
+  fn write_u16(&mut self, n: u16) {
+    self.write_u64(u64::from(n));
+  }
+
+  fn write_u32(&mut self, n: u32) {
+    self.write_u64(u64::from(n));
+  }
+
+  fn write_u64(&mut self, n: u64) {
+    self.0 = fold(self.0 ^ n, MULTIPLIER);
+  }
+
+  fn write_u128(&mut self, n: u128) {
+    self.write_u64(n as u64);
+    self.write_u64((n >> 64) as u64);
+  }
+
+  fn write_usize(&mut self, n: usize) {
+    self.write_u64(n as u64);
+  }
+
+  fn finish(&self) -> u64 {
+    fold(self.0, FINISH)
+  }
+}
+
+/// Builds an [`IdHasher`] for a map
+type IdHashing = BuildHasherDefault<IdHasher>;
 
 /// A call site: the static file name's address, its length, line and column
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,9 +136,9 @@ impl Site {
 #[derive(Debug, Default)]
 pub(crate) struct IdScopes {
   stack: Vec<UiId>,
-  counts: HashMap<(UiId, Site), u64>,
-  used: HashSet<UiId>,
-  warned: HashSet<UiId>,
+  counts: HashMap<(UiId, Site), u64, IdHashing>,
+  used: HashSet<UiId, IdHashing>,
+  warned: HashSet<UiId, IdHashing>,
 }
 
 impl IdScopes {
@@ -133,7 +208,7 @@ impl IdScopes {
 
 /// A key's hash for `.id(key)`
 pub(crate) fn key_hash<K: Hash + ?Sized>(key: &K) -> u64 {
-  let mut hasher = DefaultHasher::new();
+  let mut hasher = IdHasher::default();
   key.hash(&mut hasher);
   hasher.finish()
 }
@@ -220,6 +295,37 @@ mod tests {
       .filter(|e| e.message.contains("share the id key"))
       .count();
     assert_eq!(warnings, 1);
+  }
+
+  #[test]
+  fn entity_keys_never_collide_and_no_id_is_none() {
+    use crate::core::ecs::kernel::World;
+    // Entities as a node tree keys them: one parent, thousands of children,
+    // in two generations of the same slots
+    let mut world = World::new();
+    let mut keys: Vec<_> = (0..4000).map(|_| world.spawn_empty().id()).collect();
+    for &entity in keys.iter().take(500) {
+      world.despawn(entity);
+    }
+    keys.extend((0..500).map(|_| world.spawn_empty().id()));
+    let site = here();
+    let mut s = scopes();
+    let mut seen = HashSet::new();
+    for key in &keys {
+      let id = s.make(site, Some(key_hash(key)));
+      assert_ne!(id, UiId::NONE);
+      assert!(seen.insert(id), "two entity keys made one id");
+    }
+    assert!(s.warned.is_empty(), "no key was taken for a duplicate");
+    // Small integers and strings that differ by one character, as `.id(i)`
+    // and `.id(name)` key list rows
+    let mut hashes = HashSet::new();
+    for i in 0..4000u64 {
+      assert!(hashes.insert(key_hash(&i)));
+      assert!(hashes.insert(key_hash(&format!("row {i}"))));
+    }
+    assert_ne!(key_hash(&"a"), key_hash(&"a\0"));
+    assert_ne!(mix(0, &[0]), 0, "a mix is never NONE");
   }
 
   #[test]
