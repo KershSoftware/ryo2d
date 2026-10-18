@@ -1,8 +1,8 @@
 ---
 name: ryo-ui
-description: Build game UI in the Scene::ui hook - widgets as builders laid out in rows, columns and grids, focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
+description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.0.0
+  version: 4.1.0
 ---
 
 # Ryo2D UI Specialist
@@ -10,6 +10,8 @@ metadata:
 Build game UI with `UiContext` inside `Scene::ui`. Complete signatures are in `ryo-api`. Text in depth (fonts, markup, effects, the typewriter) is in `ryo-text`; actions and pads in `ryo-controller`.
 
 The model in one breath: every frame `ui` calls builders (`ui.button("Play")`), containers lay them out (`ui.column().show(|ui| ..)`), and each widget answers from what the player did to what was drawn last frame (`.clicked()`). Your game's values stay in your scene; what a widget remembers of itself (an open list, a caret, a scroll offset, the focus) lives in the UI's memory under its id. Keyboard and pad navigation work inside **focus scopes** you mark, so a menu is pad-playable and a HUD never steals the arrows.
+
+There are two styles. **Closures** (sections 1 to 14) call the builders every frame. **Node trees** (section 15) describe a screen once as a `UiNode`, spawn it as entities, and report what the player did as `UiEvent`s. The engine draws node trees through the same builders, so everything in sections 3 to 13 applies to both, and the two mix in one scene.
 
 ## 1. The `ui` Hook
 
@@ -1070,7 +1072,691 @@ impl Scene for QuitConfirm {
 }
 ```
 
-## 15. Testing UI
+## 15. Nodes
+
+A **node tree** is UI described once as a `UiNode` value and spawned as entities, one entity per node. The engine draws a scene's trees every frame through the same builders a closure calls, so focus, hit testing, scrolling, popups, drag and drop, themes and sounds behave exactly as they do in sections 3 to 12. A node's state lives in its components: the game writes them, and hears the player's changes as `UiEvent`s.
+
+```rust
+let menu = UiNode::panel()                 // the closure API's names, as a value
+  .focus_scope()
+  .anchor(Anchor::Center)
+  .width(260.0)
+  .gap(8.0)
+  .child(UiNode::button("Resume").action("resume").fill_width().default_focus())
+  .child(UiNode::button("Quit").action("quit").fill_width());
+let root = ctx.spawn_ui(menu);             // in on_enter: entities now, drawn from this frame
+```
+
+### Nodes or closures
+
+| Use nodes for | Use closures for |
+|---|---|
+| A screen described once that changes only when the game's data changes: menus, settings, inventories, dialogue | HUDs and screens computed every frame from game state |
+| Parts that systems find and change (`find_ui`, a game component inserted on the node) | `ui.custom` painters and absolute `draw_*` calls (closure only) |
+| Screens 4d will load from files (files load into the same `UiNode`) | Anything that reads best as straight-line code |
+
+The two styles mix: a scene's trees draw before its `ui` closure, and a closure can embed a tree (Embedding, below).
+
+### Spawning and ownership
+
+- `ctx.spawn_ui(tree) -> Entity` spawns the tree at once and returns its root. The root belongs to the scene that spawned it: only that scene's UI pass draws it, and it follows the top-scene rule (a lower scene's nodes draw but take no input).
+- `ctx.spawn_ui_in(parent, tree) -> Option<Entity>` adds a subtree as the last child of a container node. It returns `None`, with a warning, when `parent` is not a container node. A dialogue swaps its choices this way.
+- **Exit despawns.** When a scene leaves the stack, every root it owns is despawned with its subtree, so a popped pause menu's nodes go with it. `ctx.world.despawn(root)` (or any node) removes a subtree at once, and the next frame draws without it.
+- **Roots draw in spawn order**, a later one above an earlier one. The root's `UiRoot { anchor, offset, at }` fields are public: change them to move the tree.
+- `.hidden()` spawns a node hidden. Inserting or removing `UiHidden` hides or shows a node with its subtree; a hidden node takes no input and leaves the focus chain. `UiDisabled` (or `.enabled(false)`) greys a widget out.
+
+### The vocabulary
+
+Constructors and options use the closure builders' names: `UiNode::column()`, `row()`, `grid(columns)`, `stack()`, `panel()`, `scroll()`, `text(..)`, `button(..)`, `image(sprite)`, `checkbox(label, on)`, `toggle(label, on)`, `radio_group(&options, i)`, `slider(range, value)`, `progress(fraction)`, `text_input(text)`, `dropdown(&options, i)`, `tabs(&options, i)`, `choice_list(&options)`, `slot()`, `prompt(action)`, `rebind(action)`, `separator()`, `spacer()`, plus `UiNode::confirm(..)` and `UiNode::popup(name)` (Modals, below). Shared options are the closure ones (`width`, `fill_width`, `gap`, `align`, `anchor`, `focus_scope`, `wrap_focus`, `default_focus`, `tooltip`, `enabled`, `variant`, `drag_source`, `drop_target`, ...). Containers (not scroll areas) in both styles also take `.background(Color)`, a fill behind their children. Use it in place of a full-screen `draw_rect`, which the closure would draw over the scene's nodes.
+
+- **Renamed options.** `UiNode` is one type, so where a closure name means two things the node option is renamed:
+
+  | Node option | Closure call |
+  |---|---|
+  | `.text_align(TextAlign)` on text | `ui.text(..).align(..)` (`.align` is a container's) |
+  | `.image_size(w, h)` on an image | `ui.image(..).size(w, h)` (`.size` is text's font size) |
+  | `.binding_slot(n)` on a rebind row | `ui.rebind(..).slot(n)` |
+  | `.default_choice(i)` on a choice list | `ui.choice_list(..).default(i)` |
+
+- **Text is plain unless `.markup()`** (on text and buttons). `.role(TextRole::Body)`, `.heading()` and `.muted()` read the theme when the text is drawn, so a theme change restyles them; `.style(TextStyle)` and `.color(c)` are fixed. `TextRole` is `Body`, `Heading`, `Button`, `Caption` or `Mono`.
+- **Node-only options:**
+  - `.action("play")`: the action name the node's events carry;
+  - `.name("gold")`: a `UiName` to find it by, and the name `nav_*` and popups use;
+  - `.insert(component)`: any game component or bundle on the node's entity;
+  - `.child(node)` and `.children(iter)`;
+  - `.hidden()`, `.modal()` and `.embedded()`.
+- **Neighbours by name.** `.nav_down("quit")` names a node instead of a `UiId`, resolved within the same tree at spawn.
+- **Warned once at spawn:** an option the node's kind does not take (`.tooltip` on text, `.background` on a scroll), children given to a widget, `.embedded()` on a child node, a `nav_*` or popup name the tree lacks, and a name used twice (`find_ui` finds the first).
+
+### State components (the data)
+
+| Node | Spawns with |
+|---|---|
+| `text`, `button` | `UiLabel(String)` |
+| `image` | `UiImage(SpriteHandle)` |
+| `checkbox`, `toggle` | `UiLabel`, `UiChecked(bool)` |
+| `slider`, `progress` | `UiValue(f32)` |
+| `text_input` | `UiTextValue(String)` |
+| `radio_group`, `dropdown`, `tabs`, `choice_list` | `UiOptions(Vec<String>)`, `UiIndex(usize)` |
+| `slot` | `UiSlot { icon, count, selected }` |
+| `text(..).typewriter(reveal)` | `TextReveal` (call `finish()`, `pause()` and the rest on it) |
+| `.name(..)`, `.tooltip(..)`, `.hidden()`, `.enabled(false)` | `UiName(String)`, `UiTooltip(String)`, `UiHidden`, `UiDisabled` |
+
+Every node also has `UiInteraction`, kept current by the walk: `hovered()`, `focused()`, and `id() -> Option<UiId>` once drawn.
+
+```rust
+// Game to UI: write a component, and the next UI pass draws it
+if let Some(gold) = ctx.find_ui("gold")
+  && let Some(mut label) = ctx.world.get_mut::<UiLabel>(gold)
+{
+  label.0 = format!("Gold {}", self.gold);
+}
+if let Some(play) = ctx.find_ui("continue") {
+  ctx.world.entity_mut(play).remove::<UiDisabled>();
+}
+
+// UI to game: the player moved the slider; read the component on its event,
+// or whenever the game needs it
+let volume = ctx.world.get::<UiValue>(slider).map_or(1.0, |v| v.0);
+```
+
+- The walk writes a value component only when the player changed it, so a `Changed<UiValue>` query filter means a real change.
+- A value the game sets out of the widget's range is drawn clamped, and kept until the player changes it.
+- **Finding nodes:** `ctx.find_ui(name)` searches this scene's trees in spawn order; `ctx.find_ui_in(root, name)` searches one tree. A component inserted with `.insert(..)` finds nodes by query, like any entity.
+
+### Events
+
+```rust
+pub struct UiEvent {
+  pub node: Entity,           // the node that reported it
+  pub name: Option<String>,   // its .name(..)
+  pub action: Option<String>, // its .action(..)
+  pub kind: UiEventKind,      // patterns use `..` for the rest
+}
+// UiEventKind: Clicked, SecondaryClicked, Changed, Submitted, Dropped { source }, Back, FocusGained, FocusLost
+```
+
+| Node | Sends |
+|---|---|
+| `button`, `image`, `slot`, `prompt`, `progress`, containers | `Clicked` |
+| `checkbox`, `toggle`, `radio_group`, `slider`, `text_input`, `dropdown`, `tabs`, `rebind` | `Changed`, after the new value is in its component |
+| `text_input` | also `Submitted` (Enter) |
+| `choice_list` | `Clicked`, with the pick in its `UiIndex`. It has no `Response`, so no `ui_id`, and its `UiInteraction` is never updated |
+| any drawn node | `SecondaryClicked`; a drop target `Dropped { source }`; a focusable one `FocusGained` and `FocusLost` |
+| `text`, `separator`, `spacer` | nothing |
+
+- **Read them with `ctx.ui_events()`**: this scene's own nodes' events since it last read them, in walk order. `ctx.messages::<UiEvent>()` reads every scene's, and the two share one cursor: read one or the other, in one place. Match on `action` for menus, on `name`, or on a game component of `event.node` for instances.
+- **When they arrive.** A scene's trees are walked before its `ui`, and their events are delivered before `ui` runs, so `ui` reads them in the same frame. The UI pass runs before the fixed steps, so `update` does too, if `ui` did not read them first. An embedded tree's events are delivered after `ui` returns: `update` reads them that frame, `ui` the next.
+- **Observers.** `UiEvent` is also an entity event triggered on its node, for one-off code: `ctx.world.entity_mut(node).observe(|event: On<UiEvent>, ..| ..)`. Observers run during the UI pass, while the scene stack is out of the world, so an observer must not try to change scenes: set a resource or write a message, and let the scene's `update` or `ui` act on it.
+
+  ```rust
+  #[derive(Resource, Default)]
+  struct Picked(Option<String>);
+
+  ctx.insert_resource(Picked::default());
+  if let Some(play) = ctx.find_ui("play") {
+    ctx.world.entity_mut(play).observe(|event: On<UiEvent>, mut picked: ResMut<Picked>| {
+      if event.kind == UiEventKind::Clicked {
+        picked.0 = event.action.clone();
+      }
+    });
+  }
+  ```
+
+- **Drag and drop by entity.** A node's drag payload is its own entity. `.drag_source()` and `.drop_target()` take no type. A target's `Dropped { source }` names the dragged node, and the game maps both nodes to its own data, usually through a component inserted on each. `ui.held::<Entity>()` is the node being carried. A slot is a source only while it has an icon. Pad pick-up, the ghost and refusals work as in section 9.
+
+### Ids and widget state
+
+- **Ids are keyed by entity.** A node's id is made from its entity under its parent's id, as `.id(key)` keys a closure widget; text, separators and spacers are drawn in `ui.scope(entity, ..)`. So focus memory, scroll offsets, an open list, a caret and tooltip timers follow the node when siblings are added, removed or reordered.
+- **Despawning forgets.** A despawned node's state is forgotten. Re-parenting a node changes its id, and a respawned tree starts fresh (4d's file keys will key nodes that survive a respawn).
+- `ctx.ui_id(node) -> Option<UiId>` gives the id once the node is drawn, for `ui.scroll_offset`, `ui.request_focus` or a closure widget's `nav_*`. `ctx.focus_ui(node)` focuses a node when it is next drawn.
+- **A focused node despawned** leaves the focus at `None`, and the next navigation lands on its scope's default. This is section 7's rule for a widget that stops being drawn.
+
+### Embedding in closure UI
+
+Spawn a root with `.embedded()` and draw it inside a closure container with `ui.node(root, ctx.world)`. It takes the closure's flow, focus scope and clip, so one focus path runs through both. An embedded root is not drawn on its own. Drawing it twice in a frame draws it once and warns.
+
+```rust
+// on_enter: self.grid = Some(ctx.spawn_ui(UiNode::grid(4).gap(6.0).embedded().children(cells)));
+fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+  let Some(grid) = self.grid else {
+    return SceneAction::Continue;
+  };
+  ui.panel()
+    .focus_scope()
+    .anchor(Anchor::Center)
+    .gap(10.0)
+    .show(|ui| {
+      ui.button("Add").default_focus();
+      ui.node(grid, ctx.world); // the tree, here, in this panel's scope
+      ui.button("Done");
+    });
+  SceneAction::Continue
+}
+```
+
+### Reusable components
+
+A reusable component is a function that returns a `UiNode`. It takes parameters and tags its nodes with names or game components, and it can go into any tree any number of times. Each instance gets its own entities, ids and state, and its events carry its own nodes, so the inserted component tells instances apart.
+
+```rust
+#[derive(Component, Clone, Copy)]
+struct ShopItem(usize);
+
+fn shop_row(name: &str, price: u32, index: usize) -> UiNode {
+  UiNode::row()
+    .gap(8.0)
+    .align(Align::Center)
+    .child(UiNode::column().grow(1.0).child(UiNode::text(name)))
+    .child(UiNode::text(format!("{price} g")).muted())
+    .child(UiNode::button("Buy").action("buy").insert(ShopItem(index)))
+}
+// A Clicked with action "buy": ctx.world.get::<ShopItem>(event.node) says which
+```
+
+### Modals, confirms, popups and Back
+
+- **`.modal()`** on any container node draws it as `ui.modal()` does: the dim, the trap, focus on its `default_focus`, and the focus given back when it goes. A modal root opens centred unless it was given an `.anchor(..)`.
+- **Back** goes to the last modal or popup node drawn in the scene's trees, the innermost, as a `Back` event carrying that node and its action. While one is drawn, Back is taken before the scene's `ui` runs, so `ui.back()` is false there. A modal or popup inside an embedded tree takes Back only through the closure's own `ui.back()`.
+- **`UiNode::confirm(title, message, yes, no)`** builds `ui.confirm_with`'s dialog as a modal tree whose buttons have the actions `"yes"` and `"no"`. It opens on No, and Back answers as No: a `Clicked` with action `"no"`. The game despawns it on either answer.
+- **`UiNode::popup(name)`** opens below the node called `name` in the same tree, as `ui.popup` does. Put it in the anchor's tree and show it by removing `UiHidden`, or spawn it there with `spawn_ui_in`. Close it on its `Back` event.
+
+```rust
+// An options dialog: Done or Back closes it
+self.options = Some(ctx.spawn_ui(
+  UiNode::panel()
+    .modal()
+    .action("options")
+    .width(320.0)
+    .gap(12.0)
+    .child(UiNode::text("Options").heading())
+    .child(UiNode::toggle("Subtitles", self.subtitles).name("subtitles"))
+    .child(
+      UiNode::row()
+        .justify(Justify::End)
+        .child(UiNode::button("Done").action("done").default_focus()),
+    ),
+));
+// In ui: (UiEventKind::Clicked, Some("done")) | (UiEventKind::Back, Some("options")) => despawn it
+```
+
+### Recipes
+
+Each compiles as written beside section 14's. They name its `Level`.
+
+#### Menu with a confirm
+
+```rust
+/// The title screen as a node tree: spawned once, its clicks read as events
+#[derive(Default)]
+struct NodeMenu {
+  has_save: bool,
+  /// The quit question, while it is open
+  confirm: Option<Entity>,
+}
+
+impl NodeMenu {
+  fn menu(has_save: bool) -> UiNode {
+    let button = |label: &str, action: &str| UiNode::button(label).action(action).fill_width();
+    UiNode::panel()
+      .focus_scope()
+      .wrap_focus()
+      .anchor(Anchor::Center)
+      .width(260.0)
+      .gap(8.0)
+      .child(UiNode::text("RYO QUEST").heading().size(32.0))
+      .child(button("Continue", "continue").enabled(has_save))
+      .child(button("New Game", "new").default_focus())
+      .child(button("Quit", "quit").variant("danger"))
+  }
+
+  fn ask_to_quit(&mut self, ctx: &mut SceneContext) {
+    if self.confirm.is_none() {
+      let question = UiNode::confirm(
+        "Quit to desktop?",
+        "Unsaved progress is lost.",
+        "Quit",
+        "Stay",
+      );
+      self.confirm = Some(ctx.spawn_ui(question));
+    }
+  }
+}
+
+impl Scene for NodeMenu {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(Self::menu(self.has_save));
+    ctx.spawn_ui(
+      UiNode::column()
+        .anchor(Anchor::BottomCenter)
+        .offset(0.0, -32.0)
+        .child(
+          UiNode::text("[prompt=ui.confirm] Select    [prompt=ui.back] Quit")
+            .markup()
+            .muted(),
+        ),
+    );
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    for event in ctx.ui_events() {
+      if event.kind != UiEventKind::Clicked {
+        continue;
+      }
+      match event.action.as_deref() {
+        Some("new" | "continue") => return SceneAction::Switch(Box::new(Level::default())),
+        Some("quit") => self.ask_to_quit(ctx),
+        // The confirm's buttons; Back on it is a "no" click
+        Some("yes") => return SceneAction::Quit,
+        Some("no") => {
+          if let Some(confirm) = self.confirm.take() {
+            ctx.world.despawn(confirm);
+          }
+        }
+        _ => {}
+      }
+    }
+    // With the confirm open, it took Back before this ran
+    if ui.back() {
+      self.ask_to_quit(ctx);
+    }
+    SceneAction::Continue
+  }
+}
+```
+
+#### Settings screen with tabs
+
+```rust
+const PAGES: [&str; 2] = ["Audio", "Video"];
+
+/// Each tab's rows are a column, hidden unless its tab is picked
+#[derive(Default)]
+struct NodeSettings {
+  /// The columns, by tab
+  pages: Vec<Entity>,
+}
+
+/// A labelled row: the label takes the room the widget leaves
+fn setting(label: &str, widget: UiNode) -> UiNode {
+  UiNode::row()
+    .gap(12.0)
+    .align(Align::Center)
+    .child(UiNode::column().grow(1.0).child(UiNode::text(label)))
+    .child(widget)
+}
+
+impl NodeSettings {
+  fn tree() -> UiNode {
+    let audio = UiNode::column()
+      .fill_width()
+      .gap(10.0)
+      .name("page-0")
+      .child(setting(
+        "Master",
+        UiNode::slider(0.0..=1.0, 0.8)
+          .step(0.05)
+          .show_value()
+          .width(200.0)
+          .name("master"),
+      ))
+      .child(UiNode::checkbox("Mute in background", true).name("mute"));
+    let video = UiNode::column()
+      .fill_width()
+      .gap(10.0)
+      .name("page-1")
+      .hidden()
+      .child(setting(
+        "Window",
+        UiNode::dropdown(&["Windowed", "Borderless", "Fullscreen"], 0).width(200.0),
+      ))
+      .child(UiNode::toggle("VSync", true).name("vsync"));
+    UiNode::panel()
+      .focus_scope()
+      .anchor(Anchor::Center)
+      .width(520.0)
+      .height(360.0)
+      .gap(12.0)
+      .child(UiNode::text("Settings").heading())
+      .child(UiNode::tabs(&PAGES, 0).name("tabs"))
+      .child(
+        UiNode::scroll()
+          .fill_width()
+          .grow(1.0)
+          .gap(10.0)
+          .child(audio)
+          .child(video),
+      )
+  }
+}
+
+impl Scene for NodeSettings {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let root = ctx.spawn_ui(Self::tree());
+    self.pages = (0..PAGES.len())
+      .filter_map(|i| ctx.find_ui_in(root, &format!("page-{i}")))
+      .collect();
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    for event in ctx.ui_events() {
+      if event.kind != UiEventKind::Changed {
+        continue;
+      }
+      match event.name.as_deref() {
+        // Q / E and the bumpers switch tabs too
+        Some("tabs") => {
+          let picked = ctx.world.get::<UiIndex>(event.node).map_or(0, |i| i.0);
+          for (i, &page) in self.pages.iter().enumerate() {
+            if i == picked {
+              ctx.world.entity_mut(page).remove::<UiHidden>();
+            } else {
+              ctx.world.entity_mut(page).insert(UiHidden);
+            }
+          }
+        }
+        // Applied as it changes; the others are read when needed
+        Some("master") => {
+          if let Some(volume) = ctx.world.get::<UiValue>(event.node).map(|v| v.0) {
+            ctx.audio.set_master_volume(volume);
+          }
+        }
+        _ => {}
+      }
+    }
+    if ui.back() {
+      return SceneAction::Pop;
+    }
+    SceneAction::Continue
+  }
+}
+```
+
+#### Inventory grid with drag and drop
+
+```rust
+/// Which bag slot a slot node shows: a game component on the node
+#[derive(Component, Clone, Copy)]
+struct BagSlot(usize);
+
+#[derive(Clone)]
+struct Stack {
+  name: &'static str,
+  icon: SpriteHandle,
+  count: u32,
+}
+
+#[derive(Default)]
+struct NodeInventory {
+  bag: Vec<Option<Stack>>,
+  /// The slot nodes, by bag index
+  slots: Vec<Entity>,
+  details: Option<Entity>,
+}
+
+impl NodeInventory {
+  /// One bag slot: its drag payload is the node itself
+  fn slot(index: usize) -> UiNode {
+    UiNode::slot()
+      .filter(Filter::Nearest)
+      .drag_source()
+      .drop_target()
+      .insert(BagSlot(index))
+  }
+
+  /// Write what every slot holds
+  fn refresh(&self, ctx: &mut SceneContext) {
+    for (stack, &node) in self.bag.iter().zip(&self.slots) {
+      if let Some(mut slot) = ctx.world.get_mut::<UiSlot>(node) {
+        slot.icon = stack.as_ref().map(|s| s.icon.clone());
+        slot.count = stack.as_ref().map_or(0, |s| s.count);
+      }
+    }
+  }
+
+  /// The stack a slot node shows
+  fn stack_at(&self, ctx: &SceneContext, node: Entity) -> Option<&Stack> {
+    let index = ctx.world.get::<BagSlot>(node)?.0;
+    self.bag.get(index)?.as_ref()
+  }
+}
+
+impl Scene for NodeInventory {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    self.bag = vec![None; 12];
+    for (i, (name, (r, g, b), count)) in
+      [("Sword", (200, 200, 220), 1), ("Potion", (220, 60, 80), 5)]
+        .into_iter()
+        .enumerate()
+    {
+      let icon = ctx
+        .assets
+        .create_sprite(Sprite::solid_rect(12, 12, r, g, b, 255), name);
+      self.bag[i] = Some(Stack { name, icon, count });
+    }
+    let root = ctx.spawn_ui(
+      UiNode::panel()
+        .focus_scope()
+        .anchor(Anchor::Center)
+        .gap(10.0)
+        .child(UiNode::text("Backpack").heading())
+        .child(
+          UiNode::grid(4)
+            .gap(6.0)
+            .name("bag")
+            .children((0..12).map(Self::slot)),
+        )
+        .child(UiNode::text("Nothing here").muted().name("details")),
+    );
+    if let Some(grid) = ctx.find_ui_in(root, "bag") {
+      self.slots = ctx
+        .world
+        .get::<Children>(grid)
+        .map(|kids| kids.to_vec())
+        .unwrap_or_default();
+    }
+    self.details = ctx.find_ui_in(root, "details");
+    self.refresh(ctx);
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    let index = |ctx: &SceneContext, node: Entity| ctx.world.get::<BagSlot>(node).map(|s| s.0);
+    let mut moved = false;
+    for event in ctx.ui_events() {
+      // A drop names the dragged node; both map to bag indices
+      if let UiEventKind::Dropped { source } = event.kind
+        && let (Some(from), Some(to)) = (index(ctx, source), index(ctx, event.node))
+      {
+        self.bag.swap(from, to);
+        moved = true;
+      }
+    }
+    if moved {
+      self.refresh(ctx);
+    }
+    // What is carried, else the slot under the pointer, else the focused one
+    let looked_at = |pick: fn(&UiInteraction) -> bool| {
+      self
+        .slots
+        .iter()
+        .copied()
+        .find(|&n| ctx.world.get::<UiInteraction>(n).is_some_and(pick))
+    };
+    let shown = match ui
+      .held::<Entity>()
+      .and_then(|node| self.stack_at(ctx, node))
+    {
+      Some(stack) => format!("Holding the {}.", stack.name),
+      None => looked_at(UiInteraction::hovered)
+        .or_else(|| looked_at(UiInteraction::focused))
+        .and_then(|node| self.stack_at(ctx, node))
+        .map_or("Nothing here".to_string(), |stack| stack.name.to_string()),
+    };
+    if let Some(details) = self.details
+      && let Some(mut label) = ctx.world.get_mut::<UiLabel>(details)
+      && label.0 != shown
+    {
+      label.0 = shown;
+    }
+    SceneAction::Continue
+  }
+}
+```
+
+#### Dialogue with swapped choices
+
+```rust
+/// A line and its choices (`None` ends the conversation)
+struct Say {
+  text: &'static str,
+  choices: &'static [(&'static str, Option<usize>)],
+}
+
+const TALK: [Say; 2] = [
+  Say {
+    text: "Welcome to the [color=#ffd166]Rusty Lantern[/color]![pause=0.3] What can I get you?",
+    choices: &[("A potion, please", Some(1)), ("Goodbye", None)],
+  },
+  Say {
+    text: "One healing potion. Drink it slowly.",
+    choices: &[("Thanks", None)],
+  },
+];
+
+#[derive(Default)]
+struct NodeDialogue {
+  line: usize,
+  /// The line's text node, which holds its `TextReveal`
+  text: Option<Entity>,
+  /// The column what the player can do next is swapped into
+  below: Option<Entity>,
+  /// That subtree, and the (line, revealed) it was built for
+  next: Option<(Entity, (usize, bool))>,
+  confirm: Option<Entity>,
+}
+
+impl NodeDialogue {
+  fn reveal<'w>(&self, ctx: &'w mut SceneContext) -> Option<Mut<'w, TextReveal>> {
+    ctx.world.get_mut::<TextReveal>(self.text?)
+  }
+
+  /// Swap in Skip while the line shows, then its choices: a new subtree is
+  /// a new focus scope, so the focus moves into it
+  fn swap_next(&mut self, ctx: &mut SceneContext) {
+    let done = self.reveal(ctx).is_some_and(|reveal| reveal.is_done());
+    let key = (self.line, done);
+    if self.next.is_some_and(|(_, built)| built == key) {
+      return;
+    }
+    if let Some((old, _)) = self.next.take() {
+      ctx.world.despawn(old);
+    }
+    let (Some(below), Some(say)) = (self.below, TALK.get(self.line)) else {
+      return;
+    };
+    let scope = UiNode::column().focus_scope();
+    let scope = if done {
+      let labels: Vec<&str> = say.choices.iter().map(|(label, _)| *label).collect();
+      scope.child(UiNode::choice_list(&labels).action("choose"))
+    } else {
+      scope.child(UiNode::button("Skip").action("skip").default_focus())
+    };
+    self.next = ctx.spawn_ui_in(below, scope).map(|node| (node, key));
+  }
+}
+
+impl Scene for NodeDialogue {
+  fn is_transparent(&self) -> bool {
+    true
+  }
+
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let root = ctx.spawn_ui(
+      UiNode::panel()
+        .anchor(Anchor::BottomCenter)
+        .offset(0.0, -32.0)
+        .width(640.0)
+        .gap(10.0)
+        .child(UiNode::text("Shopkeeper").heading())
+        .child(
+          UiNode::text(TALK[0].text)
+            .markup()
+            .role(TextRole::Body)
+            .typewriter(TextReveal::new(40.0).with_punctuation_pause(0.15))
+            .name("line"),
+        ),
+    );
+    self.text = ctx.find_ui_in(root, "line");
+    self.below = Some(root);
+    self.swap_next(ctx);
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    for event in ctx.ui_events() {
+      if event.kind != UiEventKind::Clicked {
+        continue;
+      }
+      match event.action.as_deref() {
+        Some("skip") => {
+          if let Some(mut reveal) = self.reveal(ctx) {
+            reveal.finish();
+          }
+        }
+        // The pick is in the list's UiIndex
+        Some("choose") => {
+          let picked = ctx.world.get::<UiIndex>(event.node).map(|i| i.0);
+          let next = TALK
+            .get(self.line)
+            .and_then(|say| say.choices.get(picked?))
+            .and_then(|(_, next)| *next);
+          let Some(next) = next.filter(|n| *n < TALK.len()) else {
+            return SceneAction::Pop;
+          };
+          self.line = next;
+          if let Some(text) = self.text
+            && let Some(mut label) = ctx.world.get_mut::<UiLabel>(text)
+          {
+            label.0 = TALK[next].text.to_string();
+          }
+          if let Some(mut reveal) = self.reveal(ctx) {
+            reveal.restart();
+          }
+        }
+        Some("yes") => return SceneAction::Pop,
+        // Stay: the line carries on from where it paused
+        Some("no") => {
+          if let Some(confirm) = self.confirm.take() {
+            ctx.world.despawn(confirm);
+          }
+          if let Some(mut reveal) = self.reveal(ctx) {
+            reveal.resume();
+          }
+        }
+        _ => {}
+      }
+    }
+    if self.confirm.is_none() && ui.back() {
+      let question = UiNode::confirm(
+        "Leave the conversation?",
+        "The shopkeeper will remember.",
+        "Yes",
+        "No",
+      );
+      self.confirm = Some(ctx.spawn_ui(question));
+      // The line waits under the question
+      if let Some(mut reveal) = self.reveal(ctx) {
+        reveal.pause();
+      }
+    }
+    self.swap_next(ctx);
+    SceneAction::Continue
+  }
+}
+```
+
+A Skip finishes the line at its next draw, and the choices replace Skip in the frame after.
+
+## 16. Testing UI
 
 **`ryo2d::testing::UiHarness`** runs UI frames with no window or GPU: the UI's memory, layout, text and the resolve step over scripted input. Write the UI as a function of `&mut UiContext` and drive it.
 
@@ -1098,13 +1784,27 @@ fn the_slider_steps_with_the_pad() {
 
 - `frame(|ui| ..) -> R` runs one 60 fps frame as the top scene and returns the closure's value; `move_to(x, y)`, `press()` (held until `release()`), `release()`, `wheel(dx, dy)` (lines, +y up); `action(name)` presses `ui.up`, `ui.down`, `ui.left`, `ui.right`, `ui.confirm`, `ui.back`, `ui.next`, `ui.tab_next` or `ui.tab_prev` for the next frame (another name warns once and does nothing); `focused() -> Option<UiId>`; `command_count()` (what the last frame drew); `with_theme(theme)`.
 - A click is a press frame then a release frame over the widget. A frame that draws nothing leaves the UI as the last frame that drew left it.
+- **Node trees:** `spawn_ui(tree) -> Entity` spawns a tree as a root of the harness's scene, and each `frame` draws the harness's trees before its closure, as a scene's are drawn before its `ui`. `events() -> &[UiEvent]` lists the last frame's node events in walk order. `find_ui(name)` and `ui_id(node)` work as on `SceneContext`, and `world()` / `world_mut()` reach the components. `frame_with_world(|ui, world| ..)` gives the closure the world as well, for `ui.node(root, world)`.
+
+  ```rust
+  let mut ui = UiHarness::new(320.0, 240.0);
+  ui.spawn_ui(UiNode::column().focus_scope().child(UiNode::checkbox("Sound", false).name("sound")));
+  ui.frame(|_| ());
+  ui.frame(|_| ());                            // the scope takes focus
+  ui.action("ui.confirm");
+  ui.frame(|_| ());
+  let sound = ui.find_ui("sound").unwrap();
+  assert_eq!(ui.world().get::<UiChecked>(sound), Some(&UiChecked(true)));
+  assert!(ui.events().iter().any(|e| e.node == sound && e.kind == UiEventKind::Changed));
+  ```
 - **With the engine**, `HeadlessEngine` (`ryo-game-dev`, Visual Tests) drives whole scenes: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `release_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `tap_key`, `mouse_move`; `ui_focused()` is the focus the last step resolved, `ui_focusables()` what the D-pad can land on now (id and rect), `focus_ui(id)` focuses a widget at the next step. Walking every `ui_focusables()` with the D-pad from each one proves a page has no dead ends.
 - **Scripted runs:** `RYO_INPUT` presses pad buttons and holds sticks in dev builds, for captures: `RYO_INPUT="60:PadDPadDown 90:PadSouth 120-180:LeftStick@0x-1 200:Wheel@0x-3"` (`ryo-cli`).
 - The console command `debug:ui` outlines every widget with its id, hot, active and focused ones coloured (`ryo-console`).
 
-## 16. Tips
+## 17. Tips
 
-- **Mark every menu `.focus_scope()`**, and give it a `.default_focus()`. Without a scope the pad and the arrows do nothing in it.
+- **Mark every menu `.focus_scope()`**, and give it a `.default_focus()`. Without a scope the pad and the arrows do nothing in it. This holds for node trees too.
+- **Node trees: read events in one place.** `ctx.ui_events()` and `ctx.messages::<UiEvent>()` share a cursor, so read in `ui` or in `update`, not both. Change scenes from there, never from an observer.
 - **Close the innermost thing on `ui.back()`**, then the next: a modal before its menu, a menu before the scene.
 - **Use `.id(key)`** for rows of a list that sorts, filters or deletes; call-site ids shift when an earlier call is skipped.
 - **Your data, its state.** Widgets write your `bool`/`f32`/`usize`/`String`; an open list, a caret, a scroll offset and focus are the UI's, dropped when the widget is not drawn for a frame (focus memory lasts the scene).

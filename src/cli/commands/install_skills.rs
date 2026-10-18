@@ -137,7 +137,7 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
   ),
   (
     "ryo-ui",
-    "Build game UI in the Scene::ui hook - widgets as builders laid out in rows, columns and grids, focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.",
+    "Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.",
     include_str!("../skills/ryo-ui.md"),
   ),
 ];

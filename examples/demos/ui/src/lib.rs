@@ -1,6 +1,8 @@
 //! UI Demo - Ryo2D's UI. The first four pages are the acceptance showcase,
-//! a game's screens played with the gamepad alone; the rest show one feature
-//! each. A library, so its tests drive the pages headlessly.
+//! a game's screens played with the gamepad alone, and the next seven show
+//! one feature each. The last five are the four showcase pages built from
+//! node trees, and a closure screen around an embedded node grid. A library,
+//! so its tests drive the pages headlessly.
 
 pub mod scenes;
 
@@ -11,9 +13,9 @@ use scenes::{
   SettingsPage, TextDemo, TextInputDemo, ThemeDemo,
 };
 
-/// The demo: Menus, Settings, Inventory, Dialogue, Theme, Layout, Clipping &
-/// Modals, Text, Text Input, Scroll Views and Dropdowns, then the node
-/// versions of Menus, Settings, Inventory and Dialogue, and the Mixed page
+/// The demo's sixteen pages: Menus, Settings, Inventory, Dialogue, Theme,
+/// Layout, Clipping & Modals, Text, Text Input, Scroll Views and Dropdowns,
+/// then Node Menus, Node Settings, Node Inventory, Node Dialogue and Mixed
 pub fn demo() -> Demo {
   Demo::new("UI")
     .resolution(1024, 768)

@@ -243,7 +243,12 @@ The engine builds for `wasm32-unknown-unknown` and runs in browsers with WebGPU:
 
 ## UI
 
-Built every frame in `Scene::ui(ui, ctx)` through `UiContext`, laid out with flexbox and grid, and drawn as commands on the GPU (see [Text and UI](#text-and-ui)). Widgets are builders (`ui.button("Play").clicked()`); the game's values stay in the game, passed as `&mut bool`, `&mut f32`, `&mut usize` or `&mut String`.
+Built every frame through `UiContext`'s builders, laid out with flexbox and grid, and drawn as commands on the GPU (see [Text and UI](#text-and-ui)). It comes in two styles that share everything below the builders:
+
+- **Closures.** `Scene::ui(ui, ctx)` calls the builders each frame (`ui.button("Play").clicked()`); the game's values stay in the game, passed as `&mut bool`, `&mut f32`, `&mut usize` or `&mut String`.
+- **Node trees.** A `UiNode` tree is described once and spawned as entities (`ctx.spawn_ui`). Each frame the engine walks a scene's trees through the same builders, keyed by entity. A node's state is its components (`UiLabel`, `UiChecked`, `UiValue`, ...), which the game writes and the walk writes back when the player changes them. What the player did arrives as `UiEvent` messages, also triggered on the node for observers. A root belongs to the scene that spawned it and is despawned when the scene exits.
+
+They meet in two ways. A scene's trees are drawn before its `ui` closure, in the same scene scope, so the closure draws above them and shares their focus, layout memory and hit tests. A closure can also embed a tree spawned with `.embedded()` inside one of its containers (`ui.node(root, world)`), so one focus path runs through both.
 
 **The frame.**
 
@@ -254,6 +259,8 @@ resolve (once a frame, before any ui hook, against last frame's records)
   focus:   the ui.* actions -> spatial navigation inside focus scopes, Confirm, Back, tab switching
      |
 hooks (each visible scene bottom-up, under its own root id scope)
+  the scene's node trees are walked through the builders; their UiEvents are delivered
+  then Scene::ui runs its builders (and draws embedded trees with ui.node)
   builders record nodes, draws and records; each answers from the resolve (Response)
   each top-level container is laid out by Taffy when its show() returns; popups when the scene's ui ends
      |
@@ -261,16 +268,16 @@ commands (UiCommand per draw, ordered by layer then recording order) -> UI camer
 ```
 
 - **Clicks land on what was drawn.** Hit testing and navigation read the records the last frame wrote (rect, clip, layer, order, scene, flags, focus scope, scroll area), so a click goes to what the player saw under the pointer, even if the widget moves or disappears this frame. Only the top scene's records are candidates: lower scenes draw, and their widgets report nothing.
-- **Ids.** A widget's `UiId` is a hash of its enclosing scope, its call site (`#[track_caller]`) and how often that site ran in the scope this frame; `.id(key)` replaces the count for lists that reorder, and `ui.scope(key, ..)` keys a group without a node. Each scene is a root scope, so the same code in two scenes makes two ids.
+- **Ids.** A widget's `UiId` is a hash of its enclosing scope, its call site (`#[track_caller]`) and how often that site ran in the scope this frame; `.id(key)` replaces the count for lists that reorder, and `ui.scope(key, ..)` keys a group without a node. A node is keyed by its entity, so its state follows it when siblings change. Each scene is a root scope, so the same code in two scenes makes two ids. The hash folds a word at a time; ids live only in memory.
 - **Memory.** `UiMemory` holds last frame's and this frame's records, typed widget state (an open list, a caret, a scroll offset, a tooltip timer) keyed by id and dropped when a widget is not drawn for a frame, and focus memory per scope for the scene's lifetime; a scene's entries are forgotten when it exits. Interaction state (hot, active, focused, drag) lives beside it.
 - **Layout.** `src/core/ui/layout/` is the only code that names Taffy: a persistent tree keyed by `UiId`, text measured through the text engine's cache. A top-level subtree is placed by its anchor and offset in the UI (or at its `at` rect), and its rects are snapped to render pixels. A 200-widget settings screen is a frame of well under 0.25 ms (`benches/ui.rs`).
 - **Focus scopes.** Keyboard and pad navigation, Tab and Confirm work only inside explicit scopes (`.focus_scope()` containers, open lists, popups and modals), so a HUD never takes the arrows, Space or A from gameplay. A scope focuses its remembered or default widget when it appears; traps (modals, lists, `.trap()`) hold the focus until they close and give it back. Directions move spatially to the nearest focusable, scrolling long lists; Back is offered to the focused widget, then to the first `ui.back()` caller.
 - **The theme** is the `UiTheme` world resource holding an `Arc<Theme>` (`ctx.ui_theme()`): a palette, metrics (timings, sizes, the focus ring), text roles, a look per widget kind and state, named variants, nine-slice skins and sounds; RON files merge over the dark theme and hot-reload in debug builds. `UiContext` takes the `Arc` once per pass, so a change applies from the next frame.
 - **Actions.** Navigation reads the `ui.*` actions (arrows, D-pad, left stick; Enter, Space, A; Escape, B; Tab; Q/E and the bumpers). The engine hides the bindings of every action the UI used until they are released, so a menu's Confirm never jumps in gameplay. Prompts (`ui.prompt`, `[prompt=..]` markup) show the binding for the last device.
 - **Absolute drawing** (`draw_rect`, `draw_text`, `ui.text(..).at(..)`, sprites, nine-slices, lines) records at once for HUDs and overlays; a clip stack of any depth clips it (a scissor per command).
-- **Testing.** `ryo2d::testing::UiHarness` runs UI frames with no window or GPU over scripted input; `HeadlessEngine` adds pad input and reads the focus (`ui_focused`, `ui_focusables`). The console's `debug:ui` outlines every record with its id.
+- **Testing.** `ryo2d::testing::UiHarness` runs UI frames with no window or GPU over scripted input, node trees included (`spawn_ui`, `events`); `HeadlessEngine` adds pad input and reads the focus (`ui_focused`, `ui_focusables`). The console's `debug:ui` outlines every record with its id.
 
-Details: `src/core/ui/AGENTS.md`; the design: `docs/specs/2026-10-16-ui-interaction-design.md`.
+Details: `src/core/ui/AGENTS.md`; the designs: `docs/specs/2026-10-16-ui-interaction-design.md` (interaction) and `docs/specs/2026-10-17-ui-nodes-design.md` (node trees).
 
 ## Saves and Settings
 

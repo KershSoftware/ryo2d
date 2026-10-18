@@ -1,6 +1,7 @@
-//! UI frame costs without a GPU: a 200-widget settings screen, a 1,000-row
-//! scroll list and an empty frame, each one `UiHarness` frame (resolve,
-//! the widgets, layout and commands).
+//! UI frame costs without a GPU: a 200-widget settings screen (as a closure
+//! and as a node tree), a 1,000-row scroll list and an empty frame, each one
+//! `UiHarness` frame (resolve, the node walk, the widgets, layout and
+//! commands).
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use ryo2d::prelude::*;
@@ -82,6 +83,52 @@ impl Settings {
   }
 }
 
+/// The settings screen as a node tree: the same panel, tabs and 50 rows
+fn settings_nodes(settings: &Settings) -> UiNode {
+  let rows = (0..ROWS).map(|i| {
+    let label = settings.labels[i].as_str();
+    let (widget, value) = match i % 4 {
+      0 => (
+        UiNode::slider(0.0..=1.0, settings.values[i]).width(200.0),
+        format!("{:.0}%", settings.values[i] * 100.0),
+      ),
+      1 => (
+        UiNode::checkbox("Enabled", settings.flags[i]),
+        "On".to_string(),
+      ),
+      2 => (
+        UiNode::dropdown(&OPTIONS, settings.choices[i]).width(200.0),
+        OPTIONS[settings.choices[i]].to_string(),
+      ),
+      _ => (
+        UiNode::toggle("Enabled", settings.flags[i]),
+        "On".to_string(),
+      ),
+    };
+    UiNode::row()
+      .gap(12.0)
+      .align(Align::Center)
+      .child(UiNode::text(label))
+      .child(widget)
+      .child(UiNode::text(value))
+  });
+  UiNode::panel()
+    .focus_scope()
+    .wrap_focus()
+    .anchor(Anchor::Center)
+    .width(600.0)
+    .height(460.0)
+    .gap(8.0)
+    .child(UiNode::tabs(&TABS, settings.tab))
+    .child(
+      UiNode::scroll()
+        .fill_width()
+        .grow(1.0)
+        .gap(6.0)
+        .children(rows),
+    )
+}
+
 /// 1,000 buttons in a 400-unit scroll area: its scroll offset and content
 /// height, as last laid out
 fn list(ui: &mut UiContext<'_>, labels: &[String]) -> (f32, f32) {
@@ -127,6 +174,31 @@ fn settings_frame(c: &mut Criterion) {
   });
 }
 
+fn settings_nodes_frame(c: &mut Criterion) {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  harness.spawn_ui(settings_nodes(&Settings::new()));
+  for _ in 0..3 {
+    harness.frame(|_| {});
+  }
+  assert!(harness.focused().is_some(), "the screen's scope took focus");
+  for _ in 0..ROWS + 5 {
+    let before = harness.focused();
+    harness.action("ui.down");
+    harness.frame(|_| {});
+    assert_ne!(harness.focused(), before, "ui.down moved the focus");
+  }
+  let mut frame = 0u64;
+  c.bench_function("ui frame, the 200-widget settings screen as nodes", |b| {
+    b.iter(|| {
+      frame += 1;
+      if frame.is_multiple_of(10) {
+        harness.action("ui.down");
+      }
+      harness.frame(|_| {});
+    })
+  });
+}
+
 fn list_frame(c: &mut Criterion) {
   let mut harness = UiHarness::new(640.0, 480.0);
   let labels: Vec<String> = (0..LIST).map(|i| format!("Item {i}")).collect();
@@ -163,5 +235,11 @@ fn empty_frame(c: &mut Criterion) {
   });
 }
 
-criterion_group!(benches, settings_frame, list_frame, empty_frame);
+criterion_group!(
+  benches,
+  settings_frame,
+  settings_nodes_frame,
+  list_frame,
+  empty_frame
+);
 criterion_main!(benches);

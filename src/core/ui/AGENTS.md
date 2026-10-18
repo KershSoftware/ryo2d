@@ -8,6 +8,7 @@ The UI is built every frame in `Scene::ui` through `UiContext` (`immediate/conte
 - **Widgets and containers** (`widgets/`, `containers.rs`) are laid out by the layout engine and report what the pointer, keyboard and pad did through a `Response` (`ui.button("Go").clicked()`), resolved before the scenes against last frame's layout (see Interaction).
 - **Game data stays with the game**: widgets take `&mut bool`, `&mut f32`, `&mut usize` or `&mut String`. What a widget remembers itself (an open list, a caret, a scroll offset) lives in `UiMemory` under its id.
 - **Popups** (`popup.rs`) are built where they are called and drawn when their scene's UI ends (see Popups and dialogs).
+- **Node trees** (`nodes/`) are UI described once as `UiNode` values and spawned as entities. Each frame the walk draws them through the same builders, before the scene's `ui` (see Nodes).
 
 ## Integration Point
 
@@ -23,7 +24,7 @@ API usage is covered by the `ryo-ui` skill.
 
 Containers (`containers.rs`: `column`, `row`, `grid`, `stack`, `panel`) are laid out by the layout engine (`layout/`, the only code that names Taffy); `tree.rs` holds the subtree being built and its resolution.
 
-- **Ids** (`id.rs`) come from call sites: a hash of the enclosing scope, the builder's `#[track_caller]` site and how often that site ran in the scope this frame. A helper called in a loop gets one id per call, and skipping an earlier call shifts the later ones; lists that reorder or filter use `.id(key)`, which replaces the count with the key. A container's id is the scope of what it contains, and `ui.scope(key, |ui| ..)` adds a keyed scope with no node, so a game's component salts its widgets' ids without touching layout.
+- **Ids** (`id.rs`) come from call sites: a hash of the enclosing scope, the builder's `#[track_caller]` site and how often that site ran in the scope this frame. A helper called in a loop gets one id per call, and skipping an earlier call shifts the later ones; lists that reorder or filter use `.id(key)`, which replaces the count with the key. A container's id is the scope of what it contains, and `ui.scope(key, |ui| ..)` adds a keyed scope with no node, so a game's component salts its widgets' ids without touching layout. The id hash is the fast word-wise one: `mix` folds each word in with a 128-bit multiply, `.id(key)` keys hash through `IdHasher` (the same fold, never SipHash), and the per-frame `counts` and `used` maps hash with it too. Ids live only in memory, so their values may change between versions; a duplicate explicit key is still caught by `used`, suffixed and warned once.
 - **Scenes are root scopes.** `SceneManager::ui_pass` brackets each scene's `ui` with `begin_scene(scope_id, is_top)` and `end_scene`; the overlays and the console are scene 0. The same code in two scenes makes two ids, and a scene's records and state carry its scope id, so they are forgotten when it exits (`SceneManager::take_exited`, drained by `Engine::draw_ui` into `UiMemory::forget_scene`).
 - **Each top-level container lays out when its `.show()` returns.** Opening a container with none open starts a subtree (remembering its `at` rect and the clip in force); nested containers and leaves join it, and closing its root lays it out, places it by its anchor and offset in the UI (or at its `at` rect), snaps every rect to render pixels (`render::ui::snap_rect`) and resolves its draws. A leaf outside any container (`ui.text("..")` without `.at`) is a subtree of its own, laid out at once. So a top-level container's `Response` has this frame's rect; one inside another container has last frame's.
 - **A fixed-size leaf that fills keeps its size as a floor.** A `Measure::Fixed` node (a button, a slider, a slot) whose width or height is `Length::Fill` has no size of its own on that axis, so a column sized to its contents would make it zero; `to_taffy` gives it a min size of its fixed size there, or of its `max_width`/`max_height` when that is smaller: a cap the caller asked for must hold (a min above it would beat it), and the widget never collapses below it.
@@ -108,6 +109,29 @@ The keyboard and gamepad focus is resolved once per engine frame, after the poin
 - **A collision swaps.** After the pass the engine applies each `PendingRebind` with `actions_mut().rebind(..)` (which swaps inside the group; the bindings' dirty flag saves it), hides the captured binding from gameplay and adds it to `ui_binding_capture` until released, so the press never acts as a UI action or reaches gameplay. When `rebind` returns another action's name, `note_swap` puts "Swapped with <name>" on the row's state.
 - **Tests** drive pad presses with `UiDriver::pad(button)` and read `pending_rebinds()` (action, slot, binding) or `rebinds()` (whole) of the last frame.
 
+## Nodes
+
+`nodes/` (`node.rs` the `UiNode` value, `spawn.rs` the entities a tree becomes, `components.rs` the public state components and the `UiNodes` resource, `draw.rs` the walk, `events.rs` `UiEvent`). The spec is `docs/specs/2026-10-17-ui-nodes-design.md`.
+
+- **The walk.** `draw_nodes(world, ui, scene)` runs in `SceneManager::ui_pass` between `begin_scene` and the scene's `ui`, and in `UiHarness::frame` before its closure. It walks the scene's roots in spawn order and draws each node through the builder a closure would call, given `.id(entity)`; text, separators and spacers are drawn in `ui.scope(entity, ..)`. So a node's id is its entity under its parent's id, its widget state follows it through sibling changes, and it is forgotten on despawn.
+  - A container's builder is configured from its `UiNodeKind`, then its `.show` walks the children with the world free. The children list is copied once onto the walk's stack.
+  - A widget reads its state components through shared gets from one entity lookup. A value the player changed is written back after the builder returns.
+  - The text field reads its tuple mutably, since it edits `UiTextValue`'s `String` in place.
+  - Each response's id, hover and focus go into the node's `UiInteraction`, written only when they differ.
+  - A modal root opens centred, as `ui.modal()` does, unless it was given an anchor.
+- **Nodes never write records themselves.** Records, layout, focus, hit tests, popups and drag and drop all come from the builders, so a node behaves exactly as the equivalent closure widget. A builder option a node cannot express is a missing `UiNode` option, never a second path.
+- **Ownership.** `UiNodes::roots` lists `(scene scope, root)` in spawn order, and `UiRoot` holds the owning scene. Only the owning scene's pass draws a root, under the top-scene rule, so a lower scene's nodes draw and take no input. `Engine::draw_ui` drains `take_exited` into `UiMemory::forget_scene` and `despawn_scene_roots`, so a popped scene's trees go with it.
+- **Components flow both ways.** The game writes a component and the next pass draws it. The walk writes a value component only when the player changed it, so `Changed<..>` filters see real changes. A value set out of a widget's range is drawn clamped and kept. `UiHidden` skips a subtree, so it records nothing and leaves the focus chain. `UiDisabled` draws a widget with `enabled(false)` and is warned once on a container.
+- **Events.** The walk collects `UiEvent`s in walk order, each after its component write. `events::deliver` writes them as messages and triggers each on its node. A scene's tree events are delivered right after its walk, before its `ui`. An embedded tree's (`ui.node`) go to `UiNodes::pending` and are delivered by `deliver_pending` after the scene's `ui` returns. `ctx.ui_events()` filters by scene and shares `messages::<UiEvent>()`'s cursor.
+- **Observers run inside `ui_pass`,** while the scene host is out of the world. An observer on a node must not try to change scenes: it sends a message or sets state for the scene's `update` or `ui` to act on.
+- **Back.** The walk remembers the last modal or popup node drawn (`Walk::back`), the innermost. After the scene's trees, `Walk::finish` calls `ui.back()` once. A confirm (its `BackAnswer` names the No button) gets a `Clicked` from No; any other dialog gets a `Back` event on itself. Node dialogs therefore answer Back before the scene's closure. A modal inside an embedded tree takes Back only through the closure's own `ui.back()`.
+- **Focus.** `ctx.focus_ui(node)` waits in `UiNodes::pending_focus` until the node is drawn. A focused node that is despawned leaves the focus at `None`, and the next navigation lands on its scope's default, as for a closure widget that stops being drawn.
+- **Spawn checks.** Each is warned once:
+  - an option the kind does not take (`Kind::takes`), including children given to a widget;
+  - `.embedded()` on a child;
+  - an unknown `nav_*` or popup name (names resolve within the root at spawn);
+  - a name used twice.
+
 ## Theme
 
 `theme/` (`mod.rs`, `look.rs`, `builtin.rs`, `file.rs`). The spec is `docs/specs/2026-10-16-ui-interaction-design.md`.
@@ -123,7 +147,7 @@ The keyboard and gamepad focus is resolved once per engine frame, after the poin
 
 - **`UiHarness`** (`ryo2d::testing`, `src/core/testing/ui.rs`) is the engine's UI frame without a window or GPU: it owns a `UiMemory`, a `LayoutEngine`, a `TextEngine` over the built-in fonts and the `UiCommands`, and each `frame` runs the engine's order (`begin_frame`, `resolve_pointer`, `apply_scroll_requests`, `route_wheel`, `resolve_focus`, the closure as the top scene between `begin_scene` and `end_scene`, `end_frame`), 1/60 s apart. Its public script is the pointer, the left button, the wheel and the nine `ui.*` actions (`action(name)`; another name warns once). A frame that records nothing rewinds the memory (`UiMemory::rewind_frame`), so a read such as `scroll_offset` leaves the UI as the last drawn frame left it.
 - **`test_util::UiDriver`** adds the crate's scripting on top: keys, typed text, IME composition, Shift, pad buttons, held directions, the right stick, the device, the scene, prompts and the theme, and reads of the memory, commands, sounds, outcomes and captured rebinds.
-- **Benchmarks** (`benches/ui.rs`, on `UiHarness`): a 200-widget settings screen (a focus-scoped panel that wraps, of tabs and a scroll area of 50 rows, a `ui.down` every 10th frame, so every step moves the focus and scrolls) must stay under 0.25 ms; a 1,000-row scroll list scrolled to its middle; an empty frame. `benches/text.rs`'s HUD frame (GPU) must not regress.
+- **Benchmarks** (`benches/ui.rs`, on `UiHarness`): a 200-widget settings screen (a focus-scoped panel that wraps, of tabs and a scroll area of 50 rows, a `ui.down` every 10th frame, so every step moves the focus and scrolls) must stay under 0.25 ms; a 1,000-row scroll list scrolled to its middle; an empty frame. The same settings screen as a node tree must stay within 10% of the closure version: 112 µs against 104 µs at 4c's end, which is 4e's baseline. `benches/text.rs`'s HUD frame (GPU) must not regress.
 
 ## Drawing on the GPU
 

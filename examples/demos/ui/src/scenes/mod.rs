@@ -1,5 +1,6 @@
 //! The demo's pages: the four acceptance pages (a game's menus, settings,
-//! inventory and dialogue, all played with the pad), then one feature each
+//! inventory and dialogue, all played with the pad), one feature each, then
+//! the acceptance pages built from node trees and the Mixed page
 
 mod art;
 mod clipping_demo;

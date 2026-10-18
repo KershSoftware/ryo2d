@@ -2,7 +2,7 @@
 name: ryo-text
 description: "Text: fonts, styles, rich text and markup, inline icons, typewriter reveal and glyph effects, world text (Text2d) and the damage-number recipe."
 metadata:
-  version: 1.1.0
+  version: 1.2.0
 ---
 
 # Ryo2D Text Specialist
@@ -277,7 +277,9 @@ if self.reveal.is_done() { /* show the "next" prompt */ }
 - Call it **once per frame per reveal**: every call advances it.
 - It sends no message: check `reveal.is_done()`. It does not notice a new text: call `reveal.restart()` when the line changes.
 - `reveal.finish()` skips to the end: the whole line shows at the next draw, fully faded in.
+- `reveal.pause()` holds it where it is: the characters shown stay, and no more appear or fade in until `reveal.resume()`. A dialogue pauses its line under a leave question. `finish()` still applies while paused, and `restart()` keeps it paused. `is_paused()` reads it.
 - It replaces `.reveal(..)` and `.fade(..)` on the same text.
+- A UI node text takes it as an option, `UiNode::text(..).typewriter(TextReveal::new(30.0))`. The node then holds the `TextReveal` as a component, so call `finish()`, `pause()` and the rest through `ctx.world.get_mut::<TextReveal>(node)` (`ryo-ui`, Nodes).
 
 ### Manual control in the UI
 
@@ -299,7 +301,7 @@ for done in ctx.messages::<TextRevealed>() {
 }
 ```
 
-`TextReveal`: `new(per_second)`, `with_punctuation_pause(seconds)`, `with_fade(seconds)`, `restart()`, `finish()` (a Skip: the rest shows at the next advance, a fade ended too), `is_done()`, `shown()`, `drawn_clusters()`; fields `per_second`, `punctuation_pause`, `fade` are public and can be changed live. With a fade, `is_done()` is true as soon as the last character starts showing; the clock runs on until it has faded in.
+`TextReveal`: `new(per_second)`, `with_punctuation_pause(seconds)`, `with_fade(seconds)`, `restart()` (a paused reveal stays paused), `finish()` (a Skip: the rest shows at the next advance, a fade ended too, even while paused), `pause()`, `resume()`, `is_paused()`, `is_done()`, `shown()`, `drawn_clusters()`; fields `per_second`, `punctuation_pause`, `fade` are public and can be changed live. With a fade, `is_done()` is true as soon as the last character starts showing; the clock runs on until it has faded in.
 
 ## 8. World Text: `Text2d`
 

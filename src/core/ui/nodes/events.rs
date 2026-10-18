@@ -5,8 +5,11 @@ use crate::core::messages::register_message;
 
 /// Something a UI node reported: a click, a change, a drop
 ///
-/// It is both an engine message (read it with a `MessageReader<UiEvent>`) and
-/// an entity event (observe it on the node, or on an ancestor).
+/// It is both an engine message (read it with `ctx.ui_events()` or a
+/// `MessageReader<UiEvent>`) and an entity event triggered on its node (observe
+/// it there). Observers run during the UI pass, while the scene stack is out
+/// of the world: an observer must not change scenes, so it sends a message or
+/// sets state for the scene to act on.
 #[derive(Message, EntityEvent, Debug, Clone, PartialEq)]
 pub struct UiEvent {
   /// The node that reported it

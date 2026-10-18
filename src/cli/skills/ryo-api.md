@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 ---
 
 # Ryo2D API Reference
@@ -409,6 +409,11 @@ pub struct SceneContext<'a> {
 | `render_targets(&mut self) -> Mut<'_, RenderTargets>` | textures cameras render into and sprites show |
 | `actions(&mut self) -> &mut Actions` | bind, rebind and reset the game's actions (read them with `ctx.input.action_pressed(..)`; see [Input](#input)) |
 | `ui_theme(&mut self) -> Mut<'_, UiTheme>` | the UI theme (`get`, `set`, `modify`), from the next frame (see [UI](#ui)) |
+| `spawn_ui(&mut self, tree: UiNode) -> Entity` | spawn a UI node tree as a root this scene owns (despawned when the scene leaves the stack); see [Node trees](#node-trees) |
+| `spawn_ui_in(&mut self, parent: Entity, tree: UiNode) -> Option<Entity>` | add a subtree as the last child of a container node; `None` (warned) if `parent` is not one |
+| `find_ui(&self, name: &str) -> Option<Entity>`, `find_ui_in(&self, root: Entity, name: &str) -> Option<Entity>` | the first node with that `.name(..)` in this scene's trees (spawn order), or in one tree |
+| `ui_id(&self, node: Entity) -> Option<UiId>`, `focus_ui(&mut self, node: Entity)` | a node's id once drawn; focus a node when it is next drawn |
+| `ui_events(&mut self) -> Vec<UiEvent>` | this scene's nodes' events since it last read them; shares `messages::<UiEvent>()`'s cursor |
 | `window(&mut self) -> Mut<'_, WindowRequest>`, `cursor(&mut self) -> Mut<'_, CursorRequest>` | requests applied after the frame |
 | `console(&mut self) -> ConsoleScope<'_>` | scene-scoped console handlers |
 | `spawn_child(&mut self, parent: Entity, bundle: impl Bundle) -> Entity` | |
@@ -535,6 +540,7 @@ Engine messages (all `Message + Clone`):
 | `AssetReloaded` | `path: PathBuf` | hot reload (dev builds) |
 | `AssetLoadFailed` | `path: PathBuf, error: String` | |
 | `ParticleCollision` | see [Particles](#particles) | |
+| `UiEvent` | `node: Entity, name: Option<String>, action: Option<String>, kind: UiEventKind` | a UI node was clicked, changed, dropped on, focused ... (see [Node trees](#node-trees)); also triggered on the node as an entity event |
 
 - Scenes: `ctx.messages::<T>()` returns a `Vec<T>` of what arrived since this scene last read `T` (each scene sees each message once); `ctx.write_message(m)`.
 - Systems: `MessageWriter<T>::write(m)`, `MessageReader<T>::read()`.
@@ -1088,7 +1094,7 @@ Fonts, styles, rich text, effects and world text. The guide is `ryo-text`.
 | `Text2d` (component, `#[non_exhaustive]`, requires `Transform` and `TextBounds`) | fields `text: RichText`, `style: TextStyle`, `layout: TextLayoutOptions` (anchor `Center`), `lit: bool` (false), `z_order: i32`, `blend: BlendMode`, `opacity: f32` (1.0; applied when drawn, not in the layout cache key) |
 | `Text2d` builders | `new(impl Into<RichText>)`, `markup(&str)`, `with_style(TextStyle)`, `with_layout(TextLayoutOptions)`, `with_lighting(bool)`, `with_z(i32)`, `with_blend(BlendMode)`, `with_opacity(f32)` (clamped 0 to 1, a non-number is opaque), `set_text(impl Into<RichText>)` |
 | `TextBounds` (component) | `size: Vec2`, `offset: Vec2` (the position to the block's top-left), updated when drawn |
-| `TextReveal` (component, `#[non_exhaustive]`) | fields `per_second`, `punctuation_pause`, `fade`; `new(per_second)`, `with_punctuation_pause(f32)`, `with_fade(f32)`, `restart()`, `finish()` (shows the rest at the next advance, a fade ended too: a dialogue's Skip), `is_done() -> bool`, `shown() -> f32`, `drawn_clusters() -> f32` (`shown` plus the run-on that lets a fade finish) |
+| `TextReveal` (component, `#[non_exhaustive]`) | fields `per_second`, `punctuation_pause`, `fade`; `new(per_second)`, `with_punctuation_pause(f32)`, `with_fade(f32)`, `restart()` (a paused reveal stays paused), `finish()` (shows the rest at the next advance, a fade ended too: a dialogue's Skip; it applies while paused too), `pause()` (hold it where it is: shown characters stay, no more appear or fade in), `resume()`, `is_paused() -> bool`, `is_done() -> bool`, `shown() -> f32`, `drawn_clusters() -> f32` (`shown` plus the run-on that lets a fade finish) |
 | `TextRevealed` (message) | `{ entity: Entity }`, written once when a world `TextReveal` has shown every character |
 
 `UiText` (from `ui.text(..)`; it records on `draw() -> Vec2`, which returns its size in UI units, or when dropped, so `ui.text("Hi");` is a statement):
@@ -1119,9 +1125,10 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `popup(anchor: UiId) -> Container` | a panel column below `anchor`'s rect (above it when only that fits; centred when unknown), on the popup layer; a trapping focus scope; the game decides when it shows |
 | `confirm(title: &str, message: &str) -> Option<bool>`, `confirm_with(title, message, yes: &str, no: &str) -> Option<bool>` | a yes/no modal, No focused first; `Some(false)` on Back; `None` while open; keyed by its texts |
 | `scope<R>(key: impl Hash, contents: impl FnOnce(&mut UiContext) -> R) -> R` | key the ids inside without a layout node |
+| `node(root: Entity, world: &mut World) -> Response` | draw a node tree spawned with `.embedded()` here, in the open container's flow, focus scope and clip; once a frame (a second call warns); its events arrive after the scene's `ui` returns |
 | `scroll_to(UiId)`, `scroll_offset(scroll: UiId) -> Vec2`, `set_scroll_offset(scroll: UiId, Vec2)` | scroll a widget into view from the next frame; read or set (no easing) an area's offset by its `Response::id` |
 
-- `Container`: `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `fill_height()`, `fill()`, `min_width(f32)`, `max_width(f32)`, `min_height(f32)`, `max_height(f32)`, `padding(impl Into<Edges>)`, `margin(impl Into<Edges>)`, `gap(f32)`, `align(Align)`, `justify(Justify)`, `center()`, `grow(f32)`, `wrap_items()`, `aspect(ratio)`, `tracks(&[f32])` (grid column widths), `anchor(Anchor)` and `offset(x, y)` (at the top level or in a stack; default `TopLeft`), `at(Rect)` (absolute, even inside a container, keeping its parent's ids, scope and clip), `id(impl Hash)`, `focus_scope()`, `trap()` and `wrap_focus()` (each a focus scope too), `block_pointer()`, `drag_source::<P>(P)`, `drop_target::<P>()`, `drag_ghost(&SpriteHandle)`, `show(impl FnOnce(&mut UiContext)) -> Response`.
+- `Container`: `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `fill_height()`, `fill()`, `min_width(f32)`, `max_width(f32)`, `min_height(f32)`, `max_height(f32)`, `padding(impl Into<Edges>)`, `margin(impl Into<Edges>)`, `gap(f32)`, `align(Align)`, `justify(Justify)`, `center()`, `grow(f32)`, `wrap_items()`, `aspect(ratio)`, `tracks(&[f32])` (grid column widths), `anchor(Anchor)` and `offset(x, y)` (at the top level or in a stack; default `TopLeft`), `at(Rect)` (absolute, even inside a container, keeping its parent's ids, scope and clip), `id(impl Hash)`, `background(Color)` (a fill behind its children), `focus_scope()`, `trap()` and `wrap_focus()` (each a focus scope too), `block_pointer()`, `drag_source::<P>(P)`, `drop_target::<P>()`, `drag_ghost(&SpriteHandle)`, `show(impl FnOnce(&mut UiContext)) -> Response`.
 - `Scroll`: `vertical()` (default), `horizontal()`, `both()`, `no_bar()`, and `width`, `height`, `fill_width`, `fill_height`, `fill`, `min_width`, `max_width`, `min_height`, `max_height`, `padding`, `margin`, `gap`, `grow`, `anchor`, `offset`, `at`, `id`, the drag methods and `show(..) -> Response` as on `Container`.
 - `enum Length { Px(f32), Pct(f32), Fill, Fit }` (default `Fit`; `From<f32>` is `Px`). A fixed-size widget that fills keeps its own size (or its `max_width`/`max_height`, when smaller) as a floor.
 - `Edges { left, top, right, bottom }`: `Edges::ZERO`, `all(v)`, `xy(x, y)`, `new(left, top, right, bottom)`, `width()`, `height()`; `From<f32>`, `From<(f32, f32)>`.
@@ -1200,6 +1207,58 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 - A RON theme file is merged over `Theme::dark()` map by map, so it states only what it changes; `Variant::base`, `TextLook::font` and `Skin::filter` are strings there (`base: "Button"`, `font: "Pixel"`, `filter: "Nearest"`).
 - `ui.theme()` reads the theme while drawing (`ui.theme().text.heading.style()`, `ui.theme().palette.accent`). Widgets take `.variant(name)` and `.style(LookPatch)`; an unknown variant or skin warns once and draws the plain look.
 - UI alpha blends in sRGB space (a 50% black panel over white is mid grey). The console command `debug:ui` outlines every widget with its id.
+
+### Node trees
+
+A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per node (`ChildOf` hierarchy), drawn each frame through the builders above before the scene's `ui`. The guide is `ryo-ui` section 15.
+
+| `UiNode` constructors | Spawns with |
+|---|---|
+| `column()`, `row()`, `grid(columns: u16)`, `stack()`, `panel()`, `scroll()` | |
+| `popup(anchor: impl Into<String>)` | a popup below the node of that name in the same tree |
+| `text(impl Into<String>)`, `button(impl Into<String>)` | `UiLabel` |
+| `image(SpriteHandle)` | `UiImage` |
+| `checkbox(label: impl Into<String>, checked: bool)`, `toggle(label: impl Into<String>, on: bool)` | `UiLabel`, `UiChecked` |
+| `radio_group(options: &[&str], selected: usize)`, `dropdown(options: &[&str], selected: usize)`, `tabs(options: &[&str], selected: usize)`, `choice_list(options: &[&str])` | `UiOptions`, `UiIndex` |
+| `slider(range: RangeInclusive<f32>, value: f32)`, `progress(fraction: f32)` | `UiValue` |
+| `text_input(text: impl Into<String>)` | `UiTextValue` |
+| `slot()` | `UiSlot` |
+| `prompt(action: &str)`, `rebind(action: &str)`, `separator()`, `spacer()` | |
+| `confirm(title: &str, message: &str, yes: &str, no: &str)` | a modal panel; buttons with actions `"yes"` and `"no"`; opens on No; Back is a `Clicked` from No |
+
+| `UiNode` options (each `(self, ..) -> UiNode`) | |
+|---|---|
+| layout | `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `fill_height()`, `fill()`, `min_width(f32)`, `max_width(f32)`, `min_height(f32)`, `max_height(f32)`, `padding(impl Into<Edges>)`, `margin(impl Into<Edges>)`, `gap(f32)`, `align(Align)`, `justify(Justify)`, `center()`, `grow(f32)`, `wrap_items()`, `aspect(f32)`, `tracks(&[f32])`, `anchor(Anchor)`, `offset(x, y)`, `at(Rect)`, `background(Color)` |
+| focus and drag | `focus_scope()`, `trap()`, `wrap_focus()`, `block_pointer()`, `default_focus()`, `nav_up(name: impl Into<String>)`, `nav_down(..)`, `nav_left(..)`, `nav_right(..)` (by node name, resolved in the tree at spawn), `nav_skip()`, `focusable(bool)`, `drag_source()`, `drop_target()` (the payload is the node's entity), `modal()` (a modal root opens centred unless anchored) |
+| other shared | `tooltip(impl Into<String>)` (a `UiTooltip`), `enabled(bool)` (`false` adds `UiDisabled`), `variant(&str)` |
+| node-only | `action(impl Into<String>)`, `name(impl Into<String>)` (a `UiName`), `hidden()` (a `UiHidden`), `embedded()` (drawn only by `ui.node`), `insert(impl Bundle)` (after the engine's components), `child(UiNode)`, `children(impl IntoIterator<Item = UiNode>)` |
+| text | `markup()` (also buttons; text is plain without it), `style(TextStyle)`, `role(TextRole)`, `heading()`, `muted()` (these three read the theme when drawn), `size(f32)`, `color(Color)`, `text_align(TextAlign)`, `wrap(f32)`, `max_lines(u32)`, `ellipsis()`, `typewriter(TextReveal)` (inserts the `TextReveal`) |
+| image | `image_size(w, h)`, `tint(Color)`, `filter(Filter)` (also slots), `uv([f32; 4])` |
+| button, slot | `icon(SpriteHandle)`; slot: `count(u32)`, `selected(bool)` |
+| slider | `step(f32)`, `show_value()`, `label(impl Into<String>)` (also progress and rebind) |
+| text input | `placeholder(impl Into<String>)`, `max_len(usize)`, `password()` |
+| radio group, scroll | `horizontal()`; scroll: `both()`, `no_bar()` |
+| choice list, rebind | `default_choice(usize)`; rebind: `binding_slot(usize)` |
+
+- An option the node's kind does not take, children given to a widget and `.embedded()` on a child are each warned once at spawn. So are an unknown `nav_*` or popup name, and a name used twice.
+- `enum TextRole { Body, Heading, Button, Caption, Mono }`: a theme text role.
+
+| Components (public; the state of a node) | |
+|---|---|
+| `UiRoot { pub anchor: Anchor, pub offset: Vec2, pub at: Option<Rect>, .. }` | on a root: its placement, which the game may change |
+| `UiNodeKind` | every node: `name() -> &'static str` (`"button"`, ...), `action() -> Option<&str>` |
+| `UiLabel(pub String)`, `UiImage(pub SpriteHandle)`, `UiChecked(pub bool)`, `UiValue(pub f32)`, `UiIndex(pub usize)`, `UiOptions(pub Vec<String>)`, `UiTextValue(pub String)`, `UiTooltip(pub String)` | state components; the walk writes a value only when the player changes it |
+| `UiSlot { pub icon: Option<SpriteHandle>, pub count: u32, pub selected: bool }` | a slot's contents |
+| `UiName(pub String)`, `UiHidden`, `UiDisabled` | markers: insert or remove to name, hide (with its subtree) or disable |
+| `UiInteraction` | every node, as of its last draw: `hovered() -> bool`, `focused() -> bool`, `id() -> Option<UiId>` |
+
+| Events | |
+|---|---|
+| `UiEvent { pub node: Entity, pub name: Option<String>, pub action: Option<String>, pub kind: UiEventKind, .. }` | a `Message` (read with `ctx.ui_events()`) and an `EntityEvent` on its node (`ctx.world.entity_mut(node).observe(\|e: On<UiEvent>\| ..)`; observers run while the scene stack is out of the world: they must not change scenes) |
+| `enum UiEventKind { Clicked, SecondaryClicked, Changed, Submitted, Dropped { source: Entity }, Back, FocusGained, FocusLost }` | buttons, images, slots, prompts, progress and containers send `Clicked`; value widgets and rebind rows `Changed`; a choice list `Clicked` (the pick in `UiIndex`); a modal or popup node `Back` |
+
+- A scene's trees are walked before its `ui`, so `ui` and `update` read their events in the same frame. An embedded tree's events are delivered after `ui` returns.
+- Ids are keyed by entity under the parent's id: widget state survives sibling changes and is forgotten on despawn.
 
 ---
 
@@ -1326,3 +1385,5 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `UiHarness::frame(\|ui\| ..) -> R` | one 60 fps frame: resolve the scripted input against the last frame, run the closure as the top scene's `ui`, finish the frame |
 | `UiHarness::move_to(x, y)`, `press()`, `release()`, `wheel(dx, dy)`, `action(&str)` | script the next frame: the pointer (UI units), the left button (held from `press` to `release`), the wheel (lines), a UI action (`ui.up`/`down`/`left`/`right`/`confirm`/`back`/`next`/`tab_next`/`tab_prev`; another name warns once and does nothing) |
 | `UiHarness::focused() -> Option<UiId>`, `command_count() -> usize` | the focus after the last frame; the UI commands it recorded |
+| `UiHarness::spawn_ui(UiNode) -> Entity`, `world() -> &World`, `world_mut() -> &mut World`, `find_ui(&str) -> Option<Entity>`, `ui_id(Entity) -> Option<UiId>`, `events() -> &[UiEvent]` | node trees in the harness: each `frame` draws them before its closure; `events` are the last frame's, in walk order |
+| `UiHarness::frame_with_world(\|ui, world\| ..) -> R` | `frame`, with the world too (for `ui.node(root, world)`) |

@@ -1,31 +1,46 @@
-# Retained UI Nodes (Sub-project 4c)
+# Retained UI Nodes (Sub-projects 4c, 4d, 4e)
 
-Noted at the end of sub-project 4b (UI interaction, `docs/specs/2026-10-16-ui-interaction-design.md`). 4c gets its own spec; this is what it starts from.
+Noted at the end of sub-project 4b (UI interaction, `docs/specs/2026-10-16-ui-interaction-design.md`). The owner split the work into three sub-projects, each with its own spec and plan.
 
-## The Idea
+## 4c: Entity Nodes (done)
 
-UIs authored as data: a menu, a HUD or an inventory screen described in a file (or built once in code as a tree of nodes) instead of a `Scene::ui` closure that runs every frame. The nodes live across frames, the game changes them only when its data changes, and a designer (or an agent) can edit the file and see it hot-reload, as theme files do today.
+Spec: `docs/specs/2026-10-17-ui-nodes-design.md`.
 
-The point is to put retained nodes **over the same memory and layout**, not beside them: a node is one more way to record what 4b's builders record, so focus, hit testing, scrolling, popups, drag and drop, the theme and the tests all work unchanged.
+What landed:
+- `UiNode` trees in the closure API's names, spawned with `ctx.spawn_ui` as one entity per node. Each frame they are drawn through 4b's builders, keyed by entity (approach A).
+- Public state components (`UiLabel`, `UiChecked`, `UiValue`, `UiIndex`, `UiSlot`, ...) that the game writes and the walk writes back on a change. `UiEvent` messages, also triggered on the node for observers.
+- Roots owned by their scene. Node modals, `UiNode::confirm` and popups, with Back. Embedding in closure UI with `ui.node(root, world)`. Reusable components as functions.
+- Node versions of the `ui` demo's four acceptance pages, the Mixed page, and breakout's menus.
+- Faster UI ids for both styles: a word-wise folded-multiply hash in place of byte-wise FNV and SipHash.
 
-## What 4b Leaves in Place
+The guard bench (`benches/ui.rs`): the 200-widget settings screen as a node tree runs at **112 µs** a frame, against **104 µs** for the same screen as a closure (about 8% more; the guard is 10%). That is 4e's baseline.
 
-- **Ids.** `UiId` is a hash of a scope, a site and an occurrence count, or of a key (`.id(key)`, `ui.scope(key, ..)`). A node can take its id from its path of keys in the tree, with no call site, through the same `IdScopes` (`src/core/ui/id.rs`).
-- **Records.** Hit testing, the wheel, navigation and the debug overlay read only `Record`s in `UiMemory` (rect, clip, layer, order, scene, flags, focus scope, scroll area, accepted payload). A node that writes the same record behaves like a widget, in the same frame order: resolve, then record, then lay out.
-- **Layout.** `LayoutEngine` (`src/core/ui/layout/`, the only Taffy code) keeps a persistent Taffy tree keyed by `UiId` and drops nodes not laid out in a frame. The style vocabulary is the engine's own (`Length`, `Edges`, `Align`, `Justify`, the crate's `UiStyle`), so a file can name it and Taffy stays swappable.
-- **Widget state** (`UiMemory` typed state: an open list, a caret, a scroll offset, a tooltip timer) is keyed by id and lives as long as the widget is drawn, so a node keeps it as long as it exists.
-- **Focus** lives in explicit scopes, with default focus, traps, wrap and explicit neighbours as record flags and fields. A node tree marks scopes the same way.
-- **The theme** is data already: `Theme` is RON (merged over the dark theme), widgets name variants and skins by string, and `ThemeWatch` reloads it in debug builds. A UI file can follow the same merge and reload rules.
-- **Testing.** `UiHarness` runs UI frames without a GPU; it can drive a node tree as it drives a closure.
+Measured, not done: the UI memory's own `UiId`-keyed maps (`UiMemory`'s records, states and focus memory, and the layout engine's entries) still use SipHash. Moving them to the id hasher made the closure screen 89 µs and the node screen 99 µs in a trial. That is faster for both, but the node screen comes out 10.4 to 11.6% slower than the closure, over the 4c guard. The same absolute walk cost is a larger share of a faster frame. Take it with 4e, which removes most of the walk's per-frame cost.
 
-## What 4c Has to Add
+## 4d: UI Files and Templates
 
-- **A node tree and its format:** node kinds for the containers and widgets, their options, and a file format (RON, like the theme) with hot reload.
-- **Binding to game data:** widgets take `&mut` values today; nodes need a way to read and write game state (a resource, a component, or named values) and to show computed text (`"Gold {gold}"`).
-- **Events out:** a `Response` is read in the same closure today. Nodes need their clicks, changes, submits and drops delivered to the game, as messages or callbacks named in the file (an action name per button, say).
-- **Recording without rebuilding:** today every widget is rebuilt, re-styled and laid out each frame. A retained tree can skip unchanged subtrees, which the 1,000-row scroll list bench (about 0.6 ms a frame at 4b's end, against 0.11 ms for the 200-widget screen) shows is worth doing. List virtualization (recording only the rows in view) fits here too.
-- **Mixing:** a closure UI and a node tree in the same scene, sharing focus scopes and z order.
+- UI files in RON that load into the same `UiNode`, with hot reload as theme files have.
+- Templates with parameters: the file form of 4c's reusable components (functions returning a `UiNode`).
+- Named bindings that write the same state components 4c's walk uses, not a second store.
+- File node keys, so ids (and widget state) survive a respawn or a reload. 4c keys nodes by entity, so a respawned tree starts fresh.
 
-## Left for Later (Not 4c)
+## 4e: Fast Big UIs
 
-From 4b's out-of-scope list: touch input; analog action axes and more than one gamepad; screen readers (AccessKit); right-to-left layout; rich text editing in a text field; windows the player drags or resizes.
+- Subtree caching: skip the walk and the builders for subtrees whose components did not change. For 4c's walk, each node costs:
+  - a few ECS component reads (about 8 to 10 ns each, some 560 a frame on the settings screen);
+  - one or two ids;
+  - the builder's work.
+- Virtualised lists for node and closure UI: record only the rows in view. The 1,000-row scroll list bench shows the need.
+- Baseline: the node settings screen at 112 µs, closure 104 µs (above).
+
+## Left for Later
+
+From 4b's out-of-scope list:
+- touch input;
+- analog action axes and more than one gamepad;
+- screen readers (AccessKit);
+- right-to-left layout;
+- rich text editing in a text field;
+- windows the player drags or resizes.
+
+From 4c: node versions of `ui.custom` painters and absolute `draw_*` calls, which stay closure UI.
