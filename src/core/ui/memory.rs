@@ -2,7 +2,6 @@
 //! hit testing and navigation), widgets' own state and per-scope focus
 
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
 use std::ops::{BitOr, BitOrAssign};
 use std::sync::Arc;
 
@@ -11,6 +10,7 @@ use glam::Vec2;
 use super::id::{IdScopes, UiId};
 use super::types::Rect;
 use super::widgets::drag::DragState;
+use crate::core::hash::FastMap;
 use crate::core::input::Direction;
 
 /// What a widget senses and how navigation treats it
@@ -257,10 +257,10 @@ struct Slot {
 /// What the UI remembers between frames: last frame's laid-out records,
 /// widgets' own state (scroll offsets, carets, open lists) and focus
 pub(crate) struct UiMemory {
-  prev: HashMap<UiId, Record>,
-  next: HashMap<UiId, Record>,
-  states: HashMap<UiId, Slot>,
-  focus_memory: HashMap<UiId, (u64, UiId)>,
+  prev: FastMap<UiId, Record>,
+  next: FastMap<UiId, Record>,
+  states: FastMap<UiId, Slot>,
+  focus_memory: FastMap<UiId, (u64, UiId)>,
   /// Widgets `scroll_to` asked to bring into view, applied by the next resolve
   scroll_requests: Vec<UiId>,
   /// The widget `request_focus` asked for, applied by the next resolve
@@ -281,10 +281,10 @@ pub(crate) struct UiMemory {
 impl UiMemory {
   pub(crate) fn new() -> UiMemory {
     UiMemory {
-      prev: HashMap::new(),
-      next: HashMap::new(),
-      states: HashMap::new(),
-      focus_memory: HashMap::new(),
+      prev: FastMap::default(),
+      next: FastMap::default(),
+      states: FastMap::default(),
+      focus_memory: FastMap::default(),
       scroll_requests: Vec::new(),
       focus_request: None,
       known_scopes: Vec::new(),

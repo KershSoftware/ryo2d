@@ -2,12 +2,13 @@
 //! that site ran in the scope this frame (or an explicit key in its place)
 //!
 //! Ids are hashed a word at a time with a folded multiply, and `.id(key)`
-//! keys with the same mix (`IdHasher`). Ids live only in memory, never in a
+//! keys with the same mix (`FastHasher`). Ids live only in memory, never in a
 //! save, so their values may change between versions.
 
-use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::Hash;
 use std::panic::Location;
+
+use crate::core::hash::{FastMap, FastSet, MULTIPLIER, SEED, fast_hash, fold};
 
 /// A widget's identity across frames. Made from where the widget is called;
 /// `.id(key)` makes it from a key instead, for lists that reorder
@@ -30,20 +31,7 @@ impl UiId {
   }
 }
 
-/// Where a hash starts (the fractional part of the golden ratio)
-const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
-/// The odd multiplier each word is folded with (splitmix64's)
-const MULTIPLIER: u64 = 0xbf58_476d_1ce4_e5b9;
-/// The multiplier a key's hash is finished with (splitmix64's other)
-const FINISH: u64 = 0x94d0_49bb_1331_11eb;
 const KEYED: u64 = 0x006b_6579;
-
-/// `a * b` as 128 bits, the halves xor'd together: every bit of `a` reaches
-/// the high half, so one multiply mixes a whole word
-fn fold(a: u64, b: u64) -> u64 {
-  let full = u128::from(a) * u128::from(b);
-  (full as u64) ^ ((full >> 64) as u64)
-}
 
 /// `words` folded into `hash` one at a time; never returns 0 (`UiId::NONE`)
 fn mix(mut hash: u64, words: &[u64]) -> u64 {
@@ -52,69 +40,6 @@ fn mix(mut hash: u64, words: &[u64]) -> u64 {
   }
   hash.max(1)
 }
-
-/// A hasher for the keys of `.id(key)`: words folded as `mix` folds them.
-/// The id maps here (`counts`, `used`) use it too: their keys are ids, not
-/// player input, so a hash built for speed rather than flood resistance is
-/// safe.
-#[derive(Debug, Clone, Copy)]
-struct IdHasher(u64);
-
-impl Default for IdHasher {
-  fn default() -> Self {
-    IdHasher(SEED)
-  }
-}
-
-impl Hasher for IdHasher {
-  fn write(&mut self, bytes: &[u8]) {
-    let (words, rest) = bytes.as_chunks::<8>();
-    for word in words {
-      self.0 = fold(self.0 ^ u64::from_le_bytes(*word), MULTIPLIER);
-    }
-    if !rest.is_empty() {
-      let mut tail = [0u8; 8];
-      for (to, from) in tail.iter_mut().zip(rest) {
-        *to = *from;
-      }
-      // The length tells "a\0" from "a"
-      let word = u64::from_le_bytes(tail) ^ ((rest.len() as u64) << 56);
-      self.0 = fold(self.0 ^ word, MULTIPLIER);
-    }
-  }
-
-  fn write_u8(&mut self, n: u8) {
-    self.write_u64(u64::from(n));
-  }
-
-  fn write_u16(&mut self, n: u16) {
-    self.write_u64(u64::from(n));
-  }
-
-  fn write_u32(&mut self, n: u32) {
-    self.write_u64(u64::from(n));
-  }
-
-  fn write_u64(&mut self, n: u64) {
-    self.0 = fold(self.0 ^ n, MULTIPLIER);
-  }
-
-  fn write_u128(&mut self, n: u128) {
-    self.write_u64(n as u64);
-    self.write_u64((n >> 64) as u64);
-  }
-
-  fn write_usize(&mut self, n: usize) {
-    self.write_u64(n as u64);
-  }
-
-  fn finish(&self) -> u64 {
-    fold(self.0, FINISH)
-  }
-}
-
-/// Builds an [`IdHasher`] for a map
-type IdHashing = BuildHasherDefault<IdHasher>;
 
 /// A call site: the static file name's address, its length, line and column
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -136,9 +61,9 @@ impl Site {
 #[derive(Debug, Default)]
 pub(crate) struct IdScopes {
   stack: Vec<UiId>,
-  counts: HashMap<(UiId, Site), u64, IdHashing>,
-  used: HashSet<UiId, IdHashing>,
-  warned: HashSet<UiId, IdHashing>,
+  counts: FastMap<(UiId, Site), u64>,
+  used: FastSet<UiId>,
+  warned: FastSet<UiId>,
 }
 
 impl IdScopes {
@@ -208,13 +133,13 @@ impl IdScopes {
 
 /// A key's hash for `.id(key)`
 pub(crate) fn key_hash<K: Hash + ?Sized>(key: &K) -> u64 {
-  let mut hasher = IdHasher::default();
-  key.hash(&mut hasher);
-  hasher.finish()
+  fast_hash(key)
 }
 
 #[cfg(test)]
 mod tests {
+  use std::collections::HashSet;
+
   use super::*;
   use std::panic::Location;
 

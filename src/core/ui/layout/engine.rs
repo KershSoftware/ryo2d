@@ -1,13 +1,14 @@
 //! The layout engine: Taffy flexbox and grid over the UI's nodes, kept
 //! between frames by widget id. The only file that names Taffy.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use glam::Vec2;
 use taffy::prelude::*;
 use taffy::{Overflow, Point, TaffyResult, compute_leaf_layout};
 
 use super::{Align, Flow, Justify, Length, Measure, Tracks, UiStyle};
+use crate::core::hash::FastMap;
 use crate::core::ui::{Rect, UiId};
 
 /// How much room a measured node is offered along one axis
@@ -57,7 +58,7 @@ struct Entry {
 /// Flexbox and grid layout over UI nodes, cached by widget id
 pub(crate) struct LayoutEngine {
   taffy: TaffyTree<UiId>,
-  entries: HashMap<UiId, Entry>,
+  entries: FastMap<UiId, Entry>,
   frame: u64,
   warned: HashSet<&'static str>,
 }
@@ -69,7 +70,7 @@ impl LayoutEngine {
     taffy.disable_rounding();
     LayoutEngine {
       taffy,
-      entries: HashMap::new(),
+      entries: FastMap::default(),
       frame: 0,
       warned: HashSet::new(),
     }
@@ -133,7 +134,8 @@ impl LayoutEngine {
   ) -> TaffyResult<()> {
     // Pre-order walk: which nodes count (reachable, unique ids), their parents
     // and their valid children
-    let mut index_of: HashMap<UiId, usize> = HashMap::with_capacity(nodes.len());
+    let mut index_of: FastMap<UiId, usize> =
+      FastMap::with_capacity_and_hasher(nodes.len(), Default::default());
     let mut parents: Vec<Option<usize>> = vec![None; nodes.len()];
     let mut visited = vec![false; nodes.len()];
     let mut kids: Vec<usize> = Vec::with_capacity(nodes.len());

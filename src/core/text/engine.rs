@@ -17,6 +17,7 @@ use parley::{
   PositionedLayoutItem, RangedBuilder, Selection, StyleProperty, VerticalAlign,
 };
 
+use crate::core::hash::{FastMap, FastSet};
 use crate::core::text::layout::{GlyphStyle, LineInfo, PlacedGlyph, PlacedIcon, TextLayout};
 use crate::core::text::rich::{Icon, RichText};
 use crate::core::text::style::{TextAlign, TextFont, TextLayoutOptions, TextOverflow, TextStyle};
@@ -63,11 +64,11 @@ pub(crate) struct TextEngine {
   /// Parley font (blob id, face index) to the registry's id
   by_blob: HashMap<(u64, u32), FontId>,
   roles: [Option<FontId>; 3],
-  cache: HashMap<u64, Cached>,
+  cache: FastMap<u64, Cached>,
   /// Single-line plain layouts for carets and hit tests
-  lines: HashMap<u64, (Layout<u16>, u64)>,
-  coords: HashMap<u64, Arc<[i16]>>,
-  warned: HashSet<u64>,
+  lines: FastMap<u64, (Layout<u16>, u64)>,
+  coords: FastMap<u64, Arc<[i16]>>,
+  warned: FastSet<u64>,
   frame: u64,
   stats: CacheStats,
 }
@@ -88,10 +89,10 @@ impl TextEngine {
       faces: HashMap::new(),
       by_blob: HashMap::new(),
       roles: [None; 3],
-      cache: HashMap::new(),
-      lines: HashMap::new(),
-      coords: HashMap::new(),
-      warned: HashSet::new(),
+      cache: FastMap::default(),
+      lines: FastMap::default(),
+      coords: FastMap::default(),
+      warned: FastSet::default(),
       frame: 0,
       stats: CacheStats::default(),
     }

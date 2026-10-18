@@ -3,6 +3,7 @@
 // Foundation
 pub mod ecs;
 pub mod error;
+pub(crate) mod hash;
 pub mod messages;
 
 // Core systems
