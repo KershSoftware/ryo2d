@@ -230,8 +230,8 @@ fn list_frame(c: &mut Criterion) {
   });
 }
 
-/// A closure list of `count` buttons (the long list's row) in a 400 by 300
-/// view: the items built this frame
+/// A closure list of `count` buttons (the long list's row) in a view 300 wide
+/// and 400 high: the items built this frame
 fn virtual_list(ui: &mut UiContext<'_>, count: usize) -> ListResponse {
   ui.list(count)
     .row_height(30.0)
@@ -259,6 +259,8 @@ fn settle_virtual_list(count: usize) -> UiHarness {
     "the list scrolled to its middle ({:?} of {count})",
     list.range
   );
+  let next = harness.frame(|ui| virtual_list(ui, count));
+  assert_eq!(next.range, list.range, "the scroll has settled");
   harness
 }
 
@@ -299,18 +301,22 @@ fn node_list_frame(c: &mut Criterion) {
   harness.frame(|_| {});
   bind_rows(&mut harness);
   harness.ui_list_scroll_to(list, 5_000);
-  let mut reached_middle = false;
   for _ in 0..60 {
     harness.frame(|_| {});
-    reached_middle |= harness
-      .messages::<UiListBind>()
-      .any(|bind| bind.index.abs_diff(5_000) < 20);
     bind_rows(&mut harness);
   }
+  // Bind every pooled row again: they all sit around the middle
+  harness.ui_list_refresh(list);
   harness.frame(|_| {});
+  let pooled: Vec<usize> = harness
+    .messages::<UiListBind>()
+    .map(|bind| bind.index)
+    .collect();
+  assert!(
+    pooled.contains(&5_000) && pooled.iter().all(|i| i.abs_diff(5_000) < 30),
+    "the node list scrolled to its middle ({pooled:?})"
+  );
   bind_rows(&mut harness);
-  // Rows bound while it eased there: the last ones are the middle's
-  assert!(reached_middle, "the node list scrolled to its middle");
   c.bench_function("ui frame, a 10,000-row node list", |b| {
     b.iter(|| {
       harness.frame(|_| {});
