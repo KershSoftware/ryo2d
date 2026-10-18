@@ -2,22 +2,28 @@
 //! place, children matched by key
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
+use crate::core::asset::AssetManager;
 use crate::core::ecs::kernel::{
-  ChildOf, Children, Component, DetectChangesMut, Entity, EntityWorldMut, World,
+  ChildOf, Children, Component, DetectChangesMut, Entity, EntityWorldMut, Messages, Mut, World,
 };
+use crate::core::messages::register_message;
 use crate::core::text::TextReveal;
 use crate::core::ui::Anchor;
+use crate::core::ui::file::document::TreeSource;
 use crate::core::ui::theme::warn_once;
 
 use super::bindings::{self, Pattern, UiBind, UiBindings, UiPattern};
 use super::components::{
   UiAdded, UiApplied, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiLabel, UiName, UiNodes,
-  UiOptions, UiRoot, UiTextValue, UiTooltip, UiTreeNode, UiValue,
+  UiOptions, UiRoot, UiSource, UiTextValue, UiTooltip, UiTreeNode, UiValue,
 };
+use super::events::UiReloaded;
 use super::node::{Kind, NodeState, UiNode, UiNodeKind};
 use super::spawn::{
-  Keys, Pending, child_keys, finish, root_key, root_of, spawn_node, spawn_root, warn_repeated_keys,
+  Keys, Pending, answer_back_above, child_keys, finish, root_key, root_of, spawn_node, spawn_root,
+  warn_repeated_keys,
 };
 
 /// Which children of a node an update may touch
@@ -26,7 +32,6 @@ pub(crate) enum Mode {
   /// `ctx.update_ui`: every child the tree spawned
   Update,
   /// A file reload: only the children built from the same file instance
-  #[allow(dead_code)] // built by the UI files' hot reload, which comes later
   Reload { instance: u64 },
 }
 
@@ -50,26 +55,108 @@ pub(crate) fn reconcile(world: &mut World, entity: Entity, mut tree: UiNode, mod
   }
   // Only the top's seeds count, as at spawn
   let seeds = std::mem::take(&mut tree.seeds);
-  // The top keeps the key its own parent matches it by
-  let key = world
-    .get::<UiTreeNode>(entity)
-    .is_none()
-    .then(|| root_key(&tree));
+  // The top takes the tree's key or name when it gives one; otherwise it
+  // keeps the key its own parent matches it by
+  let given = tree.key.is_some() || tree.name.is_some();
+  let key = (given || world.get::<UiTreeNode>(entity).is_none()).then(|| root_key(&tree));
   let mut walk = Walk {
     mode,
     pending: Vec::new(),
     fresh: Vec::new(),
+    reshaped: false,
     stack: Vec::new(),
     nth: Vec::new(),
   };
   let top = walk.node(world, entity, tree, key);
   finish(world, top, walk.pending);
-  bindings::invalidate(world, top);
+  // A subtree's change can move the answer of a dialog around it
+  answer_back_above(world, top);
+  if walk.reshaped {
+    bindings::invalidate(world, top);
+  }
   bindings::seed(world, top, seeds);
   for node in walk.fresh {
     bindings::apply_subtree(world, node, Vec::new());
   }
   top
+}
+
+/// Bring every tree built from a UI file that changed since in line with the
+/// file, outer trees first, and send a `UiReloaded` for each root touched.
+/// A tree that cannot be rebuilt (a missing image, a template gone) is kept as
+/// it was and warned about once.
+///
+/// Runs every frame before the UI pass; with no tree from a file it is one
+/// query, and none at all until one has been spawned.
+pub(crate) fn reload_trees(world: &mut World) {
+  let Some(mut sources) = world.try_query::<(Entity, &UiSource)>() else {
+    return;
+  };
+  let mut stale: Vec<(Entity, Arc<TreeSource>, u64)> = sources
+    .iter(world)
+    .filter_map(|(entity, held)| {
+      let now = held.source.file.generation();
+      (now != held.generation).then(|| (entity, Arc::clone(&held.source), now))
+    })
+    .collect();
+  if stale.is_empty() {
+    return;
+  }
+  // Outer trees first: a code-built instance inside one is left alone by its
+  // reload, or goes with its parent and is skipped
+  stale.sort_by_cached_key(|&(entity, ..)| depth(world, entity));
+  let roots = world.try_resource_scope(|world, mut assets: Mut<AssetManager>| {
+    let mut roots = Vec::new();
+    for (entity, source, now) in stale {
+      // Gone with an outer tree that was given a new kind
+      if world.get::<UiSource>(entity).is_none() {
+        continue;
+      }
+      let top = match source.file.build_source(&source, &mut *assets) {
+        Ok(tree) => {
+          let instance = source.instance;
+          let top = reconcile(world, entity, tree, Mode::Reload { instance });
+          if let Some(root) = root_of(world, top)
+            && !roots.contains(&root)
+          {
+            roots.push(root);
+          }
+          top
+        }
+        Err(error) => {
+          let path = source.file.path();
+          warn_once(format!("ui-rebuild:{path}:{now}"), || {
+            format!("could not rebuild a tree from {path}; keeping it as it was:\n{error}")
+          });
+          entity
+        }
+      };
+      // Not tried again until the file changes again
+      if let Some(mut held) = world.get_mut::<UiSource>(top) {
+        held.generation = now;
+      }
+    }
+    roots
+  });
+  let Some(roots) = roots.filter(|roots| !roots.is_empty()) else {
+    return;
+  };
+  register_message::<UiReloaded>(world);
+  if let Some(mut messages) = world.get_resource_mut::<Messages<UiReloaded>>() {
+    for root in roots {
+      messages.write(UiReloaded { root });
+    }
+  }
+}
+
+/// How many ancestors `entity` has
+fn depth(world: &World, mut entity: Entity) -> usize {
+  let mut depth = 0;
+  while let Some(parent) = world.get::<ChildOf>(entity) {
+    entity = parent.parent();
+    depth += 1;
+  }
+  depth
 }
 
 /// One reconcile: what it leaves for the end, and scratch reused down the
@@ -79,6 +166,8 @@ struct Walk {
   pending: Vec<Pending>,
   /// Subtrees spawned, and nodes rebound: their bindings start fresh
   fresh: Vec<Entity>,
+  /// A node was spawned or despawned, so the root's bindings index is stale
+  reshaped: bool,
   /// The children lists being walked, outermost first
   stack: Vec<Entity>,
   /// Scratch for the keys of one list of tree children
@@ -104,6 +193,7 @@ impl Walk {
         .unwrap_or_else(|| root_key(&tree));
       let new = respawn_in_place(world, entity, tree, key, &mut self.pending);
       self.fresh.push(new);
+      self.reshaped = true;
       return new;
     }
     let NodeUpdate {
@@ -112,7 +202,7 @@ impl Walk {
       popup,
       modal,
       rebound,
-    } = update_node(world, entity, tree, key);
+    } = update_node(world, entity, tree, key, self.mode);
     if rebound {
       self.fresh.push(entity);
     }
@@ -228,6 +318,7 @@ impl Walk {
         None => {
           let entity = spawn_node(world, Some(parent), false, child, key, &mut self.pending);
           self.fresh.push(entity);
+          self.reshaped = true;
           entity
         }
       };
@@ -236,6 +327,7 @@ impl Walk {
     for (&child, became) in owned.iter().zip(&became) {
       if became.is_none() && world.get_entity(child).is_ok() {
         world.despawn(child);
+        self.reshaped = true;
       }
     }
 
@@ -352,12 +444,14 @@ pub(crate) struct NodeUpdate {
 /// only where the tree changed it since it last gave it (`UiApplied`), so what
 /// the game or the player wrote survives, and a bound value is never written.
 /// An unchanged node allocates and writes nothing. `key` is the node's new
-/// key, or `None` to keep its own.
+/// key, or `None` to keep its own. In `Mode::Update` the node's `UiSource`
+/// becomes the tree's; a reload leaves it to its caller.
 pub(crate) fn update_node(
   world: &mut World,
   entity: Entity,
   node: UiNode,
   key: Option<String>,
+  mode: Mode,
 ) -> NodeUpdate {
   let UiNode {
     kind,
@@ -381,7 +475,7 @@ pub(crate) fn update_node(
     key: _,
     template: _,
     instance,
-    source: _,
+    source,
   } = node;
 
   let popup = match &kind {
@@ -424,6 +518,9 @@ pub(crate) fn update_node(
     instance,
   );
   update.rebound = set(&mut node, bind);
+  if mode == Mode::Update {
+    set_source(&mut node, source);
+  }
   let patterns = update_patterns(
     &mut node,
     &applied,
@@ -488,6 +585,24 @@ fn set<C: Component + PartialEq>(node: &mut EntityWorldMut<'_>, value: Option<C>
   }
   write(node, value);
   true
+}
+
+/// Make the node's `UiSource` the tree's, writing only on a difference
+fn set_source(node: &mut EntityWorldMut<'_>, source: Option<Arc<TreeSource>>) {
+  let same = match (node.get::<UiSource>(), &source) {
+    (None, None) => true,
+    (Some(held), Some(source)) => Arc::ptr_eq(&held.source, source),
+    _ => false,
+  };
+  if !same {
+    write(
+      node,
+      source.map(|source| UiSource {
+        generation: source.file.generation(),
+        source,
+      }),
+    );
+  }
 }
 
 /// Rewrite what the tree owns where it differs
@@ -694,7 +809,7 @@ mod tests {
 
   fn update(h: &mut UiHarness, entity: Entity, node: UiNode) {
     let key = root_key(&node);
-    update_node(h.world_mut(), entity, node, Some(key));
+    update_node(h.world_mut(), entity, node, Some(key), Mode::Update);
   }
 
   #[test]
@@ -866,7 +981,7 @@ mod tests {
     let e = one(&mut h, UiNode::slider(0.0..=1.0, 0.5));
     let mut rebound = |node: UiNode| {
       let key = root_key(&node);
-      update_node(h.world_mut(), e, node, Some(key)).rebound
+      update_node(h.world_mut(), e, node, Some(key), Mode::Update).rebound
     };
     let slider = || UiNode::slider(0.0..=1.0, 0.5);
     assert!(!rebound(slider()), "no bind before or after");
@@ -909,6 +1024,7 @@ mod tests {
 
 #[cfg(test)]
 mod tree_tests {
+  use super::super::components::BackAnswer;
   use super::*;
   use crate::core::testing::UiHarness;
   use crate::core::ui::nodes::*;
@@ -1190,6 +1306,45 @@ mod tree_tests {
   }
 
   #[test]
+  fn a_subtree_update_that_respawns_a_confirms_no_moves_the_dialogs_back_answer() {
+    let mut h = UiHarness::new(400.0, 300.0);
+    let dialog = h.spawn_ui(UiNode::confirm("Quit?", "", "Yes", "No"));
+    let row = *kids(&h, dialog).last().unwrap();
+    let no = kids(&h, row)[1];
+    assert_eq!(h.world().get::<BackAnswer>(dialog).map(|a| a.0), Some(no));
+    let mut new_no = UiNode::toggle("No", false).action("no");
+    new_no.flags.answers_back = true;
+    let respawned = h.update_ui(no, new_no);
+    assert_ne!(respawned, no);
+    assert_eq!(
+      h.world().get::<BackAnswer>(dialog).map(|a| a.0),
+      Some(respawned),
+      "Back answers with the new No"
+    );
+  }
+
+  #[test]
+  fn a_subtree_update_takes_the_trees_key_or_keeps_its_own() {
+    let mut h = UiHarness::new(400.0, 300.0);
+    let tree = |first: UiNode| {
+      UiNode::column()
+        .child(first)
+        .child(UiNode::button("b").name("b"))
+    };
+    let root = h.spawn_ui(tree(UiNode::button("a").name("a")));
+    let [a, b] = kids(&h, root)[..] else {
+      panic!("two children")
+    };
+    h.update_ui(a, UiNode::button("c").name("c"));
+    h.update_ui(b, UiNode::button("B"));
+    let key = |h: &UiHarness, node: Entity| h.world().get::<UiTreeNode>(node).unwrap().key.clone();
+    assert_eq!(key(&h, a), "c", "the tree's name");
+    assert_eq!(key(&h, b), "b", "a top with neither keeps its key");
+    h.update_ui(root, tree(UiNode::button("c").name("c")));
+    assert_eq!(kids(&h, root), [a, b], "both matched by their keys");
+  }
+
+  #[test]
   fn update_ui_on_a_plain_entity_warns_and_returns_it() {
     let mut h = UiHarness::new(400.0, 300.0);
     let plain = h.world_mut().spawn_empty().id();
@@ -1198,5 +1353,170 @@ mod tree_tests {
       crate::core::ui::test_util::warnings_containing("update_ui needs a node"),
       1
     );
+  }
+}
+
+#[cfg(test)]
+mod reload_tests {
+  use super::*;
+  use crate::core::testing::UiHarness;
+  use crate::core::ui::nodes::*;
+  use crate::prelude::*;
+
+  fn harness(files: &[(&str, &str)]) -> (tempfile::TempDir, UiHarness) {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+      std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let h = UiHarness::new(640.0, 480.0).with_assets(dir.path());
+    (dir, h)
+  }
+
+  fn rewrite(dir: &tempfile::TempDir, h: &mut UiHarness, name: &str, text: &str) {
+    std::fs::write(dir.path().join(name), text).unwrap();
+    h.reload_ui(name).unwrap();
+    h.frame(|_| {});
+  }
+
+  const PAUSE: &str = r#"(root: Panel(modal: true, focus_scope: true, children: [
+    Text(text: "Paused", name: "title"),
+    Button(label: "Resume", action: "resume", default_focus: true),
+    Button(label: "Quit", action: "quit"),
+  ]))"#;
+
+  #[test]
+  fn a_reload_updates_in_place_keeping_entities_game_values_and_focus() {
+    let (dir, mut h) = harness(&[("pause.ui.ron", PAUSE)]);
+    let root = h.spawn_ui_file("pause.ui.ron").unwrap();
+    h.frame(|_| {});
+    h.frame(|_| {});
+    let focused = h.focused();
+    let title = h.find_ui("title").unwrap();
+    h.world_mut().get_mut::<UiLabel>(title).unwrap().0 = "Game wrote".into();
+    rewrite(
+      &dir,
+      &mut h,
+      "pause.ui.ron",
+      &PAUSE.replace("modal: true,", "modal: true, gap: 20,"),
+    );
+    assert_eq!(h.find_ui("title"), Some(title), "the same entity");
+    assert_eq!(h.world().get::<UiLabel>(title).unwrap().0, "Game wrote");
+    assert_eq!(
+      h.world().get::<UiNodeKind>(root).unwrap().layout.gap,
+      Some(20.0)
+    );
+    assert_eq!(h.focused(), focused, "focus stays on Resume");
+    assert!(h.events().is_empty(), "the reload sent no UiEvents");
+    let reloaded: Vec<_> = h.messages::<UiReloaded>().collect();
+    assert_eq!(reloaded, [UiReloaded { root }]);
+  }
+
+  #[test]
+  fn two_trees_from_one_file_both_reload_and_keep_their_values() {
+    let (dir, mut h) = harness(&[(
+      "hud.ui.ron",
+      r#"(root: Column(children: [Text("{score}")]))"#,
+    )]);
+    let one = h.spawn_ui_file("hud.ui.ron").unwrap();
+    let two = h.spawn_ui_file("hud.ui.ron").unwrap();
+    h.ui_set(one, "score", 1);
+    h.ui_set(two, "score", 2);
+    rewrite(
+      &dir,
+      &mut h,
+      "hud.ui.ron",
+      r#"(root: Column(gap: 4, children: [Text("Score {score}")]))"#,
+    );
+    let label = |h: &UiHarness, root: Entity| {
+      let text = h.world().get::<Children>(root).unwrap()[0];
+      h.world().get::<UiLabel>(text).unwrap().0.clone()
+    };
+    assert_eq!(label(&h, one), "Score 1");
+    assert_eq!(label(&h, two), "Score 2");
+  }
+
+  #[test]
+  fn code_built_instances_reload_from_their_template_and_a_removed_template_keeps_them() {
+    let file = r#"(templates: {"Item": (params: ["name"], node: Button(label: "{name}"))}, root: Column(name: "list"))"#;
+    let (dir, mut h) = harness(&[("inv.ui.ron", file)]);
+    h.spawn_ui_file("inv.ui.ron").unwrap();
+    let list = h.find_ui("list").unwrap();
+    let ui_file = h.assets().load_ui("inv.ui.ron").unwrap();
+    let node = ui_file
+      .template("Item", &UiArgs::new().with("name", "Sword"), h.assets())
+      .unwrap();
+    let item = spawn_ui_in(h.world_mut(), list, node).unwrap();
+    rewrite(
+      &dir,
+      &mut h,
+      "inv.ui.ron",
+      &file.replace("\"{name}\"", "\"<{name}>\""),
+    );
+    assert_eq!(h.world().get::<UiLabel>(item).unwrap().0, "<Sword>");
+    assert_eq!(
+      h.world().get::<Children>(list).unwrap().to_vec(),
+      [item],
+      "the root's reload left the code-built item"
+    );
+    rewrite(
+      &dir,
+      &mut h,
+      "inv.ui.ron",
+      r#"(root: Column(name: "list"))"#,
+    );
+    assert_eq!(
+      h.world().get::<UiLabel>(item).unwrap().0,
+      "<Sword>",
+      "kept as it was"
+    );
+    // The file's name keeps the count apart from the other tests' warnings
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing("could not rebuild a tree from inv.ui.ron"),
+      1
+    );
+  }
+
+  #[test]
+  fn a_reload_that_cannot_build_keeps_the_tree_and_warns_once() {
+    let (dir, mut h) = harness(&[("img.ui.ron", r#"(root: Column(children: [Text("a")]))"#)]);
+    let root = h.spawn_ui_file("img.ui.ron").unwrap();
+    rewrite(
+      &dir,
+      &mut h,
+      "img.ui.ron",
+      r#"(root: Column(children: [Image("missing.png")]))"#,
+    );
+    h.frame(|_| {});
+    let child = h.world().get::<Children>(root).unwrap()[0];
+    assert_eq!(h.world().get::<UiNodeKind>(child).unwrap().name(), "text");
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing("missing.png"),
+      1
+    );
+  }
+
+  #[test]
+  fn children_the_game_added_before_spawning_survive_a_reload() {
+    let (dir, mut h) = harness(&[("m.ui.ron", r#"(root: Column(children: [Text("file")]))"#)]);
+    let file = h.assets().load_ui("m.ui.ron").unwrap();
+    let tree = file
+      .root(h.assets())
+      .unwrap()
+      .child(UiNode::text("code").key("code"));
+    let root = h.spawn_ui(tree);
+    rewrite(
+      &dir,
+      &mut h,
+      "m.ui.ron",
+      r#"(root: Column(children: [Text("file2")]))"#,
+    );
+    let labels: Vec<String> = h
+      .world()
+      .get::<Children>(root)
+      .unwrap()
+      .iter()
+      .map(|&c| h.world().get::<UiLabel>(c).unwrap().0.clone())
+      .collect();
+    assert_eq!(labels, ["file2", "code"]);
   }
 }

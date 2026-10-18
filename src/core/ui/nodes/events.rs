@@ -25,6 +25,18 @@ pub struct UiEvent {
   pub(crate) scene: u64,
 }
 
+/// A tree built from a UI file was brought in line with the file after it
+/// changed: sent once per root, before that frame's UI pass.
+///
+/// The tree's entities, values and focus survive a reload. A node the file
+/// gave a new kind is a new entity, so a game that filled a placeholder node
+/// can fill it again here.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiReloaded {
+  /// The root of the tree that was reloaded
+  pub root: Entity,
+}
+
 /// What a `UiEvent` reports
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiEventKind {

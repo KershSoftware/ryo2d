@@ -59,3 +59,6 @@ mod ui_focus;
 
 #[path = "e2e/ui_nodes.rs"]
 mod ui_nodes;
+
+#[path = "e2e/ui_files.rs"]
+mod ui_files;

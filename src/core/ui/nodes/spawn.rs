@@ -12,7 +12,8 @@ use crate::core::ui::theme::warn_once;
 use super::bindings::{self, Pattern, UiBind, UiPattern};
 use super::components::{
   BackAnswer, UiAdded, UiApplied, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction,
-  UiLabel, UiName, UiNodes, UiOptions, UiRoot, UiTextValue, UiTooltip, UiTreeNode, UiValue,
+  UiLabel, UiName, UiNodes, UiOptions, UiRoot, UiSource, UiTextValue, UiTooltip, UiTreeNode,
+  UiValue,
 };
 use super::node::{Kind, UiNode, UiNodeKind};
 
@@ -146,7 +147,10 @@ pub(crate) fn spawn_ui(world: &mut World, scene: u64, mut tree: UiNode) -> Entit
   let seq = nodes.seq;
   nodes.seq += 1;
   let top = spawn_root(world, scene, seq, tree, key, &mut pending);
-  world.resource_mut::<UiNodes>().roots.push((scene, top));
+  world
+    .get_resource_or_insert_with(UiNodes::default)
+    .roots
+    .push((scene, top));
 
   finish(world, top, pending);
   bindings::invalidate(world, top);
@@ -247,7 +251,7 @@ pub(crate) fn spawn_node(
     key: _,
     template: _,
     instance,
-    source: _,
+    source,
   } = node;
 
   let kind_name = kind.name();
@@ -347,6 +351,10 @@ pub(crate) fn spawn_node(
   if let Some(parent) = parent {
     entity.insert(ChildOf(parent));
   }
+  if let Some(source) = source {
+    let generation = source.file.generation();
+    entity.insert(UiSource { source, generation });
+  }
   // After the engine's components, so a game component may replace one
   for insert in inserts {
     insert(&mut entity);
@@ -398,17 +406,41 @@ pub(crate) fn finish(world: &mut World, top: Entity, pending: Vec<Pending>) {
   }
 
   for node in &pending {
-    let answer = node
-      .modal
-      .then(|| first_answering_descendant(world, node.entity))
-      .flatten();
-    let held = world.get::<BackAnswer>(node.entity).map(|answer| answer.0);
-    if held != answer {
-      match answer {
-        Some(answer) => world.entity_mut(node.entity).insert(BackAnswer(answer)),
-        None => world.entity_mut(node.entity).remove::<BackAnswer>(),
-      };
+    set_back_answer(world, node.entity, node.modal);
+  }
+}
+
+/// Bring the Back answer of each modal ancestor of `top` in line, after an
+/// update of `top`'s subtree (which `finish` covers) changed what is below
+/// them
+pub(crate) fn answer_back_above(world: &mut World, top: Entity) {
+  let mut at = top;
+  while world.get::<UiRoot>(at).is_none() {
+    let Some(parent) = world.get::<ChildOf>(at).map(ChildOf::parent) else {
+      return;
+    };
+    let modal = world
+      .get::<UiNodeKind>(parent)
+      .is_some_and(|node| node.flags.modal);
+    if modal {
+      set_back_answer(world, parent, true);
     }
+    at = parent;
+  }
+}
+
+/// Point a modal node's `BackAnswer` at its first descendant that answers
+/// Back, or take it away; written only on a difference
+fn set_back_answer(world: &mut World, node: Entity, modal: bool) {
+  let answer = modal
+    .then(|| first_answering_descendant(world, node))
+    .flatten();
+  let held = world.get::<BackAnswer>(node).map(|answer| answer.0);
+  if held != answer {
+    match answer {
+      Some(answer) => world.entity_mut(node).insert(BackAnswer(answer)),
+      None => world.entity_mut(node).remove::<BackAnswer>(),
+    };
   }
 }
 

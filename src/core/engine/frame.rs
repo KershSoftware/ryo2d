@@ -543,6 +543,8 @@ impl Engine {
       self.ui_memory.forget_scene(scope);
       crate::core::ui::nodes::despawn_scene_roots(&mut self.world, scope);
     }
+    // Trees whose UI file changed are brought in line before they are drawn
+    crate::core::ui::nodes::reload_trees(&mut self.world);
     let theme = self.refresh_ui_theme();
     self.load_ui_sounds(&theme);
     self.refresh_prompts();

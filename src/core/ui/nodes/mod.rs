@@ -18,7 +18,7 @@ pub use components::{
   UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName, UiOptions,
   UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
 };
-pub use events::{UiEvent, UiEventKind};
+pub use events::{UiEvent, UiEventKind, UiReloaded};
 pub use node::{TextRole, UiNode, UiNodeKind};
 
 pub(crate) use components::UiNodes;
@@ -26,5 +26,5 @@ pub(crate) use draw::{begin_pass, deliver_pending, draw_nodes};
 pub(crate) use events::deliver;
 #[cfg(test)]
 pub(crate) use node::fingerprint;
-pub(crate) use reconcile::update_ui;
+pub(crate) use reconcile::{reload_trees, update_ui};
 pub(crate) use spawn::*;

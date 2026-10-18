@@ -1,9 +1,12 @@
 //! The state components a UI node spawns with, and the resource its walks keep
 
+use std::sync::Arc;
+
 use glam::Vec2;
 
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::kernel::{Component, Entity, Resource};
+use crate::core::ui::file::document::TreeSource;
 use crate::core::ui::{Anchor, Rect, UiId};
 
 use super::events::UiEvent;
@@ -131,6 +134,14 @@ pub(crate) struct UiApplied {
   pub(crate) disabled: bool,
   /// A root's placement as the tree gave it
   pub(crate) place: Option<(Anchor, Vec2, Option<Rect>)>,
+}
+
+/// The top of a tree built from a UI file: what it was built from, and the
+/// file's generation it was last built from, so a reload finds it
+#[derive(Component)]
+pub(crate) struct UiSource {
+  pub(crate) source: Arc<TreeSource>,
+  pub(crate) generation: u64,
 }
 
 /// A confirm's No button: the node Back answers as if it were clicked

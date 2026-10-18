@@ -83,8 +83,6 @@ pub(crate) struct TemplateDef {
 /// What a built tree came from, so a reload can build it again as the same
 /// instance
 pub(crate) struct TreeSource {
-  // Read by the reload of spawned trees (Task 8)
-  #[allow(dead_code)]
   pub(crate) file: UiFile,
   /// The template, or `None` for the file's root
   pub(crate) template: Option<String>,
@@ -374,8 +372,6 @@ impl UiFile {
   }
 
   /// Build again what `source` built, as the same instance
-  // Called by the reload of spawned trees (Task 8)
-  #[cfg_attr(not(test), allow(dead_code))]
   pub(crate) fn build_source(
     &self,
     source: &TreeSource,

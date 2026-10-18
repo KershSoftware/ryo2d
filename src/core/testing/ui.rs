@@ -1,14 +1,17 @@
 //! A UI with no window or GPU, driven frame by frame over scripted input
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use glam::Vec2;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-use crate::core::ecs::kernel::{Entity, Messages, World};
+use crate::core::asset::AssetManager;
+use crate::core::ecs::kernel::{Entity, Message, Messages, World};
+use crate::core::error::AssetResult;
 use crate::core::input::{Direction, GamepadButton, InputView};
-use crate::core::messages::register_message;
+use crate::core::messages::{register_message, update_messages};
 use crate::core::render::UiSpace;
 use crate::core::text::{Fonts, TextEngine};
 use crate::core::ui::immediate::{PendingRebind, PromptContext, UiCommands};
@@ -19,7 +22,9 @@ use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
 use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
 use crate::core::ui::theme::warn_once;
-use crate::core::ui::{BindValue, Theme, UiContext, UiEvent, UiId, UiInput, UiNode, nodes};
+use crate::core::ui::{
+  BindValue, Theme, UiContext, UiEvent, UiFileError, UiId, UiInput, UiNode, UiReloaded, nodes,
+};
 
 /// How long each frame lasts (seconds)
 const FRAME: f64 = 1.0 / 60.0;
@@ -91,7 +96,8 @@ pub struct UiHarness {
   pub(crate) prompts: Arc<PromptContext>,
   /// The presses rebinding rows captured in the last frame
   pub(crate) rebinds: Vec<PendingRebind>,
-  /// The entities of spawned UI nodes
+  /// The entities of spawned UI nodes, and the asset manager UI files load
+  /// through
   world: World,
   /// The last frame's node events
   last_events: Vec<UiEvent>,
@@ -99,12 +105,15 @@ pub struct UiHarness {
 
 impl UiHarness {
   /// A UI `width` by `height` UI units with the built-in fonts, at scale 1,
-  /// in the dark theme, the pointer at the origin
+  /// in the dark theme, the pointer at the origin, loading files relative to
+  /// the working directory
   pub fn new(width: f32, height: f32) -> UiHarness {
     let mut text = TextEngine::new();
     text.sync(&Fonts::with_builtins());
     let mut world = World::new();
     register_message::<UiEvent>(&mut world);
+    register_message::<UiReloaded>(&mut world);
+    world.insert_resource(AssetManager::new());
     UiHarness {
       memory: UiMemory::new(),
       layout: LayoutEngine::new(),
@@ -146,6 +155,42 @@ impl UiHarness {
   /// Bring a spawned tree in line with `tree` in place, as `ctx.update_ui`
   pub fn update_ui(&mut self, node: Entity, tree: UiNode) -> Entity {
     nodes::update_ui(&mut self.world, node, tree)
+  }
+
+  /// Load UI files (and their images) relative to `dir`
+  pub fn with_assets(mut self, dir: impl Into<PathBuf>) -> UiHarness {
+    self.assets().set_base_path(dir.into());
+    self
+  }
+
+  /// The asset manager the harness loads UI files through
+  pub fn assets(&mut self) -> &mut AssetManager {
+    self
+      .world
+      .get_resource_or_insert_with(AssetManager::new)
+      .into_inner()
+  }
+
+  /// Load a UI file, build its root and spawn it, as `ctx.spawn_ui_file`
+  pub fn spawn_ui_file(&mut self, path: &str) -> Result<Entity, UiFileError> {
+    let file = self.assets().load_ui(path)?;
+    let tree = file.root(self.assets())?;
+    Ok(self.spawn_ui(tree))
+  }
+
+  /// Read a loaded UI file from disk again, as `ctx.assets.reload_ui`: the
+  /// next frame brings the trees built from it in line before drawing
+  pub fn reload_ui(&mut self, path: &str) -> AssetResult<()> {
+    self.assets().reload_ui(path)
+  }
+
+  /// The `M` messages written in the last frame, `UiReloaded` among them
+  pub fn messages<M: Message + Clone>(&self) -> impl Iterator<Item = M> {
+    self
+      .world
+      .get_resource::<Messages<M>>()
+      .into_iter()
+      .flat_map(|messages| messages.iter_current_update_messages().cloned())
   }
 
   /// The world UI nodes live in
@@ -267,9 +312,8 @@ impl UiHarness {
   /// in too. The harness scene's node trees draw before `ui`, as a scene's
   /// do before its `ui`.
   pub fn frame_with_world<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>, &mut World) -> R) -> R {
-    if let Some(mut messages) = self.world.get_resource_mut::<Messages<UiEvent>>() {
-      messages.update();
-    }
+    update_messages(&mut self.world);
+    nodes::reload_trees(&mut self.world);
     self.time += FRAME;
     self.pointer.time = self.time;
     self.commands.clear();

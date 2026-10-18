@@ -20,7 +20,7 @@ use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
 use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
-use crate::core::ui::{BindValue, UiId, UiNode, UiTheme, nodes};
+use crate::core::ui::{BindValue, UiArgs, UiFileError, UiId, UiNode, UiTheme, nodes};
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
 
 #[cfg(test)]
@@ -256,6 +256,58 @@ impl SceneContext<'_> {
   /// ```
   pub fn spawn_ui(&mut self, tree: UiNode) -> Entity {
     nodes::spawn_ui(self.world, self.scope_id, tree)
+  }
+
+  /// Load a UI file (`.ui.ron`) through `ctx.assets`, build its root and
+  /// spawn it as a root owned by this scene, as `spawn_ui` does.
+  ///
+  /// When the file changes (hot reload, or `ctx.assets.reload_ui(path)`), the
+  /// tree is brought in line with it in place before the next UI pass and a
+  /// `UiReloaded` message names its root. Every mistake in the file comes
+  /// back together, each with its line and column.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn open_pause(ctx: &mut SceneContext<'_>) {
+  ///   match ctx.spawn_ui_file("assets/ui/pause.ui.ron") {
+  ///     Ok(menu) => {
+  ///       let resume = ctx.find_ui_in(menu, "resume");
+  ///       # let _ = resume;
+  ///     }
+  ///     Err(error) => eprintln!("{error}"),
+  ///   }
+  /// }
+  /// ```
+  pub fn spawn_ui_file(&mut self, path: &str) -> Result<Entity, UiFileError> {
+    let file = self.assets.load_ui(path)?;
+    let tree = file.root(self.assets)?;
+    Ok(self.spawn_ui(tree))
+  }
+
+  /// Load a UI file through `ctx.assets` and build an instance of its
+  /// template `name` (or one it imports) with `args`, to spawn or add to a
+  /// tree. Spawned anywhere, the instance follows the template when the file
+  /// is reloaded.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn add_item(ctx: &mut SceneContext<'_>, list: Entity, name: &str, count: u32) {
+  ///   let args = UiArgs::new().with("name", name).with("count", count);
+  ///   if let Ok(item) = ctx.ui_template("assets/ui/inventory.ui.ron", "Item", &args) {
+  ///     ctx.spawn_ui_in(list, item);
+  ///   }
+  /// }
+  /// ```
+  pub fn ui_template(
+    &mut self,
+    path: &str,
+    name: &str,
+    args: &UiArgs,
+  ) -> Result<UiNode, UiFileError> {
+    let file = self.assets.load_ui(path)?;
+    file.template(name, args, self.assets)
   }
 
   /// Spawn a UI node tree under `parent`, after its last child; `None`
