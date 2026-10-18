@@ -45,9 +45,14 @@ pub(crate) enum ValueKind {
   },
   /// Never read: stands for a template parameter whose value is unknown
   /// while a template is checked
-  // Built by template checks (Task 6)
-  #[allow(dead_code)]
   Any,
+  /// Never read: a template use passed as an argument to a template from
+  /// another file, built in the scope it was written in (an index into the
+  /// build's scopes)
+  InScope {
+    scope: usize,
+    value: Box<Value>,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,8 +77,6 @@ pub(crate) struct Issue {
 }
 
 /// Read a whole file's text: one value, with blanks and comments around it
-// Called by the loader (Task 6)
-#[allow(dead_code)]
 pub(crate) fn read(text: &str) -> Result<Value, Issue> {
   // A byte-order mark some editors write takes no column
   let text = text.strip_prefix('\u{feff}').unwrap_or(text);

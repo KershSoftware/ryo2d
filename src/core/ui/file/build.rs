@@ -1,20 +1,29 @@
 //! Building `UiNode`s from the values the reader produced
 //!
 //! Mistakes are collected with their positions rather than stopping at the
-//! first: building goes on past one, skipping what failed.
+//! first: building goes on past one, skipping what failed. A name that is
+//! not a kind is a template: its arguments are substituted into its body,
+//! which is built in the template's own file.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::core::asset::SpriteHandle;
 use crate::core::graphics::Sprite;
 use crate::core::text::TextReveal;
+use crate::core::ui::nodes::BindValue;
+use crate::core::ui::nodes::bindings::parse_hole;
 use crate::core::ui::{Color, Edges, Length, UiNode};
 
+use super::document::{Document, TemplateDef};
 use super::error::describe;
-use super::reader::{Body, Issue, Pos, Value, ValueKind};
-use super::vocab::{
-  Ctor, Form, KINDS, KindSpec, OPTIONS, UNIVERSAL, kind_spec, nearest, option_spec,
-};
+use super::reader::{Body, Field, Issue, Pos, Value, ValueKind};
+use super::vocab::{Ctor, Form, KINDS, OPTIONS, UNIVERSAL, kind_spec, nearest, option_spec};
+
+/// How deep nodes may nest, templates included, so that templates passing
+/// nodes to each other cannot overflow the stack
+const MAX_DEPTH: usize = 64;
 
 /// Where a file's images come from
 pub(crate) trait SpriteSource {
@@ -37,11 +46,62 @@ impl SpriteSource for Placeholders {
   }
 }
 
+/// A file whose templates a build can use: its own and its imports'
+#[derive(Clone)]
+pub(crate) struct Scope {
+  pub(crate) path: String,
+  pub(crate) doc: Arc<Document>,
+}
+
+impl Scope {
+  /// The template `name`, from the file or else its imports, and the scope
+  /// its body builds in
+  pub(crate) fn find(&self, name: &str) -> Option<(Arc<TemplateDef>, Scope)> {
+    if let Some(def) = self.doc.templates.get(name) {
+      return Some((def.clone(), self.clone()));
+    }
+    self.doc.imports.iter().find_map(|file| {
+      let doc = file.doc();
+      let def = doc.templates.get(name)?.clone();
+      let path = file.path().to_string();
+      Some((def, Scope { path, doc }))
+    })
+  }
+
+  fn defines(&self, name: &str) -> bool {
+    self.doc.templates.contains_key(name)
+      || self
+        .doc
+        .imports
+        .iter()
+        .any(|file| file.doc().templates.contains_key(name))
+  }
+
+  /// Every template name the scope can use, sorted, for suggestions
+  pub(crate) fn names(&self) -> Vec<String> {
+    let mut names: Vec<String> = self.doc.templates.keys().cloned().collect();
+    for file in &self.doc.imports {
+      names.extend(file.doc().templates.keys().cloned());
+    }
+    names.sort_unstable();
+    names
+  }
+}
+
 pub(crate) struct BuildCx<'a> {
   pub(crate) sprites: &'a mut dyn SpriteSource,
   pub(crate) issues: Vec<Issue>,
   /// The option or argument being read, for messages
   pub(crate) what: &'static str,
+  /// The file template names resolve in; none outside a file
+  pub(crate) scope: Option<Scope>,
+  /// The templates being expanded, by file path and name, outermost first
+  pub(crate) stack: Vec<(String, String)>,
+  /// The instance id every node built is given
+  pub(crate) instance: u64,
+  /// The scopes `InScope` values were written in
+  pinned: Vec<Scope>,
+  depth: usize,
 }
 
 impl BuildCx<'_> {
@@ -50,7 +110,38 @@ impl BuildCx<'_> {
       sprites,
       issues: Vec::new(),
       what: "",
+      scope: None,
+      stack: Vec::new(),
+      instance: 0,
+      pinned: Vec::new(),
+      depth: 0,
     }
+  }
+
+  /// A build in `scope`'s file, giving every node `instance`
+  pub(crate) fn in_file(
+    sprites: &mut dyn SpriteSource,
+    scope: Scope,
+    instance: u64,
+  ) -> BuildCx<'_> {
+    BuildCx {
+      scope: Some(scope),
+      instance,
+      ..BuildCx::new(sprites)
+    }
+  }
+
+  /// The index of `scope` among the scopes arguments were written in
+  fn pin_scope(&mut self, scope: &Scope) -> usize {
+    if let Some(index) = self
+      .pinned
+      .iter()
+      .position(|pinned| Arc::ptr_eq(&pinned.doc, &scope.doc))
+    {
+      return index;
+    }
+    self.pinned.push(scope.clone());
+    self.pinned.len() - 1
   }
 
   fn issue(&mut self, pos: Pos, message: impl Into<String>) {
@@ -113,12 +204,24 @@ impl BuildCx<'_> {
     }
   }
 
+  /// A number as `f32`, which must stay finite: a finite `f64` such as
+  /// `1e40` is not one
+  fn single(&mut self, n: f64, pos: Pos) -> Option<f32> {
+    let single = n as f32;
+    if single.is_finite() {
+      return Some(single);
+    }
+    let message = format!("\"{}\" is too large", self.what);
+    self.issue(pos, message);
+    None
+  }
+
   pub(crate) fn number(&mut self, value: &Value) -> Option<f32> {
     if !self.readable(value) {
       return None;
     }
     match value.kind {
-      ValueKind::Num(n) => Some(n as f32),
+      ValueKind::Num(n) => self.single(n, value.pos),
       _ => self.mismatch(value, Form::Number),
     }
   }
@@ -152,7 +255,7 @@ impl BuildCx<'_> {
       return None;
     }
     match &value.kind {
-      ValueKind::Num(n) => Some(Length::Px(*n as f32)),
+      ValueKind::Num(n) => self.single(*n, value.pos).map(Length::Px),
       ValueKind::Named { name, body } => match (name.as_str(), body) {
         ("Fill", Body::Unit) => Some(Length::Fill),
         ("Fit", Body::Unit) => Some(Length::Fit),
@@ -168,7 +271,7 @@ impl BuildCx<'_> {
       return None;
     }
     match &value.kind {
-      ValueKind::Num(n) => Some(Edges::from(*n as f32)),
+      ValueKind::Num(n) => self.single(*n, value.pos).map(Edges::from),
       ValueKind::Tuple(_) => {
         let (x, y) = self.tuple::<2>(value, Form::Edges).map(|[x, y]| (x, y))?;
         Some(Edges::from((x, y)))
@@ -214,6 +317,12 @@ impl BuildCx<'_> {
   }
 
   pub(crate) fn asset(&mut self, value: &Value) -> Option<SpriteHandle> {
+    // A template parameter while the template is checked: a stand-in, so
+    // the rest of its node is checked too
+    if matches!(value.kind, ValueKind::Any) {
+      let blank = Sprite::solid_rect(1, 1, 0, 0, 0, 0);
+      return Some(SpriteHandle::new(blank, PathBuf::new()));
+    }
     if !self.readable(value) {
       return None;
     }
@@ -293,7 +402,7 @@ impl BuildCx<'_> {
     let mut out = [0.0; N];
     for (slot, item) in out.iter_mut().zip(items) {
       match &item.kind {
-        ValueKind::Num(n) => *slot = *n as f32,
+        ValueKind::Num(n) => *slot = self.single(*n, item.pos)?,
         _ if !self.readable(item) => return None,
         _ => return self.mismatch(item, form),
       }
@@ -329,7 +438,7 @@ impl BuildCx<'_> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
       match &item.kind {
-        ValueKind::Num(n) => out.push(*n as f32),
+        ValueKind::Num(n) => out.push(self.single(*n, item.pos)?),
         _ if !self.readable(item) => return None,
         _ => return self.mismatch(item, Form::Numbers),
       }
@@ -360,7 +469,7 @@ impl BuildCx<'_> {
       return None;
     }
     match &value.kind {
-      ValueKind::Num(n) => Some(TextReveal::new(*n as f32)),
+      ValueKind::Num(n) => self.single(*n, value.pos).map(TextReveal::new),
       ValueKind::Fields(fields) => {
         let mut per_second = None;
         let mut punctuation_pause = None;
@@ -470,10 +579,47 @@ struct Entry<'v> {
   value: &'v Value,
 }
 
-/// Build a node from a `Kind(..)` value
+fn entries(fields: &[Field]) -> Vec<Entry<'_>> {
+  fields
+    .iter()
+    .map(|field| Entry {
+      name: &field.name,
+      pos: field.pos,
+      value: &field.value,
+    })
+    .collect()
+}
+
+/// Who a node's fields are given to, for messages: a kind, or a template
+/// and its parameters
+struct Owner<'a> {
+  name: &'a str,
+  params: Option<&'a [&'a str]>,
+}
+
+/// Build a node from a `Kind(..)` value, or a template's use
 pub(crate) fn build_node(value: &Value, cx: &mut BuildCx<'_>) -> Option<UiNode> {
+  if cx.depth >= MAX_DEPTH {
+    let message = format!("nodes nest more than {MAX_DEPTH} deep here");
+    cx.issue(value.pos, message);
+    return None;
+  }
+  cx.depth += 1;
+  let node = build_value(value, cx);
+  cx.depth -= 1;
+  node
+}
+
+fn build_value(value: &Value, cx: &mut BuildCx<'_>) -> Option<UiNode> {
   let (name, body) = match &value.kind {
     ValueKind::Any => return None,
+    ValueKind::InScope { scope, value } => {
+      let written = cx.pinned.get(*scope)?.clone();
+      let outer = cx.scope.replace(written);
+      let node = build_node(value, cx);
+      cx.scope = outer;
+      return node;
+    }
     ValueKind::Named { name, body } => (name, body),
     other => {
       let message = format!(
@@ -489,8 +635,16 @@ pub(crate) fn build_node(value: &Value, cx: &mut BuildCx<'_>) -> Option<UiNode> 
     return None;
   }
   let Some(spec) = kind_spec(name) else {
+    if let Some((def, scope)) = cx.scope.as_ref().and_then(|scope| scope.find(name)) {
+      return expand(value, body, &def, scope, cx);
+    }
+    let templates = cx.scope.as_ref().map(Scope::names).unwrap_or_default();
     let mut message = format!("unknown node kind \"{name}\"");
-    if let Some(close) = nearest(name, KINDS.iter().map(|kind| kind.name)) {
+    let known = KINDS
+      .iter()
+      .map(|kind| kind.name)
+      .chain(templates.iter().map(String::as_str));
+    if let Some(close) = nearest(name, known) {
       message.push_str(&format!("; did you mean \"{close}\"?"));
     }
     cx.issue(value.pos, message);
@@ -512,14 +666,7 @@ pub(crate) fn build_node(value: &Value, cx: &mut BuildCx<'_>) -> Option<UiNode> 
         value: inner,
       }]
     }
-    Body::Fields(fields) => fields
-      .iter()
-      .map(|field| Entry {
-        name: &field.name,
-        pos: field.pos,
-        value: &field.value,
-      })
-      .collect(),
+    Body::Fields(fields) => entries(fields),
   };
 
   let mut ctor = Ctor { args: Vec::new() };
@@ -538,41 +685,360 @@ pub(crate) fn build_node(value: &Value, cx: &mut BuildCx<'_>) -> Option<UiNode> 
     return None;
   }
   let mut node = bound_all((spec.make)(&ctor, cx)?);
+  node.instance = cx.instance;
 
+  let owner = Owner {
+    name: spec.name,
+    params: None,
+  };
   let mut keys: Vec<String> = Vec::new();
   for entry in entries {
     if spec.args.iter().any(|arg| arg.name == entry.name) {
       continue;
     }
-    node = apply_field(node, spec, &entry, cx, &mut keys);
+    node = apply_field(node, &owner, &entry, cx, &mut keys);
   }
   Some(node)
 }
 
+/// A use of a template: its arguments substituted into its body, built in
+/// the template's own file, then the other fields applied as options of the
+/// node that built
+fn expand(
+  value: &Value,
+  body: &Body,
+  def: &TemplateDef,
+  scope: Scope,
+  cx: &mut BuildCx<'_>,
+) -> Option<UiNode> {
+  let name = def.name.as_str();
+  let cycle = cx
+    .stack
+    .iter()
+    .position(|(path, used)| *path == scope.path && used == name);
+  if let Some(start) = cycle {
+    let chain: Vec<&str> = cx.stack[start..]
+      .iter()
+      .map(|(_, used)| used.as_str())
+      .chain([name])
+      .collect();
+    let message = format!(
+      "the template \"{name}\" uses itself ({})",
+      chain.join(" -> ")
+    );
+    cx.issue(value.pos, message);
+    return None;
+  }
+  let entries = match body {
+    Body::Unit => Vec::new(),
+    Body::Single(inner) => {
+      let message = format!("{name} has no short form; name its parameters");
+      cx.issue(inner.pos, message);
+      return None;
+    }
+    Body::Fields(fields) => entries(fields),
+  };
+  let params: Vec<&str> = def
+    .params
+    .iter()
+    .chain(def.defaults.iter().map(|(param, _)| param))
+    .map(String::as_str)
+    .collect();
+
+  // Arguments written in another file keep their template uses there
+  let outer = match &cx.scope {
+    Some(outer) if !Arc::ptr_eq(&outer.doc, &scope.doc) => Some(outer.clone()),
+    _ => None,
+  };
+  let pin_to = outer.map(|outer| (cx.pin_scope(&outer), outer));
+  let mut args: HashMap<String, Value> = def.defaults.iter().cloned().collect();
+  let mut options = Vec::new();
+  for entry in entries {
+    if !params.contains(&entry.name) {
+      options.push(entry);
+      continue;
+    }
+    let mut arg = entry.value.clone();
+    if let Some((index, outer)) = &pin_to {
+      pin(&mut arg, *index, outer);
+    }
+    args.insert(entry.name.to_string(), arg);
+  }
+  for param in &def.params {
+    if !args.contains_key(param) {
+      cx.issue(value.pos, format!("{name} needs \"{param}\""));
+      // Built on with the value unknown, so the rest is still checked
+      let unknown = Value {
+        kind: ValueKind::Any,
+        pos: value.pos,
+      };
+      args.insert(param.clone(), unknown);
+    }
+  }
+
+  cx.stack.push((scope.path.clone(), def.name.clone()));
+  let outer = cx.scope.replace(scope);
+  let body = substitute(&def.node, &args, name, cx);
+  let built = build_node(&body, cx);
+  cx.scope = outer;
+  cx.stack.pop();
+
+  let mut node = built?;
+  let mut keys: Vec<String> = node
+    .children
+    .iter()
+    .filter_map(|child| child.key.clone().or_else(|| child.name.clone()))
+    .collect();
+  let owner = Owner {
+    name,
+    params: Some(&params),
+  };
+  for entry in options {
+    node = apply_field(node, &owner, &entry, cx, &mut keys);
+  }
+  node.template = Some(def.name.clone());
+  Some(node)
+}
+
+/// Check a template's body as it stands alone: each required parameter
+/// unknown, each optional one at its default
+pub(crate) fn check_template(def: &TemplateDef, cx: &mut BuildCx<'_>) {
+  let Some(path) = cx.scope.as_ref().map(|scope| scope.path.clone()) else {
+    return;
+  };
+  cx.stack.push((path, def.name.clone()));
+  let mut args: HashMap<String, Value> = def.defaults.iter().cloned().collect();
+  for param in &def.params {
+    let unknown = Value {
+      kind: ValueKind::Any,
+      pos: def.pos,
+    };
+    args.insert(param.clone(), unknown);
+  }
+  let body = substitute(&def.node, &args, &def.name, cx);
+  build_node(&body, cx);
+  cx.stack.pop();
+}
+
+/// Mark the template uses in an argument so they are built in the file the
+/// argument was written in, wherever the template places it
+fn pin(value: &mut Value, index: usize, outer: &Scope) {
+  match &mut value.kind {
+    ValueKind::Named { name, body } => {
+      if kind_spec(name).is_none() && outer.defines(name) {
+        let pos = value.pos;
+        let blank = Value {
+          kind: ValueKind::Any,
+          pos,
+        };
+        let inner = std::mem::replace(value, blank);
+        value.kind = ValueKind::InScope {
+          scope: index,
+          value: Box::new(inner),
+        };
+        return;
+      }
+      match body {
+        Body::Unit => {}
+        Body::Single(inner) => pin(inner, index, outer),
+        Body::Fields(fields) => {
+          for field in fields {
+            pin(&mut field.value, index, outer);
+          }
+        }
+      }
+    }
+    ValueKind::List(items) | ValueKind::Tuple(items) => {
+      for item in items {
+        pin(item, index, outer);
+      }
+    }
+    ValueKind::Map(entries) => {
+      for (_, _, item) in entries {
+        pin(item, index, outer);
+      }
+    }
+    ValueKind::Fields(fields) => {
+      for field in fields {
+        pin(&mut field.value, index, outer);
+      }
+    }
+    _ => {}
+  }
+}
+
+/// A template body with its parameters replaced by the arguments: a bare
+/// lowercase name is a parameter, and so is a `{param}` hole in a string.
+/// The arguments themselves are not substituted again.
+pub(crate) fn substitute(
+  value: &Value,
+  args: &HashMap<String, Value>,
+  template: &str,
+  cx: &mut BuildCx<'_>,
+) -> Value {
+  let kind = match &value.kind {
+    ValueKind::Named {
+      name,
+      body: Body::Unit,
+    } if is_lowercase(name) => {
+      if let Some(arg) = args.get(name) {
+        return arg.clone();
+      }
+      let mut message = format!("\"{name}\" is not a parameter of {template}");
+      let mut params: Vec<&str> = args.keys().map(String::as_str).collect();
+      params.sort_unstable();
+      if let Some(close) = nearest(name, params) {
+        message.push_str(&format!("; did you mean \"{close}\"?"));
+      }
+      cx.issue(value.pos, message);
+      ValueKind::Any
+    }
+    ValueKind::Str(text) => ValueKind::Str(fill_holes(text, value.pos, args, cx)),
+    ValueKind::List(items) => ValueKind::List(
+      items
+        .iter()
+        .map(|item| substitute(item, args, template, cx))
+        .collect(),
+    ),
+    ValueKind::Tuple(items) => ValueKind::Tuple(
+      items
+        .iter()
+        .map(|item| substitute(item, args, template, cx))
+        .collect(),
+    ),
+    ValueKind::Map(entries) => ValueKind::Map(
+      entries
+        .iter()
+        .map(|(key, pos, item)| (key.clone(), *pos, substitute(item, args, template, cx)))
+        .collect(),
+    ),
+    ValueKind::Fields(fields) => ValueKind::Fields(substitute_fields(fields, args, template, cx)),
+    ValueKind::Named { name, body } => ValueKind::Named {
+      name: name.clone(),
+      body: match body {
+        Body::Unit => Body::Unit,
+        Body::Single(inner) => Body::Single(Box::new(substitute(inner, args, template, cx))),
+        Body::Fields(fields) => Body::Fields(substitute_fields(fields, args, template, cx)),
+      },
+    },
+    other => other.clone(),
+  };
+  Value {
+    kind,
+    pos: value.pos,
+  }
+}
+
+fn substitute_fields(
+  fields: &[Field],
+  args: &HashMap<String, Value>,
+  template: &str,
+  cx: &mut BuildCx<'_>,
+) -> Vec<Field> {
+  fields
+    .iter()
+    .map(|field| Field {
+      name: field.name.clone(),
+      pos: field.pos,
+      value: substitute(&field.value, args, template, cx),
+    })
+    .collect()
+}
+
+/// A string with each `{param}` and `{param:.N}` hole replaced by the
+/// argument's text; `{{`, `}}` and other holes stay for bindings, and so
+/// does a hole whose argument is unknown
+fn fill_holes(text: &str, pos: Pos, args: &HashMap<String, Value>, cx: &mut BuildCx<'_>) -> String {
+  if !text.contains('{') {
+    return text.to_string();
+  }
+  let mut out = String::with_capacity(text.len());
+  let mut chars = text.chars().peekable();
+  while let Some(c) = chars.next() {
+    match c {
+      '{' | '}' if chars.peek() == Some(&c) => {
+        chars.next();
+        out.push(c);
+        out.push(c);
+      }
+      '{' => {
+        let mut hole = String::new();
+        let mut closed = false;
+        for c in chars.by_ref() {
+          if c == '}' {
+            closed = true;
+            break;
+          }
+          hole.push(c);
+        }
+        let filled = parse_hole(&hole)
+          .filter(|_| closed)
+          .and_then(|(name, decimals)| {
+            let shown = match &args.get(&name)?.kind {
+              ValueKind::Str(text) => BindValue::Text(text.clone()),
+              ValueKind::Num(n) => BindValue::Number(*n),
+              ValueKind::Bool(on) => BindValue::Bool(*on),
+              ValueKind::Any => return None,
+              other => {
+                let message = format!(
+                  "the parameter \"{name}\" is {}, which text cannot show",
+                  describe(other)
+                );
+                cx.issue(pos, message);
+                return None;
+              }
+            };
+            Some(shown.display(decimals))
+          });
+        match filled {
+          Some(shown) => out.push_str(&shown),
+          None => {
+            out.push('{');
+            out.push_str(&hole);
+            if closed {
+              out.push('}');
+            }
+          }
+        }
+      }
+      c => out.push(c),
+    }
+  }
+  out
+}
+
 fn apply_field(
   node: UiNode,
-  spec: &KindSpec,
+  owner: &Owner<'_>,
   entry: &Entry<'_>,
   cx: &mut BuildCx<'_>,
   keys: &mut Vec<String>,
 ) -> UiNode {
   let name = entry.name;
+  let who = owner.name;
   if name == "children" {
     if !node.kind.takes("child") {
-      cx.issue(
-        entry.pos,
-        format!("{} does not take \"children\"", spec.name),
-      );
+      cx.issue(entry.pos, format!("{who} does not take \"children\""));
       return node;
     }
     return add_children(node, entry, cx, keys);
   }
   let Some(option) = option_spec(name) else {
-    let mut message = format!("{} has no option \"{name}\"", spec.name);
-    let takes = OPTIONS
+    let mut message = match owner.params {
+      Some(_) => format!("{who} has no parameter or option \"{name}\""),
+      None => format!("{who} has no option \"{name}\""),
+    };
+    let takes = owner
+      .params
+      .unwrap_or_default()
       .iter()
-      .map(|option| option.name)
-      .filter(|option| UNIVERSAL.contains(option) || node.kind.takes(option))
+      .copied()
+      .chain(
+        OPTIONS
+          .iter()
+          .map(|option| option.name)
+          .filter(|option| UNIVERSAL.contains(option) || node.kind.takes(option)),
+      )
       .chain(node.kind.takes("child").then_some("children"));
     if let Some(close) = nearest(name, takes) {
       message.push_str(&format!("; did you mean \"{close}\"?"));
@@ -581,7 +1047,7 @@ fn apply_field(
     return node;
   };
   if !UNIVERSAL.contains(&name) && !node.kind.takes(name) {
-    cx.issue(entry.pos, format!("{} does not take \"{name}\"", spec.name));
+    cx.issue(entry.pos, format!("{who} does not take \"{name}\""));
     return node;
   }
   cx.what = option.name;
@@ -951,12 +1417,34 @@ mod tests {
   }
 
   #[test]
+  fn a_number_too_large_for_f32_is_an_issue_at_the_value() {
+    let (node, issues) = build("Column(width: 1e40)");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].message, "\"width\" is too large");
+    assert_eq!(issues[0].pos.column, 15);
+    assert_eq!(node.unwrap().layout.width, None, "no infinite width");
+    assert_eq!(
+      messages("Column(offset: (1, -1e39))"),
+      ["\"offset\" is too large"]
+    );
+    assert_eq!(
+      messages("Grid(columns: 2, tracks: [1, 1e300])"),
+      ["\"tracks\" is too large"]
+    );
+  }
+
+  #[test]
   fn nearest_suggests_only_close_names() {
     assert_eq!(
       nearest("fil_width", ["fill_width", "width"]),
       Some("fill_width")
     );
     assert_eq!(nearest("colour", ["color", "size"]), Some("color"));
+    assert_eq!(
+      nearest("gpa", ["grow", "gap"]),
+      Some("gap"),
+      "a swap is one edit"
+    );
     assert_eq!(nearest("zzz", ["fill_width", "width"]), None);
   }
 }

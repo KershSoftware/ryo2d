@@ -381,6 +381,7 @@ pub(crate) fn update_node(
     key: _,
     template: _,
     instance,
+    source: _,
   } = node;
 
   let popup = match &kind {

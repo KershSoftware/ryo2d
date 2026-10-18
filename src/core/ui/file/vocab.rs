@@ -60,12 +60,16 @@ impl Form {
 
 pub(crate) struct OptionSpec {
   pub(crate) name: &'static str,
+  /// How the option is written (`apply` reads it in this form)
+  #[allow(dead_code)] // the table states it, nothing reads it yet
   pub(crate) form: Form,
   pub(crate) apply: fn(UiNode, &Value, &mut BuildCx<'_>) -> UiNode,
 }
 
 pub(crate) struct ArgSpec {
   pub(crate) name: &'static str,
+  /// How the argument is written (the kind's `make` reads it in this form)
+  #[allow(dead_code)] // the table states it, nothing reads it yet
   pub(crate) form: Form,
   pub(crate) required: bool,
 }
@@ -538,18 +542,28 @@ pub(crate) fn nearest<'a>(
   best.map(|(_, name)| name)
 }
 
+/// Edits between two words: inserting, deleting or changing a character,
+/// or swapping two neighbours (`gpa` is one edit from `gap`)
 fn edit_distance(a: &[char], b: &[char]) -> usize {
-  let mut row: Vec<usize> = (0..=b.len()).collect();
-  for (i, &ca) in a.iter().enumerate() {
-    let mut diagonal = row[0];
-    row[0] = i + 1;
-    for (j, &cb) in b.iter().enumerate() {
-      let above = row[j + 1];
-      row[j + 1] = (above + 1)
-        .min(row[j] + 1)
-        .min(diagonal + usize::from(ca != cb));
-      diagonal = above;
+  let width = b.len() + 1;
+  let mut d: Vec<usize> = vec![0; (a.len() + 1) * width];
+  for (i, row) in d.chunks_mut(width).enumerate() {
+    row[0] = i;
+  }
+  for (j, cell) in d.iter_mut().take(width).enumerate() {
+    *cell = j;
+  }
+  for i in 1..=a.len() {
+    for j in 1..=b.len() {
+      let change = usize::from(a[i - 1] != b[j - 1]);
+      let mut best = (d[(i - 1) * width + j] + 1)
+        .min(d[i * width + j - 1] + 1)
+        .min(d[(i - 1) * width + j - 1] + change);
+      if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+        best = best.min(d[(i - 2) * width + j - 2] + 1);
+      }
+      d[i * width + j] = best;
     }
   }
-  row[b.len()]
+  d[a.len() * width + b.len()]
 }

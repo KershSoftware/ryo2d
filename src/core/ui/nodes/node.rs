@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 
 use glam::Vec2;
 
@@ -9,6 +10,7 @@ use crate::core::asset::SpriteHandle;
 use crate::core::ecs::kernel::{Bundle, Component, Entity, EntityWorldMut};
 use crate::core::render::batch::Filter;
 use crate::core::text::{TextAlign, TextReveal, TextStyle};
+use crate::core::ui::file::document::TreeSource;
 use crate::core::ui::widgets::modal::MESSAGE_WIDTH as CONFIRM_MESSAGE_WIDTH;
 use crate::core::ui::{Align, Anchor, Color, Edges, Justify, Length, Rect};
 
@@ -229,8 +231,10 @@ pub struct UiNode {
   pub(crate) key: Option<String>,
   /// The file template a node came from, for its default key
   pub(crate) template: Option<String>,
-  /// Which instance of a repeated template this is
+  /// Which build of a file this node came from (0 for a node built in code)
   pub(crate) instance: u64,
+  /// What the top node of a tree built from a file came from
+  pub(crate) source: Option<Arc<TreeSource>>,
 }
 
 impl fmt::Debug for UiNode {
@@ -406,6 +410,7 @@ impl UiNode {
       key: None,
       template: None,
       instance: 0,
+      source: None,
     }
   }
 

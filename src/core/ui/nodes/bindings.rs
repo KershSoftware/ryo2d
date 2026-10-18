@@ -264,7 +264,7 @@ impl Pattern {
 }
 
 /// `name` or `name:.N`
-fn parse_hole(hole: &str) -> Option<(String, Option<usize>)> {
+pub(crate) fn parse_hole(hole: &str) -> Option<(String, Option<usize>)> {
   let (name, spec) = match hole.split_once(':') {
     Some((name, spec)) => (name, Some(spec)),
     None => (hole, None),
@@ -327,7 +327,6 @@ struct Index {
 
 impl UiNode {
   /// Values to give names that have none when the tree is spawned
-  #[allow(dead_code)] // the UI files' templates seed their bindings
   pub(crate) fn seed(mut self, name: impl Into<String>, value: BindValue) -> UiNode {
     self.seeds.push((name.into(), value));
     self

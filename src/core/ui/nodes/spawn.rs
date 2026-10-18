@@ -247,6 +247,7 @@ pub(crate) fn spawn_node(
     key: _,
     template: _,
     instance,
+    source: _,
   } = node;
 
   let kind_name = kind.name();

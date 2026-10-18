@@ -32,6 +32,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use crate::core::ecs::{Resource, ShaderHandle};
 use crate::core::error::{AssetError, AssetResult};
 use crate::core::graphics::Sprite;
+use crate::core::ui::file::build::SpriteSource;
 
 use super::hot_reload::{HotReloadEvent, HotReloadWatcher};
 #[allow(unused_imports)] // engine_info only used in debug builds
@@ -1178,6 +1179,13 @@ impl AssetManager {
 impl Default for AssetManager {
   fn default() -> Self {
     Self::new()
+  }
+}
+
+/// UI files load their images as sprites, resolved and cached as any other
+impl SpriteSource for AssetManager {
+  fn sprite(&mut self, path: &str) -> Result<SpriteHandle, String> {
+    self.load_sprite(path).map_err(|e| e.to_string())
   }
 }
 

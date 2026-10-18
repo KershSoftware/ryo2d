@@ -80,6 +80,9 @@ pub use widgets::{
 // The context, its absolute drawing and its input snapshot
 pub use immediate::{UiConsumed, UiContext, UiInput, UiText};
 
+// UI files
+pub use file::{UiArg, UiArgs, UiFile, UiFileError, UiFileIssue};
+
 // Retained nodes
 pub use nodes::{
   BindValue, TextRole, UiChecked, UiDisabled, UiEvent, UiEventKind, UiHidden, UiImage, UiIndex,

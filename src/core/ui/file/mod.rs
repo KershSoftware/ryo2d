@@ -1,14 +1,15 @@
 //! UI files: screens written in RON that load into `UiNode`
 //!
 //! `reader` turns the file's text into values that know their line and
-//! column. Later modules check those values against the vocabulary and
-//! build `UiNode`s from them.
+//! column, `vocab` is the table of node kinds and options, `build` turns
+//! values into `UiNode`s (expanding templates), and `document` is the file:
+//! its top level, templates and imports, checked at load.
 
-pub(crate) mod reader;
-// Built from the loader (Task 6)
-#[allow(dead_code)]
 pub(crate) mod build;
-#[allow(dead_code)]
+pub(crate) mod document;
 pub(crate) mod error;
-#[allow(dead_code)]
+pub(crate) mod reader;
 pub(crate) mod vocab;
+
+pub use document::{UiArg, UiArgs, UiFile};
+pub use error::{UiFileError, UiFileIssue};
