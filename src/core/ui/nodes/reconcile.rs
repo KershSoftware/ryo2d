@@ -139,10 +139,10 @@ pub(crate) fn reload_trees(world: &mut World) {
       if world.get::<UiSource>(entity).is_none() {
         continue;
       }
-      let mut rebuilt = false;
+      let mut built: Option<Arc<TreeSource>> = None;
       let top = match source.file.build_source(&source, &mut *assets) {
         Ok(tree) => {
-          rebuilt = true;
+          built = tree.source.clone();
           let instance = source.instance;
           let was_root = world.get::<UiRoot>(entity).is_some();
           let top = reconcile(world, entity, tree, Mode::Reload { instance });
@@ -164,7 +164,13 @@ pub(crate) fn reload_trees(world: &mut World) {
       };
       // Not tried again until the file changes again
       if let Some(mut held) = world.get_mut::<UiSource>(top) {
-        held.generation = if rebuilt { held.source.generation } else { now };
+        match built {
+          Some(built) => {
+            held.generation = built.generation;
+            held.source = built;
+          }
+          None => held.generation = now,
+        }
       }
     }
     roots
@@ -1414,6 +1420,28 @@ mod reload_tests {
     Button(label: "Resume", action: "resume", default_focus: true),
     Button(label: "Quit", action: "quit"),
   ]))"#;
+
+  #[test]
+  fn a_reloaded_tree_is_not_rebuilt_in_the_frames_after() {
+    let (dir, mut h) = harness(&[("pause.ui.ron", PAUSE)]);
+    h.spawn_ui_file("pause.ui.ron").unwrap();
+    h.frame(|_| {});
+    let title = h.find_ui("title").unwrap();
+    rewrite(
+      &dir,
+      &mut h,
+      "pause.ui.ron",
+      &PAUSE.replace("modal: true,", "modal: true, gap: 20,"),
+    );
+    let mut reloads = h.messages::<UiReloaded>().count();
+    h.world_mut().get_mut::<UiLabel>(title).unwrap().0 = "Game wrote".into();
+    for _ in 0..4 {
+      h.frame(|_| {});
+      reloads += h.messages::<UiReloaded>().count();
+    }
+    assert_eq!(reloads, 1);
+    assert_eq!(h.world().get::<UiLabel>(title).unwrap().0, "Game wrote");
+  }
 
   #[test]
   fn a_tree_built_before_a_reload_and_spawned_after_it_reloads() {

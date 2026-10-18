@@ -225,6 +225,9 @@ fn draw_node(
     walk.registered = true;
   }
   let Ok((hidden, kind, bound, disabled, tooltip)) = entity.get_components::<NodeRead>() else {
+    warn_once("ui-node:not-a-node".to_string(), || {
+      "an entity under a UI node is not a node; it is skipped".to_string()
+    });
     return None;
   };
   if hidden {
