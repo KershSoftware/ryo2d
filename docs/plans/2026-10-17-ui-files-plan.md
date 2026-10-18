@@ -207,7 +207,7 @@ line"]"##).unwrap();
     let top = read(text).unwrap();
     let f = fields(&top);
     assert_eq!(f[0].value.kind, ValueKind::Str("é😀".into()));
-    assert_eq!(f[1].pos, Pos { line: 2, column: 13 }, "columns count characters");
+    assert_eq!(f[1].pos, Pos { line: 2, column: 12 }, "columns count characters");
     assert_eq!(f[2].pos, Pos { line: 3, column: 3 }, "\\r\\n is one line end");
   }
 
@@ -898,7 +898,8 @@ git commit -m "feat: read UI files' RON syntax with positions
   pub(crate) struct Pattern(..);  // parse(&str) -> Pattern, names(), format(..)
   pub(crate) fn set(world: &mut World, node: Entity, name: &str, value: BindValue);
   pub(crate) fn get(world: &World, node: Entity, name: &str) -> Option<BindValue>;
-  pub(crate) fn apply_subtree(world: &mut World, top: Entity, seeds: Vec<(String, BindValue)>);
+  pub(crate) fn seed(world: &mut World, node: Entity, seeds: Vec<(String, BindValue)>);   // fill names with no value; propagate those
+  pub(crate) fn apply_subtree(world: &mut World, top: Entity, seeds: Vec<(String, BindValue)>);  // for a freshly spawned subtree
   pub(crate) fn sync_root(world: &mut World, root: Entity);
   pub(crate) fn widget_wrote(world: &mut World, node: Entity);
   pub(crate) fn format_node(world: &mut World, root: Entity, node: Entity);
@@ -912,7 +913,7 @@ Behaviour (the spec's Bindings section, restated as rules for the code):
 - **Patterns:** a node marked `bound` turns its `UiLabel` text (from `state.label`) and its tooltip into `Pattern`s, kept in `UiPattern`; formatting writes `UiLabel`/`UiTooltip` only when the text differs.
 - **Comparing a stored value with a widget** compares numbers as `f32` (widgets hold `f32` and `usize`), so a slider's `0.8` and a stored `0.800000011920929` are the same.
 - **`{name}` formatting:** a whole number (finite, `fract() == 0.0`, below `1e15` in size) prints as an integer; another number prints as the shortest text for its `f32` (`format!("{}", n as f32)`); `{name:.N}` prints `N` decimals (`format!("{n:.N$}")`); bools print `true`/`false`; text as is; `{{` and `}}` print braces; a `{..}` that is not a valid hole (`name` of `[A-Za-z0-9_-]` and an optional `:.N`) is kept as written. An unset name prints nothing and, in debug builds, warns once per name (`warn_once(format!("ui-binding-unset:{name}"), ..)`).
-- **Seeding** (`apply_subtree(world, top, seeds)`, run after `spawn_ui`/`spawn_ui_in` finish, and by the reconcile in Tasks 3-4): first the given `seeds` fill names with no value; then each bound widget in the subtree, depth first, fills its name from its own component if the name has no value, or else is written from the stored value; then every pattern node in the subtree is formatted; every name newly seeded is also propagated to the whole root (a new slider's name may be shown by an existing label).
+- **Seeding** (`apply_subtree(world, top, seeds)`, run on a freshly spawned subtree: after `spawn_ui`/`spawn_ui_in` finish, and by the reconcile in Task 4 for each subtree it spawns): first the given `seeds` fill names with no value (this first step is `seed(world, top, seeds)`, which the reconcile also calls on its own); then each bound widget in the subtree, depth first, fills its name from its own component if the name has no value, or else is written from the stored value; then every pattern node in the subtree is formatted; every name newly seeded is also propagated to the whole root (a new slider's name may be shown by an existing label).
 - **Syncing:** `sync_root(world, root)` runs for each root just before the walk draws it (in `draw_nodes`, and for an embedded root in `UiContext::node`): for each bound name, the first bound widget whose component differs from the stored value sets it and propagates to every other widget and pattern of that name. `widget_wrote(world, node)` runs right after a bound widget is drawn (after its `Write` is applied, in every arm that writes: check, slider, pick, radio group, choice list, text input), so patterns drawn later in the same walk show the new value.
 - **The index** (`name → widgets`, `name → pattern nodes`, depth first) is rebuilt lazily when `None`; `invalidate` sets it `None` and is called by `spawn_ui_in` and the reconcile. Despawned entities in a stale index are skipped.
 - `Kind::takes` gains `"bind"` for the bound kinds, and `bind` records `given("bind")`, so 4c's spawn already warns `UiNode::bind does nothing on a button node`. `bound` records nothing (any node may be bound; only labels and tooltips have patterns).
@@ -1388,7 +1389,7 @@ git commit -m "feat: named bindings for UI node trees
   pub(crate) fn root_key(node: &UiNode) -> String;
   // reconcile.rs (crate)
   pub(crate) fn same_kind(a: &Kind, b: &Kind) -> bool;            // same constructor
-  pub(crate) struct NodeUpdate { pub(crate) children: Vec<UiNode>, pub(crate) nav: [Option<String>; 4], pub(crate) popup: Option<String>, pub(crate) modal: bool }
+  pub(crate) struct NodeUpdate { pub(crate) children: Vec<UiNode>, pub(crate) nav: [Option<String>; 4], pub(crate) popup: Option<String>, pub(crate) modal: bool, pub(crate) rebound: bool }  // rebound: its UiBind changed
   pub(crate) fn update_node(world: &mut World, entity: Entity, node: UiNode, key: String) -> NodeUpdate;
   impl PartialEq for SpriteHandle   // the same image: the same shared cell
   ```
@@ -1612,7 +1613,7 @@ git commit -m "feat: keys and an in-place update for spawned UI nodes
   ```
 
 Rules (the spec's reconcile section):
-- `reconcile` updates `entity` from `tree` and walks the children; afterwards it runs 4c's `finish(world, top, pending)` over every node it updated or spawned (re-resolving `nav_*`, popup anchors and confirms' `BackAnswer`), then `bindings::invalidate(world, top)` and `bindings::apply_subtree(world, top, seeds)` with the tree's top seeds.
+- `reconcile` updates `entity` from `tree` and walks the children; afterwards it runs 4c's `finish(world, top, pending)` over every node it updated or spawned (re-resolving `nav_*`, popup anchors and confirms' `BackAnswer`), then `bindings::invalidate(world, top)`, `bindings::seed(world, top, seeds)` with the tree's top seeds, and `bindings::apply_subtree(world, fresh, Vec::new())` for each subtree it spawned and each matched node whose `NodeUpdate::rebound` was set. It never formats the patterns of matched nodes wholesale: `update_node` already formatted those whose pattern changed, and a label the game wrote on an unchanged pattern node must survive.
 - **Which children the tree owns:** in `Mode::Update`, every child with `UiTreeNode` and without `UiAdded`; in `Mode::Reload { instance }`, every child with `UiTreeNode { instance, .. }` of that instance and without `UiAdded`. Other children (the game's) are left alone.
 - **Matching** the tree's children by `child_keys` against the owned children's `UiTreeNode.key`, first come first matched for a repeated key: a match of the same kind is updated (recursively); a match of a different kind is despawned and a new node spawned in its place; an unmatched tree child is spawned (`spawn_node`); an unmatched owned child is despawned with its subtree.
 - **Order:** the tree's children end in the tree's order. Each kept child (not owned) stays right after the owned sibling it followed before the reconcile; if that sibling was despawned, after the nearest earlier owned sibling that survived; if none, first. The parent's children are reordered only if the order changed.
@@ -1788,32 +1789,49 @@ pub(crate) fn reconcile(world: &mut World, entity: Entity, mut tree: UiNode, mod
   // Only the top's seeds count, as at spawn
   let seeds = std::mem::take(&mut tree.seeds);
   let mut pending = Vec::new();
-  let top = reconcile_node(world, entity, tree, mode, &mut pending);
+  // Subtrees spawned, and nodes rebound, during the reconcile: their bindings start fresh
+  let mut fresh = Vec::new();
+  let top = reconcile_node(world, entity, tree, mode, &mut pending, &mut fresh);
   finish(world, top, pending);
   bindings::invalidate(world, top);
-  bindings::apply_subtree(world, top, seeds);
+  bindings::seed(world, top, seeds);
+  for node in fresh {
+    bindings::apply_subtree(world, node, Vec::new());
+  }
   top
 }
 
-fn reconcile_node(world: &mut World, entity: Entity, tree: UiNode, mode: Mode, pending: &mut Vec<Pending>) -> Entity {
+fn reconcile_node(
+  world: &mut World,
+  entity: Entity,
+  tree: UiNode,
+  mode: Mode,
+  pending: &mut Vec<Pending>,
+  fresh: &mut Vec<Entity>,
+) -> Entity {
   let same = world
     .get::<UiNodeKind>(entity)
     .is_some_and(|node| same_kind(&node.kind, &tree.kind));
   if !same {
-    return respawn_in_place(world, entity, tree, pending);
+    let new = respawn_in_place(world, entity, tree, pending);
+    fresh.push(new);
+    return new;
   }
   let key = world
     .get::<UiTreeNode>(entity)
     .map(|node| node.key.clone())
     .unwrap_or_else(|| root_key(&tree));
-  let NodeUpdate { children, nav, popup, modal } = update_node(world, entity, tree, key);
+  let NodeUpdate { children, nav, popup, modal, rebound } = update_node(world, entity, tree, key);
+  if rebound {
+    fresh.push(entity);
+  }
   pending.push(Pending { entity, nav, popup, modal });
-  reconcile_children(world, entity, children, mode, pending);
+  reconcile_children(world, entity, children, mode, pending, fresh);
   entity
 }
 ```
 
-`reconcile_children` collects the parent's `Children`, splits owned from kept by `Mode`, matches by key with a `HashMap<String, VecDeque<Entity>>`, and reorders by the rules. Moving an existing child: bevy's `EntityWorldMut::insert_children(index, &[child])` re-places an entity already in the list; prefer computing the whole final order and writing it once only when it differs. Matched children are passed their new key through `update_node`.
+`reconcile_children` (which pushes each subtree it spawns onto `fresh`) collects the parent's `Children`, splits owned from kept by `Mode`, matches by key with a `HashMap<String, VecDeque<Entity>>`, and reorders by the rules. Moving an existing child: bevy's `EntityWorldMut::insert_children(index, &[child])` re-places an entity already in the list; prefer computing the whole final order and writing it once only when it differs. Matched children are passed their new key through `update_node`.
 
 `SceneContext::update_ui` and `UiHarness::update_ui` call `nodes::reconcile(.., Mode::Update)` after the `UiTreeNode` check (export `reconcile` and `Mode` from `nodes/mod.rs` as `pub(crate)`).
 
@@ -2261,7 +2279,7 @@ git commit -m "feat: build UiNode trees from UI file values
   ```
 
 Rules (the spec's File, Templates, Imports and Loading sections):
-- **Top level:** `Fields` with `root`, `templates` (a map of name to `(params: [..], defaults: {..}, node: ..)`; `params` and `defaults` optional, `node` required), `imports` (a list of path strings), `bindings` (a map of name to string, number or bool). Anything else: `a UI file has root, templates, imports and bindings; "x" is not one` (with a suggestion). A file with neither `root` nor `templates` is an error at 1:1: `a UI file needs a root or templates`.
+- **Top level:** `Fields` (an empty `()` reads as an empty tuple: treat it as a struct with no fields) with `root`, `templates` (a map of name to `(params: [..], defaults: {..}, node: ..)`; `params` and `defaults` optional, `node` required), `imports` (a list of path strings), `bindings` (a map of name to string, number or bool). Anything else: `a UI file has root, templates, imports and bindings; "x" is not one` (with a suggestion). A file with neither `root` nor `templates` is an error at 1:1: `a UI file needs a root or templates`.
 - **Template names** are CamelCase (first character uppercase) and not a kind's name: `"button" is not a template name: template names are CamelCase`, `"Button" is a node kind; give the template another name`. A name defined in the file and in an import, or in two imports: `the template "X" is defined twice (here and in "path")`.
 - **Imports** load through the `ImportResolver`; a failure is an issue at the import's string (`cannot import "path"`), followed by the imported file's own issues (they carry their own path). Imports are not transitive: a file sees its own templates and its direct imports' templates. A template's body resolves template names in its own file's scope.
 - **Expansion** (in `build.rs`, called from `build_node` when the name is not a kind): find the template (local, then imports), push `(file path, name)` on `cx.stack` (a name already on the stack: `the template "A" uses itself (A -> B -> A)`), compute the arguments (defaults, overridden by use-site fields whose name is a parameter; a missing required parameter: `MenuButton needs "label"`), substitute them into a clone of the body, build it in the template's own scope, then apply the remaining use-site fields as options of the result's kind (by the Task 5 rules; an unknown one: `MenuButton has no parameter or option "x"`, with a suggestion among both), set `template = Some(name)` on the result, and pop the stack.
@@ -2560,14 +2578,14 @@ In `manager.rs`'s tests (they have `event_fixture()`, a temp dir and a manager b
   #[test]
   fn a_half_saved_file_warns_once_and_the_finished_save_reloads() {
     let (dir, mut assets) = event_fixture();
-    let path = write(dir.path(), "menu.ui.ron", "(root: Text(\"a\"))");
-    let file = assets.load_ui("menu.ui.ron").unwrap();
+    let path = write(dir.path(), "halfsaved.ui.ron", "(root: Text(\"a\"))");
+    let file = assets.load_ui("halfsaved.ui.ron").unwrap();
     let start = file.generation();
     std::fs::write(&path, "(root: Te").unwrap();
     for _ in 0..3 {
       assert!(!assets.handle_reload_event(HotReloadEvent::FileModified(path.clone())));
     }
-    assert_eq!(crate::core::ui::test_util::warnings_containing("menu.ui.ron"), 1, "once per broken text");
+    assert_eq!(crate::core::ui::test_util::warnings_containing("halfsaved.ui.ron"), 1, "once per broken text");
     std::fs::write(&path, "(root: Text(\"b\"))").unwrap();
     assert!(assets.handle_reload_event(HotReloadEvent::FileModified(path.clone())));
     assert!(file.generation() > start);
