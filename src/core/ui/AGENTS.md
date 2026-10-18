@@ -201,7 +201,7 @@ The UI is built every frame, so the shared pipeline does per frame only what cha
 - **The layout diff by hash.** A layout entry keeps one hash of its raw style (`UiStyle::shape_hash`), its parent's flow and its measure kind. Only a node whose hash changed is cleaned and converted for Taffy, and only a changed child list is sent. A field added to `UiStyle` must be added to `UiStyle::hash_into`, or a change to it alone is never laid out.
 - **Looks borrowed.** Widgets read their look from the theme by reference, and `Look::skin` is an `Option<Arc<str>>`, so resolving a look copies no string.
 - **The node walk** reads a node's hidden flag, kind, binding, disabled flag and tooltip in one entity lookup (`NodeRead`, `draw.rs`), then dispatches on the kind.
-- **Nothing added to the world.** A UI pass must not add an entity, a resource or an archetype to a world (Notes for AI Agents, 6).
+- **Nothing added to the world.** A UI pass must not add an entity or a resource to a world, and avoids adding archetypes (Notes for AI Agents, 6).
 
 ## Testing and performance
 
@@ -224,4 +224,4 @@ The UI is built every frame, so the shared pipeline does per frame only what cha
 3. **Alpha blending**: colours with alpha < 255 blend with what is below in sRGB space, as designers expect.
 4. **The UI is never lit** and never post-processed.
 5. **Fade text through opacity**, never through a style's colour: colour is in the layout cache key, so a colour fade lays the text out again every frame (`ui.text(..).opacity(a)`).
-6. **A UI pass must not add an entity, a resource or an archetype to a world.** In bevy 0.20 a resource is an entity: when the reload check kept its query as a resource, every later entity id shifted, and so did the archetype order a fresh query sees, which changed what a game printed and drew. Keep per-world UI state outside the world (the reload query is owned by `Engine` and `UiHarness`, keyed by `WorldId`), and return early when there is nothing to do (`update_lists` in a world with no list).
+6. **A UI pass must not add an entity or a resource to a world, and avoids adding archetypes.** In bevy 0.20 a resource is an entity: when the reload check kept its query as a resource, every later entity id shifted, and so did the archetype order a fresh query sees, which changed what a game printed and drew. Keep per-world UI state outside the world (the reload query is owned by `Engine` and `UiHarness`, keyed by `WorldId`), and return early when there is nothing to do (`update_lists` in a world with no list). One known archetype remains: `draw_nodes` takes `UiNodes` out with `try_resource_scope`, which adds one archetype in a world with node trees.

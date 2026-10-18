@@ -105,7 +105,7 @@ A reader ordered after the writer in the same schedule sees the message the same
 | Gameplay (`MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `KnockbackStarted`, `KnockbackFinished`) | each fixed step, in `FixedSet::Movement`: after `Scene::update` and the scene's fixed systems, before physics | the next step's `update` |
 | Juice systems (tweens, squash and stretch) | each fixed step, before `Scene::update` | the same step's `update` |
 | Hot reload (`AssetReloaded`, `AssetLoadFailed`) | `PreUpdate`, once a frame | this frame's `ui` and steps |
-| The UI pass (`UiReloaded`, then `UiListBind`, before any tree is drawn; `UiEvent` as each scene's node trees are walked) | once a frame, before the fixed steps | this frame's `ui` and steps |
+| The UI pass (`UiReloaded`, then `UiListBind`, before any tree is drawn; `UiEvent` as each scene's node trees are walked, or after `ui` for embedded trees) | once a frame, before the fixed steps | this frame's `ui` and steps |
 | `ParticleSystem::update` (`ParticleCollision`) | where the scene calls it | after that call |
 
 The trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`) read the previous step's `TriggerEntered` in `FixedSet::Movement`, so `PickedUp`, `Killed` and `CheckpointReached` come one step after the overlap, and `update` reads them one step after that. While physics is paused (`PhysicsPaused`) no collision or trigger messages are written; the behaviours keep running and still act on an entry that arrived just before the pause.
