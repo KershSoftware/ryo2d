@@ -13,16 +13,13 @@ const INVENTORY: &str = "assets/ui/inventory.ui.ron";
 #[derive(Component, Debug, Clone, Copy)]
 struct SlotAt(SlotRef);
 
-/// A slot node of the file's template, marked with the place it shows
+/// A slot node of the file's template, marked with the place it shows. The
+/// first bag slot's focus goes in the arguments, not on the built node: a
+/// reload builds the slot again from its template and arguments.
 fn slot(ctx: &mut SceneContext, at: SlotRef) -> Result<UiNode, UiFileError> {
-  let slot = ctx
-    .ui_template(INVENTORY, "InvSlot", &UiArgs::new())?
-    .insert(SlotAt(at));
-  Ok(if at == SlotRef::Bag(0) {
-    slot.default_focus()
-  } else {
-    slot
-  })
+  let args = UiArgs::new().with("default_focus", at == SlotRef::Bag(0));
+  let slot = ctx.ui_template(INVENTORY, "InvSlot", &args)?;
+  Ok(slot.insert(SlotAt(at)))
 }
 
 /// The page's trees, all built before any is spawned

@@ -20,11 +20,43 @@ struct Hud {
 
 /// The conversation panel's nodes the page writes
 struct Conversation {
+  root: Entity,
   speaker: Entity,
   /// The line's text, with its `TextReveal`
   line: Entity,
   /// The focus-scope column holding what the player can do next
   choices: Entity,
+  /// The placeholder the page puts the portrait in
+  portrait: Entity,
+}
+
+impl Conversation {
+  /// The panel's nodes, by name, in the tree at `root`
+  fn find(ctx: &SceneContext, root: Entity) -> Result<Self, UiFileError> {
+    let find = |name| ctx.find_ui_in(root, name);
+    let (Some(speaker), Some(line), Some(choices), Some(portrait)) = (
+      find("speaker"),
+      find("line"),
+      find("choices"),
+      find("portrait"),
+    ) else {
+      return Err(UiFileError {
+        issues: vec![UiFileIssue {
+          path: DIALOGUE.to_string(),
+          line: 0,
+          column: 0,
+          message: "the root needs nodes named speaker, line, choices and portrait".to_string(),
+        }],
+      });
+    };
+    Ok(Self {
+      root,
+      speaker,
+      line,
+      choices,
+      portrait,
+    })
+  }
 }
 
 pub struct FileDialoguePage {
@@ -100,42 +132,64 @@ impl FileDialoguePage {
     }
   }
 
-  /// Spawn the conversation panel, with the portrait in its placeholder and
-  /// the current line in its texts
+  /// Spawn the conversation panel and fill it
   fn spawn_panel(&mut self, ctx: &mut SceneContext) -> Result<(), UiFileError> {
     let panel = ctx.assets.load_ui(DIALOGUE)?.root(ctx.assets)?;
     let root = ctx.spawn_ui(panel);
-    let find = |name| ctx.find_ui_in(root, name);
-    let (Some(speaker), Some(line), Some(choices), Some(portrait)) = (
-      find("speaker"),
-      find("line"),
-      find("choices"),
-      find("portrait"),
-    ) else {
-      ctx.world.despawn(root);
-      return Err(UiFileError {
-        issues: vec![UiFileIssue {
-          path: DIALOGUE.to_string(),
-          line: 0,
-          column: 0,
-          message: "the root needs nodes named speaker, line, choices and portrait".to_string(),
-        }],
-      });
-    };
-    let image = UiNode::image(self.portrait.clone())
-      .image_size(96.0, 96.0)
-      .filter(Filter::Nearest);
-    ctx.spawn_ui_in(portrait, image);
-    if let Some(shown) = self.shop.node.and_then(|n| TREE.get(n)) {
-      Self::set_label(ctx, speaker, shown.speaker);
-      Self::set_label(ctx, line, shown.text);
+    match Conversation::find(ctx, root) {
+      Ok(conversation) => self.conversation = Some(conversation),
+      Err(error) => {
+        ctx.world.despawn(root);
+        return Err(error);
+      }
     }
-    self.conversation = Some(Conversation {
-      speaker,
-      line,
-      choices,
-    });
+    self.fill_panel(ctx);
     Ok(())
+  }
+
+  /// The portrait in its placeholder, unless it is there, and the current
+  /// line (or the goodbye) in the texts
+  fn fill_panel(&self, ctx: &mut SceneContext) {
+    let Some(conversation) = &self.conversation else {
+      return;
+    };
+    if ctx.world.get::<Children>(conversation.portrait).is_none() {
+      let image = UiNode::image(self.portrait.clone())
+        .image_size(96.0, 96.0)
+        .filter(Filter::Nearest);
+      ctx.spawn_ui_in(conversation.portrait, image);
+    }
+    let (speaker, text) = match self.shop.node.and_then(|n| TREE.get(n)) {
+      Some(shown) => (shown.speaker, shown.text),
+      None => ("Shopkeeper", GOODBYE),
+    };
+    Self::set_label(ctx, conversation.speaker, speaker);
+    Self::set_label(ctx, conversation.line, text);
+  }
+
+  /// A saved file is brought in line before the UI pass. A node it gave a
+  /// new kind is a new entity (`replaced` names a replaced root): follow the
+  /// HUD's root, look the panel's nodes up again by name, fill what came back
+  /// empty, and build the choices again into a new column.
+  fn reloaded(&mut self, ctx: &mut SceneContext, reloaded: UiReloaded) {
+    let ours = |root| root == reloaded.root || Some(root) == reloaded.replaced;
+    if let Some(hud) = self.hud.as_mut().filter(|hud| ours(hud.root)) {
+      hud.root = reloaded.root;
+    }
+    let Some(held) = self.conversation.as_ref().filter(|c| ours(c.root)) else {
+      return;
+    };
+    let choices = held.choices;
+    match Conversation::find(ctx, reloaded.root) {
+      Ok(found) => {
+        if found.choices != choices {
+          self.built = None;
+        }
+        self.conversation = Some(found);
+        self.fill_panel(ctx);
+      }
+      Err(error) => self.fail(error),
+    }
   }
 
   fn reveal<'w>(&self, ctx: &'w mut SceneContext) -> Option<Mut<'w, TextReveal>> {
@@ -225,31 +279,43 @@ impl FileDialoguePage {
   /// `skipped`: Skip finished the line this frame, so it shows whole at the
   /// next draw, with the choices that follow it.
   fn update_scope(&mut self, ctx: &mut SceneContext, skipped: bool) {
-    let Some(choices) = self.conversation.as_ref().map(|c| c.choices) else {
-      return;
-    };
     let Some(n) = self.shop.node else {
       if self.built.take().is_some() {
-        ctx.update_ui(choices, UiNode::column().focus_scope().name("choices"));
-        ctx.world.entity_mut(choices).insert(UiHidden);
+        let empty = UiNode::column().focus_scope().name("choices");
+        self.set_choices(ctx, empty, false);
       }
       return;
     };
     let done = skipped || self.reveal(ctx).is_some_and(|reveal| reveal.is_done());
     let key = (n, done);
-    if self.built == Some(key) {
+    if self.conversation.is_none() || self.built == Some(key) {
       return;
     }
     let tree = match self.choices_tree(ctx, n, done) {
       Ok(tree) => tree,
       Err(error) => return self.fail(error),
     };
-    ctx.update_ui(choices, tree);
-    ctx.world.entity_mut(choices).remove::<UiHidden>();
     self.built = Some(key);
-    if let Some(pick) = ctx.find_ui_in(choices, "pick") {
+    if let Some(choices) = self.set_choices(ctx, tree, true)
+      && let Some(pick) = ctx.find_ui_in(choices, "pick")
+    {
       ctx.focus_ui(pick);
     }
+  }
+
+  /// Bring the choices column in line with `tree`, shown or hidden; the
+  /// column, which `update_ui` replaces if the file made it another kind
+  fn set_choices(&mut self, ctx: &mut SceneContext, tree: UiNode, shown: bool) -> Option<Entity> {
+    let conversation = self.conversation.as_mut()?;
+    let choices = ctx.update_ui(conversation.choices, tree);
+    conversation.choices = choices;
+    let mut column = ctx.world.get_entity_mut(choices).ok()?;
+    if shown {
+      column.remove::<UiHidden>();
+    } else {
+      column.insert(UiHidden);
+    }
+    Some(choices)
   }
 
   /// Ask whether to leave; the line waits under the question
@@ -325,6 +391,9 @@ impl DemoPage for FileDialoguePage {
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
     if let Some(error) = &self.error {
       ui.text(error.as_str());
+    }
+    for reloaded in ctx.messages::<UiReloaded>() {
+      self.reloaded(ctx, reloaded);
     }
     self.place_hud(ui, ctx);
     let mut skipped = false;

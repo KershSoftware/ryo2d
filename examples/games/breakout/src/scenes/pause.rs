@@ -101,6 +101,12 @@ impl Scene for PauseScene {
   }
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    // A saved menu file that gave the root a new kind replaced its entity
+    for reloaded in ctx.messages::<UiReloaded>() {
+      if self.root.is_some() && self.root == reloaded.replaced {
+        self.root = Some(reloaded.root);
+      }
+    }
     let mut action = None;
     for event in ctx.ui_events() {
       match (event.kind, event.name.as_deref(), event.action.as_deref()) {

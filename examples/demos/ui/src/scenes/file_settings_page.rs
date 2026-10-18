@@ -9,6 +9,8 @@ use super::settings_data::{TABS, bind_actions};
 const SETTINGS: &str = "assets/ui/settings.ui.ron";
 
 pub struct FileSettingsPage {
+  /// The file's tree
+  root: Option<Entity>,
   /// Each tab's column, by tab
   tabs: Vec<Entity>,
   reset_controls: bool,
@@ -19,9 +21,32 @@ pub struct FileSettingsPage {
 impl FileSettingsPage {
   pub fn new() -> Self {
     Self {
+      root: None,
       tabs: Vec::new(),
       reset_controls: false,
       error: None,
+    }
+  }
+
+  /// Look the tab columns up by name in the tree at `root`
+  fn find_tabs(&mut self, ctx: &SceneContext, root: Entity) {
+    self.root = Some(root);
+    self.tabs = (0..TABS.len())
+      .filter_map(|i| ctx.find_ui_in(root, &format!("tab-{i}")))
+      .collect();
+  }
+
+  /// Show the picked tab's column and hide the others
+  fn show_tab(&self, ctx: &mut SceneContext, picked: usize) {
+    for (i, &column) in self.tabs.iter().enumerate() {
+      let Ok(mut column) = ctx.world.get_entity_mut(column) else {
+        continue;
+      };
+      if i == picked {
+        column.remove::<UiHidden>();
+      } else {
+        column.insert(UiHidden);
+      }
     }
   }
 }
@@ -56,11 +81,7 @@ impl DemoPage for FileSettingsPage {
   fn enter(&mut self, ctx: &mut SceneContext) {
     bind_actions(ctx);
     match ctx.spawn_ui_file(SETTINGS) {
-      Ok(root) => {
-        self.tabs = (0..TABS.len())
-          .filter_map(|i| ctx.find_ui_in(root, &format!("tab-{i}")))
-          .collect();
-      }
+      Ok(root) => self.find_tabs(ctx, root),
       Err(error) => {
         game_error!("{error}");
         self.error = Some(error.to_string());
@@ -78,17 +99,23 @@ impl DemoPage for FileSettingsPage {
     if let Some(error) = &self.error {
       ui.text(error.as_str());
     }
+    // A saved file is brought in line before the UI pass. A node it gave a
+    // new kind is a new entity (`replaced` names a replaced root), so look
+    // the columns up again and show the picked tab in them
+    for reloaded in ctx.messages::<UiReloaded>() {
+      let ours = |root| root == reloaded.root || Some(root) == reloaded.replaced;
+      if self.root.is_some_and(ours) {
+        self.find_tabs(ctx, reloaded.root);
+        let tabs = ctx.find_ui_in(reloaded.root, "tabs");
+        let picked = tabs.and_then(|tabs| ctx.world.get::<UiIndex>(tabs));
+        self.show_tab(ctx, picked.map_or(0, |i| i.0));
+      }
+    }
     for event in ctx.ui_events() {
       match (event.kind, event.name.as_deref(), event.action.as_deref()) {
         (UiEventKind::Changed, Some("tabs"), _) => {
           let picked = ctx.world.get::<UiIndex>(event.node).map_or(0, |i| i.0);
-          for (i, &column) in self.tabs.iter().enumerate() {
-            if i == picked {
-              ctx.world.entity_mut(column).remove::<UiHidden>();
-            } else {
-              ctx.world.entity_mut(column).insert(UiHidden);
-            }
-          }
+          self.show_tab(ctx, picked);
         }
         (UiEventKind::Clicked, _, Some("reset")) => self.reset_controls = true,
         _ => {}

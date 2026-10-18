@@ -1263,6 +1263,12 @@ impl Scene for GameScene {
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, _screen_h) = ui.screen_size();
 
+    // A saved HUD file that gave the root a new kind replaced its entity
+    for reloaded in ctx.messages::<UiReloaded>() {
+      if self.hud.is_some() && self.hud == reloaded.replaced {
+        self.hud = Some(reloaded.root);
+      }
+    }
     self.show_hud(ctx);
 
     // "+1" fly-by animation when gaining a life
