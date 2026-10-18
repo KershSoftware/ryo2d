@@ -28,9 +28,10 @@ pub struct UiEvent {
 /// What a `UiEvent` reports
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiEventKind {
-  /// A button, tab, choice or slot was activated
+  /// A button, image, slot, prompt, progress bar, container or choice was
+  /// activated
   Clicked,
-  /// A slot or button was activated with the secondary button
+  /// Any node that has a response was activated with the secondary button
   SecondaryClicked,
   /// A checkbox, toggle, radio group, slider, dropdown or tab changed
   Changed,

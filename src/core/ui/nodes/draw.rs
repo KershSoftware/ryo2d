@@ -622,6 +622,12 @@ fn scroll_builder<'u, 'a>(
   if opts.no_bar {
     scroll = scroll.no_bar();
   }
+  if kind.flags.drag_source {
+    scroll = scroll.drag_source(node.id());
+  }
+  if kind.flags.drop_target {
+    scroll = scroll.drop_target::<Entity>();
+  }
   sized!(scroll, layout);
   if let Some(gap) = gap {
     scroll = scroll.gap(gap);

@@ -299,6 +299,7 @@ impl Kind {
   pub(crate) fn takes(&self, option: &str) -> bool {
     const SIZE: &str =
       "width height fill_width fill_height fill min_width max_width min_height max_height";
+    const WIDGET_SIZE: &str = "width height fill_width fill_height fill min_width max_width";
     let listed = |list: &str| list.split_whitespace().any(|name| name == option);
     match self {
       Kind::Column | Kind::Row | Kind::Grid(_) | Kind::Stack | Kind::Panel | Kind::Popup { .. } => {
@@ -327,7 +328,7 @@ impl Kind {
       ),
       Kind::Separator | Kind::Spacer => option == "embedded",
       widget => {
-        listed(SIZE)
+        listed(WIDGET_SIZE)
           || listed(
             "margin anchor offset grow at default_focus nav_up nav_down nav_left nav_right \
              nav_skip focusable variant tooltip enabled drag_source drop_target embedded",

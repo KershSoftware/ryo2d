@@ -11,7 +11,8 @@ use super::events::UiEvent;
 /// The root of a spawned tree
 ///
 /// Its placement is the game's to change: edit `anchor`, `offset` or `at` on
-/// the entity and the tree moves.
+/// the entity and the tree moves. A text, separator or spacer root ignores
+/// placement; wrap a lone text in a `column()` to place it.
 #[derive(Component, Debug, Clone)]
 pub struct UiRoot {
   /// Which point of the screen the tree is placed against: the root's
@@ -111,7 +112,6 @@ impl UiInteraction {
 
 /// A confirm's No button: the node Back answers as if it were clicked
 #[derive(Component)]
-#[allow(dead_code)] // read once node dialogs answer Back
 pub(crate) struct BackAnswer(pub(crate) Entity);
 
 /// The trees the engine is walking this frame

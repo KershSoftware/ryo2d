@@ -1102,7 +1102,7 @@ The two styles mix: a scene's trees draw before its `ui` closure, and a closure 
 - `ctx.spawn_ui(tree) -> Entity` spawns the tree at once and returns its root. The root belongs to the scene that spawned it: only that scene's UI pass draws it, and it follows the top-scene rule (a lower scene's nodes draw but take no input).
 - `ctx.spawn_ui_in(parent, tree) -> Option<Entity>` adds a subtree as the last child of a container node. It returns `None`, with a warning, when `parent` is not a container node. A dialogue swaps its choices this way.
 - **Exit despawns.** When a scene leaves the stack, every root it owns is despawned with its subtree, so a popped pause menu's nodes go with it. `ctx.world.despawn(root)` (or any node) removes a subtree at once, and the next frame draws without it.
-- **Roots draw in spawn order**, a later one above an earlier one. The root's `UiRoot { anchor, offset, at }` fields are public: change them to move the tree.
+- **Roots draw in spawn order**, a later one above an earlier one. The root's `UiRoot { anchor, offset, at }` fields are public: change them to move the tree. A text, separator or spacer root ignores placement; wrap a lone text in a `column()` to place it.
 - `.hidden()` spawns a node hidden. Inserting or removing `UiHidden` hides or shows a node with its subtree; a hidden node takes no input and leaves the focus chain. `UiDisabled` (or `.enabled(false)`) greys a widget out.
 
 ### The vocabulary
@@ -1179,10 +1179,10 @@ pub struct UiEvent {
 | Node | Sends |
 |---|---|
 | `button`, `image`, `slot`, `prompt`, `progress`, containers | `Clicked` |
-| `checkbox`, `toggle`, `radio_group`, `slider`, `text_input`, `dropdown`, `tabs`, `rebind` | `Changed`, after the new value is in its component |
+| `checkbox`, `toggle`, `radio_group`, `slider`, `text_input`, `dropdown`, `tabs`, `rebind` | `Changed`, after the new value is in its component. A `radio_group` also sends focus events, but never `SecondaryClicked` or `Dropped` |
 | `text_input` | also `Submitted` (Enter) |
 | `choice_list` | `Clicked`, with the pick in its `UiIndex`. It has no `Response`, so no `ui_id`, and its `UiInteraction` is never updated |
-| any drawn node | `SecondaryClicked`; a drop target `Dropped { source }`; a focusable one `FocusGained` and `FocusLost` |
+| any drawn node except a `radio_group` and a `choice_list` | `SecondaryClicked`; a drop target `Dropped { source }`; a focusable one `FocusGained` and `FocusLost` |
 | `text`, `separator`, `spacer` | nothing |
 
 - **Read them with `ctx.ui_events()`**: this scene's own nodes' events since it last read them, in walk order. `ctx.messages::<UiEvent>()` reads every scene's, and the two share one cursor: read one or the other, in one place. Match on `action` for menus, on `name`, or on a game component of `event.node` for instances.
@@ -1209,7 +1209,7 @@ pub struct UiEvent {
 
 - **Ids are keyed by entity.** A node's id is made from its entity under its parent's id, as `.id(key)` keys a closure widget; text, separators and spacers are drawn in `ui.scope(entity, ..)`. So focus memory, scroll offsets, an open list, a caret and tooltip timers follow the node when siblings are added, removed or reordered.
 - **Despawning forgets.** A despawned node's state is forgotten. Re-parenting a node changes its id, and a respawned tree starts fresh (4d's file keys will key nodes that survive a respawn).
-- `ctx.ui_id(node) -> Option<UiId>` gives the id once the node is drawn, for `ui.scroll_offset`, `ui.request_focus` or a closure widget's `nav_*`. `ctx.focus_ui(node)` focuses a node when it is next drawn.
+- `ctx.ui_id(node) -> Option<UiId>` gives the id once the node is drawn, for `ui.scroll_offset`, `ui.request_focus` or a closure widget's `nav_*`. `ctx.focus_ui(node)` focuses a node when it is next drawn; it does not apply to a `radio_group` or a `choice_list`, which never take the request.
 - **A focused node despawned** leaves the focus at `None`, and the next navigation lands on its scope's default. This is section 7's rule for a widget that stops being drawn.
 
 ### Embedding in closure UI
@@ -1257,7 +1257,7 @@ fn shop_row(name: &str, price: u32, index: usize) -> UiNode {
 ### Modals, confirms, popups and Back
 
 - **`.modal()`** on any container node draws it as `ui.modal()` does: the dim, the trap, focus on its `default_focus`, and the focus given back when it goes. A modal root opens centred unless it was given an `.anchor(..)`.
-- **Back** goes to the last modal or popup node drawn in the scene's trees, the innermost, as a `Back` event carrying that node and its action. While one is drawn, Back is taken before the scene's `ui` runs, so `ui.back()` is false there. A modal or popup inside an embedded tree takes Back only through the closure's own `ui.back()`.
+- **Back** goes to the last modal or popup node drawn in the scene's trees, the innermost, as a `Back` event carrying that node and its action. While one is drawn, Back is taken before the scene's `ui` runs, so `ui.back()` is false there. A modal or popup inside an embedded tree takes Back only through the closure's own `ui.back()`. A scene's node dialogs answer Back before its closure runs, so a closure modal drawn above a node dialog in the same scene does not get Back first. Do not mix them in one scene; if you must, close the node dialog from the closure explicitly.
 - **`UiNode::confirm(title, message, yes, no)`** builds `ui.confirm_with`'s dialog as a modal tree whose buttons have the actions `"yes"` and `"no"`. It opens on No, and Back answers as No: a `Clicked` with action `"no"`. The game despawns it on either answer.
 - **`UiNode::popup(name)`** opens below the node called `name` in the same tree, as `ui.popup` does. Put it in the anchor's tree and show it by removing `UiHidden`, or spawn it there with `spawn_ui_in`. Close it on its `Back` event.
 

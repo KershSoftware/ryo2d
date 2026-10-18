@@ -222,7 +222,7 @@ It takes parameters, tags its nodes with game components or names, and is placed
 
 - **A `.modal()` node** (any container node) draws through `ui.modal()`: the dim over the whole UI, the trap, opening on its `default_focus`, and Back. After a scene's trees are walked, Back goes to the last modal or popup node drawn, the innermost, as a `UiEvent` of kind `Back` with that node and its action. Node dialogs therefore answer Back before the scene's closure calls `ui.back()`.
 - **A ready-made confirm.** `UiNode::confirm(title, message, yes, no)` builds the same dialog as `ui.confirm_with`: a modal root, title, message, and buttons with the actions `"yes"` and `"no"`. It opens on No, and Back sends `Clicked` with the action `"no"`, as if No were pressed.
-- **Popups:** a `UiNode::popup(anchor_name)` root opens below the named node, as `ui.popup` does.
+- **Popups:** a `UiNode::popup(anchor_name)` opens below the named node, as `ui.popup` does. Names resolve only within the popup's own tree, so the popup sits in the same tree as its anchor.
 
 ## Public API changes
 
