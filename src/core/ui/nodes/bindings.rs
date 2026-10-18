@@ -42,6 +42,40 @@ impl BindValue {
     }
   }
 
+  /// Whether a widget holding `own` agrees with this stored value. A text
+  /// input holds text whatever the name holds, so its text is compared as
+  /// the stored value shows, or as the number it parses to.
+  fn agrees(&self, own: &BindValue) -> bool {
+    match (self, own) {
+      (BindValue::Text(_), _) | (_, BindValue::Number(_) | BindValue::Bool(_)) => self.same(own),
+      (stored, BindValue::Text(text)) => {
+        stored.display(None) == *text
+          || matches!(stored, BindValue::Number(n)
+            if text.parse::<f64>().is_ok_and(|parsed| parsed as f32 == *n as f32))
+      }
+    }
+  }
+
+  /// What the name stores when a widget holding `own` changes: a text
+  /// input's text keeps the type the name already has
+  fn adopt(stored: Option<&BindValue>, own: BindValue) -> BindValue {
+    let BindValue::Text(text) = &own else {
+      return own;
+    };
+    match stored {
+      Some(BindValue::Number(_)) => match text.parse::<f64>() {
+        Ok(n) if n.is_finite() => BindValue::Number(n),
+        _ => own,
+      },
+      Some(BindValue::Bool(_)) => match text.as_str() {
+        "true" => BindValue::Bool(true),
+        "false" => BindValue::Bool(false),
+        _ => own,
+      },
+      _ => own,
+    }
+  }
+
   fn type_name(&self) -> &'static str {
     match self {
       BindValue::Number(_) => "number",
@@ -218,10 +252,11 @@ impl Pattern {
     for piece in &self.0 {
       match piece {
         Piece::Text(literal) => text.push_str(literal),
-        Piece::Value { name, decimals } => match values.get(name) {
-          Some(value) => text.push_str(&value.display(*decimals)),
-          None => warn_unset(name),
-        },
+        Piece::Value { name, decimals } => {
+          if let Some(value) = values.get(name) {
+            text.push_str(&value.display(*decimals));
+          }
+        }
       }
     }
     text
@@ -243,7 +278,14 @@ fn parse_hole(hole: &str) -> Option<(String, Option<usize>)> {
   }
   let decimals = match spec {
     None => None,
-    Some(spec) => Some(spec.strip_prefix('.')?.parse::<usize>().ok()?),
+    // At most nine decimals: a larger precision is not a hole
+    Some(spec) => Some(
+      spec
+        .strip_prefix('.')?
+        .parse::<usize>()
+        .ok()
+        .filter(|&d| d <= 9)?,
+    ),
   };
   Some((name.to_string(), decimals))
 }
@@ -272,6 +314,9 @@ pub(crate) struct UiPattern {
 pub(crate) struct UiBindings {
   pub(crate) values: HashMap<String, BindValue>,
   index: Option<Index>,
+  /// Whether the pattern names have been checked for unset values since the
+  /// tree last changed
+  checked: bool,
 }
 
 #[derive(Debug, Default)]
@@ -407,6 +452,7 @@ pub(crate) fn invalidate(world: &mut World, node: Entity) {
     && let Some(mut bindings) = world.get_mut::<UiBindings>(root)
   {
     bindings.index = None;
+    bindings.checked = false;
   }
 }
 
@@ -595,6 +641,7 @@ pub(crate) fn sync_root(world: &mut World, root: Entity) {
     return;
   }
   ensure_index(world, root);
+  warn_unset_names(world, root);
   let mut changes = Vec::new();
   if let Some(bindings) = world.get::<UiBindings>(root)
     && let Some(index) = &bindings.index
@@ -605,7 +652,7 @@ pub(crate) fn sync_root(world: &mut World, root: Entity) {
         let Some(own) = widget_value(world, widget) else {
           continue;
         };
-        if stored.is_none_or(|stored| !stored.same(&own)) {
+        if stored.is_none_or(|stored| !stored.agrees(&own)) {
           changes.push((name.clone(), widget, own));
           break;
         }
@@ -613,8 +660,35 @@ pub(crate) fn sync_root(world: &mut World, root: Entity) {
     }
   }
   for (name, widget, value) in changes {
+    let value = adopted(world, root, &name, value);
     store(world, root, &name, value);
     propagate(world, root, &name, Some(widget));
+  }
+}
+
+/// What `name` stores for a widget's `own` value
+fn adopted(world: &World, root: Entity, name: &str, own: BindValue) -> BindValue {
+  let stored = world
+    .get::<UiBindings>(root)
+    .and_then(|b| b.values.get(name));
+  BindValue::adopt(stored, own)
+}
+
+/// Once per index build: warn about pattern names that have no value
+fn warn_unset_names(world: &mut World, root: Entity) {
+  let Some(mut bindings) = world.get_mut::<UiBindings>(root) else {
+    return;
+  };
+  if bindings.checked {
+    return;
+  }
+  bindings.checked = true;
+  if let Some(index) = &bindings.index {
+    for name in index.patterns.keys() {
+      if !bindings.values.contains_key(name) {
+        warn_unset(name);
+      }
+    }
   }
 }
 
@@ -632,8 +706,9 @@ pub(crate) fn widget_wrote(world: &mut World, node: Entity) {
   let same = world
     .get::<UiBindings>(root)
     .and_then(|b| b.values.get(&name))
-    .is_some_and(|stored| stored.same(&own));
+    .is_some_and(|stored| stored.agrees(&own));
   if !same {
+    let own = adopted(world, root, &name, own);
     store(world, root, &name, own);
     propagate(world, root, &name, Some(node));
   }
@@ -851,6 +926,94 @@ mod tests {
     h.spawn_ui(UiNode::column().child(UiNode::button("Go").bind("x")));
     assert_eq!(
       crate::core::ui::test_util::warnings_containing("UiNode::bind does nothing on a button node"),
+      1
+    );
+  }
+
+  #[test]
+  fn a_large_precision_is_not_a_hole() {
+    let mut values = HashMap::new();
+    values.insert("hp".to_string(), BindValue::from(0.5));
+    let format = |text: &str| Pattern::parse(text).format(&values);
+    assert_eq!(format("{hp:.70000}"), "{hp:.70000}");
+    assert_eq!(format("{hp:.9}"), "0.500000000");
+  }
+
+  #[test]
+  fn a_text_input_keeps_the_names_type() {
+    let mut h = UiHarness::new(400.0, 300.0);
+    let root = h.spawn_ui(
+      UiNode::column()
+        .child(UiNode::text("{age:.1}").bound().name("shown"))
+        .child(UiNode::text_input("").bind("age")),
+    );
+    h.ui_set(root, "age", 30);
+    h.frame(|_| {});
+    h.frame(|_| {});
+    assert_eq!(h.ui_get::<u32>(root, "age"), Some(30));
+    assert_eq!(label(&h, h.find_ui("shown").unwrap()), "30.0");
+  }
+
+  #[test]
+  fn a_slider_and_a_text_input_on_one_name_settle() {
+    use crate::core::ecs::kernel::Changed;
+    let mut h = UiHarness::new(400.0, 300.0);
+    h.spawn_ui(
+      UiNode::column()
+        .child(UiNode::slider(0.0..=1.0, 0.5).bind("v").name("s"))
+        .child(UiNode::text_input("").bind("v").name("t"))
+        .child(UiNode::text("{v}").bound().name("shown")),
+    );
+    for _ in 0..4 {
+      h.frame(|_| {});
+    }
+    h.world_mut().clear_trackers();
+    h.frame(|_| {});
+    let w = h.world_mut();
+    let mut changed = w.query_filtered::<Entity, Changed<UiValue>>();
+    assert_eq!(changed.iter(w).count(), 0);
+    let mut changed = w.query_filtered::<Entity, Changed<UiTextValue>>();
+    assert_eq!(changed.iter(w).count(), 0);
+    let mut changed = w.query_filtered::<Entity, Changed<UiLabel>>();
+    assert_eq!(changed.iter(w).count(), 0);
+  }
+
+  #[test]
+  fn text_written_to_an_input_moves_the_slider_on_its_name() {
+    let mut h = UiHarness::new(400.0, 300.0);
+    h.spawn_ui(
+      UiNode::column()
+        .child(UiNode::slider(0.0..=1.0, 0.5).bind("v").name("s"))
+        .child(UiNode::text_input("").bind("v").name("t")),
+    );
+    let t = h.find_ui("t").unwrap();
+    h.world_mut().get_mut::<UiTextValue>(t).unwrap().0 = "0.7".to_string();
+    h.frame(|_| {});
+    let value = h.world().get::<UiValue>(h.find_ui("s").unwrap()).unwrap().0;
+    assert_eq!(value, 0.7);
+  }
+
+  #[test]
+  fn an_unset_name_warns_when_first_drawn_not_at_spawn() {
+    let mut h = UiHarness::new(400.0, 300.0);
+    let root = h.spawn_ui(
+      UiNode::column()
+        .child(UiNode::text("{late}").bound())
+        .child(UiNode::text("{never}").bound()),
+    );
+    h.ui_set(root, "late", 1);
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing("\"never\""),
+      0
+    );
+    h.frame(|_| {});
+    h.frame(|_| {});
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing("\"late\""),
+      0
+    );
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing("\"never\""),
       1
     );
   }
