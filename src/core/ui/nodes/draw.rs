@@ -211,10 +211,10 @@ fn draw_node(
       let dialog = kind.flags.modal || matches!(kind.kind, Kind::Popup { .. });
       let container = container_builder(&entity, kind, ui, place)?;
       let world = entity.into_world_mut();
-      let response = container.show(|ui| walk_children(world, ui, node, walk));
       if dialog {
         walk.back = Some(node);
       }
+      let response = container.show(|ui| walk_children(world, ui, node, walk));
       return answer_container(world, ui, node, response, walk);
     }
     Kind::Scroll(opts) => {
@@ -939,7 +939,11 @@ fn draw_slider(
   let extras = Extras::of(node, kind, place);
   let (lo, hi) = opts.range;
   let start = if value.0.is_finite() { value.0 } else { lo };
-  let drawn = start.clamp(lo.min(hi), hi.max(lo));
+  let drawn = if lo.is_finite() && hi.is_finite() {
+    start.clamp(lo.min(hi), hi.max(lo))
+  } else {
+    start
+  };
   let mut v = drawn;
   let mut slider = widget_opts!(ui.slider(&mut v, lo..=hi), kind, extras);
   if let Some(step) = opts.step {
@@ -1779,6 +1783,19 @@ mod values {
   }
 
   #[test]
+  fn a_slider_with_a_broken_range_draws_without_panicking() {
+    for range in [
+      f32::NAN..=f32::NAN,
+      0.0..=f32::NAN,
+      0.0..=f32::INFINITY,
+      f32::NEG_INFINITY..=f32::INFINITY,
+    ] {
+      let (mut d, _) = focused(UiNode::slider(range, 0.5));
+      d.frame(|_| {});
+    }
+  }
+
+  #[test]
   fn a_slider_reads_what_the_game_wrote() {
     let (mut d, node) = focused(UiNode::slider(0.0..=1.0, 0.5).step(0.05));
     if let Some(mut value) = d.world_mut().get_mut::<UiValue>(node) {
@@ -2251,6 +2268,48 @@ mod dialogs {
       .map(|e| (e.node, e.action.clone()))
       .collect();
     assert_eq!(backs, [(inner, Some("inner".to_string()))]);
+  }
+
+  fn backs(d: &UiDriver) -> Vec<(Entity, Option<String>)> {
+    d.events()
+      .iter()
+      .filter(|e| e.kind == UiEventKind::Back)
+      .map(|e| (e.node, e.action.clone()))
+      .collect()
+  }
+
+  #[test]
+  fn back_goes_to_a_popup_inside_a_modal() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let modal = d.spawn_ui(
+      UiNode::panel()
+        .modal()
+        .action("dialog")
+        .child(UiNode::button("Menu").name("menu").default_focus())
+        .child(
+          UiNode::popup("menu")
+            .action("popup")
+            .child(UiNode::button("Item")),
+        ),
+    );
+    settle(&mut d);
+    let popup = kids(d.world(), modal)[1];
+    d.back();
+    d.frame(|_| {});
+    assert_eq!(backs(&d), [(popup, Some("popup".to_string()))]);
+  }
+
+  #[test]
+  fn back_goes_to_a_modal_spawned_inside_a_modal() {
+    let mut d = UiDriver::new((400.0, 300.0));
+    let outer = d.spawn_ui(dialog("outer"));
+    settle(&mut d);
+    let inner = crate::core::ui::nodes::spawn_ui_in(d.world_mut(), outer, dialog("inner"))
+      .expect("a panel takes children");
+    settle(&mut d);
+    d.back();
+    d.frame(|_| {});
+    assert_eq!(backs(&d), [(inner, Some("inner".to_string()))]);
   }
 
   #[test]
