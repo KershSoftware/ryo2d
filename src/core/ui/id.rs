@@ -64,6 +64,10 @@ pub(crate) struct IdScopes {
   counts: FastMap<(UiId, Site), u64>,
   used: FastSet<UiId>,
   warned: FastSet<UiId>,
+  /// The ids made while a capture is open, in order
+  captured: Vec<UiId>,
+  /// Captures open (they nest: a list in a row of a list)
+  capturing: usize,
 }
 
 impl IdScopes {
@@ -71,6 +75,30 @@ impl IdScopes {
     self.stack.clear();
     self.counts.clear();
     self.used.clear();
+    self.captured.clear();
+    self.capturing = 0;
+  }
+
+  /// Whether `id` has been made this frame
+  pub(crate) fn made(&self, id: UiId) -> bool {
+    self.used.contains(&id)
+  }
+
+  /// Start noting the ids made from here; the mark is for `take_capture`
+  pub(crate) fn start_capture(&mut self) -> usize {
+    self.capturing += 1;
+    self.captured.len()
+  }
+
+  /// The ids made since the `start_capture` that gave `mark`, in order, into
+  /// `ids` (cleared first); that capture ends
+  pub(crate) fn take_capture(&mut self, mark: usize, ids: &mut Vec<UiId>) {
+    ids.clear();
+    ids.extend_from_slice(self.captured.get(mark..).unwrap_or_default());
+    self.capturing = self.capturing.saturating_sub(1);
+    if self.capturing == 0 {
+      self.captured.clear();
+    }
   }
 
   /// Start a scene's UI: `root` is the only open scope
@@ -96,6 +124,15 @@ impl IdScopes {
 
   /// The id of a widget started at `site` in the current scope
   pub(crate) fn make(&mut self, site: &'static Location<'static>, key: Option<u64>) -> UiId {
+    let id = self.make_unique(site, key);
+    if self.capturing > 0 {
+      self.captured.push(id);
+    }
+    id
+  }
+
+  /// [`make`](Self::make)'s id, never one already made this frame
+  fn make_unique(&mut self, site: &'static Location<'static>, key: Option<u64>) -> UiId {
     let parent = self.current();
     let site = Site::of(site);
     let id = match key {
@@ -251,6 +288,29 @@ mod tests {
     }
     assert_ne!(key_hash(&"a"), key_hash(&"a\0"));
     assert_ne!(mix(0, &[0]), 0, "a mix is never NONE");
+  }
+
+  #[test]
+  fn a_capture_notes_the_ids_made_in_order_and_nests() {
+    let site = here();
+    let mut s = scopes();
+    let before = s.make(site, None);
+    let outer = s.start_capture();
+    let a = s.make(site, None);
+    let inner = s.start_capture();
+    let b = s.make(site, Some(7));
+    let mut ids = vec![before];
+    s.take_capture(inner, &mut ids);
+    assert_eq!(ids, [b], "the inner capture has only its own ids");
+    let c = s.make(site, None);
+    s.take_capture(outer, &mut ids);
+    assert_eq!(ids, [a, b, c], "the outer one has the inner one's too");
+    assert!(s.made(before) && s.made(c) && !s.made(UiId::root(9)));
+    // Made with no capture open, it is in no later capture
+    s.make(site, None);
+    let next = s.start_capture();
+    s.take_capture(next, &mut ids);
+    assert!(ids.is_empty());
   }
 
   #[test]

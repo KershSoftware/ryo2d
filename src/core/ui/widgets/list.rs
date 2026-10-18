@@ -22,8 +22,9 @@ use crate::core::ui::{Anchor, Rect, UiId};
 const OVERSCAN: usize = 2;
 /// Keeps a list's state apart from its scroll area's, which has its id
 const STATE_SALT: u64 = 0x006c_6973;
-/// The spacers before and after the built rows
+/// The spacers before, between and after the runs of built rows
 const LEAD_SALT: u64 = 0x6c65_6164;
+const GAP_SALT: u64 = 0x6761_7073;
 const TRAIL_SALT: u64 = 0x7472_6169;
 /// The empty cells that fill a grid's last row
 const BLANK_SALT: u64 = 0x626c_616e;
@@ -47,15 +48,29 @@ pub(crate) struct ListState {
   /// `list_scroll_to` moved the target: the next build brings the offset to
   /// within a view of it first
   pub(crate) jump: bool,
-  /// The item whose row holds the focus
-  #[expect(dead_code, reason = "kept for the list's focus handling")]
+  /// The item whose row holds the focus: its row (and one either side, so
+  /// the pad can step off it) stays built wherever the list scrolls
   pub(crate) focused: Option<usize>,
-  /// An item to give the focus once its row is built
-  #[expect(dead_code, reason = "kept for the list's focus handling")]
+  /// The widget with the focus, made in `focused`'s row
+  pub(crate) focus_widget: UiId,
+  /// An item to give the focus once its row is built (`list_focus`, or the
+  /// new last item when the count shrank under the focus); its row stays
+  /// built until then
   pub(crate) pending_focus: Option<usize>,
   /// The ids made while building the pending item's row
-  #[expect(dead_code, reason = "kept for the list's focus handling")]
   pub(crate) focus_ids: Vec<UiId>,
+  /// The focus was asked for one of `focus_ids`: the next build ends the
+  /// pending focus, landed or not
+  pub(crate) focus_asked: bool,
+}
+
+impl ListState {
+  /// Give item `index` the focus once its row is built, starting over
+  fn pend(&mut self, index: Option<usize>) {
+    self.pending_focus = index;
+    self.focus_ids.clear();
+    self.focus_asked = false;
+  }
 }
 
 /// Where the list `list` keeps its [`ListState`]
@@ -113,7 +128,7 @@ pub struct ListResponse {
   /// the scroll area calls ([`scroll_offset`](UiContext::scroll_offset))
   pub id: UiId,
   /// The items built for the view this frame: the rows in view and the
-  /// overscan either side
+  /// overscan either side (not a focused row kept built out of view)
   pub range: Range<usize>,
   /// The scroll area's response
   pub response: Response,
@@ -128,9 +143,11 @@ impl<'a> UiContext<'a> {
   ///
   /// Each item is built in a container keyed by its index, so its widgets
   /// keep their ids, and with them their hover, focus and memory, wherever
-  /// it scrolls. What a row's widgets remember (a caret, an open dropdown)
-  /// is dropped when the row leaves the built rows: keep what must last in
-  /// the game's data.
+  /// it scrolls. The row with the keyboard or gamepad focus stays built
+  /// (clipped) when the wheel or the scrollbar takes it out of view, so it
+  /// keeps the focus and the pad steps on from it. What a row's widgets
+  /// remember (a caret, an open dropdown) is dropped when the row leaves
+  /// the built rows: keep what must last in the game's data.
   ///
   /// ```ignore
   /// let list = ui.list(scores.len()).row_height(28.0).gap(2.0).fill().show(|ui, i| {
@@ -171,6 +188,40 @@ impl<'a> UiContext<'a> {
     // and its layout (a call after the list in the same container)
     if let Some(state) = self.memory.state::<ListState>(state_id(list), scene) {
       state.jump = true;
+    }
+  }
+
+  /// Scroll the list `list` to item `index`, as
+  /// [`list_scroll_to`](Self::list_scroll_to), and give the first focusable
+  /// widget in its row the keyboard and gamepad focus. The row is built
+  /// wherever the list is heading, and the focus lands up to two frames
+  /// after the row is first built. An index past the end is the last item;
+  /// a list not drawn yet, or empty, ignores it.
+  ///
+  /// ```ignore
+  /// let list = ui.list(names.len()).row_height(28.0).fill().show(|ui, i| {
+  ///     ui.button(names[i].as_str()).id(i);
+  /// });
+  /// if ui.button("Back to the top").clicked() {
+  ///     ui.list_focus(list.id, 0);
+  /// }
+  /// ```
+  pub fn list_focus(&mut self, list: UiId, index: usize) {
+    let Some(last) = self
+      .memory
+      .peek_state::<ListState>(state_id(list))
+      .and_then(|state| state.count.checked_sub(1))
+    else {
+      return;
+    };
+    let index = index.min(last);
+    self.list_scroll_to(list, index);
+    let (scene, _) = self.scene();
+    if let Some(state) = self.memory.state::<ListState>(state_id(list), scene)
+      // Asked again for the same item, it keeps its progress
+      && state.pending_focus != Some(index)
+    {
+      state.pend(Some(index));
     }
   }
 }
@@ -415,7 +466,8 @@ impl<'a> List<'_, 'a> {
 }
 
 /// Build the rows in view between their spacers, in the list's scroll area
-/// (the current scope); the items built
+/// (the current scope), and the rows the focus needs wherever they are; the
+/// items built for the view
 fn build<'a>(
   ui: &mut UiContext<'a>,
   shape: Shape,
@@ -454,6 +506,12 @@ fn build<'a>(
     offset = state.offset.y;
   }
   let built = built_rows(rows, stride, view, offset - top, overscan);
+  // The focus this frame's resolve left, unless it was made before the list
+  let focus = ui
+    .focused()
+    .filter(|id| !ui.memory.scopes.made(*id))
+    .unwrap_or(UiId::NONE);
+  let plan = plan_focus(ui, list, count, focus);
   if let Some(state) = ui.memory.state::<ListState>(state_id(list), scene) {
     state.stride = stride;
     state.row_height = row_height;
@@ -464,47 +522,228 @@ fn build<'a>(
     state.jump = false;
   }
 
+  // The focused item's row and one either side, so the pad can step off it
+  // in either direction wherever it has scrolled to; the pending item's row
+  let row_of = |index: usize| index / per_row;
+  let focused = plan.focused.map_or(0..0, |i| {
+    row_of(i).saturating_sub(1)..row_of(i).saturating_add(2).min(rows)
+  });
+  let pending = plan
+    .pending
+    .map_or(0..0, |i| row_of(i)..row_of(i).saturating_add(1).min(rows));
+  let mut watch = Watch {
+    focus,
+    found: None,
+    capture: plan.capture,
+    ids: plan.ids,
+  };
   // The area's gap is the list's, so a spacer is a gap short of the rows it
   // stands for
-  let (stride64, gap64) = (f64::from(stride), f64::from(gap));
-  if built.start > 0 {
-    let height = built.start as f64 * stride64 - gap64;
-    blank(ui, list.derived(LEAD_SALT), height_style(height));
-  }
-  for r in built.clone() {
-    if per_row == 1 {
-      cell(ui, item_site(), r, item_style(row_height), |ui| row(ui, r));
+  let spacer = |ui: &mut UiContext<'_>, salt: u64, standing_for: usize| {
+    let height = standing_for as f64 * f64::from(stride) - f64::from(gap);
+    blank(ui, list.derived(salt), height_style(height));
+  };
+  let mut next = 0;
+  for (k, run) in runs([built.clone(), focused, pending]).iter().enumerate() {
+    if run.is_empty() {
       continue;
     }
-    let style = UiStyle {
-      flow: Flow::Row,
-      gap,
-      ..item_style(row_height)
-    };
-    cell(ui, row_site(), r, style, |ui| {
-      // No floor of their contents' width: the cells stay equal
-      let cells = UiStyle {
-        width: Length::Fill,
-        min_width: Some(0.0),
-        ..UiStyle::default()
+    if run.start > next {
+      let salt = if k == 0 {
+        LEAD_SALT
+      } else {
+        GAP_SALT ^ k as u64
       };
-      for c in 0..per_row {
-        let index = r.saturating_mul(per_row).saturating_add(c);
-        if index < count {
-          cell(ui, item_site(), index, cells.clone(), |ui| row(ui, index));
-        } else {
-          // The last row's missing items keep the cells equal
-          let id = ui.memory.scopes.current().derived(BLANK_SALT ^ c as u64);
-          blank(ui, id, cells.clone());
-        }
-      }
-    });
+      spacer(ui, salt, run.start - next);
+    }
+    for r in run.clone() {
+      build_row(ui, shape, r, &mut watch, row);
+    }
+    next = run.end;
   }
-  if built.end < rows {
-    let height = (rows - built.end) as f64 * stride64 - gap64;
-    blank(ui, list.derived(TRAIL_SALT), height_style(height));
+  if next < rows {
+    spacer(ui, TRAIL_SALT, rows - next);
+  }
+
+  if let Some(state) = ui.memory.state::<ListState>(state_id(list), scene) {
+    state.focused = watch.found;
+    state.focus_widget = if watch.found.is_some() {
+      focus
+    } else {
+      UiId::NONE
+    };
+    // Unless a row asked for another item meanwhile (`list_focus` there)
+    let same = state.pending_focus == plan.pending;
+    if plan.capture.is_some() && same && !state.focus_asked {
+      state.focus_ids = watch.ids;
+    } else if plan.landing && same && state.focus_asked {
+      state.pend(None);
+    }
   }
   built.start.saturating_mul(per_row)..built.end.saturating_mul(per_row).min(count)
+}
+
+/// What a list's build does for the focus this frame
+#[derive(Default)]
+struct FocusPlan {
+  /// The item whose row held the focus last frame, still in the list
+  focused: Option<usize>,
+  /// The item to give the focus, whose row is built
+  pending: Option<usize>,
+  /// The pending item, when its ids are to be captured this frame
+  capture: Option<usize>,
+  /// The focus was asked for last frame: this build ends the pending focus
+  landing: bool,
+  /// The buffer the capture fills (the state's own, so it keeps its room)
+  ids: Vec<UiId>,
+}
+
+/// Bring the list's focus state in line with this frame's `count` and move
+/// a pending focus on a step: its row's ids are captured, then the first of
+/// them that can take the focus is asked for, then it ends
+fn plan_focus(ui: &mut UiContext<'_>, list: UiId, count: usize, focus: UiId) -> FocusPlan {
+  let (scene, _) = ui.scene();
+  let Some(state) = ui.memory.state::<ListState>(state_id(list), scene) else {
+    return FocusPlan::default();
+  };
+  // The count shrank under the focused item: the focus moves to the new
+  // last item if it is still on the widget that item made, else it goes
+  let gone = state.focused.is_some_and(|i| i >= count);
+  if gone {
+    state.focused = None;
+  }
+  if state.pending_focus.is_some_and(|i| i >= count) {
+    state.pend(count.checked_sub(1));
+  }
+  if gone && state.pending_focus.is_none() && count > 0 && focus == state.focus_widget {
+    state.pend(Some(count - 1));
+  }
+  let pending = state.pending_focus;
+  let asked = state.focus_asked;
+  let ids = std::mem::take(&mut state.focus_ids);
+  let mut plan = FocusPlan {
+    focused: state.focused,
+    pending,
+    capture: pending.filter(|_| !asked && ids.is_empty()),
+    landing: pending.is_some() && asked,
+    ids: Vec::new(),
+  };
+  if plan.capture.is_some() {
+    plan.ids = ids;
+    return plan;
+  }
+  if pending.is_none() || asked {
+    state.focus_ids = ids;
+    return plan;
+  }
+  // The row was built last frame: its first widget that can take the focus
+  let target = ids.iter().copied().find(|id| {
+    ui.memory
+      .prev(*id)
+      .is_some_and(|r| r.flags.contains(Flags::FOCUSABLE) && !r.flags.contains(Flags::DISABLED))
+  });
+  if let Some(id) = target {
+    ui.request_focus(id);
+  }
+  if let Some(state) = ui.memory.state::<ListState>(state_id(list), scene) {
+    state.focus_ids = ids;
+    if target.is_some() {
+      state.focus_asked = true;
+    } else {
+      // Nothing in the row takes the focus
+      state.pend(None);
+      plan.pending = None;
+    }
+  }
+  plan
+}
+
+/// Up to three runs of rows, in order, merged where they touch; the unused
+/// ones are empty
+fn runs(mut ranges: [Range<usize>; 3]) -> [Range<usize>; 3] {
+  ranges.sort_unstable_by_key(|r| r.start);
+  let mut out = [0..0, 0..0, 0..0];
+  let mut n: usize = 0;
+  for r in ranges.into_iter().filter(|r| !r.is_empty()) {
+    match n.checked_sub(1).and_then(|last| out.get_mut(last)) {
+      Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+      _ => {
+        if let Some(slot) = out.get_mut(n) {
+          *slot = r;
+          n += 1;
+        }
+      }
+    }
+  }
+  out
+}
+
+/// What a list watches for while it builds its items
+struct Watch {
+  /// The focused widget, when it was not made before the list
+  focus: UiId,
+  /// The item that made it
+  found: Option<usize>,
+  /// The item whose ids are captured, into `ids`
+  capture: Option<usize>,
+  ids: Vec<UiId>,
+}
+
+/// Build row `r`: one item's container, or a grid row of cells
+fn build_row<'a>(
+  ui: &mut UiContext<'a>,
+  shape: Shape,
+  r: usize,
+  watch: &mut Watch,
+  row: &mut impl FnMut(&mut UiContext<'_>, usize),
+) {
+  let per_row = usize::from(shape.columns);
+  if per_row == 1 {
+    item(ui, r, item_style(shape.row_height), watch, row);
+    return;
+  }
+  let style = UiStyle {
+    flow: Flow::Row,
+    gap: shape.gap,
+    ..item_style(shape.row_height)
+  };
+  cell(ui, row_site(), r, style, |ui| {
+    // No floor of their contents' width: the cells stay equal
+    let cells = UiStyle {
+      width: Length::Fill,
+      min_width: Some(0.0),
+      ..UiStyle::default()
+    };
+    for c in 0..per_row {
+      let index = r.saturating_mul(per_row).saturating_add(c);
+      if index < shape.count {
+        item(ui, index, cells.clone(), watch, row);
+      } else {
+        // The last row's missing items keep the cells equal
+        let id = ui.memory.scopes.current().derived(BLANK_SALT ^ c as u64);
+        blank(ui, id, cells.clone());
+      }
+    }
+  });
+}
+
+/// Build item `index` in its container, noting whether it made the focused
+/// widget, and capturing its ids when it is the one to focus
+fn item<'a>(
+  ui: &mut UiContext<'a>,
+  index: usize,
+  style: UiStyle,
+  watch: &mut Watch,
+  row: &mut impl FnMut(&mut UiContext<'_>, usize),
+) {
+  let mark = (watch.capture == Some(index)).then(|| ui.memory.scopes.start_capture());
+  cell(ui, item_site(), index, style, |ui| row(ui, index));
+  if let Some(mark) = mark {
+    ui.memory.scopes.take_capture(mark, &mut watch.ids);
+  }
+  if watch.found.is_none() && watch.focus != UiId::NONE && ui.memory.scopes.made(watch.focus) {
+    watch.found = Some(index);
+  }
 }
 
 /// A built row's container: the whole width, a row tall
@@ -1028,5 +1267,242 @@ mod tests {
       2 * middle.range.len(),
       "each item's container and button, nothing else"
     );
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod focus_tests {
+  use super::*;
+  use crate::core::testing::UiHarness;
+  use crate::prelude::*;
+
+  fn scope_list(h: &mut UiHarness, count: usize) -> ListResponse {
+    h.frame(|ui| {
+      let mut out = None;
+      ui.column().focus_scope().show(|ui| {
+        out = Some(
+          ui.list(count)
+            .row_height(20.0)
+            .height(100.0)
+            .width(200.0)
+            .id("l")
+            .show(|ui, i| {
+              let b = ui.button(format!("Item {i}")).id(i);
+              if i == 0 {
+                b.default_focus().show();
+              } else {
+                b.show();
+              }
+            }),
+        );
+      });
+      out.unwrap()
+    })
+  }
+
+  #[test]
+  fn the_pad_walks_to_the_end_of_a_long_list() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = scope_list(&mut h, 300);
+    scope_list(&mut h, 300);
+    for _ in 0..299 {
+      h.action("ui.down");
+      scope_list(&mut h, 300);
+      scope_list(&mut h, 300);
+    }
+    assert_eq!(h.list_state(list.id).unwrap().focused, Some(299));
+    let max = h.scroll_content(list.id).y - 100.0;
+    for _ in 0..60 {
+      scope_list(&mut h, 300);
+    }
+    assert!(
+      (h.scroll_offset(list.id).y - max).abs() < 1.0,
+      "scrolled to the end"
+    );
+  }
+
+  #[test]
+  fn a_focused_row_scrolled_away_stays_built_and_keeps_the_focus() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = scope_list(&mut h, 300);
+    scope_list(&mut h, 300);
+    let focused = h.focused();
+    assert!(focused.is_some());
+    h.frame(|ui| ui.set_scroll_offset(list.id, Vec2::new(0.0, 3000.0)));
+    for _ in 0..3 {
+      scope_list(&mut h, 300);
+    }
+    assert_eq!(
+      h.focused(),
+      focused,
+      "item 0 is still built, so it keeps the focus"
+    );
+    h.action("ui.down");
+    scope_list(&mut h, 300);
+    scope_list(&mut h, 300);
+    assert_eq!(
+      h.list_state(list.id).unwrap().focused,
+      Some(1),
+      "navigation resumes from item 0"
+    );
+  }
+
+  #[test]
+  fn a_focused_row_wheeled_thousands_of_rows_away_is_kept_and_the_pad_returns_to_it() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let draw = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        let mut out = None;
+        ui.column().focus_scope().show(|ui| {
+          out = Some(
+            ui.list(10_000)
+              .row_height(20.0)
+              .height(100.0)
+              .width(200.0)
+              .id("far")
+              .show(|ui, i| {
+                let b = ui.button(format!("Item {i}")).id(i);
+                if i == 0 {
+                  b.default_focus().show();
+                } else {
+                  b.show();
+                }
+              }),
+          );
+        });
+        out.expect("drawn")
+      })
+    };
+    // The items built: each is its container and its button
+    let built = |h: &UiHarness, list: UiId| {
+      let records = h.memory.drawn_records().filter(|(_, r)| r.scroll == list);
+      records.count() / 2
+    };
+    let list = draw(&mut h);
+    draw(&mut h);
+    // The pointer rests on the list beside the buttons, so the focus never
+    // follows it
+    let rect = h.record_of(list.id).expect("drawn").rect;
+    h.move_to(rect.x + 150.0, rect.y + 50.0);
+    draw(&mut h);
+    for _ in 0..2 {
+      h.action("ui.down");
+      draw(&mut h);
+      draw(&mut h);
+    }
+    assert_eq!(h.list_state(list.id).expect("drawn").focused, Some(2));
+    let focused = h.focused();
+    // 2,000 lines of 40 units are 4,000 rows of 20
+    h.wheel(0.0, -2000.0);
+    for frame in 0..90 {
+      let r = draw(&mut h);
+      assert!(r.range.len() <= 10, "frame {frame}: {:?}", r.range);
+      assert!(
+        built(&h, list.id) <= r.range.len() + 3,
+        "frame {frame}: the view's rows and the focused row with its neighbours"
+      );
+      assert_eq!(h.focused(), focused, "frame {frame}: the focus is kept");
+    }
+    let far = h.scroll_offset(list.id).y;
+    assert!(far > 79_000.0, "wheeled far away: {far}");
+    assert_eq!(h.list_state(list.id).expect("drawn").focused, Some(2));
+    h.action("ui.down");
+    for frame in 0..90 {
+      let r = draw(&mut h);
+      assert!(
+        built(&h, list.id) <= r.range.len() + 3,
+        "frame {frame} back: {:?}",
+        r.range
+      );
+    }
+    assert_eq!(
+      h.list_state(list.id).expect("drawn").focused,
+      Some(3),
+      "the pad steps on from item 2"
+    );
+    let offset = h.scroll_offset(list.id).y;
+    assert!(
+      (offset - 60.0).abs() < 1.0,
+      "the view came back to item 3: {offset}"
+    );
+  }
+
+  #[test]
+  fn list_focus_jumps_to_an_item_and_focuses_it() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = scope_list(&mut h, 300);
+    scope_list(&mut h, 300);
+    h.frame(|ui| ui.list_focus(list.id, 250));
+    for _ in 0..4 {
+      scope_list(&mut h, 300);
+    }
+    assert_eq!(h.list_state(list.id).unwrap().focused, Some(250));
+  }
+
+  #[test]
+  fn a_count_that_shrinks_under_the_focus_moves_it_to_the_last_item() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = scope_list(&mut h, 300);
+    scope_list(&mut h, 300);
+    h.frame(|ui| ui.list_focus(list.id, 250));
+    for _ in 0..4 {
+      scope_list(&mut h, 300);
+    }
+    for _ in 0..4 {
+      scope_list(&mut h, 100);
+    }
+    assert_eq!(h.list_state(list.id).unwrap().focused, Some(99));
+  }
+
+  #[test]
+  fn a_list_in_a_modal_inside_a_scroll_area_takes_the_wheel_and_the_pad() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let draw = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        let mut out = None;
+        ui.scroll()
+          .height(300.0)
+          .width(400.0)
+          .id("outer")
+          .show(|ui| {
+            ui.modal().show(|ui| {
+              out = Some(
+                ui.list(500)
+                  .row_height(20.0)
+                  .height(100.0)
+                  .width(200.0)
+                  .id("inner")
+                  .show(|ui, i| {
+                    let b = ui.button(format!("{i}")).id(i);
+                    if i == 0 {
+                      b.default_focus().show();
+                    } else {
+                      b.show();
+                    }
+                  }),
+              );
+            });
+          });
+        out.unwrap()
+      })
+    };
+    let list = draw(&mut h);
+    draw(&mut h);
+    let rect = h.record_of(list.id).unwrap().rect;
+    h.move_to(rect.x + 10.0, rect.y + 10.0);
+    h.wheel(0.0, -3.0);
+    for _ in 0..30 {
+      draw(&mut h);
+    }
+    assert!(
+      h.scroll_offset(list.id).y > 0.0,
+      "the inner list took the wheel"
+    );
+    for _ in 0..10 {
+      h.action("ui.down");
+      draw(&mut h);
+      draw(&mut h);
+    }
+    assert_eq!(h.list_state(list.id).unwrap().focused, Some(10));
   }
 }

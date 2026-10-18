@@ -336,6 +336,19 @@ impl UiHarness {
     self.memory.drawn(item_id(list, columns, key)).copied()
   }
 
+  /// What the list `list` remembers after the last frame (`None` for a
+  /// list never drawn)
+  #[cfg(test)]
+  pub(crate) fn list_state(&self, list: UiId) -> Option<ListState> {
+    self.memory.peek_state::<ListState>(state_id(list)).cloned()
+  }
+
+  /// The last frame's record of the widget or container `id`
+  #[cfg(test)]
+  pub(crate) fn record_of(&self, id: UiId) -> Option<Record> {
+    self.memory.drawn(id).copied()
+  }
+
   /// Press `direction` for the next frame (and release it after)
   pub(crate) fn press_direction(&mut self, direction: Direction) {
     let k = direction_index(direction);
