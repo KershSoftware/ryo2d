@@ -20,8 +20,18 @@ ryo2d run              # Run production build
 ryo2d dev              # Development mode (debug build, asset hot reload)
 ryo2d export           # Package release into distributable zip
 ryo2d install-skills   # Add Agent Skills to existing project
+ryo2d check-ui [files] # Check UI files (*.ui.ron) without running the game
 ryo2d netplay          # Tools for testing multiplayer with friends
 ```
+
+## Checking UI files
+
+```bash
+ryo2d check-ui                          # every *.ui.ron under the project's assets directory
+ryo2d check-ui assets/ui/menu.ui.ron    # just these files
+```
+
+It reads each file as the game would at load: syntax, node kinds and options, templates, imports (read from disk) and sibling keys, plus whether the images the file names exist. Each problem prints as `path:line:column: message` (paths from the project root, with a suggestion for a misspelt name), and the command exits non-zero when any file has one. Paths inside UI files are relative to the project root, like `assets/ui/common.ui.ron`. Run it before `ryo2d dev` or in CI; see `ryo-ui` section 15, Files.
 
 ## Project Structure
 

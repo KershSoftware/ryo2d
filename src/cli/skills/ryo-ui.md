@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.1.0
+  version: 4.2.0
 ---
 
 # Ryo2D UI Specialist
@@ -11,7 +11,7 @@ Build game UI with `UiContext` inside `Scene::ui`. Complete signatures are in `r
 
 The model in one breath: every frame `ui` calls builders (`ui.button("Play")`), containers lay them out (`ui.column().show(|ui| ..)`), and each widget answers from what the player did to what was drawn last frame (`.clicked()`). Your game's values stay in your scene; what a widget remembers of itself (an open list, a caret, a scroll offset, the focus) lives in the UI's memory under its id. Keyboard and pad navigation work inside **focus scopes** you mark, so a menu is pad-playable and a HUD never steals the arrows.
 
-There are two styles. **Closures** (sections 1 to 14) call the builders every frame. **Node trees** (section 15) describe a screen once as a `UiNode`, spawn it as entities, and report what the player did as `UiEvent`s. The engine draws node trees through the same builders, so everything in sections 3 to 13 applies to both, and the two mix in one scene.
+There are two styles. **Closures** (sections 1 to 14) call the builders every frame. **Node trees** (section 15) describe a screen once as a `UiNode`, spawn it as entities, and report what the player did as `UiEvent`s; a tree can be written in a RON **file** that reloads while the game runs (section 15, Files). The engine draws node trees through the same builders, so everything in sections 3 to 13 applies to both, and the two mix in one scene.
 
 ## 1. The `ui` Hook
 
@@ -1093,7 +1093,7 @@ let root = ctx.spawn_ui(menu);             // in on_enter: entities now, drawn f
 |---|---|
 | A screen described once that changes only when the game's data changes: menus, settings, inventories, dialogue | HUDs and screens computed every frame from game state |
 | Parts that systems find and change (`find_ui`, a game component inserted on the node) | `ui.custom` painters and absolute `draw_*` calls (closure only) |
-| Screens 4d will load from files (files load into the same `UiNode`) | Anything that reads best as straight-line code |
+| Screens you want to edit as data and see change while the game runs (Files, below) | Anything that reads best as straight-line code |
 
 The two styles mix: a scene's trees draw before its `ui` closure, and a closure can embed a tree (Embedding, below).
 
@@ -1208,7 +1208,7 @@ pub struct UiEvent {
 ### Ids and widget state
 
 - **Ids are keyed by entity.** A node's id is made from its entity under its parent's id, as `.id(key)` keys a closure widget; text, separators and spacers are drawn in `ui.scope(entity, ..)`. So focus memory, scroll offsets, an open list, a caret and tooltip timers follow the node when siblings are added, removed or reordered.
-- **Despawning forgets.** A despawned node's state is forgotten. Re-parenting a node changes its id, and a respawned tree starts fresh (4d's file keys will key nodes that survive a respawn).
+- **Despawning forgets.** A despawned node's state is forgotten. Re-parenting a node changes its id, and a respawned tree starts fresh. `ctx.update_ui` and file reloads keep the entities of matched nodes instead (Files, below).
 - `ctx.ui_id(node) -> Option<UiId>` gives the id once the node is drawn, for `ui.scroll_offset`, `ui.request_focus` or a closure widget's `nav_*`. `ctx.focus_ui(node)` focuses a node when it is next drawn; it does not apply to a `radio_group` or a `choice_list`, which never take the request.
 - **A focused node despawned** leaves the focus at `None`, and the next navigation lands on its scope's default. This is section 7's rule for a widget that stops being drawn.
 
@@ -1756,6 +1756,394 @@ impl Scene for NodeDialogue {
 
 A Skip finishes the line at its next draw, and the choices replace Skip in the frame after.
 
+### Files
+
+A screen can be written in a RON file, `assets/ui/pause.ui.ron`, instead of Rust. The file loads into the same `UiNode` as section 15's builders make, so everything above applies: spawning, ownership, state components, events, focus, modals. The file holds the look and layout; game code answers `UiEvent`s and sets values. In debug builds the running game picks up a saved file without a rebuild.
+
+| Use | When |
+|---|---|
+| **A UI file** | A menu, settings page, dialog or HUD whose layout you want to change without recompiling, or want an agent to edit as data |
+| **A `UiNode` tree in Rust** | A tree built from game data in one expression (a shop from its stock), or one a unit test builds |
+| **A closure** (`Scene::ui`) | `ui.custom` painters, absolute `draw_*` calls, and screens computed every frame |
+
+The three mix. A file can hold a screen while code builds its dynamic parts from the file's templates. The "+1" fly-by and the banners of breakout stay closure UI.
+
+#### The file
+
+A UI file is valid RON. Its top level is an unnamed struct; every field is optional, but a file needs a `root` or `templates`:
+
+```ron
+// assets/ui/pause.ui.ron
+(
+  imports: ["assets/ui/common.ui.ron"],      // other files whose templates this one uses
+  templates: {
+    "MenuButton": (
+      params: ["label", "action"],
+      node: Button(label: label, action: action, fill_width: true),
+    ),
+  },
+  bindings: { "score": 0 },                  // starting values for names that only text uses
+  root: Panel(
+    focus_scope: true, anchor: Center, modal: true, width: 260, gap: 8,
+    children: [
+      Text(text: "Paused", heading: true),
+      Text("Score: {score}"),
+      MenuButton(label: "Resume", action: "resume", default_focus: true),
+      MenuButton(label: "Quit", action: "quit"),
+      Slider(range: (0, 1), value: 0.8, bind: "volume", name: "volume"),
+      Text("Volume: {volume:.1}"),
+      Column(name: "extras"),
+    ],
+  ),
+)
+```
+
+- **Syntax.** `//` and `/* */` comments, trailing commas, strings (`"..."` with RON escapes, `r"..."`, `r#"..."#`), numbers, `true` and `false`, lists `[a, b]`, tuples `(a, b)`, maps `{ "key": value }` with string keys, and named values `Name`, `Name(value)`, `Name(field: value, ..)`. Not taken, each with an error saying so: `#![enable(..)]`, `Some(..)`/`None`, chars, byte strings.
+- **A node is a named value.** Its name is a kind (below) or a template; its fields are options. Kinds are `UiNode`'s constructors in CamelCase (`radio_group` is `RadioGroup`); options are `UiNode`'s method names (`fill_width`, `nav_up`). A constructor's arguments are options named after its parameters (`Checkbox(label: "Sound", checked: true)`), except `Popup`'s anchor node, which is `anchor_node`, and `Prompt`'s and `Rebind`'s action, which is `input`.
+- **Short forms.** RON cannot mix a positional value with named fields, so a node takes named options or its main value alone: `Text("Paused")`, `Button("OK")`, `Separator`, `Spacer`. A node with a short form and other options writes its main value by name: `Text(text: "Paused", heading: true)`.
+- **`children: [..]`** lists a container's children. A widget takes none.
+- **Paths are relative to the game's working directory**, as `load_sprite`'s are: `assets/ui/common.ui.ron`, `icon: "assets/items/sword.png"`.
+- **Not in files:** `insert` (Rust components; add them in code to the built node) and `style` (a whole `TextStyle`; files use `role`, `size`, `color` and `text_align`).
+
+| Kind | Short form | Constructor options (required in bold) |
+|---|---|---|
+| `Column`, `Row`, `Stack`, `Panel`, `Scroll`, `Slot` | none | none |
+| `Grid` | `columns` | **`columns`** |
+| `Popup` | none | **`anchor_node`** (a node name) |
+| `Text` | `text` | `text` (default `""`) |
+| `Button` | `label` | `label` (default `""`) |
+| `Image` | `sprite` | **`sprite`** (an asset path) |
+| `Checkbox` | `label` | `label`, `checked` (default `false`) |
+| `Toggle` | `label` | `label`, `on` (default `false`) |
+| `RadioGroup`, `Dropdown`, `Tabs` | none | **`options`** (a list of strings), `selected` (default 0) |
+| `ChoiceList` | none | **`options`** |
+| `Slider` | none | **`range`** (`(min, max)`), `value` (default min) |
+| `Progress` | `fraction` | `fraction` (default 0) |
+| `TextInput` | `text` | `text` (default `""`) |
+| `Prompt`, `Rebind` | `input` | **`input`** (an input action name) |
+| `Separator`, `Spacer` | the bare name | none |
+| `Confirm` | none | **`title`**, `message` (default `""`), `yes` (default `"Yes"`), `no` (default `"No"`) |
+
+| Value form | Options |
+|---|---|
+| `true` (the method with no argument; `false` leaves it off) | `fill_width`, `fill_height`, `fill`, `center`, `wrap_items`, `focus_scope`, `trap`, `wrap_focus`, `block_pointer`, `default_focus`, `nav_skip`, `drag_source`, `drop_target`, `modal`, `hidden`, `embedded`, `markup`, `heading`, `muted`, `ellipsis`, `show_value`, `password`, `horizontal`, `both`, `no_bar` |
+| a bool | `enabled`, `focusable`, `selected` (on `Slot`; on `RadioGroup`, `Dropdown` and `Tabs`, `selected` is the constructor's index) |
+| a number | `min_width`, `max_width`, `min_height`, `max_height`, `gap`, `grow`, `aspect`, `size`, `wrap`, `step` |
+| a whole number | `max_lines`, `max_len`, `default_choice`, `count`, `binding_slot` |
+| a length: `240`, `Pct(0.5)`, `Fill`, `Fit` | `width`, `height` |
+| edges: `8`, `(x, y)`, or `(left: .., top: .., right: .., bottom: ..)` | `padding`, `margin` |
+| an enum by name | `align` (`Start`, `Center`, `End`, `Stretch`); `justify` (`Start`, `Center`, `End`, `SpaceBetween`, `SpaceAround`, `SpaceEvenly`); `anchor` (`TopLeft`, `TopCenter`, `TopRight`, `CenterLeft`, `Center`, `CenterRight`, `BottomLeft`, `BottomCenter`, `BottomRight`); `text_align` (`Start`, `Center`, `End`, `Justify`); `filter` (`Nearest`, `Linear`); `role` (`Body`, `Heading`, `Button`, `Caption`, `Mono`) |
+| numbers in a tuple or list | `offset` `(x, y)`, `at` `(x, y, width, height)`, `image_size` `(width, height)`, `uv` `(u0, v0, u1, v1)`, `tracks` `[1, 2, 1]` |
+| a colour: `"#rrggbb"`, `"#rrggbbaa"`, or `(r: .., g: .., b: .., a: ..)` | `background`, `color`, `tint` |
+| a string | `tooltip`, `variant`, `action`, `name`, `key`, `bind`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `label`, `placeholder` |
+| an asset path | `icon` |
+| a number (characters per second) or `(per_second: .., punctuation_pause: .., fade: ..)` | `typewriter` |
+
+- **An option the kind does not take is an error** (the same rule as the spawn warning in Spawning, above). `name`, `action`, `hidden` and `key` suit every kind. **`Text` takes only the text options** (`markup`, `role`, `heading`, `size`, `color`, `muted`, `text_align`, `wrap`, `max_lines`, `ellipsis`, `typewriter`, `embedded`): it has no `width`, `margin` or `tooltip`. Wrap it in a sized `Column`: `Column(width: 96, children: [Text(label)])`.
+- **Mistakes come with a place.** `assets/ui/pause.ui.ron:12:5: Button has no option "fil_width"; did you mean "fill_width"?` Unknown kinds, options, enum values, templates and parameters get the nearest name. One load reports every mistake in the file together.
+
+#### Keys
+
+Every node has a key that an update or reload matches nodes by: its `key`, else its `name`, else its kind (or template) and its index among the siblings of that kind that have no `key` or `name` (the third such `Button` is `Button#2`). Naming one node does not change its siblings' keys. Two siblings with the same key are an error in a file (a warning in code). Give a `name` or `key` to nodes that move around, so a reload or update keeps them with their state.
+
+#### Templates
+
+```ron
+templates: {
+  "ItemSlot": (
+    params: ["icon", "count"],            // required
+    defaults: { "count": 1 },            // optional, with their values
+    node: Slot(icon: icon, count: count, drag_source: true, drop_target: true),
+  ),
+}
+```
+
+- **Used like a kind:** `ItemSlot(icon: "assets/items/sword.png", count: 3)`. A use's fields are the template's parameters first, then any option of its root node, applied over the template's own: `MenuButton(label: "Resume", action: "resume", default_focus: true)`. A missing required parameter or an unknown field is an error at the use.
+- **A bare lowercase name that is a parameter** stands for the argument's value wherever a value can go (`icon: icon`). Kinds, templates and enum values are CamelCase, so a lowercase name is always a parameter reference.
+- **A parameter can stand for a node:** `Labelled(label: "Volume", widget: Slider(range: (0, 1), bind: "volume"))` with `node: Row(children: [Text(label), widget])`. A bare template name works as the argument too (`widget: VolumeSlider`).
+- **`{param}` in a string** is replaced by the argument's text when the template expands: `Text("Hello {who}")`; `{param:.1}` gives a number argument one decimal. A `{name}` that is not a parameter stays a binding pattern (Bindings), so inside a template a parameter shadows a binding of the same name.
+- **A template cannot build a binding pattern from a parameter.** `{{` stays an escape that prints a literal brace, so `"{{{name}}}"` does not give `"{master}"`. Pass the whole pattern in as an argument, next to the name: `VolumeRow(label: "Master", name: "master", shown: "{master:.0}%")`, with `Slider(bind: name)` and `Text(shown)` inside.
+- **A template name is CamelCase and cannot be a kind's name.** Call a confirm template `QuitConfirm`, not `Confirm`.
+- **Templates nest** and pass values explicitly (`Inner(label: label)`). A template that uses itself, directly or through others, is an error.
+
+#### Imports
+
+`imports: ["assets/ui/common.ui.ron"]` makes another file's templates usable here; its `root` is ignored. A template name defined twice across a file and its imports is an error, as is an import cycle. **Imports are not transitive**: a file sees its own templates and its direct imports' only, and a node passed as an argument is checked in the file that wrote it, so it may name only templates visible there. Import what you use.
+
+#### Placeholders
+
+An empty named container, `Column(name: "extras")`, is where code adds nodes with `ctx.spawn_ui_in(parent, node)`. A reload and `ctx.update_ui` do not despawn or move what code added there (below). A template instance among them (`ctx.ui_template`) still follows its template when the file reloads.
+
+#### Loading and building
+
+| Call | Does |
+|---|---|
+| `ctx.spawn_ui_file(path) -> Result<Entity, UiFileError>` | load, build and spawn the file's `root` |
+| `ctx.assets.load_ui(path) -> AssetResult<UiFile>` | load and check a file; cached by path, imports through the same cache |
+| `file.root(ctx.assets) -> Result<UiNode, UiFileError>` | build the `root` |
+| `ctx.ui_template(path, name, &args) -> Result<UiNode, UiFileError>` | load a file and build one instance of its template (or an import's) |
+| `file.template(name, &args, ctx.assets)` | the same, on a file you hold |
+| `ctx.assets.add_ui(path, text) -> Result<UiFile, UiFileError>` | check text the game embedded and cache it under `path`; never reloaded |
+| `UiFile::parse(name, text)` | check text with no asset manager (tests, tools); such a file cannot import |
+| `UiArgs::new().with("label", "Resume").with("count", 3)` | a template's arguments: text, numbers, bools and lists |
+
+- The built `UiNode` is ordinary. Add `.insert(MyComponent)`, `.child(..)`ren or `.default_focus()` in code, spawn it with `spawn_ui`, `spawn_ui_in`, or put it in a code tree.
+- Images are loaded while building; a missing one is an error at the `sprite` or `icon` value.
+- `UiFileError` lists every mistake, each with `path`, `line`, `column` and `message`; `Display` prints one per line. Log it with `game_error!("{error}")`. A game that cannot load a file should show something, not panic.
+- **Build every tree before spawning any.** A template that fails to build then leaves nothing half on screen: build the root and every template instance first, then `spawn_ui` and `spawn_ui_in`.
+
+#### Bindings
+
+A binding is a name whose value text shows and value widgets read and write.
+
+- **Patterns.** In a file, every string that becomes a label or tooltip is a pattern: `Text`'s `text`, the `label` of `Button`, `Checkbox` and `Toggle`, `tooltip`, and `Confirm`'s `title`, `message`, `yes` and `no`. `{name}` shows the value (whole numbers without a decimal point, other numbers in their shortest form, bools as `true` or `false`); `{name:.1}` gives one decimal; `{{` and `}}` print braces. **A literal brace in any of these strings is `{{`.** A `Slider`'s, `Progress`'s or `Rebind`'s `label` is a kind option, not a component: it is literal, with no patterns. A `TextInput`'s `text` and `placeholder` are not patterns.
+- **`bind: "volume"`** on a value widget ties it to the name: `Slider`, `Progress`, `Checkbox`, `Toggle`, `RadioGroup`, `Dropdown`, `Tabs`, `ChoiceList` and `TextInput`. Any other kind is an error. The widget and `"Volume: {volume:.1}"` then follow each other with no game code, and so does every other widget and pattern bound to the name.
+- **Values** are `BindValue`s: numbers, strings and bools (`From` for the usual types). A bound `Slider` or `Progress` takes a number; `Checkbox` and `Toggle` a bool; `RadioGroup`, `Dropdown`, `Tabs` and `ChoiceList` a whole, non-negative number (the index); `TextInput` text (a number or bool is formatted). A value of the wrong type warns once, naming the binding and the node, and leaves the widget as it is.
+- **`ctx.ui_set(node, "score", 120)`** sets the name on `node`'s root: it writes every bound widget (`UiValue`, `UiChecked`, `UiIndex` or `UiTextValue`), formats every label and tooltip that uses the name, and writes nothing when the value is unchanged, so setting a value every frame is fine. **`ctx.ui_get::<f32>(node, "volume")`** reads it back (`f32`, `f64`, `i32`, `u32`, `usize`, `bool`, `String`).
+- **One set of values per spawned root.** Two HUDs from one file never share values, and nodes code adds under a root use that root's. Pass any node of the tree: `ui_set(hud, ..)`.
+- **Starting values.** A bound widget's file value (`value`, `checked`, `on`, `selected`, `text`) seeds its name (`value: 0.8` seeds `volume`); the top-level `bindings` seeds names only text uses. A seed applies only to a name with no value yet, so a reload never resets a score. A name never set shows as nothing, and debug builds warn once per name.
+- **The components stay the truth.** The player moving a bound slider, `ui_set`, and game code writing `UiValue` directly all change the name, and the `Changed` `UiEvent` fires as usual. A pattern drawn after the widget shows the new value in the same frame; one drawn before it shows it the next.
+- **In a code tree,** `UiNode::bind(name)` binds a value widget and `.bound()` makes a node's label and tooltip patterns (code text is literal otherwise). Binding a kind that holds no value warns once.
+
+#### Updating a tree: `ctx.update_ui`
+
+`ctx.update_ui(node, tree) -> Entity` brings a spawned tree in line with a new `UiNode`, in place. A reload is the same operation with the file's new tree. Rebuild a `UiNode` from your data whenever the data changes and let the engine apply only the differences.
+
+- **Matching is by key** among siblings. Same key and kind: updated in place (the entity, its id, focus, scroll offset, open list and caret survive). Same key, different kind: despawned, and a new node spawned in the same place. Only in the new tree: spawned. Only in the old: despawned with its subtree. The new tree's order wins. If `tree`'s top is a different kind, the old node is replaced and the new entity returned. A node that was not spawned from a tree warns once and is returned unchanged.
+- **The tree owns its settings** (layout, flags, variant, action, name, key, neighbours, kind options, `bind`) and rewrites them every update.
+- **The game and the player own the state they wrote.** `UiLabel`, `UiChecked`, `UiValue`, `UiIndex`, `UiOptions`, `UiTextValue`, `UiSlot`, `UiImage`, `UiTooltip`, `UiHidden`, `UiDisabled` and a root's placement are written only when the tree's value differs from what the tree last applied. So an update that moves a button keeps the score the game wrote into a label and the slider the player dragged, while one that changes a label's text in the tree replaces it. Two exceptions: **a bound widget's value belongs to its binding** (the tree's value only seeds the name; an update never writes it), and **a root's placement** (`UiRoot`'s `anchor`, `offset`, `at`) is the game's to change.
+- **The game's additions stay.** Components the game inserted on matched nodes stay, and a tree's `.insert` bundles apply only when a node is spawned. Subtrees added with `spawn_ui_in` stay, each after the sibling it followed, until their parent despawns. `ctx.update_ui` replaces everything else in the tree it is given; a reload replaces only what came from the file, so nodes the game put in with `.child(..)` before spawning are left too.
+- **Quiet.** Components are written only on a real change, so `Changed<..>` filters stay truthful, and an update sends no `UiEvent`s.
+- **Focus after an update.** An updated focus scope is not a newly opened one, so it does not take the focus again. When the update adds a widget that should have it, call `ctx.focus_ui(entity)` (find it with `ctx.find_ui_in(root, name)`; it waits until the node is drawn). A `ChoiceList` takes the focus by its scope's own rule, so `focus_ui` is not needed for it. A despawned focused node leaves the focus empty, and the next navigation lands on the scope's default.
+- **Cost.** One walk over both trees. An unchanged update of the 200-widget settings tree costs about a third of spawning it.
+
+#### Hot reload
+
+In debug builds with an assets directory (never headless), the asset manager watches `.ui.ron` files. When one changes, it is read and checked again, and so is every loaded file that imports it. A clean file replaces the old one, and every tree built from it is reconciled before that frame's UI pass: roots and code-built template instances, in every scene. Then a `UiReloaded { root }` message goes out for each root touched.
+
+- **What a reload keeps:** entities and their ids, focus, scroll, widget state, and what the game and the player wrote, unless the file changed that same value (the update rules above). Bindings keep their values and pick up new and removed names.
+- **What it leaves:** components the game inserted, `spawn_ui_in` subtrees and `.child(..)` additions (a template instance among them is rebuilt from its template with its arguments and updated in place). A node the file gives a new kind is a new entity, so a game that filled a placeholder or looked up a node by entity listens for `UiReloaded` and fills or looks it up again.
+- **A broken file** keeps the old document and trees. The errors are warned once per broken text, with positions. A file that lost its `root`, or a template that code-built instances use, also keeps the old version and warns.
+- `ctx.assets.reload_ui(path)` asks for the same reload directly (tests, headless runs). A file added with `add_ui` is never reloaded. Release builds read files once and never watch them.
+- `ryo2d check-ui [files]` (`ryo-cli`) checks files without running the game: syntax, vocabulary, templates, imports, keys and image paths, with the same messages.
+
+#### Recipes
+
+##### A menu file with events
+
+```ron
+// assets/ui/main_menu.ui.ron
+(
+  templates: {
+    "MenuButton": (
+      params: ["label", "action"],
+      defaults: { "focus": false },
+      node: Button(label: label, action: action, fill_width: true, default_focus: focus),
+    ),
+    // A template cannot share a kind's name, so not `Confirm`
+    "QuitConfirm": (
+      node: Confirm(title: "Quit to desktop?", message: "Unsaved progress is lost.", yes: "Quit", no: "Stay"),
+    ),
+  },
+  root: Panel(
+    focus_scope: true, wrap_focus: true, anchor: Center, width: 260, gap: 8,
+    children: [
+      Text(text: "MY GAME", heading: true),
+      MenuButton(label: "Play", action: "play", focus: true),
+      MenuButton(label: "Options", action: "options"),
+      MenuButton(label: "Quit", action: "quit"),
+    ],
+  ),
+)
+```
+
+```rust
+const MENU: &str = "assets/ui/main_menu.ui.ron";
+
+#[derive(Default)]
+struct MainMenu {
+  quit_dialog: Option<Entity>,
+}
+
+impl Scene for MainMenu {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    if let Err(error) = ctx.spawn_ui_file(MENU) {
+      game_error!("{error}");
+    }
+  }
+
+  fn ui(&mut self, _ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    for event in ctx.ui_events() {
+      if event.kind != UiEventKind::Clicked {
+        continue;
+      }
+      match event.action.as_deref() {
+        Some("play") => return SceneAction::Switch(Box::new(Level::default())),
+        Some("quit") if self.quit_dialog.is_none() => {
+          // Build, then spawn: nothing half-open if the template is broken
+          match ctx.ui_template(MENU, "QuitConfirm", &UiArgs::new()) {
+            Ok(dialog) => self.quit_dialog = Some(ctx.spawn_ui(dialog)),
+            Err(error) => game_error!("{error}"),
+          }
+        }
+        // The confirm's buttons; Back on it is a "no" click
+        Some("yes") => return SceneAction::Quit,
+        Some("no") => {
+          if let Some(dialog) = self.quit_dialog.take() {
+            ctx.world.despawn(dialog);
+          }
+        }
+        _ => {}
+      }
+    }
+    SceneAction::Continue
+  }
+}
+```
+
+The file's buttons carry `action` strings; the game matches them, as for any node tree. Edit the file's text, colours or order while the game runs and the menu follows.
+
+##### A HUD with bindings
+
+```ron
+// assets/ui/hud.ui.ron
+(
+  templates: {
+    "Line": (
+      params: ["text", "color"],
+      node: Column(height: 18, children: [Text(text: text, color: color)]),
+    ),
+  },
+  bindings: { "lives": 3, "score": 0 },
+  root: Row(
+    anchor: TopLeft, width: Pct(1), padding: (20, 10), justify: SpaceBetween,
+    children: [
+      Line(text: "Lives: {lives}", color: "#ffffff"),
+      Line(text: "Score: {score}", color: "#ffff00"),
+    ],
+  ),
+)
+```
+
+```rust
+// on_enter
+self.hud = ctx.spawn_ui_file("assets/ui/hud.ui.ron").ok();
+
+// update, every frame: ui_set writes nothing when a value is unchanged
+if let Some(hud) = self.hud {
+  ctx.ui_set(hud, "lives", self.lives);
+  ctx.ui_set(hud, "score", self.score);
+}
+```
+
+`Text` has no `width`, so each line sits in a sized `Column`. `Line`'s `text` is a template parameter holding a pattern: its `{lives}` is not a parameter, so it stays a binding.
+
+##### A list built from a template into a placeholder
+
+```ron
+// assets/ui/shop.ui.ron
+(
+  templates: {
+    "ShopRow": (
+      params: ["name", "price"],
+      node: Row(
+        gap: 8, align: Center,
+        children: [
+          Column(grow: 1, children: [Text(name)]),
+          Text("{price} g"),
+          Button(label: "Buy", action: "buy"),
+        ],
+      ),
+    ),
+  },
+  root: Panel(
+    focus_scope: true, anchor: Center, width: 360, gap: 8,
+    children: [Text(text: "Shop", heading: true), Column(gap: 4, name: "rows")],
+  ),
+)
+```
+
+```rust
+#[derive(Component, Clone, Copy)]
+struct ShopItem(usize);
+
+const SHOP: &str = "assets/ui/shop.ui.ron";
+
+fn open_shop(ctx: &mut SceneContext, stock: &[(&str, u32)]) -> Result<Entity, UiFileError> {
+  // Build the root and every row first, then spawn: a failure leaves nothing on screen
+  let root = ctx.assets.load_ui(SHOP)?.root(ctx.assets)?;
+  let mut rows = Vec::new();
+  for (i, (name, price)) in stock.iter().enumerate() {
+    let args = UiArgs::new().with("name", *name).with("price", *price);
+    rows.push(ctx.ui_template(SHOP, "ShopRow", &args)?.insert(ShopItem(i)));
+  }
+  let shop = ctx.spawn_ui(root);
+  if let Some(list) = ctx.find_ui_in(shop, "rows") {
+    for row in rows {
+      ctx.spawn_ui_in(list, row);
+    }
+  }
+  Ok(shop)
+}
+// A Clicked with action "buy" has the Buy button as `event.node`; its parent is the row
+// that carries `ShopItem(i)`
+```
+
+The rows are template instances the game added: a reload of `shop.ui.ron` updates the panel, and re-expands each row from `ShopRow` with its own arguments and updates it in place, while the rows stay in `rows`. Listen for `UiReloaded` to fill `rows` again if the file gave it a new kind.
+
+##### Rebuilding choices with `update_ui`
+
+```rust
+/// The choices column for what the player can do now: one tree from the data
+fn choices_tree(ctx: &mut SceneContext, labels: Vec<String>) -> Result<UiNode, UiFileError> {
+  let args = UiArgs::new().with("options", labels);
+  let list = ctx.ui_template("assets/ui/dialogue.ui.ron", "Choices", &args)?;
+  Ok(UiNode::column().focus_scope().name("choices").child(list))
+}
+// "Choices" in the file: params: ["options"], node: ChoiceList(options: options, action: "choose", name: "pick")
+
+fn show_choices(ctx: &mut SceneContext, column: Entity, labels: Vec<String>) {
+  match choices_tree(ctx, labels) {
+    Ok(tree) => {
+      ctx.update_ui(column, tree);   // only the differences are applied; focus and scroll survive
+    }
+    Err(error) => game_error!("{error}"),
+  }
+}
+```
+
+If the column's content can be a `Button` (a Skip, a Continue) rather than a `ChoiceList`, call `ctx.focus_ui(pick)` after the update for the new button: an updated scope is not newly opened. The `ChoiceList` takes the focus by its scope's own rule.
+
+##### Loading with an embedded fallback
+
+A game that ships as one binary or for the web has no assets directory at run time. Keep the file on disk for development and embed a copy:
+
+```rust
+/// A UI file of the game: from disk when `path` is there (debug builds reload it when
+/// it is saved), else the copy embedded in the binary
+pub fn ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Result<UiFile, UiFileError> {
+  match ctx.assets.load_ui(path) {
+    Err(AssetError::NotFound(_)) => ctx.assets.add_ui(path, embedded),
+    loaded => Ok(loaded?),
+  }
+}
+
+pub fn spawn_ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Option<Entity> {
+  let tree = ui_file(ctx, path, embedded).and_then(|file| file.root(ctx.assets));
+  match tree {
+    Ok(tree) => Some(ctx.spawn_ui(tree)),
+    Err(error) => {
+      game_error!("{path}: {error}");
+      None
+    }
+  }
+}
+
+// spawn_ui_file(ctx, "assets/ui/pause.ui.ron", include_str!("../assets/ui/pause.ui.ron"))
+```
+
+`add_ui` caches the text under `path`, so later loads and imports of that path find it. An embedded file imports other files by their paths too: embed those and `add_ui` them first, or they are read from disk. This is breakout's `look.rs` (`ui_file`, `spawn_ui_file`); any error other than a missing file, such as a mistake in the file on disk, is returned rather than hidden by the embedded copy.
+
 ## 16. Testing UI
 
 **`ryo2d::testing::UiHarness`** runs UI frames with no window or GPU: the UI's memory, layout, text and the resolve step over scripted input. Write the UI as a function of `&mut UiContext` and drive it.
@@ -1797,6 +2185,8 @@ fn the_slider_steps_with_the_pad() {
   assert_eq!(ui.world().get::<UiChecked>(sound), Some(&UiChecked(true)));
   assert!(ui.events().iter().any(|e| e.node == sound && e.kind == UiEventKind::Changed));
   ```
+- **UI files in a test:** `UiHarness::new(w, h).with_assets(dir)` loads files and images relative to `dir`; `spawn_ui_file(path) -> Result<Entity, UiFileError>` spawns one; `update_ui(node, tree)`, `ui_set(node, name, value)` and `ui_get::<T>(node, name)` work as on `SceneContext`. After editing the file on disk, `reload_ui(path)` makes the next `frame` bring the trees in line, and `messages::<UiReloaded>()` lists the roots it touched. `UiFile::parse(name, text)` checks text alone, for asserting a file's errors.
+
 - **With the engine**, `HeadlessEngine` (`ryo-game-dev`, Visual Tests) drives whole scenes: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `release_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `tap_key`, `mouse_move`; `ui_focused()` is the focus the last step resolved, `ui_focusables()` what the D-pad can land on now (id and rect), `focus_ui(id)` focuses a widget at the next step. Walking every `ui_focusables()` with the D-pad from each one proves a page has no dead ends.
 - **Scripted runs:** `RYO_INPUT` presses pad buttons and holds sticks in dev builds, for captures: `RYO_INPUT="60:PadDPadDown 90:PadSouth 120-180:LeftStick@0x-1 200:Wheel@0x-3"` (`ryo-cli`).
 - The console command `debug:ui` outlines every widget with its id, hot, active and focused ones coloured (`ryo-console`).
@@ -1805,6 +2195,8 @@ fn the_slider_steps_with_the_pad() {
 
 - **Mark every menu `.focus_scope()`**, and give it a `.default_focus()`. Without a scope the pad and the arrows do nothing in it. This holds for node trees too.
 - **Node trees: read events in one place.** `ctx.ui_events()` and `ctx.messages::<UiEvent>()` share a cursor, so read in `ui` or in `update`, not both. Change scenes from there, never from an observer.
+- **Files: run `ryo2d check-ui` and read the messages.** They carry line, column and the nearest valid name. A template named like a kind, a `Text` with a `width`, a `{` in a label that is not a binding, and a template used from a file it was not imported into are the usual mistakes.
+- **Files: the game keeps what the player and it wrote.** A reload or `update_ui` rewrites the tree's settings and leaves values the game and the player set, unless the file changed that value. A bound widget's value is the binding's.
 - **Close the innermost thing on `ui.back()`**, then the next: a modal before its menu, a menu before the scene.
 - **Use `.id(key)`** for rows of a list that sorts, filters or deletes; call-site ids shift when an earlier call is skipped.
 - **Your data, its state.** Widgets write your `bool`/`f32`/`usize`/`String`; an open list, a caret, a scroll offset and focus are the UI's, dropped when the widget is not drawn for a frame (focus memory lasts the scene).

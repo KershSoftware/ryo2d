@@ -414,6 +414,10 @@ pub struct SceneContext<'a> {
 | `find_ui(&self, name: &str) -> Option<Entity>`, `find_ui_in(&self, root: Entity, name: &str) -> Option<Entity>` | the first node with that `.name(..)` in this scene's trees (spawn order), or in one tree |
 | `ui_id(&self, node: Entity) -> Option<UiId>`, `focus_ui(&mut self, node: Entity)` | a node's id once drawn; focus a node when it is next drawn |
 | `ui_events(&mut self) -> Vec<UiEvent>` | this scene's nodes' events since it last read them; shares `messages::<UiEvent>()`'s cursor |
+| `spawn_ui_file(&mut self, path: &str) -> Result<Entity, UiFileError>` | load a UI file, build its `root` and spawn it (see [UI files](#ui-files)) |
+| `ui_template(&mut self, path: &str, name: &str, args: &UiArgs) -> Result<UiNode, UiFileError>` | load a UI file and build an instance of its template `name`, to spawn or add to a tree |
+| `update_ui(&mut self, node: Entity, tree: UiNode) -> Entity` | bring a spawned tree in line with `tree` in place; returns the node, or its replacement when `tree`'s top is a different kind. A node that is not from a tree warns once and is returned unchanged |
+| `ui_set(&mut self, node: Entity, name: &str, value: impl Into<BindValue>)`, `ui_get<T: TryFrom<BindValue>>(&self, node: Entity, name: &str) -> Option<T>` | a named binding of the tree `node` belongs to; `T` is `f32`, `f64`, `i32`, `u32`, `usize`, `bool` or `String` |
 | `window(&mut self) -> Mut<'_, WindowRequest>`, `cursor(&mut self) -> Mut<'_, CursorRequest>` | requests applied after the frame |
 | `console(&mut self) -> ConsoleScope<'_>` | scene-scoped console handlers |
 | `spawn_child(&mut self, parent: Entity, bundle: impl Bundle) -> Entity` | |
@@ -860,6 +864,9 @@ ctx.look().tonemap = Tonemap::Aces;
 |---|---|
 | `load_sprite<P: AsRef<Path>>(path) -> AssetResult<SpriteHandle>` | cached by path |
 | `load_shader(path) -> AssetResult<ShaderHandle>` | WGSL, hot-reloadable |
+| `load_ui<P: AsRef<Path>>(path) -> AssetResult<UiFile>` | a `.ui.ron` file, cached by path; imports load through the cache. Mistakes come back together in `AssetError::UiFile(UiFileError)` |
+| `add_ui<P: AsRef<Path>>(path, text: &str) -> Result<UiFile, UiFileError>` | check text the game embedded (`include_str!`) and cache it under `path`; never reloaded from disk |
+| `reload_ui<P: AsRef<Path>>(path) -> AssetResult<()>` | read a cached file again and check it and its importers; on a mistake the old contents stay. The next frame brings the trees built from it in line |
 | `create_sprite(Sprite, name) -> SpriteHandle` | from generated pixels |
 | `load_sprite_async(path) -> AsyncSpriteHandle` | background load |
 | `start_loading(paths)`, `loading_progress() -> LoadingProgress`, `is_loading_complete()`, `reset_loading_progress()` | batch loading screens |
@@ -1239,6 +1246,7 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 | text input | `placeholder(impl Into<String>)`, `max_len(usize)`, `password()` |
 | radio group, scroll | `horizontal()`; scroll: `both()`, `no_bar()` |
 | choice list, rebind | `default_choice(usize)`; rebind: `binding_slot(usize)` |
+| matching and bindings | `key(impl Into<String>)` (what an update or reload matches the node by; defaults to the name, else the kind and position), `bind(impl Into<String>)` (tie a value widget to a named binding), `bound()` (read the node's label and tooltip as `{name}` patterns) |
 
 - An option the node's kind does not take, children given to a widget and `.embedded()` on a child are each warned once at spawn. So are an unknown `nav_*` or popup name, and a name used twice.
 - `enum TextRole { Body, Heading, Button, Caption, Mono }`: a theme text role.
@@ -1256,6 +1264,20 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 |---|---|
 | `UiEvent { pub node: Entity, pub name: Option<String>, pub action: Option<String>, pub kind: UiEventKind, .. }` | a `Message` (read with `ctx.ui_events()`) and an `EntityEvent` on its node (`ctx.world.entity_mut(node).observe(\|e: On<UiEvent>\| ..)`; observers run while the scene stack is out of the world: they must not change scenes) |
 | `enum UiEventKind { Clicked, SecondaryClicked, Changed, Submitted, Dropped { source: Entity }, Back, FocusGained, FocusLost }` | buttons, images, slots, prompts, progress and containers send `Clicked`; value widgets and rebind rows `Changed`; a choice list `Clicked` (the pick in `UiIndex`); a modal or popup node `Back` |
+
+### UI files
+
+A screen written in a `.ui.ron` file loads into the same `UiNode`. The guide is `ryo-ui` section 15, Files.
+
+| Type | |
+|---|---|
+| `UiFile` | a cheap, cloneable handle to a checked file: `parse(name: &str, text: &str) -> Result<UiFile, UiFileError>` (no imports), `path() -> &str`, `generation() -> u64` (counts reloads), `root(&self, assets: &mut AssetManager) -> Result<UiNode, UiFileError>`, `template(&self, name: &str, args: &UiArgs, assets: &mut AssetManager) -> Result<UiNode, UiFileError>` |
+| `UiFileError { pub issues: Vec<UiFileIssue> }` | every mistake found; `Display` prints one `path:line:column: message` per line |
+| `UiFileIssue { pub path: String, pub line: u32, pub column: u32, pub message: String }` | one mistake; lines and columns count from 1, line 0 means no place in the text |
+| `UiArgs` | a template's arguments: `new()`, `with(self, name: &str, value: impl Into<UiArg>) -> UiArgs`; giving a name again replaces it |
+| `enum UiArg { Number(f64), Text(String), Bool(bool), List(Vec<UiArg>) }` | `From` for `f32`, `f64`, `i32`, `u32`, `usize`, `bool`, `&str`, `String`, `Vec<T: Into<UiArg>>` and `&[&str]` |
+| `enum BindValue { Number(f64), Text(String), Bool(bool) }` | a binding's value; `From` for the usual number, string and bool types, `TryFrom` back out |
+| `UiReloaded { pub root: Entity }` | a `Message`, sent once per root whose tree a reload brought in line, before that frame's UI pass |
 
 - A scene's trees are walked before its `ui`, so `ui` and `update` read their events in the same frame. An embedded tree's events are delivered after `ui` returns.
 - Ids are keyed by entity under the parent's id: widget state survives sibling changes and is forgotten on despawn.
@@ -1387,3 +1409,5 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `UiHarness::focused() -> Option<UiId>`, `command_count() -> usize` | the focus after the last frame; the UI commands it recorded |
 | `UiHarness::spawn_ui(UiNode) -> Entity`, `world() -> &World`, `world_mut() -> &mut World`, `find_ui(&str) -> Option<Entity>`, `ui_id(Entity) -> Option<UiId>`, `events() -> &[UiEvent]` | node trees in the harness: each `frame` draws them before its closure; `events` are the last frame's, in walk order |
 | `UiHarness::frame_with_world(\|ui, world\| ..) -> R` | `frame`, with the world too (for `ui.node(root, world)`) |
+| `UiHarness::update_ui(node, tree) -> Entity`, `ui_set(node, name, value)`, `ui_get::<T>(node, name) -> Option<T>` | as on `SceneContext` |
+| `UiHarness::with_assets(dir) -> UiHarness`, `assets() -> &mut AssetManager`, `spawn_ui_file(path) -> Result<Entity, UiFileError>`, `reload_ui(path) -> AssetResult<()>`, `messages::<M>() -> impl Iterator<Item = M>` | UI files through an asset manager the harness owns, rooted at `dir`; `reload_ui` brings the trees in line at the next `frame`, and `messages::<UiReloaded>()` lists that frame's reloads |

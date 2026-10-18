@@ -132,6 +132,35 @@ The keyboard and gamepad focus is resolved once per engine frame, after the poin
   - an unknown `nav_*` or popup name (names resolve within the root at spawn);
   - a name used twice.
 
+## Files
+
+`file/` (`reader.rs` RON text into positioned values, `vocab.rs` the kinds and options, `build.rs` templates and the `UiNode` they make, `document.rs` `UiFile`, `UiArgs` and the load checks, `error.rs` `UiFileError`, `check.rs` `ryo2d check-ui`) with the reconcile (`nodes/reconcile.rs`) and bindings (`nodes/bindings.rs`) in `nodes/`. The spec is `docs/specs/2026-10-17-ui-files-design.md`; where it and the code differ, the code is current.
+
+- **The reader is ours.** `ron::Value` drops names (`Button(..)` becomes a nameless map), typed serde structs fight template parameters in any value position and a serde schema would repeat `UiNode`'s option list. Ours keeps every value's line and column, which every error uses. It takes a subset of RON; every UI file in the repo is also parsed by the `ron` crate in a test, so the files stay valid RON. A new RON form the reader refuses gets an error that says so, never a silent skip.
+- **One vocabulary.** `vocab.rs` holds `KINDS` (a `KindSpec` per kind: its main value for the short form, its constructor arguments, the `UiNode` constructor it calls) and `OPTIONS` (an `OptionSpec` per option: its name, a function that reads the value form and calls the `UiNode` method). Checking and building both read them, so a file cannot say what `UiNode` cannot. To add an option:
+  - add the `UiNode` method first (it records itself with `given(..)` so spawn can warn);
+  - add one `option!` line to `OPTIONS` (a form already there, or a new reader on `BuildCx`);
+  - list it in `Kind::takes` (`nodes/node.rs`) for the kinds that use it. A file option a kind does not take is an error by that same list, the one spawn warns with in code trees;
+  - add the option to the `ryo-ui` Files tables and a test that the file form builds what the method builds.
+  To add a kind, add the constructor and a `KindSpec`; a template may not share a kind's name.
+- **Errors collect.** A load reports every mistake in a file at once, each with the file, line and column of the offending value (a template's error in the file that defines it). Unknown names get `nearest(..)` suggestions. Keep messages in the form "what is wrong; did you mean ..".
+- **Templates expand at build time.** `substitute` replaces a bare lowercase parameter name with the argument and fills `{param}` holes in strings. A hole that is not a parameter, and `{{`/`}}`, are left for the binding pattern parser, which is why a binding pattern cannot be built from a parameter. A built node carries its source (`TreeSource`: the file, the root or template, the arguments, an instance number), so a reload can build it again.
+- **Keys.** `UiTreeNode { key, instance }` is on every spawned node: the key (`key`, else `name`, else kind and index among the unnamed siblings of that kind) is what a reconcile matches by, and the instance says which file instance of a repeated template the node came from.
+- **The reconcile** (`reconcile.rs`) is one walk over the tree being applied and the spawned children:
+  - same key and kind: updated in place; same key, other kind: despawned and spawned again in the same place; new keys spawn; missing keys despawn with their subtree;
+  - **ownership.** `UiAdded` marks the top of a `spawn_ui_in` subtree, which the reconcile never touches (it stays after the tree sibling it followed). A reload (`Mode::Reload { instance }`) updates only the children of its own file instance, so a `.child(..)` the game put into a file-built tree is left alone like an added subtree; `ctx.update_ui` (`Mode::Update`) replaces everything else;
+  - **the three-way rule.** `UiApplied` holds what the tree last gave each node (state, tooltip, hidden, disabled, a root's placement). A state component is written only when the tree's value differs from the applied one; then it wins. When it does not differ the live value stays, whoever wrote it. The tree's own settings (layout, flags, variant, action, name, key, neighbours, `bind`) are rewritten;
+  - **a bound widget's value** is never written by the reconcile: the tree's value only seeds the name;
+  - writes only on a real change (change detection stays truthful), and no `UiEvent` is sent;
+  - keys that repeat among siblings warn in code trees and match in order.
+- **Bindings** (`bindings.rs`). The bound components stay the truth; the per-root `UiBindings` values hold what patterns format and `ui_get` reads. Sync points:
+  - `set` (`ctx.ui_set`) stores the value, writes every bound widget and formats every pattern that uses the name, writing only on a change;
+  - `sync_root` runs before a root is drawn: a bound widget a game changed (`UiValue` written directly) sets its name;
+  - `widget_wrote` runs right after a bound widget is drawn: the player's change sets the name, so a pattern drawn after the widget shows it the same frame and one drawn before it the next;
+  - `seed` applies starting values only to names with no value yet, so a reload never resets a score; `apply_subtree` formats a freshly spawned subtree.
+  A per-root index of bound widgets and patterns is built lazily and dropped by `invalidate` when the tree's shape changes. A name used in a pattern and never set warns once.
+- **Reloads.** `UiFile` is a cheap handle over a shared document and an atomic `generation`; the asset manager replaces the document in place on a reload. Every tree built from a file holds a `UiSource` with the generation it was built at. `reload_trees` (called by `Engine::draw_ui` before the UI pass, and by `UiHarness::frame`) finds the sources whose file's generation moved, builds each again, outer trees first, reconciles it, and sends `UiReloaded` once per root. A template instance built from code (`ctx.ui_template`) holds its own `UiSource`, so it reloads on its own wherever it was spawned, and a reload of its parent tree leaves it to that. A tree that cannot be rebuilt (a missing image, a template that went) is kept as it was and warned about once. With no source in the world it is one query. Keep it before the walk, never inside it.
+
 ## Theme
 
 `theme/` (`mod.rs`, `look.rs`, `builtin.rs`, `file.rs`). The spec is `docs/specs/2026-10-16-ui-interaction-design.md`.

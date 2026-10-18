@@ -125,7 +125,7 @@ SceneManager (engine-owned stack over the one shared world)
 
 ## Messages
 
-- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TriggerEntered`/`Exited`, `ContactForce`, `JointBroken`, `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `AssetReloaded`, `AssetLoadFailed`, `ParticleCollision`) are registered at build; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
+- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TriggerEntered`/`Exited`, `ContactForce`, `JointBroken`, `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `AssetReloaded`, `AssetLoadFailed`, `ParticleCollision`, `UiEvent`, `UiReloaded`) are registered at build; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
 - Buffers advance in `First`, but only once a fixed step has run since the last advance: a message stays readable until two fixed steps have run after it was written, so every reader, per-frame or fixed-step, sees it at any frame rate. While no fixed step runs (the game clock paused) nothing is dropped.
 - Systems use `MessageWriter<T>` / `MessageReader<T>`; scenes use `ctx.write_message(m)` and `ctx.messages::<T>()`, which keeps a cursor per scene so each scene sees each message once.
 - Modules define no message type they do not write; games define their own notifications.
@@ -243,10 +243,12 @@ The engine builds for `wasm32-unknown-unknown` and runs in browsers with WebGPU:
 
 ## UI
 
-Built every frame through `UiContext`'s builders, laid out with flexbox and grid, and drawn as commands on the GPU (see [Text and UI](#text-and-ui)). It comes in two styles that share everything below the builders:
+Built every frame through `UiContext`'s builders, laid out with flexbox and grid, and drawn as commands on the GPU (see [Text and UI](#text-and-ui)). It comes in two styles that share everything below the builders, and node trees can be written in files:
 
 - **Closures.** `Scene::ui(ui, ctx)` calls the builders each frame (`ui.button("Play").clicked()`); the game's values stay in the game, passed as `&mut bool`, `&mut f32`, `&mut usize` or `&mut String`.
 - **Node trees.** A `UiNode` tree is described once and spawned as entities (`ctx.spawn_ui`). Each frame the engine walks a scene's trees through the same builders, keyed by entity. A node's state is its components (`UiLabel`, `UiChecked`, `UiValue`, ...), which the game writes and the walk writes back when the player changes them. What the player did arrives as `UiEvent` messages, also triggered on the node for observers. A root belongs to the scene that spawned it and is despawned when the scene exits.
+
+- **UI files.** A node tree can be written in a `*.ui.ron` file (`src/core/ui/file/`) that loads into the same `UiNode`. A reader of RON syntax of our own (it knows every value's line and column) feeds one vocabulary table that maps kinds and options onto `UiNode`'s constructors and methods, so a file says nothing a `UiNode` cannot. Files have templates with parameters (used from files and from code), imports, and named bindings: `{score}` in text and `bind: "volume"` on value widgets, set by name with `ctx.ui_set`, writing the same state components. `AssetManager::load_ui` checks a file at load and reports every mistake with line, column and a suggested name. Each built node remembers its source. `ctx.update_ui` and hot reload are one operation, the reconcile (`nodes/reconcile.rs`): children match by key, matched nodes keep their entities (so ids, focus and widget state survive), and the game's and the player's values survive unless the new tree changes that same value. In debug builds the asset watcher reloads changed files before the frame's UI pass and sends `UiReloaded`. `ryo2d check-ui` checks files without a game.
 
 They meet in two ways. A scene's trees are drawn before its `ui` closure, in the same scene scope, so the closure draws above them and shares their focus, layout memory and hit tests. A closure can also embed a tree spawned with `.embedded()` inside one of its containers (`ui.node(root, world)`), so one focus path runs through both.
 
@@ -275,9 +277,9 @@ commands (UiCommand per draw, ordered by layer then recording order) -> UI camer
 - **The theme** is the `UiTheme` world resource holding an `Arc<Theme>` (`ctx.ui_theme()`): a palette, metrics (timings, sizes, the focus ring), text roles, a look per widget kind and state, named variants, nine-slice skins and sounds; RON files merge over the dark theme and hot-reload in debug builds. `UiContext` takes the `Arc` once per pass, so a change applies from the next frame.
 - **Actions.** Navigation reads the `ui.*` actions (arrows, D-pad, left stick; Enter, Space, A; Escape, B; Tab; Q/E and the bumpers). The engine hides the bindings of every action the UI used until they are released, so a menu's Confirm never jumps in gameplay. Prompts (`ui.prompt`, `[prompt=..]` markup) show the binding for the last device.
 - **Absolute drawing** (`draw_rect`, `draw_text`, `ui.text(..).at(..)`, sprites, nine-slices, lines) records at once for HUDs and overlays; a clip stack of any depth clips it (a scissor per command).
-- **Testing.** `ryo2d::testing::UiHarness` runs UI frames with no window or GPU over scripted input, node trees included (`spawn_ui`, `events`); `HeadlessEngine` adds pad input and reads the focus (`ui_focused`, `ui_focusables`). The console's `debug:ui` outlines every record with its id.
+- **Testing.** `ryo2d::testing::UiHarness` runs UI frames with no window or GPU over scripted input, node trees and UI files included (`spawn_ui`, `spawn_ui_file`, `reload_ui`, `events`); `HeadlessEngine` adds pad input and reads the focus (`ui_focused`, `ui_focusables`). The console's `debug:ui` outlines every record with its id.
 
-Details: `src/core/ui/AGENTS.md`; the designs: `docs/specs/2026-10-16-ui-interaction-design.md` (interaction) and `docs/specs/2026-10-17-ui-nodes-design.md` (node trees).
+Details: `src/core/ui/AGENTS.md`; the designs: `docs/specs/2026-10-16-ui-interaction-design.md` (interaction) `docs/specs/2026-10-17-ui-nodes-design.md` (node trees) and `docs/specs/2026-10-17-ui-files-design.md` (files).
 
 ## Saves and Settings
 
@@ -314,6 +316,7 @@ Settings resolve in order: engine defaults, `Ryo.toml`, `EngineBuilder` calls, t
 | `ryo2d build` / `ryo2d run` | Optimised release build / run it |
 | `ryo2d export` | Package the release into a zip |
 | `ryo2d install-skills` | Install the agent skills to `.claude/skills/` or `.github/skills/` |
+| `ryo2d check-ui [files]` | Check UI files (`*.ui.ron`) without running the game |
 | `ryo2d netplay` | Start a signalling server for netplay testing |
 
 The CLI finds the workspace by searching up for `Ryo.toml` and embeds its configuration at build time through `RYO_EMBED_*` variables.

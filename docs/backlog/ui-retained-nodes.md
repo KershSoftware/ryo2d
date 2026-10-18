@@ -17,12 +17,30 @@ The guard bench (`benches/ui.rs`): the 200-widget settings screen as a node tree
 
 Measured, not done: the UI memory's own `UiId`-keyed maps (`UiMemory`'s records, states and focus memory, and the layout engine's entries) still use SipHash. Moving them to the id hasher made the closure screen 89 µs and the node screen 99 µs in a trial. That is faster for both, but the node screen comes out 10.4 to 11.6% slower than the closure, over the 4c guard. The same absolute walk cost is a larger share of a faster frame. Take it with 4e, which removes most of the walk's per-frame cost.
 
-## 4d: UI Files and Templates
+## 4d: UI Files and Templates (done)
 
-- UI files in RON that load into the same `UiNode`, with hot reload as theme files have.
-- Templates with parameters: the file form of 4c's reusable components (functions returning a `UiNode`).
-- Named bindings that write the same state components 4c's walk uses, not a second store.
-- File node keys, so ids (and widget state) survive a respawn or a reload. 4c keys nodes by entity, so a respawned tree starts fresh.
+Spec: `docs/specs/2026-10-17-ui-files-design.md`.
+
+What landed:
+- `*.ui.ron` files that load into the same `UiNode`, through our own RON reader, one vocabulary table shared with `UiNode`, and errors with line, column and a suggested name. `AssetManager::load_ui`, `add_ui` (embedded text) and `reload_ui`; `ctx.spawn_ui_file` and `ctx.ui_template`.
+- Templates with parameters and defaults (also node parameters), usable from files and from code (`UiArgs`), and imports between files.
+- Named bindings: `{name}` patterns in labels and tooltips, `bind` on value widgets, `ctx.ui_set` / `ui_get`, values kept per root. They write the same state components 4c uses.
+- File node keys and the reconcile: `ctx.update_ui` and hot reload bring a spawned tree in line in place. Entities, ids, focus, scroll and the game's and the player's values survive; `UiReloaded` tells the game a root was reloaded.
+- Hot reload through the asset watcher (`.ui.ron` in debug builds), `ryo2d check-ui`, and `UiHarness` support.
+- The `ui` demo's node pages (menu, settings, inventory, dialogue, Mixed) and breakout's menus and HUD load from files.
+
+Benchmarks (`benches/ui.rs`):
+- An unchanged `ctx.update_ui` of the 200-widget settings tree takes **39.0 µs**, against **125.4 µs** to spawn it.
+- The 4c guard, the node settings frame against the closure one, is about **+8.5 to +8.8%** after the bindings sync was added (Task 8). That is inside the 10% limit, but with less room than 4c's 8%.
+
+Left for later:
+- Rust templates callable from files (an unknown template name could fall back to a registry of functions).
+- Loops and conditionals in files.
+- Localisation tables.
+- Patterns in a slider's, progress bar's or rebind row's `label` (they are literal kind options today).
+- Building a binding pattern from a template parameter (`{{` stays an escape, so a pattern is passed in whole as an argument).
+- A visual editor and a JSON schema for files.
+- Animations and transitions in files.
 
 ## 4e: Fast Big UIs
 
