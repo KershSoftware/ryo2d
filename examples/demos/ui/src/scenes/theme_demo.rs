@@ -300,8 +300,9 @@ impl DemoPage for ThemeDemo {
 
     // Theme buttons: the one in use is an accent button
     ui.draw_text("Themes:", content_x, y, text_color);
+    // Five buttons fit between the label and the panel's padding
     for (i, name) in THEME_NAMES.iter().enumerate() {
-      let btn_rect = Rect::new(widget_x - 60.0 + i as f32 * 80.0, y - 5.0, 74.0, 28.0);
+      let btn_rect = Rect::new(widget_x - 60.0 + i as f32 * 72.0, y - 5.0, 68.0, 28.0);
       let variant = if i == self.current_theme {
         "accent"
       } else {
