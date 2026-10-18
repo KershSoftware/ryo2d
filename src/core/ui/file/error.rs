@@ -103,7 +103,11 @@ impl From<AssetError> for UiFileError {
 impl fmt::Display for UiFileIssue {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     if self.path.is_empty() {
-      write!(f, "{}", self.message)
+      if self.line == 0 {
+        write!(f, "{}", self.message)
+      } else {
+        write!(f, "{}:{}: {}", self.line, self.column, self.message)
+      }
     } else if self.line == 0 {
       write!(f, "{}: {}", self.path, self.message)
     } else {
@@ -135,6 +139,20 @@ mod tests {
   use std::path::PathBuf;
 
   use super::*;
+
+  #[test]
+  fn an_issue_prints_the_parts_it_has() {
+    let issue = |path: &str, line| UiFileIssue {
+      path: path.into(),
+      line,
+      column: 4,
+      message: "bad".into(),
+    };
+    assert_eq!(issue("", 2).to_string(), "2:4: bad");
+    assert_eq!(issue("", 0).to_string(), "bad");
+    assert_eq!(issue("a.ui.ron", 0).to_string(), "a.ui.ron: bad");
+    assert_eq!(issue("a.ui.ron", 2).to_string(), "a.ui.ron:2:4: bad");
+  }
 
   #[test]
   fn an_asset_error_becomes_the_files_mistakes_or_one_issue_without_a_position() {

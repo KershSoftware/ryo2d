@@ -6,6 +6,8 @@
 //! its top level, templates and imports, checked at load.
 
 pub(crate) mod build;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod check;
 pub(crate) mod document;
 pub(crate) mod error;
 pub(crate) mod reader;

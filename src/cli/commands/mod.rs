@@ -3,6 +3,7 @@
 //! Each submodule implements a specific CLI command.
 
 mod build;
+mod check_ui;
 mod dev;
 mod export;
 mod init;
@@ -117,6 +118,7 @@ pub fn run_cli() -> CliResult<()> {
     "export" => export::execute(&args[2..]),
     "install-skills" => install_skills::execute(&args[2..]),
     "netplay" => netplay::execute(&args[2..]),
+    "check-ui" => check_ui::execute(&args[2..]),
     "help" | "--help" | "-h" => {
       print_help();
       Ok(())
@@ -149,6 +151,7 @@ COMMANDS
     export          Package release into distributable zip
     install-skills  Install Agent Skills for AI assistants
     netplay         Start a signaling server for netplay testing
+    check-ui        Check UI files (*.ui.ron) without running the game
     help            Show this help message
     version         Show version information
 
