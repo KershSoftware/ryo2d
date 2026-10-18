@@ -21,7 +21,7 @@ use super::components::{
   UiOptions, UiRoot, UiSource, UiTextValue, UiTooltip, UiTreeNode, UiValue,
 };
 use super::events::UiReloaded;
-use super::list::UiList;
+use super::list::{self, RowShape, UiList, UiListShape};
 use super::node::{Kind, NodeState, UiNode, UiNodeKind};
 use super::spawn::{
   Keys, Pending, answer_back_above, child_keys, finish, root_key, root_of, scope_of, spawn_node,
@@ -514,8 +514,7 @@ pub(crate) fn update_node(
     template: _,
     instance,
     source,
-    // A list keeps the row shape it was spawned with, and its rows
-    row_shape: _,
+    row_shape,
   } = node;
 
   let popup = match &kind {
@@ -560,6 +559,9 @@ pub(crate) fn update_node(
   update.rebound = set(&mut node, bind);
   if mode == Mode::Update {
     set_source(&mut node, source);
+  }
+  if node.contains::<UiList>() {
+    update_row_shape(&mut node, row_shape);
   }
   let patterns = update_patterns(
     &mut node,
@@ -642,6 +644,24 @@ fn set_source(node: &mut EntityWorldMut<'_>, source: Option<Arc<TreeSource>>) {
         source,
       }),
     );
+  }
+}
+
+/// A list's row shape is the tree's. A new one waits for the next pool
+/// update, which builds it (a file's images load through the world's asset
+/// manager, which a reload holds out of the world) and brings the rows in
+/// line when it builds another row; one taken away releases the rows.
+fn update_row_shape(node: &mut EntityWorldMut<'_>, shape: Option<RowShape>) {
+  match (node.get_mut::<UiListShape>(), shape) {
+    (Some(mut held), Some(shape)) => held.bypass_change_detection().next = Some(shape),
+    (None, Some(shape)) => {
+      node.insert(UiListShape::new(shape));
+    }
+    (Some(_), None) => {
+      node.remove::<UiListShape>();
+      list::warn_shapeless();
+    }
+    (None, None) => {}
   }
 }
 
@@ -802,7 +822,7 @@ fn update_state(
 }
 
 /// Whether two reveals are set the same way, ignoring how far they have run
-fn same_reveal(a: &Option<TextReveal>, b: &Option<TextReveal>) -> bool {
+pub(super) fn same_reveal(a: &Option<TextReveal>, b: &Option<TextReveal>) -> bool {
   match (a, b) {
     (None, None) => true,
     (Some(a), Some(b)) => {

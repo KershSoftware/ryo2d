@@ -12,12 +12,12 @@ use std::sync::Arc;
 use crate::core::asset::SpriteHandle;
 use crate::core::graphics::Sprite;
 use crate::core::text::TextReveal;
-use crate::core::ui::nodes::BindValue;
 use crate::core::ui::nodes::bindings::parse_hole;
+use crate::core::ui::nodes::{BindValue, RowShape};
 use crate::core::ui::{Color, Edges, Length, UiNode};
 
 use super::document::{Document, TemplateDef};
-use super::error::describe;
+use super::error::{UiFileError, UiFileIssue, describe};
 use super::reader::{Body, Field, Issue, Pos, Value, ValueKind};
 use super::vocab::{Ctor, Form, KINDS, OPTIONS, UNIVERSAL, kind_spec, nearest, option_spec};
 
@@ -76,6 +76,42 @@ impl Scope {
     }
     names.sort_unstable();
     names
+  }
+}
+
+/// A file list's row shape (`List(row_shape: ..)`): the value as the file
+/// wrote it, built for each row in the file it was written in, as that file
+/// was when the list's tree was built. A reload builds the tree again, and
+/// so gives its list a new one.
+pub(crate) struct FileRow {
+  /// The file the value is built in; none outside a file
+  scope: Option<Scope>,
+  /// The files a template's arguments in the value were written in
+  pinned: Vec<Scope>,
+  value: Value,
+}
+
+impl FileRow {
+  /// The file the row shape was written in, for messages
+  pub(crate) fn path(&self) -> &str {
+    self.scope.as_ref().map_or("", |scope| scope.path.as_str())
+  }
+
+  /// One row's tree, its images loaded through `sprites`
+  pub(crate) fn build(&self, sprites: &mut dyn SpriteSource) -> Result<UiNode, UiFileError> {
+    let mut cx = BuildCx {
+      scope: self.scope.clone(),
+      pinned: self.pinned.clone(),
+      ..BuildCx::new(sprites)
+    };
+    let node = build_node(&self.value, &mut cx);
+    let path = self.path();
+    let issues = cx
+      .issues
+      .into_iter()
+      .map(|issue| UiFileIssue::at(path, issue));
+    UiFileError::check(issues.collect())?;
+    node.ok_or_else(|| UiFileError::one(path, "the list's row shape builds no node"))
   }
 }
 
@@ -508,6 +544,39 @@ impl BuildCx<'_> {
       }
       _ => self.mismatch(value, Form::Typewriter),
     }
+  }
+
+  /// A list's row shape: a template's name (bare, or as a string) or a node.
+  /// It is built once here, so its mistakes are found (and its images
+  /// loaded) with the rest of the tree, then again for each row, in the file
+  /// it was written in.
+  pub(crate) fn row_shape(&mut self, value: &Value) -> Option<RowShape> {
+    let value = match &value.kind {
+      // A template parameter while the template is checked
+      ValueKind::Any => return None,
+      ValueKind::Str(name) => {
+        if !name.chars().next().is_some_and(char::is_uppercase) {
+          let message = format!("\"{name}\" is not a template name: template names are CamelCase");
+          self.issue(value.pos, message);
+          return None;
+        }
+        Value {
+          kind: ValueKind::Named {
+            name: name.clone(),
+            body: Body::Unit,
+          },
+          pos: value.pos,
+        }
+      }
+      ValueKind::Named { .. } | ValueKind::InScope { .. } => value.clone(),
+      _ => return self.mismatch(value, Form::Node),
+    };
+    let _ = build_node(&value, self)?;
+    Some(RowShape::File(Arc::new(FileRow {
+      scope: self.scope.clone(),
+      pinned: self.pinned.clone(),
+      value,
+    })))
   }
 
   /// One of `names`, written as a bare name
@@ -1111,7 +1180,7 @@ mod tests {
   use super::*;
   use crate::core::graphics::Sprite;
   use crate::core::ui::file::reader::read;
-  use crate::core::ui::nodes::fingerprint;
+  use crate::core::ui::nodes::{RowShape, fingerprint};
   use crate::prelude::*;
 
   fn build(text: &str) -> (Option<UiNode>, Vec<Issue>) {
@@ -1198,6 +1267,10 @@ mod tests {
     same(
       "Confirm(title: \"Quit?\")",
       UiNode::confirm("Quit?", "", "Yes", "No"),
+    );
+    same(
+      "List(count: 3, row_height: 20, row_shape: Row)",
+      UiNode::list(3, 20.0),
     );
   }
 
@@ -1469,6 +1542,108 @@ mod tests {
     assert_eq!(
       messages("Grid(columns: 2, tracks: [1, 1e300])"),
       ["\"tracks\" is too large"]
+    );
+  }
+
+  #[test]
+  fn a_list_builds_with_its_row_and_needs_both() {
+    let (node, issues) =
+      build("List(count: 5, row_height: 20, gap: 2, columns: 2, row_shape: Text(\"x\"))");
+    assert!(issues.is_empty(), "{issues:?}");
+    let node = node.unwrap();
+    assert_eq!(node.kind.name(), "list");
+    assert!(node.row_shape.is_some());
+    assert_eq!(
+      messages("List(count: 5, row_shape: Text(\"x\"))"),
+      ["List needs \"row_height\""]
+    );
+    assert_eq!(
+      messages("List(count: 5, row_height: 20)"),
+      ["List needs \"row_shape\""]
+    );
+  }
+
+  #[test]
+  fn a_list_s_options_apply_the_methods_of_their_names() {
+    same(
+      "List(row_height: 28, row_shape: Row)",
+      UiNode::list(0, 28.0),
+    );
+    same(
+      "List(count: 10000, row_height: 28, row_shape: Row, columns: 4, overscan: 3, gap: 2, padding: 4, no_bar: true, fill: true, name: \"board\", embedded: true)",
+      UiNode::list(10_000, 28.0)
+        .columns(4)
+        .overscan(3)
+        .gap(2.0)
+        .padding(4.0)
+        .no_bar()
+        .fill()
+        .name("board")
+        .embedded(),
+    );
+    assert_eq!(
+      messages("List(row_height: 20, row_shape: 3)"),
+      ["\"row_shape\" takes a template name or a node such as Row(..), not a number"]
+    );
+    assert_eq!(
+      messages("List(row_height: 20, row_shape: \"leader\")"),
+      ["\"leader\" is not a template name: template names are CamelCase"]
+    );
+    assert_eq!(
+      messages("List(row_height: 20, row_shape: Row(gpa: 1))"),
+      ["Row has no option \"gpa\"; did you mean \"gap\"?"],
+      "the row is checked where it is written"
+    );
+    assert_eq!(
+      messages("Column(columns: 2)"),
+      ["Column does not take \"columns\""]
+    );
+  }
+
+  #[test]
+  fn a_list_s_row_shape_names_a_template_bare_or_as_a_string_or_is_a_node() {
+    let templates = r#""Leader": (node: Row(children: [Text("{rank}")])), "Needy": (params: ["x"], node: Text(x))"#;
+    let file = |row: &str| {
+      UiFile::parse(
+        "ui/board.ui.ron",
+        &format!("(templates: {{{templates}}}, root: List(row_height: 20, row_shape: {row}))"),
+      )
+    };
+    for row in ["Leader", "\"Leader\"", "Column(children: [Leader])"] {
+      let file = file(row).unwrap_or_else(|e| panic!("{row}: {e}"));
+      let list = file.build_root(&mut Placeholders::default()).unwrap();
+      let Some(RowShape::File(shape)) = &list.row_shape else {
+        panic!("{row}: a file row shape")
+      };
+      let mut built = shape.build(&mut Placeholders::default()).unwrap();
+      while built.kind.name() == "column" {
+        built = built.children.remove(0);
+      }
+      assert_eq!(built.template.as_deref(), Some("Leader"), "{row}");
+      assert_eq!(
+        built.children[0].state.label.as_deref(),
+        Some("{rank}"),
+        "{row}: a binding pattern"
+      );
+      assert!(built.children[0].bound, "{row}");
+    }
+    let messages = |row: &str| -> Vec<String> {
+      file(row)
+        .err()
+        .unwrap()
+        .issues
+        .into_iter()
+        .map(|i| i.message)
+        .collect()
+    };
+    assert_eq!(
+      messages("Leadr"),
+      ["unknown node kind \"Leadr\"; did you mean \"Leader\"?"]
+    );
+    assert_eq!(
+      messages("Needy"),
+      ["Needy needs \"x\""],
+      "a row is built with no arguments"
     );
   }
 

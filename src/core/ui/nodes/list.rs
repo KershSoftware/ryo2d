@@ -10,14 +10,23 @@
 //! focus follows the closure list's rules: the focused row stays pooled, a
 //! count that shrinks under it moves it to the new last item, and a focus
 //! jump waits until the focus lands.
+//!
+//! A file's list (`List(row_shape: LeaderRow)`) builds its rows from the
+//! file, loading their images through the world's `AssetManager`. A row
+//! shape the list's tree gives later (a reload, `update_ui`) is built and
+//! set against the row the pool was built as: another row brings every
+//! pooled row in line where it is, hidden until it is bound again.
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use glam::Vec2;
 
+use crate::core::asset::AssetManager;
 use crate::core::ecs::kernel::{ChildOf, Children, Component, Entity, Messages, Mut, World};
 use crate::core::messages::register_message;
+use crate::core::ui::file::UiFileError;
+use crate::core::ui::file::build::FileRow;
 use crate::core::ui::memory::UiMemory;
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::widgets::list::{
@@ -30,7 +39,8 @@ use super::bindings;
 use super::components::{UiDisabled, UiHidden, UiInteraction, UiName, UiNodes, UiRoot};
 use super::draw::{Walk, draw_child};
 use super::events::UiListBind;
-use super::node::{Kind, UiNode, UiNodeKind};
+use super::node::{Kind, UiNode, UiNodeKind, same_tree};
+use super::reconcile::{Mode, reconcile, same_kind};
 use super::spawn::spawn_list_row;
 
 /// What a list's pooled rows are spawned from
@@ -38,20 +48,48 @@ use super::spawn::spawn_list_row;
 pub(crate) enum RowShape {
   /// `UiNode::list(..).row_shape(f)`
   Code(Arc<dyn Fn() -> UiNode + Send + Sync>),
+  /// A file's `List(row_shape: ..)`
+  File(Arc<FileRow>),
 }
 
 impl RowShape {
-  /// One row's tree
-  fn build(&self) -> UiNode {
+  /// One row's tree; a file's loads its images through the world's
+  /// `AssetManager`
+  fn build(&self, world: &mut World) -> Result<UiNode, UiFileError> {
     match self {
-      RowShape::Code(shape) => shape(),
+      RowShape::Code(shape) => Ok(shape()),
+      RowShape::File(row) => match world.get_resource_mut::<AssetManager>() {
+        Some(mut assets) => row.build(&mut *assets),
+        None => Err(UiFileError::one(
+          row.path(),
+          "the world has no AssetManager to load the row's images",
+        )),
+      },
     }
   }
 }
 
-/// A list node's row shape
+/// A list node's row shape, and a new one a reconcile gave it, which the
+/// next pool update takes up
 #[derive(Component)]
-pub(crate) struct UiListShape(pub(crate) RowShape);
+pub(crate) struct UiListShape {
+  pub(crate) shape: RowShape,
+  pub(crate) next: Option<RowShape>,
+  /// A row of `shape` as the pool's rows were built, which a new shape is
+  /// set against: built again, a file's shape could give another row (an
+  /// import is read as it is now)
+  built: Option<UiNode>,
+}
+
+impl UiListShape {
+  pub(crate) fn new(shape: RowShape) -> UiListShape {
+    UiListShape {
+      shape,
+      next: None,
+      built: None,
+    }
+  }
+}
 
 /// A list node's pool: its item count and the row entities given items
 #[derive(Component, Debug, Default)]
@@ -72,8 +110,9 @@ pub(crate) struct UiList {
   /// the list heads there at the next update
   pub(crate) jump: Option<(usize, bool)>,
   /// An item to give the focus once its row is drawn bound (a focus jump
-  /// once aimed, or the new last item when the count shrank under the
-  /// focus): its row stays pooled until the focus has been given
+  /// once aimed, the new last item when the count shrank under the focus,
+  /// or the focused item when a new row shape hid its row): its row stays
+  /// pooled until the focus has been given
   pub(crate) pending: Option<PendingFocus>,
   /// Pooled rows to bind again at the next update (`ui_list_refresh`)
   pub(crate) rebind: Rebind,
@@ -89,6 +128,10 @@ pub(crate) struct PendingFocus {
   /// drawn bound: the update after the walk draws it ends the pending focus,
   /// landed or not
   pub(crate) asked: Option<Entity>,
+  /// The widget, by its id, that had the focus when a new row shape hid its
+  /// row: asked for again while the row still has it, else (and with `NONE`)
+  /// the row's first focusable node
+  pub(crate) widget: UiId,
 }
 
 /// The pooled rows a list node binds again: each keeps drawing its old data
@@ -225,8 +268,10 @@ pub(super) fn shape_of(kind: &UiNodeKind, count: usize) -> Option<Shape> {
 /// when the two are within two views, the overscan, the focused item's row
 /// and one either side, a row being jumped to and a row waiting for the
 /// focus), reuses the rows of the items it no longer needs for the ones that
-/// have none, and spawns or despawns the difference. Each row given an item,
-/// and each row the game asked to refresh, sends a `UiListBind`.
+/// have none, and spawns or despawns the difference. A new row shape that
+/// builds another row first brings every pooled row in line with it. Each
+/// row given an item, each row a new shape rebuilt and each row the game
+/// asked to refresh sends a `UiListBind`.
 ///
 /// A world with no list is left exactly as it was: nothing is spawned,
 /// inserted or registered.
@@ -263,17 +308,21 @@ fn update_list(
   list: Entity,
   binds: &mut Vec<UiListBind>,
 ) {
-  let Some((count, focused, focus_widget, jump, pending)) = world.get::<UiList>(list).map(|pool| {
-    (
-      pool.count,
-      pool.focused,
-      pool.focus_widget,
-      pool.jump,
-      pool.pending,
-    )
-  }) else {
+  let Some((count, focused, focus_widget, jump, pending, pooled)) =
+    world.get::<UiList>(list).map(|pool| {
+      (
+        pool.count,
+        pool.focused,
+        pool.focus_widget,
+        pool.jump,
+        pool.pending,
+        !pool.rows.is_empty(),
+      )
+    })
+  else {
     return;
   };
+  let renew = take_up_shape(world, list, pooled);
   let shape = world
     .get::<UiNodeKind>(list)
     .and_then(|kind| shape_of(kind, count));
@@ -304,9 +353,26 @@ fn update_list(
   // A focus on its way past the end goes to the new last item, from the start
   if pending.is_some_and(|waiting| waiting.index >= count) {
     take_back(world, pending);
-    pending = count
-      .checked_sub(1)
-      .map(|index| PendingFocus { index, asked: None });
+    pending = count.checked_sub(1).map(|index| PendingFocus {
+      index,
+      asked: None,
+      widget: UiId::NONE,
+    });
+  }
+  // A new row shape hides the focused row until it is bound again: the
+  // focus goes back to its widget once the row is drawn
+  if renew == Renew::Rebind
+    && let Some(index) = focused
+    && focus_widget != UiId::NONE
+    && memory.interact.focused == focus_widget
+    && pending.is_none()
+    && !jump.is_some_and(|(_, focus)| focus)
+  {
+    pending = Some(PendingFocus {
+      index,
+      asked: None,
+      widget: focus_widget,
+    });
   }
 
   let per_row = usize::from(shape.columns);
@@ -348,7 +414,11 @@ fn update_list(
     && pending.is_none_or(|waiting| waiting.index != index)
   {
     take_back(world, pending);
-    pending = Some(PendingFocus { index, asked: None });
+    pending = Some(PendingFocus {
+      index,
+      asked: None,
+      widget: UiId::NONE,
+    });
   }
   // The jump's row is pooled below; a jump to nothing has nowhere to go
   if aimed || jump_to.is_none() {
@@ -397,6 +467,10 @@ fn update_list(
   let rebind = std::mem::take(&mut pool.rebind);
   // A row despawned elsewhere is gone from the pool
   held.retain(|&(_, row)| world.get::<UiListRow>(row).is_some());
+  // A new row shape: every row in line with it (those reused below too)
+  if renew != Renew::Keep {
+    renew_rows(world, list, &mut held, frame, renew == Renew::Rebind);
+  }
   let mut free = Vec::new();
   held.retain(|&(index, row)| {
     let keep = needed.iter().any(|items| items.contains(&index));
@@ -405,8 +479,17 @@ fn update_list(
     }
     keep
   });
+  // Kept, each is bound again; a reused one is bound for its new item below
+  if renew == Renew::Rebind {
+    binds.extend(
+      held
+        .iter()
+        .map(|&(index, row)| UiListBind { list, row, index }),
+    );
+  }
   // The items given a row now join the pool sorted once, after the loop
   let mut added = Vec::new();
+  let mut unbuilt = false;
   for items in &needed {
     for index in items.clone() {
       if held.binary_search_by_key(&index, |&(item, _)| item).is_ok() {
@@ -423,10 +506,24 @@ fn update_list(
           row
         }
         None => {
-          let Some(shape) = world.get::<UiListShape>(list).map(|shape| shape.0.clone()) else {
+          let shape = world
+            .get::<UiListShape>(list)
+            .map(|held| held.shape.clone());
+          let Some(shape) = shape.filter(|_| !unbuilt) else {
             continue;
           };
-          spawn_list_row(world, list, shape.build(), index, frame)
+          match shape.build(world) {
+            Ok(tree) => {
+              keep_built(world, list, &shape);
+              spawn_list_row(world, list, tree, index, frame)
+            }
+            // Not tried again this frame
+            Err(error) => {
+              warn_unbuilt(world, list, &error);
+              unbuilt = true;
+              continue;
+            }
+          }
         }
       };
       added.push((index, row));
@@ -486,23 +583,39 @@ fn update_list(
         None
       }
     }
-    Some(PendingFocus { index, asked: None }) => {
+    Some(PendingFocus {
+      index,
+      asked: None,
+      widget,
+    }) => {
       match pooled(index).filter(|&row| drawn(world, row, frame)) {
         // Its row is not drawn yet
         None => pending,
-        Some(row) => match first_focusable(world, row, false) {
-          Some(node) => {
-            if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
-              nodes.pending_focus = Some(node);
-            }
-            Some(PendingFocus {
-              index,
-              asked: Some(node),
+        Some(row) => {
+          let had = (widget != UiId::NONE)
+            .then(|| {
+              find_focusable(world, row, |node, _| {
+                world
+                  .get::<UiInteraction>(node)
+                  .is_some_and(|state| state.id == widget)
+              })
             })
+            .flatten();
+          match had.or_else(|| first_focusable(world, row, false)) {
+            Some(node) => {
+              if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
+                nodes.pending_focus = Some(node);
+              }
+              Some(PendingFocus {
+                index,
+                asked: Some(node),
+                widget,
+              })
+            }
+            // Nothing in the row takes the focus
+            None => None,
           }
-          // Nothing in the row takes the focus
-          None => None,
-        },
+        }
       }
     }
     None => None,
@@ -514,6 +627,124 @@ fn update_list(
     pool.pending = pending;
     if pool.focused != focused {
       pool.focused = focused;
+    }
+  }
+}
+
+/// What a new row shape from the list's tree asks of its pooled rows
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Renew {
+  /// Nothing: no new shape, one that cannot build here, or one that builds
+  /// the row the old one built
+  Keep,
+  /// Each brought in line where it is, still drawn: the same row, holding a
+  /// list that takes its own new row shape from it
+  InPlace,
+  /// Each brought in line where it is, hidden and bound again: another row
+  Rebind,
+}
+
+/// Take up the row shape a reconcile gave `list` (`UiListShape::next`).
+/// With rows `pooled`, it is built and set against the row they were built
+/// as: one that cannot build here keeps the old shape and rows (warned
+/// once), and one that builds the same row leaves the rows as they are.
+fn take_up_shape(world: &mut World, list: Entity, pooled: bool) -> Renew {
+  let Some(next) = world
+    .get::<UiListShape>(list)
+    .and_then(|held| held.next.clone())
+  else {
+    return Renew::Keep;
+  };
+  let (renew, built) = if pooled {
+    match next.build(world) {
+      Ok(new) => {
+        let same = world
+          .get::<UiListShape>(list)
+          .and_then(|held| held.built.as_ref())
+          .is_some_and(|built| same_tree(built, &new));
+        let renew = if !same {
+          Renew::Rebind
+        } else if holds_list(&new) {
+          Renew::InPlace
+        } else {
+          Renew::Keep
+        };
+        (renew, Some(new))
+      }
+      Err(error) => {
+        warn_unbuilt(world, list, &error);
+        if let Some(mut held) = world.get_mut::<UiListShape>(list) {
+          held.next = None;
+        }
+        return Renew::Keep;
+      }
+    }
+  } else {
+    (Renew::Keep, None)
+  };
+  if let Some(mut held) = world.get_mut::<UiListShape>(list) {
+    held.next = None;
+    held.shape = next;
+    held.built = built;
+  }
+  renew
+}
+
+/// Keep a row of `shape` as `list`'s rows are built from it, the first time
+/// it builds one
+fn keep_built(world: &mut World, list: Entity, shape: &RowShape) {
+  if world
+    .get::<UiListShape>(list)
+    .is_some_and(|held| held.built.is_none())
+    && let Ok(built) = shape.build(world)
+    && let Some(mut held) = world.get_mut::<UiListShape>(list)
+  {
+    held.built = Some(built);
+  }
+}
+
+/// Whether `node`'s tree holds a list node
+fn holds_list(node: &UiNode) -> bool {
+  node.row_shape.is_some() || node.children.iter().any(holds_list)
+}
+
+/// Bring each of `rows` (a pool, by item) in line with `list`'s row shape
+/// where it is, as `update_ui` does, so its entities (and the focus) stay
+/// where the tree keeps them; a row whose top is of another kind is spawned
+/// again in its place. With `rebind`, each is hidden from this frame until
+/// drawn bound again (the caller sends the binds).
+fn renew_rows(
+  world: &mut World,
+  list: Entity,
+  rows: &mut [(usize, Entity)],
+  frame: u64,
+  rebind: bool,
+) {
+  let Some(shape) = world
+    .get::<UiListShape>(list)
+    .map(|held| held.shape.clone())
+  else {
+    return;
+  };
+  for (index, row) in rows.iter_mut() {
+    let tree = match shape.build(world) {
+      Ok(tree) => tree,
+      Err(error) => {
+        warn_unbuilt(world, list, &error);
+        return;
+      }
+    };
+    let same = world
+      .get::<UiNodeKind>(*row)
+      .is_some_and(|node| same_kind(&node.kind, &tree.kind));
+    if !same {
+      world.despawn(*row);
+      *row = spawn_list_row(world, list, tree, *index, frame);
+      continue;
+    }
+    reconcile(world, *row, tree, Mode::Update);
+    if rebind && let Some(mut pooled) = world.get_mut::<UiListRow>(*row) {
+      pooled.bound_frame = frame;
     }
   }
 }
@@ -566,6 +797,16 @@ fn takes_focus(kind: &UiNodeKind) -> bool {
 /// disabled, and with `marked` one marked `.default_focus()`. The rows of a
 /// list inside the row are that list's.
 fn first_focusable(world: &World, row: Entity, marked: bool) -> Option<Entity> {
+  find_focusable(world, row, |_, kind| !marked || kind.flags.default_focus)
+}
+
+/// The first node of `row`'s tree that takes the focus when asked (as
+/// [`first_focusable`]) and that `accept` takes
+fn find_focusable(
+  world: &World,
+  row: Entity,
+  accept: impl Fn(Entity, &UiNodeKind) -> bool,
+) -> Option<Entity> {
   let mut stack = vec![row];
   while let Some(node) = stack.pop() {
     let Ok(entity) = world.get_entity(node) else {
@@ -577,7 +818,7 @@ fn first_focusable(world: &World, row: Entity, marked: bool) -> Option<Entity> {
     if let Some(kind) = entity.get::<UiNodeKind>()
       && takes_focus(kind)
       && !entity.contains::<UiDisabled>()
-      && (!marked || kind.flags.default_focus)
+      && accept(node, kind)
     {
       return Some(node);
     }
@@ -634,6 +875,23 @@ fn deliver(world: &mut World, binds: Vec<UiListBind>) {
       world.trigger(bind);
     }
   }
+}
+
+/// The list node `list` as a message names it
+fn list_name(world: &World, list: Entity) -> String {
+  match world.get::<UiName>(list) {
+    Some(name) => format!("the list node \"{}\"", name.0),
+    None => format!("the list node {list}"),
+  }
+}
+
+/// Warn once, for each list and mistake, that `list`'s row shape cannot
+/// build its rows here
+fn warn_unbuilt(world: &World, list: Entity, error: &UiFileError) {
+  let what = list_name(world, list);
+  warn_once(format!("ui-list-row:{list}:{what}:{error}"), || {
+    format!("could not build a row for {what}, so its rows stay as they are:\n{error}")
+  });
 }
 
 /// Warn once that a list node has no row shape, so builds no rows
@@ -1920,5 +2178,531 @@ mod api_tests {
       warnings_containing("the list node \"tiny\" would build more than 4096"),
       1
     );
+  }
+}
+
+#[cfg(test)]
+mod file_tests {
+  use super::*;
+  use crate::core::asset::HotReloadEvent;
+  use crate::core::testing::UiHarness;
+  use crate::core::ui::file::build::Placeholders;
+  use crate::core::ui::nodes::*;
+  use crate::core::ui::test_util::warnings_containing;
+  use crate::prelude::*;
+
+  fn harness(files: &[(&str, &str)]) -> (tempfile::TempDir, UiHarness) {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+      std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let h = UiHarness::new(640.0, 480.0).with_assets(dir.path());
+    (dir, h)
+  }
+
+  /// Write a file anew and reload it, then draw the frame that takes it up
+  fn rewrite(dir: &tempfile::TempDir, h: &mut UiHarness, name: &str, text: &str) {
+    std::fs::write(dir.path().join(name), text).unwrap();
+    h.reload_ui(name).unwrap();
+    h.frame(|_| {});
+  }
+
+  /// A frame, then each row it bound filled as a game would: `rank` the
+  /// item's number, `name` P and its index. The (item, row) of each bind.
+  fn step(h: &mut UiHarness) -> Vec<(usize, Entity)> {
+    h.frame(|_| {});
+    let binds: Vec<UiListBind> = h.messages::<UiListBind>().collect();
+    for b in &binds {
+      h.ui_set(b.row, "rank", b.index + 1);
+      h.ui_set(b.row, "name", format!("P{}", b.index));
+    }
+    binds.iter().map(|b| (b.index, b.row)).collect()
+  }
+
+  fn rows(h: &UiHarness, list: Entity) -> Vec<(usize, Entity)> {
+    h.world().get::<UiList>(list).unwrap().rows.clone()
+  }
+
+  fn line_of(h: &UiHarness, row: Entity) -> String {
+    let line = find_ui_in(h.world(), row, "line").expect("the row's line");
+    h.world()
+      .get::<UiLabel>(line)
+      .map(|l| l.0.clone())
+      .unwrap_or_default()
+  }
+
+  /// Whether `row` was drawn in the last frame
+  fn drawn_now(h: &UiHarness, row: Entity) -> bool {
+    h.ui_id(row).and_then(|id| h.record_of(id)).is_some()
+  }
+
+  const BOARD: &str = r#"(
+    templates: { "LeaderRow": (node: Row(children: [Button(label: "{rank}. {name}", name: "line")])) },
+    root: Column(focus_scope: true, children: [List(count: 1000, row_height: 20, height: 100, width: 200, name: "board", row_shape: LeaderRow)]),
+  )"#;
+
+  #[test]
+  fn a_file_list_pools_rows_from_its_template() {
+    let (_dir, mut h) = harness(&[("board.ui.ron", BOARD)]);
+    h.spawn_ui_file("board.ui.ron").unwrap();
+    let list = h.find_ui("board").unwrap();
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    let pool = h.world().get::<UiList>(list).unwrap().rows.clone();
+    assert!(!pool.is_empty() && pool.len() < 20);
+    for &(index, row) in &pool {
+      assert_eq!(
+        line_of(&h, row),
+        format!("{}. P{index}", index + 1),
+        "each row its own binding scope"
+      );
+    }
+  }
+
+  #[test]
+  fn a_reload_of_the_row_template_rebuilds_rows_and_keeps_the_focused_item() {
+    let (dir, mut h) = harness(&[("board.ui.ron", BOARD)]);
+    h.spawn_ui_file("board.ui.ron").unwrap();
+    let list = h.find_ui("board").unwrap();
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    h.ui_list_focus(list, 40);
+    for _ in 0..5 {
+      step(&mut h);
+    }
+    assert_eq!(h.world().get::<UiList>(list).unwrap().focused, Some(40));
+    // The jump's ease settles, so the pool holds still
+    for _ in 0..60 {
+      step(&mut h);
+    }
+    let pool = rows(&h, list);
+    rewrite(
+      &dir,
+      &mut h,
+      "board.ui.ron",
+      &BOARD.replace("\"{rank}. {name}\"", "\"#{rank} {name}\""),
+    );
+    let bound: Vec<(usize, Entity)> = h
+      .messages::<UiListBind>()
+      .map(|b| (b.index, b.row))
+      .collect();
+    assert_eq!(bound, pool, "one bind for each pooled row");
+    assert_eq!(rows(&h, list), pool, "each row brought in line where it is");
+    assert!(
+      pool.iter().all(|&(_, row)| !drawn_now(&h, row)),
+      "hidden until bound again"
+    );
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    let (_, row) = *h
+      .world()
+      .get::<UiList>(list)
+      .unwrap()
+      .rows
+      .iter()
+      .find(|(i, _)| *i == 40)
+      .unwrap();
+    let line = crate::core::ui::nodes::find_ui_in(h.world(), row, "line").unwrap();
+    assert_eq!(h.world().get::<UiLabel>(line).unwrap().0, "#41 P40");
+    assert_eq!(
+      h.world().get::<UiList>(list).unwrap().focused,
+      Some(40),
+      "the focus stays on item 40"
+    );
+    assert!(h.focused().is_some());
+    assert_eq!(h.focused(), h.ui_id(line), "on the widget that had it");
+  }
+
+  #[test]
+  fn a_row_template_whose_file_fails_to_parse_keeps_the_rows_drawing_and_warns_once() {
+    let template = r#"(templates: { "LeaderRow": (node: Row(children: [Button(label: "{rank}. {name}", name: "line")])) })"#;
+    let board = r#"(imports: ["parse-rows.ui.ron"], root: Column(focus_scope: true, children: [
+      List(count: 1000, row_height: 20, height: 100, width: 200, name: "board", row_shape: LeaderRow),
+    ]))"#;
+    let (dir, mut h) = harness(&[
+      ("parse-rows.ui.ron", template),
+      ("parse-board.ui.ron", board),
+    ]);
+    h.spawn_ui_file("parse-board.ui.ron").unwrap();
+    let list = h.find_ui("board").unwrap();
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    let pool = rows(&h, list);
+    let path = dir.path().join("parse-rows.ui.ron");
+    std::fs::write(&path, "(templates: { \"LeaderRow\": (node: Row(children: [").unwrap();
+    // A watcher may report one save more than once
+    for _ in 0..2 {
+      assert!(
+        !h.assets()
+          .handle_reload_event(HotReloadEvent::FileModified(path.clone()))
+      );
+      assert!(step(&mut h).is_empty(), "nothing bound again");
+    }
+    assert_eq!(warnings_containing("could not reload parse-rows.ui.ron"), 1);
+    assert_eq!(rows(&h, list), pool, "the same rows");
+    for &(index, row) in &pool {
+      assert!(drawn_now(&h, row), "item {index} still drawn");
+      assert_eq!(line_of(&h, row), format!("{}. P{index}", index + 1));
+    }
+    std::fs::write(
+      &path,
+      template.replace("\"{rank}. {name}\"", "\"#{rank} {name}\""),
+    )
+    .unwrap();
+    assert!(
+      h.assets()
+        .handle_reload_event(HotReloadEvent::FileModified(path))
+    );
+    assert_eq!(step(&mut h), pool, "the fix rebuilds and binds every row");
+    for _ in 0..2 {
+      step(&mut h);
+    }
+    assert_eq!(rows(&h, list), pool);
+    for &(index, row) in &pool {
+      assert!(drawn_now(&h, row), "item {index} drawn again");
+      assert_eq!(line_of(&h, row), format!("#{} P{index}", index + 1));
+    }
+  }
+
+  #[test]
+  fn a_row_template_that_cannot_build_keeps_the_rows_and_warns_once() {
+    let name = "lost-image-board.ui.ron";
+    let (dir, mut h) = harness(&[(name, BOARD)]);
+    h.spawn_ui_file(name).unwrap();
+    let list = h.find_ui("board").unwrap();
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    let pool = rows(&h, list);
+    // It checks (images are placeholders when checked) and cannot build
+    let lost = BOARD.replace(
+      "name: \"line\")",
+      "name: \"line\"), Image(\"gone-leader.png\")",
+    );
+    rewrite(&dir, &mut h, name, &lost);
+    for _ in 0..3 {
+      assert!(step(&mut h).is_empty(), "nothing bound again");
+    }
+    assert_eq!(rows(&h, list), pool);
+    for &(index, row) in &pool {
+      assert!(drawn_now(&h, row), "item {index} still drawn");
+      assert_eq!(line_of(&h, row), format!("{}. P{index}", index + 1));
+    }
+    assert_eq!(warnings_containing("gone-leader.png"), 1);
+    rewrite(
+      &dir,
+      &mut h,
+      name,
+      &BOARD.replace("\"{rank}. {name}\"", "\"#{rank} {name}\""),
+    );
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    assert_eq!(rows(&h, list), pool, "rebuilt where they were");
+    for &(index, row) in &pool {
+      assert_eq!(line_of(&h, row), format!("#{} P{index}", index + 1));
+    }
+  }
+
+  #[test]
+  fn a_reload_that_leaves_the_row_as_it_was_leaves_the_rows_drawing() {
+    let (dir, mut h) = harness(&[("board.ui.ron", BOARD)]);
+    h.spawn_ui_file("board.ui.ron").unwrap();
+    let list = h.find_ui("board").unwrap();
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    let pool = rows(&h, list);
+    rewrite(
+      &dir,
+      &mut h,
+      "board.ui.ron",
+      &BOARD.replace("focus_scope: true,", "focus_scope: true, gap: 6,"),
+    );
+    assert_eq!(h.messages::<UiReloaded>().count(), 1, "reloaded");
+    assert_eq!(
+      h.messages::<UiListBind>().count(),
+      0,
+      "nothing to bind again"
+    );
+    assert!(
+      pool.iter().all(|&(_, row)| drawn_now(&h, row)),
+      "drawn through the reload"
+    );
+    assert_eq!(rows(&h, list), pool);
+  }
+
+  #[test]
+  fn a_row_shape_builds_in_the_file_that_wrote_it() {
+    let common = r#"(templates: {
+      "Board": (params: ["row"], node: List(count: 10, row_height: 20, height: 100, width: 200, name: "given", row_shape: row)),
+      "Plain": (node: List(count: 10, row_height: 20, height: 100, width: 200, name: "plain", row_shape: CommonRow)),
+      "CommonRow": (node: Button(label: "common {name}", name: "line")),
+    })"#;
+    let menu = r#"(
+      imports: ["scoped-common.ui.ron"],
+      templates: { "MenuRow": (node: Button(label: "menu {name}", name: "line")) },
+      root: Column(children: [Board(row: MenuRow), Plain]),
+    )"#;
+    let (_dir, mut h) = harness(&[
+      ("scoped-common.ui.ron", common),
+      ("scoped-menu.ui.ron", menu),
+    ]);
+    h.spawn_ui_file("scoped-menu.ui.ron").unwrap();
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    for (name, says) in [("given", "menu"), ("plain", "common")] {
+      let list = h.find_ui(name).unwrap();
+      let pool = rows(&h, list);
+      assert!(!pool.is_empty(), "{name}");
+      for &(index, row) in &pool {
+        assert_eq!(line_of(&h, row), format!("{says} P{index}"), "{name}");
+      }
+    }
+  }
+
+  fn code_board(label: &'static str) -> UiNode {
+    UiNode::column().focus_scope().child(
+      UiNode::list(100, 20.0)
+        .height(100.0)
+        .width(200.0)
+        .row_shape(move || UiNode::row().child(UiNode::button(label).bound().name("line")))
+        .name("board"),
+    )
+  }
+
+  #[test]
+  fn update_ui_with_the_same_row_keeps_the_rows_drawing_and_with_another_rebuilds_them() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let root = h.spawn_ui(code_board("{name}"));
+    let list = h.find_ui("board").unwrap();
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    let pool = rows(&h, list);
+    // Another function that builds the same row: nothing to do, every frame
+    for _ in 0..3 {
+      h.update_ui(root, code_board("{name}"));
+      assert!(step(&mut h).is_empty(), "nothing bound again");
+      assert!(pool.iter().all(|&(_, row)| drawn_now(&h, row)));
+    }
+    // Another row: each brought in line where it is, and bound again
+    h.update_ui(root, code_board("<{name}>"));
+    assert_eq!(step(&mut h), pool);
+    assert_eq!(rows(&h, list), pool);
+    assert!(pool.iter().all(|&(_, row)| !drawn_now(&h, row)));
+    step(&mut h);
+    for &(index, row) in &pool {
+      assert!(drawn_now(&h, row), "item {index} drawn from the next frame");
+      assert_eq!(line_of(&h, row), format!("<P{index}>"));
+    }
+  }
+
+  #[test]
+  fn a_row_of_another_top_kind_takes_each_pooled_row_s_place() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let tree = |column: bool| {
+      UiNode::list(100, 20.0)
+        .height(100.0)
+        .width(200.0)
+        .row_shape(move || {
+          let top = if column {
+            UiNode::column()
+          } else {
+            UiNode::row()
+          };
+          top.child(UiNode::text("{name}").bound().name("line"))
+        })
+        .name("board")
+    };
+    let list = h.spawn_ui(tree(false));
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    let pool = rows(&h, list);
+    h.update_ui(list, tree(true));
+    let bound = step(&mut h);
+    let now = rows(&h, list);
+    assert_eq!(bound, now, "each new row bound");
+    let items = |rows: &[(usize, Entity)]| rows.iter().map(|r| r.0).collect::<Vec<_>>();
+    assert_eq!(items(&now), items(&pool), "the same items");
+    for (&(_, old), &(index, new)) in pool.iter().zip(&now) {
+      assert!(h.world().get_entity(old).is_err(), "the old row went");
+      assert_eq!(h.world().get::<UiNodeKind>(new).unwrap().name(), "column");
+      assert_eq!(
+        h.world().get::<UiListRow>(new).map(UiListRow::index),
+        Some(index)
+      );
+      assert_eq!(
+        h.world().get::<ChildOf>(new).map(ChildOf::parent),
+        Some(list)
+      );
+    }
+    step(&mut h);
+    for &(index, row) in &now {
+      assert!(drawn_now(&h, row));
+      assert_eq!(line_of(&h, row), format!("P{index}"));
+    }
+    assert_eq!(warnings_containing("two UI nodes are named \"line\""), 0);
+  }
+
+  #[test]
+  fn a_list_in_each_row_takes_its_new_row_shape_while_the_rows_keep_drawing() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let tree = |label: &'static str| {
+      UiNode::list(10, 120.0)
+        .height(400.0)
+        .width(300.0)
+        .row_shape(move || {
+          UiNode::column().child(
+            UiNode::list(50, 20.0)
+              .height(100.0)
+              .row_shape(move || UiNode::row().child(UiNode::button(label).bound().name("line")))
+              .name("inner"),
+          )
+        })
+        .name("outer")
+    };
+    let outer = h.spawn_ui(tree("{name}"));
+    for _ in 0..4 {
+      step(&mut h);
+    }
+    let outer_rows = rows(&h, outer);
+    let inner = find_ui_in(h.world(), outer_rows[0].1, "inner").expect("its list");
+    let inner_rows = rows(&h, inner);
+    assert!(!inner_rows.is_empty());
+    h.update_ui(outer, tree("<{name}>"));
+    let bound = step(&mut h);
+    for &(index, row) in &outer_rows {
+      assert!(
+        !bound.contains(&(index, row)),
+        "outer item {index} not bound again"
+      );
+      assert!(drawn_now(&h, row), "outer item {index} still drawn");
+    }
+    for pooled in &inner_rows {
+      assert!(bound.contains(pooled), "inner {pooled:?} bound again");
+    }
+    step(&mut h);
+    for &(index, row) in &inner_rows {
+      assert_eq!(line_of(&h, row), format!("<P{index}>"));
+    }
+  }
+
+  #[test]
+  fn a_new_row_shape_gives_the_focus_back_to_the_widget_that_had_it() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let tree = |label: &'static str| {
+      UiNode::column().focus_scope().child(
+        UiNode::list(100, 20.0)
+          .height(100.0)
+          .width(200.0)
+          .row_shape(move || {
+            UiNode::row()
+              .child(UiNode::button("A"))
+              .child(UiNode::button(label).bound().name("line"))
+          })
+          .name("board"),
+      )
+    };
+    let root = h.spawn_ui(tree("{name}"));
+    let list = h.find_ui("board").unwrap();
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    let row = rows(&h, list)[3].1;
+    let b = find_ui_in(h.world(), row, "line").unwrap();
+    h.world_mut().resource_mut::<UiNodes>().pending_focus = Some(b);
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    assert!(h.focused().is_some());
+    assert_eq!(h.focused(), h.ui_id(b));
+    h.update_ui(root, tree("<{name}>"));
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    assert!(rows(&h, list).contains(&(3, row)));
+    assert_eq!(line_of(&h, row), "<P3>");
+    assert_eq!(h.focused(), h.ui_id(b), "item 3's second button, as before");
+    assert_eq!(h.world().get::<UiList>(list).unwrap().focused, Some(3));
+  }
+
+  #[test]
+  fn a_tree_that_gives_or_takes_away_the_row_shape_builds_or_releases_the_rows() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let bare = || {
+      UiNode::list(100, 20.0)
+        .height(100.0)
+        .width(200.0)
+        .name("board")
+    };
+    let list = h.spawn_ui(bare());
+    for _ in 0..2 {
+      step(&mut h);
+    }
+    assert!(rows(&h, list).is_empty());
+    h.update_ui(
+      list,
+      bare().row_shape(|| UiNode::button("{name}").bound().name("line")),
+    );
+    for _ in 0..2 {
+      step(&mut h);
+    }
+    let pool = rows(&h, list);
+    assert!(!pool.is_empty());
+    for &(index, row) in &pool {
+      assert_eq!(line_of(&h, row), format!("P{index}"));
+    }
+    h.update_ui(list, bare());
+    step(&mut h);
+    assert!(rows(&h, list).is_empty());
+    assert!(
+      pool
+        .iter()
+        .all(|&(_, row)| h.world().get_entity(row).is_err())
+    );
+  }
+
+  #[test]
+  fn a_row_shape_that_cannot_build_where_the_list_is_keeps_its_rows_and_warns_once() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = h.spawn_ui(
+      UiNode::list(100, 20.0)
+        .height(100.0)
+        .width(200.0)
+        .row_shape(|| UiNode::button("{name}").bound().name("line"))
+        .name("board"),
+    );
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    let pool = rows(&h, list);
+    // Built against placeholder images: the image is found nowhere else
+    let file = UiFile::parse(
+      "ui/lost-row.ui.ron",
+      r#"(root: List(count: 100, row_height: 20, height: 100, width: 200, name: "board", row_shape: Image("lost-row.png")))"#,
+    )
+    .unwrap();
+    let tree = || file.build_root(&mut Placeholders::default()).unwrap();
+    h.update_ui(list, tree());
+    for _ in 0..3 {
+      assert!(step(&mut h).is_empty(), "nothing bound again");
+    }
+    assert_eq!(rows(&h, list), pool, "the rows it had");
+    assert!(pool.iter().all(|&(_, row)| drawn_now(&h, row)));
+    assert_eq!(warnings_containing("lost-row.png"), 1);
+    // A new list of that shape builds no row, warned once
+    let other = h.spawn_ui(tree());
+    for _ in 0..3 {
+      step(&mut h);
+    }
+    assert!(rows(&h, other).is_empty());
+    assert_eq!(warnings_containing("lost-row.png"), 2, "once for each list");
   }
 }

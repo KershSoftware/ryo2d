@@ -17,6 +17,7 @@ use crate::core::ui::{Align, Anchor, Color, Edges, Justify, Length, Rect};
 use super::bindings::BindValue;
 use super::components::UiSlot;
 use super::list::RowShape;
+use super::reconcile::same_reveal;
 
 /// A theme text role, read when the text is drawn
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1320,7 +1321,13 @@ impl UiNode {
 
   /// What each of the list's rows is spawned from: a function returning one
   /// row's tree. Every row is spawned from it and given an item by index
-  /// (list)
+  /// (list). In a UI file it names a template, or is a node:
+  /// `List(count: 0, row_height: 28, row_shape: LeaderRow)`.
+  ///
+  /// An update (`ctx.update_ui`) or a file reload whose shape builds
+  /// another row brings each pooled row in line in place and binds it again
+  /// (it is drawn from the next frame, as a new row is); one that builds the
+  /// same row leaves the rows as they are.
   pub fn row_shape(mut self, shape: impl Fn() -> UiNode + Send + Sync + 'static) -> UiNode {
     if matches!(self.kind, Kind::List(_)) {
       self.row_shape = Some(RowShape::Code(Arc::new(shape)));
@@ -1369,6 +1376,86 @@ impl UiNode {
     }
     self.given("binding_slot")
   }
+}
+
+/// Whether two trees spawn the same nodes: everything a reconcile brings in
+/// line, and a list's row shape by whether it is given (a function cannot be
+/// compared; a list in a tree takes its own new shape up itself)
+pub(crate) fn same_tree(a: &UiNode, b: &UiNode) -> bool {
+  let UiNode {
+    kind,
+    layout,
+    flags,
+    variant,
+    action,
+    name,
+    tooltip,
+    hidden,
+    disabled,
+    embedded,
+    nav,
+    state,
+    children,
+    // Applied at spawn only, as a reconcile leaves them
+    inserts: _,
+    given: _,
+    bind,
+    bound,
+    seeds,
+    key,
+    template,
+    instance: _,
+    source: _,
+    row_shape,
+  } = a;
+  *kind == b.kind
+    && *layout == b.layout
+    && *flags == b.flags
+    && *variant == b.variant
+    && *action == b.action
+    && *name == b.name
+    && *tooltip == b.tooltip
+    && *hidden == b.hidden
+    && *disabled == b.disabled
+    && *embedded == b.embedded
+    && *nav == b.nav
+    && same_state(state, &b.state)
+    && *bind == b.bind
+    && *bound == b.bound
+    && *seeds == b.seeds
+    && *key == b.key
+    && *template == b.template
+    && row_shape.is_some() == b.row_shape.is_some()
+    && children.len() == b.children.len()
+    && children
+      .iter()
+      .zip(&b.children)
+      .all(|(a, b)| same_tree(a, b))
+}
+
+fn same_state(a: &NodeState, b: &NodeState) -> bool {
+  let NodeState {
+    label,
+    image,
+    checked,
+    value,
+    index,
+    options,
+    text,
+    slot,
+    reveal,
+    list_count,
+  } = a;
+  *label == b.label
+    && *image == b.image
+    && *checked == b.checked
+    && *value == b.value
+    && *index == b.index
+    && *options == b.options
+    && *text == b.text
+    && *slot == b.slot
+    && same_reveal(reveal, &b.reveal)
+    && *list_count == b.list_count
 }
 
 /// Everything a node was given, as text, for comparing a file-built node with

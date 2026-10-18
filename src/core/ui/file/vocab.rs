@@ -5,7 +5,7 @@
 
 use crate::core::render::batch::Filter;
 use crate::core::text::TextAlign;
-use crate::core::ui::nodes::TextRole;
+use crate::core::ui::nodes::{RowShape, TextRole};
 use crate::core::ui::{Align, Anchor, Justify, Rect, UiNode};
 
 use super::build::BuildCx;
@@ -30,6 +30,7 @@ pub(crate) enum Form {
   Strings,
   Range,
   Typewriter,
+  Node,
   Enum(&'static [&'static str]),
 }
 
@@ -53,6 +54,7 @@ impl Form {
       Form::Strings => "a list of strings".into(),
       Form::Range => "(min, max)".into(),
       Form::Typewriter => "a number or (per_second: .., punctuation_pause: .., fade: ..)".into(),
+      Form::Node => "a template name or a node such as Row(..)".into(),
       Form::Enum(names) => format!("one of {}", names.join(", ")),
     }
   }
@@ -119,6 +121,10 @@ impl Ctor<'_> {
     name: &'static str,
   ) -> Option<crate::core::asset::SpriteHandle> {
     self.read(cx, name, |cx, v| cx.asset(v))
+  }
+
+  pub(crate) fn row_shape(&self, cx: &mut BuildCx<'_>, name: &'static str) -> Option<RowShape> {
+    self.read(cx, name, |cx, v| cx.row_shape(v))
   }
 }
 
@@ -285,6 +291,22 @@ pub(crate) static KINDS: &[KindSpec] = &[
       Some(UiNode::confirm(&title, &message, &yes, &no))
     },
   },
+  KindSpec {
+    name: "List",
+    main: None,
+    args: &[
+      arg("count", false),
+      arg("row_height", true),
+      arg("row_shape", true),
+    ],
+    make: |c, cx| {
+      let count = c.whole(cx, "count", usize::MAX as u64).unwrap_or(0) as usize;
+      let row_height = c.number(cx, "row_height").unwrap_or(0.0);
+      let mut list = UiNode::list(count, row_height);
+      list.row_shape = c.row_shape(cx, "row_shape");
+      Some(list)
+    },
+  },
 ];
 
 /// Defines the names of an enum option and the function from a name to its
@@ -410,6 +432,8 @@ pub(crate) static OPTIONS: &[OptionSpec] = &[
   option!("default_choice", Whole, usize, default_choice),
   option!("count", Whole, u32, count),
   option!("binding_slot", Whole, usize, binding_slot),
+  option!("columns", Whole, u16, columns),
+  option!("overscan", Whole, u16, overscan),
   option!("width", length, width),
   option!("height", length, height),
   option!("padding", edges, padding),

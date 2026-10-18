@@ -169,6 +169,34 @@ mod tests {
   }
 
   #[test]
+  fn a_list_checks_like_any_kind() {
+    const BOARD: &str = r#"(
+    templates: { "LeaderRow": (node: Row(children: [Button(label: "{rank}. {name}", name: "line")])) },
+    root: Column(focus_scope: true, children: [List(count: 1000, row_height: 20, height: 100, width: 200, name: "board", row_shape: LeaderRow)]),
+  )"#;
+    let clean = project(&[("assets/ui/board.ui.ron", BOARD)]);
+    let files = ui_files_under(&clean.path().join("assets"));
+    assert_eq!(check_files(clean.path(), &files), []);
+
+    let broken = project(&[(
+      "assets/ui/board.ui.ron",
+      "(root: Column(children: [\n  List(count: 3),\n]))",
+    )]);
+    let issues = check_files(
+      broken.path(),
+      &ui_files_under(&broken.path().join("assets")),
+    );
+    let shown: Vec<String> = issues.iter().map(ToString::to_string).collect();
+    assert_eq!(
+      shown,
+      [
+        "assets/ui/board.ui.ron:2:3: List needs \"row_height\"",
+        "assets/ui/board.ui.ron:2:3: List needs \"row_shape\"",
+      ]
+    );
+  }
+
+  #[test]
   fn broken_files_and_missing_images_are_reported_with_positions() {
     let dir = project(&[
       ("assets/ui/a.ui.ron", "(root: Column(\n  gpa: 1))"),

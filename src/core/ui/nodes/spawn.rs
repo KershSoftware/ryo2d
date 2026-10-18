@@ -392,7 +392,7 @@ pub(crate) fn spawn_node(
     });
     match row_shape {
       Some(shape) => {
-        entity.insert(UiListShape(shape));
+        entity.insert(UiListShape::new(shape));
       }
       None => list::warn_shapeless(),
     }
