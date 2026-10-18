@@ -230,6 +230,95 @@ fn list_frame(c: &mut Criterion) {
   });
 }
 
+/// A closure list of `count` buttons (the long list's row) in a 400 by 300
+/// view: the items built this frame
+fn virtual_list(ui: &mut UiContext<'_>, count: usize) -> ListResponse {
+  ui.list(count)
+    .row_height(30.0)
+    .gap(2.0)
+    .height(400.0)
+    .width(300.0)
+    .id("bench list")
+    .show(|ui, i| {
+      ui.button(format!("Item {i}")).id(i).fill_width().show();
+    })
+}
+
+/// Jump a closure list to its middle and let the eased scroll settle
+fn settle_virtual_list(count: usize) -> UiHarness {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  let list = harness.frame(|ui| virtual_list(ui, count));
+  let middle = count / 2;
+  harness.frame(|ui| ui.list_scroll_to(list.id, middle));
+  for _ in 0..60 {
+    harness.frame(|ui| virtual_list(ui, count));
+  }
+  let list = harness.frame(|ui| virtual_list(ui, count));
+  assert!(
+    list.range.contains(&middle),
+    "the list scrolled to its middle ({:?} of {count})",
+    list.range
+  );
+  harness
+}
+
+fn virtual_list_frame(c: &mut Criterion) {
+  let mut harness = settle_virtual_list(10_000);
+  c.bench_function("ui frame, a 10,000-row virtual list", |b| {
+    b.iter(|| harness.frame(|ui| virtual_list(ui, 10_000)))
+  });
+}
+
+fn virtual_list_100_frame(c: &mut Criterion) {
+  let mut harness = settle_virtual_list(100);
+  c.bench_function("ui frame, a 100-row virtual list", |b| {
+    b.iter(|| harness.frame(|ui| virtual_list(ui, 100)))
+  });
+}
+
+/// Bind every row the last frame asked for, as a game would
+fn bind_rows(harness: &mut UiHarness) -> usize {
+  let binds: Vec<UiListBind> = harness.messages::<UiListBind>().collect();
+  for bind in &binds {
+    harness.ui_set(bind.row, "name", format!("Item {}", bind.index));
+  }
+  binds.len()
+}
+
+fn node_list_frame(c: &mut Criterion) {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  harness.spawn_ui(
+    UiNode::list(10_000, 30.0)
+      .gap(2.0)
+      .height(400.0)
+      .width(300.0)
+      .row_shape(|| UiNode::button("{name}").bound().fill_width())
+      .name("board"),
+  );
+  let list = harness.find_ui("board").expect("spawned");
+  harness.frame(|_| {});
+  bind_rows(&mut harness);
+  harness.ui_list_scroll_to(list, 5_000);
+  let mut reached_middle = false;
+  for _ in 0..60 {
+    harness.frame(|_| {});
+    reached_middle |= harness
+      .messages::<UiListBind>()
+      .any(|bind| bind.index.abs_diff(5_000) < 20);
+    bind_rows(&mut harness);
+  }
+  harness.frame(|_| {});
+  bind_rows(&mut harness);
+  // Rows bound while it eased there: the last ones are the middle's
+  assert!(reached_middle, "the node list scrolled to its middle");
+  c.bench_function("ui frame, a 10,000-row node list", |b| {
+    b.iter(|| {
+      harness.frame(|_| {});
+      bind_rows(&mut harness)
+    })
+  });
+}
+
 fn empty_frame(c: &mut Criterion) {
   let mut harness = UiHarness::new(640.0, 480.0);
   harness.frame(|_| ());
@@ -275,6 +364,9 @@ criterion_group!(
   settings_frame,
   settings_nodes_frame,
   list_frame,
+  virtual_list_frame,
+  virtual_list_100_frame,
+  node_list_frame,
   empty_frame,
   settings_update_unchanged,
   settings_spawn
