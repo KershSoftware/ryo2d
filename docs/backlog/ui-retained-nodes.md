@@ -51,6 +51,13 @@ Left for later:
 - Virtualised lists for node and closure UI: record only the rows in view. The 1,000-row scroll list bench shows the need.
 - Baseline: the node settings screen at 112 µs, closure 104 µs (above).
 
+Part 1 numbers (`cargo bench --bench ui`, load about 2.5; before 4e against after Part 1):
+- closure settings screen: 100.1 µs, now 50.7 µs (target under 60);
+- node settings screen: 116.0 µs, now 59.0 µs (guard: within `max(10%, 10 µs)` of the closure, a gap of 8.4 µs);
+- 1,000-row scroll list: 597.3 µs, now 314.3 µs (target under 350);
+- empty frame: about 0.18 µs, now 0.176 µs (target under 250 ns);
+- the demo tour is pixel-identical to the pre-4e baseline, apart from the text demo's shake line (its phase seed follows the new text hash) and pages that vary run to run (particles, steering).
+
 ## Left for Later
 
 From 4b's out-of-scope list:
