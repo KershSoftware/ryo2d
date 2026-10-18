@@ -12,6 +12,8 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+use crate::core::ui::file::UiFileError;
+
 /// Top-level engine error type
 ///
 /// This encompasses all errors that can occur within the engine.
@@ -60,6 +62,10 @@ pub enum AssetError {
   /// Sprite loading error (wraps SpriteError)
   #[error(transparent)]
   Sprite(#[from] SpriteError),
+
+  /// A UI file has mistakes
+  #[error("{0}")]
+  UiFile(UiFileError),
 }
 
 /// Result type for asset operations

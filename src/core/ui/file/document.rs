@@ -59,8 +59,6 @@ struct FileCell {
 /// A file's checked contents
 pub(crate) struct Document {
   /// The text it was read from, to check again when an import changes
-  // Read by the asset manager's reloads (Task 7)
-  #[allow(dead_code)]
   pub(crate) text: String,
   pub(crate) root: Option<Value>,
   /// The file's own templates; its imports hold theirs
@@ -346,15 +344,16 @@ impl UiFile {
   }
 
   /// Hold `doc` as the file's contents from now on
-  // Called by the asset manager's reloads (Task 7)
-  #[allow(dead_code)]
   pub(crate) fn replace(&self, doc: Arc<Document>) {
     *self.0.doc.write().unwrap_or_else(PoisonError::into_inner) = doc;
     self.0.generation.fetch_add(1, Ordering::AcqRel);
   }
 
-  // Read by the asset manager's reloads (Task 7)
-  #[allow(dead_code)]
+  /// Whether both are the same file (not just equal)
+  pub(crate) fn same_file(&self, other: &UiFile) -> bool {
+    Arc::ptr_eq(&self.0, &other.0)
+  }
+
   pub(crate) fn is_embedded(&self) -> bool {
     self.0.embedded
   }
@@ -391,8 +390,6 @@ impl UiFile {
   }
 
   /// Whether the file imports `other` itself (not through another file)
-  // Called by the asset manager's reloads (Task 7)
-  #[allow(dead_code)]
   pub(crate) fn imports_file(&self, other: &UiFile) -> bool {
     self
       .doc()

@@ -21,6 +21,8 @@
 //! finishes async loads and applies hot reloads each frame in `PreUpdate`.
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -32,7 +34,9 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use crate::core::ecs::{Resource, ShaderHandle};
 use crate::core::error::{AssetError, AssetResult};
 use crate::core::graphics::Sprite;
-use crate::core::ui::file::build::SpriteSource;
+use crate::core::ui::file::build::{Placeholders, SpriteSource};
+use crate::core::ui::file::document::ImportResolver;
+use crate::core::ui::file::{UiFile, UiFileError};
 
 use super::hot_reload::{HotReloadEvent, HotReloadWatcher};
 #[allow(unused_imports)] // engine_info only used in debug builds
@@ -586,6 +590,12 @@ pub struct AssetManager {
   /// Hot reloads since the engine last took them: the path, or the path and
   /// the error
   reload_outcomes: Vec<Result<PathBuf, (PathBuf, String)>>,
+  /// Cache of UI files, keyed by resolved path
+  ui_files: HashMap<PathBuf, UiFile>,
+  /// The UI files being loaded now, to catch imports that go round
+  ui_loading: Vec<PathBuf>,
+  /// A hash of the last broken text of each UI file the watcher warned about
+  ui_warned: HashMap<PathBuf, u64>,
 }
 
 impl AssetManager {
@@ -603,6 +613,9 @@ impl AssetManager {
       batch_succeeded: 0,
       batch_failures: Vec::new(),
       reload_outcomes: Vec::new(),
+      ui_files: HashMap::new(),
+      ui_loading: Vec::new(),
+      ui_warned: HashMap::new(),
     }
   }
 
@@ -622,6 +635,9 @@ impl AssetManager {
       batch_succeeded: 0,
       batch_failures: Vec::new(),
       reload_outcomes: Vec::new(),
+      ui_files: HashMap::new(),
+      ui_loading: Vec::new(),
+      ui_warned: HashMap::new(),
     }
   }
 
@@ -727,6 +743,119 @@ impl AssetManager {
     let handle = ShaderHandle::from_file(&full_path, source);
     self.shaders.insert(key, handle.clone());
     Ok(handle)
+  }
+
+  /// Read a file's text, as an asset error
+  fn read_text(full_path: &Path) -> AssetResult<String> {
+    std::fs::read_to_string(full_path).map_err(|e| match e.kind() {
+      std::io::ErrorKind::NotFound => AssetError::NotFound(full_path.to_path_buf()),
+      _ => AssetError::LoadError {
+        path: full_path.to_path_buf(),
+        reason: e.to_string(),
+      },
+    })
+  }
+
+  /// Load a UI file (`.ui.ron`)
+  ///
+  /// Cached by resolved path, so loading the same file twice returns the same
+  /// [`UiFile`]. Its imports load through the cache too. Every mistake in the
+  /// file is reported together in [`AssetError::UiFile`]. With hot reload
+  /// enabled, editing the file updates the `UiFile` in place.
+  pub fn load_ui<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<UiFile> {
+    let key = self.cache_key(&path);
+    if let Some(file) = self.ui_files.get(&key) {
+      return Ok(file.clone());
+    }
+    let text = Self::read_text(&self.resolve_path(&path))?;
+    let name = path.as_ref().display().to_string();
+    self.ui_loading.push(key.clone());
+    let loaded = UiFile::load(&name, &text, self, &mut Placeholders::default(), false);
+    self.ui_loading.pop();
+    let file = loaded.map_err(AssetError::UiFile)?;
+    self.ui_files.insert(key, file.clone());
+    Ok(file)
+  }
+
+  /// Add a UI file from text the game holds (for instance `include_str!`)
+  ///
+  /// The text is checked like a file on disk. Later loads and imports of
+  /// `path` use it, and it is never reloaded from disk.
+  pub fn add_ui<P: AsRef<Path>>(&mut self, path: P, text: &str) -> Result<UiFile, UiFileError> {
+    let key = self.cache_key(&path);
+    let name = path.as_ref().display().to_string();
+    self.ui_loading.push(key.clone());
+    let loaded = UiFile::load(&name, text, self, &mut Placeholders::default(), true);
+    self.ui_loading.pop();
+    let file = loaded?;
+    self.ui_files.insert(key, file.clone());
+    Ok(file)
+  }
+
+  /// Read a cached UI file from disk again
+  ///
+  /// On success the same [`UiFile`] holds the new contents, and the files that
+  /// import it are checked again. On a mistake the old contents stay.
+  pub fn reload_ui<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<()> {
+    let key = self.cache_key(&path);
+    let Some(file) = self.ui_files.get(&key).cloned() else {
+      return Err(AssetError::NotFound(self.resolve_path(&path)));
+    };
+    if file.is_embedded() {
+      return Ok(());
+    }
+    let text = Self::read_text(&key)?;
+    self
+      .reload_ui_text(&key, &file, &text)
+      .map_err(AssetError::UiFile)
+  }
+
+  /// Check `text` as the new contents of `file`; on success hold it and check
+  /// the importers again
+  fn reload_ui_text(&mut self, key: &Path, file: &UiFile, text: &str) -> Result<(), UiFileError> {
+    self.ui_loading.push(key.to_path_buf());
+    let checked = UiFile::check(file.path(), text, self, &mut Placeholders::default());
+    self.ui_loading.pop();
+    file.replace(checked?);
+    self.recheck_importers(file);
+    Ok(())
+  }
+
+  /// Check every cached file that imports `changed`, directly or through
+  /// others, against its own text; a file that no longer checks keeps its old
+  /// contents
+  fn recheck_importers(&mut self, changed: &UiFile) {
+    let mut queue = vec![changed.clone()];
+    let mut done: Vec<UiFile> = vec![changed.clone()];
+    while let Some(current) = queue.pop() {
+      let importers: Vec<(PathBuf, UiFile)> = self
+        .ui_files
+        .iter()
+        .filter(|(_, file)| file.imports_file(&current))
+        .filter(|(_, file)| !done.iter().any(|d| d.same_file(file)))
+        .map(|(key, file)| (key.clone(), file.clone()))
+        .collect();
+      for (key, importer) in importers {
+        done.push(importer.clone());
+        let text = importer.doc().text.clone();
+        self.ui_loading.push(key);
+        let checked = UiFile::check(importer.path(), &text, self, &mut Placeholders::default());
+        self.ui_loading.pop();
+        match checked {
+          Ok(doc) => {
+            importer.replace(doc);
+            queue.push(importer);
+          }
+          Err(error) => {
+            engine_warn!(
+              module: "ui",
+              "could not check {} again after an import changed; keeping the old version:\n{error}",
+              importer.path()
+            );
+          }
+        }
+      }
+    }
   }
 
   /// Create a sprite handle from an existing sprite (not from a file)
@@ -1122,6 +1251,49 @@ impl AssetManager {
     std::mem::take(&mut self.reload_outcomes)
   }
 
+  /// The watcher saw a cached UI file change: reload it if its text changed
+  /// and checks, else keep the old version and warn once per broken text
+  fn reload_ui_from_event(&mut self, key: &Path, file: &UiFile) -> bool {
+    let text = match std::fs::read_to_string(key) {
+      Ok(text) => text,
+      Err(e) => {
+        engine_error!(module: "HotReload", "Failed to reload {:?}: {}", key, e);
+        self
+          .reload_outcomes
+          .push(Err((key.to_path_buf(), e.to_string())));
+        return false;
+      }
+    };
+    if text == file.doc().text {
+      return false;
+    }
+    match self.reload_ui_text(key, file, &text) {
+      Ok(()) => {
+        self.ui_warned.remove(key);
+        self.reload_outcomes.push(Ok(key.to_path_buf()));
+        #[cfg(debug_assertions)]
+        engine_info!(module: "HotReload", "Reloaded UI file: {:?}", key);
+        true
+      }
+      Err(error) => {
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let hash = hasher.finish();
+        if self.ui_warned.insert(key.to_path_buf(), hash) != Some(hash) {
+          engine_warn!(
+            module: "ui",
+            "could not reload {}; keeping the old version:\n{error}",
+            file.path()
+          );
+        }
+        self
+          .reload_outcomes
+          .push(Err((key.to_path_buf(), error.to_string())));
+        false
+      }
+    }
+  }
+
   /// Apply one watcher event, returning whether an asset was reloaded
   ///
   /// The event path is canonicalized before the cache lookup, because the OS
@@ -1162,6 +1334,11 @@ impl AssetManager {
             }
           }
         }
+        if let Some(file) = self.ui_files.get(&key).cloned()
+          && !file.is_embedded()
+        {
+          reloaded |= self.reload_ui_from_event(&key, &file);
+        }
       }
       HotReloadEvent::FileDeleted(_path) => {
         // Just log - don't remove from cache as handles may still be in use
@@ -1179,6 +1356,34 @@ impl AssetManager {
 impl Default for AssetManager {
   fn default() -> Self {
     Self::new()
+  }
+}
+
+/// UI files import through the cache, refusing imports that go round
+impl ImportResolver for AssetManager {
+  fn import(&mut self, path: &str) -> Result<UiFile, UiFileError> {
+    let key = self.cache_key(path);
+    if let Some(start) = self.ui_loading.iter().position(|k| *k == key) {
+      let name = |k: &Path| {
+        k.file_name().map_or_else(
+          || k.display().to_string(),
+          |n| n.to_string_lossy().into_owned(),
+        )
+      };
+      let chain: Vec<String> = self.ui_loading[start..]
+        .iter()
+        .map(|k| name(k))
+        .chain(std::iter::once(name(&key)))
+        .collect();
+      return Err(UiFileError::one(
+        path,
+        format!("the imports go round in a circle: {}", chain.join(" -> ")),
+      ));
+    }
+    self.load_ui(path).map_err(|e| match e {
+      AssetError::UiFile(error) => error,
+      other => UiFileError::one(path, other.to_string()),
+    })
   }
 }
 
@@ -1209,6 +1414,144 @@ mod tests {
     let mut assets = AssetManager::new();
     assets.set_base_path(dir.path());
     (dir, assets)
+  }
+
+  fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    path
+  }
+
+  #[test]
+  fn load_ui_caches_by_path_and_imports_through_the_cache() {
+    let (dir, mut assets) = event_fixture();
+    write(
+      dir.path(),
+      "common.ui.ron",
+      r#"(templates: {"T": (node: Text("t"))})"#,
+    );
+    write(
+      dir.path(),
+      "menu.ui.ron",
+      r#"(imports: ["common.ui.ron"], root: T)"#,
+    );
+    let menu = assets.load_ui("menu.ui.ron").unwrap();
+    let again = assets.load_ui("menu.ui.ron").unwrap();
+    assert_eq!(menu.generation(), again.generation());
+    let common = assets.load_ui("common.ui.ron").unwrap();
+    assert!(menu.imports_file(&common), "the import came from the cache");
+  }
+
+  #[test]
+  fn a_broken_or_missing_ui_file_is_an_error() {
+    let (dir, mut assets) = event_fixture();
+    write(dir.path(), "bad.ui.ron", "(root: Buton)");
+    assert!(matches!(
+      assets.load_ui("bad.ui.ron"),
+      Err(AssetError::UiFile(_))
+    ));
+    assert!(matches!(
+      assets.load_ui("nope.ui.ron"),
+      Err(AssetError::NotFound(_))
+    ));
+  }
+
+  #[test]
+  fn add_ui_serves_later_loads_and_imports() {
+    let (dir, mut assets) = event_fixture();
+    assets
+      .add_ui(
+        "embedded/common.ui.ron",
+        r#"(templates: {"T": (node: Text("t"))})"#,
+      )
+      .unwrap();
+    write(
+      dir.path(),
+      "menu.ui.ron",
+      r#"(imports: ["embedded/common.ui.ron"], root: T)"#,
+    );
+    assert!(assets.load_ui("menu.ui.ron").is_ok());
+  }
+
+  #[test]
+  fn reload_ui_replaces_the_document_and_a_broken_reload_keeps_the_old_one() {
+    let (dir, mut assets) = event_fixture();
+    let path = write(dir.path(), "hud.ui.ron", "(root: Text(\"a\"))");
+    let file = assets.load_ui("hud.ui.ron").unwrap();
+    let first = file.generation();
+    std::fs::write(&path, "(root: Text(\"b\"))").unwrap();
+    assets.reload_ui("hud.ui.ron").unwrap();
+    assert!(
+      file.generation() > first,
+      "the same handle sees the new document"
+    );
+    let good = file.generation();
+    std::fs::write(&path, "(root: Text(").unwrap();
+    assert!(assets.reload_ui("hud.ui.ron").is_err());
+    assert_eq!(file.generation(), good, "kept");
+  }
+
+  #[test]
+  fn reloading_an_import_bumps_its_importers() {
+    let (dir, mut assets) = event_fixture();
+    let common = write(
+      dir.path(),
+      "common.ui.ron",
+      r#"(templates: {"T": (node: Text("t"))})"#,
+    );
+    write(
+      dir.path(),
+      "menu.ui.ron",
+      r#"(imports: ["common.ui.ron"], root: T)"#,
+    );
+    let menu = assets.load_ui("menu.ui.ron").unwrap();
+    let before = menu.generation();
+    std::fs::write(&common, r#"(templates: {"T": (node: Text("u"))})"#).unwrap();
+    assets.reload_ui("common.ui.ron").unwrap();
+    assert!(menu.generation() > before);
+  }
+
+  #[test]
+  fn ui_imports_in_a_circle_are_an_error() {
+    let (dir, mut assets) = event_fixture();
+    write(
+      dir.path(),
+      "a.ui.ron",
+      r#"(imports: ["b.ui.ron"], templates: {"A": (node: Column)})"#,
+    );
+    write(
+      dir.path(),
+      "b.ui.ron",
+      r#"(imports: ["a.ui.ron"], templates: {"B": (node: Column)})"#,
+    );
+    let Err(AssetError::UiFile(error)) = assets.load_ui("a.ui.ron") else {
+      panic!()
+    };
+    assert!(error.to_string().contains("circle"), "{error}");
+  }
+
+  #[test]
+  fn a_half_saved_file_warns_once_and_the_finished_save_reloads() {
+    let (dir, mut assets) = event_fixture();
+    let path = write(dir.path(), "halfsaved.ui.ron", "(root: Text(\"a\"))");
+    let file = assets.load_ui("halfsaved.ui.ron").unwrap();
+    let start = file.generation();
+    std::fs::write(&path, "(root: Te").unwrap();
+    for _ in 0..3 {
+      assert!(!assets.handle_reload_event(HotReloadEvent::FileModified(path.clone())));
+    }
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing("halfsaved.ui.ron"),
+      1,
+      "once per broken text"
+    );
+    std::fs::write(&path, "(root: Text(\"b\"))").unwrap();
+    assert!(assets.handle_reload_event(HotReloadEvent::FileModified(path.clone())));
+    assert!(file.generation() > start);
+    assert!(
+      !assets.handle_reload_event(HotReloadEvent::FileModified(path)),
+      "the same text again does nothing"
+    );
   }
 
   #[test]

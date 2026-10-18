@@ -80,6 +80,8 @@ impl Default for HotReloadConfig {
     extensions.insert("flac".to_string());
     // Shaders
     extensions.insert("wgsl".to_string());
+    // UI files (x.ui.ron)
+    extensions.insert("ron".to_string());
 
     HotReloadConfig {
       watch_paths: vec![PathBuf::from(".")],
@@ -262,6 +264,7 @@ mod tests {
 
     // Image formats
     assert!(config.extensions.contains("png"));
+    assert!(config.extensions.contains("ron"));
     assert!(config.extensions.contains("jpg"));
     assert!(config.extensions.contains("jpeg"));
     assert!(config.extensions.contains("gif"));
