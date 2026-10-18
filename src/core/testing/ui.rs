@@ -292,13 +292,13 @@ impl UiHarness {
     self.commands.len()
   }
 
-  /// Press `direction` for the next frame (and release it after)
-  #[cfg(test)]
   /// What the last frame did to the layout's tree
+  #[cfg(test)]
   pub(crate) fn layout_stats(&self) -> crate::core::ui::layout::engine::LayoutStats {
     self.layout.stats()
   }
 
+  /// Press `direction` for the next frame (and release it after)
   pub(crate) fn press_direction(&mut self, direction: Direction) {
     let k = direction_index(direction);
     self.nav.pressed[k] = true;

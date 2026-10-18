@@ -352,7 +352,7 @@ pub(crate) fn spawn_node(
     entity.insert(ChildOf(parent));
   }
   if let Some(source) = source {
-    let generation = source.file.generation();
+    let generation = source.generation;
     entity.insert(UiSource { source, generation });
   }
   // After the engine's components, so a game component may replace one

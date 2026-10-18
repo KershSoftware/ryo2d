@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use crate::core::asset::AssetManager;
 use crate::core::ecs::kernel::{
-  ChildOf, Children, Component, DetectChangesMut, Entity, EntityWorldMut, Messages, Mut, World,
+  ChildOf, Children, Component, DetectChangesMut, Entity, EntityWorldMut, Messages, Mut,
+  QueryState, Resource, World,
 };
 use crate::core::messages::register_message;
 use crate::core::text::TextReveal;
@@ -89,6 +90,33 @@ pub(crate) fn reconcile(world: &mut World, entity: Entity, mut tree: UiNode, mod
   top
 }
 
+/// The query over the trees' sources, kept between frames
+#[derive(Resource, Default)]
+struct SourceQuery(Option<QueryState<(Entity, &'static UiSource)>>);
+
+/// The trees whose file moved since they were built, with the generation seen
+fn stale_sources(world: &mut World) -> Vec<(Entity, Arc<TreeSource>, u64)> {
+  if world.get_resource::<SourceQuery>().is_none() {
+    world.init_resource::<SourceQuery>();
+  }
+  world
+    .resource_scope(|world, mut cached: Mut<SourceQuery>| {
+      if cached.0.is_none() {
+        cached.0 = world.try_query::<(Entity, &UiSource)>();
+      }
+      cached.0.as_mut().map(|sources| {
+        sources
+          .iter(world)
+          .filter_map(|(entity, held)| {
+            let now = held.source.file.generation();
+            (now != held.generation).then(|| (entity, Arc::clone(&held.source), now))
+          })
+          .collect()
+      })
+    })
+    .unwrap_or_default()
+}
+
 /// Bring every tree built from a UI file that changed since in line with the
 /// file, outer trees first, and send a `UiReloaded` for each root touched.
 /// A tree that cannot be rebuilt (a missing image, a template gone) is kept as
@@ -97,16 +125,7 @@ pub(crate) fn reconcile(world: &mut World, entity: Entity, mut tree: UiNode, mod
 /// Runs every frame before the UI pass; with no tree from a file it is one
 /// query, and none at all until one has been spawned.
 pub(crate) fn reload_trees(world: &mut World) {
-  let Some(mut sources) = world.try_query::<(Entity, &UiSource)>() else {
-    return;
-  };
-  let mut stale: Vec<(Entity, Arc<TreeSource>, u64)> = sources
-    .iter(world)
-    .filter_map(|(entity, held)| {
-      let now = held.source.file.generation();
-      (now != held.generation).then(|| (entity, Arc::clone(&held.source), now))
-    })
-    .collect();
+  let mut stale = stale_sources(world);
   if stale.is_empty() {
     return;
   }
@@ -120,8 +139,10 @@ pub(crate) fn reload_trees(world: &mut World) {
       if world.get::<UiSource>(entity).is_none() {
         continue;
       }
+      let mut rebuilt = false;
       let top = match source.file.build_source(&source, &mut *assets) {
         Ok(tree) => {
+          rebuilt = true;
           let instance = source.instance;
           let was_root = world.get::<UiRoot>(entity).is_some();
           let top = reconcile(world, entity, tree, Mode::Reload { instance });
@@ -143,7 +164,7 @@ pub(crate) fn reload_trees(world: &mut World) {
       };
       // Not tried again until the file changes again
       if let Some(mut held) = world.get_mut::<UiSource>(top) {
-        held.generation = now;
+        held.generation = if rebuilt { held.source.generation } else { now };
       }
     }
     roots
@@ -608,7 +629,7 @@ fn set_source(node: &mut EntityWorldMut<'_>, source: Option<Arc<TreeSource>>) {
     write(
       node,
       source.map(|source| UiSource {
-        generation: source.file.generation(),
+        generation: source.generation,
         source,
       }),
     );
@@ -1393,6 +1414,23 @@ mod reload_tests {
     Button(label: "Resume", action: "resume", default_focus: true),
     Button(label: "Quit", action: "quit"),
   ]))"#;
+
+  #[test]
+  fn a_tree_built_before_a_reload_and_spawned_after_it_reloads() {
+    let (dir, mut h) = harness(&[("late.ui.ron", r#"(root: Column(children: [Text("a")]))"#)]);
+    let file = h.assets().load_ui("late.ui.ron").unwrap();
+    let tree = file.root(h.assets()).unwrap();
+    std::fs::write(
+      dir.path().join("late.ui.ron"),
+      r#"(root: Column(children: [Text("b")]))"#,
+    )
+    .unwrap();
+    h.reload_ui("late.ui.ron").unwrap();
+    let root = h.spawn_ui(tree);
+    h.frame(|_| {});
+    let text = h.world().get::<Children>(root).unwrap()[0];
+    assert_eq!(h.world().get::<UiLabel>(text).unwrap().0, "b");
+  }
 
   #[test]
   fn a_reload_updates_in_place_keeping_entities_game_values_and_focus() {

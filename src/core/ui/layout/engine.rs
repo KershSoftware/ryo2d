@@ -2,12 +2,11 @@
 //! between frames by widget id. The only file that names Taffy.
 
 use std::collections::HashSet;
+use std::hash::Hasher;
 
 use glam::Vec2;
 use taffy::prelude::*;
 use taffy::{Overflow, Point, TaffyResult, compute_leaf_layout};
-
-use std::hash::Hasher;
 
 use super::{Align, Flow, Justify, Length, Measure, Tracks, UiStyle};
 use crate::core::hash::{FastHasher, FastMap};

@@ -713,7 +713,7 @@ mod tests {
       "frame",
       Skin::from_sprite(sprite, [4.0; 4], Filter::Nearest),
     );
-    theme.widgets.panel.normal.skin = Some("frame".to_string());
+    theme.widgets.panel.normal.skin = Some("frame".into());
     let mut d = UiDriver::new((200.0, 100.0)).with_theme(theme);
     d.frame(|ui| {
       ui.panel()

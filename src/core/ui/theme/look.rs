@@ -2,7 +2,7 @@
 //! only what they name, and the named variants that extend a kind
 
 use std::collections::BTreeSet;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -78,7 +78,7 @@ pub struct Look {
   /// Moves the contents, in UI units (a pressed look nudging its label)
   pub offset: [f32; 2],
   /// The name of a theme skin drawn in place of the fill and border
-  pub skin: Option<String>,
+  pub skin: Option<Arc<str>>,
 }
 
 impl Default for Look {
@@ -107,7 +107,7 @@ pub struct LookPatch {
   pub text: Option<Color>,
   pub padding: Option<Edges>,
   pub offset: Option<[f32; 2]>,
-  pub skin: Option<String>,
+  pub skin: Option<Arc<str>>,
 }
 
 impl LookPatch {
@@ -137,7 +137,7 @@ impl LookPatch {
 
   /// Draw the theme skin `name`
   pub fn skin(mut self, name: &str) -> Self {
-    self.skin = Some(name.to_string());
+    self.skin = Some(name.into());
     self
   }
 
@@ -385,6 +385,20 @@ mod tests {
       focused: LookPatch::default(),
       disabled: LookPatch::default().text(Color::GRAY),
     }
+  }
+
+  #[test]
+  fn a_skinned_look_round_trips_through_a_theme_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("theme.ron");
+    let mut theme = Theme::dark();
+    theme.widgets.button.normal.skin = Some("button.png".into());
+    theme.save(&path).unwrap();
+    let back = Theme::load(&path).unwrap();
+    assert_eq!(
+      back.widgets.button.normal.skin.as_deref(),
+      Some("button.png")
+    );
   }
 
   #[test]

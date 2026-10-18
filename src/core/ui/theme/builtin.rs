@@ -598,7 +598,7 @@ pub(super) fn pixel() -> Theme {
   let button = &mut widgets.button;
   button.normal.fill = Color::WHITE;
   button.normal.border_width = 0.0;
-  button.normal.skin = Some("button".to_string());
+  button.normal.skin = Some("button".into());
   button.hovered = LookPatch::default().fill(Color::rgb(225, 225, 255));
   button.pressed = LookPatch::default().fill(Color::rgb(170, 170, 200));
   button.focused = LookPatch::default().fill(Color::rgb(225, 225, 255));
@@ -608,6 +608,6 @@ pub(super) fn pixel() -> Theme {
   let panel = &mut widgets.panel;
   panel.normal.fill = Color::WHITE;
   panel.normal.border_width = 0.0;
-  panel.normal.skin = Some("panel".to_string());
+  panel.normal.skin = Some("panel".into());
   theme
 }

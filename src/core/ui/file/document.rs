@@ -88,6 +88,8 @@ pub(crate) struct TreeSource {
   pub(crate) template: Option<String>,
   pub(crate) args: UiArgs,
   pub(crate) instance: u64,
+  /// The file's generation when this tree was built
+  pub(crate) generation: u64,
 }
 
 /// Where a file's imports come from
@@ -407,6 +409,8 @@ impl UiFile {
     sprites: &mut dyn SpriteSource,
   ) -> Result<UiNode, UiFileError> {
     let path = self.path();
+    // Before the document, so a reload between them reads as older
+    let generation = self.generation();
     let doc = self.doc();
     let scope = Scope {
       path: path.to_string(),
@@ -473,6 +477,7 @@ impl UiFile {
       template: template.map(str::to_string),
       args: args.clone(),
       instance,
+      generation,
     }));
     Ok(node)
   }

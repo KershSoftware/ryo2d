@@ -804,7 +804,7 @@ impl<'a> UiContext<'a> {
   /// a rounded rect
   pub(crate) fn push_look_box(&mut self, node: usize, look: &Look) {
     if let Some(name) = &look.skin {
-      match self.theme.skins.get(name) {
+      match self.theme.skins.get(&**name) {
         Some(Skin {
           sprite: Some(sprite),
           insets,
