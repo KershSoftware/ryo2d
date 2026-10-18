@@ -204,12 +204,14 @@ impl FileDialoguePage {
         .map(|line| self.shop.choices(line))
         .unwrap_or_default();
       if choices.is_empty() {
+        let tree = ctx.ui_template(DIALOGUE, "Continue", &none)?;
         self.choices = Vec::new();
-        ctx.ui_template(DIALOGUE, "Continue", &none)?
+        tree
       } else {
-        self.choices = choices.iter().map(|(_, next)| *next).collect();
         let labels: Vec<String> = choices.iter().map(|(label, _)| label.to_string()).collect();
-        ctx.ui_template(DIALOGUE, "Choices", &UiArgs::new().with("options", labels))?
+        let tree = ctx.ui_template(DIALOGUE, "Choices", &UiArgs::new().with("options", labels))?;
+        self.choices = choices.iter().map(|(_, next)| *next).collect();
+        tree
       }
     };
     Ok(column.child(content))
@@ -217,7 +219,9 @@ impl FileDialoguePage {
 
   /// Swap in the choices for what the player can do next; the column is
   /// hidden once the conversation is over. An updated scope is not a newly
-  /// opened one, so the new choice is given the focus.
+  /// opened one, so Skip and Continue are given the focus with `focus_ui`. A
+  /// choice list has no `Response`, so `focus_ui` does nothing for it; it
+  /// takes the focus by the scope's own rule.
   /// `skipped`: Skip finished the line this frame, so it shows whole at the
   /// next draw, with the choices that follow it.
   fn update_scope(&mut self, ctx: &mut SceneContext, skipped: bool) {

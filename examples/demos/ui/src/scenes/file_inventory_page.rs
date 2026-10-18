@@ -257,20 +257,33 @@ impl DemoPage for FileInventoryPage {
       Err(error) => return self.fail(error),
     };
     let root = ctx.spawn_ui(built.root);
-    if let Some(column) = ctx.find_ui_in(root, "equipment") {
-      for row in built.equipment {
-        ctx.spawn_ui_in(column, row);
-      }
+    let (Some(equipment), Some(bag), Some(discard), Some(status), Some(details)) = (
+      ctx.find_ui_in(root, "equipment"),
+      ctx.find_ui_in(root, "bag"),
+      ctx.find_ui_in(root, "discard"),
+      ctx.find_ui_in(root, "status"),
+      Details::find(ctx, root),
+    ) else {
+      ctx.world.despawn(root);
+      return self.fail(UiFileError {
+        issues: vec![UiFileIssue {
+          path: INVENTORY.to_string(),
+          line: 0,
+          column: 0,
+          message: "the root needs nodes named equipment, bag, discard, status, item, item-name, item-text and empty".to_string(),
+        }],
+      });
+    };
+    for row in built.equipment {
+      ctx.spawn_ui_in(equipment, row);
     }
-    if let Some(grid) = ctx.find_ui_in(root, "bag") {
-      for slot in built.bag {
-        ctx.spawn_ui_in(grid, slot);
-      }
+    for slot in built.bag {
+      ctx.spawn_ui_in(bag, slot);
     }
     self.slots = slots_under(ctx.world, root);
-    self.discard = ctx.find_ui_in(root, "discard");
-    self.status = ctx.find_ui_in(root, "status");
-    self.details = Details::find(ctx, root);
+    self.discard = Some(discard);
+    self.status = Some(status);
+    self.details = Some(details);
     self.refresh(ctx);
   }
 
