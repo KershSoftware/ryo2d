@@ -7,6 +7,7 @@ use crate::core::ecs::kernel::{Component, Entity, Resource};
 use crate::core::ui::{Anchor, Rect, UiId};
 
 use super::events::UiEvent;
+use super::node::NodeState;
 
 /// The root of a spawned tree
 ///
@@ -63,7 +64,7 @@ pub struct UiOptions(pub Vec<String>);
 pub struct UiTextValue(pub String);
 
 /// What an inventory-style slot holds
-#[derive(Component, Debug, Clone, Default)]
+#[derive(Component, Debug, Clone, Default, PartialEq)]
 pub struct UiSlot {
   /// The icon drawn in the slot
   pub icon: Option<SpriteHandle>,
@@ -108,6 +109,31 @@ impl UiInteraction {
   pub fn id(&self) -> Option<UiId> {
     (self.id != UiId::NONE).then_some(self.id)
   }
+}
+
+/// Where a node sits in its tree: the key it is matched by in an update, and
+/// which instance of a repeated template it came from
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UiTreeNode {
+  pub(crate) key: String,
+  pub(crate) instance: u64,
+}
+
+/// The top of a `spawn_ui_in` subtree
+#[derive(Component, Debug, Clone, Copy)]
+pub(crate) struct UiAdded;
+
+/// What a node's tree last gave it, so an update writes only what the tree
+/// changed and leaves what the game or the player wrote
+#[allow(dead_code)] // read by the node update, which nothing calls yet
+#[derive(Component, Debug, Clone, Default)]
+pub(crate) struct UiApplied {
+  pub(crate) state: NodeState,
+  pub(crate) tooltip: Option<String>,
+  pub(crate) hidden: bool,
+  pub(crate) disabled: bool,
+  /// A root's placement as the tree gave it
+  pub(crate) place: Option<(Anchor, Vec2, Option<Rect>)>,
 }
 
 /// A confirm's No button: the node Back answers as if it were clicked

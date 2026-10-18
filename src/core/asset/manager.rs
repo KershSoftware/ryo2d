@@ -183,6 +183,16 @@ impl SpriteHandle {
   }
 }
 
+/// The same image: two handles share one cell (the asset cache returns the
+/// same cell for one path)
+impl PartialEq for SpriteHandle {
+  fn eq(&self, other: &Self) -> bool {
+    Arc::ptr_eq(&self.inner, &other.inner)
+  }
+}
+
+impl Eq for SpriteHandle {}
+
 impl std::fmt::Debug for SpriteHandle {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("SpriteHandle")

@@ -9,6 +9,8 @@ mod components;
 mod draw;
 mod events;
 mod node;
+#[allow(dead_code)] // the whole-tree update that calls it comes next
+mod reconcile;
 mod spawn;
 
 pub use bindings::BindValue;

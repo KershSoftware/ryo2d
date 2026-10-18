@@ -1,5 +1,7 @@
 //! Spawning a node tree as entities, finding nodes by name, and despawning a scene's trees
 
+use std::collections::HashMap;
+
 use glam::Vec2;
 
 use crate::core::ecs::kernel::{ChildOf, Children, Entity, World};
@@ -8,8 +10,8 @@ use crate::core::ui::theme::warn_once;
 
 use super::bindings::{self, Pattern, UiBind, UiPattern};
 use super::components::{
-  BackAnswer, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName,
-  UiNodes, UiOptions, UiRoot, UiTextValue, UiTooltip, UiValue,
+  BackAnswer, UiAdded, UiApplied, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction,
+  UiLabel, UiName, UiNodes, UiOptions, UiRoot, UiTextValue, UiTooltip, UiTreeNode, UiValue,
 };
 use super::node::{Kind, UiNode, UiNodeKind};
 
@@ -21,6 +23,36 @@ struct Pending {
   nav: [Option<String>; 4],
   popup: Option<String>,
   modal: bool,
+}
+
+/// The keys of a node's children: a child's key, else its name, else its
+/// label (the template, else the kind) and its index among the siblings of
+/// that label that have neither
+pub(crate) fn child_keys(children: &[UiNode]) -> Vec<String> {
+  let mut seen: HashMap<&str, usize> = HashMap::new();
+  children
+    .iter()
+    .map(|child| {
+      if let Some(key) = child.key.as_ref().or(child.name.as_ref()) {
+        return key.clone();
+      }
+      let label = child.template.as_deref().unwrap_or(child.kind.name());
+      let index = seen.entry(label).or_insert(0);
+      let key = format!("{label}#{index}");
+      *index += 1;
+      key
+    })
+    .collect()
+}
+
+/// The key of a tree's top node
+pub(crate) fn root_key(node: &UiNode) -> String {
+  node
+    .key
+    .as_ref()
+    .or(node.name.as_ref())
+    .cloned()
+    .unwrap_or_else(|| format!("{}#0", node.template.as_deref().unwrap_or(node.kind.name())))
 }
 
 /// Spawn `tree` as a root owned by `scene`
@@ -36,7 +68,8 @@ pub(crate) fn spawn_ui(world: &mut World, scene: u64, mut tree: UiNode) -> Entit
   let offset = tree.layout.offset.unwrap_or(Vec2::ZERO);
   let (at, embedded) = (tree.layout.at, tree.embedded);
   let mut pending = Vec::new();
-  let top = spawn_node(world, None, true, tree, &mut pending);
+  let key = root_key(&tree);
+  let top = spawn_node(world, None, true, tree, key, &mut pending);
 
   let mut nodes = world.get_resource_or_insert_with(UiNodes::default);
   let seq = nodes.seq;
@@ -50,6 +83,9 @@ pub(crate) fn spawn_ui(world: &mut World, scene: u64, mut tree: UiNode) -> Entit
     seq,
     embedded,
   });
+  if let Some(mut applied) = world.get_mut::<UiApplied>(top) {
+    applied.place = Some((anchor, offset, at));
+  }
 
   finish(world, top, pending);
   bindings::invalidate(world, top);
@@ -76,7 +112,9 @@ pub(crate) fn spawn_ui_in(world: &mut World, parent: Entity, mut tree: UiNode) -
   }
   let seeds = std::mem::take(&mut tree.seeds);
   let mut pending = Vec::new();
-  let top = spawn_node(world, Some(parent), false, tree, &mut pending);
+  let key = root_key(&tree);
+  let top = spawn_node(world, Some(parent), false, tree, key, &mut pending);
+  world.entity_mut(top).insert(UiAdded);
   finish(world, top, pending);
   bindings::invalidate(world, top);
   bindings::apply_subtree(world, top, seeds);
@@ -89,6 +127,7 @@ fn spawn_node(
   parent: Option<Entity>,
   is_root: bool,
   node: UiNode,
+  key: String,
   pending: &mut Vec<Pending>,
 ) -> Entity {
   let UiNode {
@@ -110,6 +149,9 @@ fn spawn_node(
     bind,
     bound,
     seeds: _,
+    key: _,
+    template: _,
+    instance,
   } = node;
 
   let kind_name = kind.name();
@@ -125,6 +167,22 @@ fn spawn_node(
       "UiNode::embedded does nothing on a child node".to_string()
     });
   }
+
+  let child_keys = child_keys(&children);
+  for (i, key) in child_keys.iter().enumerate() {
+    if child_keys[..i].contains(key) {
+      warn_once(format!("ui-key-twice:{key}"), || {
+        format!("two UI nodes under one parent are keyed \"{key}\"; they match in order")
+      });
+    }
+  }
+  let applied = UiApplied {
+    state: state.clone(),
+    tooltip: tooltip.clone(),
+    hidden,
+    disabled,
+    place: None,
+  };
 
   let popup = match &kind {
     Kind::Popup { anchor } => Some(anchor.clone()),
@@ -148,6 +206,8 @@ fn spawn_node(
       anchor_node: None,
     },
     UiInteraction::default(),
+    UiTreeNode { key, instance },
+    applied,
   ));
   if let Some(label) = state.label {
     entity.insert(UiLabel(label));
@@ -209,8 +269,8 @@ fn spawn_node(
     popup,
     modal,
   });
-  for child in children {
-    spawn_node(world, Some(id), false, child, pending);
+  for (child, key) in children.into_iter().zip(child_keys) {
+    spawn_node(world, Some(id), false, child, key, pending);
   }
   id
 }
@@ -497,5 +557,20 @@ mod tests {
     let w = h.world();
     assert!(w.get_entity(a).is_err() && w.get_entity(b).is_err() && w.get_entity(kid).is_err());
     assert!(w.resource::<UiNodes>().roots.is_empty());
+  }
+
+  #[test]
+  fn keys_come_from_key_then_name_then_kind_and_index() {
+    let children = vec![
+      UiNode::button("A"),
+      UiNode::button("B").name("b"),
+      UiNode::button("C"),
+      UiNode::text("T"),
+      UiNode::button("D").key("d"),
+    ];
+    assert_eq!(
+      child_keys(&children),
+      ["button#0", "b", "button#1", "text#0", "d"]
+    );
   }
 }

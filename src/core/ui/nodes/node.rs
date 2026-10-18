@@ -30,7 +30,7 @@ pub enum TextRole {
   Mono,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Kind {
   Column,
   Row,
@@ -58,14 +58,14 @@ pub(crate) enum Kind {
   Spacer,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ScrollOpts {
   pub(crate) horizontal: bool,
   pub(crate) both: bool,
   pub(crate) no_bar: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct TextOpts {
   pub(crate) markup: bool,
   pub(crate) style: Option<TextStyle>,
@@ -79,13 +79,13 @@ pub(crate) struct TextOpts {
   pub(crate) ellipsis: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ButtonOpts {
   pub(crate) markup: bool,
   pub(crate) icon: Option<SpriteHandle>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ImageOpts {
   pub(crate) size: Option<Vec2>,
   pub(crate) tint: Option<Color>,
@@ -93,7 +93,7 @@ pub(crate) struct ImageOpts {
   pub(crate) uv: Option<[f32; 4]>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SliderOpts {
   pub(crate) range: (f32, f32),
   pub(crate) step: Option<f32>,
@@ -101,14 +101,14 @@ pub(crate) struct SliderOpts {
   pub(crate) label: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct TextInputOpts {
   pub(crate) placeholder: Option<String>,
   pub(crate) max_len: Option<usize>,
   pub(crate) password: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RebindOpts {
   pub(crate) action: String,
   pub(crate) label: Option<String>,
@@ -116,7 +116,7 @@ pub(crate) struct RebindOpts {
 }
 
 /// The layout options a node was given; `None` leaves the builder's default
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct NodeLayout {
   pub(crate) width: Option<Length>,
   pub(crate) height: Option<Length>,
@@ -141,7 +141,7 @@ pub(crate) struct NodeLayout {
   pub(crate) background: Option<Color>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, PartialEq, Copy, Default)]
 pub(crate) struct NodeFlags {
   pub(crate) focus_scope: bool,
   pub(crate) trap: bool,
@@ -215,6 +215,12 @@ pub struct UiNode {
   pub(crate) bound: bool,
   /// Binding values to give names that have none (the top node's count)
   pub(crate) seeds: Vec<(String, BindValue)>,
+  /// The key the node is matched by in an update (see `key`)
+  pub(crate) key: Option<String>,
+  /// The file template a node came from, for its default key
+  pub(crate) template: Option<String>,
+  /// Which instance of a repeated template this is
+  pub(crate) instance: u64,
 }
 
 impl fmt::Debug for UiNode {
@@ -387,6 +393,9 @@ impl UiNode {
       bind: None,
       bound: false,
       seeds: Vec::new(),
+      key: None,
+      template: None,
+      instance: 0,
     }
   }
 
@@ -903,6 +912,12 @@ impl UiNode {
   /// The node's name: in its `UiEvent`s, `UiName`, and for `nav_*` and popups
   pub fn name(mut self, name: impl Into<String>) -> UiNode {
     self.name = Some(name.into());
+    self
+  }
+
+  /// The key the node is matched by when its tree is updated or its file reloads; defaults to its name, else its kind and position
+  pub fn key(mut self, key: impl Into<String>) -> UiNode {
+    self.key = Some(key.into());
     self
   }
 
