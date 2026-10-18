@@ -555,13 +555,18 @@ impl GameScene {
       .id();
     self.walls.push(ceiling);
 
-    // Death zone (below screen)
+    // Death zone: from just below the screen, and far wider than it, since
+    // the side walls end at the bottom edge and a ball leaving near a corner
+    // heads sideways past them before it is off the bottom
     let death = ctx
       .world
       .spawn((
-        Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 + 100.0),
+        Transform::from_xy(
+          SCREEN_WIDTH as f32 / 2.0,
+          SCREEN_HEIGHT as f32 + BALL_SIZE + 50.0,
+        ),
         RigidBody::fixed(),
-        Collider::rect(SCREEN_WIDTH as f32, 100.0).as_trigger(),
+        Collider::rect(SCREEN_WIDTH as f32 * 3.0, 100.0).as_trigger(),
         DeathZone,
       ))
       .id();
