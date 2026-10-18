@@ -46,11 +46,12 @@ pub(crate) enum ValueKind {
   /// Never read: stands for a template parameter whose value is unknown
   /// while a template is checked
   Any,
-  /// Never read: a template use passed as an argument to a template from
-  /// another file, built in the scope it was written in (an index into the
-  /// build's scopes)
+  /// Never read: a name in a template use's arguments, built where it was
+  /// written: in that file's scope (an index into the build's scopes), with
+  /// the templates being expanded there (the length of the stack then)
   InScope {
     scope: usize,
+    stack: usize,
     value: Box<Value>,
   },
 }

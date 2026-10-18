@@ -68,15 +68,6 @@ impl Scope {
     })
   }
 
-  fn defines(&self, name: &str) -> bool {
-    self.doc.templates.contains_key(name)
-      || self
-        .doc
-        .imports
-        .iter()
-        .any(|file| file.doc().templates.contains_key(name))
-  }
-
   /// Every template name the scope can use, sorted, for suggestions
   pub(crate) fn names(&self) -> Vec<String> {
     let mut names: Vec<String> = self.doc.templates.keys().cloned().collect();
@@ -131,17 +122,20 @@ impl BuildCx<'_> {
     }
   }
 
-  /// The index of `scope` among the scopes arguments were written in
-  fn pin_scope(&mut self, scope: &Scope) -> usize {
+  /// The index of the current scope among the scopes arguments were
+  /// written in
+  fn pin_scope(&mut self) -> Option<usize> {
+    let scope = self.scope.as_ref()?;
     if let Some(index) = self
       .pinned
       .iter()
       .position(|pinned| Arc::ptr_eq(&pinned.doc, &scope.doc))
     {
-      return index;
+      return Some(index);
     }
-    self.pinned.push(scope.clone());
-    self.pinned.len() - 1
+    let scope = scope.clone();
+    self.pinned.push(scope);
+    Some(self.pinned.len() - 1)
   }
 
   fn issue(&mut self, pos: Pos, message: impl Into<String>) {
@@ -254,7 +248,7 @@ impl BuildCx<'_> {
     if !self.readable(value) {
       return None;
     }
-    match &value.kind {
+    match &unpinned(value).kind {
       ValueKind::Num(n) => self.single(*n, value.pos).map(Length::Px),
       ValueKind::Named { name, body } => match (name.as_str(), body) {
         ("Fill", Body::Unit) => Some(Length::Fill),
@@ -529,7 +523,7 @@ impl BuildCx<'_> {
     let ValueKind::Named {
       name,
       body: Body::Unit,
-    } = &value.kind
+    } = &unpinned(value).kind
     else {
       return self.mismatch(value, form);
     };
@@ -564,11 +558,26 @@ fn parse_hex(text: &str) -> Option<Color> {
   Some(Color::new(byte(0)?, byte(2)?, byte(4)?, alpha))
 }
 
-/// Mark a node and everything under it as binding patterns: in a file,
-/// labels and tooltips are patterns
-fn bound_all(mut node: UiNode) -> UiNode {
+/// The value an argument's wrapper holds: an enum name or `Fill` passed to
+/// a template reads as itself
+fn unpinned(value: &Value) -> &Value {
+  match &value.kind {
+    ValueKind::InScope { value, .. } => value,
+    _ => value,
+  }
+}
+
+/// Mark a node and everything under it as built from a file: labels and
+/// tooltips are binding patterns, and every node carries the build's
+/// instance (a kind such as `Confirm` builds children of its own)
+fn from_file(mut node: UiNode, instance: u64) -> UiNode {
   node = node.bound();
-  node.children = node.children.into_iter().map(bound_all).collect();
+  node.instance = instance;
+  node.children = node
+    .children
+    .into_iter()
+    .map(|child| from_file(child, instance))
+    .collect();
   node
 }
 
@@ -613,10 +622,18 @@ pub(crate) fn build_node(value: &Value, cx: &mut BuildCx<'_>) -> Option<UiNode> 
 fn build_value(value: &Value, cx: &mut BuildCx<'_>) -> Option<UiNode> {
   let (name, body) = match &value.kind {
     ValueKind::Any => return None,
-    ValueKind::InScope { scope, value } => {
+    ValueKind::InScope {
+      scope,
+      stack,
+      value,
+    } => {
       let written = cx.pinned.get(*scope)?.clone();
       let outer = cx.scope.replace(written);
+      // Only the templates being expanded where it was written: a template
+      // used inside its own argument is not using itself
+      let inner = cx.stack.split_off((*stack).min(cx.stack.len()));
       let node = build_node(value, cx);
+      cx.stack.extend(inner);
       cx.scope = outer;
       return node;
     }
@@ -684,8 +701,7 @@ fn build_value(value: &Value, cx: &mut BuildCx<'_>) -> Option<UiNode> {
   if missing {
     return None;
   }
-  let mut node = bound_all((spec.make)(&ctor, cx)?);
-  node.instance = cx.instance;
+  let mut node = from_file((spec.make)(&ctor, cx)?, cx.instance);
 
   let owner = Owner {
     name: spec.name,
@@ -745,12 +761,9 @@ fn expand(
     .map(String::as_str)
     .collect();
 
-  // Arguments written in another file keep their template uses there
-  let outer = match &cx.scope {
-    Some(outer) if !Arc::ptr_eq(&outer.doc, &scope.doc) => Some(outer.clone()),
-    _ => None,
-  };
-  let pin_to = outer.map(|outer| (cx.pin_scope(&outer), outer));
+  // Arguments are built where they were written; defaults are the
+  // template's own and are built in its body
+  let written = cx.pin_scope().map(|index| (index, cx.stack.len()));
   let mut args: HashMap<String, Value> = def.defaults.iter().cloned().collect();
   let mut options = Vec::new();
   for entry in entries {
@@ -759,8 +772,8 @@ fn expand(
       continue;
     }
     let mut arg = entry.value.clone();
-    if let Some((index, outer)) = &pin_to {
-      pin(&mut arg, *index, outer);
+    if let Some((index, stack)) = written {
+      pin(&mut arg, index, stack);
     }
     args.insert(entry.name.to_string(), arg);
   }
@@ -820,12 +833,15 @@ pub(crate) fn check_template(def: &TemplateDef, cx: &mut BuildCx<'_>) {
   cx.stack.pop();
 }
 
-/// Mark the template uses in an argument so they are built in the file the
-/// argument was written in, wherever the template places it
-fn pin(value: &mut Value, index: usize, outer: &Scope) {
+/// Wrap the names in an argument that are not kinds (template uses, and
+/// unknown names) so they are built where the argument was written,
+/// wherever the template places them: in that file, which sees only its own
+/// templates and its imports', with that file's templates being expanded
+fn pin(value: &mut Value, scope: usize, stack: usize) {
   match &mut value.kind {
     ValueKind::Named { name, body } => {
-      if kind_spec(name).is_none() && outer.defines(name) {
+      let parameter = matches!(body, Body::Unit) && is_lowercase(name);
+      if !parameter && kind_spec(name).is_none() {
         let pos = value.pos;
         let blank = Value {
           kind: ValueKind::Any,
@@ -833,34 +849,35 @@ fn pin(value: &mut Value, index: usize, outer: &Scope) {
         };
         let inner = std::mem::replace(value, blank);
         value.kind = ValueKind::InScope {
-          scope: index,
+          scope,
+          stack,
           value: Box::new(inner),
         };
         return;
       }
       match body {
         Body::Unit => {}
-        Body::Single(inner) => pin(inner, index, outer),
+        Body::Single(inner) => pin(inner, scope, stack),
         Body::Fields(fields) => {
           for field in fields {
-            pin(&mut field.value, index, outer);
+            pin(&mut field.value, scope, stack);
           }
         }
       }
     }
     ValueKind::List(items) | ValueKind::Tuple(items) => {
       for item in items {
-        pin(item, index, outer);
+        pin(item, scope, stack);
       }
     }
     ValueKind::Map(entries) => {
       for (_, _, item) in entries {
-        pin(item, index, outer);
+        pin(item, scope, stack);
       }
     }
     ValueKind::Fields(fields) => {
       for field in fields {
-        pin(&mut field.value, index, outer);
+        pin(&mut field.value, scope, stack);
       }
     }
     _ => {}
@@ -1414,6 +1431,28 @@ mod tests {
         .contains("cannot load the image \"gone.png\"")
     );
     assert_eq!(cx.issues[0].pos.column, 15);
+  }
+
+  #[test]
+  fn every_node_a_kind_builds_carries_the_build_instance() {
+    let value = read("Confirm(title: \"Quit?\", message: \"Sure?\")").unwrap();
+    let mut sprites = Placeholders::default();
+    let mut cx = BuildCx::new(&mut sprites);
+    cx.instance = 7;
+    let node = build_node(&value, &mut cx).expect("builds");
+    fn instances(node: &UiNode, out: &mut Vec<u64>) {
+      out.push(node.instance);
+      for child in &node.children {
+        instances(child, out);
+      }
+    }
+    let mut all = Vec::new();
+    instances(&node, &mut all);
+    assert!(
+      all.len() > 3,
+      "the dialog builds children of its own: {all:?}"
+    );
+    assert!(all.iter().all(|&instance| instance == 7), "{all:?}");
   }
 
   #[test]

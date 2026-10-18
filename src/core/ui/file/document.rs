@@ -421,10 +421,10 @@ impl UiFile {
         };
         let mut cx = BuildCx::in_file(sprites, scope, instance);
         let node = build_node(root, &mut cx);
-        (node, cx.issues)
+        (node, cx.issues, path.to_string())
       }
       Some(name) => {
-        let Some((def, _)) = scope.find(name) else {
+        let Some((def, defined)) = scope.find(name) else {
           let mut message = format!("no template \"{name}\" in this file or its imports");
           if let Some(close) = nearest(name, scope.names().iter().map(String::as_str)) {
             message.push_str(&format!("; did you mean \"{close}\"?"));
@@ -450,14 +450,15 @@ impl UiFile {
         };
         let mut cx = BuildCx::in_file(sprites, scope, instance);
         let node = build_node(&used, &mut cx);
-        (node, cx.issues)
+        // The positions are in the text of the file that defines it
+        (node, cx.issues, defined.path)
       }
     };
-    let (node, issues) = built;
+    let (node, issues, at) = built;
     UiFileError::check(
       issues
         .into_iter()
-        .map(|issue| UiFileIssue::at(path, issue))
+        .map(|issue| UiFileIssue::at(&at, issue))
         .collect(),
     )?;
     let Some(mut node) = node else {
@@ -1253,5 +1254,96 @@ mod tests {
         ),
       ]
     );
+  }
+
+  #[test]
+  fn a_template_used_inside_its_own_argument_is_not_a_cycle() {
+    let file = load(
+      r#"(
+        templates: {"Card": (params: ["content"], node: Panel(children: [content]))},
+        root: Card(content: Card(content: Text("x"))),
+      )"#,
+      &mut files(&[]),
+    )
+    .unwrap();
+    let built = root(&file);
+    assert_eq!(
+      built.children[0].children[0].state.label.as_deref(),
+      Some("x")
+    );
+
+    let mut imports = files(&[(
+      "ui/common.ui.ron",
+      r#"(templates: {
+        "Labelled": (params: ["label", "widget"], node: Row(children: [Text(label), widget])),
+      })"#,
+    )]);
+    let file = load(
+      r#"(
+        imports: ["ui/common.ui.ron"],
+        templates: {"Volume": (node: Labelled(label: "v", widget: Slider(range: (0, 1))))},
+        root: Labelled(label: "Master", widget: Volume),
+      )"#,
+      &mut imports,
+    );
+    assert!(file.is_ok(), "{:?}", file.err());
+
+    let issues = messages(load(
+      r#"(templates: {"A": (defaults: {"c": A}, node: Panel(children: [c]))})"#,
+      &mut files(&[]),
+    ));
+    assert!(
+      issues[0].contains("uses itself"),
+      "a default is the template's own: {issues:?}"
+    );
+  }
+
+  #[test]
+  fn imports_are_not_transitive_even_in_arguments() {
+    let mut imports = files(&[
+      (
+        "a.ui.ron",
+        r#"(imports: ["c.ui.ron"], templates: {"A": (params: ["w"], node: Column(children: [w]))})"#,
+      ),
+      ("c.ui.ron", r#"(templates: {"Foo": (node: Text("foo"))})"#),
+    ]);
+    let error = load(
+      "(imports: [\"a.ui.ron\"],\n  root: A(w: Foo))",
+      &mut imports,
+    )
+    .expect_err("Foo is a.ui.ron's import, not this file's");
+    assert_eq!(error.issues.len(), 1, "{error}");
+    let issue = &error.issues[0];
+    assert_eq!(
+      (issue.path.as_str(), issue.line, issue.column),
+      ("ui/test.ui.ron", 2, 14)
+    );
+    assert!(
+      issue.message.starts_with("unknown node kind \"Foo\""),
+      "{error}"
+    );
+  }
+
+  #[test]
+  fn an_imported_template_built_from_code_reports_issues_in_its_own_file() {
+    let mut imports = files(&[(
+      "ui/common.ui.ron",
+      r#"(templates: {"Item": (params: ["name"], node: Button(label: name))})"#,
+    )]);
+    let file = load(
+      r#"(imports: ["ui/common.ui.ron"], root: Column)"#,
+      &mut imports,
+    )
+    .unwrap();
+    let args = UiArgs::new().with("name", "S").with("cnt", 1);
+    let error = file
+      .build_template("Item", &args, &mut Placeholders::default())
+      .expect_err("cnt is not an argument of Item");
+    assert_eq!(error.issues.len(), 1, "{error}");
+    assert_eq!(
+      error.issues[0].path, "ui/common.ui.ron",
+      "the position is in the text of the file that defines Item"
+    );
+    assert!(error.issues[0].message.contains("\"cnt\""), "{error}");
   }
 }

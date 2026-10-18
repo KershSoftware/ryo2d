@@ -60,26 +60,16 @@ impl Form {
 
 pub(crate) struct OptionSpec {
   pub(crate) name: &'static str,
-  /// How the option is written (`apply` reads it in this form)
-  #[allow(dead_code)] // the table states it, nothing reads it yet
-  pub(crate) form: Form,
   pub(crate) apply: fn(UiNode, &Value, &mut BuildCx<'_>) -> UiNode,
 }
 
 pub(crate) struct ArgSpec {
   pub(crate) name: &'static str,
-  /// How the argument is written (the kind's `make` reads it in this form)
-  #[allow(dead_code)] // the table states it, nothing reads it yet
-  pub(crate) form: Form,
   pub(crate) required: bool,
 }
 
-const fn arg(name: &'static str, form: Form, required: bool) -> ArgSpec {
-  ArgSpec {
-    name,
-    form,
-    required,
-  }
+const fn arg(name: &'static str, required: bool) -> ArgSpec {
+  ArgSpec { name, required }
 }
 
 /// A constructor's arguments, as the file gave them
@@ -157,10 +147,7 @@ macro_rules! choices {
     KindSpec {
       name: $name,
       main: None,
-      args: &[
-        arg("options", Form::Strings, true),
-        arg("selected", Form::Whole, false),
-      ],
+      args: &[arg("options", true), arg("selected", false)],
       make: |c, cx| {
         let options = c.strings(cx, "options").unwrap_or_default();
         let options: Vec<&str> = options.iter().map(String::as_str).collect();
@@ -183,7 +170,7 @@ pub(crate) static KINDS: &[KindSpec] = &[
   KindSpec {
     name: "Grid",
     main: Some("columns"),
-    args: &[arg("columns", Form::Whole, true)],
+    args: &[arg("columns", true)],
     make: |c, cx| {
       let columns = c.whole(cx, "columns", u16::MAX as u64).unwrap_or(1) as u16;
       Some(UiNode::grid(columns))
@@ -192,34 +179,31 @@ pub(crate) static KINDS: &[KindSpec] = &[
   KindSpec {
     name: "Popup",
     main: None,
-    args: &[arg("anchor_node", Form::Text, true)],
+    args: &[arg("anchor_node", true)],
     make: |c, cx| Some(UiNode::popup(c.text(cx, "anchor_node").unwrap_or_default())),
   },
   KindSpec {
     name: "Text",
     main: Some("text"),
-    args: &[arg("text", Form::Text, false)],
+    args: &[arg("text", false)],
     make: |c, cx| Some(UiNode::text(c.text(cx, "text").unwrap_or_default())),
   },
   KindSpec {
     name: "Button",
     main: Some("label"),
-    args: &[arg("label", Form::Text, false)],
+    args: &[arg("label", false)],
     make: |c, cx| Some(UiNode::button(c.text(cx, "label").unwrap_or_default())),
   },
   KindSpec {
     name: "Image",
     main: Some("sprite"),
-    args: &[arg("sprite", Form::Asset, true)],
+    args: &[arg("sprite", true)],
     make: |c, cx| c.asset(cx, "sprite").map(UiNode::image),
   },
   KindSpec {
     name: "Checkbox",
     main: Some("label"),
-    args: &[
-      arg("label", Form::Text, false),
-      arg("checked", Form::Bool, false),
-    ],
+    args: &[arg("label", false), arg("checked", false)],
     make: |c, cx| {
       let label = c.text(cx, "label").unwrap_or_default();
       Some(UiNode::checkbox(
@@ -231,10 +215,7 @@ pub(crate) static KINDS: &[KindSpec] = &[
   KindSpec {
     name: "Toggle",
     main: Some("label"),
-    args: &[
-      arg("label", Form::Text, false),
-      arg("on", Form::Bool, false),
-    ],
+    args: &[arg("label", false), arg("on", false)],
     make: |c, cx| {
       let label = c.text(cx, "label").unwrap_or_default();
       Some(UiNode::toggle(label, c.bool(cx, "on").unwrap_or(false)))
@@ -246,7 +227,7 @@ pub(crate) static KINDS: &[KindSpec] = &[
   KindSpec {
     name: "ChoiceList",
     main: None,
-    args: &[arg("options", Form::Strings, true)],
+    args: &[arg("options", true)],
     make: |c, cx| {
       let options = c.strings(cx, "options").unwrap_or_default();
       let options: Vec<&str> = options.iter().map(String::as_str).collect();
@@ -256,10 +237,7 @@ pub(crate) static KINDS: &[KindSpec] = &[
   KindSpec {
     name: "Slider",
     main: None,
-    args: &[
-      arg("range", Form::Range, true),
-      arg("value", Form::Number, false),
-    ],
+    args: &[arg("range", true), arg("value", false)],
     make: |c, cx| {
       let (min, max) = c.range(cx, "range").unwrap_or((0.0, 1.0));
       let value = c.number(cx, "value").unwrap_or(min);
@@ -269,35 +247,35 @@ pub(crate) static KINDS: &[KindSpec] = &[
   KindSpec {
     name: "Progress",
     main: Some("fraction"),
-    args: &[arg("fraction", Form::Number, false)],
+    args: &[arg("fraction", false)],
     make: |c, cx| Some(UiNode::progress(c.number(cx, "fraction").unwrap_or(0.0))),
   },
   KindSpec {
     name: "TextInput",
     main: Some("text"),
-    args: &[arg("text", Form::Text, false)],
+    args: &[arg("text", false)],
     make: |c, cx| Some(UiNode::text_input(c.text(cx, "text").unwrap_or_default())),
   },
   KindSpec {
     name: "Prompt",
     main: Some("input"),
-    args: &[arg("input", Form::Text, true)],
+    args: &[arg("input", true)],
     make: |c, cx| Some(UiNode::prompt(&c.text(cx, "input").unwrap_or_default())),
   },
   KindSpec {
     name: "Rebind",
     main: Some("input"),
-    args: &[arg("input", Form::Text, true)],
+    args: &[arg("input", true)],
     make: |c, cx| Some(UiNode::rebind(&c.text(cx, "input").unwrap_or_default())),
   },
   KindSpec {
     name: "Confirm",
     main: None,
     args: &[
-      arg("title", Form::Text, true),
-      arg("message", Form::Text, false),
-      arg("yes", Form::Text, false),
-      arg("no", Form::Text, false),
+      arg("title", true),
+      arg("message", false),
+      arg("yes", false),
+      arg("no", false),
     ],
     make: |c, cx| {
       let title = c.text(cx, "title").unwrap_or_default();
@@ -356,14 +334,12 @@ macro_rules! option {
   ($name:literal, Flag, $method:ident) => {
     OptionSpec {
       name: $name,
-      form: Form::Flag,
       apply: |node, value, cx| if cx.flag(value) { node.$method() } else { node },
     }
   };
   ($name:literal, Whole, $ty:ty, $method:ident) => {
     OptionSpec {
       name: $name,
-      form: Form::Whole,
       apply: |node, value, cx| match cx.whole(value, <$ty>::MAX as u64) {
         Some(v) => node.$method(v as $ty),
         None => node,
@@ -373,17 +349,15 @@ macro_rules! option {
   ($name:literal, Enum, $names:ident, $from:ident, $method:ident) => {
     OptionSpec {
       name: $name,
-      form: Form::Enum($names),
       apply: |node, value, cx| match cx.enum_name(value, $names).and_then($from) {
         Some(v) => node.$method(v),
         None => node,
       },
     }
   };
-  ($name:literal, $form:ident, $read:ident, $method:ident) => {
+  ($name:literal, $read:ident, $method:ident) => {
     OptionSpec {
       name: $name,
-      form: Form::$form,
       apply: |node, value, cx| match cx.$read(value) {
         Some(v) => node.$method(v),
         None => node,
@@ -418,28 +392,28 @@ pub(crate) static OPTIONS: &[OptionSpec] = &[
   option!("horizontal", Flag, horizontal),
   option!("both", Flag, both),
   option!("no_bar", Flag, no_bar),
-  option!("enabled", Bool, bool, enabled),
-  option!("focusable", Bool, bool, focusable),
-  option!("selected", Bool, bool, selected),
-  option!("min_width", Number, number, min_width),
-  option!("max_width", Number, number, max_width),
-  option!("min_height", Number, number, min_height),
-  option!("max_height", Number, number, max_height),
-  option!("gap", Number, number, gap),
-  option!("grow", Number, number, grow),
-  option!("aspect", Number, number, aspect),
-  option!("size", Number, number, size),
-  option!("wrap", Number, number, wrap),
-  option!("step", Number, number, step),
+  option!("enabled", bool, enabled),
+  option!("focusable", bool, focusable),
+  option!("selected", bool, selected),
+  option!("min_width", number, min_width),
+  option!("max_width", number, max_width),
+  option!("min_height", number, min_height),
+  option!("max_height", number, max_height),
+  option!("gap", number, gap),
+  option!("grow", number, grow),
+  option!("aspect", number, aspect),
+  option!("size", number, size),
+  option!("wrap", number, wrap),
+  option!("step", number, step),
   option!("max_lines", Whole, u32, max_lines),
   option!("max_len", Whole, usize, max_len),
   option!("default_choice", Whole, usize, default_choice),
   option!("count", Whole, u32, count),
   option!("binding_slot", Whole, usize, binding_slot),
-  option!("width", Length, length, width),
-  option!("height", Length, length, height),
-  option!("padding", Edges, edges, padding),
-  option!("margin", Edges, edges, margin),
+  option!("width", length, width),
+  option!("height", length, height),
+  option!("padding", edges, padding),
+  option!("margin", edges, margin),
   option!("align", Enum, ALIGNS, align_of, align),
   option!("justify", Enum, JUSTIFIES, justify_of, justify),
   option!("anchor", Enum, ANCHORS, anchor_of, anchor),
@@ -448,7 +422,6 @@ pub(crate) static OPTIONS: &[OptionSpec] = &[
   option!("role", Enum, ROLES, role_of, role),
   OptionSpec {
     name: "offset",
-    form: Form::Pair,
     apply: |node, value, cx| match cx.pair(value) {
       Some((x, y)) => node.offset(x, y),
       None => node,
@@ -456,7 +429,6 @@ pub(crate) static OPTIONS: &[OptionSpec] = &[
   },
   OptionSpec {
     name: "image_size",
-    form: Form::Pair,
     apply: |node, value, cx| match cx.pair(value) {
       Some((width, height)) => node.image_size(width, height),
       None => node,
@@ -464,47 +436,43 @@ pub(crate) static OPTIONS: &[OptionSpec] = &[
   },
   OptionSpec {
     name: "at",
-    form: Form::Rect,
     apply: |node, value, cx| match cx.rect(value) {
       Some([x, y, width, height]) => node.at(Rect::new(x, y, width, height)),
       None => node,
     },
   },
-  option!("uv", Quad, quad, uv),
+  option!("uv", quad, uv),
   OptionSpec {
     name: "tracks",
-    form: Form::Numbers,
     apply: |node, value, cx| match cx.numbers(value) {
       Some(tracks) => node.tracks(&tracks),
       None => node,
     },
   },
-  option!("background", Color, color, background),
-  option!("color", Color, color, color),
-  option!("tint", Color, color, tint),
-  option!("tooltip", Text, text, tooltip),
+  option!("background", color, background),
+  option!("color", color, color),
+  option!("tint", color, tint),
+  option!("tooltip", text, tooltip),
   OptionSpec {
     name: "variant",
-    form: Form::Text,
     apply: |node, value, cx| match cx.text(value) {
       Some(v) => node.variant(&v),
       None => node,
     },
   },
-  option!("action", Text, text, action),
-  option!("name", Text, text, name),
-  option!("key", Text, text, key),
-  option!("bind", Text, text, bind),
-  option!("nav_up", Text, text, nav_up),
-  option!("nav_down", Text, text, nav_down),
-  option!("nav_left", Text, text, nav_left),
-  option!("nav_right", Text, text, nav_right),
-  option!("label", Text, text, label),
-  option!("placeholder", Text, text, placeholder),
-  option!("icon", Asset, asset, icon),
+  option!("action", text, action),
+  option!("name", text, name),
+  option!("key", text, key),
+  option!("bind", text, bind),
+  option!("nav_up", text, nav_up),
+  option!("nav_down", text, nav_down),
+  option!("nav_left", text, nav_left),
+  option!("nav_right", text, nav_right),
+  option!("label", text, label),
+  option!("placeholder", text, placeholder),
+  option!("icon", asset, icon),
   OptionSpec {
     name: "typewriter",
-    form: Form::Typewriter,
     apply: |node, value, cx| match cx.typewriter(value) {
       Some(reveal) => node.typewriter(reveal),
       None => node,
