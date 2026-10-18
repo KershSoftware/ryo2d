@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use demo_kit::prelude::*;
 use ryo2d::testing::{HeadlessEngine, StepOutcome};
-use ui_demo::scenes::{FileInventoryPage, InventoryPage, Item, ItemKind, SlotRef};
+use ui_demo::scenes::{
+  BigListPage, BigListShown, FileInventoryPage, InventoryPage, Item, ItemKind, ListShown, SlotRef,
+};
 
 const DPAD: [GamepadButton; 4] = [
   GamepadButton::DPadUp,
@@ -470,5 +472,260 @@ fn the_mixed_pages_focus_path_runs_through_the_node_grid() {
   assert!(
     back.is_some_and(|r| r.y < done_y),
     "Up from Done goes back into the grid"
+  );
+}
+
+/// What the watched Big list page showed on its last UI frame
+#[derive(Debug, Clone, Default)]
+struct ShownLists {
+  page: BigListShown,
+  /// The node list's pooled rows: each row's rank (its item plus one) and
+  /// the rank its label shows
+  node_rows: Vec<(usize, String)>,
+}
+
+/// The Big list page, with what it shows copied out after each UI frame
+struct WatchedBigList {
+  page: BigListPage,
+  shown: Arc<Mutex<ShownLists>>,
+}
+
+impl DemoPage for WatchedBigList {
+  fn name(&self) -> &str {
+    self.page.name()
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    self.page.controls()
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.page.enter(ctx);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    self.page.update(ctx, dt);
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
+    self.page.ui(ui, ctx);
+    let node_rows = node_rows(ctx);
+    if let Ok(mut shown) = self.shown.lock() {
+      shown.page = self.page.shown();
+      shown.node_rows = node_rows;
+    }
+  }
+}
+
+/// The node list's pooled rows, read from the world: each row's rank and
+/// the text of its "rank" label
+fn node_rows(ctx: &SceneContext) -> Vec<(usize, String)> {
+  let Some(board) = ctx.find_ui("board") else {
+    return Vec::new();
+  };
+  let Some(rows) = ctx.world.get::<Children>(board) else {
+    return Vec::new();
+  };
+  rows
+    .iter()
+    .filter_map(|&row| {
+      let index = ctx.world.get::<UiListRow>(row)?.index();
+      let rank = ctx.find_ui_in(row, "rank")?;
+      let label = ctx.world.get::<UiLabel>(rank)?.0.clone();
+      Some((index + 1, label))
+    })
+    .collect()
+}
+
+/// The Big list page alone, opened, and a reader of what it shows
+fn big_list() -> Option<(HeadlessEngine, impl Fn() -> ShownLists)> {
+  let shown = Arc::new(Mutex::new(ShownLists::default()));
+  let watched = Arc::clone(&shown);
+  let demo = Demo::new("Big list")
+    .resolution(1024, 768)
+    .page(move || WatchedBigList {
+      page: BigListPage::new(),
+      shown: Arc::clone(&watched),
+    });
+  let mut engine = HeadlessEngine::new_or_skip(demo.engine_builder())?;
+  engine.step_frames(6).unwrap();
+  Some((engine, move || {
+    shown.lock().map(|s| s.clone()).unwrap_or_default()
+  }))
+}
+
+/// Time for a list's eased scroll to catch up with its focus
+fn settle(engine: &mut HeadlessEngine) {
+  engine.step_frames(20).unwrap();
+}
+
+/// A shoulder button, then time for the focus to land in that list
+fn switch_list(engine: &mut HeadlessEngine, button: GamepadButton) {
+  pad(engine, button);
+  engine.step_frames(4).unwrap();
+}
+
+/// Type `rank` into the jump field and press Go with the pad
+fn jump_to(engine: &mut HeadlessEngine, rank: usize) {
+  // The field and Go are the page's only focusables narrower than a list
+  // row, and the field is left of Go (a list's rows built above its view
+  // can be as high as the field)
+  let field = engine
+    .ui_focusables()
+    .into_iter()
+    .filter(|(_, r)| r.width < 200.0)
+    .min_by(|a, b| a.1.x.total_cmp(&b.1.x))
+    .map(|(id, _)| id);
+  let Some(field) = field else {
+    panic!("the page has nothing to focus");
+  };
+  engine.focus_ui(field);
+  engine.step_frames(2).unwrap();
+  assert_eq!(
+    engine.ui_focused(),
+    Some(field),
+    "the jump field has the focus"
+  );
+  // Clear the rank it starts with, then type this one
+  for _ in 0..8 {
+    engine.tap_key(KeyCode::Backspace);
+    engine.step_frames(1).unwrap();
+  }
+  engine.type_text(&rank.to_string());
+  engine.step_frames(2).unwrap();
+  // Tab on to Go, and A presses it
+  engine.tap_key(KeyCode::Tab);
+  engine.step_frames(2).unwrap();
+  assert_ne!(
+    engine.ui_focused(),
+    Some(field),
+    "Tab left the field for Go"
+  );
+  pad(engine, GamepadButton::South);
+  // The far jump lands, and the eased scroll settles
+  engine.step_frames(10).unwrap();
+  settle(engine);
+}
+
+/// Whether `rank` is in view in `list`
+fn in_view(list: &ListShown, rank: usize) -> bool {
+  (list.first..=list.last).contains(&rank)
+}
+
+/// What one of the page's lists showed
+type ListOf = fn(&ShownLists) -> ListShown;
+
+fn closure(shown: &ShownLists) -> ListShown {
+  shown.page.closure
+}
+
+fn node(shown: &ShownLists) -> ListShown {
+  shown.page.node
+}
+
+#[test]
+fn both_big_lists_walk_by_pad_and_jump_to_a_rank() {
+  let Some((mut engine, shown)) = big_list() else {
+    return;
+  };
+  assert_eq!(
+    closure(&shown()).focused,
+    Some(1),
+    "the page opens on rank 1 of the closure list"
+  );
+  assert!(
+    in_view(&node(&shown()), 1),
+    "the node list shows its top too"
+  );
+
+  // From the top of each list, 30 steps down: RB moves to the node list
+  let lists: [(&str, ListOf); 2] = [("closure", closure), ("node", node)];
+  for (which, list) in lists {
+    if which == "node" {
+      switch_list(&mut engine, GamepadButton::RightBumper);
+    }
+    assert_eq!(list(&shown()).focused, Some(1), "{which}: from rank 1");
+    for _ in 0..30 {
+      pad(&mut engine, GamepadButton::DPadDown);
+    }
+    settle(&mut engine);
+    let at = list(&shown());
+    assert_eq!(at.focused, Some(31), "{which}: rank 31 after 30 steps down");
+    assert!(
+      at.first > 1 && in_view(&at, 31),
+      "{which}: scrolled past rank 1 to show rank 31 ({at:?})"
+    );
+  }
+
+  // Go with rank 9,990: the list walked last (the node list) takes the
+  // focus there, and the other scrolls there too
+  jump_to(&mut engine, 9990);
+  let after = shown();
+  assert_eq!(
+    node(&after).focused,
+    Some(9990),
+    "the jump focused rank 9,990"
+  );
+  assert_eq!(closure(&after).focused, None, "one list has the focus");
+  for (which, list) in [("closure", closure(&after)), ("node", node(&after))] {
+    assert!(
+      in_view(&list, 9990),
+      "{which}: rank 9,990 in view ({list:?})"
+    );
+  }
+  // The node rows drawn after the jump are bound to their own ranks
+  assert!(
+    after.node_rows.iter().any(|(rank, _)| *rank == 9990),
+    "rank 9,990 has a row: {:?}",
+    after.node_rows
+  );
+  for (rank, label) in &after.node_rows {
+    assert_eq!(
+      label.replace(',', "").parse::<usize>().ok(),
+      Some(*rank),
+      "the row for rank {rank} shows {label:?}"
+    );
+  }
+
+  // Each list walks on to rank 10,000, and stays there: LB moves back to
+  // the closure list, where the jump left it
+  let lists: [(&str, ListOf); 2] = [("node", node), ("closure", closure)];
+  for (which, list) in lists {
+    if which == "closure" {
+      switch_list(&mut engine, GamepadButton::LeftBumper);
+      assert_eq!(
+        list(&shown()).focused,
+        Some(9990),
+        "{which}: from rank 9,990"
+      );
+    }
+    for _ in 0..20 {
+      pad(&mut engine, GamepadButton::DPadDown);
+    }
+    settle(&mut engine);
+    let at = list(&shown());
+    assert_eq!(
+      at.focused,
+      Some(10_000),
+      "{which}: the walk stops at the last rank"
+    );
+    assert_eq!(at.last, 10_000, "{which}: the end of the list shows");
+  }
+  assert_eq!(
+    node(&shown()).focused,
+    None,
+    "the focus is in the closure list"
+  );
+
+  // Go with rank 1, the closure list used last: it takes the focus at the
+  // top, and the node list scrolls back there too
+  jump_to(&mut engine, 1);
+  let top = shown();
+  assert_eq!(closure(&top).focused, Some(1), "the jump focused rank 1");
+  assert_eq!(node(&top).focused, None, "one list has the focus");
+  assert_eq!(
+    (closure(&top).first, node(&top).first),
+    (1, 1),
+    "both lists show their top"
   );
 }

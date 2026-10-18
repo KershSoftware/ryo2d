@@ -1,0 +1,35 @@
+// The Big list page's node list: 10,000 leaderboard rows, of which only
+// those in view are pooled. The page fills each row from its UiListBind with
+// the rank, name and score. The row height and gap are the page's closure
+// list's (big_list_page.rs), so the two lists' rows line up. Debug builds
+// reload this file when it is saved.
+(
+  templates: {
+    // One row: a button across it, under the rank, the name and the score
+    "LeaderRow": (
+      node: Stack(
+        fill: true,
+        children: [
+          Button(label: "", width: Pct(1.0), height: Pct(1.0), action: "pick"),
+          Row(
+            fill: true, padding: (12, 0), gap: 12, align: Center,
+            children: [
+              Column(width: 64, children: [Text(text: "{rank}", muted: true, name: "rank")]),
+              Column(fill_width: true, children: [Text(text: "{name}", name: "name")]),
+              Column(width: 96, align: End, children: [Text(text: "{score}", name: "score")]),
+            ],
+          ),
+        ],
+      ),
+    ),
+  },
+  root: Column(
+    embedded: true, focus_scope: true, fill: true,
+    children: [
+      List(
+        count: 10000, row_height: 28, gap: 2, padding: (4, 0), fill: true,
+        row_shape: LeaderRow, name: "board",
+      ),
+    ],
+  ),
+)

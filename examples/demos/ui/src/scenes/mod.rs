@@ -1,8 +1,10 @@
 //! The demo's pages: the four acceptance pages (a game's menus, settings,
 //! inventory and dialogue, all played with the pad), one feature each, then
-//! the acceptance pages built from node trees and UI files and the Mixed page
+//! the acceptance pages built from node trees and UI files, the Mixed page
+//! and the Big list page
 
 mod art;
+mod big_list_page;
 mod clipping_demo;
 mod dialogue_data;
 mod dialogue_page;
@@ -24,6 +26,7 @@ mod text_demo;
 mod text_input_demo;
 mod theme_demo;
 
+pub use big_list_page::{BigListPage, BigListShown, ListShown};
 pub use clipping_demo::ClippingDemo;
 pub use dialogue_page::DialoguePage;
 pub use dropdown_demo::DropdownDemo;

@@ -1,21 +1,23 @@
 //! UI Demo - Ryo2D's UI. The first four pages are the acceptance showcase,
 //! a game's screens played with the gamepad alone, and the next seven show
-//! one feature each. The last five are the four showcase pages built from
+//! one feature each. The next five are the four showcase pages built from
 //! UI files, and a closure screen around an embedded node grid built from one.
+//! The last is a 10,000-row leaderboard as a closure list beside a node list.
 //! A library, so its tests drive the pages headlessly.
 
 pub mod scenes;
 
 use demo_kit::prelude::*;
 use scenes::{
-  ClippingDemo, DialoguePage, DropdownDemo, FileDialoguePage, FileInventoryPage, FileMenuPage,
-  FileSettingsPage, InventoryPage, LayoutDemo, MenuPage, MixedPage, ScrollViewDemo, SettingsPage,
-  TextDemo, TextInputDemo, ThemeDemo,
+  BigListPage, ClippingDemo, DialoguePage, DropdownDemo, FileDialoguePage, FileInventoryPage,
+  FileMenuPage, FileSettingsPage, InventoryPage, LayoutDemo, MenuPage, MixedPage, ScrollViewDemo,
+  SettingsPage, TextDemo, TextInputDemo, ThemeDemo,
 };
 
-/// The demo's sixteen pages: Menus, Settings, Inventory, Dialogue, Theme,
+/// The demo's seventeen pages: Menus, Settings, Inventory, Dialogue, Theme,
 /// Layout, Clipping & Modals, Text, Text Input, Scroll Views and Dropdowns,
-/// then File Menus, File Settings, File Inventory, File Dialogue and Mixed
+/// then File Menus, File Settings, File Inventory, File Dialogue, Mixed and
+/// Big list
 pub fn demo() -> Demo {
   Demo::new("UI")
     .resolution(1024, 768)
@@ -35,4 +37,5 @@ pub fn demo() -> Demo {
     .page(FileInventoryPage::new)
     .page(FileDialoguePage::new)
     .page(MixedPage::new)
+    .page(BigListPage::new)
 }
