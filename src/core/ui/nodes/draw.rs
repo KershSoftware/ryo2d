@@ -19,6 +19,7 @@ use crate::core::text::{RichText, TextReveal, TextStyle};
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::{Anchor, Container, Rect, Response, Scroll, Theme, UiContext, UiId};
 
+use super::bindings::{self, UiBind};
 use super::components::{
   BackAnswer, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName,
   UiNodes, UiOptions, UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
@@ -129,6 +130,7 @@ impl<'a> UiContext<'a> {
     nodes.embedded_drawn.push(root);
     let pending_focus = nodes.pending_focus.take();
     let mut walk = Walk::new(self.scene().0, pending_focus);
+    bindings::sync_root(world, root);
     let response = draw_node(world, self, root, None, &mut walk);
     if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
       if let Some(node) = walk.pending_focus {
@@ -180,6 +182,7 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
       offset: placed.offset,
       at: placed.at,
     };
+    bindings::sync_root(world, root);
     draw_node(world, ui, root, Some(place), &mut walk);
   }
   walk.finish(world, ui)
@@ -244,6 +247,7 @@ fn draw_node(
         if group.changed {
           Write::Index(group.chosen).apply(&mut entity);
         }
+        wrote(&mut entity, node);
         answer_group(&mut entity, &group, walk);
       }
       return None;
@@ -253,6 +257,7 @@ fn draw_node(
       if let Some(write) = write {
         write.apply(&mut entity);
       }
+      wrote(&mut entity, node);
       if picked.is_some() {
         push_event(entity.world(), walk, node, UiEventKind::Clicked);
       }
@@ -309,10 +314,18 @@ fn draw_node(
   if let Some(write) = write {
     write.apply(&mut entity);
   }
+  wrote(&mut entity, node);
   if let Some(response) = &response {
     answer(&mut entity, ui, response, sends, walk);
   }
   response
+}
+
+/// A bound widget has been drawn and may have written: its name follows
+fn wrote(entity: &mut EntityWorldMut<'_>, node: Entity) {
+  if entity.contains::<UiBind>() {
+    entity.world_scope(|world| bindings::widget_wrote(world, node));
+  }
 }
 
 /// Which of `Clicked` and `Changed` a kind sends
@@ -1303,6 +1316,7 @@ mod tests {
   use crate::core::testing::UiHarness;
   use crate::core::ui::nav::nav_targets;
   use crate::core::ui::nodes::*;
+  use crate::core::ui::test_util::warnings_containing as warnings;
   use crate::core::ui::{Align, Anchor, Rect, UiContext};
 
   fn kids(world: &World, of: Entity) -> Vec<Entity> {
@@ -1317,13 +1331,6 @@ mod tests {
       .into_iter()
       .map(|(_, r)| r)
       .collect()
-  }
-
-  fn warnings(needle: &str) -> usize {
-    crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|w| w.message.contains(needle))
-      .count()
   }
 
   /// A screen of every container and the simple widgets, as a closure

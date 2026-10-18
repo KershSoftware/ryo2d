@@ -12,6 +12,7 @@ use crate::core::text::{TextAlign, TextReveal, TextStyle};
 use crate::core::ui::widgets::modal::MESSAGE_WIDTH as CONFIRM_MESSAGE_WIDTH;
 use crate::core::ui::{Align, Anchor, Color, Edges, Justify, Length, Rect};
 
+use super::bindings::BindValue;
 use super::components::UiSlot;
 
 /// A theme text role, read when the text is drawn
@@ -210,6 +211,10 @@ pub struct UiNode {
   pub(crate) inserts: Vec<Insert>,
   /// Every option given, by method name, checked against the kind at spawn
   pub(crate) given: Vec<&'static str>,
+  pub(crate) bind: Option<String>,
+  pub(crate) bound: bool,
+  /// Binding values to give names that have none (the top node's count)
+  pub(crate) seeds: Vec<(String, BindValue)>,
 }
 
 impl fmt::Debug for UiNode {
@@ -320,7 +325,7 @@ impl Kind {
       }
       Kind::RadioGroup { .. } => listed(
         "width height fill_width min_width max_width margin gap align justify grow anchor offset \
-         at enabled horizontal embedded",
+         at enabled horizontal embedded bind",
       ),
       Kind::Text(_) => listed(
         "embedded markup style role heading size color muted text_align wrap max_lines ellipsis \
@@ -333,6 +338,18 @@ impl Kind {
             "margin anchor offset grow at default_focus nav_up nav_down nav_left nav_right \
              nav_skip focusable variant tooltip enabled drag_source drop_target embedded",
           )
+          || (option == "bind"
+            && matches!(
+              widget,
+              Kind::Slider(_)
+                | Kind::Progress { .. }
+                | Kind::Checkbox
+                | Kind::Toggle
+                | Kind::Dropdown
+                | Kind::Tabs
+                | Kind::ChoiceList { .. }
+                | Kind::TextInput(_)
+            ))
           || match widget {
             Kind::Button(_) => matches!(option, "markup" | "icon"),
             Kind::Image(_) => matches!(option, "image_size" | "tint" | "filter" | "uv"),
@@ -367,6 +384,9 @@ impl UiNode {
       children: Vec::new(),
       inserts: Vec::new(),
       given: Vec::new(),
+      bind: None,
+      bound: false,
+      seeds: Vec::new(),
     }
   }
 
@@ -597,6 +617,21 @@ impl UiNode {
   /// Reads the theme's spacing as the gap when drawn
   pub(crate) fn theme_gap(mut self) -> UiNode {
     self.layout.theme_gap = true;
+    self
+  }
+
+  /// Tie a value widget (slider, progress, checkbox, toggle, radio group,
+  /// dropdown, tabs, choice list, text input) to a named binding: the tree's
+  /// `ctx.ui_set(root, name, ..)` writes it, and its changes set the name
+  pub fn bind(mut self, name: impl Into<String>) -> UiNode {
+    self.bind = Some(name.into());
+    self.given("bind")
+  }
+
+  /// Read the node's label and tooltip as patterns: `{name}` shows a
+  /// binding's value, `{name:.1}` with one decimal, `{{` a brace
+  pub fn bound(mut self) -> UiNode {
+    self.bound = true;
     self
   }
 

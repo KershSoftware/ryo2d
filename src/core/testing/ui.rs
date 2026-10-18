@@ -19,7 +19,7 @@ use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
 use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
 use crate::core::ui::theme::warn_once;
-use crate::core::ui::{Theme, UiContext, UiEvent, UiId, UiInput, UiNode, nodes};
+use crate::core::ui::{BindValue, Theme, UiContext, UiEvent, UiId, UiInput, UiNode, nodes};
 
 /// How long each frame lasts (seconds)
 const FRAME: f64 = 1.0 / 60.0;
@@ -156,6 +156,16 @@ impl UiHarness {
   /// The first node named `name` in the harness's UI trees
   pub fn find_ui(&self, name: &str) -> Option<Entity> {
     nodes::find_ui(&self.world, self.scene, name)
+  }
+
+  /// Set a named binding on the tree `node` belongs to, as `ctx.ui_set`
+  pub fn ui_set(&mut self, node: Entity, name: &str, value: impl Into<BindValue>) {
+    nodes::bindings::set(&mut self.world, node, name, value.into());
+  }
+
+  /// A named binding's value on the tree `node` belongs to, as `ctx.ui_get`
+  pub fn ui_get<T: TryFrom<BindValue>>(&self, node: Entity, name: &str) -> Option<T> {
+    nodes::bindings::get(&self.world, node, name).and_then(|value| T::try_from(value).ok())
   }
 
   /// The events the node trees sent in the last frame, in walk order

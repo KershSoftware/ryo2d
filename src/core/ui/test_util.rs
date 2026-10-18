@@ -18,6 +18,14 @@ use crate::core::ui::memory::{UiMemory, UiSound};
 use crate::core::ui::nav::NavOutcome;
 use crate::core::ui::theme::Theme;
 
+/// How many captured warnings contain `needle`
+pub(crate) fn warnings_containing(needle: &str) -> usize {
+  crate::core::dev_log::get_entries()
+    .iter()
+    .filter(|w| w.message.contains(needle))
+    .count()
+}
+
 /// A text engine over the built-in fonts
 pub(crate) fn text_engine() -> TextEngine {
   let mut engine = TextEngine::new();

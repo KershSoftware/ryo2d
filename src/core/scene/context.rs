@@ -20,7 +20,7 @@ use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
 use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
-use crate::core::ui::{UiId, UiNode, UiTheme, nodes};
+use crate::core::ui::{BindValue, UiId, UiNode, UiTheme, nodes};
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
 
 #[cfg(test)]
@@ -291,6 +291,19 @@ impl SceneContext<'_> {
   /// The first node named `name` in the tree under `root` (included).
   pub fn find_ui_in(&self, root: Entity, name: &str) -> Option<Entity> {
     nodes::find_ui_in(self.world, root, name)
+  }
+
+  /// Set a named binding on the UI tree `node` belongs to: every widget bound
+  /// to `name` and every label or tooltip showing it update. Values are kept
+  /// per root, so two trees from one file never share them.
+  pub fn ui_set(&mut self, node: Entity, name: &str, value: impl Into<BindValue>) {
+    nodes::bindings::set(self.world, node, name, value.into());
+  }
+
+  /// A named binding's value on the UI tree `node` belongs to, as `T`
+  /// (`f32`, `f64`, `i32`, `u32`, `usize`, `bool` or `String`)
+  pub fn ui_get<T: TryFrom<BindValue>>(&self, node: Entity, name: &str) -> Option<T> {
+    nodes::bindings::get(self.world, node, name).and_then(|value| T::try_from(value).ok())
   }
 
   // --- hierarchy and interpolation ---

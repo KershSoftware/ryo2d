@@ -4,12 +4,14 @@
 //! resource the walks keep, `events` what a widget reports, `spawn` the
 //! entities a tree becomes and `draw` the walk that draws them each frame.
 
+pub(crate) mod bindings;
 mod components;
 mod draw;
 mod events;
 mod node;
 mod spawn;
 
+pub use bindings::BindValue;
 pub use components::{
   UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName, UiOptions,
   UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,

@@ -6,6 +6,7 @@ use crate::core::ecs::kernel::{ChildOf, Children, Entity, World};
 use crate::core::ui::Anchor;
 use crate::core::ui::theme::warn_once;
 
+use super::bindings::{self, Pattern, UiBind, UiPattern};
 use super::components::{
   BackAnswer, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName,
   UiNodes, UiOptions, UiRoot, UiTextValue, UiTooltip, UiValue,
@@ -23,7 +24,8 @@ struct Pending {
 }
 
 /// Spawn `tree` as a root owned by `scene`
-pub(crate) fn spawn_ui(world: &mut World, scene: u64, tree: UiNode) -> Entity {
+pub(crate) fn spawn_ui(world: &mut World, scene: u64, mut tree: UiNode) -> Entity {
+  let seeds = std::mem::take(&mut tree.seeds);
   // A modal root opens centred, as `ui.modal()` does, unless told otherwise
   let default = if tree.flags.modal {
     Anchor::Center
@@ -50,12 +52,14 @@ pub(crate) fn spawn_ui(world: &mut World, scene: u64, tree: UiNode) -> Entity {
   });
 
   finish(world, top, pending);
+  bindings::invalidate(world, top);
+  bindings::apply_subtree(world, top, seeds);
   top
 }
 
 /// Spawn `tree` under `parent`, after its last child; `None` if `parent` is
 /// not a container node
-pub(crate) fn spawn_ui_in(world: &mut World, parent: Entity, tree: UiNode) -> Option<Entity> {
+pub(crate) fn spawn_ui_in(world: &mut World, parent: Entity, mut tree: UiNode) -> Option<Entity> {
   let parent_kind = world.get::<UiNodeKind>(parent).map(|node| node.kind.name());
   let container = world
     .get::<UiNodeKind>(parent)
@@ -70,9 +74,12 @@ pub(crate) fn spawn_ui_in(world: &mut World, parent: Entity, tree: UiNode) -> Op
     });
     return None;
   }
+  let seeds = std::mem::take(&mut tree.seeds);
   let mut pending = Vec::new();
   let top = spawn_node(world, Some(parent), false, tree, &mut pending);
   finish(world, top, pending);
+  bindings::invalidate(world, top);
+  bindings::apply_subtree(world, top, seeds);
   Some(top)
 }
 
@@ -100,6 +107,9 @@ fn spawn_node(
     children,
     inserts,
     given,
+    bind,
+    bound,
+    seeds: _,
   } = node;
 
   let kind_name = kind.name();
@@ -121,6 +131,11 @@ fn spawn_node(
     _ => None,
   };
   let modal = flags.modal;
+  let pattern = bound.then(|| UiPattern {
+    label: state.label.as_deref().map(Pattern::parse),
+    tooltip: tooltip.as_deref().map(Pattern::parse),
+  });
+  let bind = bind.filter(|_| kind.takes("bind"));
 
   let mut entity = world.spawn((
     UiNodeKind {
@@ -160,6 +175,12 @@ fn spawn_node(
   }
   if let Some(reveal) = state.reveal {
     entity.insert(reveal);
+  }
+  if let Some(bind) = bind {
+    entity.insert(UiBind(bind));
+  }
+  if let Some(pattern) = pattern.filter(|p| p.label.is_some() || p.tooltip.is_some()) {
+    entity.insert(pattern);
   }
   if let Some(name) = name {
     entity.insert(UiName(name));
@@ -313,6 +334,7 @@ mod tests {
   use super::*;
   use crate::core::ecs::kernel::{ChildOf, Children, Component};
   use crate::core::testing::UiHarness;
+  use crate::core::ui::test_util::warnings_containing as warnings;
   use crate::core::ui::{Anchor, UiNode};
 
   #[derive(Component, Debug, PartialEq)]
@@ -323,13 +345,6 @@ mod tests {
       .get::<Children>(of)
       .map(|c| c.to_vec())
       .unwrap_or_default()
-  }
-
-  fn warnings(needle: &str) -> usize {
-    crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|w| w.message.contains(needle))
-      .count()
   }
 
   #[test]

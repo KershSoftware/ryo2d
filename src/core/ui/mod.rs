@@ -82,8 +82,9 @@ pub use immediate::{UiConsumed, UiContext, UiInput, UiText};
 
 // Retained nodes
 pub use nodes::{
-  TextRole, UiChecked, UiDisabled, UiEvent, UiEventKind, UiHidden, UiImage, UiIndex, UiInteraction,
-  UiLabel, UiName, UiNode, UiNodeKind, UiOptions, UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
+  BindValue, TextRole, UiChecked, UiDisabled, UiEvent, UiEventKind, UiHidden, UiImage, UiIndex,
+  UiInteraction, UiLabel, UiName, UiNode, UiNodeKind, UiOptions, UiRoot, UiSlot, UiTextValue,
+  UiTooltip, UiValue,
 };
 
 // Re-export theme types

@@ -34,7 +34,7 @@ pub struct UiRoot {
 #[derive(Component, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UiName(pub String);
 
-/// The text of a text, button, checkbox, toggle, slider, progress or rebind node
+/// The text of a text, button, checkbox or toggle node
 #[derive(Component, Debug, Clone, PartialEq, Eq, Default)]
 pub struct UiLabel(pub String);
 
