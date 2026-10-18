@@ -1,0 +1,96 @@
+// The Settings page: the whole panel is the root. Each tab is a column the
+// page shows or hides, and the Audio and Video sliders are bound to the names
+// their value texts show. Debug builds reload this file when it is saved.
+(
+  imports: ["assets/ui/common.ui.ron"],
+  templates: {
+    // A slider with its value as text after it, in a labelled row: `bind` names
+    // the value and `shows` is the text pattern that shows it
+    "SliderRow": (
+      params: ["label", "bind", "shows", "range", "value"],
+      node: Labelled(
+        label: label,
+        widget: Row(
+          gap: 8, align: Center,
+          children: [
+            Slider(range: range, value: value, step: 0.05, width: 172, bind: bind),
+            Column(width: 40, children: [Text(shows)]),
+          ],
+        ),
+      ),
+    ),
+
+    "DropdownRow": (
+      params: ["label", "options", "selected"],
+      node: Labelled(
+        label: label,
+        widget: Dropdown(options: options, selected: selected, width: 220),
+      ),
+    ),
+  },
+  root: Panel(
+    focus_scope: true, anchor: Center, width: 600, height: 460, gap: 12,
+    children: [
+      Text(text: "Settings", heading: true),
+      Tabs(options: ["Audio", "Video", "Controls"], name: "tabs"),
+      Scroll(
+        fill_width: true, grow: 1, gap: 10,
+        children: [
+          Column(
+            fill_width: true, gap: 10, name: "tab-0",
+            children: [
+              SliderRow(label: "Master", bind: "master", shows: "{master:.2}", range: (0, 1), value: 0.8),
+              SliderRow(label: "Music", bind: "music", shows: "{music:.2}", range: (0, 1), value: 0.6),
+              SliderRow(label: "Effects", bind: "effects", shows: "{effects:.2}", range: (0, 1), value: 0.7),
+              SliderRow(label: "Voice", bind: "voice", shows: "{voice:.2}", range: (0, 1), value: 1),
+              Checkbox(label: "Mute in background", checked: true),
+              DropdownRow(label: "Output", options: ["Default", "Headphones", "Speakers"], selected: 0),
+            ],
+          ),
+          Column(
+            fill_width: true, gap: 10, name: "tab-1", hidden: true,
+            children: [
+              DropdownRow(label: "Window", options: ["Windowed", "Borderless", "Fullscreen"], selected: 0),
+              DropdownRow(
+                label: "Resolution", selected: 13,
+                options: [
+      "640×480", "800×600", "1024×768", "1152×864",
+      "1280×720", "1280×800", "1280×1024", "1360×768",
+      "1366×768", "1440×900", "1536×864", "1600×900",
+      "1680×1050", "1920×1080", "1920×1200", "2048×1152",
+      "2560×1080", "2560×1440", "2560×1600", "3440×1440",
+      "3840×2160",
+                ],
+              ),
+              Toggle(label: "VSync", on: true),
+              Labelled(
+                label: "UI scale",
+                widget: RadioGroup(options: ["Small", "Medium", "Large"], selected: 1, horizontal: true, gap: 16),
+              ),
+              SliderRow(label: "Brightness", bind: "brightness", shows: "{brightness:.2}", range: (0.5, 1.5), value: 1),
+              Checkbox(label: "Show FPS", checked: false),
+            ],
+          ),
+          Column(
+            fill_width: true, gap: 10, name: "tab-2", hidden: true,
+            children: [
+          Rebind(input: "move_left", label: "Move left"),
+          Rebind(input: "move_right", label: "Move right"),
+          Rebind(input: "jump", label: "Jump"),
+          Rebind(input: "attack", label: "Attack"),
+          Rebind(input: "interact", label: "Interact"),
+          Rebind(input: "inventory", label: "Inventory"),
+          Rebind(input: "pause", label: "Pause"),
+              ButtonRow(label: "Reset controls", action: "reset"),
+            ],
+          ),
+        ],
+      ),
+      Row(
+        children: [
+          Text(text: "[prompt=ui.tab_prev] [prompt=ui.tab_next] Switch tab    [prompt=ui.back] Back", markup: true),
+        ],
+      ),
+    ],
+  ),
+)

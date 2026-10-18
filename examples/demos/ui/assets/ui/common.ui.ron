@@ -1,0 +1,27 @@
+// Templates the ui demo's pages share. Debug builds reload this file, and the
+// pages that import it, when it is saved.
+(
+  templates: {
+    // A row that gives its label the room the widget leaves
+    "Labelled": (
+      params: ["label", "widget"],
+      node: Row(
+        gap: 12, align: Center,
+        children: [
+          Column(grow: 1, children: [Text(label)]),
+          widget,
+        ],
+      ),
+    ),
+
+    // A button at the end of its own row
+    "ButtonRow": (
+      params: ["label", "action"],
+      defaults: { "focus": false },
+      node: Row(
+        justify: End,
+        children: [Button(label: label, action: action, default_focus: focus)],
+      ),
+    ),
+  },
+)

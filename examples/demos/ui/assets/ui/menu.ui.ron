@@ -1,0 +1,83 @@
+// The Menus page: the title menu is the root, and the title, the status line
+// and the dialogs are templates the page spawns. Debug builds reload this file
+// when it is saved.
+(
+  imports: ["assets/ui/common.ui.ron"],
+  templates: {
+    "Title": (
+      node: Column(
+        anchor: TopCenter, offset: (0, 80),
+        children: [Text(text: "RYO QUEST", heading: true, size: 48)],
+      ),
+    ),
+
+    "Status": (
+      params: ["status"],
+      node: Column(
+        anchor: BottomCenter, offset: (0, -40), align: Center, gap: 8,
+        children: [
+          Text(text: status, muted: true, name: "status"),
+          Text(text: "[prompt=ui.confirm] Select    [prompt=ui.back] Back", markup: true),
+        ],
+      ),
+    ),
+
+    "Options": (
+      params: ["volume", "fullscreen", "subtitles"],
+      node: Panel(
+        modal: true, action: "options", width: 320, gap: 12,
+        children: [
+          Text(text: "Options", heading: true),
+          Slider(
+            range: (0, 1), value: volume, step: 0.05,
+            label: "Volume", show_value: true, name: "volume",
+          ),
+          Toggle(label: "Fullscreen", on: fullscreen, name: "fullscreen"),
+          Checkbox(label: "Subtitles", checked: subtitles, name: "subtitles"),
+          ButtonRow(label: "Done", action: "done", focus: true),
+        ],
+      ),
+    ),
+
+    // The page adds a CreditLine to "credit-lines" for each credit
+    "Credits": (
+      node: Panel(
+        modal: true, action: "credits", width: 360, gap: 12,
+        children: [
+          Text(text: "Credits", heading: true),
+          Scroll(height: 200, fill_width: true, gap: 10, name: "credit-lines"),
+          Text(text: "The right stick scrolls the credits.", muted: true),
+          ButtonRow(label: "Close", action: "close", focus: true),
+        ],
+      ),
+    ),
+
+    "CreditLine": (
+      params: ["role", "name"],
+      node: Column(
+        gap: 2,
+        children: [
+          Text(text: role, role: Body, muted: true),
+          Text(text: name, role: Body),
+        ],
+      ),
+    ),
+
+    "QuitConfirm": (
+      node: Confirm(
+        title: "Quit to desktop?", message: "Your progress is saved.",
+        yes: "Yes", no: "No",
+      ),
+    ),
+  },
+  root: Panel(
+    focus_scope: true, wrap_focus: true, anchor: Center, width: 260, gap: 8,
+    children: [
+      Button(label: "Continue", action: "continue", fill_width: true, name: "continue", enabled: false),
+      Button(label: "New Game", action: "new", fill_width: true, default_focus: true),
+      Button(label: "Options", action: "options", fill_width: true),
+      Button(label: "Credits", action: "credits", fill_width: true),
+      Button(label: "Quit", action: "quit", fill_width: true),
+    ],
+  ),
+)

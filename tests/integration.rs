@@ -20,6 +20,9 @@ mod transform;
 #[path = "integration/ui.rs"]
 mod ui;
 
+#[path = "integration/ui_file_validity.rs"]
+mod ui_file_validity;
+
 #[path = "integration/ui_harness.rs"]
 mod ui_harness;
 
