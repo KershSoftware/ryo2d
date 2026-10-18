@@ -175,7 +175,8 @@ fn settings_frame(c: &mut Criterion) {
 }
 
 /// The guard: the closure settings screen stays under 60 µs, and this node
-/// screen within the larger of 10% or 10 µs of it (the node walk's share).
+/// screen within the larger of 10% or 10 µs of it: the cost of walking the
+/// node entities on top of the same builders.
 fn settings_nodes_frame(c: &mut Criterion) {
   let mut harness = UiHarness::new(640.0, 480.0);
   harness.spawn_ui(settings_nodes(&Settings::new()));
