@@ -26,7 +26,7 @@ pub use node::{TextRole, UiNode, UiNodeKind};
 pub(crate) use components::UiNodes;
 pub(crate) use draw::{begin_pass, deliver_pending, draw_nodes};
 pub(crate) use events::deliver;
-pub(crate) use list::update_lists;
+pub(crate) use list::{list_count, list_index, list_jump, list_refresh, update_lists};
 #[cfg(test)]
 pub(crate) use node::fingerprint;
 pub(crate) use reconcile::{SourceQuery, reload_trees, update_ui};

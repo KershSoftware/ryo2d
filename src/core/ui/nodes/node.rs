@@ -491,7 +491,8 @@ impl UiNode {
   /// A list of `count` items in rows `row_height` tall, in a scroll area as
   /// long as the whole list. It keeps about a screenful of row entities,
   /// spawned from its [`row_shape`](Self::row_shape) (required) and reused
-  /// as it scrolls, so 10,000 items cost what a screenful does.
+  /// as it scrolls, so 10,000 items cost what a screenful does (however
+  /// short its rows, at most 4,096 items' rows for the view, warned once).
   ///
   /// Each row given an item sends a [`UiListBind`](super::UiListBind)
   /// naming the row and the item's index, and the game fills the row from
@@ -500,6 +501,11 @@ impl UiNode {
   /// drawn from the frame after it is given its item, so bind it in the
   /// scene's `ui` (it runs every frame) or in an observer on the row.
   /// [`columns`](Self::columns) lays the items out as a grid.
+  ///
+  /// The game drives the list with `ctx.ui_list_count`, `ui_list_refresh`,
+  /// `ui_list_scroll_to` and `ui_list_focus`, and maps an event from a
+  /// row's widget to its item with `ui_list_index`. The focused row stays
+  /// pooled wherever the list scrolls, so the pad walks the whole list.
   ///
   /// ```
   /// use ryo2d::prelude::*;
@@ -517,9 +523,16 @@ impl UiNode {
   ///     .name("board")
   /// }
   ///
-  /// // In the scene's `ui`: fill each row the list gave an item
+  /// // In the scene's `ui`: fill each row the board gave an item (every list
+  /// // sends `UiListBind`, so keep to this one's)
   /// fn bind_rows(ctx: &mut SceneContext, names: &[String]) {
+  ///   let Some(board) = ctx.find_ui("board") else {
+  ///     return;
+  ///   };
   ///   for bind in ctx.messages::<UiListBind>() {
+  ///     if bind.list != board {
+  ///       continue;
+  ///     }
   ///     ctx.ui_set(bind.row, "rank", bind.index + 1);
   ///     let name = names.get(bind.index).cloned().unwrap_or_default();
   ///     ctx.ui_set(bind.row, "name", name);
@@ -1281,7 +1294,8 @@ impl UiNode {
     self.given("no_bar")
   }
 
-  /// Items side by side in each row, as a grid of equal cells; 0 is 1 (list)
+  /// Items side by side in each row, as a grid of equal cells, from 1 to
+  /// 256 (list)
   pub fn columns(mut self, columns: u16) -> UiNode {
     if let Kind::List(opts) = &mut self.kind {
       opts.columns = columns;
@@ -1289,7 +1303,7 @@ impl UiNode {
     self.given("columns")
   }
 
-  /// Rows kept past each edge of the view (default 2, at least 1), so the
+  /// Rows kept past each edge of the view (default 2, from 1 to 64), so the
   /// pad can always step onto the next row (list)
   pub fn overscan(mut self, rows: u16) -> UiNode {
     if let Kind::List(opts) = &mut self.kind {

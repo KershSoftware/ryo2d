@@ -229,6 +229,59 @@ impl UiHarness {
     nodes::bindings::get(&self.world, node, name).and_then(|value| T::try_from(value).ok())
   }
 
+  /// Change the item count of the list node `list`, as `ctx.ui_list_count`
+  pub fn ui_list_count(&mut self, list: Entity, count: usize) {
+    nodes::list_count(&mut self.world, list, count);
+  }
+
+  /// Bind every pooled row of the list node `list` again next frame, as
+  /// `ctx.ui_list_refresh`
+  pub fn ui_list_refresh(&mut self, list: Entity) {
+    nodes::list_refresh(&mut self.world, list, None);
+  }
+
+  /// Bind the row holding item `index` of the list node `list` again next
+  /// frame, if it is pooled, as `ctx.ui_list_refresh_row`
+  pub fn ui_list_refresh_row(&mut self, list: Entity, index: usize) {
+    nodes::list_refresh(&mut self.world, list, Some(index));
+  }
+
+  /// Scroll the list node `list` to item `index`, as `ctx.ui_list_scroll_to`
+  pub fn ui_list_scroll_to(&mut self, list: Entity, index: usize) {
+    nodes::list_jump(&mut self.world, list, index, false);
+  }
+
+  /// Scroll the list node `list` to item `index` and give its row the focus,
+  /// as `ctx.ui_list_focus`
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  /// use ryo2d::testing::UiHarness;
+  ///
+  /// let mut ui = UiHarness::new(320.0, 240.0);
+  /// ui.spawn_ui(UiNode::column().focus_scope().child(
+  ///   UiNode::list(1000, 20.0).height(100.0).row_shape(|| UiNode::button("Pick")).name("list"),
+  /// ));
+  /// let list = ui.find_ui("list").expect("spawned");
+  /// ui.frame(|_| {});
+  /// ui.ui_list_focus(list, 700);
+  /// for _ in 0..4 {
+  ///   ui.frame(|_| {});
+  /// }
+  /// ui.action("ui.confirm");
+  /// ui.frame(|_| {});
+  /// let click = ui.events().iter().find(|e| e.kind == UiEventKind::Clicked);
+  /// assert_eq!(click.and_then(|e| ui.ui_list_index(e.node)), Some(700));
+  /// ```
+  pub fn ui_list_focus(&mut self, list: Entity, index: usize) {
+    nodes::list_jump(&mut self.world, list, index, true);
+  }
+
+  /// The item of the list row `node` belongs to, as `ctx.ui_list_index`
+  pub fn ui_list_index(&self, node: Entity) -> Option<usize> {
+    nodes::list_index(&self.world, node)
+  }
+
   /// The events the node trees sent in the last frame, in walk order
   pub fn events(&self) -> &[UiEvent] {
     &self.last_events

@@ -273,13 +273,13 @@ fn draw_node(
         no_bar: opts.no_bar,
         ..ScrollOpts::default()
       };
-      let (gap, top) = (
-        kind.layout.gap.unwrap_or(0.0),
-        kind.layout.padding.map_or(0.0, |padding| padding.top),
-      );
+      let count = entity
+        .get::<super::list::UiList>()
+        .map_or(0, |pool| pool.count);
+      let shape = super::list::shape_of(kind, count);
       let scroll = scroll_builder(&entity, kind, shared, &area, ui, place);
       let world = entity.into_world_mut();
-      let response = super::list::draw_list(world, node, scroll, opts, gap, top, walk);
+      let response = super::list::draw_list(world, node, scroll, shape, walk);
       return answer_container(world, ui, node, response, walk);
     }
     Kind::Text(opts) => {

@@ -21,6 +21,13 @@ use crate::core::ui::{Anchor, Rect, UiId};
 
 /// Rows built past each edge of the view unless `.overscan` says otherwise
 const OVERSCAN: usize = 2;
+/// The most rows built past each edge of the view
+const MAX_OVERSCAN: usize = 64;
+/// The most items side by side in a row
+const MAX_COLUMNS: u16 = 256;
+/// The most items a list builds for its views in a frame, however small its
+/// rows or large its overscan (a focused or jumped-to row may add its few)
+pub(crate) const BUILT_ITEMS: usize = 4096;
 /// Keeps a list's state apart from its scroll area's, which has its id
 const STATE_SALT: u64 = 0x006c_6973;
 /// The spacers before, between and after the runs of built rows
@@ -139,8 +146,9 @@ impl<'a> UiContext<'a> {
   /// A list of `count` items in rows of one height, in a scroll area as
   /// long as the whole list. Only the rows in view are built, and a few
   /// either side ([`overscan`](List::overscan)), so a list of 10,000 costs
-  /// what a screenful does. [`row_height`](List::row_height) is required;
-  /// [`columns`](List::columns) lays the items out as a grid.
+  /// what a screenful does; however short its rows, a frame builds at most
+  /// 4,096 items for the view (warned once). [`row_height`](List::row_height)
+  /// is required; [`columns`](List::columns) lays the items out as a grid.
   ///
   /// Each item is built in a container keyed by its index, so its widgets
   /// keep their ids, and with them their hover, focus and memory, wherever
@@ -268,7 +276,8 @@ impl List<'_, '_> {
     self
   }
 
-  /// Items side by side in each row, as a grid of equal cells (0 is 1)
+  /// Items side by side in each row, as a grid of equal cells (from 1 to
+  /// 256)
   pub fn columns(mut self, columns: u16) -> Self {
     self.columns = columns;
     self
@@ -280,7 +289,7 @@ impl List<'_, '_> {
     self
   }
 
-  /// Rows built past each edge of the view (default 2, at least 1), so
+  /// Rows built past each edge of the view (default 2, from 1 to 64), so
   /// the pad can always step onto the next row
   pub fn overscan(mut self, rows: usize) -> Self {
     self.overscan = rows;
@@ -400,11 +409,11 @@ pub(crate) struct Shape {
   pub(crate) count: usize,
   /// Finite and above 0
   pub(crate) row_height: f32,
-  /// At least 1
+  /// From 1 to 256
   pub(crate) columns: u16,
   /// Finite, never negative
   pub(crate) gap: f32,
-  /// At least 1
+  /// From 1 to 64
   pub(crate) overscan: usize,
   /// Where the first row starts in the contents: the area's top padding
   pub(crate) top: f32,
@@ -437,11 +446,30 @@ impl Shape {
     Some(Shape {
       count,
       row_height,
-      columns: columns.max(1),
+      columns: columns.clamp(1, MAX_COLUMNS),
       gap: clean_gap,
-      overscan: overscan.max(1),
+      overscan: overscan.clamp(1, MAX_OVERSCAN),
       top: clean(top),
     })
+  }
+
+  /// The most rows built for the views in a frame: [`BUILT_ITEMS`] items
+  pub(crate) fn row_cap(&self) -> usize {
+    (BUILT_ITEMS / usize::from(self.columns)).max(1)
+  }
+
+  /// The rows to build for a view `view` tall shown from `offset` (the
+  /// scroll area's offset), with the overscan, cut to [`row_cap`](Self::row_cap)
+  /// rows from the first; whether the cap cut them
+  pub(crate) fn built(&self, view: f32, offset: f32) -> (Range<usize>, bool) {
+    let rows = built_rows(
+      self.rows(),
+      self.stride(),
+      view,
+      offset - self.top,
+      self.overscan,
+    );
+    cut_rows(rows, self.row_cap())
   }
 
   /// Rows of `columns` items, the last one perhaps short
@@ -466,6 +494,26 @@ impl Shape {
     let length = rows * f64::from(self.stride()) - f64::from(self.gap);
     to_units(length)
   }
+}
+
+/// `rows` cut to at most `cap` rows from the first; whether they were cut
+pub(crate) fn cut_rows(rows: Range<usize>, cap: usize) -> (Range<usize>, bool) {
+  if rows.len() > cap {
+    (rows.start..rows.start.saturating_add(cap), true)
+  } else {
+    (rows, false)
+  }
+}
+
+/// Warn once per list (`key`) that it would build more than [`BUILT_ITEMS`]
+/// items in a frame; `list` names it
+pub(crate) fn warn_cut(key: impl std::fmt::Display, list: impl FnOnce() -> String) {
+  warn_once(format!("ui-list-cap:{key}"), || {
+    format!(
+      "{} would build more than {BUILT_ITEMS} items in a frame (very short rows or a large overscan); it builds {BUILT_ITEMS}",
+      list()
+    )
+  });
 }
 
 /// A length in `f64` as the layout takes it: finite, never negative
@@ -520,7 +568,6 @@ fn build<'a>(
     count,
     row_height,
     columns,
-    overscan,
     top,
     ..
   } = shape;
@@ -546,7 +593,10 @@ fn build<'a>(
     }
     offset = state.offset.y;
   }
-  let built = built_rows(rows, stride, view, offset - top, overscan);
+  let (built, cut) = shape.built(view, offset);
+  if cut {
+    warn_cut(format_args!("{list:?}"), || format!("the list {list:?}"));
+  }
   let watch = FocusWatch::new(ui);
   let focus = watch.focus;
   let plan = plan_focus(ui, list, count, focus);
@@ -1400,6 +1450,55 @@ mod tests {
       2 * middle.range.len(),
       "each item's container and button, nothing else"
     );
+  }
+
+  #[test]
+  fn hostile_sizes_build_at_most_the_cap_and_warn_once() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let tiny = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        ui.list(1_000_000)
+          .row_height(0.001)
+          .height(200.0)
+          .id("tiny")
+          .show(|_, _| {})
+      })
+    };
+    let first = tiny(&mut h);
+    for _ in 0..2 {
+      let r = tiny(&mut h);
+      assert_eq!(r.range.len(), BUILT_ITEMS, "{:?}", r.range);
+    }
+    let needle = format!("the list {:?} would build more than 4096", first.id);
+    assert_eq!(crate::core::ui::test_util::warnings_containing(&needle), 1);
+    // 256 columns at most: 1,000,000 items are 3,907 rows
+    let wide = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        ui.list(1_000_000)
+          .row_height(20.0)
+          .columns(u16::MAX)
+          .height(200.0)
+          .id("wide")
+          .show(|_, _| {})
+      })
+    };
+    let first = wide(&mut h);
+    let r = wide(&mut h);
+    assert_eq!(r.range, 0..12 * 256, "10 rows in view and 2 past it");
+    assert_eq!(h.scroll_content(first.id).y, 3907.0 * 20.0);
+    // 64 rows of overscan at most
+    let deep = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        ui.list(1000)
+          .row_height(20.0)
+          .overscan(1000)
+          .height(200.0)
+          .id("deep")
+          .show(|_, _| {})
+      })
+    };
+    deep(&mut h);
+    assert_eq!(deep(&mut h).range, 0..10 + 64);
   }
 }
 

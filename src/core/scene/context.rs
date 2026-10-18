@@ -390,6 +390,86 @@ impl SceneContext<'_> {
     nodes::bindings::get(self.world, node, name).and_then(|value| T::try_from(value).ok())
   }
 
+  // --- UI list nodes ---
+
+  /// Change the item count of the list node `list` (`UiNode::list`). Rows
+  /// past the new end are released next frame and the view is clamped to
+  /// the new length. A focus on an item past the end moves to the new last
+  /// item (it goes when the list is empty). The count is state, as a
+  /// widget's value is: a reload or `update_ui` writes it only when the
+  /// tree's count changed. On a node that is not a list it warns once and
+  /// does nothing, as every `ui_list_*` call does.
+  pub fn ui_list_count(&mut self, list: Entity, count: usize) {
+    nodes::list_count(self.world, list, count);
+  }
+
+  /// Send a `UiListBind` again next frame for every pooled row of the list
+  /// node `list`, after the game's data changed. The rows keep drawing what
+  /// they showed until the game binds them.
+  pub fn ui_list_refresh(&mut self, list: Entity) {
+    nodes::list_refresh(self.world, list, None);
+  }
+
+  /// Send a `UiListBind` again next frame for the row holding item `index`
+  /// of the list node `list`, if it is pooled (none is needed for a row not
+  /// pooled: it is bound when it next shows)
+  pub fn ui_list_refresh_row(&mut self, list: Entity, index: usize) {
+    nodes::list_refresh(self.world, list, Some(index));
+  }
+
+  /// Scroll the list node `list` by the least that shows item `index`'s
+  /// row. A jump further than the view lands one view short next frame and
+  /// eases the rest, so it never sweeps through the rows between. An index
+  /// past the end is the last item.
+  pub fn ui_list_scroll_to(&mut self, list: Entity, index: usize) {
+    nodes::list_jump(self.world, list, index, false);
+  }
+
+  /// Scroll the list node `list` to item `index`, as
+  /// [`ui_list_scroll_to`](Self::ui_list_scroll_to), and give the keyboard
+  /// and gamepad focus to the first focusable node of its row (depth first:
+  /// a widget that takes the focus, neither hidden nor disabled). The row is
+  /// pooled wherever the list is heading, and the focus lands up to two
+  /// frames after the row is bound. An index past the end is the last item;
+  /// an empty list, or a row with nothing focusable, drops it.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// // "Jump to rank": the leaderboard's row for `rank` takes the focus
+  /// fn jump_to_rank(ctx: &mut SceneContext<'_>, rank: usize) {
+  ///   if let Some(board) = ctx.find_ui("board") {
+  ///     ctx.ui_list_focus(board, rank.saturating_sub(1));
+  ///   }
+  /// }
+  /// # let _ = jump_to_rank;
+  /// ```
+  pub fn ui_list_focus(&mut self, list: Entity, index: usize) {
+    nodes::list_jump(self.world, list, index, true);
+  }
+
+  /// The index of the item whose list row `node` belongs to (the nearest
+  /// row up from it, itself included), so a `UiEvent` from a widget in a
+  /// row maps to its item; `None` for a node in no list row
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// // The rank of the leaderboard row whose button was clicked
+  /// fn picked(ctx: &mut SceneContext<'_>) -> Option<usize> {
+  ///   let clicks: Vec<UiEvent> = ctx.ui_events();
+  ///   clicks
+  ///     .iter()
+  ///     .filter(|event| event.kind == UiEventKind::Clicked)
+  ///     .find_map(|event| ctx.ui_list_index(event.node))
+  ///     .map(|index| index + 1)
+  /// }
+  /// # let _ = picked;
+  /// ```
+  pub fn ui_list_index(&self, node: Entity) -> Option<usize> {
+    nodes::list_index(self.world, node)
+  }
+
   // --- hierarchy and interpolation ---
 
   /// Spawn `bundle` as a child of `parent`.
