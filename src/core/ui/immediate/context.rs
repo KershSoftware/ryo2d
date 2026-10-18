@@ -53,7 +53,7 @@ use crate::core::ui::popup::{Popup, SetAside};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{Look, Skin, Theme, WidgetKind, WidgetState, warn_once};
 use crate::core::ui::tree::{
-  self, Draw, DrawKind, Node, RecordSpec, ResolveCx, Resolved, Subtree, TextLeaf, align_fraction,
+  self, Draw, DrawKind, Node, RecordSpec, ResolveCx, Subtree, TextLeaf, align_fraction,
 };
 use crate::core::ui::types::{Anchor, Color, Rect};
 use crate::core::ui::widgets::common::WidgetOpts;
@@ -956,9 +956,10 @@ impl<'a> UiContext<'a> {
     let clip = self.current_clip;
     // The nearest open scope, or the scope the subtree started in
     node.scope = self.focus_scope_here();
+    let scope = node.scope;
     let subtree = self
       .subtree
-      .get_or_insert_with(|| Subtree::new(at, clip, node.scope));
+      .get_or_insert_with(|| self.memory.scratch.take_subtree(at, clip, scope));
     // A popup's subtree starts empty: its root's `at` places it
     if parent.is_none() && subtree.nodes.is_empty() {
       subtree.at = at;
@@ -976,9 +977,6 @@ impl<'a> UiContext<'a> {
     node.at = at.filter(|_| node.parent.is_some());
     let index = subtree.nodes.len();
     subtree.nodes.push(node);
-    if let Some(p) = parent.and_then(|p| subtree.nodes.get_mut(p)) {
-      p.children.push(index);
-    }
     self.open = Some(index);
     index
   }
@@ -1019,7 +1017,7 @@ impl<'a> UiContext<'a> {
       return None;
     }
     let subtree = self.subtree.take()?;
-    self.finish_subtree(subtree).rects.first().copied()
+    self.finish_subtree(subtree)
   }
 
   /// Make `subtree` (with `open` its innermost open node) the one being
@@ -1035,19 +1033,25 @@ impl<'a> UiContext<'a> {
     )
   }
 
-  /// Lay `subtree` out, write its records and turn its draws into commands
-  pub(crate) fn finish_subtree(&mut self, subtree: Subtree) -> Resolved {
-    tree::resolve(
-      subtree,
+  /// Lay `subtree` out, write its records and turn its draws into
+  /// commands, then keep its lists for the next subtree. Its root's rect.
+  pub(crate) fn finish_subtree(&mut self, mut subtree: Subtree) -> Option<Rect> {
+    let mut scratch = std::mem::take(&mut self.memory.scratch);
+    let root = tree::resolve(
+      &mut subtree,
       ResolveCx {
         layout: &mut *self.layout,
         text: &self.text,
         memory: &mut *self.memory,
+        scratch: &mut scratch,
         commands: &mut *self.commands,
         space: self.space,
         scene: self.scene,
       },
-    )
+    );
+    scratch.give_subtree(subtree);
+    self.memory.scratch = scratch;
+    root
   }
 
   /// Record `leaf` as a text node: on its own when no container is open
@@ -1077,12 +1081,12 @@ impl<'a> UiContext<'a> {
     // fonts change (not its colours)
     let generation = self.engine().map_or(0, |engine| engine.generation());
     node.content_key = fast_hash(&(leaf.key.seed(), self.space.px_scale.to_bits(), generation));
-    node.text = Some(leaf.clone());
+    // Drawn from the node, which keeps the one copy
+    node.text = Some(leaf);
     let index = self.push_node(node, None);
     self.push_draw(
       index,
-      DrawKind::Text {
-        leaf: Box::new(leaf),
+      DrawKind::NodeText {
         frac,
         wrap: true,
         opacity,

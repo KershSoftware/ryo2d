@@ -9,7 +9,7 @@ use glam::Vec2;
 use super::immediate::{UiCommand, UiCommands};
 use super::layout::engine::{Avail, LayoutEngine, NodeDesc};
 use super::layout::{Edges, Flow, Length, Measure, UiStyle};
-use super::memory::{Flags, Record, UiMemory};
+use super::memory::{Flags, Record, Scratch, UiMemory, recycle};
 use super::widgets::scroll::ScrollState;
 use super::{Color, Rect, UiId};
 use crate::core::asset::SpriteHandle;
@@ -63,7 +63,6 @@ pub(crate) struct Node {
   pub(crate) text: Option<TextLeaf>,
   /// Changes when what is measured changes
   pub(crate) content_key: u64,
-  pub(crate) children: Vec<usize>,
   /// What its record says; `None` writes no record
   pub(crate) record: Option<RecordSpec>,
   pub(crate) layer: u8,
@@ -90,7 +89,6 @@ impl Node {
       measure,
       text: None,
       content_key: 0,
-      children: Vec::new(),
       record: None,
       layer: 0,
       order: 0,
@@ -195,6 +193,13 @@ pub(crate) enum DrawKind {
     opacity: f32,
     reveal: Option<(f32, f32)>,
   },
+  /// The text its node is measured by (`Node::text`), drawn as `Text` is
+  NodeText {
+    frac: Vec2,
+    wrap: bool,
+    opacity: f32,
+    reveal: Option<(f32, f32)>,
+  },
   /// A sprite over the inset rect, or, with a `size`, a sprite that size at
   /// `frac` of the room left in the inset rect
   Sprite {
@@ -220,19 +225,13 @@ pub(crate) enum DrawKind {
   Local(UiCommand),
 }
 
-/// A laid-out subtree: each node's rect (absolute, snapped to render pixels)
-/// and its content extent
-#[derive(Debug, Default)]
-pub(crate) struct Resolved {
-  pub(crate) rects: Vec<Rect>,
-  pub(crate) content: Vec<Vec2>,
-}
-
 /// What resolving a subtree reads and writes
 pub(crate) struct ResolveCx<'r, 'a> {
   pub(crate) layout: &'r mut LayoutEngine,
   pub(crate) text: &'r RefCell<&'a mut TextEngine>,
   pub(crate) memory: &'r mut UiMemory,
+  /// The buffers it works in, kept between subtrees
+  pub(crate) scratch: &'r mut Scratch,
   pub(crate) commands: &'r mut UiCommands,
   pub(crate) space: UiSpace,
   /// The scope id of the scene the subtree belongs to
@@ -249,21 +248,19 @@ pub(crate) fn align_fraction(align: TextAlign) -> f32 {
 }
 
 /// Lay `subtree` out, then write its records into memory and its draws into
-/// the commands, each with the order it was recorded in
-pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
-  let Subtree {
-    nodes,
-    draws,
-    at,
-    clip,
-    below,
-    ..
-  } = subtree;
+/// the commands, each with the order it was recorded in. Its draws are
+/// taken; its nodes stay for the caller. The root's rect (absolute, snapped
+/// to render pixels), or `None` when it has no nodes.
+pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Rect> {
+  let (at, clip, below) = (subtree.at, subtree.clip, subtree.below);
+  let nodes: &[Node] = &subtree.nodes;
   if nodes.is_empty() {
-    return Resolved::default();
+    return None;
   }
+  let scratch = cx.scratch;
   let ui_size = cx.space.size;
   let scale = cx.space.px_scale;
+  let count = nodes.len();
 
   // Lay out: an `at` rect is the room offered and the root's size
   let root_style = at.map(|at| UiStyle {
@@ -272,21 +269,21 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
     ..nodes[0].style.clone()
   });
   // A nested node with an `at` rect leaves its parent's flow, at that size
-  let floating: Vec<Option<UiStyle>> = nodes
-    .iter()
-    .map(|node| {
-      node.at.filter(|_| node.parent.is_some()).map(|at| UiStyle {
-        width: Length::Px(at.width),
-        height: Length::Px(at.height),
-        absolute: true,
-        ..node.style.clone()
-      })
+  scratch.floating.clear();
+  scratch.floating.extend(nodes.iter().map(|node| {
+    node.at.filter(|_| node.parent.is_some()).map(|at| UiStyle {
+      width: Length::Px(at.width),
+      height: Length::Px(at.height),
+      absolute: true,
+      ..node.style.clone()
     })
-    .collect();
-  let descs: Vec<NodeDesc<'_>> = nodes
-    .iter()
-    .enumerate()
-    .map(|(i, node)| NodeDesc {
+  }));
+  child_runs(nodes, &mut scratch.children, &mut scratch.child_ends);
+  let (floating, children, ends) = (&scratch.floating, &scratch.children, &scratch.child_ends);
+  let mut descs: Vec<NodeDesc<'_>> = recycle(std::mem::take(&mut scratch.descs));
+  descs.extend(nodes.iter().enumerate().map(|(i, node)| {
+    let start = if i == 0 { 0 } else { ends[i - 1] };
+    NodeDesc {
       id: node.id,
       style: match (&root_style, &floating[i], i) {
         (Some(style), _, 0) => style,
@@ -295,9 +292,9 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
       },
       measure: node.measure,
       content_key: node.content_key,
-      children: &node.children,
-    })
-    .collect();
+      children: &children[start..ends[i]],
+    }
+  }));
   let available = at.map_or(ui_size, |at| Vec2::new(at.width, at.height));
   let text = cx.text;
   let mut measure = |i: usize, known: (Option<f32>, Option<f32>), avail: (Avail, Avail)| {
@@ -309,6 +306,7 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
       })
   };
   let placed = cx.layout.layout(&descs, available, &mut measure);
+  scratch.descs = recycle(descs);
 
   // Place the root: at its rect, below its popup anchor, or by its anchor
   // and offset in the UI
@@ -323,11 +321,15 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
   };
 
   // Absolute rects and clips; a parent always comes before its children
-  let count = nodes.len();
-  let mut shift = vec![Vec2::ZERO; count];
-  let mut exact: Vec<Rect> = Vec::with_capacity(count);
-  let mut rects: Vec<Rect> = Vec::with_capacity(count);
-  let mut clips: Vec<Option<Rect>> = Vec::with_capacity(count);
+  let shift = &mut scratch.shift;
+  let exact = &mut scratch.exact;
+  let rects = &mut scratch.rects;
+  let clips = &mut scratch.clips;
+  shift.clear();
+  shift.resize(count, Vec2::ZERO);
+  exact.clear();
+  rects.clear();
+  clips.clear();
   for (i, node) in nodes.iter().enumerate() {
     let mut node_clip = clip;
     if let Some(p) = node.parent.filter(|&p| p < i) {
@@ -368,10 +370,6 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
     rects.push(snap_rect(rect, scale));
     clips.push(node_clip);
   }
-  let resolved = Resolved {
-    rects,
-    content: placed.iter().map(|p| p.content).collect(),
-  };
 
   // A scroll area keeps the size of its view and contents for next frame's
   // wheel, scrollbar and `scroll_to`; an axis it does not scroll has no more
@@ -382,11 +380,11 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
       continue;
     }
     if let Some(state) = cx.memory.state::<ScrollState>(node.id, cx.scene) {
-      let view = Vec2::new(resolved.rects[i].width, resolved.rects[i].height);
+      let view = Vec2::new(rects[i].width, rects[i].height);
       // The contents overflow by what they pass the unsnapped view: an area
       // snapped a fraction smaller than its layout still fits them
       let snapping = view - Vec2::new(exact[i].width, exact[i].height);
-      let content = resolved.content[i] + snapping;
+      let content = placed[i].content + snapping;
       state.view = view;
       state.content = Vec2::new(
         if x { content.x.max(view.x) } else { view.x },
@@ -403,7 +401,7 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
     cx.memory.record(
       node.id,
       Record {
-        rect: resolved.rects[i],
+        rect: rects[i],
         clip: clips[i],
         layer: node.layer,
         order: node.order,
@@ -412,19 +410,19 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
         flags: spec.flags,
         scope: node.scope,
         scroll: node.scroll,
-        content: resolved.content[i],
+        content: placed[i].content,
         nav: spec.nav,
         accepts: spec.accepts,
       },
     );
   }
 
-  for draw in draws {
+  for draw in subtree.draws.drain(..) {
     let Some(node) = nodes.get(draw.node) else {
       continue;
     };
     let place = Placement {
-      rect: resolved.rects[draw.node],
+      rect: rects[draw.node],
       exact: exact[draw.node],
       padding: clean_edges(node.style.padding),
       clip: clips[draw.node],
@@ -445,14 +443,45 @@ pub(crate) fn resolve(subtree: Subtree, cx: ResolveCx<'_, '_>) -> Resolved {
         tint: *tint,
         filter: *filter,
       };
-      for command in nine_slice(room, &slice, place.clip, place.layer, scale) {
+      nine_slice(room, &slice, place.clip, place.layer, scale, |command| {
         cx.commands.push(draw.order, command);
-      }
-    } else if let Some(command) = command_of(draw.kind, &place, text, scale) {
+      });
+    } else if let Some(command) = command_of(draw.kind, &place, node, text, scale) {
       cx.commands.push(draw.order, command);
     }
   }
-  resolved
+  rects.first().copied()
+}
+
+/// Each node's children in `children`, in the order they were added (by
+/// index, as each child names its parent): node `i`'s run ends at
+/// `ends[i]` and starts where node `i - 1`'s ends
+fn child_runs(nodes: &[Node], children: &mut Vec<usize>, ends: &mut Vec<usize>) {
+  let count = nodes.len();
+  let parent = |node: &Node| node.parent.filter(|&p| p < count);
+  ends.clear();
+  ends.resize(count, 0);
+  for node in nodes {
+    if let Some(p) = parent(node) {
+      ends[p] += 1;
+    }
+  }
+  // Each count becomes its run's start; placing a child moves its parent's
+  // start on, so each ends as its run's end
+  let mut start = 0;
+  for end in ends.iter_mut() {
+    let run = *end;
+    *end = start;
+    start += run;
+  }
+  children.clear();
+  children.resize(start, 0);
+  for (i, node) in nodes.iter().enumerate() {
+    if let Some(p) = parent(node) {
+      children[ends[p]] = i;
+      ends[p] += 1;
+    }
+  }
 }
 
 /// A nine-slice sprite to place
@@ -465,16 +494,18 @@ struct NineSlice<'s> {
 }
 
 /// The pieces of `sprite` stretched over `room` with corners of `insets`
-/// (left, top, right, bottom): up to nine sprite commands, edges snapped to
-/// render pixels so the pieces meet without gaps. Corners shrink together
-/// when `room` is smaller than they are.
+/// (left, top, right, bottom): up to nine sprite commands under `clip` on
+/// `layer`, each given to `emit`, edges snapped to render pixels so the
+/// pieces meet without gaps. Corners shrink together when `room` is smaller
+/// than they are.
 fn nine_slice(
   room: Rect,
   slice: &NineSlice<'_>,
   clip: Option<Rect>,
   layer: u8,
   scale: f32,
-) -> Vec<UiCommand> {
+  mut emit: impl FnMut(UiCommand),
+) {
   let NineSlice {
     sprite,
     insets,
@@ -483,7 +514,7 @@ fn nine_slice(
   } = *slice;
   let (width, height) = (sprite.width() as f32, sprite.height() as f32);
   if !(drawable(room) && width > 0.0 && height > 0.0) {
-    return Vec::new();
+    return;
   }
   let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
   let [left, top, right, bottom] = insets.map(clean);
@@ -514,7 +545,6 @@ fn nine_slice(
     1.0 - bottom.min(height) / height,
     1.0,
   ];
-  let mut commands = Vec::with_capacity(9);
   for row in 0..3 {
     for column in 0..3 {
       let rect = Rect::new(
@@ -524,7 +554,7 @@ fn nine_slice(
         ys[row + 1] - ys[row],
       );
       if drawable(rect) && !outside(clip, rect) {
-        commands.push(UiCommand::Sprite {
+        emit(UiCommand::Sprite {
           sprite: sprite.clone(),
           rect,
           uv: [us[column], vs[row], us[column + 1], vs[row + 1]],
@@ -536,7 +566,6 @@ fn nine_slice(
       }
     }
   }
-  commands
 }
 
 /// The size of a text node offered `known` or `avail` width: wrapped to the
@@ -588,10 +617,21 @@ struct Placement {
   layer: u8,
 }
 
-/// A draw as a command in UI units, or `None` when nothing of it would show
+/// How a text draw sits in its node's content box
+#[derive(Clone, Copy)]
+struct TextAt {
+  frac: Vec2,
+  wrap: bool,
+  opacity: f32,
+  reveal: Option<(f32, f32)>,
+}
+
+/// A draw on `node` as a command in UI units, or `None` when nothing of it
+/// would show
 fn command_of(
   kind: DrawKind,
   place: &Placement,
+  node: &Node,
   text: &RefCell<&mut TextEngine>,
   scale: f32,
 ) -> Option<UiCommand> {
@@ -641,31 +681,27 @@ fn command_of(
       opacity,
       reveal,
     } => {
-      let content = inset_rect(place.rect, place.padding);
-      let mut options = leaf.options;
-      let mut key = leaf.key;
-      if wrap {
-        let width = (place.exact.width - place.padding.width()).max(0.0) + WRAP_SLACK;
-        options.wrap = narrowest(Some(width), leaf.options.wrap);
-        key = key.with_options(&options);
-      }
-      let layout = {
-        let mut engine = text.try_borrow_mut().ok()?;
-        engine.layout_keyed(key, &leaf.text, &leaf.style, &options, scale)?
-      };
-      let size = layout.size / scale;
-      let origin =
-        Vec2::new(content.x, content.y) + frac * (Vec2::new(content.width, content.height) - size);
-      let block = Rect::new(origin.x, origin.y, size.x, size.y);
-      (origin.is_finite() && !outside(clip, block)).then_some(UiCommand::Text {
-        layout,
-        origin,
-        reveal,
+      let at = TextAt {
+        frac,
+        wrap,
         opacity,
-        seed: leaf.key.seed(),
-        clip,
-        layer,
-      })
+        reveal,
+      };
+      text_command(&leaf, at, place, text, scale)
+    }
+    DrawKind::NodeText {
+      frac,
+      wrap,
+      opacity,
+      reveal,
+    } => {
+      let at = TextAt {
+        frac,
+        wrap,
+        opacity,
+        reveal,
+      };
+      text_command(node.text.as_ref()?, at, place, text, scale)
     }
     DrawKind::Sprite {
       inset,
@@ -810,6 +846,42 @@ fn command_of(
   }
 }
 
+/// `leaf` laid out in its node's content box, wrapped to its width when
+/// `at.wrap`; its effect seed is its key's
+fn text_command(
+  leaf: &TextLeaf,
+  at: TextAt,
+  place: &Placement,
+  text: &RefCell<&mut TextEngine>,
+  scale: f32,
+) -> Option<UiCommand> {
+  let content = inset_rect(place.rect, place.padding);
+  let mut options = leaf.options;
+  let mut key = leaf.key;
+  if at.wrap {
+    let width = (place.exact.width - place.padding.width()).max(0.0) + WRAP_SLACK;
+    options.wrap = narrowest(Some(width), leaf.options.wrap);
+    key = key.with_options(&options);
+  }
+  let layout = {
+    let mut engine = text.try_borrow_mut().ok()?;
+    engine.layout_keyed(key, &leaf.text, &leaf.style, &options, scale)?
+  };
+  let size = layout.size / scale;
+  let origin =
+    Vec2::new(content.x, content.y) + at.frac * (Vec2::new(content.width, content.height) - size);
+  let block = Rect::new(origin.x, origin.y, size.x, size.y);
+  (origin.is_finite() && !outside(place.clip, block)).then_some(UiCommand::Text {
+    layout,
+    origin,
+    reveal: at.reveal,
+    opacity: at.opacity,
+    seed: leaf.key.seed(),
+    clip: place.clip,
+    layer: place.layer,
+  })
+}
+
 /// A vector with any non-finite part made zero
 fn finite(v: Vec2) -> Vec2 {
   Vec2::new(
@@ -899,6 +971,31 @@ mod tests {
         _ => None,
       })
       .collect()
+  }
+
+  #[test]
+  fn each_nodes_children_run_in_the_order_they_were_added() {
+    let parents = [None, Some(0), Some(1), Some(0), Some(1), Some(3)];
+    let nodes: Vec<Node> = parents
+      .iter()
+      .enumerate()
+      .map(|(i, &parent)| {
+        let mut node = Node::new(UiId(i as u64), UiStyle::default(), Measure::None);
+        node.parent = parent;
+        node
+      })
+      .collect();
+    let (mut children, mut ends) = (vec![9; 3], vec![9; 2]);
+    child_runs(&nodes, &mut children, &mut ends);
+    let run = |i: usize| {
+      let start = if i == 0 { 0 } else { ends[i - 1] };
+      children[start..ends[i]].to_vec()
+    };
+    let runs: Vec<Vec<usize>> = (0..nodes.len()).map(run).collect();
+    assert_eq!(
+      runs,
+      vec![vec![1, 3], vec![2, 4], vec![], vec![5], vec![], vec![]]
+    );
   }
 
   #[test]

@@ -8,6 +8,9 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::id::{IdScopes, UiId};
+use super::layout::UiStyle;
+use super::layout::engine::NodeDesc;
+use super::tree::Subtree;
 use super::types::Rect;
 use super::widgets::drag::DragState;
 use crate::core::hash::FastMap;
@@ -254,6 +257,69 @@ struct Slot {
   value: Box<dyn Any>,
 }
 
+/// Buffers kept from one subtree, and one frame, to the next: the subtrees'
+/// node and draw lists and tree resolve's vectors, cleared at each use with
+/// their capacity kept
+#[derive(Default)]
+pub(crate) struct Scratch {
+  /// Subtrees given back, empty
+  subtrees: Vec<Subtree>,
+  /// The layout's node descriptions; empty between uses, since they borrow
+  /// the subtree being resolved
+  pub(crate) descs: Vec<NodeDesc<'static>>,
+  /// Each node's style out of its parent's flow, when it is placed at a rect
+  pub(crate) floating: Vec<Option<UiStyle>>,
+  /// Every node's children, run by run in node order
+  pub(crate) children: Vec<usize>,
+  /// Where each node's run of `children` ends
+  pub(crate) child_ends: Vec<usize>,
+  /// How far each node is moved from where the layout put it
+  pub(crate) shift: Vec<Vec2>,
+  /// Each node's rect before snapping
+  pub(crate) exact: Vec<Rect>,
+  /// Each node's rect snapped to render pixels
+  pub(crate) rects: Vec<Rect>,
+  /// Each node's clip
+  pub(crate) clips: Vec<Option<Rect>>,
+}
+
+impl Scratch {
+  /// An empty subtree started under `clip` in focus scope `scope`, placed at
+  /// `at`: one given back if there is one
+  pub(crate) fn take_subtree(
+    &mut self,
+    at: Option<Rect>,
+    clip: Option<Rect>,
+    scope: UiId,
+  ) -> Subtree {
+    match self.subtrees.pop() {
+      Some(mut subtree) => {
+        subtree.at = at;
+        subtree.clip = clip;
+        subtree.scope = scope;
+        subtree.below = None;
+        subtree
+      }
+      None => Subtree::new(at, clip, scope),
+    }
+  }
+
+  /// Keep `subtree`'s lists for the next one, emptied
+  pub(crate) fn give_subtree(&mut self, mut subtree: Subtree) {
+    subtree.nodes.clear();
+    subtree.draws.clear();
+    self.subtrees.push(subtree);
+  }
+}
+
+/// An empty vector in `v`'s allocation, for values of the same type with
+/// another lifetime: a vector of borrowing values kept between uses. The
+/// standard library collects in place when the layouts match.
+pub(crate) fn recycle<T, U>(mut v: Vec<T>) -> Vec<U> {
+  v.clear();
+  v.into_iter().filter_map(|_| None).collect()
+}
+
 /// What the UI remembers between frames: last frame's laid-out records,
 /// widgets' own state (scroll offsets, carets, open lists) and focus
 pub(crate) struct UiMemory {
@@ -276,6 +342,8 @@ pub(crate) struct UiMemory {
   pub(crate) scopes: IdScopes,
   /// The pointer's hot, active, click and drag state, and the focus
   pub(crate) interact: Interaction,
+  /// Buffers the subtrees and their resolution reuse
+  pub(crate) scratch: Scratch,
 }
 
 impl UiMemory {
@@ -293,6 +361,7 @@ impl UiMemory {
       drawing: false,
       scopes: IdScopes::default(),
       interact: Interaction::default(),
+      scratch: Scratch::default(),
     }
   }
 
@@ -438,6 +507,8 @@ impl UiMemory {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::ui::layout::Measure;
+  use crate::core::ui::tree::Node;
 
   fn record(scene: u64) -> Record {
     Record {
@@ -507,6 +578,35 @@ mod tests {
     assert_eq!(memory.recall_focus(UiId(100)), Some(UiId(7)));
     memory.forget_scene(3);
     assert_eq!(memory.recall_focus(UiId(100)), None);
+  }
+
+  #[test]
+  fn a_recycled_vector_keeps_its_allocation() {
+    let words = [String::from("a"), String::from("b")];
+    let mut borrowed: Vec<&str> = Vec::with_capacity(16);
+    borrowed.extend(words.iter().map(String::as_str));
+    let at = borrowed.as_ptr() as usize;
+    let kept: Vec<&'static str> = recycle(borrowed);
+    assert!(kept.is_empty());
+    assert_eq!((kept.capacity(), kept.as_ptr() as usize), (16, at));
+  }
+
+  #[test]
+  fn a_given_back_subtree_comes_back_empty_with_its_room() {
+    let mut scratch = Scratch::default();
+    let mut subtree = scratch.take_subtree(None, None, UiId(1));
+    subtree.below = Some(Rect::new(0.0, 0.0, 1.0, 1.0));
+    for i in 0..10 {
+      let node = Node::new(UiId(i), UiStyle::default(), Measure::None);
+      subtree.nodes.push(node);
+    }
+    let room = subtree.nodes.capacity();
+    scratch.give_subtree(subtree);
+    let at = Some(Rect::new(1.0, 2.0, 3.0, 4.0));
+    let again = scratch.take_subtree(at, None, UiId(2));
+    assert!(again.nodes.is_empty() && again.draws.is_empty());
+    assert_eq!(again.nodes.capacity(), room);
+    assert_eq!((again.at, again.scope, again.below), (at, UiId(2), None));
   }
 
   #[test]

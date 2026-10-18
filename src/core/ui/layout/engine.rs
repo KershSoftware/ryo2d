@@ -55,12 +55,35 @@ struct Entry {
   frame: u64,
 }
 
+/// What one layout call works in, kept between calls: cleared and filled
+/// again, never allocated anew once warm
+#[derive(Default)]
+struct Buffers {
+  /// Each node that counts, by id: its index
+  index_of: FastMap<UiId, usize>,
+  parents: Vec<Option<usize>>,
+  visited: Vec<bool>,
+  /// Every node's valid children, run by run
+  kids: Vec<usize>,
+  /// Each node's run of `kids`
+  kid_range: Vec<(usize, usize)>,
+  /// The nodes that count, parents before children
+  order: Vec<usize>,
+  /// Each node's style made safe for layout
+  clean: Vec<Option<UiStyle>>,
+  stack: Vec<usize>,
+  child_ids: Vec<NodeId>,
+  /// The result
+  placed: Vec<Placed>,
+}
+
 /// Flexbox and grid layout over UI nodes, cached by widget id
 pub(crate) struct LayoutEngine {
   taffy: TaffyTree<UiId>,
   entries: FastMap<UiId, Entry>,
   frame: u64,
   warned: HashSet<&'static str>,
+  buffers: Buffers,
 }
 
 impl LayoutEngine {
@@ -73,6 +96,7 @@ impl LayoutEngine {
       entries: FastMap::default(),
       frame: 0,
       warned: HashSet::new(),
+      buffers: Buffers::default(),
     }
   }
 
@@ -102,27 +126,30 @@ impl LayoutEngine {
 
   /// Lays out `nodes` (node 0 is the subtree's root) in `available` UI units.
   /// `measure` sizes `Measure::Text` nodes: it gets the node's index, the
-  /// dimensions already known and the space offered
+  /// dimensions already known and the space offered. One result per node,
+  /// valid until the next call.
   pub(crate) fn layout(
     &mut self,
     nodes: &[NodeDesc<'_>],
     available: Vec2,
     measure: &mut MeasureFn<'_>,
-  ) -> Vec<Placed> {
-    let mut placed = vec![Placed::default(); nodes.len()];
-    if nodes.is_empty() {
-      return placed;
-    }
-    if let Err(e) = self.try_layout(nodes, available, measure, &mut placed) {
+  ) -> &[Placed] {
+    let mut buffers = std::mem::take(&mut self.buffers);
+    buffers.placed.clear();
+    buffers.placed.resize(nodes.len(), Placed::default());
+    if !nodes.is_empty()
+      && let Err(e) = self.try_layout(nodes, available, measure, &mut buffers)
+    {
       if self.warned.insert("layout failed") {
         crate::engine_warn!(module: "ui", "layout failed: {e}");
       }
       // Start over rather than trust a tree that failed half way
       self.taffy.clear();
       self.entries.clear();
-      placed.fill(Placed::default());
+      buffers.placed.fill(Placed::default());
     }
-    placed
+    self.buffers = buffers;
+    &self.buffers.placed
   }
 
   fn try_layout(
@@ -130,19 +157,37 @@ impl LayoutEngine {
     nodes: &[NodeDesc<'_>],
     available: Vec2,
     measure: &mut MeasureFn<'_>,
-    placed: &mut [Placed],
+    buffers: &mut Buffers,
   ) -> TaffyResult<()> {
+    let Buffers {
+      index_of,
+      parents,
+      visited,
+      kids,
+      kid_range,
+      order,
+      clean,
+      stack,
+      child_ids,
+      placed,
+    } = buffers;
     // Pre-order walk: which nodes count (reachable, unique ids), their parents
     // and their valid children
-    let mut index_of: FastMap<UiId, usize> =
-      FastMap::with_capacity_and_hasher(nodes.len(), Default::default());
-    let mut parents: Vec<Option<usize>> = vec![None; nodes.len()];
-    let mut visited = vec![false; nodes.len()];
-    let mut kids: Vec<usize> = Vec::with_capacity(nodes.len());
-    let mut kid_range: Vec<(usize, usize)> = vec![(0, 0); nodes.len()];
-    let mut order: Vec<usize> = Vec::with_capacity(nodes.len());
-    let mut clean: Vec<Option<UiStyle>> = vec![None; nodes.len()];
-    let mut stack = vec![0usize];
+    let count = nodes.len();
+    index_of.clear();
+    index_of.reserve(count);
+    parents.clear();
+    parents.resize(count, None);
+    visited.clear();
+    visited.resize(count, false);
+    kids.clear();
+    kid_range.clear();
+    kid_range.resize(count, (0, 0));
+    order.clear();
+    clean.clear();
+    clean.resize(count, None);
+    stack.clear();
+    stack.push(0);
     visited[0] = true;
     index_of.insert(nodes[0].id, 0);
     while let Some(i) = stack.pop() {
@@ -163,7 +208,6 @@ impl LayoutEngine {
     }
 
     // Children before parents
-    let mut child_ids: Vec<NodeId> = Vec::new();
     for &i in order.iter().rev() {
       let desc = &nodes[i];
       let Some(style) = clean[i].as_ref() else {
@@ -193,9 +237,9 @@ impl LayoutEngine {
             entry.parent_flow = parent_flow.cloned();
             entry.measure = measure_kind;
           }
-          if entry.children != child_ids {
-            self.taffy.set_children(entry.node, &child_ids)?;
-            entry.children.clone_from(&child_ids);
+          if entry.children != *child_ids {
+            self.taffy.set_children(entry.node, child_ids)?;
+            entry.children.clone_from(child_ids);
           }
           if entry.content_key != desc.content_key {
             self.taffy.mark_dirty(entry.node)?;
@@ -207,7 +251,7 @@ impl LayoutEngine {
             .taffy
             .new_leaf_with_context(to_taffy(style, parent_flow, &measure_kind), desc.id)?;
           if !child_ids.is_empty() {
-            self.taffy.set_children(node, &child_ids)?;
+            self.taffy.set_children(node, child_ids)?;
           }
           self.entries.insert(
             desc.id,
@@ -262,7 +306,7 @@ impl LayoutEngine {
 
     // Taffy's locations are relative to the parent: accumulate from the root
     let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
-    for &i in &order {
+    for &i in order.iter() {
       let Some(entry) = self.entries.get(&nodes[i].id) else {
         continue;
       };
@@ -796,7 +840,9 @@ mod tests {
       text(i, k, a)
     };
     engine.begin_frame();
-    let first = engine.layout(&nodes, Vec2::new(800.0, 600.0), &mut counting);
+    let first = engine
+      .layout(&nodes, Vec2::new(800.0, 600.0), &mut counting)
+      .to_vec();
     let after_first = calls.get();
     engine.end_frame();
     engine.begin_frame();
@@ -852,7 +898,7 @@ mod tests {
     ] {
       engine.begin_frame();
       let placed = engine.layout(&nodes, available, &mut |_, _, _| Vec2::ZERO);
-      for p in &placed {
+      for p in placed {
         assert!(
           p.rect.x.is_finite()
             && p.rect.y.is_finite()
@@ -929,7 +975,9 @@ mod tests {
     measure: &mut MeasureFn<'_>,
   ) -> Vec<Placed> {
     engine.begin_frame();
-    let placed = engine.layout(nodes, Vec2::new(800.0, 600.0), measure);
+    let placed = engine
+      .layout(nodes, Vec2::new(800.0, 600.0), measure)
+      .to_vec();
     engine.end_frame();
     placed
   }

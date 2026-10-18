@@ -77,7 +77,8 @@ impl UiContext<'_> {
   pub(crate) fn begin_popup(&mut self, anchor: Option<Rect>, modal: bool) {
     let scope = self.focus_scope_here();
     // Popups draw over everything, so no clip of the page reaches them
-    let (subtree, open) = self.swap_subtree(Some(Subtree::new(None, None, scope)), None);
+    let fresh = self.memory.scratch.take_subtree(None, None, scope);
+    let (subtree, open) = self.swap_subtree(Some(fresh), None);
     let slot = self.popups.len();
     self.subtree_stack.push(SetAside {
       subtree,
@@ -98,17 +99,22 @@ impl UiContext<'_> {
       return;
     };
     let (popup, _) = self.swap_subtree(aside.subtree, aside.open);
-    if let Some(subtree) = popup.filter(|subtree| !subtree.nodes.is_empty()) {
-      let slot = aside.slot.min(self.popups.len());
-      self.popups.insert(
-        slot,
-        Popup {
-          subtree,
-          anchor: aside.anchor,
-          modal: aside.modal,
-        },
-      );
+    let Some(subtree) = popup else {
+      return;
+    };
+    if subtree.nodes.is_empty() {
+      self.memory.scratch.give_subtree(subtree);
+      return;
     }
+    let slot = aside.slot.min(self.popups.len());
+    self.popups.insert(
+      slot,
+      Popup {
+        subtree,
+        anchor: aside.anchor,
+        modal: aside.modal,
+      },
+    );
   }
 
   /// Whether a popup is being recorded: its root does not lay out when it
