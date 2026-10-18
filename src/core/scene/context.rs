@@ -263,8 +263,9 @@ impl SceneContext<'_> {
   ///
   /// When the file changes (hot reload, or `ctx.assets.reload_ui(path)`), the
   /// tree is brought in line with it in place before the next UI pass and a
-  /// `UiReloaded` message names its root. Every mistake in the file comes
-  /// back together, each with its line and column.
+  /// `UiReloaded` message names its root (and the root it replaced, if the
+  /// file gave the root a new kind). Every mistake in the file comes back
+  /// together, each with its line and column.
   ///
   /// ```
   /// use ryo2d::prelude::*;
@@ -372,8 +373,9 @@ impl SceneContext<'_> {
   }
 
   /// Set a named binding on the UI tree `node` belongs to: every widget bound
-  /// to `name` and every label or tooltip showing it update. Values are kept
-  /// per root, so two trees from one file never share them.
+  /// to `name` and every label or tooltip showing it update. A value equal to
+  /// the one held does nothing, so setting one every frame is cheap. Values
+  /// are kept per root, so two trees from one file never share them.
   pub fn ui_set(&mut self, node: Entity, name: &str, value: impl Into<BindValue>) {
     nodes::bindings::set(self.world, node, name, value.into());
   }

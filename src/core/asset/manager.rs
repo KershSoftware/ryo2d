@@ -1265,6 +1265,8 @@ impl AssetManager {
       }
     };
     if text == file.doc().text {
+      // Back to the loaded text: a mistake saved again is reported again
+      self.ui_warned.remove(key);
       return false;
     }
     match self.reload_ui_text(key, file, &text) {
@@ -1638,6 +1640,26 @@ mod tests {
       !assets.handle_reload_event(HotReloadEvent::FileModified(path)),
       "the same text again does nothing"
     );
+  }
+
+  #[test]
+  fn the_same_mistake_saved_again_after_a_revert_warns_again() {
+    let (dir, mut assets) = event_fixture();
+    let good = "(root: Text(\"a\"))";
+    let path = write(dir.path(), "rebroken.ui.ron", good);
+    assets.load_ui("rebroken.ui.ron").unwrap();
+    let warned = || crate::core::ui::test_util::warnings_containing("rebroken.ui.ron");
+    std::fs::write(&path, "(root: Te").unwrap();
+    assert!(!assets.handle_reload_event(HotReloadEvent::FileModified(path.clone())));
+    assert_eq!(warned(), 1);
+    std::fs::write(&path, good).unwrap();
+    assert!(
+      !assets.handle_reload_event(HotReloadEvent::FileModified(path.clone())),
+      "the loaded text: nothing to reload"
+    );
+    std::fs::write(&path, "(root: Te").unwrap();
+    assert!(!assets.handle_reload_event(HotReloadEvent::FileModified(path)));
+    assert_eq!(warned(), 2, "reported again");
   }
 
   #[test]

@@ -124,6 +124,7 @@ pub struct UiArgs {
 }
 
 impl UiArgs {
+  /// No arguments: a template with no required parameters builds from it
   pub fn new() -> UiArgs {
     UiArgs::default()
   }
@@ -142,9 +143,13 @@ impl UiArgs {
 /// A template argument from code: a number, text, a bool or a list of them
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiArg {
+  /// A number, as a file's `3` or `0.5`
   Number(f64),
+  /// Text, as a file's `"Resume"`
   Text(String),
+  /// `true` or `false`
   Bool(bool),
+  /// A list, as a file's `["A", "B"]`
   List(Vec<UiArg>),
 }
 
@@ -170,7 +175,7 @@ macro_rules! arg_from_number {
     }
   )*};
 }
-arg_from_number!(f64, i32, u32, usize);
+arg_from_number!(f64, i32, i64, u32, u64, usize);
 
 impl From<f32> for UiArg {
   fn from(value: f32) -> UiArg {
@@ -905,6 +910,16 @@ mod tests {
   }
 
   #[test]
+  fn false_on_a_use_leaves_a_flag_the_template_sets() {
+    let file = load(
+      r#"(templates: {"Wide": (node: Button(label: "a", fill_width: true))}, root: Wide(fill_width: false))"#,
+      &mut files(&[]),
+    )
+    .unwrap();
+    assert_eq!(root(&file).layout.width, Some(Length::Fill));
+  }
+
+  #[test]
   fn keys_of_template_instances_use_the_template_name() {
     let file = load(MENU, &mut files(&[])).unwrap();
     let built = root(&file);
@@ -1247,6 +1262,12 @@ mod tests {
         ),
       ]
     );
+  }
+
+  #[test]
+  fn args_take_the_whole_number_types_bind_values_do() {
+    assert_eq!(UiArg::from(-3_i64), UiArg::Number(-3.0));
+    assert_eq!(UiArg::from(7_u64), UiArg::Number(7.0));
   }
 
   #[test]

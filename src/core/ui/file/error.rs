@@ -32,6 +32,7 @@ pub(crate) fn describe(kind: &ValueKind) -> String {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiFileError {
+  /// Each mistake, in the order found
   pub issues: Vec<UiFileIssue>,
 }
 
@@ -39,9 +40,14 @@ pub struct UiFileError {
 /// with no place in the text (a file that cannot be read) has line 0.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiFileIssue {
+  /// The file the offending value is in: for a template's mistake, the file
+  /// that defines the template
   pub path: String,
+  /// The line of the offending value, from 1; 0 when it has no place
   pub line: u32,
+  /// The column of the offending value, from 1; 0 when it has no place
   pub column: u32,
+  /// What is wrong, and the nearest name when an unknown one has one
   pub message: String,
 }
 

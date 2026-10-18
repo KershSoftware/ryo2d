@@ -532,22 +532,31 @@ pub(crate) fn set(world: &mut World, node: Entity, name: &str, value: BindValue)
     });
     return;
   };
-  store(world, root, name, value);
-  propagate(world, root, name, None);
+  // An unchanged value formats and writes nothing, so a game may set it every
+  // frame; a widget the game wrote directly keeps its value, and `sync_root`
+  // gives it to the name
+  if store(world, root, name, value) {
+    propagate(world, root, name, None);
+  }
 }
 
-/// Keep `value` as the root's value of `name`, if it differs
-fn store(world: &mut World, root: Entity, name: &str, value: BindValue) {
+/// Keep `value` as the root's value of `name`, if it differs; whether it did
+fn store(world: &mut World, root: Entity, name: &str, value: BindValue) -> bool {
   if world.get::<UiBindings>(root).is_none() {
     world.entity_mut(root).insert(UiBindings::default());
   }
-  if let Some(mut bindings) = world.get_mut::<UiBindings>(root) {
-    match bindings.values.get_mut(name) {
-      Some(stored) if stored.same(&value) => {}
-      Some(stored) => *stored = value,
-      None => {
-        bindings.values.insert(name.to_string(), value);
-      }
+  let Some(mut bindings) = world.get_mut::<UiBindings>(root) else {
+    return false;
+  };
+  match bindings.values.get_mut(name) {
+    Some(stored) if stored.same(&value) => false,
+    Some(stored) => {
+      *stored = value;
+      true
+    }
+    None => {
+      bindings.values.insert(name.to_string(), value);
+      true
     }
   }
 }
@@ -975,6 +984,36 @@ mod tests {
     assert_eq!(changed.iter(w).count(), 0);
     let mut changed = w.query_filtered::<Entity, Changed<UiLabel>>();
     assert_eq!(changed.iter(w).count(), 0);
+  }
+
+  #[test]
+  fn ui_set_of_an_unchanged_value_writes_and_formats_nothing() {
+    use crate::core::ecs::kernel::Changed;
+    let mut h = UiHarness::new(400.0, 300.0);
+    let root = h.spawn_ui(
+      UiNode::column()
+        .child(UiNode::text("Score {score}").bound().name("shown"))
+        .child(UiNode::progress(0.5).bind("hp").name("bar")),
+    );
+    h.ui_set(root, "score", 3);
+    h.ui_set(root, "hp", 0.5);
+    let (shown, bar) = (h.find_ui("shown").unwrap(), h.find_ui("bar").unwrap());
+    // Written directly, so a set that formats or writes shows
+    h.world_mut().get_mut::<UiLabel>(shown).unwrap().0 = "Game wrote".into();
+    h.world_mut().get_mut::<UiValue>(bar).unwrap().0 = 0.9;
+    h.world_mut().clear_trackers();
+    h.ui_set(root, "score", 3);
+    h.ui_set(root, "hp", 0.5);
+    let w = h.world_mut();
+    let mut changed = w.query_filtered::<Entity, Changed<UiLabel>>();
+    assert_eq!(changed.iter(w).count(), 0, "no pattern formatted");
+    let mut changed = w.query_filtered::<Entity, Changed<UiValue>>();
+    assert_eq!(changed.iter(w).count(), 0, "no widget written");
+    // The widget the game wrote sets its name at the next sync
+    h.frame(|_| {});
+    assert_eq!(h.ui_get::<f32>(root, "hp"), Some(0.9));
+    h.ui_set(root, "score", 4);
+    assert_eq!(label(&h, shown), "Score 4", "a change formats");
   }
 
   #[test]

@@ -55,6 +55,14 @@ pub(crate) fn reconcile(world: &mut World, entity: Entity, mut tree: UiNode, mod
   }
   // Only the top's seeds count, as at spawn
   let seeds = std::mem::take(&mut tree.seeds);
+  // `update_ui` on part of a tree: the top stays the node its parent placed
+  // (a file's placeholder stays the file's), while what it is given is code's
+  if mode == Mode::Update
+    && world.get::<UiRoot>(entity).is_none()
+    && let Some(node) = world.get::<UiTreeNode>(entity)
+  {
+    tree.instance = node.instance;
+  }
   // The top takes the tree's key or name when it gives one; otherwise it
   // keeps the key its own parent matches it by
   let given = tree.key.is_some() || tree.name.is_some();
@@ -106,7 +114,7 @@ pub(crate) fn reload_trees(world: &mut World) {
   // reload, or goes with its parent and is skipped
   stale.sort_by_cached_key(|&(entity, ..)| depth(world, entity));
   let roots = world.try_resource_scope(|world, mut assets: Mut<AssetManager>| {
-    let mut roots = Vec::new();
+    let mut roots: Vec<UiReloaded> = Vec::new();
     for (entity, source, now) in stale {
       // Gone with an outer tree that was given a new kind
       if world.get::<UiSource>(entity).is_none() {
@@ -115,11 +123,13 @@ pub(crate) fn reload_trees(world: &mut World) {
       let top = match source.file.build_source(&source, &mut *assets) {
         Ok(tree) => {
           let instance = source.instance;
+          let was_root = world.get::<UiRoot>(entity).is_some();
           let top = reconcile(world, entity, tree, Mode::Reload { instance });
           if let Some(root) = root_of(world, top)
-            && !roots.contains(&root)
+            && !roots.iter().any(|reloaded| reloaded.root == root)
           {
-            roots.push(root);
+            let replaced = (was_root && top != entity).then_some(entity);
+            roots.push(UiReloaded { root, replaced });
           }
           top
         }
@@ -143,8 +153,8 @@ pub(crate) fn reload_trees(world: &mut World) {
   };
   register_message::<UiReloaded>(world);
   if let Some(mut messages) = world.get_resource_mut::<Messages<UiReloaded>>() {
-    for root in roots {
-      messages.write(UiReloaded { root });
+    for reloaded in roots {
+      messages.write(reloaded);
     }
   }
 }
@@ -1408,7 +1418,109 @@ mod reload_tests {
     assert_eq!(h.focused(), focused, "focus stays on Resume");
     assert!(h.events().is_empty(), "the reload sent no UiEvents");
     let reloaded: Vec<_> = h.messages::<UiReloaded>().collect();
-    assert_eq!(reloaded, [UiReloaded { root }]);
+    assert_eq!(
+      reloaded,
+      [UiReloaded {
+        root,
+        replaced: None
+      }]
+    );
+  }
+
+  #[test]
+  fn a_reload_that_gives_the_root_a_new_kind_names_the_root_it_replaced() {
+    let (dir, mut h) = harness(&[("kind.ui.ron", r#"(root: Column(children: [Text("a")]))"#)]);
+    let old = h.spawn_ui_file("kind.ui.ron").unwrap();
+    rewrite(
+      &dir,
+      &mut h,
+      "kind.ui.ron",
+      r#"(root: Row(children: [Text("a")]))"#,
+    );
+    let reloaded: Vec<_> = h.messages::<UiReloaded>().collect();
+    let new = reloaded.first().map(|reloaded| reloaded.root).unwrap();
+    assert_ne!(new, old);
+    assert!(h.world().get_entity(old).is_err(), "the old root went");
+    assert_eq!(
+      reloaded,
+      [UiReloaded {
+        root: new,
+        replaced: Some(old)
+      }]
+    );
+  }
+
+  #[test]
+  fn a_placeholder_rebuilt_with_update_ui_stays_the_files_through_a_reload() {
+    let file = r#"(root: Column(children: [
+      Text(text: "a", name: "line"),
+      Column(focus_scope: true, name: "choices-f1"),
+    ]))"#;
+    let (dir, mut h) = harness(&[("choices.ui.ron", file)]);
+    let root = h.spawn_ui_file("choices.ui.ron").unwrap();
+    let line = h.find_ui("line").unwrap();
+    let choices = h.find_ui("choices-f1").unwrap();
+    let tree = UiNode::column()
+      .focus_scope()
+      .name("choices-f1")
+      .child(UiNode::button("Go").name("go"));
+    assert_eq!(h.update_ui(choices, tree), choices);
+    let go = h.find_ui("go").unwrap();
+    rewrite(
+      &dir,
+      &mut h,
+      "choices.ui.ron",
+      &file.replace("\"a\"", "\"b\""),
+    );
+    assert_eq!(h.world().get::<UiLabel>(line).unwrap().0, "b", "reloaded");
+    assert_eq!(
+      h.world().get::<Children>(root).unwrap().to_vec(),
+      [line, choices],
+      "the column is the file's still, not spawned again"
+    );
+    assert_eq!(
+      h.world().get::<Children>(choices).unwrap().to_vec(),
+      [go],
+      "the code child stays"
+    );
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing("two UI nodes are named \"choices-f1\""),
+      0
+    );
+  }
+
+  #[test]
+  fn options_given_in_ui_args_survive_a_reload_and_options_set_in_code_do_not() {
+    let file = r#"(templates: {"Pick": (node: Button(label: "s"))}, root: Column(focus_scope: true, name: "picks"))"#;
+    let (dir, mut h) = harness(&[("opts.ui.ron", file)]);
+    h.spawn_ui_file("opts.ui.ron").unwrap();
+    let picks = h.find_ui("picks").unwrap();
+    let ui_file = h.assets().load_ui("opts.ui.ron").unwrap();
+    let args = UiArgs::new()
+      .with("name", "pick-3")
+      .with("default_focus", true);
+    let given = ui_file.template("Pick", &args, h.assets()).unwrap();
+    let coded = ui_file
+      .template("Pick", &UiArgs::new(), h.assets())
+      .unwrap()
+      .name("pick-coded");
+    let given = spawn_ui_in(h.world_mut(), picks, given).unwrap();
+    spawn_ui_in(h.world_mut(), picks, coded).unwrap();
+    rewrite(&dir, &mut h, "opts.ui.ron", &file.replace("\"s\"", "\"t\""));
+    assert_eq!(h.world().get::<UiLabel>(given).unwrap().0, "t", "reloaded");
+    assert_eq!(h.find_ui("pick-3"), Some(given));
+    assert!(
+      h.world()
+        .get::<UiNodeKind>(given)
+        .unwrap()
+        .flags
+        .default_focus
+    );
+    assert_eq!(
+      h.find_ui("pick-coded"),
+      None,
+      "a reload rebuilds the instance from its template and arguments only"
+    );
   }
 
   #[test]

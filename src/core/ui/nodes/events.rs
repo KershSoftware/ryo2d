@@ -30,11 +30,15 @@ pub struct UiEvent {
 ///
 /// The tree's entities, values and focus survive a reload. A node the file
 /// gave a new kind is a new entity, so a game that filled a placeholder node
-/// can fill it again here.
+/// can fill it again here, and one that holds the root swaps `replaced` for
+/// `root`.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiReloaded {
   /// The root of the tree that was reloaded
   pub root: Entity,
+  /// The root it replaced, when the file gave the root a new kind (the old
+  /// entity is gone); `None` when the root was updated in place
+  pub replaced: Option<Entity>,
 }
 
 /// What a `UiEvent` reports
