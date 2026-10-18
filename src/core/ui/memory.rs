@@ -487,6 +487,18 @@ impl UiMemory {
     self.states.get(&id)?.value.downcast_ref::<T>()
   }
 
+  /// A widget's own state of type `T`, to change, if it has one; it is not
+  /// marked seen, so it is still dropped at the end of a frame it is not
+  /// drawn in
+  pub(crate) fn peek_state_mut<T: 'static>(&mut self, id: UiId) -> Option<&mut T> {
+    self.states.get_mut(&id)?.value.downcast_mut::<T>()
+  }
+
+  /// The frame being drawn, counted from 1 by `begin_frame`
+  pub(crate) fn frame(&self) -> u64 {
+    self.frame
+  }
+
   pub(crate) fn remember_focus(&mut self, scope: UiId, scene: u64, focused: UiId) {
     self.focus_memory.insert(scope, (scene, focused));
   }

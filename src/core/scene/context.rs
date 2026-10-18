@@ -362,12 +362,15 @@ impl SceneContext<'_> {
       .pending_focus = Some(node);
   }
 
-  /// The first node named `name` in this scene's UI trees.
+  /// The first node named `name` in this scene's UI trees (not in a list's
+  /// rows: find those from the row, with `find_ui_in`).
   pub fn find_ui(&self, name: &str) -> Option<Entity> {
     nodes::find_ui(self.world, self.scope_id, name)
   }
 
-  /// The first node named `name` in the tree under `root` (included).
+  /// The first node named `name` in the tree under `root` (included). A
+  /// list's rows are searched only from the row itself (`root` a row that a
+  /// `UiListBind` named).
   pub fn find_ui_in(&self, root: Entity, name: &str) -> Option<Entity> {
     nodes::find_ui_in(self.world, root, name)
   }
@@ -375,7 +378,8 @@ impl SceneContext<'_> {
   /// Set a named binding on the UI tree `node` belongs to: every widget bound
   /// to `name` and every label or tooltip showing it update. A value equal to
   /// the one held does nothing, so setting one every frame is cheap. Values
-  /// are kept per root, so two trees from one file never share them.
+  /// are kept per root, so two trees from one file never share them, and
+  /// per row of a list: `ui_set(row, ..)` fills that row only.
   pub fn ui_set(&mut self, node: Entity, name: &str, value: impl Into<BindValue>) {
     nodes::bindings::set(self.world, node, name, value.into());
   }

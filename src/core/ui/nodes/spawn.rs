@@ -15,6 +15,7 @@ use super::components::{
   UiLabel, UiName, UiNodes, UiOptions, UiRoot, UiSource, UiTextValue, UiTooltip, UiTreeNode,
   UiValue,
 };
+use super::list::{self, UiList, UiListRow, UiListShape};
 use super::node::{Kind, UiNode, UiNodeKind};
 
 const NAV_OPTIONS: [&str; 4] = ["nav_up", "nav_down", "nav_left", "nav_right"];
@@ -220,6 +221,32 @@ pub(crate) fn spawn_ui_in(world: &mut World, parent: Entity, mut tree: UiNode) -
   Some(top)
 }
 
+/// Spawn `tree` as a pooled row of the list `list`, showing item `index`
+/// from `frame` on: the list's own (a reconcile never matches it) and a
+/// binding scope of its own
+pub(crate) fn spawn_list_row(
+  world: &mut World,
+  list: Entity,
+  mut tree: UiNode,
+  index: usize,
+  frame: u64,
+) -> Entity {
+  let seeds = std::mem::take(&mut tree.seeds);
+  let mut pending = Vec::new();
+  let key = root_key(&tree);
+  let row = spawn_node(world, Some(list), false, tree, key, &mut pending);
+  world.entity_mut(row).insert((
+    UiAdded,
+    UiListRow {
+      index,
+      bound_frame: frame,
+    },
+  ));
+  finish(world, row, pending);
+  bindings::apply_subtree(world, row, seeds);
+  row
+}
+
 /// Spawn one node and, depth first, its children
 pub(crate) fn spawn_node(
   world: &mut World,
@@ -252,6 +279,7 @@ pub(crate) fn spawn_node(
     template: _,
     instance,
     source,
+    row_shape,
   } = node;
 
   let kind_name = kind.name();
@@ -288,6 +316,8 @@ pub(crate) fn spawn_node(
     tooltip: tooltip.as_deref().map(Pattern::parse),
   });
   let bind = bind.filter(|_| kind.takes("bind"));
+  let is_list = matches!(kind, Kind::List(_));
+  let list_count = state.list_count;
 
   let mut entity = world.spawn((
     UiNodeKind {
@@ -355,11 +385,29 @@ pub(crate) fn spawn_node(
     let generation = source.generation;
     entity.insert(UiSource { source, generation });
   }
+  if is_list {
+    entity.insert(UiList {
+      count: list_count.unwrap_or(0),
+      ..UiList::default()
+    });
+    match row_shape {
+      Some(shape) => {
+        entity.insert(UiListShape(shape));
+      }
+      None => list::warn_shapeless(),
+    }
+  }
   // After the engine's components, so a game component may replace one
   for insert in inserts {
     insert(&mut entity);
   }
   let id = entity.id();
+  if is_list {
+    world
+      .get_resource_or_insert_with(UiNodes::default)
+      .lists
+      .push(id);
+  }
 
   pending.push(Pending {
     entity: id,
@@ -376,7 +424,8 @@ pub(crate) fn spawn_node(
 /// Resolve names, duplicates and confirms once a tree exists, or once an
 /// update has brought it in line; each written only on a difference
 pub(crate) fn finish(world: &mut World, top: Entity, pending: Vec<Pending>) {
-  let root = root_of(world, top).unwrap_or(top);
+  // A list's row resolves names within itself
+  let root = scope_of(world, top).unwrap_or(top);
   for node in &pending {
     if let Some(name) = world.get::<UiName>(node.entity)
       && find_ui_in(world, root, &name.0) != Some(node.entity)
@@ -472,7 +521,9 @@ fn first_answering_descendant(world: &World, of: Entity) -> Option<Entity> {
   None
 }
 
-/// The first node named `name` under `root` (included), depth first
+/// The first node named `name` under `root` (included), depth first. The
+/// rows of a list under it are their own scopes: they are searched only
+/// from a row itself.
 pub(crate) fn find_ui_in(world: &World, root: Entity, name: &str) -> Option<Entity> {
   if world.get::<UiName>(root).is_some_and(|node| node.0 == name) {
     return Some(root);
@@ -480,6 +531,7 @@ pub(crate) fn find_ui_in(world: &World, root: Entity, name: &str) -> Option<Enti
   let kids = world.get::<Children>(root)?;
   kids
     .iter()
+    .filter(|&&child| world.get::<UiListRow>(child).is_none())
     .find_map(|&child| find_ui_in(world, child, name))
 }
 
@@ -501,6 +553,19 @@ pub(crate) fn root_of(world: &World, node: Entity) -> Option<Entity> {
       return Some(at);
     }
     at = world.get::<ChildOf>(at)?.parent();
+  }
+}
+
+/// The scope `node` is in for its names and bindings: the nearest of it and
+/// its ancestors that is a tree's root or a list's row
+pub(crate) fn scope_of(world: &World, node: Entity) -> Option<Entity> {
+  let mut at = node;
+  loop {
+    let entity = world.get_entity(at).ok()?;
+    if entity.contains::<UiRoot>() || entity.contains::<UiListRow>() {
+      return Some(at);
+    }
+    at = entity.get::<ChildOf>()?.parent();
   }
 }
 

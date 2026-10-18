@@ -208,6 +208,16 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
   walk.finish(world, ui)
 }
 
+/// Draw `node`, a node that is not a root, and its subtree
+pub(super) fn draw_child(
+  world: &mut World,
+  ui: &mut UiContext<'_>,
+  node: Entity,
+  walk: &mut Walk,
+) -> Option<Response> {
+  draw_node(world, ui, node, None, walk)
+}
+
 /// Draw `node` and its subtree by its kind; `place` is a root's placement.
 /// The node is looked up once, and its `UiNodeKind` read once.
 fn draw_node(
@@ -255,6 +265,21 @@ fn draw_node(
       let scroll = scroll_builder(&entity, kind, shared, opts, ui, place);
       let world = entity.into_world_mut();
       let response = scroll.show(|ui| walk_children(world, ui, node, walk));
+      return answer_container(world, ui, node, response, walk);
+    }
+    Kind::List(opts) => {
+      let opts = *opts;
+      let area = ScrollOpts {
+        no_bar: opts.no_bar,
+        ..ScrollOpts::default()
+      };
+      let (gap, top) = (
+        kind.layout.gap.unwrap_or(0.0),
+        kind.layout.padding.map_or(0.0, |padding| padding.top),
+      );
+      let scroll = scroll_builder(&entity, kind, shared, &area, ui, place);
+      let world = entity.into_world_mut();
+      let response = super::list::draw_list(world, node, scroll, opts, gap, top, walk);
       return answer_container(world, ui, node, response, walk);
     }
     Kind::Text(opts) => {
@@ -645,8 +670,8 @@ fn container_builder<'u, 'a>(
   Some(container)
 }
 
-/// A scroll node's builder, configured from the node: only the options
-/// `Scroll` has
+/// A scroll or list node's builder, configured from the node: only the
+/// options `Scroll` has (a list's no drag or drop, as `ui.list`)
 fn scroll_builder<'u, 'a>(
   node: &EntityWorldMut<'_>,
   kind: &UiNodeKind,
@@ -668,10 +693,11 @@ fn scroll_builder<'u, 'a>(
   if opts.no_bar {
     scroll = scroll.no_bar();
   }
-  if kind.flags.drag_source {
+  let scroll_kind = matches!(kind.kind, Kind::Scroll(_));
+  if scroll_kind && kind.flags.drag_source {
     scroll = scroll.drag_source(node.id());
   }
-  if kind.flags.drop_target {
+  if scroll_kind && kind.flags.drop_target {
     scroll = scroll.drop_target::<Entity>();
   }
   sized!(scroll, layout);

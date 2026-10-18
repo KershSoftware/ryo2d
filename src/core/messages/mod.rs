@@ -120,6 +120,7 @@ pub fn register_engine_messages(world: &mut World) {
   register_message::<crate::core::text::TextRevealed>(world);
   register_message::<crate::core::ui::UiEvent>(world);
   register_message::<crate::core::ui::UiReloaded>(world);
+  register_message::<crate::core::ui::UiListBind>(world);
 }
 
 #[cfg(test)]

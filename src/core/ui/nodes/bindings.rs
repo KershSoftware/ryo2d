@@ -1,6 +1,7 @@
 //! Named bindings: values a tree's root keeps by name, written into the
 //! state components of the widgets bound to each name and formatted into
-//! the labels and tooltips that show them
+//! the labels and tooltips that show them. A list node's row is a scope of
+//! its own: it keeps its own values, and its root's never reach into it.
 
 use std::collections::HashMap;
 
@@ -8,9 +9,10 @@ use crate::core::ecs::kernel::{Children, Component, Entity, World};
 use crate::core::ui::theme::warn_once;
 
 use super::components::{UiChecked, UiIndex, UiLabel, UiTextValue, UiTooltip, UiValue};
+use super::list::UiListRow;
 use super::node::UiNode;
 use super::node::UiNodeKind;
-use super::spawn::root_of;
+use super::spawn::scope_of;
 
 /// A value a binding holds
 #[derive(Debug, Clone, PartialEq)]
@@ -439,7 +441,7 @@ fn collect(world: &World, node: Entity, index: &mut Index) {
     }
   }
   if let Some(kids) = world.get::<Children>(node) {
-    for &child in kids.iter() {
+    for &child in kids.iter().filter(|&&child| !is_row(world, child)) {
       collect(world, child, index);
     }
   }
@@ -447,7 +449,7 @@ fn collect(world: &World, node: Entity, index: &mut Index) {
 
 /// The node's root re-indexes on next use
 pub(crate) fn invalidate(world: &mut World, node: Entity) {
-  if let Some(root) = root_of(world, node)
+  if let Some(root) = scope_of(world, node)
     && let Some(mut bindings) = world.get_mut::<UiBindings>(root)
   {
     bindings.index = None;
@@ -526,7 +528,7 @@ pub(crate) fn format_node(world: &mut World, root: Entity, node: Entity) {
 
 /// Set `name` on the root `node` belongs to, and update everything that uses it
 pub(crate) fn set(world: &mut World, node: Entity, name: &str, value: BindValue) {
-  let Some(root) = root_of(world, node) else {
+  let Some(root) = scope_of(world, node) else {
     warn_once("ui-set:no-root".to_string(), || {
       "ui_set needs a node of a spawned UI tree".to_string()
     });
@@ -563,7 +565,7 @@ fn store(world: &mut World, root: Entity, name: &str, value: BindValue) -> bool 
 
 /// The value of `name` on the root `node` belongs to
 pub(crate) fn get(world: &World, node: Entity, name: &str) -> Option<BindValue> {
-  let root = root_of(world, node)?;
+  let root = scope_of(world, node)?;
   world.get::<UiBindings>(root)?.values.get(name).cloned()
 }
 
@@ -572,7 +574,7 @@ pub(crate) fn seed(world: &mut World, node: Entity, seeds: Vec<(String, BindValu
   if seeds.is_empty() {
     return;
   }
-  let Some(root) = root_of(world, node) else {
+  let Some(root) = scope_of(world, node) else {
     return;
   };
   for (name, value) in seeds {
@@ -595,15 +597,20 @@ fn subtree(world: &World, node: Entity, widgets: &mut Vec<Entity>, patterns: &mu
     patterns.push(node);
   }
   if let Some(kids) = world.get::<Children>(node) {
-    for &child in kids.iter() {
+    for &child in kids.iter().filter(|&&child| !is_row(world, child)) {
       subtree(world, child, widgets, patterns);
     }
   }
 }
 
+/// Whether `node` is a list's row, a binding scope of its own
+fn is_row(world: &World, node: Entity) -> bool {
+  world.get::<UiListRow>(node).is_some()
+}
+
 /// Join a freshly spawned subtree to its root's values
 pub(crate) fn apply_subtree(world: &mut World, top: Entity, seeds: Vec<(String, BindValue)>) {
-  let Some(root) = root_of(world, top) else {
+  let Some(root) = scope_of(world, top) else {
     return;
   };
   let (mut widgets, mut patterns) = (Vec::new(), Vec::new());
@@ -702,7 +709,7 @@ fn warn_unset_names(world: &mut World, root: Entity) {
 
 /// Right after a bound widget is drawn: its change sets its name
 pub(crate) fn widget_wrote(world: &mut World, node: Entity) {
-  let Some(root) = root_of(world, node) else {
+  let Some(root) = scope_of(world, node) else {
     return;
   };
   let Some(name) = world.get::<UiBind>(node).map(|b| b.0.clone()) else {

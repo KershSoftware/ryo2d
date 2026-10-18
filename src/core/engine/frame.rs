@@ -570,6 +570,9 @@ impl Engine {
         snapshot.consume_scroll();
       }
       self.resolve_navigation(&theme);
+      // List pools follow this frame's scrolling before any tree is drawn
+      let frame = self.ui_memory.frame();
+      crate::core::ui::nodes::update_lists(&mut self.world, &mut self.ui_memory, frame, space.size);
     } else {
       self.ui_memory.restart_pass();
     }

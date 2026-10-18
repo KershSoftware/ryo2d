@@ -21,10 +21,11 @@ use super::components::{
   UiOptions, UiRoot, UiSource, UiTextValue, UiTooltip, UiTreeNode, UiValue,
 };
 use super::events::UiReloaded;
+use super::list::UiList;
 use super::node::{Kind, NodeState, UiNode, UiNodeKind};
 use super::spawn::{
-  Keys, Pending, answer_back_above, child_keys, finish, root_key, root_of, spawn_node, spawn_root,
-  warn_repeated_keys,
+  Keys, Pending, answer_back_above, child_keys, finish, root_key, root_of, scope_of, spawn_node,
+  spawn_root, warn_repeated_keys,
 };
 
 /// Which children of a node an update may touch
@@ -513,6 +514,8 @@ pub(crate) fn update_node(
     template: _,
     instance,
     source,
+    // A list keeps the row shape it was spawned with, and its rows
+    row_shape: _,
   } = node;
 
   let popup = match &kind {
@@ -596,7 +599,7 @@ pub(crate) fn update_node(
     bindings::invalidate(world, entity);
   }
   if patterns.changed
-    && let Some(root) = root_of(world, entity)
+    && let Some(root) = scope_of(world, entity)
   {
     bindings::format_node(world, root, entity);
   }
@@ -786,6 +789,15 @@ fn update_state(
   }
   if !same_reveal(&state.reveal, &old.reveal) {
     write(node, state.reveal);
+  }
+  // A list's count is state: the rows follow it at the next pool update
+  if let Some(count) = state
+    .list_count
+    .filter(|_| state.list_count != old.list_count)
+    && node.get::<UiList>().is_some_and(|pool| pool.count != count)
+    && let Some(mut pool) = node.get_mut::<UiList>()
+  {
+    pool.count = count;
   }
 }
 

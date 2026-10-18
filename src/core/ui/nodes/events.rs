@@ -41,6 +41,27 @@ pub struct UiReloaded {
   pub replaced: Option<Entity>,
 }
 
+/// A list node gave one of its pooled rows an item: fill the row for item
+/// `index` from the game's data, with `ctx.ui_set(row, ..)` (each row is its
+/// own binding scope) or by writing the row's nodes (`ctx.find_ui_in(row,
+/// ..)`). Sent for a new row and for a row reused for another item, before
+/// the row is drawn: it shows from the next frame.
+///
+/// It is both an engine message (read it with `ctx.messages::<UiListBind>()`
+/// in the scene's `ui`, which runs every frame) and an entity event
+/// triggered on the row (an observer there binds it at once). Observers run
+/// during the UI pass: an observer must not change scenes.
+#[derive(Message, EntityEvent, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiListBind {
+  /// The list node
+  pub list: Entity,
+  /// The row given the item
+  #[event_target]
+  pub row: Entity,
+  /// The item's index
+  pub index: usize,
+}
+
 /// What a `UiEvent` reports
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiEventKind {

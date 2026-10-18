@@ -86,8 +86,8 @@ pub use file::{UiArg, UiArgs, UiFile, UiFileError, UiFileIssue};
 // Retained nodes
 pub use nodes::{
   BindValue, TextRole, UiChecked, UiDisabled, UiEvent, UiEventKind, UiHidden, UiImage, UiIndex,
-  UiInteraction, UiLabel, UiName, UiNode, UiNodeKind, UiOptions, UiReloaded, UiRoot, UiSlot,
-  UiTextValue, UiTooltip, UiValue,
+  UiInteraction, UiLabel, UiListBind, UiListRow, UiName, UiNode, UiNodeKind, UiOptions, UiReloaded,
+  UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
 };
 
 // Re-export theme types

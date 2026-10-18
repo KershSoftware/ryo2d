@@ -230,9 +230,9 @@ pub mod prelude {
     TextRole, TextRoles, Theme, ThemeError, ThemeFont, TweenColor, TweenFloat, TweenRect,
     TweenVec2, UiArg, UiArgs, UiChecked, UiContext, UiDisabled, UiEvent, UiEventKind, UiFile,
     UiFileError, UiFileIssue, UiHidden, UiId, UiImage, UiIndex, UiInput, UiInteraction, UiLabel,
-    UiName, UiNode, UiNodeKind, UiOptions, UiReloaded, UiRoot, UiSlot, UiSounds, UiText,
-    UiTextValue, UiTheme, UiTooltip, UiTween, UiTweenLoop, UiValue, Variant, WidgetKind,
-    WidgetLooks, WidgetState,
+    UiListBind, UiListRow, UiName, UiNode, UiNodeKind, UiOptions, UiReloaded, UiRoot, UiSlot,
+    UiSounds, UiText, UiTextValue, UiTheme, UiTooltip, UiTween, UiTweenLoop, UiValue, Variant,
+    WidgetKind, WidgetLooks, WidgetState,
   };
 
   // Errors

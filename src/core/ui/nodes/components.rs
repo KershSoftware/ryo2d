@@ -159,6 +159,9 @@ pub(crate) struct UiNodes {
   pub(crate) pending: Vec<UiEvent>,
   /// Embedded roots drawn this pass
   pub(crate) embedded_drawn: Vec<Entity>,
+  /// The list nodes spawned, whose pools `update_lists` keeps (a despawned
+  /// one is dropped there)
+  pub(crate) lists: Vec<Entity>,
 }
 
 #[cfg(test)]

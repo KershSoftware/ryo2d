@@ -1,6 +1,7 @@
 //! Virtual lists: `ui.list(count)` is a scroll area of the list's exact
 //! length that builds only the rows in view (and a few either side), with
-//! spacers standing in for the rest
+//! spacers standing in for the rest. The shape and the placement are shared
+//! with the pooled node list (`nodes/list.rs`), so both place rows alike.
 
 use std::hash::Hash;
 use std::ops::Range;
@@ -234,8 +235,21 @@ fn row_target(memory: &UiMemory, list: UiId, index: usize) -> Option<f32> {
   let area = memory.peek_state::<ScrollState>(list)?;
   let last = shape.count.checked_sub(1)?;
   let row = index.min(last) / usize::from(shape.columns.max(1));
-  let top = f64::from(shape.top) + row as f64 * f64::from(shape.stride);
-  let bottom = top + f64::from(shape.row_height);
+  row_target_in(area, shape.top, shape.stride, shape.row_height, row)
+}
+
+/// Where the list's scroll area `area` should head to show row `row` (rows
+/// `row_height` tall every `stride`, from `top`), moving least; `None` when
+/// it shows already
+pub(crate) fn row_target_in(
+  area: &ScrollState,
+  top: f32,
+  stride: f32,
+  row_height: f32,
+  row: usize,
+) -> Option<f32> {
+  let top = f64::from(top) + row as f64 * f64::from(stride);
+  let bottom = top + f64::from(row_height);
   let (shown, view) = (f64::from(area.offset.y), f64::from(area.view.y));
   let wanted = if top < shown {
     top
@@ -337,11 +351,7 @@ impl List<'_, '_> {
   /// Room between its edges and its rows
   pub fn padding(mut self, p: impl Into<Edges>) -> Self {
     let p = p.into();
-    self.top = if p.top.is_finite() {
-      p.top.max(0.0)
-    } else {
-      0.0
-    };
+    self.top = p.top;
     self.scroll = self.scroll.padding(p);
     self
   }
@@ -383,28 +393,77 @@ impl List<'_, '_> {
   }
 }
 
-/// A list's measures for one frame, cleaned
-#[derive(Clone, Copy)]
-struct Shape {
-  count: usize,
-  row_height: f32,
+/// A list's measures for one frame, cleaned: a closure list's and a node
+/// list's alike
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Shape {
+  pub(crate) count: usize,
+  /// Finite and above 0
+  pub(crate) row_height: f32,
   /// At least 1
-  columns: u16,
-  gap: f32,
-  overscan: usize,
-  top: f32,
+  pub(crate) columns: u16,
+  /// Finite, never negative
+  pub(crate) gap: f32,
+  /// At least 1
+  pub(crate) overscan: usize,
+  /// Where the first row starts in the contents: the area's top padding
+  pub(crate) top: f32,
 }
 
 impl Shape {
+  /// The measures of a list of `count` items given these options, cleaned
+  /// as its layout cleans them; `None`, warned once, when the row height is
+  /// not finite and above 0, or it and the gap are not finite together
+  pub(crate) fn new(
+    count: usize,
+    row_height: f32,
+    columns: u16,
+    gap: f32,
+    overscan: usize,
+    top: f32,
+  ) -> Option<Shape> {
+    let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    // The layout cleans the gap it is given the same way, and warns
+    let clean_gap = clean(gap);
+    let stride = row_height + clean_gap;
+    if !(row_height.is_finite() && row_height > 0.0 && stride.is_finite()) {
+      warn_once("ui-list-row-height".into(), || {
+        format!(
+          "a list's row height must be finite and above 0, and its row height and gap finite together (got {row_height} and {gap}); drawn empty"
+        )
+      });
+      return None;
+    }
+    Some(Shape {
+      count,
+      row_height,
+      columns: columns.max(1),
+      gap: clean_gap,
+      overscan: overscan.max(1),
+      top: clean(top),
+    })
+  }
+
   /// Rows of `columns` items, the last one perhaps short
-  fn rows(&self) -> usize {
+  pub(crate) fn rows(&self) -> usize {
     self.count.div_ceil(usize::from(self.columns))
   }
 
+  /// A row's height and the gap after it
+  pub(crate) fn stride(&self) -> f32 {
+    self.row_height + self.gap
+  }
+
+  /// The items in `rows`
+  pub(crate) fn items(&self, rows: Range<usize>) -> Range<usize> {
+    let per_row = usize::from(self.columns);
+    rows.start.saturating_mul(per_row)..rows.end.saturating_mul(per_row).min(self.count)
+  }
+
   /// The whole list's height: every row and the gaps between
-  fn length(&self) -> f32 {
+  pub(crate) fn length(&self) -> f32 {
     let rows = self.rows() as f64;
-    let length = rows * f64::from(self.row_height + self.gap) - f64::from(self.gap);
+    let length = rows * f64::from(self.stride()) - f64::from(self.gap);
     to_units(length)
   }
 }
@@ -428,32 +487,14 @@ impl<'a> List<'_, 'a> {
       overscan,
       top,
     } = self;
-    // The layout cleans the gap it is given the same way, and warns
-    let clean_gap = if gap.is_finite() { gap.max(0.0) } else { 0.0 };
-    let stride = row_height + clean_gap;
-    let sized = row_height.is_finite() && row_height > 0.0 && stride.is_finite();
-    if !sized {
-      warn_once("ui-list-row-height".into(), || {
-        format!(
-          "a list's row height must be finite and above 0, and its row height and gap finite together (got {row_height} and {gap}); drawn empty"
-        )
-      });
-    }
-    let shape = Shape {
-      count,
-      row_height,
-      columns: columns.max(1),
-      gap: clean_gap,
-      overscan: overscan.max(1),
-      top,
-    };
+    let shape = Shape::new(count, row_height, columns, gap, overscan, top);
     let mut range = 0..0;
     let mut scroll = scroll.gap(gap);
-    if sized {
+    if let Some(shape) = shape {
       scroll = scroll.content_height(shape.length());
     }
     let response = scroll.show(|ui| {
-      if sized {
+      if let Some(shape) = shape {
         range = build(ui, shape, &mut row);
       }
     });
@@ -479,13 +520,13 @@ fn build<'a>(
     count,
     row_height,
     columns,
-    gap,
     overscan,
     top,
+    ..
   } = shape;
   let per_row = usize::from(columns);
   let rows = shape.rows();
-  let stride = row_height + gap;
+  let stride = shape.stride();
   let view = ui
     .memory
     .peek_state::<ScrollState>(list)
@@ -506,11 +547,8 @@ fn build<'a>(
     offset = state.offset.y;
   }
   let built = built_rows(rows, stride, view, offset - top, overscan);
-  // The focus this frame's resolve left, unless it was made before the list
-  let focus = ui
-    .focused()
-    .filter(|id| !ui.memory.scopes.made(*id))
-    .unwrap_or(UiId::NONE);
+  let watch = FocusWatch::new(ui);
+  let focus = watch.focus;
   let plan = plan_focus(ui, list, count, focus);
   if let Some(state) = ui.memory.state::<ListState>(state_id(list), scene) {
     state.stride = stride;
@@ -531,39 +569,21 @@ fn build<'a>(
   let pending = plan
     .pending
     .map_or(0..0, |i| row_of(i)..row_of(i).saturating_add(1).min(rows));
-  let mut watch = Watch {
-    focus,
-    found: None,
+  let mut fill = Rows {
+    row,
+    watch,
     capture: plan.capture,
     ids: plan.ids,
+    mark: None,
   };
-  // The area's gap is the list's, so a spacer is a gap short of the rows it
-  // stands for
-  let spacer = |ui: &mut UiContext<'_>, salt: u64, standing_for: usize| {
-    let height = standing_for as f64 * f64::from(stride) - f64::from(gap);
-    blank(ui, list.derived(salt), height_style(height));
-  };
-  let mut next = 0;
-  for (k, run) in runs([built.clone(), focused, pending]).iter().enumerate() {
-    if run.is_empty() {
-      continue;
-    }
-    if run.start > next {
-      let salt = if k == 0 {
-        LEAD_SALT
-      } else {
-        GAP_SALT ^ k as u64
-      };
-      spacer(ui, salt, run.start - next);
-    }
-    for r in run.clone() {
-      build_row(ui, shape, r, &mut watch, row);
-    }
-    next = run.end;
-  }
-  if next < rows {
-    spacer(ui, TRAIL_SALT, rows - next);
-  }
+  place(
+    ui,
+    list,
+    shape,
+    runs([built.clone(), focused, pending]),
+    &mut fill,
+  );
+  let Rows { watch, ids, .. } = fill;
 
   if let Some(state) = ui.memory.state::<ListState>(state_id(list), scene) {
     state.focused = watch.found;
@@ -575,12 +595,12 @@ fn build<'a>(
     // Unless a row asked for another item meanwhile (`list_focus` there)
     let same = state.pending_focus == plan.pending;
     if plan.capture.is_some() && same && !state.focus_asked {
-      state.focus_ids = watch.ids;
+      state.focus_ids = ids;
     } else if plan.landing && same && state.focus_asked {
       state.pend(None);
     }
   }
-  built.start.saturating_mul(per_row)..built.end.saturating_mul(per_row).min(count)
+  shape.items(built)
 }
 
 /// What a list's build does for the focus this frame
@@ -658,11 +678,11 @@ fn plan_focus(ui: &mut UiContext<'_>, list: UiId, count: usize, focus: UiId) -> 
   plan
 }
 
-/// Up to three runs of rows, in order, merged where they touch; the unused
-/// ones are empty
-fn runs(mut ranges: [Range<usize>; 3]) -> [Range<usize>; 3] {
+/// The rows of `ranges` as runs, in order, merged where they touch; the
+/// unused ones are empty, at the end
+pub(crate) fn runs<const N: usize>(mut ranges: [Range<usize>; N]) -> [Range<usize>; N] {
   ranges.sort_unstable_by_key(|r| r.start);
-  let mut out = [0..0, 0..0, 0..0];
+  let mut out = std::array::from_fn(|_| 0..0);
   let mut n: usize = 0;
   for r in ranges.into_iter().filter(|r| !r.is_empty()) {
     match n.checked_sub(1).and_then(|last| out.get_mut(last)) {
@@ -678,28 +698,126 @@ fn runs(mut ranges: [Range<usize>; 3]) -> [Range<usize>; 3] {
   out
 }
 
-/// What a list watches for while it builds its items
-struct Watch {
-  /// The focused widget, when it was not made before the list
-  focus: UiId,
+/// What fills a list's item containers as they are placed
+pub(crate) trait Fill {
+  /// Before item `index`'s container opens
+  fn opening(&mut self, _ui: &mut UiContext<'_>, _index: usize) {}
+  /// Item `index`'s contents, built in its container's scope
+  fn contents(&mut self, ui: &mut UiContext<'_>, index: usize);
+  /// After item `index`'s container has closed
+  fn closed(&mut self, _ui: &mut UiContext<'_>, _index: usize) {}
+}
+
+/// Which item of a list made the focused widget, found as the items are
+/// built: the first item after which the focus has been made
+pub(crate) struct FocusWatch {
+  /// The focused widget, when it was not made before the list (`NONE`)
+  pub(crate) focus: UiId,
   /// The item that made it
-  found: Option<usize>,
+  pub(crate) found: Option<usize>,
+}
+
+impl FocusWatch {
+  /// Watch for the focus this frame's resolve left, unless it was made
+  /// before the list
+  pub(crate) fn new(ui: &UiContext<'_>) -> FocusWatch {
+    let focus = ui
+      .focused()
+      .filter(|id| !ui.memory.scopes.made(*id))
+      .unwrap_or(UiId::NONE);
+    FocusWatch { focus, found: None }
+  }
+
+  /// Item `index` has been built
+  pub(crate) fn note(&mut self, ui: &UiContext<'_>, index: usize) {
+    if self.found.is_none() && self.focus != UiId::NONE && ui.memory.scopes.made(self.focus) {
+      self.found = Some(index);
+    }
+  }
+}
+
+/// A closure list's items: built by its row closure, watched for the focus,
+/// and the pending item's ids captured
+struct Rows<'r, R> {
+  row: &'r mut R,
+  watch: FocusWatch,
   /// The item whose ids are captured, into `ids`
   capture: Option<usize>,
   ids: Vec<UiId>,
+  /// The capture under way
+  mark: Option<usize>,
+}
+
+impl<R: FnMut(&mut UiContext<'_>, usize)> Fill for Rows<'_, R> {
+  fn opening(&mut self, ui: &mut UiContext<'_>, index: usize) {
+    if self.capture == Some(index) {
+      self.mark = Some(ui.memory.scopes.start_capture());
+    }
+  }
+
+  fn contents(&mut self, ui: &mut UiContext<'_>, index: usize) {
+    (self.row)(ui, index);
+  }
+
+  fn closed(&mut self, ui: &mut UiContext<'_>, index: usize) {
+    if let Some(mark) = self.mark.take() {
+      ui.memory.scopes.take_capture(mark, &mut self.ids);
+    }
+    self.watch.note(ui, index);
+  }
+}
+
+/// Place the runs of rows `runs` (in order) in a list's scroll area, the
+/// current scope `list`: each item in its container keyed by its index and
+/// filled by `fill`, with spacers that record nothing standing for the rows
+/// between, so every row keeps its place. The closure list and the node list
+/// both place their rows through this.
+pub(crate) fn place(
+  ui: &mut UiContext<'_>,
+  list: UiId,
+  shape: Shape,
+  runs: impl IntoIterator<Item = Range<usize>>,
+  fill: &mut impl Fill,
+) {
+  let rows = shape.rows();
+  let (stride, gap) = (shape.stride(), shape.gap);
+  // The area's gap is the list's, so a spacer is a gap short of the rows it
+  // stands for
+  let spacer = |ui: &mut UiContext<'_>, salt: u64, standing_for: usize| {
+    let height = standing_for as f64 * f64::from(stride) - f64::from(gap);
+    blank(ui, list.derived(salt), height_style(height));
+  };
+  let (mut next, mut k) = (0, 0);
+  for run in runs {
+    // Kept to the list's rows, past the last run's end
+    let run = run.start.max(next)..run.end.min(rows);
+    if run.is_empty() {
+      continue;
+    }
+    if run.start > next {
+      let salt = if k == 0 {
+        LEAD_SALT
+      } else {
+        GAP_SALT ^ k as u64
+      };
+      spacer(ui, salt, run.start - next);
+    }
+    for r in run.clone() {
+      build_row(ui, shape, r, fill);
+    }
+    next = run.end;
+    k += 1;
+  }
+  if next < rows {
+    spacer(ui, TRAIL_SALT, rows - next);
+  }
 }
 
 /// Build row `r`: one item's container, or a grid row of cells
-fn build_row<'a>(
-  ui: &mut UiContext<'a>,
-  shape: Shape,
-  r: usize,
-  watch: &mut Watch,
-  row: &mut impl FnMut(&mut UiContext<'_>, usize),
-) {
+fn build_row(ui: &mut UiContext<'_>, shape: Shape, r: usize, fill: &mut impl Fill) {
   let per_row = usize::from(shape.columns);
   if per_row == 1 {
-    item(ui, r, item_style(shape.row_height), watch, row);
+    item(ui, r, item_style(shape.row_height), fill);
     return;
   }
   let style = UiStyle {
@@ -717,7 +835,7 @@ fn build_row<'a>(
     for c in 0..per_row {
       let index = r.saturating_mul(per_row).saturating_add(c);
       if index < shape.count {
-        item(ui, index, cells.clone(), watch, row);
+        item(ui, index, cells.clone(), fill);
       } else {
         // The last row's missing items keep the cells equal
         let id = ui.memory.scopes.current().derived(BLANK_SALT ^ c as u64);
@@ -727,23 +845,11 @@ fn build_row<'a>(
   });
 }
 
-/// Build item `index` in its container, noting whether it made the focused
-/// widget, and capturing its ids when it is the one to focus
-fn item<'a>(
-  ui: &mut UiContext<'a>,
-  index: usize,
-  style: UiStyle,
-  watch: &mut Watch,
-  row: &mut impl FnMut(&mut UiContext<'_>, usize),
-) {
-  let mark = (watch.capture == Some(index)).then(|| ui.memory.scopes.start_capture());
-  cell(ui, item_site(), index, style, |ui| row(ui, index));
-  if let Some(mark) = mark {
-    ui.memory.scopes.take_capture(mark, &mut watch.ids);
-  }
-  if watch.found.is_none() && watch.focus != UiId::NONE && ui.memory.scopes.made(watch.focus) {
-    watch.found = Some(index);
-  }
+/// Build item `index` in its container, filled by `fill`
+fn item(ui: &mut UiContext<'_>, index: usize, style: UiStyle, fill: &mut impl Fill) {
+  fill.opening(ui, index);
+  cell(ui, item_site(), index, style, |ui| fill.contents(ui, index));
+  fill.closed(ui, index);
 }
 
 /// A built row's container: the whole width, a row tall

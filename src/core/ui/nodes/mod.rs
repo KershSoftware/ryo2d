@@ -2,13 +2,14 @@
 //!
 //! `node` is the tree value, `components` the state components and the
 //! resource the walks keep, `events` what a widget reports, `spawn` the
-//! entities a tree becomes, `reconcile` the update of a spawned tree in place
-//! and `draw` the walk that draws them each frame.
+//! entities a tree becomes, `reconcile` the update of a spawned tree in place,
+//! `draw` the walk that draws them each frame and `list` the pooled list.
 
 pub(crate) mod bindings;
 mod components;
 mod draw;
 mod events;
+mod list;
 mod node;
 mod reconcile;
 mod spawn;
@@ -18,12 +19,14 @@ pub use components::{
   UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName, UiOptions,
   UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
 };
-pub use events::{UiEvent, UiEventKind, UiReloaded};
+pub use events::{UiEvent, UiEventKind, UiListBind, UiReloaded};
+pub use list::UiListRow;
 pub use node::{TextRole, UiNode, UiNodeKind};
 
 pub(crate) use components::UiNodes;
 pub(crate) use draw::{begin_pass, deliver_pending, draw_nodes};
 pub(crate) use events::deliver;
+pub(crate) use list::update_lists;
 #[cfg(test)]
 pub(crate) use node::fingerprint;
 pub(crate) use reconcile::{SourceQuery, reload_trees, update_ui};

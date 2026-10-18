@@ -23,7 +23,8 @@ use crate::core::ui::memory::UiMemory;
 use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::{
-  BindValue, Theme, UiContext, UiEvent, UiFileError, UiId, UiInput, UiNode, UiReloaded, nodes,
+  BindValue, Theme, UiContext, UiEvent, UiFileError, UiId, UiInput, UiListBind, UiNode, UiReloaded,
+  nodes,
 };
 #[cfg(test)]
 use crate::core::ui::{
@@ -121,6 +122,7 @@ impl UiHarness {
     let mut world = World::new();
     register_message::<UiEvent>(&mut world);
     register_message::<UiReloaded>(&mut world);
+    register_message::<UiListBind>(&mut world);
     world.insert_resource(AssetManager::new());
     UiHarness {
       memory: UiMemory::new(),
@@ -414,6 +416,10 @@ impl UiHarness {
     if scripted {
       self.outcome = outcome;
     }
+    // List pools follow this frame's scrolling before any tree is drawn
+    let frame = self.memory.frame();
+    let screen = Vec2::new(self.size.0, self.size.1);
+    nodes::update_lists(&mut self.world, &mut self.memory, frame, screen);
     let space = UiSpace {
       size: Vec2::new(self.size.0, self.size.1),
       px_scale: 1.0,

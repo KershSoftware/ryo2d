@@ -16,6 +16,7 @@ use crate::core::ui::{Align, Anchor, Color, Edges, Justify, Length, Rect};
 
 use super::bindings::BindValue;
 use super::components::UiSlot;
+use super::list::RowShape;
 
 /// A theme text role, read when the text is drawn
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +59,17 @@ pub(crate) enum Kind {
   Rebind(RebindOpts),
   Separator,
   Spacer,
+  List(ListOpts),
+}
+
+/// A pooled list's own settings; its count is state (`NodeState::list_count`)
+/// and its row shape a component (`UiListShape`)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ListOpts {
+  pub(crate) row_height: f32,
+  pub(crate) columns: u16,
+  pub(crate) overscan: u16,
+  pub(crate) no_bar: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -181,6 +193,8 @@ pub(crate) struct NodeState {
   pub(crate) text: Option<String>,
   pub(crate) slot: Option<UiSlot>,
   pub(crate) reveal: Option<TextReveal>,
+  /// A list's item count
+  pub(crate) list_count: Option<usize>,
 }
 
 pub(crate) type Insert = Box<dyn FnOnce(&mut EntityWorldMut<'_>) + Send + Sync>;
@@ -235,6 +249,8 @@ pub struct UiNode {
   pub(crate) instance: u64,
   /// What the top node of a tree built from a file came from
   pub(crate) source: Option<Arc<TreeSource>>,
+  /// What a list's pooled rows are spawned from
+  pub(crate) row_shape: Option<RowShape>,
 }
 
 impl fmt::Debug for UiNode {
@@ -303,6 +319,7 @@ impl Kind {
       Kind::Rebind(_) => "rebind",
       Kind::Separator => "separator",
       Kind::Spacer => "spacer",
+      Kind::List(_) => "list",
     }
   }
 
@@ -341,6 +358,13 @@ impl Kind {
           || listed(
             "padding margin gap grow anchor offset at drag_source drop_target horizontal both \
              no_bar child embedded",
+          )
+      }
+      // Its rows are the pool's: it takes no children
+      Kind::List(_) => {
+        listed(SIZE)
+          || listed(
+            "padding margin gap grow anchor offset at no_bar columns overscan row_shape embedded",
           )
       }
       Kind::RadioGroup { .. } => listed(
@@ -411,6 +435,7 @@ impl UiNode {
       template: None,
       instance: 0,
       source: None,
+      row_shape: None,
     }
   }
 
@@ -461,6 +486,59 @@ impl UiNode {
   /// A scrolling area holding children
   pub fn scroll() -> UiNode {
     UiNode::of(Kind::Scroll(ScrollOpts::default()))
+  }
+
+  /// A list of `count` items in rows `row_height` tall, in a scroll area as
+  /// long as the whole list. It keeps about a screenful of row entities,
+  /// spawned from its [`row_shape`](Self::row_shape) (required) and reused
+  /// as it scrolls, so 10,000 items cost what a screenful does.
+  ///
+  /// Each row given an item sends a [`UiListBind`](super::UiListBind)
+  /// naming the row and the item's index, and the game fills the row from
+  /// its own data. A row is its own binding scope: `ctx.ui_set(row, ..)`
+  /// fills that row's `{name}` patterns and bound widgets only. A row is
+  /// drawn from the frame after it is given its item, so bind it in the
+  /// scene's `ui` (it runs every frame) or in an observer on the row.
+  /// [`columns`](Self::columns) lays the items out as a grid.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn board() -> UiNode {
+  ///   UiNode::list(10_000, 28.0)
+  ///     .gap(2.0)
+  ///     .fill()
+  ///     .row_shape(|| {
+  ///       UiNode::row()
+  ///         .gap(8.0)
+  ///         .child(UiNode::text("{rank}").bound())
+  ///         .child(UiNode::text("{name}").bound())
+  ///     })
+  ///     .name("board")
+  /// }
+  ///
+  /// // In the scene's `ui`: fill each row the list gave an item
+  /// fn bind_rows(ctx: &mut SceneContext, names: &[String]) {
+  ///   for bind in ctx.messages::<UiListBind>() {
+  ///     ctx.ui_set(bind.row, "rank", bind.index + 1);
+  ///     let name = names.get(bind.index).cloned().unwrap_or_default();
+  ///     ctx.ui_set(bind.row, "name", name);
+  ///   }
+  /// }
+  /// # let _ = (board, bind_rows);
+  /// ```
+  pub fn list(count: usize, row_height: f32) -> UiNode {
+    let opts = ListOpts {
+      row_height,
+      columns: 1,
+      overscan: 2,
+      no_bar: false,
+    };
+    let state = NodeState {
+      list_count: Some(count),
+      ..NodeState::default()
+    };
+    UiNode::with_state(Kind::List(opts), state)
   }
 
   /// A popup opened below the node named `anchor`
@@ -1193,12 +1271,41 @@ impl UiNode {
     self.given("both")
   }
 
-  /// Hide the scroll bar (scroll)
+  /// Hide the scroll bar (scroll, list)
   pub fn no_bar(mut self) -> UiNode {
-    if let Kind::Scroll(opts) = &mut self.kind {
-      opts.no_bar = true;
+    match &mut self.kind {
+      Kind::Scroll(opts) => opts.no_bar = true,
+      Kind::List(opts) => opts.no_bar = true,
+      _ => {}
     }
     self.given("no_bar")
+  }
+
+  /// Items side by side in each row, as a grid of equal cells; 0 is 1 (list)
+  pub fn columns(mut self, columns: u16) -> UiNode {
+    if let Kind::List(opts) = &mut self.kind {
+      opts.columns = columns;
+    }
+    self.given("columns")
+  }
+
+  /// Rows kept past each edge of the view (default 2, at least 1), so the
+  /// pad can always step onto the next row (list)
+  pub fn overscan(mut self, rows: u16) -> UiNode {
+    if let Kind::List(opts) = &mut self.kind {
+      opts.overscan = rows;
+    }
+    self.given("overscan")
+  }
+
+  /// What each of the list's rows is spawned from: a function returning one
+  /// row's tree. Every row is spawned from it and given an item by index
+  /// (list)
+  pub fn row_shape(mut self, shape: impl Fn() -> UiNode + Send + Sync + 'static) -> UiNode {
+    if matches!(self.kind, Kind::List(_)) {
+      self.row_shape = Some(RowShape::Code(Arc::new(shape)));
+    }
+    self.given("row_shape")
   }
 
   /// The option the list highlights first (choice list)
@@ -1252,7 +1359,7 @@ pub(crate) fn fingerprint(node: &UiNode) -> String {
     |handle: &Option<SpriteHandle>| handle.as_ref().map(|h| h.path().display().to_string());
   let state = &node.state;
   format!(
-    "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{:?}|label={:?} image={:?} checked={:?} value={:?} index={:?} options={:?} text={:?} slot={:?} reveal={:?}|key={:?} bind={:?} bound={}|[{}]",
+    "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{:?}|label={:?} image={:?} checked={:?} value={:?} index={:?} options={:?} text={:?} slot={:?} reveal={:?} list={:?}|key={:?} bind={:?} bound={}|[{}]",
     node.kind,
     node.layout,
     node.flags,
@@ -1279,6 +1386,7 @@ pub(crate) fn fingerprint(node: &UiNode) -> String {
       .reveal
       .as_ref()
       .map(|r| (r.per_second, r.punctuation_pause, r.fade)),
+    state.list_count,
     node.key,
     node.bind,
     node.bound,
