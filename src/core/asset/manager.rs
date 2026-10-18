@@ -1363,22 +1363,51 @@ impl Default for AssetManager {
 impl ImportResolver for AssetManager {
   fn import(&mut self, path: &str) -> Result<UiFile, UiFileError> {
     let key = self.cache_key(path);
+    let name = |k: &Path| {
+      k.file_name().map_or_else(
+        || k.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+      )
+    };
+    let circle = |chain: Vec<String>| {
+      UiFileError::one(
+        path,
+        format!("the imports go round in a circle: {}", chain.join(" -> ")),
+      )
+    };
     if let Some(start) = self.ui_loading.iter().position(|k| *k == key) {
-      let name = |k: &Path| {
-        k.file_name().map_or_else(
-          || k.display().to_string(),
-          |n| n.to_string_lossy().into_owned(),
-        )
-      };
-      let chain: Vec<String> = self.ui_loading[start..]
+      let chain = self.ui_loading[start..]
         .iter()
         .map(|k| name(k))
         .chain(std::iter::once(name(&key)))
         .collect();
-      return Err(UiFileError::one(
-        path,
-        format!("the imports go round in a circle: {}", chain.join(" -> ")),
-      ));
+      return Err(circle(chain));
+    }
+    // A cached file that already imports a file being loaded would close a circle
+    if let Some(cached) = self.ui_files.get(&key) {
+      let mut seen: Vec<UiFile> = Vec::new();
+      let mut stack = vec![cached.clone()];
+      while let Some(file) = stack.pop() {
+        if seen.iter().any(|f| f.same_file(&file)) {
+          continue;
+        }
+        let hit = self.ui_loading.iter().position(|k| {
+          self
+            .ui_files
+            .get(k)
+            .is_some_and(|loading| loading.same_file(&file))
+        });
+        if let Some(start) = hit {
+          let chain = self.ui_loading[start..]
+            .iter()
+            .map(|k| name(k))
+            .chain([name(&key), name(&self.ui_loading[start])])
+            .collect();
+          return Err(circle(chain));
+        }
+        stack.extend(file.doc().imports.iter().cloned());
+        seen.push(file);
+      }
     }
     self.load_ui(path).map_err(|e| match e {
       AssetError::UiFile(error) => error,
@@ -1528,6 +1557,63 @@ mod tests {
       panic!()
     };
     assert!(error.to_string().contains("circle"), "{error}");
+  }
+
+  #[test]
+  fn a_reload_that_closes_a_circle_is_refused_and_keeps_the_old_document() {
+    let (dir, mut assets) = event_fixture();
+    write(
+      dir.path(),
+      "a.ui.ron",
+      r#"(imports: ["b.ui.ron"], templates: {"A": (node: Column)})"#,
+    );
+    let b = write(
+      dir.path(),
+      "b.ui.ron",
+      r#"(templates: {"B": (node: Column)})"#,
+    );
+    assets.load_ui("a.ui.ron").unwrap();
+    let file = assets.load_ui("b.ui.ron").unwrap();
+    let good = file.generation();
+    std::fs::write(
+      &b,
+      r#"(imports: ["a.ui.ron"], templates: {"B": (node: Column)})"#,
+    )
+    .unwrap();
+    let Err(AssetError::UiFile(error)) = assets.reload_ui("b.ui.ron") else {
+      panic!()
+    };
+    assert!(error.to_string().contains("circle"), "{error}");
+    assert_eq!(file.generation(), good, "kept");
+  }
+
+  #[test]
+  fn the_watcher_refuses_a_circle_and_warns() {
+    let (dir, mut assets) = event_fixture();
+    write(
+      dir.path(),
+      "ca.ui.ron",
+      r#"(imports: ["cb.ui.ron"], templates: {"A": (node: Column)})"#,
+    );
+    let b = write(
+      dir.path(),
+      "cb.ui.ron",
+      r#"(templates: {"B": (node: Column)})"#,
+    );
+    assets.load_ui("ca.ui.ron").unwrap();
+    let file = assets.load_ui("cb.ui.ron").unwrap();
+    let good = file.generation();
+    std::fs::write(
+      &b,
+      r#"(imports: ["ca.ui.ron"], templates: {"B": (node: Column)})"#,
+    )
+    .unwrap();
+    assert!(!assets.handle_reload_event(HotReloadEvent::FileModified(b)));
+    assert_eq!(file.generation(), good);
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing("cb.ui.ron"),
+      1
+    );
   }
 
   #[test]
