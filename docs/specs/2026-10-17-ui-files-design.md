@@ -165,7 +165,7 @@ Two siblings with the same key are an error in a file. In a code tree they are a
 ```ron
 templates: {
   "ItemSlot": (
-    params: ["icon", "count"],
+    params: ["icon"],
     defaults: { "count": 1 },
     node: Slot(icon: icon, count: count, drag_source: true, drop_target: true),
   ),
@@ -173,7 +173,7 @@ templates: {
 ```
 
 - **A template is used like a kind:** `ItemSlot(icon: "items/sword.png", count: 3)`. Its fields are its parameters first, then any option of its root node, applied over the template's own (`MenuButton(label: "Resume", action: "resume", default_focus: true)`).
-- **Parameters.** `params` lists the required ones; `defaults` gives the optional ones and their values. A missing required parameter, or an unknown field, is an error at the use.
+- **Parameters.** `params` lists the required ones; `defaults` gives the optional ones and their values. A parameter is either required or has a default, never both: a name in both lists is an error. A missing required parameter, or an unknown field, is an error at the use.
 - **Parameter references.** Inside a template, a bare lowercase name that is one of its parameters stands for the argument's value wherever a value can go (`icon: icon`). Lowercase names are always parameter references; enum values and kinds are CamelCase. In a string, `{param}` is replaced by the argument's text when the template expands. A `{name}` that is not a parameter stays a binding (Bindings), so inside a template a parameter shadows a binding of the same name.
 - **Nesting.** A template may use other templates and passes them values explicitly (`Inner(label: label)`). A template that uses itself, directly or through others, is an error.
 - **Names.** A template name is CamelCase and must not be a kind's name.

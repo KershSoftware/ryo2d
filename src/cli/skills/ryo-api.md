@@ -1276,7 +1276,7 @@ A screen written in a `.ui.ron` file loads into the same `UiNode`. The guide is 
 | `UiFileIssue { pub path: String, pub line: u32, pub column: u32, pub message: String }` | one mistake; lines and columns count from 1, line 0 means no place in the text |
 | `UiArgs` | a template's arguments: `new()`, `with(self, name: &str, value: impl Into<UiArg>) -> UiArgs`; giving a name again replaces it |
 | `enum UiArg { Number(f64), Text(String), Bool(bool), List(Vec<UiArg>) }` | `From` for `f32`, `f64`, `i32`, `u32`, `usize`, `bool`, `&str`, `String`, `Vec<T: Into<UiArg>>` and `&[&str]` |
-| `enum BindValue { Number(f64), Text(String), Bool(bool) }` | a binding's value; `From` for the usual number, string and bool types, `TryFrom` back out |
+| `enum BindValue { Number(f64), Text(String), Bool(bool) }` | a binding's value; `From` for `f32`, `f64`, `i32`, `i64`, `u32`, `u64`, `usize`, `bool`, `&str` and `String`, `TryFrom` back out |
 | `UiReloaded { pub root: Entity }` | a `Message`, sent once per root whose tree a reload brought in line, before that frame's UI pass |
 
 - A scene's trees are walked before its `ui`, so `ui` and `update` read their events in the same frame. An embedded tree's events are delivered after `ui` returns.

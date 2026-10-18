@@ -279,7 +279,7 @@ commands (UiCommand per draw, ordered by layer then recording order) -> UI camer
 - **Absolute drawing** (`draw_rect`, `draw_text`, `ui.text(..).at(..)`, sprites, nine-slices, lines) records at once for HUDs and overlays; a clip stack of any depth clips it (a scissor per command).
 - **Testing.** `ryo2d::testing::UiHarness` runs UI frames with no window or GPU over scripted input, node trees and UI files included (`spawn_ui`, `spawn_ui_file`, `reload_ui`, `events`); `HeadlessEngine` adds pad input and reads the focus (`ui_focused`, `ui_focusables`). The console's `debug:ui` outlines every record with its id.
 
-Details: `src/core/ui/AGENTS.md`; the designs: `docs/specs/2026-10-16-ui-interaction-design.md` (interaction) `docs/specs/2026-10-17-ui-nodes-design.md` (node trees) and `docs/specs/2026-10-17-ui-files-design.md` (files).
+Details: `src/core/ui/AGENTS.md`; the designs: `docs/specs/2026-10-16-ui-interaction-design.md` (interaction); `docs/specs/2026-10-17-ui-nodes-design.md` (node trees) and `docs/specs/2026-10-17-ui-files-design.md` (files).
 
 ## Saves and Settings
 

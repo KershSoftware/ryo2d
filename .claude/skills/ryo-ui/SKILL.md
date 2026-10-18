@@ -1851,14 +1851,14 @@ Every node has a key that an update or reload matches nodes by: its `key`, else 
 ```ron
 templates: {
   "ItemSlot": (
-    params: ["icon", "count"],            // required
-    defaults: { "count": 1 },            // optional, with their values
+    params: ["icon"],                     // required
+    defaults: { "count": 1 },            // optional, with their values (a name is in one list or the other)
     node: Slot(icon: icon, count: count, drag_source: true, drop_target: true),
   ),
 }
 ```
 
-- **Used like a kind:** `ItemSlot(icon: "assets/items/sword.png", count: 3)`. A use's fields are the template's parameters first, then any option of its root node, applied over the template's own: `MenuButton(label: "Resume", action: "resume", default_focus: true)`. A missing required parameter or an unknown field is an error at the use.
+- **Used like a kind:** `ItemSlot(icon: "assets/items/sword.png", count: 3)`. A use's fields are the template's parameters first, then any option of its root node, applied over the template's own: `MenuButton(label: "Resume", action: "resume", default_focus: true)`. A parameter is either required (in `params`) or has a default (in `defaults`), never both: listing a name in both is a load error. A missing required parameter or an unknown field is an error at the use.
 - **A bare lowercase name that is a parameter** stands for the argument's value wherever a value can go (`icon: icon`). Kinds, templates and enum values are CamelCase, so a lowercase name is always a parameter reference.
 - **A parameter can stand for a node:** `Labelled(label: "Volume", widget: Slider(range: (0, 1), bind: "volume"))` with `node: Row(children: [Text(label), widget])`. A bare template name works as the argument too (`widget: VolumeSlider`).
 - **`{param}` in a string** is replaced by the argument's text when the template expands: `Text("Hello {who}")`; `{param:.1}` gives a number argument one decimal. A `{name}` that is not a parameter stays a binding pattern (Bindings), so inside a template a parameter shadows a binding of the same name.
