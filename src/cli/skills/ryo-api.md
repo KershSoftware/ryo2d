@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.4.0
+  version: 2.5.0
 ---
 
 # Ryo2D API Reference
@@ -417,7 +417,11 @@ pub struct SceneContext<'a> {
 | `spawn_ui_file(&mut self, path: &str) -> Result<Entity, UiFileError>` | load a UI file, build its `root` and spawn it (see [UI files](#ui-files)) |
 | `ui_template(&mut self, path: &str, name: &str, args: &UiArgs) -> Result<UiNode, UiFileError>` | load a UI file and build an instance of its template `name`, to spawn or add to a tree |
 | `update_ui(&mut self, node: Entity, tree: UiNode) -> Entity` | bring a spawned tree in line with `tree` in place; returns the node, or its replacement when `tree`'s top is a different kind. A node that is not from a tree warns once and is returned unchanged |
-| `ui_set(&mut self, node: Entity, name: &str, value: impl Into<BindValue>)`, `ui_get<T: TryFrom<BindValue>>(&self, node: Entity, name: &str) -> Option<T>` | a named binding of the tree `node` belongs to; `T` is `f32`, `f64`, `i32`, `u32`, `usize`, `bool` or `String` |
+| `ui_set(&mut self, node: Entity, name: &str, value: impl Into<BindValue>)`, `ui_get<T: TryFrom<BindValue>>(&self, node: Entity, name: &str) -> Option<T>` | a named binding of the tree `node` belongs to, or of its list row (each row of a list is its own scope); `T` is `f32`, `f64`, `i32`, `u32`, `usize`, `bool` or `String` |
+| `ui_list_count(&mut self, list: Entity, count: usize)` | a list node's item count (state: a reload or `update_ui` writes it only when the tree's count changed); a focus on an item past the new end moves to the new last item |
+| `ui_list_refresh(&mut self, list: Entity)`, `ui_list_refresh_row(&mut self, list: Entity, index: usize)` | send `UiListBind` again next frame for every pooled row, or for item `index`'s row if pooled; the rows keep drawing until bound |
+| `ui_list_scroll_to(&mut self, list: Entity, index: usize)`, `ui_list_focus(&mut self, list: Entity, index: usize)` | scroll a list node by the least that shows item `index`'s row (a jump further than a view lands one view short, then eases); `ui_list_focus` also focuses the row's first focusable node, up to two frames after it is bound |
+| `ui_list_index(&self, node: Entity) -> Option<usize>` | the item of the list row `node` is in (itself or the nearest row above it), to map a `UiEvent` to its item. Each `ui_list_*` call on a node that is not a list warns once and does nothing |
 | `window(&mut self) -> Mut<'_, WindowRequest>`, `cursor(&mut self) -> Mut<'_, CursorRequest>` | requests applied after the frame |
 | `console(&mut self) -> ConsoleScope<'_>` | scene-scoped console handlers |
 | `spawn_child(&mut self, parent: Entity, bundle: impl Bundle) -> Entity` | |
@@ -545,6 +549,7 @@ Engine messages (all `Message + Clone`):
 | `AssetLoadFailed` | `path: PathBuf, error: String` | |
 | `ParticleCollision` | see [Particles](#particles) | |
 | `UiEvent` | `node: Entity, name: Option<String>, action: Option<String>, kind: UiEventKind` | a UI node was clicked, changed, dropped on, focused ... (see [Node trees](#node-trees)); also triggered on the node as an entity event |
+| `UiListBind` | `list, row: Entity, index: usize` | a list node gave a pooled row an item, at the start of the UI pass; the row is drawn from the next frame; also triggered on the row |
 
 - Scenes: `ctx.messages::<T>()` returns a `Vec<T>` of what arrived since this scene last read `T` (each scene sees each message once); `ctx.write_message(m)`.
 - Systems: `MessageWriter<T>::write(m)`, `MessageReader<T>::read()`.
@@ -1134,9 +1139,13 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `scope<R>(key: impl Hash, contents: impl FnOnce(&mut UiContext) -> R) -> R` | key the ids inside without a layout node |
 | `node(root: Entity, world: &mut World) -> Response` | draw a node tree spawned with `.embedded()` here, in the open container's flow, focus scope and clip; once a frame (a second call warns); its events arrive after the scene's `ui` returns |
 | `scroll_to(UiId)`, `scroll_offset(scroll: UiId) -> Vec2`, `set_scroll_offset(scroll: UiId, Vec2)` | scroll a widget into view from the next frame; read or set (no easing) an area's offset by its `Response::id` |
+| `list(count: usize) -> List` | a virtual list: a scroll area exactly as long as its rows that builds only the rows in view and the overscan, each item in a container keyed by its index (`ryo-ui` section 16) |
+| `list_scroll_to(list: UiId, index: usize)`, `list_focus(list: UiId, index: usize)` | scroll the list (its `ListResponse::id`) by the least that shows item `index`'s row; `list_focus` also focuses the row's first focusable widget, up to two frames after it is built. A jump further than a view lands one view short at the list's next draw, then eases. An index past the end is the last item; a list not drawn yet ignores both |
 
 - `Container`: `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `fill_height()`, `fill()`, `min_width(f32)`, `max_width(f32)`, `min_height(f32)`, `max_height(f32)`, `padding(impl Into<Edges>)`, `margin(impl Into<Edges>)`, `gap(f32)`, `align(Align)`, `justify(Justify)`, `center()`, `grow(f32)`, `wrap_items()`, `aspect(ratio)`, `tracks(&[f32])` (grid column widths), `anchor(Anchor)` and `offset(x, y)` (at the top level or in a stack; default `TopLeft`), `at(Rect)` (absolute, even inside a container, keeping its parent's ids, scope and clip), `id(impl Hash)`, `background(Color)` (a fill behind its children), `focus_scope()`, `trap()` and `wrap_focus()` (each a focus scope too), `block_pointer()`, `drag_source::<P>(P)`, `drop_target::<P>()`, `drag_ghost(&SpriteHandle)`, `show(impl FnOnce(&mut UiContext)) -> Response`.
 - `Scroll`: `vertical()` (default), `horizontal()`, `both()`, `no_bar()`, and `width`, `height`, `fill_width`, `fill_height`, `fill`, `min_width`, `max_width`, `min_height`, `max_height`, `padding`, `margin`, `gap`, `grow`, `anchor`, `offset`, `at`, `id`, the drag methods and `show(..) -> Response` as on `Container`.
+- `List` (vertical): `row_height(f32)` (required: finite and above 0, else the list draws empty, warned once), `columns(u16)` (a grid of equal cells, 1 to 256), `gap(f32)` (between rows and cells), `overscan(usize)` (rows built past each edge of the view, default 2, 1 to 64), `id(impl Hash)`, `width`, `height`, `fill_width`, `fill_height`, `fill`, `min_width`, `max_width`, `min_height`, `max_height`, `padding`, `margin`, `grow`, `anchor`, `offset`, `at`, `no_bar()`, and `show(impl FnMut(&mut UiContext, usize)) -> ListResponse` (the closure builds item `index`). At most 4,096 items are built for the view a frame (warned once). The scroll length is `rows × (row_height + gap) - gap` whatever the rows hold.
+- `ListResponse { pub id: UiId, pub range: Range<usize>, pub response: Response }`: the list's id (for `list_scroll_to`, `list_focus`, `scroll_offset`), the items built for the view this frame (the rows in view and the overscan; a focused row kept built out of view is not in it), and the scroll area's response.
 - `enum Length { Px(f32), Pct(f32), Fill, Fit }` (default `Fit`; `From<f32>` is `Px`). A fixed-size widget that fills keeps its own size (or its `max_width`/`max_height`, when smaller) as a floor.
 - `Edges { left, top, right, bottom }`: `Edges::ZERO`, `all(v)`, `xy(x, y)`, `new(left, top, right, bottom)`, `width()`, `height()`; `From<f32>`, `From<(f32, f32)>`.
 - `enum Align { Start, Center, End, Stretch }` (default `Stretch`), `enum Justify { Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly }` (default `Start`).
@@ -1202,7 +1211,7 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `TextRoles { body, heading, button, caption, mono }` of `TextLook { size, color, font: ThemeFont, bold }` | `TextLook::style() -> TextStyle`; `enum ThemeFont { Ui, Mono, Pixel }` |
 | `WidgetLooks` | a `Looks` per kind: `button`, `panel`, `checkbox`, `toggle`, `radio`, `slider`, `text_input`, `dropdown`, `tab`, `choice`, `tooltip`, `scroll`, `slot`, `progress`, `rebind`, `modal`, `prompt`; `get(WidgetKind) -> &Looks` |
 | `Looks { normal: UiLook, hovered, pressed, focused, disabled: LookPatch }` | `resolve(WidgetState) -> UiLook`; a patch changes only what it names; pressed builds on hovered |
-| `UiLook` (the UI's `Look`) | `fill`, `border`, `border_width`, `radius`, `text`, `padding: Edges`, `offset: [f32; 2]`, `skin: Option<String>` |
+| `UiLook` (the UI's `Look`) | `fill`, `border`, `border_width`, `radius`, `text`, `padding: Edges`, `offset: [f32; 2]`, `skin: Option<Arc<str>>` |
 | `LookPatch` (each field an `Option`) | `fill(Color)`, `border(Color)`, `text(Color)`, `radius(f32)`, `skin(&str)` |
 | `Variant { base: WidgetKind, normal, hovered, pressed, focused, disabled: LookPatch }` | `of(WidgetKind)`, `normal(LookPatch)`, `hovered(..)`, `pressed(..)`, `focused(..)`, `disabled(..)` (without one, a disabled widget takes its kind's disabled look); built in: `danger`, `accent`, `tab` (buttons), `selected` (tabs) |
 | `Skin { path: Option<String>, insets: [f32; 4], filter: Filter, sprite: Option<SpriteHandle> }` | `from_path(&str, insets, Filter)`, `from_sprite(SpriteHandle, insets, Filter)`: a nine-slice drawn in place of a look's fill and border, the fill tinting it |
@@ -1232,6 +1241,7 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 | `slot()` | `UiSlot` |
 | `prompt(action: &str)`, `rebind(action: &str)`, `separator()`, `spacer()` | |
 | `confirm(title: &str, message: &str, yes: &str, no: &str)` | a modal panel; buttons with actions `"yes"` and `"no"`; opens on No; Back is a `Clicked` from No |
+| `list(count: usize, row_height: f32)` | a virtual list: a scroll area as long as its rows, keeping about a screenful of pooled row entities (each a `UiListRow`) spawned from its `row_shape` and bound by `UiListBind`; its count is state (`ctx.ui_list_count`) |
 
 | `UiNode` options (each `(self, ..) -> UiNode`) | |
 |---|---|
@@ -1246,6 +1256,7 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 | text input | `placeholder(impl Into<String>)`, `max_len(usize)`, `password()` |
 | radio group, scroll | `horizontal()`; scroll: `both()`, `no_bar()` |
 | choice list, rebind | `default_choice(usize)`; rebind: `binding_slot(usize)` |
+| list | `row_shape(impl Fn() -> UiNode + Send + Sync + 'static)` (required: one row's tree; a file's `row_shape` names a template or is a node), `columns(u16)` (1 to 256), `overscan(u16)` (default 2, 1 to 64), `no_bar()`; `gap` and the size and placement options as above |
 | matching and bindings | `key(impl Into<String>)` (what an update or reload matches the node by; defaults to the name, else the kind and position), `bind(impl Into<String>)` (tie a value widget to a named binding), `bound()` (read the node's label and tooltip as `{name}` patterns) |
 
 - An option the node's kind does not take, children given to a widget and `.embedded()` on a child are each warned once at spawn. So are an unknown `nav_*` or popup name, and a name used twice.
@@ -1259,10 +1270,12 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 | `UiSlot { pub icon: Option<SpriteHandle>, pub count: u32, pub selected: bool }` | a slot's contents |
 | `UiName(pub String)`, `UiHidden`, `UiDisabled` | markers: insert or remove to name, hide (with its subtree) or disable |
 | `UiInteraction` | every node, as of its last draw: `hovered() -> bool`, `focused() -> bool`, `id() -> Option<UiId>` |
+| `UiListRow` | each pooled row of a list node: `index() -> usize`, the item it shows. A row is its own binding and naming scope (`ui_set(row, ..)`, `find_ui_in(row, ..)`) |
 
 | Events | |
 |---|---|
 | `UiEvent { pub node: Entity, pub name: Option<String>, pub action: Option<String>, pub kind: UiEventKind, .. }` | a `Message` (read with `ctx.ui_events()`) and an `EntityEvent` on its node (`ctx.world.entity_mut(node).observe(\|e: On<UiEvent>\| ..)`; observers run while the scene stack is out of the world: they must not change scenes) |
+| `UiListBind { pub list: Entity, pub row: Entity, pub index: usize }` | a list node gave a pooled row an item: fill it from the game's data. A `Message` (`ctx.messages::<UiListBind>()`; every list's reach every scene, so keep to `list`) and an `EntityEvent` triggered on the row. Sent at the start of the UI pass for each new or reused row (and again on `ui_list_refresh`); a new or reused row is drawn from the next frame |
 | `enum UiEventKind { Clicked, SecondaryClicked, Changed, Submitted, Dropped { source: Entity }, Back, FocusGained, FocusLost }` | buttons, images, slots, prompts, progress and containers send `Clicked`; value widgets and rebind rows `Changed`; a choice list `Clicked` (the pick in `UiIndex`); a modal or popup node `Back` |
 
 ### UI files
@@ -1410,4 +1423,5 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `UiHarness::spawn_ui(UiNode) -> Entity`, `world() -> &World`, `world_mut() -> &mut World`, `find_ui(&str) -> Option<Entity>`, `ui_id(Entity) -> Option<UiId>`, `events() -> &[UiEvent]` | node trees in the harness: each `frame` draws them before its closure; `events` are the last frame's, in walk order |
 | `UiHarness::frame_with_world(\|ui, world\| ..) -> R` | `frame`, with the world too (for `ui.node(root, world)`) |
 | `UiHarness::update_ui(node, tree) -> Entity`, `ui_set(node, name, value)`, `ui_get::<T>(node, name) -> Option<T>` | as on `SceneContext` |
+| `UiHarness::ui_list_count(list, count)`, `ui_list_refresh(list)`, `ui_list_refresh_row(list, index)`, `ui_list_scroll_to(list, index)`, `ui_list_focus(list, index)`, `ui_list_index(node) -> Option<usize>` | list nodes, as on `SceneContext`; read a frame's binds with `messages::<UiListBind>()` |
 | `UiHarness::with_assets(dir) -> UiHarness`, `assets() -> &mut AssetManager`, `spawn_ui_file(path) -> Result<Entity, UiFileError>`, `reload_ui(path) -> AssetResult<()>`, `messages::<M>() -> impl Iterator<Item = M>` | UI files through an asset manager the harness owns, rooted at `dir`; `reload_ui` brings the trees in line at the next `frame`, and `messages::<UiReloaded>()` lists that frame's reloads |

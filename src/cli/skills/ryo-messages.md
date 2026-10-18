@@ -105,6 +105,7 @@ A reader ordered after the writer in the same schedule sees the message the same
 | Gameplay (`MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `KnockbackStarted`, `KnockbackFinished`) | each fixed step, in `FixedSet::Movement`: after `Scene::update` and the scene's fixed systems, before physics | the next step's `update` |
 | Juice systems (tweens, squash and stretch) | each fixed step, before `Scene::update` | the same step's `update` |
 | Hot reload (`AssetReloaded`, `AssetLoadFailed`) | `PreUpdate`, once a frame | this frame's `ui` and steps |
+| The UI pass (`UiReloaded`, then `UiListBind`, before any tree is drawn; `UiEvent` as each scene's node trees are walked) | once a frame, before the fixed steps | this frame's `ui` and steps |
 | `ParticleSystem::update` (`ParticleCollision`) | where the scene calls it | after that call |
 
 The trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`) read the previous step's `TriggerEntered` in `FixedSet::Movement`, so `PickedUp`, `Killed` and `CheckpointReached` come one step after the overlap, and `update` reads them one step after that. While physics is paused (`PhysicsPaused`) no collision or trigger messages are written; the behaviours keep running and still act on an entry that arrived just before the pause.
@@ -145,6 +146,7 @@ All are in the prelude and registered at engine build.
 | `AssetLoadFailed` | `path`, `error: String` | a hot reload failed (dev builds); an async load reports failure on its `AsyncSpriteHandle` (`state()`) instead |
 | `ParticleCollision` | `emitter_entity`, `collider_entity`, `position_x/y`, `normal_x/y`, `velocity_x/y` | a particle hits a collider (see `ryo-particles`) |
 | `UiEvent` | `node`, `name`, `action`, `kind: UiEventKind` (`Clicked`, `SecondaryClicked`, `Changed`, `Submitted`, `Dropped { source }`, `Back`, `FocusGained`, `FocusLost`) | a UI node reported something, during the UI pass, before the fixed steps (see `ryo-ui`, Nodes). A scene reads its own nodes' with `ctx.ui_events()`, which shares this message's cursor |
+| `UiListBind` | `list` (the list node), `row` (the pooled row), `index` (the item) | a UI list node gave one of its pooled rows an item (a new row, a row reused for another item, or `ctx.ui_list_refresh`), at the start of the UI pass, before any tree is drawn. The game fills the row (`ctx.ui_set(row, ..)`) in `ui`, and the row is drawn from the next frame. Every list's binds reach every scene: keep to your list's `list`. Also triggered on the row as an entity event (see `ryo-ui`, Virtual Lists) |
 | `UiReloaded` | `root: Entity`, `replaced: Option<Entity>` | a UI node tree was brought in line with its changed `.ui.ron` file (dev builds, or `ctx.assets.reload_ui`), once per root, before that frame's UI pass. `replaced` is the old root when the file gave the root a new kind, so a game holding it swaps in `root`. Nodes the file gave a new kind are new entities, so a game that filled a placeholder fills it again here (see `ryo-ui`, Files) |
 
 ```rust
@@ -170,7 +172,7 @@ Modules define no message they do not write. Navigation, procgen, inventory and 
 
 ## Observers
 
-The ECS's immediate events are available too: a `#[derive(Event)]` type, `ctx.world.add_observer(|event: On<Explode>| ..)` and `ctx.world.trigger(Explode { .. })` run the observer at once. The engine triggers none of its own. Observers are entities that `SceneCleanup::WORLD` keeps, so a scene that adds one despawns it in `on_exit`:
+The ECS's immediate events are available too: a `#[derive(Event)]` type, `ctx.world.add_observer(|event: On<Explode>| ..)` and `ctx.world.trigger(Explode { .. })` run the observer at once. The engine triggers only two of its own, on UI nodes: `UiEvent` on its node and `UiListBind` on its row, during the UI pass (an observer there must not change scenes; see `ryo-ui`). Observers are entities that `SceneCleanup::WORLD` keeps, so a scene that adds one despawns it in `on_exit`:
 
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {

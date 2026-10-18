@@ -1,6 +1,7 @@
 //! UI frame costs without a GPU: a 200-widget settings screen (as a closure
-//! and as a node tree), a 1,000-row scroll list and an empty frame, each one
-//! `UiHarness` frame (resolve, the node walk, the widgets, layout and
+//! and as a node tree), a 1,000-row scroll list, virtual lists in both styles
+//! (10,000 and 100 closure rows, 10,000 node rows) and an empty frame, each
+//! one `UiHarness` frame (resolve, the node walk, the widgets, layout and
 //! commands); and the settings tree updated unchanged against spawning it.
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};

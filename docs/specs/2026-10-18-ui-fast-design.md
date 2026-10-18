@@ -132,17 +132,17 @@ let board = ctx.spawn_ui(
   UiNode::list(10_000, 28.0)
     .gap(2.0)
     .fill()
-    .row(|| UiNode::row().gap(8.0).child(UiNode::text("{rank}").bound()).child(UiNode::text("{name}").bound()))
+    .row_shape(|| UiNode::row().gap(8.0).child(UiNode::text("{rank}").bound()).child(UiNode::text("{name}").bound()))
     .name("board"),
 );
 ```
 
 ```ron
 // In a file
-List(count: 0, row_height: 28, gap: 2, fill: true, name: "board", row: LeaderRow)
+List(count: 0, row_height: 28, gap: 2, fill: true, name: "board", row_shape: LeaderRow)
 ```
 
-- `UiNode::list(count, row_height)` with `.columns(n)`, `.gap(g)`, `.overscan(rows)`, the scroll area's size options, and `.row(f)`: a function returning one row's shape (`Fn() -> UiNode`). In a file, `row` names a template (built with its defaults) or is a node value. A list without a row shape warns once and builds no rows.
+- `UiNode::list(count, row_height)` with `.columns(n)`, `.gap(g)`, `.overscan(rows)`, the scroll area's size options, and `.row_shape(f)`: a function returning one row's shape (`Fn() -> UiNode`). In a file, `row_shape` names a template (built with its defaults) or is a node value. A list without a row shape warns once and builds no rows.
 - **The pool.** The list keeps one row entity per built index (the rows in view, the overscan and a focused row): about a screenful, whatever the count. Each row carries `UiListRow { index }`. When the view moves, rows whose index left the built range are reused for indices entering it; extra rows are despawned when fewer are needed; new rows are spawned from the row shape when more are needed.
 - **Binding.** Every row given an index (new, or reused for another index, or refreshed) sends `UiListBind { list, row, index }` as a message (and as an entity event on the row, for observers). The game fills the row:
   - with `ctx.ui_set(row, name, value)`: **each row is its own binding scope**, so a row's `{name}` patterns and bound widgets read that row's values, not the list's root;
@@ -155,12 +155,12 @@ List(count: 0, row_height: 28, gap: 2, fill: true, name: "board", row: LeaderRow
   - `ctx.ui_list_scroll_to(list, index)` and `ctx.ui_list_focus(list, index)`;
   - `ctx.ui_list_index(node) -> Option<usize>`: the index of the row a node belongs to, so a `UiEvent` from a widget in a row maps to the item.
 - **Events** from widgets in rows are the ordinary `UiEvent`s (4c): their `node` is the widget's entity, and `ui_list_index` gives the item.
-- **Reconcile and reload.** The list's own settings (count, row height, columns, gap, row shape) are tree-owned (4d's reconcile rules). A changed row shape (a reload of the row template, or `update_ui` with a new `.row`) rebuilds the pooled rows from it and binds them all again. The pool's rows are the list's own; they are never matched against a tree's children.
+- **Reconcile and reload.** The list's own settings (count, row height, columns, gap, row shape) are tree-owned (4d's reconcile rules). A changed row shape (a reload of the row template, or `update_ui` with a new `.row_shape`) rebuilds the pooled rows from it and binds them all again. The pool's rows are the list's own; they are never matched against a tree's children.
 - **Spawning and despawning** rows uses 4c's spawn and despawn; a despawned list despawns its rows.
 
 ### Files
 
-- `List` joins the vocabulary: constructor options `count` (a whole number, default 0), **`row_height`** and **`row`** (a template name or a node), both required; options `columns`, `gap`, `overscan`, the scroll area's size and placement options, and the universal options.
+- `List` joins the vocabulary: constructor options `count` (a whole number, default 0), **`row_height`** and **`row_shape`** (a template name or a node), both required; options `columns`, `gap`, `overscan`, the scroll area's size and placement options, and the universal options.
 - `ryo2d check-ui` checks `List` like any kind.
 
 ## Acceptance

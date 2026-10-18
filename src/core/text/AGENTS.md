@@ -32,6 +32,19 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   `Fonts::generation` changes. Layouts are cached by text, style, options,
   scale and font generation, and dropped after 120 unused frames, so an
   immediate-mode call every frame costs a hash lookup.
+- `TextKey` (`key.rs`) hashes a text's parts once each with the fast
+  hasher (`core::hash`): the text, the style's shape (all but its
+  colours), its colours and the layout options. `cache_key` folds them
+  with the scale and the font generation; `seed`, the effect seed, leaves
+  the colours out, so a hover that recolours a shaking text keeps its
+  phase. `layout` and `measure` make the key themselves; `layout_keyed`
+  and `measure_keyed` take one the caller made, which must be `TextKey::of`
+  the same text, style and options. The UI makes one per text leaf
+  (`TextLeaf`, `src/core/ui/tree.rs`) and passes it to every call on the
+  leaf, so a leaf's text is hashed once a frame.
+- A cache hit is confirmed against what the layout was made from
+  (`Source::matches`: text, style, options and scale), so a hash collision
+  is a miss, never another text's layout.
 - `scale` is layout pixels per text unit (the UI's render scale; 1 for
   world text). Layouts are in layout pixels, y down; `measure` returns
   text units.

@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.2.0
+  version: 4.3.0
 ---
 
 # Ryo2D UI Specialist
@@ -11,7 +11,7 @@ Build game UI with `UiContext` inside `Scene::ui`. Complete signatures are in `r
 
 The model in one breath: every frame `ui` calls builders (`ui.button("Play")`), containers lay them out (`ui.column().show(|ui| ..)`), and each widget answers from what the player did to what was drawn last frame (`.clicked()`). Your game's values stay in your scene; what a widget remembers of itself (an open list, a caret, a scroll offset, the focus) lives in the UI's memory under its id. Keyboard and pad navigation work inside **focus scopes** you mark, so a menu is pad-playable and a HUD never steals the arrows.
 
-There are two styles. **Closures** (sections 1 to 14) call the builders every frame. **Node trees** (section 15) describe a screen once as a `UiNode`, spawn it as entities, and report what the player did as `UiEvent`s; a tree can be written in a RON **file** that reloads while the game runs (section 15, Files). The engine draws node trees through the same builders, so everything in sections 3 to 13 applies to both, and the two mix in one scene.
+There are two styles. **Closures** (sections 1 to 14) call the builders every frame. **Node trees** (section 15) describe a screen once as a `UiNode`, spawn it as entities, and report what the player did as `UiEvent`s; a tree can be written in a RON **file** that reloads while the game runs (section 15, Files). The engine draws node trees through the same builders, so everything in sections 3 to 13 applies to both, and the two mix in one scene. Lists far longer than a screen are **virtual lists** in either style (section 16): only the rows in view are built.
 
 ## 1. The `ui` Hook
 
@@ -182,6 +182,7 @@ let area = ui.scroll().height(300.0).fill_width().gap(4.0).show(|ui| {
 - **The wheel** goes to the scroll area under the pointer (the topmost thing there decides, so a panel or popup over a list keeps the wheel from it), innermost first: an area at its edge passes the wheel to the one around it. Shift scrolls sideways. Scrolling eases (0.08 s). The wheel over any of the top scene's UI never reaches gameplay, whether it scrolled anything or not (over a panel, a modal, or a list at its edge); over nothing it is the game's.
 - **The pad** walks a long list: focus moves onto rows scrolled out of view and scrolls them in, through nested areas too (a strip of cards inside a list is reached from the rows around it, and every area around the focused widget scrolls to show it). The right stick scrolls the focused widget's area, or the first area in its focus scope (a dialog's text above its Close button).
 - `ui.scroll_to(id)` brings a widget into view from the next frame; `ui.scroll_offset(area.id)` reads where an area shows from; `ui.set_scroll_offset(area.id, Vec2::new(0.0, 0.0))` jumps there without easing.
+- A scroll area builds everything in it every frame. For hundreds of rows or more, use a virtual list (section 16), which builds only the rows in view.
 
 ## 7. Focus and Navigation
 
@@ -1107,7 +1108,7 @@ The two styles mix: a scene's trees draw before its `ui` closure, and a closure 
 
 ### The vocabulary
 
-Constructors and options use the closure builders' names: `UiNode::column()`, `row()`, `grid(columns)`, `stack()`, `panel()`, `scroll()`, `text(..)`, `button(..)`, `image(sprite)`, `checkbox(label, on)`, `toggle(label, on)`, `radio_group(&options, i)`, `slider(range, value)`, `progress(fraction)`, `text_input(text)`, `dropdown(&options, i)`, `tabs(&options, i)`, `choice_list(&options)`, `slot()`, `prompt(action)`, `rebind(action)`, `separator()`, `spacer()`, plus `UiNode::confirm(..)` and `UiNode::popup(name)` (Modals, below). Shared options are the closure ones (`width`, `fill_width`, `gap`, `align`, `anchor`, `focus_scope`, `wrap_focus`, `default_focus`, `tooltip`, `enabled`, `variant`, `drag_source`, `drop_target`, ...). Containers (not scroll areas) in both styles also take `.background(Color)`, a fill behind their children. Use it in place of a full-screen `draw_rect`, which the closure would draw over the scene's nodes.
+Constructors and options use the closure builders' names: `UiNode::column()`, `row()`, `grid(columns)`, `stack()`, `panel()`, `scroll()`, `text(..)`, `button(..)`, `image(sprite)`, `checkbox(label, on)`, `toggle(label, on)`, `radio_group(&options, i)`, `slider(range, value)`, `progress(fraction)`, `text_input(text)`, `dropdown(&options, i)`, `tabs(&options, i)`, `choice_list(&options)`, `slot()`, `prompt(action)`, `rebind(action)`, `separator()`, `spacer()`, plus `UiNode::confirm(..)` and `UiNode::popup(name)` (Modals, below), and `UiNode::list(count, row_height)`, a virtual list (section 16). Shared options are the closure ones (`width`, `fill_width`, `gap`, `align`, `anchor`, `focus_scope`, `wrap_focus`, `default_focus`, `tooltip`, `enabled`, `variant`, `drag_source`, `drop_target`, ...). Containers (not scroll areas) in both styles also take `.background(Color)`, a fill behind their children. Use it in place of a full-screen `draw_rect`, which the closure would draw over the scene's nodes.
 
 - **Renamed options.** `UiNode` is one type, so where a closure name means two things the node option is renamed:
 
@@ -1141,6 +1142,7 @@ Constructors and options use the closure builders' names: `UiNode::column()`, `r
 | `slot` | `UiSlot { icon, count, selected }` |
 | `text(..).typewriter(reveal)` | `TextReveal` (call `finish()`, `pause()` and the rest on it) |
 | `.name(..)`, `.tooltip(..)`, `.hidden()`, `.enabled(false)` | `UiName(String)`, `UiTooltip(String)`, `UiHidden`, `UiDisabled` |
+| a `list`'s pooled rows | `UiListRow` (`index()`: the item the row shows; section 16) |
 
 Every node also has `UiInteraction`, kept current by the walk: `hovered()`, `focused()`, and `id() -> Option<UiId>` once drawn.
 
@@ -1183,6 +1185,7 @@ pub struct UiEvent {
 | `text_input` | also `Submitted` (Enter) |
 | `choice_list` | `Clicked`, with the pick in its `UiIndex`. It has no `Response`, so no `ui_id`, and its `UiInteraction` is never updated |
 | any drawn node except a `radio_group` and a `choice_list` | `SecondaryClicked`; a drop target `Dropped { source }`; a focusable one `FocusGained` and `FocusLost` |
+| `list` | no `UiEvent` of its own: a `UiListBind` message for each row it gives an item (section 16); its rows' widgets send theirs |
 | `text`, `separator`, `spacer` | nothing |
 
 - **Read them with `ctx.ui_events()`**: this scene's own nodes' events since it last read them, in walk order. `ctx.messages::<UiEvent>()` reads every scene's, and the two share one cursor: read one or the other, in one place. Match on `action` for menus, on `name`, or on a game component of `event.node` for instances.
@@ -1823,13 +1826,14 @@ A UI file is valid RON. Its top level is an unnamed struct; every field is optio
 | `Prompt`, `Rebind` | `input` | **`input`** (an input action name) |
 | `Separator`, `Spacer` | the bare name | none |
 | `Confirm` | none | **`title`**, `message` (default `""`), `yes` (default `"Yes"`), `no` (default `"No"`) |
+| `List` | none | `count` (default 0), **`row_height`** (a number), **`row_shape`** (a template name, or a node; section 16) |
 
 | Value form | Options |
 |---|---|
 | `true` (the method with no argument; `false` leaves it off) | `fill_width`, `fill_height`, `fill`, `center`, `wrap_items`, `focus_scope`, `trap`, `wrap_focus`, `block_pointer`, `default_focus`, `nav_skip`, `drag_source`, `drop_target`, `modal`, `hidden`, `embedded`, `markup`, `heading`, `muted`, `ellipsis`, `show_value`, `password`, `horizontal`, `both`, `no_bar` |
 | a bool | `enabled`, `focusable`, `selected` (on `Slot`; on `RadioGroup`, `Dropdown` and `Tabs`, `selected` is the constructor's index) |
 | a number | `min_width`, `max_width`, `min_height`, `max_height`, `gap`, `grow`, `aspect`, `size`, `wrap`, `step` |
-| a whole number | `max_lines`, `max_len`, `default_choice`, `count`, `binding_slot` |
+| a whole number | `max_lines`, `max_len`, `default_choice`, `count`, `binding_slot`, `columns` and `overscan` (on `List`) |
 | a length: `240`, `Pct(0.5)`, `Fill`, `Fit` | `width`, `height` |
 | edges: `8`, `(x, y)`, or `(left: .., top: .., right: .., bottom: ..)` | `padding`, `margin` |
 | an enum by name | `align` (`Start`, `Center`, `End`, `Stretch`); `justify` (`Start`, `Center`, `End`, `SpaceBetween`, `SpaceAround`, `SpaceEvenly`); `anchor` (`TopLeft`, `TopCenter`, `TopRight`, `CenterLeft`, `Center`, `CenterRight`, `BottomLeft`, `BottomCenter`, `BottomRight`); `text_align` (`Start`, `Center`, `End`, `Justify`); `filter` (`Nearest`, `Linear`); `role` (`Body`, `Heading`, `Button`, `Caption`, `Mono`) |
@@ -1902,7 +1906,7 @@ A binding is a name whose value text shows and value widgets read and write.
 - **`bind: "volume"`** on a value widget ties it to the name: `Slider`, `Progress`, `Checkbox`, `Toggle`, `RadioGroup`, `Dropdown`, `Tabs`, `ChoiceList` and `TextInput`. Any other kind is an error. The widget and `"Volume: {volume:.1}"` then follow each other with no game code, and so does every other widget and pattern bound to the name.
 - **Values** are `BindValue`s: numbers, strings and bools (`From` for the usual types). A bound `Slider` or `Progress` takes a number; `Checkbox` and `Toggle` a bool; `RadioGroup`, `Dropdown`, `Tabs` and `ChoiceList` a whole, non-negative number (the index); `TextInput` text (a number or bool is formatted). A value of the wrong type warns once, naming the binding and the node, and leaves the widget as it is.
 - **`ctx.ui_set(node, "score", 120)`** sets the name on `node`'s root: it writes every bound widget (`UiValue`, `UiChecked`, `UiIndex` or `UiTextValue`) and formats every label and tooltip that uses the name. A value equal to the one held does nothing at all (no write, no formatting), so setting a value every frame is cheap. **`ctx.ui_get::<f32>(node, "volume")`** reads it back (`f32`, `f64`, `i32`, `u32`, `usize`, `bool`, `String`).
-- **One set of values per spawned root.** Two HUDs from one file never share values, and nodes code adds under a root use that root's. Pass any node of the tree: `ui_set(hud, ..)`.
+- **One set of values per spawned root.** Two HUDs from one file never share values, and nodes code adds under a root use that root's. Pass any node of the tree: `ui_set(hud, ..)`. Each row of a list is a scope of its own, with its own values: `ui_set(row, ..)` fills that row (section 16).
 - **Starting values.** A bound widget's file value (`value`, `checked`, `on`, `selected`, `text`) seeds its name (`value: 0.8` seeds `volume`); the top-level `bindings` seeds names only text uses. A seed applies only to a name with no value yet, so a reload never resets a score. A name never set shows as nothing, and debug builds warn once per name.
 - **The components stay the truth.** The player moving a bound slider, `ui_set`, and game code writing `UiValue` directly all change the name, and the `Changed` `UiEvent` fires as usual. A pattern drawn after the widget shows the new value in the same frame; one drawn before it shows it the next.
 - **In a code tree,** `UiNode::bind(name)` binds a value widget and `.bound()` makes a node's label and tooltip patterns (code text is literal otherwise). Binding a kind that holds no value warns once.
@@ -2174,7 +2178,420 @@ pub fn spawn_ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Opti
 
 `add_ui` caches the text under `path`, so later loads and imports of that path find it. An embedded file imports other files by their paths too: embed those and `add_ui` them first, or they are read from disk. This is breakout's `look.rs` (`ui_file`, `spawn_ui_file`); any error other than a missing file, such as a mistake in the file on disk, is returned rather than hidden by the embedded copy.
 
-## 16. Testing UI
+## 16. Virtual Lists
+
+A **virtual list** shows thousands of items for the cost of a screenful. It is a scroll area as long as the whole list that builds only the rows in view, and a few either side (the **overscan**), with spacers standing in for the rest. Both styles have one: `ui.list(count)` in a closure, and `UiNode::list(count, row_height)` (`List` in a file) in a node tree, which keeps a few row entities and reuses them as it scrolls. The `ui` demo's Big list page (`examples/demos/ui/src/scenes/big_list_page.rs`, with `examples/demos/ui/assets/ui/big_list.ui.ron`) shows one 10,000-row leaderboard in both, side by side.
+
+| Use a virtual list for | Use a scroll area (section 6) for |
+|---|---|
+| Far more rows than fit: leaderboards, logs, save slots, server lists, inventories of hundreds | A few dozen rows, cheap to build every frame |
+| Rows of one height (with `columns`, cells of one size) | Rows as tall as what they hold (wrapped text) |
+
+- **One row height.** The scroll length is exact, `rows × (row_height + gap) − gap` (rows: the items divided by `columns`, rounded up), whatever the rows hold. Row contents taller than `row_height` draw over the next row, so size them to fit: fixed heights, `fill`, text kept to a line (`.max_lines(1)`, `.ellipsis()`).
+- **A list is a scroll area, not a focus scope.** Put it in one (section 7), as a menu's buttons are, so the pad walks it.
+- **Bad sizes draw nothing.** A row height that is not a finite number above 0 warns once and draws the list empty, as does a closure list given no `.row_height`. `overscan` is clamped to 1..=64 and `columns` to 1..=256, and a frame builds at most 4,096 items for the view (warned once per list), however short the rows.
+
+### Closure lists: `ui.list`
+
+```rust
+let list = ui
+  .list(self.scores.len())
+  .row_height(28.0) // required
+  .gap(2.0)
+  .fill()
+  .show(|ui, i| {
+    // Called for each item built this frame, in a container keyed by `i`
+    ui.row().gap(8.0).show(|ui| {
+      ui.text(format!("{}", i + 1));
+      ui.text(self.scores[i].name.as_str());
+    });
+  });
+// list.id names the list (list_focus, scroll_offset); list.range is the items built for the view
+```
+
+- **Options:** `.row_height(h)`, `.columns(n)` (a grid of equal cells, filled row by row), `.gap(g)` (between rows and between cells), `.overscan(rows)` (default 2), `.id(key)`, and the scroll area's size and placement options (`width`, `height`, `fill_width`, `fill_height`, `fill`, `min_width`, `max_width`, `min_height`, `max_height`, `padding`, `margin`, `grow`, `anchor`, `offset`, `at`, `no_bar`). Lists scroll vertically.
+- **`.show(|ui, i| ..) -> ListResponse { id, range, response }`.** Each item built is drawn in a container of its own, a row tall (a cell, in a grid), keyed by its index, so the widgets in it keep their ids, and with them their hover, focus and memory, wherever the item scrolls. `range` is the items built for the view this frame (the rows in view and the overscan, not a focused row kept built out of view); `response` is the scroll area's.
+- **`ui.list_scroll_to(list.id, index)`** scrolls by the least that shows the item's row. **`ui.list_focus(list.id, index)`** also gives the first focusable widget in the row the focus, up to two frames after the row is first built. An index past the end is the last item; a list not drawn yet ignores both. The scroll area's own calls take the list's id: `ui.scroll_offset(list.id)`.
+- The closure runs only for the items built, so it can index the game's data and format their text without costing the whole list.
+
+### Node lists: `UiNode::list`
+
+```rust
+fn board() -> UiNode {
+  UiNode::list(10_000, 28.0)
+    .gap(2.0)
+    .fill()
+    .row_shape(|| {
+      // Required: one row's tree, which every pooled row is spawned from
+      UiNode::row()
+        .gap(8.0)
+        .child(UiNode::text("{rank}").bound())
+        .child(UiNode::text("{name}").bound())
+    })
+    .name("board")
+}
+```
+
+```ron
+// In a file: row_shape names a template (bare or as a string), or is a node
+List(count: 10000, row_height: 28, gap: 2, fill: true, row_shape: LeaderRow, name: "board")
+```
+
+- **Options:** `.columns(n)`, `.overscan(rows)`, `.gap(g)`, `.no_bar()`, the scroll area's size and placement options, and `.row_shape(f)`. In a file `count` defaults to 0, and `row_height` and `row_shape` are required (`List needs "row_shape"`); in code a list without a row shape warns once and builds no rows.
+- **The pool.** The list keeps about a screenful of row entities, plus the overscan, whatever its count. Each carries a `UiListRow` (`index()`: the item it shows). As the view moves, a row whose item went out is given one coming in; rows are spawned from the row shape when more are needed and despawned when fewer are.
+- **`UiListBind { list, row, index }`** is sent for every row given an item (new, or reused for another item): fill the row from the game's data.
+  - `ctx.ui_set(bind.row, "name", value)`: **each row is its own binding scope**, so this fills that row's `{name}` patterns and bound widgets only;
+  - or the row's nodes' components: **each row is its own naming scope** too, so `ctx.find_ui_in(bind.row, "name")` finds the row's node, and `find_ui` and `find_ui_in` from the tree's root never look inside rows.
+
+  Set every value the row shows: a reused row holds its last item's values until it is bound.
+- **Every list's binds reach every scene**, so keep to your list's: `if bind.list != board { continue; }`.
+- **Bind in `ui`.** The pool follows the scroll once a frame, at the start of the UI pass, before any tree is drawn. A row given an item is hidden that frame and drawn from the next, so the game binds it in between: in the scene's `ui` (recommended: it runs every frame, after the scene's trees are walked), in an observer on the row (`UiListBind` is also an entity event triggered on the row, so the observer fills it at once; it must not change scenes), or in `update` (at the fixed rate: at a high frame rate a row can show for a frame before it is filled).
+- **The game API** (on `SceneContext`, and on `UiHarness`):
+  - `ctx.ui_list_count(list, n)`: the item count. It is state, like a widget's value: a reload or `update_ui` writes it only when the tree's count changed;
+  - `ctx.ui_list_refresh(list)`: bind every pooled row again next frame, after the game's data changed; `ctx.ui_list_refresh_row(list, index)` for one item's row (a row not pooled needs none: it is bound when it shows). A refreshed row keeps drawing what it showed until it is bound, so nothing flashes;
+  - `ctx.ui_list_scroll_to(list, index)` and `ctx.ui_list_focus(list, index)`, as the closure calls; the focus goes to the row's first focusable node (depth first, neither hidden nor disabled), up to two frames after the row is bound;
+  - `ctx.ui_list_index(node) -> Option<usize>`: the item of the row a node is in, so a `UiEvent` from a row's widget maps to its item.
+
+  On a node that is not a list each warns once and does nothing.
+- **Events from rows** are ordinary `UiEvent`s: give the row's widget an `action`, and map `event.node` to its item with `ui_list_index`.
+- **A new row shape** (a reload, or `update_ui` with another `.row_shape`) that builds another row brings every pooled row in line where it is and binds it again (hidden until bound, as a new row is). One that builds the same row leaves the rows alone.
+- **Rows are drawn in their item's container**, keyed by index as closure rows are, so a reused row entity never carries another item's focus or hover.
+
+### Focus, the pad and jumps
+
+In both styles:
+
+- **The pad walks the whole list.** The overscan keeps the row past each edge of the view built, so a direction steps onto it and the area scrolls it in. In a grid, Left and Right move along a row and Up and Down by a row. At the first and last items the pad goes on as from any widget, to the next one that way in the focus scope.
+- **The focused row stays built.** Scrolled away by the wheel or the scrollbar, the row with the focus (and one row each side) stays built, clipped out of view, so it keeps the focus and the pad steps on from it.
+- **Jumps never sweep.** A `list_scroll_to` or `list_focus` (`ui_list_*` for a node list) further than a view first moves the list to one view short of the item, then eases the rest, so the rows between are never built.
+- **A shrinking count** clamps the scroll in the frame the list is drawn with it. A focus on an item past the new end moves to the new last item if the list held it, and goes when the list is empty.
+- **Where the focus starts.** A closure list's rows are widgets like any others: a scope that appears focuses its `.default_focus()` widget (the first row's, `if i == 0`) or its first. A node list's rows show from its second frame, so other focusables in its focus scope take the scope's default focus (a scope holding only the list gives it to the first row once the rows show). To start on a row, call `ctx.ui_list_focus(list, 0)` after spawning.
+
+### What a row keeps
+
+- **Widget memory goes with the row.** What a row's widgets remember (a text field's caret, an open dropdown, a tooltip timer) is dropped when the row leaves the built rows, as for any widget not drawn. Keep what must last in the game's data: the row's text in a `Vec<String>`, a choice in the game's state.
+- **Ids follow the index, not the item.** When the game sorts or filters the list, the focus stays at its index, now another item's; give it the item's new index with `list_focus` to follow the item.
+
+### Recipes
+
+Each compiles as written.
+
+#### A leaderboard (closure)
+
+```rust
+/// One player on a leaderboard
+struct Entry {
+  name: String,
+  score: u32,
+}
+
+/// A leaderboard of any length as a closure list, with a jump to a rank
+struct Leaderboard {
+  board: Vec<Entry>,
+  /// The jump field's text
+  rank: String,
+  status: String,
+}
+
+impl Leaderboard {
+  fn new(board: Vec<Entry>) -> Self {
+    Self {
+      board,
+      rank: String::new(),
+      status: "Pick a player".to_string(),
+    }
+  }
+}
+
+impl Scene for Leaderboard {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let muted = ui.theme().palette.muted;
+    let board = &self.board;
+    let (mut go, mut picked, mut list) = (false, None, None);
+    ui.panel()
+      .focus_scope()
+      .anchor(Anchor::Center)
+      .width(440.0)
+      .height(Length::Pct(0.8))
+      .gap(8.0)
+      .show(|ui| {
+        ui.row().gap(8.0).align(Align::Center).show(|ui| {
+          ui.text("Rank");
+          go = ui
+            .text_input(&mut self.rank)
+            .width(80.0)
+            .max_len(6)
+            .show()
+            .submitted();
+          go |= ui.button("Go").clicked();
+          ui.text(self.status.as_str()).color(muted);
+        });
+        let shown = ui
+          .list(board.len())
+          .row_height(28.0)
+          .gap(2.0)
+          .fill()
+          .show(|ui, i| {
+            let Some(entry) = board.get(i) else {
+              return;
+            };
+            // A button across the row takes the focus and the click; the texts sit on it
+            ui.stack().fill().show(|ui| {
+              let mut pick = ui
+                .button("")
+                .width(Length::Pct(1.0))
+                .height(Length::Pct(1.0));
+              if i == 0 {
+                pick = pick.default_focus();
+              }
+              if pick.clicked() {
+                picked = Some(i);
+              }
+              ui.row()
+                .fill()
+                .padding((12.0, 0.0))
+                .gap(12.0)
+                .align(Align::Center)
+                .show(|ui| {
+                  ui.column().width(48.0).show(|ui| {
+                    ui.text(format!("{}", i + 1)).color(muted);
+                  });
+                  ui.column().fill_width().show(|ui| {
+                    ui.text(entry.name.as_str());
+                  });
+                  ui.text(format!("{}", entry.score));
+                });
+            });
+          });
+        list = Some(shown.id);
+      });
+
+    if let Some(entry) = picked.and_then(|i| self.board.get(i)) {
+      self.status = format!("{}: {} points", entry.name, entry.score);
+    }
+    if go && let (Some(list), Ok(rank)) = (list, self.rank.trim().parse::<usize>()) {
+      // Scrolls there (one view short, then eased) and focuses the row
+      ui.list_focus(list, rank.saturating_sub(1));
+    }
+    if ui.back() {
+      return SceneAction::Pop;
+    }
+    SceneAction::Continue
+  }
+}
+```
+
+#### A leaderboard (nodes, from a file)
+
+The same board (`Entry` above) as a node list. The file holds the row as a template; the game gives the list its count and fills each row it binds.
+
+```ron
+// assets/ui/leaderboard.ui.ron
+(
+  templates: {
+    // One row: a button across it, under the rank, the name and the score
+    "LeaderRow": (
+      node: Stack(
+        fill: true,
+        children: [
+          Button(label: "", width: Pct(1), height: Pct(1), action: "pick"),
+          Row(
+            fill: true, padding: (12, 0), gap: 12, align: Center,
+            children: [
+              Column(width: 48, children: [Text(text: "{rank}", muted: true)]),
+              Column(fill_width: true, children: [Text("{name}")]),
+              Text("{score}"),
+            ],
+          ),
+        ],
+      ),
+    ),
+  },
+  bindings: { "status": "Pick a player" },
+  root: Panel(
+    focus_scope: true, anchor: Center, width: 440, height: Pct(0.8), gap: 8,
+    children: [
+      Text(text: "Leaderboard", heading: true),
+      Text(text: "{status}", muted: true),
+      List(count: 0, row_height: 28, gap: 2, fill: true, row_shape: LeaderRow, name: "board"),
+    ],
+  ),
+)
+```
+
+```rust
+const LEADERBOARD: &str = "assets/ui/leaderboard.ui.ron";
+
+/// The leaderboard as a node list from a file: a screenful of pooled rows,
+/// each filled from the game's data when it is given an item
+struct NodeLeaderboard {
+  board: Vec<Entry>,
+  root: Option<Entity>,
+  list: Option<Entity>,
+}
+
+impl NodeLeaderboard {
+  fn new(board: Vec<Entry>) -> Self {
+    Self {
+      board,
+      root: None,
+      list: None,
+    }
+  }
+
+  /// Hold the tree and its list, and give the list the board's length
+  fn hold(&mut self, ctx: &mut SceneContext, root: Entity) {
+    self.root = Some(root);
+    self.list = ctx.find_ui_in(root, "board");
+    if let Some(list) = self.list {
+      ctx.ui_list_count(list, self.board.len());
+    }
+  }
+}
+
+impl Scene for NodeLeaderboard {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    match ctx.spawn_ui_file(LEADERBOARD) {
+      Ok(root) => self.hold(ctx, root),
+      Err(error) => game_error!("{error}"),
+    }
+    if let Some(list) = self.list {
+      // A node list's rows show from its second frame: start on rank 1
+      ctx.ui_list_focus(list, 0);
+    }
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    // A saved file was brought in line before the UI pass: a respawned list
+    // starts from the file's count, so hold it again
+    for reloaded in ctx.messages::<UiReloaded>() {
+      if self
+        .root
+        .is_some_and(|root| root == reloaded.root || Some(root) == reloaded.replaced)
+      {
+        self.hold(ctx, reloaded.root);
+      }
+    }
+    // Fill each row given an item this frame: it is drawn from the next
+    for bind in ctx.messages::<UiListBind>() {
+      // Every list's binds come here: answer only this one's
+      if Some(bind.list) != self.list {
+        continue;
+      }
+      let Some(entry) = self.board.get(bind.index) else {
+        continue;
+      };
+      // The row's own values: each row is a binding scope
+      ctx.ui_set(bind.row, "rank", bind.index + 1);
+      ctx.ui_set(bind.row, "name", entry.name.as_str());
+      ctx.ui_set(bind.row, "score", entry.score);
+    }
+    // A row's button was clicked: the row's item
+    for event in ctx.ui_events() {
+      if event.kind == UiEventKind::Clicked
+        && event.action.as_deref() == Some("pick")
+        && let (Some(root), Some(i)) = (self.root, ctx.ui_list_index(event.node))
+        && let Some(entry) = self.board.get(i)
+      {
+        // The root's values: the status line outside the list
+        ctx.ui_set(
+          root,
+          "status",
+          format!("{}: {} points", entry.name, entry.score),
+        );
+      }
+    }
+    if ui.back() {
+      return SceneAction::Pop;
+    }
+    SceneAction::Continue
+  }
+}
+```
+
+`Text` takes no `width`, so the rank and the name sit in sized columns. When the board changes (a new score), change the data, then `ctx.ui_list_count(list, len)` and `ctx.ui_list_refresh(list)`: the pooled rows are bound again and show the new order.
+
+#### An inventory grid
+
+```rust
+/// One stack in the bag
+struct Item {
+  name: String,
+  icon: SpriteHandle,
+  count: u32,
+}
+
+/// A bag of hundreds of stacks in a grid eight wide: only the rows in view
+/// are built
+struct Bag {
+  items: Vec<Item>,
+  selected: Option<usize>,
+}
+
+impl Bag {
+  fn new(items: Vec<Item>) -> Self {
+    Self {
+      items,
+      selected: None,
+    }
+  }
+}
+
+impl Scene for Bag {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let items = &self.items;
+    let selected = self.selected;
+    let mut picked = None;
+    ui.panel()
+      .focus_scope()
+      .anchor(Anchor::Center)
+      .width(480.0)
+      .gap(8.0)
+      .show(|ui| {
+        ui.text(format!("Bag: {} stacks", items.len()));
+        ui.list(items.len())
+          .columns(8) // equal cells, filled row by row
+          .row_height(52.0)
+          .gap(4.0)
+          .height(300.0)
+          .fill_width()
+          .show(|ui, i| {
+            let Some(item) = items.get(i) else {
+              return;
+            };
+            ui.column().fill().center().show(|ui| {
+              let slot = ui
+                .slot()
+                .icon(&item.icon)
+                .count(item.count)
+                .selected(selected == Some(i))
+                .tooltip(item.name.as_str())
+                .show();
+              if slot.clicked() {
+                picked = Some(i);
+              }
+            });
+          });
+        let detail = match selected.and_then(|i| items.get(i)) {
+          Some(item) => format!("{} x{}", item.name, item.count),
+          None => "Nothing selected".to_string(),
+        };
+        ui.text(detail);
+      });
+    if picked.is_some() {
+      self.selected = picked;
+    }
+    if ui.back() {
+      return SceneAction::Pop;
+    }
+    SceneAction::Continue
+  }
+}
+```
+
+A slot keeps its own size, so each sits centred in its cell. The pad moves along a row with Left and Right and between rows with Up and Down; Confirm picks.
+
+## 17. Testing UI
 
 **`ryo2d::testing::UiHarness`** runs UI frames with no window or GPU: the UI's memory, layout, text and the resolve step over scripted input. Write the UI as a function of `&mut UiContext` and drive it.
 
@@ -2216,12 +2633,33 @@ fn the_slider_steps_with_the_pad() {
   assert!(ui.events().iter().any(|e| e.node == sound && e.kind == UiEventKind::Changed));
   ```
 - **UI files in a test:** `UiHarness::new(w, h).with_assets(dir)` loads files and images relative to `dir`; `spawn_ui_file(path) -> Result<Entity, UiFileError>` spawns one; `update_ui(node, tree)`, `ui_set(node, name, value)` and `ui_get::<T>(node, name)` work as on `SceneContext`. After editing the file on disk, `reload_ui(path)` makes the next `frame` bring the trees in line, and `messages::<UiReloaded>()` lists the roots it touched. `UiFile::parse(name, text)` checks text alone, for asserting a file's errors.
+- **Lists in a test:** `frame` draws a closure list like any widget. A node list's binds are in `messages::<UiListBind>()` after the frame that sent them: fill the rows there with `ui_set`, as a scene's `ui` would, and they are drawn from the next `frame`. `ui_list_count`, `ui_list_refresh`, `ui_list_refresh_row`, `ui_list_scroll_to`, `ui_list_focus` and `ui_list_index` work as on `SceneContext`.
+
+  ```rust
+  let mut ui = UiHarness::new(320.0, 240.0);
+  ui.spawn_ui(UiNode::column().focus_scope().child(
+    UiNode::list(1000, 20.0).height(100.0).row_shape(|| UiNode::button("{name}").bound()).name("list"),
+  ));
+  let list = ui.find_ui("list").unwrap();
+  ui.ui_list_focus(list, 700);
+  for _ in 0..4 {
+    ui.frame(|_| ());
+    let binds: Vec<UiListBind> = ui.messages::<UiListBind>().collect();
+    for bind in binds {
+      ui.ui_set(bind.row, "name", format!("Item {}", bind.index));
+    }
+  }
+  ui.action("ui.confirm");
+  ui.frame(|_| ());
+  let click = ui.events().iter().find(|e| e.kind == UiEventKind::Clicked);
+  assert_eq!(click.and_then(|e| ui.ui_list_index(e.node)), Some(700));
+  ```
 
 - **With the engine**, `HeadlessEngine` (`ryo-game-dev`, Visual Tests) drives whole scenes: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `release_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `tap_key`, `mouse_move`; `ui_focused()` is the focus the last step resolved, `ui_focusables()` what the D-pad can land on now (id and rect), `focus_ui(id)` focuses a widget at the next step. Walking every `ui_focusables()` with the D-pad from each one proves a page has no dead ends.
 - **Scripted runs:** `RYO_INPUT` presses pad buttons and holds sticks in dev builds, for captures: `RYO_INPUT="60:PadDPadDown 90:PadSouth 120-180:LeftStick@0x-1 200:Wheel@0x-3"` (`ryo-cli`).
 - The console command `debug:ui` outlines every widget with its id, hot, active and focused ones coloured (`ryo-console`).
 
-## 17. Tips
+## 18. Tips
 
 - **Mark every menu `.focus_scope()`**, and give it a `.default_focus()`. Without a scope the pad and the arrows do nothing in it. This holds for node trees too.
 - **Node trees: read events in one place.** `ctx.ui_events()` and `ctx.messages::<UiEvent>()` share a cursor, so read in `ui` or in `update`, not both. Change scenes from there, never from an observer.
@@ -2229,6 +2667,7 @@ fn the_slider_steps_with_the_pad() {
 - **Files: the game keeps what the player and it wrote.** A reload or `update_ui` rewrites the tree's settings and leaves values the game and the player set, unless the file changed that value. A bound widget's value is the binding's.
 - **Close the innermost thing on `ui.back()`**, then the next: a modal before its menu, a menu before the scene.
 - **Use `.id(key)`** for rows of a list that sorts, filters or deletes; call-site ids shift when an earlier call is skipped.
+- **Hundreds of rows: a virtual list** (section 16), in either style, rather than a scroll area that builds them all. Give its rows one height and keep their contents inside it; bind a node list's rows in `ui`, and set every value a row shows.
 - **Your data, its state.** Widgets write your `bool`/`f32`/`usize`/`String`; an open list, a caret, a scroll offset and focus are the UI's, dropped when the widget is not drawn for a frame (focus memory lasts the scene).
 - **Collect, then act.** Set a local in the closure (`clicked = ui.button(..).clicked()`) and change scenes or mutate other state after `.show()` returns.
 - **Bind theme values before a closure** (`let heading = ui.theme().text.heading.style();`): `ui.theme()` borrows `ui`.
