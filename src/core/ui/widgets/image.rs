@@ -90,10 +90,13 @@ impl Image<'_, '_> {
     let disabled = self.opts.disabled;
     let mut response = ui.widget_response(id, Sense::hover(), &self.opts);
     let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
-    let size = self
-      .size
-      .map(|s| Vec2::new(clean(s.x), clean(s.y)))
-      .unwrap_or_else(|| Vec2::new(self.sprite.width() as f32, self.sprite.height() as f32));
+    let size = match self.size {
+      Some(s) => Vec2::new(clean(s.x), clean(s.y)),
+      None => {
+        ui.note_sprite(&self.sprite);
+        Vec2::new(self.sprite.width() as f32, self.sprite.height() as f32)
+      }
+    };
 
     let mut node = Node::new(id, self.opts.style.clone(), Measure::Fixed(size));
     if self.opts.tooltip.is_some() || self.opts.drag.is_set() {

@@ -153,6 +153,7 @@ impl<'a> UiContext<'a> {
 
     if let Some(source) = glyph {
       // An image a caption line high, keeping its aspect
+      self.note_sprite(&source.sprite);
       let sprite_size = Vec2::new(source.sprite.width() as f32, source.sprite.height() as f32);
       let size = source
         .region

@@ -14,11 +14,12 @@
 //! consumes input, plays a sound, draws outside its subtree) taints its tape
 //! and every tape around it: they are recorded but never replayed. What a
 //! build read from outside its own node (another node's id, the rect it
-//! placed by) is noted as a [`Read`] in its tape and every tape around it,
-//! and a replay inside a recording tape adds the replayed reads to it: a
-//! tape replays only while every read of its subtree still holds, so a
-//! clean parent never holds a child that is not.
+//! placed by, the size of a sprite) is noted as a [`Read`] in its tape and
+//! every tape around it, and a replay inside a recording tape adds the
+//! replayed reads to it: a tape replays only while every read of its
+//! subtree still holds, so a clean parent never holds a child that is not.
 
+use crate::core::asset::SpriteHandle;
 use crate::core::ecs::kernel::Entity;
 use crate::core::ui::immediate::UiContext;
 use crate::core::ui::tree::{DrawKind, Node};
@@ -106,7 +107,7 @@ impl Tape {
 
 /// Something a build read from outside its own node, baked into what it
 /// pushed: a replay is right only while it is still as read
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Read {
   /// Node `node`'s response id, as its `UiInteraction` held it (`NONE`
   /// before it was drawn): a `nav_*` neighbour, a popup's anchor
@@ -115,6 +116,13 @@ pub(crate) enum Read {
   /// the build placed something by it: an open dropdown's list is as tall
   /// as the room beside the dropdown itself
   Rect { id: UiId, rect: Option<Rect> },
+  /// The version of `sprite` whose size the build sized something by: an
+  /// image without a size, a prompt's glyph. A hot reload replaces a
+  /// sprite in place, perhaps at another size, and no component changes.
+  Sprite {
+    sprite: SpriteHandle,
+    generation: u64,
+  },
 }
 
 /// One thing a builder pushed
@@ -233,8 +241,20 @@ impl UiContext<'_> {
   /// them would push what it made of it
   pub(crate) fn note_read(&mut self, read: Read) {
     for recorder in &mut self.tapes {
-      recorder.tape.reads.push(read);
+      recorder.tape.reads.push(read.clone());
     }
+  }
+
+  /// The build being recorded sized something by `sprite`: noted as a read
+  /// of its version ([`Read::Sprite`])
+  pub(crate) fn note_sprite(&mut self, sprite: &SpriteHandle) {
+    if self.tapes.is_empty() {
+      return;
+    }
+    self.note_read(Read::Sprite {
+      sprite: sprite.clone(),
+      generation: sprite.generation(),
+    });
   }
 
   /// The build being recorded did something a replay would not repeat:
