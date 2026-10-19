@@ -513,21 +513,24 @@ pub(crate) fn mark_live(
   pending: Option<Entity>,
 ) {
   world.try_resource_scope(|world, mut nodes: Mut<UiNodes>| {
-    nodes.cache.mark_live(world, ui, scene, pending);
+    nodes.cache.mark_live(world, ui, scene, pending, None);
   });
 }
 
 impl UiCache {
-  /// [`mark_live`] on this cache, taken out of the world for a walk
+  /// [`mark_live`] on this cache, taken out of the world for a walk: of the
+  /// tree rooted at `within` only, if given (an embedded tree about to be
+  /// drawn: the scene's other trees were drawn already, or mark their own)
   pub(crate) fn mark_live(
     &mut self,
     world: &mut World,
     ui: &UiContext<'_>,
     scene: u64,
     pending: Option<Entity>,
+    within: Option<Entity>,
   ) {
     // First: a check made for another world starts the cache as new
-    self.mark_reveals(world, scene);
+    self.mark_reveals(world, scene, within);
     let interact = &ui.memory.interact;
     let now = interact.roles();
     let frame = ui.memory.frame();
@@ -538,36 +541,39 @@ impl UiCache {
     }
     self.roles = (frame, now);
     let world = &*world;
+    let inside = move |node| within.is_none_or(|root| in_tree(world, node, root));
     let (dirty, records) = (&mut self.dirty, &self.records);
     let roles = now.iter().chain(self.last_roles.iter());
     let holders = roles.filter_map(|id| self.by_id.get(&id).copied());
     for node in holders.chain(pending) {
-      if recorded_in(records, node, scene) {
+      if recorded_in(records, node, scene) && inside(node) {
         mark(dirty, world, node);
       }
     }
-    let always = |_| true;
-    mark_each(&mut self.live, dirty, records, world, scene, always);
+    mark_each(&mut self.live, dirty, records, world, scene, inside);
     let top = ui.scene().1;
     if top && interact.tab_step != 0 {
-      mark_each(&mut self.tabs, dirty, records, world, scene, always);
+      mark_each(&mut self.tabs, dirty, records, world, scene, inside);
     }
     if top && ui.choice_key_pressed() {
-      mark_each(&mut self.choices, dirty, records, world, scene, always);
+      mark_each(&mut self.choices, dirty, records, world, scene, inside);
     }
     if interact.drag.is_some() {
-      mark_each(&mut self.targets, dirty, records, world, scene, always);
+      mark_each(&mut self.targets, dirty, records, world, scene, inside);
     }
     let busy = |node| {
-      ui.memory
-        .peek_state::<RebindState>(recorded_id(world, node))
-        .is_some_and(|state| state.capturing || state.note.is_some())
+      inside(node)
+        && ui
+          .memory
+          .peek_state::<RebindState>(recorded_id(world, node))
+          .is_some_and(|state| state.capturing || state.note.is_some())
     };
     mark_each(&mut self.rebinds, dirty, records, world, scene, busy);
   }
 
-  /// Mark each typewriter in `scene` that an advance would still move
-  fn mark_reveals(&mut self, world: &mut World, scene: u64) {
+  /// Mark each typewriter in `scene` (of the tree rooted at `within`, if
+  /// given) that an advance would still move
+  fn mark_reveals(&mut self, world: &mut World, scene: u64, within: Option<Entity>) {
     self.check_for(world);
     let Some(check) = self.check.as_deref_mut() else {
       return;
@@ -575,10 +581,34 @@ impl UiCache {
     let world = &*world;
     let (dirty, records) = (&mut self.dirty, &self.records);
     for (node, reveal) in check.reveals.iter(world) {
-      if !reveal.idle() && recorded_in(records, node, scene) {
+      if !reveal.idle()
+        && recorded_in(records, node, scene)
+        && within.is_none_or(|root| in_tree(world, node, root))
+      {
         mark(dirty, world, node);
       }
     }
+  }
+}
+
+/// Whether `node` is `root` or under it, in `root`'s tree (a list's rows
+/// are in the list's)
+fn in_tree(world: &World, node: Entity, root: Entity) -> bool {
+  let mut at = node;
+  loop {
+    if at == root {
+      return true;
+    }
+    let Ok(entity) = world.get_entity(at) else {
+      return false;
+    };
+    if entity.contains::<UiRoot>() {
+      return false;
+    }
+    let Some(parent) = entity.get::<ChildOf>() else {
+      return false;
+    };
+    at = parent.parent();
   }
 }
 
@@ -1490,7 +1520,13 @@ mod live_tests {
 
     let a = h.find_ui("a").unwrap();
     record(&mut h, a, replayable(vec![read]));
-    let is_clean = |h: &mut UiHarness| h.frame_with_world(|ui, world| clean(world, ui, a));
+    // A holds the focus, which marks it: only the read decides here
+    let is_clean = |h: &mut UiHarness| {
+      h.frame_with_world(|ui, world| {
+        world.resource_mut::<UiNodes>().cache.dirty.clear();
+        clean(world, ui, a)
+      })
+    };
     assert!(is_clean(&mut h), "the neighbour's id is as read");
     if let Some(mut state) = h.world_mut().get_mut::<UiInteraction>(more) {
       state.id = UiId(12_345);
@@ -1642,8 +1678,8 @@ mod live_tests {
       frame(&mut d);
     }
     let choices = d.find_ui("choices").unwrap();
-    // An embedded tree is built, not recorded, so a record made here goes
-    // at the end of the next frame: made again for each frame that reads it
+    // The tree's own walk records over a record made here, so one is made
+    // again for each frame that reads it
     let recorded = |d: &mut UiDriver, under| {
       note(d, choices);
       insert(d, choices, replayable(Vec::new()), under);

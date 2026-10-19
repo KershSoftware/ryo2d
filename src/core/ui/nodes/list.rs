@@ -38,7 +38,6 @@ use crate::core::ui::widgets::list::{
 use crate::core::ui::widgets::scroll::{Scroll, ScrollState};
 use crate::core::ui::{Response, UiContext, UiId};
 
-use super::bindings;
 use super::components::{UiDisabled, UiHidden, UiInteraction, UiName, UiNodes, UiRoot};
 use super::draw::{Walk, draw_child};
 use super::events::UiListBind;
@@ -1070,9 +1069,12 @@ fn first_focus(
     FirstFocus::Waiting => {
       let (_, top) = ui.scene();
       if top && ui.focused().is_none() && walk.pending_focus.is_none() && !asking {
-        walk.pending_focus = shown()
+        let node = shown()
           .find_map(|row| first_focusable(world, row, true))
           .or_else(|| shown().find_map(|row| first_focusable(world, row, false)));
+        if let Some(node) = node {
+          walk.ask_focus(world, node);
+        }
       }
       FirstFocus::Done
     }
@@ -1100,10 +1102,14 @@ impl Fill for Pool<'_, '_> {
     else {
       return;
     };
+    // A row replays its record when clean, as any node: its ids are its
+    // item's, since it is drawn in that item's container, and a row given
+    // another item is not clean there (its record's id scope differs)
     if drawn(self.world, row, self.frame) {
-      // A bound widget the game changed sets its name in the row's scope
-      bindings::sync_root(self.world, row);
+      self.walk.sync_row(self.world, row);
       draw_child(self.world, ui, row, self.walk);
+    } else {
+      self.walk.skip_row(self.world, row);
     }
   }
 
@@ -1675,6 +1681,39 @@ mod tests {
       assert_view_drawn(&h, list, id, &format!("frame {frame}"));
     }
     assert_eq!(h.scroll_offset(id).y, 360.0);
+  }
+
+  #[test]
+  fn unchanged_rows_replay_and_a_rebound_row_rebuilds() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = h.spawn_ui(
+      UiNode::list(100, 20.0)
+        .height(200.0)
+        .width(200.0)
+        .row_shape(|| UiNode::text("{name}").bound())
+        .name("l"),
+    );
+    let bind_all = |h: &mut UiHarness| {
+      let binds: Vec<UiListBind> = h.messages::<UiListBind>().collect();
+      for b in binds {
+        h.ui_set(b.row, "name", format!("Item {}", b.index));
+      }
+    };
+    for _ in 0..4 {
+      h.frame(|_| ());
+      bind_all(&mut h);
+    }
+    h.frame(|_| ());
+    let stats = h.ui_cache_stats();
+    assert!(stats.replayed > 0, "rows replay");
+    assert!(
+      stats.rebuilt.contains(&list),
+      "the List node itself always builds"
+    );
+    let (_, row) = h.world().get::<UiList>(list).unwrap().rows[0];
+    h.ui_set(row, "name", "Changed");
+    h.frame(|_| ());
+    assert!(h.ui_cache_stats().rebuilt.contains(&row));
   }
 }
 

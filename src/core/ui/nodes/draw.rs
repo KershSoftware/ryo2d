@@ -14,6 +14,9 @@
 //! building it, and records each node it builds, each child in a slot of its
 //! parent's tape. A replay never builds: a clean node's children are clean,
 //! since everything that makes a node rebuild makes its ancestors rebuild.
+//! An embedded tree (`ui.node`) and a list's rows replay or build the same
+//! way: the dirty set is brought up to date before an embedded tree is
+//! drawn, and what a row's bindings sync writes is marked before the row.
 
 use glam::Vec2;
 
@@ -95,9 +98,6 @@ pub(crate) struct Walk {
   cache: UiCache,
   /// Whether clean nodes replay and built ones are recorded
   caching: bool,
-  /// Subtrees under way that are built as before caching: list rows, whose
-  /// bindings sync after the dirty check
-  plain: u32,
   /// What every builder reads besides its node's components, this pass
   env: UiEnv,
   /// The other nodes a bound widget's change wrote, for the one drawn last
@@ -121,15 +121,9 @@ impl Walk {
       registered: false,
       cache,
       caching,
-      plain: 0,
       env,
       written: Vec::new(),
     }
-  }
-
-  /// Whether the node being built is recorded
-  fn taping(&self) -> bool {
-    self.caching && self.plain == 0
   }
 
   /// Answer Back, keep an unused focus request for a later frame and give
@@ -144,6 +138,45 @@ impl Walk {
         None => push_event(world, &mut self, target, UiEventKind::Back, ui),
       }
     }
+    self.give_back(world)
+  }
+
+  /// `node` is to be given the focus where it is built, asked for in the
+  /// middle of the walk (a new list's first rows): it and the nodes above it
+  /// are marked, so a clean row holding it is built, not replayed
+  pub(super) fn ask_focus(&mut self, world: &World, node: Entity) {
+    self.pending_focus = Some(node);
+    if self.caching {
+      self.cache.mark(world, node);
+    }
+  }
+
+  /// Before the list row `row` is drawn: a bound widget the game changed
+  /// sets its name in the row's scope (`bindings::sync_root`). The dirty
+  /// set was brought up to date before the walk, so what that writes is
+  /// marked here, before the row replays or builds.
+  pub(super) fn sync_row(&mut self, world: &mut World, row: Entity) {
+    self.written.clear();
+    if !bindings::sync_root(world, row, Some(&mut self.written)) || !self.caching {
+      return;
+    }
+    for &node in &self.written {
+      self.cache.mark(world, node);
+    }
+  }
+
+  /// The list row `row` is not drawn this frame (given its item this frame):
+  /// like a hidden node, it does not stay dirty under the list just built
+  pub(super) fn skip_row(&mut self, world: &World, row: Entity) {
+    if self.caching {
+      self.cache.forget(world, row);
+    }
+  }
+
+  /// Keep an unused focus request for a later walk and give the cache back,
+  /// what the walk wrote not to be seen as a change by the next check; the
+  /// walk's events
+  fn give_back(mut self, world: &mut World) -> Vec<UiEvent> {
     if self.caching {
       self.cache.walked(world);
     }
@@ -178,11 +211,12 @@ impl<'a> UiContext<'a> {
   /// `ctx.ui_events()` after this scene's `ui` returns. Drawing one root
   /// twice in a frame draws it once and warns.
   ///
+  /// What the closure wrote before the call is drawn: the tree's clean
+  /// subtrees replay, as a scene's trees' do, and the rest is built.
+  ///
   /// A modal or popup inside an embedded tree takes Back only through the
   /// closure's own `ui.back()`.
   pub fn node(&mut self, root: Entity, world: &mut World) -> Response {
-    // Not taped yet: a tape cannot hold the embedded tree's walk
-    self.taint();
     let embedded = world.get::<UiRoot>(root).is_some_and(|r| r.embedded);
     if !embedded {
       warn_once("ui-node:embed-not-embedded".to_string(), || {
@@ -201,22 +235,23 @@ impl<'a> UiContext<'a> {
     }
     nodes.embedded_drawn.push(root);
     let pending_focus = nodes.pending_focus.take();
-    // Built as before caching, until embedded trees replay
-    let env = self.env();
-    let mut walk = Walk::new(
-      self.scene().0,
-      pending_focus,
-      UiCache::default(),
-      false,
-      env,
-    );
-    bindings::sync_root(world, root);
+    let cache = std::mem::take(&mut nodes.cache);
+    let caching = cache.enabled;
+    let scene = self.scene().0;
+    let mut walk = Walk::new(scene, pending_focus, cache, caching, self.env());
+    bindings::sync_root(world, root, None);
+    if walk.caching {
+      // The scene's walk marked before its `ui` ran: what that `ui` wrote
+      // since, and what is live in this tree, are marked now
+      walk.cache.refresh(world);
+      walk
+        .cache
+        .mark_live(world, self, scene, walk.pending_focus, Some(root));
+    }
     let response = draw_node(world, self, root, None, &mut walk);
+    let mut events = walk.give_back(world);
     if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
-      if let Some(node) = walk.pending_focus {
-        nodes.pending_focus = Some(node);
-      }
-      nodes.pending.append(&mut walk.events);
+      nodes.pending.append(&mut events);
     }
     response.unwrap_or_default()
   }
@@ -251,11 +286,13 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
   let mut walk = Walk::new(scene, pending_focus, cache, caching, ui.env());
   let mut i = 0;
   while let Some((root, _)) = scene_root(world, scene, &mut i) {
-    bindings::sync_root(world, root);
+    bindings::sync_root(world, root, None);
   }
   if walk.caching {
     walk.cache.refresh(world);
-    walk.cache.mark_live(world, ui, scene, walk.pending_focus);
+    walk
+      .cache
+      .mark_live(world, ui, scene, walk.pending_focus, None);
   }
   let mut i = 0;
   while let Some((root, place)) = scene_root(world, scene, &mut i) {
@@ -287,16 +324,21 @@ fn scene_root(world: &World, scene: u64, i: &mut usize) -> Option<(Entity, Place
   None
 }
 
-/// Draw `node`, a list row, and its subtree, built as before caching
+/// Draw `node`, a child of the node being built (a container's child, a
+/// list's row), and its subtree: while the parent is recorded, in a slot of
+/// its tape
 pub(super) fn draw_child(
   world: &mut World,
   ui: &mut UiContext<'_>,
   node: Entity,
   walk: &mut Walk,
 ) -> Option<Response> {
-  walk.plain += 1;
+  if !walk.caching {
+    return draw_node(world, ui, node, None, walk);
+  }
+  ui.begin_child(node);
   let response = draw_node(world, ui, node, None, walk);
-  walk.plain -= 1;
+  ui.end_child();
   response
 }
 
@@ -334,17 +376,13 @@ fn draw_node(
   }
   // The node a focus request waits for asks for it as it is built
   let scope = ui.memory.scopes.current();
-  let replays = walk.plain == 0
-    && walk.pending_focus != Some(node)
-    && walk.cache.is_clean(world, ui, node, walk.env, Some(scope));
+  let replays =
+    walk.pending_focus != Some(node) && walk.cache.is_clean(world, ui, node, walk.env, Some(scope));
   if replays {
     return replay_node(world, ui, node, walk);
   }
   let tape = walk.cache.take_for_build(node);
   walk.cache.count_built(node);
-  if walk.plain > 0 {
-    return build_node(world, ui, node, place, walk);
-  }
   ui.start_tape_in(tape);
   let response = build_node(world, ui, node, place, walk);
   let tape = ui.end_tape();
@@ -769,16 +807,8 @@ fn walk_children(world: &mut World, ui: &mut UiContext<'_>, parent: Entity, walk
     walk.children.extend_from_slice(children);
   }
   let end = walk.children.len();
-  let taping = walk.taping();
   for i in start..end {
-    let child = walk.children[i];
-    if taping {
-      ui.begin_child(child);
-    }
-    draw_node(world, ui, child, None, walk);
-    if taping {
-      ui.end_child();
-    }
+    draw_child(world, ui, walk.children[i], walk);
   }
   walk.children.truncate(start);
 }
@@ -2945,11 +2975,12 @@ mod embedding {
 
 #[cfg(all(test, feature = "default-fonts"))]
 mod cache_tests {
-  use super::{Walk, begin_pass, draw_node, draw_nodes};
-  use crate::core::ecs::kernel::{ChildOf, Entity, World};
+  use super::super::list::UiList;
+  use super::{Walk, begin_pass, draw_nodes};
+  use crate::core::ecs::kernel::{ChildOf, Children, DetectChangesMut, Entity, World};
   use crate::core::testing::UiHarness;
   use crate::core::ui::nodes::*;
-  use crate::core::ui::{Rect, Response, UiContext, UiId};
+  use crate::core::ui::{Rect, Response, UiId};
 
   /// Children found unclean in a parent's replay in the last pass: a broken
   /// invariant, never so
@@ -3398,43 +3429,26 @@ mod cache_tests {
     assert_eq!(on, off);
   }
 
-  /// Draw the embedded tree `root` through a walk of its own over the
-  /// cache, as `ui.node` will: its response
-  fn draw_embedded(
-    ui: &mut UiContext<'_>,
-    world: &mut World,
-    root: Entity,
-    cache: bool,
-  ) -> Option<Response> {
-    let taken = std::mem::take(&mut world.resource_mut::<UiNodes>().cache);
-    let mut walk = Walk::new(ui.scene().0, None, taken, cache, ui.env());
-    if cache {
-      walk.cache.refresh(world);
-    }
-    let response = draw_node(world, ui, root, None, &mut walk);
-    walk.finish(world, ui);
-    response
-  }
-
   #[test]
   fn a_replayed_node_answers_with_its_id_and_the_rect_a_build_gives() {
     // One tree laid out where it is drawn (this frame's rect), one inside
     // an open container that moves (last frame's rect)
     let run = |cache: bool| {
       let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
       let top = h.spawn_ui(UiNode::column().embedded().child(UiNode::button("Top")));
       let nested = h.spawn_ui(UiNode::column().embedded().child(UiNode::button("Nested")));
       h.move_to(630.0, 470.0);
       let mut answers = Vec::new();
       for x in [10.0, 10.0, 10.0, 60.0, 60.0, 110.0] {
         let answer = h.frame_with_world(|ui, world| {
-          let top = draw_embedded(ui, world, top, cache);
-          let mut inner = None;
+          let top = ui.node(top, world);
+          let mut inner = Response::default();
           ui.column()
             .id("outer")
             .at(Rect::new(x, 200.0, 160.0, 80.0))
-            .show(|ui| inner = draw_embedded(ui, world, nested, cache));
-          let both = [top, inner].map(|r| r.map(|r| (r.id, r.rect)));
+            .show(|ui| inner = ui.node(nested, world));
+          let both = [top, inner].map(|r| (r.id, r.rect));
           let replayed = !rebuilt_so_far(world).contains(&nested);
           (both, replayed)
         });
@@ -3449,16 +3463,375 @@ mod cache_tests {
       on.iter().skip(1).all(|(_, replayed)| *replayed),
       "replayed after the first frame"
     );
-    let moved = on[3].0[1].map(|(_, rect)| rect.x);
-    assert_eq!(moved, on[2].0[1].map(|(_, rect)| rect.x), "last frame's");
+    let moved = on[3].0[1].1.x;
+    assert_eq!(moved, on[2].0[1].1.x, "last frame's");
+  }
+
+  #[test]
+  fn an_embedded_tree_replays_and_sees_a_write_made_before_it_is_drawn() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let root = h.spawn_ui(
+      UiNode::column()
+        .embedded()
+        .child(UiNode::text("Hp").name("hp")),
+    );
+    let hp = h.find_ui("hp").unwrap();
+    // One call site for the closure's column, so it keeps its id
+    let draw = |h: &mut UiHarness, label: Option<&str>| {
+      h.frame_with_world(|ui, world| {
+        if let Some(label) = label {
+          world.get_mut::<UiLabel>(hp).unwrap().0 = label.into();
+        }
+        ui.column().show(|ui| {
+          ui.node(root, world);
+        });
+      });
+    };
+    for _ in 0..3 {
+      draw(&mut h, None);
+    }
+    draw(&mut h, None);
+    assert!(h.ui_cache_stats().replayed > 0);
+    draw(&mut h, Some("Hp 9"));
+    assert!(h.ui_cache_stats().rebuilt.contains(&hp));
   }
 
   /// The two trees' responses (id and rect) in a frame, and whether the
   /// nested one replayed
-  type Answer = ([Option<(UiId, Rect)>; 2], bool);
+  type Answer = ([(UiId, Rect); 2], bool);
 
   /// The nodes built so far this pass
   fn rebuilt_so_far(world: &World) -> Vec<Entity> {
     world.resource::<UiNodes>().cache.stats.rebuilt.clone()
+  }
+
+  /// What a frame showed and did: its commands, the focus and the events
+  type Shown = (String, Option<UiId>, String);
+
+  fn shown(h: &UiHarness) -> Shown {
+    (h.commands_debug(), h.focused(), format!("{:?}", h.events()))
+  }
+
+  /// The centre of node `node`'s rect as last drawn
+  fn centre_of(h: &UiHarness, node: Entity) -> (f32, f32) {
+    let rect = h.record_of(h.ui_id(node).unwrap()).unwrap().rect;
+    (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
+  }
+
+  #[test]
+  fn an_embedded_tree_draws_as_uncached_through_writes_hover_and_a_focus_request() {
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
+      h.spawn_ui(menu());
+      // A takes the scope's focus; B's branch stays clean until asked for
+      let root = h.spawn_ui(
+        UiNode::column()
+          .embedded()
+          .focus_scope()
+          .gap(4.0)
+          .child(UiNode::text("Hp").name("hp"))
+          .child(UiNode::column().child(UiNode::button("A").name("ea")))
+          .child(UiNode::column().child(UiNode::button("B").name("eb"))),
+      );
+      let [hp, a, b] = ["hp", "ea", "eb"].map(|name| h.find_ui(name).unwrap());
+      h.move_to(630.0, 470.0);
+      let mut frames = Vec::new();
+      for step in 0..12 {
+        if step == 5 {
+          let (x, y) = centre_of(&h, a);
+          h.move_to(x, y);
+        }
+        if step == 7 {
+          h.move_to(630.0, 470.0);
+        }
+        h.frame_with_world(|ui, world| {
+          let label = |world: &mut World, text: &str| {
+            world.get_mut::<UiLabel>(hp).unwrap().0 = text.into();
+          };
+          match step {
+            // Written before the tree is drawn: drawn this frame
+            3 => label(world, "Hp 9"),
+            // A focus request from the closure, before the tree is drawn
+            9 => world.resource_mut::<UiNodes>().pending_focus = Some(b),
+            _ => {}
+          }
+          ui.column()
+            .id("hud")
+            .at(Rect::new(300.0, 100.0, 200.0, 200.0))
+            .show(|ui| {
+              ui.node(root, world);
+            });
+          // Written after it: drawn next frame, cached or not
+          if step == 4 {
+            label(world, "Hp 8");
+          }
+        });
+        if cache {
+          assert_eq!(missed(&h), 0, "step {step}");
+          assert_dirty_ancestors(&h);
+        }
+        frames.push(shown(&h));
+      }
+      frames
+    };
+    let (on, off) = (run(true), run(false));
+    assert!(on[11].0.contains("\"Hp 8\""), "{}", on[11].0);
+    assert_ne!(on[8].1, on[10].1, "the request moved the focus");
+    assert_eq!(on, off);
+  }
+
+  #[test]
+  fn an_embedded_tree_marks_only_its_own_live_nodes() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(menu());
+    let hud = h.spawn_ui(UiNode::column().embedded().child(UiNode::text("Hud")));
+    let draw = |h: &mut UiHarness| {
+      h.frame_with_world(|ui, world| {
+        ui.column()
+          .id("hud")
+          .at(Rect::new(400.0, 400.0, 100.0, 40.0))
+          .show(|ui| {
+            ui.node(hud, world);
+          });
+      });
+    };
+    h.move_to(1000.0, 1000.0);
+    for _ in 0..3 {
+      draw(&mut h);
+    }
+    let play = h.find_ui("play").unwrap();
+    let (x, y) = centre_of(&h, play);
+    h.move_to(x, y);
+    draw(&mut h);
+    h.move_to(1000.0, 1000.0);
+    draw(&mut h);
+    assert!(
+      h.ui_cache_stats().rebuilt.contains(&play),
+      "it draws its exit"
+    );
+    draw(&mut h);
+    assert!(
+      !h.ui_cache_stats().rebuilt.contains(&play),
+      "the embedded tree's marks leave the scene's trees, drawn already, alone"
+    );
+  }
+
+  /// A list of `count` button rows, each with a caption, in a focus scope
+  fn list_page(count: usize) -> UiNode {
+    let row = || {
+      UiNode::row()
+        .child(UiNode::button("{name}").bound().name("pick"))
+        .child(UiNode::text("#{n}").bound())
+    };
+    UiNode::column().focus_scope().child(
+      UiNode::list(count, 24.0)
+        .height(120.0)
+        .width(240.0)
+        .row_shape(row)
+        .name("list"),
+    )
+  }
+
+  /// Bind every row the last frame asked for, as a game would
+  fn bind_rows(h: &mut UiHarness) {
+    let binds: Vec<UiListBind> = h.messages::<UiListBind>().collect();
+    for b in binds {
+      h.ui_set(b.row, "name", format!("Item {}", b.index));
+      h.ui_set(b.row, "n", b.index);
+    }
+  }
+
+  fn pool_of(h: &UiHarness, list: Entity) -> Vec<(usize, Entity)> {
+    h.world().get::<UiList>(list).unwrap().rows.clone()
+  }
+
+  #[test]
+  fn list_rows_draw_as_uncached_through_scrolls_refreshes_binds_and_focus() {
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
+      h.spawn_ui(list_page(200));
+      let list = h.find_ui("list").unwrap();
+      h.move_to(630.0, 470.0);
+      let (mut frames, mut replayed) = (Vec::new(), 0);
+      for step in 0..40 {
+        match step {
+          5 => {
+            let (x, y) = centre_of(&h, list);
+            h.move_to(x, y);
+            h.wheel(0.0, -3.0); // rows are given other items
+          }
+          12 => h.move_to(630.0, 470.0),
+          16 => h.ui_list_refresh(list),
+          20 => {
+            let (_, row) = pool_of(&h, list)[2];
+            h.ui_set(row, "name", "Changed");
+          }
+          24..=27 => h.action("ui.down"),
+          30 => {
+            let (x, y) = centre_of(&h, list);
+            h.move_to(x, y + 20.0); // over a row
+          }
+          _ => {}
+        }
+        h.frame(|_| ());
+        bind_rows(&mut h);
+        if cache {
+          assert_eq!(missed(&h), 0, "step {step}");
+          assert_dirty_ancestors(&h);
+          replayed += h.ui_cache_stats().replayed;
+        }
+        let focused = h.world().get::<UiList>(list).unwrap().focused;
+        frames.push((shown(&h), focused));
+      }
+      (frames, replayed)
+    };
+    let (on, off) = (run(true), run(false));
+    assert!(on.1 > 0, "rows replayed");
+    assert_eq!(on.0, off.0);
+  }
+
+  #[test]
+  fn a_row_given_another_item_unseen_by_change_detection_is_built_in_its_new_place() {
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
+      h.spawn_ui(list_page(10));
+      let list = h.find_ui("list").unwrap();
+      h.move_to(630.0, 470.0);
+      for _ in 0..4 {
+        h.frame(|_| ());
+        bind_rows(&mut h);
+      }
+      let pool = pool_of(&h, list);
+      let (r0, r1) = (pool[0].1, pool[1].1);
+      // Rows 0 and 1 swap items, their records not marked: the id scope a
+      // row is drawn in (its item's container) decides
+      let world = h.world_mut();
+      if let Some(mut pool) = world.get_mut::<UiList>(list) {
+        let pool = pool.bypass_change_detection();
+        pool.rows[0].1 = r1;
+        pool.rows[1].1 = r0;
+      }
+      for (row, index) in [(r1, 0), (r0, 1)] {
+        if let Some(mut pooled) = world.get_mut::<UiListRow>(row) {
+          pooled.bypass_change_detection().index = index;
+        }
+      }
+      h.frame(|_| ());
+      if cache {
+        let rebuilt = h.ui_cache_stats().rebuilt;
+        assert!(
+          rebuilt.contains(&r0) && rebuilt.contains(&r1),
+          "{rebuilt:?}"
+        );
+        assert_eq!(missed(&h), 0);
+      }
+      (h.ui_id(r0), h.ui_id(r1), h.commands_debug())
+    };
+    assert_eq!(run(true), run(false));
+  }
+
+  #[test]
+  fn a_rows_sync_writes_are_drawn_the_frame_they_are_made() {
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
+      let row = || {
+        UiNode::row()
+          .child(UiNode::slider(0.0..=1.0, 0.0).bind("v"))
+          .child(UiNode::text("v = {v}").bound())
+      };
+      let list = h.spawn_ui(
+        UiNode::list(5, 30.0)
+          .height(150.0)
+          .width(300.0)
+          .row_shape(row)
+          .name("list"),
+      );
+      h.move_to(630.0, 470.0);
+      for _ in 0..4 {
+        h.frame(|_| ());
+      }
+      let (_, row) = pool_of(&h, list)[0];
+      let slider = h.world().get::<Children>(row).unwrap()[0];
+      // The game writes the bound widget itself: the row's sync sets the
+      // name, which writes its caption, during the walk
+      h.world_mut().get_mut::<UiValue>(slider).unwrap().0 = 0.5;
+      h.frame(|_| ());
+      if cache {
+        assert_eq!(missed(&h), 0);
+      }
+      h.commands_debug()
+    };
+    let (on, off) = (run(true), run(false));
+    assert!(on.contains("v = 0.5"), "{on}");
+    assert_eq!(on, off);
+  }
+
+  #[test]
+  fn a_focused_row_of_a_scrolled_list_keeps_the_focus_as_uncached() {
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
+      h.spawn_ui(list_page(1000));
+      let list = h.find_ui("list").unwrap();
+      let mut frames = Vec::new();
+      let step = |h: &mut UiHarness, frames: &mut Vec<_>| {
+        h.frame(|_| ());
+        bind_rows(h);
+        if cache {
+          assert_eq!(missed(h), 0);
+        }
+        let focused = h.world().get::<UiList>(list).unwrap().focused;
+        frames.push((shown(h), focused));
+      };
+      for _ in 0..4 {
+        step(&mut h, &mut frames);
+      }
+      for _ in 0..3 {
+        h.action("ui.down");
+        step(&mut h, &mut frames);
+      }
+      let id = h.ui_id(list).unwrap();
+      h.frame(|ui| ui.set_scroll_offset(id, glam::Vec2::new(0.0, 15_000.0)));
+      for _ in 0..4 {
+        step(&mut h, &mut frames);
+      }
+      h.action("ui.down");
+      for _ in 0..3 {
+        step(&mut h, &mut frames);
+      }
+      frames
+    };
+    let (on, off) = (run(true), run(false));
+    assert_eq!(on.last().map(|frame| frame.1), Some(Some(4)));
+    assert_eq!(on, off);
+  }
+
+  #[test]
+  fn a_focus_asked_for_mid_walk_marks_the_row_holding_it() {
+    // A new list's first rows ask for the focus while the list is built:
+    // the row holding the node must be built, never replayed
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(list_page(10));
+    let list = h.find_ui("list").unwrap();
+    h.move_to(630.0, 470.0);
+    for _ in 0..4 {
+      h.frame(|_| ());
+      bind_rows(&mut h);
+    }
+    let (_, row) = pool_of(&h, list)[1];
+    let pick = h.world().get::<Children>(row).unwrap()[0];
+    let marked = h.frame_with_world(|ui, world| {
+      let cache = std::mem::take(&mut world.resource_mut::<UiNodes>().cache);
+      let mut walk = Walk::new(ui.scene().0, None, cache, true, ui.env());
+      walk.ask_focus(world, pick);
+      let dirty = walk.cache.dirty.clone();
+      walk.finish(world, ui);
+      dirty
+    });
+    assert!(marked.contains(&pick) && marked.contains(&row) && marked.contains(&list));
   }
 }

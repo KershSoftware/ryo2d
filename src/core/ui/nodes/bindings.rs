@@ -680,8 +680,13 @@ pub(crate) fn apply_subtree(world: &mut World, top: Entity, seeds: Vec<(String, 
 }
 
 /// Before a root is drawn: a bound widget a game changed sets its name.
-/// Whether that wrote another widget or a pattern.
-pub(crate) fn sync_root(world: &mut World, root: Entity) -> bool {
+/// Whether that wrote another widget or a pattern; each node that wrote is
+/// pushed to `written`.
+pub(crate) fn sync_root(
+  world: &mut World,
+  root: Entity,
+  mut written: Option<&mut Vec<Entity>>,
+) -> bool {
   if world.get::<UiBindings>(root).is_none() {
     return false;
   }
@@ -708,7 +713,7 @@ pub(crate) fn sync_root(world: &mut World, root: Entity) -> bool {
   for (name, widget, value) in changes {
     let value = adopted(world, root, &name, value);
     store(world, root, &name, value);
-    wrote |= propagate(world, root, &name, Some(widget), None);
+    wrote |= propagate(world, root, &name, Some(widget), written.as_deref_mut());
   }
   wrote
 }
