@@ -3134,15 +3134,20 @@ mod cache_tests {
   }
 
   #[test]
-  fn hovering_a_button_rebuilds_it_on_entry_and_on_exit() {
+  fn hovering_a_button_rebuilds_it_every_frame_it_is_hovered_and_on_exit() {
     let mut h = UiHarness::new(640.0, 480.0);
     h.spawn_ui(menu());
     warm(&mut h);
     let play = h.find_ui("play").unwrap();
     let rect = h.record_of(h.ui_id(play).unwrap()).unwrap().rect;
     h.move_to(rect.x + 2.0, rect.y + 2.0);
-    h.frame(|_| ());
-    assert!(h.ui_cache_stats().rebuilt.contains(&play));
+    for _ in 0..3 {
+      h.frame(|_| ());
+      assert!(
+        h.ui_cache_stats().rebuilt.contains(&play),
+        "hovered: its tooltip timer runs"
+      );
+    }
     h.move_to(1000.0, 1000.0);
     h.frame(|_| ());
     assert!(

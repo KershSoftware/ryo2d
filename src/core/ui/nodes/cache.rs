@@ -2326,16 +2326,35 @@ mod edge_tests {
       )
   }
 
+  /// The menu with the pointer off it: "a" takes the scope's focus, so
+  /// "pair" builds every frame, while "other" and "c" hold no role and
+  /// replay
+  fn menu_away(h: &mut UiHarness) {
+    h.move_to(1000.0, 1000.0);
+    h.spawn_ui(menu());
+  }
+
+  /// Whether "other" replayed in each of `frames` and was built in each of
+  /// `steps`: each step changed a cached subtree
+  fn assert_other(run: &Run, frames: &[usize], steps: &[usize]) {
+    let other = named(&run.on, "other");
+    let built = |frame: usize| run.stats[frame].rebuilt.contains(&other);
+    for &frame in frames {
+      assert!(!built(frame), "frame {frame}: \"other\" replays");
+    }
+    for &frame in steps {
+      assert!(built(frame), "frame {frame}: \"other\" builds");
+    }
+  }
+
   #[test]
   fn despawning_inside_a_cached_subtree_looks_the_same() {
     let run = oracle(
-      |h| {
-        h.spawn_ui(menu());
-      },
+      menu_away,
       &[
         Frame,
         Frame,
-        Write("a", |w, e| {
+        Write("c", |w, e| {
           w.despawn(e);
         }),
         Frame,
@@ -2343,6 +2362,7 @@ mod edge_tests {
       ],
     );
     assert_cached(&run);
+    assert_other(&run, &[1, 3], &[2]);
   }
 
   #[test]
@@ -2368,23 +2388,24 @@ mod edge_tests {
   #[test]
   fn hiding_and_disabling_a_cached_node_looks_the_same() {
     let run = oracle(
-      |h| {
-        h.spawn_ui(menu());
-      },
+      menu_away,
       &[
         Frame,
         Frame,
-        Write("a", |w, e| {
+        Write("c", |w, e| {
           w.entity_mut(e).insert(UiHidden);
         }),
         Frame,
-        Write("a", |w, e| {
+        Frame,
+        Write("c", |w, e| {
           w.entity_mut(e).remove::<UiHidden>();
         }),
+        Frame,
         Frame,
         Write("c", |w, e| {
           w.entity_mut(e).insert(UiDisabled);
         }),
+        Frame,
         Frame,
         Write("c", |w, e| {
           w.entity_mut(e).remove::<UiDisabled>();
@@ -2394,6 +2415,8 @@ mod edge_tests {
       ],
     );
     assert_cached(&run);
+    // Frame 3 replays "other" with "c" hidden: its slot draws nothing
+    assert_other(&run, &[1, 3, 5, 7, 9], &[2, 4, 6, 8]);
   }
 
   #[test]

@@ -64,6 +64,13 @@ fn an_unchanged_cached_node_frame_allocates_no_more_than_an_uncached_one() {
     on <= off,
     "an unchanged cached frame made {on} allocations, an uncached one {off}"
   );
+  // A replay allocates nothing once warm: what is left is the frame's own
+  // (the focused path's builds, resolve, commands), well under an uncached
+  // frame's
+  assert!(
+    on <= 30,
+    "an unchanged cached frame made {on} allocations (at most 30)"
+  );
   assert_eq!(
     on, again,
     "two unchanged cached frames allocate the same: replay allocates nothing"
