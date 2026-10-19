@@ -654,8 +654,10 @@ fn set_source(node: &mut EntityWorldMut<'_>, source: Option<Arc<TreeSource>>) {
 fn update_row_shape(node: &mut EntityWorldMut<'_>, shape: Option<RowShape>) {
   match (node.get_mut::<UiListShape>(), shape) {
     (Some(mut held), Some(shape)) => held.bypass_change_detection().next = Some(shape),
+    // Given back before the update released the rows of the old one: it is
+    // taken up as a new shape, so the rows come in line with it
     (None, Some(shape)) => {
-      node.insert(UiListShape::new(shape));
+      node.insert(UiListShape::given(shape));
     }
     (Some(_), None) => {
       node.remove::<UiListShape>();
