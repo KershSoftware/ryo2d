@@ -33,6 +33,9 @@ pub(crate) enum UiCommand {
   },
   Line {
     points: Arc<[Vec2]>,
+    /// Added to every point where it is drawn: a node's local line is
+    /// placed so, sharing its points with the draw it was made from
+    at: Vec2,
     width: f32,
     color: Color,
     closed: bool,

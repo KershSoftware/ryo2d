@@ -2042,6 +2042,7 @@ impl<'a> UiContext<'a> {
       order,
       UiCommand::Line {
         points: points.into(),
+        at: Vec2::ZERO,
         width,
         color,
         closed: false,

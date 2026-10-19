@@ -243,6 +243,7 @@ impl Dropdown<'_, '_> {
           Vec2::new(CHEVRON.x, ends),
         ]
         .into(),
+        at: Vec2::ZERO,
         width: 1.5,
         color: look.text,
         closed: false,

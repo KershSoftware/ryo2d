@@ -313,6 +313,7 @@ impl Painter<'_> {
     }
     self.commands.push(UiCommand::Line {
       points: points.into(),
+      at: Vec2::ZERO,
       width,
       color,
       closed: false,
@@ -567,7 +568,9 @@ mod tests {
           ..
         } => format!("rect {} {} {radius} {}", rect.x, rect.y, border.is_some()),
         UiCommand::Sprite { rect, .. } => format!("sprite {} {}", rect.x, rect.y),
-        UiCommand::Line { points, .. } => format!("line {} {}", points[0].x, points[1].x),
+        UiCommand::Line { points, at, .. } => {
+          format!("line {} {}", points[0].x + at.x, points[1].x + at.x)
+        }
         UiCommand::Text { origin, .. } => format!("text {} {}", origin.x, origin.y),
       });
     }

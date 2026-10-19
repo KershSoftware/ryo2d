@@ -851,19 +851,16 @@ fn command_of(
         }
         UiCommand::Line {
           points,
+          at,
           width,
           color,
           closed,
           ..
         } => {
-          let mut points = points;
-          // Moved in place when the draw is the only holder
-          match Arc::get_mut(&mut points) {
-            Some(own) => own.iter_mut().for_each(|point| *point += by),
-            None => points = points.iter().map(|point| *point + by).collect(),
-          }
+          // The points are shared, moved where they are drawn
           Some(UiCommand::Line {
             points,
+            at: at + by,
             width,
             color,
             closed,
@@ -1311,6 +1308,7 @@ mod tests {
       node,
       DrawKind::Local(UiCommand::Line {
         points: [Vec2::ZERO, Vec2::new(4.0, 0.0)].into(),
+        at: Vec2::ZERO,
         width: 1.0,
         color: Color::WHITE,
         closed: false,
@@ -1335,13 +1333,14 @@ mod tests {
         Rect::new(15.0, 49.0, 8.0, 6.0)
       ]
     );
+    // Where the line is drawn: its points moved to its node
     let points = commands.commands().find_map(|c| match c {
-      UiCommand::Line { points, .. } => Some(points.clone()),
+      UiCommand::Line { points, at, .. } => Some(points.iter().map(|p| *p + *at).collect()),
       _ => None,
     });
     assert_eq!(
       points,
-      Some([Vec2::new(10.0, 20.0), Vec2::new(14.0, 20.0)].into())
+      Some(vec![Vec2::new(10.0, 20.0), Vec2::new(14.0, 20.0)])
     );
   }
 
@@ -1449,6 +1448,7 @@ mod clone_tests {
     let points: Arc<[Vec2]> = Arc::from(vec![Vec2::ZERO, Vec2::ONE]);
     let draw = DrawKind::Local(UiCommand::Line {
       points: Arc::clone(&points),
+      at: Vec2::ZERO,
       width: 1.0,
       color: Color::WHITE,
       closed: false,

@@ -105,6 +105,7 @@ impl UiContext<'_> {
             node,
             DrawKind::Local(UiCommand::Line {
               points: points.into(),
+              at: Vec2::ZERO,
               width: 2.0,
               color: ink,
               closed: false,

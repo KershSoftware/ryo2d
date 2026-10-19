@@ -284,16 +284,17 @@ pub(crate) fn emit_ui(
         list.set_last_sprite_scissor(scissor);
       }
       UiCommand::Line {
-        points: at,
+        points: line,
+        at,
         width,
         color,
         closed,
         ..
       } => {
-        let last = at.len().saturating_sub(1).max(1) as f32;
+        let last = line.len().saturating_sub(1).max(1) as f32;
         points.clear();
-        points.extend(at.iter().enumerate().map(|(i, pos)| PolyPoint {
-          pos: *pos,
+        points.extend(line.iter().enumerate().map(|(i, pos)| PolyPoint {
+          pos: *pos + *at,
           half_width: width / 2.0,
           color: line_color(*color, 1.0),
           u: i as f32 / last,
