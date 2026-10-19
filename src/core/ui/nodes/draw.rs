@@ -16,6 +16,7 @@ use crate::core::ecs::kernel::{
 };
 use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextReveal, TextStyle};
+use crate::core::ui::tape::Read;
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::{Anchor, Container, Rect, Response, Scroll, Theme, UiContext, UiId};
 
@@ -613,7 +614,7 @@ fn container_builder<'u, 'a>(
   let gap = gap_of(layout, ui);
   let anchor = kind
     .anchor_node
-    .map_or(UiId::NONE, |anchor| recorded_id(node.world(), anchor));
+    .map_or(UiId::NONE, |anchor| read_id(node.world(), anchor, ui));
   let mut container = match kind.kind {
     _ if flags.modal => ui.modal(),
     Kind::Popup { .. } => ui.popup(anchor),
@@ -733,24 +734,34 @@ impl<'w> Extras<'w> {
     kind: &UiNodeKind,
     shared: Shared<'w>,
     place: Option<Place>,
+    ui: &mut UiContext<'_>,
   ) -> Extras<'w> {
     Extras {
       entity: node.id(),
       place,
       tooltip: shared.tooltip,
       disabled: shared.disabled,
-      nav: neighbour_ids(node.world(), kind.nav),
+      nav: neighbour_ids(node.world(), kind.nav, ui),
     }
   }
 }
 
 /// The recorded id of each named neighbour (`NONE` for none, or one not
-/// drawn yet)
-fn neighbour_ids(world: &World, nav: [Option<Entity>; 4]) -> [UiId; 4] {
-  nav.map(|target| target.map_or(UiId::NONE, |target| recorded_id(world, target)))
+/// drawn yet), each noted as read
+fn neighbour_ids(world: &World, nav: [Option<Entity>; 4], ui: &mut UiContext<'_>) -> [UiId; 4] {
+  nav.map(|target| target.map_or(UiId::NONE, |target| read_id(world, target, ui)))
 }
 
-fn recorded_id(world: &World, node: Entity) -> UiId {
+/// `node`'s recorded id, noted as read by the build being recorded: a
+/// replay of it is right only while the id stays
+fn read_id(world: &World, node: Entity, ui: &mut UiContext<'_>) -> UiId {
+  let id = recorded_id(world, node);
+  ui.note_read(Read::Id { node, id });
+  id
+}
+
+/// `node`'s response id as its last draw recorded it (`NONE` before one)
+pub(super) fn recorded_id(world: &World, node: Entity) -> UiId {
   world
     .get::<UiInteraction>(node)
     .map_or(UiId::NONE, |state| state.id)
@@ -895,7 +906,7 @@ fn draw_button(
   let Some(label) = node.get::<UiLabel>() else {
     return missing("button", "UiLabel");
   };
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   let label = rich(&label.0, opts.markup);
   let mut button = widget_opts!(ui.button(label), kind, extras);
   if let Some(icon) = &opts.icon {
@@ -916,7 +927,7 @@ fn draw_image(
   let Some(image) = node.get::<UiImage>() else {
     return missing("image", "UiImage");
   };
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   let mut builder = widget_opts!(ui.image(&image.0), kind, extras);
   if let Some(size) = opts.size {
     builder = builder.size(size.x, size.y);
@@ -945,7 +956,7 @@ fn draw_slot(
   let Some(slot) = node.get::<UiSlot>() else {
     return missing("slot", "UiSlot");
   };
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   let mut builder = widget_opts!(ui.slot(), kind, extras)
     .count(slot.count)
     .selected(slot.selected);
@@ -970,7 +981,7 @@ fn draw_prompt(
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   Some(widget_opts!(ui.prompt(action), kind, extras).show())
 }
 
@@ -983,7 +994,7 @@ fn draw_rebind(
   ui: &mut UiContext<'_>,
   place: Option<Place>,
 ) -> Option<Response> {
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   let mut builder = widget_opts!(ui.rebind(&opts.action), kind, extras);
   if let Some(label) = &opts.label {
     builder = builder.label(label.as_str());
@@ -1010,7 +1021,7 @@ fn draw_check(
   let Some(checked) = node.get::<UiChecked>() else {
     return (missing(name, "UiChecked"), None);
   };
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   let mut on = checked.0;
   let response = if matches!(kind.kind, Kind::Toggle) {
     widget_opts!(ui.toggle(&mut on, label.0.as_str()), kind, extras).show()
@@ -1033,7 +1044,7 @@ fn draw_slider(
   let Some(value) = node.get::<UiValue>() else {
     return (missing("slider", "UiValue"), None);
   };
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   let (lo, hi) = opts.range;
   let start = if value.0.is_finite() { value.0 } else { lo };
   let drawn = if lo.is_finite() && hi.is_finite() {
@@ -1069,7 +1080,7 @@ fn draw_progress(
   let Some(value) = node.get::<UiValue>() else {
     return missing("progress", "UiValue");
   };
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   let fraction = if value.0.is_nan() {
     0.0
   } else {
@@ -1091,7 +1102,7 @@ fn draw_text_input(
 ) -> Option<Response> {
   let entity = node.id();
   let nav = node.get::<UiNodeKind>().map_or([UiId::NONE; 4], |kind| {
-    neighbour_ids(node.world(), kind.nav)
+    neighbour_ids(node.world(), kind.nav, ui)
   });
   let (kind, mut text, tooltip, disabled) = components::<(
     &UiNodeKind,
@@ -1283,7 +1294,7 @@ fn draw_pick(
   let Some(index) = node.get::<UiIndex>() else {
     return (missing(name, "UiIndex"), None);
   };
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   let list = OptionList::of(&options.0);
   let list = list.as_slice();
   let drawn = index.0.min(list.len().saturating_sub(1));
@@ -1313,7 +1324,7 @@ fn draw_choice_list(
   let Some(index) = node.get::<UiIndex>() else {
     return (missing("choice_list", "UiIndex"), None);
   };
-  let extras = Extras::of(node, kind, shared, place);
+  let extras = Extras::of(node, kind, shared, place, ui);
   let list = OptionList::of(&options.0);
   let mut choices = widget_opts!(ui.choice_list(list.as_slice()), kind, extras);
   if let Some(first) = default {

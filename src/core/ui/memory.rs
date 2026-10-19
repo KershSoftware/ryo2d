@@ -249,6 +249,56 @@ impl Interaction {
       self.play(UiSound::Tick);
     }
   }
+
+  /// Every id that holds an interaction role this frame: hot, hovered,
+  /// pressed, clicked (left, right, double), dragged, pressed on, focused
+  /// (held, gained, lost), activated, stepped, dropped on or over, and the
+  /// held payload's source. A widget draws each, and its exit from each.
+  pub(crate) fn roles(&self) -> Roles {
+    let ids = [
+      self.hot,
+      self.hovered,
+      self.active,
+      self.clicked,
+      self.secondary,
+      self.double,
+      self.drag_started,
+      self.drag_released,
+      self.press_target,
+      self.focused,
+      self.gained,
+      self.lost,
+      self.activated,
+      self.nav_step.map_or(UiId::NONE, |(id, _)| id),
+      self.drop_hover,
+      self.dropped.as_ref().map_or(UiId::NONE, |(id, _)| *id),
+      self.drag.as_ref().map_or(UiId::NONE, |drag| drag.source),
+    ];
+    let mut roles = Roles::default();
+    for (slot, id) in roles.0.iter_mut().zip(ids) {
+      *slot = id;
+    }
+    roles
+  }
+}
+
+/// The ids holding an interaction role in one frame
+/// ([`Interaction::roles`]), `NONE` in an empty slot: a fixed array, so
+/// taking them allocates nothing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Roles([UiId; 20]);
+
+impl Roles {
+  /// Whether `id` holds a role (never `NONE`)
+  #[cfg(test)]
+  pub(crate) fn contains(&self, id: UiId) -> bool {
+    id != UiId::NONE && self.0.contains(&id)
+  }
+
+  /// The ids holding a role, a repeated one as often as it holds one
+  pub(crate) fn iter(&self) -> impl Iterator<Item = UiId> + '_ {
+    self.0.iter().copied().filter(|&id| id != UiId::NONE)
+  }
 }
 
 struct Slot {

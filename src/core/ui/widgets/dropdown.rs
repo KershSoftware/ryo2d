@@ -136,7 +136,8 @@ impl Dropdown<'_, '_> {
   /// it opens on, so a long list stays inside the UI and the wheel and
   /// navigation scroll it. The option picked this frame, if any.
   fn list(&self, ui: &mut UiContext<'_>, list: UiId, anchor: UiId) -> Option<usize> {
-    let room = popup::room(ui.anchor_rect(anchor), ui.ui_size()) - 2.0 * LIST_PADDING;
+    // Baked into the list: a replay waits for the anchor to stay put
+    let room = popup::room(ui.placed_by(anchor), ui.ui_size()) - 2.0 * LIST_PADDING;
     ui.begin_popup(anchor, false);
     let style = UiStyle {
       flow: Flow::Column,

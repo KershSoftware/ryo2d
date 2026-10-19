@@ -6,7 +6,6 @@
 /// cache compares two of these to know whether all it recorded is stale.
 /// Scale and size are `f32` bit patterns, so equal values compare equal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)] // until the node cache reads it
 pub(crate) struct UiEnv {
   /// `UiTheme::generation`
   pub(crate) theme: u64,

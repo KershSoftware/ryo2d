@@ -12,7 +12,10 @@
 //! to the child (its own tape, or its replay) until `end_child`. A build
 //! that does something a replay would not repeat (asks for the focus,
 //! consumes input, plays a sound, draws outside its subtree) taints its tape
-//! and every tape around it: they are recorded but never replayed.
+//! and every tape around it: they are recorded but never replayed. What a
+//! build read from outside its own node (another node's id, the rect it
+//! placed by) is noted as a [`Read`]: the tape replays only while each is
+//! still as read.
 
 use crate::core::ecs::kernel::Entity;
 use crate::core::ui::immediate::UiContext;
@@ -31,6 +34,21 @@ pub(crate) struct Tape {
   /// Its build did nothing a replay would not repeat
   /// ([`UiContext::taint`])
   pub(crate) replayable: bool,
+  /// What its build read from outside its own node, in order
+  pub(crate) reads: Vec<Read>,
+}
+
+/// Something a build read from outside its own node, baked into what it
+/// pushed: a replay is right only while it is still as read
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Read {
+  /// Node `node`'s response id, as its `UiInteraction` held it (`NONE`
+  /// before it was drawn): a `nav_*` neighbour, a popup's anchor
+  Id { node: Entity, id: UiId },
+  /// Where widget `id` was (`UiContext::anchor_rect`; `None`: nowhere) when
+  /// the build placed something by it: an open dropdown's list is as tall
+  /// as the room beside the dropdown itself
+  Rect { id: UiId, rect: Option<Rect> },
 }
 
 /// One thing a builder pushed
@@ -124,6 +142,17 @@ impl UiContext<'_> {
   #[allow(dead_code)] // until the node walk records and replays tapes
   pub(crate) fn end_child(&mut self) {
     self.resume();
+  }
+
+  /// The build being recorded read `read` from outside its own node: noted
+  /// in the recording tape, if one is
+  pub(crate) fn note_read(&mut self, read: Read) {
+    if !self.recording() {
+      return;
+    }
+    if let Some(recorder) = self.tapes.last_mut() {
+      recorder.tape.reads.push(read);
+    }
   }
 
   /// The build being recorded did something a replay would not repeat:

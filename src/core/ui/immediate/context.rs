@@ -387,7 +387,6 @@ pub struct UiContext<'a> {
   /// The theme widgets read, taken from the world at the start of the pass
   theme: Arc<Theme>,
   /// The generation of `theme` (`UiTheme::generation`); read by `env`
-  #[allow(dead_code)] // until the node cache reads `env`
   theme_generation: u64,
   /// Stack of clip rects for nested clipping
   clip_stack: Vec<Rect>,
@@ -499,7 +498,6 @@ impl<'a> UiContext<'a> {
   }
 
   /// Everything a builder reads besides a node's own components
-  #[allow(dead_code)] // until the node cache reads it
   pub(crate) fn env(&self) -> UiEnv {
     UiEnv {
       theme: self.theme_generation,

@@ -10,7 +10,7 @@
 use glam::Vec2;
 
 use super::immediate::{PAGE_LAYER, POPUP_LAYER, UiContext};
-use super::tape::Op;
+use super::tape::{Op, Read};
 use super::tree::Subtree;
 use super::{Anchor, Rect, UiId};
 use crate::core::ui::theme::warn_once;
@@ -82,6 +82,17 @@ impl UiContext<'_> {
       .current(anchor)
       .or_else(|| self.memory.prev(anchor))
       .map(|record| record.rect)
+  }
+
+  /// Where widget `anchor` is ([`anchor_rect`](Self::anchor_rect)), for a
+  /// build that places something by it: noted in the recording tape, which
+  /// then replays only while the anchor stays where it was
+  pub(crate) fn placed_by(&mut self, anchor: UiId) -> Option<Rect> {
+    let rect = self.anchor_rect(anchor);
+    if anchor != UiId::NONE {
+      self.note_read(Read::Rect { id: anchor, rect });
+    }
+    rect
   }
 
   /// Start recording a popup: the nodes that follow go into a subtree of
