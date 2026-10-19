@@ -217,6 +217,52 @@ impl Flow {
   }
 }
 
+// `UiStyle::hash_into` packs `Align` into 3 bits (and `align_self`, one more
+// than it, into 3), `Justify` into 3 and `Anchor` into 4. Each match below
+// is exhaustive, so a new variant fails to compile here; the match then
+// names the last variant, whose discriminant must still fit, or the field
+// must be widened.
+const fn last_align(align: Align) -> Align {
+  match align {
+    Align::Start | Align::Center | Align::End | Align::Stretch => Align::Stretch,
+  }
+}
+const fn last_justify(justify: Justify) -> Justify {
+  match justify {
+    Justify::Start
+    | Justify::Center
+    | Justify::End
+    | Justify::SpaceBetween
+    | Justify::SpaceAround
+    | Justify::SpaceEvenly => Justify::SpaceEvenly,
+  }
+}
+const fn last_anchor(anchor: Anchor) -> Anchor {
+  match anchor {
+    Anchor::TopLeft
+    | Anchor::TopCenter
+    | Anchor::TopRight
+    | Anchor::CenterLeft
+    | Anchor::Center
+    | Anchor::CenterRight
+    | Anchor::BottomLeft
+    | Anchor::BottomCenter
+    | Anchor::BottomRight => Anchor::BottomRight,
+  }
+}
+const _: () = assert!(
+  (last_align(Align::Start) as u64) < 7,
+  "Align outgrew its bits"
+);
+const _: () = assert!(
+  (last_justify(Justify::Start) as u64) < 8,
+  "Justify outgrew its bits"
+);
+const _: () = assert!(
+  (last_anchor(Anchor::Center) as u64) < 16,
+  "Anchor outgrew its bits"
+);
+
 impl UiStyle {
   /// A hash of every field, floats by their bits
   pub(crate) fn shape_hash(&self) -> u64 {
