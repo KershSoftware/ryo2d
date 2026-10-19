@@ -679,7 +679,7 @@ git commit -m "feat: what else makes a cached UI node rebuild
 ### Task 6: Splice or build
 
 **Files:**
-- Modify: `src/core/ui/nodes/draw.rs` (`draw_nodes` refreshes the dirty set after syncing the scene's roots; `draw_node` replays a clean node or builds and records it; `walk_children` brackets each child with `begin_child`/`end_child`; the Back target and pending focus), `src/core/ui/nodes/bindings.rs` (`sync_root` returns whether it wrote; a write the walk makes through bindings marks its target dirty), `src/core/ui/nodes/cache.rs` (storing records, dropping undrawn ones, stats), `src/core/testing/ui.rs` (`set_ui_cache`, `ui_cache_stats`), `src/core/engine/frame.rs` (the end-of-frame record drop; the switch read from `DebugConfig.ui_cache` once Task 11 adds it — until then, `UiCache.enabled` stays true)
+- Modify: `src/core/ui/nodes/draw.rs` (`draw_nodes` refreshes the dirty set after syncing the scene's roots; `draw_node` replays a clean node or builds and records it; `walk_children` brackets each child with `begin_child`/`end_child`; the Back target and pending focus), `src/core/ui/nodes/bindings.rs` (`sync_root` returns whether it wrote; a write the walk makes through bindings marks its target dirty), `src/core/ui/nodes/cache.rs` (storing records, dropping undrawn ones, stats), `src/core/testing/ui.rs` (`set_ui_cache`, `ui_cache_stats`), `src/core/engine/frame.rs` (the end-of-frame record drop; the switch read from `DebugConfig.ui_cache` once Task 9 adds it — until then, `UiCache.enabled` stays true)
 - Test: `src/core/ui/nodes/draw.rs` (`mod cache_tests`)
 
 **Interfaces:**
@@ -963,7 +963,7 @@ git commit -m "test: caching on and off draw and behave the same, frame by frame
 
 **Files:**
 - Create: `examples/demos/ui/tests/cache.rs`, `examples/games/breakout/tests/cache.rs`
-- Modify: `src/core/testing/` (`HeadlessEngine`: a caching switch and a per-frame UI snapshot, `#[doc(hidden)]`), `src/core/engine/` (the builder option `EngineBuilder::ui_cache(bool)` if Task 11 has not added it yet: add it here and Task 11 documents it)
+- Modify: `src/core/testing/` (`HeadlessEngine`: a per-frame UI snapshot, `#[doc(hidden)]`), `src/core/config/debug.rs` (`DebugConfig.ui_cache: bool`, default true), `src/core/engine/frame.rs` (copy `DebugConfig.ui_cache` into `UiCache.enabled` each pass, when `UiNodes` exists), the `EngineBuilder` file (`EngineBuilder::ui_cache(bool)`, setting that field)
 - Test: those two files
 
 Rules:
@@ -1134,12 +1134,12 @@ git commit -m "feat: a debug spot check that a cached UI node still builds the s
 ### Task 11: The debug view and the switch
 
 **Files:**
-- Modify: `src/core/ui/debug.rs` (the rebuilds overlay), `src/core/console/builtins.rs` (`debug:ui-rebuilds`, `ui:cache on|off`, help lines), `src/core/config/debug.rs` (`DebugConfig.show_ui_rebuilds: bool`, `DebugConfig.ui_cache: bool` default true), `src/core/engine/frame.rs` (draw the overlay; copy `ui_cache` into `UiCache.enabled` each pass), the `EngineBuilder` file (`ui_cache(bool)`)
+- Modify: `src/core/ui/debug.rs` (the rebuilds overlay), `src/core/console/builtins.rs` (`debug:ui-rebuilds`, `ui:cache on|off`, help lines), `src/core/config/debug.rs` (`DebugConfig.show_ui_rebuilds: bool`; `ui_cache` exists since Task 9), `src/core/engine/frame.rs` (draw the overlay)
 - Test: `src/core/console/builtins.rs` tests and `src/core/ui/debug.rs` tests
 
 Rules:
 - `debug:ui-rebuilds` toggles `show_ui_rebuilds`. The overlay, on the overlay layer like `debug:ui`, outlines each node rebuilt this frame (its last-frame record rect), each outline fading out over 0.5 s (the overlay keeps `(UiId, seconds left)`, aged by `dt`), and writes "rebuilt N / replayed M nodes" in a corner.
-- `ui:cache off` / `ui:cache on` set `DebugConfig.ui_cache`; `ui:cache` alone prints the state. `EngineBuilder::ui_cache(on)` sets the start value.
+- `ui:cache off` / `ui:cache on` set `DebugConfig.ui_cache` (Task 9 added it, its per-pass copy into the cache and `EngineBuilder::ui_cache`); `ui:cache` alone prints the state.
 - With caching off, the frame is exactly the uncached path (Task 6's switch).
 
 - [ ] **Step 1: Write the failing tests:**
