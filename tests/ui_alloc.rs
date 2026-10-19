@@ -112,11 +112,9 @@ fn an_unchanged_settings_frame_allocates_little() {
   let made = ALLOCATIONS.load(Ordering::Relaxed) - before;
   println!("allocations in one frame: {made}");
   // 191 when written: each label copied into its text leaf, line points and
-  // this screen's own `format!`s. 366 once text leaves are shared (`Arc`):
-  // every labelled row allocates its leaf's Arc until the node cache replays
-  // it. Less than one a row to spare
+  // this screen's own `format!`s; less than one a row to spare
   assert!(
-    made < 400,
+    made < 220,
     "an unchanged 200-widget frame made {made} allocations"
   );
 }

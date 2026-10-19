@@ -54,7 +54,7 @@ use crate::core::ui::popup::{Popup, SetAside};
 use crate::core::ui::response::{Response, Sense};
 use crate::core::ui::theme::{Look, Skin, Theme, WidgetKind, WidgetState, warn_once};
 use crate::core::ui::tree::{
-  self, Draw, DrawKind, Node, RecordSpec, ResolveCx, Subtree, TextLeaf, align_fraction,
+  self, Draw, DrawKind, Leaf, Node, RecordSpec, ResolveCx, Subtree, TextLeaf, align_fraction,
 };
 use crate::core::ui::types::{Anchor, Color, Rect};
 use crate::core::ui::widgets::common::WidgetOpts;
@@ -1134,7 +1134,7 @@ impl<'a> UiContext<'a> {
     let generation = self.engine().map_or(0, |engine| engine.generation());
     node.content_key = fast_hash(&(leaf.key.seed(), self.space.px_scale.to_bits(), generation));
     // Drawn from the node, which keeps the one copy
-    node.text = Some(Arc::new(leaf));
+    node.text = Some(Leaf::Owned(leaf));
     let index = self.push_node(node, None);
     self.push_draw(
       index,

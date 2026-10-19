@@ -62,7 +62,7 @@ pub(crate) struct Node {
   pub(crate) style: UiStyle,
   pub(crate) measure: Measure,
   /// The text a `Measure::Text` node is measured by
-  pub(crate) text: Option<Arc<TextLeaf>>,
+  pub(crate) text: Option<Leaf>,
   /// Changes when what is measured changes
   pub(crate) content_key: u64,
   /// What its record says; `None` writes no record
@@ -145,6 +145,50 @@ impl TextLeaf {
       style,
       options,
       key,
+    }
+  }
+}
+
+/// A node's text: moved in by a live build, which allocates nothing, and
+/// shared once recorded
+#[derive(Debug, Clone)]
+// A node held the whole leaf before; moving it in must not allocate
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum Leaf {
+  /// Built this frame; cloning copies the text, so recording shares first
+  Owned(TextLeaf),
+  /// Recorded: cloning shares the one copy
+  #[allow(dead_code)] // made by recording (the node tape)
+  Shared(Arc<TextLeaf>),
+}
+
+impl Leaf {
+  /// Turn an owned leaf into a shared one in place; the shared leaf
+  #[allow(dead_code)] // called by recording (the node tape)
+  pub(crate) fn share(&mut self) -> Arc<TextLeaf> {
+    match self {
+      Leaf::Shared(leaf) => Arc::clone(leaf),
+      Leaf::Owned(leaf) => {
+        let blank = TextLeaf::new(
+          RichText::default(),
+          TextStyle::default(),
+          TextLayoutOptions::default(),
+        );
+        let shared = Arc::new(std::mem::replace(leaf, blank));
+        *self = Leaf::Shared(Arc::clone(&shared));
+        shared
+      }
+    }
+  }
+}
+
+impl std::ops::Deref for Leaf {
+  type Target = TextLeaf;
+
+  fn deref(&self) -> &TextLeaf {
+    match self {
+      Leaf::Owned(leaf) => leaf,
+      Leaf::Shared(leaf) => leaf,
     }
   }
 }
@@ -821,7 +865,12 @@ fn command_of(
           closed,
           ..
         } => {
-          let points: Arc<[Vec2]> = points.iter().map(|point| *point + by).collect();
+          let mut points = points;
+          // Moved in place when the draw is the only holder
+          match Arc::get_mut(&mut points) {
+            Some(own) => own.iter_mut().for_each(|point| *point += by),
+            None => points = points.iter().map(|point| *point + by).collect(),
+          }
           Some(UiCommand::Line {
             points,
             width,
@@ -1366,15 +1415,34 @@ mod clone_tests {
     assert_eq!((copy.order, copy.layer, copy.node), (3, 1, 0));
   }
 
+  fn shared_of(node: &Node) -> &Arc<TextLeaf> {
+    match node.text.as_ref() {
+      Some(Leaf::Shared(leaf)) => leaf,
+      _ => panic!("a shared leaf"),
+    }
+  }
+
   #[test]
   fn a_cloned_node_shares_its_text() {
     let mut node = Node::new(UiId(1), UiStyle::default(), Measure::None);
-    node.text = Some(leaf("Label"));
+    node.text = Some(Leaf::Shared(leaf("Label")));
     let copy = node.clone();
-    assert!(Arc::ptr_eq(
-      copy.text.as_ref().expect("text"),
-      node.text.as_ref().expect("text")
-    ));
+    assert!(Arc::ptr_eq(shared_of(&copy), shared_of(&node)));
+  }
+
+  #[test]
+  fn a_shared_owned_leaf_clones_without_copying_text() {
+    let mut node = Node::new(UiId(1), UiStyle::default(), Measure::None);
+    node.text = Some(Leaf::Owned(TextLeaf::new(
+      RichText::new("Label"),
+      TextStyle::default(),
+      TextLayoutOptions::default(),
+    )));
+    let shared = node.text.as_mut().expect("text").share();
+    assert_eq!(shared.text.text, "Label");
+    let copy = node.clone();
+    assert!(Arc::ptr_eq(shared_of(&copy), &shared));
+    assert!(Arc::ptr_eq(shared_of(&node), &shared));
   }
 
   #[test]
