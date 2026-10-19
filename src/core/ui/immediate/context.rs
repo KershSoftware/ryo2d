@@ -1021,14 +1021,37 @@ impl<'a> UiContext<'a> {
       node.text = node.text.take().map(Leaf::share);
       (node.clone(), at)
     });
-    node.layer = self.layer;
-    node.order = self.next_order();
+    let index = self.push_stamped(at, |nodes| nodes.push(node));
+    if let Some((node, at)) = taped {
+      self.tape_node(node, at, index);
+    }
+    index
+  }
+
+  /// [`push_node`](Self::push_node) of a copy of `node`, cloned straight
+  /// into the subtree: a replay pushes its tape's nodes so
+  pub(crate) fn push_node_copy(&mut self, node: &Node, at: Option<Rect>) -> usize {
+    if self.recording() {
+      return self.push_node(node.clone(), at);
+    }
+    self.push_stamped(at, |nodes| {
+      nodes.extend_from_slice(std::slice::from_ref(node))
+    })
+  }
+
+  /// Push the node `put` adds to the open subtree (started if none is) and
+  /// stamp it where it went: its layer, order, focus scope and, inside a
+  /// container, its parent, depth and scroll area, and `at` (placed out of
+  /// its parent's flow) or, as a subtree's root, the subtree's `at`. It
+  /// becomes the innermost open node; its index.
+  fn push_stamped(&mut self, at: Option<Rect>, put: impl FnOnce(&mut Vec<Node>)) -> usize {
+    let layer = self.layer;
+    let order = self.next_order();
     let parent = self.open;
     let at = at.map(clean_at);
     let clip = self.current_clip;
     // The nearest open scope, or the scope the subtree started in
-    node.scope = self.focus_scope_here();
-    let scope = node.scope;
+    let scope = self.focus_scope_here();
     let subtree = self
       .subtree
       .get_or_insert_with(|| self.memory.scratch.take_subtree(at, clip, scope));
@@ -1036,23 +1059,29 @@ impl<'a> UiContext<'a> {
     if parent.is_none() && subtree.nodes.is_empty() {
       subtree.at = at;
     }
-    if let Some(p) = parent.and_then(|p| subtree.nodes.get(p)) {
+    let inside = parent.and_then(|p| subtree.nodes.get(p)).map(|p| {
       let flags = p.record.map(|r| r.flags).unwrap_or_default();
-      node.parent = parent;
-      node.depth = p.depth.saturating_add(1);
-      node.scroll = if flags.contains(Flags::SCROLLABLE) {
+      let scroll = if flags.contains(Flags::SCROLLABLE) {
         p.id
       } else {
         p.scroll
       };
-    }
-    node.at = at.filter(|_| node.parent.is_some());
+      (p.depth.saturating_add(1), scroll)
+    });
     let index = subtree.nodes.len();
-    subtree.nodes.push(node);
-    self.open = Some(index);
-    if let Some((node, at)) = taped {
-      self.tape_node(node, at, index);
+    put(&mut subtree.nodes);
+    if let Some(node) = subtree.nodes.get_mut(index) {
+      node.layer = layer;
+      node.order = order;
+      node.scope = scope;
+      if let Some((depth, scroll)) = inside {
+        node.parent = parent;
+        node.depth = depth;
+        node.scroll = scroll;
+      }
+      node.at = at.filter(|_| node.parent.is_some());
     }
+    self.open = Some(index);
     index
   }
 

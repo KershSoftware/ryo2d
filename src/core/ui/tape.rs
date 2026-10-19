@@ -316,7 +316,7 @@ impl UiContext<'_> {
           let Some(node) = usize::try_from(*node).ok().and_then(|k| tape.nodes.get(k)) else {
             continue;
           };
-          let index = self.push_node(node.clone(), *at);
+          let index = self.push_node_copy(node, *at);
           self.memory.scratch.replayed.push(index);
         }
         Op::Draw { node, kind } => {
