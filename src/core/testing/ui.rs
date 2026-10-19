@@ -112,9 +112,9 @@ pub struct UiHarness {
   sources: nodes::SourceQuery,
   /// The last frame's node events
   last_events: Vec<UiEvent>,
-  /// What the last frame's UI consumed of the input, in `Debug` form, each
-  /// kind sorted
-  consumed: String,
+  /// What the last frame's UI consumed of the input (formatted only for
+  /// `frame_snapshot`)
+  consumed: UiConsumed,
   /// Whether the node walk replays clean nodes (`set_ui_cache`)
   ui_cache: bool,
   /// Whether the walk spot-checks a clean node a frame (`set_ui_spot_check`)
@@ -169,7 +169,7 @@ impl UiHarness {
       world,
       sources: Default::default(),
       last_events: Vec::new(),
-      consumed: String::new(),
+      consumed: UiConsumed::default(),
       ui_cache: true,
       ui_spot_check: false,
       #[cfg(test)]
@@ -648,7 +648,7 @@ impl UiHarness {
       self.last_events.extend(late);
       context.end_scene();
       self.rebinds = context.take_rebinds();
-      self.consumed = consumed_debug(context.input().consumed());
+      self.consumed = context.input().consumed();
       result
     };
     // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
@@ -764,8 +764,8 @@ pub(crate) struct UiSnapshot<'a> {
   pub(crate) outcome: &'a [&'static str],
   /// The presses rebinding rows captured
   pub(crate) rebinds: &'a [PendingRebind],
-  /// What the UI consumed of the input ([`consumed_debug`])
-  pub(crate) consumed: &'a str,
+  /// What the UI consumed of the input
+  pub(crate) consumed: &'a UiConsumed,
   /// The world the node trees live in
   pub(crate) world: &'a World,
 }
@@ -801,7 +801,7 @@ pub(crate) fn ui_snapshot(parts: &UiSnapshot<'_>) -> String {
   let _ = writeln!(out, "modals {:?}", memory.modal_stack);
   let _ = writeln!(out, "outcome {:?}", parts.outcome);
   let _ = writeln!(out, "rebinds {:?}", parts.rebinds);
-  let _ = writeln!(out, "consumed {}", parts.consumed);
+  let _ = writeln!(out, "consumed {}", consumed_debug(parts.consumed));
   out.push_str(&nodes::node_snapshot(parts.world));
   without_ref_counts(&out)
 }
@@ -824,17 +824,17 @@ impl UiCacheStats {
 
 /// `consumed` in `Debug` form, each list sorted (the UI keeps them in
 /// hash sets)
-pub(crate) fn consumed_debug(consumed: UiConsumed) -> String {
-  fn sorted<T: std::fmt::Debug>(items: Vec<T>) -> Vec<String> {
+fn consumed_debug(consumed: &UiConsumed) -> String {
+  fn sorted<T: std::fmt::Debug>(items: &[T]) -> Vec<String> {
     let mut items: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
     items.sort_unstable();
     items
   }
   format!(
     "keys {:?} mouse {:?} pad {:?} text {} scroll {}",
-    sorted(consumed.keys),
-    sorted(consumed.mouse),
-    sorted(consumed.gamepad),
+    sorted(&consumed.keys),
+    sorted(&consumed.mouse),
+    sorted(&consumed.gamepad),
     consumed.text,
     consumed.scroll
   )

@@ -4,7 +4,7 @@ use image::RgbaImage;
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
-use super::ui::{UiCacheStats, UiSnapshot, consumed_debug, ui_snapshot};
+use super::ui::{UiCacheStats, UiSnapshot, ui_snapshot};
 use super::{HeadlessError, shared_gpu};
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::Messages;
@@ -367,7 +367,7 @@ impl HeadlessEngine {
       events: &events,
       outcome: &log.used,
       rebinds: &log.rebinds,
-      consumed: &consumed_debug(log.consumed.consumed()),
+      consumed: &log.consumed.consumed(),
       world: engine.world(),
     })
   }
