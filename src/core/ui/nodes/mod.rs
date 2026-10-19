@@ -15,6 +15,8 @@ mod events;
 mod list;
 mod node;
 #[cfg(all(test, feature = "default-fonts"))]
+mod oracle;
+#[cfg(all(test, feature = "default-fonts"))]
 mod oracle_tests;
 mod reconcile;
 mod spawn;
@@ -29,7 +31,7 @@ pub use list::UiListRow;
 pub use node::{TextRole, UiNode, UiNodeKind};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use cache::{cache_stats, node_snapshot};
+pub(crate) use cache::{cache_records, cache_stats, node_snapshot, set_spot_check};
 pub(crate) use cache::{check_cache_ticks, end_frame, set_cache_enabled};
 pub(crate) use components::UiNodes;
 pub(crate) use draw::{begin_pass, deliver_pending, draw_nodes};

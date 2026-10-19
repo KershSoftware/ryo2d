@@ -55,7 +55,7 @@ impl Subtree {
 }
 
 /// One container or leaf in a subtree
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct Node {
   pub(crate) id: UiId,
   pub(crate) parent: Option<usize>,
@@ -195,7 +195,7 @@ pub(crate) struct Draw {
 }
 
 /// What a draw is, relative to its node
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) enum DrawKind {
   /// The node's rect shrunk by `inset`
   Fill {

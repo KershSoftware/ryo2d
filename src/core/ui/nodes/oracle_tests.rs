@@ -1,406 +1,25 @@
-//! The differential oracle: caching is not observable
+//! The differential oracle's scenarios: caching is not observable
 //!
-//! Each scenario runs in two harnesses, the node cache on in one and off in
-//! the other, through the same setup and steps. After every frame the two
-//! must agree on everything a player or the game can see
-//! (`UiHarness::frame_snapshot`: draw commands, records, focus, events,
-//! component values), and the cached one must never find a child unclean
-//! inside its parent's replay (a miss) or a dirty node under a clean parent.
+//! Each scenario runs through the oracle (`oracle.rs`) in two harnesses, the
+//! node cache on in one and off in the other, and must agree after every
+//! frame.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use winit::keyboard::KeyCode;
 
+use super::oracle::*;
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::kernel::{ChildOf, Children, Entity, World};
 use crate::core::graphics::Sprite;
 use crate::core::input::{Binding, GamepadButton, InputDevice, PadFamily};
-use crate::core::testing::fixtures::settings_tree;
-use crate::core::testing::{UiCacheStats, UiHarness};
+use crate::core::testing::UiHarness;
 use crate::core::text::{FontRole, Fonts, TextReveal};
 use crate::core::ui::nodes::*;
 use crate::core::ui::test_util::prompts_with;
 use crate::core::ui::widgets::rebind::note_swap;
 use crate::core::ui::{Rect, Theme, UiContext};
-
-/// One scripted step: input or a game write for the next frame, or a frame
-#[derive(Clone)]
-enum Step {
-  /// Run one frame (the scenario's `ui`, then what the game does after it)
-  Frame,
-  /// Move the pointer to (x, y)
-  Move(f32, f32),
-  /// Press the left button
-  Press,
-  /// Release the left button
-  Release,
-  /// A vertical wheel step, in lines (+ scrolls up)
-  Wheel(f32),
-  /// Press a UI action
-  Action(&'static str),
-  /// `ui_set` on the tree of the node named `.0`: name `.1` to `.2`
-  Set(&'static str, &'static str, BindValue),
-  /// The game writes the node named `.0`
-  Write(&'static str, fn(&mut World, Entity)),
-  /// Draw with this theme from the next frame
-  Theme(fn() -> Theme),
-  /// Resize the UI
-  Resize(f32, f32),
-  /// `ui_list_count` of the list named `.0`
-  Count(&'static str, usize),
-  /// Type text
-  Type(&'static str),
-  /// Press a key
-  Key(KeyCode),
-  /// `ui_list_scroll_to` the list named `.0`
-  Jump(&'static str, usize),
-  /// `ui_list_refresh` the list named `.0`
-  Refresh(&'static str),
-  /// The player's last device and pad family change, as the engine syncs
-  /// them into the prompts
-  Device(InputDevice, PadFamily),
-  /// The pointer to the centre of the settings tree's control in row `.0`
-  Control(usize),
-  /// The pointer to the centre of the node named `.0`, if it was drawn
-  At(&'static str),
-  /// Anything else the game does to the harness
-  Do(fn(&mut UiHarness)),
-}
-
-use Step::*;
-
-/// A scenario's `ui`: the closure drawn each frame after the node trees,
-/// given the frame's number (from 0)
-type SceneUi<'s> = &'s dyn Fn(&mut UiContext<'_>, &mut World, usize);
-
-/// What the game does after each frame (binding a list's rows, closing a
-/// dialog its answer closes)
-type After<'s> = &'s dyn Fn(&mut UiHarness);
-
-/// What a scenario's cached run did, for its own checks
-struct Run {
-  /// The cached harness, after the last step
-  on: UiHarness,
-  /// The tree nodes it replayed, over every frame
-  replayed: usize,
-  /// The frames run
-  frames: usize,
-  /// What its walks did in each frame
-  stats: Vec<UiCacheStats>,
-}
-
-/// Run `steps` after `setup` on a harness with caching on and one with it
-/// off, and assert after every frame that they show and did the same
-fn oracle(setup: impl Fn(&mut UiHarness), steps: &[Step]) -> Run {
-  oracle_with(setup, &|_, _, _| {}, &|_| {}, steps)
-}
-
-/// [`oracle`], with the scenario's `ui` drawn each frame and what the game
-/// does `after` each frame
-fn oracle_with(
-  setup: impl Fn(&mut UiHarness),
-  ui: SceneUi<'_>,
-  after: After<'_>,
-  steps: &[Step],
-) -> Run {
-  let mut on = UiHarness::new(640.0, 480.0);
-  let mut off = UiHarness::new(640.0, 480.0);
-  on.set_ui_cache(true);
-  off.set_ui_cache(false);
-  setup(&mut on);
-  setup(&mut off);
-  let (mut frame, mut replayed, mut stats) = (0, 0, Vec::new());
-  let mut since = 0;
-  for (i, step) in steps.iter().enumerate() {
-    let ran = apply(&mut on, step, ui, frame);
-    apply(&mut off, step, ui, frame);
-    if !ran {
-      continue;
-    }
-    let input: Vec<String> = steps[since..i].iter().map(name).collect();
-    since = i + 1;
-    assert_eq!(
-      off.ui_cache_stats().replayed,
-      0,
-      "caching off replays nothing"
-    );
-    assert_eq!(
-      missed(&on),
-      0,
-      "step {i} (frame {frame}, after {input:?}): a child missed"
-    );
-    assert_dirty_ancestors(&on, i);
-    let (a, b) = (on.frame_snapshot(), off.frame_snapshot());
-    if a != b {
-      panic!(
-        "step {i} (frame {frame}, after {input:?}): caching on and off differ\n{}",
-        first_difference(&a, &b)
-      );
-    }
-    replayed += on.ui_cache_stats().replayed;
-    stats.push(on.ui_cache_stats());
-    after(&mut on);
-    after(&mut off);
-    frame += 1;
-  }
-  Run {
-    on,
-    replayed,
-    frames: frame,
-    stats,
-  }
-}
-
-/// Apply `step` to `h`; whether it ran a frame
-fn apply(h: &mut UiHarness, step: &Step, ui: SceneUi<'_>, frame: usize) -> bool {
-  match step {
-    Frame => {
-      h.frame_with_world(|context, world| ui(context, world, frame));
-      return true;
-    }
-    Move(x, y) => h.move_to(*x, *y),
-    Press => h.press(),
-    Release => h.release(),
-    Wheel(dy) => h.wheel(0.0, *dy),
-    Action(name) => h.action(name),
-    Set(node, name, value) => {
-      let node = named(h, node);
-      h.ui_set(node, name, value.clone());
-    }
-    Write(node, write) => {
-      let node = named(h, node);
-      write(h.world_mut(), node);
-    }
-    Theme(theme) => h.set_theme(theme()),
-    Resize(width, height) => h.resize(*width, *height),
-    Count(list, count) => {
-      let list = named(h, list);
-      h.ui_list_count(list, *count);
-    }
-    Type(text) => h.type_text(text),
-    Key(key) => h.keys.push(*key),
-    Jump(list, index) => {
-      let list = named(h, list);
-      h.ui_list_scroll_to(list, *index);
-    }
-    Refresh(list) => {
-      let list = named(h, list);
-      h.ui_list_refresh(list);
-    }
-    Device(device, family) => {
-      h.nav.device = *device;
-      let prompts = Arc::make_mut(&mut h.prompts);
-      prompts.device = *device;
-      prompts.family = *family;
-      prompts.generation += 1;
-    }
-    Control(row) => point_at(h, settings_control(h, *row), 0.0, 0.0),
-    At(node) => {
-      let rect = h
-        .find_ui(node)
-        .and_then(|node| h.ui_id(node))
-        .and_then(|id| h.record_of(id));
-      if let Some(record) = rect {
-        let rect = record.rect;
-        h.move_to(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
-      }
-    }
-    Do(change) => change(h),
-  }
-  false
-}
-
-/// A step's name, for a failure's message
-fn name(step: &Step) -> String {
-  match step {
-    Frame => "Frame".into(),
-    Move(x, y) => format!("Move({x}, {y})"),
-    Press => "Press".into(),
-    Release => "Release".into(),
-    Wheel(dy) => format!("Wheel({dy})"),
-    Action(action) => format!("Action({action})"),
-    Set(node, name, value) => format!("Set({node}, {name}, {value:?})"),
-    Write(node, _) => format!("Write({node})"),
-    Theme(_) => "Theme".into(),
-    Resize(width, height) => format!("Resize({width}, {height})"),
-    Count(list, count) => format!("Count({list}, {count})"),
-    Type(text) => format!("Type({text:?})"),
-    Key(key) => format!("Key({key:?})"),
-    Jump(list, index) => format!("Jump({list}, {index})"),
-    Refresh(list) => format!("Refresh({list})"),
-    Device(device, family) => format!("Device({device:?}, {family:?})"),
-    Control(row) => format!("Control({row})"),
-    At(node) => format!("At({node})"),
-    Do(_) => "Do".into(),
-  }
-}
-
-/// The node named `name` in `h`'s trees
-fn named(h: &UiHarness, name: &str) -> Entity {
-  h.find_ui(name)
-    .unwrap_or_else(|| panic!("no node is named {name}"))
-}
-
-/// The first line on which `a` and `b` differ, around the first differing
-/// character
-fn first_difference(a: &str, b: &str) -> String {
-  let (mut lines_a, mut lines_b) = (a.lines(), b.lines());
-  let mut line = 0;
-  loop {
-    match (lines_a.next(), lines_b.next()) {
-      (Some(x), Some(y)) if x == y => line += 1,
-      (x, y) => {
-        let (x, y) = (x.unwrap_or("<none>"), y.unwrap_or("<none>"));
-        let at = x
-          .char_indices()
-          .zip(y.chars())
-          .find(|((_, p), q)| p != q)
-          .map_or(x.len().min(y.len()), |((i, _), _)| i);
-        let from = at.saturating_sub(300);
-        let around = |s: &str| -> String { s.chars().skip(from).take(700).collect() };
-        let head = |s: &str| -> String { s.chars().take(60).collect() };
-        return format!(
-          "line {line} ({}..), char {at}\n  on:  ..{}..\n  off: ..{}..",
-          head(x),
-          around(x),
-          around(y)
-        );
-      }
-    }
-  }
-}
-
-/// Children found unclean in a parent's replay in the last pass
-fn missed(h: &UiHarness) -> usize {
-  h.world()
-    .get_resource::<UiNodes>()
-    .map_or(0, |nodes| nodes.cache.stats.missed)
-}
-
-/// Every dirty node's ancestors are dirty
-fn assert_dirty_ancestors(h: &UiHarness, step: usize) {
-  let Some(nodes) = h.world().get_resource::<UiNodes>() else {
-    return;
-  };
-  let dirty = &nodes.cache.dirty;
-  for &node in dirty {
-    let mut at = node;
-    while let Some(parent) = h.world().get::<ChildOf>(at).map(ChildOf::parent) {
-      if h.world().get::<UiNodeKind>(parent).is_none() {
-        break;
-      }
-      assert!(
-        dirty.contains(&parent),
-        "step {step}: {node:?} is dirty under a clean {parent:?}"
-      );
-      at = parent;
-    }
-  }
-}
-
-// Building scripts
-
-/// `n` frames
-fn frames(n: usize) -> Vec<Step> {
-  vec![Frame; n]
-}
-
-/// A script: steps added in order
-#[derive(Default)]
-struct Script(Vec<Step>);
-
-impl Script {
-  /// `n` frames
-  fn frames(mut self, n: usize) -> Script {
-    self.0.extend(frames(n));
-    self
-  }
-
-  /// `step`, then a frame
-  fn then(mut self, step: Step) -> Script {
-    self.0.push(step);
-    self.0.push(Frame);
-    self
-  }
-
-  /// `step` then a frame, `n` times
-  fn repeat(mut self, step: Step, n: usize) -> Script {
-    for _ in 0..n {
-      self.0.push(step.clone());
-      self.0.push(Frame);
-    }
-    self
-  }
-
-  /// `step` and no frame
-  fn input(mut self, step: Step) -> Script {
-    self.0.push(step);
-    self
-  }
-
-  fn steps(&self) -> &[Step] {
-    &self.0
-  }
-}
-
-// Finding what the steps point at
-
-/// The `i`th root spawned in `h`
-fn root(h: &UiHarness, i: usize) -> Entity {
-  h.world().resource::<UiNodes>().roots[i].1
-}
-
-/// `node`'s children
-fn kids(h: &UiHarness, node: Entity) -> Vec<Entity> {
-  h.world()
-    .get::<Children>(node)
-    .map(|children| children.to_vec())
-    .unwrap_or_default()
-}
-
-/// `node`'s rect as last drawn
-fn rect_of(h: &UiHarness, node: Entity) -> Rect {
-  let id = h
-    .ui_id(node)
-    .unwrap_or_else(|| panic!("{node:?} has been drawn"));
-  h.record_of(id)
-    .unwrap_or_else(|| panic!("{node:?} was drawn last frame"))
-    .rect
-}
-
-/// Move the pointer to `node`'s centre, moved by (dx, dy)
-fn point_at(h: &mut UiHarness, node: Entity, dx: f32, dy: f32) {
-  let rect = rect_of(h, node);
-  h.move_to(
-    rect.x + rect.width / 2.0 + dx,
-    rect.y + rect.height / 2.0 + dy,
-  );
-}
-
-/// The settings tree's scroll area (the first root's second child)
-fn settings_scroll(h: &UiHarness) -> Entity {
-  kids(h, root(h, 0))[1]
-}
-
-/// The control of the settings tree's row `row`: a slider, checkbox,
-/// dropdown or toggle by `row % 4`
-fn settings_control(h: &UiHarness, row: usize) -> Entity {
-  kids(h, kids(h, settings_scroll(h))[row])[1]
-}
-
-fn spawn_settings(h: &mut UiHarness) {
-  h.spawn_ui(settings_tree());
-}
-
-/// A scenario's own check on its cached run: it replayed, and so the oracle
-/// compared a cached run with an uncached one
-fn assert_cached(run: &Run) {
-  assert!(
-    run.replayed > 0,
-    "the cached run replayed nothing over {} frames",
-    run.frames
-  );
-}
 
 // Scenarios
 
@@ -1385,12 +1004,25 @@ fn an_embedded_list_beside_a_scene_tree_looks_the_same_cached() {
 
 #[test]
 fn a_rerun_pass_with_an_embedded_tree_looks_the_same_cached() {
+  // What the cached harness's first passes built, by frame: the stats keep
+  // only a frame's last pass
+  let first: RefCell<Vec<(usize, Vec<Entity>)>> = RefCell::new(Vec::new());
   // The scene's `ui` draws the embedded tree, writes labels in both trees
   // and switches scenes, and the pass runs again in the same frame
   let ui = |ui: &mut UiContext<'_>, world: &mut World, frame: usize| {
     draw_hud(ui, world);
     if !matches!(frame, 5 | 9 | 12 | 16) {
       return;
+    }
+    let cache = &world.resource::<UiNodes>().cache;
+    assert_eq!(
+      cache.stats.missed, 0,
+      "frame {frame}: a child missed in the first pass"
+    );
+    if cache.enabled {
+      first
+        .borrow_mut()
+        .push((frame, cache.stats.rebuilt.clone()));
     }
     let (hp, go) = (embedded(world, "hp"), embedded(world, "go"));
     world.get_mut::<UiLabel>(hp).unwrap().0 = format!("Hp {frame}");
@@ -1457,6 +1089,45 @@ fn a_rerun_pass_with_an_embedded_tree_looks_the_same_cached() {
   let hp = named(&run.on, "hp");
   assert_eq!(run.on.world().get::<UiLabel>(hp).unwrap().0, "Hp 16");
   assert!(run.on.frame_snapshot().contains("\"Moved\""), "drawn");
+  let [go, shelf, text] = ["go", "shelf", "shelf text"].map(|name| named(&run.on, name));
+  let built = |frame: usize, node: Entity| run.stats[frame].rebuilt.contains(&node);
+  for frame in [5, 9, 12, 16] {
+    assert!(
+      built(frame, go) && built(frame, hp),
+      "frame {frame}: the rerun builds what the first pass's ui wrote"
+    );
+  }
+  for frame in [13, 17] {
+    assert!(
+      run.stats[frame].rebuilt.is_empty() && run.stats[frame].replayed > 0,
+      "frame {frame}: nothing changed since the rerun, and all of it replays"
+    );
+  }
+  // Until frame 8 the pointer rests on Go, at the top left: Go and its root
+  // build every frame, and the rest replays
+  assert_eq!(run.stats[6].rebuilt, [root(&run.on, 0), go]);
+  assert!(
+    built(12, shelf) && built(16, shelf) && built(16, text),
+    "shown again between the passes: built"
+  );
+  let first = first.borrow();
+  assert_eq!(
+    first.iter().map(|(frame, _)| *frame).collect::<Vec<_>>(),
+    [5, 9, 12, 16]
+  );
+  for (frame, rebuilt) in first.iter() {
+    assert!(
+      !rebuilt.contains(&hp),
+      "frame {frame}: written after the first pass"
+    );
+    // Before frame 12 the pointer is on Go
+    if *frame >= 12 {
+      assert!(
+        !rebuilt.contains(&go),
+        "frame {frame}: written after the first pass"
+      );
+    }
+  }
 }
 
 /// What a node reads of other nodes, each reader left holding no role (no
@@ -1685,6 +1356,50 @@ fn two_scenes_drawn_in_one_frame_look_the_same_cached() {
     script.steps(),
   );
   assert_cached(&run);
+  // Both trees, each from its root
+  let [one, two] = [0, 1].map(|i| tree_nodes(&run.on, root(&run.on, i)));
+  let built = |frame: usize, nodes: &[Entity]| -> Vec<Entity> {
+    let rebuilt = &run.stats[frame].rebuilt;
+    nodes
+      .iter()
+      .copied()
+      .filter(|node| rebuilt.contains(node))
+      .collect()
+  };
+  for frame in [6, 14] {
+    assert_eq!(built(frame, &one), one, "frame {frame}: the top flag moved");
+    assert_eq!(built(frame, &two), two, "frame {frame}: the top flag moved");
+  }
+  // A lower scene holds no role: once the flag and the focus have moved,
+  // all of it replays
+  for frame in [8, 9] {
+    assert!(
+      built(frame, &one).is_empty(),
+      "frame {frame}: scene 1 lower"
+    );
+  }
+  for frame in [16, 17, 20, 21] {
+    assert!(
+      built(frame, &two).is_empty(),
+      "frame {frame}: scene 2 lower"
+    );
+  }
+  let play = find_ui(run.on.world(), 1, "play").unwrap();
+  assert_eq!(built(11, &one), [one[0], play], "a lower scene's write");
+  let form = find_ui(run.on.world(), 2, "form").unwrap();
+  assert!(built(10, &two).contains(&form), "the top scene's write");
+  assert!(run.stats[8].replayed > 0 && run.stats[16].replayed > 0);
+}
+
+/// `root` and every node under it, parents first
+fn tree_nodes(h: &UiHarness, root: Entity) -> Vec<Entity> {
+  let mut nodes = vec![root];
+  let mut i = 0;
+  while let Some(&node) = nodes.get(i) {
+    nodes.extend(kids(h, node));
+    i += 1;
+  }
+  nodes
 }
 
 const MENU_FILE: &str = r#"(root: Panel(focus_scope: true, gap: 4, children: [
@@ -2293,4 +2008,37 @@ fn lists_in_a_lists_rows_look_the_same_cached() {
     script.steps(),
   );
   assert_cached(&run);
+}
+
+/// Every scenario again with the debug spot check on in both harnesses: a
+/// clean node built in place of its replay draws and does the same, and no
+/// record differs from its build
+#[cfg(debug_assertions)]
+#[test]
+fn every_scenario_looks_the_same_with_the_spot_check_on() {
+  let checked = with_spot_checks(&[
+    the_settings_tree_idle_looks_the_same_cached,
+    the_settings_tree_walked_by_pad_looks_the_same_cached,
+    the_settings_tree_under_the_pointer_looks_the_same_cached,
+    bindings_and_game_writes_look_the_same_cached,
+    a_modal_over_the_settings_tree_looks_the_same_cached,
+    a_text_field_looks_the_same_cached,
+    a_node_list_of_a_thousand_rows_looks_the_same_cached,
+    theme_scale_and_device_changes_look_the_same_cached,
+    drag_and_drop_in_an_inventory_looks_the_same_cached,
+    three_thousand_frames_of_random_input_look_the_same_cached,
+    an_embedded_tree_drawn_from_two_call_sites_in_turn_looks_the_same_cached,
+    an_embedded_list_beside_a_scene_tree_looks_the_same_cached,
+    a_rerun_pass_with_an_embedded_tree_looks_the_same_cached,
+    reads_of_other_nodes_look_the_same_cached,
+    a_dialogue_with_a_typewriter_and_number_keys_looks_the_same_cached,
+    two_scenes_drawn_in_one_frame_look_the_same_cached,
+    a_reloaded_ui_file_looks_the_same_cached,
+    three_thousand_random_frames_over_every_kind_of_node_look_the_same_cached,
+    an_embedded_tree_in_a_closure_scroll_area_looks_the_same_cached,
+    a_grid_list_in_a_scroll_area_with_popups_in_its_rows_looks_the_same_cached,
+    lists_in_a_lists_rows_look_the_same_cached,
+  ]);
+  // Of 7,360 frames, most hold a clean node to check
+  assert!(checked > 5_000, "the spot check ran in {checked} frames");
 }

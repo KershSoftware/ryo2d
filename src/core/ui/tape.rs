@@ -54,6 +54,54 @@ impl Tape {
     self.reads.clear();
     self.replayable = false;
   }
+
+  /// Where a replay of `self` and one of `other` would first differ, op by
+  /// op in `Debug` form (a node as it was given), then the ids made, the
+  /// states touched and whether each replays: what differs, `self`'s and
+  /// `other`'s. What each read is not compared: a replay pushes none of it.
+  #[cfg(debug_assertions)]
+  pub(crate) fn first_difference(&self, other: &Tape) -> Option<(String, String, String)> {
+    for k in 0..self.ops.len().max(other.ops.len()) {
+      let (was, now) = (self.op_debug(k), other.op_debug(k));
+      if was != now {
+        return Some((format!("op {k}"), was, now));
+      }
+    }
+    let parts = [
+      (
+        "the ids made",
+        format!("{:?}", self.ids),
+        format!("{:?}", other.ids),
+      ),
+      (
+        "the states touched",
+        format!("{:?}", self.states),
+        format!("{:?}", other.states),
+      ),
+      (
+        "replayable",
+        self.replayable.to_string(),
+        other.replayable.to_string(),
+      ),
+    ];
+    parts
+      .into_iter()
+      .find(|(_, was, now)| was != now)
+      .map(|(what, was, now)| (what.to_string(), was, now))
+  }
+
+  /// Op `k` in `Debug` form, a node op with the node it pushed
+  #[cfg(debug_assertions)]
+  fn op_debug(&self, k: usize) -> String {
+    match self.ops.get(k) {
+      None => "nothing".to_string(),
+      Some(Op::Node { node, at }) => {
+        let given = usize::try_from(*node).ok().and_then(|i| self.nodes.get(i));
+        format!("Node {node} {given:?} at {at:?}")
+      }
+      Some(op) => format!("{op:?}"),
+    }
+  }
 }
 
 /// Something a build read from outside its own node, baked into what it
@@ -70,7 +118,7 @@ pub(crate) enum Read {
 }
 
 /// One thing a builder pushed
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) enum Op {
   /// The k-th node the tape pushed (`Tape::nodes`), at `at`
   Node { node: u32, at: Option<Rect> },

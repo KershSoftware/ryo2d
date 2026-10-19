@@ -8,7 +8,7 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use crate::core::asset::AssetManager;
-use crate::core::ecs::kernel::{Entity, Message, Messages, World};
+use crate::core::ecs::kernel::{Entity, Message, Messages, Tick, World};
 use crate::core::error::AssetResult;
 use crate::core::input::{Direction, GamepadButton, InputView};
 use crate::core::messages::{register_message, update_messages};
@@ -117,6 +117,8 @@ pub struct UiHarness {
   consumed: String,
   /// Whether the node walk replays clean nodes (`set_ui_cache`)
   ui_cache: bool,
+  /// Whether the walk spot-checks a clean node a frame (`set_ui_spot_check`)
+  ui_spot_check: bool,
   /// The next frame draws before the list pools are updated, as a rerun UI
   /// pass does (a scene switched from `ui` draws its new lists so)
   #[cfg(test)]
@@ -169,6 +171,7 @@ impl UiHarness {
       last_events: Vec::new(),
       consumed: String::new(),
       ui_cache: true,
+      ui_spot_check: false,
       #[cfg(test)]
       skip_list_update: false,
     }
@@ -241,6 +244,18 @@ impl UiHarness {
     };
     nodes::check_cache_ticks(&mut self.world, check);
     true
+  }
+
+  /// Age the world past bevy's maximum change age, as a long session does,
+  /// then run the world's change-tick check and clamp the tick the node
+  /// cache keeps ([`check_change_ticks`](Self::check_change_ticks)). Bevy
+  /// moves the tick one at a time; an optimised build folds the loop.
+  #[doc(hidden)]
+  pub fn age_change_ticks(&mut self) {
+    for _ in 0..=Tick::MAX.get() {
+      self.world.increment_change_tick();
+    }
+    self.check_change_ticks();
   }
 
   /// The first node named `name` in the harness's UI trees
@@ -330,6 +345,16 @@ impl UiHarness {
   /// when chasing a bug.
   pub fn set_ui_cache(&mut self, on: bool) {
     self.ui_cache = on;
+  }
+
+  /// Turn the debug spot check on or off from the next frame (off by
+  /// default; the engine's is on in debug builds). Each frame it builds one
+  /// clean node in place of its replay, taking the records in turn
+  /// ([`UiCacheStats::spot_checked`]), and compares the build with the
+  /// record: a difference, something the node reads that changed unseen,
+  /// warns once naming the node. Release builds have no spot check.
+  pub fn set_ui_spot_check(&mut self, on: bool) {
+    self.ui_spot_check = on;
   }
 
   /// What the node walk did in the last frame: the nodes it built (and
@@ -596,6 +621,7 @@ impl UiHarness {
       context.set_prompts(Arc::clone(&self.prompts));
       context.begin_scene(self.scene, true);
       nodes::set_cache_enabled(&mut self.world, self.ui_cache);
+      nodes::set_spot_check(&mut self.world, self.ui_spot_check);
       nodes::begin_pass(&mut self.world);
       let events = nodes::draw_nodes(&mut self.world, &mut context, self.scene);
       self.last_events.clone_from(&events);
@@ -691,6 +717,11 @@ pub struct UiCacheStats {
   pub replayed: usize,
   /// The nodes built, in walk order
   pub rebuilt: Vec<Entity>,
+  /// The node the debug spot check built in place of its replay and
+  /// compared with its record (not counted in `built`)
+  pub spot_checked: Option<Entity>,
+  /// The node records the cache keeps
+  pub records: usize,
 }
 
 /// What a UI snapshot is made of: one frame of a UI, from the harness or
@@ -757,6 +788,8 @@ impl UiCacheStats {
         built: stats.built,
         replayed: stats.replayed,
         rebuilt: stats.rebuilt.clone(),
+        spot_checked: stats.spot_checked,
+        records: nodes::cache_records(world),
       })
       .unwrap_or_default()
   }

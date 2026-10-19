@@ -15,6 +15,10 @@
 //! without holding a role while that moves). `clean` then adds what a
 //! record itself says: it must be replayable, built in this environment and
 //! top flag, and every read of its subtree must still hold.
+//!
+//! In debug builds a spot check (`SpotCheck`) builds one clean node a frame
+//! in place of its replay and compares the two: a dependency the cache
+//! missed warns, naming the node, instead of drawing stale.
 
 #[cfg(test)]
 use crate::core::ecs::kernel::Mut;
@@ -28,10 +32,14 @@ use crate::core::text::TextReveal;
 use crate::core::ui::env::UiEnv;
 use crate::core::ui::memory::Roles;
 use crate::core::ui::tape::{Read, Tape};
+#[cfg(debug_assertions)]
+use crate::core::ui::theme::warn_once;
 use crate::core::ui::widgets::rebind::RebindState;
 use crate::core::ui::{UiContext, UiId};
 
 use super::bindings::{UiBind, UiPattern};
+#[cfg(debug_assertions)]
+use super::components::UiName;
 use super::components::{
   UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiLabel, UiNodes, UiOptions, UiRoot, UiSlot,
   UiTextValue, UiTooltip, UiValue,
@@ -99,6 +107,9 @@ pub(crate) struct UiCache {
   rebinds: EntityHashSet,
   /// The check's query and removal cursors, made for one world
   check: Option<Box<Check>>,
+  /// The debug spot check
+  #[cfg(debug_assertions)]
+  pub(crate) spot: SpotCheck,
 }
 
 impl Default for UiCache {
@@ -118,6 +129,39 @@ impl Default for UiCache {
       choices: EntityHashSet::default(),
       rebinds: EntityHashSet::default(),
       check: None,
+      #[cfg(debug_assertions)]
+      spot: SpotCheck::default(),
+    }
+  }
+}
+
+/// The debug spot check: each frame one clean node with a record, taken in
+/// turn by entity, is built in place of its replay, and the build is
+/// compared with its record op by op. They are equal while everything the
+/// node reads is tracked; a difference warns once per node and the build
+/// becomes its record.
+#[cfg(debug_assertions)]
+pub(crate) struct SpotCheck {
+  /// Whether it runs: on by default, off in `UiHarness` until asked for
+  pub(crate) on: bool,
+  /// The node checked last: the next is the first record after it
+  last: Option<Entity>,
+  /// The memory frame the node was chosen in
+  frame: Option<u64>,
+  /// This frame's node, then its ancestors up to its root. A clean one of
+  /// them is built, not replayed: only a build draws a child, since a
+  /// replay never builds.
+  path: Vec<Entity>,
+}
+
+#[cfg(debug_assertions)]
+impl Default for SpotCheck {
+  fn default() -> SpotCheck {
+    SpotCheck {
+      on: true,
+      last: None,
+      frame: None,
+      path: Vec::new(),
     }
   }
 }
@@ -158,6 +202,12 @@ pub(crate) struct CacheStats {
   /// dirty node's ancestors are dirty; drawn from their stale records and
   /// built from the next frame
   pub(crate) missed: usize,
+  /// The node the debug spot check built in place of replaying it, and
+  /// compared with its record (not counted in `built`)
+  pub(crate) spot_checked: Option<Entity>,
+  /// Records the spot check found differing from their build: never so
+  /// while everything a build reads is tracked
+  pub(crate) spot_differed: usize,
 }
 
 impl CacheStats {
@@ -167,6 +217,8 @@ impl CacheStats {
     self.replayed = 0;
     self.missed = 0;
     self.rebuilt.clear();
+    self.spot_checked = None;
+    self.spot_differed = 0;
   }
 }
 
@@ -448,6 +500,87 @@ impl UiCache {
     }
     self.check = Some(Box::new(Check::new(world)));
     self.checked = None;
+  }
+
+  /// Choose the node the spot check builds this frame, once a frame, after
+  /// the first walk's marks: the first record after the last one checked,
+  /// by entity, of a node not dirty (a dirty one is built anyway)
+  #[cfg(debug_assertions)]
+  pub(crate) fn choose_spot(&mut self, world: &World, frame: u64) {
+    let UiCache {
+      enabled,
+      records,
+      dirty,
+      spot,
+      ..
+    } = self;
+    if !(*enabled && spot.on) {
+      spot.path.clear();
+      return;
+    }
+    if spot.frame == Some(frame) {
+      return;
+    }
+    spot.frame = Some(frame);
+    spot.path.clear();
+    let (mut first, mut next) = (None, None);
+    for &node in records.keys().filter(|node| !dirty.contains(*node)) {
+      first = Some(first.map_or(node, |first: Entity| first.min(node)));
+      if spot.last.is_none_or(|last| node > last) {
+        next = Some(next.map_or(node, |next: Entity| next.min(node)));
+      }
+    }
+    let Some(chosen) = next.or(first) else {
+      return;
+    };
+    spot.last = Some(chosen);
+    let mut at = chosen;
+    loop {
+      spot.path.push(at);
+      let Ok(entity) = world.get_entity(at) else {
+        break;
+      };
+      let parent = entity.get::<ChildOf>().map(ChildOf::parent);
+      match parent {
+        Some(parent) if !entity.contains::<UiRoot>() => at = parent,
+        _ => break,
+      }
+    }
+  }
+
+  /// Whether the walk builds `node`, clean, for the spot check
+  #[cfg(debug_assertions)]
+  pub(crate) fn spot_due(&self, node: Entity) -> bool {
+    self.spot.path.contains(&node)
+  }
+
+  /// The spot check built `node`, whose record held `old`, into `new`:
+  /// counted, and on a difference warned once per node
+  #[cfg(debug_assertions)]
+  pub(crate) fn spot_compare(&mut self, world: &World, node: Entity, old: &Tape, new: &Tape) {
+    if self.spot.path.first() == Some(&node) {
+      self.stats.spot_checked = Some(node);
+    }
+    let Some((at, was, now)) = old.first_difference(new) else {
+      return;
+    };
+    self.stats.spot_differed += 1;
+    let kind = world
+      .get::<UiNodeKind>(node)
+      .map_or("node", UiNodeKind::name);
+    let name = world
+      .get::<UiName>(node)
+      .map(|name| format!(" {:?}", name.0))
+      .unwrap_or_default();
+    let (was, now) = around_difference(&was, &now);
+    warn_once(format!("ui-cache:spot:{:?}:{node:?}", world.id()), || {
+      format!(
+        "the cached UI node {kind}{name} ({node:?}) does not build as it was recorded, \
+         at {at}: recorded {was}, built {now}. Something it reads changed unseen (a \
+         write through bypass_change_detection, or an input the cache does not track); it \
+         is drawn as built from now on"
+      )
+    });
   }
 
   /// Bring `dirty` up to date with what changed in `world` since the last
@@ -741,6 +874,14 @@ pub(crate) fn cache_stats(world: &World) -> Option<&CacheStats> {
     .map(|nodes| &nodes.cache.stats)
 }
 
+/// How many node records the cache of the trees in `world` keeps
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn cache_records(world: &World) -> usize {
+  world
+    .get_resource::<UiNodes>()
+    .map_or(0, |nodes| nodes.cache.records.len())
+}
+
 /// Every UI node's tracked components (and the walk's writes: its
 /// interaction, a list's pool, a tree's binding values) in `Debug` form, a
 /// line per node in entity order: what the game can read of the trees
@@ -806,6 +947,42 @@ pub(crate) fn set_cache_enabled(world: &mut World, on: bool) {
   {
     nodes.cache.enabled = on;
   }
+}
+
+/// Turn the debug spot check of the trees in `world` on or off (debug builds
+/// only: a release build has none)
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn set_spot_check(world: &mut World, on: bool) {
+  #[cfg(debug_assertions)]
+  if let Some(mut nodes) = world.get_resource_mut::<UiNodes>()
+    && nodes.cache.spot.on != on
+  {
+    nodes.cache.spot.on = on;
+  }
+  #[cfg(not(debug_assertions))]
+  let _ = (world, on);
+}
+
+/// `was` and `now` around where they first differ, shortened
+#[cfg(debug_assertions)]
+fn around_difference(was: &str, now: &str) -> (String, String) {
+  let at = was
+    .chars()
+    .zip(now.chars())
+    .position(|(a, b)| a != b)
+    .unwrap_or_else(|| was.chars().count().min(now.chars().count()));
+  let from = at.saturating_sub(60);
+  let cut = |s: &str| -> String {
+    let part: String = s.chars().skip(from).take(160).collect();
+    let before = if from > 0 { ".." } else { "" };
+    let after = if s.chars().count() > from + 160 {
+      ".."
+    } else {
+      ""
+    };
+    format!("{before}{part}{after}")
+  };
+  (cut(was), cut(now))
 }
 
 /// The memory frame `frame` ended: drop the records of the nodes it did not
@@ -1802,5 +1979,277 @@ mod live_tests {
     );
     let (fixed, _) = h.frame(|ui| field(ui, false));
     assert!(fixed.reads.is_empty(), "its own size: nothing read");
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod edge_tests {
+  use super::super::oracle::*;
+  use super::*;
+  use crate::core::testing::UiHarness;
+  use crate::core::ui::nodes::*;
+  #[cfg(debug_assertions)]
+  use crate::core::ui::test_util::warnings_containing;
+  use crate::prelude::*;
+
+  /// The spot check's differences found over the last pass
+  #[cfg(debug_assertions)]
+  fn differed(h: &UiHarness) -> usize {
+    h.world().resource::<UiNodes>().cache.stats.spot_differed
+  }
+
+  #[test]
+  #[cfg(debug_assertions)]
+  fn the_spot_check_catches_a_bypassed_write() {
+    let tree = || UiNode::column().child(UiNode::text("One").name("bypassed"));
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.set_ui_spot_check(true);
+    h.spawn_ui(tree());
+    // The same UI uncached, its label written as the game should
+    let mut off = UiHarness::new(640.0, 480.0);
+    off.set_ui_cache(false);
+    off.spawn_ui(tree());
+    for _ in 0..3 {
+      h.frame(|_| ());
+      off.frame(|_| ());
+    }
+    let t = h.find_ui("bypassed").unwrap();
+    h.world_mut()
+      .get_mut::<UiLabel>(t)
+      .unwrap()
+      .bypass_change_detection()
+      .0 = "Two".into();
+    off.world_mut().get_mut::<UiLabel>(t).unwrap().0 = "Two".into();
+    let mut found = 0;
+    // One record a frame: it reaches the text
+    for _ in 0..10 {
+      h.frame(|_| ());
+      off.frame(|_| ());
+      found += differed(&h);
+    }
+    assert_eq!(found, 1, "found once, then the new build is the record");
+    // The log is the process's: the needle names this test's node
+    assert_eq!(warnings_containing("cached UI node text \"bypassed\""), 1);
+    assert_eq!(
+      h.frame_snapshot(),
+      off.frame_snapshot(),
+      "drawn as built from then on"
+    );
+  }
+
+  /// A column of a title, a row of two buttons and a column of one: no
+  /// focus scope, so nothing holds a role and every node replays
+  fn still() -> UiNode {
+    UiNode::column()
+      .name("still")
+      .child(UiNode::text("Title").name("title"))
+      .child(
+        UiNode::row()
+          .name("pair")
+          .child(UiNode::button("A").name("a"))
+          .child(UiNode::button("B").name("b")),
+      )
+      .child(
+        UiNode::column()
+          .name("other")
+          .child(UiNode::button("C").name("c")),
+      )
+  }
+
+  #[test]
+  #[cfg(debug_assertions)]
+  fn the_spot_check_takes_every_record_in_turn_and_builds_nothing_counted() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.move_to(630.0, 470.0);
+    h.spawn_ui(still());
+    for _ in 0..3 {
+      h.frame(|_| ());
+    }
+    h.frame(|_| ());
+    assert_eq!(
+      h.ui_cache_stats().spot_checked,
+      None,
+      "off in the harness until asked for"
+    );
+    h.set_ui_spot_check(true);
+    let mut checked = Vec::new();
+    for _ in 0..14 {
+      h.frame(|_| ());
+      let stats = h.ui_cache_stats();
+      assert_eq!(stats.built, 0, "a spot check is not a build");
+      assert!(stats.replayed > 0);
+      assert_eq!(differed(&h), 0);
+      checked.extend(stats.spot_checked);
+    }
+    assert_eq!(checked.len(), 14, "one record a frame");
+    let (first, second) = checked.split_at(7);
+    let mut order = first.to_vec();
+    order.sort_unstable();
+    assert_eq!(first, order, "in turn, by entity");
+    order.dedup();
+    assert_eq!(order.len(), 7, "every record of the seven");
+    assert_eq!(first, second, "and round again");
+  }
+
+  // Despawning inside a cached subtree, reparenting, hiding and disabling:
+  // on and off must match
+
+  fn menu() -> UiNode {
+    UiNode::column()
+      .focus_scope()
+      .name("menu")
+      .child(
+        UiNode::row()
+          .name("pair")
+          .child(UiNode::button("A").name("a"))
+          .child(UiNode::button("B").name("b")),
+      )
+      .child(
+        UiNode::column()
+          .name("other")
+          .child(UiNode::button("C").name("c")),
+      )
+  }
+
+  #[test]
+  fn despawning_inside_a_cached_subtree_looks_the_same() {
+    let run = oracle(
+      |h| {
+        h.spawn_ui(menu());
+      },
+      &[
+        Frame,
+        Frame,
+        Write("a", |w, e| {
+          w.despawn(e);
+        }),
+        Frame,
+        Frame,
+      ],
+    );
+    assert_cached(&run);
+  }
+
+  #[test]
+  fn reparenting_a_cached_node_looks_the_same() {
+    let run = oracle(
+      |h| {
+        h.spawn_ui(menu());
+      },
+      &[
+        Frame,
+        Frame,
+        Write("b", |w, e| {
+          let other = find_ui(w, 1, "other").unwrap();
+          w.entity_mut(e).insert(ChildOf(other));
+        }),
+        Frame,
+        Frame,
+      ],
+    );
+    assert_cached(&run);
+  }
+
+  #[test]
+  fn hiding_and_disabling_a_cached_node_looks_the_same() {
+    let run = oracle(
+      |h| {
+        h.spawn_ui(menu());
+      },
+      &[
+        Frame,
+        Frame,
+        Write("a", |w, e| {
+          w.entity_mut(e).insert(UiHidden);
+        }),
+        Frame,
+        Write("a", |w, e| {
+          w.entity_mut(e).remove::<UiHidden>();
+        }),
+        Frame,
+        Write("c", |w, e| {
+          w.entity_mut(e).insert(UiDisabled);
+        }),
+        Frame,
+        Write("c", |w, e| {
+          w.entity_mut(e).remove::<UiDisabled>();
+        }),
+        Frame,
+        Frame,
+      ],
+    );
+    assert_cached(&run);
+  }
+
+  #[test]
+  fn caching_turned_off_and_on_again_replays_nothing_stale() {
+    // Off, the walk keeps no record and no dirty set: what changes then must
+    // not replay from what was kept before
+    let script = Script::default()
+      .frames(3)
+      .then(Cache(false))
+      .then(Write("title", |w, e| {
+        w.get_mut::<UiLabel>(e).unwrap().0 = "Renamed".into();
+      }))
+      .then(Write("b", |w, e| {
+        w.despawn(e);
+      }))
+      .then(Write("c", |w, e| {
+        w.entity_mut(e).insert(UiHidden);
+      }))
+      .frames(2)
+      .then(Cache(true))
+      .frames(2)
+      .then(Write("c", |w, e| {
+        w.entity_mut(e).remove::<UiHidden>();
+      }))
+      .frames(3);
+    let run = oracle(
+      |h| {
+        h.spawn_ui(still());
+      },
+      script.steps(),
+    );
+    assert_cached(&run);
+    // Frames 3 to 8 are off; 9 builds every node again, 10 replays them
+    let (title, c) = (named(&run.on, "title"), named(&run.on, "c"));
+    assert!(run.stats[3..9].iter().all(|stats| stats.replayed == 0));
+    assert!(run.stats[9].rebuilt.contains(&title));
+    assert!(run.stats[10].rebuilt.is_empty() && run.stats[10].replayed > 0);
+    assert!(run.stats[12].rebuilt.contains(&c), "shown again: built");
+    assert_eq!(run.on.world().get::<UiLabel>(title).unwrap().0, "Renamed");
+  }
+
+  // Review Focus 5: change ticks wrap
+
+  #[test]
+  fn a_kept_tick_survives_a_tick_check() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    // Off the button, at the top left: a hovered one is built every frame
+    h.move_to(630.0, 470.0);
+    h.spawn_ui(UiNode::column().child(UiNode::button("A").name("a")));
+    for _ in 0..3 {
+      h.frame(|_| ());
+    }
+    // Past bevy's maximum change age, then the world's check, the cache's
+    // kept tick clamped with it
+    h.age_change_ticks();
+    let now = h.world_mut().change_tick();
+    let kept = h.world().resource::<UiNodes>().cache.checked;
+    let age = kept.map(|kept| now.get().wrapping_sub(kept.get()));
+    assert_eq!(age, Some(Tick::MAX.get()), "clamped to bevy's oldest age");
+    h.frame(|_| ());
+    assert_eq!(
+      h.ui_cache_stats().built,
+      0,
+      "nothing looks changed after the clamp"
+    );
+    let a = h.find_ui("a").unwrap();
+    h.world_mut().get_mut::<UiLabel>(a).unwrap().0 = "B".into();
+    h.frame(|_| ());
+    assert!(
+      h.ui_cache_stats().rebuilt.contains(&a),
+      "a real change is still seen"
+    );
   }
 }

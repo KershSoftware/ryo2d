@@ -62,3 +62,6 @@ mod ui_nodes;
 
 #[path = "e2e/ui_files.rs"]
 mod ui_files;
+
+#[path = "e2e/ui_cache.rs"]
+mod ui_cache;

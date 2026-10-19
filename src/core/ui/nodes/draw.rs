@@ -17,6 +17,9 @@
 //! An embedded tree (`ui.node`) and a list's rows replay or build the same
 //! way: the dirty set is brought up to date before an embedded tree is
 //! drawn, and what a row's bindings sync writes is marked before the row.
+//! In debug builds the spot check builds one clean node a frame (and the
+//! clean nodes above it, to reach it) in place of its replay, and compares
+//! the build with the record (`spot_check`).
 
 use glam::Vec2;
 
@@ -27,7 +30,7 @@ use crate::core::ecs::kernel::{
 use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextReveal, TextStyle};
 use crate::core::ui::env::UiEnv;
-use crate::core::ui::tape::Read;
+use crate::core::ui::tape::{Read, Tape};
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::{Anchor, Container, Rect, Response, Scroll, Theme, UiContext, UiId};
 
@@ -247,6 +250,8 @@ impl<'a> UiContext<'a> {
       walk
         .cache
         .mark_live(world, self, scene, walk.pending_focus, Some(root));
+      #[cfg(debug_assertions)]
+      walk.cache.choose_spot(world, self.memory.frame());
     }
     let response = draw_node(world, self, root, None, &mut walk);
     let mut events = walk.give_back(world);
@@ -293,6 +298,8 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
     walk
       .cache
       .mark_live(world, ui, scene, walk.pending_focus, None);
+    #[cfg(debug_assertions)]
+    walk.cache.choose_spot(world, ui.memory.frame());
   }
   let mut i = 0;
   while let Some((root, place)) = scene_root(world, scene, &mut i) {
@@ -343,8 +350,9 @@ pub(super) fn draw_child(
 }
 
 /// Draw `node` and its subtree; `place` is a root's placement. A clean node
-/// replays its record; any other is built by its kind and, while caching,
-/// recorded in its place, with a slot for each child.
+/// replays its record (unless the spot check builds it); any other is built
+/// by its kind and, while caching, recorded in its place, with a slot for
+/// each child.
 fn draw_node(
   world: &mut World,
   ui: &mut UiContext<'_>,
@@ -379,10 +387,31 @@ fn draw_node(
   let replays =
     walk.pending_focus != Some(node) && walk.cache.is_clean(world, ui, node, walk.env, Some(scope));
   if replays {
+    #[cfg(debug_assertions)]
+    if walk.cache.spot_due(node) {
+      return spot_check(world, ui, node, place, live, dialog, walk);
+    }
     return replay_node(world, ui, node, walk);
   }
   let tape = walk.cache.take_for_build(node);
   walk.cache.count_built(node);
+  let (response, record) = build_recorded(world, ui, node, place, tape, dialog, walk);
+  walk.cache.store(node, record, live);
+  response
+}
+
+/// Build `node` (a `dialog` or not) and its subtree, recorded into `tape`:
+/// its response and its new record
+fn build_recorded(
+  world: &mut World,
+  ui: &mut UiContext<'_>,
+  node: Entity,
+  place: Option<Place>,
+  tape: Tape,
+  dialog: bool,
+  walk: &mut Walk,
+) -> (Option<Response>, NodeRecord) {
+  let scope = ui.memory.scopes.current();
   ui.start_tape_in(tape);
   let response = build_node(world, ui, node, place, walk);
   let tape = ui.end_tape();
@@ -397,6 +426,25 @@ fn draw_node(
     dialog,
     scope,
   };
+  (response, record)
+}
+
+/// The spot check: build the clean `node` in place of its replay and
+/// compare the build with its record, which the build then replaces. It
+/// draws what the replay would, so it is counted apart from the builds.
+#[cfg(debug_assertions)]
+fn spot_check(
+  world: &mut World,
+  ui: &mut UiContext<'_>,
+  node: Entity,
+  place: Option<Place>,
+  live: LiveKinds,
+  dialog: bool,
+  walk: &mut Walk,
+) -> Option<Response> {
+  let old = walk.cache.take_for_build(node);
+  let (response, record) = build_recorded(world, ui, node, place, Tape::default(), dialog, walk);
+  walk.cache.spot_compare(world, node, &old, &record.tape);
   walk.cache.store(node, record, live);
   response
 }

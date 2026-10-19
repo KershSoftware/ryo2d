@@ -1651,6 +1651,84 @@ mod tests {
     assert_eq!(replayed(&mut e), 0, "off again");
   }
 
+  /// A menu of a title and a button, spawned on enter
+  struct NodeMenu;
+
+  impl Scene for NodeMenu {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let menu = crate::core::ui::UiNode::column()
+        .child(crate::core::ui::UiNode::text("Title"))
+        .child(crate::core::ui::UiNode::button("Play"));
+      ctx.spawn_ui(menu);
+    }
+  }
+
+  fn node_menu_engine() -> Option<Engine> {
+    let (device, queue) = crate::core::testing::shared_gpu().ok()?;
+    let mut e = EngineBuilder::new()
+      .resolution(64, 48)
+      .start_scene(NodeMenu)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 48), 1.0);
+    Some(e)
+  }
+
+  #[test]
+  fn the_engine_clamps_the_tick_the_node_cache_keeps() {
+    use crate::core::ecs::kernel::Tick;
+    use crate::core::ui::nodes::UiNodes;
+    let Some(mut e) = node_menu_engine() else {
+      return;
+    };
+    for _ in 0..3 {
+      e.frame(Some(Duration::from_millis(16)));
+    }
+    // Off, no pass moves the tick the cache keeps: it ages with the session
+    e.config.debug.ui_cache = false;
+    e.frame(Some(Duration::from_millis(16)));
+    for _ in 0..=Tick::MAX.get() {
+      e.world.increment_change_tick();
+    }
+    // The world's check (`clear_trackers_system` runs it every 1024 frames)
+    // waits for the end of the next frame
+    let check = e.world.check_change_ticks().expect("past bevy's threshold");
+    e.frame(Some(Duration::from_millis(16)));
+    let oldest = check.present_tick().get().wrapping_sub(Tick::MAX.get());
+    assert_eq!(
+      e.world.resource::<UiNodes>().cache.checked,
+      Some(Tick::new(oldest)),
+      "clamped to the oldest age bevy compares"
+    );
+    // On again: built once, then replayed
+    e.config.debug.ui_cache = true;
+    let stats = |e: &mut Engine| {
+      e.frame(Some(Duration::from_millis(16)));
+      crate::core::ui::nodes::cache_stats(&e.world).map(|stats| (stats.built, stats.replayed))
+    };
+    assert_eq!(stats(&mut e), Some((3, 0)));
+    assert_eq!(stats(&mut e).map(|(built, _)| built), Some(0));
+  }
+
+  #[test]
+  fn the_spot_check_runs_in_the_engine_in_debug_builds() {
+    let Some(mut e) = node_menu_engine() else {
+      return;
+    };
+    let mut checked = Vec::new();
+    for _ in 0..8 {
+      e.frame(Some(Duration::from_millis(16)));
+      if let Some(stats) = crate::core::ui::nodes::cache_stats(&e.world) {
+        checked.extend(stats.spot_checked);
+        assert_eq!(stats.spot_differed, 0);
+      }
+    }
+    assert_eq!(
+      !checked.is_empty(),
+      cfg!(debug_assertions),
+      "on by default in debug builds only: {checked:?}"
+    );
+  }
+
   #[test]
   fn a_scene_switched_from_ui_draws_its_ui_the_same_frame() {
     use crate::core::ui::immediate::UiCommand;
