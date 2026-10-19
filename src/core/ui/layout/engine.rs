@@ -71,6 +71,8 @@ struct Buffers {
   order: Vec<usize>,
   stack: Vec<usize>,
   child_ids: Vec<NodeId>,
+  /// Each node's taffy node, once it has been brought up to date
+  taffy_ids: Vec<Option<NodeId>>,
   /// The result
   placed: Vec<Placed>,
 }
@@ -186,6 +188,7 @@ impl LayoutEngine {
       order,
       stack,
       child_ids,
+      taffy_ids,
       placed,
     } = buffers;
     // Pre-order walk: which nodes count (reachable, unique ids), their parents
@@ -201,6 +204,8 @@ impl LayoutEngine {
     kid_range.clear();
     kid_range.resize(count, (0, 0));
     order.clear();
+    taffy_ids.clear();
+    taffy_ids.resize(count, None);
     stack.clear();
     stack.push(0);
     visited[0] = true;
@@ -221,7 +226,16 @@ impl LayoutEngine {
       stack.extend(kids[start..].iter().rev());
     }
 
-    // Children before parents
+    // Children before parents, each entry looked up once: a child's taffy
+    // node is known by its index when its parent comes
+    let LayoutEngine {
+      taffy,
+      entries,
+      frame,
+      warned,
+      stats,
+      ..
+    } = self;
     for &i in order.iter().rev() {
       let desc = &nodes[i];
       let hash = node_hash(
@@ -231,68 +245,56 @@ impl LayoutEngine {
       );
       child_ids.clear();
       let (start, end) = kid_range[i];
-      for &c in &kids[start..end] {
-        if let Some(entry) = self.entries.get(&nodes[c].id) {
-          child_ids.push(entry.node);
-        }
-      }
+      child_ids.extend(kids[start..end].iter().filter_map(|&c| taffy_ids[c]));
 
       // Only a node whose hash changed is cleaned and converted
-      let unchanged = self.entries.get(&desc.id).is_some_and(|e| e.hash == hash);
-      let converted = if unchanged {
-        None
-      } else {
-        let style = self.sanitize(desc.style);
-        let parent_flow = parents[i].map(|p| self.sanitize(nodes[p].style).flow);
-        Some(to_taffy(
-          &style,
-          parent_flow.as_ref(),
-          &clean_measure(desc.measure),
-        ))
+      let convert = |warned: &mut HashSet<&'static str>| {
+        let style = sanitize(warned, desc.style);
+        let parent_flow = parents[i].map(|p| sanitize(warned, nodes[p].style).flow);
+        to_taffy(&style, parent_flow.as_ref(), &clean_measure(desc.measure))
       };
 
-      match self.entries.get_mut(&desc.id) {
+      match entries.get_mut(&desc.id) {
         Some(entry) => {
-          entry.frame = self.frame;
-          if let Some(converted) = converted {
-            self.taffy.set_style(entry.node, converted)?;
+          entry.frame = *frame;
+          if entry.hash != hash {
+            taffy.set_style(entry.node, convert(warned))?;
             entry.hash = hash;
-            self.stats.restyled += 1;
+            stats.restyled += 1;
           }
           if entry.children != *child_ids {
-            self.taffy.set_children(entry.node, child_ids)?;
+            taffy.set_children(entry.node, child_ids)?;
             entry.children.clone_from(child_ids);
-            self.stats.rechildren += 1;
+            stats.rechildren += 1;
           }
           if entry.content_key != desc.content_key {
-            self.taffy.mark_dirty(entry.node)?;
+            taffy.mark_dirty(entry.node)?;
             entry.content_key = desc.content_key;
           }
+          taffy_ids[i] = Some(entry.node);
         }
         None => {
-          let Some(converted) = converted else {
-            continue;
-          };
-          let node = self.taffy.new_leaf_with_context(converted, desc.id)?;
+          let node = taffy.new_leaf_with_context(convert(warned), desc.id)?;
           if !child_ids.is_empty() {
-            self.taffy.set_children(node, child_ids)?;
+            taffy.set_children(node, child_ids)?;
           }
-          self.stats.created += 1;
-          self.entries.insert(
+          stats.created += 1;
+          entries.insert(
             desc.id,
             Entry {
               node,
               hash,
               children: child_ids.clone(),
               content_key: desc.content_key,
-              frame: self.frame,
+              frame: *frame,
             },
           );
+          taffy_ids[i] = Some(node);
         }
       }
     }
 
-    let Some(root) = self.entries.get(&nodes[0].id).map(|e| e.node) else {
+    let Some(root) = taffy_ids[0] else {
       return Ok(());
     };
     let fit = |v: f32| if v.is_finite() && v > 0.0 { v } else { 0.0 };
@@ -330,10 +332,10 @@ impl LayoutEngine {
     // Taffy's locations are relative to the parent: accumulate from the root
     let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
     for &i in order.iter() {
-      let Some(entry) = self.entries.get(&nodes[i].id) else {
+      let Some(node) = taffy_ids[i] else {
         continue;
       };
-      let layout = self.taffy.layout(entry.node)?;
+      let layout = self.taffy.layout(node)?;
       let (x, y) = match parents[i] {
         Some(p) => (
           placed[p].rect.x + layout.location.x,
@@ -361,80 +363,82 @@ impl LayoutEngine {
     }
     Ok(())
   }
+}
 
-  /// Replaces what layout cannot use, warning once per field
-  fn sanitize(&mut self, style: &UiStyle) -> UiStyle {
-    let mut s = style.clone();
-    s.width = self.clean_length(s.width, "width");
-    s.height = self.clean_length(s.height, "height");
-    s.min_width = self.clean_opt(s.min_width, "min_width");
-    s.max_width = self.clean_opt(s.max_width, "max_width");
-    s.min_height = self.clean_opt(s.min_height, "min_height");
-    s.max_height = self.clean_opt(s.max_height, "max_height");
-    s.padding.left = self.clean_value(s.padding.left, "padding");
-    s.padding.top = self.clean_value(s.padding.top, "padding");
-    s.padding.right = self.clean_value(s.padding.right, "padding");
-    s.padding.bottom = self.clean_value(s.padding.bottom, "padding");
-    s.margin.left = self.clean_value(s.margin.left, "margin");
-    s.margin.top = self.clean_value(s.margin.top, "margin");
-    s.margin.right = self.clean_value(s.margin.right, "margin");
-    s.margin.bottom = self.clean_value(s.margin.bottom, "margin");
-    s.gap = self.clean_value(s.gap, "gap");
-    s.grow = self.clean_value(s.grow, "grow");
-    if s.aspect.is_some_and(|a| !a.is_finite() || a <= 0.0) {
-      self.warn_field("aspect");
-      s.aspect = None;
-    }
-    if let Flow::Grid(Tracks::Fixed(widths)) = &mut s.flow {
-      for w in widths.iter_mut() {
-        if !w.is_finite() || *w < 0.0 {
-          if self.warned.insert("grid track") {
-            warn_bad("grid track");
-          }
-          *w = 0.0;
-        }
+/// `style` with what layout cannot use replaced, warned once per field
+fn sanitize(warned: &mut HashSet<&'static str>, style: &UiStyle) -> UiStyle {
+  let mut s = style.clone();
+  s.width = clean_length(warned, s.width, "width");
+  s.height = clean_length(warned, s.height, "height");
+  s.min_width = clean_opt(warned, s.min_width, "min_width");
+  s.max_width = clean_opt(warned, s.max_width, "max_width");
+  s.min_height = clean_opt(warned, s.min_height, "min_height");
+  s.max_height = clean_opt(warned, s.max_height, "max_height");
+  s.padding.left = clean_value(warned, s.padding.left, "padding");
+  s.padding.top = clean_value(warned, s.padding.top, "padding");
+  s.padding.right = clean_value(warned, s.padding.right, "padding");
+  s.padding.bottom = clean_value(warned, s.padding.bottom, "padding");
+  s.margin.left = clean_value(warned, s.margin.left, "margin");
+  s.margin.top = clean_value(warned, s.margin.top, "margin");
+  s.margin.right = clean_value(warned, s.margin.right, "margin");
+  s.margin.bottom = clean_value(warned, s.margin.bottom, "margin");
+  s.gap = clean_value(warned, s.gap, "gap");
+  s.grow = clean_value(warned, s.grow, "grow");
+  if s.aspect.is_some_and(|a| !a.is_finite() || a <= 0.0) {
+    warn_field(warned, "aspect");
+    s.aspect = None;
+  }
+  if let Flow::Grid(Tracks::Fixed(widths)) = &mut s.flow {
+    for w in widths.iter_mut() {
+      if !w.is_finite() || *w < 0.0 {
+        warn_field(warned, "grid track");
+        *w = 0.0;
       }
     }
-    if !s.offset.is_finite() {
-      self.warn_field("offset");
-      s.offset = Vec2::ZERO;
-    }
-    s
   }
-
-  fn clean_value(&mut self, v: f32, field: &'static str) -> f32 {
-    if v.is_finite() && v >= 0.0 {
-      v
-    } else {
-      self.warn_field(field);
-      0.0
-    }
+  if !s.offset.is_finite() {
+    warn_field(warned, "offset");
+    s.offset = Vec2::ZERO;
   }
+  s
+}
 
-  fn clean_opt(&mut self, v: Option<f32>, field: &'static str) -> Option<f32> {
-    match v {
-      Some(v) if !v.is_finite() || v < 0.0 => {
-        self.warn_field(field);
-        None
-      }
-      v => v,
-    }
+fn clean_value(warned: &mut HashSet<&'static str>, v: f32, field: &'static str) -> f32 {
+  if v.is_finite() && v >= 0.0 {
+    v
+  } else {
+    warn_field(warned, field);
+    0.0
   }
+}
 
-  fn clean_length(&mut self, l: Length, field: &'static str) -> Length {
-    match l {
-      Length::Px(v) | Length::Pct(v) if !v.is_finite() || v < 0.0 => {
-        self.warn_field(field);
-        Length::Fit
-      }
-      l => l,
+fn clean_opt(
+  warned: &mut HashSet<&'static str>,
+  v: Option<f32>,
+  field: &'static str,
+) -> Option<f32> {
+  match v {
+    Some(v) if !v.is_finite() || v < 0.0 => {
+      warn_field(warned, field);
+      None
     }
+    v => v,
   }
+}
 
-  fn warn_field(&mut self, field: &'static str) {
-    if self.warned.insert(field) {
-      warn_bad(field);
+fn clean_length(warned: &mut HashSet<&'static str>, l: Length, field: &'static str) -> Length {
+  match l {
+    Length::Px(v) | Length::Pct(v) if !v.is_finite() || v < 0.0 => {
+      warn_field(warned, field);
+      Length::Fit
     }
+    l => l,
+  }
+}
+
+fn warn_field(warned: &mut HashSet<&'static str>, field: &'static str) {
+  if warned.insert(field) {
+    warn_bad(field);
   }
 }
 
