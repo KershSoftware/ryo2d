@@ -80,9 +80,12 @@ impl TapeLog {
     self.ids.len()
   }
 
-  /// What was noted since `mark`, taken out
-  pub(crate) fn take(&mut self, mark: usize) -> Vec<UiId> {
-    self.ids.split_off(mark.min(self.ids.len()))
+  /// What was noted since `mark`, taken out into `into` (cleared first, its
+  /// buffer kept)
+  pub(crate) fn take_into(&mut self, mark: usize, into: &mut Vec<UiId>) {
+    into.clear();
+    let mark = mark.min(self.ids.len());
+    into.extend(self.ids.drain(mark..));
   }
 
   /// Nothing noted, nothing recording (a new frame)

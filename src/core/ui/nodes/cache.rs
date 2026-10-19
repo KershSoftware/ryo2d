@@ -16,10 +16,12 @@
 //! record itself says: it must be replayable, built in this environment and
 //! top flag, and every read of its subtree must still hold.
 
+#[cfg(test)]
+use crate::core::ecs::kernel::Mut;
 use crate::core::ecs::kernel::{
   Allow, Changed, CheckChangeTicks, ChildOf, Children, ComponentId, Disabled, Entity,
-  EntityHashMap, EntityHashSet, MessageCursor, Mut, Or, QueryState, RemovedComponentEntity, Tick,
-  With, World, WorldId,
+  EntityHashMap, EntityHashSet, MessageCursor, Or, QueryState, RemovedComponentEntity, Tick, With,
+  World, WorldId,
 };
 use crate::core::hash::FastMap;
 use crate::core::text::TextReveal;
@@ -62,14 +64,16 @@ tracked!(
 
 /// What the node walk keeps between frames: each node's last build, and
 /// which nodes changed since
-#[allow(dead_code)] // enabled, records and stats until the walk reads them
 pub(crate) struct UiCache {
   /// Whether the walk replays clean nodes
   pub(crate) enabled: bool,
   /// Each node's last build
   pub(crate) records: EntityHashMap<NodeRecord>,
   /// The nodes that changed since their records were made, and their
-  /// ancestors, until rebuilt
+  /// ancestors, until rebuilt. Every dirty node's ancestors are dirty: a
+  /// mark stops at a dirty node, and the walk clears a node only as it
+  /// builds it, before its children, and a node it does not draw with its
+  /// subtree.
   pub(crate) dirty: EntityHashSet,
   /// The change tick the last check saw up to
   pub(crate) checked: Option<Tick>,
@@ -120,7 +124,6 @@ impl Default for UiCache {
 
 /// A node's last build: what its builder pushed and what it was built under
 #[derive(Clone)]
-#[allow(dead_code)] // until the walk keeps records
 pub(crate) struct NodeRecord {
   /// What the builder pushed
   pub(crate) tape: Tape,
@@ -136,18 +139,57 @@ pub(crate) struct NodeRecord {
   pub(crate) id: UiId,
   /// A modal or popup container: the walk's Back target
   pub(crate) dialog: bool,
+  /// The id scope it was built in, its parent's id: the ids it made are
+  /// made from it, so a node reparented (or a parent given another id)
+  /// builds again
+  pub(crate) scope: UiId,
 }
 
-/// What the walk did with the nodes of its last pass
+/// What the walks did with the nodes of the last pass
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[allow(dead_code)] // until the walk counts them
 pub(crate) struct CacheStats {
   /// Nodes built
   pub(crate) built: usize,
-  /// Nodes replayed
+  /// Tree nodes replayed (a node's record may hold several)
   pub(crate) replayed: usize,
   /// The nodes built, in walk order
   pub(crate) rebuilt: Vec<Entity>,
+  /// Children found unclean in a parent's replay: never so while every
+  /// dirty node's ancestors are dirty; drawn from their stale records and
+  /// built from the next frame
+  pub(crate) missed: usize,
+}
+
+impl CacheStats {
+  /// A new pass: nothing done yet, the buffer kept
+  fn clear(&mut self) {
+    self.built = 0;
+    self.replayed = 0;
+    self.missed = 0;
+    self.rebuilt.clear();
+  }
+}
+
+/// Which of the live sets a node belongs to, by its kind (`note_live`)
+#[derive(Clone, Copy)]
+pub(crate) struct LiveKinds {
+  live: bool,
+  tabs: bool,
+  choices: bool,
+  target: bool,
+  rebind: bool,
+}
+
+impl LiveKinds {
+  pub(crate) fn of(kind: &UiNodeKind) -> LiveKinds {
+    LiveKinds {
+      live: matches!(kind.kind, Kind::Scroll(_) | Kind::List(_)),
+      tabs: matches!(kind.kind, Kind::Tabs),
+      choices: matches!(kind.kind, Kind::ChoiceList { .. }),
+      target: kind.flags.drop_target,
+      rebind: matches!(kind.kind, Kind::Rebind(_)),
+    }
+  }
 }
 
 /// Every node with a typewriter, `Disabled` ones too
@@ -215,22 +257,169 @@ impl Check {
 }
 
 impl UiCache {
+  /// Drop the records not drawn in memory frame `frame`, with what they
+  /// noted: their ids in `by_id` and their places in the live sets
+  fn drop_undrawn(&mut self, frame: u64) {
+    let UiCache {
+      records,
+      by_id,
+      live,
+      tabs,
+      targets,
+      choices,
+      rebinds,
+      ..
+    } = self;
+    records.retain(|&node, record| {
+      if record.frame == frame {
+        return true;
+      }
+      unindex(by_id, node, &record.tape);
+      for set in [
+        &mut *live,
+        &mut *tabs,
+        &mut *targets,
+        &mut *choices,
+        &mut *rebinds,
+      ] {
+        set.remove(&node);
+      }
+      false
+    });
+  }
+
+  /// Drop every record, with what they noted
+  fn clear_records(&mut self) {
+    self.records.clear();
+    self.by_id.clear();
+    self.live.clear();
+    self.tabs.clear();
+    self.targets.clear();
+    self.choices.clear();
+    self.rebinds.clear();
+  }
+
+  /// A new pass begins: its stats start from nothing
+  pub(crate) fn begin_pass(&mut self) {
+    self.stats.clear();
+  }
+
+  /// Whether the walk may replay `node`'s record in place of building it
+  /// (see [`clean`]), in environment `env`, where the id scope is `scope`.
+  /// `None` in a parent's replay, which pushes no scope: there a child's
+  /// scope is the one its parent's build gave it, since a child is built
+  /// again whenever its parent is built in another scope.
+  pub(crate) fn is_clean(
+    &self,
+    world: &World,
+    ui: &UiContext<'_>,
+    node: Entity,
+    env: UiEnv,
+    scope: Option<UiId>,
+  ) -> bool {
+    if !self.enabled || self.dirty.contains(&node) {
+      return false;
+    }
+    let Some(record) = self.records.get(&node) else {
+      return false;
+    };
+    let (scene, top) = ui.scene();
+    record.tape.replayable
+      && record.scene == scene
+      && record.top == top
+      && record.env == env
+      && scope.is_none_or(|scope| record.scope == scope)
+      && record.tape.reads.iter().all(|read| holds(world, ui, read))
+  }
+
+  /// `node` is being built: it leaves the dirty set (its dirty children are
+  /// drawn after it, or forgotten) and its record gives up its tape, to be
+  /// recorded again in the same buffers
+  pub(crate) fn take_for_build(&mut self, node: Entity) -> Tape {
+    self.dirty.remove(&node);
+    match self.records.remove(&node) {
+      Some(record) => {
+        unindex(&mut self.by_id, node, &record.tape);
+        record.tape
+      }
+      None => Tape::default(),
+    }
+  }
+
+  /// Keep `node`'s new record: its ids find it by `by_id`, and its `live`
+  /// kinds put it in the live sets
+  pub(crate) fn store(&mut self, node: Entity, record: NodeRecord, live: LiveKinds) {
+    for built in &record.tape.nodes {
+      self.by_id.insert(built.id, node);
+    }
+    self.note(node, live);
+    self.records.insert(node, record);
+  }
+
+  /// Keep `node`'s place in the live sets by its kinds
+  fn note(&mut self, node: Entity, kinds: LiveKinds) {
+    member(&mut self.live, node, kinds.live);
+    member(&mut self.tabs, node, kinds.tabs);
+    member(&mut self.choices, node, kinds.choices);
+    member(&mut self.targets, node, kinds.target);
+    member(&mut self.rebinds, node, kinds.rebind);
+  }
+
+  /// Count `node` as built, in walk order
+  pub(crate) fn count_built(&mut self, node: Entity) {
+    self.stats.built += 1;
+    self.stats.rebuilt.push(node);
+  }
+
+  /// `node` is not drawn where its parent's build reached it (hidden, or
+  /// no longer a node): if dirty, it leaves the dirty set with its subtree,
+  /// whose records go at the frame's end. Once drawn again it is marked
+  /// anew, up to its root.
+  pub(crate) fn forget(&mut self, world: &World, node: Entity) {
+    if !self.dirty.remove(&node) {
+      return;
+    }
+    let mut stack: Vec<Entity> = world
+      .get::<Children>(node)
+      .map(|children| children.to_vec())
+      .unwrap_or_default();
+    while let Some(at) = stack.pop() {
+      self.dirty.remove(&at);
+      if let Some(children) = world.get::<Children>(at) {
+        stack.extend_from_slice(children);
+      }
+    }
+  }
+
+  /// Mark `node` dirty, with its ancestors up to its root or a dirty one
+  pub(crate) fn mark(&mut self, world: &World, node: Entity) {
+    mark(&mut self.dirty, world, node);
+  }
+
+  /// [`mark`](Self::mark) `node` as if it were not dirty, so its ancestors
+  /// are marked whatever it was
+  pub(crate) fn mark_anew(&mut self, world: &World, node: Entity) {
+    self.dirty.remove(&node);
+    mark(&mut self.dirty, world, node);
+  }
+
+  /// A scene's walk is done: what it wrote (already marked where it
+  /// matters) is not seen as a change by the next check, while what is
+  /// written from here (the scene's `ui`, the next scene's walk) is
+  pub(crate) fn walked(&mut self, world: &mut World) {
+    self.checked = Some(world.increment_change_tick());
+  }
+
   /// Make the check for `world` if it has none. A check made for another
   /// world starts the cache as new: nothing kept from there holds here.
   fn check_for(&mut self, world: &mut World) {
     match &self.check {
       Some(check) if check.world == world.id() => return,
       Some(_) => {
-        self.records.clear();
+        self.clear_records();
         self.dirty.clear();
-        self.by_id.clear();
         self.last_roles = Roles::default();
         self.roles = (0, Roles::default());
-        self.live.clear();
-        self.tabs.clear();
-        self.targets.clear();
-        self.choices.clear();
-        self.rebinds.clear();
       }
       None => {}
     }
@@ -240,7 +429,7 @@ impl UiCache {
 
   /// Bring `dirty` up to date with what changed in `world` since the last
   /// check
-  fn refresh(&mut self, world: &mut World) {
+  pub(crate) fn refresh(&mut self, world: &mut World) {
     self.check_for(world);
     let Some(check) = self.check.as_deref_mut() else {
       return;
@@ -261,7 +450,7 @@ impl UiCache {
         if check.read_removals(world, Some(dirty)) {
           // Which nodes the missed removals touched is unknown: every node
           // is built again
-          self.records.clear();
+          self.clear_records();
         }
       }
     }
@@ -275,7 +464,7 @@ impl UiCache {
 /// Bring the dirty set up to date from the tracked components' change ticks
 /// and removals since the last check. A world without node trees is left
 /// as it is.
-#[allow(dead_code)] // until the walk checks before it draws
+#[cfg(test)]
 pub(crate) fn refresh_dirty(world: &mut World) {
   world.try_resource_scope(|world, mut nodes: Mut<UiNodes>| nodes.cache.refresh(world));
 }
@@ -293,7 +482,7 @@ pub(crate) fn refresh_dirty(world: &mut World) {
 ///
 /// `ui` is recording `scene`. It costs the roles and the members of the
 /// live sets, never a walk of every node.
-#[allow(dead_code)] // until the walk marks before it draws
+#[cfg(test)]
 pub(crate) fn mark_live(
   world: &mut World,
   ui: &UiContext<'_>,
@@ -306,7 +495,8 @@ pub(crate) fn mark_live(
 }
 
 impl UiCache {
-  fn mark_live(
+  /// [`mark_live`] on this cache, taken out of the world for a walk
+  pub(crate) fn mark_live(
     &mut self,
     world: &mut World,
     ui: &UiContext<'_>,
@@ -403,19 +593,18 @@ fn mark_each(
 /// stored: a scroll area or a list is built every frame; a tabs node, a
 /// choice list, a drop target and a rebinding row are built while what they
 /// read without holding a role moves
-#[allow(dead_code)] // until the walk stores records
+#[cfg(test)]
 pub(crate) fn note_live(cache: &mut UiCache, node: Entity, kind: &UiNodeKind) {
-  let live = matches!(kind.kind, Kind::Scroll(_) | Kind::List(_));
-  member(&mut cache.live, node, live);
-  member(&mut cache.tabs, node, matches!(kind.kind, Kind::Tabs));
-  let choices = matches!(kind.kind, Kind::ChoiceList { .. });
-  member(&mut cache.choices, node, choices);
-  member(&mut cache.targets, node, kind.flags.drop_target);
-  member(
-    &mut cache.rebinds,
-    node,
-    matches!(kind.kind, Kind::Rebind(_)),
-  );
+  cache.note(node, LiveKinds::of(kind));
+}
+
+/// Take what `node`'s record `tape` noted in `by_id` out of it
+fn unindex(by_id: &mut FastMap<UiId, Entity>, node: Entity, tape: &Tape) {
+  for built in &tape.nodes {
+    if by_id.get(&built.id) == Some(&node) {
+      by_id.remove(&built.id);
+    }
+  }
 }
 
 fn member(set: &mut EntityHashSet, node: Entity, is: bool) {
@@ -428,27 +617,15 @@ fn member(set: &mut EntityHashSet, node: Entity, is: bool) {
 
 /// Whether the walk may replay `node`'s record instead of building it:
 /// caching is on, it has a record, its tape is replayable, it was built in
-/// this scene, environment and top flag, what it and its subtree read of
-/// other nodes is unchanged (a tape carries its descendants' reads), and it
-/// is not dirty
-#[allow(dead_code)] // until the walk replays
+/// this scene, environment, top flag and id scope, what it and its subtree
+/// read of other nodes is unchanged (a tape carries its descendants'
+/// reads), and it is not dirty
+#[cfg(test)]
 pub(crate) fn clean(world: &World, ui: &UiContext<'_>, node: Entity) -> bool {
-  let Some(nodes) = world.get_resource::<UiNodes>() else {
-    return false;
-  };
-  let cache = &nodes.cache;
-  if !cache.enabled || cache.dirty.contains(&node) {
-    return false;
-  }
-  let Some(record) = cache.records.get(&node) else {
-    return false;
-  };
-  let (scene, top) = ui.scene();
-  record.tape.replayable
-    && record.scene == scene
-    && record.top == top
-    && record.env == ui.env()
-    && record.tape.reads.iter().all(|read| holds(world, ui, read))
+  let scope = Some(ui.memory.scopes.current());
+  world
+    .get_resource::<UiNodes>()
+    .is_some_and(|nodes| nodes.cache.is_clean(world, ui, node, ui.env(), scope))
 }
 
 /// Whether what a build read is still so: a node's id, or where a widget is
@@ -460,7 +637,7 @@ fn holds(world: &World, ui: &UiContext<'_>, read: &Read) -> bool {
 }
 
 /// Mark `node` dirty, with its ancestors up to its root
-#[allow(dead_code)] // until the walk marks what a built node writes
+#[cfg(test)]
 pub(crate) fn mark_dirty(world: &mut World, node: Entity) {
   let Some(mut nodes) = world.get_resource_mut::<UiNodes>() else {
     return;
@@ -499,6 +676,36 @@ fn mark(dirty: &mut EntityHashSet, world: &World, node: Entity) {
       return;
     };
     at = parent.parent();
+  }
+}
+
+/// What the node walks of the last pass did (`None` in a world without
+/// node trees)
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn cache_stats(world: &World) -> Option<&CacheStats> {
+  world
+    .get_resource::<UiNodes>()
+    .map(|nodes| &nodes.cache.stats)
+}
+
+/// Turn the cache of the trees in `world` on or off: off, every node is
+/// built and no record is kept (those kept are dropped at the frame's end,
+/// not drawn)
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn set_cache_enabled(world: &mut World, on: bool) {
+  if let Some(mut nodes) = world.get_resource_mut::<UiNodes>()
+    && nodes.cache.enabled != on
+  {
+    nodes.cache.enabled = on;
+  }
+}
+
+/// The memory frame `frame` ended: drop the records of the nodes it did not
+/// draw (despawned, hidden, of a scene not drawn or gone), as the memory
+/// drops widget state not touched
+pub(crate) fn end_frame(world: &mut World, frame: u64) {
+  if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
+    nodes.cache.drop_undrawn(frame);
   }
 }
 
@@ -647,8 +854,10 @@ mod tests {
       frame: 1,
       id: UiId::NONE,
       dialog: false,
+      scope: UiId::NONE,
     };
-    let records = |h: &mut UiHarness| h.world_mut().resource_mut::<UiNodes>().cache.records.len();
+    // The walk keeps the tree's records; `go`'s is replaced by hand
+    let records = |h: &mut UiHarness| h.world().resource::<UiNodes>().cache.records.clone();
     h.world_mut()
       .resource_mut::<UiNodes>()
       .cache
@@ -657,13 +866,19 @@ mod tests {
     h.world_mut().entity_mut(go).remove::<UiDisabled>();
     h.world_mut().clear_trackers();
     refresh_dirty(h.world_mut());
-    assert_eq!(records(&mut h), 1, "read within two clears: nothing missed");
+    assert!(
+      records(&mut h).contains_key(&go),
+      "read within two clears: nothing missed"
+    );
     h.world_mut().entity_mut(go).insert(UiDisabled);
     h.world_mut().entity_mut(go).remove::<UiDisabled>();
     h.world_mut().clear_trackers();
     h.world_mut().clear_trackers();
     refresh_dirty(h.world_mut());
-    assert_eq!(records(&mut h), 0, "a missed removal rebuilds everything");
+    assert!(
+      records(&mut h).is_empty(),
+      "a missed removal rebuilds everything"
+    );
   }
 
   #[test]
@@ -681,6 +896,7 @@ mod tests {
       frame: 1,
       id: UiId::NONE,
       dialog: false,
+      scope: UiId::NONE,
     };
     nodes.cache.records.insert(go, record);
     let mut other = World::new();
@@ -729,6 +945,7 @@ mod tests {
         frame: 1,
         id: UiId::NONE,
         dialog: false,
+        scope: UiId::NONE,
       };
       ui_nodes.cache.records.insert(node, record);
     }
@@ -863,14 +1080,16 @@ mod live_tests {
     note_live(&mut cache_mut(h).cache, node, &kind);
   }
 
-  /// What a record is built under: its environment, scene and frame
-  fn built_under(ui: &UiContext<'_>) -> (UiEnv, u64, u64) {
-    (ui.env(), ui.scene().0, ui.memory.frame())
+  /// What a record is built under: its environment, scene, frame and id
+  /// scope (a root's, the scene's)
+  fn built_under(ui: &UiContext<'_>) -> (UiEnv, u64, u64, UiId) {
+    let scope = ui.memory.scopes.current();
+    (ui.env(), ui.scene().0, ui.memory.frame(), scope)
   }
 
   /// A record of `tape` for `node`, built under `under`
-  fn insert(h: &mut UiHarness, node: Entity, tape: Tape, under: (UiEnv, u64, u64)) {
-    let (env, scene, frame) = under;
+  fn insert(h: &mut UiHarness, node: Entity, tape: Tape, under: (UiEnv, u64, u64, UiId)) {
+    let (env, scene, frame, scope) = under;
     let record = NodeRecord {
       tape,
       scene,
@@ -879,6 +1098,7 @@ mod live_tests {
       frame,
       id: UiId::NONE,
       dialog: false,
+      scope,
     };
     cache_mut(h).cache.records.insert(node, record);
   }
@@ -955,6 +1175,7 @@ mod live_tests {
         .child(UiNode::tabs(&["One", "Two"], 0).name("tabs"))
         .child(UiNode::button("Other").name("other").default_focus()),
     );
+    h.move_to(630.0, 470.0); // hovering no tab
     warm(&mut h);
     let tabs = h.find_ui("tabs").unwrap();
     note(&mut h, tabs);
@@ -967,7 +1188,13 @@ mod live_tests {
   #[test]
   fn a_changed_env_makes_a_record_unclean() {
     let mut h = UiHarness::new(640.0, 480.0);
-    h.spawn_ui(UiNode::column().child(UiNode::button("A").name("a")));
+    // Embedded and never drawn: the walk keeps no record of it, only the
+    // one made here
+    h.spawn_ui(
+      UiNode::column()
+        .embedded()
+        .child(UiNode::button("A").name("a")),
+    );
     warm(&mut h);
     let a = h.find_ui("a").unwrap();
     record(&mut h, a, replayable(Vec::new()));
@@ -985,7 +1212,13 @@ mod live_tests {
   #[test]
   fn a_record_is_clean_only_when_replayable_undirty_and_cached() {
     let mut h = UiHarness::new(640.0, 480.0);
-    h.spawn_ui(UiNode::column().child(UiNode::button("A").name("a")));
+    // Embedded and never drawn: the walk keeps no record of it, only the
+    // ones made here
+    h.spawn_ui(
+      UiNode::column()
+        .embedded()
+        .child(UiNode::button("A").name("a")),
+    );
     warm(&mut h);
     let a = h.find_ui("a").unwrap();
     let is_clean = |h: &mut UiHarness| h.frame_with_world(|ui, world| clean(world, ui, a));
@@ -1002,7 +1235,7 @@ mod live_tests {
     }
     assert!(!is_clean(&mut h), "built while its scene was below another");
     record(&mut h, a, replayable(Vec::new()));
-    cache_mut(&mut h).cache.enabled = false;
+    h.set_ui_cache(false);
     assert!(!is_clean(&mut h), "caching off");
   }
 
@@ -1017,6 +1250,7 @@ mod live_tests {
           .child(UiNode::button("Row").name("row")),
       ),
     );
+    h.move_to(630.0, 470.0); // hovering no row
     warm(&mut h);
     let [page, area, row] = ["page", "area", "row"].map(|name| h.find_ui(name).unwrap());
     note(&mut h, area);
@@ -1062,8 +1296,11 @@ mod live_tests {
   #[test]
   fn the_pending_focus_node_is_marked() {
     let mut h = UiHarness::new(640.0, 480.0);
+    // Embedded and never drawn: the walk keeps no record of it, only the
+    // one made here
     h.spawn_ui(
       UiNode::column()
+        .embedded()
         .focus_scope()
         .child(UiNode::button("A").name("a").default_focus())
         .child(UiNode::button("B").name("b")),
@@ -1134,7 +1371,10 @@ mod live_tests {
   #[test]
   fn an_open_dropdown_reads_its_own_rect_and_rebuilds_once_it_moved() {
     let mut h = UiHarness::new(640.0, 480.0);
-    let node = h.spawn_ui(UiNode::column().name("page"));
+    // Embedded and never drawn: the walk keeps no record of it, only the
+    // one made here (gone at the end of each frame that draws, so made
+    // again for each check)
+    let node = h.spawn_ui(UiNode::column().embedded().name("page"));
     warm(&mut h);
     let trigger = h.frame(|ui| difficulty(ui, 10.0)).rect;
     h.move_to(trigger.x + 5.0, trigger.y + 5.0);
@@ -1174,6 +1414,7 @@ mod live_tests {
     };
     assert!(is_clean(&mut h, 10.0), "where it was: clean");
     h.frame(|ui| difficulty(ui, 200.0));
+    insert(&mut h, node, replayable(tape.reads.clone()), under);
     assert!(!is_clean(&mut h, 200.0), "it moved: its list is rebuilt");
   }
 
@@ -1240,12 +1481,12 @@ mod live_tests {
       !unseen.contains(&area) && !unseen.contains(&page),
       "a live node under a hidden branch rebuilds nothing above it"
     );
-    let (env, scene, frame) = h.frame(|ui| built_under(ui));
+    let (env, scene, frame, scope) = h.frame(|ui| built_under(ui));
     insert(
       &mut h,
       area,
       replayable(Vec::new()),
-      (env, scene + 1, frame),
+      (env, scene + 1, frame, scope),
     );
     assert!(
       !marked(&mut h).contains(&area),
@@ -1273,8 +1514,12 @@ mod live_tests {
   #[test]
   fn a_parent_carries_the_reads_of_its_subtree() {
     let mut h = UiHarness::new(640.0, 480.0);
+    // Embedded and never drawn: the walk keeps no record of it, only the
+    // ones made here (gone at the end of each frame that draws, so made
+    // again for each check)
     h.spawn_ui(
       UiNode::row()
+        .embedded()
         .child(UiNode::column().name("left"))
         .child(UiNode::column().name("right")),
     );
@@ -1299,8 +1544,11 @@ mod live_tests {
 
     // The column's record on one node, a sibling's on another
     let (left, right) = (h.find_ui("left").unwrap(), h.find_ui("right").unwrap());
-    insert(&mut h, left, replayable(column.reads.clone()), under);
-    insert(&mut h, right, replayable(Vec::new()), under);
+    let records = |h: &mut UiHarness| {
+      insert(h, left, replayable(column.reads.clone()), under);
+      insert(h, right, replayable(Vec::new()), under);
+    };
+    records(&mut h);
     let both = |h: &mut UiHarness, x: f32| {
       h.frame_with_world(|ui, world| {
         let both = (clean(world, ui, left), clean(world, ui, right));
@@ -1310,6 +1558,7 @@ mod live_tests {
     };
     assert_eq!(both(&mut h, 10.0), (true, true));
     h.frame(|ui| taped_column(ui, 200.0));
+    records(&mut h);
     assert_eq!(
       both(&mut h, 200.0),
       (false, true),
@@ -1355,10 +1604,16 @@ mod live_tests {
       frame(&mut d);
     }
     let choices = d.find_ui("choices").unwrap();
-    note(&mut d, choices);
+    // An embedded tree is built, not recorded, so a record made here goes
+    // at the end of the next frame: made again for each frame that reads it
+    let recorded = |d: &mut UiDriver, under| {
+      note(d, choices);
+      insert(d, choices, replayable(Vec::new()), under);
+    };
     let (_, under) = frame(&mut d);
-    insert(&mut d, choices, replayable(Vec::new()), under);
+    recorded(&mut d, under);
     assert!(!frame(&mut d).0.contains(&choices), "no number key");
+    recorded(&mut d, under);
     d.key(KeyCode::Digit2);
     assert!(
       frame(&mut d).0.contains(&choices),
@@ -1374,6 +1629,7 @@ mod live_tests {
     );
     let mut d = UiDriver::new((640.0, 480.0)).prompts(prompts);
     d.spawn_ui(UiNode::column().child(UiNode::rebind("jump").name("row")));
+    d.move_to(630.0, 470.0); // hovering no row
     warm(&mut d);
     let row = d.find_ui("row").unwrap();
     note(&mut d, row);

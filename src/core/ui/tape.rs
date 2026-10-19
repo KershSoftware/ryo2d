@@ -24,11 +24,15 @@ use crate::core::ui::immediate::UiContext;
 use crate::core::ui::tree::{DrawKind, Node};
 use crate::core::ui::{Rect, UiId};
 
-/// What one builder call pushed, to push again in a later frame
+/// What one builder call pushed, to push again in a later frame. A tape
+/// recorded again into the same value reuses its buffers.
 #[derive(Clone, Default)]
 pub(crate) struct Tape {
   /// What it pushed, in order
   pub(crate) ops: Vec<Op>,
+  /// The nodes it pushed, as given to `push_node` before they were stamped:
+  /// `Op::Node { node: k, .. }` is the k-th
+  pub(crate) nodes: Vec<Node>,
   /// The ids its own builder made, in order (not its children's)
   pub(crate) ids: Vec<UiId>,
   /// The widget states it touched, in order
@@ -38,6 +42,18 @@ pub(crate) struct Tape {
   pub(crate) replayable: bool,
   /// What its build read from outside its own node, in order
   pub(crate) reads: Vec<Read>,
+}
+
+impl Tape {
+  /// Empty and not replayable, its buffers kept
+  pub(crate) fn clear(&mut self) {
+    self.ops.clear();
+    self.nodes.clear();
+    self.ids.clear();
+    self.states.clear();
+    self.reads.clear();
+    self.replayable = false;
+  }
 }
 
 /// Something a build read from outside its own node, baked into what it
@@ -56,9 +72,8 @@ pub(crate) enum Read {
 /// One thing a builder pushed
 #[derive(Clone)]
 pub(crate) enum Op {
-  /// A node as given to `push_node`, before it was stamped (boxed: a node
-  /// is many times the size of any other op)
-  Node { node: Box<Node>, at: Option<Rect> },
+  /// The k-th node the tape pushed (`Tape::nodes`), at `at`
+  Node { node: u32, at: Option<Rect> },
   /// The close of the k-th node the tape pushed
   Close(u32),
   /// A draw on the k-th node the tape pushed, as given to `push_draw`
@@ -74,7 +89,7 @@ pub(crate) enum Op {
 
 /// Where a node a tape pushed went
 #[derive(Clone, Copy)]
-struct Place {
+pub(crate) struct Place {
   /// The popups being recorded around it (`subtree_stack`'s length)
   depth: usize,
   /// Its index in that subtree
@@ -85,8 +100,9 @@ struct Place {
 /// A tape being recorded
 pub(crate) struct Recorder {
   tape: Tape,
-  /// Where each node it pushed went, by its place in the tape
-  places: Vec<Place>,
+  /// Where each node it pushed went, by its place in the tape: from here on
+  /// in the memory's `Scratch::places`, which nested tapes share
+  places: usize,
   /// Child slots (and replays) under way: nothing is recorded while above 0
   paused: u32,
   /// Replays under way while it was the open tape: a replay inside another
@@ -101,17 +117,26 @@ impl UiContext<'_> {
   /// Start recording a tape of what is pushed from here. Inside another
   /// tape, call it in a child slot ([`begin_child`](Self::begin_child)):
   /// the tape around it would miss what this one takes, so it is tainted.
-  #[allow(dead_code)] // until the node walk records and replays tapes
+  #[cfg(test)]
   pub(crate) fn start_tape(&mut self) {
+    self.start_tape_in(Tape::default());
+  }
+
+  /// [`start_tape`](Self::start_tape) into `tape`, cleared: a tape recorded
+  /// again reuses the buffers of the one it replaces
+  pub(crate) fn start_tape_in(&mut self, mut tape: Tape) {
     if self.recording() {
       self.taint();
     }
+    tape.clear();
+    tape.replayable = true;
+    let places = &mut self.memory.scratch.places;
+    if self.tapes.is_empty() {
+      places.clear();
+    }
     let recorder = Recorder {
-      tape: Tape {
-        replayable: true,
-        ..Tape::default()
-      },
-      places: Vec::new(),
+      tape,
+      places: places.len(),
       paused: 0,
       replaying: 0,
       ids: self.memory.scopes.log.mark(),
@@ -123,14 +148,21 @@ impl UiContext<'_> {
 
   /// Stop recording the tape started last: what it recorded (an empty
   /// tape, not replayable, when none was started)
-  #[allow(dead_code)] // until the node walk records and replays tapes
   pub(crate) fn end_tape(&mut self) -> Tape {
     let Some(recorder) = self.tapes.pop() else {
       return Tape::default();
     };
     let mut tape = recorder.tape;
-    tape.ids = self.memory.scopes.log.take(recorder.ids);
-    tape.states = self.memory.touched.take(recorder.states);
+    self
+      .memory
+      .scopes
+      .log
+      .take_into(recorder.ids, &mut tape.ids);
+    self
+      .memory
+      .touched
+      .take_into(recorder.states, &mut tape.states);
+    self.memory.scratch.places.truncate(recorder.places);
     self.sync_logs();
     tape
   }
@@ -138,14 +170,12 @@ impl UiContext<'_> {
   /// Where `child`'s output goes: noted in the open tape, which records
   /// nothing more until [`end_child`](Self::end_child). What the child
   /// pushes, makes and touches is its own: its tape, or its replay.
-  #[allow(dead_code)] // until the node walk records and replays tapes
   pub(crate) fn begin_child(&mut self, child: Entity) {
     self.tape_op(Op::Child(child));
     self.pause();
   }
 
   /// The child slot begun last is filled: the open tape records again
-  #[allow(dead_code)] // until the node walk records and replays tapes
   pub(crate) fn end_child(&mut self) {
     self.resume();
   }
@@ -171,8 +201,23 @@ impl UiContext<'_> {
   /// build would be: `child` fills each child slot. Its ids are made and
   /// its widget states kept this frame. An open tape records none of it
   /// (it holds the child slot this is drawn in, if any) but its reads.
-  #[allow(dead_code)] // until the node walk records and replays tapes
+  ///
+  /// Called while a tape records outside a child slot, that tape is
+  /// tainted, as [`start_tape_in`](Self::start_tape_in) taints it. A
+  /// replay is a build's equal only where the build was made:
+  /// - in the same id scope, since the ids it made are kept, not made
+  ///   again;
+  /// - with no own id made after a child slot it holds, and none unkeyed
+  ///   made in the scope it is replayed into: a replay registers its ids
+  ///   but does not advance the per-site counts an unkeyed id is made from,
+  ///   so an unkeyed build after it at the same site would make the id the
+  ///   replay holds. Node trees key every node by its entity, so neither
+  ///   arises there.
   pub(crate) fn replay(&mut self, tape: &Tape, child: &mut dyn FnMut(&mut UiContext<'_>, Entity)) {
+    // The tape recording here would miss what the replay pushes
+    if self.recording() {
+      self.taint();
+    }
     // The tapes around carry what it read, as they would had it been built
     if self
       .tapes
@@ -200,7 +245,10 @@ impl UiContext<'_> {
     for op in &tape.ops {
       match op {
         Op::Node { node, at } => {
-          let index = self.push_node(Node::clone(node), *at);
+          let Some(node) = usize::try_from(*node).ok().and_then(|k| tape.nodes.get(k)) else {
+            continue;
+          };
+          let index = self.push_node(node.clone(), *at);
           self.memory.scratch.replayed.push(index);
         }
         Op::Draw { node, kind } => {
@@ -276,17 +324,21 @@ impl UiContext<'_> {
   /// went to `index` in the open subtree
   pub(crate) fn tape_node(&mut self, node: Node, at: Option<Rect>, index: usize) {
     let depth = self.subtree_stack.len();
-    if let Some(recorder) = self.tapes.last_mut() {
-      recorder.places.push(Place {
-        depth,
-        index,
-        id: node.id,
-      });
-      recorder.tape.ops.push(Op::Node {
-        node: Box::new(node),
-        at,
-      });
-    }
+    let Some(recorder) = self.tapes.last_mut() else {
+      return;
+    };
+    let tape = &mut recorder.tape;
+    let Ok(k) = u32::try_from(tape.nodes.len()) else {
+      tape.replayable = false;
+      return;
+    };
+    self.memory.scratch.places.push(Place {
+      depth,
+      index,
+      id: node.id,
+    });
+    tape.nodes.push(node);
+    tape.ops.push(Op::Node { node: k, at });
   }
 
   /// A draw of `kind` on `node` of the open subtree into the recording
@@ -321,7 +373,8 @@ impl UiContext<'_> {
   fn tape_place(&self, node: usize) -> Option<u32> {
     let id = self.subtree_node_id(node)?;
     let depth = self.subtree_stack.len();
-    let places = &self.tapes.last()?.places;
+    let base = self.tapes.last()?.places;
+    let places = self.memory.scratch.places.get(base..)?;
     let k = places
       .iter()
       .rposition(|place| place.depth == depth && place.index == node)?;
@@ -508,10 +561,7 @@ mod tests {
         .any(|op| matches!(op, Op::Child(e) if *e == child))
     );
     assert!(
-      !outer
-        .ops
-        .iter()
-        .any(|op| matches!(op, Op::Node { node, .. } if node.id == inner_id(&inner))),
+      !outer.nodes.iter().any(|node| node.id == inner_id(&inner)),
       "the parent's tape does not hold its child's nodes"
     );
     let count = h.frame(|ui| {
@@ -522,14 +572,7 @@ mod tests {
   }
 
   fn inner_id(tape: &Tape) -> UiId {
-    tape
-      .ops
-      .iter()
-      .find_map(|op| match op {
-        Op::Node { node, .. } => Some(node.id),
-        _ => None,
-      })
-      .unwrap_or(UiId::NONE)
+    tape.nodes.first().map_or(UiId::NONE, |node| node.id)
   }
 
   /// Three tapes nested two deep: a column holding a child (a column with
@@ -578,16 +621,7 @@ mod tests {
     let (_, ids) = built.frame(nested);
     let [outer, mid, inner] = &tapes;
     let [_, own, deep] = ids;
-    let nodes = |tape: &Tape| -> Vec<UiId> {
-      tape
-        .ops
-        .iter()
-        .filter_map(|op| match op {
-          Op::Node { node, .. } => Some(node.id),
-          _ => None,
-        })
-        .collect()
-    };
+    let nodes = |tape: &Tape| -> Vec<UiId> { tape.nodes.iter().map(|node| node.id).collect() };
     let children = |tape: &Tape| {
       tape
         .ops
@@ -613,6 +647,70 @@ mod tests {
       }
     });
     assert_eq!(snapshot(&replayed, &ids), snapshot(&built, &ids));
+  }
+
+  #[test]
+  fn a_replay_in_a_recording_parents_child_slot_leaves_only_the_slot() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let child = Entity::from_raw_u32(9).unwrap();
+    // A row with one child slot, filled by `fill`: the row's tape
+    let parent = |ui: &mut UiContext<'_>, fill: &mut dyn FnMut(&mut UiContext<'_>)| {
+      ui.start_tape();
+      ui.row().id("parent").gap(2.0).show(|ui| {
+        ui.begin_child(child);
+        fill(ui);
+        ui.end_child();
+      });
+      ui.end_tape()
+    };
+    let (mut inner, mut inner_id) = (Tape::default(), UiId::NONE);
+    h.frame(|ui| {
+      parent(ui, &mut |ui| {
+        ui.start_tape();
+        inner_id = ui.button("Inner").id("inner").show().id;
+        inner = ui.end_tape();
+      })
+    });
+    assert!(inner.replayable && inner.ids.contains(&inner_id));
+    let outer = h.frame(|ui| parent(ui, &mut |ui| ui.replay(&inner, &mut |_, _| {})));
+    assert!(outer.replayable, "a replay in a child slot taints nothing");
+    let slots: Vec<&Op> = outer
+      .ops
+      .iter()
+      .filter(|op| matches!(op, Op::Child(_)))
+      .collect();
+    assert!(matches!(slots.as_slice(), [Op::Child(e)] if *e == child));
+    assert_eq!(outer.nodes.len(), 1, "only the parent's own row");
+    assert!(
+      !outer.nodes.iter().any(|node| node.id == inner_id),
+      "none of the child's nodes"
+    );
+    assert!(!outer.ids.contains(&inner_id), "none of the child's ids");
+    assert!(
+      outer
+        .ops
+        .iter()
+        .all(|op| !matches!(op, Op::Draw { node, .. } if *node > 0)),
+      "no draw on a node of the child"
+    );
+  }
+
+  #[test]
+  fn a_replay_outside_a_child_slot_taints_the_recording_tape() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let inner = h.frame(|ui| {
+      ui.start_tape();
+      ui.button("Inner").id("inner").show();
+      ui.end_tape()
+    });
+    let outer = h.frame(|ui| {
+      ui.start_tape();
+      ui.column()
+        .id("c")
+        .show(|ui| ui.replay(&inner, &mut |_, _| {}));
+      ui.end_tape()
+    });
+    assert!(!outer.replayable, "it would miss what the replay pushed");
   }
 
   #[test]
@@ -773,15 +871,12 @@ mod tests {
       tape = ui.end_tape();
     });
     let leaf = tape
-      .ops
+      .nodes
       .iter()
-      .find_map(|op| match op {
-        Op::Node { node, .. } => match &node.text {
-          Some(Leaf::Shared(leaf)) => Some(Arc::clone(leaf)),
-          Some(Leaf::Owned(_)) => panic!("a taped leaf is shared"),
-          None => None,
-        },
-        _ => None,
+      .find_map(|node| match &node.text {
+        Some(Leaf::Shared(leaf)) => Some(Arc::clone(leaf)),
+        Some(Leaf::Owned(_)) => panic!("a taped leaf is shared"),
+        None => None,
       })
       .expect("a text node");
     assert_eq!(leaf.text.text, "Hello");

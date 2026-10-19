@@ -112,6 +112,8 @@ pub struct UiHarness {
   sources: nodes::SourceQuery,
   /// The last frame's node events
   last_events: Vec<UiEvent>,
+  /// Whether the node walk replays clean nodes (`set_ui_cache`)
+  ui_cache: bool,
   /// The next frame draws before the list pools are updated, as a rerun UI
   /// pass does (a scene switched from `ui` draws its new lists so)
   #[cfg(test)]
@@ -162,6 +164,7 @@ impl UiHarness {
       world,
       sources: Default::default(),
       last_events: Vec::new(),
+      ui_cache: true,
       #[cfg(test)]
       skip_list_update: false,
     }
@@ -315,6 +318,26 @@ impl UiHarness {
       .world
       .get::<nodes::UiInteraction>(node)
       .and_then(nodes::UiInteraction::id)
+  }
+
+  /// Turn the node cache on (the default) or off from the next frame. Off,
+  /// the walk builds every node of every tree each frame and keeps no
+  /// record, as before caching: for comparing output, or ruling caching out
+  /// when chasing a bug.
+  pub fn set_ui_cache(&mut self, on: bool) {
+    self.ui_cache = on;
+  }
+
+  /// What the node walk did in the last frame: the nodes it built (and
+  /// which), and how many tree nodes it replayed from records instead
+  pub fn ui_cache_stats(&self) -> UiCacheStats {
+    nodes::cache_stats(&self.world)
+      .map(|stats| UiCacheStats {
+        built: stats.built,
+        replayed: stats.replayed,
+        rebuilt: stats.rebuilt.clone(),
+      })
+      .unwrap_or_default()
   }
 
   /// Draw with `theme` (and take its interaction timings) from the next frame
@@ -546,6 +569,7 @@ impl UiHarness {
       context.set_dt(FRAME as f32);
       context.set_prompts(Arc::clone(&self.prompts));
       context.begin_scene(self.scene, true);
+      nodes::set_cache_enabled(&mut self.world, self.ui_cache);
       nodes::begin_pass(&mut self.world);
       let events = nodes::draw_nodes(&mut self.world, &mut context, self.scene);
       self.last_events.clone_from(&events);
@@ -564,6 +588,7 @@ impl UiHarness {
     } else {
       self.memory.end_frame();
       self.layout.end_frame();
+      nodes::end_frame(&mut self.world, self.memory.frame());
     }
     self.text.end_frame();
     // A press and a release last one frame, and so do navigation presses
@@ -627,6 +652,18 @@ impl UiHarness {
     view.gamepad_pressed.extend(self.pads.iter().copied());
     view
   }
+}
+
+/// What the node walk did in a frame ([`UiHarness::ui_cache_stats`])
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UiCacheStats {
+  /// The nodes built (their builders ran)
+  pub built: usize,
+  /// The tree nodes replayed from their records instead of built: a widget
+  /// is one, an open dropdown its trigger, list and options
+  pub replayed: usize,
+  /// The nodes built, in walk order
+  pub rebuilt: Vec<Entity>,
 }
 
 /// A direction's place in `NavInput`'s arrays

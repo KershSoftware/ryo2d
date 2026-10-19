@@ -345,6 +345,8 @@ impl Engine {
     if self.ui_pass_index > 0 {
       self.ui_memory.end_frame();
       self.ui_layout.end_frame();
+      // Node records not drawn this frame go, as widget state does
+      crate::core::ui::nodes::end_frame(&mut self.world, self.ui_memory.frame());
     }
   }
 

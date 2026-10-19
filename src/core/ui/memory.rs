@@ -10,6 +10,7 @@ use glam::Vec2;
 use super::id::{IdScopes, TapeLog, UiId};
 use super::layout::UiStyle;
 use super::layout::engine::NodeDesc;
+use super::tape::Place;
 use super::tree::Subtree;
 use super::types::Rect;
 use super::widgets::drag::DragState;
@@ -331,6 +332,9 @@ pub(crate) struct Scratch {
   /// The subtree index of each node a replay pushed, by its place in the
   /// tape; a replay inside another stacks its own after the outer's
   pub(crate) replayed: Vec<usize>,
+  /// Where each node the open tapes pushed went; a tape started inside
+  /// another stacks its own after the outer's
+  pub(crate) places: Vec<Place>,
 }
 
 impl Scratch {

@@ -2,11 +2,18 @@
 //!
 //! Each node is drawn by the builder a closure would call, given `.id(entity)`
 //! (text, separators and spacers are drawn inside `ui.scope(entity, ..)`), so
-//! its id depends only on its entity and its parent's id. `draw_node` reads a
-//! node's kind, flags and tooltip in one lookup and dispatches on it. A widget is drawn from shared reads
-//! of its components, and a value the player changed is written back after
-//! the builder returns. A container's builder is configured from the node
-//! first; its `.show` then walks the children with the world free.
+//! its id depends only on its entity and its parent's id. `build_node` reads
+//! a node's kind, flags and tooltip in one lookup and dispatches on it. A
+//! widget is drawn from shared reads of its components, and a value the
+//! player changed is written back after the builder returns. A container's
+//! builder is configured from the node first; its `.show` then walks the
+//! children with the world free.
+//!
+//! With the cache on, `draw_node` replays a clean node's record (its tape,
+//! with each child slot filled by the child's own replay) in place of
+//! building it, and records each node it builds, each child in a slot of its
+//! parent's tape. A replay never builds: a clean node's children are clean,
+//! since everything that makes a node rebuild makes its ancestors rebuild.
 
 use glam::Vec2;
 
@@ -16,11 +23,13 @@ use crate::core::ecs::kernel::{
 };
 use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextReveal, TextStyle};
+use crate::core::ui::env::UiEnv;
 use crate::core::ui::tape::Read;
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::{Anchor, Container, Rect, Response, Scroll, Theme, UiContext, UiId};
 
 use super::bindings::{self, UiBind};
+use super::cache::{LiveKinds, NodeRecord, UiCache};
 use super::components::{
   BackAnswer, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName,
   UiNodes, UiOptions, UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
@@ -82,10 +91,27 @@ pub(crate) struct Walk {
   children: Vec<Entity>,
   /// Whether `NodeRead`'s components are registered in the world
   registered: bool,
+  /// The trees' cache, out of `UiNodes` while the walk runs
+  cache: UiCache,
+  /// Whether clean nodes replay and built ones are recorded
+  caching: bool,
+  /// Subtrees under way that are built as before caching: list rows, whose
+  /// bindings sync after the dirty check
+  plain: u32,
+  /// What every builder reads besides its node's components, this pass
+  env: UiEnv,
+  /// The other nodes a bound widget's change wrote, for the one drawn last
+  written: Vec<Entity>,
 }
 
 impl Walk {
-  fn new(scene: u64, pending_focus: Option<Entity>) -> Walk {
+  fn new(
+    scene: u64,
+    pending_focus: Option<Entity>,
+    cache: UiCache,
+    caching: bool,
+    env: UiEnv,
+  ) -> Walk {
     Walk {
       scene,
       events: Vec::new(),
@@ -93,33 +119,56 @@ impl Walk {
       pending_focus,
       children: Vec::new(),
       registered: false,
+      cache,
+      caching,
+      plain: 0,
+      env,
+      written: Vec::new(),
     }
   }
 
-  /// Keep an unused focus request for a later frame; the walk's events
+  /// Whether the node being built is recorded
+  fn taping(&self) -> bool {
+    self.caching && self.plain == 0
+  }
+
+  /// Answer Back, keep an unused focus request for a later frame and give
+  /// the cache back; the walk's events
   pub(crate) fn finish(mut self, world: &mut World, ui: &mut UiContext<'_>) -> Vec<UiEvent> {
     if let Some(target) = self.back
       && ui.back()
     {
       let answer = world.get::<BackAnswer>(target).map(|answer| answer.0);
       match answer {
-        Some(no) => push_event(world, &mut self, no, UiEventKind::Clicked),
-        None => push_event(world, &mut self, target, UiEventKind::Back),
+        Some(no) => push_event(world, &mut self, no, UiEventKind::Clicked, ui),
+        None => push_event(world, &mut self, target, UiEventKind::Back, ui),
       }
     }
-    if let Some(node) = self.pending_focus
-      && let Some(mut nodes) = world.get_resource_mut::<UiNodes>()
-    {
-      nodes.pending_focus = Some(node);
+    if self.caching {
+      self.cache.walked(world);
     }
-    self.events
+    let Walk {
+      events,
+      pending_focus,
+      cache,
+      ..
+    } = self;
+    if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
+      if let Some(node) = pending_focus {
+        nodes.pending_focus = Some(node);
+      }
+      nodes.cache = cache;
+    }
+    events
   }
 }
 
-/// Start a UI pass: embedded trees may be drawn again
+/// Start a UI pass: embedded trees may be drawn again, and the cache counts
+/// afresh
 pub(crate) fn begin_pass(world: &mut World) {
   if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
     nodes.embedded_drawn.clear();
+    nodes.cache.begin_pass();
   }
 }
 
@@ -152,7 +201,15 @@ impl<'a> UiContext<'a> {
     }
     nodes.embedded_drawn.push(root);
     let pending_focus = nodes.pending_focus.take();
-    let mut walk = Walk::new(self.scene().0, pending_focus);
+    // Built as before caching, until embedded trees replay
+    let env = self.env();
+    let mut walk = Walk::new(
+      self.scene().0,
+      pending_focus,
+      UiCache::default(),
+      false,
+      env,
+    );
     bindings::sync_root(world, root);
     let response = draw_node(world, self, root, None, &mut walk);
     if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
@@ -177,23 +234,43 @@ pub(crate) fn deliver_pending(world: &mut World) -> Vec<UiEvent> {
 }
 
 /// Draw `scene`'s node trees through the builders, in spawn order (a later
-/// root over an earlier one), and return their events in walk order
+/// root over an earlier one), and return their events in walk order. Every
+/// root's bindings sync first, then the cache finds what changed and what
+/// is live (before any widget takes this frame's input), then the roots are
+/// drawn.
 pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) -> Vec<UiEvent> {
-  let Some(pending_focus) = world.try_resource_scope(|world, mut nodes: Mut<UiNodes>| {
+  let Some((pending_focus, cache)) = world.try_resource_scope(|world, mut nodes: Mut<UiNodes>| {
     nodes
       .roots
       .retain(|&(_, root)| world.get::<UiRoot>(root).is_some());
-    nodes.pending_focus.take()
+    (nodes.pending_focus.take(), std::mem::take(&mut nodes.cache))
   }) else {
     return Vec::new();
   };
-  let mut walk = Walk::new(scene, pending_focus);
+  let caching = cache.enabled;
+  let mut walk = Walk::new(scene, pending_focus, cache, caching, ui.env());
   let mut i = 0;
-  while let Some((owner, root)) = world
-    .get_resource::<UiNodes>()
-    .and_then(|nodes| nodes.roots.get(i).copied())
-  {
-    i += 1;
+  while let Some((root, _)) = scene_root(world, scene, &mut i) {
+    bindings::sync_root(world, root);
+  }
+  if walk.caching {
+    walk.cache.refresh(world);
+    walk.cache.mark_live(world, ui, scene, walk.pending_focus);
+  }
+  let mut i = 0;
+  while let Some((root, place)) = scene_root(world, scene, &mut i) {
+    draw_node(world, ui, root, Some(place), &mut walk);
+  }
+  walk.finish(world, ui)
+}
+
+/// The next of `scene`'s own roots (not embedded) from `i`, with its
+/// placement; `i` moves past it. The list is read each time: the walk has
+/// the world.
+fn scene_root(world: &World, scene: u64, i: &mut usize) -> Option<(Entity, Place)> {
+  let nodes = world.get_resource::<UiNodes>()?;
+  while let Some(&(owner, root)) = nodes.roots.get(*i) {
+    *i += 1;
     let Some(placed) = world.get::<UiRoot>(root) else {
       continue;
     };
@@ -205,25 +282,159 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
       offset: placed.offset,
       at: placed.at,
     };
-    bindings::sync_root(world, root);
-    draw_node(world, ui, root, Some(place), &mut walk);
+    return Some((root, place));
   }
-  walk.finish(world, ui)
+  None
 }
 
-/// Draw `node`, a node that is not a root, and its subtree
+/// Draw `node`, a list row, and its subtree, built as before caching
 pub(super) fn draw_child(
   world: &mut World,
   ui: &mut UiContext<'_>,
   node: Entity,
   walk: &mut Walk,
 ) -> Option<Response> {
-  draw_node(world, ui, node, None, walk)
+  walk.plain += 1;
+  let response = draw_node(world, ui, node, None, walk);
+  walk.plain -= 1;
+  response
 }
 
-/// Draw `node` and its subtree by its kind; `place` is a root's placement.
-/// The node is looked up once, and its `UiNodeKind` read once.
+/// Draw `node` and its subtree; `place` is a root's placement. A clean node
+/// replays its record; any other is built by its kind and, while caching,
+/// recorded in its place, with a slot for each child.
 fn draw_node(
+  world: &mut World,
+  ui: &mut UiContext<'_>,
+  node: Entity,
+  place: Option<Place>,
+  walk: &mut Walk,
+) -> Option<Response> {
+  let Ok(entity) = world.get_entity(node) else {
+    return None;
+  };
+  let shown = entity
+    .get::<UiNodeKind>()
+    .filter(|_| !entity.contains::<UiHidden>())
+    .map(|kind| {
+      let dialog = kind.flags.modal || matches!(kind.kind, Kind::Popup { .. });
+      (LiveKinds::of(kind), dialog)
+    });
+  let Some((live, dialog)) = shown else {
+    // Hidden, or not a node: drawn as ever (nothing). Not dirty, so a mark
+    // once it shows reaches its root.
+    if walk.caching {
+      walk.cache.forget(world, node);
+    }
+    return build_node(world, ui, node, place, walk);
+  };
+  if !walk.caching {
+    walk.cache.count_built(node);
+    return build_node(world, ui, node, place, walk);
+  }
+  // The node a focus request waits for asks for it as it is built
+  let scope = ui.memory.scopes.current();
+  let replays = walk.plain == 0
+    && walk.pending_focus != Some(node)
+    && walk.cache.is_clean(world, ui, node, walk.env, Some(scope));
+  if replays {
+    return replay_node(world, ui, node, walk);
+  }
+  let tape = walk.cache.take_for_build(node);
+  walk.cache.count_built(node);
+  if walk.plain > 0 {
+    return build_node(world, ui, node, place, walk);
+  }
+  ui.start_tape_in(tape);
+  let response = build_node(world, ui, node, place, walk);
+  let tape = ui.end_tape();
+  let (scene, top) = ui.scene();
+  let record = NodeRecord {
+    tape,
+    scene,
+    env: walk.env,
+    top,
+    frame: ui.memory.frame(),
+    id: response.as_ref().map_or(UiId::NONE, |response| response.id),
+    dialog,
+    scope,
+  };
+  walk.cache.store(node, record, live);
+  response
+}
+
+/// Replay `node`'s record, each child slot filled by the child's replay:
+/// its response (its recorded id, and its rect as a build's would be), if
+/// its build gave one
+fn replay_node(
+  world: &mut World,
+  ui: &mut UiContext<'_>,
+  node: Entity,
+  walk: &mut Walk,
+) -> Option<Response> {
+  let frame = ui.memory.frame();
+  let record = walk.cache.records.get_mut(&node)?;
+  record.frame = frame;
+  let tape = std::mem::take(&mut record.tape);
+  let (id, dialog) = (record.id, record.dialog);
+  if dialog {
+    walk.back = Some(node);
+  }
+  walk.cache.stats.replayed += tape.nodes.len();
+  ui.replay(&tape, &mut |ui, child| replay_child(world, ui, child, walk));
+  if let Some(record) = walk.cache.records.get_mut(&node) {
+    record.tape = tape;
+  }
+  if id == UiId::NONE {
+    return None;
+  }
+  let rect = ui
+    .memory
+    .current(id)
+    .or_else(|| ui.memory.prev(id))
+    .map(|record| record.rect)
+    .unwrap_or_default();
+  Some(Response {
+    id,
+    rect,
+    ..Response::default()
+  })
+}
+
+/// Fill a replaying parent's slot for `child`: its replay, or nothing for a
+/// child hidden (as it was when the parent was built) or gone. A child that
+/// is not clean is never built here, where its parent's id scope was not
+/// pushed: that would be a missed mark. It is counted, warned once, drawn
+/// from its record if it has one, and marked, with its ancestors, to build
+/// next frame.
+fn replay_child(world: &mut World, ui: &mut UiContext<'_>, child: Entity, walk: &mut Walk) {
+  if walk.cache.is_clean(world, ui, child, walk.env, None) {
+    replay_node(world, ui, child, walk);
+    return;
+  }
+  let shown = world
+    .get_entity(child)
+    .is_ok_and(|entity| entity.contains::<UiNodeKind>() && !entity.contains::<UiHidden>());
+  if !shown {
+    walk.cache.forget(world, child);
+    return;
+  }
+  walk.cache.stats.missed += 1;
+  warn_once("ui-cache:missed".to_string(), || {
+    "a cached UI node changed while its parent was replayed; it is drawn as before and \
+     rebuilt next frame"
+      .to_string()
+  });
+  ui.taint();
+  walk.cache.mark_anew(world, child);
+  if walk.cache.records.contains_key(&child) {
+    replay_node(world, ui, child, walk);
+  }
+}
+
+/// Build `node` and its subtree by its kind; `place` is a root's placement.
+/// The node is looked up once, and its `UiNodeKind` read once.
+fn build_node(
   world: &mut World,
   ui: &mut UiContext<'_>,
   node: Entity,
@@ -306,8 +517,8 @@ fn draw_node(
         if group.changed {
           Write::Index(group.chosen).apply(&mut entity);
         }
-        wrote(&mut entity, node, bound);
-        answer_group(&mut entity, &group, walk);
+        wrote(&mut entity, node, bound, walk, ui);
+        answer_group(&mut entity, &group, walk, ui);
       }
       return None;
     }
@@ -316,9 +527,9 @@ fn draw_node(
       if let Some(write) = write {
         write.apply(&mut entity);
       }
-      wrote(&mut entity, node, bound);
+      wrote(&mut entity, node, bound, walk, ui);
       if picked.is_some() {
-        push_event(entity.world(), walk, node, UiEventKind::Clicked);
+        push_event(entity.world(), walk, node, UiEventKind::Clicked, ui);
       }
       return None;
     }
@@ -373,17 +584,39 @@ fn draw_node(
   if let Some(write) = write {
     write.apply(&mut entity);
   }
-  wrote(&mut entity, node, bound);
+  wrote(&mut entity, node, bound, walk, ui);
   if let Some(response) = &response {
     answer(&mut entity, ui, response, sends, walk);
   }
   response
 }
 
-/// A bound widget has been drawn and may have written: its name follows
-fn wrote(entity: &mut EntityWorldMut<'_>, node: Entity, bound: bool) {
-  if bound {
-    entity.world_scope(|world| bindings::widget_wrote(world, node));
+/// A bound widget has been drawn and may have written: its name follows.
+/// What that writes to other nodes is marked dirty at once, so one drawn
+/// later in the walk is built with it (one drawn before it already shows
+/// last frame's, as without caching, and is built next frame); a replay
+/// would not write it again, so the tapes being recorded are tainted.
+fn wrote(
+  entity: &mut EntityWorldMut<'_>,
+  node: Entity,
+  bound: bool,
+  walk: &mut Walk,
+  ui: &mut UiContext<'_>,
+) {
+  if !bound {
+    return;
+  }
+  walk.written.clear();
+  let written = &mut walk.written;
+  entity.world_scope(|world| bindings::widget_wrote(world, node, written));
+  if walk.written.is_empty() {
+    return;
+  }
+  ui.taint();
+  if walk.caching {
+    for &other in &walk.written {
+      walk.cache.mark(entity.world(), other);
+    }
   }
 }
 
@@ -447,7 +680,7 @@ fn answer(
     walk.pending_focus = None;
   }
   for kind in event_kinds(response, sends).into_iter().flatten() {
-    push_event(node.world(), walk, entity, kind);
+    push_event(node.world(), walk, entity, kind, ui);
   }
 }
 
@@ -506,8 +739,16 @@ fn set_interaction(node: &mut EntityWorldMut<'_>, now: UiInteraction) {
   }
 }
 
-/// Queue an event of `kind` from `node`
-fn push_event(world: &World, walk: &mut Walk, node: Entity, kind: UiEventKind) {
+/// Queue an event of `kind` from `node`. A replay sends none, so the tapes
+/// being recorded are tainted.
+fn push_event(
+  world: &World,
+  walk: &mut Walk,
+  node: Entity,
+  kind: UiEventKind,
+  ui: &mut UiContext<'_>,
+) {
+  ui.taint();
   walk.events.push(UiEvent {
     node,
     name: world.get::<UiName>(node).map(|name| name.0.clone()),
@@ -520,16 +761,24 @@ fn push_event(world: &World, walk: &mut Walk, node: Entity, kind: UiEventKind) {
 }
 
 /// Draw `parent`'s children in order. Its list is copied to the walk's
-/// stack once, so it is not read again for each child.
+/// stack once, so it is not read again for each child. While `parent` is
+/// recorded, each child's output goes in a slot of its tape.
 fn walk_children(world: &mut World, ui: &mut UiContext<'_>, parent: Entity, walk: &mut Walk) {
   let start = walk.children.len();
   if let Some(children) = world.get::<Children>(parent) {
     walk.children.extend_from_slice(children);
   }
   let end = walk.children.len();
+  let taping = walk.taping();
   for i in start..end {
     let child = walk.children[i];
+    if taping {
+      ui.begin_child(child);
+    }
     draw_node(world, ui, child, None, walk);
+    if taping {
+      ui.end_child();
+    }
   }
   walk.children.truncate(start);
 }
@@ -1222,14 +1471,19 @@ fn draw_radio_group(
 }
 
 /// Record a radio group's interaction and send its events
-fn answer_group(node: &mut EntityWorldMut<'_>, group: &GroupAnswer, walk: &mut Walk) {
+fn answer_group(
+  node: &mut EntityWorldMut<'_>,
+  group: &GroupAnswer,
+  walk: &mut Walk,
+  ui: &mut UiContext<'_>,
+) {
   let was_focused = node
     .get::<UiInteraction>()
     .is_some_and(|state| state.focused);
   set_interaction(node, group.interaction);
   let entity = node.id();
   if group.changed {
-    push_event(node.world(), walk, entity, UiEventKind::Changed);
+    push_event(node.world(), walk, entity, UiEventKind::Changed, ui);
   }
   if group.interaction.focused != was_focused {
     let kind = if group.interaction.focused {
@@ -1237,7 +1491,7 @@ fn answer_group(node: &mut EntityWorldMut<'_>, group: &GroupAnswer, walk: &mut W
     } else {
       UiEventKind::FocusLost
     };
-    push_event(node.world(), walk, entity, kind);
+    push_event(node.world(), walk, entity, kind, ui);
   }
 }
 
@@ -2686,5 +2940,397 @@ mod embedding {
       d.world().resource::<UiNodes>().pending.is_empty(),
       "delivered after it"
     );
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod cache_tests {
+  use crate::core::ecs::kernel::{ChildOf, Entity};
+  use crate::core::testing::UiHarness;
+  use crate::core::ui::nodes::*;
+
+  /// Children found unclean in a parent's replay in the last pass: a broken
+  /// invariant, never so
+  fn missed(h: &UiHarness) -> usize {
+    h.world().resource::<UiNodes>().cache.stats.missed
+  }
+
+  /// Every dirty node's ancestors are dirty
+  fn assert_dirty_ancestors(h: &UiHarness) {
+    let dirty = &h.world().resource::<UiNodes>().cache.dirty;
+    for &node in dirty {
+      let mut at = node;
+      while let Some(parent) = h.world().get::<ChildOf>(at).map(|c| c.parent()) {
+        if h.world().get::<UiNodeKind>(parent).is_none() {
+          break;
+        }
+        assert!(
+          dirty.contains(&parent),
+          "{node:?} is dirty under a clean {parent:?}"
+        );
+        at = parent;
+      }
+    }
+  }
+
+  /// No focus scope: nothing holds the focus, whose path rebuilds every
+  /// frame
+  fn menu() -> UiNode {
+    UiNode::column()
+      .gap(4.0)
+      .child(UiNode::text("Menu").name("title"))
+      .child(UiNode::button("Play").name("play"))
+      .child(
+        UiNode::row()
+          .name("pair")
+          .child(UiNode::button("A").name("a"))
+          .child(UiNode::button("B").name("b")),
+      )
+  }
+
+  fn warm(h: &mut UiHarness) {
+    for _ in 0..3 {
+      h.frame(|_| ());
+    }
+  }
+
+  #[test]
+  fn an_unchanged_frame_builds_nothing() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(menu());
+    warm(&mut h);
+    h.frame(|_| ());
+    let stats = h.ui_cache_stats();
+    assert_eq!(stats.built, 0, "rebuilt: {:?}", stats.rebuilt);
+    assert!(stats.replayed > 0);
+  }
+
+  #[test]
+  fn a_changed_label_rebuilds_its_path_only() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let root = h.spawn_ui(menu());
+    warm(&mut h);
+    let a = h.find_ui("a").unwrap();
+    h.world_mut().get_mut::<UiLabel>(a).unwrap().0 = "Alpha".into();
+    h.frame(|_| ());
+    let rebuilt = h.ui_cache_stats().rebuilt;
+    let pair = h.find_ui("pair").unwrap();
+    assert_eq!(rebuilt.len(), 3, "{rebuilt:?}");
+    assert!(rebuilt.contains(&a) && rebuilt.contains(&pair) && rebuilt.contains(&root));
+  }
+
+  #[test]
+  fn hovering_a_button_rebuilds_it_on_entry_and_on_exit() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(menu());
+    warm(&mut h);
+    let play = h.find_ui("play").unwrap();
+    let rect = h.record_of(h.ui_id(play).unwrap()).unwrap().rect;
+    h.move_to(rect.x + 2.0, rect.y + 2.0);
+    h.frame(|_| ());
+    assert!(h.ui_cache_stats().rebuilt.contains(&play));
+    h.move_to(1000.0, 1000.0);
+    h.frame(|_| ());
+    assert!(
+      h.ui_cache_stats().rebuilt.contains(&play),
+      "it draws its exit"
+    );
+    h.frame(|_| ());
+    assert!(!h.ui_cache_stats().rebuilt.contains(&play));
+  }
+
+  #[test]
+  fn an_easing_scroll_area_rebuilds_itself_and_replays_its_rows() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let rows = (0..30).map(|i| UiNode::button(format!("Row {i}")).name(format!("r{i}")));
+    let area = h.spawn_ui(
+      UiNode::scroll()
+        .height(100.0)
+        .width(200.0)
+        .name("area")
+        .children(rows),
+    );
+    warm(&mut h);
+    let rect = h.record_of(h.ui_id(area).unwrap()).unwrap().rect;
+    h.move_to(rect.x + 150.0, rect.y + 50.0); // over the area, away from row 0
+    h.wheel(0.0, -3.0); // starts an ease
+    h.frame(|_| ());
+    h.move_to(1000.0, 1000.0);
+    h.frame(|_| ()); // still easing; nothing hovered
+    let stats = h.ui_cache_stats();
+    assert!(
+      stats.rebuilt.contains(&area),
+      "the area draws its moving bar"
+    );
+    let r0 = h.find_ui("r0").unwrap();
+    assert!(
+      !stats.rebuilt.contains(&r0),
+      "its rows replay: the shift is applied at resolve"
+    );
+  }
+
+  #[test]
+  fn caching_off_builds_everything() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(menu());
+    h.set_ui_cache(false);
+    warm(&mut h);
+    h.frame(|_| ());
+    assert_eq!(h.ui_cache_stats().replayed, 0);
+  }
+
+  #[test]
+  fn a_bound_sibling_written_during_the_walk_shows_the_value_that_frame() {
+    let tree = || {
+      UiNode::column()
+        .focus_scope()
+        .child(
+          UiNode::slider(0.0..=1.0, 0.0)
+            .bind("volume")
+            .name("s1")
+            .default_focus(),
+        )
+        .child(UiNode::slider(0.0..=1.0, 0.0).bind("volume").name("s2"))
+    };
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
+      h.spawn_ui(tree());
+      warm(&mut h);
+      h.action("ui.right"); // the focused slider steps
+      h.frame(|_| ());
+      let s2 = h.find_ui("s2").unwrap();
+      (
+        h.world().get::<UiValue>(s2).map(|v| v.0),
+        h.commands_debug(),
+      )
+    };
+    assert_eq!(run(true), run(false));
+  }
+
+  #[test]
+  fn an_unchanged_frame_misses_nothing() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(menu());
+    warm(&mut h);
+    for _ in 0..3 {
+      h.frame(|_| ());
+      assert_eq!(missed(&h), 0);
+      assert_dirty_ancestors(&h);
+    }
+  }
+
+  #[test]
+  fn a_node_hidden_while_its_subtree_changed_is_marked_up_to_its_root_when_shown() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let root = h.spawn_ui(
+      UiNode::column()
+        .child(
+          UiNode::column().name("box").child(
+            UiNode::row()
+              .name("inner")
+              .child(UiNode::button("Go").name("go")),
+          ),
+        )
+        .child(UiNode::button("Other").name("other")),
+    );
+    h.move_to(630.0, 470.0);
+    warm(&mut h);
+    let [boxed, go] = ["box", "go"].map(|name| h.find_ui(name).unwrap());
+    h.world_mut().entity_mut(boxed).insert(UiHidden);
+    h.frame(|_| ());
+    // Changed while hidden: marked up to the root, which builds; the hidden
+    // branch is not drawn, and must not stay dirty under it
+    h.world_mut().get_mut::<UiLabel>(go).unwrap().0 = "Stop".into();
+    h.frame(|_| ());
+    assert!(h.ui_cache_stats().rebuilt.contains(&root));
+    assert_dirty_ancestors(&h);
+    h.frame(|_| ());
+    assert_eq!(h.ui_cache_stats().built, 0, "nothing shown changed");
+    h.world_mut().entity_mut(boxed).remove::<UiHidden>();
+    h.frame(|_| ());
+    let rebuilt = h.ui_cache_stats().rebuilt;
+    assert_eq!(missed(&h), 0, "shown again: built from its root");
+    assert!(rebuilt.contains(&root) && rebuilt.contains(&boxed) && rebuilt.contains(&go));
+    assert_dirty_ancestors(&h);
+  }
+
+  #[test]
+  fn a_reparented_subtree_is_built_with_its_new_ids() {
+    let tree = || {
+      UiNode::column()
+        .child(
+          UiNode::column()
+            .name("a")
+            .child(UiNode::row().name("x").child(UiNode::button("Y").name("y"))),
+        )
+        .child(UiNode::column().name("b"))
+    };
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
+      h.spawn_ui(tree());
+      h.move_to(630.0, 470.0);
+      warm(&mut h);
+      let [b, x, y] = ["b", "x", "y"].map(|name| h.find_ui(name).unwrap());
+      h.world_mut().entity_mut(x).insert(ChildOf(b));
+      h.frame(|_| ());
+      if cache {
+        let rebuilt = h.ui_cache_stats().rebuilt;
+        assert!(rebuilt.contains(&y), "its id is made under its new parent");
+        assert_eq!(missed(&h), 0);
+      }
+      let id = h.ui_id(y).unwrap();
+      (id, h.record_of(id).map(|r| r.rect), h.commands_debug())
+    };
+    assert_eq!(run(true), run(false));
+  }
+
+  #[test]
+  fn a_rerecorded_node_keeps_its_tape_buffers() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(
+      UiNode::column()
+        .focus_scope()
+        .child(UiNode::button("Play").name("play").default_focus())
+        .child(UiNode::button("Quit").name("quit")),
+    );
+    warm(&mut h);
+    let play = h.find_ui("play").unwrap();
+    let buffers = |h: &UiHarness| {
+      let tape = &h.world().resource::<UiNodes>().cache.records[&play].tape;
+      (tape.ops.as_ptr(), tape.nodes.as_ptr(), tape.ids.as_ptr())
+    };
+    let before = buffers(&h);
+    for _ in 0..3 {
+      h.frame(|_| ());
+      assert!(
+        h.ui_cache_stats().rebuilt.contains(&play),
+        "focused: built every frame"
+      );
+    }
+    assert_eq!(buffers(&h), before, "recorded again in the same buffers");
+  }
+
+  #[test]
+  fn a_dropped_record_takes_its_ids_and_live_kinds_with_it() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(
+      UiNode::column().child(
+        UiNode::scroll()
+          .height(100.0)
+          .name("area")
+          .child(UiNode::button("Row").name("row")),
+      ),
+    );
+    h.move_to(630.0, 470.0);
+    warm(&mut h);
+    let [area, row] = ["area", "row"].map(|name| h.find_ui(name).unwrap());
+    let ids = [h.ui_id(area).unwrap(), h.ui_id(row).unwrap()];
+    let cache = |h: &UiHarness| {
+      let cache = &h.world().resource::<UiNodes>().cache;
+      let found = ids.map(|id| cache.by_id.get(&id).copied());
+      (
+        found,
+        cache.live.contains(&area),
+        cache.records.contains_key(&row),
+      )
+    };
+    assert_eq!(cache(&h), ([Some(area), Some(row)], true, true));
+    h.world_mut().entity_mut(area).insert(UiHidden);
+    h.frame(|_| ());
+    assert_eq!(cache(&h), ([None, None], false, false), "not drawn: gone");
+  }
+
+  #[test]
+  fn the_walks_own_writes_are_not_seen_again_next_frame() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(
+      UiNode::column()
+        .focus_scope()
+        .child(
+          UiNode::slider(0.0..=1.0, 0.0)
+            .bind("volume")
+            .name("s1")
+            .default_focus(),
+        )
+        .child(UiNode::slider(0.0..=1.0, 0.0).bind("volume").name("s2")),
+    );
+    h.move_to(630.0, 470.0);
+    warm(&mut h);
+    let s2 = h.find_ui("s2").unwrap();
+    h.action("ui.right");
+    h.frame(|_| ());
+    assert!(
+      h.ui_cache_stats().rebuilt.contains(&s2),
+      "written by s1 before it is drawn: built with the value"
+    );
+    h.frame(|_| ());
+    assert!(
+      !h.ui_cache_stats().rebuilt.contains(&s2),
+      "already built from what the walk wrote"
+    );
+    assert_eq!(missed(&h), 0);
+  }
+
+  #[test]
+  fn a_bound_sibling_drawn_before_the_writer_follows_it_next_frame_as_uncached() {
+    let tree = || {
+      UiNode::column()
+        .focus_scope()
+        .child(UiNode::slider(0.0..=1.0, 0.0).bind("volume").name("s2"))
+        .child(
+          UiNode::slider(0.0..=1.0, 0.0)
+            .bind("volume")
+            .name("s1")
+            .default_focus(),
+        )
+    };
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
+      h.spawn_ui(tree());
+      warm(&mut h);
+      h.action("ui.right");
+      let s2 = h.find_ui("s2").unwrap();
+      let mut frames = Vec::new();
+      for _ in 0..3 {
+        h.frame(|_| ());
+        frames.push((
+          h.world().get::<UiValue>(s2).map(|v| v.0),
+          h.commands_debug(),
+        ));
+      }
+      frames
+    };
+    assert_eq!(run(true), run(false));
+  }
+
+  #[test]
+  fn a_replayed_dialog_still_takes_back() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let note = h.spawn_ui(
+      UiNode::panel()
+        .modal()
+        .action("note")
+        .child(UiNode::text("Saved")),
+    );
+    h.move_to(1000.0, 1000.0); // off its dim, so nothing holds a role
+    warm(&mut h);
+    h.frame(|_| ());
+    assert!(
+      !h.ui_cache_stats().rebuilt.contains(&note),
+      "replayed: {:?}",
+      h.ui_cache_stats()
+    );
+    h.action("ui.back");
+    h.frame(|_| ());
+    let backs: Vec<Entity> = h
+      .events()
+      .iter()
+      .filter(|e| e.kind == UiEventKind::Back)
+      .map(|e| e.node)
+      .collect();
+    assert_eq!(backs, [note], "the replay restores the Back target");
   }
 }

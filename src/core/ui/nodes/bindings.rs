@@ -353,10 +353,10 @@ fn widget_value(world: &World, node: Entity) -> Option<BindValue> {
 }
 
 /// Write `value` into the bound widget's component if it differs, or warn
-/// once when its type does not fit the widget
-fn write_widget(world: &mut World, node: Entity, name: &str, value: &BindValue) {
+/// once when its type does not fit the widget; whether it wrote
+fn write_widget(world: &mut World, node: Entity, name: &str, value: &BindValue) -> bool {
   let Some(kind) = world.get::<UiNodeKind>(node).map(|k| k.name()) else {
-    return;
+    return false;
   };
   let wrong = || {
     warn_once(format!("ui-bind-type:{name}:{kind}"), || {
@@ -368,7 +368,7 @@ fn write_widget(world: &mut World, node: Entity, name: &str, value: &BindValue) 
     });
   };
   let Ok(mut entity) = world.get_entity_mut(node) else {
-    return;
+    return false;
   };
   match (kind, value) {
     ("slider" | "progress", BindValue::Number(n)) => {
@@ -377,6 +377,7 @@ fn write_widget(world: &mut World, node: Entity, name: &str, value: &BindValue) 
         && let Some(mut v) = entity.get_mut::<UiValue>()
       {
         v.0 = n;
+        return true;
       }
     }
     ("checkbox" | "toggle", BindValue::Bool(on)) => {
@@ -384,6 +385,7 @@ fn write_widget(world: &mut World, node: Entity, name: &str, value: &BindValue) 
         && let Some(mut c) = entity.get_mut::<UiChecked>()
       {
         c.0 = *on;
+        return true;
       }
     }
     ("radio_group" | "dropdown" | "tabs" | "choice_list", BindValue::Number(n))
@@ -394,6 +396,7 @@ fn write_widget(world: &mut World, node: Entity, name: &str, value: &BindValue) 
         && let Some(mut c) = entity.get_mut::<UiIndex>()
       {
         c.0 = i;
+        return true;
       }
     }
     ("text_input", BindValue::Text(_) | BindValue::Number(_) | BindValue::Bool(_)) => {
@@ -402,10 +405,12 @@ fn write_widget(world: &mut World, node: Entity, name: &str, value: &BindValue) 
         && let Some(mut t) = entity.get_mut::<UiTextValue>()
       {
         t.0 = text;
+        return true;
       }
     }
     _ => wrong(),
   }
+  false
 }
 
 /// Build the index of a root if it has none
@@ -470,33 +475,50 @@ fn users(world: &mut World, root: Entity, name: &str) -> (Vec<Entity>, Vec<Entit
 }
 
 /// Write the stored value of `name` to every widget bound to it (but
-/// `except`) and format every pattern showing it
-fn propagate(world: &mut World, root: Entity, name: &str, except: Option<Entity>) {
+/// `except`) and format every pattern showing it. Whether anything was
+/// written; each node written is pushed to `written`, if given.
+fn propagate(
+  world: &mut World,
+  root: Entity,
+  name: &str,
+  except: Option<Entity>,
+  mut written: Option<&mut Vec<Entity>>,
+) -> bool {
   let Some(value) = world
     .get::<UiBindings>(root)
     .and_then(|b| b.values.get(name).cloned())
   else {
-    return;
+    return false;
   };
   let (widgets, patterns) = users(world, root, name);
+  let mut wrote = false;
+  let mut note = |node: Entity, did: bool| {
+    if did {
+      wrote = true;
+      if let Some(written) = written.as_deref_mut() {
+        written.push(node);
+      }
+    }
+  };
   for widget in widgets {
     if Some(widget) != except {
-      write_widget(world, widget, name, &value);
+      note(widget, write_widget(world, widget, name, &value));
     }
   }
   for node in patterns {
-    format_node(world, root, node);
+    note(node, format_node(world, root, node));
   }
+  wrote
 }
 
 /// Format the node's patterns against the root's values, writing the label
-/// and tooltip only when the text differs
-pub(crate) fn format_node(world: &mut World, root: Entity, node: Entity) {
+/// and tooltip only when the text differs; whether it wrote
+pub(crate) fn format_node(world: &mut World, root: Entity, node: Entity) -> bool {
   let (label, tooltip) = {
     let (Some(pattern), Some(bindings)) =
       (world.get::<UiPattern>(node), world.get::<UiBindings>(root))
     else {
-      return;
+      return false;
     };
     (
       pattern.label.as_ref().map(|p| p.format(&bindings.values)),
@@ -504,26 +526,31 @@ pub(crate) fn format_node(world: &mut World, root: Entity, node: Entity) {
     )
   };
   let Ok(mut entity) = world.get_entity_mut(node) else {
-    return;
+    return false;
   };
+  let mut wrote = false;
   if let Some(text) = label
     && entity.get::<UiLabel>().is_some_and(|l| l.0 != text)
     && let Some(mut l) = entity.get_mut::<UiLabel>()
   {
     l.0 = text;
+    wrote = true;
   }
   if let Some(text) = tooltip {
     match entity.get_mut::<UiTooltip>() {
       Some(mut t) => {
         if t.0 != text {
           t.0 = text;
+          wrote = true;
         }
       }
       None => {
         entity.insert(UiTooltip(text));
+        wrote = true;
       }
     }
   }
+  wrote
 }
 
 /// Set `name` on the root `node` belongs to, and update everything that uses it
@@ -538,7 +565,7 @@ pub(crate) fn set(world: &mut World, node: Entity, name: &str, value: BindValue)
   // frame; a widget the game wrote directly keeps its value, and `sync_root`
   // gives it to the name
   if store(world, root, name, value) {
-    propagate(world, root, name, None);
+    propagate(world, root, name, None, None);
   }
 }
 
@@ -583,7 +610,7 @@ pub(crate) fn seed(world: &mut World, node: Entity, seeds: Vec<(String, BindValu
       .is_none_or(|b| !b.values.contains_key(&name));
     if unset {
       store(world, root, &name, value);
-      propagate(world, root, &name, None);
+      propagate(world, root, &name, None, None);
     }
   }
 }
@@ -633,7 +660,9 @@ pub(crate) fn apply_subtree(world: &mut World, top: Entity, seeds: Vec<(String, 
       .get::<UiBindings>(root)
       .and_then(|b| b.values.get(&name).cloned());
     match stored {
-      Some(value) => write_widget(world, widget, &name, &value),
+      Some(value) => {
+        write_widget(world, widget, &name, &value);
+      }
       None => {
         if let Some(own) = widget_value(world, widget) {
           store(world, root, &name, own);
@@ -646,14 +675,15 @@ pub(crate) fn apply_subtree(world: &mut World, top: Entity, seeds: Vec<(String, 
     format_node(world, root, node);
   }
   for name in fresh {
-    propagate(world, root, &name, None);
+    propagate(world, root, &name, None, None);
   }
 }
 
-/// Before a root is drawn: a bound widget a game changed sets its name
-pub(crate) fn sync_root(world: &mut World, root: Entity) {
+/// Before a root is drawn: a bound widget a game changed sets its name.
+/// Whether that wrote another widget or a pattern.
+pub(crate) fn sync_root(world: &mut World, root: Entity) -> bool {
   if world.get::<UiBindings>(root).is_none() {
-    return;
+    return false;
   }
   ensure_index(world, root);
   warn_unset_names(world, root);
@@ -674,11 +704,13 @@ pub(crate) fn sync_root(world: &mut World, root: Entity) {
       }
     }
   }
+  let mut wrote = false;
   for (name, widget, value) in changes {
     let value = adopted(world, root, &name, value);
     store(world, root, &name, value);
-    propagate(world, root, &name, Some(widget));
+    wrote |= propagate(world, root, &name, Some(widget), None);
   }
+  wrote
 }
 
 /// What `name` stores for a widget's `own` value
@@ -707,8 +739,9 @@ fn warn_unset_names(world: &mut World, root: Entity) {
   }
 }
 
-/// Right after a bound widget is drawn: its change sets its name
-pub(crate) fn widget_wrote(world: &mut World, node: Entity) {
+/// Right after a bound widget is drawn: its change sets its name. Each other
+/// node that wrote is pushed to `written`.
+pub(crate) fn widget_wrote(world: &mut World, node: Entity, written: &mut Vec<Entity>) {
   let Some(root) = scope_of(world, node) else {
     return;
   };
@@ -725,7 +758,7 @@ pub(crate) fn widget_wrote(world: &mut World, node: Entity) {
   if !same {
     let own = adopted(world, root, &name, own);
     store(world, root, &name, own);
-    propagate(world, root, &name, Some(node));
+    propagate(world, root, &name, Some(node), Some(written));
   }
 }
 
