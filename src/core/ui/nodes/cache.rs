@@ -741,6 +741,62 @@ pub(crate) fn cache_stats(world: &World) -> Option<&CacheStats> {
     .map(|nodes| &nodes.cache.stats)
 }
 
+/// Every UI node's tracked components (and the walk's writes: its
+/// interaction, a list's pool, a tree's binding values) in `Debug` form, a
+/// line per node in entity order: what the game can read of the trees
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn node_snapshot(world: &World) -> String {
+  use super::bindings::UiBindings;
+  use super::components::UiInteraction;
+  use super::list::UiList;
+  use std::fmt::Write;
+
+  let Some(mut query) = world.try_query_filtered::<Entity, (With<UiNodeKind>, Allow<Disabled>)>()
+  else {
+    return String::new();
+  };
+  let mut nodes: Vec<Entity> = query.iter(world).collect();
+  nodes.sort_unstable();
+  let mut out = String::new();
+  for node in nodes {
+    let Ok(e) = world.get_entity(node) else {
+      continue;
+    };
+    let _ = write!(
+      out,
+      "{node:?} {:?} parent {:?} children {:?} | {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} \
+       {:?} hidden {} disabled {} {:?} {:?} {:?} {:?} {:?}",
+      e.get::<UiNodeKind>(),
+      e.get::<ChildOf>().map(ChildOf::parent),
+      e.get::<Children>().map(|children| children.to_vec()),
+      e.get::<UiRoot>(),
+      e.get::<UiLabel>(),
+      e.get::<UiValue>(),
+      e.get::<UiChecked>(),
+      e.get::<UiIndex>(),
+      e.get::<UiOptions>(),
+      e.get::<UiTextValue>(),
+      e.get::<UiSlot>(),
+      e.get::<UiImage>(),
+      e.get::<UiTooltip>(),
+      e.contains::<UiHidden>(),
+      e.contains::<UiDisabled>(),
+      e.get::<TextReveal>(),
+      e.get::<UiInteraction>(),
+      e.get::<UiListRow>(),
+      e.get::<UiList>(),
+      e.get::<UiBind>(),
+    );
+    if let Some(bindings) = e.get::<UiBindings>() {
+      let mut values: Vec<_> = bindings.values.iter().collect();
+      values.sort_by(|a, b| a.0.cmp(b.0));
+      let _ = write!(out, " values {values:?}");
+    }
+    out.push('\n');
+  }
+  out
+}
+
 /// Turn the cache of the trees in `world` on or off: off, every node is
 /// built and no record is kept (those kept are dropped at the frame's end,
 /// not drawn)

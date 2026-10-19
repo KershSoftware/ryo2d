@@ -7,6 +7,7 @@
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use ryo2d::prelude::*;
 use ryo2d::testing::UiHarness;
+use ryo2d::testing::fixtures::settings_tree;
 
 const TABS: [&str; 3] = ["Audio", "Video", "Controls"];
 const OPTIONS: [&str; 3] = ["Low", "Medium", "High"];
@@ -84,52 +85,6 @@ impl Settings {
   }
 }
 
-/// The settings screen as a node tree: the same panel, tabs and 50 rows
-fn settings_nodes(settings: &Settings) -> UiNode {
-  let rows = (0..ROWS).map(|i| {
-    let label = settings.labels[i].as_str();
-    let (widget, value) = match i % 4 {
-      0 => (
-        UiNode::slider(0.0..=1.0, settings.values[i]).width(200.0),
-        format!("{:.0}%", settings.values[i] * 100.0),
-      ),
-      1 => (
-        UiNode::checkbox("Enabled", settings.flags[i]),
-        "On".to_string(),
-      ),
-      2 => (
-        UiNode::dropdown(&OPTIONS, settings.choices[i]).width(200.0),
-        OPTIONS[settings.choices[i]].to_string(),
-      ),
-      _ => (
-        UiNode::toggle("Enabled", settings.flags[i]),
-        "On".to_string(),
-      ),
-    };
-    UiNode::row()
-      .gap(12.0)
-      .align(Align::Center)
-      .child(UiNode::text(label))
-      .child(widget)
-      .child(UiNode::text(value))
-  });
-  UiNode::panel()
-    .focus_scope()
-    .wrap_focus()
-    .anchor(Anchor::Center)
-    .width(600.0)
-    .height(460.0)
-    .gap(8.0)
-    .child(UiNode::tabs(&TABS, settings.tab))
-    .child(
-      UiNode::scroll()
-        .fill_width()
-        .grow(1.0)
-        .gap(6.0)
-        .children(rows),
-    )
-}
-
 /// 1,000 buttons in a 400-unit scroll area: its scroll offset and content
 /// height, as last laid out
 fn list(ui: &mut UiContext<'_>, labels: &[String]) -> (f32, f32) {
@@ -180,7 +135,7 @@ fn settings_frame(c: &mut Criterion) {
 /// node entities on top of the same builders.
 fn settings_nodes_frame(c: &mut Criterion) {
   let mut harness = UiHarness::new(640.0, 480.0);
-  harness.spawn_ui(settings_nodes(&Settings::new()));
+  harness.spawn_ui(settings_tree());
   for _ in 0..3 {
     harness.frame(|_| {});
   }
@@ -335,13 +290,12 @@ fn empty_frame(c: &mut Criterion) {
 }
 
 fn settings_update_unchanged(c: &mut Criterion) {
-  let settings = Settings::new();
   let mut harness = UiHarness::new(640.0, 480.0);
-  let root = harness.spawn_ui(settings_nodes(&settings));
+  let root = harness.spawn_ui(settings_tree());
   harness.frame(|_| {});
   c.bench_function("ui update, the 200-widget settings tree unchanged", |b| {
     b.iter_batched(
-      || settings_nodes(&settings),
+      settings_tree,
       |tree| harness.update_ui(root, tree),
       BatchSize::SmallInput,
     )
@@ -349,13 +303,12 @@ fn settings_update_unchanged(c: &mut Criterion) {
 }
 
 fn settings_spawn(c: &mut Criterion) {
-  let settings = Settings::new();
   let mut harness = UiHarness::new(640.0, 480.0);
   c.bench_function(
     "ui spawn, the 200-widget settings tree (and despawn)",
     |b| {
       b.iter_batched(
-        || settings_nodes(&settings),
+        settings_tree,
         |tree| {
           let root = harness.spawn_ui(tree);
           harness.world_mut().despawn(root);

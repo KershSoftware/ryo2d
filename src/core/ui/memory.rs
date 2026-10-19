@@ -439,6 +439,21 @@ impl UiMemory {
     self.next.is_empty()
   }
 
+  /// What is kept besides the records, sorted: the ids of the widget states
+  /// and each scope's remembered focus (the UI harness's snapshot)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn kept(&self) -> (Vec<UiId>, Vec<(UiId, UiId)>) {
+    let mut states: Vec<UiId> = self.states.keys().copied().collect();
+    states.sort_unstable();
+    let mut focus: Vec<(UiId, UiId)> = self
+      .focus_memory
+      .iter()
+      .map(|(&scope, &(_, focused))| (scope, focused))
+      .collect();
+    focus.sort_unstable();
+    (states, focus)
+  }
+
   /// Make the frame that began never have been: last frame's records stay
   /// last frame's (the UI harness)
   #[cfg(not(target_arch = "wasm32"))]

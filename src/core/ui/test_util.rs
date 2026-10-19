@@ -180,11 +180,6 @@ impl UiDriver {
     self.harness.keys.push(key);
   }
 
-  /// Type `text` in the next frame
-  pub(crate) fn type_text(&mut self, text: &str) {
-    self.harness.typed.push_str(text);
-  }
-
   /// Show `text` as the IME's composition in the next frame
   pub(crate) fn preedit(&mut self, text: &str) {
     self.harness.preedit = text.to_string();

@@ -43,6 +43,8 @@
 mod atlas_bleeding;
 #[cfg(test)]
 mod capture_matches_frame;
+#[doc(hidden)]
+pub mod fixtures;
 mod gpu;
 #[cfg(test)]
 mod gpu_world;

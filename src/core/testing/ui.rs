@@ -23,8 +23,8 @@ use crate::core::ui::memory::UiMemory;
 use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::{
-  BindValue, Theme, UiContext, UiEvent, UiFileError, UiId, UiInput, UiListBind, UiNode, UiReloaded,
-  nodes,
+  BindValue, Theme, UiConsumed, UiContext, UiEvent, UiFileError, UiId, UiInput, UiListBind, UiNode,
+  UiReloaded, nodes,
 };
 #[cfg(test)]
 use crate::core::ui::{
@@ -112,6 +112,9 @@ pub struct UiHarness {
   sources: nodes::SourceQuery,
   /// The last frame's node events
   last_events: Vec<UiEvent>,
+  /// What the last frame's UI consumed of the input, in `Debug` form, each
+  /// kind sorted
+  consumed: String,
   /// Whether the node walk replays clean nodes (`set_ui_cache`)
   ui_cache: bool,
   /// The next frame draws before the list pools are updated, as a rerun UI
@@ -164,6 +167,7 @@ impl UiHarness {
       world,
       sources: Default::default(),
       last_events: Vec::new(),
+      consumed: String::new(),
       ui_cache: true,
       #[cfg(test)]
       skip_list_update: false,
@@ -419,6 +423,44 @@ impl UiHarness {
     format!("{:?}", self.commands)
   }
 
+  /// Everything the oracle compares about the last frame: draw commands,
+  /// every record, focus, the events and every UI component's value, in
+  /// Debug form
+  ///
+  /// Also the interaction (sounds, Back and tab use, the drag), the widget
+  /// states kept and each scope's remembered focus, the open modals, the
+  /// navigation outcome, the captured rebinds and the input the UI took
+  /// from the game. Two runs that differ in anything a player or the game
+  /// can see differ here. A sprite's reference count is left out: it counts
+  /// every holder, and what holds one is no one's business but the engine's.
+  #[doc(hidden)]
+  pub fn frame_snapshot(&self) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "commands {:?}", self.commands);
+    let mut records: Vec<_> = self.memory.drawn_records().collect();
+    records.sort_unstable_by_key(|&(id, _)| id);
+    for (id, record) in records {
+      let _ = writeln!(out, "record {id:?} {record:?}");
+    }
+    let _ = writeln!(out, "focused {:?}", self.focused());
+    let _ = writeln!(out, "events {:?}", self.last_events);
+    let _ = writeln!(out, "interaction {:?}", self.memory.interact);
+    let (states, focus) = self.memory.kept();
+    let _ = writeln!(out, "states {states:?}\nscope focus {focus:?}");
+    let _ = writeln!(out, "modals {:?}", self.memory.modal_stack);
+    let _ = writeln!(out, "outcome {:?}", self.outcome);
+    let _ = writeln!(out, "rebinds {:?}", self.rebinds);
+    let _ = writeln!(out, "consumed {}", self.consumed);
+    out.push_str(&nodes::node_snapshot(&self.world));
+    without_ref_counts(&out)
+  }
+
+  /// Type `text` in the next frame: a focused text field takes it
+  pub fn type_text(&mut self, text: &str) {
+    self.typed.push_str(text);
+  }
+
   /// What the last frame did to the layout's tree
   #[cfg(test)]
   pub(crate) fn layout_stats(&self) -> crate::core::ui::layout::engine::LayoutStats {
@@ -579,6 +621,7 @@ impl UiHarness {
       self.last_events.extend(late);
       context.end_scene();
       self.rebinds = context.take_rebinds();
+      self.consumed = consumed_debug(context.input().consumed());
       result
     };
     // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
@@ -664,6 +707,39 @@ pub struct UiCacheStats {
   pub replayed: usize,
   /// The nodes built, in walk order
   pub rebuilt: Vec<Entity>,
+}
+
+/// `consumed` in `Debug` form, each list sorted (the UI keeps them in
+/// hash sets)
+fn consumed_debug(consumed: UiConsumed) -> String {
+  fn sorted<T: std::fmt::Debug>(items: Vec<T>) -> Vec<String> {
+    let mut items: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
+    items.sort_unstable();
+    items
+  }
+  format!(
+    "keys {:?} mouse {:?} pad {:?} text {} scroll {}",
+    sorted(consumed.keys),
+    sorted(consumed.mouse),
+    sorted(consumed.gamepad),
+    consumed.text,
+    consumed.scroll
+  )
+}
+
+/// `debug` with each sprite's `ref_count: n` made `ref_count: _`
+fn without_ref_counts(debug: &str) -> String {
+  const FIELD: &str = "ref_count: ";
+  let mut out = String::with_capacity(debug.len());
+  let mut rest = debug;
+  while let Some(at) = rest.find(FIELD) {
+    let (before, after) = rest.split_at(at + FIELD.len());
+    out.push_str(before);
+    out.push('_');
+    rest = after.trim_start_matches(|c: char| c.is_ascii_digit());
+  }
+  out.push_str(rest);
+  out
 }
 
 /// A direction's place in `NavInput`'s arrays
