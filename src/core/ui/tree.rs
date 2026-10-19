@@ -472,7 +472,6 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     let place = Placement {
       rect: rects[draw.node],
       exact: exact[draw.node],
-      padding: clean_edges(node.style.padding),
       clip: clips[draw.node],
       layer: draw.layer,
     };
@@ -660,7 +659,6 @@ struct Placement {
   rect: Rect,
   /// Before snapping (text wraps at this width, so snapping never wraps it)
   exact: Rect,
-  padding: Edges,
   clip: Option<Rect>,
   layer: u8,
 }
@@ -736,7 +734,7 @@ fn command_of(
         opacity,
         reveal,
       };
-      text_command(&leaf, at, place, text, scale)
+      text_command(&leaf, at, place, node, text, scale)
     }
     DrawKind::NodeText {
       frac,
@@ -750,7 +748,8 @@ fn command_of(
         opacity,
         reveal,
       };
-      text_command(node.text.as_ref()?.get(leaves)?, at, place, text, scale)
+      let leaf = node.text.as_ref()?.get(leaves)?;
+      text_command(leaf, at, place, node, text, scale)
     }
     DrawKind::Sprite {
       inset,
@@ -898,20 +897,22 @@ fn command_of(
   }
 }
 
-/// `leaf` laid out in its node's content box, wrapped to its width when
-/// `at.wrap`; its effect seed is its key's
+/// `leaf` laid out in the content box of `node` (inside its padding),
+/// wrapped to its width when `at.wrap`; its effect seed is its key's
 fn text_command(
   leaf: &TextLeaf,
   at: TextAt,
   place: &Placement,
+  node: &Node,
   text: &RefCell<&mut TextEngine>,
   scale: f32,
 ) -> Option<UiCommand> {
-  let content = inset_rect(place.rect, place.padding);
+  let padding = clean_edges(node.style.padding);
+  let content = inset_rect(place.rect, padding);
   let mut options = leaf.options;
   let mut key = leaf.key;
   if at.wrap {
-    let width = (place.exact.width - place.padding.width()).max(0.0) + WRAP_SLACK;
+    let width = (place.exact.width - padding.width()).max(0.0) + WRAP_SLACK;
     options.wrap = narrowest(Some(width), leaf.options.wrap);
     key = key.with_options(&options);
   }
