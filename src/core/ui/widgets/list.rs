@@ -189,6 +189,14 @@ impl<'a> UiContext<'a> {
   /// 4,096 items for the view (warned once). [`row_height`](List::row_height)
   /// is required; [`columns`](List::columns) lays the items out as a grid.
   ///
+  /// Give it a height: [`height`](List::height),
+  /// [`max_height`](List::max_height), [`fill`](List::fill) or
+  /// [`fill_height`](List::fill_height), or [`grow`](List::grow) in a sized
+  /// parent. Without one it grows to its whole length and cannot scroll; it
+  /// then builds only the rows that show on screen, warned once. Rows are
+  /// placed at `f32` positions, so past about 10 million items they lose
+  /// precision.
+  ///
   /// Each item is built in a container keyed by its index, so its widgets
   /// keep their ids, and with them their hover, focus and memory, wherever
   /// it scrolls. The row with the keyboard or gamepad focus stays built

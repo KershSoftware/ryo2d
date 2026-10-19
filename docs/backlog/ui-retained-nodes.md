@@ -98,6 +98,7 @@ Left for later:
 - Node subtree caching (pending the owner's decision above).
 - The dropdown and choice lists virtualised (they stay short).
 - Touch flinging and momentum.
+- A node's label drawn without a per-frame copy (`UiLabel` as a shared value): the walk still copies each `UiLabel` into its text every frame.
 
 ## Left for Later
 

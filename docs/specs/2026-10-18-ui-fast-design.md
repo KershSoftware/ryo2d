@@ -55,7 +55,7 @@ Each change targets a measured cost. None changes what a frame draws or how it b
 ### Buffers kept between frames
 
 - The subtree's node and draw lists, the layout engine's descriptions, results and index map, and the per-frame scratch vectors of tree resolve are kept in their owners and cleared at the start of each use, not allocated anew.
-- Label text is not copied into a new string per frame where a borrowed or shared one serves (for example a node's `UiLabel` drawn as-is).
+- Label text is not copied into a new string per frame where a borrowed or shared one serves. As built, a node's `UiLabel` is still copied into its text each frame (`nodes/draw.rs`, `rich`): `UiLabel(String)` is public, and the targets were met without changing it. Drawing it without the copy is in the backlog.
 
 ### A cheaper layout diff
 

@@ -496,12 +496,21 @@ impl UiNode {
   /// short its rows, a frame builds at most 4,096 items for the view, warned
   /// once.
   ///
+  /// Give it a height: [`height`](Self::height),
+  /// [`max_height`](Self::max_height), [`fill`](Self::fill) or
+  /// [`fill_height`](Self::fill_height), or [`grow`](Self::grow) in a sized
+  /// parent. Without one it grows to its whole length and cannot scroll; it
+  /// then pools only the rows that show on screen, warned once.
+  ///
   /// Each row given an item sends a [`UiListBind`](super::UiListBind)
   /// naming the row and the item's index, and the game fills the row from
   /// its own data. A row is its own binding scope: `ctx.ui_set(row, ..)`
   /// fills that row's `{name}` patterns and bound widgets only. A row is
   /// drawn from the frame after it is given its item, so bind it in the
-  /// scene's `ui` (it runs every frame) or in an observer on the row.
+  /// scene's `ui` (it runs every frame) or in an observer on the row. Bound
+  /// in `update`, which runs at the fixed rate, a row can draw unfilled for
+  /// a frame when the display runs faster, and debug builds warn once for
+  /// each name it shows with no value yet.
   /// [`columns`](Self::columns) lays the items out as a grid.
   ///
   /// The game drives the list with `ctx.ui_list_count`, `ui_list_refresh`,

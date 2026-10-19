@@ -1125,7 +1125,7 @@ Fade text through `opacity` (`UiText::opacity`, `Text2d::opacity`, a tween's alp
 
 ## UI
 
-Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out by containers (flexbox and grid), answering from the UI's memory through a `Response`; keyboard and pad navigation work inside focus scopes; the theme is a world resource. The guide is `ryo-ui`. The builder types (`Container`, `Scroll`, `Button`, `Slider`, ...) live in `ryo2d::core::ui`; games rarely name them.
+Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out by containers (flexbox and grid), answering from the UI's memory through a `Response`; keyboard and pad navigation work inside focus scopes; the theme is a world resource. The guide is `ryo-ui`. The builder types (`Container`, `Scroll`, `List`, `Button`, `Slider`, ...) live in `ryo2d::core::ui`; games rarely name them.
 
 **Containers** (`.show(|ui| ..) -> Response`; a top-level one is laid out when `show` returns, so its `Response` has this frame's rect, a nested one last frame's):
 
@@ -1139,7 +1139,7 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `scope<R>(key: impl Hash, contents: impl FnOnce(&mut UiContext) -> R) -> R` | key the ids inside without a layout node |
 | `node(root: Entity, world: &mut World) -> Response` | draw a node tree spawned with `.embedded()` here, in the open container's flow, focus scope and clip; once a frame (a second call warns); its events arrive after the scene's `ui` returns |
 | `scroll_to(UiId)`, `scroll_offset(scroll: UiId) -> Vec2`, `set_scroll_offset(scroll: UiId, Vec2)` | scroll a widget into view from the next frame; read or set (no easing) an area's offset by its `Response::id` |
-| `list(count: usize) -> List` | a virtual list: a scroll area exactly as long as its rows that builds only the rows in view and the overscan, each item in a container keyed by its index (`ryo-ui` section 16) |
+| `list(count: usize) -> List` | a virtual list: a scroll area exactly as long as its rows that builds only the rows in view and the overscan, each item in a container keyed by its index (`ryo-ui` section 16). Give it a height (`height`, `max_height`, `fill`/`fill_height`, or `grow` in a sized parent): without one it grows to its whole length, cannot scroll, builds only the rows that show and warns once |
 | `list_scroll_to(list: UiId, index: usize)`, `list_focus(list: UiId, index: usize)` | scroll the list (its `ListResponse::id`) by the least that shows item `index`'s row; `list_focus` also focuses the row's first focusable widget, up to two frames after it is built. A jump further than a view lands one view short at the list's next draw, then eases. An index past the end is the last item; a list not drawn yet ignores both |
 
 - `Container`: `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `fill_height()`, `fill()`, `min_width(f32)`, `max_width(f32)`, `min_height(f32)`, `max_height(f32)`, `padding(impl Into<Edges>)`, `margin(impl Into<Edges>)`, `gap(f32)`, `align(Align)`, `justify(Justify)`, `center()`, `grow(f32)`, `wrap_items()`, `aspect(ratio)`, `tracks(&[f32])` (grid column widths), `anchor(Anchor)` and `offset(x, y)` (at the top level or in a stack; default `TopLeft`), `at(Rect)` (absolute, even inside a container, keeping its parent's ids, scope and clip), `id(impl Hash)`, `background(Color)` (a fill behind its children), `focus_scope()`, `trap()` and `wrap_focus()` (each a focus scope too), `block_pointer()`, `drag_source::<P>(P)`, `drop_target::<P>()`, `drag_ghost(&SpriteHandle)`, `show(impl FnOnce(&mut UiContext)) -> Response`.
@@ -1241,7 +1241,7 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 | `slot()` | `UiSlot` |
 | `prompt(action: &str)`, `rebind(action: &str)`, `separator()`, `spacer()` | |
 | `confirm(title: &str, message: &str, yes: &str, no: &str)` | a modal panel; buttons with actions `"yes"` and `"no"`; opens on No; Back is a `Clicked` from No |
-| `list(count: usize, row_height: f32)` | a virtual list: a scroll area as long as its rows, keeping about a screenful of pooled row entities (each a `UiListRow`) spawned from its `row_shape` and bound by `UiListBind`; its count is state (`ctx.ui_list_count`) |
+| `list(count: usize, row_height: f32)` | a virtual list: a scroll area as long as its rows, keeping about a screenful of pooled row entities (each a `UiListRow`) spawned from its `row_shape` and bound by `UiListBind`; its count is state (`ctx.ui_list_count`). Give it a height, as `ui.list` |
 
 | `UiNode` options (each `(self, ..) -> UiNode`) | |
 |---|---|
