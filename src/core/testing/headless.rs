@@ -4,13 +4,15 @@ use image::RgbaImage;
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
+use super::ui::{UiCacheStats, UiSnapshot, consumed_debug, ui_snapshot};
 use super::{HeadlessError, shared_gpu};
 use crate::core::ecs::World;
+use crate::core::ecs::kernel::Messages;
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::{ScreenMapping, WgpuRenderer};
 use crate::core::input::{GamepadButton, InputEvent, Stick};
 use crate::core::ui::nav::nav_targets;
-use crate::core::ui::{Rect, UiId};
+use crate::core::ui::{Rect, UiEvent, UiId};
 
 /// Largest supported render target side, in pixels.
 const MAX_DIMENSION: u32 = 8192;
@@ -341,5 +343,39 @@ impl HeadlessEngine {
   /// `UiContext::request_focus` does (when it can take it then).
   pub fn focus_ui(&mut self, id: UiId) {
     self.engine.ui_memory_mut().request_focus(id);
+  }
+
+  /// Everything about the last frame's UI that a player or the game can see,
+  /// in `Debug` form, as `UiHarness::frame_snapshot`: the draw commands,
+  /// every record, the focus, the node events (those not yet dropped by a
+  /// message update), the interaction, the widget states and their values,
+  /// the open modals, the UI actions navigation used, the captured rebinds,
+  /// the input the UI took and every UI node's components. Two runs that
+  /// differ in any of these differ here.
+  #[doc(hidden)]
+  pub fn ui_snapshot(&self) -> String {
+    let engine = &self.engine;
+    let events: Vec<UiEvent> = engine
+      .world()
+      .get_resource::<Messages<UiEvent>>()
+      .map(|messages| messages.iter_current_update_messages().cloned().collect())
+      .unwrap_or_default();
+    let log = engine.ui_pass_log();
+    ui_snapshot(&UiSnapshot {
+      commands: engine.ui_commands(),
+      memory: engine.ui_memory(),
+      events: &events,
+      outcome: &log.used,
+      rebinds: &log.rebinds,
+      consumed: &consumed_debug(log.consumed.consumed()),
+      world: engine.world(),
+    })
+  }
+
+  /// What the node walk did in the last UI pass: the nodes it built (and
+  /// which), and how many tree nodes it replayed from records
+  #[doc(hidden)]
+  pub fn ui_cache_stats(&self) -> UiCacheStats {
+    UiCacheStats::of(self.engine.world())
   }
 }

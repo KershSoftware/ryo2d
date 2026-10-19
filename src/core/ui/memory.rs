@@ -14,6 +14,8 @@ use super::tape::Place;
 use super::tree::Subtree;
 use super::types::Rect;
 use super::widgets::drag::DragState;
+#[cfg(not(target_arch = "wasm32"))]
+use super::widgets::state_debug;
 use crate::core::hash::FastMap;
 use crate::core::input::Direction;
 
@@ -439,19 +441,30 @@ impl UiMemory {
     self.next.is_empty()
   }
 
-  /// What is kept besides the records, sorted: the ids of the widget states
-  /// and each scope's remembered focus (the UI harness's snapshot)
+  /// The widget states kept, sorted by id: each one's id, scene and value
+  /// in `Debug` form (the UI snapshots of the test harnesses)
   #[cfg(not(target_arch = "wasm32"))]
-  pub(crate) fn kept(&self) -> (Vec<UiId>, Vec<(UiId, UiId)>) {
-    let mut states: Vec<UiId> = self.states.keys().copied().collect();
-    states.sort_unstable();
+  pub(crate) fn kept_states(&self) -> Vec<(UiId, u64, String)> {
+    let mut states: Vec<(UiId, u64, String)> = self
+      .states
+      .iter()
+      .map(|(&id, slot)| (id, slot.scene, state_debug(&*slot.value)))
+      .collect();
+    states.sort_unstable_by_key(|&(id, _, _)| id);
+    states
+  }
+
+  /// Each scope's remembered focus, sorted (the UI snapshots of the test
+  /// harnesses)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn kept_focus(&self) -> Vec<(UiId, UiId)> {
     let mut focus: Vec<(UiId, UiId)> = self
       .focus_memory
       .iter()
       .map(|(&scope, &(_, focused))| (scope, focused))
       .collect();
     focus.sort_unstable();
-    (states, focus)
+    focus
   }
 
   /// Make the frame that began never have been: last frame's records stay

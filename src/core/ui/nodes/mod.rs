@@ -29,8 +29,8 @@ pub use list::UiListRow;
 pub use node::{TextRole, UiNode, UiNodeKind};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use cache::{cache_stats, node_snapshot, set_cache_enabled};
-pub(crate) use cache::{check_cache_ticks, end_frame};
+pub(crate) use cache::{cache_stats, node_snapshot};
+pub(crate) use cache::{check_cache_ticks, end_frame, set_cache_enabled};
 pub(crate) use components::UiNodes;
 pub(crate) use draw::{begin_pass, deliver_pending, draw_nodes};
 pub(crate) use events::deliver;

@@ -246,6 +246,9 @@ pub struct Engine {
   theme_watch: crate::core::ui::theme::ThemeWatch,
   /// UI passes run this frame (a scene switched from `ui` runs a second)
   ui_pass_index: u32,
+  /// What the frame's UI pass did besides drawing, for headless snapshots
+  #[cfg(not(target_arch = "wasm32"))]
+  ui_pass_log: frame::UiPassLog,
   // Developer tools
   console_state: ConsoleState,
   console_quit_requested: bool,
@@ -643,6 +646,8 @@ impl Engine {
       #[cfg(debug_assertions)]
       theme_watch: Default::default(),
       ui_pass_index: 0,
+      #[cfg(not(target_arch = "wasm32"))]
+      ui_pass_log: frame::UiPassLog::default(),
       console_state: ConsoleState::new(),
       console_quit_requested: false,
       capture: CaptureState::new(capture_config),
@@ -933,6 +938,18 @@ impl Engine {
     &mut self.ui_memory
   }
 
+  /// The UI commands the last frame recorded
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn ui_commands(&self) -> &UiCommands {
+    &self.ui_commands
+  }
+
+  /// What the last frame's UI pass did besides drawing
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn ui_pass_log(&self) -> &frame::UiPassLog {
+    &self.ui_pass_log
+  }
+
   /// The top scene's scope id (`None` with no scene)
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn top_scope(&self) -> Option<u64> {
@@ -1192,6 +1209,14 @@ impl EngineBuilder {
   /// number is warned about and treated as `None`.
   pub fn ui_scale(mut self, scale: Option<f32>) -> Self {
     self.config.ui_scale = scale;
+    self
+  }
+
+  /// Whether UI node trees replay their unchanged subtrees instead of
+  /// building them every frame (default true). Off, they draw and behave
+  /// the same, slower: for ruling caching out when chasing a UI bug.
+  pub fn ui_cache(mut self, on: bool) -> Self {
+    self.config.debug.ui_cache = on;
     self
   }
 

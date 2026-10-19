@@ -335,13 +335,7 @@ impl UiHarness {
   /// What the node walk did in the last frame: the nodes it built (and
   /// which), and how many tree nodes it replayed from records instead
   pub fn ui_cache_stats(&self) -> UiCacheStats {
-    nodes::cache_stats(&self.world)
-      .map(|stats| UiCacheStats {
-        built: stats.built,
-        replayed: stats.replayed,
-        rebuilt: stats.rebuilt.clone(),
-      })
-      .unwrap_or_default()
+    UiCacheStats::of(&self.world)
   }
 
   /// Draw with `theme` (and take its interaction timings) from the next frame
@@ -435,25 +429,15 @@ impl UiHarness {
   /// every holder, and what holds one is no one's business but the engine's.
   #[doc(hidden)]
   pub fn frame_snapshot(&self) -> String {
-    use std::fmt::Write;
-    let mut out = String::new();
-    let _ = writeln!(out, "commands {:?}", self.commands);
-    let mut records: Vec<_> = self.memory.drawn_records().collect();
-    records.sort_unstable_by_key(|&(id, _)| id);
-    for (id, record) in records {
-      let _ = writeln!(out, "record {id:?} {record:?}");
-    }
-    let _ = writeln!(out, "focused {:?}", self.focused());
-    let _ = writeln!(out, "events {:?}", self.last_events);
-    let _ = writeln!(out, "interaction {:?}", self.memory.interact);
-    let (states, focus) = self.memory.kept();
-    let _ = writeln!(out, "states {states:?}\nscope focus {focus:?}");
-    let _ = writeln!(out, "modals {:?}", self.memory.modal_stack);
-    let _ = writeln!(out, "outcome {:?}", self.outcome);
-    let _ = writeln!(out, "rebinds {:?}", self.rebinds);
-    let _ = writeln!(out, "consumed {}", self.consumed);
-    out.push_str(&nodes::node_snapshot(&self.world));
-    without_ref_counts(&out)
+    ui_snapshot(&UiSnapshot {
+      commands: &self.commands,
+      memory: &self.memory,
+      events: &self.last_events,
+      outcome: &self.outcome.used,
+      rebinds: &self.rebinds,
+      consumed: &self.consumed,
+      world: &self.world,
+    })
   }
 
   /// Type `text` in the next frame: a focused text field takes it
@@ -709,9 +693,78 @@ pub struct UiCacheStats {
   pub rebuilt: Vec<Entity>,
 }
 
+/// What a UI snapshot is made of: one frame of a UI, from the harness or
+/// the engine
+pub(crate) struct UiSnapshot<'a> {
+  /// The frame's UI commands
+  pub(crate) commands: &'a UiCommands,
+  /// The memory after the frame
+  pub(crate) memory: &'a UiMemory,
+  /// The node events the frame sent
+  pub(crate) events: &'a [UiEvent],
+  /// The UI actions navigation used
+  pub(crate) outcome: &'a [&'static str],
+  /// The presses rebinding rows captured
+  pub(crate) rebinds: &'a [PendingRebind],
+  /// What the UI consumed of the input ([`consumed_debug`])
+  pub(crate) consumed: &'a str,
+  /// The world the node trees live in
+  pub(crate) world: &'a World,
+}
+
+/// A frame of a UI in `Debug` form: draw commands, every record, focus, the
+/// events, the interaction, the widget states kept (with their values) and
+/// each scope's remembered focus, the open modals, the actions navigation
+/// used, the captured rebinds, the input the UI took and every UI node's
+/// components. A sprite's reference count is left out: it counts every
+/// holder, and what holds one is no one's business but the engine's.
+pub(crate) fn ui_snapshot(parts: &UiSnapshot<'_>) -> String {
+  use std::fmt::Write;
+  let memory = parts.memory;
+  let mut out = String::new();
+  let _ = writeln!(out, "commands {:?}", parts.commands);
+  let mut records: Vec<_> = memory.drawn_records().collect();
+  records.sort_unstable_by_key(|&(id, _)| id);
+  for (id, record) in records {
+    let _ = writeln!(out, "record {id:?} {record:?}");
+  }
+  let focused = memory.interact.focused;
+  let _ = writeln!(
+    out,
+    "focused {:?}",
+    (focused != UiId::NONE).then_some(focused)
+  );
+  let _ = writeln!(out, "events {:?}", parts.events);
+  let _ = writeln!(out, "interaction {:?}", memory.interact);
+  for (id, scene, value) in memory.kept_states() {
+    let _ = writeln!(out, "state {id:?} scene {scene} {value}");
+  }
+  let _ = writeln!(out, "scope focus {:?}", memory.kept_focus());
+  let _ = writeln!(out, "modals {:?}", memory.modal_stack);
+  let _ = writeln!(out, "outcome {:?}", parts.outcome);
+  let _ = writeln!(out, "rebinds {:?}", parts.rebinds);
+  let _ = writeln!(out, "consumed {}", parts.consumed);
+  out.push_str(&nodes::node_snapshot(parts.world));
+  without_ref_counts(&out)
+}
+
+impl UiCacheStats {
+  /// What the node walk of `world`'s trees did in the last pass (nothing,
+  /// in a world without node trees)
+  pub(crate) fn of(world: &World) -> UiCacheStats {
+    nodes::cache_stats(world)
+      .map(|stats| UiCacheStats {
+        built: stats.built,
+        replayed: stats.replayed,
+        rebuilt: stats.rebuilt.clone(),
+      })
+      .unwrap_or_default()
+  }
+}
+
 /// `consumed` in `Debug` form, each list sorted (the UI keeps them in
 /// hash sets)
-fn consumed_debug(consumed: UiConsumed) -> String {
+pub(crate) fn consumed_debug(consumed: UiConsumed) -> String {
   fn sorted<T: std::fmt::Debug>(items: Vec<T>) -> Vec<String> {
     let mut items: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
     items.sort_unstable();
@@ -749,5 +802,43 @@ pub(crate) fn direction_index(direction: Direction) -> usize {
     Direction::Down => 1,
     Direction::Left => 2,
     Direction::Right => 3,
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn a_snapshot_holds_the_values_of_the_widget_states() {
+    fn area(ui: &mut UiContext<'_>) {
+      ui.scroll().width(200.0).height(60.0).show(|ui| {
+        for i in 0..20 {
+          ui.text(format!("Line {i}")).draw();
+        }
+      });
+    }
+    let mut h = UiHarness::new(320.0, 240.0);
+    h.frame(area);
+    h.frame(area);
+    let still = h.frame_snapshot();
+    assert!(
+      still.contains("ScrollState { offset: Vec2(0.0, 0.0)"),
+      "{still}"
+    );
+    h.move_to(20.0, 20.0);
+    h.wheel(0.0, -2.0);
+    h.frame(area);
+    let scrolled = h.frame_snapshot();
+    let line = |s: &str| {
+      s.lines()
+        .find(|l| l.starts_with("state "))
+        .map(str::to_string)
+    };
+    assert_ne!(
+      line(&still),
+      line(&scrolled),
+      "the offset is in the snapshot"
+    );
   }
 }

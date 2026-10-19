@@ -37,6 +37,17 @@ use crate::{engine_warn, profile_scope};
 /// The UI's direction actions: Up, Down, Left, Right
 const NAV_DIRECTIONS: [&str; 4] = ["ui.up", "ui.down", "ui.left", "ui.right"];
 
+/// What the frame's UI pass did besides drawing, kept for
+/// `HeadlessEngine::ui_snapshot`: the input the last pass consumed, the
+/// presses its rebinding rows captured, and the UI actions navigation used
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+pub(crate) struct UiPassLog {
+  pub(crate) consumed: UiInput,
+  pub(crate) rebinds: Vec<crate::core::ui::immediate::PendingRebind>,
+  pub(crate) used: Vec<&'static str>,
+}
+
 /// The real delta the loop chose for this frame: `Some` for headless runs
 /// and tests, `None` for the wall clock.
 #[derive(Resource)]
@@ -426,6 +437,10 @@ impl Engine {
       &outcome.used,
       &mut self.ui_binding_capture,
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+      self.ui_pass_log.used = outcome.used;
+    }
   }
 
   /// The theme for this UI pass: a watched theme file that changed is
@@ -536,6 +551,8 @@ impl Engine {
     }
     // Trees whose UI file changed are brought in line before they are drawn
     crate::core::ui::nodes::reload_trees(&mut self.world, &mut self.ui_sources);
+    // The node trees replay their clean subtrees unless caching is off
+    crate::core::ui::nodes::set_cache_enabled(&mut self.world, self.config.debug.ui_cache);
     let theme = self.refresh_ui_theme();
     let theme_generation = self.world.resource::<UiTheme>().generation();
     self.load_ui_sounds(&theme);
@@ -673,6 +690,11 @@ impl Engine {
       .ui_mouse_capture
       .retain(|&button| consumed.mouse_held_raw(button));
     self.play_ui_sounds(&theme);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+      self.ui_pass_log.consumed = consumed;
+      self.ui_pass_log.rebinds = rebinds;
+    }
     Some(action)
   }
 
@@ -1592,6 +1614,41 @@ mod tests {
       !update_saw.load(Ordering::SeqCst),
       "the press the UI took never reached the fixed update"
     );
+  }
+
+  #[test]
+  fn the_debug_switch_turns_the_node_cache_off_and_on() {
+    use crate::core::ui::UiNode;
+    struct Menu;
+    impl Scene for Menu {
+      fn on_enter(&mut self, ctx: &mut SceneContext) {
+        let menu = UiNode::column()
+          .child(UiNode::text("Title"))
+          .child(UiNode::button("Play"));
+        ctx.spawn_ui(menu);
+      }
+    }
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(64, 48)
+      .ui_cache(false)
+      .start_scene(Menu)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 48), 1.0);
+    let replayed = |e: &mut Engine| {
+      e.frame(Some(Duration::from_millis(16)));
+      crate::core::ui::nodes::cache_stats(&e.world).map_or(0, |stats| stats.replayed)
+    };
+    for _ in 0..3 {
+      assert_eq!(replayed(&mut e), 0, "off, every node is built");
+    }
+    e.config.debug.ui_cache = true;
+    replayed(&mut e);
+    assert!(replayed(&mut e) > 0, "on, the unchanged tree replays");
+    e.config.debug.ui_cache = false;
+    assert_eq!(replayed(&mut e), 0, "off again");
   }
 
   #[test]

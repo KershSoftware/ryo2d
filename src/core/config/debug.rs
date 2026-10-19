@@ -11,6 +11,7 @@
 //! | `show_velocities` | Draw velocity vectors on physics entities |
 //! | `show_origins` | Draw entity origin points (transform position) |
 //! | `enable_profiler` | Open flamegraph profiler window |
+//! | `ui_cache` | Replay UI node trees' unchanged subtrees (on by default; `EngineBuilder::ui_cache`) |
 //!
 //! # Available Info Overlays
 //!
@@ -245,6 +246,11 @@ pub struct DebugConfig {
   /// Whether to enable the developer console (toggled with backtick key).
   /// Defaults to true in debug builds, false in release builds.
   pub dev_console: bool,
+  /// Whether UI node trees replay their unchanged subtrees from the last
+  /// frame instead of building them (default true). Off, every node is
+  /// built every frame: it draws and behaves the same, slower. For ruling
+  /// caching out when chasing a UI bug.
+  pub ui_cache: bool,
 }
 
 impl Default for DebugConfig {
@@ -269,6 +275,7 @@ impl Default for DebugConfig {
       dev_console: true,
       #[cfg(not(debug_assertions))]
       dev_console: false,
+      ui_cache: true,
     }
   }
 }
@@ -719,6 +726,7 @@ mod tests {
     assert!(!config.show_origins);
     // enable_profiler defaults to false (opt-in)
     assert!(!config.enable_profiler);
+    assert!(config.ui_cache, "UI node trees are cached by default");
   }
 
   #[test]

@@ -44,3 +44,20 @@ pub use slot::Slot;
 pub use tabs::Tabs;
 pub use text_input::TextInput;
 pub use toggle::Toggle;
+
+/// A widget state kept in `UiMemory` in `Debug` form (`?` for a type no
+/// widget keeps): what the test harnesses' UI snapshots compare
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn state_debug(value: &dyn std::any::Any) -> String {
+  fn as_debug<T: std::fmt::Debug + 'static>(value: &dyn std::any::Any) -> Option<String> {
+    value.downcast_ref::<T>().map(|value| format!("{value:?}"))
+  }
+  as_debug::<scroll::ScrollState>(value)
+    .or_else(|| as_debug::<list::ListState>(value))
+    .or_else(|| as_debug::<text_edit::TextEdit>(value))
+    .or_else(|| as_debug::<dropdown::DropdownMemory>(value))
+    .or_else(|| as_debug::<rebind::RebindState>(value))
+    .or_else(|| as_debug::<tooltip::TooltipTimer>(value))
+    .or_else(|| as_debug::<u32>(value))
+    .unwrap_or_else(|| "?".to_string())
+}

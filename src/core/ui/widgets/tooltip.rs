@@ -21,8 +21,8 @@ const GAP: f32 = 6.0;
 const SALT: u64 = 0x0074_6970;
 
 /// How long the pointer or focus has rested on a widget with a tooltip
-#[derive(Default)]
-struct TooltipTimer {
+#[derive(Debug, Default)]
+pub(super) struct TooltipTimer {
   seconds: f32,
 }
 

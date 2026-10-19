@@ -1,7 +1,6 @@
 //! The scene stack.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::core::audio::Audio;
@@ -18,9 +17,6 @@ use crate::profile_scope;
 use super::cleanup::execute_cleanup;
 use super::{PhysicsPaused, Scene, SceneAction, SceneCleanup, SceneContext, Transition};
 
-/// Console scope ids, unique per scene instance for the whole process.
-static NEXT_SCOPE_ID: AtomicU64 = AtomicU64::new(1);
-
 /// A scene on the stack with what it owns: its systems, its message read
 /// positions and its console scope.
 pub(crate) struct SceneSlot {
@@ -33,12 +29,13 @@ pub(crate) struct SceneSlot {
 }
 
 impl SceneSlot {
-  pub(crate) fn new(scene: Box<dyn Scene>) -> Self {
+  /// A slot for `scene` with the scope id `scope_id`
+  pub(crate) fn new(scene: Box<dyn Scene>, scope_id: u64) -> Self {
     Self {
       scene,
       schedules: SceneSchedules::default(),
       messages: SceneMessages::default(),
-      scope_id: NEXT_SCOPE_ID.fetch_add(1, Ordering::Relaxed),
+      scope_id,
       warned_dropped_action: false,
     }
   }
@@ -94,6 +91,11 @@ pub struct SceneManager {
   exited: Vec<u64>,
   /// Scenes entered so far (each `on_enter`)
   entries: u64,
+  /// The scope id the next scene gets. Each scene instance has its own,
+  /// counted per manager (so per engine), never 0 (the engine's overlays):
+  /// two engines run the same way give their scenes the same ids, and so
+  /// their UI the same ids
+  next_scope: u64,
 }
 
 /// Internal state for an in-progress transition.
@@ -156,7 +158,15 @@ impl SceneManager {
       transition_state: None,
       exited: Vec::new(),
       entries: 0,
+      next_scope: 1,
     }
+  }
+
+  /// A slot for `scene`, with the next scope id
+  fn slot(&mut self, scene: Box<dyn Scene>) -> SceneSlot {
+    let scope_id = self.next_scope;
+    self.next_scope += 1;
+    SceneSlot::new(scene, scope_id)
   }
 
   /// How many scenes have been entered so far: a frame that raises it
@@ -174,7 +184,8 @@ impl SceneManager {
   /// Create a scene manager with an initial scene, entered by `enter_initial`.
   pub fn with_scene(scene: Box<dyn Scene>) -> Self {
     let mut manager = Self::new();
-    manager.scenes.push(SceneSlot::new(scene));
+    let slot = manager.slot(scene);
+    manager.scenes.push(slot);
     manager
   }
 
@@ -255,7 +266,8 @@ impl SceneManager {
     if let Some(current) = self.scenes.last_mut() {
       current.call(world, audio, |scene, ctx| scene.on_pause(ctx));
     }
-    self.scenes.push(SceneSlot::new(scene));
+    let slot = self.slot(scene);
+    self.scenes.push(slot);
     self.enter_top(world, audio);
   }
 
@@ -289,7 +301,8 @@ impl SceneManager {
       drop(current);
       execute_cleanup(cleanup, world, audio);
     }
-    self.scenes.push(SceneSlot::new(scene));
+    let slot = self.slot(scene);
+    self.scenes.push(slot);
     self.enter_top(world, audio);
   }
 
@@ -310,7 +323,8 @@ impl SceneManager {
       .map_or(SceneCleanup::NONE, |slot| slot.scene.cleanup_on_exit());
     self.clear(world, audio);
     execute_cleanup(cleanup, world, audio);
-    self.scenes.push(SceneSlot::new(scene));
+    let slot = self.slot(scene);
+    self.scenes.push(slot);
     self.enter_top(world, audio);
   }
 
@@ -737,6 +751,22 @@ mod tests {
       *self.0.lock().unwrap() += ctx.messages::<Ping>().len();
       SceneAction::Continue
     }
+  }
+
+  #[test]
+  fn each_manager_counts_its_own_scope_ids() {
+    let log: Shared = Arc::default();
+    let (mut world, mut audio) = world();
+    let mut a = SceneManager::with_scene(rec(&log, "a"));
+    let b = SceneManager::with_scene(rec(&log, "b"));
+    // So two engines run the same way give their UI the same ids
+    assert_eq!(a.top_scope(), Some(1));
+    assert_eq!(b.top_scope(), Some(1));
+    a.push(rec(&log, "c"), &mut world, &mut audio);
+    a.switch(rec(&log, "d"), &mut world, &mut audio);
+    assert_eq!(a.top_scope(), Some(3), "a new id for each scene entered");
+    a.reset(rec(&log, "e"), &mut world, &mut audio);
+    assert_eq!(a.top_scope(), Some(4));
   }
 
   #[test]
@@ -1268,12 +1298,15 @@ mod tests {
   #[test]
   fn scoped_context_puts_resources_back() {
     let (mut world, mut audio) = world();
-    let mut slot = SceneSlot::new(Box::new(Rec {
-      log: Arc::default(),
-      name: "x",
-      action: None,
-      updates_below: false,
-    }));
+    let mut slot = SceneSlot::new(
+      Box::new(Rec {
+        log: Arc::default(),
+        name: "x",
+        action: None,
+        updates_below: false,
+      }),
+      1,
+    );
     SceneContext::scoped(&mut world, &mut audio, &mut slot, |ctx| {
       ctx.camera().set_zoom(2.0);
       ctx.time.game.set_speed(0.5);

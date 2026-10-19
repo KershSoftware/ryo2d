@@ -800,7 +800,6 @@ pub(crate) fn node_snapshot(world: &World) -> String {
 /// Turn the cache of the trees in `world` on or off: off, every node is
 /// built and no record is kept (those kept are dropped at the frame's end,
 /// not drawn)
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn set_cache_enabled(world: &mut World, on: bool) {
   if let Some(mut nodes) = world.get_resource_mut::<UiNodes>()
     && nodes.cache.enabled != on
