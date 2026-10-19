@@ -981,6 +981,7 @@ impl<'a> UiContext<'a> {
     if let DrawKind::Text { leaf, .. } = &mut kind
       && !leaf.text.prompts.is_empty()
     {
+      let leaf = Arc::make_mut(leaf);
       leaf.text = self.with_prompts(std::mem::take(&mut leaf.text));
       leaf.key = TextKey::of(&leaf.text, &leaf.style, &leaf.options);
     }
@@ -1133,7 +1134,7 @@ impl<'a> UiContext<'a> {
     let generation = self.engine().map_or(0, |engine| engine.generation());
     node.content_key = fast_hash(&(leaf.key.seed(), self.space.px_scale.to_bits(), generation));
     // Drawn from the node, which keeps the one copy
-    node.text = Some(leaf);
+    node.text = Some(Arc::new(leaf));
     let index = self.push_node(node, None);
     self.push_draw(
       index,
@@ -1937,7 +1938,7 @@ impl<'a> UiContext<'a> {
     self.commands.push(
       order,
       UiCommand::Line {
-        points: points.to_vec(),
+        points: points.into(),
         width,
         color,
         closed: false,

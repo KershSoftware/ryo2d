@@ -3,6 +3,7 @@
 //! records once the layout engine has placed them
 
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use glam::Vec2;
 
@@ -54,13 +55,14 @@ impl Subtree {
 }
 
 /// One container or leaf in a subtree
+#[derive(Clone)]
 pub(crate) struct Node {
   pub(crate) id: UiId,
   pub(crate) parent: Option<usize>,
   pub(crate) style: UiStyle,
   pub(crate) measure: Measure,
   /// The text a `Measure::Text` node is measured by
-  pub(crate) text: Option<TextLeaf>,
+  pub(crate) text: Option<Arc<TextLeaf>>,
   /// Changes when what is measured changes
   pub(crate) content_key: u64,
   /// What its record says; `None` writes no record
@@ -148,6 +150,7 @@ impl TextLeaf {
 }
 
 /// A draw on a node, placed when the subtree is laid out
+#[derive(Clone)]
 pub(crate) struct Draw {
   /// Taken when it was recorded, so it keeps its place in the painter's order
   pub(crate) order: u32,
@@ -157,6 +160,7 @@ pub(crate) struct Draw {
 }
 
 /// What a draw is, relative to its node
+#[derive(Clone)]
 pub(crate) enum DrawKind {
   /// The node's rect shrunk by `inset`
   Fill {
@@ -186,8 +190,9 @@ pub(crate) enum DrawKind {
   /// Text at `frac` of the room left in the node's content box, wrapped to
   /// its width when `wrap`; its effect seed is its key's
   Text {
-    /// Boxed: a text is far larger than the other draws
-    leaf: Box<TextLeaf>,
+    /// Shared: a text is far larger than the other draws, and a replayed
+    /// draw must not copy it
+    leaf: Arc<TextLeaf>,
     frac: Vec2,
     wrap: bool,
     opacity: f32,
@@ -810,15 +815,13 @@ fn command_of(
           })
         }
         UiCommand::Line {
-          mut points,
+          points,
           width,
           color,
           closed,
           ..
         } => {
-          for point in &mut points {
-            *point += by;
-          }
+          let points: Arc<[Vec2]> = points.iter().map(|point| *point + by).collect();
           Some(UiCommand::Line {
             points,
             width,
@@ -1189,7 +1192,7 @@ mod tests {
       ui.push_draw(
         node,
         DrawKind::Text {
-          leaf: Box::new(TextLeaf::new(
+          leaf: Arc::new(TextLeaf::new(
             RichText::new("Hi there"),
             TextStyle::default(),
             TextLayoutOptions::default(),
@@ -1265,7 +1268,7 @@ mod tests {
     ui.push_draw(
       node,
       DrawKind::Local(UiCommand::Line {
-        points: vec![Vec2::ZERO, Vec2::new(4.0, 0.0)],
+        points: [Vec2::ZERO, Vec2::new(4.0, 0.0)].into(),
         width: 1.0,
         color: Color::WHITE,
         closed: false,
@@ -1296,7 +1299,7 @@ mod tests {
     });
     assert_eq!(
       points,
-      Some(vec![Vec2::new(10.0, 20.0), Vec2::new(14.0, 20.0)])
+      Some([Vec2::new(10.0, 20.0), Vec2::new(14.0, 20.0)].into())
     );
   }
 
@@ -1324,5 +1327,70 @@ mod tests {
       .filter(|e| e.message.contains("still open when the scene's ui ended"))
       .count();
     assert_eq!(warnings, 1);
+  }
+}
+
+#[cfg(test)]
+mod clone_tests {
+  use super::*;
+  use std::sync::Arc;
+
+  fn leaf(text: &str) -> Arc<TextLeaf> {
+    Arc::new(TextLeaf::new(
+      RichText::new(text),
+      TextStyle::default(),
+      TextLayoutOptions::default(),
+    ))
+  }
+
+  #[test]
+  fn a_cloned_text_draw_shares_its_leaf() {
+    let leaf = leaf("Hello");
+    let draw = Draw {
+      order: 3,
+      layer: 1,
+      node: 0,
+      kind: DrawKind::Text {
+        leaf: Arc::clone(&leaf),
+        frac: Vec2::ZERO,
+        wrap: false,
+        opacity: 1.0,
+        reveal: None,
+      },
+    };
+    let copy = draw.clone();
+    let DrawKind::Text { leaf: copied, .. } = &copy.kind else {
+      panic!("a text draw")
+    };
+    assert!(Arc::ptr_eq(copied, &leaf));
+    assert_eq!((copy.order, copy.layer, copy.node), (3, 1, 0));
+  }
+
+  #[test]
+  fn a_cloned_node_shares_its_text() {
+    let mut node = Node::new(UiId(1), UiStyle::default(), Measure::None);
+    node.text = Some(leaf("Label"));
+    let copy = node.clone();
+    assert!(Arc::ptr_eq(
+      copy.text.as_ref().expect("text"),
+      node.text.as_ref().expect("text")
+    ));
+  }
+
+  #[test]
+  fn a_cloned_line_draw_shares_its_points() {
+    let points: Arc<[Vec2]> = Arc::from(vec![Vec2::ZERO, Vec2::ONE]);
+    let draw = DrawKind::Local(UiCommand::Line {
+      points: Arc::clone(&points),
+      width: 1.0,
+      color: Color::WHITE,
+      closed: false,
+      clip: None,
+      layer: 0,
+    });
+    let DrawKind::Local(UiCommand::Line { points: copied, .. }) = draw.clone() else {
+      panic!("a line")
+    };
+    assert!(Arc::ptr_eq(&copied, &points));
   }
 }

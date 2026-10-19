@@ -243,11 +243,12 @@ impl Dropdown<'_, '_> {
     ui.push_draw(
       node,
       DrawKind::Local(UiCommand::Line {
-        points: vec![
+        points: [
           Vec2::new(0.0, ends),
           Vec2::new(CHEVRON.x / 2.0, tip),
           Vec2::new(CHEVRON.x, ends),
-        ],
+        ]
+        .into(),
         width: 1.5,
         color: look.text,
         closed: false,

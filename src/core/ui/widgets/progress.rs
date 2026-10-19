@@ -1,6 +1,7 @@
 //! The progress bar
 
 use std::panic::Location;
+use std::sync::Arc;
 
 use glam::Vec2;
 
@@ -109,7 +110,7 @@ impl Progress<'_, '_> {
       ui.push_draw(
         index,
         DrawKind::Text {
-          leaf: Box::new(leaf),
+          leaf: Arc::new(leaf),
           frac: Vec2::splat(0.5),
           wrap: false,
           opacity: f32::from(look.text.a) / 255.0,

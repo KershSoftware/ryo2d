@@ -1,6 +1,8 @@
 //! Tooltips: a widget's `.tooltip(text)` shows after the pointer or focus
 //! rests on it; the scene's UI draws the last one asked for when it ends
 
+use std::sync::Arc;
+
 use glam::Vec2;
 
 use crate::core::text::{RichText, TextLayoutOptions};
@@ -99,7 +101,7 @@ impl UiContext<'_> {
       ui.push_draw(
         index,
         DrawKind::Text {
-          leaf: Box::new(leaf),
+          leaf: Arc::new(leaf),
           frac: Vec2::ZERO,
           wrap: false,
           opacity: f32::from(look.text.a) / 255.0,

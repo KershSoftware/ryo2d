@@ -104,7 +104,7 @@ impl UiContext<'_> {
           self.push_draw(
             node,
             DrawKind::Local(UiCommand::Line {
-              points: points.to_vec(),
+              points: points.into(),
               width: 2.0,
               color: ink,
               closed: false,

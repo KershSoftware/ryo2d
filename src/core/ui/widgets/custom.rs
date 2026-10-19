@@ -312,7 +312,7 @@ impl Painter<'_> {
       return;
     }
     self.commands.push(UiCommand::Line {
-      points: points.to_vec(),
+      points: points.into(),
       width,
       color,
       closed: false,

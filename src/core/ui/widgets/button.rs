@@ -1,6 +1,7 @@
 //! The button
 
 use std::panic::Location;
+use std::sync::Arc;
 
 use glam::Vec2;
 
@@ -172,7 +173,7 @@ impl Button<'_, '_> {
     ui.push_draw(
       index,
       DrawKind::Text {
-        leaf: Box::new(leaf),
+        leaf: Arc::new(leaf),
         frac: Vec2::new(self.label_x, 0.5),
         wrap: false,
         opacity: f32::from(look.text.a) / 255.0,

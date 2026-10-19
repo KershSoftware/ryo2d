@@ -32,7 +32,7 @@ pub(crate) enum UiCommand {
     layer: u8,
   },
   Line {
-    points: Vec<Vec2>,
+    points: Arc<[Vec2]>,
     width: f32,
     color: Color,
     closed: bool,

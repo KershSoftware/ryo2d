@@ -2,6 +2,7 @@
 //! drag source and drop target
 
 use std::panic::Location;
+use std::sync::Arc;
 
 use glam::Vec2;
 
@@ -164,7 +165,7 @@ impl Slot<'_, '_> {
       ui.push_draw(
         index,
         DrawKind::Text {
-          leaf: Box::new(leaf),
+          leaf: Arc::new(leaf),
           frac: Vec2::ONE,
           wrap: false,
           opacity: f32::from(alpha) / 255.0,
