@@ -17,7 +17,7 @@ use parley::{
   PositionedLayoutItem, RangedBuilder, Selection, StyleProperty, VerticalAlign,
 };
 
-use crate::core::hash::{FastMap, FastSet};
+use crate::core::hash::{FastHasher, FastMap, FastSet};
 use crate::core::text::key::TextKey;
 use crate::core::text::layout::{GlyphStyle, LineInfo, PlacedGlyph, PlacedIcon, TextLayout};
 use crate::core::text::rich::{Icon, RichText};
@@ -470,7 +470,7 @@ impl TextEngine {
   /// A plain one-line layout for carets and hit tests, cached
   fn single_line(&mut self, text: &str, style: &TextStyle, scale: f32) -> Option<&Layout<u16>> {
     let key = {
-      let mut h = DefaultHasher::new();
+      let mut h = FastHasher::default();
       text.hash(&mut h);
       style.hash_into(&mut h);
       scale.to_bits().hash(&mut h);
