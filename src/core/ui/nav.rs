@@ -244,9 +244,9 @@ struct Nav<'m> {
   memory: &'m UiMemory,
   scene: Option<u64>,
   /// The focusables inside scopes, by order
-  focusables: Vec<(UiId, Record)>,
+  focusables: Vec<(UiId, &'m Record)>,
   /// The focus scopes, by order
-  scopes: Vec<(UiId, Record)>,
+  scopes: Vec<(UiId, &'m Record)>,
 }
 
 impl<'m> Nav<'m> {
@@ -260,15 +260,17 @@ impl<'m> Nav<'m> {
     let Some(scene) = scene else {
       return nav;
     };
+    // At most every record: grown once, not doubled up to it
+    nav.focusables.reserve(memory.drawn_records().size_hint().0);
     for (id, record) in memory.drawn_records() {
       if record.scene != scene {
         continue;
       }
       if record.flags.contains(Flags::FOCUS_SCOPE) {
-        nav.scopes.push((id, *record));
+        nav.scopes.push((id, record));
       }
       if nav.takes_focus(record, Via::Nav) {
-        nav.focusables.push((id, *record));
+        nav.focusables.push((id, record));
       }
     }
     nav.focusables.sort_by_key(|(id, r)| (r.order, *id));
@@ -347,14 +349,14 @@ impl<'m> Nav<'m> {
   /// What directional navigation can land on: the focusables that are not
   /// `NAV_SKIP`, inside `trap` (the innermost open trapping scope) when
   /// one is open, by order
-  fn targets(&self, trap: Option<UiId>) -> impl Iterator<Item = &(UiId, Record)> {
+  fn targets(&self, trap: Option<UiId>) -> impl Iterator<Item = &(UiId, &'m Record)> {
     self.focusables.iter().filter(move |(_, record)| {
       !record.flags.contains(Flags::NAV_SKIP) && trap.is_none_or(|scope| self.inside(record, scope))
     })
   }
 
   /// The focusables inside `scope`, by order
-  fn members(&self, scope: UiId) -> impl Iterator<Item = &(UiId, Record)> {
+  fn members(&self, scope: UiId) -> impl Iterator<Item = &(UiId, &'m Record)> {
     self
       .focusables
       .iter()
