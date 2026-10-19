@@ -235,6 +235,9 @@ pub struct DebugConfig {
   pub show_origins: bool,
   /// Whether to outline every UI widget with its id (`debug:ui`; runtime only)
   pub show_ui_debug: bool,
+  /// Whether to outline the UI node subtrees rebuilt each frame, fading,
+  /// with a rebuilt/replayed counter (`debug:ui-rebuilds`; runtime only)
+  pub show_ui_rebuilds: bool,
   /// Whether to open the flamegraph profiler window (requires --features profiler or `ryo2d dev --profiler`)
   pub enable_profiler: bool,
   /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
@@ -263,6 +266,7 @@ impl Default for DebugConfig {
       show_velocities: false,
       show_origins: false,
       show_ui_debug: false,
+      show_ui_rebuilds: false,
       enable_profiler: false, // Disabled by default (opt-in)
       logger_window: false,   // Disabled by default (opt-in)
       // Dev window keys (F9/F10/F12) enabled by default in debug builds only

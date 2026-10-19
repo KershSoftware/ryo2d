@@ -208,6 +208,9 @@ pub(crate) struct CacheStats {
   /// Records the spot check found differing from their build: never so
   /// while everything a build reads is tracked
   pub(crate) spot_differed: usize,
+  /// Clean nodes the spot check built (the node and its ancestors): not
+  /// replayed, not counted in `built`
+  pub(crate) spot_built: usize,
 }
 
 impl CacheStats {
@@ -219,6 +222,7 @@ impl CacheStats {
     self.rebuilt.clear();
     self.spot_checked = None;
     self.spot_differed = 0;
+    self.spot_built = 0;
   }
 }
 
@@ -558,6 +562,7 @@ impl UiCache {
   /// counted, and on a difference warned once per node
   #[cfg(debug_assertions)]
   pub(crate) fn spot_compare(&mut self, world: &World, node: Entity, old: &Tape, new: &Tape) {
+    self.stats.spot_built += 1;
     if self.spot.path.first() == Some(&node) {
       self.stats.spot_checked = Some(node);
     }
@@ -869,7 +874,6 @@ fn mark(dirty: &mut EntityHashSet, world: &World, node: Entity) {
 
 /// What the node walks of the last pass did (`None` in a world without
 /// node trees)
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn cache_stats(world: &World) -> Option<&CacheStats> {
   world
     .get_resource::<UiNodes>()

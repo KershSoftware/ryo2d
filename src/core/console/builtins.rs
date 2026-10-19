@@ -112,6 +112,12 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         ctx
           .console
           .print("  debug:ui            - Toggle the UI widget rect and id overlay");
+        ctx.console.print(
+          "  debug:ui-rebuilds   - Toggle the overlay outlining UI nodes rebuilt this frame",
+        );
+        ctx
+          .console
+          .print("  ui:cache [on|off]   - Show or set UI node tree caching");
         ctx.console.print_system("");
         ctx.console.print_system("system:");
         ctx
@@ -318,6 +324,42 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
       } else {
         ctx.console.print("UI debug overlay disabled");
       }
+      CommandResult::Ok
+    },
+  );
+
+  // UI rebuilds overlay
+  registry.register(
+    "debug:ui-rebuilds",
+    "Toggle the overlay outlining UI nodes rebuilt this frame",
+    |_args, ctx| {
+      ctx.debug_config.show_ui_rebuilds = !ctx.debug_config.show_ui_rebuilds;
+      if ctx.debug_config.show_ui_rebuilds {
+        ctx.console.print("UI rebuilds overlay enabled");
+      } else {
+        ctx.console.print("UI rebuilds overlay disabled");
+      }
+      CommandResult::Ok
+    },
+  );
+
+  // UI node tree caching
+  registry.register(
+    "ui:cache",
+    "Show or set UI node tree caching: ui:cache [on|off]",
+    |args, ctx| {
+      match args.first().map(|arg| arg.to_ascii_lowercase()).as_deref() {
+        None => {}
+        Some("on") => ctx.debug_config.ui_cache = true,
+        Some("off") => ctx.debug_config.ui_cache = false,
+        Some(_) => return CommandResult::Error("Usage: ui:cache [on|off]".to_string()),
+      }
+      let state = if ctx.debug_config.ui_cache {
+        "on"
+      } else {
+        "off"
+      };
+      ctx.console.print(format!("UI caching is {state}"));
       CommandResult::Ok
     },
   );
@@ -594,5 +636,46 @@ mod tests {
     assert!(ctx.debug_config.show_ui_debug);
     registry.execute("debug:ui", &mut ctx);
     assert!(!ctx.debug_config.show_ui_debug);
+  }
+
+  #[test]
+  fn debug_ui_rebuilds_toggles_the_overlay() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+    let mut console = super::super::ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+    assert_eq!(
+      registry.execute("debug:ui-rebuilds", &mut ctx),
+      CommandResult::Ok
+    );
+    assert!(ctx.debug_config.show_ui_rebuilds);
+    registry.execute("debug:ui-rebuilds", &mut ctx);
+    assert!(!ctx.debug_config.show_ui_rebuilds);
+  }
+
+  #[test]
+  fn ui_cache_turns_caching_off_and_on() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+    let mut console = super::super::ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+    assert!(ctx.debug_config.ui_cache, "on by default");
+    assert_eq!(
+      registry.execute("ui:cache off", &mut ctx),
+      CommandResult::Ok
+    );
+    assert!(!ctx.debug_config.ui_cache);
+    assert_eq!(registry.execute("ui:cache", &mut ctx), CommandResult::Ok);
+    assert!(!ctx.debug_config.ui_cache, "alone it only prints");
+    registry.execute("ui:cache on", &mut ctx);
+    assert!(ctx.debug_config.ui_cache);
+    assert!(matches!(
+      registry.execute("ui:cache maybe", &mut ctx),
+      CommandResult::Error(_)
+    ));
   }
 }

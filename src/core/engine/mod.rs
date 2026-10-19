@@ -228,6 +228,8 @@ pub struct Engine {
   prompt_icons: Option<crate::core::ecs::kernel::Tick>,
   /// What the UI remembers between frames: records, widget state, focus
   ui_memory: UiMemory,
+  /// The `debug:ui-rebuilds` overlay's outlines
+  ui_rebuilds: crate::core::ui::debug::RebuildsOverlay,
   /// Lays the UI's containers out, kept between frames
   ui_layout: LayoutEngine,
   /// The query `reload_trees` keeps over the trees built from UI files
@@ -636,6 +638,7 @@ impl Engine {
       prompts: Default::default(),
       prompt_icons: None,
       ui_memory: UiMemory::new(),
+      ui_rebuilds: Default::default(),
       ui_layout: LayoutEngine::new(),
       ui_sources: Default::default(),
       // None: the starting theme's skins load on the first pass

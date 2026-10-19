@@ -635,6 +635,14 @@ impl Engine {
       if debug.show_ui_debug {
         crate::core::ui::debug::draw_debug_overlay(&mut ui);
       }
+      if debug.show_ui_rebuilds {
+        let dt = if self.ui_pass_index == 1 {
+          real_dt
+        } else {
+          0.0
+        };
+        self.ui_rebuilds.draw(&mut ui, &self.world, dt);
+      }
       // The console over everything
       self.console_state.render(&mut ui, width, height);
       ui.end_scene();
