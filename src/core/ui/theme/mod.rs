@@ -476,8 +476,8 @@ pub(crate) fn refresh_skins(
   load: impl FnMut(&str) -> Option<SpriteHandle>,
 ) {
   if *loaded != Some(theme.generation()) {
-    *loaded = Some(theme.generation());
     theme.load_skins(load);
+    *loaded = Some(theme.generation());
   }
 }
 
@@ -532,24 +532,25 @@ impl UiTheme {
   }
 
   /// Load the sprite of every skin that has a `path` and no sprite yet,
-  /// through `load`, without counting as a change
+  /// through `load`. Loaded skins change what is drawn, so this moves the
+  /// generation.
   pub(crate) fn load_skins(&mut self, mut load: impl FnMut(&str) -> Option<SpriteHandle>) {
     let missing = self
       .theme
       .skins
       .values()
       .any(|skin| skin.sprite.is_none() && skin.path.is_some());
-    if !missing {
-      return;
-    }
-    let theme = Arc::make_mut(&mut self.theme);
-    for skin in theme.skins.values_mut() {
-      if skin.sprite.is_none()
-        && let Some(path) = &skin.path
-      {
-        skin.sprite = load(path);
+    if missing {
+      let theme = Arc::make_mut(&mut self.theme);
+      for skin in theme.skins.values_mut() {
+        if skin.sprite.is_none()
+          && let Some(path) = &skin.path
+        {
+          skin.sprite = load(path);
+        }
       }
     }
+    self.generation += 1;
   }
 }
 

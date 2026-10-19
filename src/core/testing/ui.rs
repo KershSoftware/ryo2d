@@ -99,6 +99,8 @@ pub struct UiHarness {
   time: f64,
   /// What the widgets and the interaction rules read
   theme: Arc<Theme>,
+  /// Moves with every theme the harness is given
+  theme_generation: u64,
   /// What prompts read
   pub(crate) prompts: Arc<PromptContext>,
   /// The presses rebinding rows captured in the last frame
@@ -154,6 +156,7 @@ impl UiHarness {
       outcome: NavOutcome::default(),
       time: 0.0,
       theme: Arc::new(Theme::dark()),
+      theme_generation: 0,
       prompts: Arc::new(PromptContext::default()),
       rebinds: Vec::new(),
       world,
@@ -303,8 +306,19 @@ impl UiHarness {
 
   /// Draw with `theme` (and take its interaction timings) from the next frame
   pub fn with_theme(mut self, theme: Theme) -> UiHarness {
-    self.theme = Arc::new(theme);
+    self.set_theme(theme);
     self
+  }
+
+  /// Draw with `theme` from the next frame, on a harness already built
+  pub fn set_theme(&mut self, theme: Theme) {
+    self.theme = Arc::new(theme);
+    self.theme_generation += 1;
+  }
+
+  /// Change the UI's size, in UI units, from the next frame
+  pub fn resize(&mut self, width: f32, height: f32) {
+    self.size = (width, height);
   }
 
   /// Move the pointer to (x, y) in UI units
@@ -507,6 +521,7 @@ impl UiHarness {
         space,
         input,
         Arc::clone(&self.theme),
+        self.theme_generation,
       );
       context.set_dt(FRAME as f32);
       context.set_prompts(Arc::clone(&self.prompts));

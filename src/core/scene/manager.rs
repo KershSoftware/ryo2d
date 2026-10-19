@@ -890,6 +890,7 @@ mod tests {
         space,
         crate::core::ui::UiInput::default(),
         Arc::new(crate::core::ui::Theme::dark()),
+        0,
       );
       m.ui_pass(world, audio, &mut ui);
     }

@@ -38,13 +38,14 @@ use super::input::UiInput;
 
 use crate::core::asset::SpriteHandle;
 use crate::core::hash::fast_hash;
-use crate::core::input::{Binding, Direction, InputDevice, PadFamily};
+use crate::core::input::{Actions, Binding, Direction, InputDevice, PadFamily};
 use crate::core::render::UiSpace;
 use crate::core::render::batch::Filter;
 use crate::core::text::{
   RichText, TextAlign, TextEngine, TextIcons, TextKey, TextLayout, TextLayoutOptions, TextOverflow,
   TextReveal, TextStyle,
 };
+use crate::core::ui::env::UiEnv;
 use crate::core::ui::id::{UiId, key_hash};
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::layout::{Edges, Flow, Measure, UiStyle};
@@ -75,6 +76,38 @@ pub(crate) struct PromptContext {
   pub(crate) family: PadFamily,
   pub(crate) bindings: BTreeMap<String, Vec<Binding>>,
   pub(crate) icons: TextIcons,
+  /// Moves whenever the device, family, bindings or icons change
+  pub(crate) generation: u64,
+}
+
+impl PromptContext {
+  /// Take the player's device, pad family and the action bindings, moving
+  /// `generation` only when one of them differs from what is held
+  pub(crate) fn sync_input(&mut self, device: InputDevice, family: PadFamily, actions: &Actions) {
+    let mut changed = false;
+    if self.device != device || self.family != family {
+      self.device = device;
+      self.family = family;
+      changed = true;
+    }
+    let same = self.bindings.len() == actions.names().count()
+      && actions.names().all(|name| {
+        self
+          .bindings
+          .get(name)
+          .is_some_and(|bindings| bindings.as_slice() == actions.bindings(name))
+      });
+    if !same {
+      self.bindings = actions
+        .names()
+        .map(|name| (name.to_string(), actions.bindings(name).to_vec()))
+        .collect();
+      changed = true;
+    }
+    if changed {
+      self.generation += 1;
+    }
+  }
 }
 
 /// A press a rebinding row captured this pass: the engine binds it to the
@@ -352,6 +385,9 @@ pub struct UiContext<'a> {
   input: UiInput,
   /// The theme widgets read, taken from the world at the start of the pass
   theme: Arc<Theme>,
+  /// The generation of `theme` (`UiTheme::generation`); read by `env`
+  #[allow(dead_code)] // until the node cache reads `env`
+  theme_generation: u64,
   /// Stack of clip rects for nested clipping
   clip_stack: Vec<Rect>,
   /// Current effective clip rect (intersection of all stacked clips)
@@ -404,6 +440,7 @@ impl<'a> UiContext<'a> {
   /// A context recording into `commands`, laying text out with `text`,
   /// remembering in `memory` and laying containers out with `layout`, over
   /// the UI `space`, reading `input` (its mouse converted to UI units).
+  #[allow(clippy::too_many_arguments)]
   pub(crate) fn new(
     commands: &'a mut UiCommands,
     text: &'a mut TextEngine,
@@ -412,6 +449,7 @@ impl<'a> UiContext<'a> {
     space: UiSpace,
     input: UiInput,
     theme: Arc<Theme>,
+    theme_generation: u64,
   ) -> Self {
     Self {
       commands,
@@ -419,6 +457,7 @@ impl<'a> UiContext<'a> {
       space,
       input: input.with_mouse_scale(space.mouse_scale),
       theme,
+      theme_generation,
       clip_stack: Vec::new(),
       current_clip: None,
       layer: PAGE_LAYER,
@@ -452,6 +491,18 @@ impl<'a> UiContext<'a> {
   /// The prompts' context, shared: for a painter that lays text out
   pub(crate) fn prompts_arc(&self) -> Arc<PromptContext> {
     Arc::clone(&self.prompts)
+  }
+
+  /// Everything a builder reads besides a node's own components
+  #[allow(dead_code)] // until the node cache reads it
+  pub(crate) fn env(&self) -> UiEnv {
+    UiEnv {
+      theme: self.theme_generation,
+      fonts: self.text.borrow().generation(),
+      scale: self.space.px_scale.to_bits(),
+      size: (self.space.size.x.to_bits(), self.space.size.y.to_bits()),
+      prompts: self.prompts.generation,
+    }
   }
 
   /// The presses rebinding rows captured this pass, taken
@@ -1998,6 +2049,18 @@ mod tests {
   use crate::core::text::{TextEngine, TextLayout, TextStyle};
   use crate::core::ui::immediate::{UiCommand, UiCommands};
   use crate::core::ui::test_util::{UiDriver, context as ui_context, text_engine};
+
+  #[test]
+  fn prompt_generation_moves_only_on_a_change() {
+    let input = Input::new();
+    let mut prompts = PromptContext::default();
+    prompts.sync_input(input.last_device(), input.pad_family(), input.actions());
+    let first = prompts.generation;
+    prompts.sync_input(input.last_device(), input.pad_family(), input.actions());
+    assert_eq!(prompts.generation, first, "same input, same generation");
+    prompts.sync_input(InputDevice::Gamepad, input.pad_family(), input.actions());
+    assert_eq!(prompts.generation, first + 1, "a new last device moves it");
+  }
 
   fn context<'a>(c: &'a mut UiCommands, t: &'a mut TextEngine) -> UiContext<'a> {
     ui_context(c, t, (320.0, 180.0))

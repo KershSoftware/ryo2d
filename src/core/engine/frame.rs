@@ -501,29 +501,18 @@ impl Engine {
   fn refresh_prompts(&mut self) {
     let input = self.world.resource::<Input>();
     let prompts = Arc::make_mut(&mut self.prompts);
-    prompts.device = input.last_device();
-    prompts.family = input.pad_family();
-    let actions = input.actions();
-    let same = prompts.bindings.len() == actions.names().count()
-      && actions.names().all(|name| {
-        prompts
-          .bindings
-          .get(name)
-          .is_some_and(|bindings| bindings.as_slice() == actions.bindings(name))
-      });
-    if !same {
-      prompts.bindings = actions
-        .names()
-        .map(|name| (name.to_string(), actions.bindings(name).to_vec()))
-        .collect();
-    }
+    prompts.sync_input(input.last_device(), input.pad_family(), input.actions());
     match self.world.get_resource_ref::<TextIcons>() {
       Some(icons) if self.prompt_icons != Some(icons.last_changed()) => {
         prompts.icons = TextIcons::clone(&icons);
+        prompts.generation += 1;
         self.prompt_icons = Some(icons.last_changed());
       }
       Some(_) => {}
       None => {
+        if self.prompt_icons.is_some() {
+          prompts.generation += 1;
+        }
         prompts.icons = TextIcons::default();
         self.prompt_icons = None;
       }
@@ -546,6 +535,7 @@ impl Engine {
     // Trees whose UI file changed are brought in line before they are drawn
     crate::core::ui::nodes::reload_trees(&mut self.world, &mut self.ui_sources);
     let theme = self.refresh_ui_theme();
+    let theme_generation = self.world.resource::<UiTheme>().generation();
     self.load_ui_sounds(&theme);
     self.refresh_prompts();
     let space = self.ui_space;
@@ -596,6 +586,7 @@ impl Engine {
         space,
         snapshot,
         Arc::clone(&theme),
+        theme_generation,
       );
       ui.set_dt(real_dt);
       ui.set_prompts(Arc::clone(&self.prompts));

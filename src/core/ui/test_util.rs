@@ -73,7 +73,7 @@ pub(crate) fn context_in<'a>(
   let memory = Box::leak(Box::new(UiMemory::new()));
   let layout = Box::leak(Box::new(LayoutEngine::new()));
   let theme = Arc::new(Theme::dark());
-  let mut ui = UiContext::new(commands, text, memory, layout, space, input, theme);
+  let mut ui = UiContext::new(commands, text, memory, layout, space, input, theme, 0);
   ui.begin_scene(1, true);
   ui
 }
