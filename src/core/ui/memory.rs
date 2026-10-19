@@ -317,8 +317,9 @@ pub(crate) struct Scratch {
   /// The layout's node descriptions; empty between uses, since they borrow
   /// the subtree being resolved
   pub(crate) descs: Vec<NodeDesc<'static>>,
-  /// Each node's style out of its parent's flow, when it is placed at a rect
-  pub(crate) floating: Vec<Option<UiStyle>>,
+  /// The style out of its parent's flow of each node placed at a rect, by
+  /// its index, in node order
+  pub(crate) floating: Vec<(usize, UiStyle)>,
   /// Every node's children, run by run in node order
   pub(crate) children: Vec<usize>,
   /// Where each node's run of `children` ends

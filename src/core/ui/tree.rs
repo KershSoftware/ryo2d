@@ -310,22 +310,27 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   });
   // A nested node with an `at` rect leaves its parent's flow, at that size
   scratch.floating.clear();
-  scratch.floating.extend(nodes.iter().map(|node| {
-    node.at.filter(|_| node.parent.is_some()).map(|at| UiStyle {
-      width: Length::Px(at.width),
-      height: Length::Px(at.height),
-      absolute: true,
-      ..node.style.clone()
-    })
-  }));
+  for (i, node) in nodes.iter().enumerate() {
+    if let Some(at) = node.at.filter(|_| node.parent.is_some()) {
+      let style = UiStyle {
+        width: Length::Px(at.width),
+        height: Length::Px(at.height),
+        absolute: true,
+        ..node.style.clone()
+      };
+      scratch.floating.push((i, style));
+    }
+  }
   child_runs(nodes, &mut scratch.children, &mut scratch.child_ends);
-  let (floating, children, ends) = (&scratch.floating, &scratch.children, &scratch.child_ends);
+  let (children, ends) = (&scratch.children, &scratch.child_ends);
+  let mut floating = scratch.floating.iter().peekable();
   let mut descs: Vec<NodeDesc<'_>> = recycle(std::mem::take(&mut scratch.descs));
   descs.extend(nodes.iter().enumerate().map(|(i, node)| {
     let start = if i == 0 { 0 } else { ends[i - 1] };
+    let float = floating.next_if(|(k, _)| *k == i).map(|(_, style)| style);
     NodeDesc {
       id: node.id,
-      style: match (&root_style, &floating[i], i) {
+      style: match (&root_style, float, i) {
         (Some(style), _, 0) => style,
         (_, Some(style), _) => style,
         _ => &node.style,
@@ -380,10 +385,8 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       }
       // A scroll area shows its contents moved up and left by its offset
       let (scroll_x, scroll_y) = (nodes[p].style.scroll_x, nodes[p].style.scroll_y);
-      if let Some(state) = cx
-        .memory
-        .peek_state::<ScrollState>(nodes[p].id)
-        .filter(|_| scroll_x || scroll_y)
+      if (scroll_x || scroll_y)
+        && let Some(state) = cx.memory.peek_state::<ScrollState>(nodes[p].id)
       {
         let by = Vec2::new(
           if scroll_x { state.offset.x } else { 0.0 },
