@@ -799,8 +799,8 @@ pub(crate) fn record_tick_check(
 }
 
 impl Engine {
-  /// Clamp the change ticks of the schedules the engine owns after the
-  /// world checked its own.
+  /// Clamp the change ticks of the schedules the engine owns, and the tick
+  /// the UI node cache keeps, after the world checked its own.
   fn clamp_schedule_ticks(&mut self) {
     let Some(check) = self
       .world
@@ -819,6 +819,7 @@ impl Engine {
     {
       physics.check_change_ticks(check);
     }
+    crate::core::ui::nodes::check_cache_ticks(&mut self.world, check);
   }
 }
 

@@ -3,9 +3,12 @@
 //! `node` is the tree value, `components` the state components and the
 //! resource the walks keep, `events` what a widget reports, `spawn` the
 //! entities a tree becomes, `reconcile` the update of a spawned tree in place,
-//! `draw` the walk that draws them each frame and `list` the pooled list.
+//! `draw` the walk that draws them each frame, `cache` what the walk keeps of
+//! each node's last build and which nodes changed since, and `list` the
+//! pooled list.
 
 pub(crate) mod bindings;
+mod cache;
 mod components;
 mod draw;
 mod events;
@@ -23,6 +26,7 @@ pub use events::{UiEvent, UiEventKind, UiListBind, UiReloaded};
 pub use list::UiListRow;
 pub use node::{TextRole, UiNode, UiNodeKind};
 
+pub(crate) use cache::check_cache_ticks;
 pub(crate) use components::UiNodes;
 pub(crate) use draw::{begin_pass, deliver_pending, draw_nodes};
 pub(crate) use events::deliver;

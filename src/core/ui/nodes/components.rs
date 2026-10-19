@@ -9,6 +9,7 @@ use crate::core::ecs::kernel::{Component, Entity, Resource};
 use crate::core::ui::file::document::TreeSource;
 use crate::core::ui::{Anchor, Rect, UiId};
 
+use super::cache::UiCache;
 use super::events::UiEvent;
 use super::node::NodeState;
 
@@ -162,6 +163,8 @@ pub(crate) struct UiNodes {
   /// The list nodes spawned, whose pools `update_lists` keeps (a despawned
   /// one is dropped there)
   pub(crate) lists: Vec<Entity>,
+  /// Each node's last build, and which nodes changed since
+  pub(crate) cache: UiCache,
 }
 
 #[cfg(test)]

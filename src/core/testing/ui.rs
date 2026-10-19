@@ -223,6 +223,19 @@ impl UiHarness {
     &mut self.world
   }
 
+  /// Run the world's change-tick check and clamp the tick the node cache
+  /// keeps with it, as the engine does every 1024 frames. The world checks
+  /// only once bevy's threshold of ticks has passed since its last check;
+  /// whether it did.
+  #[doc(hidden)]
+  pub fn check_change_ticks(&mut self) -> bool {
+    let Some(check) = self.world.check_change_ticks() else {
+      return false;
+    };
+    nodes::check_cache_ticks(&mut self.world, check);
+    true
+  }
+
   /// The first node named `name` in the harness's UI trees
   pub fn find_ui(&self, name: &str) -> Option<Entity> {
     nodes::find_ui(&self.world, self.scene, name)

@@ -23,7 +23,7 @@ Most subsystems have their own AGENTS.md or a skill in `.claude/skills/` (`physi
 
 ## Change Ticks
 
-Bevy clamps the change ticks of the systems in its own `Schedules` resource only, and the engine keeps its schedules elsewhere: `EngineSchedules`, each scene's `SceneSchedules` and physics' `PhysicsSchedule`. `clear_trackers_system` (`Last`) runs `world.check_change_ticks()` every 1024 frames; the `record_tick_check` observer stores the check in `PendingTickCheck`, and `Engine::clamp_schedule_ticks` (`engine/frame.rs`) then clamps all three. A schedule the engine adds must be clamped there too, or its systems' change detection breaks after about half a billion ticks.
+Bevy clamps the change ticks of the systems in its own `Schedules` resource only, and the engine keeps its schedules elsewhere: `EngineSchedules`, each scene's `SceneSchedules` and physics' `PhysicsSchedule`. `clear_trackers_system` (`Last`) runs `world.check_change_ticks()` every 1024 frames; the `record_tick_check` observer stores the check in `PendingTickCheck`, and `Engine::clamp_schedule_ticks` (`engine/frame.rs`) then clamps all three, and the tick the UI node cache keeps (`check_cache_ticks`). A schedule (or any tick) the engine adds must be clamped there too, or its change detection breaks after about half a billion ticks.
 
 ## Input
 

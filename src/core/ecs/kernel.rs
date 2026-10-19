@@ -10,6 +10,8 @@ pub(crate) use bevy_ecs::change_detection::Tick;
 pub(crate) use bevy_ecs::change_detection::CheckChangeTicks;
 pub use bevy_ecs::change_detection::{DetectChanges, DetectChangesMut, Mut, Ref};
 pub use bevy_ecs::component::{Component, Mutable};
+// A component type's id, to find its removal messages
+pub(crate) use bevy_ecs::component::ComponentId;
 pub use bevy_ecs::entity::Entity;
 // Maps and sets keyed by `Entity`, with a hash cheaper than SipHash
 pub(crate) use bevy_ecs::entity::{EntityHashMap, EntityHashSet};
@@ -21,6 +23,8 @@ pub use bevy_ecs::event::{EntityEvent, Event};
 pub use bevy_ecs::hierarchy::{ChildOf, Children};
 pub(crate) use bevy_ecs::lifecycle::HookContext;
 pub use bevy_ecs::lifecycle::RemovedComponents;
+// A removal message, read through a `MessageCursor` outside a system
+pub(crate) use bevy_ecs::lifecycle::RemovedComponentEntity;
 pub use bevy_ecs::message::{Message, MessageCursor, MessageReader, MessageWriter, Messages};
 pub use bevy_ecs::observer::{Observer, On};
 pub(crate) use bevy_ecs::query::QueryState;

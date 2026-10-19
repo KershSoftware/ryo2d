@@ -19,7 +19,7 @@ Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports
 | `Update` | once | `UpdateSet::Game`: scene per-frame systems and builder ones by default |
 | `PostUpdate` | once | `PostUpdateSet::Transforms` (propagation), `Camera` (shake on real time, then every camera's `CameraView` from its interpolated transform), `Extract` (timed effects, real time) |
 | render | once | `present_frame` (`engine/extract.rs`): queries the world into the draw list, plans the cameras, runs the render pipeline (not a schedule) |
-| `Last` | once | physics registration bookkeeping, `forget_despawned_tilemaps`, `clear_trackers`, `check_change_ticks` every 1024 frames; the engine then clamps its own, the scenes' and physics' schedules (`PendingTickCheck`) |
+| `Last` | once | physics registration bookkeeping, `forget_despawned_tilemaps`, `clear_trackers`, `check_change_ticks` every 1024 frames; the engine then clamps its own, the scenes' and physics' schedules and the UI node cache's tick (`PendingTickCheck`) |
 
 `FixedSet`, in order:
 
