@@ -630,6 +630,21 @@ pub(crate) fn refresh_dirty(world: &mut World) {
   world.try_resource_scope(|world, mut nodes: Mut<UiNodes>| nodes.cache.refresh(world));
 }
 
+/// The dirty check alone, as `draw_nodes` runs it before drawing `scene`'s
+/// trees: what changed since the last check, then what is live. What it
+/// marks is built by the next walk, as it would be. For benchmarks.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dirty_check(world: &mut World, ui: &UiContext<'_>, scene: u64) {
+  world.try_resource_scope(|world, mut nodes: crate::core::ecs::kernel::Mut<UiNodes>| {
+    let pending = nodes.pending_focus;
+    let cache = &mut nodes.cache;
+    if cache.enabled {
+      cache.refresh(world);
+      cache.mark_live(world, ui, scene, pending, None);
+    }
+  });
+}
+
 /// Mark what must be built in `scene`'s walk whatever changed, of the
 /// nodes with a record of `scene` (one without is built anyway when drawn):
 /// - the nodes holding an interaction role this frame or the last (found

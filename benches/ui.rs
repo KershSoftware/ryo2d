@@ -1,8 +1,12 @@
 //! UI frame costs without a GPU: a 200-widget settings screen (as a closure
-//! and as a node tree), a 1,000-row scroll list, virtual lists in both styles
-//! (10,000 and 100 closure rows, 10,000 node rows) and an empty frame, each
-//! one `UiHarness` frame (resolve, the node walk, the widgets, layout and
-//! commands); and the settings tree updated unchanged against spawning it.
+//! and as a node tree, moving its focus and unchanged), a 2,000-node static
+//! tree, an embedded node tree in closure UI, a 1,000-row scroll list,
+//! virtual lists in both styles (10,000 and 100 closure rows, 10,000 node
+//! rows) and an empty frame, each one `UiHarness` frame (resolve, the node
+//! walk, the widgets, layout and commands); the node cache's dirty check
+//! alone; and the settings tree updated unchanged against spawning it.
+
+use std::time::{Duration, Instant};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use ryo2d::prelude::*;
@@ -15,6 +19,8 @@ const OPTIONS: [&str; 3] = ["Low", "Medium", "High"];
 const ROWS: usize = 50;
 /// Buttons in the long list
 const LIST: usize = 1000;
+/// Nodes in the static tree: text and buttons, alternating
+const STATIC: usize = 2000;
 
 /// The settings screen's values, one of each kind per row
 struct Settings {
@@ -156,6 +162,127 @@ fn settings_nodes_frame(c: &mut Criterion) {
       harness.frame(|_| {});
     })
   });
+}
+
+/// The settings tree drawn again with no input, its scope's first tab
+/// focused: the cached frame replays every node but the focused path and
+/// the scroll area (the target: under 35 µs)
+fn settings_nodes_unchanged(c: &mut Criterion) {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  harness.spawn_ui(settings_tree());
+  for _ in 0..10 {
+    harness.frame(|_| {});
+  }
+  assert!(harness.focused().is_some(), "the screen's scope took focus");
+  let stats = harness.ui_cache_stats();
+  assert!(stats.replayed > 0, "the unchanged tree replays");
+  println!(
+    "settings nodes, unchanged: {} built, {} replayed",
+    stats.built, stats.replayed
+  );
+  c.bench_function(
+    "ui frame, the 200-widget settings screen as nodes, unchanged",
+    |b| b.iter(|| harness.frame(|_| {})),
+  );
+}
+
+/// A grid of 2,000 nodes, text and buttons alternating, 20 to a row
+fn static_tree() -> UiNode {
+  UiNode::grid(20).gap(2.0).children((0..STATIC).map(|i| {
+    if i % 2 == 0 {
+      UiNode::text(format!("Item {i}"))
+    } else {
+      UiNode::button(format!("Go {i}"))
+    }
+  }))
+}
+
+/// The static tree drawn again with no input and the pointer over nothing:
+/// every node replays (the cost per replayed node is this over the count)
+fn static_tree_frame(c: &mut Criterion) {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  harness.spawn_ui(static_tree());
+  harness.move_to(-100.0, -100.0);
+  for _ in 0..5 {
+    harness.frame(|_| {});
+  }
+  let stats = harness.ui_cache_stats();
+  assert_eq!(stats.built, 0, "nothing in the static tree builds");
+  println!("static tree: {} replayed", stats.replayed);
+  c.bench_function("ui frame, a 2,000-node static tree", |b| {
+    b.iter(|| harness.frame(|_| {}))
+  });
+}
+
+/// The `ui` demo's Mixed page: a closure panel around an embedded grid of 8
+/// node buttons, its own Add button focused
+fn mixed(ui: &mut UiContext<'_>, world: &mut World, grid: Entity, status: &str) {
+  let heading = ui.theme().text.heading.style();
+  let muted = ui.theme().palette.muted;
+  ui.panel()
+    .focus_scope()
+    .anchor(Anchor::Center)
+    .width(420.0)
+    .gap(10.0)
+    .show(|ui| {
+      ui.text("Mixed").style(&heading);
+      ui.row().gap(8.0).show(|ui| {
+        ui.button("Add").default_focus().show();
+        ui.button("Clear").show();
+      });
+      ui.node(grid, world);
+      ui.text(status).color(muted);
+      ui.button("Done").show();
+    });
+}
+
+/// The Mixed page drawn again with no input: the embedded tree's dirty check
+/// and its replay inside the closure's panel
+fn embedded_frame(c: &mut Criterion) {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  let cells = (1..=8).map(|n| {
+    UiNode::button(format!("Cell {n}"))
+      .action("cell")
+      .width(80.0)
+  });
+  let grid = harness.spawn_ui(UiNode::grid(4).gap(6.0).embedded().children(cells));
+  let status = "Add a cell, or pick one.".to_string();
+  for _ in 0..5 {
+    harness.frame_with_world(|ui, world| mixed(ui, world, grid, &status));
+  }
+  assert!(harness.focused().is_some(), "the panel's scope took focus");
+  let stats = harness.ui_cache_stats();
+  assert!(stats.replayed > 0, "the embedded tree replays");
+  c.bench_function("ui frame, an embedded node tree in closure UI", |b| {
+    b.iter(|| harness.frame_with_world(|ui, world| mixed(ui, world, grid, &status)))
+  });
+}
+
+/// The node cache's dirty check on the settings tree, alone: each check
+/// follows an unmeasured unchanged frame, as the walk's does
+fn dirty_check(c: &mut Criterion) {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  harness.spawn_ui(settings_tree());
+  for _ in 0..10 {
+    harness.frame(|_| {});
+  }
+  let mut group = c.benchmark_group("ui dirty check");
+  // Each measured check costs a frame besides
+  group.warm_up_time(Duration::from_millis(200));
+  group.measurement_time(Duration::from_secs(1));
+  group.bench_function("the 200-widget settings tree", |b| {
+    b.iter_custom(|iters| {
+      let mut total = Duration::ZERO;
+      for _ in 0..iters {
+        harness.frame(|_| {});
+        let start = Instant::now();
+        harness.ui_dirty_check();
+        total += start.elapsed();
+      }
+      total
+    })
+  });
+  group.finish();
 }
 
 fn list_frame(c: &mut Criterion) {
@@ -323,6 +450,10 @@ criterion_group!(
   benches,
   settings_frame,
   settings_nodes_frame,
+  settings_nodes_unchanged,
+  static_tree_frame,
+  embedded_frame,
+  dirty_check,
   list_frame,
   virtual_list_frame,
   virtual_list_100_frame,

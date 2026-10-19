@@ -363,6 +363,28 @@ impl UiHarness {
     UiCacheStats::of(&self.world)
   }
 
+  /// Run the node cache's dirty check alone, as a frame runs it before
+  /// drawing the harness scene's trees: what changed since the last check,
+  /// then what must be built whatever changed (the interaction roles'
+  /// holders, scroll areas, ..). What it marks is built next frame, as it
+  /// would be. For benchmarks.
+  #[doc(hidden)]
+  pub fn ui_dirty_check(&mut self) {
+    let space = self.space();
+    let mut context = UiContext::new(
+      &mut self.commands,
+      &mut self.text,
+      &mut self.memory,
+      &mut self.layout,
+      space,
+      UiInput::default(),
+      Arc::clone(&self.theme),
+      self.theme_generation,
+    );
+    context.begin_scene(self.scene, true);
+    nodes::dirty_check(&mut self.world, &context, self.scene);
+  }
+
   /// Draw with `theme` (and take its interaction timings) from the next frame
   pub fn with_theme(mut self, theme: Theme) -> UiHarness {
     self.set_theme(theme);
@@ -589,12 +611,7 @@ impl UiHarness {
       let screen = Vec2::new(self.size.0, self.size.1);
       nodes::update_lists(&mut self.world, &mut self.memory, frame, screen);
     }
-    let space = UiSpace {
-      size: Vec2::new(self.size.0, self.size.1),
-      px_scale: 1.0,
-      image: (self.size.0.ceil() as u32, self.size.1.ceil() as u32),
-      mouse_scale: 1.0,
-    };
+    let space = self.space();
     // The keys, text and pointer as the UI reads them; a press over the UI
     // is the UI's, as in the engine
     let mut input = UiInput::from_view(self.view());
@@ -658,6 +675,16 @@ impl UiHarness {
       ..NavInput::default()
     };
     result
+  }
+
+  /// The UI's size and scale: UI units are render pixels
+  fn space(&self) -> UiSpace {
+    UiSpace {
+      size: Vec2::new(self.size.0, self.size.1),
+      px_scale: 1.0,
+      image: (self.size.0.ceil() as u32, self.size.1.ceil() as u32),
+      mouse_scale: 1.0,
+    }
   }
 
   /// Whether this frame skips the list update (a test's rerun pass)
