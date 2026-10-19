@@ -27,6 +27,8 @@ use crate::core::ecs::kernel::{
   EntityHashMap, EntityHashSet, MessageCursor, Or, QueryState, RemovedComponentEntity, Tick, With,
   World, WorldId,
 };
+use std::sync::Arc;
+
 use crate::core::hash::FastMap;
 use crate::core::text::TextReveal;
 use crate::core::ui::env::UiEnv;
@@ -169,8 +171,9 @@ impl Default for SpotCheck {
 /// A node's last build: what its builder pushed and what it was built under
 #[derive(Clone)]
 pub(crate) struct NodeRecord {
-  /// What the builder pushed
-  pub(crate) tape: Tape,
+  /// What the builder pushed: shared with a replay under way, so a replay
+  /// neither takes it out of the record nor puts it back
+  pub(crate) tape: Arc<Tape>,
   /// The scene that drew it
   pub(crate) scene: u64,
   /// The environment it was built in
@@ -189,9 +192,9 @@ pub(crate) struct NodeRecord {
   pub(crate) scope: UiId,
 }
 
-/// A record's tape taken out to replay, with what the replay answers
+/// A record's tape, shared to replay, with what the replay answers
 pub(crate) struct Taken {
-  pub(crate) tape: Tape,
+  pub(crate) tape: Arc<Tape>,
   /// The node's response id
   pub(crate) id: UiId,
   /// A modal or popup container: the walk's Back target
@@ -218,12 +221,12 @@ fn replays_here(
     && record.tape.reads.iter().all(|read| holds(world, ui, read))
 }
 
-/// `record`'s tape taken out to replay, the record marked drawn in memory
+/// `record`'s tape shared to replay, the record marked drawn in memory
 /// frame `frame`
 fn take(record: &mut NodeRecord, frame: u64) -> Taken {
   record.frame = frame;
   Taken {
-    tape: std::mem::take(&mut record.tape),
+    tape: Arc::clone(&record.tape),
     id: record.id,
     dialog: record.dialog,
   }
@@ -424,7 +427,7 @@ impl UiCache {
   }
 
   /// [`is_clean`](Self::is_clean)'s check and, when it passes, the
-  /// record's tape taken out to replay, the record marked drawn this frame:
+  /// record's tape shared to replay, the record marked drawn this frame:
   /// one lookup of the record for both
   pub(crate) fn take_clean(
     &mut self,
@@ -441,7 +444,7 @@ impl UiCache {
     replays_here(record, world, ui, env, scope).then(|| take(record, ui.memory.frame()))
   }
 
-  /// `node`'s record's tape taken out to replay, clean or not, the record
+  /// `node`'s record's tape shared to replay, clean or not, the record
   /// marked drawn in memory frame `frame`
   pub(crate) fn take_tape(&mut self, node: Entity, frame: u64) -> Option<Taken> {
     self
@@ -450,26 +453,14 @@ impl UiCache {
       .map(|record| take(record, frame))
   }
 
-  /// The tape `take_clean` or `take_tape` took, replayed, back in `node`'s
-  /// record
-  pub(crate) fn give_tape(&mut self, node: Entity, tape: Tape) {
-    if let Some(record) = self.records.get_mut(&node) {
-      record.tape = tape;
-    }
-  }
-
   /// `node` is being built: it leaves the dirty set (its dirty children are
   /// drawn after it, or forgotten) and its record gives up its tape, to be
-  /// recorded again in the same buffers
-  pub(crate) fn take_for_build(&mut self, node: Entity) -> Tape {
+  /// recorded again in the same buffers (none for a node without a record)
+  pub(crate) fn take_for_build(&mut self, node: Entity) -> Option<Arc<Tape>> {
     self.dirty.remove(&node);
-    match self.records.remove(&node) {
-      Some(record) => {
-        unindex(&mut self.by_id, node, &record.tape);
-        record.tape
-      }
-      None => Tape::default(),
-    }
+    let record = self.records.remove(&node)?;
+    unindex(&mut self.by_id, node, &record.tape);
+    Some(record.tape)
   }
 
   /// Keep `node`'s new record: its ids find it by `by_id`, and its `live`
@@ -1223,7 +1214,7 @@ mod tests {
     h.world_mut().entity_mut(go).insert(UiDisabled);
     clear(&mut h);
     let record = NodeRecord {
-      tape: Tape::default(),
+      tape: Arc::default(),
       scene: 1,
       env: UiEnv::default(),
       top: true,
@@ -1265,7 +1256,7 @@ mod tests {
     let mut nodes = h.world_mut().remove_resource::<UiNodes>().unwrap();
     nodes.cache.dirty.insert(go);
     let record = NodeRecord {
-      tape: Tape::default(),
+      tape: Arc::default(),
       scene: 1,
       env: UiEnv::default(),
       top: true,
@@ -1314,7 +1305,7 @@ mod tests {
     let mut ui_nodes = h.world_mut().resource_mut::<UiNodes>();
     for &node in &nodes {
       let record = NodeRecord {
-        tape: Tape::default(),
+        tape: Arc::default(),
         scene: 1,
         env,
         top: true,
@@ -1477,7 +1468,7 @@ mod live_tests {
   fn insert(h: &mut UiHarness, node: Entity, tape: Tape, under: (UiEnv, u64, u64, UiId)) {
     let (env, scene, frame, scope) = under;
     let record = NodeRecord {
-      tape,
+      tape: Arc::new(tape),
       scene,
       env,
       top: true,

@@ -21,6 +21,8 @@
 //! clean nodes above it, to reach it) in place of its replay, and compares
 //! the build with the record (`spot_check`).
 
+use std::sync::Arc;
+
 use glam::Vec2;
 
 use crate::core::ecs::kernel::{
@@ -421,31 +423,42 @@ fn draw_node(
       return Drawn::Replayed(replay_taken(world, ui, node, taken, walk));
     }
   }
-  let tape = walk.cache.take_for_build(node);
+  let shell = walk.cache.take_for_build(node);
   walk.cache.count_built(node);
-  let (response, record) = build_recorded(world, ui, node, place, tape, dialog, walk);
+  let (response, record) = build_recorded(world, ui, node, place, shell, dialog, walk);
   walk.cache.store(node, record, live);
   Drawn::Built(response)
 }
 
-/// Build `node` (a `dialog` or not) and its subtree, recorded into `tape`:
-/// its response and its new record
+/// Build `node` (a `dialog` or not) and its subtree, recorded into the
+/// buffers of `shell`, its old record's tape (taken out of its `Arc` and
+/// put back, so a record built again allocates nothing): its response and
+/// its new record
 fn build_recorded(
   world: &mut World,
   ui: &mut UiContext<'_>,
   node: Entity,
   place: Option<Place>,
-  tape: Tape,
+  shell: Option<Arc<Tape>>,
   dialog: bool,
   walk: &mut Walk,
 ) -> (Option<Response>, NodeRecord) {
   let scope = ui.memory.scopes.current();
-  ui.start_tape_in(tape);
+  let mut shell = shell.unwrap_or_default();
+  ui.start_tape_in(
+    Arc::get_mut(&mut shell)
+      .map(std::mem::take)
+      .unwrap_or_default(),
+  );
   let response = build_node(world, ui, node, place, walk);
   let tape = ui.end_tape();
+  match Arc::get_mut(&mut shell) {
+    Some(slot) => *slot = tape,
+    None => shell = Arc::new(tape),
+  }
   let (scene, top) = ui.scene();
   let record = NodeRecord {
-    tape,
+    tape: shell,
     scene,
     env: walk.env,
     top,
@@ -470,16 +483,15 @@ fn spot_check(
   dialog: bool,
   walk: &mut Walk,
 ) -> Option<Response> {
-  let old = walk.cache.take_for_build(node);
-  let (response, record) = build_recorded(world, ui, node, place, Tape::default(), dialog, walk);
+  let old = walk.cache.take_for_build(node).unwrap_or_default();
+  let (response, record) = build_recorded(world, ui, node, place, None, dialog, walk);
   walk.cache.spot_compare(world, node, &old, &record.tape);
   walk.cache.store(node, record, live);
   response
 }
 
-/// Replay `node`'s record, whose tape was `taken` out of it, each child
-/// slot filled by the child's replay, and put the tape back: the id it
-/// answers with
+/// Replay `node`'s record, whose tape was `taken`, each child slot filled
+/// by the child's replay: the id it answers with
 fn replay_taken(
   world: &mut World,
   ui: &mut UiContext<'_>,
@@ -493,7 +505,6 @@ fn replay_taken(
   }
   walk.cache.stats.replayed += tape.nodes.len();
   ui.replay(&tape, &mut |ui, child| replay_child(world, ui, child, walk));
-  walk.cache.give_tape(node, tape);
   id
 }
 
