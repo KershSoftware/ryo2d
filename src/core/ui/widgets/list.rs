@@ -1953,11 +1953,14 @@ mod focus_tests {
     let draw = |h: &mut UiHarness| {
       h.frame(|ui| {
         let mut out = None;
-        ui.scroll()
+        let outer = ui
+          .scroll()
           .height(300.0)
           .width(400.0)
           .id("outer")
           .show(|ui| {
+            // Room for the outer area to scroll, had the wheel reached it
+            ui.column().height(1000.0).show(|_| {});
             ui.modal().show(|ui| {
               let above = ui.button("Above").show().id;
               let list = ui
@@ -1977,11 +1980,13 @@ mod focus_tests {
               let below = ui.button("Below").show().id;
               out = Some((list, above, below));
             });
-          });
-        out.unwrap()
+          })
+          .id;
+        let (list, above, below) = out.unwrap();
+        (list, above, below, outer)
       })
     };
-    let (list, above, below) = draw(&mut h);
+    let (list, above, below, outer) = draw(&mut h);
     draw(&mut h);
     let rect = h.record_of(list.id).unwrap().rect;
     h.move_to(rect.x + 10.0, rect.y + 10.0);
@@ -1989,6 +1994,11 @@ mod focus_tests {
     for _ in 0..30 {
       draw(&mut h);
     }
+    assert_eq!(
+      h.scroll_offset(outer),
+      Vec2::ZERO,
+      "the outer area kept still"
+    );
     assert!(
       h.scroll_offset(list.id).y > 0.0,
       "the inner list took the wheel"
