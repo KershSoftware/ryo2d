@@ -35,12 +35,7 @@ impl<'a> UiContext<'a> {
   /// ```
   #[track_caller]
   pub fn popup<'u>(&'u mut self, anchor: UiId) -> Container<'u, 'a> {
-    let rect = self
-      .memory
-      .current(anchor)
-      .or_else(|| self.memory.prev(anchor))
-      .map(|record| record.rect);
-    self.popup_panel(Location::caller(), rect)
+    self.popup_panel(Location::caller(), anchor)
   }
 
   /// A modal: a dialog (a column with the panel look) centred over a dim

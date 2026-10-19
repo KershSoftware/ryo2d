@@ -57,6 +57,41 @@ impl Site {
   }
 }
 
+/// Ids noted while a tape records (`UiContext::start_tape`), in order: the
+/// ids a builder made, or the widget states it touched. Nested tapes share
+/// it, each taking what was noted after its mark.
+#[derive(Debug, Default)]
+pub(crate) struct TapeLog {
+  ids: Vec<UiId>,
+  /// A tape is recording: `note` keeps what it is given
+  pub(crate) on: bool,
+}
+
+impl TapeLog {
+  /// Keep `id` while a tape records
+  pub(crate) fn note(&mut self, id: UiId) {
+    if self.on {
+      self.ids.push(id);
+    }
+  }
+
+  /// Where what is noted next starts
+  pub(crate) fn mark(&self) -> usize {
+    self.ids.len()
+  }
+
+  /// What was noted since `mark`, taken out
+  pub(crate) fn take(&mut self, mark: usize) -> Vec<UiId> {
+    self.ids.split_off(mark.min(self.ids.len()))
+  }
+
+  /// Nothing noted, nothing recording (a new frame)
+  pub(crate) fn clear(&mut self) {
+    self.ids.clear();
+    self.on = false;
+  }
+}
+
 /// The scopes and per-site counts of the frame being recorded
 #[derive(Debug, Default)]
 pub(crate) struct IdScopes {
@@ -68,6 +103,8 @@ pub(crate) struct IdScopes {
   captured: Vec<UiId>,
   /// Captures open (they nest: a list in a row of a list)
   capturing: usize,
+  /// The ids made while a tape records
+  pub(crate) log: TapeLog,
 }
 
 impl IdScopes {
@@ -77,6 +114,16 @@ impl IdScopes {
     self.used.clear();
     self.captured.clear();
     self.capturing = 0;
+    self.log.clear();
+  }
+
+  /// Register `id`, made by a builder a tape recorded, as made this frame:
+  /// a replay of that tape. Captured like a made id.
+  pub(crate) fn replay_id(&mut self, id: UiId) {
+    self.used.insert(id);
+    if self.capturing > 0 {
+      self.captured.push(id);
+    }
   }
 
   /// Whether `id` has been made this frame
@@ -128,6 +175,7 @@ impl IdScopes {
     if self.capturing > 0 {
       self.captured.push(id);
     }
+    self.log.note(id);
     id
   }
 

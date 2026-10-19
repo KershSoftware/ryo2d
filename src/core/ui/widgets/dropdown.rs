@@ -113,16 +113,9 @@ impl Dropdown<'_, '_> {
       }
     }
 
-    if open {
-      let anchor = ui
-        .memory
-        .current(id)
-        .or_else(|| ui.memory.prev(id))
-        .map(|record| record.rect);
-      if let Some(picked) = self.list(ui, list, anchor) {
-        *self.selected = picked;
-        open = false;
-      }
+    if open && let Some(picked) = self.list(ui, list, id) {
+      *self.selected = picked;
+      open = false;
     }
     if *self.selected != before {
       response.mark_changed();
@@ -136,14 +129,14 @@ impl Dropdown<'_, '_> {
     Some(response)
   }
 
-  /// Record the open list below `anchor` (the trigger's rect): a popup
+  /// Record the open list below the trigger `anchor`: a popup
   /// column in the dropdown's normal look (opaque in the built-in themes,
   /// so the page does not show through), a focus scope that traps, of one
   /// option per entry in a scroll area no taller than the room on the side
   /// it opens on, so a long list stays inside the UI and the wheel and
   /// navigation scroll it. The option picked this frame, if any.
-  fn list(&self, ui: &mut UiContext<'_>, list: UiId, anchor: Option<Rect>) -> Option<usize> {
-    let room = popup::room(anchor, ui.ui_size()) - 2.0 * LIST_PADDING;
+  fn list(&self, ui: &mut UiContext<'_>, list: UiId, anchor: UiId) -> Option<usize> {
+    let room = popup::room(ui.anchor_rect(anchor), ui.ui_size()) - 2.0 * LIST_PADDING;
     ui.begin_popup(anchor, false);
     let style = UiStyle {
       flow: Flow::Column,

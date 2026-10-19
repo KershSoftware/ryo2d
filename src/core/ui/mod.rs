@@ -59,6 +59,7 @@ pub(crate) mod nav;
 pub mod nodes;
 pub(crate) mod popup;
 mod response;
+pub(crate) mod tape;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod theme;

@@ -376,6 +376,13 @@ impl UiHarness {
     self.commands.len()
   }
 
+  /// The UI commands the last frame recorded, with their orders, in
+  /// `Debug` form: two frames that draw the same compare equal
+  #[cfg(test)]
+  pub(crate) fn commands_debug(&self) -> String {
+    format!("{:?}", self.commands)
+  }
+
   /// What the last frame did to the layout's tree
   #[cfg(test)]
   pub(crate) fn layout_stats(&self) -> crate::core::ui::layout::engine::LayoutStats {

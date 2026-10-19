@@ -48,6 +48,7 @@ impl UiContext<'_> {
     timer.seconds = if resting { timer.seconds + dt } else { 0.0 };
     let seconds = timer.seconds;
     if resting && seconds >= self.theme().metrics.tooltip_delay {
+      self.taint();
       self.pending_tooltip = Some((text.clone(), response.rect));
     }
   }

@@ -131,6 +131,8 @@ impl<'a> UiContext<'a> {
   /// A modal or popup inside an embedded tree takes Back only through the
   /// closure's own `ui.back()`.
   pub fn node(&mut self, root: Entity, world: &mut World) -> Response {
+    // Not taped yet: a tape cannot hold the embedded tree's walk
+    self.taint();
     let embedded = world.get::<UiRoot>(root).is_some_and(|r| r.embedded);
     if !embedded {
       warn_once("ui-node:embed-not-embedded".to_string(), || {

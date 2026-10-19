@@ -233,6 +233,7 @@ impl<'a> UiContext<'a> {
   /// through the rows between. An index past the end is the last item; a
   /// list not drawn yet ignores it.
   pub fn list_scroll_to(&mut self, list: UiId, index: usize) {
+    self.taint();
     let Some(target) = row_target(self.memory, list, index) else {
       return;
     };
@@ -263,6 +264,7 @@ impl<'a> UiContext<'a> {
   /// }
   /// ```
   pub fn list_focus(&mut self, list: UiId, index: usize) {
+    self.taint();
     let Some(last) = self
       .memory
       .peek_state::<ListState>(state_id(list))

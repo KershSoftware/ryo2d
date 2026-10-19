@@ -231,6 +231,9 @@ impl UiContext<'_> {
     } else {
       Vec2::ZERO
     };
+    // A pick-up (and the ghost it draws) only a build makes
+    self.taint();
+    let i = &mut self.memory.interact;
     i.drag = Some(DragState {
       source: id,
       payload: Arc::clone(payload),

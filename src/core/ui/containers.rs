@@ -36,8 +36,9 @@ pub struct Container<'u, 'a> {
 enum ContainerKind {
   Plain,
   Panel,
-  /// A panel in a popup below this rect (centred when `None`)
-  Popup(Option<Rect>),
+  /// A panel in a popup below this widget (centred when it is nowhere, or
+  /// `NONE`)
+  Popup(UiId),
   /// A panel centred in a popup that dims and blocks the whole UI
   Modal,
 }
@@ -114,12 +115,12 @@ impl<'a> UiContext<'a> {
     }
   }
 
-  /// A panel being set up as a popup below `anchor` (centred when `None`):
-  /// a focus scope that traps, blocking the pointer
+  /// A panel being set up as a popup below widget `anchor` (centred when
+  /// it is nowhere): a focus scope that traps, blocking the pointer
   pub(crate) fn popup_panel<'u>(
     &'u mut self,
     site: &'static Location<'static>,
-    anchor: Option<Rect>,
+    anchor: UiId,
   ) -> Container<'u, 'a> {
     let padding = self.panel_padding();
     let mut popup = Container::new(self, site, Flow::Column);
@@ -387,7 +388,7 @@ impl<'u, 'a> Container<'u, 'a> {
         response
       }
       ContainerKind::Modal => {
-        ui.begin_popup(None, true);
+        ui.begin_popup(UiId::NONE, true);
         // The dim covers the UI and takes the pointer; the dialog is placed
         // in it by its anchor
         let dim_style = UiStyle {

@@ -278,6 +278,7 @@ impl<'a> UiContext<'a> {
   /// Bring the widget `id` into view in the scroll area around it, from the
   /// next frame
   pub fn scroll_to(&mut self, id: UiId) {
+    self.taint();
     self.memory.request_scroll(id);
   }
 
@@ -293,6 +294,7 @@ impl<'a> UiContext<'a> {
   /// Show the scroll area `scroll` from `offset` at once, without easing
   /// (clamped to its contents once they are laid out)
   pub fn set_scroll_offset(&mut self, scroll: UiId, offset: Vec2) {
+    self.taint();
     // Nothing is named, or nothing can be shown from there
     if scroll == UiId::NONE {
       return;

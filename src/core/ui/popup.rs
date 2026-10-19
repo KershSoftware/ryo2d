@@ -10,8 +10,9 @@
 use glam::Vec2;
 
 use super::immediate::{PAGE_LAYER, POPUP_LAYER, UiContext};
+use super::tape::Op;
 use super::tree::Subtree;
-use super::{Anchor, Rect};
+use super::{Anchor, Rect, UiId};
 use crate::core::ui::theme::warn_once;
 
 /// Room between a popup and its anchor
@@ -70,11 +71,30 @@ pub(crate) fn room(anchor: Option<Rect>, ui: Vec2) -> f32 {
 }
 
 impl UiContext<'_> {
+  /// Where widget `anchor` is: its rect this frame when it was laid out
+  /// already, else last frame's (`None` for `NONE` or a widget not drawn)
+  pub(crate) fn anchor_rect(&self, anchor: UiId) -> Option<Rect> {
+    if anchor == UiId::NONE {
+      return None;
+    }
+    self
+      .memory
+      .current(anchor)
+      .or_else(|| self.memory.prev(anchor))
+      .map(|record| record.rect)
+  }
+
   /// Start recording a popup: the nodes that follow go into a subtree of
   /// their own, opened in the focus scope here, until
-  /// [`end_popup`](Self::end_popup). It opens below `anchor` (centred when
-  /// `None`), or covers the UI when `modal`.
-  pub(crate) fn begin_popup(&mut self, anchor: Option<Rect>, modal: bool) {
+  /// [`end_popup`](Self::end_popup). It opens below widget `anchor` where
+  /// it is now ([`anchor_rect`](Self::anchor_rect); centred when it is
+  /// nowhere, or `NONE`), or covers the UI when `modal`.
+  pub(crate) fn begin_popup(&mut self, anchor: UiId, modal: bool) {
+    // A replay looks the anchor up again, so it follows the widget
+    if !self.tapes.is_empty() {
+      self.tape_op(Op::PopupBegin { anchor, modal });
+    }
+    let anchor = self.anchor_rect(anchor);
     let scope = self.focus_scope_here();
     // Popups draw over everything, so no clip of the page reaches them
     let fresh = self.memory.scratch.take_subtree(None, None, scope);
@@ -92,6 +112,9 @@ impl UiContext<'_> {
   /// Stop recording the popup begun last: it is queued until the scene's UI
   /// ends, and the subtree it set aside is built on again
   pub(crate) fn end_popup(&mut self) {
+    if !self.tapes.is_empty() {
+      self.tape_op(Op::PopupEnd);
+    }
     let Some(aside) = self.subtree_stack.pop() else {
       warn_once("end_popup".to_string(), || {
         "end_popup with no popup begun; ignored".to_string()

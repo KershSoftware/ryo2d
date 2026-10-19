@@ -158,26 +158,17 @@ pub(crate) enum Leaf {
   /// Built this frame; cloning copies the text, so recording shares first
   Owned(TextLeaf),
   /// Recorded: cloning shares the one copy
-  #[allow(dead_code)] // made by recording (the node tape)
   Shared(Arc<TextLeaf>),
 }
 
 impl Leaf {
-  /// Turn an owned leaf into a shared one in place; the shared leaf
-  #[allow(dead_code)] // called by recording (the node tape)
-  pub(crate) fn share(&mut self) -> Arc<TextLeaf> {
+  /// The leaf shared: an owned one moved into an `Arc`, so cloning its node
+  /// copies no text (a tape records it so). Taken out of its node with
+  /// `Option::take` and put back, it needs no placeholder.
+  pub(crate) fn share(self) -> Leaf {
     match self {
-      Leaf::Shared(leaf) => Arc::clone(leaf),
-      Leaf::Owned(leaf) => {
-        let blank = TextLeaf::new(
-          RichText::default(),
-          TextStyle::default(),
-          TextLayoutOptions::default(),
-        );
-        let shared = Arc::new(std::mem::replace(leaf, blank));
-        *self = Leaf::Shared(Arc::clone(&shared));
-        shared
-      }
+      Leaf::Owned(leaf) => Leaf::Shared(Arc::new(leaf)),
+      shared => shared,
     }
   }
 }
@@ -1438,11 +1429,13 @@ mod clone_tests {
       TextStyle::default(),
       TextLayoutOptions::default(),
     )));
-    let shared = node.text.as_mut().expect("text").share();
+    node.text = node.text.take().map(Leaf::share);
+    let shared = Arc::clone(shared_of(&node));
     assert_eq!(shared.text.text, "Label");
     let copy = node.clone();
     assert!(Arc::ptr_eq(shared_of(&copy), &shared));
-    assert!(Arc::ptr_eq(shared_of(&node), &shared));
+    node.text = node.text.take().map(Leaf::share);
+    assert!(Arc::ptr_eq(shared_of(&node), &shared), "shared once");
   }
 
   #[test]

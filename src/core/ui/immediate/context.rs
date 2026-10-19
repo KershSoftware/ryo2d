@@ -52,6 +52,7 @@ use crate::core::ui::layout::{Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory, UiSound};
 use crate::core::ui::popup::{Popup, SetAside};
 use crate::core::ui::response::{Response, Sense};
+use crate::core::ui::tape::Recorder;
 use crate::core::ui::theme::{Look, Skin, Theme, WidgetKind, WidgetState, warn_once};
 use crate::core::ui::tree::{
   self, Draw, DrawKind, Leaf, Node, RecordSpec, ResolveCx, Subtree, TextLeaf, align_fraction,
@@ -425,6 +426,9 @@ pub struct UiContext<'a> {
   /// The presses rebinding rows captured this pass, for the engine to bind
   /// after it
   pub(crate) pending_rebinds: Vec<PendingRebind>,
+  /// The tapes being recorded, innermost last (`tape.rs`): empty unless a
+  /// node tree's builder is running
+  pub(crate) tapes: Vec<Recorder>,
 }
 
 /// The draw layer a scene's page records on
@@ -474,6 +478,7 @@ impl<'a> UiContext<'a> {
       pending_tooltip: None,
       prompts: Arc::new(PromptContext::default()),
       pending_rebinds: Vec::new(),
+      tapes: Vec::new(),
     }
   }
 
@@ -715,6 +720,7 @@ impl<'a> UiContext<'a> {
   /// Give `id` the keyboard and gamepad focus, from the next frame (when it
   /// can take it: focusable, enabled, shown, in the top scene)
   pub fn request_focus(&mut self, id: UiId) {
+    self.taint();
     self.memory.request_focus(id);
   }
 
@@ -722,6 +728,7 @@ impl<'a> UiContext<'a> {
   /// plays the theme's sound of that kind after the UI pass
   pub(crate) fn play(&mut self, sound: UiSound) {
     if self.top {
+      self.taint();
       self.memory.interact.play(sound);
     }
   }
@@ -729,6 +736,7 @@ impl<'a> UiContext<'a> {
   /// Raise a slider tick for the top scene, at most every 0.05 s
   pub(crate) fn play_tick(&mut self) {
     if self.top {
+      self.taint();
       self.memory.interact.tick();
     }
   }
@@ -747,8 +755,9 @@ impl<'a> UiContext<'a> {
 
   /// Take the focus from `id` now, if it has it (a text field Escape leaves)
   pub(crate) fn release_focus(&mut self, id: UiId) {
-    let i = &mut self.memory.interact;
-    if id != UiId::NONE && i.focused == id {
+    if id != UiId::NONE && self.memory.interact.focused == id {
+      self.taint();
+      let i = &mut self.memory.interact;
       i.focused = UiId::NONE;
       i.lost = id;
       if i.gained == id {
@@ -769,9 +778,11 @@ impl<'a> UiContext<'a> {
   /// }
   /// ```
   pub fn back(&mut self) -> bool {
-    let i = &mut self.memory.interact;
+    let i = &self.memory.interact;
     let free = self.top && i.back_pressed && !i.back_used && !i.back_taken;
     if free {
+      self.taint();
+      let i = &mut self.memory.interact;
       i.back_taken = true;
       i.play(UiSound::Back);
     }
@@ -783,10 +794,12 @@ impl<'a> UiContext<'a> {
   /// to take: a step taken (`tab_taken`) is 0 for every later call, in a
   /// rerun pass too
   pub(crate) fn take_tab_step(&mut self) -> i8 {
-    let i = &mut self.memory.interact;
+    let i = &self.memory.interact;
     if !self.top || i.tab_taken || i.tab_step == 0 {
       return 0;
     }
+    self.taint();
+    let i = &mut self.memory.interact;
     i.tab_taken = true;
     i.tab_step
   }
@@ -985,6 +998,10 @@ impl<'a> UiContext<'a> {
       leaf.text = self.with_prompts(std::mem::take(&mut leaf.text));
       leaf.key = TextKey::of(&leaf.text, &leaf.style, &leaf.options);
     }
+    // Taped resolved: the environment a replay checks covers the prompts
+    if !self.tapes.is_empty() {
+      self.tape_draw(node, &kind);
+    }
     let order = self.next_order();
     let layer = self.layer;
     if let Some(subtree) = &mut self.subtree {
@@ -1001,6 +1018,11 @@ impl<'a> UiContext<'a> {
   /// (placed at `at`, under the current clip). It becomes the innermost
   /// open node: close it with [`close_node`](Self::close_node).
   pub(crate) fn push_node(&mut self, mut node: Node, at: Option<Rect>) -> usize {
+    // A tape keeps the node as given, its text shared with the one pushed
+    let taped = self.recording().then(|| {
+      node.text = node.text.take().map(Leaf::share);
+      (node.clone(), at)
+    });
     node.layer = self.layer;
     node.order = self.next_order();
     let parent = self.open;
@@ -1030,7 +1052,15 @@ impl<'a> UiContext<'a> {
     let index = subtree.nodes.len();
     subtree.nodes.push(node);
     self.open = Some(index);
+    if let Some((node, at)) = taped {
+      self.tape_node(node, at, index);
+    }
     index
+  }
+
+  /// The id of `node` of the open subtree
+  pub(crate) fn subtree_node_id(&self, node: usize) -> Option<UiId> {
+    Some(self.subtree.as_ref()?.nodes.get(node)?.id)
   }
 
   /// How the open container places its children (`None` outside any)
@@ -1058,7 +1088,10 @@ impl<'a> UiContext<'a> {
   /// Close `node`: its parent is the innermost open node again. Closing the
   /// root lays the subtree out (the root's rect this frame then), unless it
   /// is a popup's, which waits for the scene's UI to end.
-  fn close(&mut self, node: usize) -> Option<Rect> {
+  pub(crate) fn close(&mut self, node: usize) -> Option<Rect> {
+    if !self.tapes.is_empty() {
+      self.tape_close(node);
+    }
     let parent = self
       .subtree
       .as_ref()
@@ -1158,23 +1191,27 @@ impl<'a> UiContext<'a> {
   /// Consume the mouse wheel for this frame, from other widgets and from
   /// gameplay (scroll views that scroll take it themselves).
   pub fn consume_scroll(&mut self) {
+    self.taint();
     self.input.consume_scroll();
   }
 
   /// Consume `key` for this frame, from other widgets and from gameplay.
   pub fn consume_key(&mut self, key: KeyCode) {
+    self.taint();
     self.input.consume_key(key);
   }
 
   /// Consume a pad `button` for this frame, from other widgets and from
   /// gameplay
   pub(crate) fn consume_gamepad(&mut self, button: crate::core::input::GamepadButton) {
+    self.taint();
     self.input.consume_gamepad(button);
   }
 
   /// Consume every key and the typed text for this frame, from other
   /// widgets and from gameplay (a focused text field takes them)
   pub(crate) fn consume_keyboard(&mut self) {
+    self.taint();
     self.input.consume_keyboard();
   }
 
@@ -1412,6 +1449,8 @@ impl<'a> UiContext<'a> {
 
   /// Record a rectangle: skipped when degenerate or outside the clip
   fn record_rect(&mut self, rect: Rect, fill: Color, radius: f32, border: Option<(f32, Color)>) {
+    // Absolute draws bypass the subtree, so a tape cannot hold them
+    self.taint();
     if !Self::drawable(rect) || self.outside_clip(rect) {
       return;
     }
@@ -1549,6 +1588,7 @@ impl<'a> UiContext<'a> {
     reveal: Option<(f32, f32)>,
     seed: u64,
   ) -> Vec2 {
+    self.taint();
     let size = layout.size / self.space.px_scale;
     if !origin.is_finite() || self.outside_clip(Rect::new(origin.x, origin.y, size.x, size.y)) {
       return size;
@@ -1824,6 +1864,7 @@ impl<'a> UiContext<'a> {
 
   /// Record part of a sprite (`uv`, fractions of it) stretched over `rect`
   fn record_sprite(&mut self, sprite: &SpriteHandle, rect: Rect, uv: [f32; 4], tint: Color) {
+    self.taint();
     if !Self::drawable(rect) || self.outside_clip(rect) {
       return;
     }
@@ -1931,6 +1972,7 @@ impl<'a> UiContext<'a> {
 
   /// Draw a polyline through `points`, `width` UI units wide.
   pub fn draw_line(&mut self, points: &[Vec2], width: f32, color: Color) {
+    self.taint();
     if points.len() < 2 || !width.is_finite() || width <= 0.0 {
       return;
     }

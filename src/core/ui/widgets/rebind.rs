@@ -148,6 +148,7 @@ impl Rebind<'_, '_> {
           Binding::Pad(button) => ui.consume_gamepad(button),
           _ => {}
         }
+        ui.taint();
         ui.pending_rebinds.push(PendingRebind {
           id,
           scene,

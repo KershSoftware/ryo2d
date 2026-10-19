@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use super::id::{IdScopes, UiId};
+use super::id::{IdScopes, TapeLog, UiId};
 use super::layout::UiStyle;
 use super::layout::engine::NodeDesc;
 use super::tree::Subtree;
@@ -281,6 +281,9 @@ pub(crate) struct Scratch {
   pub(crate) rects: Vec<Rect>,
   /// Each node's clip
   pub(crate) clips: Vec<Option<Rect>>,
+  /// The subtree index of each node a replay pushed, by its place in the
+  /// tape; a replay inside another stacks its own after the outer's
+  pub(crate) replayed: Vec<usize>,
 }
 
 impl Scratch {
@@ -340,6 +343,8 @@ pub(crate) struct UiMemory {
   /// A frame is being drawn: between `begin_frame` and `end_frame`
   drawing: bool,
   pub(crate) scopes: IdScopes,
+  /// The widget states touched while a tape records
+  pub(crate) touched: TapeLog,
   /// The pointer's hot, active, click and drag state, and the focus
   pub(crate) interact: Interaction,
   /// Buffers the subtrees and their resolution reuse
@@ -360,6 +365,7 @@ impl UiMemory {
       frame: 0,
       drawing: false,
       scopes: IdScopes::default(),
+      touched: TapeLog::default(),
       interact: Interaction::default(),
       scratch: Scratch::default(),
     }
@@ -372,6 +378,7 @@ impl UiMemory {
     self.frame += 1;
     self.drawing = true;
     self.scopes.begin_frame();
+    self.touched.clear();
     self.interact.sounds.clear();
   }
 
@@ -394,6 +401,7 @@ impl UiMemory {
   pub(crate) fn restart_pass(&mut self) {
     self.next.clear();
     self.scopes.begin_frame();
+    self.touched.clear();
   }
 
   /// Widget state not touched this frame is dropped
@@ -480,7 +488,18 @@ impl UiMemory {
     }
     slot.scene = scene;
     slot.seen = frame;
+    self.touched.note(id);
     slot.value.downcast_mut::<T>()
+  }
+
+  /// Keep widget `id`'s state this frame, as [`state`](Self::state) would,
+  /// for `scene`: a replay of a tape that touched it. A state that is gone
+  /// stays gone.
+  pub(crate) fn touch(&mut self, id: UiId, scene: u64) {
+    if let Some(slot) = self.states.get_mut(&id) {
+      slot.scene = scene;
+      slot.seen = self.frame;
+    }
   }
 
   pub(crate) fn peek_state<T: 'static>(&self, id: UiId) -> Option<&T> {
