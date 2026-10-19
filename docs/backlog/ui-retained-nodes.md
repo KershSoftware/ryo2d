@@ -1,4 +1,4 @@
-# Retained UI Nodes (Sub-projects 4c, 4d, 4e)
+# Retained UI Nodes (Sub-projects 4c, 4d, 4e, 4f)
 
 Noted at the end of sub-project 4b (UI interaction, `docs/specs/2026-10-16-ui-interaction-design.md`). The owner split the work into three sub-projects, each with its own spec and plan.
 
@@ -95,10 +95,81 @@ What subtree caching would have to track to be correct (all under `src/core/ui/`
 Left for later:
 - Measured rows (variable height) in virtual lists.
 - Horizontal virtual lists.
-- Node subtree caching (pending the owner's decision above).
+- Node subtree caching: done in 4f, below.
 - The dropdown and choice lists virtualised (they stay short).
 - Touch flinging and momentum.
 - A node's label drawn without a per-frame copy (`UiLabel` as a shared value): the walk still copies each `UiLabel` into its text every frame.
+
+## 4f: Cached Node Trees (done)
+
+Spec: `docs/specs/2026-10-18-ui-cache-design.md`.
+
+What landed:
+- The tape (`ui/tape.rs`): what a node's builder pushed (nodes, draws, ids, state and live-rule registrations, the reads it made) is recorded relative to the node, and replayed anywhere, with the context fields stamped at the splice point. Records live in `UiNodes` (`nodes/cache.rs`), not in components, so the game's archetypes are unchanged.
+- Dirty tracking: one generation for what every builder reads (theme, scale, font, prompt), the tracked components by change tick and removal cursor, bindings, list rows, hover/press/focus and the clocks (reveals, tooltips); a dirty node rebuilds its own calls, so does every ancestor, and a replay never resumes inside a half-open builder.
+- Splice or build in the node walk (`nodes/draw.rs`): a clean node replays its record; embedded trees (`ui.node`) and virtual-list rows do the same.
+- The spot check (debug builds): each frame one clean record is built in place of its replay and compared op by op; a difference warns once and means an input the cache does not track.
+- The on/off oracle (`nodes/oracle.rs`, 21 scenarios, about 7,400 frames, two seeded random runs, again with the spot check on) and the ui demo's and breakout's `tests/cache.rs`, which compare a cached engine with an uncached one frame by frame; `tests/e2e/ui_cache.rs` for a pushed scene.
+- Tooling: `debug:ui-rebuilds` outlines rebuilt nodes with a rebuilt/replayed counter, `ui:cache on|off` and `EngineBuilder::ui_cache` switch it, and `UiHarness` has `set_ui_cache`, `set_ui_spot_check` and `ui_cache_stats`. `tests/ui_cache_alloc.rs` holds an unchanged cached frame at 15 allocations (an uncached one: about 190).
+- Optimisations found by profiling the cached frame: a replay clones each node straight into the subtree and shares its record's tape, a taped node keeps its style's hash, a clean node's record is looked up once, a text leaf lives in its subtree, a shape hash that folds a dozen words, one layout entry lookup per node, scroll state read only under a scroll area, a replayed draw pushed without resolving its prompts again, focus navigation sorting references to last frame's records, a layout frame end that skips its sweep when every node was laid out, and a placed line that shares its points.
+
+Numbers (`cargo bench --bench ui`, load about 3; "before" is the cached frame as first landed, or the end of 4e where there was no cached frame):
+
+| Bench | Before | After 4f |
+|--|--|--|
+| node settings screen, unchanged (3 built, 274 replayed) | 50.2 µs (about 60 at the end of 4e) | 33.7 µs |
+| node settings screen, focus moving | 50.8 µs | 33.6 µs |
+| closure settings screen | 54.5 µs (52.3 at the end of 4e) | 48.9 µs |
+| 2,000-node static tree | 452 µs | 314 µs (0.157 µs per replayed node) |
+| embedded node tree in closure UI | 4.52 µs | 3.81 µs |
+| dirty check alone, settings tree | - | 1.35 µs |
+| 10,000-row node list | 8.71 µs | 7.28 µs |
+| 10,000-row virtual list (closure) | 7.6 µs | 7.46 µs |
+| 1,000-row scroll list | 325 µs | 322 µs |
+| empty frame | 0.188 µs | 0.270 µs |
+| `update_ui`, settings tree unchanged | 38.8 µs | 42.0 µs |
+
+The unchanged node screen is now 14.8 µs (30%) under the closure one, where it was 7.9 µs over. The empty frame and `update_ui` rows moved up about 40% and 8% against 4e's figures, on a different load and with the cache's per-frame work (the dirty check, a few clears) in each; the empty frame is 0.27 µs either way.
+
+The new profile (xctrace Time Profiler, 10 s each; exclusive time charged to the nearest engine function from the leaf up, so hashing and allocation land on their callers). The replay and dirty check buckets are new; 4e's walk, builders, layout and text carry over, and its records, input, navigation and memory bucket splits into (g) and (h):
+
+| Bucket | Node unchanged | Node, focus moving | 2,000-node tree | Closure settings |
+|--|--|--|--|--|
+| (a) walk (`draw_node`, component reads, bindings sync) | 1.35 µs (4%) | 1.71 µs (5%) | 0.5 µs (0%) | 0.1 µs (0%) |
+| (b) builders run (rebuilt nodes, the root's close, command clear) | 2.03 µs (6%) | 1.75 µs (5%) | 11.2 µs (4%) | 18.1 µs (37%) |
+| (c) replay (tape replay, node copies, id re-registration) | 8.53 µs (25%) | 8.10 µs (24%) | 72.8 µs (23%) | - |
+| (d) dirty check (`refresh_dirty`, `mark_live`, `clean`) | 2.05 µs (6%) | 2.31 µs (7%) | 21.6 µs (7%) | - |
+| (e) layout (taffy and the diff) | 5.04 µs (15%) | 5.01 µs (15%) | 34.8 µs (11%) | 7.5 µs (15%) |
+| (f) text (shaping, cache keys and lookups) | 3.84 µs (11%) | 4.05 µs (12%) | 62.0 µs (20%) | 11.0 µs (23%) |
+| (g) resolve, records, commands (`finish_subtree`, `push_node`, `tree`) | 9.23 µs (27%) | 8.98 µs (27%) | 103.0 µs (33%) | 9.9 µs (20%) |
+| (h) input, navigation, memory | 1.32 µs (4%) | 1.42 µs (4%) | 7.5 µs (2%) | 2.1 µs (4%) |
+| (i) other | 0.30 µs (1%) | 0.27 µs (1%) | 0.6 µs (0%) | 0.3 µs (1%) |
+| total | 33.7 µs | 33.6 µs | 313.9 µs | 48.9 µs |
+
+Against 4e's node screen (60.2 µs): the walk and the builders (a)+(b), 36.6 µs there, are 3.4 µs now in the unchanged frame (the 3 nodes built and the root's own work), and the cost moved to replay and the dirty check (10.6 µs together) and to what the tapes still feed: layout, text and resolve are about as they were (10.6, 9.5 and 3.0+ µs against 5.0, 3.8 and 9.2 µs; resolve now carries the work 4e filed under builders' `finish_subtree` and `push_node`). Moving the focus changes the buckets by under 0.5 µs: a focus move rebuilds only the nodes it touches, as the oracle expects.
+
+Approach B's data. In the unchanged frame, layout, text and resolve (e)+(f)+(g) are 18.1 µs (54% of the frame): that is the ceiling for retaining layout and paint, and it is smaller than it looks:
+- Layout (5.0 µs, 15%) is already the hash diff. Taffy computes nothing in an unchanged frame (under 0.01 µs of its samples); the 5 µs is `try_layout`'s walk of the descriptions, the style and flow hashes and one index lookup per node (`layout/engine.rs:186`, the entry compare at 270-285). B would skip this walk for clean subtrees, but a clean subtree's description still has to be known to its parent's layout.
+- Text (3.8 µs, 11%) is cache hits: the keyed lookup (`TextEngine::layout_keyed`, 2.0 µs) and the text commands built at resolve (`tree::text_command`, 3.8 µs inclusive). There is no shaping; B would save the hit and the command, not a layout.
+- Resolve (9.2 µs, 27%) is the largest piece and the real prize: `finish_subtree` (`immediate/context.rs:1185`, 7.5 µs) turns the replayed nodes into rects, clips, draws and records every frame (`tree.rs:288` `resolve`).
+- Replay (8.5 µs) would shrink too if B reused records: the node copies (2.8 µs) and the id set (1.2 µs) exist to feed layout and resolve; but B cannot avoid the dirty check (2.05 µs), the walk (1.35 µs), input and navigation (1.3 µs), which are about 4.7 µs of floor, and tapes for what does rebuild.
+- So a clean frame could fall from 33.7 µs to about 15 µs at best (an unchanged frame's floor is (a)+(b)+(c)+(d)+(h)+(i) = 15.6 µs, less whatever replay B's records also absorb, down to about 12.5 µs), roughly 2x. A real frame gets less: a hover or a focus move dirties the nodes under it and every node whose looks follow them.
+
+What B would have to track to reuse resolved records and commands (all in `src/core/ui/`):
+- Position: records and commands are absolute and snapped to render pixels (`tree.rs:410` `snap_rect`, `579` `snap`), and the snapping is by position, so a subtree that moves by a fraction of a pixel changes its edges: B would reuse only for whole-pixel shifts or re-snap.
+- Clips: each node's clip comes from its ancestors' (`tree.rs:365-395`, `clips[p]`, `nodes[p].clips`), so a moved or resized scroll area changes every clipped descendant's draws.
+- Scroll shifts: a scroll area's contents move by its state's offset (`tree.rs:383-390`); a subtree under one moves every frame it eases, and its records carry the shift.
+- Order and layer: draws take `layer` and `order` from the painter's order (`tree.rs:78-79`, `184-186`, `454`), so inserting or removing a sibling before a clean subtree renumbers it.
+- Text layout width: text is wrapped at the room left in its node's content box (`tree.rs:219-233`, the wrap slack at 22), so a change of the parent's width above a clean subtree re-lays its text.
+- Layout inputs from above: the available size and the parent's flow (`layout/engine.rs:161`), the focus scope, and the `at` rect of absolutely placed nodes (`tree.rs:340`).
+
+**Recommendation: not next; revisit with a retained UI renderer.** 4f already gives node trees the property that defines retained UI: building costs what changed. An unchanged 200-widget node screen is 33.7 µs, 30% under the same screen as closure UI and about 0.2% of a 60 Hz frame. Retaining layout and paint could take that to about 15 µs at best, and a real frame gets less, since every hover or focus move dirties what it touches. To earn those 18 µs, B needs six more kinds of tracking (pixel snapping by position, clip chains, scroll shifts, painter's order, text wrap width, layout inputs from above) inside `tree::resolve`, which every closure UI also runs. The oracle makes that far safer than it was when 4e weighed caching, but the gain is small for the surface it touches. Two cheaper steps come first if UI time ever matters: replay is now the largest bucket (8.5 µs), and bulk copies plus less id-set work could take a few µs from it; and resolve's per-node work (9.2 µs). Paint retention pays when the renderer keeps a subtree's geometry on the GPU across frames rather than rebuilding `UiCommands` every frame, so B belongs with a retained UI renderer, or with a game whose UI pass measures above about 1 ms. For full parity with Unity UI Toolkit and Flutter, B is the remaining half; the owner decides.
+
+Left for later:
+- Layout and paint retention (approach B), pending the owner's decision above.
+- Closure UI is immediate by design and is not cached.
+- Sharing records between identical subtrees, and building on several threads.
+- Text with icons after an in-place sprite resize (found in 4f, in the text engine; under Left for Later below).
 
 ## Left for Later
 
