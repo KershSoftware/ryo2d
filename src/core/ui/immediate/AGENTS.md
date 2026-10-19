@@ -4,7 +4,7 @@
 
 ## Commands
 
-- `UiCommand` is `Rect` (fill, radius, border), `Sprite` (a sprite handle, a rect, UVs, a tint), `Line` (a polyline, width, colour) or `Text` (a cached `TextLayout`, origin, reveal, opacity, effect seed). All are in UI units, and each carries the clip it was drawn under and its draw layer.
+- `UiCommand` is `Rect` (fill, radius, border), `Sprite` (a sprite handle, a rect, UVs, a tint), `Line` (a polyline's shared points, an offset `at` added to each where it is emitted, width, colour) or `Text` (a cached `TextLayout`, origin, reveal, opacity, effect seed). All are in UI units, and each carries the clip it was drawn under and its draw layer.
 - Nine-slices are nine `Sprite` commands. Borders and rounded corners are the `Rect` command's, drawn analytically by the shader.
 - `UiCommands` is cleared at the start of each UI pass, so a pass that runs twice in a frame (a scene switch returned from `ui`) keeps only the second pass's commands.
 - Each command is stored with its `order`, taken when it was recorded (`next_order`). Absolute draws (`draw_*`, `ui.text(..).at(..)`) are pushed at once; a container's draws are pushed when it is laid out (`src/core/ui/AGENTS.md`, Layout and ids), so the list is not in painter's order: the order is.

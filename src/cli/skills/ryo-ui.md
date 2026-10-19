@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.3.0
+  version: 4.4.0
 ---
 
 # Ryo2D UI Specialist
@@ -1075,7 +1075,7 @@ impl Scene for QuitConfirm {
 
 ## 15. Nodes
 
-A **node tree** is UI described once as a `UiNode` value and spawned as entities, one entity per node. The engine draws a scene's trees every frame through the same builders a closure calls, so focus, hit testing, scrolling, popups, drag and drop, themes and sounds behave exactly as they do in sections 3 to 12. A node's state lives in its components: the game writes them, and hears the player's changes as `UiEvent`s.
+A **node tree** is UI described once as a `UiNode` value and spawned as entities, one entity per node. The engine draws a scene's trees every frame through the same builders a closure calls, so focus, hit testing, scrolling, popups, drag and drop, themes and sounds behave exactly as they do in sections 3 to 12; nodes that did not change replay last frame's build (Cached node trees, below). A node's state lives in its components: the game writes them, and hears the player's changes as `UiEvent`s.
 
 ```rust
 let menu = UiNode::panel()                 // the closure API's names, as a value
@@ -1282,6 +1282,24 @@ self.options = Some(ctx.spawn_ui(
 ));
 // In ui: (UiEventKind::Clicked, Some("done")) | (UiEventKind::Back, Some("options")) => despawn it
 ```
+
+### Cached node trees
+
+Node trees are cached for you. Each frame a node whose inputs did not change replays what its builder pushed last frame, and only the nodes that changed are built again, each with the path from its root (never its siblings). A screen that sits still costs a fraction of building it. It looks and behaves exactly as if every node were built: there is no API and nothing to call. Closure UI (`Scene::ui`) is built every frame as before.
+
+A node is built again, with its ancestors, when:
+- **its components change**: a state component (`UiLabel`, `UiValue`, `UiChecked`, ...), `UiTooltip`, `UiHidden`, `UiDisabled`, `UiRoot`, its `TextReveal`, or its children (added, removed, reordered, reparented). `ctx.ui_set`, `ctx.update_ui` and file reloads write these, so they count too;
+- **the player is on it**, this frame or the last: hovered, pressed, clicked, focused, dragged or dropped on. A focused widget builds every frame it holds the focus;
+- **it is live**: every scroll area and list builds its own node each frame (what they hold still replays), an unfinished typewriter, tabs while Q/E or a shoulder button is pressed, a choice list while a number key is, drop targets while something is carried, a rebinding row while it captures or shows its swap note;
+- **something else it read changed**: the id of a `nav_*` neighbour or of a popup's anchor (moved to another parent, say), where an open dropdown is, a filling text field's last size, the size of a sprite it is sized by (a hot reload);
+- **the environment changes**: the theme (its skins loading too), the UI scale or size, the fonts, the prompts (the player's device or pad family, the bindings, the text icons), or which scene is on top. Every tree builds once.
+
+**The bypass rule.** A write through `bypass_change_detection` is invisible to the cache, as it is to any `Changed` query: the node keeps drawing the old value until something else rebuilds it. Write UI components normally.
+
+**Seeing it.**
+- `debug:ui-rebuilds` (console) outlines each node built this frame in orange, fading over half a second, so a node that rebuilds every frame stays lit. The counter at the top right reads "rebuilt N / replayed M nodes".
+- `ui:cache off` (console) or `EngineBuilder::ui_cache(false)` builds every node every frame: the same UI, slower. Use it to rule caching in or out when chasing a UI bug.
+- **Debug builds spot-check the cache.** Each frame one cached node (and the cached nodes above it) is built instead of replayed and compared with what it replays. A difference warns once, naming the node ("the cached UI node ... does not build as it was recorded"), and the node draws as built from then on. Debug builds therefore replay a few nodes fewer than release builds; the counter shows those apart, as "(spot check K)".
 
 ### Recipes
 
@@ -2657,14 +2675,29 @@ fn the_slider_steps_with_the_pad() {
   assert_eq!(click.and_then(|e| ui.ui_list_index(e.node)), Some(700));
   ```
 
+- **The node cache in a test:** caching is on in the harness, as in a game. `ui_cache_stats() -> UiCacheStats` says what the last frame's walk did: `built` and `rebuilt` (the nodes built, in walk order), `replayed`, `records`. `set_ui_cache(false)` builds every node every frame; `set_ui_spot_check(true)` turns on the debug spot check, which the harness leaves off so the counts stay exact. `set_theme(theme)`, `resize(w, h)` and `type_text(text)` change the theme, the UI's size and the typed text from the next frame.
+
+  ```rust
+  let mut ui = UiHarness::new(320.0, 240.0);
+  let hud = ui.spawn_ui(UiNode::column().child(UiNode::text("Gold 0").name("gold")).child(UiNode::text("Lives 3")));
+  ui.frame(|_| ());                            // builds and records every node
+  ui.frame(|_| ());
+  assert_eq!(ui.ui_cache_stats().built, 0);    // nothing changed: every node replayed
+  let gold = ui.find_ui("gold").unwrap();
+  ui.world_mut().get_mut::<UiLabel>(gold).unwrap().0 = "Gold 5".into();
+  ui.frame(|_| ());
+  assert_eq!(ui.ui_cache_stats().rebuilt, vec![hud, gold]); // the label and its path, not "Lives 3"
+  ```
+
 - **With the engine**, `HeadlessEngine` (`ryo-game-dev`, Visual Tests) drives whole scenes: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `release_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `tap_key`, `mouse_move`; `ui_focused()` is the focus the last step resolved, `ui_focusables()` what the D-pad can land on now (id and rect), `focus_ui(id)` focuses a widget at the next step. Walking every `ui_focusables()` with the D-pad from each one proves a page has no dead ends.
 - **Scripted runs:** `RYO_INPUT` presses pad buttons and holds sticks in dev builds, for captures: `RYO_INPUT="60:PadDPadDown 90:PadSouth 120-180:LeftStick@0x-1 200:Wheel@0x-3"` (`ryo-cli`).
-- The console command `debug:ui` outlines every widget with its id, hot, active and focused ones coloured (`ryo-console`).
+- The console command `debug:ui` outlines every widget with its id, hot, active and focused ones coloured; `debug:ui-rebuilds` outlines the nodes rebuilt each frame (`ryo-console`).
 
 ## 18. Tips
 
 - **Mark every menu `.focus_scope()`**, and give it a `.default_focus()`. Without a scope the pad and the arrows do nothing in it. This holds for node trees too.
 - **Node trees: read events in one place.** `ctx.ui_events()` and `ctx.messages::<UiEvent>()` share a cursor, so read in `ui` or in `update`, not both. Change scenes from there, never from an observer.
+- **Node trees: change them through their components** (or `ui_set`, `update_ui`), never through `bypass_change_detection`: a cached node does not see that write (section 15, Cached node trees).
 - **Files: run `ryo2d check-ui` and read the messages.** They carry line, column and the nearest valid name. A template named like a kind, a `Text` with a `width`, a `{` in a label that is not a binding, and a template used from a file it was not imported into are the usual mistakes.
 - **Files: the game keeps what the player and it wrote.** A reload or `update_ui` rewrites the tree's settings and leaves values the game and the player set, unless the file changed that value. A bound widget's value is the binding's.
 - **Close the innermost thing on `ui.back()`**, then the next: a modal before its menu, a menu before the scene.

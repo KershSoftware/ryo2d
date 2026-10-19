@@ -111,3 +111,5 @@ From 4b's out-of-scope list:
 - windows the player drags or resizes.
 
 From 4c: node versions of `ui.custom` painters and absolute `draw_*` calls, which stay closure UI.
+
+Found in 4f, in the text engine: text that embeds icons (`[icon=..]`, and `[prompt=..]` markup resolved to a glyph) keeps its old layout after a sprite is replaced in place at another size (a hot reload), with node caching on or off. The layout is keyed by the text, not by the sprite's version; an image or a `ui.prompt` glyph sized by a sprite already rebuilds (`Read::Sprite`).

@@ -2,7 +2,7 @@
 name: ryo-console
 description: Developer console system - commands, registration, debugging overlays.
 metadata:
-  version: 1.1.0
+  version: 1.2.0
 ---
 
 # Ryo2D Developer Console
@@ -42,6 +42,8 @@ console = true  # Works in both debug and release builds
 | `debug:velocities` | F3 | Toggle velocity vectors |
 | `debug:origins` | F4 | Toggle entity origin points |
 | `debug:ui` | | Outline every UI widget with its id: hot yellow, active orange, focused green |
+| `debug:ui-rebuilds` | | Outline the UI nodes rebuilt each frame in orange, fading over 0.5 s, with a "rebuilt N / replayed M nodes" counter at the top right ("(spot check K)" in debug builds) |
+| `ui:cache [on\|off]` | | Show or set UI node tree caching; off builds every node every frame (the same UI, slower), to rule caching in or out when chasing a UI bug |
 | `debug:capture [path]` | F12 | Save the next frame as a PNG |
 | `system:version` | | Show engine and game version |
 | `system:timescale <n>` | | Set the game clock's speed (`ctx.time.game.speed()`, 0.0-10.0) |

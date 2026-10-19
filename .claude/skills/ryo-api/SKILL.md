@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.5.0
+  version: 2.6.0
 ---
 
 # Ryo2D API Reference
@@ -510,6 +510,7 @@ EngineBuilder::new()
 | `background_fps(u32)`, `background_rendering(bool)` | unfocused behaviour |
 | `pixel_art(w: u32, h: u32)`, `window_size(w: u32, h: u32)`, `resizable(bool)`, `display_mode(DisplayMode)`, `ui_scale(Option<f32>)`, `ui_resolution(UiResolution)` | presentation; `ui_scale(None)` (default) keeps UI units equal to screen units, `Some(s)` is `s` render pixels per UI unit; `UiResolution::Render` (default) or `Window` |
 | `ui_theme(Theme)` | the starting UI theme (default `Theme::dark()`) |
+| `ui_cache(bool)` | whether node trees replay their unchanged nodes instead of building them (default `true`); `false` builds every node every frame, the same UI slower, to rule caching out of a UI bug (also `DebugConfig::ui_cache`, the console's `ui:cache on\|off`) |
 | `show_colliders(bool)`, `show_fps(bool)`, `show_velocities(bool)`, `show_origins(bool)` | debug overlays |
 | `with_user_preferences(impl Into<UserPreferenceFilter>)` | let saved `system.json` values override |
 | `insert_resource(impl Resource)` | resource for every scene and system |
@@ -1278,6 +1279,8 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 | `UiListBind { pub list: Entity, pub row: Entity, pub index: usize }` | a list node gave a pooled row an item: fill it from the game's data. A `Message` (`ctx.messages::<UiListBind>()`; every list's reach every scene, so keep to `list`) and an `EntityEvent` triggered on the row. Sent at the start of the UI pass for each new or reused row (and again on `ui_list_refresh`); a new or reused row is drawn from the next frame |
 | `enum UiEventKind { Clicked, SecondaryClicked, Changed, Submitted, Dropped { source: Entity }, Back, FocusGained, FocusLost }` | buttons, images, slots, prompts, progress and containers send `Clicked`; value widgets and rebind rows `Changed`; a choice list `Clicked` (the pick in `UiIndex`); a modal or popup node `Back` |
 
+- **Cached.** A node whose inputs did not change replays last frame's build; a node rebuilds, with its ancestors, when its components change (so `ui_set`, `update_ui` and reloads), when the player interacts with it, while it is live (scroll areas, lists, a typewriter), when something it read changed, or when the theme, fonts, UI size or scale, prompts or top scene change. A write through `bypass_change_detection` is not seen. Closure UI is not cached. The guide is `ryo-ui` section 15, Cached node trees.
+
 ### UI files
 
 A screen written in a `.ui.ron` file loads into the same `UiNode`. The guide is `ryo-ui` section 15, Files.
@@ -1425,3 +1428,7 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `UiHarness::update_ui(node, tree) -> Entity`, `ui_set(node, name, value)`, `ui_get::<T>(node, name) -> Option<T>` | as on `SceneContext` |
 | `UiHarness::ui_list_count(list, count)`, `ui_list_refresh(list)`, `ui_list_refresh_row(list, index)`, `ui_list_scroll_to(list, index)`, `ui_list_focus(list, index)`, `ui_list_index(node) -> Option<usize>` | list nodes, as on `SceneContext`; read a frame's binds with `messages::<UiListBind>()` |
 | `UiHarness::with_assets(dir) -> UiHarness`, `assets() -> &mut AssetManager`, `spawn_ui_file(path) -> Result<Entity, UiFileError>`, `reload_ui(path) -> AssetResult<()>`, `messages::<M>() -> impl Iterator<Item = M>` | UI files through an asset manager the harness owns, rooted at `dir`; `reload_ui` brings the trees in line at the next `frame`, and `messages::<UiReloaded>()` lists that frame's reloads |
+| `UiHarness::set_theme(Theme)`, `resize(width, height)`, `type_text(&str)` | from the next frame: draw with another theme, change the UI's size (UI units), type text into the focused field |
+| `UiHarness::set_ui_cache(bool)`, `set_ui_spot_check(bool)`, `ui_cache_stats() -> UiCacheStats` | the node cache from the next frame: on (default) or off (every node built, as `EngineBuilder::ui_cache(false)`); the debug spot check, off in the harness (the engine runs it in debug builds; release builds have none); what the last frame's walk did |
+| `UiCacheStats { pub built: usize, pub replayed: usize, pub rebuilt: Vec<Entity>, pub spot_checked: Option<Entity>, pub records: usize }` | the nodes built, the tree nodes replayed (an open dropdown is its trigger, list and options), the nodes built in walk order, the node the spot check built in place of its replay (not in `built`), the records the cache keeps |
+| `UiHarness::frame_snapshot() -> String`, `HeadlessEngine::ui_snapshot() -> String`, `HeadlessEngine::ui_cache_stats() -> UiCacheStats` | doc-hidden, for comparing two runs: the last frame's UI in `Debug` form (commands, records, focus, events, widget states, every node's components); equal with caching on and off |

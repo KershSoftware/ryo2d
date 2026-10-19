@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.1.0
+  version: 2.2.0
 ---
 
 # Ryo2D Engine Developer
@@ -36,7 +36,8 @@ Engine::frame
 │                     then the console (animation, input, commands)
 ├─ UI pass            resolve first, once a frame, against last frame's UI records: the
 │                     pointer, the wheel, then focus and navigation from the ui.* actions;
-│                     then Scene::ui for visible scenes bottom-up (each top-level container
+│                     then each visible scene bottom-up: its node trees (unchanged nodes
+│                     replayed from the cache), then Scene::ui (each top-level container
 │                     laid out by Taffy when its show() returns, popups at the scene's end),
 │                     debug overlays, console; consumption and used actions applied to Input;
 │                     a SceneAction applies at once (a scene change redraws the UI once)
@@ -104,7 +105,7 @@ Engine::frame
 | `gameplay/` | On top of physics: `MoveIntent` and bindings, the platformer and top-down presets, knockback, trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, `Respawn`) |
 | `particles/`, `trail/`, `skeleton/`, `tilemap/`, `navigation/`, `state_machine/` | Feature modules |
 | `text/` | Fonts (`Fonts`), `TextStyle`, rich text and markup, layout (Parley), glyph rasterization (swash, fdsm), effects, reveal, `Text2d` and `CpuText` for the dev windows; GPU-free |
-| `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` overlay |
+| `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`) and their cache (`nodes/cache.rs`, the records and the dirty set; `tape.rs`, what a build pushed and its replay), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` and `debug:ui-rebuilds` overlays (`debug.rs`) |
 | `hash.rs` | The engine's fast hasher (`FastHasher`, `FastMap`, `FastSet`, `fast_hash`) for keys it makes itself: ids, the UI's memory and layout maps, the text caches; never SipHash, never saved |
 | `asset/` | `AssetManager`, async loads, hot reload |
 | `audio.rs` | Kira audio (`Audio`, `AudioManager`) |
@@ -149,10 +150,11 @@ See `ryo-ecs-internals` and `src/core/systems/AGENTS.md`. In short: derive `Comp
 | Integration | `tests/integration/` (target `integration`) | `cargo test --test integration` |
 | End-to-end, GPU | `tests/e2e/` with `HeadlessEngine` (target `e2e`) | `cargo test --test e2e`, `./dev.sh test:e2e` |
 | Demo tour | every page of every demo, headless | `./dev.sh demos:tour [demo...]` → `target/demo-tour/<demo>/page-N.png` |
-| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU) | `cargo bench --bench ui` |
+| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, the node version unchanged under 35 µs, a 2,000-node static tree, an embedded node tree, the node cache's dirty check, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU) | `cargo bench --bench ui` |
 
 - Rendering regressions: write the failing pixel assertion in `tests/e2e/` first (see `src/core/testing/AGENTS.md`).
-- UI behaviour: unit tests drive frames with `ui::test_util::UiDriver` (a `UiHarness` plus keys, text, pad buttons, held directions and scenes); games use the public `ryo2d::testing::UiHarness`.
+- UI behaviour: unit tests drive frames with `ui::test_util::UiDriver` (a `UiHarness` plus keys, pad buttons, held directions and scenes); games use the public `ryo2d::testing::UiHarness`.
+- Node tree caching: the on/off oracle (`src/core/ui/nodes/oracle_tests.rs`) is the test of record. A change to what a node's build reads or does needs a scenario there that fails without it (`src/core/ui/AGENTS.md`, Cached node trees).
 - `cargo test` takes one name filter; several go after `--`: `cargo test --lib -- core::scene core::audio`.
 - Verify a rendering change from captures, not guesses: `RYO_CAPTURE_FRAMES=<n> RYO_CAPTURE_EXIT=1 RYO_CAPTURE_DIR=<abs dir>`, plus `RYO_HEADLESS=1` (no window) and `RYO_INPUT="60:Digit2 120:ArrowRight"` to reach pages behind keys (`ryo-cli`).
 
