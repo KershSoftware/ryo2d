@@ -7,6 +7,8 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::panic::Location;
 
+use glam::Vec2;
+
 #[cfg(test)]
 use crate::core::ui::id::IdScopes;
 use crate::core::ui::id::key_hash;
@@ -114,6 +116,43 @@ pub(crate) fn built_rows(
   let first = first.saturating_sub(overscan).min(rows);
   let end = end.saturating_add(overscan).min(rows).max(first);
   first..end
+}
+
+/// The part of the list `list`'s view (`view` tall as last laid out) that
+/// shows: how far below the view's top it starts, and how tall it is. A view
+/// no taller than the screen counts whole, a screenful at most, so an outer
+/// scroll area moving it past its edge never shows rows not built. A taller
+/// one (a list given no height grows to its whole length) counts only where
+/// last frame's rect meets the screen and the clip it was drawn under, so a
+/// list in an outer scroll area builds what that area shows. Before the
+/// list's first layout the screen's height stands in.
+pub(crate) fn seen(memory: &UiMemory, list: UiId, view: f32, screen: Vec2) -> (f32, f32) {
+  if view.is_nan() || view <= 0.0 {
+    return (0.0, screen.y);
+  }
+  if view <= screen.y {
+    return (0.0, view);
+  }
+  let Some(record) = memory.prev(list) else {
+    return (0.0, screen.y);
+  };
+  let rect = record.rect;
+  let (mut top, mut bottom) = (rect.y.max(0.0), rect.bottom().min(screen.y));
+  if let Some(clip) = record.clip {
+    top = top.max(clip.y);
+    bottom = bottom.min(clip.bottom());
+  }
+  // `max` and `min` over `clamp`: they never panic on a non-finite value
+  let below = (top - rect.y).max(0.0).min(view);
+  (below, (bottom - top).max(0.0).min(view - below))
+}
+
+/// Whether the list's scroll area `area` is heading further than two views
+/// `view` from its offset: the list then brings the offset to one view short
+/// before choosing rows (`ScrollState::approach`), as a jump does, so the
+/// ease never draws rows it did not build
+pub(crate) fn far(area: &ScrollState, view: f32) -> bool {
+  (f64::from(area.target.y) - f64::from(area.offset.y)).abs() > 2.0 * f64::from(view)
 }
 
 /// A list being set up: `.show(|ui, index| ..)` builds the rows in view
@@ -524,6 +563,23 @@ pub(crate) fn warn_cut(key: impl std::fmt::Display, list: impl FnOnce() -> Strin
   });
 }
 
+/// Whether a list of `shape` grew to its whole length: its view (`view`
+/// tall as last laid out) holds every row and is taller than the screen
+pub(crate) fn grown(view: f32, shape: &Shape, screen: Vec2) -> bool {
+  view > screen.y && f64::from(view) >= f64::from(shape.length())
+}
+
+/// Warn once per list (`key`) that it grew to its whole length, so it cannot
+/// scroll and builds every row that shows; `list` names it
+pub(crate) fn warn_grown(key: impl std::fmt::Display, list: impl FnOnce() -> String) {
+  warn_once(format!("ui-list-grown:{key}"), || {
+    format!(
+      "{}: give the list a height, a max_height or fill: without one it grows to its full length",
+      list()
+    )
+  });
+}
+
 /// A length in `f64` as the layout takes it: finite, never negative
 fn to_units(length: f64) -> f32 {
   length.clamp(0.0, f64::from(f32::MAX)) as f32
@@ -582,27 +638,31 @@ fn build<'a>(
   let per_row = usize::from(columns);
   let rows = shape.rows();
   let stride = shape.stride();
-  let view = ui
+  let laid = ui
     .memory
     .peek_state::<ScrollState>(list)
     .map_or(0.0, |s| s.view.y);
-  // Before its first layout the list has no view: the screen's stands in
-  let view = if view > 0.0 { view } else { ui.ui_size().y };
+  // The rows chosen cover the part of the view that shows, `below` its top
+  let screen = ui.ui_size();
+  let (below, view) = seen(ui.memory, list, laid, screen);
   let jump = ui
     .memory
     .peek_state::<ListState>(state_id(list))
     .is_some_and(|s| s.jump);
-  // The area has eased this frame's offset already; a jump moves it on
-  // before the rows are chosen, so the frame draws at the offset built for
+  // The area has eased this frame's offset already; a jump, or any target
+  // far away (scroll-into-view), moves it on before the rows are chosen, so
+  // the frame draws at the offset built for and the ease never sweeps
   let mut offset = 0.0;
   if let Some(state) = ui.memory.state::<ScrollState>(list, scene) {
-    if jump {
+    if jump || far(state, view) {
       state.approach(1, view);
     }
     offset = state.offset.y;
   }
-  let (built, cut) = shape.built(view, offset);
-  if cut {
+  let (built, cut) = shape.built(view, offset + below);
+  if grown(laid, &shape, screen) {
+    warn_grown(format_args!("{list:?}"), || format!("the list {list:?}"));
+  } else if cut {
     warn_cut(format_args!("{list:?}"), || format!("the list {list:?}"));
   }
   let watch = FocusWatch::new(ui);
@@ -1494,6 +1554,53 @@ mod tests {
   }
 
   #[test]
+  fn a_list_given_no_height_builds_only_what_shows_and_warns_once() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    // Grown to its whole length in a column, then inside a 300-unit scroll
+    // area scrolled down
+    let draw = |h: &mut UiHarness, outer: Option<f32>| {
+      h.frame(|ui| {
+        let mut out = None;
+        let body = |ui: &mut UiContext<'_>| {
+          out = Some(ui.list(10_000).row_height(28.0).id("grown").show(|ui, i| {
+            ui.text(format!("{i}"));
+          }));
+        };
+        match outer {
+          None => {
+            ui.column().show(body);
+          }
+          Some(offset) => {
+            let area = ui.scroll().height(300.0).id("outer").show(body);
+            ui.set_scroll_offset(area.id, Vec2::new(0.0, offset));
+          }
+        }
+        out.expect("drawn")
+      })
+    };
+    let first = draw(&mut h, None);
+    // 480 / 28 is 18 rows to fill the screen, and 2 of overscan past them
+    assert_eq!(first.range, 0..20, "the screen stands in before a layout");
+    for frame in 0..3 {
+      let r = draw(&mut h, None);
+      assert_eq!(r.range, 0..20, "frame {frame}");
+    }
+    assert_eq!(h.scroll_content(first.id).y, 10_000.0 * 28.0);
+    let needle = format!("the list {:?}: give the list a height", first.id);
+    assert_eq!(crate::core::ui::test_util::warnings_containing(&needle), 1);
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing(&format!("the list {:?} would", first.id)),
+      0
+    );
+    // 3,000 down an outer area of 300: rows 107 to 117 show
+    for _ in 0..3 {
+      draw(&mut h, Some(3000.0));
+    }
+    let nested = draw(&mut h, Some(3000.0));
+    assert_eq!(nested.range, 105..120, "what shows, and the overscan");
+  }
+
+  #[test]
   fn hostile_sizes_build_at_most_the_cap_and_warn_once() {
     let mut h = UiHarness::new(640.0, 480.0);
     let tiny = |h: &mut UiHarness| {
@@ -1698,6 +1805,43 @@ mod focus_tests {
       (offset - 60.0).abs() < 1.0,
       "the view came back to item 3: {offset}"
     );
+  }
+
+  #[test]
+  fn the_pad_s_return_from_far_away_builds_the_view_and_never_sweeps() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = scope_list(&mut h, 1000);
+    scope_list(&mut h, 1000);
+    assert_eq!(h.list_state(list.id).expect("drawn").focused, Some(0));
+    let rect = h.record_of(list.id).expect("drawn").rect;
+    // Beside the buttons, so the focus never follows the pointer
+    h.move_to(rect.x + 150.0, rect.y + 50.0);
+    // 15 lines of 40: six views of 100
+    h.wheel(0.0, -15.0);
+    for _ in 0..60 {
+      scope_list(&mut h, 1000);
+    }
+    let far = h.scroll_offset(list.id).y;
+    assert_eq!(far, 600.0);
+    // Scroll-into-view eases back the whole way
+    h.action("ui.down");
+    for frame in 0..60 {
+      let r = scope_list(&mut h, 1000);
+      let offset = h.scroll_offset(list.id).y;
+      let (top, bottom) = (r.range.start as f32 * 20.0, r.range.end as f32 * 20.0);
+      assert!(
+        top <= offset && offset + 100.0 <= bottom,
+        "frame {frame}: the view at {offset} is built: {:?}",
+        r.range
+      );
+      // From where it was to a view short of item 1, nothing between
+      assert!(
+        offset >= far || offset <= 20.0 + 100.0,
+        "frame {frame} swept through {offset}"
+      );
+    }
+    assert_eq!(h.list_state(list.id).expect("drawn").focused, Some(1));
+    assert_eq!(h.scroll_offset(list.id).y, 20.0);
   }
 
   #[test]

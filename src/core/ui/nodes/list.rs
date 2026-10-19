@@ -30,7 +30,8 @@ use crate::core::ui::file::build::FileRow;
 use crate::core::ui::memory::UiMemory;
 use crate::core::ui::theme::warn_once;
 use crate::core::ui::widgets::list::{
-  Fill, FocusWatch, Shape, cut_rows, place, row_target_in, runs, warn_cut,
+  Fill, FocusWatch, Shape, cut_rows, far, grown, place, row_target_in, runs, seen, warn_cut,
+  warn_grown,
 };
 use crate::core::ui::widgets::scroll::{Scroll, ScrollState};
 use crate::core::ui::{Response, UiContext, UiId};
@@ -381,19 +382,20 @@ fn update_list(
   let row_of = |index: usize| index / per_row;
   let jump_to = jump.and_then(|(index, _)| count.checked_sub(1).map(|last| index.min(last)));
   let mut aimed = false;
+  let laid = memory
+    .peek_state::<ScrollState>(id)
+    .filter(|_| id != UiId::NONE)
+    .map_or(0.0, |area| area.view.y);
+  // The rows chosen cover the part of the view that shows, `below` its top;
+  // before its first draw the screen's height stands in
+  let (below, view) = seen(memory, id, laid, screen);
   let area = if id == UiId::NONE {
     None
   } else {
     memory.peek_state_mut::<ScrollState>(id)
   };
-  // Before its first draw the list has no view: the screen's stands in
-  let (offset, target, view) = match area {
+  let (offset, target) = match area {
     Some(area) => {
-      let view = if area.view.y > 0.0 {
-        area.view.y
-      } else {
-        screen.y
-      };
       if let Some(index) = jump_to {
         // The least movement; a jump further than a view lands one view
         // short before the rows are chosen, and the area eases the rest
@@ -402,10 +404,14 @@ fn update_list(
           area.approach(1, view);
         }
         aimed = true;
+      } else if far(area, view) {
+        // Any other far target too (scroll-into-view from far away): the rows
+        // pooled cover every offset the ease draws, from the next frame
+        area.approach(1, view);
       }
-      (area.offset.y, area.target.y, view)
+      (area.offset.y + below, area.target.y + below)
     }
-    None => (0.0, 0.0, screen.y),
+    None => (0.0, 0.0),
   };
   // Aimed, a focus jump waits for its row; asked again for the same item,
   // it keeps its progress
@@ -439,17 +445,17 @@ fn update_list(
     let (to, cut) = cut_rows(to, cap.saturating_sub(at.len()));
     (at, to, cut || near)
   };
-  if cut || cut_at || cut_to {
+  let grown = grown(laid, &shape, screen);
+  if grown || cut || cut_at || cut_to {
     // Once per list, by its entity and name (another world's list may have
     // the same entity)
-    let name = world.get::<UiName>(list).map(|name| name.0.as_str());
-    warn_cut(
-      format_args!("{list}:{}", name.unwrap_or_default()),
-      || match name {
-        Some(name) => format!("the list node \"{name}\""),
-        None => format!("the list node {list}"),
-      },
-    );
+    let name = world.get::<UiName>(list).map_or("", |name| name.0.as_str());
+    let named = || list_name(world, list);
+    if grown {
+      warn_grown(format_args!("{list}:{name}"), named);
+    } else {
+      warn_cut(format_args!("{list}:{name}"), named);
+    }
   }
   let one = |index: usize| row_of(index)..row_of(index).saturating_add(1).min(rows);
   // The focused item's row and one either side, so the pad steps off it
@@ -2117,6 +2123,57 @@ mod api_tests {
     assert_eq!(warnings_containing(&format!("{dead}")), 0);
   }
 
+  /// The items in the view `setup`'s list was drawn at last frame (rows 20
+  /// tall, a view of 100) that were not drawn bound
+  fn undrawn_in_view(h: &UiHarness, list: Entity, id: UiId) -> Vec<usize> {
+    let offset = h.scroll_offset(id).y;
+    let first = (offset / 20.0).floor() as usize;
+    let end = ((offset + 100.0) / 20.0).ceil() as usize;
+    (first..end)
+      .filter(|&index| {
+        !row_of(h, list, index).is_some_and(|row| {
+          h.world()
+            .get::<UiListRow>(row)
+            .is_some_and(|pooled| pooled.bound_frame < h.memory.frame())
+        })
+      })
+      .collect()
+  }
+
+  #[test]
+  fn the_pad_s_return_from_far_away_draws_the_view_on_all_but_one_frame() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = setup(&mut h, 1000);
+    for _ in 0..4 {
+      step(&mut h);
+    }
+    assert_eq!(focused_index(&h, list), Some(0));
+    let id = h.ui_id(list).unwrap();
+    let rect = h.record_of(id).unwrap().rect;
+    // Beside the buttons, so the focus never follows the pointer
+    h.move_to(rect.x + 150.0, rect.y + 50.0);
+    // 15 lines of 40: six views of 100
+    h.wheel(0.0, -15.0);
+    for _ in 0..60 {
+      step(&mut h);
+    }
+    assert_eq!(h.scroll_offset(id).y, 600.0);
+    assert_eq!(focused_index(&h, list), Some(0), "kept pooled far away");
+    // Scroll-into-view eases back the whole way
+    h.action("ui.down");
+    let mut blank = Vec::new();
+    for frame in 0..60 {
+      step(&mut h);
+      let missing = undrawn_in_view(&h, list, id);
+      if !missing.is_empty() {
+        blank.push((frame, h.scroll_offset(id).y, missing));
+      }
+    }
+    assert!(blank.len() <= 1, "rows in view not drawn: {blank:?}");
+    assert_eq!(focused_index(&h, list), Some(1));
+    assert_eq!(h.scroll_offset(id).y, 20.0);
+  }
+
   #[test]
   fn a_capped_list_pools_and_draws_the_rows_in_view_first() {
     let mut h = UiHarness::new(640.0, 480.0);
@@ -2142,6 +2199,35 @@ mod api_tests {
         .and_then(|id| h.record_of(id));
       assert!(drawn.is_some(), "item {index} pooled and drawn");
     }
+  }
+
+  #[test]
+  fn a_list_given_no_height_pools_only_what_shows_and_warns_once() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    // In a 300-wide, 400-tall panel: it grows to its whole length
+    h.spawn_ui(
+      UiNode::panel()
+        .width(300.0)
+        .height(400.0)
+        .child(UiNode::list(10_000, 28.0).row_shape(row).name("grown")),
+    );
+    let list = h.find_ui("grown").unwrap();
+    for frame in 0..4 {
+      step(&mut h);
+      let pooled = h.world().get::<UiList>(list).unwrap().rows.len();
+      // 480 / 28 is 18 rows to fill the screen, and 2 of overscan past them
+      assert!(pooled <= 20, "frame {frame}: {pooled} rows pooled");
+    }
+    let id = h.ui_id(list).unwrap();
+    assert_eq!(h.scroll_content(id).y, 10_000.0 * 28.0);
+    assert_eq!(
+      warnings_containing("the list node \"grown\": give the list a height"),
+      1
+    );
+    assert_eq!(
+      warnings_containing("the list node \"grown\" would build"),
+      0
+    );
   }
 
   #[test]
