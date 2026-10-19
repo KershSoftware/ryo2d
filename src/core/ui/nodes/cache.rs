@@ -9,7 +9,9 @@
 //! pass, so the world's own would miss the previous frame's `update`.
 //!
 //! The rest of what makes a node rebuild is marked by `mark_live` before
-//! each walk: the nodes holding an interaction role this frame or the last,
+//! each scene's walk (`check_tree` does both for an embedded tree, reading
+//! only that tree's nodes): the nodes holding an interaction role this
+//! frame or the last,
 //! and the live ones (scroll areas and lists, an unfinished typewriter, the
 //! node a focus request waits for, and the nodes that read input or time
 //! without holding a role while that moves). `clean` then adds what a
@@ -190,6 +192,10 @@ pub(crate) struct NodeRecord {
   /// made from it, so a node reparented (or a parent given another id)
   /// builds again
   pub(crate) scope: UiId,
+  /// The change tick it was built at, which its build's own writes carry:
+  /// a change counts only when newer than this and the last check (an
+  /// embedded tree is drawn after the check that saw its own writes)
+  pub(crate) tick: Tick,
 }
 
 /// A record's tape, shared to replay, with what the replay answers
@@ -303,6 +309,11 @@ struct Check {
   /// The nodes with a typewriter: `mark_live` builds the unfinished ones
   reveals: Reveals,
   removals: Vec<Removals>,
+  /// The nodes a check found changed, kept to be looked at again (a record
+  /// newer than the check: its own writes are not changes)
+  changed: Vec<Entity>,
+  /// The nodes of an embedded tree still to check, kept between checks
+  stack: Vec<Entity>,
 }
 
 /// One tracked component's removal messages, read from where the last
@@ -329,7 +340,14 @@ impl Check {
       changes,
       reveals,
       removals,
+      changed: Vec::new(),
+      stack: Vec::new(),
     }
+  }
+
+  /// Whether a tracked component of `node` changed after `since`
+  fn changed_since(&mut self, world: &mut World, node: Entity, since: Tick) -> bool {
+    world.last_change_tick_scope(since, |world| self.changes.get(world, node).is_ok())
   }
 
   /// Mark the entities each tracked component was removed from since the
@@ -663,12 +681,18 @@ impl UiCache {
         check.read_removals(world, None);
       }
       Some(last) => {
-        let dirty = &mut self.dirty;
-        world.last_change_tick_scope(last, |world| {
-          for node in check.changes.iter(world) {
-            mark(dirty, world, node);
+        let mut changed = std::mem::take(&mut check.changed);
+        changed.clear();
+        world.last_change_tick_scope(last, |world| changed.extend(check.changes.iter(world)));
+        let now = world.read_change_tick();
+        for &node in &changed {
+          let since = newer_record(&self.records, node, last, now);
+          if since.is_none_or(|since| check.changed_since(world, node, since)) {
+            mark(&mut self.dirty, world, node);
           }
-        });
+        }
+        check.changed = changed;
+        let dirty = &mut self.dirty;
         if check.read_removals(world, Some(dirty)) {
           // Which nodes the missed removals touched is unknown: every node
           // is built again
@@ -701,7 +725,7 @@ pub(crate) fn dirty_check(world: &mut World, ui: &UiContext<'_>, scene: u64) {
     let cache = &mut nodes.cache;
     if cache.enabled {
       cache.refresh(world);
-      cache.mark_live(world, ui, scene, pending, None);
+      cache.mark_live(world, ui, scene, pending);
     }
   });
 }
@@ -727,26 +751,51 @@ pub(crate) fn mark_live(
   pending: Option<Entity>,
 ) {
   world.try_resource_scope(|world, mut nodes: Mut<UiNodes>| {
-    nodes.cache.mark_live(world, ui, scene, pending, None);
+    nodes.cache.mark_live(world, ui, scene, pending);
   });
 }
 
 impl UiCache {
-  /// [`mark_live`] on this cache, taken out of the world for a walk: of the
-  /// tree rooted at `within` only, if given (an embedded tree about to be
-  /// drawn: the scene's other trees were drawn already, or mark their own)
+  /// [`mark_live`] on this cache, taken out of the world for a walk
   pub(crate) fn mark_live(
     &mut self,
     world: &mut World,
     ui: &UiContext<'_>,
     scene: u64,
     pending: Option<Entity>,
-    within: Option<Entity>,
   ) {
     // First: a check made for another world starts the cache as new
-    self.mark_reveals(world, scene, within);
+    self.mark_reveals(world, scene);
+    let world = &*world;
+    self.mark_roles(world, ui, scene, pending, |_| true);
     let interact = &ui.memory.interact;
-    let now = interact.roles();
+    let (dirty, records) = (&mut self.dirty, &self.records);
+    mark_each(&mut self.live, dirty, records, world, scene, |_| true);
+    let top = ui.scene().1;
+    if top && interact.tab_step != 0 {
+      mark_each(&mut self.tabs, dirty, records, world, scene, |_| true);
+    }
+    if top && ui.choice_key_pressed() {
+      mark_each(&mut self.choices, dirty, records, world, scene, |_| true);
+    }
+    if interact.drag.is_some() {
+      mark_each(&mut self.targets, dirty, records, world, scene, |_| true);
+    }
+    let busy = |node| rebinding(world, ui, node);
+    mark_each(&mut self.rebinds, dirty, records, world, scene, busy);
+  }
+
+  /// Mark the holders of an interaction role this frame or the last, and
+  /// `pending`, that have a record of `scene` and are `inside`
+  fn mark_roles(
+    &mut self,
+    world: &World,
+    ui: &UiContext<'_>,
+    scene: u64,
+    pending: Option<Entity>,
+    inside: impl Fn(Entity) -> bool,
+  ) {
+    let now = ui.memory.interact.roles();
     let frame = ui.memory.frame();
     // A second pass in the same frame (another scene, a rerun) keeps last
     // frame's roles
@@ -754,8 +803,6 @@ impl UiCache {
       self.last_roles = self.roles.1;
     }
     self.roles = (frame, now);
-    let world = &*world;
-    let inside = move |node| within.is_none_or(|root| in_tree(world, node, root));
     let (dirty, records) = (&mut self.dirty, &self.records);
     let roles = now.iter().chain(self.last_roles.iter());
     let holders = roles.filter_map(|id| self.by_id.get(&id).copied());
@@ -764,30 +811,10 @@ impl UiCache {
         mark(dirty, world, node);
       }
     }
-    mark_each(&mut self.live, dirty, records, world, scene, inside);
-    let top = ui.scene().1;
-    if top && interact.tab_step != 0 {
-      mark_each(&mut self.tabs, dirty, records, world, scene, inside);
-    }
-    if top && ui.choice_key_pressed() {
-      mark_each(&mut self.choices, dirty, records, world, scene, inside);
-    }
-    if interact.drag.is_some() {
-      mark_each(&mut self.targets, dirty, records, world, scene, inside);
-    }
-    let busy = |node| {
-      inside(node)
-        && ui
-          .memory
-          .peek_state::<RebindState>(recorded_id(world, node))
-          .is_some_and(|state| state.capturing || state.note.is_some())
-    };
-    mark_each(&mut self.rebinds, dirty, records, world, scene, busy);
   }
 
-  /// Mark each typewriter in `scene` (of the tree rooted at `within`, if
-  /// given) that an advance would still move
-  fn mark_reveals(&mut self, world: &mut World, scene: u64, within: Option<Entity>) {
+  /// Mark each typewriter in `scene` that an advance would still move
+  fn mark_reveals(&mut self, world: &mut World, scene: u64) {
     self.check_for(world);
     let Some(check) = self.check.as_deref_mut() else {
       return;
@@ -795,14 +822,107 @@ impl UiCache {
     let world = &*world;
     let (dirty, records) = (&mut self.dirty, &self.records);
     for (node, reveal) in check.reveals.iter(world) {
-      if !reveal.idle()
-        && recorded_in(records, node, scene)
-        && within.is_none_or(|root| in_tree(world, node, root))
-      {
+      if !reveal.idle() && recorded_in(records, node, scene) {
         mark(dirty, world, node);
       }
     }
   }
+
+  /// Before the embedded tree `root` is drawn (`ui.node`, in `scene`'s
+  /// `ui`): mark what changed in it since the last check and what is live
+  /// in it, as `refresh` and `mark_live` do before a scene's walk, reading
+  /// only this tree's nodes, so a closure drawing many trees pays for each
+  /// once. The scene's other trees were drawn already (marking their roles
+  /// again would rebuild them a frame too long), and what the closure wrote
+  /// to them is seen by the next check: `checked` stays where it is.
+  pub(crate) fn check_tree(
+    &mut self,
+    world: &mut World,
+    ui: &UiContext<'_>,
+    scene: u64,
+    pending: Option<Entity>,
+    root: Entity,
+  ) {
+    // First: a check made for another world starts the cache as new
+    self.check_for(world);
+    let last = self.checked;
+    if let Some(check) = self.check.as_deref_mut() {
+      let interact = &ui.memory.interact;
+      let top = ui.scene().1;
+      let tabs = top && interact.tab_step != 0;
+      let choices = top && ui.choice_key_pressed();
+      let targets = interact.drag.is_some();
+      let now = world.read_change_tick();
+      let mut stack = std::mem::take(&mut check.stack);
+      stack.clear();
+      stack.push(root);
+      while let Some(node) = stack.pop() {
+        let record = self.records.get(&node);
+        // The first check marks nothing changed: a node without a record is
+        // built anyway
+        let changed = last.is_some_and(|last| {
+          let since = record
+            .map(|record| record.tick)
+            .filter(|tick| tick.is_newer_than(last, now))
+            .unwrap_or(last);
+          check.changed_since(world, node, since)
+        });
+        let Ok(entity) = world.get_entity(node) else {
+          continue;
+        };
+        // Another tree's root is that tree's
+        if node != root && entity.contains::<UiRoot>() {
+          continue;
+        }
+        let live = record.is_some_and(|record| record.scene == scene)
+          && (self.live.contains(&node)
+            || entity
+              .get::<TextReveal>()
+              .is_some_and(|reveal| !reveal.idle())
+            || (tabs && self.tabs.contains(&node))
+            || (choices && self.choices.contains(&node))
+            || (targets && self.targets.contains(&node))
+            || (self.rebinds.contains(&node) && rebinding(world, ui, node)));
+        if changed || live {
+          mark(&mut self.dirty, world, node);
+        }
+        if let Some(children) = entity.get::<Children>() {
+          stack.extend_from_slice(children);
+        }
+      }
+      check.stack = stack;
+      // Before the first check the removals are left for it to pass over
+      if last.is_some() && check.read_removals(world, Some(&mut self.dirty)) {
+        // Which nodes the missed removals touched is unknown: every node
+        // is built again
+        self.clear_records();
+      }
+    }
+    let world = &*world;
+    self.mark_roles(world, ui, scene, pending, |node| in_tree(world, node, root));
+  }
+}
+
+/// The tick `node`'s record was built at, when newer than `last` (the
+/// last check's): only a change newer than its build counts
+fn newer_record(
+  records: &EntityHashMap<NodeRecord>,
+  node: Entity,
+  last: Tick,
+  now: Tick,
+) -> Option<Tick> {
+  records
+    .get(&node)
+    .map(|record| record.tick)
+    .filter(|tick| tick.is_newer_than(last, now))
+}
+
+/// Whether the rebinding row `node` is capturing a press or showing a
+/// swap's note
+fn rebinding(world: &World, ui: &UiContext<'_>, node: Entity) -> bool {
+  ui.memory
+    .peek_state::<RebindState>(recorded_id(world, node))
+    .is_some_and(|state| state.capturing || state.note.is_some())
 }
 
 /// Whether `node` is `root` or under it, in `root`'s tree (a list's rows
@@ -1076,11 +1196,14 @@ pub(crate) fn end_frame(world: &mut World, frame: u64) {
   }
 }
 
-/// Clamp the tick the cache keeps after the world checked its own (bevy
-/// clamps only the ticks it holds)
+/// Clamp the ticks the cache keeps (its last check's and each record's)
+/// after the world checked its own (bevy clamps only the ticks it holds)
 pub(crate) fn check_ticks(cache: &mut UiCache, check: CheckChangeTicks) {
   if let Some(tick) = cache.checked.as_mut() {
     tick.check_tick(check);
+  }
+  for record in cache.records.values_mut() {
+    record.tick.check_tick(check);
   }
 }
 
@@ -1222,6 +1345,7 @@ mod tests {
       id: UiId::NONE,
       dialog: false,
       scope: UiId::NONE,
+      tick: Tick::default(),
     };
     // The walk keeps the tree's records; `go`'s is replaced by hand
     let records = |h: &mut UiHarness| h.world().resource::<UiNodes>().cache.records.clone();
@@ -1264,6 +1388,7 @@ mod tests {
       id: UiId::NONE,
       dialog: false,
       scope: UiId::NONE,
+      tick: Tick::default(),
     };
     nodes.cache.records.insert(go, record);
     let mut other = World::new();
@@ -1313,6 +1438,7 @@ mod tests {
         id: UiId::NONE,
         dialog: false,
         scope: UiId::NONE,
+        tick: Tick::default(),
       };
       ui_nodes.cache.records.insert(node, record);
     }
@@ -1476,6 +1602,7 @@ mod live_tests {
       id: UiId::NONE,
       dialog: false,
       scope,
+      tick: Tick::default(),
     };
     cache_mut(h).cache.records.insert(node, record);
   }

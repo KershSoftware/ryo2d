@@ -1,6 +1,7 @@
 //! UI frame costs without a GPU: a 200-widget settings screen (as a closure
 //! and as a node tree, moving its focus and unchanged), a 2,000-node static
-//! tree, an embedded node tree in closure UI, a 1,000-row scroll list,
+//! tree, an embedded node tree in closure UI, 64 embedded trees cached and
+//! uncached, a 1,000-row scroll list,
 //! virtual lists in both styles (10,000 and 100 closure rows, 10,000 node
 //! rows) and an empty frame, each one `UiHarness` frame (resolve, the node
 //! walk, the widgets, layout and commands); the node cache's dirty check
@@ -258,6 +259,93 @@ fn embedded_frame(c: &mut Criterion) {
   });
 }
 
+/// Embedded trees in the many-trees frame
+const EMBEDDED: usize = 64;
+
+/// `EMBEDDED` embedded trees of three nodes (a column of a text and a
+/// button), warmed up with caching on or off and the pointer over nothing
+fn embedded_trees(cache: bool) -> (UiHarness, Vec<Entity>) {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  harness.set_ui_cache(cache);
+  let roots: Vec<Entity> = (0..EMBEDDED)
+    .map(|i| {
+      harness.spawn_ui(
+        UiNode::column()
+          .embedded()
+          .child(UiNode::text(format!("Item {i}")))
+          .child(UiNode::button("Use")),
+      )
+    })
+    .collect();
+  harness.move_to(-100.0, -100.0);
+  for _ in 0..5 {
+    trees_frame(&mut harness, &roots);
+  }
+  (harness, roots)
+}
+
+/// One frame of the embedded trees, drawn with `ui.node` in a closure grid
+fn trees_frame(harness: &mut UiHarness, roots: &[Entity]) {
+  harness.frame_with_world(|ui, world| {
+    ui.grid(8).gap(4.0).show(|ui| {
+      for &root in roots {
+        ui.node(root, world);
+      }
+    });
+  });
+}
+
+/// The time per frame of `cached` and of `uncached`, interleaved so load and
+/// drift hit both alike: each the median of 101 rounds of 20 frames
+fn per_frame(
+  cached: &mut UiHarness,
+  uncached: &mut UiHarness,
+  roots: &[Entity],
+) -> (Duration, Duration) {
+  let time = |harness: &mut UiHarness| {
+    let start = Instant::now();
+    for _ in 0..20 {
+      trees_frame(harness, roots);
+    }
+    start.elapsed() / 20
+  };
+  let (mut on, mut off) = (Vec::new(), Vec::new());
+  for round in 0..101 {
+    if round % 2 == 0 {
+      on.push(time(cached));
+      off.push(time(uncached));
+    } else {
+      off.push(time(uncached));
+      on.push(time(cached));
+    }
+  }
+  on.sort_unstable();
+  off.sort_unstable();
+  (on[50], off[50])
+}
+
+/// 64 embedded trees in closure UI, unchanged, cached and uncached. The
+/// guard: cached is no slower than uncached (each `ui.node` checks its own
+/// tree, not every node in the world).
+fn embedded_trees_frame(c: &mut Criterion) {
+  let (mut cached, roots) = embedded_trees(true);
+  let (mut uncached, _) = embedded_trees(false);
+  let stats = cached.ui_cache_stats();
+  assert_eq!(stats.built, 0, "nothing in the trees builds: {stats:?}");
+  let (on, off) = per_frame(&mut cached, &mut uncached, &roots);
+  println!("{EMBEDDED} embedded trees, medians: {on:?} cached, {off:?} uncached");
+  assert!(
+    on <= off,
+    "{EMBEDDED} embedded trees: {on:?} a frame cached, {off:?} uncached"
+  );
+  let mut group = c.benchmark_group("ui frame, 64 embedded three-node trees");
+  group.bench_function("cached", |b| b.iter(|| trees_frame(&mut cached, &roots)));
+  group.bench_function("uncached", |b| {
+    b.iter(|| trees_frame(&mut uncached, &roots))
+  });
+  group.finish();
+}
+
 /// The node cache's dirty check on the settings tree, alone: each check
 /// follows an unmeasured unchanged frame, as the walk's does
 fn dirty_check(c: &mut Criterion) {
@@ -453,6 +541,7 @@ criterion_group!(
   settings_nodes_unchanged,
   static_tree_frame,
   embedded_frame,
+  embedded_trees_frame,
   dirty_check,
   list_frame,
   virtual_list_frame,

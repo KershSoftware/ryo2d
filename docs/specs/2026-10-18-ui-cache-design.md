@@ -73,7 +73,7 @@ A node is dirty when anything its builder reads may have changed since its recor
 4. **Reads of other nodes.** A record notes the ids it read from other nodes (`nav_*` targets, a popup's anchor); if one has changed, the node is dirty.
 5. **The environment.** One generation covers what every builder reads: the theme generation (fixed so that loading skins bumps it too), the UI scale and size, the font generation, the prompt context (device, pad family, bindings, icons; it gains a generation), and whether the scene is on top. When it moves, every tree rebuilds once.
 
-**Freshness.** The dirty set is brought up to date before each scene's walk and before each embedded tree is drawn, from change ticks since the previous check, so a write made earlier in the same frame (a lower scene's `ui`, or the same `ui` before `ui.node`) is seen that frame, as today. The ticks the cache keeps are clamped on `CheckChangeTicks`, as every engine-held tick is (`src/core/AGENTS.md`, "Change Ticks").
+**Freshness.** The dirty set is brought up to date before each scene's walk and before each embedded tree is drawn (that tree's nodes only, so many embedded trees cost each tree once), from change ticks since the previous check, so a write made earlier in the same frame (a lower scene's `ui`, or the same `ui` before `ui.node`) is seen that frame, as today. The ticks the cache keeps are clamped on `CheckChangeTicks`, as every engine-held tick is (`src/core/AGENTS.md`, "Change Ticks").
 
 **Propagation.** Each dirty node marks its ancestors up to its root. A node replays only when it and every descendant are clean.
 

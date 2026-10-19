@@ -15,8 +15,9 @@
 //! parent's tape. A replay never builds: a clean node's children are clean,
 //! since everything that makes a node rebuild makes its ancestors rebuild.
 //! An embedded tree (`ui.node`) and a list's rows replay or build the same
-//! way: the dirty set is brought up to date before an embedded tree is
-//! drawn, and what a row's bindings sync writes is marked before the row.
+//! way: what changed in an embedded tree, and what is live in it, is marked
+//! before it is drawn, and what a row's bindings sync writes is marked
+//! before the row.
 //! In debug builds the spot check builds one clean node a frame (and the
 //! clean nodes above it, to reach it) in place of its replay, and compares
 //! the build with the record (`spot_check`).
@@ -107,6 +108,8 @@ pub(crate) struct Walk {
   env: UiEnv,
   /// The other nodes a bound widget's change wrote, for the one drawn last
   written: Vec<Entity>,
+  /// An embedded tree's walk (`ui.node`), not a scene's
+  embedded: bool,
 }
 
 impl Walk {
@@ -128,6 +131,7 @@ impl Walk {
       caching,
       env,
       written: Vec::new(),
+      embedded: false,
     }
   }
 
@@ -180,10 +184,16 @@ impl Walk {
 
   /// Keep an unused focus request for a later walk and give the cache back,
   /// what the walk wrote not to be seen as a change by the next check; the
-  /// walk's events
+  /// walk's events. A scene's walk moves the check's tick past its writes;
+  /// an embedded tree's records carry theirs (the scene's trees were checked
+  /// before it), and the tick moves on so later writes are newer.
   fn give_back(mut self, world: &mut World) -> Vec<UiEvent> {
     if self.caching {
-      self.cache.walked(world);
+      if self.embedded {
+        world.increment_change_tick();
+      } else {
+        self.cache.walked(world);
+      }
     }
     let Walk {
       events,
@@ -244,16 +254,19 @@ impl<'a> UiContext<'a> {
     let caching = cache.enabled;
     let scene = self.scene().0;
     let mut walk = Walk::new(scene, pending_focus, cache, caching, self.env());
+    walk.embedded = true;
     bindings::sync_root(world, root, None);
     if walk.caching {
       // The scene's walk marked before its `ui` ran: what that `ui` wrote
-      // since, and what is live in this tree, are marked now
-      walk.cache.refresh(world);
+      // to this tree since, and what is live in it, are marked now
       walk
         .cache
-        .mark_live(world, self, scene, walk.pending_focus, Some(root));
+        .check_tree(world, self, scene, walk.pending_focus, root);
       #[cfg(debug_assertions)]
       walk.cache.choose_spot(world, self.memory.frame());
+      // The walk's own writes get a tick of their own, which its records
+      // keep
+      world.increment_change_tick();
     }
     let response = draw_node(world, self, root, None, &mut walk).response(self);
     let mut events = walk.give_back(world);
@@ -297,9 +310,7 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
   }
   if walk.caching {
     walk.cache.refresh(world);
-    walk
-      .cache
-      .mark_live(world, ui, scene, walk.pending_focus, None);
+    walk.cache.mark_live(world, ui, scene, walk.pending_focus);
     #[cfg(debug_assertions)]
     walk.cache.choose_spot(world, ui.memory.frame());
   }
@@ -466,6 +477,7 @@ fn build_recorded(
     id: response.as_ref().map_or(UiId::NONE, |response| response.id),
     dialog,
     scope,
+    tick: world.read_change_tick(),
   };
   (response, record)
 }
@@ -3684,6 +3696,95 @@ mod cache_tests {
       !h.ui_cache_stats().rebuilt.contains(&play),
       "the embedded tree's marks leave the scene's trees, drawn already, alone"
     );
+  }
+
+  #[test]
+  fn writes_to_other_trees_before_an_embedded_tree_is_drawn_show_as_uncached() {
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_cache(cache);
+      h.spawn_ui(menu());
+      let hud = |name: &str| {
+        UiNode::column()
+          .embedded()
+          .child(UiNode::text("Hud").name(name))
+      };
+      let (a, b) = (h.spawn_ui(hud("ha")), h.spawn_ui(hud("hb")));
+      let [title, hb] = ["title", "hb"].map(|name| h.find_ui(name).unwrap());
+      h.move_to(1000.0, 1000.0);
+      let mut frames = Vec::new();
+      for step in 0..8 {
+        h.frame_with_world(|ui, world| {
+          // Before the first tree is drawn: the scene's tree, drawn already,
+          // and the second tree, drawn after it
+          if step == 4 {
+            world.get_mut::<UiLabel>(title).unwrap().0 = "Title".into();
+            world.get_mut::<UiLabel>(hb).unwrap().0 = "Hud B".into();
+          }
+          ui.column()
+            .id("huds")
+            .at(Rect::new(400.0, 300.0, 200.0, 100.0))
+            .show(|ui| {
+              ui.node(a, world);
+              ui.node(b, world);
+            });
+        });
+        if cache {
+          assert_eq!(missed(&h), 0, "step {step}");
+          assert_dirty_ancestors(&h);
+        }
+        frames.push(h.commands_debug());
+      }
+      frames
+    };
+    let (on, off) = (run(true), run(false));
+    assert!(on[4].contains("\"Hud B\""), "drawn after the write");
+    assert!(
+      !on[4].contains("\"Title\"") && on[5].contains("\"Title\""),
+      "drawn before it: shown next frame"
+    );
+    assert_eq!(on, off);
+  }
+
+  #[test]
+  fn an_embedded_trees_own_writes_are_not_seen_again_next_frame() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let root = h.spawn_ui(
+      UiNode::column()
+        .embedded()
+        .focus_scope()
+        .child(
+          UiNode::slider(0.0..=1.0, 0.0)
+            .bind("volume")
+            .name("s1")
+            .default_focus(),
+        )
+        .child(UiNode::slider(0.0..=1.0, 0.0).bind("volume").name("s2")),
+    );
+    let draw = |h: &mut UiHarness| {
+      h.frame_with_world(|ui, world| {
+        ui.column().id("hud").show(|ui| {
+          ui.node(root, world);
+        });
+      });
+    };
+    h.move_to(630.0, 470.0);
+    for _ in 0..3 {
+      draw(&mut h);
+    }
+    let s2 = h.find_ui("s2").unwrap();
+    h.action("ui.right");
+    draw(&mut h);
+    assert!(
+      h.ui_cache_stats().rebuilt.contains(&s2),
+      "written by s1 before it is drawn: built with the value"
+    );
+    draw(&mut h);
+    assert!(
+      !h.ui_cache_stats().rebuilt.contains(&s2),
+      "already built from what the walk wrote"
+    );
+    assert_eq!(missed(&h), 0);
   }
 
   /// A list of `count` button rows, each with a caption, in a focus scope
