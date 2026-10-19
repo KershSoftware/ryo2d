@@ -2945,9 +2945,11 @@ mod embedding {
 
 #[cfg(all(test, feature = "default-fonts"))]
 mod cache_tests {
-  use crate::core::ecs::kernel::{ChildOf, Entity};
+  use super::{Walk, begin_pass, draw_node, draw_nodes};
+  use crate::core::ecs::kernel::{ChildOf, Entity, World};
   use crate::core::testing::UiHarness;
   use crate::core::ui::nodes::*;
+  use crate::core::ui::{Rect, Response, UiContext, UiId};
 
   /// Children found unclean in a parent's replay in the last pass: a broken
   /// invariant, never so
@@ -3332,5 +3334,131 @@ mod cache_tests {
       .map(|e| e.node)
       .collect();
     assert_eq!(backs, [note], "the replay restores the Back target");
+  }
+
+  /// A column holding the button "Go", after warming frames
+  fn go_tree(cache: bool) -> (UiHarness, Entity, Entity) {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.set_ui_cache(cache);
+    let root = h.spawn_ui(UiNode::column().child(UiNode::button("Go").name("go")));
+    h.move_to(630.0, 470.0);
+    warm(&mut h);
+    let go = h.find_ui("go").unwrap();
+    (h, root, go)
+  }
+
+  #[test]
+  fn a_tree_changed_while_hidden_shows_its_change() {
+    let run = |cache: bool| {
+      let (mut h, root, go) = go_tree(cache);
+      h.world_mut().entity_mut(root).insert(UiHidden);
+      h.frame(|_| ()); // draws nothing: the harness rewinds it
+      h.world_mut().get_mut::<UiLabel>(go).unwrap().0 = "Stop".into();
+      h.frame(|_| ());
+      h.world_mut().entity_mut(root).remove::<UiHidden>();
+      h.frame(|_| ());
+      if cache {
+        assert_eq!(missed(&h), 0);
+        assert!(h.ui_cache_stats().rebuilt.contains(&go), "its record went");
+      }
+      h.commands_debug()
+    };
+    let (on, off) = (run(true), run(false));
+    assert!(on.contains("\"Stop\"") && !on.contains("\"Go\""), "{on}");
+    assert_eq!(on, off);
+  }
+
+  #[test]
+  fn a_branch_hidden_and_shown_again_in_one_frame_shows_its_change() {
+    // The engine's rerun pass: the first pass draws the tree hidden, the
+    // scene's `ui` shows it again and switches scenes, and the pass runs
+    // again in the same frame, before records not drawn are dropped
+    let run = |cache: bool| {
+      let (mut h, root, go) = go_tree(cache);
+      let scene = h.frame(|ui| ui.scene().0);
+      h.world_mut().entity_mut(root).insert(UiHidden);
+      h.world_mut().get_mut::<UiLabel>(go).unwrap().0 = "Stop".into();
+      h.frame_with_world(|ui, world| {
+        world.entity_mut(root).remove::<UiHidden>();
+        ui.end_scene();
+        ui.memory.restart_pass();
+        ui.begin_scene(scene, true);
+        begin_pass(world);
+        let events = draw_nodes(world, ui, scene);
+        assert!(events.is_empty());
+      });
+      if cache {
+        assert_eq!(missed(&h), 0);
+        assert!(h.ui_cache_stats().rebuilt.contains(&go));
+      }
+      h.commands_debug()
+    };
+    let (on, off) = (run(true), run(false));
+    assert!(on.contains("\"Stop\""), "{on}");
+    assert_eq!(on, off);
+  }
+
+  /// Draw the embedded tree `root` through a walk of its own over the
+  /// cache, as `ui.node` will: its response
+  fn draw_embedded(
+    ui: &mut UiContext<'_>,
+    world: &mut World,
+    root: Entity,
+    cache: bool,
+  ) -> Option<Response> {
+    let taken = std::mem::take(&mut world.resource_mut::<UiNodes>().cache);
+    let mut walk = Walk::new(ui.scene().0, None, taken, cache, ui.env());
+    if cache {
+      walk.cache.refresh(world);
+    }
+    let response = draw_node(world, ui, root, None, &mut walk);
+    walk.finish(world, ui);
+    response
+  }
+
+  #[test]
+  fn a_replayed_node_answers_with_its_id_and_the_rect_a_build_gives() {
+    // One tree laid out where it is drawn (this frame's rect), one inside
+    // an open container that moves (last frame's rect)
+    let run = |cache: bool| {
+      let mut h = UiHarness::new(640.0, 480.0);
+      let top = h.spawn_ui(UiNode::column().embedded().child(UiNode::button("Top")));
+      let nested = h.spawn_ui(UiNode::column().embedded().child(UiNode::button("Nested")));
+      h.move_to(630.0, 470.0);
+      let mut answers = Vec::new();
+      for x in [10.0, 10.0, 10.0, 60.0, 60.0, 110.0] {
+        let answer = h.frame_with_world(|ui, world| {
+          let top = draw_embedded(ui, world, top, cache);
+          let mut inner = None;
+          ui.column()
+            .id("outer")
+            .at(Rect::new(x, 200.0, 160.0, 80.0))
+            .show(|ui| inner = draw_embedded(ui, world, nested, cache));
+          let both = [top, inner].map(|r| r.map(|r| (r.id, r.rect)));
+          let replayed = !rebuilt_so_far(world).contains(&nested);
+          (both, replayed)
+        });
+        answers.push(answer);
+      }
+      answers
+    };
+    let (on, off) = (run(true), run(false));
+    let ids = |answers: &[Answer]| -> Vec<_> { answers.iter().map(|(both, _)| *both).collect() };
+    assert_eq!(ids(&on), ids(&off), "the same ids and rects");
+    assert!(
+      on.iter().skip(1).all(|(_, replayed)| *replayed),
+      "replayed after the first frame"
+    );
+    let moved = on[3].0[1].map(|(_, rect)| rect.x);
+    assert_eq!(moved, on[2].0[1].map(|(_, rect)| rect.x), "last frame's");
+  }
+
+  /// The two trees' responses (id and rect) in a frame, and whether the
+  /// nested one replayed
+  type Answer = ([Option<(UiId, Rect)>; 2], bool);
+
+  /// The nodes built so far this pass
+  fn rebuilt_so_far(world: &World) -> Vec<Entity> {
+    world.resource::<UiNodes>().cache.stats.rebuilt.clone()
   }
 }

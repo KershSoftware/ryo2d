@@ -372,22 +372,45 @@ impl UiCache {
   }
 
   /// `node` is not drawn where its parent's build reached it (hidden, or
-  /// no longer a node): if dirty, it leaves the dirty set with its subtree,
-  /// whose records go at the frame's end. Once drawn again it is marked
-  /// anew, up to its root.
+  /// no longer a node): if dirty, it leaves the dirty set with its subtree.
+  /// Each node taken out of the set loses its record now, not at the
+  /// frame's end: a frame that draws nothing keeps every record (the
+  /// harness rewinds it), and a rerun pass may show the branch again before
+  /// the frame ends, so a changed node's record must not survive to be
+  /// replayed. Once drawn again it is marked anew, up to its root.
   pub(crate) fn forget(&mut self, world: &World, node: Entity) {
     if !self.dirty.remove(&node) {
       return;
     }
+    self.drop_record(node);
     let mut stack: Vec<Entity> = world
       .get::<Children>(node)
       .map(|children| children.to_vec())
       .unwrap_or_default();
     while let Some(at) = stack.pop() {
-      self.dirty.remove(&at);
+      if self.dirty.remove(&at) {
+        self.drop_record(at);
+      }
       if let Some(children) = world.get::<Children>(at) {
         stack.extend_from_slice(children);
       }
+    }
+  }
+
+  /// Drop `node`'s record, with what it noted: its ids in `by_id` and its
+  /// places in the live sets
+  fn drop_record(&mut self, node: Entity) {
+    if let Some(record) = self.records.remove(&node) {
+      unindex(&mut self.by_id, node, &record.tape);
+    }
+    for set in [
+      &mut self.live,
+      &mut self.tabs,
+      &mut self.targets,
+      &mut self.choices,
+      &mut self.rebinds,
+    ] {
+      set.remove(&node);
     }
   }
 
@@ -1061,6 +1084,16 @@ mod live_tests {
     h.world_mut().resource_mut::<UiNodes>()
   }
 
+  /// Whether `node` has a record: a negative `clean` must not be for want
+  /// of one
+  fn has_record(h: &UiHarness, node: Entity) -> bool {
+    h.world()
+      .resource::<UiNodes>()
+      .cache
+      .records
+      .contains_key(&node)
+  }
+
   fn warm(h: &mut UiHarness) {
     for _ in 0..3 {
       h.frame(|_| ());
@@ -1203,6 +1236,7 @@ mod live_tests {
       "same env: clean"
     );
     h.set_theme(Theme::light());
+    assert!(has_record(&h, a));
     assert!(
       !h.frame_with_world(|ui, world| clean(world, ui, a)),
       "another theme: stale"
@@ -1224,18 +1258,22 @@ mod live_tests {
     let is_clean = |h: &mut UiHarness| h.frame_with_world(|ui, world| clean(world, ui, a));
     assert!(!is_clean(&mut h), "no record");
     record(&mut h, a, Tape::default());
+    assert!(has_record(&h, a));
     assert!(!is_clean(&mut h), "not replayable");
     record(&mut h, a, replayable(Vec::new()));
     assert!(is_clean(&mut h));
     cache_mut(&mut h).cache.dirty.insert(a);
+    assert!(has_record(&h, a));
     assert!(!is_clean(&mut h), "dirty");
     cache_mut(&mut h).cache.dirty.clear();
     if let Some(record) = cache_mut(&mut h).cache.records.get_mut(&a) {
       record.top = false;
     }
+    assert!(has_record(&h, a));
     assert!(!is_clean(&mut h), "built while its scene was below another");
     record(&mut h, a, replayable(Vec::new()));
     h.set_ui_cache(false);
+    assert!(has_record(&h, a));
     assert!(!is_clean(&mut h), "caching off");
   }
 
