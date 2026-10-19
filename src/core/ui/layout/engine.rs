@@ -84,6 +84,9 @@ pub(crate) struct LayoutEngine {
   taffy: TaffyTree<UiId>,
   entries: FastMap<UiId, Entry>,
   frame: u64,
+  /// The entries laid out since `begin_frame`: when that is every entry,
+  /// `end_frame` has nothing to remove
+  laid: usize,
   warned: HashSet<&'static str>,
   buffers: Buffers,
   stats: LayoutStats,
@@ -109,6 +112,7 @@ impl LayoutEngine {
       taffy,
       entries: FastMap::default(),
       frame: 0,
+      laid: 0,
       warned: HashSet::new(),
       buffers: Buffers::default(),
       stats: LayoutStats::default(),
@@ -118,6 +122,7 @@ impl LayoutEngine {
   /// Starts a frame: nodes laid out from here on are kept by `end_frame`
   pub(crate) fn begin_frame(&mut self) {
     self.frame += 1;
+    self.laid = 0;
     self.stats = LayoutStats::default();
   }
 
@@ -129,6 +134,9 @@ impl LayoutEngine {
 
   /// Removes the nodes that were not laid out since `begin_frame`
   pub(crate) fn end_frame(&mut self) {
+    if self.laid == self.entries.len() {
+      return;
+    }
     let frame = self.frame;
     let taffy = &mut self.taffy;
     self.entries.retain(|_, entry| {
@@ -168,6 +176,7 @@ impl LayoutEngine {
       // Start over rather than trust a tree that failed half way
       self.taffy.clear();
       self.entries.clear();
+      self.laid = 0;
       buffers.placed.fill(Placed::default());
     }
     self.buffers = buffers;
@@ -234,6 +243,7 @@ impl LayoutEngine {
       taffy,
       entries,
       frame,
+      laid,
       warned,
       stats,
       ..
@@ -254,7 +264,10 @@ impl LayoutEngine {
 
       match entries.get_mut(&desc.id) {
         Some(entry) => {
-          entry.frame = *frame;
+          if entry.frame != *frame {
+            entry.frame = *frame;
+            *laid += 1;
+          }
           if entry.hash != hash {
             taffy.set_style(entry.node, convert(warned))?;
             entry.hash = hash;
@@ -277,6 +290,7 @@ impl LayoutEngine {
             taffy.set_children(node, child_ids)?;
           }
           stats.created += 1;
+          *laid += 1;
           entries.insert(
             desc.id,
             Entry {
