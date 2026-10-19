@@ -9,8 +9,9 @@
 //! pass, so the world's own would miss the previous frame's `update`.
 
 use crate::core::ecs::kernel::{
-  Changed, CheckChangeTicks, ChildOf, Children, ComponentId, Entity, EntityHashMap, EntityHashSet,
-  MessageCursor, Mut, Or, QueryState, RemovedComponentEntity, Tick, With, World, WorldId,
+  Allow, Changed, CheckChangeTicks, ChildOf, Children, ComponentId, Disabled, Entity,
+  EntityHashMap, EntityHashSet, MessageCursor, Mut, Or, QueryState, RemovedComponentEntity, Tick,
+  With, World, WorldId,
 };
 use crate::core::text::TextReveal;
 use crate::core::ui::UiId;
@@ -114,8 +115,9 @@ pub(crate) struct CacheStats {
 /// The dirty check's query and removal cursors, made for one world
 struct Check {
   world: WorldId,
-  /// The nodes whose tracked components changed since the check's last tick
-  changes: QueryState<Entity, (With<UiNodeKind>, Changes)>,
+  /// The nodes whose tracked components changed since the check's last
+  /// tick, `Disabled` ones too: the walk draws them
+  changes: QueryState<Entity, (With<UiNodeKind>, Allow<Disabled>, Changes)>,
   removals: Vec<Removals>,
 }
 
@@ -173,8 +175,11 @@ impl UiCache {
   fn refresh(&mut self, world: &mut World) {
     let id = world.id();
     if self.check.as_ref().is_none_or(|check| check.world != id) {
+      // Nothing kept from another world holds here: start as new
       self.check = Some(Box::new(Check::new(world)));
       self.checked = None;
+      self.records.clear();
+      self.dirty.clear();
     }
     let Some(check) = self.check.as_deref_mut() else {
       return;
@@ -338,6 +343,25 @@ mod tests {
   }
 
   #[test]
+  fn a_disabled_entity_is_still_checked() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let (root, row, go) = tree(&mut h);
+    h.world_mut()
+      .entity_mut(go)
+      .insert((Disabled, UiTooltip("Tip".into())));
+    h.world_mut().entity_mut(row).insert(Disabled);
+    clear(&mut h);
+    // The walk draws a node bevy's `Disabled` hides from default queries
+    h.world_mut().get_mut::<UiLabel>(go).unwrap().0 = "Stop".into();
+    let d = dirty(&mut h);
+    assert!(d.contains(&go) && d.contains(&row) && d.contains(&root));
+    clear(&mut h);
+    h.world_mut().entity_mut(go).remove::<UiTooltip>();
+    let d = dirty(&mut h);
+    assert!(d.contains(&go) && d.contains(&row) && d.contains(&root));
+  }
+
+  #[test]
   fn a_removed_component_marks_its_node() {
     let mut h = UiHarness::new(640.0, 480.0);
     let (_, _, go) = tree(&mut h);
@@ -400,6 +424,30 @@ mod tests {
     h.world_mut().clear_trackers();
     refresh_dirty(h.world_mut());
     assert_eq!(records(&mut h), 0, "a missed removal rebuilds everything");
+  }
+
+  #[test]
+  fn another_world_starts_the_cache_afresh() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let (_, _, go) = tree(&mut h);
+    clear(&mut h);
+    let mut nodes = h.world_mut().remove_resource::<UiNodes>().unwrap();
+    nodes.cache.dirty.insert(go);
+    let record = NodeRecord {
+      tape: Tape::default(),
+      scene: 1,
+      env: UiEnv::default(),
+      top: true,
+      frame: 1,
+      id: UiId::NONE,
+      dialog: false,
+    };
+    nodes.cache.records.insert(go, record);
+    let mut other = World::new();
+    other.insert_resource(nodes);
+    refresh_dirty(&mut other);
+    let cache = &other.resource::<UiNodes>().cache;
+    assert!(cache.records.is_empty() && cache.dirty.is_empty());
   }
 
   #[test]
