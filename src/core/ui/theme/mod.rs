@@ -22,6 +22,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -485,8 +486,17 @@ pub(crate) fn refresh_skins(
 #[derive(Resource, Debug, Clone)]
 pub struct UiTheme {
   theme: Arc<Theme>,
-  /// Counts the changes; the engine loads skin sprites when it moves
+  /// Names the theme's state: taken fresh from [`next_generation`] by every
+  /// change, so a theme put in place of the resource never shares one with
+  /// the theme it replaced (the engine loads skins, and the node cache
+  /// rebuilds, when it moves)
   generation: u64,
+}
+
+/// A generation no theme state has had in this process
+fn next_generation() -> u64 {
+  static NEXT: AtomicU64 = AtomicU64::new(1);
+  NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Default for UiTheme {
@@ -500,7 +510,7 @@ impl UiTheme {
   pub fn new(theme: Theme) -> UiTheme {
     UiTheme {
       theme: Arc::new(theme),
-      generation: 0,
+      generation: next_generation(),
     }
   }
 
@@ -512,13 +522,13 @@ impl UiTheme {
   /// Use `theme` from the next frame
   pub fn set(&mut self, theme: Theme) {
     self.theme = Arc::new(theme);
-    self.generation += 1;
+    self.generation = next_generation();
   }
 
   /// Change the theme in use, from the next frame
   pub fn modify(&mut self, change: impl FnOnce(&mut Theme)) {
     change(Arc::make_mut(&mut self.theme));
-    self.generation += 1;
+    self.generation = next_generation();
   }
 
   /// The theme, shared with the UI pass
@@ -550,7 +560,7 @@ impl UiTheme {
         }
       }
     }
-    self.generation += 1;
+    self.generation = next_generation();
   }
 }
 
@@ -585,9 +595,25 @@ mod tests {
     let start = theme.generation();
     theme.set(Theme::light());
     assert_eq!(theme.get().name, "light");
+    let set = theme.generation();
     theme.modify(|t| t.name = "mine".to_string());
     assert_eq!(theme.get().name, "mine");
-    assert_eq!(theme.generation(), start + 2);
+    let modified = theme.generation();
+    assert!(start != set && set != modified && start != modified);
+  }
+
+  #[test]
+  fn no_two_theme_states_share_a_generation() {
+    // A theme a game puts in place of the resource must never look like
+    // the one it replaced, whichever has moved further
+    let mut first = UiTheme::new(Theme::dark());
+    first.load_skins(|_| None);
+    let second = UiTheme::new(Theme::dark());
+    let third = UiTheme::default();
+    let generations = [first.generation(), second.generation(), third.generation()];
+    assert_ne!(generations[0], generations[1]);
+    assert_ne!(generations[1], generations[2]);
+    assert_ne!(generations[0], generations[2]);
   }
 
   #[test]

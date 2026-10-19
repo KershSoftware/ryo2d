@@ -271,3 +271,69 @@ fn a_scene_pushed_over_a_cached_tree_and_popped_looks_the_same_cached() {
   // The engine's spot check, on in debug builds, changed no frame
   assert_eq!(pair.spot_checked > 0, cfg!(debug_assertions));
 }
+
+/// A column of two texts and three buttons, more clean nodes than a debug
+/// spot check heals in a frame
+struct Themed;
+
+impl Scene for Themed {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(
+      UiNode::column()
+        .focus_scope()
+        .gap(4.0)
+        .anchor(Anchor::TopLeft)
+        .child(UiNode::text("Title"))
+        .child(UiNode::button("Play"))
+        .child(UiNode::button("Options"))
+        .child(UiNode::button("Quit"))
+        .child(UiNode::text("Footer")),
+    );
+  }
+}
+
+#[test]
+fn a_replaced_theme_resource_restyles_a_cached_tree() {
+  let engine = |cache: bool| {
+    let builder = EngineBuilder::new()
+      .resolution(320, 240)
+      .ui_cache(cache)
+      .start_scene(Themed);
+    HeadlessEngine::new_or_skip(builder)
+  };
+  let (Some(mut on), Some(mut off)) = (engine(true), engine(false)) else {
+    return;
+  };
+  let mut replayed = 0;
+  for frame in 0..12 {
+    // A new resource, as a game inserts it: light, then a fresh dark one
+    let theme = match frame {
+      4 => Some(Theme::light()),
+      8 => Some(Theme::dark()),
+      _ => None,
+    };
+    if let Some(theme) = theme {
+      for engine in [&mut on, &mut off] {
+        engine
+          .world_mut()
+          .insert_resource(UiTheme::new(theme.clone()));
+      }
+    }
+    assert_eq!(
+      (on.step().unwrap(), off.step().unwrap()),
+      (StepOutcome::Running, StepOutcome::Running),
+      "frame {frame}"
+    );
+    let (a, b) = (on.ui_snapshot(), off.ui_snapshot());
+    if a != b {
+      panic!(
+        "frame {frame}: caching on and off differ\n{}",
+        difference(&a, &b)
+      );
+    }
+    if frame >= 4 {
+      replayed += on.ui_cache_stats().replayed;
+    }
+  }
+  assert!(replayed > 0, "the tree replays in each new theme");
+}
