@@ -321,7 +321,7 @@ impl UiContext<'_> {
         }
         Op::Draw { node, kind } => {
           if let Some(index) = self.replayed(base, *node) {
-            self.push_draw(index, kind.clone());
+            self.push_draw_copy(index, kind);
           }
         }
         Op::Close(node) => {

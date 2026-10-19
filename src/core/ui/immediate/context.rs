@@ -1012,6 +1012,29 @@ impl<'a> UiContext<'a> {
     }
   }
 
+  /// [`push_draw`](Self::push_draw) of a copy of `kind`, a draw a tape
+  /// recorded: its prompts were resolved before it was taped
+  pub(crate) fn push_draw_copy(&mut self, node: usize, kind: &DrawKind) {
+    if self.recording() {
+      self.push_draw(node, kind.clone());
+      return;
+    }
+    debug_assert!(
+      !matches!(kind, DrawKind::Text { leaf, .. } if !leaf.text.prompts.is_empty()),
+      "a taped draw's prompts are resolved"
+    );
+    let order = self.next_order();
+    let layer = self.layer;
+    if let Some(subtree) = &mut self.subtree {
+      subtree.draws.push(Draw {
+        order,
+        layer,
+        node,
+        kind: kind.clone(),
+      });
+    }
+  }
+
   /// Push `node` into the open container, or start a subtree with it
   /// (placed at `at`, under the current clip). It becomes the innermost
   /// open node: close it with [`close_node`](Self::close_node).
