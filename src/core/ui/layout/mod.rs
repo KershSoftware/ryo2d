@@ -225,69 +225,63 @@ impl UiStyle {
     h.finish()
   }
 
+  /// Every field into `h`, packed into few words (each write is a
+  /// multiply): the tags and flags in one, the floats' bits two to a word
   fn hash_into(&self, h: &mut FastHasher) {
-    fn float(h: &mut FastHasher, v: f32) {
-      h.write_u32(v.to_bits());
+    fn bits(v: f32) -> u64 {
+      u64::from(v.to_bits())
     }
-    fn opt(h: &mut FastHasher, v: Option<f32>) {
-      match v {
-        Some(v) => {
-          h.write_u8(1);
-          h.write_u32(v.to_bits());
-        }
-        None => h.write_u8(0),
-      }
-    }
-    fn length(h: &mut FastHasher, l: Length) {
+    fn length(l: Length) -> (u64, u64) {
       match l {
-        Length::Px(v) => {
-          h.write_u8(0);
-          h.write_u32(v.to_bits());
-        }
-        Length::Pct(v) => {
-          h.write_u8(1);
-          h.write_u32(v.to_bits());
-        }
-        Length::Fill => h.write_u8(2),
-        Length::Fit => h.write_u8(3),
+        Length::Px(v) => (0, bits(v)),
+        Length::Pct(v) => (1, bits(v)),
+        Length::Fill => (2, 0),
+        Length::Fit => (3, 0),
       }
     }
-    fn edges(h: &mut FastHasher, e: Edges) {
-      for v in [e.left, e.top, e.right, e.bottom] {
-        h.write_u32(v.to_bits());
-      }
+    fn opt(v: Option<f32>) -> (u64, u64) {
+      v.map_or((0, 0), |v| (1, bits(v)))
     }
+    let (width_tag, width) = length(self.width);
+    let (height_tag, height) = length(self.height);
+    let (min_w_tag, min_w) = opt(self.min_width);
+    let (max_w_tag, max_w) = opt(self.max_width);
+    let (min_h_tag, min_h) = opt(self.min_height);
+    let (max_h_tag, max_h) = opt(self.max_height);
+    let (aspect_tag, aspect) = opt(self.aspect);
+    let align_self = self.align_self.map_or(0, |a| 1 + a as u64);
+    let tags = width_tag
+      | height_tag << 2
+      | min_w_tag << 4
+      | max_w_tag << 5
+      | min_h_tag << 6
+      | max_h_tag << 7
+      | aspect_tag << 8
+      | (self.align as u64) << 9
+      | (self.justify as u64) << 12
+      | align_self << 15
+      | (self.anchor as u64) << 18
+      | u64::from(self.wrap) << 22
+      | u64::from(self.scroll_x) << 23
+      | u64::from(self.scroll_y) << 24
+      | u64::from(self.absolute) << 25;
+    let (p, m) = (self.padding, self.margin);
     self.flow.hash_into(h);
-    length(h, self.width);
-    length(h, self.height);
-    opt(h, self.min_width);
-    opt(h, self.max_width);
-    opt(h, self.min_height);
-    opt(h, self.max_height);
-    edges(h, self.padding);
-    edges(h, self.margin);
-    float(h, self.gap);
-    self.align.hash(h);
-    self.justify.hash(h);
-    match self.align_self {
-      Some(a) => {
-        h.write_u8(1);
-        a.hash(h);
-      }
-      None => h.write_u8(0),
+    for word in [
+      tags,
+      width | height << 32,
+      min_w | max_w << 32,
+      min_h | max_h << 32,
+      bits(p.left) | bits(p.top) << 32,
+      bits(p.right) | bits(p.bottom) << 32,
+      bits(m.left) | bits(m.top) << 32,
+      bits(m.right) | bits(m.bottom) << 32,
+      bits(self.gap) | bits(self.grow) << 32,
+      aspect | bits(self.offset.x) << 32,
+      bits(self.offset.y),
+    ] {
+      h.write_u64(word);
     }
-    float(h, self.grow);
-    opt(h, self.aspect);
-    // The booleans share one word
-    h.write_u8(
-      u8::from(self.wrap)
-        | u8::from(self.scroll_x) << 1
-        | u8::from(self.scroll_y) << 2
-        | u8::from(self.absolute) << 3,
-    );
-    self.anchor.hash(h);
-    float(h, self.offset.x);
-    float(h, self.offset.y);
   }
 }
 
@@ -315,6 +309,71 @@ impl Default for UiStyle {
       anchor: Anchor::TopLeft,
       offset: Vec2::ZERO,
       absolute: false,
+    }
+  }
+}
+
+#[cfg(test)]
+mod hash_tests {
+  use super::*;
+
+  /// A named change to a style
+  type Change = (&'static str, fn(&mut UiStyle));
+
+  /// Every field changes the hash, and so does a value's kind: a field
+  /// left out of the packing would never be laid out again on its own
+  #[test]
+  fn every_style_field_moves_the_shape_hash() {
+    let base = UiStyle::default();
+    let changes: Vec<Change> = vec![
+      ("flow", |s| s.flow = Flow::Row),
+      ("grid", |s| s.flow = Flow::Grid(Tracks::Equal(3))),
+      ("tracks", |s| s.flow = Flow::Grid(Tracks::Fixed(vec![1.0]))),
+      ("width", |s| s.width = Length::Px(10.0)),
+      ("width kind", |s| s.width = Length::Px(0.0)),
+      ("width fill", |s| s.width = Length::Fill),
+      ("width pct", |s| s.width = Length::Pct(0.0)),
+      ("height", |s| s.height = Length::Px(10.0)),
+      ("height kind", |s| s.height = Length::Fill),
+      ("min width", |s| s.min_width = Some(0.0)),
+      ("max width", |s| s.max_width = Some(0.0)),
+      ("min height", |s| s.min_height = Some(0.0)),
+      ("max height", |s| s.max_height = Some(0.0)),
+      ("min width value", |s| s.min_width = Some(3.0)),
+      ("max height value", |s| s.max_height = Some(3.0)),
+      ("padding left", |s| s.padding.left = 1.0),
+      ("padding top", |s| s.padding.top = 1.0),
+      ("padding right", |s| s.padding.right = 1.0),
+      ("padding bottom", |s| s.padding.bottom = 1.0),
+      ("margin left", |s| s.margin.left = 1.0),
+      ("margin top", |s| s.margin.top = 1.0),
+      ("margin right", |s| s.margin.right = 1.0),
+      ("margin bottom", |s| s.margin.bottom = 1.0),
+      ("gap", |s| s.gap = 1.0),
+      ("align", |s| s.align = Align::Center),
+      ("justify", |s| s.justify = Justify::SpaceEvenly),
+      ("align self", |s| s.align_self = Some(Align::Start)),
+      ("align self value", |s| s.align_self = Some(Align::Stretch)),
+      ("grow", |s| s.grow = 1.0),
+      ("wrap", |s| s.wrap = true),
+      ("aspect", |s| s.aspect = Some(0.0)),
+      ("aspect value", |s| s.aspect = Some(2.0)),
+      ("scroll x", |s| s.scroll_x = true),
+      ("scroll y", |s| s.scroll_y = true),
+      ("anchor", |s| s.anchor = Anchor::BottomRight),
+      ("offset x", |s| s.offset.x = 1.0),
+      ("offset y", |s| s.offset.y = 1.0),
+      ("absolute", |s| s.absolute = true),
+    ];
+    let mut seen = vec![("default", base.shape_hash())];
+    for (name, change) in changes {
+      let mut style = base.clone();
+      change(&mut style);
+      let hash = style.shape_hash();
+      if let Some((same, _)) = seen.iter().find(|(_, h)| *h == hash) {
+        panic!("{name} hashes as {same}");
+      }
+      seen.push((name, hash));
     }
   }
 }
