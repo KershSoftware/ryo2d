@@ -6,3 +6,6 @@ title = "Ryo2D UI Demo"
 
 [display]
 mode = "Fit"
+
+[system]
+console = true
