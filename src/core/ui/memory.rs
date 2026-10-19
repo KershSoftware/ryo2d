@@ -255,7 +255,9 @@ impl Interaction {
   /// (held, gained, lost), activated, stepped, dropped on or over, and the
   /// held payload's source. A widget draws each, and its exit from each.
   pub(crate) fn roles(&self) -> Roles {
-    let ids = [
+    // One slot per role: a role added here without growing `Roles` does
+    // not compile
+    Roles([
       self.hot,
       self.hovered,
       self.active,
@@ -273,20 +275,15 @@ impl Interaction {
       self.drop_hover,
       self.dropped.as_ref().map_or(UiId::NONE, |(id, _)| *id),
       self.drag.as_ref().map_or(UiId::NONE, |drag| drag.source),
-    ];
-    let mut roles = Roles::default();
-    for (slot, id) in roles.0.iter_mut().zip(ids) {
-      *slot = id;
-    }
-    roles
+    ])
   }
 }
 
 /// The ids holding an interaction role in one frame
-/// ([`Interaction::roles`]), `NONE` in an empty slot: a fixed array, so
-/// taking them allocates nothing
+/// ([`Interaction::roles`]), one slot per role (`NONE` when no widget holds
+/// it): a fixed array, so taking them allocates nothing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct Roles([UiId; 20]);
+pub(crate) struct Roles([UiId; 17]);
 
 impl Roles {
   /// Whether `id` holds a role (never `NONE`)

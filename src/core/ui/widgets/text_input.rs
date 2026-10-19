@@ -13,6 +13,7 @@ use crate::core::ui::immediate::{UiCommand, UiContext};
 use crate::core::ui::layout::{Edges, Flow, Length, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
 use crate::core::ui::response::{Response, Sense};
+use crate::core::ui::tape::Read;
 use crate::core::ui::theme::{WidgetKind, WidgetState};
 use crate::core::ui::tree::{DrawKind, Node};
 use crate::core::ui::{Color, Rect};
@@ -127,6 +128,16 @@ impl TextInput<'_, '_> {
         along(style.height, sizes.text_input[1], last.map(|r| r.height)),
       ),
     };
+    // Sized by last frame's layout (`along`'s last arm), what it draws is
+    // placed by its own rect
+    let sized_by_layout = |length: Length| match length {
+      Length::Fit => fills,
+      Length::Px(v) if v.is_finite() && v >= 0.0 => fills,
+      _ => true,
+    };
+    if self.opts.at.is_none() && (sized_by_layout(style.width) || sized_by_layout(style.height)) {
+      ui.note_read(Read::Rect { id, rect: last });
+    }
     let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     let size = Vec2::new(finite(size.x), finite(size.y));
     if style.width == Length::Fit {

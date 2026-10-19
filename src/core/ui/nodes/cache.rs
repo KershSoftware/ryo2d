@@ -11,10 +11,10 @@
 //! The rest of what makes a node rebuild is marked by `mark_live` before
 //! each walk: the nodes holding an interaction role this frame or the last,
 //! and the live ones (scroll areas and lists, an unfinished typewriter, the
-//! node a focus request waits for, tabs while a tab switch is pressed and
-//! drop targets while a drag is held). `clean` then adds what a record
-//! itself says: it must be replayable, built in this environment and top
-//! flag, and its reads of other nodes must still hold.
+//! node a focus request waits for, and the nodes that read input or time
+//! without holding a role while that moves). `clean` then adds what a
+//! record itself says: it must be replayable, built in this environment and
+//! top flag, and every read of its subtree must still hold.
 
 use crate::core::ecs::kernel::{
   Allow, Changed, CheckChangeTicks, ChildOf, Children, ComponentId, Disabled, Entity,
@@ -26,6 +26,7 @@ use crate::core::text::TextReveal;
 use crate::core::ui::env::UiEnv;
 use crate::core::ui::memory::Roles;
 use crate::core::ui::tape::{Read, Tape};
+use crate::core::ui::widgets::rebind::RebindState;
 use crate::core::ui::{UiContext, UiId};
 
 use super::bindings::{UiBind, UiPattern};
@@ -88,6 +89,10 @@ pub(crate) struct UiCache {
   tabs: EntityHashSet,
   /// The drop-target nodes, built while a drag is held
   targets: EntityHashSet,
+  /// The choice lists, built while a number key is pressed
+  choices: EntityHashSet,
+  /// The rebinding rows, built while capturing or showing a note
+  rebinds: EntityHashSet,
   /// The check's query and removal cursors, made for one world
   check: Option<Box<Check>>,
 }
@@ -106,6 +111,8 @@ impl Default for UiCache {
       live: EntityHashSet::default(),
       tabs: EntityHashSet::default(),
       targets: EntityHashSet::default(),
+      choices: EntityHashSet::default(),
+      rebinds: EntityHashSet::default(),
       check: None,
     }
   }
@@ -222,6 +229,8 @@ impl UiCache {
         self.live.clear();
         self.tabs.clear();
         self.targets.clear();
+        self.choices.clear();
+        self.rebinds.clear();
       }
       None => {}
     }
@@ -271,16 +280,27 @@ pub(crate) fn refresh_dirty(world: &mut World) {
   world.try_resource_scope(|world, mut nodes: Mut<UiNodes>| nodes.cache.refresh(world));
 }
 
-/// Mark what must be built in `scene`'s walk whatever changed: the nodes
-/// holding an interaction role this frame or the last (through `by_id`), the
-/// live ones, the node a focus request waits for, the tabs nodes while a tab
-/// switch is pressed in the top scene and the drop targets while a drag is
-/// held. `ui` is recording `scene`. It costs the roles and the live nodes,
-/// never a walk of every node.
+/// Mark what must be built in `scene`'s walk whatever changed, of the
+/// nodes with a record of `scene` (one without is built anyway when drawn):
+/// - the nodes holding an interaction role this frame or the last (found
+///   through `by_id`);
+/// - the live ones: scroll areas and lists, and unfinished typewriters;
+/// - `pending`, the node a focus request waits for;
+/// - in the top scene, the tabs nodes while a tab switch is pressed, and the
+///   choice lists while a number key is;
+/// - the drop targets while a drag is held;
+/// - the rebinding rows capturing a press or showing a swap's note.
+///
+/// `ui` is recording `scene`. It costs the roles and the members of the
+/// live sets, never a walk of every node.
 #[allow(dead_code)] // until the walk marks before it draws
-pub(crate) fn mark_live(world: &mut World, ui: &UiContext<'_>, scene: u64) {
+pub(crate) fn mark_live(
+  world: &mut World,
+  ui: &UiContext<'_>,
+  scene: u64,
+  pending: Option<Entity>,
+) {
   world.try_resource_scope(|world, mut nodes: Mut<UiNodes>| {
-    let pending = nodes.pending_focus;
     nodes.cache.mark_live(world, ui, scene, pending);
   });
 }
@@ -305,27 +325,32 @@ impl UiCache {
     }
     self.roles = (frame, now);
     let world = &*world;
-    for id in now.iter().chain(self.last_roles.iter()) {
-      if let Some(&node) = self.by_id.get(&id) {
-        mark(&mut self.dirty, world, node);
+    let (dirty, records) = (&mut self.dirty, &self.records);
+    let roles = now.iter().chain(self.last_roles.iter());
+    let holders = roles.filter_map(|id| self.by_id.get(&id).copied());
+    for node in holders.chain(pending) {
+      if recorded_in(records, node, scene) {
+        mark(dirty, world, node);
       }
     }
-    if let Some(node) = pending {
-      mark(&mut self.dirty, world, node);
+    let always = |_| true;
+    mark_each(&mut self.live, dirty, records, world, scene, always);
+    let top = ui.scene().1;
+    if top && interact.tab_step != 0 {
+      mark_each(&mut self.tabs, dirty, records, world, scene, always);
     }
-    mark_each(&mut self.live, &mut self.dirty, &self.records, world, scene);
-    if interact.tab_step != 0 && ui.scene().1 {
-      mark_each(&mut self.tabs, &mut self.dirty, &self.records, world, scene);
+    if top && ui.choice_key_pressed() {
+      mark_each(&mut self.choices, dirty, records, world, scene, always);
     }
     if interact.drag.is_some() {
-      mark_each(
-        &mut self.targets,
-        &mut self.dirty,
-        &self.records,
-        world,
-        scene,
-      );
+      mark_each(&mut self.targets, dirty, records, world, scene, always);
     }
+    let busy = |node| {
+      ui.memory
+        .peek_state::<RebindState>(recorded_id(world, node))
+        .is_some_and(|state| state.capturing || state.note.is_some())
+    };
+    mark_each(&mut self.rebinds, dirty, records, world, scene, busy);
   }
 
   /// Mark each typewriter in `scene` that an advance would still move
@@ -337,34 +362,37 @@ impl UiCache {
     let world = &*world;
     let (dirty, records) = (&mut self.dirty, &self.records);
     for (node, reveal) in check.reveals.iter(world) {
-      if !reveal.idle() && drawn_in(records, node, scene) {
+      if !reveal.idle() && recorded_in(records, node, scene) {
         mark(dirty, world, node);
       }
     }
   }
 }
 
-/// Whether `node` was last built in `scene`, or not yet built (then it is
-/// built anyway, and marking it costs nothing)
-fn drawn_in(records: &EntityHashMap<NodeRecord>, node: Entity, scene: u64) -> bool {
+/// Whether `node` has a record of `scene`. One without is built anyway when
+/// it is drawn; marking it would only dirty its ancestors (a hidden
+/// branch's would rebuild the path above it every frame).
+fn recorded_in(records: &EntityHashMap<NodeRecord>, node: Entity, scene: u64) -> bool {
   records
     .get(&node)
-    .is_none_or(|record| record.scene == scene)
+    .is_some_and(|record| record.scene == scene)
 }
 
-/// Mark each node of `set` drawn in `scene`; despawned ones leave the set
+/// Mark each node of `set` with a record of `scene` that is live `when`;
+/// despawned ones leave the set
 fn mark_each(
   set: &mut EntityHashSet,
   dirty: &mut EntityHashSet,
   records: &EntityHashMap<NodeRecord>,
   world: &World,
   scene: u64,
+  when: impl Fn(Entity) -> bool,
 ) {
   set.retain(|&node| {
     if world.get_entity(node).is_err() {
       return false;
     }
-    if drawn_in(records, node, scene) {
+    if recorded_in(records, node, scene) && when(node) {
       mark(dirty, world, node);
     }
     true
@@ -372,14 +400,22 @@ fn mark_each(
 }
 
 /// Keep `node`'s place in the live sets by its `kind`, when its record is
-/// stored: a scroll area or a list is built every frame, a tabs node while
-/// a tab switch is pressed, a drop target while a drag is held
+/// stored: a scroll area or a list is built every frame; a tabs node, a
+/// choice list, a drop target and a rebinding row are built while what they
+/// read without holding a role moves
 #[allow(dead_code)] // until the walk stores records
 pub(crate) fn note_live(cache: &mut UiCache, node: Entity, kind: &UiNodeKind) {
   let live = matches!(kind.kind, Kind::Scroll(_) | Kind::List(_));
   member(&mut cache.live, node, live);
   member(&mut cache.tabs, node, matches!(kind.kind, Kind::Tabs));
+  let choices = matches!(kind.kind, Kind::ChoiceList { .. });
+  member(&mut cache.choices, node, choices);
   member(&mut cache.targets, node, kind.flags.drop_target);
+  member(
+    &mut cache.rebinds,
+    node,
+    matches!(kind.kind, Kind::Rebind(_)),
+  );
 }
 
 fn member(set: &mut EntityHashSet, node: Entity, is: bool) {
@@ -392,8 +428,9 @@ fn member(set: &mut EntityHashSet, node: Entity, is: bool) {
 
 /// Whether the walk may replay `node`'s record instead of building it:
 /// caching is on, it has a record, its tape is replayable, it was built in
-/// this scene, environment and top flag, what it read of other nodes is
-/// unchanged, and it is not dirty
+/// this scene, environment and top flag, what it and its subtree read of
+/// other nodes is unchanged (a tape carries its descendants' reads), and it
+/// is not dirty
 #[allow(dead_code)] // until the walk replays
 pub(crate) fn clean(world: &World, ui: &UiContext<'_>, node: Entity) -> bool {
   let Some(nodes) = world.get_resource::<UiNodes>() else {
@@ -777,12 +814,15 @@ mod tests {
 #[cfg(all(test, feature = "default-fonts"))]
 mod live_tests {
   use super::*;
+  use crate::core::input::{Binding, InputDevice};
   use crate::core::testing::UiHarness;
   use crate::core::ui::id::UiId;
   use crate::core::ui::memory::Interaction;
   use crate::core::ui::nodes::*;
   use crate::core::ui::tape::Read;
+  use crate::core::ui::test_util::{UiDriver, prompts_with};
   use crate::prelude::*;
+  use winit::keyboard::KeyCode;
 
   #[test]
   fn roles_hold_every_id_with_a_part_this_frame() {
@@ -813,7 +853,7 @@ mod live_tests {
   /// `mark_live` for the harness scene inside a frame: the dirty set after
   fn marked(h: &mut UiHarness) -> EntityHashSet {
     h.frame_with_world(|ui, world| {
-      mark_live(world, ui, ui.scene().0);
+      mark_live(world, ui, ui.scene().0, None);
       world.resource::<UiNodes>().cache.dirty.clone()
     })
   }
@@ -857,6 +897,15 @@ mod live_tests {
     }
   }
 
+  /// Replayable records of nothing for `nodes`, built in a frame of their
+  /// own: `mark_live` marks only nodes with a record
+  fn recorded(h: &mut UiHarness, nodes: &[Entity]) {
+    let under = h.frame(|ui| built_under(ui));
+    for &node in nodes {
+      insert(h, node, replayable(Vec::new()), under);
+    }
+  }
+
   #[test]
   fn the_roles_of_this_frame_and_the_last_are_marked() {
     let mut h = UiHarness::new(640.0, 480.0);
@@ -870,8 +919,9 @@ mod live_tests {
     let (a, b) = (h.find_ui("a").unwrap(), h.find_ui("b").unwrap());
     let (ida, idb) = (h.ui_id(a).unwrap(), h.ui_id(b).unwrap());
     cache_mut(&mut h).cache.by_id.extend([(ida, a), (idb, b)]);
+    recorded(&mut h, &[a, b]);
     // A holds the focus: marking now records it as last frame's
-    h.frame_with_world(|ui, world| mark_live(world, ui, ui.scene().0));
+    h.frame_with_world(|ui, world| mark_live(world, ui, ui.scene().0, None));
     cache_mut(&mut h).cache.dirty.clear();
     h.action("ui.down"); // the focus moves from A to B
     let moved = marked(&mut h);
@@ -880,10 +930,10 @@ mod live_tests {
     cache_mut(&mut h).cache.dirty.clear();
     h.move_to(630.0, 470.0);
     let after = h.frame_with_world(|ui, world| {
-      mark_live(world, ui, ui.scene().0);
+      mark_live(world, ui, ui.scene().0, None);
       world.resource_mut::<UiNodes>().cache.dirty.clear();
       // Another scene's pass in the same frame
-      mark_live(world, ui, ui.scene().0);
+      mark_live(world, ui, ui.scene().0, None);
       world.resource::<UiNodes>().cache.dirty.clone()
     });
     assert!(
@@ -908,6 +958,7 @@ mod live_tests {
     warm(&mut h);
     let tabs = h.find_ui("tabs").unwrap();
     note(&mut h, tabs);
+    recorded(&mut h, &[tabs]);
     assert!(!marked(&mut h).contains(&tabs), "no step: no tab moves");
     h.action("ui.tab_next");
     assert!(marked(&mut h).contains(&tabs));
@@ -970,6 +1021,7 @@ mod live_tests {
     let [page, area, row] = ["page", "area", "row"].map(|name| h.find_ui(name).unwrap());
     note(&mut h, area);
     note(&mut h, row);
+    recorded(&mut h, &[area, row]);
     let live = marked(&mut h);
     assert!(live.contains(&area) && live.contains(&page));
     assert!(!live.contains(&row), "its rows may replay");
@@ -994,6 +1046,7 @@ mod live_tests {
     );
     warm(&mut h);
     let (line, still) = (h.find_ui("line").unwrap(), h.find_ui("still").unwrap());
+    recorded(&mut h, &[line, still]);
     let marked_now = marked(&mut h);
     assert!(marked_now.contains(&line), "it reveals more each frame");
     assert!(!marked_now.contains(&still));
@@ -1016,14 +1069,23 @@ mod live_tests {
         .child(UiNode::button("B").name("b")),
     );
     warm(&mut h);
-    let b = h.find_ui("b").unwrap();
-    let marked = h.frame_with_world(|ui, world| {
-      world.resource_mut::<UiNodes>().pending_focus = Some(b);
-      mark_live(world, ui, ui.scene().0);
-      world.resource_mut::<UiNodes>().pending_focus = None;
-      world.resource::<UiNodes>().cache.dirty.clone()
-    });
-    assert!(marked.contains(&b), "only its build asks for the focus");
+    let (a, b) = (h.find_ui("a").unwrap(), h.find_ui("b").unwrap());
+    recorded(&mut h, &[b]);
+    let pending = |h: &mut UiHarness, node: Entity| {
+      h.frame_with_world(|ui, world| {
+        mark_live(world, ui, ui.scene().0, Some(node));
+        world.resource::<UiNodes>().cache.dirty.clone()
+      })
+    };
+    assert!(
+      pending(&mut h, b).contains(&b),
+      "only its build asks for the focus"
+    );
+    cache_mut(&mut h).cache.dirty.clear();
+    assert!(
+      !pending(&mut h, a).contains(&a),
+      "no record: it is built when drawn"
+    );
   }
 
   #[test]
@@ -1046,11 +1108,12 @@ mod live_tests {
     let (target, other) = (h.find_ui("target").unwrap(), h.find_ui("other").unwrap());
     note(&mut h, target);
     note(&mut h, other);
+    recorded(&mut h, &[target, other]);
     assert!(!marked(&mut h).contains(&target), "nothing is held");
     h.action("ui.confirm"); // the focused source is picked up
     h.frame(|_| ());
     let (held, marked) = h.frame_with_world(|ui, world| {
-      mark_live(world, ui, ui.scene().0);
+      mark_live(world, ui, ui.scene().0, None);
       let dirty = world.resource::<UiNodes>().cache.dirty.clone();
       (ui.held::<Entity>(), dirty)
     });
@@ -1154,5 +1217,205 @@ mod live_tests {
       state.id = UiId(12_345);
     }
     assert!(!is_clean(&mut h), "the neighbour's id changed");
+  }
+
+  #[test]
+  fn a_node_without_a_record_of_this_scene_is_not_marked() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(
+      UiNode::column().name("page").child(
+        UiNode::column().name("branch").hidden().child(
+          UiNode::scroll()
+            .height(100.0)
+            .name("area")
+            .child(UiNode::text("Hello")),
+        ),
+      ),
+    );
+    warm(&mut h);
+    let (page, area) = (h.find_ui("page").unwrap(), h.find_ui("area").unwrap());
+    note(&mut h, area);
+    let unseen = marked(&mut h);
+    assert!(
+      !unseen.contains(&area) && !unseen.contains(&page),
+      "a live node under a hidden branch rebuilds nothing above it"
+    );
+    let (env, scene, frame) = h.frame(|ui| built_under(ui));
+    insert(
+      &mut h,
+      area,
+      replayable(Vec::new()),
+      (env, scene + 1, frame),
+    );
+    assert!(
+      !marked(&mut h).contains(&area),
+      "its record is another scene's"
+    );
+  }
+
+  /// A column holding the difficulty dropdown at `x`, each taped as the
+  /// walk tapes a node and its child: the column's tape, the dropdown's,
+  /// and the dropdown's response
+  fn taped_column(ui: &mut UiContext<'_>, x: f32) -> (Tape, Tape, Response) {
+    let slot = Entity::from_raw_u32(7).unwrap();
+    let mut inner = (Tape::default(), Response::default());
+    ui.start_tape();
+    ui.column().id("column").show(|ui| {
+      ui.begin_child(slot);
+      ui.start_tape();
+      let response = difficulty(ui, x);
+      inner = (ui.end_tape(), response);
+      ui.end_child();
+    });
+    (ui.end_tape(), inner.0, inner.1)
+  }
+
+  #[test]
+  fn a_parent_carries_the_reads_of_its_subtree() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(
+      UiNode::row()
+        .child(UiNode::column().name("left"))
+        .child(UiNode::column().name("right")),
+    );
+    warm(&mut h);
+    let id = h.frame(|ui| taped_column(ui, 10.0).2.id);
+    let trigger = h.record_of(id).unwrap().rect;
+    h.move_to(trigger.x + 5.0, trigger.y + 5.0);
+    h.press();
+    h.frame(|ui| taped_column(ui, 10.0));
+    h.release();
+    h.frame(|ui| taped_column(ui, 10.0)); // the click opens it
+    let (column, dropdown, under) = h.frame(|ui| {
+      let (column, dropdown, _) = taped_column(ui, 10.0);
+      (column, dropdown, built_under(ui))
+    });
+    let read = Read::Rect {
+      id,
+      rect: h.record_of(id).map(|record| record.rect),
+    };
+    assert!(dropdown.reads.contains(&read), "{:?}", dropdown.reads);
+    assert_eq!(column.reads, [read], "the column carries its child's read");
+
+    // The column's record on one node, a sibling's on another
+    let (left, right) = (h.find_ui("left").unwrap(), h.find_ui("right").unwrap());
+    insert(&mut h, left, replayable(column.reads.clone()), under);
+    insert(&mut h, right, replayable(Vec::new()), under);
+    let both = |h: &mut UiHarness, x: f32| {
+      h.frame_with_world(|ui, world| {
+        let both = (clean(world, ui, left), clean(world, ui, right));
+        taped_column(ui, x);
+        both
+      })
+    };
+    assert_eq!(both(&mut h, 10.0), (true, true));
+    h.frame(|ui| taped_column(ui, 200.0));
+    assert_eq!(
+      both(&mut h, 200.0),
+      (false, true),
+      "the column around the moved dropdown rebuilds; its sibling replays"
+    );
+
+    // Replayed inside a recording tape, the column's reads come along once:
+    // they already hold the dropdown's
+    let slot = Entity::from_raw_u32(8).unwrap();
+    let outer = h.frame(|ui| {
+      ui.start_tape();
+      ui.column().id("outer").show(|ui| {
+        ui.begin_child(slot);
+        ui.replay(&column, &mut |ui, _| ui.replay(&dropdown, &mut |_, _| {}));
+        ui.end_child();
+      });
+      ui.end_tape()
+    });
+    assert_eq!(outer.reads, column.reads);
+  }
+
+  #[test]
+  fn a_number_key_marks_a_choice_list_that_holds_no_role() {
+    let mut d = UiDriver::new((640.0, 480.0));
+    // Embedded, so each frame marks before the tree is drawn, as the walk
+    // will: the list takes the key it picks with
+    let root = d.spawn_ui(
+      UiNode::column()
+        .embedded()
+        .focus_scope()
+        .child(UiNode::button("Other").name("other").default_focus())
+        .child(UiNode::choice_list(&["Yes", "No"]).name("choices")),
+    );
+    let frame = |d: &mut UiDriver| {
+      d.frame_with_world(|ui, world| {
+        mark_live(world, ui, ui.scene().0, None);
+        let marked = world.resource::<UiNodes>().cache.dirty.clone();
+        ui.node(root, world);
+        (marked, built_under(ui))
+      })
+    };
+    for _ in 0..3 {
+      frame(&mut d);
+    }
+    let choices = d.find_ui("choices").unwrap();
+    note(&mut d, choices);
+    let (_, under) = frame(&mut d);
+    insert(&mut d, choices, replayable(Vec::new()), under);
+    assert!(!frame(&mut d).0.contains(&choices), "no number key");
+    d.key(KeyCode::Digit2);
+    assert!(
+      frame(&mut d).0.contains(&choices),
+      "2 picks its second choice"
+    );
+  }
+
+  #[test]
+  fn a_rebinding_row_is_marked_while_it_shows_a_note() {
+    let prompts = prompts_with(
+      InputDevice::Keyboard,
+      &[("jump", vec![Binding::Key(KeyCode::Space)])],
+    );
+    let mut d = UiDriver::new((640.0, 480.0)).prompts(prompts);
+    d.spawn_ui(UiNode::column().child(UiNode::rebind("jump").name("row")));
+    warm(&mut d);
+    let row = d.find_ui("row").unwrap();
+    note(&mut d, row);
+    recorded(&mut d, &[row]);
+    assert!(!marked(&mut d).contains(&row), "idle");
+    let (id, scene) = (d.ui_id(row).unwrap(), d.frame(|ui| ui.scene().0));
+    let now = d.memory.interact.now;
+    if let Some(state) = d.memory.state::<RebindState>(id, scene) {
+      // A swap the engine applied after the pass: its note fades on time
+      state.note = Some(("Swapped with run".to_string(), now));
+    }
+    assert!(marked(&mut d).contains(&row));
+  }
+
+  #[test]
+  fn a_text_field_sized_by_layout_reads_its_own_rect() {
+    let field = |ui: &mut UiContext<'_>, fill: bool| {
+      let mut name = String::from("Ada");
+      let mut tape = Tape::default();
+      let mut id = UiId::NONE;
+      ui.column().id("form").width(300.0).show(|ui| {
+        ui.start_tape();
+        let mut builder = ui.text_input(&mut name).id("name");
+        if fill {
+          builder = builder.fill_width();
+        }
+        id = builder.show().id;
+        tape = ui.end_tape();
+      });
+      (tape, id)
+    };
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.frame(|ui| field(ui, true));
+    h.frame(|ui| field(ui, true));
+    let (tape, id) = h.frame(|ui| field(ui, true));
+    let rect = h.record_of(id).map(|record| record.rect);
+    assert_eq!(
+      tape.reads,
+      [Read::Rect { id, rect }],
+      "it fills: its text is placed in last frame's rect"
+    );
+    let (fixed, _) = h.frame(|ui| field(ui, false));
+    assert!(fixed.reads.is_empty(), "its own size: nothing read");
   }
 }

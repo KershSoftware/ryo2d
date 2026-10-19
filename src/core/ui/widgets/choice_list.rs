@@ -66,6 +66,18 @@ impl<'a> UiContext<'a> {
 
 widget_builders!(ChoiceList<'_, '_>);
 
+impl UiContext<'_> {
+  /// Whether a number key a choice list picks with is pressed this frame
+  /// and not consumed yet
+  pub(crate) fn choice_key_pressed(&self) -> bool {
+    let input = self.input();
+    NUMBER_KEYS
+      .iter()
+      .flatten()
+      .any(|&key| input.key_pressed(key))
+  }
+}
+
 impl ChoiceList<'_, '_> {
   /// Focus choice `index` first when the list appears (the first choice
   /// when there is no such choice)

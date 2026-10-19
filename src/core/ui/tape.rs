@@ -14,8 +14,10 @@
 //! consumes input, plays a sound, draws outside its subtree) taints its tape
 //! and every tape around it: they are recorded but never replayed. What a
 //! build read from outside its own node (another node's id, the rect it
-//! placed by) is noted as a [`Read`]: the tape replays only while each is
-//! still as read.
+//! placed by) is noted as a [`Read`] in its tape and every tape around it,
+//! and a replay inside a recording tape adds the replayed reads to it: a
+//! tape replays only while every read of its subtree still holds, so a
+//! clean parent never holds a child that is not.
 
 use crate::core::ecs::kernel::Entity;
 use crate::core::ui::immediate::UiContext;
@@ -87,6 +89,9 @@ pub(crate) struct Recorder {
   places: Vec<Place>,
   /// Child slots (and replays) under way: nothing is recorded while above 0
   paused: u32,
+  /// Replays under way while it was the open tape: a replay inside another
+  /// adds no reads, the outer one's hold its
+  replaying: u32,
   /// Where its ids and touches start in the memory's logs
   ids: usize,
   states: usize,
@@ -108,6 +113,7 @@ impl UiContext<'_> {
       },
       places: Vec::new(),
       paused: 0,
+      replaying: 0,
       ids: self.memory.scopes.log.mark(),
       states: self.memory.touched.mark(),
     };
@@ -145,12 +151,10 @@ impl UiContext<'_> {
   }
 
   /// The build being recorded read `read` from outside its own node: noted
-  /// in the recording tape, if one is
+  /// in the open tape and every tape around it, since a replay of any of
+  /// them would push what it made of it
   pub(crate) fn note_read(&mut self, read: Read) {
-    if !self.recording() {
-      return;
-    }
-    if let Some(recorder) = self.tapes.last_mut() {
+    for recorder in &mut self.tapes {
       recorder.tape.reads.push(read);
     }
   }
@@ -166,9 +170,22 @@ impl UiContext<'_> {
   /// Push again what `tape` recorded, stamped from the context here as a
   /// build would be: `child` fills each child slot. Its ids are made and
   /// its widget states kept this frame. An open tape records none of it
-  /// (it holds the child slot this is drawn in, if any).
+  /// (it holds the child slot this is drawn in, if any) but its reads.
   #[allow(dead_code)] // until the node walk records and replays tapes
   pub(crate) fn replay(&mut self, tape: &Tape, child: &mut dyn FnMut(&mut UiContext<'_>, Entity)) {
+    // The tapes around carry what it read, as they would had it been built
+    if self
+      .tapes
+      .last()
+      .is_some_and(|recorder| recorder.replaying == 0)
+    {
+      for recorder in &mut self.tapes {
+        recorder.tape.reads.extend_from_slice(&tape.reads);
+      }
+    }
+    if let Some(recorder) = self.tapes.last_mut() {
+      recorder.replaying += 1;
+    }
     self.pause();
     // Made before the nodes, as a build makes a node's ids before its
     // children's, so a capture sees them in a build's order
@@ -203,6 +220,9 @@ impl UiContext<'_> {
     }
     self.memory.scratch.replayed.truncate(base);
     self.resume();
+    if let Some(recorder) = self.tapes.last_mut() {
+      recorder.replaying = recorder.replaying.saturating_sub(1);
+    }
   }
 
   /// The subtree index the replay from `base` gave its k-th node
