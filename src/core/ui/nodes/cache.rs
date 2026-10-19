@@ -111,6 +111,8 @@ pub(crate) struct UiCache {
   rebinds: EntityHashSet,
   /// The check's query and removal cursors, made for one world
   check: Option<Box<Check>>,
+  /// The nodes `forget` has still to take out, kept between calls
+  forgetting: Vec<Entity>,
   /// The debug spot check
   #[cfg(debug_assertions)]
   pub(crate) spot: SpotCheck,
@@ -133,6 +135,7 @@ impl Default for UiCache {
       choices: EntityHashSet::default(),
       rebinds: EntityHashSet::default(),
       check: None,
+      forgetting: Vec::new(),
       #[cfg(debug_assertions)]
       spot: SpotCheck::default(),
     }
@@ -518,10 +521,11 @@ impl UiCache {
       return;
     }
     self.drop_record(node);
-    let mut stack: Vec<Entity> = world
-      .get::<Children>(node)
-      .map(|children| children.to_vec())
-      .unwrap_or_default();
+    let mut stack = std::mem::take(&mut self.forgetting);
+    stack.clear();
+    if let Some(children) = world.get::<Children>(node) {
+      stack.extend_from_slice(children);
+    }
     while let Some(at) = stack.pop() {
       if self.dirty.remove(&at) {
         self.drop_record(at);
@@ -530,6 +534,7 @@ impl UiCache {
         stack.extend_from_slice(children);
       }
     }
+    self.forgetting = stack;
   }
 
   /// Drop `node`'s record, with what it noted: its ids in `by_id` and its
@@ -587,7 +592,8 @@ impl UiCache {
 
   /// Choose the node the spot check builds this frame, once a frame, after
   /// the first walk's marks: the first record after the last one checked,
-  /// by entity, of a node not dirty (a dirty one is built anyway)
+  /// by entity, of a node not dirty and replayable (any other is built
+  /// anyway)
   #[cfg(debug_assertions)]
   pub(crate) fn choose_spot(&mut self, world: &World, frame: u64) {
     let UiCache {
@@ -607,7 +613,10 @@ impl UiCache {
     spot.frame = Some(frame);
     spot.path.clear();
     let (mut first, mut next) = (None, None);
-    for &node in records.keys().filter(|node| !dirty.contains(*node)) {
+    let candidates = records
+      .iter()
+      .filter(|(node, record)| record.tape.replayable && !dirty.contains(*node));
+    for (&node, _) in candidates {
       first = Some(first.map_or(node, |first: Entity| first.min(node)));
       if spot.last.is_none_or(|last| node > last) {
         next = Some(next.map_or(node, |next: Entity| next.min(node)));
