@@ -189,6 +189,46 @@ pub(crate) struct NodeRecord {
   pub(crate) scope: UiId,
 }
 
+/// A record's tape taken out to replay, with what the replay answers
+pub(crate) struct Taken {
+  pub(crate) tape: Tape,
+  /// The node's response id
+  pub(crate) id: UiId,
+  /// A modal or popup container: the walk's Back target
+  pub(crate) dialog: bool,
+}
+
+/// Whether `record` may replay where `ui` is: its tape is replayable, it was
+/// built in this scene, top flag, environment and id scope (`None`: in a
+/// parent's replay, see [`UiCache::is_clean`]), and every read of its
+/// subtree still holds
+fn replays_here(
+  record: &NodeRecord,
+  world: &World,
+  ui: &UiContext<'_>,
+  env: UiEnv,
+  scope: Option<UiId>,
+) -> bool {
+  let (scene, top) = ui.scene();
+  record.tape.replayable
+    && record.scene == scene
+    && record.top == top
+    && record.env == env
+    && scope.is_none_or(|scope| record.scope == scope)
+    && record.tape.reads.iter().all(|read| holds(world, ui, read))
+}
+
+/// `record`'s tape taken out to replay, the record marked drawn in memory
+/// frame `frame`
+fn take(record: &mut NodeRecord, frame: u64) -> Taken {
+  record.frame = frame;
+  Taken {
+    tape: std::mem::take(&mut record.tape),
+    id: record.id,
+    dialog: record.dialog,
+  }
+}
+
 /// What the walks did with the nodes of the last pass
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CacheStats {
@@ -365,6 +405,7 @@ impl UiCache {
   /// `None` in a parent's replay, which pushes no scope: there a child's
   /// scope is the one its parent's build gave it, since a child is built
   /// again whenever its parent is built in another scope.
+  #[cfg(any(test, debug_assertions))]
   pub(crate) fn is_clean(
     &self,
     world: &World,
@@ -376,16 +417,45 @@ impl UiCache {
     if !self.enabled || self.dirty.contains(&node) {
       return false;
     }
-    let Some(record) = self.records.get(&node) else {
-      return false;
-    };
-    let (scene, top) = ui.scene();
-    record.tape.replayable
-      && record.scene == scene
-      && record.top == top
-      && record.env == env
-      && scope.is_none_or(|scope| record.scope == scope)
-      && record.tape.reads.iter().all(|read| holds(world, ui, read))
+    self
+      .records
+      .get(&node)
+      .is_some_and(|record| replays_here(record, world, ui, env, scope))
+  }
+
+  /// [`is_clean`](Self::is_clean)'s check and, when it passes, the
+  /// record's tape taken out to replay, the record marked drawn this frame:
+  /// one lookup of the record for both
+  pub(crate) fn take_clean(
+    &mut self,
+    world: &World,
+    ui: &UiContext<'_>,
+    node: Entity,
+    env: UiEnv,
+    scope: Option<UiId>,
+  ) -> Option<Taken> {
+    if !self.enabled || self.dirty.contains(&node) {
+      return None;
+    }
+    let record = self.records.get_mut(&node)?;
+    replays_here(record, world, ui, env, scope).then(|| take(record, ui.memory.frame()))
+  }
+
+  /// `node`'s record's tape taken out to replay, clean or not, the record
+  /// marked drawn in memory frame `frame`
+  pub(crate) fn take_tape(&mut self, node: Entity, frame: u64) -> Option<Taken> {
+    self
+      .records
+      .get_mut(&node)
+      .map(|record| take(record, frame))
+  }
+
+  /// The tape `take_clean` or `take_tape` took, replayed, back in `node`'s
+  /// record
+  pub(crate) fn give_tape(&mut self, node: Entity, tape: Tape) {
+    if let Some(record) = self.records.get_mut(&node) {
+      record.tape = tape;
+    }
   }
 
   /// `node` is being built: it leaves the dirty set (its dirty children are

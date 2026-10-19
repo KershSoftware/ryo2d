@@ -35,7 +35,7 @@ use crate::core::ui::theme::warn_once;
 use crate::core::ui::{Anchor, Container, Rect, Response, Scroll, Theme, UiContext, UiId};
 
 use super::bindings::{self, UiBind};
-use super::cache::{LiveKinds, NodeRecord, UiCache};
+use super::cache::{LiveKinds, NodeRecord, Taken, UiCache};
 use super::components::{
   BackAnswer, UiChecked, UiDisabled, UiHidden, UiImage, UiIndex, UiInteraction, UiLabel, UiName,
   UiNodes, UiOptions, UiRoot, UiSlot, UiTextValue, UiTooltip, UiValue,
@@ -253,7 +253,7 @@ impl<'a> UiContext<'a> {
       #[cfg(debug_assertions)]
       walk.cache.choose_spot(world, self.memory.frame());
     }
-    let response = draw_node(world, self, root, None, &mut walk);
+    let response = draw_node(world, self, root, None, &mut walk).response(self);
     let mut events = walk.give_back(world);
     if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
       nodes.pending.append(&mut events);
@@ -334,19 +334,47 @@ fn scene_root(world: &World, scene: u64, i: &mut usize) -> Option<(Entity, Place
 /// Draw `node`, a child of the node being built (a container's child, a
 /// list's row), and its subtree: while the parent is recorded, in a slot of
 /// its tape
-pub(super) fn draw_child(
-  world: &mut World,
-  ui: &mut UiContext<'_>,
-  node: Entity,
-  walk: &mut Walk,
-) -> Option<Response> {
+pub(super) fn draw_child(world: &mut World, ui: &mut UiContext<'_>, node: Entity, walk: &mut Walk) {
   if !walk.caching {
-    return draw_node(world, ui, node, None, walk);
+    draw_node(world, ui, node, None, walk);
+    return;
   }
   ui.begin_child(node);
-  let response = draw_node(world, ui, node, None, walk);
+  draw_node(world, ui, node, None, walk);
   ui.end_child();
-  response
+}
+
+/// What drawing a node gave: a build's response, or the id a replay
+/// answers with, its response made only when asked for
+enum Drawn {
+  Built(Option<Response>),
+  Replayed(UiId),
+}
+
+impl Drawn {
+  /// The node's response: a replay's is its recorded id with the rect a
+  /// build's would have (this frame's if laid out already, else last
+  /// frame's), if its build gave one
+  fn response(self, ui: &UiContext<'_>) -> Option<Response> {
+    let id = match self {
+      Drawn::Built(response) => return response,
+      Drawn::Replayed(id) => id,
+    };
+    if id == UiId::NONE {
+      return None;
+    }
+    let rect = ui
+      .memory
+      .current(id)
+      .or_else(|| ui.memory.prev(id))
+      .map(|record| record.rect)
+      .unwrap_or_default();
+    Some(Response {
+      id,
+      rect,
+      ..Response::default()
+    })
+  }
 }
 
 /// Draw `node` and its subtree; `place` is a root's placement. A clean node
@@ -359,9 +387,9 @@ fn draw_node(
   node: Entity,
   place: Option<Place>,
   walk: &mut Walk,
-) -> Option<Response> {
+) -> Drawn {
   let Ok(entity) = world.get_entity(node) else {
-    return None;
+    return Drawn::Built(None);
   };
   let shown = entity
     .get::<UiNodeKind>()
@@ -376,28 +404,28 @@ fn draw_node(
     if walk.caching {
       walk.cache.forget(world, node);
     }
-    return build_node(world, ui, node, place, walk);
+    return Drawn::Built(build_node(world, ui, node, place, walk));
   };
   if !walk.caching {
     walk.cache.count_built(node);
-    return build_node(world, ui, node, place, walk);
+    return Drawn::Built(build_node(world, ui, node, place, walk));
   }
   // The node a focus request waits for asks for it as it is built
-  let scope = ui.memory.scopes.current();
-  let replays =
-    walk.pending_focus != Some(node) && walk.cache.is_clean(world, ui, node, walk.env, Some(scope));
-  if replays {
+  if walk.pending_focus != Some(node) {
+    let scope = Some(ui.memory.scopes.current());
     #[cfg(debug_assertions)]
-    if walk.cache.spot_due(node) {
-      return spot_check(world, ui, node, place, live, dialog, walk);
+    if walk.cache.spot_due(node) && walk.cache.is_clean(world, ui, node, walk.env, scope) {
+      return Drawn::Built(spot_check(world, ui, node, place, live, dialog, walk));
     }
-    return replay_node(world, ui, node, walk);
+    if let Some(taken) = walk.cache.take_clean(world, ui, node, walk.env, scope) {
+      return Drawn::Replayed(replay_taken(world, ui, node, taken, walk));
+    }
   }
   let tape = walk.cache.take_for_build(node);
   walk.cache.count_built(node);
   let (response, record) = build_recorded(world, ui, node, place, tape, dialog, walk);
   walk.cache.store(node, record, live);
-  response
+  Drawn::Built(response)
 }
 
 /// Build `node` (a `dialog` or not) and its subtree, recorded into `tape`:
@@ -449,42 +477,24 @@ fn spot_check(
   response
 }
 
-/// Replay `node`'s record, each child slot filled by the child's replay:
-/// its response (its recorded id, and its rect as a build's would be), if
-/// its build gave one
-fn replay_node(
+/// Replay `node`'s record, whose tape was `taken` out of it, each child
+/// slot filled by the child's replay, and put the tape back: the id it
+/// answers with
+fn replay_taken(
   world: &mut World,
   ui: &mut UiContext<'_>,
   node: Entity,
+  taken: Taken,
   walk: &mut Walk,
-) -> Option<Response> {
-  let frame = ui.memory.frame();
-  let record = walk.cache.records.get_mut(&node)?;
-  record.frame = frame;
-  let tape = std::mem::take(&mut record.tape);
-  let (id, dialog) = (record.id, record.dialog);
+) -> UiId {
+  let Taken { tape, id, dialog } = taken;
   if dialog {
     walk.back = Some(node);
   }
   walk.cache.stats.replayed += tape.nodes.len();
   ui.replay(&tape, &mut |ui, child| replay_child(world, ui, child, walk));
-  if let Some(record) = walk.cache.records.get_mut(&node) {
-    record.tape = tape;
-  }
-  if id == UiId::NONE {
-    return None;
-  }
-  let rect = ui
-    .memory
-    .current(id)
-    .or_else(|| ui.memory.prev(id))
-    .map(|record| record.rect)
-    .unwrap_or_default();
-  Some(Response {
-    id,
-    rect,
-    ..Response::default()
-  })
+  walk.cache.give_tape(node, tape);
+  id
 }
 
 /// Fill a replaying parent's slot for `child`: its replay, or nothing for a
@@ -494,8 +504,8 @@ fn replay_node(
 /// from its record if it has one, and marked, with its ancestors, to build
 /// next frame.
 fn replay_child(world: &mut World, ui: &mut UiContext<'_>, child: Entity, walk: &mut Walk) {
-  if walk.cache.is_clean(world, ui, child, walk.env, None) {
-    replay_node(world, ui, child, walk);
+  if let Some(taken) = walk.cache.take_clean(world, ui, child, walk.env, None) {
+    replay_taken(world, ui, child, taken, walk);
     return;
   }
   let shown = world
@@ -513,8 +523,8 @@ fn replay_child(world: &mut World, ui: &mut UiContext<'_>, child: Entity, walk: 
   });
   ui.taint();
   walk.cache.mark_anew(world, child);
-  if walk.cache.records.contains_key(&child) {
-    replay_node(world, ui, child, walk);
+  if let Some(taken) = walk.cache.take_tape(child, ui.memory.frame()) {
+    replay_taken(world, ui, child, taken, walk);
   }
 }
 
