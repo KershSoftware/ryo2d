@@ -390,7 +390,7 @@ impl UiContext<'_> {
 
   /// `node` (as given to `push_node`, at `at`) into the recording tape: it
   /// went to `index` in the open subtree
-  pub(crate) fn tape_node(&mut self, node: Node, at: Option<Rect>, index: usize) {
+  pub(crate) fn tape_node(&mut self, mut node: Node, at: Option<Rect>, index: usize) {
     let depth = self.subtree_stack.len();
     let Some(recorder) = self.tapes.last_mut() else {
       return;
@@ -405,6 +405,8 @@ impl UiContext<'_> {
       index,
       id: node.id,
     });
+    // Hashed once here, not in each replay's layout
+    node.shape = node.style.shape_hash();
     tape.nodes.push(node);
     tape.ops.push(Op::Node { node: k, at });
   }
@@ -877,10 +879,15 @@ mod tests {
   /// A button at `x` with a popup below it, built, taped or replayed: the
   /// popup's id (`NONE` when replayed)
   fn anchored(ui: &mut UiContext<'_>, x: f32, menu: Menu<'_>) -> UiId {
+    anchored_wide(ui, x, 80.0, menu)
+  }
+
+  /// [`anchored`] with a button `width` wide
+  fn anchored_wide(ui: &mut UiContext<'_>, x: f32, width: f32, menu: Menu<'_>) -> UiId {
     let more = ui
       .button("More")
       .id("more")
-      .at(Rect::new(x, 20.0, 80.0, 24.0))
+      .at(Rect::new(x, 20.0, width, 24.0))
       .show();
     let tape = match menu {
       Menu::Replay(tape) => {
@@ -925,6 +932,31 @@ mod tests {
     let rect = replayed.record_of(menu).map(|r| r.rect).unwrap_or_default();
     assert_eq!(rect.x, 300.0, "below the anchor where it is now");
     assert_eq!(snapshot(&replayed, &[menu]), snapshot(&built, &[menu]));
+  }
+
+  #[test]
+  fn a_replayed_popup_is_as_wide_as_its_anchor_is_now() {
+    // The popup's root takes its anchor's width after it is pushed: a
+    // replay must lay that out, not the width its tape was hashed at
+    let mut built = UiHarness::new(640.0, 480.0);
+    built.move_to(630.0, 470.0);
+    let mut tape = Tape::default();
+    built.frame(|ui| anchored_wide(ui, 10.0, 80.0, Menu::Tape(&mut tape)));
+    let mut replayed = UiHarness::new(640.0, 480.0);
+    replayed.move_to(630.0, 470.0);
+    let mut menu = UiId::NONE;
+    for width in [80.0, 80.0, 300.0, 300.0, 120.0, 120.0] {
+      menu = built.frame(|ui| anchored_wide(ui, 10.0, width, Menu::Build));
+      replayed.frame(|ui| anchored_wide(ui, 10.0, width, Menu::Replay(&tape)));
+      let rect = replayed.record_of(menu).map(|r| r.rect).unwrap_or_default();
+      assert!(
+        rect.width >= width,
+        "{} for an anchor {width} wide",
+        rect.width
+      );
+      assert_eq!(snapshot(&replayed, &[menu]), snapshot(&built, &[menu]));
+    }
+    assert!(tape.replayable && menu != UiId::NONE);
   }
 
   #[test]

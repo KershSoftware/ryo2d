@@ -69,6 +69,10 @@ pub(crate) struct Node {
   pub(crate) text: Option<Leaf>,
   /// Changes when what is measured changes
   pub(crate) content_key: u64,
+  /// Its style's [`UiStyle::shape_hash`] when known (0: not): a tape keeps
+  /// it, so a replayed node is not hashed again. A style changed after the
+  /// node is pushed sets it back to 0.
+  pub(crate) shape: u64,
   /// What its record says; `None` writes no record
   pub(crate) record: Option<RecordSpec>,
   pub(crate) layer: u8,
@@ -95,6 +99,7 @@ impl Node {
       measure,
       text: None,
       content_key: 0,
+      shape: 0,
       record: None,
       layer: 0,
       order: 0,
@@ -318,13 +323,15 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   descs.extend(nodes.iter().enumerate().map(|(i, node)| {
     let start = if i == 0 { 0 } else { ends[i - 1] };
     let float = floating.next_if(|(k, _)| *k == i).map(|(_, style)| style);
+    let (style, shape) = match (&root_style, float, i) {
+      (Some(style), _, 0) => (style, 0),
+      (_, Some(style), _) => (style, 0),
+      _ => (&node.style, node.shape),
+    };
     NodeDesc {
       id: node.id,
-      style: match (&root_style, float, i) {
-        (Some(style), _, 0) => style,
-        (_, Some(style), _) => style,
-        _ => &node.style,
-      },
+      style,
+      shape,
       measure: node.measure,
       content_key: node.content_key,
       children: &children[start..ends[i]],

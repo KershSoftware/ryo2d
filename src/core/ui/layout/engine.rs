@@ -31,6 +31,8 @@ pub(crate) type MeasureFn<'a> =
 pub(crate) struct NodeDesc<'s> {
   pub(crate) id: UiId,
   pub(crate) style: &'s UiStyle,
+  /// `style`'s shape hash when known (0: hashed here)
+  pub(crate) shape: u64,
   pub(crate) measure: Measure,
   /// Changes when the measured content changes (a text's hash)
   pub(crate) content_key: u64,
@@ -238,11 +240,7 @@ impl LayoutEngine {
     } = self;
     for &i in order.iter().rev() {
       let desc = &nodes[i];
-      let hash = node_hash(
-        desc.style,
-        parents[i].map(|p| &nodes[p].style.flow),
-        desc.measure,
-      );
+      let hash = node_hash(desc, parents[i].map(|p| &nodes[p].style.flow), desc.measure);
       child_ids.clear();
       let (start, end) = kid_range[i];
       child_ids.extend(kids[start..end].iter().filter_map(|&c| taffy_ids[c]));
@@ -449,11 +447,18 @@ fn warn_bad(field: &str) {
   );
 }
 
-/// One hash of everything `to_taffy` reads: the raw style, the parent's raw
-/// flow and the raw measure kind
-fn node_hash(style: &UiStyle, parent_flow: Option<&Flow>, measure: Measure) -> u64 {
+/// One hash of everything `to_taffy` reads: the raw style (`desc`'s shape
+/// hash, when known), the parent's raw flow and the raw measure kind
+fn node_hash(desc: &NodeDesc<'_>, parent_flow: Option<&Flow>, measure: Measure) -> u64 {
+  let shape = match desc.shape {
+    0 => desc.style.shape_hash(),
+    known => {
+      debug_assert_eq!(known, desc.style.shape_hash(), "a node's kept shape hash");
+      known
+    }
+  };
   let mut h = FastHasher::default();
-  h.write_u64(style.shape_hash());
+  h.write_u64(shape);
   match parent_flow {
     Some(flow) => {
       h.write_u8(1);
@@ -722,6 +727,7 @@ mod tests {
     NodeDesc {
       id: UiId(id),
       style,
+      shape: 0,
       measure,
       content_key: 0,
       children,
@@ -1075,6 +1081,7 @@ mod tests {
         NodeDesc {
           id: UiId(2),
           style: &leaf,
+          shape: 0,
           measure: Measure::Text,
           content_key: key,
           children: &[],

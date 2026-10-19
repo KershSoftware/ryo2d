@@ -192,11 +192,13 @@ impl UiContext<'_> {
                 .min_width
                 .map_or(anchor.width, |w| w.max(anchor.width));
               root.style.min_width = Some(width);
+              root.shape = 0;
             }
           }
           (false, None) => {
             if let Some(root) = subtree.nodes.first_mut() {
               root.style.anchor = Anchor::Center;
+              root.shape = 0;
             }
           }
         }
