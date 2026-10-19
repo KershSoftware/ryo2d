@@ -1015,17 +1015,29 @@ impl<'a> UiContext<'a> {
   /// Push `node` into the open container, or start a subtree with it
   /// (placed at `at`, under the current clip). It becomes the innermost
   /// open node: close it with [`close_node`](Self::close_node).
-  pub(crate) fn push_node(&mut self, mut node: Node, at: Option<Rect>) -> usize {
-    // A tape keeps the node as given, its text shared with the one pushed
-    let taped = self.recording().then(|| {
-      node.text = node.text.take().map(Leaf::share);
-      (node.clone(), at)
-    });
-    let index = self.push_stamped(at, |nodes| nodes.push(node));
+  pub(crate) fn push_node(&mut self, node: Node, at: Option<Rect>) -> usize {
+    // A tape keeps the node as given
+    let taped = self.recording().then(|| (node.clone(), at));
+    let index = self.push_stamped(at, |subtree| subtree.nodes.push(node));
     if let Some((node, at)) = taped {
       self.tape_node(node, at, index);
     }
     index
+  }
+
+  /// [`push_node`](Self::push_node) of a text node measured and drawn by
+  /// `leaf`: kept in the subtree beside the node, or shared with the node
+  /// a tape keeps while one records
+  pub(crate) fn push_text_node(&mut self, mut node: Node, leaf: TextLeaf) -> usize {
+    if self.recording() {
+      node.text = Some(Leaf::Shared(Arc::new(leaf)));
+      return self.push_node(node, None);
+    }
+    self.push_stamped(None, |subtree| {
+      node.text = Some(Leaf::Owned(subtree.leaves.len()));
+      subtree.leaves.push(leaf);
+      subtree.nodes.push(node);
+    })
   }
 
   /// [`push_node`](Self::push_node) of a copy of `node`, cloned straight
@@ -1034,8 +1046,8 @@ impl<'a> UiContext<'a> {
     if self.recording() {
       return self.push_node(node.clone(), at);
     }
-    self.push_stamped(at, |nodes| {
-      nodes.extend_from_slice(std::slice::from_ref(node))
+    self.push_stamped(at, |subtree| {
+      subtree.nodes.extend_from_slice(std::slice::from_ref(node))
     })
   }
 
@@ -1044,7 +1056,7 @@ impl<'a> UiContext<'a> {
   /// container, its parent, depth and scroll area, and `at` (placed out of
   /// its parent's flow) or, as a subtree's root, the subtree's `at`. It
   /// becomes the innermost open node; its index.
-  fn push_stamped(&mut self, at: Option<Rect>, put: impl FnOnce(&mut Vec<Node>)) -> usize {
+  fn push_stamped(&mut self, at: Option<Rect>, put: impl FnOnce(&mut Subtree)) -> usize {
     let layer = self.layer;
     let order = self.next_order();
     let parent = self.open;
@@ -1069,7 +1081,7 @@ impl<'a> UiContext<'a> {
       (p.depth.saturating_add(1), scroll)
     });
     let index = subtree.nodes.len();
-    put(&mut subtree.nodes);
+    put(subtree);
     if let Some(node) = subtree.nodes.get_mut(index) {
       node.layer = layer;
       node.order = order;
@@ -1193,9 +1205,8 @@ impl<'a> UiContext<'a> {
     // fonts change (not its colours)
     let generation = self.engine().map_or(0, |engine| engine.generation());
     node.content_key = fast_hash(&(leaf.key.seed(), self.space.px_scale.to_bits(), generation));
-    // Drawn from the node, which keeps the one copy
-    node.text = Some(Leaf::Owned(leaf));
-    let index = self.push_node(node, None);
+    // Drawn from the node's leaf, the one copy
+    let index = self.push_text_node(node, leaf);
     self.push_draw(
       index,
       DrawKind::NodeText {

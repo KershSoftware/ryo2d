@@ -28,6 +28,9 @@ const WRAP_SLACK: f32 = 0.01;
 pub(crate) struct Subtree {
   pub(crate) nodes: Vec<Node>,
   pub(crate) draws: Vec<Draw>,
+  /// The text leaves of the nodes built into it (`Leaf::Owned` indexes
+  /// them), apart from the nodes so a node stays small to push and clone
+  pub(crate) leaves: Vec<TextLeaf>,
   /// The rect the root was placed at, if any
   pub(crate) at: Option<Rect>,
   /// The clip in force when the subtree started
@@ -46,6 +49,7 @@ impl Subtree {
     Subtree {
       nodes: Vec::new(),
       draws: Vec::new(),
+      leaves: Vec::new(),
       at,
       clip,
       scope,
@@ -149,37 +153,22 @@ impl TextLeaf {
   }
 }
 
-/// A node's text: moved in by a live build, which allocates nothing, and
-/// shared once recorded
+/// A node's text: moved into its subtree by a live build, which allocates
+/// nothing, and shared when recorded
 #[derive(Debug, Clone)]
-// A node held the whole leaf before; moving it in must not allocate
-#[allow(clippy::large_enum_variant)]
 pub(crate) enum Leaf {
-  /// Built this frame; cloning copies the text, so recording shares first
-  Owned(TextLeaf),
+  /// Built this frame: its subtree's `leaves[k]`
+  Owned(usize),
   /// Recorded: cloning shares the one copy
   Shared(Arc<TextLeaf>),
 }
 
 impl Leaf {
-  /// The leaf shared: an owned one moved into an `Arc`, so cloning its node
-  /// copies no text (a tape records it so). Taken out of its node with
-  /// `Option::take` and put back, it needs no placeholder.
-  pub(crate) fn share(self) -> Leaf {
+  /// The text, from `leaves` (its subtree's) when it is owned
+  pub(crate) fn get<'a>(&'a self, leaves: &'a [TextLeaf]) -> Option<&'a TextLeaf> {
     match self {
-      Leaf::Owned(leaf) => Leaf::Shared(Arc::new(leaf)),
-      shared => shared,
-    }
-  }
-}
-
-impl std::ops::Deref for Leaf {
-  type Target = TextLeaf;
-
-  fn deref(&self) -> &TextLeaf {
-    match self {
-      Leaf::Owned(leaf) => leaf,
-      Leaf::Shared(leaf) => leaf,
+      Leaf::Owned(k) => leaves.get(*k),
+      Leaf::Shared(leaf) => Some(leaf),
     }
   }
 }
@@ -294,6 +283,7 @@ pub(crate) fn align_fraction(align: TextAlign) -> f32 {
 pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Rect> {
   let (at, clip, below) = (subtree.at, subtree.clip, subtree.below);
   let nodes: &[Node] = &subtree.nodes;
+  let leaves: &[TextLeaf] = &subtree.leaves;
   if nodes.is_empty() {
     return None;
   }
@@ -345,7 +335,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   let mut measure = |i: usize, known: (Option<f32>, Option<f32>), avail: (Avail, Avail)| {
     nodes
       .get(i)
-      .and_then(|node| node.text.as_ref())
+      .and_then(|node| node.text.as_ref()?.get(leaves))
       .map_or(Vec2::ZERO, |leaf| {
         measure_text(text, leaf, known.0, avail.0, scale)
       })
@@ -497,7 +487,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       nine_slice(room, &slice, place.clip, place.layer, scale, |command| {
         cx.commands.push(draw.order, command);
       });
-    } else if let Some(command) = command_of(draw.kind, &place, node, text, scale) {
+    } else if let Some(command) = command_of(draw.kind, &place, node, leaves, text, scale) {
       cx.commands.push(draw.order, command);
     }
   }
@@ -677,12 +667,13 @@ struct TextAt {
   reveal: Option<(f32, f32)>,
 }
 
-/// A draw on `node` as a command in UI units, or `None` when nothing of it
-/// would show
+/// A draw on `node` (its text owned in `leaves`) as a command in UI units,
+/// or `None` when nothing of it would show
 fn command_of(
   kind: DrawKind,
   place: &Placement,
   node: &Node,
+  leaves: &[TextLeaf],
   text: &RefCell<&mut TextEngine>,
   scale: f32,
 ) -> Option<UiCommand> {
@@ -752,7 +743,7 @@ fn command_of(
         opacity,
         reveal,
       };
-      text_command(node.text.as_ref()?, at, place, text, scale)
+      text_command(node.text.as_ref()?.get(leaves)?, at, place, text, scale)
     }
     DrawKind::Sprite {
       inset,
@@ -1425,20 +1416,24 @@ mod clone_tests {
   }
 
   #[test]
-  fn a_shared_owned_leaf_clones_without_copying_text() {
-    let mut node = Node::new(UiId(1), UiStyle::default(), Measure::None);
-    node.text = Some(Leaf::Owned(TextLeaf::new(
+  fn an_owned_leaf_is_read_from_its_subtree_and_a_shared_one_from_itself() {
+    let leaves = [TextLeaf::new(
       RichText::new("Label"),
       TextStyle::default(),
       TextLayoutOptions::default(),
-    )));
-    node.text = node.text.take().map(Leaf::share);
-    let shared = Arc::clone(shared_of(&node));
-    assert_eq!(shared.text.text, "Label");
-    let copy = node.clone();
-    assert!(Arc::ptr_eq(shared_of(&copy), &shared));
-    node.text = node.text.take().map(Leaf::share);
-    assert!(Arc::ptr_eq(shared_of(&node), &shared), "shared once");
+    )];
+    let owned = Leaf::Owned(0)
+      .get(&leaves)
+      .map(|leaf| leaf.text.text.as_str());
+    assert_eq!(owned, Some("Label"));
+    assert!(Leaf::Owned(1).get(&leaves).is_none(), "out of its subtree");
+    let shared = leaf("Shared");
+    let read = Leaf::Shared(Arc::clone(&shared));
+    assert!(
+      read
+        .get(&[])
+        .is_some_and(|leaf| std::ptr::eq(leaf, &*shared))
+    );
   }
 
   #[test]

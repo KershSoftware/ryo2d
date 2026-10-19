@@ -365,6 +365,7 @@ impl Scratch {
   pub(crate) fn give_subtree(&mut self, mut subtree: Subtree) {
     subtree.nodes.clear();
     subtree.draws.clear();
+    subtree.leaves.clear();
     self.subtrees.push(subtree);
   }
 }
