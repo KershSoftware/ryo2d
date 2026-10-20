@@ -272,6 +272,10 @@ impl Engine {
     self.console_state.update(real_dt);
 
     if self.console_state.visible {
+      // The console's units are the pointer's, so a trackpad moves it as far
+      // as the pointer would
+      let to_screen = self.logical_to_screen();
+      self.console_state.set_pixel_scale(to_screen);
       let command = self
         .console_state
         .handle_input(&mut self.world.resource_mut::<Input>());

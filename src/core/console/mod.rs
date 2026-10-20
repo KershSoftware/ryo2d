@@ -96,6 +96,15 @@ const SCROLLBAR_WIDTH: f32 = 8.0;
 /// Minimum scrollbar thumb height
 const SCROLLBAR_MIN_THUMB: f32 = 20.0;
 
+/// Lines a wheel notch scrolls
+const WHEEL_LINES: f32 = 3.0;
+
+/// Time constant (seconds) of the wheel's ease, as the UI's scroll areas
+const SCROLL_SMOOTHING: f32 = 0.08;
+
+/// Closer than this to its target (in lines) the view settles
+const SCROLL_SNAP: f32 = 0.02;
+
 /// Console visual colors
 mod colors {
   use super::Color;
@@ -177,7 +186,7 @@ enum DragState {
     start_mouse_y: f32,
   },
   ScrollbarDragging {
-    start_scroll_offset: usize,
+    start_scroll_offset: f32,
     start_mouse_y: f32,
   },
 }
@@ -207,8 +216,15 @@ pub struct ConsoleState {
   history_index: Option<usize>,
   /// Saved input when browsing history
   saved_input: String,
-  /// Scroll offset from the bottom (0 = showing newest lines)
-  scroll_offset: usize,
+  /// How far the view is scrolled up from the bottom, in (fractional) lines
+  /// (0 = showing the newest lines)
+  scroll_offset: f32,
+  /// Where a wheel's ease is taking `scroll_offset`, in lines
+  scroll_target: f32,
+  /// Logical pixels to the console's units (the pointer's conversion)
+  pixel_scale: f32,
+  /// Wrapped rows as last drawn (0 before the first render)
+  wrapped_rows: Cell<usize>,
   /// Timer for cursor blink animation
   cursor_blink_timer: f32,
   /// Total time elapsed (for timestamps)
@@ -243,7 +259,10 @@ impl ConsoleState {
       command_history: Vec::with_capacity(MAX_COMMAND_HISTORY),
       history_index: None,
       saved_input: String::new(),
-      scroll_offset: 0,
+      scroll_offset: 0.0,
+      scroll_target: 0.0,
+      pixel_scale: 1.0,
+      wrapped_rows: Cell::new(0),
       cursor_blink_timer: 0.0,
       total_time: 0.0,
       drag_state: DragState::None,
@@ -267,8 +286,12 @@ impl ConsoleState {
       self.output_lines.pop_front();
     }
 
-    // Reset scroll to bottom when new content is added
-    self.scroll_offset = 0;
+    // At the bottom the view follows the output; a reader scrolled up keeps
+    // the lines being read where they are
+    if self.scroll_target > 0.0 {
+      self.scroll_offset += 1.0;
+      self.scroll_target += 1.0;
+    }
   }
 
   /// Print a normal text line
@@ -294,7 +317,8 @@ impl ConsoleState {
   /// Clear all output lines
   pub fn clear(&mut self) {
     self.output_lines.clear();
-    self.scroll_offset = 0;
+    self.scroll_offset = 0.0;
+    self.scroll_target = 0.0;
   }
 
   /// Toggle console visibility
@@ -308,15 +332,62 @@ impl ConsoleState {
     }
   }
 
+  /// Set the conversion from logical pixels (a trackpad's) to the console's
+  /// units, which are the pointer's
+  pub(crate) fn set_pixel_scale(&mut self, scale: f32) {
+    if scale.is_finite() && scale > 0.0 {
+      self.pixel_scale = scale;
+    }
+  }
+
   /// Update cursor blink and timers
   pub fn update(&mut self, dt: f32) {
     self.total_time += dt;
+    self.ease_scroll(dt);
     if self.visible {
       self.cursor_blink_timer += dt;
       if self.cursor_blink_timer > 1.0 {
         self.cursor_blink_timer -= 1.0;
       }
     }
+  }
+
+  /// Ease the view toward the wheel's target, as a UI scroll area does
+  fn ease_scroll(&mut self, dt: f32) {
+    let left = self.scroll_target - self.scroll_offset;
+    if left == 0.0 {
+      return;
+    }
+    let step = if dt.is_finite() && dt > 0.0 {
+      1.0 - (-dt / SCROLL_SMOOTHING).exp()
+    } else {
+      0.0
+    };
+    let next = self.scroll_offset + left * step;
+    // Far from the target a step can be smaller than a float can move
+    self.scroll_offset = if left.abs() < SCROLL_SNAP || next == self.scroll_offset {
+      self.scroll_target
+    } else {
+      next
+    };
+  }
+
+  /// How far the view scrolls, in lines: the rows (wrapped, as last drawn)
+  /// less what fits
+  fn max_scroll_lines(&self) -> f32 {
+    let rows = match self.wrapped_rows.get() {
+      0 => self.output_lines.len(),
+      wrapped => wrapped,
+    };
+    let (_, _, output_height, _) = self.output_area();
+    (rows as f32 - output_height / self.line_height.get()).max(0.0)
+  }
+
+  /// Put the view at `lines` (clamped), stopping any ease
+  fn scroll_to_lines(&mut self, lines: f32) {
+    let lines = lines.clamp(0.0, self.max_scroll_lines());
+    self.scroll_offset = lines;
+    self.scroll_target = lines;
   }
 
   /// The title bar's height: one line of the console font plus padding
@@ -426,9 +497,9 @@ impl ConsoleState {
     let visible_ratio = visible_lines as f32 / total_lines as f32;
     let thumb_height = (output_height * visible_ratio).max(SCROLLBAR_MIN_THUMB);
 
-    let max_scroll = total_lines.saturating_sub(visible_lines);
-    let scroll_ratio = if max_scroll > 0 {
-      self.scroll_offset as f32 / max_scroll as f32
+    let max_scroll = total_lines as f32 - output_height / self.line_height.get();
+    let scroll_ratio = if max_scroll > 0.0 {
+      (self.scroll_offset / max_scroll).min(1.0)
     } else {
       0.0
     };
@@ -442,11 +513,6 @@ impl ConsoleState {
       SCROLLBAR_WIDTH,
       thumb_height,
     ))
-  }
-
-  /// Calculate max scroll offset
-  fn max_scroll_offset(&self, visible_lines: usize, total_lines: usize) -> usize {
-    total_lines.saturating_sub(visible_lines)
   }
 
   /// Get the maximum text width for word wrapping
@@ -482,7 +548,7 @@ impl ConsoleState {
     let (_, _, output_height, _) = self.output_area();
     let visible_lines = (output_height / line_height) as usize;
     let total_lines = self.output_lines.len();
-    let max_scroll = self.max_scroll_offset(visible_lines, total_lines);
+    let max_scroll = self.max_scroll_lines();
 
     // Handle window dragging/resizing/scrollbar (works even when unfocused)
     match self.drag_state {
@@ -524,14 +590,11 @@ impl ConsoleState {
           let thumb_height = (output_height * visible_ratio).max(SCROLLBAR_MIN_THUMB);
           let thumb_travel = output_height - thumb_height;
 
-          if thumb_travel > 0.0 && max_scroll > 0 {
+          if thumb_travel > 0.0 && max_scroll > 0.0 {
             let delta_y = mouse_y - start_mouse_y;
             // Dragging down = scroll_ratio increases = scroll_offset decreases (toward bottom)
-            let scroll_delta = (delta_y / thumb_travel * max_scroll as f32).round() as i32;
-            let new_offset = (start_scroll_offset as i32 - scroll_delta)
-              .max(0)
-              .min(max_scroll as i32);
-            self.scroll_offset = new_offset as usize;
+            let scroll_delta = delta_y / thumb_travel * max_scroll;
+            self.scroll_to_lines(start_scroll_offset - scroll_delta);
           }
         } else {
           self.drag_state = DragState::None;
@@ -578,8 +641,7 @@ impl ConsoleState {
               let (output_top, _, output_height, _) = self.output_area();
               let click_ratio = (mouse_y - output_top) / output_height;
               // Invert because scroll_offset=0 is bottom, max is top
-              let new_scroll = ((1.0 - click_ratio) * max_scroll as f32).round() as usize;
-              self.scroll_offset = new_scroll.min(max_scroll);
+              self.scroll_to_lines((1.0 - click_ratio) * max_scroll);
               // Start dragging from new position
               self.drag_state = DragState::ScrollbarDragging {
                 start_scroll_offset: self.scroll_offset,
@@ -603,16 +665,19 @@ impl ConsoleState {
     }
 
     // Mouse wheel scrolling works even when unfocused (as long as mouse is over console)
-    let (_, scroll_y) = input.scroll_delta();
-    if scroll_y.abs() > 0.01 && window_rect.contains(mouse_x, mouse_y) {
+    let (_, wheel_y) = input.scroll_wheel_lines();
+    let (_, pixel_y) = input.scroll_pixels();
+    if (wheel_y != 0.0 || pixel_y != 0.0) && window_rect.contains(mouse_x, mouse_y) {
       input.consume_scroll();
-      // Scroll up (positive scroll_y) increases offset, scroll down decreases
-      let scroll_lines = (scroll_y * 3.0).round() as i32;
-      if scroll_lines > 0 {
-        self.scroll_offset = (self.scroll_offset + scroll_lines as usize)
-          .min(self.output_lines.len().saturating_sub(1));
-      } else {
-        self.scroll_offset = self.scroll_offset.saturating_sub((-scroll_lines) as usize);
+      // Positive scroll is up: the view moves away from the bottom
+      if pixel_y != 0.0 {
+        // A trackpad follows the fingers at once (the OS supplies the
+        // momentum), from where the view is
+        let at = self.scroll_offset.clamp(0.0, max_scroll);
+        self.scroll_to_lines(at + pixel_y * self.pixel_scale / line_height);
+      }
+      if wheel_y != 0.0 {
+        self.scroll_target = (self.scroll_target + wheel_y * WHEEL_LINES).clamp(0.0, max_scroll);
       }
     }
 
@@ -735,11 +800,11 @@ impl ConsoleState {
 
     // Page Up/Down for scrolling
     if input.key_pressed(KeyCode::PageUp) {
-      self.scroll_offset = (self.scroll_offset + 10).min(self.output_lines.len().saturating_sub(1));
+      self.scroll_to_lines(self.scroll_offset + 10.0);
     }
 
     if input.key_pressed(KeyCode::PageDown) {
-      self.scroll_offset = self.scroll_offset.saturating_sub(10);
+      self.scroll_to_lines(self.scroll_offset - 10.0);
     }
 
     // Enter to submit command
@@ -944,7 +1009,10 @@ impl ConsoleState {
     }
 
     let total_lines = wrapped_lines.len();
+    self.wrapped_rows.set(total_lines);
     let has_scrollbar = total_lines > visible_line_count;
+    let max_scroll = (total_lines as f32 - output_height / line_height).max(0.0);
+    let scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
 
     // Draw scrollbar if there's more content than visible
     let scrollbar_x = x + self.width - SCROLLBAR_WIDTH - 4.0;
@@ -958,9 +1026,8 @@ impl ConsoleState {
       let thumb_height = (output_height * visible_ratio).max(SCROLLBAR_MIN_THUMB);
 
       // scroll_offset=0 means at bottom, max scroll_offset means at top
-      let max_scroll = total_lines.saturating_sub(visible_line_count);
-      let scroll_ratio = if max_scroll > 0 {
-        self.scroll_offset.min(max_scroll) as f32 / max_scroll as f32
+      let scroll_ratio = if max_scroll > 0.0 {
+        (scroll_offset / max_scroll).min(1.0)
       } else {
         0.0
       };
@@ -974,19 +1041,16 @@ impl ConsoleState {
       ui.draw_rect(thumb_rect, colors::SCROLLBAR_THUMB);
     }
 
-    // Draw output lines (from bottom to top, accounting for scroll)
-    // Clamp scroll_offset to valid range
-    let max_scroll = total_lines.saturating_sub(visible_line_count);
-    let effective_scroll = self.scroll_offset.min(max_scroll);
-
-    let start_idx = total_lines.saturating_sub(visible_line_count + effective_scroll);
-    let end_idx = total_lines.saturating_sub(effective_scroll);
-
-    let mut text_y = output_bottom - line_height;
-    for i in (start_idx..end_idx).rev() {
-      if text_y < output_top {
-        break;
-      }
+    // Draw the output at the fractional position, bottom-aligned: the view
+    // is `scroll_offset` lines above the newest row, and the lines cut by
+    // the output area's edges are clipped, not skipped
+    let first = (total_lines as f32 - scroll_offset - output_height / line_height)
+      .floor()
+      .max(0.0) as usize;
+    let last = ((total_lines as f32 - scroll_offset).ceil().max(0.0) as usize).min(total_lines);
+    ui.push_clip(Rect::new(x, output_top, self.width, output_height));
+    for i in first..last {
+      let text_y = output_bottom + (scroll_offset - (total_lines - i) as f32) * line_height;
       if let Some((text, color)) = wrapped_lines.get(i) {
         let line_color = if self.focused {
           *color
@@ -999,14 +1063,14 @@ impl ConsoleState {
           )
         };
         draw_line(ui, text, x + padding, text_y, line_color);
-        text_y -= line_height;
       }
     }
+    ui.pop_clip();
 
     // Draw scroll indicator if not at bottom (now shown in scrollbar area)
-    if self.scroll_offset > 0 && !has_scrollbar {
+    if self.scroll_offset >= 0.5 && !has_scrollbar {
       // Only show text indicator if no scrollbar (few lines but scrolled)
-      let indicator = format!("[{} more lines below]", self.scroll_offset);
+      let indicator = format!("[{:.0} more lines below]", self.scroll_offset);
       let indicator_x = x + (self.width - ui.measure_text(indicator.as_str(), &style).x) / 2.0;
       let indicator_color = if self.focused {
         colors::SYSTEM
@@ -1110,7 +1174,7 @@ mod tests {
     assert!(console.focused);
     assert!(console.input_buffer.is_empty());
     assert_eq!(console.cursor_pos, 0);
-    assert_eq!(console.scroll_offset, 0);
+    assert_eq!(console.scroll_offset, 0.0);
     // Welcome message adds lines
     assert!(!console.output_lines.is_empty());
   }
@@ -1128,6 +1192,157 @@ mod tests {
     input.handle_scroll(winit::event::MouseScrollDelta::LineDelta(0.0, 1.0));
     console.handle_input(&mut input);
     assert_eq!(input.scroll_delta(), (0.0, 0.0));
+  }
+
+  /// A console of `lines` short lines with the pointer over its output
+  fn scrolling_console(lines: usize) -> (ConsoleState, Input) {
+    let mut console = ConsoleState::new();
+    console.toggle();
+    console.clear();
+    for i in 0..lines {
+      console.print(format!("line {i}"));
+    }
+    let rect = console.window_rect();
+    let mut input = Input::new();
+    input.handle_mouse_move(
+      f64::from(rect.x + rect.width / 2.0),
+      f64::from(rect.y + rect.height / 2.0),
+    );
+    (console, input)
+  }
+
+  /// One frame as the engine runs it: ease, then read the input; `scroll`
+  /// is a trackpad's logical pixels and `lines` a wheel's
+  fn console_frame(console: &mut ConsoleState, input: &mut Input, lines: f32, scroll: f32) {
+    input.begin_frame();
+    if lines != 0.0 {
+      input.handle_scroll(winit::event::MouseScrollDelta::LineDelta(0.0, lines));
+    }
+    if scroll != 0.0 {
+      input.handle_scroll_pixels(0.0, scroll);
+    }
+    console.update(1.0 / 60.0);
+    console.handle_input(input);
+  }
+
+  /// How far the view is scrolled, in the console's drawing units
+  fn scrolled_units(console: &ConsoleState) -> f32 {
+    console.scroll_offset * console.line_height.get()
+  }
+
+  #[test]
+  fn a_trackpad_moves_the_console_exactly_as_far_as_the_fingers() {
+    let (mut console, mut input) = scrolling_console(50);
+    for _ in 0..20 {
+      console_frame(&mut console, &mut input, 0.0, 3.0);
+    }
+    let units = scrolled_units(&console);
+    assert!((units - 60.0).abs() < 0.01, "60 units, got {units}");
+    for _ in 0..20 {
+      console_frame(&mut console, &mut input, 0.0, -3.0);
+    }
+    assert!(scrolled_units(&console).abs() < 0.01, "and back down");
+  }
+
+  #[test]
+  fn a_trackpad_is_converted_to_the_consoles_units() {
+    let (mut console, mut input) = scrolling_console(50);
+    console.set_pixel_scale(2.0);
+    for _ in 0..10 {
+      console_frame(&mut console, &mut input, 0.0, 3.0);
+    }
+    let units = scrolled_units(&console);
+    assert!(
+      (units - 60.0).abs() < 0.01,
+      "10 x 3 px at 2 units a px, {units}"
+    );
+  }
+
+  #[test]
+  fn a_wheel_line_eases_toward_three_lines() {
+    let (mut console, mut input) = scrolling_console(50);
+    let line = console.line_height.get();
+    console_frame(&mut console, &mut input, 1.0, 0.0);
+    console_frame(&mut console, &mut input, 0.0, 0.0);
+    let early = scrolled_units(&console);
+    assert!(early > 0.0 && early < 3.0 * line, "easing, at {early}");
+    for _ in 0..60 {
+      console_frame(&mut console, &mut input, 0.0, 0.0);
+    }
+    let settled = scrolled_units(&console);
+    assert!((settled - 3.0 * line).abs() < 0.1, "three lines, {settled}");
+  }
+
+  #[test]
+  fn the_console_scroll_stops_at_the_top_and_the_bottom() {
+    let (mut console, mut input) = scrolling_console(50);
+    let (_, _, view, _) = console.output_area();
+    let max = 50.0 * console.line_height.get() - view;
+    console_frame(&mut console, &mut input, 0.0, 100000.0);
+    assert!((scrolled_units(&console) - max).abs() < 0.01, "the top");
+    console_frame(&mut console, &mut input, 0.0, -100000.0);
+    assert_eq!(scrolled_units(&console), 0.0, "the bottom");
+    console_frame(&mut console, &mut input, 100.0, 0.0);
+    for _ in 0..600 {
+      console_frame(&mut console, &mut input, 0.0, 0.0);
+    }
+    assert!((scrolled_units(&console) - max).abs() < 0.01, "a wheel too");
+  }
+
+  #[test]
+  fn new_output_keeps_a_console_at_the_bottom_and_a_reader_in_place() {
+    let (mut console, mut input) = scrolling_console(50);
+    console.print("more");
+    assert_eq!(scrolled_units(&console), 0.0, "at the bottom it stays");
+
+    console_frame(&mut console, &mut input, 0.0, 30.0);
+    let before = scrolled_units(&console);
+    console.print("one more");
+    let after = scrolled_units(&console);
+    assert!(
+      (after - before - console.line_height.get()).abs() < 0.01,
+      "the lines being read keep their place: {before} -> {after}"
+    );
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn a_fractional_scroll_draws_the_cut_lines_clipped() {
+    use crate::core::ui::immediate::{UiCommand, UiCommands};
+    let rows_at = |lines: f32| {
+      let (mut console, _) = scrolling_console(60);
+      console.scroll_offset = lines;
+      let (mut commands, mut text) = (
+        UiCommands::default(),
+        crate::core::ui::test_util::text_engine(),
+      );
+      let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
+      console.render(&mut ui, 1280, 720);
+      drop(ui);
+      let (top, bottom, _, _) = console.output_area();
+      let ys: Vec<f32> = commands
+        .commands()
+        .filter_map(|c| match c {
+          UiCommand::Text { origin, clip, .. } if origin.y > top - 20.0 && origin.y < bottom => {
+            assert_eq!(clip.map(|c| (c.y, c.height)), Some((top, bottom - top)));
+            Some(origin.y)
+          }
+          _ => None,
+        })
+        .collect();
+      (ys, console.line_height.get())
+    };
+    let (still, line) = rows_at(0.0);
+    let (moved, _) = rows_at(0.5);
+    let last = |ys: &[f32]| ys.iter().copied().fold(f32::MIN, f32::max);
+    assert!(
+      (last(&moved) - last(&still) - 0.5 * line).abs() < 0.01,
+      "rows move by half a line: {still:?} {moved:?}"
+    );
+    assert!(
+      moved.len() > still.len(),
+      "a cut row at the top is drawn too"
+    );
   }
 
   #[test]
@@ -1200,12 +1415,12 @@ mod tests {
     let mut console = ConsoleState::new();
     console.print("Line 1");
     console.print("Line 2");
-    console.scroll_offset = 5;
+    console.scroll_offset = 5.0;
 
     console.clear();
 
     assert!(console.output_lines.is_empty());
-    assert_eq!(console.scroll_offset, 0);
+    assert_eq!(console.scroll_offset, 0.0);
   }
 
   #[test]
@@ -1391,7 +1606,7 @@ mod tests {
     console.y = 0.0;
     console.width = 600.0;
     console.height = 400.0;
-    console.scroll_offset = 0; // At bottom
+    console.scroll_offset = 0.0; // At bottom
 
     let (output_top, _, output_height, _) = console.output_area();
     let thumb = console.scrollbar_thumb_rect(10, 100).unwrap();
@@ -1409,27 +1624,13 @@ mod tests {
     console.y = 0.0;
     console.width = 600.0;
     console.height = 400.0;
-    console.scroll_offset = 90; // At top (max for 100 total, 10 visible)
+    console.scroll_offset = 90.0; // At top (max for 100 total, 10 visible)
 
     let (output_top, _, _, _) = console.output_area();
     let thumb = console.scrollbar_thumb_rect(10, 100).unwrap();
 
     // At max scroll_offset, thumb should be at top
     assert!((thumb.y - output_top).abs() < 1.0);
-  }
-
-  #[test]
-  fn test_max_scroll_offset() {
-    let console = ConsoleState::new();
-
-    // 100 total lines, 20 visible -> max scroll is 80
-    assert_eq!(console.max_scroll_offset(20, 100), 80);
-
-    // 10 total lines, 20 visible -> max scroll is 0
-    assert_eq!(console.max_scroll_offset(20, 10), 0);
-
-    // Equal -> max scroll is 0
-    assert_eq!(console.max_scroll_offset(20, 20), 0);
   }
 
   #[test]
@@ -1479,11 +1680,11 @@ mod tests {
     assert_eq!(resize1, resize2);
 
     let scroll1 = DragState::ScrollbarDragging {
-      start_scroll_offset: 10,
+      start_scroll_offset: 10.0,
       start_mouse_y: 100.0,
     };
     let scroll2 = DragState::ScrollbarDragging {
-      start_scroll_offset: 10,
+      start_scroll_offset: 10.0,
       start_mouse_y: 100.0,
     };
     assert_eq!(scroll1, scroll2);
@@ -1577,21 +1778,6 @@ mod tests {
 
     console.focused = false;
     assert!(!console.is_focused());
-  }
-
-  // ============================================================================
-  // Print resets scroll offset
-  // ============================================================================
-
-  #[test]
-  fn test_print_resets_scroll_offset() {
-    let mut console = ConsoleState::new();
-    console.scroll_offset = 10;
-
-    console.print("New message");
-
-    // Adding new content should reset scroll to bottom
-    assert_eq!(console.scroll_offset, 0);
   }
 
   // ============================================================================

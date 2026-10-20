@@ -2,7 +2,7 @@
 name: ryo-console
 description: Developer console system - commands, registration, debugging overlays.
 metadata:
-  version: 1.3.2
+  version: 1.3.3
 ---
 
 # Ryo2D Developer Console
@@ -215,7 +215,8 @@ Handlers are `Fn(&[&str], &mut CommandContext) -> CommandResult + Send + Sync + 
 ### Input
 - **Up/Down arrows** - Navigate command history
 - **Page Up/Down** - Scroll output
-- **Mouse wheel** - Scroll output
+- **Mouse wheel** - Scroll output; a wheel notch eases three lines, a trackpad follows the fingers at once (as far as the pointer would move)
+- New output keeps the view at the bottom; scrolled up, the lines being read stay in place
 - **Scrollbar** - Click and drag to scroll
 
 ### Visual Style
