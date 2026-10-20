@@ -18,9 +18,8 @@ use crate::core::graphics::{
 use crate::core::render::batch::{
   BlendMode, Filter, LineLook, PolyPoint, PolyStyle, Triangles, line_color, push_polyline,
 };
-use crate::core::render::text::{
-  TextDraw, TextPlacement, TextSources, TextTargets, UI_GLYPH_PX, emit_text,
-};
+use crate::core::render::text::{TextDraw, TextPlacement, TextSources, TextTargets, UI_GLYPH_PX};
+use crate::core::render::ui_retain::{UiRenderEnv, UiTextCache};
 use crate::core::render::{CameraDraw, DrawKind, DrawShape, PixelRect, SpriteLook, SpriteShading};
 use crate::core::trail::{LineCap, LineJoin};
 use crate::core::ui::immediate::{UiCommand, UiCommands};
@@ -164,21 +163,24 @@ fn unit(color: Color) -> [f32; 4] {
 /// Lay the frame's UI commands into the draw list for the UI camera and
 /// return that camera, or `None` when nothing was drawn.
 ///
-/// With `pixel_art` the UI image is the pixel-art target: rects land on
+/// With `env.on_target` the UI image is the pixel-art target: rects land on
 /// whole target pixels, like the sprites the camera snaps. Without `sources`
 /// (a game removed the text resources) text is skipped and the rest drawn.
+/// Texts are drawn through `texts`, which reuses the glyphs of those drawn
+/// unchanged before.
 pub(crate) fn emit_ui(
   commands: &UiCommands,
-  space: &UiSpace,
-  pixel_art: bool,
+  env: &UiRenderEnv,
   sources: Option<&TextSources<'_>>,
   targets: &mut TextTargets<'_>,
   triangles: &mut Triangles,
   real_time: f32,
+  texts: &mut UiTextCache,
 ) -> Option<CameraDraw> {
   if commands.is_empty() {
     return None;
   }
+  let (space, pixel_art) = (&env.space, env.on_target);
   let view = CameraView::compute(
     space.size / 2.0,
     0.0,
@@ -360,7 +362,7 @@ pub(crate) fn emit_ui(
           seed: *seed,
           opacity: *opacity,
         };
-        emit_text(sources, targets, layout, &place);
+        texts.emit(sources, targets, layout, &place);
       }
     }
   }

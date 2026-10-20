@@ -377,20 +377,29 @@ impl Engine {
       self.ui_camera = if ui_kept {
         None
       } else {
-        emit_ui(
+        self.ui_retain.texts.begin(env, retain);
+        let camera = emit_ui(
           &self.ui_commands,
-          &self.ui_space,
-          ui_on_target,
+          &env,
           sources.as_ref(),
           &mut text_targets,
           triangles,
           real_time,
-        )
+          &mut self.ui_retain.texts,
+        );
+        self.ui_retain.texts.end();
+        camera
+      };
+      let (texts_built, texts_reused) = if ui_kept {
+        (0, 0)
+      } else {
+        (self.ui_retain.texts.built(), self.ui_retain.texts.reused())
       };
       self.ui_retain.stats = UiRenderStats {
         kept: ui_kept,
+        texts_built,
+        texts_reused,
         glyph_evictions: gpu.glyph_evictions(),
-        ..UiRenderStats::default()
       };
       if let Some(ui) = &self.ui_camera {
         let globals = CameraGlobals::new(

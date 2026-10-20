@@ -13,6 +13,9 @@ use crate::core::ui::immediate::{UiCommand, UiCommands};
 
 #[cfg(test)]
 mod tests;
+mod texts;
+
+pub(crate) use texts::UiTextCache;
 
 /// What the UI's render step did in a frame
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -55,6 +58,8 @@ pub(crate) struct UiRetain {
   image: Option<u64>,
   /// The last frame's
   pub(crate) stats: UiRenderStats,
+  /// The texts' built glyphs
+  pub(crate) texts: UiTextCache,
 }
 
 impl UiRetain {
@@ -117,6 +122,7 @@ impl UiRetain {
     self.stamps.clear();
     self.env = None;
     self.image = None;
+    self.texts.clear();
   }
 }
 

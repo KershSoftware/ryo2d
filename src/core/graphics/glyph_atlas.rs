@@ -209,14 +209,12 @@ impl GlyphShelves {
   }
 
   /// The generation of page `index` of `format` (`None`: no such page)
-  #[cfg_attr(not(test), allow(dead_code))] // used by UI render retention (Tasks 3 and 4)
   pub(crate) fn page_generation(&self, format: GlyphFormat, index: usize) -> Option<u64> {
     Some(self.pages.get(&format)?.get(index)?.generation)
   }
 
   /// Keep page `index` of `format` from eviction in `frame`: something
   /// built from its glyphs earlier is drawn in it
-  #[cfg_attr(not(test), allow(dead_code))] // used by UI render retention (Tasks 3 and 4)
   pub(crate) fn pin(&mut self, format: GlyphFormat, index: usize, frame: u64) {
     if let Some(page) = self
       .pages
@@ -234,7 +232,6 @@ impl GlyphShelves {
 
   /// Glyphs refused so far because the pages were full of glyphs drawn in
   /// their frame
-  #[cfg_attr(not(test), allow(dead_code))] // used by UI render retention (Tasks 3 and 4)
   pub(crate) fn refused(&self) -> u64 {
     self.refused
   }
@@ -312,7 +309,6 @@ impl GlyphAtlas {
   }
 
   /// The generation of the glyph page `page` (`None`: no such page)
-  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
   pub(crate) fn page_generation(&self, page: GlyphPage) -> Option<u64> {
     self
       .shelves
@@ -320,7 +316,6 @@ impl GlyphAtlas {
   }
 
   /// Keep `page` from eviction in `frame`
-  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
   pub(crate) fn pin(&mut self, page: GlyphPage, frame: u64) {
     self
       .shelves
@@ -333,7 +328,6 @@ impl GlyphAtlas {
   }
 
   /// Glyphs refused so far for a full atlas
-  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
   pub(crate) fn refused(&self) -> u64 {
     self.shelves.refused()
   }

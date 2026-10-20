@@ -152,3 +152,85 @@ fn a_disabled_ui_pass_hides_the_kept_ui() {
   set_ui_pass(&mut pair, true);
   pair.frames(5, "the ui pass on again");
 }
+
+#[test]
+fn one_changed_label_builds_one_text() {
+  let Some(mut pair) = PixelPair::new(hud(true)) else {
+    return;
+  };
+  pair.frames(5, "counting");
+  for frame in 0..10 {
+    pair.frames(1, "counting");
+    let on = pair.on.ui_render_stats();
+    assert_eq!(
+      (on.kept, on.texts_built, on.texts_reused),
+      (false, 1, 10),
+      "frame {frame}: {on:?}"
+    );
+    let off = pair.off.ui_render_stats();
+    assert_eq!(
+      (off.texts_built, off.texts_reused),
+      (11, 0),
+      "retention off builds every text"
+    );
+  }
+}
+
+/// A waving greeting and three still labels
+struct Wavy;
+
+impl Scene for Wavy {
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    ui.draw_text_styled(
+      RichText::markup("[wave]Hello[/wave]"),
+      8.0,
+      8.0,
+      &TextStyle::default().size(24.0),
+    );
+    for i in 0..3 {
+      ui.draw_text(
+        &format!("Still {i}"),
+        8.0,
+        60.0 + i as f32 * 20.0,
+        Color::WHITE,
+      );
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn an_effect_text_is_built_every_frame() {
+  let make = || EngineBuilder::new().resolution(320, 240).start_scene(Wavy);
+  let Some(mut pair) = PixelPair::new(make) else {
+    return;
+  };
+  pair.frames(5, "waving");
+  for frame in 0..10 {
+    pair.frames(1, "waving");
+    let on = pair.on.ui_render_stats();
+    assert_eq!(
+      (on.kept, on.texts_built, on.texts_reused),
+      (false, 1, 3),
+      "frame {frame}: {on:?}"
+    );
+  }
+}
+
+#[test]
+fn a_new_ui_space_rebuilds_every_text() {
+  let Some(mut pair) = PixelPair::new(hud(true)) else {
+    return;
+  };
+  pair.frames(5, "counting");
+  pair.each(|engine| engine.resize(400, 300));
+  pair.frames(1, "resized");
+  let on = pair.on.ui_render_stats();
+  assert_eq!((on.texts_built, on.texts_reused), (11, 0), "{on:?}");
+  pair.frames(1, "resized, counting");
+  assert_eq!(pair.on.ui_render_stats().texts_reused, 10);
+}

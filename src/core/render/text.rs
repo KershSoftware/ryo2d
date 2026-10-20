@@ -119,6 +119,18 @@ pub(crate) fn emit_text(
   layout: &TextLayout,
   place: &TextPlacement,
 ) {
+  emit_glyphs(sources, targets, layout, place);
+  emit_icons(sources, targets, layout, place);
+}
+
+/// Lay a block's glyphs into the draw list: its shadows, outlines, then
+/// fills (a bitmap font's cells are sprites)
+pub(crate) fn emit_glyphs(
+  sources: &TextSources<'_>,
+  targets: &mut TextTargets<'_>,
+  layout: &TextLayout,
+  place: &TextPlacement,
+) {
   if !(place.px_per_layout.is_finite() && place.px_per_layout > 0.0) {
     return;
   }
@@ -138,6 +150,24 @@ pub(crate) fn emit_text(
       emit_glyph(&mut block, at, layer, &mut effects);
     }
   }
+}
+
+/// Lay a block's inline icons into the draw list
+pub(crate) fn emit_icons(
+  sources: &TextSources<'_>,
+  targets: &mut TextTargets<'_>,
+  layout: &TextLayout,
+  place: &TextPlacement,
+) {
+  if !(place.px_per_layout.is_finite() && place.px_per_layout > 0.0) {
+    return;
+  }
+  let mut block = Block {
+    sources,
+    targets,
+    layout,
+    place,
+  };
   for icon in &layout.icons {
     emit_icon(&mut block, icon);
   }

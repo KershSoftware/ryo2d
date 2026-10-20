@@ -302,6 +302,33 @@ impl DrawList {
     self.push_item(lit, z, kind, payload, only_camera);
   }
 
+  /// How many glyphs the frame holds
+  pub(crate) fn glyph_count(&self) -> usize {
+    self.glyphs.len()
+  }
+
+  /// The glyphs pushed from the `start`-th on, in the order pushed
+  pub(crate) fn glyphs_from(&self, start: usize) -> &[DrawGlyph] {
+    self.glyphs.get(start..).unwrap_or(&[])
+  }
+
+  /// Add `glyphs` at `z`, in their order, for `only_camera` or every camera
+  /// (a text's glyphs built in an earlier frame)
+  pub(crate) fn push_glyphs(
+    &mut self,
+    kind: DrawKind,
+    z: i32,
+    lit: bool,
+    only_camera: Option<Entity>,
+    glyphs: &[DrawGlyph],
+  ) {
+    let start = self.glyphs.len();
+    self.glyphs.extend_from_slice(glyphs);
+    for index in start..self.glyphs.len() {
+      self.push_item(lit, z, kind, DrawPayload::Glyph(index), only_camera);
+    }
+  }
+
   /// Add a UI rectangle at `z`, for `only_camera` or every camera.
   pub(crate) fn push_shape(
     &mut self,
@@ -545,6 +572,38 @@ mod tests {
       &mut targetless,
     );
     CameraDraw { ui, ..cameras[0] }
+  }
+
+  #[test]
+  fn pushed_glyphs_keep_their_order_at_one_depth() {
+    let glyph = |x: f32| DrawGlyph {
+      instance: SpriteInstance::new().with_transform(x, 0.0, 0.0, 1.0, 1.0),
+      ..glyph_item(Vec2::ZERO, Vec2::ONE)
+    };
+    let mut list = DrawList::default();
+    list.push_glyphs(
+      DrawKind::Sprite,
+      5,
+      false,
+      None,
+      &[glyph(1.0), glyph(2.0), glyph(3.0)],
+    );
+    assert_eq!(list.glyph_count(), 3);
+    assert_eq!(list.glyphs_from(1).len(), 2);
+    list.sorted();
+    let order: Vec<_> = list
+      .unlit_items()
+      .iter()
+      .map(|item| (item.z, item.payload))
+      .collect();
+    assert_eq!(
+      order,
+      vec![
+        (5, DrawPayload::Glyph(0)),
+        (5, DrawPayload::Glyph(1)),
+        (5, DrawPayload::Glyph(2)),
+      ]
+    );
   }
 
   #[test]

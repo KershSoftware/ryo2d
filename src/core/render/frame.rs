@@ -103,7 +103,7 @@ pub(crate) struct FrameScene<'a> {
 }
 
 /// A rectangle of whole pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PixelRect {
   pub(crate) x: u32,
   pub(crate) y: u32,
