@@ -47,7 +47,8 @@ pub struct RenderContext<'a> {
   /// cameras), and the scene image to go back to after them
   camera: Option<usize>,
   scene_image: FrameImage,
-  /// Whether the `ui` pass drew this frame's UI (the composite only blends it then)
+  /// Whether the frame's UI image is blended: drawn by the `ui` pass this
+  /// frame, or kept from an earlier one
   pub(crate) ui_drawn: bool,
   /// Whether the `capture` pass drew into the capture texture this frame
   pub(crate) captured: bool,

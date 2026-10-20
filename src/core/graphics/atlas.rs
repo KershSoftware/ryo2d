@@ -433,7 +433,6 @@ impl TextureAtlas {
   }
 
   /// Glyph pages cleared to make room so far
-  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
   pub(crate) fn glyph_evictions(&self) -> u64 {
     self.glyphs.evictions()
   }

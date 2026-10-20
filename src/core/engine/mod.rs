@@ -214,6 +214,8 @@ pub struct Engine {
   ui_commands: UiCommands,
   ui_space: UiSpace,
   ui_camera: Option<crate::core::render::CameraDraw>,
+  /// UI render retention: what the UI image holds
+  ui_retain: crate::core::render::ui_retain::UiRetain,
   batch_cameras: Vec<crate::core::render::CameraDraw>,
   /// Mouse buttons whose press the UI took: until released, their held
   /// state and release are the UI's too
@@ -632,6 +634,7 @@ impl Engine {
       ui_commands: UiCommands::default(),
       ui_space: initial_ui_space,
       ui_camera: None,
+      ui_retain: Default::default(),
       batch_cameras: Vec::new(),
       ui_mouse_capture: Vec::new(),
       ui_binding_capture: Vec::new(),
@@ -941,6 +944,19 @@ impl Engine {
     &mut self.ui_memory
   }
 
+  /// What the UI's render step did in the last frame
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn ui_render_stats(&self) -> crate::core::render::UiRenderStats {
+    self.ui_retain.stats
+  }
+
+  /// The last frame's render step on the CPU (building, uploading and
+  /// encoding; not the UI pass)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn render_time(&self) -> std::time::Duration {
+    self.frame_timings.render + self.frame_timings.present
+  }
+
   /// The UI commands the last frame recorded
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn ui_commands(&self) -> &UiCommands {
@@ -1220,6 +1236,15 @@ impl EngineBuilder {
   /// the same, slower: for ruling caching out when chasing a UI bug.
   pub fn ui_cache(mut self, on: bool) -> Self {
     self.config.debug.ui_cache = on;
+    self
+  }
+
+  /// Whether the renderer keeps the UI image while the UI is unchanged and
+  /// reuses the glyphs of unchanged texts (default true). Off, the whole UI
+  /// is built and drawn every frame: the same pixels, slower. For ruling
+  /// retention out when chasing a rendering bug.
+  pub fn ui_retain(mut self, on: bool) -> Self {
+    self.config.debug.ui_retain = on;
     self
   }
 

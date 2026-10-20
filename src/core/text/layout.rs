@@ -85,7 +85,6 @@ pub(crate) struct TextLayout {
 impl TextLayout {
   /// Whether drawing it runs a text effect (wave, shake, rainbow or a game's
   /// own): effects may read the clock, so it looks different every frame
-  #[cfg_attr(not(test), allow(dead_code))] // wired into the frame in the next task
   pub(crate) fn has_effects(&self) -> bool {
     self.styles.iter().any(|style| style.effect.is_some())
   }

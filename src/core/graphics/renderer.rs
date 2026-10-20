@@ -27,7 +27,7 @@ use crate::core::capture::{CapturedFrame, read_texture_rgba};
 use crate::core::error::{CaptureError, CaptureResult};
 use crate::core::render::{
   DrawList, EffectStages, FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline,
-  TRANSITION_VISIBLE,
+  TRANSITION_VISIBLE, pass_ids,
 };
 use crate::core::shaders::{EffectStage, EffectsManager, PostProcessPipeline};
 
@@ -191,6 +191,8 @@ pub struct WgpuRenderer {
   fault: GpuFault,
   // The surface was suboptimal: reconfigure it after this frame
   needs_reconfigure: bool,
+  // Whether the last frame blended the UI image (drawn or kept)
+  ui_drawn: bool,
 }
 
 /// Create the persistent lighting output texture at game resolution.
@@ -513,6 +515,7 @@ impl WgpuRenderer {
       capture_result: None,
       fault: GpuFault::default(),
       needs_reconfigure: false,
+      ui_drawn: false,
     };
 
     // Initialize viewport transform
@@ -717,12 +720,25 @@ impl WgpuRenderer {
     }
   }
 
+  /// The UI image's epoch (`Compositor::ui_epoch`)
+  pub(crate) fn ui_image_epoch(&self) -> u64 {
+    self.compositor.ui_epoch()
+  }
+
+  /// Whether the last frame blended the UI image (drawn by its `ui` pass,
+  /// or kept)
+  pub(crate) fn ui_drawn(&self) -> bool {
+    self.ui_drawn
+  }
+
   /// Render a frame by running `pipeline`'s passes on one encoder.
   pub(crate) fn render_frame(
     &mut self,
     pipeline: &mut RenderPipeline,
     scene: FrameScene<'_>,
   ) -> Result<(), FrameError> {
+    self.ui_drawn = false;
+    let ui_kept = scene.ui_kept;
     let (output, view, then_reconfigure) = self.target.acquire()?;
     self.needs_reconfigure |= then_reconfigure;
     let capture_path = self.prepare_capture();
@@ -759,6 +775,7 @@ impl WgpuRenderer {
         label: Some("Frame Encoder"),
       });
     let captured;
+    let ui_drawn;
     {
       let targets = FrameTargets {
         game: &self.texture,
@@ -784,9 +801,14 @@ impl WgpuRenderer {
           display: &mut self.display_effects,
         },
       );
+      // A kept UI image is blended as it is, unless the game turned the
+      // `ui` pass off
+      ctx.ui_drawn = ui_kept && pipeline.is_enabled(pass_ids::UI) == Some(true);
       pipeline.execute(&mut ctx);
       captured = ctx.captured;
+      ui_drawn = ctx.ui_drawn;
     }
+    self.ui_drawn = ui_drawn;
     self.queue.submit(std::iter::once(encoder.finish()));
     if let Some(output) = output {
       self.queue.present(output);
@@ -823,6 +845,7 @@ impl WgpuRenderer {
       look: &look,
       ui_camera: None,
       ui_size: self.compositor.ui_size(),
+      ui_kept: false,
       cameras: &[],
       time: 0.0,
       overlay: ([0; 3], 0.0),

@@ -49,10 +49,13 @@ mod gpu;
 #[cfg(test)]
 mod gpu_world;
 mod headless;
+mod retain;
 pub(crate) mod ui;
 
 pub use headless::{HeadlessEngine, OffscreenOptions, StepOutcome, offscreen_with_format};
+pub use retain::PixelPair;
 pub use ui::{UiCacheStats, UiHarness};
 
 pub use crate::core::error::HeadlessError;
+pub use crate::core::render::UiRenderStats;
 pub use gpu::shared_gpu;

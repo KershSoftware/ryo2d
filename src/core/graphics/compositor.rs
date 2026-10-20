@@ -7,6 +7,8 @@
 //! premultiplied by alpha, which the composite shader blends over the frame
 //! in sRGB space.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use wgpu::util::DeviceExt;
 
 use super::bind_groups::{BindGroupCache, Bound};
@@ -46,12 +48,21 @@ pub(crate) struct Compositor {
   // The UI image the `ui` pass draws into
   ui_texture: wgpu::Texture,
   ui_texture_view: wgpu::TextureView,
+  /// Changes whenever the UI image is created anew
+  ui_epoch: u64,
   // A transparent 1x1 image bound when no UI is blended
   blank_view: wgpu::TextureView,
   // One uniform per (viewport, UI blended): the letterbox transform is
   // written when the window or mode changes; the identity ones never change
   letterboxed: [wgpu::Buffer; 2],
   identity: [wgpu::Buffer; 2],
+}
+
+/// An epoch no UI image has had in this process: a recreated compositor's
+/// image never matches an old one's
+fn next_ui_epoch() -> u64 {
+  static NEXT: AtomicU64 = AtomicU64::new(1);
+  NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// An image the `ui` pass draws into and the composite samples.
@@ -222,6 +233,7 @@ impl Compositor {
       sampler,
       ui_texture,
       ui_texture_view,
+      ui_epoch: next_ui_epoch(),
       blank_view,
       letterboxed,
       identity,
@@ -238,9 +250,15 @@ impl Compositor {
     &self.ui_texture_view
   }
 
+  /// Changes whenever the UI image is created anew (it is then blank)
+  pub(crate) fn ui_epoch(&self) -> u64 {
+    self.ui_epoch
+  }
+
   /// Recreate the UI image at `width` x `height`.
   pub(crate) fn resize_ui(&mut self, device: &wgpu::Device, width: u32, height: u32) {
     (self.ui_texture, self.ui_texture_view) = create_ui_texture(device, width, height);
+    self.ui_epoch = next_ui_epoch();
     self.bind_groups.clear();
   }
 

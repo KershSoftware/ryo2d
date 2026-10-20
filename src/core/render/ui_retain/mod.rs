@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), allow(dead_code))] // wired into the frame in the next task
-
 //! UI render retention: a frame whose UI draws exactly what the UI image
 //! holds keeps the image, building, uploading and drawing no UI (see the
 //! module notes, "UI render retention")
@@ -56,7 +54,6 @@ pub(crate) struct UiRetain {
   /// pass drew it
   image: Option<u64>,
   /// The last frame's
-  #[allow(dead_code)] // read by the frame in the next task
   pub(crate) stats: UiRenderStats,
 }
 
@@ -115,7 +112,6 @@ impl UiRetain {
   }
 
   /// Forget the image (retention was turned off)
-  #[allow(dead_code)] // called by the frame in the next task
   pub(crate) fn clear(&mut self) {
     self.drawn.clear();
     self.stamps.clear();

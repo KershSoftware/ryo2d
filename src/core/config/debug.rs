@@ -12,6 +12,7 @@
 //! | `show_origins` | Draw entity origin points (transform position) |
 //! | `enable_profiler` | Open flamegraph profiler window |
 //! | `ui_cache` | Replay UI node trees' unchanged subtrees (on by default; `EngineBuilder::ui_cache`) |
+//! | `ui_retain` | Keep the UI image while the UI is unchanged; reuse unchanged texts' glyphs (on by default; `EngineBuilder::ui_retain`) |
 //!
 //! # Available Info Overlays
 //!
@@ -254,6 +255,11 @@ pub struct DebugConfig {
   /// built every frame: it draws and behaves the same, slower. For ruling
   /// caching out when chasing a UI bug.
   pub ui_cache: bool,
+  /// Whether the renderer keeps the UI image while the UI is unchanged, and
+  /// reuses the glyphs built for unchanged texts (default true). Off, it
+  /// builds and draws the whole UI every frame: the same pixels, slower.
+  /// For ruling retention out when chasing a rendering bug.
+  pub ui_retain: bool,
 }
 
 impl Default for DebugConfig {
@@ -280,6 +286,7 @@ impl Default for DebugConfig {
       #[cfg(not(debug_assertions))]
       dev_console: false,
       ui_cache: true,
+      ui_retain: true,
     }
   }
 }

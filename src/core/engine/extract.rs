@@ -26,9 +26,10 @@ use crate::core::render::text::{
   TextSources, TextTargets, WorldTextFrame, emit_world_text, layout_world_text, prewarm,
 };
 use crate::core::render::ui::emit_ui;
+use crate::core::render::ui_retain::UiRenderEnv;
 use crate::core::render::{
   DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, SpriteLook, SpriteShading,
-  plan_cameras,
+  UiRenderStats, plan_cameras,
 };
 use crate::core::shaders::EffectsManager;
 use crate::core::text::{Fonts, TextEffects, TextIcons};
@@ -85,7 +86,7 @@ impl Engine {
       )
     };
 
-    let (entity_sprites, lights) = {
+    let (entity_sprites, lights, ui_kept) = {
       profile_scope!("cpu:render");
 
       // The scenes' GPU-batched sprites
@@ -356,15 +357,41 @@ impl Engine {
         list: &mut self.draw_list,
         warned: &mut self.text_warned,
       };
-      self.ui_camera = emit_ui(
-        &self.ui_commands,
-        &self.ui_space,
-        ui_on_target,
-        sources.as_ref(),
-        &mut text_targets,
-        triangles,
-        real_time,
-      );
+      // An unchanged UI keeps the UI image: none of it is built, uploaded
+      // or drawn (render module notes, "UI render retention")
+      let retain = self.config.debug.ui_retain;
+      if !retain {
+        self.ui_retain.clear();
+      }
+      let env = UiRenderEnv {
+        space: self.ui_space,
+        on_target: ui_on_target,
+        text: sources.is_some(),
+        fonts: self.text.generation(),
+      };
+      let icons = sources.as_ref().map(|sources| sources.icons);
+      let ui_kept = retain
+        && self
+          .ui_retain
+          .keep(&self.ui_commands, icons, env, rend.ui_image_epoch());
+      self.ui_camera = if ui_kept {
+        None
+      } else {
+        emit_ui(
+          &self.ui_commands,
+          &self.ui_space,
+          ui_on_target,
+          sources.as_ref(),
+          &mut text_targets,
+          triangles,
+          real_time,
+        )
+      };
+      self.ui_retain.stats = UiRenderStats {
+        kept: ui_kept,
+        glyph_evictions: gpu.glyph_evictions(),
+        ..UiRenderStats::default()
+      };
       if let Some(ui) = &self.ui_camera {
         let globals = CameraGlobals::new(
           &ui.view,
@@ -393,7 +420,7 @@ impl Engine {
         &mut gpu,
       );
       self.text.end_frame();
-      (entity_sprites, lights)
+      (entity_sprites, lights, ui_kept)
     };
 
     self.debug_stats = DebugStats {
@@ -420,12 +447,21 @@ impl Engine {
           look: world.resource::<crate::core::render::Look>(),
           ui_camera: self.ui_camera.as_ref(),
           ui_size: self.ui_space.image,
+          ui_kept,
           cameras: &self.camera_draws,
           time: real_time,
           overlay,
         };
         rend.render_frame(&mut pipeline, scene)
       });
+
+    // What the UI image holds now
+    match &result {
+      Ok(()) => self
+        .ui_retain
+        .presented(ui_kept, rend.ui_drawn(), rend.ui_image_epoch()),
+      Err(_) => self.ui_retain.lost(),
+    }
 
     let outcome = match result {
       Ok(()) => {

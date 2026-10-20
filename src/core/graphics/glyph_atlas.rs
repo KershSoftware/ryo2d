@@ -228,7 +228,6 @@ impl GlyphShelves {
   }
 
   /// Pages cleared to make room so far
-  #[cfg_attr(not(test), allow(dead_code))] // used by UI render retention (Tasks 3 and 4)
   pub(crate) fn evictions(&self) -> u64 {
     self.evictions
   }
@@ -329,7 +328,6 @@ impl GlyphAtlas {
   }
 
   /// Pages cleared to make room so far
-  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
   pub(crate) fn evictions(&self) -> u64 {
     self.shelves.evictions()
   }

@@ -1,5 +1,7 @@
 //! `HeadlessEngine`: a real engine without a window.
 
+use std::time::Duration;
+
 use image::RgbaImage;
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
@@ -11,6 +13,7 @@ use crate::core::ecs::kernel::Messages;
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::{ScreenMapping, WgpuRenderer};
 use crate::core::input::{GamepadButton, InputEvent, Stick};
+use crate::core::render::UiRenderStats;
 use crate::core::ui::nav::nav_targets;
 use crate::core::ui::{Rect, UiEvent, UiId};
 
@@ -377,5 +380,19 @@ impl HeadlessEngine {
   #[doc(hidden)]
   pub fn ui_cache_stats(&self) -> UiCacheStats {
     UiCacheStats::of(self.engine.world())
+  }
+
+  /// What the UI's render step did in the last frame: whether it kept the
+  /// UI image, the texts it built and reused
+  #[doc(hidden)]
+  pub fn ui_render_stats(&self) -> UiRenderStats {
+    self.engine.ui_render_stats()
+  }
+
+  /// The last frame's render step on the CPU (building, uploading and
+  /// encoding the frame; not the UI pass)
+  #[doc(hidden)]
+  pub fn render_time(&self) -> Duration {
+    self.engine.render_time()
   }
 }

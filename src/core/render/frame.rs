@@ -91,6 +91,9 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) ui_camera: Option<&'a CameraDraw>,
   /// The UI image's size in pixels
   pub(crate) ui_size: (u32, u32),
+  /// The UI image already holds this frame's UI (it was kept): the `ui`
+  /// pass does not run, and the composite blends the image as it is
+  pub(crate) ui_kept: bool,
   /// The cameras the camera passes run for, in render order
   pub(crate) cameras: &'a [CameraDraw],
   pub(crate) time: f32,
