@@ -171,6 +171,51 @@ Left for later:
 - Sharing records between identical subtrees, and building on several threads.
 - Text with icons after an in-place sprite resize (found in 4f, in the text engine; under Left for Later below).
 
+## 4g: UI render retention (measured)
+
+The renderer keeps the UI image while the UI's commands and render inputs are unchanged, and reuses an unchanged text's glyphs when the UI changes. Measured on an Apple GPU (Metal), 1280x720, with `benches/ui_render.rs` (the 200-widget settings node screen; "render step" is `HeadlessEngine::render_time()`, the CPU side of building, uploading and encoding, not the UI pass). The machine is shared, so numbers move 10 to 15% between runs.
+
+**The guard** (medians of 2,000 frames, over an empty frame's render step of about 88 µs; four runs):
+
+| Frame | Retention on | Retention off | Target |
+|---|---|---|---|
+| idle settings screen | 0 ns (kept) | 117 to 129 µs | under 5 µs: met |
+| one label changing every frame | 81 to 96 µs | 112 to 136 µs | under 60 µs: **not met** |
+| changing frame, on against off | on is 31 to 40 µs faster | | on no slower than off: met |
+
+The research measured the render side of this screen at about 120 µs (profile, `emit_ui` 70.6 + `Batch2D::prepare` 28.0 + about 19 for the extra pass); idle is now zero and a changing frame is about 80 to 95 µs, but the 60 µs target for a changing frame is missed. The guard's threshold was left as written, so `cargo bench --bench ui_render` stops at the guard until the target or the code changes.
+
+**Criterion** (`cargo bench --bench ui_render`, whole `step()`):
+
+| Bench | Retained | Not retained |
+|---|---|---|
+| `settings_idle` | 122.7 µs | 254.8 µs |
+| `settings_label` | 224.8 µs | 259.7 µs |
+| `settings_scrolling` | 216.1 µs | 249.9 µs |
+| `empty_frame` | 187.1 µs | |
+
+`empty_frame` is GPU-paced (its fixed passes cost more than the CPU work, so `step()` waits on the GPU), which is why an idle retained screen steps faster than it. Compare the render-step medians above, not the whole-step figures, against an empty frame. A scrolling list rebuilds its visible texts' placement each frame (the glyphs are reused, the instances are rewritten); retained is about 34 µs faster. Reusing the instances by translation is the possible follow-up. (The wheel needs the pointer over a row: at the panel's centre it does not reach the scroll area and the bench would measure a kept frame.)
+
+**`benches/text.rs`** (HUD of 100 texts and 50 panels, 640x360): 248.3 µs before 4g (research); 219.2 µs after the glyph-lookup fix alone (Task 1, before retention existed); 197.2 µs retained [194.6 199.9] and 227.2 µs with `ui_retain(false)`. 1,000 cached UI texts: 136.1 µs (626.8 µs in the research); 200 world labels: 146.6 µs.
+
+**Profile of the changing frame** (`settings_label`, retained; Time Profiler, 40,000 frames, inclusive per frame, against an empty scene at 102.3 µs; step total 218.5 µs):
+
+| Function | Per frame | Empty |
+|---|---|---|
+| `SceneManager::ui_pass` | 43.6 µs | 0.6 |
+| `render::ui::emit_ui` | 18.4 µs | 0 |
+| `UiRetain::keep` | 2.4 µs | 0 |
+| text built (one label: `emit_text` and `push_glyph`) | 0.6 µs | 0 |
+| `Batch2D::prepare` | 27.0 µs | 0.1 |
+| `Queue::write_buffer` (all) | 28.2 µs | 14.5 |
+| `WgpuRenderer::render_frame` | 100.6 µs | 77.0 |
+| of which `encode_render_pass` | 65.8 µs | 45.4 |
+| `CameraUniforms::sync` | 9.0 µs | 10.4 |
+
+140 texts are reused and one built each frame. What `emit_ui` still does is copy the reused texts' instances (the cloned-iterator copies are about 12 µs of its 18.4); the hashing and quad building are gone.
+
+**Approach C** (upload only the changed instance ranges; record the UI's draws once as a render bundle). Render-side work over an empty frame in a changing frame is about 69 µs: `emit_ui` 18, `Batch2D::prepare` 27 (its uploads about 14 more than empty), and the extra pass about 24 (`encode_render_pass` +20). So prepare, uploads and encoding are about three quarters of what is left, and the per-call costs (one staging buffer per `write_buffer`, about 150 draws encoded) dominate their size. A bundle of the unchanged draws plus a small pass for the changed ones could remove most of the encoding and upload, perhaps 25 to 35 µs, which would bring this frame under 60 µs, but it needs stable instance ranges across frames (the draw list is sorted and remapped every frame) and a bundle per clip and image state, and it saves nothing on a frame where much changes (the scrolling list). My reading: not worth a sub-project on this measurement alone. It is the only way to reach the 60 µs target; the UI pass (43.6 µs here) is now as large as the whole render side. 4h (layout and resolve retention for node trees, ceiling about 18 µs of the UI pass) is the smaller of the two and helps every changing frame, not only ones with few changes. The owner decides.
+
 ## Left for Later
 
 From 4b's out-of-scope list:

@@ -79,6 +79,21 @@ fn hud_frame(c: &mut Criterion) {
   });
 }
 
+fn hud_frame_unretained(c: &mut Criterion) {
+  let builder = EngineBuilder::new()
+    .resolution(640, 360)
+    .ui_retain(false)
+    .start_scene(Hud);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(2).expect("warm-up frames");
+  c.bench_function(
+    "headless frame, HUD of 100 texts and 50 panels, UI retention off",
+    |b| b.iter(|| engine.step().expect("frame")),
+  );
+}
+
 fn static_texts_frame(c: &mut Criterion) {
   let builder = EngineBuilder::new()
     .resolution(640, 360)
@@ -105,5 +120,11 @@ fn world_labels_frame(c: &mut Criterion) {
   });
 }
 
-criterion_group!(benches, hud_frame, static_texts_frame, world_labels_frame);
+criterion_group!(
+  benches,
+  hud_frame,
+  hud_frame_unretained,
+  static_texts_frame,
+  world_labels_frame
+);
 criterion_main!(benches);
