@@ -58,6 +58,7 @@ mod pipeline;
 pub(crate) mod scratch;
 pub(crate) mod text;
 pub(crate) mod ui;
+pub(crate) mod ui_retain;
 
 pub use context::RenderContext;
 pub(crate) use context::{EffectStages, FrameTargets};
@@ -77,6 +78,7 @@ pub use pass::{PassScope, RenderPass};
 pub use pipeline::{RenderPipeline, RenderPipelineError};
 pub use ui::UiResolution;
 pub(crate) use ui::UiSpace;
+pub use ui_retain::UiRenderStats;
 
 /// Ids of the built-in passes, in the order `RenderPipeline::default_2d` runs them.
 pub mod pass_ids {

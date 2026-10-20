@@ -110,6 +110,11 @@ pub(crate) struct UiCommands {
 }
 
 impl UiCommands {
+  /// Each command with its order, in the order they were pushed
+  #[cfg_attr(not(test), allow(dead_code))] // wired into the frame in the next task
+  pub(crate) fn as_slice(&self) -> &[(u32, UiCommand)] {
+    &self.commands
+  }
   pub(crate) fn clear(&mut self) {
     self.commands.clear();
   }
