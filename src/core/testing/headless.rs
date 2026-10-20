@@ -328,7 +328,9 @@ impl HeadlessEngine {
   }
 
   /// Move a trackpad by `(dx, dy)` logical pixels in the next step (+y
-  /// scrolls up), as the window reports it once converted.
+  /// scrolls up); the logical form, so the window's scale factor is not
+  /// applied (queue `InputEvent::Scroll` with a `PixelDelta` for winit's
+  /// physical pixels).
   pub fn trackpad(&mut self, dx: f32, dy: f32) {
     self
       .engine

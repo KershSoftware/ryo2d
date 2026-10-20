@@ -136,11 +136,13 @@ pub(crate) struct UiList {
   /// Whether the list's first rows give its focus scope its default focus
   pub(crate) first_focus: FirstFocus,
   /// The offset the pool was last chosen at, so a scroll that follows the
-  /// fingers (offset == target) is looked ahead by its last step
+  /// fingers (offset == target) has a step to look ahead by
   pub(crate) last_offset: Option<f32>,
   /// How far the pool looks ahead of an offset that moves at once: the
   /// largest recent step, decaying over the frames that do not move
   pub(crate) ahead: f32,
+  /// Frames in a row the offset did not move
+  pub(crate) still: u8,
 }
 
 /// A focus on its way to an item of a list node
@@ -326,6 +328,9 @@ pub(crate) fn update_lists(world: &mut World, memory: &mut UiMemory, frame: u64,
 /// fingers
 const LOOK_AHEAD_SNAP: f32 = 0.5;
 
+/// The still frames the look-ahead is held for before it decays
+const LOOK_AHEAD_HOLD: u8 = 2;
+
 /// How much of the look-ahead a frame without movement keeps
 const LOOK_AHEAD_DECAY: f32 = 0.75;
 
@@ -453,17 +458,28 @@ fn update_list(
         .last_offset
         .replace(offset)
         .map_or(0.0, |last| offset - last);
+      pool.still = if step == 0.0 {
+        pool.still.saturating_add(1)
+      } else {
+        0
+      };
       pool.ahead = if !tracking || step.abs() > view {
         0.0
-      } else if step != 0.0 && (step.abs() >= pool.ahead.abs() || step * pool.ahead < 0.0) {
+      } else if step * pool.ahead < 0.0 {
         step
       } else {
-        let held = pool.ahead * LOOK_AHEAD_DECAY;
-        if held.abs() < LOOK_AHEAD_SNAP {
+        // Held a few still frames, then decaying; never below this step
+        let held = if pool.still > LOOK_AHEAD_HOLD {
+          pool.ahead * LOOK_AHEAD_DECAY
+        } else {
+          pool.ahead
+        };
+        let held = if held.abs() < LOOK_AHEAD_SNAP {
           0.0
         } else {
           held
-        }
+        };
+        if step.abs() > held.abs() { step } else { held }
       };
       if tracking {
         offset + pool.ahead.max(-view).min(view)
@@ -930,6 +946,9 @@ fn release(world: &mut World, list: Entity) {
   pool.jump = None;
   pool.rebind = Rebind::None;
   pool.focused = None;
+  pool.last_offset = None;
+  pool.ahead = 0.0;
+  pool.still = 0;
   let pending = pool.pending.take();
   let rows = std::mem::take(&mut pool.rows);
   take_back(world, pending);
@@ -1690,10 +1709,14 @@ mod tests {
   /// Every item in the view the list was drawn at last frame has a row given
   /// its item before that frame
   fn assert_view_drawn(h: &UiHarness, list: Entity, id: UiId, when: &str) {
+    assert_view_drawn_in(h, list, id, 200.0, when);
+  }
+
+  fn assert_view_drawn_in(h: &UiHarness, list: Entity, id: UiId, view: f32, when: &str) {
     let offset = h.scroll_offset(id).y;
     let pool = rows(h, list);
     let first = (offset / 22.0).floor() as usize;
-    let end = ((offset + 200.0) / 22.0).ceil() as usize;
+    let end = ((offset + view) / 22.0).ceil() as usize;
     for index in first..end {
       let row = pool.iter().find(|(i, _)| *i == index).map(|r| r.1);
       let row = row.unwrap_or_else(|| panic!("{when}: item {index} in view at {offset}"));
@@ -1803,9 +1826,71 @@ mod tests {
       }
       h.frame(|_| {});
       bind(&mut h);
-      // The first, bigger step than any before it has no look-ahead
+      // A step bigger than any before it is covered by the overscan alone
       if frame > 0 {
         assert_view_drawn(&h, list, id, &format!("gaps frame {frame}"));
+      }
+    }
+  }
+
+  #[test]
+  fn a_slowing_flick_keeps_every_view_drawn() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = h.spawn_ui(
+      UiNode::list(10_000, 20.0)
+        .gap(2.0)
+        .height(400.0)
+        .width(300.0)
+        .row_shape(row)
+        .name("tall"),
+    );
+    for _ in 0..3 {
+      h.frame(|_| {});
+      bind(&mut h);
+    }
+    let id = h.ui_id(list).unwrap();
+    h.move_to(150.0, 100.0);
+    // Momentum: 300 px a frame (over five overscans), slowing by 1.5% a frame
+    let mut step = 300.0_f32;
+    for frame in 0..40 {
+      h.trackpad(0.0, -step);
+      step *= 0.985;
+      h.frame(|_| {});
+      bind(&mut h);
+      if frame > 0 {
+        assert_view_drawn_in(&h, list, id, 400.0, &format!("slowing frame {frame}"));
+      }
+    }
+  }
+
+  #[test]
+  fn an_uneven_cadence_never_despawns_look_ahead_rows() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = board(&mut h, 10_000);
+    for _ in 0..3 {
+      h.frame(|_| {});
+      bind(&mut h);
+    }
+    h.move_to(150.0, 100.0);
+    let mut seen: Vec<Entity> = Vec::new();
+    for frame in 0..24 {
+      if frame % 2 == 0 {
+        h.trackpad(0.0, -44.0);
+      }
+      h.frame(|_| {});
+      bind(&mut h);
+      if frame >= 6 {
+        for &(_, row) in &rows(&h, list) {
+          if !seen.contains(&row) {
+            seen.push(row);
+          }
+        }
+        for row in &seen {
+          assert!(
+            h.world().get_entity(*row).is_ok(),
+            "a row went at frame {frame}"
+          );
+        }
       }
     }
   }

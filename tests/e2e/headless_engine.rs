@@ -1082,3 +1082,26 @@ fn a_trackpad_beside_the_ui_reaches_gameplay() {
   assert_eq!(offset, 0.0);
   assert_eq!(seen, 8.0);
 }
+
+#[test]
+fn a_physical_pixel_delta_reads_as_logical_pixels_at_the_windows_scale_factor() {
+  struct Watch;
+  impl Scene for Watch {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+  let builder = EngineBuilder::new().resolution(64, 64).start_scene(Watch);
+  let Some(mut engine) = HeadlessEngine::new_or_skip_with_scale_factor(builder, 2.0) else {
+    return;
+  };
+  engine
+    .world_mut()
+    .resource_mut::<Input>()
+    .queue(InputEvent::Scroll(
+      winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(10.0, -20.0)),
+    ));
+  engine.step().unwrap();
+  let input = engine.world().resource::<Input>();
+  assert_eq!(input.scroll_pixels(), (5.0, -10.0));
+}
