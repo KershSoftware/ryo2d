@@ -244,6 +244,11 @@ impl Engine {
             }
             Err(e) => {
               engine_warn!(module: "Cursor", "Failed to create custom cursor: {:?}", e);
+              // Not the console's icon left behind: the default, once
+              window.set_cursor(winit::window::Cursor::Icon(
+                crate::core::cursor::CursorStyle::Default.to_winit(),
+              ));
+              self.cursor_resolver.fell_back();
             }
           }
         }

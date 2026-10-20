@@ -48,11 +48,11 @@ Bevy clamps the change ticks of the systems in its own `Schedules` resource only
 
 ## Cursor (`cursor.rs`)
 
-- Deferred requests avoid borrowing the window during scene callbacks: `ctx.set_cursor*()` / `show_cursor()` / `hide_cursor()` write the `CursorRequest` resource (`ctx.cursor()`), applied in `about_to_wait()` (`engine/window.rs`). The window's cursor is resolved there by `CursorResolver` (`cursor.rs`): the console's per-frame override (`Engine::console_cursor`, set by `console_tick` from `ConsoleState::desired_cursor`; `None` = no opinion), else the game's last cursor, which persists without being asked again. It is applied only when it differs from what was last shown, and again when the left button is released (macOS applies a new icon lazily). `WindowRequest` (`ctx.window()`) works the same way for resolution, display mode and UI scale.
+- Deferred requests avoid borrowing the window during scene callbacks: `ctx.set_cursor*()` / `show_cursor()` / `hide_cursor()` write the `CursorRequest` resource (`ctx.cursor()`), applied in `about_to_wait()` (`engine/window.rs`). The window's cursor is resolved there by `CursorResolver` (`cursor.rs`): the console's per-frame override (`Engine::console_cursor`, set by `console_tick` from `ConsoleState::desired_cursor`; `None` = no opinion), else the game's last cursor, which persists without being asked again. It is applied only when it differs from what was last shown, and again when the left button is released (macOS applies a new icon lazily). A game cursor that cannot be created falls back to the default once (`CursorResolver::fell_back`). `WindowRequest` (`ctx.window()`) works the same way for resolution, display mode and UI scale.
 - Demo: `examples/demos/cursor/`
 
 ## Related Skills
 
 - Profiler (`profiler.rs`, `windows/profiler_window.rs`): skill `ryo-profiler`
-- Developer console (`console/`): skill `ryo-console`
+- Developer console (`console/`): skill `ryo-console`. Its view is a fractional distance from the bottom, in lines (a trackpad moves it at once, a wheel eases it); output printed while the reader is scrolled up leaves the lines read in place (counted as `unseen_lines`, moved by their wrapped rows at the next render), and submitting a command jumps to the bottom.
 - Messages (`messages/`): skill `ryo-messages`

@@ -271,9 +271,9 @@ impl Engine {
     self.console_state.update(real_dt);
 
     if self.console_state.visible {
-      // The console's units are the pointer's, so a trackpad moves it as far
-      // as the pointer would
-      let to_screen = self.logical_to_screen();
+      // A trackpad moves the console as far as the pointer would, converted
+      // as the UI converts the pointer
+      let to_screen = self.console_pixel_scale();
       self.console_state.set_pixel_scale(to_screen);
       let command = self
         .console_state
@@ -364,6 +364,11 @@ impl Engine {
 
   /// Screen units per logical window pixel (1 without a renderer, where
   /// the pointer is not mapped either)
+  /// A trackpad's logical pixels in the console's units
+  fn console_pixel_scale(&self) -> f32 {
+    self.ui_space.mouse_scale * self.logical_to_screen()
+  }
+
   fn logical_to_screen(&self) -> f32 {
     self.renderer.as_ref().map_or(1.0, |renderer| {
       let scale = renderer.mapping().scale();
@@ -2410,6 +2415,19 @@ mod tests {
       "over the console"
     );
     assert_eq!(frame(&mut e, vec![mouse(319.0, 239.0)]), None, "away");
+  }
+
+  #[test]
+  fn the_console_moves_by_the_trackpad_as_far_as_the_pointer_would() {
+    struct Idle;
+    impl Scene for Idle {}
+    let mut e = EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(Idle)
+      .build_headless();
+    let plain = e.console_pixel_scale();
+    e.ui_space.mouse_scale = 0.5;
+    assert_eq!(e.console_pixel_scale(), plain * 0.5);
   }
 
   #[test]

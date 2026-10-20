@@ -102,6 +102,9 @@ const WHEEL_LINES: f32 = 3.0;
 /// Time constant (seconds) of the wheel's ease, as the UI's scroll areas
 const SCROLL_SMOOTHING: f32 = 0.08;
 
+/// Less than this far (in units) from the bottom counts as the bottom
+const BOTTOM_SNAP: f32 = 0.5;
+
 /// Closer than this to its target (in lines) the view settles
 const SCROLL_SNAP: f32 = 0.02;
 
@@ -225,6 +228,8 @@ pub struct ConsoleState {
   pixel_scale: f32,
   /// Wrapped rows as last drawn (0 before the first render)
   wrapped_rows: Cell<usize>,
+  /// Lines printed since the last render while the reader was scrolled up
+  unseen_lines: usize,
   /// Timer for cursor blink animation
   cursor_blink_timer: f32,
   /// Total time elapsed (for timestamps)
@@ -263,6 +268,7 @@ impl ConsoleState {
       scroll_target: 0.0,
       pixel_scale: 1.0,
       wrapped_rows: Cell::new(0),
+      unseen_lines: 0,
       cursor_blink_timer: 0.0,
       total_time: 0.0,
       drag_state: DragState::None,
@@ -289,8 +295,7 @@ impl ConsoleState {
     // At the bottom the view follows the output; a reader scrolled up keeps
     // the lines being read where they are
     if self.scroll_target > 0.0 {
-      self.scroll_offset += 1.0;
-      self.scroll_target += 1.0;
+      self.unseen_lines += 1;
     }
   }
 
@@ -319,6 +324,7 @@ impl ConsoleState {
     self.output_lines.clear();
     self.scroll_offset = 0.0;
     self.scroll_target = 0.0;
+    self.unseen_lines = 0;
   }
 
   /// Toggle console visibility
@@ -355,14 +361,10 @@ impl ConsoleState {
   /// Ease the view toward the wheel's target, as a UI scroll area does
   fn ease_scroll(&mut self, dt: f32) {
     let left = self.scroll_target - self.scroll_offset;
-    if left == 0.0 {
+    if left == 0.0 || !dt.is_finite() || dt <= 0.0 {
       return;
     }
-    let step = if dt.is_finite() && dt > 0.0 {
-      1.0 - (-dt / SCROLL_SMOOTHING).exp()
-    } else {
-      0.0
-    };
+    let step = 1.0 - (-dt / SCROLL_SMOOTHING).exp();
     let next = self.scroll_offset + left * step;
     // Far from the target a step can be smaller than a float can move
     self.scroll_offset = if left.abs() < SCROLL_SNAP || next == self.scroll_offset {
@@ -375,17 +377,36 @@ impl ConsoleState {
   /// How far the view scrolls, in lines: the rows (wrapped, as last drawn)
   /// less what fits
   fn max_scroll_lines(&self) -> f32 {
-    let rows = match self.wrapped_rows.get() {
-      0 => self.output_lines.len(),
-      wrapped => wrapped,
-    };
+    let rows = self.total_rows();
     let (_, _, output_height, _) = self.output_area();
     (rows as f32 - output_height / self.line_height.get()).max(0.0)
   }
 
-  /// Put the view at `lines` (clamped), stopping any ease
+  /// A distance from the bottom, with less than half a unit counting as
+  /// the bottom itself
+  fn snap_to_bottom(&self, lines: f32) -> f32 {
+    if lines * self.line_height.get() < BOTTOM_SNAP {
+      0.0
+    } else {
+      lines
+    }
+  }
+
+  /// The wrapped rows as last drawn (the lines before the first render)
+  fn total_rows(&self) -> usize {
+    match self.wrapped_rows.get() {
+      0 => self.output_lines.len(),
+      wrapped => wrapped,
+    }
+  }
+
+  /// Put the view at `lines` (clamped), stopping any ease; a move that ends
+  /// just above the bottom ends at it
   fn scroll_to_lines(&mut self, lines: f32) {
-    let lines = lines.clamp(0.0, self.max_scroll_lines());
+    let mut lines = lines.clamp(0.0, self.max_scroll_lines());
+    if lines < self.scroll_offset {
+      lines = self.snap_to_bottom(lines);
+    }
     self.scroll_offset = lines;
     self.scroll_target = lines;
   }
@@ -544,8 +565,11 @@ impl ConsoleState {
     let line_height = self.line_height.get();
     let (_, _, output_height, _) = self.output_area();
     let visible_lines = (output_height / line_height) as usize;
-    let total_lines = self.output_lines.len();
+    let total_lines = self.total_rows();
     let max_scroll = self.max_scroll_lines();
+    // A resize or the line cap can leave the view past the end
+    self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
+    self.scroll_target = self.scroll_target.clamp(0.0, max_scroll);
 
     // Handle window dragging/resizing/scrollbar (works even when unfocused)
     match self.drag_state {
@@ -674,7 +698,8 @@ impl ConsoleState {
         self.scroll_to_lines(at + pixel_y * self.pixel_scale / line_height);
       }
       if wheel_y != 0.0 {
-        self.scroll_target = (self.scroll_target + wheel_y * WHEEL_LINES).clamp(0.0, max_scroll);
+        let target = (self.scroll_target + wheel_y * WHEEL_LINES).clamp(0.0, max_scroll);
+        self.scroll_target = self.snap_to_bottom(target);
       }
     }
 
@@ -808,6 +833,9 @@ impl ConsoleState {
     if input.key_pressed(KeyCode::Enter) && !self.input_buffer.is_empty() {
       let command = self.input_buffer.clone();
 
+      // Typing a command brings the reader to the bottom, as in a terminal
+      self.scroll_to_lines(0.0);
+
       // Echo the command
       self.print_command(format!("> {}", command));
 
@@ -842,7 +870,7 @@ impl ConsoleState {
   }
 
   /// Render the console window
-  pub fn render(&self, ui: &mut UiContext, frame_width: u32, frame_height: u32) {
+  pub fn render(&mut self, ui: &mut UiContext, frame_width: u32, frame_height: u32) {
     if !self.visible {
       return;
     }
@@ -1000,9 +1028,30 @@ impl ConsoleState {
       }
       rows
     };
-    let mut wrapped_lines = wrap_all(self.max_text_width(false));
+    let mut text_width = self.max_text_width(false);
+    let mut wrapped_lines = wrap_all(text_width);
     if wrapped_lines.len() > visible_line_count {
-      wrapped_lines = wrap_all(self.max_text_width(true));
+      text_width = self.max_text_width(true);
+      wrapped_lines = wrap_all(text_width);
+    }
+
+    // Lines printed while the reader was scrolled up push the rows they
+    // wrap to under the view: move the view by those, so what is read stays
+    let unseen = std::mem::take(&mut self.unseen_lines).min(self.output_lines.len());
+    if unseen > 0 && self.scroll_target > 0.0 {
+      let rows: usize = self
+        .output_lines
+        .iter()
+        .rev()
+        .take(unseen)
+        .map(|line| {
+          ui.wrap_text_styled(&line.text, text_width, &style)
+            .len()
+            .max(1)
+        })
+        .sum();
+      self.scroll_offset += rows as f32;
+      self.scroll_target += rows as f32;
     }
 
     let total_lines = wrapped_lines.len();
@@ -1010,6 +1059,8 @@ impl ConsoleState {
     let has_scrollbar = total_lines > visible_line_count;
     let max_scroll = (total_lines as f32 - output_height / line_height).max(0.0);
     let scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
+    self.scroll_target = self.scroll_target.clamp(0.0, max_scroll);
+    self.scroll_offset = scroll_offset;
 
     // Draw scrollbar if there's more content than visible
     let scrollbar_x = x + self.width - SCROLLBAR_WIDTH - 4.0;
@@ -1063,25 +1114,6 @@ impl ConsoleState {
       }
     }
     ui.pop_clip();
-
-    // Draw scroll indicator if not at bottom (now shown in scrollbar area)
-    if self.scroll_offset >= 0.5 && !has_scrollbar {
-      // Only show text indicator if no scrollbar (few lines but scrolled)
-      let indicator = format!("[{:.0} more lines below]", self.scroll_offset);
-      let indicator_x = x + (self.width - ui.measure_text(indicator.as_str(), &style).x) / 2.0;
-      let indicator_color = if self.focused {
-        colors::SYSTEM
-      } else {
-        Color::new(colors::SYSTEM.r, colors::SYSTEM.g, colors::SYSTEM.b, 160)
-      };
-      draw_line(
-        ui,
-        &indicator,
-        indicator_x,
-        output_bottom - line_height,
-        indicator_color,
-      );
-    }
   }
 }
 
@@ -1286,20 +1318,133 @@ mod tests {
     assert!((scrolled_units(&console) - max).abs() < 0.01, "a wheel too");
   }
 
+  /// Render the console and give each drawn row's y by its text's seed
+  #[cfg(feature = "default-fonts")]
+  fn drawn_rows(console: &mut ConsoleState) -> std::collections::HashMap<u64, f32> {
+    use crate::core::ui::immediate::{UiCommand, UiCommands};
+    let (mut commands, mut text) = (
+      UiCommands::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
+    console.render(&mut ui, 1280, 720);
+    drop(ui);
+    let (top, bottom, _, _) = console.output_area();
+    commands
+      .commands()
+      .filter_map(|c| match c {
+        UiCommand::Text { origin, seed, .. } if origin.y > top - 20.0 && origin.y < bottom => {
+          Some((*seed, origin.y))
+        }
+        _ => None,
+      })
+      .collect()
+  }
+
+  #[cfg(feature = "default-fonts")]
   #[test]
   fn new_output_keeps_a_console_at_the_bottom_and_a_reader_in_place() {
     let (mut console, mut input) = scrolling_console(50);
     console.print("more");
     assert_eq!(scrolled_units(&console), 0.0, "at the bottom it stays");
 
+    drawn_rows(&mut console);
     console_frame(&mut console, &mut input, 0.0, 30.0);
-    let before = scrolled_units(&console);
-    console.print("one more");
-    let after = scrolled_units(&console);
+    let before = drawn_rows(&mut console);
+    // A line that wraps to several rows must not move what is being read
+    console.print("word ".repeat(300));
+    let after = drawn_rows(&mut console);
+    let kept: Vec<_> = before
+      .iter()
+      .filter_map(|(seed, y)| after.get(seed).map(|y2| (*y, *y2)))
+      .collect();
+    assert!(kept.len() > 5, "the rows being read are still drawn");
+    for (y, y2) in kept {
+      assert!((y - y2).abs() < 0.01, "a row moved from {y} to {y2}");
+    }
+  }
+
+  #[test]
+  fn submitting_a_command_jumps_to_the_bottom_but_other_output_does_not() {
+    let (mut console, mut input) = scrolling_console(50);
+    console_frame(&mut console, &mut input, 0.0, 60.0);
+    console.print_error("a capture report");
     assert!(
-      (after - before - console.line_height.get()).abs() < 0.01,
-      "the lines being read keep their place: {before} -> {after}"
+      (scrolled_units(&console) - 60.0).abs() < 0.01,
+      "left in place"
     );
+    assert_eq!(console.unseen_lines, 1);
+    console.input_buffer = "help".to_string();
+    console.cursor_pos = 4;
+    input.queue(crate::core::input::InputEvent::Key {
+      key: KeyCode::Enter,
+      pressed: true,
+    });
+    input.begin_frame();
+    assert_eq!(console.handle_input(&mut input).as_deref(), Some("help"));
+    assert_eq!(console.scroll_offset, 0.0);
+    assert_eq!(console.scroll_target, 0.0);
+  }
+
+  #[test]
+  fn an_offset_beyond_the_end_is_brought_back_before_scrolling() {
+    let (mut console, mut input) = scrolling_console(50);
+    let (_, _, view, _) = console.output_area();
+    let line = console.line_height.get();
+    let max = 50.0 * line - view;
+    console.scroll_offset = 500.0;
+    console.scroll_target = 500.0;
+    console_frame(&mut console, &mut input, -1.0, 0.0);
+    for _ in 0..120 {
+      console_frame(&mut console, &mut input, 0.0, 0.0);
+    }
+    let units = scrolled_units(&console);
+    assert!(
+      (units - (max - 3.0 * line)).abs() < 0.1,
+      "a notch down moved it: {units}"
+    );
+  }
+
+  #[test]
+  fn a_tiny_distance_from_the_bottom_counts_as_the_bottom() {
+    let (mut console, mut input) = scrolling_console(50);
+    console_frame(&mut console, &mut input, 0.0, 60.0);
+    console_frame(&mut console, &mut input, 0.0, -59.8);
+    assert_eq!(console.scroll_target, 0.0);
+    assert_eq!(console.scroll_offset, 0.0);
+    console.print("more");
+    assert_eq!(scrolled_units(&console), 0.0, "it follows the output");
+  }
+
+  #[test]
+  fn a_zero_time_step_does_not_jump_the_ease() {
+    let (mut console, mut input) = scrolling_console(50);
+    console_frame(&mut console, &mut input, 1.0, 0.0);
+    console.update(0.0);
+    assert_eq!(console.scroll_offset, 0.0);
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn the_scrollbar_answers_to_the_wrapped_rows_it_draws() {
+    let (mut console, mut input) = scrolling_console(0);
+    for _ in 0..8 {
+      console.print("word ".repeat(120));
+    }
+    drawn_rows(&mut console);
+    let (_, _, view, _) = console.output_area();
+    assert!(console.output_lines.len() as f32 * console.line_height.get() < view);
+    assert!(console.wrapped_rows.get() as f32 * console.line_height.get() > view);
+    // Click the track near its top: the view jumps up
+    let track = console.scrollbar_track_rect();
+    input.handle_mouse_move(f64::from(track.x + 2.0), f64::from(track.y + 2.0));
+    input.queue(crate::core::input::InputEvent::MouseButton {
+      button: MouseButton::Left,
+      pressed: true,
+    });
+    input.begin_frame();
+    console.handle_input(&mut input);
+    assert!(console.scroll_offset > 0.0, "the click found the scrollbar");
   }
 
   #[cfg(feature = "default-fonts")]

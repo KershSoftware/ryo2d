@@ -170,14 +170,28 @@ pub(crate) enum CursorShape {
 }
 
 impl CursorShape {
-  /// Whether the window already shows it: styles by value, sprites by id
-  fn is_shown_as(&self, other: &CursorShape) -> bool {
-    match (self, other) {
-      (CursorShape::Style(a), CursorShape::Style(b)) => a == b,
-      (CursorShape::Custom(a), CursorShape::Custom(b)) => a.id == b.id,
+  /// What the window must show to show this shape
+  fn key(&self) -> ShownKey {
+    match self {
+      CursorShape::Style(style) => ShownKey::Style(*style),
+      CursorShape::Custom(data) => ShownKey::Custom(data.id.clone()),
+    }
+  }
+
+  fn is_shown_as(&self, shown: &ShownKey) -> bool {
+    match (self, shown) {
+      (CursorShape::Style(a), ShownKey::Style(b)) => a == b,
+      (CursorShape::Custom(a), ShownKey::Custom(b)) => a.id == *b,
       _ => false,
     }
   }
+}
+
+/// What the window last showed: styles by value, sprites by id
+#[derive(Debug, Clone, PartialEq)]
+enum ShownKey {
+  Style(CursorStyle),
+  Custom(String),
 }
 
 /// Which cursor the window shows: the engine's per-frame override (the
@@ -187,14 +201,14 @@ impl CursorShape {
 #[derive(Debug)]
 pub(crate) struct CursorResolver {
   game: CursorShape,
-  shown: CursorShape,
+  shown: ShownKey,
 }
 
 impl Default for CursorResolver {
   fn default() -> Self {
     Self {
       game: CursorShape::Style(CursorStyle::Default),
-      shown: CursorShape::Style(CursorStyle::Default),
+      shown: ShownKey::Style(CursorStyle::Default),
     }
   }
 }
@@ -215,20 +229,25 @@ impl CursorResolver {
     } else if let Some(style) = style {
       self.game = CursorShape::Style(style);
     }
-    let wanted = match over {
-      Some(style) => CursorShape::Style(style),
-      None => self.game.clone(),
-    };
+    let overridden = over.map(CursorShape::Style);
+    let wanted = overridden.as_ref().unwrap_or(&self.game);
     if !refresh && wanted.is_shown_as(&self.shown) {
       return None;
     }
-    self.shown = wanted.clone();
-    Some(wanted)
+    self.shown = wanted.key();
+    Some(wanted.clone())
+  }
+
+  /// The game's cursor could not be made: the window shows the default, and
+  /// the game's cursor becomes it, so the failure is not retried every frame
+  pub(crate) fn fell_back(&mut self) {
+    self.game = CursorShape::Style(CursorStyle::Default);
+    self.shown = ShownKey::Style(CursorStyle::Default);
   }
 
   /// The window was made afresh: it shows its default, whatever was shown
   pub(crate) fn window_reset(&mut self) {
-    self.shown = CursorShape::Style(CursorStyle::Default);
+    self.shown = ShownKey::Style(CursorStyle::Default);
   }
 }
 
@@ -481,5 +500,25 @@ mod tests {
     assert_eq!(style(shown), Some(CursorStyle::Text));
     let shown = cursors.resolve(Some(CursorStyle::Text), Some(sprite("b")), None, false);
     assert!(matches!(shown, Some(CursorShape::Custom(c)) if c.id == "b"));
+  }
+
+  #[test]
+  fn a_custom_cursor_that_cannot_be_made_falls_back_to_the_default() {
+    let mut cursors = CursorResolver::default();
+    cursors.resolve(None, None, Some(CursorStyle::ResizeNwSe), false);
+    let shown = cursors.resolve(None, Some(sprite("bad")), None, false);
+    assert!(matches!(shown, Some(CursorShape::Custom(_))));
+    cursors.fell_back();
+    assert!(
+      cursors.resolve(None, None, None, false).is_none(),
+      "no retry"
+    );
+    cursors.resolve(None, None, Some(CursorStyle::ResizeNwSe), false);
+    let shown = cursors.resolve(None, None, None, false);
+    assert_eq!(
+      style(shown),
+      Some(CursorStyle::Default),
+      "not the resize icon"
+    );
   }
 }
