@@ -428,8 +428,8 @@ impl ConsoleState {
 
   /// Get the desired cursor style based on current state and mouse position.
   ///
-  /// Returns `Some(CursorStyle)` if the console wants to override the cursor,
-  /// or `None` if the console doesn't need to control the cursor.
+  /// Returns `Some(CursorStyle)` while the console wants the cursor, or
+  /// `None` (no opinion) when the game's cursor should show.
   pub fn desired_cursor(&self, mouse_x: f32, mouse_y: f32) -> Option<CursorStyle> {
     if !self.visible {
       return None;
@@ -451,13 +451,10 @@ impl ConsoleState {
       return Some(CursorStyle::ResizeNwSe);
     }
 
-    // If focused and mouse is over console window, use default cursor
-    // If unfocused, let the game control the cursor
-    if self.focused {
-      let window_rect = self.window_rect();
-      if window_rect.contains(mouse_x, mouse_y) {
-        return Some(CursorStyle::Default);
-      }
+    // Over the window it is the default cursor, focused or not, so a game's
+    // crosshair does not show over it; elsewhere the game's cursor returns
+    if self.window_rect().contains(mouse_x, mouse_y) {
+      return Some(CursorStyle::Default);
     }
 
     None
@@ -1765,6 +1762,68 @@ mod tests {
 
     let cursor = console.desired_cursor(mouse_x, mouse_y);
     assert_eq!(cursor, Some(CursorStyle::ResizeNwSe));
+  }
+
+  #[test]
+  fn the_console_asks_for_no_cursor_once_a_resize_drag_ends_outside_it() {
+    use crate::core::input::InputEvent;
+    let mut console = ConsoleState::new();
+    console.toggle();
+    let handle = console.resize_handle_rect();
+    let (hx, hy) = (
+      handle.x + handle.width / 2.0,
+      handle.y + handle.height / 2.0,
+    );
+    let mut input = Input::new();
+    let mut frame = |console: &mut ConsoleState, events: Vec<InputEvent>| {
+      for event in events {
+        input.queue(event);
+      }
+      input.begin_frame();
+      console.handle_input(&mut input);
+      let (x, y) = input.mouse_position();
+      console.desired_cursor(x, y)
+    };
+    let mouse = |x: f32, y: f32| InputEvent::MouseMove {
+      x: f64::from(x),
+      y: f64::from(y),
+    };
+    let button = |pressed| InputEvent::MouseButton {
+      button: MouseButton::Left,
+      pressed,
+    };
+    assert_eq!(
+      frame(&mut console, vec![mouse(hx, hy)]),
+      Some(CursorStyle::ResizeNwSe),
+      "over the handle"
+    );
+    frame(&mut console, vec![button(true)]);
+    // Far past the minimum size: the window stops shrinking, the pointer goes on
+    assert_eq!(
+      frame(&mut console, vec![mouse(hx - 900.0, hy - 600.0)]),
+      Some(CursorStyle::ResizeNwSe),
+      "resizing"
+    );
+    // Released with no further move, outside the window
+    assert_eq!(
+      frame(&mut console, vec![button(false)]),
+      None,
+      "the game's cursor is back"
+    );
+    // Over the window it is the default, focused or not
+    let rect = console.window_rect();
+    let inside = mouse(rect.x + 20.0, rect.y + 20.0);
+    assert_eq!(
+      frame(&mut console, vec![inside]),
+      Some(CursorStyle::Default)
+    );
+    console.focused = false;
+    let (x, y) = (rect.x + 20.0, rect.y + 20.0);
+    assert_eq!(
+      console.desired_cursor(x, y),
+      Some(CursorStyle::Default),
+      "a game's crosshair does not show over the console"
+    );
   }
 
   // ============================================================================

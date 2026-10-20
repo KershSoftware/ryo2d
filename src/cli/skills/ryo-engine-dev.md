@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.2.1
+  version: 2.2.2
 ---
 
 # Ryo2D Engine Developer
@@ -83,7 +83,7 @@ Engine::frame
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
 - Scene callbacks get `Time`, `Input` and `AssetManager` as `SceneContext` fields, taken out of the world for the callback (`SceneContext::scoped`). Systems always see them as resources. Cameras are entities (`Camera2d`); the main one (`MainCamera`) is spawned with the world and survives world cleanup, and `ctx.camera()` edits it.
-- Per-frame requests from scenes to the window go through resources (`WindowRequest`, `CursorRequest`) applied in `about_to_wait` (`engine/window.rs`), never by borrowing the window during a callback.
+- Per-frame requests from scenes to the window go through resources (`WindowRequest`, `CursorRequest`) applied in `about_to_wait` (`engine/window.rs`), never by borrowing the window during a callback. The window's cursor is resolved there too (`CursorResolver`): the console's per-frame override (`Engine::console_cursor`, `None` = no opinion), else the game's last cursor, applied only when it changes and once more when the left button is released.
 
 ## Module Map (`src/core/`)
 

@@ -14,7 +14,6 @@ use crate::core::audio::SoundOptions;
 use crate::core::capture::CaptureTarget;
 use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
-use crate::core::cursor::CursorRequest;
 use crate::core::ecs::kernel::{CheckChangeTicks, DetectChanges};
 use crate::core::ecs::{MessageWriter, On, Res, ResMut, Resource, World};
 use crate::core::input::{Binding, Input, InputEvent};
@@ -318,11 +317,9 @@ impl Engine {
       }
     }
 
-    // Runs while closed too, so the cursor is reset
+    // Runs while closed too, so the override ends with the console
     let (mouse_x, mouse_y) = self.world.resource::<Input>().mouse_position();
-    if let Some(style) = self.console_state.desired_cursor(mouse_x, mouse_y) {
-      self.world.resource_mut::<CursorRequest>().cursor = Some(style);
-    }
+    self.console_cursor = self.console_state.desired_cursor(mouse_x, mouse_y);
   }
 
   /// The UI pass: the scenes' `ui` (visible scenes, bottom-up), then the
@@ -2358,6 +2355,61 @@ mod tests {
     }
     click(&mut e, at.x + 10.0, at.y + 10.0);
     assert_eq!(e.world().resource::<Seen>().button, 1);
+  }
+
+  #[test]
+  fn the_console_overrides_the_cursor_only_while_it_is_the_one_under_it() {
+    use crate::core::cursor::CursorStyle;
+    struct Idle;
+    impl Scene for Idle {}
+    let mut e = EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(Idle)
+      .build_headless();
+    let frame = |e: &mut Engine, events: Vec<InputEvent>| {
+      for event in events {
+        e.world_mut().resource_mut::<Input>().queue(event);
+      }
+      e.frame(Some(Duration::from_micros(16_667)));
+      e.console_cursor
+    };
+    let mouse = |x: f32, y: f32| InputEvent::MouseMove {
+      x: f64::from(x),
+      y: f64::from(y),
+    };
+    let button = |pressed| InputEvent::MouseButton {
+      button: MouseButton::Left,
+      pressed,
+    };
+    assert_eq!(frame(&mut e, vec![mouse(300.0, 200.0)]), None, "closed");
+    e.console_state.toggle();
+    for _ in 0..60 {
+      frame(&mut e, vec![]);
+    }
+    let rect = e.console_state.window_rect();
+    let (hx, hy) = (rect.x + rect.width - 4.0, rect.y + rect.height - 4.0);
+    assert_eq!(
+      frame(&mut e, vec![mouse(hx, hy)]),
+      Some(CursorStyle::ResizeNwSe)
+    );
+    frame(&mut e, vec![button(true)]);
+    // Drag far past the minimum size, then let go with no move
+    assert_eq!(
+      frame(&mut e, vec![mouse(hx - 900.0, hy - 600.0)]),
+      Some(CursorStyle::ResizeNwSe)
+    );
+    assert_eq!(
+      frame(&mut e, vec![button(false)]),
+      None,
+      "the game's cursor is back the frame the drag ends"
+    );
+    let rect = e.console_state.window_rect();
+    assert_eq!(
+      frame(&mut e, vec![mouse(rect.x + 20.0, rect.y + 20.0)]),
+      Some(CursorStyle::Default),
+      "over the console"
+    );
+    assert_eq!(frame(&mut e, vec![mouse(319.0, 239.0)]), None, "away");
   }
 
   #[test]

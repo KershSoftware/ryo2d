@@ -162,6 +162,76 @@ impl CursorRequest {
   }
 }
 
+/// What the window shows: a system cursor, or a sprite's by its id
+#[derive(Debug, Clone)]
+pub(crate) enum CursorShape {
+  Style(CursorStyle),
+  Custom(CustomCursorData),
+}
+
+impl CursorShape {
+  /// Whether the window already shows it: styles by value, sprites by id
+  fn is_shown_as(&self, other: &CursorShape) -> bool {
+    match (self, other) {
+      (CursorShape::Style(a), CursorShape::Style(b)) => a == b,
+      (CursorShape::Custom(a), CursorShape::Custom(b)) => a.id == b.id,
+      _ => false,
+    }
+  }
+}
+
+/// Which cursor the window shows: the engine's per-frame override (the
+/// console's), else the game's last choice, which persists without being
+/// asked for again. The window is told only when the result differs from
+/// what it last showed, or on a refresh (macOS applies a new icon lazily).
+#[derive(Debug)]
+pub(crate) struct CursorResolver {
+  game: CursorShape,
+  shown: CursorShape,
+}
+
+impl Default for CursorResolver {
+  fn default() -> Self {
+    Self {
+      game: CursorShape::Style(CursorStyle::Default),
+      shown: CursorShape::Style(CursorStyle::Default),
+    }
+  }
+}
+
+impl CursorResolver {
+  /// This frame's cursor change, if any. `style` and `custom` are what the
+  /// game asked for this frame (a sprite wins over a style), `over` the
+  /// override, and `refresh` shows the cursor again even if unchanged.
+  pub(crate) fn resolve(
+    &mut self,
+    style: Option<CursorStyle>,
+    custom: Option<CustomCursorData>,
+    over: Option<CursorStyle>,
+    refresh: bool,
+  ) -> Option<CursorShape> {
+    if let Some(custom) = custom {
+      self.game = CursorShape::Custom(custom);
+    } else if let Some(style) = style {
+      self.game = CursorShape::Style(style);
+    }
+    let wanted = match over {
+      Some(style) => CursorShape::Style(style),
+      None => self.game.clone(),
+    };
+    if !refresh && wanted.is_shown_as(&self.shown) {
+      return None;
+    }
+    self.shown = wanted.clone();
+    Some(wanted)
+  }
+
+  /// The window was made afresh: it shows its default, whatever was shown
+  pub(crate) fn window_reset(&mut self) {
+    self.shown = CursorShape::Style(CursorStyle::Default);
+  }
+}
+
 /// Whether the cursor can be confined to the window here: winit cannot on
 /// macOS, iOS, Android or the web
 pub(crate) fn confinement_supported() -> bool {
@@ -309,5 +379,107 @@ mod tests {
     for style in styles {
       let _ = style.to_winit();
     }
+  }
+
+  fn style(shape: Option<CursorShape>) -> Option<CursorStyle> {
+    match shape {
+      Some(CursorShape::Style(style)) => Some(style),
+      _ => None,
+    }
+  }
+
+  fn sprite(id: &str) -> CustomCursorData {
+    CustomCursorData {
+      rgba: vec![0; 4],
+      width: 1,
+      height: 1,
+      hotspot_x: 0,
+      hotspot_y: 0,
+      id: id.to_string(),
+    }
+  }
+
+  #[test]
+  fn the_override_wins_and_the_game_cursor_comes_back() {
+    let mut cursors = CursorResolver::default();
+    let shown = cursors.resolve(Some(CursorStyle::Crosshair), None, None, false);
+    assert_eq!(style(shown), Some(CursorStyle::Crosshair));
+    let shown = cursors.resolve(None, None, Some(CursorStyle::ResizeNwSe), false);
+    assert_eq!(style(shown), Some(CursorStyle::ResizeNwSe));
+    // Nobody asks any more: the game's cursor is back, without a request
+    let shown = cursors.resolve(None, None, None, false);
+    assert_eq!(style(shown), Some(CursorStyle::Crosshair));
+  }
+
+  #[test]
+  fn the_override_beats_a_cursor_set_in_the_same_frame() {
+    let mut cursors = CursorResolver::default();
+    let shown = cursors.resolve(
+      Some(CursorStyle::Crosshair),
+      None,
+      Some(CursorStyle::Move),
+      false,
+    );
+    assert_eq!(style(shown), Some(CursorStyle::Move));
+    let shown = cursors.resolve(None, None, None, false);
+    assert_eq!(style(shown), Some(CursorStyle::Crosshair), "kept meanwhile");
+  }
+
+  #[test]
+  fn the_game_cursor_persists_and_a_change_applies_once() {
+    let mut cursors = CursorResolver::default();
+    assert!(
+      cursors.resolve(None, None, None, false).is_none(),
+      "the window starts on the default"
+    );
+    assert!(
+      cursors
+        .resolve(Some(CursorStyle::Default), None, None, false)
+        .is_none()
+    );
+    let shown = cursors.resolve(Some(CursorStyle::Pointer), None, None, false);
+    assert_eq!(style(shown), Some(CursorStyle::Pointer));
+    for _ in 0..3 {
+      assert!(
+        cursors.resolve(None, None, None, false).is_none(),
+        "persists"
+      );
+      assert!(
+        cursors
+          .resolve(Some(CursorStyle::Pointer), None, None, false)
+          .is_none(),
+        "no change, nothing applied"
+      );
+    }
+  }
+
+  #[test]
+  fn a_button_release_applies_the_cursor_again() {
+    let mut cursors = CursorResolver::default();
+    cursors.resolve(Some(CursorStyle::Pointer), None, None, false);
+    let shown = cursors.resolve(None, None, None, true);
+    assert_eq!(style(shown), Some(CursorStyle::Pointer));
+    let shown = cursors.resolve(None, None, Some(CursorStyle::Move), true);
+    assert_eq!(style(shown), Some(CursorStyle::Move));
+  }
+
+  #[test]
+  fn a_custom_cursor_is_the_games_and_comes_back_too() {
+    let mut cursors = CursorResolver::default();
+    let shown = cursors.resolve(None, Some(sprite("a")), None, false);
+    assert!(matches!(shown, Some(CursorShape::Custom(c)) if c.id == "a"));
+    assert!(
+      cursors
+        .resolve(None, Some(sprite("a")), None, false)
+        .is_none()
+    );
+    cursors.resolve(None, None, Some(CursorStyle::ResizeNwSe), false);
+    let shown = cursors.resolve(None, None, None, false);
+    assert!(matches!(shown, Some(CursorShape::Custom(c)) if c.id == "a"));
+    // A style set later replaces it, and a sprite wins over a style set with it
+    let shown = cursors.resolve(Some(CursorStyle::Text), None, None, false);
+    assert_eq!(style(shown), Some(CursorStyle::Text));
+    let shown = cursors.resolve(Some(CursorStyle::Text), Some(sprite("b")), None, false);
+    assert!(matches!(shown, Some(CursorShape::Custom(c)) if c.id == "b"));
   }
 }

@@ -256,6 +256,13 @@ pub struct Engine {
   // Developer tools
   console_state: ConsoleState,
   console_quit_requested: bool,
+  /// The console's cursor override this frame (`None` = no opinion)
+  console_cursor: Option<crate::core::cursor::CursorStyle>,
+  /// Which cursor the window shows: the console's override, else the game's
+  cursor_resolver: crate::core::cursor::CursorResolver,
+  /// The left button was released: show the cursor again (macOS applies a
+  /// new icon lazily)
+  cursor_refresh: bool,
   pub(crate) capture: CaptureState,
   input_script: InputScript,
   frame_timings: FrameTimings,
@@ -656,6 +663,9 @@ impl Engine {
       ui_pass_log: frame::UiPassLog::default(),
       console_state: ConsoleState::new(),
       console_quit_requested: false,
+      console_cursor: None,
+      cursor_resolver: crate::core::cursor::CursorResolver::default(),
+      cursor_refresh: false,
       capture: CaptureState::new(capture_config),
       input_script,
       frame_timings: FrameTimings::default(),

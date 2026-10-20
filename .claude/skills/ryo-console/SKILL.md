@@ -2,7 +2,7 @@
 name: ryo-console
 description: Developer console system - commands, registration, debugging overlays.
 metadata:
-  version: 1.3.3
+  version: 1.3.4
 ---
 
 # Ryo2D Developer Console
@@ -223,6 +223,7 @@ Handlers are `Fn(&[&str], &mut CommandContext) -> CommandResult + Send + Sync + 
 - Semi-transparent dark background
 - Color-coded output (white, blue, red, gray)
 - Blinking cursor
+- Over the console window the mouse cursor is the default arrow (a resize arrow on the corner handle, a move cursor while dragging), whatever the game set; the game's cursor returns when the pointer leaves or the drag ends
 - JetBrains Mono (the `FontRole::Mono` font), so a game that points that role at its own font changes the console too
 - Rows are sized by the font's real line height, not a fixed cell
 - Word wrapping for long lines, in any script (the fonts must have the characters; see `ryo-text`)

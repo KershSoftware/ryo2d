@@ -14,7 +14,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use super::frame::should_pace_frames;
 use super::{Engine, EngineEvent, FrameOutcome, SceneHost};
 use crate::core::config::DisplayMode;
-use crate::core::cursor::CursorRequest;
+use crate::core::cursor::{CursorRequest, CursorShape};
 use crate::core::graphics::WgpuRenderer;
 use crate::core::graphics::renderer::RendererSettings;
 use crate::core::graphics::screen::initial_window_size;
@@ -112,6 +112,7 @@ impl Engine {
 
     let scale_factor = window.scale_factor();
     self.window = Some(window);
+    self.cursor_resolver.window_reset();
     self.init_gpu(renderer, scale_factor);
 
     // The profiler opens on its own only for `ryo2d dev --profiler`
@@ -214,42 +215,45 @@ impl Engine {
     self.world.resource_mut::<WindowInfo>().display_mode = mode;
   }
 
-  /// Apply pending cursor configuration changes from the game.
-  fn apply_cursor_request(
+  /// Show a cursor: a system icon, or a sprite's (made once, then cached).
+  fn apply_cursor_shape(
     &mut self,
     window: &Arc<Window>,
     event_loop: &ActiveEventLoop,
-    request: CursorRequest,
+    shape: CursorShape,
   ) {
-    use winit::window::CursorGrabMode;
-
-    // Custom cursor takes precedence over system cursor
-    if let Some(custom_data) = &request.custom_cursor {
-      if let Some(cached) = self.custom_cursor_cache.get(&custom_data.id) {
-        window.set_cursor(cached.clone());
-      } else {
-        match winit::window::CustomCursor::from_rgba(
-          custom_data.rgba.clone(),
-          custom_data.width,
-          custom_data.height,
-          custom_data.hotspot_x,
-          custom_data.hotspot_y,
-        ) {
-          Ok(source) => {
-            let cursor = event_loop.create_custom_cursor(source);
-            window.set_cursor(cursor.clone());
-            self
-              .custom_cursor_cache
-              .insert(custom_data.id.clone(), cursor);
-          }
-          Err(e) => {
-            engine_warn!(module: "Cursor", "Failed to create custom cursor: {:?}", e);
+    match shape {
+      CursorShape::Style(style) => window.set_cursor(winit::window::Cursor::Icon(style.to_winit())),
+      CursorShape::Custom(custom_data) => {
+        if let Some(cached) = self.custom_cursor_cache.get(&custom_data.id) {
+          window.set_cursor(cached.clone());
+        } else {
+          match winit::window::CustomCursor::from_rgba(
+            custom_data.rgba.clone(),
+            custom_data.width,
+            custom_data.height,
+            custom_data.hotspot_x,
+            custom_data.hotspot_y,
+          ) {
+            Ok(source) => {
+              let cursor = event_loop.create_custom_cursor(source);
+              window.set_cursor(cursor.clone());
+              self
+                .custom_cursor_cache
+                .insert(custom_data.id.clone(), cursor);
+            }
+            Err(e) => {
+              engine_warn!(module: "Cursor", "Failed to create custom cursor: {:?}", e);
+            }
           }
         }
       }
-    } else if let Some(style) = &request.cursor {
-      window.set_cursor(winit::window::Cursor::Icon(style.to_winit()));
     }
+  }
+
+  /// Apply the rest of the game's cursor requests: visibility, lock, confine.
+  fn apply_cursor_request(&mut self, window: &Arc<Window>, request: CursorRequest) {
+    use winit::window::CursorGrabMode;
 
     if let Some(visible) = request.visible {
       window.set_cursor_visible(visible);
@@ -530,6 +534,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
         }
       });
       self.window = Some(window);
+      self.cursor_resolver.window_reset();
     }
   }
 
@@ -613,6 +618,11 @@ impl ApplicationHandler<EngineEvent> for Engine {
         }
       }
       WindowEvent::MouseInput { state, button, .. } => {
+        if *state == winit::event::ElementState::Released
+          && *button == winit::event::MouseButton::Left
+        {
+          self.cursor_refresh = true;
+        }
         self
           .world
           .resource_mut::<Input>()
@@ -800,9 +810,21 @@ impl ApplicationHandler<EngineEvent> for Engine {
       if request.has_changes() {
         self.apply_window_request(&window, request);
       }
-      let request = std::mem::take(&mut *self.world.resource_mut::<CursorRequest>());
+      let mut request = std::mem::take(&mut *self.world.resource_mut::<CursorRequest>());
+      // The console's override over the game's last cursor, applied only
+      // when it changes (or the left button was released)
+      let refresh = std::mem::take(&mut self.cursor_refresh);
+      let shape = self.cursor_resolver.resolve(
+        request.cursor.take(),
+        request.custom_cursor.take(),
+        self.console_cursor,
+        refresh,
+      );
+      if let Some(shape) = shape {
+        self.apply_cursor_shape(&window, event_loop, shape);
+      }
       if request.has_changes() {
-        self.apply_cursor_request(&window, event_loop, request);
+        self.apply_cursor_request(&window, request);
       }
     }
 

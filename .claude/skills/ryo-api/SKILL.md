@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.7.3
+  version: 2.7.4
 ---
 
 # Ryo2D API Reference
@@ -891,7 +891,7 @@ ctx.look().tonemap = Tonemap::Aces;
 
 - `WindowRequest { width, height, display_mode, ui_scale: Option<Option<f32>> }` (resource, `ctx.window()`): `new()`, `with_resolution(w, h)`, `with_display_mode(DisplayMode)`, `has_changes()`, `clear()`. Prefer the `ctx.request_*` helpers.
 - `WindowInfo { scale_factor: f64, display_mode: DisplayMode }` (resource kept current by the engine).
-- `CursorRequest { cursor, custom_cursor, visible, confined, locked }` (resource, `ctx.cursor()`): `has_changes()`. Prefer the `ctx.set_cursor*` helpers.
+- `CursorRequest { cursor, custom_cursor, visible, confined, locked }` (resource, `ctx.cursor()`): `has_changes()`. Prefer the `ctx.set_cursor*` helpers. The cursor you set (`ctx.set_cursor`, `ctx.set_custom_cursor`) stays until you set another; the engine shows it except over the developer console, where the console's cursor shows, and gives it back the frame the pointer leaves.
 - `enum CursorStyle { Default, Text, Crosshair, Pointer, ResizeHorizontal, ResizeVertical, ResizeNeSw, ResizeNwSe, Move, NotAllowed, Grab, Grabbing, Wait, Progress, Help, Cell, ZoomIn, ZoomOut }`.
 
 ---
