@@ -1,6 +1,7 @@
 //! Scroll areas: `ui.scroll()` clips and translates its contents by an
-//! eased offset, with a scrollbar. The wheel is routed to the innermost area
-//! that can take it (`interact::route_wheel`).
+//! offset, with a scrollbar. A wheel and the scrollbar set a target the
+//! offset eases toward; a trackpad moves the offset at once. Both are routed
+//! to the innermost area that can take them (`interact::route_wheel`).
 
 use std::hash::Hash;
 use std::panic::Location;
@@ -31,7 +32,8 @@ const SNAP: f32 = 0.5;
 /// What a scroll area remembers between frames
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ScrollState {
-  /// Where the contents are shown from, eased toward `target`
+  /// Where the contents are shown from: eased toward `target`, or moved with
+  /// it at once by a trackpad
   pub(crate) offset: Vec2,
   /// Where the wheel, the scrollbar and `scroll_to` want it
   pub(crate) target: Vec2,

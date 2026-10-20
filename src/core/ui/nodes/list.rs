@@ -135,6 +135,9 @@ pub(crate) struct UiList {
   pub(crate) rebind: Rebind,
   /// Whether the list's first rows give its focus scope its default focus
   pub(crate) first_focus: FirstFocus,
+  /// The offset the pool was last chosen at, so a scroll that follows the
+  /// fingers (offset == target) is looked ahead by its last step
+  pub(crate) last_offset: Option<f32>,
 }
 
 /// A focus on its way to an item of a list node
@@ -316,6 +319,10 @@ pub(crate) fn update_lists(world: &mut World, memory: &mut UiMemory, frame: u64,
   deliver(world, binds);
 }
 
+/// A target this close to the offset is no target: the offset follows the
+/// fingers
+const LOOK_AHEAD_SNAP: f32 = 0.5;
+
 /// Bring the pool of `list` in line; each row bound joins `binds`
 fn update_list(
   world: &mut World,
@@ -428,6 +435,17 @@ fn update_list(
       (area.offset.y + below, area.target.y + below)
     }
     None => (0.0, 0.0),
+  };
+  // A scroll that moves the offset at once (a trackpad) leaves no target to
+  // pool ahead at: look ahead by the last step, at most a view
+  let last = world
+    .get_mut::<UiList>(list)
+    .and_then(|mut pool| pool.last_offset.replace(offset));
+  let target = match last {
+    Some(last) if (target - offset).abs() < LOOK_AHEAD_SNAP => {
+      offset + (offset - last).clamp(-view, view)
+    }
+    _ => target,
   };
   // Aimed, a focus jump waits for its row; asked again for the same item,
   // it keeps its progress
@@ -1706,6 +1724,29 @@ mod tests {
     bind(&mut h);
     assert_eq!(h.scroll_offset(id).y, 537.5, "nothing eases on");
     assert_view_drawn(&h, list, id, "a frame after a drag");
+  }
+
+  #[test]
+  fn a_fast_trackpad_flick_keeps_the_leading_rows_drawn() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = board(&mut h, 10_000);
+    for _ in 0..3 {
+      h.frame(|_| {});
+      bind(&mut h);
+    }
+    let id = h.ui_id(list).unwrap();
+    h.move_to(150.0, 100.0);
+    // Three rows a frame, past the two rows of overscan
+    for frame in 0..10 {
+      h.trackpad(0.0, -66.0);
+      h.frame(|_| {});
+      bind(&mut h);
+      // The first two frames of a flick have no speed to look ahead by
+      if frame > 1 {
+        assert_view_drawn(&h, list, id, &format!("flick frame {frame}"));
+      }
+    }
+    assert_eq!(h.scroll_offset(id).y, 660.0);
   }
 
   #[test]

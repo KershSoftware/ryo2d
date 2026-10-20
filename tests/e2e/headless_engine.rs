@@ -972,7 +972,7 @@ fn the_wheel_over_no_ui_reaches_gameplay() {
 }
 
 #[test]
-fn a_trackpad_reads_as_logical_pixels_beside_the_wheel() {
+fn a_trackpad_and_a_wheel_read_apart() {
   struct Watch;
   impl Scene for Watch {
     fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -985,11 +985,102 @@ fn a_trackpad_reads_as_logical_pixels_beside_the_wheel() {
     return;
   };
   engine.trackpad(6.0, -12.0);
+  engine.wheel(0.0, 1.0);
   engine.step().unwrap();
   let input = engine.world().resource::<Input>();
   assert_eq!(input.scroll_pixels(), (6.0, -12.0));
-  assert_eq!(input.scroll_delta(), (0.05, -0.1));
+  assert_eq!(input.scroll_delta(), (0.05, 0.9));
   engine.step().unwrap();
   let input = engine.world().resource::<Input>();
   assert_eq!(input.scroll_pixels(), (0.0, 0.0), "one frame only");
+}
+
+/// A scroll area over the left half of a 100 x 75 UI; gameplay adds up the
+/// trackpad pixels it sees, and the area's offset is kept
+struct Pad {
+  offset: std::sync::Arc<std::sync::Mutex<f32>>,
+  seen: std::sync::Arc<std::sync::Mutex<f32>>,
+}
+
+impl Scene for Pad {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if let Ok(mut seen) = self.seen.lock() {
+      *seen += ctx.input.scroll_pixels().1.abs();
+    }
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let id = ui
+      .scroll()
+      .id("pad")
+      .at(Rect::new(0.0, 0.0, 50.0, 75.0))
+      .show(|ui| {
+        for i in 0..60 {
+          ui.text(format!("Row {i}")).draw();
+        }
+      })
+      .id;
+    if let Ok(mut offset) = self.offset.lock() {
+      *offset = ui.scroll_offset(id).y;
+    }
+    SceneAction::Continue
+  }
+}
+
+/// (the area's offset in UI units, the trackpad pixels gameplay saw) after a
+/// trackpad drag of 8 logical pixels down with the pointer at the window
+/// pixel `(x, y)`, on a 2x display whose window was resized to 4x the
+/// resolution (mapping scale 4: not the display's)
+fn pad_drag(ui_scale: Option<f32>, x: f32, y: f32) -> Option<(f32, f32)> {
+  let offset = std::sync::Arc::new(std::sync::Mutex::new(0.0));
+  let seen = std::sync::Arc::new(std::sync::Mutex::new(0.0));
+  let scene = Pad {
+    offset: std::sync::Arc::clone(&offset),
+    seen: std::sync::Arc::clone(&seen),
+  };
+  let builder = EngineBuilder::new()
+    .resolution(100, 75)
+    .ui_scale(ui_scale)
+    .start_scene(scene);
+  let mut engine = HeadlessEngine::new_or_skip_with_scale_factor(builder, 2.0)?;
+  engine.resize(400, 300);
+  engine.mouse_move_window(x, y);
+  engine.step_frames(4).unwrap();
+  engine.trackpad(0.0, -8.0);
+  engine.step_frames(1).unwrap();
+  let result = (*offset.lock().unwrap(), *seen.lock().unwrap());
+  Some(result)
+}
+
+#[test]
+fn a_trackpad_moves_a_scroll_area_as_far_as_the_pointer_would() {
+  // Logical pixels to screen units: the display's 2 physical pixels per
+  // logical one over the mapping's 4 per screen unit
+  let screen_per_logical = 2.0 / 4.0;
+  for (ui_scale, ui_per_screen) in [(None, 1.0), (Some(2.0), 2.0)] {
+    // The mapping's 4 render pixels per screen unit, over the UI scale
+    let ui_per_screen = match ui_scale {
+      Some(scale) => 4.0 / scale,
+      None => ui_per_screen,
+    };
+    let Some((offset, seen)) = pad_drag(ui_scale, 40.0, 100.0) else {
+      return;
+    };
+    assert_eq!(
+      offset,
+      8.0 * screen_per_logical * ui_per_screen,
+      "ui scale {ui_scale:?}"
+    );
+    assert_eq!(seen, 0.0, "a trackpad over the UI is the UI's");
+  }
+}
+
+#[test]
+fn a_trackpad_beside_the_ui_reaches_gameplay() {
+  let Some((offset, seen)) = pad_drag(None, 300.0, 100.0) else {
+    return;
+  };
+  assert_eq!(offset, 0.0);
+  assert_eq!(seen, 8.0);
 }

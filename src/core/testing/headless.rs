@@ -333,9 +333,7 @@ impl HeadlessEngine {
     self
       .engine
       .input_mut()
-      .queue(InputEvent::Scroll(MouseScrollDelta::PixelDelta(
-        winit::dpi::PhysicalPosition::new(f64::from(dx), f64::from(dy)),
-      )));
+      .queue(InputEvent::ScrollPixels { x: dx, y: dy });
   }
 
   /// The UI widget with the keyboard and gamepad focus, as the last step

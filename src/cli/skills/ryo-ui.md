@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.5.4
+  version: 4.5.5
 ---
 
 # Ryo2D UI Specialist
@@ -179,7 +179,7 @@ let area = ui.scroll().height(300.0).fill_width().gap(4.0).show(|ui| {
 ```
 
 - Contents are laid out as a column (`.horizontal()` for a row, `.both()` for both ways) and shown through the view you size; they are clipped for drawing and for hits. `.no_bar()` hides the scrollbar.
-- **The wheel** goes to the scroll area under the pointer (the topmost thing there decides, so a panel or popup over a list keeps the wheel from it), innermost first: an area at its edge passes the wheel to the one around it. Shift scrolls sideways. A mouse wheel's lines move the target `scroll_line` units a line and ease (0.08 s); a trackpad's pixels (`Input::scroll_pixels`) move the area exactly as far as the pointer would move, at once, with no easing (the OS supplies the momentum), and an area passes on the pixels it cannot use. Lists (`ui.list`, node `List`) scroll the same way. The wheel over any of the top scene's UI never reaches gameplay, whether it scrolled anything or not (over a panel, a modal, or a list at its edge); over nothing it is the game's.
+- **The wheel** goes to the scroll area under the pointer (the topmost thing there decides, so a panel or popup over a list keeps the wheel from it), innermost first: an area at its edge passes the wheel to the one around it. Shift scrolls sideways. A mouse wheel's lines move the target `scroll_line` units a line and ease (0.08 s); a trackpad's pixels (`Input::scroll_pixels`) move the area exactly as far as the pointer would move, at once, with no easing (the OS supplies the momentum), cutting short an ease in flight, and an area passes on the pixels it cannot use. On the web a browser reports a mouse wheel as pixels too, so there it moves at once (about 100 px a notch). Lists (`ui.list`, node `List`) scroll the same way; a node list pools its rows ahead of a trackpad by the last frame's step, so a flick stays drawn up to about that speed (`.overscan(n)` for faster flicks). The wheel over any of the top scene's UI never reaches gameplay, whether it scrolled anything or not (over a panel, a modal, or a list at its edge); over nothing it is the game's.
 - **The pad** walks a long list: focus moves onto rows scrolled out of view and scrolls them in, through nested areas too (a strip of cards inside a list is reached from the rows around it, and every area around the focused widget scrolls to show it). The right stick scrolls the focused widget's area, or the first area in its focus scope (a dialog's text above its Close button).
 - `ui.scroll_to(id)` brings a widget into view from the next frame; `ui.scroll_offset(area.id)` reads where an area shows from; `ui.set_scroll_offset(area.id, Vec2::new(0.0, 0.0))` jumps there without easing.
 - A scroll area builds everything in it every frame. For hundreds of rows or more, use a virtual list (section 16), which builds only the rows in view.

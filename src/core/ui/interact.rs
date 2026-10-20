@@ -295,13 +295,16 @@ pub(crate) fn route_wheel(
         }
       }
       if pixels[axis] != 0.0 {
+        // From where the content shows (a fingers' gesture interrupts an
+        // ease in flight), so it follows them exactly
         let wanted = -pixels[axis];
-        let target = (state.target[axis] + wanted).clamp(0.0, max[axis]);
-        let used = target - state.target[axis];
-        if used != 0.0 {
-          state.target[axis] = target;
-          state.offset[axis] = (state.offset[axis] + used).clamp(0.0, max[axis]);
-          pixels[axis] = -(wanted - used);
+        let from = state.offset[axis];
+        let raw = from + wanted;
+        let next = raw.clamp(0.0, max[axis]);
+        if next != from {
+          state.offset[axis] = next;
+          state.target[axis] = next;
+          pixels[axis] = -(raw - next);
           taken = true;
         }
       }
@@ -957,7 +960,6 @@ mod tests {
   #[test]
   fn an_area_passes_on_the_pixels_it_cannot_use() {
     let mut m = nested();
-    state_of(&mut m, 2);
     let inner = m.state::<ScrollState>(UiId(2), 1).unwrap();
     inner.offset.y = 390.0;
     inner.target.y = 390.0;
@@ -991,5 +993,41 @@ mod tests {
     assert!(pixels(&mut m, 0.0, -30.0, true));
     let state = state_of(&mut m, 1);
     assert_eq!((state.offset.x, state.target.x), (30.0, 30.0));
+  }
+
+  #[test]
+  fn fractional_pixels_inside_the_range_pass_exactly_nothing_outward() {
+    for start in [0.1_f32, 0.7, 1.3, 3.3, 17.9] {
+      for delta in [0.2_f32, 0.3, 0.7, 1.1, 5.3] {
+        let mut m = nested();
+        let inner = m.state::<ScrollState>(UiId(2), 1).unwrap();
+        inner.offset.y = start;
+        inner.target.y = start;
+        assert!(pixels(&mut m, 0.0, -delta, false));
+        assert_eq!(state_of(&mut m, 1).target.y, 0.0, "{start} + {delta}");
+        assert_eq!(state_of(&mut m, 1).offset.y, 0.0, "{start} + {delta}");
+      }
+    }
+  }
+
+  #[test]
+  fn pixels_interrupt_an_ease_in_flight() {
+    let mut m = nested();
+    assert!(route_wheel(
+      &mut m,
+      Vec2::new(20.0, 20.0),
+      Vec2::new(0.0, -1.0),
+      Vec2::ZERO,
+      false,
+      Some(1),
+      40.0
+    ));
+    let inner = state_of(&mut m, 2);
+    assert_eq!((inner.offset.y, inner.target.y), (0.0, 40.0));
+    // The ease got to 12 before the fingers came down
+    m.state::<ScrollState>(UiId(2), 1).unwrap().offset.y = 12.0;
+    assert!(pixels(&mut m, 0.0, -10.0, false));
+    let inner = state_of(&mut m, 2);
+    assert_eq!((inner.offset.y, inner.target.y), (22.0, 22.0));
   }
 }

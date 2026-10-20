@@ -416,9 +416,7 @@ mod tests {
     input.queue(InputEvent::Scroll(
       winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
     ));
-    input.queue(InputEvent::Scroll(
-      winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, 12.0)),
-    ));
+    input.queue(InputEvent::ScrollPixels { x: 0.0, y: 12.0 });
     input.begin_frame();
     let mut ui = UiInput::snapshot(&input);
     assert_eq!(ui.scroll_wheel_lines(), (0.0, 1.0));

@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.2.0
+  version: 2.2.1
 ---
 
 # Ryo2D Engine Developer
@@ -112,7 +112,7 @@ Engine::frame
 | `config/` | `Ryo.toml` workspace, user preferences (`system.json`), saves |
 | `console/` | Developer console and commands |
 | `capture/` | Frame capture to PNG (`RYO_CAPTURE_*`) |
-| `testing/` | `HeadlessEngine` (pad, wheel and UI-focus helpers), `UiHarness` (UI frames without a GPU), `shared_gpu` |
+| `testing/` | `HeadlessEngine` (pad, wheel, trackpad and UI-focus helpers), `UiHarness` (UI frames without a GPU), `shared_gpu` |
 | `network/` | Client/server, replication, RPC (`ryo-network`) |
 | `windows/` | Dev tool windows (profiler, logger); they draw `CpuText` (JetBrains Mono through the text module), with no hand-made font |
 | `window.rs`, `cursor.rs` | Window modes and requests, cursor requests |
