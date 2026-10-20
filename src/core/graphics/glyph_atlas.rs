@@ -61,7 +61,10 @@ pub(crate) struct ShelfEntry {
   left: i32,
   top: i32,
   base: f32,
-  #[allow(dead_code)] // kept so a placed rectangle can be freed individually
+  // Kept so a placed rectangle can be freed individually; freeing one glyph
+  // must also change its page's generation, or texts reused from earlier
+  // frames would sample the wrong glyph
+  #[allow(dead_code)]
   alloc: AllocId,
   last_used: u64,
 }

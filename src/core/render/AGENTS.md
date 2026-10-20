@@ -15,7 +15,7 @@ The engine draws every frame through one `RenderPipeline` (a resource, `RenderPi
 | 7 | `TONEMAP` | frame | always | the look: writes the display image (the display stage's buffer A) from the latest scene image; the transition, `post_process` and the composite work on the display image |
 | 8 | `TRANSITION` | frame | a transition fade is visible | scene transition fade over the whole frame (not the UI) |
 | 9 | `POST_PROCESS` | frame | display effects are active | fade, tint, vignette, flash, CRT, chromatic aberration and display custom effects on the display image |
-| 10 | `UI` | frame | the UI recorded something | draws the frame's UI commands into the UI image (the UI camera, `UI_FORMAT`) |
+| 10 | `UI` | frame | the UI recorded something and the UI image was not kept | draws the frame's UI commands into the UI image (the UI camera, `UI_FORMAT`) |
 | 11 | `COMPOSITE` | frame | always | to the window or offscreen target through `ScreenMapping` (bars for fit and pixel art), UI blended last in sRGB space |
 | 12 | `CAPTURE` | frame | a capture was requested | frame capture readback copy |
 
@@ -137,7 +137,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 ## UI render retention
 
 - **An unchanged UI keeps the UI image.** The composite blends it as it is, so the frame builds, uploads and draws no UI. The UI is composited over the world, so the world changing does not matter.
-- **What "unchanged" means:** the same commands in the same order (shared layouts and points by address, each held by the retainer so an address is not reused under it; numbers by bits), the same sprite and icon versions (stamps: a sprite's generation; a text's icons, names resolved through `TextIcons`), no text effect, the same `UiRenderEnv` (UI space, pixel-art snapping, text on, the text engine's font generation), and the UI image's epoch (process-unique; a recreated image is blank).
+- **What "unchanged" means:** the same commands in the same order (shared layouts by address, held by the retainer so an address is not reused under it; line points by value, as immediate widgets allocate them anew each frame; numbers by bits), the same sprite and icon versions (stamps: a sprite's generation; a text's icons, names resolved through `TextIcons`), no text effect, the same `UiRenderEnv` (UI space, pixel-art snapping, text on, the text engine's font generation, the bitmap faces' sheet versions), and the UI image's epoch (process-unique; a recreated image is blank).
 - **The image record is committed only for a presented frame whose `ui` pass drew.** A kept frame with the `ui` pass disabled shows no UI and leaves the image as it is.
 - **A changing frame reuses texts' built glyphs by `TextKey`** (layout address, origin, reveal, opacity, seed, scissor) within one environment. Only texts are cached (92% of building the UI's draw items in 4g's profile); rects, sprites and lines are built every frame, as that is cheaper than a lookup. Effects, bitmap-font cells (sprites, re-resolved each frame) and texts a full atlas cut short are not kept.
 - **Glyph pages carry process-unique generations, changed when a page is cleared.** A reused text whose page changed is built again. A reused text pins its pages for the frame (counted in the eviction test as "drawn this frame").

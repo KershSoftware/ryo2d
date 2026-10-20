@@ -21,6 +21,7 @@ fn env() -> UiRenderEnv {
     on_target: false,
     text: true,
     fonts: 1,
+    bitmaps: 0,
   }
 }
 
@@ -30,6 +31,18 @@ fn rect(x: f32) -> UiCommand {
     fill: Color::WHITE,
     radius: 4.0,
     border: None,
+    clip: None,
+    layer: 0,
+  }
+}
+
+fn line(points: &[Vec2]) -> UiCommand {
+  UiCommand::Line {
+    points: points.into(),
+    at: Vec2::ZERO,
+    width: 2.0,
+    color: Color::WHITE,
+    closed: false,
     clip: None,
     layer: 0,
   }
@@ -210,4 +223,14 @@ fn a_renamed_icon_redraws() {
   assert!(retain.keep(&commands(&list), Some(&icons), env(), 7));
   icons.insert("confirm", blue);
   assert!(!retain.keep(&commands(&list), Some(&icons), env(), 7));
+}
+
+#[test]
+fn lines_with_equal_points_keep_and_a_moved_point_redraws() {
+  let points = [Vec2::new(1.0, 2.0), Vec2::new(30.0, 40.0)];
+  let mut retain = drawn(&[line(&points)]);
+  // Another allocation holding the same points, as a widget makes each frame
+  assert!(retain.keep(&commands(&[line(&points)]), None, env(), 7));
+  let moved = [Vec2::new(1.0, 2.0), Vec2::new(30.0, 41.0)];
+  assert!(!retain.keep(&commands(&[line(&moved)]), None, env(), 7));
 }

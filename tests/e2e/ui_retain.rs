@@ -642,3 +642,50 @@ fn a_bitmap_font_label_is_built_every_frame() {
     );
   }
 }
+
+/// A static closure UI with a line, a checked checkbox and a dropdown: the
+/// widgets allocate their line points anew every frame
+struct LineUi {
+  checked: bool,
+  choice: usize,
+}
+
+impl Scene for LineUi {
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    ui.draw_line(
+      &[Vec2::new(10.0, 200.0), Vec2::new(150.0, 220.0)],
+      2.0,
+      Color::WHITE,
+    );
+    ui.checkbox(&mut self.checked, "Checked").show();
+    ui.dropdown(&mut self.choice, &["one", "two"]).show();
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_closure_ui_with_lines_keeps_its_image() {
+  let make = || {
+    EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(LineUi {
+        checked: true,
+        choice: 0,
+      })
+  };
+  let Some(mut pair) = PixelPair::new(make) else {
+    return;
+  };
+  pair.frames(10, "the lines opening");
+  let before = pair.kept();
+  pair.frames(10, "the lines unchanged");
+  assert_eq!(
+    pair.kept() - before,
+    10,
+    "every unchanged frame kept the image"
+  );
+}

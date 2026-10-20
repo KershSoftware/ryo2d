@@ -43,6 +43,9 @@ pub(crate) struct UiRenderEnv {
   pub(crate) text: bool,
   /// The text engine's font generation (faces and render modes)
   pub(crate) fonts: u64,
+  /// A hash of the bitmap faces' sheets (serial and generation): a sheet
+  /// replaced in place changes the glyph cells without a new font generation
+  pub(crate) bitmaps: u64,
 }
 
 /// Whether the UI image can be shown again as it is, and what it holds
@@ -137,8 +140,9 @@ fn bits(rect: Rect) -> [u32; 4] {
   [rect.x, rect.y, rect.width, rect.height].map(f32::to_bits)
 }
 
-/// Whether `a` draws what `b` does: shared layouts and points by address,
-/// numbers by their bits, sprites by handle (their versions are stamps)
+/// Whether `a` draws what `b` does: shared layouts by address, line points
+/// by value (immediate widgets allocate them anew every frame), numbers by
+/// their bits, sprites by handle (their versions are stamps)
 fn same(a: &UiCommand, b: &UiCommand) -> bool {
   let clips = |a: &Option<Rect>, b: &Option<Rect>| a.map(bits) == b.map(bits);
   match (a, b) {
@@ -216,7 +220,12 @@ fn same(a: &UiCommand, b: &UiCommand) -> bool {
         layer: layer_b,
       },
     ) => {
-      Arc::ptr_eq(points, points_b)
+      (Arc::ptr_eq(points, points_b)
+        || (points.len() == points_b.len()
+          && points
+            .iter()
+            .zip(points_b.iter())
+            .all(|(p, q)| p.to_array().map(f32::to_bits) == q.to_array().map(f32::to_bits))))
         && at.to_array().map(f32::to_bits) == at_b.to_array().map(f32::to_bits)
         && width.to_bits() == width_b.to_bits()
         && color == color_b

@@ -368,6 +368,10 @@ impl Engine {
         on_target: ui_on_target,
         text: sources.is_some(),
         fonts: self.text.generation(),
+        bitmaps: self
+          .world
+          .get_resource::<Fonts>()
+          .map_or(0, Fonts::bitmap_stamp),
       };
       let icons = sources.as_ref().map(|sources| sources.icons);
       let ui_kept = retain

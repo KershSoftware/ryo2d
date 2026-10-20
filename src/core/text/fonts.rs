@@ -400,6 +400,22 @@ impl Fonts {
     self.generation
   }
 
+  /// A hash of each bitmap face's sheet version (serial and generation):
+  /// changes when a sheet is replaced in place, which `generation` does not
+  /// see (0 with no bitmap faces)
+  pub(crate) fn bitmap_stamp(&self) -> u64 {
+    let mut hasher = crate::core::hash::FastHasher::default();
+    let mut any = false;
+    for face in &self.faces {
+      if let FaceSource::Bitmap(bitmap) = &face.source {
+        any = true;
+        bitmap.sprite.serial().hash(&mut hasher);
+        bitmap.sprite.generation().hash(&mut hasher);
+      }
+    }
+    if any { hasher.finish() } else { 0 }
+  }
+
   pub(crate) fn face(&self, font: FontId) -> Option<&Face> {
     self.faces.get(font.0 as usize)
   }
