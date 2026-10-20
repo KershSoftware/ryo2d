@@ -12,6 +12,8 @@ use crate::core::ui::Rect;
 use crate::core::ui::immediate::{UiCommand, UiCommands};
 
 #[cfg(test)]
+mod gpu_tests;
+#[cfg(test)]
 mod tests;
 mod texts;
 
