@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use super::glyph_atlas::GlyphSlot;
+use super::glyph_atlas::{GlyphPage, GlyphSlot};
 use super::render_targets::RenderTargets;
 use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
 use super::{RenderLayers, RenderTarget};
@@ -598,6 +598,31 @@ impl SpriteGpuRenderer {
     raster: impl FnOnce() -> Option<GlyphImage>,
   ) -> Option<GlyphSlot> {
     self.atlas.glyph(device, queue, key, self.frame, raster)
+  }
+
+  /// The generation of the glyph page `page` (`None`: no such page)
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn glyph_page_generation(&self, page: GlyphPage) -> Option<u64> {
+    self.atlas.glyph_page_generation(page)
+  }
+
+  /// Keep the glyph page `page` from eviction this frame: glyphs built from
+  /// it in an earlier frame are drawn again
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn pin_glyph_page(&mut self, page: GlyphPage) {
+    self.atlas.pin_glyph_page(page, self.frame);
+  }
+
+  /// Glyph pages cleared to make room so far
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn glyph_evictions(&self) -> u64 {
+    self.atlas.glyph_evictions()
+  }
+
+  /// Glyphs refused so far for a full atlas
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn glyphs_refused(&self) -> u64 {
+    self.atlas.glyphs_refused()
   }
 
   /// The bind group sampling atlas or target page `page` with `sampling`.

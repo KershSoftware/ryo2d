@@ -420,6 +420,30 @@ impl TextureAtlas {
     )
   }
 
+  /// The generation of the glyph page `page` (`None`: no such page)
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn glyph_page_generation(&self, page: GlyphPage) -> Option<u64> {
+    self.glyphs.page_generation(page)
+  }
+
+  /// Keep the glyph page `page` from eviction in `frame`
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn pin_glyph_page(&mut self, page: GlyphPage, frame: u64) {
+    self.glyphs.pin(page, frame);
+  }
+
+  /// Glyph pages cleared to make room so far
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn glyph_evictions(&self) -> u64 {
+    self.glyphs.evictions()
+  }
+
+  /// Glyphs refused so far for a full atlas
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn glyphs_refused(&self) -> u64 {
+    self.glyphs.refused()
+  }
+
   /// The slot of a glyph image, rasterizing and uploading it on first use.
   /// A key with no image (a space) or one too big for a glyph page is
   /// remembered and not rasterized again.

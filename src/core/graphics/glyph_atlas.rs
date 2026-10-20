@@ -3,11 +3,13 @@
 //! (MSDF). Glyphs are placed on first use and evicted a page at a time,
 //! least recently used first, never one drawn this frame.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use etagere::{AllocId, BucketedAtlasAllocator, size2};
 
 use crate::core::graphics::atlas::PageBindGroups;
+use crate::core::hash::{FastMap, FastSet};
 use crate::core::render::batch::Sampling;
 use crate::core::text::{GlyphFormat, GlyphImage, GlyphKey};
 use crate::engine_warn;
@@ -80,19 +82,37 @@ pub(crate) enum Placement {
 
 struct ShelfPage {
   allocator: BucketedAtlasAllocator,
-  keys: HashSet<GlyphKey>,
+  keys: FastSet<GlyphKey>,
+  /// Changes whenever the page is cleared, never repeating in the process
+  /// (a new atlas's pages never match an old one's): what was built from
+  /// its glyphs is good while it is unchanged
+  generation: u64,
+  /// The last frame something built from the page earlier was drawn
+  /// without looking its glyphs up; the page is not evicted in that frame
+  pinned: u64,
+}
+
+/// A page generation no page has had in this process
+fn next_page_generation() -> u64 {
+  static NEXT: AtomicU64 = AtomicU64::new(1);
+  NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Packing and eviction, GPU-free
 pub(crate) struct GlyphShelves {
   size: u32,
   max_pages: usize,
-  pages: HashMap<GlyphFormat, Vec<ShelfPage>>,
-  entries: HashMap<GlyphKey, ShelfEntry>,
+  pages: FastMap<GlyphFormat, Vec<ShelfPage>>,
+  /// The hot map: looked up for every glyph every frame
+  entries: FastMap<GlyphKey, ShelfEntry>,
   warned: HashSet<(u32, u32)>,
   /// Formats found full of this frame's glyphs: warned once per run, as a
   /// sustained overflow runs out every frame
   warned_full: HashSet<GlyphFormat>,
+  /// Pages cleared to make room, over the atlas's life
+  evictions: u64,
+  /// Glyphs refused because every page held glyphs drawn this frame
+  refused: u64,
 }
 
 impl GlyphShelves {
@@ -100,10 +120,12 @@ impl GlyphShelves {
     Self {
       size,
       max_pages,
-      pages: HashMap::new(),
-      entries: HashMap::new(),
+      pages: FastMap::default(),
+      entries: FastMap::default(),
       warned: HashSet::new(),
       warned_full: HashSet::new(),
+      evictions: 0,
+      refused: 0,
     }
   }
 
@@ -119,7 +141,9 @@ impl GlyphShelves {
     let side = self.size as i32;
     self.pages.entry(format).or_default().push(ShelfPage {
       allocator: BucketedAtlasAllocator::new(size2(side, side)),
-      keys: HashSet::new(),
+      keys: FastSet::default(),
+      generation: next_page_generation(),
+      pinned: 0,
     });
   }
 
@@ -159,7 +183,8 @@ impl GlyphShelves {
           .filter_map(|k| self.entries.get(k))
           .map(|e| e.last_used)
           .max()
-          .unwrap_or(0);
+          .unwrap_or(0)
+          .max(page.pinned);
         (newest < frame).then_some((newest, index))
       })
       .min();
@@ -167,6 +192,7 @@ impl GlyphShelves {
       if self.warned_full.insert(format) {
         engine_warn!(module: "text", "the {format:?} glyph pages are full of glyphs drawn this frame; some text is not drawn");
       }
+      self.refused += 1;
       return Placement::Full;
     };
     if let Some(page) = self.pages.get_mut(&format).and_then(|p| p.get_mut(index)) {
@@ -174,10 +200,44 @@ impl GlyphShelves {
       for evicted in page.keys.drain() {
         self.entries.remove(&evicted);
       }
+      page.generation = next_page_generation();
     }
+    self.evictions += 1;
     self
       .allocate(key, format, index, want, (w, h), frame)
       .unwrap_or(Placement::Full)
+  }
+
+  /// The generation of page `index` of `format` (`None`: no such page)
+  #[cfg_attr(not(test), allow(dead_code))] // used by UI render retention (Tasks 3 and 4)
+  pub(crate) fn page_generation(&self, format: GlyphFormat, index: usize) -> Option<u64> {
+    Some(self.pages.get(&format)?.get(index)?.generation)
+  }
+
+  /// Keep page `index` of `format` from eviction in `frame`: something
+  /// built from its glyphs earlier is drawn in it
+  #[cfg_attr(not(test), allow(dead_code))] // used by UI render retention (Tasks 3 and 4)
+  pub(crate) fn pin(&mut self, format: GlyphFormat, index: usize, frame: u64) {
+    if let Some(page) = self
+      .pages
+      .get_mut(&format)
+      .and_then(|pages| pages.get_mut(index))
+    {
+      page.pinned = page.pinned.max(frame);
+    }
+  }
+
+  /// Pages cleared to make room so far
+  #[cfg_attr(not(test), allow(dead_code))] // used by UI render retention (Tasks 3 and 4)
+  pub(crate) fn evictions(&self) -> u64 {
+    self.evictions
+  }
+
+  /// Glyphs refused so far because the pages were full of glyphs drawn in
+  /// their frame
+  #[cfg_attr(not(test), allow(dead_code))] // used by UI render retention (Tasks 3 and 4)
+  pub(crate) fn refused(&self) -> u64 {
+    self.refused
   }
 
   fn allocate(
@@ -223,17 +283,17 @@ struct GpuPage {
 /// The glyph pages on the GPU
 pub(crate) struct GlyphAtlas {
   shelves: GlyphShelves,
-  pages: HashMap<GlyphFormat, Vec<GpuPage>>,
+  pages: FastMap<GlyphFormat, Vec<GpuPage>>,
   /// Keys that have no image (spaces, refused glyphs): not asked for again
-  empty: HashSet<GlyphKey>,
+  empty: FastSet<GlyphKey>,
 }
 
 impl GlyphAtlas {
   pub(crate) fn new() -> Self {
     Self {
       shelves: GlyphShelves::new(GLYPH_PAGE_SIZE, GLYPH_PAGES),
-      pages: HashMap::new(),
-      empty: HashSet::new(),
+      pages: FastMap::default(),
+      empty: FastSet::default(),
     }
   }
 
@@ -250,6 +310,34 @@ impl GlyphAtlas {
       self.empty.clear();
     }
     self.empty.insert(key);
+  }
+
+  /// The generation of the glyph page `page` (`None`: no such page)
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn page_generation(&self, page: GlyphPage) -> Option<u64> {
+    self
+      .shelves
+      .page_generation(page.format, usize::from(page.index))
+  }
+
+  /// Keep `page` from eviction in `frame`
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn pin(&mut self, page: GlyphPage, frame: u64) {
+    self
+      .shelves
+      .pin(page.format, usize::from(page.index), frame);
+  }
+
+  /// Pages cleared to make room so far
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn evictions(&self) -> u64 {
+    self.shelves.evictions()
+  }
+
+  /// Glyphs refused so far for a full atlas
+  #[allow(dead_code)] // used by UI render retention (Tasks 3 and 4); tests reach only the shelves
+  pub(crate) fn refused(&self) -> u64 {
+    self.shelves.refused()
   }
 
   fn slot_of(entry: &ShelfEntry) -> GlyphSlot {
@@ -403,6 +491,77 @@ mod tests {
 
   fn key(glyph: u16) -> GlyphKey {
     GlyphKey::fill(FontId(0), glyph, 16.0, 0.0)
+  }
+
+  /// Two pages of four 12x12 glyphs each: keys 0..4 drawn in frame 1 fill
+  /// page 0, keys 4..8 drawn in frame 2 fill page 1
+  fn two_full_pages() -> GlyphShelves {
+    let mut shelves = GlyphShelves::new(32, 2);
+    shelves.add_page(GlyphFormat::Mask);
+    shelves.add_page(GlyphFormat::Mask);
+    for glyph in 0..8 {
+      let frame = if glyph < 4 { 1 } else { 2 };
+      let placed = shelves.place(&key(glyph), GlyphFormat::Mask, (12, 12), frame);
+      assert!(matches!(placed, Placement::Placed { .. }), "{placed:?}");
+    }
+    shelves
+  }
+
+  #[test]
+  fn a_pinned_page_is_not_evicted_in_its_frame() {
+    let mut shelves = two_full_pages();
+    // Page 0 is the least recently used, but pinned in frame 3
+    shelves.pin(GlyphFormat::Mask, 0, 3);
+    let placed = shelves.place(&key(100), GlyphFormat::Mask, (12, 12), 3);
+    let Placement::Placed { page, .. } = placed else {
+      panic!("{placed:?}")
+    };
+    assert_eq!(page, 1, "the unpinned page is cleared instead");
+    assert!(
+      shelves.lookup(&key(0), 3).is_some(),
+      "the pinned page's glyphs stay"
+    );
+    assert!(shelves.lookup(&key(4), 3).is_none());
+  }
+
+  #[test]
+  fn an_eviction_changes_the_page_generation_and_is_counted() {
+    let mut shelves = two_full_pages();
+    let before = (
+      shelves.page_generation(GlyphFormat::Mask, 0),
+      shelves.page_generation(GlyphFormat::Mask, 1),
+    );
+    assert_eq!(shelves.evictions(), 0);
+    // Page 0 is the least recently used: cleared for the new glyph
+    shelves.place(&key(100), GlyphFormat::Mask, (12, 12), 3);
+    assert_eq!(shelves.evictions(), 1);
+    assert_ne!(shelves.page_generation(GlyphFormat::Mask, 0), before.0);
+    assert_eq!(shelves.page_generation(GlyphFormat::Mask, 1), before.1);
+    assert_eq!(shelves.page_generation(GlyphFormat::Mask, 2), None);
+  }
+
+  #[test]
+  fn page_generations_never_repeat_across_atlases() {
+    let mut first = GlyphShelves::new(32, 1);
+    let mut second = GlyphShelves::new(32, 1);
+    first.add_page(GlyphFormat::Mask);
+    second.add_page(GlyphFormat::Mask);
+    assert_ne!(
+      first.page_generation(GlyphFormat::Mask, 0),
+      second.page_generation(GlyphFormat::Mask, 0)
+    );
+  }
+
+  #[test]
+  fn a_glyph_refused_for_a_full_atlas_is_counted() {
+    let mut shelves = two_full_pages();
+    shelves.pin(GlyphFormat::Mask, 0, 2);
+    // Frame 2: page 1 was drawn in it and page 0 is pinned in it
+    assert!(matches!(
+      shelves.place(&key(100), GlyphFormat::Mask, (12, 12), 2),
+      Placement::Full
+    ));
+    assert_eq!(shelves.refused(), 1);
   }
 
   #[test]
