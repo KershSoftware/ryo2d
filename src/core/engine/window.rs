@@ -628,7 +628,10 @@ impl ApplicationHandler<EngineEvent> for Engine {
         }
       }
       WindowEvent::MouseWheel { delta, .. } => {
-        self.scroll(*delta);
+        self
+          .world
+          .resource_mut::<Input>()
+          .queue(InputEvent::Scroll(*delta));
       }
       WindowEvent::Ime(ime_event) => {
         let event = match ime_event {
@@ -674,6 +677,10 @@ impl ApplicationHandler<EngineEvent> for Engine {
         // A resize event follows; screen space changes with the factor now
         self.scale_factor = *scale_factor;
         self.world.resource_mut::<WindowInfo>().scale_factor = *scale_factor;
+        self
+          .world
+          .resource_mut::<Input>()
+          .set_scale_factor(*scale_factor);
         // The new mapping brings a new UI space
         let (width, height) = self.last_window_size;
         self.resize_window(width, height);

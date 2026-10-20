@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.7.2
+  version: 2.7.3
 ---
 
 # Ryo2D API Reference
@@ -590,7 +590,7 @@ Engine messages (all `Message + Clone`):
 - The UI's actions are bound by the engine and may be rebound: `ui.up`, `ui.down`, `ui.left`, `ui.right` (arrows, D-pad, left stick), `ui.confirm` (Enter, numpad Enter, Space, South), `ui.back` (Escape, East), `ui.next` (Tab; Shift goes back), `ui.tab_next` (E, right bumper), `ui.tab_prev` (Q, left bumper).
 - Saved bindings: with `EngineBuilder::with_user_preferences([UserPreference::Bindings])` the bindings that differ from the defaults are kept in `system.json`, loaded at startup and saved when they change.
 - `enum GamepadButton { South, East, West, North, LeftBumper, RightBumper, LeftTrigger, RightTrigger, LeftStick, RightStick, Select, Start, Guide, DPadUp, DPadDown, DPadLeft, DPadRight }`.
-- `enum InputEvent { Key { key, pressed }, Text(String), MouseButton { button, pressed }, MouseMove { x, y }, RawMouseMotion { dx, dy }, Scroll(MouseScrollDelta) (a wheel's lines), ScrollPixels { x, y } (a trackpad, logical pixels), ImeEnabled, ImeDisabled, ImePreedit { text, cursor }, ImeCommit(String), GamepadConnected { id, name }, GamepadDisconnected(id), GamepadButton { id, button, pressed }, GamepadTrigger { id, button, value }, GamepadAxis { id, axis, value }, PadButton { button: GamepadButton, pressed }, PadStick { stick: Stick, x, y } }`: what the window, gamepads, `RYO_INPUT` scripts and the headless harness queue. `PadButton` and `PadStick` carry no gilrs id (scripted and headless input): they drive the tracked pad, or a virtual pad named "Virtual pad" when none is connected.
+- `enum InputEvent { Key { key, pressed }, Text(String), MouseButton { button, pressed }, MouseMove { x, y }, RawMouseMotion { dx, dy }, Scroll(MouseScrollDelta) (a wheel's lines), ScrollPixels { x, y } (a trackpad already in logical pixels; Scroll(PixelDelta) is winit's physical pixels, divided by the window's scale factor), ImeEnabled, ImeDisabled, ImePreedit { text, cursor }, ImeCommit(String), GamepadConnected { id, name }, GamepadDisconnected(id), GamepadButton { id, button, pressed }, GamepadTrigger { id, button, value }, GamepadAxis { id, axis, value }, PadButton { button: GamepadButton, pressed }, PadStick { stick: Stick, x, y } }`: what the window, gamepads, `RYO_INPUT` scripts and the headless harness queue. `PadButton` and `PadStick` carry no gilrs id (scripted and headless input): they drive the tracked pad, or a virtual pad named "Virtual pad" when none is connected.
 
 ---
 

@@ -298,7 +298,7 @@ pub(crate) fn route_wheel(
         // From where the content shows (a fingers' gesture interrupts an
         // ease in flight), so it follows them exactly
         let wanted = -pixels[axis];
-        let from = state.offset[axis];
+        let from = state.offset[axis].max(0.0).min(max[axis]);
         let raw = from + wanted;
         let next = raw.clamp(0.0, max[axis]);
         if next != from {
@@ -1029,5 +1029,18 @@ mod tests {
     assert!(pixels(&mut m, 0.0, -10.0, false));
     let inner = state_of(&mut m, 2);
     assert_eq!((inner.offset.y, inner.target.y), (22.0, 22.0));
+  }
+
+  #[test]
+  fn pixels_start_from_an_offset_clamped_to_the_content() {
+    let mut m = nested();
+    // The content shrank under the area: it is shown from past its end
+    let inner = m.state::<ScrollState>(UiId(2), 1).unwrap();
+    inner.offset.y = 500.0;
+    inner.target.y = 500.0;
+    assert!(pixels(&mut m, 0.0, 10.0, false));
+    let inner = state_of(&mut m, 2);
+    assert_eq!((inner.offset.y, inner.target.y), (390.0, 390.0));
+    assert_eq!(state_of(&mut m, 1).target.y, 0.0, "nothing passed outward");
   }
 }

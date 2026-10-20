@@ -123,26 +123,6 @@ pub enum Stick {
 /// Trackpad pixels that make one line of [`Input::scroll_delta`]
 const PIXELS_PER_LINE: f32 = 120.0;
 
-/// The event for a window scroll: a wheel's lines as they are, a trackpad's
-/// physical pixels divided by the window's `scale_factor` into logical
-/// pixels (a bad factor leaves them as they are).
-pub(crate) fn scroll_event(delta: MouseScrollDelta, scale_factor: f64) -> InputEvent {
-  match delta {
-    MouseScrollDelta::LineDelta(x, y) => InputEvent::Scroll(MouseScrollDelta::LineDelta(x, y)),
-    MouseScrollDelta::PixelDelta(pos) => {
-      let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
-        scale_factor
-      } else {
-        1.0
-      };
-      InputEvent::ScrollPixels {
-        x: (pos.x / scale) as f32,
-        y: (pos.y / scale) as f32,
-      }
-    }
-  }
-}
-
 /// A window or gamepad event, applied at the next `begin_frame`.
 #[derive(Debug, Clone)]
 pub enum InputEvent {
@@ -163,11 +143,12 @@ pub enum InputEvent {
     dx: f64,
     dy: f64,
   },
-  /// A wheel step in lines (a `PixelDelta` has no scale factor here and
-  /// counts as logical pixels; the window sends `ScrollPixels` instead)
+  /// A wheel step in lines, or a trackpad movement in winit's physical
+  /// pixels (the window forwards its `MouseWheel` delta as it is; `Input`
+  /// divides pixels by the window's scale factor)
   Scroll(MouseScrollDelta),
-  /// A trackpad movement in logical pixels, +y up (the window divides
-  /// winit's physical pixels by its scale factor)
+  /// A trackpad movement already in logical pixels, +y up (what scripts and
+  /// the test helpers queue)
   ScrollPixels {
     x: f32,
     y: f32,
@@ -249,9 +230,11 @@ pub struct Input {
   mouse_delta_y: f32,
 
   // Mouse scroll
+  /// The window's physical pixels per logical pixel (0 until set: 1)
+  scale_factor: f64,
   /// Wheel lines this frame (`LineDelta` only)
   scroll_lines: (f32, f32),
-  /// Trackpad movement this frame, in logical pixels (`PixelDelta` only)
+  /// Trackpad movement this frame, in logical pixels (pixel scrolls only)
   scroll_px: (f32, f32),
   /// Both for the fixed steps: kept until a step has seen them
   scroll_lines_fixed: (f32, f32),
@@ -961,6 +944,13 @@ impl Input {
     self.gamepad_buttons_pressed_fixed.contains(&button)
   }
 
+  /// The window's physical pixels per logical pixel, which turns winit's
+  /// trackpad pixels into logical ones (the engine sets it at start and when
+  /// the window's changes)
+  pub(crate) fn set_scale_factor(&mut self, scale_factor: f64) {
+    self.scale_factor = scale_factor;
+  }
+
   /// Handle mouse scroll (applied at once)
   pub(crate) fn handle_scroll(&mut self, delta: MouseScrollDelta) {
     match delta {
@@ -971,7 +961,15 @@ impl Input {
         self.scroll_lines_fixed.1 += y;
         self.last_device = InputDevice::Mouse;
       }
-      MouseScrollDelta::PixelDelta(pos) => self.handle_scroll_pixels(pos.x as f32, pos.y as f32),
+      // winit reports a trackpad in physical pixels
+      MouseScrollDelta::PixelDelta(pos) => {
+        let scale = if self.scale_factor.is_finite() && self.scale_factor > 0.0 {
+          self.scale_factor
+        } else {
+          1.0
+        };
+        self.handle_scroll_pixels((pos.x / scale) as f32, (pos.y / scale) as f32);
+      }
     }
   }
 
@@ -1575,9 +1573,10 @@ mod tests {
   #[test]
   fn small_trackpad_events_add_up_to_exact_logical_pixels() {
     let mut input = Input::new();
+    input.set_scale_factor(2.0);
     // 20 events of 0.75 physical pixels on a 2x display
     for _ in 0..20 {
-      input.queue(scroll_event(physical(0.75, -1.5), 2.0));
+      input.queue(InputEvent::Scroll(physical(0.75, -1.5)));
     }
     input.begin_frame();
     assert_eq!(input.scroll_pixels(), (7.5, -15.0));
@@ -1600,20 +1599,23 @@ mod tests {
   }
 
   #[test]
-  fn scroll_event_scales_pixels_only() {
-    assert!(matches!(
-      scroll_event(MouseScrollDelta::LineDelta(1.0, 2.0), 2.0),
-      InputEvent::Scroll(MouseScrollDelta::LineDelta(1.0, 2.0))
-    ));
-    assert!(matches!(
-      scroll_event(physical(4.0, 6.0), 2.0),
-      InputEvent::ScrollPixels { x: 2.0, y: 3.0 }
-    ));
+  fn a_physical_pixel_delta_counts_half_as_many_logical_pixels_at_2x() {
+    let mut input = Input::new();
+    input.set_scale_factor(2.0);
+    input.handle_scroll(physical(4.0, 6.0));
+    assert_eq!(input.scroll_pixels(), (2.0, 3.0));
+    // Lines and logical pixels are not scaled
+    input.handle_scroll(MouseScrollDelta::LineDelta(1.0, 2.0));
+    input.handle_scroll_pixels(1.0, 1.0);
+    assert_eq!(input.scroll_pixels(), (3.0, 4.0));
+    assert_eq!(input.scroll_wheel_lines(), (1.0, 2.0));
     // A bad factor leaves the pixels as they are
-    assert!(matches!(
-      scroll_event(physical(4.0, 6.0), 0.0),
-      InputEvent::ScrollPixels { x: 4.0, y: 6.0 }
-    ));
+    for bad in [0.0, -1.0, f64::NAN] {
+      let mut input = Input::new();
+      input.set_scale_factor(bad);
+      input.handle_scroll(physical(4.0, 6.0));
+      assert_eq!(input.scroll_pixels(), (4.0, 6.0));
+    }
   }
 
   #[test]
@@ -1655,9 +1657,9 @@ mod tests {
   #[test]
   fn scroll_pixel_delta_conversion() {
     let mut input = Input::new();
-    input.handle_scroll(MouseScrollDelta::PixelDelta(
-      winit::dpi::PhysicalPosition::new(120.0, 240.0),
-    ));
+    input.set_scale_factor(2.0);
+    // 240 x 480 physical pixels are 120 x 240 logical: 1 x 2 lines
+    input.handle_scroll(physical(240.0, 480.0));
     assert_eq!(input.scroll_delta(), (1.0, 2.0)); // Divided by 120.0
   }
 

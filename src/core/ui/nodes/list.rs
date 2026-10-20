@@ -138,6 +138,9 @@ pub(crate) struct UiList {
   /// The offset the pool was last chosen at, so a scroll that follows the
   /// fingers (offset == target) is looked ahead by its last step
   pub(crate) last_offset: Option<f32>,
+  /// How far the pool looks ahead of an offset that moves at once: the
+  /// largest recent step, decaying over the frames that do not move
+  pub(crate) ahead: f32,
 }
 
 /// A focus on its way to an item of a list node
@@ -323,6 +326,9 @@ pub(crate) fn update_lists(world: &mut World, memory: &mut UiMemory, frame: u64,
 /// fingers
 const LOOK_AHEAD_SNAP: f32 = 0.5;
 
+/// How much of the look-ahead a frame without movement keeps
+const LOOK_AHEAD_DECAY: f32 = 0.75;
+
 /// Bring the pool of `list` in line; each row bound joins `binds`
 fn update_list(
   world: &mut World,
@@ -437,15 +443,35 @@ fn update_list(
     None => (0.0, 0.0),
   };
   // A scroll that moves the offset at once (a trackpad) leaves no target to
-  // pool ahead at: look ahead by the last step, at most a view
-  let last = world
-    .get_mut::<UiList>(list)
-    .and_then(|mut pool| pool.last_offset.replace(offset));
-  let target = match last {
-    Some(last) if (target - offset).abs() < LOOK_AHEAD_SNAP => {
-      offset + (offset - last).clamp(-view, view)
+  // pool ahead at: look ahead by the recent step, at most a view. A frame
+  // with no movement (routine at high refresh rates) lets it decay rather
+  // than drop, and a jump (further than a view) is no gesture.
+  let tracking = (target - offset).abs() < LOOK_AHEAD_SNAP;
+  let target = match world.get_mut::<UiList>(list) {
+    Some(mut pool) => {
+      let step = pool
+        .last_offset
+        .replace(offset)
+        .map_or(0.0, |last| offset - last);
+      pool.ahead = if !tracking || step.abs() > view {
+        0.0
+      } else if step != 0.0 && (step.abs() >= pool.ahead.abs() || step * pool.ahead < 0.0) {
+        step
+      } else {
+        let held = pool.ahead * LOOK_AHEAD_DECAY;
+        if held.abs() < LOOK_AHEAD_SNAP {
+          0.0
+        } else {
+          held
+        }
+      };
+      if tracking {
+        offset + pool.ahead.max(-view).min(view)
+      } else {
+        target
+      }
     }
-    _ => target,
+    None => target,
   };
   // Aimed, a focus jump waits for its row; asked again for the same item,
   // it keeps its progress
@@ -1741,12 +1767,70 @@ mod tests {
       h.trackpad(0.0, -66.0);
       h.frame(|_| {});
       bind(&mut h);
-      // The first two frames of a flick have no speed to look ahead by
-      if frame > 1 {
+      // Frame 0's step already pools ahead for frame 1
+      if frame > 0 {
         assert_view_drawn(&h, list, id, &format!("flick frame {frame}"));
       }
     }
     assert_eq!(h.scroll_offset(id).y, 660.0);
+  }
+
+  #[test]
+  fn an_uneven_trackpad_cadence_keeps_every_view_drawn() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = board(&mut h, 10_000);
+    for _ in 0..3 {
+      h.frame(|_| {});
+      bind(&mut h);
+    }
+    let id = h.ui_id(list).unwrap();
+    h.move_to(150.0, 100.0);
+    // Two rows every other frame, as a 120 Hz display with a 60 Hz pad gives
+    for frame in 0..24 {
+      if frame % 2 == 0 {
+        h.trackpad(0.0, -44.0);
+      }
+      h.frame(|_| {});
+      bind(&mut h);
+      if frame > 0 {
+        assert_view_drawn(&h, list, id, &format!("uneven frame {frame}"));
+      }
+    }
+    // The same with two gaps in a row, then two frames' pixels at once
+    for frame in 0..24 {
+      if frame % 3 == 0 {
+        h.trackpad(0.0, -66.0);
+      }
+      h.frame(|_| {});
+      bind(&mut h);
+      // The first, bigger step than any before it has no look-ahead
+      if frame > 0 {
+        assert_view_drawn(&h, list, id, &format!("gaps frame {frame}"));
+      }
+    }
+  }
+
+  #[test]
+  fn a_jump_of_the_offset_is_not_looked_ahead() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = board(&mut h, 10_000);
+    for _ in 0..3 {
+      h.frame(|_| {});
+      bind(&mut h);
+    }
+    let id = h.ui_id(list).unwrap();
+    // At the top: a view of rows and the overscan below
+    let steady = rows(&h, list).len();
+    h.frame(|ui| ui.set_scroll_offset(id, Vec2::new(0.0, 5000.0)));
+    bind(&mut h);
+    h.frame(|_| {});
+    assert_eq!(h.scroll_offset(id).y, 5000.0);
+    // Mid-list: the overscan above too, and not a view more for a step
+    assert!(
+      rows(&h, list).len() <= steady + 2,
+      "{} rows after a jump, {steady} at the top",
+      rows(&h, list).len()
+    );
   }
 
   #[test]

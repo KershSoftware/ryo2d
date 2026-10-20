@@ -1058,12 +1058,10 @@ fn a_trackpad_moves_a_scroll_area_as_far_as_the_pointer_would() {
   // Logical pixels to screen units: the display's 2 physical pixels per
   // logical one over the mapping's 4 per screen unit
   let screen_per_logical = 2.0 / 4.0;
-  for (ui_scale, ui_per_screen) in [(None, 1.0), (Some(2.0), 2.0)] {
-    // The mapping's 4 render pixels per screen unit, over the UI scale
-    let ui_per_screen = match ui_scale {
-      Some(scale) => 4.0 / scale,
-      None => ui_per_screen,
-    };
+  for ui_scale in [None, Some(2.0_f32)] {
+    // Automatic: UI units are screen units. Else the mapping's 4 render
+    // pixels per screen unit over the UI scale.
+    let ui_per_screen = ui_scale.map_or(1.0, |scale| 4.0 / scale);
     let Some((offset, seen)) = pad_drag(ui_scale, 40.0, 100.0) else {
       return;
     };

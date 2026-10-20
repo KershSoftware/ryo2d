@@ -913,13 +913,6 @@ impl Engine {
       });
   }
 
-  /// Queue a wheel or trackpad scroll; a trackpad's pixels become logical
-  /// pixels here, where the scale factor is known.
-  pub(crate) fn scroll(&mut self, delta: winit::event::MouseScrollDelta) {
-    let event = crate::core::input::scroll_event(delta, self.scale_factor);
-    self.world.resource_mut::<Input>().queue(event);
-  }
-
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn game_size(&self) -> (u32, u32) {
     (self.config.width, self.config.height)
@@ -1028,6 +1021,10 @@ impl Engine {
 
     self.scale_factor = scale_factor;
     self.world.resource_mut::<WindowInfo>().scale_factor = scale_factor;
+    self
+      .world
+      .resource_mut::<Input>()
+      .set_scale_factor(scale_factor);
     self.world.insert_resource(Gpu {
       device: renderer.device_arc(),
       queue: renderer.queue_arc(),
