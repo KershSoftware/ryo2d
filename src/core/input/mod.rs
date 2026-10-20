@@ -120,6 +120,24 @@ pub enum Stick {
   Right,
 }
 
+/// Trackpad pixels that make one line of [`Input::scroll_delta`]
+const PIXELS_PER_LINE: f32 = 120.0;
+
+/// A window scroll with its pixels in logical pixels: winit reports
+/// trackpads in physical pixels, so they are divided by the window's
+/// `scale_factor` (a bad factor leaves them as they are). Lines pass through.
+pub(crate) fn logical_scroll(delta: MouseScrollDelta, scale_factor: f64) -> MouseScrollDelta {
+  match delta {
+    MouseScrollDelta::PixelDelta(pos) if scale_factor.is_finite() && scale_factor > 0.0 => {
+      MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+        pos.x / scale_factor,
+        pos.y / scale_factor,
+      ))
+    }
+    other => other,
+  }
+}
+
 /// A window or gamepad event, applied at the next `begin_frame`.
 #[derive(Debug, Clone)]
 pub enum InputEvent {
@@ -140,6 +158,7 @@ pub enum InputEvent {
     dx: f64,
     dy: f64,
   },
+  /// A wheel step in lines, or a trackpad movement in logical pixels
   Scroll(MouseScrollDelta),
   ImeEnabled,
   ImeDisabled,
@@ -218,11 +237,13 @@ pub struct Input {
   mouse_delta_y: f32,
 
   // Mouse scroll
-  scroll_delta_x: f32,
-  scroll_delta_y: f32,
-  /// The wheel for the fixed steps: kept until a step has seen it
-  scroll_fixed_x: f32,
-  scroll_fixed_y: f32,
+  /// Wheel lines this frame (`LineDelta` only)
+  scroll_lines: (f32, f32),
+  /// Trackpad movement this frame, in logical pixels (`PixelDelta` only)
+  scroll_px: (f32, f32),
+  /// Both for the fixed steps: kept until a step has seen them
+  scroll_lines_fixed: (f32, f32),
+  scroll_px_fixed: (f32, f32),
 
   /// The device behind the newest input
   last_device: InputDevice,
@@ -323,8 +344,8 @@ impl Input {
     self.consumed_mouse.clear();
     self.mouse_delta_x = 0.0;
     self.mouse_delta_y = 0.0;
-    self.scroll_delta_x = 0.0;
-    self.scroll_delta_y = 0.0;
+    self.scroll_lines = (0.0, 0.0);
+    self.scroll_px = (0.0, 0.0);
     // Clear committed text, but keep preedit (it persists until cleared by IME)
     self.text_input.clear();
     self.ime_committed_this_frame = false;
@@ -411,8 +432,8 @@ impl Input {
       self.gamepad_buttons_released_fixed.clear();
       self.stick_dirs_pressed_fixed.clear();
       self.stick_dirs_released_fixed.clear();
-      self.scroll_fixed_x = 0.0;
-      self.scroll_fixed_y = 0.0;
+      self.scroll_lines_fixed = (0.0, 0.0);
+      self.scroll_px_fixed = (0.0, 0.0);
     }
   }
 
@@ -550,10 +571,10 @@ impl Input {
     if self.pointer_blocked() {
       return;
     }
-    self.scroll_delta_x = 0.0;
-    self.scroll_delta_y = 0.0;
-    self.scroll_fixed_x = 0.0;
-    self.scroll_fixed_y = 0.0;
+    self.scroll_lines = (0.0, 0.0);
+    self.scroll_px = (0.0, 0.0);
+    self.scroll_lines_fixed = (0.0, 0.0);
+    self.scroll_px_fixed = (0.0, 0.0);
   }
 
   /// Hide this frame's text from later readers.
@@ -871,21 +892,46 @@ impl Input {
   // Mouse Scroll
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /// Get the scroll wheel delta (x, y) in lines.
+  /// Get the scroll delta (x, y) in lines: a mouse wheel's lines plus a
+  /// trackpad's pixels at 120 to the line.
   /// Positive y = scroll up, negative y = scroll down
   ///
-  /// Outside the fixed steps this is the frame's wheel. Inside them the first
-  /// step sees the frame's wheel and later steps see none, so a step never
-  /// counts it twice; a frame with no step carries its wheel to the next
-  /// first step, and a pause drops it.
+  /// Outside the fixed steps this is the frame's scroll. Inside them the
+  /// first step sees the frame's scroll and later steps see none, so a step
+  /// never counts it twice; a frame with no step carries its scroll to the
+  /// next first step, and a pause drops it.
   pub fn scroll_delta(&self) -> (f32, f32) {
+    let (lines, px) = self.scroll_parts();
+    (
+      lines.0 + px.0 / PIXELS_PER_LINE,
+      lines.1 + px.1 / PIXELS_PER_LINE,
+    )
+  }
+
+  /// A trackpad's movement (x, y) in logical pixels this frame, 0 for a
+  /// mouse wheel; follow the fingers with this. Same sign as
+  /// [`Input::scroll_delta`] (positive y = scroll up) and the same
+  /// fixed-step, consume and block rules.
+  pub fn scroll_pixels(&self) -> (f32, f32) {
+    self.scroll_parts().1
+  }
+
+  /// A mouse wheel's lines alone, trackpad pixels left out (what the UI
+  /// eases; it follows the pixels at once).
+  pub(crate) fn scroll_wheel_lines(&self) -> (f32, f32) {
+    self.scroll_parts().0
+  }
+
+  /// This frame's scroll as (wheel lines, trackpad pixels), after the
+  /// blocks and the fixed-step view
+  fn scroll_parts(&self) -> ((f32, f32), (f32, f32)) {
     if self.pointer_blocked() {
-      return (0.0, 0.0);
+      return ((0.0, 0.0), (0.0, 0.0));
     }
     match self.oneshots() {
-      OneShots::Frame => (self.scroll_delta_x, self.scroll_delta_y),
-      OneShots::Fixed => (self.scroll_fixed_x, self.scroll_fixed_y),
-      OneShots::Suppressed => (0.0, 0.0),
+      OneShots::Frame => (self.scroll_lines, self.scroll_px),
+      OneShots::Fixed => (self.scroll_lines_fixed, self.scroll_px_fixed),
+      OneShots::Suppressed => ((0.0, 0.0), (0.0, 0.0)),
     }
   }
 
@@ -899,17 +945,24 @@ impl Input {
     self.gamepad_buttons_pressed_fixed.contains(&button)
   }
 
-  /// Handle mouse scroll (applied at once)
+  /// Handle mouse scroll (applied at once). A `PixelDelta` is in logical
+  /// pixels (the window converts it, see [`logical_scroll`]).
   pub(crate) fn handle_scroll(&mut self, delta: MouseScrollDelta) {
-    let (x, y) = match delta {
-      MouseScrollDelta::LineDelta(x, y) => (x, y),
-      // Convert pixel delta to approximate line delta
-      MouseScrollDelta::PixelDelta(pos) => (pos.x as f32 / 120.0, pos.y as f32 / 120.0),
-    };
-    self.scroll_delta_x += x;
-    self.scroll_delta_y += y;
-    self.scroll_fixed_x += x;
-    self.scroll_fixed_y += y;
+    match delta {
+      MouseScrollDelta::LineDelta(x, y) => {
+        self.scroll_lines.0 += x;
+        self.scroll_lines.1 += y;
+        self.scroll_lines_fixed.0 += x;
+        self.scroll_lines_fixed.1 += y;
+      }
+      MouseScrollDelta::PixelDelta(pos) => {
+        let (x, y) = (pos.x as f32, pos.y as f32);
+        self.scroll_px.0 += x;
+        self.scroll_px.1 += y;
+        self.scroll_px_fixed.0 += x;
+        self.scroll_px_fixed.1 += y;
+      }
+    }
     self.last_device = InputDevice::Mouse;
   }
 
@@ -1337,6 +1390,9 @@ impl Input {
 pub(crate) struct InputView {
   pub(crate) mouse: (f32, f32),
   pub(crate) scroll: (f32, f32),
+  /// A wheel's lines alone, and a trackpad's logical pixels
+  pub(crate) wheel: (f32, f32),
+  pub(crate) pixels: (f32, f32),
   pub(crate) keys_down: HashSet<KeyCode>,
   pub(crate) keys_pressed: HashSet<KeyCode>,
   pub(crate) keys_released: HashSet<KeyCode>,
@@ -1365,6 +1421,8 @@ impl Input {
     InputView {
       mouse: self.mouse_position(),
       scroll: self.scroll_delta(),
+      wheel: self.scroll_wheel_lines(),
+      pixels: self.scroll_pixels(),
       keys_down: keep(&self.keys_down, |key| self.key_down(key)),
       keys_pressed: keep(&self.keys_pressed, |key| self.key_pressed(key)),
       keys_released: keep(&self.keys_released, |key| self.key_released(key)),
@@ -1486,6 +1544,90 @@ mod tests {
 
     input.begin_frame();
     assert_eq!(input.scroll_delta(), (0.0, 0.0));
+  }
+
+  fn pixels(x: f64, y: f64) -> MouseScrollDelta {
+    MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(x, y))
+  }
+
+  #[test]
+  fn small_trackpad_events_add_up_to_exact_logical_pixels() {
+    let mut input = Input::new();
+    // 20 events of 0.75 physical pixels on a 2x display
+    for _ in 0..20 {
+      input.handle_scroll(logical_scroll(pixels(0.75, -1.5), 2.0));
+    }
+    assert_eq!(input.scroll_pixels(), (7.5, -15.0));
+    assert_eq!(input.scroll_delta(), (7.5 / 120.0, -15.0 / 120.0));
+    assert_eq!(input.scroll_wheel_lines(), (0.0, 0.0));
+    input.begin_frame();
+    assert_eq!(input.scroll_pixels(), (0.0, 0.0));
+  }
+
+  #[test]
+  fn a_wheel_adds_no_pixels_and_a_trackpad_no_lines() {
+    let mut input = Input::new();
+    input.handle_scroll(MouseScrollDelta::LineDelta(1.0, -2.0));
+    assert_eq!(input.scroll_pixels(), (0.0, 0.0));
+    assert_eq!(input.scroll_wheel_lines(), (1.0, -2.0));
+    input.handle_scroll(pixels(60.0, 120.0));
+    assert_eq!(input.scroll_pixels(), (60.0, 120.0));
+    assert_eq!(input.scroll_wheel_lines(), (1.0, -2.0));
+    assert_eq!(input.scroll_delta(), (1.5, -1.0));
+  }
+
+  #[test]
+  fn logical_scroll_scales_pixels_only() {
+    let line = MouseScrollDelta::LineDelta(1.0, 2.0);
+    assert!(matches!(
+      logical_scroll(line, 2.0),
+      MouseScrollDelta::LineDelta(1.0, 2.0)
+    ));
+    assert!(matches!(
+      logical_scroll(pixels(4.0, 6.0), 2.0),
+      MouseScrollDelta::PixelDelta(p) if (p.x, p.y) == (2.0, 3.0)
+    ));
+    // A bad factor leaves the pixels as they are
+    assert!(matches!(
+      logical_scroll(pixels(4.0, 6.0), 0.0),
+      MouseScrollDelta::PixelDelta(p) if (p.x, p.y) == (4.0, 6.0)
+    ));
+  }
+
+  #[test]
+  fn trackpad_pixels_follow_the_blocked_consumed_and_fixed_rules() {
+    let mut input = Input::new();
+    frame(&mut input, vec![InputEvent::Scroll(pixels(0.0, 30.0))]);
+    assert_eq!(input.scroll_pixels(), (0.0, 30.0));
+    input.set_fixed_step(0);
+    assert_eq!(input.scroll_pixels(), (0.0, 30.0));
+    input.set_fixed_step(1);
+    assert_eq!(input.scroll_pixels(), (0.0, 0.0), "once per frame");
+    input.end_fixed_steps(true);
+    input.begin_frame();
+    input.set_fixed_step(0);
+    assert_eq!(input.scroll_pixels(), (0.0, 0.0), "seen once, gone");
+
+    // A frame with no step carries its pixels to the next first step
+    let mut input = Input::new();
+    frame(&mut input, vec![InputEvent::Scroll(pixels(0.0, 5.0))]);
+    input.end_fixed_steps(false);
+    frame(&mut input, vec![InputEvent::Scroll(pixels(0.0, 7.0))]);
+    input.set_fixed_step(0);
+    assert_eq!(input.scroll_pixels(), (0.0, 12.0));
+
+    let mut input = Input::new();
+    frame(&mut input, vec![InputEvent::Scroll(pixels(0.0, 5.0))]);
+    input.consume_scroll();
+    assert_eq!(input.scroll_pixels(), (0.0, 0.0));
+    input.set_fixed_step(0);
+    assert_eq!(input.scroll_pixels(), (0.0, 0.0));
+
+    let mut input = Input::new();
+    input.handle_scroll(pixels(0.0, 5.0));
+    input.block_pointer();
+    assert_eq!(input.scroll_pixels(), (0.0, 0.0));
+    assert_eq!(input.scroll_wheel_lines(), (0.0, 0.0));
   }
 
   #[test]

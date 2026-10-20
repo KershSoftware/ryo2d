@@ -970,3 +970,26 @@ fn the_wheel_over_no_ui_reaches_gameplay() {
     assert_eq!(seen, 1.0, "the wheel beside the UI is the game's");
   }
 }
+
+#[test]
+fn a_trackpad_reads_as_logical_pixels_beside_the_wheel() {
+  struct Watch;
+  impl Scene for Watch {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+  let Some(mut engine) =
+    HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(64, 64).start_scene(Watch))
+  else {
+    return;
+  };
+  engine.trackpad(6.0, -12.0);
+  engine.step().unwrap();
+  let input = engine.world().resource::<Input>();
+  assert_eq!(input.scroll_pixels(), (6.0, -12.0));
+  assert_eq!(input.scroll_delta(), (0.05, -0.1));
+  engine.step().unwrap();
+  let input = engine.world().resource::<Input>();
+  assert_eq!(input.scroll_pixels(), (0.0, 0.0), "one frame only");
+}

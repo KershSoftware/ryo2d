@@ -111,6 +111,25 @@ impl UiInput {
     }
   }
 
+  /// A mouse wheel's lines alone (the UI eases these), 0 once consumed
+  pub(crate) fn scroll_wheel_lines(&self) -> (f32, f32) {
+    if self.scroll_consumed {
+      (0.0, 0.0)
+    } else {
+      self.view.wheel
+    }
+  }
+
+  /// A trackpad's movement in logical pixels (the UI follows it at once),
+  /// 0 once consumed
+  pub(crate) fn scroll_pixels(&self) -> (f32, f32) {
+    if self.scroll_consumed {
+      (0.0, 0.0)
+    } else {
+      self.view.pixels
+    }
+  }
+
   // --- keyboard ---
 
   pub fn key_down(&self, key: KeyCode) -> bool {
@@ -389,5 +408,27 @@ mod tests {
     ui.apply_consumed(&mut input);
     assert!(input.mouse_pressed(MouseButton::Left));
     assert_eq!(input.text_input(), "hi");
+  }
+
+  #[test]
+  fn consuming_the_scroll_hides_wheel_lines_and_trackpad_pixels() {
+    let mut input = Input::new();
+    input.queue(InputEvent::Scroll(
+      winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+    ));
+    input.queue(InputEvent::Scroll(
+      winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, 12.0)),
+    ));
+    input.begin_frame();
+    let mut ui = UiInput::snapshot(&input);
+    assert_eq!(ui.scroll_wheel_lines(), (0.0, 1.0));
+    assert_eq!(ui.scroll_pixels(), (0.0, 12.0));
+    ui.consume_scroll();
+    assert_eq!(ui.scroll_wheel_lines(), (0.0, 0.0));
+    assert_eq!(ui.scroll_pixels(), (0.0, 0.0));
+    assert_eq!(ui.scroll_delta(), (0.0, 0.0));
+    ui.apply_consumed(&mut input);
+    assert_eq!(input.scroll_pixels(), (0.0, 0.0));
+    assert_eq!(input.scroll_wheel_lines(), (0.0, 0.0));
   }
 }

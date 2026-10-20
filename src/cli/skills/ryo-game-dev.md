@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.2.0
+  version: 2.2.1
 ---
 
 # Ryo2D Game Developer
@@ -748,7 +748,7 @@ fn player_is_drawn_at_spawn() {
 ```
 
 - Same scene, steps and input give identical frames: seed your RNG and use `ParticleSystem::with_seed(n)`.
-- Pads and menus: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`; `ui_focused()`, `ui_focusables()` and `focus_ui(id)` check pad navigation. `ryo2d::testing::UiHarness` tests a UI function without a GPU (`ryo-ui`, Testing UI).
+- Pads and menus: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `trackpad(dx, dy)` (logical pixels); `ui_focused()`, `ui_focusables()` and `focus_ui(id)` check pad navigation. `ryo2d::testing::UiHarness` tests a UI function without a GPU (`ryo-ui`, Testing UI).
 - Headless runs have no audio device, real gamepads (the pad methods drive a virtual one) or user preferences; `Ryo.toml` is honoured. `engine.world()` / `world_mut()` reach the world between steps.
 
 ## Pitfalls

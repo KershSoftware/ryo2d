@@ -78,6 +78,8 @@ pub struct UiHarness {
   pointer: PointerInput,
   /// A wheel step for the next frame, in lines
   wheel: Vec2,
+  /// A trackpad movement for the next frame, in logical pixels
+  trackpad: Vec2,
   /// The navigation input for the next frame
   pub(crate) nav: NavInput,
   /// Keys pressed in the next frame
@@ -152,6 +154,7 @@ impl UiHarness {
         double_click: 0.3,
       },
       wheel: Vec2::ZERO,
+      trackpad: Vec2::ZERO,
       nav: NavInput::default(),
       keys: Vec::new(),
       pads: Vec::new(),
@@ -425,6 +428,12 @@ impl UiHarness {
     self.wheel = Vec2::new(dx, dy);
   }
 
+  /// A trackpad movement of (dx, dy) logical pixels in the next frame (+y
+  /// scrolls up); a UI unit is a logical pixel here
+  pub fn trackpad(&mut self, dx: f32, dy: f32) {
+    self.trackpad = Vec2::new(dx, dy);
+  }
+
   /// Press a UI action in the next frame (and release it after): `"ui.up"`,
   /// `"ui.down"`, `"ui.left"`, `"ui.right"`, `"ui.confirm"`, `"ui.back"`,
   /// `"ui.next"` (Tab), `"ui.tab_next"` or `"ui.tab_prev"`. Another name
@@ -582,6 +591,7 @@ impl UiHarness {
       &mut self.memory,
       self.pointer.position,
       self.wheel,
+      self.trackpad,
       false,
       scene,
       metrics.scroll_line,
@@ -665,6 +675,7 @@ impl UiHarness {
     self.pointer.pressed = [false; 2];
     self.pointer.released = [false; 2];
     self.wheel = Vec2::ZERO;
+    self.trackpad = Vec2::ZERO;
     self.keys.clear();
     self.pads.clear();
     self.typed.clear();
@@ -900,5 +911,36 @@ mod tests {
       line(&scrolled),
       "the offset is in the snapshot"
     );
+  }
+
+  #[test]
+  fn a_trackpad_follows_the_fingers_and_a_wheel_eases() {
+    fn area(ui: &mut UiContext<'_>) -> UiId {
+      ui.scroll()
+        .id("s")
+        .width(200.0)
+        .height(60.0)
+        .show(|ui| {
+          for i in 0..20 {
+            ui.text(format!("Line {i}")).draw();
+          }
+        })
+        .id
+    }
+    let mut h = UiHarness::new(320.0, 240.0);
+    let id = h.frame(area);
+    h.frame(area);
+    h.move_to(20.0, 20.0);
+    h.trackpad(0.0, -17.5);
+    h.frame(area);
+    assert_eq!(h.scroll_offset(id).y, 17.5, "the same frame, no easing");
+    // The way back, clamped at the top
+    h.trackpad(0.0, 100.0);
+    h.frame(area);
+    assert_eq!(h.scroll_offset(id).y, 0.0);
+    h.wheel(0.0, -1.0);
+    h.frame(area);
+    let eased = h.scroll_offset(id).y;
+    assert!(eased > 0.0 && eased < 40.0, "a wheel line eases: {eased}");
   }
 }

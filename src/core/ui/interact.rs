@@ -223,16 +223,21 @@ fn drop_target_at(memory: &UiMemory, at: Vec2, scene: u64, type_id: TypeId) -> U
   }
 }
 
-/// Give the frame's wheel (`wheel`, in lines, +y up) to the scroll areas of
-/// `top_scene` under `pointer`, from last frame's records. Per axis, the
-/// innermost area that can still move toward the wheel takes it (its
-/// `target` moves `line` units per line); an area at its edge passes the
-/// wheel to the one around it. Shift turns a vertical-only wheel sideways.
-/// Whether anything took the wheel, so gameplay must not see it.
+/// Give the frame's scrolling to the scroll areas of `top_scene` under
+/// `pointer`, from last frame's records: a mouse wheel's `wheel` (in lines,
+/// +y up) and a trackpad's `pixels` (in UI units, +y up). Per axis, the
+/// innermost area that can still move toward the scroll takes it. A wheel
+/// line moves the `target` `line` units and the offset eases after it; the
+/// pixels move the target and the offset together, as far as the area can
+/// go, and pass on what it cannot use (the OS supplies a trackpad's
+/// momentum, so nothing eases). An area at its edge passes the scroll to the
+/// one around it. Shift turns a vertical-only scroll sideways. Whether
+/// anything took it, so gameplay must not see it.
 pub(crate) fn route_wheel(
   memory: &mut UiMemory,
   pointer: Vec2,
   wheel: Vec2,
+  pixels: Vec2,
   shift: bool,
   top_scene: Option<u64>,
   line: f32,
@@ -240,12 +245,16 @@ pub(crate) fn route_wheel(
   let Some(scene) = top_scene else {
     return false;
   };
-  let mut wheel = if shift && wheel.x == 0.0 {
-    Vec2::new(wheel.y, 0.0)
-  } else {
-    wheel
+  let sideways = |v: Vec2| {
+    if shift && v.x == 0.0 {
+      Vec2::new(v.y, 0.0)
+    } else {
+      v
+    }
   };
-  if !wheel.is_finite() || wheel == Vec2::ZERO {
+  let mut wheel = sideways(wheel);
+  let mut pixels = sideways(pixels);
+  if !wheel.is_finite() || !pixels.is_finite() || (wheel == Vec2::ZERO && pixels == Vec2::ZERO) {
     return false;
   }
   // The topmost thing under the pointer decides, as for clicks, so a panel
@@ -272,22 +281,32 @@ pub(crate) fn route_wheel(
     };
     let max = state.max();
     for axis in 0..2 {
-      if wheel[axis] == 0.0 {
-        continue;
+      if wheel[axis] != 0.0 {
+        let delta = -wheel[axis] * line;
+        let room = if delta < 0.0 {
+          state.target[axis] > 0.0
+        } else {
+          state.target[axis] < max[axis]
+        };
+        if room {
+          state.target[axis] = (state.target[axis] + delta).clamp(0.0, max[axis]);
+          wheel[axis] = 0.0;
+          taken = true;
+        }
       }
-      let delta = -wheel[axis] * line;
-      let room = if delta < 0.0 {
-        state.target[axis] > 0.0
-      } else {
-        state.target[axis] < max[axis]
-      };
-      if room {
-        state.target[axis] = (state.target[axis] + delta).clamp(0.0, max[axis]);
-        wheel[axis] = 0.0;
-        taken = true;
+      if pixels[axis] != 0.0 {
+        let wanted = -pixels[axis];
+        let target = (state.target[axis] + wanted).clamp(0.0, max[axis]);
+        let used = target - state.target[axis];
+        if used != 0.0 {
+          state.target[axis] = target;
+          state.offset[axis] = (state.offset[axis] + used).clamp(0.0, max[axis]);
+          pixels[axis] = -(wanted - used);
+          taken = true;
+        }
       }
     }
-    if wheel == Vec2::ZERO {
+    if wheel == Vec2::ZERO && pixels == Vec2::ZERO {
       break;
     }
   }
@@ -764,6 +783,7 @@ mod tests {
       &mut m,
       Vec2::new(20.0, 20.0),
       Vec2::new(0.0, -1.0),
+      Vec2::ZERO,
       false,
       Some(1),
       40.0
@@ -796,6 +816,7 @@ mod tests {
       &mut m,
       Vec2::new(20.0, 20.0),
       Vec2::new(0.0, 1.0),
+      Vec2::ZERO,
       false,
       Some(1),
       40.0
@@ -808,6 +829,7 @@ mod tests {
       &mut m,
       Vec2::new(20.0, 20.0),
       Vec2::new(0.0, 1.0),
+      Vec2::ZERO,
       false,
       Some(1),
       40.0
@@ -832,6 +854,7 @@ mod tests {
       &mut m,
       Vec2::new(20.0, 20.0),
       Vec2::new(0.0, -1.0),
+      Vec2::ZERO,
       false,
       Some(1),
       40.0
@@ -855,10 +878,118 @@ mod tests {
       &mut m,
       Vec2::new(20.0, 20.0),
       Vec2::new(0.0, -2.0),
+      Vec2::ZERO,
       true,
       Some(1),
       40.0
     ));
     assert_eq!(target(&m, 1).x, 80.0);
+  }
+
+  fn state_of(m: &mut UiMemory, id: u64) -> ScrollState {
+    *m.state::<ScrollState>(UiId(id), 1).unwrap()
+  }
+
+  /// One outer area (max 800) around an inner one (max 400), settled
+  fn nested() -> UiMemory {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    scrollable(
+      Rect::new(0.0, 0.0, 200.0, 200.0),
+      0,
+      1,
+      &mut m,
+      Vec2::new(200.0, 1000.0),
+    );
+    scrollable(
+      Rect::new(10.0, 10.0, 100.0, 100.0),
+      3,
+      2,
+      &mut m,
+      Vec2::new(100.0, 500.0),
+    );
+    m.end_frame();
+    m.begin_frame();
+    m
+  }
+
+  fn pixels(m: &mut UiMemory, dx: f32, dy: f32, shift: bool) -> bool {
+    route_wheel(
+      m,
+      Vec2::new(20.0, 20.0),
+      Vec2::ZERO,
+      Vec2::new(dx, dy),
+      shift,
+      Some(1),
+      40.0,
+    )
+  }
+
+  #[test]
+  fn trackpad_pixels_move_the_offset_and_the_target_at_once() {
+    let mut m = nested();
+    assert!(pixels(&mut m, 0.0, -25.0, false));
+    let inner = state_of(&mut m, 2);
+    assert_eq!((inner.offset.y, inner.target.y), (25.0, 25.0));
+    assert_eq!(state_of(&mut m, 1).target.y, 0.0);
+    // Back past the top clamps there
+    assert!(pixels(&mut m, 0.0, 100.0, false));
+    let inner = state_of(&mut m, 2);
+    assert_eq!((inner.offset.y, inner.target.y), (0.0, 0.0));
+  }
+
+  #[test]
+  fn a_wheel_still_moves_only_the_target() {
+    let mut m = nested();
+    assert!(route_wheel(
+      &mut m,
+      Vec2::new(20.0, 20.0),
+      Vec2::new(0.0, -1.0),
+      Vec2::ZERO,
+      false,
+      Some(1),
+      40.0
+    ));
+    let inner = state_of(&mut m, 2);
+    assert_eq!((inner.offset.y, inner.target.y), (0.0, 40.0));
+  }
+
+  #[test]
+  fn an_area_passes_on_the_pixels_it_cannot_use() {
+    let mut m = nested();
+    state_of(&mut m, 2);
+    let inner = m.state::<ScrollState>(UiId(2), 1).unwrap();
+    inner.offset.y = 390.0;
+    inner.target.y = 390.0;
+    // 30 down: 10 left in the inner area, 20 for the outer one
+    assert!(pixels(&mut m, 0.0, -30.0, false));
+    let inner = state_of(&mut m, 2);
+    assert_eq!((inner.offset.y, inner.target.y), (400.0, 400.0));
+    let outer = state_of(&mut m, 1);
+    assert_eq!((outer.offset.y, outer.target.y), (20.0, 20.0));
+  }
+
+  #[test]
+  fn pixels_with_no_room_anywhere_are_not_taken() {
+    let mut m = nested();
+    assert!(!pixels(&mut m, 0.0, 50.0, false), "both are at their tops");
+  }
+
+  #[test]
+  fn shift_turns_trackpad_pixels_sideways() {
+    let mut m = UiMemory::new();
+    m.begin_frame();
+    scrollable(
+      Rect::new(0.0, 0.0, 200.0, 50.0),
+      0,
+      1,
+      &mut m,
+      Vec2::new(800.0, 50.0),
+    );
+    m.end_frame();
+    m.begin_frame();
+    assert!(pixels(&mut m, 0.0, -30.0, true));
+    let state = state_of(&mut m, 1);
+    assert_eq!((state.offset.x, state.target.x), (30.0, 30.0));
   }
 }

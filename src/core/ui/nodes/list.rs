@@ -1684,6 +1684,31 @@ mod tests {
   }
 
   #[test]
+  fn a_virtual_list_follows_a_trackpad_one_to_one() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let list = board(&mut h, 10_000);
+    for _ in 0..3 {
+      h.frame(|_| {});
+      bind(&mut h);
+    }
+    let id = h.ui_id(list).unwrap();
+    h.move_to(150.0, 100.0);
+    h.trackpad(0.0, -37.5);
+    h.frame(|_| {});
+    assert_eq!(h.scroll_offset(id).y, 37.5, "the same frame, no easing");
+    bind(&mut h);
+    h.trackpad(0.0, -500.0);
+    h.frame(|_| {});
+    assert_eq!(h.scroll_offset(id).y, 537.5);
+    bind(&mut h);
+    // Rows that came into view past the overscan are bound a frame late
+    h.frame(|_| {});
+    bind(&mut h);
+    assert_eq!(h.scroll_offset(id).y, 537.5, "nothing eases on");
+    assert_view_drawn(&h, list, id, "a frame after a drag");
+  }
+
+  #[test]
   fn unchanged_rows_replay_and_a_rebound_row_rebuilds() {
     let mut h = UiHarness::new(640.0, 480.0);
     let list = h.spawn_ui(

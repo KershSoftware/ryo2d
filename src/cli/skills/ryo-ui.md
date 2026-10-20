@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.5.3
+  version: 4.5.4
 ---
 
 # Ryo2D UI Specialist
@@ -179,7 +179,7 @@ let area = ui.scroll().height(300.0).fill_width().gap(4.0).show(|ui| {
 ```
 
 - Contents are laid out as a column (`.horizontal()` for a row, `.both()` for both ways) and shown through the view you size; they are clipped for drawing and for hits. `.no_bar()` hides the scrollbar.
-- **The wheel** goes to the scroll area under the pointer (the topmost thing there decides, so a panel or popup over a list keeps the wheel from it), innermost first: an area at its edge passes the wheel to the one around it. Shift scrolls sideways. Scrolling eases (0.08 s). The wheel over any of the top scene's UI never reaches gameplay, whether it scrolled anything or not (over a panel, a modal, or a list at its edge); over nothing it is the game's.
+- **The wheel** goes to the scroll area under the pointer (the topmost thing there decides, so a panel or popup over a list keeps the wheel from it), innermost first: an area at its edge passes the wheel to the one around it. Shift scrolls sideways. A mouse wheel's lines move the target `scroll_line` units a line and ease (0.08 s); a trackpad's pixels (`Input::scroll_pixels`) move the area exactly as far as the pointer would move, at once, with no easing (the OS supplies the momentum), and an area passes on the pixels it cannot use. Lists (`ui.list`, node `List`) scroll the same way. The wheel over any of the top scene's UI never reaches gameplay, whether it scrolled anything or not (over a panel, a modal, or a list at its edge); over nothing it is the game's.
 - **The pad** walks a long list: focus moves onto rows scrolled out of view and scrolls them in, through nested areas too (a strip of cards inside a list is reached from the rows around it, and every area around the focused widget scrolls to show it). The right stick scrolls the focused widget's area, or the first area in its focus scope (a dialog's text above its Close button).
 - `ui.scroll_to(id)` brings a widget into view from the next frame; `ui.scroll_offset(area.id)` reads where an area shows from; `ui.set_scroll_offset(area.id, Vec2::new(0.0, 0.0))` jumps there without easing.
 - A scroll area builds everything in it every frame. For hundreds of rows or more, use a virtual list (section 16), which builds only the rows in view.
@@ -2639,7 +2639,7 @@ fn the_slider_steps_with_the_pad() {
 }
 ```
 
-- `frame(|ui| ..) -> R` runs one 60 fps frame as the top scene and returns the closure's value; `move_to(x, y)`, `press()` (held until `release()`), `release()`, `wheel(dx, dy)` (lines, +y up); `action(name)` presses `ui.up`, `ui.down`, `ui.left`, `ui.right`, `ui.confirm`, `ui.back`, `ui.next`, `ui.tab_next` or `ui.tab_prev` for the next frame (another name warns once and does nothing); `focused() -> Option<UiId>`; `command_count()` (what the last frame drew); `with_theme(theme)`.
+- `frame(|ui| ..) -> R` runs one 60 fps frame as the top scene and returns the closure's value; `move_to(x, y)`, `press()` (held until `release()`), `release()`, `wheel(dx, dy)` (lines, +y up), `trackpad(dx, dy)` (logical pixels, +y up); `action(name)` presses `ui.up`, `ui.down`, `ui.left`, `ui.right`, `ui.confirm`, `ui.back`, `ui.next`, `ui.tab_next` or `ui.tab_prev` for the next frame (another name warns once and does nothing); `focused() -> Option<UiId>`; `command_count()` (what the last frame drew); `with_theme(theme)`.
 - A click is a press frame then a release frame over the widget. A frame that draws nothing leaves the UI as the last frame that drew left it.
 - **Node trees:** `spawn_ui(tree) -> Entity` spawns a tree as a root of the harness's scene, and each `frame` draws the harness's trees before its closure, as a scene's are drawn before its `ui`. `events() -> &[UiEvent]` lists the last frame's node events in walk order. `find_ui(name)` and `ui_id(node)` work as on `SceneContext`, and `world()` / `world_mut()` reach the components. `frame_with_world(|ui, world| ..)` gives the closure the world as well, for `ui.node(root, world)`.
 
@@ -2691,7 +2691,7 @@ fn the_slider_steps_with_the_pad() {
   assert_eq!(ui.ui_cache_stats().rebuilt, vec![hud, gold]); // the label and its path, not "Lives 3"
   ```
 
-- **With the engine**, `HeadlessEngine` (`ryo-game-dev`, Visual Tests) drives whole scenes: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `release_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `tap_key`, `mouse_move`; `ui_focused()` is the focus the last step resolved, `ui_focusables()` what the D-pad can land on now (id and rect), `focus_ui(id)` focuses a widget at the next step. Walking every `ui_focusables()` with the D-pad from each one proves a page has no dead ends.
+- **With the engine**, `HeadlessEngine` (`ryo-game-dev`, Visual Tests) drives whole scenes: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `release_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `trackpad(dx, dy)`, `tap_key`, `mouse_move`; `ui_focused()` is the focus the last step resolved, `ui_focusables()` what the D-pad can land on now (id and rect), `focus_ui(id)` focuses a widget at the next step. Walking every `ui_focusables()` with the D-pad from each one proves a page has no dead ends.
 - **Scripted runs:** `RYO_INPUT` presses pad buttons and holds sticks in dev builds, for captures: `RYO_INPUT="60:PadDPadDown 90:PadSouth 120-180:LeftStick@0x-1 200:Wheel@0x-3"` (`ryo-cli`).
 - The console command `debug:ui` outlines every widget with its id, hot, active and focused ones coloured; `debug:ui-rebuilds` outlines the nodes rebuilt each frame (`ryo-console`).
 

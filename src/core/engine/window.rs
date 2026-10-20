@@ -628,10 +628,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
         }
       }
       WindowEvent::MouseWheel { delta, .. } => {
-        self
-          .world
-          .resource_mut::<Input>()
-          .queue(InputEvent::Scroll(*delta));
+        self.scroll(*delta);
       }
       WindowEvent::Ime(ime_event) => {
         let event = match ime_event {

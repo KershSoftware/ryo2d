@@ -913,6 +913,16 @@ impl Engine {
       });
   }
 
+  /// Queue a wheel or trackpad scroll; a trackpad's pixels become logical
+  /// pixels here, where the scale factor is known.
+  pub(crate) fn scroll(&mut self, delta: winit::event::MouseScrollDelta) {
+    let delta = crate::core::input::logical_scroll(delta, self.scale_factor);
+    self
+      .world
+      .resource_mut::<Input>()
+      .queue(crate::core::input::InputEvent::Scroll(delta));
+  }
+
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn game_size(&self) -> (u32, u32) {
     (self.config.width, self.config.height)

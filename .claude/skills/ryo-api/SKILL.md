@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.7.0
+  version: 2.7.1
 ---
 
 # Ryo2D API Reference
@@ -568,7 +568,7 @@ Engine messages (all `Message + Clone`):
 |---|---|
 | actions | `actions() -> &Actions`, `actions_mut() -> &mut Actions` (`ctx.actions()` in a scene), `action_pressed(&str)`, `action_held(&str)`, `action_released(&str)` |
 | keyboard | `key_down(KeyCode)`, `key_pressed(KeyCode)`, `key_released(KeyCode)`, `key_repeat(KeyCode)` (press or OS repeat) |
-| mouse | `mouse_down(MouseButton)`, `mouse_pressed(..)`, `mouse_released(..)`, `mouse_x()`, `mouse_y()`, `mouse_position() -> (f32, f32)` (screen space: logical pixels or the pixel-art target, outside `0..screen_size` over the bars; `ctx.camera().screen_to_world(Vec2::new(x, y))` for world), `mouse_delta()`, `scroll_delta()` (lines, +y up) |
+| mouse | `mouse_down(MouseButton)`, `mouse_pressed(..)`, `mouse_released(..)`, `mouse_x()`, `mouse_y()`, `mouse_position() -> (f32, f32)` (screen space: logical pixels or the pixel-art target, outside `0..screen_size` over the bars; `ctx.camera().screen_to_world(Vec2::new(x, y))` for world), `mouse_delta()`, `scroll_delta()` (lines, +y up: a wheel's lines plus a trackpad's pixels / 120), `scroll_pixels() -> (f32, f32)` (a trackpad's movement in logical pixels this frame, 0 for a wheel, +y up: follow the fingers with this) |
 | devices | `last_device() -> InputDevice` (the newest key press, mouse press, wheel or motion, or pad press or stick past 0.5), `pad_family() -> PadFamily` |
 | text and IME | `text_input() -> &str`, `has_text_input()`, `consume_text_input()`, `ime_preedit()`, `ime_preedit_cursor()`, `ime_composing()`, `ime_enabled()` |
 | gamepad | `gamepad_connected()`, `gamepad_name()`, `gamepad_button_down/pressed/released(GamepadButton)`, `stick_direction_down/pressed/released(StickDirection)` (digital past 0.5, released below 0.4), `left_stick()`, `right_stick()` (deadzoned, plus `_x`/`_y`), `left_stick_raw()`, `right_stick_raw()`, `left_trigger()`, `right_trigger()` (0..1) |
@@ -1415,14 +1415,14 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `press_key` / `release_key` / `tap_key` / `type_text(&str)` | keyboard input (`KeyCode`) |
 | `press_mouse` / `release_mouse` / `mouse_move(x, y)` | mouse input (screen space) |
 | `mouse_move_window(x, y)` | the pointer at physical window pixels, mapped like a real cursor |
-| `press_pad(GamepadButton)` / `release_pad` / `tap_pad`, `set_stick(Stick, x, y)` (-1..1, +y up, held until set again), `wheel(dx, dy)` (lines) | pad and wheel input; a virtual pad connects if none is |
+| `press_pad(GamepadButton)` / `release_pad` / `tap_pad`, `set_stick(Stick, x, y)` (-1..1, +y up, held until set again), `wheel(dx, dy)` (lines), `trackpad(dx, dy)` (logical pixels) | pad, wheel and trackpad input; a virtual pad connects if none is |
 | `ui_focused() -> Option<UiId>`, `ui_focusables() -> Vec<(UiId, Rect)>`, `focus_ui(UiId)` | the focus the last step resolved; what the D-pad can land on in the top scene (focusable, enabled, shown, in a scope, not `nav_skip`, inside the innermost trap; rects in UI units); a focus request for the next step |
 | `StepOutcome` | `Running` \| `Quit` |
 | `HeadlessError` | `NoGpu` \| `Render(String)` \| `Capture(CaptureError)` |
 | `shared_gpu()` | one GPU device shared across tests |
 | `UiHarness::new(width, height)` | a UI with no window or GPU (built-in fonts, scale 1, the dark theme) for unit-testing game UI; `with_theme(Theme)` |
 | `UiHarness::frame(\|ui\| ..) -> R` | one 60 fps frame: resolve the scripted input against the last frame, run the closure as the top scene's `ui`, finish the frame |
-| `UiHarness::move_to(x, y)`, `press()`, `release()`, `wheel(dx, dy)`, `action(&str)` | script the next frame: the pointer (UI units), the left button (held from `press` to `release`), the wheel (lines), a UI action (`ui.up`/`down`/`left`/`right`/`confirm`/`back`/`next`/`tab_next`/`tab_prev`; another name warns once and does nothing) |
+| `UiHarness::move_to(x, y)`, `press()`, `release()`, `wheel(dx, dy)`, `trackpad(dx, dy)`, `action(&str)` | script the next frame: the pointer (UI units), the left button (held from `press` to `release`), the wheel (lines), a trackpad (logical pixels, followed at once), a UI action (`ui.up`/`down`/`left`/`right`/`confirm`/`back`/`next`/`tab_next`/`tab_prev`; another name warns once and does nothing) |
 | `UiHarness::focused() -> Option<UiId>`, `command_count() -> usize` | the focus after the last frame; the UI commands it recorded |
 | `UiHarness::spawn_ui(UiNode) -> Entity`, `world() -> &World`, `world_mut() -> &mut World`, `find_ui(&str) -> Option<Entity>`, `ui_id(Entity) -> Option<UiId>`, `events() -> &[UiEvent]` | node trees in the harness: each `frame` draws them before its closure; `events` are the last frame's, in walk order |
 | `UiHarness::frame_with_world(\|ui, world\| ..) -> R` | `frame`, with the world too (for `ui.node(root, world)`) |

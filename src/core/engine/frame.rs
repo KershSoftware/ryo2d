@@ -361,6 +361,19 @@ impl Engine {
     }
   }
 
+  /// Screen units per logical window pixel (1 without a renderer, where
+  /// the pointer is not mapped either)
+  fn logical_to_screen(&self) -> f32 {
+    self.renderer.as_ref().map_or(1.0, |renderer| {
+      let scale = renderer.mapping().scale();
+      if scale.is_finite() && scale > 0.0 {
+        self.scale_factor as f32 / scale
+      } else {
+        1.0
+      }
+    })
+  }
+
   /// Resolve the frame's pointer (`input`, in UI units) against last
   /// frame's records of the top scene, the console blocking it while shown
   fn resolve_pointer(&mut self, input: &UiInput, theme: &Theme) -> PointerOutcome {
@@ -390,7 +403,12 @@ impl Engine {
     // under the console. The wheel over the UI is consumed whether or not
     // an area moved (`outcome.consume_wheel`), as a press over it is.
     apply_scroll_requests(&mut self.ui_memory);
-    let (wheel_x, wheel_y) = input.scroll_delta();
+    let (wheel_x, wheel_y) = input.scroll_wheel_lines();
+    // A trackpad moves content as far as the pointer would move: logical
+    // pixels to screen units to UI units, the pointer's scales with no offset
+    let (pixel_x, pixel_y) = input.scroll_pixels();
+    let to_ui = self.ui_space.mouse_scale * self.logical_to_screen();
+    let pixels = Vec2::new(pixel_x, pixel_y) * to_ui;
     let shift = input.key_down(KeyCode::ShiftLeft) || input.key_down(KeyCode::ShiftRight);
     let blocked = console.iter().any(|c| c.contains(x, y));
     let taken = !blocked
@@ -398,6 +416,7 @@ impl Engine {
         &mut self.ui_memory,
         pointer.position,
         Vec2::new(wheel_x, wheel_y),
+        pixels,
         shift,
         top,
         theme.metrics.scroll_line,

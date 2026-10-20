@@ -327,6 +327,17 @@ impl HeadlessEngine {
       .queue(InputEvent::Scroll(MouseScrollDelta::LineDelta(dx, dy)));
   }
 
+  /// Move a trackpad by `(dx, dy)` logical pixels in the next step (+y
+  /// scrolls up), as the window reports it once converted.
+  pub fn trackpad(&mut self, dx: f32, dy: f32) {
+    self
+      .engine
+      .input_mut()
+      .queue(InputEvent::Scroll(MouseScrollDelta::PixelDelta(
+        winit::dpi::PhysicalPosition::new(f64::from(dx), f64::from(dy)),
+      )));
+  }
+
   /// The UI widget with the keyboard and gamepad focus, as the last step
   /// resolved it (`None` when nothing has it).
   pub fn ui_focused(&self) -> Option<UiId> {
