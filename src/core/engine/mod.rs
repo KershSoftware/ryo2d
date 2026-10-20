@@ -950,6 +950,12 @@ impl Engine {
     self.ui_retain.stats
   }
 
+  /// The debug switches, for a test to turn an overlay on
+  #[cfg(all(test, not(target_arch = "wasm32")))]
+  pub(crate) fn debug_config_mut(&mut self) -> &mut DebugConfig {
+    &mut self.config.debug
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding; not the UI pass)
   #[cfg(not(target_arch = "wasm32"))]

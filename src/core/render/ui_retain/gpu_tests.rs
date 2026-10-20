@@ -4,7 +4,7 @@
 use crate::core::asset::SpriteHandle;
 use crate::core::engine::EngineBuilder;
 use crate::core::graphics::Sprite;
-use crate::core::testing::PixelPair;
+use crate::core::testing::{HeadlessEngine, PixelPair};
 use crate::prelude::*;
 
 /// A sprite and a label
@@ -106,4 +106,38 @@ fn a_bitmap_font_sheet_updated_in_place_redraws() {
   pair.frames(1, "blue cells, the same size");
   assert!(!pair.on.ui_render_stats().kept, "the update redraws the UI");
   pair.frames(5, "blue cells");
+}
+
+/// The settings screen as a node tree
+struct NodeUi;
+
+impl Scene for NodeUi {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(crate::core::testing::fixtures::settings_tree());
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn the_rebuilds_overlay_keeps_an_idle_ui_image() {
+  let builder = EngineBuilder::new()
+    .resolution(640, 480)
+    .start_scene(NodeUi);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.debug_config_mut().show_ui_rebuilds = true;
+  let _ = engine.step_frames(120);
+  let mut kept = 0;
+  for _ in 0..120 {
+    let _ = engine.step();
+    kept += u32::from(engine.ui_render_stats().kept);
+  }
+  assert!(
+    kept >= 110,
+    "the overlay kept the UI image in {kept} of 120 frames"
+  );
 }

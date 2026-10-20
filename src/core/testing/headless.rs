@@ -389,6 +389,12 @@ impl HeadlessEngine {
     self.engine.ui_render_stats()
   }
 
+  /// The engine's debug switches, for a test to turn an overlay on
+  #[cfg(test)]
+  pub(crate) fn debug_config_mut(&mut self) -> &mut crate::core::config::DebugConfig {
+    self.engine.debug_config_mut()
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]

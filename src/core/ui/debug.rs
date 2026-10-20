@@ -6,7 +6,7 @@ use crate::core::render::UiRenderStats;
 use crate::core::text::TextStyle;
 use crate::core::ui::UiContext;
 use crate::core::ui::immediate::OVERLAY_LAYER;
-use crate::core::ui::nodes::{UiInteraction, cache_stats};
+use crate::core::ui::nodes::{CacheStats, UiInteraction, cache_stats};
 use crate::core::ui::{Color, Rect, UiId};
 
 /// Size of the id labels, in UI units
@@ -59,23 +59,27 @@ pub(crate) fn draw_debug_overlay(ui: &mut UiContext) {
 /// How long a rebuilt node's outline stays, in seconds
 const FADE: f32 = 0.5;
 
-/// The render step's totals over a second, for the overlay's render line.
-/// The line changes once a second, so while the UI is still the overlay
-/// redraws it only then.
+/// The overlay's two lines of text, the node counter and the render step's
+/// totals over a second. Both change once a second, so while the UI is
+/// still the overlay redraws it only then.
 #[derive(Debug, Default)]
-struct RenderTally {
+struct OverlayTally {
   seconds: f32,
   frames: u32,
   kept: u32,
   built: u32,
   reused: u32,
+  spot_built: usize,
   line: Option<String>,
+  counter: Option<String>,
 }
 
-impl RenderTally {
-  /// Count a frame's `stats`; `dt` is zero for a pass that reruns the
-  /// frame, which is not counted
-  fn add(&mut self, stats: UiRenderStats, dt: f32) {
+impl OverlayTally {
+  /// Count a frame's render `stats` and node `cache` stats; `dt` is zero for
+  /// a pass that reruns the frame, which is not counted. The counter shows
+  /// the frame at which it refreshes (the first frame at once) and the spot
+  /// check's total over the second.
+  fn add(&mut self, stats: UiRenderStats, cache: &CacheStats, dt: f32) {
     if dt <= 0.0 {
       return;
     }
@@ -84,16 +88,32 @@ impl RenderTally {
     self.kept += u32::from(stats.kept);
     self.built += stats.texts_built;
     self.reused += stats.texts_reused;
+    self.spot_built += cache.spot_built;
+    if self.counter.is_none() || self.seconds >= 1.0 {
+      let mut text = format!(
+        "rebuilt {} / replayed {} nodes",
+        cache.built, cache.replayed
+      );
+      if self.spot_built > 0 {
+        text.push_str(&format!(" (spot check {})", self.spot_built));
+      }
+      self.counter = Some(text);
+    }
     if self.seconds >= 1.0 {
       self.line = Some(format!(
         "UI image kept {} of {} frames, texts built {} / reused {}",
         self.kept, self.frames, self.built, self.reused
       ));
-      *self = RenderTally {
+      *self = OverlayTally {
         line: self.line.take(),
-        ..RenderTally::default()
+        counter: self.counter.take(),
+        ..OverlayTally::default()
       };
     }
+  }
+
+  fn counter(&self) -> &str {
+    self.counter.as_deref().unwrap_or("")
   }
 
   fn line(&self) -> &str {
@@ -112,7 +132,7 @@ impl RenderTally {
 pub(crate) struct RebuildsOverlay {
   /// The ids outlined and the seconds each has left
   marks: Vec<(UiId, f32)>,
-  render: RenderTally,
+  render: OverlayTally,
 }
 
 impl RebuildsOverlay {
@@ -128,12 +148,12 @@ impl RebuildsOverlay {
   /// below it. Call it once a pass, after the node trees drew; `dt` is zero
   /// for a pass that reruns the frame.
   pub(crate) fn draw(&mut self, ui: &mut UiContext, world: &World, dt: f32, render: UiRenderStats) {
-    self.render.add(render, dt);
     for (_, left) in &mut self.marks {
       *left -= dt;
     }
     self.marks.retain(|&(_, left)| left > 0.0);
     let stats = cache_stats(world).cloned().unwrap_or_default();
+    self.render.add(render, &stats, dt);
     for node in &stats.rebuilt {
       let Some(id) = world
         .get::<UiInteraction>(*node)
@@ -157,15 +177,9 @@ impl RebuildsOverlay {
         let alpha = (left / FADE).clamp(0.0, 1.0);
         ui.draw_rect_outline(rect, Color::new(255, 150, 40, (alpha * 255.0) as u8), 2.0);
       }
-      let mut text = format!(
-        "rebuilt {} / replayed {} nodes",
-        stats.built, stats.replayed
-      );
-      if stats.spot_built > 0 {
-        text.push_str(&format!(" (spot check {})", stats.spot_built));
-      }
+      let text = self.render.counter();
       let style = TextStyle::default().size(LABEL_SIZE * 1.5);
-      let width = ui.measure_text(text.as_str(), &style).x;
+      let width = ui.measure_text(text, &style).x;
       let (screen, _) = ui.screen_size();
       ui.draw_text_styled(text, screen as f32 - width - 4.0, 4.0, &style);
       let line = self.render.line();
@@ -191,7 +205,7 @@ mod tests {
 
   #[test]
   fn the_render_line_totals_a_second() {
-    let mut tally = RenderTally::default();
+    let mut tally = OverlayTally::default();
     let kept = UiRenderStats {
       kept: true,
       ..UiRenderStats::default()
@@ -203,20 +217,49 @@ mod tests {
     };
     assert_eq!(tally.line(), "UI render: measuring");
     for _ in 0..3 {
-      tally.add(kept, 0.25);
+      tally.add(kept, &CacheStats::default(), 0.25);
     }
-    tally.add(drawn, 0.0); // a rerun pass: not counted
+    tally.add(drawn, &CacheStats::default(), 0.0); // a rerun pass: not counted
     assert_eq!(tally.line(), "UI render: measuring");
-    tally.add(drawn, 0.25);
+    tally.add(drawn, &CacheStats::default(), 0.25);
     assert_eq!(
       tally.line(),
       "UI image kept 3 of 4 frames, texts built 2 / reused 30"
     );
-    tally.add(kept, 0.25);
+    tally.add(kept, &CacheStats::default(), 0.25);
     assert_eq!(
       tally.line(),
       "UI image kept 3 of 4 frames, texts built 2 / reused 30",
       "shown once a second"
+    );
+  }
+
+  #[test]
+  fn the_counter_line_updates_once_a_second() {
+    let mut tally = OverlayTally::default();
+    let frame = |built, replayed, spot_built| CacheStats {
+      built,
+      replayed,
+      spot_built,
+      ..CacheStats::default()
+    };
+    let first = "rebuilt 1 / replayed 8 nodes (spot check 1)";
+    tally.add(UiRenderStats::default(), &frame(1, 8, 1), 0.25);
+    assert_eq!(tally.counter(), first, "the first frame shows at once");
+    tally.add(UiRenderStats::default(), &frame(0, 9, 1), 0.25);
+    tally.add(UiRenderStats::default(), &frame(0, 10, 2), 0.25);
+    tally.add(UiRenderStats::default(), &frame(5, 5, 5), 0.0); // a rerun pass
+    assert_eq!(tally.counter(), first, "held until the second rolls");
+    tally.add(UiRenderStats::default(), &frame(2, 7, 3), 0.25);
+    assert_eq!(
+      tally.counter(),
+      "rebuilt 2 / replayed 7 nodes (spot check 7)",
+      "the rolling frame, with the second's spot checks"
+    );
+    tally.add(UiRenderStats::default(), &frame(0, 3, 0), 0.25);
+    assert_eq!(
+      tally.counter(),
+      "rebuilt 2 / replayed 7 nodes (spot check 7)"
     );
   }
 
