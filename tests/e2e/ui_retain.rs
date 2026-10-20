@@ -280,14 +280,19 @@ fn hover_scroll_a_dropdown_and_a_theme_change_match() {
   // opened by its trigger, then closed; before the scroll, which would
   // move it
   let (x, y) = widget(&pair, 5);
+  let widgets = pair.on.ui_focusables().len();
   pair.each(|engine| engine.mouse_move(x, y));
   pair.frames(2, "over the dropdown");
   pair.each(|engine| engine.press_mouse(MouseButton::Left));
   pair.frames(2, "pressing");
   pair.each(|engine| engine.release_mouse(MouseButton::Left));
   pair.frames(5, "the dropdown open");
+  // The open dropdown's options are the only focus targets
+  let open = pair.on.ui_focusables().len();
+  assert!(open < widgets, "the dropdown opened: {open} of {widgets}");
   pair.each(|engine| engine.tap_key(KeyCode::Escape));
   pair.frames(5, "the dropdown closed");
+  assert_eq!(pair.on.ui_focusables().len(), widgets, "Escape closed it");
   pair.each(|engine| engine.wheel(0.0, -3.0));
   pair.frames(20, "scrolling down");
   pair.each(|engine| {
@@ -426,8 +431,15 @@ fn a_pixel_art_ui_matches() {
   let Some(mut pair) = PixelPair::new(make) else {
     return;
   };
+  // Covers the pixel-art configuration through the pixel oracle
   pair.frames(20, "a pixel-art HUD");
-  assert!(pair.reused() > 0);
+  let frame = pair.on.frame().expect("a frame");
+  assert_eq!(
+    (frame.width(), frame.height()),
+    (320, 180),
+    "the pixel-art target"
+  );
+  assert!(pair.reused() > 0, "texts were reused");
 }
 
 /// Enough characters that cycling them at large sizes fills the glyph pages
@@ -496,9 +508,11 @@ impl Scene for WorldChurn {
     if let Some(text) = self.text.take() {
       ctx.world.despawn(text);
     }
-    // Sizes up to 240, under the 256 px the atlas rasterises at: a glyph
-    // scaled up is sampled between texels, and where the atlas packed it
-    // changes the bilinear rounding by one level in a few edge pixels
+    // Sizes up to 240, under the 256 px the atlas rasterises at. World text
+    // above 256 px is scaled from its image with linear filtering, so
+    // engines whose atlases are packed differently can differ by one level
+    // at glyph edges; retention changes the packing (two engines, both
+    // retention off, one with extra glyphs drawn early, differ so too)
     let (text, _) = churn(self.frame);
     let size = 130.0 + (self.frame * 29 % 111) as f32;
     let spawned = ctx.world.spawn((
