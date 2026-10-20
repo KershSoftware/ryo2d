@@ -118,6 +118,9 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         ctx
           .console
           .print("  ui:cache [on|off]   - Show or set UI node tree caching");
+        ctx
+          .console
+          .print("  ui:retain [on|off]  - Show or set UI render retention");
         ctx.console.print_system("");
         ctx.console.print_system("system:");
         ctx
@@ -360,6 +363,27 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         "off"
       };
       ctx.console.print(format!("UI caching is {state}"));
+      CommandResult::Ok
+    },
+  );
+
+  // UI render retention
+  registry.register(
+    "ui:retain",
+    "Show or set UI render retention: ui:retain [on|off]",
+    |args, ctx| {
+      match args.first().map(|arg| arg.to_ascii_lowercase()).as_deref() {
+        None => {}
+        Some("on") => ctx.debug_config.ui_retain = true,
+        Some("off") => ctx.debug_config.ui_retain = false,
+        Some(_) => return CommandResult::Error("Usage: ui:retain [on|off]".to_string()),
+      }
+      let state = if ctx.debug_config.ui_retain {
+        "on"
+      } else {
+        "off"
+      };
+      ctx.console.print(format!("UI render retention is {state}"));
       CommandResult::Ok
     },
   );
@@ -675,6 +699,30 @@ mod tests {
     assert!(ctx.debug_config.ui_cache);
     assert!(matches!(
       registry.execute("ui:cache maybe", &mut ctx),
+      CommandResult::Error(_)
+    ));
+  }
+
+  #[test]
+  fn ui_retain_turns_retention_off_and_on() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+    let mut console = super::super::ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+    assert!(ctx.debug_config.ui_retain, "on by default");
+    assert_eq!(
+      registry.execute("ui:retain off", &mut ctx),
+      CommandResult::Ok
+    );
+    assert!(!ctx.debug_config.ui_retain);
+    assert_eq!(registry.execute("ui:retain", &mut ctx), CommandResult::Ok);
+    assert!(!ctx.debug_config.ui_retain, "alone it only prints");
+    registry.execute("ui:retain on", &mut ctx);
+    assert!(ctx.debug_config.ui_retain);
+    assert!(matches!(
+      registry.execute("ui:retain maybe", &mut ctx),
       CommandResult::Error(_)
     ));
   }

@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.6.0
+  version: 2.7.0
 ---
 
 # Ryo2D API Reference
@@ -511,6 +511,7 @@ EngineBuilder::new()
 | `pixel_art(w: u32, h: u32)`, `window_size(w: u32, h: u32)`, `resizable(bool)`, `display_mode(DisplayMode)`, `ui_scale(Option<f32>)`, `ui_resolution(UiResolution)` | presentation; `ui_scale(None)` (default) keeps UI units equal to screen units, `Some(s)` is `s` render pixels per UI unit; `UiResolution::Render` (default) or `Window` |
 | `ui_theme(Theme)` | the starting UI theme (default `Theme::dark()`) |
 | `ui_cache(bool)` | whether node trees replay their unchanged nodes instead of building them (default `true`); `false` builds every node every frame, the same UI slower, to rule caching out of a UI bug (also `DebugConfig::ui_cache`, the console's `ui:cache on\|off`) |
+| `ui_retain(bool)` | whether the renderer keeps the UI image while the UI is unchanged and reuses unchanged texts' glyphs (default `true`); `false` draws the whole UI every frame, the same pixels slower, to rule retention out of a rendering bug (also `DebugConfig::ui_retain`, the console's `ui:retain on\|off`) |
 | `show_colliders(bool)`, `show_fps(bool)`, `show_velocities(bool)`, `show_origins(bool)` | debug overlays |
 | `with_user_preferences(impl Into<UserPreferenceFilter>)` | let saved `system.json` values override |
 | `insert_resource(impl Resource)` | resource for every scene and system |

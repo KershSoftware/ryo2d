@@ -237,7 +237,9 @@ pub struct DebugConfig {
   /// Whether to outline every UI widget with its id (`debug:ui`; runtime only)
   pub show_ui_debug: bool,
   /// Whether to outline the UI node subtrees rebuilt each frame, fading,
-  /// with a rebuilt/replayed counter (`debug:ui-rebuilds`; runtime only)
+  /// with a rebuilt/replayed counter and a render line (the UI image kept,
+  /// texts built and reused, over the last second) (`debug:ui-rebuilds`;
+  /// runtime only)
   pub show_ui_rebuilds: bool,
   /// Whether to open the flamegraph profiler window (requires --features profiler or `ryo2d dev --profiler`)
   pub enable_profiler: bool,
@@ -738,6 +740,7 @@ mod tests {
     // enable_profiler defaults to false (opt-in)
     assert!(!config.enable_profiler);
     assert!(config.ui_cache, "UI node trees are cached by default");
+    assert!(config.ui_retain, "UI render retention is on by default");
   }
 
   #[test]

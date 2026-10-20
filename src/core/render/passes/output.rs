@@ -52,7 +52,7 @@ impl RenderPass for Ui {
 }
 
 /// Draws the latest image, then the UI (if the `ui` pass drew it this
-/// frame), to the window or offscreen target with letterboxing.
+/// frame or it was kept), to the window or offscreen target with letterboxing.
 pub(super) struct Composite;
 
 impl RenderPass for Composite {

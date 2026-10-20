@@ -17,7 +17,12 @@ use crate::core::text::TextLayout;
 const SPARE: usize = 64;
 
 /// What a text's glyphs were built from, besides the UI's environment: its
-/// layout (by address, held by the entry) and its placement
+/// layout (by address, held by the entry) and its placement.
+///
+/// Relies on `emit_ui` keeping the placement's other fields (axes, pixel
+/// grid, blend, layers, draw kind, lit, camera, size steps, max glyph size)
+/// constant or derived from the layout and the `UiRenderEnv`: a per-text
+/// value there must join the key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TextKey {
   layout: usize,

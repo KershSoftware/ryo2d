@@ -2,6 +2,7 @@
 //! with its id.
 
 use crate::core::ecs::kernel::World;
+use crate::core::render::UiRenderStats;
 use crate::core::text::TextStyle;
 use crate::core::ui::UiContext;
 use crate::core::ui::immediate::OVERLAY_LAYER;
@@ -58,8 +59,51 @@ pub(crate) fn draw_debug_overlay(ui: &mut UiContext) {
 /// How long a rebuilt node's outline stays, in seconds
 const FADE: f32 = 0.5;
 
+/// The render step's totals over a second, for the overlay's render line.
+/// The line changes once a second, so while the UI is still the overlay
+/// redraws it only then.
+#[derive(Debug, Default)]
+struct RenderTally {
+  seconds: f32,
+  frames: u32,
+  kept: u32,
+  built: u32,
+  reused: u32,
+  line: Option<String>,
+}
+
+impl RenderTally {
+  /// Count a frame's `stats`; `dt` is zero for a pass that reruns the
+  /// frame, which is not counted
+  fn add(&mut self, stats: UiRenderStats, dt: f32) {
+    if dt <= 0.0 {
+      return;
+    }
+    self.seconds += dt;
+    self.frames += 1;
+    self.kept += u32::from(stats.kept);
+    self.built += stats.texts_built;
+    self.reused += stats.texts_reused;
+    if self.seconds >= 1.0 {
+      self.line = Some(format!(
+        "UI image kept {} of {} frames, texts built {} / reused {}",
+        self.kept, self.frames, self.built, self.reused
+      ));
+      *self = RenderTally {
+        line: self.line.take(),
+        ..RenderTally::default()
+      };
+    }
+  }
+
+  fn line(&self) -> &str {
+    self.line.as_deref().unwrap_or("UI render: measuring")
+  }
+}
+
 /// The `debug:ui-rebuilds` overlay's state: the nodes rebuilt lately, each
-/// outlined for half a second, fading.
+/// outlined for half a second, fading, and the render step's totals over the
+/// last second.
 ///
 /// A rebuilt node is outlined in orange. The nodes the debug spot check
 /// built to compare with their records are not outlined, since nothing
@@ -68,6 +112,7 @@ const FADE: f32 = 0.5;
 pub(crate) struct RebuildsOverlay {
   /// The ids outlined and the seconds each has left
   marks: Vec<(UiId, f32)>,
+  render: RenderTally,
 }
 
 impl RebuildsOverlay {
@@ -79,9 +124,11 @@ impl RebuildsOverlay {
 
   /// Age the outlines by `dt`, add the nodes the last node walk rebuilt,
   /// draw them on the overlay layer and write the counter in the top right
-  /// corner. Call it once a pass, after the node trees drew; `dt` is zero
+  /// corner with the render line (`render` is last frame's render stats)
+  /// below it. Call it once a pass, after the node trees drew; `dt` is zero
   /// for a pass that reruns the frame.
-  pub(crate) fn draw(&mut self, ui: &mut UiContext, world: &World, dt: f32) {
+  pub(crate) fn draw(&mut self, ui: &mut UiContext, world: &World, dt: f32, render: UiRenderStats) {
+    self.render.add(render, dt);
     for (_, left) in &mut self.marks {
       *left -= dt;
     }
@@ -121,6 +168,14 @@ impl RebuildsOverlay {
       let width = ui.measure_text(text.as_str(), &style).x;
       let (screen, _) = ui.screen_size();
       ui.draw_text_styled(text, screen as f32 - width - 4.0, 4.0, &style);
+      let line = self.render.line();
+      let width = ui.measure_text(line, &style).x;
+      ui.draw_text_styled(
+        line,
+        screen as f32 - width - 4.0,
+        4.0 + LABEL_SIZE * 2.0,
+        &style,
+      );
     });
     ui.set_layer(layer);
   }
@@ -133,6 +188,37 @@ mod tests {
   use crate::core::ui::immediate::UiCommands;
   use crate::core::ui::nodes::{UiLabel, UiNode};
   use crate::core::ui::test_util::{context, text_engine};
+
+  #[test]
+  fn the_render_line_totals_a_second() {
+    let mut tally = RenderTally::default();
+    let kept = UiRenderStats {
+      kept: true,
+      ..UiRenderStats::default()
+    };
+    let drawn = UiRenderStats {
+      texts_built: 2,
+      texts_reused: 30,
+      ..UiRenderStats::default()
+    };
+    assert_eq!(tally.line(), "UI render: measuring");
+    for _ in 0..3 {
+      tally.add(kept, 0.25);
+    }
+    tally.add(drawn, 0.0); // a rerun pass: not counted
+    assert_eq!(tally.line(), "UI render: measuring");
+    tally.add(drawn, 0.25);
+    assert_eq!(
+      tally.line(),
+      "UI image kept 3 of 4 frames, texts built 2 / reused 30"
+    );
+    tally.add(kept, 0.25);
+    assert_eq!(
+      tally.line(),
+      "UI image kept 3 of 4 frames, texts built 2 / reused 30",
+      "shown once a second"
+    );
+  }
 
   #[test]
   fn the_overlay_leaves_the_callers_clips() {
@@ -161,10 +247,10 @@ mod tests {
     let a = h.find_ui("a").unwrap();
     h.world_mut().get_mut::<UiLabel>(a).unwrap().0 = "B".into();
     let mut overlay = RebuildsOverlay::default();
-    h.frame_with_world(|ui, world| overlay.draw(ui, world, 1.0 / 60.0));
+    h.frame_with_world(|ui, world| overlay.draw(ui, world, 1.0 / 60.0, UiRenderStats::default()));
     assert!(overlay.outlined() >= 1, "the rebuilt path is outlined");
     for _ in 0..40 {
-      h.frame_with_world(|ui, world| overlay.draw(ui, world, 1.0 / 60.0));
+      h.frame_with_world(|ui, world| overlay.draw(ui, world, 1.0 / 60.0, UiRenderStats::default()));
     }
     assert_eq!(overlay.outlined(), 0, "faded after half a second");
   }

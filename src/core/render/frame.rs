@@ -39,7 +39,8 @@ pub struct FrameInfo {
   pub hdr_effects: bool,
   /// Display-stage effects are active
   pub effects: bool,
-  /// The UI recorded something to draw
+  /// The `ui` pass draws the UI this frame (false when nothing was
+  /// recorded, or when the UI image was kept from an earlier frame)
   pub ui: bool,
   /// A scene transition's fade overlay is visible
   pub transition: bool,

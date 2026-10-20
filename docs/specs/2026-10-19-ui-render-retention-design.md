@@ -59,6 +59,8 @@ The cost of an idle frame's render side is then the key comparison.
 
 On a changing frame, a command whose key has a **built entry** reuses it: its draw items are pushed again with the depth stamped from this frame's order (an earlier command's change can move it). A command without one is built as today, and its items are stored under its key. Entries not used in a frame are dropped at its end. The draw list, the sort, the batch and the pass then run as today.
 
+Only texts are cached: building them is 92% of building the UI's draw items, and a rect, sprite or line costs less to build than to look up. A text drawn in a bitmap font (its cells are sprites) or cut short by a full glyph atlas is built every frame.
+
 - **Glyph slots are pinned.** A reused text's glyph instances hold atlas positions, so the slots an entry uses are kept from eviction while the entry is used: each frame it is reused, its slots are stamped by slot index, with no hashing.
 - **Sprites need no pinning:** sprite atlas positions are remapped at batch time from the sprite handle, as now.
 
@@ -79,7 +81,7 @@ A command's built items depend on more than its own value:
 
 - **Automatic** for every UI: closure UI, node trees, absolute `draw_*` calls and the engine's overlays. There is no API change.
 - **`ui:retain off|on`** (console) and `EngineBuilder::ui_retain(bool)` turn retention off. Off is exactly today's path, for comparing output and for ruling retention in or out when chasing a bug. It is separate from `ui:cache` (node-tree building).
-- **`debug:ui-rebuilds`** gains a render line: "UI image: kept" or "redrawn", and "commands built N / reused M".
+- **`debug:ui-rebuilds`** gains a render line, updated once a second (so the overlay itself redraws the UI only then): the frames the UI image was kept, and the texts built and reused.
 - **`HeadlessEngine`** gains render-side counts (image kept, commands built and reused), `#[doc(hidden)]`.
 
 ## Acceptance

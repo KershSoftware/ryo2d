@@ -641,7 +641,9 @@ impl Engine {
         } else {
           0.0
         };
-        self.ui_rebuilds.draw(&mut ui, &self.world, dt);
+        self
+          .ui_rebuilds
+          .draw(&mut ui, &self.world, dt, self.ui_retain.stats);
       }
       // The console over everything
       self.console_state.render(&mut ui, width, height);
