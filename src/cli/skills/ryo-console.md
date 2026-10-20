@@ -2,7 +2,7 @@
 name: ryo-console
 description: Developer console system - commands, registration, debugging overlays.
 metadata:
-  version: 1.3.1
+  version: 1.3.2
 ---
 
 # Ryo2D Developer Console
@@ -42,7 +42,7 @@ console = true  # Works in both debug and release builds
 | `debug:velocities` | F3 | Toggle velocity vectors |
 | `debug:origins` | F4 | Toggle entity origin points |
 | `debug:ui` | | Outline every UI widget with its id: hot yellow, active orange, focused green |
-| `debug:ui-rebuilds` | | Outline the UI nodes rebuilt each frame in orange, fading over 0.5 s, with a "rebuilt N / replayed M nodes" counter at the top right ("(spot check K)" in debug builds) and a render line below it: the frames the UI image was kept, and the texts built and reused. Both lines update once a second, so the overlay does not keep the UI redrawing; the outlines show rebuilds as they happen |
+| `debug:ui-rebuilds` | | Outline the UI nodes rebuilt each frame in orange, fading over 0.5 s, with a "rebuilt N / replayed M nodes" counter in the bottom-left stack with the other overlays ("(spot check K)" in debug builds) and a render line below it: the frames the UI image was kept, and the texts built and reused. Both lines update once a second, so the overlay does not keep the UI redrawing; the outlines show rebuilds as they happen |
 | `ui:cache [on\|off]` | | Show or set UI node tree caching; off builds every node every frame (the same UI, slower), to rule caching in or out when chasing a UI bug |
 | `ui:retain [on\|off]` | | Show or set UI render retention; off draws the whole UI every frame (the same pixels, slower), to rule retention in or out when chasing a rendering bug |
 | `debug:capture [path]` | F12 | Save the next frame as a PNG |

@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.5.2
+  version: 4.5.3
 ---
 
 # Ryo2D UI Specialist
@@ -1297,7 +1297,7 @@ A node is built again, with its ancestors, when:
 **The bypass rule.** A write through `bypass_change_detection` is invisible to the cache, as it is to any `Changed` query: the node keeps drawing the old value until something else rebuilds it. Write UI components normally.
 
 **Seeing it.**
-- `debug:ui-rebuilds` (console) outlines each widget and container built this frame in orange, fading over half a second, so a node that rebuilds every frame stays lit. Texts, separators and spacers have no id of their own: a rebuilt one shows as its container's outline. The counter at the top right reads "rebuilt N / replayed M nodes" and, with the render line below it, updates once a second, so the overlay itself does not keep the UI redrawing; the outlines show rebuilds as they happen.
+- `debug:ui-rebuilds` (console) outlines each widget and container built this frame in orange, fading over half a second, so a node that rebuilds every frame stays lit. Texts, separators and spacers have no id of their own: a rebuilt one shows as its container's outline. The counter, in the bottom-left stack with the other overlays, reads "rebuilt N / replayed M nodes" and, with the render line below it, updates once a second, so the overlay itself does not keep the UI redrawing; the outlines show rebuilds as they happen.
 - `ui:cache off` (console) or `EngineBuilder::ui_cache(false)` builds every node every frame: the same UI, slower. Use it to rule caching in or out when chasing a UI bug.
 - **Debug builds spot-check the cache.** Each frame one cached node (and the cached nodes above it) is built instead of replayed and compared with what it replays. A difference warns once, naming the node ("the cached UI node ... does not build as it was recorded"), and the node draws as built from then on. Debug builds therefore replay a few nodes fewer than release builds; the counter shows those apart, as "(spot check K)".
 

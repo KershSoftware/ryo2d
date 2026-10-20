@@ -1,6 +1,7 @@
 //! The `debug:ui` overlay: every widget the UI recorded this frame, outlined
 //! with its id.
 
+use crate::core::config::debug as overlay;
 use crate::core::ecs::kernel::World;
 use crate::core::render::UiRenderStats;
 use crate::core::text::TextStyle;
@@ -143,11 +144,20 @@ impl RebuildsOverlay {
   }
 
   /// Age the outlines by `dt`, add the nodes the last node walk rebuilt,
-  /// draw them on the overlay layer and write the counter in the top right
-  /// corner with the render line (`render` is last frame's render stats)
-  /// below it. Call it once a pass, after the node trees drew; `dt` is zero
-  /// for a pass that reruns the frame.
-  pub(crate) fn draw(&mut self, ui: &mut UiContext, world: &World, dt: f32, render: UiRenderStats) {
+  /// draw them on the overlay layer and write the counter and, below it, the
+  /// render line (`render` is last frame's render stats) as the engine's
+  /// overlay panels in the bottom-left corner, ending at `stack_top`, the
+  /// top of the other overlays shown (see `overlay_stack_top`). Call it once
+  /// a pass, after the node trees drew; `dt` is zero for a pass that reruns
+  /// the frame.
+  pub(crate) fn draw(
+    &mut self,
+    ui: &mut UiContext,
+    world: &World,
+    dt: f32,
+    render: UiRenderStats,
+    stack_top: f32,
+  ) {
     for (_, left) in &mut self.marks {
       *left -= dt;
     }
@@ -177,19 +187,16 @@ impl RebuildsOverlay {
         let alpha = (left / FADE).clamp(0.0, 1.0);
         ui.draw_rect_outline(rect, Color::new(255, 150, 40, (alpha * 255.0) as u8), 2.0);
       }
-      let text = self.render.counter();
-      let style = TextStyle::default().size(LABEL_SIZE * 1.5);
-      let width = ui.measure_text(text, &style).x;
-      let (screen, _) = ui.screen_size();
-      ui.draw_text_styled(text, screen as f32 - width - 4.0, 4.0, &style);
-      let line = self.render.line();
-      let width = ui.measure_text(line, &style).x;
-      ui.draw_text_styled(
-        line,
-        screen as f32 - width - 4.0,
-        4.0 + LABEL_SIZE * 2.0,
-        &style,
+      let pitch = overlay::row_pitch(ui);
+      let white = Color::rgb(255, 255, 255);
+      overlay::overlay_label(
+        ui,
+        self.render.counter(),
+        4.0,
+        stack_top - pitch * 2.0,
+        white,
       );
+      overlay::overlay_label(ui, self.render.line(), 4.0, stack_top - pitch, white);
     });
     ui.set_layer(layer);
   }
@@ -290,11 +297,81 @@ mod tests {
     let a = h.find_ui("a").unwrap();
     h.world_mut().get_mut::<UiLabel>(a).unwrap().0 = "B".into();
     let mut overlay = RebuildsOverlay::default();
-    h.frame_with_world(|ui, world| overlay.draw(ui, world, 1.0 / 60.0, UiRenderStats::default()));
+    h.frame_with_world(|ui, world| {
+      overlay.draw(ui, world, 1.0 / 60.0, UiRenderStats::default(), 480.0)
+    });
     assert!(overlay.outlined() >= 1, "the rebuilt path is outlined");
     for _ in 0..40 {
-      h.frame_with_world(|ui, world| overlay.draw(ui, world, 1.0 / 60.0, UiRenderStats::default()));
+      h.frame_with_world(|ui, world| {
+        overlay.draw(ui, world, 1.0 / 60.0, UiRenderStats::default(), 480.0)
+      });
     }
     assert_eq!(overlay.outlined(), 0, "faded after half a second");
+  }
+
+  /// The panels (translucent black rects) recorded
+  fn panels(commands: &UiCommands) -> Vec<Rect> {
+    commands
+      .commands()
+      .filter_map(|command| match command {
+        crate::core::ui::immediate::UiCommand::Rect { rect, fill, .. }
+          if *fill == Color::new(0, 0, 0, 180) =>
+        {
+          Some(*rect)
+        }
+        _ => None,
+      })
+      .collect()
+  }
+
+  fn overlaps(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+  }
+
+  #[test]
+  fn the_rebuilds_overlay_stacks_above_the_engine_overlays() {
+    use crate::core::config::debug::{
+      SmoothedDebugStats, SmoothedFrameTimings, render_fps_counter, render_frame_timing,
+      render_stats,
+    };
+    let height = 480u32;
+    let mut text = text_engine();
+    for flags in 0..8u8 {
+      let (stats, fps, timing) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
+      let mut engine = UiCommands::default();
+      let mut ui = context(&mut engine, &mut text, (640.0, height as f32));
+      if stats {
+        render_stats(&mut ui, &SmoothedDebugStats::default(), height);
+      }
+      if fps {
+        render_fps_counter(&mut ui, 60, height, timing);
+      }
+      if timing {
+        render_frame_timing(&mut ui, &SmoothedFrameTimings::default(), height);
+      }
+      let top = overlay::overlay_stack_top(&ui, (stats, fps, timing), height);
+      drop(ui);
+      let mut mine = UiCommands::default();
+      let mut ui = context(&mut mine, &mut text, (640.0, height as f32));
+      let mut overlay = RebuildsOverlay::default();
+      overlay.draw(&mut ui, &World::new(), 0.0, UiRenderStats::default(), top);
+      drop(ui);
+      let (engine, mine) = (panels(&engine), panels(&mine));
+      assert_eq!(mine.len(), 2, "two lines, flags {flags:03b}");
+      for panel in &mine {
+        assert!(
+          panel.x >= 0.0 && panel.y >= 0.0,
+          "on screen, flags {flags:03b}"
+        );
+        assert!(panel.x < 100.0, "at the left, flags {flags:03b}");
+        assert!(panel.y + panel.height <= height as f32, "above the bottom");
+        for other in &engine {
+          assert!(
+            !overlaps(*panel, *other),
+            "{panel:?} overlaps {other:?}, flags {flags:03b}"
+          );
+        }
+      }
+    }
   }
 }

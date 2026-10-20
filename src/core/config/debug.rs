@@ -239,8 +239,8 @@ pub struct DebugConfig {
   /// Whether to outline the UI node subtrees rebuilt each frame, fading,
   /// with a rebuilt/replayed counter and a render line (the UI image kept,
   /// texts built and reused, over the last second), both updated once a
-  /// second (`debug:ui-rebuilds`;
-  /// runtime only)
+  /// second, in the bottom-left stack above the other overlays
+  /// (`debug:ui-rebuilds`; runtime only)
   pub show_ui_rebuilds: bool,
   /// Whether to open the flamegraph profiler window (requires --features profiler or `ryo2d dev --profiler`)
   pub enable_profiler: bool,
@@ -510,7 +510,7 @@ const OVERLAY_MARGIN: f32 = 8.0;
 
 /// Distance between overlay rows: a line of text plus the label padding
 /// above and below, so the panels touch instead of overlapping
-fn row_pitch(ui: &UiContext) -> f32 {
+pub(crate) fn row_pitch(ui: &UiContext) -> f32 {
   ui.line_height(&overlay_style()) + 8.0
 }
 
@@ -519,8 +519,33 @@ fn frame_timing_height(ui: &UiContext) -> f32 {
   row_pitch(ui) * 5.0 + OVERLAY_MARGIN
 }
 
+/// The y of the top row of the engine overlays shown (stats, FPS, frame
+/// timing), or `screen_height` when none is: the rows above it are free.
+/// Follows `render_stats`, `render_fps_counter` and `render_frame_timing`.
+pub(crate) fn overlay_stack_top(
+  ui: &UiContext,
+  flags: (bool, bool, bool),
+  screen_height: u32,
+) -> f32 {
+  let (stats, fps, timing) = flags;
+  let height = screen_height as f32;
+  let pitch = row_pitch(ui);
+  let mut top = height;
+  if timing {
+    top = top.min(height - frame_timing_height(ui));
+  }
+  if fps {
+    let offset = if timing { frame_timing_height(ui) } else { 0.0 };
+    top = top.min(height - pitch - offset);
+  }
+  if stats {
+    top = top.min(height - frame_timing_height(ui) - pitch * 4.0 - OVERLAY_MARGIN);
+  }
+  top
+}
+
 /// A mono label on a translucent panel padded to fit the measured text
-fn overlay_label(ui: &mut UiContext, text: &str, x: f32, y: f32, color: Color) {
+pub(crate) fn overlay_label(ui: &mut UiContext, text: &str, x: f32, y: f32, color: Color) {
   let style = overlay_style();
   let size = ui.measure_text(text, &style);
   let padding = 4.0;

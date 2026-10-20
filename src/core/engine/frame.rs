@@ -641,9 +641,14 @@ impl Engine {
         } else {
           0.0
         };
+        let top = overlays::overlay_stack_top(
+          &ui,
+          (debug.show_stats, debug.show_fps, debug.show_frame_timing),
+          height,
+        );
         self
           .ui_rebuilds
-          .draw(&mut ui, &self.world, dt, self.ui_retain.stats);
+          .draw(&mut ui, &self.world, dt, self.ui_retain.stats, top);
       }
       // The console over everything
       self.console_state.render(&mut ui, width, height);
