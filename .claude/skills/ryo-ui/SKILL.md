@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.5.6
+  version: 4.5.7
 ---
 
 # Ryo2D UI Specialist
@@ -1302,6 +1302,8 @@ A node is built again, with its ancestors, when:
 - **Debug builds spot-check the cache.** Each frame one cached node (and the cached nodes above it) is built instead of replayed and compared with what it replays. A difference warns once, naming the node ("the cached UI node ... does not build as it was recorded"), and the node draws as built from then on. Debug builds therefore replay a few nodes fewer than release builds; the counter shows those apart, as "(spot check K)".
 
 **Rendering an unchanged UI is nearly free.** When a frame's UI draws exactly what the last frame's did, the renderer keeps the UI image and draws no UI; a changing UI rebuilds only its changed texts, reusing the rest's glyphs. Both UI styles get it automatically, lines (checkmarks, dropdown chevrons, `draw_line`) included. A text with an effect (`[wave]`, `[shake]`, `[rainbow]`, or a game's own) redraws the UI every frame while it is on screen, as does anything that changes every frame (a ticking clock, a blinking caret); a text in a bitmap font is rebuilt each time the UI redraws. `ui:retain off` (console) or `EngineBuilder::ui_retain(false)` draws the whole UI every frame: the same pixels, slower, to rule retention in or out when chasing a rendering bug. `debug:ui-rebuilds` shows, once a second (so it does not defeat retention itself), how many frames kept the UI image and how many texts were built and reused.
+
+**A UI draws in one draw call per texture run, usually one.** Rects, text, images and lines all draw through one pipeline that clips in the shader, so scroll areas, clips and the mix of widgets cost no extra draws. A new draw starts only where the next item needs a different texture of a kind the current run already uses: text on a second glyph page (many sizes or a large character set can fill more than one page), or an image on another atlas page or too large for the atlas (over 256 px a side). A UI that alternates between such textures draws more runs; keeping a screen's images on one page keeps it at one draw. The stats overlay's `Batches` count (`debug:stats`) includes the UI's draws.
 
 ### Recipes
 

@@ -216,6 +216,69 @@ The research measured the render side of this screen at about 120 µs (profile, 
 
 **Approach C** (upload only the changed instance ranges; record the UI's draws once as a render bundle). Render-side work over an empty frame in a changing frame is about 69 µs: `emit_ui` 18, `Batch2D::prepare` 27 (its uploads about 14 more than empty), and the extra pass about 24 (`encode_render_pass` +20). So prepare, uploads and encoding are about three quarters of what is left, and the per-call costs (one staging buffer per `write_buffer`, about 150 draws encoded) dominate their size. A bundle of the unchanged draws plus a small pass for the changed ones could remove most of the encoding and upload, perhaps 25 to 35 µs, which would bring this frame under 60 µs, but it needs stable instance ranges across frames (the draw list is sorted and remapped every frame) and a bundle per clip and image state, and it saves nothing on a frame where much changes (the scrolling list). Approach C is the only route to the 60 µs target. My reading of its costs: it is not worth a sub-project on this measurement alone; the UI pass (43.6 µs here) is now as large as the whole render side. 4h (layout and resolve retention for node trees, ceiling about 18 µs of the UI pass) is the smaller of the two and helps every changing frame, not only ones with few changes. The owner decides.
 
+## 4h: the UI renderer (measured)
+
+Spec: `docs/specs/2026-10-20-ui-renderer-design.md`. The UI draws through a renderer of its own (4g's approach C, reshaped by measurement): its commands become one 144-byte instance format in painter's order, culled before they are built, uploaded in one write and drawn through one pipeline that clips in the shader, one draw per texture run. The settings screen, every page of the `ui` demo and breakout's menus, HUD and play draw in **1 draw** (the old path: 64 on the settings screen); the demo and breakout retain tests now assert at most 2. Measured on an Apple GPU (Metal, M5 Pro), 1280x720, `benches/ui_render.rs`, on a shared machine (load 2 to 13 during these runs).
+
+**The guard** (medians of 2,000 frames, render step over an empty frame; twelve runs of the 4h build, two of the pre-4h base, d1016380, in the same session):
+
+| Frame | 4h | pre-4h base | 4g's measurement | Target |
+|---|---|---|---|---|
+| empty frame's render step | 95 to 137 µs | 96 to 106 µs | about 88 µs | |
+| idle settings screen (kept) | 0 ns in eight runs, 0.9 to 3.1 µs in three, **7.2 µs in one (failed)** | 0 to 0.6 µs | 0 ns | under 5 µs |
+| one label changing every frame | **0 to 26.5 µs** (median of the runs about 12) | 68.0, 75.5 µs | 81 to 96 µs | under 40 µs: met by the guard |
+| the same, retention off | 31 to 77 µs | 105.6, 114.8 µs | 112 to 136 µs | |
+| retained against off | on is 31 to 52 µs faster | 37 to 39 µs | 31 to 40 µs | on no slower: met |
+
+**The guard reads the changing frame low: its empty-frame baseline is paced by the GPU.** Each engine's median is taken over its own 2,000 frames in turn. An empty frame does so little on the CPU that each step waits on the GPU, and that wait is CPU time too (thread CPU time equals wall time here), so the empty baseline swings from 95 to 137 µs between runs, where the settings screen's frames, which spend about 50 µs in the UI pass first, do not wait. So the idle screen's render step is usually below the empty frame's (clamped to 0 ns), and in one run the changing label's was too (0 ns). Measured instead with the five engines stepped in turn, frame by frame, so none is paced, and with the render step's thread CPU time (a temporary probe, not committed; medians of 2,000 frames):
+
+| Render step over an empty frame (thread CPU) | 4h | pre-4h base |
+|---|---|---|
+| empty frame itself | 70 to 75 µs | 72 to 74 µs |
+| idle settings screen (kept) | 5.0 to 7.5 µs | 3.8 to 5.6 µs |
+| **one label changing** | **58.4 to 62.5 µs** (six runs) | 106.3 to 107.2 µs (three runs, same session) |
+| one label, retention off | 103.1 to 104.4 µs | 138.4 to 140.4 µs |
+
+(Two earlier sessions under heavier load read 80 to 109 µs for 4h and 135 to 173 µs for the base: 4h at 57 to 78% of the base there, 55% here.) Stepped one engine at a time, as the guard does, the same probe reads the empty frame at 93 to 139 µs of CPU and the kept screen below it; there a changing label costs 29 to 41 µs over a kept frame (base: 83 to 92 µs).
+
+So 4h cuts the changing frame's render side by roughly 40 to 65% depending on the measure (interleaved 107 to 59 µs; by the research's profile method 74 to 44 µs, below; one engine at a time over a kept frame 83-92 to 29-41 µs), and **whether it meets the 40 µs target depends on the baseline**: met by the guard as specified (empty frame, one engine at a time), not met with an unpaced empty frame (59 µs) or by the profile (44 µs). The idle target holds by the guard (one flaky run) and is about 5 to 7.5 µs interleaved, near the base's (3.8 to 5.6). The owner decides how to read the target; a guard that steps its engines in turn would measure what the spec meant, and would fail at 40 µs today.
+
+**Profile of the changing frame** (`settings_label`, retained; xctrace Time Profiler, 40,000 frames, main thread, inclusive µs per frame, against an empty scene run the same way; traces deleted):
+
+| Function | Label | Empty | Difference |
+|---|---|---|---|
+| `Engine::frame` | 199.3 | 101.5 | +97.9 |
+| `SceneManager::ui_pass` (the UI pass, not render side) | 50.9 | 0.9 | +50.0 |
+| `Engine::draw_frame` (the render side) | 137.3 | 93.3 | **+44.0** |
+| `UiRenderer::finish` | 19.8 | 0 | +19.8 |
+| of which `UiGpu::upload` (one `write_buffer`, 461 instances, 66,384 B) | 19.4 | 0 | +19.4 |
+| `build_ui` (of which the text cache 6.1) | 13.5 | 0 | +13.5 |
+| `UiRetain::keep` | 2.9 | 0 | +2.9 |
+| `WgpuRenderer::render_frame` (encoding and submitting; most of the difference is the `ui` pass's render-pass begin) | 81.1 | 76.0 | +5.1 |
+| `CameraUniforms::sync` | 12.7 | 11.3 | +1.4 |
+| `Queue::write_buffer` (all calls) | 35.1 | 15.2 | +19.9 |
+
+The empty run's own render side (93.3 µs) is about 20 µs above its unpaced CPU (70 to 75), the same pacing as the guard's, so +44 is itself low; against an unpaced empty frame this frame is about +60 to 65, as interleaved. The research's profile of 4g's frame read +74 µs by this method (`emit_ui` 17.9, `Batch2D::prepare` 25.6, encoding the UI pass 23.2, keep, sort and submit 7.2): the encode is now +5 (one draw), `prepare` +0 for the UI, and `build_ui` (13.5) does what `emit_ui` and `prepare`'s placing did.
+
+**Criterion** (`cargo bench --bench ui_render`, whole `step()`; two runs, at load about 13 and about 4.5):
+
+| Bench | 4h retained | 4h not retained | 4g retained | 4g not retained |
+|---|---|---|---|---|
+| `settings_idle` | 121.5, 155.2 µs | 213.0, 225.6 µs | 122.7 µs | 254.8 µs |
+| `settings_label` | 186.0, 190.2 µs | 229.4, 231.2 µs | 224.8 µs | 259.7 µs |
+| `settings_scrolling` | 123.3, 126.2 µs | 227.7, 219.2 µs | 216.1 µs | 249.9 µs |
+| `empty_frame` | 189.7, 199.1 µs | | 187.1 µs | |
+
+A changing frame's whole step is 35 to 39 µs faster than 4g's retained, and about 30 µs faster not retained. The idle and empty rows are paced by the GPU (an idle retained screen steps faster than an empty frame) and move with the load.
+
+**The scrolling bench does not scroll.** The fixture's scroll area grows to its content (1,406 px tall in a 460 px panel), so the wheel has nothing to move. Today every retained frame is kept, so `settings_scrolling` reads as `settings_idle`. At 4g's commit (e012a347) the same bench redrew every frame (none kept), but its commands were identical frame to frame and all 140 texts were reused, so it never measured a moving list either; what made 4g's frames redraw was not traced (the wheel's handling has changed since, with the trackpad fixes). It needs a scroll area that can scroll (a height on the fixture's, which changes the guard's screen) before a scrolling number means anything.
+
+**`benches/text.rs`** (640x360; the 4h build and the pre-4h base run alternately, two rounds each): HUD of 100 texts and 50 panels 194.0, 195.7 µs (base 204.9, 190.9; 4g 197.2), and with `ui_retain(false)` 225.1, 216.3 µs (base 230.6, 238.0; 4g 227.2); 1,000 cached UI texts 137.2, 135.2 µs (base 135.7, 134.0; 4g 136.1); 200 world labels 153.8, 228.6 µs (base 188.4, 225.0; 4g 146.6). The HUD and the cached texts are kept frames (unchanged UIs), so 4h leaves them as they were; the HUD without retention, which builds and draws every frame, is 5 to 22 µs faster. The world labels bench swings between about 150 and 230 µs on both builds alike, so the world's text is unchanged within that noise.
+
+**Uploading only what changed: now worth doing, in its simplest form.** The upload is now the largest part of a changing frame: 19.4 µs, a third to a half of it (of +44 profiled, of about +60 unpaced). Inside it, 11.3 µs is the copy into a new staging buffer and 6.7 µs creating that buffer (`wgpu` makes one per `write_buffer` call). The research's numbers say one short write costs about 2.2 µs against 9 for 51 KB, so writing only the changed bytes could save about 10 to 12 µs, taking the profiled frame to about 32 µs and the unpaced one to about 48. The settings screen is the good case: the changing label is recorded last, so its instances sit at the end of the array and a compare with the last frame finds one short dirty range. It pays only while instance positions hold: a text whose glyph count changes (99 to 100) shifts every later instance, and a scrolling list moves them all, so the diff needs a fallback to one full write beyond a few ranges (the research put the break-even at about 5) and the compare itself (about 1.5 µs for 66 KB, estimated). After the upload, the next parts are `build_ui`'s text copies (6.1 µs) and the `ui` pass's own begin and encode (about 5 µs, near the floor of one more pass).
+
+**Next: analytic line anti-aliasing (owner, 2026-10-20).** UI line pixels may differ from the pre-4h renderer on Apple GPUs by one derivative class: Metal gives the old indexed, shared-vertex line mesh a different `fwidth` near a shared edge than the UI renderer's per-triangle drawing (the new path equals the old line pipeline drawn without shared vertices; on the demo tour only the text demo's page 5 differs, 34 pixels at miter tips, at most 67/255). Accepted. The follow-up is a small sub-project of its own: derivative-free, analytic anti-aliasing for UI and world lines, so the coverage of a line pixel is computed from its distance to the line's edges in pixels rather than from `fwidth`, and lines draw the same on every GPU and in every mesh layout. It starts with a visual review of how others do it: Skia (analytic coverage for strokes and paths), Dear ImGui and NanoVG (a one-pixel feather fringe of extra geometry, alpha 0 at its outer edge), and Unity UI Toolkit (its vector stroke tessellation and edge anti-aliasing), then compares the candidates on the demo pages by eye.
+
 ## Left for Later
 
 From 4b's out-of-scope list:

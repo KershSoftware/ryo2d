@@ -12,7 +12,7 @@
 
 ## Clipping Stack
 
-- `push_clip()`/`pop_clip()` nest without a depth limit; nested clips intersect with their parents. Each recorded command carries the clip it was drawn under, drawn as a scissor.
+- `push_clip()`/`pop_clip()` nest without a depth limit; nested clips intersect with their parents. Each recorded command carries the clip it was drawn under; the UI renderer tests it per pixel in the UI shader, exactly as a scissor would.
 - `pop_clip()` on an empty stack does nothing and is warned once. Always pair every `push_clip` with a `pop_clip`.
 
 ```rust

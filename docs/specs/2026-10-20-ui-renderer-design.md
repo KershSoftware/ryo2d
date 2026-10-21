@@ -47,7 +47,7 @@ UiCommands -> cull (outside clip or image) -> UiInstances in painter's order (on
 
 ## The instance and the shader
 
-**`UiInstance`.** One instance format for every kind: rect, raster glyph, colour glyph, MSDF glyph, sprite, and line piece. Each carries:
+**`UiInstance`.** One instance format for every kind: rect, raster glyph, colour glyph, MSDF glyph, sprite (an sRGB page, or a render target's linear one), and line triangle. Each carries:
 
 - a `kind`;
 - its clip, as four integers: the scissor rect `scissor_of` gives today, or the whole UI image for no clip;
@@ -55,22 +55,22 @@ UiCommands -> cull (outside clip or image) -> UiInstances in painter's order (on
 
 Quads keep today's transform rows, so the vertex shader computes their corners with exactly today's arithmetic, pixel-art snap included.
 
-**Lines.** Line pieces carry four explicit corners, made on the CPU as today's line triangles are (`Triangles::polyline`: solid style, miter joins, butt caps). Each segment quad and each join wedge is one instance (a wedge is a degenerate quad), so the geometry is exactly today's. A quad's `uv.y` is affine across it, so the line's anti-aliasing is the same in either diagonal split.
+**Lines.** A line is one instance per triangle of today's line builder (`Triangles::polyline`: solid style, miter joins, butt caps), each carrying its three corners' positions, uvs and colours; the quad's other three vertices repeat the last corner. Instances are the builder's triangles rather than segment quads and wedges so the geometry is exactly the builder's, triangle for triangle (amended after Task 3; first designed as one quad per segment and wedge).
 
 **One pipeline.**
 
-- **Vertex:** today's `vs_main` for quads, and a corner path for line pieces.
-- **Fragment:** a switch over `kind` running today's six fragment bodies unchanged (`fs_ui_rect`, `fs_text_mask`, `fs_text_color`, `fs_text_msdf`, the sprite body, the line body). Each then goes through the same `ui_out` with the `UI_GAMMA` override.
+- **Vertex:** today's `vs_main` for quads, and a corner path for line triangles.
+- **Fragment:** a switch over `kind` running today's seven fragment bodies unchanged (`fs_ui_rect`, `fs_text_mask`, `fs_text_color`, `fs_text_msdf`, the sprite body, the linear sprite body for a render target's page (`fs_base_linear`), the line body), each now a shared include function the world entries call too. Each then goes through the same `ui_out` with the `UI_GAMMA` override.
 - **Sampling:** texture reads use explicit-gradient sampling (`textureSampleGrad`), as WGSL's uniformity rules require inside the switch. This samples identically: glyph pages have one mip level, and the sprite body already takes its own derivatives.
 
 **Clipping in the shader.** The clip test runs last in the fragment: the pixel centre (`@builtin(position).xy`, at k + 0.5) must lie in `[x0, x1) x [y0, y1)` of the instance's integer clip, and pixels outside output zero. Under the UI's premultiplied blend, a zero output leaves the image as it was. This is exactly the scissor test, and it runs after all derivative-taking code.
 
 **Textures.**
 
-- One bind group holds the current raster-glyph page, colour-glyph page, MSDF page and sprite texture (an atlas page, a standalone image or a render target), plus a linear and a nearest sampler. Unused slots hold a 1x1 placeholder.
+- One bind group holds the current raster-glyph page, colour-glyph page, MSDF page and sprite texture (an atlas page, a standalone image or a render target), plus the samplers today's pages use: the atlas's linear and nearest pair. Unused slots hold a 1x1 placeholder.
 - An instance picks its slot by kind and its sampler by a flag.
 - A draw breaks only when the next instance needs a different texture in its slot. The settings screen uses one glyph page, so it takes one draw.
-- Bind groups are cached by the textures they hold, and dropped when a page or texture is recreated.
+- Bind groups are cached by the textures and samplers they hold. wgpu handles compare by identity, so a recreated page or texture is a new key; an entry is dropped once it has gone unused for 8 drawn frames, releasing the textures it holds (amended after Task 2; first designed as dropped when a texture is recreated).
 - Four sampled textures and two samplers fit WebGPU's default limits, so this works on the web.
 - The glyph atlas does not change. Texture arrays per format, which would need the atlas to grow by copying pages, are left for later if many pages interleave in practice.
 
@@ -144,6 +144,11 @@ The HUD and scrolling benches are measured again.
 - **Many interleaved glyph pages** (a UI with text at many sizes) would break runs often. This is counted, and texture arrays are the follow-up.
 - **A larger instance format** costs upload bytes. It is measured, and the format is kept tight.
 - **Web behaviour** (each wgpu call crosses into JS) is not measured here. Fewer calls should help more there.
+
+## Decisions after review
+
+- **UI lines on Apple GPUs (owner, 2026-10-20).** On Apple/Metal, the old path's indexed line mesh, whose triangles share vertices, gets a different `fwidth` near a shared edge than the same triangles drawn apart, as the UI renderer draws them. UI line pixels may therefore differ from the pre-4h renderer by that derivative class alone: up to 3/255 along slanted edges and up to about 0.36 coverage at miter tips and closed-outline corners; on the demo tour, only the text demo's page 5 differs, in 34 pixels at miter tips, by at most 67/255. Proven, not assumed: the new path equals the old line pipeline drawn without shared vertices (`lines_draw_as_the_batch_draws_them_with_no_vertex_shared`). Accepted. Next: analytic, derivative-free line anti-aliasing for UI and world lines, as a small sub-project of its own with a visual review (`docs/backlog/ui-retained-nodes.md`, 4h).
+- **The measurement** (Task 8) is in `docs/backlog/ui-retained-nodes.md`, 4h, with the guard's caveat: its empty-frame baseline is paced by the GPU, so it reads the changing frame lower than other measures do.
 
 ## Out of scope
 

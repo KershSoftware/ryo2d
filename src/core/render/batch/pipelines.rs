@@ -321,7 +321,9 @@ fn batch_pipeline(
     BatchShader::Light(step) => light_blend(step),
     _ => (blend_state(key.blend), wgpu::ColorWrites::ALL),
   };
-  // The UI image holds gamma-encoded colour: its pipelines encode on output.
+  // Built for the UI image (gamma-encoded colour), a pipeline encodes on
+  // output. The UI draws through its own renderer: this rule now serves the
+  // tests alone, chiefly the proof of UI lines against this line pipeline.
   // Light modules do not compose color.wgsl (lights are always in the scene
   // format)
   let ui = key.format == UI_FORMAT && !matches!(key.shader, BatchShader::Light(_));
