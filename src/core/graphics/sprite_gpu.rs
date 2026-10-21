@@ -23,6 +23,7 @@ use super::{RenderLayers, RenderTarget};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
 use crate::core::render::batch::{BlendMode, Filter, Sampling};
+use crate::core::render::ui_renderer::TexKey;
 use crate::core::render::{DrawKind, DrawList, SpriteLook, SpriteShading};
 use crate::core::shaders::custom::{self, CompiledShader, ShaderKind};
 use crate::core::text::{GlyphImage, GlyphKey};
@@ -619,6 +620,22 @@ impl SpriteGpuRenderer {
   /// Glyphs refused so far for a full atlas
   pub(crate) fn glyphs_refused(&self) -> u64 {
     self.atlas.glyphs_refused()
+  }
+
+  /// The texture behind `key`: a glyph page, or an atlas, standalone or
+  /// render-target page (`None`: no such page)
+  #[cfg_attr(not(test), allow(dead_code))] // wired in Task 4
+  pub(crate) fn page_texture(&self, key: TexKey) -> Option<&wgpu::Texture> {
+    self.atlas.texture(match key {
+      TexKey::Glyph(page) => SlotPage::Glyph(page),
+      TexKey::Sprite(page) => page,
+    })
+  }
+
+  /// The linear and nearest samplers the pages' bind groups use
+  #[cfg_attr(not(test), allow(dead_code))] // wired in Task 4
+  pub(crate) fn samplers(&self) -> (&wgpu::Sampler, &wgpu::Sampler) {
+    self.atlas.samplers()
   }
 
   /// The bind group sampling atlas or target page `page` with `sampling`.

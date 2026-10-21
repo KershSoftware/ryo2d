@@ -24,9 +24,33 @@ pub(crate) const SPRITE: &str = concat!(
   "\n",
   include_str!("include/ui_rect.wgsl"),
   "\n",
+  include_str!("include/snap.wgsl"),
+  "\n",
   include_str!("core/sprite.wgsl"),
   "\n",
   include_str!("core/text.wgsl"),
+);
+
+/// The UI pipeline: every UI instance kind through one vertex and one
+/// fragment entry
+pub(crate) const UI: &str = concat!(
+  include_str!("include/camera.wgsl"),
+  "\n",
+  include_str!("include/color.wgsl"),
+  "\n",
+  include_str!("include/sample.wgsl"),
+  "\n",
+  include_str!("include/tint.wgsl"),
+  "\n",
+  include_str!("include/glyph.wgsl"),
+  "\n",
+  include_str!("include/ui_rect.wgsl"),
+  "\n",
+  include_str!("include/line_style.wgsl"),
+  "\n",
+  include_str!("include/snap.wgsl"),
+  "\n",
+  include_str!("core/ui.wgsl"),
 );
 
 /// Light accumulation
@@ -175,6 +199,7 @@ pub(crate) fn compose(parts: &[&str]) -> String {
 pub(crate) fn built_in() -> Vec<(&'static str, String)> {
   [
     ("sprite", SPRITE),
+    ("ui", UI),
     ("light", LIGHT),
     ("shadow", SHADOW),
     ("line", LINE),

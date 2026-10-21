@@ -154,6 +154,19 @@ impl Batch2D {
     &mut self.triangles
   }
 
+  /// The layout cameras' uniforms are bound with (group 0)
+  #[cfg_attr(not(test), allow(dead_code))] // wired in Task 4
+  pub(crate) fn camera_layout(&self) -> &wgpu::BindGroupLayout {
+    &self.camera_layout
+  }
+
+  /// `camera`'s uniform bind group, once [`sync_cameras`](Self::sync_cameras)
+  /// made it
+  #[cfg_attr(not(test), allow(dead_code))] // wired in Task 4
+  pub(crate) fn camera_group(&self, camera: Entity) -> Option<&wgpu::BindGroup> {
+    self.camera_groups.get(&camera)
+  }
+
   /// Bind every camera's uniform buffer (made by `CameraUniforms::sync`),
   /// dropping the bind groups of cameras that are gone.
   pub(crate) fn sync_cameras(&mut self, device: &wgpu::Device, uniforms: &CameraUniforms) {
