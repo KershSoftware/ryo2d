@@ -8,8 +8,8 @@ use crate::core::hash::FastMap;
 use crate::core::render::UI_FORMAT;
 use crate::core::render::batch::{QUAD_LAYOUT, unit_quad};
 
-/// A bind group unused for this many frames in which the UI drew instances
-/// is dropped, so the textures it holds are released
+/// A bind group unused for this many frames whose UI built instances is
+/// dropped, so the textures it holds are released
 pub(crate) const KEEP_FRAMES: u64 = 8;
 
 /// Instances the buffer holds at first; it doubles when a frame needs more

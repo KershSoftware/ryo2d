@@ -8,8 +8,8 @@ What it adds:
 
 - **A `UiRenderer`.** It turns the frame's `UiCommands` straight into GPU instances in painter's order. The world's batch, draw list, world text, trails and lighting are untouched.
 - **One pipeline with clipping in the shader.** Rects, glyphs (raster, colour, MSDF), sprites and lines draw from one instance format through one pipeline. Each instance carries its clip rect, so a draw breaks only when a bound texture changes.
-- **The UI's own instance buffer**, with one upload a frame.
-- **4g's retention on top.** An unchanged UI keeps its image; on a changing frame, the text cache holds each text's finished instances, so a reused text is a single copy.
+- **The UI's own instance buffer**, with one upload a frame (amended after Task 10: of only the range that changed since the last upload; see "Decisions after review").
+- **4g's retention on top.** An unchanged UI keeps its image; on a changing frame, the text cache holds each text's finished instances, so a reused text is a single copy (amended after Task 11: a text that moved is laid again from its kept glyphs; see "Decisions after review").
 
 **Why.** 4g made an unchanged UI cost nothing to render, but a changing one still costs 81-96 µs of render-side CPU on the 200-widget settings node screen with one label changing every frame (4g's target was 60 µs). A profile of that frame (headless, 1280x720, Apple GPU) gave:
 
@@ -30,7 +30,7 @@ What each candidate change would remove (measured in micro-benchmarks, estimated
 
 **Decisions taken with the owner:**
 
-- **Target:** one changing label under 40 µs of render-side CPU (estimated about 36 µs). Uploading only what changed stays a follow-up, measured after this lands.
+- **Target:** one changing label under 40 µs of render-side CPU (estimated about 36 µs). Uploading only what changed stays a follow-up, measured after this lands (amended after Task 10: it was brought into 4h, and the target is met with it; see "Decisions after review").
 - **Approach A: a dedicated UI renderer**, rather than patching the shared batch with an uber pipeline. That would keep the copying and placing, give about 60 µs, and miss the target.
 
 ## The UI renderer
@@ -70,7 +70,7 @@ Quads keep today's transform rows, so the vertex shader computes their corners w
 - One bind group holds the current raster-glyph page, colour-glyph page, MSDF page and sprite texture (an atlas page, a standalone image or a render target), plus the samplers today's pages use: the atlas's linear and nearest pair. Unused slots hold a 1x1 placeholder.
 - An instance picks its slot by kind and its sampler by a flag.
 - A draw breaks only when the next instance needs a different texture in its slot. The settings screen uses one glyph page, so it takes one draw.
-- Bind groups are cached by the textures and samplers they hold. wgpu handles compare by identity, so a recreated page or texture is a new key; an entry is dropped once it has gone unused for 8 frames in which the UI drew instances (a kept frame, or one whose commands are all culled, ages none), releasing the textures it holds (amended after Task 2; first designed as dropped when a texture is recreated).
+- Bind groups are cached by the textures and samplers they hold. wgpu handles compare by identity, so a recreated page or texture is a new key; an entry is dropped once it has gone unused for 8 frames whose UI built instances (a kept frame, or one whose commands are all culled, ages none), releasing the textures it holds (amended after Task 2; first designed as dropped when a texture is recreated).
 - Four sampled textures and two samplers fit WebGPU's default limits, so this works on the web.
 - The glyph atlas does not change. Texture arrays per format, which would need the atlas to grow by copying pages, are left for later if many pages interleave in practice.
 
@@ -79,12 +79,12 @@ Quads keep today's transform rows, so the vertex shader computes their corners w
 1. **Order.** Commands are walked in painter's order: layer, then recorded order. They usually arrive in that order, so the renderer checks once and sorts an index list only if one is out of place.
 2. **Cull.** A command that draws nothing is skipped before anything is built: one wholly outside its clip or the UI image, or with an empty clip (as today). This removes exactly what today's scissor and camera culling remove, only earlier.
 3. **Build.** Rects, sprites and line pieces are built into the instance array. Texts go through `UiTextCache`:
-   - a reused text is one copy of its stored instances;
+   - a reused text is one copy of its stored instances (amended after Task 11: one drawn elsewhere is laid again from its kept glyphs, by the text emitter's own placing);
    - a changed text is built, then stored;
    - texts with effects, bitmap-font texts and texts cut short by a full atlas are built every frame, as today;
    - icons are built fresh, as today.
 4. **Runs.** While building, a new run starts whenever an instance needs a different texture in its slot. A run is an instance range and its bind group.
-5. **Upload.** The UI has its own instance buffer, grown by doubling, with one `write_buffer` of the frame's instances. It replaces the three shared writes (instances, line vertices, indices).
+5. **Upload.** The UI has its own instance buffer, grown by doubling, with one `write_buffer` of the frame's instances (amended after Task 10: of only the range that differs from the last upload, compared bit for bit; a new or grown buffer is given the whole frame). It replaces the three shared writes (instances, line vertices, indices).
 6. **The `ui` pass.** It clears the UI image, sets the pipeline once and binds the UI camera's uniform. Then, for each run, it binds that run's texture group and draws the range.
 
 Draw counts and frame stats include the UI's draws. `ui:retain off` still means everything is built and drawn every frame.
@@ -151,6 +151,7 @@ The HUD and scrolling benches are measured again.
 - **The guard measures without the GPU's pacing (owner, 2026-10-21; Task 9).** Task 8's guard took each engine's frames alone, and a lone engine is paced by the GPU: a frame takes the GPU about 210 to 310 µs here, longer than a render step, so a step waits on the backlog, an empty frame most. Its empty baseline read high, and one label read 0 to 26.5 µs over it. The guard now steps its seven engines in turn, one frame each (every other round in reverse), waits for the GPU to finish all submitted work before each step (outside the measure), and takes each median over the same 2,000 rounds. Wall time then equals the render step's thread CPU time to within 0.5 µs. The wait also runs wgpu's cleanup of finished submissions, which a 60 Hz frame does in its next submit, so the guard reads a little low.
 - **The targets are read on the screen they were set on (Task 9).** The shared settings fixture's list never scrolled, so Task 9 made it fill the panel (`settings_tree`); that screen draws fewer rows (355 instances against 461) and flattered the label reading. The idle and one-label targets are read on the original layout (`settings_tree_overflowing`), the scrolling frame on the new one. There, at Task 9, one label read +42.7 to +46.0 µs over an empty frame: the 40 µs target was missed.
 - **Uploading only what changed came into 4h (owner, 2026-10-21; Task 10).** The upload was then the largest part of a changing frame (19.4 µs: a new staging buffer for every `write_buffer`, and the copy into it). The renderer keeps a copy of what its instance buffer holds and writes only the one range that differs, compared bit for bit from both ends (from the first instance that differs to the last when the counts are equal, to the end when they are not; the whole frame into a new or grown buffer). The changing label writes 1 to 3 of 461 instances. One label now reads +31.2 to +33.6 µs over an empty frame (before: +40.7 to +42.4), so the 40 µs target is **met and asserted**, with the idle target and retained-no-slower. The margin needs a quiet machine: at a load of about 4 one label read +39.1 to +40.2 µs. The numbers and the profile after it are in `docs/backlog/ui-retained-nodes.md`, 4h.
+- **A scrolled text reuses the text cache (Task 11).** Once the settings list scrolled (Task 9), a retained frame cost 6 to 9 µs more than an unretained one: the cache keyed a text by its origin, so a moving list's texts missed every frame. Translating kept instances is not exact (each line's baseline rounds on its own, and a snapped centre is divided by the UI scale), so the cache keys a text without its origin, keeps each glyph's seed (its quad and image before placement) and lays a moved text again through the emitter's own placing, after checking along x that no glyph's subpixel bin changes. Scrolling retained now reads +36.3 to +37.2 µs over an empty frame against +42.8 to +43.4 unretained (it was +51.0 to +52.4), and the guard asserts that it is no slower retained. The numbers are in the backlog, 4h.
 
 ## Out of scope
 
