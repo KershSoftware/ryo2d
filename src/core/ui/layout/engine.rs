@@ -23,9 +23,18 @@ pub(crate) enum Avail {
   MaxContent,
 }
 
-/// Sizes a text node: its index, the dimensions already known and the space offered
+/// Which node Taffy asks to be measured
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Measured {
+  /// The node at this index of the descriptions laid out
+  Index(usize),
+  /// A node inside a kept node's subtree, by its id
+  Kept(UiId),
+}
+
+/// Sizes a text node: which node, the dimensions already known and the space offered
 pub(crate) type MeasureFn<'a> =
-  dyn FnMut(usize, (Option<f32>, Option<f32>), (Avail, Avail)) -> Vec2 + 'a;
+  dyn FnMut(Measured, (Option<f32>, Option<f32>), (Avail, Avail)) -> Vec2 + 'a;
 
 /// One node to lay out: the tree is a slice of these, node 0 the root
 pub(crate) struct NodeDesc<'s> {
@@ -38,6 +47,10 @@ pub(crate) struct NodeDesc<'s> {
   pub(crate) content_key: u64,
   /// Indices into the slice
   pub(crate) children: &'s [usize],
+  /// Laid out in an earlier frame and kept: its children in Taffy are left as
+  /// they are (its `children` slice is empty), and its descendants count as
+  /// laid out
+  pub(crate) kept: bool,
 }
 
 /// A node's result: its rect relative to node 0's origin, and the extent of
@@ -55,6 +68,8 @@ struct Entry {
   children: Vec<NodeId>,
   content_key: u64,
   frame: u64,
+  /// The entries in its subtree, counted when it was laid out with its children
+  below: u32,
 }
 
 /// What one layout call works in, kept between calls: cleared and filled
@@ -75,6 +90,8 @@ struct Buffers {
   child_ids: Vec<NodeId>,
   /// Each node's taffy node, once it has been brought up to date
   taffy_ids: Vec<Option<NodeId>>,
+  /// Each node's descendant count, children before parents
+  below: Vec<u32>,
   /// The result
   placed: Vec<Placed>,
 }
@@ -87,6 +104,8 @@ pub(crate) struct LayoutEngine {
   /// The entries laid out since `begin_frame`: when that is every entry,
   /// `end_frame` has nothing to remove
   laid: usize,
+  /// The kept nodes laid out since `begin_frame`
+  kept: Vec<NodeId>,
   warned: HashSet<&'static str>,
   buffers: Buffers,
   stats: LayoutStats,
@@ -113,6 +132,7 @@ impl LayoutEngine {
       entries: FastMap::default(),
       frame: 0,
       laid: 0,
+      kept: Vec::new(),
       warned: HashSet::new(),
       buffers: Buffers::default(),
       stats: LayoutStats::default(),
@@ -123,6 +143,7 @@ impl LayoutEngine {
   pub(crate) fn begin_frame(&mut self) {
     self.frame += 1;
     self.laid = 0;
+    self.kept.clear();
     self.stats = LayoutStats::default();
   }
 
@@ -138,6 +159,27 @@ impl LayoutEngine {
       return;
     }
     let frame = self.frame;
+    // A kept subtree was not walked: its entries are laid out as it is
+    let mut stack = std::mem::take(&mut self.buffers.child_ids);
+    for &kept in &self.kept {
+      stack.clear();
+      stack.push(kept);
+      while let Some(node) = stack.pop() {
+        if let Ok(children) = self.taffy.children(node) {
+          for child in children {
+            if let Some(entry) = self
+              .taffy
+              .get_node_context(child)
+              .and_then(|id| self.entries.get_mut(id))
+            {
+              entry.frame = frame;
+            }
+            stack.push(child);
+          }
+        }
+      }
+    }
+    self.buffers.child_ids = stack;
     let taffy = &mut self.taffy;
     self.entries.retain(|_, entry| {
       if entry.frame == frame {
@@ -147,6 +189,60 @@ impl LayoutEngine {
       let _ = taffy.remove(entry.node);
       false
     });
+  }
+
+  /// Whether a node with this id was laid out and is still kept
+  #[allow(dead_code)] // used by the fragment cache, which follows
+  pub(crate) fn holds(&self, id: UiId) -> bool {
+    self.entries.contains_key(&id)
+  }
+
+  /// The layout of a kept subtree as this frame's layout left it: `ids` are
+  /// its nodes, root first, parents before children, `parents[i]` the index
+  /// of node `i`'s parent in `ids` (`None` for the root), and the root at
+  /// `root_rect` (relative to its subtree's root, as `layout` gives it). The
+  /// rects accumulate as `layout`'s do; each `content` is its rect's size.
+  /// False, with `out` cleared, if a node is not held.
+  #[allow(dead_code)] // used by the fragment cache, which follows
+  pub(crate) fn placed_below(
+    &self,
+    root_rect: Rect,
+    ids: &[UiId],
+    parents: &[Option<usize>],
+    out: &mut Vec<Placed>,
+  ) -> bool {
+    out.clear();
+    let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+    for (k, id) in ids.iter().enumerate() {
+      let rect = match parents.get(k).copied().flatten() {
+        None if k == 0 => root_rect,
+        Some(p) if p < k => {
+          let layout = self
+            .entries
+            .get(id)
+            .and_then(|e| self.taffy.layout(e.node).ok());
+          let Some(layout) = layout else {
+            out.clear();
+            return false;
+          };
+          Rect::new(
+            finite(out[p].rect.x + layout.location.x),
+            finite(out[p].rect.y + layout.location.y),
+            finite(layout.size.width),
+            finite(layout.size.height),
+          )
+        }
+        _ => {
+          out.clear();
+          return false;
+        }
+      };
+      out.push(Placed {
+        rect,
+        content: Vec2::new(rect.width, rect.height),
+      });
+    }
+    true
   }
 
   #[cfg(test)]
@@ -200,6 +296,7 @@ impl LayoutEngine {
       stack,
       child_ids,
       taffy_ids,
+      below,
       placed,
     } = buffers;
     // Pre-order walk: which nodes count (reachable, unique ids), their parents
@@ -217,6 +314,8 @@ impl LayoutEngine {
     order.clear();
     taffy_ids.clear();
     taffy_ids.resize(count, None);
+    below.clear();
+    below.resize(count, 0);
     stack.clear();
     stack.push(0);
     visited[0] = true;
@@ -244,6 +343,7 @@ impl LayoutEngine {
       entries,
       frame,
       laid,
+      kept: kept_nodes,
       warned,
       stats,
       ..
@@ -254,6 +354,20 @@ impl LayoutEngine {
       child_ids.clear();
       let (start, end) = kid_range[i];
       child_ids.extend(kids[start..end].iter().filter_map(|&c| taffy_ids[c]));
+      // A kept node without an entry is a caller's mistake: it is a leaf
+      let kept = desc.kept && entries.contains_key(&desc.id);
+      if desc.kept && !kept && warned.insert("kept node unknown") {
+        crate::engine_warn!(
+          module: "ui",
+          "a kept UI node was not laid out before; drawn without its contents"
+        );
+      }
+      let mut sum = 0;
+      if !kept {
+        for &c in &kids[start..end] {
+          sum += 1 + below[c];
+        }
+      }
 
       // Only a node whose hash changed is cleaned and converted
       let convert = |warned: &mut HashSet<&'static str>| {
@@ -267,16 +381,26 @@ impl LayoutEngine {
           if entry.frame != *frame {
             entry.frame = *frame;
             *laid += 1;
+            if kept {
+              *laid += entry.below as usize;
+            }
           }
           if entry.hash != hash {
             taffy.set_style(entry.node, convert(warned))?;
             entry.hash = hash;
             stats.restyled += 1;
           }
-          if entry.children != *child_ids {
-            taffy.set_children(entry.node, child_ids)?;
-            entry.children.clone_from(child_ids);
-            stats.rechildren += 1;
+          if kept {
+            kept_nodes.push(entry.node);
+            below[i] = entry.below;
+          } else {
+            if entry.children != *child_ids {
+              taffy.set_children(entry.node, child_ids)?;
+              entry.children.clone_from(child_ids);
+              stats.rechildren += 1;
+            }
+            entry.below = sum;
+            below[i] = sum;
           }
           if entry.content_key != desc.content_key {
             taffy.mark_dirty(entry.node)?;
@@ -299,8 +423,10 @@ impl LayoutEngine {
               children: child_ids.clone(),
               content_key: desc.content_key,
               frame: *frame,
+              below: sum,
             },
           );
+          below[i] = sum;
           taffy_ids[i] = Some(node);
         }
       }
@@ -322,14 +448,16 @@ impl LayoutEngine {
           style,
           |_, _| 0.0,
           |known, avail| {
-            let Some(i) = ctx.and_then(|id| index_of.get(&*id).copied()) else {
+            let Some(id) = ctx.map(|id| *id) else {
               return Size::ZERO;
             };
-            if nodes[i].measure != Measure::Text {
-              return Size::ZERO;
-            }
+            let target = match index_of.get(&id) {
+              Some(&i) if nodes[i].measure == Measure::Text => Measured::Index(i),
+              Some(_) => return Size::ZERO,
+              None => Measured::Kept(id),
+            };
             let size = measure(
-              i,
+              target,
               (known.width, known.height),
               (to_avail(avail.width), to_avail(avail.height)),
             );
@@ -719,7 +847,7 @@ mod tests {
   #[allow(clippy::type_complexity)]
   fn measure_text(
     chars: f32,
-  ) -> impl FnMut(usize, (Option<f32>, Option<f32>), (Avail, Avail)) -> Vec2 {
+  ) -> impl FnMut(Measured, (Option<f32>, Option<f32>), (Avail, Avail)) -> Vec2 {
     move |_, known, avail| {
       let full = chars * 7.0;
       let width = match (known.0, avail.0) {
@@ -745,6 +873,194 @@ mod tests {
       measure,
       content_key: 0,
       children,
+      kept: false,
+    }
+  }
+
+  fn kept_node<'s>(id: u64, style: &'s UiStyle) -> NodeDesc<'s> {
+    NodeDesc {
+      kept: true,
+      ..node(id, style, Measure::None, &[])
+    }
+  }
+
+  /// The spike's measure, given an index or a kept id
+  #[allow(clippy::type_complexity)]
+  fn measure_any(
+    chars: f32,
+  ) -> impl FnMut(Measured, (Option<f32>, Option<f32>), (Avail, Avail)) -> Vec2 {
+    measure_text(chars)
+  }
+
+  /// A 200-wide column (id 1) holding a 180-wide column (id 2) of three texts (ids 3 to 5)
+  fn nested<'s>(outer: &'s UiStyle, inner: &'s UiStyle, leaf: &'s UiStyle) -> [NodeDesc<'s>; 5] {
+    [
+      node(1, outer, Measure::None, &[1]),
+      node(2, inner, Measure::None, &[2, 3, 4]),
+      node(3, leaf, Measure::Text, &[]),
+      node(4, leaf, Measure::Text, &[]),
+      node(5, leaf, Measure::Text, &[]),
+    ]
+  }
+
+  #[test]
+  fn a_kept_node_keeps_its_subtree_without_its_children_listed() {
+    let outer = UiStyle {
+      width: Length::Px(200.0),
+      ..UiStyle::default()
+    };
+    let inner = UiStyle {
+      gap: 4.0,
+      ..UiStyle::default()
+    };
+    let leaf = UiStyle::default();
+    let mut engine = LayoutEngine::new();
+    engine.begin_frame();
+    let full: Vec<Placed> = engine
+      .layout(
+        &nested(&outer, &inner, &leaf),
+        Vec2::new(800.0, 600.0),
+        &mut measure_any(40.0),
+      )
+      .to_vec();
+    engine.end_frame();
+    let count = engine.node_count();
+
+    engine.begin_frame();
+    let kept = [node(1, &outer, Measure::None, &[1]), kept_node(2, &inner)];
+    let placed = engine
+      .layout(&kept, Vec2::new(800.0, 600.0), &mut measure_any(40.0))
+      .to_vec();
+    engine.end_frame();
+    assert_eq!(
+      placed[1].rect, full[1].rect,
+      "the kept node is where it was"
+    );
+    assert_eq!(engine.node_count(), count, "its subtree is kept");
+
+    engine.begin_frame();
+    let _ = engine.layout(
+      &nested(&outer, &inner, &leaf),
+      Vec2::new(800.0, 600.0),
+      &mut measure_any(40.0),
+    );
+    engine.end_frame();
+    let stats = engine.stats();
+    assert_eq!(
+      (stats.created, stats.rechildren),
+      (0, 0),
+      "its children were left as they were"
+    );
+  }
+
+  #[test]
+  fn the_sweep_keeps_a_kept_subtree_when_something_else_goes() {
+    let outer = UiStyle {
+      width: Length::Px(200.0),
+      ..UiStyle::default()
+    };
+    let inner = UiStyle::default();
+    let leaf = UiStyle::default();
+    let mut engine = LayoutEngine::new();
+    engine.begin_frame();
+    let with_sibling = [
+      node(1, &outer, Measure::None, &[1, 5]),
+      node(2, &inner, Measure::None, &[2, 3, 4]),
+      node(3, &leaf, Measure::Text, &[]),
+      node(4, &leaf, Measure::Text, &[]),
+      node(5, &leaf, Measure::Text, &[]),
+      node(6, &leaf, Measure::Fixed(Vec2::new(10.0, 10.0)), &[]),
+    ];
+    let _ = engine.layout(
+      &with_sibling,
+      Vec2::new(800.0, 600.0),
+      &mut measure_any(10.0),
+    );
+    engine.end_frame();
+    let before = engine.node_count();
+
+    engine.begin_frame();
+    let kept = [node(1, &outer, Measure::None, &[1]), kept_node(2, &inner)];
+    let _ = engine.layout(&kept, Vec2::new(800.0, 600.0), &mut measure_any(10.0));
+    engine.end_frame();
+    assert_eq!(
+      engine.node_count(),
+      before - 1,
+      "only the gone sibling is removed"
+    );
+    assert!(
+      engine.holds(UiId(3)) && engine.holds(UiId(5)),
+      "the kept subtree stays"
+    );
+  }
+
+  #[test]
+  fn a_kept_text_leaf_is_measured_by_id_when_taffy_lays_it_again() {
+    let outer = UiStyle {
+      width: Length::Fill,
+      ..UiStyle::default()
+    };
+    let inner = UiStyle::default();
+    let leaf = UiStyle::default();
+    let mut engine = LayoutEngine::new();
+    engine.begin_frame();
+    let _ = engine.layout(
+      &nested(&outer, &inner, &leaf),
+      Vec2::new(300.0, 600.0),
+      &mut measure_any(60.0),
+    );
+    engine.end_frame();
+
+    engine.begin_frame();
+    let mut asked = Vec::new();
+    let mut measure = |target: Measured, known, avail| {
+      asked.push(target);
+      measure_any(60.0)(target, known, avail)
+    };
+    let kept = [node(1, &outer, Measure::None, &[1]), kept_node(2, &inner)];
+    // Narrower: the texts wrap to more lines, so the kept node grows
+    let placed = engine
+      .layout(&kept, Vec2::new(150.0, 600.0), &mut measure)
+      .to_vec();
+    engine.end_frame();
+    assert!(
+      asked.contains(&Measured::Kept(UiId(3))),
+      "a kept leaf is measured by id: {asked:?}"
+    );
+    assert!(
+      placed[1].rect.height > 51.0,
+      "the kept node follows its texts"
+    );
+  }
+
+  #[test]
+  fn placed_below_matches_a_full_layout() {
+    let outer = UiStyle {
+      width: Length::Px(200.0),
+      padding: Edges::all(7.0),
+      ..UiStyle::default()
+    };
+    let inner = UiStyle {
+      gap: 4.0,
+      padding: Edges::all(3.0),
+      ..UiStyle::default()
+    };
+    let leaf = UiStyle::default();
+    let mut engine = LayoutEngine::new();
+    engine.begin_frame();
+    let full = engine
+      .layout(
+        &nested(&outer, &inner, &leaf),
+        Vec2::new(800.0, 600.0),
+        &mut measure_any(40.0),
+      )
+      .to_vec();
+    let ids = [UiId(2), UiId(3), UiId(4), UiId(5)];
+    let parents = [None, Some(0), Some(0), Some(0)];
+    let mut out = Vec::new();
+    assert!(engine.placed_below(full[1].rect, &ids, &parents, &mut out));
+    for (k, i) in (1..5).enumerate() {
+      assert_eq!(out[k].rect, full[i].rect, "node {i}");
     }
   }
 
@@ -1099,6 +1415,7 @@ mod tests {
           measure: Measure::Text,
           content_key: key,
           children: &[],
+          kept: false,
         },
       ]
     };

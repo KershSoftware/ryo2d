@@ -8,7 +8,7 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::immediate::{ScrollSlot, UiCommand, UiCommands, intersect, meet};
-use super::layout::engine::{Avail, LayoutEngine, NodeDesc};
+use super::layout::engine::{Avail, LayoutEngine, Measured, NodeDesc};
 use super::layout::{Edges, Flow, Length, Measure, UiStyle};
 use super::memory::{Flags, Record, Scratch, UiMemory, recycle};
 use super::widgets::scroll::{ScrollState, drawn_px};
@@ -335,11 +335,16 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       measure: node.measure,
       content_key: node.content_key,
       children: &children[start..ends[i]],
+      kept: false,
     }
   }));
   let available = at.map_or(ui_size, |at| Vec2::new(at.width, at.height));
   let text = cx.text;
-  let mut measure = |i: usize, known: (Option<f32>, Option<f32>), avail: (Avail, Avail)| {
+  let mut measure = |target: Measured, known: (Option<f32>, Option<f32>), avail: (Avail, Avail)| {
+    // Until kept fragments exist, nothing inside a kept node can be measured
+    let Measured::Index(i) = target else {
+      return Vec2::ZERO;
+    };
     nodes
       .get(i)
       .and_then(|node| node.text.as_ref()?.get(leaves))
