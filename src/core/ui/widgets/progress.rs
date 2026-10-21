@@ -146,8 +146,8 @@ mod tests {
         .show();
     });
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect { rect, .. } => Some(rect.width),
         _ => None,
       })

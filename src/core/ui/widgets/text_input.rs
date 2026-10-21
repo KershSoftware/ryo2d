@@ -497,8 +497,8 @@ mod tests {
     d.frame(|ui| ui.text_input(&mut secret).at(FIELD).password().show());
     let shown: Vec<String> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Text { layout, .. } => Some(layout.text().to_string()),
         _ => None,
       })
@@ -563,8 +563,8 @@ mod tests {
   /// The rect commands of the last frame
   fn rects(d: &UiDriver) -> Vec<(Rect, Color)> {
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect { rect, fill, .. } => Some((*rect, *fill)),
         _ => None,
       })
@@ -574,8 +574,8 @@ mod tests {
   /// The texts of the last frame, with their clips
   fn texts(d: &UiDriver) -> Vec<(String, Option<Rect>)> {
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Text { layout, clip, .. } => Some((layout.text().to_string(), *clip)),
         _ => None,
       })

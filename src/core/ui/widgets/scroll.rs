@@ -101,6 +101,22 @@ impl ScrollState {
   }
 }
 
+/// Where a scroll area at `offset` draws its contents from, in whole render
+/// pixels at `px_scale` per UI unit: the offset rounded on each axis it
+/// scrolls (`axes`: sideways, down), 0 on the other and where it is not
+/// finite
+pub(crate) fn drawn_px(offset: Vec2, axes: [bool; 2], px_scale: f32) -> [i32; 2] {
+  let axis = |k: usize| {
+    let px = (offset[k] * px_scale).round();
+    if axes[k] && px.is_finite() {
+      px as i32
+    } else {
+      0
+    }
+  };
+  [axis(0), axis(1)]
+}
+
 /// One scrollbar, in the scroll area's own units
 struct Bar {
   axis: usize,
@@ -581,8 +597,10 @@ impl<'a> Scroll<'_, 'a> {
 
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
-  use super::ScrollState;
-  use crate::core::ui::immediate::UiCommand;
+  use super::{ScrollState, drawn_px};
+  use crate::core::render::ui::snap_rect;
+  use crate::core::testing::UiHarness;
+  use crate::core::ui::immediate::{UiCommand, UiCommands, UiDraw};
   use crate::core::ui::test_util::UiDriver;
   use crate::core::ui::{Rect, UiContext, UiId};
   use glam::Vec2;
@@ -709,7 +727,8 @@ mod tests {
     // Row 0 (-50..-20) lies wholly outside the view: nothing of it is drawn
     let drawn = d
       .commands
-      .commands()
+      .placed(1.0)
+      .iter()
       .filter(|c| matches!(c, UiCommand::Rect { rect, .. } if rect.bottom() <= 0.0))
       .count();
     assert_eq!(drawn, 0);
@@ -1014,5 +1033,186 @@ mod tests {
         .show(rows)
         .id
     })
+  }
+
+  /// A list of 30 rows of 20 units in a 100-unit-tall scroll area at (0, 0);
+  /// the area's id
+  fn scrolled_list(ui: &mut UiContext<'_>) -> UiId {
+    scrolled_list_rows(ui, &mut Vec::new())
+  }
+
+  /// `scrolled_list`, each row's id pushed to `rows`
+  fn scrolled_list_rows(ui: &mut UiContext<'_>, rows: &mut Vec<UiId>) -> UiId {
+    ui.scroll()
+      .height(100.0)
+      .width(200.0)
+      .show(|ui| {
+        for i in 0..30 {
+          let row = ui
+            .button(format!("Row {i}"))
+            .width(200.0)
+            .height(20.0)
+            .show();
+          rows.push(row.id);
+        }
+      })
+      .id
+  }
+
+  /// The first rect drawn in slot `slot`
+  fn first_rect_in(commands: &UiCommands, slot: u16) -> Option<UiCommand> {
+    commands
+      .as_slice()
+      .iter()
+      .find(|d| d.slot == slot && matches!(d.command, UiCommand::Rect { .. }))
+      .map(|d| d.command.clone())
+  }
+
+  #[test]
+  fn a_scroll_area_draws_its_rows_in_a_slot_moved_by_whole_pixels() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.set_ui_scale(1.25); // whole render pixels are 0.8 units
+    let id = h.frame(scrolled_list);
+    h.move_to(50.0, 50.0);
+    h.trackpad(0.0, -13.3); // a fractional offset, at once
+    let first_offset = h.frame(|ui| {
+      scrolled_list(ui);
+      ui.scroll_offset(id)
+    });
+    let slots = h.commands.slots().to_vec();
+    assert_eq!(slots.len(), 2, "slot 0 and the scroll area's");
+    let rows: Vec<&UiDraw> = h
+      .commands
+      .as_slice()
+      .iter()
+      .filter(|d| d.slot == 1 && matches!(d.command, UiCommand::Rect { .. }))
+      .collect();
+    assert!(!rows.is_empty(), "the rows draw in the scroll area's slot");
+    // The rows are where an unscrolled list puts them, relative to the slot
+    let unscrolled_first = rows[0].command.clone();
+    // Short of Row 0 leaving the view (an offset of 20), so it is still the
+    // first row drawn
+    h.trackpad(0.0, -4.9);
+    let second_offset = h.frame(|ui| {
+      scrolled_list(ui);
+      ui.scroll_offset(id)
+    });
+    let first = first_rect_in(&h.commands, 1).unwrap();
+    assert_eq!(
+      format!("{first:?}"),
+      format!("{unscrolled_first:?}"),
+      "scrolling moves the slot, not its contents"
+    );
+    let (a, b) = (slots[1].offset, h.commands.slots()[1].offset);
+    assert_ne!(a, b, "the slot moved");
+    // The slot moved by the change in the drawn offset: the scroll offset
+    // rounded to whole render pixels
+    let drawn = |offset: f32| (offset * 1.25).round() as i32;
+    assert_eq!(
+      b[1] - a[1],
+      -(drawn(second_offset.y) - drawn(first_offset.y)),
+      "the drawn offset is the scroll offset rounded to whole render pixels"
+    );
+  }
+
+  #[test]
+  fn records_under_a_slot_are_absolute() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    let mut rows = Vec::new();
+    h.frame(|ui| scrolled_list_rows(ui, &mut rows));
+    h.move_to(50.0, 50.0);
+    h.trackpad(0.0, -40.0);
+    h.frame(scrolled_list);
+    // Row 2 started at y = 40: scrolled up by 40 it is at the area's top
+    let row = h.record_of(rows[2]).expect("row 2 has a record");
+    assert_eq!(row.rect.y, 0.0, "a record is where the row is drawn");
+  }
+
+  #[test]
+  fn a_page_at_rest_draws_as_it_did() {
+    // No scroll offset: slot 0 places everything exactly as snap_rect did
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.set_ui_scale(1.25);
+    h.frame(|ui| {
+      ui.column()
+        .at(Rect::new(10.3, 7.7, 300.0, 200.0))
+        .gap(3.3)
+        .show(|ui| {
+          ui.button("A").show();
+          ui.text("Some text that wraps at the column's width")
+            .wrap(300.0)
+            .draw();
+        });
+    });
+    assert!(!h.commands.as_slice().is_empty());
+    for d in h.commands.as_slice() {
+      assert_eq!(d.slot, 0);
+      if let UiCommand::Rect { rect, .. } = &d.command {
+        assert_eq!(
+          *rect,
+          snap_rect(*rect, 1.25),
+          "rects stay on the pixel grid"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn a_text_field_in_a_scroll_area_keeps_its_text_inside_it() {
+    // The field clips its text to its box: inside a slot that clip is the
+    // field's own, met with the slot's
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.set_ui_scale(1.25);
+    let mut text = "a text far longer than the field it is typed in".to_string();
+    let mut draw = |h: &mut UiHarness| {
+      h.frame(|ui| {
+        let mut field = UiId::NONE;
+        let area = ui
+          .scroll()
+          .width(300.0)
+          .height(100.0)
+          .show(|ui| {
+            ui.custom(100.0, 30.0).show();
+            field = ui.text_input(&mut text).width(120.0).show().id;
+            for i in 0..10 {
+              ui.custom(100.0, 30.0).id(i).show();
+            }
+          })
+          .id;
+        (area, field)
+      })
+    };
+    draw(&mut h);
+    h.move_to(50.0, 50.0);
+    h.trackpad(0.0, -7.3);
+    let (area, field) = draw(&mut h);
+    let (area, field) = (h.record_of(area).unwrap(), h.record_of(field).unwrap());
+    let texts: Vec<Rect> = h
+      .commands
+      .placed(1.25)
+      .iter()
+      .filter(|c| matches!(c, UiCommand::Text { .. }))
+      .filter_map(UiCommand::clip_rect)
+      .collect();
+    assert_eq!(texts.len(), 1, "the field's text");
+    let (clip, rect) = (texts[0], field.rect);
+    assert!(
+      clip.x >= rect.x
+        && clip.right() <= rect.right()
+        && clip.y >= area.rect.y
+        && clip.bottom() <= rect.bottom(),
+      "the text is clipped to its field: {clip:?} in {rect:?}"
+    );
+    assert!(clip.width < area.rect.width / 2.0, "{clip:?}");
+  }
+
+  #[test]
+  fn the_drawn_offset_is_whole_render_pixels_on_the_scrolled_axes() {
+    assert_eq!(drawn_px(Vec2::new(3.3, 13.3), [false, true], 1.25), [0, 17]);
+    assert_eq!(drawn_px(Vec2::new(3.3, 13.3), [true, true], 2.0), [7, 27]);
+    assert_eq!(
+      drawn_px(Vec2::new(f32::NAN, f32::INFINITY), [true, true], 1.0),
+      [0, 0]
+    );
   }
 }

@@ -157,8 +157,8 @@ mod tests {
     });
     let fills: Vec<Color> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect { fill, .. } => Some(*fill),
         _ => None,
       })
@@ -166,8 +166,8 @@ mod tests {
     assert_eq!(fills, vec![Color::rgb(80, 150, 255)]);
     let lines = d
       .commands
-      .iter()
-      .filter(|(_, c)| matches!(c, UiCommand::Line { .. }))
+      .commands()
+      .filter(|c| matches!(c, UiCommand::Line { .. }))
       .count();
     assert_eq!(lines, 2, "the two strokes of the check");
   }

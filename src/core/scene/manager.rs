@@ -932,8 +932,8 @@ mod tests {
   /// The texts `commands` draw
   fn texts(commands: &crate::core::ui::immediate::UiCommands) -> Vec<String> {
     commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         crate::core::ui::immediate::UiCommand::Text { layout, .. } => {
           Some(layout.text().to_string())
         }
@@ -958,7 +958,7 @@ mod tests {
       "the list opened"
     );
     assert!(
-      commands.iter().any(|(_, c)| c.draw_layer() == 1),
+      commands.commands().any(|c| c.draw_layer() == 1),
       "the open list is on the popup layer after ui_pass"
     );
   }
@@ -998,7 +998,7 @@ mod tests {
     );
     let keys: Vec<(u8, u32)> = commands
       .iter()
-      .map(|(order, c)| (c.draw_layer(), order))
+      .map(|d| (d.command.draw_layer(), d.order))
       .collect();
     let (last, earlier) = keys.split_last().unwrap();
     assert!(earlier.len() > 1, "the lower scene drew its dropdown");

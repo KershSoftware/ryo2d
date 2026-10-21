@@ -479,8 +479,8 @@ mod tests {
     d.frame(draw);
     let ghost: Vec<(Rect, u8)> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Sprite {
           rect, tint, layer, ..
         } if *layer == POPUP_LAYER => Some((*rect, tint.a)),
@@ -563,8 +563,8 @@ mod tests {
     d.frame(slots);
     let ghost: Vec<(Rect, crate::core::ui::Color)> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect {
           rect, fill, layer, ..
         } if *layer == POPUP_LAYER => Some((*rect, *fill)),

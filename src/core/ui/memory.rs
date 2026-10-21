@@ -11,7 +11,7 @@ use super::id::{IdScopes, TapeLog, UiId};
 use super::layout::UiStyle;
 use super::layout::engine::NodeDesc;
 use super::tape::Place;
-use super::tree::Subtree;
+use super::tree::{SlotPlace, Slotted, Subtree};
 use super::types::Rect;
 use super::widgets::drag::DragState;
 #[cfg(not(target_arch = "wasm32"))]
@@ -324,14 +324,19 @@ pub(crate) struct Scratch {
   pub(crate) children: Vec<usize>,
   /// Where each node's run of `children` ends
   pub(crate) child_ends: Vec<usize>,
-  /// How far each node is moved from where the layout put it
+  /// How far each node is moved from where the layout put it, scrolling
+  /// aside
   pub(crate) shift: Vec<Vec2>,
-  /// Each node's rect before snapping
+  /// Each node's rect before snapping, unscrolled
   pub(crate) exact: Vec<Rect>,
-  /// Each node's rect snapped to render pixels
+  /// Each node's rect snapped to render pixels, absolute (its record's)
   pub(crate) rects: Vec<Rect>,
-  /// Each node's clip
+  /// Each node's clip, absolute (its record's)
   pub(crate) clips: Vec<Option<Rect>>,
+  /// Each node's slot, and its rect and clip as its draws carry them
+  pub(crate) slotted: Vec<Slotted>,
+  /// The subtree's slots: slot 0, then each scroll area's
+  pub(crate) slots: Vec<SlotPlace>,
   /// The subtree index of each node a replay pushed, by its place in the
   /// tape; a replay inside another stacks its own after the outer's
   pub(crate) replayed: Vec<usize>,

@@ -40,7 +40,7 @@ mod commands;
 mod context;
 mod input;
 
-pub(crate) use commands::{UiCommand, UiCommands};
+pub(crate) use commands::{ScrollSlot, UiCommand, UiCommands, UiDraw, intersect, meet};
 pub(crate) use context::{OVERLAY_LAYER, PAGE_LAYER, POPUP_LAYER, PendingRebind, PromptContext};
 pub use context::{UiContext, UiText};
 pub use input::{UiConsumed, UiInput};

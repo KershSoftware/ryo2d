@@ -377,13 +377,13 @@ mod tests {
     d.release();
     d.frame(|ui| draw(ui, &mut sel));
     d.frame(|ui| draw(ui, &mut sel));
-    let layers: Vec<u8> = d.commands.iter().map(|(_, c)| c.draw_layer()).collect();
+    let layers: Vec<u8> = d.commands.commands().map(|c| c.draw_layer()).collect();
     assert!(layers.contains(&1), "the list is on the popup layer");
   }
 
   /// Whether the list is open: anything is drawn on the popup layer
   fn list_shown(d: &UiDriver) -> bool {
-    d.commands.iter().any(|(_, c)| c.draw_layer() == 1)
+    d.commands.commands().any(|c| c.draw_layer() == 1)
   }
 
   #[test]
@@ -427,8 +427,8 @@ mod tests {
     assert!(!list_shown(&d));
     let texts: Vec<String> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         crate::core::ui::immediate::UiCommand::Text { layout, .. } => {
           Some(layout.text().to_string())
         }

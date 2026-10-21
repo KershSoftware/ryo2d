@@ -75,6 +75,8 @@ pub struct UiHarness {
   /// The last frame's commands
   pub(crate) commands: UiCommands,
   size: (f32, f32),
+  /// Render pixels per UI unit
+  px_scale: f32,
   pointer: PointerInput,
   /// A wheel step for the next frame, in lines
   wheel: Vec2,
@@ -145,6 +147,7 @@ impl UiHarness {
       text,
       commands: UiCommands::default(),
       size: (width, height),
+      px_scale: 1.0,
       pointer: PointerInput {
         position: Vec2::ZERO,
         pressed: [false; 2],
@@ -403,6 +406,13 @@ impl UiHarness {
   /// Change the UI's size, in UI units, from the next frame
   pub fn resize(&mut self, width: f32, height: f32) {
     self.size = (width, height);
+  }
+
+  /// Draw `scale` render pixels per UI unit from the next frame (the UI
+  /// keeps its size in UI units)
+  #[cfg(test)]
+  pub(crate) fn set_ui_scale(&mut self, scale: f32) {
+    self.px_scale = scale;
   }
 
   /// Move the pointer to (x, y) in UI units
@@ -688,12 +698,17 @@ impl UiHarness {
     result
   }
 
-  /// The UI's size and scale: UI units are render pixels
+  /// The UI's size and scale: UI units are render pixels unless a test
+  /// set another scale
   fn space(&self) -> UiSpace {
+    let s = self.px_scale;
     UiSpace {
       size: Vec2::new(self.size.0, self.size.1),
-      px_scale: 1.0,
-      image: (self.size.0.ceil() as u32, self.size.1.ceil() as u32),
+      px_scale: s,
+      image: (
+        (self.size.0 * s).ceil() as u32,
+        (self.size.1 * s).ceil() as u32,
+      ),
       mouse_scale: 1.0,
     }
   }
@@ -791,7 +806,8 @@ pub(crate) fn ui_snapshot(parts: &UiSnapshot<'_>) -> String {
   use std::fmt::Write;
   let memory = parts.memory;
   let mut out = String::new();
-  let _ = writeln!(out, "commands {:?}", parts.commands);
+  let _ = writeln!(out, "commands {:?}", parts.commands.as_slice());
+  let _ = writeln!(out, "slots {:?}", parts.commands.slots());
   let mut records: Vec<_> = memory.drawn_records().collect();
   records.sort_unstable_by_key(|&(id, _)| id);
   for (id, record) in records {

@@ -346,7 +346,7 @@ mod tests {
           .paint(|p, _| p.rect(Rect::new(2.0, 2.0, 4.0, 4.0), Color::RED));
       });
     });
-    let rect = d.commands.iter().find_map(|(_, c)| match c {
+    let rect = d.commands.commands().find_map(|c| match c {
       UiCommand::Rect { rect, .. } => Some(*rect),
       _ => None,
     });
@@ -559,7 +559,7 @@ mod tests {
         });
     });
     let mut kinds = Vec::new();
-    for (_, command) in d.commands.iter() {
+    for command in d.commands.commands() {
       kinds.push(match command {
         UiCommand::Rect {
           rect,

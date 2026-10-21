@@ -156,8 +156,8 @@ mod tests {
     });
     let drawn: Vec<(Rect, Filter)> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Sprite { rect, filter, .. } => Some((*rect, *filter)),
         _ => None,
       })

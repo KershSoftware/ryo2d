@@ -18,7 +18,7 @@ use crate::core::render::ui::{
 use crate::core::render::ui_retain::{TextSink, UiRenderEnv, UiTextCache};
 use crate::core::render::{DrawGlyph, DrawList, DrawPayload, reach};
 use crate::core::text::GlyphFormat;
-use crate::core::ui::immediate::{UiCommand, UiCommands};
+use crate::core::ui::immediate::{ScrollSlot, UiCommand, UiCommands, UiDraw};
 
 /// A sprite instance whose uv and kind are fixed once its texture is
 /// resident: its uv rect is placed in the texture's slot, its sampler and
@@ -169,6 +169,9 @@ impl Seen {
 /// What every command of the frame is built with
 struct Frame<'f> {
   env: &'f UiRenderEnv,
+  /// The frame's slot table: a draw in a slot is moved by its offset and
+  /// clipped by its clip before it is built
+  slots: &'f [ScrollSlot],
   seen: Seen,
   sources: Option<&'f TextSources<'f>>,
   real_time: f32,
@@ -177,16 +180,18 @@ struct Frame<'f> {
 /// Where a command falls in the painter's order: by z (the layer, then the
 /// recorded order), then with lines after the rest at one z (as the batch
 /// draws a line after a sprite at equal z), then as recorded
-fn paint_key((order, command): &(u32, UiCommand)) -> (i32, bool) {
-  let line = matches!(command, UiCommand::Line { .. });
-  (ui_z(command.draw_layer(), *order), line)
+fn paint_key(draw: &UiDraw) -> (i32, bool) {
+  let line = matches!(draw.command, UiCommand::Line { .. });
+  (ui_z(draw.command.draw_layer(), draw.order), line)
 }
 
 /// Build the frame's UI commands into `build` (cleared first): the UI's
 /// instances in painter's order, what each samples, and its sprites, whose
 /// uv and kind are fixed once their textures are resident.
 ///
-/// A command drawing no pixel (wholly outside its clip or the UI camera's
+/// A draw in a slot is built moved by the slot's offset, under the slot's
+/// clip and its own; one whose slot is not in the table builds nothing. A
+/// command drawing no pixel (wholly outside its clip or the UI camera's
 /// view, or with an empty clip) builds nothing. Texts go through `texts`;
 /// without `sources` they are skipped. `targets.list` is scratch, cleared
 /// for each text and line.
@@ -200,13 +205,14 @@ pub(crate) fn build_ui(
   texts: &mut UiTextCache<UiInstance>,
 ) {
   build.clear();
-  let commands = commands.as_slice();
   let frame = Frame {
     env,
+    slots: commands.slots(),
     seen: Seen::of(env),
     sources,
     real_time,
   };
+  let commands = commands.as_slice();
   // Commands usually arrive in the painter's order: sort only when one is
   // out of it
   let mut last = None;
@@ -217,8 +223,8 @@ pub(crate) fn build_ui(
     rising
   });
   if in_order {
-    for (index, (order, command)) in (0..).zip(commands) {
-      build_command(build, &frame, targets, texts, (index, *order), command);
+    for (index, draw) in (0..).zip(commands) {
+      build_command(build, &frame, targets, texts, index, draw);
     }
   } else {
     let mut painted = std::mem::take(&mut build.order);
@@ -227,8 +233,8 @@ pub(crate) fn build_ui(
     // Stable: commands equal in the order keep the order recorded
     painted.sort_by_key(|&index| paint_key(&commands[index as usize]));
     for &index in &painted {
-      if let Some((order, command)) = commands.get(index as usize) {
-        build_command(build, &frame, targets, texts, (index, *order), command);
+      if let Some(draw) = commands.get(index as usize) {
+        build_command(build, &frame, targets, texts, index, draw);
       }
     }
     build.order = painted;
@@ -241,22 +247,26 @@ pub(crate) fn build_ui(
   textures.extend(resident.iter().map(|&(_, texture)| texture));
 }
 
-/// Build one command (the `index`-th of the frame's, recorded `order`-th),
-/// at its place in the painter's order
+/// Build one draw (the `index`-th of the frame's), at its place in the
+/// painter's order: in its slot's place, then as an absolute command
 fn build_command(
   build: &mut UiBuild,
   frame: &Frame<'_>,
   targets: &mut TextTargets<'_>,
   texts: &mut UiTextCache<UiInstance>,
-  (index, order): (u32, u32),
-  command: &UiCommand,
+  index: u32,
+  draw: &UiDraw,
 ) {
   let space = &frame.env.space;
+  let Some(command) = draw.placed(frame.slots, space.px_scale) else {
+    return;
+  };
+  let command = &*command;
   let Some(scissor) = scissor_of(command.clip_rect(), space) else {
     return;
   };
   let clip = ClipRect::of(scissor, space.image);
-  let z = ui_z(command.draw_layer(), order);
+  let z = ui_z(command.draw_layer(), draw.order);
   match command {
     UiCommand::Rect {
       rect,

@@ -2459,7 +2459,7 @@ mod tests {
       .build_headless();
     e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 320, 240), 1.0);
     let outlined = |e: &Engine| {
-      e.ui_commands.iter().any(|(_, c)| {
+      e.ui_commands.commands().any(|c| {
         matches!(c, UiCommand::Rect { rect, layer, border: Some(_), .. } if *layer == OVERLAY_LAYER && *rect == AT)
       })
     };

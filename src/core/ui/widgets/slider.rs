@@ -414,8 +414,8 @@ mod tests {
       });
       let rects: Vec<Rect> = d
         .commands
-        .iter()
-        .filter_map(|(_, c)| match c {
+        .commands()
+        .filter_map(|c| match c {
           UiCommand::Rect { rect, .. } => Some(*rect),
           _ => None,
         })
@@ -442,8 +442,8 @@ mod tests {
       });
       let rects: Vec<Rect> = d
         .commands
-        .iter()
-        .filter_map(|(_, c)| match c {
+        .commands()
+        .filter_map(|c| match c {
           UiCommand::Rect { rect, .. } => Some(*rect),
           _ => None,
         })
@@ -495,8 +495,8 @@ mod tests {
     });
     let texts: Vec<String> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Text { layout, .. } => Some(layout.text().to_string()),
         _ => None,
       })

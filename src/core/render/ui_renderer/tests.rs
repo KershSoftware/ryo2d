@@ -185,3 +185,82 @@ fn the_upload_is_the_one_range_that_changed() {
   assert_eq!(changed_range(&[], &held), 0..100);
   assert!(changed_range(&[], &[]).is_empty());
 }
+
+#[test]
+fn a_rect_in_a_slot_builds_as_the_same_rect_placed_absolute() {
+  use crate::core::render::UiSpace;
+  use crate::core::render::ui::{rect_instance, scissor_of};
+  use crate::core::ui::immediate::{ScrollSlot, UiCommand, UiDraw};
+  use crate::core::ui::{Color, Rect};
+  use glam::Vec2;
+
+  let space = UiSpace {
+    size: Vec2::new(320.0, 240.0),
+    px_scale: 1.0,
+    image: (320, 240),
+    mouse_scale: 1.0,
+  };
+  let rect = |rect, clip| UiCommand::Rect {
+    rect,
+    fill: Color::new(40, 160, 220, 200),
+    radius: 4.0,
+    border: Some((1.5, Color::WHITE)),
+    clip,
+    layer: 0,
+  };
+  let slots = [
+    ScrollSlot {
+      offset: [0, 0],
+      clip: None,
+    },
+    ScrollSlot {
+      offset: [0, 7],
+      clip: Some(Rect::new(0.0, 5.0, 100.0, 10.0)),
+    },
+  ];
+  // The instance (data and clip) a rect draw builds, as `build_command` does
+  let instance = |draw: &UiDraw| {
+    let command = draw.placed(&slots, space.px_scale).expect("a slot");
+    let UiCommand::Rect {
+      rect,
+      fill,
+      radius,
+      border,
+      ..
+    } = *command
+    else {
+      panic!("a rect")
+    };
+    let scissor = scissor_of(command.clip_rect(), &space).expect("a clip that draws");
+    let (quad, _, _) = rect_instance(rect, fill, radius, border, &space, false).expect("a rect");
+    UiInstance::quad(
+      UiKind::RECT,
+      &quad,
+      ClipRect::of(scissor, space.image),
+      false,
+      0,
+    )
+  };
+  let in_slot = UiDraw {
+    order: 0,
+    slot: 1,
+    command: rect(Rect::new(0.0, 0.0, 50.0, 20.0), None),
+  };
+  let absolute = UiDraw {
+    order: 0,
+    slot: 0,
+    command: rect(
+      Rect::new(0.0, 7.0, 50.0, 20.0),
+      Some(Rect::new(0.0, 5.0, 100.0, 10.0)),
+    ),
+  };
+  assert_eq!(
+    bytemuck::bytes_of(&instance(&in_slot)),
+    bytemuck::bytes_of(&instance(&absolute))
+  );
+  let lost = UiDraw { slot: 2, ..in_slot };
+  assert!(
+    lost.placed(&slots, space.px_scale).is_none(),
+    "past the table"
+  );
+}

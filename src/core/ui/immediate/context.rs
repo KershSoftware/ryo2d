@@ -1518,6 +1518,7 @@ impl<'a> UiContext<'a> {
     let order = self.next_order();
     self.commands.push(
       order,
+      0,
       UiCommand::Rect {
         rect,
         fill,
@@ -1657,6 +1658,7 @@ impl<'a> UiContext<'a> {
     let order = self.next_order();
     self.commands.push(
       order,
+      0,
       UiCommand::Text {
         layout,
         origin,
@@ -1932,6 +1934,7 @@ impl<'a> UiContext<'a> {
     let order = self.next_order();
     self.commands.push(
       order,
+      0,
       UiCommand::Sprite {
         sprite: sprite.clone(),
         rect,
@@ -2040,6 +2043,7 @@ impl<'a> UiContext<'a> {
     let order = self.next_order();
     self.commands.push(
       order,
+      0,
       UiCommand::Line {
         points: points.into(),
         at: Vec2::ZERO,

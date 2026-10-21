@@ -290,8 +290,8 @@ mod tests {
     assert_ne!(selected.fill, plain.fill);
     let tabs: Vec<(Rect, crate::core::ui::Color)> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect { rect, fill, .. } => Some((*rect, *fill)),
         _ => None,
       })

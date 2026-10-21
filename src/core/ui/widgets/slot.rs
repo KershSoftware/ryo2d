@@ -210,8 +210,8 @@ mod tests {
     });
     let sprites: Vec<Rect> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Sprite { rect, .. } => Some(*rect),
         _ => None,
       })
@@ -223,8 +223,8 @@ mod tests {
     );
     let texts: Vec<String> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Text { layout, .. } => Some(layout.text().to_string()),
         _ => None,
       })
@@ -247,8 +247,8 @@ mod tests {
     });
     let corners: Vec<(f32, f32)> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Text { layout, origin, .. } => {
           let end = *origin + layout.size;
           Some((end.x, end.y))
@@ -276,8 +276,8 @@ mod tests {
     });
     let borders: Vec<_> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect { border, .. } => Some(*border),
         _ => None,
       })

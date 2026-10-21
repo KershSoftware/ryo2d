@@ -123,8 +123,8 @@ mod tests {
 
   fn popup_texts(d: &UiDriver) -> Vec<String> {
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Text { layout, layer, .. } if *layer == POPUP_LAYER => {
           Some(layout.text().to_string())
         }
@@ -165,7 +165,7 @@ mod tests {
 
   /// The first rect the last frame drew on the popup layer
   fn popup_rect(d: &UiDriver) -> Option<Rect> {
-    d.commands.iter().find_map(|(_, c)| match c {
+    d.commands.commands().find_map(|c| match c {
       UiCommand::Rect { rect, layer, .. } if *layer == POPUP_LAYER => Some(*rect),
       _ => None,
     })

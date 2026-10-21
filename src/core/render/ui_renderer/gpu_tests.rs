@@ -994,7 +994,7 @@ mod building {
   use crate::core::text::{
     Fonts, GlyphRasterizer, Icon, PlacedIcon, TextEffects, TextEngine, TextIcons, TextLayout,
   };
-  use crate::core::ui::immediate::{UiCommand, UiCommands};
+  use crate::core::ui::immediate::{ScrollSlot, UiCommand, UiCommands, intersect};
   use crate::core::ui::{Color, Rect};
 
   /// What the text emitters write into, shared by the build and what it is
@@ -1136,7 +1136,7 @@ mod building {
   fn commands_of(list: impl IntoIterator<Item = UiCommand>) -> UiCommands {
     let mut commands = UiCommands::default();
     for (order, command) in (0..).zip(list) {
-      commands.push(order, command);
+      commands.push(order, 0, command);
     }
     commands
   }
@@ -1175,9 +1175,10 @@ mod building {
   ) -> DrawList {
     writes.list.clear();
     let space = &env.space;
-    for (order, command) in commands.as_slice() {
+    for draw in commands.as_slice() {
+      let command = &draw.command;
       let scissor = scissor_of(command.clip_rect(), space).expect("a clip that draws");
-      let z = ui_z(command.draw_layer(), *order);
+      let z = ui_z(command.draw_layer(), draw.order);
       if let Some((layout, place)) = text_of(command, space, z, scissor, 0.0) {
         emit_text(sources, &mut writes.targets(), layout, &place);
       }
@@ -1230,9 +1231,9 @@ mod building {
     };
     // Each rect's x is ten times its order
     let mut commands = UiCommands::default();
-    commands.push(1, rect_at(10.0, 100.0, None, 1));
+    commands.push(1, 0, rect_at(10.0, 100.0, None, 1));
     for order in [5, 2, 9] {
-      commands.push(order, rect_at(order as f32 * 10.0, 10.0, None, 0));
+      commands.push(order, 0, rect_at(order as f32 * 10.0, 10.0, None, 0));
     }
     let build = built(&mut writes, &commands, env(), None);
     let painted: Vec<(f32, f32)> = build
@@ -1256,12 +1257,100 @@ mod building {
       return;
     };
     let mut commands = UiCommands::default();
-    commands.push(3, line(&[Vec2::new(5.0, 5.0), Vec2::new(60.0, 30.0)], None));
-    commands.push(3, rect_at(10.0, 10.0, None, 0));
+    commands.push(
+      3,
+      0,
+      line(&[Vec2::new(5.0, 5.0), Vec2::new(60.0, 30.0)], None),
+    );
+    commands.push(3, 0, rect_at(10.0, 10.0, None, 0));
     let build = built(&mut writes, &commands, env(), None);
     let kinds: Vec<u32> = build.instances.iter().map(UiInstance::kind).collect();
     assert_eq!(kinds[0], UiKind::RECT);
     assert!(kinds.len() > 1 && kinds[1..].iter().all(|&kind| kind == UiKind::LINE));
+  }
+
+  #[test]
+  fn draws_in_a_slot_build_as_the_same_draws_placed_absolute() {
+    let Some(mut writes) = Writes::new() else {
+      return;
+    };
+    let swatch = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let slot_clip = Rect::new(0.0, 5.0, 100.0, 60.0);
+    let inner = Rect::new(4.0, 2.0, 40.0, 30.0);
+    // At a fractional scale: 3 and 7 render pixels are 2.4 and 5.6 units
+    let env = env_at(1.25, false);
+    let by = Vec2::new(3.0, 7.0) / 1.25;
+    let draws = |placed: bool| {
+      let at = |x: f32, y: f32| {
+        if placed {
+          Vec2::new(x, y) + by
+        } else {
+          Vec2::new(x, y)
+        }
+      };
+      let rect = |x, y| Rect::new(at(x, y).x, at(x, y).y, 20.0, 10.0);
+      let clip = |own: Option<Rect>| match (placed, own) {
+        // Placed absolute: the slot's clip with the draw's own moved there
+        (true, Some(own)) => Some(intersect(
+          slot_clip,
+          Rect::new(own.x + by.x, own.y + by.y, own.width, own.height),
+        )),
+        (true, None) => Some(slot_clip),
+        (false, own) => own,
+      };
+      [
+        UiCommand::Rect {
+          rect: rect(0.0, 0.0),
+          fill: Color::new(200, 60, 30, 230),
+          radius: 3.0,
+          border: Some((1.5, Color::WHITE)),
+          clip: clip(None),
+          layer: 0,
+        },
+        UiCommand::Sprite {
+          sprite: swatch.clone(),
+          rect: rect(10.0, 12.0),
+          uv: [0.0, 0.0, 1.0, 1.0],
+          tint: Color::WHITE,
+          filter: Filter::Default,
+          clip: clip(Some(inner)),
+          layer: 0,
+        },
+        UiCommand::Line {
+          points: [Vec2::new(5.0, 5.0), Vec2::new(60.0, 30.0)].into(),
+          at: at(2.0, 1.0),
+          width: 3.0,
+          color: Color::WHITE,
+          closed: false,
+          clip: clip(None),
+          layer: 0,
+        },
+      ]
+    };
+    let mut slotted = UiCommands::default();
+    let slot = slotted.push_slot(ScrollSlot {
+      offset: [3, 7],
+      clip: Some(slot_clip),
+    });
+    for (order, command) in (0..).zip(draws(false)) {
+      slotted.push(order, slot, command);
+    }
+    // Past the slot table: skipped
+    slotted.push(9, slot + 1, rect_at(0.0, 0.0, None, 0));
+    let mut absolute = UiCommands::default();
+    for (order, command) in (0..).zip(draws(true)) {
+      absolute.push(order, 0, command);
+    }
+    let slotted = built(&mut writes, &slotted, env, None);
+    let absolute = built(&mut writes, &absolute, env, None);
+    assert!(absolute.instances.len() > 2, "{:?}", absolute.instances);
+    assert_eq!(
+      bytemuck::cast_slice::<UiInstance, u8>(&slotted.instances),
+      bytemuck::cast_slice::<UiInstance, u8>(&absolute.instances),
+      "data and clips"
+    );
+    assert_eq!(slotted.needs, absolute.needs);
+    assert_eq!(slotted.sprites, absolute.sprites);
   }
 
   #[test]

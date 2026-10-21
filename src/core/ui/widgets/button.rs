@@ -265,8 +265,8 @@ mod tests {
   /// The fills of the last frame's rect commands
   fn fills(d: &UiDriver) -> Vec<Color> {
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect { fill, .. } => Some(*fill),
         _ => None,
       })
@@ -321,11 +321,11 @@ mod tests {
       let style = TextStyle::default();
       (ui.measure_text("Save", &style), ui.line_height(&style))
     });
-    let icon = d.commands.iter().find_map(|(_, c)| match c {
+    let icon = d.commands.commands().find_map(|c| match c {
       UiCommand::Sprite { rect, .. } => Some(*rect),
       _ => None,
     });
-    let text = d.commands.iter().find_map(|(_, c)| c.text_origin());
+    let text = d.commands.commands().find_map(|c| c.text_origin());
     let (Some(icon), Some(text)) = (icon, text) else {
       panic!("an icon and a label");
     };
@@ -351,8 +351,8 @@ mod tests {
     assert_eq!(fills(&d).len(), 1);
     assert_eq!(
       d.commands
-        .iter()
-        .filter(|(_, c)| c.text_origin().is_some())
+        .commands()
+        .filter(|c| c.text_origin().is_some())
         .count(),
       1
     );
@@ -872,8 +872,8 @@ mod tests {
   /// The last frame's focus rings: transparent rects with a border
   fn rings(d: &UiDriver) -> Vec<(Rect, f32, Color)> {
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect {
           rect,
           fill,
@@ -1038,8 +1038,8 @@ mod tests {
     });
     let fills: Vec<Color> = d
       .commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect { fill, .. } => Some(*fill),
         _ => None,
       })
@@ -1122,7 +1122,7 @@ mod tests {
     for _ in 0..3 {
       d.frame(draw);
     }
-    let ring = d.commands.iter().find_map(|(_, c)| match c {
+    let ring = d.commands.commands().find_map(|c| match c {
       UiCommand::Rect {
         border: Some((width, color)),
         fill,
@@ -1151,7 +1151,7 @@ mod tests {
     let disabled = fills(&d);
     assert_ne!(disabled, enabled);
     assert_eq!(disabled[0].a, 120, "dimmed like any disabled button");
-    let text = d.commands.iter().find_map(|(_, c)| match c {
+    let text = d.commands.commands().find_map(|c| match c {
       UiCommand::Text { opacity, .. } => Some(*opacity),
       _ => None,
     });

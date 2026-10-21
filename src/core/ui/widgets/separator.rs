@@ -80,8 +80,8 @@ mod tests {
 
   fn rects(d: &UiDriver) -> Vec<Rect> {
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect { rect, .. } => Some(*rect),
         _ => None,
       })

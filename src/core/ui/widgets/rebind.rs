@@ -405,8 +405,8 @@ mod tests {
   fn texts(d: &UiDriver) -> Vec<String> {
     use crate::core::ui::immediate::UiCommand;
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Text { layout, .. } => Some(layout.text().to_string()),
         _ => None,
       })

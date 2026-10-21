@@ -262,8 +262,8 @@ mod tests {
 
   fn shown(d: &UiDriver) -> Vec<String> {
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Text { layout, .. } => Some(layout.text().to_string()),
         _ => None,
       })
@@ -492,7 +492,7 @@ mod tests {
       let caption = ui.theme().text.caption.style();
       ui.line_height(&caption)
     });
-    let rect = d.commands.iter().find_map(|(_, c)| match c {
+    let rect = d.commands.commands().find_map(|c| match c {
       UiCommand::Sprite { rect, .. } => Some(*rect),
       _ => None,
     });

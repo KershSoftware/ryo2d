@@ -9,7 +9,7 @@ use crate::core::hash::FastHasher;
 use crate::core::render::UiSpace;
 use crate::core::text::{Icon, TextIcons};
 use crate::core::ui::Rect;
-use crate::core::ui::immediate::{UiCommand, UiCommands};
+use crate::core::ui::immediate::{ScrollSlot, UiCommand, UiCommands, UiDraw};
 
 #[cfg(test)]
 mod gpu_tests;
@@ -51,10 +51,12 @@ pub(crate) struct UiRenderEnv {
 /// Whether the UI image can be shown again as it is, and what it holds
 #[derive(Debug, Default)]
 pub(crate) struct UiRetain {
-  /// The commands the UI image holds or is being drawn with: copies, so the
+  /// The draws the UI image holds or is being drawn with: copies, so the
   /// layouts and points they share stay alive and no address in them is
   /// reused while compared
-  drawn: Vec<(u32, UiCommand)>,
+  drawn: Vec<UiDraw>,
+  /// The slot table they were drawn with
+  slots: Vec<ScrollSlot>,
   /// Each drawn command's stamp (`stamp_of`)
   stamps: Vec<u64>,
   env: Option<UiRenderEnv>,
@@ -67,10 +69,11 @@ pub(crate) struct UiRetain {
 
 impl UiRetain {
   /// Whether this frame shows the UI image as it is: its commands draw what
-  /// the image holds (the same commands in the same order, the same sprite
-  /// and icon versions, none time-driven), in the same environment, and
-  /// the image (epoch `image`) is the one they were drawn into. When not,
-  /// the commands become what the image is to hold, once drawn.
+  /// the image holds (the same commands in the same order and slots, the
+  /// same slot table, the same sprite and icon versions, none time-driven),
+  /// in the same environment, and the image (epoch `image`) is the one they
+  /// were drawn into. When not, the commands become what the image is to
+  /// hold, once drawn.
   pub(crate) fn keep(
     &mut self,
     commands: &UiCommands,
@@ -82,24 +85,30 @@ impl UiRetain {
     let same = !now.is_empty()
       && self.image == Some(image)
       && self.env == Some(env)
+      && commands.slots() == self.slots.as_slice()
       && now.len() == self.drawn.len()
-      && now.iter().zip(&self.drawn).zip(&self.stamps).all(
-        |(((order, command), (was_order, was)), stamp)| {
-          order == was_order
-            && !animated(command)
-            && same(command, was)
-            && stamp_of(command, icons) == *stamp
-        },
-      );
+      && now
+        .iter()
+        .zip(&self.drawn)
+        .zip(&self.stamps)
+        .all(|((draw, was), stamp)| {
+          draw.order == was.order
+            && draw.slot == was.slot
+            && !animated(&draw.command)
+            && same(&draw.command, &was.command)
+            && stamp_of(&draw.command, icons) == *stamp
+        });
     if same {
       return true;
     }
     self.drawn.clear();
     self.drawn.extend_from_slice(now);
+    self.slots.clear();
+    self.slots.extend_from_slice(commands.slots());
     self.stamps.clear();
     self
       .stamps
-      .extend(now.iter().map(|(_, command)| stamp_of(command, icons)));
+      .extend(now.iter().map(|draw| stamp_of(&draw.command, icons)));
     self.env = Some(env);
     self.image = None;
     false
@@ -122,6 +131,7 @@ impl UiRetain {
   /// Forget the image (retention was turned off)
   pub(crate) fn clear(&mut self) {
     self.drawn.clear();
+    self.slots.clear();
     self.stamps.clear();
     self.env = None;
     self.image = None;

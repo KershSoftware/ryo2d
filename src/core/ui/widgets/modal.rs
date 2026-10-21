@@ -261,7 +261,7 @@ mod tests {
     };
     d.frame(draw);
     let dialog = d.frame(draw).rect;
-    let dim = d.commands.iter().find_map(|(_, c)| match c {
+    let dim = d.commands.commands().find_map(|c| match c {
       UiCommand::Rect {
         rect, fill, layer, ..
       } if *layer == 1 => Some((*rect, *fill)),
@@ -294,7 +294,7 @@ mod tests {
         .iter()
         .all(|v| v.abs() < 0.5)
     };
-    let fill = d.commands.iter().find_map(|(_, c)| match c {
+    let fill = d.commands.commands().find_map(|c| match c {
       UiCommand::Rect {
         rect, fill, layer, ..
       } if *layer == 1 && near(*rect, dialog) => Some(*fill),
@@ -318,8 +318,8 @@ mod tests {
       d.frame(|ui| ui.confirm("Quit?", message));
     }
     d.commands
-      .iter()
-      .filter_map(|(_, c)| match c {
+      .commands()
+      .filter_map(|c| match c {
         UiCommand::Rect { rect, layer, .. } if *layer == 1 && rect.width < 400.0 => {
           Some(rect.height)
         }

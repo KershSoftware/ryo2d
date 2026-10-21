@@ -7,7 +7,7 @@ use crate::core::asset::SpriteHandle;
 use crate::core::graphics::Sprite;
 use crate::core::render::UiSpace;
 use crate::core::text::{GlyphStyle, Icon, PlacedIcon, TextIcons, TextLayout};
-use crate::core::ui::immediate::{UiCommand, UiCommands};
+use crate::core::ui::immediate::{ScrollSlot, UiCommand, UiCommands};
 use crate::core::ui::{Color, Rect};
 
 fn env() -> UiRenderEnv {
@@ -63,7 +63,7 @@ fn text(layout: &Arc<TextLayout>) -> UiCommand {
 fn commands(list: &[UiCommand]) -> UiCommands {
   let mut commands = UiCommands::default();
   for (order, command) in list.iter().enumerate() {
-    commands.push(order as u32, command.clone());
+    commands.push(order as u32, 0, command.clone());
   }
   commands
 }
@@ -98,7 +98,7 @@ fn a_changed_number_redraws() {
 fn another_order_redraws() {
   let mut retain = drawn(&[rect(0.0)]);
   let mut moved = UiCommands::default();
-  moved.push(1, rect(0.0));
+  moved.push(1, 0, rect(0.0));
   assert!(!retain.keep(&moved, None, env(), 7));
 }
 
@@ -233,4 +233,58 @@ fn lines_with_equal_points_keep_and_a_moved_point_redraws() {
   assert!(retain.keep(&commands(&[line(&points)]), None, env(), 7));
   let moved = [Vec2::new(1.0, 2.0), Vec2::new(30.0, 41.0)];
   assert!(!retain.keep(&commands(&[line(&moved)]), None, env(), 7));
+}
+
+#[test]
+fn a_frame_whose_only_change_is_a_slot_offset_is_not_kept() {
+  let mut retain = UiRetain::default();
+  let clip = Some(Rect::new(0.0, 0.0, 100.0, 100.0));
+  let mut commands = UiCommands::default();
+  commands.clear();
+  let slot = commands.push_slot(ScrollSlot {
+    offset: [0, -10],
+    clip,
+  });
+  commands.push(0, slot, rect(0.0));
+  assert!(
+    !retain.keep(&commands, None, env(), 7),
+    "the first frame is drawn"
+  );
+  retain.presented(false, true, 7);
+  commands.clear();
+  let slot = commands.push_slot(ScrollSlot {
+    offset: [0, -11],
+    clip,
+  });
+  commands.push(0, slot, rect(0.0));
+  assert!(
+    !retain.keep(&commands, None, env(), 7),
+    "a moved slot moves pixels"
+  );
+  retain.presented(false, true, 7);
+  assert!(
+    retain.keep(&commands, None, env(), 7),
+    "unchanged, it is kept"
+  );
+}
+
+#[test]
+fn a_draw_moved_to_another_slot_is_not_kept() {
+  let clip = Some(Rect::new(0.0, 0.0, 100.0, 100.0));
+  let frame = |slot_of_rect: bool| {
+    let mut commands = UiCommands::default();
+    let slot = commands.push_slot(ScrollSlot {
+      offset: [0, 0],
+      clip,
+    });
+    commands.push(0, if slot_of_rect { slot } else { 0 }, rect(0.0));
+    commands
+  };
+  let mut retain = UiRetain::default();
+  assert!(!retain.keep(&frame(false), None, env(), 7));
+  retain.presented(false, true, 7);
+  assert!(
+    !retain.keep(&frame(true), None, env(), 7),
+    "the same command in a slot draws elsewhere"
+  );
 }

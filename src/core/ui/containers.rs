@@ -461,8 +461,8 @@ mod tests {
   fn texts(commands: &UiCommands) -> Vec<(u32, Vec2)> {
     commands
       .iter()
-      .filter_map(|(order, c)| match c {
-        UiCommand::Text { origin, .. } => Some((order, *origin)),
+      .filter_map(|d| match &d.command {
+        UiCommand::Text { origin, .. } => Some((d.order, *origin)),
         _ => None,
       })
       .collect()
@@ -522,7 +522,7 @@ mod tests {
       .show(|_| {});
     drop(ui);
     assert_eq!(response.rect, Rect::new(150.0, 130.0, 100.0, 40.0));
-    let rect = commands.iter().find_map(|(_, c)| match c {
+    let rect = commands.commands().find_map(|c| match c {
       UiCommand::Rect { rect, .. } => Some(*rect),
       _ => None,
     });
@@ -574,7 +574,7 @@ mod tests {
     drop(ui);
     let mut kinds: Vec<(u32, &'static str)> = commands
       .iter()
-      .map(|(order, c)| (order, c.kind_name()))
+      .map(|d| (d.order, d.command.kind_name()))
       .collect();
     kinds.sort();
     assert_eq!(
@@ -591,7 +591,7 @@ mod tests {
       ui.text("several words that cannot fit on one line");
     });
     drop(ui);
-    let lines = commands.iter().find_map(|(_, c)| match c {
+    let lines = commands.commands().find_map(|c| match c {
       UiCommand::Text { layout, .. } => Some(layout.lines.len()),
       _ => None,
     });
@@ -723,13 +723,13 @@ mod tests {
     });
     let sprites = d
       .commands
-      .iter()
-      .filter(|(_, c)| matches!(c, UiCommand::Sprite { .. }))
+      .commands()
+      .filter(|c| matches!(c, UiCommand::Sprite { .. }))
       .count();
     let rects = d
       .commands
-      .iter()
-      .filter(|(_, c)| matches!(c, UiCommand::Rect { .. }))
+      .commands()
+      .filter(|c| matches!(c, UiCommand::Rect { .. }))
       .count();
     assert_eq!(
       (sprites, rects),
