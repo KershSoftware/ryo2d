@@ -554,6 +554,439 @@ fn every_kind_draws_as_the_batch_draws_it() {
   );
 }
 
+/// A render target shown as UI sprites, the linear sprite body: a world
+/// camera draws into it through the batch, then the UI camera samples it
+/// through the batch (scissored) and through the UI pipeline, its instances
+/// fixed by `UiBuild::fix_sprites` (linear and nearest, one turned and
+/// minified). The two images are the same, pixel for pixel. (The UI's own
+/// commands draw sprite handles only, so the engine cannot show a target in
+/// its UI; this covers the kind as the batch draws it.)
+#[test]
+fn a_render_target_sprite_draws_as_the_batch_draws_it() {
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let ui = crate::core::render::ui::UI_CAMERA;
+  let world = Entity::from_raw_u32(7).expect("an entity");
+  let camera = Camera2d::default();
+  let size = Vec2::splat(SIDE as f32);
+  let view = CameraView::compute(size / 2.0, 0.0, &camera, Vec2::ZERO, size);
+  let target_size = (20, 16);
+  let seen = Vec2::new(target_size.0 as f32, target_size.1 as f32);
+  let target_view = CameraView::compute(seen / 2.0, 0.0, &camera, Vec2::ZERO, seen);
+  let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
+  plan_cameras(
+    [
+      (world, &camera, &target_view, None),
+      (ui, &camera, &view, None),
+    ]
+    .into_iter(),
+    (SIDE, SIDE),
+    false,
+    None,
+    &mut cameras,
+    &mut targetless,
+  );
+  for planned in &mut cameras {
+    planned.ui = planned.entity == ui;
+  }
+  let scissor = PixelRect {
+    x: 5,
+    y: 6,
+    width: 37,
+    height: 35,
+  };
+  let clip = ClipRect::of(Some(scissor), (SIDE, SIDE));
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let mut sprites = SpriteGpuRenderer::new(&device, &queue);
+  let mut targets = crate::core::graphics::RenderTargets::default();
+  let target = targets.create(target_size.0, target_size.1);
+  sprites.sync_targets(&device, &targets);
+  let shown = sprites
+    .target_texture(target)
+    .expect("the target's texture");
+  let mut batch = Batch2D::new(&device, SCENE_FORMAT, Default::default());
+  let mut list = DrawList::default();
+  let look = |filter| SpriteLook {
+    shading: SpriteShading::Plain,
+    blend: BlendMode::Alpha,
+    filter,
+    lit: false,
+  };
+
+  // What the world camera draws into the target: a turned gradient
+  let gradient = gradient(5, 4);
+  let texture = sprites.texture_of(&gradient);
+  let instance = quad(
+    Vec2::new(10.2, 7.7),
+    Vec2::new(17.0, 12.5),
+    0.3,
+    Color::WHITE,
+  );
+  list.push_sprite_in(
+    DrawKind::Sprite,
+    0,
+    texture,
+    look(Filter::Linear),
+    instance,
+    (RenderLayers::all(), None, Some(world)),
+  );
+
+  // The target in the UI, linear and magnified, then nearest, turned and
+  // minified, both scissored
+  let mut build = UiBuild::default();
+  for (z, (filter, centre, size, angle)) in (1..).zip([
+    (
+      Filter::Linear,
+      Vec2::new(20.3, 19.6),
+      Vec2::new(33.1, 25.7),
+      0.0,
+    ),
+    (
+      Filter::Nearest,
+      Vec2::new(31.2, 33.4),
+      Vec2::new(13.0, 9.3),
+      0.4,
+    ),
+  ]) {
+    let instance = quad(centre, size, angle, Color::new(255, 235, 220, 240));
+    list.push_sprite_in(
+      DrawKind::Sprite,
+      z,
+      shown,
+      look(filter),
+      instance,
+      (RenderLayers::all(), None, Some(ui)),
+    );
+    list.set_last_sprite_scissor(Some(scissor));
+    build.sprites.push(SpriteFix {
+      index: build.instances.len() as u32,
+      texture: shown,
+      filter,
+    });
+    build
+      .instances
+      .push(UiInstance::quad(UiKind::SPRITE, &instance, clip, false, 0));
+    build.needs.push(TexNeed::Sprite(shown));
+  }
+  list.sorted();
+
+  let mut uniforms = CameraUniforms::default();
+  let globals = [
+    (
+      world,
+      CameraGlobals::new(&target_view, target_size, 0.0, 0.0, false),
+    ),
+    (ui, CameraGlobals::new(&view, (SIDE, SIDE), 0.0, 0.0, false)),
+  ];
+  uniforms.sync(&device, &queue, &globals);
+  batch.sync_cameras(&device, &uniforms);
+  batch.prepare(&device, &queue, &list, &cameras, &mut sprites, &[]);
+  build.fix_sprites(&sprites, Presentation::default());
+  assert!(
+    build
+      .instances
+      .iter()
+      .all(|instance| instance.kind() == UiKind::SPRITE_LINEAR),
+    "a render target's sprites draw with the linear body"
+  );
+
+  let runs = plan_runs(&build.needs, |need| slot_of(need, &sprites));
+  assert_eq!(runs.len(), 1, "{runs:?}");
+  let mut gpu = UiGpu::new(&device, batch.camera_layout());
+  gpu.upload(&device, &queue, &build.instances);
+  let textures = runs[0]
+    .textures
+    .map(|key| key.and_then(|key| sprites.page_texture(key)));
+  let group = gpu
+    .bind_group(&device, textures, sprites.samplers(), 0)
+    .clone();
+  let camera_group = batch.camera_group(ui).expect("the camera is bound");
+
+  let (_, target_image) = sprites.target_image(target).expect("the target's image");
+  let (old, new) = (ui_image(&device), ui_image(&device));
+  let mut encoder = device.create_command_encoder(&Default::default());
+  {
+    let mut pass = begin(&mut encoder, target_image);
+    for draw in batch.draws(world, false) {
+      batch.draw(&mut pass, draw, world, &sprites, target_size);
+    }
+  }
+  {
+    let view = old.create_view(&Default::default());
+    let mut pass = begin(&mut encoder, &view);
+    for draw in batch.draws(ui, false) {
+      batch.draw(&mut pass, draw, ui, &sprites, (SIDE, SIDE));
+    }
+  }
+  {
+    let view = new.create_view(&Default::default());
+    let mut pass = begin(&mut encoder, &view);
+    pass.set_pipeline(gpu.pipeline());
+    pass.set_bind_group(0, camera_group, &[]);
+    pass.set_bind_group(1, &group, &[]);
+    pass.set_vertex_buffer(0, gpu.quad().slice(..));
+    pass.set_vertex_buffer(1, gpu.instances().slice(..));
+    pass.draw(0..6, 0..build.instances.len() as u32);
+  }
+  queue.submit([encoder.finish()]);
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  let old = crate::core::capture::read_texture_rgba(&device, &queue, &old).expect("read back");
+  let new = crate::core::capture::read_texture_rgba(&device, &queue, &new).expect("read back");
+
+  let cleared = [51, 102, 153, 255];
+  let drawn = new.pixels().filter(|pixel| pixel.0 != cleared).count();
+  assert!(drawn > 500, "{drawn} pixels drawn");
+  // The target holds the gradient, not one colour
+  let colours: std::collections::HashSet<_> = new.pixels().map(|pixel| pixel.0).collect();
+  assert!(colours.len() > 50, "{} colours", colours.len());
+  // Left of the scissor: untouched
+  assert_eq!(new.get_pixel(4, 20).0, cleared);
+  let differ: Vec<_> = old
+    .enumerate_pixels()
+    .zip(new.pixels())
+    .filter(|((_, _, a), b)| a != b)
+    .map(|((x, y, a), b)| ((x, y), a.0, b.0))
+    .collect();
+  assert!(
+    differ.is_empty(),
+    "{} pixels (old, new) differ: {:?}",
+    differ.len(),
+    &differ[..differ.len().min(8)]
+  );
+}
+
+/// UI lines through the batch and through the UI pipeline: pixel for pixel
+/// the same once the batch shares no vertex between triangles
+mod lines {
+  use glam::Vec2;
+
+  use super::*;
+  use crate::core::render::ui::{UI_CAMERA, line_of};
+  use crate::core::ui::immediate::UiCommand;
+
+  /// The line images' size
+  const IMAGE: (u32, u32) = (200, 150);
+
+  /// The line test's lines, moved by `shift`: straight ones thin and thick at
+  /// several slants, a gentle arc (10 degree turns), closed outlines (a
+  /// rectangle, a hexagon, a triangle) and zigzags with long miters
+  fn test_lines(shift: Vec2) -> Vec<(Vec<Vec2>, f32)> {
+    let at = |points: &[(f32, f32)]| -> Vec<Vec2> {
+      points
+        .iter()
+        .map(|&(x, y)| Vec2::new(x, y) + shift)
+        .collect()
+    };
+    let around = |centre: (f32, f32), radius: f32, from: f32, step: f32, n: usize| {
+      let points: Vec<(f32, f32)> = (0..=n)
+        .map(|i| {
+          let a = (from + i as f32 * step).to_radians();
+          (centre.0 + a.cos() * radius, centre.1 + a.sin() * radius)
+        })
+        .collect();
+      at(&points)
+    };
+    let zigzag = |x: f32, y: f32, dx: f32, dy: f32, n: usize| {
+      let points: Vec<(f32, f32)> = (0..=n)
+        .map(|i| (x + i as f32 * dx, y + if i % 2 == 0 { dy } else { 0.0 }))
+        .collect();
+      at(&points)
+    };
+    let mut lines = vec![
+      (at(&[(6.3, 6.3), (90.6, 11.4)]), 1.0),
+      (at(&[(6.5, 16.2), (90.1, 30.7)]), 1.5),
+      (at(&[(100.4, 5.2), (104.9, 60.7)]), 2.0),
+      (at(&[(112.2, 6.1), (150.6, 58.3)]), 3.0),
+      (at(&[(160.7, 8.8), (192.0, 20.5)]), 6.0),
+      (around((60.0, 70.0), 30.0, 200.0, 10.0, 14), 2.0),
+      (around((140.0, 75.0), 28.0, 200.0, 10.0, 14), 5.0),
+      (
+        at(&[
+          (8.5, 95.5),
+          (58.5, 95.5),
+          (58.5, 125.5),
+          (8.5, 125.5),
+          (8.5, 95.5),
+        ]),
+        2.0,
+      ),
+      (around((88.0, 112.0), 16.3, 7.0, 60.0, 6), 3.0),
+      (around((128.0, 114.0), 14.7, -90.0, 120.0, 3), 2.0),
+    ];
+    lines.push((zigzag(150.0, 100.0, 9.0, 18.0, 5), 4.0));
+    lines.push((zigzag(8.0, 132.0, 20.0, 14.0, 9), 2.0));
+    lines
+  }
+
+  /// `lines` drawn as `ui.draw_line` makes them: through the batch with no
+  /// vertex shared between its triangles (`old`), and as one UI instance a
+  /// triangle through the UI pipeline (`new`)
+  fn drawn(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    lines: &[(Vec<Vec2>, f32)],
+  ) -> (image::RgbaImage, image::RgbaImage) {
+    let (width, height) = IMAGE;
+    let camera = Camera2d::default();
+    let size = Vec2::new(width as f32, height as f32);
+    let view = CameraView::compute(size / 2.0, 0.0, &camera, Vec2::ZERO, size);
+    let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
+    plan_cameras(
+      [(UI_CAMERA, &camera, &view, None)].into_iter(),
+      IMAGE,
+      false,
+      None,
+      &mut cameras,
+      &mut targetless,
+    );
+    cameras[0].ui = true;
+    let mut sprites = SpriteGpuRenderer::new(device, queue);
+    let mut batch = Batch2D::new(device, SCENE_FORMAT, Default::default());
+    let mut list = DrawList::default();
+    let mut points = Vec::new();
+    for (z, (line, width)) in (0..).zip(lines) {
+      let command = UiCommand::Line {
+        points: line.as_slice().into(),
+        at: Vec2::ZERO,
+        width: *width,
+        color: Color::new(240, 236, 250, 230),
+        closed: false,
+        clip: None,
+        layer: 0,
+      };
+      let (style, look) = line_of(&command, z, &mut points).expect("a line");
+      push_polyline(&mut list, batch.triangles(), &points, &style, look);
+    }
+    let triangles = batch.triangles();
+    let mut instances = Vec::new();
+    for triangle in triangles.indices.as_chunks::<3>().0 {
+      let vertex = |i: u32| &triangles.vertices[i as usize];
+      let corner = |i: u32| {
+        let v = vertex(i);
+        (Vec2::from(v.position), Vec2::from(v.uv), v.color)
+      };
+      instances.push(UiInstance::triangle(
+        [
+          corner(triangle[0]),
+          corner(triangle[1]),
+          corner(triangle[2]),
+        ],
+        vertex(triangle[0]).params,
+        ClipRect::of(None, IMAGE),
+      ));
+    }
+    // Each index its own vertex: the same triangles, in the same order,
+    // drawn by the batch's own pipeline, but sharing no vertex
+    let expanded: Vec<_> = triangles
+      .indices
+      .iter()
+      .map(|&i| triangles.vertices[i as usize])
+      .collect();
+    triangles.indices = (0..expanded.len() as u32).collect();
+    triangles.vertices = expanded;
+    list.sorted();
+    let mut uniforms = CameraUniforms::default();
+    let globals = CameraGlobals::new(&view, IMAGE, 0.0, 0.0, false);
+    uniforms.sync(device, queue, &[(UI_CAMERA, globals)]);
+    batch.sync_cameras(device, &uniforms);
+    batch.prepare(device, queue, &list, &cameras, &mut sprites, &[]);
+
+    let mut gpu = UiGpu::new(device, batch.camera_layout());
+    gpu.upload(device, queue, &instances);
+    let group = gpu
+      .bind_group(device, [None; 4], sprites.samplers(), 0)
+      .clone();
+    let camera_group = batch.camera_group(UI_CAMERA).expect("the camera is bound");
+    let image = || {
+      device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("UI Line Test Image"),
+        size: wgpu::Extent3d {
+          width,
+          height,
+          depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: UI_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+      })
+    };
+    let (old, new) = (image(), image());
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+      let view = old.create_view(&Default::default());
+      let mut pass = begin(&mut encoder, &view);
+      for draw in batch.draws(UI_CAMERA, false) {
+        batch.draw(&mut pass, draw, UI_CAMERA, &sprites, IMAGE);
+      }
+    }
+    {
+      let view = new.create_view(&Default::default());
+      let mut pass = begin(&mut encoder, &view);
+      pass.set_pipeline(gpu.pipeline());
+      pass.set_bind_group(0, camera_group, &[]);
+      pass.set_bind_group(1, &group, &[]);
+      pass.set_vertex_buffer(0, gpu.quad().slice(..));
+      pass.set_vertex_buffer(1, gpu.instances().slice(..));
+      pass.draw(0..6, 0..instances.len() as u32);
+    }
+    queue.submit([encoder.finish()]);
+    let read = |texture| crate::core::capture::read_texture_rgba(device, queue, texture);
+    (
+      read(&old).expect("read back"),
+      read(&new).expect("read back"),
+    )
+  }
+
+  /// How many pixels two images differ in, and the first few: where, then
+  /// each image's
+  fn differ(old: &image::RgbaImage, new: &image::RgbaImage) -> (usize, Vec<String>) {
+    let differ: Vec<_> = old
+      .enumerate_pixels()
+      .zip(new.pixels())
+      .filter(|((_, _, a), b)| a != b)
+      .map(|((x, y, a), b)| format!("({x}, {y}): {:?} {:?}", a.0, b.0))
+      .collect();
+    (differ.len(), differ.into_iter().take(8).collect())
+  }
+
+  /// The proof behind the owner's acceptance (2026-10-20) of UI line pixels
+  /// differing between the paths on some GPUs (Apple): drawn by the batch's
+  /// own line pipeline with no vertex shared between its triangles, every
+  /// line is the UI pipeline's pixel for pixel, at every sub-pixel shift. The
+  /// geometry and the arithmetic are the same; what differs, where it does,
+  /// is how such a GPU takes the derivative (`fwidth`) across the triangles
+  /// of an indexed mesh that share vertices, as the batch draws lines.
+  #[test]
+  fn lines_draw_as_the_batch_draws_them_with_no_vertex_shared() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let cleared = [51, 102, 153, 255];
+    for k in 0..16u16 {
+      let shift = Vec2::new(
+        f32::from(k % 4) * 0.25 + 0.0625,
+        f32::from(k / 4) * 0.25 + 0.03125,
+      );
+      let (old, new) = drawn(&device, &queue, &test_lines(shift));
+      let painted = new.pixels().filter(|pixel| pixel.0 != cleared).count();
+      assert!(painted > 2000, "shift {shift}: {painted} pixels drawn");
+      let (count, first) = differ(&old, &new);
+      assert_eq!(
+        count, 0,
+        "shift {shift}: pixels (old, new) differ: {first:?}"
+      );
+    }
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+  }
+}
+
 /// `build_ui` against the old path (`emit_ui` into a draw list), command by
 /// command
 mod building {
@@ -1296,5 +1729,79 @@ mod building {
       assert!(builds.iter().all(|build| build.instances.is_empty()));
       assert_eq!((texts.built(), texts.reused()), (0, 1));
     }
+  }
+}
+
+/// Named text icons swapped and a sprite's pixels replaced in place (as hot
+/// reload does), on the old UI path and the new renderer
+mod updated {
+  use crate::core::asset::SpriteHandle;
+  use crate::core::engine::EngineBuilder;
+  use crate::core::graphics::Sprite;
+  use crate::core::testing::PixelPair;
+  use crate::prelude::*;
+
+  /// A prompt with a named icon, a sprite and labels
+  struct IconsAndSprite(SpriteHandle);
+
+  impl Scene for IconsAndSprite {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      ui.draw_text_styled(
+        RichText::markup("Press [icon=confirm] to start"),
+        8.0,
+        8.0,
+        &TextStyle::default().size(24.0),
+      );
+      ui.draw_sprite_rect(&self.0, Rect::new(10.3, 50.6, 21.0, 17.0), Color::WHITE);
+      ui.draw_text("Sprite", 40.0, 52.0, Color::WHITE);
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn named_icons_and_a_sprite_updated_in_place_match() {
+    let swatch =
+      |r, g, b, name| SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, r, g, b, 255), name);
+    let (red, blue) = (swatch(255, 0, 0, "red"), swatch(0, 0, 255, "blue"));
+    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 0, 0, 255), "swatch");
+    let make = {
+      let sprite = sprite.clone();
+      move || {
+        EngineBuilder::new()
+          .resolution(240, 120)
+          .start_scene(IconsAndSprite(sprite.clone()))
+      }
+    };
+    let Some(mut pair) =
+      PixelPair::between(make, |b| b.ui_dedicated(false), |b| b.ui_dedicated(true))
+    else {
+      return;
+    };
+    let icon = |pair: &mut PixelPair, handle: &SpriteHandle| {
+      pair.each(|engine| {
+        engine
+          .world_mut()
+          .resource_mut::<TextIcons>()
+          .insert("confirm", handle.clone());
+      });
+    };
+    // Each change redraws the new renderer's UI at once
+    let redrawn = |pair: &mut PixelPair, what: &str| {
+      pair.frames(1, what);
+      assert!(pair.b().ui_draw_count() >= 1, "{what}: drawn");
+      pair.frames(4, what);
+    };
+    icon(&mut pair, &red);
+    redrawn(&mut pair, "the red icon");
+    icon(&mut pair, &blue);
+    redrawn(&mut pair, "the icon swapped");
+    sprite.update(Sprite::solid_rect(8, 8, 0, 0, 255, 255));
+    redrawn(&mut pair, "the sprite blue, the same size");
+    sprite.update(Sprite::solid_rect(24, 20, 0, 255, 0, 255));
+    redrawn(&mut pair, "the sprite green and larger");
   }
 }

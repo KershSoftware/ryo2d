@@ -410,7 +410,6 @@ impl TextureAtlas {
 
   /// The linear and nearest samplers every page's bind groups use (atlas
   /// and standalone pages, render targets and glyph pages)
-  #[cfg_attr(not(test), allow(dead_code))] // wired in Task 4
   pub(crate) fn samplers(&self) -> (&wgpu::Sampler, &wgpu::Sampler) {
     (&self.linear, &self.nearest)
   }
