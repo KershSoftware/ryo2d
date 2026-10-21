@@ -217,9 +217,10 @@ fn guard() {
   };
   // Round robin: each round starts at the next engine, and every other
   // round runs in reverse, starting one further on so that no engine steps
-  // twice in a row. So each engine follows its upper neighbour in the
-  // reversed rounds and its lower one in the others, but for the rounds it
-  // starts (one in `count`), where it follows the engine three below it
+  // twice in a row. Within a forward round each engine follows its lower
+  // neighbour, within a reversed one its upper; a forward round's first
+  // engine follows its upper neighbour, a reversed round's first the engine
+  // three below it
   let count = probes.len();
   for round in 0..FRAMES {
     for i in 0..count {
