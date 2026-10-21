@@ -80,7 +80,6 @@ mod tests {
       shader: BatchShader::Sprite,
       blend,
       sampling: Sampling::Nearest,
-      scissor: None,
     }
   }
 
@@ -133,28 +132,6 @@ mod tests {
       quads(&out),
       [(states[0], 0..1), (states[1], 1..2), (states[2], 2..3)]
     );
-  }
-
-  #[test]
-  fn a_scissor_change_splits_draws() {
-    let clip = Some(crate::core::render::PixelRect {
-      x: 0,
-      y: 0,
-      width: 10,
-      height: 10,
-    });
-    let open = DrawState {
-      page: None,
-      shader: BatchShader::UiRect,
-      ..state(0, BlendMode::Alpha)
-    };
-    let clipped = DrawState {
-      scissor: clip,
-      ..open
-    };
-    let states = [open, open, clipped, clipped, open];
-    let out = plan(&list(5), |i| Some(Placed::Quad(states[i])));
-    assert_eq!(quads(&out), [(open, 0..2), (clipped, 2..4), (open, 4..5)]);
   }
 
   #[test]

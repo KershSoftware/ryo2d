@@ -77,6 +77,8 @@ pub(crate) struct TextDraw {
   pub(crate) lit: bool,
   pub(crate) only_camera: Option<Entity>,
   pub(crate) layers: RenderLayers,
+  /// The UI clip it is drawn under, as the UI renderer clips it (the UI's
+  /// text cache keys texts by it); `None` for world text
   pub(crate) scissor: Option<PixelRect>,
   pub(crate) blend: BlendMode,
 }
@@ -823,7 +825,6 @@ fn push_glyph(
       layers: draw.layers,
       min: centre - reach,
       max: centre + reach,
-      scissor: draw.scissor,
     },
   );
 }
@@ -970,7 +971,6 @@ fn push_sprite(
   targets
     .list
     .push_sprite_in(draw.kind, draw.z, texture, look, instance, seen);
-  targets.list.set_last_sprite_scissor(draw.scissor);
 }
 
 /// An inline icon: its sprite (or a region of it) over its box, revealed
@@ -1219,7 +1219,7 @@ pub(crate) fn emit_world_text(
     // unmirrored, evenly scaled block
     let on_grid = axis_x.y == 0.0 && axis_y.x == 0.0 && axis_x.x > 0.0 && axis_x.x == axis_y.y;
     for camera in frame.cameras {
-      if camera.ui || !camera.layers.intersects(&layers) || !camera.view.is_visible(min, max) {
+      if !camera.layers.intersects(&layers) || !camera.view.is_visible(min, max) {
         continue;
       }
       // Render pixels per world unit: a texture camera's target units are

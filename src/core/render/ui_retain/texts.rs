@@ -7,7 +7,6 @@ use super::UiRenderEnv;
 use crate::core::graphics::GlyphPage;
 use crate::core::hash::FastMap;
 use crate::core::render::PixelRect;
-use crate::core::render::draw_list::DrawGlyph;
 use crate::core::render::text::{
   TextPlacement, TextSources, TextTargets, emit_glyphs, emit_icons, emit_text,
 };
@@ -53,10 +52,9 @@ impl TextKey {
 }
 
 /// Where a cached text's glyphs go. The text emitters lay a text's glyphs
-/// into `targets.list`; a sink takes them from there (the old path leaves
-/// them in the draw list, the UI renderer makes its instances of them), says
-/// what it made of a built text's glyphs, to keep, and pushes a kept text
-/// again.
+/// into `targets.list`; a sink takes them from there (the UI renderer makes
+/// its instances of them), says what it made of a built text's glyphs, to
+/// keep, and pushes a kept text again.
 pub(crate) trait TextSink<G> {
   /// Where what the sink makes of the next built glyph lands (to capture
   /// from)
@@ -68,33 +66,6 @@ pub(crate) trait TextSink<G> {
   fn captured<'s>(&'s self, targets: &'s TextTargets<'_>, from: usize) -> &'s [G];
   /// Push a text's kept glyphs again, at this frame's place
   fn push_cached(&mut self, targets: &mut TextTargets<'_>, glyphs: &[G], place: &TextPlacement);
-}
-
-/// The old path's sink: the glyphs stay in the draw list
-struct DrawListSink;
-
-impl TextSink<DrawGlyph> for DrawListSink {
-  fn mark(&self, targets: &TextTargets<'_>) -> usize {
-    targets.list.glyph_count()
-  }
-
-  fn take(&mut self, _targets: &mut TextTargets<'_>) {}
-
-  fn captured<'s>(&'s self, targets: &'s TextTargets<'_>, from: usize) -> &'s [DrawGlyph] {
-    targets.list.glyphs_from(from)
-  }
-
-  fn push_cached(
-    &mut self,
-    targets: &mut TextTargets<'_>,
-    glyphs: &[DrawGlyph],
-    place: &TextPlacement,
-  ) {
-    let draw = place.draw;
-    targets
-      .list
-      .push_glyphs(draw.kind, draw.z, draw.lit, draw.only_camera, glyphs);
-  }
 }
 
 /// A text's built glyphs, as its sink made them
@@ -110,11 +81,10 @@ struct Built<G> {
   used: u64,
 }
 
-/// The UI's texts' built glyphs, kept from one frame to the next: as draw
-/// list glyphs (`DrawGlyph`, the old path) or as what another sink makes of
-/// them
+/// The UI's texts' built glyphs, kept from one frame to the next as what
+/// their sink made of them (the UI renderer's instances)
 #[derive(Debug)]
-pub(crate) struct UiTextCache<G = DrawGlyph> {
+pub(crate) struct UiTextCache<G> {
   built: FastMap<TextKey, Built<G>>,
   spare: Vec<Vec<G>>,
   env: Option<UiRenderEnv>,
@@ -136,19 +106,6 @@ impl<G> Default for UiTextCache<G> {
       texts_built: 0,
       texts_reused: 0,
     }
-  }
-}
-
-impl UiTextCache<DrawGlyph> {
-  /// Draw a text into the draw list (see [`emit_into`](Self::emit_into))
-  pub(crate) fn emit(
-    &mut self,
-    sources: &TextSources<'_>,
-    targets: &mut TextTargets<'_>,
-    layout: &Arc<TextLayout>,
-    place: &TextPlacement,
-  ) {
-    self.emit_into(sources, targets, &mut DrawListSink, layout, place);
   }
 }
 

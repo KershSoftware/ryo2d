@@ -3,8 +3,8 @@
 use crate::core::graphics::CompositeViewport;
 use crate::core::render::{FrameInfo, RenderContext, RenderPass, pass_ids};
 
-/// Draws the frame's UI (the UI renderer's frame, or the UI camera's draws
-/// laid out by the batch) into the compositor's UI image, cleared first.
+/// Draws the frame's UI (the UI renderer's frame) into the compositor's UI
+/// image, cleared first.
 pub(super) struct Ui;
 
 impl RenderPass for Ui {
@@ -17,13 +17,9 @@ impl RenderPass for Ui {
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
-    let ui_frame = ctx.scene.ui_frame;
-    let old = ctx.scene.ui_camera.zip(ctx.scene.batch);
-    if ui_frame.is_none() && old.is_none() {
+    let Some(ui_frame) = ctx.scene.ui_frame else {
       return;
-    }
-    let sprites = ctx.scene.sprites;
-    let image = ctx.scene.ui_size;
+    };
     let compositor = ctx.targets.compositor;
     let view = compositor.ui_view();
     let mut pass = ctx
@@ -44,15 +40,7 @@ impl RenderPass for Ui {
         occlusion_query_set: None,
         multiview_mask: None,
       });
-    match (ui_frame, old) {
-      (Some(frame), _) => frame.draw(&mut pass),
-      (None, Some((camera, batch))) => {
-        for draw in batch.draws(camera.entity, false) {
-          batch.draw(&mut pass, draw, camera.entity, sprites, image);
-        }
-      }
-      (None, None) => {}
-    }
+    ui_frame.draw(&mut pass);
     drop(pass);
     ctx.ui_drawn = true;
   }

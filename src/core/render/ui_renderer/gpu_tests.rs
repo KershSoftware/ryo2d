@@ -11,12 +11,11 @@ use crate::core::graphics::{
   place_in_slot,
 };
 use crate::core::render::batch::{
-  Batch2D, BatchShader, BlendMode, Filter, LineLook, PolyPoint, PolyStyle, Sampling, line_color,
+  Batch2D, BlendMode, Filter, LineLook, PolyPoint, PolyStyle, Sampling, Triangles, line_color,
   push_polyline,
 };
 use crate::core::render::{
-  DrawGlyph, DrawKind, DrawList, DrawShape, PixelRect, SCENE_FORMAT, SpriteLook, SpriteShading,
-  UI_FORMAT, plan_cameras,
+  DrawKind, DrawList, PixelRect, SCENE_FORMAT, SpriteLook, SpriteShading, UI_FORMAT, plan_cameras,
 };
 use crate::core::shaders::compose::UI;
 use crate::core::text::{FontId, GlyphFormat, GlyphImage, GlyphKey};
@@ -138,6 +137,15 @@ fn begin<'e>(
   encoder: &'e mut wgpu::CommandEncoder,
   view: &wgpu::TextureView,
 ) -> wgpu::RenderPass<'e> {
+  begin_cleared(encoder, view, CLEAR)
+}
+
+/// A pass into `view`, cleared to `clear`
+fn begin_cleared<'e>(
+  encoder: &'e mut wgpu::CommandEncoder,
+  view: &wgpu::TextureView,
+  clear: wgpu::Color,
+) -> wgpu::RenderPass<'e> {
   encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
     label: Some("UI Test Pass"),
     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -145,7 +153,7 @@ fn begin<'e>(
       depth_slice: None,
       resolve_target: None,
       ops: wgpu::Operations {
-        load: wgpu::LoadOp::Clear(CLEAR),
+        load: wgpu::LoadOp::Clear(clear),
         store: wgpu::StoreOp::Store,
       },
     })],
@@ -204,29 +212,33 @@ fn quad(centre: Vec2, size: Vec2, angle: f32, tint: Color) -> SpriteInstance {
     .with_tint(tint, 1.0)
 }
 
-/// Every kind but the linear sprite (a render target) in one image, all but
-/// one rect clipped by one scissor: through the batch's pipelines with the
-/// scissor, and through the UI pipeline with the clip in each instance and
-/// one bind group per run. The two images are the same, pixel for pixel.
+/// The UI camera's uniforms for a `side` x `side` image, bound through the
+/// batch's camera layout (as the engine binds them)
+fn camera_bound(
+  device: &wgpu::Device,
+  queue: &wgpu::Queue,
+  batch: &mut Batch2D,
+  entity: Entity,
+  side: u32,
+) {
+  let size = Vec2::splat(side as f32);
+  let view = CameraView::compute(size / 2.0, 0.0, &Camera2d::default(), Vec2::ZERO, size);
+  let mut uniforms = CameraUniforms::default();
+  let globals = CameraGlobals::new(&view, (side, side), 0.0, 0.0, false);
+  uniforms.sync(device, queue, &[(entity, globals)]);
+  batch.sync_cameras(device, &uniforms);
+}
+
+/// Every kind but the linear sprite (a render target) in one image through
+/// the UI pipeline, all but one rect clipped by one clip in each instance,
+/// in one run: each draws, and no pixel outside the clip changes but the
+/// unclipped rect's
 #[test]
-fn every_kind_draws_as_the_batch_draws_it() {
+fn every_kind_draws_inside_its_clip() {
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
   };
   let entity = Entity::PLACEHOLDER;
-  let camera = Camera2d::default();
-  let size = Vec2::splat(SIDE as f32);
-  let view = CameraView::compute(size / 2.0, 0.0, &camera, Vec2::ZERO, size);
-  let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
-  plan_cameras(
-    [(entity, &camera, &view, None)].into_iter(),
-    (SIDE, SIDE),
-    false,
-    None,
-    &mut cameras,
-    &mut targetless,
-  );
-  cameras[0].ui = true;
   let scissor = PixelRect {
     x: 7,
     y: 5,
@@ -237,14 +249,13 @@ fn every_kind_draws_as_the_batch_draws_it() {
   let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
   let mut sprites = SpriteGpuRenderer::new(&device, &queue);
   let mut batch = Batch2D::new(&device, SCENE_FORMAT, Default::default());
-  let mut list = DrawList::default();
   // The UI's instances in painter's order, and what each samples; the
   // sprites' are made once their textures are placed
   let mut instances = Vec::new();
   let mut needs = Vec::new();
 
-  // A rounded, bordered rect off the pixel grid as `emit_ui` makes one (one
-  // pixel of anti-aliasing margin), clipped; a small one unclipped
+  // A rounded, bordered rect off the pixel grid as `rect_instance` makes
+  // one (one pixel of anti-aliasing margin), clipped; a small one unclipped
   let rect = |centre: Vec2, w: f32, h: f32, fill: Color| {
     let p = 1.0;
     let mut rect = quad(centre, Vec2::new(w + 2.0 * p, h + 2.0 * p), 0.0, fill);
@@ -252,33 +263,18 @@ fn every_kind_draws_as_the_batch_draws_it() {
     rect.uv_bounds = rect.uv_rect;
     rect.effect_params = [4.0, 1.5, w, h];
     rect.effect_extra = [0.1, 0.9, 0.3, 1.0];
-    let half = Vec2::new(w / 2.0 + p, h / 2.0 + p);
-    (rect, centre - half, centre + half)
+    rect
   };
-  for (z, (centre, w, h), scissor) in [
-    (0, (Vec2::new(14.3, 13.6), 17.2, 13.9), Some(scissor)),
-    (7, (Vec2::new(4.2, 44.4), 7.3, 5.1), None),
+  for ((centre, w, h), scissor) in [
+    ((Vec2::new(14.3, 13.6), 17.2, 13.9), Some(scissor)),
+    ((Vec2::new(4.2, 44.4), 7.3, 5.1), None),
   ] {
-    let (instance, min, max) = rect(centre, w, h, Color::new(200, 60, 30, 230));
-    list.push_shape(
-      DrawKind::Sprite,
-      z,
-      false,
-      Some(entity),
-      DrawShape {
-        instance,
-        blend: BlendMode::Alpha,
-        layers: RenderLayers::all(),
-        min,
-        max,
-        scissor,
-      },
-    );
+    let instance = rect(centre, w, h, Color::new(200, 60, 30, 230));
     let clip = ClipRect::of(scissor, (SIDE, SIDE));
     instances.push(UiInstance::quad(UiKind::RECT, &instance, clip, false, 0));
     needs.push(TexNeed::None);
   }
-  // The rect at z 7 is drawn last: keep the UI's order the batch's
+  // The unclipped rect is drawn last
   let unclipped = (instances.pop(), needs.pop());
 
   // A slanted, mitred line over the first rect, one instance per triangle
@@ -307,9 +303,14 @@ fn every_kind_draws_as_the_batch_draws_it() {
     layers: RenderLayers::all(),
     only_camera: Some(entity),
   };
-  push_polyline(&mut list, batch.triangles(), &points, &style, look);
-  list.set_last_triangles_scissor(Some(scissor));
-  let triangles = batch.triangles();
+  let mut triangles = Triangles::default();
+  push_polyline(
+    &mut DrawList::default(),
+    &mut triangles,
+    &points,
+    &style,
+    look,
+  );
   assert!(!triangles.indices.is_empty());
   for triangle in triangles.indices.as_chunks::<3>().0 {
     let vertex = |i: u32| &triangles.vertices[i as usize];
@@ -340,7 +341,6 @@ fn every_kind_draws_as_the_batch_draws_it() {
   let glyphs = [
     (
       GlyphFormat::Mask,
-      BatchShader::TextMask,
       UiKind::MASK,
       Vec2::new(30.4, 10.7),
       Vec2::new(9.3, 12.6),
@@ -350,7 +350,6 @@ fn every_kind_draws_as_the_batch_draws_it() {
     ),
     (
       GlyphFormat::Color,
-      BatchShader::TextColor,
       UiKind::COLOR,
       Vec2::new(40.2, 12.1),
       Vec2::new(10.5, 10.5),
@@ -360,15 +359,14 @@ fn every_kind_draws_as_the_batch_draws_it() {
     ),
     (
       GlyphFormat::Msdf,
-      BatchShader::TextMsdf,
       UiKind::MSDF,
       Vec2::new(12.7, 33.3),
       Vec2::new(14.0, 14.0),
       glyph_image(GlyphFormat::Msdf, (8, 8), disc),
     ),
   ];
-  for (z, (format, shader, kind, centre, size, image)) in (2..).zip(glyphs) {
-    let key = GlyphKey::fill(FontId(0), z as u16, 16.0, 0.0);
+  for (n, (format, kind, centre, size, image)) in (2..).zip(glyphs) {
+    let key = GlyphKey::fill(FontId(0), n, 16.0, 0.0);
     let slot = sprites
       .glyph(&device, &queue, key, || Some(image))
       .expect("the glyph is placed");
@@ -379,23 +377,6 @@ fn every_kind_draws_as_the_batch_draws_it() {
       instance.effect_params = [0.0, 0.6, 0.0, 4.0];
       instance.effect_extra = [0.9, 0.2, 0.1, 1.0];
     }
-    list.push_glyph(
-      DrawKind::Text,
-      z,
-      false,
-      Some(entity),
-      DrawGlyph {
-        page: slot.page,
-        instance,
-        shader,
-        blend: BlendMode::Alpha,
-        sampling: Sampling::Linear,
-        layers: RenderLayers::all(),
-        min: centre - size,
-        max: centre + size,
-        scissor: Some(scissor),
-      },
-    );
     instances.push(UiInstance::quad(
       kind,
       &instance,
@@ -424,36 +405,18 @@ fn every_kind_draws_as_the_batch_draws_it() {
       0.0,
     ),
   ];
-  let mut placed = Vec::new();
-  for (z, (sprite, filter, centre, size, angle)) in (5..).zip(sprite_quads) {
-    let texture = sprites.texture_of(&sprite);
-    let instance = quad(centre, size, angle, Color::new(255, 230, 210, 250));
-    let look = SpriteLook {
-      shading: SpriteShading::Plain,
-      blend: BlendMode::Alpha,
-      filter,
-      lit: false,
-    };
-    list.push_sprite_in(
-      DrawKind::Sprite,
-      z,
-      texture,
-      look,
-      instance,
-      (RenderLayers::all(), None, Some(entity)),
-    );
-    list.set_last_sprite_scissor(Some(scissor));
-    placed.push((texture, instance, filter));
-  }
-  list.sorted();
+  let placed: Vec<_> = sprite_quads
+    .iter()
+    .map(|(sprite, filter, centre, size, angle)| {
+      let texture = sprites.texture_of(sprite);
+      let instance = quad(*centre, *size, *angle, Color::new(255, 230, 210, 250));
+      (texture, instance, *filter)
+    })
+    .collect();
+  let textures: Vec<_> = placed.iter().map(|(texture, ..)| *texture).collect();
+  sprites.prepare_textures(&device, &queue, &DrawList::default(), &textures);
 
-  let mut uniforms = CameraUniforms::default();
-  let globals = CameraGlobals::new(&view, (SIDE, SIDE), 0.0, 0.0, false);
-  uniforms.sync(&device, &queue, &[(entity, globals)]);
-  batch.sync_cameras(&device, &uniforms);
-  batch.prepare(&device, &queue, &list, &cameras, &mut sprites, &[]);
-
-  // The sprites remapped into their slots as the batch does
+  // The sprites placed in their slots as `UiBuild::fix_sprites` places them
   for (texture, instance, filter) in placed {
     let (slot, page_size) = sprites.slot(texture).expect("the sprite is resident");
     let instance = place_in_slot(&instance, &slot, page_size, false);
@@ -473,23 +436,10 @@ fn every_kind_draws_as_the_batch_draws_it() {
   }
 
   // One run: every slot holds one texture
-  let runs: Vec<Run> = plan_runs(&needs, |need| match need {
-    TexNeed::None => None,
-    TexNeed::Glyph(page) => {
-      let slot = match page.format {
-        GlyphFormat::Mask => Slot::Mask,
-        GlyphFormat::Color => Slot::Color,
-        GlyphFormat::Msdf => Slot::Msdf,
-      };
-      Some((slot, TexKey::Glyph(page)))
-    }
-    TexNeed::Sprite(texture) => {
-      let (slot, _) = sprites.slot(texture)?;
-      Some((Slot::Sprite, TexKey::Sprite(slot.page)))
-    }
-  });
+  let runs: Vec<Run> = plan_runs(&needs, |need| slot_of(need, &sprites));
   assert_eq!(runs.len(), 1, "{runs:?}");
   assert!(runs[0].textures.iter().all(Option::is_some), "{runs:?}");
+  camera_bound(&device, &queue, &mut batch, entity, SIDE);
   let mut gpu = UiGpu::new(&device, batch.camera_layout());
   gpu.upload(&device, &queue, &instances);
   let groups: Vec<_> = runs
@@ -505,17 +455,10 @@ fn every_kind_draws_as_the_batch_draws_it() {
     .collect();
   let camera_group = batch.camera_group(entity).expect("the camera is bound");
 
-  let (old, new) = (ui_image(&device), ui_image(&device));
+  let image = ui_image(&device);
   let mut encoder = device.create_command_encoder(&Default::default());
   {
-    let view = old.create_view(&Default::default());
-    let mut pass = begin(&mut encoder, &view);
-    for draw in batch.draws(entity, false) {
-      batch.draw(&mut pass, draw, entity, &sprites, (SIDE, SIDE));
-    }
-  }
-  {
-    let view = new.create_view(&Default::default());
+    let view = image.create_view(&Default::default());
     let mut pass = begin(&mut encoder, &view);
     pass.set_pipeline(gpu.pipeline());
     pass.set_bind_group(0, camera_group, &[]);
@@ -529,40 +472,40 @@ fn every_kind_draws_as_the_batch_draws_it() {
   queue.submit([encoder.finish()]);
   let error = pollster::block_on(scope.pop());
   assert!(error.is_none(), "{error:?}");
-  let old = crate::core::capture::read_texture_rgba(&device, &queue, &old).expect("read back");
-  let new = crate::core::capture::read_texture_rgba(&device, &queue, &new).expect("read back");
+  let image = crate::core::capture::read_texture_rgba(&device, &queue, &image).expect("read back");
 
   let cleared = [51, 102, 153, 255];
   // Inside the first rect and the clip: drawn; inside it left of the clip:
   // untouched; the unclipped rect outside the clip: drawn
-  assert_ne!(new.get_pixel(15, 14).0, cleared);
-  assert_eq!(new.get_pixel(6, 14).0, cleared);
-  assert_ne!(new.get_pixel(4, 44).0, cleared);
-  let drawn = new.pixels().filter(|pixel| pixel.0 != cleared).count();
+  assert_ne!(image.get_pixel(15, 14).0, cleared);
+  assert_eq!(image.get_pixel(6, 14).0, cleared);
+  assert_ne!(image.get_pixel(4, 44).0, cleared);
+  let drawn = image.pixels().filter(|pixel| pixel.0 != cleared).count();
   assert!(drawn > 500, "{drawn} pixels drawn");
-  let differ: Vec<_> = old
+  // Outside the clip only the unclipped rect (its box, margin included,
+  // reaches pixels x <= 8, y >= 41) draws
+  let inside = |x: u32, y: u32| (7..41).contains(&x) && (5..43).contains(&y);
+  let stray: Vec<_> = image
     .enumerate_pixels()
-    .zip(new.pixels())
-    .filter(|((_, _, a), b)| a != b)
-    .map(|((x, y, a), b)| ((x, y), a.0, b.0))
+    .filter(|&(x, y, pixel)| !inside(x, y) && !(x <= 8 && y >= 41) && pixel.0 != cleared)
+    .map(|(x, y, pixel)| ((x, y), pixel.0))
     .collect();
   assert!(
-    differ.is_empty(),
-    "{} pixels (old, new) differ: {:?}",
-    differ.len(),
-    &differ[..differ.len().min(8)]
+    stray.is_empty(),
+    "{} pixels outside the clip drawn: {:?}",
+    stray.len(),
+    &stray[..stray.len().min(8)]
   );
 }
 
 /// A render target shown as UI sprites, the linear sprite body: a world
-/// camera draws into it through the batch, then the UI camera samples it
-/// through the batch (scissored) and through the UI pipeline, its instances
-/// fixed by `UiBuild::fix_sprites` (linear and nearest, one turned and
-/// minified). The two images are the same, pixel for pixel. (The UI's own
-/// commands draw sprite handles only, so the engine cannot show a target in
-/// its UI; this covers the kind as the batch draws it.)
+/// camera draws into it through the batch, then the UI pipeline samples it,
+/// its instances fixed by `UiBuild::fix_sprites` (linear and nearest, one
+/// turned and minified) and clipped. (The UI's own commands draw sprite
+/// handles only, so the engine cannot show a target in its UI; this covers
+/// the kind.)
 #[test]
-fn a_render_target_sprite_draws_as_the_batch_draws_it() {
+fn a_render_target_sprite_draws_with_the_linear_body() {
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
   };
@@ -576,20 +519,13 @@ fn a_render_target_sprite_draws_as_the_batch_draws_it() {
   let target_view = CameraView::compute(seen / 2.0, 0.0, &camera, Vec2::ZERO, seen);
   let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
   plan_cameras(
-    [
-      (world, &camera, &target_view, None),
-      (ui, &camera, &view, None),
-    ]
-    .into_iter(),
+    [(world, &camera, &target_view, None)].into_iter(),
     (SIDE, SIDE),
     false,
     None,
     &mut cameras,
     &mut targetless,
   );
-  for planned in &mut cameras {
-    planned.ui = planned.entity == ui;
-  }
   let scissor = PixelRect {
     x: 5,
     y: 6,
@@ -633,9 +569,9 @@ fn a_render_target_sprite_draws_as_the_batch_draws_it() {
   );
 
   // The target in the UI, linear and magnified, then nearest, turned and
-  // minified, both scissored
+  // minified, both clipped
   let mut build = UiBuild::default();
-  for (z, (filter, centre, size, angle)) in (1..).zip([
+  for (filter, centre, size, angle) in [
     (
       Filter::Linear,
       Vec2::new(20.3, 19.6),
@@ -648,17 +584,8 @@ fn a_render_target_sprite_draws_as_the_batch_draws_it() {
       Vec2::new(13.0, 9.3),
       0.4,
     ),
-  ]) {
+  ] {
     let instance = quad(centre, size, angle, Color::new(255, 235, 220, 240));
-    list.push_sprite_in(
-      DrawKind::Sprite,
-      z,
-      shown,
-      look(filter),
-      instance,
-      (RenderLayers::all(), None, Some(ui)),
-    );
-    list.set_last_sprite_scissor(Some(scissor));
     build.sprites.push(SpriteFix {
       index: build.instances.len() as u32,
       texture: shown,
@@ -681,7 +608,7 @@ fn a_render_target_sprite_draws_as_the_batch_draws_it() {
   ];
   uniforms.sync(&device, &queue, &globals);
   batch.sync_cameras(&device, &uniforms);
-  batch.prepare(&device, &queue, &list, &cameras, &mut sprites, &[]);
+  batch.prepare(&device, &queue, &list, &cameras, &mut sprites, &[shown]);
   build.fix_sprites(&sprites, Presentation::default());
   assert!(
     build
@@ -704,19 +631,12 @@ fn a_render_target_sprite_draws_as_the_batch_draws_it() {
   let camera_group = batch.camera_group(ui).expect("the camera is bound");
 
   let (_, target_image) = sprites.target_image(target).expect("the target's image");
-  let (old, new) = (ui_image(&device), ui_image(&device));
+  let new = ui_image(&device);
   let mut encoder = device.create_command_encoder(&Default::default());
   {
     let mut pass = begin(&mut encoder, target_image);
     for draw in batch.draws(world, false) {
       batch.draw(&mut pass, draw, world, &sprites, target_size);
-    }
-  }
-  {
-    let view = old.create_view(&Default::default());
-    let mut pass = begin(&mut encoder, &view);
-    for draw in batch.draws(ui, false) {
-      batch.draw(&mut pass, draw, ui, &sprites, (SIDE, SIDE));
     }
   }
   {
@@ -732,7 +652,6 @@ fn a_render_target_sprite_draws_as_the_batch_draws_it() {
   queue.submit([encoder.finish()]);
   let error = pollster::block_on(scope.pop());
   assert!(error.is_none(), "{error:?}");
-  let old = crate::core::capture::read_texture_rgba(&device, &queue, &old).expect("read back");
   let new = crate::core::capture::read_texture_rgba(&device, &queue, &new).expect("read back");
 
   let cleared = [51, 102, 153, 255];
@@ -741,24 +660,90 @@ fn a_render_target_sprite_draws_as_the_batch_draws_it() {
   // The target holds the gradient, not one colour
   let colours: std::collections::HashSet<_> = new.pixels().map(|pixel| pixel.0).collect();
   assert!(colours.len() > 50, "{} colours", colours.len());
-  // Left of the scissor: untouched
-  assert_eq!(new.get_pixel(4, 20).0, cleared);
-  let differ: Vec<_> = old
+  // Outside the clip: untouched
+  let outside: Vec<_> = new
     .enumerate_pixels()
-    .zip(new.pixels())
-    .filter(|((_, _, a), b)| a != b)
-    .map(|((x, y, a), b)| ((x, y), a.0, b.0))
+    .filter(|&(x, y, _)| !(5..42).contains(&x) || !(6..41).contains(&y))
+    .map(|(_, _, pixel)| pixel.0)
     .collect();
-  assert!(
-    differ.is_empty(),
-    "{} pixels (old, new) differ: {:?}",
-    differ.len(),
-    &differ[..differ.len().min(8)]
-  );
+  assert!(outside.len() > 300);
+  assert!(outside.iter().all(|&pixel| pixel == cleared));
 }
 
-/// UI lines through the batch and through the UI pipeline: pixel for pixel
-/// the same once the batch shares no vertex between triangles
+/// One rect over the whole UI image through the UI pipeline, tinted `tint`,
+/// into an image cleared to `clear`: its centre pixel
+fn ui_pixel(
+  device: &wgpu::Device,
+  queue: &wgpu::Queue,
+  clear: wgpu::Color,
+  tint: [f32; 4],
+) -> [u8; 4] {
+  let entity = Entity::PLACEHOLDER;
+  let mut batch = Batch2D::new(device, SCENE_FORMAT, Default::default());
+  camera_bound(device, queue, &mut batch, entity, SIDE);
+  let sprites = SpriteGpuRenderer::new(device, queue);
+  // A quad far larger than the image, so the rect's edge is out of view
+  let mut rect = SpriteInstance::new();
+  let centre = SIDE as f32 / 2.0;
+  rect.transform = [
+    [1000.0, 0.0, 0.0, 0.0],
+    [0.0, 1000.0, 0.0, 0.0],
+    [centre, centre, 1.0, 0.0],
+  ];
+  rect.tint = tint;
+  rect.effect_params = [0.0, 0.0, 1000.0, 1000.0];
+  let clip = ClipRect::of(None, (SIDE, SIDE));
+  let mut gpu = UiGpu::new(device, batch.camera_layout());
+  gpu.upload(
+    device,
+    queue,
+    &[UiInstance::quad(UiKind::RECT, &rect, clip, false, 0)],
+  );
+  let group = gpu
+    .bind_group(device, [None; 4], sprites.samplers(), 0)
+    .clone();
+  let camera_group = batch.camera_group(entity).expect("the camera is bound");
+  let image = ui_image(device);
+  let mut encoder = device.create_command_encoder(&Default::default());
+  {
+    let view = image.create_view(&Default::default());
+    let mut pass = begin_cleared(&mut encoder, &view, clear);
+    pass.set_pipeline(gpu.pipeline());
+    pass.set_bind_group(0, camera_group, &[]);
+    pass.set_bind_group(1, &group, &[]);
+    pass.set_vertex_buffer(0, gpu.quad().slice(..));
+    pass.set_vertex_buffer(1, gpu.instances().slice(..));
+    pass.draw(0..6, 0..1);
+  }
+  queue.submit([encoder.finish()]);
+  let image = crate::core::capture::read_texture_rgba(device, queue, &image).expect("read back");
+  image.get_pixel(SIDE / 2, SIDE / 2).0
+}
+
+/// The UI image holds gamma-encoded colour, premultiplied, blended in gamma
+/// space as on the web
+#[test]
+fn the_ui_pipeline_gamma_encodes_its_output() {
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let near = |got: [u8; 4], want: [u8; 4]| got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 1);
+  let clear = wgpu::Color::TRANSPARENT;
+  // An opaque sRGB 0.5 grey is stored as 128, not the linear 55
+  let grey = ui_pixel(&device, &queue, clear, [0.5, 0.5, 0.5, 1.0]);
+  assert!(near(grey, [128, 128, 128, 255]), "grey {grey:?}");
+  // 50% black over white mixes in gamma space
+  let white = wgpu::Color::WHITE;
+  let over = ui_pixel(&device, &queue, white, [0.0, 0.0, 0.0, 0.5]);
+  assert!(near(over, [128, 128, 128, 255]), "over white {over:?}");
+  // A fully transparent quad leaves the destination alone
+  let kept = ui_pixel(&device, &queue, CLEAR, [1.0, 0.0, 0.0, 0.0]);
+  assert!(near(kept, [51, 102, 153, 255]), "kept {kept:?}");
+}
+
+/// UI lines through the batch's line pipeline (the world's lines, drawn into
+/// the UI format) and through the UI pipeline: pixel for pixel the same once
+/// the batch shares no vertex between triangles
 mod lines {
   use glam::Vec2;
 
@@ -841,9 +826,9 @@ mod lines {
       &mut cameras,
       &mut targetless,
     );
-    cameras[0].ui = true;
     let mut sprites = SpriteGpuRenderer::new(device, queue);
-    let mut batch = Batch2D::new(device, SCENE_FORMAT, Default::default());
+    // Into the UI image's format, gamma-encoded as the UI pipeline draws
+    let mut batch = Batch2D::new(device, UI_FORMAT, Default::default());
     let mut list = DrawList::default();
     let mut points = Vec::new();
     for (z, (line, width)) in (0..).zip(lines) {
@@ -987,8 +972,9 @@ mod lines {
   }
 }
 
-/// `build_ui` against the old path (`emit_ui` into a draw list), command by
-/// command
+/// `build_ui`, command by command: what each command builds against the
+/// shared functions that make it (`rect_instance`, `sprite_instance`,
+/// `line_of` and the line builder, `text_of` and the text emitters)
 mod building {
   use std::collections::HashSet;
   use std::sync::Arc;
@@ -998,19 +984,21 @@ mod building {
   use super::super::*;
   use crate::core::asset::SpriteHandle;
   use crate::core::graphics::{Sprite, SpriteGpuRenderer};
-  use crate::core::render::batch::{Filter, Triangles};
-  use crate::core::render::text::{TextSources, TextTargets};
-  use crate::core::render::ui::emit_ui;
+  use crate::core::render::batch::{Filter, Triangles, push_polyline};
+  use crate::core::render::text::{TextSources, TextTargets, emit_text};
+  use crate::core::render::ui::{
+    line_of, rect_instance, scissor_of, sprite_instance, text_of, ui_z,
+  };
   use crate::core::render::ui_retain::{UiRenderEnv, UiTextCache};
-  use crate::core::render::{DrawList, DrawPayload, UiSpace};
+  use crate::core::render::{DrawList, UiSpace};
   use crate::core::text::{
     Fonts, GlyphRasterizer, Icon, PlacedIcon, TextEffects, TextEngine, TextIcons, TextLayout,
   };
   use crate::core::ui::immediate::{UiCommand, UiCommands};
   use crate::core::ui::{Color, Rect};
 
-  /// What the text emitters write into, shared by both paths (one glyph
-  /// atlas, so a glyph has one slot)
+  /// What the text emitters write into, shared by the build and what it is
+  /// checked against (one glyph atlas, so a glyph has one slot)
   struct Writes {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -1176,32 +1164,25 @@ mod building {
     build
   }
 
-  /// The old path's draw list (sorted) and triangles for `commands`,
-  /// retention off
-  fn emitted(
+  /// What the text emitters lay for `commands`' texts, each placed by
+  /// `text_of` (as `build_ui` places them, under their clip's scissor), in
+  /// the order laid
+  fn laid(
     writes: &mut Writes,
     commands: &UiCommands,
     env: UiRenderEnv,
-    sources: Option<&TextSources<'_>>,
-  ) -> (DrawList, Triangles) {
-    let mut triangles = Triangles::default();
-    let mut texts = UiTextCache::default();
-    texts.begin(env, false);
+    sources: &TextSources<'_>,
+  ) -> DrawList {
     writes.list.clear();
-    let drew = emit_ui(
-      commands,
-      &env,
-      sources,
-      &mut writes.targets(),
-      &mut triangles,
-      0.0,
-      &mut texts,
-    );
-    texts.end();
-    assert!(drew.is_some());
-    let mut list = std::mem::take(&mut writes.list);
-    list.sorted();
-    (list, triangles)
+    let space = &env.space;
+    for (order, command) in commands.as_slice() {
+      let scissor = scissor_of(command.clip_rect(), space).expect("a clip that draws");
+      let z = ui_z(command.draw_layer(), *order);
+      if let Some((layout, place)) = text_of(command, space, z, scissor, 0.0) {
+        emit_text(sources, &mut writes.targets(), layout, &place);
+      }
+    }
+    std::mem::take(&mut writes.list)
   }
 
   /// An instance's quad centre (a quad's third lane is its translation)
@@ -1270,20 +1251,13 @@ mod building {
   }
 
   #[test]
-  fn at_one_order_a_line_draws_after_the_rest_as_the_batch_sorts_them() {
+  fn at_one_order_a_line_draws_after_the_rest() {
     let Some(mut writes) = Writes::new() else {
       return;
     };
     let mut commands = UiCommands::default();
     commands.push(3, line(&[Vec2::new(5.0, 5.0), Vec2::new(60.0, 30.0)], None));
     commands.push(3, rect_at(10.0, 10.0, None, 0));
-    let (list, _) = emitted(&mut writes, &commands, env(), None);
-    let old: Vec<bool> = list
-      .unlit_items()
-      .iter()
-      .map(|item| matches!(item.payload, DrawPayload::Triangles(_)))
-      .collect();
-    assert_eq!(old, [false, true], "the batch draws the rect first");
     let build = built(&mut writes, &commands, env(), None);
     let kinds: Vec<u32> = build.instances.iter().map(UiInstance::kind).collect();
     assert_eq!(kinds[0], UiKind::RECT);
@@ -1291,41 +1265,47 @@ mod building {
   }
 
   #[test]
-  fn a_rect_instance_is_the_old_paths() {
+  fn a_rect_instance_is_its_rect_quad() {
     let Some(mut writes) = Writes::new() else {
       return;
     };
     // Off the pixel grid at a fractional scale, snapped on the target or not
     for on_target in [false, true] {
       let env = env_at(1.5, on_target);
+      let (rect, fill, radius) = (
+        Rect::new(10.3, 7.6, 30.2, 12.9),
+        Color::new(40, 160, 220, 200),
+        4.0,
+      );
+      let border = Some((1.5, Color::new(250, 250, 250, 180)));
       let command = UiCommand::Rect {
-        rect: Rect::new(10.3, 7.6, 30.2, 12.9),
-        fill: Color::new(40, 160, 220, 200),
-        radius: 4.0,
-        border: Some((1.5, Color::new(250, 250, 250, 180))),
+        rect,
+        fill,
+        radius,
+        border,
         clip: Some(Rect::new(5.0, 5.0, 30.0, 40.0)),
         layer: 0,
       };
       let commands = commands_of([command]);
-      let (list, _) = emitted(&mut writes, &commands, env, None);
-      let shape = list.shape(0).expect("the old path drew the rect");
+      let (quad, _, _) =
+        rect_instance(rect, fill, radius, border, &env.space, on_target).expect("a rect");
       let build = built(&mut writes, &commands, env, None);
-      let clip = ClipRect::of(shape.scissor, env.space.image);
+      // The clip out to whole image pixels
+      let clip = ClipRect {
+        x0: 7,
+        y0: 7,
+        x1: 53,
+        y1: 68,
+      };
       assert_eq!(
         build.instances,
-        [UiInstance::quad(
-          UiKind::RECT,
-          &shape.instance,
-          clip,
-          false,
-          0
-        )],
+        [UiInstance::quad(UiKind::RECT, &quad, clip, false, 0)],
         "on target: {on_target}"
       );
       // Every lane, bit for bit
       assert_eq!(
         bytemuck::bytes_of(&build.instances[0].data),
-        bytemuck::bytes_of(&shape.instance)
+        bytemuck::bytes_of(&quad)
       );
     }
   }
@@ -1340,12 +1320,21 @@ mod building {
       Vec2::new(40.5, 12.2),
       Vec2::new(70.0, 33.0),
     ];
-    let commands = commands_of([line(&points, Some(Rect::new(0.0, 0.0, 200.0, 100.0)))]);
-    let (list, triangles) = emitted(&mut writes, &commands, env(), None);
-    let made = list.triangles(0).expect("the old path made the line");
-    let indices = &triangles.indices[made.indices.start as usize..made.indices.end as usize];
-    let clip = ClipRect::of(made.scissor, env().space.image);
-    let expected: Vec<UiInstance> = indices
+    let command = line(&points, Some(Rect::new(0.0, 0.0, 200.0, 100.0)));
+    // The line's builder's triangles, as `line_of` asks for them
+    let (mut list, mut triangles, mut poly) =
+      (DrawList::default(), Triangles::default(), Vec::new());
+    let (style, look) = line_of(&command, ui_z(0, 0), &mut poly).expect("a line");
+    push_polyline(&mut list, &mut triangles, &poly, &style, look);
+    let clip = ClipRect {
+      x0: 0,
+      y0: 0,
+      x1: 200,
+      y1: 100,
+    };
+    let commands = commands_of([command]);
+    let expected: Vec<UiInstance> = triangles
+      .indices
       .as_chunks::<3>()
       .0
       .iter()
@@ -1401,17 +1390,20 @@ mod building {
       text(&icons, Vec2::new(40.0, 10.0), None),
     ]);
     let sources = NoFonts::new();
-    let (list, _) = emitted(&mut writes, &commands, env(), Some(&sources.sources()));
+    // The sprite's quad, and the icon's as the text emitters lay it
+    let quad = sprite_instance(
+      Rect::new(10.3, 10.0, 16.0, 12.0),
+      [0.0, 0.0, 1.0, 1.0],
+      Color::new(255, 230, 210, 250),
+    )
+    .expect("a sprite");
+    let list = laid(&mut writes, &commands, env(), &sources.sources());
+    let icon = list.sprite(0).expect("the icon is laid").instance;
     let texture = writes.sprites.texture_of(&swatch);
     let build = built(&mut writes, &commands, env(), Some(&sources.sources()));
     let clip = ClipRect::of(None, env().space.image);
-    let old: Vec<UiInstance> = (0..2)
-      .map(|index| {
-        let drawn = list.sprite(index).expect("the old path drew both");
-        UiInstance::quad(UiKind::SPRITE, &drawn.instance, clip, false, 0)
-      })
-      .collect();
-    assert_eq!(build.instances, old);
+    let expected = [quad, icon].map(|quad| UiInstance::quad(UiKind::SPRITE, &quad, clip, false, 0));
+    assert_eq!(build.instances, expected);
     assert_eq!(build.needs, [TexNeed::Sprite(texture); 2]);
     assert_eq!(
       build.sprites,
@@ -1585,14 +1577,15 @@ mod building {
       }
     }
 
-    /// The old path's glyphs for `commands`, as the instances they become
-    fn old_glyphs(
+    /// The glyphs the text emitters lay for `commands`, as the instances
+    /// they become
+    fn laid_glyphs(
       writes: &mut Writes,
       commands: &UiCommands,
       sources: &TextSources<'_>,
       clip: ClipRect,
     ) -> (Vec<UiInstance>, Vec<TexNeed>, Vec<(Vec2, Vec2)>) {
-      let (list, _) = emitted(writes, commands, env(), Some(sources));
+      let list = laid(writes, commands, env(), sources);
       let glyphs = list.glyphs_from(0);
       assert!(!glyphs.is_empty());
       assert!(
@@ -1650,7 +1643,7 @@ mod building {
     }
 
     #[test]
-    fn a_text_is_the_old_paths_glyphs_then_one_copy_of_them() {
+    fn a_text_is_its_laid_glyphs_then_one_copy_of_them() {
       let Some(mut writes) = Writes::new() else {
         return;
       };
@@ -1659,7 +1652,7 @@ mod building {
       let commands = commands_of([text(&layout, Vec2::new(12.3, 20.0), None)]);
       let sources = fonts.0.sources();
       let clip = ClipRect::of(None, env().space.image);
-      let (instances, needs, _) = old_glyphs(&mut writes, &commands, &sources, clip);
+      let (instances, needs, _) = laid_glyphs(&mut writes, &commands, &sources, clip);
       let (builds, texts) = rebuilt(&mut writes, &commands, &sources, 2);
       for (frame, build) in builds.iter().enumerate() {
         assert_eq!(build.instances, instances, "frame {frame}");
@@ -1692,7 +1685,7 @@ mod building {
         }),
         env().space.image,
       );
-      let (instances, needs, boxes) = old_glyphs(&mut writes, &commands, &sources, clip);
+      let (instances, needs, boxes) = laid_glyphs(&mut writes, &commands, &sources, clip);
       // A glyph is kept when its box comes within a pixel of the clip
       let meets = |(min, _): &(Vec2, Vec2)| min.x - 1.0 < 40.0;
       let kept: Vec<UiInstance> = instances
@@ -1729,79 +1722,5 @@ mod building {
       assert!(builds.iter().all(|build| build.instances.is_empty()));
       assert_eq!((texts.built(), texts.reused()), (0, 1));
     }
-  }
-}
-
-/// Named text icons swapped and a sprite's pixels replaced in place (as hot
-/// reload does), on the old UI path and the new renderer
-mod updated {
-  use crate::core::asset::SpriteHandle;
-  use crate::core::engine::EngineBuilder;
-  use crate::core::graphics::Sprite;
-  use crate::core::testing::PixelPair;
-  use crate::prelude::*;
-
-  /// A prompt with a named icon, a sprite and labels
-  struct IconsAndSprite(SpriteHandle);
-
-  impl Scene for IconsAndSprite {
-    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-      SceneAction::Continue
-    }
-
-    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-      ui.draw_text_styled(
-        RichText::markup("Press [icon=confirm] to start"),
-        8.0,
-        8.0,
-        &TextStyle::default().size(24.0),
-      );
-      ui.draw_sprite_rect(&self.0, Rect::new(10.3, 50.6, 21.0, 17.0), Color::WHITE);
-      ui.draw_text("Sprite", 40.0, 52.0, Color::WHITE);
-      SceneAction::Continue
-    }
-  }
-
-  #[test]
-  fn named_icons_and_a_sprite_updated_in_place_match() {
-    let swatch =
-      |r, g, b, name| SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, r, g, b, 255), name);
-    let (red, blue) = (swatch(255, 0, 0, "red"), swatch(0, 0, 255, "blue"));
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 0, 0, 255), "swatch");
-    let make = {
-      let sprite = sprite.clone();
-      move || {
-        EngineBuilder::new()
-          .resolution(240, 120)
-          .start_scene(IconsAndSprite(sprite.clone()))
-      }
-    };
-    let Some(mut pair) =
-      PixelPair::between(make, |b| b.ui_dedicated(false), |b| b.ui_dedicated(true))
-    else {
-      return;
-    };
-    let icon = |pair: &mut PixelPair, handle: &SpriteHandle| {
-      pair.each(|engine| {
-        engine
-          .world_mut()
-          .resource_mut::<TextIcons>()
-          .insert("confirm", handle.clone());
-      });
-    };
-    // Each change redraws the new renderer's UI at once
-    let redrawn = |pair: &mut PixelPair, what: &str| {
-      pair.frames(1, what);
-      assert!(pair.b().ui_draw_count() >= 1, "{what}: drawn");
-      pair.frames(4, what);
-    };
-    icon(&mut pair, &red);
-    redrawn(&mut pair, "the red icon");
-    icon(&mut pair, &blue);
-    redrawn(&mut pair, "the icon swapped");
-    sprite.update(Sprite::solid_rect(8, 8, 0, 0, 255, 255));
-    redrawn(&mut pair, "the sprite blue, the same size");
-    sprite.update(Sprite::solid_rect(24, 20, 0, 255, 0, 255));
-    redrawn(&mut pair, "the sprite green and larger");
   }
 }

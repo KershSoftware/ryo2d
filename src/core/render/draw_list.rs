@@ -5,8 +5,8 @@
 //! a trail can sit between two sprites in one render pass. Lights are kept
 //! apart, for the lighting pass.
 
+use super::CameraDraw;
 use super::batch::{BatchShader, BlendMode, Filter, Sampling};
-use super::{CameraDraw, PixelRect};
 use crate::core::ecs::Entity;
 use crate::core::ecs::Vec2;
 use std::ops::Range;
@@ -18,8 +18,7 @@ use crate::core::graphics::{GlyphPage, RenderLayers, RenderTarget, SpriteInstanc
 pub(crate) enum DrawKind {
   /// An entity (with its shadows, tiles and composite parts) drawn on the GPU
   Entity,
-  /// World text: after the entities at equal z (UI items are `Sprite`, or
-  /// `Trail` for lines; each UI command has a z of its own)
+  /// World text: after the entities at equal z
   Text,
   /// A `Scene::render`, particle or parallax sprite
   Sprite,
@@ -37,8 +36,6 @@ pub(crate) enum DrawPayload {
   Triangles(usize),
   /// Index into the list's glyph items
   Glyph(usize),
-  /// Index into the list's shape items
-  Shape(usize),
 }
 
 /// One drawable and where it sorts.
@@ -105,8 +102,6 @@ pub(crate) struct DrawSprite {
   /// The world box its quad stays inside at any rotation
   pub(crate) min: Vec2,
   pub(crate) max: Vec2,
-  /// Pixels outside are not drawn
-  pub(crate) scissor: Option<PixelRect>,
 }
 
 /// A trail or line waiting to be drawn: its triangles in the batch's
@@ -125,8 +120,6 @@ pub(crate) struct DrawTriangles {
   pub(crate) indices: Range<u32>,
   /// Its vertices (a textured one is told its atlas slot when placed)
   pub(crate) vertices: Range<u32>,
-  /// Pixels outside are not drawn
-  pub(crate) scissor: Option<PixelRect>,
 }
 
 /// A glyph waiting to be drawn: its quad is already placed in its glyph
@@ -144,22 +137,6 @@ pub(crate) struct DrawGlyph {
   /// The box its quad stays inside
   pub(crate) min: Vec2,
   pub(crate) max: Vec2,
-  /// Pixels outside are not drawn
-  pub(crate) scissor: Option<PixelRect>,
-}
-
-/// An untextured UI rectangle (rounded corners, border) waiting to be drawn.
-#[derive(Debug, Clone)]
-pub(crate) struct DrawShape {
-  pub(crate) instance: SpriteInstance,
-  pub(crate) blend: BlendMode,
-  /// The cameras on these layers draw it
-  pub(crate) layers: RenderLayers,
-  /// The box its quad stays inside
-  pub(crate) min: Vec2,
-  pub(crate) max: Vec2,
-  /// Pixels outside are not drawn
-  pub(crate) scissor: Option<PixelRect>,
 }
 
 /// A light waiting to be drawn into the light buffers of the lit cameras
@@ -189,7 +166,6 @@ pub(crate) struct DrawList {
   sprites: Vec<DrawSprite>,
   triangles: Vec<DrawTriangles>,
   glyphs: Vec<DrawGlyph>,
-  shapes: Vec<DrawShape>,
   lights: Vec<DrawLight>,
   next_sequence: u32,
   sorted: bool,
@@ -203,7 +179,6 @@ impl DrawList {
     self.sprites.clear();
     self.triangles.clear();
     self.glyphs.clear();
-    self.shapes.clear();
     self.lights.clear();
     self.next_sequence = 0;
     self.sorted = true;
@@ -248,17 +223,8 @@ impl DrawList {
       shows,
       min,
       max,
-      scissor: None,
     });
     self.push_item(look.lit, z, kind, payload, only_camera);
-  }
-
-  /// Clip the most recently pushed sprite to `scissor` (a no-op before any
-  /// sprite).
-  pub(crate) fn set_last_sprite_scissor(&mut self, scissor: Option<PixelRect>) {
-    if let Some(sprite) = self.sprites.last_mut() {
-      sprite.scissor = scissor;
-    }
   }
 
   /// Add a trail or line at `z`, for `only_camera` or every camera; `lit`
@@ -273,19 +239,6 @@ impl DrawList {
     let payload = DrawPayload::Triangles(self.triangles.len());
     self.triangles.push(triangles);
     self.push_item(lit, z, DrawKind::Trail, payload, only_camera);
-  }
-
-  /// Clip the most recently pushed trail or line to `scissor` (a no-op
-  /// before any).
-  pub(crate) fn set_last_triangles_scissor(&mut self, scissor: Option<PixelRect>) {
-    if let Some(triangles) = self.triangles.last_mut() {
-      triangles.scissor = scissor;
-    }
-  }
-
-  /// How many trails and lines the frame holds.
-  pub(crate) fn triangles_count(&self) -> usize {
-    self.triangles.len()
   }
 
   /// Add a glyph at `z`, for `only_camera` or every camera.
@@ -310,37 +263,6 @@ impl DrawList {
   /// The glyphs pushed from the `start`-th on, in the order pushed
   pub(crate) fn glyphs_from(&self, start: usize) -> &[DrawGlyph] {
     self.glyphs.get(start..).unwrap_or(&[])
-  }
-
-  /// Add `glyphs` at `z`, in their order, for `only_camera` or every camera
-  /// (a text's glyphs built in an earlier frame)
-  pub(crate) fn push_glyphs(
-    &mut self,
-    kind: DrawKind,
-    z: i32,
-    lit: bool,
-    only_camera: Option<Entity>,
-    glyphs: &[DrawGlyph],
-  ) {
-    let start = self.glyphs.len();
-    self.glyphs.extend_from_slice(glyphs);
-    for index in start..self.glyphs.len() {
-      self.push_item(lit, z, kind, DrawPayload::Glyph(index), only_camera);
-    }
-  }
-
-  /// Add a UI rectangle at `z`, for `only_camera` or every camera.
-  pub(crate) fn push_shape(
-    &mut self,
-    kind: DrawKind,
-    z: i32,
-    lit: bool,
-    only_camera: Option<Entity>,
-    shape: DrawShape,
-  ) {
-    let payload = DrawPayload::Shape(self.shapes.len());
-    self.shapes.push(shape);
-    self.push_item(lit, z, kind, payload, only_camera);
   }
 
   /// Add a light for the lit cameras that see it.
@@ -418,11 +340,6 @@ impl DrawList {
     self.glyphs.get(index)
   }
 
-  /// The rectangle a [`DrawPayload::Shape`] index refers to.
-  pub(crate) fn shape(&self, index: usize) -> Option<&DrawShape> {
-    self.shapes.get(index)
-  }
-
   /// The textures the frame's trails and lines draw.
   pub(crate) fn triangle_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
     self
@@ -465,10 +382,6 @@ impl DrawList {
     if item.only_camera.is_some_and(|only| only != camera.entity) {
       return false;
     }
-    // A UI camera draws what is drawn for it alone
-    if camera.ui && item.only_camera != Some(camera.entity) {
-      return false;
-    }
     match item.payload {
       DrawPayload::Sprite(index) => self.sprites.get(index).is_some_and(|sprite| {
         sprite.layers.intersects(&camera.layers)
@@ -481,9 +394,6 @@ impl DrawList {
       }),
       DrawPayload::Glyph(index) => self.glyphs.get(index).is_some_and(|glyph| {
         glyph.layers.intersects(&camera.layers) && camera.view.is_visible(glyph.min, glyph.max)
-      }),
-      DrawPayload::Shape(index) => self.shapes.get(index).is_some_and(|shape| {
-        shape.layers.intersects(&camera.layers) && camera.view.is_visible(shape.min, shape.max)
       }),
     }
   }
@@ -529,7 +439,6 @@ mod tests {
       max: Vec2::ONE,
       indices: 0..3,
       vertices: 0..3,
-      scissor: None,
     };
     list.push_triangles(lit, z, None, triangles);
   }
@@ -547,12 +456,11 @@ mod tests {
       layers: RenderLayers::default(),
       min,
       max,
-      scissor: None,
     }
   }
 
-  /// A camera over (0,0) to (100,100), a UI camera if `ui`.
-  fn test_camera(entity: Entity, ui: bool) -> CameraDraw {
+  /// A camera over (0,0) to (100,100).
+  fn test_camera(entity: Entity) -> CameraDraw {
     use crate::core::graphics::{Camera2d, CameraView};
     let camera = Camera2d::default();
     let view = CameraView::compute(
@@ -571,7 +479,7 @@ mod tests {
       &mut cameras,
       &mut targetless,
     );
-    CameraDraw { ui, ..cameras[0] }
+    cameras[0]
   }
 
   #[test]
@@ -581,15 +489,16 @@ mod tests {
       ..glyph_item(Vec2::ZERO, Vec2::ONE)
     };
     let mut list = DrawList::default();
-    list.push_glyphs(
-      DrawKind::Sprite,
-      5,
-      false,
-      None,
-      &[glyph(1.0), glyph(2.0), glyph(3.0)],
-    );
+    for x in [1.0, 2.0, 3.0] {
+      list.push_glyph(DrawKind::Sprite, 5, false, None, glyph(x));
+    }
     assert_eq!(list.glyph_count(), 3);
-    assert_eq!(list.glyphs_from(1).len(), 2);
+    let from: Vec<f32> = list
+      .glyphs_from(1)
+      .iter()
+      .map(|glyph| glyph.instance.transform[2][0])
+      .collect();
+    assert_eq!(from, [2.0, 3.0]);
     list.sorted();
     let order: Vec<_> = list
       .unlit_items()
@@ -618,19 +527,18 @@ mod tests {
   }
 
   #[test]
-  fn a_ui_camera_sees_only_its_own_items() {
+  fn an_item_for_one_camera_is_seen_by_that_camera_alone() {
     use crate::core::ecs::World;
     let mut world = World::new();
-    let (ui, other) = (world.spawn_empty().id(), world.spawn_empty().id());
-    let world_camera = test_camera(other, false);
-    let ui_camera = test_camera(ui, true);
+    let (one, other) = (world.spawn_empty().id(), world.spawn_empty().id());
+    let (one_camera, other_camera) = (test_camera(one), test_camera(other));
     let mut list = DrawList::default();
     let (min, max) = (Vec2::new(40.0, 40.0), Vec2::new(60.0, 60.0));
-    list.push_glyph(DrawKind::Text, 0, false, Some(ui), glyph_item(min, max));
+    list.push_glyph(DrawKind::Text, 0, false, Some(one), glyph_item(min, max));
     list.push_glyph(DrawKind::Text, 0, false, None, glyph_item(min, max));
     list.sorted();
-    assert_eq!(list.unlit_items_for(&ui_camera).count(), 1);
-    assert_eq!(list.unlit_items_for(&world_camera).count(), 1);
+    assert_eq!(list.unlit_items_for(&one_camera).count(), 2);
+    assert_eq!(list.unlit_items_for(&other_camera).count(), 1);
   }
 
   fn order(items: &[DrawItem]) -> Vec<(i32, DrawKind)> {

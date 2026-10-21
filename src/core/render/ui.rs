@@ -1,11 +1,11 @@
 //! The UI camera: the UI space (UI units, the UI image and the scale
-//! between them) and the frame's UI commands laid into the 2D batch
+//! between them), and what the UI renderer makes of each UI command
 //!
-//! `Scene::ui` records [`UiCommand`]s in UI units. Each frame [`emit_ui`]
-//! lays them into the draw list as unlit items for the UI camera alone,
-//! ordered by their layer, then by the order they were recorded in (one z
-//! per command, so the batch's sort keeps the painter's order). The `ui` pass draws the UI
-//! camera into the UI image, which the composite blends over the frame.
+//! `Scene::ui` records [`UiCommand`]s in UI units. Each frame the UI
+//! renderer (`render::ui_renderer`) builds them, ordered by their layer,
+//! then by the order they were recorded in, and the `ui` pass draws them
+//! through the UI camera into the UI image, which the composite blends over
+//! the frame.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,21 +14,18 @@ use glam::Vec2;
 
 use crate::core::ecs::Entity;
 use crate::core::graphics::{
-  Camera2d, CameraClear, CameraView, Presentation, RenderLayers, ScreenMapping, SpriteInstance,
+  Camera2d, CameraView, Presentation, RenderLayers, ScreenMapping, SpriteInstance,
 };
-use crate::core::render::batch::{
-  BlendMode, Filter, LineLook, PolyPoint, PolyStyle, Triangles, line_color, push_polyline,
-};
-use crate::core::render::text::{TextDraw, TextPlacement, TextSources, TextTargets, UI_GLYPH_PX};
-use crate::core::render::ui_retain::{UiRenderEnv, UiTextCache};
-use crate::core::render::{CameraDraw, DrawKind, DrawShape, PixelRect, SpriteLook, SpriteShading};
+use crate::core::render::batch::{BlendMode, Filter, LineLook, PolyPoint, PolyStyle, line_color};
+use crate::core::render::text::{TextDraw, TextPlacement, UI_GLYPH_PX};
+use crate::core::render::{DrawKind, PixelRect};
 use crate::core::text::TextLayout;
 use crate::core::trail::{LineCap, LineJoin};
-use crate::core::ui::immediate::{UiCommand, UiCommands};
+use crate::core::ui::immediate::UiCommand;
 use crate::core::ui::{Color, Rect};
 
 /// The UI camera's entity: no entity in the world, only a key for its
-/// uniforms, bind group and draws
+/// uniforms and bind group
 pub(crate) const UI_CAMERA: Entity = Entity::PLACEHOLDER;
 
 /// What resolution the UI image has.
@@ -173,7 +170,7 @@ pub(crate) fn ui_view(space: &UiSpace) -> CameraView {
   )
 }
 
-/// A rect command's quad (`UiRect`'s lanes) and the box it covers, or
+/// A rect command's quad (the UI rect body's lanes) and the box it covers, or
 /// `None` when it draws nothing. With `pixel_art` its edges land on whole
 /// image pixels.
 pub(crate) fn rect_instance(
@@ -328,133 +325,6 @@ pub(crate) fn text_of<'c>(
     opacity: *opacity,
   };
   Some((layout, place))
-}
-
-/// Lay the frame's UI commands into the draw list for the UI camera and
-/// return that camera, or `None` when nothing was drawn.
-///
-/// With `env.on_target` the UI image is the pixel-art target: rects land on
-/// whole target pixels, like the sprites the camera snaps. Without `sources`
-/// (a game removed the text resources) text is skipped and the rest drawn.
-/// Texts are drawn through `texts`, which reuses the glyphs of those drawn
-/// unchanged before.
-pub(crate) fn emit_ui(
-  commands: &UiCommands,
-  env: &UiRenderEnv,
-  sources: Option<&TextSources<'_>>,
-  targets: &mut TextTargets<'_>,
-  triangles: &mut Triangles,
-  real_time: f32,
-  texts: &mut UiTextCache,
-) -> Option<CameraDraw> {
-  if commands.is_empty() {
-    return None;
-  }
-  let (space, pixel_art) = (&env.space, env.on_target);
-  let view = ui_view(space);
-  let only = Some(UI_CAMERA);
-  let layers = RenderLayers::all();
-  let mut points: Vec<PolyPoint> = Vec::new();
-  for (order, command) in commands.iter() {
-    // Painter order: z orders the layer, then the recorded order
-    let z = ui_z(command.draw_layer(), order);
-    let Some(scissor) = scissor_of(command.clip_rect(), space) else {
-      continue;
-    };
-    match command {
-      UiCommand::Rect {
-        rect,
-        fill,
-        radius,
-        border,
-        ..
-      } => {
-        let Some((instance, min, max)) =
-          rect_instance(*rect, *fill, *radius, *border, space, pixel_art)
-        else {
-          continue;
-        };
-        let shape = DrawShape {
-          instance,
-          blend: BlendMode::Alpha,
-          layers,
-          min,
-          max,
-          scissor,
-        };
-        targets
-          .list
-          .push_shape(DrawKind::Sprite, z, false, only, shape);
-      }
-      UiCommand::Sprite {
-        sprite,
-        rect,
-        uv,
-        tint,
-        filter,
-        ..
-      } => {
-        let Some(instance) = sprite_instance(*rect, *uv, *tint) else {
-          continue;
-        };
-        let texture = targets.sprites.texture_of(sprite);
-        let look = SpriteLook {
-          shading: SpriteShading::Plain,
-          blend: BlendMode::Alpha,
-          filter: *filter,
-          lit: false,
-        };
-        let list = &mut *targets.list;
-        list.push_sprite_in(
-          DrawKind::Sprite,
-          z,
-          texture,
-          look,
-          instance,
-          (layers, None, only),
-        );
-        list.set_last_sprite_scissor(scissor);
-      }
-      UiCommand::Line { .. } => {
-        let Some((style, look)) = line_of(command, z, &mut points) else {
-          continue;
-        };
-        let list = &mut *targets.list;
-        let before = list.triangles_count();
-        push_polyline(list, triangles, &points, &style, look);
-        // Only a line that made triangles is clipped (never an earlier one)
-        if list.triangles_count() > before {
-          list.set_last_triangles_scissor(scissor);
-        }
-      }
-      UiCommand::Text { .. } => {
-        let Some(sources) = sources else {
-          continue;
-        };
-        let Some((layout, place)) = text_of(command, space, z, scissor, real_time) else {
-          continue;
-        };
-        texts.emit(sources, targets, layout, &place);
-      }
-    }
-  }
-  Some(CameraDraw {
-    entity: UI_CAMERA,
-    view,
-    layers,
-    clear: CameraClear::None,
-    target: None,
-    direct: false,
-    own_image: false,
-    rect: PixelRect {
-      x: 0,
-      y: 0,
-      width: space.image.0,
-      height: space.image.1,
-    },
-    lit: false,
-    ui: true,
-  })
 }
 
 #[cfg(test)]

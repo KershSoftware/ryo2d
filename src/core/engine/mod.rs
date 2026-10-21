@@ -212,17 +212,13 @@ pub struct Engine {
   warned_targetless: std::collections::HashSet<crate::core::ecs::Entity>,
   draw_list: DrawList,
   batch_collector: BatchCollector,
-  // UI: the frame's recorded draws, the UI space they are in, the UI
-  // camera they draw through (when any were recorded) and the cameras the
-  // batch lays out (the world's, then the UI's; refilled each frame)
+  // UI: the frame's recorded draws and the UI space they are in
   ui_commands: UiCommands,
   ui_space: UiSpace,
-  ui_camera: Option<crate::core::render::CameraDraw>,
   /// UI render retention: what the UI image holds
   ui_retain: crate::core::render::ui_retain::UiRetain,
   /// The draws the last frame's `ui` pass was given (0 when it did not run)
   ui_draw_count: u32,
-  batch_cameras: Vec<crate::core::render::CameraDraw>,
   /// Mouse buttons whose press the UI took: until released, their held
   /// state and release are the UI's too
   ui_mouse_capture: Vec<winit::event::MouseButton>,
@@ -647,10 +643,8 @@ impl Engine {
       batch_collector: BatchCollector::new(),
       ui_commands: UiCommands::default(),
       ui_space: initial_ui_space,
-      ui_camera: None,
       ui_retain: Default::default(),
       ui_draw_count: 0,
-      batch_cameras: Vec::new(),
       ui_mouse_capture: Vec::new(),
       ui_binding_capture: Vec::new(),
       prompts: Default::default(),
@@ -1281,14 +1275,6 @@ impl EngineBuilder {
   /// retention out when chasing a rendering bug.
   pub fn ui_retain(mut self, on: bool) -> Self {
     self.config.debug.ui_retain = on;
-    self
-  }
-
-  /// Draw the UI through the dedicated UI renderer instead of the world's
-  /// batch (temporary, for comparing the two)
-  #[doc(hidden)]
-  pub fn ui_dedicated(mut self, on: bool) -> Self {
-    self.config.debug.ui_dedicated = on;
     self
   }
 

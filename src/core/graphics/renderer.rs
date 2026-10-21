@@ -753,7 +753,7 @@ impl WgpuRenderer {
       lighting: scene.lighting.is_some(),
       hdr_effects: scene.effects.has_active_effects_in(EffectStage::Hdr),
       effects: scene.effects.has_active_effects_in(EffectStage::Display),
-      ui: scene.ui_camera.is_some() || scene.ui_frame.is_some(),
+      ui: scene.ui_frame.is_some(),
       transition: scene.overlay.1 > TRANSITION_VISIBLE,
       capture: capture_path.is_some() || self.keep_scene,
     };
@@ -843,7 +843,6 @@ impl WgpuRenderer {
       lighting: None,
       effects: &effects,
       look: &look,
-      ui_camera: None,
       ui_frame: None,
       ui_size: self.compositor.ui_size(),
       ui_kept: false,

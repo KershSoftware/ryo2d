@@ -90,6 +90,49 @@ fn a_resize_redraws_the_ui() {
   assert!(pair.on.ui_render_stats().kept);
 }
 
+/// Commands that draw nothing: off the UI image, outside their clip, and
+/// under an empty clip
+struct Culled;
+
+impl Scene for Culled {
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    ui.draw_rect(Rect::new(-500.0, -500.0, 40.0, 20.0), Color::WHITE);
+    ui.draw_text("Far away", 900.0, 900.0, Color::WHITE);
+    ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
+    ui.draw_rect(Rect::new(100.0, 100.0, 40.0, 20.0), Color::WHITE);
+    ui.pop_clip();
+    ui.push_clip(Rect::new(10.0, 10.0, 0.0, 50.0));
+    ui.draw_text("Clipped away", 12.0, 12.0, Color::WHITE);
+    ui.pop_clip();
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_ui_drawing_nothing_keeps_its_image() {
+  let make = || {
+    EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(Culled)
+  };
+  let Some(mut pair) = PixelPair::new(make) else {
+    return;
+  };
+  pair.frames(1, "the culled UI's first frame");
+  assert!(!pair.on.ui_render_stats().kept, "the first frame draws it");
+  let before = pair.kept();
+  pair.frames(10, "the culled UI unchanged");
+  assert_eq!(
+    pair.kept() - before,
+    10,
+    "every unchanged frame kept the image"
+  );
+}
+
 /// A panel and a label while the shared flag is set, nothing otherwise
 struct Toggle(Arc<Mutex<bool>>);
 

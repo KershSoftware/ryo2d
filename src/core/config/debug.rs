@@ -264,10 +264,6 @@ pub struct DebugConfig {
   /// builds and draws the whole UI every frame: the same pixels, slower.
   /// For ruling retention out when chasing a rendering bug.
   pub ui_retain: bool,
-  /// Draw the UI through the dedicated UI renderer instead of the world's
-  /// batch (temporary, for comparing the two)
-  #[doc(hidden)]
-  pub ui_dedicated: bool,
 }
 
 impl Default for DebugConfig {
@@ -295,7 +291,6 @@ impl Default for DebugConfig {
       dev_console: false,
       ui_cache: true,
       ui_retain: true,
-      ui_dedicated: false,
     }
   }
 }

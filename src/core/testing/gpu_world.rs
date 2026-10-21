@@ -776,8 +776,11 @@ fn a_glyph_too_big_for_a_page_is_rasterized_once() {
   assert_eq!(rasterized.get(), 1, "refused once, then remembered");
 }
 
+/// The batch's pipelines build in the scene format and in the UI format
+/// (where they gamma-encode, as the UI pipeline does: what the UI line
+/// proof compares against)
 #[test]
-fn the_text_and_ui_pipelines_build_in_both_formats() {
+fn the_batch_pipelines_build_in_both_formats() {
   use crate::core::render::batch::{BatchShader, BlendMode, LightStep, Stream};
   use crate::core::render::{SCENE_FORMAT, UI_FORMAT};
   let Ok((device, _queue)) = crate::core::testing::shared_gpu() else {
@@ -791,7 +794,6 @@ fn the_text_and_ui_pipelines_build_in_both_formats() {
     (BatchShader::TextMask, Stream::Quads),
     (BatchShader::TextColor, Stream::Quads),
     (BatchShader::TextMsdf, Stream::Quads),
-    (BatchShader::UiRect, Stream::Quads),
     (BatchShader::Sprite, Stream::Quads),
     (BatchShader::Line, Stream::Triangles),
     (BatchShader::Light(LightStep::Add), Stream::Quads),
@@ -824,136 +826,4 @@ fn the_text_and_ui_pipelines_build_in_both_formats() {
   }
   let error = pollster::block_on(scope.pop());
   assert!(error.is_none(), "{error:?}");
-}
-
-/// Draw one full-target `UiRect` quad through a UI camera into an
-/// `Rgba8Unorm` image cleared to `clear`, and read back its first pixel.
-fn ui_pixel(
-  device: &std::sync::Arc<wgpu::Device>,
-  queue: &std::sync::Arc<wgpu::Queue>,
-  clear: wgpu::Color,
-  tint: [f32; 4],
-) -> [u8; 4] {
-  use crate::core::ecs::{Vec2, World};
-  use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
-  use crate::core::graphics::{Camera2d, CameraView, RenderLayers, SpriteGpuRenderer};
-  use crate::core::render::batch::{Batch2D, BlendMode};
-  use crate::core::render::{DrawKind, DrawList, DrawShape, SCENE_FORMAT, UI_FORMAT, plan_cameras};
-  const SIDE: u32 = 8;
-  let mut world = World::new();
-  let entity = world.spawn_empty().id();
-  let camera = Camera2d::default();
-  let size = Vec2::splat(SIDE as f32);
-  let view = CameraView::compute(size / 2.0, 0.0, &camera, Vec2::ZERO, size);
-  let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
-  plan_cameras(
-    [(entity, &camera, &view, None)].into_iter(),
-    (SIDE, SIDE),
-    false,
-    None,
-    &mut cameras,
-    &mut targetless,
-  );
-  cameras[0].ui = true;
-
-  let mut instance = crate::core::graphics::SpriteInstance::new();
-  // A quad far larger than the image, so the rect's edge is out of view
-  instance.transform = [
-    [1000.0, 0.0, 0.0, 0.0],
-    [0.0, 1000.0, 0.0, 0.0],
-    [size.x / 2.0, size.y / 2.0, 1.0, 0.0],
-  ];
-  instance.tint = tint;
-  instance.effect_params = [0.0, 0.0, 1000.0, 1000.0];
-  let mut list = DrawList::default();
-  list.push_shape(
-    DrawKind::Text,
-    0,
-    true,
-    Some(entity),
-    DrawShape {
-      instance,
-      blend: BlendMode::Alpha,
-      layers: RenderLayers::default(),
-      min: Vec2::splat(-1000.0),
-      max: Vec2::splat(1000.0),
-      scissor: None,
-    },
-  );
-  list.sorted();
-
-  let mut batch = Batch2D::new(device, SCENE_FORMAT, Default::default());
-  let mut uniforms = CameraUniforms::default();
-  let globals = CameraGlobals::new(&view, (SIDE, SIDE), 0.0, 0.0, false);
-  uniforms.sync(device, queue, &[(entity, globals)]);
-  batch.sync_cameras(device, &uniforms);
-  let mut sprites = SpriteGpuRenderer::new(device, queue);
-  batch.prepare(device, queue, &list, &cameras, &mut sprites, &[]);
-
-  let texture = device.create_texture(&wgpu::TextureDescriptor {
-    label: Some("UI Readback Target"),
-    size: wgpu::Extent3d {
-      width: SIDE,
-      height: SIDE,
-      depth_or_array_layers: 1,
-    },
-    mip_level_count: 1,
-    sample_count: 1,
-    dimension: wgpu::TextureDimension::D2,
-    format: UI_FORMAT,
-    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-    view_formats: &[],
-  });
-  let view_gpu = texture.create_view(&Default::default());
-  let mut encoder = device.create_command_encoder(&Default::default());
-  {
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-      label: Some("UI Readback Pass"),
-      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        view: &view_gpu,
-        depth_slice: None,
-        resolve_target: None,
-        ops: wgpu::Operations {
-          load: wgpu::LoadOp::Clear(clear),
-          store: wgpu::StoreOp::Store,
-        },
-      })],
-      depth_stencil_attachment: None,
-      timestamp_writes: None,
-      occlusion_query_set: None,
-      multiview_mask: None,
-    });
-    for draw in batch.draws(entity, true) {
-      batch.draw(&mut pass, draw, entity, &sprites, (SIDE, SIDE));
-    }
-  }
-  queue.submit([encoder.finish()]);
-  let image = crate::core::capture::read_texture_rgba(device, queue, &texture).unwrap();
-  image.get_pixel(SIDE / 2, SIDE / 2).0
-}
-
-#[test]
-fn a_ui_camera_gamma_encodes_its_output() {
-  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
-    eprintln!("skipping: no GPU available");
-    return;
-  };
-  let near = |got: [u8; 4], want: [u8; 4]| got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 1);
-  let clear = wgpu::Color::TRANSPARENT;
-  // An opaque sRGB 0.5 grey is stored as 128, not the linear 55
-  let grey = ui_pixel(&device, &queue, clear, [0.5, 0.5, 0.5, 1.0]);
-  assert!(near(grey, [128, 128, 128, 255]), "grey {grey:?}");
-  // 50% black over white mixes in gamma space
-  let white = wgpu::Color::WHITE;
-  let over = ui_pixel(&device, &queue, white, [0.0, 0.0, 0.0, 0.5]);
-  assert!(near(over, [128, 128, 128, 255]), "over white {over:?}");
-  // A fully transparent quad leaves the destination alone
-  let dst = wgpu::Color {
-    r: 0.2,
-    g: 0.4,
-    b: 0.6,
-    a: 1.0,
-  };
-  let kept = ui_pixel(&device, &queue, dst, [1.0, 0.0, 0.0, 0.0]);
-  assert!(near(kept, [51, 102, 153, 255]), "kept {kept:?}");
 }

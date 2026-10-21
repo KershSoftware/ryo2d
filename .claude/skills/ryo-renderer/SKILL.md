@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.0.0
+  version: 2.0.1
 ---
 
 # Ryo2D Renderer Specialist
@@ -21,7 +21,7 @@ You help developers work on the rendering system.
 - **Cameras**: `src/core/graphics/{camera2d,camera_mut,camera_gpu,camera_images,render_targets,render_layers}.rs`
 - **Screen and window**: `src/core/graphics/screen.rs` (`ScreenMapping`), `compositor.rs`
 - **Shaders**: `src/core/shaders/`
-- **Text and the UI camera**: `src/core/render/text.rs` (lays glyphs, bitmap cells and icons into the draw list, shared by world text and the UI), `src/core/render/ui.rs` (`emit_ui`: the UI commands into the batch for the UI camera, `UiSpace`), `src/core/graphics/glyph_atlas.rs` (the glyph pages); the text itself (fonts, layout, glyph bitmaps) is `src/core/text/`, which the renderer sees only as `GlyphImage`s
+- **Text and the UI**: `src/core/render/text.rs` (lays glyphs, bitmap cells and icons into a draw list, shared by world text and the UI), `src/core/render/ui.rs` (the UI camera, `UiSpace`, and what each UI command becomes), `src/core/render/ui_renderer/` (the UI's own renderer: its instances, one pipeline, texture runs), `src/core/graphics/glyph_atlas.rs` (the glyph pages); the text itself (fonts, layout, glyph bitmaps) is `src/core/text/`, which the renderer sees only as `GlyphImage`s
 - **Lighting**: `src/core/lighting/`
 - **Trails and lines**: `src/core/trail/` (components)
 - **Parallax**: `src/core/graphics/parallax.rs` (`ParallaxLayer`)
@@ -36,7 +36,7 @@ The world is read fresh every frame; there is no render cache to invalidate. Eve
 4. The `Scene::render` sprites join the frame's `DrawList`; each `ParallaxLayer` is laid out for every camera on its layers from that camera's view (items for that camera alone, `only_camera`).
 5. One query over the renderables (plus `CompositeTile`) adds the entities, skipping quads no camera on the entity's layers can see. `Disabled` entities are skipped by the query itself.
 6. World text: `Text2d`s whose text, style or fonts changed are laid out again, and each camera that sees a block gets its glyphs (made at the size that camera sees) as glyph items for that camera alone.
-7. The UI: `render::ui::emit_ui` lays the frame's UI commands (rects, sprites, lines, text) into the list as unlit items for the UI camera alone, one z per command so the painter's order holds.
+7. The UI: unless its image is kept, the UI renderer builds the frame's UI commands (rects, sprites, lines, text) into instances of its own in painter's order; it does not use the frame's draw list or the batch's cameras.
 6. Trails and lines become joined polylines on the batch's triangle stream, one item each; `DebugDraw`'s shapes (and the overlays) are built for each camera in its own screen pixels.
 7. `Batch2D::prepare` makes the textures resident, lays each camera's lit and unlit items into draws (on its layers, inside its `CameraView::bounds`, not showing its own target) and uploads the quads and triangles once.
 8. The render pipeline runs; `world` and `unlit_world` replay the camera's draws.
@@ -68,7 +68,7 @@ hdr_effects   bloom, god rays, ambient occlusion and HDR custom effects, on the 
 tonemap       the look: exposure, auto-exposure, curve, grading and LUT; scene image -> display image (Rgba8UnormSrgb)
 transition    scene transition fade over the whole frame (not the UI)
 post_process  display effects: fade, tint, vignette, flash, CRT, chromatic aberration and display custom effects, on the display image
-ui            the UI camera's draws (rects, sprites, lines, text) into the UI image (only if the scene drew UI)
+ui            the UI renderer's draws (rects, sprites, lines, text) into the UI image (only if the scene drew UI)
 composite     to the window/offscreen target through ScreenMapping (letterbox for pixel art); the UI image is blended last in sRGB (gamma) space, untouched by effects
 capture       frame capture, when requested
 ```
@@ -136,7 +136,7 @@ Particles, parallax and trails default to z 0: give them an explicit z to sit be
 ## The 2D Batch
 
 - **Streams.** Instanced quads (`SpriteInstance`, 128 bytes, remapped into its atlas slot) and indexed triangles (`Vertex2D`, 72 bytes). Each is written once per frame into a buffer that doubles when needed.
-- **Keys.** Every item resolves to a `DrawState`: page (atlas page, standalone texture or render target; none for untextured lines), `BatchShader` (`Sprite`, `SpriteEffect`, `Custom(source)`, `Line`, `LineTextured`, `TextMask`, `TextColor`, `TextMsdf`, `UiRect`), `BlendMode`, `Sampling`, scissor. `plan_draws` merges consecutive equal states per camera (triangles also need adjacent index ranges).
+- **Keys.** Every item resolves to a `DrawState`: page (atlas page, standalone texture or render target; none for untextured lines), `BatchShader` (`Sprite`, `SpriteEffect`, `Custom(source)`, `Line`, `LineTextured`, `TextMask`, `TextColor`, `TextMsdf`), `BlendMode`, `Sampling`. `plan_draws` merges consecutive equal states per camera (triangles also need adjacent index ranges).
 - **Blend modes.** Every batch shader outputs premultiplied colour, so each `BlendMode` is one fixed blend state (`pipelines::blend_state`): Alpha and Premultiplied `(One, OneMinusSrcAlpha)`; Additive `(One, One)`; Multiply `(Dst, OneMinusSrcAlpha)`; Screen `(OneMinusDst, One)`; the last three keep the destination's alpha. `Premultiplied` uses the shader entries that take a texture's colour as it is (`fs_*_premultiplied`).
 - **Pipelines** are made on first use per `(BatchShader, BlendMode, Stream, format)`; a custom shader gets one per blend it is drawn with, checked without blocking.
 - **Bind groups are made with their resource**, never per frame: one per camera, one per texture page and sampler. Make every bind group through `graphics::bind_groups::create` (a guard test fails on any other `create_bind_group`); `steady_frames_create_no_bind_groups` counts them. Frame-resource passes (compositor, post-process, lighting) keep a `BindGroupCache` keyed by the resources they bind.
@@ -144,10 +144,10 @@ Particles, parallax and trails default to z 0: give them an explicit z to sit be
 
 ### Text and the UI Image
 
-- **Glyphs and UI rects are batch items.** Text glyphs are placed in a glyph page (`R8Unorm` coverage, `Rgba8Unorm` colour or MSDF) and drawn by `TextMask`, `TextColor` or `TextMsdf`; UI rects are untextured quads drawn by `UiRect`; bitmap-font cells and inline icons are ordinary sprites. The instance's `tint`, `effect_params` and `effect_extra` lanes carry the glyph colour, the MSDF mode/width/softness/range and the outline or border colour (lanes in `src/core/render/AGENTS.md`).
-- **The UI camera.** `UI_CAMERA` is a `CameraDraw` with `ui: true` that sees only the items drawn for it. The `ui` pass draws it into the UI image: `Rgba8Unorm` (`UI_FORMAT`), colour gamma-encoded and premultiplied by alpha. The batch's `UI_GAMMA` pipeline override (and `ui_out` in `color.wgsl`, which every batch shader's final colour goes through) switches the encoding on for that camera only.
+- **World glyphs are batch items.** Text glyphs are placed in a glyph page (`R8Unorm` coverage, `Rgba8Unorm` colour or MSDF) and drawn by `TextMask`, `TextColor` or `TextMsdf`; bitmap-font cells and inline icons are ordinary sprites. The instance's `tint`, `effect_params` and `effect_extra` lanes carry the glyph colour, the MSDF mode/width/softness/range and the outline or border colour (lanes in `src/core/render/AGENTS.md`).
+- **The UI renderer.** The UI does not go through the batch: `render::ui_renderer` builds its commands into one instance format (rects, glyphs, sprites, line triangles) drawn by one pipeline (`ui.wgsl`) that clips in the shader, a draw only where a bound texture changes. The `ui` pass draws it through the UI camera (`UI_CAMERA`, its uniforms only) into the UI image: `Rgba8Unorm` (`UI_FORMAT`), colour gamma-encoded and premultiplied by alpha, through the `UI_GAMMA` override and `ui_out` in `color.wgsl`.
 - **Gamma-space composite.** The composite shader (`fullscreen_quad.wgsl`) encodes the frame to sRGB, blends `ui + frame * (1 - ui.a)` and decodes, so UI alpha behaves as on the web (a 50% black panel over white is 128). The UI image is size `UiSpace::image`: the render size, or the window's screen rectangle with `UiResolution::Window` in pixel-art mode.
-- **A new batch shader** that can draw in the UI must end in `ui_out(..)` like the existing ones; custom sprite shaders get it from the generated entry points.
+- **Batch shaders end in `ui_out(..)`** like the existing ones (custom sprite shaders get it from the generated entry points): a batch built in `UI_FORMAT` gamma-encodes as the UI pipeline does, which a test uses to prove UI lines against the line pipeline.
 
 ### Texture Atlas and Fidelity
 
@@ -208,7 +208,7 @@ Located in `src/core/shaders/`:
 | `core/line.wgsl` | Trails, lines and debug shapes (batch triangles) |
 | `core/light.wgsl`, `shadow.wgsl` | Lights (batch quads) and shadow volumes (batch triangles) |
 | `core/tonemap.wgsl`, `exposure.wgsl` | The look, and auto-exposure's compute passes |
-| `core/text.wgsl` | Glyphs and UI rects: `fs_text_mask` (raster coverage times tint), `fs_text_color` (colour glyphs), `fs_text_msdf` (distance field: fill, outline, soft shadow and glow lanes), `fs_ui_rect` (analytic rounded rect with a border) |
+| `core/text.wgsl` | World glyphs: `fs_text_mask` (raster coverage times tint), `fs_text_color` (colour glyphs), `fs_text_msdf` (distance field: fill, outline, soft shadow and glow lanes) |
 | `core/camera_image.wgsl` | A window camera's own image placed in its viewport |
 | `core/fullscreen_quad.wgsl` | The final composite (and sRGB encoding when the surface is not sRGB) |
 | `post-process/*.wgsl` | Screen-wide effects (one file per effect) |

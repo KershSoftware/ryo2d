@@ -101,11 +101,6 @@ impl UiRenderer {
     self.texts.end();
   }
 
-  /// Whether the last build made any instance
-  pub(crate) fn has_instances(&self) -> bool {
-    !self.build.instances.is_empty()
-  }
-
   /// The last build's sprite textures, to make resident before
   /// [`finish`](Self::finish)
   pub(crate) fn sprite_textures(&self) -> &[TextureId] {
@@ -120,8 +115,8 @@ impl UiRenderer {
   /// Finish the last build, its sprite textures now resident: fix its
   /// sprites (dropping those whose texture has no slot), split it into runs
   /// and bind each run's textures, and upload it in one write. The frame
-  /// draws through the UI camera's `camera` group; `None` when it has no
-  /// instance.
+  /// draws through the UI camera's `camera` group; a build without an
+  /// instance (all of it culled) draws none.
   pub(crate) fn finish<'a>(
     &'a mut self,
     device: &wgpu::Device,
@@ -129,32 +124,31 @@ impl UiRenderer {
     sprites: &SpriteGpuRenderer,
     presentation: Presentation,
     camera: &'a wgpu::BindGroup,
-  ) -> Option<UiFrame<'a>> {
+  ) -> UiFrame<'a> {
     self.runs.clear();
     self.build.fix_sprites(sprites, presentation);
-    if self.build.instances.is_empty() {
-      return None;
+    if !self.build.instances.is_empty() {
+      let runs = plan_runs(&self.build.needs, |need| slot_of(need, sprites));
+      self.frame += 1;
+      for run in runs {
+        let textures = run
+          .textures
+          .map(|key| key.and_then(|key| sprites.page_texture(key)));
+        let group = self
+          .gpu
+          .bind_group(device, textures, sprites.samplers(), self.frame);
+        self.runs.push((run.range, group.clone()));
+      }
+      self.gpu.upload(device, queue, &self.build.instances);
+      self.gpu.end_frame(self.frame);
     }
-    let runs = plan_runs(&self.build.needs, |need| slot_of(need, sprites));
-    self.frame += 1;
-    for run in runs {
-      let textures = run
-        .textures
-        .map(|key| key.and_then(|key| sprites.page_texture(key)));
-      let group = self
-        .gpu
-        .bind_group(device, textures, sprites.samplers(), self.frame);
-      self.runs.push((run.range, group.clone()));
-    }
-    self.gpu.upload(device, queue, &self.build.instances);
-    self.gpu.end_frame(self.frame);
-    Some(UiFrame {
+    UiFrame {
       pipeline: self.gpu.pipeline(),
       quad: self.gpu.quad(),
       instances: self.gpu.instances(),
       camera,
       runs: &self.runs,
-    })
+    }
   }
 }
 
@@ -198,6 +192,9 @@ impl UiFrame<'_> {
   /// Draw it into `pass` (the UI image): the pipeline and the camera bound
   /// once, then each run with its textures
   pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+    if self.runs.is_empty() {
+      return;
+    }
     pass.set_pipeline(self.pipeline);
     pass.set_bind_group(0, self.camera, &[]);
     pass.set_vertex_buffer(0, self.quad.slice(..));

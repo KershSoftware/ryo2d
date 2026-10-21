@@ -41,8 +41,9 @@ pub(crate) struct UiBuild {
   pub(crate) needs: Vec<TexNeed>,
   pub(crate) sprites: Vec<SpriteFix>,
   /// Every sprite texture the commands drew or would have drawn but for
-  /// culling, with the place of its command in the frame's: the old path
-  /// made exactly these resident, in the order recorded
+  /// culling, with the place of its command in the frame's: all are made
+  /// resident, in the order recorded, so where the atlas places a texture
+  /// does not depend on what is culled
   resident: Vec<(u32, TextureId)>,
   /// `resident`'s textures, in the order recorded
   textures: Vec<TextureId>,
@@ -65,7 +66,7 @@ impl UiBuild {
 
   /// The sprite textures to make resident before the sprites are fixed:
   /// every one the commands asked for, culled or not, in the order recorded
-  /// (so the atlas places them, and their uvs come out, as on the old path)
+  /// (see `resident`)
   pub(crate) fn sprite_textures(&self) -> &[TextureId] {
     &self.textures
   }
@@ -173,9 +174,9 @@ struct Frame<'f> {
   real_time: f32,
 }
 
-/// Where a command falls in the painter's order: as the batch sorts the old
-/// path's items, by z (the layer, then the recorded order), then with lines
-/// after the rest at one z (the batch's `DrawKind` order), then as recorded
+/// Where a command falls in the painter's order: by z (the layer, then the
+/// recorded order), then with lines after the rest at one z (as the batch
+/// draws a line after a sprite at equal z), then as recorded
 fn paint_key((order, command): &(u32, UiCommand)) -> (i32, bool) {
   let line = matches!(command, UiCommand::Line { .. });
   (ui_z(command.draw_layer(), *order), line)
@@ -286,7 +287,7 @@ fn build_command(
       let Some(instance) = sprite_instance(*rect, *uv, *tint) else {
         return;
       };
-      // Asked for and made resident culled or not, as the old path does
+      // Asked for and made resident culled or not (see `UiBuild::resident`)
       let texture = targets.sprites.texture_of(sprite);
       build.resident.push((index, texture));
       let (min, max) = reach(&instance);
@@ -412,7 +413,7 @@ impl TextSink<UiInstance> for TextInstances<'_> {
           let Some(sprite) = list.sprite(index) else {
             continue;
           };
-          // Resident culled or not, as on the old path
+          // Resident culled or not (see `UiBuild::resident`)
           let resident = (self.command, sprite.texture);
           self.build.resident.push(resident);
           if self.seen.sees(sprite.min, sprite.max, self.clip) {
@@ -423,7 +424,7 @@ impl TextSink<UiInstance> for TextInstances<'_> {
           }
         }
         // Text lays glyphs and sprites only
-        DrawPayload::Triangles(_) | DrawPayload::Shape(_) => {}
+        DrawPayload::Triangles(_) => {}
       }
     }
     self.taken = items.len();

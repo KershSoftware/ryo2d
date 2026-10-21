@@ -41,8 +41,7 @@ pub struct FrameInfo {
   /// Display-stage effects are active
   pub effects: bool,
   /// The `ui` pass draws the UI this frame (false when nothing was
-  /// recorded or none of it draws, or when the UI image was kept from an
-  /// earlier frame)
+  /// recorded, or when the UI image was kept from an earlier frame)
   pub ui: bool,
   /// A scene transition's fade overlay is visible
   pub transition: bool,
@@ -89,11 +88,8 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) effects: &'a EffectsManager,
   /// The frame's look (the tonemap pass reads it)
   pub(crate) look: &'a Look,
-  /// The UI camera, when the frame's UI recorded anything and the batch
-  /// laid out its draws (no camera pass runs for it)
-  pub(crate) ui_camera: Option<&'a CameraDraw>,
-  /// The UI renderer's frame, when it built a UI that draws anything (then
-  /// the batch laid out no UI)
+  /// The UI renderer's frame, when the frame's UI recorded anything and
+  /// was not kept
   pub(crate) ui_frame: Option<UiFrame<'a>>,
   /// The UI image's size in pixels
   pub(crate) ui_size: (u32, u32),
@@ -168,9 +164,6 @@ pub(crate) struct CameraDraw {
   pub(crate) rect: PixelRect,
   /// Lighting runs for it
   pub(crate) lit: bool,
-  /// A UI camera: sees only the items drawn for it, and draws in
-  /// `UI_FORMAT`
-  pub(crate) ui: bool,
 }
 
 /// One camera to plan, as the world holds it.
@@ -239,7 +232,6 @@ pub(crate) fn plan_cameras<'a>(
       own_image,
       rect,
       lit: lighting,
-      ui: false,
     });
   }
 }

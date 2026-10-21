@@ -1,7 +1,6 @@
 //! What decides whether two drawables can share a draw call.
 
 use crate::core::graphics::{Presentation, SlotPage};
-use crate::core::render::PixelRect;
 
 /// How a drawable's colour combines with what is already drawn.
 ///
@@ -99,8 +98,6 @@ pub(crate) enum BatchShader {
   TextColor,
   /// An MSDF glyph, with outline or as a soft shadow or glow layer
   TextMsdf,
-  /// An untextured UI rectangle with rounded corners and a border
-  UiRect,
 }
 
 /// One draw of a light into a light buffer. A shadowed light draws, inside
@@ -156,8 +153,6 @@ pub(crate) struct DrawState {
   pub(crate) shader: BatchShader,
   pub(crate) blend: BlendMode,
   pub(crate) sampling: Sampling,
-  /// Pixels outside are not drawn (`None`: the whole image)
-  pub(crate) scissor: Option<PixelRect>,
 }
 
 #[cfg(test)]

@@ -22,8 +22,6 @@ pub(crate) const SPRITE: &str = concat!(
   "\n",
   include_str!("include/glyph.wgsl"),
   "\n",
-  include_str!("include/ui_rect.wgsl"),
-  "\n",
   include_str!("include/snap.wgsl"),
   "\n",
   include_str!("core/sprite.wgsl"),

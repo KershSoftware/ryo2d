@@ -262,7 +262,6 @@ impl Pipelines {
         (&self.sprite, &self.layout, "fs_text_color")
       }
       (BatchShader::TextMsdf, Stream::Quads, _, _) => (&self.sprite, &self.layout, "fs_text_msdf"),
-      (BatchShader::UiRect, Stream::Quads, _, _) => (&self.sprite, &self.camera_only, "fs_ui_rect"),
       (BatchShader::Light(LightStep::Shadow), Stream::Triangles, _, _) => {
         (&self.shadow, &self.camera_only, "fs_shadow")
       }

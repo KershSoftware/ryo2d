@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.2.2
+  version: 2.2.3
 ---
 
 # Ryo2D Engine Developer
@@ -58,7 +58,7 @@ Engine::frame
 ├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
 │                     the world into the draw list (world space, sorted once: sprites, entities,
 │                     trails and lines as polylines, world text; parallax and debug shapes per camera),
-│                     the UI: UI commands, then the UI camera through the batch, then the UI image,
+│                     the UI: UI commands, then the UI renderer (its own instances), then the UI image,
 │                     then the composite,
 │                     plans the cameras, lays each camera's items into the 2D batch's draws
 │                     (Batch2D::prepare, uploaded once), runs the RenderPipeline:

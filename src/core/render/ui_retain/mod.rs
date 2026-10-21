@@ -63,8 +63,6 @@ pub(crate) struct UiRetain {
   image: Option<u64>,
   /// The last frame's
   pub(crate) stats: UiRenderStats,
-  /// The texts' built glyphs
-  pub(crate) texts: UiTextCache,
 }
 
 impl UiRetain {
@@ -127,7 +125,6 @@ impl UiRetain {
     self.stamps.clear();
     self.env = None;
     self.image = None;
-    self.texts.clear();
   }
 }
 

@@ -128,6 +128,10 @@ impl UiCommands {
   pub(crate) fn len(&self) -> usize {
     self.commands.len()
   }
+}
+
+#[cfg(test)]
+impl UiCommands {
   /// Each command with its order, in the order they were pushed
   pub(crate) fn iter(&self) -> impl Iterator<Item = (u32, &UiCommand)> {
     self
@@ -135,10 +139,6 @@ impl UiCommands {
       .iter()
       .map(|(order, command)| (*order, command))
   }
-}
-
-#[cfg(test)]
-impl UiCommands {
   /// The commands without their orders, in the order they were pushed
   pub(crate) fn commands(&self) -> impl Iterator<Item = &UiCommand> {
     self.commands.iter().map(|(_, command)| command)
