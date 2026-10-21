@@ -16,9 +16,9 @@ use std::ops::Range;
 #[cfg(test)]
 use build::SpriteFix;
 use build::{UiBuild, build_ui};
-#[cfg(test)]
-use gpu::KEEP_FRAMES;
 use gpu::UiGpu;
+#[cfg(test)]
+use gpu::{KEEP_FRAMES, changed_range};
 use instance::UiInstance;
 #[cfg(test)]
 use instance::{ClipRect, UiKind};
@@ -35,8 +35,9 @@ use crate::core::text::GlyphFormat;
 use crate::core::ui::immediate::UiCommands;
 
 /// The UI renderer: the frame's UI commands built into instances, fixed once
-/// their sprite textures are resident, split into runs and uploaded in one
-/// write, for the `ui` pass to draw with one pipeline
+/// their sprite textures are resident, split into runs and uploaded (what
+/// changed since the last upload, in one write), for the `ui` pass to draw
+/// with one pipeline
 pub(crate) struct UiRenderer {
   gpu: UiGpu,
   build: UiBuild,
@@ -114,9 +115,9 @@ impl UiRenderer {
 
   /// Finish the last build, its sprite textures now resident: fix its
   /// sprites (dropping those whose texture has no slot), split it into runs
-  /// and bind each run's textures, and upload it in one write. The frame
-  /// draws through the UI camera's `camera` group; a build without an
-  /// instance (all of it culled) draws none.
+  /// and bind each run's textures, and upload what changed in one write.
+  /// The frame draws through the UI camera's `camera` group; a build without
+  /// an instance (all of it culled) draws none.
   pub(crate) fn finish<'a>(
     &'a mut self,
     device: &wgpu::Device,

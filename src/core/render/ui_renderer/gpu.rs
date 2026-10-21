@@ -1,6 +1,8 @@
 //! The UI on the GPU: its one pipeline, the texture bind groups it draws
 //! with (cached by the textures they hold) and its instance buffer
 
+use std::ops::Range;
+
 use super::instance::UiInstance;
 use crate::core::hash::FastMap;
 use crate::core::render::UI_FORMAT;
@@ -12,6 +14,10 @@ pub(crate) const KEEP_FRAMES: u64 = 8;
 
 /// Instances the buffer holds at first; it doubles when a frame needs more
 const FIRST_CAPACITY: usize = 1024;
+
+/// Instances compared at once while looking for a change: one `memcmp`
+/// over many is far cheaper than one per instance
+const COMPARE_CHUNK: usize = 32;
 
 /// A [`UiInstance`]: its eight lanes, then its clip, kind and flags
 const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
@@ -40,7 +46,12 @@ pub(crate) struct UiGpu {
   instances: wgpu::Buffer,
   /// In instances
   capacity: usize,
+  /// What the instance buffer holds, from its start: last upload's frame
+  held: Vec<UiInstance>,
   groups: BindCache,
+  /// The instances the last upload wrote
+  #[cfg(test)]
+  written: Range<usize>,
 }
 
 /// What a texture bind group holds: the four slots' textures, then the
@@ -151,7 +162,10 @@ impl UiGpu {
       placeholder,
       instances: instance_buffer(device, FIRST_CAPACITY),
       capacity: FIRST_CAPACITY,
+      held: Vec::new(),
       groups: BindCache::default(),
+      #[cfg(test)]
+      written: 0..0,
     }
   }
 
@@ -216,8 +230,10 @@ impl UiGpu {
       .retain(|_, (_, used)| frame.saturating_sub(*used) < KEEP_FRAMES);
   }
 
-  /// Upload the frame's `instances` in one write, growing the buffer to the
-  /// next power of two instances if need be
+  /// Upload the frame's `instances`: the one range that differs from what
+  /// the buffer holds, in one write (nothing when nothing differs). A buffer
+  /// too small is replaced by one of the next power of two instances, and
+  /// given the whole frame.
   pub(crate) fn upload(
     &mut self,
     device: &wgpu::Device,
@@ -227,10 +243,32 @@ impl UiGpu {
     if instances.len() > self.capacity {
       self.capacity = instances.len().next_power_of_two();
       self.instances = instance_buffer(device, self.capacity);
+      self.held.clear();
     }
-    if !instances.is_empty() {
-      queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(instances));
+    let range = changed_range(&self.held, instances);
+    if !range.is_empty() {
+      let offset = (range.start * std::mem::size_of::<UiInstance>()) as u64;
+      let changed = &instances[range.clone()];
+      queue.write_buffer(&self.instances, offset, bytemuck::cast_slice(changed));
     }
+    // Keep `held` equal to `instances`, copying only what changed
+    self.held.truncate(instances.len());
+    let kept = self.held.len();
+    let end = range.end.min(kept);
+    if range.start < end {
+      self.held[range.start..end].copy_from_slice(&instances[range.start..end]);
+    }
+    self.held.extend_from_slice(&instances[kept..]);
+    #[cfg(test)]
+    {
+      self.written = range;
+    }
+  }
+
+  /// The instances the last upload wrote (tests)
+  #[cfg(test)]
+  pub(crate) fn written(&self) -> Range<usize> {
+    self.written.clone()
   }
 
   pub(crate) fn pipeline(&self) -> &wgpu::RenderPipeline {
@@ -254,11 +292,62 @@ impl UiGpu {
   }
 }
 
+/// The one range of `frame` to write over a buffer holding `held`: from
+/// the first instance that differs to the last that does when the lengths
+/// are equal (empty when nothing does), to the frame's end when they are
+/// not. Instances compare bit for bit, as the buffer holds them.
+pub(crate) fn changed_range(held: &[UiInstance], frame: &[UiInstance]) -> Range<usize> {
+  let shared = held.len().min(frame.len());
+  let first = same_prefix(&held[..shared], &frame[..shared]);
+  if held.len() != frame.len() {
+    return first..frame.len();
+  }
+  if first == frame.len() {
+    return first..first;
+  }
+  first..frame.len() - same_suffix(&held[first..], &frame[first..])
+}
+
+fn bytes(instances: &[UiInstance]) -> &[u8] {
+  bytemuck::cast_slice(instances)
+}
+
+fn alike(a: &UiInstance, b: &UiInstance) -> bool {
+  bytemuck::bytes_of(a) == bytemuck::bytes_of(b)
+}
+
+/// How many instances `a` and `b` (as long as each other) begin with alike
+fn same_prefix(a: &[UiInstance], b: &[UiInstance]) -> usize {
+  let mut same = 0;
+  for (a, b) in a.chunks(COMPARE_CHUNK).zip(b.chunks(COMPARE_CHUNK)) {
+    if bytes(a) != bytes(b) {
+      return same + a.iter().zip(b).take_while(|(a, b)| alike(a, b)).count();
+    }
+    same += a.len();
+  }
+  same
+}
+
+/// How many instances `a` and `b` (as long as each other) end with alike
+fn same_suffix(a: &[UiInstance], b: &[UiInstance]) -> usize {
+  let mut same = 0;
+  for (a, b) in a.rchunks(COMPARE_CHUNK).zip(b.rchunks(COMPARE_CHUNK)) {
+    if bytes(a) != bytes(b) {
+      let pairs = a.iter().rev().zip(b.iter().rev());
+      return same + pairs.take_while(|(a, b)| alike(a, b)).count();
+    }
+    same += a.len();
+  }
+  same
+}
+
 fn instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+  use wgpu::BufferUsages as U;
   device.create_buffer(&wgpu::BufferDescriptor {
     label: Some("UI Instances"),
     size: (capacity * std::mem::size_of::<UiInstance>()) as u64,
-    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    // Tests read it back
+    usage: U::VERTEX | U::COPY_DST | U::COPY_SRC,
     mapped_at_creation: false,
   })
 }

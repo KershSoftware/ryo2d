@@ -413,6 +413,12 @@ impl HeadlessEngine {
     self.engine.debug_config_mut()
   }
 
+  /// The engine's UI renderer (tests)
+  #[cfg(test)]
+  pub(crate) fn ui_renderer(&self) -> Option<&crate::core::render::ui_renderer::UiRenderer> {
+    self.engine.ui_renderer()
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]

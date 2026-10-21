@@ -28,9 +28,13 @@
 //! more than an empty one, as it leaves more to clean up.
 //!
 //! The guard asserts the idle target and that one changing label is no
-//! slower retained than not (4g), and that the scrolling list moves every
-//! frame. It prints every median, and one label against the 40 µs target
-//! (4h) without asserting it: the render step misses it today.
+//! slower retained than not (4g), one label's 40 µs target (4h), and that
+//! the scrolling list moves every frame. It prints every median, and
+//! scrolling retained against not without asserting it: a moving list's
+//! texts miss the text cache, so retention costs it more than it saves.
+//! One label meets its target by about 7 µs on an Apple M5 Pro at a load
+//! of 2 to 3, but read 39 to 40 µs at a load of 4: run the guard on a quiet
+//! machine.
 
 use std::time::Duration;
 
@@ -187,8 +191,8 @@ fn over(time: Duration, empty: Duration) -> f64 {
 /// on: an idle settings screen adds under 5 µs (4g), a changing frame is no
 /// slower retained than not (4g), and one changing label adds under 40 µs
 /// (4h). Every median is printed, and each target with its verdict;
-/// asserted are the idle target, that one label is no slower retained and
-/// that the scrolling list moves every frame.
+/// asserted are the idle and one-label targets, that one label is no slower
+/// retained and that the scrolling list moves every frame.
 fn guard() {
   let screens = [
     (Screen::Empty, true),
@@ -273,6 +277,11 @@ fn guard() {
     idle.saturating_sub(empty) < IDLE_TARGET,
     "an idle UI costs {:+.1} µs to render",
     us(idle)
+  );
+  assert!(
+    label.saturating_sub(empty) < LABEL_TARGET,
+    "one changing label costs {:+.1} µs to render",
+    us(label)
   );
   assert!(
     label <= label_off,

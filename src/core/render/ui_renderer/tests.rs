@@ -1,3 +1,5 @@
+use bytemuck::Zeroable;
+
 use super::*;
 use crate::core::graphics::{GlyphPage, SpriteInstance};
 use crate::core::render::PixelRect;
@@ -132,4 +134,54 @@ fn a_run_break_starts_the_next_run_with_only_the_breaking_texture() {
     runs[1].textures,
     [Some(TexKey::Glyph(page(1))), None, None, Some(atlas(2))]
   );
+}
+
+/// `n` instances, each told apart by its first lane
+fn instances(n: usize) -> Vec<UiInstance> {
+  (0..n)
+    .map(|i| {
+      let mut instance = UiInstance::zeroed();
+      instance.data[0][0] = i as f32;
+      instance
+    })
+    .collect()
+}
+
+#[test]
+fn the_upload_is_the_one_range_that_changed() {
+  let held = instances(100);
+  let changed = |at: &[usize]| {
+    let mut frame = held.clone();
+    for &i in at {
+      frame[i].data[3][2] += 1.0;
+    }
+    frame
+  };
+  // Equal: nothing
+  assert!(changed_range(&held, &held).is_empty());
+  // Equal lengths: from the first instance that differs to the last
+  for first in 0..100 {
+    for last in first..100 {
+      assert_eq!(
+        changed_range(&held, &changed(&[first, last])),
+        first..last + 1
+      );
+    }
+  }
+  assert_eq!(changed_range(&held, &changed(&[40, 43, 47])), 40..48);
+  // Compared bit for bit: zero and minus zero differ
+  let mut signed = held.clone();
+  signed[60].data[7][3] = -0.0;
+  assert_eq!(changed_range(&held, &signed), 60..61);
+  // Other lengths: from the first difference to the frame's end
+  let mut longer = held.clone();
+  longer.extend(instances(120).split_off(100));
+  assert_eq!(changed_range(&held, &longer), 100..120);
+  longer[10].data[3][2] += 1.0;
+  assert_eq!(changed_range(&held, &longer), 10..120);
+  assert!(changed_range(&held, &held[..70]).is_empty());
+  assert_eq!(changed_range(&held, &changed(&[30])[..70]), 30..70);
+  // A new or grown buffer holds nothing yet: the whole frame
+  assert_eq!(changed_range(&[], &held), 0..100);
+  assert!(changed_range(&[], &[]).is_empty());
 }

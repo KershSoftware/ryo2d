@@ -1112,6 +1112,12 @@ impl Engine {
     &self.debug_stats
   }
 
+  /// The UI renderer, between frames (tests)
+  #[cfg(test)]
+  pub(crate) fn ui_renderer(&self) -> Option<&UiRenderer> {
+    self.ui_renderer.as_ref()
+  }
+
   /// Per-camera GPU state: the uniform buffers, the camera images and the
   /// cameras' light targets.
   #[cfg(test)]

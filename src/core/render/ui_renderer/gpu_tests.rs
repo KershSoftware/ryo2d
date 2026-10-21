@@ -1724,3 +1724,133 @@ mod building {
     }
   }
 }
+
+/// The instance buffer after uploads that change part of a frame
+mod upload {
+  use bytemuck::Zeroable;
+  use glam::Vec2;
+
+  use super::super::*;
+  use crate::core::engine::EngineBuilder;
+  use crate::core::render::SCENE_FORMAT;
+  use crate::core::render::batch::Batch2D;
+  use crate::core::scene::{Scene, SceneAction, SceneContext};
+  use crate::core::testing::HeadlessEngine;
+  use crate::core::ui::immediate::UiContext;
+  use crate::core::ui::{Color, Rect};
+
+  /// What `buffer` holds over its first `len` instances
+  fn read_back(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    len: usize,
+  ) -> Vec<UiInstance> {
+    let stride = std::mem::size_of::<UiInstance>();
+    let size = (len * stride) as u64;
+    if size == 0 {
+      return Vec::new();
+    }
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("UI Instance Readback"),
+      size,
+      usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+      mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size);
+    queue.submit([encoder.finish()]);
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .expect("the readback finishes");
+    let bytes = slice.get_mapped_range().expect("the readback maps");
+    bytes
+      .chunks_exact(stride)
+      .map(bytemuck::pod_read_unaligned)
+      .collect()
+  }
+
+  /// `n` instances told apart by their first lane, from `from`
+  fn numbered(from: usize, n: usize) -> Vec<UiInstance> {
+    (from..from + n)
+      .map(|i| {
+        let mut instance = UiInstance::zeroed();
+        instance.data[0][0] = i as f32;
+        instance
+      })
+      .collect()
+  }
+
+  #[test]
+  fn a_grown_buffer_is_given_the_whole_frame() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let batch = Batch2D::new(&device, SCENE_FORMAT, Default::default());
+    let mut gpu = UiGpu::new(&device, batch.camera_layout());
+    let first = numbered(0, 600);
+    gpu.upload(&device, &queue, &first);
+    // The same 600 first, then more than the buffer holds
+    let grown = numbered(0, 3000);
+    gpu.upload(&device, &queue, &grown);
+    assert_eq!(gpu.written(), 0..3000);
+    let held = read_back(&device, &queue, gpu.instances(), grown.len());
+    assert!(held == grown, "the grown buffer holds the frame");
+  }
+
+  /// A panel with texts before and after a counter that changes every frame,
+  /// a line, and every third frame a text more
+  struct Counter {
+    frame: u32,
+  }
+
+  impl Scene for Counter {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      self.frame += 1;
+      ui.draw_rect(Rect::new(4.0, 4.0, 200.0, 120.0), Color::new(0, 0, 0, 160));
+      ui.draw_text("Before the counter", 8.0, 8.0, Color::WHITE);
+      ui.draw_text(&format!("Frame {}", self.frame), 8.0, 30.0, Color::WHITE);
+      ui.draw_text("After the counter", 8.0, 52.0, Color::WHITE);
+      if self.frame.is_multiple_of(3) {
+        ui.draw_text("Now and then", 8.0, 74.0, Color::WHITE);
+      }
+      let points = [Vec2::new(8.0, 100.0), Vec2::new(120.0, 110.0)];
+      ui.draw_line(&points, 2.0, Color::WHITE);
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn the_instance_buffer_holds_each_frame_as_one_label_changes() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let builder = EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(Counter { frame: 0 });
+    let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+      return;
+    };
+    let mut partial = 0;
+    // Past "Frame 9" to "Frame 10", and the text more coming and going
+    for frame in 1..=12 {
+      engine.step().expect("a frame");
+      let ui = engine.ui_renderer().expect("a UI renderer");
+      let instances = &ui.build.instances;
+      let held = read_back(&device, &queue, ui.gpu.instances(), instances.len());
+      assert!(
+        held == *instances,
+        "frame {frame}: the buffer holds the frame"
+      );
+      let written = ui.gpu.written();
+      partial += usize::from(!written.is_empty() && written.len() < instances.len());
+    }
+    assert!(partial >= 6, "{partial} frames wrote only what changed");
+  }
+}
