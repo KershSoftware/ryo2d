@@ -425,4 +425,11 @@ impl HeadlessEngine {
   pub fn render_time(&self) -> Duration {
     self.engine.render_time()
   }
+
+  /// The last frame's UI pass on the CPU: the scenes' UI, the node walk,
+  /// layout, resolve and the overlays (not the render side)
+  #[doc(hidden)]
+  pub fn ui_pass_time(&self) -> Duration {
+    self.engine.ui_pass_time()
+  }
 }

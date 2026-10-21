@@ -565,6 +565,7 @@ impl Engine {
   /// pass's) and apply what it consumed; `None` before the GPU is up.
   fn draw_ui(&mut self) -> Option<SceneAction> {
     self.renderer.as_ref()?;
+    let started = Instant::now();
     self.ui_commands.clear();
     if let Some(fonts) = self.world.get_resource::<crate::core::text::Fonts>() {
       self.text.sync(fonts);
@@ -587,7 +588,8 @@ impl Engine {
       UiInput::snapshot(self.world.resource::<Input>()).with_mouse_scale(space.mouse_scale);
     // A rerun pass replaces the first pass's records; the pointer is
     // resolved once a frame, against last frame's records
-    if self.ui_pass_index == 0 {
+    let first_pass = self.ui_pass_index == 0;
+    if first_pass {
       self.sounds_played = 0;
       self.ui_memory.begin_frame();
       self.ui_layout.begin_frame();
@@ -681,6 +683,12 @@ impl Engine {
       let rebinds = ui.take_rebinds();
       (action, ui.into_input(), rebinds)
     };
+    // A rerun pass adds to the frame's first
+    if first_pass {
+      self.ui_pass_time = started.elapsed();
+    } else {
+      self.ui_pass_time += started.elapsed();
+    }
 
     let mut input = self.world.resource_mut::<Input>();
     consumed.apply_consumed(&mut input);

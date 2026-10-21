@@ -151,6 +151,8 @@ struct Probe {
   engine: HeadlessEngine,
   wheel: Wheel,
   times: Vec<Duration>,
+  /// The UI pass's CPU time each frame
+  ui_times: Vec<Duration>,
   /// Frames whose UI image was kept
   kept: usize,
 }
@@ -163,6 +165,7 @@ impl Probe {
       engine: engine(screen, retain)?,
       wheel: Wheel::default(),
       times: Vec::with_capacity(FRAMES),
+      ui_times: Vec::with_capacity(FRAMES),
       kept: 0,
     })
   }
@@ -173,12 +176,19 @@ impl Probe {
     }
     self.engine.step().expect("a guard frame");
     self.times.push(self.engine.render_time());
+    self.ui_times.push(self.engine.ui_pass_time());
     self.kept += usize::from(self.engine.ui_render_stats().kept);
   }
 
   fn median(&mut self) -> Duration {
     self.times.sort_unstable();
     self.times[self.times.len() / 2]
+  }
+
+  /// The median UI pass (CPU time before the render step; no target yet)
+  fn ui_pass_median(&mut self) -> Duration {
+    self.ui_times.sort_unstable();
+    self.ui_times[self.ui_times.len() / 2]
   }
 }
 
@@ -276,6 +286,22 @@ fn guard() {
     off(label_off, label),
     us(scrolling),
     off(scrolling_off, scrolling),
+  );
+  let passes: Vec<String> = probes
+    .iter_mut()
+    .map(|probe| {
+      let median = probe.ui_pass_median();
+      format!(
+        "{:?}{} {:.1} µs",
+        probe.screen,
+        if probe.retain { "" } else { " (unretained)" },
+        median.as_secs_f64() * 1e6
+      )
+    })
+    .collect();
+  eprintln!(
+    "ui_render guard, UI pass medians (CPU, not the render step): {}",
+    passes.join(", ")
   );
   assert_eq!(scrolling_kept, 0, "the scrolling list rested");
   assert!(

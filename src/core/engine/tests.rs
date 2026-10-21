@@ -740,3 +740,49 @@ fn built_engines_hold_the_builder_s_resources_and_messages() {
   assert!(engine.world.contains_resource::<Time>());
   assert!(engine.world.contains_resource::<Physics>());
 }
+
+/// Spawns `tree` when it enters
+struct SpawnUi(Option<crate::core::ui::UiNode>);
+
+impl Scene for SpawnUi {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    if let Some(tree) = self.0.take() {
+      ctx.spawn_ui(tree);
+    }
+  }
+}
+
+#[test]
+fn the_ui_pass_time_is_measured_and_is_zero_without_ui() {
+  use crate::core::testing::HeadlessEngine;
+  use crate::core::testing::fixtures::settings_tree;
+  use std::time::Duration;
+
+  let Some(mut empty) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(EmptyScene),
+  ) else {
+    return;
+  };
+  empty.step_frames(3).unwrap();
+  let empty_time = empty.ui_pass_time();
+
+  let builder = EngineBuilder::new()
+    .resolution(1280, 720)
+    .start_scene(SpawnUi(Some(settings_tree())));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(5).unwrap();
+  assert!(
+    engine.ui_pass_time() > Duration::ZERO,
+    "a UI pass takes time"
+  );
+  assert!(
+    engine.ui_pass_time() > empty_time,
+    "a 200-widget screen takes longer than no UI ({:?} against {:?})",
+    engine.ui_pass_time(),
+    empty_time
+  );
+}

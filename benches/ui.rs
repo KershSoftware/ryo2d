@@ -188,6 +188,27 @@ fn settings_nodes_unchanged(c: &mut Criterion) {
   );
 }
 
+/// The settings tree with `ui.down` pressed every frame: the focus moves
+/// down the list each frame, wrapping, so every frame rebuilds the rows it
+/// leaves and enters
+fn settings_nodes_focus_every_frame(c: &mut Criterion) {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  harness.spawn_ui(settings_tree());
+  for _ in 0..3 {
+    harness.frame(|_| {});
+  }
+  assert!(harness.focused().is_some(), "the screen's scope took focus");
+  c.bench_function(
+    "ui frame, the 200-widget settings screen as nodes, focus moving every frame",
+    |b| {
+      b.iter(|| {
+        harness.action("ui.down");
+        harness.frame(|_| {});
+      })
+    },
+  );
+}
+
 /// A grid of 2,000 nodes, text and buttons alternating, 20 to a row
 fn static_tree() -> UiNode {
   UiNode::grid(20).gap(2.0).children((0..STATIC).map(|i| {
@@ -540,6 +561,7 @@ criterion_group!(
   settings_frame,
   settings_nodes_frame,
   settings_nodes_unchanged,
+  settings_nodes_focus_every_frame,
   static_tree_frame,
   embedded_frame,
   embedded_trees_frame,

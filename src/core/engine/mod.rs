@@ -268,6 +268,9 @@ pub struct Engine {
   pub(crate) capture: CaptureState,
   input_script: InputScript,
   frame_timings: FrameTimings,
+  /// The last frame's UI pass on the CPU, its rerun passes included
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  ui_pass_time: std::time::Duration,
   smoothed_timings: SmoothedFrameTimings,
   overlay_mode: OverlayMode,
   debug_stats: DebugStats,
@@ -671,6 +674,7 @@ impl Engine {
       capture: CaptureState::new(capture_config),
       input_script,
       frame_timings: FrameTimings::default(),
+      ui_pass_time: std::time::Duration::ZERO,
       smoothed_timings: SmoothedFrameTimings::default(),
       overlay_mode: initial_overlay_mode,
       debug_stats: DebugStats::default(),
@@ -979,6 +983,13 @@ impl Engine {
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn render_time(&self) -> std::time::Duration {
     self.frame_timings.render + self.frame_timings.present
+  }
+
+  /// The last frame's UI pass: recording the scenes' UI, the node walk,
+  /// layout and resolve, the overlays and the console (not the render side)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn ui_pass_time(&self) -> std::time::Duration {
+    self.ui_pass_time
   }
 
   /// The UI commands the last frame recorded
