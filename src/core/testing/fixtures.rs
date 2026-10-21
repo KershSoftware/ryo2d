@@ -15,6 +15,20 @@ const ROWS: usize = 50;
 /// 1,406 units) scroll
 #[doc(hidden)]
 pub fn settings_tree() -> UiNode {
+  settings(true)
+}
+
+/// [`settings_tree`] as the UI render targets (4g, 4h) were set on it: its
+/// scroll area grows to its rows, so the list overflows the panel (at
+/// 1280x720, to the bottom of the screen) and cannot scroll
+#[doc(hidden)]
+pub fn settings_tree_overflowing() -> UiNode {
+  settings(false)
+}
+
+/// The settings screen, its scroll area filling the rest of the panel or
+/// growing to its rows
+fn settings(fill: bool) -> UiNode {
   let rows = (0..ROWS).map(|i| {
     let (widget, value) = match i % 4 {
       0 => (
@@ -35,6 +49,12 @@ pub fn settings_tree() -> UiNode {
       .child(widget)
       .child(UiNode::text(value))
   });
+  let scroll = UiNode::scroll().fill_width();
+  let scroll = if fill {
+    scroll.fill_height()
+  } else {
+    scroll.grow(1.0)
+  };
   UiNode::panel()
     .focus_scope()
     .wrap_focus()
@@ -43,11 +63,5 @@ pub fn settings_tree() -> UiNode {
     .height(460.0)
     .gap(8.0)
     .child(UiNode::tabs(&TABS, 0))
-    .child(
-      UiNode::scroll()
-        .fill_width()
-        .fill_height()
-        .gap(6.0)
-        .children(rows),
-    )
+    .child(scroll.gap(6.0).children(rows))
 }

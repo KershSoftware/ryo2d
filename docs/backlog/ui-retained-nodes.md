@@ -220,25 +220,39 @@ The research measured the render side of this screen at about 120 µs (profile, 
 
 Spec: `docs/specs/2026-10-20-ui-renderer-design.md`. The UI draws through a renderer of its own (4g's approach C, reshaped by measurement): its commands become one 144-byte instance format in painter's order, culled before they are built, uploaded in one write and drawn through one pipeline that clips in the shader, one draw per texture run. The settings screen, every page of the `ui` demo and breakout's menus, HUD and play draw in **1 draw** (the old path: 64 on the settings screen); the demo and breakout retain tests now assert at most 2. Measured on an Apple GPU (Metal, M5 Pro), 1280x720, `benches/ui_render.rs`, on a shared machine (load 2 to 13 during these runs).
 
-**The guard (Task 9: measured without the GPU's pacing).** `benches/ui_render.rs` measures the render step (`HeadlessEngine::render_time()`, wall time) of seven engines: an empty frame, and the settings screen idle, with one label changing every frame and scrolling, each with retention on and off. They are stepped in turn, one frame each, and before each step the guard waits until the GPU has finished all submitted work (outside the measure). Each median is over 2,000 rounds and is reported over the empty frame's median. Two things distorted the earlier figures:
+**The guard (Task 9: measured without the GPU's pacing).** `benches/ui_render.rs` measures the render step (`HeadlessEngine::render_time()`, wall time) of seven engines: an empty frame; the settings screen the targets were set on (`settings_tree_overflowing`, its list overflowing the panel), idle and with one label changing every frame, each with retention on and off; and the settings screen whose list scrolls (`settings_tree`), turned by the wheel every frame, with retention on and off. They are stepped in turn, one frame each, and before each step the guard waits until the GPU has finished all submitted work (outside the measure). Each median is over 2,000 rounds and is reported over the empty frame's median. Two things distorted the earlier figures:
 - A lone engine is paced by the GPU. The GPU takes about 210 to 310 µs to finish a frame here (the guard's wait shows it), far longer than a 65 to 170 µs render step, so a step waits on the GPU's backlog. An empty frame waits most.
 - Stepping the engines in turn does not cure this alone: seven frames of GPU work take longer than seven render steps, so the queue still backs up. Without the wait, four identical idle engines differ by 3 to 4 µs; with it, they agree to within 0.3 µs.
 
-Wall time equals the render step's thread CPU time to within 0.5 µs this way (checked with a temporary probe), so the guard needs no platform call. It asserts that one label is no slower retained than not, and that the scrolling list moves every frame (no frame kept). It prints idle and one label against their targets, and both retained changing frames against retention off.
+Wall time equals the render step's thread CPU time to within 0.5 µs this way (checked with a temporary probe), so the guard needs no platform call. It asserts the idle target, that one label is no slower retained than not, and that the scrolling list moves every frame (no frame kept). It prints one label against the 40 µs target without asserting it (missed today; Task 10 decides), and scrolling retained against retention off.
 
-The settings screen as the guard now draws it, its list scrolling (see "A settings screen that scrolls" below). Medians over an empty frame; five rounds, the 4h build and the pre-4h base (d1016380, given the same fixture) run alternately, load 3 to 4:
+The guard as committed (Task 9's fix round; six runs of the 4h build, load 2 to 3):
+
+| Frame | 4h | Target |
+|---|---|---|
+| empty frame's render step | 61.7 to 63.9 µs | |
+| idle settings screen (kept) | +0.5 to +1.2 µs | under 5 µs: met (asserted) |
+| **one label changing** | **42.7 to 46.0 µs** | under 40 µs: **missed** (printed) |
+| idle, retention off | 78.4 to 89.5 µs | |
+| one label, retention off | 80.1 to 91.2 µs | retained no slower: met (asserted) |
+| scrolling, on the scrolling screen (no frame kept) | 52.0 to 55.5 µs | |
+| scrolling, retention off | 44.0 to 47.5 µs | retained no slower: **missed** (printed; Task 11) |
+
+Retention off moved between about +79 and +90 µs from run to run (two levels, within one session); the retained figures did not.
+
+Against the pre-4h base (d1016380), the builds run alternately: first with every settings engine on the scrolling screen (Task 9's first round, before the targets went back to their own screen; five rounds, the base given the same fixture, load 3 to 4):
 
 | Frame | 4h | pre-4h base | Target |
 |---|---|---|---|
 | empty frame's render step | 66.8 to 70.0 µs | 66.3 to 70.7 µs | |
 | idle settings screen (kept) | -1.4 to +1.3 µs | -1.2 to +1.7 µs | under 5 µs: met |
-| **one label changing** | **34.5 to 39.3 µs** | 64.3 to 73.8 µs | under 40 µs: met, narrowly |
+| **one label changing** | **34.5 to 39.3 µs** | 64.3 to 73.8 µs | under 40 µs: met on this screen, narrowly |
 | scrolling (no frame kept) | 51.6 to 58.3 µs | 81.5 to 91.7 µs | |
 | idle, retention off | 43.0 to 48.0 µs | 70.2 to 78.1 µs | |
 | one label, retention off | 44.2 to 50.1 µs | 72.0 to 80.5 µs | retained no slower: met |
 | scrolling, retention off | 43.4 to 48.5 µs | 70.5 to 79.1 µs | retained no slower: **missed**, on both builds |
 
-Single runs of the 4h build in the same task read one label at 34.2 to 42.0 µs. The same method on the screen before the fixture change (its list overflowing the panel, nothing scrolling), in two sessions:
+Single runs of the 4h build there read one label at 34.2 to 42.0 µs. Then on the screen the targets were set on (its list overflowing the panel, nothing scrolling), in two sessions:
 
 | Frame (old screen) | 4h, load 2 to 4 | 4h, load 7 to 12 | base, load 2 to 4 | base, load 7 to 12 |
 |---|---|---|---|---|
@@ -247,11 +261,11 @@ Single runs of the 4h build in the same task read one label at 34.2 to 42.0 µs.
 | one label changing | 42.8 to 44.8 µs | 54.0 to 56.8 µs | 86.5, 88.0 µs | 102.9 to 105.5 µs |
 | one label, retention off | 79.1 to 80.6 µs | 90.3 to 92.5 µs | 114.9, 117.1 µs | 127.4 to 132.6 µs |
 
-So 4h roughly halves the changing frame's render side: one label costs 50 to 57% of the base's, round by round, in every session measured this way, and the profile below agrees (74 to 44 µs). The 40 µs target is met, narrowly, on the scrolling screen, and missed on the old one, whose overflowing list drew 461 instances. Task 10 decides the guard's assertions after it uploads only what changed.
+So 4h roughly halves the changing frame's render side: one label costs 50 to 57% of the base's, round by round, in every session measured this way, and the profile below agrees (74 to 44 µs). Read on the screen it was set on, whose overflowing list draws 461 instances, the 40 µs target is missed (42.7 to 56.8 µs, by load). The scrolling screen draws fewer rows (355 instances), and there the same frame reads 34.2 to 42.0 µs. Task 10 decides the guard's assertions after it uploads only what changed.
 
 Task 8's figures read otherwise because of the pacing. Its guard took each engine's 2,000 frames alone, so the empty baseline was paced (95 to 137 µs), and one label read 0 to 26.5 µs over it, with idle failing once (7.2 µs). Its interleaved probe (five engines in turn, thread CPU, no wait) was paced the other way: one label 58.4 to 62.5 µs (base 106.3 to 107.2), idle 5.0 to 7.5 µs (base 3.8 to 5.6).
 
-**The idle frame (Task 9).** Measured without the pacing, an idle (kept) frame costs the same on both builds: +0.6 to +2.2 µs for 4h and +1.0 to +2.4 µs for the base on the old screen, and within 1.5 µs of the empty frame on the new one. Stepped in turn without the wait, both builds' kept frames read +7.3 to +10 µs, so the rise Task 8 saw came from the GPU's backlog, not from work in the kept frame. Profiles agree (xctrace Time Profiler; 100,000 frames each of each build's idle and empty screens, two pairs per build, with the wait; main thread under `Engine::draw_frame`; traces deleted):
+**The idle frame (Task 9).** Measured without the pacing, an idle (kept) frame costs the same on both builds: +0.6 to +2.2 µs for 4h and +1.0 to +2.4 µs for the base on the old screen, and within 1.5 µs of the empty frame on the scrolling screen. Stepped in turn without the wait, both builds' kept frames read +7.3 to +10 µs, so the rise Task 8 saw came from the GPU's backlog, not from work in the kept frame. Profiles agree (xctrace Time Profiler; 100,000 frames each of each build's idle and empty screens, two pairs per build, with the wait; main thread under `Engine::draw_frame`; traces deleted):
 - On both builds, the kept frame's only work beyond an empty frame is `UiRetain::keep` comparing the commands: 0.9 to 1.2 µs.
 - Everything else (buffer creation, submits) moves by 1 to 2 µs between pairs, in both directions. The base's idle read +9.2 µs over its empty frame in one pair and -0.3 µs in the other.
 - One call shows only in 4h's idle traces: Metal waking its completion queue on commit (`_dispatch_kq_poll` under `commitCommandBuffer`, 1.2 to 1.6 µs). It is the same submit every frame makes, timed by the system, not a call 4h added.
@@ -275,29 +289,30 @@ Nothing to fix.
 
 Each scene ran alone, so both runs are paced (the empty run's render side is 93.3 µs, against 63 to 78 µs for an empty frame without pacing). Their difference, +44, still agrees with the guard's figures for this screen (+42.8 to 56.8 µs, by load). The research's profile of 4g's frame read +74 µs by this method (`emit_ui` 17.9, `Batch2D::prepare` 25.6, encoding the UI pass 23.2, keep, sort and submit 7.2): the encode is now +5 (one draw), `prepare` +0 for the UI, and `build_ui` (13.5) does what `emit_ui` and `prepare`'s placing did.
 
-**Criterion** (`cargo bench --bench ui_render`, whole `step()`): Task 8's two runs (load about 13, then about 4.5) on the old screen, and Task 9's in one session (load 2 to 4), before and after the fixture change:
+**Criterion** (`cargo bench --bench ui_render`, whole `step()`): Task 8's two runs (load about 13, then about 4.5), and Task 9's in one session (load 2 to 4). Idle and label are on the screen the targets were set on, except in the "all on the scrolling screen" column; the list scrolls in the last two Task 9 columns only:
 
-| Bench | Task 8 | Task 9, old screen | Task 9, scrolling screen | 4g |
-|---|---|---|---|---|
-| `settings_idle` | 121.5, 155.2 µs | 123.6 µs | 120.5 µs | 122.7 µs |
-| `settings_idle_unretained` | 213.0, 225.6 µs | 216.2 µs | 176.2 µs | 254.8 µs |
-| `settings_label` | 186.0, 190.2 µs | 180.1 µs | 172.2 µs | 224.8 µs |
-| `settings_label_unretained` | 229.4, 231.2 µs | 223.3 µs | 185.5 µs | 259.7 µs |
-| `settings_scrolling` | 123.3, 126.2 µs (kept frames) | 123.7 µs (kept frames) | 182.6 µs | 216.1 µs |
-| `settings_scrolling_unretained` | 227.7, 219.2 µs | 218.0 µs | 179.7 µs | 249.9 µs |
-| `empty_frame` | 189.7, 199.1 µs | 187.4 µs | 189.8 µs | 187.1 µs |
+| Bench | Task 8 | Task 9, before the fixture change | Task 9, as committed | Task 9, all on the scrolling screen | 4g |
+|---|---|---|---|---|---|
+| `settings_idle` | 121.5, 155.2 µs | 123.6 µs | 121.7 µs | 120.5 µs | 122.7 µs |
+| `settings_idle_unretained` | 213.0, 225.6 µs | 216.2 µs | 215.1 µs | 176.2 µs | 254.8 µs |
+| `settings_label` | 186.0, 190.2 µs | 180.1 µs | 179.6 µs | 172.2 µs | 224.8 µs |
+| `settings_label_unretained` | 229.4, 231.2 µs | 223.3 µs | 222.7 µs | 185.5 µs | 259.7 µs |
+| `settings_scrolling` | 123.3, 126.2 µs (kept frames) | 123.7 µs (kept frames) | 179.4 µs | 182.6 µs | 216.1 µs |
+| `settings_scrolling_unretained` | 227.7, 219.2 µs | 218.0 µs | 174.5 µs | 179.7 µs | 249.9 µs |
+| `empty_frame` | 189.7, 199.1 µs | 187.4 µs | 187.3 µs | 189.8 µs | 187.1 µs |
 
-On the old screen a changing frame's whole step is 35 to 45 µs faster than 4g's retained, and 28 to 36 µs faster not retained. The idle and empty rows are paced by the GPU (an idle retained screen steps faster than an empty frame) and move with the load; the guard, not these, measures the render side.
+On the targets' screen a changing frame's whole step is 35 to 45 µs faster than 4g's retained, and 28 to 36 µs faster not retained. The idle and empty rows are paced by the GPU (an idle retained screen steps faster than an empty frame) and move with the load; the guard, not these, measures the render side.
 
-**A settings screen that scrolls (Task 9).** The shared fixture's scroll area grew to its content (1,406 units in a 460-unit panel), so the wheel had nothing to move and `settings_scrolling` measured kept frames (at 4g's commit it redrew, but with identical commands, so it never measured a moving list either). The scroll area now fills the rest of the panel (`fill_height` in place of `grow(1.0)`: 407 units of view, 999 of travel), so the wheel scrolls it:
+**A settings screen that scrolls (Task 9).** The shared fixture's scroll area grew to its content (1,406 units in a 460-unit panel), so the wheel had nothing to move and `settings_scrolling` measured kept frames (at 4g's commit it redrew, but with identical commands, so it never measured a moving list either). `settings_tree` now gives it the rest of the panel (`fill_height` in place of `grow(1.0)`: 407 units of view, 999 of travel), so the wheel scrolls it; `settings_tree_overflowing` keeps the old layout for the guard's targets. The closure mirror of the screen in `benches/ui.rs` (and its copy in `tests/ui_alloc.rs`) changed with it, so 4f's node-against-closure comparison stays like for like:
 - `settings_scrolling` asserts that the list's widgets move, and the guard that no scrolling frame is kept. The wheel turns 20 lines each way, less than the list's travel, so the list never rests at an end.
-- Scrolling, a retained frame is **slower than one without retention**: by 8 to 11 µs on 4h, and 10 to 13 µs on the base. While the list moves, 41 of the 44 visible texts miss the text cache every frame: it is keyed by each text's origin, so they are built and stored again, and only the tabs' 3 are reused. Without retention they are only built. Reusing a moved text's instances by translation (4g's noted follow-up) is the fix; it is not this sub-project's.
+- Scrolling, a retained frame is **slower than one without retention**: by 8 to 11 µs on 4h, and 10 to 13 µs on the base. While the list moves, 41 of the 44 visible texts miss the text cache every frame: it is keyed by each text's origin, so they are built and stored again, and only the tabs' 3 are reused. Without retention they are only built. Reusing a moved text's instances by translation (4g's noted follow-up) is the fix: Task 11.
 
 What the change moved (Task 9, same sessions, before and after):
-- The guard, at the same load: one label from +42.8 to 44.8 µs to +34.5 to 39.3 µs, and one label with retention off from +79.1 to 80.6 µs to +44.2 to 50.1 µs. The list now ends at the panel (407 units of rows shown) where it ran on to the bottom of the screen (545 units), and culling drops the rows outside it: the label frame uploads 355 instances (51 KB) where it uploaded 461 (66 KB). Idle is unchanged (kept).
+- The guard: nothing, as it reads idle and one label on `settings_tree_overflowing`. On the scrolling screen the same frames read lower, at the same load (one label +34.5 to 39.3 µs against +42.8 to 44.8 µs; with retention off +44.2 to 50.1 µs against +79.1 to 80.6 µs): the list ends at the panel (407 units of rows shown) where it runs on to the bottom of the screen (545 units), and culling drops the rows outside it, so the label frame uploads 355 instances (51 KB), not 461 (66 KB).
 - Criterion: as in the table above.
 - `benches/ui.rs` (before, then after): the node screen with the focus moving 34.1, then 32.6 and 32.7 µs (the focus now scrolls the list); unchanged 33.0, then 32.5 µs, still 3 built and 274 replayed; the dirty check 1.28, then 1.29 µs; spawning 128.0, then 130.8 µs. Updating the unchanged tree read 37.6, then 41.5 and 38.6 µs: noise, as the closure screen, which did not change, moved 2% in the same runs.
-- `tests/ui_cache_alloc.rs`: unchanged, 14 allocations cached and 189 uncached (ceiling 30).
+- `benches/ui.rs`, the closure screen brought into step: 49.1, then 47.3 µs; the node screen, whose code did not change, read 32.4, then 31.7 µs in the same runs, so the mirror's own change is about 2%. The node screen is now 33% under the closure one (4f: 30%).
+- `tests/ui_cache_alloc.rs`: unchanged, 14 allocations cached and 189 uncached (ceiling 30). `tests/ui_alloc.rs` (the closure screen): unchanged, 186 allocations (ceiling 220).
 - The tests that use the fixture pass unchanged: the node cache oracle's four settings scenarios (the pad walk now scrolls the list), the rebuilds overlay's retain test, and the e2e renderer and retain tests (whose wheel step now scrolls).
 
 **`benches/text.rs`** (640x360; the 4h build and the pre-4h base run alternately, two rounds each): HUD of 100 texts and 50 panels 194.0, 195.7 µs (base 204.9, 190.9; 4g 197.2), and with `ui_retain(false)` 225.1, 216.3 µs (base 230.6, 238.0; 4g 227.2); 1,000 cached UI texts 137.2, 135.2 µs (base 135.7, 134.0; 4g 136.1); 200 world labels 153.8, 228.6 µs (base 188.4, 225.0; 4g 146.6). The HUD and the cached texts are kept frames (unchanged UIs), so 4h leaves them as they were; the HUD without retention, which builds and draws every frame, is 5 to 22 µs faster. The world labels bench swings between about 150 and 230 µs on both builds alike, so the world's text is unchanged within that noise.

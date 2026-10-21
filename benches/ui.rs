@@ -45,8 +45,9 @@ impl Settings {
 
   /// One panel, a focus scope that wraps (so a step down past the last row
   /// goes back to the top, and every step moves the focus and scrolls),
-  /// holding tabs and a scroll area of 50 rows: a label, a slider,
-  /// checkbox, dropdown or toggle (cycling) and a value
+  /// holding tabs and a scroll area of 50 rows filling the rest of the
+  /// panel, as `settings_tree`: a label, a slider, checkbox, dropdown or
+  /// toggle (cycling) and a value
   fn ui(&mut self, ui: &mut UiContext<'_>) {
     ui.panel()
       .focus_scope()
@@ -57,7 +58,7 @@ impl Settings {
       .gap(8.0)
       .show(|ui| {
         ui.tabs(&mut self.tab, &TABS).show();
-        ui.scroll().fill_width().grow(1.0).gap(6.0).show(|ui| {
+        ui.scroll().fill_width().fill_height().gap(6.0).show(|ui| {
           for i in 0..ROWS {
             let label = self.labels[i].as_str();
             let (value, flag, choice) = (

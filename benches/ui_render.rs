@@ -1,7 +1,10 @@
 //! The UI's render-side cost with a GPU (`HeadlessEngine`, 1280x720): the
 //! 200-widget settings node screen unchanged, with a label changing every
 //! frame, and scrolling, with UI render retention on and off, and an empty
-//! frame.
+//! frame. The unchanged and changing-label screens are the one the targets
+//! were set on, its list overflowing the panel
+//! (`settings_tree_overflowing`); the scrolling screen's list fills the
+//! panel, so the wheel scrolls it (`settings_tree`).
 //!
 //! Before criterion runs, a guard measures the render step of each
 //! (`HeadlessEngine::render_time`, the wall time of building, uploading and
@@ -16,12 +19,17 @@
 //! finds it. Each median is taken over the same rounds, so a change in the
 //! machine's load moves them all alike. Wall time here equals the render
 //! step's thread CPU time to within about 0.5 µs.
+//!
+//! The guard asserts the idle target and that one changing label is no
+//! slower retained than not (4g), and that the scrolling list moves every
+//! frame. It prints every median, and one label against the 40 µs target
+//! (4h) without asserting it: the render step misses it today.
 
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use ryo2d::prelude::*;
-use ryo2d::testing::fixtures::settings_tree;
+use ryo2d::testing::fixtures::{settings_tree, settings_tree_overflowing};
 use ryo2d::testing::{HeadlessEngine, shared_gpu};
 
 /// Rounds each median is taken over: one frame of every engine a round
@@ -44,15 +52,17 @@ impl Scene for Empty {
   }
 }
 
-/// The settings screen; with `label`, a counter over it changes every frame
+/// A settings screen, `tree`; with `label`, a counter over it changes every
+/// frame
 struct Settings {
+  tree: fn() -> UiNode,
   label: bool,
   frame: u32,
 }
 
 impl Scene for Settings {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.spawn_ui(settings_tree());
+    ctx.spawn_ui((self.tree)());
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -72,27 +82,28 @@ impl Scene for Settings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
   Empty,
-  /// The settings screen, unchanged
+  /// The settings screen the targets were set on, unchanged
   Idle,
-  /// The settings screen and a label changing every frame
+  /// The settings screen the targets were set on, and a label changing
+  /// every frame
   Label,
-  /// The settings screen, its list turned by the wheel every frame
+  /// The settings screen whose list scrolls, turned by the wheel every frame
   Scrolling,
 }
 
 /// An engine on `screen`, warmed up; scrolling, the pointer over the list
 fn engine(screen: Screen, retain: bool) -> Option<HeadlessEngine> {
   let builder = EngineBuilder::new().resolution(1280, 720).ui_retain(retain);
+  let settings = |tree: fn() -> UiNode, label: bool| Settings {
+    tree,
+    label,
+    frame: 0,
+  };
   let builder = match screen {
     Screen::Empty => builder.start_scene(Empty),
-    Screen::Idle | Screen::Scrolling => builder.start_scene(Settings {
-      label: false,
-      frame: 0,
-    }),
-    Screen::Label => builder.start_scene(Settings {
-      label: true,
-      frame: 0,
-    }),
+    Screen::Idle => builder.start_scene(settings(settings_tree_overflowing, false)),
+    Screen::Label => builder.start_scene(settings(settings_tree_overflowing, true)),
+    Screen::Scrolling => builder.start_scene(settings(settings_tree, false)),
   };
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   if screen == Screen::Scrolling {
@@ -164,11 +175,12 @@ fn over(time: Duration, empty: Duration) -> f64 {
   (time.as_secs_f64() - empty.as_secs_f64()) * 1e6
 }
 
-/// The UI's render targets over an empty frame: an idle settings screen
-/// adds under 5 µs (4g), a changing frame is no slower retained than not
-/// (4g), and one changing label adds under 40 µs (4h). Every median is
-/// printed, and each target with its verdict; asserted are that one label
-/// is no slower retained and that the scrolling list moves every frame.
+/// The UI's render targets over an empty frame, on the screen they were set
+/// on: an idle settings screen adds under 5 µs (4g), a changing frame is no
+/// slower retained than not (4g), and one changing label adds under 40 µs
+/// (4h). Every median is printed, and each target with its verdict;
+/// asserted are the idle target, that one label is no slower retained and
+/// that the scrolling list moves every frame.
 fn guard() {
   let screens = [
     (Screen::Empty, true),
@@ -232,25 +244,31 @@ fn guard() {
   };
   eprintln!(
     "ui_render guard, render step over an empty frame ({:.1} µs), medians of {FRAMES} \
-     interleaved frames: idle {} ({idle_kept} kept), one label {}, scrolling {:+.1} µs \
-     ({scrolling_kept} kept); retention off: idle {:+.1} µs, one label {}, scrolling {}",
+     interleaved frames. The screen the targets were set on: idle {} ({idle_kept} kept), \
+     one label {}; retention off: idle {:+.1} µs, one label {}. The scrolling screen: \
+     scrolling {:+.1} µs ({scrolling_kept} kept); retention off {}",
     empty.as_secs_f64() * 1e6,
     against(idle, IDLE_TARGET),
     against(label, LABEL_TARGET),
-    us(scrolling),
     us(idle_off),
     off(label_off, label),
+    us(scrolling),
     off(scrolling_off, scrolling),
   );
   assert_eq!(scrolling_kept, 0, "the scrolling list rested");
+  assert!(
+    idle.saturating_sub(empty) < IDLE_TARGET,
+    "an idle UI costs {:+.1} µs to render",
+    us(idle)
+  );
   assert!(
     label <= label_off,
     "one label: retained {label:?}, not retained {label_off:?}"
   );
 }
 
-/// Where the settings screen's focusable widgets are: the list's move as
-/// it scrolls
+/// Where the scrolling settings screen's focusable widgets are: the list's
+/// move as it scrolls
 fn rows(engine: &HeadlessEngine) -> Vec<Rect> {
   engine
     .ui_focusables()
