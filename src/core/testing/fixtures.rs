@@ -10,7 +10,9 @@ const ROWS: usize = 50;
 /// The 200-widget settings screen as a node tree: a panel 600 by 460,
 /// centred, a focus scope that wraps, holding tabs and a scroll area of 50
 /// rows ("Setting {i}"), each a label, a slider (at 0.5), checkbox (on),
-/// dropdown (on "Medium") or toggle (on), cycling, and a value text
+/// dropdown (on "Medium") or toggle (on), cycling, and a value text. The
+/// scroll area fills the rest of the panel (407 units), so its rows (about
+/// 1,406 units) scroll
 #[doc(hidden)]
 pub fn settings_tree() -> UiNode {
   let rows = (0..ROWS).map(|i| {
@@ -44,7 +46,7 @@ pub fn settings_tree() -> UiNode {
     .child(
       UiNode::scroll()
         .fill_width()
-        .grow(1.0)
+        .fill_height()
         .gap(6.0)
         .children(rows),
     )
