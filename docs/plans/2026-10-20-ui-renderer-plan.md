@@ -1046,3 +1046,16 @@ Added after Task 8 (owner decision, 2026-10-21): the upload is the largest part 
 - [ ] **Step 2: Implement.** `UiGpu` keeps a copy of what the buffer holds; `upload` writes only the one range that differs (one `write_buffer`), the whole array when the buffer was recreated or grown, nothing when nothing differs. The compare is a slice compare from both ends.
 - [ ] **Step 3: Measure.** Run the honest guard (Task 9): one label against 40 µs, idle against 5 µs. Assert each target the measurement meets; for a target still missed, keep it printed, profile the frame, and report the numbers and the next costs (the text cache copies, the pass encode) for the owner.
 - [ ] **Step 4: Docs and commit.** The render module notes (the upload rule), the backlog's 4h numbers; run the gate; commit `feat: the UI uploads only the instances that changed`.
+
+### Task 11: Scrolling texts cost no more retained than unretained
+
+Added after Task 9: with the settings list actually scrolling, a retained frame costs 8-11 µs more than an unretained one (the pre-4h base too: 10-13), because `TextKey` holds each text's origin, so every moved text misses the text cache, is laid out and is stored again. The spec's bench criterion is "retained no slower than unretained".
+
+**Files:**
+- Modify: `src/core/render/ui_retain/texts.rs` (`UiTextCache`, `TextKey`) and whatever builds a text's instances from its origin, their tests, `benches/ui_render.rs`, `src/core/render/AGENTS.md` (UI render retention), `docs/backlog/ui-retained-nodes.md`
+
+- [ ] **Step 1: Find what a text's instances depend on.** Trace how a UI text's glyph positions follow from its origin (snapping to physical pixels, the pixel-art snap, sub-pixel glyph images). Decide the cheapest exact rule: either a text moved by a whole physical-pixel offset (after whatever snapping layout applies) reuses its stored instances translated by that offset, or a text that keeps moving is not stored while it moves. Record the reasoning in the report.
+- [ ] **Step 2: Write the failing tests.** A unit test that a text moved by the offsets the rule covers reuses its instances and that the result equals a fresh layout at the new origin, instance for instance; a test that the cache does no extra work for a text that moves every frame (whichever the rule gives); the e2e retention oracle (`PixelPair`, retention on against off) on a scrolling list driven by wheel steps and by fractional trackpad deltas.
+- [ ] **Step 3: Implement** the rule. Pixels must not change anywhere (the retention oracles, the e2e renderer tests).
+- [ ] **Step 4: Measure** with the honest guard: scrolling retained no slower than unretained (assert it if the numbers meet it with margin over five runs); one label and idle not regressed.
+- [ ] **Step 5: Docs and commit.** The render module notes' text cache paragraph, the backlog's numbers; run the gate; commit `perf: a scrolled text reuses its cached instances`.
