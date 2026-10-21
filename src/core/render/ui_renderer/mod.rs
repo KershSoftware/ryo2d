@@ -48,8 +48,8 @@ pub(crate) struct UiRenderer {
   scratch: DrawList,
   /// The frame's runs, each with its bind group
   runs: Vec<(Range<u32>, wgpu::BindGroup)>,
-  /// Frames drawn, which age the bind groups (a kept frame draws none and
-  /// ages none)
+  /// Frames whose UI drew instances, which age the bind groups (a kept
+  /// frame, or one whose commands were all culled, ages none)
   frame: u64,
 }
 
