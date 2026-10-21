@@ -109,6 +109,13 @@ pub(super) fn with_spot_checks(scenarios: &[fn()]) -> usize {
   SPOT_CHECKS.with(|checks| checks.take()).unwrap_or(0)
 }
 
+/// Whether the scenarios run with the spot check on: it builds a clean node
+/// each frame in place of its replay, so which subtrees are kept or
+/// resolved again is not a scenario's to count then
+pub(super) fn spot_checking() -> bool {
+  SPOT_CHECKS.with(Cell::get).is_some()
+}
+
 /// Run `steps` after `setup` on a harness with caching on and one with it
 /// off, and assert after every frame that they show and did the same
 pub(super) fn oracle(setup: impl Fn(&mut UiHarness), steps: &[Step]) -> Run {

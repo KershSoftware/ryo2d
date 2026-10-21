@@ -2173,8 +2173,50 @@ fn a_kept_fragments_reads_go_up_to_the_parent_built_around_it() {
   );
   assert_cached(&run);
   assert!(
-    run.stats.iter().any(|s| s.resolved_again > 0),
+    spot_checking() || run.stats.iter().any(|s| s.resolved_again > 0),
     "the kept row was resolved again where it moved"
+  );
+}
+
+#[test]
+fn a_skin_replaced_in_place_at_another_size_redraws_its_kept_fragment() {
+  // The pixel theme's buttons are nine-slice skins, cut by the skin
+  // sprite's size. A hot reload replaces the sprite in place at another
+  // size: no component, theme or environment changes, so the kept row's
+  // skinned button must still be cut again
+  let script = Script::default()
+    .frames(1)
+    // The pointer on the first button keeps the column building: its row is
+    // kept on its own
+    .then(At("hovered"))
+    .frames(3)
+    .then(Do(|h| {
+      let skin = h.theme().skins.get("button").and_then(|s| s.sprite.clone());
+      let sprite = skin.expect("the pixel theme's button skin");
+      sprite.update(Sprite::solid_rect(24, 20, 90, 90, 140, 255));
+    }))
+    .frames(2);
+  let run = oracle(
+    |h| {
+      h.set_theme(Theme::pixel());
+      h.spawn_ui(
+        UiNode::column()
+          .anchor(crate::core::ui::Anchor::TopLeft)
+          .gap(4.0)
+          .child(UiNode::button("Hovered").name("hovered"))
+          .child(
+            UiNode::row()
+              .name("row")
+              .child(UiNode::button("Skinned").name("skinned")),
+          ),
+      );
+    },
+    script.steps(),
+  );
+  assert_cached(&run);
+  assert!(
+    spot_checking() || run.stats.iter().any(|s| s.resolved_again > 0),
+    "the kept row was cut again"
   );
 }
 
@@ -2210,6 +2252,8 @@ fn every_scenario_looks_the_same_with_the_spot_check_on() {
     a_reconciled_node_drops_its_fragment,
     fragments_switched_on_and_off_mid_run,
     a_fragment_moved_by_a_growing_sibling_is_resolved_again,
+    a_kept_fragments_reads_go_up_to_the_parent_built_around_it,
+    a_skin_replaced_in_place_at_another_size_redraws_its_kept_fragment,
   ]);
   // Of 7,360 frames, most hold a clean node to check
   assert!(checked > 5_000, "the spot check ran in {checked} frames");

@@ -15,10 +15,11 @@
 
 use glam::Vec2;
 
+use crate::core::asset::SpriteHandle;
 use crate::core::ecs::kernel::Entity;
 use crate::core::ui::immediate::UiCommand;
 use crate::core::ui::memory::Record;
-use crate::core::ui::tree::{Draw, Node};
+use crate::core::ui::tree::{Draw, DrawKind, Node};
 use crate::core::ui::{Rect, UiId};
 
 /// How a node takes part in fragments
@@ -131,8 +132,31 @@ pub(crate) struct Fragment {
   /// index into `nodes`, orders less the root's): to resolve it again
   pub(crate) nodes: Vec<Node>,
   pub(crate) node_draws: Vec<Draw>,
+  /// The sprites its commands were cut by (a nine-slice skin's pieces and
+  /// their UVs follow its size), each with the generation it had: a sprite
+  /// replaced in place since (a hot reload) changes no other input
+  pub(crate) sprites: Vec<(SpriteHandle, u64)>,
   /// Changes each time it is resolved (captured, or resolved again)
   pub(crate) version: u64,
+}
+
+impl Fragment {
+  /// Whether every sprite its commands were cut by is as it was
+  pub(crate) fn sprites_hold(&self) -> bool {
+    self
+      .sprites
+      .iter()
+      .all(|(sprite, generation)| sprite.generation() == *generation)
+  }
+}
+
+/// The sprite whose size `kind`'s commands are cut by, with its generation
+/// now, if it has one: a nine-slice's
+pub(crate) fn sized_by(kind: &DrawKind) -> Option<(SpriteHandle, u64)> {
+  match kind {
+    DrawKind::NineSlice { sprite, .. } => Some((sprite.clone(), sprite.generation())),
+    _ => None,
+  }
 }
 
 /// What a capture saw while its subtree was replayed

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use super::fragment::{Fragment, Inputs, KeptDraw, KeptRecord, Role};
+use super::fragment::{Fragment, Inputs, KeptDraw, KeptRecord, Role, sized_by};
 use super::immediate::{ScrollSlot, UiCommand, UiCommands, intersect, meet};
 use super::layout::engine::{Avail, LayoutEngine, Measured, NodeDesc, Placed};
 use super::layout::{Edges, Flow, Length, Measure, UiStyle};
@@ -481,7 +481,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     };
     let laid = placed[*i].rect;
     let inputs = placing.inputs(*i, nodes[*i].layer, laid, from, scale);
-    if inputs == fragment.inputs {
+    if inputs == fragment.inputs && fragment.sprites_hold() {
       memory.fragment_stats.reused += 1;
       continue;
     }
@@ -628,6 +628,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       draws: capture.draws,
       nodes: span.collect(),
       node_draws: capture.node_draws,
+      sprites: capture.sprites,
       version: memory.next_fragment_version(),
     };
     memory.fragments_next.insert(node.id, fragment);
@@ -1063,6 +1064,7 @@ impl Again<'_, '_> {
       node_draws,
       records,
       draws,
+      sprites,
       ..
     } = fragment;
     run.ids.clear();
@@ -1094,7 +1096,9 @@ impl Again<'_, '_> {
       records.push(placing.kept_record(start + k, node.id, record, node.order, node.depth));
     }
     draws.clear();
+    sprites.clear();
     for draw in node_draws.iter() {
+      sprites.extend(sized_by(&draw.kind));
       let j = start + draw.node;
       let (Some(node), Some(at)) = (nodes.get(draw.node), placing.slotted.get(j)) else {
         continue;
@@ -1168,11 +1172,14 @@ struct Capturing {
   records: Vec<KeptRecord>,
   draws: Vec<KeptDraw>,
   node_draws: Vec<Draw>,
+  sprites: Vec<(SpriteHandle, u64)>,
 }
 
 impl Capturing {
-  /// A draw on a node of the span, kept to resolve the fragment again
+  /// A draw on a node of the span, kept to resolve the fragment again, and
+  /// the sprite it is cut by
   fn keep_draw(&mut self, draw: &Draw) {
+    self.sprites.extend(sized_by(&draw.kind));
     self.low = self.low.min(draw.order);
     self.high = self.high.max(draw.order);
     self.drawn = self.drawn.saturating_add(1);
@@ -1254,6 +1261,7 @@ fn spans(
       records: Vec::new(),
       draws: Vec::new(),
       node_draws: Vec::new(),
+      sprites: Vec::new(),
     });
     span_of[i..end].fill(c);
   }

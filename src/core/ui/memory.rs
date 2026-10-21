@@ -913,6 +913,7 @@ mod tests {
       draws: Vec::new(),
       nodes: Vec::new(),
       node_draws: Vec::new(),
+      sprites: Vec::new(),
       version,
     }
   }

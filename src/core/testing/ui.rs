@@ -415,6 +415,12 @@ impl UiHarness {
     self.theme_generation += 1;
   }
 
+  /// The theme the next frame draws with
+  #[cfg(test)]
+  pub(crate) fn theme(&self) -> &Theme {
+    &self.theme
+  }
+
   /// Change the UI's size, in UI units, from the next frame
   pub fn resize(&mut self, width: f32, height: f32) {
     self.size = (width, height);
