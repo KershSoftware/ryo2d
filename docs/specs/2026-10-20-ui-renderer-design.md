@@ -59,7 +59,7 @@ Quads keep today's transform rows, so the vertex shader computes their corners w
 
 **One pipeline.**
 
-- **Vertex:** today's `vs_main` for quads, and a corner path for line triangles.
+- **Vertex:** today's `vs_main` arithmetic for quads, one include function both call (`quad_corner`, amended after the branch review), and a corner path for line triangles.
 - **Fragment:** a switch over `kind` running today's seven fragment bodies unchanged (`fs_ui_rect`, `fs_text_mask`, `fs_text_color`, `fs_text_msdf`, the sprite body, the linear sprite body for a render target's page (`fs_base_linear`), the line body), each now a shared include function the world entries call too. Each then goes through the same `ui_out` with the `UI_GAMMA` override.
 - **Sampling:** texture reads use explicit-gradient sampling (`textureSampleGrad`), as WGSL's uniformity rules require inside the switch. This samples identically: glyph pages have one mip level, and the sprite body already takes its own derivatives.
 
@@ -154,6 +154,7 @@ The HUD and scrolling benches are measured again.
 - **A scrolled text reuses the text cache (Task 11).** Once the settings list scrolled (Task 9), a retained frame cost 6 to 9 µs more than an unretained one: the cache keyed a text by its origin, so a moving list's texts missed every frame. Translating kept instances is not exact (each line's baseline rounds on its own, and a snapped centre is divided by the UI scale), so the cache keys a text without its origin, keeps each glyph's seed (its quad and image before placement) and lays a moved text again through the emitter's own placing, after checking along x that no glyph's subpixel bin changes. Scrolling retained now reads +36.3 to +37.2 µs over an empty frame against +42.8 to +43.4 unretained (it was +51.0 to +52.4), and the guard asserts that it is no slower retained. The numbers are in the backlog, 4h.
 
 - **Bind groups go with the UI that needed them (branch review).** The cache aged only on frames whose UI built instances, so after the UI went away (no commands), held still (kept) or was all culled, its last groups, and the textures in them, stayed alive indefinitely: a title screen's full-screen background held through a gameplay scene with no UI, even once the sprite renderer had let it go. Now a frame whose UI records nothing drops every group, a kept frame keeps only the groups its image was drawn with (the ones a change most likely needs again), and a finished frame ages the cache even when all of it is culled. Making a group again took about 1 µs (measured: 4 views and the group, on Metal), so dropping one a later change needs is harmless.
+- **Quads are placed by one function (branch review).** `vs_ui` had a copy of `sprite.wgsl`'s quad arithmetic, pixel-art snap included, which nothing kept in step. The arithmetic moved verbatim into `quad_corner` (`include/quad.wgsl`), which both vertex stages call, and a test fails if either body places quads itself. Nothing moved: the demo tour is byte-identical to the baseline outside the nondeterministic pages, but for the 34 accepted line pixels of the text demo's page 5.
 
 ## Out of scope
 

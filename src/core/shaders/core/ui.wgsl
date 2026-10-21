@@ -91,36 +91,8 @@ fn vs_ui(vertex: QuadVertex, instance: UiInstanceIn, @builtin(vertex_index) inde
         out.params = instance.a6;
         return out;
     }
-    // Quads: sprite.wgsl's vs_main, the same arithmetic in the same order
-
-    // Apply 2D affine transform from instance
-    let transform = mat3x3<f32>(
-        instance.a0.xyz,
-        instance.a1.xyz,
-        instance.a2.xyz
-    );
-
-    let local_pos = vec3<f32>(vertex.position, 1.0);
-    let world_pos = transform * local_pos;
-
-    // Through the camera
-    var clip = globals.view_proj * vec4<f32>(world_pos.xy, 0.0, 1.0);
-    // Pixel art: a quad axis-aligned on screen (itself and the camera
-    // unturned) rounds its top-left and size to whole pixels once, so it
-    // keeps its width as it moves; under a turned camera it draws unsnapped
-    let unturned = abs(instance.a0.y) < 1e-5 && abs(instance.a1.x) < 1e-5;
-    let camera_unturned = abs(globals.view_proj[0][1]) < 1e-5 && abs(globals.view_proj[1][0]) < 1e-5;
-    let axis_aligned = unturned && camera_unturned;
-    if globals.snap > 0.5 && axis_aligned {
-        let p0 = to_pixel((transform * vec3<f32>(-0.5, -0.5, 1.0)).xy);
-        let p1 = to_pixel((transform * vec3<f32>(0.5, 0.5, 1.0)).xy);
-        let origin = round(min(p0, p1));
-        let size = round(abs(p1 - p0));
-        // A corner that maps to the larger pixel coordinate counts from the far side
-        let along = select(vertex.position + 0.5, 0.5 - vertex.position, p1 < p0);
-        clip = from_pixel(origin + along * size);
-    }
-    out.position = clip;
+    // Quads: where sprite.wgsl's vs_main puts them (quad.wgsl)
+    out.position = quad_corner(instance.a0, instance.a1, instance.a2, vertex.position);
 
     // Interpolate UVs from uv_rect
     out.uv = mix(instance.a3.xy, instance.a3.zw, vertex.uv);

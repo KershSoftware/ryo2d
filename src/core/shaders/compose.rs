@@ -24,6 +24,8 @@ pub(crate) const SPRITE: &str = concat!(
   "\n",
   include_str!("include/snap.wgsl"),
   "\n",
+  include_str!("include/quad.wgsl"),
+  "\n",
   include_str!("core/sprite.wgsl"),
   "\n",
   include_str!("core/text.wgsl"),
@@ -47,6 +49,8 @@ pub(crate) const UI: &str = concat!(
   include_str!("include/line_style.wgsl"),
   "\n",
   include_str!("include/snap.wgsl"),
+  "\n",
+  include_str!("include/quad.wgsl"),
   "\n",
   include_str!("core/ui.wgsl"),
 );
@@ -245,6 +249,18 @@ mod tests {
     assert!(shaders.len() >= 18, "{} built-in shaders", shaders.len());
     for (name, source) in &shaders {
       validate(name, source);
+    }
+  }
+
+  #[test]
+  fn sprites_and_the_ui_place_quads_with_one_function() {
+    let bodies = [
+      ("sprite", include_str!("core/sprite.wgsl")),
+      ("ui", include_str!("core/ui.wgsl")),
+    ];
+    for (name, body) in bodies {
+      assert!(body.contains("quad_corner("), "{name} places quads itself");
+      assert!(!body.contains("to_pixel("), "{name} repeats the snap");
     }
   }
 

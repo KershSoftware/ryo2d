@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.0.2
+  version: 2.0.3
 ---
 
 # Ryo2D Renderer Specialist
@@ -203,10 +203,10 @@ Located in `src/core/shaders/`:
 
 | File | Purpose |
 |------|---------|
-| `include/*.wgsl` | Shared, composed by `compose.rs` at compile time: `camera.wgsl`, `color.wgsl`, `sample.wgsl`, `fullscreen.wgsl`, `snap.wgsl` (pixel-art snapping), and the fragment bodies the world and UI shaders share: `tint.wgsl` (sprite tinting), `glyph.wgsl` (raster, colour and MSDF glyphs), `ui_rect.wgsl` (the UI rect) and `line_style.wgsl` (line shading) |
+| `include/*.wgsl` | Shared, composed by `compose.rs` at compile time: `camera.wgsl`, `color.wgsl`, `sample.wgsl`, `fullscreen.wgsl`, `snap.wgsl` (pixel-art snapping), `quad.wgsl` (`quad_corner`: where a quad's corner lands, snap included; the sprite and UI vertex stages both call it), and the fragment bodies the world and UI shaders share: `tint.wgsl` (sprite tinting), `glyph.wgsl` (raster, colour and MSDF glyphs), `ui_rect.wgsl` (the UI rect) and `line_style.wgsl` (line shading) |
 | `core/sprite.wgsl` | Sprites (batch quads), including per-sprite effects and premultiplied entries |
 | `core/line.wgsl` | Trails, lines and debug shapes (batch triangles) |
-| `core/ui.wgsl` | The UI renderer's one pipeline: `vs_ui` (quads as `sprite.wgsl` places them, line triangles by their corners) and `fs_ui` (a switch over the instance's kind running the shared bodies, then the clip test as a scissor) |
+| `core/ui.wgsl` | The UI renderer's one pipeline: `vs_ui` (quads through `quad_corner`, as `sprite.wgsl` places them, line triangles by their corners) and `fs_ui` (a switch over the instance's kind running the shared bodies, then the clip test as a scissor) |
 | `core/light.wgsl`, `shadow.wgsl` | Lights (batch quads) and shadow volumes (batch triangles) |
 | `core/tonemap.wgsl`, `exposure.wgsl` | The look, and auto-exposure's compute passes |
 | `core/text.wgsl` | World glyphs: `fs_text_mask` (raster coverage times tint), `fs_text_color` (colour glyphs), `fs_text_msdf` (distance field: fill, outline, soft shadow and glow lanes) |
