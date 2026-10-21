@@ -14,11 +14,18 @@
 //! wait reads as cost. Stepping the engines in turn does not cure it alone,
 //! as the GPU takes longer to finish a frame (about 200 to 300 µs on an
 //! Apple GPU) than the CPU takes to step one. So the guard steps its engines
-//! in turn, one frame each, and lets the GPU finish all submitted work
-//! before each measured step (outside the measure), as a frame at 60 Hz
-//! finds it. Each median is taken over the same rounds, so a change in the
-//! machine's load moves them all alike. Wall time here equals the render
-//! step's thread CPU time to within about 0.5 µs.
+//! in turn, one frame each (each round starting at the next engine, and
+//! every other round in reverse, so no engine always follows the same one),
+//! and lets the GPU finish all submitted work before each measured step
+//! (outside the measure), as a frame at 60 Hz finds it. Each median is taken
+//! over the same rounds, so a change in the machine's load moves them all
+//! alike. Wall time here equals the render step's thread CPU time to within
+//! about 0.5 µs.
+//!
+//! The wait also runs wgpu's cleanup of the submissions the GPU finished
+//! (freeing their staging buffers and command buffers), which a 60 Hz frame
+//! does inside its next submit. So the guard reads a little low, a UI frame
+//! more than an empty one, as it leaves more to clean up.
 //!
 //! The guard asserts the idle target and that one changing label is no
 //! slower retained than not (4g), and that the scrolling list moves every
@@ -35,7 +42,7 @@ use ryo2d::testing::{HeadlessEngine, shared_gpu};
 /// Rounds each median is taken over: one frame of every engine a round
 const FRAMES: usize = 2000;
 /// Wheel lines each way: fewer than the list scrolls, so it never rests at
-/// an end and every frame moves it
+/// its far end, and every frame moves it
 const SWING: u32 = 20;
 /// Over a row of the scroll area (the panel centre is not over it)
 const OVER_LIST: (f32, f32) = (520.0, 238.0);
@@ -109,25 +116,26 @@ fn engine(screen: Screen, retain: bool) -> Option<HeadlessEngine> {
   if screen == Screen::Scrolling {
     engine.mouse_move(OVER_LIST.0, OVER_LIST.1);
   }
-  engine.step_frames(60).ok()?;
+  engine.step_frames(60).expect("the warm-up frames");
   Some(engine)
 }
 
-/// The wheel of a scrolling screen: one line a frame, `SWING` down, then
-/// `SWING` up
+/// The wheel of a scrolling screen: one line a frame, `SWING` down from
+/// where the list starts (its top), then `SWING` back up to it, and again
 #[derive(Default)]
 struct Wheel {
-  frame: u32,
+  /// Lines turned so far
+  turned: u32,
 }
 
 impl Wheel {
   fn turn(&mut self, engine: &mut HeadlessEngine) {
-    self.frame += 1;
-    let dy = if (self.frame / SWING).is_multiple_of(2) {
+    let dy = if (self.turned / SWING).is_multiple_of(2) {
       -1.0
     } else {
       1.0
     };
+    self.turned += 1;
     engine.wheel(0.0, dy);
   }
 }
@@ -202,14 +210,19 @@ fn guard() {
   let Ok((device, _)) = shared_gpu() else {
     return;
   };
-  // Round robin, each round started by the next engine, so none always
-  // follows the same one
+  // Round robin, each round started by the next engine and every other
+  // round in reverse, so each engine follows both its neighbours alike
+  let count = probes.len();
   for round in 0..FRAMES {
-    for i in 0..probes.len() {
+    for i in 0..count {
       device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("the GPU finishes its work");
-      let at = (round + i) % probes.len();
+      let at = if round.is_multiple_of(2) {
+        (round + i) % count
+      } else {
+        (round + count - i) % count
+      };
       probes[at].step();
     }
   }
