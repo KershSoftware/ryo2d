@@ -553,3 +553,626 @@ fn every_kind_draws_as_the_batch_draws_it() {
     &differ[..differ.len().min(8)]
   );
 }
+
+/// `build_ui` against the old path (`emit_ui` into a draw list), command by
+/// command
+mod building {
+  use std::collections::HashSet;
+  use std::sync::Arc;
+
+  use glam::Vec2;
+
+  use super::super::*;
+  use crate::core::asset::SpriteHandle;
+  use crate::core::graphics::{Sprite, SpriteGpuRenderer};
+  use crate::core::render::batch::{Filter, Triangles};
+  use crate::core::render::text::{TextSources, TextTargets};
+  use crate::core::render::ui::emit_ui;
+  use crate::core::render::ui_retain::{UiRenderEnv, UiTextCache};
+  use crate::core::render::{DrawList, DrawPayload, UiSpace};
+  use crate::core::text::{
+    Fonts, GlyphRasterizer, Icon, PlacedIcon, TextEffects, TextEngine, TextIcons, TextLayout,
+  };
+  use crate::core::ui::immediate::{UiCommand, UiCommands};
+  use crate::core::ui::{Color, Rect};
+
+  /// What the text emitters write into, shared by both paths (one glyph
+  /// atlas, so a glyph has one slot)
+  struct Writes {
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    sprites: SpriteGpuRenderer,
+    raster: GlyphRasterizer,
+    list: DrawList,
+    warned: HashSet<u64>,
+  }
+
+  impl Writes {
+    fn new() -> Option<Writes> {
+      let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+        return None;
+      };
+      let sprites = SpriteGpuRenderer::new(&device, &queue);
+      Some(Writes {
+        device,
+        queue,
+        sprites,
+        raster: GlyphRasterizer::new(),
+        list: DrawList::default(),
+        warned: HashSet::new(),
+      })
+    }
+
+    fn targets(&mut self) -> TextTargets<'_> {
+      TextTargets {
+        raster: &mut self.raster,
+        sprites: &mut self.sprites,
+        device: &self.device,
+        queue: &self.queue,
+        list: &mut self.list,
+        warned: &mut self.warned,
+      }
+    }
+  }
+
+  /// No text engine work happens without sources; these make empty ones
+  struct NoFonts {
+    fonts: Fonts,
+    engine: TextEngine,
+    effects: TextEffects,
+    icons: TextIcons,
+  }
+
+  impl NoFonts {
+    fn new() -> NoFonts {
+      NoFonts {
+        fonts: Fonts::new(),
+        engine: TextEngine::new(),
+        effects: TextEffects::default(),
+        icons: TextIcons::default(),
+      }
+    }
+
+    fn sources(&self) -> TextSources<'_> {
+      TextSources {
+        fonts: &self.fonts,
+        engine: &self.engine,
+        effects: &self.effects,
+        icons: &self.icons,
+      }
+    }
+  }
+
+  /// A 320 x 240 UI image at `px_scale` image pixels per UI unit
+  fn env_at(px_scale: f32, on_target: bool) -> UiRenderEnv {
+    UiRenderEnv {
+      space: UiSpace {
+        size: Vec2::new(320.0, 240.0) / px_scale,
+        px_scale,
+        image: (320, 240),
+        mouse_scale: 1.0,
+      },
+      on_target,
+      text: true,
+      fonts: 1,
+      bitmaps: 0,
+    }
+  }
+
+  fn env() -> UiRenderEnv {
+    env_at(1.0, false)
+  }
+
+  /// A 20 x 10 rounded, bordered rect with its top-left at (x, y)
+  fn rect_at(x: f32, y: f32, clip: Option<Rect>, layer: u8) -> UiCommand {
+    UiCommand::Rect {
+      rect: Rect::new(x, y, 20.0, 10.0),
+      fill: Color::new(200, 60, 30, 230),
+      radius: 3.0,
+      border: Some((1.5, Color::WHITE)),
+      clip,
+      layer,
+    }
+  }
+
+  fn line(points: &[Vec2], clip: Option<Rect>) -> UiCommand {
+    UiCommand::Line {
+      points: points.into(),
+      at: Vec2::new(2.0, 1.0),
+      width: 3.0,
+      color: Color::new(250, 240, 90, 200),
+      closed: false,
+      clip,
+      layer: 0,
+    }
+  }
+
+  fn sprite(handle: &SpriteHandle, rect: Rect, filter: Filter, clip: Option<Rect>) -> UiCommand {
+    UiCommand::Sprite {
+      sprite: handle.clone(),
+      rect,
+      uv: [0.0, 0.0, 1.0, 1.0],
+      tint: Color::new(255, 230, 210, 250),
+      filter,
+      clip,
+      layer: 0,
+    }
+  }
+
+  fn text(layout: &Arc<TextLayout>, origin: Vec2, clip: Option<Rect>) -> UiCommand {
+    UiCommand::Text {
+      layout: layout.clone(),
+      origin,
+      reveal: None,
+      opacity: 1.0,
+      seed: 3,
+      clip,
+      layer: 0,
+    }
+  }
+
+  /// `list` in order, each command's order its index
+  fn commands_of(list: impl IntoIterator<Item = UiCommand>) -> UiCommands {
+    let mut commands = UiCommands::default();
+    for (order, command) in (0..).zip(list) {
+      commands.push(order, command);
+    }
+    commands
+  }
+
+  /// The new path's build of `commands`, retention off
+  fn built(
+    writes: &mut Writes,
+    commands: &UiCommands,
+    env: UiRenderEnv,
+    sources: Option<&TextSources<'_>>,
+  ) -> UiBuild {
+    let mut build = UiBuild::default();
+    let mut texts = UiTextCache::<UiInstance>::default();
+    texts.begin(env, false);
+    build_ui(
+      &mut build,
+      commands,
+      &env,
+      sources,
+      &mut writes.targets(),
+      0.0,
+      &mut texts,
+    );
+    texts.end();
+    build
+  }
+
+  /// The old path's draw list (sorted) and triangles for `commands`,
+  /// retention off
+  fn emitted(
+    writes: &mut Writes,
+    commands: &UiCommands,
+    env: UiRenderEnv,
+    sources: Option<&TextSources<'_>>,
+  ) -> (DrawList, Triangles) {
+    let mut triangles = Triangles::default();
+    let mut texts = UiTextCache::default();
+    texts.begin(env, false);
+    writes.list.clear();
+    let drew = emit_ui(
+      commands,
+      &env,
+      sources,
+      &mut writes.targets(),
+      &mut triangles,
+      0.0,
+      &mut texts,
+    );
+    texts.end();
+    assert!(drew.is_some());
+    let mut list = std::mem::take(&mut writes.list);
+    list.sorted();
+    (list, triangles)
+  }
+
+  /// An instance's quad centre (a quad's third lane is its translation)
+  fn centre(instance: &UiInstance) -> Vec2 {
+    Vec2::new(instance.data[2][0], instance.data[2][1])
+  }
+
+  #[test]
+  fn commands_outside_their_clip_or_the_image_build_nothing() {
+    let Some(mut writes) = Writes::new() else {
+      return;
+    };
+    let swatch = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let clip = Some(Rect::new(0.0, 0.0, 100.0, 50.0));
+    let commands = commands_of([
+      // Wholly below its clip
+      rect_at(10.0, 80.0, clip, 0),
+      // Wholly right of the image (320 wide)
+      rect_at(340.0, 10.0, None, 0),
+      // An empty clip
+      rect_at(10.0, 10.0, Some(Rect::new(0.0, 0.0, 0.0, 50.0)), 0),
+      // A line wholly right of its clip, a sprite wholly below the image
+      line(&[Vec2::new(150.0, 10.0), Vec2::new(200.0, 40.0)], clip),
+      sprite(
+        &swatch,
+        Rect::new(10.0, 260.0, 8.0, 8.0),
+        Filter::Default,
+        None,
+      ),
+      // Seen
+      rect_at(10.0, 10.0, clip, 0),
+    ]);
+    let build = built(&mut writes, &commands, env(), None);
+    assert_eq!(build.instances.len(), 1, "{:?}", build.instances);
+    assert_eq!(build.instances[0].kind(), UiKind::RECT);
+    assert_eq!(centre(&build.instances[0]), Vec2::new(20.0, 15.0));
+    assert_eq!(build.needs, [TexNeed::None]);
+    assert!(build.sprites.is_empty());
+  }
+
+  #[test]
+  fn commands_out_of_order_are_built_in_painters_order() {
+    let Some(mut writes) = Writes::new() else {
+      return;
+    };
+    // Each rect's x is ten times its order
+    let mut commands = UiCommands::default();
+    commands.push(1, rect_at(10.0, 100.0, None, 1));
+    for order in [5, 2, 9] {
+      commands.push(order, rect_at(order as f32 * 10.0, 10.0, None, 0));
+    }
+    let build = built(&mut writes, &commands, env(), None);
+    let painted: Vec<(f32, f32)> = build
+      .instances
+      .iter()
+      .map(|instance| {
+        let at = centre(instance) - Vec2::new(10.0, 5.0);
+        (at.x / 10.0, at.y)
+      })
+      .collect();
+    // Layer 0 by order, then layer 1
+    assert_eq!(
+      painted,
+      [(2.0, 10.0), (5.0, 10.0), (9.0, 10.0), (1.0, 100.0)]
+    );
+  }
+
+  #[test]
+  fn at_one_order_a_line_draws_after_the_rest_as_the_batch_sorts_them() {
+    let Some(mut writes) = Writes::new() else {
+      return;
+    };
+    let mut commands = UiCommands::default();
+    commands.push(3, line(&[Vec2::new(5.0, 5.0), Vec2::new(60.0, 30.0)], None));
+    commands.push(3, rect_at(10.0, 10.0, None, 0));
+    let (list, _) = emitted(&mut writes, &commands, env(), None);
+    let old: Vec<bool> = list
+      .unlit_items()
+      .iter()
+      .map(|item| matches!(item.payload, DrawPayload::Triangles(_)))
+      .collect();
+    assert_eq!(old, [false, true], "the batch draws the rect first");
+    let build = built(&mut writes, &commands, env(), None);
+    let kinds: Vec<u32> = build.instances.iter().map(UiInstance::kind).collect();
+    assert_eq!(kinds[0], UiKind::RECT);
+    assert!(kinds.len() > 1 && kinds[1..].iter().all(|&kind| kind == UiKind::LINE));
+  }
+
+  #[test]
+  fn a_rect_instance_is_the_old_paths() {
+    let Some(mut writes) = Writes::new() else {
+      return;
+    };
+    // Off the pixel grid at a fractional scale, snapped on the target or not
+    for on_target in [false, true] {
+      let env = env_at(1.5, on_target);
+      let command = UiCommand::Rect {
+        rect: Rect::new(10.3, 7.6, 30.2, 12.9),
+        fill: Color::new(40, 160, 220, 200),
+        radius: 4.0,
+        border: Some((1.5, Color::new(250, 250, 250, 180))),
+        clip: Some(Rect::new(5.0, 5.0, 30.0, 40.0)),
+        layer: 0,
+      };
+      let commands = commands_of([command]);
+      let (list, _) = emitted(&mut writes, &commands, env, None);
+      let shape = list.shape(0).expect("the old path drew the rect");
+      let build = built(&mut writes, &commands, env, None);
+      let clip = ClipRect::of(shape.scissor, env.space.image);
+      assert_eq!(
+        build.instances,
+        [UiInstance::quad(
+          UiKind::RECT,
+          &shape.instance,
+          clip,
+          false,
+          0
+        )],
+        "on target: {on_target}"
+      );
+      // Every lane, bit for bit
+      assert_eq!(
+        bytemuck::bytes_of(&build.instances[0].data),
+        bytemuck::bytes_of(&shape.instance)
+      );
+    }
+  }
+
+  #[test]
+  fn a_line_becomes_its_builders_triangles() {
+    let Some(mut writes) = Writes::new() else {
+      return;
+    };
+    let points = [
+      Vec2::new(10.0, 30.0),
+      Vec2::new(40.5, 12.2),
+      Vec2::new(70.0, 33.0),
+    ];
+    let commands = commands_of([line(&points, Some(Rect::new(0.0, 0.0, 200.0, 100.0)))]);
+    let (list, triangles) = emitted(&mut writes, &commands, env(), None);
+    let made = list.triangles(0).expect("the old path made the line");
+    let indices = &triangles.indices[made.indices.start as usize..made.indices.end as usize];
+    let clip = ClipRect::of(made.scissor, env().space.image);
+    let expected: Vec<UiInstance> = indices
+      .as_chunks::<3>()
+      .0
+      .iter()
+      .map(|triangle| {
+        let vertex = |i: u32| &triangles.vertices[i as usize];
+        let corner = |i: u32| {
+          let v = vertex(i);
+          (Vec2::from(v.position), Vec2::from(v.uv), v.color)
+        };
+        UiInstance::triangle(
+          [
+            corner(triangle[0]),
+            corner(triangle[1]),
+            corner(triangle[2]),
+          ],
+          vertex(triangle[0]).params,
+          clip,
+        )
+      })
+      .collect();
+    // Two segments and the wedge at their corner
+    assert!(expected.len() >= 5, "{} triangles", expected.len());
+    let build = built(&mut writes, &commands, env(), None);
+    assert_eq!(build.instances, expected);
+    assert_eq!(build.needs, vec![TexNeed::None; expected.len()]);
+  }
+
+  #[test]
+  fn sprites_and_icons_become_sprite_instances_fixed_later() {
+    let Some(mut writes) = Writes::new() else {
+      return;
+    };
+    let swatch = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let icons = Arc::new(TextLayout {
+      scale: 1.0,
+      icons: vec![PlacedIcon {
+        icon: Icon::Sprite {
+          sprite: swatch.clone(),
+          size: None,
+        },
+        rect: Rect::new(0.0, 0.0, 8.0, 8.0),
+        cluster: 0,
+      }],
+      ..TextLayout::default()
+    });
+    let commands = commands_of([
+      sprite(
+        &swatch,
+        Rect::new(10.3, 10.0, 16.0, 12.0),
+        Filter::Nearest,
+        None,
+      ),
+      text(&icons, Vec2::new(40.0, 10.0), None),
+    ]);
+    let sources = NoFonts::new();
+    let (list, _) = emitted(&mut writes, &commands, env(), Some(&sources.sources()));
+    let texture = writes.sprites.texture_of(&swatch);
+    let build = built(&mut writes, &commands, env(), Some(&sources.sources()));
+    let clip = ClipRect::of(None, env().space.image);
+    let old: Vec<UiInstance> = (0..2)
+      .map(|index| {
+        let drawn = list.sprite(index).expect("the old path drew both");
+        UiInstance::quad(UiKind::SPRITE, &drawn.instance, clip, false, 0)
+      })
+      .collect();
+    assert_eq!(build.instances, old);
+    assert_eq!(build.needs, [TexNeed::Sprite(texture); 2]);
+    assert_eq!(
+      build.sprites,
+      [
+        SpriteFix {
+          index: 0,
+          texture,
+          filter: Filter::Nearest
+        },
+        SpriteFix {
+          index: 1,
+          texture,
+          filter: Filter::Default
+        },
+      ]
+    );
+  }
+
+  /// Built-in fonts: texts as glyphs
+  #[cfg(feature = "default-fonts")]
+  mod texts {
+    use super::*;
+    use crate::core::render::PixelRect;
+    use crate::core::render::batch::Sampling;
+    use crate::core::text::{GlyphFormat, RichText, TextLayoutOptions, TextStyle};
+
+    /// The built-in fonts, and a text engine synced to them
+    struct WithFonts(NoFonts);
+
+    impl WithFonts {
+      fn new() -> WithFonts {
+        let mut sources = NoFonts::new();
+        sources.fonts = Fonts::with_builtins();
+        sources.engine.sync(&sources.fonts);
+        WithFonts(sources)
+      }
+
+      fn laid(&mut self, text: &str) -> Arc<TextLayout> {
+        self
+          .0
+          .engine
+          .layout(
+            &RichText::new(text),
+            &TextStyle::default(),
+            &TextLayoutOptions::default(),
+            1.0,
+          )
+          .expect("laid out")
+      }
+    }
+
+    /// The old path's glyphs for `commands`, as the instances they become
+    fn old_glyphs(
+      writes: &mut Writes,
+      commands: &UiCommands,
+      sources: &TextSources<'_>,
+      clip: ClipRect,
+    ) -> (Vec<UiInstance>, Vec<TexNeed>, Vec<(Vec2, Vec2)>) {
+      let (list, _) = emitted(writes, commands, env(), Some(sources));
+      let glyphs = list.glyphs_from(0);
+      assert!(!glyphs.is_empty());
+      assert!(
+        glyphs
+          .iter()
+          .all(|glyph| glyph.page.format == GlyphFormat::Mask)
+      );
+      let instances = glyphs
+        .iter()
+        .map(|glyph| {
+          let nearest = glyph.sampling == Sampling::Nearest;
+          UiInstance::quad(
+            UiKind::MASK,
+            &glyph.instance,
+            clip,
+            nearest,
+            glyph.page.index,
+          )
+        })
+        .collect();
+      let needs = glyphs
+        .iter()
+        .map(|glyph| TexNeed::Glyph(glyph.page))
+        .collect();
+      let boxes = glyphs.iter().map(|glyph| (glyph.min, glyph.max)).collect();
+      (instances, needs, boxes)
+    }
+
+    /// `commands` built `frames` times through one text cache, retention on
+    fn rebuilt(
+      writes: &mut Writes,
+      commands: &UiCommands,
+      sources: &TextSources<'_>,
+      frames: usize,
+    ) -> (Vec<UiBuild>, UiTextCache<UiInstance>) {
+      let mut texts = UiTextCache::<UiInstance>::default();
+      let builds = (0..frames)
+        .map(|_| {
+          let mut build = UiBuild::default();
+          texts.begin(env(), true);
+          build_ui(
+            &mut build,
+            commands,
+            &env(),
+            Some(sources),
+            &mut writes.targets(),
+            0.0,
+            &mut texts,
+          );
+          texts.end();
+          build
+        })
+        .collect();
+      (builds, texts)
+    }
+
+    #[test]
+    fn a_text_is_the_old_paths_glyphs_then_one_copy_of_them() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = WithFonts::new();
+      let layout = fonts.laid("Settings 42");
+      let commands = commands_of([text(&layout, Vec2::new(12.3, 20.0), None)]);
+      let sources = fonts.0.sources();
+      let clip = ClipRect::of(None, env().space.image);
+      let (instances, needs, _) = old_glyphs(&mut writes, &commands, &sources, clip);
+      let (builds, texts) = rebuilt(&mut writes, &commands, &sources, 2);
+      for (frame, build) in builds.iter().enumerate() {
+        assert_eq!(build.instances, instances, "frame {frame}");
+        assert_eq!(build.needs, needs, "frame {frame}");
+        assert!(build.sprites.is_empty());
+      }
+      assert_eq!(
+        (texts.built(), texts.reused()),
+        (0, 1),
+        "the second frame reuses the text"
+      );
+    }
+
+    #[test]
+    fn a_text_builds_only_the_glyphs_that_meet_its_clip() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = WithFonts::new();
+      let layout = fonts.laid("A label cut by its clip");
+      let cut = Rect::new(0.0, 0.0, 40.0, 240.0);
+      let commands = commands_of([text(&layout, Vec2::new(10.0, 20.0), Some(cut))]);
+      let sources = fonts.0.sources();
+      let clip = ClipRect::of(
+        Some(PixelRect {
+          x: 0,
+          y: 0,
+          width: 40,
+          height: 240,
+        }),
+        env().space.image,
+      );
+      let (instances, needs, boxes) = old_glyphs(&mut writes, &commands, &sources, clip);
+      // A glyph is kept when its box comes within a pixel of the clip
+      let meets = |(min, _): &(Vec2, Vec2)| min.x - 1.0 < 40.0;
+      let kept: Vec<UiInstance> = instances
+        .iter()
+        .zip(&boxes)
+        .filter(|(_, b)| meets(b))
+        .map(|(instance, _)| *instance)
+        .collect();
+      let kept_needs: Vec<TexNeed> = needs
+        .iter()
+        .zip(&boxes)
+        .filter(|(_, b)| meets(b))
+        .map(|(need, _)| *need)
+        .collect();
+      assert!(!kept.is_empty() && kept.len() < instances.len());
+      let (builds, texts) = rebuilt(&mut writes, &commands, &sources, 2);
+      for (frame, build) in builds.iter().enumerate() {
+        assert_eq!(build.instances, kept, "frame {frame}");
+        assert_eq!(build.needs, kept_needs, "frame {frame}");
+      }
+      assert_eq!(texts.reused(), 1);
+    }
+
+    #[test]
+    fn a_text_outside_the_image_builds_nothing_and_is_still_reused() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = WithFonts::new();
+      let layout = fonts.laid("Far away");
+      let commands = commands_of([text(&layout, Vec2::new(10.0, 400.0), None)]);
+      let sources = fonts.0.sources();
+      let (builds, texts) = rebuilt(&mut writes, &commands, &sources, 2);
+      assert!(builds.iter().all(|build| build.instances.is_empty()));
+      assert_eq!((texts.built(), texts.reused()), (0, 1));
+    }
+  }
+}

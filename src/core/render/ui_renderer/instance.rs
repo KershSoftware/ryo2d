@@ -66,6 +66,9 @@ pub(crate) struct UiInstance {
   pub(crate) meta: [u32; 4],
 }
 
+// A quad's eight lanes are a sprite instance, cast as it is
+const _: () = assert!(std::mem::size_of::<SpriteInstance>() == 128);
+
 impl UiInstance {
   /// A quad of `kind` drawn as `instance` (its transform, uv rect, tint,
   /// effect lanes and uv bounds), sampling glyph page `page` (glyph kinds)

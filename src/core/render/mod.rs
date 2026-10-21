@@ -67,7 +67,7 @@ pub use debug_draw::{DebugDraw, DebugPen};
 pub(crate) use debug_draw::{begin_debug_fixed_step, end_debug_fixed_step};
 pub(crate) use draw_list::{
   DrawGlyph, DrawItem, DrawKind, DrawLight, DrawList, DrawPayload, DrawShape, DrawTriangles,
-  SpriteLook, SpriteShading,
+  SpriteLook, SpriteShading, reach,
 };
 pub(crate) use entities::EntityDrawer;
 pub use frame::FrameInfo;

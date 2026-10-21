@@ -17,7 +17,7 @@ mod gpu_tests;
 mod tests;
 mod texts;
 
-pub(crate) use texts::UiTextCache;
+pub(crate) use texts::{TextSink, UiTextCache};
 
 /// What the UI's render step did in a frame
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

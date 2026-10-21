@@ -392,8 +392,8 @@ impl DrawList {
     &self.items
   }
 
-  /// The unlit items, in draw order once [`sorted`](Self::sorted) has run.
-  #[cfg(test)]
+  /// The unlit items, in draw order once [`sorted`](Self::sorted) has run
+  /// (in the order pushed before).
   pub(crate) fn unlit_items(&self) -> &[DrawItem] {
     &self.unlit_items
   }
@@ -491,7 +491,7 @@ impl DrawList {
 
 /// The world box `instance`'s quad stays inside at any rotation: its centre
 /// give or take its half-diagonal.
-fn reach(instance: &SpriteInstance) -> (Vec2, Vec2) {
+pub(crate) fn reach(instance: &SpriteInstance) -> (Vec2, Vec2) {
   let [x, y, at] = [
     instance.transform[0],
     instance.transform[1],

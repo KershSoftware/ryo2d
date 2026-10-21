@@ -7,6 +7,7 @@
 //! per command, so the batch's sort keeps the painter's order). The `ui` pass draws the UI
 //! camera into the UI image, which the composite blends over the frame.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec2;
@@ -21,6 +22,7 @@ use crate::core::render::batch::{
 use crate::core::render::text::{TextDraw, TextPlacement, TextSources, TextTargets, UI_GLYPH_PX};
 use crate::core::render::ui_retain::{UiRenderEnv, UiTextCache};
 use crate::core::render::{CameraDraw, DrawKind, DrawShape, PixelRect, SpriteLook, SpriteShading};
+use crate::core::text::TextLayout;
 use crate::core::trail::{LineCap, LineJoin};
 use crate::core::ui::immediate::{UiCommand, UiCommands};
 use crate::core::ui::{Color, Rect};
@@ -103,7 +105,7 @@ impl UiSpace {
 /// A command's place in the painter's order: its layer (0..=127, so the
 /// sign bit stays clear), then the order it was recorded in (saturating
 /// below 2^24, so it never reaches the layer bits)
-fn ui_z(layer: u8, order: u32) -> i32 {
+pub(crate) fn ui_z(layer: u8, order: u32) -> i32 {
   const ORDER_BITS: u32 = 24;
   let layer = i32::from(layer.min(127));
   let order = order.min((1 << ORDER_BITS) - 1) as i32;
@@ -112,7 +114,7 @@ fn ui_z(layer: u8, order: u32) -> i32 {
 
 /// `clip` (UI units) as a scissor on the UI image: `None` to skip the
 /// command (an empty or invalid clip), `Some(None)` for no scissor
-fn scissor_of(clip: Option<Rect>, space: &UiSpace) -> Option<Option<PixelRect>> {
+pub(crate) fn scissor_of(clip: Option<Rect>, space: &UiSpace) -> Option<Option<PixelRect>> {
   let Some(clip) = clip else {
     return Some(None);
   };
@@ -160,6 +162,174 @@ fn unit(color: Color) -> [f32; 4] {
   [color.r, color.g, color.b, color.a].map(|c| f32::from(c) / 255.0)
 }
 
+/// The UI camera's view: the UI space, top-left at (0, 0)
+pub(crate) fn ui_view(space: &UiSpace) -> CameraView {
+  CameraView::compute(
+    space.size / 2.0,
+    0.0,
+    &Camera2d::default(),
+    Vec2::ZERO,
+    space.size,
+  )
+}
+
+/// A rect command's quad (`UiRect`'s lanes) and the box it covers, or
+/// `None` when it draws nothing. With `pixel_art` its edges land on whole
+/// image pixels.
+pub(crate) fn rect_instance(
+  rect: Rect,
+  fill: Color,
+  radius: f32,
+  border: Option<(f32, Color)>,
+  space: &UiSpace,
+  pixel_art: bool,
+) -> Option<(SpriteInstance, Vec2, Vec2)> {
+  let (border_width, border_color) = match border {
+    Some((width, color)) if width.is_finite() && width > 0.0 && color.a > 0 => (width, color),
+    _ => (0.0, Color::TRANSPARENT),
+  };
+  if fill.a == 0 && border_width == 0.0 {
+    return None;
+  }
+  let rect = if pixel_art {
+    snap_rect(rect, space.px_scale)
+  } else {
+    rect
+  };
+  if !drawable(rect) {
+    return None;
+  }
+  let (w, h) = (rect.width, rect.height);
+  let radius = if radius.is_finite() {
+    radius.max(0.0)
+  } else {
+    0.0
+  };
+  // The quad reaches one image pixel past the rect on every side,
+  // and its UVs as far past [0, 1], so the shader anti-aliases the
+  // outer edge there
+  let p = 1.0 / space.px_scale;
+  let centre = Vec2::new(rect.x + w / 2.0, rect.y + h / 2.0);
+  let mut instance = SpriteInstance::new()
+    .with_transform(centre.x, centre.y, 0.0, w + 2.0 * p, h + 2.0 * p)
+    .with_tint(fill, 1.0);
+  instance.uv_rect = [-p / w, -p / h, 1.0 + p / w, 1.0 + p / h];
+  instance.uv_bounds = instance.uv_rect;
+  instance.effect_params = [radius, border_width, w, h];
+  instance.effect_extra = unit(border_color);
+  let half = Vec2::new(w / 2.0 + p, h / 2.0 + p);
+  Some((instance, centre - half, centre + half))
+}
+
+/// A sprite command's quad (before it is placed in its texture's slot), or
+/// `None` when it draws nothing
+pub(crate) fn sprite_instance(rect: Rect, uv: [f32; 4], tint: Color) -> Option<SpriteInstance> {
+  if tint.a == 0 || !drawable(rect) {
+    return None;
+  }
+  let (cx, cy) = rect.center();
+  Some(
+    SpriteInstance::new()
+      .with_transform(cx, cy, 0.0, rect.width, rect.height)
+      .with_uv(uv[0], uv[1], uv[2], uv[3])
+      .with_tint(tint, 1.0),
+  )
+}
+
+/// A line command's points (into `points`, cleared first) and how it is
+/// drawn at `z`, or `None` for another command
+pub(crate) fn line_of(
+  command: &UiCommand,
+  z: i32,
+  points: &mut Vec<PolyPoint>,
+) -> Option<(PolyStyle, LineLook)> {
+  let UiCommand::Line {
+    points: line,
+    at,
+    width,
+    color,
+    closed,
+    ..
+  } = command
+  else {
+    return None;
+  };
+  let last = line.len().saturating_sub(1).max(1) as f32;
+  points.clear();
+  points.extend(line.iter().enumerate().map(|(i, pos)| PolyPoint {
+    pos: *pos + *at,
+    half_width: width / 2.0,
+    color: line_color(*color, 1.0),
+    u: i as f32 / last,
+  }));
+  let style = PolyStyle {
+    join: LineJoin::Miter,
+    cap: LineCap::Butt,
+    closed: *closed,
+    params: [0.0; 4],
+  };
+  let look = LineLook {
+    lit: false,
+    z,
+    texture: None,
+    blend: BlendMode::Alpha,
+    filter: Filter::Default,
+    layers: RenderLayers::all(),
+    only_camera: Some(UI_CAMERA),
+  };
+  Some((style, look))
+}
+
+/// A text command's layout and where it draws at `z` under `scissor`, or
+/// `None` for another command or a layout without a usable scale
+pub(crate) fn text_of<'c>(
+  command: &'c UiCommand,
+  space: &UiSpace,
+  z: i32,
+  scissor: Option<PixelRect>,
+  time: f32,
+) -> Option<(&'c Arc<TextLayout>, TextPlacement)> {
+  let UiCommand::Text {
+    layout,
+    origin,
+    reveal,
+    opacity,
+    seed,
+    ..
+  } = command
+  else {
+    return None;
+  };
+  if !(layout.scale.is_finite() && layout.scale > 0.0) {
+    return None;
+  }
+  // Layout pixels to UI units (the layout was made at the UI scale)
+  let k = 1.0 / layout.scale;
+  let place = TextPlacement {
+    origin: *origin,
+    axis_x: Vec2::new(k, 0.0),
+    axis_y: Vec2::new(0.0, k),
+    px_per_layout: space.px_scale * k,
+    size_steps: false,
+    max_glyph_px: UI_GLYPH_PX,
+    pixel_grid: Some((Vec2::ZERO, space.px_scale)),
+    draw: TextDraw {
+      kind: DrawKind::Sprite,
+      z,
+      lit: false,
+      only_camera: Some(UI_CAMERA),
+      layers: RenderLayers::all(),
+      scissor,
+      blend: BlendMode::Alpha,
+    },
+    time,
+    reveal: *reveal,
+    seed: *seed,
+    opacity: *opacity,
+  };
+  Some((layout, place))
+}
+
 /// Lay the frame's UI commands into the draw list for the UI camera and
 /// return that camera, or `None` when nothing was drawn.
 ///
@@ -181,13 +351,7 @@ pub(crate) fn emit_ui(
     return None;
   }
   let (space, pixel_art) = (&env.space, env.on_target);
-  let view = CameraView::compute(
-    space.size / 2.0,
-    0.0,
-    &Camera2d::default(),
-    Vec2::ZERO,
-    space.size,
-  );
+  let view = ui_view(space);
   let only = Some(UI_CAMERA);
   let layers = RenderLayers::all();
   let mut points: Vec<PolyPoint> = Vec::new();
@@ -205,46 +369,17 @@ pub(crate) fn emit_ui(
         border,
         ..
       } => {
-        let (border_width, border_color) = match *border {
-          Some((width, color)) if width.is_finite() && width > 0.0 && color.a > 0 => (width, color),
-          _ => (0.0, Color::TRANSPARENT),
-        };
-        if fill.a == 0 && border_width == 0.0 {
+        let Some((instance, min, max)) =
+          rect_instance(*rect, *fill, *radius, *border, space, pixel_art)
+        else {
           continue;
-        }
-        let rect = if pixel_art {
-          snap_rect(*rect, space.px_scale)
-        } else {
-          *rect
         };
-        if !drawable(rect) {
-          continue;
-        }
-        let (w, h) = (rect.width, rect.height);
-        let radius = if radius.is_finite() {
-          radius.max(0.0)
-        } else {
-          0.0
-        };
-        // The quad reaches one image pixel past the rect on every side,
-        // and its UVs as far past [0, 1], so the shader anti-aliases the
-        // outer edge there
-        let p = 1.0 / space.px_scale;
-        let centre = Vec2::new(rect.x + w / 2.0, rect.y + h / 2.0);
-        let mut instance = SpriteInstance::new()
-          .with_transform(centre.x, centre.y, 0.0, w + 2.0 * p, h + 2.0 * p)
-          .with_tint(*fill, 1.0);
-        instance.uv_rect = [-p / w, -p / h, 1.0 + p / w, 1.0 + p / h];
-        instance.uv_bounds = instance.uv_rect;
-        instance.effect_params = [radius, border_width, w, h];
-        instance.effect_extra = unit(border_color);
-        let half = Vec2::new(w / 2.0 + p, h / 2.0 + p);
         let shape = DrawShape {
           instance,
           blend: BlendMode::Alpha,
           layers,
-          min: centre - half,
-          max: centre + half,
+          min,
+          max,
           scissor,
         };
         targets
@@ -259,15 +394,10 @@ pub(crate) fn emit_ui(
         filter,
         ..
       } => {
-        if tint.a == 0 || !drawable(*rect) {
+        let Some(instance) = sprite_instance(*rect, *uv, *tint) else {
           continue;
-        }
+        };
         let texture = targets.sprites.texture_of(sprite);
-        let (cx, cy) = rect.center();
-        let instance = SpriteInstance::new()
-          .with_transform(cx, cy, 0.0, rect.width, rect.height)
-          .with_uv(uv[0], uv[1], uv[2], uv[3])
-          .with_tint(*tint, 1.0);
         let look = SpriteLook {
           shading: SpriteShading::Plain,
           blend: BlendMode::Alpha,
@@ -285,36 +415,9 @@ pub(crate) fn emit_ui(
         );
         list.set_last_sprite_scissor(scissor);
       }
-      UiCommand::Line {
-        points: line,
-        at,
-        width,
-        color,
-        closed,
-        ..
-      } => {
-        let last = line.len().saturating_sub(1).max(1) as f32;
-        points.clear();
-        points.extend(line.iter().enumerate().map(|(i, pos)| PolyPoint {
-          pos: *pos + *at,
-          half_width: width / 2.0,
-          color: line_color(*color, 1.0),
-          u: i as f32 / last,
-        }));
-        let style = PolyStyle {
-          join: LineJoin::Miter,
-          cap: LineCap::Butt,
-          closed: *closed,
-          params: [0.0; 4],
-        };
-        let look = LineLook {
-          lit: false,
-          z,
-          texture: None,
-          blend: BlendMode::Alpha,
-          filter: Filter::Default,
-          layers,
-          only_camera: only,
+      UiCommand::Line { .. } => {
+        let Some((style, look)) = line_of(command, z, &mut points) else {
+          continue;
         };
         let list = &mut *targets.list;
         let before = list.triangles_count();
@@ -324,43 +427,12 @@ pub(crate) fn emit_ui(
           list.set_last_triangles_scissor(scissor);
         }
       }
-      UiCommand::Text {
-        layout,
-        origin,
-        reveal,
-        opacity,
-        seed,
-        ..
-      } => {
+      UiCommand::Text { .. } => {
         let Some(sources) = sources else {
           continue;
         };
-        if !(layout.scale.is_finite() && layout.scale > 0.0) {
+        let Some((layout, place)) = text_of(command, space, z, scissor, real_time) else {
           continue;
-        }
-        // Layout pixels to UI units (the layout was made at the UI scale)
-        let k = 1.0 / layout.scale;
-        let place = TextPlacement {
-          origin: *origin,
-          axis_x: Vec2::new(k, 0.0),
-          axis_y: Vec2::new(0.0, k),
-          px_per_layout: space.px_scale * k,
-          size_steps: false,
-          max_glyph_px: UI_GLYPH_PX,
-          pixel_grid: Some((Vec2::ZERO, space.px_scale)),
-          draw: TextDraw {
-            kind: DrawKind::Sprite,
-            z,
-            lit: false,
-            only_camera: only,
-            layers,
-            scissor,
-            blend: BlendMode::Alpha,
-          },
-          time: real_time,
-          reveal: *reveal,
-          seed: *seed,
-          opacity: *opacity,
         };
         texts.emit(sources, targets, layout, &place);
       }

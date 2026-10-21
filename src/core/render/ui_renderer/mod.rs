@@ -2,6 +2,7 @@
 //! drawn in painter's order through one pipeline that clips in the shader
 #![cfg_attr(not(test), allow(dead_code, unused_imports))] // wired in Task 4
 
+mod build;
 mod gpu;
 mod instance;
 mod runs;
@@ -11,6 +12,7 @@ mod gpu_tests;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use build::{SpriteFix, UiBuild, build_ui};
 pub(crate) use gpu::{KEEP_FRAMES, UiGpu};
 pub(crate) use instance::{ClipRect, UiInstance, UiKind};
 pub(crate) use runs::{Run, Slot, TexKey, TexNeed, plan_runs};
