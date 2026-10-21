@@ -1550,7 +1550,9 @@ mod building {
     use super::*;
     use crate::core::render::PixelRect;
     use crate::core::render::batch::Sampling;
-    use crate::core::text::{GlyphFormat, RichText, TextLayoutOptions, TextStyle};
+    use crate::core::text::{
+      FontRender, FontRole, GlyphFormat, RichText, TextLayoutOptions, TextStyle,
+    };
 
     /// The built-in fonts, and a text engine synced to them
     struct WithFonts(NoFonts);
@@ -1721,6 +1723,204 @@ mod building {
       let (builds, texts) = rebuilt(&mut writes, &commands, &sources, 2);
       assert!(builds.iter().all(|build| build.instances.is_empty()));
       assert_eq!((texts.built(), texts.reused()), (0, 1));
+    }
+
+    /// `text` laid out at `scale` (as the UI lays it out at its own), with
+    /// an outline and a shadow, so a glyph is three quads from two kinds of
+    /// image
+    fn outlined(fonts: &mut WithFonts, text: &str, scale: f32) -> Arc<TextLayout> {
+      let style = TextStyle::default()
+        .size(15.0)
+        .outline(1.0, Color::BLACK)
+        .shadow(Vec2::new(1.0, 1.0), Color::new(0, 0, 0, 160), 0.0);
+      fonts
+        .0
+        .engine
+        .layout(
+          &RichText::new(text),
+          &style,
+          &TextLayoutOptions::default(),
+          scale,
+        )
+        .expect("laid out")
+    }
+
+    /// Each of `frames` built in turn through one text cache, retention on,
+    /// with the texts the frame built and reused
+    fn retained(
+      writes: &mut Writes,
+      frames: &[UiCommands],
+      sources: &TextSources<'_>,
+      env: UiRenderEnv,
+    ) -> Vec<(UiBuild, (u32, u32))> {
+      let mut texts = UiTextCache::<UiInstance>::default();
+      frames
+        .iter()
+        .map(|commands| {
+          let mut build = UiBuild::default();
+          texts.begin(env, true);
+          build_ui(
+            &mut build,
+            commands,
+            &env,
+            Some(sources),
+            &mut writes.targets(),
+            0.0,
+            &mut texts,
+          );
+          texts.end();
+          (build, (texts.built(), texts.reused()))
+        })
+        .collect()
+    }
+
+    /// Whether `build` is `fresh`'s instances bit for bit (0.0 and -0.0
+    /// differ), sampling the same
+    fn same_bits(build: &UiBuild, fresh: &UiBuild) -> bool {
+      bytemuck::cast_slice::<UiInstance, u8>(&build.instances)
+        == bytemuck::cast_slice::<UiInstance, u8>(&fresh.instances)
+        && build.needs == fresh.needs
+    }
+
+    /// The render modes the moved-text tests run in: raster (on the pixel
+    /// grid, its subpixel bins picked by the pen), and MSDF (scaled, off
+    /// the grid)
+    fn with_render(msdf: bool) -> WithFonts {
+      let mut fonts = WithFonts::new();
+      if msdf {
+        let ui = fonts.0.fonts.role(FontRole::Ui).expect("a UI font");
+        fonts.0.fonts.set_render(ui, FontRender::msdf());
+        fonts.0.engine.sync(&fonts.0.fonts);
+      }
+      fonts
+    }
+
+    #[test]
+    fn a_moved_text_is_reused_as_a_fresh_build_at_its_new_place_lays_it() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      for msdf in [false, true] {
+        let mut fonts = with_render(msdf);
+        // Image pixels per UI unit: whole, and not a power of two
+        for px_scale in [1.0, 1.5, 1.25] {
+          let env = env_at(px_scale, false);
+          // Two lines, so each line's baseline rounds on its own
+          let layout = outlined(&mut fonts, "Settings 42\nVolume, 7%", px_scale);
+          // A clip cutting some glyphs at some places
+          let clip = Some(Rect::new(
+            4.0 / px_scale,
+            30.0 / px_scale,
+            120.0 / px_scale,
+            70.0 / px_scale,
+          ));
+          let from = Vec2::new(12.3, 40.2) / px_scale;
+          let a_pixel = 1.0 / px_scale;
+          // Moves down and up by fractions of a pixel, by whole pixels,
+          // across the clip's edge, far (an offset carrying float error),
+          // and right by whole pixels
+          let moves = [
+            (Vec2::new(0.0, 0.37), true),
+            (Vec2::new(0.0, -13.71), true),
+            (Vec2::new(0.0, 3.0 * a_pixel), true),
+            (Vec2::new(0.0, 35.5), true),
+            (
+              Vec2::new(0.0, (from.y + 100_000.3) - 100_000.0 - from.y),
+              true,
+            ),
+            (Vec2::new(5.0 * a_pixel, 0.0), false),
+            (Vec2::new(5.0 * a_pixel, -7.43), false),
+          ];
+          let sources = fonts.0.sources();
+          for (by, vertical) in moves {
+            let to = from + by;
+            let frames = [from, to].map(|at| commands_of([text(&layout, at, clip)]));
+            let builds = retained(&mut writes, &frames, &sources, env);
+            let fresh = built(&mut writes, &frames[1], env, Some(&sources));
+            let case = format!("msdf {msdf}, scale {px_scale}, moved by {by}");
+            assert!(!fresh.instances.is_empty(), "{case}: the text draws");
+            assert!(
+              same_bits(&builds[1].0, &fresh),
+              "{case}: the moved text is what a fresh build lays"
+            );
+            // A vertical move never changes a glyph's subpixel bin, nor does
+            // any move of an MSDF glyph (it has none)
+            if vertical || msdf {
+              assert_eq!(builds[1].1, (0, 1), "{case}: reused");
+            }
+          }
+        }
+      }
+    }
+
+    #[test]
+    fn a_text_moved_into_other_subpixel_bins_is_built_again() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = with_render(false);
+      let layout = outlined(&mut fonts, "Settings 42", 1.0);
+      let sources = fonts.0.sources();
+      // A quarter pixel moves every pen to the next bin
+      let frames = [Vec2::new(12.0, 20.0), Vec2::new(12.25, 20.0)]
+        .map(|at| commands_of([text(&layout, at, None)]));
+      let builds = retained(&mut writes, &frames, &sources, env());
+      let fresh = built(&mut writes, &frames[1], env(), Some(&sources));
+      assert!(same_bits(&builds[1].0, &fresh));
+      assert_eq!(builds[1].1, (1, 0), "built again");
+    }
+
+    #[test]
+    fn a_layout_drawn_twice_keeps_an_entry_for_each() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = WithFonts::new();
+      let layout = fonts.laid("On");
+      let sources = fonts.0.sources();
+      let commands = commands_of([
+        text(&layout, Vec2::new(10.0, 20.0), None),
+        text(&layout, Vec2::new(10.0, 50.0), None),
+      ]);
+      let (builds, texts) = rebuilt(&mut writes, &commands, &sources, 3);
+      let fresh = built(&mut writes, &commands, env(), Some(&sources));
+      assert!(builds.iter().all(|build| same_bits(build, &fresh)));
+      assert_eq!((texts.built(), texts.reused()), (0, 2));
+      assert_eq!(texts.entries(), 2, "each drawing of the layout is kept");
+    }
+
+    #[test]
+    fn texts_moving_every_frame_are_never_built_again() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = with_render(false);
+      let env = env_at(1.25, false);
+      let row = outlined(&mut fonts, "Setting 7", 1.25);
+      let title = outlined(&mut fonts, "Settings", 1.25);
+      let clip = Some(Rect::new(0.0, 40.0, 200.0, 120.0));
+      // A list easing as a wheel turns it: fractional offsets every frame.
+      // One layout drawn twice (two rows), and a still title
+      let frames: Vec<UiCommands> = (0..40)
+        .map(|frame| {
+          let t = frame as f32 / 39.0;
+          let offset = -95.3 * (1.0 - (1.0 - t).powi(3));
+          commands_of([
+            text(&title, Vec2::new(10.0, 8.0), None),
+            text(&row, Vec2::new(10.0, 60.0 + offset), clip),
+            text(&row, Vec2::new(10.0, 81.7 + offset), clip),
+          ])
+        })
+        .collect();
+      let sources = fonts.0.sources();
+      let builds = retained(&mut writes, &frames, &sources, env);
+      for (frame, (build, counts)) in builds.iter().enumerate() {
+        let fresh = built(&mut writes, &frames[frame], env, Some(&sources));
+        assert!(same_bits(build, &fresh), "frame {frame}");
+        if frame > 0 {
+          assert_eq!(*counts, (0, 3), "frame {frame}: every text reused");
+        }
+      }
     }
   }
 }

@@ -27,14 +27,13 @@
 //! does inside its next submit. So the guard reads a little low, a UI frame
 //! more than an empty one, as it leaves more to clean up.
 //!
-//! The guard asserts the idle target and that one changing label is no
-//! slower retained than not (4g), one label's 40 µs target (4h), and that
-//! the scrolling list moves every frame. It prints every median, and
-//! scrolling retained against not without asserting it: a moving list's
-//! texts miss the text cache, so retention costs it more than it saves.
-//! One label meets its target by about 7 µs on an Apple M5 Pro at a load
-//! of 2 to 3, but read 39 to 40 µs at a load of 4: run the guard on a quiet
-//! machine.
+//! The guard asserts the idle target, that one changing label and the
+//! scrolling list are each no slower retained than not (4g; the moving
+//! list's texts are laid again from their kept glyphs), one label's 40 µs
+//! target (4h), and that the scrolling list moves every frame. It prints
+//! every median. One label meets its target by about 7 µs on an Apple M5
+//! Pro at a load of 2 to 3, but read 39 to 41 µs at a load of 4 to 7: run
+//! the guard on a quiet machine.
 
 use std::time::Duration;
 
@@ -191,8 +190,9 @@ fn over(time: Duration, empty: Duration) -> f64 {
 /// on: an idle settings screen adds under 5 µs (4g), a changing frame is no
 /// slower retained than not (4g), and one changing label adds under 40 µs
 /// (4h). Every median is printed, and each target with its verdict;
-/// asserted are the idle and one-label targets, that one label is no slower
-/// retained and that the scrolling list moves every frame.
+/// asserted are the idle and one-label targets, that one label and the
+/// scrolling list are no slower retained, and that the list moves every
+/// frame.
 fn guard() {
   let screens = [
     (Screen::Empty, true),
@@ -286,6 +286,10 @@ fn guard() {
   assert!(
     label <= label_off,
     "one label: retained {label:?}, not retained {label_off:?}"
+  );
+  assert!(
+    scrolling <= scrolling_off,
+    "scrolling: retained {scrolling:?}, not retained {scrolling_off:?}"
   );
 }
 

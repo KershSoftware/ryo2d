@@ -32,7 +32,7 @@ pub(crate) use engine::{RevealClock, TextEngine};
 pub(crate) use key::TextKey;
 pub(crate) use layout::{GlyphStyle, PlacedGlyph, PlacedIcon, TextLayout};
 pub(crate) use raster::{
-  GlyphFormat, GlyphImage, GlyphKey, GlyphRasterizer, glyph_id, raster_size_step,
+  GlyphFormat, GlyphImage, GlyphKey, GlyphRasterizer, glyph_id, raster_size_step, subpixel_bin,
 };
 pub(crate) use world::{TextLayoutState, advance_text_reveal, clean_opacity};
 

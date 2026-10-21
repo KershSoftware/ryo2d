@@ -402,11 +402,8 @@ impl TextSink<UiInstance> for TextInstances<'_> {
     for item in items.get(self.taken..).unwrap_or(&[]) {
       match item.payload {
         DrawPayload::Glyph(index) => {
-          if let Some(glyph) = list.glyph(index)
-            && self.seen.sees(glyph.min, glyph.max, self.clip)
-          {
-            let instance = glyph_instance(glyph, self.clip);
-            self.build.push(instance, TexNeed::Glyph(glyph.page));
+          if let Some(glyph) = list.glyph(index) {
+            self.glyph(glyph);
           }
         }
         DrawPayload::Sprite(index) => {
@@ -443,6 +440,13 @@ impl TextSink<UiInstance> for TextInstances<'_> {
     // Their clip is the text's, part of its key
     self.build.instances.extend_from_slice(glyphs);
     self.build.needs.extend(glyphs.iter().map(glyph_need));
+  }
+
+  fn glyph(&mut self, glyph: &DrawGlyph) {
+    if self.seen.sees(glyph.min, glyph.max, self.clip) {
+      let instance = glyph_instance(glyph, self.clip);
+      self.build.push(instance, TexNeed::Glyph(glyph.page));
+    }
   }
 }
 

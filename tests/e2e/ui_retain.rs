@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use ryo2d::prelude::*;
-use ryo2d::testing::PixelPair;
+use ryo2d::testing::{HeadlessEngine, PixelPair};
 
 use crate::common::ui_scenes::{Culled, Toggle, lock};
 
@@ -301,6 +301,86 @@ fn hover_scroll_a_dropdown_and_a_theme_change_match() {
   pair.frames(10, "the light theme");
   assert!(pair.kept() > 0, "an unchanged frame kept the image");
   assert!(pair.reused() > 0, "a changing frame reused texts");
+}
+
+/// Where the settings screen's focusable widgets are (UI units)
+fn rows(pair: &PixelPair) -> Vec<Rect> {
+  pair
+    .on
+    .ui_focusables()
+    .into_iter()
+    .map(|(_, rect)| rect)
+    .collect()
+}
+
+/// Run one frame of each scroll in `steps` (applied by `scroll`), and sum
+/// the texts the retaining engine built and reused in them
+fn scrolled(
+  pair: &mut PixelPair,
+  steps: &[f32],
+  scroll: fn(&mut HeadlessEngine, f32),
+  what: &str,
+) -> (u32, u32) {
+  let (mut built, mut reused) = (0, 0);
+  for &step in steps {
+    pair.each(|engine| scroll(engine, step));
+    pair.frames(1, what);
+    let on = pair.on.ui_render_stats();
+    assert!(!on.kept, "{what}: the list moves every frame");
+    built += on.texts_built;
+    reused += on.texts_reused;
+  }
+  (built, reused)
+}
+
+#[test]
+fn a_scrolling_list_matches_and_reuses_its_moving_texts() {
+  // The default UI scale, and one where a UI unit is 1.25 image pixels;
+  // the pointer over the list's top rows (screen units)
+  for (scale, pointer) in [(None, (520.0, 238.0)), (Some(1.25), (490.0, 207.5))] {
+    let make = move || {
+      EngineBuilder::new()
+        .resolution(1280, 720)
+        .ui_scale(scale)
+        .start_scene(SettingsScreen)
+    };
+    let Some(mut pair) = PixelPair::new(make) else {
+      return;
+    };
+    pair.each(|engine| engine.mouse_move(pointer.0, pointer.1));
+    pair.frames(10, "the screen opening");
+    let top = rows(&pair);
+    // Wheel lines, eased: the list moves by fractions of a pixel
+    let wheel = scrolled(
+      &mut pair,
+      &[-1.0; 12],
+      |engine, dy| engine.wheel(0.0, dy),
+      "wheel scrolling",
+    );
+    let wheeled = rows(&pair);
+    assert_ne!(wheeled, top, "scale {scale:?}: the wheel scrolls the list");
+    // A trackpad's fractional steps, both ways
+    let steps = [-7.3, -2.6, 4.15, -11.9, 0.7, 3.35, -0.45, -5.05, 9.2, -1.3];
+    let trackpad = scrolled(
+      &mut pair,
+      &steps,
+      |engine, dy| engine.trackpad(0.0, dy),
+      "trackpad scrolling",
+    );
+    assert_ne!(
+      rows(&pair),
+      wheeled,
+      "scale {scale:?}: the trackpad scrolls the list"
+    );
+    // Texts moving with the list are reused; only rows coming into view
+    // are built
+    for ((built, reused), what) in [(wheel, "wheel"), (trackpad, "trackpad")] {
+      assert!(
+        reused > 8 * built,
+        "scale {scale:?}, {what}: {built} texts built, {reused} reused"
+      );
+    }
+  }
 }
 
 /// A prompt with a named icon, and a still label

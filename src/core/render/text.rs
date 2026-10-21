@@ -11,6 +11,12 @@
 //! and pixel glyphs on whole render pixels: the pen's fraction of a pixel
 //! picks the glyph's subpixel bin, the baseline is rounded, and the image
 //! maps 1:1 onto render pixels. MSDF glyphs scale and never snap.
+//!
+//! The origin is read only to place each quad and to pick a raster glyph's
+//! subpixel bin. So a block emitted with its glyphs' seeds kept
+//! (`emit_glyphs_seeded`) can be laid again at another origin where every
+//! bin is the same (`seeds_fit`, `lay_seeds`) without fetching a glyph, as
+//! the UI's text cache lays a moved text.
 
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -29,7 +35,7 @@ use crate::core::text::{
   BitmapFace, FaceSource, FontId, FontRender, Fonts, GlyphContext, GlyphFormat, GlyphKey, GlyphMod,
   GlyphRasterizer, GlyphStyle, Icon, PlacedGlyph, PlacedIcon, RichText, Text2d, TextBounds,
   TextEffects, TextEngine, TextIcons, TextLayout, TextLayoutState, TextReveal, clean_opacity,
-  glyph_id, raster_size_step, reveal_alpha,
+  glyph_id, raster_size_step, reveal_alpha, subpixel_bin,
 };
 use crate::core::ui::immediate::PromptContext;
 use crate::core::ui::widgets::prompt::resolve_prompts;
@@ -133,6 +139,28 @@ pub(crate) fn emit_glyphs(
   layout: &TextLayout,
   place: &TextPlacement,
 ) {
+  lay_block(sources, targets, layout, place, None);
+}
+
+/// [`emit_glyphs`], keeping in `seeds` each glyph quad as it was before it
+/// was placed, to lay it again at another origin ([`lay_seeds`])
+pub(crate) fn emit_glyphs_seeded(
+  sources: &TextSources<'_>,
+  targets: &mut TextTargets<'_>,
+  layout: &TextLayout,
+  place: &TextPlacement,
+  seeds: &mut Vec<GlyphSeed>,
+) {
+  lay_block(sources, targets, layout, place, Some(seeds));
+}
+
+fn lay_block(
+  sources: &TextSources<'_>,
+  targets: &mut TextTargets<'_>,
+  layout: &TextLayout,
+  place: &TextPlacement,
+  seeds: Option<&mut Vec<GlyphSeed>>,
+) {
   if !(place.px_per_layout.is_finite() && place.px_per_layout > 0.0) {
     return;
   }
@@ -141,6 +169,7 @@ pub(crate) fn emit_glyphs(
     targets,
     layout,
     place,
+    seeds,
   };
   let mut effects = EffectRun::new(place);
   for layer in [Layer::Shadow, Layer::Outline, Layer::Fill] {
@@ -169,6 +198,7 @@ pub(crate) fn emit_icons(
     targets,
     layout,
     place,
+    seeds: None,
   };
   for icon in &layout.icons {
     emit_icon(&mut block, icon);
@@ -176,12 +206,13 @@ pub(crate) fn emit_icons(
 }
 
 /// A block being emitted: what it reads, where it goes, its layout and
-/// placement
+/// placement, and where its glyphs' seeds are kept (when they are)
 struct Block<'b, 's, 't> {
   sources: &'b TextSources<'s>,
   targets: &'b mut TextTargets<'t>,
   layout: &'b TextLayout,
   place: &'b TextPlacement,
+  seeds: Option<&'b mut Vec<GlyphSeed>>,
 }
 
 /// A glyph and its index in its block
@@ -295,6 +326,9 @@ struct GlyphQuad {
   texel: Option<f32>,
   /// Moved by this many render pixels (pixel-font outlines)
   nudge: Vec2,
+  /// The key's subpixel bin is the pen's fraction's (`pen_fraction`):
+  /// raster glyphs drawn from an uncapped image
+  subpixel: bool,
   shade: Shade,
 }
 
@@ -406,6 +440,7 @@ fn emit_raster(
       k: glyph.size / r,
       texel: (!capped).then_some(1.0),
       nudge: Vec2::ZERO,
+      subpixel: !capped,
       shade: Shade::tinted(tint, look.alpha, Sampling::Linear),
     }
   };
@@ -502,6 +537,7 @@ fn emit_pixel(
     k: glyph.size / r,
     texel: Some(texel),
     nudge,
+    subpixel: false,
     shade: Shade::tinted(tint, look.alpha, Sampling::Nearest),
   };
   match layer {
@@ -572,6 +608,7 @@ fn emit_msdf(
     k,
     texel: None,
     nudge: Vec2::ZERO,
+    subpixel: false,
     shade: Shade {
       tint,
       alpha,
@@ -766,7 +803,13 @@ fn push_glyph(
   look: &GlyphLook,
   glyph_quad: GlyphQuad,
 ) {
-  let (sources, place) = (block.sources, block.place);
+  let Block {
+    sources,
+    targets,
+    place,
+    seeds,
+    ..
+  } = block;
   let TextTargets {
     raster,
     sprites,
@@ -774,7 +817,7 @@ fn push_glyph(
     queue,
     list,
     ..
-  } = &mut *block.targets;
+  } = &mut **targets;
   let key = glyph_quad.key;
   let Some(slot) = sprites.glyph(device, queue, key, || {
     let coords = sources.engine.coords(glyph.coords);
@@ -782,51 +825,124 @@ fn push_glyph(
   }) else {
     return;
   };
-  let image = ImageBox {
-    left: slot.left as f32,
-    top: slot.top as f32,
-    width: slot.width as f32,
-    height: slot.height as f32,
-  };
-  let texel = glyph_quad.texel;
-  let (centre, size, rotation) = quad(
-    place,
-    glyph_quad.pen,
-    image,
-    glyph_quad.k,
-    texel,
-    glyph_quad.nudge,
-  );
-  let size = size * look.scale;
-  if !(centre.is_finite() && size.is_finite() && size.x != 0.0 && size.y != 0.0) {
-    return;
-  }
   let shade = glyph_quad.shade;
   let mut instance = SpriteInstance::new()
-    .with_transform(centre.x, centre.y, rotation, size.x, size.y)
     .with_uv(slot.uv[0], slot.uv[1], slot.uv[2], slot.uv[3])
     .with_tint(shade.tint, shade.alpha);
   instance.uv_bounds = slot.uv;
   instance.effect_params = shade.params;
   instance.effect_extra = shade.extra;
-  let reach = Vec2::splat(size.length() / 2.0);
-  let draw = place.draw;
-  list.push_glyph(
-    draw.kind,
-    draw.z,
-    draw.lit,
-    draw.only_camera,
-    DrawGlyph {
-      page: slot.page,
+  let seed = GlyphSeed {
+    page: slot.page,
+    instance,
+    sampling: shade.sampling,
+    pen: glyph_quad.pen,
+    image: ImageBox {
+      left: slot.left as f32,
+      top: slot.top as f32,
+      width: slot.width as f32,
+      height: slot.height as f32,
+    },
+    k: glyph_quad.k,
+    texel: glyph_quad.texel,
+    nudge: glyph_quad.nudge,
+    scale: look.scale,
+    subpixel: glyph_quad.subpixel.then_some(key.subpixel),
+  };
+  if let Some(seeds) = seeds {
+    seeds.push(seed);
+  }
+  if let Some(laid) = seed.lay(place) {
+    let draw = place.draw;
+    list.push_glyph(draw.kind, draw.z, draw.lit, draw.only_camera, laid);
+  }
+}
+
+/// A glyph quad with its image, before it is placed: everything a glyph's
+/// item is made of that does not follow from the block's origin. Laid at a
+/// placement it is the item `emit_glyphs` makes there, as long as the
+/// glyph's image is the one it would fetch there ([`fits`](Self::fits)).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GlyphSeed {
+  page: GlyphPage,
+  /// Every lane but the transform's
+  instance: SpriteInstance,
+  sampling: Sampling,
+  /// The pen, layout pixels
+  pen: Vec2,
+  image: ImageBox,
+  /// Layout pixels per image pixel
+  k: f32,
+  /// Render pixels per image pixel, on the pixel grid (see `GlyphQuad`)
+  texel: Option<f32>,
+  nudge: Vec2,
+  /// The effect's scale
+  scale: f32,
+  /// The subpixel bin its image was made for, when the pen's fraction of a
+  /// render pixel picked it
+  subpixel: Option<u8>,
+}
+
+impl GlyphSeed {
+  /// Whether its image is the one emitting its block at `place` would
+  /// fetch: the pen's fraction there picks the same subpixel bin. Nothing
+  /// else in the image's key follows from the origin.
+  fn fits(&self, place: &TextPlacement) -> bool {
+    self
+      .subpixel
+      .is_none_or(|bin| subpixel_bin(pen_fraction(place, self.pen)) == bin)
+  }
+
+  /// The glyph's item placed at `place` (as `quad` places it, on the pixel
+  /// grid when the block is), unless it lands nowhere finite
+  #[inline]
+  fn lay(&self, place: &TextPlacement) -> Option<DrawGlyph> {
+    let (centre, size, rotation) =
+      quad(place, self.pen, self.image, self.k, self.texel, self.nudge);
+    let size = size * self.scale;
+    if !(centre.is_finite() && size.is_finite() && size.x != 0.0 && size.y != 0.0) {
+      return None;
+    }
+    let instance = self
+      .instance
+      .with_transform(centre.x, centre.y, rotation, size.x, size.y);
+    let reach = Vec2::splat(size.length() / 2.0);
+    Some(DrawGlyph {
+      page: self.page,
       instance,
-      shader: shader_for(slot.page),
-      blend: draw.blend,
-      sampling: shade.sampling,
-      layers: draw.layers,
+      shader: shader_for(self.page),
+      blend: place.draw.blend,
+      sampling: self.sampling,
+      layers: place.draw.layers,
       min: centre - reach,
       max: centre + reach,
-    },
-  );
+    })
+  }
+}
+
+/// Whether a block's glyphs laid at `place` from the seeds
+/// [`emit_glyphs_seeded`] kept when it laid them elsewhere are the glyphs
+/// emitting it at `place` would lay: their images are the same there (no
+/// pen's fraction picks another subpixel bin). The bins follow from the
+/// origin's x alone.
+pub(crate) fn seeds_fit(place: &TextPlacement, seeds: &[GlyphSeed]) -> bool {
+  seeds.iter().all(|seed| seed.fits(place))
+}
+
+/// Lay a block's glyphs at `place` from its seeds, into `each` in the order
+/// `emit_glyphs` lays them: the same items, given the same layout, glyph
+/// pages and placement but for the origin, when the seeds fit there
+/// ([`seeds_fit`])
+pub(crate) fn lay_seeds(
+  place: &TextPlacement,
+  seeds: &[GlyphSeed],
+  mut each: impl FnMut(&DrawGlyph),
+) {
+  for seed in seeds {
+    if let Some(laid) = seed.lay(place) {
+      each(&laid);
+    }
+  }
 }
 
 /// The text shader a glyph page draws with

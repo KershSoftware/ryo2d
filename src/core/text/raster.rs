@@ -52,15 +52,19 @@ fn fixed(value: f32) -> u32 {
   (value * 64.0).round().clamp(0.0, u32::MAX as f32) as u32
 }
 
+/// The subpixel bin of a pen at `x_fraction` of a pixel
+pub(crate) fn subpixel_bin(x_fraction: f32) -> u8 {
+  (x_fraction.rem_euclid(1.0) * SUBPIXEL_BINS as f32).round() as u8 % SUBPIXEL_BINS
+}
+
 impl GlyphKey {
   /// A filled glyph at `px`, its pen at `x_fraction` (0..1) of a pixel
   pub(crate) fn fill(font: FontId, glyph: u16, px: f32, x_fraction: f32) -> Self {
-    let bin = (x_fraction.rem_euclid(1.0) * SUBPIXEL_BINS as f32).round() as u8 % SUBPIXEL_BINS;
     Self {
       font,
       glyph,
       size64: fixed(px),
-      subpixel: bin,
+      subpixel: subpixel_bin(x_fraction),
       kind: GlyphKind::Fill,
       coords: 0,
       skew: false,
