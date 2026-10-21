@@ -295,9 +295,16 @@ fn scroll_clipping_and_nested_clips_match() {
   }
 }
 
-/// The most a line pixel's channel differs between the paths in the owner's
-/// accepted class (see [`lines_match`]): 0.36 coverage, the worst measured
+/// The most a line pixel's channel may differ between the paths, in the
+/// owner's accepted class (see [`lines_match`]): 0.36 coverage, Task 4's
+/// measured worst (the text demo page's zigzag, at its miter tips). Measured
+/// on an Apple GPU (Metal), this scene's worst is 65/255 over its 24 frames,
+/// and a sweep of probe lines over 64 sub-pixel shifts reached 77/255.
 const LINE_AA_SLACK: u8 = 92;
+
+/// Fewer line pixels than this in either frame means the lines did not draw
+/// (about 6,100 do in every frame)
+const LINES_DRAWN: usize = 5_000;
 
 /// Lines `ui.draw_line` draws over a panel, moved by a sub-pixel shift each
 /// frame: straight ones thin and thick at several slants, gentle arcs, closed
@@ -398,7 +405,7 @@ impl Scene for Lines {
 
 /// Step both engines once and compare their frames: identical, but that a
 /// line pixel (in the line panel, drawn by a line in either frame) may
-/// differ by up to [`LINE_AA_SLACK`]
+/// differ by up to [`LINE_AA_SLACK`]. Both frames must show the lines.
 fn line_frame(pair: &mut PixelPair, what: &str) {
   for engine in [&mut pair.on, &mut pair.off] {
     assert!(
@@ -415,6 +422,17 @@ fn line_frame(pair: &mut PixelPair, what: &str) {
     let (x, y) = (x as f32 + 0.5, y as f32 + 0.5);
     x > LINE_PANEL.x && x < LINE_PANEL.right() && y > LINE_PANEL.y && y < LINE_PANEL.bottom()
   };
+  let drawn = |frame: &image::RgbaImage| {
+    frame
+      .enumerate_pixels()
+      .filter(|&(x, y, pixel)| panel(x, y) && *pixel != under)
+      .count()
+  };
+  let (in_a, in_b) = (drawn(&a), drawn(&b));
+  assert!(
+    in_a >= LINES_DRAWN && in_b >= LINES_DRAWN,
+    "{what}: the lines drew {in_a} pixels in a and {in_b} in b"
+  );
   let mut wrong = Vec::new();
   for ((x, y, old), new) in a.enumerate_pixels().zip(b.pixels()) {
     if old == new {
