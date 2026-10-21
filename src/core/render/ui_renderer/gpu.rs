@@ -343,11 +343,12 @@ fn same_suffix(a: &[UiInstance], b: &[UiInstance]) -> usize {
 
 fn instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
   use wgpu::BufferUsages as U;
+  // Tests read it back
+  let read_back = if cfg!(test) { U::COPY_SRC } else { U::empty() };
   device.create_buffer(&wgpu::BufferDescriptor {
     label: Some("UI Instances"),
     size: (capacity * std::mem::size_of::<UiInstance>()) as u64,
-    // Tests read it back
-    usage: U::VERTEX | U::COPY_DST | U::COPY_SRC,
+    usage: U::VERTEX | U::COPY_DST | read_back,
     mapped_at_creation: false,
   })
 }

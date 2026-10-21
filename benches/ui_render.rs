@@ -15,8 +15,9 @@
 //! as the GPU takes longer to finish a frame (about 200 to 300 µs on an
 //! Apple GPU) than the CPU takes to step one. So the guard steps its engines
 //! in turn, one frame each (each round starting at the next engine, and
-//! every other round in reverse, so no engine always follows the same one),
-//! and lets the GPU finish all submitted work before each measured step
+//! every other round in reverse, so no engine always follows the same one
+//! and none steps twice in a row), and lets the GPU finish all submitted
+//! work before each measured step
 //! (outside the measure), as a frame at 60 Hz finds it. Each median is taken
 //! over the same rounds, so a change in the machine's load moves them all
 //! alike. Wall time here equals the render step's thread CPU time to within
@@ -214,8 +215,11 @@ fn guard() {
   let Ok((device, _)) = shared_gpu() else {
     return;
   };
-  // Round robin, each round started by the next engine and every other
-  // round in reverse, so each engine follows both its neighbours alike
+  // Round robin: each round starts at the next engine, and every other
+  // round runs in reverse, starting one further on so that no engine steps
+  // twice in a row. So each engine follows its upper neighbour in the
+  // reversed rounds and its lower one in the others, but for the rounds it
+  // starts (one in `count`), where it follows the engine three below it
   let count = probes.len();
   for round in 0..FRAMES {
     for i in 0..count {
@@ -225,7 +229,7 @@ fn guard() {
       let at = if round.is_multiple_of(2) {
         (round + i) % count
       } else {
-        (round + count - i) % count
+        (round + 1 + count - i) % count
       };
       probes[at].step();
     }
