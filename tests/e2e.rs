@@ -68,3 +68,6 @@ mod ui_cache;
 
 #[path = "e2e/ui_retain.rs"]
 mod ui_retain;
+
+#[path = "e2e/ui_renderer.rs"]
+mod ui_renderer;

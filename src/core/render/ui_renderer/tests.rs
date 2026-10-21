@@ -100,3 +100,36 @@ fn the_kinds_and_the_nearest_flag_are_the_shaders() {
   let constant = format!("const FLAG_NEAREST: u32 = {}u;", flags(true));
   assert!(shader.contains(&constant), "{constant}");
 }
+
+#[test]
+fn a_run_break_starts_the_next_run_with_only_the_breaking_texture() {
+  use crate::core::graphics::{SlotPage, TextureId};
+  let page = |index| GlyphPage {
+    format: GlyphFormat::Mask,
+    index,
+  };
+  // Sprite texture n sits on atlas page n
+  let atlas = |index: u32| TexKey::Sprite(SlotPage::Atlas(index as usize));
+  // Glyph page 0, sprite A, sprite B (a break), glyph page 1: the run
+  // sprite B starts holds no glyph page, so page 1 joins it
+  let needs = [
+    TexNeed::Glyph(page(0)),
+    TexNeed::Sprite(TextureId::for_test(1)),
+    TexNeed::Sprite(TextureId::for_test(2)),
+    TexNeed::Glyph(page(1)),
+  ];
+  let runs = plan_runs(&needs, |need| match need {
+    TexNeed::Glyph(p) => Some((Slot::Mask, TexKey::Glyph(p))),
+    TexNeed::Sprite(texture) => {
+      let index = (0..8).find(|&i| TextureId::for_test(i) == texture)?;
+      Some((Slot::Sprite, atlas(index)))
+    }
+    TexNeed::None => None,
+  });
+  let ranges: Vec<_> = runs.iter().map(|run| run.range.clone()).collect();
+  assert_eq!(ranges, vec![0..2, 2..4]);
+  assert_eq!(
+    runs[1].textures,
+    [Some(TexKey::Glyph(page(1))), None, None, Some(atlas(2))]
+  );
+}

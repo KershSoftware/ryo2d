@@ -25,7 +25,7 @@ use crate::core::render::scratch::recycle;
 use crate::core::render::text::{
   TextSources, TextTargets, WorldTextFrame, emit_world_text, layout_world_text, prewarm,
 };
-use crate::core::render::ui::emit_ui;
+use crate::core::render::ui::{UI_CAMERA, emit_ui, ui_view};
 use crate::core::render::ui_retain::UiRenderEnv;
 use crate::core::render::{
   DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, SpriteLook, SpriteShading,
@@ -67,10 +67,11 @@ impl Engine {
     if self.minimized {
       return PresentOutcome::Skipped;
     }
-    let (Some(mut rend), Some(mut gpu), Some(mut batch)) = (
+    let (Some(mut rend), Some(mut gpu), Some(mut batch), Some(mut ui_renderer)) = (
       self.renderer.take(),
       self.sprite_gpu.take(),
       self.batch.take(),
+      self.ui_renderer.take(),
     ) else {
       return PresentOutcome::Skipped;
     };
@@ -86,7 +87,7 @@ impl Engine {
       )
     };
 
-    let (entity_sprites, lights, ui_kept) = {
+    let (entity_sprites, lights, ui_kept, ui_frame) = {
       profile_scope!("cpu:render");
 
       // The scenes' GPU-batched sprites
@@ -378,11 +379,22 @@ impl Engine {
         && self
           .ui_retain
           .keep(&self.ui_commands, icons, env, rend.ui_image_epoch());
-      self.ui_camera = if ui_kept {
-        None
-      } else {
+      // A changed UI is built by the UI renderer, or (the old path) laid
+      // into the draw list for the batch's UI camera
+      let ui_built = !ui_kept && self.config.debug.ui_dedicated;
+      self.ui_camera = None;
+      if ui_built {
+        ui_renderer.build(
+          &self.ui_commands,
+          env,
+          retain,
+          sources.as_ref(),
+          &mut text_targets,
+          real_time,
+        );
+      } else if !ui_kept {
         self.ui_retain.texts.begin(env, retain);
-        let camera = emit_ui(
+        self.ui_camera = emit_ui(
           &self.ui_commands,
           &env,
           sources.as_ref(),
@@ -392,9 +404,10 @@ impl Engine {
           &mut self.ui_retain.texts,
         );
         self.ui_retain.texts.end();
-        camera
-      };
-      let (texts_built, texts_reused) = if ui_kept {
+      }
+      let (texts_built, texts_reused) = if ui_built {
+        ui_renderer.text_counts()
+      } else if ui_kept {
         (0, 0)
       } else {
         (self.ui_retain.texts.built(), self.ui_retain.texts.reused())
@@ -405,40 +418,71 @@ impl Engine {
         texts_reused,
         glyph_evictions: gpu.glyph_evictions(),
       };
-      if let Some(ui) = &self.ui_camera {
+      // The UI camera's uniforms, whichever path draws the UI (the UI
+      // renderer binds the bind group the batch makes for them)
+      let ui_camera_view = match &self.ui_camera {
+        Some(camera) => Some(camera.view),
+        None => (ui_built && ui_renderer.has_instances()).then(|| ui_view(&self.ui_space)),
+      };
+      if let Some(view) = ui_camera_view {
         let globals = CameraGlobals::new(
-          &ui.view,
+          &view,
           self.ui_space.image,
           game_time,
           real_time,
           ui_on_target,
         );
-        self.camera_globals.push((ui.entity, globals));
+        self.camera_globals.push((UI_CAMERA, globals));
       }
       self
         .camera_uniforms
         .sync(rend.device(), rend.queue(), &self.camera_globals);
       batch.sync_cameras(rend.device(), &self.camera_uniforms);
-      // The batch lays out the world's cameras, then the UI camera; the
-      // camera passes run for the world's alone
+      // The batch lays out the world's cameras, then the old path's UI
+      // camera; the camera passes run for the world's alone
       self.batch_cameras.clear();
       self.batch_cameras.extend(self.camera_draws.iter().copied());
       self.batch_cameras.extend(self.ui_camera);
       self.draw_list.sorted();
+      // The UI renderer's sprite textures are made resident with the
+      // world's, then its frame is finished with their slots
+      let ui_textures = if ui_built {
+        ui_renderer.sprite_textures()
+      } else {
+        &[]
+      };
       batch.prepare(
         rend.device(),
         rend.queue(),
         &self.draw_list,
         &self.batch_cameras,
         &mut gpu,
+        ui_textures,
       );
+      let ui_frame = match batch.camera_group(UI_CAMERA) {
+        Some(camera) if ui_built => ui_renderer.finish(
+          rend.device(),
+          rend.queue(),
+          &gpu,
+          self.config.presentation,
+          camera,
+        ),
+        _ => None,
+      };
       self.text.end_frame();
-      (entity_sprites, lights, ui_kept)
+      (entity_sprites, lights, ui_kept, ui_frame)
     };
 
+    let ui_draws = match (&ui_frame, &self.ui_camera) {
+      (Some(frame), _) => frame.draw_count(),
+      (None, Some(camera)) => batch.draws(camera.entity, false).len(),
+      (None, None) => 0,
+    };
+    self.ui_draw_count = ui_draws as u32;
     self.debug_stats = DebugStats {
       entity_count: game_entity_count(&self.world),
-      draw_calls: batch.draw_count() as u32,
+      // The old path's UI draws are the batch's
+      draw_calls: (batch.draw_count() + ui_frame.map_or(0, |frame| frame.draw_count())) as u32,
       sprite_count: (entity_sprites + self.batch_collector.sprite_count()) as u32,
     };
     self.frame_timings.render = render_start.elapsed();
@@ -459,6 +503,7 @@ impl Engine {
           effects: world.resource::<EffectsManager>(),
           look: world.resource::<crate::core::render::Look>(),
           ui_camera: self.ui_camera.as_ref(),
+          ui_frame,
           ui_size: self.ui_space.image,
           ui_kept,
           cameras: &self.camera_draws,
@@ -506,6 +551,7 @@ impl Engine {
     self.renderer = Some(rend);
     self.sprite_gpu = Some(gpu);
     self.batch = Some(batch);
+    self.ui_renderer = Some(ui_renderer);
     self.lighting = lighting;
     self.lights = lights;
     self.frame_timings.present = present_start.elapsed();

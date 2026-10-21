@@ -451,7 +451,7 @@ fn every_kind_draws_as_the_batch_draws_it() {
   let globals = CameraGlobals::new(&view, (SIDE, SIDE), 0.0, 0.0, false);
   uniforms.sync(&device, &queue, &[(entity, globals)]);
   batch.sync_cameras(&device, &uniforms);
-  batch.prepare(&device, &queue, &list, &cameras, &mut sprites);
+  batch.prepare(&device, &queue, &list, &cameras, &mut sprites, &[]);
 
   // The sprites remapped into their slots as the batch does
   for (texture, instance, filter) in placed {
@@ -995,6 +995,128 @@ mod building {
         },
       ]
     );
+  }
+
+  #[test]
+  fn sprites_are_placed_in_their_slots_and_those_without_one_dropped() {
+    use crate::core::graphics::{
+      Presentation, RenderTargets, SpriteInstance, TextureId, place_in_slot,
+    };
+    let Some(mut writes) = Writes::new() else {
+      return;
+    };
+    let swatch = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let commands = commands_of([
+      sprite(
+        &swatch,
+        Rect::new(10.0, 10.0, 16.0, 12.0),
+        Filter::Nearest,
+        None,
+      ),
+      sprite(
+        &swatch,
+        Rect::new(40.0, 10.0, 16.0, 12.0),
+        Filter::Linear,
+        None,
+      ),
+    ]);
+    let mut build = built(&mut writes, &commands, env(), None);
+    let texture = writes.sprites.texture_of(&swatch);
+    // Two more sprites: one of a texture with no slot, one of a render
+    // target's
+    let mut targets = RenderTargets::default();
+    let target = targets.create(8, 8);
+    writes.sprites.sync_targets(&writes.device, &targets);
+    let target = writes.sprites.target_texture(target).expect("the target");
+    let unknown = TextureId::for_test(9_999);
+    for texture in [unknown, target] {
+      let index = build.instances.len() as u32;
+      build.instances.push(build.instances[0]);
+      build.needs.push(TexNeed::Sprite(texture));
+      build.sprites.push(SpriteFix {
+        index,
+        texture,
+        filter: Filter::Default,
+      });
+    }
+    let before: Vec<SpriteInstance> = build
+      .instances
+      .iter()
+      .map(|instance| bytemuck::cast(instance.data))
+      .collect();
+    let list = DrawList::default();
+    let resident = build.sprite_textures().to_vec();
+    assert_eq!(resident, [texture; 2]);
+    writes
+      .sprites
+      .prepare_textures(&writes.device, &writes.queue, &list, &resident);
+    build.fix_sprites(&writes.sprites, Presentation::default());
+
+    // The swatch's placed as the batch places them, with their samplers
+    let (slot, size) = writes.sprites.slot(texture).expect("resident");
+    let clip = ClipRect::of(None, env().space.image);
+    for (index, nearest) in [(0, true), (1, false)] {
+      let placed = place_in_slot(&before[index], &slot, size, false);
+      let expected = UiInstance::quad(UiKind::SPRITE, &placed, clip, nearest, 0);
+      assert_eq!(build.instances[index], expected, "sprite {index}");
+    }
+    // The one without a slot dropped, the target's drawn linear
+    assert_eq!(build.instances.len(), 3);
+    assert_eq!(build.instances[2].kind(), UiKind::SPRITE_LINEAR);
+    assert_eq!(
+      build.needs,
+      [
+        TexNeed::Sprite(texture),
+        TexNeed::Sprite(texture),
+        TexNeed::Sprite(target)
+      ]
+    );
+    assert!(build.sprites.is_empty(), "each fixed once");
+  }
+
+  #[test]
+  fn sprite_textures_are_made_resident_in_the_order_recorded() {
+    let Some(mut writes) = Writes::new() else {
+      return;
+    };
+    let [a, b] = ["a", "b"]
+      .map(|name| SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), name));
+    let on_layer = |handle: &SpriteHandle, x: f32, layer: u8| match sprite(
+      handle,
+      Rect::new(x, 10.0, 16.0, 12.0),
+      Filter::Default,
+      None,
+    ) {
+      UiCommand::Sprite {
+        sprite,
+        rect,
+        uv,
+        tint,
+        filter,
+        clip,
+        ..
+      } => UiCommand::Sprite {
+        sprite,
+        rect,
+        uv,
+        tint,
+        filter,
+        clip,
+        layer,
+      },
+      other => other,
+    };
+    // Recorded a (above), then b: painted b, then a; a culled one (off the
+    // image) is still made resident
+    let commands = commands_of([
+      on_layer(&a, 10.0, 1),
+      on_layer(&b, 40.0, 0),
+      on_layer(&a, 900.0, 0),
+    ]);
+    let build = built(&mut writes, &commands, env(), None);
+    let (a, b) = (writes.sprites.texture_of(&a), writes.sprites.texture_of(&b));
+    assert_eq!(build.needs, [TexNeed::Sprite(b), TexNeed::Sprite(a)]);
+    assert_eq!(build.sprite_textures(), [a, b, a]);
   }
 
   /// Built-in fonts: texts as glyphs

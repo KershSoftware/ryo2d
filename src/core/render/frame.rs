@@ -3,6 +3,7 @@
 use super::DrawList;
 use super::batch::Batch2D;
 use super::look::Look;
+use super::ui_renderer::UiFrame;
 use crate::core::ecs::Entity;
 use crate::core::graphics::{
   Camera2d, CameraClear, CameraTarget, CameraView, RenderLayers, RenderTarget, RenderTargets,
@@ -40,7 +41,8 @@ pub struct FrameInfo {
   /// Display-stage effects are active
   pub effects: bool,
   /// The `ui` pass draws the UI this frame (false when nothing was
-  /// recorded, or when the UI image was kept from an earlier frame)
+  /// recorded or none of it draws, or when the UI image was kept from an
+  /// earlier frame)
   pub ui: bool,
   /// A scene transition's fade overlay is visible
   pub transition: bool,
@@ -87,9 +89,12 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) effects: &'a EffectsManager,
   /// The frame's look (the tonemap pass reads it)
   pub(crate) look: &'a Look,
-  /// The UI camera, when the frame's UI recorded anything (the batch laid
-  /// out its draws; no camera pass runs for it)
+  /// The UI camera, when the frame's UI recorded anything and the batch
+  /// laid out its draws (no camera pass runs for it)
   pub(crate) ui_camera: Option<&'a CameraDraw>,
+  /// The UI renderer's frame, when it built a UI that draws anything (then
+  /// the batch laid out no UI)
+  pub(crate) ui_frame: Option<UiFrame<'a>>,
   /// The UI image's size in pixels
   pub(crate) ui_size: (u32, u32),
   /// The UI image already holds this frame's UI (it was kept): the `ui`

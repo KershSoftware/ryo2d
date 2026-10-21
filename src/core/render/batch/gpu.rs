@@ -107,28 +107,13 @@ impl Batch2D {
   ) -> Self {
     let camera_layout = pipelines::camera_layout(device);
     let texture_layout = pipelines::texture_layout(device);
-    // Centred on the origin; the instance transform places and sizes it
-    #[rustfmt::skip]
-    let corners: [f32; 24] = [
-      -0.5, -0.5, 0.0, 0.0,
-       0.5, -0.5, 1.0, 0.0,
-      -0.5,  0.5, 0.0, 1.0,
-       0.5, -0.5, 1.0, 0.0,
-       0.5,  0.5, 1.0, 1.0,
-      -0.5,  0.5, 0.0, 1.0,
-    ];
-    let quad = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: Some("Batch Quad"),
-      contents: bytemuck::cast_slice(&corners),
-      usage: wgpu::BufferUsages::VERTEX,
-    });
     Self {
       format,
       presentation,
       pipelines: Pipelines::new(device, &camera_layout, &texture_layout),
       camera_layout,
       camera_groups: HashMap::new(),
-      quad,
+      quad: unit_quad(device, "Batch Quad"),
       instances: instance_buffer(device, FIRST_CAPACITY),
       capacity: FIRST_CAPACITY,
       placed: Vec::new(),
@@ -155,14 +140,12 @@ impl Batch2D {
   }
 
   /// The layout cameras' uniforms are bound with (group 0)
-  #[cfg_attr(not(test), allow(dead_code))] // wired in Task 4
   pub(crate) fn camera_layout(&self) -> &wgpu::BindGroupLayout {
     &self.camera_layout
   }
 
   /// `camera`'s uniform bind group, once [`sync_cameras`](Self::sync_cameras)
   /// made it
-  #[cfg_attr(not(test), allow(dead_code))] // wired in Task 4
   pub(crate) fn camera_group(&self, camera: Entity) -> Option<&wgpu::BindGroup> {
     self.camera_groups.get(&camera)
   }
@@ -197,12 +180,13 @@ impl Batch2D {
 
   /// Lay out the sorted `list` for each of `cameras` and upload it once.
   ///
-  /// Makes the list's textures resident; then, per camera, remaps the
-  /// sprites it sees into their atlas slots in draw order, in a range of
-  /// the instance buffer of its own, and merges consecutive drawables with
-  /// equal draw states into draws (trails and lines by their index ranges).
-  /// Call once per frame, after [`sync_cameras`](Self::sync_cameras) and
-  /// after the frame's triangles are built.
+  /// Makes the list's textures resident, and `extra_textures` (the UI
+  /// renderer's sprites) with them; then, per camera, remaps the sprites it
+  /// sees into their atlas slots in draw order, in a range of the instance
+  /// buffer of its own, and merges consecutive drawables with equal draw
+  /// states into draws (trails and lines by their index ranges). Call once
+  /// per frame, after [`sync_cameras`](Self::sync_cameras) and after the
+  /// frame's triangles are built.
   pub(crate) fn prepare(
     &mut self,
     device: &wgpu::Device,
@@ -210,8 +194,9 @@ impl Batch2D {
     list: &DrawList,
     cameras: &[CameraDraw],
     textures: &mut SpriteGpuRenderer,
+    extra_textures: &[TextureId],
   ) {
-    textures.prepare_textures(device, queue, list);
+    textures.prepare_textures(device, queue, list, extra_textures);
     let textures: &SpriteGpuRenderer = textures;
     self.pipelines.settle();
     // Shaders the sprite renderer forgot take their pipelines with them
@@ -643,6 +628,27 @@ fn light_draw(step: LightStep, range: std::ops::Range<u32>) -> Draw {
     },
     range,
   }
+}
+
+/// The unit quad every quad instance is drawn from (laid out as
+/// [`QUAD_LAYOUT`](super::QUAD_LAYOUT)): two triangles, split along the
+/// diagonal from (0.5, -0.5) to (-0.5, 0.5), centred on the origin; the
+/// instance transform places and sizes it
+pub(crate) fn unit_quad(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
+  #[rustfmt::skip]
+  let corners: [f32; 24] = [
+    -0.5, -0.5, 0.0, 0.0,
+     0.5, -0.5, 1.0, 0.0,
+    -0.5,  0.5, 0.0, 1.0,
+     0.5, -0.5, 1.0, 0.0,
+     0.5,  0.5, 1.0, 1.0,
+    -0.5,  0.5, 0.0, 1.0,
+  ];
+  device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    label: Some(label),
+    contents: bytemuck::cast_slice(&corners),
+    usage: wgpu::BufferUsages::VERTEX,
+  })
 }
 
 fn instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {

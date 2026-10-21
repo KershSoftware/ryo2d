@@ -400,6 +400,13 @@ impl HeadlessEngine {
     self.engine.ui_render_stats()
   }
 
+  /// The draws the last frame's `ui` pass was given: none when the UI image
+  /// was kept or the UI drew nothing
+  #[doc(hidden)]
+  pub fn ui_draw_count(&self) -> u32 {
+    self.engine.ui_draw_count()
+  }
+
   /// The engine's debug switches, for a test to turn an overlay on
   #[cfg(test)]
   pub(crate) fn debug_config_mut(&mut self) -> &mut crate::core::config::DebugConfig {

@@ -771,7 +771,7 @@ fn a_glyph_too_big_for_a_page_is_rasterized_once() {
   let list = crate::core::render::DrawList::default();
   for _ in 0..2 {
     assert!(sprites.glyph(&device, &queue, key, wide).is_none());
-    sprites.prepare_textures(&device, &queue, &list);
+    sprites.prepare_textures(&device, &queue, &list, &[]);
   }
   assert_eq!(rasterized.get(), 1, "refused once, then remembered");
 }
@@ -888,7 +888,7 @@ fn ui_pixel(
   uniforms.sync(device, queue, &[(entity, globals)]);
   batch.sync_cameras(device, &uniforms);
   let mut sprites = SpriteGpuRenderer::new(device, queue);
-  batch.prepare(device, queue, &list, &cameras, &mut sprites);
+  batch.prepare(device, queue, &list, &cameras, &mut sprites, &[]);
 
   let texture = device.create_texture(&wgpu::TextureDescriptor {
     label: Some("UI Readback Target"),

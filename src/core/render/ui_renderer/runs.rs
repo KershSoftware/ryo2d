@@ -45,7 +45,9 @@ pub(crate) struct Run {
 }
 
 /// Split instances into runs: a run ends when an instance needs a texture in a
-/// slot that already holds another one (slots it leaves alone carry over)
+/// slot that already holds another one. The next run starts with only that
+/// texture; its other slots fill as later instances need them (carrying the
+/// last run's textures over could only make more breaks).
 pub(crate) fn plan_runs(
   needs: &[TexNeed],
   slot_of: impl Fn(TexNeed) -> Option<(Slot, TexKey)>,
@@ -65,6 +67,7 @@ pub(crate) fn plan_runs(
           textures,
         });
         start = index;
+        textures = [None; 4];
         textures[slot.index()] = Some(key);
       }
       Some(_) => {}

@@ -109,18 +109,20 @@ pub(crate) fn camera_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
   wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
 
+/// The unit quad ([`unit_quad`](super::unit_quad)), vertex buffer 0 of every
+/// quad pipeline (the batch's and the UI's)
+pub(crate) const QUAD_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+  array_stride: 16,
+  step_mode: wgpu::VertexStepMode::Vertex,
+  attributes: &QUAD_ATTRIBUTES,
+};
+
 /// A [`SpriteInstance`]: its transform rows, UV rect, tint, effect
 /// parameters and UV bounds.
 const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
   2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
   6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
 ];
-
-const QUAD_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
-  array_stride: 16,
-  step_mode: wgpu::VertexStepMode::Vertex,
-  attributes: &QUAD_ATTRIBUTES,
-};
 
 const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
   array_stride: std::mem::size_of::<SpriteInstance>() as u64,

@@ -19,6 +19,10 @@ const SPARE: usize = 64;
 /// What a text's glyphs were built from, besides the UI's environment: its
 /// layout (by address, held by the entry) and its placement.
 ///
+/// What a sink makes of a text's glyphs (which of them it culls included)
+/// depends only on the key and the environment, so a kept text is reused
+/// exactly as it would be built again.
+///
 /// Relies on `text_of` (render/ui.rs) keeping the placement's other fields
 /// (axes, pixel grid, blend, layers, draw kind, lit, camera, size steps, max
 /// glyph size) constant or derived from the layout and the `UiRenderEnv`: a

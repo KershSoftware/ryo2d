@@ -52,6 +52,7 @@ use crate::core::messages::{register_engine_messages, register_message};
 use crate::core::physics::sync::register_physics_systems;
 use crate::core::physics::{Physics, PhysicsConfig};
 use crate::core::render::batch::Batch2D;
+use crate::core::render::ui_renderer::UiRenderer;
 use crate::core::render::{
   DrawList, EntityDrawer, RenderPipeline, UiResolution, UiSpace, begin_debug_fixed_step,
   end_debug_fixed_step,
@@ -178,6 +179,9 @@ pub struct Engine {
   // GPU renderers the passes draw with (engine-owned, not resources)
   pub(crate) sprite_gpu: Option<SpriteGpuRenderer>,
   pub(crate) batch: Option<Batch2D>,
+  /// The UI's own renderer (beside the batch, which it shares the UI
+  /// camera's bind group with)
+  ui_renderer: Option<UiRenderer>,
   lighting: Option<LightingRenderer>,
   entity_drawer: EntityDrawer,
   // Text layout (synced with `Fonts`), the glyph rasterizer for that
@@ -216,6 +220,8 @@ pub struct Engine {
   ui_camera: Option<crate::core::render::CameraDraw>,
   /// UI render retention: what the UI image holds
   ui_retain: crate::core::render::ui_retain::UiRetain,
+  /// The draws the last frame's `ui` pass was given (0 when it did not run)
+  ui_draw_count: u32,
   batch_cameras: Vec<crate::core::render::CameraDraw>,
   /// Mouse buttons whose press the UI took: until released, their held
   /// state and release are the UI's too
@@ -622,6 +628,7 @@ impl Engine {
       schedules,
       sprite_gpu: None,
       batch: None,
+      ui_renderer: None,
       lighting: None,
       entity_drawer: EntityDrawer::default(),
       text: TextEngine::new(),
@@ -642,6 +649,7 @@ impl Engine {
       ui_space: initial_ui_space,
       ui_camera: None,
       ui_retain: Default::default(),
+      ui_draw_count: 0,
       batch_cameras: Vec::new(),
       ui_mouse_capture: Vec::new(),
       ui_binding_capture: Vec::new(),
@@ -960,6 +968,12 @@ impl Engine {
     self.ui_retain.stats
   }
 
+  /// The draws the last frame's `ui` pass was given
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn ui_draw_count(&self) -> u32 {
+    self.ui_draw_count
+  }
+
   /// The debug switches, for a test to turn an overlay on
   #[cfg(all(test, not(target_arch = "wasm32")))]
   pub(crate) fn debug_config_mut(&mut self) -> &mut DebugConfig {
@@ -1017,14 +1031,15 @@ impl Engine {
 
   /// Finish GPU-dependent setup once a renderer exists (window or offscreen).
   ///
-  /// Creates the sprite and lighting renderers and the batch, inserts the `Gpu`
-  /// resource and the profiler, then enters the initial scene.
+  /// Creates the sprite, UI and lighting renderers and the batch, inserts the
+  /// `Gpu` resource and the profiler, then enters the initial scene.
   pub(crate) fn init_gpu(&mut self, renderer: WgpuRenderer, scale_factor: f64) {
     let format = renderer.game_texture_format();
     // Sprites sample as their filter says, by default nearest for pixel art
     // and smooth at the window's resolution (the batch resolves it)
     let sprite_gpu = SpriteGpuRenderer::new(renderer.device(), renderer.queue());
     let batch = Batch2D::new(renderer.device(), format, self.config.presentation);
+    let ui_renderer = UiRenderer::new(renderer.device(), batch.camera_layout());
     // Each camera is lit in light targets of its own size
     let lighting = LightingRenderer::new(renderer.device(), format);
     let mapping = renderer.mapping();
@@ -1043,6 +1058,7 @@ impl Engine {
     self.renderer = Some(renderer);
     self.sprite_gpu = Some(sprite_gpu);
     self.batch = Some(batch);
+    self.ui_renderer = Some(ui_renderer);
     self.lighting = Some(lighting);
     self.last_window_size = mapping.physical_size();
     self.apply_mapping(mapping);
@@ -1265,6 +1281,14 @@ impl EngineBuilder {
   /// retention out when chasing a rendering bug.
   pub fn ui_retain(mut self, on: bool) -> Self {
     self.config.debug.ui_retain = on;
+    self
+  }
+
+  /// Draw the UI through the dedicated UI renderer instead of the world's
+  /// batch (temporary, for comparing the two)
+  #[doc(hidden)]
+  pub fn ui_dedicated(mut self, on: bool) -> Self {
+    self.config.debug.ui_dedicated = on;
     self
   }
 

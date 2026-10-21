@@ -1,11 +1,10 @@
 //! The UI on the GPU: its one pipeline, the texture bind groups it draws
 //! with (cached by the textures they hold) and its instance buffer
 
-use wgpu::util::DeviceExt;
-
 use super::instance::UiInstance;
 use crate::core::hash::FastMap;
 use crate::core::render::UI_FORMAT;
+use crate::core::render::batch::{QUAD_LAYOUT, unit_quad};
 
 /// A bind group unused for this many frames is dropped, so the textures it
 /// holds are released
@@ -14,22 +13,12 @@ pub(crate) const KEEP_FRAMES: u64 = 8;
 /// Instances the buffer holds at first; it doubles when a frame needs more
 const FIRST_CAPACITY: usize = 1024;
 
-/// The unit quad's corners: position, then UV (as the batch's)
-const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-  wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
-
 /// A [`UiInstance`]: its eight lanes, then its clip, kind and flags
 const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
   2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
   6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
   10 => Uint32x4,
 ];
-
-const QUAD_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
-  array_stride: 16,
-  step_mode: wgpu::VertexStepMode::Vertex,
-  attributes: &QUAD_ATTRIBUTES,
-};
 
 const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
   array_stride: std::mem::size_of::<UiInstance>() as u64,
@@ -139,21 +128,8 @@ impl UiGpu {
       multiview_mask: None,
       cache: None,
     });
-    // Centred on the origin; the instance transform places and sizes it
-    #[rustfmt::skip]
-    let corners: [f32; 24] = [
-      -0.5, -0.5, 0.0, 0.0,
-       0.5, -0.5, 1.0, 0.0,
-      -0.5,  0.5, 0.0, 1.0,
-       0.5, -0.5, 1.0, 0.0,
-       0.5,  0.5, 1.0, 1.0,
-      -0.5,  0.5, 0.0, 1.0,
-    ];
-    let quad = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: Some("UI Quad"),
-      contents: bytemuck::cast_slice(&corners),
-      usage: wgpu::BufferUsages::VERTEX,
-    });
+    // The batch's quad, split along the same diagonal: the same pixels
+    let quad = unit_quad(device, "UI Quad");
     let placeholder = device.create_texture(&wgpu::TextureDescriptor {
       label: Some("UI Placeholder Texture"),
       size: wgpu::Extent3d {

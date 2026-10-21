@@ -753,13 +753,13 @@ impl WgpuRenderer {
       lighting: scene.lighting.is_some(),
       hdr_effects: scene.effects.has_active_effects_in(EffectStage::Hdr),
       effects: scene.effects.has_active_effects_in(EffectStage::Display),
-      ui: scene.ui_camera.is_some(),
+      ui: scene.ui_camera.is_some() || scene.ui_frame.is_some(),
       transition: scene.overlay.1 > TRANSITION_VISIBLE,
       capture: capture_path.is_some() || self.keep_scene,
     };
-    // The UI image matches what the UI camera drew for (a renderer resized
-    // on its own keeps its old UI image until the engine's next mapping)
-    if scene.ui_camera.is_some() && self.compositor.ui_size() != scene.ui_size {
+    // The UI image matches what the UI was drawn for (a renderer resized on
+    // its own keeps its old UI image until the engine's next mapping)
+    if frame.ui && self.compositor.ui_size() != scene.ui_size {
       let (width, height) = scene.ui_size;
       self.compositor.resize_ui(&self.device, width, height);
     }
@@ -844,6 +844,7 @@ impl WgpuRenderer {
       effects: &effects,
       look: &look,
       ui_camera: None,
+      ui_frame: None,
       ui_size: self.compositor.ui_size(),
       ui_kept: false,
       cameras: &[],

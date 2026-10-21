@@ -7,8 +7,10 @@ use glam::Vec2;
 
 use super::instance::{ClipRect, UiInstance, UiKind};
 use super::runs::TexNeed;
-use crate::core::graphics::{CameraView, GlyphPage, SpriteInstance, TextureId};
-use crate::core::render::batch::{Filter, PolyPoint, Sampling, Triangles, push_polyline};
+use crate::core::graphics::{
+  CameraView, GlyphPage, Presentation, SpriteGpuRenderer, SpriteInstance, TextureId, place_in_slot,
+};
+use crate::core::render::batch::{Filter, PageKind, PolyPoint, Sampling, Triangles, push_polyline};
 use crate::core::render::text::{TextPlacement, TextSources, TextTargets};
 use crate::core::render::ui::{
   line_of, rect_instance, scissor_of, sprite_instance, text_of, ui_view, ui_z,
@@ -29,14 +31,21 @@ pub(crate) struct SpriteFix {
   pub(crate) filter: Filter,
 }
 
-/// The frame's UI instances in painter's order, what each samples, and the
-/// sprites among them; reused from frame to frame
+/// The frame's UI instances in painter's order, what each samples, the
+/// sprites among them and the sprite textures to make resident; reused from
+/// frame to frame
 #[derive(Default)]
 pub(crate) struct UiBuild {
   pub(crate) instances: Vec<UiInstance>,
   /// What each instance samples, one per instance
   pub(crate) needs: Vec<TexNeed>,
   pub(crate) sprites: Vec<SpriteFix>,
+  /// Every sprite texture the commands drew or would have drawn but for
+  /// culling, with the place of its command in the frame's: the old path
+  /// made exactly these resident, in the order recorded
+  resident: Vec<(u32, TextureId)>,
+  /// `resident`'s textures, in the order recorded
+  textures: Vec<TextureId>,
   /// The commands' painter's order, when they arrive out of it
   order: Vec<u32>,
   /// A line's points and triangles
@@ -50,11 +59,51 @@ impl UiBuild {
     self.instances.clear();
     self.needs.clear();
     self.sprites.clear();
+    self.resident.clear();
+    self.textures.clear();
+  }
+
+  /// The sprite textures to make resident before the sprites are fixed:
+  /// every one the commands asked for, culled or not, in the order recorded
+  /// (so the atlas places them, and their uvs come out, as on the old path)
+  pub(crate) fn sprite_textures(&self) -> &[TextureId] {
+    &self.textures
   }
 
   fn push(&mut self, instance: UiInstance, need: TexNeed) {
     self.instances.push(instance);
     self.needs.push(need);
+  }
+
+  /// Fix the sprites' instances, their textures now resident: each one's uv
+  /// rect placed in its texture's slot and its uv bounds the slot's part
+  /// (`place_in_slot`, as the batch places sprites), its body its page's (a
+  /// render target's is linear), its sampler its filter's under
+  /// `presentation`. A sprite whose texture has no slot is dropped, as the
+  /// batch skips it.
+  pub(crate) fn fix_sprites(&mut self, textures: &SpriteGpuRenderer, presentation: Presentation) {
+    let mut gone = Vec::new();
+    for fix in self.sprites.drain(..) {
+      let Some(instance) = self.instances.get_mut(fix.index as usize) else {
+        continue;
+      };
+      let Some((slot, page_size)) = textures.slot(fix.texture) else {
+        gone.push(fix.index);
+        continue;
+      };
+      let sprite: SpriteInstance = bytemuck::cast(instance.data);
+      let placed = place_in_slot(&sprite, &slot, page_size, false);
+      let kind = match PageKind::of(Some(slot.page)) {
+        PageKind::Linear => UiKind::SPRITE_LINEAR,
+        PageKind::Srgb8 => UiKind::SPRITE,
+      };
+      let nearest = fix.filter.resolve(presentation) == Sampling::Nearest;
+      *instance = UiInstance::quad(kind, &placed, instance.clip(), nearest, 0);
+    }
+    if !gone.is_empty() {
+      drop_at(&mut self.instances, &gone);
+      drop_at(&mut self.needs, &gone);
+    }
   }
 
   /// A sprite quad, its uv and kind fixed once its texture is resident
@@ -167,31 +216,38 @@ pub(crate) fn build_ui(
     rising
   });
   if in_order {
-    for (order, command) in commands {
-      build_command(build, &frame, targets, texts, *order, command);
+    for (index, (order, command)) in (0..).zip(commands) {
+      build_command(build, &frame, targets, texts, (index, *order), command);
     }
-    return;
-  }
-  let mut painted = std::mem::take(&mut build.order);
-  painted.clear();
-  painted.extend(0..commands.len() as u32);
-  // Stable: commands equal in the order keep the order recorded
-  painted.sort_by_key(|&index| paint_key(&commands[index as usize]));
-  for &index in &painted {
-    if let Some((order, command)) = commands.get(index as usize) {
-      build_command(build, &frame, targets, texts, *order, command);
+  } else {
+    let mut painted = std::mem::take(&mut build.order);
+    painted.clear();
+    painted.extend(0..commands.len() as u32);
+    // Stable: commands equal in the order keep the order recorded
+    painted.sort_by_key(|&index| paint_key(&commands[index as usize]));
+    for &index in &painted {
+      if let Some((order, command)) = commands.get(index as usize) {
+        build_command(build, &frame, targets, texts, (index, *order), command);
+      }
     }
+    build.order = painted;
+    // Stable: a command's textures keep the order they were asked for in
+    build.resident.sort_by_key(|&(command, _)| command);
   }
-  build.order = painted;
+  let UiBuild {
+    resident, textures, ..
+  } = build;
+  textures.extend(resident.iter().map(|&(_, texture)| texture));
 }
 
-/// Build one command, at its place in the painter's order
+/// Build one command (the `index`-th of the frame's, recorded `order`-th),
+/// at its place in the painter's order
 fn build_command(
   build: &mut UiBuild,
   frame: &Frame<'_>,
   targets: &mut TextTargets<'_>,
   texts: &mut UiTextCache<UiInstance>,
-  order: u32,
+  (index, order): (u32, u32),
   command: &UiCommand,
 ) {
   let space = &frame.env.space;
@@ -230,8 +286,9 @@ fn build_command(
       let Some(instance) = sprite_instance(*rect, *uv, *tint) else {
         return;
       };
-      // Asked for before culling, as the old path does
+      // Asked for and made resident culled or not, as the old path does
       let texture = targets.sprites.texture_of(sprite);
+      build.resident.push((index, texture));
       let (min, max) = reach(&instance);
       if frame.seen.sees(min, max, clip) {
         build.push_sprite(&instance, texture, *filter, clip);
@@ -250,6 +307,7 @@ fn build_command(
         build,
         seen: &frame.seen,
         clip,
+        command: index,
         taken: 0,
       };
       texts.emit_into(sources, targets, &mut sink, layout, &place);
@@ -324,6 +382,8 @@ struct TextInstances<'b> {
   build: &'b mut UiBuild,
   seen: &'b Seen,
   clip: ClipRect,
+  /// The text command's place in the frame's
+  command: u32,
   /// The scratch list's items already taken
   taken: usize,
 }
@@ -349,9 +409,13 @@ impl TextSink<UiInstance> for TextInstances<'_> {
           }
         }
         DrawPayload::Sprite(index) => {
-          if let Some(sprite) = list.sprite(index)
-            && self.seen.sees(sprite.min, sprite.max, self.clip)
-          {
+          let Some(sprite) = list.sprite(index) else {
+            continue;
+          };
+          // Resident culled or not, as on the old path
+          let resident = (self.command, sprite.texture);
+          self.build.resident.push(resident);
+          if self.seen.sees(sprite.min, sprite.max, self.clip) {
             let clip = self.clip;
             self
               .build
@@ -393,8 +457,28 @@ fn glyph_instance(glyph: &DrawGlyph, clip: ClipRect) -> UiInstance {
   UiInstance::quad(kind, &glyph.instance, clip, nearest, glyph.page.index)
 }
 
+/// Remove the items at the places `gone` (ascending) from `items`
+fn drop_at<T>(items: &mut Vec<T>, gone: &[u32]) {
+  let mut next = gone.iter().copied().peekable();
+  let mut index = 0;
+  items.retain(|_| {
+    let keep = next.peek() != Some(&index);
+    if !keep {
+      next.next();
+    }
+    index += 1;
+    keep
+  });
+}
+
 /// The glyph page a glyph instance samples
 fn glyph_need(instance: &UiInstance) -> TexNeed {
+  // A text with a sprite (a bitmap font's cell) is never kept, and its
+  // icons are drawn anew: a kept text holds glyphs alone
+  debug_assert!(
+    !matches!(instance.kind(), UiKind::SPRITE | UiKind::SPRITE_LINEAR),
+    "a kept text holds no sprite"
+  );
   let format = match instance.kind() {
     UiKind::MASK => GlyphFormat::Mask,
     UiKind::COLOR => GlyphFormat::Color,

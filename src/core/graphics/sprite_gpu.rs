@@ -557,14 +557,16 @@ impl SpriteGpuRenderer {
     self.frame += 1;
   }
 
-  /// Make the textures of `list`'s sprites and textured trails resident for
-  /// this frame (the batch then looks up their [`slot`](Self::slot)s). Call
-  /// once per frame.
+  /// Make the textures of `list`'s sprites, then `extra` (the UI's sprites),
+  /// then those of `list`'s textured trails resident for this frame, in that
+  /// order (the order they are placed in the atlas); the batch and the UI
+  /// renderer then look up their [`slot`](Self::slot)s. Call once per frame.
   pub(crate) fn prepare_textures(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     list: &DrawList,
+    extra: &[TextureId],
   ) {
     let mut seen = std::mem::take(&mut self.resident_scratch);
     seen.clear();
@@ -573,6 +575,7 @@ impl SpriteGpuRenderer {
     let textures = (0..list.sprite_count())
       .filter_map(|i| list.sprite(i))
       .map(|sprite| sprite.texture)
+      .chain(extra.iter().copied())
       .chain(list.triangle_textures())
       .filter(|&texture| {
         let repeat = previous == Some(texture);
@@ -624,7 +627,6 @@ impl SpriteGpuRenderer {
 
   /// The texture behind `key`: a glyph page, or an atlas, standalone or
   /// render-target page (`None`: no such page)
-  #[cfg_attr(not(test), allow(dead_code))] // wired in Task 4
   pub(crate) fn page_texture(&self, key: TexKey) -> Option<&wgpu::Texture> {
     self.atlas.texture(match key {
       TexKey::Glyph(page) => SlotPage::Glyph(page),
@@ -633,7 +635,6 @@ impl SpriteGpuRenderer {
   }
 
   /// The linear and nearest samplers the pages' bind groups use
-  #[cfg_attr(not(test), allow(dead_code))] // wired in Task 4
   pub(crate) fn samplers(&self) -> (&wgpu::Sampler, &wgpu::Sampler) {
     self.atlas.samplers()
   }
@@ -1298,14 +1299,14 @@ mod tests {
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
     let a = solid("a");
     let list = world_list(&mut renderer, &[(&a, 0)]);
-    renderer.prepare_textures(&device, &queue, &list);
+    renderer.prepare_textures(&device, &queue, &list, &[]);
     assert!(renderer.lookup_sprite(&a).is_some());
     // As if the atlas had evicted it
     renderer.atlas.clear();
     assert!(renderer.lookup_sprite(&a).is_none());
 
     let list = world_list(&mut renderer, &[(&a, 0)]);
-    renderer.prepare_textures(&device, &queue, &list);
+    renderer.prepare_textures(&device, &queue, &list, &[]);
     assert!(renderer.lookup_sprite(&a).is_some());
   }
 
@@ -1329,12 +1330,12 @@ mod tests {
     let drawn = solid("drawn");
     let gone_sprite = solid("gone-sprite");
     let list = world_list(&mut renderer, &[(&gone_sprite, 0)]);
-    renderer.prepare_textures(&device, &queue, &list);
+    renderer.prepare_textures(&device, &queue, &list, &[]);
     for _ in 0..=TEXTURE_TTL {
       // The engine uploads what it draws each frame (a no-op once cached)
       renderer.upload_texture(&device, &queue, "uploaded", 2, 2, &[255; 16]);
       let list = world_list(&mut renderer, &[(&drawn, 0)]);
-      renderer.prepare_textures(&device, &queue, &list);
+      renderer.prepare_textures(&device, &queue, &list, &[]);
     }
     assert!(renderer.named_texture("gone").is_none());
     assert!(renderer.lookup("gone").is_none(), "its atlas rect is freed");
