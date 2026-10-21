@@ -1,5 +1,6 @@
 //! Every page of the ui demo with UI render retention on and off: two
-//! engines driven by the same input must draw the same pixels every frame
+//! engines driven by the same input must draw the same pixels every frame,
+//! and the UI renderer draws each page in one or two draws
 
 use demo_kit::prelude::*;
 use ryo2d::testing::PixelPair;
@@ -10,10 +11,14 @@ const PAGES: usize = 17;
 /// The Clipping & Modals page, whose Enter opens a modal
 const CLIPPING: usize = 6;
 
+/// Most UI draws a page may make in a frame: the UI renderer draws once per
+/// texture run, and every page's text sits on one glyph page
+const MAX_DRAWS: u32 = 2;
+
 /// Open page `page`, leave it still, move the focus, point at and scroll
 /// over its widgets, press one and, on the modal page, close the modal; the frames compared, kept and
-/// the texts reused
-fn run(page: usize) -> Option<(usize, usize, usize)> {
+/// the texts reused, and the most UI draws a frame made
+fn run(page: usize) -> Option<(usize, usize, usize, u32)> {
   let mut pair = PixelPair::new(|| ui_demo::demo().start_page(page).engine_builder())?;
   let what = |step: &str| format!("page {page}, {step}");
   pair.frames(20, &what("opening"));
@@ -60,17 +65,28 @@ fn run(page: usize) -> Option<(usize, usize, usize)> {
   } else {
     pair.frames(10, &what("settling"));
   }
-  Some((pair.compared(), pair.kept(), pair.reused()))
+  Some((
+    pair.compared(),
+    pair.kept(),
+    pair.reused(),
+    pair.most_draws(),
+  ))
 }
 
 #[test]
 fn every_page_looks_the_same_retained() {
   let (mut compared, mut kept, mut reused) = (0, 0, 0);
   for page in 0..PAGES {
-    let Some((c, k, r)) = run(page) else {
+    let Some((c, k, r, draws)) = run(page) else {
       return;
     };
-    eprintln!("page {page}: {c} frames compared, {k} kept, {r} texts reused");
+    eprintln!(
+      "page {page}: {c} frames compared, {k} kept, {r} texts reused, at most {draws} UI draws"
+    );
+    assert!(
+      (1..=MAX_DRAWS).contains(&draws),
+      "page {page}: {draws} UI draws"
+    );
     (compared, kept, reused) = (compared + c, kept + k, reused + r);
   }
   assert!(compared > 0);

@@ -1,5 +1,6 @@
 //! Breakout's menus and HUD with UI render retention on and off: two engines
-//! driven by the same input must draw the same pixels every frame
+//! driven by the same input must draw the same pixels every frame, and the
+//! UI renderer draws them in one or two draws
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -28,6 +29,10 @@ fn game_folder() {
   });
 }
 
+/// Most UI draws a frame may make: the UI renderer draws once per texture
+/// run, and the game's text sits on one glyph page
+const MAX_DRAWS: u32 = 2;
+
 fn pair<S: Scene + 'static>(start: fn() -> S) -> Option<PixelPair> {
   game_folder();
   PixelPair::new(move || {
@@ -50,12 +55,15 @@ fn the_main_menu_looks_the_same_retained() {
   }
   pair.frames(30, "the menu still");
   eprintln!(
-    "menu: {} compared, {} kept, {} reused",
+    "menu: {} compared, {} kept, {} reused, at most {} UI draws",
     pair.compared(),
     pair.kept(),
-    pair.reused()
+    pair.reused(),
+    pair.most_draws()
   );
   assert!(pair.kept() > 0);
+  let draws = pair.most_draws();
+  assert!((1..=MAX_DRAWS).contains(&draws), "{draws} UI draws");
 }
 
 #[test]
@@ -80,11 +88,14 @@ fn the_pause_menu_and_the_hud_look_the_same_retained() {
   pair.each(|engine| engine.tap_key(KeyCode::Escape));
   pair.frames(30, "playing again");
   eprintln!(
-    "play: {} compared, {} kept, {} reused",
+    "play: {} compared, {} kept, {} reused, at most {} UI draws",
     pair.compared(),
     pair.kept(),
-    pair.reused()
+    pair.reused(),
+    pair.most_draws()
   );
   assert!(pair.kept() > 0, "the paused menu kept the image");
   assert!(pair.reused() > 0, "the HUD reused its still texts");
+  let draws = pair.most_draws();
+  assert!((1..=MAX_DRAWS).contains(&draws), "{draws} UI draws");
 }

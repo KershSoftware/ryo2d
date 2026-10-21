@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use ryo2d::prelude::*;
 use ryo2d::testing::PixelPair;
 
+use crate::common::ui_scenes::{Culled, Toggle, lock};
+
 /// Ten panels with labels, and a frame counter when `counting`
 struct Hud {
   counting: bool,
@@ -41,12 +43,6 @@ fn hud(counting: bool) -> impl Fn() -> EngineBuilder {
       .resolution(320, 240)
       .start_scene(Hud { counting, frame: 0 })
   }
-}
-
-fn lock<T>(shared: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-  shared
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[test]
@@ -90,28 +86,6 @@ fn a_resize_redraws_the_ui() {
   assert!(pair.on.ui_render_stats().kept);
 }
 
-/// Commands that draw nothing: off the UI image, outside their clip, and
-/// under an empty clip
-struct Culled;
-
-impl Scene for Culled {
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    SceneAction::Continue
-  }
-
-  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    ui.draw_rect(Rect::new(-500.0, -500.0, 40.0, 20.0), Color::WHITE);
-    ui.draw_text("Far away", 900.0, 900.0, Color::WHITE);
-    ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
-    ui.draw_rect(Rect::new(100.0, 100.0, 40.0, 20.0), Color::WHITE);
-    ui.pop_clip();
-    ui.push_clip(Rect::new(10.0, 10.0, 0.0, 50.0));
-    ui.draw_text("Clipped away", 12.0, 12.0, Color::WHITE);
-    ui.pop_clip();
-    SceneAction::Continue
-  }
-}
-
 #[test]
 fn a_ui_drawing_nothing_keeps_its_image() {
   let make = || {
@@ -131,26 +105,6 @@ fn a_ui_drawing_nothing_keeps_its_image() {
     10,
     "every unchanged frame kept the image"
   );
-}
-
-/// A panel and a label while the shared flag is set, nothing otherwise
-struct Toggle(Arc<Mutex<bool>>);
-
-impl Scene for Toggle {
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    SceneAction::Continue
-  }
-
-  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    if *lock(&self.0) {
-      ui.draw_rect(
-        Rect::new(10.0, 10.0, 120.0, 40.0),
-        Color::new(40, 60, 90, 255),
-      );
-      ui.draw_text("Shown", 20.0, 20.0, Color::WHITE);
-    }
-    SceneAction::Continue
-  }
 }
 
 #[test]

@@ -16,6 +16,7 @@ pub struct PixelPair {
   compared: usize,
   kept: usize,
   reused: usize,
+  most_draws: u32,
 }
 
 impl PixelPair {
@@ -28,6 +29,7 @@ impl PixelPair {
       compared: 0,
       kept: 0,
       reused: 0,
+      most_draws: 0,
     })
   }
 
@@ -93,6 +95,7 @@ impl PixelPair {
       let on = self.on.ui_render_stats();
       self.kept += usize::from(on.kept);
       self.reused += on.texts_reused as usize;
+      self.most_draws = self.most_draws.max(self.on.ui_draw_count());
     }
   }
 
@@ -109,5 +112,11 @@ impl PixelPair {
   /// Texts the retaining engine reused, so far
   pub fn reused(&self) -> usize {
     self.reused
+  }
+
+  /// The most UI draws the retaining engine made in one frame, so far (a
+  /// kept frame makes none)
+  pub fn most_draws(&self) -> u32 {
+    self.most_draws
   }
 }

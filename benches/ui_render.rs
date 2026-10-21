@@ -1,9 +1,9 @@
 //! The UI's render-side cost with a GPU (`HeadlessEngine`, 1280x720): the
 //! 200-widget settings node screen unchanged, with a label changing every
 //! frame, and scrolling, with UI render retention on and off, and an empty
-//! frame. Before criterion runs, a guard checks 4g's targets on medians of
-//! the render step's CPU time (not the UI pass): it asserts the idle and
-//! retained-no-slower targets and reports the one-label target.
+//! frame. Before criterion runs, a guard asserts the UI's render targets on
+//! medians of the render step's CPU time (not the UI pass): idle (4g),
+//! retained no slower than not (4g) and one changing label (4h).
 
 use std::time::Duration;
 
@@ -74,11 +74,10 @@ fn median(engine: &mut HeadlessEngine) -> Duration {
   times[times.len() / 2]
 }
 
-/// 4g's targets on render-side work over an empty frame. Asserted: an idle
-/// settings screen adds under 5 µs, and a changing frame is no slower
-/// retained than not. Reported only: one changing label under 60 µs, which
-/// approach B alone cannot reach (the batch's prepare, upload and encode
-/// remain; approach C in docs/backlog/ui-retained-nodes.md)
+/// The UI's targets on render-side work over an empty frame: an idle
+/// settings screen adds under 5 µs (4g), a changing frame is no slower
+/// retained than not (4g), and one changing label adds under 40 µs (4h, the
+/// UI renderer)
 fn guard() {
   let (Some(mut empty), Some(mut idle), Some(mut idle_off), Some(mut label), Some(mut label_off)) = (
     engine(Empty, true),
@@ -104,15 +103,13 @@ fn guard() {
     idle < Duration::from_micros(5),
     "an idle UI costs {idle:?} to render"
   );
-  let verdict = if label < Duration::from_micros(60) {
-    "met".to_string()
-  } else {
-    "not met (the batch's prepare, upload and encode remain; approach C in docs/backlog/ui-retained-nodes.md)".to_string()
-  };
-  eprintln!("ui_render guard: one label {label:?} against the 4g target of 60 µs: {verdict}");
   assert!(
     label <= label_off,
     "retained {label:?}, not retained {label_off:?}"
+  );
+  assert!(
+    label < Duration::from_micros(40),
+    "one changing label costs {label:?} to render (4h target 40 µs)"
   );
 }
 

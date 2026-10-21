@@ -6,11 +6,7 @@ use std::sync::{Arc, Mutex};
 use ryo2d::prelude::*;
 use ryo2d::testing::{HeadlessEngine, StepOutcome};
 
-fn lock<T>(shared: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-  shared
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+use crate::common::ui_scenes::{Culled, Toggle, lock};
 
 /// Run one frame of `engine`
 fn frame(engine: &mut HeadlessEngine, what: &str) {
@@ -73,26 +69,6 @@ fn retention_off_draws_the_settings_screen_every_frame() {
   }
 }
 
-/// A panel and a label while the shared flag is set, nothing otherwise
-struct Toggle(Arc<Mutex<bool>>);
-
-impl Scene for Toggle {
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    SceneAction::Continue
-  }
-
-  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    if *lock(&self.0) {
-      ui.draw_rect(
-        Rect::new(10.0, 10.0, 120.0, 40.0),
-        Color::new(40, 60, 90, 255),
-      );
-      ui.draw_text("Shown", 20.0, 20.0, Color::WHITE);
-    }
-    SceneAction::Continue
-  }
-}
-
 #[test]
 fn an_empty_ui_draws_nothing_and_the_next_draws_in_full() {
   let shown = Arc::new(Mutex::new(false));
@@ -127,28 +103,6 @@ fn an_empty_ui_draws_nothing_and_the_next_draws_in_full() {
     for _ in 0..4 {
       frame(&mut engine, "shown");
     }
-  }
-}
-
-/// Commands that draw nothing: off the UI image, outside their clip, and
-/// under an empty clip
-struct Culled;
-
-impl Scene for Culled {
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    SceneAction::Continue
-  }
-
-  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    ui.draw_rect(Rect::new(-500.0, -500.0, 40.0, 20.0), Color::WHITE);
-    ui.draw_text("Far away", 900.0, 900.0, Color::WHITE);
-    ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
-    ui.draw_rect(Rect::new(100.0, 100.0, 40.0, 20.0), Color::WHITE);
-    ui.pop_clip();
-    ui.push_clip(Rect::new(10.0, 10.0, 0.0, 50.0));
-    ui.draw_text("Clipped away", 12.0, 12.0, Color::WHITE);
-    ui.pop_clip();
-    SceneAction::Continue
   }
 }
 

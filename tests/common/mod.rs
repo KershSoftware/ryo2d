@@ -4,3 +4,4 @@
 //! including headless GPU context for rendering tests.
 
 pub mod gpu;
+pub mod ui_scenes;
