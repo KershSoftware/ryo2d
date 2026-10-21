@@ -1020,3 +1020,29 @@ git add benches/ui_render.rs src/core/render/AGENTS.md .claude/skills/ryo-ui/SKI
 git commit -m "test: the UI render guard asserts the 4h target, and the 4h measurement" -m "- one changing label under 40 µs of render-side CPU
 - the render module notes, the ryo-ui skill and the spec describe the UI renderer"
 ```
+
+---
+
+### Task 9: An honest guard, and a settings screen that scrolls
+
+Added after Task 8 (owner decision, 2026-10-21): the guard's empty-frame baseline is GPU-paced when each engine runs alone, so it under-reads the UI's cost (one label read 0-26 µs; measured CPU-honestly, interleaved, it is 58-63 µs over an empty frame, pre-4h 106-107). The idle check is flaky for the same reason, and the "scrolling" bench never scrolls (the shared settings fixture's scroll area grows to fit its content).
+
+**Files:**
+- Modify: `benches/ui_render.rs`, `src/core/testing/fixtures.rs` (the settings tree's scroll area), any test or bench whose numbers or assertions move with the fixture, `docs/backlog/ui-retained-nodes.md` (the 4h section's numbers)
+
+- [ ] **Step 1: The guard measures CPU honestly.** Step the engines it compares in turn, frame by frame (round robin), so no engine is GPU-paced; take each engine's median render step (`HeadlessEngine::render_time`) over the same frames; compare each scene with the empty frame measured the same way. Print every median. Keep the targets but assert only what the honest numbers meet today (retained no slower than unretained; idle and one-label printed against 5 µs and 40 µs); Task 10 re-decides the assertions after its change.
+- [ ] **Step 2: Explain the idle numbers.** Interleaved, an idle (kept) settings frame costs 5-7.5 µs over an empty one against 3.8-5.6 µs before 4h. Profile the kept frame on both (the pre-4h base is commit d1016380) and find what the kept frame now does that it did not (or confirm noise); fix it if it is waste, with a test or a bench line.
+- [ ] **Step 3: A settings screen that scrolls.** Give the fixture's scroll area a bounded height (its content, 1,406 UI units, must overflow the 460-unit panel), so the wheel scrolls it; make `settings_scrolling` assert that its offset moves. Run every test and bench that uses `settings_tree()` (4f's cache benches and allocation ceiling, 4g's retention and render benches, the e2e oracles) and fix only what the fixture change legitimately moves (record each).
+- [ ] **Step 4: Record and commit.** Update the 4h numbers in `docs/backlog/ui-retained-nodes.md` with the honest method; run the gate; commit `test: the UI render guard measures CPU honestly, and the settings screen scrolls`.
+
+### Task 10: Upload only what changed
+
+Added after Task 8 (owner decision, 2026-10-21): the upload is the largest part of a changing frame (19.4 µs: 11.3 copying into a fresh staging buffer, 6.7 creating it).
+
+**Files:**
+- Modify: `src/core/render/ui_renderer/gpu.rs` (`UiGpu::upload`), its tests, `benches/ui_render.rs`, `docs/backlog/ui-retained-nodes.md`, `src/core/render/AGENTS.md` (the UI renderer section)
+
+- [ ] **Step 1: Write the failing tests.** A unit test of the range rule (pure: last frame's instances and this frame's give one range `first..end` — `first` the first differing instance, `end` the last differing one + 1 when the lengths are equal, the new length when they differ; empty when equal; the whole array after growth or a new buffer) and a GPU test that, after several frames with one label changing, the instance buffer's contents equal the frame's instances (read the buffer back).
+- [ ] **Step 2: Implement.** `UiGpu` keeps a copy of what the buffer holds; `upload` writes only the one range that differs (one `write_buffer`), the whole array when the buffer was recreated or grown, nothing when nothing differs. The compare is a slice compare from both ends.
+- [ ] **Step 3: Measure.** Run the honest guard (Task 9): one label against 40 µs, idle against 5 µs. Assert each target the measurement meets; for a target still missed, keep it printed, profile the frame, and report the numbers and the next costs (the text cache copies, the pass encode) for the owner.
+- [ ] **Step 4: Docs and commit.** The render module notes (the upload rule), the backlog's 4h numbers; run the gate; commit `feat: the UI uploads only the instances that changed`.
