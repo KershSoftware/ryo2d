@@ -2,7 +2,26 @@
 
 Small issues found while building each sub-project and left for later: deferred review findings, known limits and pre-existing bugs seen along the way. Each line names where it came from. Remove a line when it is fixed.
 
-Items from 4f and 4g were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+Items from 4f, 4g and 4h were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+
+## UI renderer (4h)
+
+- Analytic, derivative-free line anti-aliasing for UI and world lines (owner decision, 2026-10-20): its own small sub-project with a visual review; see `docs/backlog/ui-retained-nodes.md`. Until then UI line pixels on Apple GPUs differ from the pre-4h path only by the indexed-mesh `fwidth` (text demo page 5: 34 px at miter tips, at most 67/255).
+- A moved text whose x changes by a fraction of a pixel is rebuilt (exact; vertical and whole-pixel moves reuse the cache).
+- `GlyphSeed` is about 152 B and keeps a full `SpriteInstance` whose transform rows are always identity; a slimmer seed would cut the cache's memory.
+- `plan_runs` allocates a fresh `Vec<Run>` every drawn frame.
+- Out-of-order UI commands build glyphs in painter's order, not recorded order, so glyph atlas placement can differ from the pre-4h path (pixels unaffected except the known scaled-glyph limit above 512 px).
+- `TexKey` duplicates `SlotPage` and makes `graphics` import `render::ui_renderer` (`runs.rs`, `sprite_gpu.rs`).
+- `sprite.wgsl`'s "Sampling and colour space" header now covers only `texel_size`.
+- Game sprite shaders get `quad_corner` in their prelude (`include/quad.wgsl`), so a game shader function of that name clashes.
+- `SPRITE_LINEAR` (a render target shown as a UI sprite) is covered at GPU level only: no UI command can show a render target today.
+- The `ui_render` guard's 40 µs one-label assertion holds with about 6 µs of margin on a quiet machine; under load (another process holding a core) it can read 39-40 µs and fail.
+- Tests: the CPU-only build checks are GPU-gated, so they pass vacuously without a GPU (the crate's pattern); the 3,000-label growth test relies on validation rather than asserting growth; no GPU test passes a kept or all-culled frame between uploads (safe by reasoning); the building tests compare `build_ui` against the shared functions it calls (their value is the fixed clips, kinds, order, culling and texture needs); no "state happened" asserts in the e2e `scroll_clipping` (scrolled), `sprites_and_a_standalone_image` (standalone) and `resize_and_theme_change` (applied) tests; the line comparison's mask admits any in-panel pixel that differs from the background (bounded by the line slack); `INTERLEAVED_RUNS == 4` depends on Inter's "◯" metrics and the page sizes without asserting the page counts; the pixel-art UI test's line is whole-pixel and horizontal; `lines_at` (e2e) and `test_lines` (GPU tests) are near-duplicate scenes; wgpu has no public strong count, so the release test checks only the renderer's own references to the textures it dropped.
+
+## UI focus and debug overlay (4h hand-play)
+
+- On the ui demo's Clipping & Modals page, the arrow keys move the focus between the horizontal cards to a different card from run to run (Card 2 or Card 3, about half the runs each, at UI scale 1.25 and after resizes), so the strip scrolls differently; directional focus seems to break a tie in an unordered way (pre-existing).
+- The `debug:ui-rebuilds` overlay outlines a node list's pooled rows outside the list's clip, over the "Node list" heading and the legend on the Big list page (pre-existing).
 
 ## UI rendering (4g, UI render retention)
 
@@ -11,7 +30,6 @@ Items from 4f and 4g were copied from their execution records. Items from earlie
 - `UiRenderEnv.bitmaps` also keys the text cache, so a bitmap font sheet updated in place drops every cached text (one full rebuild per update; matters only for a sheet rewritten every frame).
 - `add_bitmap` fixes the column count from the sheet width at registration; a sheet updated in place at another width keeps stale columns (pre-existing; same with retention on and off).
 - Text drawn above its largest glyph image (world text above 256 px, UI text above 512 px) is scaled with linear filtering, so runs whose glyph atlases are packed differently can differ by one level at those glyphs' edges.
-- The one-label changing frame misses the 60 µs target (81-96 µs): the rest is the batch's prepare, upload and encode (approach C).
 - `UiRenderStats` is public without `#[doc(hidden)]` (as `UiCacheStats` from 4f).
 - `UiTextCache::end` allocates a temporary `Vec` on frames that drop entries.
 - Glyph atlas: `place()`'s post-eviction `allocate(..).unwrap_or(Placement::Full)` does not count `refused` (unreachable: a glyph smaller than a page fits a cleared page); evictions are counted outside the `if let` that clears the page.
