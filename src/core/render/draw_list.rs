@@ -256,11 +256,13 @@ impl DrawList {
   }
 
   /// How many glyphs the frame holds
+  #[cfg(test)]
   pub(crate) fn glyph_count(&self) -> usize {
     self.glyphs.len()
   }
 
   /// The glyphs pushed from the `start`-th on, in the order pushed
+  #[cfg(test)]
   pub(crate) fn glyphs_from(&self, start: usize) -> &[DrawGlyph] {
     self.glyphs.get(start..).unwrap_or(&[])
   }

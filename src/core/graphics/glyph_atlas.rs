@@ -198,6 +198,16 @@ impl GlyphShelves {
       self.refused += 1;
       return Placement::Full;
     };
+    self.clear_page(format, index);
+    self.evictions += 1;
+    self
+      .allocate(key, format, index, want, (w, h), frame)
+      .unwrap_or(Placement::Full)
+  }
+
+  /// Empty page `index` of `format`: its glyphs are forgotten and its
+  /// generation changes
+  fn clear_page(&mut self, format: GlyphFormat, index: usize) {
     if let Some(page) = self.pages.get_mut(&format).and_then(|p| p.get_mut(index)) {
       page.allocator.clear();
       for evicted in page.keys.drain() {
@@ -205,10 +215,6 @@ impl GlyphShelves {
       }
       page.generation = next_page_generation();
     }
-    self.evictions += 1;
-    self
-      .allocate(key, format, index, want, (w, h), frame)
-      .unwrap_or(Placement::Full)
   }
 
   /// The generation of page `index` of `format` (`None`: no such page)
@@ -316,6 +322,14 @@ impl GlyphAtlas {
     self
       .shelves
       .page_generation(page.format, usize::from(page.index))
+  }
+
+  /// Clear `page` as an eviction clears it
+  #[cfg(test)]
+  pub(crate) fn clear_page(&mut self, page: GlyphPage) {
+    self
+      .shelves
+      .clear_page(page.format, usize::from(page.index));
   }
 
   /// Keep `page` from eviction in `frame`

@@ -431,6 +431,12 @@ impl TextureAtlas {
     self.glyphs.page_generation(page)
   }
 
+  /// Clear the glyph page `page` as an eviction clears it
+  #[cfg(test)]
+  pub(crate) fn clear_glyph_page(&mut self, page: GlyphPage) {
+    self.glyphs.clear_page(page);
+  }
+
   /// Keep the glyph page `page` from eviction in `frame`
   pub(crate) fn pin_glyph_page(&mut self, page: GlyphPage, frame: u64) {
     self.glyphs.pin(page, frame);

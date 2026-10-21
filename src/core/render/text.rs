@@ -884,6 +884,11 @@ pub(crate) struct GlyphSeed {
 }
 
 impl GlyphSeed {
+  /// The glyph page its image is on
+  pub(crate) fn page(&self) -> GlyphPage {
+    self.page
+  }
+
   /// Whether its image is the one emitting its block at `place` would
   /// fetch: the pen's fraction there picks the same subpixel bin. Nothing
   /// else in the image's key follows from the origin.

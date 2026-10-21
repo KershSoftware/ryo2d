@@ -34,7 +34,10 @@ const SPARE: usize = 64;
 /// Relies on `text_of` (render/ui.rs) keeping the placement's other fields
 /// (axes, pixel grid, blend, layers, draw kind, lit, camera, size steps, max
 /// glyph size) constant or derived from the layout and the `UiRenderEnv`: a
-/// per-text value there must join the key.
+/// per-text value there must join the key. Its `z` and `time` are left out
+/// on purpose: the UI renderer orders by its own painter's order and never
+/// reads an item's z, and time only feeds effects, whose texts are never
+/// kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TextKey {
   layout: usize,
@@ -100,8 +103,8 @@ struct Built<G> {
   last: [u32; 2],
   glyphs: Vec<G>,
   seeds: Vec<GlyphSeed>,
-  /// Each glyph page the text's glyphs sample, with its generation when they
-  /// were built: they are good while every one is unchanged
+  /// Each glyph page the text's seeds' images are on, with its generation
+  /// when they were built: they are good while every one is unchanged
   pages: Vec<(GlyphPage, u64)>,
   /// The last frame it was drawn in
   used: u64,
@@ -213,7 +216,7 @@ impl<G: Clone> UiTextCache<G> {
     key: TextKey,
   ) {
     let from = sink.mark(targets);
-    let (glyphs, sprites) = (targets.list.glyph_count(), targets.list.sprite_count());
+    let sprites = targets.list.sprite_count();
     let refused = targets.sprites.glyphs_refused();
     let mut seeds = self.spare_seeds.pop().unwrap_or_default();
     seeds.clear();
@@ -226,34 +229,32 @@ impl<G: Clone> UiTextCache<G> {
       targets.sprites.glyphs_refused() == refused && targets.list.sprite_count() == sprites;
     if complete {
       let made = sink.captured(targets, from);
-      self.keep(key, layout, place.origin, targets, glyphs, made, seeds);
+      self.keep(key, layout, place.origin, targets, made, seeds);
     } else {
       self.spare_seeds.push(seeds);
     }
   }
 
   /// Keep `made` and `seeds` as `key`'s, laid at `origin`, its pages those
-  /// of the glyphs laid into the draw list from the `start`-th on (every
-  /// glyph built, also those a sink left out, so reusing the text pins what
-  /// building it did)
-  #[allow(clippy::too_many_arguments)]
+  /// of every glyph fetched (each seed's): also those a sink left out or
+  /// that landed nowhere where it was built, so reusing the text, here or
+  /// laid elsewhere, checks and pins every page it can draw from
   fn keep(
     &mut self,
     key: TextKey,
     layout: &Arc<TextLayout>,
     origin: Vec2,
     targets: &TextTargets<'_>,
-    start: usize,
     made: &[G],
     seeds: Vec<GlyphSeed>,
   ) {
     let mut pages: Vec<(GlyphPage, u64)> = Vec::new();
-    for glyph in targets.list.glyphs_from(start) {
-      if pages.iter().any(|&(page, _)| page == glyph.page) {
+    for page in seeds.iter().map(GlyphSeed::page) {
+      if pages.iter().any(|&(kept, _)| kept == page) {
         continue;
       }
-      match targets.sprites.glyph_page_generation(glyph.page) {
-        Some(generation) => pages.push((glyph.page, generation)),
+      match targets.sprites.glyph_page_generation(page) {
+        Some(generation) => pages.push((page, generation)),
         None => {
           self.spare_seeds.push(seeds);
           return;

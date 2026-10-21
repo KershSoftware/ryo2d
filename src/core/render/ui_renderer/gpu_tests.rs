@@ -1548,6 +1548,7 @@ mod building {
   #[cfg(feature = "default-fonts")]
   mod texts {
     use super::*;
+    use crate::core::graphics::GlyphPage;
     use crate::core::render::PixelRect;
     use crate::core::render::batch::Sampling;
     use crate::core::text::{
@@ -1844,8 +1845,10 @@ mod building {
               "{case}: the moved text is what a fresh build lays"
             );
             // A vertical move never changes a glyph's subpixel bin, nor does
-            // any move of an MSDF glyph (it has none)
-            if vertical || msdf {
+            // any move of an MSDF glyph (it has none); on scale 1's grid
+            // neither does this text's whole-pixel move along x, which
+            // `seeds_fit` checks
+            if vertical || msdf || px_scale == 1.0 {
               assert_eq!(builds[1].1, (0, 1), "{case}: reused");
             }
           }
@@ -1868,6 +1871,111 @@ mod building {
       let fresh = built(&mut writes, &frames[1], env(), Some(&sources));
       assert!(same_bits(&builds[1].0, &fresh));
       assert_eq!(builds[1].1, (1, 0), "built again");
+    }
+
+    /// `frames` built in turn through `texts`, retention on, at `env`,
+    /// with `between` run before each frame: each frame's build, and the
+    /// texts it built and reused
+    fn through(
+      writes: &mut Writes,
+      texts: &mut UiTextCache<UiInstance>,
+      frames: &[UiCommands],
+      sources: &TextSources<'_>,
+      env: UiRenderEnv,
+      mut between: impl FnMut(usize, &mut Writes),
+    ) -> Vec<(UiBuild, (u32, u32))> {
+      frames
+        .iter()
+        .enumerate()
+        .map(|(frame, commands)| {
+          between(frame, writes);
+          let mut build = UiBuild::default();
+          texts.begin(env, true);
+          build_ui(
+            &mut build,
+            commands,
+            &env,
+            Some(sources),
+            &mut writes.targets(),
+            0.0,
+            texts,
+          );
+          texts.end();
+          (build, (texts.built(), texts.reused()))
+        })
+        .collect()
+    }
+
+    #[test]
+    fn a_text_kept_where_it_drew_nothing_checks_its_pages_where_it_draws() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = WithFonts::new();
+      let layout = fonts.laid("Settings 42");
+      let sources = fonts.0.sources();
+      // Kept where no glyph lands (its centre not a number), then drawn
+      // where every glyph does; its glyph page cleared before the last frame
+      let nowhere = || commands_of([text(&layout, Vec2::new(12.0, f32::NAN), None)]);
+      let here = || commands_of([text(&layout, Vec2::new(12.0, 20.0), None)]);
+      let pages: Vec<GlyphPage> = built(&mut writes, &here(), env(), Some(&sources))
+        .needs
+        .iter()
+        .filter_map(|need| match need {
+          TexNeed::Glyph(page) => Some(*page),
+          _ => None,
+        })
+        .collect();
+      assert!(!pages.is_empty());
+      let frames = [nowhere(), here(), nowhere(), here()];
+      let mut texts = UiTextCache::<UiInstance>::default();
+      let clear = |frame: usize, writes: &mut Writes| {
+        if frame == 3 {
+          for &page in &pages {
+            writes.sprites.clear_glyph_page(page);
+          }
+        }
+      };
+      let builds = through(&mut writes, &mut texts, &frames, &sources, env(), clear);
+      assert!(builds[0].0.instances.is_empty(), "nothing lands");
+      assert_eq!(builds[1].1, (0, 1), "laid where it draws");
+      // The pages its glyphs were fetched from are checked, though none
+      // landed where it was built: cleared, the text is built again
+      assert_eq!(builds[3].1, (1, 0), "built again on a cleared page");
+      let fresh = built(&mut writes, &here(), env(), Some(&sources));
+      assert!(same_bits(&builds[1].0, &fresh));
+      assert!(same_bits(&builds[3].0, &fresh));
+    }
+
+    #[test]
+    fn a_text_stopped_at_a_new_place_is_kept_there() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = WithFonts::new();
+      let still = fonts.laid("Title");
+      let moving = fonts.laid("A label cut by its clip");
+      let sources = fonts.0.sources();
+      // At `b` the clip cuts the moving text, so what is kept there differs
+      // from what was kept where it was built
+      let clip = Some(Rect::new(0.0, 0.0, 120.0, 240.0));
+      let at = |x: f32| {
+        commands_of([
+          text(&still, Vec2::new(8.0, 4.0), None),
+          text(&moving, Vec2::new(x, 40.5), clip),
+        ])
+      };
+      // Built at a; laid at b; laid and kept there; copied; laid at a
+      let (a, b) = (10.0, 70.0);
+      let frames = [a, b, b, b, a].map(at);
+      let mut texts = UiTextCache::<UiInstance>::default();
+      let builds = through(&mut writes, &mut texts, &frames, &sources, env(), |_, _| {});
+      let counts: Vec<(u32, u32)> = builds.iter().map(|(_, counts)| *counts).collect();
+      assert_eq!(counts, [(2, 0), (0, 2), (0, 2), (0, 2), (0, 2)]);
+      for (frame, (build, _)) in builds.iter().enumerate() {
+        let fresh = built(&mut writes, &frames[frame], env(), Some(&sources));
+        assert!(same_bits(build, &fresh), "frame {frame}");
+      }
     }
 
     #[test]

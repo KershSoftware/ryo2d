@@ -615,6 +615,13 @@ impl SpriteGpuRenderer {
     self.atlas.pin_glyph_page(page, self.frame);
   }
 
+  /// Clear the glyph page `page` as an eviction clears it: its glyphs are
+  /// forgotten and its generation changes
+  #[cfg(test)]
+  pub(crate) fn clear_glyph_page(&mut self, page: GlyphPage) {
+    self.atlas.clear_glyph_page(page);
+  }
+
   /// Glyph pages cleared to make room so far
   pub(crate) fn glyph_evictions(&self) -> u64 {
     self.atlas.glyph_evictions()
