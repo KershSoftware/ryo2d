@@ -48,8 +48,8 @@ pub(crate) struct UiRenderer {
   scratch: DrawList,
   /// The frame's runs, each with its bind group
   runs: Vec<(Range<u32>, wgpu::BindGroup)>,
-  /// Frames whose UI built instances, which age the bind groups (a kept
-  /// frame, or one whose commands were all culled, ages none)
+  /// Frames whose UI was drawn (finished, even all of it culled), which age
+  /// the bind groups
   frame: u64,
 }
 
@@ -113,11 +113,26 @@ impl UiRenderer {
     (self.texts.built(), self.texts.reused())
   }
 
+  /// The frame keeps the UI image: only the bind groups it was drawn with
+  /// stay, so a texture the UI no longer shows is not held while it holds
+  /// still
+  pub(crate) fn image_kept(&mut self) {
+    self.gpu.keep_used_in(self.frame);
+  }
+
+  /// The frame's UI records nothing: every bind group goes, and with them
+  /// the textures they hold
+  pub(crate) fn release(&mut self) {
+    self.runs.clear();
+    self.gpu.drop_groups();
+  }
+
   /// Finish the last build, its sprite textures now resident: fix its
   /// sprites (dropping those whose texture has no slot), split it into runs
   /// and bind each run's textures, and upload what changed in one write.
   /// The frame draws through the UI camera's `camera` group; a build without
-  /// an instance (all of it culled) draws none.
+  /// an instance (all of it culled) draws none. Bind groups unused for
+  /// [`KEEP_FRAMES`](gpu::KEEP_FRAMES) finished frames are dropped.
   pub(crate) fn finish<'a>(
     &'a mut self,
     device: &wgpu::Device,
@@ -128,9 +143,9 @@ impl UiRenderer {
   ) -> UiFrame<'a> {
     self.runs.clear();
     self.build.fix_sprites(sprites, presentation);
+    self.frame += 1;
     if !self.build.instances.is_empty() {
       let runs = plan_runs(&self.build.needs, |need| slot_of(need, sprites));
-      self.frame += 1;
       for run in runs {
         let textures = run
           .textures
@@ -141,8 +156,8 @@ impl UiRenderer {
         self.runs.push((run.range, group.clone()));
       }
       self.gpu.upload(device, queue, &self.build.instances);
-      self.gpu.end_frame(self.frame);
     }
+    self.gpu.end_frame(self.frame);
     UiFrame {
       pipeline: self.gpu.pipeline(),
       quad: self.gpu.quad(),

@@ -393,6 +393,13 @@ impl Engine {
           real_time,
         );
       }
+      // Bind groups hold their textures alive: a kept UI image keeps only
+      // those it was drawn with, and a frame without UI none
+      if ui_kept {
+        ui_renderer.image_kept();
+      } else if self.ui_commands.is_empty() {
+        ui_renderer.release();
+      }
       let ui_pass = ui_built && !self.ui_commands.is_empty();
       let (texts_built, texts_reused) = if ui_built {
         ui_renderer.text_counts()

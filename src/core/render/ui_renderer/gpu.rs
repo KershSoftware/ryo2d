@@ -8,8 +8,9 @@ use crate::core::hash::FastMap;
 use crate::core::render::UI_FORMAT;
 use crate::core::render::batch::{QUAD_LAYOUT, unit_quad};
 
-/// A bind group unused for this many frames whose UI built instances is
-/// dropped, so the textures it holds are released
+/// A bind group unused for this many frames whose UI was drawn is dropped,
+/// so the textures it holds are released (a frame keeping the UI image keeps
+/// only the groups it was drawn with, and a frame without UI none)
 pub(crate) const KEEP_FRAMES: u64 = 8;
 
 /// Instances the buffer holds at first; it doubles when a frame needs more
@@ -228,6 +229,16 @@ impl UiGpu {
       .groups
       .groups
       .retain(|_, (_, used)| frame.saturating_sub(*used) < KEEP_FRAMES);
+  }
+
+  /// Keep only the bind groups used in `frame`
+  pub(crate) fn keep_used_in(&mut self, frame: u64) {
+    self.groups.groups.retain(|_, (_, used)| *used == frame);
+  }
+
+  /// Drop every bind group
+  pub(crate) fn drop_groups(&mut self) {
+    self.groups.groups.clear();
   }
 
   /// Upload the frame's `instances`: the one range that differs from what

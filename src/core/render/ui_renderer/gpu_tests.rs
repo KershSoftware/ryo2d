@@ -2162,3 +2162,157 @@ mod upload {
     assert!(partial >= 6, "{partial} frames wrote only what changed");
   }
 }
+
+/// The bind groups the renderer holds, and so the textures they hold alive,
+/// as the UI changes, holds still and goes away
+mod groups_held {
+  use super::super::*;
+  use super::gradient;
+  use crate::core::asset::SpriteHandle;
+  use crate::core::engine::EngineBuilder;
+  use crate::core::scene::{Scene, SceneAction, SceneContext};
+  use crate::core::testing::HeadlessEngine;
+  use crate::core::ui::immediate::UiContext;
+  use crate::core::ui::{Color, Rect};
+
+  /// What the UI draws in a frame
+  #[derive(Clone, Copy)]
+  enum Shows {
+    /// One of the images (each a standalone texture, being over 256 px)
+    Image(usize),
+    /// The image, and a rect over it
+    ImageAndRect(usize),
+    /// The image, outside the UI image: all of it culled
+    Outside(usize),
+  }
+
+  /// A UI drawing `shows` frame by frame, then nothing
+  struct Script {
+    images: [SpriteHandle; 2],
+    shows: Vec<Shows>,
+    frame: usize,
+  }
+
+  impl Scene for Script {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      let shows = self.shows.get(self.frame).copied();
+      self.frame += 1;
+      match shows {
+        Some(Shows::Image(image)) => ui.draw_sprite(&self.images[image], 0.0, 0.0),
+        Some(Shows::ImageAndRect(image)) => {
+          ui.draw_sprite(&self.images[image], 0.0, 0.0);
+          ui.draw_rect(Rect::new(8.0, 8.0, 40.0, 20.0), Color::WHITE);
+        }
+        Some(Shows::Outside(image)) => ui.draw_sprite(&self.images[image], 1000.0, 0.0),
+        None => {}
+      }
+      SceneAction::Continue
+    }
+  }
+
+  fn engine(shows: Vec<Shows>) -> Option<HeadlessEngine> {
+    crate::core::testing::shared_gpu().ok()?;
+    let scene = Script {
+      images: [gradient(300, 300), gradient(300, 280)],
+      shows,
+      frame: 0,
+    };
+    let builder = EngineBuilder::new().resolution(320, 240).start_scene(scene);
+    HeadlessEngine::new_or_skip(builder)
+  }
+
+  fn renderer(engine: &HeadlessEngine) -> &UiRenderer {
+    engine.ui_renderer().expect("a UI renderer")
+  }
+
+  #[test]
+  fn a_ui_that_records_nothing_holds_no_bind_group() {
+    let Some(mut engine) = engine(vec![Shows::Image(0), Shows::Image(0)]) else {
+      return;
+    };
+    engine.step().expect("a frame");
+    engine.step().expect("a frame");
+    assert!(
+      engine.ui_render_stats().kept,
+      "the second frame keeps the image"
+    );
+    assert_eq!(
+      renderer(&engine).gpu.cached_groups(),
+      1,
+      "the image's group"
+    );
+    // No UI from here on, as a scene without one after a title screen
+    for _ in 0..3 {
+      engine.step().expect("a frame");
+    }
+    let ui = renderer(&engine);
+    assert_eq!(
+      ui.gpu.cached_groups(),
+      0,
+      "no UI: no group holds the image's texture"
+    );
+    assert!(ui.runs.is_empty(), "nor does a run");
+  }
+
+  #[test]
+  fn a_kept_ui_holds_only_the_groups_its_image_was_drawn_with() {
+    let shows = vec![
+      Shows::Image(0),
+      Shows::Image(1),
+      Shows::Image(1),
+      Shows::ImageAndRect(1),
+    ];
+    let Some(mut engine) = engine(shows) else {
+      return;
+    };
+    engine.step().expect("a frame");
+    engine.step().expect("a frame");
+    let ui = renderer(&engine);
+    assert_eq!(
+      ui.gpu.cached_groups(),
+      2,
+      "the first image's group and the second's"
+    );
+    assert_eq!(ui.runs.len(), 1);
+    let drawn_with = ui.runs[0].1.clone();
+
+    engine.step().expect("a frame");
+    assert!(
+      engine.ui_render_stats().kept,
+      "the third frame keeps the image"
+    );
+    assert_eq!(
+      renderer(&engine).gpu.cached_groups(),
+      1,
+      "kept: only the group the image was drawn with"
+    );
+
+    // The UI changes again, and draws with the group it kept
+    engine.step().expect("a frame");
+    assert!(!engine.ui_render_stats().kept);
+    let ui = renderer(&engine);
+    assert_eq!(ui.runs.len(), 1);
+    assert!(ui.runs[0].1 == drawn_with, "the kept group, not a new one");
+    assert_eq!(ui.gpu.cached_groups(), 1);
+  }
+
+  #[test]
+  fn a_ui_kept_with_all_of_it_culled_holds_no_bind_group() {
+    let shows = vec![Shows::Image(0), Shows::Outside(0), Shows::Outside(0)];
+    let Some(mut engine) = engine(shows) else {
+      return;
+    };
+    engine.step().expect("a frame");
+    engine.step().expect("a frame");
+    assert!(renderer(&engine).build.instances.is_empty(), "all culled");
+    engine.step().expect("a frame");
+    assert!(engine.ui_render_stats().kept);
+    let ui = renderer(&engine);
+    assert_eq!(ui.gpu.cached_groups(), 0, "its image was drawn with none");
+    assert!(ui.runs.is_empty());
+  }
+}
