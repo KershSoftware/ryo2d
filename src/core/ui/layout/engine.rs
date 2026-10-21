@@ -192,7 +192,6 @@ impl LayoutEngine {
   }
 
   /// Whether a node with this id was laid out and is still kept
-  #[allow(dead_code)] // used by the fragment cache, which follows
   pub(crate) fn holds(&self, id: UiId) -> bool {
     self.entries.contains_key(&id)
   }
@@ -203,7 +202,6 @@ impl LayoutEngine {
   /// `root_rect` (relative to its subtree's root, as `layout` gives it). The
   /// rects accumulate as `layout`'s do; each `content` is its rect's size.
   /// False, with `out` cleared, if a node is not held.
-  #[allow(dead_code)] // used by the fragment cache, which follows
   pub(crate) fn placed_below(
     &self,
     root_rect: Rect,
@@ -243,6 +241,11 @@ impl LayoutEngine {
       });
     }
     true
+  }
+
+  /// What the last `layout` call gave: one result per node it was given
+  pub(crate) fn placed(&self) -> &[Placed] {
+    &self.buffers.placed
   }
 
   #[cfg(test)]

@@ -577,8 +577,10 @@ impl Engine {
     }
     // Trees whose UI file changed are brought in line before they are drawn
     crate::core::ui::nodes::reload_trees(&mut self.world, &mut self.ui_sources);
-    // The node trees replay their clean subtrees unless caching is off
+    // The node trees replay their clean subtrees unless caching is off, and
+    // copy those they kept unless fragments are off
     crate::core::ui::nodes::set_cache_enabled(&mut self.world, self.config.debug.ui_cache);
+    crate::core::ui::nodes::set_fragments_enabled(&mut self.world, self.config.debug.ui_fragments);
     let theme = self.refresh_ui_theme();
     let theme_generation = self.world.resource::<UiTheme>().generation();
     self.load_ui_sounds(&theme);

@@ -56,10 +56,13 @@ fn an_unchanged_cached_node_frame_allocates_no_more_than_an_uncached_one() {
   let stats = cached.ui_cache_stats();
   println!(
     "allocations in one unchanged frame: {on} cached, then {again}; {off} uncached \
-     ({} built, {} replayed)",
-    stats.built, stats.replayed
+     ({} built, {} replayed, {} fragments copied)",
+    stats.built, stats.replayed, stats.reused
   );
-  assert!(stats.replayed > 0, "the cached tree replays");
+  assert!(
+    stats.replayed + stats.reused > 0,
+    "the cached tree replays or copies its fragments"
+  );
   assert!(
     on <= off,
     "an unchanged cached frame made {on} allocations, an uncached one {off}"
@@ -70,6 +73,11 @@ fn an_unchanged_cached_node_frame_allocates_no_more_than_an_uncached_one() {
   assert!(
     on <= 30,
     "an unchanged cached frame made {on} allocations (at most 30)"
+  );
+  // Copying fragments allocates nothing: no more than before them (14)
+  assert!(
+    on <= 14,
+    "an unchanged cached frame made {on} allocations (at most 14)"
   );
   assert_eq!(
     on, again,

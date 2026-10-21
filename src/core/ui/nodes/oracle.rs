@@ -64,6 +64,9 @@ pub(super) enum Step {
   Do(fn(&mut UiHarness)),
   /// Turn caching on or off in the cached harness (the other stays off)
   Cache(bool),
+  /// Turn fragments on or off in the cached harness (the other has none:
+  /// its cache is off)
+  Fragments(bool),
 }
 
 pub(super) use Step::*;
@@ -241,6 +244,11 @@ fn apply(h: &mut UiHarness, cached: bool, step: &Step, ui: SceneUi<'_>, frame: u
         h.set_ui_cache(*on);
       }
     }
+    Fragments(on) => {
+      if cached {
+        h.set_ui_fragments(*on);
+      }
+    }
   }
   false
 }
@@ -268,6 +276,7 @@ fn name(step: &Step) -> String {
     At(node) => format!("At({node})"),
     Do(_) => "Do".into(),
     Cache(on) => format!("Cache({on})"),
+    Fragments(on) => format!("Fragments({on})"),
   }
 }
 

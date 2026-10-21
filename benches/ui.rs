@@ -177,10 +177,13 @@ fn settings_nodes_unchanged(c: &mut Criterion) {
   }
   assert!(harness.focused().is_some(), "the screen's scope took focus");
   let stats = harness.ui_cache_stats();
-  assert!(stats.replayed > 0, "the unchanged tree replays");
+  assert!(
+    stats.replayed + stats.reused > 0,
+    "the unchanged tree replays or copies its fragments"
+  );
   println!(
-    "settings nodes, unchanged: {} built, {} replayed",
-    stats.built, stats.replayed
+    "settings nodes, unchanged: {} built, {} replayed, {} fragments copied",
+    stats.built, stats.replayed, stats.reused
   );
   c.bench_function(
     "ui frame, the 200-widget settings screen as nodes, unchanged",
@@ -231,7 +234,10 @@ fn static_tree_frame(c: &mut Criterion) {
   }
   let stats = harness.ui_cache_stats();
   assert_eq!(stats.built, 0, "nothing in the static tree builds");
-  println!("static tree: {} replayed", stats.replayed);
+  println!(
+    "static tree: {} replayed, {} fragments copied",
+    stats.replayed, stats.reused
+  );
   c.bench_function("ui frame, a 2,000-node static tree", |b| {
     b.iter(|| harness.frame(|_| {}))
   });
@@ -275,7 +281,10 @@ fn embedded_frame(c: &mut Criterion) {
   }
   assert!(harness.focused().is_some(), "the panel's scope took focus");
   let stats = harness.ui_cache_stats();
-  assert!(stats.replayed > 0, "the embedded tree replays");
+  assert!(
+    stats.replayed + stats.reused > 0,
+    "the embedded tree replays or copies its fragments"
+  );
   c.bench_function("ui frame, an embedded node tree in closure UI", |b| {
     b.iter(|| harness.frame_with_world(|ui, world| mixed(ui, world, grid, &status)))
   });

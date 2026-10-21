@@ -1286,6 +1286,16 @@ impl EngineBuilder {
     self
   }
 
+  /// Whether UI node trees keep the layout and resolved output of unchanged
+  /// subtrees between frames, copying them instead of replaying them
+  /// (default true; only while `ui_cache` is on). Off, unchanged subtrees
+  /// are replayed and resolved every frame: the same output, slower. For
+  /// ruling fragments out when chasing a UI bug.
+  pub fn ui_fragments(mut self, on: bool) -> Self {
+    self.config.debug.ui_fragments = on;
+    self
+  }
+
   /// Whether the renderer keeps the UI image while the UI is unchanged and
   /// reuses the glyphs of unchanged texts (default true). Off, the whole UI
   /// is built and drawn every frame: the same pixels, slower. For ruling

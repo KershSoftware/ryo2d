@@ -1940,7 +1940,10 @@ mod tests {
     }
     h.frame(|_| ());
     let stats = h.ui_cache_stats();
-    assert!(stats.replayed > 0, "rows replay");
+    assert!(
+      stats.replayed + stats.reused > 0,
+      "rows replay, or are copied from their fragments"
+    );
     assert!(
       stats.rebuilt.contains(&list),
       "the List node itself always builds"

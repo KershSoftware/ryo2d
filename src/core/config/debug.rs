@@ -12,6 +12,7 @@
 //! | `show_origins` | Draw entity origin points (transform position) |
 //! | `enable_profiler` | Open flamegraph profiler window |
 //! | `ui_cache` | Replay UI node trees' unchanged subtrees (on by default; `EngineBuilder::ui_cache`) |
+//! | `ui_fragments` | Keep the layout and resolved output of UI node trees' unchanged subtrees between frames (on by default; `EngineBuilder::ui_fragments`) |
 //! | `ui_retain` | Keep the UI image while the UI is unchanged; reuse unchanged texts' glyphs (on by default; `EngineBuilder::ui_retain`) |
 //!
 //! # Available Info Overlays
@@ -259,6 +260,10 @@ pub struct DebugConfig {
   /// built every frame: it draws and behaves the same, slower. For ruling
   /// caching out when chasing a UI bug.
   pub ui_cache: bool,
+  /// Whether UI node trees keep the layout and resolved output of unchanged
+  /// subtrees between frames (default true). Off, unchanged subtrees are
+  /// replayed and resolved every frame: the same output, slower.
+  pub ui_fragments: bool,
   /// Whether the renderer keeps the UI image while the UI is unchanged, and
   /// reuses the glyphs built for unchanged texts (default true). Off, it
   /// builds and draws the whole UI every frame: the same pixels, slower.
@@ -290,6 +295,7 @@ impl Default for DebugConfig {
       #[cfg(not(debug_assertions))]
       dev_console: false,
       ui_cache: true,
+      ui_fragments: true,
       ui_retain: true,
     }
   }
@@ -767,6 +773,7 @@ mod tests {
     // enable_profiler defaults to false (opt-in)
     assert!(!config.enable_profiler);
     assert!(config.ui_cache, "UI node trees are cached by default");
+    assert!(config.ui_fragments, "UI fragments are kept by default");
     assert!(config.ui_retain, "UI render retention is on by default");
   }
 

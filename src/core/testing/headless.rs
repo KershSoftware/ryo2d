@@ -390,7 +390,7 @@ impl HeadlessEngine {
   /// which), and how many tree nodes it replayed from records
   #[doc(hidden)]
   pub fn ui_cache_stats(&self) -> UiCacheStats {
-    UiCacheStats::of(self.engine.world())
+    UiCacheStats::of(self.engine.world(), self.engine.ui_memory())
   }
 
   /// What the UI's render step did in the last frame: whether it kept the

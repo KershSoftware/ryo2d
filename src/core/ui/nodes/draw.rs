@@ -104,6 +104,9 @@ pub(crate) struct Walk {
   cache: UiCache,
   /// Whether clean nodes replay and built ones are recorded
   caching: bool,
+  /// Whether a clean subtree's kept fragment is pushed in place of its
+  /// replay, and a replayed one is captured (while caching)
+  fragments: bool,
   /// What every builder reads besides its node's components, this pass
   env: UiEnv,
   /// The other nodes a bound widget's change wrote, for the one drawn last
@@ -127,6 +130,7 @@ impl Walk {
       pending_focus,
       children: Vec::new(),
       registered: false,
+      fragments: caching && cache.fragments,
       cache,
       caching,
       env,
@@ -255,6 +259,7 @@ impl<'a> UiContext<'a> {
     let scene = self.scene().0;
     let mut walk = Walk::new(scene, pending_focus, cache, caching, self.env());
     walk.embedded = true;
+    self.memory.set_fragments(walk.fragments);
     bindings::sync_root(world, root, None);
     if walk.caching {
       // The scene's walk marked before its `ui` ran: what that `ui` wrote
@@ -304,6 +309,7 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
   };
   let caching = cache.enabled;
   let mut walk = Walk::new(scene, pending_focus, cache, caching, ui.env());
+  ui.memory.set_fragments(walk.fragments);
   let mut i = 0;
   while let Some((root, _)) = scene_root(world, scene, &mut i) {
     bindings::sync_root(world, root, None);
@@ -431,7 +437,7 @@ fn draw_node(
       return Drawn::Built(spot_check(world, ui, node, place, live, dialog, walk));
     }
     if let Some(taken) = walk.cache.take_clean(world, ui, node, walk.env, scope) {
-      return Drawn::Replayed(replay_taken(world, ui, node, taken, walk));
+      return Drawn::Replayed(draw_clean(world, ui, node, taken, walk));
     }
   }
   let shell = walk.cache.take_for_build(node);
@@ -474,6 +480,7 @@ fn build_recorded(
     env: walk.env,
     top,
     frame: ui.memory.frame(),
+    built: ui.memory.frame(),
     id: response.as_ref().map_or(UiId::NONE, |response| response.id),
     dialog,
     scope,
@@ -502,6 +509,41 @@ fn spot_check(
   response
 }
 
+/// Draw the clean `node`, whose record's tape was `taken`: with fragments,
+/// its kept fragment in place of its replay, or its replay captured to be
+/// kept; the id it answers with. Everything under it is its fragment's:
+/// its children replay (`replay_child`), never pushing a fragment of their
+/// own.
+fn draw_clean(
+  world: &mut World,
+  ui: &mut UiContext<'_>,
+  node: Entity,
+  taken: Taken,
+  walk: &mut Walk,
+) -> UiId {
+  let root = taken.tape.nodes.first().map(|root| root.id);
+  let Some(root) = root.filter(|_| walk.fragments) else {
+    return replay_taken(world, ui, node, taken, walk);
+  };
+  if ui.push_kept(root, taken.built) {
+    // What a replay would do besides pushing: the tapes around carry its
+    // reads, and its nodes' records are drawn this frame
+    ui.carry_reads(&taken.tape.reads);
+    let frame = ui.memory.frame();
+    walk
+      .cache
+      .keep_drawn(&ui.memory.scratch.kept_entities, frame);
+    if taken.dialog {
+      walk.back = Some(node);
+    }
+    return taken.id;
+  }
+  ui.begin_capture(root, taken.built);
+  let id = replay_taken(world, ui, node, taken, walk);
+  ui.end_capture();
+  id
+}
+
 /// Replay `node`'s record, whose tape was `taken`, each child slot filled
 /// by the child's replay: the id it answers with
 fn replay_taken(
@@ -511,10 +553,13 @@ fn replay_taken(
   taken: Taken,
   walk: &mut Walk,
 ) -> UiId {
-  let Taken { tape, id, dialog } = taken;
+  let Taken {
+    tape, id, dialog, ..
+  } = taken;
   if dialog {
     walk.back = Some(node);
   }
+  ui.note_captured(node);
   walk.cache.stats.replayed += tape.nodes.len();
   ui.replay(&tape, &mut |ui, child| replay_child(world, ui, child, walk));
   id
@@ -539,6 +584,7 @@ fn replay_child(world: &mut World, ui: &mut UiContext<'_>, child: Entity, walk: 
     return;
   }
   walk.cache.stats.missed += 1;
+  ui.spoil_capture();
   warn_once("ui-cache:missed".to_string(), || {
     "a cached UI node changed while its parent was replayed; it is drawn as before and \
      rebuilt next frame"
@@ -3116,7 +3162,7 @@ mod cache_tests {
     h.frame(|_| ());
     let stats = h.ui_cache_stats();
     assert_eq!(stats.built, 0, "rebuilt: {:?}", stats.rebuilt);
-    assert!(stats.replayed > 0);
+    assert!(stats.replayed + stats.reused > 0, "replayed or copied");
   }
 
   #[test]
@@ -3577,7 +3623,8 @@ mod cache_tests {
       draw(&mut h, None);
     }
     draw(&mut h, None);
-    assert!(h.ui_cache_stats().replayed > 0);
+    let stats = h.ui_cache_stats();
+    assert!(stats.replayed + stats.reused > 0, "replayed or copied");
     draw(&mut h, Some("Hp 9"));
     assert!(h.ui_cache_stats().rebuilt.contains(&hp));
   }

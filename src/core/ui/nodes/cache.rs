@@ -79,6 +79,10 @@ tracked!(
 pub(crate) struct UiCache {
   /// Whether the walk replays clean nodes
   pub(crate) enabled: bool,
+  /// Whether the walk pushes a clean subtree's kept fragment in place of
+  /// its replay, and keeps what a replayed one resolves to (while
+  /// `enabled`)
+  pub(crate) fragments: bool,
   /// Each node's last build
   pub(crate) records: EntityHashMap<NodeRecord>,
   /// The nodes that changed since their records were made, and their
@@ -122,6 +126,7 @@ impl Default for UiCache {
   fn default() -> UiCache {
     UiCache {
       enabled: true,
+      fragments: true,
       records: EntityHashMap::default(),
       dirty: EntityHashSet::default(),
       checked: None,
@@ -185,8 +190,11 @@ pub(crate) struct NodeRecord {
   pub(crate) env: UiEnv,
   /// Whether its scene was on top
   pub(crate) top: bool,
-  /// The memory frame it was built in
+  /// The memory frame it was last drawn in (built or replayed)
   pub(crate) frame: u64,
+  /// The memory frame it was built in: a fragment of its subtree kept from
+  /// an older build is stale
+  pub(crate) built: u64,
   /// The node's response id: what a replay returns, with last frame's rect
   pub(crate) id: UiId,
   /// A modal or popup container: the walk's Back target
@@ -204,6 +212,8 @@ pub(crate) struct NodeRecord {
 /// A record's tape, shared to replay, with what the replay answers
 pub(crate) struct Taken {
   pub(crate) tape: Arc<Tape>,
+  /// The memory frame the record was built in
+  pub(crate) built: u64,
   /// The node's response id
   pub(crate) id: UiId,
   /// A modal or popup container: the walk's Back target
@@ -236,6 +246,7 @@ fn take(record: &mut NodeRecord, frame: u64) -> Taken {
   record.frame = frame;
   Taken {
     tape: Arc::clone(&record.tape),
+    built: record.built,
     id: record.id,
     dialog: record.dialog,
   }
@@ -472,6 +483,17 @@ impl UiCache {
       .records
       .get_mut(&node)
       .map(|record| take(record, frame))
+  }
+
+  /// The records of `nodes`, replayed in a fragment pushed kept in memory
+  /// frame `frame`, are drawn in it: their nodes are in its subtree, and a
+  /// role or a live rule must still find them
+  pub(crate) fn keep_drawn(&mut self, nodes: &[Entity], frame: u64) {
+    for node in nodes {
+      if let Some(record) = self.records.get_mut(node) {
+        record.frame = frame;
+      }
+    }
   }
 
   /// `node` is being built: it leaves the dirty set (its dirty children are
@@ -1160,6 +1182,16 @@ pub(crate) fn set_cache_enabled(world: &mut World, on: bool) {
   }
 }
 
+/// Turn fragments for the trees in `world` on or off: off, a clean subtree
+/// is replayed and resolved every frame, as with fragments, slower
+pub(crate) fn set_fragments_enabled(world: &mut World, on: bool) {
+  if let Some(mut nodes) = world.get_resource_mut::<UiNodes>()
+    && nodes.cache.fragments != on
+  {
+    nodes.cache.fragments = on;
+  }
+}
+
 /// Turn the debug spot check of the trees in `world` on or off (debug builds
 /// only: a release build has none)
 #[cfg(not(target_arch = "wasm32"))]
@@ -1351,6 +1383,7 @@ mod tests {
       env: UiEnv::default(),
       top: true,
       frame: 1,
+      built: 1,
       id: UiId::NONE,
       dialog: false,
       scope: UiId::NONE,
@@ -1394,6 +1427,7 @@ mod tests {
       env: UiEnv::default(),
       top: true,
       frame: 1,
+      built: 1,
       id: UiId::NONE,
       dialog: false,
       scope: UiId::NONE,
@@ -1444,6 +1478,7 @@ mod tests {
         env,
         top: true,
         frame: 1,
+        built: 1,
         id: UiId::NONE,
         dialog: false,
         scope: UiId::NONE,
@@ -1608,6 +1643,7 @@ mod live_tests {
       env,
       top: true,
       frame,
+      built: frame,
       id: UiId::NONE,
       dialog: false,
       scope,
@@ -2301,7 +2337,7 @@ mod edge_tests {
       h.frame(|_| ());
       let stats = h.ui_cache_stats();
       assert_eq!(stats.built, 0, "a spot check is not a build");
-      assert!(stats.replayed > 0);
+      assert!(stats.replayed + stats.reused > 0, "replayed or copied");
       assert_eq!(differed(&h), 0);
       checked.extend(stats.spot_checked);
     }
@@ -2568,5 +2604,83 @@ mod edge_tests {
       h.ui_cache_stats().rebuilt.contains(&a),
       "a real change is still seen"
     );
+  }
+}
+
+#[cfg(all(test, feature = "default-fonts"))]
+mod fragment_tests {
+  use super::super::oracle::*;
+  use crate::core::testing::UiHarness;
+  use crate::core::testing::fixtures::settings_tree;
+  use crate::core::ui::{Rect, UiNode};
+
+  #[test]
+  fn an_unchanged_tree_is_copied_from_its_fragments() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(settings_tree());
+    h.move_to(-100.0, -100.0);
+    for _ in 0..3 {
+      h.frame(|_| {});
+    }
+    let stats = h.ui_cache_stats();
+    assert!(stats.reused > 0, "clean subtrees are copied: {stats:?}");
+    assert_eq!(
+      stats.captured, 0,
+      "nothing new to keep in an unchanged frame"
+    );
+    assert!(
+      stats.replayed < 20,
+      "only the dirty path's own tapes replay, not the screen ({} replayed)",
+      stats.replayed
+    );
+  }
+
+  #[test]
+  fn with_fragments_off_the_tree_replays_as_before() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.set_ui_fragments(false);
+    h.spawn_ui(settings_tree());
+    for _ in 0..3 {
+      h.frame(|_| {});
+    }
+    let stats = h.ui_cache_stats();
+    assert_eq!((stats.reused, stats.captured), (0, 0));
+    assert!(stats.replayed > 200, "the screen replays");
+  }
+
+  #[test]
+  fn a_popup_or_a_placed_node_is_never_kept() {
+    let tree = || {
+      UiNode::column()
+        .child(UiNode::dropdown(&["Low", "High"], 1).name("pick"))
+        .child(
+          UiNode::column().child(
+            UiNode::column()
+              .at(Rect::new(300.0, 10.0, 80.0, 20.0))
+              .child(UiNode::text("placed")),
+          ),
+        )
+    };
+    let run = oracle(
+      |h| {
+        h.spawn_ui(tree());
+      },
+      &[
+        Frame,
+        Frame,
+        At("pick"),
+        Press,
+        Release,
+        Frame,
+        Frame,
+        Frame,
+      ],
+    );
+    // Equal to the uncached harness every frame is the oracle's own check.
+    // With the list open, the dropdown replays a popup (never kept) and the
+    // column holds a placed node (never kept), so nothing is kept or
+    // captured
+    let last = run.stats.last().unwrap();
+    assert_eq!((last.reused, last.captured), (0, 0), "{last:?}");
   }
 }

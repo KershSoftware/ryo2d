@@ -287,15 +287,7 @@ impl UiContext<'_> {
       self.taint();
     }
     // The tapes around carry what it read, as they would had it been built
-    if self
-      .tapes
-      .last()
-      .is_some_and(|recorder| recorder.replaying == 0)
-    {
-      for recorder in &mut self.tapes {
-        recorder.tape.reads.extend_from_slice(&tape.reads);
-      }
-    }
+    self.carry_reads(&tape.reads);
     if let Some(recorder) = self.tapes.last_mut() {
       recorder.replaying += 1;
     }
@@ -308,6 +300,11 @@ impl UiContext<'_> {
     let (scene, _) = self.scene();
     for &id in &tape.states {
       self.memory.touch(id, scene);
+    }
+    // A capture keeps them for its fragment, which makes and keeps them so
+    if let Some(log) = self.memory.scratch.open_capture() {
+      log.ids.extend_from_slice(&tape.ids);
+      log.states.extend_from_slice(&tape.states);
     }
     let base = self.memory.scratch.replayed.len();
     for op in &tape.ops {
@@ -338,6 +335,22 @@ impl UiContext<'_> {
     self.resume();
     if let Some(recorder) = self.tapes.last_mut() {
       recorder.replaying = recorder.replaying.saturating_sub(1);
+    }
+  }
+
+  /// The tapes around carry `reads`, what a subtree drawn here without
+  /// being built read (a replay's, a kept fragment's), as they would had it
+  /// been built: unless a replay is under way in the open tape, whose reads
+  /// hold these
+  pub(crate) fn carry_reads(&mut self, reads: &[Read]) {
+    if self
+      .tapes
+      .last()
+      .is_some_and(|recorder| recorder.replaying == 0)
+    {
+      for recorder in &mut self.tapes {
+        recorder.tape.reads.extend_from_slice(reads);
+      }
     }
   }
 

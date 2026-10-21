@@ -33,7 +33,7 @@ pub use node::{TextRole, UiNode, UiNodeKind};
 pub(crate) use cache::{CacheStats, cache_stats};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use cache::{cache_records, dirty_check, node_snapshot, set_spot_check};
-pub(crate) use cache::{check_cache_ticks, end_frame, set_cache_enabled};
+pub(crate) use cache::{check_cache_ticks, end_frame, set_cache_enabled, set_fragments_enabled};
 pub(crate) use components::UiNodes;
 pub(crate) use draw::{begin_pass, deliver_pending, draw_nodes};
 pub(crate) use events::deliver;

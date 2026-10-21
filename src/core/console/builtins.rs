@@ -367,6 +367,27 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
     },
   );
 
+  // UI fragments
+  registry.register(
+    "ui:fragments",
+    "Show or set UI fragments: ui:fragments [on|off]",
+    |args, ctx| {
+      match args.first().map(|arg| arg.to_ascii_lowercase()).as_deref() {
+        None => {}
+        Some("on") => ctx.debug_config.ui_fragments = true,
+        Some("off") => ctx.debug_config.ui_fragments = false,
+        Some(_) => return CommandResult::Error("Usage: ui:fragments [on|off]".to_string()),
+      }
+      let state = if ctx.debug_config.ui_fragments {
+        "on"
+      } else {
+        "off"
+      };
+      ctx.console.print(format!("UI fragments are {state}"));
+      CommandResult::Ok
+    },
+  );
+
   // UI render retention
   registry.register(
     "ui:retain",
@@ -699,6 +720,33 @@ mod tests {
     assert!(ctx.debug_config.ui_cache);
     assert!(matches!(
       registry.execute("ui:cache maybe", &mut ctx),
+      CommandResult::Error(_)
+    ));
+  }
+
+  #[test]
+  fn ui_fragments_turns_fragments_off_and_on() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+    let mut console = super::super::ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+    assert!(ctx.debug_config.ui_fragments, "on by default");
+    assert_eq!(
+      registry.execute("ui:fragments off", &mut ctx),
+      CommandResult::Ok
+    );
+    assert!(!ctx.debug_config.ui_fragments);
+    assert_eq!(
+      registry.execute("ui:fragments", &mut ctx),
+      CommandResult::Ok
+    );
+    assert!(!ctx.debug_config.ui_fragments, "alone it only prints");
+    registry.execute("ui:fragments on", &mut ctx);
+    assert!(ctx.debug_config.ui_fragments);
+    assert!(matches!(
+      registry.execute("ui:fragments maybe", &mut ctx),
       CommandResult::Error(_)
     ));
   }

@@ -2010,6 +2010,174 @@ fn lists_in_a_lists_rows_look_the_same_cached() {
   assert_cached(&run);
 }
 
+// Fragments: a clean subtree's kept output, copied or resolved again
+
+#[test]
+fn a_rebuilt_node_drops_its_fragment() {
+  let run = oracle(
+    spawn_settings,
+    &[
+      Frame,
+      Frame,
+      Frame,
+      // Row 3's label, in a row kept as a fragment
+      Do(|h| {
+        let label = kids(h, kids(h, settings_scroll(h))[3])[0];
+        h.world_mut().get_mut::<UiLabel>(label).unwrap().0 = "Changed".into();
+      }),
+      Frame,
+      Frame,
+      Frame,
+    ],
+  );
+  assert_cached(&run);
+  assert!(
+    run.stats.iter().any(|s| s.reused > 0),
+    "fragments were copied"
+  );
+}
+
+#[test]
+fn a_reconciled_node_drops_its_fragment() {
+  // A UI file's tree updated in place, as a hot reload or `update_ui` does
+  let run = oracle(
+    |h| {
+      h.spawn_ui(
+        UiNode::column()
+          .name("list")
+          .child(UiNode::text("one").name("first"))
+          .child(UiNode::text("two")),
+      );
+    },
+    &[
+      Frame,
+      Frame,
+      Frame,
+      Do(|h| {
+        let list = h.find_ui("list").unwrap();
+        h.update_ui(
+          list,
+          UiNode::column()
+            .name("list")
+            .child(UiNode::text("ONE").name("first"))
+            .child(UiNode::text("two")),
+        );
+      }),
+      Frame,
+      Frame,
+    ],
+  );
+  assert_cached(&run);
+  assert!(run.on.frame_snapshot().contains("\"ONE\""), "drawn");
+}
+
+#[test]
+fn fragments_switched_on_and_off_mid_run() {
+  let run = oracle(
+    spawn_settings,
+    &[
+      Frame,
+      Frame,
+      Fragments(false),
+      Frame,
+      Frame,
+      Fragments(true),
+      Frame,
+      Frame,
+      Frame,
+    ],
+  );
+  assert_cached(&run);
+  let kept = |frame: usize| run.stats[frame].reused + run.stats[frame].resolved_again;
+  assert_eq!((kept(2), kept(3)), (0, 0), "off: nothing is kept");
+  assert!(kept(6) > 0, "on again: kept from the frame after a capture");
+}
+
+#[test]
+fn a_fragment_moved_by_a_growing_sibling_is_resolved_again() {
+  let run = oracle_with(
+    |h| {
+      h.spawn_ui(
+        UiNode::column()
+          .child(UiNode::text("{n}").bound().name("grows"))
+          .child(
+            UiNode::row()
+              .child(UiNode::button("Kept"))
+              .child(UiNode::button("Also kept")),
+          ),
+      );
+    },
+    &|_, _, _| {},
+    &|_| {},
+    &[
+      Frame,
+      Frame,
+      Frame,
+      // The column builds, and its row is replayed and kept on its own
+      Set("grows", "n", BindValue::from("a\nlonger")),
+      Frame,
+      // The text grows again: the kept row is pushed lower
+      Set(
+        "grows",
+        "n",
+        BindValue::from("a\nlonger\ntext\nthat\nwraps"),
+      ),
+      Frame,
+      Frame,
+    ],
+  );
+  assert_cached(&run);
+  assert!(
+    run.stats.iter().any(|s| s.resolved_again > 0),
+    "the moved row was resolved again"
+  );
+}
+
+#[test]
+fn a_kept_fragments_reads_go_up_to_the_parent_built_around_it() {
+  // The field fills its row, so its build reads its own last rect. The row
+  // is kept while the column builds around it and moves it: the column's
+  // record must carry the field's read, or its replay next frame would find
+  // the row unclean inside it (a miss)
+  let run = oracle(
+    |h| {
+      h.spawn_ui(
+        UiNode::column()
+          .anchor(crate::core::ui::Anchor::TopLeft)
+          .child(UiNode::text("{n}").bound().name("grows"))
+          .child(
+            UiNode::row()
+              .width(320.0)
+              .name("field row")
+              .child(UiNode::text_input("typed").fill_width().name("field")),
+          ),
+      );
+      let grows = named(h, "grows");
+      h.ui_set(grows, "n", "a");
+      h.move_to(630.0, 470.0);
+    },
+    &[
+      Frame,
+      Frame,
+      Frame,
+      Frame,
+      // The column builds; its row, unmoved, is replayed and kept alone
+      Set("grows", "n", BindValue::from("b")),
+      Frame,
+      // The column builds again; the kept row moves down
+      Set("grows", "n", BindValue::from("b\nc")),
+      Frame,
+      Frame,
+      Frame,
+    ],
+  );
+  assert_cached(&run);
+  assert!(
+    run.stats.iter().any(|s| s.resolved_again > 0),
+    "the kept row was resolved again where it moved"
+  );
+}
+
 /// Every scenario again with the debug spot check on in both harnesses: a
 /// clean node built in place of its replay draws and does the same, and no
 /// record differs from its build
@@ -2038,6 +2206,10 @@ fn every_scenario_looks_the_same_with_the_spot_check_on() {
     an_embedded_tree_in_a_closure_scroll_area_looks_the_same_cached,
     a_grid_list_in_a_scroll_area_with_popups_in_its_rows_looks_the_same_cached,
     lists_in_a_lists_rows_look_the_same_cached,
+    a_rebuilt_node_drops_its_fragment,
+    a_reconciled_node_drops_its_fragment,
+    fragments_switched_on_and_off_mid_run,
+    a_fragment_moved_by_a_growing_sibling_is_resolved_again,
   ]);
   // Of 7,360 frames, most hold a clean node to check
   assert!(checked > 5_000, "the spot check ran in {checked} frames");

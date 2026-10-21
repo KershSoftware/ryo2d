@@ -37,6 +37,7 @@ use super::commands::{UiCommand, UiCommands};
 use super::input::UiInput;
 
 use crate::core::asset::SpriteHandle;
+use crate::core::ecs::kernel::Entity;
 use crate::core::hash::fast_hash;
 use crate::core::input::{Actions, Binding, Direction, InputDevice, PadFamily};
 use crate::core::render::UiSpace;
@@ -46,6 +47,7 @@ use crate::core::text::{
   TextReveal, TextStyle,
 };
 use crate::core::ui::env::UiEnv;
+use crate::core::ui::fragment::Role;
 use crate::core::ui::id::{UiId, key_hash};
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::layout::{Edges, Flow, Measure, UiStyle};
@@ -60,6 +62,17 @@ use crate::core::ui::tree::{
 use crate::core::ui::types::{Anchor, Color, Rect};
 use crate::core::ui::widgets::common::WidgetOpts;
 use crate::core::ui::widgets::prompt::resolve_prompts;
+
+/// The scroll area a child of `parent` is in: `parent` when it scrolls,
+/// else `parent`'s
+fn scroll_of(parent: &Node) -> UiId {
+  let flags = parent.record.map(|r| r.flags).unwrap_or_default();
+  if flags.contains(Flags::SCROLLABLE) {
+    parent.id
+  } else {
+    parent.scroll
+  }
+}
 
 /// `pop_clip` on an empty stack was warned about
 static EMPTY_POP_WARNED: AtomicBool = AtomicBool::new(false);
@@ -1064,14 +1077,119 @@ impl<'a> UiContext<'a> {
   }
 
   /// [`push_node`](Self::push_node) of a copy of `node`, cloned straight
-  /// into the subtree: a replay pushes its tape's nodes so
+  /// into the subtree: a replay pushes its tape's nodes so. The first node a
+  /// capture's replay pushes is its root, marked to be kept.
   pub(crate) fn push_node_copy(&mut self, node: &Node, at: Option<Rect>) -> usize {
     if self.recording() {
       return self.push_node(node.clone(), at);
     }
-    self.push_stamped(at, |subtree| {
+    let index = self.push_stamped(at, |subtree| {
       subtree.nodes.extend_from_slice(std::slice::from_ref(node))
-    })
+    });
+    if let Some(log) = self.memory.scratch.open_capture()
+      && !log.rooted
+    {
+      log.rooted = true;
+      let pushed = self.subtree.as_mut().and_then(|s| s.nodes.get_mut(index));
+      if let Some(pushed) = pushed.filter(|pushed| pushed.id == log.root) {
+        pushed.role = Role::Capture;
+      }
+    }
+    index
+  }
+
+  /// Push the kept fragment of the clean subtree whose root is `id`, whose
+  /// node record was built in frame `built`, as one node in place of a
+  /// replay: its ids made and states kept as a replay would, the orders its
+  /// subtree takes reserved. False, with nothing pushed, when it has none,
+  /// it is stale, or its root would be stamped otherwise than it was (or
+  /// it would land in a popup, which takes fresh orders when it is drawn).
+  /// The nodes replayed in it are left in the memory's
+  /// `scratch.kept_entities`.
+  pub(crate) fn push_kept(&mut self, id: UiId, built: u64) -> bool {
+    debug_assert!(
+      !self.recording(),
+      "a kept fragment is pushed where no tape records (a child slot)"
+    );
+    // A recording tape would miss it: the walk replays there instead, which
+    // taints that tape
+    if self.recording() || self.in_popup() {
+      return false;
+    }
+    let (scene, _) = self.scene();
+    let scope = self.focus_scope_here();
+    let scroll = self.scroll_here();
+    let fits = self.memory.fragments_prev.get(&id).is_some_and(|fragment| {
+      fragment.built == built
+        && fragment.scene == scene
+        && fragment.inputs.layer == self.layer
+        && fragment.root.scope == scope
+        && fragment.root.scroll == scroll
+    });
+    // Its subtree is still in the layout's tree, laid out as it was kept
+    if !fits || !self.layout.holds(id) {
+      return false;
+    }
+    let Some((mut root, at, count)) = self.memory.replay_fragment(id, scene) else {
+      return false;
+    };
+    // Stamped where it lands, as a replay stamps the node its tape gave
+    root.role = Role::Kept;
+    root.parent = None;
+    root.depth = 0;
+    root.scroll = UiId::NONE;
+    let index = self.push_stamped(at, |subtree| subtree.nodes.push(root));
+    let layer = self.layer;
+    let Some(subtree) = self.subtree.as_mut() else {
+      return false;
+    };
+    let base = subtree.nodes.get(index).map_or(0, |root| root.order);
+    // Its commands go where its subtree's draws would
+    subtree.draws.push(Draw {
+      order: base,
+      layer,
+      node: index,
+      kind: DrawKind::Kept,
+    });
+    // The orders its subtree's nodes and draws take, after its root's
+    self.order = self.order.saturating_add(count.saturating_sub(1));
+    self.close(index);
+    true
+  }
+
+  /// Start keeping what the replay of the clean subtree rooted at `id`
+  /// (record built in frame `built`) makes, touches and pushes: resolve
+  /// keeps what it resolves to as its fragment
+  pub(crate) fn begin_capture(&mut self, id: UiId, built: u64) {
+    let popup = self.in_popup();
+    self.memory.scratch.begin_capture(id, built, popup);
+  }
+
+  /// Stop keeping what the replay makes: its log stays for resolve
+  pub(crate) fn end_capture(&mut self) {
+    self.memory.scratch.end_capture();
+  }
+
+  /// A node of the clean subtree being captured, `entity`, is replayed
+  pub(crate) fn note_captured(&mut self, entity: Entity) {
+    if let Some(log) = self.memory.scratch.open_capture() {
+      log.entities.push(entity);
+    }
+  }
+
+  /// A child of the subtree being captured was drawn from a record that was
+  /// not clean (a miss): it is not kept
+  pub(crate) fn spoil_capture(&mut self) {
+    if let Some(log) = self.memory.scratch.open_capture() {
+      log.missed = true;
+    }
+  }
+
+  /// The scroll area a node pushed now would be stamped with: its parent's,
+  /// or its parent itself when that scrolls (`NONE` for a subtree's root)
+  fn scroll_here(&self) -> UiId {
+    let parent = self.open.and_then(|p| self.subtree.as_ref()?.nodes.get(p));
+    parent.map_or(UiId::NONE, scroll_of)
   }
 
   /// Push the node `put` adds to the open subtree (started if none is) and
@@ -1094,15 +1212,9 @@ impl<'a> UiContext<'a> {
     if parent.is_none() && subtree.nodes.is_empty() {
       subtree.at = at;
     }
-    let inside = parent.and_then(|p| subtree.nodes.get(p)).map(|p| {
-      let flags = p.record.map(|r| r.flags).unwrap_or_default();
-      let scroll = if flags.contains(Flags::SCROLLABLE) {
-        p.id
-      } else {
-        p.scroll
-      };
-      (p.depth.saturating_add(1), scroll)
-    });
+    let inside = parent
+      .and_then(|p| subtree.nodes.get(p))
+      .map(|p| (p.depth.saturating_add(1), scroll_of(p)));
     let index = subtree.nodes.len();
     put(subtree);
     if let Some(node) = subtree.nodes.get_mut(index) {

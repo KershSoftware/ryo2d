@@ -105,6 +105,11 @@ impl UiContext<'_> {
     if !self.tapes.is_empty() {
       self.tape_op(Op::PopupBegin { anchor, modal });
     }
+    // A subtree with a popup is never kept: the popup takes fresh orders
+    // when the scene's UI ends
+    if let Some(log) = self.memory.scratch.open_capture() {
+      log.popup = true;
+    }
     let anchor = self.anchor_rect(anchor);
     let scope = self.focus_scope_here();
     // Popups draw over everything, so no clip of the page reaches them

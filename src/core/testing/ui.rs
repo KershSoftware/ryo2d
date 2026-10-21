@@ -123,6 +123,9 @@ pub struct UiHarness {
   ui_cache: bool,
   /// Whether the walk spot-checks a clean node a frame (`set_ui_spot_check`)
   ui_spot_check: bool,
+  /// Whether clean subtrees are copied from their kept fragments
+  /// (`set_ui_fragments`)
+  ui_fragments: bool,
   /// The next frame draws before the list pools are updated, as a rerun UI
   /// pass does (a scene switched from `ui` draws its new lists so)
   #[cfg(test)]
@@ -178,6 +181,7 @@ impl UiHarness {
       consumed: UiConsumed::default(),
       ui_cache: true,
       ui_spot_check: false,
+      ui_fragments: true,
       #[cfg(test)]
       skip_list_update: false,
     }
@@ -353,6 +357,14 @@ impl UiHarness {
     self.ui_cache = on;
   }
 
+  /// Turn fragments on (the default) or off from the next frame. On, with
+  /// the node cache, a clean subtree keeps its layout and resolved output
+  /// between frames and is copied instead of replayed; off, it is replayed
+  /// and resolved every frame: the same output, slower.
+  pub fn set_ui_fragments(&mut self, on: bool) {
+    self.ui_fragments = on;
+  }
+
   /// Turn the debug spot check on or off from the next frame (off by
   /// default; the engine's is on in debug builds). Each frame it builds one
   /// clean node in place of its replay, taking the records in turn
@@ -366,7 +378,7 @@ impl UiHarness {
   /// What the node walk did in the last frame: the nodes it built (and
   /// which), and how many tree nodes it replayed from records instead
   pub fn ui_cache_stats(&self) -> UiCacheStats {
-    UiCacheStats::of(&self.world)
+    UiCacheStats::of(&self.world, &self.memory)
   }
 
   /// Run the node cache's dirty check alone, as a frame runs it before
@@ -658,6 +670,7 @@ impl UiHarness {
       context.set_prompts(Arc::clone(&self.prompts));
       context.begin_scene(self.scene, true);
       nodes::set_cache_enabled(&mut self.world, self.ui_cache);
+      nodes::set_fragments_enabled(&mut self.world, self.ui_fragments);
       nodes::set_spot_check(&mut self.world, self.ui_spot_check);
       nodes::begin_pass(&mut self.world);
       let events = nodes::draw_nodes(&mut self.world, &mut context, self.scene);
@@ -775,6 +788,14 @@ pub struct UiCacheStats {
   pub spot_checked: Option<Entity>,
   /// The node records the cache keeps
   pub records: usize,
+  /// Clean subtrees copied from the fragments they kept, in place of a
+  /// replay
+  pub reused: usize,
+  /// Kept fragments resolved again from what they kept (moved, resized or
+  /// placed under another clip), in place of a replay
+  pub resolved_again: usize,
+  /// Clean subtrees replayed and kept as fragments
+  pub captured: usize,
 }
 
 /// What a UI snapshot is made of: one frame of a UI, from the harness or
@@ -834,9 +855,10 @@ pub(crate) fn ui_snapshot(parts: &UiSnapshot<'_>) -> String {
 }
 
 impl UiCacheStats {
-  /// What the node walk of `world`'s trees did in the last pass (nothing,
-  /// in a world without node trees)
-  pub(crate) fn of(world: &World) -> UiCacheStats {
+  /// What the node walk of `world`'s trees did in the last pass, with
+  /// `memory`'s fragments (nothing, in a world without node trees)
+  pub(crate) fn of(world: &World, memory: &UiMemory) -> UiCacheStats {
+    let fragments = memory.fragment_stats;
     nodes::cache_stats(world)
       .map(|stats| UiCacheStats {
         built: stats.built,
@@ -844,6 +866,9 @@ impl UiCacheStats {
         rebuilt: stats.rebuilt.clone(),
         spot_checked: stats.spot_checked,
         records: nodes::cache_records(world),
+        reused: fragments.reused,
+        resolved_again: fragments.resolved_again,
+        captured: fragments.captured,
       })
       .unwrap_or_default()
   }
