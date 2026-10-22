@@ -227,7 +227,8 @@ impl SlotMark {
 struct Placed<'d> {
   command: Cow<'d, UiCommand>,
   /// The clip its instances carry: the scissor of its clip when built
-  /// absolute; in a slot the slot's, or its own relative to the slot
+  /// absolute; in a slot its own relative to the slot, else the whole
+  /// image (the shader takes the slot's clip from the slot)
   clip: ClipRect,
   /// `clip` as a text is placed with it (and kept by it in the text cache)
   scissor: Option<PixelRect>,
@@ -253,9 +254,10 @@ impl Frame<'_> {
   ///
   /// In slot 0 it is built as it is, under its clip. In slot `k` below
   /// [`SLOTS`] it is built relative to the slot, which the shader moves by
-  /// its offset: under the slot's clip, or, with a clip of its own (a text
-  /// field's view in a scrolled list), under that clip relative to the slot,
-  /// which the shader moves and meets with the slot's. Past those slots, or
+  /// its offset: under the slot's clip (which the shader reads from the
+  /// slot), or, with a clip of its own (a text field's view in a scrolled
+  /// list), under that clip relative to the slot, which the shader moves
+  /// and meets with the slot's. Past those slots, or
   /// when its own clip does not fit a [`ClipRect`] relative to the slot, it
   /// is built absolute, moved and clipped on the CPU (`UiDraw::placed`).
   ///
@@ -333,10 +335,14 @@ fn in_slot<'d>(draw: &'d UiDraw, slot: &ScrollSlot, k: u8, space: &UiSpace) -> I
   let by = slot.offset_units(space.px_scale);
   let command = Cow::Borrowed(&draw.command);
   let Some(own) = draw.command.clip_rect() else {
+    // The shader draws it under the slot's clip, read from the slot: it
+    // carries none (the whole image), so neither it nor its text's key
+    // changes as the slot's clip moves (a nested list's, as an outer list
+    // scrolls it)
     return InSlot::Built(Placed {
       command,
-      clip: slot_clip,
-      scissor,
+      clip: ClipRect::of(None, space.image),
+      scissor: None,
       mark: SlotMark {
         slot: k,
         own: false,

@@ -423,7 +423,9 @@ mod slots {
     assert!(!instance.own_clip());
     // Where the command puts it, not moved by the slot's offset
     assert_eq!(centre(&instance), Vec2::new(25.0, 10.0));
-    assert_eq!(instance.clip(), SLOT_CLIP);
+    // The shader takes its clip from the slot: it carries the whole image,
+    // the same wherever the slot is drawn and whatever it is clipped by
+    assert_eq!(instance.clip(), ClipRect::of(None, env.space.image));
 
     // Past the slots the shader holds: moved on the CPU, as before
     slots.resize(301, SLOT);

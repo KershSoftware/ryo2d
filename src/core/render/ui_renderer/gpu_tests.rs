@@ -2785,6 +2785,52 @@ mod building {
         }
       }
 
+      /// A nested list's texts are copied while an outer list scrolls it:
+      /// their slot's clip moves with the outer list, but the shader takes
+      /// a slot's clip from the slot, so neither their instances nor their
+      /// key in the text cache hold it
+      #[test]
+      fn a_text_in_a_slot_whose_clip_moves_is_one_copy_of_its_instances() {
+        let Some(mut writes) = Writes::new() else {
+          return;
+        };
+        let mut fonts = fonts();
+        let env = env_sized(1.25, (320, 240), false);
+        let layout = label(&mut fonts, 1.25);
+        let sources = fonts.sources();
+        let mut texts = UiTextCache::<UiInstance>::default();
+        let mut first: Option<Vec<UiInstance>> = None;
+        for frame in 0..6 {
+          let mut commands = UiCommands::default();
+          let slot = commands.push_slot(ScrollSlot {
+            offset: [0, 10 - 7 * frame],
+            clip: Some(Rect::new(0.0, 8.0 - 3.0 * frame as f32, 200.0, 100.0)),
+            cull: None,
+          });
+          commands.push(0, slot, text(&layout, Vec2::new(8.0, 12.8), None));
+          let mut build = UiBuild::default();
+          texts.begin(env, true);
+          build_ui(
+            &mut build,
+            &commands,
+            &env,
+            Some(&sources),
+            &mut writes.targets(),
+            0.0,
+            &mut texts,
+          );
+          texts.end();
+          assert!(!build.instances.is_empty());
+          match &first {
+            None => first = Some(build.instances),
+            Some(first) => {
+              assert_eq!(&build.instances, first, "frame {frame}");
+              assert_eq!((texts.built(), texts.reused()), (0, 1), "frame {frame}");
+            }
+          }
+        }
+      }
+
       /// A text drawn in slot 0 is culled glyph by glyph; drawn next in a
       /// slot (the same layout, at the same place, under the same clip, as
       /// a scroll area's contents are on the frame its state is made), its

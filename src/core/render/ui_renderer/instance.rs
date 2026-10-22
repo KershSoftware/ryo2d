@@ -91,8 +91,10 @@ impl ClipRect {
 /// order; a line triangle's are its corners), then the clip, kind and flags.
 ///
 /// In a scroll slot (`slot()` above 0) its positions are relative to the
-/// slot: the shader adds the slot's offset, and its clip is the slot's, or
-/// its own relative to the slot met with the slot's (`own_clip()`).
+/// slot: the shader adds the slot's offset, and its clip is the slot's
+/// (read from the slot; the instance's is not read, and is built as the
+/// whole image), or its own relative to the slot met with the slot's
+/// (`own_clip()`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub(crate) struct UiInstance {
