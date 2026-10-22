@@ -1,5 +1,9 @@
 //! Retention with what only the engine can do: a sprite's pixels replaced
-//! in place, as hot reload does
+//! in place, as hot reload does, and world text evicting a glyph page a
+//! kept fragment run samples
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::core::asset::SpriteHandle;
 use crate::core::engine::EngineBuilder;
@@ -228,4 +232,209 @@ fn a_sprite_in_a_kept_fragment_updated_in_place_redraws() {
   assert_eq!(pair.on.ui_runs_snapshot(), runs, "the runs are the same");
   pair.frames(5, "blue");
   assert!(pair.on.ui_render_stats().kept);
+}
+
+/// Two engines built alike by `make`: fragments on in one, the node cache
+/// (and so fragments) off in the other, the spot checks off in both, driven
+/// together and their frames compared pixel for pixel
+struct Fragments {
+  on: HeadlessEngine,
+  off: HeadlessEngine,
+  compared: usize,
+}
+
+impl Fragments {
+  fn new(make: impl Fn() -> EngineBuilder) -> Option<Fragments> {
+    let mut pair = Fragments {
+      on: HeadlessEngine::new_or_skip(make().ui_fragments(true))?,
+      off: HeadlessEngine::new_or_skip(make().ui_cache(false))?,
+      compared: 0,
+    };
+    pair.on.set_ui_spot_check(false);
+    pair.off.set_ui_spot_check(false);
+    Some(pair)
+  }
+
+  fn frames(&mut self, n: u32, what: &str) {
+    for _ in 0..n {
+      let _ = self.on.step().expect("a frame");
+      let _ = self.off.step().expect("a frame");
+      self.compared += 1;
+      let (Ok(on), Ok(off)) = (self.on.frame(), self.off.frame()) else {
+        panic!("{what}, frame {}: no frame presented", self.compared);
+      };
+      let differ = on
+        .pixels()
+        .zip(off.pixels())
+        .filter(|(a, b)| a != b)
+        .count();
+      assert_eq!(
+        differ, 0,
+        "{what}, frame {}: fragments on and off differ in {differ} pixels",
+        self.compared
+      );
+    }
+  }
+}
+
+/// Characters cycled through at large sizes to fill the glyph pages
+const CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+/// A node tree's labels, a swatch whose shade the test sets and, while
+/// `churn` is set, large world text that changes every frame
+struct Pressure {
+  shade: Arc<AtomicU8>,
+  churn: Arc<AtomicBool>,
+  text: Option<Entity>,
+  frame: u32,
+}
+
+impl Scene for Pressure {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.camera().set_position(0.0, 0.0);
+    ctx.spawn_ui(
+      UiNode::column()
+        .child(UiNode::text("A kept label"))
+        .child(UiNode::text("And another one")),
+    );
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if let Some(text) = self.text.take() {
+      ctx.world.despawn(text);
+    }
+    if self.churn.load(Ordering::Relaxed) {
+      self.frame += 1;
+      // Sizes up to 240, under the 256 px the atlas rasterises at
+      let start = (self.frame as usize * 8) % CHARS.len();
+      let text: String = CHARS.chars().cycle().skip(start).take(8).collect();
+      let size = 130.0 + (self.frame * 29 % 111) as f32;
+      let spawned = ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Text2d::new(text).with_style(TextStyle::new().size(size)),
+      ));
+      self.text = Some(spawned.id());
+    }
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let shade = self.shade.load(Ordering::Relaxed);
+    ui.draw_rect(
+      Rect::new(300.0, 8.0, 20.0, 20.0),
+      Color::new(shade, 40, 40, 255),
+    );
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn an_evicted_glyph_page_drops_a_fragments_instances() {
+  let shade = Arc::new(AtomicU8::new(100));
+  let churn = Arc::new(AtomicBool::new(false));
+  let make = {
+    let (shade, churn) = (shade.clone(), churn.clone());
+    move || {
+      EngineBuilder::new()
+        .resolution(640, 480)
+        .start_scene(Pressure {
+          shade: shade.clone(),
+          churn: churn.clone(),
+          text: None,
+          frame: 0,
+        })
+    }
+  };
+  let Some(mut pair) = Fragments::new(make) else {
+    return;
+  };
+  pair.frames(10, "the tree");
+  assert!(pair.on.ui_render_stats().kept);
+  // The swatch changes: the UI is built, the tree's run copied
+  shade.store(120, Ordering::Relaxed);
+  pair.frames(1, "the swatch changed");
+  let stats = pair.on.ui_render_stats();
+  assert_eq!(
+    (stats.runs_copied, stats.runs_built),
+    (1, 0),
+    "the tree's run is copied"
+  );
+  let pages = pair
+    .on
+    .ui_renderer()
+    .expect("a UI renderer")
+    .kept_run_pages();
+  assert!(!pages.is_empty(), "the tree's labels sit on a glyph page");
+  // World text churns under the kept UI image until it evicts a page the
+  // run's instances sample
+  churn.store(true, Ordering::Relaxed);
+  let evicted = (0..600).any(|_| {
+    pair.frames(1, "world text churning");
+    assert!(pair.on.ui_render_stats().kept, "the UI image is kept");
+    pages
+      .iter()
+      .any(|&(page, generation)| pair.on.glyph_page_generation(page) != Some(generation))
+  });
+  assert!(evicted, "the world text evicted the run's glyph page");
+  churn.store(false, Ordering::Relaxed);
+  // The next frame that builds the UI builds the run again, its labels'
+  // glyphs anew: as a full rebuild draws them
+  shade.store(140, Ordering::Relaxed);
+  pair.frames(1, "the swatch changed after the eviction");
+  let stats = pair.on.ui_render_stats();
+  assert_eq!(
+    (stats.runs_copied, stats.runs_built),
+    (0, 1),
+    "the tree's run is built again"
+  );
+  shade.store(160, Ordering::Relaxed);
+  pair.frames(1, "the swatch changed again");
+  let stats = pair.on.ui_render_stats();
+  assert_eq!((stats.runs_copied, stats.runs_built), (1, 0), "and copied");
+  pair.frames(3, "after");
+}
+
+/// The settings screen as a node tree, and a swatch whose shade changes
+/// every frame
+struct NodeSwatch {
+  frame: u8,
+}
+
+impl Scene for NodeSwatch {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(crate::core::testing::fixtures::settings_tree());
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    self.frame = self.frame.wrapping_add(1);
+    ui.draw_rect(
+      Rect::new(600.0, 4.0, 20.0, 20.0),
+      Color::new(self.frame, 40, 40, 255),
+    );
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_kept_trees_runs_are_copied_while_a_loose_draw_changes() {
+  let make = || {
+    EngineBuilder::new()
+      .resolution(640, 480)
+      .start_scene(NodeSwatch { frame: 0 })
+  };
+  let Some(mut pair) = Fragments::new(make) else {
+    return;
+  };
+  pair.frames(10, "the settings screen");
+  for frame in 0..20 {
+    pair.frames(1, "the swatch changing");
+    let stats = pair.on.ui_render_stats();
+    assert!(!stats.kept, "frame {frame}: the UI changed");
+    assert!(stats.runs_copied > 0, "frame {frame}: {stats:?}");
+    assert_eq!(stats.runs_built, 0, "frame {frame}: {stats:?}");
+  }
 }

@@ -89,7 +89,7 @@ impl PixelPair {
       }
       let off = self.off.ui_render_stats();
       assert!(
-        !off.kept && off.texts_reused == 0,
+        !off.kept && off.texts_reused == 0 && off.runs_copied == 0,
         "{what}, frame {frame}: retention off kept or reused: {off:?}"
       );
       let on = self.on.ui_render_stats();

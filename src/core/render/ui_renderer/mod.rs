@@ -13,24 +13,23 @@ mod tests;
 
 use std::ops::Range;
 
-#[cfg(test)]
-use build::SpriteFix;
+pub(crate) use build::SpriteFix;
 use build::{UiBuild, build_ui};
 use gpu::UiGpu;
 #[cfg(test)]
 use gpu::{KEEP_FRAMES, SLOTS, SlotUniform, changed_range};
-use instance::UiInstance;
+pub(crate) use instance::UiInstance;
 #[cfg(test)]
 use instance::{ClipRect, UiKind};
 #[cfg(test)]
 use runs::Run;
-pub(crate) use runs::TexKey;
-use runs::{Slot, TexNeed, plan_runs};
+use runs::{Slot, plan_runs};
+pub(crate) use runs::{TexKey, TexNeed};
 
 use crate::core::graphics::{Presentation, SpriteGpuRenderer, TextureId};
 use crate::core::render::DrawList;
 use crate::core::render::text::{TextSources, TextTargets};
-use crate::core::render::ui_retain::{UiRenderEnv, UiTextCache};
+use crate::core::render::ui_retain::{UiRenderEnv, UiRunCache, UiTextCache};
 use crate::core::text::GlyphFormat;
 use crate::core::ui::immediate::UiCommands;
 
@@ -43,6 +42,8 @@ pub(crate) struct UiRenderer {
   build: UiBuild,
   /// The texts' built instances, kept from frame to frame
   texts: UiTextCache<UiInstance>,
+  /// The fragment runs' built instances, kept from frame to frame
+  fragments: UiRunCache,
   /// Where texts and lines are laid while built (cleared for each): never
   /// the frame's draw list, which holds the world's items
   scratch: DrawList,
@@ -61,6 +62,7 @@ impl UiRenderer {
       gpu: UiGpu::new(device, camera_layout),
       build: UiBuild::default(),
       texts: UiTextCache::default(),
+      fragments: UiRunCache::default(),
       scratch: DrawList::default(),
       runs: Vec::new(),
       frame: 0,
@@ -68,9 +70,10 @@ impl UiRenderer {
   }
 
   /// Build the frame's UI commands (see [`build_ui`]), its texts through the
-  /// text cache, begun in `env` (with `retain` off nothing is reused).
-  /// Glyphs are made through `targets`, but texts and lines are laid into
-  /// the renderer's scratch list, never `targets.list`.
+  /// text cache and its fragment runs through the run cache, both begun in
+  /// `env` (with `retain` off nothing is reused). Glyphs are made through
+  /// `targets`, but texts and lines are laid into the renderer's scratch
+  /// list, never `targets.list`.
   pub(crate) fn build(
     &mut self,
     commands: &UiCommands,
@@ -89,7 +92,7 @@ impl UiRenderer {
       warned: &mut *targets.warned,
     };
     self.texts.begin(env, retain);
-    let texts = &mut self.texts;
+    self.fragments.begin(env, retain);
     build_ui(
       &mut self.build,
       commands,
@@ -97,9 +100,11 @@ impl UiRenderer {
       sources,
       &mut scratch,
       real_time,
-      texts,
+      &mut self.texts,
+      &mut self.fragments,
     );
     self.texts.end();
+    self.fragments.end();
   }
 
   /// The last build's sprite textures, to make resident before
@@ -111,6 +116,18 @@ impl UiRenderer {
   /// The last build's texts: those built, then those reused
   pub(crate) fn text_counts(&self) -> (u32, u32) {
     (self.texts.built(), self.texts.reused())
+  }
+
+  /// The last build's fragment runs: those copied, then those built
+  pub(crate) fn run_counts(&self) -> (u32, u32) {
+    self.fragments.stats()
+  }
+
+  /// The glyph pages the kept fragment runs sample, with their generations
+  /// when built (tests)
+  #[cfg(test)]
+  pub(crate) fn kept_run_pages(&self) -> Vec<(crate::core::graphics::GlyphPage, u64)> {
+    self.fragments.kept_pages()
   }
 
   /// The frame keeps the UI image: only the bind groups it was drawn with

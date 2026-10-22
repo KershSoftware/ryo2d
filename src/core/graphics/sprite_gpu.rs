@@ -622,6 +622,13 @@ impl SpriteGpuRenderer {
     self.atlas.clear_glyph_page(page);
   }
 
+  /// Whether the glyph page `page` is kept from eviction in this frame
+  /// (`pin_glyph_page`; tests)
+  #[cfg(test)]
+  pub(crate) fn glyph_page_pinned(&self, page: GlyphPage) -> bool {
+    self.atlas.glyph_page_pinned(page) == Some(self.frame)
+  }
+
   /// Glyph pages cleared to make room so far
   pub(crate) fn glyph_evictions(&self) -> u64 {
     self.atlas.glyph_evictions()

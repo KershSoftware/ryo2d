@@ -507,3 +507,219 @@ fn a_run_with_a_text_effect_never_keeps() {
     retain.presented(false, true, 7);
   }
 }
+
+/// The fragment runs' kept instances (`UiRunCache`), apart from building
+mod runs {
+  use bytemuck::Zeroable;
+
+  use super::*;
+  use crate::core::graphics::{GlyphPage, TextureId};
+  use crate::core::render::ui_renderer::{TexNeed, UiInstance};
+  use crate::core::text::GlyphFormat;
+
+  const PAGE: GlyphPage = GlyphPage {
+    format: GlyphFormat::Mask,
+    index: 2,
+  };
+
+  /// Run 7 at `version`, its one draw in slot 0
+  fn tag(version: u64) -> FragmentRun {
+    FragmentRun {
+      id: UiId(7),
+      version,
+      base: 0,
+      layer: 0,
+      slot: 0,
+      draws: 0..1,
+    }
+  }
+
+  /// Keep run 7 as built at `version` in `env`: a glyph on `PAGE` (at
+  /// generation 5) and a sprite of texture 3 (its command's stamp 9)
+  fn keep(cache: &mut UiRunCache, version: u64, env: UiRenderEnv, animated: bool) {
+    let Some(mut kept) = cache.spare() else {
+      return;
+    };
+    kept.version = version;
+    kept.env = env;
+    kept.instances.push(UiInstance::zeroed());
+    kept.needs.push(TexNeed::Glyph(PAGE));
+    kept.resident.push((0, TextureId::for_test(3)));
+    kept.pages.push((PAGE, 5));
+    kept.stamps.push((0, 9));
+    kept.animated = animated;
+    cache.store(UiId(7), kept);
+  }
+
+  /// A cache that kept run 7 at version 1 in the frame before
+  fn holding(animated: bool) -> UiRunCache {
+    let mut cache = UiRunCache::default();
+    cache.begin(env(), true);
+    keep(&mut cache, 1, env(), animated);
+    cache.end();
+    cache.begin(env(), true);
+    cache
+  }
+
+  /// Whether the cache gives run 7 at `version`, drawn in `slot`, with
+  /// `PAGE` at generation `page` (`None`: no such page), texture 3 live or
+  /// not and its command's stamp `stamp`
+  fn found(
+    cache: &mut UiRunCache,
+    version: u64,
+    slot: u8,
+    page: Option<u64>,
+    live: bool,
+    stamp: u64,
+  ) -> bool {
+    cache
+      .get(&tag(version), slot, |_| page, |_| live, |_| stamp)
+      .is_some()
+  }
+
+  #[test]
+  fn a_kept_run_is_copied_while_it_is_the_same() {
+    let mut cache = UiRunCache::default();
+    cache.begin(env(), true);
+    assert!(!found(&mut cache, 1, 0, Some(5), true, 9), "nothing kept");
+    keep(&mut cache, 1, env(), false);
+    cache.end();
+    cache.begin(env(), true);
+    let kept = cache
+      .get(&tag(1), 0, |_| Some(5), |_| true, |_| 9)
+      .expect("the same run");
+    assert_eq!(kept.instances.len(), 1);
+    assert_eq!(cache.stats(), (1, 0));
+    // Drawn once a frame: a second run with its id is built
+    assert!(!found(&mut cache, 1, 0, Some(5), true, 9));
+    cache.end();
+    cache.begin(env(), true);
+    assert!(found(&mut cache, 1, 0, Some(5), true, 9), "and again");
+  }
+
+  /// What run 7 is asked with (see `found`)
+  struct Asked {
+    version: u64,
+    slot: u8,
+    page: Option<u64>,
+    live: bool,
+    stamp: u64,
+  }
+
+  /// Run 7 asked as it was kept
+  const SAME: Asked = Asked {
+    version: 1,
+    slot: 0,
+    page: Some(5),
+    live: true,
+    stamp: 9,
+  };
+
+  #[test]
+  fn a_kept_run_is_built_again_when_anything_it_was_built_from_changed() {
+    let cases = [
+      ("a new version", Asked { version: 2, ..SAME }),
+      (
+        "its page cleared",
+        Asked {
+          page: Some(6),
+          ..SAME
+        },
+      ),
+      ("its page gone", Asked { page: None, ..SAME }),
+      (
+        "its texture forgotten",
+        Asked {
+          live: false,
+          ..SAME
+        },
+      ),
+      ("a sprite changed in place", Asked { stamp: 10, ..SAME }),
+      (
+        "built in slot 0, drawn in a slot",
+        Asked { slot: 4, ..SAME },
+      ),
+    ];
+    for (what, asked) in cases {
+      let mut cache = holding(false);
+      let Asked {
+        version,
+        slot,
+        page,
+        live,
+        stamp,
+      } = asked;
+      assert!(
+        !found(&mut cache, version, slot, page, live, stamp),
+        "{what}"
+      );
+    }
+    let mut cache = holding(false);
+    assert!(found(&mut cache, 1, 0, Some(5), true, 9), "the same");
+    // A text with an effect reads the clock
+    let mut cache = holding(true);
+    assert!(!found(&mut cache, 1, 0, Some(5), true, 9), "animated");
+  }
+
+  #[test]
+  fn a_run_built_in_a_slot_is_copied_into_another_slot_but_not_slot_0() {
+    let mut cache = UiRunCache::default();
+    cache.begin(env(), true);
+    let mut kept = cache.spare().expect("retention on");
+    kept.version = 1;
+    kept.slot = 3;
+    cache.store(UiId(7), kept);
+    cache.end();
+    cache.begin(env(), true);
+    assert!(
+      found(&mut cache, 1, 5, Some(5), true, 9),
+      "slot indices are per frame"
+    );
+    cache.end();
+    cache.begin(env(), true);
+    assert!(!found(&mut cache, 1, 0, Some(5), true, 9));
+  }
+
+  #[test]
+  fn a_run_not_drawn_in_a_frame_or_built_in_another_environment_is_dropped() {
+    let mut cache = holding(false);
+    cache.end();
+    cache.begin(env(), true);
+    assert!(!found(&mut cache, 1, 0, Some(5), true, 9), "not drawn");
+
+    let mut cache = holding(false);
+    cache.end();
+    let scaled = UiRenderEnv {
+      space: UiSpace {
+        px_scale: 2.0,
+        ..env().space
+      },
+      ..env()
+    };
+    cache.begin(scaled, true);
+    assert!(!found(&mut cache, 1, 0, Some(5), true, 9), "another env");
+    // Kept in one environment, asked in another (as `begin` never lets)
+    let mut cache = UiRunCache::default();
+    cache.begin(env(), true);
+    keep(&mut cache, 1, scaled, false);
+    cache.end();
+    cache.begin(env(), true);
+    assert!(
+      !found(&mut cache, 1, 0, Some(5), true, 9),
+      "built elsewhere"
+    );
+  }
+
+  #[test]
+  fn with_retention_off_nothing_is_kept() {
+    let mut cache = holding(false);
+    cache.end();
+    cache.begin(env(), false);
+    assert!(cache.spare().is_none(), "no run is kept");
+    assert!(!found(&mut cache, 1, 0, Some(5), true, 9));
+    keep(&mut cache, 1, env(), false);
+    cache.end();
+    cache.begin(env(), true);
+    assert!(!found(&mut cache, 1, 0, Some(5), true, 9), "cleared");
+  }
+}

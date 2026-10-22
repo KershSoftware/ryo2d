@@ -437,6 +437,12 @@ impl TextureAtlas {
     self.glyphs.clear_page(page);
   }
 
+  /// The last frame the glyph page `page` was pinned in (tests)
+  #[cfg(test)]
+  pub(crate) fn glyph_page_pinned(&self, page: GlyphPage) -> Option<u64> {
+    self.glyphs.pinned(page)
+  }
+
   /// Keep the glyph page `page` from eviction in `frame`
   pub(crate) fn pin_glyph_page(&mut self, page: GlyphPage, frame: u64) {
     self.glyphs.pin(page, frame);

@@ -12,12 +12,14 @@ use crate::core::text::{Icon, TextIcons};
 use crate::core::ui::Rect;
 use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands, UiDraw};
 
+mod fragments;
 #[cfg(test)]
 mod gpu_tests;
 #[cfg(test)]
 mod tests;
 mod texts;
 
+pub(crate) use fragments::{KeptRun, UiRunCache};
 pub(crate) use texts::{TextSink, UiTextCache};
 
 /// What the UI's render step did in a frame
@@ -32,6 +34,10 @@ pub struct UiRenderStats {
   pub texts_reused: u32,
   /// Glyph pages cleared to make room since the renderer started
   pub glyph_evictions: u64,
+  /// Fragment runs whose instances were copied from an earlier frame
+  pub runs_copied: u32,
+  /// Fragment runs whose instances were built
+  pub runs_built: u32,
 }
 
 /// What a frame's UI pixels depend on besides its commands
@@ -420,7 +426,7 @@ fn stamped(command: &UiCommand) -> bool {
 /// What `command` draws from besides its own value: a sprite's version, or
 /// a text's icons (each sprite's version; a name's sprite and region in
 /// `icons`); 0 for neither
-fn stamp_of(command: &UiCommand, icons: Option<&TextIcons>) -> u64 {
+pub(crate) fn stamp_of(command: &UiCommand, icons: Option<&TextIcons>) -> u64 {
   match command {
     UiCommand::Sprite { sprite, .. } => sprite.generation(),
     UiCommand::Text { layout, .. } if !layout.icons.is_empty() => {

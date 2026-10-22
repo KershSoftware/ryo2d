@@ -2,7 +2,9 @@
 //! draw no pixel is culled before it is built, texts go through the text
 //! cache (a reused text is one copy of its instances), and a line becomes
 //! its builder's triangles. A draw in a scroll slot is built relative to
-//! the slot, which the shader moves and clips.
+//! the slot, which the shader moves and clips. A fragment's run is one copy
+//! of its kept instances while it is the same (`UiRunCache`); in a slot it
+//! is built unculled, so it stays the same while the slot scrolls.
 
 use std::borrow::Cow;
 
@@ -19,10 +21,12 @@ use crate::core::render::text::{TextPlacement, TextSources, TextTargets};
 use crate::core::render::ui::{
   line_of, rect_instance, scissor_of, sprite_instance, text_of, ui_view, ui_z,
 };
-use crate::core::render::ui_retain::{TextSink, UiRenderEnv, UiTextCache};
+use crate::core::render::ui_retain::{
+  KeptRun, TextSink, UiRenderEnv, UiRunCache, UiTextCache, stamp_of,
+};
 use crate::core::render::{DrawGlyph, DrawList, DrawPayload, PixelRect, UiSpace, reach};
 use crate::core::text::GlyphFormat;
-use crate::core::ui::immediate::{ScrollSlot, UiCommand, UiCommands, UiDraw};
+use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands, UiDraw};
 use crate::core::ui::{Color, Rect};
 
 /// A sprite instance whose uv and kind are fixed once its texture is
@@ -236,19 +240,31 @@ struct Placed<'d> {
   /// Where its slot draws it, in UI units (zero when built absolute)
   by: Vec2,
   /// Its clip where it is drawn: what its boxes, moved by `by`, are culled
-  /// against
-  cull: ClipRect,
+  /// against; `None` when nothing of it is culled (a fragment run's draw in
+  /// a slot, kept to be copied wherever the slot is drawn)
+  cull: Option<ClipRect>,
 }
 
 impl Placed<'_> {
-  /// Whether an item inside the box `min..max` (as built) can draw a pixel
-  /// where its slot draws it
+  /// Whether an item inside the box `min..max` (as built) is built: it can
+  /// draw a pixel where its slot draws it, or nothing of it is culled
   fn sees(&self, seen: &Seen, min: Vec2, max: Vec2) -> bool {
-    seen.sees(min + self.by, max + self.by, self.cull)
+    self
+      .cull
+      .is_none_or(|cull| seen.sees(min + self.by, max + self.by, cull))
   }
 }
 
 impl Frame<'_> {
+  /// Slot `slot` and its index when the shader moves the draws in it: one
+  /// of its slots, in the table, off the pixel-art target (see `place`)
+  fn shader_slot(&self, slot: u16) -> Option<(u8, &ScrollSlot)> {
+    if slot == 0 || usize::from(slot) >= SLOTS || self.env.on_target {
+      return None;
+    }
+    Some((u8::try_from(slot).ok()?, self.slots.get(usize::from(slot))?))
+  }
+
   /// Where `draw` is built (see [`Placed`]), or `None` when it draws
   /// nothing: its slot is not in the table, or its clip is empty.
   ///
@@ -257,23 +273,20 @@ impl Frame<'_> {
   /// its offset: under the slot's clip (which the shader reads from the
   /// slot), or, with a clip of its own (a text field's view in a scrolled
   /// list), under that clip relative to the slot, which the shader moves
-  /// and meets with the slot's. Past those slots, or
-  /// when its own clip does not fit a [`ClipRect`] relative to the slot, it
-  /// is built absolute, moved and clipped on the CPU (`UiDraw::placed`).
+  /// and meets with the slot's; with `cull` off nothing of it is culled
+  /// (the shader collapses what lies outside its clip). Past those slots,
+  /// or when its own clip does not fit a [`ClipRect`] relative to the slot,
+  /// it is built absolute, moved and clipped on the CPU (`UiDraw::placed`),
+  /// and culled.
   ///
   /// On the pixel-art target every draw in a slot is built absolute: there
   /// a quad's corners are rounded to whole pixels, and a corner on a half
   /// pixel rounds by the last bit of its position, which moving it on the
   /// CPU and moving it in the shader compute differently.
-  fn place<'d>(&self, draw: &'d UiDraw) -> Option<Placed<'d>> {
+  fn place<'d>(&self, draw: &'d UiDraw, cull: bool) -> Option<Placed<'d>> {
     let space = &self.env.space;
-    let k = usize::from(draw.slot);
-    if k > 0
-      && k < SLOTS
-      && !self.env.on_target
-      && let Some(slot) = self.slots.get(k)
-    {
-      match in_slot(draw, slot, k as u8, space) {
+    if let Some((k, slot)) = self.shader_slot(draw.slot) {
+      match in_slot(draw, slot, k, space, cull) {
         InSlot::Built(placed) => return Some(placed),
         InSlot::Nothing => return None,
         InSlot::Absolute => {}
@@ -288,8 +301,19 @@ impl Frame<'_> {
       scissor,
       mark: SlotMark::NONE,
       by: Vec2::ZERO,
-      cull: clip,
+      cull: Some(clip),
     })
+  }
+
+  /// Where a fragment run in slot `slot` is built
+  fn run_at(&self, slot: u16) -> RunAt {
+    if slot == 0 {
+      RunAt::Image
+    } else if let Some((k, _)) = self.shader_slot(slot) {
+      RunAt::Slot(k)
+    } else {
+      RunAt::Elsewhere
+    }
   }
 
   /// A rect command's instance where `placed` puts it, or `None` when it
@@ -318,20 +342,31 @@ enum InSlot<'d> {
   /// Built relative to the slot
   Built(Placed<'d>),
   /// It draws nothing: the slot's clip is empty, or its own clip does not
-  /// meet the slot's where the slot draws it
+  /// meet the slot's where the slot draws it (when culled)
   Nothing,
   /// Its own clip does not fit a [`ClipRect`] relative to the slot: it is
   /// built absolute
   Absolute,
 }
 
-/// `draw` built relative to `slot`, the shader's slot `k` (see
-/// [`Frame::place`])
-fn in_slot<'d>(draw: &'d UiDraw, slot: &ScrollSlot, k: u8, space: &UiSpace) -> InSlot<'d> {
-  let Some(scissor) = scissor_of(slot.clip, space) else {
-    return InSlot::Nothing;
+/// `draw` built relative to `slot`, the shader's slot `k`, culled where the
+/// slot draws it with `cull` on (see [`Frame::place`])
+fn in_slot<'d>(
+  draw: &'d UiDraw,
+  slot: &ScrollSlot,
+  k: u8,
+  space: &UiSpace,
+  cull: bool,
+) -> InSlot<'d> {
+  // Where the slot draws, to cull by: nothing under an empty clip
+  let slot_clip = if cull {
+    let Some(scissor) = scissor_of(slot.clip, space) else {
+      return InSlot::Nothing;
+    };
+    Some(ClipRect::of(scissor, space.image))
+  } else {
+    None
   };
-  let slot_clip = ClipRect::of(scissor, space.image);
   let by = slot.offset_units(space.px_scale);
   let command = Cow::Borrowed(&draw.command);
   let Some(own) = draw.command.clip_rect() else {
@@ -355,10 +390,16 @@ fn in_slot<'d>(draw: &'d UiDraw, slot: &ScrollSlot, k: u8, space: &UiSpace) -> I
     return InSlot::Absolute;
   };
   let clip = ClipRect::of(Some(own), space.image);
-  let cull = clip.in_slot(slot.offset, slot_clip);
-  if cull.is_empty() {
-    return InSlot::Nothing;
-  }
+  let cull = match slot_clip {
+    Some(slot_clip) => {
+      let cull = clip.in_slot(slot.offset, slot_clip);
+      if cull.is_empty() {
+        return InSlot::Nothing;
+      }
+      Some(cull)
+    }
+    None => None,
+  };
   InSlot::Built(Placed {
     command,
     clip,
@@ -437,6 +478,11 @@ fn paint_key(draw: &UiDraw) -> (i32, bool) {
 /// nothing; in a slot a text is not culled glyph by glyph (see
 /// `TextInstances`). Texts go through `texts`; without `sources` they are
 /// skipped. `targets.list` is scratch, cleared for each text and line.
+///
+/// When the commands arrive in the painter's order, a fragment's run is
+/// copied from `runs` while it is the same, or built whole and kept there
+/// (`build_run`); out of order every command is built, and no run is kept.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_ui(
   build: &mut UiBuild,
   commands: &UiCommands,
@@ -445,6 +491,7 @@ pub(crate) fn build_ui(
   targets: &mut TextTargets<'_>,
   real_time: f32,
   texts: &mut UiTextCache<UiInstance>,
+  runs: &mut UiRunCache,
 ) {
   build.clear();
   slot_uniforms(commands.slots(), &env.space, &mut build.slots);
@@ -455,29 +502,47 @@ pub(crate) fn build_ui(
     sources,
     real_time,
   };
-  let commands = commands.as_slice();
+  let draws = commands.as_slice();
   // Commands usually arrive in the painter's order: sort only when one is
   // out of it
   let mut last = None;
-  let in_order = commands.iter().all(|command| {
-    let key = Some(paint_key(command));
+  let in_order = draws.iter().all(|draw| {
+    let key = Some(paint_key(draw));
     let rising = key >= last;
     last = key;
     rising
   });
   if in_order {
-    for (index, draw) in (0..).zip(commands) {
-      build_command(build, &frame, targets, texts, index, draw);
+    // Each run's draws are contiguous, in the order of the runs' ranges;
+    // runs that do not hold their draws are not trusted
+    let held = if commands.runs_hold() {
+      commands.runs()
+    } else {
+      &[]
+    };
+    let mut next = held.iter().filter(|run| !run.draws.is_empty()).peekable();
+    let mut index = 0;
+    while let Some(draw) = draws.get(index as usize) {
+      match next.next_if(|run| run.draws.start == index) {
+        Some(run) => {
+          build_run(build, &frame, targets, texts, runs, run, draws);
+          index = run.draws.end;
+        }
+        None => {
+          build_command(build, &frame, targets, texts, index, draw, true);
+          index += 1;
+        }
+      }
     }
   } else {
     let mut painted = std::mem::take(&mut build.order);
     painted.clear();
-    painted.extend(0..commands.len() as u32);
+    painted.extend(0..draws.len() as u32);
     // Stable: commands equal in the order keep the order recorded
-    painted.sort_by_key(|&index| paint_key(&commands[index as usize]));
+    painted.sort_by_key(|&index| draws.get(index as usize).map(paint_key));
     for &index in &painted {
-      if let Some(draw) = commands.get(index as usize) {
-        build_command(build, &frame, targets, texts, index, draw);
+      if let Some(draw) = draws.get(index as usize) {
+        build_command(build, &frame, targets, texts, index, draw, true);
       }
     }
     build.order = painted;
@@ -490,8 +555,191 @@ pub(crate) fn build_ui(
   textures.extend(resident.iter().map(|&(_, texture)| texture));
 }
 
+/// Where a fragment run is built
+#[derive(Debug, Clone, Copy)]
+enum RunAt {
+  /// Slot 0: as its draws are, culled as any draw is
+  Image,
+  /// One of the shader's slots (its index): relative to the slot and
+  /// unculled, so its instances hold wherever the slot is drawn
+  Slot(u8),
+  /// Past the shader's slots or on the pixel-art target (moved and clipped
+  /// on the CPU), or in no slot of the table: built every frame
+  Elsewhere,
+}
+
+/// Build `run` (its draws `draws`' at its range), or copy its kept
+/// instances from `runs` when they are what building it gives (see
+/// `UiRunCache::get`). A copy pins the glyph pages it samples for the
+/// frame, and holds its texts in `texts` as drawing them would, so its next
+/// version reuses them. In a slot nothing of it is culled. Built, it is
+/// kept, unless it was built absolute (`RunAt::Elsewhere`, or a draw of it
+/// took the absolute path) or a full atlas cut a text of it short.
+fn build_run(
+  build: &mut UiBuild,
+  frame: &Frame<'_>,
+  targets: &mut TextTargets<'_>,
+  texts: &mut UiTextCache<UiInstance>,
+  runs: &mut UiRunCache,
+  run: &FragmentRun,
+  draws: &[UiDraw],
+) {
+  let start = run.draws.start;
+  let Some(own) = draws.get(start as usize..run.draws.end as usize) else {
+    return;
+  };
+  let at = frame.run_at(run.slot);
+  let slot = match at {
+    RunAt::Slot(k) => k,
+    RunAt::Image | RunAt::Elsewhere => 0,
+  };
+  let icons = frame.sources.map(|sources| sources.icons);
+  if !matches!(at, RunAt::Elsewhere) {
+    let sprites = &*targets.sprites;
+    let kept = runs.get(
+      run,
+      slot,
+      |page| sprites.glyph_page_generation(page),
+      |texture| sprites.is_texture(texture),
+      |k| {
+        own
+          .get(k as usize)
+          .map_or(0, |draw| stamp_of(&draw.command, icons))
+      },
+    );
+    if let Some(kept) = kept {
+      copy_run(build, kept, start, slot);
+      for &(page, _) in &kept.pages {
+        targets.sprites.pin_glyph_page(page);
+      }
+      texts.hold(&kept.texts);
+      return;
+    }
+  }
+  let from = Marks::of(build);
+  let drawn = texts.drawn_count();
+  let refused = targets.sprites.glyphs_refused();
+  let cull = !matches!(at, RunAt::Slot(_));
+  let mut absolute = matches!(at, RunAt::Elsewhere);
+  for (index, draw) in (start..).zip(own) {
+    absolute |= build_command(build, frame, targets, texts, index, draw, cull);
+  }
+  runs.count_built();
+  if absolute || targets.sprites.glyphs_refused() != refused {
+    return;
+  }
+  let Some(mut kept) = runs.spare() else {
+    return;
+  };
+  kept.version = run.version;
+  kept.slot = slot;
+  kept.note(own, icons);
+  kept.texts.extend_from_slice(texts.drawn_from(drawn));
+  if kept.animated || keep_built(&mut kept, build, from, start, targets.sprites) {
+    runs.store(run.id, kept);
+  } else {
+    runs.recycle(kept);
+  }
+}
+
+/// Where a run's build starts in a `UiBuild`
+#[derive(Debug, Clone, Copy)]
+struct Marks {
+  instances: usize,
+  sprites: usize,
+  resident: usize,
+}
+
+impl Marks {
+  fn of(build: &UiBuild) -> Marks {
+    Marks {
+      instances: build.instances.len(),
+      sprites: build.sprites.len(),
+      resident: build.resident.len(),
+    }
+  }
+}
+
+/// Keep in `kept` what a run whose first draw is the frame's `start`-th
+/// built into `build` from `from`: its instances, what each samples, its
+/// sprites and sprite textures (relative to its first instance and draw),
+/// and the glyph pages it samples with their generations. `false` when a
+/// page has none (it is not kept).
+fn keep_built(
+  kept: &mut KeptRun,
+  build: &UiBuild,
+  from: Marks,
+  start: u32,
+  sprites: &SpriteGpuRenderer,
+) -> bool {
+  let first = from.instances as u32;
+  kept
+    .instances
+    .extend_from_slice(build.instances.get(from.instances..).unwrap_or_default());
+  kept
+    .needs
+    .extend_from_slice(build.needs.get(from.instances..).unwrap_or_default());
+  let fixes = build.sprites.get(from.sprites..).unwrap_or_default();
+  kept.sprites.extend(fixes.iter().map(|fix| SpriteFix {
+    index: fix.index.saturating_sub(first),
+    ..*fix
+  }));
+  let resident = build.resident.get(from.resident..).unwrap_or_default();
+  kept.resident.extend(
+    resident
+      .iter()
+      .map(|&(command, texture)| (command.saturating_sub(start), texture)),
+  );
+  let KeptRun { needs, pages, .. } = kept;
+  for need in needs.iter() {
+    let TexNeed::Glyph(page) = *need else {
+      continue;
+    };
+    if pages.iter().any(|&(kept, _)| kept == page) {
+      continue;
+    }
+    match sprites.glyph_page_generation(page) {
+      Some(generation) => pages.push((page, generation)),
+      None => return false,
+    }
+  }
+  true
+}
+
+/// Append `kept`'s instances to `build`, the run's first draw the frame's
+/// `start`-th: its instances marked with `slot` (this frame's index of the
+/// slot it is in), its sprites and sprite textures moved to where its
+/// first instance and draw land
+fn copy_run(build: &mut UiBuild, kept: &KeptRun, start: u32, slot: u8) {
+  let first = build.instances.len();
+  build.instances.extend_from_slice(&kept.instances);
+  if kept.slot != slot
+    && let Some(copied) = build.instances.get_mut(first..)
+  {
+    for instance in copied {
+      *instance = instance.with_slot(slot);
+    }
+  }
+  build.needs.extend_from_slice(&kept.needs);
+  let first = first as u32;
+  build
+    .sprites
+    .extend(kept.sprites.iter().map(|fix| SpriteFix {
+      index: fix.index + first,
+      ..*fix
+    }));
+  build.resident.extend(
+    kept
+      .resident
+      .iter()
+      .map(|&(command, texture)| (command + start, texture)),
+  );
+}
+
 /// Build one draw (the `index`-th of the frame's), at its place in the
-/// painter's order, where `Frame::place` puts it
+/// painter's order, where `Frame::place` puts it, culled with `cull` on
+/// (see `Frame::place`). `true` when it was in one of the shader's slots
+/// but built absolute (its own clip does not fit relative to the slot).
 fn build_command(
   build: &mut UiBuild,
   frame: &Frame<'_>,
@@ -499,11 +747,13 @@ fn build_command(
   texts: &mut UiTextCache<UiInstance>,
   index: u32,
   draw: &UiDraw,
-) {
+  cull: bool,
+) -> bool {
   let space = &frame.env.space;
-  let Some(placed) = frame.place(draw) else {
-    return;
+  let Some(placed) = frame.place(draw, cull) else {
+    return false;
   };
+  let absolute = draw.slot != 0 && placed.mark.slot == 0;
   let command = &*placed.command;
   let z = ui_z(command.draw_layer(), draw.order);
   match command {
@@ -527,7 +777,7 @@ fn build_command(
       ..
     } => {
       let Some(instance) = sprite_instance(*rect, *uv, *tint) else {
-        return;
+        return absolute;
       };
       // Asked for and made resident culled or not (see `UiBuild::resident`)
       let texture = targets.sprites.texture_of(sprite);
@@ -540,11 +790,11 @@ fn build_command(
     UiCommand::Line { .. } => build_line(build, &frame.seen, targets.list, z, &placed),
     UiCommand::Text { .. } => {
       let Some(sources) = frame.sources else {
-        return;
+        return absolute;
       };
       let Some((layout, place)) = text_of(command, space, z, placed.scissor, frame.real_time)
       else {
-        return;
+        return absolute;
       };
       targets.list.clear();
       let mut sink = TextInstances {
@@ -558,6 +808,7 @@ fn build_command(
       texts.emit_into(sources, targets, &mut sink, layout, &place);
     }
   }
+  absolute
 }
 
 /// A rect draw's instance as `build_ui` builds it, or `None` when it draws
@@ -575,7 +826,7 @@ pub(crate) fn rect_built(
     sources: None,
     real_time: 0.0,
   };
-  let placed = frame.place(draw)?;
+  let placed = frame.place(draw, true)?;
   let UiCommand::Rect {
     rect,
     fill,
@@ -592,7 +843,8 @@ pub(crate) fn rect_built(
 /// A line command as its builder's triangles, one instance each, in index
 /// order. The line is culled by its box as the batch culls it; then a
 /// triangle wholly outside the clip is left out (lines are never snapped).
-/// Both are tested where `placed`'s slot draws them.
+/// Both are tested where `placed`'s slot draws them, unless nothing of it
+/// is culled.
 fn build_line(build: &mut UiBuild, seen: &Seen, list: &mut DrawList, z: i32, placed: &Placed<'_>) {
   let UiBuild {
     instances,
@@ -610,9 +862,10 @@ fn build_line(build: &mut UiBuild, seen: &Seen, list: &mut DrawList, z: i32, pla
   let Some(line) = list.triangles(0) else {
     return;
   };
-  if !seen
-    .view
-    .is_visible(line.min + placed.by, line.max + placed.by)
+  if placed.cull.is_some()
+    && !seen
+      .view
+      .is_visible(line.min + placed.by, line.max + placed.by)
   {
     return;
   }
@@ -637,7 +890,10 @@ fn build_line(build: &mut UiBuild, seen: &Seen, list: &mut DrawList, z: i32, pla
       continue;
     };
     let (min, max) = (a.0.min(b.0).min(c.0), a.0.max(b.0).max(c.0));
-    if seen.meets(min + placed.by, max + placed.by, placed.cull) {
+    let shown = placed
+      .cull
+      .is_none_or(|cull| seen.meets(min + placed.by, max + placed.by, cull));
+    if shown {
       let triangle = UiInstance::triangle([a, b, c], params, placed.clip);
       instances.push(placed.mark.on(triangle));
       needs.push(TexNeed::None);

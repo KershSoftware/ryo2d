@@ -993,7 +993,7 @@ mod building {
   use crate::core::render::ui::{
     line_of, rect_instance, scissor_of, sprite_instance, text_of, ui_z,
   };
-  use crate::core::render::ui_retain::{UiRenderEnv, UiTextCache};
+  use crate::core::render::ui_retain::{UiRenderEnv, UiRunCache, UiTextCache};
   use crate::core::render::{DrawList, UiSpace};
   use crate::core::text::{
     Fonts, GlyphRasterizer, Icon, PlacedIcon, TextEffects, TextEngine, TextIcons, TextLayout,
@@ -1163,6 +1163,7 @@ mod building {
       &mut writes.targets(),
       0.0,
       &mut texts,
+      &mut UiRunCache::default(),
     );
     texts.end();
     build
@@ -1737,6 +1738,7 @@ mod building {
             &mut writes.targets(),
             0.0,
             &mut texts,
+            &mut UiRunCache::default(),
           );
           texts.end();
           build
@@ -1868,6 +1870,7 @@ mod building {
             &mut writes.targets(),
             0.0,
             &mut texts,
+            &mut UiRunCache::default(),
           );
           texts.end();
           (build, (texts.built(), texts.reused()))
@@ -1999,6 +2002,7 @@ mod building {
             &mut writes.targets(),
             0.0,
             texts,
+            &mut UiRunCache::default(),
           );
           texts.end();
           (build, (texts.built(), texts.reused()))
@@ -2764,6 +2768,7 @@ mod building {
             &mut writes.targets(),
             0.0,
             &mut texts,
+            &mut UiRunCache::default(),
           );
           texts.end();
           let slot = commands.slots().len() as u8 - 1;
@@ -2818,6 +2823,7 @@ mod building {
             &mut writes.targets(),
             0.0,
             &mut texts,
+            &mut UiRunCache::default(),
           );
           texts.end();
           assert!(!build.instances.is_empty());
@@ -2869,6 +2875,7 @@ mod building {
             &mut writes.targets(),
             0.0,
             &mut texts,
+            &mut UiRunCache::default(),
           );
           texts.end();
           counts.push((texts.built(), texts.reused()));
@@ -2876,6 +2883,655 @@ mod building {
         }
         assert_eq!(counts, [(1, 0), (1, 0)]);
         assert!(builds[0] < builds[1], "{builds:?}");
+      }
+    }
+  }
+  /// A fragment run's instances, built once per version and copied after
+  mod runs {
+    use super::*;
+    use crate::core::ui::UiId;
+    use crate::core::ui::immediate::FragmentRun;
+
+    /// The run's root
+    const ID: UiId = UiId(41);
+
+    /// A loose rect, then a fragment's run in `slot` at `version` (three
+    /// rects stacked 20 apart from y = 0, a sprite, a line and, with
+    /// `label`, a text), then a loose rect in that slot at y = 80; the
+    /// frame's slots `slots` (pushed after slot 0)
+    fn with_run(
+      version: u64,
+      slots: &[ScrollSlot],
+      slot: u16,
+      swatch: &SpriteHandle,
+      label: Option<&Arc<TextLayout>>,
+    ) -> UiCommands {
+      let mut commands = UiCommands::default();
+      for &slot in slots {
+        commands.push_slot(slot);
+      }
+      commands.push(0, 0, rect_at(200.0, 4.0, None, 0));
+      let start = commands.position();
+      let mut order = 10;
+      let mut push = |commands: &mut UiCommands, command: UiCommand| {
+        commands.push(order, slot, command);
+        order += 1;
+      };
+      for k in 0..3 {
+        push(&mut commands, rect_at(4.0, 20.0 * k as f32, None, 0));
+      }
+      let picture = Rect::new(30.0, 2.0, 16.0, 16.0);
+      push(
+        &mut commands,
+        sprite(swatch, picture, Filter::Default, None),
+      );
+      let points = [Vec2::new(5.0, 5.0), Vec2::new(60.0, 30.0)];
+      push(&mut commands, line(&points, None));
+      if let Some(label) = label {
+        push(&mut commands, text(label, Vec2::new(50.0, 4.0), None));
+      }
+      let end = commands.position();
+      commands.push_run(FragmentRun {
+        id: ID,
+        version,
+        base: 10,
+        layer: 0,
+        slot,
+        draws: start..end,
+      });
+      commands.push(order, slot, rect_at(4.0, 80.0, None, 0));
+      commands
+    }
+
+    /// Each of `frames` built in turn through one text cache and one run
+    /// cache in `env`, retention `retain`: each build, with the runs it
+    /// copied and built
+    fn through(
+      writes: &mut Writes,
+      frames: &[UiCommands],
+      env: UiRenderEnv,
+      sources: Option<&TextSources<'_>>,
+      retain: bool,
+    ) -> Vec<(UiBuild, (u32, u32))> {
+      let mut texts = UiTextCache::<UiInstance>::default();
+      let mut runs = UiRunCache::default();
+      frames
+        .iter()
+        .map(|commands| {
+          let mut build = UiBuild::default();
+          texts.begin(env, retain);
+          runs.begin(env, retain);
+          build_ui(
+            &mut build,
+            commands,
+            &env,
+            sources,
+            &mut writes.targets(),
+            0.0,
+            &mut texts,
+            &mut runs,
+          );
+          texts.end();
+          runs.end();
+          (build, runs.stats())
+        })
+        .collect()
+    }
+
+    /// Whether two builds are the same instances bit for bit, sampling the
+    /// same, with the same sprites and sprite textures
+    fn same(a: &UiBuild, b: &UiBuild) -> bool {
+      bytemuck::cast_slice::<UiInstance, u8>(&a.instances)
+        == bytemuck::cast_slice::<UiInstance, u8>(&b.instances)
+        && a.needs == b.needs
+        && a.sprites == b.sprites
+        && a.sprite_textures() == b.sprite_textures()
+    }
+
+    /// The counts of each build in `built`
+    fn counts(built: &[(UiBuild, (u32, u32))]) -> Vec<(u32, u32)> {
+      built.iter().map(|(_, counts)| *counts).collect()
+    }
+
+    #[test]
+    fn the_second_frame_copies_the_run() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let swatch = super::super::gradient(6, 5);
+      let frames = [
+        with_run(1, &[], 0, &swatch, None),
+        with_run(1, &[], 0, &swatch, None),
+      ];
+      let built = through(&mut writes, &frames, env(), None, true);
+      assert_eq!(counts(&built), [(0, 1), (1, 0)]);
+      let (first, second) = (&built[0].0, &built[1].0);
+      assert!(same(first, second), "the copy is the build");
+      // Three rects, the sprite and the line's triangles, the loose rects
+      assert!(first.instances.len() >= 7, "{}", first.instances.len());
+      assert_eq!(second.sprites.len(), 1);
+    }
+
+    #[test]
+    fn a_new_version_rebuilds_the_run() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let swatch = super::super::gradient(6, 5);
+      let frames = [1, 1, 2, 2].map(|version| with_run(version, &[], 0, &swatch, None));
+      let built = through(&mut writes, &frames, env(), None, true);
+      assert_eq!(counts(&built), [(0, 1), (1, 0), (0, 1), (1, 0)]);
+    }
+
+    #[test]
+    fn with_retention_off_every_run_is_built() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let swatch = super::super::gradient(6, 5);
+      let frames = [1, 1, 1].map(|version| with_run(version, &[], 0, &swatch, None));
+      let built = through(&mut writes, &frames, env(), None, false);
+      assert_eq!(counts(&built), [(0, 1), (0, 1), (0, 1)]);
+      let on = through(&mut writes, &frames, env(), None, true);
+      for ((off, _), (on, _)) in built.iter().zip(&on) {
+        assert!(same(off, on), "built or copied, the same instances");
+      }
+    }
+
+    /// A slot drawn at `offset`, under a clip from y = 0 that is `high`
+    fn slot_at(offset: [i32; 2], high: f32) -> ScrollSlot {
+      ScrollSlot {
+        offset,
+        clip: Some(Rect::new(0.0, 0.0, 300.0, high)),
+        cull: None,
+      }
+    }
+
+    #[test]
+    fn a_slots_run_is_built_unculled() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let swatch = super::super::gradient(6, 5);
+      // The slot's clip shows the first rect only, and not the loose rect
+      // at y = 80 after the run
+      let commands = with_run(1, &[slot_at([0, 0], 15.0)], 1, &swatch, None);
+      let built = through(&mut writes, &[commands], env(), None, false);
+      let build = &built[0].0;
+      let in_slot: Vec<&UiInstance> = build
+        .instances
+        .iter()
+        .filter(|instance| instance.slot() == 1)
+        .collect();
+      let rects = in_slot
+        .iter()
+        .filter(|instance| instance.kind() == UiKind::RECT)
+        .count();
+      assert_eq!(rects, 3, "the run's three rects; the loose one culled");
+      assert_eq!(build.sprites.len(), 1, "the run's sprite");
+      assert!(
+        in_slot
+          .iter()
+          .any(|instance| instance.kind() == UiKind::LINE),
+        "the run's line"
+      );
+      // Its commands where the slot puts them, in slot 0: culled
+      let mut placed = UiCommands::default();
+      for draw in build_commands(&with_run(1, &[slot_at([0, 0], 15.0)], 1, &swatch, None)) {
+        placed.push(draw.0, 0, draw.1);
+      }
+      let culled = through(&mut writes, &[placed], env(), None, false);
+      let rects = culled[0]
+        .0
+        .instances
+        .iter()
+        .filter(|instance| instance.kind() == UiKind::RECT)
+        .count();
+      assert_eq!(
+        rects, 2,
+        "the run's first rect and the loose rect in slot 0"
+      );
+    }
+
+    /// `commands`' draws where they are drawn (moved by their slots), with
+    /// their orders
+    fn build_commands(commands: &UiCommands) -> Vec<(u32, UiCommand)> {
+      commands
+        .as_slice()
+        .iter()
+        .filter_map(|draw| {
+          let command = draw.placed(commands.slots(), 1.0)?;
+          Some((draw.order, command.into_owned()))
+        })
+        .collect()
+    }
+
+    #[test]
+    fn a_copied_run_is_what_building_it_gives_as_its_slot_scrolls() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let swatch = super::super::gradient(6, 5);
+      // A list scrolling under a clip that moves as an outer list scrolls
+      // it (a nested slot), and a slot pushed before it on odd frames, so
+      // its index changes
+      let frames: Vec<UiCommands> = (0..6)
+        .map(|frame: i32| {
+          let mut slots = Vec::new();
+          if frame % 2 == 1 {
+            slots.push(ScrollSlot::NONE);
+          }
+          slots.push(ScrollSlot {
+            offset: [0, 10 - 7 * frame],
+            clip: Some(Rect::new(0.0, 8.0 - frame as f32, 200.0, 50.0)),
+            cull: None,
+          });
+          let slot = slots.len() as u16;
+          with_run(1, &slots, slot, &swatch, None)
+        })
+        .collect();
+      let kept = through(&mut writes, &frames, env(), None, true);
+      let fresh = through(&mut writes, &frames, env(), None, false);
+      assert_eq!(counts(&kept)[1..], [(1, 0); 5]);
+      for (frame, ((kept, _), (fresh, _))) in kept.iter().zip(&fresh).enumerate() {
+        assert!(same(kept, fresh), "frame {frame}");
+        let slot = frames[frame].slots().len() as u8 - 1;
+        let run = kept.instances.iter().filter(|i| i.slot() != 0);
+        assert!(run.clone().count() >= 5, "frame {frame}");
+        assert!(run.clone().all(|i| i.slot() == slot), "frame {frame}");
+        // Its clip is the slot's, which the shader takes from the slot
+        let image = ClipRect::of(None, env().space.image);
+        assert!(run.clone().all(|i| i.clip() == image), "frame {frame}");
+      }
+    }
+
+    #[test]
+    fn a_run_built_absolute_is_never_kept() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let swatch = super::super::gradient(6, 5);
+      let twice =
+        |slots: &[ScrollSlot], slot: u16| [0, 1].map(|_| with_run(1, slots, slot, &swatch, None));
+      // Past the shader's slots
+      let past = vec![slot_at([0, 3], 100.0); 300];
+      let built = through(&mut writes, &twice(&past, 299), env(), None, true);
+      assert_eq!(counts(&built), [(0, 1), (0, 1)], "past the slots");
+      // Kept in slot 0, then drawn past the slots: moved on the CPU, not
+      // copied as it was
+      let frames = [
+        with_run(1, &past, 0, &swatch, None),
+        with_run(1, &past, 299, &swatch, None),
+      ];
+      let built = through(&mut writes, &frames, env(), None, true);
+      assert_eq!(
+        counts(&built),
+        [(0, 1), (0, 1)],
+        "from slot 0 past the slots"
+      );
+      // On the pixel-art target, in a slot; in slot 0 it is kept there
+      let pixel_art = env_at(1.0, true);
+      let frames = twice(&[slot_at([0, 3], 100.0)], 1);
+      let built = through(&mut writes, &frames, pixel_art, None, true);
+      assert_eq!(counts(&built), [(0, 1), (0, 1)], "on the pixel-art target");
+      let built = through(&mut writes, &twice(&[], 0), pixel_art, None, true);
+      assert_eq!(counts(&built), [(0, 1), (1, 0)], "slot 0 on the target");
+      // A run with a draw whose own clip does not fit relative to the slot
+      // (a text field 70,000 pixels down a list), after one that fits
+      let far = |mut commands: UiCommands| {
+        let clip = Some(Rect::new(4.0, 70_000.0, 40.0, 10.0));
+        let start = commands.position();
+        commands.push(30, 1, rect_at(4.0, 69_995.0, clip, 0));
+        commands.push(31, 1, rect_at(4.0, 0.0, None, 0));
+        commands.push_run(FragmentRun {
+          id: UiId(42),
+          version: 1,
+          base: 30,
+          layer: 0,
+          slot: 1,
+          draws: start..commands.position(),
+        });
+        commands
+      };
+      let frames = twice(&[slot_at([0, -69_990], 100.0)], 1).map(far);
+      let built = through(&mut writes, &frames, env(), None, true);
+      assert_eq!(counts(&built), [(0, 2), (1, 1)], "only the run in reach");
+    }
+
+    #[cfg(feature = "default-fonts")]
+    #[test]
+    fn a_runs_text_is_copied_with_it() {
+      use crate::core::text::{RichText, TextLayoutOptions, TextStyle};
+
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = NoFonts::new();
+      fonts.fonts = Fonts::with_builtins();
+      fonts.engine.sync(&fonts.fonts);
+      let layout = fonts
+        .engine
+        .layout(
+          &RichText::new("Kept 42"),
+          &TextStyle::default(),
+          &TextLayoutOptions::default(),
+          1.0,
+        )
+        .expect("laid out");
+      let sources = fonts.sources();
+      let swatch = super::super::gradient(6, 5);
+      for (slots, slot) in [(vec![], 0), (vec![slot_at([0, 4], 60.0)], 1)] {
+        let frames = [1, 1, 1].map(|_| with_run(1, &slots, slot, &swatch, Some(&layout)));
+        let built = through(&mut writes, &frames, env(), Some(&sources), true);
+        assert_eq!(counts(&built), [(0, 1), (1, 0), (1, 0)], "slot {slot}");
+        assert!(same(&built[0].0, &built[2].0), "slot {slot}");
+        let glyphs = built[2]
+          .0
+          .needs
+          .iter()
+          .filter(|need| matches!(need, TexNeed::Glyph(_)))
+          .count();
+        assert!(glyphs >= 5, "slot {slot}: {glyphs} glyphs");
+      }
+    }
+
+    /// A copied run's texts are drawn with it: the text cache keeps them,
+    /// so the run's next version (a hover in it, its list's interest moving
+    /// on) reuses them
+    #[cfg(feature = "default-fonts")]
+    #[test]
+    fn a_copied_runs_texts_stay_in_the_text_cache() {
+      use crate::core::text::{RichText, TextLayoutOptions, TextStyle};
+
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = NoFonts::new();
+      fonts.fonts = Fonts::with_builtins();
+      fonts.engine.sync(&fonts.fonts);
+      let layout = fonts
+        .engine
+        .layout(
+          &RichText::new("Held 3"),
+          &TextStyle::default(),
+          &TextLayoutOptions::default(),
+          1.0,
+        )
+        .expect("laid out");
+      let sources = fonts.sources();
+      let swatch = super::super::gradient(6, 5);
+      for (slots, slot) in [(vec![], 0), (vec![slot_at([0, 4], 60.0)], 1)] {
+        let (mut texts, mut runs) = (UiTextCache::<UiInstance>::default(), UiRunCache::default());
+        let mut counts = Vec::new();
+        for version in [1, 1, 1, 2, 2] {
+          let mut build = UiBuild::default();
+          texts.begin(env(), true);
+          runs.begin(env(), true);
+          build_ui(
+            &mut build,
+            &with_run(version, &slots, slot, &swatch, Some(&layout)),
+            &env(),
+            Some(&sources),
+            &mut writes.targets(),
+            0.0,
+            &mut texts,
+            &mut runs,
+          );
+          texts.end();
+          runs.end();
+          counts.push((runs.stats(), (texts.built(), texts.reused())));
+        }
+        // A copy draws the text from glyphs built earlier: reused
+        let expected = [
+          ((0, 1), (1, 0)),
+          ((1, 0), (0, 1)),
+          ((1, 0), (0, 1)),
+          ((0, 1), (0, 1)),
+          ((1, 0), (0, 1)),
+        ];
+        assert_eq!(counts, expected, "slot {slot}");
+      }
+    }
+
+    /// Two runs draw one layout (two rows' equal labels share it): a copy
+    /// of the first holds its text where drawing it would, so the second,
+    /// built anew, still finds its own entry
+    #[cfg(feature = "default-fonts")]
+    #[test]
+    fn a_held_text_keeps_its_place_among_texts_alike() {
+      use crate::core::text::{RichText, TextLayoutOptions, TextStyle};
+
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = NoFonts::new();
+      fonts.fonts = Fonts::with_builtins();
+      fonts.engine.sync(&fonts.fonts);
+      let layout = fonts
+        .engine
+        .layout(
+          &RichText::new("On"),
+          &TextStyle::default(),
+          &TextLayoutOptions::default(),
+          1.0,
+        )
+        .expect("laid out");
+      let sources = fonts.sources();
+      // Rows 1 and 2, each a run of its label, at their versions
+      let frame = |versions: [u64; 2]| {
+        let mut commands = UiCommands::default();
+        for (row, version) in (0u32..).zip(versions) {
+          let start = commands.position();
+          let origin = Vec2::new(8.0, 10.0 + 30.0 * row as f32);
+          commands.push(10 * row, 0, text(&layout, origin, None));
+          commands.push_run(FragmentRun {
+            id: UiId(u64::from(row) + 1),
+            version,
+            base: 10 * row,
+            layer: 0,
+            slot: 0,
+            draws: start..commands.position(),
+          });
+        }
+        commands
+      };
+      let (mut texts, mut runs) = (UiTextCache::<UiInstance>::default(), UiRunCache::default());
+      let mut counts = Vec::new();
+      for versions in [[1, 1], [1, 2], [3, 2]] {
+        let mut build = UiBuild::default();
+        texts.begin(env(), true);
+        runs.begin(env(), true);
+        build_ui(
+          &mut build,
+          &frame(versions),
+          &env(),
+          Some(&sources),
+          &mut writes.targets(),
+          0.0,
+          &mut texts,
+          &mut runs,
+        );
+        texts.end();
+        runs.end();
+        counts.push((runs.stats(), (texts.built(), texts.reused())));
+      }
+      let expected = [
+        ((0, 2), (2, 0)),
+        // The first copied, the second built from its kept text
+        ((1, 1), (0, 2)),
+        // The first built from its kept text, the second copied
+        ((1, 1), (0, 2)),
+      ];
+      assert_eq!(counts, expected);
+    }
+
+    /// A run whose text a full atlas cut short (glyphs refused for the
+    /// frame) is not kept: built in the next frame, its text is whole
+    #[cfg(feature = "default-fonts")]
+    #[test]
+    fn a_run_a_full_atlas_cut_short_is_built_again() {
+      use crate::core::text::{RichText, TextLayoutOptions, TextStyle};
+
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = NoFonts::new();
+      fonts.fonts = Fonts::with_builtins();
+      fonts.engine.sync(&fonts.fonts);
+      let mut laid = |text: &str, size: f32| {
+        fonts
+          .engine
+          .layout(
+            &RichText::new(text),
+            &TextStyle::default().size(size),
+            &TextLayoutOptions::default(),
+            1.0,
+          )
+          .expect("laid out")
+      };
+      // Large glyphs enough to fill every glyph page in one frame, laid
+      // below the image (culled, but made), then the label: its glyphs, as
+      // wide, find no room left
+      let chars = "ABCDEFGHIJKLNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz0123456789";
+      let flood: Vec<_> = [500.0, 480.0, 460.0, 440.0, 420.0]
+        .into_iter()
+        .map(|size| laid(chars, size))
+        .collect();
+      let label = laid("MW", 500.0);
+      let sources = fonts.sources();
+      let env = UiRenderEnv {
+        space: UiSpace {
+          size: Vec2::new(2048.0, 1024.0),
+          px_scale: 1.0,
+          image: (2048, 1024),
+          mouse_scale: 1.0,
+        },
+        ..env()
+      };
+      // The run, after the flood when `flooded`: its label alone
+      let frame = |flooded: bool| {
+        let mut commands = UiCommands::default();
+        if flooded {
+          for (order, layout) in (0..).zip(&flood) {
+            commands.push(order, 0, text(layout, Vec2::new(0.0, 1500.0), None));
+          }
+        }
+        let start = commands.position();
+        commands.push(10, 0, text(&label, Vec2::new(8.0, 8.0), None));
+        commands.push_run(FragmentRun {
+          id: ID,
+          version: 1,
+          base: 10,
+          layer: 0,
+          slot: 0,
+          draws: start..commands.position(),
+        });
+        commands
+      };
+      let (mut texts, mut runs) = (UiTextCache::<UiInstance>::default(), UiRunCache::default());
+      let (mut counts, mut glyphs) = (Vec::new(), Vec::new());
+      for flooded in [true, false] {
+        let mut build = UiBuild::default();
+        texts.begin(env, true);
+        runs.begin(env, true);
+        build_ui(
+          &mut build,
+          &frame(flooded),
+          &env,
+          Some(&sources),
+          &mut writes.targets(),
+          0.0,
+          &mut texts,
+          &mut runs,
+        );
+        texts.end();
+        runs.end();
+        counts.push(runs.stats());
+        // The label's glyphs (the flood's are culled)
+        glyphs.push(build.instances.len());
+        // The next frame
+        let (device, queue) = (Arc::clone(&writes.device), Arc::clone(&writes.queue));
+        let list = DrawList::default();
+        let textures = build.sprite_textures().to_vec();
+        writes
+          .sprites
+          .prepare_textures(&device, &queue, &list, &textures);
+      }
+      assert_eq!(glyphs[1], 2, "the whole label");
+      assert!(glyphs[0] < glyphs[1], "the label cut short: {glyphs:?}");
+      assert_eq!(counts, [(0, 1), (0, 1)], "built again");
+    }
+
+    /// A copied run's glyphs were looked up in an earlier frame: the copy
+    /// keeps the pages they sit on from eviction for the frame, so a glyph
+    /// made later in it cannot clear one under them
+    #[cfg(feature = "default-fonts")]
+    #[test]
+    fn a_copied_run_pins_the_glyph_pages_it_samples() {
+      use crate::core::text::{RichText, TextLayoutOptions, TextStyle};
+
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let mut fonts = NoFonts::new();
+      fonts.fonts = Fonts::with_builtins();
+      fonts.engine.sync(&fonts.fonts);
+      let layout = fonts
+        .engine
+        .layout(
+          &RichText::new("Pinned 7"),
+          &TextStyle::default(),
+          &TextLayoutOptions::default(),
+          1.0,
+        )
+        .expect("laid out");
+      let sources = fonts.sources();
+      let swatch = super::super::gradient(6, 5);
+      let commands = with_run(1, &[], 0, &swatch, Some(&layout));
+      let (mut texts, mut runs) = (UiTextCache::<UiInstance>::default(), UiRunCache::default());
+      let mut pages = Vec::new();
+      for frame in 0..2 {
+        let mut build = UiBuild::default();
+        texts.begin(env(), true);
+        runs.begin(env(), true);
+        build_ui(
+          &mut build,
+          &commands,
+          &env(),
+          Some(&sources),
+          &mut writes.targets(),
+          0.0,
+          &mut texts,
+          &mut runs,
+        );
+        texts.end();
+        runs.end();
+        pages = build
+          .needs
+          .iter()
+          .filter_map(|need| match need {
+            TexNeed::Glyph(page) => Some(*page),
+            _ => None,
+          })
+          .collect();
+        if frame == 0 {
+          // The next frame
+          let (device, queue) = (Arc::clone(&writes.device), Arc::clone(&writes.queue));
+          let list = DrawList::default();
+          let textures = build.sprite_textures().to_vec();
+          writes
+            .sprites
+            .prepare_textures(&device, &queue, &list, &textures);
+          let unpinned = pages
+            .iter()
+            .all(|&page| !writes.sprites.glyph_page_pinned(page));
+          assert!(unpinned, "built, not pinned");
+        }
+      }
+      assert_eq!(runs.stats(), (1, 0), "copied");
+      assert!(!pages.is_empty());
+      for page in pages {
+        assert!(writes.sprites.glyph_page_pinned(page), "{page:?}");
       }
     }
   }

@@ -39,7 +39,7 @@ const SPARE: usize = 64;
 /// reads an item's z, and time only feeds effects, whose texts are never
 /// kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct TextKey {
+pub(crate) struct TextKey {
   layout: usize,
   reveal: Option<[u32; 2]>,
   opacity: u32,
@@ -122,6 +122,10 @@ struct Built<G> {
 #[derive(Debug)]
 pub(crate) struct UiTextCache<G> {
   built: FastMap<TextKey, Built<G>>,
+  /// The keys (each a key's first) of the texts drawn this frame through
+  /// the cache, in the order drawn: a fragment run built takes its texts'
+  /// (`drawn_from`), to hold them while it is copied (`hold`)
+  drawn: Vec<TextKey>,
   spare: Vec<Vec<G>>,
   spare_seeds: Vec<Vec<GlyphSeed>>,
   env: Option<UiRenderEnv>,
@@ -136,6 +140,7 @@ impl<G> Default for UiTextCache<G> {
   fn default() -> Self {
     Self {
       built: FastMap::default(),
+      drawn: Vec::new(),
       spare: Vec::new(),
       spare_seeds: Vec::new(),
       env: None,
@@ -159,6 +164,7 @@ impl<G: Clone> UiTextCache<G> {
     self.frame += 1;
     self.texts_built = 0;
     self.texts_reused = 0;
+    self.drawn.clear();
   }
 
   /// Draw a text into `sink`: the glyphs built for it earlier when it has
@@ -183,6 +189,7 @@ impl<G: Clone> UiTextCache<G> {
       return;
     }
     let mut key = TextKey::of(layout, place, sink.variant());
+    self.drawn.push(key);
     let frame = self.frame;
     let reused = match self.built.get_mut(&key) {
       // Another text with this key was drawn first: this one has an entry
@@ -315,7 +322,48 @@ impl<G: Clone> UiTextCache<G> {
   /// Drop everything built
   pub(crate) fn clear(&mut self) {
     self.built.clear();
+    self.drawn.clear();
     self.env = None;
+  }
+
+  /// How many texts have been drawn through the cache this frame: a
+  /// fragment run being built takes its texts' keys from here (`drawn_from`)
+  pub(crate) fn drawn_count(&self) -> usize {
+    self.drawn.len()
+  }
+
+  /// The keys of the texts drawn through the cache this frame since
+  /// `drawn_count` gave `from`
+  pub(crate) fn drawn_from(&self, from: usize) -> &[TextKey] {
+    self.drawn.get(from..).unwrap_or_default()
+  }
+
+  /// The texts of `keys` (as `drawn_from` gave them) were drawn here with a
+  /// copied fragment run, from glyphs built in an earlier frame: each is
+  /// counted reused, kept as drawing it through the cache keeps it, and
+  /// counted among the texts with its key drawn so far in the frame, so
+  /// those drawn after it find the entries they would have found
+  pub(crate) fn hold(&mut self, keys: &[TextKey]) {
+    let frame = self.frame;
+    let held = u32::try_from(keys.len()).unwrap_or(u32::MAX);
+    self.texts_reused = self.texts_reused.saturating_add(held);
+    for &key in keys {
+      let mut key = key;
+      match self.built.get_mut(&key) {
+        Some(first) if first.used == frame => {
+          key.nth = first.drawn;
+          first.drawn += 1;
+          if let Some(built) = self.built.get_mut(&key) {
+            built.used = frame;
+          }
+        }
+        Some(first) => {
+          first.drawn = 1;
+          first.used = frame;
+        }
+        None => {}
+      }
+    }
   }
 
   /// Texts built in the frame

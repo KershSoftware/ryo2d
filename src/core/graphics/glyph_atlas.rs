@@ -222,6 +222,12 @@ impl GlyphShelves {
     Some(self.pages.get(&format)?.get(index)?.generation)
   }
 
+  /// The last frame page `index` of `format` was pinned in (tests)
+  #[cfg(test)]
+  fn page_pinned(&self, format: GlyphFormat, index: usize) -> Option<u64> {
+    Some(self.pages.get(&format)?.get(index)?.pinned)
+  }
+
   /// Keep page `index` of `format` from eviction in `frame`: something
   /// built from its glyphs earlier is drawn in it
   pub(crate) fn pin(&mut self, format: GlyphFormat, index: usize, frame: u64) {
@@ -330,6 +336,14 @@ impl GlyphAtlas {
     self
       .shelves
       .clear_page(page.format, usize::from(page.index));
+  }
+
+  /// The last frame `page` was pinned in (tests)
+  #[cfg(test)]
+  pub(crate) fn pinned(&self, page: GlyphPage) -> Option<u64> {
+    self
+      .shelves
+      .page_pinned(page.format, usize::from(page.index))
   }
 
   /// Keep `page` from eviction in `frame`

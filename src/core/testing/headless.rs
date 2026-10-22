@@ -446,6 +446,16 @@ impl HeadlessEngine {
     self.engine.ui_renderer()
   }
 
+  /// The generation of glyph page `page` (`None`: no such page), changed
+  /// when an eviction clears it (tests)
+  #[cfg(test)]
+  pub(crate) fn glyph_page_generation(
+    &self,
+    page: crate::core::graphics::GlyphPage,
+  ) -> Option<u64> {
+    self.engine.sprite_gpu.as_ref()?.glyph_page_generation(page)
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]
