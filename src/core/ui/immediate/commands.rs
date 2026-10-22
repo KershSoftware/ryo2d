@@ -830,4 +830,75 @@ mod tests {
     let visible: Vec<u32> = commands.visible().map(|draw| draw.order).collect();
     assert_eq!(visible, [2, 5, 7]);
   }
+
+  /// A pass of a loose draw, then fragment 1's run (version 5, base 10,
+  /// layer 0, slot 0) of two draws, followed by the next pass's start
+  fn after_a_run() -> UiCommands {
+    let mut commands = UiCommands::default();
+    let at = |y: f32| rect(Rect::new(0.0, y, 10.0, 10.0), None);
+    commands.push(1, 0, at(0.0));
+    commands.push(10, 0, at(10.0));
+    commands.push(11, 0, at(20.0));
+    commands.push_run(FragmentRun {
+      id: UiId(1),
+      version: 5,
+      base: 10,
+      layer: 0,
+      slot: 0,
+      draws: 1..3,
+      bounds: None,
+    });
+    commands.end_pass();
+    commands.clear();
+    commands
+  }
+
+  #[test]
+  fn a_run_is_taken_where_it_was_only_under_its_whole_tag() {
+    let loose = || rect(Rect::new(0.0, 0.0, 10.0, 10.0), None);
+    // Where it was, with its tag: taken whole
+    let mut commands = after_a_run();
+    commands.push(1, 0, loose());
+    assert!(commands.reuse_run(UiId(1), 5, 10, 0, 0));
+    assert_eq!((commands.len(), commands.runs().len()), (3, 1));
+    assert_eq!(commands.runs()[0].draws, 1..3);
+    // Any other id, version, base, layer or slot: refused, nothing pushed
+    for (id, version, base, layer, slot) in [
+      (2, 5, 10, 0, 0),
+      (1, 6, 10, 0, 0),
+      (1, 5, 11, 0, 0),
+      (1, 5, 10, 1, 0),
+      (1, 5, 10, 0, 1),
+    ] {
+      let mut commands = after_a_run();
+      commands.push(1, 0, loose());
+      let tag = (id, version, base, layer, slot);
+      assert!(
+        !commands.reuse_run(UiId(id), version, base, layer, slot),
+        "{tag:?}"
+      );
+      assert_eq!((commands.len(), commands.runs().len()), (1, 0), "{tag:?}");
+    }
+    // Its start written over, or not reached: refused
+    let mut commands = after_a_run();
+    commands.push(1, 0, loose());
+    commands.push(2, 0, loose());
+    assert!(!commands.reuse_run(UiId(1), 5, 10, 0, 0), "written over");
+    let mut commands = after_a_run();
+    assert!(
+      !commands.reuse_run(UiId(1), 5, 10, 0, 0),
+      "not where it was"
+    );
+  }
+
+  #[test]
+  fn a_pass_drops_what_is_left_of_the_last_when_it_ends() {
+    let mut commands = after_a_run();
+    assert_eq!(commands.draws.len(), 3, "the last pass's draws stay");
+    commands.push(1, 0, rect(Rect::new(0.0, 0.0, 10.0, 10.0), None));
+    commands.end_pass();
+    assert_eq!((commands.draws.len(), commands.len()), (1, 1));
+    commands.clear();
+    assert!(commands.is_empty() && commands.as_slice().is_empty());
+  }
 }
