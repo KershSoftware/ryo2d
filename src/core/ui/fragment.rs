@@ -209,6 +209,9 @@ struct Slot {
   older: Option<u32>,
   /// Changes each time the slot is given to a fragment
   generation: u32,
+  /// Its fragment was lost this frame (`lose`): never taken again, it
+  /// keeps its ids and its hold until the next frame drops it
+  lost: bool,
 }
 
 impl Fragments {
@@ -217,7 +220,7 @@ impl Fragments {
     let mut at = self.newest.get(&root).copied();
     while let Some(slot) = at {
       let kept = self.slots.get(slot as usize)?;
-      if kept.kept.wrapping_add(1) == frame && kept.fragment.is_some() {
+      if kept.kept.wrapping_add(1) == frame && kept.fragment.is_some() && !kept.lost {
         return Some(slot);
       }
       at = kept.older;
@@ -241,6 +244,17 @@ impl Fragments {
     if let Some(at) = self.slots.get_mut(slot as usize) {
       at.fragment = Some(fragment);
       at.kept = frame;
+    }
+  }
+
+  /// `fragment`, taken from `slot` and pushed this pass, is lost (resolve
+  /// found its nodes no longer laid out): back in its slot, never taken
+  /// again, its ids still made and its nodes' records still drawn until
+  /// the next frame drops it, as when it was pushed
+  pub(crate) fn lose(&mut self, slot: u32, fragment: Box<Fragment>) {
+    if let Some(at) = self.slots.get_mut(slot as usize) {
+      at.fragment = Some(fragment);
+      at.lost = true;
     }
   }
 
@@ -269,6 +283,7 @@ impl Fragments {
         pushed: 0,
         older,
         generation,
+        lost: false,
       };
     }
     slot
@@ -319,6 +334,7 @@ impl Fragments {
     at.root = UiId::NONE;
     at.kept = 0;
     at.pushed = 0;
+    at.lost = false;
     scopes.unindex_kept(slot, fragment.as_ref().map(|f| f.ids.as_slice()));
     self.free.push(slot);
     if self.newest.get(&root) == Some(&slot) {
@@ -350,18 +366,13 @@ impl Fragments {
     }
   }
 
-  /// Drop every fragment in a slot that `drop` picks, given the slot's
-  /// fragment (`None`: out) and the frame it was kept in
-  fn drop_where(
-    &mut self,
-    scopes: &mut IdScopes,
-    mut drop: impl FnMut(Option<&Fragment>, u64) -> bool,
-  ) {
+  /// Drop every fragment in a slot that `drop` picks, given the slot
+  fn drop_where(&mut self, scopes: &mut IdScopes, mut drop: impl FnMut(&Slot) -> bool) {
     for slot in 0..self.slots.len() {
       let gone = self
         .slots
         .get(slot)
-        .is_some_and(|at| at.root != UiId::NONE && drop(at.fragment.as_deref(), at.kept));
+        .is_some_and(|at| at.root != UiId::NONE && drop(at));
       if gone {
         self.drop_slot(u32::try_from(slot).unwrap_or(u32::MAX), scopes);
       }
@@ -374,7 +385,7 @@ impl Fragments {
     if self.slots.len() == self.free.len() {
       return;
     }
-    self.drop_where(scopes, |_, kept| kept.wrapping_add(2) <= frame);
+    self.drop_where(scopes, |at| at.lost || at.kept.wrapping_add(2) <= frame);
   }
 
   /// `frame`'s pass is run again: of the fragments it kept, those it only
@@ -382,12 +393,13 @@ impl Fragments {
   /// captured or resolved again go with it. `latest` is the last version
   /// given out.
   pub(crate) fn restart(&mut self, frame: u64, carried: u64, latest: u64, scopes: &mut IdScopes) {
-    self.drop_where(scopes, |fragment, kept| {
+    self.drop_where(scopes, |at| {
+      let fragment = at.fragment.as_deref();
       debug_assert!(
         fragment.is_none_or(|fragment| fragment.version <= latest),
         "every fragment version is given out by `next_fragment_version` or carried"
       );
-      kept == frame && fragment.is_some_and(|fragment| fragment.version > carried)
+      at.kept == frame && fragment.is_some_and(|fragment| fragment.version > carried)
     });
     for at in &mut self.slots {
       if at.root != UiId::NONE && at.kept == frame {
@@ -400,7 +412,7 @@ impl Fragments {
   /// it did not take are the frame before the next's, and what it kept goes
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn rewind(&mut self, frame: u64, scopes: &mut IdScopes) {
-    self.drop_where(scopes, |_, kept| kept == frame);
+    self.drop_where(scopes, |at| at.kept == frame);
     for at in &mut self.slots {
       if at.root != UiId::NONE && at.kept.wrapping_add(1) == frame {
         at.kept = frame;
@@ -410,14 +422,14 @@ impl Fragments {
 
   /// `scene`'s fragments go
   pub(crate) fn forget_scene(&mut self, scene: u64, scopes: &mut IdScopes) {
-    self.drop_where(scopes, |fragment, _| {
-      fragment.is_some_and(|f| f.scene == scene)
+    self.drop_where(scopes, |at| {
+      at.fragment.as_deref().is_some_and(|f| f.scene == scene)
     });
   }
 
   /// Every fragment goes; the slots stay, their generations counting on
   pub(crate) fn clear(&mut self, scopes: &mut IdScopes) {
-    self.drop_where(scopes, |_, _| true);
+    self.drop_where(scopes, |_| true);
     scopes.clear_kept();
   }
 
@@ -427,7 +439,8 @@ impl Fragments {
   pub(crate) fn of_last_frame(&self, frame: u64) -> impl Iterator<Item = (UiId, &Fragment)> {
     self.slots.iter().filter_map(move |at| {
       let fragment = at.fragment.as_deref()?;
-      (at.root != UiId::NONE && at.kept.wrapping_add(1) == frame).then_some((at.root, fragment))
+      let last = at.root != UiId::NONE && !at.lost && at.kept.wrapping_add(1) == frame;
+      last.then_some((at.root, fragment))
     })
   }
 

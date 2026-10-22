@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use super::fragment::{CaptureLog, FragmentStats, Fragments, Role};
+use super::fragment::{CaptureLog, Fragment, FragmentStats, Fragments, Role};
 use super::id::{IdScopes, TapeLog, UiId};
 use super::layout::engine::NodeDesc;
 use super::layout::{Measure, UiStyle};
@@ -644,7 +644,14 @@ impl UiMemory {
       .map(|(_, slot)| slot)
   }
 
+  /// `fragment`, taken from `slot` this pass, cannot be used (its nodes are
+  /// no longer laid out): it goes when the frame ends (`Fragments::lose`)
+  pub(crate) fn lose_fragment(&mut self, slot: u32, fragment: Box<Fragment>) {
+    self.fragments.lose(slot, fragment);
+  }
+
   /// Drop the fragment in `slot`
+  #[cfg(debug_assertions)]
   pub(crate) fn drop_fragment(&mut self, slot: u32) {
     self.fragments.drop_slot(slot, &mut self.scopes);
   }
@@ -843,7 +850,6 @@ fn touch(states: &mut FastMap<UiId, Slot>, id: UiId, scene: u64, frame: u64) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::ui::fragment::Fragment;
   use crate::core::ui::layout::Measure;
   use crate::core::ui::tree::Node;
 
@@ -1079,6 +1085,42 @@ mod tests {
     assert_eq!(kept(&memory), 1, "on: kept");
     memory.set_fragments(false);
     assert_eq!(kept(&memory), 0);
+  }
+
+  #[test]
+  fn a_fragment_lost_mid_pass_keeps_its_ids_and_its_hold_until_the_frame_ends() {
+    let site = std::panic::Location::caller();
+    let mut memory = UiMemory::new();
+    memory.begin_frame();
+    memory.scopes.enter_root(UiId::root(1));
+    let a = memory.scopes.make(site, Some(5));
+    let mut kept = fragment(1, 7, memory.next_fragment_version());
+    kept.ids = vec![a];
+    let slot = capture(&mut memory, kept);
+    memory.end_frame();
+    memory.begin_frame();
+    memory.scopes.enter_root(UiId::root(1));
+    // Pushed, then lost by resolve (its nodes no longer laid out)
+    let mut nodes = Vec::new();
+    memory.replay_fragment(slot, UiId(1), 7, &mut nodes);
+    let frame = memory.frame();
+    let hold = memory.fragments.first_hold(slot).map(|(_, hold)| hold);
+    let taken = memory.fragments.take(slot).unwrap();
+    memory.lose_fragment(slot, taken);
+    // For the rest of the pass its id is made, and a build making it again
+    // is given another; its nodes' records are drawn this frame
+    assert!(memory.scopes.made(a), "made for the rest of the pass");
+    assert_ne!(memory.scopes.make(site, Some(5)), a, "a duplicate");
+    let hold = hold.unwrap();
+    assert!(memory.fragments.holds(hold, frame), "its records drawn");
+    // Never taken again; gone the next frame
+    assert_eq!(memory.fragments.last_of(UiId(1), frame), None);
+    memory.end_frame();
+    memory.begin_frame();
+    memory.scopes.enter_root(UiId::root(1));
+    assert!(!memory.scopes.made(a));
+    assert_eq!(memory.scopes.make(site, Some(5)), a, "its id is free");
+    assert!(!memory.fragments.holds(hold, memory.frame()));
   }
 
   #[test]

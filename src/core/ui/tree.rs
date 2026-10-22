@@ -511,11 +511,9 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       warn_once("ui-fragment:unheld".to_string(), || {
         "a kept UI fragment's nodes were no longer laid out; drawn empty".to_string()
       });
-      // Back in its slot, to go with it
       if let Some(fragment) = taken.fragment.take() {
-        memory.fragments.keep(taken.slot, fragment, memory.frame());
+        memory.lose_fragment(taken.slot, fragment);
       }
-      memory.drop_fragment(taken.slot);
       continue;
     }
     fragment.inputs = inputs;
