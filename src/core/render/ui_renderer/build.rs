@@ -265,8 +265,9 @@ impl Frame<'_> {
     Some((u8::try_from(slot).ok()?, self.slots.get(usize::from(slot))?))
   }
 
-  /// Where `draw` is built (see [`Placed`]), or `None` when it draws
-  /// nothing: its slot is not in the table, or its clip is empty.
+  /// Where `draw` is built (see [`Placement`]): `None` when it draws
+  /// nothing (its slot is not in the table, or its clip is empty), and
+  /// whether it is in a slot but built absolute, drawing or not.
   ///
   /// In slot 0 it is built as it is, under its clip. In slot `k` below
   /// [`SLOTS`] it is built relative to the slot, which the shader moves by
@@ -283,15 +284,35 @@ impl Frame<'_> {
   /// a quad's corners are rounded to whole pixels, and a corner on a half
   /// pixel rounds by the last bit of its position, which moving it on the
   /// CPU and moving it in the shader compute differently.
-  fn place<'d>(&self, draw: &'d UiDraw, cull: bool) -> Option<Placed<'d>> {
-    let space = &self.env.space;
+  fn place<'d>(&self, draw: &'d UiDraw, cull: bool) -> Placement<'d> {
     if let Some((k, slot)) = self.shader_slot(draw.slot) {
-      match in_slot(draw, slot, k, space, cull) {
-        InSlot::Built(placed) => return Some(placed),
-        InSlot::Nothing => return None,
+      match in_slot(draw, slot, k, &self.env.space, cull) {
+        InSlot::Built(placed) => {
+          return Placement {
+            placed: Some(placed),
+            absolute: false,
+          };
+        }
+        InSlot::Nothing => {
+          return Placement {
+            placed: None,
+            absolute: false,
+          };
+        }
         InSlot::Absolute => {}
       }
     }
+    Placement {
+      placed: self.absolute(draw),
+      absolute: draw.slot != 0,
+    }
+  }
+
+  /// `draw` built absolute: moved by its slot's offset and clipped by its
+  /// clip on the CPU (`UiDraw::placed`), and culled; `None` when it draws
+  /// nothing
+  fn absolute<'d>(&self, draw: &'d UiDraw) -> Option<Placed<'d>> {
+    let space = &self.env.space;
     let command = draw.placed(self.slots, space.px_scale)?;
     let scissor = scissor_of(command.clip_rect(), space)?;
     let clip = ClipRect::of(scissor, space.image);
@@ -335,6 +356,17 @@ impl Frame<'_> {
     let instance = UiInstance::quad(UiKind::RECT, &instance, placed.clip, false, 0);
     Some(placed.mark.on(instance))
   }
+}
+
+/// Where a draw is built (`Frame::place`)
+struct Placement<'d> {
+  /// Where it is built; `None` when it draws nothing
+  placed: Option<Placed<'d>>,
+  /// It is in a slot but built absolute (past the shader's slots, on the
+  /// pixel-art target, or its own clip does not fit relative to the slot),
+  /// whether it draws anything or not: its instances, if any, hold only
+  /// where the slot is now
+  absolute: bool,
 }
 
 /// What becomes of a draw in one of the shader's slots
@@ -481,7 +513,8 @@ fn paint_key(draw: &UiDraw) -> (i32, bool) {
 ///
 /// When the commands arrive in the painter's order, a fragment's run is
 /// copied from `runs` while it is the same, or built whole and kept there
-/// (`build_run`); out of order every command is built, and no run is kept.
+/// (`build_run`); out of order every command is built (each run counted
+/// built), and no run is kept.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_ui(
   build: &mut UiBuild,
@@ -512,15 +545,16 @@ pub(crate) fn build_ui(
     last = key;
     rising
   });
+  // Each run's draws are contiguous, in the order of the runs' ranges;
+  // runs that do not hold their draws are not trusted
+  let held = if commands.runs_hold() {
+    commands.runs()
+  } else {
+    &[]
+  };
+  let held = held.iter().filter(|run| !run.draws.is_empty());
   if in_order {
-    // Each run's draws are contiguous, in the order of the runs' ranges;
-    // runs that do not hold their draws are not trusted
-    let held = if commands.runs_hold() {
-      commands.runs()
-    } else {
-      &[]
-    };
-    let mut next = held.iter().filter(|run| !run.draws.is_empty()).peekable();
+    let mut next = held.peekable();
     let mut index = 0;
     while let Some(draw) = draws.get(index as usize) {
       match next.next_if(|run| run.draws.start == index) {
@@ -548,6 +582,8 @@ pub(crate) fn build_ui(
     build.order = painted;
     // Stable: a command's textures keep the order they were asked for in
     build.resident.sort_by_key(|&(command, _)| command);
+    // Every run was built, one command at a time
+    held.for_each(|_| runs.count_built());
   }
   let UiBuild {
     resident, textures, ..
@@ -588,6 +624,11 @@ fn build_run(
   let Some(own) = draws.get(start as usize..run.draws.end as usize) else {
     return;
   };
+  // A copy marks every instance with the run's slot
+  debug_assert!(
+    own.iter().all(|draw| draw.slot == run.slot),
+    "a run's draws share its slot: {run:?}"
+  );
   let at = frame.run_at(run.slot);
   let slot = match at {
     RunAt::Slot(k) => k,
@@ -738,8 +779,8 @@ fn copy_run(build: &mut UiBuild, kept: &KeptRun, start: u32, slot: u8) {
 
 /// Build one draw (the `index`-th of the frame's), at its place in the
 /// painter's order, where `Frame::place` puts it, culled with `cull` on
-/// (see `Frame::place`). `true` when it was in one of the shader's slots
-/// but built absolute (its own clip does not fit relative to the slot).
+/// (see `Frame::place`). `true` when it is in a slot but was placed
+/// absolute (see `Placement::absolute`), whether it drew anything or not.
 fn build_command(
   build: &mut UiBuild,
   frame: &Frame<'_>,
@@ -750,10 +791,10 @@ fn build_command(
   cull: bool,
 ) -> bool {
   let space = &frame.env.space;
-  let Some(placed) = frame.place(draw, cull) else {
-    return false;
+  let Placement { placed, absolute } = frame.place(draw, cull);
+  let Some(placed) = placed else {
+    return absolute;
   };
-  let absolute = draw.slot != 0 && placed.mark.slot == 0;
   let command = &*placed.command;
   let z = ui_z(command.draw_layer(), draw.order);
   match command {
@@ -826,7 +867,7 @@ pub(crate) fn rect_built(
     sources: None,
     real_time: 0.0,
   };
-  let placed = frame.place(draw, true)?;
+  let placed = frame.place(draw, true).placed?;
   let UiCommand::Rect {
     rect,
     fill,

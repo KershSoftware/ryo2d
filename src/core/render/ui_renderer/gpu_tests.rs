@@ -3023,6 +3023,24 @@ mod building {
       assert_eq!(counts(&built), [(0, 1), (1, 0), (0, 1), (1, 0)]);
     }
 
+    /// Commands out of the painter's order are sorted and built one by one:
+    /// every run is built, and counted so, and none is kept
+    #[test]
+    fn out_of_order_every_run_is_built_and_counted() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let swatch = super::super::gradient(6, 5);
+      let frames = [0, 1].map(|_| {
+        let mut commands = with_run(1, &[], 0, &swatch, None);
+        // Recorded last, drawn first
+        commands.push(5, 0, rect_at(260.0, 4.0, None, 0));
+        commands
+      });
+      let built = through(&mut writes, &frames, env(), None, true);
+      assert_eq!(counts(&built), [(0, 1), (0, 1)]);
+    }
+
     #[test]
     fn with_retention_off_every_run_is_built() {
       let Some(mut writes) = Writes::new() else {
@@ -3196,6 +3214,32 @@ mod building {
       let frames = twice(&[slot_at([0, -69_990], 100.0)], 1).map(far);
       let built = through(&mut writes, &frames, env(), None, true);
       assert_eq!(counts(&built), [(0, 2), (1, 1)], "only the run in reach");
+      // Its own clip scrolled outside the slot's view (it draws nothing),
+      // then into it at the same version: built in both frames, so it
+      // draws in the second as a rebuild draws it
+      let frames = [-69_800, -69_990].map(|y| {
+        let slots = [slot_at([0, y], 100.0)];
+        far(with_run(1, &slots, 1, &swatch, None))
+      });
+      let built = through(&mut writes, &frames, env(), None, true);
+      assert_eq!(counts(&built), [(0, 2), (1, 1)], "scrolled into view");
+      let fresh = through(&mut writes, &frames, env(), None, false);
+      assert!(
+        same(&built[1].0, &fresh[1].0),
+        "drawn as a rebuild draws it"
+      );
+      // The far rect, built absolute under its own clip met with the slot's
+      let far_clip = ClipRect {
+        x0: 4,
+        y0: 10,
+        x1: 44,
+        y1: 20,
+      };
+      let drawn = |build: &UiBuild| {
+        let far = |instance: &&UiInstance| instance.clip() == far_clip;
+        build.instances.iter().filter(far).count()
+      };
+      assert_eq!((drawn(&built[0].0), drawn(&built[1].0)), (0, 1));
     }
 
     #[cfg(feature = "default-fonts")]
