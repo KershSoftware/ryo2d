@@ -570,9 +570,9 @@ impl UiCommands {
     &self.runs
   }
   /// A new pass: no draws, slots or runs. The last pass's draws stay to
-  /// be written over, or taken as they are by `reuse_run`.
+  /// be written over, or taken as they are by `reuse_run` (what lies past
+  /// them, if the last pass did not end with `end_pass`, is never read).
   pub(crate) fn clear(&mut self) {
-    self.end_pass();
     self.len = 0;
     self.slots.clear();
     self.slots.push(ScrollSlot::NONE);

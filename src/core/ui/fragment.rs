@@ -412,6 +412,9 @@ impl Fragments {
   /// it did not take are the frame before the next's, and what it kept goes
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn rewind(&mut self, frame: u64, scopes: &mut IdScopes) {
+    if self.slots.len() == self.free.len() {
+      return;
+    }
     self.drop_where(scopes, |at| at.kept == frame);
     for at in &mut self.slots {
       if at.root != UiId::NONE && at.kept.wrapping_add(1) == frame {
