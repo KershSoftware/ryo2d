@@ -730,3 +730,47 @@ mod runs {
     assert!(!found(&mut cache, 1, 0, Some(5), true, 9), "cleared");
   }
 }
+
+#[test]
+fn held_runs_are_found_after_many_leave() {
+  // Forty runs, then the last twenty of them: a list's top rows leaving
+  // its interest at once, more of them than the look-ahead holds. Every run
+  // left is found among those held before, and none is looked through again
+  let frame = |from: u32| {
+    let mut commands = UiCommands::default();
+    for k in from..40 {
+      let at = commands.position();
+      commands.push(k, 0, rect(k as f32));
+      commands.push_run(FragmentRun {
+        id: UiId(u64::from(k) + 1),
+        version: u64::from(k) + 1,
+        base: k,
+        layer: 0,
+        slot: 0,
+        draws: at..at + 1,
+        bounds: None,
+      });
+    }
+    commands
+  };
+  let mut retain = UiRetain::default();
+  assert!(!retain.keep(&frame(0), None, env(), 1));
+  assert_eq!(retain.unseen, 40, "every run is new");
+  assert!(!retain.keep(&frame(20), None, env(), 1));
+  assert_eq!(retain.unseen, 0, "every run left was held before");
+  // A new run among them, then the rest: found still
+  let mut commands = frame(30);
+  let at = commands.position();
+  commands.push(50, 0, rect(50.0));
+  commands.push_run(FragmentRun {
+    id: UiId(99),
+    version: 99,
+    base: 50,
+    layer: 0,
+    slot: 0,
+    draws: at..at + 1,
+    bounds: None,
+  });
+  assert!(!retain.keep(&commands, None, env(), 1));
+  assert_eq!(retain.unseen, 1, "only the new run");
+}

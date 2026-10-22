@@ -137,18 +137,21 @@ impl<T> std::ops::DerefMut for InPlace<T> {
   }
 }
 
+#[cfg(test)]
 impl<T> AsRef<[T]> for InPlace<T> {
   fn as_ref(&self) -> &[T] {
     self
   }
 }
 
+#[cfg(test)]
 impl<T: PartialEq, U: AsRef<[T]>> PartialEq<U> for InPlace<T> {
   fn eq(&self, other: &U) -> bool {
     **self == *other.as_ref()
   }
 }
 
+#[cfg(test)]
 impl<T: PartialEq> PartialEq<InPlace<T>> for Vec<T> {
   fn eq(&self, other: &InPlace<T>) -> bool {
     **self == **other
@@ -225,6 +228,20 @@ impl UiBuild {
       self.next_last += 1;
     }
     self.last.get(self.next_last) == Some(segment)
+  }
+
+  /// What the frame built, as a build of its own (tests)
+  #[cfg(test)]
+  pub(crate) fn snapshot(&self) -> UiBuild {
+    let mut copy = UiBuild::default();
+    copy.instances.extend_from_slice(&self.instances);
+    copy.needs.extend_from_slice(&self.needs);
+    copy.sprites.clone_from(&self.sprites);
+    copy.slots.clone_from(&self.slots);
+    copy.resident.clone_from(&self.resident);
+    copy.textures.clone_from(&self.textures);
+    copy.copied = self.copied;
+    copy
   }
 
   /// End the frame's build: the last frame's instances past it go
@@ -466,7 +483,7 @@ impl Frame<'_> {
   /// and meets with the slot's; with `cull` off nothing of it is culled
   /// (the shader collapses what lies outside its clip). Past those slots,
   /// or when its own clip does not fit a [`ClipRect`] relative to the slot,
-  /// it is built absolute, moved and clipped on the CPU (`UiDraw::placed`),
+  /// it is built absolute, moved and clipped on the CPU (`UiDraw::placement`),
   /// and culled.
   ///
   /// On the pixel-art target every draw in a slot is built absolute: there
@@ -668,7 +685,7 @@ fn relative_scissor(clip: Rect, px_scale: f32) -> Option<PixelRect> {
 
 /// The frame's scroll slots as the shader reads them (into `out`, cleared
 /// first): the first [`SLOTS`] of the table, each with its offset in UI
-/// units (exactly what the CPU moves a draw in it by, `UiDraw::placed`) and
+/// units (exactly what the CPU moves a draw in it by, `UiDraw::placement`) and
 /// in whole pixels, and its clip in image pixels as the scissor would be
 /// (empty when it is). Slot 0 holds no offset and the whole image.
 pub(crate) fn slot_uniforms(slots: &[ScrollSlot], space: &UiSpace, out: &mut Vec<SlotUniform>) {
@@ -1324,8 +1341,9 @@ impl TextInstances<'_> {
 
 impl TextSink<UiInstance> for TextInstances<'_> {
   fn variant(&self) -> u32 {
-    // Culled glyph by glyph (slot 0), kept whole under the slot's clip, or
-    // kept whole under a clip of its own
+    // Culled glyph by glyph (slot 0); in a slot, under the slot's clip or
+    // under a clip of its own, whole while texts are kept (its glyphs are
+    // culled where the slot draws it only when none is, retention off)
     match self.mark {
       SlotMark { slot: 0, .. } => 0,
       SlotMark { own: false, .. } => 1,

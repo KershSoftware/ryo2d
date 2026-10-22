@@ -60,10 +60,19 @@ pub(crate) struct UiRenderEnv {
   pub(crate) bitmaps: u64,
 }
 
-/// How far past the last run found a run drawn before is looked for
+/// How far past the last run found a run drawn before is looked for first
 /// (`UiRetain::seen`): runs that left between them (a list's rows leaving
 /// its interest) are passed over
 const LOOK_AHEAD: usize = 16;
+
+/// Where `UiRetain::hold` looks for a run among those drawn before: from
+/// `next`, past the last found (runs keep their order), and whether past
+/// the look-ahead too
+#[derive(Debug, Clone, Copy)]
+struct Seek {
+  next: usize,
+  far: bool,
+}
 
 /// Whether the UI image can be shown again as it is, and what it holds
 #[derive(Debug, Default)]
@@ -95,6 +104,9 @@ pub(crate) struct UiRetain {
   image: Option<u64>,
   /// The last frame's
   pub(crate) stats: UiRenderStats,
+  /// The runs the last hold did not find among those held before (tests)
+  #[cfg(test)]
+  pub(crate) unseen: usize,
 }
 
 /// A fragment run the UI image holds
@@ -181,7 +193,11 @@ impl UiRetain {
     std::mem::swap(&mut self.run_stamps, &mut self.run_stamps_was);
     self.runs.clear();
     self.run_stamps.clear();
-    let mut next = 0;
+    let mut seek = Seek { next: 0, far: true };
+    #[cfg(test)]
+    {
+      self.unseen = 0;
+    }
     for run in runs {
       let draws = now
         .get(run.draws.start as usize..run.draws.end as usize)
@@ -189,7 +205,7 @@ impl UiRetain {
       let from = self.run_stamps.len();
       // A run seen with its version has the commands it had: which have a
       // stamp, and whether one reads the clock, was found then
-      let animated = match self.seen(run, &mut next) {
+      let animated = match self.seen(run, &mut seek) {
         Some(was) => {
           let was = &self.runs_was[was];
           for &(k, _) in &self.run_stamps_was[was.stamps.clone()] {
@@ -200,6 +216,10 @@ impl UiRetain {
           was.animated
         }
         None => {
+          #[cfg(test)]
+          {
+            self.unseen += 1;
+          }
           let mut any = false;
           for (k, draw) in (0u32..).zip(draws) {
             any |= animated(&draw.command);
@@ -219,19 +239,29 @@ impl UiRetain {
   }
 
   /// Where `run` is among the runs drawn before, if one of them is it with
-  /// its version (its commands the same): looked for from `next` (past the
-  /// last found, as runs keep their order) up to [`LOOK_AHEAD`] runs on.
-  /// One not found is taken as new: what is found of its commands is found
-  /// again.
-  fn seen(&self, run: &FragmentRun, next: &mut usize) -> Option<usize> {
+  /// its version (its commands the same): looked for from `seek.next` (past
+  /// the last found) up to [`LOOK_AHEAD`] runs on, then, past more runs
+  /// that left than that holds, on to the end; after a run not found so
+  /// (a new one), only in the look-ahead until the next is found. One not
+  /// found is taken as new: what is found of its commands is found again.
+  fn seen(&self, run: &FragmentRun, seek: &mut Seek) -> Option<usize> {
     let count = |run: &FragmentRun| run.draws.end.saturating_sub(run.draws.start);
-    let ahead = self.runs_was.get(*next..).unwrap_or_default();
-    let at = ahead.iter().take(LOOK_AHEAD).position(|was| {
+    let is = |was: &HeldRun| {
       let was = &was.run;
       was.version == run.version && was.id == run.id && count(was) == count(run)
-    })?;
-    let k = *next + at;
-    *next = k + 1;
+    };
+    let ahead = self.runs_was.get(seek.next..).unwrap_or_default();
+    let at = match ahead.iter().take(LOOK_AHEAD).position(is) {
+      Some(at) => Some(at),
+      None if seek.far => {
+        let past = ahead.iter().skip(LOOK_AHEAD).position(is);
+        past.map(|at| at + LOOK_AHEAD)
+      }
+      None => None,
+    };
+    seek.far = at.is_some();
+    let k = seek.next + at?;
+    seek.next = k + 1;
     Some(k)
   }
 

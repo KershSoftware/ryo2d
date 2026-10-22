@@ -525,22 +525,22 @@ pub(crate) fn changed_ranges(
       break;
     }
     // On to the first changed instance that [`MERGE_GAP`] alike ones (or
-    // the frame's end) follow
+    // the frame's end) follow; those are compared already
     let mut end = start + 1;
-    loop {
+    let alike_to = loop {
       let reach = (end + MERGE_GAP).min(n);
       let same = alike.from(end, reach);
       if end + same == reach {
-        break;
+        break reach;
       }
       end += same + 1;
-    }
+    };
     if out.len() < MAX_WRITES {
       out.push(start..end);
     } else if let Some(last) = out.last_mut() {
       last.end = end;
     }
-    at = end;
+    at = alike_to;
   }
   alike.compared
 }
@@ -612,7 +612,8 @@ fn same_prefix(a: &[UiInstance], b: &[UiInstance]) -> usize {
 }
 
 /// Write `instances` (their bytes) at `offset` and `slots` at `at`, past
-/// them, in one write; the bytes between are never read
+/// them, in one write; the bytes between are never read. Should that write
+/// not be made, each goes in a write of its own.
 fn write_joined(
   queue: &wgpu::Queue,
   buffer: &wgpu::Buffer,
@@ -622,20 +623,27 @@ fn write_joined(
   slots: &[u8],
 ) {
   let gap = usize::try_from(at.saturating_sub(offset)).unwrap_or(usize::MAX);
-  let Some(size) = gap
+  let size = gap
     .checked_add(slots.len())
-    .and_then(|size| wgpu::BufferSize::new(size as u64))
-  else {
-    return;
-  };
-  if gap < instances.len() {
-    return;
+    .filter(|_| gap >= instances.len())
+    .and_then(|size| wgpu::BufferSize::new(size as u64));
+  let view = size.and_then(|size| queue.write_buffer_with(buffer, offset, size));
+  debug_assert!(
+    view.is_some(),
+    "the slots go past the instances, in one write: {offset} {} {at} {}",
+    instances.len(),
+    slots.len()
+  );
+  match view {
+    Some(mut view) => {
+      view.slice(..instances.len()).copy_from_slice(instances);
+      view.slice(gap..).copy_from_slice(slots);
+    }
+    None => {
+      queue.write_buffer(buffer, offset, instances);
+      queue.write_buffer(buffer, at, slots);
+    }
   }
-  let Some(mut view) = queue.write_buffer_with(buffer, offset, size) else {
-    return;
-  };
-  view.slice(..instances.len()).copy_from_slice(instances);
-  view.slice(gap..).copy_from_slice(slots);
 }
 
 /// The instance buffer for `capacity` instances, and the scroll slots past

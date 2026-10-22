@@ -197,6 +197,11 @@ fn the_upload_is_the_ranges_that_changed() {
     changed(&long, &with(&long, &[0, 200, 400, 600, 800, 999])),
     [0..1, 200..201, 400..401, 600..1000]
   );
+  // Each instance is compared once
+  let mut ranges = Vec::new();
+  let compared = changed_ranges(&long, &with(&long, &[10, 600]), &[], &mut ranges);
+  assert_eq!(ranges, [10..11, 600..601]);
+  assert_eq!(compared, 1000, "each instance compared once");
   // Ranges known alike are not compared: a change in them goes unseen
   let mut ranges = Vec::new();
   let frame = with(&long, &[5, 300, 600]);

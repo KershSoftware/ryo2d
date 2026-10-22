@@ -2947,9 +2947,10 @@ mod building {
       commands
     }
 
-    /// Each of `frames` built in turn through one text cache and one run
-    /// cache in `env`, retention `retain`: each build, with the runs it
-    /// copied and built
+    /// Each of `frames` built in turn through one build (each frame's
+    /// instances written over the last's, as the renderer builds them), one
+    /// text cache and one run cache in `env`, retention `retain`: what each
+    /// frame built, with the runs it copied and built
     fn through(
       writes: &mut Writes,
       frames: &[UiCommands],
@@ -2959,10 +2960,10 @@ mod building {
     ) -> Vec<(UiBuild, (u32, u32))> {
       let mut texts = UiTextCache::<UiInstance>::default();
       let mut runs = UiRunCache::default();
+      let mut build = UiBuild::default();
       frames
         .iter()
         .map(|commands| {
-          let mut build = UiBuild::default();
           texts.begin(env, retain);
           runs.begin(env, retain);
           build_ui(
@@ -2977,7 +2978,7 @@ mod building {
           );
           texts.end();
           runs.end();
-          (build, runs.stats())
+          (build.snapshot(), runs.stats())
         })
         .collect()
     }
@@ -3025,6 +3026,8 @@ mod building {
       assert_eq!(counts(&built), [(0, 1), (1, 0)]);
       let (first, second) = (&built[0].0, &built[1].0);
       assert!(same(first, second), "the copy is the build");
+      // It holds a sprite, fixed once its texture is resident: copied
+      assert!(second.copied > 0);
       // Three rects, the sprite and the line's triangles, the loose rects
       assert!(first.instances.len() >= 7, "{}", first.instances.len());
       assert_eq!(second.sprites.len(), 1);
@@ -3151,9 +3154,12 @@ mod building {
       let Some(mut writes) = Writes::new() else {
         return;
       };
-      // Three rects in a slot drawn at y = 20 under a view 40 tall: the run
-      // below the view, within a pixel of it, and inside it; its bounds
-      // known or not, retention off (so it is culled), the same instances
+      // Three rects in a slot drawn at y = 20 under a view 40 tall, and a
+      // fourth beside them whose own clip starts half a unit below it (it
+      // shows nothing, though it lies within a pixel of that clip): the run
+      // below the view, within a pixel of it, across it and inside it; its
+      // bounds known or not, retention off (so it is culled), the same
+      // instances
       let frame = |top: f32, bounded: bool| {
         let mut commands = UiCommands::default();
         let view = Rect::new(0.0, 0.0, 300.0, 40.0);
@@ -3162,9 +3168,15 @@ mod building {
           clip: Some(Rect::new(0.0, 20.0, 300.0, 40.0)),
           cull: Some(view),
         });
+        let own = Some(Rect::new(0.0, top + 14.5, 300.0, 5.0));
+        let rects = [
+          rect_at(4.0, top, None, 0),
+          rect_at(4.0, top + 12.0, None, 0),
+          rect_at(4.0, top + 24.0, None, 0),
+          rect_at(40.0, top + 4.0, own, 0),
+        ];
         let mut bounds = Bounds::default();
-        for k in 0..3 {
-          let rect = rect_at(4.0, top + 12.0 * k as f32, None, 0);
+        for (k, rect) in (0..).zip(rects) {
           bounds.add(rect.cull_box());
           commands.push(10 + k, 1, rect);
         }
@@ -3174,18 +3186,23 @@ mod building {
           base: 10,
           layer: 0,
           slot: 1,
-          draws: 0..3,
+          draws: 0..4,
           bounds: bounded.then(|| bounds.edges()).flatten(),
         });
         commands
       };
-      for top in [300.0, 40.5, 40.0, 39.0, 10.0] {
+      // Outside, across (a pixel off, its edge, a unit in, partly), inside
+      for top in [300.0, 40.5, 40.0, 39.0, 10.0, 2.0] {
         let culled = [true, false].map(|bounded| {
           let built = through(&mut writes, &[frame(top, bounded)], env(), None, false);
           built.into_iter().next().expect("a build")
         });
         assert_eq!(counts(&culled), [(0, 1), (0, 1)], "top {top}");
         assert!(same(&culled[0].0, &culled[1].0), "top {top}");
+        if top == 2.0 {
+          let rects = culled[0].0.instances.len();
+          assert_eq!(rects, 3, "inside: the three rects, the clipped one culled");
+        }
       }
     }
 
@@ -3239,6 +3256,60 @@ mod building {
         let image = ClipRect::of(None, env().space.image);
         assert!(run.clone().all(|i| i.clip() == image), "frame {frame}");
       }
+    }
+
+    #[test]
+    fn a_run_left_in_place_is_what_building_it_gives() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      // A run of rects in a scrolling slot, between loose rects, written over
+      // the last frame's instances: where it sat, with its slot's index,
+      // it is left in place; where the slot's index moved (a slot pushed
+      // before it), or a loose rect before it came and went, it is copied
+      let run = |frame: i32| {
+        let mut commands = UiCommands::default();
+        if frame == 3 {
+          commands.push_slot(ScrollSlot::NONE);
+        }
+        let slot = commands.push_slot(ScrollSlot {
+          offset: [0, 10 - 7 * frame],
+          clip: Some(Rect::new(0.0, 8.0, 200.0, 50.0)),
+          cull: None,
+        });
+        commands.push(0, 0, rect_at(200.0, 4.0, None, 0));
+        if frame == 5 {
+          commands.push(1, 0, rect_at(230.0, 4.0, None, 0));
+        }
+        let start = commands.position();
+        for k in 0..4 {
+          commands.push(10 + k, slot, rect_at(4.0, 20.0 * k as f32, None, 0));
+        }
+        let draws = start..commands.position();
+        commands.push_run(FragmentRun {
+          id: ID,
+          version: 1,
+          base: 10,
+          layer: 0,
+          slot,
+          draws,
+          bounds: None,
+        });
+        commands.push(20, slot, rect_at(4.0, 90.0, None, 0));
+        commands
+      };
+      let frames: Vec<UiCommands> = (0..7).map(run).collect();
+      let kept = through(&mut writes, &frames, env(), None, true);
+      let fresh = fresh(&mut writes, &frames, env(), None);
+      assert_eq!(counts(&kept)[1..], [(1, 0); 6]);
+      for (frame, ((kept, _), (fresh, _))) in kept.iter().zip(&fresh).enumerate() {
+        assert!(same(kept, fresh), "frame {frame}: as building it gives");
+      }
+      let copied: Vec<bool> = kept.iter().map(|(build, _)| build.copied > 0).collect();
+      // Built; in place twice; at another index; back at the first (the
+      // last frame had the other); after a loose rect more; back where it
+      // was two frames before
+      assert_eq!(copied, [false, false, false, true, true, true, true]);
     }
 
     #[test]
