@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use super::fragment::{CaptureLog, Fragment, FragmentStats};
+use super::fragment::{CaptureLog, Fragment, FragmentStats, Role};
 use super::id::{IdScopes, TapeLog, UiId};
-use super::layout::UiStyle;
 use super::layout::engine::NodeDesc;
+use super::layout::{Measure, UiStyle};
 use super::tape::Place;
 #[cfg(debug_assertions)]
 use super::tape::Tape;
@@ -20,7 +20,7 @@ use super::widgets::drag::DragState;
 #[cfg(not(target_arch = "wasm32"))]
 use super::widgets::state_debug;
 use crate::core::ecs::kernel::Entity;
-use crate::core::hash::{FastMap, FastSet};
+use crate::core::hash::FastMap;
 use crate::core::input::Direction;
 
 /// What a widget senses and how navigation treats it
@@ -486,13 +486,14 @@ pub(crate) struct UiMemory {
   /// Buffers the subtrees and their resolution reuse
   pub(crate) scratch: Scratch,
   /// Last frame's fragments, by their root's id: this frame's resolves
-  /// take them, and a fragment not taken is gone the frame after
-  pub(crate) fragments_prev: FastMap<UiId, Fragment>,
+  /// take them, and a fragment not taken is gone the frame after. Boxed: a
+  /// frame moves each kept one into `fragments_next`.
+  pub(crate) fragments_prev: FastMap<UiId, Box<Fragment>>,
   /// This frame's fragments, kept for the next
-  pub(crate) fragments_next: FastMap<UiId, Fragment>,
-  /// The versions of the fragments carried into this frame: a rerun pass
-  /// keeps only those
-  carried: FastSet<u64>,
+  pub(crate) fragments_next: FastMap<UiId, Box<Fragment>>,
+  /// The last fragment version given out before this frame: the fragments
+  /// carried into it have one up to it, and a rerun pass keeps only those
+  carried: u64,
   /// The last fragment version given out
   fragment_version: u64,
   /// What resolve did with fragments this pass
@@ -503,7 +504,7 @@ pub(crate) struct UiMemory {
   /// root's id: its subtree is replayed and captured in place of its copy,
   /// and resolve compares the capture with it
   #[cfg(debug_assertions)]
-  pub(crate) spot_held: Option<(UiId, Fragment)>,
+  pub(crate) spot_held: Option<(UiId, Box<Fragment>)>,
 }
 
 impl UiMemory {
@@ -525,7 +526,7 @@ impl UiMemory {
       scratch: Scratch::default(),
       fragments_prev: FastMap::default(),
       fragments_next: FastMap::default(),
-      carried: FastSet::default(),
+      carried: 0,
       fragment_version: 0,
       fragment_stats: FragmentStats::default(),
       fragments_on: true,
@@ -550,12 +551,7 @@ impl UiMemory {
     {
       self.spot_held = None;
     }
-    self.carried.clear();
-    let carried = self
-      .fragments_prev
-      .values()
-      .map(|fragment| fragment.version);
-    self.carried.extend(carried);
+    self.carried = self.fragment_version;
     self.fragment_stats = FragmentStats::default();
     self.scratch.clear_captures();
   }
@@ -611,9 +607,9 @@ impl UiMemory {
     self.scopes.begin_frame();
     self.touched.clear();
     self.unhold_spot();
-    let (prev, carried) = (&mut self.fragments_prev, &self.carried);
+    let (prev, carried) = (&mut self.fragments_prev, self.carried);
     for (id, fragment) in self.fragments_next.drain() {
-      if carried.contains(&fragment.version) {
+      if fragment.version <= carried {
         prev.insert(id, fragment);
       }
     }
@@ -630,7 +626,6 @@ impl UiMemory {
     if !on {
       self.fragments_prev.clear();
       self.fragments_next.clear();
-      self.carried.clear();
       #[cfg(debug_assertions)]
       {
         self.spot_held = None;
@@ -650,7 +645,7 @@ impl UiMemory {
   /// The fragment rooted at `id` the spot check set aside this frame, if
   /// it did
   #[cfg(debug_assertions)]
-  pub(crate) fn take_spot_held(&mut self, id: UiId) -> Option<Fragment> {
+  pub(crate) fn take_spot_held(&mut self, id: UiId) -> Option<Box<Fragment>> {
     self
       .spot_held
       .take_if(|(held, _)| *held == id)
@@ -664,26 +659,33 @@ impl UiMemory {
   }
 
   /// Make the ids and keep the widget states of the fragment rooted at
-  /// `id` as a replay of its subtree in `scene` would, and note the nodes
-  /// replayed in it in `scratch.kept_entities`: its root to push, the rect
-  /// it goes at and the orders its subtree takes. `None` when there is no
-  /// such fragment.
-  pub(crate) fn replay_fragment(
-    &mut self,
-    id: UiId,
-    scene: u64,
-  ) -> Option<(Node, Option<Rect>, u32)> {
-    let fragment = self.fragments_prev.get(&id)?;
-    for &made in &fragment.ids {
-      self.scopes.replay_id(made);
-    }
-    for &state in &fragment.states {
-      touch(&mut self.states, state, scene, self.frame);
-    }
+  /// `id` as a replay of its subtree in `scene` would, note the nodes
+  /// replayed in it in `scratch.kept_entities`, and push its root to
+  /// `nodes` as a kept node (`Role::Kept`), its place in the tree not yet
+  /// stamped. Without such a fragment, a kept node with nothing kept, which
+  /// resolve draws empty.
+  pub(crate) fn replay_fragment(&mut self, id: UiId, scene: u64, nodes: &mut Vec<Node>) {
     let entities = &mut self.scratch.kept_entities;
     entities.clear();
-    entities.extend_from_slice(&fragment.entities);
-    Some((fragment.root.clone(), fragment.at, fragment.count))
+    match self.fragments_prev.get(&id) {
+      Some(fragment) => {
+        for &made in &fragment.ids {
+          self.scopes.replay_id(made);
+        }
+        for &state in &fragment.states {
+          touch(&mut self.states, state, scene, self.frame);
+        }
+        entities.extend_from_slice(&fragment.entities);
+        nodes.extend_from_slice(std::slice::from_ref(&fragment.root));
+      }
+      None => nodes.push(Node::new(id, UiStyle::default(), Measure::None)),
+    }
+    if let Some(root) = nodes.last_mut() {
+      root.role = Role::Kept;
+      root.parent = None;
+      root.depth = 0;
+      root.scroll = UiId::NONE;
+    }
   }
 
   /// Widget state not touched this frame is dropped
@@ -957,9 +959,9 @@ mod tests {
   }
 
   /// A fragment of `scene`, rooted at node `root`, at `version`
-  fn fragment(root: u64, scene: u64, version: u64) -> Fragment {
+  fn fragment(root: u64, scene: u64, version: u64) -> Box<Fragment> {
     use crate::core::ui::fragment::Inputs;
-    Fragment {
+    Box::new(Fragment {
       built: 1,
       scene,
       inputs: Inputs {
@@ -986,15 +988,21 @@ mod tests {
       sprites: Vec::new(),
       interest: None,
       version,
-    }
+    })
   }
 
   #[test]
   fn a_fragment_lasts_a_frame_undrawn_and_a_rerun_keeps_only_last_frames() {
     let mut memory = UiMemory::new();
     memory.begin_frame();
-    memory.fragments_next.insert(UiId(1), fragment(1, 7, 10));
-    memory.fragments_next.insert(UiId(2), fragment(2, 7, 11));
+    let version = memory.next_fragment_version();
+    memory
+      .fragments_next
+      .insert(UiId(1), fragment(1, 7, version));
+    let version = memory.next_fragment_version();
+    memory
+      .fragments_next
+      .insert(UiId(2), fragment(2, 7, version));
     memory.end_frame();
     memory.begin_frame();
     assert_eq!(memory.fragments_prev.len(), 2, "last frame's, to take");
@@ -1002,16 +1010,22 @@ mod tests {
     let copied = memory.fragments_prev.remove(&UiId(1)).unwrap();
     memory.fragments_next.insert(UiId(1), copied);
     let mut again = memory.fragments_prev.remove(&UiId(2)).unwrap();
-    again.version = 12;
+    again.version = memory.next_fragment_version();
     memory.fragments_next.insert(UiId(2), again);
-    memory.fragments_next.insert(UiId(3), fragment(3, 7, 13));
+    let version = memory.next_fragment_version();
+    memory
+      .fragments_next
+      .insert(UiId(3), fragment(3, 7, version));
     // The pass is discarded: what it only copied is last frame's again
     memory.restart_pass();
     let mut kept: Vec<UiId> = memory.fragments_prev.keys().copied().collect();
     kept.sort_unstable();
     assert_eq!(kept, [UiId(1)]);
     assert!(memory.fragments_next.is_empty());
-    memory.fragments_next.insert(UiId(4), fragment(4, 8, 14));
+    let version = memory.next_fragment_version();
+    memory
+      .fragments_next
+      .insert(UiId(4), fragment(4, 8, version));
     memory.end_frame();
     // Not drawn in a frame: gone the frame after
     memory.begin_frame();

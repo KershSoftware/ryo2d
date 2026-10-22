@@ -321,11 +321,22 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   let ui_size = space.size;
   let scale = space.px_scale;
 
-  // Each kept node's fragment, taken out of last frame's
+  // Each kept node's fragment, taken out of last frame's; and a nested
+  // node with an `at` rect leaves its parent's flow, at that size
   let mut keeping = std::mem::take(&mut scratch.keeping);
   keeping.kept.clear();
   let mut captures = false;
+  scratch.floating.clear();
   for (i, node) in nodes.iter().enumerate() {
+    if let Some(at) = node.at.filter(|_| node.parent.is_some()) {
+      let style = UiStyle {
+        width: Length::Px(at.width),
+        height: Length::Px(at.height),
+        absolute: true,
+        ..node.style.clone()
+      };
+      scratch.floating.push((i, style));
+    }
     match node.role {
       Role::Kept => {
         let fragment = memory.fragments_prev.remove(&node.id);
@@ -347,19 +358,6 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     height: Length::Px(at.height),
     ..nodes[0].style.clone()
   });
-  // A nested node with an `at` rect leaves its parent's flow, at that size
-  scratch.floating.clear();
-  for (i, node) in nodes.iter().enumerate() {
-    if let Some(at) = node.at.filter(|_| node.parent.is_some()) {
-      let style = UiStyle {
-        width: Length::Px(at.width),
-        height: Length::Px(at.height),
-        absolute: true,
-        ..node.style.clone()
-      };
-      scratch.floating.push((i, style));
-    }
-  }
   child_runs(nodes, &mut scratch.children, &mut scratch.child_ends);
   let (children, ends) = (&scratch.children, &scratch.child_ends);
   let mut floating = scratch.floating.iter().peekable();
@@ -401,7 +399,13 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
           measure_text(text, leaf, known.0, avail.0, scale)
         })
       };
-    layout.layout(&descs, available, &mut measure);
+    // Only a subtree capturing a fragment counts its nodes' subtrees, for
+    // the frames that keep them
+    if captures {
+      layout.layout_counting(&descs, available, &mut measure);
+    } else {
+      layout.layout(&descs, available, &mut measure);
+    }
   }
   scratch.descs = recycle(descs);
   let layout: &LayoutEngine = layout;
@@ -429,7 +433,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   let from = Origin { origin, clip, s };
   let mut placing = std::mem::take(&mut scratch.placing);
   let placing = &mut placing;
-  placing.clear();
+  placing.clear(s);
   for (i, node) in nodes.iter().enumerate() {
     let parent = node.parent.filter(|&p| p < i).map(|p| (p, &nodes[p]));
     placing.place(node, parent, placed[i].rect, from, memory, commands);
@@ -444,11 +448,12 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       continue;
     }
     if let Some(state) = memory.state::<ScrollState>(node.id, scene) {
-      let shown = placing.slotted[i].rect;
+      let at = &placing.nodes[i];
+      let shown = at.rect;
       let view = Vec2::new(shown.width, shown.height);
       // The contents overflow by what they pass the unsnapped view: an area
       // snapped a fraction smaller than its layout still fits them
-      let exact = placing.exact[i];
+      let exact = at.exact;
       let snapping = view - Vec2::new(exact.width, exact.height);
       let content = placed[i].content + snapping;
       // A height its owner gave stands, whatever the contents measure
@@ -561,57 +566,95 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   // a capture's go from where the first draw at or past its root's order
   // lands (its own, or the next one's when none of its draws is pushed)
   let runs_from = commands.runs().len();
-  let mut opening = 0;
-  for draw in subtree.draws.drain(..) {
-    start_runs(capturing, &mut opening, draw.order, commands.position());
-    if matches!(draw.kind, DrawKind::Kept) {
-      if let (Some(node), Some(fragment)) = (nodes.get(draw.node), kept_at_mut(kept, draw.node)) {
-        let slot = placing.slot_of(draw.node);
-        copy_draws(fragment, node, slot, memory, commands);
+  if captures {
+    let mut opening = 0;
+    for draw in subtree.draws.drain(..) {
+      start_runs(capturing, &mut opening, draw.order, commands.position());
+      if matches!(draw.kind, DrawKind::Kept) {
+        if let (Some(node), Some(fragment)) = (nodes.get(draw.node), kept_at_mut(kept, draw.node)) {
+          let slot = placing.slot_of(draw.node);
+          copy_draws(fragment, node, slot, memory, commands);
+        }
+        continue;
       }
-      continue;
-    }
-    let (Some(node), Some(at)) = (nodes.get(draw.node), placing.slotted.get(draw.node)) else {
-      continue;
-    };
-    let slot = placing.slots[at.slot];
-    let (index, mut place) = placement(at, placing.exact[draw.node], slot, draw.layer);
-    let mut capture = captures
-      .then(|| captured(draw.node))
-      .flatten()
-      .and_then(|c| capturing.get_mut(c));
-    if let Some(capture) = capture.as_deref_mut() {
-      capture.keep_draw(&draw);
-      // A fragment's draws are culled by its slot's interest
-      place.cull = slot.fragment_cull(place.clip);
-    }
-    let order = draw.order;
-    draw_commands(
-      draw.kind,
-      &place,
-      node,
-      leaves,
-      text,
-      scale,
-      |command, seen| {
-        if let Some(capture) = capture.as_deref_mut() {
-          capture.draws.push(KeptDraw {
-            order: order.wrapping_sub(capture.base),
-            command: command.clone(),
-            cull: seen,
-          });
-        }
-        if !seen.is_some_and(|seen| outside(place.cull, seen)) {
-          commands.push(order, index, command);
+      let (Some(node), Some(at)) = (nodes.get(draw.node), placing.nodes.get(draw.node)) else {
+        continue;
+      };
+      let slot = placing.slots[at.slot];
+      let (index, mut place) = placement(at, &slot, draw.layer);
+      let mut capture = captured(draw.node).and_then(|c| capturing.get_mut(c));
+      if let Some(capture) = capture.as_deref_mut() {
+        capture.keep_draw(&draw);
+        // A fragment's draws are culled by its slot's interest
+        place.cull = slot.fragment_cull(place.clip);
+      }
+      let order = draw.order;
+      draw_commands(
+        draw.kind,
+        &place,
+        node,
+        leaves,
+        text,
+        scale,
+        |command, seen| {
           if let Some(capture) = capture.as_deref_mut() {
-            capture.pushed += 1;
-            capture.run.end = commands.position();
+            capture.draws.push(KeptDraw {
+              order: order.wrapping_sub(capture.base),
+              command: command.clone(),
+              cull: seen,
+            });
           }
+          if !seen.is_some_and(|seen| outside(place.cull, seen)) {
+            commands.push(order, index, command);
+            if let Some(capture) = capture.as_deref_mut() {
+              capture.pushed += 1;
+              capture.run.end = commands.position();
+            }
+          }
+        },
+      );
+    }
+    start_runs(capturing, &mut opening, u32::MAX, commands.position());
+  } else {
+    // Nothing is captured: a draw's commands are made only where they show
+    for draw in subtree.draws.drain(..) {
+      if matches!(draw.kind, DrawKind::Kept) {
+        if let (Some(node), Some(fragment)) = (nodes.get(draw.node), kept_at_mut(kept, draw.node)) {
+          let slot = placing.slot_of(draw.node);
+          copy_draws(fragment, node, slot, memory, commands);
         }
-      },
-    );
+        continue;
+      }
+      let (Some(node), Some(at)) = (nodes.get(draw.node), placing.nodes.get(draw.node)) else {
+        continue;
+      };
+      let (index, place) = placement(at, &placing.slots[at.slot], draw.layer);
+      let order = draw.order;
+      if let DrawKind::NineSlice {
+        inset,
+        sprite,
+        insets,
+        tint,
+        filter,
+      } = &draw.kind
+      {
+        let room = inset_rect(place.rect, *inset);
+        let slice = NineSlice {
+          sprite,
+          insets: *insets,
+          tint: *tint,
+          filter: *filter,
+        };
+        nine_slice(room, &slice, &place, scale, place.cull, |command, _| {
+          commands.push(order, index, command);
+        });
+      } else if let Some((command, _)) =
+        command_of(draw.kind, &place, node, leaves, text, scale, place.cull)
+      {
+        commands.push(order, index, command);
+      }
+    }
   }
-  start_runs(capturing, &mut opening, u32::MAX, commands.position());
 
   // What each capture kept becomes its fragment
   for capture in capturing.drain(..) {
@@ -689,7 +732,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
         draws: run,
       });
     }
-    memory.fragments_next.insert(node.id, fragment);
+    memory.fragments_next.insert(node.id, Box::new(fragment));
   }
   // Captured runs were pushed after the kept ones
   if captures {
@@ -702,7 +745,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       memory.fragments_next.insert(nodes[i].id, fragment);
     }
   }
-  let rect = placing.rects.first().copied();
+  let rect = placing.nodes.first().map(|at| at.rect);
   scratch.keeping = keeping;
   scratch.placing = std::mem::take(placing);
   rect
@@ -721,55 +764,57 @@ struct Origin {
 /// and its records and draws read. Kept between subtrees in `Scratch`.
 #[derive(Default)]
 pub(crate) struct Placing {
-  /// How far each node is moved from where the layout put it, scrolling
-  /// aside
-  shift: Vec<Vec2>,
-  /// Each node's rect before snapping, unscrolled
-  exact: Vec<Rect>,
-  /// Each node's rect snapped to render pixels, absolute (its record's)
-  rects: Vec<Rect>,
-  /// Each node's clip, absolute (its record's)
-  clips: Vec<Option<Rect>>,
-  /// Each node's slot, and its rect and clip as its draws carry them
-  slotted: Vec<Slotted>,
+  nodes: Vec<NodeAt>,
   /// The subtree's slots: slot 0, then each scroll area's
   slots: Vec<SlotPlace>,
+  /// Render pixels per UI unit
+  s: f32,
+}
+
+/// Where resolve put one node, in the coordinates its draws carry
+#[derive(Debug, Clone, Copy)]
+struct NodeAt {
+  /// How far it is moved from where the layout put it, scrolling aside
+  shift: Vec2,
+  /// Its rect before snapping, unscrolled
+  exact: Rect,
+  /// Its slot, in the subtree's slots
+  slot: usize,
+  /// Its contents' slot: a scroll area's own, else its slot
+  content: usize,
+  /// Its rect snapped to render pixels: relative to its slot when its slot
+  /// is in the table, else absolute
+  rect: Rect,
+  /// Its draws' clip in the same coordinates; in a slot, `None` is the
+  /// slot's clip alone (a clipping node between adds its own)
+  clip: Option<Rect>,
+  /// Its edges in whole render pixels from its slot's base: x0, y0, x1, y1
+  edges: [f32; 4],
 }
 
 impl Placing {
-  /// Nothing placed, in slot 0 alone
-  fn clear(&mut self) {
-    self.shift.clear();
-    self.exact.clear();
-    self.rects.clear();
-    self.clips.clear();
-    self.slotted.clear();
+  /// Nothing placed, in slot 0 alone, at `s` render pixels per UI unit
+  fn clear(&mut self, s: f32) {
+    self.nodes.clear();
     self.slots.clear();
     self.slots.push(SlotPlace::NONE);
+    self.s = s;
   }
 
   /// How many nodes are placed
   fn len(&self) -> usize {
-    self.slotted.len()
+    self.nodes.len()
   }
 
   /// Back to the first `len` nodes placed
   fn truncate(&mut self, len: usize) {
-    self.shift.truncate(len);
-    self.exact.truncate(len);
-    self.rects.truncate(len);
-    self.clips.truncate(len);
-    self.slotted.truncate(len);
+    self.nodes.truncate(len);
   }
 
   /// Node `i` placed again after the last: a fragment resolved again has
   /// its root where its kept node is
   fn repeat(&mut self, i: usize) {
-    self.shift.push(self.shift[i]);
-    self.exact.push(self.exact[i]);
-    self.rects.push(self.rects[i]);
-    self.clips.push(self.clips[i]);
-    self.slotted.push(self.slotted[i]);
+    self.nodes.push(self.nodes[i]);
   }
 
   /// Place `node`, laid out at `r` (relative to its subtree's root), after
@@ -777,7 +822,8 @@ impl Placing {
   /// (`None` for the subtree's root). A scroll area's contents are placed
   /// relative to its slot, on whole render pixels counted from the slot's
   /// origin, so its offset moves them rigidly; a scroll area with a state
-  /// adds its slot to the frame's.
+  /// adds its slot to the frame's. Inlined: resolve places every node.
+  #[inline(always)]
   fn place(
     &mut self,
     node: &Node,
@@ -791,12 +837,12 @@ impl Placing {
     let mut shift = Vec2::ZERO;
     let mut slot = 0;
     if let Some((p, up)) = parent {
-      shift = self.shift[p];
+      shift = self.nodes[p].shift;
       // A stack places its children by anchor, then moves them by their offset
       if matches!(up.style.flow, Flow::Stack) {
         shift += finite(node.style.offset);
       }
-      slot = self.slotted[p].content;
+      slot = self.nodes[p].content;
     }
     // A node placed at a rect goes there, wherever its parent is: it does
     // not scroll
@@ -804,10 +850,8 @@ impl Placing {
       shift = Vec2::new(at.x, at.y) - origin - Vec2::new(r.x, r.y);
       slot = 0;
     }
-    self.shift.push(shift);
     let at = origin + Vec2::new(r.x, r.y) + shift;
     let unsnapped = Rect::new(at.x, at.y, r.width, r.height);
-    self.exact.push(unsnapped);
 
     // Its edges in whole render pixels from its slot's origin
     let place = self.slots[slot];
@@ -821,42 +865,41 @@ impl Placing {
       edge(unsnapped.bottom(), place.base.y),
     );
     let relative = rect_of(x0, y0, x1, y1, s);
-    let (dx, dy) = (place.offset.x, place.offset.y);
-    let absolute = if slot == 0 {
+    // In a slot of the table it is placed relative to the slot (its record
+    // makes it absolute); in one past the table, absolute
+    let rect = if slot == 0 || place.real() {
       relative
     } else {
+      let (dx, dy) = (place.offset.x, place.offset.y);
       rect_of(x0 + dx, y0 + dy, x1 + dx, y1 + dy, s)
     };
-    self.rects.push(absolute);
 
     // Its clip: inside a slot, relative to it from the slot's first
     // contents (whose clip is the slot's own) on; elsewhere absolute
-    let (clip_abs, clip_rel) = match parent {
-      None => (clip, clip),
+    let clip = match parent {
+      None => clip,
       Some((p, up)) if place.real() => {
-        let above = self.slotted[p];
+        let above = &self.nodes[p];
         let starts_slot = above.content == slot && above.slot != slot;
-        let rel = if starts_slot {
+        if starts_slot {
           None
         } else if up.clips {
           meet(above.clip, Some(above.rect))
         } else {
           above.clip
-        };
-        (slot_clip(place, rel, s), rel)
+        }
       }
       Some((p, up)) => {
-        let mut abs = self.clips[p];
+        let (rect, mut abs) = self.absolute(p);
         if up.clips {
           abs = Some(match abs {
-            Some(c) => intersect(c, self.rects[p]),
-            None => self.rects[p],
+            Some(c) => intersect(c, rect),
+            None => rect,
           });
         }
-        (abs, abs)
+        abs
       }
     };
-    self.clips.push(clip_abs);
 
     // A scroll area is a slot for its contents, drawn at its offset rounded
     // to whole render pixels
@@ -868,6 +911,13 @@ impl Placing {
       let drawn = drawn_px(state.offset, [scroll_x, scroll_y], s);
       let corner = Vec2::new(x0, y0);
       let offset = place.offset + corner - Vec2::new(drawn[0] as f32, drawn[1] as f32);
+      let (absolute, clip_abs) = if place.real() {
+        let (dx, dy) = (place.offset.x, place.offset.y);
+        let absolute = rect_of(x0 + dx, y0 + dy, x1 + dx, y1 + dy, s);
+        (absolute, slot_clip(&place, clip))
+      } else {
+        (rect, clip)
+      };
       let view = Some(match clip_abs {
         Some(c) => intersect(c, absolute),
         None => absolute,
@@ -882,6 +932,7 @@ impl Placing {
       self.slots.push(SlotPlace {
         base: place.base + corner,
         offset,
+        units: offset / s,
         clip: view,
         cull,
         interest: Some(interest(size, drawn, [scroll_x, scroll_y], s)),
@@ -889,26 +940,46 @@ impl Placing {
       });
       content = self.slots.len() - 1;
     }
-    self.slotted.push(Slotted {
+    self.nodes.push(NodeAt {
+      shift,
+      exact: unsnapped,
       slot,
       content,
-      rect: if place.real() { relative } else { absolute },
-      clip: if place.real() { clip_rel } else { clip_abs },
+      rect,
+      clip,
       edges: [x0, y0, x1, y1],
     });
   }
 
   /// The slot node `i` is placed in
   fn slot_of(&self, i: usize) -> SlotPlace {
-    self.slots[self.slotted[i].slot]
+    self.slots[self.nodes[i].slot]
+  }
+
+  /// Node `i`'s rect and clip, absolute (its record's): in a slot of the
+  /// table, made so from its edges and clip there by the slot's offset.
+  /// Inlined: every record asks.
+  #[inline(always)]
+  fn absolute(&self, i: usize) -> (Rect, Option<Rect>) {
+    let at = &self.nodes[i];
+    let slot = &self.slots[at.slot];
+    if slot.real() {
+      let [x0, y0, x1, y1] = at.edges;
+      let (dx, dy) = (slot.offset.x, slot.offset.y);
+      let rect = rect_of(x0 + dx, y0 + dy, x1 + dx, y1 + dy, self.s);
+      (rect, slot_clip(slot, at.clip))
+    } else {
+      (at.rect, at.clip)
+    }
   }
 
   /// Node `i`'s record (`node` placed there, with `spec` and the size of
   /// its `content`), in `scene`
   fn record(&self, i: usize, node: &Node, spec: RecordSpec, content: Vec2, scene: u64) -> Record {
+    let (rect, clip) = self.absolute(i);
     Record {
-      rect: self.rects[i],
-      clip: self.clips[i],
+      rect,
+      clip,
       layer: node.layer,
       order: node.order,
       depth: node.depth,
@@ -925,7 +996,7 @@ impl Placing {
   /// Node `i`'s `record`, of widget `id`, kept in a fragment, with its
   /// order and depth less its fragment root's
   fn kept_record(&self, i: usize, id: UiId, record: Record, order: u32, depth: u16) -> KeptRecord {
-    let at = self.slotted[i];
+    let at = &self.nodes[i];
     KeptRecord {
       id,
       record,
@@ -949,7 +1020,7 @@ impl Placing {
     Inputs {
       origin: Inputs::vec(from.origin),
       rect: Inputs::rect(laid),
-      shift: Inputs::vec(self.shift[i]),
+      shift: Inputs::vec(self.nodes[i].shift),
       base: Inputs::vec(slot.base),
       scale: scale.to_bits(),
       slot: kind,
@@ -958,7 +1029,7 @@ impl Placing {
       } else {
         Inputs::vec(slot.offset)
       },
-      clip: self.slotted[i].clip.map(Inputs::rect),
+      clip: self.nodes[i].clip.map(Inputs::rect),
       layer,
     }
   }
@@ -971,15 +1042,15 @@ fn rect_of(x0: f32, y0: f32, x1: f32, y1: f32, s: f32) -> Rect {
 
 /// The absolute clip of a node in slot `place` whose clip relative to the
 /// slot is `rel` (`None`: the slot's alone)
-fn slot_clip(place: SlotPlace, rel: Option<Rect>, s: f32) -> Option<Rect> {
-  let moved_out = rel.map(|c| moved(c, place.offset / s));
+fn slot_clip(place: &SlotPlace, rel: Option<Rect>) -> Option<Rect> {
+  let moved_out = rel.map(|c| moved(c, place.units));
   meet(place.clip, moved_out)
 }
 
-/// Where a draw on a node at `at` (its rect before snapping `unsnapped`) in
-/// `slot` lands, on `layer`: its slot's index in the frame's table (0 for
-/// none) and its placement
-fn placement(at: &Slotted, unsnapped: Rect, slot: SlotPlace, layer: u8) -> (u16, Placement) {
+/// Where a draw on a node placed at `at` in `slot` lands, on `layer`: its
+/// slot's index in the frame's table (0 for none) and its placement
+fn placement(at: &NodeAt, slot: &SlotPlace, layer: u8) -> (u16, Placement) {
+  let unsnapped = at.exact;
   let (index, clip, cull) = if slot.real() {
     (slot.index, at.clip, meet(at.clip, slot.cull))
   } else {
@@ -1022,17 +1093,17 @@ fn draw_commands(
       tint: *tint,
       filter: *filter,
     };
-    nine_slice(room, &slice, place, scale, |command, rect| {
+    nine_slice(room, &slice, place, scale, None, |command, rect| {
       emit(command, Some(rect))
     });
-  } else if let Some((command, seen)) = command_of(kind, place, node, leaves, text, scale) {
+  } else if let Some((command, seen)) = command_of(kind, place, node, leaves, text, scale, None) {
     emit(command, seen);
   }
 }
 
 /// The text leaf of the node `id` in one of `kept`'s fragments, if it is a
 /// text node
-fn kept_leaf(kept: &[(usize, Option<Fragment>)], id: UiId) -> Option<&TextLeaf> {
+fn kept_leaf(kept: &[(usize, Option<Box<Fragment>>)], id: UiId) -> Option<&TextLeaf> {
   kept
     .iter()
     .filter_map(|(_, fragment)| fragment.as_ref())
@@ -1044,15 +1115,15 @@ fn kept_leaf(kept: &[(usize, Option<Fragment>)], id: UiId) -> Option<&TextLeaf> 
 }
 
 /// The fragment of the kept node `i` (`kept` is in node order)
-fn kept_at(kept: &[(usize, Option<Fragment>)], i: usize) -> Option<&Fragment> {
+fn kept_at(kept: &[(usize, Option<Box<Fragment>>)], i: usize) -> Option<&Fragment> {
   let k = kept.binary_search_by_key(&i, |(j, _)| *j).ok()?;
-  kept[k].1.as_ref()
+  kept[k].1.as_deref()
 }
 
 /// [`kept_at`], to change
-fn kept_at_mut(kept: &mut [(usize, Option<Fragment>)], i: usize) -> Option<&mut Fragment> {
+fn kept_at_mut(kept: &mut [(usize, Option<Box<Fragment>>)], i: usize) -> Option<&mut Fragment> {
   let k = kept.binary_search_by_key(&i, |(j, _)| *j).ok()?;
-  kept[k].1.as_mut()
+  kept[k].1.as_deref_mut()
 }
 
 /// Where a fragment is copied: its root the kept node `root` in `slot`, at
@@ -1080,7 +1151,7 @@ impl CopyAt<'_> {
       let [x0, y0, x1, y1] = kept.edges;
       let (dx, dy) = (slot.offset.x, slot.offset.y);
       let rect = rect_of(x0 + dx, y0 + dy, x1 + dx, y1 + dy, s);
-      (rect, slot_clip(slot, kept.clip, s))
+      (rect, slot_clip(&slot, kept.clip))
     } else {
       (kept.record.rect, kept.record.clip)
     };
@@ -1312,10 +1383,10 @@ impl Again<'_, '_> {
     for draw in node_draws.iter() {
       sprites.extend(sized_by(&draw.kind));
       let j = start + draw.node;
-      let (Some(node), Some(at)) = (nodes.get(draw.node), placing.slotted.get(j)) else {
+      let (Some(node), Some(at)) = (nodes.get(draw.node), placing.nodes.get(j)) else {
         continue;
       };
-      let (_, place) = placement(at, placing.exact[j], placing.slots[at.slot], draw.layer);
+      let (_, place) = placement(at, &placing.slots[at.slot], draw.layer);
       let kind = draw.kind.clone();
       draw_commands(
         kind,
@@ -1347,7 +1418,7 @@ const NO_SPAN: u32 = u32::MAX;
 pub(crate) struct Keeping {
   /// The subtree's kept nodes, in node order, with their fragments (`None`:
   /// missing)
-  kept: Vec<(usize, Option<Fragment>)>,
+  kept: Vec<(usize, Option<Box<Fragment>>)>,
   /// Each node's subtree size, itself included
   sizes: Vec<usize>,
   /// The capture whose span each node is in (`NO_SPAN`)
@@ -1526,6 +1597,8 @@ pub(crate) struct SlotPlace {
   base: Vec2,
   /// Where its origin is drawn, in whole render pixels
   offset: Vec2,
+  /// That offset in UI units
+  units: Vec2,
   /// The clip its contents draw under (absolute)
   clip: Option<Rect>,
   /// That clip in the slot's own coordinates: what its draws are culled by
@@ -1543,6 +1616,7 @@ impl SlotPlace {
   const NONE: SlotPlace = SlotPlace {
     base: Vec2::ZERO,
     offset: Vec2::ZERO,
+    units: Vec2::ZERO,
     clip: None,
     cull: None,
     interest: None,
@@ -1606,23 +1680,6 @@ fn interest(view: Vec2, drawn: [i32; 2], scrolls: [bool; 2], s: f32) -> Rect {
   Rect::new(x, y, width, height)
 }
 
-/// Where resolve put a node, in the coordinates its draws carry
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Slotted {
-  /// Its slot, in the subtree's slots
-  slot: usize,
-  /// Its contents' slot: a scroll area's own, else its slot
-  content: usize,
-  /// Its rect snapped to render pixels: relative to its slot when its slot
-  /// is in the table, else absolute
-  rect: Rect,
-  /// Its draws' clip in the same coordinates; in a slot, `None` is the
-  /// slot's clip alone (a clipping node between adds its own)
-  clip: Option<Rect>,
-  /// Its edges in whole render pixels from its slot's base: x0, y0, x1, y1
-  edges: [f32; 4],
-}
-
 /// Each node's children in `children`, in the order they were added (by
 /// index, as each child names its parent): node `i`'s run ends at
 /// `ends[i]` and starts where node `i - 1`'s ends
@@ -1674,6 +1731,7 @@ fn nine_slice(
   slice: &NineSlice<'_>,
   place: &Placement,
   scale: f32,
+  cull: Option<Rect>,
   mut emit: impl FnMut(UiCommand, Rect),
 ) {
   let NineSlice {
@@ -1723,7 +1781,7 @@ fn nine_slice(
         xs[column + 1] - xs[column],
         ys[row + 1] - ys[row],
       );
-      if drawable(rect) {
+      if drawable(rect) && !outside(cull, rect) {
         let piece = UiCommand::Sprite {
           sprite: sprite.clone(),
           rect,
@@ -1803,7 +1861,10 @@ struct TextAt {
 
 /// A draw on `node` (its text owned in `leaves`) as a command in UI units,
 /// with the box it is culled by (`None`: never culled), or `None` when it
-/// draws nothing
+/// draws nothing or its box lies outside `cull`. Inlined into each draw
+/// loop, so a command culled there is never built.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn command_of(
   kind: DrawKind,
   place: &Placement,
@@ -1811,10 +1872,9 @@ fn command_of(
   leaves: &[TextLeaf],
   text: &RefCell<&mut TextEngine>,
   scale: f32,
+  cull: Option<Rect>,
 ) -> Option<(UiCommand, Option<Rect>)> {
   let (clip, layer) = (place.clip, place.layer);
-  // A command with its box, when its rect can draw
-  let boxed = |rect: Rect, command: UiCommand| drawable(rect).then_some((command, Some(rect)));
   match kind {
     DrawKind::Fill {
       inset,
@@ -1823,17 +1883,14 @@ fn command_of(
       border,
     } => {
       let rect = inset_rect(place.rect, inset);
-      boxed(
+      boxed(rect, cull, || UiCommand::Rect {
         rect,
-        UiCommand::Rect {
-          rect,
-          fill,
-          radius,
-          border,
-          clip,
-          layer,
-        },
-      )
+        fill,
+        radius,
+        border,
+        clip,
+        layer,
+      })
     }
     DrawKind::Box {
       inset,
@@ -1846,17 +1903,14 @@ fn command_of(
       let room = inset_rect(place.rect, inset);
       let at = Vec2::new(room.x, room.y) + frac * (Vec2::new(room.width, room.height) - size);
       let rect = snap_rect(Rect::new(at.x, at.y, size.x, size.y), scale);
-      boxed(
+      boxed(rect, cull, || UiCommand::Rect {
         rect,
-        UiCommand::Rect {
-          rect,
-          fill,
-          radius,
-          border,
-          clip,
-          layer,
-        },
-      )
+        fill,
+        radius,
+        border,
+        clip,
+        layer,
+      })
     }
     DrawKind::Text {
       leaf,
@@ -1871,7 +1925,7 @@ fn command_of(
         opacity,
         reveal,
       };
-      text_command(&leaf, at, place, node, text, scale)
+      text_command(&leaf, at, place, node, text, scale, cull)
     }
     DrawKind::NodeText {
       frac,
@@ -1886,7 +1940,7 @@ fn command_of(
         reveal,
       };
       let leaf = node.text.as_ref()?.get(leaves)?;
-      text_command(leaf, at, place, node, text, scale)
+      text_command(leaf, at, place, node, text, scale, cull)
     }
     DrawKind::Sprite {
       inset,
@@ -1905,18 +1959,15 @@ fn command_of(
         }
         None => room,
       };
-      boxed(
+      boxed(rect, cull, || UiCommand::Sprite {
+        sprite,
         rect,
-        UiCommand::Sprite {
-          sprite,
-          rect,
-          uv,
-          tint,
-          filter,
-          clip,
-          layer,
-        },
-      )
+        uv,
+        tint,
+        filter,
+        clip,
+        layer,
+      })
     }
     DrawKind::Fraction {
       inset,
@@ -1939,17 +1990,14 @@ fn command_of(
         Rect::new(room.x, room.y, room.width * to, room.height),
         scale,
       );
-      boxed(
+      boxed(rect, cull, || UiCommand::Rect {
         rect,
-        UiCommand::Rect {
-          rect,
-          fill,
-          radius,
-          border: None,
-          clip,
-          layer,
-        },
-      )
+        fill,
+        radius,
+        border: None,
+        clip,
+        layer,
+      })
     }
     // Placed as nine commands by the caller
     DrawKind::NineSlice { .. } => None,
@@ -1966,17 +2014,14 @@ fn command_of(
           ..
         } => {
           let rect = moved(rect, by);
-          boxed(
+          boxed(rect, cull, || UiCommand::Rect {
             rect,
-            UiCommand::Rect {
-              rect,
-              fill,
-              radius,
-              border,
-              clip,
-              layer,
-            },
-          )
+            fill,
+            radius,
+            border,
+            clip,
+            layer,
+          })
         }
         UiCommand::Sprite {
           sprite,
@@ -1987,18 +2032,15 @@ fn command_of(
           ..
         } => {
           let rect = moved(rect, by);
-          boxed(
+          boxed(rect, cull, || UiCommand::Sprite {
+            sprite,
             rect,
-            UiCommand::Sprite {
-              sprite,
-              rect,
-              uv,
-              tint,
-              filter,
-              clip,
-              layer,
-            },
-          )
+            uv,
+            tint,
+            filter,
+            clip,
+            layer,
+          })
         }
         UiCommand::Line {
           points,
@@ -2031,7 +2073,7 @@ fn command_of(
           let origin = origin + by;
           let size = layout.size / layout.scale;
           let block = Rect::new(origin.x, origin.y, size.x, size.y);
-          let text = UiCommand::Text {
+          let text = || UiCommand::Text {
             layout,
             origin,
             reveal,
@@ -2040,7 +2082,7 @@ fn command_of(
             clip,
             layer,
           };
-          origin.is_finite().then_some((text, Some(block)))
+          (origin.is_finite() && !outside(cull, block)).then(|| (text(), Some(block)))
         }
       }
     }
@@ -2049,7 +2091,7 @@ fn command_of(
 
 /// `leaf` laid out in the content box of `node` (inside its padding),
 /// wrapped to its width when `at.wrap`, with its block (what it is culled
-/// by); its effect seed is its key's
+/// by), unless the block lies outside `cull`; its effect seed is its key's
 fn text_command(
   leaf: &TextLeaf,
   at: TextAt,
@@ -2057,6 +2099,7 @@ fn text_command(
   node: &Node,
   text: &RefCell<&mut TextEngine>,
   scale: f32,
+  cull: Option<Rect>,
 ) -> Option<(UiCommand, Option<Rect>)> {
   let padding = clean_edges(node.style.padding);
   let content = inset_rect(place.rect, padding);
@@ -2075,7 +2118,7 @@ fn text_command(
   let origin =
     Vec2::new(content.x, content.y) + at.frac * (Vec2::new(content.width, content.height) - size);
   let block = Rect::new(origin.x, origin.y, size.x, size.y);
-  let command = UiCommand::Text {
+  let command = || UiCommand::Text {
     layout,
     origin,
     reveal: at.reveal,
@@ -2084,7 +2127,18 @@ fn text_command(
     clip: place.clip,
     layer: place.layer,
   };
-  origin.is_finite().then_some((command, Some(block)))
+  (origin.is_finite() && !outside(cull, block)).then(|| (command(), Some(block)))
+}
+
+/// `command` with its box `rect`, when `rect` can draw and does not lie
+/// outside `cull`
+#[inline(always)]
+fn boxed(
+  rect: Rect,
+  cull: Option<Rect>,
+  command: impl FnOnce() -> UiCommand,
+) -> Option<(UiCommand, Option<Rect>)> {
+  (drawable(rect) && !outside(cull, rect)).then(|| (command(), Some(rect)))
 }
 
 /// A vector with any non-finite part made zero

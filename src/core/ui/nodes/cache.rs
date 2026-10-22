@@ -633,7 +633,7 @@ impl UiCache {
     &mut self,
     world: &World,
     frame: u64,
-    fragments: &FastMap<UiId, Fragment>,
+    fragments: &FastMap<UiId, Box<Fragment>>,
   ) {
     let UiCache {
       enabled,

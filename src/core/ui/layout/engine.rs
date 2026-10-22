@@ -120,6 +120,10 @@ pub(crate) struct LayoutStats {
   pub(crate) rechildren: u64,
   /// Nodes added
   pub(crate) created: u64,
+  /// Nodes whose subtree was counted, for when one is kept
+  pub(crate) counted: u64,
+  /// Ends of a frame that found entries not laid out, and swept them
+  pub(crate) swept: u64,
 }
 
 impl LayoutEngine {
@@ -158,6 +162,7 @@ impl LayoutEngine {
     if self.laid == self.entries.len() {
       return;
     }
+    self.stats.swept += 1;
     let frame = self.frame;
     // A kept subtree was not walked: its entries are laid out as it is
     let mut stack = std::mem::take(&mut self.buffers.child_ids);
@@ -263,11 +268,34 @@ impl LayoutEngine {
     available: Vec2,
     measure: &mut MeasureFn<'_>,
   ) -> &[Placed] {
+    self.lay_out(nodes, available, false, measure)
+  }
+
+  /// [`layout`](Self::layout), counting each node's subtree as well: a node
+  /// kept in a later frame counts it as laid out, so `end_frame` need not
+  /// look for what is left. What a layout that keeps a node next frame (one
+  /// capturing a fragment) does; a node is kept only after one.
+  pub(crate) fn layout_counting(
+    &mut self,
+    nodes: &[NodeDesc<'_>],
+    available: Vec2,
+    measure: &mut MeasureFn<'_>,
+  ) -> &[Placed] {
+    self.lay_out(nodes, available, true, measure)
+  }
+
+  fn lay_out(
+    &mut self,
+    nodes: &[NodeDesc<'_>],
+    available: Vec2,
+    count: bool,
+    measure: &mut MeasureFn<'_>,
+  ) -> &[Placed] {
     let mut buffers = std::mem::take(&mut self.buffers);
     buffers.placed.clear();
     buffers.placed.resize(nodes.len(), Placed::default());
     if !nodes.is_empty()
-      && let Err(e) = self.try_layout(nodes, available, measure, &mut buffers)
+      && let Err(e) = self.try_layout(nodes, available, count, measure, &mut buffers)
     {
       if self.warned.insert("layout failed") {
         crate::engine_warn!(module: "ui", "layout failed: {e}");
@@ -286,6 +314,7 @@ impl LayoutEngine {
     &mut self,
     nodes: &[NodeDesc<'_>],
     available: Vec2,
+    count: bool,
     measure: &mut MeasureFn<'_>,
     buffers: &mut Buffers,
   ) -> TaffyResult<()> {
@@ -304,21 +333,23 @@ impl LayoutEngine {
     } = buffers;
     // Pre-order walk: which nodes count (reachable, unique ids), their parents
     // and their valid children
-    let count = nodes.len();
+    let len = nodes.len();
     index_of.clear();
-    index_of.reserve(count);
+    index_of.reserve(len);
     parents.clear();
-    parents.resize(count, None);
+    parents.resize(len, None);
     visited.clear();
-    visited.resize(count, false);
+    visited.resize(len, false);
     kids.clear();
     kid_range.clear();
-    kid_range.resize(count, (0, 0));
+    kid_range.resize(len, (0, 0));
     order.clear();
     taffy_ids.clear();
-    taffy_ids.resize(count, None);
+    taffy_ids.resize(len, None);
     below.clear();
-    below.resize(count, 0);
+    if count {
+      below.resize(len, 0);
+    }
     stack.clear();
     stack.push(0);
     visited[0] = true;
@@ -357,19 +388,23 @@ impl LayoutEngine {
       child_ids.clear();
       let (start, end) = kid_range[i];
       child_ids.extend(kids[start..end].iter().filter_map(|&c| taffy_ids[c]));
+      let entry = entries.get_mut(&desc.id);
       // A kept node without an entry is a caller's mistake: it is a leaf
-      let kept = desc.kept && entries.contains_key(&desc.id);
+      let kept = desc.kept && entry.is_some();
       if desc.kept && !kept && warned.insert("kept node unknown") {
         crate::engine_warn!(
           module: "ui",
           "a kept UI node was not laid out before; drawn without its contents"
         );
       }
+      // Each node's subtree, counted only where a node will be kept: a
+      // count left from before is read only by a node kept since
       let mut sum = 0;
-      if !kept {
+      if count && !kept {
         for &c in &kids[start..end] {
-          sum += 1 + below[c];
+          sum += 1 + below.get(c).copied().unwrap_or(0);
         }
+        stats.counted += 1;
       }
 
       // Only a node whose hash changed is cleaned and converted
@@ -379,7 +414,7 @@ impl LayoutEngine {
         to_taffy(&style, parent_flow.as_ref(), &clean_measure(desc.measure))
       };
 
-      match entries.get_mut(&desc.id) {
+      match entry {
         Some(entry) => {
           if entry.frame != *frame {
             entry.frame = *frame;
@@ -395,15 +430,19 @@ impl LayoutEngine {
           }
           if kept {
             kept_nodes.push(entry.node);
-            below[i] = entry.below;
+            if count {
+              below[i] = entry.below;
+            }
           } else {
             if entry.children != *child_ids {
               taffy.set_children(entry.node, child_ids)?;
               entry.children.clone_from(child_ids);
               stats.rechildren += 1;
             }
-            entry.below = sum;
-            below[i] = sum;
+            if count {
+              entry.below = sum;
+              below[i] = sum;
+            }
           }
           if entry.content_key != desc.content_key {
             taffy.mark_dirty(entry.node)?;
@@ -429,7 +468,9 @@ impl LayoutEngine {
               below: sum,
             },
           );
-          below[i] = sum;
+          if count {
+            below[i] = sum;
+          }
           taffy_ids[i] = Some(node);
         }
       }
@@ -919,8 +960,9 @@ mod tests {
     let leaf = UiStyle::default();
     let mut engine = LayoutEngine::new();
     engine.begin_frame();
+    // Counted, as a layout that captures what it keeps is
     let full: Vec<Placed> = engine
-      .layout(
+      .layout_counting(
         &nested(&outer, &inner, &leaf),
         Vec2::new(800.0, 600.0),
         &mut measure_any(40.0),
@@ -940,6 +982,11 @@ mod tests {
       "the kept node is where it was"
     );
     assert_eq!(engine.node_count(), count, "its subtree is kept");
+    assert_eq!(
+      (engine.stats().counted, engine.stats().swept),
+      (0, 0),
+      "its subtree counts as laid out, uncounted again"
+    );
 
     engine.begin_frame();
     let _ = engine.layout(
@@ -974,7 +1021,7 @@ mod tests {
       node(5, &leaf, Measure::Text, &[]),
       node(6, &leaf, Measure::Fixed(Vec2::new(10.0, 10.0)), &[]),
     ];
-    let _ = engine.layout(
+    let _ = engine.layout_counting(
       &with_sibling,
       Vec2::new(800.0, 600.0),
       &mut measure_any(10.0),
@@ -1007,7 +1054,7 @@ mod tests {
     let leaf = UiStyle::default();
     let mut engine = LayoutEngine::new();
     engine.begin_frame();
-    let _ = engine.layout(
+    let _ = engine.layout_counting(
       &nested(&outer, &inner, &leaf),
       Vec2::new(300.0, 600.0),
       &mut measure_any(60.0),
@@ -1494,6 +1541,60 @@ mod tests {
       (results[1][2].rect.x, results[1][2].rect.width),
       (50.0, 250.0),
       "fills the rest of a row"
+    );
+  }
+
+  #[test]
+  fn a_closure_ui_counts_no_subtree() {
+    let mut h = crate::core::testing::UiHarness::new(400.0, 300.0);
+    let screen = |ui: &mut crate::core::ui::UiContext<'_>| {
+      ui.column().gap(4.0).show(|ui| {
+        for i in 0..20 {
+          ui.button(format!("B{i}")).id(i).fill_width();
+        }
+        ui.scroll().height(40.0).show(|ui| {
+          ui.text("Scrolled");
+        });
+      });
+    };
+    h.frame(screen);
+    h.frame(screen);
+    assert_eq!(h.layout_stats().counted, 0, "no closure node is ever kept");
+  }
+
+  #[test]
+  fn only_a_capturing_layout_counts_and_kept_nodes_need_no_sweep() {
+    use crate::core::ui::nodes::UiNode;
+    let mut h = crate::core::testing::UiHarness::new(400.0, 300.0);
+    let buttons = (0..5).map(|i| UiNode::button(format!("B{i}")));
+    h.spawn_ui(UiNode::column().gap(4.0).children(buttons));
+    h.move_to(-100.0, -100.0);
+    // Built, then replayed and captured, then copied
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+      h.frame(|_| {});
+      let (cache, layout) = (h.ui_cache_stats(), h.layout_stats());
+      seen.push((
+        cache.built > 0,
+        cache.captured,
+        cache.reused,
+        layout.counted,
+        layout.swept,
+      ));
+    }
+    for &(built, captured, reused, counted, swept) in &seen {
+      assert_eq!(
+        counted > 0,
+        captured > 0,
+        "a layout counts subtrees exactly when it captures: {seen:?}"
+      );
+      if reused > 0 && !built {
+        assert_eq!(swept, 0, "kept nodes count as laid out: {seen:?}");
+      }
+    }
+    assert!(
+      seen.iter().any(|s| s.1 > 0) && seen.last().is_some_and(|s| s.2 > 0),
+      "the tree is captured, then copied: {seen:?}"
     );
   }
 
