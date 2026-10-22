@@ -56,6 +56,9 @@ pub struct HeadlessEngine {
   quit: bool,
   pending_releases: Vec<KeyCode>,
   pending_pad_releases: Vec<GamepadButton>,
+  /// The node cache's debug spot checks, set before each step when asked
+  /// for (`None`: as the engine has them, on in debug builds)
+  ui_spot_check: Option<bool>,
 }
 
 impl HeadlessEngine {
@@ -119,6 +122,7 @@ impl HeadlessEngine {
       quit: false,
       pending_releases: Vec::new(),
       pending_pad_releases: Vec::new(),
+      ui_spot_check: None,
     })
   }
 
@@ -148,6 +152,9 @@ impl HeadlessEngine {
   pub fn step(&mut self) -> Result<StepOutcome, HeadlessError> {
     if self.quit {
       return Ok(StepOutcome::Quit);
+    }
+    if let Some(on) = self.ui_spot_check {
+      crate::core::ui::nodes::set_spot_check(self.engine.world_mut(), on);
     }
     let dt = self.engine.fixed_timestep();
     let outcome = self.engine.frame(Some(dt));
@@ -384,6 +391,16 @@ impl HeadlessEngine {
       consumed: &log.consumed.consumed(),
       world: engine.world(),
     })
+  }
+
+  /// Turn the node cache's debug spot checks on or off from the next step,
+  /// as `UiHarness::set_ui_spot_check`: each frame they build a clean node
+  /// in place of its replay and capture a kept fragment in place of its
+  /// copy, comparing each with what was kept. On in the engine's debug
+  /// builds; release builds have none.
+  #[doc(hidden)]
+  pub fn set_ui_spot_check(&mut self, on: bool) {
+    self.ui_spot_check = Some(on);
   }
 
   /// What the node walk did in the last UI pass: the nodes it built (and

@@ -2,7 +2,10 @@
 //! node trees' clean subtrees as fragments and one with the node cache off,
 //! draw and behave the same every frame while scenes are pushed over a page,
 //! popped and switched (a switch from `ui` runs the UI pass again), and a
-//! click lands on the top scene
+//! click lands on the top scene. The debug spot check is off in both unless
+//! a test turns it on: each frame it builds a clean node and captures the
+//! fragment around it afresh, so a tree of one fragment would never be
+//! copied.
 
 use std::sync::{Arc, Mutex};
 
@@ -184,10 +187,16 @@ struct Pair {
 }
 
 impl Pair {
-  /// `make` is given the log the engine's scenes write their clicks to
+  /// `make` is given the log the engine's scenes write their clicks to; the
+  /// spot check is off in both
   fn new(make: impl Fn(Log) -> EngineBuilder) -> Option<Pair> {
+    Pair::with_spot_check(make, false)
+  }
+
+  /// [`new`](Pair::new), with the debug spot check `spot` in both
+  fn with_spot_check(make: impl Fn(Log) -> EngineBuilder, spot: bool) -> Option<Pair> {
     let logs = [Log::default(), Log::default()];
-    Some(Pair {
+    let mut pair = Pair {
       on: HeadlessEngine::new_or_skip(
         make(Arc::clone(&logs[0])).ui_cache(true).ui_fragments(true),
       )?,
@@ -195,7 +204,9 @@ impl Pair {
       frames: 0,
       stats: Vec::new(),
       logs,
-    })
+    };
+    pair.each(|engine| engine.set_ui_spot_check(spot));
+    Some(pair)
   }
 
   fn each(&mut self, mut f: impl FnMut(&mut HeadlessEngine)) {
@@ -233,16 +244,9 @@ impl Pair {
     }
   }
 
-  /// Fragments copied over `frames`, or (debug builds) captured afresh by
-  /// the spot check in place of their copy and found the same: each frame it
-  /// builds a node and the clean nodes above it, and captures the outermost
-  /// as the fragment its replay would be, which in a tree of one fragment is
-  /// its root's
+  /// Fragments copied over `frames`
   fn reused(&self, frames: std::ops::Range<usize>) -> usize {
-    self.stats[frames]
-      .iter()
-      .map(|s| s.reused + s.spot_kept)
-      .sum()
+    self.stats[frames].iter().map(|s| s.reused).sum()
   }
 }
 
@@ -296,6 +300,31 @@ fn the_top_scene_changes() {
   assert!(pair.reused(8..11) > 0, "both trees were copied");
   pair.frames(6, "the page again");
   assert!(pair.reused(13..17) > 0, "the page's tree was copied");
+}
+
+#[test]
+fn the_top_scene_changes_with_the_spot_check_on() {
+  // As above, with the debug spot check on in both engines, as in a debug
+  // game: each frame it builds a clean node and captures the fragment
+  // around it afresh, and captures a kept fragment in place of its copy.
+  // Both must draw and do what the copies would.
+  let Some(mut pair) = Pair::with_spot_check(page(5, Some(5), true), true) else {
+    return;
+  };
+  pair.frames(5, "the page");
+  pair.frames(6, "the overlay over the page");
+  pair.frames(6, "the page again");
+  let differed: usize = pair.stats.iter().map(|s| s.spot_fragment_differed).sum();
+  assert_eq!(differed, 0, "no kept fragment differs from its resolve");
+  if cfg!(debug_assertions) {
+    let checked = pair.stats.iter().filter(|s| s.spot_checked.is_some());
+    assert!(checked.count() > 10, "the spot check built a node");
+    let kept: usize = pair.stats.iter().map(|s| s.spot_kept).sum();
+    assert!(
+      kept > 0,
+      "the spot checks captured fragments found the same"
+    );
+  }
 }
 
 #[test]
