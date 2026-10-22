@@ -4,13 +4,11 @@
 
 use std::hash::Hasher;
 use std::ops::Range;
-use std::sync::Arc;
 
 use crate::core::hash::FastHasher;
 use crate::core::render::UiSpace;
 use crate::core::text::{Icon, TextIcons};
-use crate::core::ui::Rect;
-use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands, UiDraw};
+use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands, UiDraw, bits};
 
 mod fragments;
 #[cfg(test)]
@@ -174,7 +172,7 @@ impl UiRetain {
           draw.order == was.order
             && draw.slot == was.slot
             && !animated(&draw.command)
-            && same(&draw.command, &was.command)
+            && draw.command.draws_as(&was.command)
             && stamp_of(&draw.command, icons) == *stamp
         });
     if same {
@@ -333,136 +331,6 @@ fn loose<'a>(now: &'a [UiDraw], runs: &'a [FragmentRun]) -> impl Iterator<Item =
 /// Whether drawing `command` reads the clock: a text with an effect
 fn animated(command: &UiCommand) -> bool {
   matches!(command, UiCommand::Text { layout, .. } if layout.has_effects())
-}
-
-fn bits(rect: Rect) -> [u32; 4] {
-  [rect.x, rect.y, rect.width, rect.height].map(f32::to_bits)
-}
-
-/// Whether `a` draws what `b` does: shared layouts by address, line points
-/// by value (immediate widgets allocate them anew every frame), numbers by
-/// their bits, sprites by handle (their versions are stamps)
-fn same(a: &UiCommand, b: &UiCommand) -> bool {
-  let clips = |a: &Option<Rect>, b: &Option<Rect>| a.map(bits) == b.map(bits);
-  match (a, b) {
-    (
-      UiCommand::Rect {
-        rect,
-        fill,
-        radius,
-        border,
-        clip,
-        layer,
-      },
-      UiCommand::Rect {
-        rect: rect_b,
-        fill: fill_b,
-        radius: radius_b,
-        border: border_b,
-        clip: clip_b,
-        layer: layer_b,
-      },
-    ) => {
-      bits(*rect) == bits(*rect_b)
-        && fill == fill_b
-        && radius.to_bits() == radius_b.to_bits()
-        && border.map(|(width, color)| (width.to_bits(), color))
-          == border_b.map(|(width, color)| (width.to_bits(), color))
-        && clips(clip, clip_b)
-        && layer == layer_b
-    }
-    (
-      UiCommand::Sprite {
-        sprite,
-        rect,
-        uv,
-        tint,
-        filter,
-        clip,
-        layer,
-      },
-      UiCommand::Sprite {
-        sprite: sprite_b,
-        rect: rect_b,
-        uv: uv_b,
-        tint: tint_b,
-        filter: filter_b,
-        clip: clip_b,
-        layer: layer_b,
-      },
-    ) => {
-      sprite.serial() == sprite_b.serial()
-        && bits(*rect) == bits(*rect_b)
-        && uv.map(f32::to_bits) == uv_b.map(f32::to_bits)
-        && tint == tint_b
-        && filter == filter_b
-        && clips(clip, clip_b)
-        && layer == layer_b
-    }
-    (
-      UiCommand::Line {
-        points,
-        at,
-        width,
-        color,
-        closed,
-        clip,
-        layer,
-      },
-      UiCommand::Line {
-        points: points_b,
-        at: at_b,
-        width: width_b,
-        color: color_b,
-        closed: closed_b,
-        clip: clip_b,
-        layer: layer_b,
-      },
-    ) => {
-      (Arc::ptr_eq(points, points_b)
-        || (points.len() == points_b.len()
-          && points
-            .iter()
-            .zip(points_b.iter())
-            .all(|(p, q)| p.to_array().map(f32::to_bits) == q.to_array().map(f32::to_bits))))
-        && at.to_array().map(f32::to_bits) == at_b.to_array().map(f32::to_bits)
-        && width.to_bits() == width_b.to_bits()
-        && color == color_b
-        && closed == closed_b
-        && clips(clip, clip_b)
-        && layer == layer_b
-    }
-    (
-      UiCommand::Text {
-        layout,
-        origin,
-        reveal,
-        opacity,
-        seed,
-        clip,
-        layer,
-      },
-      UiCommand::Text {
-        layout: layout_b,
-        origin: origin_b,
-        reveal: reveal_b,
-        opacity: opacity_b,
-        seed: seed_b,
-        clip: clip_b,
-        layer: layer_b,
-      },
-    ) => {
-      Arc::ptr_eq(layout, layout_b)
-        && origin.to_array().map(f32::to_bits) == origin_b.to_array().map(f32::to_bits)
-        && reveal.map(|(shown, fade)| (shown.to_bits(), fade.to_bits()))
-          == reveal_b.map(|(shown, fade)| (shown.to_bits(), fade.to_bits()))
-        && opacity.to_bits() == opacity_b.to_bits()
-        && seed == seed_b
-        && clips(clip, clip_b)
-        && layer == layer_b
-    }
-    _ => false,
-  }
 }
 
 /// Whether `command` draws from something besides its own value: a sprite,

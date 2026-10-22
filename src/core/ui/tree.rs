@@ -1313,7 +1313,8 @@ fn copy_draws(
 }
 
 /// Whether `draws` are the commands `fragment`, copied at the kept node
-/// `root` in `slot`, pushes: by order, slot, layer, box and clip
+/// `root` in `slot`, pushes: each its order and slot, and a command that
+/// draws as the kept one does (`UiCommand::draws_as`)
 #[cfg(debug_assertions)]
 fn pushed_as_kept(
   fragment: &Fragment,
@@ -1331,9 +1332,7 @@ fn pushed_as_kept(
     draws.next().is_some_and(|draw| {
       draw.order == root.order.saturating_add(kept.order)
         && draw.slot == index
-        && draw.command.draw_layer() == kept.command.draw_layer()
-        && draw.command.cull_box() == kept.command.cull_box()
-        && draw.command.clip_rect() == kept.command.clip_rect()
+        && draw.command.draws_as(&kept.command)
     })
   });
   each && draws.next().is_none()

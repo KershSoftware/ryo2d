@@ -3042,6 +3042,30 @@ mod fragment_tests {
   }
 
   #[test]
+  #[cfg(debug_assertions)]
+  #[should_panic(expected = "a run taken where it was holds what copying it pushes")]
+  fn a_run_taken_in_place_that_is_not_what_its_copy_pushes_is_caught() {
+    use crate::core::ui::Color;
+    use crate::core::ui::immediate::UiCommand;
+    let mut h = unchanged_settings();
+    // A kept fragment's fill changed without a new version: its run is
+    // still where it was, but no longer what copying it pushes
+    let frame = h.memory.frame();
+    let changed = h.memory.fragments.kept_in_mut(frame).any(|fragment| {
+      let fill = fragment
+        .draws
+        .iter_mut()
+        .find_map(|kept| match &mut kept.command {
+          UiCommand::Rect { fill, .. } => Some(fill),
+          _ => None,
+        });
+      fill.map(|fill| *fill = Color::rgb(255, 0, 255)).is_some()
+    });
+    assert!(changed, "a kept fragment draws a rect");
+    h.frame(|_| {});
+  }
+
+  #[test]
   fn an_unchanged_frame_marks_no_kept_node_drawn_one_at_a_time() {
     let mut h = unchanged_settings();
     let stats = |h: &UiHarness| h.world().resource::<UiNodes>().cache.stats.clone();
