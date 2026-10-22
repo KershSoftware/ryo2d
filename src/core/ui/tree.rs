@@ -3,12 +3,13 @@
 //! records once the layout engine has placed them
 
 use std::cell::RefCell;
+use std::ops::Range;
 use std::sync::Arc;
 
 use glam::Vec2;
 
 use super::fragment::{Fragment, Inputs, KeptDraw, KeptRecord, Role, sized_by};
-use super::immediate::{ScrollSlot, UiCommand, UiCommands, intersect, meet, outside};
+use super::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands, intersect, meet, outside};
 use super::layout::engine::{Avail, LayoutEngine, Measured, NodeDesc, Placed};
 use super::layout::{Edges, Flow, Length, Measure, UiStyle};
 use super::memory::{Flags, Record, Scratch, UiMemory, recycle};
@@ -555,8 +556,14 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     memory.record(node.id, record);
   }
 
-  // Draws, relative to their node's slot and culled by its clip there
+  // Draws, relative to their node's slot and culled by its clip there. Each
+  // fragment's commands are one run: a kept one's are pushed together, and
+  // a capture's go from where the first draw at or past its root's order
+  // lands (its own, or the next one's when none of its draws is pushed)
+  let runs_from = commands.runs().len();
+  let mut opening = 0;
   for draw in subtree.draws.drain(..) {
+    start_runs(capturing, &mut opening, draw.order, commands.position());
     if matches!(draw.kind, DrawKind::Kept) {
       if let (Some(node), Some(fragment)) = (nodes.get(draw.node), kept_at_mut(kept, draw.node)) {
         let slot = placing.slot_of(draw.node);
@@ -596,10 +603,15 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
         }
         if !seen.is_some_and(|seen| outside(place.cull, seen)) {
           commands.push(order, index, command);
+          if let Some(capture) = capture.as_deref_mut() {
+            capture.pushed += 1;
+            capture.run.end = commands.position();
+          }
         }
       },
     );
   }
+  start_runs(capturing, &mut opening, u32::MAX, commands.position());
 
   // What each capture kept becomes its fragment
   for capture in capturing.drain(..) {
@@ -663,7 +675,25 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     if !spotted {
       memory.fragment_stats.captured += 1;
     }
+    // Its commands pushed above, which nothing else's came between
+    let run = capture.run;
+    let together = run.end.checked_sub(run.start) == Some(capture.pushed);
+    debug_assert!(together, "a capture's commands are pushed together");
+    if together {
+      commands.push_run(FragmentRun {
+        id: node.id,
+        version: fragment.version,
+        base: capture.base,
+        layer: node.layer,
+        slot: slot.table_index(),
+        draws: run,
+      });
+    }
     memory.fragments_next.insert(node.id, fragment);
+  }
+  // Captured runs were pushed after the kept ones
+  if captures {
+    commands.sort_runs(runs_from);
   }
 
   // Every kept fragment is kept for next frame
@@ -1072,10 +1102,11 @@ fn copy_records(fragment: &Fragment, copy: CopyAt<'_>, memory: &mut UiMemory) {
   }
 }
 
-/// Push `fragment`'s commands, its root the kept node `root` in `slot`: each
-/// culled by its clip there (met with the slot's interest in a slot), its
-/// orders re-based to the root's. A slot's interest other than the one it
-/// was last pushed under gives it a new version: it pushes other commands.
+/// Push `fragment`'s commands as its run, its root the kept node `root` in
+/// `slot`: each culled by its clip there (met with the slot's interest in a
+/// slot), its orders re-based to the root's. A slot's interest other than
+/// the one it was last pushed under gives it a new version: it pushes other
+/// commands.
 fn copy_draws(
   fragment: &mut Fragment,
   root: &Node,
@@ -1088,7 +1119,8 @@ fn copy_draws(
     fragment.interest = interest;
     fragment.version = memory.next_fragment_version();
   }
-  let index = if slot.real() { slot.index } else { 0 };
+  let index = slot.table_index();
+  let start = commands.position();
   for kept in &fragment.draws {
     let cull = slot.fragment_cull(kept.command.clip_rect());
     if !kept.cull.is_some_and(|seen| outside(cull, seen)) {
@@ -1096,6 +1128,14 @@ fn copy_draws(
       commands.push(order, index, kept.command.clone());
     }
   }
+  commands.push_run(FragmentRun {
+    id: root.id,
+    version: fragment.version,
+    base: root.order,
+    layer: root.layer,
+    slot: index,
+    draws: start..commands.position(),
+  });
 }
 
 /// The debug spot checks, for `fresh`, just captured at `copy`; `built`
@@ -1345,6 +1385,10 @@ struct Capturing {
   draws: Vec<KeptDraw>,
   node_draws: Vec<Draw>,
   sprites: Vec<(SpriteHandle, u64)>,
+  /// Where its commands went in the frame's (`start_runs` starts it), and
+  /// how many were pushed
+  run: Range<u32>,
+  pushed: u32,
 }
 
 impl Capturing {
@@ -1392,6 +1436,17 @@ fn count_runs(draws: &[Draw], span_of: &mut [u32], captures: &mut [Capturing]) {
     if capture.count().is_none() {
       span_of[capture.root..capture.end].fill(NO_SPAN);
     }
+  }
+}
+
+/// Start the run of each capture from `captures[*next]` on whose root's
+/// order is at most `order` (they are in node order, so in their roots'
+/// orders) at `at`, where the draw of that order goes in the frame's
+/// commands
+fn start_runs(captures: &mut [Capturing], next: &mut usize, order: u32, at: u32) {
+  while let Some(capture) = captures.get_mut(*next).filter(|c| c.base <= order) {
+    capture.run = at..at;
+    *next += 1;
   }
 }
 
@@ -1455,6 +1510,8 @@ fn spans(
       draws: Vec::new(),
       node_draws: Vec::new(),
       sprites: Vec::new(),
+      run: 0..0,
+      pushed: 0,
     });
     span_of[i..end].fill(c);
   }
@@ -1495,6 +1552,12 @@ impl SlotPlace {
   /// Whether its contents' draws are relative to it (a slot in the table)
   fn real(&self) -> bool {
     self.index != 0 && self.index != u16::MAX
+  }
+
+  /// The slot its contents' draws carry: its index in the table, or 0
+  /// (absolute) when it is not in it
+  fn table_index(&self) -> u16 {
+    if self.real() { self.index } else { 0 }
   }
 
   /// What a fragment's draw in it with its own `clip` is culled by: in a

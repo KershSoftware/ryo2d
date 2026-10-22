@@ -6,7 +6,7 @@ use image::RgbaImage;
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
-use super::ui::{UiCacheStats, UiSnapshot, ui_snapshot};
+use super::ui::{UiCacheStats, UiSnapshot, runs_snapshot, ui_snapshot};
 use super::{HeadlessError, shared_gpu};
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::Messages;
@@ -401,6 +401,16 @@ impl HeadlessEngine {
   #[doc(hidden)]
   pub fn set_ui_spot_check(&mut self, on: bool) {
     self.ui_spot_check = Some(on);
+  }
+
+  /// The last frame's fragment runs (each kept fragment's commands, tagged
+  /// for the UI image's retention) in `Debug` form: a `runs` line (how many,
+  /// and whether they hold their draws), then each run's tag. What
+  /// [`ui_snapshot`](Self::ui_snapshot) leaves out, since with fragments off
+  /// there are none.
+  #[doc(hidden)]
+  pub fn ui_runs_snapshot(&self) -> String {
+    runs_snapshot(self.engine.ui_commands())
   }
 
   /// What the node walk did in the last UI pass: the nodes it built (and

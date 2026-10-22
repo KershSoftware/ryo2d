@@ -179,3 +179,53 @@ fn an_idle_scrolled_node_list_keeps_its_ui_image() {
   }
   assert_eq!(kept, 120, "the UI image was kept in {kept} of 120 frames");
 }
+
+/// A node tree drawing a sprite beside a label
+struct NodeSpriteUi(SpriteHandle);
+
+impl Scene for NodeSpriteUi {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(
+      UiNode::column()
+        .child(
+          UiNode::row()
+            .child(UiNode::image(self.0.clone()).image_size(16.0, 16.0))
+            .child(UiNode::text("Sprite")),
+        )
+        .child(UiNode::text("Below")),
+    );
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_sprite_in_a_kept_fragment_updated_in_place_redraws() {
+  // The sprite's fragment is copied with its version: its run is the same
+  // but for the sprite's stamp
+  let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 0, 0, 255), "node-swatch");
+  let make = {
+    let sprite = sprite.clone();
+    move || {
+      EngineBuilder::new()
+        .resolution(160, 120)
+        .start_scene(NodeSpriteUi(sprite.clone()))
+    }
+  };
+  let Some(mut pair) = PixelPair::new(make) else {
+    return;
+  };
+  pair.each(|engine| engine.set_ui_spot_check(false));
+  pair.frames(10, "red");
+  assert!(pair.on.ui_render_stats().kept);
+  assert!(pair.on.ui_cache_stats().reused > 0, "the tree is copied");
+  let runs = pair.on.ui_runs_snapshot();
+  sprite.update(Sprite::solid_rect(8, 8, 0, 0, 255, 255));
+  pair.frames(1, "blue, the same size");
+  assert!(!pair.on.ui_render_stats().kept, "the update redraws the UI");
+  assert_eq!(pair.on.ui_runs_snapshot(), runs, "the runs are the same");
+  pair.frames(5, "blue");
+  assert!(pair.on.ui_render_stats().kept);
+}

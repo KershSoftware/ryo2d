@@ -179,11 +179,18 @@ pub(super) fn oracle_with(
       0,
       "step {i} (frame {frame}, after {input:?}): a kept fragment differs from its resolve"
     );
+    assert!(
+      on.commands.runs_hold(),
+      "step {i} (frame {frame}): each fragment run holds its own draws\n{}",
+      on.runs_snapshot()
+    );
     let (a, b) = (on.frame_snapshot(), off.frame_snapshot());
     if a != b {
       panic!(
-        "step {i} (frame {frame}, after {input:?}): caching on and off differ\n{}",
-        first_difference(&a, &b)
+        "step {i} (frame {frame}, after {input:?}): caching on and off differ\n{}\n\
+         with caching on, {}",
+        first_difference(&a, &b),
+        on.runs_snapshot()
       );
     }
     let done = on.ui_cache_stats();

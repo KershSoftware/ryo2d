@@ -2,6 +2,7 @@
 //! batch, by layer, then in the order the draws were recorded
 
 use std::borrow::Cow;
+use std::ops::Range;
 use std::sync::Arc;
 
 use glam::Vec2;
@@ -9,7 +10,7 @@ use glam::Vec2;
 use crate::core::asset::SpriteHandle;
 use crate::core::render::batch::Filter;
 use crate::core::text::TextLayout;
-use crate::core::ui::{Color, Rect};
+use crate::core::ui::{Color, Rect, UiId};
 
 /// One UI draw, in UI units
 #[derive(Debug, Clone)]
@@ -282,17 +283,35 @@ pub(crate) fn outside(clip: Option<Rect>, rect: Rect) -> bool {
   })
 }
 
+/// A fragment's commands in the frame: `draws` is their range in
+/// `UiCommands::as_slice()` (contiguous, in painter's order, one layer, one
+/// slot), and the rest says when they are the same as before
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FragmentRun {
+  /// Its root's id
+  pub(crate) id: UiId,
+  /// Changes whenever its commands may (`Fragment::version`)
+  pub(crate) version: u64,
+  /// Its first order: the run's orders are `base..base + count`
+  pub(crate) base: u32,
+  pub(crate) layer: u8,
+  pub(crate) slot: u16,
+  pub(crate) draws: Range<u32>,
+}
+
 /// The frame's UI draws (cleared each UI pass), each with its place in the
-/// painter's order and its slot, and the frame's slot table. A container's
-/// draws are pushed when it is laid out, after absolute draws recorded
-/// later, so the order (taken when a draw was recorded), not the position in
-/// the list, is what orders them.
+/// painter's order and its slot, the frame's slot table and its fragment
+/// runs. A container's draws are pushed when it is laid out, after absolute
+/// draws recorded later, so the order (taken when a draw was recorded), not
+/// the position in the list, is what orders them.
 #[derive(Debug)]
 pub(crate) struct UiCommands {
   draws: Vec<UiDraw>,
   /// Slot 0 (no scroll area), then each scroll area's, in the order they
   /// were laid out
   slots: Vec<ScrollSlot>,
+  /// Each fragment's draws, tagged, in the order of their ranges
+  runs: Vec<FragmentRun>,
 }
 
 impl Default for UiCommands {
@@ -300,6 +319,7 @@ impl Default for UiCommands {
     UiCommands {
       draws: Vec::new(),
       slots: vec![ScrollSlot::NONE],
+      runs: Vec::new(),
     }
   }
 }
@@ -313,10 +333,16 @@ impl UiCommands {
   pub(crate) fn slots(&self) -> &[ScrollSlot] {
     &self.slots
   }
+  /// The fragment runs, in the order of their ranges: a range is
+  /// contiguous and holds one fragment's draws, which no other run holds
+  pub(crate) fn runs(&self) -> &[FragmentRun] {
+    &self.runs
+  }
   pub(crate) fn clear(&mut self) {
     self.draws.clear();
     self.slots.clear();
     self.slots.push(ScrollSlot::NONE);
+    self.runs.clear();
   }
   pub(crate) fn push(&mut self, order: u32, slot: u16, command: UiCommand) {
     self.draws.push(UiDraw {
@@ -336,6 +362,48 @@ impl UiCommands {
     }
     self.slots.push(slot);
     index
+  }
+  /// Where the next draw pushed goes in the list: a run's range starts or
+  /// ends here
+  pub(crate) fn position(&self) -> u32 {
+    u32::try_from(self.draws.len()).unwrap_or(u32::MAX)
+  }
+  /// Tag the draws `run.draws` as one fragment's: the caller pushed them
+  /// just before, each in `run.slot` on `run.layer`, from order `run.base`
+  /// on. A range past the draws is dropped.
+  pub(crate) fn push_run(&mut self, run: FragmentRun) {
+    let Range { start, end } = run.draws;
+    let held = self.draws.get(start as usize..end as usize);
+    debug_assert!(held.is_some(), "a run holds draws pushed: {run:?}");
+    debug_assert!(
+      held.into_iter().flatten().all(|draw| {
+        draw.slot == run.slot && draw.order >= run.base && draw.command.draw_layer() == run.layer
+      }),
+      "a run's draws share its slot and layer, from its base on: {run:?}"
+    );
+    if held.is_some() {
+      self.runs.push(run);
+    }
+  }
+  /// Put the runs from `from` on in the order of their ranges (an empty one
+  /// by its base, where its copy goes): resolve pushes a captured
+  /// fragment's run after the kept ones of its subtree
+  pub(crate) fn sort_runs(&mut self, from: usize) {
+    if let Some(runs) = self.runs.get_mut(from..) {
+      runs.sort_unstable_by_key(|run| (run.draws.start, run.draws.end, run.base));
+    }
+    debug_assert!(self.runs_hold(), "runs never overlap: {:?}", self.runs);
+  }
+  /// Whether the runs are in the order of their ranges, which do not
+  /// overlap and hold draws pushed
+  pub(crate) fn runs_hold(&self) -> bool {
+    let mut at = 0;
+    self.runs.iter().all(|run| {
+      let Range { start, end } = run.draws;
+      let holds = at <= start && start <= end && end as usize <= self.draws.len();
+      at = end;
+      holds
+    })
   }
   pub(crate) fn is_empty(&self) -> bool {
     self.draws.is_empty()

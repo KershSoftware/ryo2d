@@ -184,6 +184,8 @@ struct Pair {
   stats: Vec<UiCacheStats>,
   /// The clicks each engine's scenes took (cached, uncached)
   logs: [Log; 2],
+  /// The debug spot check is on in both
+  spot: bool,
 }
 
 impl Pair {
@@ -204,6 +206,7 @@ impl Pair {
       frames: 0,
       stats: Vec::new(),
       logs,
+      spot,
     };
     pair.each(|engine| engine.set_ui_spot_check(spot));
     Some(pair)
@@ -215,7 +218,8 @@ impl Pair {
   }
 
   /// Run `n` frames on both: their UI (commands, records, focus, events,
-  /// states) and their pixels must be the same after each
+  /// states) and their pixels must be the same after each, and each
+  /// fragment the cached engine drew pushed one run of its own draws
   fn frames(&mut self, n: u32, what: &str) {
     for _ in 0..n {
       let (on, off) = (self.on.step(), self.off.step());
@@ -227,10 +231,26 @@ impl Pair {
         "{what}, frame {frame}"
       );
       let (a, b) = (self.on.ui_snapshot(), self.off.ui_snapshot());
+      let runs = self.on.ui_runs_snapshot();
       if a != b {
         panic!(
-          "{what}, frame {frame}: fragments on and the cache off differ\n{}",
+          "{what}, frame {frame}: fragments on and the cache off differ\n{}\n\
+           with fragments on, {runs}",
           difference(&a, &b)
+        );
+      }
+      let stats = self.on.ui_cache_stats();
+      assert!(
+        runs.starts_with(&format!("runs {} held", runs.lines().count() - 1)),
+        "{what}, frame {frame}: each run holds its own draws\n{runs}"
+      );
+      // The spot checks capture fragments they count apart
+      if !self.spot {
+        let drawn = stats.reused + stats.resolved_again + stats.captured;
+        assert_eq!(
+          runs.lines().count() - 1,
+          drawn,
+          "{what}, frame {frame}: one run per fragment drawn\n{runs}"
         );
       }
       let (Ok(a), Ok(b)) = (self.on.frame(), self.off.frame()) else {
@@ -240,7 +260,7 @@ impl Pair {
         a.as_raw() == b.as_raw(),
         "{what}, frame {frame}: fragments on and the cache off draw other pixels"
       );
-      self.stats.push(self.on.ui_cache_stats());
+      self.stats.push(stats);
     }
   }
 

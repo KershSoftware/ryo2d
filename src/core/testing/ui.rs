@@ -527,6 +527,13 @@ impl UiHarness {
     })
   }
 
+  /// The last frame's fragment runs (`runs_snapshot`): what
+  /// `frame_snapshot` leaves out
+  #[cfg(test)]
+  pub(crate) fn runs_snapshot(&self) -> String {
+    runs_snapshot(&self.commands)
+  }
+
   /// Type `text` in the next frame: a focused text field takes it
   pub fn type_text(&mut self, text: &str) {
     self.typed.push_str(text);
@@ -876,6 +883,26 @@ pub(crate) fn ui_snapshot(parts: &UiSnapshot<'_>) -> String {
   let _ = writeln!(out, "consumed {}", consumed_debug(parts.consumed));
   out.push_str(&nodes::node_snapshot(parts.world));
   without_ref_counts(&out)
+}
+
+/// A frame's fragment runs in `Debug` form: a `runs` line (how many, and
+/// whether they hold their draws: in the order of their ranges, which do
+/// not overlap), then each run's tag. What a snapshot leaves out: with
+/// fragments off there are none, so two runs are compared without them.
+pub(crate) fn runs_snapshot(commands: &UiCommands) -> String {
+  use std::fmt::Write;
+  let runs = commands.runs();
+  let held = if commands.runs_hold() {
+    "held"
+  } else {
+    "not held"
+  };
+  let mut out = String::new();
+  let _ = writeln!(out, "runs {} {held}", runs.len());
+  for run in runs {
+    let _ = writeln!(out, "run {run:?}");
+  }
+  out
 }
 
 impl UiCacheStats {

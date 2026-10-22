@@ -2927,6 +2927,57 @@ mod fragment_tests {
   }
 
   #[test]
+  fn a_kept_tree_pushes_one_run_per_fragment() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(settings_tree());
+    for _ in 0..3 {
+      h.frame(|_| {});
+    }
+    let commands = &h.commands;
+    let runs = commands.runs();
+    assert_eq!(
+      runs.len(),
+      h.ui_cache_stats().reused,
+      "one run per kept fragment"
+    );
+    for run in runs {
+      let draws = &commands.as_slice()[run.draws.start as usize..run.draws.end as usize];
+      assert!(
+        draws
+          .iter()
+          .all(|d| d.slot == run.slot && d.order >= run.base),
+        "{run:?}"
+      );
+      assert!(
+        draws.windows(2).all(|w| w[0].order < w[1].order),
+        "in order"
+      );
+    }
+  }
+
+  #[test]
+  fn a_captured_fragments_run_is_the_run_its_copy_pushes() {
+    // Captured, a fragment pushes its run where its copy will next frame,
+    // with the version its copy keeps: an unchanged UI keeps its image from
+    // the frame after a capture
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(settings_tree());
+    h.move_to(-100.0, -100.0);
+    let mut frames = 0;
+    while h.ui_cache_stats().captured == 0 {
+      assert!(frames < 4, "the tree's clean subtrees are captured");
+      h.frame(|_| {});
+      frames += 1;
+    }
+    let captured = h.commands.runs().to_vec();
+    assert_eq!(captured.len(), h.ui_cache_stats().captured);
+    h.frame(|_| {});
+    let stats = h.ui_cache_stats();
+    assert_eq!((stats.captured, stats.reused), (0, captured.len()));
+    assert_eq!(h.commands.runs(), captured.as_slice());
+  }
+
+  #[test]
   fn with_fragments_off_the_tree_replays_as_before() {
     let mut h = UiHarness::new(640.0, 480.0);
     h.set_ui_fragments(false);
