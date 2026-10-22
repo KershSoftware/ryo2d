@@ -6,10 +6,21 @@
 //! rows) and an empty frame, each one `UiHarness` frame (resolve, the node
 //! walk, the widgets, layout and commands); the node cache's dirty check
 //! alone; and the settings tree updated unchanged against spawning it.
+//!
+//! The guards (4i's targets, on an Apple M5 Pro): before criterion measures
+//! them, the unchanged node screen, the node screen with its focus moving
+//! every frame, the 2,000-node static tree and the closure screen are each
+//! warmed up for a second, as criterion warms up, then timed over 2,020
+//! frames (the median of 101 rounds of 20). Each median is printed against
+//! its target, and a missed target fails the run once every bench has run,
+//! printing the command to profile it with. The targets are absolute: run
+//! them on a quiet machine. Criterion's `--profile-time` (the profile
+//! command) skips them.
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group};
 use ryo2d::prelude::*;
 use ryo2d::testing::UiHarness;
 use ryo2d::testing::fixtures::settings_tree;
@@ -22,6 +33,63 @@ const ROWS: usize = 50;
 const LIST: usize = 1000;
 /// Nodes in the static tree: text and buttons, alternating
 const STATIC: usize = 2000;
+
+/// The unchanged node screen's target (4i)
+const UNCHANGED_TARGET: Duration = Duration::from_micros(15);
+/// The node screen's, its focus moving every frame (4i)
+const FOCUS_TARGET: Duration = Duration::from_micros(18);
+/// The 2,000-node static tree's (4i)
+const STATIC_TARGET: Duration = Duration::from_micros(100);
+/// The closure settings screen before 4i (8ef20e0f; this guard's median of
+/// it there, measured alternately with this build): 4i's target is no
+/// slower, within 5%
+const CLOSURE_BEFORE: Duration = Duration::from_nanos(48_500);
+
+/// The targets missed so far: the run fails once every bench has run
+static MISSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Whether criterion runs to be profiled (`--profile-time`): the guards do
+/// not run then, so a profile holds the bench's frames alone
+fn profiling() -> bool {
+  std::env::args().any(|arg| arg == "--profile-time")
+}
+
+/// The median time of one call of `frame`, after a second of calls: of
+/// 101 rounds of 20 calls
+fn median_frame(mut frame: impl FnMut()) -> Duration {
+  let warm = Instant::now();
+  while warm.elapsed() < Duration::from_secs(1) {
+    frame();
+  }
+  let mut rounds: Vec<Duration> = (0..101)
+    .map(|_| {
+      let start = Instant::now();
+      for _ in 0..20 {
+        frame();
+      }
+      start.elapsed() / 20
+    })
+    .collect();
+  rounds.sort_unstable();
+  rounds[50]
+}
+
+/// Print `bench`'s median against `target`, and note a miss
+fn guard(bench: &str, median: Duration, target: Duration) {
+  let met = median < target;
+  let verdict = if met { "met" } else { "missed" };
+  println!(
+    "guard: {bench}: {:.2} µs a frame (target under {:.2} µs: {verdict})",
+    median.as_secs_f64() * 1e6,
+    target.as_secs_f64() * 1e6
+  );
+  if !met {
+    MISSED
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .push(bench.to_string());
+  }
+}
 
 /// The settings screen's values, one of each kind per row
 struct Settings {
@@ -126,16 +194,19 @@ fn settings_frame(c: &mut Criterion) {
     assert_ne!(harness.focused(), before, "ui.down moved the focus");
   }
   let mut frame = 0u64;
-  c.bench_function("ui frame, a 200-widget settings screen", |b| {
-    b.iter(|| {
-      // Navigation is part of the cost: a step down every 10th frame
-      frame += 1;
-      if frame.is_multiple_of(10) {
-        harness.action("ui.down");
-      }
-      harness.frame(|ui| settings.ui(ui));
-    })
-  });
+  // Navigation is part of the cost: a step down every 10th frame
+  let mut step = || {
+    frame += 1;
+    if frame.is_multiple_of(10) {
+      harness.action("ui.down");
+    }
+    harness.frame(|ui| settings.ui(ui));
+  };
+  let name = "ui frame, a 200-widget settings screen";
+  if !profiling() {
+    guard(name, median_frame(&mut step), CLOSURE_BEFORE.mul_f64(1.05));
+  }
+  c.bench_function(name, |b| b.iter(&mut step));
 }
 
 /// The guard: the closure settings screen stays under 60 µs, and this node
@@ -185,10 +256,14 @@ fn settings_nodes_unchanged(c: &mut Criterion) {
     "settings nodes, unchanged: {} built, {} replayed, {} fragments copied",
     stats.built, stats.replayed, stats.reused
   );
-  c.bench_function(
-    "ui frame, the 200-widget settings screen as nodes, unchanged",
-    |b| b.iter(|| harness.frame(|_| {})),
-  );
+  let name = "ui frame, the 200-widget settings screen as nodes, unchanged";
+  if !profiling() {
+    let median = median_frame(|| {
+      harness.frame(|_| {});
+    });
+    guard(name, median, UNCHANGED_TARGET);
+  }
+  c.bench_function(name, |b| b.iter(|| harness.frame(|_| {})));
 }
 
 /// The settings tree with `ui.down` pressed every frame: the focus moves
@@ -201,15 +276,15 @@ fn settings_nodes_focus_every_frame(c: &mut Criterion) {
     harness.frame(|_| {});
   }
   assert!(harness.focused().is_some(), "the screen's scope took focus");
-  c.bench_function(
-    "ui frame, the 200-widget settings screen as nodes, focus moving every frame",
-    |b| {
-      b.iter(|| {
-        harness.action("ui.down");
-        harness.frame(|_| {});
-      })
-    },
-  );
+  let mut step = || {
+    harness.action("ui.down");
+    harness.frame(|_| {});
+  };
+  let name = "ui frame, the 200-widget settings screen as nodes, focus moving every frame";
+  if !profiling() {
+    guard(name, median_frame(&mut step), FOCUS_TARGET);
+  }
+  c.bench_function(name, |b| b.iter(&mut step));
 }
 
 /// A grid of 2,000 nodes, text and buttons alternating, 20 to a row
@@ -238,9 +313,14 @@ fn static_tree_frame(c: &mut Criterion) {
     "static tree: {} replayed, {} fragments copied",
     stats.replayed, stats.reused
   );
-  c.bench_function("ui frame, a 2,000-node static tree", |b| {
-    b.iter(|| harness.frame(|_| {}))
-  });
+  let name = "ui frame, a 2,000-node static tree";
+  if !profiling() {
+    let median = median_frame(|| {
+      harness.frame(|_| {});
+    });
+    guard(name, median, STATIC_TARGET);
+  }
+  c.bench_function(name, |b| b.iter(|| harness.frame(|_| {})));
 }
 
 /// The `ui` demo's Mixed page: a closure panel around an embedded grid of 8
@@ -583,4 +663,23 @@ criterion_group!(
   settings_update_unchanged,
   settings_spawn
 );
-criterion_main!(benches);
+
+/// Every bench, then the guards' verdict: a missed target fails the run
+fn main() {
+  benches();
+  Criterion::default().configure_from_args().final_summary();
+  let missed = MISSED
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  if !missed.is_empty() {
+    eprintln!(
+      "ui guards missed: {}. Profile a missed frame (the bench binary is the one \
+       `cargo bench --bench ui --no-run` names) with\n  xcrun xctrace record --template \
+       'Time Profiler' --output ui.trace --launch -- target/release/deps/ui-<hash> --bench \
+       --profile-time 10 '^<bench name>$'\nand charge each sample's time to the nearest \
+       ryo2d function from the leaf up, as docs/backlog/ui-retained-nodes.md's 4i section does.",
+      missed.join("; ")
+    );
+    std::process::exit(1);
+  }
+}

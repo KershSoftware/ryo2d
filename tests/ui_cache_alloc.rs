@@ -1,5 +1,6 @@
-//! Allocations per UI frame of a cached node tree, counted by a global
-//! allocator in this test binary
+//! Allocations per UI frame of a cached node tree (its clean subtrees copied
+//! from their kept fragments), counted by a global allocator in this test
+//! binary
 // This test binary must hold exactly one test: the allocator is global, and a second test on another thread would count into it
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -59,10 +60,7 @@ fn an_unchanged_cached_node_frame_allocates_no_more_than_an_uncached_one() {
      ({} built, {} replayed, {} fragments copied)",
     stats.built, stats.replayed, stats.reused
   );
-  assert!(
-    stats.replayed + stats.reused > 0,
-    "the cached tree replays or copies its fragments"
-  );
+  assert!(stats.reused > 0, "the cached tree copies its fragments");
   assert!(
     on <= off,
     "an unchanged cached frame made {on} allocations, an uncached one {off}"
@@ -74,7 +72,8 @@ fn an_unchanged_cached_node_frame_allocates_no_more_than_an_uncached_one() {
     on <= 30,
     "an unchanged cached frame made {on} allocations (at most 30)"
   );
-  // Copying fragments allocates nothing: no more than before them (14)
+  // Copying fragments allocates nothing: no more than before them (14,
+  // 4f's replay)
   assert!(
     on <= 14,
     "an unchanged cached frame made {on} allocations (at most 14)"

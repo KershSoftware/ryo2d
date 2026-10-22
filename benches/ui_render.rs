@@ -28,17 +28,28 @@
 //! does inside its next submit. So the guard reads a little low, a UI frame
 //! more than an empty one, as it leaves more to clean up.
 //!
-//! The guard asserts the idle target, that one changing label and the
-//! scrolling list are each no slower retained than not (4g; the moving
-//! list's texts are laid again from their kept glyphs), one label's 40 µs
-//! target (4h), and that the scrolling list moves every frame. It prints
-//! every median. One label meets its target by about 7 µs on an Apple M5
-//! Pro at a load of 2 to 3, but read 39 to 41 µs at a load of 4 to 7: run
-//! the guard on a quiet machine.
+//! The guard asserts that one changing label and the scrolling list are
+//! each no slower retained than not (4g; the moving list's texts are laid
+//! again from their kept glyphs) and that the scrolling list moves every
+//! frame. It prints every median, and holds the retained screens to 4i's
+//! targets: the render step over an empty frame's under 5 µs idle (4g),
+//! 25 µs with one label changing and 20 µs scrolling, and the UI pass
+//! (`HeadlessEngine::ui_pass_time`, CPU time before the render step) under
+//! 18 µs idle, 25 µs with the label and 20 µs scrolling. The UI pass is
+//! read from each engine stepped alone afterwards (2,000 frames, after as
+//! many to warm up), as a game runs its one engine and as the targets were
+//! set: stepped in turn, each engine's caches are evicted by the others'
+//! work, and its UI pass reads 1.4 to 2 times as long (also printed). A
+//! missed target fails the run once criterion's benches have run, printing
+//! the command to profile it with. The targets are absolute, and these
+//! medians move by up to 2x with the machine's load: run the guard on a
+//! quiet machine. Criterion's `--profile-time` (the profile command) skips
+//! the guard.
 
+use std::sync::Mutex;
 use std::time::Duration;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group};
 use ryo2d::prelude::*;
 use ryo2d::testing::fixtures::{settings_tree, settings_tree_overflowing};
 use ryo2d::testing::{HeadlessEngine, shared_gpu};
@@ -52,8 +63,17 @@ const SWING: u32 = 20;
 const OVER_LIST: (f32, f32) = (520.0, 238.0);
 /// An idle settings screen's render step over an empty frame's (4g)
 const IDLE_TARGET: Duration = Duration::from_micros(5);
-/// One changing label's render step over an empty frame's (4h)
-const LABEL_TARGET: Duration = Duration::from_micros(40);
+/// One changing label's render step over an empty frame's (4i)
+const LABEL_TARGET: Duration = Duration::from_micros(25);
+/// The scrolling screen's render step over an empty frame's (4i)
+const SCROLLING_TARGET: Duration = Duration::from_micros(20);
+/// The UI pass of the idle, one-label and scrolling screens (4i)
+const IDLE_PASS_TARGET: Duration = Duration::from_micros(18);
+const LABEL_PASS_TARGET: Duration = Duration::from_micros(25);
+const SCROLLING_PASS_TARGET: Duration = Duration::from_micros(20);
+
+/// The targets the guard missed: the run fails once the benches have run
+static MISSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 struct Empty;
 
@@ -185,10 +205,29 @@ impl Probe {
     self.times[self.times.len() / 2]
   }
 
-  /// The median UI pass (CPU time before the render step; no target yet)
+  /// The median UI pass (CPU time before the render step) of the frames
+  /// stepped in turn with the other engines
   fn ui_pass_median(&mut self) -> Duration {
     self.ui_times.sort_unstable();
     self.ui_times[self.ui_times.len() / 2]
+  }
+
+  /// The median UI pass of `FRAMES` frames stepped alone, after as many
+  /// again to warm up: as a game's one engine runs it, its caches its own
+  /// (stepped in turn, the other engines' work evicts them)
+  fn lone_ui_pass(&mut self) -> Duration {
+    let mut times = Vec::with_capacity(FRAMES);
+    for frame in 0..2 * FRAMES {
+      if self.screen == Screen::Scrolling {
+        self.wheel.turn(&mut self.engine);
+      }
+      self.engine.step().expect("a guard frame");
+      if frame >= FRAMES {
+        times.push(self.engine.ui_pass_time());
+      }
+    }
+    times.sort_unstable();
+    times[times.len() / 2]
   }
 }
 
@@ -199,11 +238,12 @@ fn over(time: Duration, empty: Duration) -> f64 {
 
 /// The UI's render targets over an empty frame, on the screen they were set
 /// on: an idle settings screen adds under 5 µs (4g), a changing frame is no
-/// slower retained than not (4g), and one changing label adds under 40 µs
-/// (4h). Every median is printed, and each target with its verdict;
-/// asserted are the idle and one-label targets, that one label and the
-/// scrolling list are no slower retained, and that the list moves every
-/// frame.
+/// slower retained than not (4g), one changing label adds under 25 µs and
+/// the scrolling list under 20 µs (4i); and the retained screens' UI pass
+/// targets (4i). Every median is printed, and each target with its
+/// verdict; asserted are that one label and the scrolling list are no
+/// slower retained, and that the list moves every frame; the targets
+/// missed are noted for the run to fail on.
 fn guard() {
   let screens = [
     (Screen::Empty, true),
@@ -278,15 +318,29 @@ fn guard() {
     "ui_render guard, render step over an empty frame ({:.1} µs), medians of {FRAMES} \
      interleaved frames. The screen the targets were set on: idle {} ({idle_kept} kept), \
      one label {}; retention off: idle {:+.1} µs, one label {}. The scrolling screen: \
-     scrolling {:+.1} µs ({scrolling_kept} kept); retention off {}",
+     scrolling {} ({scrolling_kept} kept); retention off {}",
     empty.as_secs_f64() * 1e6,
     against(idle, IDLE_TARGET),
     against(label, LABEL_TARGET),
     us(idle_off),
     off(label_off, label),
-    us(scrolling),
+    against(scrolling, SCROLLING_TARGET),
     off(scrolling_off, scrolling),
   );
+  let mut missed = Vec::new();
+  for (screen, time, target) in [
+    (Screen::Idle, idle, IDLE_TARGET),
+    (Screen::Label, label, LABEL_TARGET),
+    (Screen::Scrolling, scrolling, SCROLLING_TARGET),
+  ] {
+    if time.saturating_sub(empty) >= target {
+      missed.push(format!(
+        "the render step, {screen:?} {:+.1} µs (target {} µs)",
+        us(time),
+        target.as_micros()
+      ));
+    }
+  }
   let passes: Vec<String> = probes
     .iter_mut()
     .map(|probe| {
@@ -300,20 +354,41 @@ fn guard() {
     })
     .collect();
   eprintln!(
-    "ui_render guard, UI pass medians (CPU, not the render step): {}",
+    "ui_render guard, UI pass medians (CPU, not the render step), stepped in turn: {}",
     passes.join(", ")
   );
+  let mut lone = Vec::new();
+  for (screen, target) in [
+    (Screen::Idle, IDLE_PASS_TARGET),
+    (Screen::Label, LABEL_PASS_TARGET),
+    (Screen::Scrolling, SCROLLING_PASS_TARGET),
+  ] {
+    let probe = probes
+      .iter_mut()
+      .find(|probe| probe.screen == screen && probe.retain)
+      .expect("a retained probe of each screen");
+    let median = probe.lone_ui_pass();
+    let met = median < target;
+    let pass = format!(
+      "{screen:?} {:.1} µs (target {} µs: {})",
+      median.as_secs_f64() * 1e6,
+      target.as_micros(),
+      verdict(met)
+    );
+    if !met {
+      missed.push(format!("the UI pass, {pass}"));
+    }
+    lone.push(pass);
+  }
+  eprintln!(
+    "ui_render guard, UI pass medians, each engine stepped alone: {}",
+    lone.join(", ")
+  );
+  MISSED
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .extend(missed);
   assert_eq!(scrolling_kept, 0, "the scrolling list rested");
-  assert!(
-    idle.saturating_sub(empty) < IDLE_TARGET,
-    "an idle UI costs {:+.1} µs to render",
-    us(idle)
-  );
-  assert!(
-    label.saturating_sub(empty) < LABEL_TARGET,
-    "one changing label costs {:+.1} µs to render",
-    us(label)
-  );
   assert!(
     label <= label_off,
     "one label: retained {label:?}, not retained {label_off:?}"
@@ -335,7 +410,9 @@ fn rows(engine: &HeadlessEngine) -> Vec<Rect> {
 }
 
 fn bench_ui_render(c: &mut Criterion) {
-  guard();
+  if !std::env::args().any(|arg| arg == "--profile-time") {
+    guard();
+  }
   for (name, screen, retain) in [
     ("settings_idle", Screen::Idle, true),
     ("settings_idle_unretained", Screen::Idle, false),
@@ -375,4 +452,26 @@ fn bench_ui_render(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_ui_render);
-criterion_main!(benches);
+
+/// The guard and the benches, then the guard's verdict: a missed target
+/// fails the run
+fn main() {
+  benches();
+  Criterion::default().configure_from_args().final_summary();
+  let missed = MISSED
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  if !missed.is_empty() {
+    eprintln!(
+      "ui_render guard missed: {}. Profile a missed frame (the bench binary is the one \
+       `cargo bench --bench ui_render --no-run` names; settings_idle, settings_label or \
+       settings_scrolling) with\n  xcrun xctrace record --template 'Time Profiler' --output \
+       ui_render.trace --launch -- target/release/deps/ui_render-<hash> --bench \
+       --profile-time 20 '^settings_label$'\nand charge each sample's time to the nearest ryo2d \
+       function from the leaf up, as docs/backlog/ui-retained-nodes.md's 4i section does; an \
+       idle or empty_frame profile is the render step's baseline.",
+      missed.join("; ")
+    );
+    std::process::exit(1);
+  }
+}

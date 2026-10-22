@@ -368,6 +368,88 @@ Retained scrolling is 5.7 to 6.7 µs under unretained in every round (medians +3
 
 **Next: analytic line anti-aliasing (owner, 2026-10-20).** UI line pixels may differ from the pre-4h renderer on Apple GPUs by one derivative class: Metal gives the old indexed, shared-vertex line mesh a different `fwidth` near a shared edge than the UI renderer's per-triangle drawing (the new path equals the old line pipeline drawn without shared vertices; on the demo tour only the text demo's page 5 differs, 34 pixels at miter tips, at most 67/255). Accepted. The follow-up is a small sub-project of its own: derivative-free, analytic anti-aliasing for UI and world lines, so the coverage of a line pixel is computed from its distance to the line's edges in pixels rather than from `fwidth`, and lines draw the same on every GPU and in every mesh layout. It starts with a visual review of how others do it: Skia (analytic coverage for strokes and paths), Dear ImGui and NanoVG (a one-pixel feather fringe of extra geometry, alpha 0 at its outer edge), and Unity UI Toolkit (its vector stroke tessellation and edge anti-aliasing), then compares the candidates on the demo pages by eye.
 
+## 4i: fragments (measured)
+
+Spec: `docs/specs/2026-10-21-ui-fragments-design.md`. A node tree's outermost clean subtrees are kept as fragments, their layout, records and commands relative to their scroll slot, and copied in place of a replay; scroll areas draw at whole-pixel offsets through slots the UI shader moves; and the renderer copies an unchanged fragment run's instances. Measured on an Apple M5 Pro (Metal), on a shared machine whose medians move by up to 2x with its load.
+
+**The oracle** (`PixelPair::fragments`: fragments on against the node cache off, a full rebuild every frame, both retaining; every frame's pixels equal, the debug spot check on in the engine with fragments and none of its fragment checks differing). 5,580 frames compared, none differing:
+- the ui demo (`examples/demos/ui/tests/fragments.rs`): every page opened, left still, its focus moved, pointed at, wheeled, moved by the trackpad, pressed (the Clipping page's modal opened and closed), at UI scale 1 and 1.25 (1,459 frames each, 3,438 and 3,042 fragments copied), at 1.25 again with the UI at the window's resolution (1,459 frames: the demo draws its UI on its pixel-art target, where a slot's contents are placed on the CPU, so this run is the one that takes the shader's slots and copies slot runs), and Settings, Clipping, File Settings and Big list at 2 (354 frames, 500 copied); and the Big list's node list scrolled to a fractional offset by trackpad steps of -3.7, -5.1 and -2.9 at 1.25, the pointer then moved across eight of its rows, one a frame, on the target and off it (98 frames). Only the node pages copy fragments (File Menus to Big list); the closure pages compare whole-pixel scrolling alone;
+- breakout (`examples/games/breakout/tests/fragments.rs`): the menu, its quit confirm, play with the HUD, pause and the way back to the menu (610 frames, 1,021 copied);
+- the engine's render cases: a font render change (MSDF and back, the list scrolled in MSDF; 55 frames), 300 scroll areas, one under the shader's 256 slots and one past them scrolled by the wheel and the trackpad (66 frames), and a sprite replaced in place under a kept fragment, at its size and at another (20 frames, `render/ui_retain/gpu_tests.rs`, since only the engine replaces a sprite in place).
+
+The pixel oracle catches a run's instances copied wrong (dropping the last instance of each copied run fails 7 of the 8 new oracle tests; the hover test still passed). It cannot reach every check: with a run cache that ignores the run's version, copies a slot-0 run into a slot or never re-marks a copied run's slot, or with the pass copying fragments whose inputs changed, every scenario still draws the same pixels, as nothing in them changes a fragment while it is drawn every frame, moves a run between slot 0 and a slot, or renumbers the slots. Those checks are the node oracle's and the renderer's unit tests'.
+
+**Method.** The build before 4i (8ef20e0f: the merge base with the UI pass timer and the focus bench) and the final build (3062dd84 and this guard) run alternately, each bench before, after, before, after, at the same load (the 1-minute load average is in each row). `benches/ui.rs`'s guards time each frame over 2,020 frames after a second's warm-up; `benches/ui_render.rs` reads the render step as 4h's guard does (seven engines in turn, the GPU idle before each step) and the UI pass from each retained engine stepped alone (2,000 frames after 2,000 to warm up), as the targets' "today" figures were read (the 4i research's lone-engine profile). Stepped in turn, each engine's caches are evicted by the others', and the UI pass reads 1.4 to 2.0 times as long: 57.4 to 91.1 µs idle before, 40.5 to 63.1 after.
+
+**`benches/ui.rs`** (the guard's median, then criterion's):
+
+| Frame | Before (load 3.7 to 10.8) | Final (load 3.3 to 5.8) | Target |
+|---|---|---|---|
+| node settings screen, unchanged | 32.3 to 35.2 µs (criterion 32.3 to 35.7) | 20.1 to 23.0 µs (20.1 to 24.0); 3 built, 50 fragments copied | under 15 µs: **missed** |
+| focus moving every frame | 34.8 to 37.0 µs (35.2 to 41.0) | 26.5 to 30.4 µs (26.3 to 30.7) | under 18 µs: **missed** |
+| 2,000-node static tree | 311 to 466 µs (318 to 434) | 48.0 to 54.5 µs (48.4 to 56.1); one fragment copied | under 100 µs: met |
+| closure settings screen | 48.3 to 57.3 µs (48.2 to 53.9) | 52.4 to 55.9 µs (52.3 to 57.5) | within 5% of 48.5 µs: **missed** (8 to 15% slower) |
+
+The closure screen's guard reads 48.29 to 48.67 µs before in the three quiet rounds (57.28 in a fourth whose first seconds met a load spike; its criterion read 53.9), and 52.4 to 55.9 after; a lone harness run reads 48.5 then 53.2 µs, three times each way. Other criterion medians, before then final, from the same rounds: node settings screen with a step every tenth frame 32.6 to 36.0, then 21.8 to 26.2 µs; embedded tree 3.85 to 4.00, then 3.30 to 3.63 µs; 64 embedded trees cached 34.8 to 37.7, then 31.2 to 36.0 µs, uncached 55.0 to 65.6, then 58.3 to 68.4 µs; dirty check 1.24 to 1.54, then 1.26 to 1.66 µs; 1,000-row scroll list 325 to 409, then 339 to 389 µs; 10,000-row virtual list 7.42 to 8.27, then 7.95 to 8.62 µs; 100-row virtual list 7.42 to 8.00, then 7.90 to 8.69 µs; **10,000-row node list 6.98 to 7.53, then 8.45 to 9.32 µs (12 to 32% slower, round by round)**; empty frame 204 to 218, then 220 to 237 ns; `update_ui` 39.7 to 41.7, then 40.4 to 48.2 µs; spawning 125 to 132, then 130 to 145 µs.
+
+**`benches/ui_render.rs`** (four rounds; the render step over the empty frame's, and the UI pass):
+
+| Frame | Before | Final | Target |
+|---|---|---|---|
+| empty frame's render step | 70.9 to 126.4 µs | 71.2 to 100.4 µs | |
+| idle (kept), render step | +2.8 to +8.0 µs | +1.2 to +6.1 µs | under 5 µs: met in three rounds of four (+6.1 at load 9) |
+| one label, render step | +44.0 to +76.4 µs | +37.3 to +63.2 µs | under 25 µs: **missed** |
+| scrolling, render step | +45.0 to +78.7 µs | +55.0 to +88.6 µs | under 20 µs: **missed** (2 to 19 µs slower than before) |
+| idle, retention off | +76.2 to +109.7 µs | +83.7 to +106.2 µs | |
+| one label, retention off | +80.1 to +112.4 µs | +87.1 to +112.5 µs | retained no slower: met |
+| scrolling, retention off | +50.0 to +81.7 µs | **+85.6 to +110.7 µs** | retained no slower: met |
+| UI pass, idle (alone) | 40.1 to 52.0 µs | 26.0 to 31.0 µs | under 18 µs: **missed** |
+| UI pass, one label (alone) | 46.8 to 66.0 µs | 33.6 to 42.8 µs | under 25 µs: **missed** |
+| UI pass, scrolling (alone) | 41.8 to 57.6 µs | 33.1 to 46.8 µs | under 20 µs: **missed** |
+
+Loads: before 4.6 to 9.2, final 4.5 to 9.2; the second round ran at 6 to 9 and reads high on both builds. Retention off now scrolls 28 to 43 µs slower than before (Task 9 saw it from Task 8 on); it builds every slot run unculled every frame, the interest's three views of the list, which is the likely cause (not profiled). Criterion (`step()`, GPU-paced), before then final: `settings_idle` 123 to 205, then 174 to 193 µs; `settings_label` 176 to 277, then 156 to 273 µs; `settings_scrolling` 186 to 279, then 172 to 253 µs; `empty_frame` 191 to 225, then 192 to 235 µs; retention off idle 203 to 302, then 199 to 274 µs, label 221 to 330, then 213 to 394 µs, scrolling 195 to 325, then 205 to 303 µs.
+
+`tests/ui_cache_alloc.rs`: an unchanged cached frame makes 14 allocations with its fragments copied (50 copied, 3 built), as before them: met (at most 14).
+
+**Profile of the final frames** (xctrace Time Profiler, 1 ms samples, main thread; engine frames from a probe running the bench's scenes alone for 20 s, the settings screen 1280x720; exclusive time charged to the nearest engine function from the leaf up, mapped to the 4i research's buckets, which carried 4f's; per frame; load about 5). Against the research's profile of the base (99e457cb, the code 8ef20e0f measures):
+
+| UI pass bucket | idle, base | idle | one label, base | one label | scrolling, base | scrolling |
+|---|---|---|---|---|---|---|
+| (a) walk (with the fragment push: ids made again, states kept, the root pushed) | 1.54 | 7.12 | 1.44 | 7.05 | 2.18 | 8.21 |
+| (b) builders run | 0.93 | 0.72 | 0.97 | 0.92 | 1.30 | 1.48 |
+| (c) replay | 7.68 | 0.58 | 7.29 | 0.59 | 7.47 | 0.96 |
+| (d) dirty check | 2.71 | 1.72 | 3.03 | 1.75 | 3.35 | 2.22 |
+| (e) layout | 6.01 | 1.85 | 6.51 | 1.73 | 6.42 | 2.16 |
+| (f) text | 2.96 | 0.40 | 3.09 | 0.36 | 2.61 | 0.74 |
+| (g) resolve, records, commands (with the fragments' records and commands copied) | 15.53 | 11.56 | 15.70 | 12.22 | 16.14 | 13.56 |
+| (h) input, navigation, memory | 0.45 | 0.14 | 0.44 | 0.18 | 0.50 | 0.17 |
+| (i) other | 0.64 | 0.63 | 0.61 | 0.86 | 0.49 | 0.62 |
+| (j) the scene's closure label | - | - | 6.88 | 7.07 | - | - |
+| UI pass | 38.47 | 24.73 | 45.96 | 32.74 | 40.46 | 30.13 |
+
+Replay, layout and text are nearly gone; what is left in the idle frame is copying 50 fragments, and copying still costs by node. A build with the fragment functions kept out of line (15 s each; it reads 24.6 µs idle, 32.0 with the label) splits (a) and (g):
+- `UiMemory::replay_fragment` 3.2 to 3.6 µs, 2.4 of it making each fragment's ids again (`IdScopes::replay_id`, a hash set insert per id);
+- `UiContext::push_kept` 1.6 to 1.8 µs (its own work and the root's close); `keeps` 0.2, `carry_reads` 0.2, `UiCache::keep_drawn` 0.15;
+- `copy_draws` 2.3 µs with its `UiCommand` clones (a clone per command), `copy_records` with `UiMemory::record` 1.6 to 1.9 µs (a map insert per record);
+- resolve's own work around them 2.4 µs, moving fragments between last frame's and next frame's maps and the scratch buffers (`memmove`) 2.8 µs, the layout of the kept subtrees 1.4 µs.
+
+So idle misses its 18 µs by about 7 µs (lone medians 26.0 to 31.0), and the per-node copying (ids 2.4, commands 2.3, records 1.6 to 1.9, moves 2.8: about 9 µs) is that excess: a copy that shared its records, commands and ids (an `Arc` or an index in place of a clone and a re-insert) is the next step. One label adds its own shaping and layout (7.1 µs: `shape_parley` 4.3), so it misses its 25 µs as idle misses 18. Scrolling adds 5.4 µs over idle: 5 to 7 nodes are built and 2 to 6 replayed a frame (the scroll area and the rows coming into view). The harness's unchanged screen (20 µs; 15 µs target) has the same shape (`replay_fragment` 2.3, `copy_draws` with clones 1.6, `copy_records` with `record` 1.5, `push_kept` with `close` 3.3, resolve 2.5); with its focus moving every frame (26 µs; 18 target) 8 nodes are built, 8 replayed and 3 captured each frame, so resolve's own work is 7.1 µs and the walk 4.6.
+
+The render side (inclusive µs per frame, the same profiles; idle keeps the image, so it is the no-UI-render baseline):
+
+| Function | idle | one label | scrolling |
+|---|---|---|---|
+| `Engine::draw_frame` | 93.8 | 115.9 (+22.0) | 132.3 (+38.5) |
+| `build_ui` | 0 | 9.1: copying the 50 kept runs' instances (`memmove`) 3.9, text holds' keys 1.4, the label and loose draws built 1.6, its walk 1.5 | 10.0: draws built 4.6 (one or two runs a frame, built unculled), copies 1.2, holds 1.0 |
+| `UiRenderer::finish` | 0 | 8.7, of it `UiGpu::upload` 6.8 (the compare 3.6, `write_buffer` 3.0; 4h's was 3.1 on this screen) | 24.3, of it `UiGpu::upload` 19.7 (`write_buffer` 17.9) |
+| `plan_runs` | 0 | 1.8 | 1.0 |
+| `UiRetain::keep` (with `hold`) | 0.4 | 1.0 | 1.1 |
+| `WgpuRenderer::render_frame` | 75.1 | 77.5 | 74.7 |
+
+The research's profile of the base read the label's render side at +35.9 µs over idle and scrolling's at +43.8: one label is now +22.0 in a lone engine (the guard, its engines stepped in turn, reads +37 to +63), and scrolling +38.5 (+55 to +89 in the guard). The label misses by the instance copies, the upload's compare and write and the run planning. Scrolling misses by more than it saves: the wheel moves the list a line a frame, and its slot's interest steps with it; each step gives the list's fragments new versions, so one or two runs a frame are built again unculled (three views of rows: 82 texts reused a frame where the base reused 41) and uploaded from the first changed instance to the end. Copying a run whose culled draws did not change across an interest step (Task 9's note) is the fix this frame needs.
+
+Not met, so the owner decides: the unchanged and focus-moving node screens, the closure screen's 5%, the UI pass's three targets and the one-label and scrolling render steps. Met: the 2,000-node static tree (6x faster), the idle render step, retention no slower, and the allocations. Found on the way and not targets: the 10,000-row node list (12 to 32% slower), the closure screen's own slowdown (+4.7 µs a frame, all in `tree::resolve`, which every closure UI runs: +4.3 outside its layout call, placing nodes and their draws relative to their slots and pushing draws through the capture-aware callback (`command_of`, `resolve::{closure#14}`, `Placing::place`; the base inlined these into resolve, so their split is not measured), and +0.4 in layout), and retention off's scrolling (28 to 43 µs slower).
+
 ## Left for Later
 
 From 4b's out-of-scope list:

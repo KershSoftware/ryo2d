@@ -234,47 +234,35 @@ fn a_sprite_in_a_kept_fragment_updated_in_place_redraws() {
   assert!(pair.on.ui_render_stats().kept);
 }
 
-/// Two engines built alike by `make`: fragments on in one, the node cache
-/// (and so fragments) off in the other, the spot checks off in both, driven
-/// together and their frames compared pixel for pixel
-struct Fragments {
-  on: HeadlessEngine,
-  off: HeadlessEngine,
-  compared: usize,
-}
-
-impl Fragments {
-  fn new(make: impl Fn() -> EngineBuilder) -> Option<Fragments> {
-    let mut pair = Fragments {
-      on: HeadlessEngine::new_or_skip(make().ui_fragments(true))?,
-      off: HeadlessEngine::new_or_skip(make().ui_cache(false))?,
-      compared: 0,
-    };
-    pair.on.set_ui_spot_check(false);
-    pair.off.set_ui_spot_check(false);
-    Some(pair)
-  }
-
-  fn frames(&mut self, n: u32, what: &str) {
-    for _ in 0..n {
-      let _ = self.on.step().expect("a frame");
-      let _ = self.off.step().expect("a frame");
-      self.compared += 1;
-      let (Ok(on), Ok(off)) = (self.on.frame(), self.off.frame()) else {
-        panic!("{what}, frame {}: no frame presented", self.compared);
-      };
-      let differ = on
-        .pixels()
-        .zip(off.pixels())
-        .filter(|(a, b)| a != b)
-        .count();
-      assert_eq!(
-        differ, 0,
-        "{what}, frame {}: fragments on and off differ in {differ} pixels",
-        self.compared
-      );
+#[test]
+fn a_sprite_updated_in_place_under_a_kept_fragment_draws_as_a_rebuild() {
+  // Fragments on against a full rebuild, the spot check off so the tree is
+  // copied: the sprite is replaced at its size, then at another
+  let sprite =
+    SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 0, 0, 255), "fragment-swatch");
+  let make = {
+    let sprite = sprite.clone();
+    move || {
+      EngineBuilder::new()
+        .resolution(160, 120)
+        .start_scene(NodeSpriteUi(sprite.clone()))
     }
-  }
+  };
+  let Some(mut pair) = PixelPair::fragments(make) else {
+    return;
+  };
+  pair.each(|engine| engine.set_ui_spot_check(false));
+  pair.frames(10, "red");
+  let copied = pair.fragments_reused();
+  assert!(copied > 0, "the tree is copied");
+  sprite.update(Sprite::solid_rect(8, 8, 0, 0, 255, 255));
+  pair.frames(5, "blue, the same size");
+  sprite.update(Sprite::solid_rect(16, 16, 0, 255, 0, 255));
+  pair.frames(5, "green and larger");
+  assert!(
+    pair.fragments_reused() > copied,
+    "the tree is copied after the updates"
+  );
 }
 
 /// Characters cycled through at large sizes to fill the glyph pages
@@ -345,9 +333,10 @@ fn an_evicted_glyph_page_drops_a_fragments_instances() {
         })
     }
   };
-  let Some(mut pair) = Fragments::new(make) else {
+  let Some(mut pair) = PixelPair::fragments(make) else {
     return;
   };
+  pair.each(|engine| engine.set_ui_spot_check(false));
   pair.frames(10, "the tree");
   assert!(pair.on.ui_render_stats().kept);
   // The swatch changes: the UI is built, the tree's run copied
@@ -426,9 +415,10 @@ fn a_kept_trees_runs_are_copied_while_a_loose_draw_changes() {
       .resolution(640, 480)
       .start_scene(NodeSwatch { frame: 0 })
   };
-  let Some(mut pair) = Fragments::new(make) else {
+  let Some(mut pair) = PixelPair::fragments(make) else {
     return;
   };
+  pair.each(|engine| engine.set_ui_spot_check(false));
   pair.frames(10, "the settings screen");
   for frame in 0..20 {
     pair.frames(1, "the swatch changing");

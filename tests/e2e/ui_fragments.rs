@@ -5,12 +5,17 @@
 //! click lands on the top scene. The debug spot check is off in both unless
 //! a test turns it on: each frame it builds a clean node and captures the
 //! fragment around it afresh, so a tree of one fragment would never be
-//! copied.
+//! copied. And the render cases (`PixelPair::fragments`, the spot check on):
+//! a font render change, and more scroll areas than the renderer's slots. A
+//! sprite updated in place under a kept fragment is the engine's own test
+//! (`render/ui_retain/gpu_tests.rs`): only the engine replaces a sprite's
+//! pixels in place, as hot reload does.
 
 use std::sync::{Arc, Mutex};
 
 use ryo2d::prelude::*;
-use ryo2d::testing::{HeadlessEngine, StepOutcome, UiCacheStats};
+use ryo2d::testing::fixtures::settings_tree;
+use ryo2d::testing::{HeadlessEngine, PixelPair, StepOutcome, UiCacheStats};
 
 use crate::common::ui_scenes::lock;
 
@@ -417,4 +422,152 @@ fn a_rerun_pass() {
   pair.frames(1, "switched, the pass run again");
   pair.frames(6, "after the switch");
   assert!(pair.reused(7..11) > 0, "the new scene's tree was copied");
+}
+
+/// The settings screen as a node tree
+struct SettingsScreen;
+
+impl Scene for SettingsScreen {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(settings_tree());
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+/// Draw the UI font of both engines with `render`
+fn render_ui_font(pair: &mut PixelPair, render: FontRender) {
+  pair.each(|engine| {
+    let mut fonts = engine.world_mut().resource_mut::<Fonts>();
+    let ui = fonts.role(FontRole::Ui).expect("a UI font");
+    fonts.set_render(ui, render);
+  });
+}
+
+#[test]
+fn a_font_render_change_draws_as_a_rebuild() {
+  // The settings screen in raster text, then in MSDF, scrolled by the
+  // wheel and the trackpad, then in raster text again; the pointer over
+  // the list
+  let make = || {
+    EngineBuilder::new()
+      .resolution(1280, 720)
+      .start_scene(SettingsScreen)
+  };
+  let Some(mut pair) = PixelPair::fragments(make) else {
+    return;
+  };
+  pair.each(|engine| engine.mouse_move(520.0, 238.0));
+  pair.frames(10, "raster text");
+  let raster = pair.on.frame().expect("a frame");
+  render_ui_font(&mut pair, FontRender::msdf());
+  pair.frames(10, "MSDF text");
+  let msdf = pair.on.frame().expect("a frame");
+  assert_ne!(raster.as_raw(), msdf.as_raw(), "the render change shows");
+  pair.each(|engine| engine.wheel(0.0, -3.0));
+  pair.frames(15, "MSDF text, the wheel turned");
+  pair.each(|engine| engine.trackpad(0.0, -7.3));
+  pair.frames(10, "MSDF text, the trackpad moved");
+  render_ui_font(&mut pair, FontRender::Raster);
+  pair.frames(10, "raster text again");
+  assert!(pair.fragments_reused() > 0, "the screen copied fragments");
+}
+
+/// Scroll areas in the many-areas tree: more than the renderer's 256 slots
+const AREAS: usize = 300;
+/// Areas to a row of the grid, and each area's size and its gap
+const AREAS_ACROSS: usize = 20;
+const AREA: (f32, f32) = (56.0, 40.0);
+const AREA_GAP: f32 = 4.0;
+
+/// A grid of `AREAS` small scroll areas, each holding four labels taller
+/// than it, so each scrolls
+struct ManyAreas;
+
+impl Scene for ManyAreas {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let areas = (0..AREAS).map(|i| {
+      UiNode::scroll()
+        .width(AREA.0)
+        .height(AREA.1)
+        .children((0..4).map(move |row| UiNode::text(format!("{i}.{row}"))))
+    });
+    ctx.spawn_ui(
+      UiNode::grid(AREAS_ACROSS as u16)
+        .gap(AREA_GAP)
+        .anchor(Anchor::TopLeft)
+        .children(areas),
+    );
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+/// The centre of area `i` of the many-areas grid (screen units)
+fn area_centre(i: usize) -> (f32, f32) {
+  let (column, row) = ((i % AREAS_ACROSS) as f32, (i / AREAS_ACROSS) as f32);
+  (
+    column * (AREA.0 + AREA_GAP) + AREA.0 / 2.0,
+    row * (AREA.1 + AREA_GAP) + AREA.1 / 2.0,
+  )
+}
+
+/// The last frame's scroll slots, each in `Debug` form (slot 0 first)
+fn slots(engine: &HeadlessEngine) -> Vec<String> {
+  let snapshot = engine.ui_snapshot();
+  let line = snapshot
+    .lines()
+    .find(|line| line.starts_with("slots "))
+    .expect("a slots line");
+  line
+    .split("ScrollSlot {")
+    .skip(1)
+    .map(str::to_string)
+    .collect()
+}
+
+/// The slots that moved between `before` and `after`
+fn moved(before: &[String], after: &[String]) -> Vec<usize> {
+  (0..before.len().max(after.len()))
+    .filter(|&i| before.get(i) != after.get(i))
+    .collect()
+}
+
+#[test]
+fn more_scroll_areas_than_slots_draw_as_a_rebuild() {
+  // Past the renderer's 256 slots an area's contents are built where they
+  // show, on the CPU, and never kept: one area under them scrolled by the
+  // wheel and the trackpad, then one past them
+  let make = || {
+    EngineBuilder::new()
+      .resolution(1280, 720)
+      .start_scene(ManyAreas)
+  };
+  let Some(mut pair) = PixelPair::fragments(make) else {
+    return;
+  };
+  pair.each(|engine| engine.mouse_move(-10.0, -10.0));
+  pair.frames(10, "the areas opening");
+  let rest = slots(&pair.on);
+  assert!(rest.len() > AREAS, "a slot for each area: {}", rest.len());
+  for (area, past) in [(10, false), (290, true)] {
+    let (x, y) = area_centre(area);
+    pair.each(|engine| engine.mouse_move(x, y));
+    pair.frames(3, &format!("over area {area}"));
+    let before = slots(&pair.on);
+    pair.each(|engine| engine.wheel(0.0, -1.0));
+    pair.frames(15, &format!("area {area}, the wheel turned"));
+    pair.each(|engine| engine.trackpad(0.0, 3.3));
+    pair.frames(10, &format!("area {area}, the trackpad moved"));
+    let scrolled = moved(&before, &slots(&pair.on));
+    assert!(
+      scrolled.len() == 1 && (scrolled[0] >= 256) == past,
+      "area {area} scrolled, its slot past the shader's: {past}; slots moved {scrolled:?}"
+    );
+  }
+  assert!(pair.fragments_reused() > 0, "the areas copied fragments");
 }
