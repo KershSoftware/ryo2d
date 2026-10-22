@@ -1,10 +1,14 @@
 // Pixel-art snapping: world positions to target pixels and back, through
 // the camera (`globals`)
 
+// Target pixel coordinates (top-left origin) of a clip position
+fn pixel_of(clip: vec4<f32>) -> vec2<f32> {
+    return (clip.xy * vec2<f32>(0.5, -0.5) + 0.5) * globals.resolution;
+}
+
 // Target pixel coordinates (top-left origin) of a world position
 fn to_pixel(world: vec2<f32>) -> vec2<f32> {
-    let clip = globals.view_proj * vec4<f32>(world, 0.0, 1.0);
-    return (clip.xy * vec2<f32>(0.5, -0.5) + 0.5) * globals.resolution;
+    return pixel_of(globals.view_proj * vec4<f32>(world, 0.0, 1.0));
 }
 
 // The clip position of target pixel coordinates

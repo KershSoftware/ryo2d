@@ -4,13 +4,21 @@
 
 // The clip position of a unit quad's `corner` (-0.5 to 0.5 on each axis)
 // under the quad's 2D affine transform: an instance's three transform lanes
-// (their w is not read)
-fn quad_corner(t0: vec4<f32>, t1: vec4<f32>, t2: vec4<f32>, corner: vec2<f32>) -> vec4<f32> {
+// (their w is not read), its translation moved by `by` world units first (a
+// UI scroll slot's offset; zero for a sprite), so the camera and the snap
+// place the moved quad
+fn quad_corner(
+    t0: vec4<f32>,
+    t1: vec4<f32>,
+    t2: vec4<f32>,
+    corner: vec2<f32>,
+    by: vec2<f32>,
+) -> vec4<f32> {
     // Apply 2D affine transform from instance
     let transform = mat3x3<f32>(
         t0.xyz,
         t1.xyz,
-        t2.xyz
+        vec3<f32>(t2.xy + by, t2.z)
     );
 
     let local_pos = vec3<f32>(corner, 1.0);

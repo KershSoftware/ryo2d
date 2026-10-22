@@ -1,7 +1,8 @@
 // The UI's one pipeline: every UI instance (rects, glyphs, sprites, line
 // triangles) through one vertex and one fragment entry. The fragment bodies
 // are the world shaders' (include files); the clip is tested last, so it
-// passes exactly the pixels a scissor would.
+// passes exactly the pixels a scissor would. An instance in a scroll slot
+// is moved by the slot's offset and drawn under its clip.
 
 @group(1) @binding(0) var mask_page: texture_2d<f32>;
 @group(1) @binding(1) var color_page: texture_2d<f32>;
@@ -9,6 +10,17 @@
 @group(1) @binding(3) var sprite_page: texture_2d<f32>;
 @group(1) @binding(4) var linear_sampler: sampler;
 @group(1) @binding(5) var nearest_sampler: sampler;
+
+// One scroll slot (`SlotUniform`): its offset in UI units, added to an
+// instance's corners, and in whole pixels, moving an instance's own clip;
+// its clip in UI image pixels (x0, y0, x1, y1). Slot 0 is no scroll area.
+struct Slot {
+    offset: vec2<f32>,
+    pixels: vec2<i32>,
+    clip: vec4<u32>,
+}
+
+@group(2) @binding(0) var<uniform> slots: array<Slot, 256>;
 
 // What an instance draws (`UiKind`)
 const KIND_RECT: u32 = 0u;
@@ -20,6 +32,12 @@ const KIND_SPRITE_LINEAR: u32 = 5u;
 const KIND_LINE: u32 = 6u;
 // Sample with the nearest sampler
 const FLAG_NEAREST: u32 = 1u;
+// The instance's clip is its own, relative to its slot
+const FLAG_OWN_CLIP: u32 = 2u;
+// Where an instance's slot sits in its flags (8 bits, below the glyph page)
+const SLOT_SHIFT: u32 = 8u;
+// Where a collapsed instance's vertices all go: one point, outside the image
+const COLLAPSED: vec4<f32> = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
 
 struct QuadVertex {
     @location(0) position: vec2<f32>,
@@ -39,7 +57,8 @@ struct UiInstanceIn {
     @location(7) a5: vec4<f32>,
     @location(8) a6: vec4<f32>,
     @location(9) a7: vec4<f32>,
-    // x: x0 | x1 << 16, y: y0 | y1 << 16, z: kind, w: flags | page << 16
+    // x: x0 | x1 << 16, y: y0 | y1 << 16, z: kind, w: flags | slot << 8 |
+    // page << 16
     @location(10) packed: vec4<u32>,
 }
 
@@ -59,18 +78,48 @@ struct UiOut {
     @location(9) @interpolate(flat) flags: u32,
 }
 
+// The clip an instance draws under: its own in slot 0; in a slot the
+// slot's, met with the instance's own moved by the slot's offset when it has
+// one (`ClipRect::in_slot`)
+fn clip_in_slot(own: vec4<u32>, slot: u32, flags: u32) -> vec4<u32> {
+    if slot == 0u {
+        return own;
+    }
+    let clip = slots[slot].clip;
+    if (flags & FLAG_OWN_CLIP) == 0u {
+        return clip;
+    }
+    let by = vec4<i32>(slots[slot].pixels, slots[slot].pixels);
+    let moved = vec4<u32>(max(vec4<i32>(own) + by, vec4<i32>(0)));
+    return vec4<u32>(max(clip.xy, moved.xy), min(clip.zw, moved.zw));
+}
+
+// Whether a primitive inside the box `lo`..`hi` (image pixels) covers no
+// pixel `clip` passes: the box lies wholly outside it, or it is empty. No
+// pixel centre outside the box is covered, so collapsing it changes nothing.
+fn outside_clip(lo: vec2<f32>, hi: vec2<f32>, clip: vec4<u32>) -> bool {
+    let c = vec4<f32>(clip);
+    return hi.x <= c.x || lo.x >= c.z || hi.y <= c.y || lo.y >= c.w || c.z <= c.x || c.w <= c.y;
+}
+
 @vertex
 fn vs_ui(vertex: QuadVertex, instance: UiInstanceIn, @builtin(vertex_index) index: u32) -> UiOut {
     var out: UiOut;
     let kind = instance.packed.z;
+    let flags = instance.packed.w & 0xFFFFu;
     out.kind = kind;
-    out.flags = instance.packed.w & 0xFFFFu;
-    out.clip = vec4<u32>(
+    out.flags = flags;
+    // Its slot's offset moves it (slot 0's is zero)
+    let slot = (flags >> SLOT_SHIFT) & 0xFFu;
+    let by = slots[slot].offset;
+    let own = vec4<u32>(
         instance.packed.x & 0xFFFFu,
         instance.packed.y & 0xFFFFu,
         instance.packed.x >> 16u,
         instance.packed.y >> 16u,
     );
+    let clip = clip_in_slot(own, slot, flags);
+    out.clip = clip;
     if kind == KIND_LINE {
         // Corners 0, 1, 2 make the triangle; the quad's other three
         // vertices repeat corner 2, so its second triangle has no area
@@ -84,15 +133,33 @@ fn vs_ui(vertex: QuadVertex, instance: UiInstanceIn, @builtin(vertex_index) inde
             at = instance.a1;
             color = instance.a4;
         }
+        // A triangle wholly outside its clip is collapsed
+        let p0 = pixel_of(globals.view_proj * vec4<f32>(instance.a0.xy + by, 0.0, 1.0));
+        let p1 = pixel_of(globals.view_proj * vec4<f32>(instance.a1.xy + by, 0.0, 1.0));
+        let p2 = pixel_of(globals.view_proj * vec4<f32>(instance.a2.xy + by, 0.0, 1.0));
+        if outside_clip(min(min(p0, p1), p2), max(max(p0, p1), p2), clip) {
+            out.position = COLLAPSED;
+            return out;
+        }
         // As line.wgsl's vs_main for a solid UI line: no displacement, no snap
-        out.position = globals.view_proj * vec4<f32>(at.xy, 0.0, 1.0);
+        out.position = globals.view_proj * vec4<f32>(at.xy + by, 0.0, 1.0);
         out.uv = at.zw;
         out.color = color;
         out.params = instance.a6;
         return out;
     }
-    // Quads: where sprite.wgsl's vs_main puts them (quad.wgsl)
-    out.position = quad_corner(instance.a0, instance.a1, instance.a2, vertex.position);
+    // Quads: where sprite.wgsl's vs_main puts them (quad.wgsl), moved by
+    // the slot's offset before the camera and the pixel-art snap; one wholly
+    // outside its clip is collapsed
+    let c0 = pixel_of(quad_corner(instance.a0, instance.a1, instance.a2, vec2<f32>(-0.5, -0.5), by));
+    let c1 = pixel_of(quad_corner(instance.a0, instance.a1, instance.a2, vec2<f32>(0.5, -0.5), by));
+    let c2 = pixel_of(quad_corner(instance.a0, instance.a1, instance.a2, vec2<f32>(-0.5, 0.5), by));
+    let c3 = pixel_of(quad_corner(instance.a0, instance.a1, instance.a2, vec2<f32>(0.5, 0.5), by));
+    if outside_clip(min(min(c0, c1), min(c2, c3)), max(max(c0, c1), max(c2, c3)), clip) {
+        out.position = COLLAPSED;
+        return out;
+    }
+    out.position = quad_corner(instance.a0, instance.a1, instance.a2, vertex.position, by);
 
     // Interpolate UVs from uv_rect
     out.uv = mix(instance.a3.xy, instance.a3.zw, vertex.uv);

@@ -462,6 +462,7 @@ fn every_kind_draws_inside_its_clip() {
     let mut pass = begin(&mut encoder, &view);
     pass.set_pipeline(gpu.pipeline());
     pass.set_bind_group(0, camera_group, &[]);
+    pass.set_bind_group(2, gpu.slots_group(), &[]);
     pass.set_vertex_buffer(0, gpu.quad().slice(..));
     pass.set_vertex_buffer(1, gpu.instances().slice(..));
     for (range, group) in &groups {
@@ -644,6 +645,7 @@ fn a_render_target_sprite_draws_with_the_linear_body() {
     let mut pass = begin(&mut encoder, &view);
     pass.set_pipeline(gpu.pipeline());
     pass.set_bind_group(0, camera_group, &[]);
+    pass.set_bind_group(2, gpu.slots_group(), &[]);
     pass.set_bind_group(1, &group, &[]);
     pass.set_vertex_buffer(0, gpu.quad().slice(..));
     pass.set_vertex_buffer(1, gpu.instances().slice(..));
@@ -710,6 +712,7 @@ fn ui_pixel(
     let mut pass = begin_cleared(&mut encoder, &view, clear);
     pass.set_pipeline(gpu.pipeline());
     pass.set_bind_group(0, camera_group, &[]);
+    pass.set_bind_group(2, gpu.slots_group(), &[]);
     pass.set_bind_group(1, &group, &[]);
     pass.set_vertex_buffer(0, gpu.quad().slice(..));
     pass.set_vertex_buffer(1, gpu.instances().slice(..));
@@ -914,6 +917,7 @@ mod lines {
       let mut pass = begin(&mut encoder, &view);
       pass.set_pipeline(gpu.pipeline());
       pass.set_bind_group(0, camera_group, &[]);
+      pass.set_bind_group(2, gpu.slots_group(), &[]);
       pass.set_bind_group(1, &group, &[]);
       pass.set_vertex_buffer(0, gpu.quad().slice(..));
       pass.set_vertex_buffer(1, gpu.instances().slice(..));
@@ -1269,8 +1273,10 @@ mod building {
     assert!(kinds.len() > 1 && kinds[1..].iter().all(|&kind| kind == UiKind::LINE));
   }
 
+  /// Past the slots the shader holds, a draw in a slot is moved and
+  /// clipped on the CPU, as every slot was before the shader held them
   #[test]
-  fn draws_in_a_slot_build_as_the_same_draws_placed_absolute() {
+  fn draws_past_the_shaders_slots_build_as_the_same_draws_placed_absolute() {
     let Some(mut writes) = Writes::new() else {
       return;
     };
@@ -1328,11 +1334,15 @@ mod building {
       ]
     };
     let mut slotted = UiCommands::default();
+    for _ in 1..SLOTS {
+      slotted.push_slot(ScrollSlot::NONE);
+    }
     let slot = slotted.push_slot(ScrollSlot {
       offset: [3, 7],
       clip: Some(slot_clip),
       cull: None,
     });
+    assert_eq!(usize::from(slot), SLOTS);
     for (order, command) in (0..).zip(draws(false)) {
       slotted.push(order, slot, command);
     }
@@ -2118,6 +2128,708 @@ mod building {
         if frame > 0 {
           assert_eq!(*counts, (0, 3), "frame {frame}: every text reused");
         }
+      }
+    }
+  }
+
+  /// Draws in scroll slots through the GPU: the vertex shader moves them by
+  /// their slot's offset and the clip comes from the slot, where Task 2 moved
+  /// and clipped them on the CPU (`UiDraw::placed`). The two must draw the
+  /// same pixels.
+  mod slots {
+    use super::*;
+    use crate::core::graphics::Presentation;
+    use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
+    use crate::core::render::batch::Batch2D;
+    use crate::core::render::ui::{UI_CAMERA, ui_view};
+    use crate::core::render::{SCENE_FORMAT, UI_FORMAT};
+
+    /// What the UI image holds before the draws (`super::super::CLEAR`)
+    const CLEARED: [u8; 4] = [51, 102, 153, 255];
+
+    /// A UI image of `image` pixels at `px_scale` image pixels per UI unit
+    fn env_sized(px_scale: f32, image: (u32, u32), on_target: bool) -> UiRenderEnv {
+      UiRenderEnv {
+        space: UiSpace {
+          size: Vec2::new(image.0 as f32, image.1 as f32) / px_scale,
+          px_scale,
+          image,
+          mouse_scale: 1.0,
+        },
+        on_target,
+        text: true,
+        fonts: 1,
+        bitmaps: 0,
+      }
+    }
+
+    /// `commands` drawn through the UI renderer (built, its sprites made
+    /// resident, finished and drawn as the `ui` pass draws it) into a UI
+    /// image of `env`'s size, read back
+    fn drawn(
+      writes: &mut Writes,
+      commands: &UiCommands,
+      env: UiRenderEnv,
+      sources: Option<&TextSources<'_>>,
+    ) -> image::RgbaImage {
+      let (device, queue) = (Arc::clone(&writes.device), Arc::clone(&writes.queue));
+      let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+      let mut batch = Batch2D::new(&device, SCENE_FORMAT, Default::default());
+      let mut uniforms = CameraUniforms::default();
+      let globals = CameraGlobals::new(
+        &ui_view(&env.space),
+        env.space.image,
+        0.0,
+        0.0,
+        env.on_target,
+      );
+      uniforms.sync(&device, &queue, &[(UI_CAMERA, globals)]);
+      batch.sync_cameras(&device, &uniforms);
+      let mut ui = UiRenderer::new(&device, batch.camera_layout());
+      ui.build(commands, env, false, sources, &mut writes.targets(), 0.0);
+      let textures = ui.sprite_textures().to_vec();
+      let list = DrawList::default();
+      writes
+        .sprites
+        .prepare_textures(&device, &queue, &list, &textures);
+      let camera = batch.camera_group(UI_CAMERA).expect("the camera is bound");
+      let frame = ui.finish(
+        &device,
+        &queue,
+        &writes.sprites,
+        Presentation::default(),
+        camera,
+      );
+      let (width, height) = env.space.image;
+      let image = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("UI Slot Test Image"),
+        size: wgpu::Extent3d {
+          width,
+          height,
+          depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: UI_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+      });
+      let mut encoder = device.create_command_encoder(&Default::default());
+      {
+        let view = image.create_view(&Default::default());
+        let mut pass = super::super::begin(&mut encoder, &view);
+        frame.draw(&mut pass);
+      }
+      queue.submit([encoder.finish()]);
+      let error = pollster::block_on(scope.pop());
+      assert!(error.is_none(), "{error:?}");
+      crate::core::capture::read_texture_rgba(&device, &queue, &image).expect("read back")
+    }
+
+    /// The draws as Task 2 drew them, on the CPU: each moved by its slot's
+    /// offset, under its slot's clip and its own (`UiDraw::placed`), in
+    /// slot 0
+    fn placed(commands: &UiCommands, px_scale: f32) -> UiCommands {
+      let mut absolute = UiCommands::default();
+      for draw in commands.as_slice() {
+        if let Some(command) = draw.placed(commands.slots(), px_scale) {
+          absolute.push(draw.order, 0, command.into_owned());
+        }
+      }
+      absolute
+    }
+
+    /// How many pixels two images differ in, and the first few: where, then
+    /// each image's
+    fn differ(a: &image::RgbaImage, b: &image::RgbaImage) -> (usize, Vec<String>) {
+      let differ: Vec<_> = a
+        .enumerate_pixels()
+        .zip(b.pixels())
+        .filter(|((_, _, a), b)| a != b)
+        .map(|((x, y, a), b)| format!("({x}, {y}): {:?} {:?}", a.0, b.0))
+        .collect();
+      (differ.len(), differ.into_iter().take(8).collect())
+    }
+
+    fn painted(image: &image::RgbaImage) -> usize {
+      image.pixels().filter(|pixel| pixel.0 != CLEARED).count()
+    }
+
+    #[test]
+    fn a_rect_in_a_slot_draws_where_the_slots_offset_puts_it() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let env = env_sized(1.0, (64, 64), false);
+      let square = |x: f32, y: f32| UiCommand::Rect {
+        rect: Rect::new(x, y, 20.0, 20.0),
+        fill: Color::new(200, 60, 30, 255),
+        radius: 0.0,
+        border: None,
+        clip: None,
+        layer: 0,
+      };
+      let in_slot = |clip: Rect| {
+        let mut commands = UiCommands::default();
+        let slot = commands.push_slot(ScrollSlot {
+          offset: [5, 9],
+          clip: Some(clip),
+          cull: None,
+        });
+        commands.push(0, slot, square(0.0, 0.0));
+        commands
+      };
+      let slotted = drawn(
+        &mut writes,
+        &in_slot(Rect::new(0.0, 0.0, 64.0, 64.0)),
+        env,
+        None,
+      );
+      let absolute = drawn(&mut writes, &commands_of([square(5.0, 9.0)]), env, None);
+      assert_eq!(painted(&absolute), 400);
+      assert_eq!(differ(&slotted, &absolute), (0, Vec::new()));
+      // The slot's clip cuts it to the pixels inside
+      let cut = drawn(
+        &mut writes,
+        &in_slot(Rect::new(0.0, 0.0, 10.0, 10.0)),
+        env,
+        None,
+      );
+      let inside: Vec<(u32, u32)> = cut
+        .enumerate_pixels()
+        .filter(|(_, _, pixel)| pixel.0 != CLEARED)
+        .map(|(x, y, _)| (x, y))
+        .collect();
+      assert_eq!(inside, (5..10).map(|x| (x, 9)).collect::<Vec<_>>());
+    }
+
+    /// A slot's clip is tested where the slot draws its contents: what its
+    /// offset moves into the clip draws (the shader collapses only what it
+    /// moves wholly outside), and what it moves out does not
+    #[test]
+    fn a_slot_draws_what_its_offset_moves_into_its_clip() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let env = env_sized(1.0, (64, 64), false);
+      let draws = |at: f32| {
+        let square = UiCommand::Rect {
+          rect: Rect::new(at, at, 16.0, 16.0),
+          fill: Color::new(200, 60, 30, 255),
+          radius: 0.0,
+          border: None,
+          clip: None,
+          layer: 0,
+        };
+        let points = [Vec2::new(at, at + 18.0), Vec2::new(at + 18.0, at + 20.0)];
+        let line = UiCommand::Line {
+          points: points.as_slice().into(),
+          at: Vec2::ZERO,
+          width: 2.0,
+          color: Color::WHITE,
+          closed: false,
+          clip: None,
+          layer: 0,
+        };
+        [square, line]
+      };
+      let in_slot = |at: f32, offset: [i32; 2]| {
+        let mut commands = UiCommands::default();
+        let slot = commands.push_slot(ScrollSlot {
+          offset,
+          clip: Some(Rect::new(36.0, 36.0, 28.0, 28.0)),
+          cull: None,
+        });
+        for (order, command) in (0..).zip(draws(at)) {
+          commands.push(order, slot, command);
+        }
+        commands
+      };
+      // Outside the clip where they are recorded, moved inside it
+      let moved_in = in_slot(2.0, [38, 38]);
+      let slotted = drawn(&mut writes, &moved_in, env, None);
+      let absolute = drawn(&mut writes, &placed(&moved_in, 1.0), env, None);
+      assert!(painted(&absolute) > 280, "{} pixels", painted(&absolute));
+      assert_eq!(differ(&slotted, &absolute), (0, Vec::new()));
+      // Inside it where they are recorded, moved out of it
+      let moved_out = drawn(&mut writes, &in_slot(40.0, [-38, -38]), env, None);
+      assert_eq!(painted(&moved_out), 0);
+    }
+
+    /// Draws as a scroll area's contents are recorded, relative to its slot
+    /// at `px_scale`: rows of rounded, bordered rects on whole render pixels
+    /// (where resolve puts nodes in a slot), each with an icon and a label,
+    /// with `field` a text field (its frame and text under its view's clip,
+    /// relative to the slot), and a custom widget's draws off the pixel grid
+    /// (a rect, a line and a sprite)
+    fn contents(
+      px_scale: f32,
+      swatch: &SpriteHandle,
+      label: Option<&Arc<TextLayout>>,
+      field: bool,
+    ) -> Vec<UiCommand> {
+      let px = |k: i32| k as f32 / px_scale;
+      let row = |rect: Rect, clip: Option<Rect>| UiCommand::Rect {
+        rect,
+        fill: Color::new(40, 160, 220, 200),
+        radius: 4.0,
+        border: Some((1.5, Color::WHITE)),
+        clip,
+        layer: 0,
+      };
+      let mut draws = Vec::new();
+      for k in 0..6 {
+        let y = 4 + 34 * k;
+        draws.push(row(Rect::new(px(6), px(y), px(180), px(30)), None));
+        draws.push(sprite(
+          swatch,
+          Rect::new(px(10), px(y + 7), px(16), px(16)),
+          Filter::Default,
+          None,
+        ));
+        if let Some(label) = label {
+          draws.push(text(label, Vec2::new(px(32), px(y + 8)), None));
+        }
+      }
+      if field {
+        let view = Some(Rect::new(px(100), px(40), px(70), px(22)));
+        draws.push(row(Rect::new(px(96), px(36), px(90), px(30)), view));
+        if let Some(label) = label {
+          draws.push(text(label, Vec2::new(px(92), px(44)), view));
+        }
+      }
+      draws.push(row(Rect::new(20.3, 61.7, 30.2, 12.9), None));
+      draws.push(line(
+        &[
+          Vec2::new(5.0, 5.0),
+          Vec2::new(60.0, 30.0),
+          Vec2::new(90.0, 12.5),
+        ],
+        None,
+      ));
+      draws.push(sprite(
+        swatch,
+        Rect::new(140.4, 20.6, 13.3, 9.8),
+        Filter::Linear,
+        None,
+      ));
+      draws
+    }
+
+    /// A page at `px_scale`: a panel in slot 0, a scroll area's contents in
+    /// slot 1 (its view from (20, 16) image pixels, drawn at `offset`), and
+    /// a strip nested in it in slot 2, drawn at `offset` moved by (30, 12)
+    fn page(
+      px_scale: f32,
+      offset: [i32; 2],
+      swatch: &SpriteHandle,
+      label: Option<&Arc<TextLayout>>,
+      field: bool,
+    ) -> UiCommands {
+      let px = |k: i32| k as f32 / px_scale;
+      let mut commands = UiCommands::default();
+      let mut order = 0;
+      let mut push = |commands: &mut UiCommands, slot: u16, command: UiCommand| {
+        commands.push(order, slot, command);
+        order += 1;
+      };
+      push(&mut commands, 0, rect_at(px(4), px(2), None, 0));
+      let area = commands.push_slot(ScrollSlot {
+        offset,
+        clip: Some(Rect::new(px(20), px(16), px(200), px(150))),
+        cull: None,
+      });
+      for command in contents(px_scale, swatch, label, field) {
+        push(&mut commands, area, command);
+      }
+      let strip = commands.push_slot(ScrollSlot {
+        offset: [offset[0] + 30, offset[1] + 12],
+        clip: Some(Rect::new(px(60), px(40), px(120), px(70))),
+        cull: None,
+      });
+      for command in contents(px_scale, swatch, label, field).into_iter().take(9) {
+        push(&mut commands, strip, command);
+      }
+      push(&mut commands, 0, rect_at(px(230), px(180), None, 0));
+      commands
+    }
+
+    /// Fractions of a pixel draws sit at off the grid, halves among them
+    const FRACTIONS: [f32; 10] = [0.0, 0.25, 0.5, 0.75, 0.1, 0.3, 0.6, 0.9, 0.45, 0.55];
+
+    /// Draws off the pixel grid, in slot `slot`: a grid of rects, sprites
+    /// and (with `label`) texts at fractions of a pixel, halves among them,
+    /// as a custom widget may draw or a padded or centred label sits, and a
+    /// line
+    fn off_grid(
+      commands: &mut UiCommands,
+      slot: u16,
+      px_scale: f32,
+      swatch: &SpriteHandle,
+      label: Option<&Arc<TextLayout>>,
+    ) {
+      let mut order = commands.as_slice().len() as u32;
+      let mut push = |commands: &mut UiCommands, command: UiCommand| {
+        commands.push(order, slot, command);
+        order += 1;
+      };
+      for (i, fx) in FRACTIONS.iter().enumerate() {
+        for (j, fy) in FRACTIONS.iter().take(8).enumerate() {
+          let x = (i as f32 * 30.0 + 4.0 + fx) / px_scale;
+          let y = (j as f32 * 28.0 + 6.0 + fy) / px_scale;
+          let (w, h) = ((17.0 + fy) / px_scale, (13.0 + fx) / px_scale);
+          let command = match ((i + j) % 3, label) {
+            (1, _) => sprite(swatch, Rect::new(x, y, w, h), Filter::Default, None),
+            (2, Some(label)) => text(label, Vec2::new(x, y), None),
+            _ => UiCommand::Rect {
+              rect: Rect::new(x, y, w, h),
+              fill: Color::new(40, 160, 220, 200),
+              radius: 4.0,
+              border: Some((1.5, Color::WHITE)),
+              clip: None,
+              layer: 0,
+            },
+          };
+          push(commands, command);
+        }
+      }
+      let points = [
+        Vec2::new(5.3, 5.7),
+        Vec2::new(60.1, 30.4),
+        Vec2::new(90.6, 12.5),
+        Vec2::new(150.0, 80.25),
+      ];
+      push(commands, line(&points, None));
+    }
+
+    /// `off_grid`'s draws in one slot drawn at `offset`, its clip the image
+    fn off_grid_at(
+      px_scale: f32,
+      offset: [i32; 2],
+      swatch: &SpriteHandle,
+      label: Option<&Arc<TextLayout>>,
+    ) -> UiCommands {
+      let mut commands = UiCommands::default();
+      let slot = commands.push_slot(ScrollSlot {
+        offset,
+        clip: None,
+        cull: None,
+      });
+      off_grid(&mut commands, slot, px_scale, swatch, label);
+      commands
+    }
+
+    /// Scroll offsets: at rest, then whole pixels each way
+    const OFFSETS: [[i32; 2]; 8] = [
+      [0, 0],
+      [3, 7],
+      [-5, -38],
+      [17, -61],
+      [-2, 23],
+      [0, -137],
+      [-29, 4],
+      [11, -1],
+    ];
+
+    /// Pages drawn through the shader's slots and placed on the CPU at each
+    /// offset: pixel for pixel the same
+    fn assert_drawn_as_placed(
+      writes: &mut Writes,
+      env: UiRenderEnv,
+      page: impl Fn([i32; 2]) -> UiCommands,
+      sources: Option<&TextSources<'_>>,
+    ) {
+      let px_scale = env.space.px_scale;
+      for offset in OFFSETS {
+        let commands = page(offset);
+        let slotted = drawn(writes, &commands, env, sources);
+        let absolute = drawn(writes, &placed(&commands, px_scale), env, sources);
+        assert!(painted(&absolute) > 5_000, "{} pixels", painted(&absolute));
+        let (count, first) = differ(&slotted, &absolute);
+        assert_eq!(
+          count, 0,
+          "scale {px_scale}, on target {}, offset {offset:?}: pixels differ (slots, placed): {first:?}",
+          env.on_target
+        );
+      }
+    }
+
+    /// Off the pixel-art target nothing is snapped but texts' glyphs: rects,
+    /// sprites and lines in a slot draw as Task 2 drew them on the CPU, on
+    /// the pixel grid or off it, at whole and fractional UI scales. So does
+    /// a text field's clip at scale 1. (At a fractional scale its edges, on
+    /// whole pixels, were moved by a fraction of a UI unit on the CPU, which
+    /// could tip one over a pixel; through the slot they move by exactly
+    /// its offset: `a_slot_moves_texts_and_clips_by_exactly_its_offset`.)
+    #[test]
+    fn draws_in_slots_draw_as_they_were_placed_on_the_cpu() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let swatch = super::super::gradient(6, 5);
+      for px_scale in [1.0, 1.25, 1.5, 2.0, 0.75] {
+        let env = env_sized(px_scale, (320, 240), false);
+        let field = px_scale == 1.0;
+        let laid = |offset| page(px_scale, offset, &swatch, None, field);
+        assert_drawn_as_placed(&mut writes, env, laid, None);
+        let off = |offset| off_grid_at(px_scale, offset, &swatch, None);
+        assert_drawn_as_placed(&mut writes, env, off, None);
+      }
+    }
+
+    /// Ruling R1: on the pixel-art target a quad's corners are rounded to
+    /// whole pixels, and one on a half pixel rounds by the last bit of its
+    /// position, which the CPU and the shader compute differently when
+    /// moving it: there draws in slots are built absolute, as on the CPU
+    #[test]
+    fn draws_in_slots_on_the_pixel_art_target_draw_as_they_were_placed() {
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      let swatch = super::super::gradient(6, 5);
+      for px_scale in [1.0, 0.5, 0.25, 1.25] {
+        let env = env_sized(px_scale, (320, 240), true);
+        let laid = |offset| page(px_scale, offset, &swatch, None, true);
+        assert_drawn_as_placed(&mut writes, env, laid, None);
+        let off = |offset| off_grid_at(px_scale, offset, &swatch, None);
+        assert_drawn_as_placed(&mut writes, env, off, None);
+      }
+    }
+
+    #[cfg(feature = "default-fonts")]
+    mod texts {
+      use super::*;
+      use crate::core::text::{RichText, TextLayoutOptions, TextStyle};
+
+      fn fonts() -> NoFonts {
+        let mut sources = NoFonts::new();
+        sources.fonts = Fonts::with_builtins();
+        sources.engine.sync(&sources.fonts);
+        sources
+      }
+
+      fn label(fonts: &mut NoFonts, px_scale: f32) -> Arc<TextLayout> {
+        let style = TextStyle::default().size(15.0);
+        fonts
+          .engine
+          .layout(
+            &RichText::new("Setting 7: 42%"),
+            &style,
+            &TextLayoutOptions::default(),
+            px_scale,
+          )
+          .expect("laid out")
+      }
+
+      /// Texts in a slot whose origins sit on whole render pixels draw as
+      /// they were placed on the CPU at UI scales 1 and 1.25; at scale 1 so
+      /// do those off the grid, and a text field's. (At a fractional scale
+      /// a text off the grid may not: on the CPU each glyph was snapped
+      /// where the slot moved it, a rounding the move by a fraction of a UI
+      /// unit could tip; through the slot it moves by exactly the slot's
+      /// offset, below.) On the pixel-art target every draw in a slot is
+      /// placed on the CPU.
+      #[test]
+      fn texts_in_slots_draw_as_they_were_placed_on_the_cpu() {
+        let Some(mut writes) = Writes::new() else {
+          return;
+        };
+        let mut fonts = fonts();
+        let swatch = super::super::super::gradient(6, 5);
+        for (px_scale, on_target, off_grid) in [
+          (1.0, false, true),
+          (1.25, false, false),
+          (1.0, true, true),
+          (1.25, true, true),
+        ] {
+          let env = env_sized(px_scale, (320, 240), on_target);
+          let layout = label(&mut fonts, px_scale);
+          let sources = fonts.sources();
+          let laid = |offset| page(px_scale, offset, &swatch, Some(&layout), off_grid);
+          assert_drawn_as_placed(&mut writes, env, laid, Some(&sources));
+          if off_grid {
+            let off = |offset| off_grid_at(px_scale, offset, &swatch, Some(&layout));
+            assert_drawn_as_placed(&mut writes, env, off, Some(&sources));
+          }
+        }
+      }
+
+      /// A slot moves its texts and the clips of its own draws by exactly
+      /// its offset, on the pixel grid or off it, at whole and fractional UI
+      /// scales: drawn at an offset, they are the image drawn at rest moved
+      /// by it, pixel for pixel
+      #[test]
+      fn a_slot_moves_texts_and_clips_by_exactly_its_offset() {
+        let Some(mut writes) = Writes::new() else {
+          return;
+        };
+        let mut fonts = fonts();
+        for px_scale in [1.0, 1.25, 1.5, 2.0, 0.75] {
+          let env = env_sized(px_scale, (320, 240), false);
+          let layout = label(&mut fonts, px_scale);
+          let sources = fonts.sources();
+          // Texts alone, at fractions of a pixel each way
+          let texts = |offset: [i32; 2]| {
+            let mut commands = UiCommands::default();
+            let slot = commands.push_slot(ScrollSlot {
+              offset,
+              clip: None,
+              cull: None,
+            });
+            let mut order = 0;
+            for (i, fx) in FRACTIONS.iter().enumerate() {
+              for (j, fy) in FRACTIONS.iter().enumerate() {
+                let x = i as f32 * 30.0 + 4.0 + fx;
+                let y = j as f32 * 22.0 + 6.0 + fy;
+                let origin = Vec2::new(x, y) / px_scale;
+                commands.push(order, slot, text(&layout, origin, None));
+                order += 1;
+              }
+            }
+            // A text field: its frame and text under its view's clip
+            let px = |k: i32| k as f32 / px_scale;
+            let view = Some(Rect::new(px(100), px(40), px(70), px(22)));
+            let frame = UiCommand::Rect {
+              rect: Rect::new(px(96), px(36), px(90), px(30)),
+              fill: Color::new(40, 160, 220, 200),
+              radius: 4.0,
+              border: Some((1.5, Color::WHITE)),
+              clip: view,
+              layer: 0,
+            };
+            commands.push(order, slot, frame);
+            commands.push(
+              order + 1,
+              slot,
+              text(&layout, Vec2::new(px(92), px(44)), view),
+            );
+            commands
+          };
+          let rest = drawn(&mut writes, &texts([0, 0]), env, Some(&sources));
+          assert!(painted(&rest) > 5_000, "{} pixels", painted(&rest));
+          for offset in OFFSETS.into_iter().skip(1) {
+            let moved = drawn(&mut writes, &texts(offset), env, Some(&sources));
+            let differ = rest
+              .enumerate_pixels()
+              .filter(|&(x, y, pixel)| {
+                let (mx, my) = (x as i32 + offset[0], y as i32 + offset[1]);
+                let inside = (0..320).contains(&mx) && (0..240).contains(&my);
+                inside && moved.get_pixel(mx as u32, my as u32) != pixel
+              })
+              .count();
+            assert_eq!(differ, 0, "scale {px_scale}, offset {offset:?}");
+          }
+        }
+      }
+
+      /// A scrolling list's texts are laid once, relative to their slot,
+      /// and copied while it scrolls: their instances do not change
+      #[test]
+      fn a_text_in_a_scrolling_slot_is_one_copy_of_its_instances() {
+        let Some(mut writes) = Writes::new() else {
+          return;
+        };
+        let mut fonts = fonts();
+        let env = env_sized(1.25, (320, 240), false);
+        let layout = label(&mut fonts, 1.25);
+        let sources = fonts.sources();
+        let frames: Vec<UiCommands> = (0..6)
+          .map(|frame| {
+            let mut commands = UiCommands::default();
+            // A slot pushed before the list's on odd frames: the list's
+            // slot changes
+            if frame % 2 == 1 {
+              commands.push_slot(ScrollSlot::NONE);
+            }
+            let slot = commands.push_slot(ScrollSlot {
+              offset: [0, 10 - 7 * frame],
+              clip: Some(Rect::new(0.0, 8.0, 200.0, 100.0)),
+              cull: None,
+            });
+            commands.push(0, slot, text(&layout, Vec2::new(8.0, 12.8), None));
+            commands
+          })
+          .collect();
+        let mut texts = UiTextCache::<UiInstance>::default();
+        let mut first: Option<Vec<UiInstance>> = None;
+        for (frame, commands) in frames.iter().enumerate() {
+          let mut build = UiBuild::default();
+          texts.begin(env, true);
+          build_ui(
+            &mut build,
+            commands,
+            &env,
+            Some(&sources),
+            &mut writes.targets(),
+            0.0,
+            &mut texts,
+          );
+          texts.end();
+          let slot = commands.slots().len() as u8 - 1;
+          assert!(!build.instances.is_empty());
+          assert!(build.instances.iter().all(|glyph| glyph.slot() == slot));
+          // The same glyphs, but for the slot they are in
+          let unslotted: Vec<UiInstance> = build
+            .instances
+            .iter()
+            .map(|glyph| glyph.with_slot(0))
+            .collect();
+          match &first {
+            None => first = Some(unslotted),
+            Some(first) => {
+              assert_eq!(&unslotted, first, "frame {frame}");
+              assert_eq!((texts.built(), texts.reused()), (0, 1), "frame {frame}");
+            }
+          }
+        }
+      }
+
+      /// A text drawn in slot 0 is culled glyph by glyph; drawn next in a
+      /// slot (the same layout, at the same place, under the same clip, as
+      /// a scroll area's contents are on the frame its state is made), its
+      /// glyphs are not, so the kept ones are not copied there
+      #[test]
+      fn a_text_kept_outside_a_slot_is_not_copied_into_one() {
+        let Some(mut writes) = Writes::new() else {
+          return;
+        };
+        let mut fonts = fonts();
+        let env = env_sized(1.0, (320, 240), false);
+        let layout = label(&mut fonts, 1.0);
+        let sources = fonts.sources();
+        // Its clip shows the first few glyphs only
+        let clip = Rect::new(0.0, 0.0, 40.0, 100.0);
+        let mut loose = UiCommands::default();
+        loose.push(0, 0, text(&layout, Vec2::new(8.0, 12.0), Some(clip)));
+        let mut slotted = UiCommands::default();
+        let slot = slotted.push_slot(ScrollSlot {
+          offset: [0, 0],
+          clip: Some(clip),
+          cull: None,
+        });
+        slotted.push(0, slot, text(&layout, Vec2::new(8.0, 12.0), None));
+        let mut texts = UiTextCache::<UiInstance>::default();
+        let mut counts = Vec::new();
+        let mut builds = Vec::new();
+        for commands in [&loose, &slotted] {
+          let mut build = UiBuild::default();
+          texts.begin(env, true);
+          build_ui(
+            &mut build,
+            commands,
+            &env,
+            Some(&sources),
+            &mut writes.targets(),
+            0.0,
+            &mut texts,
+          );
+          texts.end();
+          counts.push((texts.built(), texts.reused()));
+          builds.push(build.instances.len());
+        }
+        assert_eq!(counts, [(1, 0), (1, 0)]);
+        assert!(builds[0] < builds[1], "{builds:?}");
       }
     }
   }

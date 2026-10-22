@@ -1,7 +1,10 @@
 //! The UI on the GPU: its one pipeline, the texture bind groups it draws
-//! with (cached by the textures they hold) and its instance buffer
+//! with (cached by the textures they hold), its instance buffer and its
+//! scroll slots' uniform
 
 use std::ops::Range;
+
+use bytemuck::{Pod, Zeroable};
 
 use super::instance::UiInstance;
 use crate::core::hash::FastMap;
@@ -20,6 +23,27 @@ const FIRST_CAPACITY: usize = 1024;
 /// over many is far cheaper than one per instance
 const COMPARE_CHUNK: usize = 32;
 
+/// The scroll slots the shader holds in a frame (slot 0 is no scroll area):
+/// what an instance's slot bits can name. Past them a scroll area's
+/// contents are built absolute.
+pub(crate) const SLOTS: usize = 256;
+
+/// One scroll slot as the shader reads it (`ui.wgsl`'s `Slot`, 16-byte
+/// aligned for a uniform array)
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub(crate) struct SlotUniform {
+  /// The offset in UI units (render pixels / px_scale), as the CPU path
+  /// adds it: added to an instance's corners
+  pub(crate) offset: [f32; 2],
+  /// The offset in whole render pixels: moves an instance's own clip
+  pub(crate) pixels: [i32; 2],
+  /// The clip in UI image pixels: x0, y0, x1, y1 (as `ClipRect`)
+  pub(crate) clip: [u32; 4],
+}
+
+const SLOT_SIZE: usize = std::mem::size_of::<SlotUniform>();
+
 /// A [`UiInstance`]: its eight lanes, then its clip, kind and flags
 const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
   2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
@@ -33,11 +57,16 @@ const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLay
   attributes: &INSTANCE_ATTRIBUTES,
 };
 
-/// The UI's pipeline, texture bind groups and instance buffer
+/// The UI's pipeline, texture bind groups, instance buffer and scroll slots
 pub(crate) struct UiGpu {
   /// Group 1: the mask, colour, MSDF and sprite slots, then the linear and
   /// nearest samplers
   textures: wgpu::BindGroupLayout,
+  /// Group 2: the frame's scroll slots, [`SLOTS`] of them
+  slots: wgpu::Buffer,
+  slots_group: wgpu::BindGroup,
+  /// What the slots' buffer holds, from its start: the last slots written
+  held_slots: Vec<SlotUniform>,
   pipeline: wgpu::RenderPipeline,
   /// The unit quad every instance is drawn from (a line triangle reads only
   /// the vertex index)
@@ -103,9 +132,41 @@ impl UiGpu {
         sampler(5),
       ],
     });
+    // The slots are read by the vertex stage only: it moves an instance by
+    // its slot's offset and hands the clip on
+    let slots_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+      label: Some("UI Slot Layout"),
+      entries: &[wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+          ty: wgpu::BufferBindingType::Uniform,
+          has_dynamic_offset: false,
+          min_binding_size: wgpu::BufferSize::new((SLOTS * SLOT_SIZE) as u64),
+        },
+        count: None,
+      }],
+    });
+    let slots = device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("UI Slots"),
+      size: (SLOTS * SLOT_SIZE) as u64,
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+      mapped_at_creation: false,
+    });
+    let slots_group = crate::core::graphics::bind_groups::create(
+      device,
+      &wgpu::BindGroupDescriptor {
+        label: Some("UI Slots"),
+        layout: &slots_layout,
+        entries: &[wgpu::BindGroupEntry {
+          binding: 0,
+          resource: slots.as_entire_binding(),
+        }],
+      },
+    );
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("UI Pipeline Layout"),
-      bind_group_layouts: &[Some(camera_layout), Some(&textures)],
+      bind_group_layouts: &[Some(camera_layout), Some(&textures), Some(&slots_layout)],
       immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -158,6 +219,9 @@ impl UiGpu {
     });
     UiGpu {
       textures,
+      slots,
+      slots_group,
+      held_slots: Vec::new(),
       pipeline,
       quad,
       placeholder,
@@ -274,6 +338,24 @@ impl UiGpu {
     {
       self.written = range;
     }
+  }
+
+  /// Write the frame's scroll slots (at most [`SLOTS`]), in one write, when
+  /// they differ from those last written. An instance of the frame names
+  /// only a slot written for it.
+  pub(crate) fn upload_slots(&mut self, queue: &wgpu::Queue, slots: &[SlotUniform]) {
+    let slots = &slots[..slots.len().min(SLOTS)];
+    let bytes: &[u8] = bytemuck::cast_slice(slots);
+    if bytemuck::cast_slice::<SlotUniform, u8>(&self.held_slots) != bytes {
+      queue.write_buffer(&self.slots, 0, bytes);
+      self.held_slots.clear();
+      self.held_slots.extend_from_slice(slots);
+    }
+  }
+
+  /// The scroll slots' bind group (group 2)
+  pub(crate) fn slots_group(&self) -> &wgpu::BindGroup {
+    &self.slots_group
   }
 
   /// The instances the last upload wrote (tests)

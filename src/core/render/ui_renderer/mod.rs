@@ -18,7 +18,7 @@ use build::SpriteFix;
 use build::{UiBuild, build_ui};
 use gpu::UiGpu;
 #[cfg(test)]
-use gpu::{KEEP_FRAMES, changed_range};
+use gpu::{KEEP_FRAMES, SLOTS, SlotUniform, changed_range};
 use instance::UiInstance;
 #[cfg(test)]
 use instance::{ClipRect, UiKind};
@@ -129,7 +129,8 @@ impl UiRenderer {
 
   /// Finish the last build, its sprite textures now resident: fix its
   /// sprites (dropping those whose texture has no slot), split it into runs
-  /// and bind each run's textures, and upload what changed in one write.
+  /// and bind each run's textures, and upload what changed in one write,
+  /// and its scroll slots in another.
   /// The frame draws through the UI camera's `camera` group; a build without
   /// an instance (all of it culled) draws none. Bind groups unused for
   /// [`KEEP_FRAMES`](gpu::KEEP_FRAMES) finished frames are dropped.
@@ -156,6 +157,7 @@ impl UiRenderer {
         self.runs.push((run.range, group.clone()));
       }
       self.gpu.upload(device, queue, &self.build.instances);
+      self.gpu.upload_slots(queue, &self.build.slots);
     }
     self.gpu.end_frame(self.frame);
     UiFrame {
@@ -163,6 +165,7 @@ impl UiRenderer {
       quad: self.gpu.quad(),
       instances: self.gpu.instances(),
       camera,
+      slots: self.gpu.slots_group(),
       runs: &self.runs,
     }
   }
@@ -189,13 +192,14 @@ fn slot_of(need: TexNeed, sprites: &SpriteGpuRenderer) -> Option<(Slot, TexKey)>
 }
 
 /// The UI renderer's frame, for the `ui` pass: its pipeline and buffers, the
-/// UI camera's uniforms and its runs
+/// UI camera's uniforms, its scroll slots and its runs
 #[derive(Clone, Copy)]
 pub(crate) struct UiFrame<'a> {
   pipeline: &'a wgpu::RenderPipeline,
   quad: &'a wgpu::Buffer,
   instances: &'a wgpu::Buffer,
   camera: &'a wgpu::BindGroup,
+  slots: &'a wgpu::BindGroup,
   runs: &'a [(Range<u32>, wgpu::BindGroup)],
 }
 
@@ -205,14 +209,15 @@ impl UiFrame<'_> {
     self.runs.len()
   }
 
-  /// Draw it into `pass` (the UI image): the pipeline and the camera bound
-  /// once, then each run with its textures
+  /// Draw it into `pass` (the UI image): the pipeline, the camera and the
+  /// scroll slots bound once, then each run with its textures
   pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
     if self.runs.is_empty() {
       return;
     }
     pass.set_pipeline(self.pipeline);
     pass.set_bind_group(0, self.camera, &[]);
+    pass.set_bind_group(2, self.slots, &[]);
     pass.set_vertex_buffer(0, self.quad.slice(..));
     pass.set_vertex_buffer(1, self.instances.slice(..));
     for (range, group) in self.runs {

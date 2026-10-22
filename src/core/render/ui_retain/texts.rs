@@ -21,15 +21,15 @@ const SPARE: usize = 64;
 
 /// What a text's glyphs were built from, besides the UI's environment and
 /// its origin: its layout (by address, held by the entry) and the rest of
-/// its placement, and which of the frame's texts with these it is (the
-/// first, the second, in painter's order), so a layout drawn twice keeps
-/// two entries.
+/// its placement, what its sink makes of glyphs (`TextSink::variant`), and
+/// which of the frame's texts with these it is (the first, the second, in
+/// painter's order), so a layout drawn twice keeps two entries.
 ///
 /// What the text emitters make of a text's glyphs follows from the key, the
 /// environment and the origin, which only places them: a seed laid at the
 /// new origin is what building it there gives, when the glyph's image is
 /// the same (`GlyphSeed::fits`). What a sink makes of them (which it culls
-/// included) follows from those glyphs and the key's clip.
+/// included) follows from those glyphs, the key's clip and its variant.
 ///
 /// Relies on `text_of` (render/ui.rs) keeping the placement's other fields
 /// (axes, pixel grid, blend, layers, draw kind, lit, camera, size steps, max
@@ -45,12 +45,13 @@ struct TextKey {
   opacity: u32,
   seed: u64,
   scissor: Option<PixelRect>,
+  variant: u32,
   /// Texts with this key drawn before it in the frame
   nth: u32,
 }
 
 impl TextKey {
-  fn of(layout: &Arc<TextLayout>, place: &TextPlacement) -> TextKey {
+  fn of(layout: &Arc<TextLayout>, place: &TextPlacement, variant: u32) -> TextKey {
     TextKey {
       layout: Arc::as_ptr(layout) as usize,
       reveal: place
@@ -59,6 +60,7 @@ impl TextKey {
       opacity: place.opacity.to_bits(),
       seed: place.seed,
       scissor: place.draw.scissor,
+      variant,
       nth: 0,
     }
   }
@@ -75,6 +77,9 @@ fn bits(origin: Vec2) -> [u32; 2] {
 /// it. A sink says what it made of a built text's glyphs, to keep, and
 /// pushes a kept text again.
 pub(crate) trait TextSink<G> {
+  /// What the sink makes of a text's glyphs besides what its clip decides
+  /// (which it culls, say), as a number: texts are kept apart by it
+  fn variant(&self) -> u32;
   /// Where what the sink makes of the next built glyph lands (to capture
   /// from)
   fn mark(&self, targets: &TextTargets<'_>) -> usize;
@@ -177,7 +182,7 @@ impl<G: Clone> UiTextCache<G> {
       self.texts_built += 1;
       return;
     }
-    let mut key = TextKey::of(layout, place);
+    let mut key = TextKey::of(layout, place, sink.variant());
     let frame = self.frame;
     let reused = match self.built.get_mut(&key) {
       // Another text with this key was drawn first: this one has an entry

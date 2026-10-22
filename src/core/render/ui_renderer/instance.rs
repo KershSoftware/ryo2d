@@ -25,6 +25,16 @@ impl UiKind {
 /// Sample with the nearest sampler (`ui.wgsl`'s `FLAG_NEAREST`)
 const NEAREST: u32 = 1;
 
+/// Its clip is its own, relative to its slot: the shader moves it by the
+/// slot's offset and meets it with the slot's clip (`ui.wgsl`'s
+/// `FLAG_OWN_CLIP`)
+const OWN_CLIP: u32 = 2;
+
+/// Where an instance's scroll slot sits in its flags word, below the glyph
+/// page: 8 bits (`ui.wgsl`'s `SLOT_SHIFT`)
+const SLOT_SHIFT: u32 = 8;
+const SLOT_BITS: u32 = 0xFF << SLOT_SHIFT;
+
 /// A clip rect in UI image pixels: pixels with centres in [x0, x1) x [y0, y1)
 /// are drawn (the scissor test)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,15 +64,41 @@ impl ClipRect {
       },
     }
   }
+
+  /// This clip, relative to a slot, where the slot draws it: moved by the
+  /// slot's `offset` (whole pixels) and met with the slot's clip, as the
+  /// shader moves an instance's own clip (`ui.wgsl`'s `vs_ui`)
+  pub(crate) fn in_slot(self, offset: [i32; 2], slot: ClipRect) -> ClipRect {
+    let at = |v: u16, by: i32| {
+      let moved = i64::from(v) + i64::from(by);
+      u16::try_from(moved.max(0)).unwrap_or(u16::MAX)
+    };
+    ClipRect {
+      x0: slot.x0.max(at(self.x0, offset[0])),
+      y0: slot.y0.max(at(self.y0, offset[1])),
+      x1: slot.x1.min(at(self.x1, offset[0])),
+      y1: slot.y1.min(at(self.y1, offset[1])),
+    }
+  }
+
+  /// Whether no pixel passes it
+  pub(crate) fn is_empty(self) -> bool {
+    self.x1 <= self.x0 || self.y1 <= self.y0
+  }
 }
 
 /// A UI draw item: eight vec4 lanes (a quad's are a `SpriteInstance`'s, in
-/// order; a line triangle's are its corners), then the clip, kind and flags
+/// order; a line triangle's are its corners), then the clip, kind and flags.
+///
+/// In a scroll slot (`slot()` above 0) its positions are relative to the
+/// slot: the shader adds the slot's offset, and its clip is the slot's, or
+/// its own relative to the slot met with the slot's (`own_clip()`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub(crate) struct UiInstance {
   pub(crate) data: [[f32; 4]; 8],
-  /// x: x0 | x1 << 16, y: y0 | y1 << 16, z: kind, w: flags | page << 16
+  /// x: x0 | x1 << 16, y: y0 | y1 << 16, z: kind, w: flags | slot << 8 |
+  /// page << 16
   pub(crate) meta: [u32; 4],
 }
 
@@ -115,6 +151,29 @@ impl UiInstance {
       kind,
       flags | u32::from(page) << 16,
     ]
+  }
+
+  /// The same instance in scroll slot `slot` (0: none, its positions and
+  /// clip absolute)
+  pub(crate) fn with_slot(mut self, slot: u8) -> UiInstance {
+    self.meta[3] = self.meta[3] & !SLOT_BITS | u32::from(slot) << SLOT_SHIFT;
+    self
+  }
+
+  /// The same instance, its clip its own, relative to its slot
+  pub(crate) fn with_own_clip(mut self) -> UiInstance {
+    self.meta[3] |= OWN_CLIP;
+    self
+  }
+
+  /// Its scroll slot (0: none)
+  pub(crate) fn slot(&self) -> u8 {
+    ((self.meta[3] & SLOT_BITS) >> SLOT_SHIFT) as u8
+  }
+
+  /// Whether its clip is its own, relative to its slot
+  pub(crate) fn own_clip(&self) -> bool {
+    self.meta[3] & OWN_CLIP != 0
   }
 
   pub(crate) fn kind(&self) -> u32 {

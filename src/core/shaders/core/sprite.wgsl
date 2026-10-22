@@ -81,7 +81,8 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
         instance.transform0,
         instance.transform1,
         instance.transform2,
-        vertex.position
+        vertex.position,
+        vec2<f32>(0.0)
     );
     
     // Interpolate UVs from uv_rect
