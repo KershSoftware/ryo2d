@@ -410,8 +410,14 @@ impl Check {
 impl UiCache {
   /// Drop the records not drawn in memory frame `frame` (nor held by a
   /// fragment pushed in it, as `held` says), with what they noted: their
-  /// ids in `by_id` and their places in the live sets
-  fn drop_undrawn(&mut self, frame: u64, held: impl Fn(Hold) -> bool) {
+  /// ids in `by_id` and their places in the live sets. Each dropped
+  /// record's node is given to `dropped`.
+  fn drop_undrawn(
+    &mut self,
+    frame: u64,
+    held: impl Fn(Hold) -> bool,
+    mut dropped: impl FnMut(Entity),
+  ) {
     let UiCache {
       records,
       by_id,
@@ -426,6 +432,7 @@ impl UiCache {
       if record.frame == frame || record.held.is_some_and(&held) {
         return true;
       }
+      dropped(node);
       unindex(by_id, node, &record.tape);
       for set in [
         &mut *live,
@@ -1293,7 +1300,16 @@ pub(crate) fn end_frame(world: &mut World, memory: &UiMemory) {
   if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
     let frame = memory.frame();
     let held = |hold| memory.fragments.holds(hold, frame);
-    nodes.cache.drop_undrawn(frame, held);
+    // A record a fragment pushed this frame holds is drawn: none dropped.
+    // Looked for only among the records dropped, so it allocates nothing.
+    let dropped = |_node: Entity| {
+      #[cfg(debug_assertions)]
+      debug_assert!(
+        !memory.fragments.held_in(frame).any(|held| *held == _node),
+        "the record of {_node:?}, held by a kept fragment pushed this frame, is dropped"
+      );
+    };
+    nodes.cache.drop_undrawn(frame, held, dropped);
   }
 }
 

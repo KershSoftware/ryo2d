@@ -444,6 +444,19 @@ impl Fragments {
     })
   }
 
+  /// The nodes replayed in each fragment pushed in `frame` that holds
+  /// their records
+  #[cfg(debug_assertions)]
+  pub(crate) fn held_in(&self, frame: u64) -> impl Iterator<Item = &Entity> {
+    let pushed = self
+      .slots
+      .iter()
+      .filter(move |at| at.root != UiId::NONE && at.pushed == frame);
+    let fragments = pushed.filter_map(|at| at.fragment.as_deref());
+    let holding = fragments.filter(|fragment| fragment.holding);
+    holding.flat_map(|fragment| fragment.entities.iter())
+  }
+
   /// The fragments kept in `frame` for the next, each with its root's id
   #[cfg(test)]
   pub(crate) fn kept_in(&self, frame: u64) -> impl Iterator<Item = (UiId, &Fragment)> {
