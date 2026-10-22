@@ -418,6 +418,7 @@ impl Engine {
         runs_copied,
         slot_runs_copied,
         runs_built,
+        instances_written: 0,
       };
       // The UI camera's uniforms (the UI renderer binds the bind group the
       // batch makes for them)
@@ -461,6 +462,7 @@ impl Engine {
         )),
         _ => None,
       };
+      self.ui_retain.stats.instances_written = ui_frame.map_or(0, |frame| frame.written());
       self.text.end_frame();
       (entity_sprites, lights, ui_kept, ui_frame)
     };

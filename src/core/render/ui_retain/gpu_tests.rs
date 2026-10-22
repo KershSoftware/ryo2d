@@ -433,3 +433,128 @@ fn a_kept_trees_runs_are_copied_while_a_loose_draw_changes() {
     assert_eq!(stats.runs_built, 0, "frame {frame}: {stats:?}");
   }
 }
+
+/// The settings screen as a node tree: a list filling its panel, which the
+/// wheel scrolls
+struct NodeSettings;
+
+impl Scene for NodeSettings {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(crate::core::testing::fixtures::settings_tree());
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+/// Over a row of the settings screen's list, on a screen `width` by
+/// `height` (its panel is centred)
+fn over_list(width: f32, height: f32) -> (f32, f32) {
+  (width / 2.0 - 120.0, height / 2.0 - 122.0)
+}
+
+/// The texts `engine` drew in each of `frames` frames of the wheel turning
+/// down over the settings screen's list, one line a frame: those built,
+/// and those drawn from kept glyphs
+fn wheeled_texts(engine: &mut HeadlessEngine, frames: usize) -> Vec<(u32, u32)> {
+  let _ = engine.step_frames(10);
+  (0..frames)
+    .map(|_| {
+      engine.wheel(0.0, -1.0);
+      let _ = engine.step();
+      let stats = engine.ui_render_stats();
+      (stats.texts_built, stats.texts_reused)
+    })
+    .collect()
+}
+
+#[test]
+fn with_retention_off_a_scrolling_list_builds_the_texts_a_rebuild_builds() {
+  // Retention off, every text drawn is built. The list's kept rows reach
+  // the renderer culled by its interest, three views tall; nothing is kept
+  // of them, so they are culled as resolve culls the draws a full rebuild
+  // sends (the node cache off), and only those are built
+  let make = |fragments: bool| {
+    EngineBuilder::new()
+      .resolution(1280, 720)
+      .ui_retain(false)
+      .ui_cache(fragments)
+      .ui_fragments(fragments)
+      .start_scene(NodeSettings)
+  };
+  let (Some(mut on), Some(mut off)) = (
+    HeadlessEngine::new_or_skip(make(true)),
+    HeadlessEngine::new_or_skip(make(false)),
+  ) else {
+    return;
+  };
+  let (x, y) = over_list(1280.0, 720.0);
+  let mut texts = Vec::new();
+  for engine in [&mut on, &mut off] {
+    engine.mouse_move(x, y);
+    texts.push(wheeled_texts(engine, 30));
+  }
+  assert!(texts[0].iter().all(|&(_, reused)| reused == 0));
+  assert_eq!(texts[0], texts[1], "with fragments, then a full rebuild");
+}
+
+#[test]
+fn on_the_pixel_art_target_a_scrolling_list_draws_the_texts_a_rebuild_draws() {
+  // On the pixel-art target a scroll slot's contents are built absolute
+  // every frame and never kept, so they are culled as resolve culls the
+  // draws a full rebuild sends
+  let make = || {
+    EngineBuilder::new()
+      .pixel_art(640, 480)
+      .start_scene(NodeSettings)
+  };
+  let Some(mut pair) = PixelPair::fragments(make) else {
+    return;
+  };
+  let (x, y) = over_list(640.0, 480.0);
+  pair.each(|engine| engine.mouse_move(x, y));
+  pair.frames(10, "the settings screen");
+  for frame in 0..30 {
+    pair.each(|engine| engine.wheel(0.0, -1.0));
+    pair.frames(1, "the wheel turning");
+    let drawn = |engine: &HeadlessEngine| {
+      let stats = engine.ui_render_stats();
+      stats.texts_built + stats.texts_reused
+    };
+    assert_eq!(
+      drawn(&pair.on),
+      drawn(&pair.off),
+      "frame {frame}: the texts drawn with fragments, then by a full rebuild"
+    );
+  }
+  assert_eq!(pair.slot_runs_copied(), 0, "nothing is copied into a slot");
+}
+
+#[test]
+fn a_scrolling_lists_interest_steps_build_only_the_rows_they_bring() {
+  // The wheel turning the settings screen's list down a line a frame under
+  // the pointer: its interest moves every half view (about 200 units, a
+  // few lines). The rows that stay inside it push what they pushed, and
+  // are copied; only the rows it brings (with those the pointer moves
+  // over) are built
+  let builder = EngineBuilder::new()
+    .resolution(1280, 720)
+    .start_scene(NodeSettings);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.set_ui_spot_check(false);
+  let (x, y) = over_list(1280.0, 720.0);
+  engine.mouse_move(x, y);
+  let _ = engine.step_frames(10);
+  let mut most = 0;
+  for frame in 0..40 {
+    engine.wheel(0.0, -1.0);
+    let _ = engine.step();
+    let stats = engine.ui_render_stats();
+    assert!(stats.runs_copied > 20, "frame {frame}: {stats:?}");
+    most = most.max(stats.runs_built);
+  }
+  assert!(most <= 20, "{most} runs built in a frame");
+}

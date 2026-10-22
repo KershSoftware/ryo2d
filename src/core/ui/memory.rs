@@ -988,6 +988,7 @@ mod tests {
       sprites: Vec::new(),
       interest: None,
       version,
+      bounds: None,
     })
   }
 

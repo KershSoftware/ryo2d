@@ -147,43 +147,73 @@ fn instances(n: usize) -> Vec<UiInstance> {
     .collect()
 }
 
+/// One range, as the ranges an upload writes
+fn one(range: Range<usize>) -> Vec<Range<usize>> {
+  vec![range]
+}
+
+/// The ranges an upload writes over a buffer holding `held`
+fn changed(held: &[UiInstance], frame: &[UiInstance]) -> Vec<Range<usize>> {
+  let mut ranges = Vec::new();
+  changed_ranges(held, frame, &[], &mut ranges);
+  ranges
+}
+
 #[test]
-fn the_upload_is_the_one_range_that_changed() {
+fn the_upload_is_the_ranges_that_changed() {
   let held = instances(100);
-  let changed = |at: &[usize]| {
-    let mut frame = held.clone();
+  let with = |held: &[UiInstance], at: &[usize]| {
+    let mut frame = held.to_vec();
     for &i in at {
       frame[i].data[3][2] += 1.0;
     }
     frame
   };
   // Equal: nothing
-  assert!(changed_range(&held, &held).is_empty());
-  // Equal lengths: from the first instance that differs to the last
+  assert!(changed(&held, &held).is_empty());
+  // Equal lengths, changes close together: from the first instance that
+  // differs to the last
   for first in 0..100 {
     for last in first..100 {
       assert_eq!(
-        changed_range(&held, &changed(&[first, last])),
-        first..last + 1
+        changed(&held, &with(&held, &[first, last])),
+        one(first..last + 1)
       );
     }
   }
-  assert_eq!(changed_range(&held, &changed(&[40, 43, 47])), 40..48);
+  assert_eq!(changed(&held, &with(&held, &[40, 43, 47])), one(40..48));
   // Compared bit for bit: zero and minus zero differ
   let mut signed = held.clone();
   signed[60].data[7][3] = -0.0;
-  assert_eq!(changed_range(&held, &signed), 60..61);
+  assert_eq!(changed(&held, &signed), one(60..61));
+  // Changes far apart are written apart; those past the most writes an
+  // upload makes go in one
+  let long = instances(1000);
+  assert_eq!(
+    changed(&long, &with(&long, &[10, 11, 300, 500, 627])),
+    [10..12, 300..301, 500..628]
+  );
+  assert_eq!(
+    changed(&long, &with(&long, &[0, 200, 400, 600, 800, 999])),
+    [0..1, 200..201, 400..401, 600..1000]
+  );
+  // Ranges known alike are not compared: a change in them goes unseen
+  let mut ranges = Vec::new();
+  let frame = with(&long, &[5, 300, 600]);
+  let compared = changed_ranges(&long, &frame, &[200..400, 500..700], &mut ranges);
+  assert_eq!(ranges, one(5..6));
+  assert!(compared <= 800, "{compared} compared");
   // Other lengths: from the first difference to the frame's end
   let mut longer = held.clone();
   longer.extend(instances(120).split_off(100));
-  assert_eq!(changed_range(&held, &longer), 100..120);
+  assert_eq!(changed(&held, &longer), one(100..120));
   longer[10].data[3][2] += 1.0;
-  assert_eq!(changed_range(&held, &longer), 10..120);
-  assert!(changed_range(&held, &held[..70]).is_empty());
-  assert_eq!(changed_range(&held, &changed(&[30])[..70]), 30..70);
+  assert_eq!(changed(&held, &longer), one(10..120));
+  assert!(changed(&held, &held[..70]).is_empty());
+  assert_eq!(changed(&held, &with(&held, &[30])[..70]), one(30..70));
   // A new or grown buffer holds nothing yet: the whole frame
-  assert_eq!(changed_range(&[], &held), 0..100);
-  assert!(changed_range(&[], &[]).is_empty());
+  assert_eq!(changed(&[], &held), one(0..100));
+  assert!(changed(&[], &[]).is_empty());
 }
 
 #[test]

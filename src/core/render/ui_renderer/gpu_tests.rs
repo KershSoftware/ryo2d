@@ -96,9 +96,10 @@ fn the_pipeline_builds_and_bind_groups_are_cached_by_texture() {
   assert_eq!(created_on_this_thread() - before, 3, "made again");
 
   // The instance buffer doubles to hold the frame's instances
-  gpu.upload(&device, &queue, &vec![UiInstance::zeroed(); 3000]);
+  gpu.upload(&device, &queue, &vec![UiInstance::zeroed(); 3000], &[], &[]);
   let stride = std::mem::size_of::<UiInstance>() as u64;
-  assert_eq!(gpu.instances().size(), 4096 * stride);
+  let slots = (SLOTS * std::mem::size_of::<SlotUniform>()) as u64;
+  assert_eq!(gpu.instances().size(), 4096 * stride + slots);
 
   let error = pollster::block_on(scope.pop());
   assert!(error.is_none(), "{error:?}");
@@ -441,7 +442,7 @@ fn every_kind_draws_inside_its_clip() {
   assert!(runs[0].textures.iter().all(Option::is_some), "{runs:?}");
   camera_bound(&device, &queue, &mut batch, entity, SIDE);
   let mut gpu = UiGpu::new(&device, batch.camera_layout());
-  gpu.upload(&device, &queue, &instances);
+  gpu.upload(&device, &queue, &instances, &[], &[]);
   let groups: Vec<_> = runs
     .iter()
     .map(|run| {
@@ -462,7 +463,7 @@ fn every_kind_draws_inside_its_clip() {
     let mut pass = begin(&mut encoder, &view);
     pass.set_pipeline(gpu.pipeline());
     pass.set_bind_group(0, camera_group, &[]);
-    pass.set_bind_group(2, gpu.slots_group(), &[]);
+    pass.set_bind_group(2, gpu.slots_group(), &[gpu.slots_offset()]);
     pass.set_vertex_buffer(0, gpu.quad().slice(..));
     pass.set_vertex_buffer(1, gpu.instances().slice(..));
     for (range, group) in &groups {
@@ -622,7 +623,7 @@ fn a_render_target_sprite_draws_with_the_linear_body() {
   let runs = plan_runs(&build.needs, |need| slot_of(need, &sprites));
   assert_eq!(runs.len(), 1, "{runs:?}");
   let mut gpu = UiGpu::new(&device, batch.camera_layout());
-  gpu.upload(&device, &queue, &build.instances);
+  gpu.upload(&device, &queue, &build.instances, &[], &build.slots);
   let textures = runs[0]
     .textures
     .map(|key| key.and_then(|key| sprites.page_texture(key)));
@@ -645,7 +646,7 @@ fn a_render_target_sprite_draws_with_the_linear_body() {
     let mut pass = begin(&mut encoder, &view);
     pass.set_pipeline(gpu.pipeline());
     pass.set_bind_group(0, camera_group, &[]);
-    pass.set_bind_group(2, gpu.slots_group(), &[]);
+    pass.set_bind_group(2, gpu.slots_group(), &[gpu.slots_offset()]);
     pass.set_bind_group(1, &group, &[]);
     pass.set_vertex_buffer(0, gpu.quad().slice(..));
     pass.set_vertex_buffer(1, gpu.instances().slice(..));
@@ -700,6 +701,8 @@ fn ui_pixel(
     device,
     queue,
     &[UiInstance::quad(UiKind::RECT, &rect, clip, false, 0)],
+    &[],
+    &[],
   );
   let group = gpu
     .bind_group(device, [None; 4], sprites.samplers(), 0)
@@ -712,7 +715,7 @@ fn ui_pixel(
     let mut pass = begin_cleared(&mut encoder, &view, clear);
     pass.set_pipeline(gpu.pipeline());
     pass.set_bind_group(0, camera_group, &[]);
-    pass.set_bind_group(2, gpu.slots_group(), &[]);
+    pass.set_bind_group(2, gpu.slots_group(), &[gpu.slots_offset()]);
     pass.set_bind_group(1, &group, &[]);
     pass.set_vertex_buffer(0, gpu.quad().slice(..));
     pass.set_vertex_buffer(1, gpu.instances().slice(..));
@@ -844,7 +847,7 @@ mod lines {
         clip: None,
         layer: 0,
       };
-      let (style, look) = line_of(&command, z, &mut points).expect("a line");
+      let (style, look) = line_of(&command, z, &mut points, None).expect("a line");
       push_polyline(&mut list, batch.triangles(), &points, &style, look);
     }
     let triangles = batch.triangles();
@@ -882,7 +885,7 @@ mod lines {
     batch.prepare(device, queue, &list, &cameras, &mut sprites, &[]);
 
     let mut gpu = UiGpu::new(device, batch.camera_layout());
-    gpu.upload(device, queue, &instances);
+    gpu.upload(device, queue, &instances, &[], &[]);
     let group = gpu
       .bind_group(device, [None; 4], sprites.samplers(), 0)
       .clone();
@@ -917,7 +920,7 @@ mod lines {
       let mut pass = begin(&mut encoder, &view);
       pass.set_pipeline(gpu.pipeline());
       pass.set_bind_group(0, camera_group, &[]);
-      pass.set_bind_group(2, gpu.slots_group(), &[]);
+      pass.set_bind_group(2, gpu.slots_group(), &[gpu.slots_offset()]);
       pass.set_bind_group(1, &group, &[]);
       pass.set_vertex_buffer(0, gpu.quad().slice(..));
       pass.set_vertex_buffer(1, gpu.instances().slice(..));
@@ -1184,7 +1187,7 @@ mod building {
       let command = &draw.command;
       let scissor = scissor_of(command.clip_rect(), space).expect("a clip that draws");
       let z = ui_z(command.draw_layer(), draw.order);
-      if let Some((layout, place)) = text_of(command, space, z, scissor, 0.0) {
+      if let Some((layout, place)) = text_of(command, space, z, scissor, 0.0, None) {
         emit_text(sources, &mut writes.targets(), layout, &place);
       }
     }
@@ -1425,7 +1428,7 @@ mod building {
     // The line's builder's triangles, as `line_of` asks for them
     let (mut list, mut triangles, mut poly) =
       (DrawList::default(), Triangles::default(), Vec::new());
-    let (style, look) = line_of(&command, ui_z(0, 0), &mut poly).expect("a line");
+    let (style, look) = line_of(&command, ui_z(0, 0), &mut poly, None).expect("a line");
     push_polyline(&mut list, &mut triangles, &poly, &style, look);
     let clip = ClipRect {
       x0: 0,
@@ -2828,9 +2831,9 @@ mod building {
           texts.end();
           assert!(!build.instances.is_empty());
           match &first {
-            None => first = Some(build.instances),
+            None => first = Some(build.instances.to_vec()),
             Some(first) => {
-              assert_eq!(&build.instances, first, "frame {frame}");
+              assert_eq!(build.instances, *first, "frame {frame}");
               assert_eq!((texts.built(), texts.reused()), (0, 1), "frame {frame}");
             }
           }
@@ -2938,6 +2941,7 @@ mod building {
         layer: 0,
         slot,
         draws: start..end,
+        bounds: None,
       });
       commands.push(order, slot, rect_at(4.0, 80.0, None, 0));
       commands
@@ -2975,6 +2979,20 @@ mod building {
           runs.end();
           (build, runs.stats())
         })
+        .collect()
+    }
+
+    /// Each of `frames` built as it is first built, each through a text and
+    /// run cache of its own, retention on: what a copy of its runs must be
+    fn fresh(
+      writes: &mut Writes,
+      frames: &[UiCommands],
+      env: UiRenderEnv,
+      sources: Option<&TextSources<'_>>,
+    ) -> Vec<(UiBuild, (u32, u32))> {
+      frames
+        .iter()
+        .flat_map(|commands| through(writes, std::slice::from_ref(commands), env, sources, true))
         .collect()
     }
 
@@ -3074,7 +3092,23 @@ mod building {
       // The slot's clip shows the first rect only, and not the loose rect
       // at y = 80 after the run
       let commands = with_run(1, &[slot_at([0, 0], 15.0)], 1, &swatch, None);
-      let built = through(&mut writes, &[commands], env(), None, false);
+      // With retention off nothing of it is kept, and it is culled as the
+      // loose rect is: the first rect alone
+      let culled = through(
+        &mut writes,
+        std::slice::from_ref(&commands),
+        env(),
+        None,
+        false,
+      );
+      let rects = culled[0]
+        .0
+        .instances
+        .iter()
+        .filter(|instance| instance.slot() == 1 && instance.kind() == UiKind::RECT)
+        .count();
+      assert_eq!(rects, 1, "the run's first rect");
+      let built = through(&mut writes, &[commands], env(), None, true);
       let build = &built[0].0;
       let in_slot: Vec<&UiInstance> = build
         .instances
@@ -3109,6 +3143,50 @@ mod building {
         rects, 2,
         "the run's first rect and the loose rect in slot 0"
       );
+    }
+
+    #[test]
+    fn a_culled_runs_bounds_cull_it_as_its_draws_are_culled() {
+      use crate::core::ui::immediate::Bounds;
+      let Some(mut writes) = Writes::new() else {
+        return;
+      };
+      // Three rects in a slot drawn at y = 20 under a view 40 tall: the run
+      // below the view, within a pixel of it, and inside it; its bounds
+      // known or not, retention off (so it is culled), the same instances
+      let frame = |top: f32, bounded: bool| {
+        let mut commands = UiCommands::default();
+        let view = Rect::new(0.0, 0.0, 300.0, 40.0);
+        commands.push_slot(ScrollSlot {
+          offset: [0, 20],
+          clip: Some(Rect::new(0.0, 20.0, 300.0, 40.0)),
+          cull: Some(view),
+        });
+        let mut bounds = Bounds::default();
+        for k in 0..3 {
+          let rect = rect_at(4.0, top + 12.0 * k as f32, None, 0);
+          bounds.add(rect.cull_box());
+          commands.push(10 + k, 1, rect);
+        }
+        commands.push_run(FragmentRun {
+          id: ID,
+          version: 1,
+          base: 10,
+          layer: 0,
+          slot: 1,
+          draws: 0..3,
+          bounds: bounded.then(|| bounds.edges()).flatten(),
+        });
+        commands
+      };
+      for top in [300.0, 40.5, 40.0, 39.0, 10.0] {
+        let culled = [true, false].map(|bounded| {
+          let built = through(&mut writes, &[frame(top, bounded)], env(), None, false);
+          built.into_iter().next().expect("a build")
+        });
+        assert_eq!(counts(&culled), [(0, 1), (0, 1)], "top {top}");
+        assert!(same(&culled[0].0, &culled[1].0), "top {top}");
+      }
     }
 
     /// `commands`' draws where they are drawn (moved by their slots), with
@@ -3149,7 +3227,7 @@ mod building {
         })
         .collect();
       let kept = through(&mut writes, &frames, env(), None, true);
-      let fresh = through(&mut writes, &frames, env(), None, false);
+      let fresh = fresh(&mut writes, &frames, env(), None);
       assert_eq!(counts(&kept)[1..], [(1, 0); 5]);
       for (frame, ((kept, _), (fresh, _))) in kept.iter().zip(&fresh).enumerate() {
         assert!(same(kept, fresh), "frame {frame}");
@@ -3208,6 +3286,7 @@ mod building {
           layer: 0,
           slot: 1,
           draws: start..commands.position(),
+          bounds: None,
         });
         commands
       };
@@ -3223,7 +3302,7 @@ mod building {
       });
       let built = through(&mut writes, &frames, env(), None, true);
       assert_eq!(counts(&built), [(0, 2), (1, 1)], "scrolled into view");
-      let fresh = through(&mut writes, &frames, env(), None, false);
+      let fresh = fresh(&mut writes, &frames, env(), None);
       assert!(
         same(&built[1].0, &fresh[1].0),
         "drawn as a rebuild draws it"
@@ -3375,6 +3454,7 @@ mod building {
             layer: 0,
             slot: 0,
             draws: start..commands.position(),
+            bounds: None,
           });
         }
         commands
@@ -3469,6 +3549,7 @@ mod building {
           layer: 0,
           slot: 0,
           draws: start..commands.position(),
+          bounds: None,
         });
         commands
       };
@@ -3593,7 +3674,7 @@ mod upload {
   use crate::core::scene::{Scene, SceneAction, SceneContext};
   use crate::core::testing::HeadlessEngine;
   use crate::core::ui::immediate::UiContext;
-  use crate::core::ui::{Color, Rect};
+  use crate::core::ui::{Color, Rect, UiNode};
 
   /// What `buffer` holds over its first `len` instances
   fn read_back(
@@ -3647,11 +3728,13 @@ mod upload {
     let batch = Batch2D::new(&device, SCENE_FORMAT, Default::default());
     let mut gpu = UiGpu::new(&device, batch.camera_layout());
     let first = numbered(0, 600);
-    gpu.upload(&device, &queue, &first);
+    gpu.upload(&device, &queue, &first, &[], &[]);
     // The same 600 first, then more than the buffer holds
     let grown = numbered(0, 3000);
-    gpu.upload(&device, &queue, &grown);
-    assert_eq!(gpu.written(), 0..3000);
+    gpu.upload(&device, &queue, &grown, &[], &[]);
+    let written: Vec<_> = gpu.written().iter().map(|range| range.len()).collect();
+    assert_eq!(written, [3000]);
+    assert_eq!(gpu.written().first().map(|range| range.start), Some(0));
     let held = read_back(&device, &queue, gpu.instances(), grown.len());
     assert!(held == grown, "the grown buffer holds the frame");
   }
@@ -3704,10 +3787,239 @@ mod upload {
         held == *instances,
         "frame {frame}: the buffer holds the frame"
       );
-      let written = ui.gpu.written();
-      partial += usize::from(!written.is_empty() && written.len() < instances.len());
+      let written: usize = ui.gpu.written().iter().map(|range| range.len()).sum();
+      partial += usize::from(written > 0 && written < instances.len());
     }
     assert!(partial >= 6, "{partial} frames wrote only what changed");
+  }
+
+  /// Two swatches whose shade changes every frame, one before and one after
+  /// a column of still labels
+  struct Swatches {
+    frame: u8,
+  }
+
+  impl Scene for Swatches {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      self.frame = self.frame.wrapping_add(1);
+      let shade = Color::new(self.frame, 40, 40, 255);
+      ui.draw_rect(Rect::new(4.0, 4.0, 20.0, 20.0), shade);
+      for row in 0..20 {
+        let y = 4.0 + 10.0 * row as f32;
+        ui.draw_text(&format!("A still label, row {row}"), 30.0, y, Color::WHITE);
+      }
+      ui.draw_rect(Rect::new(4.0, 216.0, 20.0, 20.0), shade);
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn changes_far_apart_are_written_apart() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let builder = EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(Swatches { frame: 0 });
+    let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+      return;
+    };
+    let _ = engine.step_frames(3);
+    for frame in 0..5 {
+      engine.step().expect("a frame");
+      let ui = engine.ui_renderer().expect("a UI renderer");
+      let instances = &ui.build.instances;
+      assert!(instances.len() > 200, "{} instances", instances.len());
+      let held = read_back(&device, &queue, ui.gpu.instances(), instances.len());
+      assert!(
+        held == *instances,
+        "frame {frame}: the buffer holds the frame"
+      );
+      // The swatches, and not the labels between them
+      let written = engine.ui_render_stats().instances_written;
+      assert_eq!(written, 2, "frame {frame}");
+    }
+  }
+
+  /// A node tree, `tree`, and a label changing every frame over it
+  struct NodeLabel {
+    tree: fn() -> UiNode,
+    frame: u32,
+  }
+
+  impl Scene for NodeLabel {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.spawn_ui((self.tree)());
+    }
+
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+
+    fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      self.frame += 1;
+      ui.draw_text(&format!("Frame {}", self.frame), 8.0, 8.0, Color::WHITE);
+      SceneAction::Continue
+    }
+  }
+
+  /// `tree` and a changing label at 1280x720, warmed up; the debug spot
+  /// check off, so every clean fragment is copied
+  fn node_label(tree: fn() -> UiNode) -> Option<HeadlessEngine> {
+    let builder = EngineBuilder::new()
+      .resolution(1280, 720)
+      .start_scene(NodeLabel { tree, frame: 0 });
+    let mut engine = HeadlessEngine::new_or_skip(builder)?;
+    engine.set_ui_spot_check(false);
+    let _ = engine.step_frames(10);
+    Some(engine)
+  }
+
+  /// Step `engine` once: the buffer holds the frame. The instances, and
+  /// those compared with what the buffer held
+  fn held_step(
+    engine: &mut HeadlessEngine,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    what: &str,
+  ) -> (usize, usize) {
+    engine.step().expect("a frame");
+    let ui = engine.ui_renderer().expect("a UI renderer");
+    let instances = &ui.build.instances;
+    let held = read_back(device, queue, ui.gpu.instances(), instances.len());
+    assert!(held == *instances, "{what}: the buffer holds the frame");
+    (instances.len(), ui.gpu.compared())
+  }
+
+  #[test]
+  fn runs_copied_where_they_sat_are_not_compared_again() {
+    // The screen the render targets were set on: its rows' runs are copied
+    // where they sat last frame, and only what was built (the label, the
+    // loose draws) is compared with what the buffer held
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let tree = crate::core::testing::fixtures::settings_tree_overflowing;
+    let Some(mut engine) = node_label(tree) else {
+      return;
+    };
+    for frame in 0..5 {
+      let (instances, compared) = held_step(&mut engine, &device, &queue, "the label");
+      let stats = engine.ui_render_stats();
+      assert!(stats.runs_copied >= 40, "frame {frame}: {stats:?}");
+      assert!(
+        compared * 10 < instances,
+        "frame {frame}: {compared} of {instances} compared"
+      );
+    }
+  }
+
+  #[test]
+  fn a_scrolling_lists_slots_are_written_with_its_instances() {
+    // On the pixel-art target every draw in a scroll slot is built
+    // absolute, and no instance is in one of the shader's slots: the list's
+    // offset is not written, and slot 0 moves past the instances only with
+    // them. Off the target its offset is written every frame it moves,
+    // past the instances, with the scrollbar's thumb (the last instance)
+    for target in [true, false] {
+      let builder = if target {
+        EngineBuilder::new().pixel_art(640, 480)
+      } else {
+        EngineBuilder::new().resolution(640, 480)
+      };
+      let tree = crate::core::testing::fixtures::settings_tree;
+      let builder = builder.start_scene(NodeLabel { tree, frame: 0 });
+      let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+        return;
+      };
+      engine.mouse_move(200.0, 118.0);
+      let _ = engine.step_frames(10);
+      let (mut written, mut apart) = (0, 0);
+      for _ in 0..10 {
+        engine.wheel(0.0, -1.0);
+        engine.step().expect("a frame");
+        let ui = engine.ui_renderer().expect("a UI renderer");
+        let (slots, alone) = ui.gpu.slots_written();
+        (written, apart) = (written + usize::from(slots), apart + usize::from(alone));
+      }
+      assert_eq!(apart, 0, "on the target: {target}");
+      if !target {
+        assert_eq!(written, 10);
+      }
+    }
+  }
+
+  #[test]
+  fn runs_copied_where_they_sat_are_left_in_place() {
+    // The screen the render targets were set on, a label changing over it:
+    // its rows' runs sit where they sat last frame, and are not copied
+    // there again; the frame is as building it gives
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let tree = crate::core::testing::fixtures::settings_tree_overflowing;
+    let Some(mut engine) = node_label(tree) else {
+      return;
+    };
+    for frame in 0..5 {
+      held_step(&mut engine, &device, &queue, "the label");
+      let ui = engine.ui_renderer().expect("a UI renderer");
+      let stats = engine.ui_render_stats();
+      assert!(stats.runs_copied >= 40, "frame {frame}: {stats:?}");
+      assert_eq!(ui.build.copied, 0, "frame {frame}: instances copied");
+    }
+  }
+
+  /// A column of rows, each a swatch beside a label
+  fn swatch_rows() -> UiNode {
+    let swatch = super::gradient(6, 5);
+    UiNode::column().children((0..20).map(|row| {
+      UiNode::row()
+        .child(UiNode::image(swatch.clone()).image_size(16.0, 16.0))
+        .child(UiNode::text(format!("Row {row}")))
+    }))
+  }
+
+  #[test]
+  fn the_instance_buffer_holds_each_frame_of_kept_runs_moving() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    // The settings screen's list turned down and up by the wheel under
+    // the pointer: its rows hovered and split into runs, their runs copied
+    // where they sat or elsewhere, its interest moving on
+    let Some(mut engine) = node_label(crate::core::testing::fixtures::settings_tree) else {
+      return;
+    };
+    engine.mouse_move(520.0, 238.0);
+    for frame in 0..60 {
+      engine.wheel(0.0, if frame < 30 { -1.0 } else { 1.0 });
+      held_step(
+        &mut engine,
+        &device,
+        &queue,
+        &format!("scrolling, frame {frame}"),
+      );
+    }
+    assert!(engine.ui_render_stats().runs_copied > 0);
+    // Rows holding sprites, whose instances are placed once their textures
+    // are resident
+    let Some(mut engine) = node_label(swatch_rows) else {
+      return;
+    };
+    for frame in 0..5 {
+      held_step(
+        &mut engine,
+        &device,
+        &queue,
+        &format!("swatches, frame {frame}"),
+      );
+      assert!(engine.ui_render_stats().runs_copied > 0);
+    }
   }
 }
 

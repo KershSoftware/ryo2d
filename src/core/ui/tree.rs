@@ -9,7 +9,9 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::fragment::{Fragment, Inputs, KeptDraw, KeptRecord, Role, sized_by};
-use super::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands, intersect, meet, outside};
+use super::immediate::{
+  Bounds, FragmentRun, ScrollSlot, UiCommand, UiCommands, intersect, meet, outside,
+};
 use super::layout::engine::{Avail, LayoutEngine, Measured, NodeDesc, Placed};
 use super::layout::{Edges, Flow, Length, Measure, UiStyle};
 use super::memory::{Flags, Record, Scratch, UiMemory, recycle};
@@ -605,6 +607,9 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
             });
           }
           if !seen.is_some_and(|seen| outside(place.cull, seen)) {
+            if let Some(capture) = capture.as_deref_mut() {
+              capture.bounds.add(command.cull_box());
+            }
             commands.push(order, index, command);
             if let Some(capture) = capture.as_deref_mut() {
               capture.pushed += 1;
@@ -701,6 +706,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       sprites: capture.sprites,
       interest: slot.interest_bits(),
       version: memory.next_fragment_version(),
+      bounds: None,
     };
     // One the spot checks captured in place of a copy is counted apart
     #[cfg(debug_assertions)]
@@ -715,6 +721,9 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     };
     #[cfg(not(debug_assertions))]
     let spotted = false;
+    let mut fragment = fragment;
+    let bounds = capture.bounds.edges();
+    fragment.bounds = Some((fragment.version, bounds));
     if !spotted {
       memory.fragment_stats.captured += 1;
     }
@@ -730,6 +739,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
         layer: node.layer,
         slot: slot.table_index(),
         draws: run,
+        bounds,
       });
     }
     memory.fragments_next.insert(node.id, Box::new(fragment));
@@ -1175,9 +1185,9 @@ fn copy_records(fragment: &Fragment, copy: CopyAt<'_>, memory: &mut UiMemory) {
 
 /// Push `fragment`'s commands as its run, its root the kept node `root` in
 /// `slot`: each culled by its clip there (met with the slot's interest in a
-/// slot), its orders re-based to the root's. A slot's interest other than
-/// the one it was last pushed under gives it a new version: it pushes other
-/// commands.
+/// slot), its orders re-based to the root's. Under a slot's interest other
+/// than the one it was last pushed under it takes a new version when it
+/// pushes other commands: when the two cull one of them differently.
 fn copy_draws(
   fragment: &mut Fragment,
   root: &Node,
@@ -1187,18 +1197,46 @@ fn copy_draws(
 ) {
   let interest = slot.interest_bits();
   if fragment.interest != interest {
+    let was = fragment.interest.map(|bits| {
+      let [x, y, width, height] = bits.map(f32::from_bits);
+      Rect::new(x, y, width, height)
+    });
+    let same = was.is_some()
+      && interest.is_some()
+      && fragment.draws.iter().all(|kept| {
+        let clip = kept.command.clip_rect();
+        kept.cull.is_none_or(|seen| {
+          outside(meet(clip, was), seen) == outside(slot.fragment_cull(clip), seen)
+        })
+      });
     fragment.interest = interest;
-    fragment.version = memory.next_fragment_version();
+    if !same {
+      fragment.version = memory.next_fragment_version();
+    }
   }
   let index = slot.table_index();
   let start = commands.position();
+  // The bounds of what it pushes follow from its version
+  let known = fragment
+    .bounds
+    .filter(|&(version, _)| version == fragment.version)
+    .map(|(_, bounds)| bounds);
+  let mut bounds = Bounds::default();
   for kept in &fragment.draws {
     let cull = slot.fragment_cull(kept.command.clip_rect());
     if !kept.cull.is_some_and(|seen| outside(cull, seen)) {
+      if known.is_none() {
+        bounds.add(kept.command.cull_box());
+      }
       let order = root.order.saturating_add(kept.order);
       commands.push(order, index, kept.command.clone());
     }
   }
+  let bounds = known.unwrap_or_else(|| {
+    let bounds = bounds.edges();
+    fragment.bounds = Some((fragment.version, bounds));
+    bounds
+  });
   commands.push_run(FragmentRun {
     id: root.id,
     version: fragment.version,
@@ -1206,6 +1244,7 @@ fn copy_draws(
     layer: root.layer,
     slot: index,
     draws: start..commands.position(),
+    bounds,
   });
 }
 
@@ -1457,9 +1496,10 @@ struct Capturing {
   node_draws: Vec<Draw>,
   sprites: Vec<(SpriteHandle, u64)>,
   /// Where its commands went in the frame's (`start_runs` starts it), and
-  /// how many were pushed
+  /// how many were pushed, and the bounds of those
   run: Range<u32>,
   pushed: u32,
+  bounds: Bounds,
 }
 
 impl Capturing {
@@ -1583,6 +1623,7 @@ fn spans(
       sprites: Vec::new(),
       run: 0..0,
       pushed: 0,
+      bounds: Bounds::default(),
     });
     span_of[i..end].fill(c);
   }

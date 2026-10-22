@@ -25,6 +25,8 @@ const SPARE: usize = 64;
 /// A fragment run's instances as built, to copy while the run is the same
 #[derive(Debug)]
 pub(crate) struct KeptRun {
+  /// Given when it is kept, and never twice: a copy of it is known by it
+  pub(crate) stamp: u64,
   pub(crate) version: u64,
   /// Built under this environment
   pub(crate) env: UiRenderEnv,
@@ -53,6 +55,7 @@ pub(crate) struct KeptRun {
 impl KeptRun {
   fn new(env: UiRenderEnv) -> KeptRun {
     KeptRun {
+      stamp: 0,
       version: 0,
       env,
       slot: 0,
@@ -69,6 +72,7 @@ impl KeptRun {
 
   /// Empty, built in `env` (its buffers' allocations kept)
   fn reset(&mut self, env: UiRenderEnv) {
+    self.stamp = 0;
     self.version = 0;
     self.env = env;
     self.slot = 0;
@@ -112,6 +116,8 @@ pub(crate) struct UiRunCache {
   /// Keep and copy runs (retention is on)
   keep: bool,
   frame: u64,
+  /// The stamp the next run kept is given
+  stamp: u64,
   copied: u32,
   /// Of `copied`, those drawn in one of the shader's scroll slots
   slot_copied: u32,
@@ -173,6 +179,11 @@ impl UiRunCache {
     Some(&entry.run)
   }
 
+  /// Whether runs are kept and copied (retention is on)
+  pub(crate) fn keeps(&self) -> bool {
+    self.keep
+  }
+
   /// A run built this frame was not copied
   pub(crate) fn count_built(&mut self) {
     self.built += 1;
@@ -188,15 +199,21 @@ impl UiRunCache {
   }
 
   /// Keep `run`, built this frame, as `id`'s, in place of what was kept
-  /// for it; not when one with its id was drawn this frame already
-  pub(crate) fn store(&mut self, id: UiId, run: KeptRun) {
+  /// for it, with a stamp of its own (`Some`); not when one with its id was
+  /// drawn this frame already
+  pub(crate) fn store(&mut self, id: UiId, mut run: KeptRun) -> Option<u64> {
     let frame = self.frame;
+    self.stamp += 1;
+    run.stamp = self.stamp;
     if !self.keep {
       recycle(&mut self.spare, run);
-      return;
+      return None;
     }
     match self.kept.get_mut(&id) {
-      Some(entry) if entry.used == frame => recycle(&mut self.spare, run),
+      Some(entry) if entry.used == frame => {
+        recycle(&mut self.spare, run);
+        return None;
+      }
       Some(entry) => {
         let old = std::mem::replace(&mut entry.run, run);
         entry.used = frame;
@@ -206,6 +223,7 @@ impl UiRunCache {
         self.kept.insert(id, Entry { run, used: frame });
       }
     }
+    Some(self.stamp)
   }
 
   /// Give back buffers `spare` gave and the run was not kept in

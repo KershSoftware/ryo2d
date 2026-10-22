@@ -1,6 +1,7 @@
 //! What `UiContext` records: drawn by the engine's UI pass through the 2D
 //! batch, by layer, then in the order the draws were recorded
 
+#[cfg(test)]
 use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Arc;
@@ -78,6 +79,7 @@ impl UiCommand {
     }
   }
 
+  #[cfg(test)]
   fn clip_mut(&mut self) -> &mut Option<Rect> {
     match self {
       Self::Rect { clip, .. }
@@ -90,8 +92,7 @@ impl UiCommand {
   /// The box it is culled by: a rect's or sprite's rect, a text's block (its
   /// layout's size at the scale it was laid out at); `None` for a line,
   /// which is never culled
-  #[cfg(not(target_arch = "wasm32"))]
-  fn cull_box(&self) -> Option<Rect> {
+  pub(crate) fn cull_box(&self) -> Option<Rect> {
     match self {
       Self::Rect { rect, .. } | Self::Sprite { rect, .. } => Some(*rect),
       Self::Text { layout, origin, .. } => {
@@ -105,8 +106,9 @@ impl UiCommand {
   /// The same draw moved by `by` (UI units): its rect, a line's offset, a
   /// text's origin and its own clip. A line's points and a text's layout are
   /// shared, not copied.
+  #[cfg(test)]
   pub(crate) fn moved(&self, by: Vec2) -> UiCommand {
-    let shift = |rect: Rect| Rect::new(rect.x + by.x, rect.y + by.y, rect.width, rect.height);
+    let shift = |rect: Rect| shifted(rect, by);
     let mut command = match self {
       Self::Rect {
         rect,
@@ -241,19 +243,63 @@ pub(crate) struct UiDraw {
 }
 
 impl UiDraw {
-  /// The command as it is drawn: one in a slot moved by the slot's offset
-  /// (at `px_scale` render pixels per UI unit), its own clip moved with it
-  /// and met with the slot's. `None` when its slot is not in `slots`.
-  pub(crate) fn placed(&self, slots: &[ScrollSlot], px_scale: f32) -> Option<Cow<'_, UiCommand>> {
+  /// Where it is drawn: what it is moved by, its slot's offset (at
+  /// `px_scale` render pixels per UI unit; `None` in slot 0), and its clip
+  /// moved with it and met with the slot's. `None` when its slot is not in
+  /// `slots`. Its rect, a line's offset and a text's origin move by
+  /// [`shifted`]'s sums, as `UiCommand::moved` moves them.
+  pub(crate) fn placement(
+    &self,
+    slots: &[ScrollSlot],
+    px_scale: f32,
+  ) -> Option<(Option<Vec2>, Option<Rect>)> {
+    let clip = self.command.clip_rect();
     if self.slot == 0 {
-      return Some(Cow::Borrowed(&self.command));
+      return Some((None, clip));
     }
     let slot = slots.get(usize::from(self.slot))?;
-    let mut command = self.command.moved(slot.offset_units(px_scale));
-    let clip = command.clip_mut();
-    *clip = meet(slot.clip, *clip);
+    let by = slot.offset_units(px_scale);
+    Some((
+      Some(by),
+      meet(slot.clip, clip.map(|clip| shifted(clip, by))),
+    ))
+  }
+
+  /// The command as it is drawn (`placement`): one in a slot moved by the
+  /// slot's offset, its clip moved with it and met with the slot's. `None`
+  /// when its slot is not in `slots`.
+  #[cfg(test)]
+  pub(crate) fn placed(&self, slots: &[ScrollSlot], px_scale: f32) -> Option<Cow<'_, UiCommand>> {
+    let (by, clip) = self.placement(slots, px_scale)?;
+    let Some(by) = by else {
+      return Some(Cow::Borrowed(&self.command));
+    };
+    let mut command = self.command.moved(by);
+    *command.clip_mut() = clip;
     Some(Cow::Owned(command))
   }
+
+  /// Whether it can show a pixel: its box (`UiCommand::cull_box`) meets
+  /// its own clip, met in a slot with the slot's clip in its coordinates
+  /// (`ScrollSlot::cull`). This is the test resolve culls the draws outside
+  /// fragments by, so a full rebuild sends only draws that pass it; a line
+  /// always does.
+  pub(crate) fn shows(&self, slots: &[ScrollSlot]) -> bool {
+    let Some(seen) = self.command.cull_box() else {
+      return true;
+    };
+    let clip = self.command.clip_rect();
+    let cull = match self.slot {
+      0 => clip,
+      k => meet(clip, slots.get(usize::from(k)).and_then(|slot| slot.cull)),
+    };
+    !outside(cull, seen)
+  }
+}
+
+/// `rect` moved by `by` (UI units)
+pub(crate) fn shifted(rect: Rect, by: Vec2) -> Rect {
+  Rect::new(rect.x + by.x, rect.y + by.y, rect.width, rect.height)
 }
 
 /// The overlap of two rects (empty when they do not meet)
@@ -283,10 +329,44 @@ pub(crate) fn outside(clip: Option<Rect>, rect: Rect) -> bool {
   })
 }
 
+/// The edges of the box a run's draws' boxes (`UiCommand::cull_box`) lie
+/// in, grown draw by draw: none once a draw has no box (a line) or one not
+/// finite
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Bounds {
+  edges: Option<[f32; 4]>,
+  open: bool,
+}
+
+impl Bounds {
+  /// Grown by a draw's box
+  pub(crate) fn add(&mut self, cull_box: Option<Rect>) {
+    let Some(rect) = cull_box else {
+      self.open = true;
+      return;
+    };
+    let [x0, y0, x1, y1] = [rect.x, rect.y, rect.right(), rect.bottom()];
+    if ![x0, y0, x1, y1].iter().all(|edge| edge.is_finite()) {
+      self.open = true;
+      return;
+    }
+    self.edges = Some(match self.edges {
+      Some([a, b, c, d]) => [a.min(x0), b.min(y0), c.max(x1), d.max(y1)],
+      None => [x0, y0, x1, y1],
+    });
+  }
+
+  /// Its edges, x0, y0, x1, y1: `None` when a draw had no box, or none was
+  /// added
+  pub(crate) fn edges(&self) -> Option<[f32; 4]> {
+    self.edges.filter(|_| !self.open)
+  }
+}
+
 /// A fragment's commands in the frame: `draws` is their range in
 /// `UiCommands::as_slice()` (contiguous, in painter's order, one layer, one
 /// slot), and the rest says when they are the same as before
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FragmentRun {
   /// Its root's id
   pub(crate) id: UiId,
@@ -297,6 +377,10 @@ pub(crate) struct FragmentRun {
   pub(crate) layer: u8,
   pub(crate) slot: u16,
   pub(crate) draws: Range<u32>,
+  /// The edges of the box its draws' boxes lie in (`Bounds`), in its
+  /// slot's coordinates; `None` when one has none. They follow from its
+  /// version, as its commands do.
+  pub(crate) bounds: Option<[f32; 4]>,
 }
 
 /// The frame's UI draws (cleared each UI pass), each with its place in the
@@ -381,6 +465,16 @@ impl UiCommands {
       }),
       "a run's draws share its slot and layer, from its base on: {run:?}"
     );
+    debug_assert!(
+      run.bounds.is_none_or(|[x0, y0, x1, y1]| {
+        held.into_iter().flatten().all(|draw| {
+          draw.command.cull_box().is_some_and(|rect| {
+            rect.x >= x0 && rect.y >= y0 && rect.right() <= x1 && rect.bottom() <= y1
+          })
+        })
+      }),
+      "a run's bounds hold its draws' boxes: {run:?}"
+    );
     if held.is_some() {
       self.runs.push(run);
     }
@@ -414,29 +508,13 @@ impl UiCommands {
     self.draws.len()
   }
 
-  /// The draws that can show a pixel, in the order they were pushed: each
-  /// one's box (`UiCommand::cull_box`) meets its own clip, met in a slot
-  /// with the slot's clip in its coordinates (`ScrollSlot::cull`). This is
-  /// the test resolve culls the draws outside fragments by, so with
-  /// fragments off it keeps every draw; a kept fragment's draws in a slot
-  /// are culled by the slot's wider interest, and some cannot show. What
-  /// two runs with fragments on and off compare.
+  /// The draws that can show a pixel (`UiDraw::shows`), in the order they
+  /// were pushed. With fragments off this keeps every draw; a kept
+  /// fragment's draws in a slot are culled by the slot's wider interest,
+  /// and some cannot show. What two runs with fragments on and off compare.
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn visible(&self) -> impl Iterator<Item = &UiDraw> {
-    self.draws.iter().filter(|draw| {
-      let Some(seen) = draw.command.cull_box() else {
-        return true;
-      };
-      let clip = draw.command.clip_rect();
-      let cull = match draw.slot {
-        0 => clip,
-        k => meet(
-          clip,
-          self.slots.get(usize::from(k)).and_then(|slot| slot.cull),
-        ),
-      };
-      !outside(cull, seen)
-    })
+    self.draws.iter().filter(|draw| draw.shows(&self.slots))
   }
 }
 
@@ -477,6 +555,20 @@ mod tests {
       clip,
       layer: 0,
     }
+  }
+
+  #[test]
+  fn a_runs_bounds_hold_its_draws_boxes_while_each_has_one() {
+    let mut bounds = Bounds::default();
+    assert_eq!(bounds.edges(), None, "nothing added");
+    bounds.add(Some(Rect::new(10.0, 20.0, 5.0, 5.0)));
+    bounds.add(Some(Rect::new(-3.0, 30.0, 4.0, 10.0)));
+    assert_eq!(bounds.edges(), Some([-3.0, 20.0, 15.0, 40.0]));
+    let (mut line, mut nan) = (bounds, bounds);
+    line.add(None);
+    assert_eq!(line.edges(), None, "a line has no box");
+    nan.add(Some(Rect::new(f32::NAN, 0.0, 1.0, 1.0)));
+    assert_eq!(nan.edges(), None, "nor has a box not finite");
   }
 
   #[test]

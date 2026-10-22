@@ -337,6 +337,7 @@ fn run_frame(at: Placed) -> UiCommands {
     layer: 0,
     slot: at.slot,
     draws: start..start + 2,
+    bounds: None,
   });
   (at.before..2).for_each(|k| loose(&mut commands, k));
   commands
@@ -408,6 +409,7 @@ fn draws_beside_a_run_are_compared_one_by_one() {
       layer: 0,
       slot: 0,
       draws: 1..3,
+      bounds: None,
     });
     commands.push(12, 0, rect(x));
     commands
@@ -449,6 +451,7 @@ fn a_sprite_in_a_run_updated_in_place_redraws() {
       layer: 0,
       slot: 0,
       draws: 1..3,
+      bounds: None,
     });
     commands
   };
@@ -498,6 +501,7 @@ fn a_run_with_a_text_effect_never_keeps() {
       layer: 0,
       slot: 0,
       draws: 0..2,
+      bounds: None,
     });
     commands
   };
@@ -531,6 +535,7 @@ mod runs {
       layer: 0,
       slot: 0,
       draws: 0..1,
+      bounds: None,
     }
   }
 

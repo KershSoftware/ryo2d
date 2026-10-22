@@ -14,10 +14,10 @@ mod tests;
 use std::ops::Range;
 
 pub(crate) use build::SpriteFix;
-use build::{UiBuild, build_ui};
+use build::{Segment, UiBuild, build_ui};
 use gpu::UiGpu;
 #[cfg(test)]
-use gpu::{KEEP_FRAMES, SLOTS, SlotUniform, changed_range};
+use gpu::{KEEP_FRAMES, SLOTS, SlotUniform, changed_ranges};
 pub(crate) use instance::UiInstance;
 #[cfg(test)]
 use instance::{ClipRect, UiKind};
@@ -49,6 +49,11 @@ pub(crate) struct UiRenderer {
   scratch: DrawList,
   /// The frame's runs, each with its bind group
   runs: Vec<(Range<u32>, wgpu::BindGroup)>,
+  /// The kept runs of the last frame uploaded (`UiBuild::segments`): where
+  /// the instance buffer holds them
+  uploaded: Vec<Segment>,
+  /// The frame's instances the buffer holds already (`in_place`)
+  in_place: Vec<Range<usize>>,
   /// Frames whose UI was drawn (finished, even all of it culled), which age
   /// the bind groups
   frame: u64,
@@ -65,6 +70,8 @@ impl UiRenderer {
       fragments: UiRunCache::default(),
       scratch: DrawList::default(),
       runs: Vec::new(),
+      uploaded: Vec::new(),
+      in_place: Vec::new(),
       frame: 0,
     }
   }
@@ -152,8 +159,9 @@ impl UiRenderer {
 
   /// Finish the last build, its sprite textures now resident: fix its
   /// sprites (dropping those whose texture has no slot), split it into runs
-  /// and bind each run's textures, and upload what changed in one write,
-  /// and its scroll slots in another.
+  /// and bind each run's textures, and upload what changed (runs copied
+  /// where the last upload put them are not compared), its scroll slots
+  /// with it.
   /// The frame draws through the UI camera's `camera` group; a build without
   /// an instance (all of it culled) draws none. Bind groups unused for
   /// [`KEEP_FRAMES`](gpu::KEEP_FRAMES) finished frames are dropped.
@@ -168,6 +176,7 @@ impl UiRenderer {
     self.runs.clear();
     self.build.fix_sprites(sprites, presentation);
     self.frame += 1;
+    let mut written = 0;
     if !self.build.instances.is_empty() {
       let runs = plan_runs(&self.build.needs, |need| slot_of(need, sprites));
       for run in runs {
@@ -179,8 +188,15 @@ impl UiRenderer {
           .bind_group(device, textures, sprites.samplers(), self.frame);
         self.runs.push((run.range, group.clone()));
       }
-      self.gpu.upload(device, queue, &self.build.instances);
-      self.gpu.upload_slots(queue, &self.build.slots);
+      in_place(&self.build.segments, &self.uploaded, &mut self.in_place);
+      written = self.gpu.upload(
+        device,
+        queue,
+        &self.build.instances,
+        &self.in_place,
+        &self.build.slots,
+      );
+      self.uploaded.clone_from(&self.build.segments);
     }
     self.gpu.end_frame(self.frame);
     UiFrame {
@@ -189,7 +205,26 @@ impl UiRenderer {
       instances: self.gpu.instances(),
       camera,
       slots: self.gpu.slots_group(),
+      slots_offset: self.gpu.slots_offset(),
       runs: &self.runs,
+      written,
+    }
+  }
+}
+
+/// The places of `now` (a frame's kept runs, `UiBuild::segments`) that
+/// `was` (those of the last frame uploaded) filled alike, into `out`
+/// (cleared first): the instance buffer holds them already
+fn in_place(now: &[Segment], was: &[Segment], out: &mut Vec<Range<usize>>) {
+  out.clear();
+  let mut was = was.iter().peekable();
+  for segment in now {
+    while was
+      .next_if(|old| old.range.start < segment.range.start)
+      .is_some()
+    {}
+    if was.peek() == Some(&segment) {
+      out.push(segment.range.start as usize..segment.range.end as usize);
     }
   }
 }
@@ -223,13 +258,22 @@ pub(crate) struct UiFrame<'a> {
   instances: &'a wgpu::Buffer,
   camera: &'a wgpu::BindGroup,
   slots: &'a wgpu::BindGroup,
+  /// Where the slots sit in the instance buffer
+  slots_offset: u32,
   runs: &'a [(Range<u32>, wgpu::BindGroup)],
+  /// The instances its upload wrote
+  written: u32,
 }
 
 impl UiFrame<'_> {
   /// Its draws: one per run
   pub(crate) fn draw_count(&self) -> usize {
     self.runs.len()
+  }
+
+  /// The instances its upload wrote: those that changed since the last
+  pub(crate) fn written(&self) -> u32 {
+    self.written
   }
 
   /// Draw it into `pass` (the UI image): the pipeline, the camera and the
@@ -240,7 +284,7 @@ impl UiFrame<'_> {
     }
     pass.set_pipeline(self.pipeline);
     pass.set_bind_group(0, self.camera, &[]);
-    pass.set_bind_group(2, self.slots, &[]);
+    pass.set_bind_group(2, self.slots, &[self.slots_offset]);
     pass.set_vertex_buffer(0, self.quad.slice(..));
     pass.set_vertex_buffer(1, self.instances.slice(..));
     for (range, group) in self.runs {

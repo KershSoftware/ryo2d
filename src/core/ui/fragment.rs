@@ -143,6 +143,9 @@ pub(crate) struct Fragment {
   /// Changes each time what it pushes may: when it is resolved (captured,
   /// or resolved again) and when its slot's interest moves
   pub(crate) version: u64,
+  /// The version it last pushed, and the bounds of the draws it pushed
+  /// (`FragmentRun::bounds`)
+  pub(crate) bounds: Option<(u64, Option<[f32; 4]>)>,
 }
 
 impl Fragment {

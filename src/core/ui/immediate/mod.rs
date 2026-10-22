@@ -41,7 +41,7 @@ mod context;
 mod input;
 
 pub(crate) use commands::{
-  FragmentRun, ScrollSlot, UiCommand, UiCommands, UiDraw, intersect, meet, outside,
+  Bounds, FragmentRun, ScrollSlot, UiCommand, UiCommands, UiDraw, intersect, meet, outside, shifted,
 };
 pub(crate) use context::{OVERLAY_LAYER, PAGE_LAYER, POPUP_LAYER, PendingRebind, PromptContext};
 pub use context::{UiContext, UiText};

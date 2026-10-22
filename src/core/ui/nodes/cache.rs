@@ -2702,14 +2702,40 @@ mod fragment_tests {
     );
   }
 
+  /// Each fragment run of the harness's last frame: its root's id, its
+  /// version and its commands (`Debug`, with orders less its base and
+  /// slots), by id
+  fn run_commands(h: &UiHarness) -> Vec<(UiId, u64, String)> {
+    let draws = h.commands.as_slice();
+    let mut runs: Vec<(UiId, u64, String)> = h
+      .commands
+      .runs()
+      .iter()
+      .map(|run| {
+        let own = draws.get(run.draws.start as usize..run.draws.end as usize);
+        let commands = own.unwrap_or_default().iter().map(|draw| {
+          let order = draw.order.wrapping_sub(run.base);
+          format!("{order} {} {:?}\n", draw.slot, draw.command)
+        });
+        (run.id, run.version, commands.collect())
+      })
+      .collect();
+    runs.sort_unstable_by_key(|(id, ..)| *id);
+    runs
+  }
+
   #[test]
-  fn a_fragment_copied_under_another_interest_takes_a_new_version() {
+  fn a_fragment_copied_under_another_interest_keeps_its_version_while_its_commands_hold() {
     use crate::core::ui::widgets::scroll::ScrollState;
     let mut h = UiHarness::new(640.0, 480.0);
     h.spawn_ui(settings_tree());
     h.frame(|_| {});
-    h.move_to_settings_list();
-    let list = h.ui_id(settings_scroll(&h)).unwrap();
+    // Over the list's scrollbar, so the trackpad scrolls it and no row is
+    // hovered: every row's fragment is copied
+    let scroll = settings_scroll(&h);
+    let width = rect_of(&h, scroll).width;
+    point_at(&mut h, scroll, width / 2.0 - 3.0, 0.0);
+    let list = h.ui_id(scroll).unwrap();
     // Which half view of the list the drawn offset (whole render pixels at
     // scale 1) is in: the interest moves when it changes
     let step = |h: &UiHarness| {
@@ -2717,27 +2743,40 @@ mod fragment_tests {
       (state.offset.y.round() / (state.view.y / 2.0)).floor()
     };
     h.frame(|_| {});
-    let (mut was, mut versions) = (step(&h), h.fragment_versions());
-    let mut crossed = 0;
+    let (mut was, mut runs) = (step(&h), run_commands(&h));
+    let (mut crossed, mut kept, mut renewed) = (0, 0, 0);
     for _ in 0..12 {
       h.trackpad(0.0, -30.0);
       h.frame(|_| {});
-      let (now, next) = (step(&h), h.fragment_versions());
+      let (now, next) = (step(&h), run_commands(&h));
       if now != was {
         crossed += 1;
-        // Every fragment copied in both frames pushes other commands now
-        for (id, version) in &next {
-          if let Some((_, old)) = versions.iter().find(|(old_id, _)| old_id == id) {
-            assert_ne!(version, old, "{id:?}: a new interest, a new version");
-          }
+        // A run copied in both frames takes a new version when, and only
+        // when, it pushes other commands under the new interest
+        for (id, version, commands) in &next {
+          let Some((_, old, pushed)) = runs.iter().find(|(old, ..)| old == id) else {
+            continue;
+          };
+          assert_eq!(
+            version != old,
+            commands != pushed,
+            "{id:?}: a new version is new commands"
+          );
+          kept += usize::from(version == old);
+          renewed += usize::from(version != old);
         }
       }
-      (was, versions) = (now, next);
+      (was, runs) = (now, next);
     }
     assert!(
       crossed > 0,
       "360 units of travel in a 407-unit view crosses a step"
     );
+    assert!(
+      kept > 0,
+      "the rows inside both interests keep their versions"
+    );
+    assert!(renewed > 0, "a row the interest cuts anew takes a new one");
   }
 
   #[test]

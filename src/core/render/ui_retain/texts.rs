@@ -366,6 +366,11 @@ impl<G: Clone> UiTextCache<G> {
     }
   }
 
+  /// Whether built glyphs are kept for later frames (retention is on)
+  pub(crate) fn keeps(&self) -> bool {
+    self.reuse
+  }
+
   /// Texts built in the frame
   pub(crate) fn built(&self) -> u32 {
     self.texts_built

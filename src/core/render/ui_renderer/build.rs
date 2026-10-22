@@ -3,10 +3,12 @@
 //! cache (a reused text is one copy of its instances), and a line becomes
 //! its builder's triangles. A draw in a scroll slot is built relative to
 //! the slot, which the shader moves and clips. A fragment's run is one copy
-//! of its kept instances while it is the same (`UiRunCache`); in a slot it
-//! is built unculled, so it stays the same while the slot scrolls.
+//! of its kept instances while it is the same (`UiRunCache`), left as it is
+//! where the last frame put it (`InPlace`); in a slot it is built unculled,
+//! so it stays the same while the slot scrolls, unless no run is kept
+//! (retention off), when it is culled as a loose draw is.
 
-use std::borrow::Cow;
+use std::ops::Range;
 
 use glam::Vec2;
 
@@ -26,7 +28,7 @@ use crate::core::render::ui_retain::{
 };
 use crate::core::render::{DrawGlyph, DrawList, DrawPayload, PixelRect, UiSpace, reach};
 use crate::core::text::GlyphFormat;
-use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands, UiDraw};
+use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands, UiDraw, shifted};
 use crate::core::ui::{Color, Rect};
 
 /// A sprite instance whose uv and kind are fixed once its texture is
@@ -40,15 +42,140 @@ pub(crate) struct SpriteFix {
   pub(crate) filter: Filter,
 }
 
+/// A kept run in a frame's instances (copied there, or built and kept):
+/// where, and what fills it there, the kept run (by its stamp) marked with
+/// its slot. Where the last frame built had the same, its instances are
+/// there still; where the last frame uploaded had, the instance buffer
+/// holds them already.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Segment {
+  pub(crate) stamp: u64,
+  pub(crate) slot: u8,
+  pub(crate) range: Range<u32>,
+}
+
+/// A frame's items written over the last frame's, in order: each goes where
+/// the frame's so far end, over what the last frame had there, so items the
+/// last frame had where they go now need no writing (`skip`). It reads as
+/// the frame's items so far; `end` drops the last frame's past them.
+#[derive(Debug)]
+pub(crate) struct InPlace<T> {
+  items: Vec<T>,
+  /// How many items the frame has so far: from here on they are the last
+  /// frame's
+  len: usize,
+}
+
+impl<T> Default for InPlace<T> {
+  fn default() -> Self {
+    Self {
+      items: Vec::new(),
+      len: 0,
+    }
+  }
+}
+
+impl<T: Copy> InPlace<T> {
+  /// Start a frame over the last frame's items
+  fn begin(&mut self) {
+    self.len = 0;
+  }
+
+  /// End the frame: the last frame's items past its own go
+  fn end(&mut self) {
+    self.items.truncate(self.len);
+  }
+
+  pub(crate) fn push(&mut self, item: T) {
+    match self.items.get_mut(self.len) {
+      Some(slot) => *slot = item,
+      None => self.items.push(item),
+    }
+    self.len += 1;
+  }
+
+  pub(crate) fn extend_from_slice(&mut self, items: &[T]) {
+    let over = self.items.len().saturating_sub(self.len).min(items.len());
+    let (head, tail) = items.split_at(over);
+    if let Some(slots) = self.items.get_mut(self.len..self.len + over) {
+      slots.copy_from_slice(head);
+    }
+    self.items.extend_from_slice(tail);
+    self.len += items.len();
+  }
+
+  pub(crate) fn extend(&mut self, items: impl IntoIterator<Item = T>) {
+    for item in items {
+      self.push(item);
+    }
+  }
+
+  /// Take the next `count` items as the last frame had them
+  fn skip(&mut self, count: usize) {
+    self.len = (self.len + count).min(self.items.len());
+  }
+
+  /// Remove the items at the places `gone` (ascending), the frame ended
+  fn drop_at(&mut self, gone: &[u32]) {
+    drop_at(&mut self.items, gone);
+    self.len = self.items.len();
+  }
+}
+
+impl<T> std::ops::Deref for InPlace<T> {
+  type Target = [T];
+
+  fn deref(&self) -> &[T] {
+    self.items.get(..self.len).unwrap_or_default()
+  }
+}
+
+impl<T> std::ops::DerefMut for InPlace<T> {
+  fn deref_mut(&mut self) -> &mut [T] {
+    let len = self.len;
+    self.items.get_mut(..len).unwrap_or_default()
+  }
+}
+
+impl<T> AsRef<[T]> for InPlace<T> {
+  fn as_ref(&self) -> &[T] {
+    self
+  }
+}
+
+impl<T: PartialEq, U: AsRef<[T]>> PartialEq<U> for InPlace<T> {
+  fn eq(&self, other: &U) -> bool {
+    **self == *other.as_ref()
+  }
+}
+
+impl<T: PartialEq> PartialEq<InPlace<T>> for Vec<T> {
+  fn eq(&self, other: &InPlace<T>) -> bool {
+    **self == **other
+  }
+}
+
 /// The frame's UI instances in painter's order, what each samples, the
 /// sprites among them and the sprite textures to make resident; reused from
-/// frame to frame
+/// frame to frame, the instances and what each samples written over the
+/// last frame's
 #[derive(Default)]
 pub(crate) struct UiBuild {
-  pub(crate) instances: Vec<UiInstance>,
+  pub(crate) instances: InPlace<UiInstance>,
   /// What each instance samples, one per instance
-  pub(crate) needs: Vec<TexNeed>,
+  pub(crate) needs: InPlace<TexNeed>,
   pub(crate) sprites: Vec<SpriteFix>,
+  /// The runs copied or built and kept, in order, but those with a sprite
+  /// (whose instances are placed once their textures are resident)
+  pub(crate) segments: Vec<Segment>,
+  /// The last frame's `segments`: where its instances still are, until
+  /// the frame writes over them
+  last: Vec<Segment>,
+  /// The first of `last` that may be where a run goes now
+  next_last: usize,
+  /// The instances copied runs wrote (tests)
+  #[cfg(test)]
+  pub(crate) copied: usize,
   /// The frame's scroll slots as the shader reads them (`slot_uniforms`)
   pub(crate) slots: Vec<SlotUniform>,
   /// Every sprite texture the commands drew or would have drawn but for
@@ -63,17 +190,47 @@ pub(crate) struct UiBuild {
   /// A line's points and triangles
   points: Vec<PolyPoint>,
   triangles: Triangles,
+  /// The frame's slots as their draws are placed (`SlotAt`)
+  slot_at: Vec<SlotAt>,
 }
 
 impl UiBuild {
-  /// Forget the frame's instances, keeping the allocations
+  /// Start a frame: its instances go over the last frame's, the rest is
+  /// forgotten (the allocations kept)
   pub(crate) fn clear(&mut self) {
-    self.instances.clear();
-    self.needs.clear();
+    self.instances.begin();
+    self.needs.begin();
     self.sprites.clear();
+    std::mem::swap(&mut self.last, &mut self.segments);
+    self.segments.clear();
+    self.next_last = 0;
+    #[cfg(test)]
+    {
+      self.copied = 0;
+    }
     self.slots.clear();
     self.resident.clear();
     self.textures.clear();
+  }
+
+  /// Whether the last frame had `segment` (a kept run, marked with its
+  /// slot) where it goes now: its instances are there still
+  fn was(&mut self, segment: &Segment) -> bool {
+    let start = segment.range.start;
+    while self
+      .last
+      .get(self.next_last)
+      .is_some_and(|old| old.range.start < start)
+    {
+      self.next_last += 1;
+    }
+    self.last.get(self.next_last) == Some(segment)
+  }
+
+  /// End the frame's build: the last frame's instances past it go
+  fn end(&mut self) {
+    self.instances.end();
+    self.needs.end();
   }
 
   /// The sprite textures to make resident before the sprites are fixed:
@@ -115,8 +272,10 @@ impl UiBuild {
       *instance = mark.on(UiInstance::quad(kind, &placed, instance.clip(), nearest, 0));
     }
     if !gone.is_empty() {
-      drop_at(&mut self.instances, &gone);
-      drop_at(&mut self.needs, &gone);
+      self.instances.drop_at(&gone);
+      self.needs.drop_at(&gone);
+      // The copied runs after them moved
+      self.segments.clear();
     }
   }
 
@@ -180,6 +339,26 @@ impl Seen {
   }
 }
 
+/// A slot as the draws in it without a clip of their own are placed
+/// (`Frame::place`), the same for each: what they are moved by, its offset
+/// in UI units, and where it draws, its clip's scissor and as a
+/// [`ClipRect`] (`None` when the clip is empty)
+#[derive(Debug, Clone, Copy)]
+struct SlotAt {
+  by: Vec2,
+  clip: Option<(Option<PixelRect>, ClipRect)>,
+}
+
+impl SlotAt {
+  fn of(slot: &ScrollSlot, space: &UiSpace) -> SlotAt {
+    let clip = scissor_of(slot.clip, space);
+    SlotAt {
+      by: slot.offset_units(space.px_scale),
+      clip: clip.map(|scissor| (scissor, ClipRect::of(scissor, space.image))),
+    }
+  }
+}
+
 /// What every command of the frame is built with
 struct Frame<'f> {
   env: &'f UiRenderEnv,
@@ -187,6 +366,8 @@ struct Frame<'f> {
   /// relative to it, one in a slot past them moved by its offset and
   /// clipped by its clip first (`Frame::place`)
   slots: &'f [ScrollSlot],
+  /// Each of `slots` as its draws are placed
+  at: &'f [SlotAt],
   seen: Seen,
   sources: Option<&'f TextSources<'f>>,
   real_time: f32,
@@ -225,11 +406,14 @@ impl SlotMark {
   }
 }
 
-/// Where a draw is built: its command as it is built (relative to its slot
-/// in one of the shader's, else absolute), the clip its instances carry and
-/// the clip it is culled by where it is drawn
+/// Where a draw is built: its command and what it is moved by to build it
+/// (relative to its slot in one of the shader's, else absolute), the clip
+/// its instances carry and the clip it is culled by where it is drawn
 struct Placed<'d> {
-  command: Cow<'d, UiCommand>,
+  command: &'d UiCommand,
+  /// What the command is moved by on the CPU to be built (`UiDraw::placement`):
+  /// its slot's offset when built absolute in a slot, else `None`
+  moved: Option<Vec2>,
   /// The clip its instances carry: the scissor of its clip when built
   /// absolute; in a slot its own relative to the slot, else the whole
   /// image (the shader takes the slot's clip from the slot)
@@ -246,6 +430,11 @@ struct Placed<'d> {
 }
 
 impl Placed<'_> {
+  /// The command's `rect` where it is built
+  fn at(&self, rect: Rect) -> Rect {
+    self.moved.map_or(rect, |by| shifted(rect, by))
+  }
+
   /// Whether an item inside the box `min..max` (as built) is built: it can
   /// draw a pixel where its slot draws it, or nothing of it is culled
   fn sees(&self, seen: &Seen, min: Vec2, max: Vec2) -> bool {
@@ -285,8 +474,10 @@ impl Frame<'_> {
   /// pixel rounds by the last bit of its position, which moving it on the
   /// CPU and moving it in the shader compute differently.
   fn place<'d>(&self, draw: &'d UiDraw, cull: bool) -> Placement<'d> {
-    if let Some((k, slot)) = self.shader_slot(draw.slot) {
-      match in_slot(draw, slot, k, &self.env.space, cull) {
+    if let Some((k, slot)) = self.shader_slot(draw.slot)
+      && let Some(at) = self.at.get(usize::from(draw.slot))
+    {
+      match in_slot(draw, (slot, at), k, &self.env.space, cull) {
         InSlot::Built(placed) => {
           return Placement {
             placed: Some(placed),
@@ -309,15 +500,25 @@ impl Frame<'_> {
   }
 
   /// `draw` built absolute: moved by its slot's offset and clipped by its
-  /// clip on the CPU (`UiDraw::placed`), and culled; `None` when it draws
-  /// nothing
+  /// clip on the CPU (`UiDraw::placement`), and culled; `None` when it
+  /// draws nothing
   fn absolute<'d>(&self, draw: &'d UiDraw) -> Option<Placed<'d>> {
     let space = &self.env.space;
-    let command = draw.placed(self.slots, space.px_scale)?;
-    let scissor = scissor_of(command.clip_rect(), space)?;
-    let clip = ClipRect::of(scissor, space.image);
+    let (moved, scissor, clip) = match self.at.get(usize::from(draw.slot)) {
+      // Under its slot's clip alone
+      Some(at) if draw.slot != 0 && draw.command.clip_rect().is_none() => {
+        let (scissor, clip) = at.clip?;
+        (Some(at.by), scissor, clip)
+      }
+      _ => {
+        let (moved, clip) = draw.placement(self.slots, space.px_scale)?;
+        let scissor = scissor_of(clip, space)?;
+        (moved, scissor, ClipRect::of(scissor, space.image))
+      }
+    };
     Some(Placed {
-      command,
+      command: &draw.command,
+      moved,
       clip,
       scissor,
       mark: SlotMark::NONE,
@@ -381,26 +582,26 @@ enum InSlot<'d> {
   Absolute,
 }
 
-/// `draw` built relative to `slot`, the shader's slot `k`, culled where the
-/// slot draws it with `cull` on (see [`Frame::place`])
+/// `draw` built relative to `slot` (placed `at`), the shader's slot `k`,
+/// culled where the slot draws it with `cull` on (see [`Frame::place`])
 fn in_slot<'d>(
   draw: &'d UiDraw,
-  slot: &ScrollSlot,
+  (slot, at): (&ScrollSlot, &SlotAt),
   k: u8,
   space: &UiSpace,
   cull: bool,
 ) -> InSlot<'d> {
   // Where the slot draws, to cull by: nothing under an empty clip
   let slot_clip = if cull {
-    let Some(scissor) = scissor_of(slot.clip, space) else {
+    let Some((_, clip)) = at.clip else {
       return InSlot::Nothing;
     };
-    Some(ClipRect::of(scissor, space.image))
+    Some(clip)
   } else {
     None
   };
-  let by = slot.offset_units(space.px_scale);
-  let command = Cow::Borrowed(&draw.command);
+  let by = at.by;
+  let command = &draw.command;
   let Some(own) = draw.command.clip_rect() else {
     // The shader draws it under the slot's clip, read from the slot: it
     // carries none (the whole image), so neither it nor its text's key
@@ -408,6 +609,7 @@ fn in_slot<'d>(
     // scrolls it)
     return InSlot::Built(Placed {
       command,
+      moved: None,
       clip: ClipRect::of(None, space.image),
       scissor: None,
       mark: SlotMark {
@@ -434,6 +636,7 @@ fn in_slot<'d>(
   };
   InSlot::Built(Placed {
     command,
+    moved: None,
     clip,
     scissor: Some(own),
     mark: SlotMark { slot: k, own: true },
@@ -527,10 +730,22 @@ pub(crate) fn build_ui(
   runs: &mut UiRunCache,
 ) {
   build.clear();
-  slot_uniforms(commands.slots(), &env.space, &mut build.slots);
+  // On the pixel-art target no instance is in one of the shader's slots
+  // (`Frame::shader_slot`): their offsets are not written
+  let slots = commands.slots();
+  let shader = if env.on_target {
+    slots.get(..1).unwrap_or_default()
+  } else {
+    slots
+  };
+  slot_uniforms(shader, &env.space, &mut build.slots);
+  let mut at = std::mem::take(&mut build.slot_at);
+  at.clear();
+  at.extend(slots.iter().map(|slot| SlotAt::of(slot, &env.space)));
   let frame = Frame {
     env,
-    slots: commands.slots(),
+    slots,
+    at: &at,
     seen: Seen::of(env),
     sources,
     real_time,
@@ -563,7 +778,8 @@ pub(crate) fn build_ui(
           index = run.draws.end;
         }
         None => {
-          build_command(build, &frame, targets, texts, index, draw, true);
+          // Culled by resolve's test already: a loose draw
+          build_command(build, &frame, targets, texts, index, draw, Cull::Drawn);
           index += 1;
         }
       }
@@ -576,7 +792,7 @@ pub(crate) fn build_ui(
     painted.sort_by_key(|&index| draws.get(index as usize).map(paint_key));
     for &index in &painted {
       if let Some(draw) = draws.get(index as usize) {
-        build_command(build, &frame, targets, texts, index, draw, true);
+        build_command(build, &frame, targets, texts, index, draw, Cull::Shown);
       }
     }
     build.order = painted;
@@ -585,6 +801,8 @@ pub(crate) fn build_ui(
     // Every run was built, one command at a time
     held.for_each(|_| runs.count_built());
   }
+  build.slot_at = at;
+  build.end();
   let UiBuild {
     resident, textures, ..
   } = build;
@@ -596,8 +814,9 @@ pub(crate) fn build_ui(
 enum RunAt {
   /// Slot 0: as its draws are, culled as any draw is
   Image,
-  /// One of the shader's slots (its index): relative to the slot and
-  /// unculled, so its instances hold wherever the slot is drawn
+  /// One of the shader's slots (its index): relative to the slot, and
+  /// unculled while runs are kept, so its instances hold wherever the slot
+  /// is drawn
   Slot(u8),
   /// Past the shader's slots or on the pixel-art target (moved and clipped
   /// on the CPU), or in no slot of the table: built every frame
@@ -608,9 +827,11 @@ enum RunAt {
 /// instances from `runs` when they are what building it gives (see
 /// `UiRunCache::get`). A copy pins the glyph pages it samples for the
 /// frame, and holds its texts in `texts` as drawing them would, so its next
-/// version reuses them. In a slot nothing of it is culled. Built, it is
-/// kept, unless it was built absolute (`RunAt::Elsewhere`, or a draw of it
-/// took the absolute path) or a full atlas cut a text of it short.
+/// version reuses them. In one of the shader's slots nothing of it is
+/// culled while runs are kept; with none kept (retention off) it is culled
+/// as a loose draw is. Built, it is kept, unless it was built absolute
+/// (`RunAt::Elsewhere`, or a draw of it took the absolute path) or a full
+/// atlas cut a text of it short.
 fn build_run(
   build: &mut UiBuild,
   frame: &Frame<'_>,
@@ -635,7 +856,7 @@ fn build_run(
     RunAt::Image | RunAt::Elsewhere => 0,
   };
   let icons = frame.sources.map(|sources| sources.icons);
-  if !matches!(at, RunAt::Elsewhere) {
+  if runs.keeps() && !matches!(at, RunAt::Elsewhere) {
     let sprites = &*targets.sprites;
     let kept = runs.get(
       run,
@@ -657,12 +878,29 @@ fn build_run(
       return;
     }
   }
+  // Unculled only to be kept: its instances then hold wherever the slot
+  // draws them
+  let culled = !matches!(at, RunAt::Slot(_)) || !runs.keeps();
+  let lies = if culled {
+    lies(run, frame.slots)
+  } else {
+    Lies::Across
+  };
+  if lies == Lies::Outside {
+    runs.count_built();
+    return;
+  }
   let from = Marks::of(build);
   let drawn = texts.drawn_count();
   let refused = targets.sprites.glyphs_refused();
-  let cull = !matches!(at, RunAt::Slot(_));
   let mut absolute = matches!(at, RunAt::Elsewhere);
   for (index, draw) in (start..).zip(own) {
+    // Inside the view, a draw shows but for a clip of its own
+    let cull = match lies {
+      _ if !culled => Cull::Off,
+      Lies::Inside if draw.command.clip_rect().is_none() => Cull::Drawn,
+      _ => Cull::Shown,
+    };
     absolute |= build_command(build, frame, targets, texts, index, draw, cull);
   }
   runs.count_built();
@@ -676,11 +914,76 @@ fn build_run(
   kept.slot = slot;
   kept.note(own, icons);
   kept.texts.extend_from_slice(texts.drawn_from(drawn));
-  if kept.animated || keep_built(&mut kept, build, from, start, targets.sprites) {
+  if kept.animated {
     runs.store(run.id, kept);
+  } else if keep_built(&mut kept, build, from, start, targets.sprites) {
+    // Where it is built is where a copy of it next frame may be left
+    let sprites = !kept.sprites.is_empty();
+    let range = from.instances as u32..build.instances.len() as u32;
+    if let Some(stamp) = runs.store(run.id, kept)
+      && !sprites
+      && !range.is_empty()
+    {
+      build.segments.push(Segment { stamp, slot, range });
+    }
   } else {
     runs.recycle(kept);
   }
+}
+
+/// What a run's draws' boxes are tested against their slot's view with to
+/// spare, in UI units: resolve's test meets the view with a draw's own
+/// clip (`UiDraw::shows`), which float rounding moves by far less
+const SPARE: f32 = 1.0;
+
+/// Where a run's draws lie against its slot's view, culled there
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lies {
+  /// Wholly outside it: each would be culled (`UiDraw::shows`)
+  Outside,
+  /// Wholly inside it: none would be, but by a clip of its own
+  Inside,
+  /// Across it, or not known
+  Across,
+}
+
+/// Where `run`, in a slot of `slots`, lies against the slot's view, by its
+/// draws' boxes (`FragmentRun::bounds`), with [`SPARE`] to spare
+fn lies(run: &FragmentRun, slots: &[ScrollSlot]) -> Lies {
+  let view = slots
+    .get(usize::from(run.slot))
+    .filter(|_| run.slot != 0)
+    .and_then(|slot| slot.cull);
+  let (Some([x0, y0, x1, y1]), Some(view)) = (run.bounds, view) else {
+    return Lies::Across;
+  };
+  if x1 <= view.x - SPARE
+    || x0 >= view.right() + SPARE
+    || y1 <= view.y - SPARE
+    || y0 >= view.bottom() + SPARE
+  {
+    Lies::Outside
+  } else if x0 >= view.x + SPARE
+    && x1 <= view.right() - SPARE
+    && y0 >= view.y + SPARE
+    && y1 <= view.bottom() - SPARE
+  {
+    Lies::Inside
+  } else {
+    Lies::Across
+  }
+}
+
+/// How a draw is culled (`build_command`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cull {
+  /// Not at all: a kept run's draw in one of the shader's slots
+  Off,
+  /// Where it is drawn (`Frame::place`)
+  Drawn,
+  /// Where it is drawn and, in a slot, first by resolve's test
+  /// (`UiDraw::shows`): a run's draw a full rebuild may not have sent
+  Shown,
 }
 
 /// Where a run's build starts in a `UiBuild`
@@ -750,18 +1053,38 @@ fn keep_built(
 /// Append `kept`'s instances to `build`, the run's first draw the frame's
 /// `start`-th: its instances marked with `slot` (this frame's index of the
 /// slot it is in), its sprites and sprite textures moved to where its
-/// first instance and draw land
+/// first instance and draw land. Unless it holds a sprite it is noted as a
+/// segment, and left as it is where the last frame put it there.
 fn copy_run(build: &mut UiBuild, kept: &KeptRun, start: u32, slot: u8) {
   let first = build.instances.len();
-  build.instances.extend_from_slice(&kept.instances);
-  if kept.slot != slot
-    && let Some(copied) = build.instances.get_mut(first..)
-  {
-    for instance in copied {
-      *instance = instance.with_slot(slot);
+  let count = kept.instances.len();
+  let segment = (kept.sprites.is_empty() && count > 0).then(|| Segment {
+    stamp: kept.stamp,
+    slot,
+    range: first as u32..(first + count) as u32,
+  });
+  let in_place = segment.as_ref().is_some_and(|segment| build.was(segment));
+  if let Some(segment) = segment {
+    build.segments.push(segment);
+  }
+  if in_place {
+    build.instances.skip(count);
+    build.needs.skip(count);
+  } else {
+    build.instances.extend_from_slice(&kept.instances);
+    build.needs.extend_from_slice(&kept.needs);
+    #[cfg(test)]
+    {
+      build.copied += count;
+    }
+    if kept.slot != slot
+      && let Some(copied) = build.instances.get_mut(first..)
+    {
+      for instance in copied {
+        *instance = instance.with_slot(slot);
+      }
     }
   }
-  build.needs.extend_from_slice(&kept.needs);
   let first = first as u32;
   build
     .sprites
@@ -778,9 +1101,11 @@ fn copy_run(build: &mut UiBuild, kept: &KeptRun, start: u32, slot: u8) {
 }
 
 /// Build one draw (the `index`-th of the frame's), at its place in the
-/// painter's order, where `Frame::place` puts it, culled with `cull` on
-/// (see `Frame::place`). `true` when it is in a slot but was placed
-/// absolute (see `Placement::absolute`), whether it drew anything or not.
+/// painter's order, where `Frame::place` puts it, culled as `cull` says:
+/// culled by resolve's test, a draw in a slot that a full rebuild would not
+/// have sent (`UiDraw::shows`) builds nothing. `true` when it is in a slot
+/// but was placed absolute (see `Placement::absolute`) or culled so,
+/// whether it drew anything or not.
 fn build_command(
   build: &mut UiBuild,
   frame: &Frame<'_>,
@@ -788,14 +1113,19 @@ fn build_command(
   texts: &mut UiTextCache<UiInstance>,
   index: u32,
   draw: &UiDraw,
-  cull: bool,
+  cull: Cull,
 ) -> bool {
   let space = &frame.env.space;
-  let Placement { placed, absolute } = frame.place(draw, cull);
+  // What a slot shows depends on where it is now, as what is built absolute
+  // does
+  if cull == Cull::Shown && draw.slot != 0 && !draw.shows(frame.slots) {
+    return true;
+  }
+  let Placement { placed, absolute } = frame.place(draw, cull != Cull::Off);
   let Some(placed) = placed else {
     return absolute;
   };
-  let command = &*placed.command;
+  let command = placed.command;
   let z = ui_z(command.draw_layer(), draw.order);
   match command {
     UiCommand::Rect {
@@ -805,7 +1135,8 @@ fn build_command(
       border,
       ..
     } => {
-      if let Some(instance) = frame.rect(&placed, *rect, *fill, *radius, *border) {
+      let rect = placed.at(*rect);
+      if let Some(instance) = frame.rect(&placed, rect, *fill, *radius, *border) {
         build.push(instance, TexNeed::None);
       }
     }
@@ -817,7 +1148,7 @@ fn build_command(
       filter,
       ..
     } => {
-      let Some(instance) = sprite_instance(*rect, *uv, *tint) else {
+      let Some(instance) = sprite_instance(placed.at(*rect), *uv, *tint) else {
         return absolute;
       };
       // Asked for and made resident culled or not (see `UiBuild::resident`)
@@ -833,16 +1164,22 @@ fn build_command(
       let Some(sources) = frame.sources else {
         return absolute;
       };
-      let Some((layout, place)) = text_of(command, space, z, placed.scissor, frame.real_time)
+      let time = frame.real_time;
+      let Some((layout, place)) = text_of(command, space, z, placed.scissor, time, placed.moved)
       else {
         return absolute;
       };
       targets.list.clear();
+      // A text kept in the cache in one of the shader's slots holds
+      // wherever the slot draws it: nothing of it is culled
+      let kept_in_slot = placed.mark.slot != 0 && texts.keeps();
       let mut sink = TextInstances {
         build,
         seen: &frame.seen,
         clip: placed.clip,
         mark: placed.mark,
+        cull: placed.cull.filter(|_| !kept_in_slot),
+        by: placed.by,
         command: index,
         taken: 0,
       };
@@ -860,9 +1197,14 @@ pub(crate) fn rect_built(
   slots: &[ScrollSlot],
   env: &UiRenderEnv,
 ) -> Option<UiInstance> {
+  let at: Vec<SlotAt> = slots
+    .iter()
+    .map(|slot| SlotAt::of(slot, &env.space))
+    .collect();
   let frame = Frame {
     env,
     slots,
+    at: &at,
     seen: Seen::of(env),
     sources: None,
     real_time: 0.0,
@@ -878,7 +1220,7 @@ pub(crate) fn rect_built(
   else {
     return None;
   };
-  frame.rect(&placed, rect, fill, radius, border)
+  frame.rect(&placed, placed.at(rect), fill, radius, border)
 }
 
 /// A line command as its builder's triangles, one instance each, in index
@@ -894,7 +1236,7 @@ fn build_line(build: &mut UiBuild, seen: &Seen, list: &mut DrawList, z: i32, pla
     triangles,
     ..
   } = build;
-  let Some((style, look)) = line_of(&placed.command, z, points) else {
+  let Some((style, look)) = line_of(placed.command, z, points, placed.moved) else {
     return;
   };
   list.clear();
@@ -949,15 +1291,21 @@ fn build_line(build: &mut UiBuild, seen: &Seen, list: &mut DrawList, z: i32, pla
 /// environment (the UI space), so the same text is culled the same way when
 /// it is reused.
 ///
-/// In a scroll slot nothing of a text is culled: it is laid relative to the
-/// slot, and its kept instances are copied while the slot scrolls, so they
-/// must not depend on where the slot draws them (the shader collapses those
-/// wholly outside the clip). A copy takes the slot the text is in now.
+/// In one of the shader's slots nothing of a text is culled while texts
+/// are kept: it is laid relative to the slot, and its kept instances are
+/// copied while the slot scrolls, so they must not depend on where the slot
+/// draws them (the shader collapses those wholly outside the clip). A copy
+/// takes the slot the text is in now. With none kept (retention off) it is
+/// culled where the slot draws it.
 struct TextInstances<'b> {
   build: &'b mut UiBuild,
   seen: &'b Seen,
   clip: ClipRect,
   mark: SlotMark,
+  /// What its items are culled by where they are drawn, moved by `by`
+  /// (`None`: nothing is culled)
+  cull: Option<ClipRect>,
+  by: Vec2,
   /// The text command's place in the frame's
   command: u32,
   /// The scratch list's items already taken
@@ -965,9 +1313,12 @@ struct TextInstances<'b> {
 }
 
 impl TextInstances<'_> {
-  /// Whether an item inside `min..max` is built: in a slot every one is
+  /// Whether an item inside `min..max` (as built) is built: it can draw a
+  /// pixel where it is drawn, or nothing of it is culled
   fn keeps(&self, min: Vec2, max: Vec2) -> bool {
-    self.mark.slot != 0 || self.seen.sees(min, max, self.clip)
+    self
+      .cull
+      .is_none_or(|cull| self.seen.sees(min + self.by, max + self.by, cull))
   }
 }
 

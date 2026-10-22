@@ -233,12 +233,14 @@ pub(crate) fn sprite_instance(rect: Rect, uv: [f32; 4], tint: Color) -> Option<S
   )
 }
 
-/// A line command's points (into `points`, cleared first) and how it is
-/// drawn at `z`, or `None` for another command
+/// A line command's points (into `points`, cleared first), moved `by` (as
+/// `UiCommand::moved` moves it), and how it is drawn at `z`, or `None` for
+/// another command
 pub(crate) fn line_of(
   command: &UiCommand,
   z: i32,
   points: &mut Vec<PolyPoint>,
+  by: Option<Vec2>,
 ) -> Option<(PolyStyle, LineLook)> {
   let UiCommand::Line {
     points: line,
@@ -251,10 +253,11 @@ pub(crate) fn line_of(
   else {
     return None;
   };
+  let at = by.map_or(*at, |by| *at + by);
   let last = line.len().saturating_sub(1).max(1) as f32;
   points.clear();
   points.extend(line.iter().enumerate().map(|(i, pos)| PolyPoint {
-    pos: *pos + *at,
+    pos: *pos + at,
     half_width: width / 2.0,
     color: line_color(*color, 1.0),
     u: i as f32 / last,
@@ -277,14 +280,16 @@ pub(crate) fn line_of(
   Some((style, look))
 }
 
-/// A text command's layout and where it draws at `z` under `scissor`, or
-/// `None` for another command or a layout without a usable scale
+/// A text command's layout and where it draws at `z` under `scissor`,
+/// moved `by` (as `UiCommand::moved` moves it), or `None` for another
+/// command or a layout without a usable scale
 pub(crate) fn text_of<'c>(
   command: &'c UiCommand,
   space: &UiSpace,
   z: i32,
   scissor: Option<PixelRect>,
   time: f32,
+  by: Option<Vec2>,
 ) -> Option<(&'c Arc<TextLayout>, TextPlacement)> {
   let UiCommand::Text {
     layout,
@@ -303,7 +308,7 @@ pub(crate) fn text_of<'c>(
   // Layout pixels to UI units (the layout was made at the UI scale)
   let k = 1.0 / layout.scale;
   let place = TextPlacement {
-    origin: *origin,
+    origin: by.map_or(*origin, |by| *origin + by),
     axis_x: Vec2::new(k, 0.0),
     axis_y: Vec2::new(0.0, k),
     px_per_layout: space.px_scale * k,

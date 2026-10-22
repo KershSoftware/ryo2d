@@ -41,6 +41,8 @@ pub struct UiRenderStats {
   pub slot_runs_copied: u32,
   /// Fragment runs whose instances were built
   pub runs_built: u32,
+  /// UI instances written to the GPU (what changed since the last upload)
+  pub instances_written: u32,
 }
 
 /// What a frame's UI pixels depend on besides its commands
@@ -57,6 +59,11 @@ pub(crate) struct UiRenderEnv {
   /// replaced in place changes the glyph cells without a new font generation
   pub(crate) bitmaps: u64,
 }
+
+/// How far past the last run found a run drawn before is looked for
+/// (`UiRetain::seen`): runs that left between them (a list's rows leaving
+/// its interest) are passed over
+const LOOK_AHEAD: usize = 16;
 
 /// Whether the UI image can be shown again as it is, and what it holds
 #[derive(Debug, Default)]
@@ -76,9 +83,6 @@ pub(crate) struct UiRetain {
   /// The commands of each run that draw from a sprite or an icon: where in
   /// the run, and the stamp each was drawn with
   run_stamps: Vec<(u32, u64)>,
-  /// `runs`' indices in the order of their versions: what was found of a
-  /// run's commands is taken again when it is seen with its version
-  by_version: Vec<u32>,
   /// The runs and their stamps drawn before, while a frame's are made
   /// (buffers kept)
   runs_was: Vec<HeldRun>,
@@ -177,6 +181,7 @@ impl UiRetain {
     std::mem::swap(&mut self.run_stamps, &mut self.run_stamps_was);
     self.runs.clear();
     self.run_stamps.clear();
+    let mut next = 0;
     for run in runs {
       let draws = now
         .get(run.draws.start as usize..run.draws.end as usize)
@@ -184,7 +189,7 @@ impl UiRetain {
       let from = self.run_stamps.len();
       // A run seen with its version has the commands it had: which have a
       // stamp, and whether one reads the clock, was found then
-      let animated = match self.seen(run) {
+      let animated = match self.seen(run, &mut next) {
         Some(was) => {
           let was = &self.runs_was[was];
           for &(k, _) in &self.run_stamps_was[was.stamps.clone()] {
@@ -211,28 +216,23 @@ impl UiRetain {
         stamps: from..self.run_stamps.len(),
       });
     }
-    let held = &self.runs;
-    self.by_version.clear();
-    self
-      .by_version
-      .extend(0..u32::try_from(held.len()).unwrap_or(u32::MAX));
-    self
-      .by_version
-      .sort_unstable_by_key(|&k| held.get(k as usize).map(|held| held.run.version));
   }
 
   /// Where `run` is among the runs drawn before, if one of them is it with
-  /// its version (its commands the same)
-  fn seen(&self, run: &FragmentRun) -> Option<usize> {
-    let version = |k: &u32| self.runs_was.get(*k as usize).map(|held| held.run.version);
-    let at = self
-      .by_version
-      .binary_search_by_key(&Some(run.version), version)
-      .ok()?;
-    let k = *self.by_version.get(at)? as usize;
-    let was = &self.runs_was.get(k)?.run;
+  /// its version (its commands the same): looked for from `next` (past the
+  /// last found, as runs keep their order) up to [`LOOK_AHEAD`] runs on.
+  /// One not found is taken as new: what is found of its commands is found
+  /// again.
+  fn seen(&self, run: &FragmentRun, next: &mut usize) -> Option<usize> {
     let count = |run: &FragmentRun| run.draws.end.saturating_sub(run.draws.start);
-    (was.id == run.id && count(was) == count(run)).then_some(k)
+    let ahead = self.runs_was.get(*next..).unwrap_or_default();
+    let at = ahead.iter().take(LOOK_AHEAD).position(|was| {
+      let was = &was.run;
+      was.version == run.version && was.id == run.id && count(was) == count(run)
+    })?;
+    let k = *next + at;
+    *next = k + 1;
+    Some(k)
   }
 
   /// The frame was presented. Unless it kept the image, the image now holds
@@ -256,7 +256,6 @@ impl UiRetain {
     self.stamps.clear();
     self.runs.clear();
     self.run_stamps.clear();
-    self.by_version.clear();
     self.runs_was.clear();
     self.run_stamps_was.clear();
     self.count = 0;
