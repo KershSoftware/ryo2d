@@ -774,3 +774,39 @@ fn held_runs_are_found_after_many_leave() {
   assert!(!retain.keep(&commands, None, env(), 1));
   assert_eq!(retain.unseen, 1, "only the new run");
 }
+
+#[test]
+fn held_runs_are_found_in_linear_time_among_new_ones() {
+  // Three hundred runs, then each of them followed by a new one (rows with
+  // a timer on every other one): the new runs are looked for past the
+  // look-ahead in all within as many runs as were held, so a hold's lookups
+  // stay linear in its runs
+  let run = |commands: &mut UiCommands, id: u64, k: u32| {
+    let at = commands.position();
+    commands.push(k, 0, rect(k as f32));
+    commands.push_run(FragmentRun {
+      id: UiId(id),
+      version: id,
+      base: k,
+      layer: 0,
+      slot: 0,
+      draws: at..at + 1,
+      bounds: None,
+    });
+  };
+  let mut held = UiCommands::default();
+  for k in 0..300 {
+    run(&mut held, u64::from(k) + 1, 2 * k);
+  }
+  let mut retain = UiRetain::default();
+  assert!(!retain.keep(&held, None, env(), 1));
+  let mut mixed = UiCommands::default();
+  for k in 0..300 {
+    run(&mut mixed, u64::from(k) + 1, 2 * k);
+    run(&mut mixed, u64::from(k) + 1001, 2 * k + 1);
+  }
+  assert!(!retain.keep(&mixed, None, env(), 1));
+  assert_eq!(retain.unseen, 300, "only the new runs");
+  let visited = retain.far_visited.get();
+  assert!(visited <= 300, "{visited} runs visited past the look-ahead");
+}

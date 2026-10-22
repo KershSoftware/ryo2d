@@ -71,7 +71,12 @@ const LOOK_AHEAD: usize = 16;
 #[derive(Debug, Clone, Copy)]
 struct Seek {
   next: usize,
+  /// The last run looked for was found
   far: bool,
+  /// How many runs drawn before the lookups may still go through past the
+  /// look-ahead, in all: as many as there are, so a hold's lookups take
+  /// time linear in its runs however they leave and arrive
+  budget: usize,
 }
 
 /// Whether the UI image can be shown again as it is, and what it holds
@@ -107,6 +112,10 @@ pub(crate) struct UiRetain {
   /// The runs the last hold did not find among those held before (tests)
   #[cfg(test)]
   pub(crate) unseen: usize,
+  /// The runs held before the last hold's lookups went through past the
+  /// look-ahead (tests)
+  #[cfg(test)]
+  pub(crate) far_visited: std::cell::Cell<usize>,
 }
 
 /// A fragment run the UI image holds
@@ -193,10 +202,15 @@ impl UiRetain {
     std::mem::swap(&mut self.run_stamps, &mut self.run_stamps_was);
     self.runs.clear();
     self.run_stamps.clear();
-    let mut seek = Seek { next: 0, far: true };
+    let mut seek = Seek {
+      next: 0,
+      far: true,
+      budget: self.runs_was.len(),
+    };
     #[cfg(test)]
     {
       self.unseen = 0;
+      self.far_visited.set(0);
     }
     for run in runs {
       let draws = now
@@ -241,9 +255,10 @@ impl UiRetain {
   /// Where `run` is among the runs drawn before, if one of them is it with
   /// its version (its commands the same): looked for from `seek.next` (past
   /// the last found) up to [`LOOK_AHEAD`] runs on, then, past more runs
-  /// that left than that holds, on to the end; after a run not found so
-  /// (a new one), only in the look-ahead until the next is found. One not
-  /// found is taken as new: what is found of its commands is found again.
+  /// that left than that holds, on to the end while `seek.budget` lasts;
+  /// after a run not found so (a new one), only in the look-ahead until the
+  /// next is found. One not found is taken as new: what is found of its
+  /// commands is found again.
   fn seen(&self, run: &FragmentRun, seek: &mut Seek) -> Option<usize> {
     let count = |run: &FragmentRun| run.draws.end.saturating_sub(run.draws.start);
     let is = |was: &HeldRun| {
@@ -253,8 +268,13 @@ impl UiRetain {
     let ahead = self.runs_was.get(seek.next..).unwrap_or_default();
     let at = match ahead.iter().take(LOOK_AHEAD).position(is) {
       Some(at) => Some(at),
-      None if seek.far => {
-        let past = ahead.iter().skip(LOOK_AHEAD).position(is);
+      None if seek.far && seek.budget > 0 => {
+        let past = ahead.iter().skip(LOOK_AHEAD).take(seek.budget).position(is);
+        let beyond = ahead.len().saturating_sub(LOOK_AHEAD).min(seek.budget);
+        let visited = past.map_or(beyond, |at| at + 1);
+        seek.budget = seek.budget.saturating_sub(visited);
+        #[cfg(test)]
+        self.far_visited.set(self.far_visited.get() + visited);
         past.map(|at| at + LOOK_AHEAD)
       }
       None => None,
