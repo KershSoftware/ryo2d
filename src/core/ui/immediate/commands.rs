@@ -388,22 +388,37 @@ pub(crate) struct FragmentRun {
 /// runs. A container's draws are pushed when it is laid out, after absolute
 /// draws recorded later, so the order (taken when a draw was recorded), not
 /// the position in the list, is what orders them.
+///
+/// A pass writes its draws over the last pass's, which stay past what it
+/// has pushed: a kept fragment's run that the last pass left where this one
+/// pushes it next, with the same tag, is taken as it is (`reuse_run`),
+/// its draws neither cloned nor written.
 #[derive(Debug)]
 pub(crate) struct UiCommands {
+  /// This pass's draws, then, past `len`, the rest of the last pass's
   draws: Vec<UiDraw>,
+  /// The draws this pass has pushed
+  len: usize,
   /// Slot 0 (no scroll area), then each scroll area's, in the order they
   /// were laid out
   slots: Vec<ScrollSlot>,
   /// Each fragment's draws, tagged, in the order of their ranges
   runs: Vec<FragmentRun>,
+  /// The last pass's runs: those from `len` on still hold their draws
+  runs_was: Vec<FragmentRun>,
+  /// The first of `runs_was` that may still be where it was
+  was_at: usize,
 }
 
 impl Default for UiCommands {
   fn default() -> UiCommands {
     UiCommands {
       draws: Vec::new(),
+      len: 0,
       slots: vec![ScrollSlot::NONE],
       runs: Vec::new(),
+      runs_was: Vec::new(),
+      was_at: 0,
     }
   }
 }
@@ -411,7 +426,7 @@ impl Default for UiCommands {
 impl UiCommands {
   /// Each draw, in the order they were pushed
   pub(crate) fn as_slice(&self) -> &[UiDraw] {
-    &self.draws
+    self.draws.get(..self.len).unwrap_or_default()
   }
   /// The slot table: slot 0, then the scroll areas'
   pub(crate) fn slots(&self) -> &[ScrollSlot] {
@@ -422,18 +437,74 @@ impl UiCommands {
   pub(crate) fn runs(&self) -> &[FragmentRun] {
     &self.runs
   }
+  /// A new pass: no draws, slots or runs. The last pass's draws stay to
+  /// be written over, or taken as they are by `reuse_run`.
   pub(crate) fn clear(&mut self) {
-    self.draws.clear();
+    self.end_pass();
+    self.len = 0;
     self.slots.clear();
     self.slots.push(ScrollSlot::NONE);
+    std::mem::swap(&mut self.runs, &mut self.runs_was);
     self.runs.clear();
+    self.was_at = 0;
+  }
+  /// The pass is over: what is left of the last pass's draws past this
+  /// pass's goes (with what it holds of sprites and text layouts)
+  pub(crate) fn end_pass(&mut self) {
+    self.draws.truncate(self.len);
   }
   pub(crate) fn push(&mut self, order: u32, slot: u16, command: UiCommand) {
-    self.draws.push(UiDraw {
+    let draw = UiDraw {
       order,
       slot,
       command,
-    });
+    };
+    match self.draws.get_mut(self.len) {
+      Some(at) => *at = draw,
+      None => self.draws.push(draw),
+    }
+    self.len += 1;
+  }
+  /// Take a kept fragment's run where the last pass left it: when the last
+  /// pass's draws from where the next one goes are the run of fragment
+  /// `id` at `version`, from order `base` on `layer` in `slot`, they are
+  /// this pass's as they are, and the run is pushed. A run of the same
+  /// fragment, version, base, layer and slot holds the same draws. False,
+  /// with nothing pushed, when they are not there.
+  pub(crate) fn reuse_run(
+    &mut self,
+    id: UiId,
+    version: u64,
+    base: u32,
+    layer: u8,
+    slot: u16,
+  ) -> bool {
+    let at = self.position();
+    // Runs before here have been written over
+    while self
+      .runs_was
+      .get(self.was_at)
+      .is_some_and(|was| was.draws.start < at)
+    {
+      self.was_at += 1;
+    }
+    let Some(was) = self.runs_was.get(self.was_at) else {
+      return false;
+    };
+    let here = was.draws.start == at && was.draws.end as usize <= self.draws.len();
+    let same = was.id == id
+      && was.version == version
+      && was.base == base
+      && was.layer == layer
+      && was.slot == slot;
+    if !(here && same) {
+      return false;
+    }
+    let run = was.clone();
+    self.len = run.draws.end as usize;
+    self.was_at += 1;
+    self.runs.push(run);
+    true
   }
   /// Add a scroll area's slot: its index, or `u16::MAX` when the table is
   /// full (its contents are then placed absolute)
@@ -450,14 +521,14 @@ impl UiCommands {
   /// Where the next draw pushed goes in the list: a run's range starts or
   /// ends here
   pub(crate) fn position(&self) -> u32 {
-    u32::try_from(self.draws.len()).unwrap_or(u32::MAX)
+    u32::try_from(self.len).unwrap_or(u32::MAX)
   }
   /// Tag the draws `run.draws` as one fragment's: the caller pushed them
   /// just before, each in `run.slot` on `run.layer`, from order `run.base`
   /// on. A range past the draws is dropped.
   pub(crate) fn push_run(&mut self, run: FragmentRun) {
     let Range { start, end } = run.draws;
-    let held = self.draws.get(start as usize..end as usize);
+    let held = self.as_slice().get(start as usize..end as usize);
     debug_assert!(held.is_some(), "a run holds draws pushed: {run:?}");
     debug_assert!(
       held.into_iter().flatten().all(|draw| {
@@ -494,18 +565,18 @@ impl UiCommands {
     let mut at = 0;
     self.runs.iter().all(|run| {
       let Range { start, end } = run.draws;
-      let holds = at <= start && start <= end && end as usize <= self.draws.len();
+      let holds = at <= start && start <= end && end as usize <= self.len;
       at = end;
       holds
     })
   }
   pub(crate) fn is_empty(&self) -> bool {
-    self.draws.is_empty()
+    self.len == 0
   }
   /// How many commands there are (the UI harness)
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn len(&self) -> usize {
-    self.draws.len()
+    self.len
   }
 
   /// The draws that can show a pixel (`UiDraw::shows`), in the order they
@@ -514,7 +585,10 @@ impl UiCommands {
   /// and some cannot show. What two runs with fragments on and off compare.
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn visible(&self) -> impl Iterator<Item = &UiDraw> {
-    self.draws.iter().filter(|draw| draw.shows(&self.slots))
+    self
+      .as_slice()
+      .iter()
+      .filter(|draw| draw.shows(&self.slots))
   }
 }
 
@@ -522,19 +596,19 @@ impl UiCommands {
 impl UiCommands {
   /// Each draw, in the order they were pushed
   pub(crate) fn iter(&self) -> impl Iterator<Item = &UiDraw> {
-    self.draws.iter()
+    self.as_slice().iter()
   }
   /// The commands as stored (relative to their slots), in the order they
   /// were pushed
   pub(crate) fn commands(&self) -> impl Iterator<Item = &UiCommand> {
-    self.draws.iter().map(|draw| &draw.command)
+    self.as_slice().iter().map(|draw| &draw.command)
   }
   /// The commands where they are drawn at `px_scale` render pixels per UI
   /// unit (each moved by its slot and under its slot's clip), in the order
   /// they were pushed
   pub(crate) fn placed(&self, px_scale: f32) -> Vec<UiCommand> {
     self
-      .draws
+      .as_slice()
       .iter()
       .filter_map(|draw| draw.placed(&self.slots, px_scale))
       .map(Cow::into_owned)

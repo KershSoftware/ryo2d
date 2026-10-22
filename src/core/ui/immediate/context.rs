@@ -1109,29 +1109,24 @@ impl<'a> UiContext<'a> {
   /// Push the kept fragment of the clean subtree whose root is `id`, whose
   /// node record was built in frame `built`, as one node in place of a
   /// replay: its ids made and states kept as a replay would, the orders its
-  /// subtree takes reserved. False, with nothing pushed, when it has none,
-  /// it is stale, or its root would be stamped otherwise than it was (or
-  /// it would land in a popup, which takes fresh orders when it is drawn).
-  /// The nodes replayed in it are left in the memory's
-  /// `scratch.kept_entities`.
-  pub(crate) fn push_kept(&mut self, id: UiId, built: u64) -> bool {
+  /// subtree takes reserved. Its slot (`memory.fragments`), or `None`, with
+  /// nothing pushed, when it has none, it is stale, or its root would be
+  /// stamped otherwise than it was (or it would land in a popup, which
+  /// takes fresh orders when it is drawn).
+  pub(crate) fn push_kept(&mut self, id: UiId, built: u64) -> Option<u32> {
     debug_assert!(
       !self.recording(),
       "a kept fragment is pushed where no tape records (a child slot)"
     );
-    let Some((at, count)) = self.keeps(id, built) else {
-      return false;
-    };
+    let (slot, at, count) = self.keeps(id, built)?;
     let (scene, _) = self.scene();
     // Its root, cloned straight into the subtree and stamped where it lands,
     // as a replay stamps the node its tape gave
     let index = self.push_stamped(at, |subtree, memory| {
-      memory.replay_fragment(id, scene, &mut subtree.nodes);
+      memory.replay_fragment(slot, id, scene, &mut subtree.nodes);
     });
     let layer = self.layer;
-    let Some(subtree) = self.subtree.as_mut() else {
-      return false;
-    };
+    let subtree = self.subtree.as_mut()?;
     let base = subtree.nodes.get(index).map_or(0, |root| root.order);
     // Its commands go where its subtree's draws would
     subtree.draws.push(Draw {
@@ -1143,15 +1138,15 @@ impl<'a> UiContext<'a> {
     // The orders its subtree's nodes and draws take, after its root's
     self.order = self.order.saturating_add(count.saturating_sub(1));
     self.close(index);
-    true
+    Some(slot)
   }
 
-  /// Whether the kept fragment of the clean subtree rooted at `id` (node
-  /// record built in frame `built`) can be pushed here: it is not stale,
-  /// its root would be stamped as it was, and it lands outside a popup and
-  /// any recording tape. If so, the rect its root goes at and the orders
-  /// its subtree takes.
-  fn keeps(&self, id: UiId, built: u64) -> Option<(Option<Rect>, u32)> {
+  /// Whether last frame's kept fragment of the clean subtree rooted at
+  /// `id` (node record built in frame `built`) can be pushed here: it is
+  /// not stale, its root would be stamped as it was, and it lands outside a
+  /// popup and any recording tape. If so, its slot, the rect its root goes
+  /// at and the orders its subtree takes.
+  fn keeps(&self, id: UiId, built: u64) -> Option<(u32, Option<Rect>, u32)> {
     // A recording tape would miss it: the walk replays there instead, which
     // taints that tape
     if self.recording() || self.in_popup() {
@@ -1160,7 +1155,9 @@ impl<'a> UiContext<'a> {
     let (scene, _) = self.scene();
     let scope = self.focus_scope_here();
     let scroll = self.scroll_here();
-    let fragment = self.memory.fragments_prev.get(&id).filter(|fragment| {
+    let fragments = &self.memory.fragments;
+    let slot = fragments.last_of(id, self.memory.frame())?;
+    let fragment = fragments.get(slot).filter(|fragment| {
       fragment.built == built
         && fragment.scene == scene
         && fragment.inputs.layer == self.layer
@@ -1171,7 +1168,7 @@ impl<'a> UiContext<'a> {
     self
       .layout
       .holds(id)
-      .then_some((fragment.at, fragment.count))
+      .then_some((slot, fragment.at, fragment.count))
   }
 
   /// The debug spot check: set the kept fragment of the clean subtree
@@ -1181,13 +1178,10 @@ impl<'a> UiContext<'a> {
   /// where it would not be pushed.
   #[cfg(debug_assertions)]
   pub(crate) fn hold_for_spot_check(&mut self, id: UiId, built: u64) -> bool {
-    if self.keeps(id, built).is_none() {
-      return false;
-    }
-    let Some(fragment) = self.memory.fragments_prev.remove(&id) else {
+    let Some((slot, ..)) = self.keeps(id, built) else {
       return false;
     };
-    self.memory.spot_held = Some((id, fragment));
+    self.memory.spot_held = Some((id, slot));
     true
   }
 
@@ -1243,12 +1237,16 @@ impl<'a> UiContext<'a> {
     parent.map_or(UiId::NONE, scroll_of)
   }
 
-  /// Push the node `put` adds to the open subtree (started if none is; `put`
-  /// may read the memory, a kept fragment's root from it) and stamp it
-  /// where it went: its layer, order, focus scope and, inside a
+  /// Push the node `put` adds to the open subtree (started if none is) and
+  /// stamp it where it went: its layer, order, focus scope and, inside a
   /// container, its parent, depth and scroll area, and `at` (placed out of
   /// its parent's flow) or, as a subtree's root, the subtree's `at`. It
   /// becomes the innermost open node; its index.
+  ///
+  /// `put` is given the memory beside the subtree because a kept fragment's
+  /// root lives in the memory (`UiMemory::replay_fragment`): it is cloned
+  /// from there straight into the subtree, where a node handed in would be
+  /// cloned once more. The other callers ignore it.
   fn push_stamped(
     &mut self,
     at: Option<Rect>,

@@ -34,9 +34,8 @@ use std::sync::Arc;
 use crate::core::hash::FastMap;
 use crate::core::text::TextReveal;
 use crate::core::ui::env::UiEnv;
-#[cfg(debug_assertions)]
-use crate::core::ui::fragment::Fragment;
-use crate::core::ui::memory::Roles;
+use crate::core::ui::fragment::{Fragments, Hold};
+use crate::core::ui::memory::{Roles, UiMemory};
 use crate::core::ui::tape::{Read, Tape};
 #[cfg(debug_assertions)]
 use crate::core::ui::theme::warn_once;
@@ -202,6 +201,10 @@ pub(crate) struct NodeRecord {
   pub(crate) top: bool,
   /// The memory frame it was last drawn in (built or replayed)
   pub(crate) frame: u64,
+  /// The kept fragment that holds it, when it was replayed in one
+  /// (`Fragments::holds`): it is drawn in every frame that fragment is
+  /// pushed in, without being marked
+  pub(crate) held: Option<Hold>,
   /// The memory frame it was built in: a fragment of its subtree kept from
   /// an older build is stale
   pub(crate) built: u64,
@@ -284,6 +287,9 @@ pub(crate) struct CacheStats {
   /// Clean nodes the spot check built (the node and its ancestors): not
   /// replayed, not counted in `built`
   pub(crate) spot_built: usize,
+  /// The records of kept fragments' nodes marked drawn one at a time
+  #[cfg(test)]
+  pub(crate) marked: usize,
 }
 
 impl CacheStats {
@@ -295,6 +301,10 @@ impl CacheStats {
     self.rebuilt.clear();
     self.spot_checked = None;
     self.spot_differed = 0;
+    #[cfg(test)]
+    {
+      self.marked = 0;
+    }
     self.spot_built = 0;
   }
 }
@@ -398,9 +408,10 @@ impl Check {
 }
 
 impl UiCache {
-  /// Drop the records not drawn in memory frame `frame`, with what they
-  /// noted: their ids in `by_id` and their places in the live sets
-  fn drop_undrawn(&mut self, frame: u64) {
+  /// Drop the records not drawn in memory frame `frame` (nor held by a
+  /// fragment pushed in it, as `held` says), with what they noted: their
+  /// ids in `by_id` and their places in the live sets
+  fn drop_undrawn(&mut self, frame: u64, held: impl Fn(Hold) -> bool) {
     let UiCache {
       records,
       by_id,
@@ -412,7 +423,7 @@ impl UiCache {
       ..
     } = self;
     records.retain(|&node, record| {
-      if record.frame == frame {
+      if record.frame == frame || record.held.is_some_and(&held) {
         return true;
       }
       unindex(by_id, node, &record.tape);
@@ -495,13 +506,22 @@ impl UiCache {
       .map(|record| take(record, frame))
   }
 
-  /// The records of `nodes`, replayed in a fragment pushed kept in memory
-  /// frame `frame`, are drawn in it: their nodes are in its subtree, and a
-  /// role or a live rule must still find them
-  pub(crate) fn keep_drawn(&mut self, nodes: &[Entity], frame: u64) {
+  /// The records of the nodes replayed in the kept fragment in `slot` of
+  /// `fragments`, just pushed, are drawn in every frame it is pushed in:
+  /// their nodes are in its subtree, and a role or a live rule must still
+  /// find them. Each is marked held by it at its first push, so a frame
+  /// copying it marks none.
+  pub(crate) fn hold_kept(&mut self, fragments: &mut Fragments, slot: u32) {
+    let Some((nodes, hold)) = fragments.first_hold(slot) else {
+      return;
+    };
     for node in nodes {
       if let Some(record) = self.records.get_mut(node) {
-        record.frame = frame;
+        record.held = Some(hold);
+        #[cfg(test)]
+        {
+          self.stats.marked += 1;
+        }
       }
     }
   }
@@ -629,12 +649,7 @@ impl UiCache {
   /// first of last frame's `fragments` after the last one checked, by its
   /// root's id, whose root the node's build does not reach.
   #[cfg(debug_assertions)]
-  pub(crate) fn choose_spot(
-    &mut self,
-    world: &World,
-    frame: u64,
-    fragments: &FastMap<UiId, Box<Fragment>>,
-  ) {
+  pub(crate) fn choose_spot(&mut self, world: &World, frame: u64, fragments: &Fragments) {
     let UiCache {
       enabled,
       records,
@@ -680,13 +695,13 @@ impl UiCache {
     }
     // A fragment whose root is built for the node's check is not pushed
     let (mut first, mut next) = (None, None);
-    let candidates = fragments.iter().filter(|(_, fragment)| {
+    let candidates = fragments.of_last_frame(frame).filter(|(_, fragment)| {
       fragment
         .entities
         .first()
         .is_none_or(|root| !spot.path.contains(root))
     });
-    for (&id, _) in candidates {
+    for (id, _) in candidates {
       first = Some(first.map_or(id, |first: UiId| first.min(id)));
       if spot.last_fragment.is_none_or(|last| id > last) {
         next = Some(next.map_or(id, |next: UiId| next.min(id)));
@@ -1271,12 +1286,14 @@ pub(crate) fn around_difference(was: &str, now: &str) -> (String, String) {
   (cut(was), cut(now))
 }
 
-/// The memory frame `frame` ended: drop the records of the nodes it did not
-/// draw (despawned, hidden, of a scene not drawn or gone), as the memory
-/// drops widget state not touched
-pub(crate) fn end_frame(world: &mut World, frame: u64) {
+/// `memory`'s frame ended: drop the records of the nodes it did not draw
+/// (despawned, hidden, of a scene not drawn or gone), as the memory drops
+/// widget state not touched
+pub(crate) fn end_frame(world: &mut World, memory: &UiMemory) {
   if let Some(mut nodes) = world.get_resource_mut::<UiNodes>() {
-    nodes.cache.drop_undrawn(frame);
+    let frame = memory.frame();
+    let held = |hold| memory.fragments.holds(hold, frame);
+    nodes.cache.drop_undrawn(frame, held);
   }
 }
 
@@ -1426,6 +1443,7 @@ mod tests {
       env: UiEnv::default(),
       top: true,
       frame: 1,
+      held: None,
       built: 1,
       id: UiId::NONE,
       dialog: false,
@@ -1470,6 +1488,7 @@ mod tests {
       env: UiEnv::default(),
       top: true,
       frame: 1,
+      held: None,
       built: 1,
       id: UiId::NONE,
       dialog: false,
@@ -1521,6 +1540,7 @@ mod tests {
         env,
         top: true,
         frame: 1,
+        held: None,
         built: 1,
         id: UiId::NONE,
         dialog: false,
@@ -1677,15 +1697,19 @@ mod live_tests {
     (ui.env(), ui.scene().0, ui.memory.frame(), scope)
   }
 
-  /// A record of `tape` for `node`, built under `under`
+  /// A record of `tape` for `node`, built under `under`. It stands in for
+  /// the record it replaces, so it keeps that one's hold: a kept fragment
+  /// that replayed the node still draws it.
   fn insert(h: &mut UiHarness, node: Entity, tape: Tape, under: (UiEnv, u64, u64, UiId)) {
     let (env, scene, frame, scope) = under;
+    let held = cache_mut(h).cache.records.get(&node).and_then(|r| r.held);
     let record = NodeRecord {
       tape: Arc::new(tape),
       scene,
       env,
       top: true,
       frame,
+      held,
       built: frame,
       id: UiId::NONE,
       dialog: false,
@@ -2652,6 +2676,7 @@ mod edge_tests {
 
 #[cfg(all(test, feature = "default-fonts"))]
 mod fragment_tests {
+  use super::super::UiNodes;
   use super::super::oracle::*;
   use crate::core::testing::UiHarness;
   use crate::core::testing::fixtures::settings_tree;
@@ -2672,11 +2697,12 @@ mod fragment_tests {
     }
 
     fn fragment_versions(&self) -> Vec<(UiId, u64)> {
+      let frame = self.memory.frame();
       let mut versions: Vec<(UiId, u64)> = self
         .memory
-        .fragments_next
-        .iter()
-        .map(|(&id, fragment)| (id, fragment.version))
+        .fragments
+        .kept_in(frame)
+        .map(|(id, fragment)| (id, fragment.version))
         .collect();
       versions.sort_unstable();
       versions
@@ -2929,10 +2955,14 @@ mod fragment_tests {
       h.frame(|_| {});
     }
     // Each kept fragment's first draw a step later in the order, as an input
-    // a fragment does not check would leave it
-    for fragment in h.memory.fragments_next.values_mut() {
+    // a fragment does not check would leave it. It pushes other commands,
+    // so it takes a new version, as any fragment does.
+    let frame = h.memory.frame();
+    let version = h.memory.next_fragment_version();
+    for fragment in h.memory.fragments.kept_in_mut(frame) {
       if let Some(draw) = fragment.draws.first_mut() {
         draw.order += 1;
+        fragment.version = version;
       }
     }
     h.set_ui_spot_check(true);
@@ -2963,6 +2993,68 @@ mod fragment_tests {
       "only the dirty path's own tapes replay, not the screen ({} replayed)",
       stats.replayed
     );
+  }
+
+  /// A settings tree drawn until it is copied whole from its fragments,
+  /// then once more: each row a kept fragment
+  fn unchanged_settings() -> UiHarness {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(settings_tree());
+    for _ in 0..10 {
+      h.frame(|_| {});
+    }
+    h.frame(|_| {});
+    let stats = h.ui_cache_stats();
+    assert_eq!((stats.reused, stats.captured), (50, 0), "{stats:?}");
+    h
+  }
+
+  #[test]
+  fn an_unchanged_frame_makes_its_kept_fragments_ids_without_registering_each() {
+    let h = unchanged_settings();
+    assert_eq!(
+      h.memory.scopes.replayed, 0,
+      "no kept fragment's id is registered one at a time"
+    );
+    let ids = h.memory.kept_ids();
+    assert!(ids.len() > 300, "{} ids", ids.len());
+    let unmade: Vec<_> = ids
+      .iter()
+      .filter(|&&id| !h.memory.scopes.made(id))
+      .collect();
+    assert!(unmade.is_empty(), "every kept id is made: {unmade:?}");
+  }
+
+  #[test]
+  fn an_unchanged_frame_clones_no_kept_command() {
+    let mut h = unchanged_settings();
+    assert_eq!(
+      h.memory.fragment_stats.cloned, 0,
+      "every run is where it was"
+    );
+    // A focus step changes what the widgets it leaves and enters draw:
+    // runs it moves are cloned, the rest stay where they were
+    h.action("ui.down");
+    h.frame(|_| {});
+    let cloned = h.memory.fragment_stats.cloned;
+    let runs = h.commands.runs().len();
+    assert!(cloned < 20, "{cloned} commands cloned in {runs} runs");
+  }
+
+  #[test]
+  fn an_unchanged_frame_marks_no_kept_node_drawn_one_at_a_time() {
+    let mut h = unchanged_settings();
+    let stats = |h: &UiHarness| h.world().resource::<UiNodes>().cache.stats.clone();
+    assert_eq!(stats(&h).marked, 0, "no kept node's record marked");
+    // The kept nodes' records stay drawn, frame after frame: no row is
+    // built or captured again
+    let records = h.ui_cache_stats().records;
+    for _ in 0..3 {
+      h.frame(|_| {});
+      let stats = h.ui_cache_stats();
+      assert_eq!(stats.records, records);
+      assert_eq!((stats.reused, stats.captured), (50, 0));
+    }
   }
 
   #[test]

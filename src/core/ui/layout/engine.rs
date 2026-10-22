@@ -68,7 +68,10 @@ struct Entry {
   children: Vec<NodeId>,
   content_key: u64,
   frame: u64,
-  /// The entries in its subtree, counted when it was laid out with its children
+  /// The entries in its subtree, counted by a layout that captures
+  /// (`layout_counting`) when it was laid out with its children. Read only
+  /// once the node is kept, which it is only after such a layout: a count
+  /// an uncounted layout left stale is never read.
   below: u32,
 }
 
@@ -90,7 +93,9 @@ struct Buffers {
   child_ids: Vec<NodeId>,
   /// Each node's taffy node, once it has been brought up to date
   taffy_ids: Vec<Option<NodeId>>,
-  /// Each node's descendant count, children before parents
+  /// Each node's descendant count, children before parents: filled only
+  /// by a layout that counts (`layout_counting`), empty after one that
+  /// does not
   below: Vec<u32>,
   /// The result
   placed: Vec<Placed>,

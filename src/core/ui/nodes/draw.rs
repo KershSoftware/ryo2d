@@ -272,7 +272,7 @@ impl<'a> UiContext<'a> {
       #[cfg(debug_assertions)]
       walk
         .cache
-        .choose_spot(world, self.memory.frame(), &self.memory.fragments_prev);
+        .choose_spot(world, self.memory.frame(), &self.memory.fragments);
       // The walk's own writes get a tick of their own, which its records
       // keep
       world.increment_change_tick();
@@ -324,7 +324,7 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
     #[cfg(debug_assertions)]
     walk
       .cache
-      .choose_spot(world, ui.memory.frame(), &ui.memory.fragments_prev);
+      .choose_spot(world, ui.memory.frame(), &ui.memory.fragments);
   }
   let mut i = 0;
   while let Some((root, place)) = scene_root(world, scene, &mut i) {
@@ -486,6 +486,7 @@ fn build_recorded(
     env: walk.env,
     top,
     frame: ui.memory.frame(),
+    held: None,
     built: ui.memory.frame(),
     id: response.as_ref().map_or(UiId::NONE, |response| response.id),
     dialog,
@@ -550,14 +551,17 @@ fn draw_clean(
   let Some(root) = root.filter(|_| walk.fragments && !ui.capturing()) else {
     return replay_taken(world, ui, node, taken, walk);
   };
-  if !spot_fragment(walk, ui, root, taken.built) && ui.push_kept(root, taken.built) {
+  let kept = if spot_fragment(walk, ui, root, taken.built) {
+    None
+  } else {
+    ui.push_kept(root, taken.built)
+  };
+  if let Some(slot) = kept {
     // What a replay would do besides pushing: the tapes around carry its
-    // reads, and its nodes' records are drawn this frame
+    // reads, and its nodes' records are drawn this frame (held by it from
+    // its first push)
     ui.carry_reads(&taken.tape.reads);
-    let frame = ui.memory.frame();
-    walk
-      .cache
-      .keep_drawn(&ui.memory.scratch.kept_entities, frame);
+    walk.cache.hold_kept(&mut ui.memory.fragments, slot);
     if taken.dialog {
       walk.back = Some(node);
     }

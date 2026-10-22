@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use super::fragment::{CaptureLog, Fragment, FragmentStats, Role};
+use super::fragment::{CaptureLog, FragmentStats, Fragments, Role};
 use super::id::{IdScopes, TapeLog, UiId};
 use super::layout::engine::NodeDesc;
 use super::layout::{Measure, UiStyle};
@@ -19,6 +19,7 @@ use super::types::Rect;
 use super::widgets::drag::DragState;
 #[cfg(not(target_arch = "wasm32"))]
 use super::widgets::state_debug;
+#[cfg(debug_assertions)]
 use crate::core::ecs::kernel::Entity;
 use crate::core::hash::FastMap;
 use crate::core::input::Direction;
@@ -344,8 +345,6 @@ pub(crate) struct Scratch {
   captures_used: usize,
   /// The last of this pass's capture logs is open
   capturing: bool,
-  /// The nodes replayed in the fragment pushed last (`UiMemory::replay_fragment`)
-  pub(crate) kept_entities: Vec<Entity>,
 }
 
 impl Scratch {
@@ -485,12 +484,9 @@ pub(crate) struct UiMemory {
   pub(crate) interact: Interaction,
   /// Buffers the subtrees and their resolution reuse
   pub(crate) scratch: Scratch,
-  /// Last frame's fragments, by their root's id: this frame's resolves
-  /// take them, and a fragment not taken is gone the frame after. Boxed: a
-  /// frame moves each kept one into `fragments_next`.
-  pub(crate) fragments_prev: FastMap<UiId, Box<Fragment>>,
-  /// This frame's fragments, kept for the next
-  pub(crate) fragments_next: FastMap<UiId, Box<Fragment>>,
+  /// The kept fragments: last frame's, for this frame's resolves to take
+  /// (one not taken is gone the frame after), and this frame's
+  pub(crate) fragments: Fragments,
   /// The last fragment version given out before this frame: the fragments
   /// carried into it have one up to it, and a rerun pass keeps only those
   carried: u64,
@@ -501,10 +497,10 @@ pub(crate) struct UiMemory {
   /// Whether fragments are kept (the walk's switch)
   fragments_on: bool,
   /// The kept fragment the debug spot check set aside this frame, by its
-  /// root's id: its subtree is replayed and captured in place of its copy,
-  /// and resolve compares the capture with it
+  /// root's id, and its slot: its subtree is replayed and captured in place
+  /// of its copy, and resolve compares the capture with it
   #[cfg(debug_assertions)]
-  pub(crate) spot_held: Option<(UiId, Box<Fragment>)>,
+  pub(crate) spot_held: Option<(UiId, u32)>,
 }
 
 impl UiMemory {
@@ -524,8 +520,7 @@ impl UiMemory {
       touched: TapeLog::default(),
       interact: Interaction::default(),
       scratch: Scratch::default(),
-      fragments_prev: FastMap::default(),
-      fragments_next: FastMap::default(),
+      fragments: Fragments::default(),
       carried: 0,
       fragment_version: 0,
       fragment_stats: FragmentStats::default(),
@@ -544,9 +539,9 @@ impl UiMemory {
     self.scopes.begin_frame();
     self.touched.clear();
     self.interact.sounds.clear();
-    // Last frame's fragments become this frame's to take
-    std::mem::swap(&mut self.fragments_prev, &mut self.fragments_next);
-    self.fragments_next.clear();
+    // Last frame's fragments are this frame's to take; those it did not
+    // take go
+    self.fragments.begin_frame(self.frame, &mut self.scopes);
     #[cfg(debug_assertions)]
     {
       self.spot_held = None;
@@ -594,7 +589,7 @@ impl UiMemory {
   pub(crate) fn rewind_frame(&mut self) {
     std::mem::swap(&mut self.prev, &mut self.next);
     self.unhold_spot();
-    std::mem::swap(&mut self.fragments_prev, &mut self.fragments_next);
+    self.fragments.rewind(self.frame, &mut self.scopes);
     self.drawing = false;
   }
 
@@ -607,12 +602,10 @@ impl UiMemory {
     self.scopes.begin_frame();
     self.touched.clear();
     self.unhold_spot();
-    let (prev, carried) = (&mut self.fragments_prev, self.carried);
-    for (id, fragment) in self.fragments_next.drain() {
-      if fragment.version <= carried {
-        prev.insert(id, fragment);
-      }
-    }
+    let (frame, carried, latest) = (self.frame, self.carried, self.fragment_version);
+    self
+      .fragments
+      .restart(frame, carried, latest, &mut self.scopes);
     self.fragment_stats = FragmentStats::default();
     self.scratch.clear_captures();
   }
@@ -624,8 +617,7 @@ impl UiMemory {
     }
     self.fragments_on = on;
     if !on {
-      self.fragments_prev.clear();
-      self.fragments_next.clear();
+      self.fragments.clear(&mut self.scopes);
       #[cfg(debug_assertions)]
       {
         self.spot_held = None;
@@ -634,22 +626,27 @@ impl UiMemory {
   }
 
   /// The fragment the spot check set aside, not yet compared, is last
-  /// frame's again
+  /// frame's again: it never left its slot
   fn unhold_spot(&mut self) {
     #[cfg(debug_assertions)]
-    if let Some((id, fragment)) = self.spot_held.take() {
-      self.fragments_prev.insert(id, fragment);
+    {
+      self.spot_held = None;
     }
   }
 
-  /// The fragment rooted at `id` the spot check set aside this frame, if
-  /// it did
+  /// The slot of the fragment rooted at `id` the spot check set aside this
+  /// frame, if it did
   #[cfg(debug_assertions)]
-  pub(crate) fn take_spot_held(&mut self, id: UiId) -> Option<Box<Fragment>> {
+  pub(crate) fn take_spot_held(&mut self, id: UiId) -> Option<u32> {
     self
       .spot_held
       .take_if(|(held, _)| *held == id)
-      .map(|(_, fragment)| fragment)
+      .map(|(_, slot)| slot)
+  }
+
+  /// Drop the fragment in `slot`
+  pub(crate) fn drop_fragment(&mut self, slot: u32) {
+    self.fragments.drop_slot(slot, &mut self.scopes);
   }
 
   /// A new fragment version: a fragment captured or resolved again takes one
@@ -658,34 +655,51 @@ impl UiMemory {
     self.fragment_version
   }
 
-  /// Make the ids and keep the widget states of the fragment rooted at
-  /// `id` as a replay of its subtree in `scene` would, note the nodes
-  /// replayed in it in `scratch.kept_entities`, and push its root to
-  /// `nodes` as a kept node (`Role::Kept`), its place in the tree not yet
-  /// stamped. Without such a fragment, a kept node with nothing kept, which
-  /// resolve draws empty.
-  pub(crate) fn replay_fragment(&mut self, id: UiId, scene: u64, nodes: &mut Vec<Node>) {
-    let entities = &mut self.scratch.kept_entities;
-    entities.clear();
-    match self.fragments_prev.get(&id) {
+  /// Make the ids and keep the widget states of the fragment in `slot`,
+  /// rooted at `id`, as a replay of its subtree in `scene` would, mark it
+  /// pushed this frame, and push its root to `nodes` as a kept node
+  /// (`Role::Kept`), its place in the tree not yet stamped. Its ids are
+  /// made at once when its slot indexes them. Without such a fragment (the
+  /// caller found it), a kept node with nothing kept, which resolve draws
+  /// empty.
+  pub(crate) fn replay_fragment(&mut self, slot: u32, id: UiId, scene: u64, nodes: &mut Vec<Node>) {
+    let fragment = self.fragments.get(slot);
+    debug_assert!(
+      fragment.is_some(),
+      "a kept fragment is pushed only once `keeps` found it"
+    );
+    match fragment {
       Some(fragment) => {
-        for &made in &fragment.ids {
-          self.scopes.replay_id(made);
+        if fragment.indexed {
+          self.scopes.make_kept(slot, &fragment.ids);
+        } else {
+          for &made in &fragment.ids {
+            self.scopes.replay_id(made);
+          }
         }
         for &state in &fragment.states {
           touch(&mut self.states, state, scene, self.frame);
         }
-        entities.extend_from_slice(&fragment.entities);
         nodes.extend_from_slice(std::slice::from_ref(&fragment.root));
       }
       None => nodes.push(Node::new(id, UiStyle::default(), Measure::None)),
     }
+    self.fragments.pushed(slot, self.frame);
     if let Some(root) = nodes.last_mut() {
-      root.role = Role::Kept;
+      root.role = Role::Kept(slot);
       root.parent = None;
       root.depth = 0;
       root.scroll = UiId::NONE;
     }
+  }
+
+  /// The ids of every fragment kept for the next frame
+  #[cfg(test)]
+  pub(crate) fn kept_ids(&self) -> Vec<UiId> {
+    let fragments = self.fragments.kept_in(self.frame);
+    fragments
+      .flat_map(|(_, fragment)| fragment.ids.iter().copied())
+      .collect()
   }
 
   /// Widget state not touched this frame is dropped
@@ -813,12 +827,7 @@ impl UiMemory {
     self.focus_memory.retain(|_, (owner, _)| *owner != scene);
     self.prev.retain(|_, record| record.scene != scene);
     self.next.retain(|_, record| record.scene != scene);
-    self
-      .fragments_prev
-      .retain(|_, fragment| fragment.scene != scene);
-    self
-      .fragments_next
-      .retain(|_, fragment| fragment.scene != scene);
+    self.fragments.forget_scene(scene, &mut self.scopes);
   }
 }
 
@@ -834,6 +843,7 @@ fn touch(states: &mut FastMap<UiId, Slot>, id: UiId, scene: u64, frame: u64) {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::ui::fragment::Fragment;
   use crate::core::ui::layout::Measure;
   use crate::core::ui::tree::Node;
 
@@ -989,60 +999,137 @@ mod tests {
       interest: None,
       version,
       bounds: None,
+      indexed: false,
+      holding: false,
     })
+  }
+
+  /// The roots of the fragments last frame left this one to take, sorted
+  fn to_take(memory: &UiMemory) -> Vec<UiId> {
+    let frame = memory.frame();
+    let mut roots: Vec<UiId> = memory
+      .fragments
+      .of_last_frame(frame)
+      .map(|(root, _)| root)
+      .collect();
+    roots.sort_unstable();
+    roots
+  }
+
+  /// How many fragments this frame keeps for the next
+  fn kept(memory: &UiMemory) -> usize {
+    memory.fragments.kept_in(memory.frame()).count()
+  }
+
+  /// `fragment` captured this frame: its slot
+  fn capture(memory: &mut UiMemory, fragment: Box<Fragment>) -> u32 {
+    let frame = memory.frame();
+    memory.fragments.insert(fragment, frame, &mut memory.scopes)
+  }
+
+  /// Last frame's fragment of `root` taken and kept again this frame:
+  /// copied, or (`again`) resolved again
+  fn copy(memory: &mut UiMemory, root: u64, again: bool) {
+    let frame = memory.frame();
+    let slot = memory.fragments.last_of(UiId(root), frame).unwrap();
+    let mut fragment = memory.fragments.take(slot).unwrap();
+    if again {
+      fragment.version = memory.next_fragment_version();
+    }
+    memory.fragments.keep(slot, fragment, frame);
   }
 
   #[test]
   fn a_fragment_lasts_a_frame_undrawn_and_a_rerun_keeps_only_last_frames() {
     let mut memory = UiMemory::new();
     memory.begin_frame();
-    let version = memory.next_fragment_version();
-    memory
-      .fragments_next
-      .insert(UiId(1), fragment(1, 7, version));
-    let version = memory.next_fragment_version();
-    memory
-      .fragments_next
-      .insert(UiId(2), fragment(2, 7, version));
+    for root in [1, 2] {
+      let version = memory.next_fragment_version();
+      capture(&mut memory, fragment(root, 7, version));
+    }
     memory.end_frame();
     memory.begin_frame();
-    assert_eq!(memory.fragments_prev.len(), 2, "last frame's, to take");
+    assert_eq!(to_take(&memory), [UiId(1), UiId(2)], "last frame's");
     // A pass copies one, resolves the other again and captures a third
-    let copied = memory.fragments_prev.remove(&UiId(1)).unwrap();
-    memory.fragments_next.insert(UiId(1), copied);
-    let mut again = memory.fragments_prev.remove(&UiId(2)).unwrap();
-    again.version = memory.next_fragment_version();
-    memory.fragments_next.insert(UiId(2), again);
+    copy(&mut memory, 1, false);
+    copy(&mut memory, 2, true);
     let version = memory.next_fragment_version();
-    memory
-      .fragments_next
-      .insert(UiId(3), fragment(3, 7, version));
+    capture(&mut memory, fragment(3, 7, version));
+    assert!(to_take(&memory).is_empty(), "all taken");
     // The pass is discarded: what it only copied is last frame's again
     memory.restart_pass();
-    let mut kept: Vec<UiId> = memory.fragments_prev.keys().copied().collect();
-    kept.sort_unstable();
-    assert_eq!(kept, [UiId(1)]);
-    assert!(memory.fragments_next.is_empty());
+    assert_eq!(to_take(&memory), [UiId(1)]);
+    assert_eq!(kept(&memory), 0);
     let version = memory.next_fragment_version();
-    memory
-      .fragments_next
-      .insert(UiId(4), fragment(4, 8, version));
+    capture(&mut memory, fragment(4, 8, version));
     memory.end_frame();
     // Not drawn in a frame: gone the frame after
     memory.begin_frame();
-    assert_eq!(memory.fragments_prev.keys().collect::<Vec<_>>(), [&UiId(4)]);
+    assert_eq!(to_take(&memory), [UiId(4)]);
     memory.forget_scene(8);
-    assert!(memory.fragments_prev.is_empty(), "its scene's go with it");
+    assert!(to_take(&memory).is_empty(), "its scene's go with it");
   }
 
   #[test]
   fn fragments_turned_off_are_dropped() {
     let mut memory = UiMemory::new();
     memory.begin_frame();
-    memory.fragments_next.insert(UiId(1), fragment(1, 7, 1));
+    capture(&mut memory, fragment(1, 7, 1));
     memory.set_fragments(true);
-    assert_eq!(memory.fragments_next.len(), 1, "on: kept");
+    assert_eq!(kept(&memory), 1, "on: kept");
     memory.set_fragments(false);
-    assert!(memory.fragments_next.is_empty() && memory.fragments_prev.is_empty());
+    assert_eq!(kept(&memory), 0);
+  }
+
+  #[test]
+  fn a_pushed_fragment_makes_its_ids_at_once_and_a_newer_one_of_its_root_takes_them() {
+    let site = std::panic::Location::caller();
+    let mut memory = UiMemory::new();
+    let begin = |memory: &mut UiMemory| {
+      memory.begin_frame();
+      memory.scopes.enter_root(UiId::root(1));
+    };
+    begin(&mut memory);
+    let a = memory.scopes.make(site, Some(5));
+    let mut kept_a = fragment(1, 7, memory.next_fragment_version());
+    kept_a.ids = vec![a];
+    let first = capture(&mut memory, kept_a);
+    memory.end_frame();
+    // Pushed: its id is made, as one registered would be, and a build
+    // making it again is given another
+    begin(&mut memory);
+    let mut nodes = Vec::new();
+    memory.replay_fragment(first, UiId(1), 7, &mut nodes);
+    assert_eq!(nodes[0].role, Role::Kept(first));
+    assert!(memory.scopes.made(a));
+    assert_eq!(memory.scopes.replayed, 0, "made as a block");
+    assert_ne!(memory.scopes.make(site, Some(5)), a, "a duplicate");
+    copy(&mut memory, 1, false);
+    memory.end_frame();
+    // Not pushed: not made
+    begin(&mut memory);
+    assert!(!memory.scopes.made(a));
+    // Its root captured anew, holding `a` and `b`: pushed, both are made
+    let b = UiId(77);
+    let mut newer = fragment(1, 7, memory.next_fragment_version());
+    newer.ids = vec![a, b];
+    let second = capture(&mut memory, newer);
+    memory.restart_pass();
+    memory.scopes.enter_root(UiId::root(1));
+    // The capture went with the discarded pass: the older one takes `a`
+    // back
+    memory.replay_fragment(first, UiId(1), 7, &mut nodes);
+    assert!(memory.scopes.made(a) && !memory.scopes.made(b));
+    assert_eq!(memory.scopes.replayed, 0);
+    let _ = second;
+    // Another root's fragment holding `a` registers its ids one at a time
+    let mut other = fragment(2, 7, memory.next_fragment_version());
+    other.ids = vec![a, b];
+    let third = capture(&mut memory, other);
+    memory.end_frame();
+    begin(&mut memory);
+    memory.replay_fragment(third, UiId(2), 7, &mut nodes);
+    assert_eq!(memory.scopes.replayed, 2, "registered one at a time");
+    assert!(memory.scopes.made(a) && memory.scopes.made(b));
   }
 }

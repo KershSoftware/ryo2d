@@ -95,6 +95,15 @@ impl TapeLog {
   }
 }
 
+/// The ids of a kept fragment's slot (`fragment::Fragments`): the pass its
+/// fragment was last pushed in, and its root
+#[derive(Debug, Clone, Copy, Default)]
+struct Block {
+  pass: u64,
+  /// `NONE` while the slot holds no fragment
+  root: UiId,
+}
+
 /// The scopes and per-site counts of the frame being recorded
 #[derive(Debug, Default)]
 pub(crate) struct IdScopes {
@@ -108,6 +117,17 @@ pub(crate) struct IdScopes {
   capturing: usize,
   /// The ids made while a tape records
   pub(crate) log: TapeLog,
+  /// Kept fragments' ids, each by the slot of the fragment holding it,
+  /// kept from frame to frame: a fragment pushed makes its ids at once by
+  /// marking its slot's block, never registering each
+  kept: FastMap<UiId, u32>,
+  /// Each fragment slot's block
+  blocks: Vec<Block>,
+  /// The pass being recorded, counted by `begin_frame`
+  pass: u64,
+  /// The ids registered one at a time this pass (`replay_id`)
+  #[cfg(test)]
+  pub(crate) replayed: usize,
 }
 
 impl IdScopes {
@@ -118,11 +138,20 @@ impl IdScopes {
     self.captured.clear();
     self.capturing = 0;
     self.log.clear();
+    self.pass += 1;
+    #[cfg(test)]
+    {
+      self.replayed = 0;
+    }
   }
 
   /// Register `id`, made by a builder a tape recorded, as made this frame:
   /// a replay of that tape. Captured like a made id.
   pub(crate) fn replay_id(&mut self, id: UiId) {
+    #[cfg(test)]
+    {
+      self.replayed += 1;
+    }
     self.used.insert(id);
     if self.capturing > 0 {
       self.captured.push(id);
@@ -131,7 +160,91 @@ impl IdScopes {
 
   /// Whether `id` has been made this frame
   pub(crate) fn made(&self, id: UiId) -> bool {
-    self.used.contains(&id)
+    self.used.contains(&id) || self.kept_made(id)
+  }
+
+  /// Whether `id` is a kept fragment's, pushed this pass
+  fn kept_made(&self, id: UiId) -> bool {
+    !self.kept.is_empty()
+      && self.kept.get(&id).is_some_and(|&slot| {
+        self
+          .blocks
+          .get(slot as usize)
+          .is_some_and(|block| block.pass == self.pass)
+      })
+  }
+
+  /// Index `ids`, those of the fragment in `slot` rooted at `root`, by its
+  /// slot: [`make_kept`](Self::make_kept) then makes them all. An older
+  /// fragment of the same root gives up the ids they share. False, with
+  /// none indexed, when another root's fragment holds one of them: the
+  /// fragment's ids are then registered one at a time when it is pushed.
+  pub(crate) fn index_kept(&mut self, slot: u32, root: UiId, ids: &[UiId]) -> bool {
+    let Some(at) = self.block_mut(slot) else {
+      return false;
+    };
+    *at = Block { pass: 0, root };
+    let blocks = &self.blocks;
+    let elsewhere = ids.iter().any(|id| {
+      self.kept.get(id).is_some_and(|&other| {
+        other != slot
+          && blocks
+            .get(other as usize)
+            .is_some_and(|block| block.root != UiId::NONE && block.root != root)
+      })
+    });
+    if elsewhere {
+      return false;
+    }
+    for &id in ids {
+      self.kept.insert(id, slot);
+    }
+    true
+  }
+
+  /// The fragment in `slot`, whose ids are indexed, is pushed: its ids are
+  /// made this pass, all at once. A capture open notes them, in order.
+  pub(crate) fn make_kept(&mut self, slot: u32, ids: &[UiId]) {
+    let pass = self.pass;
+    if let Some(block) = self.block_mut(slot) {
+      block.pass = pass;
+    }
+    if self.capturing > 0 {
+      self.captured.extend_from_slice(ids);
+    }
+  }
+
+  /// The fragment in `slot` goes: its ids, `ids` (all it indexed, or
+  /// `None` when they are not known), are no longer indexed by it
+  pub(crate) fn unindex_kept(&mut self, slot: u32, ids: Option<&[UiId]>) {
+    match ids {
+      Some(ids) => {
+        for id in ids {
+          if self.kept.get(id) == Some(&slot) {
+            self.kept.remove(id);
+          }
+        }
+      }
+      None => self.kept.retain(|_, at| *at != slot),
+    }
+    if let Some(block) = self.blocks.get_mut(slot as usize) {
+      *block = Block::default();
+    }
+  }
+
+  /// Every kept fragment goes
+  pub(crate) fn clear_kept(&mut self) {
+    self.kept.clear();
+    self.blocks.clear();
+  }
+
+  /// `slot`'s block, the blocks grown to hold it
+  fn block_mut(&mut self, slot: u32) -> Option<&mut Block> {
+    let at = slot as usize;
+    if self.blocks.len() <= at {
+      self.blocks.resize(at + 1, Block::default());
+    }
+    self.blocks.get_mut(at)
   }
 
   /// Start noting the ids made from here; the mark is for `take_capture`
@@ -201,7 +314,7 @@ impl IdScopes {
         id
       }
     };
-    if self.used.insert(id) {
+    if !self.kept_made(id) && self.used.insert(id) {
       return id;
     }
     // Only repeated explicit keys collide; never share their state
@@ -211,7 +324,7 @@ impl IdScopes {
     let mut n = 1;
     loop {
       let candidate = UiId(mix(id.0, &[n]));
-      if self.used.insert(candidate) {
+      if !self.kept_made(candidate) && self.used.insert(candidate) {
         return candidate;
       }
       n += 1;

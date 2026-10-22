@@ -358,7 +358,7 @@ impl Engine {
       self.ui_memory.end_frame();
       self.ui_layout.end_frame();
       // Node records not drawn this frame go, as widget state does
-      crate::core::ui::nodes::end_frame(&mut self.world, self.ui_memory.frame());
+      crate::core::ui::nodes::end_frame(&mut self.world, &self.ui_memory);
     }
   }
 
@@ -685,6 +685,7 @@ impl Engine {
       let rebinds = ui.take_rebinds();
       (action, ui.into_input(), rebinds)
     };
+    self.ui_commands.end_pass();
     // A rerun pass adds to the frame's first
     if first_pass {
       self.ui_pass_time = started.elapsed();

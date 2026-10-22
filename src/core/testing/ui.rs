@@ -700,6 +700,7 @@ impl UiHarness {
       self.consumed = context.input().consumed();
       result
     };
+    self.commands.end_pass();
     // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
     // the UI stays as the last drawn frame left it
     if self.memory.drew_nothing() {
@@ -707,7 +708,7 @@ impl UiHarness {
     } else {
       self.memory.end_frame();
       self.layout.end_frame();
-      nodes::end_frame(&mut self.world, self.memory.frame());
+      nodes::end_frame(&mut self.world, &self.memory);
     }
     self.text.end_frame();
     // A press and a release last one frame, and so do navigation presses

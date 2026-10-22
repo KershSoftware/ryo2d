@@ -9,6 +9,8 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::fragment::{Fragment, Inputs, KeptDraw, KeptRecord, Role, sized_by};
+#[cfg(debug_assertions)]
+use super::immediate::UiDraw;
 use super::immediate::{
   Bounds, FragmentRun, ScrollSlot, UiCommand, UiCommands, intersect, meet, outside,
 };
@@ -340,14 +342,18 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       scratch.floating.push((i, style));
     }
     match node.role {
-      Role::Kept => {
-        let fragment = memory.fragments_prev.remove(&node.id);
+      Role::Kept(slot) => {
+        let fragment = memory.fragments.take(slot);
         if fragment.is_none() {
           warn_once("ui-fragment:missing".to_string(), || {
             "a kept UI fragment was missing when its subtree was laid out; drawn empty".to_string()
           });
         }
-        keeping.kept.push((i, fragment));
+        keeping.kept.push(Taken {
+          node: i,
+          slot,
+          fragment,
+        });
       }
       Role::Capture => captures = true,
       Role::None => {}
@@ -382,7 +388,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       measure: node.measure,
       content_key: node.content_key,
       children: &children[start..ends[i]],
-      kept: node.role == Role::Kept,
+      kept: matches!(node.role, Role::Kept(_)),
     }
   }));
   let available = at.map_or(ui_size, |at| Vec2::new(at.width, at.height));
@@ -483,12 +489,13 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     captures: capturing,
     run,
   } = &mut keeping;
-  for (i, slot) in kept.iter_mut() {
-    let Some(fragment) = slot else {
+  for taken in kept.iter_mut() {
+    let i = taken.node;
+    let Some(fragment) = &mut taken.fragment else {
       continue;
     };
-    let laid = placed[*i].rect;
-    let inputs = placing.inputs(*i, nodes[*i].layer, laid, from, scale);
+    let laid = placed[i].rect;
+    let inputs = placing.inputs(i, nodes[i].layer, laid, from, scale);
     if inputs == fragment.inputs && fragment.sprites_hold() {
       memory.fragment_stats.reused += 1;
       continue;
@@ -500,15 +507,19 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       from,
       scene,
     };
-    if !again.resolve(fragment, *i, laid, placing, run, memory, commands) {
+    if !again.resolve(fragment, i, laid, placing, run, memory, commands) {
       warn_once("ui-fragment:unheld".to_string(), || {
         "a kept UI fragment's nodes were no longer laid out; drawn empty".to_string()
       });
-      *slot = None;
+      // Back in its slot, to go with it
+      if let Some(fragment) = taken.fragment.take() {
+        memory.fragments.keep(taken.slot, fragment, memory.frame());
+      }
+      memory.drop_fragment(taken.slot);
       continue;
     }
     fragment.inputs = inputs;
-    fragment.interest = placing.slot_of(*i).interest_bits();
+    fragment.interest = placing.slot_of(i).interest_bits();
     fragment.version = memory.next_fragment_version();
     memory.fragment_stats.resolved_again += 1;
   }
@@ -535,9 +546,11 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   };
 
   // Records, for next frame's hit tests and navigation: absolute
+  let mut at_kept = 0;
   for (i, node) in nodes.iter().enumerate() {
-    if node.role == Role::Kept {
-      if let Some(fragment) = kept_at(kept, i) {
+    if let Role::Kept(_) = node.role {
+      let taken = kept_at(kept, &mut at_kept, i).and_then(|k| kept.get(k));
+      if let Some(fragment) = taken.and_then(|taken| taken.fragment.as_deref()) {
         let slot = placing.slot_of(i);
         let copy = CopyAt {
           root: node,
@@ -568,15 +581,21 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   // a capture's go from where the first draw at or past its root's order
   // lands (its own, or the next one's when none of its draws is pushed)
   let runs_from = commands.runs().len();
+  let mut at_kept = 0;
   if captures {
     let mut opening = 0;
     for draw in subtree.draws.drain(..) {
       start_runs(capturing, &mut opening, draw.order, commands.position());
-      if matches!(draw.kind, DrawKind::Kept) {
-        if let (Some(node), Some(fragment)) = (nodes.get(draw.node), kept_at_mut(kept, draw.node)) {
-          let slot = placing.slot_of(draw.node);
-          copy_draws(fragment, node, slot, memory, commands);
-        }
+      if let DrawKind::Kept = draw.kind {
+        copy_kept(
+          draw.node,
+          nodes,
+          kept,
+          &mut at_kept,
+          placing,
+          memory,
+          commands,
+        );
         continue;
       }
       let (Some(node), Some(at)) = (nodes.get(draw.node), placing.nodes.get(draw.node)) else {
@@ -623,11 +642,16 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   } else {
     // Nothing is captured: a draw's commands are made only where they show
     for draw in subtree.draws.drain(..) {
-      if matches!(draw.kind, DrawKind::Kept) {
-        if let (Some(node), Some(fragment)) = (nodes.get(draw.node), kept_at_mut(kept, draw.node)) {
-          let slot = placing.slot_of(draw.node);
-          copy_draws(fragment, node, slot, memory, commands);
-        }
+      if let DrawKind::Kept = draw.kind {
+        copy_kept(
+          draw.node,
+          nodes,
+          kept,
+          &mut at_kept,
+          placing,
+          memory,
+          commands,
+        );
         continue;
       }
       let (Some(node), Some(at)) = (nodes.get(draw.node), placing.nodes.get(draw.node)) else {
@@ -635,21 +659,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       };
       let (index, place) = placement(at, &placing.slots[at.slot], draw.layer);
       let order = draw.order;
-      if let DrawKind::NineSlice {
-        inset,
-        sprite,
-        insets,
-        tint,
-        filter,
-      } = &draw.kind
-      {
-        let room = inset_rect(place.rect, *inset);
-        let slice = NineSlice {
-          sprite,
-          insets: *insets,
-          tint: *tint,
-          filter: *filter,
-        };
+      if let Some((room, slice)) = nine_slice_of(&draw.kind, &place) {
         nine_slice(room, &slice, &place, scale, place.cull, |command, _| {
           commands.push(order, index, command);
         });
@@ -707,6 +717,8 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       interest: slot.interest_bits(),
       version: memory.next_fragment_version(),
       bounds: None,
+      indexed: false,
+      holding: false,
     };
     // One the spot checks captured in place of a copy is counted apart
     #[cfg(debug_assertions)]
@@ -742,17 +754,21 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
         bounds,
       });
     }
-    memory.fragments_next.insert(node.id, Box::new(fragment));
+    let frame = memory.frame();
+    memory
+      .fragments
+      .insert(Box::new(fragment), frame, &mut memory.scopes);
   }
   // Captured runs were pushed after the kept ones
   if captures {
     commands.sort_runs(runs_from);
   }
 
-  // Every kept fragment is kept for next frame
-  for (i, fragment) in kept.drain(..) {
-    if let Some(fragment) = fragment {
-      memory.fragments_next.insert(nodes[i].id, fragment);
+  // Every kept fragment is back in its slot, kept for next frame
+  let frame = memory.frame();
+  for taken in kept.drain(..) {
+    if let Some(fragment) = taken.fragment {
+      memory.fragments.keep(taken.slot, fragment, frame);
     }
   }
   let rect = placing.nodes.first().map(|at| at.rect);
@@ -1088,21 +1104,7 @@ fn draw_commands(
   scale: f32,
   mut emit: impl FnMut(UiCommand, Option<Rect>),
 ) {
-  if let DrawKind::NineSlice {
-    inset,
-    sprite,
-    insets,
-    tint,
-    filter,
-  } = &kind
-  {
-    let room = inset_rect(place.rect, *inset);
-    let slice = NineSlice {
-      sprite,
-      insets: *insets,
-      tint: *tint,
-      filter: *filter,
-    };
+  if let Some((room, slice)) = nine_slice_of(&kind, place) {
     nine_slice(room, &slice, place, scale, None, |command, rect| {
       emit(command, Some(rect))
     });
@@ -1111,12 +1113,35 @@ fn draw_commands(
   }
 }
 
+/// A nine-slice draw's room (its node's rect placed at `place`, less its
+/// inset) and its slice; `None` for any other draw
+#[inline(always)]
+fn nine_slice_of<'k>(kind: &'k DrawKind, place: &Placement) -> Option<(Rect, NineSlice<'k>)> {
+  let DrawKind::NineSlice {
+    inset,
+    sprite,
+    insets,
+    tint,
+    filter,
+  } = kind
+  else {
+    return None;
+  };
+  let slice = NineSlice {
+    sprite,
+    insets: *insets,
+    tint: *tint,
+    filter: *filter,
+  };
+  Some((inset_rect(place.rect, *inset), slice))
+}
+
 /// The text leaf of the node `id` in one of `kept`'s fragments, if it is a
 /// text node
-fn kept_leaf(kept: &[(usize, Option<Box<Fragment>>)], id: UiId) -> Option<&TextLeaf> {
+fn kept_leaf(kept: &[Taken], id: UiId) -> Option<&TextLeaf> {
   kept
     .iter()
-    .filter_map(|(_, fragment)| fragment.as_ref())
+    .filter_map(|taken| taken.fragment.as_ref())
     .flat_map(|fragment| fragment.nodes.iter())
     .find(|node| node.id == id && node.text.is_some())?
     .text
@@ -1124,16 +1149,36 @@ fn kept_leaf(kept: &[(usize, Option<Box<Fragment>>)], id: UiId) -> Option<&TextL
     .get(&[])
 }
 
-/// The fragment of the kept node `i` (`kept` is in node order)
-fn kept_at(kept: &[(usize, Option<Box<Fragment>>)], i: usize) -> Option<&Fragment> {
-  let k = kept.binary_search_by_key(&i, |(j, _)| *j).ok()?;
-  kept[k].1.as_deref()
+/// Where in `kept` (in node order) the kept node `i` is. The loops ask in
+/// node order, so the one after the last found (`at`) is tried first.
+#[inline(always)]
+fn kept_at(kept: &[Taken], at: &mut usize, i: usize) -> Option<usize> {
+  let k = match kept.get(*at) {
+    Some(taken) if taken.node == i => *at,
+    _ => kept.binary_search_by_key(&i, |taken| taken.node).ok()?,
+  };
+  *at = k + 1;
+  Some(k)
 }
 
-/// [`kept_at`], to change
-fn kept_at_mut(kept: &mut [(usize, Option<Box<Fragment>>)], i: usize) -> Option<&mut Fragment> {
-  let k = kept.binary_search_by_key(&i, |(j, _)| *j).ok()?;
-  kept[k].1.as_deref_mut()
+/// Push the commands of the kept node `i`'s fragment, if it has one, as
+/// its run (`copy_draws`)
+#[inline(always)]
+fn copy_kept(
+  i: usize,
+  nodes: &[Node],
+  kept: &mut [Taken],
+  at: &mut usize,
+  placing: &Placing,
+  memory: &mut UiMemory,
+  commands: &mut UiCommands,
+) {
+  let taken = kept_at(kept, at, i).and_then(|k| kept.get_mut(k));
+  let fragment = taken.and_then(|taken| taken.fragment.as_deref_mut());
+  let (Some(node), Some(fragment)) = (nodes.get(i), fragment) else {
+    return;
+  };
+  copy_draws(fragment, node, placing.slot_of(i), memory, commands);
 }
 
 /// Where a fragment is copied: its root the kept node `root` in `slot`, at
@@ -1187,7 +1232,9 @@ fn copy_records(fragment: &Fragment, copy: CopyAt<'_>, memory: &mut UiMemory) {
 /// `slot`: each culled by its clip there (met with the slot's interest in a
 /// slot), its orders re-based to the root's. Under a slot's interest other
 /// than the one it was last pushed under it takes a new version when it
-/// pushes other commands: when the two cull one of them differently.
+/// pushes other commands: when the two cull one of them differently. Where
+/// the last pass left the same run (`UiCommands::reuse_run`), its commands
+/// are taken as they are, none cloned.
 fn copy_draws(
   fragment: &mut Fragment,
   root: &Node,
@@ -1216,6 +1263,19 @@ fn copy_draws(
   }
   let index = slot.table_index();
   let start = commands.position();
+  if commands.reuse_run(root.id, fragment.version, root.order, root.layer, index) {
+    #[cfg(debug_assertions)]
+    debug_assert!(
+      pushed_as_kept(
+        fragment,
+        root,
+        slot,
+        commands.as_slice().get(start as usize..)
+      ),
+      "a run taken where it was holds what copying it pushes"
+    );
+    return;
+  }
   // The bounds of what it pushes follow from its version
   let known = fragment
     .bounds
@@ -1230,6 +1290,10 @@ fn copy_draws(
       }
       let order = root.order.saturating_add(kept.order);
       commands.push(order, index, kept.command.clone());
+      #[cfg(test)]
+      {
+        memory.fragment_stats.cloned += 1;
+      }
     }
   }
   let bounds = known.unwrap_or_else(|| {
@@ -1246,6 +1310,33 @@ fn copy_draws(
     draws: start..commands.position(),
     bounds,
   });
+}
+
+/// Whether `draws` are the commands `fragment`, copied at the kept node
+/// `root` in `slot`, pushes: by order, slot, layer, box and clip
+#[cfg(debug_assertions)]
+fn pushed_as_kept(
+  fragment: &Fragment,
+  root: &Node,
+  slot: SlotPlace,
+  draws: Option<&[UiDraw]>,
+) -> bool {
+  let index = slot.table_index();
+  let mut draws = draws.unwrap_or_default().iter();
+  let mut pushed = fragment.draws.iter().filter(|kept| {
+    let cull = slot.fragment_cull(kept.command.clip_rect());
+    !kept.cull.is_some_and(|seen| outside(cull, seen))
+  });
+  let each = pushed.all(|kept| {
+    draws.next().is_some_and(|draw| {
+      draw.order == root.order.saturating_add(kept.order)
+        && draw.slot == index
+        && draw.command.draw_layer() == kept.command.draw_layer()
+        && draw.command.cull_box() == kept.command.cull_box()
+        && draw.command.clip_rect() == kept.command.clip_rect()
+    })
+  });
+  each && draws.next().is_none()
 }
 
 /// The debug spot checks, for `fresh`, just captured at `copy`; `built`
@@ -1270,7 +1361,9 @@ fn spot_check(
   memory: &mut UiMemory,
 ) -> (Fragment, bool) {
   if built {
-    if let Some(kept) = memory.fragments_prev.get(&copy.root.id)
+    let frame = memory.frame();
+    let last = memory.fragments.last_of(copy.root.id, frame);
+    if let Some(kept) = last.and_then(|slot| memory.fragments.get(slot))
       && copied_as(kept, &fresh)
       && kept.interest == fresh.interest
       && fragment_difference(kept, &fresh, copy).is_none()
@@ -1280,20 +1373,33 @@ fn spot_check(
     }
     return (fresh, true);
   }
-  let Some(kept) = memory.take_spot_held(copy.root.id) else {
+  let Some(slot) = memory.take_spot_held(copy.root.id) else {
     return (fresh, false);
   };
-  if !copied_as(&kept, &fresh) {
-    return (fresh, true);
+  // Compared, the fragment set aside goes
+  let spotted = spot_compare(&mut fresh, slot, copy, memory);
+  memory.drop_fragment(slot);
+  (fresh, spotted)
+}
+
+/// [`spot_check`]'s comparison of `fresh` with the fragment the spot
+/// check set aside in `slot`, copied at `copy`
+#[cfg(debug_assertions)]
+fn spot_compare(fresh: &mut Fragment, slot: u32, copy: CopyAt<'_>, memory: &mut UiMemory) -> bool {
+  let Some(kept) = memory.fragments.get(slot) else {
+    return true;
+  };
+  if !copied_as(kept, fresh) {
+    return true;
   }
   let stats = &mut memory.fragment_stats;
   stats.spot = Some(copy.root.id);
-  let Some((at, was, now)) = fragment_difference(&kept, &fresh, copy) else {
+  let Some((at, was, now)) = fragment_difference(kept, fresh, copy) else {
     if kept.interest == fresh.interest {
       fresh.version = kept.version;
       stats.spot_kept += 1;
     }
-    return (fresh, true);
+    return true;
   };
   stats.spot_differed += 1;
   let node = kept
@@ -1308,7 +1414,7 @@ fn spot_check(
        resolved from now on"
     )
   });
-  (fresh, true)
+  true
 }
 
 /// Whether `kept` would have been copied where `fresh` was resolved: its
@@ -1455,9 +1561,8 @@ const NO_SPAN: u32 = u32::MAX;
 /// each use
 #[derive(Default)]
 pub(crate) struct Keeping {
-  /// The subtree's kept nodes, in node order, with their fragments (`None`:
-  /// missing)
-  kept: Vec<(usize, Option<Box<Fragment>>)>,
+  /// The subtree's kept nodes, in node order, with their fragments
+  kept: Vec<Taken>,
   /// Each node's subtree size, itself included
   sizes: Vec<usize>,
   /// The capture whose span each node is in (`NO_SPAN`)
@@ -1466,6 +1571,14 @@ pub(crate) struct Keeping {
   captures: Vec<Capturing>,
   /// A fragment being resolved again
   run: Run,
+}
+
+/// A kept node of the subtree being resolved, with its fragment taken out
+/// of its slot (`None`: missing)
+struct Taken {
+  node: usize,
+  slot: u32,
+  fragment: Option<Box<Fragment>>,
 }
 
 /// A kept fragment resolved again: its nodes' ids and parents, and where
@@ -1543,10 +1656,15 @@ fn count_runs(draws: &[Draw], span_of: &mut [u32], captures: &mut [Capturing]) {
       capture.count_draw(draw.order);
     }
   }
-  for capture in captures.iter() {
+  for capture in captures.iter_mut() {
     if capture.count().is_none() {
       span_of[capture.root..capture.end].fill(NO_SPAN);
+      continue;
     }
+    // Each of its draws is kept, and makes a command at least
+    let drawn = capture.drawn as usize;
+    capture.node_draws.reserve_exact(drawn);
+    capture.draws.reserve(drawn);
   }
 }
 
@@ -1596,7 +1714,7 @@ fn spans(
       let inside = k == 0 || n.parent.is_some_and(|p| p >= i && p < i + k);
       inside
         && n.at.is_none()
-        && n.role != Role::Kept
+        && !matches!(n.role, Role::Kept(_))
         && !(n.style.scroll_x || n.style.scroll_y)
         && !matches!(n.text, Some(Leaf::Owned(_)))
     });
@@ -1617,7 +1735,7 @@ fn spans(
       low,
       high,
       drawn: 0,
-      records: Vec::new(),
+      records: Vec::with_capacity(end - i),
       draws: Vec::new(),
       node_draws: Vec::new(),
       sprites: Vec::new(),
@@ -1832,7 +1950,7 @@ fn nine_slice(
           clip: place.clip,
           layer: place.layer,
         };
-        emit(piece, rect);
+        emit(made(piece), rect);
       }
     }
   }
@@ -2101,7 +2219,7 @@ fn command_of(
             clip,
             layer,
           };
-          Some((line, None))
+          Some((made(line), None))
         }
         UiCommand::Text {
           layout,
@@ -2123,7 +2241,7 @@ fn command_of(
             clip,
             layer,
           };
-          (origin.is_finite() && !outside(cull, block)).then(|| (text(), Some(block)))
+          (origin.is_finite() && !outside(cull, block)).then(|| (made(text()), Some(block)))
         }
       }
     }
@@ -2168,7 +2286,7 @@ fn text_command(
     clip: place.clip,
     layer: place.layer,
   };
-  (origin.is_finite() && !outside(cull, block)).then(|| (command(), Some(block)))
+  (origin.is_finite() && !outside(cull, block)).then(|| (made(command()), Some(block)))
 }
 
 /// `command` with its box `rect`, when `rect` can draw and does not lie
@@ -2179,7 +2297,27 @@ fn boxed(
   cull: Option<Rect>,
   command: impl FnOnce() -> UiCommand,
 ) -> Option<(UiCommand, Option<Rect>)> {
-  (drawable(rect) && !outside(cull, rect)).then(|| (command(), Some(rect)))
+  (drawable(rect) && !outside(cull, rect)).then(|| (made(command()), Some(rect)))
+}
+
+#[cfg(test)]
+thread_local! {
+  /// The commands resolve has made on this thread
+  static MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `command`, counted as made (tests)
+#[inline(always)]
+fn made(command: UiCommand) -> UiCommand {
+  #[cfg(test)]
+  MADE.with(|made| made.set(made.get() + 1));
+  command
+}
+
+/// The commands resolve has made on this thread so far
+#[cfg(test)]
+fn commands_made() -> usize {
+  MADE.with(std::cell::Cell::get)
 }
 
 /// A vector with any non-finite part made zero
@@ -2599,6 +2737,32 @@ mod tests {
       .filter(|e| e.message.contains("still open when the scene's ui ended"))
       .count();
     assert_eq!(warnings, 1);
+  }
+
+  #[test]
+  fn a_closure_ui_builds_only_the_commands_it_draws() {
+    use crate::core::testing::UiHarness;
+    // 200 buttons in a scroll area 100 tall: most rows are out of view
+    let rows = |ui: &mut UiContext<'_>| {
+      ui.scroll().height(100.0).width(200.0).show(|ui| {
+        for i in 0..200 {
+          ui.button(format!("Row {i}")).id(i).show();
+        }
+      });
+    };
+    let mut h = UiHarness::new(640.0, 480.0);
+    for _ in 0..3 {
+      h.frame(rows);
+    }
+    let before = commands_made();
+    h.frame(rows);
+    let made = commands_made() - before;
+    assert!(h.command_count() < 40, "{} drawn", h.command_count());
+    assert_eq!(
+      made,
+      h.command_count(),
+      "a draw culled is never built: only what is drawn is made"
+    );
   }
 }
 
