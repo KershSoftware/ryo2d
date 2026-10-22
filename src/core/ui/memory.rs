@@ -12,6 +12,8 @@ use super::id::{IdScopes, TapeLog, UiId};
 use super::layout::UiStyle;
 use super::layout::engine::NodeDesc;
 use super::tape::Place;
+#[cfg(debug_assertions)]
+use super::tape::Tape;
 use super::tree::{Keeping, Node, Placing, Subtree};
 use super::types::Rect;
 use super::widgets::drag::DragState;
@@ -392,6 +394,38 @@ impl Scratch {
   /// Close the capture log opened last: it stays for resolve
   pub(crate) fn end_capture(&mut self) {
     self.capturing = false;
+  }
+
+  /// Whether a capture log is open
+  pub(crate) fn capturing(&self) -> bool {
+    self.capturing
+  }
+
+  /// Where the open capture log's ids, states and nodes end, if one is open
+  #[cfg(debug_assertions)]
+  pub(crate) fn capture_mark(&self) -> Option<[usize; 3]> {
+    if !self.capturing {
+      return None;
+    }
+    let log = self.captures[..self.captures_used].last()?;
+    Some([log.ids.len(), log.states.len(), log.entities.len()])
+  }
+
+  /// The node `entity` was built in the open capture from `mark` on (what
+  /// is drawn in it was logged since), making the ids and touching the
+  /// states of `tape`, its own build: they go where it began, before what
+  /// is drawn in it, as a replay of it logs them
+  #[cfg(debug_assertions)]
+  pub(crate) fn capture_built(&mut self, mark: [usize; 3], entity: Entity, tape: &Tape) {
+    let Some(log) = self.open_capture() else {
+      return;
+    };
+    let [ids, states, entities] = mark;
+    log.ids.splice(ids..ids, tape.ids.iter().copied());
+    log
+      .states
+      .splice(states..states, tape.states.iter().copied());
+    log.entities.insert(entities, entity);
   }
 
   /// The capture log open now, if one is

@@ -2741,6 +2741,42 @@ mod fragment_tests {
   }
 
   #[test]
+  fn an_inner_strips_fragments_keep_their_versions_while_the_outer_list_scrolls() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(super::super::oracle_tests::strip_list());
+    h.frame(|_| {});
+    let (list, strip) = (named(&h, "list"), named(&h, "strip"));
+    // Over the list's first rows, clear of the strip and the buttons
+    point_at(&mut h, list, 0.0, -90.0);
+    for _ in 0..3 {
+      h.frame(|_| {});
+    }
+    let cards: Vec<UiId> = kids(&h, strip)
+      .into_iter()
+      .filter_map(|card| h.ui_id(card))
+      .collect();
+    let versions = |h: &UiHarness| -> Vec<(UiId, u64)> {
+      let all = h.fragment_versions().into_iter();
+      all.filter(|(id, _)| cards.contains(id)).collect()
+    };
+    let mut was = versions(&h);
+    assert_eq!(was.len(), cards.len(), "every card is kept: {was:?}");
+    // The strip, partly below the list's view, moves up 30 units in steps:
+    // the list's interest (a 240-unit view stepped by halves) stays, and so
+    // does the strip's own view, though the list's clip cuts it less each
+    // frame
+    for frame in 0..10 {
+      h.trackpad(0.0, -3.0);
+      h.frame(|_| {});
+      let now = versions(&h);
+      assert_eq!(now, was, "frame {frame}: the cards keep their versions");
+      was = now;
+    }
+    let scrolled = h.scroll_offset(h.ui_id(list).unwrap()).y;
+    assert_eq!(scrolled, 30.0, "the list scrolled within its first step");
+  }
+
+  #[test]
   fn a_scrolling_list_carries_rows_outside_its_view_that_are_not_visible() {
     let mut h = UiHarness::new(640.0, 480.0);
     h.spawn_ui(settings_tree());
@@ -2808,6 +2844,40 @@ mod fragment_tests {
     assert!(
       checked >= 8,
       "a fragment is checked most frames ({checked})"
+    );
+  }
+
+  #[test]
+  #[cfg(debug_assertions)]
+  fn with_the_spot_checks_on_an_idle_trees_fragments_keep_their_versions() {
+    // Each frame the node spot check builds a clean node and the clean
+    // nodes above it, the outermost of them captured as the fragment its
+    // replay would be; the fragment spot check captures a kept fragment.
+    // Both stand in for copies, and keep the versions of what they replace.
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.set_ui_spot_check(true);
+    h.spawn_ui(settings_tree());
+    h.move_to(-100.0, -100.0);
+    for _ in 0..4 {
+      h.frame(|_| {});
+    }
+    let (was, built) = (h.fragment_versions(), h.ui_cache_stats().built);
+    let mut fragments = 0;
+    for frame in 0..12 {
+      h.frame(|_| {});
+      let stats = h.ui_cache_stats();
+      assert!(
+        stats.spot_checked.is_some(),
+        "frame {frame}: a node was built"
+      );
+      fragments += usize::from(stats.spot_fragment.is_some());
+      assert_eq!(h.fragment_versions(), was, "frame {frame}");
+      // Only the focused tab's path builds: a fragment's nodes stay drawn
+      assert_eq!(stats.built, built, "frame {frame}: {:?}", stats.rebuilt);
+    }
+    assert!(
+      fragments >= 8,
+      "a fragment was checked in {fragments} frames"
     );
   }
 

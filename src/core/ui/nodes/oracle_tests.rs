@@ -2225,10 +2225,13 @@ fn a_skin_replaced_in_place_at_another_size_redraws_its_kept_fragment() {
 // reached at all: an environment change, a resize among them, builds every
 // node, so its fragments are never pushed
 
-/// Fragments were copied in `run`: it compared a kept path, not a rebuild
+/// Fragments were copied in `run`: it compared a kept path, not a rebuild.
+/// Not under the spot check: the node it builds each frame, with the clean
+/// nodes above it, is captured as the fragment its replay would be, and in
+/// a small tree that fragment is the only one.
 fn assert_reused(run: &Run) {
   assert!(
-    run.stats.iter().any(|s| s.reused > 0),
+    spot_checking() || run.stats.iter().any(|s| s.reused > 0),
     "no fragment was copied over {} frames",
     run.frames
   );
@@ -2677,7 +2680,7 @@ fn each_env_change() {
 
 /// The Clipping page's list as nodes: a scroll area of rows holding a
 /// horizontal strip of cards, a scroll area itself, after a spacer
-fn strip_list() -> UiNode {
+pub(super) fn strip_list() -> UiNode {
   let row = |i: usize| {
     UiNode::row()
       .gap(6.0)

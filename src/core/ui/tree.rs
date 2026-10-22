@@ -611,6 +611,8 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     let Some(log) = scratch.capture_of(node.id) else {
       continue;
     };
+    #[cfg(debug_assertions)]
+    let built = log.spot;
     let inputs = placing.inputs(i, node.layer, placed[i].rect, from, scale);
     let slot = placing.slot_of(i);
     let mut root = node.clone();
@@ -645,7 +647,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       interest: slot.interest_bits(),
       version: memory.next_fragment_version(),
     };
-    // One the spot check captured in place of its copy is counted apart
+    // One the spot checks captured in place of a copy is counted apart
     #[cfg(debug_assertions)]
     let (fragment, spotted) = {
       let copy = CopyAt {
@@ -654,7 +656,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
         s,
         scene,
       };
-      spot_check(fragment, copy, memory)
+      spot_check(fragment, copy, built, memory)
     };
     #[cfg(not(debug_assertions))]
     let spotted = false;
@@ -852,7 +854,7 @@ impl Placing {
         offset,
         clip: view,
         cull,
-        interest: cull.map(|c| interest(c, size, drawn, [scroll_x, scroll_y], s)),
+        interest: Some(interest(size, drawn, [scroll_x, scroll_y], s)),
         index,
       });
       content = self.slots.len() - 1;
@@ -1096,23 +1098,42 @@ fn copy_draws(
   }
 }
 
-/// The debug spot check, for `fresh`, just captured at `copy`: when the
-/// spot check set the fragment `kept` of its subtree aside this frame
-/// (`UiMemory::spot_held`), the subtree was replayed and captured in place
-/// of `kept`'s copy. `fresh`, and whether the spot check captured it.
+/// The debug spot checks, for `fresh`, just captured at `copy`; `built`
+/// when its root was built by the node spot check in place of its replay.
+/// `fresh`, and whether a spot check captured it.
 ///
-/// `fresh` is compared with what copying `kept` there would have given: its
-/// order count, its records as copied and its draws, by `Debug` form. Only
-/// when `kept` would have been copied (its inputs the same and its sprites
-/// as they were); else it would have been resolved again. A difference
-/// warns once and is counted. With none, `fresh` keeps `kept`'s version
-/// when it pushed under the same interest: it pushed the same commands.
+/// - Built so, where last frame's fragment of the subtree would have been
+///   copied: `fresh` keeps that fragment's version when it is the same (by
+///   `fragment_difference`) and pushed under the same interest, since it
+///   pushed the same commands. The node spot check compares the build.
+/// - Replayed and captured in place of the copy of `kept`, which the
+///   fragment spot check set aside this frame (`UiMemory::spot_held`):
+///   `fresh` is compared with what copying `kept` there would have given,
+///   only when `kept` would have been copied (else it would have been
+///   resolved again). A difference warns once and is counted. With none,
+///   `fresh` keeps `kept`'s version as above.
 #[cfg(debug_assertions)]
-fn spot_check(mut fresh: Fragment, copy: CopyAt<'_>, memory: &mut UiMemory) -> (Fragment, bool) {
+fn spot_check(
+  mut fresh: Fragment,
+  copy: CopyAt<'_>,
+  built: bool,
+  memory: &mut UiMemory,
+) -> (Fragment, bool) {
+  if built {
+    if let Some(kept) = memory.fragments_prev.get(&copy.root.id)
+      && copied_as(kept, &fresh)
+      && kept.interest == fresh.interest
+      && fragment_difference(kept, &fresh, copy).is_none()
+    {
+      fresh.version = kept.version;
+      memory.fragment_stats.spot_kept += 1;
+    }
+    return (fresh, true);
+  }
   let Some(kept) = memory.take_spot_held(copy.root.id) else {
     return (fresh, false);
   };
-  if kept.inputs != fresh.inputs || !kept.sprites_hold() {
+  if !copied_as(&kept, &fresh) {
     return (fresh, true);
   }
   let stats = &mut memory.fragment_stats;
@@ -1120,6 +1141,7 @@ fn spot_check(mut fresh: Fragment, copy: CopyAt<'_>, memory: &mut UiMemory) -> (
   let Some((at, was, now)) = fragment_difference(&kept, &fresh, copy) else {
     if kept.interest == fresh.interest {
       fresh.version = kept.version;
+      stats.spot_kept += 1;
     }
     return (fresh, true);
   };
@@ -1137,6 +1159,13 @@ fn spot_check(mut fresh: Fragment, copy: CopyAt<'_>, memory: &mut UiMemory) -> (
     )
   });
   (fresh, true)
+}
+
+/// Whether `kept` would have been copied where `fresh` was resolved: its
+/// inputs the same and its sprites as they were
+#[cfg(debug_assertions)]
+fn copied_as(kept: &Fragment, fresh: &Fragment) -> bool {
+  kept.inputs == fresh.inputs && kept.sprites_hold()
 }
 
 /// Where `kept`, copied at `copy`, first differs from `fresh`, resolved
@@ -1445,7 +1474,8 @@ pub(crate) struct SlotPlace {
   /// That clip in the slot's own coordinates: what its draws are culled by
   cull: Option<Rect>,
   /// What a kept fragment's draws in it are culled by, in its own
-  /// coordinates: its view grown along each axis it scrolls ([`interest`])
+  /// coordinates: the area's own view, uncut by the clips around, grown
+  /// along each axis it scrolls ([`interest`])
   interest: Option<Rect>,
   /// Its index in the frame's slot table: 0 for none, `u16::MAX` when the
   /// table was full (its contents are then placed absolute)
@@ -1485,24 +1515,31 @@ impl SlotPlace {
   }
 }
 
-/// The rect a kept fragment's draws in a scroll area's slot are culled by
-/// (UI units, in the slot's coordinates, where `cull` is its view): along
-/// each axis the area `scrolls`, three of its `view`s from a view before
-/// its drawn offset (`drawn`, render pixels at `s` per UI unit) taken down
-/// to a whole number of half views, so the rect moves only every half view
-/// the contents travel and holds the view with a half view to spare on
-/// each side; along an axis it does not scroll, the view itself
-fn interest(cull: Rect, view: Vec2, drawn: [i32; 2], scrolls: [bool; 2], s: f32) -> Rect {
-  let axis = |k: usize, at: f32, size: f32| {
-    let step = view[k] / 2.0;
-    if !(scrolls[k] && step.is_finite() && step > 0.0) {
-      return (at, size);
+/// The rect a kept fragment's draws in a scroll area's slot are culled by,
+/// in the slot's coordinates (UI units): the area's own view there, `view`
+/// its size and `drawn` its drawn offset (render pixels, `s` to a UI unit),
+/// never cut by the clips around it, so an area an outer one scrolls keeps
+/// its interest.
+///
+/// Along an axis the area `scrolls`, it is three views from a view before
+/// the drawn offset taken down to a whole number of half views: it moves
+/// only every half view the contents travel, and holds the view with at
+/// least half a view to spare each side. Along an axis it does not scroll,
+/// it is the view itself grown by a render pixel each side: the slot's
+/// clip there is the view cut by the clips around, which float rounding
+/// may leave an ulp past the view, and must lie inside it.
+fn interest(view: Vec2, drawn: [i32; 2], scrolls: [bool; 2], s: f32) -> Rect {
+  let axis = |k: usize| {
+    let (size, step) = (view[k], view[k] / 2.0);
+    if scrolls[k] && step.is_finite() && step > 0.0 {
+      let d = drawn[k] as f32 / s;
+      ((d / step).floor() * step - size, 3.0 * size)
+    } else {
+      let px = 1.0 / s;
+      (-px, size + 2.0 * px)
     }
-    let d = drawn[k] as f32 / s;
-    ((d / step).floor() * step - view[k], 3.0 * view[k])
   };
-  let (x, width) = axis(0, cull.x, cull.width);
-  let (y, height) = axis(1, cull.y, cull.height);
+  let ((x, width), (y, height)) = (axis(0), axis(1));
   Rect::new(x, y, width, height)
 }
 

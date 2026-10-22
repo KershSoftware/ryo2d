@@ -498,6 +498,12 @@ fn build_recorded(
 /// The spot check: build the clean `node` in place of its replay and
 /// compare the build with its record, which the build then replaces. It
 /// draws what the replay would, so it is counted apart from the builds.
+///
+/// With fragments, where its replay would be captured (the outermost clean
+/// node on the spot check's path), the build is captured: kept as the
+/// fragment its replay would be, its draws culled as that fragment's are.
+/// The nodes on the path below it are built inside that capture, and the
+/// rest of what it holds is replayed into it (`draw_clean`).
 #[cfg(debug_assertions)]
 fn spot_check(
   world: &mut World,
@@ -509,7 +515,19 @@ fn spot_check(
   walk: &mut Walk,
 ) -> Option<Response> {
   let old = walk.cache.take_for_build(node).unwrap_or_default();
+  let root = old.nodes.first().map(|root| root.id);
+  let captures = root.filter(|_| walk.fragments && !ui.capturing());
+  if let Some(root) = captures {
+    ui.begin_spot_capture(root, ui.memory.frame());
+  }
+  let mark = ui.memory.scratch.capture_mark();
   let (response, record) = build_recorded(world, ui, node, place, None, dialog, walk);
+  if let Some(mark) = mark {
+    ui.memory.scratch.capture_built(mark, node, &record.tape);
+  }
+  if captures.is_some() {
+    ui.end_capture();
+  }
   walk.cache.spot_compare(world, node, &old, &record.tape);
   walk.cache.store(node, record, live);
   response
@@ -528,7 +546,8 @@ fn draw_clean(
   walk: &mut Walk,
 ) -> UiId {
   let root = taken.tape.nodes.first().map(|root| root.id);
-  let Some(root) = root.filter(|_| walk.fragments) else {
+  // Inside a capture (the spot check's build), what it holds is replayed
+  let Some(root) = root.filter(|_| walk.fragments && !ui.capturing()) else {
     return replay_taken(world, ui, node, taken, walk);
   };
   if !spot_fragment(walk, ui, root, taken.built) && ui.push_kept(root, taken.built) {

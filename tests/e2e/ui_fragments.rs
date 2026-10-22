@@ -233,9 +233,16 @@ impl Pair {
     }
   }
 
-  /// Fragments copied over `frames`
+  /// Fragments copied over `frames`, or (debug builds) captured afresh by
+  /// the spot check in place of their copy and found the same: each frame it
+  /// builds a node and the clean nodes above it, and captures the outermost
+  /// as the fragment its replay would be, which in a tree of one fragment is
+  /// its root's
   fn reused(&self, frames: std::ops::Range<usize>) -> usize {
-    self.stats[frames].iter().map(|s| s.reused).sum()
+    self.stats[frames]
+      .iter()
+      .map(|s| s.reused + s.spot_kept)
+      .sum()
   }
 }
 

@@ -812,6 +812,10 @@ pub struct UiCacheStats {
   /// Kept fragments the spot check found differing from their resolve:
   /// never so while a fragment checks every input its output follows from
   pub spot_fragment_differed: usize,
+  /// Kept fragments the debug spot check captured afresh in place of their
+  /// copy (the fragment it checks, or the subtree of the node it builds)
+  /// and found the same: copied in all but name (not counted in `reused`)
+  pub spot_kept: usize,
 }
 
 /// What a UI snapshot is made of: one frame of a UI, from the harness or
@@ -891,6 +895,7 @@ impl UiCacheStats {
         captured: fragments.captured,
         spot_fragment: fragments.spot,
         spot_fragment_differed: fragments.spot_differed,
+        spot_kept: fragments.spot_kept,
       })
       .unwrap_or_default()
   }

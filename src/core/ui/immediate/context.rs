@@ -1058,6 +1058,7 @@ impl<'a> UiContext<'a> {
     if let Some((node, at)) = taped {
       self.tape_node(node, at, index);
     }
+    self.root_capture(index);
     index
   }
 
@@ -1086,6 +1087,14 @@ impl<'a> UiContext<'a> {
     let index = self.push_stamped(at, |subtree| {
       subtree.nodes.extend_from_slice(std::slice::from_ref(node))
     });
+    self.root_capture(index);
+    index
+  }
+
+  /// The first node pushed (at `index`) while a capture is open is its
+  /// root: marked to be kept when it is the node the capture began for. A
+  /// replay pushes it so, and a build the spot check captures.
+  fn root_capture(&mut self, index: usize) {
     if let Some(log) = self.memory.scratch.open_capture()
       && !log.rooted
     {
@@ -1095,7 +1104,6 @@ impl<'a> UiContext<'a> {
         pushed.role = Role::Capture;
       }
     }
-    index
   }
 
   /// Push the kept fragment of the clean subtree whose root is `id`, whose
@@ -1194,6 +1202,23 @@ impl<'a> UiContext<'a> {
   /// Stop keeping what the replay makes: its log stays for resolve
   pub(crate) fn end_capture(&mut self) {
     self.memory.scratch.end_capture();
+  }
+
+  /// Whether a capture is open: what is drawn now is kept with it
+  pub(crate) fn capturing(&self) -> bool {
+    self.memory.scratch.capturing()
+  }
+
+  /// The debug spot check: start a capture, as
+  /// [`begin_capture`](Self::begin_capture), of the clean subtree rooted at
+  /// `id`, which it builds in place of its replay (or its fragment's copy)
+  /// this frame (`frame`, its new record's)
+  #[cfg(debug_assertions)]
+  pub(crate) fn begin_spot_capture(&mut self, id: UiId, frame: u64) {
+    self.begin_capture(id, frame);
+    if let Some(log) = self.memory.scratch.open_capture() {
+      log.spot = true;
+    }
   }
 
   /// A node of the clean subtree being captured, `entity`, is replayed

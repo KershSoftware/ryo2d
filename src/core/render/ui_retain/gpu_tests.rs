@@ -131,11 +131,6 @@ fn the_rebuilds_overlay_keeps_an_idle_ui_image() {
   };
   engine.debug_config_mut().show_ui_rebuilds = true;
   let _ = engine.step_frames(120);
-  // The debug spot check builds a clean node a frame: a row of the list
-  // built so has its draws culled by the list's view, and kept as a
-  // fragment by the list's wider interest, so the commands change each
-  // frame though nothing on screen does. Release builds have none.
-  crate::core::ui::nodes::set_spot_check(engine.world_mut(), false);
   let mut kept = 0;
   for _ in 0..120 {
     let _ = engine.step();
@@ -145,4 +140,42 @@ fn the_rebuilds_overlay_keeps_an_idle_ui_image() {
     kept >= 110,
     "the overlay kept the UI image in {kept} of 120 frames"
   );
+}
+
+#[test]
+fn an_idle_scrolled_node_list_keeps_its_ui_image() {
+  // Debug builds run the spot check: each frame it builds a clean node, a
+  // row of the list or a part of one, in place of its replay. Built, it is
+  // kept as the fragment its replay would be, culled by the list's
+  // interest as every kept row is, so the frame's commands stay the same.
+  let builder = EngineBuilder::new()
+    .resolution(640, 480)
+    .start_scene(NodeUi);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  let _ = engine.step_frames(3);
+  // Scrolled by a fractional trackpad step, then the pointer off the panel
+  engine.mouse_move(320.0, 300.0);
+  let _ = engine.step();
+  engine.trackpad(0.0, -137.3);
+  let _ = engine.step_frames(10);
+  engine.mouse_move(636.0, 476.0);
+  let _ = engine.step_frames(30);
+  assert!(
+    !engine
+      .ui_snapshot()
+      .contains("ScrollState { offset: Vec2(0.0, 0.0)"),
+    "the list scrolled"
+  );
+  let (mut kept, mut checked) = (0, 0);
+  for _ in 0..120 {
+    let _ = engine.step();
+    kept += u32::from(engine.ui_render_stats().kept);
+    checked += u32::from(engine.ui_cache_stats().spot_checked.is_some());
+  }
+  if cfg!(debug_assertions) {
+    assert!(checked >= 100, "the spot check ran in {checked} frames");
+  }
+  assert_eq!(kept, 120, "the UI image was kept in {kept} of 120 frames");
 }

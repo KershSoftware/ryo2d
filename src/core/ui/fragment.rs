@@ -180,6 +180,9 @@ pub(crate) struct CaptureLog {
   pub(crate) missed: bool,
   /// Its root has been pushed (and marked `Role::Capture`)
   pub(crate) rooted: bool,
+  /// Its root was built by the debug spot check in place of its replay or
+  /// its kept fragment's copy
+  pub(crate) spot: bool,
 }
 
 impl CaptureLog {
@@ -194,6 +197,7 @@ impl CaptureLog {
     self.popup = false;
     self.missed = false;
     self.rooted = false;
+    self.spot = false;
   }
 }
 
@@ -212,4 +216,8 @@ pub(crate) struct FragmentStats {
   /// Kept fragments the spot check found differing from their resolve:
   /// never so while a fragment checks every input its output follows from
   pub(crate) spot_differed: usize,
+  /// Kept fragments the spot checks captured afresh in place of their copy
+  /// (the fragment spot check's, or the subtree of the node it builds) and
+  /// found the same: they keep their versions
+  pub(crate) spot_kept: usize,
 }
