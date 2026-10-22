@@ -36,6 +36,9 @@ pub struct UiRenderStats {
   pub glyph_evictions: u64,
   /// Fragment runs whose instances were copied from an earlier frame
   pub runs_copied: u32,
+  /// Of `runs_copied`, those copied into one of the shader's scroll slots
+  /// (moved by the slot's offset; none on the pixel-art target)
+  pub slot_runs_copied: u32,
   /// Fragment runs whose instances were built
   pub runs_built: u32,
 }

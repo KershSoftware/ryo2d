@@ -255,10 +255,15 @@ fn a_sprite_updated_in_place_under_a_kept_fragment_draws_as_a_rebuild() {
   pair.frames(10, "red");
   let copied = pair.fragments_reused();
   assert!(copied > 0, "the tree is copied");
+  let red = pair.on.frame().expect("a frame");
   sprite.update(Sprite::solid_rect(8, 8, 0, 0, 255, 255));
   pair.frames(5, "blue, the same size");
+  let blue = pair.on.frame().expect("a frame");
+  assert_ne!(red.as_raw(), blue.as_raw(), "the update shows");
   sprite.update(Sprite::solid_rect(16, 16, 0, 255, 0, 255));
   pair.frames(5, "green and larger");
+  let green = pair.on.frame().expect("a frame");
+  assert_ne!(blue.as_raw(), green.as_raw(), "the second update shows");
   assert!(
     pair.fragments_reused() > copied,
     "the tree is copied after the updates"

@@ -1,6 +1,8 @@
 //! Two engines alike but for UI render retention, or for UI fragments,
 //! compared pixel for pixel
 
+use image::RgbaImage;
+
 use crate::core::engine::EngineBuilder;
 
 use super::{HeadlessEngine, StepOutcome};
@@ -29,6 +31,9 @@ pub struct PixelPair {
   kept: usize,
   reused: usize,
   fragments_reused: usize,
+  resolved_again: usize,
+  runs_copied: usize,
+  slot_runs_copied: usize,
   most_draws: u32,
 }
 
@@ -66,6 +71,9 @@ impl PixelPair {
       kept: 0,
       reused: 0,
       fragments_reused: 0,
+      resolved_again: 0,
+      runs_copied: 0,
+      slot_runs_copied: 0,
       most_draws: 0,
     })
   }
@@ -77,11 +85,11 @@ impl PixelPair {
   }
 
   /// Run `n` frames on both. After each, their frames must be the same
-  /// pixels (on a difference both are saved as PNGs in the temp folder's
-  /// `ryo2d-ui-retain` or `ryo2d-ui-fragments`). Without retention the
-  /// second engine must have kept and reused nothing; without the node
-  /// cache it must have replayed and copied nothing, and no fragment the
-  /// first engine's spot check captured may differ from what it kept.
+  /// pixels, and their windows' too where the window is not the game's
+  /// resolution (see [`same`](Self::same)). Without retention the second
+  /// engine must have kept and reused nothing; without the node cache it
+  /// must have replayed and copied nothing, and no fragment the first
+  /// engine's spot check captured may differ from what it kept.
   pub fn frames(&mut self, n: u32, what: &str) {
     for _ in 0..n {
       let (on, off) = (self.on.step(), self.off.step());
@@ -94,41 +102,13 @@ impl PixelPair {
       let (Ok(on), Ok(off)) = (self.on.frame(), self.off.frame()) else {
         panic!("{what}, frame {frame}: no frame presented");
       };
-      if on.as_raw() != off.as_raw() {
-        let differ = on
-          .pixels()
-          .zip(off.pixels())
-          .filter(|(a, b)| a != b)
-          .count();
-        let first = on
-          .enumerate_pixels()
-          .zip(off.pixels())
-          .find(|((_, _, a), b)| a != b)
-          .map(|((x, y, _), _)| (x, y));
-        let (folder, pair) = match self.lacks {
-          Lacks::Retention => ("ryo2d-ui-retain", "retention on and off"),
-          Lacks::Cache => ("ryo2d-ui-fragments", "fragments on and the cache off"),
-        };
-        let folder = std::env::temp_dir().join(folder);
-        let name: String = what
-          .chars()
-          .map(|c| if c.is_alphanumeric() { c } else { '-' })
-          .collect();
-        let saved = std::fs::create_dir_all(&folder).is_ok()
-          && on
-            .save(folder.join(format!("{name}-{frame}-on.png")))
-            .is_ok()
-          && off
-            .save(folder.join(format!("{name}-{frame}-off.png")))
-            .is_ok();
-        let saved = if saved {
-          format!(" (both saved in {})", folder.display())
-        } else {
-          String::new()
-        };
-        panic!(
-          "{what}, frame {frame}: {pair} differ in {differ} pixels, the first at {first:?}{saved}"
-        );
+      self.same(&on, &off, what, frame, "frame");
+      // A UI drawn at the window's resolution is presented at it: compared
+      // there too, where it is not the game's
+      if let (Ok(on_window), Ok(off_window)) = (self.on.window_frame(), self.off.window_frame())
+        && on_window.dimensions() != on.dimensions()
+      {
+        self.same(&on_window, &off_window, what, frame, "window");
       }
       let walk = self.on.ui_cache_stats();
       match self.lacks {
@@ -156,8 +136,55 @@ impl PixelPair {
       self.kept += usize::from(on.kept);
       self.reused += on.texts_reused as usize;
       self.fragments_reused += walk.reused;
+      self.resolved_again += walk.resolved_again;
+      self.runs_copied += on.runs_copied as usize;
+      self.slot_runs_copied += on.slot_runs_copied as usize;
       self.most_draws = self.most_draws.max(self.on.ui_draw_count());
     }
+  }
+
+  /// `on` and `off`, the two engines' `image` of frame `frame`, must be
+  /// the same pixels: on a difference both are saved as PNGs in the temp
+  /// folder's `ryo2d-ui-retain` or `ryo2d-ui-fragments`
+  fn same(&self, on: &RgbaImage, off: &RgbaImage, what: &str, frame: usize, image: &str) {
+    if on.as_raw() == off.as_raw() {
+      return;
+    }
+    let differ = on
+      .pixels()
+      .zip(off.pixels())
+      .filter(|(a, b)| a != b)
+      .count();
+    let first = on
+      .enumerate_pixels()
+      .zip(off.pixels())
+      .find(|((_, _, a), b)| a != b)
+      .map(|((x, y, _), _)| (x, y));
+    let (folder, pair) = match self.lacks {
+      Lacks::Retention => ("ryo2d-ui-retain", "retention on and off"),
+      Lacks::Cache => ("ryo2d-ui-fragments", "fragments on and the cache off"),
+    };
+    let folder = std::env::temp_dir().join(folder);
+    let name: String = what
+      .chars()
+      .map(|c| if c.is_alphanumeric() { c } else { '-' })
+      .collect();
+    let saved = std::fs::create_dir_all(&folder).is_ok()
+      && on
+        .save(folder.join(format!("{name}-{frame}-{image}-on.png")))
+        .is_ok()
+      && off
+        .save(folder.join(format!("{name}-{frame}-{image}-off.png")))
+        .is_ok();
+    let saved = if saved {
+      format!(" (both saved in {})", folder.display())
+    } else {
+      String::new()
+    };
+    panic!(
+      "{what}, frame {frame}: {pair} differ in {differ} pixels of the {image}, the first at \
+       {first:?}{saved}"
+    );
   }
 
   /// Frames compared so far
@@ -179,6 +206,24 @@ impl PixelPair {
   /// so far (not those the spot check captured afresh and found the same)
   pub fn fragments_reused(&self) -> usize {
     self.fragments_reused
+  }
+
+  /// Kept fragments the first engine's node walk resolved again (moved,
+  /// resized or placed under another clip) in place of a replay, so far
+  pub fn resolved_again(&self) -> usize {
+    self.resolved_again
+  }
+
+  /// Fragment runs whose instances the first engine's renderer copied, so
+  /// far
+  pub fn runs_copied(&self) -> usize {
+    self.runs_copied
+  }
+
+  /// Of [`runs_copied`](Self::runs_copied), those copied into one of the
+  /// shader's scroll slots, so far
+  pub fn slot_runs_copied(&self) -> usize {
+    self.slot_runs_copied
   }
 
   /// The most UI draws the retaining engine made in one frame, so far (a

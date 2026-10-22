@@ -413,6 +413,21 @@ impl HeadlessEngine {
     runs_snapshot(self.engine.ui_commands())
   }
 
+  /// The last frame's scroll slots, slot 0 (no scroll area) first: each
+  /// one's clip (UI units, absolute; `None` for slot 0) and where its
+  /// contents' origin is drawn (whole render pixels). A scroll area that
+  /// scrolls moves its slot's origin.
+  #[doc(hidden)]
+  pub fn ui_scroll_slots(&self) -> Vec<(Option<Rect>, [i32; 2])> {
+    self
+      .engine
+      .ui_commands()
+      .slots()
+      .iter()
+      .map(|slot| (slot.clip, slot.offset))
+      .collect()
+  }
+
   /// What the node walk did in the last UI pass: the nodes it built (and
   /// which), and how many tree nodes it replayed from records
   #[doc(hidden)]

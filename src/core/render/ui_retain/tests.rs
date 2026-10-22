@@ -590,6 +590,7 @@ mod runs {
       .expect("the same run");
     assert_eq!(kept.instances.len(), 1);
     assert_eq!(cache.stats(), (1, 0));
+    assert_eq!(cache.slot_copied(), 0, "copied into slot 0");
     // Drawn once a frame: a second run with its id is built
     assert!(!found(&mut cache, 1, 0, Some(5), true, 9));
     cache.end();
@@ -675,6 +676,7 @@ mod runs {
       found(&mut cache, 1, 5, Some(5), true, 9),
       "slot indices are per frame"
     );
+    assert_eq!(cache.slot_copied(), 1, "copied into a shader slot");
     cache.end();
     cache.begin(env(), true);
     assert!(!found(&mut cache, 1, 0, Some(5), true, 9));

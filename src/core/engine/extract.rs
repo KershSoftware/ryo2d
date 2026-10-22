@@ -401,10 +401,14 @@ impl Engine {
         ui_renderer.release();
       }
       let ui_pass = ui_built && !self.ui_commands.is_empty();
-      let ((texts_built, texts_reused), (runs_copied, runs_built)) = if ui_built {
-        (ui_renderer.text_counts(), ui_renderer.run_counts())
+      let ((texts_built, texts_reused), (runs_copied, runs_built), slot_runs_copied) = if ui_built {
+        (
+          ui_renderer.text_counts(),
+          ui_renderer.run_counts(),
+          ui_renderer.slot_runs_copied(),
+        )
       } else {
-        ((0, 0), (0, 0))
+        ((0, 0), (0, 0), 0)
       };
       self.ui_retain.stats = UiRenderStats {
         kept: ui_kept,
@@ -412,6 +416,7 @@ impl Engine {
         texts_reused,
         glyph_evictions: gpu.glyph_evictions(),
         runs_copied,
+        slot_runs_copied,
         runs_built,
       };
       // The UI camera's uniforms (the UI renderer binds the bind group the

@@ -450,7 +450,7 @@ fn render_ui_font(pair: &mut PixelPair, render: FontRender) {
 fn a_font_render_change_draws_as_a_rebuild() {
   // The settings screen in raster text, then in MSDF, scrolled by the
   // wheel and the trackpad, then in raster text again; the pointer over
-  // the list
+  // the list. Copying resumes after each change.
   let make = || {
     EngineBuilder::new()
       .resolution(1280, 720)
@@ -462,17 +462,29 @@ fn a_font_render_change_draws_as_a_rebuild() {
   pair.each(|engine| engine.mouse_move(520.0, 238.0));
   pair.frames(10, "raster text");
   let raster = pair.on.frame().expect("a frame");
+  let copied = pair.fragments_reused();
   render_ui_font(&mut pair, FontRender::msdf());
   pair.frames(10, "MSDF text");
   let msdf = pair.on.frame().expect("a frame");
   assert_ne!(raster.as_raw(), msdf.as_raw(), "the render change shows");
+  assert!(pair.fragments_reused() > copied, "copying resumed in MSDF");
+  // The list is the screen's one scroll area
+  let list = |pair: &PixelPair| pair.on.ui_scroll_slots().get(1).map(|&(_, offset)| offset);
+  let still = list(&pair);
   pair.each(|engine| engine.wheel(0.0, -3.0));
   pair.frames(15, "MSDF text, the wheel turned");
+  let wheeled = list(&pair);
+  assert_ne!(wheeled, still, "the wheel scrolled the list");
   pair.each(|engine| engine.trackpad(0.0, -7.3));
   pair.frames(10, "MSDF text, the trackpad moved");
+  assert_ne!(list(&pair), wheeled, "the trackpad scrolled the list");
+  let copied = pair.fragments_reused();
   render_ui_font(&mut pair, FontRender::Raster);
   pair.frames(10, "raster text again");
-  assert!(pair.fragments_reused() > 0, "the screen copied fragments");
+  assert!(
+    pair.fragments_reused() > copied,
+    "copying resumed in raster text"
+  );
 }
 
 /// Scroll areas in the many-areas tree: more than the renderer's 256 slots
@@ -516,24 +528,11 @@ fn area_centre(i: usize) -> (f32, f32) {
   )
 }
 
-/// The last frame's scroll slots, each in `Debug` form (slot 0 first)
-fn slots(engine: &HeadlessEngine) -> Vec<String> {
-  let snapshot = engine.ui_snapshot();
-  let line = snapshot
-    .lines()
-    .find(|line| line.starts_with("slots "))
-    .expect("a slots line");
-  line
-    .split("ScrollSlot {")
-    .skip(1)
-    .map(str::to_string)
-    .collect()
-}
-
-/// The slots that moved between `before` and `after`
-fn moved(before: &[String], after: &[String]) -> Vec<usize> {
+/// The scroll slots whose origins moved between `before` and `after` (each
+/// `HeadlessEngine::ui_scroll_slots`)
+fn moved(before: &[(Option<Rect>, [i32; 2])], after: &[(Option<Rect>, [i32; 2])]) -> Vec<usize> {
   (0..before.len().max(after.len()))
-    .filter(|&i| before.get(i) != after.get(i))
+    .filter(|&i| before.get(i).map(|slot| slot.1) != after.get(i).map(|slot| slot.1))
     .collect()
 }
 
@@ -552,18 +551,18 @@ fn more_scroll_areas_than_slots_draw_as_a_rebuild() {
   };
   pair.each(|engine| engine.mouse_move(-10.0, -10.0));
   pair.frames(10, "the areas opening");
-  let rest = slots(&pair.on);
+  let rest = pair.on.ui_scroll_slots();
   assert!(rest.len() > AREAS, "a slot for each area: {}", rest.len());
   for (area, past) in [(10, false), (290, true)] {
     let (x, y) = area_centre(area);
     pair.each(|engine| engine.mouse_move(x, y));
     pair.frames(3, &format!("over area {area}"));
-    let before = slots(&pair.on);
+    let before = pair.on.ui_scroll_slots();
     pair.each(|engine| engine.wheel(0.0, -1.0));
     pair.frames(15, &format!("area {area}, the wheel turned"));
     pair.each(|engine| engine.trackpad(0.0, 3.3));
     pair.frames(10, &format!("area {area}, the trackpad moved"));
-    let scrolled = moved(&before, &slots(&pair.on));
+    let scrolled = moved(&before, &pair.on.ui_scroll_slots());
     assert!(
       scrolled.len() == 1 && (scrolled[0] >= 256) == past,
       "area {area} scrolled, its slot past the shader's: {past}; slots moved {scrolled:?}"

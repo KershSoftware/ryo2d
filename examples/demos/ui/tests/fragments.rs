@@ -1,13 +1,14 @@
 //! Every page of the ui demo with UI fragments on and with the node cache
-//! off (a full rebuild), at UI scales 1 and 1.25, and four pages at 2: two
+//! off (a full rebuild), at UI scales 1 and 1.25, and five pages at 2: two
 //! engines driven by the same input, wheel and trackpad scrolling among it,
 //! must draw the same pixels every frame, and the UI renderer draws each
 //! page in one or two draws. The demo draws its UI on its pixel-art target,
 //! where a scroll slot's contents are placed on the CPU and never kept, so
-//! every page runs at 1.25 at the window's resolution too, where the shader
-//! moves them and their runs are copied. The debug spot check stays on in
-//! the engine with fragments: what it captures afresh must equal what was
-//! kept, and it is not counted as a copy.
+//! every page runs at 1.25 again with its UI at the resolution of a window
+//! twice the game's, where the shader moves them and their runs are copied.
+//! The debug spot check stays on in the engine with fragments: what it
+//! captures afresh must equal what was kept, and it is not counted as a
+//! copy.
 
 use demo_kit::prelude::*;
 use ryo2d::testing::PixelPair;
@@ -15,49 +16,109 @@ use ryo2d::testing::PixelPair;
 /// The demo's pages (`ui_demo::demo`)
 const PAGES: usize = 17;
 
-/// The Settings page, and the same screen built from a UI file
+/// The Settings page, and the same screen built from a UI file: their
+/// lists fit their views, so their scroll areas never move
 const SETTINGS: usize = 1;
 const FILE_SETTINGS: usize = 12;
+
+/// The Layout page, whose column scrolls where the UI is small enough
+const LAYOUT: usize = 5;
 
 /// The Clipping & Modals page, whose Enter opens a modal
 const CLIPPING: usize = 6;
 
+/// The Scroll Views page: two lists and a horizontal strip
+const SCROLL_VIEWS: usize = 9;
+
+/// The File Dialogue page: a conversation whose lines move the nodes around
+/// them
+const FILE_DIALOGUE: usize = 14;
+
 /// The Big list page: a closure list beside a node list
 const BIG_LIST: usize = 16;
+
+/// The pages whose scroll area must scroll at every scale they run
+const SCROLLS: [usize; 3] = [CLIPPING, SCROLL_VIEWS, BIG_LIST];
+
+/// The game's size: a whole multiple of it is a window the pixel-art target
+/// is scaled into
+const GAME: (u32, u32) = (1024, 768);
 
 /// Most UI draws a page may make in a frame: the UI renderer draws once per
 /// texture run, and every page's text sits on one glyph page
 const MAX_DRAWS: u32 = 2;
 
-/// The two engines on page `page` at UI scale `scale` (`None`: the
-/// default), the UI drawn at `resolution`
-fn pair(page: usize, scale: Option<f32>, resolution: UiResolution) -> Option<PixelPair> {
-  PixelPair::fragments(move || {
-    ui_demo::demo()
-      .start_page(page)
-      .engine_builder()
-      .ui_scale(scale)
-      .ui_resolution(resolution)
-  })
+/// How a run draws the demo: its UI scale (`None`: the default), and the
+/// window's multiple of the game's size its UI is drawn at (`None`: the
+/// demo's own, the UI on the pixel-art target)
+#[derive(Debug, Clone, Copy)]
+struct Look {
+  scale: Option<f32>,
+  window: Option<u32>,
 }
 
-/// The centre of `rect` (UI units) in screen units, at UI scale `scale`
-fn centre(rect: Rect, scale: f32) -> (f32, f32) {
-  (
-    (rect.x + rect.width / 2.0) * scale,
-    (rect.y + rect.height / 2.0) * scale,
-  )
+impl Look {
+  const fn at(scale: Option<f32>) -> Look {
+    Look {
+      scale,
+      window: None,
+    }
+  }
+
+  /// The two engines on page `page`
+  fn pair(self, page: usize) -> Option<PixelPair> {
+    let mut pair = PixelPair::fragments(move || {
+      let builder = ui_demo::demo().start_page(page).engine_builder();
+      let builder = builder.ui_scale(self.scale);
+      match self.window {
+        Some(_) => builder.ui_resolution(UiResolution::Window),
+        None => builder,
+      }
+    })?;
+    if let Some(k) = self.window {
+      pair.each(|engine| engine.resize(GAME.0 * k, GAME.1 * k));
+    }
+    Some(pair)
+  }
+
+  /// The centre of `rect` (UI units) in screen units: a UI unit is the
+  /// scale's render pixels, and a screen unit the window's multiple of them
+  fn centre(self, rect: Rect) -> (f32, f32) {
+    let window = self.window.map_or(1.0, |k| k as f32);
+    let screen = self.scale.unwrap_or(window) / window;
+    (
+      (rect.x + rect.width / 2.0) * screen,
+      (rect.y + rect.height / 2.0) * screen,
+    )
+  }
 }
 
-/// Open page `page` at UI scale `scale` and `resolution`, leave it still,
-/// move the focus, point at its widgets, turn the wheel and move the
-/// trackpad over them, press one and, on the modal page, close the modal;
-/// the frames compared and the fragments copied, and the most UI draws a
-/// frame made
-fn run(page: usize, scale: Option<f32>, resolution: UiResolution) -> Option<(usize, usize, u32)> {
-  let mut pair = pair(page, scale, resolution)?;
-  let units = scale.unwrap_or(1.0);
-  let what = |step: &str| format!("page {page} at scale {units} ({resolution:?}), {step}");
+/// The scroll slot of the area the page's wheel and trackpad steps point
+/// at: for the Big list, the node list's
+fn scroll_area(page: usize) -> Option<usize> {
+  match page {
+    SETTINGS | LAYOUT | CLIPPING | SCROLL_VIEWS | FILE_SETTINGS => Some(1),
+    BIG_LIST => Some(2),
+    _ => None,
+  }
+}
+
+/// What a page's run saw
+struct Seen {
+  compared: usize,
+  copied: usize,
+  resolved_again: usize,
+  slot_runs_copied: usize,
+  draws: u32,
+}
+
+/// Open page `page` in `look`, leave it still, move the focus, point at its
+/// widgets, turn the wheel and move the trackpad over its scroll area (on
+/// the pages that have one), advance the File Dialogue page's conversation,
+/// press a widget and, on the modal page, close the modal
+fn run(page: usize, look: Look) -> Option<Seen> {
+  let mut pair = look.pair(page)?;
+  let what = |step: &str| format!("page {page} in {look:?}, {step}");
   pair.frames(20, &what("opening"));
   pair.frames(10, &what("still"));
   for key in [KeyCode::ArrowDown, KeyCode::ArrowDown, KeyCode::ArrowRight] {
@@ -66,14 +127,50 @@ fn run(page: usize, scale: Option<f32>, resolution: UiResolution) -> Option<(usi
   }
   let targets = pair.on.ui_focusables();
   for &(_, rect) in targets.iter().take(3) {
-    let (x, y) = centre(rect, units);
+    let (x, y) = look.centre(rect);
     pair.each(|engine| engine.mouse_move(x, y));
     pair.frames(3, &what("pointing"));
   }
+  let area = scroll_area(page);
+  if let Some(slot) = area {
+    let slots = pair.on.ui_scroll_slots();
+    let Some(&(Some(clip), _)) = slots.get(slot) else {
+      panic!("{}: no scroll slot {slot} in {slots:?}", what("scrolling"));
+    };
+    let (x, y) = look.centre(clip);
+    pair.each(|engine| engine.mouse_move(x, y));
+    pair.frames(3, &what("over a scroll area"));
+  }
+  let still = pair.on.ui_scroll_slots();
   pair.each(|engine| engine.wheel(0.0, -3.0));
   pair.frames(15, &what("scrolling"));
+  let wheeled = pair.on.ui_scroll_slots();
   pair.each(|engine| engine.trackpad(0.0, -7.3));
   pair.frames(10, &what("trackpad scrolling"));
+  let moved = pair.on.ui_scroll_slots();
+  if let Some(slot) = area.filter(|_| SCROLLS.contains(&page)) {
+    let offset = |slots: &[(Option<Rect>, [i32; 2])]| slots.get(slot).map(|&(_, offset)| offset);
+    assert_ne!(
+      offset(&wheeled),
+      offset(&still),
+      "{}: the wheel moved scroll slot {slot}",
+      what("scrolling")
+    );
+    assert_ne!(
+      offset(&moved),
+      offset(&wheeled),
+      "{}: the trackpad moved scroll slot {slot}",
+      what("trackpad scrolling")
+    );
+  }
+  // Each line of the conversation is a text of its own size: the panel
+  // around it, anchored at the bottom, moves the nodes kept around it
+  if page == FILE_DIALOGUE {
+    for _ in 0..4 {
+      pair.each(|engine| engine.tap_key(KeyCode::Enter));
+      pair.frames(20, &what("advancing the conversation"));
+    }
+  }
   // The earlier steps moved the focus off the Show Modal Dialog button (the
   // first widget in the page's right-hand column), so give it back
   if page == CLIPPING {
@@ -105,59 +202,89 @@ fn run(page: usize, scale: Option<f32>, resolution: UiResolution) -> Option<(usi
   } else {
     pair.frames(10, &what("settling"));
   }
-  Some((pair.compared(), pair.fragments_reused(), pair.most_draws()))
+  Some(Seen {
+    compared: pair.compared(),
+    copied: pair.fragments_reused(),
+    resolved_again: pair.resolved_again(),
+    slot_runs_copied: pair.slot_runs_copied(),
+    draws: pair.most_draws(),
+  })
 }
 
-/// Run each of `pages` at UI scale `scale` and `resolution`: every page
-/// draws in at most `MAX_DRAWS`, and the run copied fragments
-fn every_page(pages: &[usize], scale: Option<f32>, resolution: UiResolution) {
-  let (mut compared, mut reused) = (0, 0);
+/// Run each of `pages` in `look`: every page draws in at most `MAX_DRAWS`,
+/// and the run copied fragments and resolved kept ones again; what it saw
+/// over the pages
+fn every_page(pages: &[usize], look: Look) -> Option<Seen> {
+  let mut all = Seen {
+    compared: 0,
+    copied: 0,
+    resolved_again: 0,
+    slot_runs_copied: 0,
+    draws: 0,
+  };
   for &page in pages {
-    let Some((c, r, draws)) = run(page, scale, resolution) else {
-      return;
-    };
+    let seen = run(page, look)?;
     eprintln!(
-      "page {page} at scale {scale:?} ({resolution:?}): {c} frames compared, \
-       {r} fragments copied, at most {draws} UI draws"
+      "page {page} in {look:?}: {} frames compared, {} fragments copied, {} resolved again, \
+       {} runs copied in scroll slots, at most {} UI draws",
+      seen.compared, seen.copied, seen.resolved_again, seen.slot_runs_copied, seen.draws
     );
     assert!(
-      (1..=MAX_DRAWS).contains(&draws),
-      "page {page} at scale {scale:?} ({resolution:?}): {draws} UI draws"
+      (1..=MAX_DRAWS).contains(&seen.draws),
+      "page {page} in {look:?}: {} UI draws",
+      seen.draws
     );
-    (compared, reused) = (compared + c, reused + r);
+    all.compared += seen.compared;
+    all.copied += seen.copied;
+    all.resolved_again += seen.resolved_again;
+    all.slot_runs_copied += seen.slot_runs_copied;
   }
   eprintln!(
-    "scale {scale:?} ({resolution:?}): {compared} frames compared, {reused} fragments copied"
+    "{look:?}: {} frames compared, {} fragments copied, {} resolved again, {} runs copied in \
+     scroll slots",
+    all.compared, all.copied, all.resolved_again, all.slot_runs_copied
   );
-  assert!(compared > 0);
+  assert!(all.compared > 0);
+  assert!(all.copied > 0, "{look:?}: some frame copied fragments");
   assert!(
-    reused > 0,
-    "scale {scale:?} ({resolution:?}): some frame copied fragments"
+    all.resolved_again > 0,
+    "{look:?}: some frame resolved a kept fragment again"
   );
+  Some(all)
 }
 
 #[test]
 fn every_page_draws_as_a_rebuild_with_fragments() {
   let pages: Vec<usize> = (0..PAGES).collect();
-  every_page(&pages, None, UiResolution::Render);
+  every_page(&pages, Look::at(None));
 }
 
 #[test]
 fn every_page_draws_as_a_rebuild_with_fragments_at_1_25() {
   let pages: Vec<usize> = (0..PAGES).collect();
-  every_page(&pages, Some(1.25), UiResolution::Render);
+  every_page(&pages, Look::at(Some(1.25)));
 }
 
 #[test]
 fn every_page_draws_as_a_rebuild_with_fragments_at_1_25_off_the_target() {
   let pages: Vec<usize> = (0..PAGES).collect();
-  every_page(&pages, Some(1.25), UiResolution::Window);
+  let look = Look {
+    scale: Some(1.25),
+    window: Some(2),
+  };
+  let Some(seen) = every_page(&pages, look) else {
+    return;
+  };
+  assert!(
+    seen.slot_runs_copied > 0,
+    "off the pixel-art target, runs in the shader's scroll slots were copied"
+  );
 }
 
 #[test]
-fn four_pages_draw_as_a_rebuild_with_fragments_at_2() {
-  let pages = [SETTINGS, CLIPPING, FILE_SETTINGS, BIG_LIST];
-  every_page(&pages, Some(2.0), UiResolution::Render);
+fn five_pages_draw_as_a_rebuild_with_fragments_at_2() {
+  let pages = [SETTINGS, CLIPPING, FILE_SETTINGS, FILE_DIALOGUE, BIG_LIST];
+  every_page(&pages, Look::at(Some(2.0)));
 }
 
 /// The node list's rows (the right-hand list's), top to bottom, in UI
@@ -182,22 +309,19 @@ fn node_rows(pair: &PixelPair) -> Vec<Rect> {
 fn hover_across_a_trackpad_scrolled_list_at_1_25() {
   // The Big list page at UI scale 1.25, as the demo draws it (the UI on the
   // pixel-art target, where a scroll slot's contents are placed on the
-  // CPU) and at the window's resolution (where the shader moves them): the
-  // node list scrolled to a fractional offset by the trackpad, then the
-  // pointer moved across eight of its rows, one row a frame
-  for resolution in [UiResolution::Render, UiResolution::Window] {
-    let scale = 1.25;
-    let make = move || {
-      ui_demo::demo()
-        .start_page(BIG_LIST)
-        .engine_builder()
-        .ui_scale(Some(scale))
-        .ui_resolution(resolution)
+  // CPU) and at the resolution of a window twice the game's (where the
+  // shader moves them): the node list scrolled to a fractional offset by
+  // the trackpad, then the pointer moved across eight of its rows, one row
+  // a frame
+  for window in [None, Some(2)] {
+    let look = Look {
+      scale: Some(1.25),
+      window,
     };
-    let Some(mut pair) = PixelPair::fragments(make) else {
+    let Some(mut pair) = look.pair(BIG_LIST) else {
       return;
     };
-    let what = |step: &str| format!("{resolution:?}, {step}");
+    let what = |step: &str| format!("{look:?}, {step}");
     pair.frames(20, &what("opening"));
     let rows = node_rows(&pair);
     assert!(
@@ -205,7 +329,7 @@ fn hover_across_a_trackpad_scrolled_list_at_1_25() {
       "{}: the node list's rows {rows:?}",
       what("opened")
     );
-    let (x, y) = centre(rows[1], scale);
+    let (x, y) = look.centre(rows[1]);
     pair.each(|engine| engine.mouse_move(x, y));
     pair.frames(3, &what("over the list"));
     // 11.7 logical pixels in all: the list rests between render pixels,
@@ -223,7 +347,7 @@ fn hover_across_a_trackpad_scrolled_list_at_1_25() {
     );
     let first = pair.fragments_reused();
     for row in scrolled.iter().skip(1).take(8) {
-      let (x, y) = centre(*row, scale);
+      let (x, y) = look.centre(*row);
       pair.each(|engine| engine.mouse_move(x, y));
       pair.frames(1, &what("hovering a row"));
     }
@@ -233,5 +357,12 @@ fn hover_across_a_trackpad_scrolled_list_at_1_25() {
       "{}: the rows not hovered were copied",
       what("hovering")
     );
+    if window.is_some() {
+      assert!(
+        pair.slot_runs_copied() > 0,
+        "{}: the list's runs were copied in its scroll slot",
+        what("hovering")
+      );
+    }
   }
 }

@@ -28,11 +28,10 @@
 //! does inside its next submit. So the guard reads a little low, a UI frame
 //! more than an empty one, as it leaves more to clean up.
 //!
-//! The guard asserts that one changing label and the scrolling list are
-//! each no slower retained than not (4g; the moving list's texts are laid
-//! again from their kept glyphs) and that the scrolling list moves every
-//! frame. It prints every median, and holds the retained screens to 4i's
-//! targets: the render step over an empty frame's under 5 µs idle (4g),
+//! The guard prints every median, and holds one changing label and the
+//! scrolling list to being no slower retained than not (4g; the moving
+//! list's texts are laid again from their kept glyphs), the scrolling list
+//! to moving every frame, and the retained screens to 4i's targets: the render step over an empty frame's under 5 µs idle (4g),
 //! 25 µs with one label changing and 20 µs scrolling, and the UI pass
 //! (`HeadlessEngine::ui_pass_time`, CPU time before the render step) under
 //! 18 µs idle, 25 µs with the label and 20 µs scrolling. The UI pass is
@@ -40,13 +39,16 @@
 //! many to warm up), as a game runs its one engine and as the targets were
 //! set: stepped in turn, each engine's caches are evicted by the others'
 //! work, and its UI pass reads 1.4 to 2 times as long (also printed). A
-//! missed target fails the run once criterion's benches have run, printing
-//! the command to profile it with. The targets are absolute, and these
-//! medians move by up to 2x with the machine's load: run the guard on a
-//! quiet machine. Criterion's `--profile-time` (the profile command) skips
-//! the guard.
+//! miss fails the run once criterion's benches have run, printing the
+//! command to profile it with. The targets are absolute, and these medians
+//! move by up to 2x with the machine's load: run the guard on a quiet
+//! machine. It runs only where criterion measures a retained settings
+//! screen: with no filter or one naming `settings_idle`, `settings_label`
+//! or `settings_scrolling`, and not for `--list`, `--test` or
+//! `--profile-time` (the profile command).
 
-use std::sync::Mutex;
+mod guards;
+
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group};
@@ -71,9 +73,6 @@ const SCROLLING_TARGET: Duration = Duration::from_micros(20);
 const IDLE_PASS_TARGET: Duration = Duration::from_micros(18);
 const LABEL_PASS_TARGET: Duration = Duration::from_micros(25);
 const SCROLLING_PASS_TARGET: Duration = Duration::from_micros(20);
-
-/// The targets the guard missed: the run fails once the benches have run
-static MISSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 struct Empty;
 
@@ -241,9 +240,9 @@ fn over(time: Duration, empty: Duration) -> f64 {
 /// slower retained than not (4g), one changing label adds under 25 µs and
 /// the scrolling list under 20 µs (4i); and the retained screens' UI pass
 /// targets (4i). Every median is printed, and each target with its
-/// verdict; asserted are that one label and the scrolling list are no
-/// slower retained, and that the list moves every frame; the targets
-/// missed are noted for the run to fail on.
+/// verdict; what is missed, these and that one label and the scrolling list
+/// are no slower retained and the list moves every frame, is noted for the
+/// run to fail on.
 fn guard() {
   let screens = [
     (Screen::Empty, true),
@@ -384,19 +383,24 @@ fn guard() {
     "ui_render guard, UI pass medians, each engine stepped alone: {}",
     lone.join(", ")
   );
-  MISSED
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
-    .extend(missed);
-  assert_eq!(scrolling_kept, 0, "the scrolling list rested");
-  assert!(
-    label <= label_off,
-    "one label: retained {label:?}, not retained {label_off:?}"
-  );
-  assert!(
-    scrolling <= scrolling_off,
-    "scrolling: retained {scrolling:?}, not retained {scrolling_off:?}"
-  );
+  if scrolling_kept > 0 {
+    missed.push(format!(
+      "the scrolling list rested in {scrolling_kept} frames"
+    ));
+  }
+  if label > label_off {
+    missed.push(format!(
+      "one label: retained {label:?}, not retained {label_off:?}"
+    ));
+  }
+  if scrolling > scrolling_off {
+    missed.push(format!(
+      "scrolling: retained {scrolling:?}, not retained {scrolling_off:?}"
+    ));
+  }
+  for miss in missed {
+    guards::miss(miss);
+  }
 }
 
 /// Where the scrolling settings screen's focusable widgets are: the list's
@@ -410,7 +414,7 @@ fn rows(engine: &HeadlessEngine) -> Vec<Rect> {
 }
 
 fn bench_ui_render(c: &mut Criterion) {
-  if !std::env::args().any(|arg| arg == "--profile-time") {
+  if guards::runs(&["settings_idle", "settings_label", "settings_scrolling"]) {
     guard();
   }
   for (name, screen, retain) in [
@@ -458,20 +462,14 @@ criterion_group!(benches, bench_ui_render);
 fn main() {
   benches();
   Criterion::default().configure_from_args().final_summary();
-  let missed = MISSED
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner());
-  if !missed.is_empty() {
-    eprintln!(
-      "ui_render guard missed: {}. Profile a missed frame (the bench binary is the one \
-       `cargo bench --bench ui_render --no-run` names; settings_idle, settings_label or \
-       settings_scrolling) with\n  xcrun xctrace record --template 'Time Profiler' --output \
-       ui_render.trace --launch -- target/release/deps/ui_render-<hash> --bench \
-       --profile-time 20 '^settings_label$'\nand charge each sample's time to the nearest ryo2d \
-       function from the leaf up, as docs/backlog/ui-retained-nodes.md's 4i section does; an \
-       idle or empty_frame profile is the render step's baseline.",
-      missed.join("; ")
-    );
-    std::process::exit(1);
-  }
+  guards::verdict(
+    "ui_render",
+    "Profile a missed frame (the bench binary is the one `cargo bench --bench ui_render \
+     --no-run` names; settings_idle, settings_label or settings_scrolling) with\n  xcrun \
+     xctrace record --template 'Time Profiler' --output ui_render.trace --launch -- \
+     target/release/deps/ui_render-<hash> --bench --profile-time 20 '^settings_label$'\nand \
+     charge each sample's time to the nearest ryo2d function from the leaf up, as \
+     docs/backlog/ui-retained-nodes.md's 4i section does; an idle or empty_frame profile is \
+     the render step's baseline.",
+  );
 }

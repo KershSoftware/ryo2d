@@ -123,6 +123,12 @@ impl UiRenderer {
     self.fragments.stats()
   }
 
+  /// The last build's fragment runs copied into one of the shader's scroll
+  /// slots
+  pub(crate) fn slot_runs_copied(&self) -> u32 {
+    self.fragments.slot_copied()
+  }
+
   /// The glyph pages the kept fragment runs sample, with their generations
   /// when built (tests)
   #[cfg(test)]

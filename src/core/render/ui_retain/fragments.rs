@@ -113,6 +113,8 @@ pub(crate) struct UiRunCache {
   keep: bool,
   frame: u64,
   copied: u32,
+  /// Of `copied`, those drawn in one of the shader's scroll slots
+  slot_copied: u32,
   built: u32,
 }
 
@@ -127,6 +129,7 @@ impl UiRunCache {
     self.keep = retain;
     self.frame += 1;
     self.copied = 0;
+    self.slot_copied = 0;
     self.built = 0;
   }
 
@@ -166,6 +169,7 @@ impl UiRunCache {
     }
     entry.used = frame;
     self.copied += 1;
+    self.slot_copied += u32::from(slot != 0);
     Some(&entry.run)
   }
 
@@ -230,6 +234,11 @@ impl UiRunCache {
   /// The frame's runs: those copied, then those built
   pub(crate) fn stats(&self) -> (u32, u32) {
     (self.copied, self.built)
+  }
+
+  /// The frame's runs copied into one of the shader's scroll slots
+  pub(crate) fn slot_copied(&self) -> u32 {
+    self.slot_copied
   }
 
   /// The glyph pages the kept runs sample, with their generations when

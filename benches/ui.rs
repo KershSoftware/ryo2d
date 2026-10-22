@@ -14,10 +14,12 @@
 //! frames (the median of 101 rounds of 20). Each median is printed against
 //! its target, and a missed target fails the run once every bench has run,
 //! printing the command to profile it with. The targets are absolute: run
-//! them on a quiet machine. Criterion's `--profile-time` (the profile
-//! command) skips them.
+//! them on a quiet machine. A guard runs only where criterion measures its
+//! bench: with no filter or one naming the bench, and not for `--list`,
+//! `--test` or `--profile-time` (the profile command).
 
-use std::sync::Mutex;
+mod guards;
+
 use std::time::{Duration, Instant};
 
 use criterion::{BatchSize, Criterion, criterion_group};
@@ -44,15 +46,6 @@ const STATIC_TARGET: Duration = Duration::from_micros(100);
 /// it there, measured alternately with this build): 4i's target is no
 /// slower, within 5%
 const CLOSURE_BEFORE: Duration = Duration::from_nanos(48_500);
-
-/// The targets missed so far: the run fails once every bench has run
-static MISSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-/// Whether criterion runs to be profiled (`--profile-time`): the guards do
-/// not run then, so a profile holds the bench's frames alone
-fn profiling() -> bool {
-  std::env::args().any(|arg| arg == "--profile-time")
-}
 
 /// The median time of one call of `frame`, after a second of calls: of
 /// 101 rounds of 20 calls
@@ -84,10 +77,7 @@ fn guard(bench: &str, median: Duration, target: Duration) {
     target.as_secs_f64() * 1e6
   );
   if !met {
-    MISSED
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
-      .push(bench.to_string());
+    guards::miss(bench.to_string());
   }
 }
 
@@ -203,15 +193,14 @@ fn settings_frame(c: &mut Criterion) {
     harness.frame(|ui| settings.ui(ui));
   };
   let name = "ui frame, a 200-widget settings screen";
-  if !profiling() {
+  if guards::runs(&[name]) {
     guard(name, median_frame(&mut step), CLOSURE_BEFORE.mul_f64(1.05));
   }
   c.bench_function(name, |b| b.iter(&mut step));
 }
 
-/// The guard: the closure settings screen stays under 60 µs, and this node
-/// screen within the larger of 10% or 10 µs of it: the cost of walking the
-/// node entities on top of the same builders.
+/// The settings tree with `ui.down` pressed every tenth frame (the closure
+/// screen's mirror as nodes; not guarded)
 fn settings_nodes_frame(c: &mut Criterion) {
   let mut harness = UiHarness::new(640.0, 480.0);
   harness.spawn_ui(settings_tree());
@@ -238,8 +227,8 @@ fn settings_nodes_frame(c: &mut Criterion) {
 }
 
 /// The settings tree drawn again with no input, its scope's first tab
-/// focused: the cached frame replays every node but the focused path and
-/// the scroll area (the target: under 35 µs)
+/// focused: the cached frame copies its clean subtrees' fragments and
+/// builds the focused path and the scroll area (the guard: under 15 µs)
 fn settings_nodes_unchanged(c: &mut Criterion) {
   let mut harness = UiHarness::new(640.0, 480.0);
   harness.spawn_ui(settings_tree());
@@ -257,7 +246,7 @@ fn settings_nodes_unchanged(c: &mut Criterion) {
     stats.built, stats.replayed, stats.reused
   );
   let name = "ui frame, the 200-widget settings screen as nodes, unchanged";
-  if !profiling() {
+  if guards::runs(&[name]) {
     let median = median_frame(|| {
       harness.frame(|_| {});
     });
@@ -281,7 +270,7 @@ fn settings_nodes_focus_every_frame(c: &mut Criterion) {
     harness.frame(|_| {});
   };
   let name = "ui frame, the 200-widget settings screen as nodes, focus moving every frame";
-  if !profiling() {
+  if guards::runs(&[name]) {
     guard(name, median_frame(&mut step), FOCUS_TARGET);
   }
   c.bench_function(name, |b| b.iter(&mut step));
@@ -314,7 +303,7 @@ fn static_tree_frame(c: &mut Criterion) {
     stats.replayed, stats.reused
   );
   let name = "ui frame, a 2,000-node static tree";
-  if !profiling() {
+  if guards::runs(&[name]) {
     let median = median_frame(|| {
       harness.frame(|_| {});
     });
@@ -668,18 +657,12 @@ criterion_group!(
 fn main() {
   benches();
   Criterion::default().configure_from_args().final_summary();
-  let missed = MISSED
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner());
-  if !missed.is_empty() {
-    eprintln!(
-      "ui guards missed: {}. Profile a missed frame (the bench binary is the one \
-       `cargo bench --bench ui --no-run` names) with\n  xcrun xctrace record --template \
-       'Time Profiler' --output ui.trace --launch -- target/release/deps/ui-<hash> --bench \
-       --profile-time 10 '^<bench name>$'\nand charge each sample's time to the nearest \
-       ryo2d function from the leaf up, as docs/backlog/ui-retained-nodes.md's 4i section does.",
-      missed.join("; ")
-    );
-    std::process::exit(1);
-  }
+  guards::verdict(
+    "ui",
+    "Profile a missed frame (the bench binary is the one `cargo bench --bench ui --no-run` \
+     names) with\n  xcrun xctrace record --template 'Time Profiler' --output ui.trace --launch \
+     -- target/release/deps/ui-<hash> --bench --profile-time 10 '^<bench name>$'\nand charge \
+     each sample's time to the nearest ryo2d function from the leaf up, as \
+     docs/backlog/ui-retained-nodes.md's 4i section does.",
+  );
 }
