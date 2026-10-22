@@ -30,6 +30,8 @@ pub use events::{UiEvent, UiEventKind, UiListBind, UiReloaded};
 pub use list::UiListRow;
 pub use node::{TextRole, UiNode, UiNodeKind};
 
+#[cfg(debug_assertions)]
+pub(crate) use cache::around_difference;
 pub(crate) use cache::{CacheStats, cache_stats};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use cache::{cache_records, dirty_check, node_snapshot, set_spot_check};

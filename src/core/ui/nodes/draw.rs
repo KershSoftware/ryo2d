@@ -20,7 +20,9 @@
 //! before the row.
 //! In debug builds the spot check builds one clean node a frame (and the
 //! clean nodes above it, to reach it) in place of its replay, and compares
-//! the build with the record (`spot_check`).
+//! the build with the record (`spot_check`); and it captures one kept
+//! fragment a frame in place of its copy, which resolve compares with what
+//! the fragment kept (`spot_fragment`).
 
 use std::sync::Arc;
 
@@ -268,7 +270,9 @@ impl<'a> UiContext<'a> {
         .cache
         .check_tree(world, self, scene, walk.pending_focus, root);
       #[cfg(debug_assertions)]
-      walk.cache.choose_spot(world, self.memory.frame());
+      walk
+        .cache
+        .choose_spot(world, self.memory.frame(), &self.memory.fragments_prev);
       // The walk's own writes get a tick of their own, which its records
       // keep
       world.increment_change_tick();
@@ -318,7 +322,9 @@ pub(crate) fn draw_nodes(world: &mut World, ui: &mut UiContext<'_>, scene: u64) 
     walk.cache.refresh(world);
     walk.cache.mark_live(world, ui, scene, walk.pending_focus);
     #[cfg(debug_assertions)]
-    walk.cache.choose_spot(world, ui.memory.frame());
+    walk
+      .cache
+      .choose_spot(world, ui.memory.frame(), &ui.memory.fragments_prev);
   }
   let mut i = 0;
   while let Some((root, place)) = scene_root(world, scene, &mut i) {
@@ -513,7 +519,7 @@ fn spot_check(
 /// its kept fragment in place of its replay, or its replay captured to be
 /// kept; the id it answers with. Everything under it is its fragment's:
 /// its children replay (`replay_child`), never pushing a fragment of their
-/// own.
+/// own. The spot check's fragment is captured in place of its copy.
 fn draw_clean(
   world: &mut World,
   ui: &mut UiContext<'_>,
@@ -525,7 +531,7 @@ fn draw_clean(
   let Some(root) = root.filter(|_| walk.fragments) else {
     return replay_taken(world, ui, node, taken, walk);
   };
-  if ui.push_kept(root, taken.built) {
+  if !spot_fragment(walk, ui, root, taken.built) && ui.push_kept(root, taken.built) {
     // What a replay would do besides pushing: the tapes around carry its
     // reads, and its nodes' records are drawn this frame
     ui.carry_reads(&taken.tape.reads);
@@ -542,6 +548,20 @@ fn draw_clean(
   let id = replay_taken(world, ui, node, taken, walk);
   ui.end_capture();
   id
+}
+
+/// Whether the spot check resolves the kept fragment rooted at `root`
+/// (node record built in frame `built`) in place of its copy this frame: it
+/// is set aside, to be compared with what its subtree's replay resolves to
+#[cfg(debug_assertions)]
+fn spot_fragment(walk: &Walk, ui: &mut UiContext<'_>, root: UiId, built: u64) -> bool {
+  walk.cache.spot_fragment_due(root) && ui.hold_for_spot_check(root, built)
+}
+
+/// Release builds have no spot check
+#[cfg(not(debug_assertions))]
+fn spot_fragment(_: &Walk, _: &mut UiContext<'_>, _: UiId, _: u64) -> bool {
+  false
 }
 
 /// Replay `node`'s record, whose tape was `taken`, each child slot filled
@@ -1909,9 +1929,11 @@ mod tests {
       targets(&closure),
       "the same focusables at the same rects"
     );
+    // The node screen's kept rows are culled by the scroll area's interest,
+    // wider than its view: the draws that show are the same
     assert_eq!(
-      nodes.command_count(),
-      closure.command_count(),
+      nodes.commands.visible().count(),
+      closure.commands.visible().count(),
       "the same draws"
     );
     assert!(

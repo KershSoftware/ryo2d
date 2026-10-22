@@ -136,7 +136,12 @@ pub(crate) struct Fragment {
   /// their UVs follow its size), each with the generation it had: a sprite
   /// replaced in place since (a hot reload) changes no other input
   pub(crate) sprites: Vec<(SpriteHandle, u64)>,
-  /// Changes each time it is resolved (captured, or resolved again)
+  /// The interest rect its draws were last culled by, in bits: its slot's,
+  /// in its slot's coordinates (`None` outside a slot, where they are
+  /// culled by their clips)
+  pub(crate) interest: Option<[u32; 4]>,
+  /// Changes each time what it pushes may: when it is resolved (captured,
+  /// or resolved again) and when its slot's interest moves
   pub(crate) version: u64,
 }
 
@@ -201,4 +206,10 @@ pub(crate) struct FragmentStats {
   pub(crate) reused: usize,
   /// Kept fragments resolved again from what they kept
   pub(crate) resolved_again: usize,
+  /// The kept fragment the debug spot check resolved in place of its copy
+  /// and compared with what it kept, by its root's id (not counted above)
+  pub(crate) spot: Option<UiId>,
+  /// Kept fragments the spot check found differing from their resolve:
+  /// never so while a fragment checks every input its output follows from
+  pub(crate) spot_differed: usize,
 }

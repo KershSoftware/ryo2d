@@ -494,11 +494,14 @@ impl UiHarness {
     self.commands.len()
   }
 
-  /// The UI commands the last frame recorded, with their orders, in
-  /// `Debug` form: two frames that draw the same compare equal
+  /// The UI commands the last frame recorded that can show a pixel
+  /// (`UiCommands::visible`), with their orders and slots, and the slot
+  /// table, in `Debug` form: two frames that draw the same compare equal,
+  /// with fragments on or off
   #[cfg(test)]
   pub(crate) fn commands_debug(&self) -> String {
-    format!("{:?}", self.commands)
+    let visible: Vec<_> = self.commands.visible().collect();
+    format!("{visible:?} {:?}", self.commands.slots())
   }
 
   /// Everything the oracle compares about the last frame: draw commands,
@@ -802,6 +805,13 @@ pub struct UiCacheStats {
   pub resolved_again: usize,
   /// Clean subtrees replayed and kept as fragments
   pub captured: usize,
+  /// The kept fragment the debug spot check resolved in place of its copy
+  /// and compared with what it kept, by its root's id (not counted in
+  /// `reused` or `captured`)
+  pub spot_fragment: Option<UiId>,
+  /// Kept fragments the spot check found differing from their resolve:
+  /// never so while a fragment checks every input its output follows from
+  pub spot_fragment_differed: usize,
 }
 
 /// What a UI snapshot is made of: one frame of a UI, from the harness or
@@ -823,17 +833,21 @@ pub(crate) struct UiSnapshot<'a> {
   pub(crate) world: &'a World,
 }
 
-/// A frame of a UI in `Debug` form: draw commands, every record, focus, the
-/// events, the interaction, the widget states kept (with their values) and
-/// each scope's remembered focus, the open modals, the actions navigation
-/// used, the captured rebinds, the input the UI took and every UI node's
-/// components. A sprite's reference count is left out: it counts every
-/// holder, and what holds one is no one's business but the engine's.
+/// A frame of a UI in `Debug` form: the draw commands that can show a
+/// pixel (with their slots: a kept fragment's draws in a scroll area are
+/// culled by the area's interest, wider than its view, so fragments on and
+/// off compare equal), every record, focus, the events, the interaction,
+/// the widget states kept (with their values) and each scope's remembered
+/// focus, the open modals, the actions navigation used, the captured
+/// rebinds, the input the UI took and every UI node's components. A
+/// sprite's reference count is left out: it counts every holder, and what
+/// holds one is no one's business but the engine's.
 pub(crate) fn ui_snapshot(parts: &UiSnapshot<'_>) -> String {
   use std::fmt::Write;
   let memory = parts.memory;
   let mut out = String::new();
-  let _ = writeln!(out, "commands {:?}", parts.commands.as_slice());
+  let visible: Vec<_> = parts.commands.visible().collect();
+  let _ = writeln!(out, "commands {visible:?}");
   let _ = writeln!(out, "slots {:?}", parts.commands.slots());
   let mut records: Vec<_> = memory.drawn_records().collect();
   records.sort_unstable_by_key(|&(id, _)| id);
@@ -875,6 +889,8 @@ impl UiCacheStats {
         reused: fragments.reused,
         resolved_again: fragments.resolved_again,
         captured: fragments.captured,
+        spot_fragment: fragments.spot,
+        spot_fragment_differed: fragments.spot_differed,
       })
       .unwrap_or_default()
   }

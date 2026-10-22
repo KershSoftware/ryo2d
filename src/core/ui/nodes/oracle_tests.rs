@@ -2128,7 +2128,7 @@ fn a_fragment_moved_by_a_growing_sibling_is_resolved_again() {
   );
   assert_cached(&run);
   assert!(
-    run.stats.iter().any(|s| s.resolved_again > 0),
+    spot_checking() || run.stats.iter().any(|s| s.resolved_again > 0),
     "the moved row was resolved again"
   );
 }
@@ -2939,12 +2939,13 @@ fn virtual_list_rows() {
 }
 
 /// Every scenario again with the debug spot check on in both harnesses: a
-/// clean node built in place of its replay draws and does the same, and no
-/// record differs from its build
+/// clean node built in place of its replay, and a kept fragment resolved in
+/// place of its copy, draw and do the same, and no record differs from its
+/// build nor fragment from its resolve
 #[cfg(debug_assertions)]
 #[test]
 fn every_scenario_looks_the_same_with_the_spot_check_on() {
-  let checked = with_spot_checks(&[
+  let (checked, fragments) = with_spot_checks(&[
     the_settings_tree_idle_looks_the_same_cached,
     the_settings_tree_walked_by_pad_looks_the_same_cached,
     the_settings_tree_under_the_pointer_looks_the_same_cached,
@@ -2987,6 +2988,11 @@ fn every_scenario_looks_the_same_with_the_spot_check_on() {
     an_embedded_tree_in_closure_ui,
     virtual_list_rows,
   ]);
-  // Of 7,651 frames, most hold a clean node to check
+  // Of 7,651 frames, most hold a clean node to check, and most a kept
+  // fragment (6,925 when measured)
   assert!(checked > 5_000, "the spot check ran in {checked} frames");
+  assert!(
+    fragments > 5_000,
+    "a kept fragment was checked in {fragments} frames"
+  );
 }

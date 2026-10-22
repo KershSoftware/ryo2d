@@ -131,6 +131,11 @@ fn the_rebuilds_overlay_keeps_an_idle_ui_image() {
   };
   engine.debug_config_mut().show_ui_rebuilds = true;
   let _ = engine.step_frames(120);
+  // The debug spot check builds a clean node a frame: a row of the list
+  // built so has its draws culled by the list's view, and kept as a
+  // fragment by the list's wider interest, so the commands change each
+  // frame though nothing on screen does. Release builds have none.
+  crate::core::ui::nodes::set_spot_check(engine.world_mut(), false);
   let mut kept = 0;
   for _ in 0..120 {
     let _ = engine.step();

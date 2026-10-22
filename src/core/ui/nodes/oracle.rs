@@ -93,20 +93,22 @@ pub(super) struct Run {
 
 thread_local! {
   /// While set, the oracle runs with the debug spot check on in both
-  /// harnesses, counting here the frames it checked a node in
-  static SPOT_CHECKS: Cell<Option<usize>> = const { Cell::new(None) };
+  /// harnesses, counting here the frames it checked a node in, and the
+  /// frames it checked a kept fragment in
+  static SPOT_CHECKS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
 }
 
 /// Run `scenarios` with the debug spot check on in both harnesses: every
 /// frame must still agree, and no check may find a record that differs from
-/// its build. The frames a node was checked in.
+/// its build or a kept fragment that differs from its resolve. The frames a
+/// node was checked in, and the frames a fragment was.
 #[cfg(debug_assertions)]
-pub(super) fn with_spot_checks(scenarios: &[fn()]) -> usize {
-  SPOT_CHECKS.with(|checks| checks.set(Some(0)));
+pub(super) fn with_spot_checks(scenarios: &[fn()]) -> (usize, usize) {
+  SPOT_CHECKS.with(|checks| checks.set(Some((0, 0))));
   for scenario in scenarios {
     scenario();
   }
-  SPOT_CHECKS.with(|checks| checks.take()).unwrap_or(0)
+  SPOT_CHECKS.with(|checks| checks.take()).unwrap_or((0, 0))
 }
 
 /// Whether the scenarios run with the spot check on: it builds a clean node
@@ -154,6 +156,13 @@ pub(super) fn oracle_with(
       0,
       "caching off replays nothing"
     );
+    // The snapshots compare the draws that can show: without fragments,
+    // that is every draw, culled by the same test
+    assert_eq!(
+      off.commands.visible().count(),
+      off.commands.as_slice().len(),
+      "step {i} (frame {frame}): a draw without fragments is culled as `visible` culls"
+    );
     assert_eq!(
       missed(&on),
       0,
@@ -165,6 +174,11 @@ pub(super) fn oracle_with(
       0,
       "step {i} (frame {frame}, after {input:?}): a record differs from its build"
     );
+    assert_eq!(
+      on.ui_cache_stats().spot_fragment_differed,
+      0,
+      "step {i} (frame {frame}, after {input:?}): a kept fragment differs from its resolve"
+    );
     let (a, b) = (on.frame_snapshot(), off.frame_snapshot());
     if a != b {
       panic!(
@@ -174,9 +188,13 @@ pub(super) fn oracle_with(
     }
     let done = on.ui_cache_stats();
     replayed += done.replayed;
-    if done.spot_checked.is_some() {
-      SPOT_CHECKS.with(|checks| checks.set(checks.get().map(|n| n + 1)));
-    }
+    let (node, fragment) = (done.spot_checked.is_some(), done.spot_fragment.is_some());
+    SPOT_CHECKS.with(|checks| {
+      let counted = checks
+        .get()
+        .map(|(nodes, fragments)| (nodes + usize::from(node), fragments + usize::from(fragment)));
+      checks.set(counted);
+    });
     stats.push(done);
     after(&mut on);
     after(&mut off);

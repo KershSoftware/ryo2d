@@ -34,6 +34,8 @@ use std::sync::Arc;
 use crate::core::hash::FastMap;
 use crate::core::text::TextReveal;
 use crate::core::ui::env::UiEnv;
+#[cfg(debug_assertions)]
+use crate::core::ui::fragment::Fragment;
 use crate::core::ui::memory::Roles;
 use crate::core::ui::tape::{Read, Tape};
 #[cfg(debug_assertions)]
@@ -164,6 +166,12 @@ pub(crate) struct SpotCheck {
   /// them is built, not replayed: only a build draws a child, since a
   /// replay never builds.
   path: Vec<Entity>,
+  /// The kept fragment checked last, by its root's id: the next is the
+  /// first after it
+  last_fragment: Option<UiId>,
+  /// This frame's kept fragment: replayed and captured in place of its
+  /// copy, and compared with what it kept
+  fragment: Option<UiId>,
 }
 
 #[cfg(debug_assertions)]
@@ -174,6 +182,8 @@ impl Default for SpotCheck {
       last: None,
       frame: None,
       path: Vec::new(),
+      last_fragment: None,
+      fragment: None,
     }
   }
 }
@@ -615,9 +625,16 @@ impl UiCache {
   /// Choose the node the spot check builds this frame, once a frame, after
   /// the first walk's marks: the first record after the last one checked,
   /// by entity, of a node not dirty and replayable (any other is built
-  /// anyway)
+  /// anyway). Then the kept fragment it resolves in place of its copy: the
+  /// first of last frame's `fragments` after the last one checked, by its
+  /// root's id, whose root the node's build does not reach.
   #[cfg(debug_assertions)]
-  pub(crate) fn choose_spot(&mut self, world: &World, frame: u64) {
+  pub(crate) fn choose_spot(
+    &mut self,
+    world: &World,
+    frame: u64,
+    fragments: &FastMap<UiId, Fragment>,
+  ) {
     let UiCache {
       enabled,
       records,
@@ -627,6 +644,7 @@ impl UiCache {
     } = self;
     if !(*enabled && spot.on) {
       spot.path.clear();
+      spot.fragment = None;
       return;
     }
     if spot.frame == Some(frame) {
@@ -634,6 +652,7 @@ impl UiCache {
     }
     spot.frame = Some(frame);
     spot.path.clear();
+    spot.fragment = None;
     let (mut first, mut next) = (None, None);
     let candidates = records
       .iter()
@@ -644,21 +663,38 @@ impl UiCache {
         next = Some(next.map_or(node, |next: Entity| next.min(node)));
       }
     }
-    let Some(chosen) = next.or(first) else {
-      return;
-    };
-    spot.last = Some(chosen);
-    let mut at = chosen;
-    loop {
-      spot.path.push(at);
-      let Ok(entity) = world.get_entity(at) else {
-        break;
-      };
-      let parent = entity.get::<ChildOf>().map(ChildOf::parent);
-      match parent {
-        Some(parent) if !entity.contains::<UiRoot>() => at = parent,
-        _ => break,
+    if let Some(chosen) = next.or(first) {
+      spot.last = Some(chosen);
+      let mut at = chosen;
+      loop {
+        spot.path.push(at);
+        let Ok(entity) = world.get_entity(at) else {
+          break;
+        };
+        let parent = entity.get::<ChildOf>().map(ChildOf::parent);
+        match parent {
+          Some(parent) if !entity.contains::<UiRoot>() => at = parent,
+          _ => break,
+        }
       }
+    }
+    // A fragment whose root is built for the node's check is not pushed
+    let (mut first, mut next) = (None, None);
+    let candidates = fragments.iter().filter(|(_, fragment)| {
+      fragment
+        .entities
+        .first()
+        .is_none_or(|root| !spot.path.contains(root))
+    });
+    for (&id, _) in candidates {
+      first = Some(first.map_or(id, |first: UiId| first.min(id)));
+      if spot.last_fragment.is_none_or(|last| id > last) {
+        next = Some(next.map_or(id, |next: UiId| next.min(id)));
+      }
+    }
+    spot.fragment = next.or(first);
+    if spot.fragment.is_some() {
+      spot.last_fragment = spot.fragment;
     }
   }
 
@@ -666,6 +702,13 @@ impl UiCache {
   #[cfg(debug_assertions)]
   pub(crate) fn spot_due(&self, node: Entity) -> bool {
     self.spot.path.contains(&node)
+  }
+
+  /// Whether the walk resolves the kept fragment rooted at `root` in place
+  /// of its copy, for the spot check
+  #[cfg(debug_assertions)]
+  pub(crate) fn spot_fragment_due(&self, root: UiId) -> bool {
+    self.spot.fragment == Some(root)
   }
 
   /// The spot check built `node`, whose record held `old`, into `new`:
@@ -1208,7 +1251,7 @@ pub(crate) fn set_spot_check(world: &mut World, on: bool) {
 
 /// `was` and `now` around where they first differ, shortened
 #[cfg(debug_assertions)]
-fn around_difference(was: &str, now: &str) -> (String, String) {
+pub(crate) fn around_difference(was: &str, now: &str) -> (String, String) {
   let at = was
     .chars()
     .zip(now.chars())
@@ -2612,7 +2655,185 @@ mod fragment_tests {
   use super::super::oracle::*;
   use crate::core::testing::UiHarness;
   use crate::core::testing::fixtures::settings_tree;
-  use crate::core::ui::{Rect, UiNode};
+  use crate::core::ui::{Rect, UiId, UiNode};
+
+  /// What the tests below read of a harness's fragments
+  trait FragmentProbe {
+    /// The pointer to the centre of the settings tree's list's view
+    fn move_to_settings_list(&mut self);
+    /// The fragments kept for the next frame: each root's id and version,
+    /// sorted
+    fn fragment_versions(&self) -> Vec<(UiId, u64)>;
+  }
+
+  impl FragmentProbe for UiHarness {
+    fn move_to_settings_list(&mut self) {
+      point_at(self, settings_scroll(self), 0.0, 0.0);
+    }
+
+    fn fragment_versions(&self) -> Vec<(UiId, u64)> {
+      let mut versions: Vec<(UiId, u64)> = self
+        .memory
+        .fragments_next
+        .iter()
+        .map(|(&id, fragment)| (id, fragment.version))
+        .collect();
+      versions.sort_unstable();
+      versions
+    }
+  }
+
+  #[test]
+  fn a_scrolling_lists_fragments_change_only_every_half_view() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(settings_tree());
+    h.frame(|_| {});
+    h.move_to_settings_list(); // the pointer over a row of the list
+    let mut versions = Vec::new();
+    for _ in 0..20 {
+      h.trackpad(0.0, -3.0);
+      h.frame(|_| {});
+      versions.push(h.fragment_versions());
+    }
+    let changes = versions.windows(2).filter(|w| w[0] != w[1]).count();
+    assert!(
+      changes <= 2,
+      "60 units of travel in a 407-unit view crosses at most one step ({changes})"
+    );
+  }
+
+  #[test]
+  fn a_fragment_copied_under_another_interest_takes_a_new_version() {
+    use crate::core::ui::widgets::scroll::ScrollState;
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(settings_tree());
+    h.frame(|_| {});
+    h.move_to_settings_list();
+    let list = h.ui_id(settings_scroll(&h)).unwrap();
+    // Which half view of the list the drawn offset (whole render pixels at
+    // scale 1) is in: the interest moves when it changes
+    let step = |h: &UiHarness| {
+      let state = h.memory.peek_state::<ScrollState>(list).unwrap();
+      (state.offset.y.round() / (state.view.y / 2.0)).floor()
+    };
+    h.frame(|_| {});
+    let (mut was, mut versions) = (step(&h), h.fragment_versions());
+    let mut crossed = 0;
+    for _ in 0..12 {
+      h.trackpad(0.0, -30.0);
+      h.frame(|_| {});
+      let (now, next) = (step(&h), h.fragment_versions());
+      if now != was {
+        crossed += 1;
+        // Every fragment copied in both frames pushes other commands now
+        for (id, version) in &next {
+          if let Some((_, old)) = versions.iter().find(|(old_id, _)| old_id == id) {
+            assert_ne!(version, old, "{id:?}: a new interest, a new version");
+          }
+        }
+      }
+      (was, versions) = (now, next);
+    }
+    assert!(
+      crossed > 0,
+      "360 units of travel in a 407-unit view crosses a step"
+    );
+  }
+
+  #[test]
+  fn a_scrolling_list_carries_rows_outside_its_view_that_are_not_visible() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(settings_tree());
+    h.frame(|_| {});
+    h.move_to_settings_list();
+    for _ in 0..4 {
+      h.trackpad(0.0, -30.0);
+      h.frame(|_| {});
+    }
+    let (all, visible) = (h.commands.as_slice().len(), h.commands.visible().count());
+    assert!(
+      all > visible,
+      "kept rows are culled by the list's interest, wider than its view ({all} drawn, {visible} visible)"
+    );
+  }
+
+  #[test]
+  fn with_fragments_off_every_draw_is_visible() {
+    // A list at UI scale 1.25 scrolled by fractional trackpad steps, a strip
+    // nested in a list scrolled sideways, and closure draws under a clip:
+    // with fragments off every draw was culled by the test `visible` uses
+    let closure = |ui: &mut crate::core::ui::UiContext<'_>| {
+      ui.push_clip(Rect::new(400.0, 300.0, 60.0, 20.0));
+      for i in 0..6 {
+        let y = 290.0 + i as f32 * 7.3;
+        ui.draw_text("Clipped", 395.0, y, crate::core::ui::Color::WHITE);
+        ui.draw_rect(
+          Rect::new(380.0 + i as f32 * 9.7, y, 10.0, 5.0),
+          crate::core::ui::Color::WHITE,
+        );
+      }
+      ui.pop_clip();
+    };
+    for scale in [1.0, 1.25] {
+      let mut h = UiHarness::new(640.0, 480.0);
+      h.set_ui_fragments(false);
+      h.set_ui_scale(scale);
+      h.spawn_ui(settings_tree());
+      h.frame(closure);
+      h.move_to_settings_list();
+      for k in 0..12 {
+        h.trackpad(0.0, -13.7 - k as f32 * 0.3);
+        h.frame(closure);
+        assert_eq!(
+          h.commands.visible().count(),
+          h.commands.as_slice().len(),
+          "scale {scale}, frame {k}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  #[cfg(debug_assertions)]
+  fn the_spot_check_compares_a_kept_fragment_with_its_resolve() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.set_ui_spot_check(true);
+    h.spawn_ui(settings_tree());
+    let mut checked = 0;
+    for _ in 0..12 {
+      h.frame(|_| {});
+      checked += usize::from(h.ui_cache_stats().spot_fragment.is_some());
+      assert_eq!(h.ui_cache_stats().spot_fragment_differed, 0);
+    }
+    assert!(
+      checked >= 8,
+      "a fragment is checked most frames ({checked})"
+    );
+  }
+
+  #[test]
+  #[cfg(debug_assertions)]
+  fn the_spot_check_finds_a_kept_fragment_that_differs_from_its_resolve() {
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(settings_tree());
+    for _ in 0..3 {
+      h.frame(|_| {});
+    }
+    // Each kept fragment's first draw a step later in the order, as an input
+    // a fragment does not check would leave it
+    for fragment in h.memory.fragments_next.values_mut() {
+      if let Some(draw) = fragment.draws.first_mut() {
+        draw.order += 1;
+      }
+    }
+    h.set_ui_spot_check(true);
+    h.frame(|_| {});
+    let stats = h.ui_cache_stats();
+    assert!(stats.spot_fragment.is_some(), "a fragment was checked");
+    assert_eq!(stats.spot_fragment_differed, 1, "and found to differ");
+    let needle = "a kept UI fragment differs from its node's resolve";
+    assert!(crate::core::ui::test_util::warnings_containing(needle) >= 1);
+  }
 
   #[test]
   fn an_unchanged_tree_is_copied_from_its_fragments() {

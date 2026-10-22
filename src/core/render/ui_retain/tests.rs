@@ -244,6 +244,7 @@ fn a_frame_whose_only_change_is_a_slot_offset_is_not_kept() {
   let slot = commands.push_slot(ScrollSlot {
     offset: [0, -10],
     clip,
+    cull: None,
   });
   commands.push(0, slot, rect(0.0));
   assert!(
@@ -255,6 +256,7 @@ fn a_frame_whose_only_change_is_a_slot_offset_is_not_kept() {
   let slot = commands.push_slot(ScrollSlot {
     offset: [0, -11],
     clip,
+    cull: None,
   });
   commands.push(0, slot, rect(0.0));
   assert!(
@@ -276,6 +278,7 @@ fn a_draw_moved_to_another_slot_is_not_kept() {
     let slot = commands.push_slot(ScrollSlot {
       offset: [0, 0],
       clip,
+      cull: None,
     });
     commands.push(0, if slot_of_rect { slot } else { 0 }, rect(0.0));
     commands

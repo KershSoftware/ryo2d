@@ -8,7 +8,7 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::fragment::{Fragment, Inputs, KeptDraw, KeptRecord, Role, sized_by};
-use super::immediate::{ScrollSlot, UiCommand, UiCommands, intersect, meet};
+use super::immediate::{ScrollSlot, UiCommand, UiCommands, intersect, meet, outside};
 use super::layout::engine::{Avail, LayoutEngine, Measured, NodeDesc, Placed};
 use super::layout::{Edges, Flow, Length, Measure, UiStyle};
 use super::memory::{Flags, Record, Scratch, UiMemory, recycle};
@@ -500,12 +500,15 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       continue;
     }
     fragment.inputs = inputs;
+    fragment.interest = placing.slot_of(*i).interest_bits();
     fragment.version = memory.next_fragment_version();
     memory.fragment_stats.resolved_again += 1;
   }
 
   // The captured nodes whose subtrees can be kept: each one's span of nodes
-  // is marked for the records and draws loops to keep what they write
+  // is marked for the records and draws loops to keep what they write. A
+  // span whose nodes and draws do not take one run of orders is not kept,
+  // and its draws are culled as loose ones.
   capturing.clear();
   if captures {
     let mut keepable = |id| {
@@ -513,6 +516,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       Some(!(log.popup || log.missed))
     };
     spans(nodes, sizes, span_of, capturing, &mut keepable);
+    count_runs(&subtree.draws, span_of, capturing);
   }
   let captured = |i: usize| -> Option<usize> {
     span_of
@@ -527,7 +531,13 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     if node.role == Role::Kept {
       if let Some(fragment) = kept_at(kept, i) {
         let slot = placing.slot_of(i);
-        copy_records(fragment, node, slot, s, memory, scene);
+        let copy = CopyAt {
+          root: node,
+          slot,
+          s,
+          scene,
+        };
+        copy_records(fragment, copy, memory);
       }
       continue;
     }
@@ -548,9 +558,9 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   // Draws, relative to their node's slot and culled by its clip there
   for draw in subtree.draws.drain(..) {
     if matches!(draw.kind, DrawKind::Kept) {
-      if let (Some(node), Some(fragment)) = (nodes.get(draw.node), kept_at(kept, draw.node)) {
+      if let (Some(node), Some(fragment)) = (nodes.get(draw.node), kept_at_mut(kept, draw.node)) {
         let slot = placing.slot_of(draw.node);
-        copy_draws(fragment, node, slot, commands);
+        copy_draws(fragment, node, slot, memory, commands);
       }
       continue;
     }
@@ -558,13 +568,15 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       continue;
     };
     let slot = placing.slots[at.slot];
-    let (index, place) = placement(at, placing.exact[draw.node], slot, draw.layer);
+    let (index, mut place) = placement(at, placing.exact[draw.node], slot, draw.layer);
     let mut capture = captures
       .then(|| captured(draw.node))
       .flatten()
       .and_then(|c| capturing.get_mut(c));
     if let Some(capture) = capture.as_deref_mut() {
       capture.keep_draw(&draw);
+      // A fragment's draws are culled by its slot's interest
+      place.cull = slot.fragment_cull(place.clip);
     }
     let order = draw.order;
     draw_commands(
@@ -600,6 +612,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       continue;
     };
     let inputs = placing.inputs(i, node.layer, placed[i].rect, from, scale);
+    let slot = placing.slot_of(i);
     let mut root = node.clone();
     root.role = Role::None;
     let span = nodes[i..capture.end].iter().enumerate().map(|(k, n)| {
@@ -629,10 +642,26 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       nodes: span.collect(),
       node_draws: capture.node_draws,
       sprites: capture.sprites,
+      interest: slot.interest_bits(),
       version: memory.next_fragment_version(),
     };
+    // One the spot check captured in place of its copy is counted apart
+    #[cfg(debug_assertions)]
+    let (fragment, spotted) = {
+      let copy = CopyAt {
+        root: node,
+        slot,
+        s,
+        scene,
+      };
+      spot_check(fragment, copy, memory)
+    };
+    #[cfg(not(debug_assertions))]
+    let spotted = false;
+    if !spotted {
+      memory.fragment_stats.captured += 1;
+    }
     memory.fragments_next.insert(node.id, fragment);
-    memory.fragment_stats.captured += 1;
   }
 
   // Every kept fragment is kept for next frame
@@ -811,15 +840,19 @@ impl Placing {
         Some(c) => intersect(c, absolute),
         None => absolute,
       });
+      let cull = view.map(|c| moved(c, -offset / s));
+      let size = Vec2::new(relative.width, relative.height);
       let index = commands.push_slot(ScrollSlot {
         offset: [offset.x as i32, offset.y as i32],
         clip: view,
+        cull,
       });
       self.slots.push(SlotPlace {
         base: place.base + corner,
         offset,
         clip: view,
-        cull: view.map(|c| moved(c, -offset / s)),
+        cull,
+        interest: cull.map(|c| interest(c, size, drawn, [scroll_x, scroll_y], s)),
         index,
       });
       content = self.slots.len() - 1;
@@ -984,18 +1017,33 @@ fn kept_at(kept: &[(usize, Option<Fragment>)], i: usize) -> Option<&Fragment> {
   kept[k].1.as_ref()
 }
 
-/// Write `fragment`'s records, its root the kept node `root` in `slot`: its
-/// rects made absolute by the slot's offset in a slot (as kept otherwise),
-/// its orders and depths re-based to the root's
-fn copy_records(
-  fragment: &Fragment,
-  root: &Node,
+/// [`kept_at`], to change
+fn kept_at_mut(kept: &mut [(usize, Option<Fragment>)], i: usize) -> Option<&mut Fragment> {
+  let k = kept.binary_search_by_key(&i, |(j, _)| *j).ok()?;
+  kept[k].1.as_mut()
+}
+
+/// Where a fragment is copied: its root the kept node `root` in `slot`, at
+/// `s` render pixels per UI unit, in `scene`
+#[derive(Clone, Copy)]
+struct CopyAt<'n> {
+  root: &'n Node,
   slot: SlotPlace,
   s: f32,
-  memory: &mut UiMemory,
   scene: u64,
-) {
-  for kept in &fragment.records {
+}
+
+impl CopyAt<'_> {
+  /// `kept`'s record as copied here: its rect made absolute by the slot's
+  /// offset in a slot (as kept otherwise), its order and depth re-based to
+  /// the root's
+  fn record(&self, kept: &KeptRecord) -> Record {
+    let CopyAt {
+      root,
+      slot,
+      s,
+      scene,
+    } = *self;
     let (rect, clip) = if slot.real() {
       let [x0, y0, x1, y1] = kept.edges;
       let (dx, dy) = (slot.offset.x, slot.offset.y);
@@ -1004,34 +1052,129 @@ fn copy_records(
     } else {
       (kept.record.rect, kept.record.clip)
     };
-    let record = Record {
+    Record {
       rect,
       clip,
       order: root.order.saturating_add(kept.order),
       depth: root.depth.saturating_add(kept.depth),
       scene,
       ..kept.record
-    };
-    memory.record(kept.id, record);
+    }
+  }
+}
+
+/// Write `fragment`'s records as copied at `copy`
+fn copy_records(fragment: &Fragment, copy: CopyAt<'_>, memory: &mut UiMemory) {
+  for kept in &fragment.records {
+    memory.record(kept.id, copy.record(kept));
   }
 }
 
 /// Push `fragment`'s commands, its root the kept node `root` in `slot`: each
-/// culled by its clip there, its orders re-based to the root's
-fn copy_draws(fragment: &Fragment, root: &Node, slot: SlotPlace, commands: &mut UiCommands) {
+/// culled by its clip there (met with the slot's interest in a slot), its
+/// orders re-based to the root's. A slot's interest other than the one it
+/// was last pushed under gives it a new version: it pushes other commands.
+fn copy_draws(
+  fragment: &mut Fragment,
+  root: &Node,
+  slot: SlotPlace,
+  memory: &mut UiMemory,
+  commands: &mut UiCommands,
+) {
+  let interest = slot.interest_bits();
+  if fragment.interest != interest {
+    fragment.interest = interest;
+    fragment.version = memory.next_fragment_version();
+  }
   let index = if slot.real() { slot.index } else { 0 };
   for kept in &fragment.draws {
-    let clip = kept.command.clip_rect();
-    let cull = if slot.real() {
-      meet(clip, slot.cull)
-    } else {
-      clip
-    };
+    let cull = slot.fragment_cull(kept.command.clip_rect());
     if !kept.cull.is_some_and(|seen| outside(cull, seen)) {
       let order = root.order.saturating_add(kept.order);
       commands.push(order, index, kept.command.clone());
     }
   }
+}
+
+/// The debug spot check, for `fresh`, just captured at `copy`: when the
+/// spot check set the fragment `kept` of its subtree aside this frame
+/// (`UiMemory::spot_held`), the subtree was replayed and captured in place
+/// of `kept`'s copy. `fresh`, and whether the spot check captured it.
+///
+/// `fresh` is compared with what copying `kept` there would have given: its
+/// order count, its records as copied and its draws, by `Debug` form. Only
+/// when `kept` would have been copied (its inputs the same and its sprites
+/// as they were); else it would have been resolved again. A difference
+/// warns once and is counted. With none, `fresh` keeps `kept`'s version
+/// when it pushed under the same interest: it pushed the same commands.
+#[cfg(debug_assertions)]
+fn spot_check(mut fresh: Fragment, copy: CopyAt<'_>, memory: &mut UiMemory) -> (Fragment, bool) {
+  let Some(kept) = memory.take_spot_held(copy.root.id) else {
+    return (fresh, false);
+  };
+  if kept.inputs != fresh.inputs || !kept.sprites_hold() {
+    return (fresh, true);
+  }
+  let stats = &mut memory.fragment_stats;
+  stats.spot = Some(copy.root.id);
+  let Some((at, was, now)) = fragment_difference(&kept, &fresh, copy) else {
+    if kept.interest == fresh.interest {
+      fresh.version = kept.version;
+    }
+    return (fresh, true);
+  };
+  stats.spot_differed += 1;
+  let node = kept
+    .entities
+    .first()
+    .map_or_else(|| format!("{:?}", copy.root.id), |root| format!("{root:?}"));
+  let (was, now) = super::nodes::around_difference(&was, &now);
+  warn_once(format!("ui-fragment:spot:{node}"), || {
+    format!(
+      "a kept UI fragment differs from its node's resolve: {node} at {at}: kept {was}, \
+       resolved {now}. An input its output follows from is not checked; it is drawn as \
+       resolved from now on"
+    )
+  });
+  (fresh, true)
+}
+
+/// Where `kept`, copied at `copy`, first differs from `fresh`, resolved
+/// there: what, `kept`'s and `fresh`'s, in `Debug` form
+#[cfg(debug_assertions)]
+fn fragment_difference(
+  kept: &Fragment,
+  fresh: &Fragment,
+  copy: CopyAt<'_>,
+) -> Option<(String, String, String)> {
+  if kept.count != fresh.count {
+    let count = |f: &Fragment| f.count.to_string();
+    return Some(("the order count".to_string(), count(kept), count(fresh)));
+  }
+  let record = |f: &Fragment, k: usize| {
+    f.records.get(k).map_or_else(
+      || "nothing".to_string(),
+      |r| format!("{:?} {:?}", r.id, copy.record(r)),
+    )
+  };
+  for k in 0..kept.records.len().max(fresh.records.len()) {
+    let (was, now) = (record(kept, k), record(fresh, k));
+    if was != now {
+      return Some((format!("record {k}"), was, now));
+    }
+  }
+  let draw = |f: &Fragment, k: usize| {
+    f.draws
+      .get(k)
+      .map_or_else(|| "nothing".to_string(), |d| format!("{d:?}"))
+  };
+  for k in 0..kept.draws.len().max(fresh.draws.len()) {
+    let (was, now) = (draw(kept, k), draw(fresh, k));
+    if was != now {
+      return Some((format!("draw {k}"), was, now));
+    }
+  }
+  None
 }
 
 /// What resolving a kept fragment again reads
@@ -1176,13 +1319,17 @@ struct Capturing {
 }
 
 impl Capturing {
+  /// A draw on a node of the span takes `order`
+  fn count_draw(&mut self, order: u32) {
+    self.low = self.low.min(order);
+    self.high = self.high.max(order);
+    self.drawn = self.drawn.saturating_add(1);
+  }
+
   /// A draw on a node of the span, kept to resolve the fragment again, and
   /// the sprite it is cut by
   fn keep_draw(&mut self, draw: &Draw) {
     self.sprites.extend(sized_by(&draw.kind));
-    self.low = self.low.min(draw.order);
-    self.high = self.high.max(draw.order);
-    self.drawn = self.drawn.saturating_add(1);
     self.node_draws.push(Draw {
       order: draw.order.wrapping_sub(self.base),
       layer: draw.layer,
@@ -1199,6 +1346,23 @@ impl Capturing {
     let count = nodes.checked_add(self.drawn)?;
     let last = self.base.checked_add(count.checked_sub(1)?)?;
     (self.low == self.base && self.high == last).then_some(count)
+  }
+}
+
+/// Count the orders `draws` take in each of `captures`' spans (marked in
+/// `span_of`), and unmark each span whose nodes and draws do not take one
+/// run of orders from its root's: it is not kept
+fn count_runs(draws: &[Draw], span_of: &mut [u32], captures: &mut [Capturing]) {
+  for draw in draws {
+    let c = span_of.get(draw.node).copied().filter(|&c| c != NO_SPAN);
+    if let Some(capture) = c.and_then(|c| captures.get_mut(c as usize)) {
+      capture.count_draw(draw.order);
+    }
+  }
+  for capture in captures.iter() {
+    if capture.count().is_none() {
+      span_of[capture.root..capture.end].fill(NO_SPAN);
+    }
   }
 }
 
@@ -1280,6 +1444,9 @@ pub(crate) struct SlotPlace {
   clip: Option<Rect>,
   /// That clip in the slot's own coordinates: what its draws are culled by
   cull: Option<Rect>,
+  /// What a kept fragment's draws in it are culled by, in its own
+  /// coordinates: its view grown along each axis it scrolls ([`interest`])
+  interest: Option<Rect>,
   /// Its index in the frame's slot table: 0 for none, `u16::MAX` when the
   /// table was full (its contents are then placed absolute)
   index: u16,
@@ -1291,6 +1458,7 @@ impl SlotPlace {
     offset: Vec2::ZERO,
     clip: None,
     cull: None,
+    interest: None,
     index: 0,
   };
 
@@ -1298,6 +1466,44 @@ impl SlotPlace {
   fn real(&self) -> bool {
     self.index != 0 && self.index != u16::MAX
   }
+
+  /// What a fragment's draw in it with its own `clip` is culled by: in a
+  /// slot of the table, the clip met with the slot's interest; elsewhere
+  /// the clip alone, which holds the clips around
+  fn fragment_cull(&self, clip: Option<Rect>) -> Option<Rect> {
+    if self.real() {
+      meet(clip, self.interest)
+    } else {
+      clip
+    }
+  }
+
+  /// The interest a fragment's draws in it are culled by, in bits (`None`
+  /// outside a slot of the table)
+  fn interest_bits(&self) -> Option<[u32; 4]> {
+    self.interest.filter(|_| self.real()).map(Inputs::rect)
+  }
+}
+
+/// The rect a kept fragment's draws in a scroll area's slot are culled by
+/// (UI units, in the slot's coordinates, where `cull` is its view): along
+/// each axis the area `scrolls`, three of its `view`s from a view before
+/// its drawn offset (`drawn`, render pixels at `s` per UI unit) taken down
+/// to a whole number of half views, so the rect moves only every half view
+/// the contents travel and holds the view with a half view to spare on
+/// each side; along an axis it does not scroll, the view itself
+fn interest(cull: Rect, view: Vec2, drawn: [i32; 2], scrolls: [bool; 2], s: f32) -> Rect {
+  let axis = |k: usize, at: f32, size: f32| {
+    let step = view[k] / 2.0;
+    if !(scrolls[k] && step.is_finite() && step > 0.0) {
+      return (at, size);
+    }
+    let d = drawn[k] as f32 / s;
+    ((d / step).floor() * step - view[k], 3.0 * view[k])
+  };
+  let (x, width) = axis(0, cull.x, cull.width);
+  let (y, height) = axis(1, cull.y, cull.height);
+  Rect::new(x, y, width, height)
 }
 
 /// Where resolve put a node, in the coordinates its draws carry
@@ -1813,18 +2019,6 @@ fn inset_rect(rect: Rect, edges: Edges) -> Rect {
 
 fn moved(rect: Rect, by: Vec2) -> Rect {
   Rect::new(rect.x + by.x, rect.y + by.y, rect.width, rect.height)
-}
-
-/// Whether `rect` lies wholly outside `clip`
-fn outside(clip: Option<Rect>, rect: Rect) -> bool {
-  clip.is_some_and(|clip| {
-    clip.width <= 0.0
-      || clip.height <= 0.0
-      || rect.right() <= clip.x
-      || rect.x >= clip.right()
-      || rect.bottom() <= clip.y
-      || rect.y >= clip.bottom()
-  })
 }
 
 /// Whether `rect` has a finite position and a positive finite size

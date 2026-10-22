@@ -1331,6 +1331,7 @@ mod building {
     let slot = slotted.push_slot(ScrollSlot {
       offset: [3, 7],
       clip: Some(slot_clip),
+      cull: None,
     });
     for (order, command) in (0..).zip(draws(false)) {
       slotted.push(order, slot, command);

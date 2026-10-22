@@ -465,6 +465,11 @@ pub(crate) struct UiMemory {
   pub(crate) fragment_stats: FragmentStats,
   /// Whether fragments are kept (the walk's switch)
   fragments_on: bool,
+  /// The kept fragment the debug spot check set aside this frame, by its
+  /// root's id: its subtree is replayed and captured in place of its copy,
+  /// and resolve compares the capture with it
+  #[cfg(debug_assertions)]
+  pub(crate) spot_held: Option<(UiId, Fragment)>,
 }
 
 impl UiMemory {
@@ -490,6 +495,8 @@ impl UiMemory {
       fragment_version: 0,
       fragment_stats: FragmentStats::default(),
       fragments_on: true,
+      #[cfg(debug_assertions)]
+      spot_held: None,
     }
   }
 
@@ -505,6 +512,10 @@ impl UiMemory {
     // Last frame's fragments become this frame's to take
     std::mem::swap(&mut self.fragments_prev, &mut self.fragments_next);
     self.fragments_next.clear();
+    #[cfg(debug_assertions)]
+    {
+      self.spot_held = None;
+    }
     self.carried.clear();
     let carried = self
       .fragments_prev
@@ -552,6 +563,7 @@ impl UiMemory {
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn rewind_frame(&mut self) {
     std::mem::swap(&mut self.prev, &mut self.next);
+    self.unhold_spot();
     std::mem::swap(&mut self.fragments_prev, &mut self.fragments_next);
     self.drawing = false;
   }
@@ -564,6 +576,7 @@ impl UiMemory {
     self.next.clear();
     self.scopes.begin_frame();
     self.touched.clear();
+    self.unhold_spot();
     let (prev, carried) = (&mut self.fragments_prev, &self.carried);
     for (id, fragment) in self.fragments_next.drain() {
       if carried.contains(&fragment.version) {
@@ -584,7 +597,30 @@ impl UiMemory {
       self.fragments_prev.clear();
       self.fragments_next.clear();
       self.carried.clear();
+      #[cfg(debug_assertions)]
+      {
+        self.spot_held = None;
+      }
     }
+  }
+
+  /// The fragment the spot check set aside, not yet compared, is last
+  /// frame's again
+  fn unhold_spot(&mut self) {
+    #[cfg(debug_assertions)]
+    if let Some((id, fragment)) = self.spot_held.take() {
+      self.fragments_prev.insert(id, fragment);
+    }
+  }
+
+  /// The fragment rooted at `id` the spot check set aside this frame, if
+  /// it did
+  #[cfg(debug_assertions)]
+  pub(crate) fn take_spot_held(&mut self, id: UiId) -> Option<Fragment> {
+    self
+      .spot_held
+      .take_if(|(held, _)| *held == id)
+      .map(|(_, fragment)| fragment)
   }
 
   /// A new fragment version: a fragment captured or resolved again takes one
@@ -914,6 +950,7 @@ mod tests {
       nodes: Vec::new(),
       node_draws: Vec::new(),
       sprites: Vec::new(),
+      interest: None,
       version,
     }
   }

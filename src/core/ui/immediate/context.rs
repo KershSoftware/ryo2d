@@ -1111,25 +1111,10 @@ impl<'a> UiContext<'a> {
       !self.recording(),
       "a kept fragment is pushed where no tape records (a child slot)"
     );
-    // A recording tape would miss it: the walk replays there instead, which
-    // taints that tape
-    if self.recording() || self.in_popup() {
+    if !self.keeps(id, built) {
       return false;
     }
     let (scene, _) = self.scene();
-    let scope = self.focus_scope_here();
-    let scroll = self.scroll_here();
-    let fits = self.memory.fragments_prev.get(&id).is_some_and(|fragment| {
-      fragment.built == built
-        && fragment.scene == scene
-        && fragment.inputs.layer == self.layer
-        && fragment.root.scope == scope
-        && fragment.root.scroll == scroll
-    });
-    // Its subtree is still in the layout's tree, laid out as it was kept
-    if !fits || !self.layout.holds(id) {
-      return false;
-    }
     let Some((mut root, at, count)) = self.memory.replay_fragment(id, scene) else {
       return false;
     };
@@ -1154,6 +1139,47 @@ impl<'a> UiContext<'a> {
     // The orders its subtree's nodes and draws take, after its root's
     self.order = self.order.saturating_add(count.saturating_sub(1));
     self.close(index);
+    true
+  }
+
+  /// Whether the kept fragment of the clean subtree rooted at `id` (node
+  /// record built in frame `built`) can be pushed here: it is not stale,
+  /// its root would be stamped as it was, and it lands outside a popup and
+  /// any recording tape
+  fn keeps(&self, id: UiId, built: u64) -> bool {
+    // A recording tape would miss it: the walk replays there instead, which
+    // taints that tape
+    if self.recording() || self.in_popup() {
+      return false;
+    }
+    let (scene, _) = self.scene();
+    let scope = self.focus_scope_here();
+    let scroll = self.scroll_here();
+    let fits = self.memory.fragments_prev.get(&id).is_some_and(|fragment| {
+      fragment.built == built
+        && fragment.scene == scene
+        && fragment.inputs.layer == self.layer
+        && fragment.root.scope == scope
+        && fragment.root.scroll == scroll
+    });
+    // Its subtree is still in the layout's tree, laid out as it was kept
+    fits && self.layout.holds(id)
+  }
+
+  /// The debug spot check: set the kept fragment of the clean subtree
+  /// rooted at `id` (node record built in frame `built`) aside, where it
+  /// would be pushed, for resolve to compare with what the subtree's replay
+  /// resolves to (`UiMemory::spot_held`). False, with nothing set aside,
+  /// where it would not be pushed.
+  #[cfg(debug_assertions)]
+  pub(crate) fn hold_for_spot_check(&mut self, id: UiId, built: u64) -> bool {
+    if !self.keeps(id, built) {
+      return false;
+    }
+    let Some(fragment) = self.memory.fragments_prev.remove(&id) else {
+      return false;
+    };
+    self.memory.spot_held = Some((id, fragment));
     true
   }
 

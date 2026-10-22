@@ -86,6 +86,21 @@ impl UiCommand {
     }
   }
 
+  /// The box it is culled by: a rect's or sprite's rect, a text's block (its
+  /// layout's size at the scale it was laid out at); `None` for a line,
+  /// which is never culled
+  #[cfg(not(target_arch = "wasm32"))]
+  fn cull_box(&self) -> Option<Rect> {
+    match self {
+      Self::Rect { rect, .. } | Self::Sprite { rect, .. } => Some(*rect),
+      Self::Text { layout, origin, .. } => {
+        let size = layout.size / layout.scale;
+        Some(Rect::new(origin.x, origin.y, size.x, size.y))
+      }
+      Self::Line { .. } => None,
+    }
+  }
+
   /// The same draw moved by `by` (UI units): its rect, a line's offset, a
   /// text's origin and its own clip. A line's points and a text's layout are
   /// shared, not copied.
@@ -196,6 +211,9 @@ pub(crate) struct ScrollSlot {
   pub(crate) offset: [i32; 2],
   /// The clip the contents draw under (UI units, absolute)
   pub(crate) clip: Option<Rect>,
+  /// That clip in the contents' own coordinates: what a draw in the slot
+  /// is culled by, with its own clip
+  pub(crate) cull: Option<Rect>,
 }
 
 impl ScrollSlot {
@@ -203,6 +221,7 @@ impl ScrollSlot {
   pub(crate) const NONE: ScrollSlot = ScrollSlot {
     offset: [0, 0],
     clip: None,
+    cull: None,
   };
 
   /// Its offset in UI units, at `px_scale` render pixels per UI unit
@@ -249,6 +268,18 @@ pub(crate) fn meet(a: Option<Rect>, b: Option<Rect>) -> Option<Rect> {
     (Some(a), Some(b)) => Some(intersect(a, b)),
     (a, b) => a.or(b),
   }
+}
+
+/// Whether `rect` lies wholly outside `clip`: nothing of it can show
+pub(crate) fn outside(clip: Option<Rect>, rect: Rect) -> bool {
+  clip.is_some_and(|clip| {
+    clip.width <= 0.0
+      || clip.height <= 0.0
+      || rect.right() <= clip.x
+      || rect.x >= clip.right()
+      || rect.bottom() <= clip.y
+      || rect.y >= clip.bottom()
+  })
 }
 
 /// The frame's UI draws (cleared each UI pass), each with its place in the
@@ -314,6 +345,31 @@ impl UiCommands {
   pub(crate) fn len(&self) -> usize {
     self.draws.len()
   }
+
+  /// The draws that can show a pixel, in the order they were pushed: each
+  /// one's box (`UiCommand::cull_box`) meets its own clip, met in a slot
+  /// with the slot's clip in its coordinates (`ScrollSlot::cull`). This is
+  /// the test resolve culls the draws outside fragments by, so with
+  /// fragments off it keeps every draw; a kept fragment's draws in a slot
+  /// are culled by the slot's wider interest, and some cannot show. What
+  /// two runs with fragments on and off compare.
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn visible(&self) -> impl Iterator<Item = &UiDraw> {
+    self.draws.iter().filter(|draw| {
+      let Some(seen) = draw.command.cull_box() else {
+        return true;
+      };
+      let clip = draw.command.clip_rect();
+      let cull = match draw.slot {
+        0 => clip,
+        k => meet(
+          clip,
+          self.slots.get(usize::from(k)).and_then(|slot| slot.cull),
+        ),
+      };
+      !outside(cull, seen)
+    })
+  }
 }
 
 #[cfg(test)]
@@ -337,5 +393,75 @@ impl UiCommands {
       .filter_map(|draw| draw.placed(&self.slots, px_scale))
       .map(Cow::into_owned)
       .collect()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn rect(rect: Rect, clip: Option<Rect>) -> UiCommand {
+    UiCommand::Rect {
+      rect,
+      fill: Color::WHITE,
+      radius: 0.0,
+      border: None,
+      clip,
+      layer: 0,
+    }
+  }
+
+  #[test]
+  fn a_draw_is_visible_where_its_box_meets_its_clip_and_its_slots() {
+    let mut commands = UiCommands::default();
+    // A slot whose view is 100 by 100 at (100, 50), its contents drawn 20
+    // render pixels up at scale 2: in its own coordinates the view starts
+    // at (0, 15)
+    let clip = Rect::new(100.0, 50.0, 100.0, 100.0);
+    let slot = commands.push_slot(ScrollSlot {
+      offset: [200, 70],
+      clip: Some(clip),
+      cull: Some(Rect::new(0.0, 15.0, 100.0, 100.0)),
+    });
+    // Order 1: above the slot's view in its coordinates, though not once
+    // moved by the offset as a placed draw would be
+    commands.push(1, slot, rect(Rect::new(10.0, 0.0, 10.0, 10.0), None));
+    // 2: meets the view
+    commands.push(2, slot, rect(Rect::new(10.0, 10.0, 10.0, 10.0), None));
+    // 3: meets the view, outside its own clip (relative to the slot)
+    let own = Some(Rect::new(0.0, 0.0, 5.0, 200.0));
+    commands.push(3, slot, rect(Rect::new(10.0, 10.0, 10.0, 10.0), own));
+    // 4: touches the view's edge only
+    commands.push(4, slot, rect(Rect::new(10.0, 5.0, 10.0, 10.0), None));
+    // 5, 6: text, by its block (layout pixels at its layout's scale)
+    let layout = Arc::new(TextLayout {
+      size: Vec2::new(40.0, 20.0),
+      scale: 2.0,
+      ..TextLayout::default()
+    });
+    let text = |y: f32| UiCommand::Text {
+      layout: Arc::clone(&layout),
+      origin: Vec2::new(0.0, y),
+      reveal: None,
+      opacity: 1.0,
+      seed: 0,
+      clip: Some(Rect::new(0.0, 100.0, 50.0, 50.0)),
+      layer: 0,
+    };
+    commands.push(5, 0, text(95.0));
+    commands.push(6, 0, text(90.0));
+    // 7: a line, never culled (resolve never culls one)
+    let line = UiCommand::Line {
+      points: Arc::from([Vec2::ZERO, Vec2::new(5.0, 0.0)]),
+      at: Vec2::ZERO,
+      width: 1.0,
+      color: Color::WHITE,
+      closed: false,
+      clip: Some(Rect::new(300.0, 300.0, 10.0, 10.0)),
+      layer: 0,
+    };
+    commands.push(7, 0, line);
+    let visible: Vec<u32> = commands.visible().map(|draw| draw.order).collect();
+    assert_eq!(visible, [2, 5, 7]);
   }
 }

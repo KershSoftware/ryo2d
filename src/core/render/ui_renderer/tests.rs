@@ -212,10 +212,12 @@ fn a_rect_in_a_slot_builds_as_the_same_rect_placed_absolute() {
     ScrollSlot {
       offset: [0, 0],
       clip: None,
+      cull: None,
     },
     ScrollSlot {
       offset: [0, 7],
       clip: Some(Rect::new(0.0, 5.0, 100.0, 10.0)),
+      cull: None,
     },
   ];
   // The instance (data and clip) a rect draw builds, as `build_command` does
