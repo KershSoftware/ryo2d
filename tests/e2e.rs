@@ -71,3 +71,6 @@ mod ui_retain;
 
 #[path = "e2e/ui_renderer.rs"]
 mod ui_renderer;
+
+#[path = "e2e/ui_fragments.rs"]
+mod ui_fragments;

@@ -2220,6 +2220,724 @@ fn a_skin_replaced_in_place_at_another_size_redraws_its_kept_fragment() {
   );
 }
 
+// Fragments: a scenario for each input a fragment depends on. Each fails
+// with the check it names taken out (4f's rule), where that check can be
+// reached at all: an environment change, a resize among them, builds every
+// node, so its fragments are never pushed
+
+/// Fragments were copied in `run`: it compared a kept path, not a rebuild
+fn assert_reused(run: &Run) {
+  assert!(
+    run.stats.iter().any(|s| s.reused > 0),
+    "no fragment was copied over {} frames",
+    run.frames
+  );
+}
+
+/// An embedded tree of texts and a row of buttons, named "hud", at the top
+/// left
+fn embedded_hud() -> UiNode {
+  UiNode::column()
+    .embedded()
+    .gap(4.0)
+    .anchor(crate::core::ui::Anchor::TopLeft)
+    .name("hud")
+    .child(UiNode::text("Hp 10").name("hp"))
+    .child(
+      UiNode::row()
+        .gap(6.0)
+        .name("bar")
+        .child(UiNode::button("Use").name("use"))
+        .child(UiNode::button("Drop").name("drop")),
+    )
+    .child(UiNode::text("Gold 25"))
+}
+
+/// The node's height set to `height` UI units, as a game writes its layout
+fn set_height(world: &mut World, node: Entity, height: f32) {
+  world.get_mut::<UiNodeKind>(node).unwrap().layout.height =
+    Some(crate::core::ui::Length::Px(height));
+}
+
+#[test]
+fn a_sibling_inserted_before_a_fragment() {
+  // From frame 3 the closure draws a label before the embedded tree: every
+  // order the tree takes moves by one, so its kept fragment is copied at
+  // the new base (a copy keeping the orders it was resolved at fails)
+  let ui = |ui: &mut UiContext<'_>, world: &mut World, frame: usize| {
+    if frame >= 3 {
+      ui.draw_text("Inserted", 420.0, 400.0, crate::core::ui::Color::WHITE);
+    }
+    let root = embedded(world, "hud");
+    ui.node(root, world);
+  };
+  let run = oracle_with(
+    |h| {
+      h.spawn_ui(embedded_hud());
+    },
+    &ui,
+    &|_| {},
+    &frames(7),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+/// A centred column whose row is kept on its own: the pointer on its first
+/// button keeps the column building. Spacers above and below the row move
+/// the row within the column and the column on the screen.
+fn moving_row() -> UiNode {
+  UiNode::column()
+    .gap(4.0)
+    .anchor(crate::core::ui::Anchor::Center)
+    .child(UiNode::button("Hovered").name("hovered"))
+    .child(UiNode::text("{t}").bound().name("above"))
+    .child(UiNode::column().height(0.0).name("nudge"))
+    .child(
+      UiNode::row()
+        .gap(6.0)
+        .name("kept")
+        .child(UiNode::button("Kept"))
+        .child(UiNode::button("Also kept")),
+    )
+    .child(UiNode::column().height(40.0).name("below"))
+}
+
+#[test]
+fn a_growing_sibling_moves_a_fragment_by_a_fraction_then_whole_pixels() {
+  // The kept row's laid-out rect changes with its column's origin unmoved,
+  // then the origin with the rect unchanged: each alone must resolve it again
+  let script = Script::default()
+    .frames(1)
+    .then(At("hovered"))
+    .frames(3)
+    // The row moves down in the column by a fraction of a pixel, then by
+    // whole pixels; the column keeps its height, so its origin stays
+    .input(Write("nudge", |w, e| set_height(w, e, 0.6)))
+    .then(Write("below", |w, e| set_height(w, e, 39.4)))
+    .input(Write("nudge", |w, e| set_height(w, e, 3.6)))
+    .then(Write("below", |w, e| set_height(w, e, 36.4)))
+    .frames(1)
+    // The column grows below the row: the row stays where it is in the
+    // column, and the column's origin moves up by a fraction, then by
+    // whole pixels
+    .then(Write("below", |w, e| set_height(w, e, 37.6)))
+    .then(Write("below", |w, e| set_height(w, e, 43.6)))
+    .frames(1)
+    // The text above grows by a line: both move
+    .then(Set("above", "t", BindValue::from("a\nline")))
+    .then(At("hovered"))
+    .frames(2);
+  let run = oracle(
+    |h| {
+      h.spawn_ui(moving_row());
+      let above = named(h, "above");
+      h.ui_set(above, "t", "a");
+    },
+    script.steps(),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+  assert!(
+    spot_checking() || run.stats.iter().any(|s| s.resolved_again > 0),
+    "the moved row was resolved again"
+  );
+}
+
+#[test]
+fn a_stack_offset_moves_a_fragment() {
+  // A stack's child moved by its offset: its row is laid out where it was
+  // (an offset is not layout), and only its shift (`Inputs::shift`) tells
+  // it moved
+  fn move_to(world: &mut World, node: Entity, by: glam::Vec2) {
+    world.get_mut::<UiNodeKind>(node).unwrap().layout.offset = Some(by);
+  }
+  let script = Script::default()
+    .frames(3)
+    // Each frame the child moves: the first builds it and keeps its row,
+    // the rest copy or resolve the row again
+    .then(Write("moved", |w, e| {
+      move_to(w, e, glam::Vec2::new(4.0, 6.0))
+    }))
+    .then(Write("moved", |w, e| {
+      move_to(w, e, glam::Vec2::new(4.4, 6.6))
+    }))
+    .then(Write("moved", |w, e| {
+      move_to(w, e, glam::Vec2::new(12.4, 20.6))
+    }))
+    .then(Write("moved", |w, e| {
+      move_to(w, e, glam::Vec2::new(12.4, 20.6))
+    }))
+    .frames(2);
+  let run = oracle(
+    |h| {
+      h.spawn_ui(
+        UiNode::stack()
+          .width(300.0)
+          .height(200.0)
+          .anchor(crate::core::ui::Anchor::TopLeft)
+          .child(
+            UiNode::column()
+              .name("moved")
+              .child(UiNode::text("Moved"))
+              .child(
+                UiNode::row()
+                  .gap(6.0)
+                  .name("kept")
+                  .child(UiNode::button("Kept"))
+                  .child(UiNode::button("Also kept")),
+              ),
+          ),
+      );
+    },
+    script.steps(),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+/// An embedded tree of texts alone (nothing to focus), named "hud", at the
+/// top left
+fn embedded_texts() -> UiNode {
+  UiNode::column()
+    .embedded()
+    .gap(4.0)
+    .name("hud")
+    .child(UiNode::text("Hp 10"))
+    .child(
+      UiNode::row()
+        .gap(6.0)
+        .child(UiNode::text("Gold 25"))
+        .child(UiNode::text("Keys 2")),
+    )
+    .child(UiNode::text("Level 3"))
+}
+
+#[test]
+fn a_clip_change() {
+  // The closure draws the embedded tree under a clip that changes at frame
+  // 3 and again at frame 6: nothing in the tree changes, and only its clip
+  // (`Inputs::clip`) tells its fragment to be resolved again
+  let ui = |ui: &mut UiContext<'_>, world: &mut World, frame: usize| {
+    let clip = match frame {
+      0..=2 => Rect::new(0.0, 0.0, 640.0, 480.0),
+      3..=5 => Rect::new(0.0, 0.0, 640.0, 30.0),
+      _ => Rect::new(12.0, 6.0, 40.0, 300.0),
+    };
+    let root = embedded(world, "hud");
+    ui.push_clip(clip);
+    ui.column()
+      .id("box")
+      .at(Rect::new(10.0, 10.0, 300.0, 200.0))
+      .show(|ui| {
+        ui.node(root, world);
+      });
+    ui.pop_clip();
+  };
+  let run = oracle_with(
+    |h| {
+      h.spawn_ui(embedded_texts());
+    },
+    &ui,
+    &|_| {},
+    &frames(10),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+#[test]
+fn a_layer_change() {
+  // The embedded tree is drawn on the popup layer from frame 3 to 5: a
+  // fragment is pushed only on the layer it was resolved on
+  let ui = |ui: &mut UiContext<'_>, world: &mut World, frame: usize| {
+    use crate::core::ui::immediate::{PAGE_LAYER, POPUP_LAYER};
+    let layer = if (3..6).contains(&frame) {
+      POPUP_LAYER
+    } else {
+      PAGE_LAYER
+    };
+    let root = embedded(world, "hud");
+    let was = ui.set_layer(layer);
+    ui.column()
+      .id("box")
+      .at(Rect::new(10.0, 10.0, 300.0, 200.0))
+      .show(|ui| {
+        ui.node(root, world);
+      });
+    ui.set_layer(was);
+  };
+  let run = oracle_with(
+    |h| {
+      h.spawn_ui(embedded_texts());
+    },
+    &ui,
+    &|_| {},
+    &frames(10),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+#[test]
+fn a_focus_scope_change() {
+  // The closure's column around the embedded tree is a focus scope from
+  // frame 3 to 5: the tree's ids, and so its records, stay; the focus scope
+  // its nodes are stamped with does not, and a fragment is pushed only in
+  // the scope it was resolved in
+  let ui = |ui: &mut UiContext<'_>, world: &mut World, frame: usize| {
+    let root = embedded(world, "hud");
+    let mut boxed = ui
+      .column()
+      .id("box")
+      .at(Rect::new(10.0, 10.0, 300.0, 200.0));
+    if (3..6).contains(&frame) {
+      boxed = boxed.focus_scope();
+    }
+    boxed.show(|ui| {
+      ui.node(root, world);
+    });
+  };
+  let run = oracle_with(
+    |h| {
+      h.spawn_ui(embedded_texts());
+    },
+    &ui,
+    &|_| {},
+    &frames(10),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+/// A scroll area or a column at `rect`, the one id either way: the call
+/// site is the caller's
+#[track_caller]
+fn boxed<'a>(
+  ui: &mut UiContext<'a>,
+  scrolls: bool,
+  rect: Rect,
+  contents: impl FnOnce(&mut UiContext<'a>),
+) {
+  if scrolls {
+    ui.scroll().id("box").at(rect).show(contents);
+  } else {
+    ui.column().id("box").at(rect).show(contents);
+  }
+}
+
+#[test]
+fn a_scroll_ancestor_change() {
+  // The closure's container around the embedded tree is a scroll area from
+  // frame 3 to 5, with the one id: the tree's records stay, and the scroll
+  // area its nodes are stamped with does not, and a fragment is pushed only
+  // under the scroll area it was resolved under
+  let ui = |ui: &mut UiContext<'_>, world: &mut World, frame: usize| {
+    let root = embedded(world, "hud");
+    let rect = Rect::new(10.0, 10.0, 300.0, 200.0);
+    boxed(ui, (3..6).contains(&frame), rect, |ui| {
+      ui.node(root, world);
+    });
+  };
+  let run = oracle_with(
+    |h| {
+      h.spawn_ui(embedded_texts());
+    },
+    &ui,
+    &|_| {},
+    &frames(10),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+/// Text long enough to wrap in the column it fills
+const WRAPS: &str = "A line of text long enough to wrap when its column narrows";
+
+#[test]
+fn a_resize_measures_text_inside_a_kept_fragment() {
+  // A row as wide as the UI, at most 400: a hovered button (the pointer on
+  // it keeps the row building) and a column filling the rest, of wrapping
+  // texts, kept on its own. The button's label widens: the kept column
+  // narrows, and Taffy lays it out again, measuring its texts through the
+  // fragment (`Measured::Kept`; measured as nothing, they would collapse).
+  // A window resize rebuilds every node (the UI's size is in the
+  // environment), so it narrows the row through a rebuild.
+  let script = Script::default()
+    .frames(1)
+    .then(At("hovered"))
+    .frames(3)
+    .then(Set("hovered", "w", BindValue::from("A much wider label")))
+    .frames(2)
+    .then(Set("hovered", "w", BindValue::from("Wide")))
+    .frames(2)
+    .then(Resize(300.0, 480.0))
+    .then(At("hovered"))
+    .frames(3)
+    .then(Set("hovered", "w", BindValue::from("Wider again")))
+    .frames(2)
+    .then(Resize(640.0, 480.0))
+    .frames(3);
+  let run = oracle(
+    |h| {
+      h.spawn_ui(
+        UiNode::row()
+          .gap(6.0)
+          .width(crate::core::ui::Length::Fill)
+          .max_width(400.0)
+          .anchor(crate::core::ui::Anchor::TopLeft)
+          .child(UiNode::button("{w}").bound().name("hovered"))
+          .child(
+            UiNode::column()
+              .fill_width()
+              .gap(2.0)
+              .name("texts")
+              .child(UiNode::text(WRAPS))
+              .child(UiNode::text(WRAPS))
+              .child(UiNode::text("Short")),
+          ),
+      );
+      let hovered = named(h, "hovered");
+      h.ui_set(hovered, "w", "W");
+    },
+    script.steps(),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+#[test]
+fn a_window_resize() {
+  // The UI's size is in the environment every record holds: a resize builds
+  // every node again, and the fragments of the frame before are dropped
+  // untaken. The rows are kept again the frame after.
+  let script = Script::default()
+    .frames(1)
+    .then(At("hovered"))
+    .frames(3)
+    .then(Resize(500.0, 400.0))
+    .then(At("hovered"))
+    .frames(3)
+    .then(Resize(640.0, 480.0))
+    .then(At("hovered"))
+    .frames(3);
+  let run = oracle(
+    |h| {
+      h.spawn_ui(moving_row());
+      let above = named(h, "above");
+      h.ui_set(above, "t", "a");
+    },
+    script.steps(),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+#[test]
+fn each_env_change() {
+  // The theme, the prompts' device, the UI's size and scale and its fonts
+  // change in turn, with frames between in which fragments are kept. Each
+  // change builds every node; the fragments of the frame before go untaken
+  // and are gone the frame after (carried on, and pushed whatever their
+  // record's build, they would draw the old theme)
+  let script = Script::default()
+    .frames(3)
+    .then(Theme(Theme::light))
+    .frames(3)
+    .then(Device(InputDevice::Gamepad, PadFamily::PlayStation))
+    .frames(3)
+    .then(Resize(500.0, 400.0))
+    .frames(3)
+    .then(Do(|h| h.set_ui_scale(1.25)))
+    .frames(3)
+    .then(Do(|h| {
+      let mut fonts = Fonts::with_builtins();
+      if let Some(mono) = fonts.role(FontRole::Mono) {
+        fonts.set_role(FontRole::Ui, mono);
+      }
+      h.text.sync(&fonts);
+    }))
+    .frames(3)
+    .then(Theme(Theme::dark))
+    .then(Do(|h| h.text.sync(&Fonts::with_builtins())))
+    .then(Do(|h| h.set_ui_scale(1.0)))
+    .then(Resize(640.0, 480.0))
+    .frames(3);
+  let run = oracle(
+    |h| {
+      with_prompts(h);
+      spawn_settings(h);
+      h.spawn_ui(controls());
+    },
+    script.steps(),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+/// The Clipping page's list as nodes: a scroll area of rows holding a
+/// horizontal strip of cards, a scroll area itself, after a spacer
+fn strip_list() -> UiNode {
+  let row = |i: usize| {
+    UiNode::row()
+      .gap(6.0)
+      .child(UiNode::text(format!("Item {:02}", i + 1)))
+      .child(UiNode::button("Go"))
+  };
+  let card = |c: usize| {
+    UiNode::column()
+      .width(110.0)
+      .height(64.0)
+      .padding(4.0)
+      .background(crate::core::ui::Color::rgb(60 + c as u8 * 10, 90, 140))
+      .child(UiNode::text(format!("Card {}", c + 1)))
+      .child(UiNode::text("Shift + wheel"))
+  };
+  let strip = UiNode::scroll()
+    .horizontal()
+    .fill_width()
+    .height(100.0)
+    .gap(8.0)
+    .padding(crate::core::ui::Edges {
+      left: 4.0,
+      top: 20.0,
+      right: 4.0,
+      bottom: 4.0,
+    })
+    .name("strip")
+    .children((0..12).map(card));
+  UiNode::scroll()
+    .anchor(crate::core::ui::Anchor::TopLeft)
+    .width(360.0)
+    .height(240.0)
+    .padding(6.0)
+    .gap(2.0)
+    .name("list")
+    .children((0..6).map(row))
+    .child(UiNode::column().height(0.0).name("spacer"))
+    .child(strip)
+    .children((6..20).map(row))
+}
+
+/// The strip's top padding set to `top`, as a game writes its layout
+fn set_top_padding(world: &mut World, node: Entity, top: f32) {
+  let mut kind = world.get_mut::<UiNodeKind>(node).unwrap();
+  let padding = kind.layout.padding.get_or_insert_default();
+  padding.top = top;
+}
+
+#[test]
+fn nested_slots_by_wheel_and_trackpad() {
+  // At UI scale 1.25 (whole render pixels are 0.8 units): the list scrolled
+  // by the wheel and by fractional trackpad steps, then the strip inside it
+  // sideways. Kept rows and cards are copied by their slots' offsets, and
+  // the cards scrolled out of the strip's view are culled by its view.
+  let script = Script::default()
+    .frames(3)
+    .then(Do(|h| point_at(h, named(h, "list"), 0.0, -90.0)))
+    .then(Wheel(-1.0))
+    .frames(5)
+    .repeat(Do(|h| h.trackpad(0.0, -7.3)), 3)
+    .then(Do(|h| point_at(h, named(h, "strip"), 0.0, 0.0)))
+    .repeat(Do(|h| h.trackpad(-13.7, 0.0)), 3)
+    .then(Do(|h| h.wheel(-1.0, 0.0)))
+    .frames(5)
+    // The strip moves down a line in the list while its top padding takes
+    // as much off: its cards stay where the layout put them, and only their
+    // slot's base moves (by whole pixels, then by a fraction)
+    .input(Write("spacer", |w, e| set_height(w, e, 16.0)))
+    .then(Write("strip", |w, e| set_top_padding(w, e, 4.0)))
+    .input(Write("spacer", |w, e| set_height(w, e, 16.3)))
+    .then(Write("strip", |w, e| set_top_padding(w, e, 3.7)))
+    .frames(2)
+    .then(Do(|h| point_at(h, named(h, "list"), 0.0, -90.0)))
+    .repeat(Do(|h| h.trackpad(0.0, 5.1)), 2)
+    .frames(3);
+  let run = oracle(
+    |h| {
+      h.set_ui_scale(1.25);
+      h.spawn_ui(strip_list());
+    },
+    script.steps(),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+  let offset = |name: &str| {
+    let id = run.on.ui_id(named(&run.on, name)).unwrap();
+    run.on.scroll_offset(id)
+  };
+  assert!(offset("list").y > 0.0, "the list scrolled");
+  assert!(offset("strip").x > 0.0, "the strip scrolled");
+}
+
+#[test]
+fn a_popup_opened_next_to_a_fragment() {
+  // The pointer on the first button keeps the root building, so its other
+  // children are kept on their own. A popup node of texts (nothing in it
+  // takes a role) is shown and hidden. It is the last thing in its column,
+  // so the column's own orders still form one run: only the popup its
+  // replay saw keeps that column from being kept, which would leave the
+  // popup undrawn. Then a dropdown beside a kept column is clicked open,
+  // answered, opened again and closed by Back. A popup's nodes take orders
+  // as they are walked (renumbered when the scene ends), so the kept
+  // subtrees after it are copied at another base.
+  let script = Script::default()
+    .frames(1)
+    .then(At("hovered"))
+    .frames(2)
+    .then(Write("menu", |w, e| {
+      w.entity_mut(e).remove::<UiHidden>();
+    }))
+    .frames(3)
+    .then(Write("menu", |w, e| {
+      w.entity_mut(e).insert(UiHidden);
+    }))
+    .frames(2)
+    .input(Do(|h| point_at(h, named(h, "pick"), 0.0, 0.0)))
+    .input(Press)
+    .then(Release)
+    .then(Move(1000.0, 1000.0))
+    .frames(3)
+    .input(Do(|h| point_at(h, named(h, "pick"), 0.0, 48.0)))
+    .input(Press)
+    .then(Release)
+    .then(Move(1000.0, 1000.0))
+    .frames(3)
+    .input(Do(|h| point_at(h, named(h, "pick"), 0.0, 0.0)))
+    .input(Press)
+    .then(Release)
+    .then(Move(1000.0, 1000.0))
+    .frames(3)
+    .then(Action("ui.back"))
+    .frames(3);
+  let run = oracle(
+    |h| {
+      h.spawn_ui(
+        UiNode::column()
+          .anchor(crate::core::ui::Anchor::TopLeft)
+          .gap(4.0)
+          .child(UiNode::button("Hovered").name("hovered"))
+          .child(
+            UiNode::row()
+              .gap(8.0)
+              .name("pair")
+              .child(
+                UiNode::dropdown(&["One", "Two", "Three"], 0)
+                  .width(100.0)
+                  .name("pick"),
+              )
+              .child(
+                UiNode::column()
+                  .gap(2.0)
+                  .name("kept")
+                  .child(UiNode::button("A"))
+                  .child(UiNode::button("B")),
+              ),
+          )
+          .child(
+            UiNode::column()
+              .name("more box")
+              .child(UiNode::button("More").name("more"))
+              .child(
+                UiNode::popup("more")
+                  .name("menu")
+                  .hidden()
+                  .child(UiNode::text("Renamed"))
+                  .child(UiNode::text("Two hours ago")),
+              ),
+          )
+          .child(
+            UiNode::row()
+              .gap(6.0)
+              .name("after")
+              .child(UiNode::button("After"))
+              .child(UiNode::text("Below")),
+          ),
+      );
+      h.move_to(1000.0, 1000.0);
+    },
+    script.steps(),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+#[test]
+fn an_embedded_tree_in_closure_ui() {
+  // The embedded tree is a cell of a closure grid whose other cells change:
+  // an extra cell before it in frames 2 and 3 moves it to the next cell, a
+  // cell before it widens its column from frame 4 to 7, and from frame 6 a
+  // label drawn before the grid moves its orders by one. Its kept root takes
+  // the grid's depth and orders as a replay would.
+  let ui = |ui: &mut UiContext<'_>, world: &mut World, frame: usize| {
+    let root = embedded(world, "hud");
+    if frame >= 6 {
+      ui.draw_text("Before", 420.0, 400.0, crate::core::ui::Color::WHITE);
+    }
+    ui.grid(2)
+      .id("grid")
+      .gap(4.0)
+      .anchor(crate::core::ui::Anchor::TopLeft)
+      .show(|ui| {
+        ui.text(if (4..8).contains(&frame) {
+          "A much longer cell"
+        } else {
+          "Short"
+        });
+        if (2..4).contains(&frame) {
+          ui.text("Extra");
+        }
+        ui.node(root, world);
+        ui.text(format!("Frame {frame}"));
+      });
+  };
+  let run = oracle_with(
+    |h| {
+      h.spawn_ui(embedded_hud());
+    },
+    &ui,
+    &|_| {},
+    &frames(14),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
+#[test]
+fn virtual_list_rows() {
+  // A node list's rows, each kept as a fragment in the list's slot: scrolled
+  // by the wheel, the trackpad and jumps (rows rebound as they come into
+  // view), and a row rebound in place. Kept rows are copied by the slot's
+  // offset, into its slot, and culled by its view.
+  let script = Script::default()
+    .frames(3)
+    .then(Do(|h| point_at(h, named(h, "board"), 0.0, 0.0)))
+    .then(Wheel(-3.0))
+    .frames(6)
+    .repeat(Do(|h| h.trackpad(0.0, -9.6)), 3)
+    .then(Jump("board", 200))
+    .frames(6)
+    .then(Do(|h| {
+      let row = pooled(h, "board", 2);
+      h.ui_set(row, "name", "Changed");
+    }))
+    .frames(2)
+    .then(Jump("board", 40))
+    .frames(6)
+    .then(Refresh("board"))
+    .frames(3);
+  let run = oracle_with(
+    |h| {
+      h.spawn_ui(board(500));
+    },
+    &|_, _, _| {},
+    &bind_rows,
+    script.steps(),
+  );
+  assert_cached(&run);
+  assert_reused(&run);
+}
+
 /// Every scenario again with the debug spot check on in both harnesses: a
 /// clean node built in place of its replay draws and does the same, and no
 /// record differs from its build
@@ -2254,7 +2972,21 @@ fn every_scenario_looks_the_same_with_the_spot_check_on() {
     a_fragment_moved_by_a_growing_sibling_is_resolved_again,
     a_kept_fragments_reads_go_up_to_the_parent_built_around_it,
     a_skin_replaced_in_place_at_another_size_redraws_its_kept_fragment,
+    a_sibling_inserted_before_a_fragment,
+    a_growing_sibling_moves_a_fragment_by_a_fraction_then_whole_pixels,
+    a_stack_offset_moves_a_fragment,
+    a_clip_change,
+    a_layer_change,
+    a_focus_scope_change,
+    a_scroll_ancestor_change,
+    a_resize_measures_text_inside_a_kept_fragment,
+    a_window_resize,
+    each_env_change,
+    nested_slots_by_wheel_and_trackpad,
+    a_popup_opened_next_to_a_fragment,
+    an_embedded_tree_in_closure_ui,
+    virtual_list_rows,
   ]);
-  // Of 7,360 frames, most hold a clean node to check
+  // Of 7,651 frames, most hold a clean node to check
   assert!(checked > 5_000, "the spot check ran in {checked} frames");
 }
