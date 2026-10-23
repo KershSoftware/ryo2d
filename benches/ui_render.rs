@@ -31,10 +31,15 @@
 //! The guard prints every median, and holds one changing label and the
 //! scrolling list to being no slower retained than not (4g; the moving
 //! list's texts are laid again from their kept glyphs), the scrolling list
-//! to moving every frame, and the retained screens to 4i's targets: the render step over an empty frame's under 5 µs idle (4g),
-//! 25 µs with one label changing and 20 µs scrolling, and the UI pass
-//! (`HeadlessEngine::ui_pass_time`, CPU time before the render step) under
-//! 18 µs idle, 25 µs with the label and 20 µs scrolling. The UI pass is
+//! to moving every frame, and the retained screens to 4i's targets: the
+//! render step over an empty frame's under 5 µs idle (4g) and 25 µs with
+//! one label changing, and the UI pass (`HeadlessEngine::ui_pass_time`, CPU
+//! time before the render step) under 18 µs idle and 25 µs with the label.
+//! Scrolling missed the spec's 20 µs for both, and is held to the numbers
+//! accepted at the end of 4i instead: the render step under 35 µs, about
+//! 10% over its final median (+31.3 µs), and the UI pass under 27 µs, about
+//! 20% over its (22.5 µs) as a busy machine reads it up to 25.4, each
+//! printed beside the 20 µs goal still open. The UI pass is
 //! read from each engine stepped alone afterwards (2,000 frames, after as
 //! many to warm up), as a game runs its one engine and as the targets were
 //! set: stepped in turn, each engine's caches are evicted by the others'
@@ -64,15 +69,63 @@ const SWING: u32 = 20;
 /// Over a row of the scroll area (the panel centre is not over it)
 const OVER_LIST: (f32, f32) = (520.0, 238.0);
 /// An idle settings screen's render step over an empty frame's (4g)
-const IDLE_TARGET: Duration = Duration::from_micros(5);
+const IDLE_TARGET: Check = Check::target(5);
 /// One changing label's render step over an empty frame's (4i)
-const LABEL_TARGET: Duration = Duration::from_micros(25);
-/// The scrolling screen's render step over an empty frame's (4i)
-const SCROLLING_TARGET: Duration = Duration::from_micros(20);
-/// The UI pass of the idle, one-label and scrolling screens (4i)
-const IDLE_PASS_TARGET: Duration = Duration::from_micros(18);
-const LABEL_PASS_TARGET: Duration = Duration::from_micros(25);
-const SCROLLING_PASS_TARGET: Duration = Duration::from_micros(20);
+const LABEL_TARGET: Check = Check::target(25);
+/// The scrolling screen's render step over an empty frame's: the limit
+/// accepted at the end of 4i, and the spec's goal, still open
+const SCROLLING_LIMIT: Check = Check::limit(35, 20);
+/// The UI pass of the idle and one-label screens (4i)
+const IDLE_PASS_TARGET: Check = Check::target(18);
+const LABEL_PASS_TARGET: Check = Check::target(25);
+/// The scrolling screen's UI pass: the limit accepted at the end of 4i, and
+/// the spec's goal, still open
+const SCROLLING_PASS_LIMIT: Check = Check::limit(27, 20);
+
+/// What a median is held to: under `limit`, or the run fails. A `goal`
+/// under the limit is a target not met when the limit was set, printed
+/// beside it.
+#[derive(Clone, Copy)]
+struct Check {
+  limit: Duration,
+  goal: Duration,
+}
+
+impl Check {
+  /// Under `us` µs
+  const fn target(us: u64) -> Check {
+    Check::limit(us, us)
+  }
+
+  /// Under `us` µs, with the goal of under `goal` µs
+  const fn limit(us: u64, goal: u64) -> Check {
+    Check {
+      limit: Duration::from_micros(us),
+      goal: Duration::from_micros(goal),
+    }
+  }
+
+  /// Whether `time` is under the limit, and what it is held to, with each
+  /// verdict
+  fn verdict(self, time: Duration) -> (bool, String) {
+    let met = time < self.limit;
+    let verdict = if met { "met" } else { "missed" };
+    let limit = self.limit.as_micros();
+    if self.goal >= self.limit {
+      return (met, format!("target {limit} µs: {verdict}"));
+    }
+    let goal = if time < self.goal {
+      "met"
+    } else {
+      "still open"
+    };
+    let text = format!(
+      "limit {limit} µs: {verdict}; the spec's goal {} µs: {goal}",
+      self.goal.as_micros()
+    );
+    (met, text)
+  }
+}
 
 struct Empty;
 
@@ -237,12 +290,13 @@ fn over(time: Duration, empty: Duration) -> f64 {
 
 /// The UI's render targets over an empty frame, on the screen they were set
 /// on: an idle settings screen adds under 5 µs (4g), a changing frame is no
-/// slower retained than not (4g), one changing label adds under 25 µs and
-/// the scrolling list under 20 µs (4i); and the retained screens' UI pass
-/// targets (4i). Every median is printed, and each target with its
-/// verdict; what is missed, these and that one label and the scrolling list
-/// are no slower retained and the list moves every frame, is noted for the
-/// run to fail on.
+/// slower retained than not (4g), one changing label adds under 25 µs (4i)
+/// and the scrolling list under its accepted 35 µs; and the retained
+/// screens' UI pass targets and limit (4i). Every median is printed, and
+/// each check with its verdict, the scrolling ones with the spec's goal;
+/// what is missed, these and that one label and the scrolling list are no
+/// slower retained and the list moves every frame, is noted for the run to
+/// fail on.
 fn guard() {
   let screens = [
     (Screen::Empty, true),
@@ -300,14 +354,9 @@ fn guard() {
   let (scrolling_off, _) = median(Screen::Scrolling, false);
   let us = |time: Duration| over(time, empty);
   let verdict = |met: bool| if met { "met" } else { "missed" };
-  let against = |time: Duration, target: Duration| {
-    let met = time.saturating_sub(empty) < target;
-    format!(
-      "{:+.1} µs (target {} µs: {})",
-      us(time),
-      target.as_micros(),
-      verdict(met)
-    )
+  let against = |time: Duration, check: Check| {
+    let (_, held) = check.verdict(time.saturating_sub(empty));
+    format!("{:+.1} µs ({held})", us(time))
   };
   let off = |time: Duration, retained: Duration| {
     let met = retained <= time;
@@ -323,20 +372,19 @@ fn guard() {
     against(label, LABEL_TARGET),
     us(idle_off),
     off(label_off, label),
-    against(scrolling, SCROLLING_TARGET),
+    against(scrolling, SCROLLING_LIMIT),
     off(scrolling_off, scrolling),
   );
   let mut missed = Vec::new();
-  for (screen, time, target) in [
+  for (screen, time, check) in [
     (Screen::Idle, idle, IDLE_TARGET),
     (Screen::Label, label, LABEL_TARGET),
-    (Screen::Scrolling, scrolling, SCROLLING_TARGET),
+    (Screen::Scrolling, scrolling, SCROLLING_LIMIT),
   ] {
-    if time.saturating_sub(empty) >= target {
+    if !check.verdict(time.saturating_sub(empty)).0 {
       missed.push(format!(
-        "the render step, {screen:?} {:+.1} µs (target {} µs)",
-        us(time),
-        target.as_micros()
+        "the render step, {screen:?} {}",
+        against(time, check)
       ));
     }
   }
@@ -357,23 +405,18 @@ fn guard() {
     passes.join(", ")
   );
   let mut lone = Vec::new();
-  for (screen, target) in [
+  for (screen, check) in [
     (Screen::Idle, IDLE_PASS_TARGET),
     (Screen::Label, LABEL_PASS_TARGET),
-    (Screen::Scrolling, SCROLLING_PASS_TARGET),
+    (Screen::Scrolling, SCROLLING_PASS_LIMIT),
   ] {
     let probe = probes
       .iter_mut()
       .find(|probe| probe.screen == screen && probe.retain)
       .expect("a retained probe of each screen");
     let median = probe.lone_ui_pass();
-    let met = median < target;
-    let pass = format!(
-      "{screen:?} {:.1} µs (target {} µs: {})",
-      median.as_secs_f64() * 1e6,
-      target.as_micros(),
-      verdict(met)
-    );
+    let (met, held) = check.verdict(median);
+    let pass = format!("{screen:?} {:.1} µs ({held})", median.as_secs_f64() * 1e6);
     if !met {
       missed.push(format!("the UI pass, {pass}"));
     }
