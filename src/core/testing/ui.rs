@@ -22,6 +22,7 @@ use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
 use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
 use crate::core::ui::theme::warn_once;
+use crate::core::ui::widgets::scroll::drag_ahead;
 use crate::core::ui::{
   BindValue, Theme, UiConsumed, UiContext, UiEvent, UiFileError, UiId, UiInput, UiListBind, UiNode,
   UiReloaded, nodes,
@@ -653,6 +654,9 @@ impl UiHarness {
     if scripted {
       self.outcome = outcome;
     }
+    // A node list's thumb drag is followed before its pool is chosen; its
+    // `show` follows it again
+    drag_ahead(&mut self.memory, metrics.sizes.scrollbar);
     // List pools follow this frame's scrolling before any tree is drawn
     if !self.skips_list_update() {
       let frame = self.memory.frame();

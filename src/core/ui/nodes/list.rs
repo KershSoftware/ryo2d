@@ -143,6 +143,9 @@ pub(crate) struct UiList {
   pub(crate) ahead: f32,
   /// Frames in a row the offset did not move
   pub(crate) still: u8,
+  /// While its scrollbar's thumb is dragged, the target the pool took the
+  /// rows at: the list shows it the next frame, once they are bound
+  pub(crate) dragged: Option<f32>,
 }
 
 /// A focus on its way to an item of a list node
@@ -343,7 +346,7 @@ fn update_list(
   list: Entity,
   binds: &mut Vec<UiListBind>,
 ) {
-  let Some((count, focused, focus_widget, jump, pending, pooled)) =
+  let Some((count, focused, focus_widget, jump, pending, pooled, dragged)) =
     world.get::<UiList>(list).map(|pool| {
       (
         pool.count,
@@ -352,6 +355,7 @@ fn update_list(
         pool.jump,
         pool.pending,
         !pool.rows.is_empty(),
+        pool.dragged,
       )
     })
   else {
@@ -423,14 +427,28 @@ fn update_list(
   // The rows chosen cover the part of the view that shows, `below` its top;
   // before its first draw the screen's height stands in
   let (below, view) = seen(memory, id, laid, screen);
+  let held = id != UiId::NONE && memory.interact.active == id;
   let area = if id == UiId::NONE {
     None
   } else {
     memory.peek_state_mut::<ScrollState>(id)
   };
+  // A thumb drag `drag_ahead` followed this frame, while it is held
+  let mut drags = None;
   let (offset, target) = match area {
     Some(area) => {
-      if let Some(index) = jump_to {
+      let dragging = held && area.grabbed();
+      if dragging || dragged.is_some() {
+        // The list shows the target its pool took the rows at last frame,
+        // which are bound now, a frame behind the thumb; let go, it rests
+        // there, where the thumb was. The drag owns the target, so a jump
+        // only pools its row.
+        if let Some(to) = dragged {
+          area.offset.y = to;
+        }
+        drags = dragging.then_some(area.target.y);
+        aimed = jump_to.is_some();
+      } else if let Some(index) = jump_to {
         // The least movement; a jump further than a view lands one view
         // short before the rows are chosen, and the area eases the rest
         if let Some(to) = row_target_in(area, shape.top, stride, shape.row_height, row_of(index)) {
@@ -454,6 +472,7 @@ fn update_list(
   let tracking = (target - offset).abs() < LOOK_AHEAD_SNAP;
   let target = match world.get_mut::<UiList>(list) {
     Some(mut pool) => {
+      pool.dragged = drags;
       let step = pool
         .last_offset
         .replace(offset)
@@ -936,6 +955,7 @@ fn release(world: &mut World, list: Entity) {
       || pool.pending.is_some()
       || pool.rebind != Rebind::None
       || pool.focused.is_some()
+      || pool.dragged.is_some()
   });
   if !pooled {
     return;
@@ -949,6 +969,7 @@ fn release(world: &mut World, list: Entity) {
   pool.last_offset = None;
   pool.ahead = 0.0;
   pool.still = 0;
+  pool.dragged = None;
   let pending = pool.pending.take();
   let rows = std::mem::take(&mut pool.rows);
   take_back(world, pending);
@@ -1041,7 +1062,16 @@ pub(super) fn draw_list(
       (std::mem::take(&mut pool.rows), pool.first_focus, asking)
     })
     .unwrap_or_default();
-  let mut scroll = scroll;
+  // Its rows are drawn from the frame after they are bound, so a list with
+  // rows (a shape and a row shape, as `update_lists` pools) shows a thumb
+  // drag a frame behind, `update_lists` moving it; one with none follows
+  // the thumb at once, as any scroll area does
+  let pooling = shape.is_some() && world.get::<UiListShape>(node).is_some();
+  let mut scroll = if pooling {
+    scroll.trails_drag()
+  } else {
+    scroll
+  };
   if let Some(shape) = shape {
     scroll = scroll.content_height(shape.length());
   }
@@ -1916,6 +1946,217 @@ mod tests {
       "{} rows after a jump, {steady} at the top",
       rows(&h, list).len()
     );
+  }
+
+  /// `board`'s node list and a closure list of its shape (`closure_board`),
+  /// each in a harness of its own, driven by one pointer
+  struct Beside {
+    node: UiHarness,
+    list: Entity,
+    id: UiId,
+    closure: UiHarness,
+    closure_id: UiId,
+  }
+
+  impl Beside {
+    fn new() -> Beside {
+      Beside::with(|h| board(h, 10_000))
+    }
+
+    /// The node list `spawn` spawns beside the closure list
+    fn with(spawn: impl FnOnce(&mut UiHarness) -> Entity) -> Beside {
+      let mut node = UiHarness::new(640.0, 480.0);
+      let list = spawn(&mut node);
+      let mut closure = UiHarness::new(640.0, 480.0);
+      let mut closure_id = UiId::NONE;
+      for _ in 0..3 {
+        node.frame(|_| {});
+        bind(&mut node);
+        closure_id = closure.frame(|ui| closure_board(ui, 1, None));
+      }
+      let id = node.ui_id(list).unwrap();
+      let rect = |h: &UiHarness, id: UiId| h.record_of(id).map(|r| r.rect);
+      assert_eq!(
+        rect(&node, id),
+        rect(&closure, closure_id),
+        "laid out alike"
+      );
+      Beside {
+        node,
+        list,
+        id,
+        closure,
+        closure_id,
+      }
+    }
+
+    fn rect(&self) -> Rect {
+      self.node.record_of(self.id).unwrap().rect
+    }
+
+    fn frame(&mut self) {
+      self.node.frame(|_| {});
+      bind(&mut self.node);
+      self.closure.frame(|ui| closure_board(ui, 1, None));
+    }
+
+    fn move_to(&mut self, x: f32, y: f32) {
+      self.node.move_to(x, y);
+      self.closure.move_to(x, y);
+    }
+
+    fn press(&mut self) {
+      self.node.press();
+      self.closure.press();
+    }
+
+    fn release(&mut self) {
+      self.node.release();
+      self.closure.release();
+    }
+
+    /// The node list's thumb and the closure list's, as last drawn
+    fn thumbs(&self) -> (Option<Rect>, Option<Rect>) {
+      let thumb = |h: &UiHarness, id: UiId| {
+        crate::core::ui::widgets::scroll::drawn_bars(&h.memory)
+          .into_iter()
+          .find(|&(area, axis, ..)| area == id && axis == 1)
+          .map(|(.., thumb)| thumb)
+      };
+      (
+        thumb(&self.node, self.id),
+        thumb(&self.closure, self.closure_id),
+      )
+    }
+
+    /// The node list's offset and the closure list's
+    fn offsets(&self) -> (f32, f32) {
+      (
+        self.node.scroll_offset(self.id).y,
+        self.closure.scroll_offset(self.closure_id).y,
+      )
+    }
+
+    /// Where a thumb drag puts the lists' offset with the pointer `along`
+    /// units down the track from where it holds the thumb's top
+    fn target(&self, along: f32) -> f32 {
+      let view = self.rect().height;
+      let content = self.closure.scroll_content(self.closure_id).y;
+      let max = content - view;
+      let thumb = (view / content * view).max(20.0);
+      (along / (view - thumb) * max).clamp(0.0, max)
+    }
+  }
+
+  #[test]
+  fn a_dragged_node_list_draws_every_view_a_frame_behind_its_thumb() {
+    // Slowly (a tenth of a unit, about half a view a frame), a unit (about
+    // six views) and twenty units a frame: the closure list follows the
+    // thumb at once, and the node list, whose rows are drawn from the frame
+    // after they are bound, shows each offset a frame later with its rows
+    // drawn, then rests where the thumb was let go
+    for step in [0.1_f32, 1.0, 20.0] {
+      let mut lists = Beside::new();
+      let rect = lists.rect();
+      // The thumb: the right 10 units of the view, 20 tall at its top
+      let (x, mut y) = (rect.x + rect.width - 5.0, rect.y + 10.0);
+      lists.move_to(x, y);
+      lists.frame();
+      lists.press();
+      lists.frame();
+      let mut was = lists.offsets().1;
+      assert_eq!(lists.offsets(), (0.0, 0.0));
+      for frame in 0..12 {
+        y += step;
+        lists.move_to(x, y);
+        lists.frame();
+        let what = format!("{step} a frame, frame {frame}");
+        let (node, closure) = lists.offsets();
+        let at = lists.target(y - rect.y - 10.0);
+        assert!(
+          (closure - at).abs() < 0.01,
+          "{what}: {closure} at once, not {at}"
+        );
+        assert_view_drawn(&lists.node, lists.list, lists.id, &what);
+        assert_eq!(node, was, "{what}: a frame behind");
+        // The thumb follows the pointer, as the closure list's does
+        let (thumb, closure_thumb) = lists.thumbs();
+        assert!(thumb.is_some(), "{what}: a thumb");
+        assert_eq!(thumb, closure_thumb, "{what}: the thumb under the pointer");
+        was = closure;
+      }
+      assert!(was > 100.0, "{step} a frame: the drag scrolled to {was}");
+      // Let go as it moves, it rests where the thumb was
+      lists.release();
+      for frame in 0..3 {
+        lists.frame();
+        let what = format!("{step} a frame, released {frame}");
+        assert_view_drawn(&lists.node, lists.list, lists.id, &what);
+        assert_eq!(lists.offsets(), (was, was), "{what}: where it was let go");
+      }
+    }
+  }
+
+  #[test]
+  fn a_node_list_without_a_row_shape_follows_its_thumb_at_once() {
+    // No rows to bind, so nothing to trail: its offset and its thumb follow
+    // the drag at once and rest where it is let go, as a closure list's do
+    let mut lists = Beside::with(|h| {
+      h.spawn_ui(
+        UiNode::list(10_000, 20.0)
+          .gap(2.0)
+          .height(200.0)
+          .width(300.0),
+      )
+    });
+    let rect = lists.rect();
+    let (x, mut y) = (rect.x + rect.width - 5.0, rect.y + 10.0);
+    lists.move_to(x, y);
+    lists.frame();
+    lists.press();
+    lists.frame();
+    for frame in 0..6 {
+      y += 1.0;
+      lists.move_to(x, y);
+      lists.frame();
+      let (node, closure) = lists.offsets();
+      assert_eq!(node, closure, "frame {frame}: at once");
+      assert_eq!(lists.thumbs().0, lists.thumbs().1, "frame {frame}");
+    }
+    let held = lists.offsets().1;
+    assert!(held > 100.0, "the drag scrolled to {held}");
+    lists.release();
+    for frame in 0..3 {
+      lists.frame();
+      assert_eq!(lists.offsets(), (held, held), "released {frame}");
+      assert_eq!(lists.thumbs().0, lists.thumbs().1, "released {frame}");
+    }
+  }
+
+  #[test]
+  fn a_press_on_a_node_list_s_track_pages_it_the_frame_after() {
+    let mut lists = Beside::new();
+    let rect = lists.rect();
+    // On the track below the thumb: the thumb is centred there
+    let (x, y) = (rect.x + rect.width - 5.0, rect.y + 150.0);
+    lists.move_to(x, y);
+    lists.frame();
+    lists.press();
+    lists.frame();
+    let paged = lists.target(150.0 - 10.0);
+    let (node, closure) = lists.offsets();
+    assert!((closure - paged).abs() < 0.01, "{closure}, not {paged}");
+    assert_eq!(node, 0.0, "the node list's rows there are bound now");
+    assert_view_drawn(&lists.node, lists.list, lists.id, "pressed");
+    lists.frame();
+    assert_eq!(lists.offsets(), (closure, closure), "paged the frame after");
+    assert_view_drawn(&lists.node, lists.list, lists.id, "paged");
+    lists.release();
+    for frame in 0..3 {
+      lists.frame();
+      assert_eq!(lists.offsets(), (closure, closure), "released {frame}");
+      assert_view_drawn(&lists.node, lists.list, lists.id, "released");
+    }
   }
 
   #[test]

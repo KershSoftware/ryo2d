@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.5.8
+  version: 4.5.9
 ---
 
 # Ryo2D UI Specialist
@@ -2275,6 +2275,7 @@ List(count: 10000, row_height: 28, gap: 2, fill: true, row_shape: LeaderRow, nam
   Set every value the row shows: a reused row holds its last item's values until it is bound.
 - **Every list's binds reach every scene**, so keep to your list's: `if bind.list != board { continue; }`.
 - **Bind in `ui`.** The pool follows the scroll once a frame, at the start of the UI pass, before any tree is drawn. A row given an item is hidden that frame and drawn from the next, so the game binds it in between: in the scene's `ui` (recommended: it runs every frame, after the scene's trees are walked) or in an observer on the row (`UiListBind` is also an entity event triggered on the row, so the observer fills it at once; it must not change scenes). Binding in `update` costs a frame: `update` runs at the fixed rate, so when the display runs faster a row can draw unfilled for a frame before a fixed step binds it, and debug builds warn once for each name it shows with no value yet ("no value is set for the UI binding ..").
+- **Dragging the scrollbar.** The thumb follows the pointer, and since a row is drawn from the frame after it is bound, a node list's rows follow it a frame behind (about 16 ms at 60 fps) with every view drawn, however far a frame's drag moves them; let go, the list rests where the thumb was. A press on the track pages it the frame after. A closure list follows the thumb at once.
 - **The game API** (on `SceneContext`, and on `UiHarness`):
   - `ctx.ui_list_count(list, n)`: the item count. It is state, like a widget's value: a reload or `update_ui` writes it only when the tree's count changed;
   - `ctx.ui_list_refresh(list)`: bind every pooled row again next frame, after the game's data changed; `ctx.ui_list_refresh_row(list, index)` for one item's row (a row not pooled needs none: it is bound when it shows). A refreshed row keeps drawing what it showed until it is bound, so nothing flashes;

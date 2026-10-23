@@ -608,6 +608,12 @@ impl Engine {
         snapshot.consume_scroll();
       }
       self.resolve_navigation(&theme);
+      // A node list's thumb drag is followed before its pool is chosen; its
+      // `show` follows it again
+      crate::core::ui::widgets::scroll::drag_ahead(
+        &mut self.ui_memory,
+        theme.metrics.sizes.scrollbar,
+      );
       // List pools follow this frame's scrolling before any tree is drawn
       let frame = self.ui_memory.frame();
       crate::core::ui::nodes::update_lists(&mut self.world, &mut self.ui_memory, frame, space.size);

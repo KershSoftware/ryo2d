@@ -14,7 +14,6 @@ use crate::core::ui::id::key_hash;
 use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Edges, Flow, Length, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::core::ui::memory::UiMemory;
 use crate::core::ui::response::Response;
 use crate::core::ui::theme::WidgetState;
@@ -53,6 +52,10 @@ pub(crate) struct ScrollState {
   /// a press grabs it) in the area's own units, for the headless engine's
   /// read in tests
   drawn: [Option<(Rect, Rect)>; 2],
+  /// The axes it scrolls and whether its bar shows, when its contents trail
+  /// a thumb drag by a frame (`Scroll::trails_drag`, a node list's): while
+  /// grabbed its offset is moved by its owner, not snapped to the target
+  trails: Option<([bool; 2], bool)>,
 }
 
 impl ScrollState {
@@ -78,7 +81,9 @@ impl ScrollState {
       let next = self.offset[axis] + left * step;
       // Far down a long list a step can be smaller than a float can move
       let stalled = step > 0.0 && next == self.offset[axis];
-      self.offset[axis] = if self.grab.is_some() || left.abs() < SNAP || stalled {
+      self.offset[axis] = if self.trailing() {
+        self.offset[axis]
+      } else if self.grab.is_some() || left.abs() < SNAP || stalled {
         self.target[axis]
       } else {
         next
@@ -87,6 +92,18 @@ impl ScrollState {
     if known {
       self.offset = self.offset.clamp(Vec2::ZERO, self.max());
     }
+  }
+
+  /// A thumb drag holds the area's bar
+  pub(crate) fn grabbed(&self) -> bool {
+    self.grab.is_some()
+  }
+
+  /// A thumb drag holds the bar of an area whose contents trail it: its
+  /// owner moves the offset (a node list, to the target its pool held a
+  /// frame ago), and the thumb is drawn at the target, under the pointer
+  fn trailing(&self) -> bool {
+    self.grab.is_some() && self.trails.is_some()
   }
 
   /// Bring the offset along `axis` to within `reach` of the target, from the
@@ -172,7 +189,9 @@ impl Bar {
   }
 }
 
-/// The bars `state` shows on the axes `enabled` (sideways, down)
+/// The bars `state` shows on the axes `enabled` (sideways, down), each
+/// thumb where the offset is, or where the drag holds it in an area whose
+/// contents trail it
 fn bars(
   state: &ScrollState,
   enabled: [bool; 2],
@@ -192,8 +211,13 @@ fn bars(
     let thumb_len = (state.view[axis] / state.content[axis] * len)
       .max(MIN_THUMB)
       .min(len);
+    let shown = if state.trailing() {
+      state.target[axis]
+    } else {
+      state.offset[axis]
+    };
     let thumb_at = if max[axis] > 0.0 {
-      state.offset[axis] / max[axis] * (len - thumb_len)
+      shown / max[axis] * (len - thumb_len)
     } else {
       0.0
     };
@@ -254,6 +278,28 @@ fn drag_bar(
   }
 }
 
+/// Follow the thumb drag of an area whose contents trail it (a node list's)
+/// before the frame's list pools are brought in line, so the pool takes the
+/// rows at the drag's new target a frame before the list shows them there.
+/// `bar_width` is the theme's scrollbar width. The area's `show` follows the
+/// drag again, as every area's does, to the same target.
+pub(crate) fn drag_ahead(memory: &mut UiMemory, bar_width: f32) {
+  let interact = &memory.interact;
+  let (active, press, pointer) = (interact.active, interact.press_pos, interact.pointer);
+  if active == UiId::NONE {
+    return;
+  }
+  let origin = memory.prev(active).map(|r| Vec2::new(r.rect.x, r.rect.y));
+  let Some(state) = memory.peek_state_mut::<ScrollState>(active) else {
+    return;
+  };
+  let Some((axes, bar)) = state.trails else {
+    return;
+  };
+  let shown = bars(state, axes, bar, bar_width);
+  drag_bar(state, &shown, true, origin, press, pointer);
+}
+
 /// The scrollbars of the last frame drawn whose thumbs show inside their
 /// area's clip: each area's id, its bar's axis (0 sideways, 1 down), its
 /// track and its thumb, absolute, in draw order (the headless engine's read
@@ -311,6 +357,8 @@ pub struct Scroll<'u, 'a> {
   drag: DragOpts,
   /// The contents' height, given rather than measured
   content_height: Option<f32>,
+  /// Its contents trail a thumb drag by a frame
+  trails: bool,
 }
 
 impl<'a> UiContext<'a> {
@@ -338,6 +386,7 @@ impl<'a> UiContext<'a> {
       bar: true,
       drag: DragOpts::default(),
       content_height: None,
+      trails: false,
     }
   }
 
@@ -516,6 +565,15 @@ impl Scroll<'_, '_> {
     self
   }
 
+  /// Its contents trail a thumb drag by a frame: while the thumb is held
+  /// the owner moves the offset (`drag_ahead` resolves the drag before
+  /// it does), and the thumb is drawn under the pointer. A node list's rows
+  /// are drawn from the frame after they are bound.
+  pub(crate) fn trails_drag(mut self) -> Self {
+    self.trails = true;
+    self
+  }
+
   drag_builders!(drag);
 }
 
@@ -534,6 +592,7 @@ impl<'a> Scroll<'_, 'a> {
       bar,
       drag,
       content_height,
+      trails,
     } = self;
     let id = ui.memory.scopes.make(site, key);
     let (scene, _) = ui.scene();
@@ -548,6 +607,7 @@ impl<'a> Scroll<'_, 'a> {
       .memory
       .state::<ScrollState>(id, scene)
       .unwrap_or(&mut scratch);
+    state.trails = trails.then_some((axes, bar));
     drag_bar(
       state,
       &bars(state, axes, bar, bar_width),
@@ -828,6 +888,40 @@ mod tests {
     d.frame(|ui| scroll = list(ui, 10, &mut Vec::new(), &mut None));
     let after = d.frame(|ui| ui.scroll_offset(scroll));
     assert!((after.y - offset.y).abs() < 2.0, "{after:?}");
+  }
+
+  #[test]
+  fn a_scroll_area_follows_its_thumb_in_the_frame_it_moves() {
+    let mut d = UiDriver::new((200.0, 200.0));
+    let mut scroll = UiId::NONE;
+    for _ in 0..3 {
+      d.frame(|ui| scroll = list(ui, 10, &mut Vec::new(), &mut None));
+    }
+    let rect = d.record_of(scroll).unwrap().rect;
+    let (view, content) = (rect.height, d.scroll_content(scroll).y);
+    let (max, thumb) = (content - view, view / content * view);
+    // Pressed 10 units down the thumb at its top, which keeps that place
+    // under the pointer: down, a jump, past the end and back
+    let x = rect.x + rect.width - 5.0;
+    d.move_to(x, rect.y + 10.0);
+    d.press();
+    d.frame(|ui| scroll = list(ui, 10, &mut Vec::new(), &mut None));
+    for y in [12.0, 20.0, 45.0, 150.0, 30.0] {
+      d.move_to(x, rect.y + y);
+      let offset = d.frame(|ui| {
+        scroll = list(ui, 10, &mut Vec::new(), &mut None);
+        ui.scroll_offset(scroll).y
+      });
+      let at = ((y - 10.0) / (view - thumb) * max).clamp(0.0, max);
+      assert!((offset - at).abs() < 1e-3, "at {y}: {offset}, not {at}");
+    }
+    d.release();
+    let offset = d.frame(|ui| {
+      scroll = list(ui, 10, &mut Vec::new(), &mut None);
+      ui.scroll_offset(scroll).y
+    });
+    let at = (20.0 / (view - thumb) * max).clamp(0.0, max);
+    assert!((offset - at).abs() < 1e-3, "let go: {offset}, not {at}");
   }
 
   #[test]
