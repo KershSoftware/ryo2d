@@ -1,5 +1,6 @@
 use std::any::{Any, TypeId};
 use std::borrow::{Borrow, Cow};
+use std::collections::hash_map::Entry;
 use std::hash::Hash;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
@@ -10,7 +11,9 @@ use super::assets::Ledger;
 use super::event::{AssetStats, TypeStats};
 use super::loader::{ErasedLoader, LoadMode, erase, settings_hash};
 use super::path::{extensions, normalise};
-use super::pump::{Finished, FreeUnheld, Loaded, Typed, free_unheld, insert_value, send_failed};
+use super::pump::{
+  Arrival, Arrived, Finished, FreeUnheld, Loaded, Typed, Waiting, fail, free_unheld, run_check,
+};
 use super::workers::{INLINE_BUDGET, Workers};
 use super::{
   Asset, AssetError, AssetEvent, AssetId, AssetLoader, AssetPath, AssetSettings, AssetSource,
@@ -18,7 +21,7 @@ use super::{
 };
 use crate::core::ecs::Resource;
 use crate::core::ecs::kernel::World;
-use crate::core::hash::FastMap;
+use crate::core::hash::{FastMap, FastSet, fast_hash};
 use crate::core::messages::register_message;
 
 /// Loads assets by path, through loaders by extension, on worker threads.
@@ -38,8 +41,7 @@ pub(crate) struct ServerInner {
   /// Finished loads, for the pump
   finished: Sender<Finished>,
   finished_queue: Receiver<Finished>,
-  /// Paths the source says changed. Reloads will read it; until then the pump
-  /// empties it, so it cannot grow
+  /// Paths the source says changed: the pump reloads them
   changed: Receiver<AssetPath>,
   workers: Workers,
 }
@@ -66,22 +68,32 @@ struct Table {
   infos: FastMap<UntypedAssetId, Info>,
   /// The last job number handed out
   last_job: u64,
+  /// Values whose dependencies are still loading, in the order they arrived
+  waiting: Vec<Waiting>,
 }
 
 struct Info {
   /// Where its key is, so freeing it can remove the key
   key: Key,
-  /// The settings it was loaded with
-  // Read by reloads (Task 5)
-  #[allow(dead_code)]
+  /// The settings it was loaded with; none for a refused load
   settings: Option<Arc<dyn Any + Send + Sync>>,
+  /// The loader that makes it; none for a refused load
+  loader: Option<Arc<dyn ErasedLoader>>,
+  typed: Typed,
   state: LoadState,
   /// The job whose result counts; any other's is stale and dropped
   job: u64,
-  /// What it loaded through its `LoadContext`
-  // Read by readiness (Task 5)
-  #[allow(dead_code)]
+  /// Whether that job is on the workers, its result not yet in
+  in_flight: bool,
+  /// Whether its file changed while that job ran: the result is dropped,
+  /// and it loads again
+  again: bool,
+  /// What the value in its store holds (loaded through its `LoadContext`)
   dependencies: Vec<UntypedAssetId>,
+  /// The loaded assets whose values hold this one
+  dependents: Vec<UntypedAssetId>,
+  /// A hash of the last error it warned about, so an error warns once
+  warned: Option<u64>,
 }
 
 enum Key {
@@ -100,6 +112,36 @@ struct Request<'p> {
   path: Cow<'p, str>,
   loader: Arc<dyn ErasedLoader>,
   settings_hash: u64,
+}
+
+/// A load to run: the asset, its job, and what reading and making it takes
+struct LoadJob {
+  id: UntypedAssetId,
+  job: u64,
+  path: AssetPath,
+  loader: Arc<dyn ErasedLoader>,
+  settings: Arc<dyn Any + Send + Sync>,
+}
+
+/// A waiting value the pump can act on, taken out of the waiting list
+pub(crate) enum Settled {
+  /// Its dependencies are all loaded
+  Ready(Waiting),
+  /// A dependency failed; the error names it
+  Failed(Waiting, Arc<AssetError>),
+  /// Freed or overtaken since it arrived: it drops
+  Stale(Waiting),
+}
+
+/// A waiting value that fails, and why
+pub(crate) type Failure = (Waiting, Arc<AssetError>);
+
+/// A loaded asset that holds one that changed, and what checks it
+pub(crate) struct Dependent {
+  pub(crate) id: UntypedAssetId,
+  pub(crate) typed: Typed,
+  pub(crate) loader: Arc<dyn ErasedLoader>,
+  pub(crate) path: AssetPath,
 }
 
 /// A load refused before anything was read: the text it is known by (the
@@ -266,8 +308,11 @@ impl AssetServer {
   ///
   /// One path (with one settings value) is one asset: while any handle to it
   /// lives, or until the pump frees it, asking again gives the same handle,
-  /// loaded, loading or failed. A failed asset is not tried again until it
-  /// is freed; asking for it then loads it anew
+  /// loaded, loading or failed. A failed asset is not tried again until its
+  /// file changes, or it is freed and asked for again.
+  ///
+  /// An asset whose loader loads dependencies is inserted only once they
+  /// are all loaded, and its loader's `check` passes; one that fails fails it
   pub fn load<T: Asset>(&self, path: &str) -> Handle<T> {
     self.load_request::<T, ()>(path, None)
   }
@@ -281,9 +326,11 @@ impl AssetServer {
   /// Loads at once on this thread (dependencies too) and inserts the result.
   ///
   /// An asset already loaded is given back as it is, without reading it
-  /// again; one already failed gives back its error, until it is freed. One
-  /// loading on a worker loads here instead, and the worker's result is
-  /// dropped. On failure the error is returned and the state stays `Failed`
+  /// again; one already failed gives back its error, until it is freed or
+  /// its file changes. One loading on a worker loads here instead, and the
+  /// worker's result is dropped. Its dependencies are loaded here too, and
+  /// its loader's `check` runs before it is inserted. On failure the error
+  /// is returned and the state stays `Failed`
   pub fn load_now<T: Asset>(
     &self,
     world: &mut World,
@@ -310,6 +357,76 @@ impl AssetServer {
   /// while it lives
   pub fn state<T: Asset>(&self, id: impl Into<AssetId<T>>) -> LoadState {
     self.state_of(id.into().untyped())
+  }
+
+  /// Loaded, with every dependency loaded too (recursively)
+  pub fn is_ready<T: Asset>(&self, id: impl Into<AssetId<T>>) -> bool {
+    self.dependency_state(id).is_loaded()
+  }
+
+  /// The state counting dependencies: `Loading` until all are loaded,
+  /// `Failed` with the first dependency's error wrapped in `Dependency`
+  pub fn dependency_state<T: Asset>(&self, id: impl Into<AssetId<T>>) -> LoadState {
+    let id = id.into().untyped();
+    let own = self.state_of(id);
+    if !own.is_loaded() {
+      return own;
+    }
+    let table = self.inner.table();
+    // An asset added in code has nothing recorded
+    let Some(root) = table
+      .infos
+      .get(&id)
+      .filter(|root| !root.dependencies.is_empty())
+    else {
+      return own;
+    };
+    // Depth first, in the order the loader asked; each asset once, so a
+    // dependency two others share is counted once
+    let mut seen = FastSet::default();
+    seen.insert(id);
+    let mut next: Vec<UntypedAssetId> = root.dependencies.iter().rev().copied().collect();
+    let mut loading = false;
+    while let Some(dependency) = next.pop() {
+      if !seen.insert(dependency) {
+        continue;
+      }
+      // Freed: its parent let go of it, so it holds nothing up
+      let Some(info) = table.infos.get(&dependency) else {
+        continue;
+      };
+      match &info.state {
+        LoadState::Failed(error) => {
+          return LoadState::Failed(Arc::new(AssetError::Dependency {
+            path: table.path_of(id),
+            dependency: table.path_of(dependency),
+            error: Arc::clone(error),
+          }));
+        }
+        LoadState::Loading => loading = true,
+        LoadState::Loaded | LoadState::NotLoaded => {}
+      }
+      next.extend(info.dependencies.iter().rev());
+    }
+    if loading {
+      LoadState::Loading
+    } else {
+      LoadState::Loaded
+    }
+  }
+
+  /// Reloads every asset loaded from `path` (each settings variant) on the workers
+  ///
+  /// Each keeps its id. Once its new dependencies load and its loader's
+  /// `check` passes, the new value is swapped in (`Modified`), and each
+  /// asset holding it is checked again. A reload that fails keeps the last
+  /// good value (`ReloadFailed`). A reload asked for while one is reading
+  /// runs again once that one is in, so the last write wins. An asset that
+  /// failed to load is loaded anew
+  pub fn reload(&self, path: &str) {
+    if let Ok(path) = normalise(path) {
+      self.reload_normal(&path);
+    }
   }
 
   /// The path the asset was loaded from
@@ -506,34 +623,34 @@ impl AssetServer {
     }
     let handle = lock(&ledger).reserve::<T>();
     let id = handle.id().untyped();
-    let path = AssetPath::from_normal(request.path);
     let settings = settings_value(settings, &*request.loader);
-    let job = table.start(
-      id,
-      path.clone(),
-      request.settings_hash,
-      Arc::clone(&settings),
-    );
+    let load = table.start(id, request, settings, Typed::of::<T>(), true);
     drop(table);
+    self.queue_job(load);
+    Ok(handle)
+  }
+
+  /// Queues `load` on the workers; its result goes to the pump
+  fn queue_job(&self, load: LoadJob) {
     let server = Arc::downgrade(&self.inner);
-    let loader = request.loader;
     self.inner.workers.queue(Box::new(move || {
       // A server dropped before the job ran has no one to give the result to
       let Some(inner) = server.upgrade() else {
         return;
       };
       let server = AssetServer { inner };
+      let LoadJob {
+        id,
+        job,
+        path,
+        loader,
+        settings,
+      } = load;
       let outcome = server
         .run_load(&path, &*loader, &*settings, LoadMode::Queued)
         .map_err(Arc::new);
-      let _ = server.inner.finished.send(Finished {
-        id,
-        job,
-        outcome,
-        typed: Typed::of::<T>(),
-      });
+      let _ = server.inner.finished.send(Finished { id, job, outcome });
     }));
-    Ok(handle)
   }
 
   /// The failed asset for a refused load: the one already kept under its
@@ -551,13 +668,17 @@ impl AssetServer {
     let error = Arc::new(refused.into_error());
     let handle = lock(&ledger).reserve::<T>();
     let id = handle.id().untyped();
-    let job = table.fail(id, Key::Refused(text, settings_key), Arc::clone(&error));
+    let job = table.fail(
+      id,
+      Key::Refused(text, settings_key),
+      Arc::clone(&error),
+      Typed::of::<T>(),
+    );
     drop(table);
     let _ = self.inner.finished.send(Finished {
       id,
       job,
       outcome: Err(error),
-      typed: Typed::of::<T>(),
     });
     handle
   }
@@ -603,14 +724,14 @@ impl AssetServer {
       None => lock(&ledger).reserve::<T>(),
     };
     let id = handle.id().untyped();
-    let path = AssetPath::from_normal(request.path);
     let settings = settings_value(settings, &*request.loader);
-    let job = table.start(
-      id,
-      path.clone(),
-      request.settings_hash,
-      Arc::clone(&settings),
-    );
+    let LoadJob {
+      job,
+      path,
+      loader,
+      settings,
+      ..
+    } = table.start(id, request, settings, Typed::of::<T>(), false);
     drop(table);
 
     stack.push(path.clone());
@@ -618,26 +739,66 @@ impl AssetServer {
       world: &mut *world,
       stack: &mut *stack,
     };
-    let outcome = self.run_load(&path, &*request.loader, &*settings, mode);
+    let outcome = self.run_load(&path, &*loader, &*settings, mode);
     stack.pop();
-    match outcome {
+    let arrived = Arrived {
+      id,
+      job,
+      arrival: Arrival::First,
+      typed: Typed::of::<T>(),
+    };
+    let settled = match outcome {
       Ok(Loaded {
         value,
         dependencies,
       }) => {
-        if insert_value::<T>(world, id, value) {
-          self.set_loaded(id, job, dependencies);
-        }
-        Ok(handle)
+        let waiting = Waiting {
+          arrived,
+          value,
+          dependencies,
+        };
+        self.settle_now(world, waiting, &*loader, &path)
       }
+      Err(error) => Err(Arc::new(error)),
+    };
+    match settled {
+      Ok(()) => Ok(handle),
       Err(error) => {
-        let error = Arc::new(error);
-        self.set_failed(id, job, Arc::clone(&error));
-        crate::engine_warn!(module: "asset", "{}", error.report());
-        send_failed::<T>(world, id, Arc::clone(&error));
+        fail(world, self, arrived, Arc::clone(&error));
         Err(NowError::Failed { path, error })
       }
     }
+  }
+
+  /// Puts a value `load_now` made in its store, its dependencies loaded
+  /// already; an error if they lead back to it or its loader's check fails
+  fn settle_now(
+    &self,
+    world: &mut World,
+    waiting: Waiting,
+    loader: &dyn ErasedLoader,
+    path: &AssetPath,
+  ) -> Result<(), Arc<AssetError>> {
+    let Waiting {
+      arrived,
+      value,
+      dependencies,
+    } = waiting;
+    // A cycle through a waiting reload, which `load_now`'s own stack cannot see
+    let cycle = self.inner.table().cycle_through(arrived.id, &dependencies);
+    if let Some((own, others)) = cycle {
+      for (waiting, error) in others {
+        let other = waiting.arrived;
+        drop(waiting);
+        fail(world, self, other, error);
+      }
+      return Err(own);
+    }
+    run_check(loader, &*value, world, path).map_err(Arc::new)?;
+    if (arrived.typed.insert)(world, arrived.id, value, Arrival::First) {
+      self.set_loaded(arrived.id, arrived.job, dependencies);
+    }
+    Ok(())
   }
 
   /// Reads and loads one asset. A panic in the source or the loader is
@@ -666,36 +827,197 @@ impl AssetServer {
     self.inner.workers.run_inline(INLINE_BUDGET);
   }
 
-  pub(crate) fn drain_changed(&self) {
-    while self.inner.changed.try_recv().is_ok() {}
+  /// Reloads each path the source says changed
+  pub(crate) fn reload_changed(&self) {
+    while let Ok(path) = self.inner.changed.try_recv() {
+      self.reload_normal(path.as_str());
+    }
+  }
+
+  /// [`AssetServer::reload`] of a normalised path
+  fn reload_normal(&self, path: &str) {
+    let mut jobs = Vec::new();
+    {
+      let mut table = self.inner.table();
+      let ids: Vec<UntypedAssetId> = table
+        .keys
+        .values()
+        .filter_map(|paths| paths.get(path).copied())
+        .collect();
+      for id in ids {
+        let Some(info) = table.infos.get_mut(&id) else {
+          continue;
+        };
+        // What that job reads may be older than the change
+        if info.in_flight {
+          info.again = true;
+          continue;
+        }
+        jobs.extend(table.restart(id));
+      }
+    }
+    for job in jobs {
+      self.queue_job(job);
+    }
   }
 
   pub(crate) fn next_finished(&self) -> Option<Finished> {
     self.inner.finished_queue.try_recv().ok()
   }
 
-  /// Whether `job` is still the one whose result counts for `id`
-  pub(crate) fn is_current(&self, id: UntypedAssetId, job: u64) -> bool {
-    self
-      .inner
-      .table()
-      .infos
-      .get(&id)
-      .is_some_and(|info| info.job == job)
+  /// The result of `job` for `id` is in: how it counts, or None if it does
+  /// not (freed, overtaken, or read before a change, which loads it again)
+  pub(crate) fn arrive(&self, id: UntypedAssetId, job: u64) -> Option<Arrived> {
+    let mut table = self.inner.table();
+    let info = table.infos.get_mut(&id).filter(|info| info.job == job)?;
+    info.in_flight = false;
+    let arrived = Arrived {
+      id,
+      job,
+      arrival: if info.state.is_loaded() {
+        Arrival::Reload
+      } else {
+        Arrival::First
+      },
+      typed: info.typed,
+    };
+    if std::mem::take(&mut info.again) {
+      let again = table.restart(id);
+      drop(table);
+      if let Some(again) = again {
+        self.queue_job(again);
+      }
+      return None;
+    }
+    Some(arrived)
   }
 
-  pub(crate) fn set_loaded(&self, id: UntypedAssetId, job: u64, dependencies: Vec<UntypedAssetId>) {
+  /// Holds a value until its dependencies load. If they lead back to it, it
+  /// fails with `Cycle` instead, and so does each other waiting value on the
+  /// cycle: those failures come back, its own first
+  pub(crate) fn wait(&self, waiting: Waiting) -> Vec<Failure> {
     let mut table = self.inner.table();
-    if let Some(info) = table.infos.get_mut(&id).filter(|info| info.job == job) {
-      info.state = LoadState::Loaded;
-      info.dependencies = dependencies;
+    match table.cycle_through(waiting.arrived.id, &waiting.dependencies) {
+      None => {
+        table.waiting.push(waiting);
+        Vec::new()
+      }
+      Some((own, mut others)) => {
+        others.insert(0, (waiting, own));
+        others
+      }
     }
   }
 
+  /// The first waiting value the pump can act on, taken out of the list
+  pub(crate) fn next_settled(&self) -> Option<Settled> {
+    let mut table = self.inner.table();
+    let (index, verdict) = table
+      .waiting
+      .iter()
+      .enumerate()
+      .find_map(|(index, waiting)| table.verdict(waiting).map(|verdict| (index, verdict)))?;
+    let waiting = table.waiting.remove(index);
+    Some(match verdict {
+      Verdict::Ready => Settled::Ready(waiting),
+      Verdict::Failed(error) => Settled::Failed(waiting, error),
+      Verdict::Stale => Settled::Stale(waiting),
+    })
+  }
+
+  /// The loader that checks `id`'s values, and its path
+  pub(crate) fn checker(&self, id: UntypedAssetId) -> Option<(Arc<dyn ErasedLoader>, AssetPath)> {
+    let table = self.inner.table();
+    let info = table.infos.get(&id)?;
+    let Key::Path(path, _) = &info.key else {
+      return None;
+    };
+    Some((Arc::clone(info.loader.as_ref()?), path.clone()))
+  }
+
+  /// `id`'s value of `job` is in its store, holding `dependencies`
+  pub(crate) fn set_loaded(&self, id: UntypedAssetId, job: u64, dependencies: Vec<UntypedAssetId>) {
+    let mut table = self.inner.table();
+    let Some(info) = table.infos.get_mut(&id).filter(|info| info.job == job) else {
+      return;
+    };
+    info.state = LoadState::Loaded;
+    info.warned = None;
+    let old = std::mem::replace(&mut info.dependencies, dependencies);
+    table.relink(id, &old);
+  }
+
+  /// `id`'s first load, `job`, failed
   pub(crate) fn set_failed(&self, id: UntypedAssetId, job: u64, error: Arc<AssetError>) {
     let mut table = self.inner.table();
     if let Some(info) = table.infos.get_mut(&id).filter(|info| info.job == job) {
       info.state = LoadState::Failed(error);
+    }
+  }
+
+  /// The loaded assets that hold `id`, directly or through others, nearest
+  /// first, each once
+  pub(crate) fn dependents_of(&self, id: UntypedAssetId) -> Vec<Dependent> {
+    let table = self.inner.table();
+    let mut order = Vec::new();
+    if table
+      .infos
+      .get(&id)
+      .is_none_or(|info| info.dependents.is_empty())
+    {
+      return order;
+    }
+    let mut seen = FastSet::default();
+    seen.insert(id);
+    // Breadth first: `reached` is the queue, `at` its head
+    let mut reached = vec![id];
+    let mut at = 0;
+    while let Some(&held) = reached.get(at) {
+      at += 1;
+      let Some(info) = table.infos.get(&held) else {
+        continue;
+      };
+      for &dependent in &info.dependents {
+        if !seen.insert(dependent) {
+          continue;
+        }
+        let Some(holder) = table.infos.get(&dependent).filter(|i| i.state.is_loaded()) else {
+          continue;
+        };
+        let (Key::Path(path, _), Some(loader)) = (&holder.key, &holder.loader) else {
+          continue;
+        };
+        reached.push(dependent);
+        order.push(Dependent {
+          id: dependent,
+          typed: holder.typed,
+          loader: Arc::clone(loader),
+          path: path.clone(),
+        });
+      }
+    }
+    order
+  }
+
+  /// Warns about `error` for `id`, unless it was the last error `id` warned about
+  pub(crate) fn warn_once(&self, id: UntypedAssetId, error: &AssetError) {
+    let report = error.report();
+    let hash = fast_hash(&report);
+    let fresh = self
+      .inner
+      .table()
+      .infos
+      .get_mut(&id)
+      .is_none_or(|info| info.warned.replace(hash) != Some(hash));
+    if fresh {
+      crate::engine_warn!(module: "asset", "{report}");
+    }
+  }
+
+  /// `id` passed again: its next error warns, even one it warned about before
+  pub(crate) fn clear_warning(&self, id: UntypedAssetId) {
+    if let Some(info) = self.inner.table().infos.get_mut(&id) {
+      info.warned = None;
     }
   }
 
@@ -750,36 +1072,85 @@ impl Table {
     self.last_job
   }
 
-  /// Records a load of `id` under its key, and gives its job number
+  /// Records a load of `id` under its request's key, and gives the job to
+  /// run; `in_flight` if it runs on the workers
   fn start(
     &mut self,
     id: UntypedAssetId,
-    path: AssetPath,
-    settings_hash: u64,
+    request: Request<'_>,
     settings: Arc<dyn Any + Send + Sync>,
-  ) -> u64 {
+    typed: Typed,
+    in_flight: bool,
+  ) -> LoadJob {
     let job = self.next_job();
+    let path = AssetPath::from_normal(request.path);
     self
       .keys
-      .entry((id.type_id, settings_hash))
+      .entry((id.type_id, request.settings_hash))
       .or_default()
       .insert(path.clone(), id);
+    // `load_now` starts again an asset loading on a worker: what holds it stays
+    let dependents = self
+      .infos
+      .remove(&id)
+      .map(|info| info.dependents)
+      .unwrap_or_default();
     self.infos.insert(
       id,
       Info {
-        key: Key::Path(path, settings_hash),
-        settings: Some(settings),
+        key: Key::Path(path.clone(), request.settings_hash),
+        settings: Some(Arc::clone(&settings)),
+        loader: Some(Arc::clone(&request.loader)),
+        typed,
         state: LoadState::Loading,
         job,
+        in_flight,
+        again: false,
         dependencies: Vec::new(),
+        dependents,
+        warned: None,
       },
     );
-    job
+    LoadJob {
+      id,
+      job,
+      path,
+      loader: request.loader,
+      settings,
+    }
+  }
+
+  /// Starts `id`'s load again under a new job, from its path, loader and
+  /// settings: a reload when it is loaded, else a load anew. A result of
+  /// an older job is stale from now on
+  fn restart(&mut self, id: UntypedAssetId) -> Option<LoadJob> {
+    let job = self.last_job + 1;
+    let info = self.infos.get_mut(&id)?;
+    let (Key::Path(path, _), Some(loader), Some(settings)) =
+      (&info.key, &info.loader, &info.settings)
+    else {
+      return None;
+    };
+    let load = LoadJob {
+      id,
+      job,
+      path: path.clone(),
+      loader: Arc::clone(loader),
+      settings: Arc::clone(settings),
+    };
+    info.job = job;
+    info.in_flight = true;
+    info.again = false;
+    if !info.state.is_loaded() {
+      info.state = LoadState::Loading;
+    }
+    self.last_job = job;
+    Some(load)
   }
 
   /// Records `id` as refused under `key`, failed before it could load, and
   /// gives its job number
-  fn fail(&mut self, id: UntypedAssetId, key: Key, error: Arc<AssetError>) -> u64 {
+  fn fail(&mut self, id: UntypedAssetId, key: Key, error: Arc<AssetError>, typed: Typed) -> u64 {
     let job = self.next_job();
     if let Key::Refused(text, settings_key) = &key {
       self
@@ -793,18 +1164,193 @@ impl Table {
       Info {
         key,
         settings: None,
+        loader: None,
+        typed,
         state: LoadState::Failed(error),
         job,
+        in_flight: false,
+        again: false,
         dependencies: Vec::new(),
+        dependents: Vec::new(),
+        warned: None,
       },
     );
     job
+  }
+
+  /// Tells what `id`'s value holds that `id` holds it, and what it held
+  /// before (`old`) and no longer does that it does not
+  fn relink(&mut self, id: UntypedAssetId, old: &[UntypedAssetId]) {
+    let Some(info) = self.infos.get_mut(&id) else {
+      return;
+    };
+    let dependencies = std::mem::take(&mut info.dependencies);
+    for dependency in old.iter().filter(|d| !dependencies.contains(d)) {
+      if let Some(held) = self.infos.get_mut(dependency) {
+        held.dependents.retain(|&dependent| dependent != id);
+      }
+    }
+    for dependency in &dependencies {
+      if let Some(held) = self.infos.get_mut(dependency)
+        && !held.dependents.contains(&id)
+      {
+        held.dependents.push(id);
+      }
+    }
+    if let Some(info) = self.infos.get_mut(&id) {
+      info.dependencies = dependencies;
+    }
+  }
+
+  /// Whether `job` is still the one whose result counts for `id`
+  fn is_current(&self, id: UntypedAssetId, job: u64) -> bool {
+    self.infos.get(&id).is_some_and(|info| info.job == job)
+  }
+
+  /// Where `id`'s current waiting value is in the list
+  fn waiting_index(&self, id: UntypedAssetId) -> Option<usize> {
+    self
+      .waiting
+      .iter()
+      .position(|waiting| waiting.arrived.id == id && self.is_current(id, waiting.arrived.job))
+  }
+
+  /// What a waiting value can do now; None while a dependency is loading
+  fn verdict(&self, waiting: &Waiting) -> Option<Verdict> {
+    let Arrived { id, job, .. } = waiting.arrived;
+    if !self.is_current(id, job) {
+      return Some(Verdict::Stale);
+    }
+    let mut loading = false;
+    for &dependency in &waiting.dependencies {
+      match self.infos.get(&dependency).map(|info| &info.state) {
+        Some(LoadState::Failed(error)) => {
+          return Some(Verdict::Failed(Arc::new(AssetError::Dependency {
+            path: self.path_of(id),
+            dependency: self.path_of(dependency),
+            error: Arc::clone(error),
+          })));
+        }
+        Some(LoadState::Loading) => loading = true,
+        // Loaded, or freed: a dependency its parent let go of holds nothing up
+        _ => {}
+      }
+    }
+    (!loading).then_some(Verdict::Ready)
+  }
+
+  /// What `id` will hold: its waiting value's dependencies if it has one,
+  /// else those of the value in its store
+  fn edges(&self, id: UntypedAssetId) -> &[UntypedAssetId] {
+    match self
+      .waiting_index(id)
+      .and_then(|index| self.waiting.get(index))
+    {
+      Some(waiting) => &waiting.dependencies,
+      None => self
+        .infos
+        .get(&id)
+        .map(|info| info.dependencies.as_slice())
+        .unwrap_or_default(),
+    }
+  }
+
+  /// The assets on a cycle through `id`, `id` first, each holding the next
+  /// and the last holding `id`, if `dependencies` (what `id` will hold) lead
+  /// back to it
+  fn find_cycle(
+    &self,
+    id: UntypedAssetId,
+    dependencies: &[UntypedAssetId],
+  ) -> Option<Vec<UntypedAssetId>> {
+    // Each asset reached, and the one it was reached from
+    let mut reached: FastMap<UntypedAssetId, UntypedAssetId> = FastMap::default();
+    let mut next = Vec::new();
+    for &dependency in dependencies {
+      if dependency == id {
+        return Some(vec![id]);
+      }
+      if let Entry::Vacant(slot) = reached.entry(dependency) {
+        slot.insert(id);
+        next.push(dependency);
+      }
+    }
+    while let Some(at) = next.pop() {
+      for &held in self.edges(at) {
+        if held == id {
+          let mut members = vec![at];
+          let mut step = at;
+          while let Some(&from) = reached.get(&step).filter(|&&from| from != id) {
+            members.push(from);
+            step = from;
+          }
+          members.push(id);
+          members.reverse();
+          return Some(members);
+        }
+        if let Entry::Vacant(slot) = reached.entry(held) {
+          slot.insert(at);
+          next.push(held);
+        }
+      }
+    }
+    None
+  }
+
+  /// If `dependencies` (what `id` will hold) lead back to `id`: its `Cycle`
+  /// error, and each other waiting value on the cycle, taken out of the
+  /// list, with its own. Each error names the chain from its asset
+  fn cycle_through(
+    &mut self,
+    id: UntypedAssetId,
+    dependencies: &[UntypedAssetId],
+  ) -> Option<(Arc<AssetError>, Vec<Failure>)> {
+    let members = self.find_cycle(id, dependencies)?;
+    let paths: Vec<AssetPath> = members.iter().map(|&member| self.path_of(member)).collect();
+    let mut own = None;
+    let mut others = Vec::new();
+    for (at, (&member, path)) in members.iter().zip(&paths).enumerate() {
+      let chain = paths
+        .iter()
+        .cycle()
+        .skip(at)
+        .take(paths.len() + 1)
+        .map(AssetPath::as_str)
+        .collect::<Vec<_>>()
+        .join(" → ");
+      let error = Arc::new(AssetError::Cycle {
+        path: path.clone(),
+        chain,
+      });
+      if member == id {
+        own = Some(error);
+      } else if let Some(index) = self.waiting_index(member) {
+        others.push((self.waiting.remove(index), error));
+      }
+    }
+    // `members` starts with `id`, so `own` is always there
+    own.map(|own| (own, others))
+  }
+
+  /// The path `id` is known by: its path, or the text a refused load asked for
+  fn path_of(&self, id: UntypedAssetId) -> AssetPath {
+    let text = match self.infos.get(&id).map(|info| &info.key) {
+      Some(Key::Path(path, _)) => return path.clone(),
+      Some(Key::Refused(text, _)) => &**text,
+      None => "(freed)",
+    };
+    AssetPath::from_normal(Cow::Borrowed(text))
   }
 
   fn forget(&mut self, id: UntypedAssetId) {
     let Some(info) = self.infos.remove(&id) else {
       return;
     };
+    for dependency in &info.dependencies {
+      if let Some(held) = self.infos.get_mut(dependency) {
+        held.dependents.retain(|&dependent| dependent != id);
+      }
+    }
     match info.key {
       Key::Path(path, settings_hash) => {
         remove_key(
@@ -819,6 +1365,16 @@ impl Table {
       }
     }
   }
+}
+
+/// What a waiting value can do now
+enum Verdict {
+  /// Be checked and put in its store
+  Ready,
+  /// Fail, a dependency having failed
+  Failed(Arc<AssetError>),
+  /// Drop: freed or overtaken
+  Stale,
 }
 
 /// Removes `text` from `map` under `key` if it still names `id`: it may name
@@ -874,7 +1430,7 @@ fn cycle(stack: &[AssetPath], path: &str) -> AssetError {
 
 #[cfg(test)]
 mod tests {
-  use std::time::Duration;
+  use std::time::{Duration, Instant};
 
   use super::*;
   use crate::core::asset::event::TypeStats;
@@ -967,15 +1523,67 @@ mod tests {
     }
   }
 
+  /// A file of paths, one a line, each loaded as a dependency: another
+  /// bundle for a ".bundle" path, else a `Text`
+  struct Bundle {
+    path: AssetPath,
+    parts: Vec<Part>,
+  }
+  impl Asset for Bundle {}
+
+  // Held so the dependencies live as long as the bundle
+  #[allow(dead_code)]
+  enum Part {
+    Text(Handle<Text>),
+    Bundle(Handle<Bundle>),
+  }
+
+  struct BundleLoader;
+  impl AssetLoader for BundleLoader {
+    type Asset = Bundle;
+    type Settings = ();
+    fn extensions(&self) -> &[&'static str] {
+      &["bundle"]
+    }
+    fn load(&self, bytes: Vec<u8>, _: &(), cx: &mut LoadContext<'_>) -> Result<Bundle, AssetError> {
+      let text = String::from_utf8(bytes).map_err(|e| AssetError::decode(cx.path(), e))?;
+      let mut parts = Vec::new();
+      for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        parts.push(if line.ends_with(".bundle") {
+          Part::Bundle(cx.load(line)?)
+        } else {
+          Part::Text(cx.load(line)?)
+        });
+      }
+      Ok(Bundle {
+        path: cx.path().clone(),
+        parts,
+      })
+    }
+    /// Fails when a text it holds reads "bad"
+    fn check(&self, bundle: &Bundle, world: &World) -> Result<(), AssetError> {
+      let texts = world.resource::<Assets<Text>>();
+      let bad = bundle.parts.iter().any(
+        |part| matches!(part, Part::Text(text) if texts.get(text).is_some_and(|t| t.0 == "bad")),
+      );
+      if bad {
+        return Err(AssetError::decode(&bundle.path, "it holds a bad text"));
+      }
+      Ok(())
+    }
+  }
+
   fn world_with(source: impl AssetSource) -> (World, AssetServer) {
     let mut world = World::new();
     let server = AssetServer::new(source);
     server.register_asset::<Text>(&mut world);
     server.register_asset::<Link>(&mut world);
+    server.register_asset::<Bundle>(&mut world);
     server.register_loader(TextLoader);
     server.register_loader(BoomLoader);
     server.register_loader(UpperLoader);
     server.register_loader(LinkLoader);
+    server.register_loader(BundleLoader);
     world.insert_resource(server.clone());
     (world, server)
   }
@@ -1011,11 +1619,66 @@ mod tests {
       .map(|t| t.0.as_str())
   }
 
-  fn events(world: &World, cursor: &mut MessageCursor<AssetEvent<Text>>) -> Vec<AssetEvent<Text>> {
+  fn events<T: Asset>(
+    world: &World,
+    cursor: &mut MessageCursor<AssetEvent<T>>,
+  ) -> Vec<AssetEvent<T>> {
     cursor
-      .read(world.resource::<Messages<AssetEvent<Text>>>())
+      .read(world.resource::<Messages<AssetEvent<T>>>())
       .cloned()
       .collect()
+  }
+
+  /// A cursor that reads only the events sent from now on
+  fn cursor<T: Asset>(world: &World) -> MessageCursor<AssetEvent<T>> {
+    world
+      .resource::<Messages<AssetEvent<T>>>()
+      .get_cursor_current()
+  }
+
+  /// Pumps until an event `done` accepts is sent; gives back every event
+  /// sent meanwhile
+  fn pump_until_sent<T: Asset>(
+    world: &mut World,
+    cursor: &mut MessageCursor<AssetEvent<T>>,
+    done: impl Fn(&AssetEvent<T>) -> bool,
+  ) -> Vec<AssetEvent<T>> {
+    let start = Instant::now();
+    let mut sent = Vec::new();
+    loop {
+      pump(world);
+      sent.extend(events(world, cursor));
+      if sent.iter().any(&done) {
+        return sent;
+      }
+      assert!(start.elapsed() < PATIENCE, "timed out waiting: {sent:?}");
+      std::thread::sleep(Duration::from_millis(1));
+    }
+  }
+
+  /// How many parts the bundle holds, once it is in its store
+  fn parts(world: &World, id: impl Into<AssetId<Bundle>>) -> Option<usize> {
+    world
+      .resource::<Assets<Bundle>>()
+      .get(id)
+      .map(|bundle| bundle.parts.len())
+  }
+
+  fn version<T: Asset>(world: &World, id: impl Into<AssetId<T>>) -> Option<u64> {
+    world.resource::<Assets<T>>().version(id)
+  }
+
+  /// Results whose dependencies are still loading
+  fn waiting(server: &AssetServer) -> usize {
+    server.inner.table().waiting.len()
+  }
+
+  /// The asset's `Cycle` error, as (path, chain)
+  fn cycle_of(error: Option<&AssetError>) -> Option<(String, String)> {
+    match error {
+      Some(AssetError::Cycle { path, chain }) => Some((path.to_string(), chain.clone())),
+      _ => None,
+    }
   }
 
   /// A source that holds back "slow.txt" until the test lets it go
@@ -1030,6 +1693,14 @@ mod tests {
         let _ = self.release.recv();
       }
       self.files.read(path)
+    }
+  }
+
+  /// Files in memory that tell no one when they change: only `reload` reloads
+  struct Unwatched(MemorySource);
+  impl AssetSource for Unwatched {
+    fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+      self.0.read(path)
     }
   }
 
@@ -1048,6 +1719,22 @@ mod tests {
         let _ = self.reading.send(());
         let _ = self.release.recv();
       }
+      bytes
+    }
+  }
+
+  /// A source whose every read takes the bytes, says so, then waits until
+  /// the test lets it go
+  struct Gated {
+    files: MemorySource,
+    reading: crossbeam_channel::Sender<()>,
+    release: crossbeam_channel::Receiver<()>,
+  }
+  impl AssetSource for Gated {
+    fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+      let bytes = self.files.read(path);
+      let _ = self.reading.send(());
+      let _ = self.release.recv();
       bytes
     }
   }
@@ -1247,7 +1934,9 @@ mod tests {
   fn load_now_inserts_at_once_and_wins_over_a_queued_load() {
     let source = MemorySource::new();
     source.insert("a.txt", "one");
-    let (mut world, server) = world_with(source.clone());
+    // Unwatched: a reload of the change would land "two" as well, hiding a
+    // stale "one" applied
+    let (mut world, server) = world_with(Unwatched(source.clone()));
     let queued: Handle<Text> = server.load("a.txt");
     // The queued load has read "one" and finished; the pump has not applied it
     wait_finished(&server, 1);
@@ -1581,6 +2270,12 @@ mod tests {
             loading: 0,
             failed: 0
           },
+          TypeStats {
+            name: "Bundle",
+            loaded: 0,
+            loading: 0,
+            failed: 0
+          },
         ]
       ),
       "{stats:?}"
@@ -1606,5 +2301,603 @@ mod tests {
         pending: 0
       }
     );
+  }
+
+  // Dependencies, readiness and reloads
+
+  #[test]
+  fn a_parent_is_added_only_once_its_dependencies_are_loaded() {
+    let files = MemorySource::new();
+    files.insert("x.bundle", "a.txt\nslow.txt");
+    files.insert("a.txt", "a");
+    files.insert("slow.txt", "s");
+    let (release, held) = crossbeam_channel::unbounded();
+    let (mut world, server) = world_with(HeldSource {
+      files,
+      release: held,
+    });
+    let mut texts = cursor::<Text>(&world);
+    let mut bundles = cursor::<Bundle>(&world);
+    let bundle: Handle<Bundle> = server.load("x.bundle");
+    let a: Handle<Text> = server.load("a.txt");
+    // The bundle's result is in, and waits for slow.txt
+    pump_until(&mut world, |_| {
+      server.state(&a).is_loaded() && waiting(&server) == 1
+    });
+    assert_eq!(parts(&world, &bundle), None, "not added while one loads");
+    assert!(matches!(server.state(&bundle), LoadState::Loading));
+    assert!(!server.is_ready(&bundle));
+    assert!(matches!(
+      server.dependency_state(&bundle),
+      LoadState::Loading
+    ));
+    assert!(events(&world, &mut bundles).is_empty());
+    let _ = release.send(());
+    // By the pump that sends Added<Bundle>, both texts were added
+    let start = Instant::now();
+    let mut added_texts = 0;
+    loop {
+      pump(&mut world);
+      added_texts += events(&world, &mut texts)
+        .iter()
+        .filter(|e| matches!(e, AssetEvent::Added { .. }))
+        .count();
+      let sent = events(&world, &mut bundles);
+      if !sent.is_empty() {
+        assert!(
+          matches!(sent.as_slice(), [AssetEvent::Added { id }] if *id == bundle.id()),
+          "{sent:?}"
+        );
+        break;
+      }
+      assert!(start.elapsed() < PATIENCE, "timed out waiting");
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(added_texts, 2);
+    assert_eq!(parts(&world, &bundle), Some(2));
+    assert!(server.is_ready(&bundle));
+    assert!(server.dependency_state(&bundle).is_loaded());
+  }
+
+  #[test]
+  fn a_failed_dependency_fails_its_parent_with_dependency() {
+    let source = MemorySource::new();
+    source.insert("x.bundle", "a.txt\nmissing.txt");
+    source.insert("a.txt", "a");
+    let (mut world, server) = world_with(source);
+    let mut bundles = cursor::<Bundle>(&world);
+    let bundle: Handle<Bundle> = server.load("x.bundle");
+    pump_until(&mut world, |_| server.state(&bundle).is_failed());
+    let error = server.state(&bundle).error().cloned();
+    assert!(
+      matches!(
+        error.as_deref(),
+        Some(AssetError::Dependency { path, dependency, error })
+          if path.as_str() == "x.bundle"
+            && dependency.as_str() == "missing.txt"
+            && matches!(**error, AssetError::NotFound { .. })
+      ),
+      "{error:?}"
+    );
+    assert!(server.dependency_state(&bundle).is_failed());
+    assert!(!server.is_ready(&bundle));
+    assert_eq!(parts(&world, &bundle), None);
+    let sent = events(&world, &mut bundles);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Failed { id, .. }] if *id == bundle.id()),
+      "{sent:?}"
+    );
+  }
+
+  #[test]
+  fn a_parent_whose_check_fails_is_failed() {
+    let source = MemorySource::new();
+    source.insert("x.bundle", "a.txt");
+    source.insert("y.bundle", "a.txt");
+    source.insert("a.txt", "bad");
+    let (mut world, server) = world_with(source);
+    let mut bundles = cursor::<Bundle>(&world);
+    let queued: Handle<Bundle> = server.load("x.bundle");
+    pump_until(&mut world, |_| server.state(&queued).is_failed());
+    let error = server.state(&queued).error().map(|e| e.to_string());
+    assert_eq!(error.as_deref(), Some("could not load \"x.bundle\""));
+    let sent = events(&world, &mut bundles);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Failed { id, .. }] if *id == queued.id()),
+      "{sent:?}"
+    );
+    let now = server.load_now::<Bundle>(&mut world, "y.bundle").err();
+    assert!(
+      matches!(now.as_deref(), Some(AssetError::Decode { path, .. }) if path.as_str() == "y.bundle"),
+      "{now:?}"
+    );
+  }
+
+  #[test]
+  fn a_reload_keeps_the_id_and_moves_the_version_on() {
+    let source = MemorySource::new();
+    source.insert("a.txt", "one");
+    let (mut world, server) = world_with(source.clone());
+    let handle = server.load_now::<Text>(&mut world, "a.txt").expect("loads");
+    let before = world.resource::<Assets<Text>>().version(&handle);
+    source.insert("a.txt", "two"); // MemorySource tells the server
+    pump_until(&mut world, |w| {
+      w.resource::<Assets<Text>>()
+        .get(&handle)
+        .map(|t| t.0.as_str())
+        == Some("two")
+    });
+    assert!(world.resource::<Assets<Text>>().version(&handle) > before);
+  }
+
+  #[test]
+  fn a_broken_reload_keeps_the_last_good_value() {
+    let source = MemorySource::new();
+    source.insert("a.txt", "one");
+    let (mut world, server) = world_with(source.clone());
+    let handle = server.load_now::<Text>(&mut world, "a.txt").expect("loads");
+    let mut texts = cursor::<Text>(&world);
+    source.insert("a.txt", [0xff, 0xfe]);
+    let sent = pump_until_sent(&mut world, &mut texts, |e| {
+      matches!(e, AssetEvent::ReloadFailed { .. })
+    });
+    assert!(
+      matches!(
+        sent.as_slice(),
+        [AssetEvent::ReloadFailed { id, error }]
+          if *id == handle.id() && matches!(**error, AssetError::Decode { .. })
+      ),
+      "{sent:?}"
+    );
+    assert_eq!(text(&world, &handle), Some("one"));
+    assert!(server.state(&handle).is_loaded());
+  }
+
+  #[test]
+  fn a_broken_reload_warns_once_per_error() {
+    use crate::core::ui::test_util::warnings_containing;
+    let warned = || warnings_containing("warn-once.txt");
+    let source = MemorySource::new();
+    source.insert("warn-once.txt", "one");
+    let (mut world, server) = world_with(source.clone());
+    let handle = server
+      .load_now::<Text>(&mut world, "warn-once.txt")
+      .expect("loads");
+    let mut texts = cursor::<Text>(&world);
+    let reload_failed = |e: &AssetEvent<Text>| matches!(e, AssetEvent::ReloadFailed { .. });
+    source.insert("warn-once.txt", [0xff]);
+    pump_until_sent(&mut world, &mut texts, reload_failed);
+    assert_eq!(warned(), 1);
+    source.insert("warn-once.txt", [0xff]);
+    pump_until_sent(&mut world, &mut texts, reload_failed);
+    assert_eq!(warned(), 1, "the same error warns once");
+    source.insert("warn-once.txt", "two");
+    pump_until_sent(&mut world, &mut texts, |e| {
+      matches!(e, AssetEvent::Modified { .. })
+    });
+    source.insert("warn-once.txt", [0xff]);
+    pump_until_sent(&mut world, &mut texts, reload_failed);
+    assert_eq!(warned(), 2, "broken again after a good reload");
+    assert_eq!(text(&world, &handle), Some("two"));
+  }
+
+  #[test]
+  fn a_reloaded_dependency_tells_its_dependents() {
+    let source = MemorySource::new();
+    source.insert("x.bundle", "a.txt\nb.txt");
+    source.insert("a.txt", "a");
+    source.insert("b.txt", "b");
+    let (mut world, server) = world_with(source.clone());
+    let bundle = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    let a: Handle<Text> = server.load("a.txt");
+    let before = version(&world, &bundle);
+    let mut texts = cursor::<Text>(&world);
+    let mut bundles = cursor::<Bundle>(&world);
+    source.insert("a.txt", "changed");
+    let sent = pump_until_sent(&mut world, &mut bundles, |e| {
+      matches!(e, AssetEvent::Modified { .. })
+    });
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Modified { id }] if *id == bundle.id()),
+      "{sent:?}"
+    );
+    let sent = events(&world, &mut texts);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Modified { id }] if *id == a.id()),
+      "{sent:?}"
+    );
+    assert_eq!(text(&world, &a), Some("changed"));
+    assert!(version(&world, &bundle) > before);
+  }
+
+  #[test]
+  fn a_dependency_reload_that_fails_its_dependents_check_is_reported() {
+    let source = MemorySource::new();
+    source.insert("x.bundle", "a.txt\nb.txt");
+    source.insert("a.txt", "a");
+    source.insert("b.txt", "b");
+    let (mut world, server) = world_with(source.clone());
+    let bundle = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    let a: Handle<Text> = server.load("a.txt");
+    let before = version(&world, &bundle);
+    let mut texts = cursor::<Text>(&world);
+    let mut bundles = cursor::<Bundle>(&world);
+    source.insert("a.txt", "bad");
+    let sent = pump_until_sent(&mut world, &mut bundles, |e| {
+      matches!(e, AssetEvent::ReloadFailed { .. })
+    });
+    assert!(
+      matches!(
+        sent.as_slice(),
+        [AssetEvent::ReloadFailed { id, error }]
+          if *id == bundle.id() && matches!(**error, AssetError::Decode { .. })
+      ),
+      "{sent:?}"
+    );
+    let sent = events(&world, &mut texts);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Modified { id }] if *id == a.id()),
+      "{sent:?}"
+    );
+    assert_eq!(version(&world, &bundle), before, "its value is as it was");
+    assert!(server.state(&bundle).is_loaded());
+  }
+
+  #[test]
+  fn freeing_a_parent_frees_dependencies_nothing_else_holds() {
+    let source = MemorySource::new();
+    source.insert("x.bundle", "a.txt\nb.txt");
+    source.insert("a.txt", "a");
+    source.insert("b.txt", "b");
+    let (mut world, server) = world_with(source);
+    let bundle = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    let a = server.load::<Text>("a.txt").id();
+    let b: Handle<Text> = server.load("b.txt");
+    let mut texts = cursor::<Text>(&world);
+    let mut bundles = cursor::<Bundle>(&world);
+    let id = bundle.id();
+    drop(bundle);
+    pump(&mut world);
+    pump(&mut world);
+    let sent = events(&world, &mut bundles);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Removed { id: removed }] if *removed == id),
+      "{sent:?}"
+    );
+    let sent = events(&world, &mut texts);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Removed { id: removed }] if *removed == a),
+      "only the text nothing else holds: {sent:?}"
+    );
+    assert_eq!(text(&world, &b), Some("b"));
+    assert!(matches!(server.state(a), LoadState::NotLoaded));
+  }
+
+  #[test]
+  fn load_now_loads_dependencies_now_and_rejects_cycles() {
+    let source = MemorySource::new();
+    source.insert("x.bundle", "a.txt\nb.txt");
+    source.insert("a.txt", "a");
+    source.insert("b.txt", "b");
+    source.insert("a.bundle", "b.bundle");
+    source.insert("b.bundle", "a.bundle");
+    let (mut world, server) = world_with(source);
+    let bundle = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    assert_eq!(parts(&world, &bundle), Some(2));
+    assert_eq!(world.resource::<Assets<Text>>().len(), 2);
+    assert!(server.is_ready(&bundle));
+    let error = server.load_now::<Bundle>(&mut world, "a.bundle").err();
+    assert_eq!(
+      cycle_of(error.as_deref()),
+      Some((
+        "a.bundle".to_owned(),
+        "a.bundle → b.bundle → a.bundle".to_owned()
+      )),
+      "{error:?}"
+    );
+  }
+
+  #[test]
+  fn a_cycle_through_queued_loads_fails_with_cycle() {
+    let source = MemorySource::new();
+    source.insert("a.bundle", "b.bundle");
+    source.insert("b.bundle", "a.bundle");
+    source.insert("me.bundle", "me.bundle");
+    let (mut world, server) = world_with(source);
+    let mut bundles = cursor::<Bundle>(&world);
+    let a: Handle<Bundle> = server.load("a.bundle");
+    let me: Handle<Bundle> = server.load("me.bundle");
+    pump_until(&mut world, |_| {
+      server.state(&a).is_failed() && server.state(&me).is_failed()
+    });
+    let chain = |handle: &Handle<Bundle>| cycle_of(server.state(handle).error().map(|e| &**e));
+    assert_eq!(
+      chain(&a),
+      Some((
+        "a.bundle".to_owned(),
+        "a.bundle → b.bundle → a.bundle".to_owned()
+      ))
+    );
+    assert_eq!(
+      chain(&me),
+      Some(("me.bundle".to_owned(), "me.bundle → me.bundle".to_owned()))
+    );
+    // Every asset on a cycle fails, each naming the chain from itself
+    let sent = events(&world, &mut bundles);
+    let mut chains: Vec<String> = sent
+      .iter()
+      .filter_map(|e| match e {
+        AssetEvent::Failed { error, .. } => cycle_of(Some(error)).map(|(_, chain)| chain),
+        _ => None,
+      })
+      .collect();
+    chains.sort();
+    assert_eq!(
+      chains,
+      [
+        "a.bundle → b.bundle → a.bundle",
+        "b.bundle → a.bundle → b.bundle",
+        "me.bundle → me.bundle"
+      ],
+      "{sent:?}"
+    );
+    // Nothing on a cycle holds another now, so all three are freed
+    drop(a);
+    drop(me);
+    pump(&mut world);
+    pump(&mut world);
+    let removed = events(&world, &mut bundles)
+      .iter()
+      .chain(&sent)
+      .filter(|e| matches!(e, AssetEvent::Removed { .. }))
+      .count();
+    assert_eq!(removed, 3);
+  }
+
+  #[test]
+  fn a_reload_that_would_make_a_cycle_fails_and_keeps_the_last_value() {
+    let source = MemorySource::new();
+    source.insert("x.bundle", "a.txt");
+    source.insert("y.bundle", "x.bundle");
+    source.insert("a.txt", "a");
+    let (mut world, server) = world_with(source.clone());
+    let y = server
+      .load_now::<Bundle>(&mut world, "y.bundle")
+      .expect("loads");
+    let x: Handle<Bundle> = server.load("x.bundle");
+    let mut bundles = cursor::<Bundle>(&world);
+    source.insert("x.bundle", "y.bundle");
+    let sent = pump_until_sent(&mut world, &mut bundles, |e| {
+      matches!(e, AssetEvent::ReloadFailed { .. })
+    });
+    let error = match sent.as_slice() {
+      [AssetEvent::ReloadFailed { id, error }] if *id == x.id() => Some(&**error),
+      _ => None,
+    };
+    assert_eq!(
+      cycle_of(error),
+      Some((
+        "x.bundle".to_owned(),
+        "x.bundle → y.bundle → x.bundle".to_owned()
+      )),
+      "{sent:?}"
+    );
+    let held = world
+      .resource::<Assets<Bundle>>()
+      .get(&x)
+      .map(|bundle| matches!(bundle.parts.as_slice(), [Part::Text(_)]));
+    assert_eq!(held, Some(true), "the last value stays");
+    assert!(server.state(&x).is_loaded());
+    // No cycle was made, so both are freed once unheld
+    drop(x);
+    drop(y);
+    pump(&mut world);
+    pump(&mut world);
+    assert!(world.resource::<Assets<Bundle>>().is_empty());
+  }
+
+  #[test]
+  fn a_reload_with_a_new_dependency_waits_for_it() {
+    let files = MemorySource::new();
+    files.insert("x.bundle", "a.txt");
+    files.insert("a.txt", "a");
+    files.insert("slow.txt", "s");
+    let (release, held) = crossbeam_channel::unbounded();
+    let (mut world, server) = world_with(HeldSource {
+      files: files.clone(),
+      release: held,
+    });
+    let bundle = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    let before = version(&world, &bundle);
+    let mut bundles = cursor::<Bundle>(&world);
+    files.insert("x.bundle", "a.txt\nslow.txt");
+    server.reload("x.bundle");
+    pump_until(&mut world, |_| waiting(&server) == 1);
+    assert_eq!(
+      parts(&world, &bundle),
+      Some(1),
+      "the old value stays meanwhile"
+    );
+    assert_eq!(version(&world, &bundle), before);
+    assert!(server.is_ready(&bundle));
+    let _ = release.send(());
+    let sent = pump_until_sent(&mut world, &mut bundles, |e| {
+      matches!(e, AssetEvent::Modified { .. })
+    });
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Modified { id }] if *id == bundle.id()),
+      "{sent:?}"
+    );
+    assert_eq!(parts(&world, &bundle), Some(2));
+    assert!(server.is_ready(&bundle));
+  }
+
+  #[test]
+  fn reload_reloads_every_settings_variant() {
+    let files = MemorySource::new();
+    files.insert("a.up", "hi");
+    let (mut world, server) = world_with(Unwatched(files.clone()));
+    let plain = server
+      .load_now_with::<Text, _>(&mut world, "a.up", Upper(false))
+      .expect("loads");
+    let upper = server
+      .load_now_with::<Text, _>(&mut world, "a.up", Upper(true))
+      .expect("loads");
+    files.insert("a.up", "bye");
+    server.reload("./a.up");
+    pump_until(&mut world, |w| {
+      text(w, &plain) == Some("bye") && text(w, &upper) == Some("BYE")
+    });
+  }
+
+  #[test]
+  fn a_change_during_a_reload_loads_again_when_it_finishes() {
+    let files = MemorySource::new();
+    files.insert("a.txt", "one");
+    let (reading, read) = crossbeam_channel::unbounded();
+    let (release, held) = crossbeam_channel::unbounded();
+    let (mut world, server) = world_with(Gated {
+      files: files.clone(),
+      reading,
+      release: held,
+    });
+    let _ = release.send(());
+    let handle = server.load_now::<Text>(&mut world, "a.txt").expect("loads");
+    let mut texts = cursor::<Text>(&world);
+    files.insert("a.txt", "two");
+    server.reload("a.txt");
+    // The reload has read "two" (after load_now's read) and is held
+    for _ in 0..2 {
+      assert!(read.recv_timeout(PATIENCE).is_ok(), "timed out waiting");
+    }
+    files.insert("a.txt", "three");
+    server.reload("a.txt");
+    // The held read goes on; the next is not started until its result is in
+    let _ = release.send(());
+    wait_finished(&server, 1);
+    assert!(read.try_recv().is_err(), "one read at a time");
+    let _ = release.send(());
+    let sent = pump_until_sent(&mut world, &mut texts, |e| {
+      matches!(e, AssetEvent::Modified { .. })
+    });
+    assert_eq!(text(&world, &handle), Some("three"), "the last write wins");
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Modified { id }] if *id == handle.id()),
+      "the outdated read was dropped: {sent:?}"
+    );
+  }
+
+  #[test]
+  fn a_failed_asset_loads_when_its_file_changes() {
+    let source = MemorySource::new();
+    source.insert("a.txt", [0xff]);
+    let (mut world, server) = world_with(source.clone());
+    let handle: Handle<Text> = server.load("a.txt");
+    pump_until(&mut world, |_| server.state(&handle).is_failed());
+    let mut texts = cursor::<Text>(&world);
+    source.insert("a.txt", "fixed");
+    let sent = pump_until_sent(&mut world, &mut texts, |e| {
+      matches!(e, AssetEvent::Added { .. })
+    });
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id }] if *id == handle.id()),
+      "{sent:?}"
+    );
+    assert_eq!(text(&world, &handle), Some("fixed"));
+    assert!(server.state(&handle).is_loaded());
+  }
+
+  #[test]
+  fn a_reload_tells_dependents_nearest_first() {
+    let source = MemorySource::new();
+    source.insert("outer.bundle", "inner.bundle");
+    source.insert("inner.bundle", "a.txt");
+    source.insert("a.txt", "a");
+    let (mut world, server) = world_with(source.clone());
+    let outer = server
+      .load_now::<Bundle>(&mut world, "outer.bundle")
+      .expect("loads");
+    let inner: Handle<Bundle> = server.load("inner.bundle");
+    let mut bundles = cursor::<Bundle>(&world);
+    source.insert("a.txt", "changed");
+    let sent = pump_until_sent(
+      &mut world,
+      &mut bundles,
+      |e| matches!(e, AssetEvent::Modified { id } if *id == outer.id()),
+    );
+    assert!(
+      matches!(
+        sent.as_slice(),
+        [AssetEvent::Modified { id: first }, AssetEvent::Modified { id: last }]
+          if *first == inner.id() && *last == outer.id()
+      ),
+      "{sent:?}"
+    );
+  }
+
+  #[test]
+  fn a_load_now_closing_a_cycle_through_a_waiting_reload_fails_both() {
+    let files = MemorySource::new();
+    files.insert("x.bundle", "a.txt");
+    files.insert("a.txt", "a");
+    files.insert("p.bundle", "x.bundle");
+    let (reading, read) = crossbeam_channel::unbounded();
+    let (release, held) = crossbeam_channel::unbounded();
+    let (mut world, server) = world_with(FirstReadHeld {
+      files: files.clone(),
+      seen: Mutex::default(),
+      reading,
+      release: held,
+    });
+    // load_now's first reads of x.bundle and a.txt are held too: let them go
+    let _ = release.send(());
+    let _ = release.send(());
+    let x = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    let mut bundles = cursor::<Bundle>(&world);
+    // x's reload now holds p.bundle, whose first read (on a worker) is held
+    files.insert("x.bundle", "a.txt\np.bundle");
+    server.reload("x.bundle");
+    for _ in 0..3 {
+      assert!(read.recv_timeout(PATIENCE).is_ok(), "timed out waiting");
+    }
+    pump_until(&mut world, |_| waiting(&server) == 1);
+    // p.bundle, loaded now, holds x.bundle, whose waiting reload holds p.bundle
+    let error = server.load_now::<Bundle>(&mut world, "p.bundle").err();
+    assert_eq!(
+      cycle_of(error.as_deref()),
+      Some((
+        "p.bundle".to_owned(),
+        "p.bundle → x.bundle → p.bundle".to_owned()
+      )),
+      "{error:?}"
+    );
+    let sent = events(&world, &mut bundles);
+    let reload_failed = sent.iter().find_map(|e| match e {
+      AssetEvent::ReloadFailed { id, error } if *id == x.id() => cycle_of(Some(error)),
+      _ => None,
+    });
+    assert_eq!(
+      reload_failed,
+      Some((
+        "x.bundle".to_owned(),
+        "x.bundle → p.bundle → x.bundle".to_owned()
+      )),
+      "{sent:?}"
+    );
+    assert_eq!(parts(&world, &x), Some(1), "x keeps its last value");
+    assert_eq!(waiting(&server), 0);
+    let _ = release.send(());
   }
 }

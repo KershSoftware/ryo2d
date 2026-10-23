@@ -3,8 +3,9 @@
 //! - [`AssetServer`] loads assets by path through [`AssetLoader`]s chosen by
 //!   extension, on worker threads, or at once with `load_now`. [`Assets<T>`]
 //!   holds every asset of a type, and a [`Handle<T>`] keeps one alive. Each
-//!   frame the pump inserts finished loads, frees unheld assets and sends
-//!   their [`AssetEvent`]s
+//!   frame the pump reloads changed files, inserts finished loads once their
+//!   dependencies are loaded, frees unheld assets and sends their
+//!   [`AssetEvent`]s
 //! - [`AssetManager`] - the old manager (sprites, shaders, UI files), until
 //!   everything loads through the registry
 //! - [`SpriteHandle`] - the old manager's reference to a loaded image

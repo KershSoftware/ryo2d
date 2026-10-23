@@ -31,7 +31,8 @@ pub trait AssetLoader: Send + Sync + 'static {
   ) -> Result<Self::Asset, AssetError>;
 
   /// Checks the asset against its dependencies, once they are loaded and
-  /// whenever one reloads (on the main thread). The default accepts
+  /// whenever one reloads (on the main thread). An error fails the load, or
+  /// a reload, which keeps the last good value. The default accepts
   fn check(&self, asset: &Self::Asset, world: &World) -> Result<(), AssetError> {
     let _ = (asset, world);
     Ok(())
@@ -124,6 +125,8 @@ pub(crate) trait ErasedLoader: Send + Sync + 'static {
     settings: &(dyn Any + Send + Sync),
     cx: &mut LoadContext<'_>,
   ) -> Result<Box<dyn Any + Send>, AssetError>;
+  /// The loader's `check` of a value it made
+  fn check(&self, value: &dyn Any, world: &World) -> Result<(), AssetError>;
 }
 
 struct Erased<L: AssetLoader> {
@@ -176,5 +179,13 @@ impl<L: AssetLoader> ErasedLoader for Erased<L> {
     };
     let asset = self.loader.load(bytes, settings, cx)?;
     Ok(Box::new(asset))
+  }
+
+  fn check(&self, value: &dyn Any, world: &World) -> Result<(), AssetError> {
+    // A value of another type is not one this loader made: nothing to check
+    match value.downcast_ref::<L::Asset>() {
+      Some(asset) => self.loader.check(asset, world),
+      None => Ok(()),
+    }
   }
 }
