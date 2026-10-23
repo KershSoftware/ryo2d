@@ -562,19 +562,22 @@ mod tests {
   fn a_second_follower_gets_the_whole_store_then_its_own_changes() {
     let mut assets = Assets::<Text>::default();
     let a = assets.add(Text("a".into()));
+    let kept = assets.add(Text("kept".into()));
     let (first, second) = (follower_token(), follower_token());
     assert_ne!(first, second);
-    assert_eq!(taken_by(&mut assets, first, false).len(), 1);
+    assert_eq!(taken_by(&mut assets, first, false).len(), 2);
     assert!(assets.is_followed_by(first));
     assets.get_mut(&a).unwrap().0 = "a2".into();
     let b = assets.add(Text("b".into()));
-    // Not the first's list: every slot, as it is now, so nothing is missed
-    let (va, vb) = (assets.version(&a).unwrap(), assets.version(&b).unwrap());
+    // Not the first's list (a and b): every slot, as it is now, so the
+    // second misses nothing, the unchanged one included
+    let versions = [&a, &kept, &b].map(|handle| assets.version(handle).unwrap());
     assert_eq!(
       taken_by(&mut assets, second, false),
       vec![
-        (0, Some((0, va, "a2".into()))),
-        (1, Some((0, vb, "b".into()))),
+        (0, Some((0, versions[0], "a2".into()))),
+        (1, Some((0, versions[1], "kept".into()))),
+        (2, Some((0, versions[2], "b".into()))),
       ]
     );
     // The list is the second's now: its own changes from here
