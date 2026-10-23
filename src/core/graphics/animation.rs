@@ -10,11 +10,11 @@
 //! For basic looping animations (spinning coins, flickering flames):
 //!
 //! ```ignore
-//! let spin = Animation::new("spin", vec![frame1, frame2, frame3], 0.1);
+//! let spin = Animation::new("spin", vec![frame1.clone(), frame2, frame3], 0.1);
 //!
 //! ctx.world.spawn((
 //!     Transform::from_xy(x, y),
-//!     Renderable::sprite(frame1),
+//!     Renderable::image(frame1),
 //!     Animator::new(spin),
 //! ));
 //! // Engine handles frame timing automatically
@@ -31,7 +31,7 @@
 //! controller.add_animation("attack", attack_anim.with_loop_mode(LoopMode::Once));
 //! controller.set_state("idle");
 //!
-//! ctx.world.spawn((Transform::from_xy(x, y), Renderable::sprite(idle_frame), controller));
+//! ctx.world.spawn((Transform::from_xy(x, y), Renderable::image(idle_frame), controller));
 //!
 //! // In game logic, set the state on the entity's controller
 //! if let Some(mut controller) = ctx.world.get_mut::<AnimationController>(player) {

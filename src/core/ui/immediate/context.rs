@@ -2132,7 +2132,8 @@ impl<'a> UiContext<'a> {
     );
   }
 
-  /// Draw a sprite with its top-left at (x, y), one UI unit per texel.
+  /// Draw a sprite with its top-left at (x, y), one UI unit per texel. An
+  /// image that is not loaded has no size, so nothing is drawn.
   pub fn draw_sprite(&mut self, sprite: &Handle<Image>, x: f32, y: f32) {
     self.draw_sprite_scaled(sprite, x, y, 1.0);
   }

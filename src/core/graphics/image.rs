@@ -88,7 +88,11 @@ impl Image {
   }
 
   /// The image drawn in place of one that is not loaded, in debug builds:
-  /// 16x16 px of magenta and black 4 px squares
+  /// 16x16 px of magenta and black 4 px squares, stretched over the
+  /// sprite's size. The UI draws it only where it is given a size or a
+  /// rect: an unloaded image at its natural size (`draw_sprite`, `ui.image`
+  /// or `UiNode::image` with no size, a prompt's glyph) is zero-sized and
+  /// draws nothing, so a UI lays out the same in debug and release builds
   pub(crate) fn checker() -> Self {
     const SIDE: u32 = 16;
     const SQUARE: u32 = 4;

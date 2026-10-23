@@ -32,6 +32,8 @@ pub struct ImageWidget<'u, 'a> {
 impl<'a> UiContext<'a> {
   /// A sprite as a widget, the sprite's size unless told ([`size`](ImageWidget::size),
   /// or the layout options). It senses nothing, unless it has a tooltip.
+  /// An image that is not loaded is zero-sized unless told a size; told
+  /// one, it draws the checker there in debug builds (nothing in release).
   ///
   /// ```ignore
   /// ui.image(&self.portrait).size(64.0, 64.0).filter(Filter::Nearest);

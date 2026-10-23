@@ -902,7 +902,7 @@ fn lerp_color(start: Color, end: Color, t: f32) -> Color {
 ///
 /// world.spawn((
 ///     Transform::from_xy(100.0, 100.0),
-///     Renderable::sprite(handle),
+///     Renderable::image(image),
 ///     sequence,
 /// ));
 /// ```

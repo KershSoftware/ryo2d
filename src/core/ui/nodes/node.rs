@@ -586,7 +586,9 @@ impl UiNode {
     UiNode::with_state(Kind::Button(ButtonOpts::default()), state)
   }
 
-  /// A sprite
+  /// A sprite, at its size unless given one (`image_size`). An image that
+  /// is not loaded is zero-sized unless given a size; given one, it draws
+  /// the checker there in debug builds (nothing in release).
   pub fn image(sprite: Handle<Image>) -> UiNode {
     let state = NodeState {
       image: Some(sprite),

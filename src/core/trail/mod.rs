@@ -22,7 +22,7 @@
 //! // Spawn a bullet with a trail effect
 //! let bullet = ctx.world.spawn((
 //!     Transform::from_xy(100.0, 100.0),
-//!     Renderable::sprite(bullet_sprite),
+//!     Renderable::image(bullet_image),
 //!     Trail2D::bullet(Color::YELLOW),
 //! )).id();
 //!

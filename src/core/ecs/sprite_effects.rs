@@ -9,15 +9,15 @@
 //! use ryo2d::prelude::*;
 //!
 //! // Add an outline to a sprite
-//! let player = Renderable::sprite(sprite_handle)
+//! let player = Renderable::image(image.clone())
 //!     .with_effect(SpriteEffect::outline(Color::WHITE, 1));
 //!
 //! // Flash a sprite when hit
-//! let enemy = Renderable::sprite(sprite_handle)
+//! let enemy = Renderable::image(image.clone())
 //!     .with_effect(SpriteEffect::flash(Color::RED, 0.8));
 //!
 //! // Multiple effects can be combined
-//! let boss = Renderable::sprite(sprite_handle)
+//! let boss = Renderable::image(image)
 //!     .with_effect(SpriteEffect::glow(Color::PURPLE, 4.0))
 //!     .with_effect(SpriteEffect::color_shift(Color::RED, 0.3));
 //! ```

@@ -18,13 +18,13 @@
 //! use ryo2d::prelude::*;
 //!
 //! // Pattern 1: Inline effect on Renderable
-//! let player = Renderable::sprite(sprite)
+//! let player = Renderable::image(image.clone())
 //!     .with_shader(SpriteShader::outline(Color::WHITE, 2));
 //!
 //! // Pattern 2: Material as separate component
 //! world.spawn((
 //!     Transform::from_xy(100.0, 200.0),
-//!     Renderable::sprite(sprite),
+//!     Renderable::image(image.clone()),
 //!     Material::outline(Color::WHITE, 2),
 //! ));
 //!
@@ -32,7 +32,7 @@
 //! let dissolve = assets.load_shader("shaders/dissolve.wgsl")?;
 //! world.spawn((
 //!     Transform::from_xy(100.0, 200.0),
-//!     Renderable::sprite(sprite),
+//!     Renderable::image(image),
 //!     Material::custom(dissolve)
 //!         .with_param("amount", 0.5)
 //!         .with_param("edge", Color::rgb(255, 120, 0)),

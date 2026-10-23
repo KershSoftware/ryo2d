@@ -40,7 +40,7 @@
 //! }
 //!
 //! // Spawn a fire effect
-//! let fire_sprite = ctx.assets.load_sprite("particle.png")?;
+//! let fire_sprite = ctx.assets().load::<Image>("particle.png");
 //! ctx.world.spawn((
 //!     Transform::from_xy(100.0, 100.0),
 //!     ParticleEmitter::fire(fire_sprite),

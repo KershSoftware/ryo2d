@@ -11,7 +11,7 @@
 //! // Spawn a bullet with a trail
 //! let bullet = ctx.world.spawn((
 //!     Transform::from_xy(100.0, 100.0),
-//!     Renderable::sprite(bullet_sprite),
+//!     Renderable::image(bullet_image),
 //!     Trail2D::new(Color::YELLOW, 5.0)
 //!         .with_length(20)
 //!         .with_fade(true),

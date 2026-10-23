@@ -11,21 +11,21 @@
 //! // Basic y-sorting (sorts by foot position)
 //! world.spawn((
 //!     Transform::from_xy(100.0, 50.0),
-//!     Renderable::sprite(player_handle),
+//!     Renderable::image(player_image),
 //!     YSort::new(),
 //! ));
 //!
 //! // With depth scaling for perspective illusion
 //! world.spawn((
 //!     Transform::from_xy(100.0, 50.0),
-//!     Renderable::sprite(npc_handle),
+//!     Renderable::image(npc_image),
 //!     YSort::new().with_depth_scale(0.7, 1.3, 0.0, 180.0),
 //! ));
 //!
 //! // Flying entity with fixed sort offset
 //! world.spawn((
 //!     Transform::from_xy(100.0, 30.0),
-//!     Renderable::sprite(bat_handle),
+//!     Renderable::image(bat_image),
 //!     YSort::new().with_sort_offset(40.0),
 //! ));
 //! ```
