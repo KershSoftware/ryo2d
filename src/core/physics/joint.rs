@@ -328,7 +328,7 @@ pub(crate) fn generic_joint(
 mod tests {
   use super::*;
   use crate::core::ecs::Velocity;
-  use crate::core::ecs::test_util::MAX_UNRELATED;
+  use crate::core::ecs::test_util::{MAX_UNRELATED, Other};
   use crate::core::ecs::{Disabled, Messages, Transform, World};
   use crate::core::physics::test_util::*;
   use crate::core::physics::{

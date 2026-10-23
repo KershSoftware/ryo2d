@@ -421,7 +421,7 @@ fn apply_edit(
 /// A body refused for a non-finite pose is tried again every step until its
 /// pose is finite.
 ///
-/// Both go in `entity_order` (spawn order), as colliders and joints do:
+/// Both go in `entity_order` (index order), as colliders and joints do:
 /// Rapier's handles, and with them its broad phase and solver order, follow
 /// the order bodies are added. A query's order changes whenever an
 /// archetype is made, a resource's included, and a hash set's with the
@@ -939,7 +939,7 @@ pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::ecs::test_util::MAX_UNRELATED;
+  use crate::core::ecs::test_util::{MAX_UNRELATED, Other};
   use crate::core::ecs::{Messages, Resource, World};
   use crate::core::physics::CollisionStarted;
   use crate::core::physics::test_util::*;
@@ -3641,7 +3641,7 @@ mod tests {
   }
 
   // Registration order. Rapier's handles, and so its broad phase and solver,
-  // follow the order things are added; these pin it to `entity_order` (spawn
+  // follow the order things are added; these pin it to `entity_order` (index
   // order) whatever the resources (`world_after`), so adding an unrelated
   // resource changes no simulation.
 

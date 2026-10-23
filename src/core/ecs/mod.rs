@@ -42,8 +42,9 @@ pub use world_ext::WorldExt;
 pub use y_sort::YSort;
 
 /// The order the engine keeps entities in wherever the order shows (a draw
-/// order's ties, physics' registration): by index, which is spawn order for
-/// entities spawned fresh. Never a query's order, which follows the
+/// order's ties, physics' registration): by index. That is spawn order only
+/// for entities spawned fresh: bevy hands a despawned entity's index to a
+/// later spawn, which then sorts by that lower index. Never a query's order, which follows the
 /// archetypes' layout and changes whenever an archetype is made (every
 /// resource is an entity with an archetype of its own), nor a hash set's;
 /// and not `Entity`'s own `Ord`, which puts higher indices first. The
@@ -55,7 +56,11 @@ pub(crate) fn entity_order(entity: &Entity) -> (u32, Entity) {
 
 #[cfg(test)]
 pub(crate) mod test_util {
-  use super::{Resource, World};
+  use super::{Component, Resource, World};
+
+  /// Puts an entity in another archetype.
+  #[derive(Component)]
+  pub(crate) struct Other;
 
   /// A resource nothing reads.
   #[derive(Resource)]

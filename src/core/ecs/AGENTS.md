@@ -80,6 +80,8 @@ world.query_filtered::<Entity, (Allow<Disabled>, Without<IsResource>)>()
 
 `despawn_game_entities` (`world_ext.rs`, used by `SceneCleanup::WORLD`) also excludes `Observer` and `SystemIdMarker`; the entity count in the debug stats does the same per archetype.
 
+Each resource also has an archetype of its own, and a query visits archetypes in hash-map order, so adding any resource can reorder a query's results. Wherever an order shows (draw ties, physics registration, a message order), sort by `ecs::entity_order` (entity index), never by a query's or a hash set's order. Tests built on `test_util::insert_unrelated` check an order for 0 to 8 extra resources.
+
 ## Messages
 
 - A message type derives `Message` and is registered with `register_message::<T>` (`core/messages`): at engine build for the engine's types, `EngineBuilder::add_message::<T>()` for a game's, or lazily on the first `ctx.write_message`.

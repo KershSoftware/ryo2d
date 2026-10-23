@@ -11,8 +11,9 @@
 //! Everything an entity emits (its shadows first, then the sprite or its
 //! tiles) is a [`DrawKind::Entity`] item at the entity's `z_order`, submitted
 //! in draw order, so the shadow draws under its entity and YSort orders
-//! entities within their layer; ties go by spawn order. Composite tiles draw
-//! at their own `z_order`; on equal z they follow the entities.
+//! entities within their layer; ties go by entity index (`entity_order`).
+//! Composite tiles draw at their own `z_order`; on equal z they follow the
+//! entities.
 //!
 //! A renderable showing a render target draws the target's texture at the
 //! target's size; the camera drawing into that target skips it.
@@ -204,7 +205,7 @@ impl EntityDrawer {
 /// by each entity's own z; this order (y-sorted after plain within a layer)
 /// becomes the submission sequence.
 ///
-/// Ties go by `entity_order` (spawn order), never by query order: a query
+/// Ties go by `entity_order` (index order), never by query order: a query
 /// visits archetypes in an order that changes whenever an archetype is made,
 /// so adding a resource anywhere would reorder overlapping sprites.
 fn in_draw_order<'w>(
@@ -785,13 +786,9 @@ fn y_sort_key(y_sort: &YSort, renderable: &Renderable, y: f32, images: &Assets<I
 mod draw_order_tests {
   use super::{DrawOrder, DrawableItem, in_draw_order, y_sort_key};
   use crate::core::asset::Assets;
-  use crate::core::ecs::test_util::{MAX_UNRELATED, insert_unrelated};
-  use crate::core::ecs::{Anchor, Component, Entity, GlobalTransform, Renderable, World, YSort};
+  use crate::core::ecs::test_util::{MAX_UNRELATED, Other, insert_unrelated};
+  use crate::core::ecs::{Anchor, Entity, GlobalTransform, Renderable, World, YSort};
   use crate::core::graphics::Image;
-
-  /// Puts a sprite in another archetype
-  #[derive(Component)]
-  struct Other;
 
   /// Catches ties left in query order (`in_draw_order` breaks them by
   /// `entity_order`): a query visits archetypes in an order that changes

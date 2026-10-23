@@ -3,7 +3,7 @@
 use super::sync::{PhysicsSchedule, register_physics_systems};
 use super::{Collider, Physics, PhysicsConfig, RigidBody};
 use crate::core::ecs::test_util::insert_unrelated;
-use crate::core::ecs::{Component, Entity, Mut, Transform, World};
+use crate::core::ecs::{Entity, Mut, Transform, World};
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, Phase};
 use crate::core::time::Time;
@@ -28,10 +28,6 @@ pub(crate) fn world_after(k: usize) -> (World, EngineSchedules) {
   insert_unrelated(&mut world, k);
   (world, schedules)
 }
-
-/// Puts an entity in another archetype.
-#[derive(Component)]
-pub(crate) struct Other;
 
 /// `entities` in the order Rapier was given their bodies (a fresh set hands
 /// out handles in order).
