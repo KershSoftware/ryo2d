@@ -1,7 +1,8 @@
 //! UI frame costs without a GPU: a 200-widget settings screen (as a closure
 //! and as a node tree, moving its focus and unchanged), a 2,000-node static
 //! tree, an embedded node tree in closure UI, 64 embedded trees cached and
-//! uncached, a 1,000-row scroll list,
+//! uncached, a 500-text kept column laid out again beside a label changing
+//! width (fragments on and off), a 1,000-row scroll list,
 //! virtual lists in both styles (10,000 and 100 closure rows, 10,000 node
 //! rows) and an empty frame, each one `UiHarness` frame (resolve, the node
 //! walk, the widgets, layout and commands); the node cache's dirty check
@@ -14,9 +15,11 @@
 //! frames (the median of 101 rounds of 20). Each median is printed against
 //! its target, and a missed target fails the run once every bench has run,
 //! printing the command to profile it with. The targets are absolute: run
-//! them on a quiet machine. A guard runs only where criterion measures its
-//! bench: with no filter or one naming the bench, and not for `--list`,
-//! `--test` or `--profile-time` (the profile command).
+//! them on a quiet machine. The kept column's guard is relative: fragments
+//! on and off are timed interleaved, and on must be no slower than off,
+//! within 5%. A guard runs only where criterion measures its bench: with no
+//! filter or one naming the bench, and not for `--list`, `--test` or
+//! `--profile-time` (the profile command).
 
 mod guards;
 
@@ -446,6 +449,120 @@ fn embedded_trees_frame(c: &mut Criterion) {
   group.finish();
 }
 
+/// Texts in the kept column
+const COLUMN: usize = 500;
+/// The kept column's label, a width a frame
+const LABELS: [&str; 4] = ["W", "Wider", "A much wider label", "A label"];
+
+/// A row as wide as the UI: a label whose width changes every frame, and a
+/// column of `COLUMN` texts filling the rest, warmed up with fragments on
+/// or off and the pointer over nothing. Its label, and the frames drawn.
+fn kept_column(fragments: bool) -> (UiHarness, Entity, usize) {
+  let mut harness = UiHarness::new(640.0, 480.0);
+  harness.set_ui_fragments(fragments);
+  harness.spawn_ui(
+    UiNode::row()
+      .gap(6.0)
+      .width(Length::Fill)
+      .anchor(Anchor::TopLeft)
+      .child(UiNode::text("{w}").bound().name("label"))
+      .child(
+        UiNode::column()
+          .fill_width()
+          .children((0..COLUMN).map(|i| UiNode::text(format!("Row {i} of the kept column")))),
+      ),
+  );
+  let label = harness.find_ui("label").expect("spawned");
+  harness.move_to(-100.0, -100.0);
+  let mut frame = 0;
+  for _ in 0..5 {
+    column_frame(&mut harness, label, &mut frame);
+  }
+  (harness, label, frame)
+}
+
+/// One frame of the kept column, its label the next width
+fn column_frame(harness: &mut UiHarness, label: Entity, frame: &mut usize) {
+  *frame += 1;
+  harness.ui_set(label, "w", LABELS[*frame % LABELS.len()]);
+  harness.frame(|_| {});
+}
+
+/// The median time of one call of `on` and of `off`, interleaved so load
+/// and drift hit both alike: after a second of calls, each the median of
+/// 101 rounds of 20 calls
+fn interleaved(mut on: impl FnMut(), mut off: impl FnMut()) -> (Duration, Duration) {
+  let warm = Instant::now();
+  while warm.elapsed() < Duration::from_secs(1) {
+    on();
+    off();
+  }
+  let time = |frame: &mut dyn FnMut()| {
+    let start = Instant::now();
+    for _ in 0..20 {
+      frame();
+    }
+    start.elapsed() / 20
+  };
+  let (mut ons, mut offs) = (Vec::new(), Vec::new());
+  for round in 0..101 {
+    if round % 2 == 0 {
+      ons.push(time(&mut on));
+      offs.push(time(&mut off));
+    } else {
+      offs.push(time(&mut off));
+      ons.push(time(&mut on));
+    }
+  }
+  ons.sort_unstable();
+  offs.sort_unstable();
+  (ons[50], offs[50])
+}
+
+/// The kept column with its label changing width every frame, fragments on
+/// and off: each frame Taffy lays the column out again, measuring its
+/// texts, and with fragments on the column is a kept fragment resolved
+/// again. The guard: fragments on is no slower than off, within 5%.
+fn kept_column_frame(c: &mut Criterion) {
+  let (mut on, on_label, mut on_frame) = kept_column(true);
+  let (mut off, off_label, mut off_frame) = kept_column(false);
+  let stats = on.ui_cache_stats();
+  assert_eq!(
+    stats.resolved_again, 1,
+    "the column is kept and resolved again: {stats:?}"
+  );
+  let group = "ui frame, a 500-text kept column beside a label changing width";
+  let names = [
+    format!("{group}/fragments on"),
+    format!("{group}/fragments off"),
+  ];
+  if guards::runs(&[names[0].as_str(), names[1].as_str()]) {
+    let (with, without) = interleaved(
+      || column_frame(&mut on, on_label, &mut on_frame),
+      || column_frame(&mut off, off_label, &mut off_frame),
+    );
+    let met = with <= without.mul_f64(1.05);
+    let verdict = if met { "met" } else { "missed" };
+    println!(
+      "guard: {group}: {:.2} µs a frame with fragments, {:.2} µs without (target no slower, \
+       within 5%: {verdict})",
+      with.as_secs_f64() * 1e6,
+      without.as_secs_f64() * 1e6
+    );
+    if !met {
+      guards::miss(names[0].clone());
+    }
+  }
+  let mut group = c.benchmark_group(group);
+  group.bench_function("fragments on", |b| {
+    b.iter(|| column_frame(&mut on, on_label, &mut on_frame))
+  });
+  group.bench_function("fragments off", |b| {
+    b.iter(|| column_frame(&mut off, off_label, &mut off_frame))
+  });
+  group.finish();
+}
+
 /// The node cache's dirty check on the settings tree, alone: each check
 /// follows an unmeasured unchanged frame, as the walk's does
 fn dirty_check(c: &mut Criterion) {
@@ -643,6 +760,7 @@ criterion_group!(
   static_tree_frame,
   embedded_frame,
   embedded_trees_frame,
+  kept_column_frame,
   dirty_check,
   list_frame,
   virtual_list_frame,

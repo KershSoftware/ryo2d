@@ -21,6 +21,7 @@ use super::theme::warn_once;
 use super::widgets::scroll::{ScrollState, drawn_px};
 use super::{Color, Rect, UiId};
 use crate::core::asset::SpriteHandle;
+use crate::core::hash::FastMap;
 use crate::core::render::UiSpace;
 use crate::core::render::batch::Filter;
 use crate::core::render::ui::snap_rect;
@@ -393,7 +394,14 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
   }));
   let available = at.map_or(ui_size, |at| Vec2::new(at.width, at.height));
   {
-    let kept = &keeping.kept;
+    let Keeping {
+      kept,
+      leaves: kept_leaves,
+      ..
+    } = &mut keeping;
+    let kept: &[Taken] = kept;
+    // The kept text leaves are indexed by id when the first is asked for
+    let mut indexed = false;
     let mut measure =
       |target: Measured, known: (Option<f32>, Option<f32>), avail: (Avail, Avail)| {
         let leaf = match target {
@@ -401,7 +409,13 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
             .get(i)
             .and_then(|node| node.text.as_ref()?.get(leaves)),
           // Asked only when the layout lays a kept subtree out again
-          Measured::Kept(id) => kept_leaf(kept, id),
+          Measured::Kept(id) => {
+            if !indexed {
+              index_kept_leaves(kept, kept_leaves);
+              indexed = true;
+            }
+            kept_leaf(kept, kept_leaves, id)
+          }
         };
         leaf.map_or(Vec2::ZERO, |leaf| {
           measure_text(text, leaf, known.0, avail.0, scale)
@@ -488,6 +502,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     span_of,
     captures: capturing,
     run,
+    ..
   } = &mut keeping;
   for taken in kept.iter_mut() {
     let i = taken.node;
@@ -1134,14 +1149,42 @@ fn nine_slice_of<'k>(kind: &'k DrawKind, place: &Placement) -> Option<(Rect, Nin
   Some((inset_rect(place.rect, *inset), slice))
 }
 
+/// Index the text nodes of `kept`'s fragments by id into `leaves`: where
+/// each id's first text node is (its index in `kept`, then in its
+/// fragment's nodes), in kept order and then node order, so an id found
+/// twice answers as a scan would
+fn index_kept_leaves(kept: &[Taken], leaves: &mut FastMap<UiId, (usize, usize)>) {
+  leaves.clear();
+  for (k, taken) in kept.iter().enumerate() {
+    let Some(fragment) = &taken.fragment else {
+      continue;
+    };
+    #[cfg(test)]
+    count_kept_leaf_work(0, fragment.nodes.len());
+    for (n, node) in fragment.nodes.iter().enumerate() {
+      if node.text.is_some() {
+        leaves.entry(node.id).or_insert((k, n));
+      }
+    }
+  }
+}
+
 /// The text leaf of the node `id` in one of `kept`'s fragments, if it is a
-/// text node
-fn kept_leaf(kept: &[Taken], id: UiId) -> Option<&TextLeaf> {
+/// text node, found through `leaves` (`index_kept_leaves`)
+fn kept_leaf<'k>(
+  kept: &'k [Taken],
+  leaves: &FastMap<UiId, (usize, usize)>,
+  id: UiId,
+) -> Option<&'k TextLeaf> {
+  #[cfg(test)]
+  count_kept_leaf_work(1, 1);
+  let &(k, n) = leaves.get(&id)?;
   kept
-    .iter()
-    .filter_map(|taken| taken.fragment.as_ref())
-    .flat_map(|fragment| fragment.nodes.iter())
-    .find(|node| node.id == id && node.text.is_some())?
+    .get(k)?
+    .fragment
+    .as_ref()?
+    .nodes
+    .get(n)?
     .text
     .as_ref()?
     .get(&[])
@@ -1560,6 +1603,9 @@ const NO_SPAN: u32 = u32::MAX;
 pub(crate) struct Keeping {
   /// The subtree's kept nodes, in node order, with their fragments
   kept: Vec<Taken>,
+  /// Where each text node of the kept fragments is, by id: filled when the
+  /// layout first measures one (`index_kept_leaves`)
+  leaves: FastMap<UiId, (usize, usize)>,
   /// Each node's subtree size, itself included
   sizes: Vec<usize>,
   /// The capture whose span each node is in (`NO_SPAN`)
@@ -2317,6 +2363,31 @@ fn commands_made() -> usize {
   MADE.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+thread_local! {
+  /// The kept text leaves the layout's measure has asked for on this
+  /// thread, and the kept nodes visited to find them
+  static KEPT_LEAF_WORK: std::cell::Cell<(usize, usize)> =
+    const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Count `asked` kept text leaves asked for and `visited` kept nodes
+/// visited to find them (tests)
+#[cfg(test)]
+fn count_kept_leaf_work(asked: usize, visited: usize) {
+  KEPT_LEAF_WORK.with(|work| {
+    let (a, v) = work.get();
+    work.set((a + asked, v + visited));
+  });
+}
+
+/// The kept text leaves asked for on this thread so far, and the kept
+/// nodes visited to find them
+#[cfg(test)]
+fn kept_leaf_work() -> (usize, usize) {
+  KEPT_LEAF_WORK.with(std::cell::Cell::get)
+}
+
 /// A vector with any non-finite part made zero
 fn finite(v: Vec2) -> Vec2 {
   Vec2::new(
@@ -2760,6 +2831,60 @@ mod tests {
       h.command_count(),
       "a draw culled is never built: only what is drawn is made"
     );
+  }
+
+  #[test]
+  fn a_kept_text_leaf_is_found_without_scanning_the_kept_nodes() {
+    use crate::core::testing::UiHarness;
+    use crate::core::ui::nodes::UiNode;
+    // A row as wide as the UI: a label whose width changes every frame (so
+    // the row builds), and a column of 500 texts filling the rest, kept as
+    // one fragment from the second frame. Each change narrows or widens the
+    // column, and Taffy lays it out again, measuring each text through the
+    // fragment (`Measured::Kept`). The kept nodes are indexed once, then
+    // each text is found by one probe: a scan of the column per text would
+    // make the frame cost texts × nodes.
+    const ROWS: usize = 500;
+    let mut h = UiHarness::new(640.0, 480.0);
+    h.spawn_ui(
+      UiNode::row()
+        .gap(6.0)
+        .width(Length::Fill)
+        .anchor(Anchor::TopLeft)
+        .child(UiNode::text("{w}").bound().name("label"))
+        .child(
+          UiNode::column()
+            .fill_width()
+            .children((0..ROWS).map(|i| UiNode::text(format!("Row {i} of the kept column")))),
+        ),
+    );
+    let label = h.find_ui("label").expect("spawned");
+    h.move_to(-100.0, -100.0);
+    let widths = ["W", "Wide", "A much wider label", "W", "Wider", "A label"];
+    for (frame, width) in widths.into_iter().enumerate() {
+      h.ui_set(label, "w", width);
+      let (lookups, visits) = kept_leaf_work();
+      h.frame(|_| {});
+      let (lookups, visits) = (kept_leaf_work().0 - lookups, kept_leaf_work().1 - visits);
+      // Built in the first frame, captured in the second
+      if frame < 2 {
+        continue;
+      }
+      let stats = h.ui_cache_stats();
+      assert_eq!(
+        stats.resolved_again, 1,
+        "{width:?}: the column was kept and laid out again: {stats:?}"
+      );
+      assert!(
+        lookups >= ROWS,
+        "{width:?}: Taffy measured each kept text: {lookups} asked for"
+      );
+      // The column and its texts, once, then a probe per text asked for
+      assert!(
+        visits <= ROWS + 1 + lookups,
+        "{width:?}: {visits} kept nodes visited for {lookups} texts asked for"
+      );
+    }
   }
 }
 
