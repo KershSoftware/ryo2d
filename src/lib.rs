@@ -170,6 +170,11 @@ pub mod prelude {
 
   // Assets
   pub use crate::core::asset::{
+    Asset, AssetError, AssetEvent, AssetId, AssetLoader, AssetPath, AssetServer, AssetSettings,
+    AssetSource, Assets, AssetsView, DiskSource, Handle, LoadContext, LoadState, MemorySource,
+    Progress, UntypedAssetId,
+  };
+  pub use crate::core::asset::{
     AssetManager, AssetStats, AsyncSpriteHandle, LoadingProgress, LoadingState, SpriteHandle,
   };
 

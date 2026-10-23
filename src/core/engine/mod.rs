@@ -20,7 +20,9 @@ use winit::event_loop::EventLoop;
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 
-use crate::core::asset::AssetManager;
+use crate::core::asset::{
+  AssetLoader, AssetManager, AssetServer, AssetSource, DiskSource, insert_registry,
+};
 use crate::core::audio::{Audio, AudioManager};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
 use crate::core::config::{
@@ -70,9 +72,9 @@ use crate::core::window::{WindowInfo, WindowRequest};
 use crate::{engine_info, engine_warn};
 
 use frame::{
-  advance_clock_system, asset_pump_system, clear_trackers_system, publish_input_system,
-  scene_fixed_systems, scene_transition_system, scene_update_system, scene_update_systems,
-  update_effects_system, update_messages_system,
+  advance_clock_system, asset_pump_system, asset_registry_system, clear_trackers_system,
+  publish_input_system, scene_fixed_systems, scene_transition_system, scene_update_system,
+  scene_update_systems, update_effects_system, update_messages_system,
 };
 
 /// Events the engine sends its own event loop.
@@ -376,6 +378,7 @@ pub(crate) fn init_world_resources(
   world: &mut World,
   config: &EngineConfig,
   assets: AssetManager,
+  registry: AssetServer,
   commands: CommandRegistry,
 ) {
   let (w, h) = (config.width, config.height);
@@ -384,6 +387,7 @@ pub(crate) fn init_world_resources(
   world.insert_resource(ScreenMapping::new(config.presentation, (w, h), 1.0));
   spawn_main_camera(world, glam::Vec2::new(w as f32, h as f32));
   world.insert_resource(assets);
+  insert_registry(world, registry);
   world.insert_resource(EffectsManager::new());
   world.insert_resource(crate::core::render::Look::default());
   world.insert_resource(LightingSettings::default());
@@ -424,7 +428,11 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   );
   schedules.add_systems(
     Phase::PreUpdate,
-    (asset_pump_system, scene_transition_system),
+    (
+      asset_registry_system.before(asset_pump_system),
+      asset_pump_system,
+      scene_transition_system,
+    ),
   );
   schedules.add_systems(
     Phase::FixedUpdate,
@@ -500,20 +508,26 @@ impl Engine {
       mut schedules,
       saved_bindings,
       bindings_saver,
+      workspace,
+      asset_source,
+      hot_reload,
     } = resolved;
 
-    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut assets = AssetManager::new();
     let initial_size = (config.width, config.height);
 
     // Tell players and developers where settings and saves are kept
-    if !headless && let Ok(workspace) = crate::core::config::Workspace::discover() {
+    if !headless && let Some(workspace) = &workspace {
       engine_info!(module: "Save", "Save data: {}", workspace.save_location().display());
     }
 
-    // Enable hot reload in debug builds if a workspace with assets directory exists
-    #[cfg(debug_assertions)]
-    if !headless && let Ok(workspace) = crate::core::config::Workspace::discover() {
+    // The old manager watches the asset folder in debug builds when hot
+    // reload is on, never headless
+    if cfg!(debug_assertions)
+      && hot_reload
+      && !headless
+      && let Some(workspace) = &workspace
+    {
       let assets_dir = workspace.assets_dir();
       if assets_dir.exists()
         && let Err(e) = assets.enable_hot_reload(vec![assets_dir])
@@ -521,6 +535,15 @@ impl Engine {
         engine_warn!(module: "HotReload", "Failed to enable: {}", e);
       }
     }
+
+    // Assets load from the project's asset folder unless the game gave a source
+    let registry = AssetServer::with_source(asset_source.unwrap_or_else(|| {
+      let root = workspace.as_ref().map_or_else(
+        || std::path::PathBuf::from("assets"),
+        crate::core::config::Workspace::assets_dir,
+      );
+      Box::new(DiskSource::new(root))
+    }));
 
     // Try to initialize audio (gracefully handle no audio device)
     let mut audio = if headless {
@@ -603,7 +626,7 @@ impl Engine {
     };
 
     let mut world = World::new();
-    init_world_resources(&mut world, &config, assets, command_registry);
+    init_world_resources(&mut world, &config, assets, registry, command_registry);
     for insert in pending_resources {
       insert(&mut world);
     }
@@ -1157,11 +1180,15 @@ pub struct EngineBuilder {
   console_builder: Option<ConsoleCommandBuilder>,
   /// Filters passed to `with_user_preferences`, combined when the engine is built
   user_preferences: Vec<crate::core::config::UserPreferenceFilter>,
-  /// Resources and message types the game registers, applied after the
-  /// engine's own
+  /// Resources, message types and asset loaders the game registers,
+  /// applied after the engine's own
   pending_resources: Vec<WorldSetup>,
   /// The game's engine-wide systems
   schedules: EngineSchedules,
+  /// Where assets load from (`None`: the project's asset folder)
+  asset_source: Option<Box<dyn AssetSource>>,
+  /// Whether changed asset files reload (`None`: in debug builds, unless headless)
+  hot_reload: Option<bool>,
 }
 
 impl EngineBuilder {
@@ -1174,6 +1201,8 @@ impl EngineBuilder {
       user_preferences: Vec::new(),
       pending_resources: Vec::new(),
       schedules: EngineSchedules::new(),
+      asset_source: None,
+      hot_reload: None,
     }
   }
 
@@ -1407,6 +1436,37 @@ impl EngineBuilder {
     self
   }
 
+  /// Adds a loader for the game's own asset type (and registers the type),
+  /// before any scene starts. For an extension an engine loader also takes,
+  /// the game's loader wins
+  pub fn asset_loader<L: AssetLoader>(mut self, loader: L) -> Self {
+    self
+      .pending_resources
+      .push(Box::new(move |world: &mut World| {
+        // The engine's world always has its registry by now
+        if let Some(registry) = world.get_resource::<AssetServer>().cloned() {
+          registry.register_asset::<L::Asset>(world);
+          registry.register_loader(loader);
+        }
+      }));
+    self
+  }
+
+  /// Loads assets from `source` instead of the project's asset folder
+  /// (`Workspace::assets_dir`); a test gives a `MemorySource`
+  pub fn asset_source(mut self, source: impl AssetSource) -> Self {
+    self.asset_source = Some(Box::new(source));
+    self
+  }
+
+  /// Watches the asset folder and reloads changed files (default: on in
+  /// debug builds, off in headless ones). `true` turns it on for headless
+  /// builds too
+  pub fn hot_reload(mut self, on: bool) -> Self {
+    self.hot_reload = Some(on);
+    self
+  }
+
   /// Set the initial scene that will run when the engine starts.
   pub fn start_scene(mut self, scene: impl Scene + 'static) -> Self {
     self.initial_scene = Some(Box::new(scene));
@@ -1561,6 +1621,11 @@ impl EngineBuilder {
       schedules: self.schedules,
       saved_bindings,
       bindings_saver,
+      workspace: workspace.cloned(),
+      asset_source: self.asset_source,
+      hot_reload: self
+        .hot_reload
+        .unwrap_or(cfg!(debug_assertions) && !headless),
     }
   }
 }
@@ -1583,6 +1648,12 @@ struct ResolvedBuild {
   saved_bindings: Option<std::collections::BTreeMap<String, Vec<String>>>,
   /// Where changed bindings are saved (`None`: headless, web or not enabled)
   bindings_saver: Option<crate::core::config::SaveManager>,
+  /// The project, found once (`None`: no working directory)
+  workspace: Option<crate::core::config::Workspace>,
+  /// Where assets load from (`None`: the project's asset folder)
+  asset_source: Option<Box<dyn AssetSource>>,
+  /// Whether changed asset files reload
+  hot_reload: bool,
 }
 
 impl Default for EngineBuilder {

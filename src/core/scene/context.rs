@@ -1,6 +1,6 @@
 //! The context scene callbacks receive.
 
-use crate::core::asset::{AssetManager, SpriteHandle};
+use crate::core::asset::{AssetManager, AssetsView, SpriteHandle};
 use crate::core::audio::Audio;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::cursor::{CursorRequest, CursorStyle, CustomCursorData};
@@ -31,8 +31,8 @@ use super::SceneSlot;
 /// `time`, `input` and `assets` are the engine's resources, taken
 /// out of the world for the duration of the callback (systems see them as
 /// resources as usual). Everything else lives in `world`; the helpers below
-/// are shorthands for it. The engine inserts every resource the helpers read
-/// before any scene runs.
+/// are shorthands for it, `assets()` (the asset registry) among them. The
+/// engine inserts every resource the helpers read before any scene runs.
 pub struct SceneContext<'a> {
   pub world: &'a mut World,
   pub time: &'a mut Time,
@@ -92,6 +92,25 @@ impl SceneContext<'_> {
         })
       })
     })
+  }
+
+  // --- assets ---
+
+  /// The asset registry: load, get and add assets of every type. The view
+  /// borrows the context, so take it for each use:
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// struct Level(String);
+  /// impl Asset for Level {}
+  ///
+  /// fn level_name(ctx: &mut SceneContext<'_>, level: &Handle<Level>) -> Option<String> {
+  ///   ctx.assets().get(level).map(|level| level.0.clone())
+  /// }
+  /// ```
+  pub fn assets(&mut self) -> AssetsView<'_> {
+    AssetsView::new(self.world)
   }
 
   // --- systems and messages ---

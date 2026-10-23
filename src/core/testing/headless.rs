@@ -8,6 +8,7 @@ use winit::keyboard::KeyCode;
 
 use super::ui::{UiCacheStats, UiSnapshot, runs_snapshot, ui_snapshot};
 use super::{HeadlessError, shared_gpu};
+use crate::core::asset::AssetsView;
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::Messages;
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
@@ -240,6 +241,12 @@ impl HeadlessEngine {
   /// The ECS world, for spawning or changing entities between steps.
   pub fn world_mut(&mut self) -> &mut World {
     self.engine.world_mut()
+  }
+
+  /// The asset registry, as scenes reach it with `ctx.assets()`: load, get
+  /// and add assets between steps. Queued loads arrive in a step's pump
+  pub fn assets(&mut self) -> AssetsView<'_> {
+    AssetsView::new(self.engine.world_mut())
   }
 
   /// Hold `key` down from the next step until [`release_key`](Self::release_key).

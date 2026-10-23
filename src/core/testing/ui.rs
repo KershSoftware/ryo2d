@@ -7,7 +7,9 @@ use glam::Vec2;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
-use crate::core::asset::AssetManager;
+use crate::core::asset::{
+  AssetManager, AssetServer, AssetsView, MemorySource, insert_registry, pump,
+};
 use crate::core::ecs::kernel::{Entity, Message, Messages, Tick, World};
 use crate::core::error::ManagerResult;
 use crate::core::input::{Direction, GamepadButton, InputView};
@@ -110,8 +112,8 @@ pub struct UiHarness {
   pub(crate) prompts: Arc<PromptContext>,
   /// The presses rebinding rows captured in the last frame
   pub(crate) rebinds: Vec<PendingRebind>,
-  /// The entities of spawned UI nodes, and the asset manager UI files load
-  /// through
+  /// The entities of spawned UI nodes, the asset manager UI files load
+  /// through and the asset registry
   world: World,
   /// The query `reload_trees` keeps over the trees built from UI files
   sources: nodes::SourceQuery,
@@ -145,6 +147,7 @@ impl UiHarness {
     register_message::<UiReloaded>(&mut world);
     register_message::<UiListBind>(&mut world);
     world.insert_resource(AssetManager::new());
+    insert_registry(&mut world, AssetServer::new(MemorySource::new()));
     UiHarness {
       memory: UiMemory::new(),
       layout: LayoutEngine::new(),
@@ -210,6 +213,13 @@ impl UiHarness {
       .world
       .get_resource_or_insert_with(AssetManager::new)
       .into_inner()
+  }
+
+  /// The asset registry of the harness's world, as scenes reach it with
+  /// `ctx.assets()`: an `AssetServer` over an empty `MemorySource`. Each
+  /// frame runs its pump first, as the engine does
+  pub fn registry(&mut self) -> AssetsView<'_> {
+    AssetsView::new(&mut self.world)
   }
 
   /// Load a UI file, build its root and spawn it, as `ctx.spawn_ui_file`
@@ -609,6 +619,7 @@ impl UiHarness {
   /// do before its `ui`.
   pub fn frame_with_world<R>(&mut self, ui: impl FnOnce(&mut UiContext<'_>, &mut World) -> R) -> R {
     update_messages(&mut self.world);
+    pump(&mut self.world);
     nodes::reload_trees(&mut self.world, &mut self.sources);
     self.time += FRAME;
     self.pointer.time = self.time;

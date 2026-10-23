@@ -837,6 +837,13 @@ pub(crate) fn update_messages_system(world: &mut World) {
   update_messages(world);
 }
 
+/// `PreUpdate`, before `asset_pump_system`: the asset registry's pump puts
+/// finished loads and reloads in their stores, frees unheld assets and sends
+/// their `AssetEvent`s.
+pub(crate) fn asset_registry_system(world: &mut World) {
+  crate::core::asset::pump(world);
+}
+
 /// `PreUpdate`: finish async loads and (dev builds) hot reloads.
 pub(crate) fn asset_pump_system(
   mut assets: ResMut<AssetManager>,

@@ -244,8 +244,15 @@ pub(crate) fn short_name<T: ?Sized>() -> &'static str {
 }
 
 impl AssetServer {
-  /// A server reading from `source`, with its worker threads started
+  /// A server reading from `source`. Its worker threads start at the first
+  /// queued load, so a server that only loads at once or is given its
+  /// assets starts none
   pub fn new(source: impl AssetSource) -> Self {
+    Self::with_source(Box::new(source))
+  }
+
+  /// [`AssetServer::new`] over a source chosen at run time
+  pub(crate) fn with_source(source: Box<dyn AssetSource>) -> Self {
     let (finished, finished_queue) = unbounded();
     let (changes, changed) = unbounded();
     if let Err(error) = source.watch(changes) {
@@ -253,7 +260,7 @@ impl AssetServer {
     }
     Self {
       inner: Arc::new(ServerInner {
-        source: Box::new(source),
+        source,
         loaders: RwLock::default(),
         types: RwLock::default(),
         table: Mutex::default(),
@@ -289,6 +296,11 @@ impl AssetServer {
         free_unheld: free_unheld::<T>,
       }),
     }
+  }
+
+  /// Whether `T` is registered (`register_asset`)
+  pub(crate) fn is_registered<T: Asset>(&self) -> bool {
+    self.ledger_of(TypeId::of::<T>()).is_some()
   }
 
   /// Adds a loader. For an extension two loaders of one type share, the
@@ -2316,6 +2328,31 @@ mod tests {
         pending: 0
       }
     );
+  }
+
+  #[test]
+  fn a_server_with_no_queued_load_starts_no_thread() {
+    let files = MemorySource::new();
+    files.insert("a.txt", "a");
+    files.insert("b.txt", "b");
+    let (mut world, server) = world_with(files);
+    let now = server.load_now::<Text>(&mut world, "a.txt");
+    assert!(now.is_ok());
+    let added = world
+      .resource_mut::<Assets<Text>>()
+      .add(Text("made".into()));
+    pump(&mut world);
+    assert_eq!(
+      server.inner.workers.threads(),
+      0,
+      "load_now, add and the pump start no worker"
+    );
+    drop((now, added));
+    // The first queued load starts them
+    let queued = server.load::<Text>("b.txt");
+    #[cfg(not(target_arch = "wasm32"))]
+    assert!(server.inner.workers.threads() > 0);
+    pump_until(&mut world, |_| server.state(&queued).is_loaded());
   }
 
   // Dependencies, readiness and reloads

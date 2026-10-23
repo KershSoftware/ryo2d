@@ -12,6 +12,9 @@ mod common;
 #[path = "e2e/engine_lifecycle.rs"]
 mod engine_lifecycle;
 
+#[path = "e2e/assets.rs"]
+mod assets;
+
 #[path = "e2e/gpu_basics.rs"]
 mod gpu_basics;
 

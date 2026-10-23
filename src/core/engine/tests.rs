@@ -786,3 +786,62 @@ fn the_ui_pass_time_is_measured_and_is_zero_without_ui() {
     empty_time
   );
 }
+
+#[test]
+fn hot_reload_is_on_in_debug_builds_unless_headless_or_set() {
+  let resolve = |builder: EngineBuilder, headless: bool| {
+    builder
+      .start_scene(EmptyScene)
+      .resolve_in(None, headless)
+      .hot_reload
+  };
+  assert_eq!(resolve(EngineBuilder::new(), false), cfg!(debug_assertions));
+  assert!(!resolve(EngineBuilder::new(), true));
+  assert!(resolve(EngineBuilder::new().hot_reload(true), true));
+  assert!(!resolve(EngineBuilder::new().hot_reload(false), false));
+}
+
+#[test]
+fn assets_load_from_the_project_s_asset_folder_unless_given_a_source() {
+  use crate::core::asset::{Asset, AssetError, AssetLoader, AssetsView, LoadContext, MemorySource};
+
+  struct Note(String);
+  impl Asset for Note {}
+  struct NoteLoader;
+  impl AssetLoader for NoteLoader {
+    type Asset = Note;
+    type Settings = ();
+    fn extensions(&self) -> &[&'static str] {
+      &["note"]
+    }
+    fn load(&self, bytes: Vec<u8>, _: &(), cx: &mut LoadContext<'_>) -> Result<Note, AssetError> {
+      String::from_utf8(bytes)
+        .map(Note)
+        .map_err(|e| AssetError::decode(cx.path(), e))
+    }
+  }
+  let read = |builder: EngineBuilder, ws: &crate::core::config::Workspace| {
+    let resolved = builder
+      .asset_loader(NoteLoader)
+      .start_scene(EmptyScene)
+      .resolve_in(Some(ws), true);
+    let mut engine = Engine::new(resolved, true);
+    let mut assets = AssetsView::new(&mut engine.world);
+    let note = assets.load_now::<Note>("hello.note").ok()?;
+    assets.get(&note).map(|note| note.0.clone())
+  };
+
+  let (dir, ws) = temp_workspace("", None);
+  std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+  std::fs::write(dir.path().join("assets/hello.note"), "from disk").unwrap();
+  assert_eq!(
+    read(EngineBuilder::new(), &ws).as_deref(),
+    Some("from disk")
+  );
+  let memory = MemorySource::new();
+  memory.insert("hello.note", "from memory");
+  assert_eq!(
+    read(EngineBuilder::new().asset_source(memory), &ws).as_deref(),
+    Some("from memory")
+  );
+}

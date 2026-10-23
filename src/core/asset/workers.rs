@@ -2,6 +2,7 @@
 //! On the web there are no threads, and the pump runs the jobs itself
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -18,66 +19,81 @@ const MAX_THREADS: usize = 4;
 
 pub(crate) struct Workers {
   jobs: Sender<Job>,
-  /// The queue the pump runs itself: on the web, or when no thread started
-  inline: Option<Receiver<Job>>,
+  /// The threads' end of `jobs`, which the pump runs itself where none started
+  queue: Receiver<Job>,
+  /// How many threads started, settled at the first queued job: a server
+  /// that only loads at once, or is given its assets, starts none
+  threads: OnceLock<usize>,
 }
 
 impl Workers {
-  /// Starts the threads: one fewer than the machine's cores, from one to four.
-  /// They stop once the pool is dropped and the queue is empty
+  /// A pool with no threads yet; they start when the first job is queued
   pub(crate) fn new() -> Self {
     let (jobs, queue) = unbounded::<Job>();
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-      let count = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .saturating_sub(1)
-        .clamp(1, MAX_THREADS);
-      let mut started = 0;
-      for n in 0..count {
-        let queue = queue.clone();
-        let thread = std::thread::Builder::new()
-          .name(format!("ryo2d-assets-{n}"))
-          .spawn(move || {
-            for job in queue.iter() {
-              run(job);
-            }
-          });
-        match thread {
-          Ok(_) => started += 1,
-          Err(error) => {
-            crate::engine_warn!(module: "asset", "could not start an asset worker: {error}")
-          }
-        }
-      }
-      if started > 0 {
-        return Self { jobs, inline: None };
-      }
-    }
     Self {
       jobs,
-      inline: Some(queue),
+      queue,
+      threads: OnceLock::new(),
     }
   }
 
-  /// Queues a job for the next free worker
+  /// Starts the threads: one fewer than the machine's cores, from one to
+  /// four. They stop once the pool is dropped and the queue is empty
+  #[cfg(not(target_arch = "wasm32"))]
+  fn start(&self) -> usize {
+    let count = std::thread::available_parallelism()
+      .map_or(1, std::num::NonZero::get)
+      .saturating_sub(1)
+      .clamp(1, MAX_THREADS);
+    let mut started = 0;
+    for n in 0..count {
+      let queue = self.queue.clone();
+      let thread = std::thread::Builder::new()
+        .name(format!("ryo2d-assets-{n}"))
+        .spawn(move || {
+          for job in queue.iter() {
+            run(job);
+          }
+        });
+      match thread {
+        Ok(_) => started += 1,
+        Err(error) => {
+          crate::engine_warn!(module: "asset", "could not start an asset worker: {error}")
+        }
+      }
+    }
+    started
+  }
+
+  /// The web has no threads: the pump runs the jobs
+  #[cfg(target_arch = "wasm32")]
+  fn start(&self) -> usize {
+    0
+  }
+
+  /// How many worker threads started
+  #[cfg(test)]
+  pub(crate) fn threads(&self) -> usize {
+    self.threads.get().copied().unwrap_or(0)
+  }
+
+  /// Queues a job for the next free worker, starting the threads first if
+  /// this is the first job
   pub(crate) fn queue(&self, job: Job) {
-    // Every worker gone (impossible while a thread or the inline queue holds
-    // the receiver) would leave the load pending; there is no one to tell
+    self.threads.get_or_init(|| self.start());
+    // The pool holds the receiving end, so the send cannot fail
     let _ = self.jobs.send(job);
   }
 
   /// Runs queued jobs on this thread until `budget` has passed, when there
   /// are no worker threads. At least one job runs, so a big file still loads
   pub(crate) fn run_inline(&self, budget: Duration) {
-    let Some(queue) = &self.inline else {
-      return;
-    };
-    if queue.is_empty() {
+    // Nothing queued yet, or threads run the jobs
+    if self.threads.get() != Some(&0) || self.queue.is_empty() {
       return;
     }
     let start = web_time::Instant::now();
-    while let Ok(job) = queue.try_recv() {
+    while let Ok(job) = self.queue.try_recv() {
       run(job);
       if start.elapsed() >= budget {
         break;
