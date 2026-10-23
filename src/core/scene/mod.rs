@@ -356,9 +356,10 @@ pub trait Scene: 'static {
   /// Draw this scene's UI and handle its input. Runs once per frame before
   /// the fixed steps, so input the UI consumes never reaches `update`.
   ///
-  /// The UI sizes images by the world's image store, lent to it for the
-  /// pass: here `ctx.assets()` neither adds, loads at once nor gets images.
-  /// Load them in `on_enter` or `update`, and keep the sizes the UI needs.
+  /// `ctx.assets()` and the image store work here as anywhere else. The UI
+  /// sizes images as the store held them when the pass began: an image
+  /// added, loaded or changed before then is sized as it is now, and one
+  /// added or loaded here is sized from the next pass.
   ///
   /// # Example
   ///

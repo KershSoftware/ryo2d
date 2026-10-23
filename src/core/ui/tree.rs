@@ -9,6 +9,7 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::fragment::{Fragment, Inputs, KeptDraw, KeptRecord, Role, sized_by};
+use super::image_sizes::ImageSizes;
 #[cfg(debug_assertions)]
 use super::immediate::UiDraw;
 use super::immediate::{
@@ -20,7 +21,7 @@ use super::memory::{Flags, Record, Scratch, UiMemory, recycle};
 use super::theme::warn_once;
 use super::widgets::scroll::{ScrollState, drawn_px};
 use super::{Color, Rect, UiId};
-use crate::core::asset::{AssetId, Assets, Handle};
+use crate::core::asset::{AssetId, Handle};
 use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
 use crate::core::render::UiSpace;
@@ -288,7 +289,7 @@ pub(crate) struct ResolveCx<'r, 'a> {
   /// The scope id of the scene the subtree belongs to
   pub(crate) scene: u64,
   /// The images nine-slices are cut by
-  pub(crate) images: &'r Assets<Image>,
+  pub(crate) images: &'r ImageSizes,
 }
 
 /// Where a text's block sits across its content box
@@ -1119,7 +1120,7 @@ fn draw_commands(
   place: &Placement,
   node: &Node,
   leaves: &[TextLeaf],
-  (text, images): (&RefCell<&mut TextEngine>, &Assets<Image>),
+  (text, images): (&RefCell<&mut TextEngine>, &ImageSizes),
   scale: f32,
   mut emit: impl FnMut(UiCommand, Option<Rect>),
 ) {
@@ -1139,7 +1140,7 @@ fn draw_commands(
 fn nine_slice_of<'k>(
   kind: &'k DrawKind,
   place: &Placement,
-  images: &Assets<Image>,
+  images: &ImageSizes,
 ) -> Option<(Rect, NineSlice<'k>)> {
   let DrawKind::NineSlice {
     inset,
@@ -1151,9 +1152,7 @@ fn nine_slice_of<'k>(
   else {
     return None;
   };
-  let size = images.get(sprite).map_or(Vec2::ZERO, |image| {
-    Vec2::new(image.width() as f32, image.height() as f32)
-  });
+  let size = images.size(sprite).unwrap_or(Vec2::ZERO);
   let slice = NineSlice {
     sprite,
     size,
@@ -1414,7 +1413,7 @@ fn spot_check(
   copy: CopyAt<'_>,
   built: bool,
   memory: &mut UiMemory,
-  images: &Assets<Image>,
+  images: &ImageSizes,
 ) -> (Fragment, bool) {
   if built {
     let frame = memory.frame();
@@ -1446,7 +1445,7 @@ fn spot_compare(
   slot: u32,
   copy: CopyAt<'_>,
   memory: &mut UiMemory,
-  images: &Assets<Image>,
+  images: &ImageSizes,
 ) -> bool {
   let Some(kept) = memory.fragments.get(slot) else {
     return true;
@@ -1482,7 +1481,7 @@ fn spot_compare(
 /// Whether `kept` would have been copied where `fresh` was resolved: its
 /// inputs the same and its sprites as they were
 #[cfg(debug_assertions)]
-fn copied_as(kept: &Fragment, fresh: &Fragment, images: &Assets<Image>) -> bool {
+fn copied_as(kept: &Fragment, fresh: &Fragment, images: &ImageSizes) -> bool {
   kept.inputs == fresh.inputs && kept.sprites_hold(images)
 }
 
@@ -1531,7 +1530,7 @@ struct Again<'r, 'a> {
   scale: f32,
   from: Origin,
   scene: u64,
-  images: &'r Assets<Image>,
+  images: &'r ImageSizes,
 }
 
 impl Again<'_, '_> {
@@ -1691,7 +1690,7 @@ impl Capturing {
 
   /// A draw on a node of the span, kept to resolve the fragment again, and
   /// the image it is cut by (its version in `images`)
-  fn keep_draw(&mut self, draw: &Draw, images: &Assets<Image>) {
+  fn keep_draw(&mut self, draw: &Draw, images: &ImageSizes) {
     self.sprites.extend(sized_by(&draw.kind, images));
     self.node_draws.push(Draw {
       order: draw.order.wrapping_sub(self.base),
@@ -2728,8 +2727,9 @@ mod tests {
   #[test]
   fn box_sprite_and_local_draws_land_on_their_node() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut images = Assets::default();
+    let mut images = crate::core::asset::Assets::default();
     let sprite = images.add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+    let images = ImageSizes::of(&images);
     let mut ui: UiContext<'_> =
       context_with_images(&mut commands, &mut text, (400.0, 300.0), &images);
     let at = Rect::new(10.0, 20.0, 100.0, 40.0);

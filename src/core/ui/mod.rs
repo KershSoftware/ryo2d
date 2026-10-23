@@ -52,6 +52,7 @@ pub(crate) mod env;
 pub(crate) mod file;
 pub(crate) mod fragment;
 pub(crate) mod id;
+pub(crate) mod image_sizes;
 pub mod immediate;
 pub(crate) mod interact;
 pub(crate) mod layout;

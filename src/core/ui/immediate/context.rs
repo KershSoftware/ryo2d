@@ -36,7 +36,7 @@ use winit::keyboard::KeyCode;
 use super::commands::{UiCommand, UiCommands};
 use super::input::UiInput;
 
-use crate::core::asset::{AssetId, Assets, Handle};
+use crate::core::asset::{AssetId, Handle};
 use crate::core::ecs::kernel::Entity;
 use crate::core::graphics::Image;
 use crate::core::hash::fast_hash;
@@ -50,6 +50,7 @@ use crate::core::text::{
 use crate::core::ui::env::UiEnv;
 use crate::core::ui::fragment::Role;
 use crate::core::ui::id::{UiId, key_hash};
+use crate::core::ui::image_sizes::ImageSizes;
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::layout::{Edges, Flow, Measure, UiStyle};
 use crate::core::ui::memory::{Flags, UiMemory, UiSound};
@@ -442,8 +443,8 @@ pub struct UiContext<'a> {
   /// The tapes being recorded, innermost last (`tape.rs`): empty unless a
   /// node tree's builder is running
   pub(crate) tapes: Vec<Recorder>,
-  /// The images widgets size themselves by
-  images: &'a Assets<Image>,
+  /// What widgets size images by
+  images: &'a ImageSizes,
 }
 
 /// The draw layer a scene's page records on
@@ -459,7 +460,7 @@ impl<'a> UiContext<'a> {
   /// A context recording into `commands`, laying text out with `text`,
   /// remembering in `memory` and laying containers out with `layout`, over
   /// the UI `space`, reading `input` (its mouse converted to UI units).
-  /// Widgets size themselves by `images`.
+  /// Widgets size images by `images`.
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn new(
     commands: &'a mut UiCommands,
@@ -470,7 +471,7 @@ impl<'a> UiContext<'a> {
     input: UiInput,
     theme: Arc<Theme>,
     theme_generation: u64,
-    images: &'a Assets<Image>,
+    images: &'a ImageSizes,
   ) -> Self {
     Self {
       commands,
@@ -502,9 +503,7 @@ impl<'a> UiContext<'a> {
 
   /// The size of `image` in texels; zero while it is not loaded
   pub(crate) fn image_size(&self, image: &Handle<Image>) -> Vec2 {
-    self.images.get(image).map_or(Vec2::ZERO, |image| {
-      Vec2::new(image.width() as f32, image.height() as f32)
-    })
+    self.images.size(image).unwrap_or(Vec2::ZERO)
   }
 
   /// The content version of image `id` (`None` while it is not loaded):
@@ -2550,8 +2549,9 @@ mod tests {
   #[test]
   fn sprites_record_their_rect_and_a_nine_slice_records_nine() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut images = Assets::default();
+    let mut images = crate::core::asset::Assets::default();
     let sprite = images.add(Image::solid_rect(16, 8, 255, 255, 255, 255));
+    let images = ImageSizes::of(&images);
     let mut ui = context_with_images(&mut commands, &mut text, (320.0, 180.0), &images);
     ui.draw_sprite(&sprite, 1.0, 2.0);
     ui.draw_sprite_scaled(&sprite, 1.0, 2.0, 2.0);
@@ -3098,8 +3098,9 @@ mod tests {
   /// The sprite pieces of a nine-slice of `image`: (rect, uv)
   fn slice_pieces(image: Image, rect: Rect, insets: [f32; 4]) -> Vec<(Rect, [f32; 4])> {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut images = Assets::default();
+    let mut images = crate::core::asset::Assets::default();
     let sprite = images.add(image);
+    let images = ImageSizes::of(&images);
     let mut ui = context_with_images(&mut commands, &mut text, (320.0, 180.0), &images);
     ui.draw_nine_slice(&sprite, rect, insets, Color::WHITE);
     drop(ui);

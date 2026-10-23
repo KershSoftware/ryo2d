@@ -9,14 +9,13 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use super::{Engine, FrameOutcome, PresentOutcome, QuitRequested, SceneHost};
-use crate::core::asset::{AssetManager, AssetsView, lend_store};
+use crate::core::asset::{AssetManager, AssetsView};
 use crate::core::audio::SoundOptions;
 use crate::core::capture::CaptureTarget;
 use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::ecs::kernel::{CheckChangeTicks, DetectChanges};
 use crate::core::ecs::{MessageWriter, On, Res, ResMut, Resource, World};
-use crate::core::graphics::Image;
 use crate::core::input::{Binding, Input, InputEvent};
 use crate::core::messages::{AssetLoadFailed, AssetReloaded, update_messages};
 use crate::core::scene::SceneAction;
@@ -626,8 +625,9 @@ impl Engine {
     let real_dt = self.world.resource::<Time>().real.delta();
     // Overlays and the console still lay out in whole UI units
     let (width, height) = (space.size.x.ceil() as u32, space.size.y.ceil() as u32);
-    // The UI sizes images by the world's store, lent to it for the pass
-    let (action, consumed, rebinds) = lend_store::<Image, _>(&mut self.world, |world, images| {
+    // The UI sizes images as the store holds them now
+    self.ui_images.refresh(&mut self.world);
+    let (action, consumed, rebinds) = {
       let mut ui = UiContext::new(
         &mut self.ui_commands,
         &mut self.text,
@@ -637,11 +637,11 @@ impl Engine {
         snapshot,
         Arc::clone(&theme),
         theme_generation,
-        images,
+        &self.ui_images,
       );
       ui.set_dt(real_dt);
       ui.set_prompts(Arc::clone(&self.prompts));
-      let action = with_host(world, |world, host| {
+      let action = with_host(&mut self.world, |world, host| {
         host.scenes.ui_pass(world, &mut host.audio, &mut ui)
       });
 
@@ -680,14 +680,14 @@ impl Engine {
         );
         self
           .ui_rebuilds
-          .draw(&mut ui, world, dt, self.ui_retain.stats, top);
+          .draw(&mut ui, &self.world, dt, self.ui_retain.stats, top);
       }
       // The console over everything
       self.console_state.render(&mut ui, width, height);
       ui.end_scene();
       let rebinds = ui.take_rebinds();
       (action, ui.into_input(), rebinds)
-    });
+    };
     self.ui_commands.end_pass();
     // A rerun pass adds to the frame's first
     if first_pass {

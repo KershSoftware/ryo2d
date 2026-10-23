@@ -15,11 +15,12 @@
 
 use glam::Vec2;
 
-use crate::core::asset::{AssetId, Assets};
+use crate::core::asset::AssetId;
 use crate::core::ecs::kernel::Entity;
 use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
 use crate::core::ui::id::IdScopes;
+use crate::core::ui::image_sizes::ImageSizes;
 use crate::core::ui::immediate::UiCommand;
 use crate::core::ui::memory::Record;
 use crate::core::ui::tree::{Draw, DrawKind, Node};
@@ -163,7 +164,7 @@ pub(crate) struct Fragment {
 
 impl Fragment {
   /// Whether every image its commands were cut by is as it was in `images`
-  pub(crate) fn sprites_hold(&self, images: &Assets<Image>) -> bool {
+  pub(crate) fn sprites_hold(&self, images: &ImageSizes) -> bool {
     self
       .sprites
       .iter()
@@ -484,7 +485,7 @@ impl Fragments {
 /// `images` now, if it has one: a nine-slice's
 pub(crate) fn sized_by(
   kind: &DrawKind,
-  images: &Assets<Image>,
+  images: &ImageSizes,
 ) -> Option<(AssetId<Image>, Option<u64>)> {
   match kind {
     DrawKind::NineSlice { sprite, .. } => Some((sprite.id(), images.version(sprite))),

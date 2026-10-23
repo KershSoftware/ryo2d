@@ -5,48 +5,10 @@ use std::sync::Arc;
 
 use super::event::AssetStats;
 use super::{
-  Asset, AssetError, AssetId, AssetPath, AssetServer, AssetSettings, Assets, Handle, LoadState,
-  MemorySource, Progress, UntypedAssetId,
+  Asset, AssetError, AssetId, AssetServer, AssetSettings, Assets, Handle, LoadState, MemorySource,
+  Progress, UntypedAssetId,
 };
-use crate::core::ecs::kernel::{Mut, World};
-
-/// Runs `f` with the world's `Assets<T>` lent out beside the rest of the
-/// world, as the UI pass reads the images (an empty store for a world
-/// without one). Meanwhile the registry adds nothing to the store and
-/// loads nothing into it at once: those calls fail, with a warning
-pub(crate) fn lend_store<T: Asset, R>(
-  world: &mut World,
-  f: impl FnOnce(&mut World, &Assets<T>) -> R,
-) -> R {
-  let server = world.get_resource::<AssetServer>().cloned();
-  if let Some(server) = &server {
-    server.lend::<T>();
-  }
-  let result = if world.contains_resource::<Assets<T>>() {
-    world.resource_scope(|world, store: Mut<Assets<T>>| f(world, &store))
-  } else {
-    f(world, &Assets::default())
-  };
-  if let Some(server) = &server {
-    server.give_back::<T>();
-  }
-  result
-}
-
-/// The error a load at once into a lent store gives
-fn lent_error<T: Asset>(path: &str) -> Arc<AssetError> {
-  let path = match AssetPath::parse(path) {
-    Ok(path) => path,
-    Err(error) => return Arc::new(error),
-  };
-  Arc::new(AssetError::Io {
-    path,
-    source: std::io::Error::other(format!(
-      "{}s cannot be loaded at once while the UI pass reads them; load it before (in enter or update)",
-      super::server::short_name::<T>()
-    )),
-  })
-}
+use crate::core::ecs::kernel::World;
 
 /// The asset registry seen from a scene or a test: loads, gets and adds
 /// assets of every type. A scene gets one from `ctx.assets()`; it borrows
@@ -103,9 +65,6 @@ impl<'w> AssetsView<'w> {
   /// Loads at once on this thread, dependencies too, and puts the asset in
   /// its store. See [`AssetServer::load_now`]
   pub fn load_now<T: Asset>(&mut self, path: &str) -> Result<Handle<T>, Arc<AssetError>> {
-    if self.server.is_lent::<T>() {
-      return Err(lent_error::<T>(path));
-    }
     self.server.load_now(self.world, path)
   }
 
@@ -115,29 +74,13 @@ impl<'w> AssetsView<'w> {
     path: &str,
     settings: S,
   ) -> Result<Handle<T>, Arc<AssetError>> {
-    if self.server.is_lent::<T>() {
-      return Err(lent_error::<T>(path));
-    }
     self.server.load_now_with(self.world, path, settings)
   }
 
   /// Adds an asset made in code; it lives while the handle (or a clone)
   /// does. A type not registered yet, or with no store in this world, is
-  /// registered first.
-  ///
-  /// Images cannot be added while the UI pass reads them (a scene's `ui`):
-  /// the value is dropped with a warning and the handle finds nothing. Add
-  /// them before (in `enter` or `update`)
+  /// registered first
   pub fn add<T: Asset>(&mut self, value: T) -> Handle<T> {
-    if self.server.is_lent::<T>() {
-      crate::engine_warn!(
-        module: "asset",
-        "{}s cannot be added while the UI pass reads them; add it before (in enter or update)",
-        super::server::short_name::<T>()
-      );
-      drop(value);
-      return Handle::detached();
-    }
     if !self.server.is_registered::<T>() || !self.world.contains_resource::<Assets<T>>() {
       self.server.register_asset::<T>(self.world);
     }
@@ -148,8 +91,7 @@ impl<'w> AssetsView<'w> {
     }
   }
 
-  /// The asset, if it is loaded (images are not, while the UI pass reads
-  /// them: see `Scene::ui`)
+  /// The asset, if it is loaded
   pub fn get<T: Asset>(&self, id: impl Into<AssetId<T>>) -> Option<&T> {
     self.world.get_resource::<Assets<T>>()?.get(id)
   }

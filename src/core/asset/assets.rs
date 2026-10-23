@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -119,6 +120,11 @@ pub struct Assets<T: Asset> {
   drops: Receiver<(u32, u32)>,
   values: Vec<Option<Entry<T>>>,
   next_version: u64,
+  /// The slots changed since the follower last took them (`take_changes`);
+  /// `None` until it first does, so a store nobody follows lists nothing
+  changes: Option<Changes>,
+  /// Tells this store from every other, so a follower handed another starts over
+  serial: u64,
 }
 
 struct Entry<T> {
@@ -126,6 +132,52 @@ struct Entry<T> {
   version: u64,
   value: T,
 }
+
+/// The slots changed since the last `take_changes`, each listed once
+#[derive(Default)]
+struct Changes {
+  slots: Vec<u32>,
+  /// By slot: whether it is in `slots`
+  listed: Vec<bool>,
+}
+
+/// Lists slot `index` as changed, once until the changes are next taken
+fn note(changes: &mut Option<Changes>, index: u32) {
+  let Some(changes) = changes else {
+    return;
+  };
+  let at = index as usize;
+  if changes.listed.len() <= at {
+    changes.listed.resize(at + 1, false);
+  }
+  if let Some(listed) = changes.listed.get_mut(at)
+    && !*listed
+  {
+    *listed = true;
+    changes.slots.push(index);
+  }
+}
+
+/// What a changed slot holds, as `Assets::take_changes` gives it
+pub(crate) struct Stored<'a, T> {
+  /// The live id's generation
+  pub(crate) generation: u32,
+  /// The content version
+  pub(crate) version: u64,
+  /// The asset
+  pub(crate) value: &'a T,
+}
+
+/// What a slot holds, as a follower sees it
+fn stored<T>(entry: &Option<Entry<T>>) -> Option<Stored<'_, T>> {
+  entry.as_ref().map(|entry| Stored {
+    generation: entry.generation,
+    version: entry.version,
+    value: &entry.value,
+  })
+}
+
+static NEXT_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 impl<T: Asset> Default for Assets<T> {
   fn default() -> Self {
@@ -135,6 +187,8 @@ impl<T: Asset> Default for Assets<T> {
       drops,
       values: Vec::new(),
       next_version: 1,
+      changes: None,
+      serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
     }
   }
 }
@@ -174,6 +228,7 @@ impl<T: Asset> Assets<T> {
       .filter(|e| e.generation == id.generation())?;
     entry.version = self.next_version;
     self.next_version += 1;
+    note(&mut self.changes, id.index());
     Some(&mut entry.value)
   }
 
@@ -231,6 +286,7 @@ impl<T: Asset> Assets<T> {
       value,
     });
     self.next_version += 1;
+    note(&mut self.changes, id.index());
     true
   }
 
@@ -245,7 +301,46 @@ impl<T: Asset> Assets<T> {
         if let Some(slot) = self.values.get_mut(index as usize) {
           *slot = None;
         }
+        note(&mut self.changes, index);
         freed.push(AssetId::new(index, generation));
+      }
+    }
+  }
+
+  /// Which store this is: no two stores share a serial
+  pub(crate) fn serial(&self) -> u64 {
+    self.serial
+  }
+
+  /// Gives `seen` each slot changed since the last call (an asset added or
+  /// loaded into it, changed through `get_mut`, or freed) once, with what
+  /// it holds now (`None`: nothing). The first call, or one asking for the
+  /// `whole` store, gives every slot. For the one follower that mirrors the
+  /// store (the UI's image sizes): a second would take the first's changes
+  pub(crate) fn take_changes(
+    &mut self,
+    whole: bool,
+    mut seen: impl FnMut(u32, Option<Stored<'_, T>>),
+  ) {
+    match &mut self.changes {
+      Some(changes) if !whole => {
+        for index in changes.slots.drain(..) {
+          if let Some(listed) = changes.listed.get_mut(index as usize) {
+            *listed = false;
+          }
+          seen(index, self.values.get(index as usize).and_then(stored));
+        }
+      }
+      changes => {
+        // Every slot is given now: the list starts over
+        let changes = changes.get_or_insert_with(Changes::default);
+        changes.slots.clear();
+        changes.listed.clear();
+        for (index, entry) in self.values.iter().enumerate() {
+          if let Ok(index) = u32::try_from(index) {
+            seen(index, stored(entry));
+          }
+        }
       }
     }
   }
@@ -258,6 +353,83 @@ mod tests {
 
   struct Text(String);
   impl Asset for Text {}
+
+  /// A slot `take_changes` gave, with its generation, version and text
+  type Taken = (u32, Option<(u32, u64, String)>);
+
+  /// What `take_changes` gives
+  fn taken(assets: &mut Assets<Text>, whole: bool) -> Vec<Taken> {
+    let mut taken = Vec::new();
+    assets.take_changes(whole, |index, now| {
+      taken.push((
+        index,
+        now.map(|now| (now.generation, now.version, now.value.0.clone())),
+      ));
+    });
+    taken
+  }
+
+  #[test]
+  fn each_changed_slot_is_given_once_with_what_it_holds_now() {
+    let mut assets = Assets::<Text>::default();
+    let a = assets.add(Text("a".into()));
+    let b = assets.add(Text("b".into()));
+    assert!(
+      assets.changes.is_none(),
+      "nothing listed before a follower asks"
+    );
+    assert_eq!(
+      taken(&mut assets, false).len(),
+      2,
+      "the first take: every slot"
+    );
+    assert!(
+      taken(&mut assets, false).is_empty(),
+      "nothing changed since"
+    );
+
+    assets.get_mut(&a).unwrap().0 = "a2".into();
+    assets.get_mut(&a).unwrap().0 = "a3".into();
+    let c = assets.add(Text("c".into()));
+    drop(b);
+    assets.free_unheld(&mut Vec::new());
+    let (va, vc) = (assets.version(&a).unwrap(), assets.version(&c).unwrap());
+    assert_eq!(
+      taken(&mut assets, false),
+      vec![
+        (0, Some((0, va, "a3".into()))),
+        (2, Some((0, vc, "c".into()))),
+        (1, None),
+      ]
+    );
+    assert!(taken(&mut assets, false).is_empty());
+  }
+
+  #[test]
+  fn a_whole_take_gives_every_slot_and_starts_the_list_over() {
+    let mut assets = Assets::<Text>::default();
+    let a = assets.add(Text("a".into()));
+    taken(&mut assets, false);
+    assets.get_mut(&a).unwrap().0 = "a2".into();
+    let whole = taken(&mut assets, true);
+    assert_eq!(whole.len(), 1);
+    assert!(
+      taken(&mut assets, false).is_empty(),
+      "the change was in the whole"
+    );
+    assets.get_mut(&a).unwrap().0 = "a3".into();
+    assert_eq!(
+      taken(&mut assets, false).len(),
+      1,
+      "and is listed again after"
+    );
+  }
+
+  #[test]
+  fn no_two_stores_share_a_serial() {
+    let (a, b) = (Assets::<Text>::default(), Assets::<Text>::default());
+    assert_ne!(a.serial(), b.serial());
+  }
 
   #[test]
   fn an_added_asset_is_got_by_its_handle() {

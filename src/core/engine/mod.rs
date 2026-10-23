@@ -225,6 +225,9 @@ pub struct Engine {
   missing_image: crate::core::asset::Handle<crate::core::graphics::Image>,
   // UI: the frame's recorded draws and the UI space they are in
   ui_commands: UiCommands,
+  /// What the UI sizes images by, brought in line with the world's store
+  /// at the start of each UI pass
+  ui_images: crate::core::ui::image_sizes::ImageSizes,
   ui_space: UiSpace,
   /// UI render retention: what the UI image holds
   ui_retain: crate::core::render::ui_retain::UiRetain,
@@ -688,6 +691,7 @@ impl Engine {
       freed_images: Vec::new(),
       missing_image,
       ui_commands: UiCommands::default(),
+      ui_images: Default::default(),
       ui_space: initial_ui_space,
       ui_retain: Default::default(),
       ui_draw_count: 0,
@@ -1755,3 +1759,5 @@ fn load_user_preferences(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod ui_image_tests;

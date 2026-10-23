@@ -921,7 +921,7 @@ mod tests {
         crate::core::ui::UiInput::default(),
         Arc::new(crate::core::ui::Theme::dark()),
         0,
-        crate::core::graphics::no_images(),
+        crate::core::ui::image_sizes::ImageSizes::none(),
       );
       m.ui_pass(world, audio, &mut ui);
     }

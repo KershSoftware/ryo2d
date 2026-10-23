@@ -47,10 +47,6 @@ pub(crate) struct ServerInner {
   /// Paths the source says changed: the pump reloads them
   changed: Receiver<AssetPath>,
   workers: Workers,
-  /// The types whose store is lent out of the world for a while (the
-  /// images, during the UI pass): nothing is added to them or loaded into
-  /// them at once meanwhile
-  lent: Mutex<Vec<TypeId>>,
 }
 
 struct AssetType {
@@ -273,41 +269,8 @@ impl AssetServer {
         changes: Mutex::new(Some(changes)),
         changed,
         workers: Workers::new(),
-        lent: Mutex::default(),
       }),
     }
-  }
-
-  /// Marks `T`'s store as lent out of the world until [`give_back`](Self::give_back)
-  pub(crate) fn lend<T: Asset>(&self) {
-    self
-      .inner
-      .lent
-      .lock()
-      .unwrap_or_else(PoisonError::into_inner)
-      .push(TypeId::of::<T>());
-  }
-
-  /// `T`'s store is back in the world
-  pub(crate) fn give_back<T: Asset>(&self) {
-    let mut lent = self
-      .inner
-      .lent
-      .lock()
-      .unwrap_or_else(PoisonError::into_inner);
-    if let Some(at) = lent.iter().rposition(|lent| *lent == TypeId::of::<T>()) {
-      lent.swap_remove(at);
-    }
-  }
-
-  /// Whether `T`'s store is lent out of the world now
-  pub(crate) fn is_lent<T: Asset>(&self) -> bool {
-    self
-      .inner
-      .lent
-      .lock()
-      .unwrap_or_else(PoisonError::into_inner)
-      .contains(&TypeId::of::<T>())
   }
 
   /// Asks the source to say which files change, so the pump reloads them.

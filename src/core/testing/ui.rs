@@ -8,16 +8,15 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use crate::core::asset::{
-  AssetManager, AssetServer, AssetsView, DiskSource, MemorySource, insert_registry, lend_store,
-  pump,
+  AssetManager, AssetServer, AssetsView, DiskSource, MemorySource, insert_registry, pump,
 };
 use crate::core::ecs::kernel::{Entity, Message, Messages, Tick, World};
 use crate::core::error::ManagerResult;
-use crate::core::graphics::Image;
 use crate::core::input::{Direction, GamepadButton, InputView};
 use crate::core::messages::{register_message, update_messages};
 use crate::core::render::UiSpace;
 use crate::core::text::{Fonts, TextEngine};
+use crate::core::ui::image_sizes::ImageSizes;
 use crate::core::ui::immediate::{PendingRebind, PromptContext, UiCommands};
 use crate::core::ui::interact::{
   PointerInput, apply_scroll_requests, resolve_pointer, route_wheel,
@@ -117,6 +116,9 @@ pub struct UiHarness {
   /// The entities of spawned UI nodes, the asset manager UI files load
   /// through and the asset registry
   world: World,
+  /// What the UI sizes images by, brought in line with the world's store
+  /// at the start of each frame
+  images: ImageSizes,
   /// The query `reload_trees` keeps over the trees built from UI files
   sources: nodes::SourceQuery,
   /// The last frame's node events
@@ -182,6 +184,7 @@ impl UiHarness {
       prompts: Arc::new(PromptContext::default()),
       rebinds: Vec::new(),
       world,
+      images: ImageSizes::default(),
       sources: Default::default(),
       last_events: Vec::new(),
       consumed: UiConsumed::default(),
@@ -405,21 +408,20 @@ impl UiHarness {
   #[doc(hidden)]
   pub fn ui_dirty_check(&mut self) {
     let space = self.space();
-    lend_store::<Image, _>(&mut self.world, |world, images| {
-      let mut context = UiContext::new(
-        &mut self.commands,
-        &mut self.text,
-        &mut self.memory,
-        &mut self.layout,
-        space,
-        UiInput::default(),
-        Arc::clone(&self.theme),
-        self.theme_generation,
-        images,
-      );
-      context.begin_scene(self.scene, true);
-      nodes::dirty_check(world, &context, self.scene);
-    });
+    self.images.refresh(&mut self.world);
+    let mut context = UiContext::new(
+      &mut self.commands,
+      &mut self.text,
+      &mut self.memory,
+      &mut self.layout,
+      space,
+      UiInput::default(),
+      Arc::clone(&self.theme),
+      self.theme_generation,
+      &self.images,
+    );
+    context.begin_scene(self.scene, true);
+    nodes::dirty_check(&mut self.world, &context, self.scene);
   }
 
   /// Draw with `theme` (and take its interaction timings) from the next frame
@@ -700,8 +702,9 @@ impl UiHarness {
         input.consume_mouse(button);
       }
     }
-    // The UI sizes images by the world's store, lent to it for the pass
-    let result = lend_store::<Image, _>(&mut self.world, |world, images| {
+    // The UI sizes images as the store holds them now
+    self.images.refresh(&mut self.world);
+    let result = {
       let mut context = UiContext::new(
         &mut self.commands,
         &mut self.text,
@@ -711,26 +714,26 @@ impl UiHarness {
         input,
         Arc::clone(&self.theme),
         self.theme_generation,
-        images,
+        &self.images,
       );
       context.set_dt(FRAME as f32);
       context.set_prompts(Arc::clone(&self.prompts));
       context.begin_scene(self.scene, true);
-      nodes::set_cache_enabled(world, self.ui_cache);
-      nodes::set_fragments_enabled(world, self.ui_fragments);
-      nodes::set_spot_check(world, self.ui_spot_check);
-      nodes::begin_pass(world);
-      let events = nodes::draw_nodes(world, &mut context, self.scene);
+      nodes::set_cache_enabled(&mut self.world, self.ui_cache);
+      nodes::set_fragments_enabled(&mut self.world, self.ui_fragments);
+      nodes::set_spot_check(&mut self.world, self.ui_spot_check);
+      nodes::begin_pass(&mut self.world);
+      let events = nodes::draw_nodes(&mut self.world, &mut context, self.scene);
       self.last_events.clone_from(&events);
-      nodes::deliver(world, events);
-      let result = ui(&mut context, world);
-      let late = nodes::deliver_pending(world);
+      nodes::deliver(&mut self.world, events);
+      let result = ui(&mut context, &mut self.world);
+      let late = nodes::deliver_pending(&mut self.world);
       self.last_events.extend(late);
       context.end_scene();
       self.rebinds = context.take_rebinds();
       self.consumed = context.input().consumed();
       result
-    });
+    };
     self.commands.end_pass();
     // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
     // the UI stays as the last drawn frame left it

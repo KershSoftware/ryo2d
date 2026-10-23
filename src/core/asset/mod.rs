@@ -44,7 +44,6 @@ pub use pump::pump;
 pub use server::AssetServer;
 pub use source::{AssetSource, DiskSource, MemorySource};
 pub use view::AssetsView;
-pub(crate) use view::lend_store;
 
 /// A type the registry stores: loaded from files by an `AssetLoader`, or
 /// made in code and added with `Assets::add`

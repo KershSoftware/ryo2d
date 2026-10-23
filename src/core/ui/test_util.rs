@@ -6,14 +6,13 @@ use std::sync::Arc;
 use glam::Vec2;
 use winit::keyboard::KeyCode;
 
-use crate::core::asset::Assets;
-use crate::core::graphics::{Image, no_images};
 use crate::core::input::{Binding, Direction, GamepadButton, InputDevice};
 use crate::core::render::UiSpace;
 use crate::core::testing::UiHarness;
 use crate::core::testing::ui::direction_index;
 use crate::core::text::{Fonts, TextEngine};
 use crate::core::ui::UiInput;
+use crate::core::ui::image_sizes::ImageSizes;
 use crate::core::ui::immediate::{PendingRebind, PromptContext, UiCommands, UiContext};
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::{UiMemory, UiSound};
@@ -73,7 +72,7 @@ pub(crate) fn context_in<'a>(
   space: UiSpace,
   input: UiInput,
 ) -> UiContext<'a> {
-  context_over(commands, text, space, input, no_images())
+  context_over(commands, text, space, input, ImageSizes::none())
 }
 
 /// [`context_in`] sizing images by `images`
@@ -82,7 +81,7 @@ pub(crate) fn context_over<'a>(
   text: &'a mut TextEngine,
   space: UiSpace,
   input: UiInput,
-  images: &'a Assets<Image>,
+  images: &'a ImageSizes,
 ) -> UiContext<'a> {
   let memory = Box::leak(Box::new(UiMemory::new()));
   let layout = Box::leak(Box::new(LayoutEngine::new()));
@@ -100,7 +99,7 @@ pub(crate) fn context_with_images<'a>(
   commands: &'a mut UiCommands,
   text: &'a mut TextEngine,
   size: (f32, f32),
-  images: &'a Assets<Image>,
+  images: &'a ImageSizes,
 ) -> UiContext<'a> {
   let space = UiSpace {
     size: Vec2::new(size.0, size.1),
