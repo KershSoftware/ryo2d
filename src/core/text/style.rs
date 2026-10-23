@@ -17,8 +17,9 @@ pub enum TextFont {
   Family(String),
   /// One exact font, which the style holds: its family, at its own weight
   /// and slant (the style's `weight` and `italic` do not apply). A font not
-  /// loaded yet, or one that failed, falls back as an unknown family does
-  /// (warned once)
+  /// loaded yet, or one that failed, falls back as an unknown family does,
+  /// quietly (a failed load is reported by the registry); one the registry
+  /// does not know (another world's) is warned once
   Face(Handle<Font>),
 }
 

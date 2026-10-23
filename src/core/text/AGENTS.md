@@ -90,9 +90,12 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   font. The cache key keeps the size as asked.
 - `TextFont::Face` lays out that exact font's face: Parley picks faces by
   family, weight and slant, so the face's own weight and slant are pushed.
-  A font that is not registered (loading, failed, freed) falls back as an
-  unknown family does, warned once per font. A word wider than the wrap
-  width breaks inside it (`OverflowWrap::Anywhere`).
+  A font that is not registered falls back as an unknown family does:
+  quietly while it is loading, once it failed (the server warned) or just
+  after it was added (it registers at the next follow); warned once per font
+  when the server does not know it (freed, another world's). The engine
+  asks the world's `AssetServer` (`watch_loads`, at each sync). A word wider
+  than the wrap width breaks inside it (`OverflowWrap::Anywhere`).
 - `min_content_width` (UI layout's min-content measure) is the widest word
   or icon: Parley's content widths shaped with `OverflowWrap::Normal`, since
   `Anywhere` would make it the widest grapheme; on a bitmap grid, the widest

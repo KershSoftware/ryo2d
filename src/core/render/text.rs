@@ -1191,6 +1191,7 @@ pub(crate) fn layout_world_text(
   let Some(fonts) = world.get_resource::<Fonts>() else {
     return;
   };
+  engine.watch_loads(world.get_resource::<crate::core::asset::AssetServer>());
   engine.sync(fonts);
   let generation = engine.generation();
   let accent = world.get_resource::<UiTheme>().map_or_else(

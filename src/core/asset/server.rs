@@ -290,6 +290,11 @@ impl AssetServer {
     }
   }
 
+  /// Whether `other` is this server (a clone of it), not another
+  pub(crate) fn is_same(&self, other: &AssetServer) -> bool {
+    Arc::ptr_eq(&self.inner, &other.inner)
+  }
+
   /// Makes `T` storable: inserts `Assets<T>` and registers `AssetEvent<T>`.
   /// The store then queues the changes made in code for the pump to send
   pub fn register_asset<T: Asset>(&self, world: &mut World) {

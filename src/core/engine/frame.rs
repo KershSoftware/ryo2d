@@ -563,6 +563,9 @@ impl Engine {
     self.ui_commands.clear();
     // Fonts added since the pump (a scene's `on_enter`) are laid out with
     crate::core::text::fonts_follow_assets(&mut self.world);
+    self
+      .text
+      .watch_loads(self.world.get_resource::<crate::core::asset::AssetServer>());
     if let Some(fonts) = self.world.get_resource::<crate::core::text::Fonts>() {
       self.text.sync(fonts);
     }

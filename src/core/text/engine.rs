@@ -17,7 +17,7 @@ use parley::{
   PositionedLayoutItem, RangedBuilder, Selection, StyleProperty, VerticalAlign,
 };
 
-use crate::core::asset::AssetId;
+use crate::core::asset::{AssetId, AssetServer, LoadState};
 use crate::core::hash::{FastHasher, FastMap, FastSet};
 use crate::core::text::key::TextKey;
 use crate::core::text::layout::{GlyphStyle, LineInfo, PlacedGlyph, PlacedIcon, TextLayout};
@@ -102,6 +102,9 @@ pub(crate) struct TextEngine {
   lines: FastMap<u64, (Layout<u16>, u64)>,
   coords: FastMap<u64, Arc<[i16]>>,
   warned: FastSet<u64>,
+  /// The registry the fonts load through, to tell a font still loading (or
+  /// failed, which the server reports) from one that is not there
+  loads: Option<AssetServer>,
   frame: u64,
   stats: CacheStats,
 }
@@ -128,6 +131,7 @@ impl TextEngine {
       lines: FastMap::default(),
       coords: FastMap::default(),
       warned: FastSet::default(),
+      loads: None,
       frame: 0,
       stats: CacheStats::default(),
     }
@@ -207,6 +211,21 @@ impl TextEngine {
   /// Moves on with every sync that changed something (0 before any)
   pub(crate) fn generation(&self) -> u64 {
     self.epoch
+  }
+
+  /// Ask `server` whether a font text names is still loading. Cheap when it
+  /// is the server asked before
+  pub(crate) fn watch_loads(&mut self, server: Option<&AssetServer>) {
+    match (server, &self.loads) {
+      (Some(server), Some(known)) if server.is_same(known) => {}
+      (server, _) => self.loads = server.cloned(),
+    }
+  }
+
+  /// Whether text naming `font`, not registered, was warned about (tests)
+  #[cfg(test)]
+  pub(crate) fn warned_unloaded(&self, font: AssetId<Font>) -> bool {
+    self.warned.contains(&hash_of(&("face", font)))
   }
 
   /// Lay out `text` (cached). `None` when the style, options or scale cannot
@@ -670,9 +689,18 @@ impl TextEngine {
         engine_warn!(module: "text", "no font family named {name:?}; using the fallbacks");
       }
     }
-    // Still loading, failed, or (named by a cache) freed
+    // A font still loading falls back quietly until it is registered, as
+    // does one that failed (the server reported it) or one just added (it
+    // registers at the next follow). One freed, or no font the server knows,
+    // is warned once
     for font in unloaded {
-      if self.first_warning(hash_of(&("face", font))) {
+      let quiet = self.loads.as_ref().is_some_and(|server| {
+        matches!(
+          server.state(font),
+          LoadState::Loading | LoadState::Failed(_) | LoadState::Loaded
+        )
+      });
+      if !quiet && self.first_warning(hash_of(&("face", font))) {
         engine_warn!(module: "text", "font {font:?} is not loaded; using the fallbacks");
       }
     }
@@ -1935,7 +1963,8 @@ fn to_u32(value: usize) -> u32 {
 mod tests {
   use super::*;
   use crate::core::asset::{
-    AssetId, AssetServer, AssetsView, Handle, MemorySource, insert_registry, pump,
+    AssetError, AssetPath, AssetServer, AssetSource, AssetsView, Handle, LoadState, MemorySource,
+    insert_registry, pump,
   };
   use crate::core::ecs::kernel::World;
   use crate::core::text::fonts::TestFonts;
@@ -2129,6 +2158,8 @@ mod tests {
     let face = world.resource::<Fonts>().face_of(&font);
     assert!(face.is_some());
     let mut engine = TextEngine::new();
+    // Asked, the server says a freed font is not loaded: warned
+    engine.watch_loads(world.get_resource::<AssetServer>());
     engine.sync(world.resource::<Fonts>());
     let style = TextStyle::default().font(TextFont::Face(font.clone()));
     let laid = layout(&mut engine, "abc", &style);
@@ -2157,20 +2188,92 @@ mod tests {
       again.glyphs.iter().all(|g| Some(g.font) == ui),
       "the UI font"
     );
-    let _ = layout(&mut engine, "abcd", &named);
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains(&format!("{id:?}")) && e.message.contains("not loaded"))
-      .count();
-    assert_eq!(warned, 1, "warned once");
+    assert!(engine.warned_unloaded(id), "warned (once: by its key)");
   }
 
-  /// How many "not loaded" warnings name `id`
-  fn not_loaded_warnings(id: AssetId<Font>) -> usize {
-    crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains(&format!("{id:?}")) && e.message.contains("not loaded"))
-      .count()
+  /// Files whose `fonts/held.ttf` is not read until the test lets it go
+  struct HeldFont {
+    files: MemorySource,
+    release: crossbeam_channel::Receiver<()>,
+  }
+
+  impl AssetSource for HeldFont {
+    fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+      if path.as_str() == "fonts/held.ttf" {
+        // Returns when the test sends, or drops its sender
+        let _ = self.release.recv();
+      }
+      self.files.read(path)
+    }
+  }
+
+  /// Pumps until `done`, for five seconds at most
+  fn pump_until(world: &mut World, done: impl Fn(&World) -> bool) {
+    let start = std::time::Instant::now();
+    while !done(world) {
+      assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "timed out"
+      );
+      pump(world);
+      std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+  }
+
+  #[test]
+  fn text_naming_a_font_still_loading_or_failed_falls_back_without_a_warning() {
+    let files = MemorySource::new();
+    files.insert("fonts/held.ttf", PRESS_START);
+    let (release, held) = crossbeam_channel::unbounded();
+    let mut world = World::new();
+    insert_registry(
+      &mut world,
+      AssetServer::new(HeldFont {
+        files,
+        release: held,
+      }),
+    );
+    insert_fonts(&mut world);
+    let server = world.resource::<AssetServer>().clone();
+    let mut engine = TextEngine::new();
+    engine.watch_loads(Some(&server));
+    engine.sync(world.resource::<Fonts>());
+    let ui = world.resource::<Fonts>().role(FontRole::Ui);
+    let in_ui = |laid: &TextLayout| laid.glyphs.iter().all(|g| Some(g.font) == ui);
+
+    // Still loading: the fallback, quietly
+    let loading = server.load::<Font>("fonts/held.ttf");
+    assert!(matches!(server.state(&loading), LoadState::Loading));
+    let style = TextStyle::default().font(TextFont::Face(loading.clone()));
+    assert!(in_ui(&layout(&mut engine, "loading", &style)));
+    assert!(!engine.warned_unloaded(loading.id()), "loading: no warning");
+
+    // Failed: the server warned already
+    let missing = server.load::<Font>("fonts/missing.ttf");
+    pump_until(&mut world, |_| server.state(&missing).is_failed());
+    let style = TextStyle::default().font(TextFont::Face(missing.clone()));
+    assert!(in_ui(&layout(&mut engine, "failed", &style)));
+    assert!(
+      !engine.warned_unloaded(missing.id()),
+      "failed: no warning here"
+    );
+
+    // A handle to nothing the server knows: warned
+    let nothing = Handle::<Font>::detached();
+    let style = TextStyle::default().font(TextFont::Face(nothing.clone()));
+    assert!(in_ui(&layout(&mut engine, "unknown", &style)));
+    assert!(engine.warned_unloaded(nothing.id()), "unknown: warned");
+
+    // Once it loads, it draws in its own face
+    let _ = release.send(());
+    pump_until(&mut world, |_| server.state(&loading).is_loaded());
+    fonts_follow_assets(&mut world);
+    engine.sync(world.resource::<Fonts>());
+    let face = world.resource::<Fonts>().face_of(&loading);
+    let style = TextStyle::default().font(TextFont::Face(loading.clone()));
+    let laid = layout(&mut engine, "loaded", &style);
+    assert!(face.is_some() && laid.glyphs.iter().all(|g| Some(g.font) == face));
+    assert!(!engine.warned_unloaded(loading.id()));
   }
 
   #[test]
@@ -2195,7 +2298,7 @@ mod tests {
       laid.glyphs.iter().all(|g| Some(g.font) == built_in),
       "drawn in the shared face, not the fallback"
     );
-    assert_eq!(not_loaded_warnings(mono.id()), 0);
+    assert!(!engine.warned_unloaded(mono.id()));
 
     // The same game font twice: the second shares the first's face
     let first = AssetsView::new(&mut world).add(font(PRESS_START));
@@ -2223,7 +2326,7 @@ mod tests {
       laid.glyphs.iter().all(|g| Some(g.font) == face),
       "still the shared face"
     );
-    assert_eq!(not_loaded_warnings(second.id()), 0, "never warned");
+    assert!(!engine.warned_unloaded(second.id()), "never warned");
   }
 
   #[test]
