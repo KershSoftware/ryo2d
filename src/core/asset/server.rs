@@ -42,6 +42,8 @@ pub(crate) struct ServerInner {
   /// Finished loads, for the pump
   finished: Sender<Finished>,
   finished_queue: Receiver<Finished>,
+  /// The source's end of `changed`, until it is asked to watch
+  changes: Mutex<Option<Sender<AssetPath>>>,
   /// Paths the source says changed: the pump reloads them
   changed: Receiver<AssetPath>,
   workers: Workers,
@@ -246,7 +248,8 @@ pub(crate) fn short_name<T: ?Sized>() -> &'static str {
 impl AssetServer {
   /// A server reading from `source`. Its worker threads start at the first
   /// queued load, so a server that only loads at once or is given its
-  /// assets starts none
+  /// assets starts none. It does not watch the source: the engine's server
+  /// does, when hot reload is on (`EngineBuilder::hot_reload`)
   pub fn new(source: impl AssetSource) -> Self {
     Self::with_source(Box::new(source))
   }
@@ -255,9 +258,6 @@ impl AssetServer {
   pub(crate) fn with_source(source: Box<dyn AssetSource>) -> Self {
     let (finished, finished_queue) = unbounded();
     let (changes, changed) = unbounded();
-    if let Err(error) = source.watch(changes) {
-      crate::engine_warn!(module: "asset", "the asset source cannot watch: {}", error.report());
-    }
     Self {
       inner: Arc::new(ServerInner {
         source,
@@ -266,9 +266,26 @@ impl AssetServer {
         table: Mutex::default(),
         finished,
         finished_queue,
+        changes: Mutex::new(Some(changes)),
         changed,
         workers: Workers::new(),
       }),
+    }
+  }
+
+  /// Asks the source to say which files change, so the pump reloads them.
+  /// The engine calls it when hot reload is on; a second call does nothing
+  pub(crate) fn start_watching(&self) {
+    let changes = self
+      .inner
+      .changes
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .take();
+    if let Some(changes) = changes
+      && let Err(error) = self.inner.source.watch(changes)
+    {
+      crate::engine_warn!(module: "asset", "the asset source cannot watch: {}", error.report());
     }
   }
 
@@ -1624,6 +1641,8 @@ mod tests {
     server.register_loader(LinkLoader);
     server.register_loader(BundleLoader);
     world.insert_resource(server.clone());
+    // A `MemorySource` tells a watching server when a file is replaced
+    server.start_watching();
     (world, server)
   }
 

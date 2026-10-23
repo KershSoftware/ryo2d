@@ -544,6 +544,10 @@ impl Engine {
       );
       Box::new(DiskSource::new(root))
     }));
+    // Changed files reload only while hot reload is on: otherwise no watcher starts
+    if hot_reload {
+      registry.start_watching();
+    }
 
     // Try to initialize audio (gracefully handle no audio device)
     let mut audio = if headless {
@@ -1187,7 +1191,7 @@ pub struct EngineBuilder {
   schedules: EngineSchedules,
   /// Where assets load from (`None`: the project's asset folder)
   asset_source: Option<Box<dyn AssetSource>>,
-  /// Whether changed asset files reload (`None`: in debug builds, unless headless)
+  /// Whether changed asset files reload (`None`: in windowed debug builds)
   hot_reload: Option<bool>,
 }
 
@@ -1459,11 +1463,16 @@ impl EngineBuilder {
     self
   }
 
-  /// Whether changed asset files reload while the game runs (default: on
-  /// in debug builds, off in headless ones). The switch is stored for the
-  /// asset registry, which does not watch the asset folder yet; for now it
-  /// turns the old asset manager's watcher on or off, which runs only in
-  /// windowed debug builds
+  /// Whether changed asset files reload while the game runs. When on, the
+  /// engine watches the asset folder: an asset whose file is saved reloads
+  /// under the same handle about 100 ms after the last write, and one whose
+  /// new file does not load keeps its last good value.
+  ///
+  /// The default is on in windowed debug builds, and off in release and
+  /// headless ones. `true` turns it on in any build, release and headless
+  /// included, as tests of reloading do; `false` turns it off. The web build
+  /// has no folder to watch. Until the old asset manager goes, its sprites
+  /// and UI files reload only in windowed debug builds with this on
   pub fn hot_reload(mut self, on: bool) -> Self {
     self.hot_reload = Some(on);
     self

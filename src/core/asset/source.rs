@@ -12,27 +12,50 @@ pub trait AssetSource: Send + Sync + 'static {
   fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError>;
 
   /// Starts telling `changed` about paths whose bytes changed; a source that
-  /// cannot watch returns Ok and never sends
+  /// cannot watch returns Ok and never sends. The engine's server asks once,
+  /// when hot reload is on
   fn watch(&self, changed: Sender<AssetPath>) -> Result<(), AssetError> {
     let _ = changed;
     Ok(())
   }
 }
 
-/// Files under a folder (Task 7 adds watching)
+/// Files under a folder. Asked to watch (the engine asks when hot reload is
+/// on), it watches the folder and every folder under it, and tells the
+/// server about a file about 100 ms after its last write, so a save in
+/// several writes reloads once. Removed files and editors' temp files (a
+/// name starting with `.` or ending in `~`) are not reported. The web build
+/// has no files to read or watch
 pub struct DiskSource {
   root: PathBuf,
+  /// The watch on `root`, once asked for; it stops when the source drops
+  #[cfg(not(target_arch = "wasm32"))]
+  watching: Mutex<Option<super::watch::Watching>>,
 }
 
 impl DiskSource {
-  /// Files under `root`
+  /// Files under `root`. Nothing is watched until the server asks
   pub fn new(root: impl Into<PathBuf>) -> Self {
-    Self { root: root.into() }
+    Self {
+      root: root.into(),
+      #[cfg(not(target_arch = "wasm32"))]
+      watching: Mutex::new(None),
+    }
   }
 
   /// The folder asset paths are relative to
   pub fn root(&self) -> &Path {
     &self.root
+  }
+
+  /// Whether it watches its folder
+  #[cfg(all(test, not(target_arch = "wasm32")))]
+  pub(crate) fn is_watching(&self) -> bool {
+    self
+      .watching
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .is_some()
   }
 }
 
@@ -57,6 +80,17 @@ impl AssetSource for DiskSource {
         "the web build has no file system",
       ),
     })
+  }
+
+  /// Watches the folder. A missing folder, or one that cannot be watched,
+  /// is warned about and watched by no one; that is no error
+  #[cfg(not(target_arch = "wasm32"))]
+  fn watch(&self, changed: Sender<AssetPath>) -> Result<(), AssetError> {
+    let mut watching = self.watching.lock().unwrap_or_else(PoisonError::into_inner);
+    // A second call replaces the first watch, which stops first
+    *watching = None;
+    *watching = super::watch::Watching::start(&self.root, changed);
+    Ok(())
   }
 }
 

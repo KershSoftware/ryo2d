@@ -801,25 +801,33 @@ fn hot_reload_is_on_in_debug_builds_unless_headless_or_set() {
   assert!(!resolve(EngineBuilder::new().hot_reload(false), false));
 }
 
+/// A text asset for the asset tests: a `.note` file
+struct Note(String);
+impl crate::core::asset::Asset for Note {}
+
+struct NoteLoader;
+impl crate::core::asset::AssetLoader for NoteLoader {
+  type Asset = Note;
+  type Settings = ();
+  fn extensions(&self) -> &[&'static str] {
+    &["note"]
+  }
+  fn load(
+    &self,
+    bytes: Vec<u8>,
+    _: &(),
+    cx: &mut crate::core::asset::LoadContext<'_>,
+  ) -> Result<Note, crate::core::asset::AssetError> {
+    String::from_utf8(bytes)
+      .map(Note)
+      .map_err(|e| crate::core::asset::AssetError::decode(cx.path(), e))
+  }
+}
+
 #[test]
 fn assets_load_from_the_project_s_asset_folder_unless_given_a_source() {
-  use crate::core::asset::{Asset, AssetError, AssetLoader, AssetsView, LoadContext, MemorySource};
+  use crate::core::asset::{AssetsView, MemorySource};
 
-  struct Note(String);
-  impl Asset for Note {}
-  struct NoteLoader;
-  impl AssetLoader for NoteLoader {
-    type Asset = Note;
-    type Settings = ();
-    fn extensions(&self) -> &[&'static str] {
-      &["note"]
-    }
-    fn load(&self, bytes: Vec<u8>, _: &(), cx: &mut LoadContext<'_>) -> Result<Note, AssetError> {
-      String::from_utf8(bytes)
-        .map(Note)
-        .map_err(|e| AssetError::decode(cx.path(), e))
-    }
-  }
   let read = |builder: EngineBuilder, ws: &crate::core::config::Workspace| {
     let resolved = builder
       .asset_loader(NoteLoader)
@@ -844,4 +852,73 @@ fn assets_load_from_the_project_s_asset_folder_unless_given_a_source() {
     read(EngineBuilder::new().asset_source(memory), &ws).as_deref(),
     Some("from memory")
   );
+}
+
+#[test]
+fn an_engine_with_hot_reload_off_starts_no_watcher() {
+  use crate::core::asset::{AssetError, AssetPath};
+
+  /// A source that records whether it was asked to watch
+  #[derive(Clone, Default)]
+  struct Asked(Arc<AtomicBool>);
+  impl AssetSource for Asked {
+    fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+      Err(AssetError::NotFound { path: path.clone() })
+    }
+    fn watch(&self, _: crossbeam_channel::Sender<AssetPath>) -> Result<(), AssetError> {
+      self.0.store(true, Ordering::SeqCst);
+      Ok(())
+    }
+  }
+  let asked = |builder: EngineBuilder| {
+    let source = Asked::default();
+    let resolved = builder
+      .asset_source(source.clone())
+      .start_scene(EmptyScene)
+      .resolve_in(None, true);
+    let _engine = Engine::new(resolved, true);
+    source.0.load(Ordering::SeqCst)
+  };
+  assert!(!asked(EngineBuilder::new().hot_reload(false)));
+  assert!(
+    !asked(EngineBuilder::new()),
+    "a headless build does not watch unless asked"
+  );
+  assert!(asked(EngineBuilder::new().hot_reload(true)));
+}
+
+#[test]
+fn an_engine_with_hot_reload_reloads_a_saved_asset_file() {
+  use std::time::{Duration, Instant};
+
+  use crate::core::asset::AssetsView;
+
+  let (dir, ws) = temp_workspace("", None);
+  std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+  std::fs::write(dir.path().join("assets/hello.note"), "before").unwrap();
+  let resolved = EngineBuilder::new()
+    .hot_reload(true)
+    .asset_loader(NoteLoader)
+    .start_scene(EmptyScene)
+    .resolve_in(Some(&ws), true);
+  let mut engine = Engine::new(resolved, true);
+  let note = AssetsView::new(&mut engine.world)
+    .load_now::<Note>("hello.note")
+    .unwrap();
+  std::fs::write(dir.path().join("assets/hello.note"), "after").unwrap();
+  let start = Instant::now();
+  loop {
+    crate::core::asset::pump(&mut engine.world);
+    let text = AssetsView::new(&mut engine.world)
+      .get(&note)
+      .map(|note| note.0.clone());
+    if text.as_deref() == Some("after") {
+      break;
+    }
+    assert!(
+      start.elapsed() < Duration::from_secs(3),
+      "timed out: the saved note never reloaded ({text:?})"
+    );
+    std::thread::sleep(Duration::from_millis(2));
+  }
 }

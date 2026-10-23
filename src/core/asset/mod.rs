@@ -5,7 +5,9 @@
 //!   holds every asset of a type, and a [`Handle<T>`] keeps one alive. Each
 //!   frame (`PreUpdate`) the pump reloads changed files, inserts finished
 //!   loads once their dependencies are loaded, frees unheld assets and sends
-//!   their [`AssetEvent`]s
+//!   their [`AssetEvent`]s. With hot reload on, the engine's [`DiskSource`]
+//!   watches the asset folder (native builds), so a saved file reloads once
+//!   its writes settle
 //! - [`AssetsView`] - the registry as scenes (`ctx.assets()`) and tests reach it
 //! - [`AssetManager`] - the old manager (sprites, shaders, UI files), until
 //!   everything loads through the registry
@@ -25,6 +27,8 @@ mod pump;
 pub mod server;
 pub mod source;
 pub mod view;
+#[cfg(not(target_arch = "wasm32"))]
+mod watch;
 mod workers;
 
 pub use assets::Assets;
