@@ -15,13 +15,13 @@ const BLUE: [u8; 4] = [30, 60, 230, 255];
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 
 /// A `size` px square of `c`
-fn solid_image(_name: &str, size: u32, c: [u8; 4]) -> Image {
+fn solid_image(size: u32, c: [u8; 4]) -> Image {
   Image::solid_rect(size, size, c[0], c[1], c[2], c[3])
 }
 
 /// [`solid_image`], added to the scene's world
-fn solid(ctx: &mut SceneContext, name: &str, size: u32, c: [u8; 4]) -> Handle<Image> {
-  ctx.assets().add(solid_image(name, size, c))
+fn solid(ctx: &mut SceneContext, size: u32, c: [u8; 4]) -> Handle<Image> {
+  ctx.assets().add(solid_image(size, c))
 }
 
 /// Whether a pixel is the test line's green (lines are slightly translucent,
@@ -99,8 +99,8 @@ fn frame_of(scene: Fixture, size: (u32, u32)) -> Option<image::RgbaImage> {
   Some(engine.frame().unwrap())
 }
 
-fn spawn_entity(ctx: &mut SceneContext, name: &str, x: f32, y: f32, c: [u8; 4], z: i32) {
-  let image = solid(ctx, name, 20, c);
+fn spawn_entity(ctx: &mut SceneContext, x: f32, y: f32, c: [u8; 4], z: i32) {
+  let image = solid(ctx, 20, c);
   ctx.world.spawn((
     Transform::from_xy(x, y),
     Renderable::image(image)
@@ -118,10 +118,10 @@ fn particle_between_entities() {
   // Entities: red z 0 (x 10..30), blue z 10 (x 30..50), both y 20..40.
   // A sprite at z 5 covers x 20..40: over red, under blue.
   let scene = Fixture::new(|ctx| {
-    spawn_entity(ctx, "pb-red", 10.0, 20.0, RED, 0);
-    spawn_entity(ctx, "pb-blue", 30.0, 20.0, BLUE, 10);
+    spawn_entity(ctx, 10.0, 20.0, RED, 0);
+    spawn_entity(ctx, 30.0, 20.0, BLUE, 10);
   })
-  .with_gpu_sprite(solid_image("pb-green", 4, GREEN), 30.0, 30.0, 20.0, 5);
+  .with_gpu_sprite(solid_image(4, GREEN), 30.0, 30.0, 20.0, 5);
   let Some(frame) = frame_of(scene, (64, 64)) else {
     return;
   };
@@ -146,8 +146,8 @@ fn spawn_line(ctx: &mut SceneContext, z: i32) {
 #[test]
 fn trail_between_entities() {
   let scene = Fixture::new(|ctx| {
-    spawn_entity(ctx, "tb-red", 10.0, 22.0, RED, 0);
-    spawn_entity(ctx, "tb-blue", 30.0, 22.0, BLUE, 10);
+    spawn_entity(ctx, 10.0, 22.0, RED, 0);
+    spawn_entity(ctx, 30.0, 22.0, BLUE, 10);
     spawn_line(ctx, 5);
   });
   let Some(frame) = frame_of(scene, (64, 64)) else {
@@ -170,10 +170,10 @@ fn trail_between_entities() {
 fn equal_z_order_entity_sprite_trail() {
   // All at z 0 and overlapping: entity, then sprite, then trail on top.
   let scene = Fixture::new(|ctx| {
-    spawn_entity(ctx, "eq-red", 10.0, 22.0, RED, 0);
+    spawn_entity(ctx, 10.0, 22.0, RED, 0);
     spawn_line(ctx, 0);
   })
-  .with_gpu_sprite(solid_image("eq-blue", 4, BLUE), 30.0, 32.0, 20.0, 0);
+  .with_gpu_sprite(solid_image(4, BLUE), 30.0, 32.0, 20.0, 0);
   let Some(frame) = frame_of(scene, (64, 64)) else {
     return;
   };
@@ -190,17 +190,17 @@ fn ysort_lower_draws_in_front() {
   // Two overlapping Y-sorted entities at one z. The one lower on screen
   // (larger y) is in front, whichever spawned first.
   let scene = Fixture::new(|ctx| {
-    let sorted = |ctx: &mut SceneContext, name: &str, y: f32, c: [u8; 4]| {
+    let sorted = |ctx: &mut SceneContext, y: f32, c: [u8; 4]| {
       (
         Transform::from_xy(20.0, y),
-        Renderable::image(solid(ctx, name, 20, c)).with_anchor(Anchor::TopLeft),
+        Renderable::image(solid(ctx, 20, c)).with_anchor(Anchor::TopLeft),
         YSort::new(),
       )
     };
     // The lower one spawns first, so submission order would put it behind
-    let low = sorted(ctx, "ys-low", 26.0, BLUE);
+    let low = sorted(ctx, 26.0, BLUE);
     ctx.world.spawn(low);
-    let high = sorted(ctx, "ys-high", 20.0, RED);
+    let high = sorted(ctx, 20.0, RED);
     ctx.world.spawn(high);
   });
   let Some(frame) = frame_of(scene, (64, 64)) else {
@@ -217,7 +217,7 @@ fn ysort_entities_stay_in_their_layer() {
   // A y-sorted entity at z 0 whose sort y is about 500 must still sit
   // between the z -1 and z 1 layers.
   let scene = Fixture::new(|ctx| {
-    let image = solid(ctx, "yl-mid", 20, RED);
+    let image = solid(ctx, 20, RED);
     ctx.world.spawn((
       Transform::from_xy(20.0, 10.0),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
@@ -227,8 +227,8 @@ fn ysort_entities_stay_in_their_layer() {
       },
     ));
   })
-  .with_gpu_sprite(solid_image("yl-back", 4, GREEN), 20.0, 20.0, 20.0, -1)
-  .with_gpu_sprite(solid_image("yl-front", 4, BLUE), 40.0, 20.0, 20.0, 1);
+  .with_gpu_sprite(solid_image(4, GREEN), 20.0, 20.0, 20.0, -1)
+  .with_gpu_sprite(solid_image(4, BLUE), 40.0, 20.0, 20.0, 1);
   let Some(frame) = frame_of(scene, (64, 64)) else {
     return;
   };
@@ -248,7 +248,7 @@ fn ysort_entities_stay_in_their_layer() {
 #[test]
 fn a_higher_layer_beats_a_far_down_ysort_entity() {
   let scene = Fixture::new(|ctx| {
-    let image = solid(ctx, "hl-ysort", 20, RED);
+    let image = solid(ctx, 20, RED);
     ctx.world.spawn((
       Transform::from_xy(20.0, 20.0),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
@@ -257,7 +257,7 @@ fn a_higher_layer_beats_a_far_down_ysort_entity() {
         ..YSort::new()
       },
     ));
-    spawn_entity(ctx, "hl-top", 30.0, 20.0, BLUE, 1);
+    spawn_entity(ctx, 30.0, 20.0, BLUE, 1);
   });
   let Some(frame) = frame_of(scene, (64, 64)) else {
     return;
@@ -275,7 +275,7 @@ struct Skeletal;
 
 impl Scene for Skeletal {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    spawn_entity(ctx, "sk-cover", 20.0, 22.0, RED, 10);
+    spawn_entity(ctx, 20.0, 22.0, RED, 10);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -329,16 +329,16 @@ fn composite_tile_honours_z() {
   // Entity z 1 over a composite z 0 (overlap x 50..60); then the composite
   // above a z-(-1) entity.
   let scene = Fixture::new(|ctx| {
-    spawn_entity(ctx, "ct-over", 40.0, 40.0, RED, 1);
-    let tile = |ctx: &mut SceneContext, name: &str| {
-      CompositeTile::new().add_part(TilePart::static_part(solid(ctx, name, 20, GREEN), 0.0, 0.0))
+    spawn_entity(ctx, 40.0, 40.0, RED, 1);
+    let tile = |ctx: &mut SceneContext| {
+      CompositeTile::new().add_part(TilePart::static_part(solid(ctx, 20, GREEN), 0.0, 0.0))
     };
-    let under = tile(ctx, "ct-under");
+    let under = tile(ctx);
     ctx
       .world
       .spawn((Transform::from_xy(50.0, 40.0), under.with_z_order(0)));
-    spawn_entity(ctx, "ct-below", 40.0, 10.0, RED, -1);
-    let above = tile(ctx, "ct-above");
+    spawn_entity(ctx, 40.0, 10.0, RED, -1);
+    let above = tile(ctx);
     ctx
       .world
       .spawn((Transform::from_xy(50.0, 10.0), above.with_z_order(0)));
@@ -364,8 +364,8 @@ fn composite_tile_honours_z() {
 #[test]
 fn trail_between_gpu_sprites() {
   let scene = Fixture::new(|ctx| spawn_line(ctx, 1))
-    .with_gpu_sprite(solid_image("tg-blue", 4, BLUE), 36.0, 32.0, 20.0, 2)
-    .with_gpu_sprite(solid_image("tg-red", 4, RED), 28.0, 32.0, 20.0, 0);
+    .with_gpu_sprite(solid_image(4, BLUE), 36.0, 32.0, 20.0, 2)
+    .with_gpu_sprite(solid_image(4, RED), 28.0, 32.0, 20.0, 0);
   let Some(frame) = frame_of(scene, (64, 64)) else {
     return;
   };
@@ -509,20 +509,20 @@ fn transition_covers_trails_not_ui() {
 #[test]
 fn inactive_and_invisible_entities_do_not_draw() {
   let scene = Fixture::new(|ctx| {
-    let image = solid(ctx, "inactive", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
       Disabled,
     ));
-    let image = solid(ctx, "hidden", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(40.0, 10.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
         .with_visible(false),
     ));
-    let image = solid(ctx, "shown", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(70.0, 10.0),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
@@ -537,8 +537,8 @@ fn inactive_and_invisible_entities_do_not_draw() {
 }
 
 /// A y-sorted entity at `(x, y)` in layer `z`
-fn spawn_sorted(ctx: &mut SceneContext, name: &str, x: f32, y: f32, c: [u8; 4], z: i32) {
-  let image = solid(ctx, name, 20, c);
+fn spawn_sorted(ctx: &mut SceneContext, x: f32, y: f32, c: [u8; 4], z: i32) {
+  let image = solid(ctx, 20, c);
   ctx.world.spawn((
     Transform::from_xy(x, y),
     Renderable::image(image)
@@ -558,16 +558,16 @@ fn plain_sprites_draw_under_y_sorted_ones_in_their_layer() {
         .resolution(64, 64)
         .start_scene(Fixture::new(match z {
           -3 => |ctx: &mut SceneContext| {
-            spawn_sorted(ctx, "ys-red-n", 10.0, 10.0, RED, -3);
-            spawn_entity(ctx, "ys-floor-n", 0.0, 0.0, GREEN, -3);
+            spawn_sorted(ctx, 10.0, 10.0, RED, -3);
+            spawn_entity(ctx, 0.0, 0.0, GREEN, -3);
           },
           0 => |ctx: &mut SceneContext| {
-            spawn_sorted(ctx, "ys-red-0", 10.0, 10.0, RED, 0);
-            spawn_entity(ctx, "ys-floor-0", 0.0, 0.0, GREEN, 0);
+            spawn_sorted(ctx, 10.0, 10.0, RED, 0);
+            spawn_entity(ctx, 0.0, 0.0, GREEN, 0);
           },
           _ => |ctx: &mut SceneContext| {
-            spawn_sorted(ctx, "ys-red-p", 10.0, 10.0, RED, 4);
-            spawn_entity(ctx, "ys-floor-p", 0.0, 0.0, GREEN, 4);
+            spawn_sorted(ctx, 10.0, 10.0, RED, 4);
+            spawn_entity(ctx, 0.0, 0.0, GREEN, 4);
           },
         }));
       let Some(mut engine) = start(builder) else {
@@ -653,7 +653,7 @@ fn transition_fades_like_srgb_bytes() {
 
 const ANCHOR_RED: [u8; 4] = [220, 30, 40, 255];
 
-fn red_rect(ctx: &mut SceneContext, width: u32, height: u32, _name: &str) -> Handle<Image> {
+fn red_rect(ctx: &mut SceneContext, width: u32, height: u32) -> Handle<Image> {
   ctx
     .assets()
     .add(Image::solid_rect(width, height, 220, 30, 40, 255))
@@ -663,7 +663,7 @@ fn red_rect(ctx: &mut SceneContext, width: u32, height: u32, _name: &str) -> Han
 fn a_sprite_is_centred_on_its_position_by_default() {
   // 10 x 10 at (20, 20): it covers 15..25 on both axes
   let scene = Fixture::new(|ctx| {
-    let image = red_rect(ctx, 10, 10, "centred");
+    let image = red_rect(ctx, 10, 10);
     ctx
       .world
       .spawn((Transform::from_xy(20.0, 20.0), Renderable::image(image)));
@@ -686,7 +686,7 @@ fn a_centred_sprite_stays_on_its_position_under_zoom() {
   let scene = Fixture::new(|ctx| {
     ctx.camera().set_position(32.0, 32.0);
     ctx.camera().set_zoom(2.0);
-    let image = red_rect(ctx, 10, 10, "zoomed");
+    let image = red_rect(ctx, 10, 10);
     ctx
       .world
       .spawn((Transform::from_xy(32.0, 32.0), Renderable::image(image)));
@@ -707,7 +707,7 @@ fn a_sprite_rotates_about_its_anchor() {
   // 20 wide, 10 tall, standing on (32, 32). A quarter turn clockwise (y is
   // down) lays it to the right of its feet: x 32..42, y 22..42
   let scene = Fixture::new(|ctx| {
-    let image = red_rect(ctx, 20, 10, "rotated");
+    let image = red_rect(ctx, 20, 10);
     ctx.world.spawn((
       Transform::from_xy(32.0, 32.0).with_rotation(std::f32::consts::FRAC_PI_2),
       Renderable::image(image).with_anchor(Anchor::BottomCenter),
@@ -730,7 +730,7 @@ fn a_top_left_anchored_sprite_rotates_about_its_corner() {
   // 20 wide, 10 tall, top-left corner on (32, 32). A quarter turn clockwise
   // swings it down and to the left of the corner: x 22..32, y 32..52
   let scene = Fixture::new(|ctx| {
-    let image = red_rect(ctx, 20, 10, "corner");
+    let image = red_rect(ctx, 20, 10);
     ctx.world.spawn((
       Transform::from_xy(32.0, 32.0).with_rotation(std::f32::consts::FRAC_PI_2),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
@@ -752,8 +752,8 @@ fn a_top_left_anchored_sprite_rotates_about_its_corner() {
 /// draw the first one's pixels.
 #[test]
 fn two_handles_with_one_name_draw_their_own_pixels() {
-  let red = solid_image("same-name", 20, RED);
-  let blue = solid_image("same-name", 20, BLUE);
+  let red = solid_image(20, RED);
+  let blue = solid_image(20, BLUE);
   let scene = Fixture::new(|_| {})
     .with_gpu_sprite(red, 15.0, 15.0, 20.0, 0)
     .with_gpu_sprite(blue, 45.0, 15.0, 20.0, 0);
@@ -771,7 +771,7 @@ fn a_rotated_camera_turns_the_world() {
   let scene = Fixture::new(|ctx| {
     ctx.camera().set_position(32.0, 32.0);
     ctx.camera().set_rotation(std::f32::consts::FRAC_PI_2);
-    let image = red_rect(ctx, 4, 4, "turned");
+    let image = red_rect(ctx, 4, 4);
     ctx
       .world
       .spawn((Transform::from_xy(42.0, 32.0), Renderable::image(image)));
@@ -788,7 +788,7 @@ fn a_fractional_position_is_not_truncated() {
   // At scale factor 2, a sprite whose left edge is at x = 10.5 starts at
   // physical pixel 21, not 20
   let scene = Fixture::new(|ctx| {
-    let image = red_rect(ctx, 10, 10, "half");
+    let image = red_rect(ctx, 10, 10);
     ctx.world.spawn((
       Transform::from_xy(10.5, 10.0),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
@@ -813,7 +813,7 @@ fn pixel_art_sprites_land_on_whole_pixels() {
   // is fully red or fully background, never a blend
   let scene = Fixture::new(|ctx| {
     ctx.camera().set_position(16.33, 16.0);
-    let image = red_rect(ctx, 9, 9, "snap");
+    let image = red_rect(ctx, 9, 9);
     ctx
       .world
       .spawn((Transform::from_xy(16.0, 16.0), Renderable::image(image)));
@@ -843,7 +843,7 @@ fn render_gpu_sprites_are_placed_in_the_world() {
   // A render_gpu sprite at world (40, 32) shows 10 px further left when the
   // camera moves 10 px right
   let scene = Fixture::new(|ctx| ctx.camera().set_position(42.0, 32.0)).with_gpu_sprite(
-    solid_image("gpu-world", 4, RED),
+    solid_image(4, RED),
     40.0,
     32.0,
     4.0,
@@ -864,7 +864,7 @@ fn shake_moves_sprites_and_lines_together() {
     camera.add_trauma(1.0);
     // Green across y 32 (rows 30..34), under the sprite so its top shows
     spawn_line(ctx, -1);
-    let image = solid(ctx, "shake-red", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(40.0, 32.0),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
@@ -929,11 +929,11 @@ fn spawn_camera(ctx: &mut SceneContext, at: Vec2, camera: Camera2d) -> Entity {
 fn two_cameras_split_the_window() {
   let scene = Fixture::new(|ctx| {
     // Red at (-1000, 0), blue at (1000, 0); each half looks at one
-    let image = solid(ctx, "split-red", 16, RED);
+    let image = solid(ctx, 16, RED);
     ctx
       .world
       .spawn((Transform::from_xy(-1000.0, 0.0), Renderable::image(image)));
-    let image = solid(ctx, "split-blue", 16, BLUE);
+    let image = solid(ctx, 16, BLUE);
     ctx
       .world
       .spawn((Transform::from_xy(1000.0, 0.0), Renderable::image(image)));
@@ -959,11 +959,11 @@ fn two_cameras_split_the_window() {
 #[test]
 fn an_overlay_camera_draws_over_the_main_view() {
   let scene = Fixture::new(|ctx| {
-    let image = solid(ctx, "main-red", 64, RED);
+    let image = solid(ctx, 64, RED);
     ctx
       .world
       .spawn((Transform::from_xy(32.0, 32.0), Renderable::image(image)));
-    let image = solid(ctx, "far-green", 8, GREEN);
+    let image = solid(ctx, 8, GREEN);
     ctx
       .world
       .spawn((Transform::from_xy(500.0, 500.0), Renderable::image(image)));
@@ -993,7 +993,7 @@ fn an_overlay_camera_draws_over_the_main_view() {
 #[test]
 fn render_layers_choose_what_a_camera_sees() {
   let scene = Fixture::new(|ctx| {
-    let image = solid(ctx, "layer-one", 8, GREEN);
+    let image = solid(ctx, 8, GREEN);
     ctx.world.spawn((
       Transform::from_xy(16.0, 16.0),
       Renderable::image(image),
@@ -1032,7 +1032,7 @@ fn a_sprite_shows_what_a_texture_camera_saw_this_frame() {
   impl Scene for Mirror {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
       // Far away: a green square, seen by a camera that renders to a texture
-      let image = solid(ctx, "rt-green", 16, GREEN);
+      let image = solid(ctx, 16, GREEN);
       ctx
         .world
         .spawn((Transform::from_xy(1000.0, 1000.0), Renderable::image(image)));
@@ -1096,7 +1096,7 @@ fn a_texture_camera_draws_into_its_viewport_of_the_target() {
   struct HalfMirror;
   impl Scene for HalfMirror {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let image = solid(ctx, "half-green", 4, GREEN);
+      let image = solid(ctx, 4, GREEN);
       ctx
         .world
         .spawn((Transform::from_xy(1000.0, 1000.0), Renderable::image(image)));
@@ -1142,11 +1142,11 @@ struct Over(BlendMode);
 
 impl Scene for Over {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let image = solid(ctx, "under-grey", 32, [100, 100, 100, 255]);
+    let image = solid(ctx, 32, [100, 100, 100, 255]);
     ctx
       .world
       .spawn((Transform::from_xy(16.0, 16.0), Renderable::image(image)));
-    let image = solid(ctx, "over-colour", 16, [120, 60, 30, 255]);
+    let image = solid(ctx, 16, [120, 60, 30, 255]);
     ctx.world.spawn((
       Transform::from_xy(16.0, 16.0),
       Renderable::image(image).with_z_order(1).with_blend(self.0),
@@ -1193,11 +1193,11 @@ fn a_transparent_render_target_shows_without_dark_edges() {
   impl Scene for Glass {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
       // White ground; a half-transparent red square seen two ways
-      let image = solid(ctx, "glass-white", 64, [255, 255, 255, 255]);
+      let image = solid(ctx, 64, [255, 255, 255, 255]);
       ctx
         .world
         .spawn((Transform::from_xy(32.0, 16.0), Renderable::image(image)));
-      let red = solid(ctx, "glass-red", 8, [220, 30, 40, 128]);
+      let red = solid(ctx, 8, [220, 30, 40, 128]);
       ctx.world.spawn((
         Transform::from_xy(16.0, 16.0),
         Renderable::image(red.clone()).with_z_order(1),
@@ -1278,7 +1278,7 @@ fn an_unlit_sprite_keeps_full_brightness_in_the_dark() {
   let scene = Fixture::new(|ctx| {
     ctx.lighting().set_ambient(AmbientLight::dark());
     ctx.lighting().set_enabled(true);
-    let red = solid(ctx, "dark-red", 8, RED);
+    let red = solid(ctx, 8, RED);
     ctx
       .world
       .spawn((Transform::from_xy(8.0, 8.0), Renderable::image(red.clone())));
@@ -1303,11 +1303,11 @@ fn a_custom_shader_draws_with_two_blend_modes_in_one_frame() {
         "two-blends",
         "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }",
       );
-      let grey = solid(ctx, "two-grey", 64, [100, 100, 100, 255]);
+      let grey = solid(ctx, 64, [100, 100, 100, 255]);
       ctx
         .world
         .spawn((Transform::from_xy(32.0, 16.0), Renderable::image(grey)));
-      let colour = solid(ctx, "two-colour", 8, [120, 60, 30, 255]);
+      let colour = solid(ctx, 8, [120, 60, 30, 255]);
       for (x, blend) in [(16.0, BlendMode::Alpha), (48.0, BlendMode::Additive)] {
         ctx.world.spawn((
           Transform::from_xy(x, 16.0),
@@ -1486,7 +1486,7 @@ fn a_tiled_trail_repeats_its_texture_without_seams() {
 #[test]
 fn an_additive_line_brightens_what_is_under_it() {
   let scene = Fixture::new(|ctx| {
-    let image = solid(ctx, "line-under", 32, [100, 100, 100, 255]);
+    let image = solid(ctx, 32, [100, 100, 100, 255]);
     ctx
       .world
       .spawn((Transform::from_xy(16.0, 8.0), Renderable::image(image)));
@@ -1588,7 +1588,7 @@ fn a_debug_line_is_one_pixel_wide_when_zoomed_out() {
 fn split_screen_cameras_each_see_their_own_parallax() {
   let scene = Fixture::new(|ctx| {
     // A screen-fixed layer (scroll 0) sits at each viewport's top-left
-    let green = solid(ctx, "plx-green", 8, GREEN);
+    let green = solid(ctx, 8, GREEN);
     ctx.world.spawn(ParallaxLayer::new(&green));
     ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
     ctx.world.spawn((
@@ -1615,7 +1615,7 @@ fn pixel_art_sprites_turn_with_a_rotated_camera() {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
       ctx.camera().set_position(32.0, 16.0);
       ctx.camera().set_rotation(self.0);
-      let image = solid(ctx, "turned-red", 16, RED);
+      let image = solid(ctx, 16, RED);
       ctx
         .world
         .spawn((Transform::from_xy(32.0, 16.0), Renderable::image(image)));
@@ -1657,7 +1657,7 @@ struct PileUp;
 
 impl Scene for PileUp {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let white = solid(ctx, "pile-white", 32, [255, 255, 255, 255]);
+    let white = solid(ctx, 32, [255, 255, 255, 255]);
     for z in 0..2 {
       ctx.world.spawn((
         Transform::from_xy(16.0, 16.0),
@@ -1667,7 +1667,7 @@ impl Scene for PileUp {
       ));
     }
     // sRGB 188 is half in linear light
-    let image = solid(ctx, "pile-half", 32, [188, 188, 188, 255]);
+    let image = solid(ctx, 32, [188, 188, 188, 255]);
     ctx.world.spawn((
       Transform::from_xy(16.0, 16.0),
       Renderable::image(image)
@@ -1695,7 +1695,7 @@ fn light_above_white_survives_until_the_tonemap() {
 #[test]
 fn a_glowing_line_over_white_keeps_its_look() {
   let scene = Fixture::new(|ctx| {
-    let image = solid(ctx, "glow-white", 64, [255, 255, 255, 255]);
+    let image = solid(ctx, 64, [255, 255, 255, 255]);
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
       Renderable::image(image)

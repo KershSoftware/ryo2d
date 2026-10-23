@@ -10,7 +10,7 @@ const GREEN: [u8; 4] = [0, 255, 0, 255];
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 
 /// A 4 px square of `c`
-fn solid(_name: &str, c: [u8; 4]) -> Image {
+fn solid(c: [u8; 4]) -> Image {
   Image::solid_rect(4, 4, c[0], c[1], c[2], c[3])
 }
 
@@ -108,13 +108,7 @@ fn inside(x: u32, y: u32, min: u32, max: u32) -> bool {
 
 #[test]
 fn outline_ignores_atlas_neighbours() {
-  let mut scene = AtlasScene::new(
-    vec![
-      solid("atlas-outline-red", RED),
-      solid("atlas-outline-blue", BLUE),
-    ],
-    4.0,
-  );
+  let mut scene = AtlasScene::new(vec![solid(RED), solid(BLUE)], 4.0);
   scene.effect = Some(SpriteEffect::outline(color(GREEN), 2));
   let Some(frame) = render(scene) else {
     return;
@@ -148,7 +142,7 @@ fn tint_matches_the_cpu() {
   let tints = [Color::rgb(200, 100, 50), Color::rgb(200, 133, 255)];
   for source in sources {
     for tint in tints {
-      let mut scene = AtlasScene::new(vec![solid("atlas-tint-source", source)], 4.0);
+      let mut scene = AtlasScene::new(vec![solid(source)], 4.0);
       scene.tint = tint;
       let Some(frame) = render(scene) else {
         return;
@@ -173,7 +167,7 @@ fn tint_expectations_follow_the_cpu_formula() {
 
 #[test]
 fn directional_outline_draws() {
-  let mut scene = AtlasScene::new(vec![solid("atlas-directional-red", RED)], 4.0);
+  let mut scene = AtlasScene::new(vec![solid(RED)], 4.0);
   scene.effect = Some(SpriteEffect::directional_outline(
     color(GREEN),
     color(MAGENTA),

@@ -13,7 +13,6 @@ use super::oracle::*;
 use crate::core::asset::Handle;
 use crate::core::ecs::kernel::{ChildOf, Children, Entity, World};
 use crate::core::graphics::Image;
-use crate::core::graphics::test_handle;
 use crate::core::input::{Binding, GamepadButton, InputDevice, PadFamily};
 use crate::core::testing::UiHarness;
 use crate::core::text::{FontRole, Fonts, TextReveal};
@@ -619,34 +618,29 @@ fn theme_scale_and_device_changes_look_the_same_cached() {
   assert_cached(&run);
 }
 
-/// One image per colour, the same in every run, so runs draw alike
-fn icon(r: u8, g: u8, b: u8) -> Handle<Image> {
-  thread_local! {
-    static ICONS: std::cell::RefCell<Vec<([u8; 3], Handle<Image>)>> =
-      std::cell::RefCell::default();
-  }
-  ICONS.with_borrow_mut(|icons| {
-    if let Some((_, icon)) = icons.iter().find(|(colour, _)| *colour == [r, g, b]) {
-      return icon.clone();
-    }
-    let icon = test_handle(Image::solid_rect(16, 16, r, g, b, 255));
-    icons.push(([r, g, b], icon.clone()));
-    icon
-  })
+/// A 16 px icon of one colour in `h`'s store; each run adds its icons in
+/// the same order, so their ids match from run to run
+fn icon(h: &mut UiHarness, r: u8, g: u8, b: u8) -> Handle<Image> {
+  h.registry().add(Image::solid_rect(16, 16, r, g, b, 255))
 }
 
 /// An inventory: a grid of eight slots in a focus scope, three holding
 /// items, every one a drag source and all but the last a drop target
-fn inventory() -> UiNode {
+fn inventory(h: &mut UiHarness) -> UiNode {
+  let icons = [
+    icon(h, 200, 50, 50),
+    icon(h, 50, 200, 50),
+    icon(h, 50, 50, 200),
+  ];
   let slot = |i: usize| {
     let mut slot = UiNode::slot().drag_source().name(format!("s{i}"));
     if i < 7 {
       slot = slot.drop_target();
     }
     match i {
-      0 => slot.icon(icon(200, 50, 50)).count(3).default_focus(),
-      2 => slot.icon(icon(50, 200, 50)),
-      5 => slot.icon(icon(50, 50, 200)).count(12),
+      0 => slot.icon(icons[0].clone()).count(3).default_focus(),
+      2 => slot.icon(icons[1].clone()),
+      5 => slot.icon(icons[2].clone()).count(12),
       _ => slot,
     }
   };
@@ -727,7 +721,8 @@ fn drag_and_drop_in_an_inventory_looks_the_same_cached() {
     .frames(3);
   let run = oracle_with(
     |h| {
-      h.spawn_ui(inventory());
+      let tree = inventory(h);
+      h.spawn_ui(tree);
     },
     &|_, _, _| {},
     &move_dropped,
@@ -1481,8 +1476,10 @@ const KITCHEN: [&str; 24] = [
 /// button, an image, a rebinding row and a prompt; nested scroll areas
 /// holding a popup's anchor; slots to drag between; a typewriter over a
 /// choice list; a list of 100 rows
-fn kitchen() -> UiNode {
+fn kitchen(h: &mut UiHarness) -> UiNode {
   use crate::core::ui::Anchor;
+  let picture = icon(h, 90, 90, 200);
+  let icons = [icon(h, 200, 90, 90), icon(h, 90, 200, 90)];
   let left = UiNode::column()
     .gap(4.0)
     .name("left")
@@ -1515,7 +1512,7 @@ fn kitchen() -> UiNode {
     .child(UiNode::button("Tip").tooltip("A tip").name("tip"))
     .child(UiNode::button("Off").enabled(false).name("off"))
     .child(
-      UiNode::image(icon(90, 90, 200))
+      UiNode::image(picture)
         .image_size(24.0, 24.0)
         .tooltip("Picture")
         .name("picture"),
@@ -1537,8 +1534,8 @@ fn kitchen() -> UiNode {
       .drop_target()
       .name(format!("g{i}"));
     match i {
-      0 => slot.icon(icon(200, 90, 90)).count(2),
-      4 => slot.icon(icon(90, 200, 90)),
+      0 => slot.icon(icons[0].clone()).count(2),
+      4 => slot.icon(icons[1].clone()),
       _ => slot,
     }
   });
@@ -1729,7 +1726,8 @@ fn three_thousand_random_frames_over_every_kind_of_node_look_the_same_cached() {
   let run = oracle_with(
     |h| {
       with_prompts(h);
-      h.spawn_ui(kitchen());
+      let tree = kitchen(h);
+      h.spawn_ui(tree);
       h.spawn_ui(kitchen_hud());
     },
     &ui,

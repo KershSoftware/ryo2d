@@ -35,7 +35,6 @@ impl AmbientOcclusionPage {
     width: u32,
     height: u32,
     color: (u8, u8, u8),
-    _name: &str,
   ) -> Entity {
     let sprite = ctx.assets().add(Image::solid_rect(
       width, height, color.0, color.1, color.2, 255,
@@ -95,7 +94,6 @@ impl DemoPage for AmbientOcclusionPage {
       200,
       300,
       (100, 120, 140),
-      "wall_left",
     ));
     self.sprites.push(Self::spawn_box(
       ctx,
@@ -104,26 +102,13 @@ impl DemoPage for AmbientOcclusionPage {
       200,
       300,
       (100, 120, 140),
-      "wall_right",
     ));
-    self.sprites.push(Self::spawn_box(
-      ctx,
-      400.0,
-      200.0,
-      480,
-      80,
-      (120, 140, 160),
-      "ceiling",
-    ));
-    self.sprites.push(Self::spawn_box(
-      ctx,
-      400.0,
-      420.0,
-      480,
-      80,
-      (80, 100, 120),
-      "floor",
-    ));
+    self
+      .sprites
+      .push(Self::spawn_box(ctx, 400.0, 200.0, 480, 80, (120, 140, 160)));
+    self
+      .sprites
+      .push(Self::spawn_box(ctx, 400.0, 420.0, 480, 80, (80, 100, 120)));
 
     // Inner box creating more corners
     self.sprites.push(Self::spawn_box(
@@ -133,28 +118,15 @@ impl DemoPage for AmbientOcclusionPage {
       120,
       100,
       (140, 150, 170),
-      "inner_box",
     ));
 
     // Side columns
-    self.sprites.push(Self::spawn_box(
-      ctx,
-      100.0,
-      150.0,
-      60,
-      400,
-      (90, 110, 130),
-      "column_left",
-    ));
-    self.sprites.push(Self::spawn_box(
-      ctx,
-      1120.0,
-      150.0,
-      60,
-      400,
-      (90, 110, 130),
-      "column_right",
-    ));
+    self
+      .sprites
+      .push(Self::spawn_box(ctx, 100.0, 150.0, 60, 400, (90, 110, 130)));
+    self
+      .sprites
+      .push(Self::spawn_box(ctx, 1120.0, 150.0, 60, 400, (90, 110, 130)));
 
     // Small boxes scattered around
     let small_boxes = [
@@ -164,16 +136,10 @@ impl DemoPage for AmbientOcclusionPage {
       (950.0, 350.0, 45, 45, (100, 100, 80)),
     ];
 
-    for (i, (x, y, w, h, color)) in small_boxes.iter().enumerate() {
-      self.sprites.push(Self::spawn_box(
-        ctx,
-        *x,
-        *y,
-        *w,
-        *h,
-        *color,
-        &format!("small_box_{}", i),
-      ));
+    for (x, y, w, h, color) in &small_boxes {
+      self
+        .sprites
+        .push(Self::spawn_box(ctx, *x, *y, *w, *h, *color));
     }
   }
 

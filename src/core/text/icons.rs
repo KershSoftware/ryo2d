@@ -60,11 +60,11 @@ mod tests {
   #[test]
   fn icons_are_found_by_name_and_replaced() {
     let mut images = crate::core::asset::Assets::default();
-    let mut sprite = |_name: &str| images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
+    let mut sprite = || images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
     let mut icons = TextIcons::default();
-    icons.insert("a_button", sprite("a"));
+    icons.insert("a_button", sprite());
     assert!(icons.get("a_button").is_some_and(|i| i.region.is_none()));
-    icons.insert_region("a_button", sprite("sheet"), Rect::new(0.0, 0.0, 2.0, 2.0));
+    icons.insert_region("a_button", sprite(), Rect::new(0.0, 0.0, 2.0, 2.0));
     assert_eq!(
       icons.get("a_button").and_then(|i| i.region),
       Some(Rect::new(0.0, 0.0, 2.0, 2.0))

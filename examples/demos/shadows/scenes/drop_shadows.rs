@@ -105,7 +105,6 @@ impl DropShadowsPage {
     y: f32,
     size: u32,
     color: (u8, u8, u8),
-    _name: &str,
     shadow: DropShadow,
   ) -> Entity {
     let sprite = ctx.assets().add(Image::solid_rect(
@@ -123,13 +122,7 @@ impl DropShadowsPage {
       .id()
   }
 
-  fn spawn_character_sprite(
-    ctx: &mut SceneContext,
-    x: f32,
-    y: f32,
-    _name: &str,
-    shadow: DropShadow,
-  ) -> Entity {
+  fn spawn_character_sprite(ctx: &mut SceneContext, x: f32, y: f32, shadow: DropShadow) -> Entity {
     // Create a simple character-like sprite (head + body)
     let sprite = ctx
       .assets()
@@ -217,7 +210,6 @@ impl DemoPage for DropShadowsPage {
         y,
         48,
         color,
-        &format!("box_{}", i),
         shadow.clone(),
       );
       self.sprites.push(entity);
@@ -226,13 +218,8 @@ impl DemoPage for DropShadowsPage {
     // Add some "character" sprites at the bottom
     let char_y = 500.0;
     for i in 0..3 {
-      let entity = Self::spawn_character_sprite(
-        ctx,
-        300.0 + i as f32 * 250.0,
-        char_y,
-        &format!("char_{}", i),
-        shadow.clone(),
-      );
+      let entity =
+        Self::spawn_character_sprite(ctx, 300.0 + i as f32 * 250.0, char_y, shadow.clone());
       self.sprites.push(entity);
     }
   }

@@ -7,7 +7,7 @@ fn engine(scene: impl Scene + 'static) -> Option<HeadlessEngine> {
   HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(64, 64).start_scene(scene))
 }
 
-fn spawn_sprite(ctx: &mut SceneContext, sprite: Image, _name: &str) {
+fn spawn_sprite(ctx: &mut SceneContext, sprite: Image) {
   let handle = ctx.assets().add(sprite);
   ctx.world.spawn((
     Transform::from_xy(0.0, 0.0),
@@ -20,7 +20,7 @@ struct StackedEffects;
 
 impl Scene for StackedEffects {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    spawn_sprite(ctx, Image::solid_rect(64, 64, 128, 128, 128, 255), "grey");
+    spawn_sprite(ctx, Image::solid_rect(64, 64, 128, 128, 128, 255));
     ctx.effects().set_vignette_custom(1.0, 0.2, 0.3);
     // Comes after the vignette in the chain; its params.x (0.01) would all but
     // disable the vignette if the vignette read it.
@@ -55,7 +55,7 @@ struct DefaultVignette;
 
 impl Scene for DefaultVignette {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    spawn_sprite(ctx, Image::solid_rect(64, 64, 128, 128, 128, 255), "grey");
+    spawn_sprite(ctx, Image::solid_rect(64, 64, 128, 128, 128, 255));
     ctx.effects().set_vignette(1.0);
   }
 
@@ -95,7 +95,7 @@ impl Scene for BrightLine {
         pixels.extend_from_slice(&[v, v, v, 255]);
       }
     }
-    spawn_sprite(ctx, Image::from_rgba(pixels, 64, 64), "line");
+    spawn_sprite(ctx, Image::from_rgba(pixels, 64, 64));
     if self.bloom {
       ctx.effects().set_bloom_custom(0.5, 1.0, 5.0, 2);
     }
@@ -351,7 +351,7 @@ impl Scene for BrightDot {
         pixels.extend_from_slice(&[v, v, v, 255]);
       }
     }
-    spawn_sprite(ctx, Image::from_rgba(pixels, 128, 64), "dot");
+    spawn_sprite(ctx, Image::from_rgba(pixels, 128, 64));
     ctx.effects().set_bloom_custom(0.1, 5.0, 5.0, 1);
   }
 
@@ -404,7 +404,7 @@ impl Scene for BrightSquare {
         pixels.extend_from_slice(&[v, v, v, 255]);
       }
     }
-    spawn_sprite(ctx, Image::from_rgba(pixels, 128, 64), "square");
+    spawn_sprite(ctx, Image::from_rgba(pixels, 128, 64));
     ctx.effects().set_bloom_custom(0.1, 5.0, 5.0, 1);
   }
 

@@ -451,6 +451,10 @@ impl GameScene {
   pub(super) fn spawn_nebula(&mut self, ctx: &mut SceneContext) {
     use crate::constants::{NEBULA_ORB_SIZE, Z_NEBULA};
 
+    let Some(orb_sprite) = self.nebula_orb_sprite.clone() else {
+      return;
+    };
+
     let mut rng = rand::thread_rng();
 
     // Spawn nebula in upper area of screen
@@ -473,7 +477,7 @@ impl GameScene {
 
     // Create the 3 orb child entities
     for (i, orb_pos) in orb_positions.iter().enumerate() {
-      let sprite = self.nebula_orb_sprite.clone();
+      let sprite = orb_sprite.clone();
 
       ctx.world.spawn((
         Transform::from_xy(orb_pos.x, orb_pos.y),
@@ -763,7 +767,9 @@ impl GameScene {
     let offset_x = (rocket_index as f32 - 1.5) * ROCKET_LAUNCH_SPREAD * 0.3;
 
     let rocket = Rocket::new(offset_x);
-    let sprite = self.rocket_sprite.clone();
+    let Some(sprite) = self.rocket_sprite.clone() else {
+      return;
+    };
 
     // Trail for rocket
     let trail = Trail2D::new(Color::new(255, 150, 50, 180), 4.0)

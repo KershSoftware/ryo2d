@@ -12,7 +12,7 @@ const RED: [u8; 4] = [220, 30, 40, 255];
 const GREEN: [u8; 4] = [30, 200, 60, 255];
 
 /// A `size` px square of `c`, added to the scene's world
-fn solid(ctx: &mut SceneContext, _name: &str, size: u32, c: [u8; 4]) -> Handle<Image> {
+fn solid(ctx: &mut SceneContext, size: u32, c: [u8; 4]) -> Handle<Image> {
   ctx
     .assets()
     .add(Image::solid_rect(size, size, c[0], c[1], c[2], c[3]))
@@ -89,7 +89,7 @@ fn render(engine: &mut HeadlessEngine) -> image::RgbaImage {
 fn custom_shader_inverts_its_sprite() {
   let shader = ShaderHandle::from_source("t2-invert.wgsl", INVERT);
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t2-inv-red", 20, RED);
+    let image = solid(ctx, 20, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 20.0),
       Renderable::image(image)
@@ -136,7 +136,7 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 fn sprite_time_advances() {
   let shader = ShaderHandle::from_source("t2-clock.wgsl", CLOCK);
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t2-clock-red", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
@@ -160,7 +160,7 @@ fn sprite_time_advances() {
 fn params_reach_the_shader() {
   let shader = ShaderHandle::from_source("t2-params.wgsl", PARAMS);
   let scene = Fixture::entities(move |ctx| {
-    let sprite = solid(ctx, "t2-params-red", 10, RED);
+    let sprite = solid(ctx, 10, RED);
     let on = SpriteShader::custom(shader.clone())
       .with_param("a", 1.0)
       .with_param("color", Color::rgb(10, 200, 90));
@@ -199,7 +199,7 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 ";
   let shader = ShaderHandle::from_source("t2-shift.wgsl", shifted);
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t2-shift-red", 8, RED);
+    let image = solid(ctx, 8, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
@@ -207,7 +207,7 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
         .with_shader(SpriteShader::custom(shader.clone())),
     ));
     // Right next to it, on the same atlas page
-    let image = solid(ctx, "t2-shift-green", 8, GREEN);
+    let image = solid(ctx, 8, GREEN);
     ctx.world.spawn((
       Transform::from_xy(18.0, 10.0),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
@@ -242,7 +242,7 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 fn tint_applies_after_the_custom_shader() {
   let shader = ShaderHandle::from_source("t2-tint.wgsl", IDENTITY);
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t2-tint-grey", 10, [200, 200, 200, 255]);
+    let image = solid(ctx, 10, [200, 200, 200, 255]);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
@@ -273,7 +273,7 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 ";
   let blue = ShaderHandle::from_source("t2-mat-blue.wgsl", blue);
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t2-mat-red", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
@@ -304,7 +304,7 @@ fn render_gpu_sprites_can_use_custom_shaders() {
     }
   });
   scene.setup = Some(Box::new(move |ctx| {
-    *added.lock().unwrap() = Some(solid(ctx, "t2-gpu-red", 4, RED));
+    *added.lock().unwrap() = Some(solid(ctx, 4, RED));
   }));
   let Some(mut engine) = start(scene) else {
     return;
@@ -323,7 +323,7 @@ fn broken_sprite_shader_falls_back() {
 ";
   let shader = ShaderHandle::from_source(id, source);
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t2-broken-red", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
@@ -352,7 +352,7 @@ fn replaced_source_changes_the_next_frame() {
   let shader = ShaderHandle::from_source("t2-replace.wgsl", IDENTITY);
   let handle = shader.clone();
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t2-replace-red", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
@@ -374,7 +374,7 @@ fn replaced_source_changes_the_next_frame() {
 fn material_built_in_effect_wins_over_renderable_shader() {
   let identity = ShaderHandle::from_source("t2-mat-builtin-identity.wgsl", IDENTITY);
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t2-mat-builtin-red", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
@@ -396,7 +396,7 @@ fn fixed_shader_recovers_after_an_error() {
   let shader = ShaderHandle::from_source("t2-recover.wgsl", "fn sprite( {");
   let handle = shader.clone();
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t2-recover-red", 10, RED);
+    let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
@@ -447,7 +447,7 @@ struct EffectScene {
 
 impl Scene for EffectScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let image = solid(ctx, "t3-red-screen", 64, RED);
+    let image = solid(ctx, 64, RED);
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
@@ -683,7 +683,7 @@ fn effect_uv_runs_from_the_top_left() {
 fn a_custom_shader_applies_once_the_gpu_has_accepted_it() {
   let shader = ShaderHandle::from_source("t3-pending.wgsl", INVERT);
   let scene = Fixture::entities(move |ctx| {
-    let image = solid(ctx, "t3-pending-red", 20, RED);
+    let image = solid(ctx, 20, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 20.0),
       Renderable::image(image)
@@ -710,7 +710,7 @@ fn a_custom_shader_applies_once_the_gpu_has_accepted_it() {
 /// A red square seen by a texture camera, shown by a sprite with `shader`.
 fn red_through_a_target(shader: SpriteShader) -> Fixture {
   Fixture::entities(move |ctx| {
-    let image = solid(ctx, "rt-red", 16, RED);
+    let image = solid(ctx, 16, RED);
     ctx
       .world
       .spawn((Transform::from_xy(1000.0, 1000.0), Renderable::image(image)));

@@ -9,7 +9,9 @@ use super::GameScene;
 
 impl GameScene {
   pub(super) fn spawn_player(&mut self, ctx: &mut SceneContext) {
-    let sprite = self.player_sprite.clone();
+    let Some(sprite) = self.player_sprite.clone() else {
+      return;
+    };
     // Spawn player at center-bottom of screen (positions are sprite centres)
     let spawn_y = self.screen_height - 240.0; // Near bottom
     let player_entity = ctx
@@ -53,7 +55,9 @@ impl GameScene {
   }
 
   pub(super) fn spawn_platforms(&mut self, ctx: &mut SceneContext) {
-    let sprite = self.platform_sprite.clone();
+    let Some(sprite) = self.platform_sprite.clone() else {
+      return;
+    };
     let sw = self.screen_width;
     let sh = self.screen_height;
 
@@ -145,7 +149,9 @@ impl GameScene {
   }
 
   pub(super) fn spawn_turrets(&mut self, ctx: &mut SceneContext) {
-    let sprite = self.turret_sprite.clone();
+    let Some(sprite) = self.turret_sprite.clone() else {
+      return;
+    };
     let mut rng = rand::thread_rng();
     let sh = self.screen_height;
     let sw = self.screen_width;
@@ -204,7 +210,9 @@ impl GameScene {
   }
 
   pub(super) fn spawn_barriers(&mut self, ctx: &mut SceneContext) {
-    let sprite = self.barrier_sprite.clone();
+    let Some(sprite) = self.barrier_sprite.clone() else {
+      return;
+    };
     let center_x = self.screen_width / 2.0;
 
     // Vertical movement bounds of the barrier's centre (top edge at 150 or
@@ -246,7 +254,9 @@ impl GameScene {
   pub(super) fn spawn_drone(&mut self, ctx: &mut SceneContext) {
     use crate::constants::{DRONE_SIZE, Z_DRONE};
 
-    let sprite = self.drone_sprite.clone();
+    let Some(sprite) = self.drone_sprite.clone() else {
+      return;
+    };
 
     // Spawn drone in center-upper area of screen
     let spawn_x = self.screen_width / 2.0;
@@ -329,7 +339,9 @@ impl GameScene {
     }
 
     // Fallback: direct spawning if pool unavailable
-    let sprite = self.bullet_sprite.clone();
+    let Some(sprite) = self.bullet_sprite.clone() else {
+      return;
+    };
     let bullet = ctx
       .world
       .spawn((
@@ -358,7 +370,9 @@ impl GameScene {
 
   pub(super) fn create_explosion(&mut self, ctx: &mut SceneContext, x: f32, y: f32) {
     let mut rng = rand::thread_rng();
-    let sprite = self.particle_sprite.clone();
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
 
     for _ in 0..PARTICLES_PER_EXPLOSION {
       let angle = rng.gen_range(0.0..std::f32::consts::TAU);
@@ -380,7 +394,9 @@ impl GameScene {
   }
 
   pub(super) fn spawn_additional_turrets(&mut self, ctx: &mut SceneContext, count: u32) {
-    let sprite = self.turret_sprite.clone();
+    let Some(sprite) = self.turret_sprite.clone() else {
+      return;
+    };
     let mut rng = rand::thread_rng();
     let sh = self.screen_height;
     let sw = self.screen_width;

@@ -74,7 +74,8 @@ impl DemoScene {
 
 struct ParticlesPage {
   current_scene: DemoScene,
-  particle_sprite: Handle<Image>,
+  /// The particles' sprite, added on enter
+  particle_sprite: Option<Handle<Image>>,
   screen_width: f32,
   screen_height: f32,
 
@@ -92,12 +93,9 @@ struct ParticlesPage {
 
 impl ParticlesPage {
   fn new(scene: DemoScene) -> Self {
-    // A placeholder, in a store of its own: enter replaces it with the
-    // world's own before anything draws
-    let placeholder = Image::solid_circle(8, 255, 255, 255, 255);
     Self {
       current_scene: scene,
-      particle_sprite: Assets::<Image>::default().add(placeholder),
+      particle_sprite: None,
       screen_width: 0.0,
       screen_height: 0.0,
       particle_system: ParticleSystem::new(),
@@ -128,13 +126,16 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_fire(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     let cx = self.screen_width / 2.0;
 
     // Large bonfire in center
     let fire = world
       .spawn((
         Transform::from_xy(cx, self.screen_height - 100.0),
-        ParticleEmitter::fire(self.particle_sprite.clone()),
+        ParticleEmitter::fire(sprite.clone()),
       ))
       .id();
     self.emitters.push(fire);
@@ -144,7 +145,7 @@ impl ParticlesPage {
       let flame = world
         .spawn((
           Transform::from_xy(x, self.screen_height - 80.0),
-          ParticleEmitter::flame_small(self.particle_sprite.clone()),
+          ParticleEmitter::flame_small(sprite.clone()),
         ))
         .id();
       self.emitters.push(flame);
@@ -156,7 +157,7 @@ impl ParticlesPage {
       let candle = world
         .spawn((
           Transform::from_xy(x, self.screen_height - 220.0),
-          ParticleEmitter::flame_small(self.particle_sprite.clone())
+          ParticleEmitter::flame_small(sprite.clone())
             .with_mode(EmissionMode::Continuous { rate: 8.0 }),
         ))
         .id();
@@ -167,7 +168,7 @@ impl ParticlesPage {
     let embers = world
       .spawn((
         Transform::from_xy(cx, self.screen_height - 120.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 12.0 })
           .with_shape(EmissionShape::Line {
             start_x: -60.0,
@@ -190,6 +191,9 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_smoke(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     let cx = self.screen_width / 2.0;
 
     // Light smoke columns spread across scene
@@ -197,7 +201,7 @@ impl ParticlesPage {
       let smoke = world
         .spawn((
           Transform::from_xy(x, self.screen_height - 50.0),
-          ParticleEmitter::smoke(self.particle_sprite.clone()),
+          ParticleEmitter::smoke(sprite.clone()),
         ))
         .id();
       self.emitters.push(smoke);
@@ -207,7 +211,7 @@ impl ParticlesPage {
     let thick = world
       .spawn((
         Transform::from_xy(cx, self.screen_height - 150.0),
-        ParticleEmitter::smoke_thick(self.particle_sprite.clone()),
+        ParticleEmitter::smoke_thick(sprite.clone()),
       ))
       .id();
     self.emitters.push(thick);
@@ -216,7 +220,7 @@ impl ParticlesPage {
     let fog = world
       .spawn((
         Transform::from_xy(cx, self.screen_height - 30.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 8.0 })
           .with_shape(EmissionShape::Line {
             start_x: -400.0,
@@ -237,7 +241,7 @@ impl ParticlesPage {
     let steam = world
       .spawn((
         Transform::from_xy(self.screen_width - 200.0, self.screen_height - 50.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 15.0 })
           .with_shape(EmissionShape::Cone {
             direction: -std::f32::consts::FRAC_PI_2,
@@ -259,17 +263,18 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_explosions(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     // Auto-repeating explosion demos so the scene isn't empty
     let explosion1 = world
       .spawn((
         Transform::from_xy(300.0, self.screen_height / 2.0),
-        ParticleEmitter::explosion(self.particle_sprite.clone(), 30).with_mode(
-          EmissionMode::BurstRepeating {
-            count: 30,
-            interval: 2.5,
-            repeats: None,
-          },
-        ),
+        ParticleEmitter::explosion(sprite.clone(), 30).with_mode(EmissionMode::BurstRepeating {
+          count: 30,
+          interval: 2.5,
+          repeats: None,
+        }),
       ))
       .id();
     self.emitters.push(explosion1);
@@ -277,7 +282,7 @@ impl ParticlesPage {
     let explosion2 = world
       .spawn((
         Transform::from_xy(self.screen_width - 300.0, self.screen_height / 2.0),
-        ParticleEmitter::explosion_debris(self.particle_sprite.clone(), 20).with_mode(
+        ParticleEmitter::explosion_debris(sprite.clone(), 20).with_mode(
           EmissionMode::BurstRepeating {
             count: 20,
             interval: 3.0,
@@ -291,24 +296,25 @@ impl ParticlesPage {
     let explosion3 = world
       .spawn((
         Transform::from_xy(self.screen_width / 2.0, self.screen_height / 2.0 - 80.0),
-        ParticleEmitter::explosion(self.particle_sprite.clone(), 50).with_mode(
-          EmissionMode::BurstRepeating {
-            count: 50,
-            interval: 4.0,
-            repeats: None,
-          },
-        ),
+        ParticleEmitter::explosion(sprite.clone(), 50).with_mode(EmissionMode::BurstRepeating {
+          count: 50,
+          interval: 4.0,
+          repeats: None,
+        }),
       ))
       .id();
     self.emitters.push(explosion3);
   }
 
   fn spawn_explosion(&mut self, world: &mut World, x: f32, y: f32, debris: bool) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     if debris {
       let explosion = world
         .spawn((
           Transform::from_xy(x, y),
-          ParticleEmitter::explosion_debris(self.particle_sprite.clone(), 25),
+          ParticleEmitter::explosion_debris(sprite.clone(), 25),
         ))
         .id();
       self.emitters.push(explosion);
@@ -316,7 +322,7 @@ impl ParticlesPage {
       let explosion = world
         .spawn((
           Transform::from_xy(x, y),
-          ParticleEmitter::explosion(self.particle_sprite.clone(), 40),
+          ParticleEmitter::explosion(sprite.clone(), 40),
         ))
         .id();
       self.emitters.push(explosion);
@@ -328,6 +334,9 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_magic(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     let cx = self.screen_width / 2.0;
     let cy = self.screen_height / 2.0;
 
@@ -335,7 +344,7 @@ impl ParticlesPage {
     let magic = world
       .spawn((
         Transform::from_xy(cx - 250.0, cy),
-        ParticleEmitter::magic(self.particle_sprite.clone()),
+        ParticleEmitter::magic(sprite.clone()),
       ))
       .id();
     self.emitters.push(magic);
@@ -344,7 +353,7 @@ impl ParticlesPage {
     let heal = world
       .spawn((
         Transform::from_xy(cx + 250.0, cy),
-        ParticleEmitter::magic_heal(self.particle_sprite.clone()),
+        ParticleEmitter::magic_heal(sprite.clone()),
       ))
       .id();
     self.emitters.push(heal);
@@ -353,7 +362,7 @@ impl ParticlesPage {
     let ring = world
       .spawn((
         Transform::from_xy(cx, cy - 50.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 40.0 })
           .with_shape(EmissionShape::Circle {
             radius: 80.0,
@@ -371,7 +380,7 @@ impl ParticlesPage {
     let fountain = world
       .spawn((
         Transform::from_xy(cx, self.screen_height - 80.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 25.0 })
           .with_shape(EmissionShape::Cone {
             direction: -std::f32::consts::FRAC_PI_2,
@@ -393,13 +402,16 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_weather(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     // Rain covering left half (multiple emitters for wider coverage)
     for x in [200.0, 420.0] {
       let rain = world
         .spawn((
           Transform::from_xy(x, 0.0),
           // Live long enough to fall the full screen height
-          ParticleEmitter::rain(self.particle_sprite.clone())
+          ParticleEmitter::rain(sprite.clone())
             .with_mode(EmissionMode::Continuous { rate: 60.0 })
             .with_lifetime(1.3, 1.5),
         ))
@@ -413,7 +425,7 @@ impl ParticlesPage {
         .spawn((
           Transform::from_xy(x, 0.0),
           // Snow drifts at about 40 px/s, so it needs ~20 s to cross the screen
-          ParticleEmitter::snow(self.particle_sprite.clone())
+          ParticleEmitter::snow(sprite.clone())
             .with_mode(EmissionMode::Continuous { rate: 20.0 })
             .with_lifetime(19.0, 21.0),
         ))
@@ -436,17 +448,18 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_impacts(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     // Auto-repeating spark demos
     let sparks1 = world
       .spawn((
         Transform::from_xy(300.0, self.screen_height / 2.0),
-        ParticleEmitter::sparks(self.particle_sprite.clone()).with_mode(
-          EmissionMode::BurstRepeating {
-            count: 15,
-            interval: 1.5,
-            repeats: None,
-          },
-        ),
+        ParticleEmitter::sparks(sprite.clone()).with_mode(EmissionMode::BurstRepeating {
+          count: 15,
+          interval: 1.5,
+          repeats: None,
+        }),
       ))
       .id();
     self.emitters.push(sparks1);
@@ -454,13 +467,11 @@ impl ParticlesPage {
     let sparks2 = world
       .spawn((
         Transform::from_xy(self.screen_width - 300.0, self.screen_height / 2.0),
-        ParticleEmitter::sparks(self.particle_sprite.clone()).with_mode(
-          EmissionMode::BurstRepeating {
-            count: 15,
-            interval: 2.0,
-            repeats: None,
-          },
-        ),
+        ParticleEmitter::sparks(sprite.clone()).with_mode(EmissionMode::BurstRepeating {
+          count: 15,
+          interval: 2.0,
+          repeats: None,
+        }),
       ))
       .id();
     self.emitters.push(sparks2);
@@ -469,24 +480,25 @@ impl ParticlesPage {
     let dust = world
       .spawn((
         Transform::from_xy(self.screen_width / 2.0, self.screen_height / 2.0 + 50.0),
-        ParticleEmitter::dust(self.particle_sprite.clone()).with_mode(
-          EmissionMode::BurstRepeating {
-            count: 12,
-            interval: 2.5,
-            repeats: None,
-          },
-        ),
+        ParticleEmitter::dust(sprite.clone()).with_mode(EmissionMode::BurstRepeating {
+          count: 12,
+          interval: 2.5,
+          repeats: None,
+        }),
       ))
       .id();
     self.emitters.push(dust);
   }
 
   fn spawn_impact(&mut self, world: &mut World, x: f32, y: f32, is_sparks: bool) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     if is_sparks {
       let sparks = world
         .spawn((
           Transform::from_xy(x, y),
-          ParticleEmitter::sparks(self.particle_sprite.clone()),
+          ParticleEmitter::sparks(sprite.clone()),
         ))
         .id();
       self.emitters.push(sparks);
@@ -494,7 +506,7 @@ impl ParticlesPage {
       let dust = world
         .spawn((
           Transform::from_xy(x, y),
-          ParticleEmitter::dust(self.particle_sprite.clone()),
+          ParticleEmitter::dust(sprite.clone()),
         ))
         .id();
       self.emitters.push(dust);
@@ -506,6 +518,9 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_celebration(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     let cx = self.screen_width / 2.0;
 
     // Confetti bursts at multiple positions
@@ -513,13 +528,11 @@ impl ParticlesPage {
       let confetti = world
         .spawn((
           Transform::from_xy(x, self.screen_height - 50.0),
-          ParticleEmitter::confetti(self.particle_sprite.clone()).with_mode(
-            EmissionMode::BurstRepeating {
-              count: 25,
-              interval: 2.0,
-              repeats: None,
-            },
-          ),
+          ParticleEmitter::confetti(sprite.clone()).with_mode(EmissionMode::BurstRepeating {
+            count: 25,
+            interval: 2.0,
+            repeats: None,
+          }),
         ))
         .id();
       self.emitters.push(confetti);
@@ -530,7 +543,7 @@ impl ParticlesPage {
       let bubbles = world
         .spawn((
           Transform::from_xy(x, self.screen_height - 50.0),
-          ParticleEmitter::bubbles(self.particle_sprite.clone()),
+          ParticleEmitter::bubbles(sprite.clone()),
         ))
         .id();
       self.emitters.push(bubbles);
@@ -540,7 +553,7 @@ impl ParticlesPage {
     let firework = world
       .spawn((
         Transform::from_xy(cx, 120.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::BurstRepeating {
             count: 40,
             interval: 3.0,
@@ -562,6 +575,9 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_trails(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     self.trail_target_x = self.screen_width / 2.0;
     self.trail_target_y = self.screen_height / 2.0;
 
@@ -569,7 +585,7 @@ impl ParticlesPage {
     let comet = world
       .spawn((
         Transform::from_xy(self.trail_target_x, self.trail_target_y),
-        ParticleEmitter::comet_trail(self.particle_sprite.clone()),
+        ParticleEmitter::comet_trail(sprite.clone()),
       ))
       .id();
     self.emitters.push(comet);
@@ -579,7 +595,7 @@ impl ParticlesPage {
       let exhaust = world
         .spawn((
           Transform::from_xy(*x, self.screen_height - 100.0),
-          ParticleEmitter::exhaust(self.particle_sprite.clone()).with_shape(EmissionShape::Cone {
+          ParticleEmitter::exhaust(sprite.clone()).with_shape(EmissionShape::Cone {
             direction: if i == 0 {
               -std::f32::consts::FRAC_PI_4
             } else {
@@ -598,7 +614,7 @@ impl ParticlesPage {
     let center_exhaust = world
       .spawn((
         Transform::from_xy(self.screen_width / 2.0, self.screen_height - 60.0),
-        ParticleEmitter::exhaust(self.particle_sprite.clone()).with_shape(EmissionShape::Cone {
+        ParticleEmitter::exhaust(sprite.clone()).with_shape(EmissionShape::Cone {
           direction: -std::f32::consts::FRAC_PI_2,
           spread: 0.2,
           min_speed: 60.0,
@@ -629,6 +645,9 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_attractors(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     let cx = self.screen_width / 2.0;
     let cy = self.screen_height / 2.0;
     let [point_at, vortex_at, turbulence_at, repel_at] =
@@ -638,7 +657,7 @@ impl ParticlesPage {
     let emitter1 = world
       .spawn((
         Transform::from_xy(150.0, 250.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 25.0 })
           .with_shape(EmissionShape::Circle {
             radius: 20.0,
@@ -656,7 +675,7 @@ impl ParticlesPage {
     let emitter2 = world
       .spawn((
         Transform::from_xy(self.screen_width - 150.0, 250.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 25.0 })
           .with_shape(EmissionShape::Circle {
             radius: 20.0,
@@ -674,7 +693,7 @@ impl ParticlesPage {
     let emitter3 = world
       .spawn((
         Transform::from_xy(cx, self.screen_height - 200.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 30.0 })
           .with_shape(EmissionShape::Line {
             start_x: -80.0,
@@ -694,7 +713,7 @@ impl ParticlesPage {
     let emitter4 = world
       .spawn((
         Transform::from_xy(cx, cy),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 40.0 })
           .with_shape(EmissionShape::Point)
           .with_lifetime(3.0, 5.0)
@@ -747,6 +766,9 @@ impl ParticlesPage {
   // ---------------------------------------------------------------------------
 
   fn setup_combined(&mut self, world: &mut World) {
+    let Some(sprite) = self.particle_sprite.clone() else {
+      return;
+    };
     let cx = self.screen_width / 2.0;
     let cy = self.screen_height / 2.0;
 
@@ -754,8 +776,7 @@ impl ParticlesPage {
     let fire = world
       .spawn((
         Transform::from_xy(200.0, self.screen_height - 80.0),
-        ParticleEmitter::fire(self.particle_sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 40.0 }),
+        ParticleEmitter::fire(sprite.clone()).with_mode(EmissionMode::Continuous { rate: 40.0 }),
       ))
       .id();
     self.emitters.push(fire);
@@ -763,7 +784,7 @@ impl ParticlesPage {
     let smoke = world
       .spawn((
         Transform::from_xy(200.0, self.screen_height - 160.0),
-        ParticleEmitter::smoke(self.particle_sprite.clone()),
+        ParticleEmitter::smoke(sprite.clone()),
       ))
       .id();
     self.emitters.push(smoke);
@@ -772,8 +793,7 @@ impl ParticlesPage {
     let magic = world
       .spawn((
         Transform::from_xy(self.screen_width - 250.0, cy),
-        ParticleEmitter::magic(self.particle_sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 25.0 }),
+        ParticleEmitter::magic(sprite.clone()).with_mode(EmissionMode::Continuous { rate: 25.0 }),
       ))
       .id();
     self.emitters.push(magic);
@@ -799,7 +819,7 @@ impl ParticlesPage {
     let sparkle = world
       .spawn((
         Transform::from_xy(cx, 100.0),
-        ParticleEmitter::new(self.particle_sprite.clone())
+        ParticleEmitter::new(sprite.clone())
           .with_mode(EmissionMode::Continuous { rate: 25.0 })
           .with_shape(EmissionShape::Line {
             start_x: -150.0,
@@ -820,7 +840,7 @@ impl ParticlesPage {
     let bubbles = world
       .spawn((
         Transform::from_xy(self.screen_width - 150.0, self.screen_height - 50.0),
-        ParticleEmitter::bubbles(self.particle_sprite.clone()),
+        ParticleEmitter::bubbles(sprite.clone()),
       ))
       .id();
     self.emitters.push(bubbles);
@@ -829,13 +849,11 @@ impl ParticlesPage {
     let confetti = world
       .spawn((
         Transform::from_xy(cx, self.screen_height - 40.0),
-        ParticleEmitter::confetti(self.particle_sprite.clone()).with_mode(
-          EmissionMode::BurstRepeating {
-            count: 20,
-            interval: 3.5,
-            repeats: None,
-          },
-        ),
+        ParticleEmitter::confetti(sprite.clone()).with_mode(EmissionMode::BurstRepeating {
+          count: 20,
+          interval: 3.5,
+          repeats: None,
+        }),
       ))
       .id();
     self.emitters.push(confetti);
@@ -846,7 +864,7 @@ impl ParticlesPage {
       let candle = world
         .spawn((
           Transform::from_xy(x, self.screen_height - 200.0),
-          ParticleEmitter::flame_small(self.particle_sprite.clone())
+          ParticleEmitter::flame_small(sprite.clone())
             .with_mode(EmissionMode::Continuous { rate: 10.0 }),
         ))
         .id();
@@ -908,7 +926,7 @@ impl DemoPage for ParticlesPage {
 
     // Create a simple white particle sprite
     let sprite = Image::solid_circle(16, 255, 255, 255, 255);
-    self.particle_sprite = ctx.assets().add(sprite);
+    self.particle_sprite = Some(ctx.assets().add(sprite));
 
     // Set up initial scene
     self.setup_scene(ctx.world);

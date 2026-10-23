@@ -51,7 +51,6 @@ impl ContactShadowsPage {
     width: u32,
     height: u32,
     color: (u8, u8, u8),
-    _name: &str,
     shadow: ContactShadow,
   ) -> Entity {
     let sprite = ctx.assets().add(Image::solid_rect(
@@ -120,16 +119,7 @@ impl DemoPage for ContactShadowsPage {
     // Small boxes
     for i in 0..5 {
       let x = 150.0 + i as f32 * 100.0;
-      let entity = Self::spawn_object(
-        ctx,
-        x,
-        450.0,
-        30,
-        30,
-        (150, 100, 80),
-        &format!("box_{}", i),
-        shadow.clone(),
-      );
+      let entity = Self::spawn_object(ctx, x, 450.0, 30, 30, (150, 100, 80), shadow.clone());
       self.objects.push(entity);
     }
 
@@ -141,16 +131,7 @@ impl DemoPage for ContactShadowsPage {
     ];
 
     for (x, y, w, h, color) in tall_objects {
-      let entity = Self::spawn_object(
-        ctx,
-        x,
-        y,
-        w,
-        h,
-        color,
-        &format!("tall_{}", x as i32),
-        shadow.clone(),
-      );
+      let entity = Self::spawn_object(ctx, x, y, w, h, color, shadow.clone());
       self.objects.push(entity);
     }
 
@@ -161,16 +142,7 @@ impl DemoPage for ContactShadowsPage {
     ];
 
     for (x, y, w, h, color) in wide_objects {
-      let entity = Self::spawn_object(
-        ctx,
-        x,
-        y,
-        w,
-        h,
-        color,
-        &format!("wide_{}", x as i32),
-        shadow.clone(),
-      );
+      let entity = Self::spawn_object(ctx, x, y, w, h, color, shadow.clone());
       self.objects.push(entity);
     }
 
@@ -182,16 +154,7 @@ impl DemoPage for ContactShadowsPage {
     ];
 
     for (x, y, w, h, color) in characters {
-      let entity = Self::spawn_object(
-        ctx,
-        x,
-        y,
-        w,
-        h,
-        color,
-        &format!("char_{}", x as i32),
-        shadow.clone(),
-      );
+      let entity = Self::spawn_object(ctx, x, y, w, h, color, shadow.clone());
       self.objects.push(entity);
     }
   }

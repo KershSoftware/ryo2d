@@ -133,55 +133,52 @@ pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
   // Outer trees first: a code-built instance inside one is left alone by its
   // reload, or goes with its parent and is skipped
   stale.sort_by_cached_key(|&(entity, ..)| depth(world, entity));
-  let roots = {
-    let mut roots: Vec<UiReloaded> = Vec::new();
-    for (entity, source, now) in stale {
-      // Gone with an outer tree that was given a new kind
-      if world.get::<UiSource>(entity).is_none() {
-        continue;
+  let mut roots: Vec<UiReloaded> = Vec::new();
+  for (entity, source, now) in stale {
+    // Gone with an outer tree that was given a new kind
+    if world.get::<UiSource>(entity).is_none() {
+      continue;
+    }
+    let mut built: Option<Arc<TreeSource>> = None;
+    let built_tree = source
+      .file
+      .build_source(&source, &mut AssetsView::new(world));
+    let top = match built_tree {
+      Ok(tree) => {
+        built = tree.source.clone();
+        let instance = source.instance;
+        let was_root = world.get::<UiRoot>(entity).is_some();
+        let top = reconcile(world, entity, tree, Mode::Reload { instance });
+        if let Some(root) = root_of(world, top)
+          && !roots.iter().any(|reloaded| reloaded.root == root)
+        {
+          let replaced = (was_root && top != entity).then_some(entity);
+          roots.push(UiReloaded { root, replaced });
+        }
+        top
       }
-      let mut built: Option<Arc<TreeSource>> = None;
-      let built_tree = source
-        .file
-        .build_source(&source, &mut AssetsView::new(world));
-      let top = match built_tree {
-        Ok(tree) => {
-          built = tree.source.clone();
-          let instance = source.instance;
-          let was_root = world.get::<UiRoot>(entity).is_some();
-          let top = reconcile(world, entity, tree, Mode::Reload { instance });
-          if let Some(root) = root_of(world, top)
-            && !roots.iter().any(|reloaded| reloaded.root == root)
-          {
-            let replaced = (was_root && top != entity).then_some(entity);
-            roots.push(UiReloaded { root, replaced });
-          }
-          top
+      Err(error) => {
+        let path = source.file.path();
+        warn_once(format!("ui-rebuild:{path}:{now}"), || {
+          format!("could not rebuild a tree from {path}; keeping it as it was:\n{error}")
+        });
+        entity
+      }
+    };
+    // Not tried again until the file changes again
+    if let Some(mut held) = world.get_mut::<UiSource>(top) {
+      match built {
+        Some(built) => {
+          held.generation = built.generation;
+          held.source = built;
         }
-        Err(error) => {
-          let path = source.file.path();
-          warn_once(format!("ui-rebuild:{path}:{now}"), || {
-            format!("could not rebuild a tree from {path}; keeping it as it was:\n{error}")
-          });
-          entity
-        }
-      };
-      // Not tried again until the file changes again
-      if let Some(mut held) = world.get_mut::<UiSource>(top) {
-        match built {
-          Some(built) => {
-            held.generation = built.generation;
-            held.source = built;
-          }
-          None => held.generation = now,
-        }
+        None => held.generation = now,
       }
     }
-    Some(roots)
-  };
-  let Some(roots) = roots.filter(|roots| !roots.is_empty()) else {
+  }
+  if roots.is_empty() {
     return;
-  };
+  }
   register_message::<UiReloaded>(world);
   if let Some(mut messages) = world.get_resource_mut::<Messages<UiReloaded>>() {
     for reloaded in roots {

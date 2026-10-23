@@ -41,7 +41,7 @@ fn render(
 }
 
 /// 16x16, transparent but for one opaque white column at `column`
-fn column_sprite(ctx: &mut SceneContext, _name: &str, column: u32) -> Handle<Image> {
+fn column_sprite(ctx: &mut SceneContext, column: u32) -> Handle<Image> {
   let mut data = vec![0u8; 16 * 16 * 4];
   for y in 0..16 {
     let i = ((y * 16 + column) * 4) as usize;
@@ -68,7 +68,7 @@ fn wave_shifts_rows_by_its_amplitude_in_pixels_and_wraps() {
       speed: 0.0,
       time: FRAC_PI_2,
     };
-    let image = column_sprite(ctx, "wave-column", 14);
+    let image = column_sprite(ctx, 14);
     ctx.world.spawn((
       Transform::from_xy(16.0, 16.0),
       Renderable::image(image)
@@ -92,7 +92,7 @@ fn wave_follows_its_effect_time() {
         speed: 0.0,
         time,
       };
-      let image = column_sprite(ctx, "wave-time-column", 8);
+      let image = column_sprite(ctx, 8);
       ctx.world.spawn((
         Transform::from_xy(16.0, 16.0),
         Renderable::image(image)

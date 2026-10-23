@@ -54,15 +54,15 @@ pub struct GameScene {
   pub(super) best_time: f32,
   pub(super) player_lives: u32,
   pub(super) player_invincible: bool,
-  pub(super) player_sprite: Handle<Image>,
-  pub(super) turret_sprite: Handle<Image>,
-  pub(super) drone_sprite: Handle<Image>,
-  pub(super) nebula_orb_sprite: Handle<Image>,
-  pub(super) rocket_sprite: Handle<Image>,
-  pub(super) bullet_sprite: Handle<Image>,
-  pub(super) particle_sprite: Handle<Image>,
-  pub(super) platform_sprite: Handle<Image>,
-  pub(super) barrier_sprite: Handle<Image>,
+  pub(super) player_sprite: Option<Handle<Image>>,
+  pub(super) turret_sprite: Option<Handle<Image>>,
+  pub(super) drone_sprite: Option<Handle<Image>>,
+  pub(super) nebula_orb_sprite: Option<Handle<Image>>,
+  pub(super) rocket_sprite: Option<Handle<Image>>,
+  pub(super) bullet_sprite: Option<Handle<Image>>,
+  pub(super) particle_sprite: Option<Handle<Image>>,
+  pub(super) platform_sprite: Option<Handle<Image>>,
+  pub(super) barrier_sprite: Option<Handle<Image>>,
   // Progression tracking
   pub(super) difficulty_level: u32,
   pub(super) time_since_last_progression: f32,
@@ -96,62 +96,59 @@ impl GameScene {
         .load_now::<Image>(path)
         .unwrap_or_else(|error| panic!("Failed to load {path}: {error}"))
     };
-    self.turret_sprite = load("turret.png");
-    self.particle_sprite = load("particle.png");
-    self.platform_sprite = load("platform.png");
+    self.turret_sprite = Some(load("turret.png"));
+    self.particle_sprite = Some(load("particle.png"));
+    self.platform_sprite = Some(load("platform.png"));
     // Heroic gold/orange player color with black outline
-    self.player_sprite = assets.add(Image::solid_rect(
+    self.player_sprite = Some(assets.add(Image::solid_rect(
       PLAYER_SIZE as u32,
       PLAYER_SIZE as u32,
       255,
       180,
       50,
       255,
-    ));
+    )));
     // A small round bullet (bright orange-red)
-    self.bullet_sprite = assets.add(Image::solid_circle(BULLET_SIZE as u32, 255, 100, 50, 255));
+    self.bullet_sprite =
+      Some(assets.add(Image::solid_circle(BULLET_SIZE as u32, 255, 100, 50, 255)));
     // Barrier (dark gray rectangle)
-    self.barrier_sprite = assets.add(Image::solid_rect(
+    self.barrier_sprite = Some(assets.add(Image::solid_rect(
       BARRIER_WIDTH as u32,
       BARRIER_HEIGHT as u32,
       60,
       60,
       70,
       255,
-    ));
+    )));
     // Drone (purple)
-    self.drone_sprite = assets.add(Image::solid_rect(
+    self.drone_sprite = Some(assets.add(Image::solid_rect(
       DRONE_SIZE as u32,
       DRONE_SIZE as u32,
       150,
       80,
       200,
       255,
-    ));
+    )));
     // Nebula orb (forest green)
-    self.nebula_orb_sprite = assets.add(Image::solid_circle(
+    self.nebula_orb_sprite = Some(assets.add(Image::solid_circle(
       NEBULA_ORB_SIZE as u32,
       45,
       120,
       50,
       255,
-    ));
+    )));
     // Rocket (orange/red)
-    self.rocket_sprite = assets.add(Image::solid_rect(
+    self.rocket_sprite = Some(assets.add(Image::solid_rect(
       ROCKET_SIZE as u32,
       (ROCKET_SIZE * 0.6) as u32,
       255,
       120,
       50,
       255,
-    ));
+    )));
   }
 
   pub fn new() -> Self {
-    // Stand-ins until on_enter adds the real sprites to the world (in a
-    // store of their own: nothing draws before then)
-    let stand_in = Assets::<Image>::default().add(Image::solid_rect(1, 1, 0, 0, 0, 0));
-
     Self {
       player: None,
       turrets: Vec::new(),
@@ -168,15 +165,15 @@ impl GameScene {
       best_time: save::load_best_time(),
       player_lives: PLAYER_MAX_LIVES,
       player_invincible: false,
-      player_sprite: stand_in.clone(),
-      turret_sprite: stand_in.clone(),
-      drone_sprite: stand_in.clone(),
-      nebula_orb_sprite: stand_in.clone(),
-      rocket_sprite: stand_in.clone(),
-      bullet_sprite: stand_in.clone(),
-      particle_sprite: stand_in.clone(),
-      platform_sprite: stand_in.clone(),
-      barrier_sprite: stand_in,
+      player_sprite: None,
+      turret_sprite: None,
+      drone_sprite: None,
+      nebula_orb_sprite: None,
+      rocket_sprite: None,
+      bullet_sprite: None,
+      particle_sprite: None,
+      platform_sprite: None,
+      barrier_sprite: None,
       // Progression starts at level 0
       difficulty_level: 0,
       time_since_last_progression: 0.0,
@@ -248,36 +245,37 @@ impl Scene for GameScene {
     self.spawn_player(ctx);
 
     // Initialize bullet pool (200 bullets, spawned on first use)
-    let bullet_sprite = self.bullet_sprite.clone();
-    self.bullet_pool = Some(Pool::new(
-      move || {
-        (
-          Transform::default(),
-          Renderable::image(bullet_sprite.clone()).with_z_order(Z_BULLET),
-          Interpolated,
-          // CCD for fast-moving bullets, no gravity
-          RigidBody::dynamic()
-            .with_ccd()
-            .with_gravity_scale(0.0)
-            .lock_rotation(),
-          Collider::circle(BULLET_SIZE / 2.0).as_trigger(),
-          Velocity::zero(),
-          Bullet::new(0.0, 0.0),
-          Trail2D::new(Color::new(255, 140, 30, 230), 3.5)
-            .with_z_order(Z_BULLET)
-            .with_length(25)
-            .with_taper(0.7)
-            .with_fade(true)
-            .with_min_distance(2.0),
-        )
-      },
-      PoolConfig {
-        initial_capacity: 200,
-        max_capacity: 500,
-        expand_batch_size: 50,
-        exhausted_policy: PoolExhaustedPolicy::RecycleOldest,
-      },
-    ));
+    if let Some(bullet_sprite) = self.bullet_sprite.clone() {
+      self.bullet_pool = Some(Pool::new(
+        move || {
+          (
+            Transform::default(),
+            Renderable::image(bullet_sprite.clone()).with_z_order(Z_BULLET),
+            Interpolated,
+            // CCD for fast-moving bullets, no gravity
+            RigidBody::dynamic()
+              .with_ccd()
+              .with_gravity_scale(0.0)
+              .lock_rotation(),
+            Collider::circle(BULLET_SIZE / 2.0).as_trigger(),
+            Velocity::zero(),
+            Bullet::new(0.0, 0.0),
+            Trail2D::new(Color::new(255, 140, 30, 230), 3.5)
+              .with_z_order(Z_BULLET)
+              .with_length(25)
+              .with_taper(0.7)
+              .with_fade(true)
+              .with_min_distance(2.0),
+          )
+        },
+        PoolConfig {
+          initial_capacity: 200,
+          max_capacity: 500,
+          expand_batch_size: 50,
+          exhausted_policy: PoolExhaustedPolicy::RecycleOldest,
+        },
+      ));
+    }
 
     // Center camera
     ctx

@@ -303,11 +303,7 @@ impl DemoPage for GradingPage {
 const LUTS: [&str; 4] = ["Warm film", "Cool night", "Sepia", "Invert"];
 
 /// A 16-step LUT made by mapping every colour of the identity strip.
-fn make_lut(
-  ctx: &mut SceneContext,
-  _name: &str,
-  map: impl Fn([f32; 3]) -> [f32; 3],
-) -> Option<ColorLut> {
+fn make_lut(ctx: &mut SceneContext, map: impl Fn([f32; 3]) -> [f32; 3]) -> Option<ColorLut> {
   let strip = ColorLut::identity_strip(16);
   let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
   let data: Vec<u8> = strip
@@ -326,17 +322,13 @@ fn make_lut(
 
 fn lut(ctx: &mut SceneContext, index: usize) -> Option<ColorLut> {
   match index {
-    0 => make_lut(ctx, "warm", |[r, g, b]| {
-      [r * 1.08 + 0.03, g + 0.01, b * 0.85]
-    }),
-    1 => make_lut(ctx, "cool", |[r, g, b]| {
-      [r * 0.8, g * 0.92 + 0.02, b * 1.1 + 0.05]
-    }),
-    2 => make_lut(ctx, "sepia", |[r, g, b]| {
+    0 => make_lut(ctx, |[r, g, b]| [r * 1.08 + 0.03, g + 0.01, b * 0.85]),
+    1 => make_lut(ctx, |[r, g, b]| [r * 0.8, g * 0.92 + 0.02, b * 1.1 + 0.05]),
+    2 => make_lut(ctx, |[r, g, b]| {
       let y = 0.299 * r + 0.587 * g + 0.114 * b;
       [y * 1.07 + 0.05, y * 0.95 + 0.02, y * 0.75]
     }),
-    _ => make_lut(ctx, "invert", |[r, g, b]| [1.0 - r, 1.0 - g, 1.0 - b]),
+    _ => make_lut(ctx, |[r, g, b]| [1.0 - r, 1.0 - g, 1.0 - b]),
   }
 }
 

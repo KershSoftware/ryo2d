@@ -254,6 +254,8 @@ impl Drop for Prompt<'_, '_> {
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
   use super::*;
+  use crate::core::asset::{Assets, Handle};
+  use crate::core::graphics::Image;
   use crate::core::input::{Binding, GamepadButton, InputDevice};
   use crate::core::ui::UiContext;
   use crate::core::ui::immediate::UiCommand;
@@ -304,9 +306,8 @@ mod tests {
     let text = RichText::markup("Press [prompt=jump] to jump");
     let resolved = resolve_prompts(&text, &context, Color::YELLOW);
     assert_eq!(resolved.as_str(), "Press [A] to jump");
-    let sprite = crate::core::graphics::test_handle(crate::core::graphics::Image::solid_rect(
-      4, 4, 255, 255, 255, 255,
-    ));
+    let mut images = Assets::default();
+    let sprite = images.add(Image::solid_rect(4, 4, 255, 255, 255, 255));
     context.icons.insert("prompt.pad.xbox.South", sprite);
     let resolved = resolve_prompts(&text, &context, Color::YELLOW);
     assert_eq!(
@@ -317,10 +318,9 @@ mod tests {
     assert_eq!(resolved.icons.len(), 1);
   }
 
-  fn sprite(_name: &str) -> crate::core::asset::Handle<crate::core::graphics::Image> {
-    crate::core::graphics::test_handle(crate::core::graphics::Image::solid_rect(
-      8, 4, 255, 255, 255, 255,
-    ))
+  /// An 8 x 4 glyph in `images`
+  fn glyph(images: &mut Assets<Image>) -> Handle<Image> {
+    images.add(Image::solid_rect(8, 4, 255, 255, 255, 255))
   }
 
   #[test]
@@ -337,8 +337,9 @@ mod tests {
     assert_eq!(resolved.icons[0].at, 0, "the icon stays first");
     assert!(resolved.prompts.is_empty());
     // A and C as glyphs: A, then [B], then C
-    context.icons.insert("prompt.key.KeyA", sprite("ga"));
-    context.icons.insert("prompt.key.KeyC", sprite("gc"));
+    let mut images = Assets::default();
+    context.icons.insert("prompt.key.KeyA", glyph(&mut images));
+    context.icons.insert("prompt.key.KeyC", glyph(&mut images));
     let resolved = resolve_prompts(&text, &context, Color::YELLOW);
     assert_eq!(resolved.as_str(), "[B]!");
     let icons: Vec<(usize, String)> = resolved
@@ -483,9 +484,9 @@ mod tests {
     let mut context = prompts_with(InputDevice::Gamepad, &[jump]);
     let mut d = UiDriver::new((200.0, 100.0));
     // An 8 x 4 glyph, in the store the UI sizes images by
-    let glyph = d.registry().add(crate::core::graphics::Image::solid_rect(
-      8, 4, 255, 255, 255, 255,
-    ));
+    let glyph = d
+      .registry()
+      .add(Image::solid_rect(8, 4, 255, 255, 255, 255));
     context.icons.insert("prompt.pad.xbox.South", glyph);
     let mut d = d.prompts(context);
     let line = d.frame(|ui| {

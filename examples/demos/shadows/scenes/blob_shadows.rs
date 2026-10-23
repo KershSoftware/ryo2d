@@ -39,7 +39,6 @@ impl BlobShadowsPage {
     x: f32,
     y: f32,
     color: (u8, u8, u8),
-    _name: &str,
     height_scaling: bool,
   ) -> JumpingCharacter {
     let sprite = ctx
@@ -79,7 +78,6 @@ impl BlobShadowsPage {
     y: f32,
     size: u32,
     color: (u8, u8, u8),
-    _name: &str,
     shadow_size: (f32, f32),
   ) -> Entity {
     let sprite = ctx.assets().add(Image::solid_rect(
@@ -158,26 +156,20 @@ impl DemoPage for BlobShadowsPage {
       // Centres; the 48 px tall sprites stand on the ground at y = 418
       let x = 216.0 + i as f32 * 250.0;
       let y = 394.0;
-      let char = Self::spawn_character(
-        ctx,
-        x,
-        y,
-        color,
-        &format!("char_{}", i),
-        self.height_scaling_enabled,
-      );
+      let char = Self::spawn_character(ctx, x, y, color, self.height_scaling_enabled);
       self.characters.push(char);
     }
 
     // Spawn some static objects with different shadow sizes (centres)
     let objects = [
-      (170.0, 400.0, 40, (80, 80, 90), "crate1", (25.0, 12.0)),
-      (1115.0, 400.0, 30, (120, 80, 60), "barrel", (18.0, 9.0)),
-      (670.0, 380.0, 60, (90, 90, 100), "big_box", (35.0, 18.0)),
+      // A crate, a barrel and a big box
+      (170.0, 400.0, 40, (80, 80, 90), (25.0, 12.0)),
+      (1115.0, 400.0, 30, (120, 80, 60), (18.0, 9.0)),
+      (670.0, 380.0, 60, (90, 90, 100), (35.0, 18.0)),
     ];
 
-    for (x, y, size, color, name, shadow_size) in objects {
-      let entity = Self::spawn_static_object(ctx, x, y, size, color, name, shadow_size);
+    for (x, y, size, color, shadow_size) in objects {
+      let entity = Self::spawn_static_object(ctx, x, y, size, color, shadow_size);
       self.static_objects.push(entity);
     }
   }
