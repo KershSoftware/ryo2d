@@ -22,8 +22,8 @@ pub fn text_style(color: Color) -> TextStyle {
 /// Make Press Start 2P the UI font, so the menus, the HUD and the dialogs
 /// all use it, drawn as a pixel font with an 8 px design size; size the
 /// theme's text to the game's; and pad panels and dialogs 16 px, since the
-/// font has almost no side bearing. Calling this again changes nothing (the
-/// same bytes are the same face), so every menu entry may.
+/// font has almost no side bearing. Calling this again draws the same (the
+/// same bytes share one face), so every menu entry may.
 pub fn use_game_look(ctx: &mut SceneContext) {
   match Font::from_bytes(PRESS_START_2P) {
     Ok(font) => {

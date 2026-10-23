@@ -84,7 +84,11 @@ struct FaceInfo {
 }
 
 pub(crate) struct TextEngine {
-  generation: Option<u64>,
+  /// The registry's `generation` and `slot_version` as of the last sync
+  synced: Option<(u64, u64)>,
+  /// Moves on with every sync that changed something: what cached layouts
+  /// and the caches built on them key on
+  epoch: u64,
   fcx: FontContext,
   lcx: LayoutContext<u16>,
   faces: HashMap<FontId, FaceInfo>,
@@ -112,7 +116,8 @@ impl TextEngine {
   /// An engine with no fonts; `sync` gives it the registry's
   pub(crate) fn new() -> Self {
     Self {
-      generation: None,
+      synced: None,
+      epoch: 0,
       fcx: font_context(),
       lcx: LayoutContext::new(),
       faces: HashMap::new(),
@@ -129,11 +134,28 @@ impl TextEngine {
   }
 
   /// Take the registry's fonts when they changed since the last sync; every
-  /// cached layout is dropped then
+  /// cached layout is dropped then. A change to which faces the font assets
+  /// registered as (one sharing a face, one freed) also drops them, as text
+  /// naming a font with `TextFont::Face` may resolve otherwise now, but
+  /// leaves Parley's collection as it is
   pub(crate) fn sync(&mut self, fonts: &Fonts) {
-    if Some(fonts.generation()) == self.generation {
-      return;
+    let now = (fonts.generation(), fonts.slot_version());
+    match self.synced.replace(now) {
+      Some(before) if before == now => {}
+      // The same faces: only what the font assets resolve to changed
+      Some((generation, _)) if generation == now.0 => {
+        self.font_slots.clear();
+        self.font_slots.extend_from_slice(fonts.font_slots());
+        self.cache.clear();
+        self.lines.clear();
+        self.epoch += 1;
+      }
+      _ => self.rebuild(fonts),
     }
+  }
+
+  /// Parley's collection and the faces, made again from the registry's
+  fn rebuild(&mut self, fonts: &Fonts) {
     self.fcx = font_context();
     self.faces.clear();
     self.by_blob.clear();
@@ -179,12 +201,12 @@ impl TextEngine {
         },
       );
     }
-    self.generation = Some(fonts.generation());
+    self.epoch += 1;
   }
 
-  /// The `Fonts::generation` the engine last synced to (0 before any sync)
+  /// Moves on with every sync that changed something (0 before any)
   pub(crate) fn generation(&self) -> u64 {
-    self.generation.unwrap_or(0)
+    self.epoch
   }
 
   /// Lay out `text` (cached). `None` when the style, options or scale cannot
@@ -481,7 +503,7 @@ impl TextEngine {
       text.hash(&mut h);
       style.hash_into(&mut h);
       scale.to_bits().hash(&mut h);
-      self.generation.hash(&mut h);
+      self.epoch.hash(&mut h);
       h.finish()
     };
     if !self.lines.contains_key(&key) {
@@ -1912,7 +1934,9 @@ fn to_u32(value: usize) -> u32 {
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
   use super::*;
-  use crate::core::asset::{AssetServer, AssetsView, Handle, MemorySource, insert_registry, pump};
+  use crate::core::asset::{
+    AssetId, AssetServer, AssetsView, Handle, MemorySource, insert_registry, pump,
+  };
   use crate::core::ecs::kernel::World;
   use crate::core::text::fonts::TestFonts;
   use crate::core::text::{
@@ -2139,6 +2163,67 @@ mod tests {
       .filter(|e| e.message.contains(&format!("{id:?}")) && e.message.contains("not loaded"))
       .count();
     assert_eq!(warned, 1, "warned once");
+  }
+
+  /// How many "not loaded" warnings name `id`
+  fn not_loaded_warnings(id: AssetId<Font>) -> usize {
+    crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains(&format!("{id:?}")) && e.message.contains("not loaded"))
+      .count()
+  }
+
+  #[test]
+  fn a_font_sharing_a_face_resolves_by_its_handle() {
+    let mut world = world_over(MemorySource::new());
+    let mut engine = TextEngine::new();
+    engine.sync(world.resource::<Fonts>());
+    let font = |bytes: &[u8]| match Font::from_bytes(bytes.to_vec()) {
+      Ok(font) => font,
+      Err(error) => panic!("not a font: {error}"),
+    };
+
+    // An embedded copy of a built-in shares the built-in's face
+    let mono = AssetsView::new(&mut world).add(font(MONO));
+    fonts_follow_assets(&mut world);
+    let built_in = world.resource::<Fonts>().role(FontRole::Mono);
+    assert_eq!(world.resource::<Fonts>().face_of(&mono), built_in);
+    engine.sync(world.resource::<Fonts>());
+    let style = TextStyle::default().font(TextFont::Face(mono.clone()));
+    let laid = layout(&mut engine, "mono", &style);
+    assert!(
+      laid.glyphs.iter().all(|g| Some(g.font) == built_in),
+      "drawn in the shared face, not the fallback"
+    );
+    assert_eq!(not_loaded_warnings(mono.id()), 0);
+
+    // The same game font twice: the second shares the first's face
+    let first = AssetsView::new(&mut world).add(font(PRESS_START));
+    fonts_follow_assets(&mut world);
+    engine.sync(world.resource::<Fonts>());
+    let second = AssetsView::new(&mut world).add(font(PRESS_START));
+    fonts_follow_assets(&mut world);
+    engine.sync(world.resource::<Fonts>());
+    let face = world.resource::<Fonts>().face_of(&first);
+    assert!(face.is_some());
+    let style = TextStyle::default().font(TextFont::Face(second.clone()));
+    let laid = layout(&mut engine, "press", &style);
+    assert!(
+      laid.glyphs.iter().all(|g| Some(g.font) == face),
+      "the shared face"
+    );
+
+    // The first sharer goes; the second still resolves
+    drop(first);
+    pump(&mut world);
+    fonts_follow_assets(&mut world);
+    engine.sync(world.resource::<Fonts>());
+    let laid = layout(&mut engine, "press again", &style);
+    assert!(
+      laid.glyphs.iter().all(|g| Some(g.font) == face),
+      "still the shared face"
+    );
+    assert_eq!(not_loaded_warnings(second.id()), 0, "never warned");
   }
 
   #[test]

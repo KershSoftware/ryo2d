@@ -24,7 +24,12 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   fonts of the same bytes and face index (a hash of the bytes, then a byte
   compare), or bitmap fonts of the same family, sheet, cell and characters,
   share one face, and a `set_role` or `set_render` to the current value
-  bumps nothing, so a game calling them every frame costs no relayout.
+  bumps nothing, so a game calling them every frame costs no relayout. A
+  font asset's registration changing without a face changing (one sharing
+  a face, one freed) moves `slot_version`: the text engine copies the slot
+  table again and drops its layouts, but keeps Parley's collection. The
+  engine's own `generation()` (its epoch) moves with both, and is what
+  cached layouts, the UI's caches and world text key on.
 - `Fonts` has no public constructor (`new` is crate-internal, no
   `Default`): `FontId`s are registry indices, never reused, that the glyph
   atlas keys on. Its `Debug` (and `FaceSource`'s, and `Font`'s) leaves the

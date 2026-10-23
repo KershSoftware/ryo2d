@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -325,7 +325,10 @@ pub(crate) struct BuiltinFonts {
 /// so there is no public constructor. Registering is idempotent: two fonts
 /// of the same bytes and face index, or bitmap fonts of the same family,
 /// sheet, cell and characters, share one face, and a `set_role` or
-/// `set_render` that changes nothing bumps nothing.
+/// `set_render` that changes nothing bumps nothing. A font that comes to
+/// share a face, or stops, moves `slot_version` instead of `generation`:
+/// text lays out again (a `TextFont::Face` may resolve otherwise), but the
+/// faces stay as they are.
 #[derive(Resource)]
 pub struct Fonts {
   faces: Vec<Option<Face>>,
@@ -337,6 +340,10 @@ pub struct Fonts {
   /// The followed `Assets<Font>`'s fonts and `Assets<BitmapFont>`'s
   fonts: Slots,
   bitmaps: Slots,
+  /// Moves on whenever a font asset's registration changes (registered,
+  /// sharing a face, changed or freed), which `generation` does not always
+  /// see: what `TextFont::Face` resolves to changes with it
+  slot_version: u64,
   /// The stores followed (`Assets::serial`)
   font_store: Option<u64>,
   bitmap_store: Option<u64>,
@@ -370,6 +377,7 @@ impl Fonts {
       by_data: HashMap::new(),
       fonts: Vec::new(),
       bitmaps: Vec::new(),
+      slot_version: 0,
       font_store: None,
       bitmap_store: None,
     }
@@ -529,6 +537,11 @@ impl Fonts {
     &self.fonts
   }
 
+  /// Moves on whenever `font_slots` changes
+  pub(crate) fn slot_version(&self) -> u64 {
+    self.slot_version
+  }
+
   /// The face a bitmap font registered as (tests)
   #[cfg(test)]
   pub(crate) fn bitmap_face_of(&self, font: impl Into<AssetId<BitmapFont>>) -> Option<FontId> {
@@ -564,6 +577,7 @@ impl Fonts {
       if whole {
         for (_, face) in std::mem::take(&mut self.fonts).into_iter().flatten() {
           self.release(face);
+          self.slot_version += 1;
         }
       }
       self.font_store = Some(serial);
@@ -593,18 +607,25 @@ impl Fonts {
       // The same asset, changed in place or reloaded
       (Some((generation, face)), Some((now_generation, font))) if generation == now_generation => {
         let face = self.change_font(face, &font);
-        set_slot(&mut self.fonts, at, face.map(|face| (generation, face)));
+        self.set_font_slot(at, face.map(|face| (generation, face)));
       }
       (held, now) => {
         if let Some((_, face)) = held {
-          set_slot(&mut self.fonts, at, None);
+          self.set_font_slot(at, None);
           self.release(face);
         }
         if let Some((generation, font)) = now {
           let face = self.hold_font(&font, FontRender::Raster);
-          set_slot(&mut self.fonts, at, face.map(|face| (generation, face)));
+          self.set_font_slot(at, face.map(|face| (generation, face)));
         }
       }
+    }
+  }
+
+  /// Slot `at` of the font store's table holds `value`
+  fn set_font_slot(&mut self, at: usize, value: Option<(u32, FontId)>) {
+    if set_slot(&mut self.fonts, at, value) {
+      self.slot_version += 1;
     }
   }
 
@@ -812,16 +833,20 @@ impl Fonts {
   }
 }
 
-/// Slot `at` of `slots` holds `value`
-fn set_slot(slots: &mut Slots, at: usize, value: Option<(u32, FontId)>) {
+/// Slot `at` of `slots` holds `value`; whether that changed it
+fn set_slot(slots: &mut Slots, at: usize, value: Option<(u32, FontId)>) -> bool {
   if slots.len() <= at {
     if value.is_none() {
-      return;
+      return false;
     }
     slots.resize(at + 1, None);
   }
-  if let Some(slot) = slots.get_mut(at) {
-    *slot = value;
+  match slots.get_mut(at) {
+    Some(slot) if *slot != value => {
+      *slot = value;
+      true
+    }
+    _ => false,
   }
 }
 
@@ -955,7 +980,7 @@ fn same_render(a: FontRender, b: FontRender) -> bool {
 
 /// A hash of a font's bytes, to find a face of the same data
 fn hash_bytes(data: &[u8]) -> u64 {
-  let mut h = DefaultHasher::new();
+  let mut h = crate::core::hash::FastHasher::default();
   data.hash(&mut h);
   h.finish()
 }
@@ -1332,6 +1357,59 @@ mod tests {
       fonts.registry.render(face),
       FontRender::pixel(8.0),
       "it draws as it did"
+    );
+  }
+
+  #[test]
+  fn a_changed_font_that_shares_its_face_gets_one_of_its_own() {
+    let mut fonts = TestFonts::empty();
+    let (first, face) = fonts.add(PRESS_START);
+    let (second, shared) = fonts.add(PRESS_START);
+    assert_eq!(shared, face, "shared");
+    let face = face.unwrap();
+    let serial = fonts.registry.face_serial(face);
+    if let Some(changed) = fonts.store.get_mut(&second) {
+      *changed = font(MONO);
+    }
+    fonts.follow();
+    // The other keeps its face, serial and data
+    assert_eq!(fonts.registry.face_of(&first), Some(face));
+    assert_eq!(fonts.registry.face_serial(face), serial);
+    assert_eq!(fonts.registry.family(face), Some("Press Start 2P"));
+    // The changed one has a face of its own, of its new data
+    let own = fonts.registry.face_of(&second);
+    assert!(own.is_some() && own != Some(face), "{own:?}");
+    assert_eq!(
+      own.and_then(|own| fonts.registry.family(own)),
+      Some("JetBrains Mono")
+    );
+  }
+
+  #[test]
+  fn a_changed_bitmap_font_that_shares_its_face_gets_one_of_its_own() {
+    let mut fonts = TestFonts::empty();
+    let sheet = Assets::default().add(Image::solid_rect(16, 16, 255, 255, 255, 255));
+    let (first, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), "AB"));
+    let (second, shared) = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "AB"));
+    assert_eq!(shared, face, "shared");
+    let face = face.unwrap();
+    let serial = fonts.registry.face_serial(face);
+    if let Some(changed) = fonts.bitmaps.get_mut(&second) {
+      changed.cell = (8, 16);
+    }
+    fonts.follow();
+    assert_eq!(fonts.registry.bitmap_face_of(&first), Some(face));
+    assert_eq!(fonts.registry.face_serial(face), serial);
+    assert_eq!(
+      fonts.registry.render(face),
+      FontRender::pixel(8.0),
+      "as it was"
+    );
+    let own = fonts.registry.bitmap_face_of(&second);
+    assert!(own.is_some() && own != Some(face), "{own:?}");
+    assert_eq!(
+      own.map(|own| fonts.registry.render(own)),
+      Some(FontRender::pixel(16.0))
     );
   }
 
