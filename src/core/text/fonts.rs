@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Resource;
-use crate::core::error::{AssetError, AssetResult};
+use crate::core::error::{ManagerError, ManagerResult};
 
 /// One registered font face: a font file, or one face of a collection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -245,11 +245,11 @@ impl Fonts {
   /// canonical path) returns the id it already has without reading it.
   /// There is no file system on the web: embed fonts with
   /// `add_bytes(include_bytes!(..))` there.
-  pub fn load(&mut self, path: impl AsRef<Path>) -> AssetResult<FontId> {
+  pub fn load(&mut self, path: impl AsRef<Path>) -> ManagerResult<FontId> {
     let path = path.as_ref();
     #[cfg(target_arch = "wasm32")]
     {
-      Err(AssetError::LoadError {
+      Err(ManagerError::LoadError {
         path: path.to_path_buf(),
         reason: "the web has no file system: embed the font with Fonts::add_bytes".into(),
       })
@@ -262,9 +262,9 @@ impl Fonts {
       }
       let bytes = std::fs::read(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-          AssetError::NotFound(path.to_path_buf())
+          ManagerError::NotFound(path.to_path_buf())
         } else {
-          AssetError::LoadError {
+          ManagerError::LoadError {
             path: path.to_path_buf(),
             reason: error.to_string(),
           }
@@ -272,7 +272,7 @@ impl Fonts {
       })?;
       let id = self
         .add_bytes(bytes)
-        .map_err(|error| AssetError::LoadError {
+        .map_err(|error| ManagerError::LoadError {
           path: path.to_path_buf(),
           reason: error.to_string(),
         })?;
@@ -717,7 +717,7 @@ mod tests {
   fn loading_a_missing_file_says_not_found() {
     let mut fonts = Fonts::new();
     let err = fonts.load("does/not/exist.ttf").unwrap_err();
-    assert!(matches!(err, crate::core::error::AssetError::NotFound(_)));
+    assert!(matches!(err, crate::core::error::ManagerError::NotFound(_)));
   }
 
   #[cfg(feature = "default-fonts")]

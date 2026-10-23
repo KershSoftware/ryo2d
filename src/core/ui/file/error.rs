@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::core::error::AssetError;
+use crate::core::error::ManagerError;
 
 use super::reader::{Issue, ValueKind};
 
@@ -91,14 +91,16 @@ impl UiFileError {
   }
 }
 
-impl From<AssetError> for UiFileError {
+impl From<ManagerError> for UiFileError {
   /// A UI file's mistakes as they are; any other asset error (a file that
   /// cannot be found or read) as one issue with no position
-  fn from(error: AssetError) -> UiFileError {
+  fn from(error: ManagerError) -> UiFileError {
     match error {
-      AssetError::UiFile(error) => error,
-      AssetError::NotFound(path) => UiFileError::one(&path.display().to_string(), "file not found"),
-      AssetError::LoadError { path, reason } => {
+      ManagerError::UiFile(error) => error,
+      ManagerError::NotFound(path) => {
+        UiFileError::one(&path.display().to_string(), "file not found")
+      }
+      ManagerError::LoadError { path, reason } => {
         UiFileError::one(&path.display().to_string(), reason)
       }
       other => UiFileError::one("", other.to_string()),
@@ -164,13 +166,13 @@ mod tests {
   fn an_asset_error_becomes_the_files_mistakes_or_one_issue_without_a_position() {
     let mistakes = UiFileError::one("menu.ui.ron", "no root");
     assert_eq!(
-      UiFileError::from(AssetError::UiFile(mistakes.clone())),
+      UiFileError::from(ManagerError::UiFile(mistakes.clone())),
       mistakes
     );
-    let missing = UiFileError::from(AssetError::NotFound(PathBuf::from("ui/gone.ui.ron")));
+    let missing = UiFileError::from(ManagerError::NotFound(PathBuf::from("ui/gone.ui.ron")));
     assert_eq!(missing.to_string(), "ui/gone.ui.ron: file not found");
     assert_eq!(missing.issues[0].line, 0);
-    let other = UiFileError::from(AssetError::WatchError("no watcher".into()));
+    let other = UiFileError::from(ManagerError::WatchError("no watcher".into()));
     assert_eq!(
       other.to_string(),
       "Failed to set up file watcher: no watcher"

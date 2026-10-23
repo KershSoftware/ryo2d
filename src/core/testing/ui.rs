@@ -9,7 +9,7 @@ use winit::keyboard::KeyCode;
 
 use crate::core::asset::AssetManager;
 use crate::core::ecs::kernel::{Entity, Message, Messages, Tick, World};
-use crate::core::error::AssetResult;
+use crate::core::error::ManagerResult;
 use crate::core::input::{Direction, GamepadButton, InputView};
 use crate::core::messages::{register_message, update_messages};
 use crate::core::render::UiSpace;
@@ -221,7 +221,7 @@ impl UiHarness {
 
   /// Read a loaded UI file from disk again, as `ctx.assets.reload_ui`: the
   /// next frame brings the trees built from it in line before drawing
-  pub fn reload_ui(&mut self, path: &str) -> AssetResult<()> {
+  pub fn reload_ui(&mut self, path: &str) -> ManagerResult<()> {
     self.assets().reload_ui(path)
   }
 

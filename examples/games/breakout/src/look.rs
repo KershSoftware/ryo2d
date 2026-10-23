@@ -45,7 +45,7 @@ pub fn use_game_look(ctx: &mut SceneContext) {
 /// the web build and the tests have
 pub fn ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Result<UiFile, UiFileError> {
   match ctx.assets.load_ui(path) {
-    Err(AssetError::NotFound(_)) => ctx.assets.add_ui(path, embedded),
+    Err(ManagerError::NotFound(_)) => ctx.assets.add_ui(path, embedded),
     loaded => Ok(loaded?),
   }
 }

@@ -21,8 +21,6 @@ struct SlotMeta {
   shared: Weak<Shared>,
 }
 
-// Used by the asset server, which comes next
-#[allow(dead_code)]
 impl Ledger {
   fn new(drops: Sender<(u32, u32)>) -> Self {
     Self {
@@ -87,10 +85,15 @@ impl Ledger {
 
   /// Whether `id` is live
   pub(crate) fn is_live<T: Asset>(&self, id: AssetId<T>) -> bool {
+    self.is_live_slot(id.index(), id.generation())
+  }
+
+  /// Whether the slot at `index` is live in `generation`
+  pub(crate) fn is_live_slot(&self, index: u32, generation: u32) -> bool {
     self
       .slots
-      .get(id.index() as usize)
-      .is_some_and(|s| s.live && s.generation == id.generation())
+      .get(index as usize)
+      .is_some_and(|s| s.live && s.generation == generation)
   }
 
   /// Frees the slot if `id` is live and no strong handle remains; the slot's
@@ -110,8 +113,6 @@ impl Ledger {
 }
 
 /// Every asset of type `T`: a slot table. A world resource per type
-// Used by the asset server, which comes next
-#[allow(dead_code)]
 #[derive(Resource)]
 pub struct Assets<T: Asset> {
   ledger: Arc<Mutex<Ledger>>,
@@ -138,8 +139,6 @@ impl<T: Asset> Default for Assets<T> {
   }
 }
 
-// Used by the asset server, which comes next
-#[allow(dead_code)]
 impl<T: Asset> Assets<T> {
   /// Adds an asset made in code; it lives while the returned handle (or a clone) does
   pub fn add(&mut self, value: T) -> Handle<T> {
@@ -189,6 +188,7 @@ impl<T: Asset> Assets<T> {
     self.values.iter().flatten().count()
   }
 
+  /// Whether no asset is loaded
   pub fn is_empty(&self) -> bool {
     self.values.iter().all(Option::is_none)
   }
@@ -310,6 +310,62 @@ mod tests {
     assets.free_unheld(&mut freed);
     assert!(freed.is_empty());
     assert_eq!(assets.get(id).map(|t| t.0.as_str()), Some("a"));
+  }
+
+  #[test]
+  fn a_rebound_slot_dropped_again_is_freed_exactly_once() {
+    let mut assets = Assets::<Text>::default();
+    let ledger = assets.ledger();
+    let id = assets.add(Text("a".into())).id();
+    // Every handle dropped, then the slot rebound before the store sees it
+    let again = ledger
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .strong(id);
+    let mut freed = Vec::new();
+    assets.free_unheld(&mut freed);
+    assert!(freed.is_empty(), "the rebound handle holds it");
+    drop(again);
+    assets.free_unheld(&mut freed);
+    assert_eq!(freed, vec![id]);
+    assets.free_unheld(&mut freed);
+    assert_eq!(freed, vec![id], "freed once");
+    // The slot's next asset is not freed by anything the old one left behind
+    let next = assets.add(Text("b".into()));
+    assert_eq!(next.id().index(), id.index());
+    assets.free_unheld(&mut freed);
+    assert_eq!(freed, vec![id]);
+    assert_eq!(assets.get(&next).map(|t| t.0.as_str()), Some("b"));
+  }
+
+  #[test]
+  fn both_drop_notices_pending_free_the_slot_once() {
+    let mut assets = Assets::<Text>::default();
+    let ledger = assets.ledger();
+    let id = assets.add(Text("a".into())).id();
+    let again = ledger
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .strong(id);
+    drop(again);
+    let mut freed = Vec::new();
+    assets.free_unheld(&mut freed);
+    assert_eq!(freed, vec![id]);
+  }
+
+  #[test]
+  fn insert_with_a_stale_id_changes_nothing() {
+    let mut assets = Assets::<Text>::default();
+    let old = assets.add(Text("old".into())).id();
+    assets.free_unheld(&mut Vec::new());
+    assert!(!assets.insert(old, Text("stale".into())), "a freed slot");
+    assert!(assets.is_empty());
+    let new = assets.add(Text("new".into()));
+    let version = assets.version(&new);
+    assert!(!assets.insert(old, Text("stale".into())), "a reused slot");
+    assert_eq!(assets.get(&new).map(|t| t.0.as_str()), Some("new"));
+    assert_eq!(assets.version(&new), version);
+    assert_eq!(assets.len(), 1);
   }
 
   #[test]

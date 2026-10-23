@@ -2,7 +2,8 @@
 //!
 //! This module provides a hierarchy of error types:
 //! - `EngineError` - Top-level engine errors
-//! - `AssetError` - Asset loading and management errors
+//! - `ManagerError` - The old `AssetManager`'s errors (the registry's are
+//!   `asset::error::AssetError`)
 //! - `AudioError` - Audio system errors
 //! - `ImageError` - Image loading errors
 //!
@@ -44,9 +45,9 @@ pub enum EngineError {
 /// Result type for engine operations
 pub type EngineResult<T> = Result<T, EngineError>;
 
-/// Errors that can occur during asset operations
+/// Errors from the old `AssetManager`, which the asset registry replaces
 #[derive(Error, Debug)]
-pub enum AssetError {
+pub enum ManagerError {
   /// Asset file not found
   #[error("Asset not found: {0}")]
   NotFound(PathBuf),
@@ -68,8 +69,8 @@ pub enum AssetError {
   UiFile(UiFileError),
 }
 
-/// Result type for asset operations
-pub type AssetResult<T> = Result<T, AssetError>;
+/// Result type for the old `AssetManager`'s operations
+pub type ManagerResult<T> = Result<T, ManagerError>;
 
 /// Errors that can occur when loading sprites
 #[derive(Error, Debug)]
@@ -223,7 +224,7 @@ mod tests {
 
   #[test]
   fn asset_error_display() {
-    let err = AssetError::NotFound(PathBuf::from("missing.png"));
+    let err = ManagerError::NotFound(PathBuf::from("missing.png"));
     assert_eq!(format!("{}", err), "Asset not found: missing.png");
   }
 
@@ -233,7 +234,7 @@ mod tests {
       path: PathBuf::from("test.png"),
       reason: "truncated".to_string(),
     };
-    let asset_err: AssetError = sprite_err.into();
-    assert!(matches!(asset_err, AssetError::Image(_)));
+    let asset_err: ManagerError = sprite_err.into();
+    assert!(matches!(asset_err, ManagerError::Image(_)));
   }
 }

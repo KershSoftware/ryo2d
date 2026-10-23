@@ -237,8 +237,8 @@ pub mod prelude {
 
   // Errors
   pub use crate::core::error::{
-    AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,
-    HotReloadResult, ImageError, ImageResult, SaveError, SaveResult,
+    AudioError, AudioResult, EngineError, EngineResult, HotReloadError, HotReloadResult,
+    ImageError, ImageResult, ManagerError, ManagerResult, SaveError, SaveResult,
   };
   pub use crate::core::graphics::GpuError;
 

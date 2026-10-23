@@ -32,7 +32,7 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
 use crate::core::ecs::{Resource, ShaderHandle};
-use crate::core::error::{AssetError, AssetResult};
+use crate::core::error::{ManagerError, ManagerResult};
 use crate::core::graphics::Image;
 use crate::core::ui::file::build::{Placeholders, SpriteSource};
 use crate::core::ui::file::document::ImportResolver;
@@ -690,7 +690,7 @@ impl AssetManager {
   /// let sprite = assets.load_sprite("sprites/player.png")?;
   /// println!("Loaded {}x{} sprite", sprite.width(), sprite.height());
   /// ```
-  pub fn load_sprite<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<SpriteHandle> {
+  pub fn load_sprite<P: AsRef<Path>>(&mut self, path: P) -> ManagerResult<SpriteHandle> {
     let full_path = self.resolve_path(&path);
     let key = self.cache_key(&path);
 
@@ -700,7 +700,7 @@ impl AssetManager {
     }
 
     // Load from disk
-    let sprite = Image::load(&full_path).map_err(AssetError::Image)?;
+    let sprite = Image::load(&full_path).map_err(ManagerError::Image)?;
 
     // Create handle and cache it
     let handle = SpriteHandle::new(sprite, full_path.clone());
@@ -724,7 +724,7 @@ impl AssetManager {
   /// let dissolve = assets.load_shader("shaders/dissolve.wgsl")?;
   /// let material = Material::custom(dissolve).with_param("progress", 0.5);
   /// ```
-  pub fn load_shader<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<ShaderHandle> {
+  pub fn load_shader<P: AsRef<Path>>(&mut self, path: P) -> ManagerResult<ShaderHandle> {
     let full_path = self.resolve_path(&path);
     let key = self.cache_key(&path);
 
@@ -733,8 +733,8 @@ impl AssetManager {
     }
 
     let source = std::fs::read_to_string(&full_path).map_err(|e| match e.kind() {
-      std::io::ErrorKind::NotFound => AssetError::NotFound(full_path.clone()),
-      _ => AssetError::LoadError {
+      std::io::ErrorKind::NotFound => ManagerError::NotFound(full_path.clone()),
+      _ => ManagerError::LoadError {
         path: full_path.clone(),
         reason: e.to_string(),
       },
@@ -746,10 +746,10 @@ impl AssetManager {
   }
 
   /// Read a file's text, as an asset error
-  fn read_text(full_path: &Path) -> AssetResult<String> {
+  fn read_text(full_path: &Path) -> ManagerResult<String> {
     std::fs::read_to_string(full_path).map_err(|e| match e.kind() {
-      std::io::ErrorKind::NotFound => AssetError::NotFound(full_path.to_path_buf()),
-      _ => AssetError::LoadError {
+      std::io::ErrorKind::NotFound => ManagerError::NotFound(full_path.to_path_buf()),
+      _ => ManagerError::LoadError {
         path: full_path.to_path_buf(),
         reason: e.to_string(),
       },
@@ -760,9 +760,9 @@ impl AssetManager {
   ///
   /// Cached by resolved path, so loading the same file twice returns the same
   /// [`UiFile`]. Its imports load through the cache too. Every mistake in the
-  /// file is reported together in [`AssetError::UiFile`]. With hot reload
+  /// file is reported together in [`ManagerError::UiFile`]. With hot reload
   /// enabled, editing the file updates the `UiFile` in place.
-  pub fn load_ui<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<UiFile> {
+  pub fn load_ui<P: AsRef<Path>>(&mut self, path: P) -> ManagerResult<UiFile> {
     let key = self.cache_key(&path);
     if let Some(file) = self.ui_files.get(&key) {
       return Ok(file.clone());
@@ -772,7 +772,7 @@ impl AssetManager {
     self.ui_loading.push(key.clone());
     let loaded = UiFile::load(&name, &text, self, &mut Placeholders::default(), false);
     self.ui_loading.pop();
-    let file = loaded.map_err(AssetError::UiFile)?;
+    let file = loaded.map_err(ManagerError::UiFile)?;
     self.ui_files.insert(key, file.clone());
     Ok(file)
   }
@@ -796,10 +796,10 @@ impl AssetManager {
   ///
   /// On success the same [`UiFile`] holds the new contents, and the files that
   /// import it are checked again. On a mistake the old contents stay.
-  pub fn reload_ui<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<()> {
+  pub fn reload_ui<P: AsRef<Path>>(&mut self, path: P) -> ManagerResult<()> {
     let key = self.cache_key(&path);
     let Some(file) = self.ui_files.get(&key).cloned() else {
-      return Err(AssetError::NotFound(self.resolve_path(&path)));
+      return Err(ManagerError::NotFound(self.resolve_path(&path)));
     };
     if file.is_embedded() {
       return Ok(());
@@ -807,7 +807,7 @@ impl AssetManager {
     let text = Self::read_text(&key)?;
     self
       .reload_ui_text(&key, &file, &text)
-      .map_err(AssetError::UiFile)
+      .map_err(ManagerError::UiFile)
   }
 
   /// Check `text` as the new contents of `file`; on success hold it and check
@@ -1184,7 +1184,7 @@ impl AssetManager {
   ///     println!("Reloaded {}", reloaded.path.display());
   /// }
   /// ```
-  pub fn enable_hot_reload<P, I>(&mut self, watch_paths: I) -> AssetResult<()>
+  pub fn enable_hot_reload<P, I>(&mut self, watch_paths: I) -> ManagerResult<()>
   where
     P: AsRef<Path>,
     I: IntoIterator<Item = P>,
@@ -1209,7 +1209,7 @@ impl AssetManager {
     };
 
     let watcher =
-      HotReloadWatcher::new(config).map_err(|e| AssetError::WatchError(e.to_string()))?;
+      HotReloadWatcher::new(config).map_err(|e| ManagerError::WatchError(e.to_string()))?;
 
     self.watcher = Some(watcher);
     Ok(())
@@ -1412,7 +1412,7 @@ impl ImportResolver for AssetManager {
       }
     }
     self.load_ui(path).map_err(|e| match e {
-      AssetError::UiFile(error) => error,
+      ManagerError::UiFile(error) => error,
       other => UiFileError::one(path, other.to_string()),
     })
   }
@@ -1479,11 +1479,11 @@ mod tests {
     write(dir.path(), "bad.ui.ron", "(root: Buton)");
     assert!(matches!(
       assets.load_ui("bad.ui.ron"),
-      Err(AssetError::UiFile(_))
+      Err(ManagerError::UiFile(_))
     ));
     assert!(matches!(
       assets.load_ui("nope.ui.ron"),
-      Err(AssetError::NotFound(_))
+      Err(ManagerError::NotFound(_))
     ));
   }
 
@@ -1555,7 +1555,7 @@ mod tests {
       "b.ui.ron",
       r#"(imports: ["a.ui.ron"], templates: {"B": (node: Column)})"#,
     );
-    let Err(AssetError::UiFile(error)) = assets.load_ui("a.ui.ron") else {
+    let Err(ManagerError::UiFile(error)) = assets.load_ui("a.ui.ron") else {
       panic!()
     };
     assert!(error.to_string().contains("circle"), "{error}");
@@ -1582,7 +1582,7 @@ mod tests {
       r#"(imports: ["a.ui.ron"], templates: {"B": (node: Column)})"#,
     )
     .unwrap();
-    let Err(AssetError::UiFile(error)) = assets.reload_ui("b.ui.ron") else {
+    let Err(ManagerError::UiFile(error)) = assets.reload_ui("b.ui.ron") else {
       panic!()
     };
     assert!(error.to_string().contains("circle"), "{error}");
@@ -1732,7 +1732,7 @@ mod tests {
 
     assert!(matches!(
       assets.load_shader("nope.wgsl"),
-      Err(AssetError::NotFound(_))
+      Err(ManagerError::NotFound(_))
     ));
   }
 
