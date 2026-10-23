@@ -129,8 +129,7 @@ impl PostProcessingPage {
       for col in 0..grid_size {
         let (r, g, b) = colors[(row + col) % colors.len()];
         let sprite = Image::solid_rect(80, 80, r, g, b, 255);
-        let name = format!("tile_{}_{}", row, col);
-        let handle = ctx.assets.create_sprite(sprite, &name);
+        let handle = ctx.assets().add(sprite);
 
         let entity = ctx
           .world
@@ -139,7 +138,7 @@ impl PostProcessingPage {
               start_x + col as f32 * spacing,
               start_y + row as f32 * spacing,
             ),
-            Renderable::sprite(handle).with_z_order(0),
+            Renderable::image(handle).with_z_order(0),
           ))
           .id();
 
@@ -156,8 +155,7 @@ impl PostProcessingPage {
 
     for (i, &(r, g, b)) in center_colors.iter().enumerate() {
       let sprite = Image::solid_rect(60, 60, r, g, b, 255);
-      let name = format!("rotating_{}", i);
-      let handle = ctx.assets.create_sprite(sprite, &name);
+      let handle = ctx.assets().add(sprite);
 
       let angle = (i as f32 / 3.0) * std::f32::consts::TAU;
       let radius = 150.0;
@@ -166,7 +164,7 @@ impl PostProcessingPage {
         .world
         .spawn((
           Transform::from_xy(cx + angle.cos() * radius, cy + angle.sin() * radius),
-          Renderable::sprite(handle).with_z_order(1),
+          Renderable::image(handle).with_z_order(1),
         ))
         .id();
 

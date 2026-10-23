@@ -6,6 +6,8 @@ use std::sync::Arc;
 use glam::Vec2;
 use winit::keyboard::KeyCode;
 
+use crate::core::asset::Assets;
+use crate::core::graphics::{Image, no_images};
 use crate::core::input::{Binding, Direction, GamepadButton, InputDevice};
 use crate::core::render::UiSpace;
 use crate::core::testing::UiHarness;
@@ -63,19 +65,50 @@ pub(crate) fn context_scaled<'a>(
 }
 
 /// A context over `space` reading `input`, drawing scene 1 (the top scene)
-/// with a fresh memory and layout engine of its own (leaked: tests only)
+/// with a fresh memory and layout engine of its own (leaked: tests only),
+/// and no images
 pub(crate) fn context_in<'a>(
   commands: &'a mut UiCommands,
   text: &'a mut TextEngine,
   space: UiSpace,
   input: UiInput,
 ) -> UiContext<'a> {
+  context_over(commands, text, space, input, no_images())
+}
+
+/// [`context_in`] sizing images by `images`
+pub(crate) fn context_over<'a>(
+  commands: &'a mut UiCommands,
+  text: &'a mut TextEngine,
+  space: UiSpace,
+  input: UiInput,
+  images: &'a Assets<Image>,
+) -> UiContext<'a> {
   let memory = Box::leak(Box::new(UiMemory::new()));
   let layout = Box::leak(Box::new(LayoutEngine::new()));
   let theme = Arc::new(Theme::dark());
-  let mut ui = UiContext::new(commands, text, memory, layout, space, input, theme, 0);
+  let mut ui = UiContext::new(
+    commands, text, memory, layout, space, input, theme, 0, images,
+  );
   ui.begin_scene(1, true);
   ui
+}
+
+/// A context recording into `commands`, `size` UI units at scale 1, sizing
+/// images by `images`
+pub(crate) fn context_with_images<'a>(
+  commands: &'a mut UiCommands,
+  text: &'a mut TextEngine,
+  size: (f32, f32),
+  images: &'a Assets<Image>,
+) -> UiContext<'a> {
+  let space = UiSpace {
+    size: Vec2::new(size.0, size.1),
+    px_scale: 1.0,
+    image: (size.0.ceil() as u32, size.1.ceil() as u32),
+    mouse_scale: 1.0,
+  };
+  context_over(commands, text, space, UiInput::default(), images)
 }
 
 /// A prompt context for `device` with `actions` bound (Xbox labels, no

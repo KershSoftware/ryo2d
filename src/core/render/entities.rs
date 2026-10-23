@@ -27,17 +27,17 @@ use std::collections::HashSet;
 use super::batch::{BlendMode, Filter};
 use super::scratch::recycle;
 use super::{CameraDraw, DrawKind, DrawList, SpriteLook, SpriteShading};
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Assets;
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{
   Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable,
   ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort,
 };
 use crate::core::graphics::TileDirection;
-use crate::core::graphics::sprite_gpu::effective_shader;
+use crate::core::graphics::sprite_gpu::{ShownImage, effective_shader};
 use crate::core::graphics::{
   CompositeTile, Image, RenderLayers, RenderTarget, RenderTargets, SpriteGpuRenderer,
-  SpriteInstance, TextureId,
+  SpriteInstance, TextureId, images_of,
 };
 use crate::core::ui::Color;
 
@@ -148,6 +148,7 @@ impl EntityDrawer {
       Option<&RenderLayers>,
     )>();
     let world: &World = world;
+    let images = images_of(world);
     // The draw list sorts by each entity's own z; this order (y-sorted after
     // plain within a layer) becomes the submission sequence
     let mut items: Vec<(DrawOrder, Drawable<'_>)> = recycle(std::mem::take(&mut self.items));
@@ -160,7 +161,7 @@ impl EntityDrawer {
             let order = match y_sort {
               Some(y_sort) => DrawOrder::y_sorted(
                 renderable.z_order,
-                y_sort_key(y_sort, renderable, global.translation().y),
+                y_sort_key(y_sort, renderable, global.translation().y, images),
               ),
               None => DrawOrder::plain(renderable.z_order),
             };
@@ -188,6 +189,7 @@ impl EntityDrawer {
       list,
       cameras,
       targets: world.get_resource::<RenderTargets>(),
+      images,
       layers: RenderLayers::default(),
       shows: None,
       filter: Filter::Default,
@@ -270,12 +272,12 @@ fn opaque(color: Color) -> Color {
   Color::new(color.r, color.g, color.b, 255)
 }
 
-/// What a draw samples: an entity sprite, or the shared shadow ellipse
+/// What a draw samples: an entity's image, or the shared shadow ellipse
 /// standing in at a size, with its texture resolved only when something is
-/// actually drawn (so culled or failed sprites cost no upload).
+/// actually drawn (so culled or failed images cost no upload).
 struct Source<'a> {
-  /// `None` for the shadow ellipse
-  sprite: Option<&'a SpriteHandle>,
+  /// `None` for the shadow ellipse and render targets
+  image: Option<ShownImage<'a>>,
   width: u32,
   height: u32,
   /// Resolved lazily: `Some(None)` is a failed upload
@@ -283,11 +285,13 @@ struct Source<'a> {
 }
 
 impl<'a> Source<'a> {
-  fn sprite(sprite: &'a SpriteHandle) -> Self {
+  /// What `image` draws: itself, or the checker in its place
+  fn image(image: ShownImage<'a>) -> Self {
+    let (width, height) = image.size();
     Self {
-      sprite: Some(sprite),
-      width: sprite.width(),
-      height: sprite.height(),
+      image: Some(image),
+      width,
+      height,
       id: None,
     }
   }
@@ -295,7 +299,7 @@ impl<'a> Source<'a> {
   /// A render target's texture `id`, `width` by `height` pixels.
   fn target(id: TextureId, (width, height): (u32, u32)) -> Source<'static> {
     Source {
-      sprite: None,
+      image: None,
       width,
       height,
       id: Some(Some(id)),
@@ -305,7 +309,7 @@ impl<'a> Source<'a> {
   /// The shadow ellipse drawn `width` by `height` pixels (before zoom).
   fn ellipse(width: u32, height: u32) -> Source<'static> {
     Source {
-      sprite: None,
+      image: None,
       width,
       height,
       id: None,
@@ -379,6 +383,8 @@ struct Emitter<'a> {
   cameras: &'a [CameraDraw],
   /// The render targets' sizes
   targets: Option<&'a RenderTargets>,
+  /// The images entities draw
+  images: &'a Assets<Image>,
   /// The layers of the entity being drawn, and the render target it shows
   layers: RenderLayers,
   shows: Option<RenderTarget>,
@@ -389,7 +395,13 @@ struct Emitter<'a> {
   ellipse: &'a mut Option<TextureId>,
 }
 
-impl Emitter<'_> {
+impl<'a> Emitter<'a> {
+  /// What drawing image `id` draws from: the image, or the checker in its
+  /// place (`None`: nothing, in release builds)
+  fn image_source(&self, id: crate::core::asset::AssetId<Image>) -> Option<Source<'a>> {
+    self.gpu.shown_image(id, self.images).map(Source::image)
+  }
+
   /// What showing `target` draws from, once its texture exists.
   fn target_source(&self, target: RenderTarget) -> Option<Source<'static>> {
     let size = self.targets?.size(target)?;
@@ -425,10 +437,8 @@ impl Emitter<'_> {
   /// The texture behind `source`, uploaded on first use.
   fn resolve(&mut self, source: &mut Source<'_>) -> Option<TextureId> {
     if source.id.is_none() {
-      let id = match source.sprite {
-        Some(sprite) => self
-          .gpu
-          .upload_entity_sprite(self.device, self.queue, sprite),
+      let id = match source.image {
+        Some(image) => self.gpu.upload_entity_image(self.device, self.queue, image),
         None => self.ellipse_texture(),
       };
       source.id = Some(id);
@@ -541,7 +551,10 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
       Some(source) => source,
       None => return,
     },
-    None => Source::sprite(&renderable.sprite),
+    None => match out.image_source(renderable.image.id()) {
+      Some(source) => source,
+      None => return,
+    },
   };
   let texels = Vec2::new(source.width as f32, source.height as f32);
 
@@ -700,7 +713,9 @@ fn collect_composite(
   let scale = global.scale();
 
   for part in &composite.parts {
-    let mut source = Source::sprite(&part.sprite);
+    let Some(mut source) = out.image_source(part.sprite.id()) else {
+      continue;
+    };
     let texels = Vec2::new(source.width as f32, source.height as f32);
     let placement = |corner: Vec2| {
       Placement::from_top_left(corner, texels, scale).flipped(part.flip_x, part.flip_y)
@@ -739,8 +754,10 @@ fn collect_composite(
 
 /// The y a y-sorted entity sorts by: the point `foot_offset` of the way down
 /// its sprite (0 top, 1 bottom), plus `sort_offset`.
-fn y_sort_key(y_sort: &YSort, renderable: &Renderable, y: f32) -> f32 {
-  let height = renderable.sprite.height() as f32;
+fn y_sort_key(y_sort: &YSort, renderable: &Renderable, y: f32, images: &Assets<Image>) -> f32 {
+  let height = images
+    .get(&renderable.image)
+    .map_or(0.0, |image| image.height() as f32);
   // `y` is the anchor point; `calculate_sort_y` measures from the top
   let (_, pivot_y) = renderable.anchor.to_pivot();
   y_sort.calculate_sort_y(y - pivot_y * height, height)
@@ -749,17 +766,17 @@ fn y_sort_key(y_sort: &YSort, renderable: &Renderable, y: f32) -> f32 {
 #[cfg(test)]
 mod draw_order_tests {
   use super::{DrawOrder, y_sort_key};
-  use crate::core::asset::SpriteHandle;
+  use crate::core::asset::Assets;
   use crate::core::ecs::{Anchor, Renderable, YSort};
   use crate::core::graphics::Image;
 
-  fn sprite_20_high(anchor: Anchor) -> Renderable {
-    let sprite = SpriteHandle::from_sprite(Image::solid_rect(10, 20, 255, 255, 255, 255), "tall");
-    Renderable::sprite(sprite).with_anchor(anchor)
-  }
-
   #[test]
   fn the_sort_key_is_the_feet_wherever_the_anchor_is() {
+    let mut images = Assets::<Image>::default();
+    let tall = images.add(Image::solid_rect(10, 20, 255, 255, 255, 255));
+    let sprite_20_high = |anchor| Renderable::image(tall.clone()).with_anchor(anchor);
+    let y_sort_key =
+      |y_sort: &YSort, renderable: &Renderable, y| y_sort_key(y_sort, renderable, y, &images);
     let y_sort = YSort::new();
     // A 20 px sprite placed at y = 100: its feet are at 110 centred, 100
     // bottom-anchored, 120 top-anchored

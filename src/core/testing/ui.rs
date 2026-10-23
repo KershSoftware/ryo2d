@@ -8,10 +8,12 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use crate::core::asset::{
-  AssetManager, AssetServer, AssetsView, MemorySource, insert_registry, pump,
+  AssetManager, AssetServer, AssetsView, DiskSource, MemorySource, insert_registry, lend_store,
+  pump,
 };
 use crate::core::ecs::kernel::{Entity, Message, Messages, Tick, World};
 use crate::core::error::ManagerResult;
+use crate::core::graphics::Image;
 use crate::core::input::{Direction, GamepadButton, InputView};
 use crate::core::messages::{register_message, update_messages};
 use crate::core::render::UiSpace;
@@ -23,7 +25,7 @@ use crate::core::ui::interact::{
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
 use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
-use crate::core::ui::theme::warn_once;
+use crate::core::ui::theme::{load_skin, warn_once};
 use crate::core::ui::widgets::scroll::drag_ahead;
 use crate::core::ui::{
   BindValue, Theme, UiConsumed, UiContext, UiEvent, UiFileError, UiId, UiInput, UiListBind, UiNode,
@@ -201,9 +203,12 @@ impl UiHarness {
     nodes::update_ui(&mut self.world, node, tree)
   }
 
-  /// Load UI files (and their images) relative to `dir`
+  /// Load UI files relative to `dir`, and their images with `dir` as the
+  /// registry's asset folder
   pub fn with_assets(mut self, dir: impl Into<PathBuf>) -> UiHarness {
-    self.assets().set_base_path(dir.into());
+    let dir = dir.into();
+    insert_registry(&mut self.world, AssetServer::new(DiskSource::new(&dir)));
+    self.assets().set_base_path(dir);
     self
   }
 
@@ -225,7 +230,7 @@ impl UiHarness {
   /// Load a UI file, build its root and spawn it, as `ctx.spawn_ui_file`
   pub fn spawn_ui_file(&mut self, path: &str) -> Result<Entity, UiFileError> {
     let file = self.assets().load_ui(path)?;
-    let tree = file.root(self.assets())?;
+    let tree = file.root(&mut self.registry())?;
     Ok(self.spawn_ui(tree))
   }
 
@@ -400,18 +405,21 @@ impl UiHarness {
   #[doc(hidden)]
   pub fn ui_dirty_check(&mut self) {
     let space = self.space();
-    let mut context = UiContext::new(
-      &mut self.commands,
-      &mut self.text,
-      &mut self.memory,
-      &mut self.layout,
-      space,
-      UiInput::default(),
-      Arc::clone(&self.theme),
-      self.theme_generation,
-    );
-    context.begin_scene(self.scene, true);
-    nodes::dirty_check(&mut self.world, &context, self.scene);
+    lend_store::<Image, _>(&mut self.world, |world, images| {
+      let mut context = UiContext::new(
+        &mut self.commands,
+        &mut self.text,
+        &mut self.memory,
+        &mut self.layout,
+        space,
+        UiInput::default(),
+        Arc::clone(&self.theme),
+        self.theme_generation,
+        images,
+      );
+      context.begin_scene(self.scene, true);
+      nodes::dirty_check(world, &context, self.scene);
+    });
   }
 
   /// Draw with `theme` (and take its interaction timings) from the next frame
@@ -420,8 +428,14 @@ impl UiHarness {
     self
   }
 
-  /// Draw with `theme` from the next frame, on a harness already built
-  pub fn set_theme(&mut self, theme: Theme) {
+  /// Draw with `theme` from the next frame, on a harness already built;
+  /// its skins' images load through the harness's registry, as the engine
+  /// loads them
+  pub fn set_theme(&mut self, mut theme: Theme) {
+    if theme.missing_skins() {
+      let mut assets = AssetsView::new(&mut self.world);
+      theme.load_skins(|source| load_skin(&mut assets, source));
+    }
     self.theme = Arc::new(theme);
     self.theme_generation += 1;
   }
@@ -686,7 +700,8 @@ impl UiHarness {
         input.consume_mouse(button);
       }
     }
-    let result = {
+    // The UI sizes images by the world's store, lent to it for the pass
+    let result = lend_store::<Image, _>(&mut self.world, |world, images| {
       let mut context = UiContext::new(
         &mut self.commands,
         &mut self.text,
@@ -696,25 +711,26 @@ impl UiHarness {
         input,
         Arc::clone(&self.theme),
         self.theme_generation,
+        images,
       );
       context.set_dt(FRAME as f32);
       context.set_prompts(Arc::clone(&self.prompts));
       context.begin_scene(self.scene, true);
-      nodes::set_cache_enabled(&mut self.world, self.ui_cache);
-      nodes::set_fragments_enabled(&mut self.world, self.ui_fragments);
-      nodes::set_spot_check(&mut self.world, self.ui_spot_check);
-      nodes::begin_pass(&mut self.world);
-      let events = nodes::draw_nodes(&mut self.world, &mut context, self.scene);
+      nodes::set_cache_enabled(world, self.ui_cache);
+      nodes::set_fragments_enabled(world, self.ui_fragments);
+      nodes::set_spot_check(world, self.ui_spot_check);
+      nodes::begin_pass(world);
+      let events = nodes::draw_nodes(world, &mut context, self.scene);
       self.last_events.clone_from(&events);
-      nodes::deliver(&mut self.world, events);
-      let result = ui(&mut context, &mut self.world);
-      let late = nodes::deliver_pending(&mut self.world);
+      nodes::deliver(world, events);
+      let result = ui(&mut context, world);
+      let late = nodes::deliver_pending(world);
       self.last_events.extend(late);
       context.end_scene();
       self.rebinds = context.take_rebinds();
       self.consumed = context.input().consumed();
       result
-    };
+    });
     self.commands.end_pass();
     // A frame that drew nothing is a read of the UI's state (`scroll_offset`):
     // the UI stays as the last drawn frame left it

@@ -9,8 +9,9 @@ const BLUE: [u8; 4] = [30, 60, 230, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 
-fn solid(name: &str, c: [u8; 4]) -> SpriteHandle {
-  SpriteHandle::from_sprite(Image::solid_rect(4, 4, c[0], c[1], c[2], c[3]), name)
+/// A 4 px square of `c`
+fn solid(_name: &str, c: [u8; 4]) -> Image {
+  Image::solid_rect(4, 4, c[0], c[1], c[2], c[3])
 }
 
 fn color(c: [u8; 4]) -> Color {
@@ -20,16 +21,19 @@ fn color(c: [u8; 4]) -> Color {
 /// Draws the first of `sprites`, 4x4 texels, centred at (32, 32) at `scale`,
 /// and the others off screen after it, so they sit next to it in the atlas.
 struct AtlasScene {
-  sprites: Vec<SpriteHandle>,
+  /// The images, added on enter
+  images: Vec<Image>,
+  sprites: Vec<Handle<Image>>,
   scale: f32,
   tint: Color,
   effect: Option<SpriteEffect>,
 }
 
 impl AtlasScene {
-  fn new(sprites: Vec<SpriteHandle>, scale: f32) -> Self {
+  fn new(images: Vec<Image>, scale: f32) -> Self {
     Self {
-      sprites,
+      images,
+      sprites: Vec::new(),
       scale,
       tint: Color::WHITE,
       effect: None,
@@ -40,6 +44,10 @@ impl AtlasScene {
 impl Scene for AtlasScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     ctx.look().tonemap = Tonemap::Clamp;
+    for image in std::mem::take(&mut self.images) {
+      let sprite = ctx.assets().add(image);
+      self.sprites.push(sprite);
+    }
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {

@@ -46,7 +46,10 @@ pub(crate) use compositor::{CompositeViewport, Compositor};
 pub(crate) use glyph_atlas::GlyphPage;
 pub use gpu_context::GpuRenderContext;
 pub use gpu_error::GpuError;
+pub(crate) use image::images_of;
 pub use image::{AnimatedSprite, Image};
+#[cfg(test)]
+pub(crate) use image::{no_images, test_handle, test_images};
 pub use parallax::{ParallaxLayer, TileMode};
 pub use render_layers::RenderLayers;
 pub use render_targets::{MAX_TARGET_SIDE, RenderTargets};

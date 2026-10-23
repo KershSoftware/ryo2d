@@ -6,7 +6,8 @@ use std::ops::Range;
 
 use glam::Vec2;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
+use crate::core::graphics::Image;
 use crate::core::text::style::{Outline, TextFont, hash_outline};
 use crate::core::ui::Color;
 
@@ -104,37 +105,16 @@ impl Span {
 }
 
 /// A picture inline with text
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Icon {
-  /// A sprite; `size` in text units, default a square as high as the font
+  /// An image; `size` in text units, default a square as high as the font
   /// size
   Sprite {
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     size: Option<Vec2>,
   },
   /// A name looked up in `TextIcons` when the text is drawn
   Named { name: String, size: Option<Vec2> },
-}
-
-// `SpriteHandle` has no `PartialEq`: two sprite icons are equal when they
-// name the same handle (its serial)
-impl PartialEq for Icon {
-  fn eq(&self, other: &Self) -> bool {
-    match (self, other) {
-      (
-        Self::Sprite {
-          sprite: a,
-          size: sa,
-        },
-        Self::Sprite {
-          sprite: b,
-          size: sb,
-        },
-      ) => a.serial() == b.serial() && sa == sb,
-      (Self::Named { name: a, size: sa }, Self::Named { name: b, size: sb }) => a == b && sa == sb,
-      _ => false,
-    }
-  }
 }
 
 impl Icon {
@@ -148,7 +128,7 @@ impl Icon {
     match self {
       Self::Sprite { sprite, size } => {
         0u8.hash(h);
-        sprite.serial().hash(h);
+        sprite.id().hash(h);
         size.map(|s| (s.x.to_bits(), s.y.to_bits())).hash(h);
       }
       Self::Named { name, size } => {
@@ -251,12 +231,12 @@ impl RichText {
   }
 
   /// Append a sprite: a square as high as the font size
-  pub fn icon(self, sprite: SpriteHandle) -> Self {
+  pub fn icon(self, sprite: Handle<Image>) -> Self {
     self.push_icon(Icon::Sprite { sprite, size: None })
   }
 
   /// Append a sprite at a size in text units
-  pub fn icon_sized(self, sprite: SpriteHandle, size: Vec2) -> Self {
+  pub fn icon_sized(self, sprite: Handle<Image>, size: Vec2) -> Self {
     self.push_icon(Icon::Sprite {
       sprite,
       size: Some(size),

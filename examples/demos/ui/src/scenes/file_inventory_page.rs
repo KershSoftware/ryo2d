@@ -115,7 +115,7 @@ impl FileInventoryPage {
   }
 
   fn build(ctx: &mut SceneContext) -> Result<Built, UiFileError> {
-    let root = ctx.assets.load_ui(INVENTORY)?.root(ctx.assets)?;
+    let root = ctx.assets.load_ui(INVENTORY)?.root(&mut ctx.assets())?;
     let mut equipment = Vec::new();
     for equip in EquipSlot::ALL {
       let args = UiArgs::new().with("label", equip.name());
@@ -137,7 +137,7 @@ impl FileInventoryPage {
     for &(at, node) in &self.slots {
       let item = self.model.item(at);
       if let Some(mut slot) = ctx.world.get_mut::<UiSlot>(node) {
-        slot.icon = item.map(|item| self.icons.of(item.kind).clone());
+        slot.icon = item.and_then(|item| self.icons.of(item.kind).cloned());
         slot.count = item.map_or(0, |item| item.count);
       }
       let tooltip = match (item, at) {
@@ -249,6 +249,7 @@ impl DemoPage for FileInventoryPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
+    self.icons.add(ctx);
     let built = match Self::build(ctx) {
       Ok(built) => built,
       Err(error) => return self.fail(error),

@@ -19,8 +19,9 @@
 //! replayed reads to it: a tape replays only while every read of its
 //! subtree still holds, so a clean parent never holds a child that is not.
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{AssetId, Handle};
 use crate::core::ecs::kernel::Entity;
+use crate::core::graphics::Image;
 use crate::core::ui::immediate::UiContext;
 use crate::core::ui::tree::{DrawKind, Node};
 use crate::core::ui::{Rect, UiId};
@@ -116,12 +117,13 @@ pub(crate) enum Read {
   /// the build placed something by it: an open dropdown's list is as tall
   /// as the room beside the dropdown itself
   Rect { id: UiId, rect: Option<Rect> },
-  /// The version of `sprite` whose size the build sized something by: an
-  /// image without a size, a prompt's glyph. A hot reload replaces a
-  /// sprite in place, perhaps at another size, and no component changes.
+  /// The version of the image whose size the build sized something by
+  /// (`None`: not loaded): an image without a size, a prompt's glyph. A
+  /// reload changes an image in place, perhaps to another size, and no
+  /// component changes.
   Sprite {
-    sprite: SpriteHandle,
-    generation: u64,
+    image: AssetId<Image>,
+    version: Option<u64>,
   },
 }
 
@@ -245,16 +247,15 @@ impl UiContext<'_> {
     }
   }
 
-  /// The build being recorded sized something by `sprite`: noted as a read
+  /// The build being recorded sized something by `image`: noted as a read
   /// of its version ([`Read::Sprite`])
-  pub(crate) fn note_sprite(&mut self, sprite: &SpriteHandle) {
+  pub(crate) fn note_sprite(&mut self, image: &Handle<Image>) {
     if self.tapes.is_empty() {
       return;
     }
-    self.note_read(Read::Sprite {
-      sprite: sprite.clone(),
-      generation: sprite.generation(),
-    });
+    let image = image.id();
+    let version = self.image_version(image);
+    self.note_read(Read::Sprite { image, version });
   }
 
   /// The build being recorded did something a replay would not repeat:

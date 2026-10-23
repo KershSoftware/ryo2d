@@ -35,18 +35,17 @@ impl AmbientOcclusionPage {
     width: u32,
     height: u32,
     color: (u8, u8, u8),
-    name: &str,
+    _name: &str,
   ) -> Entity {
-    let sprite = ctx.assets.create_sprite(
-      Image::solid_rect(width, height, color.0, color.1, color.2, 255),
-      name,
-    );
+    let sprite = ctx.assets().add(Image::solid_rect(
+      width, height, color.0, color.1, color.2, 255,
+    ));
 
     ctx
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_anchor(Anchor::TopLeft)
           .with_z_order(5),
       ))
@@ -77,13 +76,12 @@ impl DemoPage for AmbientOcclusionPage {
       .set_ambient(AmbientLight::new(Color::WHITE, 0.95));
 
     // Create background
-    let bg = ctx.assets.create_sprite(
-      Image::solid_rect(1280, 720, 180, 180, 190, 255), // Light gray
-      "background",
-    );
+    let bg = ctx
+      .assets()
+      .add(Image::solid_rect(1280, 720, 180, 180, 190, 255));
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
-      Renderable::sprite(bg)
+      Renderable::image(bg)
         .with_anchor(Anchor::TopLeft)
         .with_z_order(-1),
     ));

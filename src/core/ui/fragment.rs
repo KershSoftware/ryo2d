@@ -15,8 +15,9 @@
 
 use glam::Vec2;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::kernel::Entity;
+use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
 use crate::core::ui::id::IdScopes;
 use crate::core::ui::immediate::UiCommand;
@@ -135,10 +136,10 @@ pub(crate) struct Fragment {
   /// index into `nodes`, orders less the root's): to resolve it again
   pub(crate) nodes: Vec<Node>,
   pub(crate) node_draws: Vec<Draw>,
-  /// The sprites its commands were cut by (a nine-slice skin's pieces and
-  /// their UVs follow its size), each with the generation it had: a sprite
-  /// replaced in place since (a hot reload) changes no other input
-  pub(crate) sprites: Vec<(SpriteHandle, u64)>,
+  /// The images its commands were cut by (a nine-slice skin's pieces and
+  /// their UVs follow its size), each with the version it had (`None`: not
+  /// loaded): an image changed or reloaded since changes no other input
+  pub(crate) sprites: Vec<(AssetId<Image>, Option<u64>)>,
   /// The interest rect its draws were last culled by, in bits: its slot's,
   /// in its slot's coordinates (`None` outside a slot, where they are
   /// culled by their clips)
@@ -161,12 +162,12 @@ pub(crate) struct Fragment {
 }
 
 impl Fragment {
-  /// Whether every sprite its commands were cut by is as it was
-  pub(crate) fn sprites_hold(&self) -> bool {
+  /// Whether every image its commands were cut by is as it was in `images`
+  pub(crate) fn sprites_hold(&self, images: &Assets<Image>) -> bool {
     self
       .sprites
       .iter()
-      .all(|(sprite, generation)| sprite.generation() == *generation)
+      .all(|(image, version)| images.version(*image) == *version)
   }
 }
 
@@ -479,11 +480,14 @@ impl Fragments {
   }
 }
 
-/// The sprite whose size `kind`'s commands are cut by, with its generation
-/// now, if it has one: a nine-slice's
-pub(crate) fn sized_by(kind: &DrawKind) -> Option<(SpriteHandle, u64)> {
+/// The image whose size `kind`'s commands are cut by, with its version in
+/// `images` now, if it has one: a nine-slice's
+pub(crate) fn sized_by(
+  kind: &DrawKind,
+  images: &Assets<Image>,
+) -> Option<(AssetId<Image>, Option<u64>)> {
   match kind {
-    DrawKind::NineSlice { sprite, .. } => Some((sprite.clone(), sprite.generation())),
+    DrawKind::NineSlice { sprite, .. } => Some((sprite.id(), images.version(sprite))),
     _ => None,
   }
 }

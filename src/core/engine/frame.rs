@@ -9,13 +9,14 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use super::{Engine, FrameOutcome, PresentOutcome, QuitRequested, SceneHost};
-use crate::core::asset::AssetManager;
+use crate::core::asset::{AssetManager, AssetsView, lend_store};
 use crate::core::audio::SoundOptions;
 use crate::core::capture::CaptureTarget;
 use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::ecs::kernel::{CheckChangeTicks, DetectChanges};
 use crate::core::ecs::{MessageWriter, On, Res, ResMut, Resource, World};
+use crate::core::graphics::Image;
 use crate::core::input::{Binding, Input, InputEvent};
 use crate::core::messages::{AssetLoadFailed, AssetReloaded, update_messages};
 use crate::core::scene::SceneAction;
@@ -28,7 +29,7 @@ use crate::core::ui::interact::{
 };
 use crate::core::ui::memory::UiSound;
 use crate::core::ui::nav::{NavInput, resolve_focus};
-use crate::core::ui::theme::{Theme, refresh_skins};
+use crate::core::ui::theme::{Theme, load_skin, refresh_skins};
 use crate::core::ui::widgets::rebind::note_swap;
 use crate::core::ui::{UiContext, UiInput, UiTheme};
 use crate::{engine_warn, profile_scope};
@@ -469,7 +470,7 @@ impl Engine {
   }
 
   /// The theme for this UI pass: a watched theme file that changed is
-  /// reloaded (debug builds), and the sprites of new skins are loaded
+  /// reloaded (debug builds), and the images of new skins are loaded
   fn refresh_ui_theme(&mut self) -> Arc<Theme> {
     #[cfg(debug_assertions)]
     let now = f64::from(self.world.resource::<Time>().real.elapsed());
@@ -481,14 +482,8 @@ impl Engine {
       .resource_scope(|world, mut theme: crate::core::ecs::Mut<UiTheme>| {
         #[cfg(debug_assertions)]
         watch.poll(&mut theme, now);
-        let mut assets = world.resource_mut::<AssetManager>();
-        refresh_skins(&mut theme, loaded, |path| match assets.load_sprite(path) {
-          Ok(sprite) => Some(sprite),
-          Err(error) => {
-            engine_warn!(module: "ui", "could not load the UI skin {path:?}: {error}");
-            None
-          }
-        });
+        let mut assets = AssetsView::new(world);
+        refresh_skins(&mut theme, loaded, |source| load_skin(&mut assets, source));
         theme.shared()
       })
   }
@@ -631,7 +626,8 @@ impl Engine {
     let real_dt = self.world.resource::<Time>().real.delta();
     // Overlays and the console still lay out in whole UI units
     let (width, height) = (space.size.x.ceil() as u32, space.size.y.ceil() as u32);
-    let (action, consumed, rebinds) = {
+    // The UI sizes images by the world's store, lent to it for the pass
+    let (action, consumed, rebinds) = lend_store::<Image, _>(&mut self.world, |world, images| {
       let mut ui = UiContext::new(
         &mut self.ui_commands,
         &mut self.text,
@@ -641,10 +637,11 @@ impl Engine {
         snapshot,
         Arc::clone(&theme),
         theme_generation,
+        images,
       );
       ui.set_dt(real_dt);
       ui.set_prompts(Arc::clone(&self.prompts));
-      let action = with_host(&mut self.world, |world, host| {
+      let action = with_host(world, |world, host| {
         host.scenes.ui_pass(world, &mut host.audio, &mut ui)
       });
 
@@ -683,14 +680,14 @@ impl Engine {
         );
         self
           .ui_rebuilds
-          .draw(&mut ui, &self.world, dt, self.ui_retain.stats, top);
+          .draw(&mut ui, world, dt, self.ui_retain.stats, top);
       }
       // The console over everything
       self.console_state.render(&mut ui, width, height);
       ui.end_scene();
       let rebinds = ui.take_rebinds();
       (action, ui.into_input(), rebinds)
-    };
+    });
     self.ui_commands.end_pass();
     // A rerun pass adds to the frame's first
     if first_pass {
@@ -844,13 +841,12 @@ pub(crate) fn asset_registry_system(world: &mut World) {
   crate::core::asset::pump(world);
 }
 
-/// `PreUpdate`: finish async loads and (dev builds) hot reloads.
+/// `PreUpdate`: the old manager's hot reloads (dev builds).
 pub(crate) fn asset_pump_system(
   mut assets: ResMut<AssetManager>,
   mut reloaded: MessageWriter<AssetReloaded>,
   mut failed: MessageWriter<AssetLoadFailed>,
 ) {
-  assets.process_async_loads();
   #[cfg(debug_assertions)]
   assets.process_reloads();
   for outcome in assets.take_reload_outcomes() {

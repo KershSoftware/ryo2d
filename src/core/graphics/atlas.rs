@@ -109,6 +109,12 @@ impl AtlasLayout {
     self.pages.len()
   }
 
+  /// Number of keys with a slot.
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn len(&self) -> usize {
+    self.entries.len()
+  }
+
   /// Find a slot for `key`, allocating `width`x`height` plus its border (in
   /// whole cells) if new.
   /// `None` when the image must be standalone (larger than 256 px) or nothing can be freed.
@@ -362,6 +368,8 @@ pub(crate) struct TextureAtlas {
   nearest: wgpu::Sampler,
   linear: wgpu::Sampler,
   glyphs: GlyphAtlas,
+  /// Images written so far, to a page or a standalone texture
+  writes: u64,
 }
 
 impl TextureAtlas {
@@ -392,6 +400,7 @@ impl TextureAtlas {
       targets: HashMap::new(),
       target_ids: HashMap::new(),
       glyphs: GlyphAtlas::new(),
+      writes: 0,
       bind_layout: layout,
       nearest: sampler(
         "Sprite Sampler (nearest)",
@@ -489,11 +498,13 @@ impl TextureAtlas {
 
   /// Upload (if needed) and return where `rgba` (sRGB bytes) lives.
   ///
-  /// `rgba` is only called when the image has to be written. Images larger
+  /// `rgba` is only read when the image has to be written. Images larger
   /// than 256 px, or that cannot be placed in the atlas without evicting more
-  /// than a bounded number of entries, get a standalone texture. `None` when
-  /// the pixel data does not match the size (nothing is registered then) or
-  /// the image exceeds the device's texture size limit.
+  /// than a bounded number of entries, get a standalone texture, whose mip
+  /// levels below the first are `mips` when its loader made them (else they
+  /// are made here). `None` when the pixel data does not match the size
+  /// (nothing is registered then) or the image exceeds the device's texture
+  /// size limit.
   #[allow(clippy::too_many_arguments)] // signature fixed by the atlas API
   pub(crate) fn slot(
     &mut self,
@@ -502,7 +513,8 @@ impl TextureAtlas {
     key: TextureId,
     width: u32,
     height: u32,
-    rgba: impl FnOnce() -> Vec<u8>,
+    rgba: &[u8],
+    mips: Option<&[Vec<u8>]>,
     frame: u64,
   ) -> Option<AtlasSlot> {
     if width == 0 || height == 0 {
@@ -530,8 +542,7 @@ impl TextureAtlas {
     }
 
     // Validate before registering anything, so a bad upload leaves no entry.
-    let pixels = rgba();
-    let bordered = extrude_border(&pixels, width, height, BORDER)?;
+    let bordered = extrude_border(rgba, width, height, BORDER)?;
     let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
     if small && let Some(p) = self.layout.place(key, width, height, frame) {
       while self.pages.len() < self.layout.page_count() {
@@ -541,19 +552,38 @@ impl TextureAtlas {
         return None;
       };
       let page = self.pages.get(index)?;
-      write_mips(
-        queue,
-        &page.texture,
-        p.x,
-        p.y,
-        &mip_chain(&bordered, bw, bh, MIP_LEVELS),
-      );
+      let chain = mip_chain(&bordered, bw, bh, MIP_LEVELS);
+      let levels = chain
+        .iter()
+        .map(|(w, h, pixels)| (*w, *h, pixels.as_slice()));
+      write_mips(queue, &page.texture, p.x, p.y, levels);
+      self.writes += 1;
       return Some(p.slot);
     }
     // Standalone now: a leftover atlas slot would be returned, unwritten, if
     // the key later shrinks back to its old size
     self.layout.remove(key);
-    Some(self.create_standalone(device, queue, key, width, height, &bordered, frame))
+    self.writes += 1;
+    let image = StandaloneImage {
+      width,
+      height,
+      bordered: &bordered,
+      mips,
+    };
+    Some(self.create_standalone(device, queue, key, image, frame))
+  }
+
+  /// How many images have been written so far, to a page or a standalone
+  /// texture
+  pub(crate) fn writes(&self) -> u64 {
+    self.writes
+  }
+
+  /// How many textures have room now: a rect on a page or a standalone
+  /// texture
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn rects(&self) -> usize {
+    self.layout.len() + self.standalone.len()
   }
 
   /// Where `key` lives now, without uploading it or marking it used.
@@ -733,21 +763,46 @@ impl TextureAtlas {
     (texture, bind_groups)
   }
 
-  #[allow(clippy::too_many_arguments)]
   fn create_standalone(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     key: TextureId,
-    width: u32,
-    height: u32,
-    bordered: &[u8],
+    image: StandaloneImage<'_>,
     frame: u64,
   ) -> AtlasSlot {
+    let StandaloneImage {
+      width,
+      height,
+      bordered,
+      mips,
+    } = image;
     let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
     let levels = standalone_levels(bw, bh);
     let (texture, bind_groups) = self.create_texture(device, bw, bh, levels, "Atlas Standalone");
-    write_mips(queue, &texture, 0, 0, &mip_chain(bordered, bw, bh, levels));
+    match mips.filter(|mips| prepared_mips_fit(mips, bw, bh, levels)) {
+      // The loader made the levels below the first on its thread
+      Some(mips) => {
+        let below = halvings(bw, bh)
+          .skip(1)
+          .zip(mips)
+          .map(|((w, h), pixels)| (w, h, pixels.as_slice()));
+        write_mips(
+          queue,
+          &texture,
+          0,
+          0,
+          std::iter::once((bw, bh, bordered)).chain(below),
+        );
+      }
+      None => {
+        let chain = mip_chain(bordered, bw, bh, levels);
+        let chain = chain
+          .iter()
+          .map(|(w, h, pixels)| (*w, *h, pixels.as_slice()));
+        write_mips(queue, &texture, 0, 0, chain);
+      }
+    }
     let id = self.next_standalone;
     self.next_standalone += 1;
     let slot = AtlasSlot {
@@ -773,6 +828,33 @@ impl TextureAtlas {
     );
     slot
   }
+}
+
+/// An image going into a standalone texture: its size, its pixels with
+/// their border, and the levels below the first its loader made, if any
+struct StandaloneImage<'p> {
+  width: u32,
+  height: u32,
+  bordered: &'p [u8],
+  mips: Option<&'p [Vec<u8>]>,
+}
+
+/// The sizes of a mip chain from `width`x`height`, halving with `mip_chain`
+fn halvings(width: u32, height: u32) -> impl Iterator<Item = (u32, u32)> {
+  std::iter::successors(Some((width, height)), |&(w, h)| {
+    Some((w.div_ceil(2).max(1), h.div_ceil(2).max(1)))
+  })
+}
+
+/// Whether `mips` are the levels below the first of a standalone texture
+/// `bw`x`bh` px (border included) with `levels` levels: one per level, each
+/// the size `mip_chain` halves to. Anything else is made again at upload
+fn prepared_mips_fit(mips: &[Vec<u8>], bw: u32, bh: u32, levels: u32) -> bool {
+  mips.len() as u64 + 1 == u64::from(levels)
+    && halvings(bw, bh)
+      .skip(1)
+      .zip(mips)
+      .all(|((w, h), pixels)| pixels.len() as u64 == u64::from(w) * u64::from(h) * 4)
 }
 
 /// The mip levels of a standalone texture `width`x`height` px, border
@@ -906,12 +988,12 @@ pub(crate) fn mip_chain(
 /// The GPU rounds odd level sizes down where the chain rounds them up: a
 /// level that would overrun its texture loses its last column or row (the
 /// border's, repeating the edge).
-fn write_mips(
+fn write_mips<'p>(
   queue: &wgpu::Queue,
   texture: &wgpu::Texture,
   x: u32,
   y: u32,
-  chain: &[(u32, u32, Vec<u8>)],
+  chain: impl IntoIterator<Item = (u32, u32, &'p [u8])>,
 ) {
   for (level, (width, height, pixels)) in (0u32..).zip(chain) {
     if level >= texture.mip_level_count() {
@@ -922,8 +1004,8 @@ fn write_mips(
       .size()
       .mip_level_size(level, wgpu::TextureDimension::D2);
     let copy = (
-      (*width).min(room.width.saturating_sub(x)),
-      (*height).min(room.height.saturating_sub(y)),
+      width.min(room.width.saturating_sub(x)),
+      height.min(room.height.saturating_sub(y)),
     );
     if copy.0 == 0 || copy.1 == 0 {
       continue;
@@ -939,7 +1021,7 @@ fn write_mips(
       wgpu::TexelCopyBufferLayout {
         offset: 0,
         bytes_per_row: Some(width * 4),
-        rows_per_image: Some(*height),
+        rows_per_image: Some(height),
       },
       wgpu::Extent3d {
         width: copy.0,
@@ -1250,12 +1332,12 @@ mod tests {
     let mut atlas = gpu_atlas(&device);
     assert!(
       atlas
-        .slot(&device, &queue, id(0), 2, 2, || vec![0; 7], 0)
+        .slot(&device, &queue, id(0), 2, 2, &[0; 7], None, 0)
         .is_none()
     );
     let px: Vec<u8> = (0..4u8).flat_map(|i| [10 * (i + 1), 0, 0, 255]).collect();
     let slot = atlas
-      .slot(&device, &queue, id(0), 2, 2, || px.clone(), 1)
+      .slot(&device, &queue, id(0), 2, 2, &px, None, 1)
       .unwrap();
     let page = atlas.texture(slot.page).unwrap();
     let img = crate::core::capture::read_texture_rgba(&device, &queue, page).unwrap();
@@ -1271,10 +1353,10 @@ mod tests {
     };
     let mut atlas = gpu_atlas(&device);
     let a = atlas
-      .slot(&device, &queue, id(0), 300, 4, || vec![9; 300 * 4 * 4], 0)
+      .slot(&device, &queue, id(0), 300, 4, &[9; 300 * 4 * 4], None, 0)
       .unwrap();
     let b = atlas
-      .slot(&device, &queue, id(0), 301, 4, || vec![9; 301 * 4 * 4], 1)
+      .slot(&device, &queue, id(0), 301, 4, &[9; 301 * 4 * 4], None, 1)
       .unwrap();
     assert_ne!(a.uv, b.uv);
     let tex = atlas.texture(b.page).unwrap();
@@ -1288,16 +1370,16 @@ mod tests {
     };
     let mut atlas = gpu_atlas(&device);
     atlas
-      .slot(&device, &queue, id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
+      .slot(&device, &queue, id(0), 2, 2, &[10; 2 * 2 * 4], None, 0)
       .unwrap();
     // Too big for the atlas, so standalone
     let big = atlas
-      .slot(&device, &queue, id(0), 300, 4, || vec![20; 300 * 4 * 4], 1)
+      .slot(&device, &queue, id(0), 300, 4, &[20; 300 * 4 * 4], None, 1)
       .unwrap();
     assert!(matches!(big.page, SlotPage::Standalone(_)));
     // Back at the original size, the new pixels must be written
     let small = atlas
-      .slot(&device, &queue, id(0), 2, 2, || vec![77; 2 * 2 * 4], 2)
+      .slot(&device, &queue, id(0), 2, 2, &[77; 2 * 2 * 4], None, 2)
       .unwrap();
     assert!(matches!(small.page, SlotPage::Atlas(_)));
     let page = atlas.texture(small.page).unwrap();
@@ -1314,10 +1396,10 @@ mod tests {
     };
     let mut atlas = gpu_atlas(&device);
     let small = atlas
-      .slot(&device, &queue, id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
+      .slot(&device, &queue, id(0), 2, 2, &[10; 2 * 2 * 4], None, 0)
       .unwrap();
     let resized = atlas
-      .slot(&device, &queue, id(0), 3, 2, || vec![50; 3 * 2 * 4], 1)
+      .slot(&device, &queue, id(0), 3, 2, &[50; 3 * 2 * 4], None, 1)
       .unwrap();
     assert_ne!(small.uv, resized.uv);
     assert_eq!(atlas.lookup(id(0)), Some(resized));
@@ -1337,7 +1419,7 @@ mod tests {
     let too_big = device.limits().max_texture_dimension_2d;
     assert!(
       atlas
-        .slot(&device, &queue, id(0), too_big, 1, || unreachable!(), 0)
+        .slot(&device, &queue, id(0), too_big, 1, &[], None, 0)
         .is_none()
     );
   }
@@ -1350,7 +1432,7 @@ mod tests {
     let mut atlas = gpu_atlas(&device);
     let px: Vec<u8> = (0..4u8).flat_map(|i| [10 * (i + 1), 0, 0, 255]).collect();
     let slot = atlas
-      .slot(&device, &queue, id(0), 2, 2, || px.clone(), 0)
+      .slot(&device, &queue, id(0), 2, 2, &px, None, 0)
       .unwrap();
     assert!(atlas.bind_group(slot.page, Sampling::Nearest).is_some());
     let page = atlas.texture(slot.page).unwrap();

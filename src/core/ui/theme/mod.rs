@@ -28,8 +28,9 @@ use serde::{Deserialize, Serialize};
 
 use super::Color;
 use super::memory::UiSound;
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{AssetsView, Handle};
 use crate::core::ecs::Resource;
+use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::text::{FontRole, TextStyle};
 
@@ -155,6 +156,24 @@ impl Default for Theme {
 }
 
 impl Theme {
+  /// Whether a skin has a path (or is a built-in theme's) and no image yet
+  pub(crate) fn missing_skins(&self) -> bool {
+    self.skins.values().any(Skin::wants_image)
+  }
+
+  /// Load the image of every skin that has a path (or is a built-in
+  /// theme's) and none yet, through `load`
+  pub(crate) fn load_skins(
+    &mut self,
+    mut load: impl FnMut(SkinSource<'_>) -> Option<Handle<Image>>,
+  ) {
+    for skin in self.skins.values_mut() {
+      if let Some(source) = skin.source() {
+        skin.sprite = load(source);
+      }
+    }
+  }
+
   /// The dark theme (the default)
   pub fn dark() -> Theme {
     builtin::dark()
@@ -375,9 +394,27 @@ pub struct Skin {
   /// Written as a string in files: `"Nearest"`
   #[serde(with = "names")]
   pub filter: Filter,
-  /// The loaded sprite
+  /// The loaded image
   #[serde(skip)]
-  pub sprite: Option<SpriteHandle>,
+  pub sprite: Option<Handle<Image>>,
+  /// A built-in theme's image, made in code when the skin is loaded
+  #[serde(skip)]
+  pub(crate) builtin: Option<BuiltinSkin>,
+}
+
+/// The images the built-in themes' skins are made of, in code
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuiltinSkin {
+  PixelButton,
+  PixelPanel,
+}
+
+/// Where a skin's image comes from, for loading it (`UiTheme::load_skins`)
+pub(crate) enum SkinSource<'a> {
+  /// A file, by its asset path
+  Path(&'a str),
+  /// A built-in theme's image, made in code
+  Made(Image),
 }
 
 impl Default for Skin {
@@ -387,6 +424,7 @@ impl Default for Skin {
       insets: [0.0; 4],
       filter: Filter::Default,
       sprite: None,
+      builtin: None,
     }
   }
 }
@@ -396,30 +434,60 @@ impl PartialEq for Skin {
     self.path == other.path
       && self.insets == other.insets
       && self.filter == other.filter
-      && self.sprite.as_ref().map(SpriteHandle::serial)
-        == other.sprite.as_ref().map(SpriteHandle::serial)
+      && self.sprite == other.sprite
+      && self.builtin == other.builtin
   }
 }
 
 impl Skin {
   /// A skin of `sprite`, whose corners reach `insets` (left, top, right,
   /// bottom) in sprite pixels
-  pub fn from_sprite(sprite: SpriteHandle, insets: [f32; 4], filter: Filter) -> Skin {
+  pub fn from_sprite(sprite: Handle<Image>, insets: [f32; 4], filter: Filter) -> Skin {
     Skin {
       path: None,
       insets,
       filter,
       sprite: Some(sprite),
+      builtin: None,
     }
   }
 
-  /// A skin of the sprite file `path`, loaded by the engine
+  /// A built-in theme's skin of `image`, made when the skin is loaded
+  pub(crate) fn builtin(image: BuiltinSkin, insets: [f32; 4], filter: Filter) -> Skin {
+    Skin {
+      path: None,
+      insets,
+      filter,
+      sprite: None,
+      builtin: Some(image),
+    }
+  }
+
+  /// Where this skin's image comes from while it has none
+  fn source(&self) -> Option<SkinSource<'_>> {
+    if self.sprite.is_some() {
+      return None;
+    }
+    match (self.builtin, &self.path) {
+      (Some(image), _) => Some(SkinSource::Made(builtin::skin_image(image))),
+      (None, Some(path)) => Some(SkinSource::Path(path)),
+      (None, None) => None,
+    }
+  }
+
+  /// Whether this skin has a path (or is a built-in theme's) and no image
+  fn wants_image(&self) -> bool {
+    self.sprite.is_none() && (self.builtin.is_some() || self.path.is_some())
+  }
+
+  /// A skin of the image file `path` (an asset path), loaded by the engine
   pub fn from_path(path: &str, insets: [f32; 4], filter: Filter) -> Skin {
     Skin {
       path: Some(path.to_string()),
       insets,
       filter,
       sprite: None,
+      builtin: None,
     }
   }
 }
@@ -468,17 +536,40 @@ impl Default for UiSounds {
   }
 }
 
-/// Load the skin sprites of `theme` through `load` when its generation is not
+/// Load the skin images of `theme` through `load` when its generation is not
 /// the one in `loaded` (`None` before the first pass, so a starting theme's
 /// skins load on the first frame), and remember it
 pub(crate) fn refresh_skins(
   theme: &mut UiTheme,
   loaded: &mut Option<u64>,
-  load: impl FnMut(&str) -> Option<SpriteHandle>,
+  load: impl FnMut(SkinSource<'_>) -> Option<Handle<Image>>,
 ) {
   if *loaded != Some(theme.generation()) {
     theme.load_skins(load);
     *loaded = Some(theme.generation());
+  }
+}
+
+/// A skin's image through the asset registry: a file loaded at once, or a
+/// built-in theme's image added. A file that will not load is warned about
+/// and leaves the skin bare
+pub(crate) fn load_skin(
+  assets: &mut AssetsView<'_>,
+  source: SkinSource<'_>,
+) -> Option<Handle<Image>> {
+  match source {
+    SkinSource::Path(path) => match assets.load_now::<Image>(path) {
+      Ok(image) => Some(image),
+      Err(error) => {
+        crate::engine_warn!(
+          module: "ui",
+          "could not load the UI skin {path:?}: {}",
+          error.report()
+        );
+        None
+      }
+    },
+    SkinSource::Made(image) => Some(assets.add(image)),
   }
 }
 
@@ -541,24 +632,12 @@ impl UiTheme {
     self.generation
   }
 
-  /// Load the sprite of every skin that has a `path` and no sprite yet,
-  /// through `load`. Loaded skins change what is drawn, so this moves the
-  /// generation.
-  pub(crate) fn load_skins(&mut self, mut load: impl FnMut(&str) -> Option<SpriteHandle>) {
-    let missing = self
-      .theme
-      .skins
-      .values()
-      .any(|skin| skin.sprite.is_none() && skin.path.is_some());
-    if missing {
-      let theme = Arc::make_mut(&mut self.theme);
-      for skin in theme.skins.values_mut() {
-        if skin.sprite.is_none()
-          && let Some(path) = &skin.path
-        {
-          skin.sprite = load(path);
-        }
-      }
+  /// Load the image of every skin that has a `path` (or is a built-in
+  /// theme's) and no image yet, through `load`. Loaded skins change what is
+  /// drawn, so this moves the generation.
+  pub(crate) fn load_skins(&mut self, load: impl FnMut(SkinSource<'_>) -> Option<Handle<Image>>) {
+    if self.theme.missing_skins() {
+      Arc::make_mut(&mut self.theme).load_skins(load);
     }
     self.generation = next_generation();
   }
@@ -580,13 +659,32 @@ mod tests {
     let theme = Theme::pixel();
     for (name, kind) in [("button", WidgetKind::Button), ("panel", WidgetKind::Panel)] {
       let skin = &theme.skins[name];
-      assert!(skin.sprite.is_some(), "{name} has a sprite made in code");
+      assert!(
+        skin.builtin.is_some() && skin.sprite.is_none(),
+        "{name}'s image is made in code when the skin is loaded"
+      );
       assert_eq!((skin.insets, skin.filter), ([4.0; 4], Filter::Nearest));
       let look = theme.look(kind, None, WidgetState::Normal);
       assert_eq!(look.skin.as_deref(), Some(name));
     }
     assert_eq!(theme.text.button.font, ThemeFont::Pixel);
     assert_eq!(theme.text.button.size, 16.0);
+    // Loaded, each skin gets its image, 12 px square
+    let mut images = crate::core::asset::Assets::default();
+    let mut theme = theme;
+    assert!(theme.missing_skins());
+    theme.load_skins(|source| match source {
+      SkinSource::Made(image) => Some(images.add(image)),
+      SkinSource::Path(_) => None,
+    });
+    assert!(!theme.missing_skins());
+    for name in ["button", "panel"] {
+      let image = theme.skins[name]
+        .sprite
+        .as_ref()
+        .and_then(|s| images.get(s));
+      assert_eq!(image.map(|i| (i.width(), i.height())), Some((12, 12)));
+    }
   }
 
   #[test]
@@ -621,11 +719,13 @@ mod tests {
     let skin = Skin::from_path("ui/frame.png", [2.0; 4], Filter::Linear);
     let mut theme = UiTheme::new(Theme::dark().skin("frame", skin));
     let mut asked = Vec::new();
+    let mut images = crate::core::asset::Assets::default();
     for _ in 0..2 {
-      theme.load_skins(|path| {
-        asked.push(path.to_string());
-        let sprite = crate::core::graphics::Image::solid_rect(4, 4, 255, 255, 255, 255);
-        Some(SpriteHandle::from_sprite(sprite, path))
+      theme.load_skins(|source| {
+        if let SkinSource::Path(path) = source {
+          asked.push(path.to_string());
+        }
+        Some(images.add(Image::solid_rect(4, 4, 255, 255, 255, 255)))
       });
     }
     assert_eq!(asked, ["ui/frame.png"]);
@@ -638,10 +738,10 @@ mod tests {
     let mut theme = UiTheme::new(Theme::dark().skin("start", skin));
     let mut loaded = None;
     let mut asked = 0;
-    let mut load = |path: &str| {
+    let mut images = crate::core::asset::Assets::default();
+    let mut load = |_: SkinSource<'_>| {
       asked += 1;
-      let sprite = crate::core::graphics::Image::solid_rect(4, 4, 255, 255, 255, 255);
-      Some(SpriteHandle::from_sprite(sprite, path))
+      Some(images.add(Image::solid_rect(4, 4, 255, 255, 255, 255)))
     };
     refresh_skins(&mut theme, &mut loaded, &mut load);
     refresh_skins(&mut theme, &mut loaded, &mut load);

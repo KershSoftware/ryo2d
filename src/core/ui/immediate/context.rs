@@ -36,8 +36,9 @@ use winit::keyboard::KeyCode;
 use super::commands::{UiCommand, UiCommands};
 use super::input::UiInput;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{AssetId, Assets, Handle};
 use crate::core::ecs::kernel::Entity;
+use crate::core::graphics::Image;
 use crate::core::hash::fast_hash;
 use crate::core::input::{Actions, Binding, Direction, InputDevice, PadFamily};
 use crate::core::render::UiSpace;
@@ -441,6 +442,8 @@ pub struct UiContext<'a> {
   /// The tapes being recorded, innermost last (`tape.rs`): empty unless a
   /// node tree's builder is running
   pub(crate) tapes: Vec<Recorder>,
+  /// The images widgets size themselves by
+  images: &'a Assets<Image>,
 }
 
 /// The draw layer a scene's page records on
@@ -456,6 +459,7 @@ impl<'a> UiContext<'a> {
   /// A context recording into `commands`, laying text out with `text`,
   /// remembering in `memory` and laying containers out with `layout`, over
   /// the UI `space`, reading `input` (its mouse converted to UI units).
+  /// Widgets size themselves by `images`.
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn new(
     commands: &'a mut UiCommands,
@@ -466,6 +470,7 @@ impl<'a> UiContext<'a> {
     input: UiInput,
     theme: Arc<Theme>,
     theme_generation: u64,
+    images: &'a Assets<Image>,
   ) -> Self {
     Self {
       commands,
@@ -491,7 +496,21 @@ impl<'a> UiContext<'a> {
       prompts: Arc::new(PromptContext::default()),
       pending_rebinds: Vec::new(),
       tapes: Vec::new(),
+      images,
     }
+  }
+
+  /// The size of `image` in texels; zero while it is not loaded
+  pub(crate) fn image_size(&self, image: &Handle<Image>) -> Vec2 {
+    self.images.get(image).map_or(Vec2::ZERO, |image| {
+      Vec2::new(image.width() as f32, image.height() as f32)
+    })
+  }
+
+  /// The content version of image `id` (`None` while it is not loaded):
+  /// what was sized by it holds while it is the same
+  pub(crate) fn image_version(&self, id: AssetId<Image>) -> Option<u64> {
+    self.images.version(id)
   }
 
   /// Prompts read `prompts` this pass (the engine's, built from `Input`
@@ -1360,6 +1379,7 @@ impl<'a> UiContext<'a> {
         commands: &mut *self.commands,
         space: self.space,
         scene: self.scene,
+        images: self.images,
       },
     );
     scratch.give_subtree(subtree);
@@ -2092,7 +2112,7 @@ impl<'a> UiContext<'a> {
   // =========================================================================
 
   /// Record part of a sprite (`uv`, fractions of it) stretched over `rect`
-  fn record_sprite(&mut self, sprite: &SpriteHandle, rect: Rect, uv: [f32; 4], tint: Color) {
+  fn record_sprite(&mut self, sprite: &Handle<Image>, rect: Rect, uv: [f32; 4], tint: Color) {
     self.taint();
     if !Self::drawable(rect) || self.outside_clip(rect) {
       return;
@@ -2114,19 +2134,20 @@ impl<'a> UiContext<'a> {
   }
 
   /// Draw a sprite with its top-left at (x, y), one UI unit per texel.
-  pub fn draw_sprite(&mut self, sprite: &SpriteHandle, x: f32, y: f32) {
+  pub fn draw_sprite(&mut self, sprite: &Handle<Image>, x: f32, y: f32) {
     self.draw_sprite_scaled(sprite, x, y, 1.0);
   }
 
-  /// Draw a sprite with its top-left at (x, y), scaled uniformly.
-  pub fn draw_sprite_scaled(&mut self, sprite: &SpriteHandle, x: f32, y: f32, scale: f32) {
-    let (w, h) = (sprite.width() as f32, sprite.height() as f32);
-    let rect = Rect::new(x, y, w * scale, h * scale);
+  /// Draw a sprite with its top-left at (x, y), scaled uniformly. An
+  /// image that is not loaded has no size, so nothing is drawn.
+  pub fn draw_sprite_scaled(&mut self, sprite: &Handle<Image>, x: f32, y: f32, scale: f32) {
+    let size = self.image_size(sprite);
+    let rect = Rect::new(x, y, size.x * scale, size.y * scale);
     self.record_sprite(sprite, rect, [0.0, 0.0, 1.0, 1.0], Color::WHITE);
   }
 
   /// Draw a sprite stretched over `rect`, tinted.
-  pub fn draw_sprite_rect(&mut self, sprite: &SpriteHandle, rect: Rect, tint: Color) {
+  pub fn draw_sprite_rect(&mut self, sprite: &Handle<Image>, rect: Rect, tint: Color) {
     self.record_sprite(sprite, rect, [0.0, 0.0, 1.0, 1.0], tint);
   }
 
@@ -2135,12 +2156,12 @@ impl<'a> UiContext<'a> {
   /// `insets` are `[left, top, right, bottom]` in texels.
   pub fn draw_nine_slice(
     &mut self,
-    sprite: &SpriteHandle,
+    sprite: &Handle<Image>,
     rect: Rect,
     insets: [f32; 4],
     tint: Color,
   ) {
-    let size = Vec2::new(sprite.width() as f32, sprite.height() as f32);
+    let size = self.image_size(sprite);
     if size.x <= 0.0 || size.y <= 0.0 || !Self::drawable(rect) {
       return;
     }
@@ -2317,13 +2338,13 @@ mod tests {
   use winit::event::{ElementState, MouseButton};
 
   use super::*;
-  use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::Image;
   use crate::core::input::Input;
   use crate::core::render::UiSpace;
   use crate::core::text::{TextEngine, TextLayout, TextStyle};
   use crate::core::ui::immediate::{UiCommand, UiCommands};
-  use crate::core::ui::test_util::{UiDriver, context as ui_context, text_engine};
+  use crate::core::ui::test_util::{
+    UiDriver, context as ui_context, context_with_images, text_engine,
+  };
 
   #[test]
   fn prompt_generation_moves_only_on_a_change() {
@@ -2529,8 +2550,9 @@ mod tests {
   #[test]
   fn sprites_record_their_rect_and_a_nine_slice_records_nine() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context(&mut commands, &mut text);
-    let sprite = SpriteHandle::from_sprite(Image::solid_rect(16, 8, 255, 255, 255, 255), "s");
+    let mut images = Assets::default();
+    let sprite = images.add(Image::solid_rect(16, 8, 255, 255, 255, 255));
+    let mut ui = context_with_images(&mut commands, &mut text, (320.0, 180.0), &images);
     ui.draw_sprite(&sprite, 1.0, 2.0);
     ui.draw_sprite_scaled(&sprite, 1.0, 2.0, 2.0);
     ui.draw_sprite_rect(&sprite, Rect::new(0.0, 0.0, 5.0, 5.0), Color::RED);
@@ -2553,7 +2575,7 @@ mod tests {
     );
 
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context(&mut commands, &mut text);
+    let mut ui = context_with_images(&mut commands, &mut text, (320.0, 180.0), &images);
     ui.draw_nine_slice(
       &sprite,
       Rect::new(0.0, 0.0, 100.0, 50.0),
@@ -3073,11 +3095,13 @@ mod tests {
     assert_eq!(seed_of(false), seed_of(true));
   }
 
-  /// The sprite pieces of a nine-slice: (rect, uv)
-  fn slice_pieces(sprite: &SpriteHandle, rect: Rect, insets: [f32; 4]) -> Vec<(Rect, [f32; 4])> {
+  /// The sprite pieces of a nine-slice of `image`: (rect, uv)
+  fn slice_pieces(image: Image, rect: Rect, insets: [f32; 4]) -> Vec<(Rect, [f32; 4])> {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui = context(&mut commands, &mut text);
-    ui.draw_nine_slice(sprite, rect, insets, Color::WHITE);
+    let mut images = Assets::default();
+    let sprite = images.add(image);
+    let mut ui = context_with_images(&mut commands, &mut text, (320.0, 180.0), &images);
+    ui.draw_nine_slice(&sprite, rect, insets, Color::WHITE);
     drop(ui);
     commands
       .commands()
@@ -3090,9 +3114,8 @@ mod tests {
 
   #[test]
   fn nine_slice_insets_clamp_to_the_texture() {
-    let sprite = SpriteHandle::from_sprite(Image::solid_rect(16, 8, 255, 255, 255, 255), "s");
     let pieces = slice_pieces(
-      &sprite,
+      Image::solid_rect(16, 8, 255, 255, 255, 255),
       Rect::new(0.0, 0.0, 100.0, 50.0),
       [20.0, 0.0, 20.0, 0.0],
     );
@@ -3107,9 +3130,12 @@ mod tests {
 
   #[test]
   fn nine_slice_corners_shrink_to_fit_a_small_rect() {
-    let sprite = SpriteHandle::from_sprite(Image::solid_rect(16, 16, 255, 255, 255, 255), "s");
     let rect = Rect::new(10.0, 10.0, 6.0, 20.0);
-    let pieces = slice_pieces(&sprite, rect, [4.0, 2.0, 4.0, 2.0]);
+    let pieces = slice_pieces(
+      Image::solid_rect(16, 16, 255, 255, 255, 255),
+      rect,
+      [4.0, 2.0, 4.0, 2.0],
+    );
     for (piece, _) in &pieces {
       assert!(
         piece.x >= rect.x - 1e-4 && piece.right() <= rect.right() + 1e-4,

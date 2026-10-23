@@ -33,8 +33,9 @@ fn the_default_transform_is_the_identity() {
 
 #[test]
 fn a_sprite_is_centred_on_its_position_by_default() {
-  let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 255, 255, 255), "dot");
-  assert_eq!(Renderable::sprite(sprite).anchor, Anchor::Center);
+  let mut images = Assets::<Image>::default();
+  let sprite = images.add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+  assert_eq!(Renderable::image(sprite).anchor, Anchor::Center);
 }
 
 /// REGRESSION: Default rotation must be 0 (no rotation)

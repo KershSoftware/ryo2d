@@ -97,9 +97,9 @@ pub use particle::Particle;
 
 use std::collections::HashMap;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::AssetId;
 use crate::core::ecs::{Entity, GlobalTransform, SpriteEffect, World};
-use crate::core::graphics::{BatchCollector, SpriteDraw, SpriteInstance};
+use crate::core::graphics::{BatchCollector, Image, SpriteDraw, SpriteInstance};
 use crate::core::messages::register_message;
 use crate::core::physics::{Collider, ColliderShape};
 use rand::rngs::StdRng;
@@ -318,7 +318,7 @@ pub struct ParticleSystem {
   /// Colliders gathered this update (reused to avoid per-frame allocation)
   colliders: Vec<ParticleCollider>,
   /// Each emitter's look while collecting for render (reused)
-  looks: HashMap<Entity, (SpriteHandle, Option<SpriteEffect>, SpriteDraw)>,
+  looks: HashMap<Entity, (AssetId<Image>, Option<SpriteEffect>, SpriteDraw)>,
   /// Random number generator for spawn variation
   rng: StdRng,
 }
@@ -818,12 +818,12 @@ impl ParticleSystem {
         effects: emitter.effect.is_some(),
         emission: emitter.emission,
       };
-      let look = (emitter.sprite.clone(), emitter.effect.clone(), draw);
+      let look = (emitter.sprite.id(), emitter.effect.clone(), draw);
       (entity, look)
     }));
 
     for p in &self.particles {
-      let Some((sprite, effect, draw)) = looks.get(&p.emitter_entity) else {
+      let Some((image, effect, draw)) = looks.get(&p.emitter_entity) else {
         continue;
       };
 
@@ -839,7 +839,7 @@ impl ParticleSystem {
         instance = instance.with_effect(effect);
       }
 
-      collector.add(sprite, instance, *draw);
+      collector.add_image(*image, instance, *draw);
     }
   }
 
@@ -883,10 +883,9 @@ impl ParticleSystem {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::asset::SpriteHandle;
+  use crate::core::asset::{Assets, Handle};
   use crate::core::ecs::propagate::propagate_transforms;
   use crate::core::ecs::{Disabled, Messages, Transform, Vec2};
-  use crate::core::graphics::Image;
   use crate::core::physics::Collider;
   use crate::core::systems::test_util;
 
@@ -896,8 +895,8 @@ mod tests {
     system.update(world, dt);
   }
 
-  fn test_sprite() -> SpriteHandle {
-    SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 255, 255, 255), "test.png")
+  fn test_sprite() -> Handle<Image> {
+    Assets::<Image>::default().add(Image::solid_rect(8, 8, 255, 255, 255, 255))
   }
 
   /// One motionless particle at the origin and a strong point attractor 100px to its right.
@@ -1600,7 +1599,7 @@ mod tests {
   fn particles_are_centred_on_their_world_position() {
     let mut world = World::new();
     let mut system = ParticleSystem::new();
-    let sprite = SpriteHandle::from_sprite(Image::solid_rect(2, 2, 255, 255, 255, 255), "dot");
+    let sprite = Assets::<Image>::default().add(Image::solid_rect(2, 2, 255, 255, 255, 255));
     let emitter = world
       .spawn((
         Transform::from_xy(100.0, 50.0),

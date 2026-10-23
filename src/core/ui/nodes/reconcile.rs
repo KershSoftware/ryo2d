@@ -4,10 +4,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use crate::core::asset::AssetManager;
+use crate::core::asset::AssetsView;
 use crate::core::ecs::kernel::{
-  ChildOf, Children, Component, DetectChangesMut, Entity, EntityWorldMut, Messages, Mut,
-  QueryState, World, WorldId,
+  ChildOf, Children, Component, DetectChangesMut, Entity, EntityWorldMut, Messages, QueryState,
+  World, WorldId,
 };
 use crate::core::messages::register_message;
 use crate::core::text::TextReveal;
@@ -133,7 +133,7 @@ pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
   // Outer trees first: a code-built instance inside one is left alone by its
   // reload, or goes with its parent and is skipped
   stale.sort_by_cached_key(|&(entity, ..)| depth(world, entity));
-  let roots = world.try_resource_scope(|world, mut assets: Mut<AssetManager>| {
+  let roots = {
     let mut roots: Vec<UiReloaded> = Vec::new();
     for (entity, source, now) in stale {
       // Gone with an outer tree that was given a new kind
@@ -141,7 +141,10 @@ pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
         continue;
       }
       let mut built: Option<Arc<TreeSource>> = None;
-      let top = match source.file.build_source(&source, &mut *assets) {
+      let built_tree = source
+        .file
+        .build_source(&source, &mut AssetsView::new(world));
+      let top = match built_tree {
         Ok(tree) => {
           built = tree.source.clone();
           let instance = source.instance;
@@ -174,8 +177,8 @@ pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
         }
       }
     }
-    roots
-  });
+    Some(roots)
+  };
   let Some(roots) = roots.filter(|roots| !roots.is_empty()) else {
     return;
   };
@@ -1511,7 +1514,7 @@ mod reload_tests {
   fn a_tree_built_before_a_reload_and_spawned_after_it_reloads() {
     let (dir, mut h) = harness(&[("late.ui.ron", r#"(root: Column(children: [Text("a")]))"#)]);
     let file = h.assets().load_ui("late.ui.ron").unwrap();
-    let tree = file.root(h.assets()).unwrap();
+    let tree = file.root(&mut h.registry()).unwrap();
     std::fs::write(
       dir.path().join("late.ui.ron"),
       r#"(root: Column(children: [Text("b")]))"#,
@@ -1629,9 +1632,9 @@ mod reload_tests {
     let args = UiArgs::new()
       .with("name", "pick-3")
       .with("default_focus", true);
-    let given = ui_file.template("Pick", &args, h.assets()).unwrap();
+    let given = ui_file.template("Pick", &args, &mut h.registry()).unwrap();
     let coded = ui_file
-      .template("Pick", &UiArgs::new(), h.assets())
+      .template("Pick", &UiArgs::new(), &mut h.registry())
       .unwrap()
       .name("pick-coded");
     let given = spawn_ui_in(h.world_mut(), picks, given).unwrap();
@@ -1685,7 +1688,11 @@ mod reload_tests {
     let list = h.find_ui("list").unwrap();
     let ui_file = h.assets().load_ui("inv.ui.ron").unwrap();
     let node = ui_file
-      .template("Item", &UiArgs::new().with("name", "Sword"), h.assets())
+      .template(
+        "Item",
+        &UiArgs::new().with("name", "Sword"),
+        &mut h.registry(),
+      )
       .unwrap();
     let item = spawn_ui_in(h.world_mut(), list, node).unwrap();
     rewrite(
@@ -1732,7 +1739,7 @@ mod reload_tests {
     let child = h.world().get::<Children>(root).unwrap()[0];
     assert_eq!(h.world().get::<UiNodeKind>(child).unwrap().name(), "text");
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("missing.png"),
+      crate::core::ui::test_util::warnings_containing("cannot load the image \"missing.png\""),
       1
     );
   }
@@ -1742,7 +1749,7 @@ mod reload_tests {
     let (dir, mut h) = harness(&[("m.ui.ron", r#"(root: Column(children: [Text("file")]))"#)]);
     let file = h.assets().load_ui("m.ui.ron").unwrap();
     let tree = file
-      .root(h.assets())
+      .root(&mut h.registry())
       .unwrap()
       .child(UiNode::text("code").key("code"));
     let root = h.spawn_ui(tree);

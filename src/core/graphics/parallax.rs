@@ -13,8 +13,9 @@
 
 use glam::Vec2;
 
+use super::Image;
 use super::{CameraView, SpriteInstance};
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::{Component, Query, Res};
 use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::time::Time;
@@ -50,7 +51,7 @@ pub(crate) const MAX_PARALLAX_TILES: usize = 1024;
 #[derive(Component, Debug, Clone)]
 pub struct ParallaxLayer {
   /// The layer's image
-  pub sprite: SpriteHandle,
+  pub sprite: Handle<Image>,
   /// How far it moves with the camera, per axis: 0 stays on screen, 1
   /// stays in the world
   pub scroll: Vec2,
@@ -76,7 +77,7 @@ pub struct ParallaxLayer {
 impl ParallaxLayer {
   /// A layer of `sprite` fixed on screen at its top-left, untiled, at its
   /// own size, untinted and lit.
-  pub fn new(sprite: &SpriteHandle) -> Self {
+  pub fn new(sprite: &Handle<Image>) -> Self {
     Self {
       sprite: sprite.clone(),
       scroll: Vec2::ZERO,
@@ -223,7 +224,7 @@ pub(crate) fn advance_parallax(time: Res<Time>, mut layers: Query<&mut ParallaxL
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::graphics::{Camera2d, CameraView, Image};
+  use crate::core::graphics::{Camera2d, CameraView};
 
   fn view(center: Vec2) -> CameraView {
     CameraView::compute(
@@ -236,7 +237,8 @@ mod tests {
   }
 
   fn layer() -> ParallaxLayer {
-    let sprite = SpriteHandle::from_sprite(Image::solid_rect(16, 16, 255, 255, 255, 255), "plx");
+    let sprite = crate::core::asset::Assets::<Image>::default()
+      .add(Image::solid_rect(16, 16, 255, 255, 255, 255));
     ParallaxLayer::new(&sprite)
       .with_scroll(Vec2::splat(0.5))
       .with_tile(TileMode::InfiniteScroll)

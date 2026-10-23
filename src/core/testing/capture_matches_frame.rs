@@ -10,14 +10,14 @@ struct Fixture;
 
 impl Scene for Fixture {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let red = SpriteHandle::from_sprite(Image::solid_rect(20, 20, 255, 0, 0, 255), "red");
-    let blue = SpriteHandle::from_sprite(Image::solid_rect(30, 12, 0, 60, 255, 255), "blue");
+    let red = ctx.assets().add(Image::solid_rect(20, 20, 255, 0, 0, 255));
+    let blue = ctx.assets().add(Image::solid_rect(30, 12, 0, 60, 255, 255));
     ctx
       .world
-      .spawn((Transform::from_xy(10.0, 10.0), Renderable::sprite(red)));
+      .spawn((Transform::from_xy(10.0, 10.0), Renderable::image(red)));
     ctx
       .world
-      .spawn((Transform::from_xy(40.0, 30.0), Renderable::sprite(blue)));
+      .spawn((Transform::from_xy(40.0, 30.0), Renderable::image(blue)));
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {

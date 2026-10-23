@@ -41,9 +41,16 @@ impl DebugScene {
     // Spawn bird as DYNAMIC (not kinematic) so Rapier generates collision events
     // But with zero gravity so it doesn't fall - we move it manually
     let size = BIRD_SIZE as u32;
-    let bird_sprite = Image::load_svg_fit("assets/bird-flap-up.svg", size, size)
+    let fit = ImageSettings {
+      svg: SvgSize::Fit {
+        width: size,
+        height: size,
+      },
+    };
+    let bird_handle = ctx
+      .assets()
+      .load_now_with::<Image, _>("bird-flap-up.svg", fit)
       .expect("Failed to load bird sprite");
-    let bird_handle = SpriteHandle::from_sprite(bird_sprite, "bird-flap-up.svg");
 
     let bird = ctx
       .world
@@ -56,7 +63,7 @@ impl DebugScene {
           .with_gravity_scale(0.0)
           .lock_rotation(),
         Collider::circle(BIRD_SIZE / 2.0),
-        Renderable::sprite(bird_handle).with_z_order(10),
+        Renderable::image(bird_handle).with_z_order(10),
       ))
       .id();
     self.bird = Some(bird);
@@ -72,11 +79,16 @@ impl DebugScene {
     ];
 
     // Load pipe sprites
-    let cap_sprite = Image::load("assets/pipe_cap.png").expect("Failed to load pipe cap");
-    let body_sprite = Image::load("assets/pipe_body.png").expect("Failed to load pipe body");
-    let cap_handle = SpriteHandle::from_sprite(cap_sprite, "pipe_cap.png");
-    let body_handle = SpriteHandle::from_sprite(body_sprite, "pipe_body.png");
-    let cap_height = cap_handle.height() as f32;
+    let mut assets = ctx.assets();
+    let cap_handle = assets
+      .load_now::<Image>("pipe_cap.png")
+      .expect("Failed to load pipe cap");
+    let body_handle = assets
+      .load_now::<Image>("pipe_body.png")
+      .expect("Failed to load pipe body");
+    let cap_height = assets
+      .get(&cap_handle)
+      .map_or(0.0, |cap| cap.height() as f32);
 
     for (x, gap_center_y) in pipe_positions {
       // TOP PIPE: hangs from ceiling
@@ -94,7 +106,7 @@ impl DebugScene {
         )
         .cap_flipped_y(cap_handle.clone(), 0.0, top_body_height)
         .z_order(5)
-        .build_with_collider();
+        .build_with_collider(ctx.world.resource::<Assets<Image>>());
 
       let top_pipe = ctx
         .world
@@ -124,7 +136,7 @@ impl DebugScene {
             bottom_body_height,
           )
           .z_order(5)
-          .build_with_collider();
+          .build_with_collider(ctx.world.resource::<Assets<Image>>());
 
         let bottom_pipe = ctx
           .world
@@ -142,8 +154,10 @@ impl DebugScene {
   }
 
   fn spawn_ground(&mut self, ctx: &mut SceneContext) {
-    let ground_sprite = Image::load("assets/ground.png").expect("Failed to load ground sprite");
-    let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground.png");
+    let ground_handle = ctx
+      .assets()
+      .load_now::<Image>("ground.png")
+      .expect("Failed to load ground sprite");
     let ground = ctx
       .world
       .spawn((
@@ -151,7 +165,7 @@ impl DebugScene {
         Velocity::new(0.0, 0.0),
         RigidBody::fixed(),
         Collider::rect(SCREEN_WIDTH as f32, GROUND_HEIGHT),
-        Renderable::sprite(ground_handle).with_z_order(15),
+        Renderable::image(ground_handle).with_z_order(15),
       ))
       .id();
     self.ground = Some(ground);

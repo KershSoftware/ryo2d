@@ -2,7 +2,7 @@ use bytemuck::Zeroable;
 use glam::Vec2;
 
 use super::*;
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::Entity;
 use crate::core::graphics::bind_groups::created_on_this_thread;
 use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
@@ -189,8 +189,14 @@ fn glyph_image(
   }
 }
 
-/// A sprite of `width` x `height` with varied colour and alpha
-fn gradient(width: u32, height: u32) -> SpriteHandle {
+/// An image of `width` x `height` with varied colour and alpha, in the
+/// test thread's store
+fn gradient(width: u32, height: u32) -> Handle<Image> {
+  crate::core::graphics::test_handle(gradient_image(width, height))
+}
+
+/// An image of `width` x `height` with varied colour and alpha
+fn gradient_image(width: u32, height: u32) -> Image {
   let mut data = Vec::new();
   for y in 0..height {
     for x in 0..width {
@@ -203,7 +209,7 @@ fn gradient(width: u32, height: u32) -> SpriteHandle {
       ]);
     }
   }
-  SpriteHandle::from_sprite(Image::from_rgba(data, width, height), "gradient")
+  Image::from_rgba(data, width, height)
 }
 
 /// A quad's instance at `centre`, `size` pixels, turned by `angle`
@@ -409,7 +415,9 @@ fn every_kind_draws_inside_its_clip() {
   let placed: Vec<_> = sprite_quads
     .iter()
     .map(|(sprite, filter, centre, size, angle)| {
-      let texture = sprites.texture_of(sprite);
+      let texture = sprites
+        .texture_of(sprite.id(), &crate::core::graphics::test_images())
+        .expect("a test image");
       let instance = quad(*centre, *size, *angle, Color::new(255, 230, 210, 250));
       (texture, instance, *filter)
     })
@@ -554,7 +562,9 @@ fn a_render_target_sprite_draws_with_the_linear_body() {
 
   // What the world camera draws into the target: a turned gradient
   let gradient = gradient(5, 4);
-  let texture = sprites.texture_of(&gradient);
+  let texture = sprites
+    .texture_of(gradient.id(), &crate::core::graphics::test_images())
+    .expect("a test image");
   let instance = quad(
     Vec2::new(10.2, 7.7),
     Vec2::new(17.0, 12.5),
@@ -989,7 +999,7 @@ mod building {
   use glam::Vec2;
 
   use super::super::*;
-  use crate::core::asset::SpriteHandle;
+  use crate::core::asset::{Assets, Handle};
   use crate::core::graphics::{Image, SpriteGpuRenderer};
   use crate::core::render::batch::{Filter, Triangles, push_polyline};
   use crate::core::render::text::{TextSources, TextTargets, emit_text};
@@ -1067,6 +1077,7 @@ mod building {
         engine: &self.engine,
         effects: &self.effects,
         icons: &self.icons,
+        images: crate::core::graphics::no_images(),
       }
     }
   }
@@ -1115,7 +1126,7 @@ mod building {
     }
   }
 
-  fn sprite(handle: &SpriteHandle, rect: Rect, filter: Filter, clip: Option<Rect>) -> UiCommand {
+  fn sprite(handle: &Handle<Image>, rect: Rect, filter: Filter, clip: Option<Rect>) -> UiCommand {
     UiCommand::Sprite {
       sprite: handle.clone(),
       rect,
@@ -1148,12 +1159,30 @@ mod building {
     commands
   }
 
-  /// The new path's build of `commands`, retention off
+  /// The new path's build of `commands`, retention off, its images in the
+  /// test thread's store
   fn built(
     writes: &mut Writes,
     commands: &UiCommands,
     env: UiRenderEnv,
     sources: Option<&TextSources<'_>>,
+  ) -> UiBuild {
+    built_with(
+      writes,
+      commands,
+      env,
+      sources,
+      &crate::core::graphics::test_images(),
+    )
+  }
+
+  /// [`built`], its images in `images`
+  fn built_with(
+    writes: &mut Writes,
+    commands: &UiCommands,
+    env: UiRenderEnv,
+    sources: Option<&TextSources<'_>>,
+    images: &Assets<Image>,
   ) -> UiBuild {
     let mut build = UiBuild::default();
     let mut texts = UiTextCache::<UiInstance>::default();
@@ -1162,7 +1191,7 @@ mod building {
       &mut build,
       commands,
       &env,
-      sources,
+      (sources, images),
       &mut writes.targets(),
       0.0,
       &mut texts,
@@ -1204,7 +1233,7 @@ mod building {
     let Some(mut writes) = Writes::new() else {
       return;
     };
-    let swatch = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let swatch = crate::core::graphics::test_handle(Image::solid_rect(4, 4, 255, 0, 0, 255));
     let clip = Some(Rect::new(0.0, 0.0, 100.0, 50.0));
     let commands = commands_of([
       // Wholly below its clip
@@ -1284,7 +1313,7 @@ mod building {
     let Some(mut writes) = Writes::new() else {
       return;
     };
-    let swatch = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let swatch = crate::core::graphics::test_handle(Image::solid_rect(4, 4, 255, 0, 0, 255));
     let slot_clip = Rect::new(0.0, 5.0, 100.0, 60.0);
     let inner = Rect::new(4.0, 2.0, 40.0, 30.0);
     // At a fractional scale: 3 and 7 render pixels are 2.4 and 5.6 units
@@ -1471,7 +1500,9 @@ mod building {
     let Some(mut writes) = Writes::new() else {
       return;
     };
-    let swatch = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    // The swatch in a store the text's sources read too
+    let mut images = Assets::default();
+    let swatch = images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
     let icons = Arc::new(TextLayout {
       scale: 1.0,
       icons: vec![PlacedIcon {
@@ -1493,7 +1524,11 @@ mod building {
       ),
       text(&icons, Vec2::new(40.0, 10.0), None),
     ]);
-    let sources = NoFonts::new();
+    let fonts = NoFonts::new();
+    let sources = TextSources {
+      images: &images,
+      ..fonts.sources()
+    };
     // The sprite's quad, and the icon's as the text emitters lay it
     let quad = sprite_instance(
       Rect::new(10.3, 10.0, 16.0, 12.0),
@@ -1501,10 +1536,13 @@ mod building {
       Color::new(255, 230, 210, 250),
     )
     .expect("a sprite");
-    let list = laid(&mut writes, &commands, env(), &sources.sources());
+    let list = laid(&mut writes, &commands, env(), &sources);
     let icon = list.sprite(0).expect("the icon is laid").instance;
-    let texture = writes.sprites.texture_of(&swatch);
-    let build = built(&mut writes, &commands, env(), Some(&sources.sources()));
+    let texture = writes
+      .sprites
+      .texture_of(swatch.id(), &images)
+      .expect("a loaded image");
+    let build = built_with(&mut writes, &commands, env(), Some(&sources), &images);
     let clip = ClipRect::of(None, env().space.image);
     let expected = [quad, icon].map(|quad| UiInstance::quad(UiKind::SPRITE, &quad, clip, false, 0));
     assert_eq!(build.instances, expected);
@@ -1534,7 +1572,7 @@ mod building {
     let Some(mut writes) = Writes::new() else {
       return;
     };
-    let swatch = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let swatch = crate::core::graphics::test_handle(Image::solid_rect(4, 4, 255, 0, 0, 255));
     let commands = commands_of([
       sprite(
         &swatch,
@@ -1550,7 +1588,10 @@ mod building {
       ),
     ]);
     let mut build = built(&mut writes, &commands, env(), None);
-    let texture = writes.sprites.texture_of(&swatch);
+    let texture = writes
+      .sprites
+      .texture_of(swatch.id(), &crate::core::graphics::test_images())
+      .expect("a test image");
     // Two more sprites: one of a texture with no slot, one of a render
     // target's
     let mut targets = RenderTargets::default();
@@ -1608,9 +1649,9 @@ mod building {
     let Some(mut writes) = Writes::new() else {
       return;
     };
-    let [a, b] = ["a", "b"]
-      .map(|name| SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), name));
-    let on_layer = |handle: &SpriteHandle, x: f32, layer: u8| match sprite(
+    let [a, b] =
+      [(); 2].map(|()| crate::core::graphics::test_handle(Image::solid_rect(4, 4, 255, 0, 0, 255)));
+    let on_layer = |handle: &Handle<Image>, x: f32, layer: u8| match sprite(
       handle,
       Rect::new(x, 10.0, 16.0, 12.0),
       Filter::Default,
@@ -1643,7 +1684,16 @@ mod building {
       on_layer(&a, 900.0, 0),
     ]);
     let build = built(&mut writes, &commands, env(), None);
-    let (a, b) = (writes.sprites.texture_of(&a), writes.sprites.texture_of(&b));
+    let (a, b) = (
+      writes
+        .sprites
+        .texture_of(a.id(), &crate::core::graphics::test_images())
+        .expect("a test image"),
+      writes
+        .sprites
+        .texture_of(b.id(), &crate::core::graphics::test_images())
+        .expect("a test image"),
+    );
     assert_eq!(build.needs, [TexNeed::Sprite(b), TexNeed::Sprite(a)]);
     assert_eq!(build.sprite_textures(), [a, b, a]);
   }
@@ -1737,7 +1787,7 @@ mod building {
             &mut build,
             commands,
             &env(),
-            Some(sources),
+            (Some(sources), &crate::core::graphics::test_images()),
             &mut writes.targets(),
             0.0,
             &mut texts,
@@ -1869,7 +1919,7 @@ mod building {
             &mut build,
             commands,
             &env,
-            Some(sources),
+            (Some(sources), &crate::core::graphics::test_images()),
             &mut writes.targets(),
             0.0,
             &mut texts,
@@ -2001,7 +2051,7 @@ mod building {
             &mut build,
             commands,
             &env,
-            Some(sources),
+            (Some(sources), &crate::core::graphics::test_images()),
             &mut writes.targets(),
             0.0,
             texts,
@@ -2193,7 +2243,14 @@ mod building {
       uniforms.sync(&device, &queue, &[(UI_CAMERA, globals)]);
       batch.sync_cameras(&device, &uniforms);
       let mut ui = UiRenderer::new(&device, batch.camera_layout());
-      ui.build(commands, env, false, sources, &mut writes.targets(), 0.0);
+      ui.build(
+        commands,
+        env,
+        false,
+        (sources, &crate::core::graphics::test_images()),
+        &mut writes.targets(),
+        0.0,
+      );
       let textures = ui.sprite_textures().to_vec();
       let list = DrawList::default();
       writes
@@ -2372,7 +2429,7 @@ mod building {
     /// (a rect, a line and a sprite)
     fn contents(
       px_scale: f32,
-      swatch: &SpriteHandle,
+      swatch: &Handle<Image>,
       label: Option<&Arc<TextLayout>>,
       field: bool,
     ) -> Vec<UiCommand> {
@@ -2430,7 +2487,7 @@ mod building {
     fn page(
       px_scale: f32,
       offset: [i32; 2],
-      swatch: &SpriteHandle,
+      swatch: &Handle<Image>,
       label: Option<&Arc<TextLayout>>,
       field: bool,
     ) -> UiCommands {
@@ -2473,7 +2530,7 @@ mod building {
       commands: &mut UiCommands,
       slot: u16,
       px_scale: f32,
-      swatch: &SpriteHandle,
+      swatch: &Handle<Image>,
       label: Option<&Arc<TextLayout>>,
     ) {
       let mut order = commands.as_slice().len() as u32;
@@ -2514,7 +2571,7 @@ mod building {
     fn off_grid_at(
       px_scale: f32,
       offset: [i32; 2],
-      swatch: &SpriteHandle,
+      swatch: &Handle<Image>,
       label: Option<&Arc<TextLayout>>,
     ) -> UiCommands {
       let mut commands = UiCommands::default();
@@ -2767,7 +2824,7 @@ mod building {
             &mut build,
             commands,
             &env,
-            Some(&sources),
+            (Some(&sources), &crate::core::graphics::test_images()),
             &mut writes.targets(),
             0.0,
             &mut texts,
@@ -2822,7 +2879,7 @@ mod building {
             &mut build,
             &commands,
             &env,
-            Some(&sources),
+            (Some(&sources), &crate::core::graphics::test_images()),
             &mut writes.targets(),
             0.0,
             &mut texts,
@@ -2874,7 +2931,7 @@ mod building {
             &mut build,
             commands,
             &env,
-            Some(&sources),
+            (Some(&sources), &crate::core::graphics::test_images()),
             &mut writes.targets(),
             0.0,
             &mut texts,
@@ -2906,7 +2963,7 @@ mod building {
       version: u64,
       slots: &[ScrollSlot],
       slot: u16,
-      swatch: &SpriteHandle,
+      swatch: &Handle<Image>,
       label: Option<&Arc<TextLayout>>,
     ) -> UiCommands {
       let mut commands = UiCommands::default();
@@ -2970,7 +3027,7 @@ mod building {
             &mut build,
             commands,
             &env,
-            sources,
+            (sources, &crate::core::graphics::test_images()),
             &mut writes.targets(),
             0.0,
             &mut texts,
@@ -3465,7 +3522,7 @@ mod building {
             &mut build,
             &with_run(version, &slots, slot, &swatch, Some(&layout)),
             &env(),
-            Some(&sources),
+            (Some(&sources), &crate::core::graphics::test_images()),
             &mut writes.targets(),
             0.0,
             &mut texts,
@@ -3540,7 +3597,7 @@ mod building {
           &mut build,
           &frame(versions),
           &env(),
-          Some(&sources),
+          (Some(&sources), &crate::core::graphics::test_images()),
           &mut writes.targets(),
           0.0,
           &mut texts,
@@ -3634,7 +3691,7 @@ mod building {
           &mut build,
           &frame(flooded),
           &env,
-          Some(&sources),
+          (Some(&sources), &crate::core::graphics::test_images()),
           &mut writes.targets(),
           0.0,
           &mut texts,
@@ -3694,7 +3751,7 @@ mod building {
           &mut build,
           &commands,
           &env(),
-          Some(&sources),
+          (Some(&sources), &crate::core::graphics::test_images()),
           &mut writes.targets(),
           0.0,
           &mut texts,
@@ -4098,8 +4155,8 @@ mod upload {
 /// as the UI changes, holds still and goes away
 mod groups_held {
   use super::super::*;
-  use super::gradient;
-  use crate::core::asset::SpriteHandle;
+  use super::gradient_image;
+  use crate::core::asset::Handle;
   use crate::core::engine::EngineBuilder;
   use crate::core::scene::{Scene, SceneAction, SceneContext};
   use crate::core::testing::HeadlessEngine;
@@ -4119,12 +4176,19 @@ mod groups_held {
 
   /// A UI drawing `shows` frame by frame, then nothing
   struct Script {
-    images: [SpriteHandle; 2],
+    images: Vec<Handle<Image>>,
     shows: Vec<Shows>,
     frame: usize,
   }
 
   impl Scene for Script {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      self.images = vec![
+        ctx.assets().add(gradient_image(300, 300)),
+        ctx.assets().add(gradient_image(300, 280)),
+      ];
+    }
+
     fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
       SceneAction::Continue
     }
@@ -4148,7 +4212,7 @@ mod groups_held {
   fn engine(shows: Vec<Shows>) -> Option<HeadlessEngine> {
     crate::core::testing::shared_gpu().ok()?;
     let scene = Script {
-      images: [gradient(300, 300), gradient(300, 280)],
+      images: Vec::new(),
       shows,
       frame: 0,
     };

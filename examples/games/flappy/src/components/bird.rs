@@ -7,30 +7,26 @@ use crate::constants::*;
 /// Create an AnimationController for the bird with flap and hurt animations.
 /// Its frames are `BIRD_RASTER_SCALE` times the bird's size: draw them on an
 /// entity scaled by its inverse.
-pub fn create_bird_animation_controller() -> AnimationController {
+pub fn create_bird_animation_controller(ctx: &mut SceneContext) -> AnimationController {
   let size = (BIRD_SIZE * BIRD_RASTER_SCALE) as u32;
 
   // Load sprite frames
-  let flap_up = SpriteHandle::from_sprite(
-    Image::load_svg_fit("assets/bird-flap-up.svg", size, size)
-      .expect("Failed to load bird-flap-up.svg"),
-    "bird-flap-up.svg",
-  );
-  let flap_down = SpriteHandle::from_sprite(
-    Image::load_svg_fit("assets/bird-flap-down.svg", size, size)
-      .expect("Failed to load bird-flap-down.svg"),
-    "bird-flap-down.svg",
-  );
-  let hurt_1 = SpriteHandle::from_sprite(
-    Image::load_svg_fit("assets/bird-hurt-1.svg", size, size)
-      .expect("Failed to load bird-hurt-1.svg"),
-    "bird-hurt-1.svg",
-  );
-  let hurt_2 = SpriteHandle::from_sprite(
-    Image::load_svg_fit("assets/bird-hurt-2.svg", size, size)
-      .expect("Failed to load bird-hurt-2.svg"),
-    "bird-hurt-2.svg",
-  );
+  let mut frame = |path: &str| {
+    let fit = ImageSettings {
+      svg: SvgSize::Fit {
+        width: size,
+        height: size,
+      },
+    };
+    ctx
+      .assets()
+      .load_now_with::<Image, _>(path, fit)
+      .unwrap_or_else(|error| panic!("Failed to load {path}: {error}"))
+  };
+  let flap_up = frame("bird-flap-up.svg");
+  let flap_down = frame("bird-flap-down.svg");
+  let hurt_1 = frame("bird-hurt-1.svg");
+  let hurt_2 = frame("bird-hurt-2.svg");
 
   // Create animations
   let flap_anim = Animation::new(

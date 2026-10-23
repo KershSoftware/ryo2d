@@ -26,7 +26,8 @@ use runs::Run;
 use runs::{Slot, plan_runs};
 pub(crate) use runs::{TexKey, TexNeed};
 
-use crate::core::graphics::{Presentation, SpriteGpuRenderer, TextureId};
+use crate::core::asset::Assets;
+use crate::core::graphics::{Image, Presentation, SpriteGpuRenderer, TextureId};
 use crate::core::render::DrawList;
 use crate::core::render::text::{TextSources, TextTargets};
 use crate::core::render::ui_retain::{UiRenderEnv, UiRunCache, UiTextCache};
@@ -86,7 +87,7 @@ impl UiRenderer {
     commands: &UiCommands,
     env: UiRenderEnv,
     retain: bool,
-    sources: Option<&TextSources<'_>>,
+    sources: (Option<&TextSources<'_>>, &Assets<Image>),
     targets: &mut TextTargets<'_>,
     real_time: f32,
   ) {

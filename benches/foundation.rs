@@ -58,20 +58,19 @@ struct ManySprites;
 
 impl Scene for ManySprites {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let textures: Vec<SpriteHandle> = (0..3u8)
+    let textures: Vec<Handle<Image>> = (0..3u8)
       .map(|i| {
         let shade = 60 + i * 80;
-        SpriteHandle::from_sprite(
-          Image::solid_rect(2, 2, shade, 30, 40, 255),
-          format!("bench-{i}"),
-        )
+        ctx
+          .assets()
+          .add(Image::solid_rect(2, 2, shade, 30, 40, 255))
       })
       .collect();
     for i in 0..10_000usize {
       let (col, row) = ((i % 100) as f32, (i / 100) as f32);
       ctx.world.spawn((
         Transform::from_xy(col * 3.0 + 1.0, row * 3.0 + 1.0),
-        Renderable::sprite(textures[i % 3].clone()),
+        Renderable::image(textures[i % 3].clone()),
       ));
     }
   }

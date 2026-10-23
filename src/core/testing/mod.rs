@@ -49,6 +49,8 @@ mod gpu;
 #[cfg(test)]
 mod gpu_world;
 mod headless;
+#[cfg(test)]
+mod image_gpu;
 mod retain;
 pub(crate) mod ui;
 

@@ -87,7 +87,7 @@ impl FileMenuPage {
   /// The title screen: its title, the menu, and the status line
   fn spawn_screen(ctx: &mut SceneContext) -> Result<(), UiFileError> {
     let title = ctx.ui_template(MENU, "Title", &UiArgs::new())?;
-    let menu = ctx.assets.load_ui(MENU)?.root(ctx.assets)?;
+    let menu = ctx.assets.load_ui(MENU)?.root(&mut ctx.assets())?;
     let status = ctx.ui_template(MENU, "Status", &UiArgs::new().with("status", NO_SAVE))?;
     ctx.spawn_ui(title);
     ctx.spawn_ui(menu);

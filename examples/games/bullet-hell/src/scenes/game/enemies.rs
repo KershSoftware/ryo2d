@@ -477,7 +477,7 @@ impl GameScene {
 
       ctx.world.spawn((
         Transform::from_xy(orb_pos.x, orb_pos.y),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_z_order(Z_NEBULA)
           .with_shader(SpriteShader::dissolve_with_edge(
             1.0,
@@ -777,7 +777,7 @@ impl GameScene {
       .world
       .spawn((
         Transform::from_xy(pos.x + offset_x, pos.y),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_z_order(Z_ROCKET)
           .with_shader(SpriteShader::outline(Color::rgb(255, 190, 130), 2)),
         Interpolated,

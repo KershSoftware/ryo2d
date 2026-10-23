@@ -46,8 +46,10 @@ impl InventoryPage {
     }
     match self.item(at) {
       Some(item) => {
+        if let Some(icon) = self.icons.of(item.kind) {
+          slot = slot.icon(icon);
+        }
         slot = slot
-          .icon(self.icons.of(item.kind))
           .count(item.count)
           .tooltip(item.kind.name())
           .drag_source(at);
@@ -121,6 +123,10 @@ impl DemoPage for InventoryPage {
   /// While an item is held, Escape puts it back instead of quitting
   fn wants_escape(&self) -> bool {
     self.holding
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.icons.add(ctx);
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {

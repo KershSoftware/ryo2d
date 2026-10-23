@@ -10,18 +10,18 @@
 //! use ryo2d::prelude::*;
 //!
 //! // Simple sprite
-//! let sprite = Renderable::sprite(player_handle);
+//! let sprite = Renderable::image(player_image);
 //!
 //! // Tiled sprite with rotation
 //! let floor = Renderable::tiled(tile_handle, TileDirection::Right, 200.0);
 //!
 //! // With z-order and visibility
-//! let background = Renderable::sprite(bg_handle)
+//! let background = Renderable::image(bg_handle)
 //!     .with_z_order(-10)
 //!     .with_visible(true);
 //!
 //! // With inline shader effect
-//! let highlighted = Renderable::sprite(item_handle)
+//! let highlighted = Renderable::image(item_handle)
 //!     .with_shader(SpriteShader::outline(Color::WHITE, 2));
 //!
 //! // Spawn with a transform (local to the parent for a child entity)
@@ -41,7 +41,7 @@
 use super::kernel::Component;
 use super::material::SpriteShader;
 use super::transform::Anchor;
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::Vec2;
 use crate::core::graphics::{Image, RenderTarget, TileDirection};
 use crate::core::render::batch::{BlendMode, Filter};
@@ -59,10 +59,10 @@ use std::sync::OnceLock;
 /// use ryo2d::prelude::*;
 ///
 /// // Simple drop shadow with default settings
-/// let sprite = Renderable::sprite(handle).with_drop_shadow(DropShadow::default());
+/// let sprite = Renderable::image(handle).with_drop_shadow(DropShadow::default());
 ///
 /// // Customized drop shadow
-/// let sprite = Renderable::sprite(handle).with_drop_shadow(
+/// let sprite = Renderable::image(handle).with_drop_shadow(
 ///     DropShadow::new()
 ///         .offset(4.0, 6.0)
 ///         .color(Color::new(0, 0, 0, 128))
@@ -161,15 +161,15 @@ impl DropShadow {
 /// use ryo2d::prelude::*;
 ///
 /// // Simple circular blob shadow
-/// let sprite = Renderable::sprite(handle).with_blob_shadow(BlobShadow::default());
+/// let sprite = Renderable::image(handle).with_blob_shadow(BlobShadow::default());
 ///
 /// // Elliptical shadow for a wider character
-/// let sprite = Renderable::sprite(handle).with_blob_shadow(
+/// let sprite = Renderable::image(handle).with_blob_shadow(
 ///     BlobShadow::ellipse(32.0, 12.0)
 /// );
 ///
 /// // Shadow that scales with "height" (for jumping)
-/// let sprite = Renderable::sprite(handle).with_blob_shadow(
+/// let sprite = Renderable::image(handle).with_blob_shadow(
 ///     BlobShadow::circle(20.0).with_height_scale(true)
 /// );
 /// ```
@@ -306,10 +306,10 @@ impl BlobShadow {
 /// use ryo2d::prelude::*;
 ///
 /// // Simple contact shadow at sprite base
-/// let sprite = Renderable::sprite(handle).with_contact_shadow(ContactShadow::default());
+/// let sprite = Renderable::image(handle).with_contact_shadow(ContactShadow::default());
 ///
 /// // Wider contact shadow for a large object
-/// let sprite = Renderable::sprite(handle).with_contact_shadow(
+/// let sprite = Renderable::image(handle).with_contact_shadow(
 ///     ContactShadow::new().radius(12.0).intensity(0.8)
 /// );
 /// ```
@@ -428,8 +428,9 @@ pub enum RenderStyle {
 /// parents'), with `anchor` choosing which point of the sprite sits there.
 #[derive(Component, Debug, Clone)]
 pub struct Renderable {
-  /// The sprite to render
-  pub sprite: SpriteHandle,
+  /// The image to draw. One that is not loaded draws the checker in debug
+  /// builds and nothing in release ones
+  pub image: Handle<Image>,
   /// How to render the sprite (single or tiled)
   pub style: RenderStyle,
   /// Whether this entity is visible
@@ -473,7 +474,7 @@ pub struct Renderable {
   ///
   /// Default: `Anchor::Center`.
   pub anchor: Anchor,
-  /// A render target drawn instead of `sprite`, at the target's size (see
+  /// A render target drawn instead of `image`, at the target's size (see
   /// [`render_target`](Self::render_target))
   pub target: Option<RenderTarget>,
   /// How the sprite combines with what is below (default `Alpha`;
@@ -492,10 +493,10 @@ pub struct Renderable {
 }
 
 impl Renderable {
-  /// Create a simple sprite renderable
-  pub fn sprite(sprite: SpriteHandle) -> Self {
+  /// A sprite drawing `image`
+  pub fn image(image: Handle<Image>) -> Self {
     Renderable {
-      sprite,
+      image,
       style: RenderStyle::Single,
       visible: true,
       z_order: 0,
@@ -521,23 +522,21 @@ impl Renderable {
   ///
   /// A camera never draws a renderable showing its own target.
   pub fn render_target(target: RenderTarget) -> Self {
-    // Stands in for the sprite; the target is drawn instead
-    static PLACEHOLDER: OnceLock<SpriteHandle> = OnceLock::new();
-    let placeholder = PLACEHOLDER.get_or_init(|| {
-      SpriteHandle::from_sprite(Image::solid_rect(1, 1, 0, 0, 0, 0), "render target")
-    });
+    // Stands in for the image, which is never drawn: the target is
+    static PLACEHOLDER: OnceLock<Handle<Image>> = OnceLock::new();
+    let placeholder = PLACEHOLDER.get_or_init(Handle::detached);
     // What a camera draws into a target is premultiplied by alpha
     Renderable {
       target: Some(target),
       blend: BlendMode::Premultiplied,
-      ..Self::sprite(placeholder.clone())
+      ..Self::image(placeholder.clone())
     }
   }
 
-  /// Create a tiled sprite renderable
-  pub fn tiled(sprite: SpriteHandle, direction: TileDirection, target_size: f32) -> Self {
+  /// A sprite repeating `image` along `direction` to fill `target_size`
+  pub fn tiled(image: Handle<Image>, direction: TileDirection, target_size: f32) -> Self {
     Renderable {
-      sprite,
+      image,
       style: RenderStyle::Tiled {
         direction,
         target_size,
@@ -651,10 +650,10 @@ impl Renderable {
   /// use ryo2d::prelude::*;
   ///
   /// // Simple drop shadow
-  /// let sprite = Renderable::sprite(handle).with_drop_shadow(DropShadow::default());
+  /// let sprite = Renderable::image(handle).with_drop_shadow(DropShadow::default());
   ///
   /// // Custom shadow
-  /// let sprite = Renderable::sprite(handle).with_drop_shadow(
+  /// let sprite = Renderable::image(handle).with_drop_shadow(
   ///     DropShadow::new().offset(4.0, 6.0).color(Color::new(0, 0, 0, 100))
   /// );
   /// ```
@@ -679,10 +678,10 @@ impl Renderable {
   /// use ryo2d::prelude::*;
   ///
   /// // Simple blob shadow
-  /// let sprite = Renderable::sprite(handle).with_blob_shadow(BlobShadow::default());
+  /// let sprite = Renderable::image(handle).with_blob_shadow(BlobShadow::default());
   ///
   /// // Custom elliptical shadow
-  /// let sprite = Renderable::sprite(handle).with_blob_shadow(
+  /// let sprite = Renderable::image(handle).with_blob_shadow(
   ///     BlobShadow::ellipse(24.0, 10.0).color(Color::new(0, 0, 0, 80))
   /// );
   /// ```
@@ -708,10 +707,10 @@ impl Renderable {
   /// use ryo2d::prelude::*;
   ///
   /// // Simple contact shadow
-  /// let sprite = Renderable::sprite(handle).with_contact_shadow(ContactShadow::default());
+  /// let sprite = Renderable::image(handle).with_contact_shadow(ContactShadow::default());
   ///
   /// // Sharp contact shadow for heavy objects
-  /// let sprite = Renderable::sprite(handle).with_contact_shadow(
+  /// let sprite = Renderable::image(handle).with_contact_shadow(
   ///     ContactShadow::sharp(10.0)
   /// );
   /// ```
@@ -741,18 +740,22 @@ impl Renderable {
     matches!(self.style, RenderStyle::Tiled { .. })
   }
 
-  /// Get tile count if tiled, otherwise 1
-  pub fn tile_count(&self) -> u32 {
+  /// Get tile count if tiled, otherwise 1 (0 while a tiled image is not
+  /// loaded in `images`)
+  pub fn tile_count(&self, images: &Assets<Image>) -> u32 {
     match &self.style {
       RenderStyle::Single => 1,
       RenderStyle::Tiled {
         direction,
         target_size,
       } => {
+        let Some(image) = images.get(&self.image) else {
+          return 0;
+        };
         let tile_size = if direction.is_horizontal() {
-          self.sprite.width() as f32
+          image.width() as f32
         } else {
-          self.sprite.height() as f32
+          image.height() as f32
         };
 
         if tile_size <= 0.0 {
@@ -770,15 +773,13 @@ mod tests {
   use super::*;
   use crate::core::graphics::Image;
 
-  fn test_handle() -> SpriteHandle {
-    // Create a minimal test sprite handle
-    let sprite = Image::solid_rect(16, 16, 255, 0, 0, 255);
-    SpriteHandle::from_sprite(sprite, "test")
+  fn test_handle() -> Handle<Image> {
+    Assets::<Image>::default().add(Image::solid_rect(16, 16, 255, 0, 0, 255))
   }
 
   #[test]
   fn sprite_defaults() {
-    let r = Renderable::sprite(test_handle());
+    let r = Renderable::image(test_handle());
     assert!(r.visible);
     assert_eq!(r.z_order, 0);
     assert!(r.is_single());
@@ -797,25 +798,28 @@ mod tests {
 
   #[test]
   fn anchor_defaults_to_center_and_can_be_set() {
-    assert_eq!(Renderable::sprite(test_handle()).anchor, Anchor::Center);
+    assert_eq!(Renderable::image(test_handle()).anchor, Anchor::Center);
     assert_eq!(
       Renderable::tiled(test_handle(), TileDirection::Right, 100.0).anchor,
       Anchor::Center
     );
-    let r = Renderable::sprite(test_handle()).with_anchor(Anchor::TopLeft);
+    let r = Renderable::image(test_handle()).with_anchor(Anchor::TopLeft);
     assert_eq!(r.anchor, Anchor::TopLeft);
   }
 
   #[test]
   fn tile_count_calculation() {
-    let r = Renderable::tiled(test_handle(), TileDirection::Right, 100.0);
+    let mut images = Assets::<Image>::default();
+    let image = images.add(Image::solid_rect(16, 16, 255, 0, 0, 255));
+    let r = Renderable::tiled(image, TileDirection::Right, 100.0);
     // 16px sprite, 100px target = ceil(100/16) = 7 tiles
-    assert_eq!(r.tile_count(), 7);
+    assert_eq!(r.tile_count(&images), 7);
+    assert_eq!(r.tile_count(&Assets::default()), 0, "not loaded");
   }
 
   #[test]
   fn builder_methods() {
-    let r = Renderable::sprite(test_handle())
+    let r = Renderable::image(test_handle())
       .with_z_order(5)
       .with_visible(false)
       .with_flip_x(true)
@@ -829,10 +833,10 @@ mod tests {
 
   #[test]
   fn alpha_clamps() {
-    let r = Renderable::sprite(test_handle()).with_alpha(2.0);
+    let r = Renderable::image(test_handle()).with_alpha(2.0);
     assert_eq!(r.alpha, 1.0);
 
-    let r = Renderable::sprite(test_handle()).with_alpha(-0.5);
+    let r = Renderable::image(test_handle()).with_alpha(-0.5);
     assert_eq!(r.alpha, 0.0);
   }
 
@@ -888,11 +892,11 @@ mod tests {
 
   #[test]
   fn renderable_with_drop_shadow() {
-    let r = Renderable::sprite(test_handle());
+    let r = Renderable::image(test_handle());
     assert!(!r.has_drop_shadow());
     assert!(r.drop_shadow.is_none());
 
-    let r = Renderable::sprite(test_handle()).with_drop_shadow(DropShadow::default());
+    let r = Renderable::image(test_handle()).with_drop_shadow(DropShadow::default());
     assert!(r.has_drop_shadow());
     assert!(r.drop_shadow.is_some());
   }
@@ -967,11 +971,11 @@ mod tests {
 
   #[test]
   fn renderable_with_blob_shadow() {
-    let r = Renderable::sprite(test_handle());
+    let r = Renderable::image(test_handle());
     assert!(!r.has_blob_shadow());
     assert!(r.blob_shadow.is_none());
 
-    let r = Renderable::sprite(test_handle()).with_blob_shadow(BlobShadow::default());
+    let r = Renderable::image(test_handle()).with_blob_shadow(BlobShadow::default());
     assert!(r.has_blob_shadow());
     assert!(r.blob_shadow.is_some());
   }

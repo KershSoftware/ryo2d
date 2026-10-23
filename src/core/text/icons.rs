@@ -2,23 +2,16 @@
 
 use std::collections::HashMap;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::Resource;
+use crate::core::graphics::Image;
 use crate::core::ui::Rect;
 
-/// A named icon: a sprite, or a region of one (pixels on the sprite)
-#[derive(Debug, Clone)]
+/// A named icon: an image, or a region of one (pixels on the image)
+#[derive(Debug, Clone, PartialEq)]
 pub struct IconSource {
-  pub sprite: SpriteHandle,
+  pub sprite: Handle<Image>,
   pub region: Option<Rect>,
-}
-
-// `SpriteHandle` has no `PartialEq`: two sources are equal when they name
-// the same handle (its serial) and region
-impl PartialEq for IconSource {
-  fn eq(&self, other: &Self) -> bool {
-    self.sprite.serial() == other.sprite.serial() && self.region == other.region
-  }
 }
 
 /// The icons markup and `RichText::icon_named` can name. Swap a set (say
@@ -30,7 +23,7 @@ pub struct TextIcons {
 
 impl TextIcons {
   /// Name a whole sprite
-  pub fn insert(&mut self, name: impl Into<String>, sprite: SpriteHandle) {
+  pub fn insert(&mut self, name: impl Into<String>, sprite: Handle<Image>) {
     self.icons.insert(
       name.into(),
       IconSource {
@@ -41,7 +34,7 @@ impl TextIcons {
   }
 
   /// Name a pixel region of a sprite (an icon sheet)
-  pub fn insert_region(&mut self, name: impl Into<String>, sprite: SpriteHandle, region: Rect) {
+  pub fn insert_region(&mut self, name: impl Into<String>, sprite: Handle<Image>, region: Rect) {
     self.icons.insert(
       name.into(),
       IconSource {
@@ -66,12 +59,8 @@ mod tests {
 
   #[test]
   fn icons_are_found_by_name_and_replaced() {
-    let sprite = |name| {
-      SpriteHandle::from_sprite(
-        crate::core::graphics::Image::solid_rect(4, 4, 255, 0, 0, 255),
-        name,
-      )
-    };
+    let mut images = crate::core::asset::Assets::default();
+    let mut sprite = |_name: &str| images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
     let mut icons = TextIcons::default();
     icons.insert("a_button", sprite("a"));
     assert!(icons.get("a_button").is_some_and(|i| i.region.is_none()));

@@ -2,9 +2,10 @@
 //!
 //! Emitters spawn particles with configurable shapes, rates, and properties.
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::Component;
 use crate::core::ecs::SpriteEffect;
+use crate::core::graphics::Image;
 use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::ui::Color;
 
@@ -116,8 +117,8 @@ pub struct ParticleEmitter {
   pub mode: EmissionMode,
   /// Emission shape
   pub shape: EmissionShape,
-  /// Sprite for particles
-  pub sprite: SpriteHandle,
+  /// The image each particle draws
+  pub sprite: Handle<Image>,
   /// Whether the emitter is currently emitting
   pub enabled: bool,
 
@@ -226,7 +227,7 @@ pub struct ParticleEmitter {
 
 impl ParticleEmitter {
   /// Create a new particle emitter with the given sprite.
-  pub fn new(sprite: SpriteHandle) -> Self {
+  pub fn new(sprite: Handle<Image>) -> Self {
     Self {
       mode: EmissionMode::default(),
       shape: EmissionShape::default(),
@@ -453,10 +454,9 @@ impl ParticleEmitter {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::graphics::Image;
 
-  fn test_sprite() -> SpriteHandle {
-    SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 255, 255, 255), "test.png")
+  fn test_sprite() -> Handle<Image> {
+    crate::core::asset::Assets::<Image>::default().add(Image::solid_rect(8, 8, 255, 255, 255, 255))
   }
 
   #[test]

@@ -64,7 +64,7 @@ impl AnchorPage {
   }
 
   /// Create a crosshair marker sprite
-  fn create_crosshair() -> SpriteHandle {
+  fn create_crosshair(ctx: &mut SceneContext) -> Handle<Image> {
     // 11x11 crosshair with red center
     let size = 11u32;
     let center = size / 2;
@@ -85,7 +85,7 @@ impl AnchorPage {
     }
 
     let sprite = Image::from_rgba(data, size, size);
-    SpriteHandle::from_sprite(sprite, "crosshair")
+    ctx.assets().add(sprite)
   }
 
   /// Move each sprite from its crosshair by the offset (its local position)
@@ -123,10 +123,10 @@ impl DemoPage for AnchorPage {
     let sprite_w = 60u32;
     let sprite_h = 40u32;
     let demo_sprite = Image::solid_rect(sprite_w, sprite_h, 80, 140, 220, 200);
-    let sprite_handle = SpriteHandle::from_sprite(demo_sprite, "demo_rect");
+    let sprite_handle = ctx.assets().add(demo_sprite);
 
     // Create crosshair for marking target positions
-    let crosshair_handle = Self::create_crosshair();
+    let crosshair_handle = Self::create_crosshair(ctx);
 
     let (cell_w, cell_h) = cell_size(screen_w, screen_h);
 
@@ -142,7 +142,7 @@ impl DemoPage for AnchorPage {
         .spawn((
           Crosshair,
           Transform::from_xy(target_x, target_y),
-          Renderable::sprite(crosshair_handle.clone()).with_z_order(10),
+          Renderable::image(crosshair_handle.clone()).with_z_order(10),
         ))
         .id();
 
@@ -153,7 +153,7 @@ impl DemoPage for AnchorPage {
         (
           DemoSprite,
           Transform::from_xy(self.offset_x, self.offset_y),
-          Renderable::sprite(sprite_handle.clone())
+          Renderable::image(sprite_handle.clone())
             .with_anchor(anchor)
             .with_z_order(5),
         ),

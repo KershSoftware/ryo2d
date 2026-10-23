@@ -326,11 +326,11 @@ impl DemoPage for VolumetricPage {
 
     // Create ground/floor
     let ground_sprite = ctx
-      .assets
-      .create_sprite(Image::solid_rect(1280, 100, 40, 35, 30, 255), "ground");
+      .assets()
+      .add(Image::solid_rect(1280, 100, 40, 35, 30, 255));
     ctx.world.spawn((
       Transform::from_xy(640.0, 670.0),
-      Renderable::sprite(ground_sprite).with_z_order(1),
+      Renderable::image(ground_sprite).with_z_order(1),
       LightOccluder2D::rect(1280.0, 100.0),
     ));
 
@@ -344,14 +344,13 @@ impl DemoPage for VolumetricPage {
 
     for (i, (x, y)) in pillar_positions.iter().enumerate() {
       let height = 150.0 + (i as f32 * 30.0);
-      let pillar_sprite = ctx.assets.create_sprite(
-        Image::solid_rect(40, height as u32, 60, 55, 50, 255),
-        format!("pillar_{}", i),
-      );
+      let pillar_sprite = ctx
+        .assets()
+        .add(Image::solid_rect(40, height as u32, 60, 55, 50, 255));
       // Standing on (x, y); the occluder covers the sprite
       ctx.world.spawn((
         Transform::from_xy(*x, *y),
-        Renderable::sprite(pillar_sprite)
+        Renderable::image(pillar_sprite)
           .with_anchor(Anchor::BottomCenter)
           .with_z_order(2),
         LightOccluder2D::rect_offset(0.0, -height / 2.0, 40.0, height),
@@ -365,14 +364,13 @@ impl DemoPage for VolumetricPage {
       (1000.0, 320.0, 100.0),
     ];
 
-    for (i, (x, y, width)) in platform_positions.iter().enumerate() {
-      let platform_sprite = ctx.assets.create_sprite(
-        Image::solid_rect(*width as u32, 20, 70, 65, 60, 255),
-        format!("platform_{}", i),
-      );
+    for (x, y, width) in platform_positions.iter() {
+      let platform_sprite = ctx
+        .assets()
+        .add(Image::solid_rect(*width as u32, 20, 70, 65, 60, 255));
       ctx.world.spawn((
         Transform::from_xy(*x, *y),
-        Renderable::sprite(platform_sprite).with_z_order(2),
+        Renderable::image(platform_sprite).with_z_order(2),
         LightOccluder2D::rect(*width, 20.0),
       ));
     }
@@ -396,12 +394,10 @@ impl DemoPage for VolumetricPage {
     );
 
     // Create a visible sprite for the spotlight source
-    let spotlight_base = ctx
-      .assets
-      .create_sprite(Image::solid_rect(30, 20, 80, 80, 80, 255), "spotlight_base");
+    let spotlight_base = ctx.assets().add(Image::solid_rect(30, 20, 80, 80, 80, 255));
     ctx.world.spawn((
       Transform::from_xy(self.spotlight_x, 610.0),
-      Renderable::sprite(spotlight_base).with_z_order(5),
+      Renderable::image(spotlight_base).with_z_order(5),
     ));
 
     // Create the "sun" light source (for god rays)
@@ -420,35 +416,31 @@ impl DemoPage for VolumetricPage {
     // Sun visual (bright circle), nearly white: lit past white it keeps its
     // hue, and so does the haze its god rays spread over the frame
     let sun_sprite = ctx
-      .assets
-      .create_sprite(Image::solid_circle(60, 255, 252, 230, 255), "sun");
+      .assets()
+      .add(Image::solid_circle(60, 255, 252, 230, 255));
     ctx.world.spawn((
       Transform::from_xy(self.sun_x, self.sun_y),
-      Renderable::sprite(sun_sprite).with_z_order(0),
+      Renderable::image(sun_sprite).with_z_order(0),
     ));
 
     // Create wall-mounted torches
     let torch_positions = [(100.0, 400.0), (1180.0, 350.0), (640.0, 150.0)];
 
-    for (i, (x, y)) in torch_positions.iter().enumerate() {
+    for (x, y) in torch_positions.iter() {
       // Torch bracket
-      let bracket = ctx.assets.create_sprite(
-        Image::solid_rect(15, 25, 100, 80, 50, 255),
-        format!("torch_bracket_{}", i),
-      );
+      let bracket = ctx
+        .assets()
+        .add(Image::solid_rect(15, 25, 100, 80, 50, 255));
       ctx.world.spawn((
         Transform::from_xy(*x, *y),
-        Renderable::sprite(bracket).with_z_order(3),
+        Renderable::image(bracket).with_z_order(3),
       ));
 
       // Torch flame (visual)
-      let flame = ctx.assets.create_sprite(
-        Image::solid_circle(16, 255, 150, 50, 200),
-        format!("torch_flame_{}", i),
-      );
+      let flame = ctx.assets().add(Image::solid_circle(16, 255, 150, 50, 200));
       ctx.world.spawn((
         Transform::from_xy(*x, y - 20.0),
-        Renderable::sprite(flame).with_z_order(4),
+        Renderable::image(flame).with_z_order(4),
       ));
 
       // Torch light: Light2D::torch's colour, re-encoded like the presets

@@ -42,7 +42,8 @@
 use crate::core::ecs::Component;
 use std::collections::HashMap;
 
-use crate::core::asset::SpriteHandle;
+use super::Image;
+use crate::core::asset::Handle;
 use crate::core::state_machine::StateMachine;
 
 /// How an animation behaves when it reaches the end
@@ -62,7 +63,7 @@ pub enum LoopMode {
 /// A sequence of sprite frames with timing
 #[derive(Clone)]
 pub struct Animation {
-  frames: Vec<SpriteHandle>,
+  frames: Vec<Handle<Image>>,
   frame_durations: Vec<f32>,
   loop_mode: LoopMode,
   name: String,
@@ -73,9 +74,9 @@ impl Animation {
   ///
   /// # Arguments
   /// * `name` - Name for identification/debugging
-  /// * `frames` - Sprite handles for each frame
+  /// * `frames` - The image of each frame
   /// * `frame_duration` - Duration of each frame in seconds
-  pub fn new(name: impl Into<String>, frames: Vec<SpriteHandle>, frame_duration: f32) -> Self {
+  pub fn new(name: impl Into<String>, frames: Vec<Handle<Image>>, frame_duration: f32) -> Self {
     let count = frames.len();
     Animation {
       frames,
@@ -90,7 +91,7 @@ impl Animation {
   /// Useful when some frames need to linger longer than others.
   pub fn with_frame_durations(
     name: impl Into<String>,
-    frames: Vec<SpriteHandle>,
+    frames: Vec<Handle<Image>>,
     durations: Vec<f32>,
   ) -> Self {
     assert_eq!(
@@ -128,7 +129,7 @@ impl Animation {
   }
 
   /// Get a frame by index
-  pub fn frame(&self, index: usize) -> Option<&SpriteHandle> {
+  pub fn frame(&self, index: usize) -> Option<&Handle<Image>> {
     self.frames.get(index)
   }
 
@@ -251,7 +252,7 @@ impl Animator {
   }
 
   /// Get the current frame's sprite handle
-  pub fn current_sprite(&self) -> Option<&SpriteHandle> {
+  pub fn current_sprite(&self) -> Option<&Handle<Image>> {
     self.animation.frame(self.current_frame)
   }
 
@@ -407,7 +408,7 @@ impl AnimationController {
   }
 
   /// Get current sprite handle
-  pub fn current_sprite(&self) -> Option<&SpriteHandle> {
+  pub fn current_sprite(&self) -> Option<&Handle<Image>> {
     self.animator.as_ref().and_then(|a| a.current_sprite())
   }
 
@@ -575,7 +576,7 @@ impl ValidatedAnimator {
   }
 
   /// Get the current sprite handle for rendering.
-  pub fn current_sprite(&self) -> Option<&SpriteHandle> {
+  pub fn current_sprite(&self) -> Option<&Handle<Image>> {
     self.controller.current_sprite()
   }
 
@@ -644,9 +645,8 @@ impl ValidatedAnimator {
 mod tests {
   use super::*;
 
-  fn mock_sprite_handle() -> SpriteHandle {
-    use crate::core::graphics::Image;
-    SpriteHandle::from_sprite(Image::solid_rect(1, 1, 255, 0, 0, 255), "test.png")
+  fn mock_sprite_handle() -> Handle<Image> {
+    crate::core::asset::Assets::<Image>::default().add(Image::solid_rect(1, 1, 255, 0, 0, 255))
   }
 
   #[test]

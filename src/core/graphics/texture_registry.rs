@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::RenderTarget;
-use crate::core::asset::SpriteHandle;
+use super::{Image, RenderTarget};
+use crate::core::asset::AssetId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct TextureId {
@@ -13,7 +13,14 @@ pub(crate) struct TextureId {
 }
 
 pub(crate) enum TextureSource {
-  Sprite(SpriteHandle),
+  /// An image asset's pixels at one version, taken when a frame drew it
+  Image {
+    id: AssetId<Image>,
+    pixels: Arc<Vec<u8>>,
+    /// The levels below the first of its own texture, made by its loader
+    mips: Option<Arc<Vec<Vec<u8>>>>,
+    version: u64,
+  },
   Pixels(Arc<[u8]>),
   /// A render target: GPU-only (cameras draw into it), never uploaded,
   /// evicted or placed in the atlas
@@ -21,12 +28,20 @@ pub(crate) enum TextureSource {
 }
 
 impl TextureSource {
-  /// The texture's pixels (RGBA8, sRGB), read from the sprite if it is one
-  pub(crate) fn rgba(&self) -> Vec<u8> {
+  /// The texture's pixels (RGBA8, sRGB)
+  pub(crate) fn rgba(&self) -> &[u8] {
     match self {
-      TextureSource::Sprite(sprite) => sprite.with_sprite(|s| s.data().to_vec()),
-      TextureSource::Pixels(data) => data.to_vec(),
-      TextureSource::Target => Vec::new(),
+      TextureSource::Image { pixels, .. } => pixels,
+      TextureSource::Pixels(data) => data,
+      TextureSource::Target => &[],
+    }
+  }
+
+  /// The mip levels below the first its loader made, if any
+  pub(crate) fn mips(&self) -> Option<&[Vec<u8>]> {
+    match self {
+      TextureSource::Image { mips, .. } => mips.as_deref().map(Vec::as_slice),
+      TextureSource::Pixels(_) | TextureSource::Target => None,
     }
   }
 }
@@ -35,7 +50,7 @@ pub(crate) struct TextureEntry {
   pub source: TextureSource,
   pub width: u32,
   pub height: u32,
-  /// The sprite content generation (or 0 for pixels) last uploaded
+  /// The image's version (or 0 for pixels) last uploaded
   pub uploaded_content: Option<u64>,
   pub last_used: u64,
 }
@@ -44,7 +59,7 @@ pub(crate) struct TextureEntry {
 pub(crate) struct TextureRegistry {
   slots: Vec<(u32, Option<TextureEntry>)>,
   free: Vec<u32>,
-  by_sprite: HashMap<usize, TextureId>,
+  by_image: HashMap<AssetId<Image>, TextureId>,
   by_name: HashMap<String, TextureId>,
   by_target: HashMap<RenderTarget, TextureId>,
 }
@@ -84,28 +99,57 @@ impl TextureRegistry {
     }
   }
 
-  pub(crate) fn sprite(&mut self, sprite: &SpriteHandle, frame: u64) -> TextureId {
-    if let Some(&id) = self.by_sprite.get(&sprite.serial())
-      && let Some(entry) = self.get_mut(id)
+  /// The texture of image `id`, `image` at `version`, registered on first
+  /// use. A new version takes its pixels and size, and is uploaded again
+  pub(crate) fn image(
+    &mut self,
+    id: AssetId<Image>,
+    image: &Image,
+    version: u64,
+    frame: u64,
+  ) -> TextureId {
+    if let Some(&texture) = self.by_image.get(&id)
+      && let Some(entry) = self.get_mut(texture)
     {
       entry.last_used = frame;
-      if entry.uploaded_content != Some(sprite.generation()) {
-        let (width, height) = sprite.with_sprite(|s| (s.width(), s.height()));
-        entry.width = width;
-        entry.height = height;
+      if !matches!(entry.source, TextureSource::Image { version: held, .. } if held == version) {
+        entry.source = Self::image_source(id, image, version);
+        entry.width = image.width();
+        entry.height = image.height();
       }
-      return id;
+      return texture;
     }
-    let (width, height) = sprite.with_sprite(|s| (s.width(), s.height()));
-    let id = self.insert(TextureEntry {
-      source: TextureSource::Sprite(sprite.clone()),
-      width,
-      height,
+    let texture = self.insert(TextureEntry {
+      source: Self::image_source(id, image, version),
+      width: image.width(),
+      height: image.height(),
       uploaded_content: None,
       last_used: frame,
     });
-    self.by_sprite.insert(sprite.serial(), id);
-    id
+    self.by_image.insert(id, texture);
+    texture
+  }
+
+  fn image_source(id: AssetId<Image>, image: &Image, version: u64) -> TextureSource {
+    TextureSource::Image {
+      id,
+      pixels: Arc::clone(image.pixels()),
+      mips: image.mips().cloned(),
+      version,
+    }
+  }
+
+  /// The texture of image `id`, if it has one
+  pub(crate) fn image_texture(&self, id: AssetId<Image>) -> Option<TextureId> {
+    self.by_image.get(&id).copied()
+  }
+
+  /// The images with a texture, for checking them against the store
+  pub(crate) fn images(&self) -> impl Iterator<Item = (AssetId<Image>, TextureId)> + '_ {
+    self
+      .by_image
+      .iter()
+      .map(|(&image, &texture)| (image, texture))
   }
 
   pub(crate) fn pixels(
@@ -149,7 +193,7 @@ impl TextureRegistry {
 
   fn content(entry: &TextureEntry) -> u64 {
     match &entry.source {
-      TextureSource::Sprite(sprite) => sprite.generation(),
+      TextureSource::Image { version, .. } => *version,
       TextureSource::Pixels(_) | TextureSource::Target => 0,
     }
   }
@@ -206,12 +250,14 @@ impl TextureRegistry {
     }
   }
 
+  /// Forget the named pixel textures neither uploaded nor drawn for `ttl`
+  /// frames, returning their ids. Images live until their asset is freed,
+  /// and render targets until they are removed
   pub(crate) fn prune(&mut self, frame: u64, ttl: u64) -> Vec<TextureId> {
     let mut pruned = Vec::new();
     for (index, (generation, entry)) in self.slots.iter_mut().enumerate() {
-      // Render targets live until they are removed
       if entry.as_ref().is_some_and(|e| {
-        !matches!(e.source, TextureSource::Target) && frame.saturating_sub(e.last_used) >= ttl
+        matches!(e.source, TextureSource::Pixels(_)) && frame.saturating_sub(e.last_used) >= ttl
       }) {
         *entry = None;
         pruned.push(TextureId {
@@ -221,21 +267,25 @@ impl TextureRegistry {
         self.free.push(index as u32);
       }
     }
-    self.by_sprite.retain(|_, id| !pruned.contains(id));
     self.by_name.retain(|_, id| !pruned.contains(id));
     pruned
   }
 
-  /// Forget `id` (its handle or name registers afresh next time).
+  /// Forget `id` (its image or name registers afresh next time).
   pub(crate) fn remove(&mut self, id: TextureId) {
     let Some((generation, entry)) = self.slots.get_mut(id.index as usize) else {
       return;
     };
-    if *generation != id.generation || entry.take().is_none() {
+    if *generation != id.generation {
       return;
     }
+    let Some(removed) = entry.take() else {
+      return;
+    };
     self.free.push(id.index);
-    self.by_sprite.retain(|_, held| *held != id);
+    if let TextureSource::Image { id: image, .. } = removed.source {
+      self.by_image.remove(&image);
+    }
     self.by_name.retain(|_, held| *held != id);
     self.by_target.retain(|_, held| *held != id);
   }
@@ -282,25 +332,40 @@ mod tests {
   }
 
   use super::*;
-  use crate::core::graphics::Image;
+  use crate::core::asset::{Assets, Handle};
 
-  fn sprite(name: &str) -> SpriteHandle {
-    SpriteHandle::from_sprite(Image::solid_rect(4, 2, 255, 0, 0, 255), name)
+  fn image(images: &mut Assets<Image>) -> Handle<Image> {
+    images.add(Image::solid_rect(4, 2, 255, 0, 0, 255))
+  }
+
+  /// The texture of `handle` as a frame draws it
+  fn texture(
+    registry: &mut TextureRegistry,
+    images: &Assets<Image>,
+    handle: &Handle<Image>,
+    frame: u64,
+  ) -> TextureId {
+    let image = images.get(handle).unwrap();
+    let version = images.version(handle).unwrap();
+    registry.image(handle.id(), image, version, frame)
   }
 
   #[test]
-  fn a_handle_and_its_clones_share_one_id() {
+  fn an_image_has_one_texture() {
+    let mut images = Assets::<Image>::default();
     let mut registry = TextureRegistry::new();
-    let a = sprite("a");
-    let id = registry.sprite(&a, 0);
-    assert_eq!(registry.sprite(&a.clone(), 1), id);
+    let a = image(&mut images);
+    let id = texture(&mut registry, &images, &a, 0);
+    assert_eq!(texture(&mut registry, &images, &a.clone(), 1), id);
+    let b = images.add(Image::solid_rect(4, 2, 255, 0, 0, 255));
     assert_ne!(
-      registry.sprite(&sprite("a"), 1),
+      texture(&mut registry, &images, &b, 1),
       id,
-      "a different handle, even with the same name"
+      "another image, even with the same pixels"
     );
     let entry = registry.get(id).unwrap();
     assert_eq!((entry.width, entry.height, entry.last_used), (4, 2, 1));
+    assert_eq!(registry.image_texture(a.id()), Some(id));
   }
 
   #[test]
@@ -313,19 +378,20 @@ mod tests {
   }
 
   #[test]
-  fn a_changed_sprite_needs_uploading_again() {
+  fn a_changed_image_needs_uploading_again() {
+    let mut images = Assets::<Image>::default();
     let mut registry = TextureRegistry::new();
-    let handle = sprite("hot");
-    let id = registry.sprite(&handle, 0);
+    let handle = image(&mut images);
+    let id = texture(&mut registry, &images, &handle, 0);
     assert!(registry.needs_upload(id), "never uploaded");
     registry.mark_uploaded(id);
     assert!(!registry.needs_upload(id));
-    handle.update(Image::solid_rect(8, 8, 0, 255, 0, 255));
+    *images.get_mut(&handle).unwrap() = Image::solid_rect(8, 8, 0, 255, 0, 255);
+    texture(&mut registry, &images, &handle, 1);
     assert!(
       registry.needs_upload(id),
-      "hot reload bumped its generation"
+      "the new version is uploaded again"
     );
-    registry.sprite(&handle, 1);
     assert_eq!(
       registry.get(id).unwrap().width,
       8,
@@ -334,43 +400,57 @@ mod tests {
   }
 
   #[test]
-  fn a_removed_texture_is_forgotten_by_handle_and_name() {
+  fn a_removed_texture_is_forgotten_by_image_and_name() {
+    let mut images = Assets::<Image>::default();
     let mut registry = TextureRegistry::new();
-    let handle = sprite("gone");
-    let sprite_id = registry.sprite(&handle, 0);
+    let handle = image(&mut images);
+    let image_id = texture(&mut registry, &images, &handle, 0);
     let pixels_id = registry.pixels("dot", 1, 1, &[1, 2, 3, 4], 0);
-    registry.remove(sprite_id);
+    registry.remove(image_id);
     registry.remove(pixels_id);
-    assert!(registry.get(sprite_id).is_none() && registry.get(pixels_id).is_none());
+    assert!(registry.get(image_id).is_none() && registry.get(pixels_id).is_none());
     assert_eq!(registry.iter().count(), 0);
-    assert_ne!(registry.sprite(&handle, 1), sprite_id, "registered afresh");
+    assert_eq!(registry.image_texture(handle.id()), None);
+    assert_ne!(
+      texture(&mut registry, &images, &handle, 1),
+      image_id,
+      "registered afresh"
+    );
     assert_ne!(registry.pixels("dot", 1, 1, &[1, 2, 3, 4], 1), pixels_id);
   }
 
   #[test]
   fn a_source_reads_its_pixels() {
+    let mut images = Assets::<Image>::default();
     let mut registry = TextureRegistry::new();
     let id = registry.pixels("dot", 1, 1, &[1, 2, 3, 4], 0);
-    assert_eq!(registry.get(id).unwrap().source.rgba(), vec![1, 2, 3, 4]);
-    let id = registry.sprite(&sprite("red"), 0);
+    assert_eq!(registry.get(id).unwrap().source.rgba(), &[1, 2, 3, 4]);
+    let red = image(&mut images);
+    let id = texture(&mut registry, &images, &red, 0);
     let rgba = registry.get(id).unwrap().source.rgba();
     assert_eq!((rgba.len(), &rgba[..4]), (4 * 2 * 4, &[255, 0, 0, 255][..]));
   }
 
   #[test]
-  fn a_pruned_id_is_never_valid_again() {
+  fn images_outlive_the_ttl_and_pruned_pixels_are_never_valid_again() {
+    let mut images = Assets::<Image>::default();
     let mut registry = TextureRegistry::new();
-    let old = registry.sprite(&sprite("old"), 0);
-    let kept = registry.sprite(&sprite("kept"), 0);
-    registry.sprite(&sprite("kept-again"), 0);
+    let old = registry.pixels("old", 1, 1, &[1, 2, 3, 4], 0);
+    let kept = registry.pixels("kept", 1, 1, &[1, 2, 3, 4], 0);
+    let held = image(&mut images);
+    let image_id = texture(&mut registry, &images, &held, 0);
     registry.get_mut(kept).unwrap().last_used = 10;
     let pruned = registry.prune(10, 5);
-    assert!(pruned.contains(&old));
+    assert_eq!(pruned, vec![old]);
     assert!(registry.get(old).is_none());
     assert!(registry.get(kept).is_some());
-    let reused = registry.sprite(&sprite("new"), 11);
+    assert!(
+      registry.get(image_id).is_some(),
+      "an image waits for its asset to go"
+    );
+    let reused = registry.pixels("new", 1, 1, &[1, 2, 3, 4], 11);
     assert_ne!(reused, old, "a reused slot gets a new generation");
     assert!(registry.get(old).is_none());
-    assert_eq!(registry.len(), 2);
+    assert_eq!(registry.len(), 3);
   }
 }

@@ -115,17 +115,27 @@ fn scene_start(c: &mut Criterion) {
   std::fs::write(dir.path().join("b.ui.ron"), ui_source("b", true)).expect("write ui");
   std::fs::write(dir.path().join("c.ui.ron"), ui_source("c", false)).expect("write ui");
 
+  // Images load through the registry (a fresh one each iteration, over
+  // the same folder); UI files still through the old manager
+  let fresh = || {
+    let mut world = ryo2d::ecs::World::new();
+    let server = AssetServer::new(DiskSource::new(dir.path()));
+    server.register_asset::<Image>(&mut world);
+    server.register_loader(ImageLoader);
+    world.insert_resource(server);
+    (AssetManager::with_base_path(dir.path()), world)
+  };
   c.bench_function("scene_start", |b| {
     b.iter_batched(
-      || AssetManager::with_base_path(dir.path()),
-      |mut assets| {
+      fresh,
+      |(mut assets, mut world)| {
         for name in &pngs {
-          std::hint::black_box(assets.load_sprite(name).expect("load sprite"));
+          std::hint::black_box(assets.load_sprite(&mut world, name).expect("load image"));
         }
         for name in uis {
           std::hint::black_box(assets.load_ui(name).expect("load ui"));
         }
-        assets
+        (assets, world)
       },
       BatchSize::PerIteration,
     );

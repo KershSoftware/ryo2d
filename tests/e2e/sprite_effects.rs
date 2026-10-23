@@ -41,13 +41,13 @@ fn render(
 }
 
 /// 16x16, transparent but for one opaque white column at `column`
-fn column_sprite(name: &str, column: u32) -> SpriteHandle {
+fn column_sprite(ctx: &mut SceneContext, _name: &str, column: u32) -> Handle<Image> {
   let mut data = vec![0u8; 16 * 16 * 4];
   for y in 0..16 {
     let i = ((y * 16 + column) * 4) as usize;
     data[i..i + 4].copy_from_slice(&WHITE);
   }
-  SpriteHandle::from_sprite(Image::from_rgba(data, 16, 16), name)
+  ctx.assets().add(Image::from_rgba(data, 16, 16))
 }
 
 /// The white pixels of row `y` between `x0` and `x1`
@@ -68,9 +68,10 @@ fn wave_shifts_rows_by_its_amplitude_in_pixels_and_wraps() {
       speed: 0.0,
       time: FRAC_PI_2,
     };
+    let image = column_sprite(ctx, "wave-column", 14);
     ctx.world.spawn((
       Transform::from_xy(16.0, 16.0),
-      Renderable::sprite(column_sprite("wave-column", 14))
+      Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
         .with_shader(SpriteShader::BuiltIn(wave)),
     ));
@@ -91,9 +92,10 @@ fn wave_follows_its_effect_time() {
         speed: 0.0,
         time,
       };
+      let image = column_sprite(ctx, "wave-time-column", 8);
       ctx.world.spawn((
         Transform::from_xy(16.0, 16.0),
-        Renderable::sprite(column_sprite("wave-time-column", 8))
+        Renderable::image(image)
           .with_anchor(Anchor::TopLeft)
           .with_shader(SpriteShader::BuiltIn(wave)),
       ));
@@ -110,7 +112,7 @@ fn wave_follows_its_effect_time() {
 
 /// 16x16 gradient with a 3 px transparent border, so outlines and glows have
 /// room inside the quad and pixelate has detail to remove
-fn gradient_sprite() -> SpriteHandle {
+fn gradient_sprite(ctx: &mut SceneContext) -> Handle<Image> {
   let mut data = vec![0u8; 16 * 16 * 4];
   for y in 3..13u32 {
     for x in 3..13u32 {
@@ -118,7 +120,7 @@ fn gradient_sprite() -> SpriteHandle {
       data[i..i + 4].copy_from_slice(&[(x * 20) as u8, (y * 20) as u8, 90, 255]);
     }
   }
-  SpriteHandle::from_sprite(Image::from_rgba(data, 16, 16), "effects-gradient")
+  ctx.assets().add(Image::from_rgba(data, 16, 16))
 }
 
 #[test]
@@ -140,18 +142,18 @@ fn every_built_in_effect_changes_its_entity() {
   let count = effects.len() as u32 + 1;
   let spawned = effects.clone();
   let Some(frame) = render(cell * count, cell, move |ctx| {
-    let sprite = gradient_sprite();
+    let sprite = gradient_sprite(ctx);
     for (i, (_, effect)) in spawned.iter().enumerate() {
       ctx.world.spawn((
         Transform::from_xy(i as f32 * cell as f32 + 8.0, 8.0),
-        Renderable::sprite(sprite.clone())
+        Renderable::image(sprite.clone())
           .with_anchor(Anchor::TopLeft)
           .with_shader(SpriteShader::BuiltIn(effect.clone())),
       ));
     }
     ctx.world.spawn((
       Transform::from_xy((count - 1) as f32 * cell as f32 + 8.0, 8.0),
-      Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
+      Renderable::image(sprite).with_anchor(Anchor::TopLeft),
     ));
   }) else {
     return;

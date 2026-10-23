@@ -39,7 +39,7 @@ impl TimeControlPage {
   }
 
   /// Create a colored circle sprite
-  fn create_circle(radius: u32, r: u8, g: u8, b: u8) -> SpriteHandle {
+  fn create_circle(ctx: &mut SceneContext, radius: u32, r: u8, g: u8, b: u8) -> Handle<Image> {
     let size = radius * 2;
     let mut pixels = vec![0u8; (size * size * 4) as usize];
     let center = radius as f32;
@@ -61,13 +61,13 @@ impl TimeControlPage {
     }
 
     let sprite = Image::from_rgba(pixels, size, size);
-    SpriteHandle::from_sprite(sprite, format!("circle_{}_{}_{}", r, g, b))
+    ctx.assets().add(sprite)
   }
 
   /// Create a colored square sprite
-  fn create_square(size: u32, r: u8, g: u8, b: u8) -> SpriteHandle {
+  fn create_square(ctx: &mut SceneContext, size: u32, r: u8, g: u8, b: u8) -> Handle<Image> {
     let sprite = Image::solid_rect(size, size, r, g, b, 255);
-    SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}", r, g, b))
+    ctx.assets().add(sprite)
   }
 
   /// Invisible walls just outside the screen edges keep the balls in view
@@ -103,7 +103,7 @@ impl TimeControlPage {
     ];
 
     for (i, (r, g, b)) in colors.iter().enumerate() {
-      let sprite = Self::create_circle(BALL_RADIUS, *r, *g, *b);
+      let sprite = Self::create_circle(ctx, BALL_RADIUS, *r, *g, *b);
 
       // Spread balls across the screen with different velocities
       let x = 100.0 + (i as f32 * 100.0);
@@ -115,7 +115,7 @@ impl TimeControlPage {
 
       ctx.world.spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite).with_z_order(10),
+        Renderable::image(sprite).with_z_order(10),
         Velocity::new(angle.cos() * speed, angle.sin() * speed),
         RigidBody::dynamic().with_gravity_scale(0.5).lock_rotation(),
         Collider::circle(BALL_RADIUS as f32)
@@ -127,11 +127,11 @@ impl TimeControlPage {
 
   /// Spawn a rotating square (uses Tween)
   fn spawn_rotating_square(&self, ctx: &mut SceneContext) {
-    let sprite = Self::create_square(40, 255, 200, 100);
+    let sprite = Self::create_square(ctx, 40, 255, 200, 100);
 
     ctx.world.spawn((
       Transform::from_xy(150.0, self.screen_h - 100.0),
-      Renderable::sprite(sprite).with_z_order(5),
+      Renderable::image(sprite).with_z_order(5),
       Tween::to_rotation(PI * 2.0, 2.0)
         .with_easing(Ease::Linear)
         .with_loop(TweenLoop::Loop),
@@ -140,11 +140,11 @@ impl TimeControlPage {
 
   /// Spawn a pulsing circle (uses Tween for scale)
   fn spawn_pulsing_circle(&self, ctx: &mut SceneContext) {
-    let sprite = Self::create_circle(20, 100, 200, 255);
+    let sprite = Self::create_circle(ctx, 20, 100, 200, 255);
 
     ctx.world.spawn((
       Transform::from_xy(self.screen_w - 150.0, self.screen_h - 100.0),
-      Renderable::sprite(sprite).with_z_order(5),
+      Renderable::image(sprite).with_z_order(5),
       Tween::to_scale(1.5, 1.5, 0.5)
         .with_easing(Ease::InOutSine)
         .with_loop(TweenLoop::PingPong),

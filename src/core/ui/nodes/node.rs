@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::kernel::{Bundle, Component, Entity, EntityWorldMut};
+use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::text::{TextAlign, TextReveal, TextStyle};
 use crate::core::ui::file::document::TreeSource;
@@ -94,20 +95,10 @@ pub(crate) struct TextOpts {
   pub(crate) ellipsis: bool,
 }
 
-#[derive(Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ButtonOpts {
   pub(crate) markup: bool,
-  pub(crate) icon: Option<SpriteHandle>,
-}
-
-// By path: a handle's own Debug prints its serial and reference count
-impl fmt::Debug for ButtonOpts {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    f.debug_struct("ButtonOpts")
-      .field("markup", &self.markup)
-      .field("icon", &self.icon.as_ref().map(|icon| icon.path()))
-      .finish()
-  }
+  pub(crate) icon: Option<Handle<Image>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -186,7 +177,7 @@ pub(crate) struct NodeFlags {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NodeState {
   pub(crate) label: Option<String>,
-  pub(crate) image: Option<SpriteHandle>,
+  pub(crate) image: Option<Handle<Image>>,
   pub(crate) checked: Option<bool>,
   pub(crate) value: Option<f32>,
   pub(crate) index: Option<usize>,
@@ -596,7 +587,7 @@ impl UiNode {
   }
 
   /// A sprite
-  pub fn image(sprite: SpriteHandle) -> UiNode {
+  pub fn image(sprite: Handle<Image>) -> UiNode {
     let state = NodeState {
       image: Some(sprite),
       ..NodeState::default()
@@ -1183,7 +1174,7 @@ impl UiNode {
   }
 
   /// An icon beside the label (button), or in the slot (slot)
-  pub fn icon(mut self, icon: SpriteHandle) -> UiNode {
+  pub fn icon(mut self, icon: Handle<Image>) -> UiNode {
     match &mut self.kind {
       Kind::Button(opts) => opts.icon = Some(icon),
       Kind::Slot { .. } => {
@@ -1468,11 +1459,10 @@ fn same_state(a: &NodeState, b: &NodeState) -> bool {
 }
 
 /// Everything a node was given, as text, for comparing a file-built node with
-/// a code-built one; sprites by path, since each handle has its own serial
+/// a code-built one; images by id
 #[cfg(test)]
 pub(crate) fn fingerprint(node: &UiNode) -> String {
-  let sprite =
-    |handle: &Option<SpriteHandle>| handle.as_ref().map(|h| h.path().display().to_string());
+  let sprite = |handle: &Option<Handle<Image>>| handle.as_ref().map(Handle::id);
   let state = &node.state;
   format!(
     "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{:?}|label={:?} image={:?} checked={:?} value={:?} index={:?} options={:?} text={:?} slot={:?} reveal={:?} list={:?}|key={:?} bind={:?} bound={}|[{}]",

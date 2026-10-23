@@ -106,8 +106,8 @@ impl Canvas {
     }
   }
 
-  fn into_handle(self, name: &str) -> SpriteHandle {
-    SpriteHandle::from_sprite(Image::from_rgba(self.pixels, self.width, self.height), name)
+  fn into_image(self) -> Image {
+    Image::from_rgba(self.pixels, self.width, self.height)
   }
 }
 
@@ -248,7 +248,7 @@ const ESC: [&str; 5] = [
 const MENU_LINES: [&str; 5] = ["#####", ".....", "#####", ".....", "#####"];
 
 /// A 16 x 16 key cap with a pixel letter on it
-fn key_cap(letter: &[&str], name: &str) -> SpriteHandle {
+fn key_cap(letter: &[&str]) -> Image {
   let mut c = Canvas::new(16, 16);
   c.fill(0, 0, 16, 16, Color::rgb(96, 102, 128));
   for (x, y) in [(0, 0), (15, 0), (0, 15), (15, 15)] {
@@ -259,11 +259,11 @@ fn key_cap(letter: &[&str], name: &str) -> SpriteHandle {
   let width = letter.first().map_or(0, |row| row.len()) as i32;
   let top = if letter.len() == 7 { 3 } else { 4 };
   c.glyph((16 - width) / 2, top, letter, INK);
-  c.into_handle(name)
+  c.into_image()
 }
 
 /// A 16 x 16 round gamepad button with a pixel letter on it
-fn pad_button(letter: &[&str], fill: Color, name: &str) -> SpriteHandle {
+fn pad_button(letter: &[&str], fill: Color) -> Image {
   let mut c = Canvas::new(16, 16);
   for y in 0..16 {
     for x in 0..16 {
@@ -278,7 +278,7 @@ fn pad_button(letter: &[&str], fill: Color, name: &str) -> SpriteHandle {
   let width = letter.first().map_or(0, |row| row.len()) as i32;
   let top = (16 - letter.len() as i32) / 2;
   c.glyph((16 - width) / 2, top, letter, Color::WHITE);
-  c.into_handle(name)
+  c.into_image()
 }
 
 #[derive(Default)]
@@ -306,18 +306,15 @@ impl DemoPage for RichPage {
     }
     self.applied = Some(self.icons);
     let set = if self.icons == 0 {
-      [
-        key_cap(&LETTER_Z, "key-z"),
-        key_cap(&LETTER_X, "key-x"),
-        key_cap(&ESC, "key-esc"),
-      ]
+      [key_cap(&LETTER_Z), key_cap(&LETTER_X), key_cap(&ESC)]
     } else {
       [
-        pad_button(&LETTER_A, Color::rgb(60, 176, 84), "pad-a"),
-        pad_button(&LETTER_X, Color::rgb(64, 120, 232), "pad-x"),
-        pad_button(&MENU_LINES, Color::rgb(112, 118, 138), "pad-menu"),
+        pad_button(&LETTER_A, Color::rgb(60, 176, 84)),
+        pad_button(&LETTER_X, Color::rgb(64, 120, 232)),
+        pad_button(&MENU_LINES, Color::rgb(112, 118, 138)),
       ]
     };
+    let set = set.map(|image| ctx.assets().add(image));
     let mut icons = ctx.world.resource_mut::<TextIcons>();
     for (name, sprite) in ICON_NAMES.into_iter().zip(set) {
       icons.insert(name, sprite);
@@ -697,7 +694,7 @@ impl DemoPage for WorldPage {
     self.numbers.clear();
     let mut dot = Canvas::new(32, 32);
     dot.rounded(16.0, |_| Some(Color::WHITE));
-    let dot = dot.into_handle("walker");
+    let dot = ctx.assets().add(dot.into_image());
     let walkers = [
       ("Aria", Color::rgb(240, 90, 90), 240.0, (90.0, 430.0), 3.0),
       ("Bram", Color::rgb(90, 200, 120), 305.0, (430.0, 120.0), 4.2),
@@ -711,7 +708,7 @@ impl DemoPage for WorldPage {
     ];
     let style = self.tag_style();
     for (name, tint, y, (from, to), seconds) in walkers {
-      let mut look = Renderable::sprite(dot.clone());
+      let mut look = Renderable::image(dot.clone());
       look.tint = tint;
       let walker = ctx
         .world
@@ -744,10 +741,10 @@ impl DemoPage for WorldPage {
     for (y, shade) in [(14, 112u8), (27, 118), (41, 110)] {
       board.fill(4, y, 292, 2, Color::rgb(shade, 72, 40));
     }
-    ctx.world.spawn((
-      Transform::from_xy(260.0, 450.0),
-      Renderable::sprite(board.into_handle("sign")),
-    ));
+    let board = ctx.assets().add(board.into_image());
+    ctx
+      .world
+      .spawn((Transform::from_xy(260.0, 450.0), Renderable::image(board)));
     ctx.world.spawn((
       Transform::from_xy(260.0, 450.0),
       Text2d::new("THE RUSTY ANCHOR").with_style(
@@ -865,7 +862,7 @@ const ITEMS: [&str; 10] = [
 
 /// The nine-slice panel: 24 x 24 texels, rounded corners and a rivet inside
 /// each 8 px inset, a gold border and a dark fill
-fn nine_slice_sprite() -> SpriteHandle {
+fn nine_slice_sprite() -> Image {
   let mut c = Canvas::new(24, 24);
   c.rounded(6.0, |d| {
     Some(if d > -2.0 {
@@ -879,7 +876,7 @@ fn nine_slice_sprite() -> SpriteHandle {
   for (x, y) in [(4, 4), (18, 4), (4, 18), (18, 18)] {
     c.fill(x, y, 2, 2, Color::rgb(255, 236, 170));
   }
-  c.into_handle("nine-slice")
+  c.into_image()
 }
 
 struct DrawingPage {
@@ -887,7 +884,7 @@ struct DrawingPage {
   border: f32,
   /// Percent
   opacity: f32,
-  panel: Option<SpriteHandle>,
+  panel: Option<Handle<Image>>,
 }
 
 impl Default for DrawingPage {
@@ -919,12 +916,14 @@ impl DemoPage for DrawingPage {
   }
   fn enter(&mut self, ctx: &mut SceneContext) {
     // A bright background of world sprites for the panels to sit over
-    let tile = SpriteHandle::from_sprite(Image::solid_rect(60, 60, 255, 255, 255, 255), "tile");
+    let tile = ctx
+      .assets()
+      .add(Image::solid_rect(60, 60, 255, 255, 255, 255));
     for row in 0..10 {
       for column in 0..9 {
         let hue = column as f32 / 9.0 + row as f32 * 0.04;
         let value = if (row + column) % 2 == 0 { 1.0 } else { 0.8 };
-        let mut look = Renderable::sprite(tile.clone());
+        let mut look = Renderable::image(tile.clone());
         look.tint = hsv(hue, 0.75, value);
         ctx.world.spawn((
           Transform::from_xy(30.0 + column as f32 * 60.0, 60.0 + row as f32 * 60.0),
@@ -932,7 +931,7 @@ impl DemoPage for DrawingPage {
         ));
       }
     }
-    self.panel = Some(nine_slice_sprite());
+    self.panel = Some(ctx.assets().add(nine_slice_sprite()));
   }
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);

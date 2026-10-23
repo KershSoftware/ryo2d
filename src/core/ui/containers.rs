@@ -704,18 +704,19 @@ mod tests {
 
   #[test]
   fn a_skinned_panel_draws_a_nine_slice_in_place_of_its_fill() {
-    use crate::core::asset::SpriteHandle;
     use crate::core::graphics::Image;
     use crate::core::render::batch::Filter;
     use crate::core::ui::theme::{Skin, Theme};
-    let sprite =
-      SpriteHandle::from_sprite(Image::solid_rect(12, 12, 255, 255, 255, 255), "test-skin");
+    let mut d = UiDriver::new((200.0, 100.0));
+    let sprite = d
+      .registry()
+      .add(Image::solid_rect(12, 12, 255, 255, 255, 255));
     let mut theme = Theme::dark().skin(
       "frame",
       Skin::from_sprite(sprite, [4.0; 4], Filter::Nearest),
     );
     theme.widgets.panel.normal.skin = Some("frame".into());
-    let mut d = UiDriver::new((200.0, 100.0)).with_theme(theme);
+    d.set_theme(theme);
     d.frame(|ui| {
       ui.panel()
         .at(Rect::new(10.0, 10.0, 80.0, 40.0))

@@ -18,8 +18,9 @@
 //! )).id();
 //! ```
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::Component;
+use crate::core::graphics::Image;
 use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::ui::Color;
 use std::collections::VecDeque;
@@ -149,7 +150,7 @@ pub struct Trail2D {
   /// Distance in pixels over which to fade (None = use position-based fade)
   fade_distance: Option<f32>,
   /// Optional texture to map along the trail
-  texture: Option<SpriteHandle>,
+  texture: Option<Handle<Image>>,
   /// How the texture is mapped along the trail
   texture_mode: TextureMode,
   /// Pixels of texture per tile (only used when texture_mode is Tile)
@@ -432,7 +433,7 @@ impl Trail2D {
   ///     .with_texture_mode(TextureMode::Tile)
   ///     .with_tile_length(64.0);
   /// ```
-  pub fn with_texture(mut self, texture: SpriteHandle) -> Self {
+  pub fn with_texture(mut self, texture: Handle<Image>) -> Self {
     self.texture = Some(texture);
     self
   }
@@ -768,12 +769,12 @@ impl Trail2D {
   }
 
   /// Get the texture assigned to this trail, if any.
-  pub fn texture(&self) -> Option<&SpriteHandle> {
+  pub fn texture(&self) -> Option<&Handle<Image>> {
     self.texture.as_ref()
   }
 
   /// Set or clear the texture for this trail.
-  pub fn set_texture(&mut self, texture: Option<SpriteHandle>) {
+  pub fn set_texture(&mut self, texture: Option<Handle<Image>>) {
     self.texture = texture;
   }
 

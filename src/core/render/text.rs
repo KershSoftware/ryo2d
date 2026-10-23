@@ -23,10 +23,12 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use glam::Vec2;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{Entity, GlobalTransform, PreviousGlobalTransform, World};
-use crate::core::graphics::{GlyphPage, RenderLayers, SpriteGpuRenderer, SpriteInstance};
+use crate::core::graphics::{
+  GlyphPage, Image, RenderLayers, SpriteGpuRenderer, SpriteInstance, images_of,
+};
 use crate::core::render::batch::{BatchShader, BlendMode, Filter, Sampling};
 use crate::core::render::{
   CameraDraw, DrawGlyph, DrawKind, DrawList, PixelRect, SpriteLook, SpriteShading,
@@ -61,6 +63,8 @@ pub(crate) struct TextSources<'a> {
   pub(crate) engine: &'a TextEngine,
   pub(crate) effects: &'a TextEffects,
   pub(crate) icons: &'a TextIcons,
+  /// The images bitmap fonts and icons draw from
+  pub(crate) images: &'a Assets<Image>,
 }
 
 /// What the text writes into
@@ -1014,12 +1018,16 @@ fn emit_bitmap(
 ) {
   let (layout, place) = (block.layout, block.place);
   let (cw, ch) = (bitmap.cell.0 as f32, bitmap.cell.1 as f32);
-  let sheet = Vec2::new(bitmap.sprite.width() as f32, bitmap.sprite.height() as f32);
+  // An image not loaded draws nothing: its cells are not known
+  let Some(image) = block.sources.images.get(&bitmap.sprite) else {
+    return;
+  };
+  let sheet = Vec2::new(image.width() as f32, image.height() as f32);
   if cw <= 0.0 || ch <= 0.0 || sheet.x <= 0.0 || sheet.y <= 0.0 {
     return;
   }
   let cell = u32::from(glyph.glyph);
-  let columns = bitmap.columns.max(1);
+  let columns = (image.width() / bitmap.cell.0.max(1)).max(1);
   let (col, row) = ((cell % columns) as f32, (cell / columns) as f32);
   let uv = [
     col * cw / sheet.x,
@@ -1048,7 +1056,7 @@ fn emit_bitmap(
     push_sprite(
       block.targets,
       place,
-      &bitmap.sprite,
+      (bitmap.sprite.id(), block.sources.images),
       Filter::Nearest,
       instance,
     );
@@ -1072,15 +1080,18 @@ fn emit_bitmap(
   }
 }
 
-/// Push a sprite quad (a bitmap cell or an icon) as part of the block
+/// Push a sprite quad (a bitmap cell or an icon) as part of the block: an
+/// image by its id, in the images it is read from
 fn push_sprite(
   targets: &mut TextTargets<'_>,
   place: &TextPlacement,
-  sprite: &SpriteHandle,
+  (image, images): (AssetId<Image>, &Assets<Image>),
   filter: Filter,
   instance: SpriteInstance,
 ) {
-  let texture = targets.sprites.texture_of(sprite);
+  let Some(texture) = targets.sprites.texture_of(image, images) else {
+    return;
+  };
   let draw = place.draw;
   let look = SpriteLook {
     shading: SpriteShading::Plain,
@@ -1105,6 +1116,7 @@ fn emit_icon(block: &mut Block<'_, '_, '_>, icon: &PlacedIcon) {
   if alpha.is_nan() || alpha <= 0.0 {
     return;
   }
+  let images = block.sources.images;
   let (sprite, uv) = match &icon.icon {
     Icon::Sprite { sprite, .. } => (sprite, [0.0, 0.0, 1.0, 1.0]),
     Icon::Named { name, .. } => {
@@ -1114,7 +1126,9 @@ fn emit_icon(block: &mut Block<'_, '_, '_>, icon: &PlacedIcon) {
         }
         return;
       };
-      let size = Vec2::new(source.sprite.width() as f32, source.sprite.height() as f32);
+      let size = images.get(&source.sprite).map_or(Vec2::ZERO, |image| {
+        Vec2::new(image.width() as f32, image.height() as f32)
+      });
       let uv = source
         .region
         .map_or([0.0, 0.0, 1.0, 1.0], |region| region_uv(region, size));
@@ -1138,7 +1152,13 @@ fn emit_icon(block: &mut Block<'_, '_, '_>, icon: &PlacedIcon) {
     .with_transform(centre.x, centre.y, rotation, size.x, size.y)
     .with_uv(uv[0], uv[1], uv[2], uv[3])
     .with_tint(Color::WHITE, alpha);
-  push_sprite(block.targets, place, sprite, Filter::Default, instance);
+  push_sprite(
+    block.targets,
+    place,
+    (sprite.id(), images),
+    Filter::Default,
+    instance,
+  );
 }
 
 /// A sprite region's UVs (a region in pixels on a `size` sprite), inset
@@ -1294,6 +1314,7 @@ pub(crate) fn emit_world_text(
     engine,
     effects,
     icons,
+    images: images_of(world),
   };
   let render_scale = if frame.render_scale.is_finite() && frame.render_scale > 0.0 {
     frame.render_scale
@@ -1634,6 +1655,7 @@ mod tests {
         engine: &engine,
         effects: &effects,
         icons: &icons,
+        images: &Assets::default(),
       };
       let last = layout.glyphs.len() - 1;
       let at = Glyph {
@@ -1701,6 +1723,7 @@ mod tests {
         engine: &engine,
         effects: &effects,
         icons: &icons,
+        images: &Assets::default(),
       };
       let place = placement(None);
       let mut run = EffectRun::new(&place);
@@ -1735,6 +1758,7 @@ mod tests {
         engine: &engine,
         effects: &effects,
         icons: &icons,
+        images: &Assets::default(),
       };
       let mut warned = HashSet::new();
       for glyph in &layout.glyphs {
@@ -1780,6 +1804,7 @@ mod tests {
         engine: &engine,
         effects: &effects,
         icons: &icons,
+        images: &Assets::default(),
       };
       let mut sprites = SpriteGpuRenderer::new(&device, &queue);
       let (mut raster, mut list) = (GlyphRasterizer::new(), DrawList::default());

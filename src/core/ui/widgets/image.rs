@@ -5,7 +5,8 @@ use std::panic::Location;
 use glam::Vec2;
 
 use super::common::{WidgetOpts, widget_builders};
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
+use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::ui::Color;
 use crate::core::ui::immediate::UiContext;
@@ -20,7 +21,7 @@ use crate::core::ui::tree::{DrawKind, Node};
 pub struct ImageWidget<'u, 'a> {
   ui: Option<&'u mut UiContext<'a>>,
   site: &'static Location<'static>,
-  sprite: SpriteHandle,
+  sprite: Handle<Image>,
   size: Option<Vec2>,
   tint: Color,
   filter: Filter,
@@ -36,7 +37,7 @@ impl<'a> UiContext<'a> {
   /// ui.image(&self.portrait).size(64.0, 64.0).filter(Filter::Nearest);
   /// ```
   #[track_caller]
-  pub fn image<'u>(&'u mut self, sprite: &SpriteHandle) -> ImageWidget<'u, 'a> {
+  pub fn image<'u>(&'u mut self, sprite: &Handle<Image>) -> ImageWidget<'u, 'a> {
     ImageWidget {
       ui: Some(self),
       site: Location::caller(),
@@ -94,7 +95,7 @@ impl ImageWidget<'_, '_> {
       Some(s) => Vec2::new(clean(s.x), clean(s.y)),
       None => {
         ui.note_sprite(&self.sprite);
-        Vec2::new(self.sprite.width() as f32, self.sprite.height() as f32)
+        ui.image_size(&self.sprite)
       }
     };
 
@@ -136,7 +137,6 @@ impl Drop for ImageWidget<'_, '_> {
 
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
-  use crate::core::asset::SpriteHandle;
   use crate::core::graphics::Image;
   use crate::core::render::batch::Filter;
   use crate::core::ui::Rect;
@@ -145,9 +145,10 @@ mod tests {
 
   #[test]
   fn an_image_draws_its_sprite_with_its_filter() {
-    let sprite =
-      SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 255, 255, 255), "test-image");
     let mut d = UiDriver::new((100.0, 100.0));
+    let sprite = d
+      .registry()
+      .add(Image::solid_rect(8, 8, 255, 255, 255, 255));
     d.frame(|ui| {
       ui.image(&sprite)
         .filter(Filter::Nearest)

@@ -186,8 +186,8 @@ pub struct GameScene {
   background_tiles: Vec<Entity>,
   bg_tile_height: f32,
   rain_emitter: Option<Entity>,
-  rain_sprite: Option<SpriteHandle>,
-  dust_sprite: Option<SpriteHandle>,
+  rain_sprite: Option<Handle<Image>>,
+  dust_sprite: Option<Handle<Image>>,
 
   // Particle system
   particle_system: ParticleSystem,
@@ -602,23 +602,21 @@ impl GameScene {
 
     // Platforms are placed and collided by their top-left corner. They are
     // one-way: players leap up through them and land on top
+    let image = ctx.assets().add(Image::solid_rect(
+      width as u32,
+      PLATFORM_HEIGHT as u32,
+      color.0,
+      color.1,
+      color.2,
+      255,
+    ));
     let entity = ctx
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_rect(
-            width as u32,
-            PLATFORM_HEIGHT as u32,
-            color.0,
-            color.1,
-            color.2,
-            255,
-          ),
-          format!("platform_{}_{}", chunk_y, self.platforms.len()),
-        ))
-        .with_z_order(Z_PLATFORM)
-        .with_anchor(Anchor::TopLeft),
+        Renderable::image(image)
+          .with_z_order(Z_PLATFORM)
+          .with_anchor(Anchor::TopLeft),
         Collider::rect(width, PLATFORM_HEIGHT)
           .with_offset(width / 2.0, PLATFORM_HEIGHT / 2.0)
           .one_way(),
@@ -754,10 +752,11 @@ impl GameScene {
 
     // Create dust sprite if not already created
     if self.dust_sprite.is_none() {
-      self.dust_sprite = Some(ctx.assets.create_sprite(
-        Image::solid_rect(2, 2, 255, 240, 200, 120), // Warm semi-transparent dust
-        "lamp_dust",
-      ));
+      self.dust_sprite = Some(
+        ctx
+          .assets()
+          .add(Image::solid_rect(2, 2, 255, 240, 200, 120)),
+      );
     }
 
     // Dust mote particle emitter - gentle floating particles in the light
@@ -887,10 +886,7 @@ impl GameScene {
 
   fn spawn_rain(&mut self, ctx: &mut SceneContext) {
     // Create particle sprite
-    let rain_sprite = ctx.assets.create_sprite(
-      Image::solid_circle(8, 255, 255, 255, 255), // White circle
-      "rain_particle",
-    );
+    let rain_sprite = ctx.assets().add(Image::solid_circle(8, 255, 255, 255, 255));
     self.rain_sprite = Some(rain_sprite.clone());
 
     // Use the built-in rain preset with wider coverage
@@ -1117,23 +1113,21 @@ impl GameScene {
     if self.mode != GameMode::Client {
       ctx.world.entity_mut(entity).insert(Respawn::here());
     }
+    let image = ctx.assets().add(Image::solid_rect(
+      PLAYER_WIDTH as u32,
+      PLAYER_HEIGHT as u32,
+      color.0,
+      color.1,
+      color.2,
+      255,
+    ));
     ctx.spawn_child(
       entity,
       (
         Transform::from_xy(0.0, PLAYER_HEIGHT),
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_rect(
-            PLAYER_WIDTH as u32,
-            PLAYER_HEIGHT as u32,
-            color.0,
-            color.1,
-            color.2,
-            255,
-          ),
-          format!("player_{}", slot),
-        ))
-        .with_z_order(Z_PLAYER)
-        .with_anchor(Anchor::BottomLeft),
+        Renderable::image(image)
+          .with_z_order(Z_PLAYER)
+          .with_anchor(Anchor::BottomLeft),
       ),
     );
 
@@ -1357,23 +1351,21 @@ impl GameScene {
     }
   }
 
-  /// Colour a platform's sprite (`kind` names the sprite).
-  fn paint_platform(ctx: &mut SceneContext, entity: Entity, color: (u8, u8, u8), kind: &str) {
+  /// Colour a platform's sprite.
+  fn paint_platform(ctx: &mut SceneContext, entity: Entity, color: (u8, u8, u8)) {
     let Some(width) = ctx.world.get::<Platform>(entity).map(|p| p.width) else {
       return;
     };
+    let image = ctx.assets().add(Image::solid_rect(
+      width as u32,
+      PLATFORM_HEIGHT as u32,
+      color.0,
+      color.1,
+      color.2,
+      255,
+    ));
     if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity) {
-      renderable.sprite = SpriteHandle::from_sprite(
-        Image::solid_rect(
-          width as u32,
-          PLATFORM_HEIGHT as u32,
-          color.0,
-          color.1,
-          color.2,
-          255,
-        ),
-        format!("platform_{kind}_{}", entity.to_bits()),
-      );
+      renderable.image = image;
     }
   }
 
@@ -1385,9 +1377,9 @@ impl GameScene {
       && old != new
       && ctx.world.get::<Platform>(old).is_some_and(|p| !p.is_spawn)
     {
-      Self::paint_platform(ctx, old, PLATFORM_COLOR, "normal");
+      Self::paint_platform(ctx, old, PLATFORM_COLOR);
     }
-    Self::paint_platform(ctx, new, CHECKPOINT_PLATFORM_COLOR, "checkpoint");
+    Self::paint_platform(ctx, new, CHECKPOINT_PLATFORM_COLOR);
   }
 
   /// The checkpoint platform with its top nearest `top`, within a platform
@@ -1493,12 +1485,12 @@ impl GameScene {
         .get::<Platform>(old_entity)
         .is_some_and(|p| p.is_checkpoint)
     {
-      Self::paint_platform(ctx, old_entity, PLATFORM_COLOR, "normal");
+      Self::paint_platform(ctx, old_entity, PLATFORM_COLOR);
     }
 
     // Color new future checkpoint platform yellow
     if let Some(new_entity) = new_entity {
-      Self::paint_platform(ctx, new_entity, FUTURE_CHECKPOINT_COLOR, "future");
+      Self::paint_platform(ctx, new_entity, FUTURE_CHECKPOINT_COLOR);
     }
 
     self.future_checkpoint_platform = new_entity;

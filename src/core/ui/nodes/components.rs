@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::kernel::{Component, Entity, Resource};
+use crate::core::graphics::Image;
 use crate::core::ui::file::document::TreeSource;
 use crate::core::ui::{Anchor, Rect, UiId};
 
@@ -43,7 +44,7 @@ pub struct UiLabel(pub String);
 
 /// The sprite of an image node
 #[derive(Component, Debug, Clone)]
-pub struct UiImage(pub SpriteHandle);
+pub struct UiImage(pub Handle<Image>);
 
 /// Whether a checkbox or toggle is on
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -69,7 +70,7 @@ pub struct UiTextValue(pub String);
 #[derive(Component, Debug, Clone, Default, PartialEq)]
 pub struct UiSlot {
   /// The icon drawn in the slot
-  pub icon: Option<SpriteHandle>,
+  pub icon: Option<Handle<Image>>,
   /// The stack count, drawn when above one
   pub count: u32,
   /// Whether the slot is drawn selected

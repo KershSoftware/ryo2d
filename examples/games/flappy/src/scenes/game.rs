@@ -48,7 +48,7 @@ impl GameScene {
 
   fn spawn_bird(&mut self, ctx: &mut SceneContext) {
     // Create animation controller with flapping and hurt animations
-    let controller = create_bird_animation_controller();
+    let controller = create_bird_animation_controller(ctx);
 
     // Get the first sprite from the controller for initial rendering
     let initial_sprite = controller
@@ -76,7 +76,7 @@ impl GameScene {
       bird,
       (
         Transform::from_xy(0.0, 0.0).with_uniform_scale(1.0 / BIRD_RASTER_SCALE),
-        Renderable::sprite(initial_sprite).with_z_order(10),
+        Renderable::image(initial_sprite).with_z_order(10),
         controller,
       ),
     );
@@ -88,17 +88,18 @@ impl GameScene {
     let mut rng = rand::thread_rng();
     let gap_center_y = rng.gen_range(PIPE_MIN_HEIGHT..=PIPE_MAX_HEIGHT);
 
-    // Load pipe sprites (cached by AssetManager)
-    let cap_handle = ctx
-      .assets
-      .load_sprite("assets/pipe_cap.png")
+    // Load pipe sprites (loaded once, while a handle to them lives)
+    let mut assets = ctx.assets();
+    let cap_handle = assets
+      .load_now::<Image>("pipe_cap.png")
       .expect("Failed to load pipe cap");
-    let body_handle = ctx
-      .assets
-      .load_sprite("assets/pipe_body.png")
+    let body_handle = assets
+      .load_now::<Image>("pipe_body.png")
       .expect("Failed to load pipe body");
 
-    let cap_height = cap_handle.height() as f32; // 24px
+    let cap_height = assets
+      .get(&cap_handle)
+      .map_or(0.0, |cap| cap.height() as f32); // 24px
 
     // TOP PIPE: hangs from ceiling, opening faces down
     // Spans from y=0 to gap_center_y - PIPE_GAP/2
@@ -117,7 +118,7 @@ impl GameScene {
       )
       .cap_flipped_y(cap_handle.clone(), 0.0, top_body_height) // Cap below body, flipped
       .z_order(5)
-      .build_with_collider();
+      .build_with_collider(ctx.world.resource::<Assets<Image>>());
 
     let top_pipe = ctx
       .world
@@ -162,7 +163,7 @@ impl GameScene {
           bottom_body_height,
         )
         .z_order(5)
-        .build_with_collider();
+        .build_with_collider(ctx.world.resource::<Assets<Image>>());
 
       let bottom_pipe = ctx
         .world
@@ -185,12 +186,13 @@ impl GameScene {
 
   fn spawn_ground(&mut self, ctx: &mut SceneContext) {
     // Spawn ground segments for seamless scrolling (cached by AssetManager)
-    let ground_handle = ctx
-      .assets
-      .load_sprite("assets/bg-ground.png")
+    let mut assets = ctx.assets();
+    let ground_handle = assets
+      .load_now::<Image>("bg-ground.png")
       .expect("Failed to load ground sprite");
-    let sprite_width = ground_handle.width() as f32;
-    let sprite_height = ground_handle.height() as f32;
+    let (sprite_width, sprite_height) = assets.get(&ground_handle).map_or((0.0, 0.0), |ground| {
+      (ground.width() as f32, ground.height() as f32)
+    });
 
     // Scale to match desired ground height (same as old ground.png)
     let target_height = 112.0;
@@ -212,7 +214,7 @@ impl GameScene {
         .world
         .spawn((
           transform,
-          Renderable::sprite(ground_handle.clone())
+          Renderable::image(ground_handle.clone())
             .with_anchor(Anchor::BottomLeft)
             .with_z_order(15),
           Interpolated,
@@ -227,13 +229,13 @@ impl GameScene {
     // Use full screen width, z-order 16 puts it on top of ground (15)
     let (r, g, b, a) = GROUND_BORDER_COLOR;
     let border_sprite = Image::solid_rect(SCREEN_WIDTH, 2, r, g, b, a);
-    let border_handle = SpriteHandle::from_sprite(border_sprite, "ground_border");
+    let border_handle = ctx.assets().add(border_sprite);
 
     let border = ctx
       .world
       .spawn((
         Transform::from_xy(0.0, GROUND_Y),
-        Renderable::sprite(border_handle)
+        Renderable::image(border_handle)
           .with_anchor(Anchor::TopLeft)
           .with_z_order(16),
       ))
@@ -244,12 +246,13 @@ impl GameScene {
   fn spawn_background(&mut self, ctx: &mut SceneContext) {
     // Spawn two background segments for seamless parallax scrolling
     // Background scrolls slower than pipes/ground for depth effect (cached by AssetManager)
-    let bg_handle = ctx
-      .assets
-      .load_sprite("assets/bg.png")
+    let mut assets = ctx.assets();
+    let bg_handle = assets
+      .load_now::<Image>("bg.png")
       .expect("Failed to load background sprite");
-    let bg_width = bg_handle.width() as f32;
-    let bg_height = bg_handle.height() as f32;
+    let (bg_width, bg_height) = assets
+      .get(&bg_handle)
+      .map_or((0.0, 0.0), |bg| (bg.width() as f32, bg.height() as f32));
     let tile_width = bg_width;
     let wrap_distance = bg_width * 2.0;
 
@@ -264,7 +267,7 @@ impl GameScene {
         .world
         .spawn((
           transform,
-          Renderable::sprite(bg_handle.clone())
+          Renderable::image(bg_handle.clone())
             .with_anchor(Anchor::TopLeft)
             .with_z_order(0), // Render behind everything
           Interpolated,

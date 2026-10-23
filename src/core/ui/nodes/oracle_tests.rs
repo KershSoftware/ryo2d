@@ -10,9 +10,10 @@ use std::sync::Arc;
 use winit::keyboard::KeyCode;
 
 use super::oracle::*;
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::kernel::{ChildOf, Children, Entity, World};
 use crate::core::graphics::Image;
+use crate::core::graphics::test_handle;
 use crate::core::input::{Binding, GamepadButton, InputDevice, PadFamily};
 use crate::core::testing::UiHarness;
 use crate::core::text::{FontRole, Fonts, TextReveal};
@@ -618,11 +619,20 @@ fn theme_scale_and_device_changes_look_the_same_cached() {
   assert_cached(&run);
 }
 
-fn icon(r: u8, g: u8, b: u8) -> SpriteHandle {
-  SpriteHandle::from_sprite(
-    Image::solid_rect(16, 16, r, g, b, 255),
-    format!("oracle-icon-{r}-{g}-{b}"),
-  )
+/// One image per colour, the same in every run, so runs draw alike
+fn icon(r: u8, g: u8, b: u8) -> Handle<Image> {
+  thread_local! {
+    static ICONS: std::cell::RefCell<Vec<([u8; 3], Handle<Image>)>> =
+      std::cell::RefCell::default();
+  }
+  ICONS.with_borrow_mut(|icons| {
+    if let Some((_, icon)) = icons.iter().find(|(colour, _)| *colour == [r, g, b]) {
+      return icon.clone();
+    }
+    let icon = test_handle(Image::solid_rect(16, 16, r, g, b, 255));
+    icons.push(([r, g, b], icon.clone()));
+    icon
+  })
 }
 
 /// An inventory: a grid of eight slots in a focus scope, three holding
@@ -2193,7 +2203,7 @@ fn a_skin_replaced_in_place_at_another_size_redraws_its_kept_fragment() {
     .then(Do(|h| {
       let skin = h.theme().skins.get("button").and_then(|s| s.sprite.clone());
       let sprite = skin.expect("the pixel theme's button skin");
-      sprite.update(Image::solid_rect(24, 20, 90, 90, 140, 255));
+      *h.registry().get_mut(&sprite).unwrap() = Image::solid_rect(24, 20, 90, 90, 140, 255);
     }))
     .frames(2);
   let run = oracle(

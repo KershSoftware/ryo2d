@@ -2,9 +2,9 @@
 //! `ValidatedAnimator` and show their current frame on the entity's
 //! `Renderable`.
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::{Or, Query, Renderable, Res, With};
-use crate::core::graphics::{AnimationController, Animator, ValidatedAnimator};
+use crate::core::graphics::{AnimationController, Animator, Image, ValidatedAnimator};
 use crate::core::time::Time;
 
 type Animated = (
@@ -39,26 +39,28 @@ pub fn animate_sprites(time: Res<Time>, mut query: Query<Animated, HasAnimation>
   }
 }
 
-/// Put `sprite` on `renderable` unless it is already showing.
-fn show(sprite: Option<&SpriteHandle>, renderable: Option<&mut Renderable>) {
-  if let (Some(sprite), Some(renderable)) = (sprite, renderable)
-    && renderable.sprite.serial() != sprite.serial()
+/// Put `image` on `renderable` unless it is already showing.
+fn show(image: Option<&Handle<Image>>, renderable: Option<&mut Renderable>) {
+  if let (Some(image), Some(renderable)) = (image, renderable)
+    && renderable.image != *image
   {
-    renderable.sprite = sprite.clone();
+    renderable.image = image.clone();
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::asset::SpriteHandle;
+  use crate::core::asset::Assets;
   use crate::core::ecs::{Disabled, Renderable};
   use crate::core::graphics::{Animation, Animator, Image, ValidatedAnimator};
   use crate::core::systems::test_util::{run, world};
 
-  fn frames() -> Vec<SpriteHandle> {
+  fn frames() -> Vec<Handle<Image>> {
+    // One store, so each frame has its own id
+    let mut images = Assets::<Image>::default();
     (0..3)
-      .map(|i| SpriteHandle::from_sprite(Image::solid_rect(4, 4, i * 80, 0, 0, 255), "frame"))
+      .map(|i| images.add(Image::solid_rect(4, 4, i * 80, 0, 0, 255)))
       .collect()
   }
 
@@ -74,13 +76,13 @@ mod tests {
     let mut world = world(10);
     let entity = world
       .spawn((
-        Renderable::sprite(frames[0].clone()),
+        Renderable::image(frames[0].clone()),
         Animator::new(Animation::new("walk", frames.clone(), 0.1)),
       ))
       .id();
     run(&mut world, animate_sprites);
-    let shown = world.get::<Renderable>(entity).unwrap().sprite.serial();
-    assert_eq!(shown, frames[1].serial());
+    let shown = world.get::<Renderable>(entity).unwrap().image.id();
+    assert_eq!(shown, frames[1].id());
   }
 
   #[test]
@@ -89,13 +91,13 @@ mod tests {
     let mut world = world(10);
     let entity = world
       .spawn((
-        Renderable::sprite(frames[0].clone()),
+        Renderable::image(frames[0].clone()),
         ValidatedAnimator::new(Animation::new("walk", frames.clone(), 0.1), "walk"),
       ))
       .id();
     run(&mut world, animate_sprites);
-    let shown = world.get::<Renderable>(entity).unwrap().sprite.serial();
-    assert_eq!(shown, frames[1].serial());
+    let shown = world.get::<Renderable>(entity).unwrap().image.id();
+    assert_eq!(shown, frames[1].id());
   }
 
   #[test]
@@ -104,13 +106,13 @@ mod tests {
     let mut world = world(10);
     let entity = world
       .spawn((
-        Renderable::sprite(frames[0].clone()),
+        Renderable::image(frames[0].clone()),
         Animator::new(Animation::new("walk", frames.clone(), 0.1)),
         Disabled,
       ))
       .id();
     run(&mut world, animate_sprites);
-    let shown = world.get::<Renderable>(entity).unwrap().sprite.serial();
-    assert_eq!(shown, frames[0].serial());
+    let shown = world.get::<Renderable>(entity).unwrap().image.id();
+    assert_eq!(shown, frames[0].id());
   }
 }

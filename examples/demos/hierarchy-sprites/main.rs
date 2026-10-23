@@ -138,19 +138,19 @@ impl DemoPage for HierarchyPage {
     // Create sprites for our celestial bodies
     // Sun: large yellow circle
     let sun_sprite = Image::solid_circle(40, 255, 220, 50, 255);
-    let sun_handle = SpriteHandle::from_sprite(sun_sprite, "sun");
+    let sun_handle = ctx.assets().add(sun_sprite);
 
     // Planet: medium blue circle
     let planet_sprite = Image::solid_circle(20, 100, 150, 255, 255);
-    let planet_handle = SpriteHandle::from_sprite(planet_sprite, "planet");
+    let planet_handle = ctx.assets().add(planet_sprite);
 
     // Moon: small gray circle
     let moon_sprite = Image::solid_circle(8, 180, 180, 180, 255);
-    let moon_handle = SpriteHandle::from_sprite(moon_sprite, "moon");
+    let moon_handle = ctx.assets().add(moon_sprite);
 
     // Satellite: tiny red square
     let satellite_sprite = Image::solid_rect(6, 6, 255, 80, 80, 255);
-    let satellite_handle = SpriteHandle::from_sprite(satellite_sprite, "satellite");
+    let satellite_handle = ctx.assets().add(satellite_sprite);
 
     // Create the sun at center of screen; it is the only entity marked
     // Interpolated, and its descendants are interpolated with it
@@ -160,7 +160,7 @@ impl DemoPage for HierarchyPage {
       .spawn((
         Sun,
         Transform::from_xy(width / 2.0, height / 2.0),
-        Renderable::sprite(sun_handle),
+        Renderable::image(sun_handle),
         Interpolated,
       ))
       .id();
@@ -172,7 +172,7 @@ impl DemoPage for HierarchyPage {
       (
         Planet,
         Transform::from_xy(120.0, 0.0), // 120 pixels right of sun
-        Renderable::sprite(planet_handle),
+        Renderable::image(planet_handle),
       ),
     );
 
@@ -182,7 +182,7 @@ impl DemoPage for HierarchyPage {
       (
         Moon,
         Transform::from_xy(40.0, 0.0), // 40 pixels right of planet
-        Renderable::sprite(moon_handle),
+        Renderable::image(moon_handle),
       ),
     );
 
@@ -192,7 +192,7 @@ impl DemoPage for HierarchyPage {
       (
         Satellite,
         Transform::from_translation(SATELLITE_LOCAL), // 15 pixels right of moon
-        Renderable::sprite(satellite_handle),
+        Renderable::image(satellite_handle),
       ),
     );
 

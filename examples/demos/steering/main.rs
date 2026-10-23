@@ -80,7 +80,7 @@ impl SteeringDemoScene {
 
     // Create sprite
     let sprite = Image::solid_rect(8, 8, r, g, b, 255);
-    let handle = SpriteHandle::from_sprite(sprite, format!("boid_{}", self.boids.len()));
+    let handle = ctx.assets().add(sprite);
 
     // Trail with boid's color
     // min_distance must be less than distance traveled per frame:
@@ -99,7 +99,7 @@ impl SteeringDemoScene {
           color: (r, g, b),
         },
         Transform::from_xy(x, y),
-        Renderable::sprite(handle).with_z_order(10),
+        Renderable::image(handle).with_z_order(10),
         trail,
       ))
       .id();
@@ -123,14 +123,14 @@ impl SteeringDemoScene {
     }
 
     let sprite = Image::solid_rect(20, 20, 255, 50, 50, 255);
-    let handle = SpriteHandle::from_sprite(sprite, "predator");
+    let handle = ctx.assets().add(sprite);
 
     let entity = ctx
       .world
       .spawn((
         Predator,
         Transform::from_xy(x, y),
-        Renderable::sprite(handle).with_z_order(20),
+        Renderable::image(handle).with_z_order(20),
       ))
       .id();
 

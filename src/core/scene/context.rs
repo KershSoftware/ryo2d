@@ -1,6 +1,6 @@
 //! The context scene callbacks receive.
 
-use crate::core::asset::{AssetManager, AssetsView, SpriteHandle};
+use crate::core::asset::{AssetManager, Assets, AssetsView, Handle};
 use crate::core::audio::Audio;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::cursor::{CursorRequest, CursorStyle, CustomCursorData};
@@ -8,7 +8,7 @@ use crate::core::ecs::{
   Bundle, Entity, IntoScheduleConfigs, Message, Messages, Mut, Mutable, Resource, ScheduleSystem,
   World, WorldExt,
 };
-use crate::core::graphics::{CameraMut, RenderTargets, ScreenMapping};
+use crate::core::graphics::{CameraMut, Image, RenderTargets, ScreenMapping};
 use crate::core::input::{Actions, Input};
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::{SceneMessages, register_message};
@@ -301,7 +301,7 @@ impl SceneContext<'_> {
   /// ```
   pub fn spawn_ui_file(&mut self, path: &str) -> Result<Entity, UiFileError> {
     let file = self.assets.load_ui(path)?;
-    let tree = file.root(self.assets)?;
+    let tree = file.root(&mut self.assets())?;
     Ok(self.spawn_ui(tree))
   }
 
@@ -327,7 +327,7 @@ impl SceneContext<'_> {
     args: &UiArgs,
   ) -> Result<UiNode, UiFileError> {
     let file = self.assets.load_ui(path)?;
-    file.template(name, args, self.assets)
+    file.template(name, args, &mut self.assets())
   }
 
   /// Spawn a UI node tree under `parent`, after its last child; `None`
@@ -613,30 +613,37 @@ impl SceneContext<'_> {
     self.cursor().locked = Some(locked);
   }
 
-  /// Use a sprite as the cursor; the hotspot is the click point, in pixels
-  /// from the sprite's top-left.
-  pub fn set_custom_cursor(&mut self, sprite: &SpriteHandle, hotspot_x: u16, hotspot_y: u16) {
-    let mut data = None;
-    sprite.with_sprite(|s| {
-      data = Some(CustomCursorData {
-        rgba: s.data().to_vec(),
-        width: s.width() as u16,
-        height: s.height() as u16,
-        hotspot_x,
-        hotspot_y,
-        id: sprite.id(),
-      });
-    });
-    if let Some(data) = data {
-      self.cursor().custom_cursor = Some(data);
-    }
+  /// Use an image as the cursor; the hotspot is the click point, in pixels
+  /// from the image's top-left. An image that is not loaded leaves the
+  /// cursor as it is.
+  pub fn set_custom_cursor(&mut self, image: &Handle<Image>, hotspot_x: u16, hotspot_y: u16) {
+    let Some(images) = self.world.get_resource::<Assets<Image>>() else {
+      return;
+    };
+    let (Some(shown), Some(version)) = (images.get(image), images.version(image)) else {
+      return;
+    };
+    let id = image.id();
+    let data = CustomCursorData {
+      rgba: shown.data().to_vec(),
+      width: shown.width() as u16,
+      height: shown.height() as u16,
+      hotspot_x,
+      hotspot_y,
+      // A changed or reloaded image is another cursor
+      id: format!("image-{}v{}-{version}", id.index(), id.generation()),
+    };
+    self.cursor().custom_cursor = Some(data);
   }
 
-  /// Use a sprite as the cursor with the hotspot at its centre.
-  pub fn set_custom_cursor_centered(&mut self, sprite: &SpriteHandle) {
-    let hotspot_x = (sprite.width() / 2) as u16;
-    let hotspot_y = (sprite.height() / 2) as u16;
-    self.set_custom_cursor(sprite, hotspot_x, hotspot_y);
+  /// Use an image as the cursor with the hotspot at its centre.
+  pub fn set_custom_cursor_centered(&mut self, image: &Handle<Image>) {
+    let Some(size) = self.assets().get(image).map(|i| (i.width(), i.height())) else {
+      return;
+    };
+    let hotspot_x = (size.0 / 2) as u16;
+    let hotspot_y = (size.1 / 2) as u16;
+    self.set_custom_cursor(image, hotspot_x, hotspot_y);
   }
 }
 

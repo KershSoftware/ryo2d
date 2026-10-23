@@ -16,13 +16,12 @@ fn main() {
 
 /// A grey backdrop over the whole window.
 fn backdrop(ctx: &mut SceneContext, grey: u8) {
-  let sprite = SpriteHandle::from_sprite(
-    Image::solid_rect(960, 640, grey, grey, grey, 255),
-    format!("look-backdrop-{grey}"),
-  );
+  let sprite = ctx
+    .assets()
+    .add(Image::solid_rect(960, 640, grey, grey, grey, 255));
   ctx.world.spawn((
     Transform::from_xy(480.0, 320.0),
-    Renderable::sprite(sprite).with_z_order(-10),
+    Renderable::image(sprite).with_z_order(-10),
   ));
 }
 
@@ -34,15 +33,14 @@ fn square(
   color: Color,
   emission: f32,
 ) -> Entity {
-  let sprite = SpriteHandle::from_sprite(
-    Image::solid_rect(size, size, color.r, color.g, color.b, 255),
-    format!("look-square-{size}-{}-{}-{}", color.r, color.g, color.b),
-  );
+  let sprite = ctx.assets().add(Image::solid_rect(
+    size, size, color.r, color.g, color.b, 255,
+  ));
   ctx
     .world
     .spawn((
       Transform::from_xy(at.0, at.1),
-      Renderable::sprite(sprite).with_emission(emission),
+      Renderable::image(sprite).with_emission(emission),
     ))
     .id()
 }
@@ -305,7 +303,11 @@ impl DemoPage for GradingPage {
 const LUTS: [&str; 4] = ["Warm film", "Cool night", "Sepia", "Invert"];
 
 /// A 16-step LUT made by mapping every colour of the identity strip.
-fn make_lut(name: &str, map: impl Fn([f32; 3]) -> [f32; 3]) -> Option<ColorLut> {
+fn make_lut(
+  ctx: &mut SceneContext,
+  _name: &str,
+  map: impl Fn([f32; 3]) -> [f32; 3],
+) -> Option<ColorLut> {
   let strip = ColorLut::identity_strip(16);
   let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
   let data: Vec<u8> = strip
@@ -316,25 +318,25 @@ fn make_lut(name: &str, map: impl Fn([f32; 3]) -> [f32; 3]) -> Option<ColorLut> 
       [byte(r), byte(g), byte(b), 255]
     })
     .collect();
-  let sprite = Image::from_rgba(data, strip.width(), strip.height());
-  ColorLut::from_sprite(&SpriteHandle::from_sprite(
-    sprite,
-    format!("look-lut-{name}"),
-  ))
-  .ok()
+  let sprite = ctx
+    .assets()
+    .add(Image::from_rgba(data, strip.width(), strip.height()));
+  ColorLut::from_sprite(&sprite, ctx.world.resource::<Assets<Image>>()).ok()
 }
 
-fn lut(index: usize) -> Option<ColorLut> {
+fn lut(ctx: &mut SceneContext, index: usize) -> Option<ColorLut> {
   match index {
-    0 => make_lut("warm", |[r, g, b]| [r * 1.08 + 0.03, g + 0.01, b * 0.85]),
-    1 => make_lut("cool", |[r, g, b]| {
+    0 => make_lut(ctx, "warm", |[r, g, b]| {
+      [r * 1.08 + 0.03, g + 0.01, b * 0.85]
+    }),
+    1 => make_lut(ctx, "cool", |[r, g, b]| {
       [r * 0.8, g * 0.92 + 0.02, b * 1.1 + 0.05]
     }),
-    2 => make_lut("sepia", |[r, g, b]| {
+    2 => make_lut(ctx, "sepia", |[r, g, b]| {
       let y = 0.299 * r + 0.587 * g + 0.114 * b;
       [y * 1.07 + 0.05, y * 0.95 + 0.02, y * 0.75]
     }),
-    _ => make_lut("invert", |[r, g, b]| [1.0 - r, 1.0 - g, 1.0 - b]),
+    _ => make_lut(ctx, "invert", |[r, g, b]| [1.0 - r, 1.0 - g, 1.0 - b]),
   }
 }
 
@@ -371,7 +373,7 @@ impl DemoPage for LutPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     palette(ctx);
-    self.luts = (0..LUTS.len()).map(lut).collect();
+    self.luts = (0..LUTS.len()).map(|index| lut(ctx, index)).collect();
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
@@ -429,17 +431,19 @@ impl DemoPage for ExposurePage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Rock from x -600 to 600, sky from 600 to 1500
-    let rock =
-      SpriteHandle::from_sprite(Image::solid_rect(1200, 640, 40, 34, 30, 255), "look-cave");
+    let rock = ctx
+      .assets()
+      .add(Image::solid_rect(1200, 640, 40, 34, 30, 255));
     ctx.world.spawn((
       Transform::from_xy(0.0, 320.0),
-      Renderable::sprite(rock).with_z_order(-1),
+      Renderable::image(rock).with_z_order(-1),
     ));
-    let sky =
-      SpriteHandle::from_sprite(Image::solid_rect(900, 640, 200, 220, 255, 255), "look-sky");
+    let sky = ctx
+      .assets()
+      .add(Image::solid_rect(900, 640, 200, 220, 255, 255));
     ctx.world.spawn((
       Transform::from_xy(1050.0, 320.0),
-      Renderable::sprite(sky).with_z_order(-1).with_emission(4.0),
+      Renderable::image(sky).with_z_order(-1).with_emission(4.0),
     ));
     for i in 0..6 {
       square(

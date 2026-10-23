@@ -174,9 +174,7 @@ pub mod prelude {
     AssetSource, Assets, AssetsView, DiskSource, Handle, ImageLoader, ImageSettings, LoadContext,
     LoadState, MemorySource, Progress, SvgSize, UntypedAssetId,
   };
-  pub use crate::core::asset::{
-    AssetManager, AssetStats, AsyncSpriteHandle, LoadingProgress, LoadingState, SpriteHandle,
-  };
+  pub use crate::core::asset::{AssetManager, AssetStats, TypeStats};
 
   // Window and cursor
   pub use crate::core::cursor::{CursorRequest, CursorStyle};

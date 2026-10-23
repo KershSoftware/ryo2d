@@ -52,9 +52,9 @@ impl SquashStretchDemoScene {
   }
 
   /// Create a colored circle sprite
-  fn create_circle(radius: u32, r: u8, g: u8, b: u8) -> SpriteHandle {
+  fn create_circle(ctx: &mut SceneContext, radius: u32, r: u8, g: u8, b: u8) -> Handle<Image> {
     let sprite = Image::solid_circle(radius, r, g, b, 255);
-    SpriteHandle::from_sprite(sprite, format!("circle_{}_{}_{}_{}", radius, r, g, b))
+    ctx.assets().add(sprite)
   }
 
   /// Spawn balls in a row
@@ -76,7 +76,7 @@ impl SquashStretchDemoScene {
       let x = spacing * (i as f32 + 1.0);
       let y = 150.0;
 
-      let sprite = Self::create_circle(30, *r, *g, *b);
+      let sprite = Self::create_circle(ctx, 30, *r, *g, *b);
       let entity = ctx
         .world
         .spawn((
@@ -86,7 +86,7 @@ impl SquashStretchDemoScene {
             label,
           },
           Transform::from_xy(x, y),
-          Renderable::sprite(sprite).with_z_order(10),
+          Renderable::image(sprite).with_z_order(10),
         ))
         .id();
       self.balls.push(entity);

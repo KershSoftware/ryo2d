@@ -3,10 +3,9 @@
 use std::collections::BTreeMap;
 
 use super::{
-  FocusRing, Look, LookPatch, Looks, Metrics, Palette, Sizes, Skin, TextLook, TextRoles, Theme,
-  ThemeFont, UiSounds, Variant, WidgetKind, WidgetLooks,
+  BuiltinSkin, FocusRing, Look, LookPatch, Looks, Metrics, Palette, Sizes, Skin, TextLook,
+  TextRoles, Theme, ThemeFont, UiSounds, Variant, WidgetKind, WidgetLooks,
 };
-use crate::core::asset::SpriteHandle;
 use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::ui::{Color, Edges};
@@ -503,9 +502,27 @@ pub(super) fn light() -> Theme {
   }
 }
 
-/// A 12 by 12 skin sprite: a one-pixel `border`, a lighter bevel on the top
+/// A built-in skin's image, made when a theme's skins are loaded
+pub(super) fn skin_image(skin: BuiltinSkin) -> Image {
+  match skin {
+    BuiltinSkin::PixelButton => skin_sprite(
+      Color::rgb(16, 16, 28),
+      Color::rgb(104, 104, 144),
+      Color::rgb(152, 152, 196),
+      Color::rgb(76, 76, 108),
+    ),
+    BuiltinSkin::PixelPanel => skin_sprite(
+      Color::rgb(16, 16, 28),
+      Color::new(34, 34, 54, 235),
+      Color::new(62, 62, 92, 235),
+      Color::new(26, 26, 42, 235),
+    ),
+  }
+}
+
+/// A 12 by 12 skin image: a one-pixel `border`, a lighter bevel on the top
 /// and left, a darker one on the bottom and right, and `fill` inside
-fn skin_sprite(name: &str, border: Color, fill: Color, light: Color, dark: Color) -> SpriteHandle {
+fn skin_sprite(border: Color, fill: Color, light: Color, dark: Color) -> Image {
   const SIDE: u32 = 12;
   let last = SIDE - 1;
   let mut data = Vec::with_capacity((SIDE * SIDE * 4) as usize);
@@ -523,7 +540,7 @@ fn skin_sprite(name: &str, border: Color, fill: Color, light: Color, dark: Color
       data.extend_from_slice(&[color.r, color.g, color.b, color.a]);
     }
   }
-  SpriteHandle::from_sprite(Image::from_rgba(data, SIDE, SIDE), name)
+  Image::from_rgba(data, SIDE, SIDE)
 }
 
 /// The pixel theme
@@ -545,31 +562,11 @@ pub(super) fn pixel() -> Theme {
   theme.metrics.focus_ring.color = Color::rgb(255, 220, 80);
   theme.skins.insert(
     "button".to_string(),
-    Skin::from_sprite(
-      skin_sprite(
-        "ryo2d-pixel-button",
-        Color::rgb(16, 16, 28),
-        Color::rgb(104, 104, 144),
-        Color::rgb(152, 152, 196),
-        Color::rgb(76, 76, 108),
-      ),
-      [4.0; 4],
-      Filter::Nearest,
-    ),
+    Skin::builtin(BuiltinSkin::PixelButton, [4.0; 4], Filter::Nearest),
   );
   theme.skins.insert(
     "panel".to_string(),
-    Skin::from_sprite(
-      skin_sprite(
-        "ryo2d-pixel-panel",
-        Color::rgb(16, 16, 28),
-        Color::new(34, 34, 54, 235),
-        Color::new(62, 62, 92, 235),
-        Color::new(26, 26, 42, 235),
-      ),
-      [4.0; 4],
-      Filter::Nearest,
-    ),
+    Skin::builtin(BuiltinSkin::PixelPanel, [4.0; 4], Filter::Nearest),
   );
 
   let widgets = &mut theme.widgets;

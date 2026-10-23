@@ -44,7 +44,7 @@ impl GameScene {
       player_entity,
       (
         Transform::IDENTITY,
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_z_order(Z_PLAYER)
           .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 2)),
       ),
@@ -67,7 +67,7 @@ impl GameScene {
       .world
       .spawn((
         ground_transform,
-        Renderable::sprite(sprite.clone())
+        Renderable::image(sprite.clone())
           .with_z_order(Z_PLATFORM)
           .with_shader(SpriteShader::platform_outline(2)),
         RigidBody::fixed(),
@@ -129,7 +129,7 @@ impl GameScene {
         .world
         .spawn((
           transform,
-          Renderable::sprite(sprite.clone())
+          Renderable::image(sprite.clone())
             .with_z_order(Z_PLATFORM)
             .with_shader(SpriteShader::platform_outline(2)),
           RigidBody::fixed(),
@@ -163,7 +163,7 @@ impl GameScene {
         .world
         .spawn((
           Transform::from_xy(TURRET_SIZE / 2.0, y),
-          Renderable::sprite(sprite.clone())
+          Renderable::image(sprite.clone())
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
@@ -187,7 +187,7 @@ impl GameScene {
         .world
         .spawn((
           Transform::from_xy(sw - TURRET_SIZE / 2.0, y),
-          Renderable::sprite(sprite.clone())
+          Renderable::image(sprite.clone())
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
@@ -217,7 +217,7 @@ impl GameScene {
       .world
       .spawn((
         Transform::from_xy(center_x - 250.0 + BARRIER_WIDTH / 2.0, min_y + 100.0),
-        Renderable::sprite(sprite.clone())
+        Renderable::image(sprite.clone())
           .with_z_order(Z_BARRIER)
           .with_shader(SpriteShader::white_outline(2)),
         RigidBody::kinematic(),
@@ -232,7 +232,7 @@ impl GameScene {
       .world
       .spawn((
         Transform::from_xy(center_x + 250.0 - BARRIER_WIDTH / 2.0, max_y - 100.0),
-        Renderable::sprite(sprite.clone())
+        Renderable::image(sprite.clone())
           .with_z_order(Z_BARRIER)
           .with_shader(SpriteShader::white_outline(2)),
         RigidBody::kinematic(),
@@ -256,7 +256,7 @@ impl GameScene {
       .world
       .spawn((
         Transform::from_xy(spawn_x, spawn_y),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_z_order(Z_DRONE)
           // Start with dissolve shader for spawn effect (black edge)
           .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(0, 0, 0))),
@@ -334,7 +334,7 @@ impl GameScene {
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite).with_z_order(Z_BULLET),
+        Renderable::image(sprite).with_z_order(Z_BULLET),
         Interpolated,
         // CCD for fast-moving bullets, no gravity
         RigidBody::dynamic()
@@ -370,7 +370,7 @@ impl GameScene {
         .world
         .spawn((
           Transform::from_xy(x, y),
-          Renderable::sprite(sprite.clone()).with_z_order(Z_PARTICLE),
+          Renderable::image(sprite.clone()).with_z_order(Z_PARTICLE),
           Collider::circle(PARTICLE_SIZE / 2.0).as_trigger(),
           Particle::new(velocity_x, velocity_y, PARTICLE_LIFETIME),
         ))
@@ -398,7 +398,7 @@ impl GameScene {
         .world
         .spawn((
           Transform::from_xy(TURRET_SIZE / 2.0, y),
-          Renderable::sprite(sprite.clone())
+          Renderable::image(sprite.clone())
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),
@@ -418,7 +418,7 @@ impl GameScene {
         .world
         .spawn((
           Transform::from_xy(sw - TURRET_SIZE / 2.0, y),
-          Renderable::sprite(sprite.clone())
+          Renderable::image(sprite.clone())
             .with_z_order(Z_TURRET)
             .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
           RigidBody::kinematic(),

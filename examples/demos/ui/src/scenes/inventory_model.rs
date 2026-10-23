@@ -117,12 +117,21 @@ pub enum SlotRef {
   Equip(EquipSlot),
 }
 
-/// The icon of each kind, in `ItemKind` order
-pub(super) struct Icons([SpriteHandle; 8]);
+/// The icon of each kind, in `ItemKind` order, added to the page's world
+/// when it enters
+pub(super) struct Icons(Vec<Handle<Image>>);
 
 impl Icons {
   pub(super) fn new() -> Self {
-    Icons([
+    Icons(Vec::new())
+  }
+
+  /// Add the icons to the world, the first time
+  pub(super) fn add(&mut self, ctx: &mut SceneContext) {
+    if !self.0.is_empty() {
+      return;
+    }
+    let art = [
       art::sword(),
       art::shield(),
       art::helmet(),
@@ -131,11 +140,16 @@ impl Icons {
       art::gem(),
       art::key(),
       art::bread(),
-    ])
+    ];
+    self.0 = art
+      .into_iter()
+      .map(|image| ctx.assets().add(image))
+      .collect();
   }
 
-  pub(super) fn of(&self, kind: ItemKind) -> &SpriteHandle {
-    &self.0[kind as usize]
+  /// The icon of `kind`, once added
+  pub(super) fn of(&self, kind: ItemKind) -> Option<&Handle<Image>> {
+    self.0.get(kind as usize)
   }
 }
 

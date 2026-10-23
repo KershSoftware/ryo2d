@@ -835,6 +835,7 @@ impl WgpuRenderer {
     let sprites = SpriteGpuRenderer::new(&self.device, &self.queue);
     let effects = EffectsManager::new();
     let look = crate::core::render::Look::default();
+    let images = crate::core::asset::Assets::default();
     let draw_list = DrawList::default();
     let scene = FrameScene {
       sprites: &sprites,
@@ -843,6 +844,7 @@ impl WgpuRenderer {
       lighting: None,
       effects: &effects,
       look: &look,
+      images: &images,
       ui_frame: None,
       ui_size: self.compositor.ui_size(),
       ui_kept: false,

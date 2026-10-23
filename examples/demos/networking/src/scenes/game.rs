@@ -154,23 +154,21 @@ impl Match {
   }
 
   fn spawn_background(&mut self, ctx: &mut SceneContext) {
+    let image = ctx.assets().add(Image::solid_rect(
+      SCREEN_WIDTH,
+      SCREEN_HEIGHT,
+      BACKGROUND_COLOR.0,
+      BACKGROUND_COLOR.1,
+      BACKGROUND_COLOR.2,
+      255,
+    ));
     let background = ctx
       .world
       .spawn((
         Transform::from_xy(0.0, 0.0),
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_rect(
-            SCREEN_WIDTH,
-            SCREEN_HEIGHT,
-            BACKGROUND_COLOR.0,
-            BACKGROUND_COLOR.1,
-            BACKGROUND_COLOR.2,
-            255,
-          ),
-          "background",
-        ))
-        .with_anchor(Anchor::TopLeft)
-        .with_z_order(Z_BACKGROUND),
+        Renderable::image(image)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(Z_BACKGROUND),
       ))
       .id();
     self.scenery.push(background);
@@ -179,23 +177,21 @@ impl Match {
   fn spawn_platform(&mut self, ctx: &mut SceneContext) {
     let platform_x = (SCREEN_WIDTH as f32 - PLATFORM_WIDTH) / 2.0;
 
+    let image = ctx.assets().add(Image::solid_rect(
+      PLATFORM_WIDTH as u32,
+      PLATFORM_HEIGHT as u32,
+      PLATFORM_COLOR.0,
+      PLATFORM_COLOR.1,
+      PLATFORM_COLOR.2,
+      255,
+    ));
     let platform = ctx
       .world
       .spawn((
         Transform::from_xy(platform_x, PLATFORM_Y),
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_rect(
-            PLATFORM_WIDTH as u32,
-            PLATFORM_HEIGHT as u32,
-            PLATFORM_COLOR.0,
-            PLATFORM_COLOR.1,
-            PLATFORM_COLOR.2,
-            255,
-          ),
-          "platform",
-        ))
-        .with_anchor(Anchor::TopLeft)
-        .with_z_order(Z_PLATFORM),
+        Renderable::image(image)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(Z_PLATFORM),
         // One-way, so players land on it only from above
         Collider::rect(PLATFORM_WIDTH, PLATFORM_HEIGHT)
           .with_offset(PLATFORM_WIDTH / 2.0, PLATFORM_HEIGHT / 2.0)
@@ -233,23 +229,21 @@ impl Match {
     // Positions are top-left corners: the collision rules below work in them.
     // Players are on their own layer and collide only with the world: they
     // pass through each other, and `check_player_collision` pushes them apart
+    let image = ctx.assets().add(Image::solid_rect(
+      PLAYER_WIDTH as u32,
+      PLAYER_HEIGHT as u32,
+      color.0,
+      color.1,
+      color.2,
+      255,
+    ));
     let entity = ctx
       .world
       .spawn((
         Transform::from_xy(spawn_x, PLAYER_SPAWN_Y),
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_rect(
-            PLAYER_WIDTH as u32,
-            PLAYER_HEIGHT as u32,
-            color.0,
-            color.1,
-            color.2,
-            255,
-          ),
-          format!("player_{}", slot),
-        ))
-        .with_anchor(Anchor::TopLeft)
-        .with_z_order(Z_PLAYER),
+        Renderable::image(image)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(Z_PLAYER),
         Collider::rect(PLAYER_WIDTH, PLAYER_HEIGHT)
           .with_offset(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0)
           .with_layer(PLAYER_LAYER)

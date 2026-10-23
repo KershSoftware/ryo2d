@@ -9,9 +9,8 @@
 //!   watches the asset folder (native builds), so a saved file reloads once
 //!   its writes settle
 //! - [`AssetsView`] - the registry as scenes (`ctx.assets()`) and tests reach it
-//! - [`AssetManager`] - the old manager (sprites, shaders, UI files), until
+//! - [`AssetManager`] - the old manager (shaders, UI files), until
 //!   everything loads through the registry
-//! - [`SpriteHandle`] - the old manager's reference to a loaded image
 //! - [`HotReloadWatcher`] - the old manager's file watcher
 
 pub mod assets;
@@ -34,9 +33,7 @@ mod workers;
 
 pub use assets::Assets;
 pub use error::AssetError;
-// The old manager's `AssetStats` holds the name here until it goes; the
-// registry's is `event::AssetStats`
-pub use event::{AssetEvent, LoadState, Progress};
+pub use event::{AssetEvent, AssetStats, LoadState, Progress, TypeStats};
 pub use handle::Handle;
 pub use id::{AssetId, UntypedAssetId};
 pub use loader::{AssetLoader, AssetSettings, LoadContext};
@@ -47,6 +44,7 @@ pub use pump::pump;
 pub use server::AssetServer;
 pub use source::{AssetSource, DiskSource, MemorySource};
 pub use view::AssetsView;
+pub(crate) use view::lend_store;
 
 /// A type the registry stores: loaded from files by an `AssetLoader`, or
 /// made in code and added with `Assets::add`
@@ -65,6 +63,4 @@ pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: Asset
 }
 
 pub use hot_reload::{HotReloadConfig, HotReloadEvent, HotReloadWatcher};
-pub use manager::{
-  AssetManager, AssetStats, AsyncSpriteHandle, LoadingProgress, LoadingState, SpriteHandle,
-};
+pub use manager::AssetManager;

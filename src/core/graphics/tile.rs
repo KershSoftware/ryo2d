@@ -23,7 +23,8 @@
 //! ));
 //! ```
 
-use crate::core::asset::SpriteHandle;
+use super::Image;
+use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::{Component, Vec2};
 use crate::core::physics::Collider;
 
@@ -70,8 +71,8 @@ impl TileDirection {
 /// Each part can be either static (drawn once) or tiled (repeated).
 #[derive(Debug, Clone)]
 pub struct TilePart {
-  /// The sprite for this part
-  pub sprite: SpriteHandle,
+  /// The image for this part
+  pub sprite: Handle<Image>,
   /// Offset from the composite tile's origin (X)
   pub offset_x: f32,
   /// Offset from the composite tile's origin (Y)
@@ -86,7 +87,7 @@ pub struct TilePart {
 
 impl TilePart {
   /// Create a static (non-tiled) part
-  pub fn static_part(sprite: SpriteHandle, offset_x: f32, offset_y: f32) -> Self {
+  pub fn static_part(sprite: Handle<Image>, offset_x: f32, offset_y: f32) -> Self {
     TilePart {
       sprite,
       offset_x,
@@ -99,7 +100,7 @@ impl TilePart {
 
   /// Create a tiled part
   pub fn tiled_part(
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     offset_x: f32,
     offset_y: f32,
     direction: TileDirection,
@@ -134,11 +135,12 @@ impl TilePart {
 
   /// Get the bounds of this part
   ///
-  /// For static parts, returns the sprite size.
-  /// For tiled parts, returns the full tiled area.
-  pub fn bounds(&self) -> (f32, f32) {
-    let sprite_w = self.sprite.width() as f32;
-    let sprite_h = self.sprite.height() as f32;
+  /// For static parts, returns the image size (zero while it is not loaded
+  /// in `images`). For tiled parts, returns the full tiled area.
+  pub fn bounds(&self, images: &Assets<Image>) -> (f32, f32) {
+    let (sprite_w, sprite_h) = images.get(&self.sprite).map_or((0.0, 0.0), |image| {
+      (image.width() as f32, image.height() as f32)
+    });
 
     match &self.tiling {
       None => (sprite_w, sprite_h),
@@ -201,10 +203,11 @@ impl CompositeTile {
     self
   }
 
-  /// Calculate the bounding box of this composite tile
+  /// Calculate the bounding box of this composite tile, its parts' sizes
+  /// read from `images`
   ///
   /// Returns (min_x, min_y, max_x, max_y) relative to the entity origin.
-  pub fn bounds(&self) -> (f32, f32, f32, f32) {
+  pub fn bounds(&self, images: &Assets<Image>) -> (f32, f32, f32, f32) {
     if self.parts.is_empty() {
       return (0.0, 0.0, 0.0, 0.0);
     }
@@ -215,7 +218,7 @@ impl CompositeTile {
     let mut max_y = f32::MIN;
 
     for part in &self.parts {
-      let (w, h) = part.bounds();
+      let (w, h) = part.bounds(images);
 
       // Handle negative direction offsets for Up and Left
       let (part_min_x, part_min_y, part_max_x, part_max_y) = match &part.tiling {
@@ -257,9 +260,10 @@ impl CompositeTile {
     (min_x, min_y, max_x, max_y)
   }
 
-  /// Get the width and height of the composite
-  pub fn size(&self) -> (f32, f32) {
-    let (min_x, min_y, max_x, max_y) = self.bounds();
+  /// Get the width and height of the composite, its parts' sizes read from
+  /// `images`
+  pub fn size(&self, images: &Assets<Image>) -> (f32, f32) {
+    let (min_x, min_y, max_x, max_y) = self.bounds(images);
     (max_x - min_x, max_y - min_y)
   }
 }
@@ -302,7 +306,7 @@ impl CompositeTileBuilder {
   }
 
   /// Add a static cap/header part
-  pub fn cap(mut self, sprite: SpriteHandle, offset_x: f32, offset_y: f32) -> Self {
+  pub fn cap(mut self, sprite: Handle<Image>, offset_x: f32, offset_y: f32) -> Self {
     self
       .parts
       .push(TilePart::static_part(sprite, offset_x, offset_y));
@@ -310,7 +314,7 @@ impl CompositeTileBuilder {
   }
 
   /// Add a static cap/header part with vertical flip
-  pub fn cap_flipped_y(mut self, sprite: SpriteHandle, offset_x: f32, offset_y: f32) -> Self {
+  pub fn cap_flipped_y(mut self, sprite: Handle<Image>, offset_x: f32, offset_y: f32) -> Self {
     self
       .parts
       .push(TilePart::static_part(sprite, offset_x, offset_y).with_flip_y(true));
@@ -320,7 +324,7 @@ impl CompositeTileBuilder {
   /// Add a static cap/header part with specified flip options
   pub fn cap_flipped(
     mut self,
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     offset_x: f32,
     offset_y: f32,
     flip_x: bool,
@@ -335,14 +339,14 @@ impl CompositeTileBuilder {
   }
 
   /// Add a static part (alias for cap)
-  pub fn static_part(self, sprite: SpriteHandle, offset_x: f32, offset_y: f32) -> Self {
+  pub fn static_part(self, sprite: Handle<Image>, offset_x: f32, offset_y: f32) -> Self {
     self.cap(sprite, offset_x, offset_y)
   }
 
   /// Add a tiled body part
   pub fn body_tiled(
     mut self,
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     offset_x: f32,
     offset_y: f32,
     direction: TileDirection,
@@ -362,7 +366,7 @@ impl CompositeTileBuilder {
   #[allow(clippy::too_many_arguments)]
   pub fn body_tiled_flipped(
     mut self,
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     offset_x: f32,
     offset_y: f32,
     direction: TileDirection,
@@ -381,7 +385,7 @@ impl CompositeTileBuilder {
   /// Add a tiled part (alias for body_tiled)
   pub fn tiled_part(
     self,
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     offset_x: f32,
     offset_y: f32,
     direction: TileDirection,
@@ -411,14 +415,15 @@ impl CompositeTileBuilder {
     }
   }
 
-  /// Build the composite tile and a rect `Collider` covering all its parts.
-  pub fn build_with_collider(self) -> (CompositeTile, Collider) {
+  /// Build the composite tile and a rect `Collider` covering all its parts,
+  /// their sizes read from `images` (`ctx.world.resource::<Assets<Image>>()`)
+  pub fn build_with_collider(self, images: &Assets<Image>) -> (CompositeTile, Collider) {
     let composite = CompositeTile {
       parts: self.parts,
       visible: self.visible,
       z_order: self.z_order,
     };
-    let (min_x, min_y, max_x, max_y) = composite.bounds();
+    let (min_x, min_y, max_x, max_y) = composite.bounds(images);
     let size = Vec2::new(max_x - min_x, max_y - min_y);
     let collider =
       Collider::rect(size.x, size.y).with_offset(min_x + size.x / 2.0, min_y + size.y / 2.0);
@@ -435,12 +440,10 @@ impl Default for CompositeTileBuilder {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::graphics::Image;
   use crate::core::physics::ColliderShape;
 
-  fn test_sprite(w: u32, h: u32) -> SpriteHandle {
-    let sprite = Image::solid_rect(w, h, 255, 0, 0, 255);
-    SpriteHandle::from_sprite(sprite, "test")
+  fn test_sprite(images: &mut Assets<Image>, w: u32, h: u32) -> Handle<Image> {
+    images.add(Image::solid_rect(w, h, 255, 0, 0, 255))
   }
 
   #[test]
@@ -466,19 +469,21 @@ mod tests {
 
   #[test]
   fn tile_part_bounds() {
-    let sprite = test_sprite(32, 16);
+    let mut images = Assets::<Image>::default();
+    let sprite = test_sprite(&mut images, 32, 16);
 
     let static_part = TilePart::static_part(sprite.clone(), 0.0, 0.0);
-    assert_eq!(static_part.bounds(), (32.0, 16.0));
+    assert_eq!(static_part.bounds(&images), (32.0, 16.0));
 
     let tiled_part = TilePart::tiled_part(sprite, 0.0, 0.0, TileDirection::Down, 100.0);
-    assert_eq!(tiled_part.bounds(), (32.0, 100.0));
+    assert_eq!(tiled_part.bounds(&images), (32.0, 100.0));
   }
 
   #[test]
   fn composite_tile_bounds() {
-    let cap = test_sprite(32, 16);
-    let body = test_sprite(32, 8);
+    let mut images = Assets::<Image>::default();
+    let cap = test_sprite(&mut images, 32, 16);
+    let body = test_sprite(&mut images, 32, 8);
 
     let composite = CompositeTile::new()
       .add_part(TilePart::static_part(cap, 0.0, 0.0))
@@ -490,21 +495,22 @@ mod tests {
         64.0,
       ));
 
-    let (min_x, min_y, max_x, max_y) = composite.bounds();
+    let (min_x, min_y, max_x, max_y) = composite.bounds(&images);
     assert_eq!(min_x, 0.0);
     assert_eq!(min_y, 0.0);
     assert_eq!(max_x, 32.0);
     assert_eq!(max_y, 80.0); // 16 (cap) + 64 (body)
 
-    let (w, h) = composite.size();
+    let (w, h) = composite.size(&images);
     assert_eq!(w, 32.0);
     assert_eq!(h, 80.0);
   }
 
   #[test]
   fn composite_tile_bounds_upward() {
-    let cap = test_sprite(32, 16);
-    let body = test_sprite(32, 8);
+    let mut images = Assets::<Image>::default();
+    let cap = test_sprite(&mut images, 32, 16);
+    let body = test_sprite(&mut images, 32, 8);
 
     // Cap at bottom, body extends upward
     let composite = CompositeTile::new()
@@ -517,7 +523,7 @@ mod tests {
         64.0,
       ));
 
-    let (min_x, min_y, max_x, max_y) = composite.bounds();
+    let (min_x, min_y, max_x, max_y) = composite.bounds(&images);
     assert_eq!(min_x, 0.0);
     assert_eq!(min_y, -64.0); // Body extends upward
     assert_eq!(max_x, 32.0);
@@ -526,12 +532,13 @@ mod tests {
 
   #[test]
   fn build_with_collider_returns_a_rect_over_the_parts() {
-    let sprite = test_sprite(32, 32);
+    let mut images = Assets::<Image>::default();
+    let sprite = test_sprite(&mut images, 32, 32);
     let (composite, collider) = CompositeTileBuilder::new()
       .cap(sprite.clone(), 0.0, 0.0)
       .body_tiled(sprite, 0.0, 32.0, TileDirection::Down, 128.0)
-      .build_with_collider();
-    assert_eq!(composite.size(), (32.0, 160.0));
+      .build_with_collider(&images);
+    assert_eq!(composite.size(&images), (32.0, 160.0));
     assert_eq!(
       collider.shape,
       ColliderShape::Rect {
@@ -543,14 +550,15 @@ mod tests {
 
   #[test]
   fn composite_builder() {
-    let cap = test_sprite(32, 16);
-    let body = test_sprite(32, 8);
+    let mut images = Assets::<Image>::default();
+    let cap = test_sprite(&mut images, 32, 16);
+    let body = test_sprite(&mut images, 32, 8);
 
     let (composite, collider) = CompositeTileBuilder::new()
       .cap(cap, 0.0, 0.0)
       .body_tiled(body, 0.0, 16.0, TileDirection::Down, 64.0)
       .z_order(5)
-      .build_with_collider();
+      .build_with_collider(&images);
 
     assert_eq!(composite.parts.len(), 2);
     assert_eq!(composite.z_order, 5);

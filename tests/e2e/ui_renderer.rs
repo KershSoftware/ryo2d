@@ -194,11 +194,20 @@ const FILLERS: usize = 60;
 /// either image is wider and taller than half a glyph page (1024 px), so
 /// each takes a page of its own.
 struct Interleaved {
-  fillers: Vec<SpriteHandle>,
+  /// The fillers' images, added on enter
+  images: Vec<Image>,
+  fillers: Vec<Handle<Image>>,
   frame: u32,
 }
 
 impl Scene for Interleaved {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    for image in std::mem::take(&mut self.images) {
+      let filler = ctx.assets().add(image);
+      self.fillers.push(filler);
+    }
+  }
+
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     SceneAction::Continue
   }
@@ -243,7 +252,7 @@ const INTERLEAVED_RUNS: u32 = 4;
 
 #[test]
 fn interleaved_textures_break_runs() {
-  let fillers: Vec<SpriteHandle> = (0..FILLERS)
+  let images: Vec<Image> = (0..FILLERS)
     .map(|i| {
       // A colour of its own, and a white diagonal
       let mut pixels = Vec::with_capacity(256 * 256 * 4);
@@ -257,15 +266,16 @@ fn interleaved_textures_break_runs() {
           pixels.extend_from_slice(&colour);
         }
       }
-      SpriteHandle::from_sprite(
-        Image::from_rgba(pixels, 256, 256),
-        format!("renderer-filler-{i}"),
-      )
+      Image::from_rgba(pixels, 256, 256)
     })
     .collect();
   let make = EngineBuilder::new()
     .resolution(1280, 720)
-    .start_scene(Interleaved { fillers, frame: 0 });
+    .start_scene(Interleaved {
+      images,
+      fillers: Vec::new(),
+      frame: 0,
+    });
   let Some(mut engine) = HeadlessEngine::new_or_skip(make) else {
     return;
   };

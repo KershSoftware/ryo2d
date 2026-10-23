@@ -39,13 +39,12 @@ impl BlobShadowsPage {
     x: f32,
     y: f32,
     color: (u8, u8, u8),
-    name: &str,
+    _name: &str,
     height_scaling: bool,
   ) -> JumpingCharacter {
-    let sprite = ctx.assets.create_sprite(
-      Image::solid_rect(32, 48, color.0, color.1, color.2, 255),
-      name,
-    );
+    let sprite = ctx
+      .assets()
+      .add(Image::solid_rect(32, 48, color.0, color.1, color.2, 255));
 
     let blob = if height_scaling {
       BlobShadow::ellipse(20.0, 10.0)
@@ -60,7 +59,7 @@ impl BlobShadowsPage {
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_z_order(5)
           .with_blob_shadow(blob),
       ))
@@ -80,13 +79,12 @@ impl BlobShadowsPage {
     y: f32,
     size: u32,
     color: (u8, u8, u8),
-    name: &str,
+    _name: &str,
     shadow_size: (f32, f32),
   ) -> Entity {
-    let sprite = ctx.assets.create_sprite(
-      Image::solid_rect(size, size, color.0, color.1, color.2, 255),
-      name,
-    );
+    let sprite = ctx.assets().add(Image::solid_rect(
+      size, size, color.0, color.1, color.2, 255,
+    ));
 
     // At the sprite's base, half its height below the centre
     let blob = BlobShadow::ellipse(shadow_size.0, shadow_size.1).offset(size as f32 / 2.0);
@@ -95,7 +93,7 @@ impl BlobShadowsPage {
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_z_order(5)
           .with_blob_shadow(blob),
       ))
@@ -127,25 +125,23 @@ impl DemoPage for BlobShadowsPage {
       .set_ambient(AmbientLight::new(Color::WHITE, 0.95));
 
     // Create ground
-    let ground = ctx.assets.create_sprite(
-      Image::solid_rect(1280, 300, 100, 140, 100, 255), // Grass green
-      "ground",
-    );
+    let ground = ctx
+      .assets()
+      .add(Image::solid_rect(1280, 300, 100, 140, 100, 255));
     ctx.world.spawn((
       Transform::from_xy(0.0, 420.0),
-      Renderable::sprite(ground)
+      Renderable::image(ground)
         .with_anchor(Anchor::TopLeft)
         .with_z_order(0),
     ));
 
     // Create sky
-    let sky = ctx.assets.create_sprite(
-      Image::solid_rect(1280, 420, 150, 200, 240, 255), // Light blue
-      "sky",
-    );
+    let sky = ctx
+      .assets()
+      .add(Image::solid_rect(1280, 420, 150, 200, 240, 255));
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
-      Renderable::sprite(sky)
+      Renderable::image(sky)
         .with_anchor(Anchor::TopLeft)
         .with_z_order(-1),
     ));

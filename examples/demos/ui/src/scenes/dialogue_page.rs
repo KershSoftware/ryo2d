@@ -8,7 +8,8 @@ use super::art;
 use super::dialogue_data::{Next, Shop, TREE};
 
 pub struct DialoguePage {
-  portrait: SpriteHandle,
+  /// Added to the world when the page enters
+  portrait: Option<Handle<Image>>,
   shop: Shop,
   reveal: TextReveal,
   /// The leave-the-conversation question is open
@@ -18,7 +19,7 @@ pub struct DialoguePage {
 impl DialoguePage {
   pub fn new() -> Self {
     Self {
-      portrait: art::shopkeeper(),
+      portrait: None,
       shop: Shop::new(),
       reveal: Self::new_reveal(),
       leaving: false,
@@ -79,10 +80,12 @@ impl DialoguePage {
       .width(760.0)
       .show(|ui| {
         ui.row().gap(16.0).show(|ui| {
-          ui.image(portrait)
-            .size(96.0, 96.0)
-            .filter(Filter::Nearest)
-            .show();
+          if let Some(portrait) = portrait {
+            ui.image(portrait)
+              .size(96.0, 96.0)
+              .filter(Filter::Nearest)
+              .show();
+          }
           ui.column().gap(10.0).grow(1.0).show(|ui| {
             let Some((n, line)) = node else {
               ui.text("Shopkeeper").style(&heading);
@@ -168,6 +171,12 @@ impl DemoPage for DialoguePage {
   /// Escape asks to leave, until the conversation is over
   fn wants_escape(&self) -> bool {
     self.shop.node.is_some()
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    if self.portrait.is_none() {
+      self.portrait = Some(ctx.assets().add(art::shopkeeper()));
+    }
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {

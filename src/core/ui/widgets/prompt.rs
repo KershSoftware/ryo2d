@@ -154,7 +154,7 @@ impl<'a> UiContext<'a> {
     if let Some(source) = glyph {
       // An image a caption line high, keeping its aspect
       self.note_sprite(&source.sprite);
-      let sprite_size = Vec2::new(source.sprite.width() as f32, source.sprite.height() as f32);
+      let sprite_size = self.image_size(&source.sprite);
       let size = source
         .region
         .map_or(sprite_size, |region| Vec2::new(region.width, region.height));
@@ -304,10 +304,9 @@ mod tests {
     let text = RichText::markup("Press [prompt=jump] to jump");
     let resolved = resolve_prompts(&text, &context, Color::YELLOW);
     assert_eq!(resolved.as_str(), "Press [A] to jump");
-    let sprite = crate::core::asset::SpriteHandle::from_sprite(
-      crate::core::graphics::Image::solid_rect(4, 4, 255, 255, 255, 255),
-      "a-glyph",
-    );
+    let sprite = crate::core::graphics::test_handle(crate::core::graphics::Image::solid_rect(
+      4, 4, 255, 255, 255, 255,
+    ));
     context.icons.insert("prompt.pad.xbox.South", sprite);
     let resolved = resolve_prompts(&text, &context, Color::YELLOW);
     assert_eq!(
@@ -318,11 +317,10 @@ mod tests {
     assert_eq!(resolved.icons.len(), 1);
   }
 
-  fn sprite(name: &str) -> crate::core::asset::SpriteHandle {
-    crate::core::asset::SpriteHandle::from_sprite(
-      crate::core::graphics::Image::solid_rect(8, 4, 255, 255, 255, 255),
-      name,
-    )
+  fn sprite(_name: &str) -> crate::core::asset::Handle<crate::core::graphics::Image> {
+    crate::core::graphics::test_handle(crate::core::graphics::Image::solid_rect(
+      8, 4, 255, 255, 255, 255,
+    ))
   }
 
   #[test]
@@ -483,10 +481,13 @@ mod tests {
   fn a_registered_glyph_draws_a_caption_line_high() {
     let jump = ("jump", vec![Binding::Pad(GamepadButton::South)]);
     let mut context = prompts_with(InputDevice::Gamepad, &[jump]);
-    context
-      .icons
-      .insert("prompt.pad.xbox.South", sprite("south"));
-    let mut d = UiDriver::new((200.0, 100.0)).prompts(context);
+    let mut d = UiDriver::new((200.0, 100.0));
+    // An 8 x 4 glyph, in the store the UI sizes images by
+    let glyph = d.registry().add(crate::core::graphics::Image::solid_rect(
+      8, 4, 255, 255, 255, 255,
+    ));
+    context.icons.insert("prompt.pad.xbox.South", glyph);
+    let mut d = d.prompts(context);
     let line = d.frame(|ui| {
       ui.prompt("jump").show();
       let caption = ui.theme().text.caption.style();

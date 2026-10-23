@@ -160,10 +160,14 @@ Ambient darkness is the room's base light: 1 is pitch black."
       let y = self.pendulum.anchor_y + PENDULUM_LENGTH * self.pendulum.angle.cos() * t;
 
       // Segment is tall enough to connect to next segment (with slight overlap)
-      let rope_sprite = ctx.assets.create_sprite(
-        Image::solid_rect(4, (segment_length + 2.0) as u32, 139, 90, 43, 255), // brown rope
-        format!("rope_segment_{}", i),
-      );
+      let rope_sprite = ctx.assets().add(Image::solid_rect(
+        4,
+        (segment_length + 2.0) as u32,
+        139,
+        90,
+        43,
+        255,
+      ));
 
       // Anchored at its top centre so the segment rotates from its top
       // attachment point. Negate the angle: a positive pendulum angle swings
@@ -172,7 +176,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
         .world
         .spawn((
           Transform::from_xy(x, y).with_rotation(-self.pendulum.angle),
-          Renderable::sprite(rope_sprite)
+          Renderable::image(rope_sprite)
             .with_anchor(Anchor::TopCenter)
             .with_z_order(10),
         ))
@@ -184,10 +188,9 @@ Ambient darkness is the room's base light: 1 is pitch black."
     let (bob_x, bob_y) = self.pendulum.bob_position();
 
     // Create the light bulb at the end of the rope
-    let bulb_sprite = ctx.assets.create_sprite(
-      Image::solid_circle(24, 255, 255, 200, 255), // warm white bulb
-      "bulb",
-    );
+    let bulb_sprite = ctx
+      .assets()
+      .add(Image::solid_circle(24, 255, 255, 200, 255));
 
     // Anchored at its top centre so the bulb rotates from its connection point with the rope
     self.bulb_entity = Some(
@@ -195,7 +198,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
         .world
         .spawn((
           Transform::from_xy(bob_x, bob_y),
-          Renderable::sprite(bulb_sprite)
+          Renderable::image(bulb_sprite)
             .with_anchor(Anchor::TopCenter)
             .with_z_order(12),
         ))
@@ -247,15 +250,14 @@ Ambient darkness is the room's base light: 1 is pitch black."
       (1100.0, 600.0, 60.0, 60.0, Color::new(200, 200, 100, 255)),
     ];
 
-    for (i, (x, y, w, h, color)) in box_positions.iter().enumerate() {
-      let sprite = ctx.assets.create_sprite(
-        Image::solid_rect(*w as u32, *h as u32, color.r, color.g, color.b, color.a),
-        format!("box_{}", i),
-      );
+    for (x, y, w, h, color) in box_positions.iter() {
+      let sprite = ctx.assets().add(Image::solid_rect(
+        *w as u32, *h as u32, color.r, color.g, color.b, color.a,
+      ));
 
       ctx.world.spawn((
         Transform::from_xy(*x, *y),
-        Renderable::sprite(sprite).with_z_order(5),
+        Renderable::image(sprite).with_z_order(5),
         LightOccluder2D::rect(*w, *h),
       ));
     }
@@ -267,27 +269,26 @@ Ambient darkness is the room's base light: 1 is pitch black."
       (1000.0, 250.0, 45.0, 45.0, Color::new(220, 180, 100, 255)),
     ];
 
-    for (i, (x, y, w, h, color)) in floating_shapes.iter().enumerate() {
-      let sprite = ctx.assets.create_sprite(
-        Image::solid_rect(*w as u32, *h as u32, color.r, color.g, color.b, color.a),
-        format!("floating_{}", i),
-      );
+    for (x, y, w, h, color) in floating_shapes.iter() {
+      let sprite = ctx.assets().add(Image::solid_rect(
+        *w as u32, *h as u32, color.r, color.g, color.b, color.a,
+      ));
 
       ctx.world.spawn((
         Transform::from_xy(*x, *y),
-        Renderable::sprite(sprite).with_z_order(5),
+        Renderable::image(sprite).with_z_order(5),
         LightOccluder2D::rect(*w, *h),
       ));
     }
 
     // Central pillar
     let pillar_sprite = ctx
-      .assets
-      .create_sprite(Image::solid_rect(40, 200, 80, 80, 80, 255), "pillar");
+      .assets()
+      .add(Image::solid_rect(40, 200, 80, 80, 80, 255));
 
     ctx.world.spawn((
       Transform::from_xy(640.0, 450.0),
-      Renderable::sprite(pillar_sprite).with_z_order(5),
+      Renderable::image(pillar_sprite).with_z_order(5),
       LightOccluder2D::rect(40.0, 200.0),
     ));
 

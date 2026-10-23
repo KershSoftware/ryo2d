@@ -7,7 +7,8 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::common::{WidgetOpts, widget_builders};
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
+use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::Color;
@@ -30,7 +31,7 @@ const SELECTED_BORDER: f32 = 2.0;
 pub struct Slot<'u, 'a> {
   ui: Option<&'u mut UiContext<'a>>,
   site: &'static Location<'static>,
-  icon: Option<SpriteHandle>,
+  icon: Option<Handle<Image>>,
   count: u32,
   selected: bool,
   filter: Filter,
@@ -78,7 +79,7 @@ widget_builders!(Slot<'_, '_>);
 impl Slot<'_, '_> {
   /// The item's icon, inset from the edges (also its drag ghost, unless
   /// [`drag_ghost`](Self::drag_ghost) gives one)
-  pub fn icon(mut self, sprite: &SpriteHandle) -> Self {
+  pub fn icon(mut self, sprite: &Handle<Image>) -> Self {
     self.icon = Some(sprite.clone());
     self
   }
@@ -191,7 +192,6 @@ impl Drop for Slot<'_, '_> {
 
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
-  use crate::core::asset::SpriteHandle;
   use crate::core::graphics::Image;
   use crate::core::ui::Rect;
   use crate::core::ui::immediate::UiCommand;
@@ -199,8 +199,10 @@ mod tests {
 
   #[test]
   fn a_slot_draws_its_icon_and_count() {
-    let icon = SpriteHandle::from_sprite(Image::solid_rect(16, 16, 200, 50, 50, 255), "test-icon");
     let mut d = UiDriver::new((100.0, 100.0));
+    let icon = d
+      .registry()
+      .add(Image::solid_rect(16, 16, 200, 50, 50, 255));
     d.frame(|ui| {
       ui.slot()
         .at(Rect::new(10.0, 10.0, 48.0, 48.0))

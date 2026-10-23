@@ -214,6 +214,15 @@ pub struct Engine {
   warned_targetless: std::collections::HashSet<crate::core::ecs::Entity>,
   draw_list: DrawList,
   batch_collector: BatchCollector,
+  /// Where the renderer has read the images' events to (their `Removed`
+  /// free textures), and the freed ids of a frame (reused)
+  image_events: crate::core::ecs::kernel::MessageCursor<
+    crate::core::asset::AssetEvent<crate::core::graphics::Image>,
+  >,
+  freed_images: Vec<crate::core::asset::AssetId<crate::core::graphics::Image>>,
+  /// The checker drawn in place of an image that is not loaded (debug
+  /// builds), added at startup
+  missing_image: crate::core::asset::Handle<crate::core::graphics::Image>,
   // UI: the frame's recorded draws and the UI space they are in
   ui_commands: UiCommands,
   ui_space: UiSpace,
@@ -631,6 +640,10 @@ impl Engine {
 
     let mut world = World::new();
     init_world_resources(&mut world, &config, assets, registry, command_registry);
+    // Drawn in place of an image that is not loaded (debug builds); held,
+    // so it lives as long as the engine
+    let missing_image =
+      crate::core::asset::AssetsView::new(&mut world).add(crate::core::graphics::Image::checker());
     for insert in pending_resources {
       insert(&mut world);
     }
@@ -671,6 +684,9 @@ impl Engine {
       warned_targetless: Default::default(),
       draw_list: DrawList::default(),
       batch_collector: BatchCollector::new(),
+      image_events: Default::default(),
+      freed_images: Vec::new(),
+      missing_image,
       ui_commands: UiCommands::default(),
       ui_space: initial_ui_space,
       ui_retain: Default::default(),

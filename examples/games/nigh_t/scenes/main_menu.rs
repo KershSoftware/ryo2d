@@ -53,7 +53,7 @@ impl MainMenuScene {
   }
 
   /// Create a tiny bright core sprite: fully opaque center, fading edge.
-  fn create_core_sprite(assets: &mut AssetManager) -> SpriteHandle {
+  fn create_core_sprite(mut assets: AssetsView<'_>) -> Handle<Image> {
     let size = 6u32;
     let mut data = vec![0u8; (size * size * 4) as usize];
     let center = size as f32 / 2.0;
@@ -88,7 +88,7 @@ impl MainMenuScene {
     }
 
     let sprite = Image::from_rgba(data, size, size);
-    assets.create_sprite(sprite, "fairy_core")
+    assets.add(sprite)
   }
 }
 
@@ -119,14 +119,14 @@ impl Scene for MainMenuScene {
     // Use softer falloff (1.5) for more natural look. Light colours are sRGB;
     // these were tuned when they were read as linear, so each is that value
     // encoded to sRGB: (180, 220, 255) became (219, 239, 255)
-    let core_sprite = Self::create_core_sprite(ctx.assets);
+    let core_sprite = Self::create_core_sprite(ctx.assets());
     let light_color = Color::rgb(219, 239, 255);
     self.fairy_entity = Some(
       ctx
         .world
         .spawn((
           Transform::from_xy(center_x, center_y),
-          Renderable::sprite(core_sprite).with_z_order(100),
+          Renderable::image(core_sprite).with_z_order(100),
           Light2D::point(light_color, BASE_RADIUS)
             .with_intensity(BASE_INTENSITY)
             .with_falloff(1.5),

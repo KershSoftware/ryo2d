@@ -52,7 +52,7 @@ pub fn ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Result<UiF
 
 /// Spawn the UI file's tree, or log why it could not be and go on without it
 pub fn spawn_ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Option<Entity> {
-  let tree = ui_file(ctx, path, embedded).and_then(|file| file.root(ctx.assets));
+  let tree = ui_file(ctx, path, embedded).and_then(|file| file.root(&mut ctx.assets()));
   match tree {
     Ok(tree) => Some(ctx.spawn_ui(tree)),
     Err(error) => {

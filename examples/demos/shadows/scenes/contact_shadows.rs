@@ -51,19 +51,18 @@ impl ContactShadowsPage {
     width: u32,
     height: u32,
     color: (u8, u8, u8),
-    name: &str,
+    _name: &str,
     shadow: ContactShadow,
   ) -> Entity {
-    let sprite = ctx.assets.create_sprite(
-      Image::solid_rect(width, height, color.0, color.1, color.2, 255),
-      name,
-    );
+    let sprite = ctx.assets().add(Image::solid_rect(
+      width, height, color.0, color.1, color.2, 255,
+    ));
 
     ctx
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_anchor(Anchor::BottomCenter) // Placed by the base, where the shadow sits
           .with_z_order(5)
           .with_contact_shadow(shadow),
@@ -95,22 +94,22 @@ impl DemoPage for ContactShadowsPage {
 
     // Ground plane
     let ground = ctx
-      .assets
-      .create_sprite(Image::solid_rect(1280, 300, 180, 170, 160, 255), "ground");
+      .assets()
+      .add(Image::solid_rect(1280, 300, 180, 170, 160, 255));
     ctx.world.spawn((
       Transform::from_xy(0.0, 420.0),
-      Renderable::sprite(ground)
+      Renderable::image(ground)
         .with_anchor(Anchor::TopLeft)
         .with_z_order(0),
     ));
 
     // Sky
     let sky = ctx
-      .assets
-      .create_sprite(Image::solid_rect(1280, 420, 200, 220, 240, 255), "sky");
+      .assets()
+      .add(Image::solid_rect(1280, 420, 200, 220, 240, 255));
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
-      Renderable::sprite(sky)
+      Renderable::image(sky)
         .with_anchor(Anchor::TopLeft)
         .with_z_order(-1),
     ));

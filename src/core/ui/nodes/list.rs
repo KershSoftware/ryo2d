@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::core::asset::AssetManager;
+use crate::core::asset::AssetsView;
 use crate::core::ecs::kernel::{
   ChildOf, Children, Component, DetectChangesMut, Entity, Messages, Mut, World,
 };
@@ -55,18 +55,12 @@ pub(crate) enum RowShape {
 }
 
 impl RowShape {
-  /// One row's tree; a file's loads its images through the world's
-  /// `AssetManager`
+  /// One row's tree; a file's loads its images through the world's asset
+  /// registry
   fn build(&self, world: &mut World) -> Result<UiNode, UiFileError> {
     match self {
       RowShape::Code(shape) => Ok(shape()),
-      RowShape::File(row) => match world.get_resource_mut::<AssetManager>() {
-        Some(mut assets) => row.build(&mut *assets),
-        None => Err(UiFileError::one(
-          row.path(),
-          "the world has no AssetManager to load the row's images",
-        )),
-      },
+      RowShape::File(row) => row.build(&mut AssetsView::new(world)),
     }
   }
 }
@@ -3047,7 +3041,10 @@ mod file_tests {
       assert!(drawn_now(&h, row), "item {index} still drawn");
       assert_eq!(line_of(&h, row), format!("{}. P{index}", index + 1));
     }
-    assert_eq!(warnings_containing("gone-leader.png"), 1);
+    assert_eq!(
+      warnings_containing("cannot load the image \"gone-leader.png\""),
+      1
+    );
     rewrite(
       &dir,
       &mut h,
@@ -3351,14 +3348,21 @@ mod file_tests {
     }
     assert_eq!(rows(&h, list), pool, "the rows it had");
     assert!(pool.iter().all(|&(_, row)| drawn_now(&h, row)));
-    assert_eq!(warnings_containing("lost-row.png"), 1);
+    assert_eq!(
+      warnings_containing("cannot load the image \"lost-row.png\""),
+      1
+    );
     // A new list of that shape builds no row, warned once
     let other = h.spawn_ui(tree());
     for _ in 0..3 {
       step(&mut h);
     }
     assert!(rows(&h, other).is_empty());
-    assert_eq!(warnings_containing("lost-row.png"), 2, "once for each list");
+    assert_eq!(
+      warnings_containing("cannot load the image \"lost-row.png\""),
+      2,
+      "once for each list"
+    );
   }
 
   #[test]
@@ -3386,7 +3390,10 @@ mod file_tests {
       h.update_ui(list, lost());
       step(&mut h);
     }
-    assert_eq!(warnings_containing("lost-again.png"), 1);
+    assert_eq!(
+      warnings_containing("cannot load the image \"lost-again.png\""),
+      1
+    );
     // Fixed, then made again: it warns again
     h.update_ui(list, good());
     for _ in 0..2 {
@@ -3394,7 +3401,10 @@ mod file_tests {
     }
     h.update_ui(list, lost());
     step(&mut h);
-    assert_eq!(warnings_containing("lost-again.png"), 2);
+    assert_eq!(
+      warnings_containing("cannot load the image \"lost-again.png\""),
+      2
+    );
   }
 
   #[test]

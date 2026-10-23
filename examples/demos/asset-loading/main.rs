@@ -1,6 +1,7 @@
 //! Asset Loading Demo
 //!
-//! Demonstrates the AssetManager's async loading with progress tracking.
+//! Demonstrates the asset registry's loading on worker threads with progress
+//! tracking (`load`, `progress`, `is_ready`).
 //! Shows how to build a loading screen with progress bar and current asset display.
 //! Runs on the demo-kit shell.
 
@@ -32,16 +33,18 @@ struct LoadingPage {
   state: DemoState,
   load_clicked: bool,
   reset_clicked: bool,
-  /// Loaded sprite handles (populated after loading completes)
-  loaded_sprites: Vec<SpriteHandle>,
+  /// The images asked for, loading or loaded
+  requested: Vec<Handle<Image>>,
+  /// The loaded images and their sizes (populated after loading completes)
+  loaded_sprites: Vec<(Handle<Image>, (u32, u32))>,
   /// Animation timer for displaying sprites
   display_timer: f32,
   /// How many completed assets to show in UI (revealed incrementally for demo effect)
   ui_shown_count: usize,
   /// Timer for incrementally revealing loaded assets in UI
   reveal_timer: f32,
-  /// Actual loading progress from AssetManager
-  actual_progress: LoadingProgress,
+  /// Actual loading progress from the asset registry
+  actual_progress: Progress,
 }
 
 impl LoadingPage {
@@ -50,11 +53,12 @@ impl LoadingPage {
       state: DemoState::Ready,
       load_clicked: false,
       reset_clicked: false,
+      requested: Vec::new(),
       loaded_sprites: Vec::new(),
       display_timer: 0.0,
       ui_shown_count: 0,
       reveal_timer: 0.0,
-      actual_progress: LoadingProgress::default(),
+      actual_progress: Progress::default(),
     }
   }
 
@@ -62,16 +66,16 @@ impl LoadingPage {
   fn assets_to_load() -> Vec<&'static str> {
     vec![
       // Forest battle background layers (various sizes for realistic loading demo)
-      "assets/back_decor.png",   // 457KB - largest
-      "assets/bg.png",           // 138KB
-      "assets/front_decor.png",  // 132KB
-      "assets/battleground.png", // 104KB
-      "assets/back_land.png",    // 87KB
-      "assets/ground_decor.png", // 76KB
-      "assets/bg-ground.png",    // 39KB
-      "assets/ground.png",       // 1KB
-      "assets/pipe_cap.png",     // 1KB
-      "assets/pipe_body.png",    // 1KB
+      "back_decor.png",   // 457KB - largest
+      "bg.png",           // 138KB
+      "front_decor.png",  // 132KB
+      "battleground.png", // 104KB
+      "back_land.png",    // 87KB
+      "ground_decor.png", // 76KB
+      "bg-ground.png",    // 39KB
+      "ground.png",       // 1KB
+      "pipe_cap.png",     // 1KB
+      "pipe_body.png",    // 1KB
     ]
   }
 }
@@ -90,8 +94,6 @@ impl DemoPage for LoadingPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    // Loading progress lives in the engine, not the scene, so start from zero
-    ctx.assets.reset_loading_progress();
     ctx
       .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
@@ -104,47 +106,54 @@ impl DemoPage for LoadingPage {
           self.load_clicked = false;
 
           // Reset for new loading sequence
+          self.requested.clear();
           self.loaded_sprites.clear();
           self.ui_shown_count = 0;
           self.reveal_timer = 0.0;
           self.display_timer = 0.0;
 
-          // Start async loading of ALL assets at once (real API usage)
-          let assets = Self::assets_to_load();
-          ctx.assets.start_loading(assets.clone());
+          // Start loading ALL assets at once, on the workers (real API usage)
+          let assets = ctx.assets();
+          self.requested = Self::assets_to_load()
+            .into_iter()
+            .map(|path| assets.load::<Image>(path))
+            .collect();
 
           self.state = DemoState::Loading;
         }
       }
 
       DemoState::Loading => {
-        // Process async loads every frame (normal real-world usage)
-        ctx.assets.process_async_loads();
-
-        // Get actual progress from AssetManager
-        self.actual_progress = ctx.assets.loading_progress();
+        // The engine finishes loads each frame; the group's progress
+        let ids: Vec<UntypedAssetId> = self.requested.iter().map(|h| h.id().untyped()).collect();
+        self.actual_progress = ctx.assets().progress(&ids);
+        let completed = self.actual_progress.loaded + self.actual_progress.failed;
         self.display_timer += dt;
 
         // Incrementally reveal completed assets in UI for demo visibility
         // (UI catches up to actual progress over time)
         const REVEAL_DELAY: f32 = 0.25; // seconds between revealing each asset in UI
         self.reveal_timer += dt;
-        if self.reveal_timer >= REVEAL_DELAY && self.ui_shown_count < self.actual_progress.completed
-        {
+        if self.reveal_timer >= REVEAL_DELAY && self.ui_shown_count < completed {
           self.reveal_timer = 0.0;
           self.ui_shown_count += 1;
         }
 
         // Complete when UI has caught up to actual progress and all assets are loaded
-        if ctx.assets.is_loading_complete() && self.ui_shown_count >= self.actual_progress.completed
-        {
-          // Collect the loaded sprites
-          self.loaded_sprites.clear();
-          for path in Self::assets_to_load() {
-            if let Ok(handle) = ctx.assets.load_sprite(path) {
-              self.loaded_sprites.push(handle);
-            }
-          }
+        if self.actual_progress.is_done() && self.ui_shown_count >= completed {
+          // Collect the loaded sprites, with their sizes
+          let assets = ctx.assets();
+          self.loaded_sprites = self
+            .requested
+            .iter()
+            .filter(|handle| assets.is_ready(*handle))
+            .filter_map(|handle| {
+              let size = assets
+                .get(handle)
+                .map(|image| (image.width(), image.height()))?;
+              Some((handle.clone(), size))
+            })
+            .collect();
 
           self.state = DemoState::Complete;
           self.display_timer = 0.0;
@@ -159,8 +168,9 @@ impl DemoPage for LoadingPage {
           self.reset_clicked = false;
 
           // Clear loaded sprites and reset
+          self.requested.clear();
           self.loaded_sprites.clear();
-          ctx.assets.reset_loading_progress();
+          self.actual_progress = Progress::default();
 
           self.state = DemoState::Ready;
           self.display_timer = 0.0;
@@ -310,7 +320,7 @@ impl LoadingPage {
     let max_preview_size = 80.0;
     let spacing = 110.0;
 
-    for (i, sprite) in self.loaded_sprites.iter().enumerate() {
+    for (i, (sprite, (width, height))) in self.loaded_sprites.iter().enumerate() {
       let col = i % 5;
       let row = i / 5;
 
@@ -318,17 +328,17 @@ impl LoadingPage {
       let y = start_y + (row as f32 * spacing);
 
       // Scale sprite to fit preview size
-      let scale_x = max_preview_size / sprite.width() as f32;
-      let scale_y = max_preview_size / sprite.height() as f32;
+      let scale_x = max_preview_size / *width as f32;
+      let scale_y = max_preview_size / *height as f32;
       let scale = scale_x.min(scale_y).min(1.0);
 
-      let draw_h = sprite.height() as f32 * scale;
+      let draw_h = *height as f32 * scale;
 
       // Draw sprite preview
       ui.draw_sprite_scaled(sprite, x, y, scale);
 
       // Draw size info below
-      let size_text = format!("{}x{}", sprite.width(), sprite.height());
+      let size_text = format!("{width}x{height}");
       let (text_w, _) = ui.text_size(&size_text);
       ui.draw_text(
         &size_text,

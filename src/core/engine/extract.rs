@@ -4,9 +4,11 @@
 use web_time::Instant;
 
 use super::{Engine, PresentOutcome, SceneHost};
+use crate::core::asset::AssetEvent;
 use crate::core::config::DebugStats;
 use crate::core::config::debug::{OverlayFlags, overlay_shapes};
 use crate::core::ecs::interpolate::render_global;
+use crate::core::ecs::kernel::Messages;
 use crate::core::ecs::kernel::{QueryState, SystemIdMarker};
 use crate::core::ecs::{
   DetectChangesMut, Entity, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform,
@@ -16,7 +18,8 @@ use crate::core::graphics::camera_gpu::CameraGlobals;
 use crate::core::graphics::camera_mut::main_view;
 use crate::core::graphics::renderer::FrameError;
 use crate::core::graphics::{
-  Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers, RenderTargets, ScreenMapping,
+  Camera2d, CameraView, GpuRenderContext, Image, Presentation, RenderLayers, RenderTargets,
+  ScreenMapping, images_of,
 };
 use crate::core::graphics::{ParallaxLayer, parallax};
 use crate::core::lighting::{FrameLight, Light2D, LightOccluder2D, LightingSettings};
@@ -26,7 +29,7 @@ use crate::core::render::text::{
   TextSources, TextTargets, WorldTextFrame, emit_world_text, layout_world_text, prewarm,
 };
 use crate::core::render::ui::{UI_CAMERA, ui_view};
-use crate::core::render::ui_retain::UiRenderEnv;
+use crate::core::render::ui_retain::{StampSources, UiRenderEnv};
 use crate::core::render::{
   DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, SpriteLook, SpriteShading,
   UiRenderStats, plan_cameras,
@@ -78,6 +81,21 @@ impl Engine {
     let mut lighting = self.lighting.take();
 
     let camera = main_view(&mut self.world);
+    // Images freed since the last frame lose their textures at once; the
+    // checker stands in for images that are not loaded (debug builds)
+    let missing = Some(self.missing_image.id());
+    self.freed_images.clear();
+    if let Some(events) = self.world.get_resource::<Messages<AssetEvent<Image>>>() {
+      let freed = self
+        .image_events
+        .read(events)
+        .filter_map(|event| match event {
+          AssetEvent::Removed { id } => Some(*id),
+          _ => None,
+        });
+      self.freed_images.extend(freed);
+    }
+    gpu.sync_images(self.freed_images.drain(..), images_of(&self.world), missing);
     let (alpha, real_time, game_time) = {
       let time = self.world.resource::<Time>();
       (
@@ -178,19 +196,26 @@ impl Engine {
         }));
 
       self.draw_list.clear();
-      self
-        .batch_collector
-        .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu);
+      self.batch_collector.push_to(
+        &mut self.draw_list,
+        DrawKind::Sprite,
+        &mut gpu,
+        images_of(&self.world),
+      );
       // Parallax layers, laid out for each camera from its own view
       let mut quads = std::mem::take(&mut self.parallax);
-      for (layer, layers) in self
+      let mut parallax_layers = self
         .world
-        .query::<(&ParallaxLayer, Option<&RenderLayers>)>()
-        .iter(&self.world)
-      {
+        .query::<(&ParallaxLayer, Option<&RenderLayers>)>();
+      let images = images_of(&self.world);
+      for (layer, layers) in parallax_layers.iter(&self.world) {
         let layers = layers.copied().unwrap_or_default();
-        let texels = Vec2::new(layer.sprite.width() as f32, layer.sprite.height() as f32);
-        let texture = gpu.texture_of(&layer.sprite);
+        let Some(shown) = gpu.shown_image(layer.sprite.id(), images) else {
+          continue;
+        };
+        let (width, height) = shown.size();
+        let texels = Vec2::new(width as f32, height as f32);
+        let texture = gpu.shown_texture(shown);
         let look = SpriteLook {
           shading: SpriteShading::Plain,
           blend: layer.blend,
@@ -271,18 +296,25 @@ impl Engine {
       }
       self.occluders = recycle(occluders);
       let mut points = std::mem::take(&mut self.poly_points);
-      for (trail, layers) in self
-        .world
-        .query::<(&Trail2D, Option<&RenderLayers>)>()
-        .iter(&self.world)
-      {
+      let mut trails = self.world.query::<(&Trail2D, Option<&RenderLayers>)>();
+      let images = images_of(&self.world);
+      for (trail, layers) in trails.iter(&self.world) {
+        // A texture that is not loaded draws the checker (debug builds), or
+        // no trail
+        let texture = match trail.texture() {
+          Some(image) => match gpu.texture_of(image.id(), images) {
+            Some(texture) => Some(texture),
+            None => continue,
+          },
+          None => None,
+        };
         let Some(style) = trail_points(trail, &mut points) else {
           continue;
         };
         let look = LineLook {
           lit: trail.lighting(),
           z: trail.z_order(),
-          texture: trail.texture().map(|sprite| gpu.texture_of(sprite)),
+          texture,
           blend: trail.blend(),
           filter: trail.filter(),
           layers: layers.copied().unwrap_or_default(),
@@ -346,6 +378,7 @@ impl Engine {
           engine: &self.text,
           effects,
           icons,
+          images: images_of(&self.world),
         }),
         // A game that removed the text resources draws its UI without text
         _ => None,
@@ -372,13 +405,16 @@ impl Engine {
         bitmaps: self
           .world
           .get_resource::<Fonts>()
-          .map_or(0, Fonts::bitmap_stamp),
+          .map_or(0, |fonts| fonts.bitmap_stamp(images_of(&self.world))),
       };
-      let icons = sources.as_ref().map(|sources| sources.icons);
+      let stamps = StampSources {
+        images: images_of(&self.world),
+        icons: sources.as_ref().map(|sources| sources.icons),
+      };
       let ui_kept = retain
         && self
           .ui_retain
-          .keep(&self.ui_commands, icons, env, rend.ui_image_epoch());
+          .keep(&self.ui_commands, stamps, env, rend.ui_image_epoch());
       // A changed UI is built by the UI renderer. It is drawn when it
       // recorded anything, also when all of it is culled: the `ui` pass then
       // clears the UI image, so an unchanged next frame keeps it
@@ -388,7 +424,7 @@ impl Engine {
           &self.ui_commands,
           env,
           retain,
-          sources.as_ref(),
+          (sources.as_ref(), images_of(&self.world)),
           &mut text_targets,
           real_time,
         );
@@ -491,6 +527,7 @@ impl Engine {
           lighting: lighting.map(|renderer| LightingFrame { renderer }),
           effects: world.resource::<EffectsManager>(),
           look: world.resource::<crate::core::render::Look>(),
+          images: images_of(world),
           ui_frame,
           ui_size: self.ui_space.image,
           ui_kept,

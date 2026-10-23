@@ -81,17 +81,21 @@ impl PlacedOccludersPage {
     height: f32,
   ) -> Entity {
     // Create visual sprite
-    let sprite = ctx.assets.create_sprite(
-      Image::solid_rect(width as u32, height as u32, 60, 70, 80, 255),
-      format!("po_occluder_{}_{}", x as i32, y as i32),
-    );
+    let sprite = ctx.assets().add(Image::solid_rect(
+      width as u32,
+      height as u32,
+      60,
+      70,
+      80,
+      255,
+    ));
 
     // Spawn entity with both visual and occluder
     ctx
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite).with_z_order(5),
+        Renderable::image(sprite).with_z_order(5),
         LightOccluder2D::rect(width, height),
       ))
       .id()
@@ -156,11 +160,11 @@ impl DemoPage for PlacedOccludersPage {
 
     // Create floor with subtle pattern
     let floor = ctx
-      .assets
-      .create_sprite(Image::solid_rect(1280, 720, 25, 28, 35, 255), "po_floor");
+      .assets()
+      .add(Image::solid_rect(1280, 720, 25, 28, 35, 255));
     ctx.world.spawn((
       Transform::from_xy(640.0, 360.0),
-      Renderable::sprite(floor).with_z_order(0),
+      Renderable::image(floor).with_z_order(0),
     ));
 
     // Create static occluders - simple squares like placed ones
@@ -189,16 +193,15 @@ impl DemoPage for PlacedOccludersPage {
     );
 
     // Create a visual for the light source
-    let light_visual = ctx.assets.create_sprite(
-      Image::solid_circle(20, 255, 220, 150, 255),
-      "po_light_source",
-    );
+    let light_visual = ctx
+      .assets()
+      .add(Image::solid_circle(20, 255, 220, 150, 255));
     self.light_visual = Some(
       ctx
         .world
         .spawn((
           Transform::from_xy(self.light_x, self.light_y),
-          Renderable::sprite(light_visual).with_z_order(10),
+          Renderable::image(light_visual).with_z_order(10),
         ))
         .id(),
     );

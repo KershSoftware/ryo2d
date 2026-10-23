@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{Assets, Handle};
 use crate::core::graphics::Image;
 
 use super::build::SpriteSource;
@@ -81,7 +81,8 @@ struct Disk {
 /// Images that exist under the root, as 1x1 placeholders
 struct DiskSprites {
   root: PathBuf,
-  handles: HashMap<String, SpriteHandle>,
+  images: Assets<Image>,
+  handles: HashMap<String, Handle<Image>>,
 }
 
 impl Disk {
@@ -89,20 +90,22 @@ impl Disk {
   fn sprites(&self) -> DiskSprites {
     DiskSprites {
       root: self.root.clone(),
+      images: Assets::default(),
       handles: HashMap::new(),
     }
   }
 }
 
 impl SpriteSource for DiskSprites {
-  fn sprite(&mut self, path: &str) -> Result<SpriteHandle, String> {
+  fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String> {
     if !self.root.join(path).is_file() {
       return Err(format!("no image at \"{path}\""));
     }
+    let images = &mut self.images;
     let handle = self
       .handles
       .entry(path.to_string())
-      .or_insert_with(|| SpriteHandle::new(Image::solid_rect(1, 1, 0, 0, 0, 0), path.into()));
+      .or_insert_with(|| images.add(Image::solid_rect(1, 1, 0, 0, 0, 0)));
     Ok(handle.clone())
   }
 }

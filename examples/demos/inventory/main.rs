@@ -200,10 +200,10 @@ impl InventoryDemoScene {
 
     self.drop_counter += 1;
     let sprite = Image::solid_rect(12, 12, color.0, color.1, color.2, 255);
-    let handle = SpriteHandle::from_sprite(sprite, format!("drop_{}", self.drop_counter));
+    let handle = world.resource_mut::<Assets<Image>>().add(sprite);
     world
       .entity_mut(entity)
-      .insert(Renderable::sprite(handle).with_z_order(5));
+      .insert(Renderable::image(handle).with_z_order(5));
 
     self.world_drops.push(entity);
   }
@@ -482,34 +482,34 @@ impl DemoPage for InventoryDemoScene {
 
     // Body
     let body_sprite = Image::solid_rect(28, 36, 100, 140, 200, 255);
-    let body_handle = SpriteHandle::from_sprite(body_sprite, "player_body");
+    let body_handle = ctx.assets().add(body_sprite);
     let body = ctx
       .world
       .spawn((
         Transform::from_xy(px, py),
-        Renderable::sprite(body_handle).with_z_order(0),
+        Renderable::image(body_handle).with_z_order(0),
       ))
       .id();
 
     // Head
     let head_sprite = Image::solid_rect(20, 20, 220, 180, 140, 255);
-    let head_handle = SpriteHandle::from_sprite(head_sprite, "player_head");
+    let head_handle = ctx.assets().add(head_sprite);
     let head = ctx
       .world
       .spawn((
         Transform::from_xy(px, py - 28.0),
-        Renderable::sprite(head_handle).with_z_order(1),
+        Renderable::image(head_handle).with_z_order(1),
       ))
       .id();
 
     // Weapon overlay (hidden until equipped, white sprite tinted by item color)
     let weapon_sprite = Image::solid_rect(6, 30, 255, 255, 255, 255);
-    let weapon_handle = SpriteHandle::from_sprite(weapon_sprite, "player_weapon");
+    let weapon_handle = ctx.assets().add(weapon_sprite);
     let weapon = ctx
       .world
       .spawn((
         Transform::from_xy(px + 17.0, py),
-        Renderable::sprite(weapon_handle)
+        Renderable::image(weapon_handle)
           .with_z_order(2)
           .with_visible(false),
       ))
@@ -517,12 +517,12 @@ impl DemoPage for InventoryDemoScene {
 
     // Armor overlay (hidden until equipped)
     let armor_sprite = Image::solid_rect(28, 36, 255, 255, 255, 255);
-    let armor_handle = SpriteHandle::from_sprite(armor_sprite, "player_armor");
+    let armor_handle = ctx.assets().add(armor_sprite);
     let armor_overlay = ctx
       .world
       .spawn((
         Transform::from_xy(px, py),
-        Renderable::sprite(armor_handle)
+        Renderable::image(armor_handle)
           .with_z_order(1)
           .with_visible(false)
           .with_alpha(0.7),
@@ -531,12 +531,12 @@ impl DemoPage for InventoryDemoScene {
 
     // Helmet overlay (hidden until equipped)
     let helmet_sprite = Image::solid_rect(22, 10, 255, 255, 255, 255);
-    let helmet_handle = SpriteHandle::from_sprite(helmet_sprite, "player_helmet");
+    let helmet_handle = ctx.assets().add(helmet_sprite);
     let helmet_overlay = ctx
       .world
       .spawn((
         Transform::from_xy(px, py - 33.0),
-        Renderable::sprite(helmet_handle)
+        Renderable::image(helmet_handle)
           .with_z_order(3)
           .with_visible(false),
       ))
@@ -552,10 +552,10 @@ impl DemoPage for InventoryDemoScene {
 
     // Ground line
     let ground_sprite = Image::solid_rect(380, 2, 100, 100, 100, 255);
-    let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground_line");
+    let ground_handle = ctx.assets().add(ground_sprite);
     ctx.world.spawn((
       Transform::from_xy(200.0, 480.0),
-      Renderable::sprite(ground_handle).with_z_order(-1),
+      Renderable::image(ground_handle).with_z_order(-1),
     ));
   }
 

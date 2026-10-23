@@ -53,9 +53,9 @@ struct PathfindingDemoScene {
   screen_w: f32,
   screen_h: f32,
   show_grid: bool,
-  agent_sprite: Option<SpriteHandle>,
-  obstacle_sprite: Option<SpriteHandle>,
-  marker_sprite: Option<SpriteHandle>,
+  agent_sprite: Option<Handle<Image>>,
+  obstacle_sprite: Option<Handle<Image>>,
+  marker_sprite: Option<Handle<Image>>,
   /// Track last cell modified during drag to avoid repeated toggles
   last_drag_cell: Option<GridCoord>,
   /// Destination marker entity
@@ -92,18 +92,18 @@ impl PathfindingDemoScene {
     }
   }
 
-  fn create_sprites(&mut self) {
+  fn create_sprites(&mut self, ctx: &mut SceneContext) {
     // Agent sprite (circle-ish)
     let agent = Image::solid_rect(12, 12, 100, 200, 255, 255);
-    self.agent_sprite = Some(SpriteHandle::from_sprite(agent, "agent"));
+    self.agent_sprite = Some(ctx.assets().add(agent));
 
     // Obstacle sprite (dark gray block)
     let obstacle = Image::solid_rect(CELL_SIZE as u32, CELL_SIZE as u32, 60, 60, 70, 255);
-    self.obstacle_sprite = Some(SpriteHandle::from_sprite(obstacle, "obstacle"));
+    self.obstacle_sprite = Some(ctx.assets().add(obstacle));
 
     // Destination marker sprite (bright target indicator)
     let marker = Image::solid_rect(16, 16, 255, 220, 100, 200);
-    self.marker_sprite = Some(SpriteHandle::from_sprite(marker, "marker"));
+    self.marker_sprite = Some(ctx.assets().add(marker));
   }
 
   fn spawn_agent(&mut self, ctx: &mut SceneContext, x: f32, y: f32) {
@@ -120,7 +120,7 @@ impl PathfindingDemoScene {
     let (r, g, b) = colors[color_idx];
 
     let sprite = Image::solid_rect(12, 12, r, g, b, 255);
-    let handle = SpriteHandle::from_sprite(sprite, format!("agent_{}", self.agents.len()));
+    let handle = ctx.assets().add(sprite);
 
     // Create a trail with the agent's color (slightly transparent)
     let trail = Trail2D::new(Color::new(r, g, b, 180), 3.0)
@@ -135,7 +135,7 @@ impl PathfindingDemoScene {
       .spawn((
         Agent { color: (r, g, b) },
         Transform::from_xy(x, y),
-        Renderable::sprite(handle).with_z_order(10),
+        Renderable::image(handle).with_z_order(10),
         NavAgent::new(AGENT_SPEED)
           .with_smoothing(self.smoothing())
           .with_arrival_threshold(4.0),
@@ -188,7 +188,7 @@ impl PathfindingDemoScene {
         .spawn((
           Obstacle,
           Transform::from_xy(cx, cy),
-          Renderable::sprite(sprite.clone()).with_z_order(1),
+          Renderable::image(sprite.clone()).with_z_order(1),
         ))
         .id();
       self.obstacles.push(entity);
@@ -266,7 +266,7 @@ impl PathfindingDemoScene {
         .spawn((
           DestinationMarker,
           Transform::from_xy(dest_x, dest_y),
-          Renderable::sprite(sprite.clone()).with_z_order(5),
+          Renderable::image(sprite.clone()).with_z_order(5),
         ))
         .id();
       self.destination_marker = Some(entity);
@@ -489,7 +489,7 @@ impl DemoPage for PathfindingDemoScene {
     self.screen_w = screen_w;
     self.screen_h = screen_h;
 
-    self.create_sprites();
+    self.create_sprites(ctx);
     self.nav_grid = NavigationGrid::new(screen_w, screen_h, CELL_SIZE);
     self.spawn_initial_agents(ctx);
   }

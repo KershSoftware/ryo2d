@@ -15,8 +15,10 @@ use glam::Vec2;
 use super::gpu::{SLOTS, SlotUniform};
 use super::instance::{ClipRect, UiInstance, UiKind};
 use super::runs::TexNeed;
+use crate::core::asset::Assets;
 use crate::core::graphics::{
-  CameraView, GlyphPage, Presentation, SpriteGpuRenderer, SpriteInstance, TextureId, place_in_slot,
+  CameraView, GlyphPage, Image, Presentation, SpriteGpuRenderer, SpriteInstance, TextureId,
+  place_in_slot,
 };
 use crate::core::render::batch::{Filter, PageKind, PolyPoint, Sampling, Triangles, push_polyline};
 use crate::core::render::text::{TextPlacement, TextSources, TextTargets};
@@ -24,7 +26,7 @@ use crate::core::render::ui::{
   line_of, rect_instance, scissor_of, sprite_instance, text_of, ui_view, ui_z,
 };
 use crate::core::render::ui_retain::{
-  KeptRun, TextSink, UiRenderEnv, UiRunCache, UiTextCache, stamp_of,
+  KeptRun, StampSources, TextSink, UiRenderEnv, UiRunCache, UiTextCache, stamp_of,
 };
 use crate::core::render::{DrawGlyph, DrawList, DrawPayload, PixelRect, UiSpace, reach};
 use crate::core::text::GlyphFormat;
@@ -387,6 +389,8 @@ struct Frame<'f> {
   at: &'f [SlotAt],
   seen: Seen,
   sources: Option<&'f TextSources<'f>>,
+  /// The images sprites draw
+  images: &'f Assets<Image>,
   real_time: f32,
 }
 
@@ -740,7 +744,7 @@ pub(crate) fn build_ui(
   build: &mut UiBuild,
   commands: &UiCommands,
   env: &UiRenderEnv,
-  sources: Option<&TextSources<'_>>,
+  (sources, images): (Option<&TextSources<'_>>, &Assets<Image>),
   targets: &mut TextTargets<'_>,
   real_time: f32,
   texts: &mut UiTextCache<UiInstance>,
@@ -765,6 +769,7 @@ pub(crate) fn build_ui(
     at: &at,
     seen: Seen::of(env),
     sources,
+    images,
     real_time,
   };
   let draws = commands.as_slice();
@@ -872,7 +877,10 @@ fn build_run(
     RunAt::Slot(k) => k,
     RunAt::Image | RunAt::Elsewhere => 0,
   };
-  let icons = frame.sources.map(|sources| sources.icons);
+  let stamps = StampSources {
+    images: frame.images,
+    icons: frame.sources.map(|sources| sources.icons),
+  };
   if runs.keeps() && !matches!(at, RunAt::Elsewhere) {
     let sprites = &*targets.sprites;
     let kept = runs.get(
@@ -883,7 +891,7 @@ fn build_run(
       |k| {
         own
           .get(k as usize)
-          .map_or(0, |draw| stamp_of(&draw.command, icons))
+          .map_or(0, |draw| stamp_of(&draw.command, stamps))
       },
     );
     if let Some(kept) = kept {
@@ -929,7 +937,7 @@ fn build_run(
   };
   kept.version = run.version;
   kept.slot = slot;
-  kept.note(own, icons);
+  kept.note(own, stamps);
   kept.texts.extend_from_slice(texts.drawn_from(drawn));
   if kept.animated {
     runs.store(run.id, kept);
@@ -1168,8 +1176,11 @@ fn build_command(
       let Some(instance) = sprite_instance(placed.at(*rect), *uv, *tint) else {
         return absolute;
       };
-      // Asked for and made resident culled or not (see `UiBuild::resident`)
-      let texture = targets.sprites.texture_of(sprite);
+      // Asked for and made resident culled or not (see `UiBuild::resident`);
+      // an image not loaded draws the checker in debug builds, else nothing
+      let Some(texture) = targets.sprites.texture_of(sprite.id(), frame.images) else {
+        return absolute;
+      };
       build.resident.push((index, texture));
       let (min, max) = reach(&instance);
       if placed.sees(&frame.seen, min, max) {
@@ -1224,6 +1235,7 @@ pub(crate) fn rect_built(
     at: &at,
     seen: Seen::of(env),
     sources: None,
+    images: crate::core::graphics::no_images(),
     real_time: 0.0,
   };
   let placed = frame.place(draw, true).placed?;

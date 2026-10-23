@@ -7,11 +7,11 @@ fn engine(scene: impl Scene + 'static) -> Option<HeadlessEngine> {
   HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(64, 64).start_scene(scene))
 }
 
-fn spawn_sprite(ctx: &mut SceneContext, sprite: Image, name: &str) {
-  let handle = SpriteHandle::from_sprite(sprite, name);
+fn spawn_sprite(ctx: &mut SceneContext, sprite: Image, _name: &str) {
+  let handle = ctx.assets().add(sprite);
   ctx.world.spawn((
     Transform::from_xy(0.0, 0.0),
-    Renderable::sprite(handle).with_anchor(Anchor::TopLeft),
+    Renderable::image(handle).with_anchor(Anchor::TopLeft),
   ));
 }
 
@@ -134,15 +134,17 @@ struct GlowingLine {
 
 impl Scene for GlowingLine {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let black = SpriteHandle::from_sprite(Image::solid_rect(64, 64, 0, 0, 0, 255), "glow-black");
+    let black = ctx.assets().add(Image::solid_rect(64, 64, 0, 0, 0, 255));
     ctx
       .world
-      .spawn((Transform::from_xy(32.0, 32.0), Renderable::sprite(black)));
-    let line = SpriteHandle::from_sprite(Image::solid_rect(2, 64, 255, 255, 255, 255), "glow-line");
+      .spawn((Transform::from_xy(32.0, 32.0), Renderable::image(black)));
+    let line = ctx
+      .assets()
+      .add(Image::solid_rect(2, 64, 255, 255, 255, 255));
     for z in 1..=self.layers as i32 {
       ctx.world.spawn((
         Transform::from_xy(33.0, 32.0),
-        Renderable::sprite(line.clone())
+        Renderable::image(line.clone())
           .with_z_order(z)
           .with_blend(BlendMode::Additive)
           .with_emission(self.emission),
@@ -214,16 +216,16 @@ struct GlowThroughTarget;
 
 impl Scene for GlowThroughTarget {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let black = SpriteHandle::from_sprite(Image::solid_rect(64, 64, 0, 0, 0, 255), "rt-glow-black");
-    let line =
-      SpriteHandle::from_sprite(Image::solid_rect(2, 64, 255, 255, 255, 255), "rt-glow-line");
-    ctx.world.spawn((
-      Transform::from_xy(1000.0, 1000.0),
-      Renderable::sprite(black),
-    ));
+    let black = ctx.assets().add(Image::solid_rect(64, 64, 0, 0, 0, 255));
+    let line = ctx
+      .assets()
+      .add(Image::solid_rect(2, 64, 255, 255, 255, 255));
+    ctx
+      .world
+      .spawn((Transform::from_xy(1000.0, 1000.0), Renderable::image(black)));
     ctx.world.spawn((
       Transform::from_xy(1001.0, 1000.0),
-      Renderable::sprite(line).with_z_order(1).with_emission(3.0),
+      Renderable::image(line).with_z_order(1).with_emission(3.0),
     ));
     let target = ctx.render_targets().create(64, 64);
     ctx.world.spawn((
@@ -294,14 +296,13 @@ struct Quartered(EffectStage);
 
 impl Scene for Quartered {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let white = SpriteHandle::from_sprite(
-      Image::solid_rect(64, 64, 255, 255, 255, 255),
-      "quarter-white",
-    );
+    let white = ctx
+      .assets()
+      .add(Image::solid_rect(64, 64, 255, 255, 255, 255));
     for z in 0..2 {
       ctx.world.spawn((
         Transform::from_xy(32.0, 32.0),
-        Renderable::sprite(white.clone())
+        Renderable::image(white.clone())
           .with_z_order(z)
           .with_blend(BlendMode::Additive),
       ));

@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
+use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::text::TextLayout;
 use crate::core::ui::{Color, Rect, UiId};
@@ -25,7 +26,7 @@ pub(crate) enum UiCommand {
     layer: u8,
   },
   Sprite {
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     rect: Rect,
     uv: [f32; 4],
     tint: Color,
@@ -61,7 +62,7 @@ pub(crate) enum UiCommand {
 impl UiCommand {
   /// Whether it draws what `other` does: shared layouts by address, line
   /// points by value (immediate widgets allocate them anew every frame),
-  /// numbers by their bits, sprites by handle (the renderer stamps their
+  /// numbers by their bits, images by id (the renderer stamps their
   /// versions apart)
   pub(crate) fn draws_as(&self, other: &UiCommand) -> bool {
     let clips = |a: &Option<Rect>, b: &Option<Rect>| a.map(bits) == b.map(bits);
@@ -112,7 +113,7 @@ impl UiCommand {
           layer: layer_b,
         },
       ) => {
-        sprite.serial() == sprite_b.serial()
+        sprite == sprite_b
           && bits(*rect) == bits(*rect_b)
           && uv.map(f32::to_bits) == uv_b.map(f32::to_bits)
           && tint == tint_b

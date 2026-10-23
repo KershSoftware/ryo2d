@@ -23,12 +23,16 @@ struct ValidatedAnimatorPage {
 
 impl ValidatedAnimatorPage {
   fn new() -> Self {
-    // Create simple colored frame animations (simulating sprite sheets)
-    let idle_anim = Self::create_animation("idle", 4, 0.3);
-    let walk_anim = Self::create_animation("walk", 6, 0.1);
-    let attack_anim = Self::create_animation("attack", 4, 0.08).with_loop_mode(LoopMode::Once);
-    let hurt_anim = Self::create_animation("hurt", 2, 0.15).with_loop_mode(LoopMode::Once);
-    let death_anim = Self::create_animation("death", 5, 0.2).with_loop_mode(LoopMode::Once);
+    // Create simple colored frame animations (simulating sprite sheets);
+    // the page shows their states, not their frames, so the frames live in
+    // a store of their own
+    let mut images = Assets::<Image>::default();
+    let ctx = &mut images;
+    let idle_anim = Self::create_animation(ctx, "idle", 4, 0.3);
+    let walk_anim = Self::create_animation(ctx, "walk", 6, 0.1);
+    let attack_anim = Self::create_animation(ctx, "attack", 4, 0.08).with_loop_mode(LoopMode::Once);
+    let hurt_anim = Self::create_animation(ctx, "hurt", 2, 0.15).with_loop_mode(LoopMode::Once);
+    let death_anim = Self::create_animation(ctx, "death", 5, 0.2).with_loop_mode(LoopMode::Once);
 
     // Create validated animator with transition rules:
     //
@@ -70,16 +74,18 @@ impl ValidatedAnimatorPage {
     }
   }
 
-  fn create_animation(name: &str, frame_count: usize, frame_duration: f32) -> Animation {
+  fn create_animation(
+    images: &mut Assets<Image>,
+    name: &str,
+    frame_count: usize,
+    frame_duration: f32,
+  ) -> Animation {
     // Create placeholder frames using solid color sprites
     // In a real game, these would be actual sprite frames
-    let frames: Vec<SpriteHandle> = (0..frame_count)
+    let frames: Vec<Handle<Image>> = (0..frame_count)
       .map(|i| {
         let color = Self::state_color(name, i);
-        SpriteHandle::from_sprite(
-          Image::solid_rect(64, 64, color.0, color.1, color.2, 255),
-          name,
-        )
+        images.add(Image::solid_rect(64, 64, color.0, color.1, color.2, 255))
       })
       .collect();
 

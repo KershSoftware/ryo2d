@@ -20,7 +20,8 @@ use super::memory::{Flags, Record, Scratch, UiMemory, recycle};
 use super::theme::warn_once;
 use super::widgets::scroll::{ScrollState, drawn_px};
 use super::{Color, Rect, UiId};
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{AssetId, Assets, Handle};
+use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
 use crate::core::render::UiSpace;
 use crate::core::render::batch::Filter;
@@ -252,7 +253,7 @@ pub(crate) enum DrawKind {
     inset: Edges,
     frac: Vec2,
     size: Option<Vec2>,
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     uv: [f32; 4],
     tint: Color,
     filter: Filter,
@@ -262,7 +263,7 @@ pub(crate) enum DrawKind {
   /// drawn at that size in UI units), the edges and the middle stretch
   NineSlice {
     inset: Edges,
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     insets: [f32; 4],
     tint: Color,
     filter: Filter,
@@ -286,6 +287,8 @@ pub(crate) struct ResolveCx<'r, 'a> {
   pub(crate) space: UiSpace,
   /// The scope id of the scene the subtree belongs to
   pub(crate) scene: u64,
+  /// The images nine-slices are cut by
+  pub(crate) images: &'r Assets<Image>,
 }
 
 /// Where a text's block sits across its content box
@@ -322,6 +325,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     commands,
     space,
     scene,
+    images,
   } = cx;
   let ui_size = space.size;
   let scale = space.px_scale;
@@ -511,7 +515,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
     };
     let laid = placed[i].rect;
     let inputs = placing.inputs(i, nodes[i].layer, laid, from, scale);
-    if inputs == fragment.inputs && fragment.sprites_hold() {
+    if inputs == fragment.inputs && fragment.sprites_hold(images) {
       memory.fragment_stats.reused += 1;
       continue;
     }
@@ -521,6 +525,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       scale,
       from,
       scene,
+      images,
     };
     if !again.resolve(fragment, i, laid, placing, run, memory, commands) {
       warn_once("ui-fragment:unheld".to_string(), || {
@@ -618,7 +623,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       let (index, mut place) = placement(at, &slot, draw.layer);
       let mut capture = captured(draw.node).and_then(|c| capturing.get_mut(c));
       if let Some(capture) = capture.as_deref_mut() {
-        capture.keep_draw(&draw);
+        capture.keep_draw(&draw, images);
         // A fragment's draws are culled by its slot's interest
         place.cull = slot.fragment_cull(place.clip);
       }
@@ -628,7 +633,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
         &place,
         node,
         leaves,
-        text,
+        (text, images),
         scale,
         |command, seen| {
           if let Some(capture) = capture.as_deref_mut() {
@@ -672,7 +677,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
       };
       let (index, place) = placement(at, &placing.slots[at.slot], draw.layer);
       let order = draw.order;
-      if let Some((room, slice)) = nine_slice_of(&draw.kind, &place) {
+      if let Some((room, slice)) = nine_slice_of(&draw.kind, &place, images) {
         nine_slice(room, &slice, &place, scale, place.cull, |command, _| {
           commands.push(order, index, command);
         });
@@ -742,7 +747,7 @@ pub(crate) fn resolve(subtree: &mut Subtree, cx: ResolveCx<'_, '_>) -> Option<Re
         s,
         scene,
       };
-      spot_check(fragment, copy, built, memory)
+      spot_check(fragment, copy, built, memory, images)
     };
     #[cfg(not(debug_assertions))]
     let spotted = false;
@@ -1107,17 +1112,18 @@ fn placement(at: &NodeAt, slot: &SlotPlace, layer: u8) -> (u16, Placement) {
 
 /// The commands a draw of `kind` on `node` (its text owned in `leaves`)
 /// placed at `place` makes, each given to `emit` with the box it is culled
-/// by (`None`: never culled), before culling
+/// by (`None`: never culled), before culling. Text is laid out with the
+/// engine, and nine-slices are cut by the images
 fn draw_commands(
   kind: DrawKind,
   place: &Placement,
   node: &Node,
   leaves: &[TextLeaf],
-  text: &RefCell<&mut TextEngine>,
+  (text, images): (&RefCell<&mut TextEngine>, &Assets<Image>),
   scale: f32,
   mut emit: impl FnMut(UiCommand, Option<Rect>),
 ) {
-  if let Some((room, slice)) = nine_slice_of(&kind, place) {
+  if let Some((room, slice)) = nine_slice_of(&kind, place, images) {
     nine_slice(room, &slice, place, scale, None, |command, rect| {
       emit(command, Some(rect))
     });
@@ -1127,9 +1133,14 @@ fn draw_commands(
 }
 
 /// A nine-slice draw's room (its node's rect placed at `place`, less its
-/// inset) and its slice; `None` for any other draw
+/// inset) and its slice, its image's size read from `images`; `None` for
+/// any other draw
 #[inline(always)]
-fn nine_slice_of<'k>(kind: &'k DrawKind, place: &Placement) -> Option<(Rect, NineSlice<'k>)> {
+fn nine_slice_of<'k>(
+  kind: &'k DrawKind,
+  place: &Placement,
+  images: &Assets<Image>,
+) -> Option<(Rect, NineSlice<'k>)> {
   let DrawKind::NineSlice {
     inset,
     sprite,
@@ -1140,8 +1151,12 @@ fn nine_slice_of<'k>(kind: &'k DrawKind, place: &Placement) -> Option<(Rect, Nin
   else {
     return None;
   };
+  let size = images.get(sprite).map_or(Vec2::ZERO, |image| {
+    Vec2::new(image.width() as f32, image.height() as f32)
+  });
   let slice = NineSlice {
     sprite,
+    size,
     insets: *insets,
     tint: *tint,
     filter: *filter,
@@ -1399,12 +1414,13 @@ fn spot_check(
   copy: CopyAt<'_>,
   built: bool,
   memory: &mut UiMemory,
+  images: &Assets<Image>,
 ) -> (Fragment, bool) {
   if built {
     let frame = memory.frame();
     let last = memory.fragments.last_of(copy.root.id, frame);
     if let Some(kept) = last.and_then(|slot| memory.fragments.get(slot))
-      && copied_as(kept, &fresh)
+      && copied_as(kept, &fresh, images)
       && kept.interest == fresh.interest
       && fragment_difference(kept, &fresh, copy).is_none()
     {
@@ -1417,7 +1433,7 @@ fn spot_check(
     return (fresh, false);
   };
   // Compared, the fragment set aside goes
-  let spotted = spot_compare(&mut fresh, slot, copy, memory);
+  let spotted = spot_compare(&mut fresh, slot, copy, memory, images);
   memory.drop_fragment(slot);
   (fresh, spotted)
 }
@@ -1425,11 +1441,17 @@ fn spot_check(
 /// [`spot_check`]'s comparison of `fresh` with the fragment the spot
 /// check set aside in `slot`, copied at `copy`
 #[cfg(debug_assertions)]
-fn spot_compare(fresh: &mut Fragment, slot: u32, copy: CopyAt<'_>, memory: &mut UiMemory) -> bool {
+fn spot_compare(
+  fresh: &mut Fragment,
+  slot: u32,
+  copy: CopyAt<'_>,
+  memory: &mut UiMemory,
+  images: &Assets<Image>,
+) -> bool {
   let Some(kept) = memory.fragments.get(slot) else {
     return true;
   };
-  if !copied_as(kept, fresh) {
+  if !copied_as(kept, fresh, images) {
     return true;
   }
   let stats = &mut memory.fragment_stats;
@@ -1460,8 +1482,8 @@ fn spot_compare(fresh: &mut Fragment, slot: u32, copy: CopyAt<'_>, memory: &mut 
 /// Whether `kept` would have been copied where `fresh` was resolved: its
 /// inputs the same and its sprites as they were
 #[cfg(debug_assertions)]
-fn copied_as(kept: &Fragment, fresh: &Fragment) -> bool {
-  kept.inputs == fresh.inputs && kept.sprites_hold()
+fn copied_as(kept: &Fragment, fresh: &Fragment, images: &Assets<Image>) -> bool {
+  kept.inputs == fresh.inputs && kept.sprites_hold(images)
 }
 
 /// Where `kept`, copied at `copy`, first differs from `fresh`, resolved
@@ -1509,6 +1531,7 @@ struct Again<'r, 'a> {
   scale: f32,
   from: Origin,
   scene: u64,
+  images: &'r Assets<Image>,
 }
 
 impl Again<'_, '_> {
@@ -1566,7 +1589,7 @@ impl Again<'_, '_> {
     draws.clear();
     sprites.clear();
     for draw in node_draws.iter() {
-      sprites.extend(sized_by(&draw.kind));
+      sprites.extend(sized_by(&draw.kind, self.images));
       let j = start + draw.node;
       let (Some(node), Some(at)) = (nodes.get(draw.node), placing.nodes.get(j)) else {
         continue;
@@ -1578,7 +1601,7 @@ impl Again<'_, '_> {
         &place,
         node,
         &[],
-        self.text,
+        (self.text, self.images),
         self.scale,
         |command, cull| {
           draws.push(KeptDraw {
@@ -1650,7 +1673,7 @@ struct Capturing {
   records: Vec<KeptRecord>,
   draws: Vec<KeptDraw>,
   node_draws: Vec<Draw>,
-  sprites: Vec<(SpriteHandle, u64)>,
+  sprites: Vec<(AssetId<Image>, Option<u64>)>,
   /// Where its commands went in the frame's (`start_runs` starts it), and
   /// how many were pushed, and the bounds of those
   run: Range<u32>,
@@ -1667,9 +1690,9 @@ impl Capturing {
   }
 
   /// A draw on a node of the span, kept to resolve the fragment again, and
-  /// the sprite it is cut by
-  fn keep_draw(&mut self, draw: &Draw) {
-    self.sprites.extend(sized_by(&draw.kind));
+  /// the image it is cut by (its version in `images`)
+  fn keep_draw(&mut self, draw: &Draw, images: &Assets<Image>) {
+    self.sprites.extend(sized_by(&draw.kind, images));
     self.node_draws.push(Draw {
       order: draw.order.wrapping_sub(self.base),
       layer: draw.layer,
@@ -1913,10 +1936,12 @@ fn child_runs(nodes: &[Node], children: &mut Vec<usize>, ends: &mut Vec<usize>) 
   }
 }
 
-/// A nine-slice sprite to place
+/// A nine-slice image to place, and its size in texels (zero while it is
+/// not loaded)
 #[derive(Clone, Copy)]
 struct NineSlice<'s> {
-  sprite: &'s SpriteHandle,
+  sprite: &'s Handle<Image>,
+  size: Vec2,
   insets: [f32; 4],
   tint: Color,
   filter: Filter,
@@ -1938,11 +1963,12 @@ fn nine_slice(
 ) {
   let NineSlice {
     sprite,
+    size,
     insets,
     tint,
     filter,
   } = *slice;
-  let (width, height) = (sprite.width() as f32, sprite.height() as f32);
+  let (width, height) = (size.x, size.y);
   if !(drawable(room) && width > 0.0 && height > 0.0) {
     return;
   }
@@ -2438,7 +2464,7 @@ mod tests {
   use crate::core::graphics::Image;
   use crate::core::ui::Anchor;
   use crate::core::ui::immediate::UiContext;
-  use crate::core::ui::test_util::{context, context_scaled, text_engine};
+  use crate::core::ui::test_util::{context, context_scaled, context_with_images, text_engine};
 
   fn rects(commands: &UiCommands) -> Vec<Rect> {
     commands
@@ -2702,8 +2728,10 @@ mod tests {
   #[test]
   fn box_sprite_and_local_draws_land_on_their_node() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut ui: UiContext<'_> = context(&mut commands, &mut text, (400.0, 300.0));
-    let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 255, 255, 255), "s");
+    let mut images = Assets::default();
+    let sprite = images.add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+    let mut ui: UiContext<'_> =
+      context_with_images(&mut commands, &mut text, (400.0, 300.0), &images);
     let at = Rect::new(10.0, 20.0, 100.0, 40.0);
     let node = ui.open_node(UiId(77), UiStyle::default(), Some(at), Flags::default());
     ui.push_draw(

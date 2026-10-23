@@ -119,7 +119,7 @@ impl Ctor<'_> {
     &self,
     cx: &mut BuildCx<'_>,
     name: &'static str,
-  ) -> Option<crate::core::asset::SpriteHandle> {
+  ) -> Option<crate::core::asset::Handle<crate::core::graphics::Image>> {
     self.read(cx, name, |cx, v| cx.asset(v))
   }
 

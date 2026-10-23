@@ -9,7 +9,8 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::common::WidgetOpts;
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
+use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::ui::immediate::{POPUP_LAYER, UiContext};
 use crate::core::ui::layout::{Edges, Measure, UiStyle};
@@ -47,7 +48,7 @@ pub(crate) struct DragState {
 #[derive(Debug, Clone)]
 pub(crate) enum Ghost {
   /// The source's `drag_ghost`, or a slot's icon
-  Sprite(SpriteHandle, Filter),
+  Sprite(Handle<Image>, Filter),
   /// A box in the accent colour
   Box,
 }
@@ -61,7 +62,7 @@ pub(crate) struct DragOpts {
   /// The payload type it takes drops of
   pub(crate) accepts: Option<TypeId>,
   /// Drawn while its payload is dragged
-  pub(crate) ghost: Option<SpriteHandle>,
+  pub(crate) ghost: Option<Handle<Image>>,
 }
 
 impl DragOpts {
@@ -128,7 +129,7 @@ macro_rules! drag_builders {
     /// Draw `sprite` while its payload is dragged, at its size and 80%
     /// opacity, under the pointer or beside the pad's focus (without one, a
     /// slot draws its icon and anything else an accent box)
-    pub fn drag_ghost(mut self, sprite: &$crate::core::asset::SpriteHandle) -> Self {
+    pub fn drag_ghost(mut self, sprite: &$crate::core::asset::Handle<$crate::core::graphics::Image>) -> Self {
       self.$($field).+.ghost = Some(sprite.clone());
       self
     }
@@ -182,7 +183,7 @@ impl UiContext<'_> {
     response: &mut Response,
     drag: &DragOpts,
     disabled: bool,
-    ghost: (Option<&SpriteHandle>, Filter),
+    ghost: (Option<&Handle<Image>>, Filter),
   ) {
     let id = response.id;
     let (_, top) = self.scene();
@@ -457,12 +458,12 @@ mod tests {
 
   #[test]
   fn the_ghost_follows_the_pointer_at_80_percent() {
-    use crate::core::asset::SpriteHandle;
     use crate::core::graphics::Image;
     use crate::core::ui::immediate::{POPUP_LAYER, UiCommand};
-    let icon =
-      SpriteHandle::from_sprite(Image::solid_rect(16, 16, 255, 255, 255, 255), "ghost-icon");
     let mut d = UiDriver::new((200.0, 100.0));
+    let icon = d
+      .registry()
+      .add(Image::solid_rect(16, 16, 255, 255, 255, 255));
     let draw = |ui: &mut UiContext<'_>| {
       ui.slot()
         .at(Rect::new(0.0, 0.0, 48.0, 48.0))

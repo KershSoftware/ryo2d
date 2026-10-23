@@ -4,10 +4,11 @@ use super::DrawList;
 use super::batch::Batch2D;
 use super::look::Look;
 use super::ui_renderer::UiFrame;
+use crate::core::asset::Assets;
 use crate::core::ecs::Entity;
 use crate::core::graphics::{
-  Camera2d, CameraClear, CameraTarget, CameraView, RenderLayers, RenderTarget, RenderTargets,
-  SpriteGpuRenderer, Viewport,
+  Camera2d, CameraClear, CameraTarget, CameraView, Image, RenderLayers, RenderTarget,
+  RenderTargets, SpriteGpuRenderer, Viewport,
 };
 use crate::core::lighting::LightingRenderer;
 use crate::core::shaders::{EffectsManager, OutputBuffer};
@@ -88,6 +89,8 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) effects: &'a EffectsManager,
   /// The frame's look (the tonemap pass reads it)
   pub(crate) look: &'a Look,
+  /// The world's images (the look's LUT is one)
+  pub(crate) images: &'a Assets<Image>,
   /// The UI renderer's frame, when the frame's UI recorded anything and
   /// was not kept
   pub(crate) ui_frame: Option<UiFrame<'a>>,

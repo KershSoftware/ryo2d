@@ -6,10 +6,9 @@
 //! which is built in the template's own file.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{Assets, AssetsView, Handle};
 use crate::core::graphics::Image;
 use crate::core::text::TextReveal;
 use crate::core::ui::nodes::bindings::parse_hole;
@@ -27,22 +26,32 @@ const MAX_DEPTH: usize = 64;
 
 /// Where a file's images come from
 pub(crate) trait SpriteSource {
-  fn sprite(&mut self, path: &str) -> Result<SpriteHandle, String>;
+  fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String>;
 }
 
-/// Stands in for every image: one shared 1x1 handle per path, never failing
+/// Stands in for every image: one shared 1x1 image per path, never failing
 #[derive(Default)]
 pub(crate) struct Placeholders {
-  handles: HashMap<String, SpriteHandle>,
+  images: Assets<Image>,
+  handles: HashMap<String, Handle<Image>>,
 }
 
 impl SpriteSource for Placeholders {
-  fn sprite(&mut self, path: &str) -> Result<SpriteHandle, String> {
+  fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String> {
+    let images = &mut self.images;
     let handle = self
       .handles
       .entry(path.to_string())
-      .or_insert_with(|| SpriteHandle::new(Image::solid_rect(1, 1, 0, 0, 0, 0), path.into()));
+      .or_insert_with(|| images.add(Image::solid_rect(1, 1, 0, 0, 0, 0)));
     Ok(handle.clone())
+  }
+}
+
+/// A file's images load at once through the asset registry; their paths are
+/// asset paths
+impl SpriteSource for AssetsView<'_> {
+  fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String> {
+    self.load_now::<Image>(path).map_err(|error| error.report())
   }
 }
 
@@ -346,12 +355,11 @@ impl BuildCx<'_> {
     }
   }
 
-  pub(crate) fn asset(&mut self, value: &Value) -> Option<SpriteHandle> {
+  pub(crate) fn asset(&mut self, value: &Value) -> Option<Handle<Image>> {
     // A template parameter while the template is checked: a stand-in, so
-    // the rest of its node is checked too
+    // the rest of its node is checked too (the node is never drawn)
     if matches!(value.kind, ValueKind::Any) {
-      let blank = Image::solid_rect(1, 1, 0, 0, 0, 0);
-      return Some(SpriteHandle::new(blank, PathBuf::new()));
+      return Some(Handle::detached());
     }
     if !self.readable(value) {
       return None;
@@ -1183,12 +1191,19 @@ mod tests {
   use crate::core::ui::nodes::{RowShape, fingerprint};
   use crate::prelude::*;
 
+  thread_local! {
+    /// One stand-in image per path for the whole test, so a file's image and
+    /// the code's are the same
+    static PLACEHOLDERS: std::cell::RefCell<Placeholders> = std::cell::RefCell::default();
+  }
+
   fn build(text: &str) -> (Option<UiNode>, Vec<Issue>) {
     let value = read(text).expect("reads");
-    let mut sprites = Placeholders::default();
-    let mut cx = BuildCx::new(&mut sprites);
-    let node = build_node(&value, &mut cx);
-    (node, cx.issues)
+    PLACEHOLDERS.with_borrow_mut(|sprites| {
+      let mut cx = BuildCx::new(sprites);
+      let node = build_node(&value, &mut cx);
+      (node, cx.issues)
+    })
   }
 
   fn same(text: &str, code: UiNode) {
@@ -1208,8 +1223,10 @@ mod tests {
     node
   }
 
-  fn sprite(path: &str) -> SpriteHandle {
-    SpriteHandle::new(Image::solid_rect(1, 1, 0, 0, 0, 0), path.into())
+  fn sprite(path: &str) -> Handle<Image> {
+    PLACEHOLDERS
+      .with_borrow_mut(|sprites| sprites.sprite(path))
+      .expect("a stand-in")
   }
 
   fn messages(text: &str) -> Vec<String> {
@@ -1489,7 +1506,7 @@ mod tests {
   fn a_failing_image_is_an_issue_at_its_value() {
     struct Missing;
     impl SpriteSource for Missing {
-      fn sprite(&mut self, path: &str) -> Result<SpriteHandle, String> {
+      fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String> {
         Err(format!("no file {path}"))
       }
     }

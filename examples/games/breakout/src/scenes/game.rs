@@ -227,6 +227,14 @@ impl GameScene {
   }
 
   fn spawn_paddle(&mut self, ctx: &mut SceneContext) {
+    let image = ctx.assets().add(Self::bordered_rect(
+      PADDLE_WIDTH as u32,
+      PADDLE_HEIGHT as u32,
+      0x40,
+      0xc0,
+      0xff,
+      (0x20, 0x60, 0x80), // Darker blue border
+    ));
     let paddle = ctx
       .world
       .spawn((
@@ -236,18 +244,7 @@ impl GameScene {
         Collider::rect(PADDLE_WIDTH, PADDLE_HEIGHT)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Self::bordered_rect(
-            PADDLE_WIDTH as u32,
-            PADDLE_HEIGHT as u32,
-            0x40,
-            0xc0,
-            0xff,
-            (0x20, 0x60, 0x80), // Darker blue border
-          ),
-          "paddle",
-        ))
-        .with_z_order(10),
+        Renderable::image(image).with_z_order(10),
         Interpolated,
         Paddle,
       ))
@@ -262,8 +259,14 @@ impl GameScene {
 
     // Use unique sprite ID for each ball to avoid caching issues
     self.ball_counter += 1;
-    let sprite_id = format!("ball_{}", self.ball_counter);
 
+    let image = ctx.assets().add(Image::solid_circle(
+      BALL_SIZE as u32,
+      0xff,
+      0xff,
+      0xff,
+      0xff,
+    ));
     let ball = ctx
       .world
       .spawn((
@@ -277,11 +280,7 @@ impl GameScene {
         Collider::circle(BALL_SIZE / 2.0)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
-          sprite_id,
-        ))
-        .with_z_order(15),
+        Renderable::image(image).with_z_order(15),
         Interpolated,
         Ball { frozen: true },
       ))
@@ -294,7 +293,6 @@ impl GameScene {
   fn spawn_ball_at(&mut self, ctx: &mut SceneContext, x: f32, y: f32) {
     // Use unique sprite ID for each ball
     self.ball_counter += 1;
-    let sprite_id = format!("ball_{}", self.ball_counter);
 
     // Random angle using multiple varying factors for better randomness
     // Combine glow_time, survival_time, score, and ball_counter for pseudo-random angle
@@ -304,6 +302,13 @@ impl GameScene {
     let vel_x = BALL_SPEED * angle_offset;
     let vel_y = -(BALL_SPEED * BALL_SPEED - vel_x * vel_x).sqrt(); // Maintain constant speed
 
+    let image = ctx.assets().add(Image::solid_circle(
+      BALL_SIZE as u32,
+      0xff,
+      0xff,
+      0xff,
+      0xff,
+    ));
     let ball = ctx
       .world
       .spawn((
@@ -317,11 +322,7 @@ impl GameScene {
         Collider::circle(BALL_SIZE / 2.0)
           .with_restitution(1.0)
           .with_friction(0.0),
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
-          sprite_id,
-        ))
-        .with_z_order(15),
+        Renderable::image(image).with_z_order(15),
         Interpolated,
         Ball { frozen: false },
       ))
@@ -382,18 +383,16 @@ impl GameScene {
     // Only change visuals and track if the flag was actually set
     if flag_set {
       // Change sprite to gold with border (will be animated with glow pulse each frame)
+      let image = ctx.assets().add(Self::bordered_rect(
+        BLOCK_WIDTH as u32,
+        BLOCK_HEIGHT as u32,
+        0xff,
+        0xd7,
+        0x00,
+        (0x80, 0x6b, 0x00), // Dark gold border
+      ));
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
-        renderable.sprite = SpriteHandle::from_sprite(
-          Self::bordered_rect(
-            BLOCK_WIDTH as u32,
-            BLOCK_HEIGHT as u32,
-            0xff,
-            0xd7,
-            0x00,
-            (0x80, 0x6b, 0x00), // Dark gold border
-          ),
-          format!("multiball_block_{}", self.ball_counter),
-        );
+        renderable.image = image;
       }
 
       // Track this block for color pulse animation
@@ -421,19 +420,17 @@ impl GameScene {
     // Use darker border based on brightness
     let border_g = (0x55 as f32 + (0x80 - 0x55) as f32 * brightness) as u8;
     let border_b = (0x00 as f32 + 0x80 as f32 * brightness) as u8;
-    for (i, &block) in self.multiball_blocks.iter().enumerate() {
+    for &block in self.multiball_blocks.iter() {
+      let image = ctx.assets().add(Self::bordered_rect(
+        BLOCK_WIDTH as u32,
+        BLOCK_HEIGHT as u32,
+        r,
+        g,
+        b,
+        (0x80, border_g, border_b),
+      ));
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
-        renderable.sprite = SpriteHandle::from_sprite(
-          Self::bordered_rect(
-            BLOCK_WIDTH as u32,
-            BLOCK_HEIGHT as u32,
-            r,
-            g,
-            b,
-            (0x80, border_g, border_b),
-          ),
-          format!("multiball_glow_{}", i),
-        );
+        renderable.image = image;
       }
     }
 
@@ -441,12 +438,14 @@ impl GameScene {
     let fade_cycle = (self.glow_time * HEART_FADE_SPEED).sin();
     let plus_alpha = 0.5 + fade_cycle * 0.5; // 0.0 to 1.0
 
-    for (i, &block) in self.heart_blocks.iter().enumerate() {
+    for &block in self.heart_blocks.iter() {
+      let image = ctx.assets().add(Self::health_block_sprite(
+        BLOCK_WIDTH as u32,
+        BLOCK_HEIGHT as u32,
+        plus_alpha,
+      ));
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
-        renderable.sprite = SpriteHandle::from_sprite(
-          Self::health_block_sprite(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, plus_alpha),
-          format!("health_glow_{}", i),
-        );
+        renderable.image = image;
       }
     }
   }
@@ -489,11 +488,13 @@ impl GameScene {
       }
 
       // Change sprite to heart block
+      let image = ctx.assets().add(Self::health_block_sprite(
+        BLOCK_WIDTH as u32,
+        BLOCK_HEIGHT as u32,
+        1.0,
+      ));
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
-        renderable.sprite = SpriteHandle::from_sprite(
-          Self::health_block_sprite(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, 1.0),
-          format!("heart_block_{}", current_milestone),
-        );
+        renderable.image = image;
       }
 
       // Track this block for pulse animation
@@ -503,6 +504,14 @@ impl GameScene {
 
   fn spawn_walls(&mut self, ctx: &mut SceneContext) {
     // Left wall
+    let image = ctx.assets().add(Image::solid_rect(
+      WALL_THICKNESS as u32,
+      SCREEN_HEIGHT,
+      0x30,
+      0x30,
+      0x40,
+      0xff,
+    ));
     let left = ctx
       .world
       .spawn((
@@ -511,17 +520,21 @@ impl GameScene {
         Collider::rect(WALL_THICKNESS, SCREEN_HEIGHT as f32)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
-          "wall_left",
-        ))
-        .with_z_order(0),
+        Renderable::image(image).with_z_order(0),
         Wall,
       ))
       .id();
     self.walls.push(left);
 
     // Right wall
+    let image = ctx.assets().add(Image::solid_rect(
+      WALL_THICKNESS as u32,
+      SCREEN_HEIGHT,
+      0x30,
+      0x30,
+      0x40,
+      0xff,
+    ));
     let right = ctx
       .world
       .spawn((
@@ -533,17 +546,21 @@ impl GameScene {
         Collider::rect(WALL_THICKNESS, SCREEN_HEIGHT as f32)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
-          "wall_right",
-        ))
-        .with_z_order(0),
+        Renderable::image(image).with_z_order(0),
         Wall,
       ))
       .id();
     self.walls.push(right);
 
     // Top wall (ceiling)
+    let image = ctx.assets().add(Image::solid_rect(
+      SCREEN_WIDTH,
+      WALL_THICKNESS as u32,
+      0x30,
+      0x30,
+      0x40,
+      0xff,
+    ));
     let ceiling = ctx
       .world
       .spawn((
@@ -552,11 +569,7 @@ impl GameScene {
         Collider::rect(SCREEN_WIDTH as f32, WALL_THICKNESS)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_rect(SCREEN_WIDTH, WALL_THICKNESS as u32, 0x30, 0x30, 0x40, 0xff),
-          "wall_ceiling",
-        ))
-        .with_z_order(0),
+        Renderable::image(image).with_z_order(0),
         Wall,
       ))
       .id();
@@ -600,6 +613,14 @@ impl GameScene {
       // Darker border color (half brightness)
       let border = (r / 3, g / 3, b / 3);
 
+      let image = ctx.assets().add(Self::bordered_rect(
+        BLOCK_WIDTH as u32,
+        BLOCK_HEIGHT as u32,
+        r,
+        g,
+        b,
+        border,
+      ));
       let block = ctx
         .world
         .spawn((
@@ -608,11 +629,7 @@ impl GameScene {
           Collider::rect(BLOCK_WIDTH, BLOCK_HEIGHT)
             .with_restitution(1.0) // Perfect bounce
             .with_friction(0.0), // No friction
-          Renderable::sprite(SpriteHandle::from_sprite(
-            Self::bordered_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, border),
-            format!("block_{}_{}", x as u32, y as u32),
-          ))
-          .with_z_order(5),
+          Renderable::image(image).with_z_order(5),
           Block::new(color, hits, points),
         ))
         .id();
@@ -809,11 +826,16 @@ impl GameScene {
         // Update block appearance to show damage
         let (r, g, b, _a) = color.dimmed();
         let border = (r / 3, g / 3, b / 3);
+        let image = ctx.assets().add(Self::bordered_rect(
+          BLOCK_WIDTH as u32,
+          BLOCK_HEIGHT as u32,
+          r,
+          g,
+          b,
+          border,
+        ));
         if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
-          renderable.sprite = SpriteHandle::from_sprite(
-            Self::bordered_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, border),
-            "block_damaged",
-          );
+          renderable.image = image;
         }
       }
     }
@@ -904,16 +926,21 @@ impl Scene for GameScene {
 
     // Spawn background entity (solid color fill)
     // Color matches menu scene: RGB(20, 20, 35)
+    let image = ctx.assets().add(Image::solid_rect(
+      SCREEN_WIDTH,
+      SCREEN_HEIGHT,
+      20,
+      20,
+      35,
+      255,
+    ));
     let bg = ctx
       .world
       .spawn((
         Transform::from_xy(0.0, 0.0),
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Image::solid_rect(SCREEN_WIDTH, SCREEN_HEIGHT, 20, 20, 35, 255),
-          "game_background",
-        ))
-        .with_anchor(Anchor::TopLeft)
-        .with_z_order(-10),
+        Renderable::image(image)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(-10),
       ))
       .id();
     self.background = Some(bg);

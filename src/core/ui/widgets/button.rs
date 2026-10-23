@@ -6,7 +6,8 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::common::{WidgetOpts, widget_builders};
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
+use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextLayoutOptions};
 use crate::core::ui::Color;
@@ -27,7 +28,7 @@ pub struct Button<'u, 'a> {
   ui: Option<&'u mut UiContext<'a>>,
   site: &'static Location<'static>,
   label: RichText,
-  icon: Option<SpriteHandle>,
+  icon: Option<Handle<Image>>,
   opts: WidgetOpts,
   /// The looks it is drawn in (a tab, a choice and a dropdown's option are
   /// buttons in their own looks)
@@ -68,7 +69,7 @@ widget_builders!(Button<'_, '_>);
 
 impl Button<'_, '_> {
   /// A sprite left of the label, as tall as a line of it
-  pub fn icon(mut self, sprite: &SpriteHandle) -> Self {
+  pub fn icon(mut self, sprite: &Handle<Image>) -> Self {
     self.icon = Some(sprite.clone());
     self
   }
@@ -204,7 +205,6 @@ mod tests {
   use crate::core::ui::Rect;
   use crate::core::ui::test_util::UiDriver;
 
-  use crate::core::asset::SpriteHandle;
   use crate::core::graphics::Image;
   use crate::core::text::TextStyle;
   use crate::core::ui::immediate::UiCommand;
@@ -314,7 +314,9 @@ mod tests {
   #[test]
   fn an_icon_sits_left_of_the_label_and_both_are_centred() {
     let mut d = UiDriver::new((300.0, 100.0));
-    let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 255, 255, 255), "i");
+    let sprite = d
+      .registry()
+      .add(Image::solid_rect(4, 4, 255, 255, 255, 255));
     let at = Rect::new(10.0, 10.0, 200.0, 40.0);
     let (label, line) = d.frame(|ui| {
       ui.button("Save").at(at).icon(&sprite).show();

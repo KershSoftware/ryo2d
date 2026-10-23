@@ -269,8 +269,8 @@ impl DemoPage for EffectsPage {
 
     // Create a colorful test sprite
     let sprite = create_test_sprite();
-    let handle = ctx.assets.create_sprite(sprite.clone(), "test_sprite");
-    let handle2 = ctx.assets.create_sprite(sprite, "test_sprite_2");
+    let handle = ctx.assets().add(sprite.clone());
+    let handle2 = ctx.assets().add(sprite);
 
     // Left: normal sprite (no effect)
     self.normal_sprite = Some(
@@ -278,7 +278,7 @@ impl DemoPage for EffectsPage {
         .world
         .spawn((
           Transform::from_xy(SPRITE_X[0], cy).with_uniform_scale(3.0),
-          Renderable::sprite(handle.clone())
+          Renderable::image(handle.clone())
             .with_anchor(Anchor::TopLeft)
             .with_z_order(0),
         ))
@@ -289,15 +289,13 @@ impl DemoPage for EffectsPage {
     // unreadable file is reported and the sprite is simply left out.
     match ctx.assets.load_shader("assets/shaders/dissolve.wgsl") {
       Ok(shader) => {
-        let handle3 = ctx
-          .assets
-          .create_sprite(create_test_sprite(), "test_sprite_3");
+        let handle3 = ctx.assets().add(create_test_sprite());
         self.custom_sprite = Some(
           ctx
             .world
             .spawn((
               Transform::from_xy(SPRITE_X[1], cy).with_uniform_scale(3.0),
-              Renderable::sprite(handle3)
+              Renderable::image(handle3)
                 .with_anchor(Anchor::TopLeft)
                 .with_z_order(0)
                 .with_shader(
@@ -318,7 +316,7 @@ impl DemoPage for EffectsPage {
         .world
         .spawn((
           Transform::from_xy(SPRITE_X[2], cy).with_uniform_scale(3.0),
-          Renderable::sprite(handle2)
+          Renderable::image(handle2)
             .with_anchor(Anchor::TopLeft)
             .with_z_order(0)
             .with_shader(SpriteShader::BuiltIn(self.create_sprite_effect())),

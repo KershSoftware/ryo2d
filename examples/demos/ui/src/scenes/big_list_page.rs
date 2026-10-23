@@ -220,7 +220,7 @@ impl BigListPage {
 
   /// Build the file's tree, then spawn it
   fn spawn_board(&mut self, ctx: &mut SceneContext) -> Result<(), UiFileError> {
-    let tree = ctx.assets.load_ui(BIG_LIST)?.root(ctx.assets)?;
+    let tree = ctx.assets.load_ui(BIG_LIST)?.root(&mut ctx.assets())?;
     let root = ctx.spawn_ui(tree);
     let Some(list) = ctx.find_ui_in(root, "board") else {
       ctx.world.despawn(root);

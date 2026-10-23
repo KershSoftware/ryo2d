@@ -5,6 +5,8 @@
 use std::hash::Hasher;
 use std::ops::Range;
 
+use crate::core::asset::Assets;
+use crate::core::graphics::Image;
 use crate::core::hash::FastHasher;
 use crate::core::render::UiSpace;
 use crate::core::text::{Icon, TextIcons};
@@ -18,6 +20,7 @@ mod tests;
 mod texts;
 
 pub(crate) use fragments::{KeptRun, UiRunCache};
+
 pub(crate) use texts::{TextSink, UiTextCache};
 
 /// What the UI's render step did in a frame
@@ -138,7 +141,7 @@ impl UiRetain {
   pub(crate) fn keep(
     &mut self,
     commands: &UiCommands,
-    icons: Option<&TextIcons>,
+    sources: StampSources<'_>,
     env: UiRenderEnv,
     image: u64,
   ) -> bool {
@@ -162,7 +165,7 @@ impl UiRetain {
             .iter()
             .all(|&(k, stamp)| {
               let draw = now.get(run.draws.start as usize + k as usize);
-              draw.is_some_and(|draw| stamp_of(&draw.command, icons) == stamp)
+              draw.is_some_and(|draw| stamp_of(&draw.command, sources) == stamp)
             })
       })
       && loose(now, runs)
@@ -173,12 +176,12 @@ impl UiRetain {
             && draw.slot == was.slot
             && !animated(&draw.command)
             && draw.command.draws_as(&was.command)
-            && stamp_of(&draw.command, icons) == *stamp
+            && stamp_of(&draw.command, sources) == *stamp
         });
     if same {
       return true;
     }
-    self.hold(now, runs, icons);
+    self.hold(now, runs, sources);
     self.slots.clear();
     self.slots.extend_from_slice(commands.slots());
     self.env = Some(env);
@@ -188,12 +191,12 @@ impl UiRetain {
 
   /// Hold `now` with its `runs`: copies of the draws outside them, each
   /// run's tag, and every stamp
-  fn hold(&mut self, now: &[UiDraw], runs: &[FragmentRun], icons: Option<&TextIcons>) {
+  fn hold(&mut self, now: &[UiDraw], runs: &[FragmentRun], sources: StampSources<'_>) {
     self.drawn.clear();
     self.stamps.clear();
     for draw in loose(now, runs) {
       self.drawn.push(draw.clone());
-      self.stamps.push(stamp_of(&draw.command, icons));
+      self.stamps.push(stamp_of(&draw.command, sources));
     }
     self.count = now.len();
     std::mem::swap(&mut self.runs, &mut self.runs_was);
@@ -222,7 +225,7 @@ impl UiRetain {
           let was = &self.runs_was[was];
           for &(k, _) in &self.run_stamps_was[was.stamps.clone()] {
             if let Some(draw) = draws.get(k as usize) {
-              self.run_stamps.push((k, stamp_of(&draw.command, icons)));
+              self.run_stamps.push((k, stamp_of(&draw.command, sources)));
             }
           }
           was.animated
@@ -236,7 +239,7 @@ impl UiRetain {
           for (k, draw) in (0u32..).zip(draws) {
             any |= animated(&draw.command);
             if stamped(&draw.command) {
-              self.run_stamps.push((k, stamp_of(&draw.command, icons)));
+              self.run_stamps.push((k, stamp_of(&draw.command, sources)));
             }
           }
           any
@@ -343,24 +346,39 @@ fn stamped(command: &UiCommand) -> bool {
   }
 }
 
-/// What `command` draws from besides its own value: a sprite's version, or
-/// a text's icons (each sprite's version; a name's sprite and region in
-/// `icons`); 0 for neither
-pub(crate) fn stamp_of(command: &UiCommand, icons: Option<&TextIcons>) -> u64 {
+/// What the UI's commands draw from besides their own values, for their
+/// stamps (`stamp_of`)
+#[derive(Clone, Copy)]
+pub(crate) struct StampSources<'a> {
+  /// The images sprites and icons draw
+  pub(crate) images: &'a Assets<Image>,
+  /// The icons texts name (`None`: the game removed them)
+  pub(crate) icons: Option<&'a TextIcons>,
+}
+
+/// What `command` draws from besides its own value: an image's version, or
+/// a text's icons (each image's id and version; a name's image and region
+/// in the icons); 0 for neither
+pub(crate) fn stamp_of(command: &UiCommand, sources: StampSources<'_>) -> u64 {
+  let StampSources { images, icons } = sources;
+  // 0 stands for an image that is not loaded: versions start at 1
+  let version = |image| images.version(image).unwrap_or(0);
   match command {
-    UiCommand::Sprite { sprite, .. } => sprite.generation(),
+    UiCommand::Sprite { sprite, .. } => version(sprite.id()),
     UiCommand::Text { layout, .. } if !layout.icons.is_empty() => {
       let mut hasher = FastHasher::default();
       for placed in &layout.icons {
         match &placed.icon {
           Icon::Sprite { sprite, .. } => {
-            hasher.write_usize(sprite.serial());
-            hasher.write_u64(sprite.generation());
+            hasher.write_u32(sprite.id().index());
+            hasher.write_u32(sprite.id().generation());
+            hasher.write_u64(version(sprite.id()));
           }
           Icon::Named { name, .. } => match icons.and_then(|icons| icons.get(name.as_str())) {
             Some(source) => {
-              hasher.write_usize(source.sprite.serial());
-              hasher.write_u64(source.sprite.generation());
+              hasher.write_u32(source.sprite.id().index());
+              hasher.write_u32(source.sprite.id().generation());
+              hasher.write_u64(version(source.sprite.id()));
               for bit in source.region.map_or([u32::MAX; 4], bits) {
                 hasher.write_u32(bit);
               }

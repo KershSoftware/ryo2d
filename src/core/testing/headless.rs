@@ -488,6 +488,39 @@ impl HeadlessEngine {
     self.engine.sprite_gpu.as_ref()?.glyph_page_generation(page)
   }
 
+  /// How many textures the renderer keeps: images', named pixels' and
+  /// render targets' (tests that watch an image's texture go with it)
+  #[doc(hidden)]
+  pub fn texture_count(&self) -> usize {
+    self
+      .engine
+      .sprite_gpu
+      .as_ref()
+      .map_or(0, |gpu| gpu.texture_count())
+  }
+
+  /// How many times an image's pixels have been written to the GPU (tests
+  /// that watch what is uploaded again)
+  #[doc(hidden)]
+  pub fn image_uploads(&self) -> u64 {
+    self
+      .engine
+      .sprite_gpu
+      .as_ref()
+      .map_or(0, |gpu| gpu.image_uploads())
+  }
+
+  /// How many textures have room in the atlas: a rect on a page or a
+  /// standalone texture (tests that watch an image's room freed)
+  #[doc(hidden)]
+  pub fn atlas_rects(&self) -> usize {
+    self
+      .engine
+      .sprite_gpu
+      .as_ref()
+      .map_or(0, |gpu| gpu.atlas_rects())
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]

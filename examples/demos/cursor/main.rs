@@ -53,7 +53,7 @@ struct CursorDemoScene {
   buttons: Vec<CursorButton>,
   current_style: CursorStyle,
   custom_cursor_enabled: bool,
-  custom_cursor_sprite: Option<SpriteHandle>,
+  custom_cursor_sprite: Option<Handle<Image>>,
   mouse_x: f32,
   mouse_y: f32,
   // Interactive area
@@ -146,7 +146,7 @@ impl CursorDemoScene {
   }
 
   /// Create a custom crosshair cursor sprite
-  fn create_custom_cursor_sprite(&self, assets: &mut AssetManager) -> SpriteHandle {
+  fn create_custom_cursor_sprite(&self, mut assets: AssetsView<'_>) -> Handle<Image> {
     let size = 32u32;
     let mut data = vec![0u8; (size * size * 4) as usize];
 
@@ -178,7 +178,7 @@ impl CursorDemoScene {
     }
 
     let sprite = Image::from_rgba(data, size, size);
-    assets.create_sprite(sprite, "custom_crosshair")
+    assets.add(sprite)
   }
 
   fn spawn_sparks(&mut self, x: f32, y: f32) {
@@ -242,7 +242,7 @@ impl DemoPage for CursorDemoScene {
     self.create_buttons();
 
     // Create custom cursor sprite
-    self.custom_cursor_sprite = Some(self.create_custom_cursor_sprite(ctx.assets));
+    self.custom_cursor_sprite = Some(self.create_custom_cursor_sprite(ctx.assets()));
 
     // Set initial cursor; visibility and confinement are engine state that
     // scene cleanup does not reset, so a rebuilt page restores the defaults here

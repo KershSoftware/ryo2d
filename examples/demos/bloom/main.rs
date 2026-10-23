@@ -113,14 +113,12 @@ impl BloomPage {
       for col in 0..cols {
         let (r, g, b) = dark_colors[(row + col) % dark_colors.len()];
         let sprite = Image::solid_rect(80, 80, r, g, b, 255);
-        let handle = ctx
-          .assets
-          .create_sprite(sprite, format!("bg_{}_{}", row, col));
+        let handle = ctx.assets().add(sprite);
         let entity = ctx
           .world
           .spawn((
             Transform::from_xy(col as f32 * tile_size, row as f32 * tile_size),
-            Renderable::sprite(handle)
+            Renderable::image(handle)
               .with_anchor(Anchor::TopLeft)
               .with_z_order(0),
           ))
@@ -141,7 +139,7 @@ impl BloomPage {
     for (i, &(r, g, b)) in bright_colors.iter().enumerate() {
       let size = 40 + i as u32 * 6;
       let sprite = Image::solid_rect(size, size, r, g, b, 255);
-      let handle = ctx.assets.create_sprite(sprite, format!("bright_{}", i));
+      let handle = ctx.assets().add(sprite);
 
       let angle = (i as f32 / bright_colors.len() as f32) * std::f32::consts::TAU;
       let dist = 120.0;
@@ -149,7 +147,7 @@ impl BloomPage {
         .world
         .spawn((
           Transform::from_xy(cx + angle.cos() * dist, cy + angle.sin() * dist),
-          Renderable::sprite(handle)
+          Renderable::image(handle)
             .with_z_order(2)
             .with_emission(if i == 0 { 6.0 } else { 3.0 }),
         ))
@@ -168,16 +166,14 @@ impl BloomPage {
       (255, 180, 180),
       (180, 255, 180),
     ];
-    for (i, &(r, g, b)) in orbit_colors.iter().enumerate() {
+    for &(r, g, b) in orbit_colors.iter() {
       let sprite = Image::solid_rect(12, 12, r, g, b, 255);
-      let handle = ctx.assets.create_sprite(sprite, format!("orbit_{}", i));
+      let handle = ctx.assets().add(sprite);
       let entity = ctx
         .world
         .spawn((
           Transform::from_xy(cx, cy),
-          Renderable::sprite(handle)
-            .with_z_order(3)
-            .with_emission(3.0),
+          Renderable::image(handle).with_z_order(3).with_emission(3.0),
         ))
         .id();
       self.orbiting_sprites.push(entity);

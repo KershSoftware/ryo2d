@@ -3,8 +3,8 @@ use std::sync::Arc;
 use glam::Vec2;
 
 use super::*;
-use crate::core::asset::SpriteHandle;
-use crate::core::graphics::Image;
+use crate::core::asset::Assets;
+use crate::core::graphics::{Image, no_images};
 use crate::core::render::UiSpace;
 use crate::core::text::{GlyphStyle, Icon, PlacedIcon, TextIcons, TextLayout};
 use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands};
@@ -60,6 +60,16 @@ fn text(layout: &Arc<TextLayout>) -> UiCommand {
   }
 }
 
+/// What the commands draw from: `images`, and `icons` by name
+fn from<'a>(images: &'a Assets<Image>, icons: Option<&'a TextIcons>) -> StampSources<'a> {
+  StampSources { images, icons }
+}
+
+/// No images and no icons
+fn none() -> StampSources<'static> {
+  from(no_images(), None)
+}
+
 fn commands(list: &[UiCommand]) -> UiCommands {
   let mut commands = UiCommands::default();
   for (order, command) in list.iter().enumerate() {
@@ -70,9 +80,14 @@ fn commands(list: &[UiCommand]) -> UiCommands {
 
 /// A retainer whose image (epoch 7) holds `list`, drawn and presented
 fn drawn(list: &[UiCommand]) -> UiRetain {
+  drawn_from(list, none())
+}
+
+/// [`drawn`], `list` drawing from `sources`
+fn drawn_from(list: &[UiCommand], sources: StampSources<'_>) -> UiRetain {
   let mut retain = UiRetain::default();
   assert!(
-    !retain.keep(&commands(list), None, env(), 7),
+    !retain.keep(&commands(list), sources, env(), 7),
     "nothing drawn yet"
   );
   retain.presented(false, true, 7);
@@ -84,14 +99,14 @@ fn the_same_commands_keep_the_image() {
   let layout = Arc::new(TextLayout::default());
   let list = [rect(0.0), text(&layout)];
   let mut retain = drawn(&list);
-  assert!(retain.keep(&commands(&list), None, env(), 7));
-  assert!(retain.keep(&commands(&list), None, env(), 7), "and again");
+  assert!(retain.keep(&commands(&list), none(), env(), 7));
+  assert!(retain.keep(&commands(&list), none(), env(), 7), "and again");
 }
 
 #[test]
 fn a_changed_number_redraws() {
   let mut retain = drawn(&[rect(0.0)]);
-  assert!(!retain.keep(&commands(&[rect(0.5)]), None, env(), 7));
+  assert!(!retain.keep(&commands(&[rect(0.5)]), none(), env(), 7));
 }
 
 #[test]
@@ -99,14 +114,14 @@ fn another_order_redraws() {
   let mut retain = drawn(&[rect(0.0)]);
   let mut moved = UiCommands::default();
   moved.push(1, 0, rect(0.0));
-  assert!(!retain.keep(&moved, None, env(), 7));
+  assert!(!retain.keep(&moved, none(), env(), 7));
 }
 
 #[test]
 fn an_equal_layout_elsewhere_is_another_text() {
   let mut retain = drawn(&[text(&Arc::new(TextLayout::default()))]);
   let other = Arc::new(TextLayout::default());
-  assert!(!retain.keep(&commands(&[text(&other)]), None, env(), 7));
+  assert!(!retain.keep(&commands(&[text(&other)]), none(), env(), 7));
 }
 
 #[test]
@@ -125,7 +140,7 @@ fn a_text_effect_never_keeps() {
   let list = [text(&layout)];
   let mut retain = drawn(&list);
   for _ in 0..3 {
-    assert!(!retain.keep(&commands(&list), None, env(), 7));
+    assert!(!retain.keep(&commands(&list), none(), env(), 7));
     retain.presented(false, true, 7);
   }
 }
@@ -136,13 +151,13 @@ fn another_environment_or_image_redraws() {
   let mut retain = drawn(&list);
   let scaled = UiRenderEnv { fonts: 2, ..env() };
   assert!(
-    !retain.keep(&commands(&list), None, scaled, 7),
+    !retain.keep(&commands(&list), none(), scaled, 7),
     "the fonts changed"
   );
   retain.presented(false, true, 7);
-  assert!(retain.keep(&commands(&list), None, scaled, 7));
+  assert!(retain.keep(&commands(&list), none(), scaled, 7));
   assert!(
-    !retain.keep(&commands(&list), None, scaled, 8),
+    !retain.keep(&commands(&list), none(), scaled, 8),
     "a new UI image"
   );
 }
@@ -151,39 +166,40 @@ fn another_environment_or_image_redraws() {
 fn an_unpresented_frame_redraws() {
   let list = [rect(0.0)];
   let mut retain = drawn(&list);
-  assert!(retain.keep(&commands(&list), None, env(), 7));
+  assert!(retain.keep(&commands(&list), none(), env(), 7));
   retain.lost();
-  assert!(!retain.keep(&commands(&list), None, env(), 7));
+  assert!(!retain.keep(&commands(&list), none(), env(), 7));
 }
 
 #[test]
 fn a_frame_whose_ui_pass_did_not_draw_redraws() {
   let list = [rect(0.0)];
   let mut retain = UiRetain::default();
-  assert!(!retain.keep(&commands(&list), None, env(), 7));
+  assert!(!retain.keep(&commands(&list), none(), env(), 7));
   retain.presented(false, false, 7);
-  assert!(!retain.keep(&commands(&list), None, env(), 7));
+  assert!(!retain.keep(&commands(&list), none(), env(), 7));
 }
 
 #[test]
 fn a_kept_frame_leaves_the_image_as_drawn() {
   let list = [rect(0.0)];
   let mut retain = drawn(&list);
-  assert!(retain.keep(&commands(&list), None, env(), 7));
+  assert!(retain.keep(&commands(&list), none(), env(), 7));
   // The `ui` pass was disabled: the image is untouched, still the commands'
   retain.presented(true, false, 7);
-  assert!(retain.keep(&commands(&list), None, env(), 7));
+  assert!(retain.keep(&commands(&list), none(), env(), 7));
 }
 
 #[test]
 fn no_commands_never_keep() {
   let mut retain = drawn(&[]);
-  assert!(!retain.keep(&UiCommands::default(), None, env(), 7));
+  assert!(!retain.keep(&UiCommands::default(), none(), env(), 7));
 }
 
 #[test]
 fn a_sprite_updated_in_place_redraws() {
-  let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+  let mut images = Assets::default();
+  let sprite = images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
   let list = [UiCommand::Sprite {
     sprite: sprite.clone(),
     rect: Rect::new(0.0, 0.0, 4.0, 4.0),
@@ -193,16 +209,17 @@ fn a_sprite_updated_in_place_redraws() {
     clip: None,
     layer: 0,
   }];
-  let mut retain = drawn(&list);
-  assert!(retain.keep(&commands(&list), None, env(), 7));
-  sprite.update(Image::solid_rect(4, 4, 0, 0, 255, 255));
-  assert!(!retain.keep(&commands(&list), None, env(), 7));
+  let mut retain = drawn_from(&list, from(&images, None));
+  assert!(retain.keep(&commands(&list), from(&images, None), env(), 7));
+  *images.get_mut(&sprite).unwrap() = Image::solid_rect(4, 4, 0, 0, 255, 255);
+  assert!(!retain.keep(&commands(&list), from(&images, None), env(), 7));
 }
 
 #[test]
 fn a_renamed_icon_redraws() {
-  let red = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "red");
-  let blue = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 0, 0, 255, 255), "blue");
+  let mut images = Assets::default();
+  let red = images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
+  let blue = images.add(Image::solid_rect(4, 4, 0, 0, 255, 255));
   let mut icons = TextIcons::default();
   icons.insert("confirm", red);
   let layout = Arc::new(TextLayout {
@@ -218,11 +235,11 @@ fn a_renamed_icon_redraws() {
   });
   let list = [text(&layout)];
   let mut retain = UiRetain::default();
-  assert!(!retain.keep(&commands(&list), Some(&icons), env(), 7));
+  assert!(!retain.keep(&commands(&list), from(&images, Some(&icons)), env(), 7));
   retain.presented(false, true, 7);
-  assert!(retain.keep(&commands(&list), Some(&icons), env(), 7));
+  assert!(retain.keep(&commands(&list), from(&images, Some(&icons)), env(), 7));
   icons.insert("confirm", blue);
-  assert!(!retain.keep(&commands(&list), Some(&icons), env(), 7));
+  assert!(!retain.keep(&commands(&list), from(&images, Some(&icons)), env(), 7));
 }
 
 #[test]
@@ -230,9 +247,9 @@ fn lines_with_equal_points_keep_and_a_moved_point_redraws() {
   let points = [Vec2::new(1.0, 2.0), Vec2::new(30.0, 40.0)];
   let mut retain = drawn(&[line(&points)]);
   // Another allocation holding the same points, as a widget makes each frame
-  assert!(retain.keep(&commands(&[line(&points)]), None, env(), 7));
+  assert!(retain.keep(&commands(&[line(&points)]), none(), env(), 7));
   let moved = [Vec2::new(1.0, 2.0), Vec2::new(30.0, 41.0)];
-  assert!(!retain.keep(&commands(&[line(&moved)]), None, env(), 7));
+  assert!(!retain.keep(&commands(&[line(&moved)]), none(), env(), 7));
 }
 
 #[test]
@@ -248,7 +265,7 @@ fn a_frame_whose_only_change_is_a_slot_offset_is_not_kept() {
   });
   commands.push(0, slot, rect(0.0));
   assert!(
-    !retain.keep(&commands, None, env(), 7),
+    !retain.keep(&commands, none(), env(), 7),
     "the first frame is drawn"
   );
   retain.presented(false, true, 7);
@@ -260,12 +277,12 @@ fn a_frame_whose_only_change_is_a_slot_offset_is_not_kept() {
   });
   commands.push(0, slot, rect(0.0));
   assert!(
-    !retain.keep(&commands, None, env(), 7),
+    !retain.keep(&commands, none(), env(), 7),
     "a moved slot moves pixels"
   );
   retain.presented(false, true, 7);
   assert!(
-    retain.keep(&commands, None, env(), 7),
+    retain.keep(&commands, none(), env(), 7),
     "unchanged, it is kept"
   );
 }
@@ -284,10 +301,10 @@ fn a_draw_moved_to_another_slot_is_not_kept() {
     commands
   };
   let mut retain = UiRetain::default();
-  assert!(!retain.keep(&frame(false), None, env(), 7));
+  assert!(!retain.keep(&frame(false), none(), env(), 7));
   retain.presented(false, true, 7);
   assert!(
-    !retain.keep(&frame(true), None, env(), 7),
+    !retain.keep(&frame(true), none(), env(), 7),
     "the same command in a slot draws elsewhere"
   );
 }
@@ -348,23 +365,23 @@ fn an_unchanged_run_is_kept_without_comparing_its_commands() {
   let mut retain = UiRetain::default();
   let frame = |version: u64| run_frame(Placed { version, ..PLACED });
   assert!(
-    !retain.keep(&frame(1), None, env(), 7),
+    !retain.keep(&frame(1), none(), env(), 7),
     "drawn the first time"
   );
   retain.presented(false, true, 7);
   assert!(
-    retain.keep(&frame(1), None, env(), 7),
+    retain.keep(&frame(1), none(), env(), 7),
     "the same run is kept"
   );
   // Its tag vouches for its commands: while its version is the same, its
   // fragment pushed the same ones
   let other = run_frame(Placed { x: 25.0, ..PLACED });
   assert!(
-    retain.keep(&other, None, env(), 7),
+    retain.keep(&other, none(), env(), 7),
     "a run's commands are not compared"
   );
   assert!(
-    !retain.keep(&frame(2), None, env(), 7),
+    !retain.keep(&frame(2), none(), env(), 7),
     "a new version is drawn"
   );
 }
@@ -372,7 +389,7 @@ fn an_unchanged_run_is_kept_without_comparing_its_commands() {
 #[test]
 fn a_run_with_another_tag_or_place_redraws() {
   let mut retain = UiRetain::default();
-  assert!(!retain.keep(&run_frame(PLACED), None, env(), 7));
+  assert!(!retain.keep(&run_frame(PLACED), none(), env(), 7));
   retain.presented(false, true, 7);
   for (at, what) in [
     (Placed { id: 8, ..PLACED }, "another fragment"),
@@ -386,11 +403,14 @@ fn a_run_with_another_tag_or_place_redraws() {
       "another place in the list",
     ),
   ] {
-    assert!(!retain.keep(&run_frame(at), None, env(), 7), "{what}");
+    assert!(!retain.keep(&run_frame(at), none(), env(), 7), "{what}");
     retain.presented(false, true, 7);
-    assert!(retain.keep(&run_frame(at), None, env(), 7), "{what}, again");
+    assert!(
+      retain.keep(&run_frame(at), none(), env(), 7),
+      "{what}, again"
+    );
     // Back to the first frame
-    assert!(!retain.keep(&run_frame(PLACED), None, env(), 7));
+    assert!(!retain.keep(&run_frame(PLACED), none(), env(), 7));
     retain.presented(false, true, 7);
   }
 }
@@ -415,18 +435,19 @@ fn draws_beside_a_run_are_compared_one_by_one() {
     commands
   };
   let mut retain = UiRetain::default();
-  assert!(!retain.keep(&frame(0.0), None, env(), 7));
+  assert!(!retain.keep(&frame(0.0), none(), env(), 7));
   retain.presented(false, true, 7);
-  assert!(retain.keep(&frame(0.0), None, env(), 7));
+  assert!(retain.keep(&frame(0.0), none(), env(), 7));
   assert!(
-    !retain.keep(&frame(0.5), None, env(), 7),
+    !retain.keep(&frame(0.5), none(), env(), 7),
     "a loose draw changed"
   );
 }
 
 #[test]
 fn a_sprite_in_a_run_updated_in_place_redraws() {
-  let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+  let mut images = Assets::default();
+  let sprite = images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
   let frame = |x: f32| {
     let mut commands = UiCommands::default();
     commands.push(0, 0, rect(x));
@@ -456,24 +477,24 @@ fn a_sprite_in_a_run_updated_in_place_redraws() {
     commands
   };
   let mut retain = UiRetain::default();
-  assert!(!retain.keep(&frame(0.0), None, env(), 7));
+  assert!(!retain.keep(&frame(0.0), from(&images, None), env(), 7));
   retain.presented(false, true, 7);
-  assert!(retain.keep(&frame(0.0), None, env(), 7));
-  sprite.update(Image::solid_rect(4, 4, 0, 0, 255, 255));
+  assert!(retain.keep(&frame(0.0), from(&images, None), env(), 7));
+  *images.get_mut(&sprite).unwrap() = Image::solid_rect(4, 4, 0, 0, 255, 255);
   assert!(
-    !retain.keep(&frame(0.0), None, env(), 7),
+    !retain.keep(&frame(0.0), from(&images, None), env(), 7),
     "the run's sprite changed"
   );
   retain.presented(false, true, 7);
-  assert!(retain.keep(&frame(0.0), None, env(), 7));
+  assert!(retain.keep(&frame(0.0), from(&images, None), env(), 7));
   // Drawn again for a loose draw, the run (seen before with its version)
   // keeps watching its sprite
-  assert!(!retain.keep(&frame(1.0), None, env(), 7));
+  assert!(!retain.keep(&frame(1.0), from(&images, None), env(), 7));
   retain.presented(false, true, 7);
-  assert!(retain.keep(&frame(1.0), None, env(), 7));
-  sprite.update(Image::solid_rect(4, 4, 0, 255, 0, 255));
+  assert!(retain.keep(&frame(1.0), from(&images, None), env(), 7));
+  *images.get_mut(&sprite).unwrap() = Image::solid_rect(4, 4, 0, 255, 0, 255);
   assert!(
-    !retain.keep(&frame(1.0), None, env(), 7),
+    !retain.keep(&frame(1.0), from(&images, None), env(), 7),
     "the run's sprite changed again"
   );
 }
@@ -507,7 +528,7 @@ fn a_run_with_a_text_effect_never_keeps() {
   };
   let mut retain = UiRetain::default();
   for _ in 0..3 {
-    assert!(!retain.keep(&frame(), None, env(), 7));
+    assert!(!retain.keep(&frame(), none(), env(), 7));
     retain.presented(false, true, 7);
   }
 }
@@ -754,9 +775,9 @@ fn held_runs_are_found_after_many_leave() {
     commands
   };
   let mut retain = UiRetain::default();
-  assert!(!retain.keep(&frame(0), None, env(), 1));
+  assert!(!retain.keep(&frame(0), none(), env(), 1));
   assert_eq!(retain.unseen, 40, "every run is new");
-  assert!(!retain.keep(&frame(20), None, env(), 1));
+  assert!(!retain.keep(&frame(20), none(), env(), 1));
   assert_eq!(retain.unseen, 0, "every run left was held before");
   // A new run among them, then the rest: found still
   let mut commands = frame(30);
@@ -771,7 +792,7 @@ fn held_runs_are_found_after_many_leave() {
     draws: at..at + 1,
     bounds: None,
   });
-  assert!(!retain.keep(&commands, None, env(), 1));
+  assert!(!retain.keep(&commands, none(), env(), 1));
   assert_eq!(retain.unseen, 1, "only the new run");
 }
 
@@ -799,13 +820,13 @@ fn held_runs_are_found_in_linear_time_among_new_ones() {
     run(&mut held, u64::from(k) + 1, 2 * k);
   }
   let mut retain = UiRetain::default();
-  assert!(!retain.keep(&held, None, env(), 1));
+  assert!(!retain.keep(&held, none(), env(), 1));
   let mut mixed = UiCommands::default();
   for k in 0..300 {
     run(&mut mixed, u64::from(k) + 1, 2 * k);
     run(&mut mixed, u64::from(k) + 1001, 2 * k + 1);
   }
-  assert!(!retain.keep(&mixed, None, env(), 1));
+  assert!(!retain.keep(&mixed, none(), env(), 1));
   assert_eq!(retain.unseen, 300, "only the new runs");
   let visited = retain.far_visited.get();
   assert!(visited <= 300, "{visited} runs visited past the look-ahead");

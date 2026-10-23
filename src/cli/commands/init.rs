@@ -330,15 +330,12 @@ impl Scene for GameScene {
 
     // Example: Spawn a simple colored square where the camera looks
     // (the centre of the resolution; world (0, 0) is its top-left)
-    let sprite = ctx.assets.create_sprite(
-      Image::solid_rect(64, 64, 0, 255, 255, 255),
-      "square"
-    );
+    let sprite = ctx.assets().add(Image::solid_rect(64, 64, 0, 255, 255, 255));
     let center = ctx.camera().position();
     // Sprites are centred on their position by default
     ctx.world.spawn((
       Transform::from_xy(center.x, center.y),
-      Renderable::sprite(sprite).with_z_order(0),
+      Renderable::image(sprite).with_z_order(0),
     ));
   }
 

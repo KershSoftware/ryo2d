@@ -54,15 +54,15 @@ pub struct GameScene {
   pub(super) best_time: f32,
   pub(super) player_lives: u32,
   pub(super) player_invincible: bool,
-  pub(super) player_sprite: SpriteHandle,
-  pub(super) turret_sprite: SpriteHandle,
-  pub(super) drone_sprite: SpriteHandle,
-  pub(super) nebula_orb_sprite: SpriteHandle,
-  pub(super) rocket_sprite: SpriteHandle,
-  pub(super) bullet_sprite: SpriteHandle,
-  pub(super) particle_sprite: SpriteHandle,
-  pub(super) platform_sprite: SpriteHandle,
-  pub(super) barrier_sprite: SpriteHandle,
+  pub(super) player_sprite: Handle<Image>,
+  pub(super) turret_sprite: Handle<Image>,
+  pub(super) drone_sprite: Handle<Image>,
+  pub(super) nebula_orb_sprite: Handle<Image>,
+  pub(super) rocket_sprite: Handle<Image>,
+  pub(super) bullet_sprite: Handle<Image>,
+  pub(super) particle_sprite: Handle<Image>,
+  pub(super) platform_sprite: Handle<Image>,
+  pub(super) barrier_sprite: Handle<Image>,
   // Progression tracking
   pub(super) difficulty_level: u32,
   pub(super) time_since_last_progression: f32,
@@ -88,34 +88,69 @@ impl Default for GameScene {
 }
 
 impl GameScene {
-  pub fn new() -> Self {
-    // Load sprites
+  /// The scene's sprites, added to (or loaded into) the world
+  fn load_sprites(&mut self, ctx: &mut SceneContext) {
+    let mut assets = ctx.assets();
+    let mut load = |path: &str| {
+      assets
+        .load_now::<Image>(path)
+        .unwrap_or_else(|error| panic!("Failed to load {path}: {error}"))
+    };
+    self.turret_sprite = load("turret.png");
+    self.particle_sprite = load("particle.png");
+    self.platform_sprite = load("platform.png");
     // Heroic gold/orange player color with black outline
-    let player_sprite =
-      Image::solid_rect(PLAYER_SIZE as u32, PLAYER_SIZE as u32, 255, 180, 50, 255);
-    let turret_sprite = Image::load("assets/turret.png").expect("Failed to load turret sprite");
-    // Create a small round bullet programmatically (bright orange-red)
-    let bullet_sprite = Image::solid_circle(BULLET_SIZE as u32, 255, 100, 50, 255);
-    let particle_sprite =
-      Image::load("assets/particle.png").expect("Failed to load particle sprite");
-    let platform_sprite =
-      Image::load("assets/platform.png").expect("Failed to load platform sprite");
-    // Create barrier sprite programmatically (dark gray rectangle)
-    let barrier_sprite =
-      Image::solid_rect(BARRIER_WIDTH as u32, BARRIER_HEIGHT as u32, 60, 60, 70, 255);
-    // Create drone sprite programmatically (purple color)
-    let drone_sprite = Image::solid_rect(DRONE_SIZE as u32, DRONE_SIZE as u32, 150, 80, 200, 255);
-    // Create nebula orb sprite (forest green)
-    let nebula_orb_sprite = Image::solid_circle(NEBULA_ORB_SIZE as u32, 45, 120, 50, 255);
-    // Create rocket sprite (orange/red)
-    let rocket_sprite = Image::solid_rect(
+    self.player_sprite = assets.add(Image::solid_rect(
+      PLAYER_SIZE as u32,
+      PLAYER_SIZE as u32,
+      255,
+      180,
+      50,
+      255,
+    ));
+    // A small round bullet (bright orange-red)
+    self.bullet_sprite = assets.add(Image::solid_circle(BULLET_SIZE as u32, 255, 100, 50, 255));
+    // Barrier (dark gray rectangle)
+    self.barrier_sprite = assets.add(Image::solid_rect(
+      BARRIER_WIDTH as u32,
+      BARRIER_HEIGHT as u32,
+      60,
+      60,
+      70,
+      255,
+    ));
+    // Drone (purple)
+    self.drone_sprite = assets.add(Image::solid_rect(
+      DRONE_SIZE as u32,
+      DRONE_SIZE as u32,
+      150,
+      80,
+      200,
+      255,
+    ));
+    // Nebula orb (forest green)
+    self.nebula_orb_sprite = assets.add(Image::solid_circle(
+      NEBULA_ORB_SIZE as u32,
+      45,
+      120,
+      50,
+      255,
+    ));
+    // Rocket (orange/red)
+    self.rocket_sprite = assets.add(Image::solid_rect(
       ROCKET_SIZE as u32,
       (ROCKET_SIZE * 0.6) as u32,
       255,
       120,
       50,
       255,
-    );
+    ));
+  }
+
+  pub fn new() -> Self {
+    // Stand-ins until on_enter adds the real sprites to the world (in a
+    // store of their own: nothing draws before then)
+    let stand_in = Assets::<Image>::default().add(Image::solid_rect(1, 1, 0, 0, 0, 0));
 
     Self {
       player: None,
@@ -133,15 +168,15 @@ impl GameScene {
       best_time: save::load_best_time(),
       player_lives: PLAYER_MAX_LIVES,
       player_invincible: false,
-      player_sprite: SpriteHandle::from_sprite(player_sprite, "player.png"),
-      turret_sprite: SpriteHandle::from_sprite(turret_sprite, "turret.png"),
-      drone_sprite: SpriteHandle::from_sprite(drone_sprite, "drone"),
-      nebula_orb_sprite: SpriteHandle::from_sprite(nebula_orb_sprite, "nebula_orb"),
-      rocket_sprite: SpriteHandle::from_sprite(rocket_sprite, "rocket"),
-      bullet_sprite: SpriteHandle::from_sprite(bullet_sprite, "bullet.png"),
-      particle_sprite: SpriteHandle::from_sprite(particle_sprite, "particle.png"),
-      platform_sprite: SpriteHandle::from_sprite(platform_sprite, "platform.png"),
-      barrier_sprite: SpriteHandle::from_sprite(barrier_sprite, "barrier"),
+      player_sprite: stand_in.clone(),
+      turret_sprite: stand_in.clone(),
+      drone_sprite: stand_in.clone(),
+      nebula_orb_sprite: stand_in.clone(),
+      rocket_sprite: stand_in.clone(),
+      bullet_sprite: stand_in.clone(),
+      particle_sprite: stand_in.clone(),
+      platform_sprite: stand_in.clone(),
+      barrier_sprite: stand_in,
       // Progression starts at level 0
       difficulty_level: 0,
       time_since_last_progression: 0.0,
@@ -164,6 +199,7 @@ impl GameScene {
 
 impl Scene for GameScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    self.load_sprites(ctx);
     // Use fixed design resolution for consistent gameplay
     // Display settings only affect window scaling, not game logic
     self.screen_width = DESIGN_WIDTH;
@@ -217,7 +253,7 @@ impl Scene for GameScene {
       move || {
         (
           Transform::default(),
-          Renderable::sprite(bullet_sprite.clone()).with_z_order(Z_BULLET),
+          Renderable::image(bullet_sprite.clone()).with_z_order(Z_BULLET),
           Interpolated,
           // CCD for fast-moving bullets, no gravity
           RigidBody::dynamic()

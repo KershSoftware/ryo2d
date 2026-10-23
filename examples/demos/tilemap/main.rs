@@ -118,14 +118,14 @@ impl TilemapPage {
   }
 
   /// Create a solid-color sprite for a tile type.
-  fn tile_sprite(tile_id: TileId) -> SpriteHandle {
+  fn tile_sprite(ctx: &mut SceneContext, tile_id: TileId) -> Handle<Image> {
     let (r, g, b) = match tile_id {
       TILE_GROUND => (90, 65, 45),    // brown earth
       TILE_PLATFORM => (70, 130, 70), // mossy green
       _ => (180, 180, 180),           // grey fallback
     };
     let sprite = Image::solid_rect(TILE_SIZE, TILE_SIZE, r, g, b, 255);
-    SpriteHandle::from_sprite(sprite, format!("tile_{}", tile_id))
+    ctx.assets().add(sprite)
   }
 
   /// Spawn Renderable entities for every non-empty tile so we can see them.
@@ -155,20 +155,20 @@ impl TilemapPage {
     };
 
     // Pre-build sprites per tile ID
-    let ground_sprite = Self::tile_sprite(TILE_GROUND);
-    let platform_sprite = Self::tile_sprite(TILE_PLATFORM);
+    let ground_sprite = Self::tile_sprite(ctx, TILE_GROUND);
+    let platform_sprite = Self::tile_sprite(ctx, TILE_PLATFORM);
 
     for (wx, wy, tile_id) in tiles {
       let sprite = match tile_id {
         TILE_GROUND => ground_sprite.clone(),
         TILE_PLATFORM => platform_sprite.clone(),
-        _ => Self::tile_sprite(tile_id),
+        _ => Self::tile_sprite(ctx, tile_id),
       };
       // Tiles are placed by their top-left corner, like the tile grid
       ctx.world.spawn((
         TileVis,
         Transform::from_xy(wx, wy),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_anchor(Anchor::TopLeft)
           .with_z_order(0),
       ));

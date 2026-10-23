@@ -405,9 +405,10 @@ impl Scene for Prompt {
 
 #[test]
 fn swapped_text_icons_show_at_once() {
-  let swatch =
-    |r, g, b, name| SpriteHandle::from_sprite(Image::solid_rect(16, 16, r, g, b, 255), name);
-  let (red, blue) = (swatch(255, 0, 0, "red"), swatch(0, 0, 255, "blue"));
+  // Each engine's icons are images in its own world
+  let swatch = |engine: &mut HeadlessEngine, r, g, b| {
+    engine.assets().add(Image::solid_rect(16, 16, r, g, b, 255))
+  };
   let make = || {
     EngineBuilder::new()
       .resolution(320, 240)
@@ -417,18 +418,20 @@ fn swapped_text_icons_show_at_once() {
     return;
   };
   pair.each(|engine| {
+    let red = swatch(engine, 255, 0, 0);
     engine
       .world_mut()
       .resource_mut::<TextIcons>()
-      .insert("confirm", red.clone());
+      .insert("confirm", red);
   });
   pair.frames(10, "the red icon");
   assert!(pair.on.ui_render_stats().kept);
   pair.each(|engine| {
+    let blue = swatch(engine, 0, 0, 255);
     engine
       .world_mut()
       .resource_mut::<TextIcons>()
-      .insert("confirm", blue.clone());
+      .insert("confirm", blue);
   });
   pair.frames(1, "the icon swapped");
   assert!(!pair.on.ui_render_stats().kept, "the swap redraws the UI");
@@ -677,7 +680,7 @@ impl Scene for BitmapLabel {
         pixels[(y * 8 + x) * 4..][..4].copy_from_slice(&[255, 255, 255, 255]);
       }
     }
-    let sheet = SpriteHandle::from_sprite(Image::from_rgba(pixels, 8, 4), "retain-grid");
+    let sheet = ctx.assets().add(Image::from_rgba(pixels, 8, 4));
     self.font = ctx.fonts().add_bitmap("Grid", sheet, (4, 4), "#.").ok();
   }
 

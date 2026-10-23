@@ -11,11 +11,10 @@
 //! drawing them would, so the run's next version reuses them.
 
 use super::texts::TextKey;
-use super::{UiRenderEnv, animated, stamp_of, stamped};
+use super::{StampSources, UiRenderEnv, animated, stamp_of, stamped};
 use crate::core::graphics::{GlyphPage, TextureId};
 use crate::core::hash::FastMap;
 use crate::core::render::ui_renderer::{SpriteFix, TexNeed, UiInstance};
-use crate::core::text::TextIcons;
 use crate::core::ui::UiId;
 use crate::core::ui::immediate::{FragmentRun, UiDraw};
 
@@ -88,11 +87,11 @@ impl KeptRun {
 
   /// Note the stamps of `draws` (the run's commands), with `icons`
   /// resolving icon names, and whether one reads the clock
-  pub(crate) fn note(&mut self, draws: &[UiDraw], icons: Option<&TextIcons>) {
+  pub(crate) fn note(&mut self, draws: &[UiDraw], sources: StampSources<'_>) {
     for (k, draw) in (0u32..).zip(draws) {
       self.animated |= animated(&draw.command);
       if stamped(&draw.command) {
-        self.stamps.push((k, stamp_of(&draw.command, icons)));
+        self.stamps.push((k, stamp_of(&draw.command, sources)));
       }
     }
   }

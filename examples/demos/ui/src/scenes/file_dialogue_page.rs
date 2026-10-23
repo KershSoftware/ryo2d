@@ -60,7 +60,8 @@ impl Conversation {
 }
 
 pub struct FileDialoguePage {
-  portrait: SpriteHandle,
+  /// Added to the world when the page enters
+  portrait: Option<Handle<Image>>,
   shop: Shop,
   hud: Option<Hud>,
   conversation: Option<Conversation>,
@@ -77,7 +78,7 @@ pub struct FileDialoguePage {
 impl FileDialoguePage {
   pub fn new() -> Self {
     Self {
-      portrait: art::shopkeeper(),
+      portrait: None,
       shop: Shop::new(),
       hud: None,
       conversation: None,
@@ -134,7 +135,7 @@ impl FileDialoguePage {
 
   /// Spawn the conversation panel and fill it
   fn spawn_panel(&mut self, ctx: &mut SceneContext) -> Result<(), UiFileError> {
-    let panel = ctx.assets.load_ui(DIALOGUE)?.root(ctx.assets)?;
+    let panel = ctx.assets.load_ui(DIALOGUE)?.root(&mut ctx.assets())?;
     let root = ctx.spawn_ui(panel);
     match Conversation::find(ctx, root) {
       Ok(conversation) => self.conversation = Some(conversation),
@@ -153,8 +154,10 @@ impl FileDialoguePage {
     let Some(conversation) = &self.conversation else {
       return;
     };
-    if ctx.world.get::<Children>(conversation.portrait).is_none() {
-      let image = UiNode::image(self.portrait.clone())
+    if ctx.world.get::<Children>(conversation.portrait).is_none()
+      && let Some(portrait) = self.portrait.clone()
+    {
+      let image = UiNode::image(portrait)
         .image_size(96.0, 96.0)
         .filter(Filter::Nearest);
       ctx.spawn_ui_in(conversation.portrait, image);
@@ -382,6 +385,9 @@ impl DemoPage for FileDialoguePage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
+    if self.portrait.is_none() {
+      self.portrait = Some(ctx.assets().add(art::shopkeeper()));
+    }
     if let Err(error) = self.spawn_panel(ctx) {
       self.fail(error);
     }

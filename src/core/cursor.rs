@@ -19,8 +19,8 @@
 //!         ctx.set_cursor(CursorStyle::Default);
 //!     }
 //!
-//!     // Use a custom sprite cursor
-//!     let crosshair = ctx.assets.load_sprite("crosshair.png").unwrap();
+//!     // Use a custom image cursor
+//!     let crosshair = ctx.assets().load_now::<Image>("crosshair.png").unwrap();
 //!     ctx.set_custom_cursor(&crosshair, 16, 16);  // hotspot at center
 //!
 //!     // Hide cursor during gameplay

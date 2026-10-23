@@ -4,8 +4,9 @@
 
 use super::collision::CollisionConfig;
 use super::emitter::{EmissionMode, EmissionShape, ParticleEmitter};
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::Handle;
 use crate::core::ecs::SpriteEffect;
+use crate::core::graphics::Image;
 use crate::core::ui::Color;
 
 impl ParticleEmitter {
@@ -16,7 +17,7 @@ impl ParticleEmitter {
   /// Create a fire effect.
   ///
   /// Orange-yellow particles rising upward with slight spread.
-  pub fn fire(sprite: SpriteHandle) -> Self {
+  pub fn fire(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 30.0 })
       .with_shape(EmissionShape::Cone {
@@ -38,7 +39,7 @@ impl ParticleEmitter {
   }
 
   /// Create a small flame (torch, candle).
-  pub fn flame_small(sprite: SpriteHandle) -> Self {
+  pub fn flame_small(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 15.0 })
       .with_shape(EmissionShape::Cone {
@@ -61,7 +62,7 @@ impl ParticleEmitter {
   /// Create a smoke effect.
   ///
   /// Slow-expanding gray particles drifting upward.
-  pub fn smoke(sprite: SpriteHandle) -> Self {
+  pub fn smoke(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 10.0 })
       .with_shape(EmissionShape::Circle {
@@ -78,7 +79,7 @@ impl ParticleEmitter {
   }
 
   /// Create a thick smoke effect (fires, destruction).
-  pub fn smoke_thick(sprite: SpriteHandle) -> Self {
+  pub fn smoke_thick(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 20.0 })
       .with_shape(EmissionShape::Circle {
@@ -101,7 +102,7 @@ impl ParticleEmitter {
   /// Create an explosion effect (one-shot burst).
   ///
   /// Radial burst of particles with trails.
-  pub fn explosion(sprite: SpriteHandle, count: u32) -> Self {
+  pub fn explosion(sprite: Handle<Image>, count: u32) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Burst { count })
       .with_shape(EmissionShape::Circle {
@@ -122,7 +123,7 @@ impl ParticleEmitter {
   }
 
   /// Create a debris explosion (physical particles).
-  pub fn explosion_debris(sprite: SpriteHandle, count: u32) -> Self {
+  pub fn explosion_debris(sprite: Handle<Image>, count: u32) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Burst { count })
       .with_shape(EmissionShape::Circle {
@@ -148,7 +149,7 @@ impl ParticleEmitter {
   /// Create a magic sparkle effect.
   ///
   /// Glowing particles that wander and fade.
-  pub fn magic(sprite: SpriteHandle) -> Self {
+  pub fn magic(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 20.0 })
       .with_shape(EmissionShape::Circle {
@@ -169,7 +170,7 @@ impl ParticleEmitter {
   }
 
   /// Create a healing/buff effect.
-  pub fn magic_heal(sprite: SpriteHandle) -> Self {
+  pub fn magic_heal(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 15.0 })
       .with_shape(EmissionShape::Circle {
@@ -196,7 +197,7 @@ impl ParticleEmitter {
   /// Create a rain effect.
   ///
   /// Fast downward streaks.
-  pub fn rain(sprite: SpriteHandle) -> Self {
+  pub fn rain(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 100.0 })
       .with_shape(EmissionShape::Line {
@@ -218,7 +219,7 @@ impl ParticleEmitter {
   /// Create a snow effect.
   ///
   /// Gentle floating descent with wobble.
-  pub fn snow(sprite: SpriteHandle) -> Self {
+  pub fn snow(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 30.0 })
       .with_shape(EmissionShape::Line {
@@ -243,7 +244,7 @@ impl ParticleEmitter {
   /// Create a sparks effect.
   ///
   /// Bright bouncing particles.
-  pub fn sparks(sprite: SpriteHandle) -> Self {
+  pub fn sparks(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Burst { count: 20 })
       .with_shape(EmissionShape::Cone {
@@ -262,7 +263,7 @@ impl ParticleEmitter {
   }
 
   /// Create a dust impact effect.
-  pub fn dust(sprite: SpriteHandle) -> Self {
+  pub fn dust(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Burst { count: 10 })
       .with_shape(EmissionShape::Cone {
@@ -285,7 +286,7 @@ impl ParticleEmitter {
   /// Create a confetti effect.
   ///
   /// Multi-colored tumbling particles.
-  pub fn confetti(sprite: SpriteHandle) -> Self {
+  pub fn confetti(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Burst { count: 50 })
       .with_shape(EmissionShape::Cone {
@@ -305,7 +306,7 @@ impl ParticleEmitter {
   }
 
   /// Create a bubble effect.
-  pub fn bubbles(sprite: SpriteHandle) -> Self {
+  pub fn bubbles(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 5.0 })
       .with_shape(EmissionShape::Circle {
@@ -328,7 +329,7 @@ impl ParticleEmitter {
   // ===========================================================================
 
   /// Create a comet/projectile trail.
-  pub fn comet_trail(sprite: SpriteHandle) -> Self {
+  pub fn comet_trail(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 60.0 })
       .with_shape(EmissionShape::Point)
@@ -346,7 +347,7 @@ impl ParticleEmitter {
   }
 
   /// Create an engine exhaust effect.
-  pub fn exhaust(sprite: SpriteHandle) -> Self {
+  pub fn exhaust(sprite: Handle<Image>) -> Self {
     Self::new(sprite)
       .with_mode(EmissionMode::Continuous { rate: 40.0 })
       .with_shape(EmissionShape::Cone {
@@ -368,8 +369,8 @@ mod tests {
   use super::*;
   use crate::core::graphics::Image;
 
-  fn test_sprite() -> SpriteHandle {
-    SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 255, 255, 255), "test.png")
+  fn test_sprite() -> Handle<Image> {
+    crate::core::asset::Assets::<Image>::default().add(Image::solid_rect(8, 8, 255, 255, 255, 255))
   }
 
   #[test]

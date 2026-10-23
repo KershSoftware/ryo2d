@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
-use crate::core::asset::AssetManager;
+use crate::core::asset::AssetsView;
 use crate::core::ui::UiNode;
 use crate::core::ui::nodes::BindValue;
 
@@ -22,8 +22,7 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 const TOP_FIELDS: &[&str] = &["root", "templates", "imports", "bindings"];
 const TEMPLATE_FIELDS: &[&str] = &["params", "defaults", "node"];
 
-/// A loaded UI file: a cheap, cloneable handle to its checked contents,
-/// like a `SpriteHandle`.
+/// A loaded UI file: a cheap, cloneable handle to its checked contents.
 ///
 /// Load one with `assets.load_ui(path)`, or check text with
 /// [`UiFile::parse`]. Build its `root`, or an instance of one of its
@@ -33,17 +32,16 @@ const TEMPLATE_FIELDS: &[&str] = &["params", "defaults", "node"];
 /// ```
 /// use ryo2d::prelude::*;
 ///
-/// let file = UiFile::parse(
-///   "ui/slots.ui.ron",
-///   r#"(templates: {
-///     "Item": (params: ["name", "count"], node: Button(label: "{name} x{count}")),
-///   })"#,
-/// )?;
-/// let mut assets = AssetManager::new();
-/// let args = UiArgs::new().with("name", "Sword").with("count", 3);
-/// let sword = file.template("Item", &args, &mut assets)?;
-/// # let _ = sword;
-/// # Ok::<(), UiFileError>(())
+/// fn sword(ctx: &mut SceneContext<'_>) -> Result<UiNode, UiFileError> {
+///   let file = UiFile::parse(
+///     "ui/slots.ui.ron",
+///     r#"(templates: {
+///       "Item": (params: ["name", "count"], node: Button(label: "{name} x{count}")),
+///     })"#,
+///   )?;
+///   let args = UiArgs::new().with("name", "Sword").with("count", 3);
+///   file.template("Item", &args, &mut ctx.assets())
+/// }
 /// ```
 #[derive(Clone)]
 pub struct UiFile(Arc<FileCell>);
@@ -247,16 +245,18 @@ impl UiFile {
     self.0.generation.load(Ordering::Acquire)
   }
 
-  /// Build the file's `root`, loading its images through `assets`.
+  /// Build the file's `root`, loading its images at once through the asset
+  /// registry (`&mut ctx.assets()`); their paths are asset paths.
   ///
   /// Each build is a new instance with the file's `bindings` as starting
   /// values; a missing image is an error at its value's position.
-  pub fn root(&self, assets: &mut AssetManager) -> Result<UiNode, UiFileError> {
+  pub fn root(&self, assets: &mut AssetsView<'_>) -> Result<UiNode, UiFileError> {
     self.build_root(assets)
   }
 
   /// Build an instance of the template `name` (the file's or an import's)
-  /// with `args`, loading its images through `assets`.
+  /// with `args`, loading its images at once through the asset registry
+  /// (`&mut ctx.assets()`).
   ///
   /// An argument is one of the template's parameters or an option of the
   /// node it builds, as in a file: `MenuButton(label: .., default_focus: true)`.
@@ -264,7 +264,7 @@ impl UiFile {
     &self,
     name: &str,
     args: &UiArgs,
-    assets: &mut AssetManager,
+    assets: &mut AssetsView<'_>,
   ) -> Result<UiNode, UiFileError> {
     self.build_template(name, args, assets)
   }
@@ -824,7 +824,6 @@ impl Check<'_> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::asset::AssetManager;
   use crate::core::ui::file::build::Placeholders;
   use crate::core::ui::nodes::fingerprint;
   use crate::prelude::*;
@@ -1073,9 +1072,9 @@ mod tests {
       r#"(templates: {"Item": (params: ["name", "count"], node: Button(label: "{name} x{count}"))})"#,
     )
     .unwrap();
-    let mut assets = AssetManager::new();
+    let mut assets = Placeholders::default();
     let node = file
-      .template(
+      .build_template(
         "Item",
         &UiArgs::new().with("name", "Sword").with("count", 3),
         &mut assets,
@@ -1089,7 +1088,7 @@ mod tests {
     assert_eq!(source.template.as_deref(), Some("Item"));
     assert_ne!(node.instance, 0);
     let error = file
-      .template(
+      .build_template(
         "Item",
         &UiArgs::new().with("name", "S").with("cnt", 1),
         &mut assets,
@@ -1098,7 +1097,7 @@ mod tests {
       .unwrap();
     assert!(error.to_string().contains("\"cnt\""), "{error}");
     let other = file
-      .template(
+      .build_template(
         "Item",
         &UiArgs::new().with("name", "A").with("count", 1),
         &mut assets,
@@ -1237,7 +1236,7 @@ mod tests {
   fn an_unknown_template_from_code_is_named_with_a_suggestion() {
     let file = UiFile::parse("ui/slot.ui.ron", r#"(templates: {"Item": (node: Slot)})"#).unwrap();
     let error = file
-      .template("Itme", &UiArgs::new(), &mut AssetManager::new())
+      .build_template("Itme", &UiArgs::new(), &mut Placeholders::default())
       .err()
       .unwrap();
     assert!(

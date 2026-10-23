@@ -369,7 +369,7 @@ impl DemoPage for YSortingPage {
     let grass_handles: Vec<_> = (0..4)
       .map(|i| {
         let grass = Self::create_grass_tile(i);
-        ctx.assets.create_sprite(grass, format!("grass_{}", i))
+        ctx.assets().add(grass)
       })
       .collect();
 
@@ -379,7 +379,7 @@ impl DemoPage for YSortingPage {
         let variant = ((tx * 3 + ty * 7) % 4) as usize;
         ctx.world.spawn((
           Transform::from_xy((tx * TILE_SIZE) as f32, (ty * TILE_SIZE) as f32),
-          Renderable::sprite(grass_handles[variant].clone())
+          Renderable::image(grass_handles[variant].clone())
             .with_anchor(Anchor::TopLeft)
             .with_z_order(-100),
         ));
@@ -388,19 +388,19 @@ impl DemoPage for YSortingPage {
 
     // Create sprites
     let player_sprite = Self::create_character_sprite(70, 130, 220); // Blue tunic
-    let player_handle = ctx.assets.create_sprite(player_sprite, "player");
+    let player_handle = ctx.assets().add(player_sprite);
 
     let tree_sprite = Self::create_tree_sprite();
-    let tree_handle = ctx.assets.create_sprite(tree_sprite, "tree");
+    let tree_handle = ctx.assets().add(tree_sprite);
 
     let bush_sprite = Self::create_bush_sprite();
-    let bush_handle = ctx.assets.create_sprite(bush_sprite, "bush");
+    let bush_handle = ctx.assets().add(bush_sprite);
 
     let rock_sprite = Self::create_rock_sprite();
-    let rock_handle = ctx.assets.create_sprite(rock_sprite, "rock");
+    let rock_handle = ctx.assets().add(rock_sprite);
 
     let shadow_sprite = Self::create_shadow_sprite();
-    let shadow_handle = ctx.assets.create_sprite(shadow_sprite, "shadow");
+    let shadow_handle = ctx.assets().add(shadow_sprite);
 
     // Spawn player at center
     let player_x = GAME_WIDTH as f32 / 2.0;
@@ -412,7 +412,7 @@ impl DemoPage for YSortingPage {
         .world
         .spawn((
           Transform::from_xy(player_x, player_y + 2.0),
-          Renderable::sprite(shadow_handle.clone()).with_z_order(-1),
+          Renderable::image(shadow_handle.clone()).with_z_order(-1),
         ))
         .id(),
     );
@@ -424,7 +424,7 @@ impl DemoPage for YSortingPage {
         .spawn((
           Player,
           Transform::from_xy(player_x, player_y),
-          Renderable::sprite(player_handle.clone())
+          Renderable::image(player_handle.clone())
             .with_anchor(Anchor::BottomCenter)
             .with_z_order(0),
           self.get_y_sort(),
@@ -454,7 +454,7 @@ impl DemoPage for YSortingPage {
 
       ctx.world.spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(tree_handle.clone())
+        Renderable::image(tree_handle.clone())
           .with_anchor(Anchor::BottomCenter)
           .with_z_order(0),
         self.get_y_sort(),
@@ -470,7 +470,7 @@ impl DemoPage for YSortingPage {
 
       ctx.world.spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(bush_handle.clone())
+        Renderable::image(bush_handle.clone())
           .with_anchor(Anchor::BottomCenter)
           .with_z_order(0),
         self.get_y_sort(),
@@ -486,7 +486,7 @@ impl DemoPage for YSortingPage {
 
       ctx.world.spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(rock_handle.clone())
+        Renderable::image(rock_handle.clone())
           .with_anchor(Anchor::BottomCenter)
           .with_z_order(0),
         self.get_y_sort(),
@@ -502,14 +502,14 @@ impl DemoPage for YSortingPage {
 
     for (i, ((r, g, b), (x, y))) in npc_configs.iter().enumerate() {
       let npc_sprite = Self::create_character_sprite(*r, *g, *b);
-      let npc_handle = ctx.assets.create_sprite(npc_sprite, format!("npc_{}", i));
+      let npc_handle = ctx.assets().add(npc_sprite);
 
       // NPC shadow
       let shadow = ctx
         .world
         .spawn((
           Transform::from_xy(*x, *y + 2.0),
-          Renderable::sprite(shadow_handle.clone()).with_z_order(-1),
+          Renderable::image(shadow_handle.clone()).with_z_order(-1),
         ))
         .id();
 
@@ -524,7 +524,7 @@ impl DemoPage for YSortingPage {
             shadow,
           },
           Transform::from_xy(*x, *y),
-          Renderable::sprite(npc_handle)
+          Renderable::image(npc_handle)
             .with_anchor(Anchor::BottomCenter)
             .with_z_order(0),
           self.get_y_sort(),

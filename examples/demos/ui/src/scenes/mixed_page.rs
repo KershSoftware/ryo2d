@@ -78,7 +78,7 @@ impl MixedPage {
 impl MixedPage {
   /// Build the grid and its first cells, then spawn them
   fn spawn_grid(&mut self, ctx: &mut SceneContext) -> Result<(), UiFileError> {
-    let root = ctx.assets.load_ui(MIXED)?.root(ctx.assets)?;
+    let root = ctx.assets.load_ui(MIXED)?.root(&mut ctx.assets())?;
     let cells = (1..=START_CELLS)
       .map(|n| Self::cell(ctx, n))
       .collect::<Result<Vec<_>, _>>()?;

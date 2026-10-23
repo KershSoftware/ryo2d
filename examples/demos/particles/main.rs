@@ -74,7 +74,7 @@ impl DemoScene {
 
 struct ParticlesPage {
   current_scene: DemoScene,
-  particle_sprite: SpriteHandle,
+  particle_sprite: Handle<Image>,
   screen_width: f32,
   screen_height: f32,
 
@@ -92,11 +92,12 @@ struct ParticlesPage {
 
 impl ParticlesPage {
   fn new(scene: DemoScene) -> Self {
-    // Create a temporary placeholder sprite - will be replaced in enter
+    // A placeholder, in a store of its own: enter replaces it with the
+    // world's own before anything draws
     let placeholder = Image::solid_circle(8, 255, 255, 255, 255);
     Self {
       current_scene: scene,
-      particle_sprite: SpriteHandle::from_sprite(placeholder, "placeholder"),
+      particle_sprite: Assets::<Image>::default().add(placeholder),
       screen_width: 0.0,
       screen_height: 0.0,
       particle_system: ParticleSystem::new(),
@@ -907,7 +908,7 @@ impl DemoPage for ParticlesPage {
 
     // Create a simple white particle sprite
     let sprite = Image::solid_circle(16, 255, 255, 255, 255);
-    self.particle_sprite = ctx.assets.create_sprite(sprite, "particle");
+    self.particle_sprite = ctx.assets().add(sprite);
 
     // Set up initial scene
     self.setup_scene(ctx.world);

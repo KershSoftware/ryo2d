@@ -54,7 +54,7 @@ pub struct MenuScene {
   host_mode: HostMode,
 
   rain_emitter: Option<Entity>,
-  rain_sprite: Option<SpriteHandle>,
+  rain_sprite: Option<Handle<Image>>,
   particle_system: ParticleSystem,
 
   // Fairy lights
@@ -87,10 +87,7 @@ impl MenuScene {
 
   fn spawn_rain(&mut self, ctx: &mut SceneContext) {
     // Create particle sprite
-    let rain_sprite = ctx.assets.create_sprite(
-      Image::solid_circle(8, 255, 255, 255, 255), // White circle
-      "rain_particle_menu",
-    );
+    let rain_sprite = ctx.assets().add(Image::solid_circle(8, 255, 255, 255, 255));
     self.rain_sprite = Some(rain_sprite.clone());
 
     // Use the built-in rain preset with wider coverage

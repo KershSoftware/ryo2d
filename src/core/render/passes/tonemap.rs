@@ -1,5 +1,7 @@
 //! The look: the scene image tonemapped into the display image
 
+use crate::core::asset::{AssetId, Assets};
+use crate::core::graphics::Image;
 use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
 use crate::core::render::context::image_view;
 use crate::core::render::exposure::ExposureGpu;
@@ -7,16 +9,19 @@ use crate::core::render::look::LookUniforms;
 use crate::core::render::{FrameImage, RenderContext, RenderPass, pass_ids};
 use crate::core::shaders::OutputBuffer;
 
+/// An image at one version: its id, and its content version
+type ImageVersion = (AssetId<Image>, u64);
+
 /// The LUT on the GPU: a 3D texture of the strip's sRGB colours, and which
-/// sprite version it holds.
+/// image version it holds.
 struct LutTexture {
   view: wgpu::TextureView,
   /// N of the LUT held (2 while it is the identity placeholder)
   size: u32,
-  /// The sprite and generation uploaded, or `None` for the placeholder
-  source: Option<(usize, u64)>,
-  /// The sprite and generation already warned about
-  warned: Option<(usize, u64)>,
+  /// The image and version uploaded, or `None` for the placeholder
+  source: Option<ImageVersion>,
+  /// The image and version already warned about
+  warned: Option<ImageVersion>,
 }
 
 impl LutTexture {
@@ -31,37 +36,39 @@ impl LutTexture {
     }
   }
 
-  /// Follow `lut`: upload a new or reloaded strip; keep the last good one
-  /// (warning once) if it is no longer a strip. Returns the N to apply, 0
+  /// Follow `lut`, its image read from `images`: upload a new or reloaded
+  /// strip; keep the last good one (warning once) if it is no longer a
+  /// strip, or while its image is not loaded. Returns the N to apply, 0
   /// without a LUT.
   fn sync(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     lut: Option<&crate::core::render::ColorLut>,
+    images: &Assets<Image>,
   ) -> u32 {
     let Some(lut) = lut else {
       return 0;
     };
-    let handle = lut.sprite();
-    let key = (handle.serial(), handle.generation());
-    if self.source != Some(key) && self.warned != Some(key) {
-      let sprite = handle.sprite();
-      match crate::core::render::look::strip_size(sprite.width(), sprite.height()) {
-        Some(n) => {
-          self.view = upload_lut(device, queue, sprite.data(), n);
-          self.size = n;
-          self.source = Some(key);
-        }
-        None => {
-          crate::engine_warn!(
-            module: "Render",
-            "LUT sprite {} is {}x{}, not a strip; keeping the last good LUT",
-            handle.path().display(),
-            sprite.width(),
-            sprite.height()
-          );
-          self.warned = Some(key);
+    let id = lut.sprite().id();
+    if let (Some(image), Some(version)) = (images.get(id), images.version(id)) {
+      let key = (id, version);
+      if self.source != Some(key) && self.warned != Some(key) {
+        match crate::core::render::look::strip_size(image.width(), image.height()) {
+          Some(n) => {
+            self.view = upload_lut(device, queue, image.data(), n);
+            self.size = n;
+            self.source = Some(key);
+          }
+          None => {
+            crate::engine_warn!(
+              module: "Render",
+              "LUT image {id:?} is {}x{}, not a strip; keeping the last good LUT",
+              image.width(),
+              image.height()
+            );
+            self.warned = Some(key);
+          }
         }
       }
     }
@@ -283,9 +290,12 @@ impl RenderPass for Tonemap {
       .last_time
       .map_or(0.0, |last| (time - last).clamp(0.0, 0.25));
     self.last_time = Some(time);
-    let lut_size = gpu
-      .lut
-      .sync(device, queue, ctx.scene.look.grading.lut.as_ref());
+    let lut_size = gpu.lut.sync(
+      device,
+      queue,
+      ctx.scene.look.grading.lut.as_ref(),
+      ctx.scene.images,
+    );
     queue.write_buffer(
       &gpu.uniforms,
       0,
@@ -349,8 +359,6 @@ impl RenderPass for Tonemap {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::Image;
   use crate::core::render::ColorLut;
 
   #[test]
@@ -358,22 +366,25 @@ mod tests {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
-    let handle = SpriteHandle::from_sprite(ColorLut::identity_strip(4), "lut-reload");
-    let Ok(lut) = ColorLut::from_sprite(&handle) else {
+    let mut images = Assets::default();
+    let handle = images.add(ColorLut::identity_strip(4));
+    let Ok(lut) = ColorLut::from_sprite(&handle, &images) else {
       panic!("a 16x4 strip is a LUT");
     };
     let mut texture = LutTexture::new(&device, &queue);
-    assert_eq!(texture.sync(&device, &queue, Some(&lut)), 4);
+    assert_eq!(texture.sync(&device, &queue, Some(&lut), &images), 4);
     let before = texture.view.clone();
-    handle.update(Image::solid_rect(5, 5, 0, 0, 0, 255));
+    if let Some(image) = images.get_mut(&handle) {
+      *image = Image::solid_rect(5, 5, 0, 0, 0, 255);
+    }
     assert_eq!(
-      texture.sync(&device, &queue, Some(&lut)),
+      texture.sync(&device, &queue, Some(&lut), &images),
       4,
       "keeps the last good LUT"
     );
     assert_eq!(texture.view, before);
     assert_eq!(
-      texture.sync(&device, &queue, None),
+      texture.sync(&device, &queue, None, &images),
       0,
       "no LUT, nothing applied"
     );

@@ -236,7 +236,7 @@ fn drive_property_tween<T: Lerp + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::asset::SpriteHandle;
+  use crate::core::asset::Assets;
   use crate::core::ecs::{
     Disabled, IntoScheduleConfigs, PropertyTween, Renderable, Transform, Tween, TweenSequence,
     Vec2, World,
@@ -259,10 +259,7 @@ mod tests {
   }
 
   fn sprite() -> Renderable {
-    Renderable::sprite(SpriteHandle::from_sprite(
-      Image::solid_rect(4, 4, 255, 255, 255, 255),
-      "white",
-    ))
+    Renderable::image(Assets::default().add(Image::solid_rect(4, 4, 255, 255, 255, 255)))
   }
 
   #[test]

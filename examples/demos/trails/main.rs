@@ -112,13 +112,13 @@ const JOINS: [LineJoin; 3] = [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round]
 const JOIN_NAMES: [&str; 3] = ["Miter", "Bevel", "Round"];
 const DEFAULT_JOIN: usize = 2;
 
-fn circle_sprite(radius: u32, color: Color) -> SpriteHandle {
+fn circle_sprite(ctx: &mut SceneContext, radius: u32, color: Color) -> Handle<Image> {
   let sprite = Image::solid_circle(radius, color.r, color.g, color.b, color.a);
-  SpriteHandle::from_sprite(sprite, format!("circle_{}_{}", radius, color.r))
+  ctx.assets().add(sprite)
 }
 
 /// Create a gradient texture for textured trails
-fn create_trail_texture() -> SpriteHandle {
+fn create_trail_texture(ctx: &mut SceneContext) -> Handle<Image> {
   let width = 64u32;
   let height = 32u32;
   let mut data = vec![0u8; (width * height * 4) as usize];
@@ -150,7 +150,7 @@ fn create_trail_texture() -> SpriteHandle {
   }
 
   let sprite = Image::from_rgba(data, width, height);
-  SpriteHandle::from_sprite(sprite, "trail_gradient")
+  ctx.assets().add(sprite)
 }
 
 // =============================================================================
@@ -179,7 +179,7 @@ struct TrailsPage {
   applied_cap_join: (usize, usize),
 
   // Textured
-  texture_sprite: Option<SpriteHandle>,
+  texture_sprite: Option<Handle<Image>>,
 }
 
 impl TrailsPage {
@@ -256,11 +256,12 @@ impl TrailsPage {
     let x = cx + start_angle.cos() * radius;
     let y = cy + start_angle.sin() * radius;
 
+    let image = circle_sprite(ctx, 6, color);
     let entity = ctx
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(circle_sprite(6, color)),
+        Renderable::image(image),
         trail,
         OrbitTrail {
           angle: start_angle,
@@ -288,11 +289,12 @@ impl TrailsPage {
     let mouse_color = Color::rgb(100, 200, 255);
     let trail = self.preset().create(mouse_color, 8.0);
 
+    let image = circle_sprite(ctx, 8, mouse_color);
     let entity = ctx
       .world
       .spawn((
         Transform::from_xy(mx, my),
-        Renderable::sprite(circle_sprite(8, mouse_color)),
+        Renderable::image(image),
         trail,
         MouseTrail,
       ))
@@ -516,11 +518,12 @@ impl TrailsPage {
       .with_cap(self.cap())
       .with_style(TrailStyle::Solid);
 
+    let image = circle_sprite(ctx, 6, mouse_color);
     let entity = ctx
       .world
       .spawn((
         Transform::from_xy(mx, my),
-        Renderable::sprite(circle_sprite(6, mouse_color)),
+        Renderable::image(image),
         trail,
         MouseTrail,
       ))
@@ -534,7 +537,7 @@ impl TrailsPage {
 
   fn setup_textured(&mut self, ctx: &mut SceneContext) {
     if self.texture_sprite.is_none() {
-      self.texture_sprite = Some(create_trail_texture());
+      self.texture_sprite = Some(create_trail_texture(ctx));
     }
     let texture = self.texture_sprite.clone().unwrap();
 

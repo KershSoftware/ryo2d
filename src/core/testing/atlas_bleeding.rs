@@ -1,5 +1,7 @@
 //! Sprites sharing an atlas page never show a neighbour's pixels.
 
+use std::sync::{Arc, Mutex};
+
 use super::HeadlessEngine;
 use crate::core::engine::EngineBuilder;
 use crate::prelude::*;
@@ -9,8 +11,9 @@ const BLUE: [u8; 4] = [30, 60, 230, 255];
 
 /// Uploads red then blue (side by side in the atlas) and draws only red.
 struct Bleed {
-  red: SpriteHandle,
-  blue: SpriteHandle,
+  /// Red and blue, added on enter (and their ids, for the test)
+  images: Option<[Handle<Image>; 2]>,
+  ids: Arc<Mutex<Option<[AssetId<Image>; 2]>>>,
   centre: f32,
   scale: f32,
   rotation: f32,
@@ -19,12 +22,9 @@ struct Bleed {
 
 impl Bleed {
   fn new(centre: f32, scale: f32, rotation: f32, flip_x: bool) -> Self {
-    let solid = |name: &str, c: [u8; 4]| {
-      SpriteHandle::from_sprite(Image::solid_rect(4, 4, c[0], c[1], c[2], c[3]), name)
-    };
     Self {
-      red: solid("bleed-red", RED),
-      blue: solid("bleed-blue", BLUE),
+      images: None,
+      ids: Arc::default(),
       centre,
       scale,
       rotation,
@@ -34,31 +34,42 @@ impl Bleed {
 }
 
 impl Scene for Bleed {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let solid = |c: [u8; 4]| Image::solid_rect(4, 4, c[0], c[1], c[2], c[3]);
+    let images = [ctx.assets().add(solid(RED)), ctx.assets().add(solid(BLUE))];
+    *self.ids.lock().unwrap() = Some(images.each_ref().map(Handle::id));
+    self.images = Some(images);
+  }
+
   fn render(&mut self, gpu: &mut GpuRenderContext) {
+    let Some([red, blue]) = &self.images else {
+      return;
+    };
     let size = 4.0 * self.scale;
     let mut instance =
       SpriteInstance::new().with_transform(self.centre, self.centre, self.rotation, size, size);
     if self.flip_x {
       instance = instance.with_uv(1.0, 0.0, 0.0, 1.0);
     }
-    gpu.add_sprite(&self.red, instance, SpriteDraw::default());
+    gpu.add_sprite(red, instance, SpriteDraw::default());
     // Blue off screen, so it is uploaded next to red in the atlas
     let off_screen = SpriteInstance::new().with_transform(-100.0, -100.0, 0.0, 4.0, 4.0);
-    gpu.add_sprite(&self.blue, off_screen, SpriteDraw::default());
+    gpu.add_sprite(blue, off_screen, SpriteDraw::default());
   }
 }
 
 /// Draw a scene and check the frame; returns the frame for further checks.
 fn draw(scene: Bleed) -> Option<image::RgbaImage> {
-  let (scene_red, scene_blue) = (scene.red.clone(), scene.blue.clone());
+  let ids = Arc::clone(&scene.ids);
   let builder = EngineBuilder::new().resolution(64, 64).start_scene(scene);
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   engine.step_frames(2).unwrap();
 
   // Bleeding needs the two sprites on one atlas page
+  let [scene_red, scene_blue] = ids.lock().unwrap().expect("added on enter");
   let gpu = engine.engine.sprite_gpu.as_ref().expect("renderer");
-  let red = gpu.lookup_sprite(&scene_red).expect("red resident");
-  let blue = gpu.lookup_sprite(&scene_blue).expect("blue resident");
+  let red = gpu.lookup_image(scene_red).expect("red resident");
+  let blue = gpu.lookup_image(scene_blue).expect("blue resident");
   assert_eq!(red.page, blue.page, "sprites must share an atlas page");
 
   Some(engine.frame().unwrap())

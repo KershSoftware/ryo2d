@@ -103,7 +103,7 @@ impl DemoScene {
     profile_scope!("spawn_cpu");
 
     let mut rng = rand::thread_rng();
-    let sprite = SpriteHandle::from_sprite(self.cpu_sprite.clone(), "cpu_sprite");
+    let sprite = ctx.assets().add(self.cpu_sprite.clone());
 
     for _ in 0..count {
       let center_x = rng.gen_range(SPAWN_LEFT + 50.0..SPAWN_RIGHT - 50.0);
@@ -111,7 +111,7 @@ impl DemoScene {
 
       ctx.world.spawn((
         Transform::from_xy(center_x, center_y),
-        Renderable::sprite(sprite.clone()).with_z_order(10),
+        Renderable::image(sprite.clone()).with_z_order(10),
         CpuHeavy {
           angle: rng.gen_range(0.0..std::f32::consts::TAU),
           angular_velocity: rng.gen_range(1.0..5.0),
@@ -145,7 +145,7 @@ impl DemoScene {
     profile_scope!("spawn_gpu");
 
     let mut rng = rand::thread_rng();
-    let sprite = SpriteHandle::from_sprite(self.gpu_sprite.clone(), "gpu_sprite");
+    let sprite = ctx.assets().add(self.gpu_sprite.clone());
 
     for _ in 0..count {
       ctx.world.spawn((
@@ -153,7 +153,7 @@ impl DemoScene {
           rng.gen_range(SPAWN_LEFT..SPAWN_RIGHT),
           rng.gen_range(SPAWN_TOP..SPAWN_BOTTOM),
         ),
-        Renderable::sprite(sprite.clone()).with_z_order(5),
+        Renderable::image(sprite.clone()).with_z_order(5),
         GpuHeavy {
           drift_x: rng.gen_range(-20.0..20.0),
           drift_y: rng.gen_range(-20.0..20.0),
@@ -184,7 +184,7 @@ impl DemoScene {
     profile_scope!("spawn_mixed");
 
     let mut rng = rand::thread_rng();
-    let sprite = SpriteHandle::from_sprite(self.mixed_sprite.clone(), "mixed_sprite");
+    let sprite = ctx.assets().add(self.mixed_sprite.clone());
 
     for _ in 0..count {
       ctx.world.spawn((
@@ -192,7 +192,7 @@ impl DemoScene {
           rng.gen_range(SPAWN_LEFT..SPAWN_RIGHT),
           rng.gen_range(SPAWN_TOP..SPAWN_BOTTOM),
         ),
-        Renderable::sprite(sprite.clone()).with_z_order(15),
+        Renderable::image(sprite.clone()).with_z_order(15),
         MixedLoad {
           target_x: rng.gen_range(SPAWN_LEFT..SPAWN_RIGHT),
           target_y: rng.gen_range(SPAWN_TOP..SPAWN_BOTTOM),

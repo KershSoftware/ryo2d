@@ -116,9 +116,10 @@ fn regression_tween_captures_start_tint() {
 /// This ensures sprites are visible by default.
 #[test]
 fn regression_renderable_default_alpha() {
+  let mut images = Assets::<Image>::default();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
-  let handle = SpriteHandle::from_sprite(sprite, "test");
-  let renderable = Renderable::sprite(handle);
+  let handle = images.add(sprite);
+  let renderable = Renderable::image(handle);
 
   assert_eq!(
     renderable.alpha, 1.0,
@@ -131,9 +132,10 @@ fn regression_renderable_default_alpha() {
 /// WHITE tint means no color modification to the sprite.
 #[test]
 fn regression_renderable_default_tint() {
+  let mut images = Assets::<Image>::default();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
-  let handle = SpriteHandle::from_sprite(sprite, "test");
-  let renderable = Renderable::sprite(handle);
+  let handle = images.add(sprite);
+  let renderable = Renderable::image(handle);
 
   assert_eq!(
     renderable.tint,
@@ -147,9 +149,10 @@ fn regression_renderable_default_tint() {
 /// The rendering system must use these values when drawing.
 #[test]
 fn regression_renderable_alpha_tint_modifiable() {
+  let mut images = Assets::<Image>::default();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
-  let handle = SpriteHandle::from_sprite(sprite, "test");
-  let mut renderable = Renderable::sprite(handle);
+  let handle = images.add(sprite);
+  let mut renderable = Renderable::image(handle);
 
   renderable.alpha = 0.5;
   renderable.tint = Color::RED;
@@ -341,9 +344,10 @@ fn tween_sequence_restart() {
 /// Test Renderable with_alpha builder
 #[test]
 fn renderable_with_alpha() {
+  let mut images = Assets::<Image>::default();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
-  let handle = SpriteHandle::from_sprite(sprite, "test");
-  let renderable = Renderable::sprite(handle).with_alpha(0.5);
+  let handle = images.add(sprite);
+  let renderable = Renderable::image(handle).with_alpha(0.5);
 
   assert_eq!(renderable.alpha, 0.5);
 }
@@ -351,9 +355,10 @@ fn renderable_with_alpha() {
 /// Test Renderable with_tint builder
 #[test]
 fn renderable_with_tint() {
+  let mut images = Assets::<Image>::default();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
-  let handle = SpriteHandle::from_sprite(sprite, "test");
-  let renderable = Renderable::sprite(handle).with_tint(Color::GREEN);
+  let handle = images.add(sprite);
+  let renderable = Renderable::image(handle).with_tint(Color::GREEN);
 
   assert_eq!(renderable.tint, Color::GREEN);
 }
@@ -365,15 +370,16 @@ fn renderable_with_tint() {
 /// Test Tween and Renderable together in ECS
 #[test]
 fn tween_renderable_ecs_integration() {
+  let mut images = Assets::<Image>::default();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
-  let handle = SpriteHandle::from_sprite(sprite, "test");
+  let handle = images.add(sprite);
 
   let entity = world
     .spawn((
       Transform::from_xy(0.0, 0.0),
-      Renderable::sprite(handle).with_alpha(0.8),
+      Renderable::image(handle).with_alpha(0.8),
       Tween::fade_to(0.2, 1.0),
     ))
     .id();
@@ -394,15 +400,16 @@ fn tween_renderable_ecs_integration() {
 /// Test TweenSequence with Renderable in ECS
 #[test]
 fn tween_sequence_renderable_ecs_integration() {
+  let mut images = Assets::<Image>::default();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
-  let handle = SpriteHandle::from_sprite(sprite, "test");
+  let handle = images.add(sprite);
 
   let entity = world
     .spawn((
       Transform::from_xy(0.0, 0.0),
-      Renderable::sprite(handle),
+      Renderable::image(handle),
       TweenSequence::new()
         .then(Tween::fade_to(0.5, 0.5))
         .then(Tween::tint_to(Color::RED, 0.5))
@@ -421,18 +428,19 @@ fn tween_sequence_renderable_ecs_integration() {
 /// Test multiple entities with different tween types
 #[test]
 fn multiple_tween_entities() {
+  let mut images = Assets::<Image>::default();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
-  let handle1 = SpriteHandle::from_sprite(sprite.clone(), "test1");
-  let handle2 = SpriteHandle::from_sprite(sprite.clone(), "test2");
-  let handle3 = SpriteHandle::from_sprite(sprite, "test3");
+  let handle1 = images.add(sprite.clone());
+  let handle2 = images.add(sprite.clone());
+  let handle3 = images.add(sprite);
 
   // Entity with Tween (alpha)
   let e1 = world
     .spawn((
       Transform::from_xy(0.0, 0.0),
-      Renderable::sprite(handle1),
+      Renderable::image(handle1),
       Tween::fade_out(1.0),
     ))
     .id();
@@ -441,7 +449,7 @@ fn multiple_tween_entities() {
   let e2 = world
     .spawn((
       Transform::from_xy(100.0, 0.0),
-      Renderable::sprite(handle2),
+      Renderable::image(handle2),
       Tween::tint_to(Color::BLUE, 1.0),
     ))
     .id();
@@ -450,7 +458,7 @@ fn multiple_tween_entities() {
   let e3 = world
     .spawn((
       Transform::from_xy(200.0, 0.0),
-      Renderable::sprite(handle3),
+      Renderable::image(handle3),
       TweenSequence::new()
         .then(Tween::to_position(300.0, 0.0, 0.5))
         .then(Tween::fade_to(0.5, 0.5)),

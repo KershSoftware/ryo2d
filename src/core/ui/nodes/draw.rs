@@ -2633,7 +2633,7 @@ mod lists {
 #[cfg(all(test, feature = "default-fonts"))]
 mod drag {
   use super::{Sends, event_kinds};
-  use crate::core::asset::SpriteHandle;
+  use crate::core::asset::Handle;
   use crate::core::ecs::kernel::{Children, Entity, World};
   use crate::core::graphics::Image;
   use crate::core::input::Direction;
@@ -2648,24 +2648,23 @@ mod drag {
       .unwrap_or_default()
   }
 
-  fn icon() -> SpriteHandle {
-    SpriteHandle::from_sprite(
-      Image::solid_rect(16, 16, 200, 50, 50, 255),
-      "node-slot-icon",
-    )
+  fn icon(d: &mut UiDriver) -> Handle<Image> {
+    d.registry()
+      .add(Image::solid_rect(16, 16, 200, 50, 50, 255))
   }
 
   /// A row of three slots: the first holds an item, the second is empty,
   /// the third is empty and refuses drops
   fn bag() -> (UiDriver, [Entity; 3]) {
     let mut d = UiDriver::new((400.0, 200.0));
+    let icon = icon(&mut d);
     let root = d.spawn_ui(
       UiNode::row()
         .focus_scope()
         .gap(6.0)
         .child(
           UiNode::slot()
-            .icon(icon())
+            .icon(icon)
             .count(3)
             .drag_source()
             .drop_target()

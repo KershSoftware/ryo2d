@@ -1,7 +1,7 @@
 //! The context a scene's `render` callback draws GPU sprites through.
 
-use super::{BatchCollector, CameraView, SpriteDraw, SpriteGpuRenderer, SpriteInstance};
-use crate::core::asset::SpriteHandle;
+use super::{BatchCollector, CameraView, Image, SpriteDraw, SpriteGpuRenderer, SpriteInstance};
+use crate::core::asset::Handle;
 use crate::core::ecs::{ShaderHandle, ShaderParams, World};
 
 /// Context for GPU sprite rendering.
@@ -19,7 +19,7 @@ use crate::core::ecs::{ShaderHandle, ShaderParams, World};
 ///             .with_transform(particle.x, particle.y, particle.rotation, 1.0, 1.0);
 ///         // The texture is uploaded the first time a frame draws it
 ///         let draw = SpriteDraw { z: particle.z_order, ..Default::default() };
-///         gpu.add_sprite(&particle.sprite, instance, draw);
+///         gpu.add_sprite(&particle.image, instance, draw);
 ///     }
 /// }
 /// ```
@@ -61,7 +61,7 @@ impl<'a> GpuRenderContext<'a> {
   /// shader that fails to compile is logged and the sprite is drawn plain.
   pub fn add_custom_sprite(
     &mut self,
-    sprite: &SpriteHandle,
+    image: &Handle<Image>,
     shader: &ShaderHandle,
     params: &ShaderParams,
     mut instance: SpriteInstance,
@@ -74,7 +74,7 @@ impl<'a> GpuRenderContext<'a> {
       Some(key) => crate::core::render::SpriteShading::Custom(key),
       None => crate::core::render::SpriteShading::Plain,
     };
-    self.batch.add_shaded(sprite, shading, instance, draw);
+    self.batch.add_shaded(image.id(), shading, instance, draw);
   }
 
   /// Get screen dimensions (width, height)
@@ -98,16 +98,17 @@ impl<'a> GpuRenderContext<'a> {
     self.camera
   }
 
-  /// Add a sprite instance drawing `sprite`'s texture, as `draw` says (z,
-  /// blend, filter, lighting, effects). Instances are in world space (their
+  /// Add a sprite instance drawing `image`, as `draw` says (z, blend,
+  /// filter, lighting, effects). Instances are in world space (their
   /// transform's centre is a world position); for something fixed on
   /// screen, place it with `camera().screen_to_world`.
   ///
-  /// The texture is uploaded the first time a frame draws it, and dropped
-  /// once no frame has drawn it for 600 frames. This is the low-level API
+  /// The texture is uploaded the first time a frame draws it, and freed with
+  /// the image's last handle. An image that is not loaded draws the checker
+  /// in debug builds and nothing in release ones. This is the low-level API
   /// for GPU sprites; most games use the higher-level ones (particles,
   /// `ParallaxLayer`).
-  pub fn add_sprite(&mut self, sprite: &SpriteHandle, instance: SpriteInstance, draw: SpriteDraw) {
-    self.batch.add(sprite, instance, draw);
+  pub fn add_sprite(&mut self, image: &Handle<Image>, instance: SpriteInstance, draw: SpriteDraw) {
+    self.batch.add(image, instance, draw);
   }
 }

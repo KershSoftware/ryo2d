@@ -2,7 +2,7 @@
 
 use glam::{Mat3, Vec3};
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::Resource;
 use crate::core::graphics::Image;
 
@@ -110,25 +110,22 @@ impl Default for ColorGrading {
 /// A colour lookup table: a strip of N tiles of N x N side by side (1024x32
 /// for N = 32, 256x16 for N = 16). Tile `b` holds blue `b / (N - 1)`; within
 /// a tile red grows to the right and green downward. Lookups are in sRGB,
-/// where LUTs are authored. It follows its sprite's hot reload.
-#[derive(Debug, Clone)]
+/// where LUTs are authored. It follows its image's reloads.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColorLut {
-  sprite: SpriteHandle,
+  sprite: Handle<Image>,
   size: u32,
 }
 
-impl PartialEq for ColorLut {
-  fn eq(&self, other: &Self) -> bool {
-    self.size == other.size && self.sprite.serial() == other.sprite.serial()
-  }
-}
-
-/// Why a sprite is not a [`ColorLut`].
+/// Why an image is not a [`ColorLut`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LutError {
   /// A strip is N x N tiles side by side: N * N wide, N high, N from 2 to 64
-  #[error("a LUT strip is N*N wide and N high (N from 2 to 64); this sprite is {width}x{height}")]
+  #[error("a LUT strip is N*N wide and N high (N from 2 to 64); this image is {width}x{height}")]
   WrongSize { width: u32, height: u32 },
+  /// The image is not loaded (not yet, or it failed)
+  #[error("the LUT image is not loaded")]
+  NotLoaded,
 }
 
 /// N for a `width` x `height` strip, if it is one.
@@ -137,9 +134,11 @@ pub(crate) fn strip_size(width: u32, height: u32) -> Option<u32> {
 }
 
 impl ColorLut {
-  /// The LUT `sprite` holds as a strip.
-  pub fn from_sprite(sprite: &SpriteHandle) -> Result<Self, LutError> {
-    let (width, height) = (sprite.width(), sprite.height());
+  /// The LUT image `sprite` holds as a strip, read from `images`
+  /// (`ctx.world.resource::<Assets<Image>>()`).
+  pub fn from_sprite(sprite: &Handle<Image>, images: &Assets<Image>) -> Result<Self, LutError> {
+    let image = images.get(sprite).ok_or(LutError::NotLoaded)?;
+    let (width, height) = (image.width(), image.height());
     let size = strip_size(width, height).ok_or(LutError::WrongSize { width, height })?;
     Ok(Self {
       sprite: sprite.clone(),
@@ -152,8 +151,8 @@ impl ColorLut {
     self.size
   }
 
-  /// The strip's sprite.
-  pub(crate) fn sprite(&self) -> &SpriteHandle {
+  /// The strip's image.
+  pub(crate) fn sprite(&self) -> &Handle<Image> {
     &self.sprite
   }
 
@@ -560,11 +559,9 @@ mod tests {
   #[test]
   fn a_lut_strip_is_n_tiles_of_n_by_n() {
     let lut = |w: u32, h: u32| {
-      let sprite = crate::core::asset::SpriteHandle::from_sprite(
-        crate::core::graphics::Image::solid_rect(w, h, 0, 0, 0, 255),
-        format!("lut-{w}x{h}"),
-      );
-      ColorLut::from_sprite(&sprite).map(|lut| lut.size())
+      let mut images = Assets::default();
+      let sprite = images.add(Image::solid_rect(w, h, 0, 0, 0, 255));
+      ColorLut::from_sprite(&sprite, &images).map(|lut| lut.size())
     };
     assert_eq!(lut(256, 16), Ok(16));
     assert_eq!(lut(1024, 32), Ok(32));
@@ -581,6 +578,11 @@ mod tests {
         width: 1,
         height: 1
       })
+    );
+    let unloaded = Assets::<Image>::default().add(ColorLut::identity_strip(4));
+    assert_eq!(
+      ColorLut::from_sprite(&unloaded, &Assets::default()),
+      Err(LutError::NotLoaded)
     );
   }
 

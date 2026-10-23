@@ -49,8 +49,8 @@ impl Canvas {
     }
   }
 
-  pub fn into_sprite(self, name: &str) -> SpriteHandle {
-    SpriteHandle::from_sprite(Image::from_rgba(self.pixels, self.width, self.height), name)
+  pub fn into_image(self) -> Image {
+    Image::from_rgba(self.pixels, self.width, self.height)
   }
 }
 
@@ -65,10 +65,10 @@ const ICON_CANVAS: u32 = ICON + 2;
 const OUTLINE: Color = Color::rgb(24, 20, 30);
 
 /// An item icon from its art
-pub fn icon(rows: &[&str], palette: &[(char, Color)], name: &str) -> SpriteHandle {
+pub fn icon(rows: &[&str], palette: &[(char, Color)]) -> Image {
   let mut canvas = Canvas::new(ICON_CANVAS, ICON_CANVAS);
   canvas.paint(1, 1, rows, palette);
-  canvas.into_sprite(name)
+  canvas.into_image()
 }
 
 /// The outline colour every icon shares, as a palette entry
@@ -228,7 +228,7 @@ pub const BREAD: [&str; 16] = [
   "................",
 ];
 
-pub fn sword() -> SpriteHandle {
+pub fn sword() -> Image {
   let palette = [
     ink(),
     ('w', Color::rgb(236, 240, 248)),
@@ -236,69 +236,69 @@ pub fn sword() -> SpriteHandle {
     ('g', Color::rgb(230, 186, 70)),
     ('b', Color::rgb(130, 82, 50)),
   ];
-  icon(&SWORD, &palette, "ui-demo-sword")
+  icon(&SWORD, &palette)
 }
 
-pub fn shield() -> SpriteHandle {
+pub fn shield() -> Image {
   let palette = [
     ink(),
     ('b', Color::rgb(60, 100, 200)),
     ('y', Color::rgb(240, 200, 80)),
   ];
-  icon(&SHIELD, &palette, "ui-demo-shield")
+  icon(&SHIELD, &palette)
 }
 
-pub fn helmet() -> SpriteHandle {
+pub fn helmet() -> Image {
   let palette = [
     ink(),
     ('w', Color::rgb(236, 240, 248)),
     ('s', Color::rgb(150, 160, 180)),
   ];
-  icon(&HELMET, &palette, "ui-demo-helmet")
+  icon(&HELMET, &palette)
 }
 
-pub fn armor() -> SpriteHandle {
+pub fn armor() -> Image {
   let palette = [
     ink(),
     ('r', Color::rgb(170, 60, 60)),
     ('y', Color::rgb(240, 200, 80)),
   ];
-  icon(&ARMOR, &palette, "ui-demo-armor")
+  icon(&ARMOR, &palette)
 }
 
-pub fn potion() -> SpriteHandle {
+pub fn potion() -> Image {
   let palette = [
     ink(),
     ('c', Color::rgb(160, 110, 70)),
     ('w', Color::rgb(220, 236, 255)),
     ('r', Color::rgb(220, 50, 70)),
   ];
-  icon(&POTION, &palette, "ui-demo-potion")
+  icon(&POTION, &palette)
 }
 
-pub fn gem() -> SpriteHandle {
+pub fn gem() -> Image {
   let palette = [
     ink(),
     ('w', Color::rgb(220, 250, 255)),
     ('b', Color::rgb(70, 190, 240)),
     ('d', Color::rgb(30, 110, 180)),
   ];
-  icon(&GEM, &palette, "ui-demo-gem")
+  icon(&GEM, &palette)
 }
 
-pub fn key() -> SpriteHandle {
+pub fn key() -> Image {
   let palette = [ink(), ('y', Color::rgb(240, 200, 80))];
-  icon(&KEY, &palette, "ui-demo-key")
+  icon(&KEY, &palette)
 }
 
-pub fn bread() -> SpriteHandle {
+pub fn bread() -> Image {
   let palette = [
     ink(),
     ('b', Color::rgb(210, 150, 80)),
     ('l', Color::rgb(245, 210, 140)),
     ('d', Color::rgb(150, 95, 45)),
   ];
-  icon(&BREAD, &palette, "ui-demo-bread")
+  icon(&BREAD, &palette)
 }
 
 /// The portrait's side in art pixels
@@ -332,7 +332,7 @@ pub const FACE: [&str; 24] = [
 ];
 
 /// The shopkeeper: a bearded face, 24 pixels square
-pub fn shopkeeper() -> SpriteHandle {
+pub fn shopkeeper() -> Image {
   let palette = [
     ink(),
     ('h', Color::rgb(90, 60, 40)),
@@ -349,7 +349,7 @@ pub fn shopkeeper() -> SpriteHandle {
   canvas.fill_rect(0, 0, 24, 24, Color::rgb(58, 46, 70));
   canvas.fill_rect(0, 20, 24, 4, Color::rgb(96, 64, 44));
   canvas.paint(0, 0, &FACE, &palette);
-  canvas.into_sprite("ui-demo-shopkeeper")
+  canvas.into_image()
 }
 
 #[cfg(test)]

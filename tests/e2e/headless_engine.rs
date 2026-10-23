@@ -13,10 +13,10 @@ struct Squares;
 impl Scene for Squares {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     ctx.look().tonemap = Tonemap::Clamp;
-    let sprite = SpriteHandle::from_sprite(Image::solid_rect(20, 20, 255, 0, 0, 255), "red");
+    let sprite = ctx.assets().add(Image::solid_rect(20, 20, 255, 0, 0, 255));
     ctx.world.spawn((
       Transform::from_xy(100.0, 50.0),
-      Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
+      Renderable::image(sprite).with_anchor(Anchor::TopLeft),
     ));
   }
 
@@ -565,10 +565,12 @@ fn a_non_srgb_target_still_shows_srgb_colours() {
   struct Grey;
   impl Scene for Grey {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let grey = SpriteHandle::from_sprite(Image::solid_rect(32, 32, 128, 128, 128, 255), "grey");
+      let grey = ctx
+        .assets()
+        .add(Image::solid_rect(32, 32, 128, 128, 128, 255));
       ctx
         .world
-        .spawn((Transform::from_xy(16.0, 16.0), Renderable::sprite(grey)));
+        .spawn((Transform::from_xy(16.0, 16.0), Renderable::image(grey)));
     }
   }
   let builder = EngineBuilder::new().resolution(32, 32).start_scene(Grey);
@@ -585,10 +587,12 @@ fn a_non_srgb_target_still_shows_srgb_colours() {
 
 fn red_square_at(x: f32, y: f32, size: u32) -> impl FnMut(&mut SceneContext) + Send + 'static {
   move |ctx| {
-    let red = SpriteHandle::from_sprite(Image::solid_rect(size, size, 220, 30, 40, 255), "red");
+    let red = ctx
+      .assets()
+      .add(Image::solid_rect(size, size, 220, 30, 40, 255));
     ctx
       .world
-      .spawn((Transform::from_xy(x, y), Renderable::sprite(red)));
+      .spawn((Transform::from_xy(x, y), Renderable::image(red)));
   }
 }
 

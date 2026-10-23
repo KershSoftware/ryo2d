@@ -58,9 +58,9 @@ impl KnockbackDemoScene {
   }
 
   /// Create a colored square sprite
-  fn create_square(size: u32, r: u8, g: u8, b: u8) -> SpriteHandle {
+  fn create_square(ctx: &mut SceneContext, size: u32, r: u8, g: u8, b: u8) -> Handle<Image> {
     let sprite = Image::solid_rect(size, size, r, g, b, 255);
-    SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}_{}", size, r, g, b))
+    ctx.assets().add(sprite)
   }
 
   /// Spawn entities in a 4x2 grid
@@ -77,21 +77,21 @@ impl KnockbackDemoScene {
       let x = spacing_x * (col as f32 + 1.0);
 
       // Top row: Simple entities (Transform only)
-      let simple_sprite = Self::create_square(40, 100, 180, 255); // Blue
+      let simple_sprite = Self::create_square(ctx, 40, 100, 180, 255); // Blue
       let simple_entity = ctx
         .world
         .spawn((
           SimpleEntity,
           Transform::from_xy(x, y_top),
-          Renderable::sprite(simple_sprite).with_z_order(10),
+          Renderable::image(simple_sprite).with_z_order(10),
         ))
         .id();
       self.simple_entities.push(simple_entity);
 
       // Bottom row: two dynamic crates of different density, then two
       // characters, each with a pillar just to its right
-      let physics_sprite = Self::create_square(40, 255, 140, 100); // Orange
-      let character_sprite = Self::create_square(40, 120, 230, 120); // Green
+      let physics_sprite = Self::create_square(ctx, 40, 255, 140, 100); // Orange
+      let character_sprite = Self::create_square(ctx, 40, 120, 230, 120); // Green
       let physics_entity = if col < 2 {
         let density = if col == 0 { 0.5 } else { 4.0 };
         ctx
@@ -99,7 +99,7 @@ impl KnockbackDemoScene {
           .spawn((
             PhysicsEntity,
             Transform::from_xy(x, y_bottom),
-            Renderable::sprite(physics_sprite).with_z_order(10),
+            Renderable::image(physics_sprite).with_z_order(10),
             RigidBody::dynamic()
               .lock_rotation()
               .with_linear_damping(4.0),
@@ -113,7 +113,7 @@ impl KnockbackDemoScene {
           .spawn((
             PhysicsEntity,
             Transform::from_xy(x, y_bottom),
-            Renderable::sprite(character_sprite).with_z_order(10),
+            Renderable::image(character_sprite).with_z_order(10),
             CharacterController::platformer(),
             Collider::rect(40.0, 40.0),
           ))
@@ -131,10 +131,10 @@ impl KnockbackDemoScene {
   /// A fixed wall of `w` x `h` centred at (x, y)
   fn spawn_wall(ctx: &mut SceneContext, x: f32, y: f32, w: u32, h: u32) {
     let sprite = Image::solid_rect(w, h, 90, 90, 110, 255);
-    let handle = SpriteHandle::from_sprite(sprite, format!("wall_{w}_{h}"));
+    let handle = ctx.assets().add(sprite);
     ctx.world.spawn((
       Transform::from_xy(x, y),
-      Renderable::sprite(handle).with_z_order(5),
+      Renderable::image(handle).with_z_order(5),
       Collider::rect(w as f32, h as f32),
     ));
   }

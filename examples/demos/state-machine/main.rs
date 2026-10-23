@@ -174,21 +174,21 @@ impl StateMachineDemoScene {
     }
   }
 
-  fn create_character_sprite() -> SpriteHandle {
+  fn create_character_sprite(ctx: &mut SceneContext) -> Handle<Image> {
     // White sprite that we'll tint with state color
     let sprite = Image::solid_rect(40, 60, 255, 255, 255, 255);
-    SpriteHandle::from_sprite(sprite, "character")
+    ctx.assets().add(sprite)
   }
 
   fn spawn_character(&mut self, ctx: &mut SceneContext) {
-    let sprite = Self::create_character_sprite();
+    let sprite = Self::create_character_sprite(ctx);
     let (r, g, b) = self.character_fsm.current().color();
     self.character_entity = Some(
       ctx
         .world
         .spawn((
           Transform::from_xy(self.character_x, self.character_y),
-          Renderable::sprite(sprite)
+          Renderable::image(sprite)
             .with_z_order(10)
             .with_tint(Color::rgb(r, g, b)),
         ))

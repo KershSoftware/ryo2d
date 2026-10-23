@@ -13,9 +13,10 @@ use std::sync::Arc;
 use swash::{FontRef, StringId};
 use thiserror::Error;
 
-use crate::core::asset::SpriteHandle;
+use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::Resource;
 use crate::core::error::{ManagerError, ManagerResult};
+use crate::core::graphics::Image;
 
 /// One registered font face: a font file, or one face of a collection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -90,12 +91,12 @@ pub enum FontError {
   EmptyBitmap,
 }
 
-/// A grid of glyphs on a sprite sheet: `chars[i]` is cell `i`, row-major
+/// A grid of glyphs on an image: `chars[i]` is cell `i`, row-major, in as
+/// many columns as the image is wide
 #[derive(Debug, Clone)]
 pub(crate) struct BitmapFace {
-  pub(crate) sprite: SpriteHandle,
+  pub(crate) sprite: Handle<Image>,
   pub(crate) cell: (u32, u32),
-  pub(crate) columns: u32,
   pub(crate) chars: Vec<char>,
 }
 
@@ -283,14 +284,14 @@ impl Fonts {
     }
   }
 
-  /// A pixel font from a grid of `cell`-sized glyphs on a sprite sheet:
+  /// A pixel font from a grid of `cell`-sized glyphs on an image:
   /// `chars` names the cells in order, left to right, then top to bottom.
-  /// The same family, sheet (handle), cell and characters again return the
-  /// id that font already has.
+  /// The same family, image, cell and characters again return the id that
+  /// font already has.
   pub fn add_bitmap(
     &mut self,
     family: &str,
-    sprite: SpriteHandle,
+    sprite: Handle<Image>,
     cell: (u32, u32),
     chars: &str,
   ) -> Result<FontId, FontError> {
@@ -300,14 +301,13 @@ impl Fonts {
     let known = self.faces().find(|(_, face)| {
       face.family == family
         && matches!(&face.source, FaceSource::Bitmap(bitmap)
-          if bitmap.sprite.serial() == sprite.serial()
+          if bitmap.sprite == sprite
             && bitmap.cell == cell
             && bitmap.chars.iter().copied().eq(chars.chars()))
     });
     if let Some((id, _)) = known {
       return Ok(id);
     }
-    let columns = (sprite.width() / cell.0).max(1);
     let face = Face {
       family: family.to_string(),
       weight: 400.0,
@@ -315,7 +315,6 @@ impl Fonts {
       source: FaceSource::Bitmap(BitmapFace {
         sprite,
         cell,
-        columns,
         chars: chars.chars().collect(),
       }),
       render: FontRender::pixel(cell.1 as f32),
@@ -400,17 +399,17 @@ impl Fonts {
     self.generation
   }
 
-  /// A hash of each bitmap face's sheet version (serial and generation):
-  /// changes when a sheet is replaced in place, which `generation` does not
-  /// see (0 with no bitmap faces)
-  pub(crate) fn bitmap_stamp(&self) -> u64 {
+  /// A hash of each bitmap face's image version (id and version in
+  /// `images`): changes when an image is changed or reloaded, which
+  /// `generation` does not see (0 with no bitmap faces)
+  pub(crate) fn bitmap_stamp(&self, images: &Assets<Image>) -> u64 {
     let mut hasher = crate::core::hash::FastHasher::default();
     let mut any = false;
     for face in &self.faces {
       if let FaceSource::Bitmap(bitmap) = &face.source {
         any = true;
-        bitmap.sprite.serial().hash(&mut hasher);
-        bitmap.sprite.generation().hash(&mut hasher);
+        bitmap.sprite.id().hash(&mut hasher);
+        images.version(&bitmap.sprite).hash(&mut hasher);
       }
     }
     if any { hasher.finish() } else { 0 }
@@ -665,10 +664,7 @@ mod tests {
   #[test]
   fn the_same_bitmap_font_twice_is_one_font() {
     let mut fonts = Fonts::new();
-    let sheet = crate::core::asset::SpriteHandle::from_sprite(
-      crate::core::graphics::Image::solid_rect(64, 16, 255, 255, 255, 255),
-      "sheet",
-    );
+    let sheet = Assets::default().add(Image::solid_rect(64, 16, 255, 255, 255, 255));
     let first = fonts
       .add_bitmap("Grid", sheet.clone(), (8, 8), "AB")
       .unwrap();
@@ -685,10 +681,7 @@ mod tests {
   #[test]
   fn a_bitmap_font_needs_a_cell_and_characters() {
     let mut fonts = Fonts::new();
-    let sheet = crate::core::asset::SpriteHandle::from_sprite(
-      crate::core::graphics::Image::solid_rect(64, 16, 255, 255, 255, 255),
-      "sheet",
-    );
+    let sheet = Assets::default().add(Image::solid_rect(64, 16, 255, 255, 255, 255));
     assert!(matches!(
       fonts.add_bitmap("Grid", sheet.clone(), (0, 8), "AB"),
       Err(FontError::EmptyBitmap)
@@ -708,8 +701,7 @@ mod tests {
     else {
       panic!("a bitmap face");
     };
-    assert_eq!(grid.columns, 8, "a 64 wide sheet of 8 wide cells");
-    assert_eq!(grid.sprite.serial(), sheet.serial());
+    assert_eq!(grid.sprite, sheet);
   }
 
   #[cfg(not(target_arch = "wasm32"))]

@@ -8,24 +8,30 @@ use ryo2d::testing::HeadlessEngine;
 
 type Setup = Box<dyn FnMut(&mut SceneContext) + Send>;
 
-/// A square of `color` filling the 32x32 window, under `look`, then `setup`.
+/// A square of `color` filling the 32x32 window, under `look` (graded by
+/// the strip `lut` too, if there is one), then `setup`.
 struct Square {
   color: [u8; 4],
   look: Look,
+  lut: Option<Image>,
   setup: Option<Setup>,
 }
 
 impl Scene for Square {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let [r, g, b, a] = self.color;
-    let sprite = SpriteHandle::from_sprite(
-      Image::solid_rect(32, 32, r, g, b, a),
-      format!("look-square-{r}-{g}-{b}-{a}"),
-    );
+    let sprite = ctx.assets().add(Image::solid_rect(32, 32, r, g, b, a));
     ctx
       .world
-      .spawn((Transform::from_xy(16.0, 16.0), Renderable::sprite(sprite)));
+      .spawn((Transform::from_xy(16.0, 16.0), Renderable::image(sprite)));
     *ctx.look() = self.look.clone();
+    if let Some(strip) = self.lut.take() {
+      let strip = ctx.assets().add(strip);
+      let Ok(lut) = ColorLut::from_sprite(&strip, ctx.world.resource::<Assets<Image>>()) else {
+        panic!("the strip is a LUT");
+      };
+      ctx.look().grading.lut = Some(lut);
+    }
     if let Some(setup) = self.setup.as_mut() {
       setup(ctx);
     }
@@ -40,7 +46,16 @@ fn square(color: [u8; 4], look: Look) -> Square {
   Square {
     color,
     look,
+    lut: None,
     setup: None,
+  }
+}
+
+/// `square`, graded by the strip `lut` too
+fn with_lut(square: Square, lut: Image) -> Square {
+  Square {
+    lut: Some(lut),
+    ..square
   }
 }
 
@@ -100,6 +115,7 @@ fn clamp_shows_white_as_255() {
 fn a_fade_to_white_still_reaches_255() {
   // Display effects run after the tonemap, so the shoulder cannot hold them back
   let scene = Square {
+    lut: None,
     color: [255, 255, 255, 255],
     look: Look::default(),
     setup: Some(Box::new(|ctx: &mut SceneContext| {
@@ -198,28 +214,21 @@ fn lift_raises_black() {
   assert!(pixel[0].abs_diff(encode(0.1)) <= 1, "{pixel:?}");
 }
 
-/// A LUT that inverts every sRGB channel.
-fn inverting_lut() -> ColorLut {
-  let mut strip = ColorLut::identity_strip(16);
+/// A LUT strip that inverts every sRGB channel.
+fn inverting_lut() -> Image {
+  let strip = ColorLut::identity_strip(16);
   let inverted: Vec<u8> = strip
     .data()
     .chunks(4)
     .flat_map(|p| [255 - p[0], 255 - p[1], 255 - p[2], 255])
     .collect();
-  strip = Image::from_rgba(inverted, strip.width(), strip.height());
-  let Ok(lut) = ColorLut::from_sprite(&SpriteHandle::from_sprite(strip, "lut-invert")) else {
-    panic!("a 256x16 strip is a LUT");
-  };
-  lut
+  Image::from_rgba(inverted, strip.width(), strip.height())
 }
 
 #[test]
 fn an_inverting_lut_inverts() {
-  let look = graded(ColorGrading {
-    lut: Some(inverting_lut()),
-    ..ColorGrading::default()
-  });
-  let Some(pixel) = shown(square([200, 100, 50, 255], look)) else {
+  let look = graded(ColorGrading::default());
+  let Some(pixel) = shown(with_lut(square([200, 100, 50, 255], look), inverting_lut())) else {
     return;
   };
   for (got, want) in pixel.iter().zip([55u8, 155, 205]) {
@@ -229,12 +238,9 @@ fn an_inverting_lut_inverts() {
 
 #[test]
 fn an_identity_lut_changes_nothing() {
-  let strip = SpriteHandle::from_sprite(ColorLut::identity_strip(16), "lut-identity");
-  let look = graded(ColorGrading {
-    lut: ColorLut::from_sprite(&strip).ok(),
-    ..ColorGrading::default()
-  });
-  let Some(pixel) = shown(square([200, 100, 50, 255], look)) else {
+  let look = graded(ColorGrading::default());
+  let identity = ColorLut::identity_strip(16);
+  let Some(pixel) = shown(with_lut(square([200, 100, 50, 255], look), identity)) else {
     return;
   };
   for (got, want) in pixel.iter().zip([200u8, 100, 50]) {
@@ -245,11 +251,10 @@ fn an_identity_lut_changes_nothing() {
 #[test]
 fn half_strength_blends_halfway() {
   let look = graded(ColorGrading {
-    lut: Some(inverting_lut()),
     lut_strength: 0.5,
     ..ColorGrading::default()
   });
-  let Some(pixel) = shown(square([200, 100, 50, 255], look)) else {
+  let Some(pixel) = shown(with_lut(square([200, 100, 50, 255], look), inverting_lut())) else {
     return;
   };
   assert!(pixel[0].abs_diff(128) <= 2, "{pixel:?}");
@@ -274,15 +279,15 @@ fn extreme_exposure_and_contrast_stay_finite() {
 /// A square of `color` with `emission`, under `look`.
 fn emitting(color: [u8; 4], emission: f32, look: Look) -> Square {
   Square {
+    lut: None,
     color: [0, 0, 0, 255],
     look,
     setup: Some(Box::new(move |ctx: &mut SceneContext| {
       let [r, g, b, a] = color;
-      let sprite =
-        SpriteHandle::from_sprite(Image::solid_rect(32, 32, r, g, b, a), "look-emitting");
+      let sprite = ctx.assets().add(Image::solid_rect(32, 32, r, g, b, a));
       ctx.world.spawn((
         Transform::from_xy(16.0, 16.0),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_z_order(1)
           .with_emission(emission),
       ));
@@ -307,11 +312,12 @@ struct Blazing(f32);
 
 impl Scene for Blazing {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let sprite =
-      SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 255, 255, 255), "look-blazing");
+    let sprite = ctx
+      .assets()
+      .add(Image::solid_rect(4, 4, 255, 255, 255, 255));
     ctx.world.spawn((
       Transform::from_xy(8.0, 16.0),
-      Renderable::sprite(sprite).with_emission(self.0),
+      Renderable::image(sprite).with_emission(self.0),
     ));
     ctx.effects().set_bloom(1.0);
   }
@@ -379,16 +385,16 @@ fn auto_exposure_stops_at_max_ev() {
 fn auto_exposure_eases_toward_a_darker_scene() {
   // A dark square under a mid-grey one, which is hidden at frame 10
   let scene = Square {
+    lut: None,
     color: [39, 39, 39, 255],
     look: auto(),
     setup: Some(Box::new(|ctx: &mut SceneContext| {
-      let grey = SpriteHandle::from_sprite(
-        Image::solid_rect(32, 32, 118, 118, 118, 255),
-        "look-auto-grey",
-      );
+      let grey = ctx
+        .assets()
+        .add(Image::solid_rect(32, 32, 118, 118, 118, 255));
       ctx.world.spawn((
         Transform::from_xy(16.0, 16.0),
-        Renderable::sprite(grey).with_z_order(1),
+        Renderable::image(grey).with_z_order(1),
       ));
     })),
   };
@@ -419,17 +425,17 @@ fn auto_exposure_eases_toward_a_darker_scene() {
 fn auto_exposure_ignores_overflowed_light() {
   // The dark square plus an 8x8 pile-up past f16's range (6% of the frame)
   let scene = Square {
+    lut: None,
     color: [39, 39, 39, 255],
     look: auto(),
     setup: Some(Box::new(|ctx: &mut SceneContext| {
-      let blaze = SpriteHandle::from_sprite(
-        Image::solid_rect(8, 8, 255, 255, 255, 255),
-        "look-auto-blaze",
-      );
+      let blaze = ctx
+        .assets()
+        .add(Image::solid_rect(8, 8, 255, 255, 255, 255));
       for z in 1..=2 {
         ctx.world.spawn((
           Transform::from_xy(4.0, 4.0),
-          Renderable::sprite(blaze.clone())
+          Renderable::image(blaze.clone())
             .with_z_order(z)
             .with_blend(BlendMode::Additive)
             .with_emission(65504.0),

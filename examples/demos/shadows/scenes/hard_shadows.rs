@@ -92,17 +92,21 @@ impl HardShadowsPage {
     height: f32,
   ) -> Entity {
     // Create visual sprite
-    let sprite = ctx.assets.create_sprite(
-      Image::solid_rect(width as u32, height as u32, 80, 80, 90, 255),
-      format!("occluder_{}_{}", x as i32, y as i32),
-    );
+    let sprite = ctx.assets().add(Image::solid_rect(
+      width as u32,
+      height as u32,
+      80,
+      80,
+      90,
+      255,
+    ));
 
     // Spawn entity with both visual and occluder
     ctx
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite).with_z_order(5),
+        Renderable::image(sprite).with_z_order(5),
         LightOccluder2D::rect(width, height),
       ))
       .id()
@@ -175,11 +179,11 @@ impl DemoPage for HardShadowsPage {
 
     // Create floor
     let floor = ctx
-      .assets
-      .create_sprite(Image::solid_rect(1280, 720, 40, 40, 45, 255), "floor");
+      .assets()
+      .add(Image::solid_rect(1280, 720, 40, 40, 45, 255));
     ctx.world.spawn((
       Transform::from_xy(640.0, 360.0),
-      Renderable::sprite(floor).with_z_order(0),
+      Renderable::image(floor).with_z_order(0),
     ));
 
     // Create static occluders (walls around the edge)
@@ -226,14 +230,14 @@ impl DemoPage for HardShadowsPage {
 
     // Create a visual for the light source
     let light_visual = ctx
-      .assets
-      .create_sprite(Image::solid_circle(16, 255, 255, 200, 255), "light_source");
+      .assets()
+      .add(Image::solid_circle(16, 255, 255, 200, 255));
     self.light_visual = Some(
       ctx
         .world
         .spawn((
           Transform::from_xy(self.light_x, self.light_y),
-          Renderable::sprite(light_visual).with_z_order(10),
+          Renderable::image(light_visual).with_z_order(10),
         ))
         .id(),
     );

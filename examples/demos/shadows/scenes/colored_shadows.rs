@@ -133,16 +133,20 @@ impl ColoredShadowsPage {
     height: f32,
     color: (u8, u8, u8),
   ) -> Entity {
-    let sprite = ctx.assets.create_sprite(
-      Image::solid_rect(width as u32, height as u32, color.0, color.1, color.2, 255),
-      format!("colored_occluder_{}_{}", x as i32, y as i32),
-    );
+    let sprite = ctx.assets().add(Image::solid_rect(
+      width as u32,
+      height as u32,
+      color.0,
+      color.1,
+      color.2,
+      255,
+    ));
 
     ctx
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite).with_z_order(5),
+        Renderable::image(sprite).with_z_order(5),
         LightOccluder2D::rect(width, height),
       ))
       .id()
@@ -181,13 +185,12 @@ impl DemoPage for ColoredShadowsPage {
       .set_ambient(AmbientLight::new(Color::new(79, 79, 96, 255), 0.12));
 
     // Create floor
-    let floor = ctx.assets.create_sprite(
-      Image::solid_rect(1280, 720, 50, 45, 55, 255),
-      "colored_floor",
-    );
+    let floor = ctx
+      .assets()
+      .add(Image::solid_rect(1280, 720, 50, 45, 55, 255));
     ctx.world.spawn((
       Transform::from_xy(640.0, 360.0),
-      Renderable::sprite(floor).with_z_order(0),
+      Renderable::image(floor).with_z_order(0),
     ));
 
     // Create colorful occluders (like stained glass panels)
@@ -218,16 +221,15 @@ impl DemoPage for ColoredShadowsPage {
     );
 
     // Light source visual
-    let light_visual = ctx.assets.create_sprite(
-      Image::solid_circle(18, 255, 255, 255, 255),
-      "colored_light_source",
-    );
+    let light_visual = ctx
+      .assets()
+      .add(Image::solid_circle(18, 255, 255, 255, 255));
     self.light_visual = Some(
       ctx
         .world
         .spawn((
           Transform::from_xy(self.light_x, self.light_y),
-          Renderable::sprite(light_visual).with_z_order(10),
+          Renderable::image(light_visual).with_z_order(10),
         ))
         .id(),
     );

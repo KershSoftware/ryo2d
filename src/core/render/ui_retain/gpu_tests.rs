@@ -1,26 +1,79 @@
-//! Retention with what only the engine can do: a sprite's pixels replaced
-//! in place, as hot reload does, and world text evicting a glyph page a
+//! Retention with what only the engine can do: an image's pixels replaced
+//! in its store, as a reload does, and world text evicting a glyph page a
 //! kept fragment run samples
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 
-use crate::core::asset::SpriteHandle;
 use crate::core::engine::EngineBuilder;
 use crate::core::graphics::Image;
 use crate::core::testing::{HeadlessEngine, PixelPair};
 use crate::prelude::*;
 
+/// An image the test changes from outside, which each engine's scene keeps
+/// in its own world: added on enter, and replaced at the scene's next
+/// update once the test sets another (a reload, in both engines alike)
+#[derive(Clone)]
+struct Swatch(Arc<Mutex<(u32, Image)>>);
+
+impl Swatch {
+  fn new(image: Image) -> Self {
+    Self(Arc::new(Mutex::new((0, image))))
+  }
+
+  /// The image each scene takes at its next update
+  fn set(&self, image: Image) {
+    let mut held = self.0.lock().unwrap();
+    *held = (held.0 + 1, image);
+  }
+
+  /// The image as it is now, added to the scene's world, with its version
+  fn add(&self, ctx: &mut SceneContext) -> (Handle<Image>, u32) {
+    let (version, image) = self.0.lock().unwrap().clone();
+    (ctx.assets().add(image), version)
+  }
+
+  /// `held` (an image `add` gave) brought in line with the image the test set
+  fn sync(&self, ctx: &mut SceneContext, held: &mut (Handle<Image>, u32)) {
+    let (version, image) = self.0.lock().unwrap().clone();
+    if version != held.1 {
+      *ctx.assets().get_mut(&held.0).unwrap() = image;
+      held.1 = version;
+    }
+  }
+}
+
 /// A sprite and a label
-struct SpriteUi(SpriteHandle);
+struct SpriteUi {
+  swatch: Swatch,
+  held: Option<(Handle<Image>, u32)>,
+}
+
+impl SpriteUi {
+  fn new(swatch: &Swatch) -> Self {
+    Self {
+      swatch: swatch.clone(),
+      held: None,
+    }
+  }
+}
 
 impl Scene for SpriteUi {
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    self.held = Some(self.swatch.add(ctx));
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if let Some(held) = &mut self.held {
+      self.swatch.sync(ctx, held);
+    }
     SceneAction::Continue
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    ui.draw_sprite(&self.0, 10.0, 10.0);
+    if let Some((sprite, _)) = &self.held {
+      ui.draw_sprite(sprite, 10.0, 10.0);
+    }
     ui.draw_text("Sprite", 40.0, 10.0, Color::WHITE);
     SceneAction::Continue
   }
@@ -28,13 +81,13 @@ impl Scene for SpriteUi {
 
 #[test]
 fn a_sprite_updated_in_place_redraws() {
-  let sprite = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 0, 0, 255), "swatch");
+  let swatch = Swatch::new(Image::solid_rect(8, 8, 255, 0, 0, 255));
   let make = {
-    let sprite = sprite.clone();
+    let swatch = swatch.clone();
     move || {
       EngineBuilder::new()
         .resolution(160, 120)
-        .start_scene(SpriteUi(sprite.clone()))
+        .start_scene(SpriteUi::new(&swatch))
     }
   };
   let Some(mut pair) = PixelPair::new(make) else {
@@ -42,29 +95,35 @@ fn a_sprite_updated_in_place_redraws() {
   };
   pair.frames(10, "red");
   assert!(pair.on.ui_render_stats().kept);
-  sprite.update(Image::solid_rect(8, 8, 0, 0, 255, 255));
+  swatch.set(Image::solid_rect(8, 8, 0, 0, 255, 255));
   pair.frames(1, "blue, the same size");
   assert!(!pair.on.ui_render_stats().kept, "the update redraws the UI");
   pair.frames(5, "blue");
-  sprite.update(Image::solid_rect(16, 16, 0, 255, 0, 255));
+  swatch.set(Image::solid_rect(16, 16, 0, 255, 0, 255));
   pair.frames(5, "green and larger");
 }
 
 /// A label in a bitmap font, in a UI that otherwise never changes
 struct BitmapUi {
-  sheet: SpriteHandle,
+  sheet: Swatch,
+  held: Option<(Handle<Image>, u32)>,
   font: Option<FontId>,
 }
 
 impl Scene for BitmapUi {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let held = self.sheet.add(ctx);
     self.font = ctx
       .fonts()
-      .add_bitmap("Grid", self.sheet.clone(), (4, 4), "#.")
+      .add_bitmap("Grid", held.0.clone(), (4, 4), "#.")
       .ok();
+    self.held = Some(held);
   }
 
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if let Some(held) = &mut self.held {
+      self.sheet.sync(ctx, held);
+    }
     SceneAction::Continue
   }
 
@@ -89,7 +148,7 @@ fn a_bitmap_font_sheet_updated_in_place_redraws() {
     }
     Image::from_rgba(pixels, 8, 4)
   };
-  let sheet = SpriteHandle::from_sprite(sheet_of([255, 0, 0, 255]), "retain-grid");
+  let sheet = Swatch::new(sheet_of([255, 0, 0, 255]));
   let make = {
     let sheet = sheet.clone();
     move || {
@@ -97,6 +156,7 @@ fn a_bitmap_font_sheet_updated_in_place_redraws() {
         .resolution(160, 120)
         .start_scene(BitmapUi {
           sheet: sheet.clone(),
+          held: None,
           font: None,
         })
     }
@@ -106,7 +166,7 @@ fn a_bitmap_font_sheet_updated_in_place_redraws() {
   };
   pair.frames(10, "red cells");
   assert!(pair.on.ui_render_stats().kept);
-  sheet.update(sheet_of([0, 0, 255, 255]));
+  sheet.set(sheet_of([0, 0, 255, 255]));
   pair.frames(1, "blue cells, the same size");
   assert!(!pair.on.ui_render_stats().kept, "the update redraws the UI");
   pair.frames(5, "blue cells");
@@ -185,23 +245,25 @@ fn an_idle_scrolled_node_list_keeps_its_ui_image() {
 }
 
 /// A node tree drawing a sprite beside a label
-struct NodeSpriteUi(SpriteHandle);
+struct NodeSpriteUi(SpriteUi);
 
 impl Scene for NodeSpriteUi {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let held = self.0.swatch.add(ctx);
     ctx.spawn_ui(
       UiNode::column()
         .child(
           UiNode::row()
-            .child(UiNode::image(self.0.clone()).image_size(16.0, 16.0))
+            .child(UiNode::image(held.0.clone()).image_size(16.0, 16.0))
             .child(UiNode::text("Sprite")),
         )
         .child(UiNode::text("Below")),
     );
+    self.0.held = Some(held);
   }
 
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    SceneAction::Continue
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    self.0.update(ctx, dt)
   }
 }
 
@@ -209,13 +271,13 @@ impl Scene for NodeSpriteUi {
 fn a_sprite_in_a_kept_fragment_updated_in_place_redraws() {
   // The sprite's fragment is copied with its version: its run is the same
   // but for the sprite's stamp
-  let sprite = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 0, 0, 255), "node-swatch");
+  let sprite = Swatch::new(Image::solid_rect(8, 8, 255, 0, 0, 255));
   let make = {
     let sprite = sprite.clone();
     move || {
       EngineBuilder::new()
         .resolution(160, 120)
-        .start_scene(NodeSpriteUi(sprite.clone()))
+        .start_scene(NodeSpriteUi(SpriteUi::new(&sprite)))
     }
   };
   let Some(mut pair) = PixelPair::new(make) else {
@@ -226,7 +288,7 @@ fn a_sprite_in_a_kept_fragment_updated_in_place_redraws() {
   assert!(pair.on.ui_render_stats().kept);
   assert!(pair.on.ui_cache_stats().reused > 0, "the tree is copied");
   let runs = pair.on.ui_runs_snapshot();
-  sprite.update(Image::solid_rect(8, 8, 0, 0, 255, 255));
+  sprite.set(Image::solid_rect(8, 8, 0, 0, 255, 255));
   pair.frames(1, "blue, the same size");
   assert!(!pair.on.ui_render_stats().kept, "the update redraws the UI");
   assert_eq!(pair.on.ui_runs_snapshot(), runs, "the runs are the same");
@@ -238,14 +300,13 @@ fn a_sprite_in_a_kept_fragment_updated_in_place_redraws() {
 fn a_sprite_updated_in_place_under_a_kept_fragment_draws_as_a_rebuild() {
   // Fragments on against a full rebuild, the spot check off so the tree is
   // copied: the sprite is replaced at its size, then at another
-  let sprite =
-    SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 0, 0, 255), "fragment-swatch");
+  let sprite = Swatch::new(Image::solid_rect(8, 8, 255, 0, 0, 255));
   let make = {
     let sprite = sprite.clone();
     move || {
       EngineBuilder::new()
         .resolution(160, 120)
-        .start_scene(NodeSpriteUi(sprite.clone()))
+        .start_scene(NodeSpriteUi(SpriteUi::new(&sprite)))
     }
   };
   let Some(mut pair) = PixelPair::fragments(make) else {
@@ -256,11 +317,11 @@ fn a_sprite_updated_in_place_under_a_kept_fragment_draws_as_a_rebuild() {
   let copied = pair.fragments_reused();
   assert!(copied > 0, "the tree is copied");
   let red = pair.on.frame().expect("a frame");
-  sprite.update(Image::solid_rect(8, 8, 0, 0, 255, 255));
+  sprite.set(Image::solid_rect(8, 8, 0, 0, 255, 255));
   pair.frames(5, "blue, the same size");
   let blue = pair.on.frame().expect("a frame");
   assert_ne!(red.as_raw(), blue.as_raw(), "the update shows");
-  sprite.update(Image::solid_rect(16, 16, 0, 255, 0, 255));
+  sprite.set(Image::solid_rect(16, 16, 0, 255, 0, 255));
   pair.frames(5, "green and larger");
   let green = pair.on.frame().expect("a frame");
   assert_ne!(blue.as_raw(), green.as_raw(), "the second update shows");

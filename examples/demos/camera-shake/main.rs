@@ -45,9 +45,9 @@ impl CameraShakePage {
   }
 
   /// Create a colored square sprite
-  fn create_square(size: u32, r: u8, g: u8, b: u8) -> SpriteHandle {
+  fn create_square(ctx: &mut SceneContext, size: u32, r: u8, g: u8, b: u8) -> Handle<Image> {
     let sprite = Image::solid_rect(size, size, r, g, b, 255);
-    SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}_{}", size, r, g, b))
+    ctx.assets().add(sprite)
   }
 
   /// Spawn a grid of reference squares to visualize shake
@@ -72,11 +72,11 @@ impl CameraShakePage {
           (60, 60, 80)
         };
 
-        let sprite = Self::create_square(square_size, r, g, b);
+        let sprite = Self::create_square(ctx, square_size, r, g, b);
         ctx.world.spawn((
           GridSquare,
           Transform::from_xy(x, y),
-          Renderable::sprite(sprite).with_z_order(0),
+          Renderable::image(sprite).with_z_order(0),
         ));
       }
     }
@@ -96,12 +96,12 @@ impl CameraShakePage {
   /// Spawn a "player" entity in the center
   fn spawn_player(&self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
-    let sprite = Self::create_square(32, 100, 200, 255);
+    let sprite = Self::create_square(ctx, 32, 100, 200, 255);
 
     ctx.world.spawn((
       Player,
       Transform::from_xy(screen_w / 2.0, screen_h / 2.0),
-      Renderable::sprite(sprite).with_z_order(10),
+      Renderable::image(sprite).with_z_order(10),
     ));
   }
 }

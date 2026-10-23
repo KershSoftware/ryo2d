@@ -179,16 +179,17 @@ fn ysort_query_with_transform() {
 /// Test typical game entity setup with Transform, Renderable, and YSort
 #[test]
 fn ysort_with_renderable() {
+  let mut images = Assets::<Image>::default();
   let mut world = World::new();
 
   // Create a simple sprite for testing
   let sprite = Image::solid_rect(16, 24, 255, 0, 0, 255);
-  let sprite_handle = SpriteHandle::from_sprite(sprite, "test_sprite");
+  let sprite_handle = images.add(sprite);
 
   let entity = world
     .spawn((
       Transform::from_xy(100.0, 150.0),
-      Renderable::sprite(sprite_handle)
+      Renderable::image(sprite_handle)
         .with_anchor(Anchor::BottomCenter)
         .with_z_order(0),
       YSort::new(),
@@ -204,7 +205,7 @@ fn ysort_with_renderable() {
   let ysort = world.get::<YSort>(entity).unwrap();
   let transform = world.get::<Transform>(entity).unwrap();
 
-  let sprite_height = renderable.sprite.height() as f32;
+  let sprite_height = images.get(&renderable.image).unwrap().height() as f32;
   let sort_y = ysort.calculate_sort_y(transform.translation.y, sprite_height);
 
   // sort_y = 150 + (24 * 1.0) + 0 = 174
@@ -218,16 +219,17 @@ fn ysort_with_renderable() {
 /// Test that entities at different Y positions produce different sort keys
 #[test]
 fn ysort_ordering_by_y() {
+  let mut images = Assets::<Image>::default();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(16, 16, 255, 0, 0, 255);
-  let sprite_handle = SpriteHandle::from_sprite(sprite, "test");
+  let sprite_handle = images.add(sprite);
 
   // Create entities at different Y positions
   let entity_top = world
     .spawn((
       Transform::from_xy(100.0, 50.0),
-      Renderable::sprite(sprite_handle.clone()),
+      Renderable::image(sprite_handle.clone()),
       YSort::new(),
     ))
     .id();
@@ -235,7 +237,7 @@ fn ysort_ordering_by_y() {
   let entity_middle = world
     .spawn((
       Transform::from_xy(100.0, 100.0),
-      Renderable::sprite(sprite_handle.clone()),
+      Renderable::image(sprite_handle.clone()),
       YSort::new(),
     ))
     .id();
@@ -243,7 +245,7 @@ fn ysort_ordering_by_y() {
   let entity_bottom = world
     .spawn((
       Transform::from_xy(100.0, 150.0),
-      Renderable::sprite(sprite_handle),
+      Renderable::image(sprite_handle),
       YSort::new(),
     ))
     .id();
@@ -392,10 +394,11 @@ fn ysort_despawn() {
 /// Test managing many YSort entities (stress test)
 #[test]
 fn ysort_many_entities() {
+  let mut images = Assets::<Image>::default();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(8, 8, 255, 255, 255, 255);
-  let sprite_handle = SpriteHandle::from_sprite(sprite, "test");
+  let sprite_handle = images.add(sprite);
 
   // Spawn 100 entities with YSort
   let mut entities = Vec::new();
@@ -403,7 +406,7 @@ fn ysort_many_entities() {
     let entity = world
       .spawn((
         Transform::from_xy(i as f32 * 10.0, i as f32 * 5.0),
-        Renderable::sprite(sprite_handle.clone()),
+        Renderable::image(sprite_handle.clone()),
         YSort::new().with_depth_scale(0.8, 1.2, 0.0, 500.0),
       ))
       .id();

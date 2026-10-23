@@ -105,19 +105,18 @@ impl DropShadowsPage {
     y: f32,
     size: u32,
     color: (u8, u8, u8),
-    name: &str,
+    _name: &str,
     shadow: DropShadow,
   ) -> Entity {
-    let sprite = ctx.assets.create_sprite(
-      Image::solid_rect(size, size, color.0, color.1, color.2, 255),
-      name,
-    );
+    let sprite = ctx.assets().add(Image::solid_rect(
+      size, size, color.0, color.1, color.2, 255,
+    ));
 
     ctx
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_z_order(5)
           .with_drop_shadow(shadow),
       ))
@@ -128,19 +127,19 @@ impl DropShadowsPage {
     ctx: &mut SceneContext,
     x: f32,
     y: f32,
-    name: &str,
+    _name: &str,
     shadow: DropShadow,
   ) -> Entity {
     // Create a simple character-like sprite (head + body)
     let sprite = ctx
-      .assets
-      .create_sprite(Image::solid_rect(32, 48, 100, 150, 200, 255), name);
+      .assets()
+      .add(Image::solid_rect(32, 48, 100, 150, 200, 255));
 
     ctx
       .world
       .spawn((
         Transform::from_xy(x, y),
-        Renderable::sprite(sprite)
+        Renderable::image(sprite)
           .with_anchor(Anchor::BottomCenter) // Placed by the feet
           .with_z_order(5)
           .with_drop_shadow(shadow),
@@ -178,23 +177,21 @@ impl DemoPage for DropShadowsPage {
       .set_ambient(AmbientLight::new(Color::WHITE, 0.9));
 
     // Create floor/ground
-    let floor = ctx.assets.create_sprite(
-      Image::solid_rect(1280, 400, 80, 120, 80, 255), // Grass-like green
-      "ground",
-    );
+    let floor = ctx
+      .assets()
+      .add(Image::solid_rect(1280, 400, 80, 120, 80, 255));
     ctx.world.spawn((
       Transform::from_xy(640.0, 520.0),
-      Renderable::sprite(floor).with_z_order(0),
+      Renderable::image(floor).with_z_order(0),
     ));
 
     // Create sky background
-    let sky = ctx.assets.create_sprite(
-      Image::solid_rect(1280, 320, 135, 180, 220, 255), // Light blue
-      "sky",
-    );
+    let sky = ctx
+      .assets()
+      .add(Image::solid_rect(1280, 320, 135, 180, 220, 255));
     ctx.world.spawn((
       Transform::from_xy(640.0, 160.0),
-      Renderable::sprite(sky).with_z_order(-1),
+      Renderable::image(sky).with_z_order(-1),
     ));
 
     let shadow = self.current_preset().create(&self.custom_params);

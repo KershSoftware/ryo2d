@@ -64,9 +64,9 @@ impl EasingScene {
     }
   }
 
-  fn create_square(r: u8, g: u8, b: u8) -> SpriteHandle {
+  fn create_square(ctx: &mut SceneContext, r: u8, g: u8, b: u8) -> Handle<Image> {
     let sprite = Image::solid_rect(24, 24, r, g, b, 255);
-    SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}", r, g, b))
+    ctx.assets().add(sprite)
   }
 
   fn respawn_with_loop_mode(&mut self, ctx: &mut SceneContext) {
@@ -98,14 +98,14 @@ impl EasingScene {
 
     for (i, (_name, ease, (r, g, b))) in easings.iter().enumerate() {
       let y = EASING_TOP + i as f32 * EASING_ROW;
-      let sprite = Self::create_square(*r, *g, *b);
+      let sprite = Self::create_square(ctx, *r, *g, *b);
 
       let entity = ctx
         .world
         .spawn((
           PositionDemo,
           Transform::from_xy(start_x, y),
-          Renderable::sprite(sprite).with_z_order(10),
+          Renderable::image(sprite).with_z_order(10),
           Tween::new(2.0)
             .to_x(target_x)
             .with_easing(*ease)
@@ -116,7 +116,7 @@ impl EasingScene {
       self.position_entities.push(entity);
     }
 
-    let rotation_sprite = Self::create_square(255, 200, 100);
+    let rotation_sprite = Self::create_square(ctx, 255, 200, 100);
     let rotation_y = screen_h - 120.0;
     let rotation_x = 200.0;
 
@@ -126,7 +126,7 @@ impl EasingScene {
         .spawn((
           RotationDemo,
           Transform::from_xy(rotation_x, rotation_y),
-          Renderable::sprite(rotation_sprite).with_z_order(10),
+          Renderable::image(rotation_sprite).with_z_order(10),
           Tween::to_rotation(PI * 2.0, 2.0)
             .with_easing(Ease::InOutCubic)
             .with_loop(loop_mode),
@@ -134,7 +134,7 @@ impl EasingScene {
         .id(),
     );
 
-    let scale_sprite = Self::create_square(100, 200, 255);
+    let scale_sprite = Self::create_square(ctx, 100, 200, 255);
     let scale_x = screen_w / 2.0;
     let scale_y = screen_h - 120.0;
 
@@ -144,7 +144,7 @@ impl EasingScene {
         .spawn((
           ScaleDemo,
           Transform::from_xy(scale_x, scale_y),
-          Renderable::sprite(scale_sprite).with_z_order(10),
+          Renderable::image(scale_sprite).with_z_order(10),
           Tween::to_scale(2.0, 2.0, 1.0)
             .with_easing(Ease::OutElastic)
             .with_loop(loop_mode),
@@ -312,7 +312,7 @@ impl DemoPage for SpeedControlScene {
     self.screen_h = screen_h;
 
     let sprite = Image::solid_circle(30, 100, 200, 255, 255);
-    let handle = SpriteHandle::from_sprite(sprite, "speed_ball");
+    let handle = ctx.assets().add(sprite);
 
     let center_y = screen_h / 2.0;
 
@@ -321,7 +321,7 @@ impl DemoPage for SpeedControlScene {
         .world
         .spawn((
           Transform::from_xy(100.0, center_y),
-          Renderable::sprite(handle).with_z_order(10),
+          Renderable::image(handle).with_z_order(10),
           Tween::to_position(screen_w - 100.0, center_y, 3.0)
             .with_easing(Ease::InOutCubic)
             .with_loop(TweenLoop::PingPong)
@@ -398,7 +398,7 @@ impl CallbacksScene {
     self.complete_count.store(0, Ordering::SeqCst);
 
     let sprite = Image::solid_rect(40, 40, 255, 150, 50, 255);
-    let handle = SpriteHandle::from_sprite(sprite, "callback_box");
+    let handle = ctx.assets().add(sprite);
 
     let center_y = self.screen_h / 2.0;
 
@@ -411,7 +411,7 @@ impl CallbacksScene {
         .world
         .spawn((
           Transform::from_xy(100.0, center_y),
-          Renderable::sprite(handle).with_z_order(10),
+          Renderable::image(handle).with_z_order(10),
           Tween::to_position(self.screen_w - 100.0, center_y, 2.0)
             .with_easing(Ease::OutCubic)
             .with_loop(TweenLoop::Times(3))
@@ -519,7 +519,7 @@ impl CombinedEffectsScene {
 
     // Demo 1: Position + Scale (bouncing ball effect)
     let sprite1 = Image::solid_circle(25, 100, 200, 255, 255);
-    let handle1 = SpriteHandle::from_sprite(sprite1, "bounce_ball");
+    let handle1 = ctx.assets().add(sprite1);
 
     self.entities.push(
       ctx
@@ -527,7 +527,7 @@ impl CombinedEffectsScene {
         .spawn((
           CombinedDemo,
           Transform::from_xy(center_x - 200.0, center_y - 100.0),
-          Renderable::sprite(handle1).with_z_order(10),
+          Renderable::image(handle1).with_z_order(10),
           Tween::new(0.6)
             .to_y(center_y + 100.0)
             .to_scale_x(1.3)
@@ -540,7 +540,7 @@ impl CombinedEffectsScene {
 
     // Demo 2: Position + Rotation (orbiting)
     let sprite2 = Image::solid_rect(30, 30, 255, 150, 50, 255);
-    let handle2 = SpriteHandle::from_sprite(sprite2, "orbit_box");
+    let handle2 = ctx.assets().add(sprite2);
 
     self.entities.push(
       ctx
@@ -548,7 +548,7 @@ impl CombinedEffectsScene {
         .spawn((
           CombinedDemo,
           Transform::from_xy(center_x, center_y),
-          Renderable::sprite(handle2).with_z_order(10),
+          Renderable::image(handle2).with_z_order(10),
           TweenSequence::new()
             .then(
               Tween::new(1.0)
@@ -581,7 +581,7 @@ impl CombinedEffectsScene {
 
     // Demo 3: Scale pulsing (heartbeat)
     let sprite3 = Image::solid_circle(20, 255, 80, 80, 255);
-    let handle3 = SpriteHandle::from_sprite(sprite3, "heart");
+    let handle3 = ctx.assets().add(sprite3);
 
     self.entities.push(
       ctx
@@ -589,7 +589,7 @@ impl CombinedEffectsScene {
         .spawn((
           CombinedDemo,
           Transform::from_xy(center_x + 200.0, center_y),
-          Renderable::sprite(handle3).with_z_order(10),
+          Renderable::image(handle3).with_z_order(10),
           TweenSequence::new()
             .then(Tween::to_uniform_scale(1.3, 0.15).with_easing(Ease::OutQuad))
             .then(Tween::to_uniform_scale(1.0, 0.15).with_easing(Ease::InQuad))
@@ -702,7 +702,7 @@ impl SequenceScene {
 
   fn spawn_entity(&mut self, ctx: &mut SceneContext) {
     let sprite = Image::solid_rect(40, 40, 50, 200, 150, 255);
-    let handle = SpriteHandle::from_sprite(sprite, "sequence_box");
+    let handle = ctx.assets().add(sprite);
 
     // Square path: start at top-left, go right, down, left, up
     let margin = 100.0;
@@ -715,7 +715,7 @@ impl SequenceScene {
         .spawn((
           SequenceDemo,
           Transform::from_xy(margin, margin),
-          Renderable::sprite(handle).with_z_order(10),
+          Renderable::image(handle).with_z_order(10),
           TweenSequence::new()
             // Move right
             .then(Tween::to_position(right, margin, 1.0).with_easing(Ease::InOutCubic))
@@ -823,7 +823,7 @@ impl ColorAlphaScene {
 
     // Demo 1: Alpha fade (ping-pong)
     let sprite1 = Image::solid_rect(60, 60, 100, 150, 255, 255);
-    let handle1 = SpriteHandle::from_sprite(sprite1, "fade_box");
+    let handle1 = ctx.assets().add(sprite1);
 
     self.entities.push(
       ctx
@@ -831,7 +831,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(200.0, start_y),
-          Renderable::sprite(handle1).with_z_order(10),
+          Renderable::image(handle1).with_z_order(10),
           Tween::new(1.5)
             .to_alpha(0.1)
             .with_easing(Ease::InOutSine)
@@ -842,7 +842,7 @@ impl ColorAlphaScene {
 
     // Demo 2: Tint to red
     let sprite2 = Image::solid_rect(60, 60, 255, 255, 255, 255);
-    let handle2 = SpriteHandle::from_sprite(sprite2, "tint_red");
+    let handle2 = ctx.assets().add(sprite2);
 
     self.entities.push(
       ctx
@@ -850,7 +850,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(350.0, start_y),
-          Renderable::sprite(handle2).with_z_order(10),
+          Renderable::image(handle2).with_z_order(10),
           Tween::new(1.0)
             .to_tint(Color::new(255, 80, 80, 255))
             .with_easing(Ease::InOutQuad)
@@ -861,7 +861,7 @@ impl ColorAlphaScene {
 
     // Demo 3: Tint to green
     let sprite3 = Image::solid_rect(60, 60, 255, 255, 255, 255);
-    let handle3 = SpriteHandle::from_sprite(sprite3, "tint_green");
+    let handle3 = ctx.assets().add(sprite3);
 
     self.entities.push(
       ctx
@@ -869,7 +869,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(500.0, start_y),
-          Renderable::sprite(handle3).with_z_order(10),
+          Renderable::image(handle3).with_z_order(10),
           Tween::new(1.0)
             .to_tint(Color::new(80, 255, 80, 255))
             .with_easing(Ease::InOutQuad)
@@ -880,7 +880,7 @@ impl ColorAlphaScene {
 
     // Demo 4: Tint to blue
     let sprite4 = Image::solid_rect(60, 60, 255, 255, 255, 255);
-    let handle4 = SpriteHandle::from_sprite(sprite4, "tint_blue");
+    let handle4 = ctx.assets().add(sprite4);
 
     self.entities.push(
       ctx
@@ -888,7 +888,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(650.0, start_y),
-          Renderable::sprite(handle4).with_z_order(10),
+          Renderable::image(handle4).with_z_order(10),
           Tween::new(1.0)
             .to_tint(Color::new(80, 80, 255, 255))
             .with_easing(Ease::InOutQuad)
@@ -899,7 +899,7 @@ impl ColorAlphaScene {
 
     // Demo 5: Color cycle (sequence)
     let sprite5 = Image::solid_circle(40, 255, 255, 255, 255);
-    let handle5 = SpriteHandle::from_sprite(sprite5, "color_cycle");
+    let handle5 = ctx.assets().add(sprite5);
 
     self.entities.push(
       ctx
@@ -907,7 +907,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(825.0, start_y),
-          Renderable::sprite(handle5).with_z_order(10),
+          Renderable::image(handle5).with_z_order(10),
           TweenSequence::new()
             .then(
               Tween::new(0.6)
@@ -939,7 +939,7 @@ impl ColorAlphaScene {
 
     // Demo 6: Alpha + Scale (pop in/out)
     let sprite6 = Image::solid_rect(50, 50, 255, 200, 100, 255);
-    let handle6 = SpriteHandle::from_sprite(sprite6, "pop_box");
+    let handle6 = ctx.assets().add(sprite6);
 
     self.entities.push(
       ctx
@@ -947,7 +947,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(200.0, row2_y).with_uniform_scale(0.1),
-          Renderable::sprite(handle6).with_z_order(10).with_alpha(0.0),
+          Renderable::image(handle6).with_z_order(10).with_alpha(0.0),
           TweenSequence::new()
             .then(
               Tween::new(0.4)
@@ -972,7 +972,7 @@ impl ColorAlphaScene {
 
     // Demo 7: Tint + Position (moving color)
     let sprite7 = Image::solid_circle(30, 255, 255, 255, 255);
-    let handle7 = SpriteHandle::from_sprite(sprite7, "moving_tint");
+    let handle7 = ctx.assets().add(sprite7);
 
     self.entities.push(
       ctx
@@ -980,7 +980,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(350.0, row2_y),
-          Renderable::sprite(handle7).with_z_order(10),
+          Renderable::image(handle7).with_z_order(10),
           TweenSequence::new()
             .then(
               Tween::new(0.8)
@@ -1001,7 +1001,7 @@ impl ColorAlphaScene {
 
     // Demo 8: Alpha + Rotation (fading spin)
     let sprite8 = Image::solid_rect(45, 45, 150, 255, 200, 255);
-    let handle8 = SpriteHandle::from_sprite(sprite8, "spin_fade");
+    let handle8 = ctx.assets().add(sprite8);
 
     self.entities.push(
       ctx
@@ -1009,7 +1009,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(700.0, row2_y),
-          Renderable::sprite(handle8).with_z_order(10),
+          Renderable::image(handle8).with_z_order(10),
           Tween::new(2.0)
             .to_alpha(0.2)
             .to_rotation_value(PI * 2.0)
@@ -1024,7 +1024,7 @@ impl ColorAlphaScene {
 
     // Demo 9: Tint darkening (multiply effect)
     let sprite9 = Image::solid_rect(60, 60, 255, 200, 150, 255);
-    let handle9 = SpriteHandle::from_sprite(sprite9, "darken");
+    let handle9 = ctx.assets().add(sprite9);
 
     self.entities.push(
       ctx
@@ -1032,7 +1032,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(200.0, row3_y),
-          Renderable::sprite(handle9).with_z_order(10),
+          Renderable::image(handle9).with_z_order(10),
           Tween::new(1.2)
             .to_tint(Color::new(80, 80, 80, 255)) // Darken by multiplying with gray
             .with_easing(Ease::InOutSine)
@@ -1043,7 +1043,7 @@ impl ColorAlphaScene {
 
     // Demo 10: Full combo (position + scale + rotation + alpha + tint)
     let sprite10 = Image::solid_circle(25, 255, 255, 255, 255);
-    let handle10 = SpriteHandle::from_sprite(sprite10, "full_combo");
+    let handle10 = ctx.assets().add(sprite10);
 
     self.entities.push(
       ctx
@@ -1051,7 +1051,7 @@ impl ColorAlphaScene {
         .spawn((
           ColorAlphaDemo,
           Transform::from_xy(500.0, row3_y),
-          Renderable::sprite(handle10).with_z_order(10),
+          Renderable::image(handle10).with_z_order(10),
           TweenSequence::new()
             .then(
               Tween::new(1.0)
@@ -1172,7 +1172,7 @@ impl PropertyTweenScene {
     // The tween interpolates 0..200 (width in pixels). We read .value() each
     // frame and set the entity's scale_x to stretch a 1-pixel-wide bar.
     let bar_sprite = Image::solid_rect(200, 20, 80, 200, 80, 255);
-    let bar_handle = SpriteHandle::from_sprite(bar_sprite, "health_bar");
+    let bar_handle = ctx.assets().add(bar_sprite);
 
     let bar_y = 200.0;
     self.health_bar_entity = Some(
@@ -1182,7 +1182,7 @@ impl PropertyTweenScene {
           HealthBarTag,
           // Placed and scaled from its top-left corner, so it grows rightwards
           Transform::from_xy(100.0, bar_y),
-          Renderable::sprite(bar_handle)
+          Renderable::image(bar_handle)
             .with_anchor(Anchor::TopLeft)
             .with_z_order(10),
           PropertyTween::new(0.0_f32, 1.0, 2.0)
@@ -1194,7 +1194,7 @@ impl PropertyTweenScene {
 
     // Demo 2: PropertyTween<Vec2> — Position
     let dot_sprite = Image::solid_circle(15, 100, 150, 255, 255);
-    let dot_handle = SpriteHandle::from_sprite(dot_sprite, "moving_dot");
+    let dot_handle = ctx.assets().add(dot_sprite);
 
     self.moving_dot_entity = Some(
       ctx
@@ -1202,7 +1202,7 @@ impl PropertyTweenScene {
         .spawn((
           MovingDotTag,
           Transform::from_xy(100.0, 400.0),
-          Renderable::sprite(dot_handle).with_z_order(10),
+          Renderable::image(dot_handle).with_z_order(10),
           PropertyTween::new(
             Vec2::new(100.0, 400.0),
             Vec2::new(self.screen_w - 100.0, 400.0),

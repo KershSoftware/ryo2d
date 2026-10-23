@@ -31,6 +31,45 @@ pub struct Image {
 
 impl Asset for Image {}
 
+/// The checker's two colours (RGBA)
+pub(crate) const CHECKER_MAGENTA: [u8; 4] = [255, 0, 255, 255];
+pub(crate) const CHECKER_BLACK: [u8; 4] = [0, 0, 0, 255];
+
+/// The world's images: its `Assets<Image>`, or an empty store for a world
+/// without one
+pub(crate) fn images_of(world: &crate::core::ecs::World) -> &crate::core::asset::Assets<Image> {
+  world
+    .get_resource::<crate::core::asset::Assets<Image>>()
+    .unwrap_or_else(|| no_images())
+}
+
+#[cfg(test)]
+thread_local! {
+  /// The test thread's own image store (leaked: tests only)
+  static TEST_IMAGES: &'static std::cell::RefCell<crate::core::asset::Assets<Image>> =
+    Box::leak(Box::default());
+}
+
+/// A handle to `image` in the test thread's own store ([`test_images`]):
+/// each call is another id
+#[cfg(test)]
+pub(crate) fn test_handle(image: Image) -> crate::core::asset::Handle<Image> {
+  TEST_IMAGES.with(|images| images.borrow_mut().add(image))
+}
+
+/// The test thread's own image store, which [`test_handle`] adds to; held,
+/// it takes no more
+#[cfg(test)]
+pub(crate) fn test_images() -> std::cell::Ref<'static, crate::core::asset::Assets<Image>> {
+  TEST_IMAGES.with(|images| images.borrow())
+}
+
+/// An empty image store, for what reads images where there are none
+pub(crate) fn no_images() -> &'static crate::core::asset::Assets<Image> {
+  static NONE: OnceLock<crate::core::asset::Assets<Image>> = OnceLock::new();
+  NONE.get_or_init(Default::default)
+}
+
 impl Image {
   /// Check if all pixels in the data are fully opaque (alpha=255)
   fn check_opaque(data: &[u8]) -> bool {
@@ -46,6 +85,25 @@ impl Image {
       opaque: OnceLock::from(is_opaque),
       mips: None,
     }
+  }
+
+  /// The image drawn in place of one that is not loaded, in debug builds:
+  /// 16x16 px of magenta and black 4 px squares
+  pub(crate) fn checker() -> Self {
+    const SIDE: u32 = 16;
+    const SQUARE: u32 = 4;
+    let mut data = Vec::with_capacity((SIDE * SIDE * 4) as usize);
+    for y in 0..SIDE {
+      for x in 0..SIDE {
+        let magenta = (x / SQUARE + y / SQUARE).is_multiple_of(2);
+        data.extend_from_slice(if magenta {
+          &CHECKER_MAGENTA
+        } else {
+          &CHECKER_BLACK
+        });
+      }
+    }
+    Self::from_parts(data, SIDE, SIDE, true)
   }
 
   /// Create a new image from raw RGBA data
@@ -374,7 +432,6 @@ impl Image {
   }
 
   /// The pixels, shared: the renderer takes this at extract time
-  #[allow(dead_code, reason = "the renderer takes it from the next change on")]
   pub(crate) fn pixels(&self) -> &Arc<Vec<u8>> {
     &self.data
   }
@@ -389,7 +446,6 @@ impl Image {
 
   /// The mip levels [`Image::prepare_mips`] made: none for an image in the
   /// atlas's shared pages, one made in code, or one changed since
-  #[allow(dead_code, reason = "the atlas takes them from the next change on")]
   pub(crate) fn mips(&self) -> Option<&Arc<Vec<Vec<u8>>>> {
     self.mips.as_ref()
   }

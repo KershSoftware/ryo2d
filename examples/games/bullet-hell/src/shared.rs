@@ -55,12 +55,12 @@ pub fn spawn_background(ctx: &mut SceneContext) {
     ("desert_dunefrontt", -20, 160.0),
   ];
   for (name, z, speed) in layers {
-    let Ok(sprite) = Image::load(format!("assets/{name}.png")) else {
+    let Ok(sprite) = ctx.assets().load_now::<Image>(&format!("{name}.png")) else {
       ryo2d::game_warn!("assets/{name}.png could not be loaded");
       continue;
     };
     let auto_scroll = Vec2::new(speed, 0.0);
-    let mut layer = ParallaxLayer::new(&SpriteHandle::from_sprite(sprite, name))
+    let mut layer = ParallaxLayer::new(&sprite)
       .with_scale(scale)
       .with_z_order(z)
       .with_auto_scroll(auto_scroll);
