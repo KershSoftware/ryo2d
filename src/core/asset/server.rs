@@ -12,8 +12,8 @@ use super::event::{AssetStats, TypeStats};
 use super::loader::{ErasedLoader, LoadMode, erase, settings_hash};
 use super::path::{extensions, normalise};
 use super::pump::{
-  Arrival, Arrived, BROKEN_STORE, Finished, FreeUnheld, Loaded, Typed, Waiting, fail, free_unheld,
-  run_check,
+  Arrival, Arrived, BROKEN_STORE, Finished, FreeUnheld, Loaded, SendQueued, Typed, Waiting, fail,
+  free_unheld, run_check, send_queued,
 };
 use super::workers::{INLINE_BUDGET, Workers};
 use super::{
@@ -21,7 +21,7 @@ use super::{
   Assets, Handle, LoadContext, LoadState, Progress, UntypedAssetId,
 };
 use crate::core::ecs::Resource;
-use crate::core::ecs::kernel::World;
+use crate::core::ecs::kernel::{DetectChangesMut, World};
 use crate::core::hash::{FastMap, FastSet, fast_hash};
 use crate::core::messages::register_message;
 
@@ -55,6 +55,7 @@ struct AssetType {
   /// The ledger of the type's `Assets<T>`, so ids can be reserved without the world
   ledger: Arc<Mutex<Ledger>>,
   free_unheld: FreeUnheld,
+  send_queued: SendQueued,
 }
 
 /// What the server knows of the assets it loads. Locked before any ledger, never after
@@ -289,12 +290,16 @@ impl AssetServer {
     }
   }
 
-  /// Makes `T` storable: inserts `Assets<T>` and registers `AssetEvent<T>`
+  /// Makes `T` storable: inserts `Assets<T>` and registers `AssetEvent<T>`.
+  /// The store then queues the changes made in code for the pump to send
   pub fn register_asset<T: Asset>(&self, world: &mut World) {
     if !world.contains_resource::<Assets<T>>() {
       world.init_resource::<Assets<T>>();
     }
     register_message::<AssetEvent<T>>(world);
+    if let Some(mut assets) = world.get_resource_mut::<Assets<T>>() {
+      assets.bypass_change_detection().send_events();
+    }
     let Some(ledger) = world.get_resource::<Assets<T>>().map(Assets::ledger) else {
       return;
     };
@@ -311,6 +316,7 @@ impl AssetServer {
         name: short_name::<T>(),
         ledger,
         free_unheld: free_unheld::<T>,
+        send_queued: send_queued::<T>,
       }),
     }
   }
@@ -1087,6 +1093,16 @@ impl AssetServer {
     types.get(index).map(|known| known.free_unheld)
   }
 
+  /// The `index`th registered type's sender of queued events
+  pub(crate) fn send_step(&self, index: usize) -> Option<SendQueued> {
+    let types = self
+      .inner
+      .types
+      .read()
+      .unwrap_or_else(PoisonError::into_inner);
+    types.get(index).map(|known| known.send_queued)
+  }
+
   /// Drops what the server knows of freed assets: their keys and states
   pub(crate) fn forget(&self, freed: &[UntypedAssetId]) {
     let mut table = self.inner.table();
@@ -1490,7 +1506,7 @@ mod tests {
 
   use super::*;
   use crate::core::asset::event::TypeStats;
-  use crate::core::asset::{AssetEvent, Assets, LoadContext, MemorySource, pump};
+  use crate::core::asset::{AssetEvent, Assets, AssetsView, LoadContext, MemorySource, pump};
   use crate::core::ecs::kernel::{
     MessageCursor, MessageReader, Messages, ResMut, Schedule, ScheduleLabel,
   };
@@ -2628,6 +2644,104 @@ mod tests {
     );
     assert_eq!(version(&world, &bundle), before, "its value is as it was");
     assert!(server.state(&bundle).is_loaded());
+  }
+
+  // Events of changes made in code
+
+  #[test]
+  fn an_added_asset_sends_added_at_the_next_pump() {
+    let (mut world, _server) = world_with(MemorySource::new());
+    let mut texts = cursor::<Text>(&world);
+    let added = world.resource_mut::<Assets<Text>>().add(Text("a".into()));
+    assert!(events(&world, &mut texts).is_empty(), "not before the pump");
+    pump(&mut world);
+    let sent = events(&world, &mut texts);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id }] if *id == added.id()),
+      "{sent:?}"
+    );
+    // Through the view as scenes add, too
+    let viewed = AssetsView::new(&mut world).add(Text("b".into()));
+    pump(&mut world);
+    let sent = events(&world, &mut texts);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id }] if *id == viewed.id()),
+      "{sent:?}"
+    );
+    pump(&mut world);
+    assert!(events(&world, &mut texts).is_empty(), "sent once");
+  }
+
+  #[test]
+  fn a_changed_asset_sends_one_modified_per_pump() {
+    let (mut world, _server) = world_with(MemorySource::new());
+    let mut texts = cursor::<Text>(&world);
+    let a = world.resource_mut::<Assets<Text>>().add(Text("a".into()));
+    pump(&mut world);
+    events(&world, &mut texts);
+    for text in ["a2", "a3", "a4"] {
+      if let Some(changed) = AssetsView::new(&mut world).get_mut(&a) {
+        changed.0 = text.into();
+      }
+    }
+    pump(&mut world);
+    let sent = events(&world, &mut texts);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Modified { id }] if *id == a.id()),
+      "one for three changes: {sent:?}"
+    );
+    pump(&mut world);
+    assert!(events(&world, &mut texts).is_empty());
+    // Added, then changed, before a pump: only added
+    let b = world.resource_mut::<Assets<Text>>().add(Text("b".into()));
+    if let Some(changed) = world.resource_mut::<Assets<Text>>().get_mut(&b) {
+      changed.0 = "b2".into();
+    }
+    pump(&mut world);
+    let sent = events(&world, &mut texts);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id }] if *id == b.id()),
+      "{sent:?}"
+    );
+  }
+
+  #[test]
+  fn an_asset_added_in_code_and_freed_sends_added_then_removed() {
+    let (mut world, _server) = world_with(MemorySource::new());
+    let mut texts = cursor::<Text>(&world);
+    let id = world
+      .resource_mut::<Assets<Text>>()
+      .add(Text("a".into()))
+      .id();
+    pump(&mut world);
+    let sent = events(&world, &mut texts);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id: added }, AssetEvent::Removed { id: removed }]
+        if *added == id && *removed == id),
+      "{sent:?}"
+    );
+  }
+
+  #[test]
+  fn a_loaded_asset_changed_in_code_sends_its_load_then_one_modified() {
+    let files = MemorySource::new();
+    files.insert("a.txt", "a");
+    let (mut world, server) = world_with(files);
+    let mut texts = cursor::<Text>(&world);
+    let a = match server.load_now::<Text>(&mut world, "a.txt") {
+      Ok(a) => a,
+      Err(error) => panic!("a.txt: {}", error.report()),
+    };
+    if let Some(changed) = world.resource_mut::<Assets<Text>>().get_mut(&a) {
+      changed.0 = "a2".into();
+    }
+    pump(&mut world);
+    let sent = events(&world, &mut texts);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id: added }, AssetEvent::Modified { id: modified }]
+        if *added == a.id() && *modified == a.id()),
+      "load_now's Added at once, the change at the pump: {sent:?}"
+    );
   }
 
   #[test]

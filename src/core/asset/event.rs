@@ -37,32 +37,43 @@ impl LoadState {
   }
 }
 
-/// Something happened to an asset of type `T` (read with `MessageReader` or `ctx.messages`)
+/// Something happened to an asset of type `T` (read with `MessageReader` or
+/// `ctx.messages`). The pump (`PreUpdate`, each frame) sends them, in the
+/// order they happened, except that `load_now` sends its asset's `Added` or
+/// `Failed` at once. Changes made in code (`add`, `get_mut`) are sent at the
+/// next pump, once per asset: an asset added, then changed, is `Added`
+/// only, and one changed many times is `Modified` once; one the pump also
+/// loads, reloads or touches that pump has only the pump's event. A store
+/// no server registered (an `Assets::default()` of a test's own) sends none
 #[derive(Message)]
 pub enum AssetEvent<T: Asset> {
-  /// It loaded, and is in its `Assets<T>`
+  /// It is in its `Assets<T>`: a load finished (sent by the pump that put it
+  /// there, or by `load_now` at once), or code added it (`add`, sent at the
+  /// next pump)
   Added {
     /// The asset
     id: AssetId<T>,
   },
-  /// Its value changed: it reloaded, or a dependency did
+  /// Its value changed: it reloaded or a dependency did (sent by the pump
+  /// that applied it), or code changed it (`get_mut`, sent at the next pump)
   Modified {
     /// The asset
     id: AssetId<T>,
   },
-  /// Its last handle dropped and it was freed
+  /// Its last handle dropped and the pump freed it (after any event of the
+  /// same pump for it)
   Removed {
     /// The asset
     id: AssetId<T>,
   },
-  /// It will not load
+  /// It will not load (sent by the pump, or by `load_now` at once)
   Failed {
     /// The asset
     id: AssetId<T>,
     /// Why
     error: Arc<AssetError>,
   },
-  /// A reload failed; the last good value stays
+  /// A reload failed; the last good value stays (sent by the pump)
   ReloadFailed {
     /// The asset
     id: AssetId<T>,

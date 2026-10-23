@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
 use super::handle::Shared;
-use super::{Asset, AssetId, Handle};
+use super::{Asset, AssetEvent, AssetId, Handle};
 use crate::core::ecs::Resource;
 
 /// Which slots are live, shared by a type's store and the asset server so
@@ -125,6 +125,26 @@ pub struct Assets<T: Asset> {
   changes: Option<Changes>,
   /// Tells this store from every other, so a follower handed another starts over
   serial: u64,
+  /// The changes made in code (`add`, `insert`, `get_mut`) for the pump to
+  /// send as events; `None` in a store no server owns
+  events: Option<Queued>,
+}
+
+/// What a slot's queued event is
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Queue {
+  Added,
+  Modified,
+}
+
+/// Events waiting for the pump, one per slot: the first change decides it
+/// (an asset added, then changed, is only added)
+#[derive(Default)]
+struct Queued {
+  /// The slots with an event, in the order they first changed
+  order: Vec<u32>,
+  /// By slot: its event
+  kinds: Vec<Option<Queue>>,
 }
 
 struct Entry<T> {
@@ -148,6 +168,23 @@ struct Changes {
 pub(crate) fn follower_token() -> u64 {
   static NEXT: AtomicU64 = AtomicU64::new(1);
   NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Queues `kind` for slot `index`, unless it has an event already
+fn queue(events: &mut Option<Queued>, index: u32, kind: Queue) {
+  let Some(queued) = events else {
+    return;
+  };
+  let at = index as usize;
+  if queued.kinds.len() <= at {
+    queued.kinds.resize(at + 1, None);
+  }
+  if let Some(slot) = queued.kinds.get_mut(at)
+    && slot.is_none()
+  {
+    *slot = Some(kind);
+    queued.order.push(index);
+  }
 }
 
 /// Lists slot `index` as changed, once until the changes are next taken
@@ -198,6 +235,7 @@ impl<T: Asset> Default for Assets<T> {
       next_version: 1,
       changes: None,
       serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
+      events: None,
     }
   }
 }
@@ -227,7 +265,9 @@ impl<T: Asset> Assets<T> {
     self.entry(id.into()).map(|e| &e.value)
   }
 
-  /// The asset for changing in place; its content version moves on
+  /// The asset for changing in place; its content version moves on, and
+  /// the next pump sends `AssetEvent::Modified` (once, however many times
+  /// it is changed before then)
   pub fn get_mut(&mut self, id: impl Into<AssetId<T>>) -> Option<&mut T> {
     let id = id.into();
     let entry = self
@@ -238,6 +278,7 @@ impl<T: Asset> Assets<T> {
     entry.version = self.next_version;
     self.next_version += 1;
     note(&mut self.changes, id.index());
+    queue(&mut self.events, id.index(), Queue::Modified);
     Some(&mut entry.value)
   }
 
@@ -272,7 +313,8 @@ impl<T: Asset> Assets<T> {
     Arc::clone(&self.ledger)
   }
 
-  /// Puts a value in a reserved (or loaded) slot; false if `id` is stale
+  /// Puts a value in a reserved (or loaded) slot, `Added` (or `Modified`)
+  /// queued for the pump; false if `id` is stale
   pub(crate) fn insert(&mut self, id: AssetId<T>, value: T) -> bool {
     if !self
       .ledger
@@ -289,6 +331,11 @@ impl<T: Asset> Assets<T> {
     let Some(slot) = self.values.get_mut(index) else {
       return false;
     };
+    let kind = match slot {
+      Some(entry) if entry.generation == id.generation() => Queue::Modified,
+      _ => Queue::Added,
+    };
+    queue(&mut self.events, id.index(), kind);
     *slot = Some(Entry {
       generation: id.generation(),
       version: self.next_version,
@@ -319,6 +366,49 @@ impl<T: Asset> Assets<T> {
   /// Which store this is: no two stores share a serial
   pub(crate) fn serial(&self) -> u64 {
     self.serial
+  }
+
+  /// From now on, changes made in code are queued as events for the pump
+  /// to send (the server does this for the stores it registers)
+  pub(crate) fn send_events(&mut self) {
+    self.events.get_or_insert_with(Queued::default);
+  }
+
+  /// Whether an event waits for the pump
+  pub(crate) fn has_events(&self) -> bool {
+    self
+      .events
+      .as_ref()
+      .is_some_and(|queued| !queued.order.is_empty())
+  }
+
+  /// Gives `send` each queued event, in the order its slot first changed
+  pub(crate) fn take_events(&mut self, mut send: impl FnMut(AssetEvent<T>)) {
+    let Some(queued) = &mut self.events else {
+      return;
+    };
+    for index in queued.order.drain(..) {
+      let kind = queued.kinds.get_mut(index as usize).and_then(Option::take);
+      let live = self.values.get(index as usize).and_then(Option::as_ref);
+      if let (Some(kind), Some(entry)) = (kind, live) {
+        let id = AssetId::new(index, entry.generation);
+        send(match kind {
+          Queue::Added => AssetEvent::Added { id },
+          Queue::Modified => AssetEvent::Modified { id },
+        });
+      }
+    }
+  }
+
+  /// Drops `id`'s queued event: the pump sends its own for it
+  pub(crate) fn unqueue(&mut self, id: AssetId<T>) {
+    if let Some(kind) = self
+      .events
+      .as_mut()
+      .and_then(|queued| queued.kinds.get_mut(id.index() as usize))
+    {
+      *kind = None;
+    }
   }
 
   /// Whether `follower` is the one this store's change list is kept for
@@ -384,7 +474,7 @@ impl<T: Asset> Assets<T> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::asset::Asset;
+  use crate::core::asset::{Asset, AssetEvent};
 
   struct Text(String);
   impl Asset for Text {}
@@ -521,6 +611,27 @@ mod tests {
     let back = taken_by(&mut assets, first, false);
     assert_eq!(back.len(), 1);
     assert_eq!(back[0].1.as_ref().map(|now| now.2.as_str()), Some("a2"));
+  }
+
+  #[test]
+  fn a_store_no_server_owns_queues_no_events() {
+    let mut assets = Assets::<Text>::default();
+    let a = assets.add(Text("a".into()));
+    assets.get_mut(&a).unwrap().0 = "a2".into();
+    let mut sent = Vec::new();
+    assets.take_events(|event| sent.push(event));
+    assert!(sent.is_empty() && assets.events.is_none());
+    // A store a server owns queues them, each id once
+    assets.send_events();
+    let b = assets.add(Text("b".into()));
+    assets.get_mut(&a).unwrap().0 = "a3".into();
+    assets.get_mut(&a).unwrap().0 = "a4".into();
+    assets.take_events(|event| sent.push(event));
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id: added }, AssetEvent::Modified { id: modified }]
+        if *added == b.id() && *modified == a.id()),
+      "{sent:?}"
+    );
   }
 
   #[test]

@@ -35,6 +35,13 @@ pub fn pump(world: &mut World) {
       Settled::Stale(waiting) => drop(waiting),
     }
   }
+  // Changes made in code since the last pump, before anything is freed (an
+  // asset added and dropped is added, then removed)
+  let mut index = 0;
+  while let Some(send_queued) = server.send_step(index) {
+    send_queued(world);
+    index += 1;
+  }
   free(world, &server);
 }
 
@@ -109,6 +116,8 @@ impl Typed {
 
 /// Frees a type's unheld assets, sends `Removed` for each and adds their ids to the list
 pub(crate) type FreeUnheld = fn(&mut World, &mut Vec<UntypedAssetId>);
+/// Sends the events a type's store queued for changes made in code
+pub(crate) type SendQueued = fn(&mut World);
 
 fn apply(world: &mut World, server: &AssetServer, finished: Finished) {
   let Finished { id, job, outcome } = finished;
@@ -265,9 +274,14 @@ pub(crate) fn insert_value<T: Asset>(
   let (Some(id), Ok(value)) = (id.typed::<T>(), value.downcast::<T>()) else {
     return false;
   };
+  // Sent here, so not queued as well
   let inserted = world
     .get_resource_mut::<Assets<T>>()
-    .is_some_and(|mut assets| assets.insert(id, *value));
+    .is_some_and(|mut assets| {
+      let inserted = assets.insert(id, *value);
+      assets.unqueue(id);
+      inserted
+    });
   if inserted {
     send(
       world,
@@ -312,9 +326,14 @@ fn touch<T: Asset>(world: &mut World, id: UntypedAssetId) {
   let Some(id) = id.typed::<T>() else {
     return;
   };
+  // Sent here, so not queued as well
   let touched = world
     .get_resource_mut::<Assets<T>>()
-    .is_some_and(|mut assets| assets.get_mut(id).is_some());
+    .is_some_and(|mut assets| {
+      let touched = assets.get_mut(id).is_some();
+      assets.unqueue(id);
+      touched
+    });
   if touched {
     send(world, AssetEvent::Modified { id });
   }
@@ -337,6 +356,28 @@ pub(crate) fn free_unheld<T: Asset>(world: &mut World, freed: &mut Vec<UntypedAs
   if let Some(mut events) = world.get_resource_mut::<Messages<AssetEvent<T>>>() {
     for id in ids {
       events.write(AssetEvent::Removed { id });
+    }
+  }
+}
+
+/// Sends the events `T`'s store queued for changes made in code
+pub(crate) fn send_queued<T: Asset>(world: &mut World) {
+  let mut events = Vec::new();
+  {
+    let Some(mut assets) = world.get_resource_mut::<Assets<T>>() else {
+      return;
+    };
+    // Most pumps find nothing; taking the queue changes no asset
+    if !assets.has_events() {
+      return;
+    }
+    assets
+      .bypass_change_detection()
+      .take_events(|event| events.push(event));
+  }
+  if let Some(mut messages) = world.get_resource_mut::<Messages<AssetEvent<T>>>() {
+    for event in events {
+      messages.write(event);
     }
   }
 }
