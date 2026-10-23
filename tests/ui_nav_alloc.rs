@@ -1,6 +1,7 @@
 //! Allocations of a UI frame whose focus moves down the rows of a scroll
 //! area, counted by a global allocator in this test binary
-// This test binary must hold exactly one test: the allocator is global, and a second test on another thread would count into it
+// This test binary must hold exactly one test: the allocator is global,
+// and a second test on another thread would count into it
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};

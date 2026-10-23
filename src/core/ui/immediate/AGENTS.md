@@ -1,14 +1,14 @@
 # AGENTS.md - UI Context, Commands and Input
 
-`UiContext` (`context.rs`) is what `Scene::ui` draws with. It draws nothing itself: every primitive records a `UiCommand` (`commands.rs`) that the engine's UI pass later lays into the 2D batch (`render/ui.rs`; the pass and the UI image are in `src/core/ui/AGENTS.md` and `src/core/render/AGENTS.md`). `input.rs` is the `UiInput` snapshot.
+`UiContext` (`context.rs`) is what `Scene::ui` draws with. It draws nothing itself: every primitive records a `UiCommand` (`commands.rs`) that the UI renderer later builds into instances of its own (`render/ui_renderer`; the pass and the UI image are in `src/core/ui/AGENTS.md` and `src/core/render/AGENTS.md`). `input.rs` is the `UiInput` snapshot.
 
 ## Commands
 
-- `UiCommand` is `Rect` (fill, radius, border), `Sprite` (a sprite handle, a rect, UVs, a tint), `Line` (a polyline's shared points, an offset `at` added to each where it is emitted, width, colour) or `Text` (a cached `TextLayout`, origin, reveal, opacity, effect seed). All are in UI units, and each carries the clip it was drawn under and its draw layer.
+- `UiCommand` is `Rect` (fill, radius, border), `Sprite` (a sprite handle, a rect, UVs, a tint), `Line` (a polyline's shared points, an offset `at` added to each where it is emitted, width, colour) or `Text` (a cached `TextLayout`, origin, reveal, opacity, effect seed). All are in UI units, and each carries the clip it was drawn under and its draw layer. Each is stored as a `UiDraw` with its order and its scroll slot: inside a scroll area its rect and clip are relative to the area's slot, which the renderer moves (`src/core/ui/AGENTS.md`, Scrolling).
 - Nine-slices are nine `Sprite` commands. Borders and rounded corners are the `Rect` command's, drawn analytically by the shader.
-- `UiCommands` is cleared at the start of each UI pass, so a pass that runs twice in a frame (a scene switch returned from `ui`) keeps only the second pass's commands.
+- Each UI pass replaces the last pass's commands, so a pass that runs twice in a frame (a scene switch returned from `ui`) keeps only the second pass's. It writes its draws over the last pass's (`clear` at its start): a kept fragment's run that the last pass left where this one pushes it, with the same tag, is taken as it is (`reuse_run`), and `end_pass` drops what is left past the pass's own. A pass also has its slot table (slot 0, no scroll area, first) and its fragment runs (`FragmentRun`).
 - Each command is stored with its `order`, taken when it was recorded (`next_order`). Absolute draws (`draw_*`, `ui.text(..).at(..)`) are pushed at once; a container's draws are pushed when it is laid out (`src/core/ui/AGENTS.md`, Layout and ids), so the list is not in painter's order: the order is.
-- Rects, sprites and text wholly outside the current clip are not recorded; so are non-finite or empty rects.
+- Rects, sprites and text wholly outside the current clip are not recorded; so are non-finite or empty rects. A kept fragment's commands in a scroll area are culled by the area's interest instead, wider than its view (`src/core/ui/AGENTS.md`, Fragments), so some of them show nothing; `UiCommands::visible` keeps those that can show.
 
 ## Clipping Stack
 

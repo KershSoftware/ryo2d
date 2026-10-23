@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.0.3
+  version: 2.0.4
 ---
 
 # Ryo2D Renderer Specialist
@@ -146,6 +146,8 @@ Particles, parallax and trails default to z 0: give them an explicit z to sit be
 
 - **World glyphs are batch items.** Text glyphs are placed in a glyph page (`R8Unorm` coverage, `Rgba8Unorm` colour or MSDF) and drawn by `TextMask`, `TextColor` or `TextMsdf`; bitmap-font cells and inline icons are ordinary sprites. The instance's `tint`, `effect_params` and `effect_extra` lanes carry the glyph colour, the MSDF mode/width/softness/range and the outline or border colour (lanes in `src/core/render/AGENTS.md`).
 - **The UI renderer.** The UI does not go through the batch: `render::ui_renderer` builds its commands into one instance format (rects, glyphs, sprites, line triangles) drawn by one pipeline (`ui.wgsl`) that clips in the shader, a draw only where a bound texture changes. The `ui` pass draws it through the UI camera (`UI_CAMERA`, its uniforms only) into the UI image: `Rgba8Unorm` (`UI_FORMAT`), colour gamma-encoded and premultiplied by alpha, through the `UI_GAMMA` override and `ui_out` in `color.wgsl`.
+- **Scroll slots.** A scroll area's contents are built relative to the area, and an instance names its slot in its flags: `vs_ui` adds the slot's whole-pixel offset before the camera and the snap and draws it under the slot's clip, so a scrolling list's instances do not change. The slots are a uniform array of 256 (`SlotUniform`, group 2) kept in the instance buffer past the instances and bound at a dynamic offset; the vertex stage collapses a quad wholly outside its clip, so unculled instances cost no fill. Past 256 slots, and on the pixel-art target, a slot's contents are built absolute on the CPU.
+- **Fragment runs.** A node tree's unchanged subtrees arrive as tagged runs (`FragmentRun`), and `UiRunCache` copies a run's built instances while its version, the environment, its glyph pages' generations, its stamps, its textures and its slot kind hold; runs built absolute are never kept. The upload writes only the stretches that changed (`changed_ranges`, at most four writes), and runs left in place are not compared. Details: `src/core/render/AGENTS.md`, The UI Renderer.
 - **Gamma-space composite.** The composite shader (`fullscreen_quad.wgsl`) encodes the frame to sRGB, blends `ui + frame * (1 - ui.a)` and decodes, so UI alpha behaves as on the web (a 50% black panel over white is 128). The UI image is size `UiSpace::image`: the render size, or the window's screen rectangle with `UiResolution::Window` in pixel-art mode.
 - **Batch shaders end in `ui_out(..)`** like the existing ones (custom sprite shaders get it from the generated entry points): a batch built in `UI_FORMAT` gamma-encodes as the UI pipeline does, which a test uses to prove UI lines against the line pipeline.
 
@@ -203,10 +205,10 @@ Located in `src/core/shaders/`:
 
 | File | Purpose |
 |------|---------|
-| `include/*.wgsl` | Shared, composed by `compose.rs` at compile time: `camera.wgsl`, `color.wgsl`, `sample.wgsl`, `fullscreen.wgsl`, `snap.wgsl` (pixel-art snapping), `quad.wgsl` (`quad_corner`: where a quad's corner lands, snap included; the sprite and UI vertex stages both call it), and the fragment bodies the world and UI shaders share: `tint.wgsl` (sprite tinting), `glyph.wgsl` (raster, colour and MSDF glyphs), `ui_rect.wgsl` (the UI rect) and `line_style.wgsl` (line shading) |
+| `include/*.wgsl` | Shared, composed by `compose.rs` at compile time: `camera.wgsl`, `color.wgsl`, `sample.wgsl`, `fullscreen.wgsl`, `snap.wgsl` (pixel-art snapping), `quad.wgsl` (`quad_corner`: where a quad's corner lands, snap included, moved first by `by`, a UI scroll slot's offset; the sprite and UI vertex stages both call it), and the fragment bodies the world and UI shaders share: `tint.wgsl` (sprite tinting), `glyph.wgsl` (raster, colour and MSDF glyphs), `ui_rect.wgsl` (the UI rect) and `line_style.wgsl` (line shading) |
 | `core/sprite.wgsl` | Sprites (batch quads), including per-sprite effects and premultiplied entries |
 | `core/line.wgsl` | Trails, lines and debug shapes (batch triangles) |
-| `core/ui.wgsl` | The UI renderer's one pipeline: `vs_ui` (quads through `quad_corner`, as `sprite.wgsl` places them, line triangles by their corners) and `fs_ui` (a switch over the instance's kind running the shared bodies, then the clip test as a scissor) |
+| `core/ui.wgsl` | The UI renderer's one pipeline: `vs_ui` (quads through `quad_corner`, as `sprite.wgsl` places them, line triangles by their corners, each moved by its scroll slot's offset and collapsed when wholly outside its clip) and `fs_ui` (a switch over the instance's kind running the shared bodies, then the clip test as a scissor) |
 | `core/light.wgsl`, `shadow.wgsl` | Lights (batch quads) and shadow volumes (batch triangles) |
 | `core/tonemap.wgsl`, `exposure.wgsl` | The look, and auto-exposure's compute passes |
 | `core/text.wgsl` | World glyphs: `fs_text_mask` (raster coverage times tint), `fs_text_color` (colour glyphs), `fs_text_msdf` (distance field: fill, outline, soft shadow and glow lanes) |

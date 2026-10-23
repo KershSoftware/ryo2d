@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.2.3
+  version: 2.2.4
 ---
 
 # Ryo2D Engine Developer
@@ -36,8 +36,8 @@ Engine::frame
 │                     then the console (animation, input, commands)
 ├─ UI pass            resolve first, once a frame, against last frame's UI records: the
 │                     pointer, the wheel, then focus and navigation from the ui.* actions;
-│                     then each visible scene bottom-up: its node trees (unchanged nodes
-│                     replayed from the cache), then Scene::ui (each top-level container
+│                     then each visible scene bottom-up: its node trees (unchanged subtrees
+│                     copied, unchanged nodes replayed), then Scene::ui (each top-level container
 │                     laid out by Taffy when its show() returns, popups at the scene's end),
 │                     debug overlays, console; consumption and used actions applied to Input;
 │                     a SceneAction applies at once (a scene change redraws the UI once)
@@ -105,7 +105,7 @@ Engine::frame
 | `gameplay/` | On top of physics: `MoveIntent` and bindings, the platformer and top-down presets, knockback, trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, `Respawn`) |
 | `particles/`, `trail/`, `skeleton/`, `tilemap/`, `navigation/`, `state_machine/` | Feature modules |
 | `text/` | Fonts (`Fonts`), `TextStyle`, rich text and markup, layout (Parley), glyph rasterization (swash, fdsm), effects, reveal, `Text2d` and `CpuText` for the dev windows; GPU-free |
-| `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`) and their cache (`nodes/cache.rs`, the records and the dirty set; `tape.rs`, what a build pushed and its replay), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` and `debug:ui-rebuilds` overlays (`debug.rs`) |
+| `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`) and their cache (`nodes/cache.rs`, the records and the dirty set; `tape.rs`, what a build pushed and its replay; `fragment.rs`, the unchanged subtrees kept and copied), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` and `debug:ui-rebuilds` overlays (`debug.rs`) |
 | `hash.rs` | The engine's fast hasher (`FastHasher`, `FastMap`, `FastSet`, `fast_hash`) for keys it makes itself: ids, the UI's memory and layout maps, the text caches; never SipHash, never saved |
 | `asset/` | `AssetManager`, async loads, hot reload |
 | `audio.rs` | Kira audio (`Audio`, `AudioManager`) |

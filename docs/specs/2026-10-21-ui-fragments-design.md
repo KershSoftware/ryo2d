@@ -124,7 +124,7 @@ Every scroll area is a slot for what it shows; slot 0 is content under no scroll
 
 - **Its data each frame:** a slot holds its pixel offset (its snapped origin less its drawn offset, in whole render pixels, absolute) and its clip (its view, intersected with the clips around it).
 - **Nesting:** slots compose. A slot's origin lies in its parent slot, so the Clipping page's card strip moves with the list around it and scrolls on its own.
-- **Its content:** commands and records under a scroll area carry its slot, with positions relative to it. Within a slot, the clip of everything it shows is the slot's clip, as only scroll areas clip their children.
+- **Its content:** commands and records under a scroll area carry its slot, with positions relative to it. Within a slot, the clip of everything it shows is the slot's clip, as only scroll areas clip their children. (Correction: other nodes clip their children too, a text field's view among them, so inside a slot a node under one keeps a clip of its own, relative to the slot, met with the slot's where it is drawn.)
 - **Nodes placed with `at`:** such a node inside a scroll area does not scroll (as today). It is placed in the area's parent slot and keeps the area's clip as its own.
 - **Records stay absolute.** A record's rect is its slot-relative rect plus its slot's offset, so hit tests, navigation, `scroll_to`, popups anchored to a widget and every widget reading a rect read what was drawn.
 - **Text** under a slot is placed relative to the slot in render pixels. A whole-pixel move along x keeps each glyph's subpixel bin, so a horizontally scrolled text is reused too (closing 4h's follow-up).
