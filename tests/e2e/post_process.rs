@@ -7,7 +7,7 @@ fn engine(scene: impl Scene + 'static) -> Option<HeadlessEngine> {
   HeadlessEngine::new_or_skip(EngineBuilder::new().resolution(64, 64).start_scene(scene))
 }
 
-fn spawn_sprite(ctx: &mut SceneContext, sprite: Sprite, name: &str) {
+fn spawn_sprite(ctx: &mut SceneContext, sprite: Image, name: &str) {
   let handle = SpriteHandle::from_sprite(sprite, name);
   ctx.world.spawn((
     Transform::from_xy(0.0, 0.0),
@@ -20,7 +20,7 @@ struct StackedEffects;
 
 impl Scene for StackedEffects {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    spawn_sprite(ctx, Sprite::solid_rect(64, 64, 128, 128, 128, 255), "grey");
+    spawn_sprite(ctx, Image::solid_rect(64, 64, 128, 128, 128, 255), "grey");
     ctx.effects().set_vignette_custom(1.0, 0.2, 0.3);
     // Comes after the vignette in the chain; its params.x (0.01) would all but
     // disable the vignette if the vignette read it.
@@ -55,7 +55,7 @@ struct DefaultVignette;
 
 impl Scene for DefaultVignette {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    spawn_sprite(ctx, Sprite::solid_rect(64, 64, 128, 128, 128, 255), "grey");
+    spawn_sprite(ctx, Image::solid_rect(64, 64, 128, 128, 128, 255), "grey");
     ctx.effects().set_vignette(1.0);
   }
 
@@ -95,7 +95,7 @@ impl Scene for BrightLine {
         pixels.extend_from_slice(&[v, v, v, 255]);
       }
     }
-    spawn_sprite(ctx, Sprite::from_rgba(pixels, 64, 64), "line");
+    spawn_sprite(ctx, Image::from_rgba(pixels, 64, 64), "line");
     if self.bloom {
       ctx.effects().set_bloom_custom(0.5, 1.0, 5.0, 2);
     }
@@ -134,12 +134,11 @@ struct GlowingLine {
 
 impl Scene for GlowingLine {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let black = SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 0, 0, 0, 255), "glow-black");
+    let black = SpriteHandle::from_sprite(Image::solid_rect(64, 64, 0, 0, 0, 255), "glow-black");
     ctx
       .world
       .spawn((Transform::from_xy(32.0, 32.0), Renderable::sprite(black)));
-    let line =
-      SpriteHandle::from_sprite(Sprite::solid_rect(2, 64, 255, 255, 255, 255), "glow-line");
+    let line = SpriteHandle::from_sprite(Image::solid_rect(2, 64, 255, 255, 255, 255), "glow-line");
     for z in 1..=self.layers as i32 {
       ctx.world.spawn((
         Transform::from_xy(33.0, 32.0),
@@ -215,12 +214,9 @@ struct GlowThroughTarget;
 
 impl Scene for GlowThroughTarget {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let black =
-      SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 0, 0, 0, 255), "rt-glow-black");
-    let line = SpriteHandle::from_sprite(
-      Sprite::solid_rect(2, 64, 255, 255, 255, 255),
-      "rt-glow-line",
-    );
+    let black = SpriteHandle::from_sprite(Image::solid_rect(64, 64, 0, 0, 0, 255), "rt-glow-black");
+    let line =
+      SpriteHandle::from_sprite(Image::solid_rect(2, 64, 255, 255, 255, 255), "rt-glow-line");
     ctx.world.spawn((
       Transform::from_xy(1000.0, 1000.0),
       Renderable::sprite(black),
@@ -299,7 +295,7 @@ struct Quartered(EffectStage);
 impl Scene for Quartered {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let white = SpriteHandle::from_sprite(
-      Sprite::solid_rect(64, 64, 255, 255, 255, 255),
+      Image::solid_rect(64, 64, 255, 255, 255, 255),
       "quarter-white",
     );
     for z in 0..2 {
@@ -354,7 +350,7 @@ impl Scene for BrightDot {
         pixels.extend_from_slice(&[v, v, v, 255]);
       }
     }
-    spawn_sprite(ctx, Sprite::from_rgba(pixels, 128, 64), "dot");
+    spawn_sprite(ctx, Image::from_rgba(pixels, 128, 64), "dot");
     ctx.effects().set_bloom_custom(0.1, 5.0, 5.0, 1);
   }
 
@@ -407,7 +403,7 @@ impl Scene for BrightSquare {
         pixels.extend_from_slice(&[v, v, v, 255]);
       }
     }
-    spawn_sprite(ctx, Sprite::from_rgba(pixels, 128, 64), "square");
+    spawn_sprite(ctx, Image::from_rgba(pixels, 128, 64), "square");
     ctx.effects().set_bloom_custom(0.1, 5.0, 5.0, 1);
   }
 

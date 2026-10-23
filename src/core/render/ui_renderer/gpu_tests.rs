@@ -7,7 +7,7 @@ use crate::core::ecs::Entity;
 use crate::core::graphics::bind_groups::created_on_this_thread;
 use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
 use crate::core::graphics::{
-  Camera2d, CameraView, Presentation, RenderLayers, Sprite, SpriteGpuRenderer, SpriteInstance,
+  Camera2d, CameraView, Image, Presentation, RenderLayers, SpriteGpuRenderer, SpriteInstance,
   place_in_slot,
 };
 use crate::core::render::batch::{
@@ -203,7 +203,7 @@ fn gradient(width: u32, height: u32) -> SpriteHandle {
       ]);
     }
   }
-  SpriteHandle::from_sprite(Sprite::from_rgba(data, width, height), "gradient")
+  SpriteHandle::from_sprite(Image::from_rgba(data, width, height), "gradient")
 }
 
 /// A quad's instance at `centre`, `size` pixels, turned by `angle`
@@ -990,7 +990,7 @@ mod building {
 
   use super::super::*;
   use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::{Sprite, SpriteGpuRenderer};
+  use crate::core::graphics::{Image, SpriteGpuRenderer};
   use crate::core::render::batch::{Filter, Triangles, push_polyline};
   use crate::core::render::text::{TextSources, TextTargets, emit_text};
   use crate::core::render::ui::{
@@ -1204,7 +1204,7 @@ mod building {
     let Some(mut writes) = Writes::new() else {
       return;
     };
-    let swatch = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let swatch = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
     let clip = Some(Rect::new(0.0, 0.0, 100.0, 50.0));
     let commands = commands_of([
       // Wholly below its clip
@@ -1284,7 +1284,7 @@ mod building {
     let Some(mut writes) = Writes::new() else {
       return;
     };
-    let swatch = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let swatch = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
     let slot_clip = Rect::new(0.0, 5.0, 100.0, 60.0);
     let inner = Rect::new(4.0, 2.0, 40.0, 30.0);
     // At a fractional scale: 3 and 7 render pixels are 2.4 and 5.6 units
@@ -1471,7 +1471,7 @@ mod building {
     let Some(mut writes) = Writes::new() else {
       return;
     };
-    let swatch = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let swatch = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
     let icons = Arc::new(TextLayout {
       scale: 1.0,
       icons: vec![PlacedIcon {
@@ -1534,7 +1534,7 @@ mod building {
     let Some(mut writes) = Writes::new() else {
       return;
     };
-    let swatch = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+    let swatch = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
     let commands = commands_of([
       sprite(
         &swatch,
@@ -1609,7 +1609,7 @@ mod building {
       return;
     };
     let [a, b] = ["a", "b"]
-      .map(|name| SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), name));
+      .map(|name| SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), name));
     let on_layer = |handle: &SpriteHandle, x: f32, layer: u8| match sprite(
       handle,
       Rect::new(x, 10.0, 16.0, 12.0),

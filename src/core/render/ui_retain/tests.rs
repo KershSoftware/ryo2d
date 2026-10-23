@@ -4,7 +4,7 @@ use glam::Vec2;
 
 use super::*;
 use crate::core::asset::SpriteHandle;
-use crate::core::graphics::Sprite;
+use crate::core::graphics::Image;
 use crate::core::render::UiSpace;
 use crate::core::text::{GlyphStyle, Icon, PlacedIcon, TextIcons, TextLayout};
 use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands};
@@ -183,7 +183,7 @@ fn no_commands_never_keep() {
 
 #[test]
 fn a_sprite_updated_in_place_redraws() {
-  let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+  let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
   let list = [UiCommand::Sprite {
     sprite: sprite.clone(),
     rect: Rect::new(0.0, 0.0, 4.0, 4.0),
@@ -195,14 +195,14 @@ fn a_sprite_updated_in_place_redraws() {
   }];
   let mut retain = drawn(&list);
   assert!(retain.keep(&commands(&list), None, env(), 7));
-  sprite.update(Sprite::solid_rect(4, 4, 0, 0, 255, 255));
+  sprite.update(Image::solid_rect(4, 4, 0, 0, 255, 255));
   assert!(!retain.keep(&commands(&list), None, env(), 7));
 }
 
 #[test]
 fn a_renamed_icon_redraws() {
-  let red = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "red");
-  let blue = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 0, 0, 255, 255), "blue");
+  let red = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "red");
+  let blue = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 0, 0, 255, 255), "blue");
   let mut icons = TextIcons::default();
   icons.insert("confirm", red);
   let layout = Arc::new(TextLayout {
@@ -426,7 +426,7 @@ fn draws_beside_a_run_are_compared_one_by_one() {
 
 #[test]
 fn a_sprite_in_a_run_updated_in_place_redraws() {
-  let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
+  let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 0, 0, 255), "swatch");
   let frame = |x: f32| {
     let mut commands = UiCommands::default();
     commands.push(0, 0, rect(x));
@@ -459,7 +459,7 @@ fn a_sprite_in_a_run_updated_in_place_redraws() {
   assert!(!retain.keep(&frame(0.0), None, env(), 7));
   retain.presented(false, true, 7);
   assert!(retain.keep(&frame(0.0), None, env(), 7));
-  sprite.update(Sprite::solid_rect(4, 4, 0, 0, 255, 255));
+  sprite.update(Image::solid_rect(4, 4, 0, 0, 255, 255));
   assert!(
     !retain.keep(&frame(0.0), None, env(), 7),
     "the run's sprite changed"
@@ -471,7 +471,7 @@ fn a_sprite_in_a_run_updated_in_place_redraws() {
   assert!(!retain.keep(&frame(1.0), None, env(), 7));
   retain.presented(false, true, 7);
   assert!(retain.keep(&frame(1.0), None, env(), 7));
-  sprite.update(Sprite::solid_rect(4, 4, 0, 255, 0, 255));
+  sprite.update(Image::solid_rect(4, 4, 0, 255, 0, 255));
   assert!(
     !retain.keep(&frame(1.0), None, env(), 7),
     "the run's sprite changed again"

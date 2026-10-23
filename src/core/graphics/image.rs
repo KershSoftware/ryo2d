@@ -1,11 +1,11 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
-use crate::core::error::{SpriteError, SpriteResult};
+use crate::core::error::{ImageError, ImageResult};
 
 /// A 2D sprite that can be drawn to the screen
 #[derive(Debug, Clone)]
-pub struct Sprite {
+pub struct Image {
   /// Raw RGBA pixel data (4 bytes per pixel)
   data: Vec<u8>,
   /// Width in pixels
@@ -16,7 +16,7 @@ pub struct Sprite {
   is_opaque: bool,
 }
 
-impl Sprite {
+impl Image {
   /// Check if all pixels in the data are fully opaque (alpha=255)
   fn check_opaque(data: &[u8]) -> bool {
     data.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255)
@@ -30,7 +30,7 @@ impl Sprite {
       "Data length must match width * height * 4"
     );
     let is_opaque = Self::check_opaque(&data);
-    Sprite {
+    Image {
       data,
       width,
       height,
@@ -47,7 +47,7 @@ impl Sprite {
       pixel[2] = b;
       pixel[3] = a;
     }
-    Sprite {
+    Image {
       data,
       width,
       height,
@@ -96,7 +96,7 @@ impl Sprite {
     }
 
     // Circles with anti-aliasing are never fully opaque
-    Sprite {
+    Image {
       data,
       width: diameter,
       height: diameter,
@@ -148,7 +148,7 @@ impl Sprite {
       }
     }
 
-    Sprite {
+    Image {
       data,
       width,
       height,
@@ -160,7 +160,7 @@ impl Sprite {
   ///
   /// SVG files are rasterized at their native size. Use `load_svg_scaled`
   /// if you need to render at a specific size.
-  pub fn load<P: AsRef<Path>>(path: P) -> SpriteResult<Self> {
+  pub fn load<P: AsRef<Path>>(path: P) -> ImageResult<Self> {
     let path_ref = path.as_ref();
 
     // Check if it's an SVG file
@@ -169,7 +169,7 @@ impl Sprite {
     }
 
     // Use image crate for raster formats
-    let img = image::open(path_ref).map_err(|e| SpriteError::DecodeError {
+    let img = image::open(path_ref).map_err(|e| ImageError::DecodeError {
       path: path_ref.to_path_buf(),
       reason: e.to_string(),
     })?;
@@ -180,7 +180,7 @@ impl Sprite {
     let data = rgba.into_raw();
     let is_opaque = Self::check_opaque(&data);
 
-    Ok(Sprite {
+    Ok(Image {
       data,
       width,
       height,
@@ -197,21 +197,21 @@ impl Sprite {
   /// # Example
   /// ```rust,ignore
   /// // Load SVG at native size
-  /// let icon = Sprite::load_svg("icon.svg", 1.0)?;
+  /// let icon = Image::load_svg("icon.svg", 1.0)?;
   ///
   /// // Load SVG at 2x size for high-DPI displays
-  /// let icon_hd = Sprite::load_svg("icon.svg", 2.0)?;
+  /// let icon_hd = Image::load_svg("icon.svg", 2.0)?;
   /// ```
-  pub fn load_svg<P: AsRef<Path>>(path: P, scale: f32) -> SpriteResult<Self> {
+  pub fn load_svg<P: AsRef<Path>>(path: P, scale: f32) -> ImageResult<Self> {
     let path_ref = path.as_ref();
 
     // Read SVG data
-    let svg_data = std::fs::read(path_ref).map_err(|e| SpriteError::DecodeError {
+    let svg_data = std::fs::read(path_ref).map_err(|e| ImageError::DecodeError {
       path: path_ref.to_path_buf(),
       reason: e.to_string(),
     })?;
 
-    Self::from_svg_data(&svg_data, scale).map_err(|reason| SpriteError::DecodeError {
+    Self::from_svg_data(&svg_data, scale).map_err(|reason| ImageError::DecodeError {
       path: path_ref.to_path_buf(),
       reason,
     })
@@ -230,16 +230,16 @@ impl Sprite {
     path: P,
     max_width: u32,
     max_height: u32,
-  ) -> SpriteResult<Self> {
+  ) -> ImageResult<Self> {
     let path_ref = path.as_ref();
 
-    let svg_data = std::fs::read(path_ref).map_err(|e| SpriteError::DecodeError {
+    let svg_data = std::fs::read(path_ref).map_err(|e| ImageError::DecodeError {
       path: path_ref.to_path_buf(),
       reason: e.to_string(),
     })?;
 
     Self::from_svg_data_fit(&svg_data, max_width, max_height).map_err(|reason| {
-      SpriteError::DecodeError {
+      ImageError::DecodeError {
         path: path_ref.to_path_buf(),
         reason,
       }
@@ -276,7 +276,7 @@ impl Sprite {
     let data = Self::unpremultiply_alpha(pixmap.data());
     let is_opaque = Self::check_opaque(&data);
 
-    Ok(Sprite {
+    Ok(Image {
       data,
       width,
       height,
@@ -401,7 +401,7 @@ impl Sprite {
     }
 
     // Scaled sprite inherits opacity from source (scaling doesn't change alpha)
-    Sprite {
+    Image {
       data,
       width: new_width,
       height: new_height,
@@ -581,7 +581,7 @@ impl Sprite {
 #[derive(Debug, Clone)]
 pub struct AnimatedSprite {
   /// The sprite sheet containing all frames
-  sheet: Sprite,
+  sheet: Image,
   /// Width of each frame
   frame_width: u32,
   /// Height of each frame
@@ -603,7 +603,7 @@ impl AnimatedSprite {
   /// * `sheet` - The sprite sheet (frames arranged horizontally)
   /// * `frame_count` - Number of frames in the sheet
   /// * `fps` - Animation frames per second
-  pub fn from_sheet(sheet: Sprite, frame_count: u32, fps: f32) -> Self {
+  pub fn from_sheet(sheet: Image, frame_count: u32, fps: f32) -> Self {
     let frame_width = sheet.width() / frame_count;
     let frame_height = sheet.height();
 
@@ -694,14 +694,14 @@ mod tests {
 
   #[test]
   fn solid_rect_creates_correct_size() {
-    let sprite = Sprite::solid_rect(10, 20, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(10, 20, 255, 0, 0, 255);
     assert_eq!(sprite.width(), 10);
     assert_eq!(sprite.height(), 20);
   }
 
   #[test]
   fn solid_rect_fills_with_color() {
-    let sprite = Sprite::solid_rect(2, 2, 100, 150, 200, 255);
+    let sprite = Image::solid_rect(2, 2, 100, 150, 200, 255);
     // Check first pixel
     assert_eq!(sprite.data[0], 100); // R
     assert_eq!(sprite.data[1], 150); // G
@@ -712,7 +712,7 @@ mod tests {
   #[test]
   fn solid_circle_transparent_pixels_have_correct_rgb() {
     // Create a white circle
-    let sprite = Sprite::solid_circle(25, 255, 200, 100, 255);
+    let sprite = Image::solid_circle(25, 255, 200, 100, 255);
 
     // Corner pixel (0,0) should be transparent but have the circle's RGB
     let corner_idx = 0;
@@ -740,7 +740,7 @@ mod tests {
   #[test]
   fn from_rgba_validates_size() {
     let data = vec![0u8; 4 * 4 * 4]; // 4x4 sprite
-    let sprite = Sprite::from_rgba(data, 4, 4);
+    let sprite = Image::from_rgba(data, 4, 4);
     assert_eq!(sprite.width(), 4);
     assert_eq!(sprite.height(), 4);
   }
@@ -749,12 +749,12 @@ mod tests {
   #[should_panic(expected = "Data length must match")]
   fn from_rgba_panics_on_wrong_size() {
     let data = vec![0u8; 10]; // Wrong size
-    Sprite::from_rgba(data, 4, 4);
+    Image::from_rgba(data, 4, 4);
   }
 
   #[test]
   fn draw_opaque_sprite() {
-    let sprite = Sprite::solid_rect(2, 2, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(2, 2, 255, 0, 0, 255);
     let mut frame = vec![0u8; 4 * 4 * 4]; // 4x4 frame, all black
 
     sprite.draw(&mut frame, 4, 4, 1, 1);
@@ -772,7 +772,7 @@ mod tests {
 
   #[test]
   fn draw_clips_to_frame_bounds() {
-    let sprite = Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+    let sprite = Image::solid_rect(4, 4, 255, 255, 255, 255);
     let mut frame = vec![0u8; 2 * 2 * 4]; // 2x2 frame
 
     // Draw sprite at (-1, -1), only bottom-right 1x1 should appear at (0,0)
@@ -784,7 +784,7 @@ mod tests {
 
   #[test]
   fn draw_offscreen_does_nothing() {
-    let sprite = Sprite::solid_rect(2, 2, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(2, 2, 255, 0, 0, 255);
     let mut frame = vec![0u8; 4 * 4 * 4];
     let original = frame.clone();
 
@@ -795,7 +795,7 @@ mod tests {
 
   #[test]
   fn draw_transparent_sprite_is_skipped() {
-    let sprite = Sprite::solid_rect(2, 2, 255, 0, 0, 0); // Alpha = 0
+    let sprite = Image::solid_rect(2, 2, 255, 0, 0, 0); // Alpha = 0
     let mut frame = vec![128u8; 4 * 4 * 4]; // Gray background
     let original = frame.clone();
 
@@ -806,7 +806,7 @@ mod tests {
 
   #[test]
   fn animated_sprite_advances_frames() {
-    let sheet = Sprite::solid_rect(30, 10, 255, 255, 255, 255); // 3 frames of 10x10
+    let sheet = Image::solid_rect(30, 10, 255, 255, 255, 255); // 3 frames of 10x10
     let mut anim = AnimatedSprite::from_sheet(sheet, 3, 10.0); // 10 FPS
 
     assert_eq!(anim.current_frame, 0);

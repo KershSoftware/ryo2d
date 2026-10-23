@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::core::asset::SpriteHandle;
-use crate::core::graphics::Sprite;
+use crate::core::graphics::Image;
 
 use super::build::SpriteSource;
 use super::document::{ImportResolver, UiFile};
@@ -102,7 +102,7 @@ impl SpriteSource for DiskSprites {
     let handle = self
       .handles
       .entry(path.to_string())
-      .or_insert_with(|| SpriteHandle::new(Sprite::solid_rect(1, 1, 0, 0, 0, 0), path.into()));
+      .or_insert_with(|| SpriteHandle::new(Image::solid_rect(1, 1, 0, 0, 0, 0), path.into()));
     Ok(handle.clone())
   }
 }

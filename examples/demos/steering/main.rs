@@ -79,7 +79,7 @@ impl SteeringDemoScene {
     let velocity = Vec2::new(angle.cos(), angle.sin()) * BOID_SPEED;
 
     // Create sprite
-    let sprite = Sprite::solid_rect(8, 8, r, g, b, 255);
+    let sprite = Image::solid_rect(8, 8, r, g, b, 255);
     let handle = SpriteHandle::from_sprite(sprite, format!("boid_{}", self.boids.len()));
 
     // Trail with boid's color
@@ -122,7 +122,7 @@ impl SteeringDemoScene {
       return;
     }
 
-    let sprite = Sprite::solid_rect(20, 20, 255, 50, 50, 255);
+    let sprite = Image::solid_rect(20, 20, 255, 50, 50, 255);
     let handle = SpriteHandle::from_sprite(sprite, "predator");
 
     let entity = ctx

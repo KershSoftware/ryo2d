@@ -15,7 +15,7 @@ const BLUE: [u8; 4] = [30, 60, 230, 255];
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 
 fn solid(name: &str, size: u32, c: [u8; 4]) -> SpriteHandle {
-  SpriteHandle::from_sprite(Sprite::solid_rect(size, size, c[0], c[1], c[2], c[3]), name)
+  SpriteHandle::from_sprite(Image::solid_rect(size, size, c[0], c[1], c[2], c[3]), name)
 }
 
 /// Whether a pixel is the test line's green (lines are slightly translucent,
@@ -366,7 +366,7 @@ fn trail_between_gpu_sprites() {
 fn blob_shadow_under_its_entity() {
   let scene = Fixture::new(|ctx| {
     let sprite =
-      SpriteHandle::from_sprite(Sprite::solid_rect(10, 10, 220, 30, 40, 255), "blob-owner");
+      SpriteHandle::from_sprite(Image::solid_rect(10, 10, 220, 30, 40, 255), "blob-owner");
     let blob = BlobShadow {
       radius_x: 12.0,
       radius_y: 6.0,
@@ -571,7 +571,7 @@ struct FadesToWhite {
 
 impl Scene for FadesToWhite {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let halves = Sprite::from_rgba(
+    let halves = Image::from_rgba(
       (0..32 * 64)
         .flat_map(|i| {
           let v = if i % 64 < 32 { 0 } else { 128 };
@@ -631,7 +631,7 @@ fn transition_fades_like_srgb_bytes() {
 const ANCHOR_RED: [u8; 4] = [220, 30, 40, 255];
 
 fn red_rect(width: u32, height: u32, name: &str) -> SpriteHandle {
-  SpriteHandle::from_sprite(Sprite::solid_rect(width, height, 220, 30, 40, 255), name)
+  SpriteHandle::from_sprite(Image::solid_rect(width, height, 220, 30, 40, 255), name)
 }
 
 #[test]
@@ -1211,7 +1211,7 @@ fn nearest_and_linear_differ_when_magnified() {
   impl Scene for Checker {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
       let texels = vec![0, 0, 0, 255, 255, 255, 255, 255];
-      let sprite = SpriteHandle::from_sprite(Sprite::from_rgba(texels, 2, 1), "checker-2x1");
+      let sprite = SpriteHandle::from_sprite(Image::from_rgba(texels, 2, 1), "checker-2x1");
       ctx.world.spawn((
         Transform::from_xy(16.0, 16.0).with_scale(Vec2::splat(16.0)),
         Renderable::sprite(sprite).with_filter(self.0),
@@ -1314,7 +1314,7 @@ fn a_fractional_quad_keeps_its_width_as_it_moves_in_pixel_art() {
   struct Bar(f32);
   impl Scene for Bar {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let bar = SpriteHandle::from_sprite(Sprite::solid_rect(3, 4, 220, 30, 40, 255), "frac-bar");
+      let bar = SpriteHandle::from_sprite(Image::solid_rect(3, 4, 220, 30, 40, 255), "frac-bar");
       ctx.world.spawn((
         Transform::from_xy(self.0, 8.0).with_scale(Vec2::splat(1.5)),
         Renderable::sprite(bar),
@@ -1352,7 +1352,7 @@ impl Scene for Shrunk {
       let v = if (i % 64 + i / 64) % 2 == 0 { 0 } else { 255 };
       data.extend_from_slice(&[v, v, v, 255]);
     }
-    let checker = SpriteHandle::from_sprite(Sprite::from_rgba(data, 64, 64), "shrunk-checker");
+    let checker = SpriteHandle::from_sprite(Image::from_rgba(data, 64, 64), "shrunk-checker");
     ctx.world.spawn((
       Transform::from_xy(16.0, 16.0).with_scale(Vec2::splat(0.125)),
       Renderable::sprite(checker).with_filter(self.0),
@@ -1426,7 +1426,7 @@ fn a_tiled_trail_repeats_its_texture_without_seams() {
         data.extend_from_slice(if x < 4 { &RED } else { &BLUE });
       }
     }
-    let texture = SpriteHandle::from_sprite(Sprite::from_rgba(data, 8, 2), "tile-stripe");
+    let texture = SpriteHandle::from_sprite(Image::from_rgba(data, 8, 2), "tile-stripe");
     // Untapered, so every pixel along it is a whole texel
     let mut trail = Trail2D::new(Color::WHITE, 6.0)
       .with_end_width(6.0)

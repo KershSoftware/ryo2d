@@ -55,7 +55,7 @@ pub fn spawn_background(ctx: &mut SceneContext) {
     ("desert_dunefrontt", -20, 160.0),
   ];
   for (name, z, speed) in layers {
-    let Ok(sprite) = Sprite::load(format!("assets/{name}.png")) else {
+    let Ok(sprite) = Image::load(format!("assets/{name}.png")) else {
       ryo2d::game_warn!("assets/{name}.png could not be loaded");
       continue;
     };

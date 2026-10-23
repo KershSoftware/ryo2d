@@ -205,7 +205,7 @@ mod tests {
   use crate::core::ui::test_util::UiDriver;
 
   use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::text::TextStyle;
   use crate::core::ui::immediate::UiCommand;
   use crate::core::ui::{Color, UiContext};
@@ -314,7 +314,7 @@ mod tests {
   #[test]
   fn an_icon_sits_left_of_the_label_and_both_are_centred() {
     let mut d = UiDriver::new((300.0, 100.0));
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 255, 255, 255), "i");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 255, 255, 255), "i");
     let at = Rect::new(10.0, 10.0, 200.0, 40.0);
     let (label, line) = d.frame(|ui| {
       ui.button("Save").at(at).icon(&sprite).show();

@@ -199,7 +199,7 @@ impl InventoryDemoScene {
     let entity = spawn_item_drop(world, stack, (x, y));
 
     self.drop_counter += 1;
-    let sprite = Sprite::solid_rect(12, 12, color.0, color.1, color.2, 255);
+    let sprite = Image::solid_rect(12, 12, color.0, color.1, color.2, 255);
     let handle = SpriteHandle::from_sprite(sprite, format!("drop_{}", self.drop_counter));
     world
       .entity_mut(entity)
@@ -481,7 +481,7 @@ impl DemoPage for InventoryDemoScene {
     let py = 300.0_f32;
 
     // Body
-    let body_sprite = Sprite::solid_rect(28, 36, 100, 140, 200, 255);
+    let body_sprite = Image::solid_rect(28, 36, 100, 140, 200, 255);
     let body_handle = SpriteHandle::from_sprite(body_sprite, "player_body");
     let body = ctx
       .world
@@ -492,7 +492,7 @@ impl DemoPage for InventoryDemoScene {
       .id();
 
     // Head
-    let head_sprite = Sprite::solid_rect(20, 20, 220, 180, 140, 255);
+    let head_sprite = Image::solid_rect(20, 20, 220, 180, 140, 255);
     let head_handle = SpriteHandle::from_sprite(head_sprite, "player_head");
     let head = ctx
       .world
@@ -503,7 +503,7 @@ impl DemoPage for InventoryDemoScene {
       .id();
 
     // Weapon overlay (hidden until equipped, white sprite tinted by item color)
-    let weapon_sprite = Sprite::solid_rect(6, 30, 255, 255, 255, 255);
+    let weapon_sprite = Image::solid_rect(6, 30, 255, 255, 255, 255);
     let weapon_handle = SpriteHandle::from_sprite(weapon_sprite, "player_weapon");
     let weapon = ctx
       .world
@@ -516,7 +516,7 @@ impl DemoPage for InventoryDemoScene {
       .id();
 
     // Armor overlay (hidden until equipped)
-    let armor_sprite = Sprite::solid_rect(28, 36, 255, 255, 255, 255);
+    let armor_sprite = Image::solid_rect(28, 36, 255, 255, 255, 255);
     let armor_handle = SpriteHandle::from_sprite(armor_sprite, "player_armor");
     let armor_overlay = ctx
       .world
@@ -530,7 +530,7 @@ impl DemoPage for InventoryDemoScene {
       .id();
 
     // Helmet overlay (hidden until equipped)
-    let helmet_sprite = Sprite::solid_rect(22, 10, 255, 255, 255, 255);
+    let helmet_sprite = Image::solid_rect(22, 10, 255, 255, 255, 255);
     let helmet_handle = SpriteHandle::from_sprite(helmet_sprite, "player_helmet");
     let helmet_overlay = ctx
       .world
@@ -551,7 +551,7 @@ impl DemoPage for InventoryDemoScene {
     });
 
     // Ground line
-    let ground_sprite = Sprite::solid_rect(380, 2, 100, 100, 100, 255);
+    let ground_sprite = Image::solid_rect(380, 2, 100, 100, 100, 255);
     let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground_line");
     ctx.world.spawn((
       Transform::from_xy(200.0, 480.0),

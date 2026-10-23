@@ -94,15 +94,15 @@ impl PathfindingDemoScene {
 
   fn create_sprites(&mut self) {
     // Agent sprite (circle-ish)
-    let agent = Sprite::solid_rect(12, 12, 100, 200, 255, 255);
+    let agent = Image::solid_rect(12, 12, 100, 200, 255, 255);
     self.agent_sprite = Some(SpriteHandle::from_sprite(agent, "agent"));
 
     // Obstacle sprite (dark gray block)
-    let obstacle = Sprite::solid_rect(CELL_SIZE as u32, CELL_SIZE as u32, 60, 60, 70, 255);
+    let obstacle = Image::solid_rect(CELL_SIZE as u32, CELL_SIZE as u32, 60, 60, 70, 255);
     self.obstacle_sprite = Some(SpriteHandle::from_sprite(obstacle, "obstacle"));
 
     // Destination marker sprite (bright target indicator)
-    let marker = Sprite::solid_rect(16, 16, 255, 220, 100, 200);
+    let marker = Image::solid_rect(16, 16, 255, 220, 100, 200);
     self.marker_sprite = Some(SpriteHandle::from_sprite(marker, "marker"));
   }
 
@@ -119,7 +119,7 @@ impl PathfindingDemoScene {
     let color_idx = self.agents.len() % colors.len();
     let (r, g, b) = colors[color_idx];
 
-    let sprite = Sprite::solid_rect(12, 12, r, g, b, 255);
+    let sprite = Image::solid_rect(12, 12, r, g, b, 255);
     let handle = SpriteHandle::from_sprite(sprite, format!("agent_{}", self.agents.len()));
 
     // Create a trail with the agent's color (slightly transparent)

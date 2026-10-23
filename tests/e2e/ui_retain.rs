@@ -406,7 +406,7 @@ impl Scene for Prompt {
 #[test]
 fn swapped_text_icons_show_at_once() {
   let swatch =
-    |r, g, b, name| SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, r, g, b, 255), name);
+    |r, g, b, name| SpriteHandle::from_sprite(Image::solid_rect(16, 16, r, g, b, 255), name);
   let (red, blue) = (swatch(255, 0, 0, "red"), swatch(0, 0, 255, "blue"));
   let make = || {
     EngineBuilder::new()
@@ -677,7 +677,7 @@ impl Scene for BitmapLabel {
         pixels[(y * 8 + x) * 4..][..4].copy_from_slice(&[255, 255, 255, 255]);
       }
     }
-    let sheet = SpriteHandle::from_sprite(Sprite::from_rgba(pixels, 8, 4), "retain-grid");
+    let sheet = SpriteHandle::from_sprite(Image::from_rgba(pixels, 8, 4), "retain-grid");
     self.font = ctx.fonts().add_bitmap("Grid", sheet, (4, 4), "#.").ok();
   }
 

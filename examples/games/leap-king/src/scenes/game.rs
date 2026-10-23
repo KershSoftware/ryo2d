@@ -607,7 +607,7 @@ impl GameScene {
       .spawn((
         Transform::from_xy(x, y),
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(
+          Image::solid_rect(
             width as u32,
             PLATFORM_HEIGHT as u32,
             color.0,
@@ -755,7 +755,7 @@ impl GameScene {
     // Create dust sprite if not already created
     if self.dust_sprite.is_none() {
       self.dust_sprite = Some(ctx.assets.create_sprite(
-        Sprite::solid_rect(2, 2, 255, 240, 200, 120), // Warm semi-transparent dust
+        Image::solid_rect(2, 2, 255, 240, 200, 120), // Warm semi-transparent dust
         "lamp_dust",
       ));
     }
@@ -888,7 +888,7 @@ impl GameScene {
   fn spawn_rain(&mut self, ctx: &mut SceneContext) {
     // Create particle sprite
     let rain_sprite = ctx.assets.create_sprite(
-      Sprite::solid_circle(8, 255, 255, 255, 255), // White circle
+      Image::solid_circle(8, 255, 255, 255, 255), // White circle
       "rain_particle",
     );
     self.rain_sprite = Some(rain_sprite.clone());
@@ -1122,7 +1122,7 @@ impl GameScene {
       (
         Transform::from_xy(0.0, PLAYER_HEIGHT),
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(
+          Image::solid_rect(
             PLAYER_WIDTH as u32,
             PLAYER_HEIGHT as u32,
             color.0,
@@ -1364,7 +1364,7 @@ impl GameScene {
     };
     if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity) {
       renderable.sprite = SpriteHandle::from_sprite(
-        Sprite::solid_rect(
+        Image::solid_rect(
           width as u32,
           PLATFORM_HEIGHT as u32,
           color.0,

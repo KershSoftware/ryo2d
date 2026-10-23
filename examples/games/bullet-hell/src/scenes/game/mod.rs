@@ -92,23 +92,23 @@ impl GameScene {
     // Load sprites
     // Heroic gold/orange player color with black outline
     let player_sprite =
-      Sprite::solid_rect(PLAYER_SIZE as u32, PLAYER_SIZE as u32, 255, 180, 50, 255);
-    let turret_sprite = Sprite::load("assets/turret.png").expect("Failed to load turret sprite");
+      Image::solid_rect(PLAYER_SIZE as u32, PLAYER_SIZE as u32, 255, 180, 50, 255);
+    let turret_sprite = Image::load("assets/turret.png").expect("Failed to load turret sprite");
     // Create a small round bullet programmatically (bright orange-red)
-    let bullet_sprite = Sprite::solid_circle(BULLET_SIZE as u32, 255, 100, 50, 255);
+    let bullet_sprite = Image::solid_circle(BULLET_SIZE as u32, 255, 100, 50, 255);
     let particle_sprite =
-      Sprite::load("assets/particle.png").expect("Failed to load particle sprite");
+      Image::load("assets/particle.png").expect("Failed to load particle sprite");
     let platform_sprite =
-      Sprite::load("assets/platform.png").expect("Failed to load platform sprite");
+      Image::load("assets/platform.png").expect("Failed to load platform sprite");
     // Create barrier sprite programmatically (dark gray rectangle)
     let barrier_sprite =
-      Sprite::solid_rect(BARRIER_WIDTH as u32, BARRIER_HEIGHT as u32, 60, 60, 70, 255);
+      Image::solid_rect(BARRIER_WIDTH as u32, BARRIER_HEIGHT as u32, 60, 60, 70, 255);
     // Create drone sprite programmatically (purple color)
-    let drone_sprite = Sprite::solid_rect(DRONE_SIZE as u32, DRONE_SIZE as u32, 150, 80, 200, 255);
+    let drone_sprite = Image::solid_rect(DRONE_SIZE as u32, DRONE_SIZE as u32, 150, 80, 200, 255);
     // Create nebula orb sprite (forest green)
-    let nebula_orb_sprite = Sprite::solid_circle(NEBULA_ORB_SIZE as u32, 45, 120, 50, 255);
+    let nebula_orb_sprite = Image::solid_circle(NEBULA_ORB_SIZE as u32, 45, 120, 50, 255);
     // Create rocket sprite (orange/red)
-    let rocket_sprite = Sprite::solid_rect(
+    let rocket_sprite = Image::solid_rect(
       ROCKET_SIZE as u32,
       (ROCKET_SIZE * 0.6) as u32,
       255,

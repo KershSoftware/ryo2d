@@ -65,7 +65,7 @@ impl EasingScene {
   }
 
   fn create_square(r: u8, g: u8, b: u8) -> SpriteHandle {
-    let sprite = Sprite::solid_rect(24, 24, r, g, b, 255);
+    let sprite = Image::solid_rect(24, 24, r, g, b, 255);
     SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}", r, g, b))
   }
 
@@ -311,7 +311,7 @@ impl DemoPage for SpeedControlScene {
     self.screen_w = screen_w;
     self.screen_h = screen_h;
 
-    let sprite = Sprite::solid_circle(30, 100, 200, 255, 255);
+    let sprite = Image::solid_circle(30, 100, 200, 255, 255);
     let handle = SpriteHandle::from_sprite(sprite, "speed_ball");
 
     let center_y = screen_h / 2.0;
@@ -397,7 +397,7 @@ impl CallbacksScene {
     self.update_count.store(0, Ordering::SeqCst);
     self.complete_count.store(0, Ordering::SeqCst);
 
-    let sprite = Sprite::solid_rect(40, 40, 255, 150, 50, 255);
+    let sprite = Image::solid_rect(40, 40, 255, 150, 50, 255);
     let handle = SpriteHandle::from_sprite(sprite, "callback_box");
 
     let center_y = self.screen_h / 2.0;
@@ -518,7 +518,7 @@ impl CombinedEffectsScene {
     let center_y = self.screen_h / 2.0;
 
     // Demo 1: Position + Scale (bouncing ball effect)
-    let sprite1 = Sprite::solid_circle(25, 100, 200, 255, 255);
+    let sprite1 = Image::solid_circle(25, 100, 200, 255, 255);
     let handle1 = SpriteHandle::from_sprite(sprite1, "bounce_ball");
 
     self.entities.push(
@@ -539,7 +539,7 @@ impl CombinedEffectsScene {
     );
 
     // Demo 2: Position + Rotation (orbiting)
-    let sprite2 = Sprite::solid_rect(30, 30, 255, 150, 50, 255);
+    let sprite2 = Image::solid_rect(30, 30, 255, 150, 50, 255);
     let handle2 = SpriteHandle::from_sprite(sprite2, "orbit_box");
 
     self.entities.push(
@@ -580,7 +580,7 @@ impl CombinedEffectsScene {
     );
 
     // Demo 3: Scale pulsing (heartbeat)
-    let sprite3 = Sprite::solid_circle(20, 255, 80, 80, 255);
+    let sprite3 = Image::solid_circle(20, 255, 80, 80, 255);
     let handle3 = SpriteHandle::from_sprite(sprite3, "heart");
 
     self.entities.push(
@@ -701,7 +701,7 @@ impl SequenceScene {
   }
 
   fn spawn_entity(&mut self, ctx: &mut SceneContext) {
-    let sprite = Sprite::solid_rect(40, 40, 50, 200, 150, 255);
+    let sprite = Image::solid_rect(40, 40, 50, 200, 150, 255);
     let handle = SpriteHandle::from_sprite(sprite, "sequence_box");
 
     // Square path: start at top-left, go right, down, left, up
@@ -822,7 +822,7 @@ impl ColorAlphaScene {
     let spacing = 120.0;
 
     // Demo 1: Alpha fade (ping-pong)
-    let sprite1 = Sprite::solid_rect(60, 60, 100, 150, 255, 255);
+    let sprite1 = Image::solid_rect(60, 60, 100, 150, 255, 255);
     let handle1 = SpriteHandle::from_sprite(sprite1, "fade_box");
 
     self.entities.push(
@@ -841,7 +841,7 @@ impl ColorAlphaScene {
     );
 
     // Demo 2: Tint to red
-    let sprite2 = Sprite::solid_rect(60, 60, 255, 255, 255, 255);
+    let sprite2 = Image::solid_rect(60, 60, 255, 255, 255, 255);
     let handle2 = SpriteHandle::from_sprite(sprite2, "tint_red");
 
     self.entities.push(
@@ -860,7 +860,7 @@ impl ColorAlphaScene {
     );
 
     // Demo 3: Tint to green
-    let sprite3 = Sprite::solid_rect(60, 60, 255, 255, 255, 255);
+    let sprite3 = Image::solid_rect(60, 60, 255, 255, 255, 255);
     let handle3 = SpriteHandle::from_sprite(sprite3, "tint_green");
 
     self.entities.push(
@@ -879,7 +879,7 @@ impl ColorAlphaScene {
     );
 
     // Demo 4: Tint to blue
-    let sprite4 = Sprite::solid_rect(60, 60, 255, 255, 255, 255);
+    let sprite4 = Image::solid_rect(60, 60, 255, 255, 255, 255);
     let handle4 = SpriteHandle::from_sprite(sprite4, "tint_blue");
 
     self.entities.push(
@@ -898,7 +898,7 @@ impl ColorAlphaScene {
     );
 
     // Demo 5: Color cycle (sequence)
-    let sprite5 = Sprite::solid_circle(40, 255, 255, 255, 255);
+    let sprite5 = Image::solid_circle(40, 255, 255, 255, 255);
     let handle5 = SpriteHandle::from_sprite(sprite5, "color_cycle");
 
     self.entities.push(
@@ -938,7 +938,7 @@ impl ColorAlphaScene {
     let row2_y = start_y + spacing;
 
     // Demo 6: Alpha + Scale (pop in/out)
-    let sprite6 = Sprite::solid_rect(50, 50, 255, 200, 100, 255);
+    let sprite6 = Image::solid_rect(50, 50, 255, 200, 100, 255);
     let handle6 = SpriteHandle::from_sprite(sprite6, "pop_box");
 
     self.entities.push(
@@ -971,7 +971,7 @@ impl ColorAlphaScene {
     );
 
     // Demo 7: Tint + Position (moving color)
-    let sprite7 = Sprite::solid_circle(30, 255, 255, 255, 255);
+    let sprite7 = Image::solid_circle(30, 255, 255, 255, 255);
     let handle7 = SpriteHandle::from_sprite(sprite7, "moving_tint");
 
     self.entities.push(
@@ -1000,7 +1000,7 @@ impl ColorAlphaScene {
     );
 
     // Demo 8: Alpha + Rotation (fading spin)
-    let sprite8 = Sprite::solid_rect(45, 45, 150, 255, 200, 255);
+    let sprite8 = Image::solid_rect(45, 45, 150, 255, 200, 255);
     let handle8 = SpriteHandle::from_sprite(sprite8, "spin_fade");
 
     self.entities.push(
@@ -1023,7 +1023,7 @@ impl ColorAlphaScene {
     let row3_y = start_y + spacing * 2.0;
 
     // Demo 9: Tint darkening (multiply effect)
-    let sprite9 = Sprite::solid_rect(60, 60, 255, 200, 150, 255);
+    let sprite9 = Image::solid_rect(60, 60, 255, 200, 150, 255);
     let handle9 = SpriteHandle::from_sprite(sprite9, "darken");
 
     self.entities.push(
@@ -1042,7 +1042,7 @@ impl ColorAlphaScene {
     );
 
     // Demo 10: Full combo (position + scale + rotation + alpha + tint)
-    let sprite10 = Sprite::solid_circle(25, 255, 255, 255, 255);
+    let sprite10 = Image::solid_circle(25, 255, 255, 255, 255);
     let handle10 = SpriteHandle::from_sprite(sprite10, "full_combo");
 
     self.entities.push(
@@ -1171,7 +1171,7 @@ impl PropertyTweenScene {
     // Demo 1: PropertyTween<f32> — Health bar width
     // The tween interpolates 0..200 (width in pixels). We read .value() each
     // frame and set the entity's scale_x to stretch a 1-pixel-wide bar.
-    let bar_sprite = Sprite::solid_rect(200, 20, 80, 200, 80, 255);
+    let bar_sprite = Image::solid_rect(200, 20, 80, 200, 80, 255);
     let bar_handle = SpriteHandle::from_sprite(bar_sprite, "health_bar");
 
     let bar_y = 200.0;
@@ -1193,7 +1193,7 @@ impl PropertyTweenScene {
     );
 
     // Demo 2: PropertyTween<Vec2> — Position
-    let dot_sprite = Sprite::solid_circle(15, 100, 150, 255, 255);
+    let dot_sprite = Image::solid_circle(15, 100, 150, 255, 255);
     let dot_handle = SpriteHandle::from_sprite(dot_sprite, "moving_dot");
 
     self.moving_dot_entity = Some(

@@ -55,7 +55,7 @@ impl ContactShadowsPage {
     shadow: ContactShadow,
   ) -> Entity {
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(width, height, color.0, color.1, color.2, 255),
+      Image::solid_rect(width, height, color.0, color.1, color.2, 255),
       name,
     );
 
@@ -96,7 +96,7 @@ impl DemoPage for ContactShadowsPage {
     // Ground plane
     let ground = ctx
       .assets
-      .create_sprite(Sprite::solid_rect(1280, 300, 180, 170, 160, 255), "ground");
+      .create_sprite(Image::solid_rect(1280, 300, 180, 170, 160, 255), "ground");
     ctx.world.spawn((
       Transform::from_xy(0.0, 420.0),
       Renderable::sprite(ground)
@@ -107,7 +107,7 @@ impl DemoPage for ContactShadowsPage {
     // Sky
     let sky = ctx
       .assets
-      .create_sprite(Sprite::solid_rect(1280, 420, 200, 220, 240, 255), "sky");
+      .create_sprite(Image::solid_rect(1280, 420, 200, 220, 240, 255), "sky");
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
       Renderable::sprite(sky)

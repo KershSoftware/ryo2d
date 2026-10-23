@@ -223,7 +223,7 @@ pub(crate) fn advance_parallax(time: Res<Time>, mut layers: Query<&mut ParallaxL
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::graphics::{Camera2d, CameraView, Sprite};
+  use crate::core::graphics::{Camera2d, CameraView, Image};
 
   fn view(center: Vec2) -> CameraView {
     CameraView::compute(
@@ -236,7 +236,7 @@ mod tests {
   }
 
   fn layer() -> ParallaxLayer {
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, 255, 255, 255, 255), "plx");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(16, 16, 255, 255, 255, 255), "plx");
     ParallaxLayer::new(&sprite)
       .with_scroll(Vec2::splat(0.5))
       .with_tile(TileMode::InfiniteScroll)

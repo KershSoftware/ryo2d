@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::core::asset::SpriteHandle;
 use crate::core::engine::EngineBuilder;
-use crate::core::graphics::Sprite;
+use crate::core::graphics::Image;
 use crate::core::testing::{HeadlessEngine, PixelPair};
 use crate::prelude::*;
 
@@ -28,7 +28,7 @@ impl Scene for SpriteUi {
 
 #[test]
 fn a_sprite_updated_in_place_redraws() {
-  let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 0, 0, 255), "swatch");
+  let sprite = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 0, 0, 255), "swatch");
   let make = {
     let sprite = sprite.clone();
     move || {
@@ -42,11 +42,11 @@ fn a_sprite_updated_in_place_redraws() {
   };
   pair.frames(10, "red");
   assert!(pair.on.ui_render_stats().kept);
-  sprite.update(Sprite::solid_rect(8, 8, 0, 0, 255, 255));
+  sprite.update(Image::solid_rect(8, 8, 0, 0, 255, 255));
   pair.frames(1, "blue, the same size");
   assert!(!pair.on.ui_render_stats().kept, "the update redraws the UI");
   pair.frames(5, "blue");
-  sprite.update(Sprite::solid_rect(16, 16, 0, 255, 0, 255));
+  sprite.update(Image::solid_rect(16, 16, 0, 255, 0, 255));
   pair.frames(5, "green and larger");
 }
 
@@ -87,7 +87,7 @@ fn a_bitmap_font_sheet_updated_in_place_redraws() {
         pixels[(y * 8 + x) * 4..][..4].copy_from_slice(&rgba);
       }
     }
-    Sprite::from_rgba(pixels, 8, 4)
+    Image::from_rgba(pixels, 8, 4)
   };
   let sheet = SpriteHandle::from_sprite(sheet_of([255, 0, 0, 255]), "retain-grid");
   let make = {
@@ -209,7 +209,7 @@ impl Scene for NodeSpriteUi {
 fn a_sprite_in_a_kept_fragment_updated_in_place_redraws() {
   // The sprite's fragment is copied with its version: its run is the same
   // but for the sprite's stamp
-  let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 0, 0, 255), "node-swatch");
+  let sprite = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 0, 0, 255), "node-swatch");
   let make = {
     let sprite = sprite.clone();
     move || {
@@ -226,7 +226,7 @@ fn a_sprite_in_a_kept_fragment_updated_in_place_redraws() {
   assert!(pair.on.ui_render_stats().kept);
   assert!(pair.on.ui_cache_stats().reused > 0, "the tree is copied");
   let runs = pair.on.ui_runs_snapshot();
-  sprite.update(Sprite::solid_rect(8, 8, 0, 0, 255, 255));
+  sprite.update(Image::solid_rect(8, 8, 0, 0, 255, 255));
   pair.frames(1, "blue, the same size");
   assert!(!pair.on.ui_render_stats().kept, "the update redraws the UI");
   assert_eq!(pair.on.ui_runs_snapshot(), runs, "the runs are the same");
@@ -239,7 +239,7 @@ fn a_sprite_updated_in_place_under_a_kept_fragment_draws_as_a_rebuild() {
   // Fragments on against a full rebuild, the spot check off so the tree is
   // copied: the sprite is replaced at its size, then at another
   let sprite =
-    SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 0, 0, 255), "fragment-swatch");
+    SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 0, 0, 255), "fragment-swatch");
   let make = {
     let sprite = sprite.clone();
     move || {
@@ -256,11 +256,11 @@ fn a_sprite_updated_in_place_under_a_kept_fragment_draws_as_a_rebuild() {
   let copied = pair.fragments_reused();
   assert!(copied > 0, "the tree is copied");
   let red = pair.on.frame().expect("a frame");
-  sprite.update(Sprite::solid_rect(8, 8, 0, 0, 255, 255));
+  sprite.update(Image::solid_rect(8, 8, 0, 0, 255, 255));
   pair.frames(5, "blue, the same size");
   let blue = pair.on.frame().expect("a frame");
   assert_ne!(red.as_raw(), blue.as_raw(), "the update shows");
-  sprite.update(Sprite::solid_rect(16, 16, 0, 255, 0, 255));
+  sprite.update(Image::solid_rect(16, 16, 0, 255, 0, 255));
   pair.frames(5, "green and larger");
   let green = pair.on.frame().expect("a frame");
   assert_ne!(blue.as_raw(), green.as_raw(), "the second update shows");

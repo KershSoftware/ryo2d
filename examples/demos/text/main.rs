@@ -107,10 +107,7 @@ impl Canvas {
   }
 
   fn into_handle(self, name: &str) -> SpriteHandle {
-    SpriteHandle::from_sprite(
-      Sprite::from_rgba(self.pixels, self.width, self.height),
-      name,
-    )
+    SpriteHandle::from_sprite(Image::from_rgba(self.pixels, self.width, self.height), name)
   }
 }
 
@@ -922,7 +919,7 @@ impl DemoPage for DrawingPage {
   }
   fn enter(&mut self, ctx: &mut SceneContext) {
     // A bright background of world sprites for the panels to sit over
-    let tile = SpriteHandle::from_sprite(Sprite::solid_rect(60, 60, 255, 255, 255, 255), "tile");
+    let tile = SpriteHandle::from_sprite(Image::solid_rect(60, 60, 255, 255, 255, 255), "tile");
     for row in 0..10 {
       for column in 0..9 {
         let hue = column as f32 / 9.0 + row as f32 * 0.04;

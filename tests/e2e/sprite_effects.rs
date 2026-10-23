@@ -47,7 +47,7 @@ fn column_sprite(name: &str, column: u32) -> SpriteHandle {
     let i = ((y * 16 + column) * 4) as usize;
     data[i..i + 4].copy_from_slice(&WHITE);
   }
-  SpriteHandle::from_sprite(Sprite::from_rgba(data, 16, 16), name)
+  SpriteHandle::from_sprite(Image::from_rgba(data, 16, 16), name)
 }
 
 /// The white pixels of row `y` between `x0` and `x1`
@@ -118,7 +118,7 @@ fn gradient_sprite() -> SpriteHandle {
       data[i..i + 4].copy_from_slice(&[(x * 20) as u8, (y * 20) as u8, 90, 255]);
     }
   }
-  SpriteHandle::from_sprite(Sprite::from_rgba(data, 16, 16), "effects-gradient")
+  SpriteHandle::from_sprite(Image::from_rgba(data, 16, 16), "effects-gradient")
 }
 
 #[test]

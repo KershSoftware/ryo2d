@@ -43,7 +43,7 @@ impl BlobShadowsPage {
     height_scaling: bool,
   ) -> JumpingCharacter {
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(32, 48, color.0, color.1, color.2, 255),
+      Image::solid_rect(32, 48, color.0, color.1, color.2, 255),
       name,
     );
 
@@ -84,7 +84,7 @@ impl BlobShadowsPage {
     shadow_size: (f32, f32),
   ) -> Entity {
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(size, size, color.0, color.1, color.2, 255),
+      Image::solid_rect(size, size, color.0, color.1, color.2, 255),
       name,
     );
 
@@ -128,7 +128,7 @@ impl DemoPage for BlobShadowsPage {
 
     // Create ground
     let ground = ctx.assets.create_sprite(
-      Sprite::solid_rect(1280, 300, 100, 140, 100, 255), // Grass green
+      Image::solid_rect(1280, 300, 100, 140, 100, 255), // Grass green
       "ground",
     );
     ctx.world.spawn((
@@ -140,7 +140,7 @@ impl DemoPage for BlobShadowsPage {
 
     // Create sky
     let sky = ctx.assets.create_sprite(
-      Sprite::solid_rect(1280, 420, 150, 200, 240, 255), // Light blue
+      Image::solid_rect(1280, 420, 150, 200, 240, 255), // Light blue
       "sky",
     );
     ctx.world.spawn((

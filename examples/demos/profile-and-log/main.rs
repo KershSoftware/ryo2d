@@ -66,9 +66,9 @@ struct MixedLoad {
 }
 
 struct DemoScene {
-  cpu_sprite: Sprite,
-  gpu_sprite: Sprite,
-  mixed_sprite: Sprite,
+  cpu_sprite: Image,
+  gpu_sprite: Image,
+  mixed_sprite: Image,
   cpu_count: usize,
   gpu_count: usize,
   mixed_count: usize,
@@ -86,9 +86,9 @@ impl DemoScene {
   fn new() -> Self {
     Self {
       // Create simple colored sprites for each type
-      cpu_sprite: Sprite::solid_rect(8, 8, 100, 150, 255, 255), // Blue
-      gpu_sprite: Sprite::solid_rect(4, 4, 150, 255, 100, 255), // Green
-      mixed_sprite: Sprite::solid_rect(6, 6, 255, 180, 100, 255), // Orange
+      cpu_sprite: Image::solid_rect(8, 8, 100, 150, 255, 255), // Blue
+      gpu_sprite: Image::solid_rect(4, 4, 150, 255, 100, 255), // Green
+      mixed_sprite: Image::solid_rect(6, 6, 255, 180, 100, 255), // Orange
       cpu_count: 0,
       gpu_count: 0,
       mixed_count: 0,

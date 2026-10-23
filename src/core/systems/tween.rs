@@ -241,7 +241,7 @@ mod tests {
     Disabled, IntoScheduleConfigs, PropertyTween, Renderable, Transform, Tween, TweenSequence,
     Vec2, World,
   };
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::messages::{TweenCompleted, TweenStarted};
   use crate::core::systems::test_util::{clear_messages, messages, run, set_hz, world};
   use crate::core::ui::Color;
@@ -260,7 +260,7 @@ mod tests {
 
   fn sprite() -> Renderable {
     Renderable::sprite(SpriteHandle::from_sprite(
-      Sprite::solid_rect(4, 4, 255, 255, 255, 255),
+      Image::solid_rect(4, 4, 255, 255, 255, 255),
       "white",
     ))
   }

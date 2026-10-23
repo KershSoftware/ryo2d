@@ -41,7 +41,7 @@ impl DebugScene {
     // Spawn bird as DYNAMIC (not kinematic) so Rapier generates collision events
     // But with zero gravity so it doesn't fall - we move it manually
     let size = BIRD_SIZE as u32;
-    let bird_sprite = Sprite::load_svg_fit("assets/bird-flap-up.svg", size, size)
+    let bird_sprite = Image::load_svg_fit("assets/bird-flap-up.svg", size, size)
       .expect("Failed to load bird sprite");
     let bird_handle = SpriteHandle::from_sprite(bird_sprite, "bird-flap-up.svg");
 
@@ -72,8 +72,8 @@ impl DebugScene {
     ];
 
     // Load pipe sprites
-    let cap_sprite = Sprite::load("assets/pipe_cap.png").expect("Failed to load pipe cap");
-    let body_sprite = Sprite::load("assets/pipe_body.png").expect("Failed to load pipe body");
+    let cap_sprite = Image::load("assets/pipe_cap.png").expect("Failed to load pipe cap");
+    let body_sprite = Image::load("assets/pipe_body.png").expect("Failed to load pipe body");
     let cap_handle = SpriteHandle::from_sprite(cap_sprite, "pipe_cap.png");
     let body_handle = SpriteHandle::from_sprite(body_sprite, "pipe_body.png");
     let cap_height = cap_handle.height() as f32;
@@ -142,7 +142,7 @@ impl DebugScene {
   }
 
   fn spawn_ground(&mut self, ctx: &mut SceneContext) {
-    let ground_sprite = Sprite::load("assets/ground.png").expect("Failed to load ground sprite");
+    let ground_sprite = Image::load("assets/ground.png").expect("Failed to load ground sprite");
     let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground.png");
     let ground = ctx
       .world

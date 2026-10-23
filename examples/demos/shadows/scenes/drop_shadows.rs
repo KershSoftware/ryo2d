@@ -109,7 +109,7 @@ impl DropShadowsPage {
     shadow: DropShadow,
   ) -> Entity {
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(size, size, color.0, color.1, color.2, 255),
+      Image::solid_rect(size, size, color.0, color.1, color.2, 255),
       name,
     );
 
@@ -134,7 +134,7 @@ impl DropShadowsPage {
     // Create a simple character-like sprite (head + body)
     let sprite = ctx
       .assets
-      .create_sprite(Sprite::solid_rect(32, 48, 100, 150, 200, 255), name);
+      .create_sprite(Image::solid_rect(32, 48, 100, 150, 200, 255), name);
 
     ctx
       .world
@@ -179,7 +179,7 @@ impl DemoPage for DropShadowsPage {
 
     // Create floor/ground
     let floor = ctx.assets.create_sprite(
-      Sprite::solid_rect(1280, 400, 80, 120, 80, 255), // Grass-like green
+      Image::solid_rect(1280, 400, 80, 120, 80, 255), // Grass-like green
       "ground",
     );
     ctx.world.spawn((
@@ -189,7 +189,7 @@ impl DemoPage for DropShadowsPage {
 
     // Create sky background
     let sky = ctx.assets.create_sprite(
-      Sprite::solid_rect(1280, 320, 135, 180, 220, 255), // Light blue
+      Image::solid_rect(1280, 320, 135, 180, 220, 255), // Light blue
       "sky",
     );
     ctx.world.spawn((

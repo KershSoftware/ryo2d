@@ -93,7 +93,7 @@ impl HardShadowsPage {
   ) -> Entity {
     // Create visual sprite
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(width as u32, height as u32, 80, 80, 90, 255),
+      Image::solid_rect(width as u32, height as u32, 80, 80, 90, 255),
       format!("occluder_{}_{}", x as i32, y as i32),
     );
 
@@ -176,7 +176,7 @@ impl DemoPage for HardShadowsPage {
     // Create floor
     let floor = ctx
       .assets
-      .create_sprite(Sprite::solid_rect(1280, 720, 40, 40, 45, 255), "floor");
+      .create_sprite(Image::solid_rect(1280, 720, 40, 40, 45, 255), "floor");
     ctx.world.spawn((
       Transform::from_xy(640.0, 360.0),
       Renderable::sprite(floor).with_z_order(0),
@@ -227,7 +227,7 @@ impl DemoPage for HardShadowsPage {
     // Create a visual for the light source
     let light_visual = ctx
       .assets
-      .create_sprite(Sprite::solid_circle(16, 255, 255, 200, 255), "light_source");
+      .create_sprite(Image::solid_circle(16, 255, 255, 200, 255), "light_source");
     self.light_visual = Some(
       ctx
         .world

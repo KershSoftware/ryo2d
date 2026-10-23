@@ -53,12 +53,12 @@ mod tests {
   use super::*;
   use crate::core::asset::SpriteHandle;
   use crate::core::ecs::{Disabled, Renderable};
-  use crate::core::graphics::{Animation, Animator, Sprite, ValidatedAnimator};
+  use crate::core::graphics::{Animation, Animator, Image, ValidatedAnimator};
   use crate::core::systems::test_util::{run, world};
 
   fn frames() -> Vec<SpriteHandle> {
     (0..3)
-      .map(|i| SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, i * 80, 0, 0, 255), "frame"))
+      .map(|i| SpriteHandle::from_sprite(Image::solid_rect(4, 4, i * 80, 0, 0, 255), "frame"))
       .collect()
   }
 

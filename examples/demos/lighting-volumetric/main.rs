@@ -327,7 +327,7 @@ impl DemoPage for VolumetricPage {
     // Create ground/floor
     let ground_sprite = ctx
       .assets
-      .create_sprite(Sprite::solid_rect(1280, 100, 40, 35, 30, 255), "ground");
+      .create_sprite(Image::solid_rect(1280, 100, 40, 35, 30, 255), "ground");
     ctx.world.spawn((
       Transform::from_xy(640.0, 670.0),
       Renderable::sprite(ground_sprite).with_z_order(1),
@@ -345,7 +345,7 @@ impl DemoPage for VolumetricPage {
     for (i, (x, y)) in pillar_positions.iter().enumerate() {
       let height = 150.0 + (i as f32 * 30.0);
       let pillar_sprite = ctx.assets.create_sprite(
-        Sprite::solid_rect(40, height as u32, 60, 55, 50, 255),
+        Image::solid_rect(40, height as u32, 60, 55, 50, 255),
         format!("pillar_{}", i),
       );
       // Standing on (x, y); the occluder covers the sprite
@@ -367,7 +367,7 @@ impl DemoPage for VolumetricPage {
 
     for (i, (x, y, width)) in platform_positions.iter().enumerate() {
       let platform_sprite = ctx.assets.create_sprite(
-        Sprite::solid_rect(*width as u32, 20, 70, 65, 60, 255),
+        Image::solid_rect(*width as u32, 20, 70, 65, 60, 255),
         format!("platform_{}", i),
       );
       ctx.world.spawn((
@@ -396,10 +396,9 @@ impl DemoPage for VolumetricPage {
     );
 
     // Create a visible sprite for the spotlight source
-    let spotlight_base = ctx.assets.create_sprite(
-      Sprite::solid_rect(30, 20, 80, 80, 80, 255),
-      "spotlight_base",
-    );
+    let spotlight_base = ctx
+      .assets
+      .create_sprite(Image::solid_rect(30, 20, 80, 80, 80, 255), "spotlight_base");
     ctx.world.spawn((
       Transform::from_xy(self.spotlight_x, 610.0),
       Renderable::sprite(spotlight_base).with_z_order(5),
@@ -422,7 +421,7 @@ impl DemoPage for VolumetricPage {
     // hue, and so does the haze its god rays spread over the frame
     let sun_sprite = ctx
       .assets
-      .create_sprite(Sprite::solid_circle(60, 255, 252, 230, 255), "sun");
+      .create_sprite(Image::solid_circle(60, 255, 252, 230, 255), "sun");
     ctx.world.spawn((
       Transform::from_xy(self.sun_x, self.sun_y),
       Renderable::sprite(sun_sprite).with_z_order(0),
@@ -434,7 +433,7 @@ impl DemoPage for VolumetricPage {
     for (i, (x, y)) in torch_positions.iter().enumerate() {
       // Torch bracket
       let bracket = ctx.assets.create_sprite(
-        Sprite::solid_rect(15, 25, 100, 80, 50, 255),
+        Image::solid_rect(15, 25, 100, 80, 50, 255),
         format!("torch_bracket_{}", i),
       );
       ctx.world.spawn((
@@ -444,7 +443,7 @@ impl DemoPage for VolumetricPage {
 
       // Torch flame (visual)
       let flame = ctx.assets.create_sprite(
-        Sprite::solid_circle(16, 255, 150, 50, 200),
+        Image::solid_circle(16, 255, 150, 50, 200),
         format!("torch_flame_{}", i),
       );
       ctx.world.spawn((

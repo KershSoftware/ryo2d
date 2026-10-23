@@ -124,7 +124,7 @@ impl TilemapPage {
       TILE_PLATFORM => (70, 130, 70), // mossy green
       _ => (180, 180, 180),           // grey fallback
     };
-    let sprite = Sprite::solid_rect(TILE_SIZE, TILE_SIZE, r, g, b, 255);
+    let sprite = Image::solid_rect(TILE_SIZE, TILE_SIZE, r, g, b, 255);
     SpriteHandle::from_sprite(sprite, format!("tile_{}", tile_id))
   }
 

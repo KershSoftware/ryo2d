@@ -453,10 +453,10 @@ impl ParticleEmitter {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
 
   fn test_sprite() -> SpriteHandle {
-    SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 255, 255, 255), "test.png")
+    SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 255, 255, 255), "test.png")
   }
 
   #[test]

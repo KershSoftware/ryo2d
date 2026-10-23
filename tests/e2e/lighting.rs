@@ -14,7 +14,7 @@ struct Lit(Setup);
 impl Scene for Lit {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let floor =
-      SpriteHandle::from_sprite(Sprite::solid_rect(128, 64, 255, 255, 255, 255), "lit-floor");
+      SpriteHandle::from_sprite(Image::solid_rect(128, 64, 255, 255, 255, 255), "lit-floor");
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
       Renderable::sprite(floor).with_anchor(Anchor::TopLeft),
@@ -329,7 +329,7 @@ fn lights_past_the_half_float_range_leave_no_nan() {
       .lighting()
       .set_ambient(AmbientLight::with_intensity(0.0));
     ctx.effects().set_bloom(1.0);
-    let black = SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 0, 0, 0, 255), "lit-black");
+    let black = SpriteHandle::from_sprite(Image::solid_rect(64, 64, 0, 0, 0, 255), "lit-black");
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
       Renderable::sprite(black)
@@ -373,8 +373,7 @@ fn an_overflowed_scene_texel_in_the_dark_stays_black() {
       lighting.set_enabled(true);
     }
     ctx.effects().set_bloom(1.0);
-    let spark =
-      SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 255, 255, 255), "lit-spark");
+    let spark = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 255, 255, 255), "lit-spark");
     for _ in 0..2 {
       ctx.world.spawn((
         Transform::from_xy(60.0, 28.0),

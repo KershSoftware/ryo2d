@@ -7,7 +7,7 @@ use super::{
   ThemeFont, UiSounds, Variant, WidgetKind, WidgetLooks,
 };
 use crate::core::asset::SpriteHandle;
-use crate::core::graphics::Sprite;
+use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::ui::{Color, Edges};
 
@@ -523,7 +523,7 @@ fn skin_sprite(name: &str, border: Color, fill: Color, light: Color, dark: Color
       data.extend_from_slice(&[color.r, color.g, color.b, color.a]);
     }
   }
-  SpriteHandle::from_sprite(Sprite::from_rgba(data, SIDE, SIDE), name)
+  SpriteHandle::from_sprite(Image::from_rgba(data, SIDE, SIDE), name)
 }
 
 /// The pixel theme

@@ -50,10 +50,7 @@ impl Canvas {
   }
 
   pub fn into_sprite(self, name: &str) -> SpriteHandle {
-    SpriteHandle::from_sprite(
-      Sprite::from_rgba(self.pixels, self.width, self.height),
-      name,
-    )
+    SpriteHandle::from_sprite(Image::from_rgba(self.pixels, self.width, self.height), name)
   }
 }
 

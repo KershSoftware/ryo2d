@@ -10,7 +10,7 @@ const GREEN: [u8; 4] = [0, 255, 0, 255];
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 
 fn solid(name: &str, c: [u8; 4]) -> SpriteHandle {
-  SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, c[0], c[1], c[2], c[3]), name)
+  SpriteHandle::from_sprite(Image::solid_rect(4, 4, c[0], c[1], c[2], c[3]), name)
 }
 
 fn color(c: [u8; 4]) -> Color {

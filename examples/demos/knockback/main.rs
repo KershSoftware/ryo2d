@@ -59,7 +59,7 @@ impl KnockbackDemoScene {
 
   /// Create a colored square sprite
   fn create_square(size: u32, r: u8, g: u8, b: u8) -> SpriteHandle {
-    let sprite = Sprite::solid_rect(size, size, r, g, b, 255);
+    let sprite = Image::solid_rect(size, size, r, g, b, 255);
     SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}_{}", size, r, g, b))
   }
 
@@ -130,7 +130,7 @@ impl KnockbackDemoScene {
 
   /// A fixed wall of `w` x `h` centred at (x, y)
   fn spawn_wall(ctx: &mut SceneContext, x: f32, y: f32, w: u32, h: u32) {
-    let sprite = Sprite::solid_rect(w, h, 90, 90, 110, 255);
+    let sprite = Image::solid_rect(w, h, 90, 90, 110, 255);
     let handle = SpriteHandle::from_sprite(sprite, format!("wall_{w}_{h}"));
     ctx.world.spawn((
       Transform::from_xy(x, y),

@@ -350,7 +350,7 @@ impl RenderPass for Tonemap {
 mod tests {
   use super::*;
   use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::render::ColorLut;
 
   #[test]
@@ -365,7 +365,7 @@ mod tests {
     let mut texture = LutTexture::new(&device, &queue);
     assert_eq!(texture.sync(&device, &queue, Some(&lut)), 4);
     let before = texture.view.clone();
-    handle.update(Sprite::solid_rect(5, 5, 0, 0, 0, 255));
+    handle.update(Image::solid_rect(5, 5, 0, 0, 0, 255));
     assert_eq!(
       texture.sync(&device, &queue, Some(&lut)),
       4,

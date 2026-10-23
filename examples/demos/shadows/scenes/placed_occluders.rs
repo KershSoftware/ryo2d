@@ -82,7 +82,7 @@ impl PlacedOccludersPage {
   ) -> Entity {
     // Create visual sprite
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(width as u32, height as u32, 60, 70, 80, 255),
+      Image::solid_rect(width as u32, height as u32, 60, 70, 80, 255),
       format!("po_occluder_{}_{}", x as i32, y as i32),
     );
 
@@ -157,7 +157,7 @@ impl DemoPage for PlacedOccludersPage {
     // Create floor with subtle pattern
     let floor = ctx
       .assets
-      .create_sprite(Sprite::solid_rect(1280, 720, 25, 28, 35, 255), "po_floor");
+      .create_sprite(Image::solid_rect(1280, 720, 25, 28, 35, 255), "po_floor");
     ctx.world.spawn((
       Transform::from_xy(640.0, 360.0),
       Renderable::sprite(floor).with_z_order(0),
@@ -190,7 +190,7 @@ impl DemoPage for PlacedOccludersPage {
 
     // Create a visual for the light source
     let light_visual = ctx.assets.create_sprite(
-      Sprite::solid_circle(20, 255, 220, 150, 255),
+      Image::solid_circle(20, 255, 220, 150, 255),
       "po_light_source",
     );
     self.light_visual = Some(

@@ -12,10 +12,10 @@ use crate::save::load_high_score;
 /// Pre-loaded sprite handles for game assets.
 /// Loaded once in MenuScene::new() before the window appears.
 struct PreloadedAssets {
-  background: Sprite,
-  ground: Sprite,
-  pipe_cap: Sprite,
-  pipe_body: Sprite,
+  background: Image,
+  ground: Image,
+  pipe_cap: Image,
+  pipe_body: Image,
 }
 
 impl PreloadedAssets {
@@ -23,10 +23,10 @@ impl PreloadedAssets {
   /// This prevents the white flash that would occur if we loaded during on_enter.
   fn load() -> Self {
     Self {
-      background: Sprite::load("assets/bg.png").expect("Failed to load bg.png"),
-      ground: Sprite::load("assets/bg-ground.png").expect("Failed to load bg-ground.png"),
-      pipe_cap: Sprite::load("assets/pipe_cap.png").expect("Failed to load pipe_cap.png"),
-      pipe_body: Sprite::load("assets/pipe_body.png").expect("Failed to load pipe_body.png"),
+      background: Image::load("assets/bg.png").expect("Failed to load bg.png"),
+      ground: Image::load("assets/bg-ground.png").expect("Failed to load bg-ground.png"),
+      pipe_cap: Image::load("assets/pipe_cap.png").expect("Failed to load pipe_cap.png"),
+      pipe_body: Image::load("assets/pipe_body.png").expect("Failed to load pipe_body.png"),
     }
   }
 
@@ -70,12 +70,11 @@ impl MenuScene {
 
     // Load bird sprites for animation (SVG - not cacheable via AssetManager)
     let bird_flap_up = SpriteHandle::from_sprite(
-      Sprite::load_svg_fit("assets/bird-flap-up.svg", 64, 64).expect("Failed to load bird sprite"),
+      Image::load_svg_fit("assets/bird-flap-up.svg", 64, 64).expect("Failed to load bird sprite"),
       "assets/bird-flap-up.svg",
     );
     let bird_flap_down = SpriteHandle::from_sprite(
-      Sprite::load_svg_fit("assets/bird-flap-down.svg", 64, 64)
-        .expect("Failed to load bird sprite"),
+      Image::load_svg_fit("assets/bird-flap-down.svg", 64, 64).expect("Failed to load bird sprite"),
       "assets/bird-flap-down.svg",
     );
 

@@ -159,7 +159,7 @@ impl Match {
       .spawn((
         Transform::from_xy(0.0, 0.0),
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(
+          Image::solid_rect(
             SCREEN_WIDTH,
             SCREEN_HEIGHT,
             BACKGROUND_COLOR.0,
@@ -184,7 +184,7 @@ impl Match {
       .spawn((
         Transform::from_xy(platform_x, PLATFORM_Y),
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(
+          Image::solid_rect(
             PLATFORM_WIDTH as u32,
             PLATFORM_HEIGHT as u32,
             PLATFORM_COLOR.0,
@@ -238,7 +238,7 @@ impl Match {
       .spawn((
         Transform::from_xy(spawn_x, PLAYER_SPAWN_Y),
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(
+          Image::solid_rect(
             PLAYER_WIDTH as u32,
             PLAYER_HEIGHT as u32,
             color.0,

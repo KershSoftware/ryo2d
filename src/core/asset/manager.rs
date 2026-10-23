@@ -33,7 +33,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 
 use crate::core::ecs::{Resource, ShaderHandle};
 use crate::core::error::{AssetError, AssetResult};
-use crate::core::graphics::Sprite;
+use crate::core::graphics::Image;
 use crate::core::ui::file::build::{Placeholders, SpriteSource};
 use crate::core::ui::file::document::ImportResolver;
 use crate::core::ui::file::{UiFile, UiFileError};
@@ -63,7 +63,7 @@ use crate::{engine_error, engine_info, engine_warn};
 /// ```
 #[derive(Clone)]
 pub struct SpriteHandle {
-  inner: Arc<RwLock<Sprite>>,
+  inner: Arc<RwLock<Image>>,
   /// The path this sprite was loaded from (for debugging/reloading)
   path: Arc<PathBuf>,
   /// Process-unique identity shared by every clone of this handle
@@ -77,7 +77,7 @@ static NEXT_SERIAL: AtomicUsize = AtomicUsize::new(1);
 
 impl SpriteHandle {
   /// Create a new sprite handle from a sprite
-  pub fn new(sprite: Sprite, path: PathBuf) -> Self {
+  pub fn new(sprite: Image, path: PathBuf) -> Self {
     SpriteHandle {
       inner: Arc::new(RwLock::new(sprite)),
       path: Arc::new(path),
@@ -106,7 +106,7 @@ impl SpriteHandle {
   /// Create a sprite handle from an existing sprite with a name
   ///
   /// Convenience method that accepts any path-like type.
-  pub fn from_sprite<P: AsRef<Path>>(sprite: Sprite, name: P) -> Self {
+  pub fn from_sprite<P: AsRef<Path>>(sprite: Image, name: P) -> Self {
     Self::new(sprite, name.as_ref().to_path_buf())
   }
 
@@ -144,7 +144,7 @@ impl SpriteHandle {
   ///
   /// This acquires a read lock on the sprite. For rendering, prefer
   /// using `with_sprite()` which handles the lock scope properly.
-  pub fn sprite(&self) -> std::sync::RwLockReadGuard<'_, Sprite> {
+  pub fn sprite(&self) -> std::sync::RwLockReadGuard<'_, Image> {
     self.inner.read().expect("SpriteHandle RwLock poisoned")
   }
 
@@ -162,7 +162,7 @@ impl SpriteHandle {
   /// ```
   pub fn with_sprite<F, R>(&self, f: F) -> R
   where
-    F: FnOnce(&Sprite) -> R,
+    F: FnOnce(&Image) -> R,
   {
     let sprite = self.inner.read().expect("SpriteHandle RwLock poisoned");
     f(&sprite)
@@ -172,7 +172,7 @@ impl SpriteHandle {
   ///
   /// This replaces the sprite data with new data. All handles
   /// pointing to this sprite will see the updated data.
-  pub(crate) fn update(&self, new_sprite: Sprite) {
+  pub(crate) fn update(&self, new_sprite: Image) {
     let mut sprite = self.inner.write().expect("SpriteHandle RwLock poisoned");
     *sprite = new_sprite;
     // Bumped while the write lock is held, so a reader never sees new pixels
@@ -372,7 +372,7 @@ impl std::fmt::Debug for AsyncSpriteHandle {
 /// Message sent from loader thread to main thread
 struct LoadResult {
   path: PathBuf,
-  result: Result<Sprite, String>,
+  result: Result<Image, String>,
 }
 
 /// Background loader for async asset loading
@@ -405,7 +405,7 @@ impl AsyncLoader {
   }
 
   fn request_load(&self, path: PathBuf) {
-    let result = Sprite::load(&path).map_err(|e| e.to_string());
+    let result = Image::load(&path).map_err(|e| e.to_string());
     let _ = self.result_tx.send(LoadResult { path, result });
   }
 }
@@ -419,7 +419,7 @@ impl AsyncLoader {
     let thread = thread::spawn(move || {
       // Process load requests until channel closes
       while let Ok(path) = request_rx.recv() {
-        let result = Sprite::load(&path).map_err(|e| e.to_string());
+        let result = Image::load(&path).map_err(|e| e.to_string());
         let _ = result_tx.send(LoadResult { path, result });
       }
     });
@@ -700,7 +700,7 @@ impl AssetManager {
     }
 
     // Load from disk
-    let sprite = Sprite::load(&full_path).map_err(AssetError::Sprite)?;
+    let sprite = Image::load(&full_path).map_err(AssetError::Image)?;
 
     // Create handle and cache it
     let handle = SpriteHandle::new(sprite, full_path.clone());
@@ -866,10 +866,10 @@ impl AssetManager {
   /// # Example
   ///
   /// ```rust,ignore
-  /// let sprite = Sprite::solid_rect(32, 32, 255, 0, 0, 255);
+  /// let sprite = Image::solid_rect(32, 32, 255, 0, 0, 255);
   /// let handle = assets.create_sprite(sprite, "generated/red_square");
   /// ```
-  pub fn create_sprite<P: AsRef<Path>>(&self, sprite: Sprite, name: P) -> SpriteHandle {
+  pub fn create_sprite<P: AsRef<Path>>(&self, sprite: Image, name: P) -> SpriteHandle {
     SpriteHandle::new(sprite, name.as_ref().to_path_buf())
   }
 
@@ -1322,7 +1322,7 @@ impl AssetManager {
           }
         }
         if let Some(handle) = self.sprites.get(&key) {
-          match Sprite::load(&key) {
+          match Image::load(&key) {
             Ok(new_sprite) => {
               handle.update(new_sprite);
               reloaded = true;
@@ -1738,7 +1738,7 @@ mod tests {
 
   #[test]
   fn sprite_handle_clone_shares_data() {
-    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(10, 10, 255, 0, 0, 255);
     let handle1 = SpriteHandle::new(sprite, PathBuf::from("test.png"));
 
     assert_eq!(handle1.ref_count(), 1);
@@ -1753,7 +1753,7 @@ mod tests {
 
   #[test]
   fn sprite_handle_dimensions() {
-    let sprite = Sprite::solid_rect(64, 32, 255, 128, 0, 255);
+    let sprite = Image::solid_rect(64, 32, 255, 128, 0, 255);
     let handle = SpriteHandle::new(sprite, PathBuf::from("test.png"));
 
     assert_eq!(handle.width(), 64);
@@ -1763,11 +1763,11 @@ mod tests {
 
   #[test]
   fn sprite_handle_update() {
-    let sprite1 = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite1 = Image::solid_rect(10, 10, 255, 0, 0, 255);
     let handle = SpriteHandle::new(sprite1, PathBuf::from("test.png"));
     assert_eq!(handle.width(), 10);
 
-    let sprite2 = Sprite::solid_rect(20, 20, 0, 255, 0, 255);
+    let sprite2 = Image::solid_rect(20, 20, 0, 255, 0, 255);
     handle.update(sprite2);
     assert_eq!(handle.width(), 20);
     assert_eq!(handle.height(), 20);
@@ -1775,12 +1775,7 @@ mod tests {
 
   #[test]
   fn sprite_handle_identity_and_generation() {
-    let make = || {
-      SpriteHandle::new(
-        Sprite::solid_rect(4, 4, 1, 2, 3, 255),
-        PathBuf::from("same"),
-      )
-    };
+    let make = || SpriteHandle::new(Image::solid_rect(4, 4, 1, 2, 3, 255), PathBuf::from("same"));
     let handle = make();
     let other = make();
     let clone = handle.clone();
@@ -1790,7 +1785,7 @@ mod tests {
     assert_eq!(handle.serial(), clone.serial());
 
     assert_eq!(handle.generation(), 0);
-    handle.update(Sprite::solid_rect(4, 4, 9, 9, 9, 255));
+    handle.update(Image::solid_rect(4, 4, 9, 9, 9, 255));
     // Every clone sees the write; other handles do not
     assert_eq!(handle.generation(), 1);
     assert_eq!(clone.generation(), 1);
@@ -1799,7 +1794,7 @@ mod tests {
 
   #[test]
   fn sprite_handle_from_sprite() {
-    let sprite = Sprite::solid_rect(50, 50, 100, 100, 100, 255);
+    let sprite = Image::solid_rect(50, 50, 100, 100, 100, 255);
     let handle = SpriteHandle::from_sprite(sprite, "named_sprite");
 
     assert_eq!(handle.path(), Path::new("named_sprite"));
@@ -1808,7 +1803,7 @@ mod tests {
 
   #[test]
   fn sprite_handle_id_matches_path() {
-    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(10, 10, 255, 0, 0, 255);
     let handle = SpriteHandle::new(sprite, PathBuf::from("assets/test.png"));
 
     assert_eq!(handle.id(), "assets/test.png");
@@ -1817,7 +1812,7 @@ mod tests {
   #[test]
   fn asset_manager_creates_sprite_handle() {
     let assets = AssetManager::new();
-    let sprite = Sprite::solid_rect(32, 32, 0, 255, 0, 255);
+    let sprite = Image::solid_rect(32, 32, 0, 255, 0, 255);
     let handle = assets.create_sprite(sprite, "generated/green");
 
     assert_eq!(handle.width(), 32);
@@ -1860,8 +1855,8 @@ mod tests {
   #[test]
   fn asset_manager_stats() {
     let assets = AssetManager::new();
-    let sprite1 = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
-    let sprite2 = Sprite::solid_rect(20, 20, 0, 255, 0, 255);
+    let sprite1 = Image::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite2 = Image::solid_rect(20, 20, 0, 255, 0, 255);
 
     let handle1 = assets.create_sprite(sprite1, "test1");
     let _handle2 = assets.create_sprite(sprite2, "test2");
@@ -1875,7 +1870,7 @@ mod tests {
   #[test]
   fn asset_manager_gc_removes_unused() {
     let mut assets = AssetManager::new();
-    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(10, 10, 255, 0, 0, 255);
     let handle = SpriteHandle::new(sprite, PathBuf::from("test.png"));
 
     // Manually insert into cache
@@ -1897,7 +1892,7 @@ mod tests {
   #[test]
   fn asset_manager_gc_threshold() {
     let mut assets = AssetManager::new();
-    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(10, 10, 255, 0, 0, 255);
 
     // Add sprites at ref_count = 1
     for i in 0..5 {
@@ -1917,7 +1912,7 @@ mod tests {
   #[test]
   fn asset_manager_clear_cache() {
     let mut assets = AssetManager::new();
-    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(10, 10, 255, 0, 0, 255);
 
     let handle = SpriteHandle::new(sprite, PathBuf::from("test.png"));
     assets
@@ -1935,7 +1930,7 @@ mod tests {
   #[test]
   fn asset_manager_create_doesnt_cache() {
     let assets = AssetManager::new();
-    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(10, 10, 255, 0, 0, 255);
 
     let _handle1 = assets.create_sprite(sprite.clone(), "test1");
     let _handle2 = assets.create_sprite(sprite.clone(), "test2");
@@ -1958,7 +1953,7 @@ mod tests {
   #[test]
   fn async_sprite_handle_success() {
     let handle = AsyncSpriteHandle::new_pending(PathBuf::from("test.png"));
-    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(10, 10, 255, 0, 0, 255);
     let sprite_handle = SpriteHandle::new(sprite, PathBuf::from("test.png"));
 
     handle.complete_success(sprite_handle.clone());
@@ -1992,7 +1987,7 @@ mod tests {
   fn async_sprite_handle_get_or_fallback() {
     let loading = AsyncSpriteHandle::new_pending(PathBuf::from("loading.png"));
     let fallback = SpriteHandle::new(
-      Sprite::solid_rect(5, 5, 128, 128, 128, 255),
+      Image::solid_rect(5, 5, 128, 128, 128, 255),
       PathBuf::from("fallback.png"),
     );
 
@@ -2001,7 +1996,7 @@ mod tests {
 
     // Complete loading
     let loaded_sprite = SpriteHandle::new(
-      Sprite::solid_rect(20, 20, 255, 255, 255, 255),
+      Image::solid_rect(20, 20, 255, 255, 255, 255),
       PathBuf::from("loading.png"),
     );
     loading.complete_success(loaded_sprite);

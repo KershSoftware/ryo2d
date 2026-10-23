@@ -112,7 +112,7 @@ impl BloomPage {
     for row in 0..rows {
       for col in 0..cols {
         let (r, g, b) = dark_colors[(row + col) % dark_colors.len()];
-        let sprite = Sprite::solid_rect(80, 80, r, g, b, 255);
+        let sprite = Image::solid_rect(80, 80, r, g, b, 255);
         let handle = ctx
           .assets
           .create_sprite(sprite, format!("bg_{}_{}", row, col));
@@ -140,7 +140,7 @@ impl BloomPage {
 
     for (i, &(r, g, b)) in bright_colors.iter().enumerate() {
       let size = 40 + i as u32 * 6;
-      let sprite = Sprite::solid_rect(size, size, r, g, b, 255);
+      let sprite = Image::solid_rect(size, size, r, g, b, 255);
       let handle = ctx.assets.create_sprite(sprite, format!("bright_{}", i));
 
       let angle = (i as f32 / bright_colors.len() as f32) * std::f32::consts::TAU;
@@ -169,7 +169,7 @@ impl BloomPage {
       (180, 255, 180),
     ];
     for (i, &(r, g, b)) in orbit_colors.iter().enumerate() {
-      let sprite = Sprite::solid_rect(12, 12, r, g, b, 255);
+      let sprite = Image::solid_rect(12, 12, r, g, b, 255);
       let handle = ctx.assets.create_sprite(sprite, format!("orbit_{}", i));
       let entity = ctx
         .world

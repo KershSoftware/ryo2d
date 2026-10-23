@@ -624,7 +624,7 @@ mod tests {
     for _ in 0..2 {
       theme.load_skins(|path| {
         asked.push(path.to_string());
-        let sprite = crate::core::graphics::Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+        let sprite = crate::core::graphics::Image::solid_rect(4, 4, 255, 255, 255, 255);
         Some(SpriteHandle::from_sprite(sprite, path))
       });
     }
@@ -640,7 +640,7 @@ mod tests {
     let mut asked = 0;
     let mut load = |path: &str| {
       asked += 1;
-      let sprite = crate::core::graphics::Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+      let sprite = crate::core::graphics::Image::solid_rect(4, 4, 255, 255, 255, 255);
       Some(SpriteHandle::from_sprite(sprite, path))
     };
     refresh_skins(&mut theme, &mut loaded, &mut load);

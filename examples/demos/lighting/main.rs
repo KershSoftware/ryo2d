@@ -161,7 +161,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
 
       // Segment is tall enough to connect to next segment (with slight overlap)
       let rope_sprite = ctx.assets.create_sprite(
-        Sprite::solid_rect(4, (segment_length + 2.0) as u32, 139, 90, 43, 255), // brown rope
+        Image::solid_rect(4, (segment_length + 2.0) as u32, 139, 90, 43, 255), // brown rope
         format!("rope_segment_{}", i),
       );
 
@@ -185,7 +185,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
 
     // Create the light bulb at the end of the rope
     let bulb_sprite = ctx.assets.create_sprite(
-      Sprite::solid_circle(24, 255, 255, 200, 255), // warm white bulb
+      Image::solid_circle(24, 255, 255, 200, 255), // warm white bulb
       "bulb",
     );
 
@@ -249,7 +249,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
 
     for (i, (x, y, w, h, color)) in box_positions.iter().enumerate() {
       let sprite = ctx.assets.create_sprite(
-        Sprite::solid_rect(*w as u32, *h as u32, color.r, color.g, color.b, color.a),
+        Image::solid_rect(*w as u32, *h as u32, color.r, color.g, color.b, color.a),
         format!("box_{}", i),
       );
 
@@ -269,7 +269,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
 
     for (i, (x, y, w, h, color)) in floating_shapes.iter().enumerate() {
       let sprite = ctx.assets.create_sprite(
-        Sprite::solid_rect(*w as u32, *h as u32, color.r, color.g, color.b, color.a),
+        Image::solid_rect(*w as u32, *h as u32, color.r, color.g, color.b, color.a),
         format!("floating_{}", i),
       );
 
@@ -283,7 +283,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
     // Central pillar
     let pillar_sprite = ctx
       .assets
-      .create_sprite(Sprite::solid_rect(40, 200, 80, 80, 80, 255), "pillar");
+      .create_sprite(Image::solid_rect(40, 200, 80, 80, 80, 255), "pillar");
 
     ctx.world.spawn((
       Transform::from_xy(640.0, 450.0),

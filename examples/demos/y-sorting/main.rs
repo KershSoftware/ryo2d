@@ -57,7 +57,7 @@ impl YSortingPage {
   }
 
   /// Create a grass tile with some variation
-  fn create_grass_tile(variant: u8) -> Sprite {
+  fn create_grass_tile(variant: u8) -> Image {
     let mut data = vec![0u8; (TILE_SIZE * TILE_SIZE * 4) as usize];
 
     for y in 0..TILE_SIZE {
@@ -80,11 +80,11 @@ impl YSortingPage {
       }
     }
 
-    Sprite::from_rgba(data, TILE_SIZE, TILE_SIZE)
+    Image::from_rgba(data, TILE_SIZE, TILE_SIZE)
   }
 
   /// Create a top-down character sprite (16x16, Zelda-style)
-  fn create_character_sprite(r: u8, g: u8, b: u8) -> Sprite {
+  fn create_character_sprite(r: u8, g: u8, b: u8) -> Image {
     let size = 16u32;
     let mut data = vec![0u8; (size * size * 4) as usize];
 
@@ -129,7 +129,7 @@ impl YSortingPage {
     // Add a dark outline
     Self::add_outline(&mut data, size, size);
 
-    Sprite::from_rgba(data, size, size)
+    Image::from_rgba(data, size, size)
   }
 
   /// Add a 1px dark outline to non-transparent pixels
@@ -171,7 +171,7 @@ impl YSortingPage {
   }
 
   /// Create a tree sprite (16x24, trunk at bottom for y-sorting)
-  fn create_tree_sprite() -> Sprite {
+  fn create_tree_sprite() -> Image {
     let width = 16u32;
     let height = 24u32;
     let mut data = vec![0u8; (width * height * 4) as usize];
@@ -217,11 +217,11 @@ impl YSortingPage {
     }
 
     Self::add_outline(&mut data, width, height);
-    Sprite::from_rgba(data, width, height)
+    Image::from_rgba(data, width, height)
   }
 
   /// Create a bush sprite (16x12)
-  fn create_bush_sprite() -> Sprite {
+  fn create_bush_sprite() -> Image {
     let width = 16u32;
     let height = 12u32;
     let mut data = vec![0u8; (width * height * 4) as usize];
@@ -251,11 +251,11 @@ impl YSortingPage {
     }
 
     Self::add_outline(&mut data, width, height);
-    Sprite::from_rgba(data, width, height)
+    Image::from_rgba(data, width, height)
   }
 
   /// Create a rock sprite (16x12)
-  fn create_rock_sprite() -> Sprite {
+  fn create_rock_sprite() -> Image {
     let width = 16u32;
     let height = 12u32;
     let mut data = vec![0u8; (width * height * 4) as usize];
@@ -287,11 +287,11 @@ impl YSortingPage {
     }
 
     Self::add_outline(&mut data, width, height);
-    Sprite::from_rgba(data, width, height)
+    Image::from_rgba(data, width, height)
   }
 
   /// Create a shadow sprite
-  fn create_shadow_sprite() -> Sprite {
+  fn create_shadow_sprite() -> Image {
     let width = 12u32;
     let height = 6u32;
     let mut data = vec![0u8; (width * height * 4) as usize];
@@ -319,7 +319,7 @@ impl YSortingPage {
       }
     }
 
-    Sprite::from_rgba(data, width, height)
+    Image::from_rgba(data, width, height)
   }
 
   /// Y-sorted sprites are anchored at their feet (bottom centre), and the

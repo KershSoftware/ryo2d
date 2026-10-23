@@ -2318,7 +2318,7 @@ mod tests {
 
   use super::*;
   use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::input::Input;
   use crate::core::render::UiSpace;
   use crate::core::text::{TextEngine, TextLayout, TextStyle};
@@ -2530,7 +2530,7 @@ mod tests {
   fn sprites_record_their_rect_and_a_nine_slice_records_nine() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut ui = context(&mut commands, &mut text);
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(16, 8, 255, 255, 255, 255), "s");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(16, 8, 255, 255, 255, 255), "s");
     ui.draw_sprite(&sprite, 1.0, 2.0);
     ui.draw_sprite_scaled(&sprite, 1.0, 2.0, 2.0);
     ui.draw_sprite_rect(&sprite, Rect::new(0.0, 0.0, 5.0, 5.0), Color::RED);
@@ -3090,7 +3090,7 @@ mod tests {
 
   #[test]
   fn nine_slice_insets_clamp_to_the_texture() {
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(16, 8, 255, 255, 255, 255), "s");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(16, 8, 255, 255, 255, 255), "s");
     let pieces = slice_pieces(
       &sprite,
       Rect::new(0.0, 0.0, 100.0, 50.0),
@@ -3107,7 +3107,7 @@ mod tests {
 
   #[test]
   fn nine_slice_corners_shrink_to_fit_a_small_rect() {
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, 255, 255, 255, 255), "s");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(16, 16, 255, 255, 255, 255), "s");
     let rect = Rect::new(10.0, 10.0, 6.0, 20.0);
     let pieces = slice_pieces(&sprite, rect, [4.0, 2.0, 4.0, 2.0]);
     for (piece, _) in &pieces {

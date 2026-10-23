@@ -84,7 +84,7 @@ impl AnchorPage {
       }
     }
 
-    let sprite = Sprite::from_rgba(data, size, size);
+    let sprite = Image::from_rgba(data, size, size);
     SpriteHandle::from_sprite(sprite, "crosshair")
   }
 
@@ -122,7 +122,7 @@ impl DemoPage for AnchorPage {
     // Create demo sprite (a colored rectangle with visible bounds)
     let sprite_w = 60u32;
     let sprite_h = 40u32;
-    let demo_sprite = Sprite::solid_rect(sprite_w, sprite_h, 80, 140, 220, 200);
+    let demo_sprite = Image::solid_rect(sprite_w, sprite_h, 80, 140, 220, 200);
     let sprite_handle = SpriteHandle::from_sprite(demo_sprite, "demo_rect");
 
     // Create crosshair for marking target positions

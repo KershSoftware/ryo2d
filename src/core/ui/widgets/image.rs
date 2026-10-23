@@ -17,7 +17,7 @@ use crate::core::ui::tree::{DrawKind, Node};
 
 /// An image being set up. It is drawn by [`show`](Self::show) or when it is
 /// dropped.
-pub struct Image<'u, 'a> {
+pub struct ImageWidget<'u, 'a> {
   ui: Option<&'u mut UiContext<'a>>,
   site: &'static Location<'static>,
   sprite: SpriteHandle,
@@ -29,15 +29,15 @@ pub struct Image<'u, 'a> {
 }
 
 impl<'a> UiContext<'a> {
-  /// A sprite as a widget, the sprite's size unless told ([`size`](Image::size),
+  /// A sprite as a widget, the sprite's size unless told ([`size`](ImageWidget::size),
   /// or the layout options). It senses nothing, unless it has a tooltip.
   ///
   /// ```ignore
   /// ui.image(&self.portrait).size(64.0, 64.0).filter(Filter::Nearest);
   /// ```
   #[track_caller]
-  pub fn image<'u>(&'u mut self, sprite: &SpriteHandle) -> Image<'u, 'a> {
-    Image {
+  pub fn image<'u>(&'u mut self, sprite: &SpriteHandle) -> ImageWidget<'u, 'a> {
+    ImageWidget {
       ui: Some(self),
       site: Location::caller(),
       sprite: sprite.clone(),
@@ -50,9 +50,9 @@ impl<'a> UiContext<'a> {
   }
 }
 
-widget_builders!(Image<'_, '_>);
+widget_builders!(ImageWidget<'_, '_>);
 
-impl Image<'_, '_> {
+impl ImageWidget<'_, '_> {
   /// Its size in UI units
   pub fn size(mut self, width: f32, height: f32) -> Self {
     self.size = Some(Vec2::new(width, height));
@@ -127,7 +127,7 @@ impl Image<'_, '_> {
   }
 }
 
-impl Drop for Image<'_, '_> {
+impl Drop for ImageWidget<'_, '_> {
   /// An image not shown is drawn when it is dropped
   fn drop(&mut self) {
     self.run();
@@ -137,7 +137,7 @@ impl Drop for Image<'_, '_> {
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
   use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::render::batch::Filter;
   use crate::core::ui::Rect;
   use crate::core::ui::immediate::UiCommand;
@@ -146,7 +146,7 @@ mod tests {
   #[test]
   fn an_image_draws_its_sprite_with_its_filter() {
     let sprite =
-      SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 255, 255, 255), "test-image");
+      SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 255, 255, 255), "test-image");
     let mut d = UiDriver::new((100.0, 100.0));
     d.frame(|ui| {
       ui.image(&sprite)

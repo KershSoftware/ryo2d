@@ -46,7 +46,7 @@ impl CameraShakePage {
 
   /// Create a colored square sprite
   fn create_square(size: u32, r: u8, g: u8, b: u8) -> SpriteHandle {
-    let sprite = Sprite::solid_rect(size, size, r, g, b, 255);
+    let sprite = Image::solid_rect(size, size, r, g, b, 255);
     SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}_{}", size, r, g, b))
   }
 

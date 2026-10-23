@@ -458,10 +458,10 @@ mod tests {
   #[test]
   fn the_ghost_follows_the_pointer_at_80_percent() {
     use crate::core::asset::SpriteHandle;
-    use crate::core::graphics::Sprite;
+    use crate::core::graphics::Image;
     use crate::core::ui::immediate::{POPUP_LAYER, UiCommand};
     let icon =
-      SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, 255, 255, 255, 255), "ghost-icon");
+      SpriteHandle::from_sprite(Image::solid_rect(16, 16, 255, 255, 255, 255), "ghost-icon");
     let mut d = UiDriver::new((200.0, 100.0));
     let draw = |ui: &mut UiContext<'_>| {
       ui.slot()

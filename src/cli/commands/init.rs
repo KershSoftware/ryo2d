@@ -331,7 +331,7 @@ impl Scene for GameScene {
     // Example: Spawn a simple colored square where the camera looks
     // (the centre of the resolution; world (0, 0) is its top-left)
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(64, 64, 0, 255, 255, 255),
+      Image::solid_rect(64, 64, 0, 255, 255, 255),
       "square"
     );
     let center = ctx.camera().position();

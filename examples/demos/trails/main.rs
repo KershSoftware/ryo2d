@@ -113,7 +113,7 @@ const JOIN_NAMES: [&str; 3] = ["Miter", "Bevel", "Round"];
 const DEFAULT_JOIN: usize = 2;
 
 fn circle_sprite(radius: u32, color: Color) -> SpriteHandle {
-  let sprite = Sprite::solid_circle(radius, color.r, color.g, color.b, color.a);
+  let sprite = Image::solid_circle(radius, color.r, color.g, color.b, color.a);
   SpriteHandle::from_sprite(sprite, format!("circle_{}_{}", radius, color.r))
 }
 
@@ -149,7 +149,7 @@ fn create_trail_texture() -> SpriteHandle {
     }
   }
 
-  let sprite = Sprite::from_rgba(data, width, height);
+  let sprite = Image::from_rgba(data, width, height);
   SpriteHandle::from_sprite(sprite, "trail_gradient")
 }
 

@@ -68,7 +68,7 @@ mod tests {
   fn icons_are_found_by_name_and_replaced() {
     let sprite = |name| {
       SpriteHandle::from_sprite(
-        crate::core::graphics::Sprite::solid_rect(4, 4, 255, 0, 0, 255),
+        crate::core::graphics::Image::solid_rect(4, 4, 255, 0, 0, 255),
         name,
       )
     };

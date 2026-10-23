@@ -77,7 +77,7 @@ impl ValidatedAnimatorPage {
       .map(|i| {
         let color = Self::state_color(name, i);
         SpriteHandle::from_sprite(
-          Sprite::solid_rect(64, 64, color.0, color.1, color.2, 255),
+          Image::solid_rect(64, 64, color.0, color.1, color.2, 255),
           name,
         )
       })

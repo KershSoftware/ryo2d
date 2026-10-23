@@ -10,8 +10,8 @@ struct Fixture;
 
 impl Scene for Fixture {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let red = SpriteHandle::from_sprite(Sprite::solid_rect(20, 20, 255, 0, 0, 255), "red");
-    let blue = SpriteHandle::from_sprite(Sprite::solid_rect(30, 12, 0, 60, 255, 255), "blue");
+    let red = SpriteHandle::from_sprite(Image::solid_rect(20, 20, 255, 0, 0, 255), "red");
+    let blue = SpriteHandle::from_sprite(Image::solid_rect(30, 12, 0, 60, 255, 255), "blue");
     ctx
       .world
       .spawn((Transform::from_xy(10.0, 10.0), Renderable::sprite(red)));

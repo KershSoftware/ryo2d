@@ -1,7 +1,7 @@
 //! Graphics and rendering systems.
 //!
 //! This module provides:
-//! - [`Sprite`] / [`AnimatedSprite`] - Sprite data and CPU blitting
+//! - [`Image`] / [`AnimatedSprite`] - Image data and CPU blitting
 //! - [`WgpuRenderer`] - the GPU renderer, presenting through [`ScreenMapping`]
 //! - [`SpriteGpuRenderer`] - GPU sprite batching for particles/effects
 //! - [`Camera2d`] / [`CameraView`] / [`CameraMut`] - cameras as entities, with
@@ -22,12 +22,12 @@ mod compositor;
 mod glyph_atlas;
 mod gpu_context;
 pub mod gpu_error;
+pub mod image;
 pub mod parallax;
 pub mod render_layers;
 pub mod render_targets;
 pub mod renderer;
 pub mod screen;
-pub mod sprite;
 pub mod sprite_gpu;
 mod texture_registry;
 pub mod tile;
@@ -46,12 +46,12 @@ pub(crate) use compositor::{CompositeViewport, Compositor};
 pub(crate) use glyph_atlas::GlyphPage;
 pub use gpu_context::GpuRenderContext;
 pub use gpu_error::GpuError;
+pub use image::{AnimatedSprite, Image};
 pub use parallax::{ParallaxLayer, TileMode};
 pub use render_layers::RenderLayers;
 pub use render_targets::{MAX_TARGET_SIDE, RenderTargets};
 pub use renderer::WgpuRenderer;
 pub use screen::{Presentation, ScreenMapping};
-pub use sprite::{AnimatedSprite, Sprite};
 pub(crate) use sprite_gpu::place_in_slot;
 pub use sprite_gpu::{
   BatchCollector, SpriteDraw, SpriteGpuRenderer, SpriteInstance, get_sprite_effect,

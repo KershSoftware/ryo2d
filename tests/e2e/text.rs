@@ -469,7 +469,7 @@ fn an_inline_icon_draws_its_sprite() {
     (96, 64),
     |b| b,
     |ctx| {
-      let red = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 0, 0, 255), "text-icon");
+      let red = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 0, 0, 255), "text-icon");
       let text = RichText::new("A ").icon(red);
       ctx.world.spawn((
         Transform::from_xy(0.0, 0.0),
@@ -497,7 +497,7 @@ fn a_bitmap_font_draws_its_cells() {
           pixels[(y * 8 + x) * 4..][..4].copy_from_slice(&[255, 255, 255, 255]);
         }
       }
-      let sheet = SpriteHandle::from_sprite(Sprite::from_rgba(pixels, 8, 4), "text-grid");
+      let sheet = SpriteHandle::from_sprite(Image::from_rgba(pixels, 8, 4), "text-grid");
       let font = ctx.fonts().add_bitmap("Grid", sheet, (4, 4), "#.").unwrap();
       let style = TextStyle::new().font(TextFont::Id(font)).size(16.0);
       ctx.world.spawn((

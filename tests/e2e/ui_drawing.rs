@@ -31,7 +31,7 @@ impl<F: FnMut(&mut UiContext) + 'static> Scene for Ui<F> {
 }
 
 fn white_world(ctx: &mut SceneContext) {
-  let white = SpriteHandle::from_sprite(Sprite::solid_rect(400, 400, 255, 255, 255, 255), "white");
+  let white = SpriteHandle::from_sprite(Image::solid_rect(400, 400, 255, 255, 255, 255), "white");
   ctx
     .world
     .spawn((Transform::from_xy(0.0, 0.0), Renderable::sprite(white)));

@@ -4,7 +4,7 @@
 //! - `EngineError` - Top-level engine errors
 //! - `AssetError` - Asset loading and management errors
 //! - `AudioError` - Audio system errors
-//! - `SpriteError` - Sprite loading errors
+//! - `ImageError` - Image loading errors
 //!
 //! All error types implement `std::error::Error` and use `thiserror` for
 //! ergonomic error handling.
@@ -59,9 +59,9 @@ pub enum AssetError {
   #[error("Failed to set up file watcher: {0}")]
   WatchError(String),
 
-  /// Sprite loading error (wraps SpriteError)
+  /// Image loading error (wraps ImageError)
   #[error(transparent)]
-  Sprite(#[from] SpriteError),
+  Image(#[from] ImageError),
 
   /// A UI file has mistakes
   #[error("{0}")]
@@ -73,14 +73,14 @@ pub type AssetResult<T> = Result<T, AssetError>;
 
 /// Errors that can occur when loading sprites
 #[derive(Error, Debug)]
-pub enum SpriteError {
+pub enum ImageError {
   /// Failed to decode image
   #[error("Failed to decode image {path}: {reason}")]
   DecodeError { path: PathBuf, reason: String },
 }
 
 /// Result type for sprite operations
-pub type SpriteResult<T> = Result<T, SpriteError>;
+pub type ImageResult<T> = Result<T, ImageError>;
 
 /// Audio system errors
 #[derive(Error, Debug)]
@@ -229,11 +229,11 @@ mod tests {
 
   #[test]
   fn sprite_error_chains_to_asset_error() {
-    let sprite_err = SpriteError::DecodeError {
+    let sprite_err = ImageError::DecodeError {
       path: PathBuf::from("test.png"),
       reason: "truncated".to_string(),
     };
     let asset_err: AssetError = sprite_err.into();
-    assert!(matches!(asset_err, AssetError::Sprite(_)));
+    assert!(matches!(asset_err, AssetError::Image(_)));
   }
 }

@@ -81,7 +81,7 @@ impl SoftShadowsPage {
   ) -> Entity {
     // Create visual sprite
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(width as u32, height as u32, 60, 55, 70, 255),
+      Image::solid_rect(width as u32, height as u32, 60, 55, 70, 255),
       format!("soft_occluder_{}_{}", x as i32, y as i32),
     );
 
@@ -128,7 +128,7 @@ impl DemoPage for SoftShadowsPage {
     // Create floor
     let floor = ctx
       .assets
-      .create_sprite(Sprite::solid_rect(1280, 720, 35, 30, 40, 255), "soft_floor");
+      .create_sprite(Image::solid_rect(1280, 720, 35, 30, 40, 255), "soft_floor");
     ctx.world.spawn((
       Transform::from_xy(640.0, 360.0),
       Renderable::sprite(floor).with_z_order(0),
@@ -167,7 +167,7 @@ impl DemoPage for SoftShadowsPage {
 
     // Create a visual for the light source
     let light_visual = ctx.assets.create_sprite(
-      Sprite::solid_circle(20, 255, 240, 200, 255),
+      Image::solid_circle(20, 255, 240, 200, 255),
       "soft_light_source",
     );
     self.light_visual = Some(

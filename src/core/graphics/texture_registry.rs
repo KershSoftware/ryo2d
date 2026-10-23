@@ -282,10 +282,10 @@ mod tests {
   }
 
   use super::*;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
 
   fn sprite(name: &str) -> SpriteHandle {
-    SpriteHandle::from_sprite(Sprite::solid_rect(4, 2, 255, 0, 0, 255), name)
+    SpriteHandle::from_sprite(Image::solid_rect(4, 2, 255, 0, 0, 255), name)
   }
 
   #[test]
@@ -320,7 +320,7 @@ mod tests {
     assert!(registry.needs_upload(id), "never uploaded");
     registry.mark_uploaded(id);
     assert!(!registry.needs_upload(id));
-    handle.update(Sprite::solid_rect(8, 8, 0, 255, 0, 255));
+    handle.update(Image::solid_rect(8, 8, 0, 255, 0, 255));
     assert!(
       registry.needs_upload(id),
       "hot reload bumped its generation"

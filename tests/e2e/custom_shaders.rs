@@ -10,7 +10,7 @@ const RED: [u8; 4] = [220, 30, 40, 255];
 const GREEN: [u8; 4] = [30, 200, 60, 255];
 
 fn solid(name: &str, size: u32, c: [u8; 4]) -> SpriteHandle {
-  SpriteHandle::from_sprite(Sprite::solid_rect(size, size, c[0], c[1], c[2], c[3]), name)
+  SpriteHandle::from_sprite(Image::solid_rect(size, size, c[0], c[1], c[2], c[3]), name)
 }
 
 const INVERT: &str = "
@@ -598,7 +598,7 @@ impl Scene for Quadrants {
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
       Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::from_rgba(pixels, 64, 64),
+        Image::from_rgba(pixels, 64, 64),
         "t3-quadrants",
       ))
       .with_anchor(Anchor::TopLeft),

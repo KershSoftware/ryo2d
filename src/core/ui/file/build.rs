@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::core::asset::SpriteHandle;
-use crate::core::graphics::Sprite;
+use crate::core::graphics::Image;
 use crate::core::text::TextReveal;
 use crate::core::ui::nodes::bindings::parse_hole;
 use crate::core::ui::nodes::{BindValue, RowShape};
@@ -41,7 +41,7 @@ impl SpriteSource for Placeholders {
     let handle = self
       .handles
       .entry(path.to_string())
-      .or_insert_with(|| SpriteHandle::new(Sprite::solid_rect(1, 1, 0, 0, 0, 0), path.into()));
+      .or_insert_with(|| SpriteHandle::new(Image::solid_rect(1, 1, 0, 0, 0, 0), path.into()));
     Ok(handle.clone())
   }
 }
@@ -350,7 +350,7 @@ impl BuildCx<'_> {
     // A template parameter while the template is checked: a stand-in, so
     // the rest of its node is checked too
     if matches!(value.kind, ValueKind::Any) {
-      let blank = Sprite::solid_rect(1, 1, 0, 0, 0, 0);
+      let blank = Image::solid_rect(1, 1, 0, 0, 0, 0);
       return Some(SpriteHandle::new(blank, PathBuf::new()));
     }
     if !self.readable(value) {
@@ -1178,7 +1178,7 @@ fn add_children(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::ui::file::reader::read;
   use crate::core::ui::nodes::{RowShape, fingerprint};
   use crate::prelude::*;
@@ -1209,7 +1209,7 @@ mod tests {
   }
 
   fn sprite(path: &str) -> SpriteHandle {
-    SpriteHandle::new(Sprite::solid_rect(1, 1, 0, 0, 0, 0), path.into())
+    SpriteHandle::new(Image::solid_rect(1, 1, 0, 0, 0, 0), path.into())
   }
 
   fn messages(text: &str) -> Vec<String> {

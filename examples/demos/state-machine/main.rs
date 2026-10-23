@@ -176,7 +176,7 @@ impl StateMachineDemoScene {
 
   fn create_character_sprite() -> SpriteHandle {
     // White sprite that we'll tint with state color
-    let sprite = Sprite::solid_rect(40, 60, 255, 255, 255, 255);
+    let sprite = Image::solid_rect(40, 60, 255, 255, 255, 255);
     SpriteHandle::from_sprite(sprite, "character")
   }
 

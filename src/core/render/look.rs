@@ -4,7 +4,7 @@ use glam::{Mat3, Vec3};
 
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Resource;
-use crate::core::graphics::Sprite;
+use crate::core::graphics::Image;
 
 /// How the frame's linear HDR image becomes the display image, once per
 /// frame after every camera has drawn (`ctx.look()`). The tonemap pass
@@ -159,7 +159,7 @@ impl ColorLut {
 
   /// The strip that changes nothing, N = `size` (2 to 64): a starting point
   /// for LUTs built in code.
-  pub fn identity_strip(size: u32) -> Sprite {
+  pub fn identity_strip(size: u32) -> Image {
     let n = size.clamp(2, 64);
     let level = |i: u32| ((i * 255 + (n - 1) / 2) / (n - 1)) as u8;
     let mut data = Vec::with_capacity((n * n * n * 4) as usize);
@@ -170,7 +170,7 @@ impl ColorLut {
         }
       }
     }
-    Sprite::from_rgba(data, n * n, n)
+    Image::from_rgba(data, n * n, n)
   }
 }
 
@@ -561,7 +561,7 @@ mod tests {
   fn a_lut_strip_is_n_tiles_of_n_by_n() {
     let lut = |w: u32, h: u32| {
       let sprite = crate::core::asset::SpriteHandle::from_sprite(
-        crate::core::graphics::Sprite::solid_rect(w, h, 0, 0, 0, 255),
+        crate::core::graphics::Image::solid_rect(w, h, 0, 0, 0, 255),
         format!("lut-{w}x{h}"),
       );
       ColorLut::from_sprite(&sprite).map(|lut| lut.size())

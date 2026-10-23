@@ -17,7 +17,7 @@ fn main() {
 /// A grey backdrop over the whole window.
 fn backdrop(ctx: &mut SceneContext, grey: u8) {
   let sprite = SpriteHandle::from_sprite(
-    Sprite::solid_rect(960, 640, grey, grey, grey, 255),
+    Image::solid_rect(960, 640, grey, grey, grey, 255),
     format!("look-backdrop-{grey}"),
   );
   ctx.world.spawn((
@@ -35,7 +35,7 @@ fn square(
   emission: f32,
 ) -> Entity {
   let sprite = SpriteHandle::from_sprite(
-    Sprite::solid_rect(size, size, color.r, color.g, color.b, 255),
+    Image::solid_rect(size, size, color.r, color.g, color.b, 255),
     format!("look-square-{size}-{}-{}-{}", color.r, color.g, color.b),
   );
   ctx
@@ -316,7 +316,7 @@ fn make_lut(name: &str, map: impl Fn([f32; 3]) -> [f32; 3]) -> Option<ColorLut> 
       [byte(r), byte(g), byte(b), 255]
     })
     .collect();
-  let sprite = Sprite::from_rgba(data, strip.width(), strip.height());
+  let sprite = Image::from_rgba(data, strip.width(), strip.height());
   ColorLut::from_sprite(&SpriteHandle::from_sprite(
     sprite,
     format!("look-lut-{name}"),
@@ -430,13 +430,13 @@ impl DemoPage for ExposurePage {
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Rock from x -600 to 600, sky from 600 to 1500
     let rock =
-      SpriteHandle::from_sprite(Sprite::solid_rect(1200, 640, 40, 34, 30, 255), "look-cave");
+      SpriteHandle::from_sprite(Image::solid_rect(1200, 640, 40, 34, 30, 255), "look-cave");
     ctx.world.spawn((
       Transform::from_xy(0.0, 320.0),
       Renderable::sprite(rock).with_z_order(-1),
     ));
     let sky =
-      SpriteHandle::from_sprite(Sprite::solid_rect(900, 640, 200, 220, 255, 255), "look-sky");
+      SpriteHandle::from_sprite(Image::solid_rect(900, 640, 200, 220, 255, 255), "look-sky");
     ctx.world.spawn((
       Transform::from_xy(1050.0, 320.0),
       Renderable::sprite(sky).with_z_order(-1).with_emission(4.0),

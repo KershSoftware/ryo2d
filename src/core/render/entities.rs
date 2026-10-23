@@ -36,7 +36,7 @@ use crate::core::ecs::{
 use crate::core::graphics::TileDirection;
 use crate::core::graphics::sprite_gpu::effective_shader;
 use crate::core::graphics::{
-  CompositeTile, RenderLayers, RenderTarget, RenderTargets, Sprite, SpriteGpuRenderer,
+  CompositeTile, Image, RenderLayers, RenderTarget, RenderTargets, SpriteGpuRenderer,
   SpriteInstance, TextureId,
 };
 use crate::core::ui::Color;
@@ -407,7 +407,7 @@ impl Emitter<'_> {
     let id = match self.gpu.named_texture(ELLIPSE_ID) {
       Some(id) => id,
       None => {
-        let sprite = Sprite::solid_ellipse(ELLIPSE_SIZE, ELLIPSE_SIZE, 255, 255, 255, 255);
+        let sprite = Image::solid_ellipse(ELLIPSE_SIZE, ELLIPSE_SIZE, 255, 255, 255, 255);
         self.gpu.upload_named(
           self.device,
           self.queue,
@@ -751,10 +751,10 @@ mod draw_order_tests {
   use super::{DrawOrder, y_sort_key};
   use crate::core::asset::SpriteHandle;
   use crate::core::ecs::{Anchor, Renderable, YSort};
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
 
   fn sprite_20_high(anchor: Anchor) -> Renderable {
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(10, 20, 255, 255, 255, 255), "tall");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(10, 20, 255, 255, 255, 255), "tall");
     Renderable::sprite(sprite).with_anchor(anchor)
   }
 

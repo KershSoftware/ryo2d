@@ -192,14 +192,14 @@ impl Drop for Slot<'_, '_> {
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
   use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::ui::Rect;
   use crate::core::ui::immediate::UiCommand;
   use crate::core::ui::test_util::UiDriver;
 
   #[test]
   fn a_slot_draws_its_icon_and_count() {
-    let icon = SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, 200, 50, 50, 255), "test-icon");
+    let icon = SpriteHandle::from_sprite(Image::solid_rect(16, 16, 200, 50, 50, 255), "test-icon");
     let mut d = UiDriver::new((100.0, 100.0));
     d.frame(|ui| {
       ui.slot()

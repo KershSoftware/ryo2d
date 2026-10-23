@@ -43,7 +43,7 @@ use super::material::SpriteShader;
 use super::transform::Anchor;
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Vec2;
-use crate::core::graphics::{RenderTarget, Sprite, TileDirection};
+use crate::core::graphics::{Image, RenderTarget, TileDirection};
 use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::ui::Color;
 use std::sync::OnceLock;
@@ -524,7 +524,7 @@ impl Renderable {
     // Stands in for the sprite; the target is drawn instead
     static PLACEHOLDER: OnceLock<SpriteHandle> = OnceLock::new();
     let placeholder = PLACEHOLDER.get_or_init(|| {
-      SpriteHandle::from_sprite(Sprite::solid_rect(1, 1, 0, 0, 0, 0), "render target")
+      SpriteHandle::from_sprite(Image::solid_rect(1, 1, 0, 0, 0, 0), "render target")
     });
     // What a camera draws into a target is premultiplied by alpha
     Renderable {
@@ -768,11 +768,11 @@ impl Renderable {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
 
   fn test_handle() -> SpriteHandle {
     // Create a minimal test sprite handle
-    let sprite = Sprite::solid_rect(16, 16, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(16, 16, 255, 0, 0, 255);
     SpriteHandle::from_sprite(sprite, "test")
   }
 

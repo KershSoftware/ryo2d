@@ -435,11 +435,11 @@ impl Default for CompositeTileBuilder {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::physics::ColliderShape;
 
   fn test_sprite(w: u32, h: u32) -> SpriteHandle {
-    let sprite = Sprite::solid_rect(w, h, 255, 0, 0, 255);
+    let sprite = Image::solid_rect(w, h, 255, 0, 0, 255);
     SpriteHandle::from_sprite(sprite, "test")
   }
 

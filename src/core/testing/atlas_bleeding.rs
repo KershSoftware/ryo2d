@@ -20,7 +20,7 @@ struct Bleed {
 impl Bleed {
   fn new(centre: f32, scale: f32, rotation: f32, flip_x: bool) -> Self {
     let solid = |name: &str, c: [u8; 4]| {
-      SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, c[0], c[1], c[2], c[3]), name)
+      SpriteHandle::from_sprite(Image::solid_rect(4, 4, c[0], c[1], c[2], c[3]), name)
     };
     Self {
       red: solid("bleed-red", RED),

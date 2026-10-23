@@ -88,7 +88,7 @@ impl MenuScene {
   fn spawn_rain(&mut self, ctx: &mut SceneContext) {
     // Create particle sprite
     let rain_sprite = ctx.assets.create_sprite(
-      Sprite::solid_circle(8, 255, 255, 255, 255), // White circle
+      Image::solid_circle(8, 255, 255, 255, 255), // White circle
       "rain_particle_menu",
     );
     self.rain_sprite = Some(rain_sprite.clone());

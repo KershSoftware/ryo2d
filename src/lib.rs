@@ -113,7 +113,7 @@ pub mod prelude {
 
   // Graphics
   pub use crate::core::graphics::{
-    AnimatedSprite, Gpu, GpuRenderContext, Presentation, ScreenMapping, Sprite,
+    AnimatedSprite, Gpu, GpuRenderContext, Image, Presentation, ScreenMapping,
   };
 
   // Cameras
@@ -238,7 +238,7 @@ pub mod prelude {
   // Errors
   pub use crate::core::error::{
     AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,
-    HotReloadResult, SaveError, SaveResult, SpriteError, SpriteResult,
+    HotReloadResult, ImageError, ImageResult, SaveError, SaveResult,
   };
   pub use crate::core::graphics::GpuError;
 

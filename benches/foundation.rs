@@ -62,7 +62,7 @@ impl Scene for ManySprites {
       .map(|i| {
         let shade = 60 + i * 80;
         SpriteHandle::from_sprite(
-          Sprite::solid_rect(2, 2, shade, 30, 40, 255),
+          Image::solid_rect(2, 2, shade, 30, 40, 255),
           format!("bench-{i}"),
         )
       })

@@ -666,7 +666,7 @@ mod tests {
   fn the_same_bitmap_font_twice_is_one_font() {
     let mut fonts = Fonts::new();
     let sheet = crate::core::asset::SpriteHandle::from_sprite(
-      crate::core::graphics::Sprite::solid_rect(64, 16, 255, 255, 255, 255),
+      crate::core::graphics::Image::solid_rect(64, 16, 255, 255, 255, 255),
       "sheet",
     );
     let first = fonts
@@ -686,7 +686,7 @@ mod tests {
   fn a_bitmap_font_needs_a_cell_and_characters() {
     let mut fonts = Fonts::new();
     let sheet = crate::core::asset::SpriteHandle::from_sprite(
-      crate::core::graphics::Sprite::solid_rect(64, 16, 255, 255, 255, 255),
+      crate::core::graphics::Image::solid_rect(64, 16, 255, 255, 255, 255),
       "sheet",
     );
     assert!(matches!(

@@ -182,7 +182,7 @@ fn ysort_with_renderable() {
   let mut world = World::new();
 
   // Create a simple sprite for testing
-  let sprite = Sprite::solid_rect(16, 24, 255, 0, 0, 255);
+  let sprite = Image::solid_rect(16, 24, 255, 0, 0, 255);
   let sprite_handle = SpriteHandle::from_sprite(sprite, "test_sprite");
 
   let entity = world
@@ -220,7 +220,7 @@ fn ysort_with_renderable() {
 fn ysort_ordering_by_y() {
   let mut world = World::new();
 
-  let sprite = Sprite::solid_rect(16, 16, 255, 0, 0, 255);
+  let sprite = Image::solid_rect(16, 16, 255, 0, 0, 255);
   let sprite_handle = SpriteHandle::from_sprite(sprite, "test");
 
   // Create entities at different Y positions
@@ -394,7 +394,7 @@ fn ysort_despawn() {
 fn ysort_many_entities() {
   let mut world = World::new();
 
-  let sprite = Sprite::solid_rect(8, 8, 255, 255, 255, 255);
+  let sprite = Image::solid_rect(8, 8, 255, 255, 255, 255);
   let sprite_handle = SpriteHandle::from_sprite(sprite, "test");
 
   // Spawn 100 entities with YSort

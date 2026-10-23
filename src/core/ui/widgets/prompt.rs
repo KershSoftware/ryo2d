@@ -305,7 +305,7 @@ mod tests {
     let resolved = resolve_prompts(&text, &context, Color::YELLOW);
     assert_eq!(resolved.as_str(), "Press [A] to jump");
     let sprite = crate::core::asset::SpriteHandle::from_sprite(
-      crate::core::graphics::Sprite::solid_rect(4, 4, 255, 255, 255, 255),
+      crate::core::graphics::Image::solid_rect(4, 4, 255, 255, 255, 255),
       "a-glyph",
     );
     context.icons.insert("prompt.pad.xbox.South", sprite);
@@ -320,7 +320,7 @@ mod tests {
 
   fn sprite(name: &str) -> crate::core::asset::SpriteHandle {
     crate::core::asset::SpriteHandle::from_sprite(
-      crate::core::graphics::Sprite::solid_rect(8, 4, 255, 255, 255, 255),
+      crate::core::graphics::Image::solid_rect(8, 4, 255, 255, 255, 255),
       name,
     )
   }

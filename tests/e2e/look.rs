@@ -19,7 +19,7 @@ impl Scene for Square {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let [r, g, b, a] = self.color;
     let sprite = SpriteHandle::from_sprite(
-      Sprite::solid_rect(32, 32, r, g, b, a),
+      Image::solid_rect(32, 32, r, g, b, a),
       format!("look-square-{r}-{g}-{b}-{a}"),
     );
     ctx
@@ -206,7 +206,7 @@ fn inverting_lut() -> ColorLut {
     .chunks(4)
     .flat_map(|p| [255 - p[0], 255 - p[1], 255 - p[2], 255])
     .collect();
-  strip = Sprite::from_rgba(inverted, strip.width(), strip.height());
+  strip = Image::from_rgba(inverted, strip.width(), strip.height());
   let Ok(lut) = ColorLut::from_sprite(&SpriteHandle::from_sprite(strip, "lut-invert")) else {
     panic!("a 256x16 strip is a LUT");
   };
@@ -279,7 +279,7 @@ fn emitting(color: [u8; 4], emission: f32, look: Look) -> Square {
     setup: Some(Box::new(move |ctx: &mut SceneContext| {
       let [r, g, b, a] = color;
       let sprite =
-        SpriteHandle::from_sprite(Sprite::solid_rect(32, 32, r, g, b, a), "look-emitting");
+        SpriteHandle::from_sprite(Image::solid_rect(32, 32, r, g, b, a), "look-emitting");
       ctx.world.spawn((
         Transform::from_xy(16.0, 16.0),
         Renderable::sprite(sprite)
@@ -308,7 +308,7 @@ struct Blazing(f32);
 impl Scene for Blazing {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let sprite =
-      SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 255, 255, 255), "look-blazing");
+      SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 255, 255, 255), "look-blazing");
     ctx.world.spawn((
       Transform::from_xy(8.0, 16.0),
       Renderable::sprite(sprite).with_emission(self.0),
@@ -383,7 +383,7 @@ fn auto_exposure_eases_toward_a_darker_scene() {
     look: auto(),
     setup: Some(Box::new(|ctx: &mut SceneContext| {
       let grey = SpriteHandle::from_sprite(
-        Sprite::solid_rect(32, 32, 118, 118, 118, 255),
+        Image::solid_rect(32, 32, 118, 118, 118, 255),
         "look-auto-grey",
       );
       ctx.world.spawn((
@@ -423,7 +423,7 @@ fn auto_exposure_ignores_overflowed_light() {
     look: auto(),
     setup: Some(Box::new(|ctx: &mut SceneContext| {
       let blaze = SpriteHandle::from_sprite(
-        Sprite::solid_rect(8, 8, 255, 255, 255, 255),
+        Image::solid_rect(8, 8, 255, 255, 255, 255),
         "look-auto-blaze",
       );
       for z in 1..=2 {

@@ -128,7 +128,7 @@ impl PostProcessingPage {
     for row in 0..grid_size {
       for col in 0..grid_size {
         let (r, g, b) = colors[(row + col) % colors.len()];
-        let sprite = Sprite::solid_rect(80, 80, r, g, b, 255);
+        let sprite = Image::solid_rect(80, 80, r, g, b, 255);
         let name = format!("tile_{}_{}", row, col);
         let handle = ctx.assets.create_sprite(sprite, &name);
 
@@ -155,7 +155,7 @@ impl PostProcessingPage {
     ];
 
     for (i, &(r, g, b)) in center_colors.iter().enumerate() {
-      let sprite = Sprite::solid_rect(60, 60, r, g, b, 255);
+      let sprite = Image::solid_rect(60, 60, r, g, b, 255);
       let name = format!("rotating_{}", i);
       let handle = ctx.assets.create_sprite(sprite, &name);
 

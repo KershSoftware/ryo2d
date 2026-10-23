@@ -87,7 +87,7 @@ impl MainMenuScene {
       }
     }
 
-    let sprite = Sprite::from_rgba(data, size, size);
+    let sprite = Image::from_rgba(data, size, size);
     assets.create_sprite(sprite, "fairy_core")
   }
 }

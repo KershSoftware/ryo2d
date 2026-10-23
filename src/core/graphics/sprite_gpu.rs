@@ -1201,7 +1201,7 @@ mod tests {
   const PAGE: (u32, u32) = (2048, 2048);
 
   fn solid(name: &str) -> SpriteHandle {
-    let sprite = crate::core::graphics::Sprite::solid_rect(2, 2, 255, 255, 255, 255);
+    let sprite = crate::core::graphics::Image::solid_rect(2, 2, 255, 255, 255, 255);
     SpriteHandle::from_sprite(sprite, name)
   }
 

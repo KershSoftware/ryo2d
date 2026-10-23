@@ -2324,7 +2324,7 @@ mod edge_tests {
   use super::super::oracle::*;
   use super::*;
   use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::input::{Binding, InputDevice};
   use crate::core::testing::UiHarness;
   use crate::core::ui::nodes::*;
@@ -2593,7 +2593,7 @@ mod edge_tests {
   fn an_image_whose_sprite_is_replaced_at_another_size_looks_the_same() {
     let run = oracle(
       |h| {
-        let pic = SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, 200, 40, 40, 255), "pic");
+        let pic = SpriteHandle::from_sprite(Image::solid_rect(16, 16, 200, 40, 40, 255), "pic");
         h.spawn_ui(
           UiNode::column()
             .child(UiNode::image(pic).name("pic"))
@@ -2605,14 +2605,14 @@ mod edge_tests {
         Frame,
         Write("pic", |w, e| {
           let pic = w.get::<UiImage>(e).unwrap().0.clone();
-          pic.update(Sprite::solid_rect(64, 40, 40, 200, 40, 255));
+          pic.update(Image::solid_rect(64, 40, 40, 200, 40, 255));
         }),
         Frame,
         Frame,
         Write("pic", |w, e| {
           // The same size, other pixels: drawn from the sprite as it is
           let pic = w.get::<UiImage>(e).unwrap().0.clone();
-          pic.update(Sprite::solid_rect(64, 40, 40, 40, 200, 255));
+          pic.update(Image::solid_rect(64, 40, 40, 40, 200, 255));
         }),
         Frame,
         Frame,
@@ -2631,7 +2631,7 @@ mod edge_tests {
           InputDevice::Keyboard,
           &[("jump", vec![Binding::Key(KeyCode::Space)])],
         );
-        let glyph = SpriteHandle::from_sprite(Sprite::solid_rect(16, 16, 9, 9, 9, 255), "space");
+        let glyph = SpriteHandle::from_sprite(Image::solid_rect(16, 16, 9, 9, 9, 255), "space");
         prompts.icons.insert("prompt.key.Space", glyph);
         h.prompts = Arc::new(prompts);
         h.spawn_ui(
@@ -2645,9 +2645,7 @@ mod edge_tests {
         Frame,
         Do(|h| {
           let glyph = h.prompts.icons.get("prompt.key.Space").unwrap();
-          glyph
-            .sprite
-            .update(Sprite::solid_rect(48, 16, 9, 9, 9, 255));
+          glyph.sprite.update(Image::solid_rect(48, 16, 9, 9, 9, 255));
         }),
         Frame,
         Frame,

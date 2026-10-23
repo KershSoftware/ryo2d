@@ -12,7 +12,7 @@ fn engine(scene: impl Scene + 'static) -> Option<HeadlessEngine> {
 
 fn white_sprite(ctx: &mut SceneContext) {
   ctx.look().tonemap = Tonemap::Clamp;
-  let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 255, 255, 255, 255), "white");
+  let sprite = SpriteHandle::from_sprite(Image::solid_rect(64, 64, 255, 255, 255, 255), "white");
   ctx.world.spawn((
     Transform::from_xy(0.0, 0.0),
     Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
@@ -216,8 +216,7 @@ struct VignetteThenOff {
 
 impl Scene for VignetteThenOff {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let sprite =
-      SpriteHandle::from_sprite(Sprite::solid_rect(128, 128, 128, 128, 128, 255), "grey");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(128, 128, 128, 128, 128, 255), "grey");
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
       Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
@@ -475,7 +474,7 @@ impl Scene for LitSplit {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     for x in [-1000.0, 1000.0] {
       let white =
-        SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 255, 255, 255, 255), "white-half");
+        SpriteHandle::from_sprite(Image::solid_rect(64, 64, 255, 255, 255, 255), "white-half");
       ctx
         .world
         .spawn((Transform::from_xy(x, 0.0), Renderable::sprite(white)));

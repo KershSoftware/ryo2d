@@ -387,7 +387,7 @@ fn ui_scale_values_valid() {
 #[test]
 fn text_icons_hand_back_their_sources_as_a_prelude_type() {
   let mut icons = TextIcons::default();
-  let sheet = SpriteHandle::from_sprite(Sprite::solid_rect(32, 16, 255, 255, 255, 255), "icons");
+  let sheet = SpriteHandle::from_sprite(Image::solid_rect(32, 16, 255, 255, 255, 255), "icons");
   icons.insert_region("coin", sheet, Rect::new(16.0, 0.0, 16.0, 16.0));
   let source: &IconSource = icons.get("coin").expect("the icon");
   assert_eq!(source.region, Some(Rect::new(16.0, 0.0, 16.0, 16.0)));

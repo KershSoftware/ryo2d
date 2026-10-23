@@ -12,7 +12,7 @@ use winit::keyboard::KeyCode;
 use super::oracle::*;
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::kernel::{ChildOf, Children, Entity, World};
-use crate::core::graphics::Sprite;
+use crate::core::graphics::Image;
 use crate::core::input::{Binding, GamepadButton, InputDevice, PadFamily};
 use crate::core::testing::UiHarness;
 use crate::core::text::{FontRole, Fonts, TextReveal};
@@ -620,7 +620,7 @@ fn theme_scale_and_device_changes_look_the_same_cached() {
 
 fn icon(r: u8, g: u8, b: u8) -> SpriteHandle {
   SpriteHandle::from_sprite(
-    Sprite::solid_rect(16, 16, r, g, b, 255),
+    Image::solid_rect(16, 16, r, g, b, 255),
     format!("oracle-icon-{r}-{g}-{b}"),
   )
 }
@@ -2193,7 +2193,7 @@ fn a_skin_replaced_in_place_at_another_size_redraws_its_kept_fragment() {
     .then(Do(|h| {
       let skin = h.theme().skins.get("button").and_then(|s| s.sprite.clone());
       let sprite = skin.expect("the pixel theme's button skin");
-      sprite.update(Sprite::solid_rect(24, 20, 90, 90, 140, 255));
+      sprite.update(Image::solid_rect(24, 20, 90, 90, 140, 255));
     }))
     .frames(2);
   let run = oracle(

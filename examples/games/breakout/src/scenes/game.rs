@@ -130,7 +130,7 @@ impl GameScene {
     g: u8,
     b: u8,
     border_color: (u8, u8, u8),
-  ) -> Sprite {
+  ) -> Image {
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     let (br, bg, bb) = border_color;
 
@@ -154,11 +154,11 @@ impl GameScene {
       }
     }
 
-    Sprite::from_rgba(pixels, width, height)
+    Image::from_rgba(pixels, width, height)
   }
 
   /// Create a health block sprite (white background with red plus sign and black outline)
-  fn health_block_sprite(width: u32, height: u32, intensity: f32) -> Sprite {
+  fn health_block_sprite(width: u32, height: u32, intensity: f32) -> Image {
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     let (bg_r, bg_g, bg_b) = (0xee, 0xee, 0xf8); // Light grayish-white background
     let (br, b_g, bb) = (0xcc, 0x33, 0x33); // Red border
@@ -223,7 +223,7 @@ impl GameScene {
       }
     }
 
-    Sprite::from_rgba(pixels, width, height)
+    Image::from_rgba(pixels, width, height)
   }
 
   fn spawn_paddle(&mut self, ctx: &mut SceneContext) {
@@ -278,7 +278,7 @@ impl GameScene {
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
+          Image::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
           sprite_id,
         ))
         .with_z_order(15),
@@ -318,7 +318,7 @@ impl GameScene {
           .with_restitution(1.0)
           .with_friction(0.0),
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
+          Image::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
           sprite_id,
         ))
         .with_z_order(15),
@@ -512,7 +512,7 @@ impl GameScene {
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
+          Image::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
           "wall_left",
         ))
         .with_z_order(0),
@@ -534,7 +534,7 @@ impl GameScene {
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
+          Image::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
           "wall_right",
         ))
         .with_z_order(0),
@@ -553,7 +553,7 @@ impl GameScene {
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(SCREEN_WIDTH, WALL_THICKNESS as u32, 0x30, 0x30, 0x40, 0xff),
+          Image::solid_rect(SCREEN_WIDTH, WALL_THICKNESS as u32, 0x30, 0x30, 0x40, 0xff),
           "wall_ceiling",
         ))
         .with_z_order(0),
@@ -909,7 +909,7 @@ impl Scene for GameScene {
       .spawn((
         Transform::from_xy(0.0, 0.0),
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(SCREEN_WIDTH, SCREEN_HEIGHT, 20, 20, 35, 255),
+          Image::solid_rect(SCREEN_WIDTH, SCREEN_HEIGHT, 20, 20, 35, 255),
           "game_background",
         ))
         .with_anchor(Anchor::TopLeft)

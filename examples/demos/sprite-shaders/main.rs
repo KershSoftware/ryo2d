@@ -400,7 +400,7 @@ impl DemoPage for EffectsPage {
 }
 
 /// Create a colorful test sprite with recognizable patterns
-fn create_test_sprite() -> Sprite {
+fn create_test_sprite() -> Image {
   let size = 32;
   let mut pixels = vec![0u8; size * size * 4];
 
@@ -446,7 +446,7 @@ fn create_test_sprite() -> Sprite {
     }
   }
 
-  Sprite::from_rgba(pixels, size as u32, size as u32)
+  Image::from_rgba(pixels, size as u32, size as u32)
 }
 
 /// Convert HSV to RGB (for colorful sprite generation)

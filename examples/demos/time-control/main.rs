@@ -60,13 +60,13 @@ impl TimeControlPage {
       }
     }
 
-    let sprite = Sprite::from_rgba(pixels, size, size);
+    let sprite = Image::from_rgba(pixels, size, size);
     SpriteHandle::from_sprite(sprite, format!("circle_{}_{}_{}", r, g, b))
   }
 
   /// Create a colored square sprite
   fn create_square(size: u32, r: u8, g: u8, b: u8) -> SpriteHandle {
-    let sprite = Sprite::solid_rect(size, size, r, g, b, 255);
+    let sprite = Image::solid_rect(size, size, r, g, b, 255);
     SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}", r, g, b))
   }
 

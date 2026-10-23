@@ -12,22 +12,22 @@ pub fn create_bird_animation_controller() -> AnimationController {
 
   // Load sprite frames
   let flap_up = SpriteHandle::from_sprite(
-    Sprite::load_svg_fit("assets/bird-flap-up.svg", size, size)
+    Image::load_svg_fit("assets/bird-flap-up.svg", size, size)
       .expect("Failed to load bird-flap-up.svg"),
     "bird-flap-up.svg",
   );
   let flap_down = SpriteHandle::from_sprite(
-    Sprite::load_svg_fit("assets/bird-flap-down.svg", size, size)
+    Image::load_svg_fit("assets/bird-flap-down.svg", size, size)
       .expect("Failed to load bird-flap-down.svg"),
     "bird-flap-down.svg",
   );
   let hurt_1 = SpriteHandle::from_sprite(
-    Sprite::load_svg_fit("assets/bird-hurt-1.svg", size, size)
+    Image::load_svg_fit("assets/bird-hurt-1.svg", size, size)
       .expect("Failed to load bird-hurt-1.svg"),
     "bird-hurt-1.svg",
   );
   let hurt_2 = SpriteHandle::from_sprite(
-    Sprite::load_svg_fit("assets/bird-hurt-2.svg", size, size)
+    Image::load_svg_fit("assets/bird-hurt-2.svg", size, size)
       .expect("Failed to load bird-hurt-2.svg"),
     "bird-hurt-2.svg",
   );

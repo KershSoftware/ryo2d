@@ -2635,7 +2635,7 @@ mod drag {
   use super::{Sends, event_kinds};
   use crate::core::asset::SpriteHandle;
   use crate::core::ecs::kernel::{Children, Entity, World};
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::input::Direction;
   use crate::core::ui::Response;
   use crate::core::ui::nodes::*;
@@ -2650,7 +2650,7 @@ mod drag {
 
   fn icon() -> SpriteHandle {
     SpriteHandle::from_sprite(
-      Sprite::solid_rect(16, 16, 200, 50, 50, 255),
+      Image::solid_rect(16, 16, 200, 50, 50, 255),
       "node-slot-icon",
     )
   }

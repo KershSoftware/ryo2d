@@ -38,7 +38,7 @@ impl AmbientOcclusionPage {
     name: &str,
   ) -> Entity {
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(width, height, color.0, color.1, color.2, 255),
+      Image::solid_rect(width, height, color.0, color.1, color.2, 255),
       name,
     );
 
@@ -78,7 +78,7 @@ impl DemoPage for AmbientOcclusionPage {
 
     // Create background
     let bg = ctx.assets.create_sprite(
-      Sprite::solid_rect(1280, 720, 180, 180, 190, 255), // Light gray
+      Image::solid_rect(1280, 720, 180, 180, 190, 255), // Light gray
       "background",
     );
     ctx.world.spawn((

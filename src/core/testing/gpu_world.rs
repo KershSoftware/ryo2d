@@ -27,8 +27,7 @@ fn engine(builder: EngineBuilder) -> Option<HeadlessEngine> {
 fn replaced_sprite_pixels_are_drawn_again() {
   let scene = Fixture {
     setup: |ctx| {
-      let sprite =
-        SpriteHandle::from_sprite(Sprite::solid_rect(10, 10, 220, 30, 40, 255), "reload");
+      let sprite = SpriteHandle::from_sprite(Image::solid_rect(10, 10, 220, 30, 40, 255), "reload");
       ctx.world.spawn((
         Transform::from_xy(40.0, 40.0),
         Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
@@ -47,7 +46,7 @@ fn replaced_sprite_pixels_are_drawn_again() {
     let mut renderables = world.query::<&Renderable>();
     renderables.iter(world).next().unwrap().sprite.clone()
   };
-  handle.update(Sprite::solid_rect(10, 10, 10, 200, 30, 255));
+  handle.update(Image::solid_rect(10, 10, 10, 200, 30, 255));
   engine.step_frames(2).unwrap();
   assert_eq!(
     engine.frame().unwrap().get_pixel(45, 45).0,
@@ -60,7 +59,7 @@ struct VaryingBlob;
 
 impl Scene for VaryingBlob {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 220, 30, 40, 255), "varying");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 220, 30, 40, 255), "varying");
     ctx.world.spawn((
       Transform::from_xy(60.0, 40.0),
       Renderable::sprite(sprite)
@@ -102,8 +101,8 @@ fn varying_shadows_do_not_grow_the_texture_cache() {
 fn off_screen_entities_are_not_uploaded() {
   let scene = Fixture {
     setup: |ctx| {
-      let near = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 1, 2, 3, 255), "near");
-      let far = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 4, 5, 6, 255), "far");
+      let near = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 1, 2, 3, 255), "near");
+      let far = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 4, 5, 6, 255), "far");
       ctx.world.spawn((
         Transform::from_xy(20.0, 20.0),
         Renderable::sprite(near).with_anchor(Anchor::TopLeft),
@@ -155,7 +154,7 @@ fn large_standalone_entity_textures_are_bounded() {
         world.despawn(entity);
       }
       let sprite = SpriteHandle::from_sprite(
-        Sprite::solid_rect(300, 20, 1, 2, 3, 255),
+        Image::solid_rect(300, 20, 1, 2, 3, 255),
         format!("wide-{i}"),
       );
       world.spawn((
@@ -181,10 +180,7 @@ fn ten_thousand_sprites_few_draws() {
       let textures: Vec<SpriteHandle> = (0..3)
         .map(|i| {
           let c = 60 + i as u8 * 80;
-          SpriteHandle::from_sprite(
-            Sprite::solid_rect(2, 2, c, 30, 40, 255),
-            format!("many-{i}"),
-          )
+          SpriteHandle::from_sprite(Image::solid_rect(2, 2, c, 30, 40, 255), format!("many-{i}"))
         })
         .collect();
       for i in 0..10_000usize {
@@ -219,7 +215,7 @@ fn draw_calls_for(a_src: &'static str, b_src: &'static str) -> Option<u32> {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
       let a = ShaderHandle::from_source("split-a.wgsl", self.sources.0);
       let b = ShaderHandle::from_source("split-b.wgsl", self.sources.1);
-      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 200, 30, 40, 255), "split");
+      let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 200, 30, 40, 255), "split");
       for (i, shader) in [&a, &a, &b, &b].into_iter().enumerate() {
         ctx.world.spawn((
           Transform::from_xy(i as f32 * 6.0, 0.0),
@@ -280,7 +276,7 @@ fn editing_a_shader_file_redraws_with_the_new_source() {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
       ctx.look().tonemap = Tonemap::Clamp;
       let shader = ctx.assets.load_shader(&self.path).expect("load shader");
-      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 200, 30, 40, 255), "edit");
+      let sprite = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 200, 30, 40, 255), "edit");
       ctx.world.spawn((
         Transform::from_xy(4.0, 4.0),
         Renderable::sprite(sprite)
@@ -349,7 +345,7 @@ fn an_interpolated_sprite_draws_between_its_last_two_steps() {
   struct Mover;
   impl Scene for Mover {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 220, 30, 40, 255), "lerp");
+      let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 220, 30, 40, 255), "lerp");
       ctx.world.spawn((
         Transform::from_xy(0.0, 10.0),
         Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
@@ -390,7 +386,7 @@ fn an_interpolated_camera_draws_between_its_last_two_steps() {
   struct Pan;
   impl Scene for Pan {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 220, 30, 40, 255), "still");
+      let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 220, 30, 40, 255), "still");
       ctx.world.spawn((
         Transform::from_xy(58.0, 10.0),
         Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
@@ -470,7 +466,7 @@ struct Busy;
 
 impl Scene for Busy {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 220, 30, 40, 255), "busy");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(8, 8, 220, 30, 40, 255), "busy");
     for i in 0..20 {
       ctx.world.spawn((
         Transform::from_xy(10.0 + i as f32 * 5.0, 30.0),
@@ -502,8 +498,7 @@ impl Scene for Busy {
   }
 
   fn render(&mut self, gpu: &mut GpuRenderContext) {
-    let sprite =
-      SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 30, 200, 60, 255), "busy-batch");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 30, 200, 60, 255), "busy-batch");
     let instance = SpriteInstance::new().with_transform(60.0, 60.0, 0.0, 4.0, 4.0);
     gpu.add_sprite(&sprite, instance, SpriteDraw::default());
   }
@@ -515,7 +510,7 @@ impl Scene for Busy {
     ui.push_clip(Rect::new(4.0, 4.0, 40.0, 20.0));
     ui.draw_text("UI 42", 8.0, 6.0, Color::WHITE);
     ui.pop_clip();
-    let icon = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 255, 0, 255), "busy-ui");
+    let icon = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 255, 0, 255), "busy-ui");
     ui.draw_sprite(&icon, 60.0, 6.0);
     let points = [Vec2::new(70.0, 6.0), Vec2::new(90.0, 16.0)];
     ui.draw_line(&points, 2.0, Color::WHITE);
@@ -623,7 +618,7 @@ fn the_batch_grows_past_its_first_capacity() {
   // 2,000 visible 1x1 sprites, more than the instance buffer starts with
   let scene = Fixture {
     setup: |ctx| {
-      let dot = SpriteHandle::from_sprite(Sprite::solid_rect(1, 1, 200, 40, 40, 255), "grow-dot");
+      let dot = SpriteHandle::from_sprite(Image::solid_rect(1, 1, 200, 40, 40, 255), "grow-dot");
       for i in 0..2_000usize {
         let (col, row) = ((i % 50) as f32, (i / 50) as f32);
         ctx.world.spawn((
@@ -650,7 +645,7 @@ fn a_reloaded_sprite_is_new_at_every_mip_level() {
   // 64 px drawn at 8: sampled from the smaller mip levels
   let scene = Fixture {
     setup: |ctx| {
-      let red = Sprite::solid_rect(64, 64, 220, 30, 40, 255);
+      let red = Image::solid_rect(64, 64, 220, 30, 40, 255);
       let sprite = SpriteHandle::from_sprite(red, "reload-mips");
       ctx.world.spawn((
         Transform::from_xy(16.0, 16.0).with_scale(Vec2::splat(0.125)),
@@ -668,7 +663,7 @@ fn a_reloaded_sprite_is_new_at_every_mip_level() {
     let mut renderables = world.query::<&Renderable>();
     renderables.iter(world).next().unwrap().sprite.clone()
   };
-  handle.update(Sprite::solid_rect(64, 64, 30, 200, 60, 255));
+  handle.update(Image::solid_rect(64, 64, 30, 200, 60, 255));
   engine.step_frames(2).unwrap();
   assert_eq!(
     engine.frame().unwrap().get_pixel(16, 16).0,

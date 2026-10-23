@@ -226,7 +226,7 @@ impl GameScene {
     // Spawn ground border - line at top of ground
     // Use full screen width, z-order 16 puts it on top of ground (15)
     let (r, g, b, a) = GROUND_BORDER_COLOR;
-    let border_sprite = Sprite::solid_rect(SCREEN_WIDTH, 2, r, g, b, a);
+    let border_sprite = Image::solid_rect(SCREEN_WIDTH, 2, r, g, b, a);
     let border_handle = SpriteHandle::from_sprite(border_sprite, "ground_border");
 
     let border = ctx

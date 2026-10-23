@@ -2435,7 +2435,7 @@ fn drawable(rect: Rect) -> bool {
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
   use super::*;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::ui::Anchor;
   use crate::core::ui::immediate::UiContext;
   use crate::core::ui::test_util::{context, context_scaled, text_engine};
@@ -2703,7 +2703,7 @@ mod tests {
   fn box_sprite_and_local_draws_land_on_their_node() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut ui: UiContext<'_> = context(&mut commands, &mut text, (400.0, 300.0));
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 255, 255, 255), "s");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 255, 255, 255), "s");
     let at = Rect::new(10.0, 20.0, 100.0, 40.0);
     let node = ui.open_node(UiId(77), UiStyle::default(), Some(at), Flags::default());
     ui.push_draw(

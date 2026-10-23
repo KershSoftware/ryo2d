@@ -93,7 +93,7 @@ struct ParticlesPage {
 impl ParticlesPage {
   fn new(scene: DemoScene) -> Self {
     // Create a temporary placeholder sprite - will be replaced in enter
-    let placeholder = Sprite::solid_circle(8, 255, 255, 255, 255);
+    let placeholder = Image::solid_circle(8, 255, 255, 255, 255);
     Self {
       current_scene: scene,
       particle_sprite: SpriteHandle::from_sprite(placeholder, "placeholder"),
@@ -906,7 +906,7 @@ impl DemoPage for ParticlesPage {
     ctx.camera().set_position(width / 2.0, height / 2.0);
 
     // Create a simple white particle sprite
-    let sprite = Sprite::solid_circle(16, 255, 255, 255, 255);
+    let sprite = Image::solid_circle(16, 255, 255, 255, 255);
     self.particle_sprite = ctx.assets.create_sprite(sprite, "particle");
 
     // Set up initial scene

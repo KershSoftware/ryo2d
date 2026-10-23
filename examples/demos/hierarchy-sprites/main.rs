@@ -137,19 +137,19 @@ impl DemoPage for HierarchyPage {
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Create sprites for our celestial bodies
     // Sun: large yellow circle
-    let sun_sprite = Sprite::solid_circle(40, 255, 220, 50, 255);
+    let sun_sprite = Image::solid_circle(40, 255, 220, 50, 255);
     let sun_handle = SpriteHandle::from_sprite(sun_sprite, "sun");
 
     // Planet: medium blue circle
-    let planet_sprite = Sprite::solid_circle(20, 100, 150, 255, 255);
+    let planet_sprite = Image::solid_circle(20, 100, 150, 255, 255);
     let planet_handle = SpriteHandle::from_sprite(planet_sprite, "planet");
 
     // Moon: small gray circle
-    let moon_sprite = Sprite::solid_circle(8, 180, 180, 180, 255);
+    let moon_sprite = Image::solid_circle(8, 180, 180, 180, 255);
     let moon_handle = SpriteHandle::from_sprite(moon_sprite, "moon");
 
     // Satellite: tiny red square
-    let satellite_sprite = Sprite::solid_rect(6, 6, 255, 80, 80, 255);
+    let satellite_sprite = Image::solid_rect(6, 6, 255, 80, 80, 255);
     let satellite_handle = SpriteHandle::from_sprite(satellite_sprite, "satellite");
 
     // Create the sun at center of screen; it is the only entity marked

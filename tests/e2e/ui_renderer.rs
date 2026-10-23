@@ -258,7 +258,7 @@ fn interleaved_textures_break_runs() {
         }
       }
       SpriteHandle::from_sprite(
-        Sprite::from_rgba(pixels, 256, 256),
+        Image::from_rgba(pixels, 256, 256),
         format!("renderer-filler-{i}"),
       )
     })

@@ -31,7 +31,7 @@ pub use checkbox::Checkbox;
 pub use choice_list::ChoiceList;
 pub use custom::{Custom, Painter};
 pub use dropdown::Dropdown;
-pub use image::Image;
+pub use image::ImageWidget;
 pub use list::{List, ListResponse};
 pub use modal::Modal;
 pub use progress::Progress;

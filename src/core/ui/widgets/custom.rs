@@ -332,7 +332,7 @@ mod tests {
   use glam::Vec2;
 
   use crate::core::asset::SpriteHandle;
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::text::TextStyle;
   use crate::core::ui::UiContext;
 
@@ -538,7 +538,7 @@ mod tests {
   #[test]
   fn a_painter_draws_in_the_widgets_units() {
     let mut d = UiDriver::new((200.0, 100.0));
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 255, 255, 255), "s");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(4, 4, 255, 255, 255, 255), "s");
     d.frame(|ui| {
       ui.custom(50.0, 50.0)
         .at(Rect::new(100.0, 40.0, 50.0, 50.0))

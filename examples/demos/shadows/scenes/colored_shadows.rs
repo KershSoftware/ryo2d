@@ -134,7 +134,7 @@ impl ColoredShadowsPage {
     color: (u8, u8, u8),
   ) -> Entity {
     let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(width as u32, height as u32, color.0, color.1, color.2, 255),
+      Image::solid_rect(width as u32, height as u32, color.0, color.1, color.2, 255),
       format!("colored_occluder_{}_{}", x as i32, y as i32),
     );
 
@@ -182,7 +182,7 @@ impl DemoPage for ColoredShadowsPage {
 
     // Create floor
     let floor = ctx.assets.create_sprite(
-      Sprite::solid_rect(1280, 720, 50, 45, 55, 255),
+      Image::solid_rect(1280, 720, 50, 45, 55, 255),
       "colored_floor",
     );
     ctx.world.spawn((
@@ -219,7 +219,7 @@ impl DemoPage for ColoredShadowsPage {
 
     // Light source visual
     let light_visual = ctx.assets.create_sprite(
-      Sprite::solid_circle(18, 255, 255, 255, 255),
+      Image::solid_circle(18, 255, 255, 255, 255),
       "colored_light_source",
     );
     self.light_visual = Some(

@@ -886,7 +886,7 @@ mod tests {
   use crate::core::asset::SpriteHandle;
   use crate::core::ecs::propagate::propagate_transforms;
   use crate::core::ecs::{Disabled, Messages, Transform, Vec2};
-  use crate::core::graphics::Sprite;
+  use crate::core::graphics::Image;
   use crate::core::physics::Collider;
   use crate::core::systems::test_util;
 
@@ -897,7 +897,7 @@ mod tests {
   }
 
   fn test_sprite() -> SpriteHandle {
-    SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 255, 255, 255), "test.png")
+    SpriteHandle::from_sprite(Image::solid_rect(8, 8, 255, 255, 255, 255), "test.png")
   }
 
   /// One motionless particle at the origin and a strong point attractor 100px to its right.
@@ -1600,7 +1600,7 @@ mod tests {
   fn particles_are_centred_on_their_world_position() {
     let mut world = World::new();
     let mut system = ParticleSystem::new();
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(2, 2, 255, 255, 255, 255), "dot");
+    let sprite = SpriteHandle::from_sprite(Image::solid_rect(2, 2, 255, 255, 255, 255), "dot");
     let emitter = world
       .spawn((
         Transform::from_xy(100.0, 50.0),

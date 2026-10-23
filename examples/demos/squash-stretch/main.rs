@@ -53,7 +53,7 @@ impl SquashStretchDemoScene {
 
   /// Create a colored circle sprite
   fn create_circle(radius: u32, r: u8, g: u8, b: u8) -> SpriteHandle {
-    let sprite = Sprite::solid_circle(radius, r, g, b, 255);
+    let sprite = Image::solid_circle(radius, r, g, b, 255);
     SpriteHandle::from_sprite(sprite, format!("circle_{}_{}_{}_{}", radius, r, g, b))
   }
 
