@@ -446,26 +446,36 @@ impl<'m> Nav<'m> {
   /// scrolls the list. One in no shared area counts by the part that
   /// shows, so a move never jumps into a list to a row the player cannot
   /// see.
+  ///
+  /// It walks `r`'s scroll chain without collecting it, as it is asked for
+  /// every candidate of every move. Unlike `scroll_chain`, it does not stop
+  /// where the chain comes back on itself: what follows only repeats areas
+  /// already walked, none of them shared, so the answer is the same.
   fn seen_from(&self, r: &Record, inside: &[UiId]) -> Option<Rect> {
     if r.scroll == UiId::NONE {
       return Some(r.rect);
     }
-    let chain = self.scroll_chain(r);
-    let Some(shared) = chain.iter().position(|area| inside.contains(area)) else {
-      return match r.clip {
-        Some(clip) => shows_in(r.rect, Some(clip)).then(|| clipped(r.rect, clip)),
-        None => Some(r.rect),
-      };
-    };
-    let mut rect = r.rect;
-    for area in &chain[..shared] {
-      let view = self.record(*area)?.rect;
-      if !shows_in(rect, Some(view)) {
-        return None;
+    // `r`, clipped by each area walked; `None` once one hides it or is gone
+    let mut rect = Some(r.rect);
+    let mut at = r.scroll;
+    for _ in 0..MAX_SCOPE_DEPTH {
+      if at == UiId::NONE {
+        break;
       }
-      rect = clipped(rect, view);
+      if inside.contains(&at) {
+        return rect;
+      }
+      let area = self.record(at);
+      rect = rect.and_then(|rect| {
+        let view = area?.rect;
+        shows_in(rect, Some(view)).then(|| clipped(rect, view))
+      });
+      at = area.map_or(UiId::NONE, |area| area.scroll);
     }
-    Some(rect)
+    match r.clip {
+      Some(clip) => shows_in(r.rect, Some(clip)).then(|| clipped(r.rect, clip)),
+      None => Some(r.rect),
+    }
   }
 
   /// The widget a move in `direction` from `from` lands on: its explicit
