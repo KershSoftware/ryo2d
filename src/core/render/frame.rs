@@ -4,7 +4,7 @@ use super::DrawList;
 use super::batch::Batch2D;
 use super::look::Look;
 use super::ui_renderer::UiFrame;
-use crate::core::asset::Assets;
+use crate::core::asset::{AssetServer, Assets};
 use crate::core::ecs::Entity;
 use crate::core::graphics::{
   Camera2d, CameraClear, CameraTarget, CameraView, Image, RenderLayers, RenderTarget,
@@ -91,6 +91,8 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) look: &'a Look,
   /// The world's images (the look's LUT is one)
   pub(crate) images: &'a Assets<Image>,
+  /// The world's asset server, which names an image by its path in a warning
+  pub(crate) server: Option<&'a AssetServer>,
   /// The UI renderer's frame, when the frame's UI recorded anything and
   /// was not kept
   pub(crate) ui_frame: Option<UiFrame<'a>>,

@@ -1,6 +1,6 @@
 //! The look: the scene image tonemapped into the display image
 
-use crate::core::asset::{AssetId, Assets};
+use crate::core::asset::{AssetId, AssetServer, Assets};
 use crate::core::graphics::Image;
 use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
 use crate::core::render::context::image_view;
@@ -37,15 +37,15 @@ impl LutTexture {
   }
 
   /// Follow `lut`, its image read from `images`: upload a new or reloaded
-  /// strip; keep the last good one (warning once) if it is no longer a
-  /// strip, or while its image is not loaded. Returns the N to apply, 0
-  /// without a LUT.
+  /// strip; keep the last good one (warning once, naming the image by its
+  /// path through `server`) if it is no longer a strip, or while its image
+  /// is not loaded. Returns the N to apply, 0 without a LUT.
   fn sync(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     lut: Option<&crate::core::render::ColorLut>,
-    images: &Assets<Image>,
+    (images, server): (&Assets<Image>, Option<&AssetServer>),
   ) -> u32 {
     let Some(lut) = lut else {
       return 0;
@@ -63,7 +63,8 @@ impl LutTexture {
           None => {
             crate::engine_warn!(
               module: "Render",
-              "LUT image {id:?} is {}x{}, not a strip; keeping the last good LUT",
+              "{} is {}x{}, not a strip; keeping the last good LUT",
+              lut_name(id, server),
               image.width(),
               image.height()
             );
@@ -73,6 +74,15 @@ impl LutTexture {
       }
     }
     if self.source.is_some() { self.size } else { 0 }
+  }
+}
+
+/// How a warning names the look's LUT image: by the path it was loaded
+/// from, if it was
+fn lut_name(id: AssetId<Image>, server: Option<&AssetServer>) -> String {
+  match server.and_then(|server| server.path(id)) {
+    Some(path) => format!("the LUT image {path:?}"),
+    None => "the look's LUT image".to_string(),
   }
 }
 
@@ -294,7 +304,7 @@ impl RenderPass for Tonemap {
       device,
       queue,
       ctx.scene.look.grading.lut.as_ref(),
-      ctx.scene.images,
+      (ctx.scene.images, ctx.scene.server),
     );
     queue.write_buffer(
       &gpu.uniforms,
@@ -362,6 +372,31 @@ mod tests {
   use crate::core::render::ColorLut;
 
   #[test]
+  fn a_lut_warning_names_its_image_by_the_path_it_came_from() {
+    use crate::core::asset::{AssetsView, MemorySource, insert_registry};
+    use crate::core::ecs::World;
+    let mut png = Vec::new();
+    image::RgbaImage::new(3, 5)
+      .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+      .unwrap();
+    let files = MemorySource::new();
+    files.insert("luts/warm.png", png);
+    let mut world = World::new();
+    insert_registry(&mut world, AssetServer::new(files));
+    let loaded = AssetsView::new(&mut world)
+      .load_now::<Image>("luts/warm.png")
+      .unwrap();
+    let made = AssetsView::new(&mut world).add(Image::solid_rect(3, 5, 0, 0, 0, 255));
+    let server = world.resource::<AssetServer>();
+    assert_eq!(
+      lut_name(loaded.id(), Some(server)),
+      r#"the LUT image "luts/warm.png""#
+    );
+    assert_eq!(lut_name(made.id(), Some(server)), "the look's LUT image");
+    assert_eq!(lut_name(loaded.id(), None), "the look's LUT image");
+  }
+
+  #[test]
   fn a_lut_reloaded_at_the_wrong_size_keeps_the_last_good_one() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
@@ -372,19 +407,22 @@ mod tests {
       panic!("a 16x4 strip is a LUT");
     };
     let mut texture = LutTexture::new(&device, &queue);
-    assert_eq!(texture.sync(&device, &queue, Some(&lut), &images), 4);
+    assert_eq!(
+      texture.sync(&device, &queue, Some(&lut), (&images, None)),
+      4
+    );
     let before = texture.view.clone();
     if let Some(image) = images.get_mut(&handle) {
       *image = Image::solid_rect(5, 5, 0, 0, 0, 255);
     }
     assert_eq!(
-      texture.sync(&device, &queue, Some(&lut), &images),
+      texture.sync(&device, &queue, Some(&lut), (&images, None)),
       4,
       "keeps the last good LUT"
     );
     assert_eq!(texture.view, before);
     assert_eq!(
-      texture.sync(&device, &queue, None, &images),
+      texture.sync(&device, &queue, None, (&images, None)),
       0,
       "no LUT, nothing applied"
     );

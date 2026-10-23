@@ -528,6 +528,7 @@ impl Engine {
           effects: world.resource::<EffectsManager>(),
           look: world.resource::<crate::core::render::Look>(),
           images: images_of(world),
+          server: world.get_resource::<crate::core::asset::AssetServer>(),
           ui_frame,
           ui_size: self.ui_space.image,
           ui_kept,

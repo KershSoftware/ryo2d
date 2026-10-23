@@ -845,6 +845,7 @@ impl WgpuRenderer {
       effects: &effects,
       look: &look,
       images: &images,
+      server: None,
       ui_frame: None,
       ui_size: self.compositor.ui_size(),
       ui_kept: false,
