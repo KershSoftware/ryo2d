@@ -182,12 +182,9 @@ path = "main.rs"
 # Windows icon embedding (used by build.rs when building via `ryo2d build`)
 winresource = "0.1"
 
-# Optimize dependencies and engine in dev builds for playable performance
+# Optimize dependencies, the engine included, in dev builds for playable performance
 # Your game code stays unoptimized for fast compile times
 [profile.dev.package."*"]
-opt-level = 2
-
-[profile.dev.package.ryo2d]
 opt-level = 2
 "#,
     project_name, project_name, ryo2d_dep, engine_root, engine_root

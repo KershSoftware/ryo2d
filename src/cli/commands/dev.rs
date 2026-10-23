@@ -134,16 +134,15 @@ fn check_dev_profile_optimization(workspace: &crate::core::config::Workspace) ->
   let contents = fs::read_to_string(&cargo_toml_path)
     .map_err(|e| CliError::Other(format!("Failed to read Cargo.toml: {}", e)))?;
 
-  // Check if the dev profile optimization is present (need both wildcard and ryo2d-specific)
+  // The "*" override covers every crate outside the game's workspace, the engine included
   let has_wildcard_opt = contents.contains("[profile.dev.package.\"*\"]")
     || contents.contains("[profile.dev.package.'*']");
-  let has_ryo2d_opt = contents.contains("[profile.dev.package.ryo2d]");
 
-  if !has_wildcard_opt || !has_ryo2d_opt {
+  if !has_wildcard_opt {
     println!();
-    Output::warning("Dev build may be slow - optimization not fully configured!");
+    Output::warning("Dev build may be slow - dependencies are not optimized!");
     println!();
-    println!("  Without these settings, the engine and dependencies run unoptimized,");
+    println!("  Without this setting, the engine and dependencies run unoptimized,");
     println!("  causing poor performance in dev builds.");
     println!();
     println!("  Add this to your Cargo.toml for playable dev builds:");
@@ -151,40 +150,21 @@ fn check_dev_profile_optimization(workspace: &crate::core::config::Workspace) ->
     println!("    [profile.dev.package.\"*\"]");
     println!("    opt-level = 2");
     println!();
-    println!("    [profile.dev.package.ryo2d]");
-    println!("    opt-level = 2");
-    println!();
 
     // Offer to add it automatically
-    print!("  Add these settings now? [Y/n] ");
+    print!("  Add this setting now? [Y/n] ");
     io::stdout().flush().ok();
 
     let mut input = String::new();
     if io::stdin().read_line(&mut input).is_ok() {
       let response = input.trim().to_lowercase();
       if response.is_empty() || response == "y" || response == "yes" {
-        // Add the missing settings to Cargo.toml
-        let mut addition = String::new();
-
-        if !has_wildcard_opt {
-          addition.push_str(
-            r#"
-# Optimize dependencies in dev builds for playable performance
+        let addition = r#"
+# Optimize dependencies, the engine included, in dev builds for playable performance
 # Your game code stays unoptimized for fast compile times
 [profile.dev.package."*"]
 opt-level = 2
-"#,
-          );
-        }
-
-        if !has_ryo2d_opt {
-          addition.push_str(
-            r#"
-[profile.dev.package.ryo2d]
-opt-level = 2
-"#,
-          );
-        }
+"#;
 
         let new_contents = format!("{}{}", contents, addition);
         fs::write(&cargo_toml_path, new_contents)
