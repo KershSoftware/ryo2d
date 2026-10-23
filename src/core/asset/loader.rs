@@ -125,8 +125,8 @@ pub(crate) trait ErasedLoader: Send + Sync + 'static {
     settings: &(dyn Any + Send + Sync),
     cx: &mut LoadContext<'_>,
   ) -> Result<Box<dyn Any + Send>, AssetError>;
-  /// The loader's `check` of a value it made
-  fn check(&self, value: &dyn Any, world: &World) -> Result<(), AssetError>;
+  /// The loader's `check` of a value it made, the asset at `path`
+  fn check(&self, value: &dyn Any, world: &World, path: &AssetPath) -> Result<(), AssetError>;
 }
 
 struct Erased<L: AssetLoader> {
@@ -181,11 +181,17 @@ impl<L: AssetLoader> ErasedLoader for Erased<L> {
     Ok(Box::new(asset))
   }
 
-  fn check(&self, value: &dyn Any, world: &World) -> Result<(), AssetError> {
-    // A value of another type is not one this loader made: nothing to check
-    match value.downcast_ref::<L::Asset>() {
-      Some(asset) => self.loader.check(asset, world),
-      None => Ok(()),
-    }
+  fn check(&self, value: &dyn Any, world: &World, path: &AssetPath) -> Result<(), AssetError> {
+    // The server checks a value only with the loader that made it (or one
+    // that makes its type); anything else fails the asset rather than pass
+    let asset = value.downcast_ref::<L::Asset>();
+    debug_assert!(asset.is_some(), "a loader checks only values it made");
+    let Some(asset) = asset else {
+      return Err(AssetError::decode(
+        path,
+        "a broken invariant: its loader was given a value of another type to check",
+      ));
+    };
+    self.loader.check(asset, world)
   }
 }

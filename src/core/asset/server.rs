@@ -12,7 +12,8 @@ use super::event::{AssetStats, TypeStats};
 use super::loader::{ErasedLoader, LoadMode, erase, settings_hash};
 use super::path::{extensions, normalise};
 use super::pump::{
-  Arrival, Arrived, Finished, FreeUnheld, Loaded, Typed, Waiting, fail, free_unheld, run_check,
+  Arrival, Arrived, BROKEN_STORE, Finished, FreeUnheld, Loaded, Typed, Waiting, fail, free_unheld,
+  run_check,
 };
 use super::workers::{INLINE_BUDGET, Workers};
 use super::{
@@ -381,8 +382,11 @@ impl AssetServer {
     else {
       return own;
     };
-    // Depth first, in the order the loader asked; each asset once, so a
-    // dependency two others share is counted once
+    // A safety net: through the server, a loaded asset's dependencies are
+    // all loaded (a parent settles only once they are, and a loaded asset
+    // never becomes `Loading` or `Failed`), so this walk agrees with `state`
+    // unless that breaks. Depth first, in the order the loader asked; each
+    // asset once, so a dependency two others share is counted once
     let mut seen = FastSet::default();
     seen.insert(id);
     let mut next: Vec<UntypedAssetId> = root.dependencies.iter().rev().copied().collect();
@@ -795,9 +799,13 @@ impl AssetServer {
       return Err(own);
     }
     run_check(loader, &*value, world, path).map_err(Arc::new)?;
-    if (arrived.typed.insert)(world, arrived.id, value, Arrival::First) {
-      self.set_loaded(arrived.id, arrived.job, dependencies);
+    let inserted = (arrived.typed.insert)(world, arrived.id, value, Arrival::First);
+    // Its slot was reserved or found live just now, and `T` is registered
+    debug_assert!(inserted, "a value load_now made goes in its store");
+    if !inserted {
+      return Err(Arc::new(AssetError::decode(path, BROKEN_STORE)));
     }
+    self.set_loaded(arrived.id, arrived.job, dependencies);
     Ok(())
   }
 
@@ -935,6 +943,12 @@ impl AssetServer {
     Some((Arc::clone(info.loader.as_ref()?), path.clone()))
   }
 
+  /// The path `id` is known by, for an error: its path, the text a refused
+  /// load asked for, or a placeholder once it is forgotten
+  pub(crate) fn known_path(&self, id: UntypedAssetId) -> AssetPath {
+    self.inner.table().path_of(id)
+  }
+
   /// `id`'s value of `job` is in its store, holding `dependencies`
   pub(crate) fn set_loaded(&self, id: UntypedAssetId, job: u64, dependencies: Vec<UntypedAssetId>) {
     let mut table = self.inner.table();
@@ -955,8 +969,9 @@ impl AssetServer {
     }
   }
 
-  /// The loaded assets that hold `id`, directly or through others, nearest
-  /// first, each once
+  /// The loaded assets that hold `id`, directly or through others, each
+  /// once, nearest first: breadth first over `dependents`, so by the fewest
+  /// steps from `id` (not outermost last)
   pub(crate) fn dependents_of(&self, id: UntypedAssetId) -> Vec<Dependent> {
     let table = self.inner.table();
     let mut order = Vec::new();
@@ -2899,5 +2914,192 @@ mod tests {
     assert_eq!(parts(&world, &x), Some(1), "x keeps its last value");
     assert_eq!(waiting(&server), 0);
     let _ = release.send(());
+  }
+
+  #[test]
+  fn a_reload_overtaken_while_it_waits_is_dropped() {
+    let files = MemorySource::new();
+    files.insert("x.bundle", "a.txt");
+    files.insert("a.txt", "a");
+    files.insert("b.txt", "b");
+    files.insert("slow.txt", "s");
+    let (release, held) = crossbeam_channel::unbounded();
+    let (mut world, server) = world_with(HeldSource {
+      files: files.clone(),
+      release: held,
+    });
+    let x = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    // Held by the test too, so it outlives the stale value
+    let slow: Handle<Text> = server.load("slow.txt");
+    files.insert("x.bundle", "a.txt\nslow.txt");
+    server.reload("x.bundle");
+    pump_until(&mut world, |_| waiting(&server) == 1);
+    // A newer reload: the value waiting on slow.txt is stale from now on
+    files.insert("x.bundle", "a.txt\nb.txt");
+    server.reload("x.bundle");
+    let b: Handle<Text> = server.load("b.txt");
+    let holds_b = |w: &World| {
+      w.resource::<Assets<Bundle>>().get(&x).is_some_and(
+        |bundle| matches!(bundle.parts.as_slice(), [_, Part::Text(t)] if t.id() == b.id()),
+      )
+    };
+    pump_until(&mut world, |w| holds_b(w));
+    let _ = release.send(());
+    pump_until(&mut world, |_| server.state(&slow).is_loaded());
+    pump(&mut world);
+    assert!(holds_b(&world), "the newer reload's value stays");
+  }
+
+  #[test]
+  fn a_first_load_overtaken_by_load_now_while_it_waits_is_dropped() {
+    let files = MemorySource::new();
+    files.insert("x.bundle", "slow.txt");
+    files.insert("slow.txt", "s");
+    let (reading, read) = crossbeam_channel::unbounded();
+    let (release, held) = crossbeam_channel::unbounded();
+    let (mut world, server) = world_with(FirstReadHeld {
+      files: files.clone(),
+      seen: Mutex::default(),
+      reading,
+      release: held,
+    });
+    // The worker's first read of x.bundle goes; its first read of slow.txt is held
+    let _ = release.send(());
+    let queued: Handle<Bundle> = server.load("x.bundle");
+    for _ in 0..2 {
+      assert!(read.recv_timeout(PATIENCE).is_ok(), "timed out waiting");
+    }
+    pump_until(&mut world, |_| waiting(&server) == 1);
+    // load_now's reads are second reads, so not held; slow.txt loads now too
+    files.insert("x.bundle", "slow.txt\nslow.txt");
+    let now = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    assert_eq!(now, queued, "one asset");
+    assert_eq!(parts(&world, &now), Some(2));
+    // slow.txt is loaded now, so the stale value would settle if it were kept
+    pump(&mut world);
+    assert_eq!(parts(&world, &now), Some(2), "load_now's value stays");
+    assert_eq!(waiting(&server), 0);
+    let _ = release.send(());
+  }
+
+  #[test]
+  fn freeing_a_parent_frees_its_dependencies_in_the_same_pump() {
+    let source = MemorySource::new();
+    source.insert("x.bundle", "a.txt\nb.txt");
+    source.insert("a.txt", "a");
+    source.insert("b.txt", "b");
+    let (mut world, server) = world_with(source);
+    let bundle = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    let mut texts = cursor::<Text>(&world);
+    drop(bundle);
+    // Text's store is freed before Bundle's in a round, so only a second
+    // round frees the texts the bundle held
+    pump(&mut world);
+    let removed = events(&world, &mut texts)
+      .iter()
+      .filter(|e| matches!(e, AssetEvent::Removed { .. }))
+      .count();
+    assert_eq!(removed, 2);
+    assert!(world.resource::<Assets<Text>>().is_empty());
+  }
+
+  #[test]
+  fn a_diamond_checks_its_top_once() {
+    let source = MemorySource::new();
+    source.insert("top.bundle", "left.bundle\nright.bundle");
+    source.insert("left.bundle", "a.txt");
+    source.insert("right.bundle", "a.txt");
+    source.insert("a.txt", "a");
+    let (mut world, server) = world_with(source.clone());
+    let top = server
+      .load_now::<Bundle>(&mut world, "top.bundle")
+      .expect("loads");
+    let mut bundles = cursor::<Bundle>(&world);
+    source.insert("a.txt", "changed");
+    let sent = pump_until_sent(
+      &mut world,
+      &mut bundles,
+      |e| matches!(e, AssetEvent::Modified { id } if *id == top.id()),
+    );
+    pump(&mut world);
+    let modified = sent
+      .iter()
+      .chain(&events(&world, &mut bundles))
+      .filter(|e| matches!(e, AssetEvent::Modified { .. }))
+      .count();
+    assert_eq!(modified, 3, "left, right and top, each once: {sent:?}");
+  }
+
+  #[test]
+  fn a_dependents_error_repeated_after_a_fix_warns_again() {
+    use crate::core::ui::test_util::warnings_containing;
+    let warned = || warnings_containing("warn-dependent.bundle");
+    let source = MemorySource::new();
+    source.insert("warn-dependent.bundle", "warn-dependency.txt");
+    source.insert("warn-dependency.txt", "a");
+    let (mut world, server) = world_with(source.clone());
+    let _bundle = server
+      .load_now::<Bundle>(&mut world, "warn-dependent.bundle")
+      .expect("loads");
+    let mut bundles = cursor::<Bundle>(&world);
+    let reload_failed = |e: &AssetEvent<Bundle>| matches!(e, AssetEvent::ReloadFailed { .. });
+    source.insert("warn-dependency.txt", "bad");
+    pump_until_sent(&mut world, &mut bundles, reload_failed);
+    assert_eq!(warned(), 1);
+    source.insert("warn-dependency.txt", "bad");
+    pump_until_sent(&mut world, &mut bundles, reload_failed);
+    assert_eq!(warned(), 1, "the same error warns once");
+    source.insert("warn-dependency.txt", "good");
+    pump_until_sent(&mut world, &mut bundles, |e| {
+      matches!(e, AssetEvent::Modified { .. })
+    });
+    source.insert("warn-dependency.txt", "bad");
+    pump_until_sent(&mut world, &mut bundles, reload_failed);
+    assert_eq!(warned(), 2, "broken again after it passed");
+  }
+
+  #[test]
+  fn dependency_state_walks_the_recorded_dependencies() {
+    let source = MemorySource::new();
+    source.insert("top.bundle", "mid.bundle");
+    source.insert("mid.bundle", "a.txt");
+    source.insert("a.txt", "a");
+    let (mut world, server) = world_with(source);
+    let top = server
+      .load_now::<Bundle>(&mut world, "top.bundle")
+      .expect("loads");
+    let a = server.load::<Text>("a.txt").id().untyped();
+    assert!(server.is_ready(&top));
+    // States the server never reaches, set by hand: the walk is a safety net
+    let set_state = |state: LoadState| {
+      if let Some(info) = server.inner.table().infos.get_mut(&a) {
+        info.state = state;
+      }
+    };
+    set_state(LoadState::Loading);
+    assert!(server.state(&top).is_loaded());
+    assert!(matches!(server.dependency_state(&top), LoadState::Loading));
+    assert!(!server.is_ready(&top));
+    let missing = AssetError::NotFound {
+      path: AssetPath::parse("a.txt").expect("a path"),
+    };
+    set_state(LoadState::Failed(Arc::new(missing)));
+    let state = server.dependency_state(&top);
+    assert!(
+      matches!(
+        state.error().map(|e| &**e),
+        Some(AssetError::Dependency { path, dependency, error })
+          if path.as_str() == "top.bundle"
+            && dependency.as_str() == "a.txt"
+            && matches!(**error, AssetError::NotFound { .. })
+      ),
+      "{state:?}"
+    );
   }
 }

@@ -150,20 +150,40 @@ fn settle(world: &mut World, server: &AssetServer, waiting: Waiting) {
     value,
     dependencies,
   } = waiting;
-  let Some((loader, path)) = server.checker(arrived.id) else {
+  // A value that counts has a path and a loader, and its slot is live (a
+  // slot is freed only in the free step, which forgets its info and so makes
+  // its values stale). Should either break, the asset fails, so nothing
+  // waits on it for good
+  let checker = server.checker(arrived.id);
+  debug_assert!(checker.is_some(), "a current value has a path and a loader");
+  let Some((loader, path)) = checker else {
+    let error = AssetError::decode(
+      &server.known_path(arrived.id),
+      "a broken invariant: the server has no path or loader for its value",
+    );
+    fail(world, server, arrived, Arc::new(error));
     return;
   };
   if let Err(error) = run_check(&*loader, &*value, world, &path) {
     fail(world, server, arrived, Arc::new(error));
     return;
   }
-  if (arrived.typed.insert)(world, arrived.id, value, arrived.arrival) {
-    server.set_loaded(arrived.id, arrived.job, dependencies);
-    if arrived.arrival == Arrival::Reload {
-      recheck_dependents(world, server, arrived.id);
-    }
+  let inserted = (arrived.typed.insert)(world, arrived.id, value, arrived.arrival);
+  debug_assert!(inserted, "a current value's store takes it");
+  if !inserted {
+    let error = AssetError::decode(&path, BROKEN_STORE);
+    fail(world, server, arrived, Arc::new(error));
+    return;
+  }
+  server.set_loaded(arrived.id, arrived.job, dependencies);
+  if arrived.arrival == Arrival::Reload {
+    recheck_dependents(world, server, arrived.id);
   }
 }
+
+/// Why a value its store would not take fails its asset
+pub(crate) const BROKEN_STORE: &str =
+  "a broken invariant: its store would not take the value (a stale id, or no store in the world)";
 
 /// A result that failed: a first load's asset fails; a reload keeps the last
 /// good value. Either way it warns once per error, and its event is sent
@@ -181,8 +201,11 @@ pub(crate) fn fail(
 }
 
 /// Checks each loaded asset that holds `id`, directly or through others,
-/// nearest first. One that passes is `Modified` (its version moves on, so
-/// what was built from it rebuilds); one that fails is `ReloadFailed`
+/// nearest first: by the fewest steps from `id`, so one that holds it both
+/// directly and through another comes before that other. Checks only read
+/// and a pass only moves a version on, so the order changes no outcome, only
+/// the order of the events. One that passes is `Modified` (its version moves
+/// on, so what was built from it rebuilds); one that fails is `ReloadFailed`
 fn recheck_dependents(world: &mut World, server: &AssetServer, id: UntypedAssetId) {
   for dependent in server.dependents_of(id) {
     let checked = (dependent.typed.check)(world, dependent.id, &*dependent.loader, &dependent.path);
@@ -229,7 +252,7 @@ pub(crate) fn run_check(
   world: &World,
   path: &AssetPath,
 ) -> Result<(), AssetError> {
-  catch_unwind(AssertUnwindSafe(|| loader.check(value, world)))
+  catch_unwind(AssertUnwindSafe(|| loader.check(value, world, path)))
     .unwrap_or_else(|_| Err(AssetError::decode(path, "the loader's check panicked")))
 }
 
