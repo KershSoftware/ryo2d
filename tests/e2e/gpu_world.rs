@@ -748,10 +748,10 @@ fn a_top_left_anchored_sprite_rotates_about_its_corner() {
   }
 }
 
-/// Two handles loaded under one name are two textures: the second does not
-/// draw the first one's pixels.
+/// Two images of one size are two textures: the second does not draw the
+/// first one's pixels.
 #[test]
-fn two_handles_with_one_name_draw_their_own_pixels() {
+fn two_images_of_one_size_draw_their_own_pixels() {
   let red = solid_image(20, RED);
   let blue = solid_image(20, BLUE);
   let scene = Fixture::new(|_| {})

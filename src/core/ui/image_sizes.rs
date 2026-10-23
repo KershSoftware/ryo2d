@@ -17,14 +17,14 @@ use crate::core::graphics::Image;
 #[derive(Default)]
 pub(crate) struct ImageSizes {
   /// By slot index
-  slots: Vec<Option<Sized>>,
+  slots: Vec<Option<LiveImage>>,
   /// The store followed (`Assets::serial`)
   store: Option<u64>,
 }
 
 /// One live image, as the UI reads it
 #[derive(Clone, Copy)]
-struct Sized {
+struct LiveImage {
   generation: u32,
   version: u64,
   size: Vec2,
@@ -93,7 +93,7 @@ impl ImageSizes {
       self.slots.resize(at + 1, None);
     }
     if let Some(slot) = self.slots.get_mut(at) {
-      *slot = now.map(|(generation, version, image)| Sized {
+      *slot = now.map(|(generation, version, image)| LiveImage {
         generation,
         version,
         size: Vec2::new(image.width() as f32, image.height() as f32),
@@ -101,7 +101,7 @@ impl ImageSizes {
     }
   }
 
-  fn get(&self, id: AssetId<Image>) -> Option<&Sized> {
+  fn get(&self, id: AssetId<Image>) -> Option<&LiveImage> {
     self
       .slots
       .get(id.index() as usize)?
