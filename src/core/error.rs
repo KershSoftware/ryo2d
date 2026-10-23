@@ -72,15 +72,18 @@ pub enum ManagerError {
 /// Result type for the old `AssetManager`'s operations
 pub type ManagerResult<T> = Result<T, ManagerError>;
 
-/// Errors that can occur when loading sprites
+/// Errors that can occur when loading images
 #[derive(Error, Debug)]
 pub enum ImageError {
   /// Failed to decode image
   #[error("Failed to decode image {path}: {reason}")]
   DecodeError { path: PathBuf, reason: String },
+  /// The bytes are not an image the `image` crate can decode (`Image::decode`)
+  #[error(transparent)]
+  Decode(#[from] image::ImageError),
 }
 
-/// Result type for sprite operations
+/// Result type for image operations
 pub type ImageResult<T> = Result<T, ImageError>;
 
 /// Audio system errors

@@ -1,20 +1,35 @@
 use std::ffi::OsStr;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
+use crate::core::asset::Asset;
 use crate::core::error::{ImageError, ImageResult};
 
-/// A 2D sprite that can be drawn to the screen
+/// An image's pixels: RGBA, 4 bytes per pixel, in rows from the top.
+///
+/// An image is an asset. Load one from a file with the
+/// [`ImageLoader`](crate::core::asset::ImageLoader)
+/// (`ctx.assets().load_now::<Image>("ship.png")`), or make one in code and
+/// add it with `ctx.assets().add(image)`. Clones share their pixels until
+/// one of them changes its own ([`Image::data_mut`])
 #[derive(Debug, Clone)]
 pub struct Image {
-  /// Raw RGBA pixel data (4 bytes per pixel)
-  data: Vec<u8>,
+  /// Raw RGBA pixel data (4 bytes per pixel), shared with clones and the renderer
+  data: Arc<Vec<u8>>,
   /// Width in pixels
   width: u32,
   /// Height in pixels
   height: u32,
-  /// Whether all pixels are fully opaque (alpha=255), enabling fast row-copy rendering
-  is_opaque: bool,
+  /// Whether all pixels are fully opaque (alpha=255), enabling fast row-copy
+  /// drawing; worked out again on first ask after the pixels change
+  opaque: OnceLock<bool>,
+  /// The mip levels below the first of the image's own texture, made by the
+  /// loader for an image too large for the atlas's shared pages (see
+  /// [`Image::prepare_mips`]); none once the pixels change
+  mips: Option<Arc<Vec<Vec<u8>>>>,
 }
+
+impl Asset for Image {}
 
 impl Image {
   /// Check if all pixels in the data are fully opaque (alpha=255)
@@ -22,7 +37,18 @@ impl Image {
     data.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255)
   }
 
-  /// Create a new sprite from raw RGBA data
+  /// An image of `data`, whose opacity is already known
+  fn from_parts(data: Vec<u8>, width: u32, height: u32, is_opaque: bool) -> Self {
+    Image {
+      data: Arc::new(data),
+      width,
+      height,
+      opaque: OnceLock::from(is_opaque),
+      mips: None,
+    }
+  }
+
+  /// Create a new image from raw RGBA data
   pub fn from_rgba(data: Vec<u8>, width: u32, height: u32) -> Self {
     assert_eq!(
       data.len(),
@@ -30,15 +56,31 @@ impl Image {
       "Data length must match width * height * 4"
     );
     let is_opaque = Self::check_opaque(&data);
-    Image {
-      data,
-      width,
-      height,
-      is_opaque,
-    }
+    Self::from_parts(data, width, height, is_opaque)
   }
 
-  /// Create a solid color rectangle sprite
+  /// Decodes an image file's bytes (any raster format the `image` crate is built with)
+  pub fn decode(bytes: &[u8]) -> Result<Image, ImageError> {
+    Ok(Self::from_decoded(image::load_from_memory(bytes)?))
+  }
+
+  /// Decodes bytes in `format`, for a format its bytes do not name (TGA has
+  /// no signature to know it by)
+  pub(crate) fn decode_as(bytes: &[u8], format: image::ImageFormat) -> Result<Image, ImageError> {
+    Ok(Self::from_decoded(image::load_from_memory_with_format(
+      bytes, format,
+    )?))
+  }
+
+  fn from_decoded(decoded: image::DynamicImage) -> Image {
+    let rgba = decoded.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    let data = rgba.into_raw();
+    let is_opaque = Self::check_opaque(&data);
+    Self::from_parts(data, width, height, is_opaque)
+  }
+
+  /// Create a solid color rectangle image
   pub fn solid_rect(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Self {
     let mut data = vec![0u8; (width * height * 4) as usize];
     for pixel in data.as_chunks_mut::<4>().0 {
@@ -47,17 +89,12 @@ impl Image {
       pixel[2] = b;
       pixel[3] = a;
     }
-    Image {
-      data,
-      width,
-      height,
-      is_opaque: a == 255,
-    }
+    Self::from_parts(data, width, height, a == 255)
   }
 
-  /// Create a solid color circle sprite with anti-aliasing
+  /// Create a solid color circle image with anti-aliasing
   ///
-  /// The sprite will be `diameter x diameter` pixels, with a circle centered in it.
+  /// The image will be `diameter x diameter` pixels, with a circle centered in it.
   /// Note: All pixels (including transparent ones) have the same RGB color to prevent
   /// black fringing during bilinear interpolation in rotated/scaled rendering.
   pub fn solid_circle(diameter: u32, r: u8, g: u8, b: u8, a: u8) -> Self {
@@ -96,17 +133,12 @@ impl Image {
     }
 
     // Circles with anti-aliasing are never fully opaque
-    Image {
-      data,
-      width: diameter,
-      height: diameter,
-      is_opaque: false,
-    }
+    Self::from_parts(data, diameter, diameter, false)
   }
 
-  /// Create a solid-colored ellipse sprite with anti-aliased edges.
+  /// Create a solid-colored ellipse image with anti-aliased edges.
   ///
-  /// The sprite will be `width x height` pixels, with an ellipse filling it.
+  /// The image will be `width x height` pixels, with an ellipse filling it.
   /// Useful for blob shadows and other oval shapes.
   ///
   /// Note: All pixels (including transparent ones) have the same RGB color to prevent
@@ -148,18 +180,13 @@ impl Image {
       }
     }
 
-    Image {
-      data,
-      width,
-      height,
-      is_opaque: false,
-    }
+    Self::from_parts(data, width, height, false)
   }
 
-  /// Load a sprite from an image file (PNG, JPEG, SVG, etc.)
+  /// Load an image from a file (PNG, JPEG, SVG, etc.)
   ///
-  /// SVG files are rasterized at their native size. Use `load_svg_scaled`
-  /// if you need to render at a specific size.
+  /// SVG files are rasterized at their native size. Use `load_svg` or
+  /// `load_svg_fit` to rasterize one at another size.
   pub fn load<P: AsRef<Path>>(path: P) -> ImageResult<Self> {
     let path_ref = path.as_ref();
 
@@ -174,18 +201,7 @@ impl Image {
       reason: e.to_string(),
     })?;
 
-    let rgba = img.into_rgba8();
-    let width = rgba.width();
-    let height = rgba.height();
-    let data = rgba.into_raw();
-    let is_opaque = Self::check_opaque(&data);
-
-    Ok(Image {
-      data,
-      width,
-      height,
-      is_opaque,
-    })
+    Ok(Self::from_decoded(img))
   }
 
   /// Load an SVG file and rasterize it at a specific scale factor.
@@ -246,7 +262,7 @@ impl Image {
     })
   }
 
-  /// Create a sprite from raw SVG data with a scale factor.
+  /// Create an image from raw SVG data with a scale factor.
   pub fn from_svg_data(svg_data: &[u8], scale: f32) -> Result<Self, String> {
     use resvg::usvg;
     use tiny_skia::{Pixmap, Transform};
@@ -275,16 +291,10 @@ impl Image {
     // Convert to RGBA (tiny-skia uses premultiplied alpha, need to unpremultiply)
     let data = Self::unpremultiply_alpha(pixmap.data());
     let is_opaque = Self::check_opaque(&data);
-
-    Ok(Image {
-      data,
-      width,
-      height,
-      is_opaque,
-    })
+    Ok(Self::from_parts(data, width, height, is_opaque))
   }
 
-  /// Create a sprite from raw SVG data, fitting within max dimensions.
+  /// Create an image from raw SVG data, fitting within max dimensions.
   pub fn from_svg_data_fit(
     svg_data: &[u8],
     max_width: u32,
@@ -330,19 +340,19 @@ impl Image {
     result
   }
 
-  /// Get the sprite width
+  /// Get the image width
   pub fn width(&self) -> u32 {
     self.width
   }
 
-  /// Get the sprite height
+  /// Get the image height
   pub fn height(&self) -> u32 {
     self.height
   }
 
-  /// Check if the sprite is fully opaque (no transparent or semi-transparent pixels)
+  /// Check if the image is fully opaque (no transparent or semi-transparent pixels)
   pub fn is_opaque(&self) -> bool {
-    self.is_opaque
+    *self.opaque.get_or_init(|| Self::check_opaque(&self.data))
   }
 
   /// Get the raw RGBA pixel data
@@ -353,9 +363,40 @@ impl Image {
     &self.data
   }
 
-  /// Create a new sprite with pre-scaled pixel data (nearest-neighbor).
+  /// The pixels for changing in place, laid out as [`Image::data`] gives
+  /// them. Clones that share them keep theirs: the pixels are copied first.
+  /// An image in an asset store is changed through `get_mut`, which moves
+  /// its version on, so what was built from it is built again
+  pub fn data_mut(&mut self) -> &mut [u8] {
+    self.mips = None;
+    self.opaque = OnceLock::new();
+    Arc::make_mut(&mut self.data).as_mut_slice()
+  }
+
+  /// The pixels, shared: the renderer takes this at extract time
+  #[allow(dead_code, reason = "the renderer takes it from the next change on")]
+  pub(crate) fn pixels(&self) -> &Arc<Vec<u8>> {
+    &self.data
+  }
+
+  /// Makes the mip levels below the first of the image's own texture, for
+  /// an image too large for the atlas's shared pages (over 256 px on a
+  /// side); nothing for a smaller one. The loader calls it on its thread, so
+  /// the upload does not make them on the main thread
+  pub(crate) fn prepare_mips(&mut self) {
+    self.mips = super::atlas::standalone_mips(&self.data, self.width, self.height).map(Arc::new);
+  }
+
+  /// The mip levels [`Image::prepare_mips`] made: none for an image in the
+  /// atlas's shared pages, one made in code, or one changed since
+  #[allow(dead_code, reason = "the atlas takes them from the next change on")]
+  pub(crate) fn mips(&self) -> Option<&Arc<Vec<Vec<u8>>>> {
+    self.mips.as_ref()
+  }
+
+  /// Create a new image with pre-scaled pixel data (nearest-neighbor).
   ///
-  /// This is useful for caching scaled versions of sprites to avoid
+  /// This is useful for caching scaled versions of images to avoid
   /// expensive per-frame scaling operations.
   ///
   /// # Arguments
@@ -364,7 +405,7 @@ impl Image {
     self.scaled_xy(scale, scale)
   }
 
-  /// Create a new sprite with pre-scaled pixel data (nearest-neighbor, non-uniform).
+  /// Create a new image with pre-scaled pixel data (nearest-neighbor, non-uniform).
   ///
   /// # Arguments
   /// * `scale_x` - Horizontal scale factor
@@ -389,7 +430,7 @@ impl Image {
         let sx = ((dx as f32) / scale_x) as u32;
         let sy = ((dy as f32) / scale_y) as u32;
 
-        // Clamp to sprite bounds
+        // Clamp to image bounds
         let sx = sx.min(self.width - 1);
         let sy = sy.min(self.height - 1);
 
@@ -400,16 +441,11 @@ impl Image {
       }
     }
 
-    // Scaled sprite inherits opacity from source (scaling doesn't change alpha)
-    Image {
-      data,
-      width: new_width,
-      height: new_height,
-      is_opaque: self.is_opaque,
-    }
+    // A scaled image inherits opacity from its source (scaling doesn't change alpha)
+    Self::from_parts(data, new_width, new_height, self.is_opaque())
   }
 
-  /// Draw the sprite to a pixel buffer at the given position
+  /// Draw the image to a pixel buffer at the given position
   ///
   /// # Arguments
   /// * `frame` - The pixel buffer (RGBA, 4 bytes per pixel)
@@ -420,22 +456,22 @@ impl Image {
   pub fn draw(&self, frame: &mut [u8], frame_width: u32, frame_height: u32, x: i32, y: i32) {
     let frame_w = frame_width as i32;
     let frame_h = frame_height as i32;
-    let sprite_w = self.width as i32;
-    let sprite_h = self.height as i32;
+    let image_w = self.width as i32;
+    let image_h = self.height as i32;
 
     // Calculate visible region (clip to screen bounds)
     let start_sx = (-x).max(0);
     let start_sy = (-y).max(0);
-    let end_sx = (frame_w - x).min(sprite_w);
-    let end_sy = (frame_h - y).min(sprite_h);
+    let end_sx = (frame_w - x).min(image_w);
+    let end_sy = (frame_h - y).min(image_h);
 
     // Early exit if completely off-screen
     if start_sx >= end_sx || start_sy >= end_sy {
       return;
     }
 
-    // Fast path for fully opaque sprites: use row-based memcpy
-    if self.is_opaque {
+    // Fast path for fully opaque images: use row-based memcpy
+    if self.is_opaque() {
       let row_width = (end_sx - start_sx) as usize * 4;
       for sy in start_sy..end_sy {
         let fy = (y + sy) as usize;
@@ -450,7 +486,7 @@ impl Image {
       return;
     }
 
-    // Slow path for sprites with transparency: per-pixel alpha blending
+    // Slow path for images with transparency: per-pixel alpha blending
     for sy in start_sy..end_sy {
       for sx in start_sx..end_sx {
         let fx = (x + sx) as usize;
@@ -486,7 +522,7 @@ impl Image {
     }
   }
 
-  /// Draw the sprite scaled (nearest-neighbor) to a pixel buffer
+  /// Draw the image scaled (nearest-neighbor) to a pixel buffer
   ///
   /// Uses nearest-neighbor sampling for crisp pixel-art scaling.
   pub fn draw_scaled(
@@ -501,7 +537,7 @@ impl Image {
     self.draw_scaled_xy(frame, frame_width, frame_height, x, y, scale, scale);
   }
 
-  /// Draw the sprite with non-uniform scaling (nearest-neighbor)
+  /// Draw the image with non-uniform scaling (nearest-neighbor)
   ///
   /// Uses nearest-neighbor sampling for crisp pixel-art scaling.
   /// Allows different scale factors for x and y axes.
@@ -538,11 +574,11 @@ impl Image {
 
     for dy in start_dy..end_dy {
       for dx in start_dx..end_dx {
-        // Map screen pixel back to source sprite (nearest neighbor)
+        // Map screen pixel back to the source image (nearest neighbor)
         let sx = ((dx as f32) / scale_x) as u32;
         let sy = ((dy as f32) / scale_y) as u32;
 
-        // Clamp to sprite bounds (safety)
+        // Clamp to image bounds (safety)
         let sx = sx.min(self.width - 1);
         let sy = sy.min(self.height - 1);
 
@@ -694,44 +730,44 @@ mod tests {
 
   #[test]
   fn solid_rect_creates_correct_size() {
-    let sprite = Image::solid_rect(10, 20, 255, 0, 0, 255);
-    assert_eq!(sprite.width(), 10);
-    assert_eq!(sprite.height(), 20);
+    let image = Image::solid_rect(10, 20, 255, 0, 0, 255);
+    assert_eq!(image.width(), 10);
+    assert_eq!(image.height(), 20);
   }
 
   #[test]
   fn solid_rect_fills_with_color() {
-    let sprite = Image::solid_rect(2, 2, 100, 150, 200, 255);
+    let image = Image::solid_rect(2, 2, 100, 150, 200, 255);
     // Check first pixel
-    assert_eq!(sprite.data[0], 100); // R
-    assert_eq!(sprite.data[1], 150); // G
-    assert_eq!(sprite.data[2], 200); // B
-    assert_eq!(sprite.data[3], 255); // A
+    assert_eq!(image.data[0], 100); // R
+    assert_eq!(image.data[1], 150); // G
+    assert_eq!(image.data[2], 200); // B
+    assert_eq!(image.data[3], 255); // A
   }
 
   #[test]
   fn solid_circle_transparent_pixels_have_correct_rgb() {
     // Create a white circle
-    let sprite = Image::solid_circle(25, 255, 200, 100, 255);
+    let image = Image::solid_circle(25, 255, 200, 100, 255);
 
     // Corner pixel (0,0) should be transparent but have the circle's RGB
     let corner_idx = 0;
-    assert_eq!(sprite.data[corner_idx], 255, "Corner R should be 255");
-    assert_eq!(sprite.data[corner_idx + 1], 200, "Corner G should be 200");
-    assert_eq!(sprite.data[corner_idx + 2], 100, "Corner B should be 100");
+    assert_eq!(image.data[corner_idx], 255, "Corner R should be 255");
+    assert_eq!(image.data[corner_idx + 1], 200, "Corner G should be 200");
+    assert_eq!(image.data[corner_idx + 2], 100, "Corner B should be 100");
     assert_eq!(
-      sprite.data[corner_idx + 3],
+      image.data[corner_idx + 3],
       0,
       "Corner A should be 0 (transparent)"
     );
 
     // Center pixel (12,12) should be fully opaque with the circle's RGB
     let center_idx = (12 * 25 + 12) * 4;
-    assert_eq!(sprite.data[center_idx], 255, "Center R should be 255");
-    assert_eq!(sprite.data[center_idx + 1], 200, "Center G should be 200");
-    assert_eq!(sprite.data[center_idx + 2], 100, "Center B should be 100");
+    assert_eq!(image.data[center_idx], 255, "Center R should be 255");
+    assert_eq!(image.data[center_idx + 1], 200, "Center G should be 200");
+    assert_eq!(image.data[center_idx + 2], 100, "Center B should be 100");
     assert_eq!(
-      sprite.data[center_idx + 3],
+      image.data[center_idx + 3],
       255,
       "Center A should be 255 (opaque)"
     );
@@ -739,10 +775,10 @@ mod tests {
 
   #[test]
   fn from_rgba_validates_size() {
-    let data = vec![0u8; 4 * 4 * 4]; // 4x4 sprite
-    let sprite = Image::from_rgba(data, 4, 4);
-    assert_eq!(sprite.width(), 4);
-    assert_eq!(sprite.height(), 4);
+    let data = vec![0u8; 4 * 4 * 4]; // 4x4 image
+    let image = Image::from_rgba(data, 4, 4);
+    assert_eq!(image.width(), 4);
+    assert_eq!(image.height(), 4);
   }
 
   #[test]
@@ -753,11 +789,11 @@ mod tests {
   }
 
   #[test]
-  fn draw_opaque_sprite() {
-    let sprite = Image::solid_rect(2, 2, 255, 0, 0, 255);
+  fn draw_opaque_image() {
+    let image = Image::solid_rect(2, 2, 255, 0, 0, 255);
     let mut frame = vec![0u8; 4 * 4 * 4]; // 4x4 frame, all black
 
-    sprite.draw(&mut frame, 4, 4, 1, 1);
+    image.draw(&mut frame, 4, 4, 1, 1);
 
     // Check pixel at (1, 1) - should be red
     // Index calculation: (y * width + x) * 4 (RGBA)
@@ -772,11 +808,11 @@ mod tests {
 
   #[test]
   fn draw_clips_to_frame_bounds() {
-    let sprite = Image::solid_rect(4, 4, 255, 255, 255, 255);
+    let image = Image::solid_rect(4, 4, 255, 255, 255, 255);
     let mut frame = vec![0u8; 2 * 2 * 4]; // 2x2 frame
 
-    // Draw sprite at (-1, -1), only bottom-right 1x1 should appear at (0,0)
-    sprite.draw(&mut frame, 2, 2, -1, -1);
+    // Draw the image at (-1, -1), only bottom-right 1x1 should appear at (0,0)
+    image.draw(&mut frame, 2, 2, -1, -1);
 
     // Pixel at (0, 0) should be white
     assert_eq!(frame[0], 255);
@@ -784,24 +820,79 @@ mod tests {
 
   #[test]
   fn draw_offscreen_does_nothing() {
-    let sprite = Image::solid_rect(2, 2, 255, 0, 0, 255);
+    let image = Image::solid_rect(2, 2, 255, 0, 0, 255);
     let mut frame = vec![0u8; 4 * 4 * 4];
     let original = frame.clone();
 
-    sprite.draw(&mut frame, 4, 4, 100, 100); // Way off screen
+    image.draw(&mut frame, 4, 4, 100, 100); // Way off screen
 
     assert_eq!(frame, original);
   }
 
   #[test]
-  fn draw_transparent_sprite_is_skipped() {
-    let sprite = Image::solid_rect(2, 2, 255, 0, 0, 0); // Alpha = 0
+  fn draw_transparent_image_is_skipped() {
+    let image = Image::solid_rect(2, 2, 255, 0, 0, 0); // Alpha = 0
     let mut frame = vec![128u8; 4 * 4 * 4]; // Gray background
     let original = frame.clone();
 
-    sprite.draw(&mut frame, 4, 4, 0, 0);
+    image.draw(&mut frame, 4, 4, 0, 0);
 
     assert_eq!(frame, original); // Should be unchanged
+  }
+
+  /// A 300x300 opaque image with its mips prepared
+  fn large() -> Image {
+    let mut image = Image::solid_rect(300, 300, 40, 80, 120, 255);
+    image.prepare_mips();
+    image
+  }
+
+  #[test]
+  fn editing_the_pixels_drops_the_prepared_mips() {
+    let mut image = large();
+    assert!(image.mips().is_some(), "300 px is too large for the atlas");
+    image.data_mut()[0] = 0;
+    assert!(image.mips().is_none(), "the old levels show the old pixels");
+  }
+
+  #[test]
+  fn editing_a_clone_leaves_the_original() {
+    let original = Image::solid_rect(2, 2, 10, 20, 30, 255);
+    let mut edited = original.clone();
+    assert!(Arc::ptr_eq(original.pixels(), edited.pixels()));
+    edited.data_mut()[0] = 99;
+    assert_eq!(original.data()[0], 10);
+    assert_eq!(edited.data()[0], 99);
+  }
+
+  #[test]
+  fn an_edit_is_seen_by_is_opaque() {
+    let mut image = Image::solid_rect(2, 2, 10, 20, 30, 255);
+    assert!(image.is_opaque());
+    image.data_mut()[3] = 128;
+    assert!(!image.is_opaque(), "one translucent pixel");
+    image.data_mut()[3] = 255;
+    assert!(image.is_opaque());
+  }
+
+  #[test]
+  fn decode_reads_any_raster_format() {
+    let pixels = image::RgbaImage::from_fn(3, 2, |x, y| image::Rgba([x as u8, y as u8, 7, 255]));
+    let mut bmp = std::io::Cursor::new(Vec::new());
+    if let Err(error) = pixels.write_to(&mut bmp, image::ImageFormat::Bmp) {
+      panic!("encoding a BMP: {error}");
+    }
+    let decoded = match Image::decode(bmp.get_ref()) {
+      Ok(decoded) => decoded,
+      Err(error) => panic!("{error}"),
+    };
+    assert_eq!((decoded.width(), decoded.height()), (3, 2));
+    assert_eq!(decoded.data(), pixels.as_raw().as_slice());
+    assert!(decoded.is_opaque());
+    assert!(matches!(
+      Image::decode(b"no image"),
+      Err(ImageError::Decode(_))
+    ));
   }
 
   #[test]

@@ -34,7 +34,7 @@ const STALE_FRAMES: u64 = 300;
 const MAX_EVICTIONS: usize = 64;
 /// Border added around every image, in pixels: one texel at the smallest
 /// mip level.
-const BORDER: u32 = 8;
+pub(crate) const BORDER: u32 = 8;
 /// Atlas rects start on and span multiples of this many pixels, so they
 /// stay whole texels down to the smallest mip level.
 const CELL: u32 = 8;
@@ -745,8 +745,7 @@ impl TextureAtlas {
     frame: u64,
   ) -> AtlasSlot {
     let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
-    // A full chain, down to one texel
-    let levels = 32 - bw.max(bh).leading_zeros();
+    let levels = standalone_levels(bw, bh);
     let (texture, bind_groups) = self.create_texture(device, bw, bh, levels, "Atlas Standalone");
     write_mips(queue, &texture, 0, 0, &mip_chain(bordered, bw, bh, levels));
     let id = self.next_standalone;
@@ -776,9 +775,38 @@ impl TextureAtlas {
   }
 }
 
+/// The mip levels of a standalone texture `width`x`height` px, border
+/// included: a full chain, down to one texel
+fn standalone_levels(width: u32, height: u32) -> u32 {
+  32 - width.max(height).leading_zeros()
+}
+
+/// The mip levels below the first of the standalone texture an image
+/// `width`x`height` px gets when it is too large for a shared page (over
+/// [`MAX_ATLAS_IMAGE`] px on a side): `rgba` with its border, halved down to
+/// one texel. None for an image that goes in a page, or whose `rgba` is not
+/// `width * height * 4` bytes. The image loader makes them on its thread,
+/// so the upload need not
+pub(crate) fn standalone_mips(rgba: &[u8], width: u32, height: u32) -> Option<Vec<Vec<u8>>> {
+  if width <= MAX_ATLAS_IMAGE && height <= MAX_ATLAS_IMAGE {
+    return None;
+  }
+  let bordered = extrude_border(rgba, width, height, BORDER)?;
+  let bw = width.checked_add(2 * BORDER)?;
+  let bh = height.checked_add(2 * BORDER)?;
+  let chain = mip_chain(&bordered, bw, bh, standalone_levels(bw, bh));
+  Some(
+    chain
+      .into_iter()
+      .skip(1)
+      .map(|(_, _, pixels)| pixels)
+      .collect(),
+  )
+}
+
 /// Copy `rgba` into a `(w+2)x(h+2)` buffer whose border repeats the edge pixels.
 /// `None` when `rgba` is not `width * height * 4` bytes.
-fn extrude_border(rgba: &[u8], width: u32, height: u32, border: u32) -> Option<Vec<u8>> {
+pub(crate) fn extrude_border(rgba: &[u8], width: u32, height: u32, border: u32) -> Option<Vec<u8>> {
   let (w, h, d) = (width as usize, height as usize, border as usize);
   if w == 0 || h == 0 || rgba.len() != w * h * 4 {
     return None;

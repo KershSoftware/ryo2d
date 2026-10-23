@@ -49,8 +49,9 @@ struct Roots {
 
 impl Watching {
   /// Watches `root` and every folder under it, telling `changed` about each
-  /// file once its writes settle. None, with a warning, when the folder is
-  /// missing or cannot be watched
+  /// file once its writes settle. None when the folder is missing (noted at
+  /// debug level: a game with no assets has none) or, with a warning, when
+  /// it cannot be watched
   pub(crate) fn start(root: &Path, changed: Sender<AssetPath>) -> Option<Watching> {
     let roots = Roots {
       // notify reports the names the file system uses: macOS's /var is /private/var
@@ -58,7 +59,7 @@ impl Watching {
       given: root.to_path_buf(),
     };
     if !roots.canonical.is_dir() {
-      crate::engine_warn!(
+      crate::engine_debug!(
         module: "asset",
         "the asset folder {} is missing: changed files will not reload",
         root.display()
@@ -117,10 +118,11 @@ impl Drop for Watching {
 }
 
 /// Whether an event of this kind can change a file's bytes: a create, a
-/// modify, or a rename to the path. A removed file keeps its last value
+/// modify, or a rename to the path. A removed file keeps its last value, and
+/// a metadata change (a `touch`) leaves the bytes as they were
 fn is_change(kind: &EventKind) -> bool {
   match kind {
-    EventKind::Modify(ModifyKind::Name(RenameMode::From)) => false,
+    EventKind::Modify(ModifyKind::Name(RenameMode::From) | ModifyKind::Metadata(_)) => false,
     EventKind::Create(_) | EventKind::Modify(_) => true,
     _ => false,
   }
@@ -221,14 +223,18 @@ impl Pending {
 #[cfg(test)]
 mod tests {
   use crossbeam_channel::{RecvTimeoutError, TryRecvError, unbounded};
-  use notify::event::{AccessKind, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode};
+  use notify::event::{
+    AccessKind, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind, RenameMode,
+  };
 
   use super::*;
   use crate::core::asset::{
     Asset, AssetError, AssetEvent, AssetLoader, AssetServer, AssetSource, Assets, DiskSource,
-    Handle, LoadContext, pump,
+    Handle, LoadContext, insert_registry, pump,
   };
+  use crate::core::dev_log::LogLevel;
   use crate::core::ecs::kernel::{MessageCursor, Messages, World};
+  use crate::core::graphics::Image;
 
   #[derive(Debug)]
   struct Text(String);
@@ -271,8 +277,9 @@ mod tests {
     }
   }
 
-  /// A `Text` server over a temp folder it watches. Other asset types
-  /// register on `server` and `world` as `Text` does
+  /// A `Text` server over a temp folder it watches, in a world made as
+  /// every world is (so it loads images too). Other asset types register on
+  /// `server` and `world` as `Text` does
   struct Folder {
     dir: tempfile::TempDir,
     world: World,
@@ -296,7 +303,7 @@ mod tests {
       let server = AssetServer::new(DiskSource::new(root));
       server.register_asset::<Text>(&mut world);
       server.register_loader(TextLoader);
-      world.insert_resource(server.clone());
+      insert_registry(&mut world, server.clone());
       server.start_watching();
       Folder { dir, world, server }
     }
@@ -305,8 +312,8 @@ mod tests {
       write(self.dir.path(), name, bytes);
     }
 
-    fn load_now(&mut self, path: &str) -> Handle<Text> {
-      match self.server.load_now::<Text>(&mut self.world, path) {
+    fn load_now<T: Asset>(&mut self, path: &str) -> Handle<T> {
+      match self.server.load_now::<T>(&mut self.world, path) {
         Ok(handle) => handle,
         Err(error) => panic!("{path}: {}", error.report()),
       }
@@ -320,11 +327,11 @@ mod tests {
         .map(|text| text.0.as_str())
     }
 
-    /// A cursor over the `Text` events sent from now on
-    fn cursor(&self) -> MessageCursor<AssetEvent<Text>> {
+    /// A cursor over the `T` events sent from now on
+    fn cursor<T: Asset>(&self) -> MessageCursor<AssetEvent<T>> {
       self
         .world
-        .resource::<Messages<AssetEvent<Text>>>()
+        .resource::<Messages<AssetEvent<T>>>()
         .get_cursor_current()
     }
 
@@ -343,18 +350,18 @@ mod tests {
 
     /// Pumps until an event `done` accepts is sent; gives back every event
     /// sent meanwhile
-    fn pump_until_sent(
+    fn pump_until_sent<T: Asset>(
       &mut self,
-      cursor: &mut MessageCursor<AssetEvent<Text>>,
-      done: impl Fn(&AssetEvent<Text>) -> bool,
-    ) -> Vec<AssetEvent<Text>> {
+      cursor: &mut MessageCursor<AssetEvent<T>>,
+      done: impl Fn(&AssetEvent<T>) -> bool,
+    ) -> Vec<AssetEvent<T>> {
       let start = Instant::now();
       let mut sent = Vec::new();
       loop {
         pump(&mut self.world);
         sent.extend(
           cursor
-            .read(self.world.resource::<Messages<AssetEvent<Text>>>())
+            .read(self.world.resource::<Messages<AssetEvent<T>>>())
             .cloned(),
         );
         if sent.iter().any(&done) {
@@ -366,7 +373,7 @@ mod tests {
     }
   }
 
-  fn modified(handle: &Handle<Text>) -> impl Fn(&AssetEvent<Text>) -> bool + use<> {
+  fn modified<T: Asset>(handle: &Handle<T>) -> impl Fn(&AssetEvent<T>) -> bool + use<T> {
     let id = handle.id();
     move |event| matches!(event, AssetEvent::Modified { id: changed } if *changed == id)
   }
@@ -439,6 +446,49 @@ mod tests {
     folder.write("a.txt", "twø");
     folder.pump_until_sent(&mut cursor, modified(&a));
     assert_eq!(folder.text(&a), Some("twø"));
+  }
+
+  /// `width`x`height` pixels of one colour, as a PNG file
+  fn png(width: u32, height: u32, colour: [u8; 4]) -> Vec<u8> {
+    let pixels = image::RgbaImage::from_pixel(width, height, image::Rgba(colour));
+    let mut file = std::io::Cursor::new(Vec::new());
+    if let Err(error) = pixels.write_to(&mut file, image::ImageFormat::Png) {
+      panic!("encoding a PNG: {error}");
+    }
+    file.into_inner()
+  }
+
+  #[test]
+  fn a_half_written_image_keeps_the_last_good_one() {
+    let red = [200, 0, 0, 255];
+    let blue = [0, 0, 200, 255];
+    let dir = temp_dir();
+    write(dir.path(), "a.png", png(32, 32, red));
+    let root = dir.path().to_path_buf();
+    let mut folder = Folder::watched_at(dir, &root);
+    let a = folder.load_now::<Image>("a.png");
+    let id = a.id();
+    let first_pixel = |folder: &Folder| {
+      let images = folder.world.resource::<Assets<Image>>();
+      images
+        .get(&a)
+        .and_then(|image| image.data().first_chunk::<4>().copied())
+    };
+    let mut cursor = folder.cursor::<Image>();
+    // An editor's save cut off halfway, with new pixels
+    let blue_png = png(32, 32, blue);
+    folder.write("a.png", &blue_png[..blue_png.len() / 2]);
+    let sent = folder.pump_until_sent(
+      &mut cursor,
+      |event| matches!(event, AssetEvent::ReloadFailed { id: failed, .. } if *failed == id),
+    );
+    assert_eq!(first_pixel(&folder), Some(red), "{sent:?}");
+    assert!(folder.server.state(&a).is_loaded());
+    assert!(!sent.iter().any(modified(&a)), "{sent:?}");
+    // The rest of the write lands
+    folder.write("a.png", &blue_png);
+    folder.pump_until_sent(&mut cursor, modified(&a));
+    assert_eq!(first_pixel(&folder), Some(blue));
   }
 
   #[cfg(unix)]
@@ -533,7 +583,8 @@ mod tests {
   #[test]
   fn a_missing_root_is_not_watched() {
     let dir = temp_dir();
-    let source = DiskSource::new(dir.path().join("missing"));
+    let missing = dir.path().join("missing");
+    let source = DiskSource::new(&missing);
     let (changes, changed) = unbounded();
     assert!(
       source.watch(changes).is_ok(),
@@ -545,6 +596,16 @@ mod tests {
       Err(TryRecvError::Disconnected),
       "nothing will ever be sent"
     );
+    // A game with no assets has no folder: that is normal, and no warning
+    let named = missing.display().to_string();
+    let said = |level: LogLevel| {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|entry| entry.level == level && entry.message.contains(&named))
+        .count()
+    };
+    assert_eq!(said(LogLevel::Warn), 0);
+    assert_eq!(said(LogLevel::Debug), 1);
   }
 
   #[test]
@@ -578,6 +639,27 @@ mod tests {
     ))));
     assert!(!is_change(&EventKind::Remove(RemoveKind::File)));
     assert!(!is_change(&EventKind::Access(AccessKind::Read)));
+  }
+
+  #[test]
+  fn metadata_changes_are_not_changes() {
+    // A `touch`, a permission or an attribute change leaves the bytes as
+    // they were; a write that does change them also sends a data event
+    for kind in [
+      MetadataKind::Any,
+      MetadataKind::AccessTime,
+      MetadataKind::WriteTime,
+      MetadataKind::Permissions,
+      MetadataKind::Ownership,
+      MetadataKind::Extended,
+      MetadataKind::Other,
+    ] {
+      assert!(
+        !is_change(&EventKind::Modify(ModifyKind::Metadata(kind))),
+        "{kind:?}"
+      );
+    }
+    assert!(is_change(&EventKind::Modify(ModifyKind::Any)));
   }
 
   #[test]

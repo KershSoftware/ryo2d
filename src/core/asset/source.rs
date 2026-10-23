@@ -82,8 +82,9 @@ impl AssetSource for DiskSource {
     })
   }
 
-  /// Watches the folder. A missing folder, or one that cannot be watched,
-  /// is warned about and watched by no one; that is no error
+  /// Watches the folder. A missing folder (noted at debug level), or one
+  /// that cannot be watched (warned about), is watched by no one; that is
+  /// no error
   #[cfg(not(target_arch = "wasm32"))]
   fn watch(&self, changed: Sender<AssetPath>) -> Result<(), AssetError> {
     let mut watching = self.watching.lock().unwrap_or_else(PoisonError::into_inner);
