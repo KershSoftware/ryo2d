@@ -260,3 +260,64 @@ fn a_resize_through_get_mut_re_lays_out_the_ui() {
   let moved = text_at(&e, "after").expect("the label draws");
   assert_eq!(moved.x, label.x + 16.0, "the label moves over");
 }
+
+/// Spawns a UI file that names `icon.png` on its first `ui`, which is where
+/// the image first loads, and draws the image itself at its natural size on
+/// every pass from then on
+struct LoadsInUi {
+  file: String,
+  image: Arc<Mutex<Option<Handle<Image>>>>,
+}
+
+impl Scene for LoadsInUi {
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    let mut image = self.image.lock().unwrap();
+    if image.is_none() {
+      ctx.spawn_ui_file(&self.file).expect("the file spawns");
+      // The file loaded it: this finds it and loads nothing
+      *image = Some(ctx.assets().load::<Image>("icon.png"));
+    }
+    if let Some(image) = image.as_ref() {
+      ui.image(image).show();
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn an_image_a_ui_file_first_loads_in_ui_is_sized_from_the_next_pass() {
+  let dir = tempfile::tempdir().unwrap();
+  image::RgbaImage::from_pixel(6, 4, image::Rgba([255, 0, 0, 255]))
+    .save(dir.path().join("icon.png"))
+    .unwrap();
+  let file = dir.path().join("icon.ui.ron");
+  std::fs::write(&file, r#"(root: Column(children: [Image("icon.png")]))"#).unwrap();
+  let image = Arc::new(Mutex::new(None));
+  let scene = LoadsInUi {
+    file: file.display().to_string(),
+    image: Arc::clone(&image),
+  };
+  let Some(mut e) = engine(scene, Some(DiskSource::new(dir.path()))) else {
+    return;
+  };
+  let mut frames = 0;
+  while image.lock().unwrap().is_none() {
+    step(&mut e);
+    frames += 1;
+    assert!(frames < 10, "ui runs");
+  }
+  let loaded = image.lock().unwrap().clone().unwrap();
+  assert!(
+    e.world.resource::<Assets<Image>>().get(&loaded).is_some(),
+    "the file loaded it at once"
+  );
+  // The pass that loaded it sized it as not loaded, so drew nothing of it
+  assert_eq!(drawn(&e, &loaded), Vec::<Rect>::new());
+  // The next pass draws it at its size, in the tree and in the scene's own UI
+  step(&mut e);
+  let rects = drawn(&e, &loaded);
+  assert_eq!(rects.len(), 2, "the tree's and the scene's: {rects:?}");
+  for rect in rects {
+    assert_eq!((rect.width, rect.height), (6.0, 4.0));
+  }
+}
