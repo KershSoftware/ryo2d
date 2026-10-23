@@ -38,13 +38,23 @@ impl LoadState {
 }
 
 /// Something happened to an asset of type `T` (read with `MessageReader` or
-/// `ctx.messages`). The pump (`PreUpdate`, each frame) sends them, in the
-/// order they happened, except that `load_now` sends its asset's `Added` or
-/// `Failed` at once. Changes made in code (`add`, `get_mut`) are sent at the
-/// next pump, once per asset: an asset added, then changed, is `Added`
-/// only, and one changed many times is `Modified` once; one the pump also
-/// loads, reloads or touches that pump has only the pump's event. A store
-/// no server registered (an `Assets::default()` of a test's own) sends none
+/// `ctx.messages`).
+///
+/// `load_now` sends its asset's `Added` or `Failed` at once. The pump
+/// (`PreUpdate`, each frame) sends the rest, for each type in this order:
+/// 1. the events of the loads, reloads and dependency touches it applies
+///    (`Added`, `Modified`, `Failed`, `ReloadFailed`), as it applies them;
+/// 2. the events of changes made in code since the last pump (`add`,
+///    `get_mut`), in the order their assets first changed: once per asset,
+///    so one added, then changed, is `Added` only, and one changed many times
+///    is `Modified` once; one the pump also loads, reloads or touches in step
+///    1 has only that event;
+/// 3. `Removed` for each asset it frees.
+///
+/// So the order holds per asset: an asset's events come in the order its
+/// changes happened. Between assets it need not, as a change made in code
+/// before the pump is sent after the pump's own events. A store no server
+/// registered (an `Assets::default()` of a test's own) sends none
 #[derive(Message)]
 pub enum AssetEvent<T: Asset> {
   /// It is in its `Assets<T>`: a load finished (sent by the pump that put it

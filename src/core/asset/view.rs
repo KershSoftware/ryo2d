@@ -97,7 +97,9 @@ impl<'w> AssetsView<'w> {
   }
 
   /// The asset for changing in place; its content version moves on, so
-  /// what was built from it is built again
+  /// what was built from it is built again, and the next pump sends
+  /// `AssetEvent::Modified` for it (once, however many times it is changed
+  /// before then)
   pub fn get_mut<T: Asset>(&mut self, id: impl Into<AssetId<T>>) -> Option<&mut T> {
     let id = id.into();
     let assets = self.world.get_resource_mut::<Assets<T>>()?;

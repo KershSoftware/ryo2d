@@ -400,8 +400,17 @@ impl<T: Asset> Assets<T> {
     }
   }
 
-  /// Drops `id`'s queued event: the pump sends its own for it
+  /// Drops `id`'s queued event: the pump sends its own for it. A stale
+  /// `id` drops nothing, as its slot's event is another asset's
   pub(crate) fn unqueue(&mut self, id: AssetId<T>) {
+    let live = self
+      .values
+      .get(id.index() as usize)
+      .and_then(Option::as_ref)
+      .is_some_and(|entry| entry.generation == id.generation());
+    if !live {
+      return;
+    }
     if let Some(kind) = self
       .events
       .as_mut()
@@ -600,20 +609,30 @@ mod tests {
     taken_by(&mut assets, first, false);
   }
 
-  /// Without the debug check, a follower handed the store back gets the
-  /// whole store, so it misses nothing the other took
-  #[cfg(not(debug_assertions))]
   #[test]
   fn a_follower_handed_the_store_back_gets_the_whole_store() {
+    // Three followers, so the first comes back after a third, not straight
+    // after the one that took the list from it (which the check catches)
     let mut assets = Assets::<Text>::default();
     let a = assets.add(Text("a".into()));
-    let (first, second) = (follower_token(), follower_token());
+    let kept = assets.add(Text("kept".into()));
+    let [first, second, third] = [(); 3].map(|()| follower_token());
     taken_by(&mut assets, first, false);
     assets.get_mut(&a).unwrap().0 = "a2".into();
     taken_by(&mut assets, second, false);
+    taken_by(&mut assets, third, false);
+    // The changes the others took are not lost to it: every slot, as it is
     let back = taken_by(&mut assets, first, false);
-    assert_eq!(back.len(), 1);
-    assert_eq!(back[0].1.as_ref().map(|now| now.2.as_str()), Some("a2"));
+    let texts: Vec<_> = back
+      .iter()
+      .map(|(index, now)| (*index, now.as_ref().map(|now| now.2.clone())))
+      .collect();
+    assert_eq!(
+      texts,
+      vec![(0, Some("a2".to_string())), (1, Some("kept".to_string()))]
+    );
+    assert!(assets.is_followed_by(first));
+    drop(kept);
   }
 
   #[test]
@@ -634,6 +653,25 @@ mod tests {
       matches!(sent.as_slice(), [AssetEvent::Added { id: added }, AssetEvent::Modified { id: modified }]
         if *added == b.id() && *modified == a.id()),
       "{sent:?}"
+    );
+  }
+
+  #[test]
+  fn unqueueing_a_stale_id_leaves_its_slots_new_event() {
+    let mut assets = Assets::<Text>::default();
+    assets.send_events();
+    let old = assets.add(Text("old".into())).id();
+    assets.take_events(|_| {});
+    assets.free_unheld(&mut Vec::new());
+    let new = assets.add(Text("new".into()));
+    assert_eq!(new.id().index(), old.index(), "the slot is reused");
+    assert!(!assets.insert(old, Text("stale".into())));
+    assets.unqueue(old);
+    let mut sent = Vec::new();
+    assets.take_events(|event| sent.push(event));
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id }] if *id == new.id()),
+      "the new asset's event stays: {sent:?}"
     );
   }
 

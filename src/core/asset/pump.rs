@@ -279,7 +279,9 @@ pub(crate) fn insert_value<T: Asset>(
     .get_resource_mut::<Assets<T>>()
     .is_some_and(|mut assets| {
       let inserted = assets.insert(id, *value);
-      assets.unqueue(id);
+      if inserted {
+        assets.unqueue(id);
+      }
       inserted
     });
   if inserted {
@@ -331,7 +333,9 @@ fn touch<T: Asset>(world: &mut World, id: UntypedAssetId) {
     .get_resource_mut::<Assets<T>>()
     .is_some_and(|mut assets| {
       let touched = assets.get_mut(id).is_some();
-      assets.unqueue(id);
+      if touched {
+        assets.unqueue(id);
+      }
       touched
     });
   if touched {
@@ -385,5 +389,60 @@ pub(crate) fn send_queued<T: Asset>(world: &mut World) {
 fn send<T: Asset>(world: &mut World, event: AssetEvent<T>) {
   if let Some(mut events) = world.get_resource_mut::<Messages<AssetEvent<T>>>() {
     events.write(event);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::asset::MemorySource;
+  use crate::core::ecs::kernel::MessageCursor;
+
+  struct Text(#[allow(dead_code)] String);
+  impl Asset for Text {}
+
+  /// A world whose registry stores texts, and a cursor over their events
+  fn world() -> (World, MessageCursor<AssetEvent<Text>>) {
+    let mut world = World::new();
+    let server = AssetServer::new(MemorySource::new());
+    server.register_asset::<Text>(&mut world);
+    world.insert_resource(server);
+    let cursor = world
+      .resource::<Messages<AssetEvent<Text>>>()
+      .get_cursor_current();
+    (world, cursor)
+  }
+
+  fn sent(world: &World, cursor: &mut MessageCursor<AssetEvent<Text>>) -> Vec<AssetEvent<Text>> {
+    cursor
+      .read(world.resource::<Messages<AssetEvent<Text>>>())
+      .cloned()
+      .collect()
+  }
+
+  #[test]
+  fn a_value_refused_for_a_stale_id_leaves_the_new_assets_event() {
+    let (mut world, mut events) = world();
+    let old = world
+      .resource_mut::<Assets<Text>>()
+      .add(Text("old".into()))
+      .id();
+    pump(&mut world);
+    sent(&world, &mut events);
+    let new = world.resource_mut::<Assets<Text>>().add(Text("new".into()));
+    assert_eq!(new.id().index(), old.index(), "the slot is reused");
+    let stale = Box::new(Text("stale".into()));
+    assert!(!insert_value::<Text>(
+      &mut world,
+      old.untyped(),
+      stale,
+      Arrival::First
+    ));
+    pump(&mut world);
+    let sent = sent(&world, &mut events);
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id }] if *id == new.id()),
+      "{sent:?}"
+    );
   }
 }

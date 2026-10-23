@@ -3,7 +3,9 @@
 //! draws. It follows the font stores (`Assets<Font>`, `Assets<BitmapFont>`)
 //! right after the asset pump each frame, at the start of each UI pass and
 //! whenever a scene takes `ctx.fonts()`; the text engine picks up a change
-//! when it next syncs (it compares `generation`).
+//! when it next syncs (it compares `generation`, which moves when a face or
+//! role changes, and `slot_version`, which moves when a font asset's
+//! registration does).
 
 use std::collections::HashMap;
 use std::fmt;
