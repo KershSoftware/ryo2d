@@ -1,5 +1,6 @@
 use std::any::{Any, TypeId};
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
+use std::hash::Hash;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
@@ -57,6 +58,10 @@ struct Table {
   /// Assets by key: by type and settings hash, then by path (so a lookup
   /// borrows the path and allocates nothing)
   keys: FastMap<(TypeId, u64), FastMap<AssetPath, UntypedAssetId>>,
+  /// Loads refused before anything was read (a bad path, no loader, settings
+  /// of another type), by type and settings key, then by the text asked for:
+  /// asking again gives the same failed asset, so it warns once
+  refused: FastMap<(TypeId, u64), FastMap<Box<str>, UntypedAssetId>>,
   /// Every asset asked for through the server, until it is freed
   infos: FastMap<UntypedAssetId, Info>,
   /// The last job number handed out
@@ -64,8 +69,8 @@ struct Table {
 }
 
 struct Info {
-  /// The path and settings hash it was loaded with; none when its path was bad
-  key: Option<(AssetPath, u64)>,
+  /// Where its key is, so freeing it can remove the key
+  key: Key,
   /// The settings it was loaded with
   // Read by reloads (Task 5)
   #[allow(dead_code)]
@@ -79,11 +84,70 @@ struct Info {
   dependencies: Vec<UntypedAssetId>,
 }
 
+enum Key {
+  /// Loaded by path: its path and settings hash, in `Table::keys`
+  Path(AssetPath, u64),
+  /// Refused: the text asked for and its settings key, in `Table::refused`
+  Refused(Box<str>, u64),
+}
+
+/// The settings key of a refused `load` without settings: there was no
+/// loader to give the default settings
+const DEFAULT_SETTINGS: u64 = 0;
+
 /// A load's path, loader and settings, worked out before anything is made
 struct Request<'p> {
   path: Cow<'p, str>,
   loader: Arc<dyn ErasedLoader>,
   settings_hash: u64,
+}
+
+/// A load refused before anything was read: the text it is known by (the
+/// path as given when it is not an asset path, else the normalised path)
+/// and why
+struct Refused<'p> {
+  text: Cow<'p, str>,
+  reason: Refusal,
+}
+
+enum Refusal {
+  InvalidPath(&'static str),
+  NoLoader,
+  Settings {
+    takes: &'static str,
+    given: &'static str,
+  },
+}
+
+impl Refused<'_> {
+  /// The key it is kept under when `load` refuses it: a bad path by its
+  /// text alone, anything else by its path and settings
+  fn settings_key(&self, given: Option<u64>) -> u64 {
+    match self.reason {
+      Refusal::InvalidPath(_) => DEFAULT_SETTINGS,
+      _ => given.unwrap_or(DEFAULT_SETTINGS),
+    }
+  }
+
+  fn into_error(self) -> AssetError {
+    match self.reason {
+      Refusal::InvalidPath(reason) => AssetError::InvalidPath {
+        path: self.text.into_owned(),
+        reason,
+      },
+      Refusal::NoLoader => {
+        let extension = extensions(&self.text).next().unwrap_or_default().to_owned();
+        AssetError::NoLoader {
+          path: AssetPath::from_normal(self.text),
+          extension,
+        }
+      }
+      Refusal::Settings { takes, given } => AssetError::decode(
+        &AssetPath::from_normal(self.text),
+        format!("its loader takes `{takes}` settings, not `{given}`"),
+      ),
+    }
+  }
 }
 
 /// Why `load_now` (or a dependency it loads) gave no asset
@@ -198,7 +262,12 @@ impl AssetServer {
   }
 
   /// The asset at `path`, loading it if needed; returns at once. A bad path
-  /// or a missing loader gives a handle whose state is `Failed`
+  /// or a missing loader gives a handle whose state is `Failed`.
+  ///
+  /// One path (with one settings value) is one asset: while any handle to it
+  /// lives, or until the pump frees it, asking again gives the same handle,
+  /// loaded, loading or failed. A failed asset is not tried again until it
+  /// is freed; asking for it then loads it anew
   pub fn load<T: Asset>(&self, path: &str) -> Handle<T> {
     self.load_request::<T, ()>(path, None)
   }
@@ -209,7 +278,12 @@ impl AssetServer {
     self.load_request(path, Some(settings))
   }
 
-  /// Loads at once on this thread (dependencies too) and inserts the result
+  /// Loads at once on this thread (dependencies too) and inserts the result.
+  ///
+  /// An asset already loaded is given back as it is, without reading it
+  /// again; one already failed gives back its error, until it is freed. One
+  /// loading on a worker loads here instead, and the worker's result is
+  /// dropped. On failure the error is returned and the state stays `Failed`
   pub fn load_now<T: Asset>(
     &self,
     world: &mut World,
@@ -241,8 +315,10 @@ impl AssetServer {
   /// The path the asset was loaded from
   pub fn path<T: Asset>(&self, id: impl Into<AssetId<T>>) -> Option<AssetPath> {
     let table = self.inner.table();
-    let info = table.infos.get(&id.into().untyped())?;
-    info.key.as_ref().map(|(path, _)| path.clone())
+    match &table.infos.get(&id.into().untyped())?.key {
+      Key::Path(path, _) => Some(path.clone()),
+      Key::Refused(..) => None,
+    }
   }
 
   /// How far a group of assets has loaded. An id neither loaded nor loading
@@ -355,15 +431,17 @@ impl AssetServer {
 
   fn resolve<'p, T: Asset, S: AssetSettings>(
     &self,
-    path: &'p str,
+    raw: &'p str,
     settings: Option<&S>,
-  ) -> Result<Request<'p>, AssetError> {
-    let path = normalise(path)?;
+  ) -> Result<Request<'p>, Refused<'p>> {
+    let path = normalise(raw).map_err(|reason| Refused {
+      text: Cow::Borrowed(raw),
+      reason: Refusal::InvalidPath(reason),
+    })?;
     let Some(loader) = self.loader::<T>(&path) else {
-      let extension = extensions(&path).next().unwrap_or_default().to_owned();
-      return Err(AssetError::NoLoader {
-        path: AssetPath::from_normal(path),
-        extension,
+      return Err(Refused {
+        text: path,
+        reason: Refusal::NoLoader,
       });
     };
     let settings_hash = match settings {
@@ -371,11 +449,13 @@ impl AssetServer {
       Some(settings) => {
         let (takes, name) = loader.settings_type();
         if takes != TypeId::of::<S>() {
-          let reason = format!(
-            "its loader takes `{name}` settings, not `{}`",
-            short_name::<S>()
-          );
-          return Err(AssetError::decode(&AssetPath::from_normal(path), reason));
+          return Err(Refused {
+            text: path,
+            reason: Refusal::Settings {
+              takes: name,
+              given: short_name::<S>(),
+            },
+          });
         }
         settings_hash(settings)
       }
@@ -388,9 +468,15 @@ impl AssetServer {
   }
 
   fn load_request<T: Asset, S: AssetSettings>(&self, path: &str, settings: Option<S>) -> Handle<T> {
-    match self.queue_load::<T, S>(path, settings) {
-      Ok(handle) => handle,
-      Err(error) => self.failed(error),
+    match self.resolve::<T, S>(path, settings.as_ref()) {
+      Ok(request) => match self.queue_resolved(request, settings) {
+        Ok(handle) => handle,
+        Err(error) => unregistered(error),
+      },
+      Err(refused) => {
+        let key = refused.settings_key(settings.as_ref().map(settings_hash));
+        self.refused(refused, key)
+      }
     }
   }
 
@@ -401,7 +487,18 @@ impl AssetServer {
     path: &str,
     settings: Option<S>,
   ) -> Result<Handle<T>, AssetError> {
-    let request = self.resolve::<T, S>(path, settings.as_ref())?;
+    let request = self
+      .resolve::<T, S>(path, settings.as_ref())
+      .map_err(Refused::into_error)?;
+    self.queue_resolved(request, settings)
+  }
+
+  /// [`AssetServer::queue_load`] once the request is resolved
+  fn queue_resolved<T: Asset, S: AssetSettings>(
+    &self,
+    request: Request<'_>,
+    settings: Option<S>,
+  ) -> Result<Handle<T>, AssetError> {
     let ledger = self.registered::<T>(&request.path)?;
     let mut table = self.inner.table();
     if let Some(handle) = table.find(&ledger, &request) {
@@ -439,18 +536,23 @@ impl AssetServer {
     Ok(handle)
   }
 
-  /// A handle whose state is `Failed`; the event goes at the next pump
-  fn failed<T: Asset>(&self, error: AssetError) -> Handle<T> {
-    let error = Arc::new(error);
+  /// The failed asset for a refused load: the one already kept under its
+  /// key, or a new one whose `Failed` event goes at the next pump
+  fn refused<T: Asset>(&self, refused: Refused<'_>, settings_key: u64) -> Handle<T> {
     let Some(ledger) = self.ledger_of(TypeId::of::<T>()) else {
-      // `T` was never registered, so there is nowhere to keep the asset or
-      // its state: say so now, and hand out a handle to nothing
-      crate::engine_warn!(module: "asset", "{}", error.report());
-      return lock(&Assets::<T>::default().ledger()).reserve();
+      return unregistered(refused.into_error());
     };
+    let key = (TypeId::of::<T>(), settings_key);
+    let mut table = self.inner.table();
+    if let Some(handle) = table.find_refused(&ledger, key, &refused.text) {
+      return handle;
+    }
+    let text: Box<str> = Box::from(&*refused.text);
+    let error = Arc::new(refused.into_error());
     let handle = lock(&ledger).reserve::<T>();
     let id = handle.id().untyped();
-    let job = self.inner.table().fail(id, Arc::clone(&error));
+    let job = table.fail(id, Key::Refused(text, settings_key), Arc::clone(&error));
+    drop(table);
     let _ = self.inner.finished.send(Finished {
       id,
       job,
@@ -471,7 +573,7 @@ impl AssetServer {
   ) -> Result<Handle<T>, NowError> {
     let request = self
       .resolve::<T, S>(path, settings.as_ref())
-      .map_err(NowError::Request)?;
+      .map_err(|refused| NowError::Request(refused.into_error()))?;
     if let Some(at) = stack.iter().position(|p| p.as_str() == request.path) {
       return Err(NowError::Request(cycle(
         stack.get(at..).unwrap_or_default(),
@@ -632,6 +734,17 @@ impl Table {
     lock(ledger).strong(id)
   }
 
+  /// A new strong handle to the live failed asset kept for a refused load
+  fn find_refused<T: Asset>(
+    &self,
+    ledger: &Mutex<Ledger>,
+    key: (TypeId, u64),
+    text: &str,
+  ) -> Option<Handle<T>> {
+    let id = self.refused.get(&key)?.get(text)?.typed::<T>()?;
+    lock(ledger).strong(id)
+  }
+
   fn next_job(&mut self) -> u64 {
     self.last_job += 1;
     self.last_job
@@ -654,7 +767,7 @@ impl Table {
     self.infos.insert(
       id,
       Info {
-        key: Some((path, settings_hash)),
+        key: Key::Path(path, settings_hash),
         settings: Some(settings),
         state: LoadState::Loading,
         job,
@@ -664,13 +777,21 @@ impl Table {
     job
   }
 
-  /// Records `id` as failed before it could load, and gives its job number
-  fn fail(&mut self, id: UntypedAssetId, error: Arc<AssetError>) -> u64 {
+  /// Records `id` as refused under `key`, failed before it could load, and
+  /// gives its job number
+  fn fail(&mut self, id: UntypedAssetId, key: Key, error: Arc<AssetError>) -> u64 {
     let job = self.next_job();
+    if let Key::Refused(text, settings_key) = &key {
+      self
+        .refused
+        .entry((id.type_id, *settings_key))
+        .or_default()
+        .insert(text.clone(), id);
+    }
     self.infos.insert(
       id,
       Info {
-        key: None,
+        key,
         settings: None,
         state: LoadState::Failed(error),
         job,
@@ -681,25 +802,49 @@ impl Table {
   }
 
   fn forget(&mut self, id: UntypedAssetId) {
-    let Some(Info {
-      key: Some((path, settings_hash)),
-      ..
-    }) = self.infos.remove(&id)
-    else {
+    let Some(info) = self.infos.remove(&id) else {
       return;
     };
-    let key = (id.type_id, settings_hash);
-    let Some(paths) = self.keys.get_mut(&key) else {
-      return;
-    };
-    // The key may name a newer asset already, loaded while this one was being freed
-    if paths.get(path.as_str()) == Some(&id) {
-      paths.remove(path.as_str());
-    }
-    if paths.is_empty() {
-      self.keys.remove(&key);
+    match info.key {
+      Key::Path(path, settings_hash) => {
+        remove_key(
+          &mut self.keys,
+          (id.type_id, settings_hash),
+          path.as_str(),
+          id,
+        );
+      }
+      Key::Refused(text, settings_key) => {
+        remove_key(&mut self.refused, (id.type_id, settings_key), &text, id);
+      }
     }
   }
+}
+
+/// Removes `text` from `map` under `key` if it still names `id`: it may name
+/// a newer asset already, asked for while this one was being freed
+fn remove_key<K: Borrow<str> + Hash + Eq>(
+  map: &mut FastMap<(TypeId, u64), FastMap<K, UntypedAssetId>>,
+  key: (TypeId, u64),
+  text: &str,
+  id: UntypedAssetId,
+) {
+  let Some(texts) = map.get_mut(&key) else {
+    return;
+  };
+  if texts.get(text) == Some(&id) {
+    texts.remove(text);
+  }
+  if texts.is_empty() {
+    map.remove(&key);
+  }
+}
+
+/// `T` was never registered, so there is nowhere to keep the asset or its
+/// state: say why now, and hand out a handle that finds nothing
+fn unregistered<T: Asset>(error: AssetError) -> Handle<T> {
+  crate::engine_warn!(module: "asset", "{}", error.report());
+  Handle::detached()
 }
 
 fn settings_value<S: AssetSettings>(
@@ -835,12 +980,26 @@ mod tests {
     (world, server)
   }
 
+  /// How long a test waits for the workers before it fails
+  const PATIENCE: Duration = Duration::from_secs(5);
+
   fn pump_until(world: &mut World, done: impl Fn(&World) -> bool) {
-    for _ in 0..200 {
+    let start = std::time::Instant::now();
+    loop {
       pump(world);
       if done(world) {
         return;
       }
+      assert!(start.elapsed() < PATIENCE, "timed out waiting");
+      std::thread::sleep(Duration::from_millis(1));
+    }
+  }
+
+  /// Waits until `count` results have finished on the workers, unapplied
+  fn wait_finished(server: &AssetServer, count: usize) {
+    let start = std::time::Instant::now();
+    while server.inner.finished_queue.len() < count {
+      assert!(start.elapsed() < PATIENCE, "timed out waiting");
       std::thread::sleep(Duration::from_millis(1));
     }
   }
@@ -871,6 +1030,25 @@ mod tests {
         let _ = self.release.recv();
       }
       self.files.read(path)
+    }
+  }
+
+  /// A source whose first read of each path takes the bytes, says so, and
+  /// holds them back until the test lets it go; later reads are not held
+  struct FirstReadHeld {
+    files: MemorySource,
+    seen: Mutex<std::collections::HashSet<AssetPath>>,
+    reading: crossbeam_channel::Sender<()>,
+    release: crossbeam_channel::Receiver<()>,
+  }
+  impl AssetSource for FirstReadHeld {
+    fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+      let bytes = self.files.read(path);
+      if lock(&self.seen).insert(path.clone()) {
+        let _ = self.reading.send(());
+        let _ = self.release.recv();
+      }
+      bytes
     }
   }
 
@@ -976,6 +1154,48 @@ mod tests {
   }
 
   #[test]
+  fn a_refused_load_asked_again_is_the_same_failed_asset() {
+    let (mut world, server) = world_with(MemorySource::new());
+    let mut cursor = world.resource::<Messages<AssetEvent<Text>>>().get_cursor();
+    let no_loader: Handle<Text> = server.load("a.xyz");
+    assert_eq!(server.load::<Text>("./a.xyz"), no_loader);
+    let invalid: Handle<Text> = server.load("../a.txt");
+    assert_eq!(server.load::<Text>("../a.txt"), invalid);
+    let wrong: Handle<Text> = server.load_with("a.up", 7u8);
+    assert_eq!(server.load_with::<Text, u8>("a.up", 7), wrong);
+    let other: Handle<Text> = server.load_with("a.xyz", Upper(true));
+    assert_ne!(other, no_loader, "other settings are another asset");
+    // One failure each, so one warning each
+    pump(&mut world);
+    let sent = events(&world, &mut cursor);
+    assert_eq!(sent.len(), 4, "{sent:?}");
+    assert!(sent.iter().all(|e| matches!(e, AssetEvent::Failed { .. })));
+    // Once freed, it is refused anew
+    let id = no_loader.id();
+    drop(no_loader);
+    pump(&mut world);
+    let again: Handle<Text> = server.load("a.xyz");
+    assert_ne!(again.id(), id);
+    assert!(server.state(&again).is_failed());
+  }
+
+  #[test]
+  fn a_handle_from_before_its_type_was_registered_finds_nothing() {
+    let mut world = World::new();
+    let server = AssetServer::new(MemorySource::new());
+    server.register_loader(TextLoader);
+    world.insert_resource(server.clone());
+    let early: Handle<Text> = server.load("a.txt");
+    server.register_asset::<Text>(&mut world);
+    let real = world
+      .resource_mut::<Assets<Text>>()
+      .add(Text("real".into()));
+    assert_ne!(early, real);
+    assert_eq!(text(&world, &early), None);
+    assert!(matches!(server.state(&early), LoadState::NotLoaded));
+  }
+
+  #[test]
   fn a_path_leaving_the_root_is_invalid() {
     let (mut world, server) = world_with(MemorySource::new());
     for path in ["../a.txt", "/a.txt"] {
@@ -1029,6 +1249,8 @@ mod tests {
     source.insert("a.txt", "one");
     let (mut world, server) = world_with(source.clone());
     let queued: Handle<Text> = server.load("a.txt");
+    // The queued load has read "one" and finished; the pump has not applied it
+    wait_finished(&server, 1);
     source.insert("a.txt", "two");
     let now = server
       .load_now::<Text>(&mut world, "a.txt")
@@ -1041,15 +1263,42 @@ mod tests {
         .map(|t| t.0.as_str()),
       Some("two")
     );
-    for _ in 0..50 {
-      pump(&mut world);
-      std::thread::sleep(Duration::from_millis(1));
-    }
+    pump(&mut world);
     assert_eq!(
       world
         .resource::<Assets<Text>>()
         .get(&queued)
         .map(|t| t.0.as_str()),
+      Some("two"),
+      "the queued load's older result is dropped"
+    );
+    assert!(server.state(&queued).is_loaded());
+  }
+
+  #[test]
+  fn load_now_wins_over_a_queued_load_still_reading() {
+    let files = MemorySource::new();
+    files.insert("a.txt", "one");
+    let (reading, started) = crossbeam_channel::unbounded();
+    let (release, held) = crossbeam_channel::unbounded();
+    let (mut world, server) = world_with(FirstReadHeld {
+      files: files.clone(),
+      seen: Mutex::default(),
+      reading,
+      release: held,
+    });
+    let queued: Handle<Text> = server.load("a.txt");
+    // The worker has read "one" and holds it
+    assert!(started.recv_timeout(PATIENCE).is_ok(), "timed out waiting");
+    files.insert("a.txt", "two");
+    let now = server.load_now::<Text>(&mut world, "a.txt").ok();
+    assert_eq!(now.as_ref(), Some(&queued), "one asset");
+    assert_eq!(text(&world, &queued), Some("two"));
+    let _ = release.send(());
+    wait_finished(&server, 1);
+    pump(&mut world);
+    assert_eq!(
+      text(&world, &queued),
       Some("two"),
       "the queued load's older result is dropped"
     );
@@ -1230,16 +1479,20 @@ mod tests {
     drop(slow);
     pump(&mut world);
     let _ = release.send(());
-    for _ in 0..50 {
-      pump(&mut world);
-      std::thread::sleep(Duration::from_millis(1));
-    }
+    wait_finished(&server, 1);
+    pump(&mut world);
+    assert!(
+      server.inner.finished_queue.is_empty(),
+      "the result was applied"
+    );
     let sent = events(&world, &mut cursor);
     assert!(
       matches!(sent.as_slice(), [AssetEvent::Removed { id: removed }] if *removed == id),
       "{sent:?}"
     );
     assert!(world.resource::<Assets<Text>>().is_empty());
+    assert!(matches!(server.state(id), LoadState::NotLoaded));
+    assert_eq!(server.path(id), None);
   }
 
   #[test]

@@ -37,6 +37,18 @@ impl<T: Asset> Handle<T> {
     }
   }
 
+  /// A handle to no slot, for an asset with nowhere to live (its type is not
+  /// registered): its index and generation are never live in a store, so it
+  /// finds nothing, even once the type is registered
+  pub(crate) fn detached() -> Self {
+    let (drops, _) = crossbeam_channel::unbounded();
+    Self::from_shared(Arc::new(Shared {
+      index: u32::MAX,
+      generation: u32::MAX,
+      drops,
+    }))
+  }
+
   /// The asset's id, which does not keep it alive
   pub fn id(&self) -> AssetId<T> {
     AssetId::new(self.shared.index, self.shared.generation)

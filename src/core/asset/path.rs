@@ -12,7 +12,12 @@ impl AssetPath {
   /// Normalises `path`: `\` to `/`, drops `.` and empty segments, resolves
   /// `..` within the path; an absolute path or one leaving the root is an error
   pub fn parse(path: &str) -> Result<AssetPath, AssetError> {
-    normalise(path).map(AssetPath::from_normal)
+    normalise(path)
+      .map(AssetPath::from_normal)
+      .map_err(|reason| AssetError::InvalidPath {
+        path: path.to_owned(),
+        reason,
+      })
   }
 
   /// A path [`normalise`] made
@@ -56,15 +61,12 @@ impl fmt::Debug for AssetPath {
 }
 
 /// `path` normalised as [`AssetPath::parse`] does; borrowed when it is
-/// already normal, so looking up a loaded path allocates nothing
-pub(crate) fn normalise(path: &str) -> Result<Cow<'_, str>, AssetError> {
-  let invalid = |reason| AssetError::InvalidPath {
-    path: path.to_owned(),
-    reason,
-  };
+/// already normal, so looking up a loaded path allocates nothing. An error
+/// is the reason the path is not an asset path
+pub(crate) fn normalise(path: &str) -> Result<Cow<'_, str>, &'static str> {
   let drive = matches!(path.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic());
   if path.starts_with(['/', '\\']) || drive {
-    return Err(invalid("it is absolute"));
+    return Err("it is absolute");
   }
   if !path.is_empty()
     && !path.contains('\\')
@@ -78,14 +80,14 @@ pub(crate) fn normalise(path: &str) -> Result<Cow<'_, str>, AssetError> {
       "" | "." => {}
       ".." => {
         if segments.pop().is_none() {
-          return Err(invalid("it leaves the asset root"));
+          return Err("it leaves the asset root");
         }
       }
       segment => segments.push(segment),
     }
   }
   if segments.is_empty() {
-    return Err(invalid("it names no file"));
+    return Err("it names no file");
   }
   Ok(Cow::Owned(segments.join("/")))
 }

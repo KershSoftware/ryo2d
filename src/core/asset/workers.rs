@@ -97,22 +97,24 @@ mod tests {
   use std::sync::Arc;
   use std::sync::atomic::{AtomicUsize, Ordering};
 
+  #[cfg(not(target_arch = "wasm32"))]
   #[test]
-  fn jobs_run_and_a_panicking_one_does_not_stop_the_rest() {
+  fn jobs_run_and_panicking_ones_do_not_stop_the_rest() {
     let workers = Workers::new();
     let done = Arc::new(AtomicUsize::new(0));
-    workers.queue(Box::new(|| panic!("a bad job")));
+    // More panics than threads: without the catch, every thread would die
+    for _ in 0..=MAX_THREADS {
+      workers.queue(Box::new(|| panic!("a bad job")));
+    }
     for _ in 0..8 {
       let done = Arc::clone(&done);
       workers.queue(Box::new(move || {
         done.fetch_add(1, Ordering::SeqCst);
       }));
     }
-    for _ in 0..1000 {
+    let start = std::time::Instant::now();
+    while done.load(Ordering::SeqCst) < 8 && start.elapsed() < Duration::from_secs(5) {
       workers.run_inline(INLINE_BUDGET);
-      if done.load(Ordering::SeqCst) == 8 {
-        break;
-      }
       std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(done.load(Ordering::SeqCst), 8);
