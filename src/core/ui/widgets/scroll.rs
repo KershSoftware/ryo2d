@@ -14,6 +14,8 @@ use crate::core::ui::id::key_hash;
 use crate::core::ui::immediate::UiContext;
 use crate::core::ui::layout::{Edges, Flow, Length, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::ui::memory::UiMemory;
 use crate::core::ui::response::Response;
 use crate::core::ui::theme::WidgetState;
 use crate::core::ui::tree::{DrawKind, Node, RecordSpec, clean_edges};
@@ -47,6 +49,10 @@ pub(crate) struct ScrollState {
   pub(crate) content_height: Option<f32>,
   /// A scrollbar drag in progress: the axis and where in the thumb it holds
   grab: Option<(usize, f32)>,
+  /// The bars last drawn, sideways and down: each one's track and thumb (as
+  /// a press grabs it) in the area's own units, for the headless engine's
+  /// read in tests
+  drawn: [Option<(Rect, Rect)>; 2],
 }
 
 impl ScrollState {
@@ -246,6 +252,48 @@ fn drag_bar(
       state.target[axis] = (along / travel * state.max()[axis]).clamp(0.0, state.max()[axis]);
     }
   }
+}
+
+/// The scrollbars of the last frame drawn whose thumbs show inside their
+/// area's clip: each area's id, its bar's axis (0 sideways, 1 down), its
+/// track and its thumb, absolute, in draw order (the headless engine's read
+/// for tests)
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn drawn_bars(memory: &UiMemory) -> Vec<(UiId, usize, Rect, Rect)> {
+  let mut drawn = Vec::new();
+  for (id, record) in memory.drawn_records() {
+    let Some(state) = memory
+      .peek_state::<ScrollState>(id)
+      .filter(|_| record.flags.contains(Flags::SCROLLABLE))
+    else {
+      continue;
+    };
+    let at = |rect: Rect| {
+      Rect::new(
+        record.rect.x + rect.x,
+        record.rect.y + rect.y,
+        rect.width,
+        rect.height,
+      )
+    };
+    for (axis, bar) in state.drawn.iter().enumerate() {
+      let Some((track, thumb)) = bar.map(|(track, thumb)| (at(track), at(thumb))) else {
+        continue;
+      };
+      let centre = (thumb.x + thumb.width / 2.0, thumb.y + thumb.height / 2.0);
+      if record
+        .clip
+        .is_none_or(|clip| clip.contains(centre.0, centre.1))
+      {
+        drawn.push((record.order, id, axis, track, thumb));
+      }
+    }
+  }
+  drawn.sort_by_key(|&(order, ..)| order);
+  drawn
+    .into_iter()
+    .map(|(_, id, axis, track, thumb)| (id, axis, track, thumb))
+    .collect()
 }
 
 /// A scroll area being set up: `.show(|ui| ..)` draws its contents
@@ -517,6 +565,9 @@ impl<'a> Scroll<'_, 'a> {
     state.ease(dt, theme.metrics.scroll_smoothing);
     state.content_height = content_height;
     let shown = bars(state, axes, bar, bar_width);
+    state.drawn = shown
+      .each_ref()
+      .map(|bar| bar.as_ref().map(|bar| (bar.track, bar.thumb())));
     let grabbed = state.grab.map(|(axis, _)| axis);
 
     // A scrollbar takes room, so contents never lie under it

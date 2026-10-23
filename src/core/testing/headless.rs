@@ -15,6 +15,7 @@ use crate::core::graphics::{ScreenMapping, WgpuRenderer};
 use crate::core::input::{GamepadButton, InputEvent, Stick};
 use crate::core::render::UiRenderStats;
 use crate::core::ui::nav::nav_targets;
+use crate::core::ui::widgets::scroll::drawn_bars;
 use crate::core::ui::{Rect, UiEvent, UiId};
 
 /// Largest supported render target side, in pixels.
@@ -426,6 +427,15 @@ impl HeadlessEngine {
       .iter()
       .map(|slot| (slot.clip, slot.offset))
       .collect()
+  }
+
+  /// The scrollbars the last frame drew whose thumbs show: each scroll
+  /// area's id, the axis its bar scrolls (0 sideways, 1 down), the bar's
+  /// track and its thumb, in UI units, absolute, in draw order. A press on
+  /// the thumb grabs it, and the drag follows the pointer along the track.
+  #[doc(hidden)]
+  pub fn ui_scrollbars(&self) -> Vec<(UiId, usize, Rect, Rect)> {
+    drawn_bars(self.engine.ui_memory())
   }
 
   /// What the node walk did in the last UI pass: the nodes it built (and

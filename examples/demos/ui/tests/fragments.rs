@@ -1,14 +1,14 @@
 //! Every page of the ui demo with UI fragments on and with the node cache
 //! off (a full rebuild), at UI scales 1 and 1.25, and five pages at 2: two
-//! engines driven by the same input, wheel and trackpad scrolling among it,
-//! must draw the same pixels every frame, and the UI renderer draws each
-//! page in one or two draws. The demo draws its UI on its pixel-art target,
-//! where a scroll slot's contents are placed on the CPU and never kept, so
-//! every page runs at 1.25 again with its UI at the resolution of a window
-//! twice the game's, where the shader moves them and their runs are copied.
-//! The debug spot check stays on in the engine with fragments: what it
-//! captures afresh must equal what was kept, and it is not counted as a
-//! copy.
+//! engines driven by the same input, wheel and trackpad scrolling and
+//! scrollbar drags among it, must draw the same pixels every frame, and the
+//! UI renderer draws each page in one or two draws. The demo draws its UI
+//! on its pixel-art target, where a scroll slot's contents are placed on
+//! the CPU and never kept, so every page runs at 1.25 again with its UI at
+//! the resolution of a window twice the game's, where the shader moves them
+//! and their runs are copied. The debug spot check stays on in the engine
+//! with fragments: what it captures afresh must equal what was kept, and it
+//! is not counted as a copy.
 
 use demo_kit::prelude::*;
 use ryo2d::testing::PixelPair;
@@ -81,15 +81,17 @@ impl Look {
     Some(pair)
   }
 
-  /// The centre of `rect` (UI units) in screen units: a UI unit is the
-  /// scale's render pixels, and a screen unit the window's multiple of them
+  /// The centre of `rect` (UI units) in screen units
   fn centre(self, rect: Rect) -> (f32, f32) {
+    self.point(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
+  }
+
+  /// The point `(x, y)` (UI units) in screen units: a UI unit is the
+  /// scale's render pixels, and a screen unit the window's multiple of them
+  fn point(self, x: f32, y: f32) -> (f32, f32) {
     let window = self.window.map_or(1.0, |k| k as f32);
     let screen = self.scale.unwrap_or(window) / window;
-    (
-      (rect.x + rect.width / 2.0) * screen,
-      (rect.y + rect.height / 2.0) * screen,
-    )
+    (x * screen, y * screen)
   }
 }
 
@@ -106,6 +108,7 @@ fn scroll_area(page: usize) -> Option<usize> {
 /// What a page's run saw
 struct Seen {
   compared: usize,
+  dragged: usize,
   copied: usize,
   resolved_again: usize,
   slot_runs_copied: usize,
@@ -114,8 +117,9 @@ struct Seen {
 
 /// Open page `page` in `look`, leave it still, move the focus, point at its
 /// widgets, turn the wheel and move the trackpad over its scroll area (on
-/// the pages that have one), advance the File Dialogue page's conversation,
-/// press a widget and, on the modal page, close the modal
+/// the pages that have one), drag each scrollbar's thumb, advance the File
+/// Dialogue page's conversation, press a widget and, on the modal page,
+/// close the modal
 fn run(page: usize, look: Look) -> Option<Seen> {
   let mut pair = look.pair(page)?;
   let what = |step: &str| format!("page {page} in {look:?}, {step}");
@@ -163,6 +167,23 @@ fn run(page: usize, look: Look) -> Option<Seen> {
       what("trackpad scrolling")
     );
   }
+  // Drag each scrollbar's thumb: small steps, then a jump to the track's
+  // end and back a third of it, which moves a long list by many views a
+  // frame, past every row its interest held
+  let dragged = drag_thumbs(&mut pair, look, &what("dragging a scrollbar"));
+  if SCROLLS.contains(&page) {
+    assert!(
+      dragged > 0,
+      "{}: a thumb to drag",
+      what("dragging a scrollbar")
+    );
+    assert_ne!(
+      pair.on.ui_scroll_slots(),
+      moved,
+      "{}: the thumbs scrolled",
+      what("dragging a scrollbar")
+    );
+  }
   // Each line of the conversation is a text of its own size: the panel
   // around it, anchored at the bottom, moves the nodes kept around it
   if page == FILE_DIALOGUE {
@@ -204,11 +225,62 @@ fn run(page: usize, look: Look) -> Option<Seen> {
   }
   Some(Seen {
     compared: pair.compared(),
+    dragged,
     copied: pair.fragments_reused(),
     resolved_again: pair.resolved_again(),
     slot_runs_copied: pair.slot_runs_copied(),
     draws: pair.most_draws(),
   })
+}
+
+/// Drag the thumb of each scrollbar the page shows, one after another, and
+/// let it go; the bars dragged
+fn drag_thumbs(pair: &mut PixelPair, look: Look, what: &str) -> usize {
+  let mut dragged = 0;
+  // A drag can scroll another area's bar out of view (a strip in a list):
+  // the bars are read again before each
+  while let Some(&(_, axis, track, thumb)) = pair.on.ui_scrollbars().get(dragged) {
+    let (start, end) = if axis == 1 {
+      (track.y, track.y + track.height)
+    } else {
+      (track.x, track.x + track.width)
+    };
+    let across = if axis == 1 {
+      thumb.x + thumb.width / 2.0
+    } else {
+      thumb.y + thumb.height / 2.0
+    };
+    let along = if axis == 1 {
+      thumb.y + thumb.height / 2.0
+    } else {
+      thumb.x + thumb.width / 2.0
+    };
+    let point = |along: f32| {
+      let along = along.clamp(start + 1.0, end - 1.0);
+      let (x, y) = if axis == 1 {
+        (across, along)
+      } else {
+        (along, across)
+      };
+      look.point(x, y)
+    };
+    let (x, y) = point(along);
+    pair.each(|engine| engine.mouse_move(x, y));
+    pair.frames(1, &format!("{what}, over thumb {dragged}"));
+    pair.each(|engine| engine.press_mouse(MouseButton::Left));
+    pair.frames(1, &format!("{what}, pressing thumb {dragged}"));
+    let third = (end - start) / 3.0;
+    for to in [along + 2.0, along + 4.0, along + 8.0, end, end - third] {
+      let (x, y) = point(to);
+      pair.each(|engine| engine.mouse_move(x, y));
+      pair.frames(1, &format!("{what}, dragging thumb {dragged}"));
+    }
+    pair.frames(2, &format!("{what}, holding thumb {dragged}"));
+    pair.each(|engine| engine.release_mouse(MouseButton::Left));
+    pair.frames(3, &format!("{what}, letting thumb {dragged} go"));
+    dragged += 1;
+  }
+  dragged
 }
 
 /// Run each of `pages` in `look`: every page draws in at most `MAX_DRAWS`,
@@ -217,6 +289,7 @@ fn run(page: usize, look: Look) -> Option<Seen> {
 fn every_page(pages: &[usize], look: Look) -> Option<Seen> {
   let mut all = Seen {
     compared: 0,
+    dragged: 0,
     copied: 0,
     resolved_again: 0,
     slot_runs_copied: 0,
@@ -225,9 +298,14 @@ fn every_page(pages: &[usize], look: Look) -> Option<Seen> {
   for &page in pages {
     let seen = run(page, look)?;
     eprintln!(
-      "page {page} in {look:?}: {} frames compared, {} fragments copied, {} resolved again, \
-       {} runs copied in scroll slots, at most {} UI draws",
-      seen.compared, seen.copied, seen.resolved_again, seen.slot_runs_copied, seen.draws
+      "page {page} in {look:?}: {} frames compared, {} scrollbars dragged, {} fragments copied, \
+       {} resolved again, {} runs copied in scroll slots, at most {} UI draws",
+      seen.compared,
+      seen.dragged,
+      seen.copied,
+      seen.resolved_again,
+      seen.slot_runs_copied,
+      seen.draws
     );
     assert!(
       (1..=MAX_DRAWS).contains(&seen.draws),
@@ -235,14 +313,15 @@ fn every_page(pages: &[usize], look: Look) -> Option<Seen> {
       seen.draws
     );
     all.compared += seen.compared;
+    all.dragged += seen.dragged;
     all.copied += seen.copied;
     all.resolved_again += seen.resolved_again;
     all.slot_runs_copied += seen.slot_runs_copied;
   }
   eprintln!(
-    "{look:?}: {} frames compared, {} fragments copied, {} resolved again, {} runs copied in \
-     scroll slots",
-    all.compared, all.copied, all.resolved_again, all.slot_runs_copied
+    "{look:?}: {} frames compared, {} scrollbars dragged, {} fragments copied, {} resolved \
+     again, {} runs copied in scroll slots",
+    all.compared, all.dragged, all.copied, all.resolved_again, all.slot_runs_copied
   );
   assert!(all.compared > 0);
   assert!(all.copied > 0, "{look:?}: some frame copied fragments");
