@@ -287,11 +287,13 @@ pub(crate) struct Prewarm {
 }
 
 /// The font a role uses, and the face it draws with: its font's, or until
-/// that is registered the face the role had before
+/// that is registered the face the role had before, whose font it holds
+/// meanwhile so it is not freed
 #[derive(Clone)]
 struct RoleFont {
   font: Handle<Font>,
   face: Option<FontId>,
+  kept: Option<Handle<Font>>,
 }
 
 /// The faces of the fonts in a followed store, by slot: each live asset's
@@ -464,7 +466,8 @@ impl Fonts {
   /// Use `font` for a role (e.g. a game's own UI font); the role holds it,
   /// so it stays loaded while the role uses it. A font not registered yet
   /// (still loading) takes over once it is; until then the role keeps the
-  /// face it had. Setting the font the role already uses changes nothing
+  /// face it had, and holds that face's font, so it is not freed meanwhile.
+  /// Setting the font the role already uses changes nothing
   pub fn set_role(&mut self, role: FontRole, font: Handle<Font>) {
     let slot = role.index();
     if self.roles[slot]
@@ -474,8 +477,15 @@ impl Fonts {
       return;
     }
     let before = self.role(role);
-    let face = self.face_of(&font).or(before);
-    self.roles[slot] = Some(RoleFont { font, face });
+    let registered = self.face_of(&font);
+    // The font the role draws with until the new one registers
+    let kept = match (registered, self.roles[slot].take()) {
+      (None, Some(old)) if self.face_of(&old.font).is_some() => Some(old.font),
+      (None, Some(old)) => old.kept,
+      _ => None,
+    };
+    let face = registered.or(before);
+    self.roles[slot] = Some(RoleFont { font, face, kept });
     if face != before {
       self.generation += 1;
     }
@@ -811,20 +821,25 @@ impl Fonts {
     }
   }
 
-  /// Each role draws with its font's face once that is registered, and
-  /// with no face once the one it kept is gone
+  /// Each role draws with its font's face once that is registered (and
+  /// lets the font it kept meanwhile go), and with no face once the one it
+  /// kept is gone
   fn resolve_roles(&mut self) {
     for at in 0..self.roles.len() {
       let Some(role) = self.roles[at].as_ref() else {
         continue;
       };
+      let registered = self.face_of(&role.font);
       let kept = role.face.filter(|&face| self.face(face).is_some());
-      let face = self.face_of(&role.font).or(kept);
-      if let Some(role) = self.roles[at].as_mut()
-        && role.face != face
-      {
-        role.face = face;
-        self.generation += 1;
+      let face = registered.or(kept);
+      if let Some(role) = self.roles[at].as_mut() {
+        if registered.is_some() {
+          role.kept = None;
+        }
+        if role.face != face {
+          role.face = face;
+          self.generation += 1;
+        }
       }
     }
   }
@@ -1484,6 +1499,32 @@ mod tests {
       "registered: the role draws with it"
     );
     assert_ne!(fonts.registry.role(FontRole::Ui), inter);
+  }
+
+  #[test]
+  fn a_role_switched_to_a_font_still_loading_keeps_its_old_font_until_then() {
+    let mut fonts = TestFonts::empty();
+    let (game, game_face) = fonts.add(PRESS_START);
+    assert!(game_face.is_some());
+    // The role is the game font's only holder
+    fonts.registry.set_role(FontRole::Ui, game);
+    // A font still loading: its slot is reserved, with nothing in it yet
+    let next = fonts.store.ledger().lock().unwrap().reserve::<Font>();
+    fonts.registry.set_role(FontRole::Ui, next.clone());
+    fonts.free_unheld();
+    assert_eq!(fonts.registry.role(FontRole::Ui), game_face, "the old face");
+    assert!(
+      game_face.is_some_and(|face| fonts.registry.face(face).is_some()),
+      "the old font is held until then"
+    );
+    // It loads: the role takes it and lets the old one go
+    assert!(fonts.store.insert(next.id(), font(MONO)));
+    fonts.follow();
+    let face = fonts.registry.face_of(&next);
+    assert!(face.is_some());
+    assert_eq!(fonts.registry.role(FontRole::Ui), face);
+    fonts.free_unheld();
+    assert!(game_face.is_some_and(|face| fonts.registry.face(face).is_none()));
   }
 
   #[test]

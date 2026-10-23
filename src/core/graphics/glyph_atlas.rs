@@ -431,6 +431,13 @@ impl GlyphAtlas {
         self.forget_font(font);
       }
     }
+    // The snapshot holds every face a glyph can be placed from until the
+    // next call. That rests on an invariant: nothing follows the font stores
+    // (`fonts_follow_assets`) while a frame is drawn. The follows run after
+    // the pump, at the start of the UI pass and in `ctx.fonts()`, all before
+    // `present_frame`, and `Scene::render` gets no `SceneContext`. A follow
+    // inside `present_frame` would let a face registered after this snapshot
+    // place glyphs that a later change in place leaves stale
     self.faces = faces;
     self.faces.clear();
     self
