@@ -2235,20 +2235,16 @@ mod tests {
     );
     insert_fonts(&mut world);
     let server = world.resource::<AssetServer>().clone();
+    // One worker, as a one- or two-core machine has: the held read takes it
+    server.limit_workers(1);
     let mut engine = TextEngine::new();
     engine.watch_loads(Some(&server));
     engine.sync(world.resource::<Fonts>());
     let ui = world.resource::<Fonts>().role(FontRole::Ui);
     let in_ui = |laid: &TextLayout| laid.glyphs.iter().all(|g| Some(g.font) == ui);
 
-    // Still loading: the fallback, quietly
-    let loading = server.load::<Font>("fonts/held.ttf");
-    assert!(matches!(server.state(&loading), LoadState::Loading));
-    let style = TextStyle::default().font(TextFont::Face(loading.clone()));
-    assert!(in_ui(&layout(&mut engine, "loading", &style)));
-    assert!(!engine.warned_unloaded(loading.id()), "loading: no warning");
-
-    // Failed: the server warned already
+    // Failed: the server warned already. It fails first: the held load
+    // below keeps the one worker until the end
     let missing = server.load::<Font>("fonts/missing.ttf");
     pump_until(&mut world, |_| server.state(&missing).is_failed());
     let style = TextStyle::default().font(TextFont::Face(missing.clone()));
@@ -2257,6 +2253,13 @@ mod tests {
       !engine.warned_unloaded(missing.id()),
       "failed: no warning here"
     );
+
+    // Still loading: the fallback, quietly
+    let loading = server.load::<Font>("fonts/held.ttf");
+    assert!(matches!(server.state(&loading), LoadState::Loading));
+    let style = TextStyle::default().font(TextFont::Face(loading.clone()));
+    assert!(in_ui(&layout(&mut engine, "loading", &style)));
+    assert!(!engine.warned_unloaded(loading.id()), "loading: no warning");
 
     // A handle to nothing the server knows: warned
     let nothing = Handle::<Font>::detached();

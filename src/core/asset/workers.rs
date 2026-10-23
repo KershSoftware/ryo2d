@@ -24,6 +24,10 @@ pub(crate) struct Workers {
   /// How many threads started, settled at the first queued job: a server
   /// that only loads at once, or is given its assets, starts none
   threads: OnceLock<usize>,
+  /// The most threads a test lets it start (`limit`), as a one-core
+  /// machine would
+  #[cfg(test)]
+  limit: std::sync::atomic::AtomicUsize,
 }
 
 impl Workers {
@@ -34,7 +38,16 @@ impl Workers {
       jobs,
       queue,
       threads: OnceLock::new(),
+      #[cfg(test)]
+      limit: std::sync::atomic::AtomicUsize::new(usize::MAX),
     }
+  }
+
+  /// Starts at most `max` threads when the first job is queued, as a
+  /// machine with fewer cores would (tests)
+  #[cfg(test)]
+  pub(crate) fn limit(&self, max: usize) {
+    self.limit.store(max, std::sync::atomic::Ordering::Relaxed);
   }
 
   /// Starts the threads: one fewer than the machine's cores, from one to
@@ -45,6 +58,8 @@ impl Workers {
       .map_or(1, std::num::NonZero::get)
       .saturating_sub(1)
       .clamp(1, MAX_THREADS);
+    #[cfg(test)]
+    let count = count.min(self.limit.load(std::sync::atomic::Ordering::Relaxed));
     let mut started = 0;
     for n in 0..count {
       let queue = self.queue.clone();

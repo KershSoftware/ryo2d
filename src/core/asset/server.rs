@@ -290,6 +290,13 @@ impl AssetServer {
     }
   }
 
+  /// Starts at most `max` worker threads, as a machine with fewer cores
+  /// would; before the first queued load (tests)
+  #[cfg(test)]
+  pub(crate) fn limit_workers(&self, max: usize) {
+    self.inner.workers.limit(max);
+  }
+
   /// Whether `other` is this server (a clone of it), not another
   pub(crate) fn is_same(&self, other: &AssetServer) -> bool {
     Arc::ptr_eq(&self.inner, &other.inner)
