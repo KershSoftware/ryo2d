@@ -112,6 +112,32 @@ fn colour_of(world: &World, entity: Entity, collider: &Collider) -> Color {
   }
 }
 
+/// What a character's floor is, from what the demo spawned. The readout
+/// names it rather than printing its entity id, which changes whenever an
+/// entity or a resource is added before it.
+fn floor_name(world: &World, floor: Option<Entity>) -> &'static str {
+  let Some(floor) = floor else {
+    return "none";
+  };
+  let parent = world.get::<ChildOf>(floor).map(ChildOf::parent);
+  let one_way = world
+    .get::<Collider>(floor)
+    .is_some_and(|collider| collider.one_way.is_some());
+  // A tile map's colliders are its children
+  if parent.is_some_and(|map| world.get::<TileColliders>(map).is_some()) {
+    return if one_way { "one-way shelf" } else { "ground" };
+  }
+  let body = world
+    .get::<RigidBody>(floor)
+    .or_else(|| parent.and_then(|parent| world.get::<RigidBody>(parent)));
+  match body.map(|body| body.kind) {
+    Some(BodyKind::Kinematic) => "moving platform",
+    Some(BodyKind::Dynamic) => "crate",
+    _ if one_way => "one-way platform",
+    _ => "fixed collider",
+  }
+}
+
 /// Outline every collider, in entity index order: a query's order changes
 /// whenever an archetype is made, and overlapping outlines would swap
 /// colours.
@@ -779,8 +805,10 @@ impl DemoPage for CustomPage {
         state.floor_normal.x, state.floor_normal.y, state.wall_normal.x, state.wall_normal.y
       ),
       format!(
-        "Floor: {:?}   platform velocity ({:.0}, {:.0})",
-        state.floor, state.platform_velocity.x, state.platform_velocity.y
+        "Floor: {}   platform velocity ({:.0}, {:.0})",
+        floor_name(ctx.world, state.floor),
+        state.platform_velocity.x,
+        state.platform_velocity.y
       ),
       format!(
         "Velocity before ({:.0}, {:.0})   hits: {}",
