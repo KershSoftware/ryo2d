@@ -3,6 +3,7 @@
 
 use glam::Vec2;
 
+use crate::core::asset::assets::follower_token;
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::DetectChangesMut;
@@ -14,12 +15,23 @@ use crate::core::graphics::Image;
 /// the pass never takes the store from the world: a scene's `ui` reads,
 /// adds and loads images as anywhere else. An image added during the pass
 /// is sized from the next one.
-#[derive(Default)]
 pub(crate) struct ImageSizes {
   /// By slot index
   slots: Vec<Option<LiveImage>>,
   /// The store followed (`Assets::serial`)
   store: Option<u64>,
+  /// Its token as the store's follower (`follower_token`)
+  follower: u64,
+}
+
+impl Default for ImageSizes {
+  fn default() -> Self {
+    Self {
+      slots: Vec::new(),
+      store: None,
+      follower: follower_token(),
+    }
+  }
 }
 
 /// One live image, as the UI reads it
@@ -34,6 +46,7 @@ struct LiveImage {
 static NO_IMAGES: ImageSizes = ImageSizes {
   slots: Vec::new(),
   store: None,
+  follower: 0,
 };
 
 impl ImageSizes {
@@ -70,12 +83,12 @@ impl ImageSizes {
   /// Brings the table in line with `images`: the slots it changed since the
   /// last call, or all of them when it is not the store followed before
   fn follow(&mut self, images: &mut Assets<Image>) {
-    let whole = self.store != Some(images.serial());
+    let whole = self.store != Some(images.serial()) || !images.is_followed_by(self.follower);
     if whole {
       self.slots.clear();
       self.store = Some(images.serial());
     }
-    images.take_changes(whole, |index, now| {
+    images.take_changes(self.follower, whole, |index, now| {
       self.set(
         index,
         now.map(|now| (now.generation, now.version, now.value)),

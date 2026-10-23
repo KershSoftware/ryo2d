@@ -120,8 +120,8 @@ pub struct Assets<T: Asset> {
   drops: Receiver<(u32, u32)>,
   values: Vec<Option<Entry<T>>>,
   next_version: u64,
-  /// The slots changed since the follower last took them (`take_changes`);
-  /// `None` until it first does, so a store nobody follows lists nothing
+  /// The slots changed since its follower last took them (`take_changes`);
+  /// `None` until one first does, so a store nobody follows lists nothing
   changes: Option<Changes>,
   /// Tells this store from every other, so a follower handed another starts over
   serial: u64,
@@ -133,12 +133,21 @@ struct Entry<T> {
   value: T,
 }
 
-/// The slots changed since the last `take_changes`, each listed once
-#[derive(Default)]
+/// The slots changed since the last `take_changes`, each listed once, for
+/// the one follower that takes them
 struct Changes {
   slots: Vec<u32>,
   /// By slot: whether it is in `slots`
   listed: Vec<bool>,
+  /// The follower the list is kept for, and the one before it
+  follower: u64,
+  before: Option<u64>,
+}
+
+/// A token no follower of a change list has had: each follower holds its own
+pub(crate) fn follower_token() -> u64 {
+  static NEXT: AtomicU64 = AtomicU64::new(1);
+  NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Lists slot `index` as changed, once until the changes are next taken
@@ -312,18 +321,31 @@ impl<T: Asset> Assets<T> {
     self.serial
   }
 
-  /// Gives `seen` each slot changed since the last call (an asset added or
-  /// loaded into it, changed through `get_mut`, or freed) once, with what
-  /// it holds now (`None`: nothing). The first call, or one asking for the
-  /// `whole` store, gives every slot. For the one follower that mirrors the
-  /// store (the UI's image sizes): a second would take the first's changes
+  /// Whether `follower` is the one this store's change list is kept for
+  pub(crate) fn is_followed_by(&self, follower: u64) -> bool {
+    self
+      .changes
+      .as_ref()
+      .is_some_and(|changes| changes.follower == follower)
+  }
+
+  /// Gives `seen` each slot changed since `follower` last took them (an
+  /// asset added or loaded into it, changed through `get_mut`, or freed)
+  /// once, with what it holds now (`None`: nothing). A store keeps one list,
+  /// for one follower (`follower_token`): a follower it is not kept for (the
+  /// first, or another) gets every slot, and the list is kept for it from
+  /// then on, so no follower misses a change. So does one asking for the
+  /// `whole` store (one that followed another store meanwhile). Two
+  /// followers taking turns would each be given the whole store every time:
+  /// a debug assertion catches them
   pub(crate) fn take_changes(
     &mut self,
+    follower: u64,
     whole: bool,
     mut seen: impl FnMut(u32, Option<Stored<'_, T>>),
   ) {
     match &mut self.changes {
-      Some(changes) if !whole => {
+      Some(changes) if !whole && changes.follower == follower => {
         for index in changes.slots.drain(..) {
           if let Some(listed) = changes.listed.get_mut(index as usize) {
             *listed = false;
@@ -332,8 +354,21 @@ impl<T: Asset> Assets<T> {
         }
       }
       changes => {
+        let changes = changes.get_or_insert_with(|| Changes {
+          slots: Vec::new(),
+          listed: Vec::new(),
+          follower,
+          before: None,
+        });
+        if changes.follower != follower {
+          debug_assert!(
+            changes.before != Some(follower),
+            "two followers take turns on one store's change list: a store has one follower"
+          );
+          changes.before = Some(changes.follower);
+          changes.follower = follower;
+        }
         // Every slot is given now: the list starts over
-        let changes = changes.get_or_insert_with(Changes::default);
         changes.slots.clear();
         changes.listed.clear();
         for (index, entry) in self.values.iter().enumerate() {
@@ -357,10 +392,18 @@ mod tests {
   /// A slot `take_changes` gave, with its generation, version and text
   type Taken = (u32, Option<(u32, u64, String)>);
 
+  /// The follower the single-follower tests take changes as
+  const FOLLOWER: u64 = u64::MAX;
+
   /// What `take_changes` gives
   fn taken(assets: &mut Assets<Text>, whole: bool) -> Vec<Taken> {
+    taken_by(assets, FOLLOWER, whole)
+  }
+
+  /// What `take_changes` gives `follower`
+  fn taken_by(assets: &mut Assets<Text>, follower: u64, whole: bool) -> Vec<Taken> {
     let mut taken = Vec::new();
-    assets.take_changes(whole, |index, now| {
+    assets.take_changes(follower, whole, |index, now| {
       taken.push((
         index,
         now.map(|now| (now.generation, now.version, now.value.0.clone())),
@@ -423,6 +466,61 @@ mod tests {
       1,
       "and is listed again after"
     );
+  }
+
+  #[test]
+  fn a_second_follower_gets_the_whole_store_then_its_own_changes() {
+    let mut assets = Assets::<Text>::default();
+    let a = assets.add(Text("a".into()));
+    let (first, second) = (follower_token(), follower_token());
+    assert_ne!(first, second);
+    assert_eq!(taken_by(&mut assets, first, false).len(), 1);
+    assert!(assets.is_followed_by(first));
+    assets.get_mut(&a).unwrap().0 = "a2".into();
+    let b = assets.add(Text("b".into()));
+    // Not the first's list: every slot, as it is now, so nothing is missed
+    let (va, vb) = (assets.version(&a).unwrap(), assets.version(&b).unwrap());
+    assert_eq!(
+      taken_by(&mut assets, second, false),
+      vec![
+        (0, Some((0, va, "a2".into()))),
+        (1, Some((0, vb, "b".into()))),
+      ]
+    );
+    // The list is the second's now: its own changes from here
+    assert!(assets.is_followed_by(second) && !assets.is_followed_by(first));
+    assert!(taken_by(&mut assets, second, false).is_empty());
+    assets.get_mut(&b).unwrap().0 = "b2".into();
+    assert_eq!(taken_by(&mut assets, second, false).len(), 1);
+  }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "two followers")]
+  fn followers_taking_turns_on_one_store_are_caught() {
+    let mut assets = Assets::<Text>::default();
+    assets.add(Text("a".into()));
+    let (first, second) = (follower_token(), follower_token());
+    taken_by(&mut assets, first, false);
+    taken_by(&mut assets, second, false);
+    // Back to the first: each would take the other's changes
+    taken_by(&mut assets, first, false);
+  }
+
+  /// Without the debug check, a follower handed the store back gets the
+  /// whole store, so it misses nothing the other took
+  #[cfg(not(debug_assertions))]
+  #[test]
+  fn a_follower_handed_the_store_back_gets_the_whole_store() {
+    let mut assets = Assets::<Text>::default();
+    let a = assets.add(Text("a".into()));
+    let (first, second) = (follower_token(), follower_token());
+    taken_by(&mut assets, first, false);
+    assets.get_mut(&a).unwrap().0 = "a2".into();
+    taken_by(&mut assets, second, false);
+    let back = taken_by(&mut assets, first, false);
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].1.as_ref().map(|now| now.2.as_str()), Some("a2"));
   }
 
   #[test]

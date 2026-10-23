@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use swash::{FontRef, StringId};
 use thiserror::Error;
 
+use crate::core::asset::assets::follower_token;
 use crate::core::asset::{Asset, AssetId, Assets, Handle};
 use crate::core::ecs::Resource;
 use crate::core::ecs::kernel::{DetectChangesMut, World};
@@ -344,9 +345,11 @@ pub struct Fonts {
   /// sharing a face, changed or freed), which `generation` does not always
   /// see: what `TextFont::Face` resolves to changes with it
   slot_version: u64,
-  /// The stores followed (`Assets::serial`)
+  /// The stores followed (`Assets::serial`), and the registry's token as
+  /// their follower
   font_store: Option<u64>,
   bitmap_store: Option<u64>,
+  follower: u64,
 }
 
 // Faces are listed by name: their font bytes are not printed
@@ -380,6 +383,7 @@ impl Fonts {
       slot_version: 0,
       font_store: None,
       bitmap_store: None,
+      follower: follower_token(),
     }
   }
 
@@ -562,7 +566,7 @@ impl Fonts {
 
   /// Follows `store` alone (the built-ins, and tests)
   pub(crate) fn follow_fonts(&mut self, store: &mut Assets<Font>) {
-    let fonts = Changed::take(store, self.font_store);
+    let fonts = Changed::take(store, self.follower, self.font_store);
     self.apply(StoreChanges {
       fonts,
       bitmaps: Changed::default(),
@@ -870,12 +874,12 @@ impl<T> Default for Changed<T> {
 }
 
 impl<T: Asset + Clone> Changed<T> {
-  /// What changed in `store` since a registry following `followed` last
-  /// looked: allocates only when something did
-  fn take(store: &mut Assets<T>, followed: Option<u64>) -> Self {
-    let whole = followed != Some(store.serial());
+  /// What changed in `store` since `follower`, following the store
+  /// `followed`, last looked: allocates only when something did
+  fn take(store: &mut Assets<T>, follower: u64, followed: Option<u64>) -> Self {
+    let whole = followed != Some(store.serial()) || !store.is_followed_by(follower);
     let mut slots = Vec::new();
-    store.take_changes(whole, |index, now| {
+    store.take_changes(follower, whole, |index, now| {
       slots.push((index, now.map(|now| (now.generation, now.value.clone()))));
     });
     Self {
@@ -904,17 +908,17 @@ pub(crate) fn fonts_follow_assets(world: &mut World) {
   let Some(fonts) = world.get_resource::<Fonts>() else {
     return;
   };
-  let (font_store, bitmap_store) = (fonts.font_store, fonts.bitmap_store);
+  let (follower, font_store, bitmap_store) = (fonts.follower, fonts.font_store, fonts.bitmap_store);
   let mut changes = StoreChanges {
     fonts: Changed::default(),
     bitmaps: Changed::default(),
   };
   // Following a store changes nothing a reader of the store can see
   if let Some(mut store) = world.get_resource_mut::<Assets<Font>>() {
-    changes.fonts = Changed::take(store.bypass_change_detection(), font_store);
+    changes.fonts = Changed::take(store.bypass_change_detection(), follower, font_store);
   }
   if let Some(mut store) = world.get_resource_mut::<Assets<BitmapFont>>() {
-    changes.bitmaps = Changed::take(store.bypass_change_detection(), bitmap_store);
+    changes.bitmaps = Changed::take(store.bypass_change_detection(), follower, bitmap_store);
   }
   if changes.fonts.is_empty() && changes.bitmaps.is_empty() {
     return;
@@ -1117,8 +1121,16 @@ impl TestFonts {
   /// Brings the registry in line with the stores
   pub(crate) fn follow(&mut self) {
     let changes = StoreChanges {
-      fonts: Changed::take(&mut self.store, self.registry.font_store),
-      bitmaps: Changed::take(&mut self.bitmaps, self.registry.bitmap_store),
+      fonts: Changed::take(
+        &mut self.store,
+        self.registry.follower,
+        self.registry.font_store,
+      ),
+      bitmaps: Changed::take(
+        &mut self.bitmaps,
+        self.registry.follower,
+        self.registry.bitmap_store,
+      ),
     };
     self.registry.apply(changes);
   }
