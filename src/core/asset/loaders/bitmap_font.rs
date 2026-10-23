@@ -167,6 +167,8 @@ mod tests {
       release: held,
     });
     let server = world.resource::<AssetServer>().clone();
+    // One worker, as a small machine has: the held sheet takes it last
+    server.limit_workers(1);
     let font = server.load::<BitmapFont>("fonts/pixel.bitmap.ron");
     // The descriptor is read, and waits for its sheet
     pump_until(&mut world, |_| server.waiting_count() == 1);

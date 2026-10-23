@@ -1657,6 +1657,15 @@ mod tests {
     }
   }
 
+  /// `world_with`, its pool held to one worker as on a one- or two-core
+  /// machine: a test that holds a read must not need a second worker while
+  /// it does
+  fn world_on_one_worker(source: impl AssetSource) -> (World, AssetServer) {
+    let (world, server) = world_with(source);
+    server.limit_workers(1);
+    (world, server)
+  }
+
   fn world_with(source: impl AssetSource) -> (World, AssetServer) {
     let mut world = World::new();
     let server = AssetServer::new(source);
@@ -1777,6 +1786,21 @@ mod tests {
       if path.as_str() == "slow.txt" {
         // Returns when the test sends, or drops its sender
         let _ = self.release.recv();
+      }
+      self.files.read(path)
+    }
+  }
+
+  /// A source that holds back each named file until the test lets that one go
+  struct HeldEach {
+    files: MemorySource,
+    held: Vec<(&'static str, crossbeam_channel::Receiver<()>)>,
+  }
+  impl AssetSource for HeldEach {
+    fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+      if let Some((_, release)) = self.held.iter().find(|(held, _)| *held == path.as_str()) {
+        // Returns when the test sends, or drops its sender
+        let _ = release.recv();
       }
       self.files.read(path)
     }
@@ -2056,7 +2080,7 @@ mod tests {
     files.insert("a.txt", "one");
     let (reading, started) = crossbeam_channel::unbounded();
     let (release, held) = crossbeam_channel::unbounded();
-    let (mut world, server) = world_with(FirstReadHeld {
+    let (mut world, server) = world_on_one_worker(FirstReadHeld {
       files: files.clone(),
       seen: Mutex::default(),
       reading,
@@ -2244,7 +2268,7 @@ mod tests {
     let files = MemorySource::new();
     files.insert("slow.txt", "late");
     let (release, held) = crossbeam_channel::unbounded();
-    let (mut world, server) = world_with(HeldSource {
+    let (mut world, server) = world_on_one_worker(HeldSource {
       files,
       release: held,
     });
@@ -2308,7 +2332,7 @@ mod tests {
     files.insert("b.txt", "b");
     files.insert("slow.txt", "s");
     let (release, held) = crossbeam_channel::unbounded();
-    let (mut world, server) = world_with(HeldSource {
+    let (mut world, server) = world_on_one_worker(HeldSource {
       files,
       release: held,
     });
@@ -2423,18 +2447,20 @@ mod tests {
     files.insert("a.txt", "a");
     files.insert("slow.txt", "s");
     let (release, held) = crossbeam_channel::unbounded();
-    let (mut world, server) = world_with(HeldSource {
+    let (mut world, server) = world_on_one_worker(HeldSource {
       files,
       release: held,
     });
     let mut texts = cursor::<Text>(&world);
     let mut bundles = cursor::<Bundle>(&world);
-    let bundle: Handle<Bundle> = server.load("x.bundle");
+    // a.txt first, so the one worker reads it before the bundle's read
+    // queues slow.txt, which holds the worker: the order does not depend on
+    // how fast the worker is
     let a: Handle<Text> = server.load("a.txt");
+    pump_until(&mut world, |_| server.state(&a).is_loaded());
+    let bundle: Handle<Bundle> = server.load("x.bundle");
     // The bundle's result is in, and waits for slow.txt
-    pump_until(&mut world, |_| {
-      server.state(&a).is_loaded() && waiting(&server) == 1
-    });
+    pump_until(&mut world, |_| waiting(&server) == 1);
     assert_eq!(parts(&world, &bundle), None, "not added while one loads");
     assert!(matches!(server.state(&bundle), LoadState::Loading));
     assert!(!server.is_ready(&bundle));
@@ -2920,7 +2946,7 @@ mod tests {
     files.insert("a.txt", "a");
     files.insert("slow.txt", "s");
     let (release, held) = crossbeam_channel::unbounded();
-    let (mut world, server) = world_with(HeldSource {
+    let (mut world, server) = world_on_one_worker(HeldSource {
       files: files.clone(),
       release: held,
     });
@@ -2975,7 +3001,7 @@ mod tests {
     files.insert("a.txt", "one");
     let (reading, read) = crossbeam_channel::unbounded();
     let (release, held) = crossbeam_channel::unbounded();
-    let (mut world, server) = world_with(Gated {
+    let (mut world, server) = world_on_one_worker(Gated {
       files: files.clone(),
       reading,
       release: held,
@@ -3062,7 +3088,7 @@ mod tests {
     files.insert("p.bundle", "x.bundle");
     let (reading, read) = crossbeam_channel::unbounded();
     let (release, held) = crossbeam_channel::unbounded();
-    let (mut world, server) = world_with(FirstReadHeld {
+    let (mut world, server) = world_on_one_worker(FirstReadHeld {
       files: files.clone(),
       seen: Mutex::default(),
       reading,
@@ -3117,33 +3143,50 @@ mod tests {
     files.insert("a.txt", "a");
     files.insert("b.txt", "b");
     files.insert("slow.txt", "s");
-    let (release, held) = crossbeam_channel::unbounded();
-    let (mut world, server) = world_with(HeldSource {
+    let (release_slow, slow_held) = crossbeam_channel::unbounded();
+    let (release_b, b_held) = crossbeam_channel::unbounded();
+    let (mut world, server) = world_on_one_worker(HeldEach {
       files: files.clone(),
-      release: held,
+      held: vec![("slow.txt", slow_held), ("b.txt", b_held)],
     });
     let x = server
       .load_now::<Bundle>(&mut world, "x.bundle")
       .expect("loads");
-    // Held by the test too, so it outlives the stale value
-    let slow: Handle<Text> = server.load("slow.txt");
+    // The reload is read, then waits on slow.txt, whose read holds the worker
     files.insert("x.bundle", "a.txt\nslow.txt");
     server.reload("x.bundle");
     pump_until(&mut world, |_| waiting(&server) == 1);
-    // A newer reload: the value waiting on slow.txt is stale from now on
+    // Held by the test too, so it outlives the stale value
+    let slow: Handle<Text> = server.load("slow.txt");
+    // A newer reload: the value waiting on slow.txt is stale from now on.
+    // The worker reads it once slow.txt is let go, then holds b.txt
     files.insert("x.bundle", "a.txt\nb.txt");
     server.reload("x.bundle");
     let b: Handle<Text> = server.load("b.txt");
-    let holds_b = |w: &World| {
+    let holds = |w: &World, text: AssetId<Text>| {
       w.resource::<Assets<Bundle>>().get(&x).is_some_and(
-        |bundle| matches!(bundle.parts.as_slice(), [_, Part::Text(t)] if t.id() == b.id()),
+        |bundle| matches!(bundle.parts.as_slice(), [_, Part::Text(t)] if t.id() == text),
       )
     };
-    pump_until(&mut world, |w| holds_b(w));
-    let _ = release.send(());
-    pump_until(&mut world, |_| server.state(&slow).is_loaded());
+    let _ = release_slow.send(());
+    // slow.txt is in while the newer value still waits on b.txt: the stale
+    // value could settle now, and is dropped instead
+    pump_until(&mut world, |_| {
+      server.state(&slow).is_loaded() && waiting(&server) == 1
+    });
+    assert!(
+      !holds(&world, slow.id()),
+      "the stale value was put in its store"
+    );
+    assert_eq!(
+      parts(&world, &x),
+      Some(1),
+      "the last good value stays meanwhile"
+    );
+    let _ = release_b.send(());
+    pump_until(&mut world, |w| holds(w, b.id()));
     pump(&mut world);
-    assert!(holds_b(&world), "the newer reload's value stays");
+    assert!(holds(&world, b.id()), "the newer reload's value stays");
   }
 
   #[test]
@@ -3153,7 +3196,7 @@ mod tests {
     files.insert("slow.txt", "s");
     let (reading, read) = crossbeam_channel::unbounded();
     let (release, held) = crossbeam_channel::unbounded();
-    let (mut world, server) = world_with(FirstReadHeld {
+    let (mut world, server) = world_on_one_worker(FirstReadHeld {
       files: files.clone(),
       seen: Mutex::default(),
       reading,
