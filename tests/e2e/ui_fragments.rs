@@ -1,13 +1,14 @@
 //! UI fragments in the engine: two engines driven alike, one keeping its
 //! node trees' clean subtrees as fragments and one with the node cache off,
 //! draw and behave the same every frame while scenes are pushed over a page,
-//! popped and switched (a switch from `ui` runs the UI pass again), and a
-//! click lands on the top scene. The debug spot check is off in both unless
-//! a test turns it on: each frame it builds a clean node and captures the
-//! fragment around it afresh, so a tree of one fragment would never be
-//! copied. And the render cases (`PixelPair::fragments`, the spot check on):
-//! a font render change, and more scroll areas than the renderer's slots. A
-//! sprite updated in place under a kept fragment is the engine's own test
+//! popped and switched (a switch or push from `ui` runs the UI pass again,
+//! also in the frame a lower scene's tree changes), and a click lands on the
+//! top scene. The debug spot check is off in both unless a test turns it on:
+//! each frame it builds a clean node and captures the fragment around it
+//! afresh, so a tree of one fragment would never be copied. And the render
+//! cases (`PixelPair::fragments`, the spot check on): a font render change,
+//! and more scroll areas than the renderer's slots. A sprite updated in place
+//! under a kept fragment is the engine's own test
 //! (`render/ui_retain/gpu_tests.rs`): only the engine replaces a sprite's
 //! pixels in place, as hot reload does.
 
@@ -422,6 +423,158 @@ fn a_rerun_pass() {
   pair.frames(1, "switched, the pass run again");
   pair.frames(6, "after the switch");
   assert!(pair.reused(7..11) > 0, "the new scene's tree was copied");
+}
+
+/// The bottom scene's tree, for the scene above to write to
+type Tree = Arc<Mutex<Option<Entity>>>;
+
+/// The bottom scene of the lower-change rerun: a tree of texts, one showing
+/// `{w}` under a wider line (so its width never moves the tree), and nothing
+/// that takes a role, so the whole tree is kept as one fragment. Its first
+/// `ui` pushes `Middle`, which changes `{w}` at its update `set`.
+struct Bottom {
+  tree: Tree,
+  frame: u32,
+  set: u32,
+}
+
+impl Scene for Bottom {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let root = ctx.spawn_ui(
+      UiNode::column()
+        .gap(4.0)
+        .anchor(Anchor::TopLeft)
+        .child(UiNode::text("Bottom, a line wider than the label"))
+        .child(UiNode::text("Shows {w}").bound())
+        .child(UiNode::text("Footer")),
+    );
+    ctx.ui_set(root, "w", "this");
+    *lock(&self.tree) = Some(root);
+  }
+
+  fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let frame = self.frame;
+    self.frame += 1;
+    if frame == 0 {
+      return SceneAction::Push(Box::new(Middle {
+        tree: Arc::clone(&self.tree),
+        updates: 0,
+        set: self.set,
+        push: false,
+      }));
+    }
+    SceneAction::Continue
+  }
+}
+
+/// A transparent scene over the bottom one, with a tree of its own. Its
+/// update `set` writes the bottom tree's `{w}`, and its next `ui` pushes a
+/// transparent `Top`: the UI pass runs again in the frame the bottom tree
+/// changed, with the bottom scene below the top in both passes.
+struct Middle {
+  tree: Tree,
+  updates: u32,
+  set: u32,
+  push: bool,
+}
+
+impl Scene for Middle {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(
+      UiNode::column()
+        .anchor(Anchor::BottomLeft)
+        .child(UiNode::text("Middle")),
+    );
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    self.updates += 1;
+    if self.updates == self.set {
+      let root = *lock(&self.tree);
+      if let Some(root) = root {
+        ctx.ui_set(root, "w", "that");
+      }
+      self.push = true;
+    }
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    if std::mem::take(&mut self.push) {
+      return SceneAction::Push(Box::new(Top));
+    }
+    SceneAction::Continue
+  }
+
+  fn is_transparent(&self) -> bool {
+    true
+  }
+}
+
+/// The transparent top scene the middle one pushes
+struct Top;
+
+impl Scene for Top {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.spawn_ui(
+      UiNode::column()
+        .anchor(Anchor::BottomRight)
+        .child(UiNode::text("Top")),
+    );
+  }
+
+  fn is_transparent(&self) -> bool {
+    true
+  }
+}
+
+#[test]
+fn a_rerun_pass_after_a_change_in_a_lower_scene() {
+  // [bottom, middle]: the bottom tree is kept as one fragment and copied.
+  // Then in one frame the bottom tree's label changes and the middle scene
+  // pushes the top one, so the pass runs again. The first pass builds the
+  // bottom tree's root (its label changed); the rerun finds that record
+  // clean, built this frame, while last frame's fragment of it, untaken, is
+  // still there to push: only the fragment's `built` refuses it, so the
+  // rerun draws the new label, not the fragment's
+  let make = |_| {
+    EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(Bottom {
+        tree: Tree::default(),
+        frame: 0,
+        set: 6,
+      })
+  };
+  let Some(mut pair) = Pair::new(make) else {
+    return;
+  };
+  pair.frames(5, "the bottom scene kept under the middle one");
+  assert!(pair.reused(2..5) > 0, "the bottom tree was copied");
+  let shows = |pair: &Pair, text: &str| pair.on.ui_snapshot().contains(text);
+  assert!(!shows(&pair, "\"Top\""), "the top scene is not pushed yet");
+  let mut pushed = None;
+  for frame in 5..12 {
+    pair.frames(1, "the bottom tree changed as the top scene is pushed");
+    if pushed.is_none() && shows(&pair, "\"Top\"") {
+      pushed = Some(frame);
+    }
+  }
+  let pushed = pushed.expect("the middle scene pushed the top one");
+  assert_eq!(
+    pair.stats[pushed - 1].reused,
+    2,
+    "the frame before the change copied both trees whole"
+  );
+  // The rerun's middle and top trees build; the bottom one replays
+  let rerun = &pair.stats[pushed];
+  assert_eq!(
+    (rerun.reused, rerun.captured),
+    (0, 1),
+    "the rerun captured the bottom tree afresh: {rerun:?}"
+  );
+  assert!(shows(&pair, "\"Shows that\""), "the new label is drawn");
+  assert!(pair.reused(pushed + 2..12) > 0, "copying resumed");
 }
 
 /// The settings screen as a node tree
