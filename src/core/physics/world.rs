@@ -26,7 +26,7 @@ use super::convert::{from_rapier, pose, poses_differ, to_rapier};
 use super::joint::{Joint, generic_joint, has_invalid_drive};
 use super::one_way::{self, OneWayHooks};
 use super::shape;
-use crate::core::ecs::{Entity, EntityHashMap, EntityHashSet, Resource, Tick, Vec2};
+use crate::core::ecs::{Entity, EntityHashMap, EntityHashSet, Resource, Tick, Vec2, entity_order};
 
 /// A collision event with its first contact, captured during the step.
 struct Captured {
@@ -275,8 +275,9 @@ pub struct Physics {
   /// Entities that lost their `RigidBody` or their parent since the last
   /// step: the colliders at and below them may belong to another body now
   pub(crate) relink: EntityHashSet,
-  /// `sync_colliders`' work list and walk stack, kept between steps so the
-  /// hot path does not allocate
+  /// The work list `register_bodies`, `sync_colliders` and `sync_joints`
+  /// sort into `entity_order`, and `sync_colliders`' walk stack, kept between
+  /// steps so the hot path does not allocate
   pub(crate) sync_queue: Vec<Entity>,
   pub(crate) walk_stack: Vec<(Entity, usize)>,
   /// `read_back`'s work list, kept for the same reason
@@ -1093,7 +1094,7 @@ impl Physics {
 
   /// Try inert joints again: their bodies may be simulated now.
   pub(crate) fn retry_inert_joints(&mut self) {
-    let ready: Vec<(Entity, Joint, bool)> = self
+    let mut ready: Vec<(Entity, Joint, bool)> = self
       .joint_entries
       .iter()
       .filter(|(_, entry)| {
@@ -1101,6 +1102,8 @@ impl Physics {
       })
       .map(|(&entity, entry)| (entity, entry.joint.clone(), entry.enabled))
       .collect();
+    // In `entity_order`, not the map's (see `sync::register_bodies`)
+    ready.sort_unstable_by_key(|(entity, ..)| entity_order(entity));
     for (entity, joint, enabled) in ready {
       self.joint_entries.remove(&entity);
       self.insert_joint(entity, &joint, enabled);
@@ -1426,6 +1429,10 @@ impl Physics {
         self.broken.push((entity, entry.joint.a, entry.joint.b));
       }
     }
+    // Reported and removed in `entity_order`, not the map's
+    self
+      .broken
+      .sort_unstable_by_key(|(joint, ..)| entity_order(joint));
     let broken = std::mem::take(&mut self.broken);
     for &(entity, _, _) in &broken {
       self.remove_joint(entity);

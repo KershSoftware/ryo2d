@@ -328,6 +328,7 @@ pub(crate) fn generic_joint(
 mod tests {
   use super::*;
   use crate::core::ecs::Velocity;
+  use crate::core::ecs::test_util::MAX_UNRELATED;
   use crate::core::ecs::{Disabled, Messages, Transform, World};
   use crate::core::physics::test_util::*;
   use crate::core::physics::{
@@ -928,5 +929,136 @@ mod tests {
         b: Vec2::Y
       }
     );
+  }
+
+  // Registration order (see `bodies_register_in_entity_order_whatever_the_resources`)
+
+  /// `count` bobs side by side, each 50 px below a pivot of its own:
+  /// (pivots, bobs).
+  fn hanging(world: &mut World, count: usize) -> (Vec<Entity>, Vec<Entity>) {
+    (0..count)
+      .map(|i| {
+        let x = i as f32 * 40.0;
+        (
+          anchor(world, Vec2::new(x, 0.0)),
+          bob(world, Vec2::new(x, 50.0)),
+        )
+      })
+      .unzip()
+  }
+
+  /// Catches `sync_joints` making new joints in its change query's order.
+  #[test]
+  fn joints_register_in_entity_order_whatever_the_resources() {
+    for k in 0..=MAX_UNRELATED {
+      let (mut world, mut s) = world_after(k);
+      let (pivots, bobs) = hanging(&mut world, 16);
+      let joints: Vec<Entity> = (0..16)
+        .map(|i| {
+          let mut joint = world.spawn(Joint::rope(pivots[i], bobs[i], 50.0));
+          if i % 2 == 1 {
+            joint.insert(Other);
+          }
+          joint.id()
+        })
+        .collect();
+      run(&mut world, &mut s, 1);
+      assert_eq!(world.resource::<Physics>().joint_count(), 16);
+      assert_eq!(
+        by_joint_handle(&world, &joints),
+        joints,
+        "with {k} unrelated resources"
+      );
+    }
+  }
+
+  /// Catches `Physics::retry_inert_joints` making joints in its hash map's
+  /// order.
+  #[test]
+  fn inert_joints_register_in_entity_order_once_their_bodies_are_simulated() {
+    for k in 0..=MAX_UNRELATED {
+      let (mut world, mut s) = world_after(k);
+      let pivot = anchor(&mut world, Vec2::ZERO);
+      let later: Vec<Entity> = (0..16)
+        .map(|i| {
+          world
+            .spawn((
+              Transform::from_xy(i as f32 * 40.0, 50.0),
+              Collider::circle(5.0),
+            ))
+            .id()
+        })
+        .collect();
+      let joints: Vec<Entity> = later
+        .iter()
+        .map(|&b| world.spawn(Joint::rope(pivot, b, 50.0)).id())
+        .collect();
+      run(&mut world, &mut s, 1);
+      assert_eq!(world.resource::<Physics>().joint_count(), 0, "inert");
+      for &b in &later {
+        world.entity_mut(b).insert(RigidBody::dynamic());
+      }
+      run(&mut world, &mut s, 1);
+      assert_eq!(world.resource::<Physics>().joint_count(), 16);
+      assert_eq!(
+        by_joint_handle(&world, &joints),
+        joints,
+        "with {k} unrelated resources"
+      );
+    }
+  }
+
+  /// Catches `sync_joints` making re-enabled joints in their hash set's
+  /// order.
+  #[test]
+  fn re_enabled_joints_register_in_entity_order() {
+    for k in 0..=MAX_UNRELATED {
+      let (mut world, mut s) = world_after(k);
+      let (pivots, bobs) = hanging(&mut world, 16);
+      let joints: Vec<Entity> = (0..16)
+        .map(|i| {
+          world
+            .spawn((Joint::rope(pivots[i], bobs[i], 50.0), Disabled))
+            .id()
+        })
+        .collect();
+      run(&mut world, &mut s, 1);
+      assert_eq!(world.resource::<Physics>().joint_count(), 0);
+      for &joint in &joints {
+        world.entity_mut(joint).remove::<Disabled>();
+      }
+      run(&mut world, &mut s, 1);
+      assert_eq!(world.resource::<Physics>().joint_count(), 16);
+      assert_eq!(
+        by_joint_handle(&world, &joints),
+        joints,
+        "with {k} unrelated resources"
+      );
+    }
+  }
+
+  /// Catches `Physics::break_joints` listing broken joints in its hash map's
+  /// order (the order of `JointBroken` and of their removal from Rapier).
+  #[test]
+  fn joints_broken_in_one_step_are_reported_in_entity_order() {
+    for k in 0..=MAX_UNRELATED {
+      let (mut world, mut s) = world_after(k);
+      let (pivots, bobs) = hanging(&mut world, 16);
+      let joints: Vec<Entity> = (0..16)
+        .map(|i| {
+          world
+            .spawn(Joint::revolute(pivots[i], bobs[i]).with_break_force(1e-3))
+            .id()
+        })
+        .collect();
+      run(&mut world, &mut s, 1);
+      let messages = world.resource::<Messages<JointBroken>>();
+      let broken: Vec<Entity> = messages
+        .get_cursor()
+        .read(messages)
+        .map(|m| m.joint)
+        .collect();
+      assert_eq!(broken, joints, "with {k} unrelated resources");
+    }
   }
 }

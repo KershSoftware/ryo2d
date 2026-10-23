@@ -38,7 +38,7 @@ use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
   EcsSystemState, Entity, GlobalTransform, Has, IntoScheduleConfigs, MessageWriter, Mut, Or,
   ParamSet, Query, Ref, RemovedComponents, Res, ResMut, Resource, SystemChangeTick, Tick,
-  Transform, Vec2, Velocity, With, Without, World,
+  Transform, Vec2, Velocity, With, Without, World, entity_order,
 };
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase};
@@ -420,6 +420,13 @@ fn apply_edit(
 /// Register new bodies at their world pose and apply edited ones in place.
 /// A body refused for a non-finite pose is tried again every step until its
 /// pose is finite.
+///
+/// Both go in `entity_order` (spawn order), as colliders and joints do:
+/// Rapier's handles, and with them its broad phase and solver order, follow
+/// the order bodies are added. A query's order changes whenever an
+/// archetype is made, a resource's included, and a hash set's with the
+/// entities' indices, so either would let an unrelated resource change the
+/// simulation.
 pub(crate) fn register_bodies(
   mut physics: ResMut<Physics>,
   config: Res<PhysicsConfig>,
@@ -427,8 +434,17 @@ pub(crate) fn register_bodies(
   globals: Globals,
 ) {
   physics.configure(&config);
-  let refused: Vec<Entity> = physics.refused.drain().collect();
-  for (entity, place, mut velocity, mut angular, body) in &mut bodies.p0() {
+  let mut refused: Vec<Entity> = physics.refused.drain().collect();
+  refused.sort_unstable_by_key(entity_order);
+  let mut todo = std::mem::take(&mut physics.sync_queue);
+  todo.clear();
+  todo.extend(bodies.p0().iter().map(|(entity, ..)| entity));
+  todo.sort_unstable_by_key(entity_order);
+  let mut changed = bodies.p0();
+  for &entity in &todo {
+    let Ok((entity, place, mut velocity, mut angular, body)) = changed.get_mut(entity) else {
+      continue;
+    };
     if body.is_added() {
       let (translation, rotation) = body_pose(place, &globals);
       physics.add_body(
@@ -443,6 +459,8 @@ pub(crate) fn register_bodies(
       apply_edit(&mut physics, entity, &body, &mut velocity, &mut angular);
     }
   }
+  todo.clear();
+  physics.sync_queue = todo;
   // Already registered (re-added or re-enabled meanwhile) is a no-op
   let bodies = bodies.p1();
   for entity in refused {
@@ -506,8 +524,6 @@ pub(crate) fn sync_colliders(
       })
       .map(|(entity, ..)| entity),
   );
-  // One query's entities are distinct; only other sources can repeat them
-  let distinct = todo.len();
   todo.extend(physics.waiting.drain());
   for root in new_bodies
     .iter()
@@ -516,10 +532,10 @@ pub(crate) fn sync_colliders(
   {
     subtree(root, &children, &mut stack, &mut todo);
   }
-  if todo.len() > distinct {
-    todo.sort_unstable();
-    todo.dedup();
-  }
+  // In `entity_order`, as bodies are (see `register_bodies`); only the
+  // sources after the query can repeat an entity
+  todo.sort_unstable_by_key(entity_order);
+  todo.dedup();
   for &entity in &todo {
     let Ok((global, collider)) = colliders.get(entity) else {
       continue;
@@ -630,20 +646,24 @@ pub(crate) fn push_changes(
 /// to where the body was moved.
 pub(crate) fn sync_joints(
   mut physics: ResMut<Physics>,
-  changed: Query<(Entity, &Joint), Changed<Joint>>,
+  changed: Query<Entity, Changed<Joint>>,
   joints: Query<&Joint>,
 ) {
-  for (entity, joint) in &changed {
-    physics.sync_joint(entity, joint);
-  }
+  // In `entity_order`, as bodies are (see `register_bodies`)
+  let mut todo = std::mem::take(&mut physics.sync_queue);
+  todo.clear();
+  todo.extend(&changed);
   // Re-enabled ones: `Changed` misses edits made while they were disabled
-  let mut resync = std::mem::take(&mut physics.resync_joints);
-  for entity in resync.drain() {
+  todo.extend(physics.resync_joints.drain());
+  todo.sort_unstable_by_key(entity_order);
+  todo.dedup();
+  for &entity in &todo {
     if let Ok(joint) = joints.get(entity) {
       physics.sync_joint(entity, joint);
     }
   }
-  physics.resync_joints = resync;
+  todo.clear();
+  physics.sync_queue = todo;
   physics.retry_inert_joints();
 }
 
@@ -919,6 +939,7 @@ pub(crate) fn register_physics_systems(schedules: &mut EngineSchedules) {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::ecs::test_util::MAX_UNRELATED;
   use crate::core::ecs::{Messages, Resource, World};
   use crate::core::physics::CollisionStarted;
   use crate::core::physics::test_util::*;
@@ -3617,5 +3638,89 @@ mod tests {
   #[test]
   fn writes_inside_the_physics_chain_end_as_without_the_skip() {
     assert_eq!(written_in_chain(true), written_in_chain(false));
+  }
+
+  // Registration order. Rapier's handles, and so its broad phase and solver,
+  // follow the order things are added; these pin it to `entity_order` (spawn
+  // order) whatever the resources (`world_after`), so adding an unrelated
+  // resource changes no simulation.
+
+  /// Catches `register_bodies` adding new bodies in its query's order.
+  #[test]
+  fn bodies_register_in_entity_order_whatever_the_resources() {
+    for k in 0..=MAX_UNRELATED {
+      let (mut world, mut s) = world_after(k);
+      let bodies: Vec<Entity> = (0..16)
+        .map(|i| {
+          let mut body = world.spawn((
+            Transform::from_xy(i as f32 * 30.0, 0.0),
+            RigidBody::dynamic(),
+          ));
+          if i % 2 == 1 {
+            body.insert(Other);
+          }
+          body.id()
+        })
+        .collect();
+      run(&mut world, &mut s, 1);
+      assert_eq!(
+        by_body_handle(&world, &bodies),
+        bodies,
+        "with {k} unrelated resources"
+      );
+    }
+  }
+
+  /// Catches `register_bodies` retrying refused bodies in their hash set's
+  /// order.
+  #[test]
+  fn refused_bodies_register_in_entity_order_once_their_pose_is_finite() {
+    for k in 0..=MAX_UNRELATED {
+      let (mut world, mut s) = world_after(k);
+      let bodies: Vec<Entity> = (0..16)
+        .map(|_| {
+          world
+            .spawn((Transform::from_xy(f32::NAN, 0.0), RigidBody::dynamic()))
+            .id()
+        })
+        .collect();
+      run(&mut world, &mut s, 1);
+      for (i, &body) in bodies.iter().enumerate() {
+        world.get_mut::<Transform>(body).unwrap().translation = Vec2::new(i as f32 * 30.0, 0.0);
+      }
+      run(&mut world, &mut s, 1);
+      assert_eq!(
+        by_body_handle(&world, &bodies),
+        bodies,
+        "with {k} unrelated resources"
+      );
+    }
+  }
+
+  /// Catches `sync_colliders` adding colliders in its change query's order
+  /// (it sorted its work list only when other sources added to it).
+  #[test]
+  fn colliders_register_in_entity_order_whatever_the_resources() {
+    for k in 0..=MAX_UNRELATED {
+      let (mut world, mut s) = world_after(k);
+      let walls: Vec<Entity> = (0..16)
+        .map(|i| {
+          let mut wall = world.spawn((
+            Transform::from_xy(i as f32 * 30.0, 0.0),
+            Collider::rect(20.0, 20.0),
+          ));
+          if i % 2 == 1 {
+            wall.insert(Other);
+          }
+          wall.id()
+        })
+        .collect();
+      run(&mut world, &mut s, 1);
+      assert_eq!(
+        by_collider_handle(&world, &walls),
+        walls,
+        "with {k} unrelated resources"
+      );
+    }
   }
 }

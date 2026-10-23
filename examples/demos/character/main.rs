@@ -112,21 +112,24 @@ fn colour_of(world: &World, entity: Entity, collider: &Collider) -> Color {
   }
 }
 
-/// Outline every collider.
+/// Outline every collider, in spawn order: a query's order changes whenever
+/// an archetype is made, and overlapping outlines would swap colours.
 fn draw_colliders(ctx: &mut SceneContext) {
   let mut query = ctx.world.query::<(Entity, &GlobalTransform, &Collider)>();
-  let lines: Vec<(Vec<Vec2>, Color)> = query
+  let mut lines: Vec<(Entity, Vec<Vec2>, Color)> = query
     .iter(ctx.world)
     .map(|(entity, global, collider)| {
       (
+        entity,
         outline(global, collider),
         colour_of(ctx.world, entity, collider),
       )
     })
     .collect();
+  lines.sort_by_key(|(entity, ..)| entity.index_u32());
   let mut debug = ctx.debug_draw();
   let mut pen = debug.width(2.0);
-  for (points, color) in lines {
+  for (_, points, color) in lines {
     pen.polyline(&points, color);
   }
 }

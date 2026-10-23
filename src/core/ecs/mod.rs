@@ -40,3 +40,47 @@ pub use transform::{Anchor, GlobalTransform, Interpolated, PreviousGlobalTransfo
 pub use tween::{Ease, Tween, TweenLoop, TweenSequence};
 pub use world_ext::WorldExt;
 pub use y_sort::YSort;
+
+/// The order the engine keeps entities in wherever the order shows (a draw
+/// order's ties, physics' registration): by index, which is spawn order for
+/// entities spawned fresh. Never a query's order, which follows the
+/// archetypes' layout and changes whenever an archetype is made (every
+/// resource is an entity with an archetype of its own), nor a hash set's;
+/// and not `Entity`'s own `Ord`, which puts higher indices first. The
+/// entity itself breaks the tie between a live entity and a dead one that
+/// had its index.
+pub(crate) fn entity_order(entity: &Entity) -> (u32, Entity) {
+  (entity.index_u32(), *entity)
+}
+
+#[cfg(test)]
+pub(crate) mod test_util {
+  use super::{Resource, World};
+
+  /// A resource nothing reads.
+  #[derive(Resource)]
+  struct Unrelated<const N: usize>;
+
+  /// The most resources `insert_unrelated` inserts.
+  pub(crate) const MAX_UNRELATED: usize = 8;
+
+  /// Insert `k` (at most `MAX_UNRELATED`) resources nothing reads. Each is an
+  /// entity with an archetype of its own, so the entities and archetypes made
+  /// after them are numbered `k` higher, and a query visits those archetypes
+  /// in another order (bevy_ecs lists them from a hash map).
+  pub(crate) fn insert_unrelated(world: &mut World, k: usize) {
+    let inserts: [fn(&mut World); MAX_UNRELATED] = [
+      |w| w.insert_resource(Unrelated::<0>),
+      |w| w.insert_resource(Unrelated::<1>),
+      |w| w.insert_resource(Unrelated::<2>),
+      |w| w.insert_resource(Unrelated::<3>),
+      |w| w.insert_resource(Unrelated::<4>),
+      |w| w.insert_resource(Unrelated::<5>),
+      |w| w.insert_resource(Unrelated::<6>),
+      |w| w.insert_resource(Unrelated::<7>),
+    ];
+    for insert in &inserts[..k] {
+      insert(world);
+    }
+  }
+}

@@ -2,7 +2,8 @@
 
 use super::sync::{PhysicsSchedule, register_physics_systems};
 use super::{Collider, Physics, PhysicsConfig, RigidBody};
-use crate::core::ecs::{Entity, Mut, Transform, World};
+use crate::core::ecs::test_util::insert_unrelated;
+use crate::core::ecs::{Component, Entity, Mut, Transform, World};
 use crate::core::scene::PhysicsPaused;
 use crate::core::schedule::{EngineSchedules, Phase};
 use crate::core::time::Time;
@@ -17,6 +18,44 @@ pub(crate) fn world(hz: u32) -> (World, EngineSchedules) {
   let mut schedules = EngineSchedules::new();
   register_physics_systems(&mut schedules);
   (world, schedules)
+}
+
+/// `world(60)` holding `k` unrelated resources before anything is spawned
+/// (`insert_unrelated`): its entities and archetypes are numbered `k`
+/// higher, and its queries visit archetypes in another order.
+pub(crate) fn world_after(k: usize) -> (World, EngineSchedules) {
+  let (mut world, schedules) = world(60);
+  insert_unrelated(&mut world, k);
+  (world, schedules)
+}
+
+/// Puts an entity in another archetype.
+#[derive(Component)]
+pub(crate) struct Other;
+
+/// `entities` in the order Rapier was given their bodies (a fresh set hands
+/// out handles in order).
+pub(crate) fn by_body_handle(world: &World, entities: &[Entity]) -> Vec<Entity> {
+  let physics = world.resource::<Physics>();
+  let mut sorted = entities.to_vec();
+  sorted.sort_by_key(|e| physics.body_entries[e].handle.into_raw_parts());
+  sorted
+}
+
+/// `entities` in the order Rapier was given their colliders.
+pub(crate) fn by_collider_handle(world: &World, entities: &[Entity]) -> Vec<Entity> {
+  let physics = world.resource::<Physics>();
+  let mut sorted = entities.to_vec();
+  sorted.sort_by_key(|e| physics.collider_entries[e].handle.into_raw_parts());
+  sorted
+}
+
+/// `entities` in the order Rapier was given their joints.
+pub(crate) fn by_joint_handle(world: &World, entities: &[Entity]) -> Vec<Entity> {
+  let physics = world.resource::<Physics>();
+  let mut sorted = entities.to_vec();
+  sorted.sort_by_key(|e| physics.joint_entries[e].handle.map(|h| h.into_raw_parts()));
+  sorted
 }
 
 /// Physics' own schedule, made if the step has not run yet: tests that

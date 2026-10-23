@@ -172,7 +172,7 @@ ctx.world.despawn(e); // bool; despawns its children too
 - `Transform`: `translation: Vec2`, `rotation` (radians), `scale: Vec2`. Build with `from_xy`, `from_translation`, `with_rotation`, `with_rotation_degrees`, `with_scale`, `with_uniform_scale`; `Transform::IDENTITY`.
 - `GlobalTransform` is the world-space result, written by the engine; read it for world positions (`global.translation()`), never write it.
 - `Velocity { dx, dy }` is integrated by physics for rigid bodies, and a character (`CharacterController`) is swept by it; anything else moves itself.
-- Draw order is `Renderable::with_z_order` (higher in front); `YSort` orders by y within a layer.
+- Draw order is `Renderable::with_z_order` (higher in front); `YSort` orders by y within a layer. Ties (equal z, or equal sort y) draw in spawn order, the later in front. A query's own order is not spawn order and changes whenever a resource or a new component combination is added: where it shows (lines drawn from a query, say), sort by `entity.index_u32()` first.
 
 ## Queries
 

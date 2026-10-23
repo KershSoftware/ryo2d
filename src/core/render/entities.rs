@@ -11,8 +11,8 @@
 //! Everything an entity emits (its shadows first, then the sprite or its
 //! tiles) is a [`DrawKind::Entity`] item at the entity's `z_order`, submitted
 //! in draw order, so the shadow draws under its entity and YSort orders
-//! entities within their layer. Composite tiles draw at their own `z_order`;
-//! on equal z they follow the entities.
+//! entities within their layer; ties go by spawn order. Composite tiles draw
+//! at their own `z_order`; on equal z they follow the entities.
 //!
 //! A renderable showing a render target draws the target's texture at the
 //! target's size; the camera drawing into that target skips it.
@@ -29,9 +29,10 @@ use super::scratch::recycle;
 use super::{CameraDraw, DrawKind, DrawList, SpriteLook, SpriteShading};
 use crate::core::asset::Assets;
 use crate::core::ecs::interpolate::render_global;
+use crate::core::ecs::kernel::QueryState;
 use crate::core::ecs::{
   Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable,
-  ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort,
+  ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort, entity_order,
 };
 use crate::core::graphics::TileDirection;
 use crate::core::graphics::sprite_gpu::{ShownImage, effective_shader};
@@ -69,7 +70,8 @@ impl DrawOrder {
     }
   }
 
-  /// Total order; sort with a stable sort so plain sprites keep their order
+  /// By layer and sort y. Ties (a layer's plain sprites, y-sorted ones at
+  /// one sort y) are broken by `entity_order` where the drawables are sorted
   pub(crate) fn cmp(&self, other: &Self) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     self
@@ -149,37 +151,8 @@ impl EntityDrawer {
     )>();
     let world: &World = world;
     let images = images_of(world);
-    // The draw list sorts by each entity's own z; this order (y-sorted after
-    // plain within a layer) becomes the submission sequence
     let mut items: Vec<(DrawOrder, Drawable<'_>)> = recycle(std::mem::take(&mut self.items));
-    items.extend(
-      drawables
-        .iter(world)
-        .filter(|(_, renderable, ..)| renderable.visible)
-        .map(
-          |(entity, renderable, global, previous, material, y_sort, layers)| {
-            let order = match y_sort {
-              Some(y_sort) => DrawOrder::y_sorted(
-                renderable.z_order,
-                y_sort_key(y_sort, renderable, global.translation().y, images),
-              ),
-              None => DrawOrder::plain(renderable.z_order),
-            };
-            let drawable = Drawable {
-              entity,
-              renderable,
-              global,
-              previous,
-              material,
-              y_sort,
-              layers: layers.copied().unwrap_or_default(),
-            };
-            (order, drawable)
-          },
-        ),
-    );
-    // Stable, so plain sprites keep their order
-    items.sort_by(|(a, _), (b, _)| a.cmp(b));
+    in_draw_order(&mut drawables, world, images, &mut items);
 
     let frame = EntityFrame { alpha };
     let mut out = Emitter {
@@ -225,6 +198,51 @@ impl EntityDrawer {
     self.items = recycle(items);
     count
   }
+}
+
+/// Add the visible drawables to `items` in draw order. The draw list sorts
+/// by each entity's own z; this order (y-sorted after plain within a layer)
+/// becomes the submission sequence.
+///
+/// Ties go by `entity_order` (spawn order), never by query order: a query
+/// visits archetypes in an order that changes whenever an archetype is made,
+/// so adding a resource anywhere would reorder overlapping sprites.
+fn in_draw_order<'w>(
+  drawables: &mut QueryState<DrawableItem>,
+  world: &'w World,
+  images: &Assets<Image>,
+  items: &mut Vec<(DrawOrder, Drawable<'w>)>,
+) {
+  items.extend(
+    drawables
+      .iter(world)
+      .filter(|(_, renderable, ..)| renderable.visible)
+      .map(
+        |(entity, renderable, global, previous, material, y_sort, layers)| {
+          let order = match y_sort {
+            Some(y_sort) => DrawOrder::y_sorted(
+              renderable.z_order,
+              y_sort_key(y_sort, renderable, global.translation().y, images),
+            ),
+            None => DrawOrder::plain(renderable.z_order),
+          };
+          let drawable = Drawable {
+            entity,
+            renderable,
+            global,
+            previous,
+            material,
+            y_sort,
+            layers: layers.copied().unwrap_or_default(),
+          };
+          (order, drawable)
+        },
+      ),
+  );
+  items.sort_unstable_by(|(a, x), (b, y)| {
+    a.cmp(b)
+      .then_with(|| entity_order(&x.entity).cmp(&entity_order(&y.entity)))
+  });
 }
 
 /// Where and how one texture is drawn, in world units: its quad's centre,
@@ -765,10 +783,48 @@ fn y_sort_key(y_sort: &YSort, renderable: &Renderable, y: f32, images: &Assets<I
 
 #[cfg(test)]
 mod draw_order_tests {
-  use super::{DrawOrder, y_sort_key};
+  use super::{DrawOrder, DrawableItem, in_draw_order, y_sort_key};
   use crate::core::asset::Assets;
-  use crate::core::ecs::{Anchor, Renderable, YSort};
+  use crate::core::ecs::test_util::{MAX_UNRELATED, insert_unrelated};
+  use crate::core::ecs::{Anchor, Component, Entity, GlobalTransform, Renderable, World, YSort};
   use crate::core::graphics::Image;
+
+  /// Puts a sprite in another archetype
+  #[derive(Component)]
+  struct Other;
+
+  /// Catches ties left in query order (`in_draw_order` breaks them by
+  /// `entity_order`): a query visits archetypes in an order that changes
+  /// when an unrelated resource is added.
+  #[test]
+  fn tied_sprites_draw_in_entity_order_whatever_the_resources() {
+    let mut images = Assets::<Image>::default();
+    let image = images.add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+    for k in 0..=MAX_UNRELATED {
+      let mut world = World::new();
+      insert_unrelated(&mut world, k);
+      // One layer, every y-sorted sprite at one sort y, in four archetypes
+      let (mut plain, mut sorted) = (Vec::new(), Vec::new());
+      for i in 0..16 {
+        let mut entity = world.spawn((Renderable::image(image.clone()), GlobalTransform::IDENTITY));
+        if i % 4 >= 2 {
+          entity.insert(Other);
+        }
+        if i % 2 == 1 {
+          entity.insert(YSort::new());
+          sorted.push(entity.id());
+        } else {
+          plain.push(entity.id());
+        }
+      }
+      let mut drawables = world.query::<DrawableItem>();
+      let mut items = Vec::new();
+      in_draw_order(&mut drawables, &world, &images, &mut items);
+      let drawn: Vec<Entity> = items.iter().map(|(_, drawable)| drawable.entity).collect();
+      let expected: Vec<Entity> = plain.into_iter().chain(sorted).collect();
+      assert_eq!(drawn, expected, "with {k} unrelated resources");
+    }
+  }
 
   #[test]
   fn the_sort_key_is_the_feet_wherever_the_anchor_is() {
