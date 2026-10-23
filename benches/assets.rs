@@ -1,18 +1,24 @@
-//! Scene-start asset loading: what a scene's `on_enter` does today. Forty
-//! PNGs (ten each at 32, 64, 128 and 256 pixels square) loaded as sprites and
-//! three UI files (the second importing the first), on a fresh
-//! `AssetManager` each iteration. This is the baseline the asset registry is
-//! measured against.
+//! Scene-start asset loading: what a scene's `on_enter` does. Forty PNGs
+//! (ten each at 32, 64, 128 and 256 pixels square) loaded at once through
+//! the asset registry (`load_now::<Image>`) and three UI files (the second
+//! importing the first) through `AssetManager`, on a fresh registry and
+//! manager each iteration. The same bench on the old manager's image loads,
+//! before the registry, is what it is measured against.
 //!
 //! The two fonts a scene start also adds are not measured here: the bench is
 //! an external crate and has no public way to build a `Fonts` registry (its
 //! constructors are crate-private and the UI harness keeps its fonts inside).
-//! The fonts join the bench when it is ported to the registry.
+//! The fonts join the bench when they are registry assets.
+//!
+//! The median is read from where criterion writes its results:
+//! `$CRITERION_HOME`, else `$CARGO_TARGET_DIR/criterion`, else the
+//! workspace's `target/criterion`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
-use criterion::{BatchSize, Criterion, criterion_group};
+use criterion::{BatchSize, Criterion};
 use ryo2d::prelude::*;
 
 const SIZES: [u32; 4] = [32, 64, 128, 256];
@@ -34,8 +40,8 @@ fn write_pngs(dir: &Path) -> Vec<String> {
   names
 }
 
-/// A UI file of about 50 lines in the vocabulary of the breakout menu; `use_a`
-/// makes it import `a.ui.ron` and draw with its template
+/// A UI file of about 50 lines in the vocabulary of the breakout menu;
+/// `import_a` makes it import `a.ui.ron` and draw with its template
 fn ui_source(tag: &str, import_a: bool) -> String {
   let imports = if import_a {
     "  imports: [\"a.ui.ron\"],\n"
@@ -115,62 +121,76 @@ fn scene_start(c: &mut Criterion) {
   std::fs::write(dir.path().join("b.ui.ron"), ui_source("b", true)).expect("write ui");
   std::fs::write(dir.path().join("c.ui.ron"), ui_source("c", false)).expect("write ui");
 
-  // Images load through the registry (a fresh one each iteration, over
-  // the same folder); UI files still through the old manager
+  // A fresh registry each iteration, over the same folder; UI files still
+  // load through the old manager
   let fresh = || {
     let mut world = ryo2d::ecs::World::new();
     let server = AssetServer::new(DiskSource::new(dir.path()));
     server.register_asset::<Image>(&mut world);
     server.register_loader(ImageLoader);
-    world.insert_resource(server);
-    (AssetManager::with_base_path(dir.path()), world)
+    world.insert_resource(server.clone());
+    (server, world, AssetManager::with_base_path(dir.path()))
   };
   c.bench_function("scene_start", |b| {
     b.iter_batched(
       fresh,
-      |(mut assets, mut world)| {
+      |(server, mut world, mut manager)| {
         for name in &pngs {
-          std::hint::black_box(assets.load_sprite(&mut world, name).expect("load image"));
+          let image = server.load_now::<Image>(&mut world, name);
+          std::hint::black_box(image.expect("load image"));
         }
         for name in uis {
-          std::hint::black_box(assets.load_ui(name).expect("load ui"));
+          std::hint::black_box(manager.load_ui(name).expect("load ui"));
         }
-        (assets, world)
+        (server, world, manager)
       },
       BatchSize::PerIteration,
     );
   });
 }
 
-fn criterion_config() -> Criterion {
+/// Where criterion writes its results, and the median is read from
+fn results_dir() -> PathBuf {
+  if let Some(home) = std::env::var_os("CRITERION_HOME") {
+    return PathBuf::from(home);
+  }
+  std::env::var_os("CARGO_TARGET_DIR")
+    .map(PathBuf::from)
+    .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
+    .join("criterion")
+}
+
+fn main() {
+  let started = SystemTime::now();
   let load = Command::new("uptime")
     .output()
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|_| "uptime unavailable".into());
   println!("machine: {load}");
-  println!(
-    "assets bench: images and UI files only; fonts are not measured (no public Fonts route)"
-  );
-  Criterion::default().sample_size(20)
+  println!("assets bench: images and UI files; fonts are not measured (not yet registry assets)");
+  let results = results_dir();
+  let mut criterion = Criterion::default()
+    .sample_size(20)
+    .output_directory(&results)
+    .configure_from_args();
+  scene_start(&mut criterion);
+  criterion.final_summary();
+  print_median(&results, started);
 }
 
-criterion_group! {
-  name = benches;
-  config = criterion_config();
-  targets = scene_start
-}
-
-fn main() {
-  benches();
-  Criterion::default().configure_from_args().final_summary();
-  print_median();
-}
-
-/// The median of the run criterion just wrote, in microseconds
-fn print_median() {
-  let path =
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("target/criterion/scene_start/new/estimates.json");
-  let median = std::fs::read_to_string(path).ok().and_then(|text| {
+/// The median of the run criterion just wrote to `results`, in
+/// microseconds; nothing for results an earlier run left (this run skipped
+/// the bench, as a filter or `--list` does)
+fn print_median(results: &Path, started: SystemTime) {
+  let path = results.join("scene_start/new/estimates.json");
+  let written = std::fs::metadata(&path)
+    .and_then(|meta| meta.modified())
+    .is_ok_and(|modified| modified >= started);
+  if !written {
+    println!("scene_start median: not measured in this run");
+    return;
+  }
+  let median = std::fs::read_to_string(&path).ok().and_then(|text| {
     let at = text.find("\"median\"")?;
     let rest = &text[at..];
     let from = rest.find("\"point_estimate\":")? + "\"point_estimate\":".len();
@@ -179,6 +199,6 @@ fn print_median() {
   });
   match median {
     Some(ns) => println!("scene_start median: {:.0} us", ns / 1000.0),
-    None => println!("scene_start median: unavailable"),
+    None => println!("scene_start median: unavailable ({})", path.display()),
   }
 }
