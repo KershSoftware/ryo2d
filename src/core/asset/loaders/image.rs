@@ -3,6 +3,8 @@
 
 use std::hash::{Hash, Hasher};
 
+use resvg::usvg;
+
 use crate::core::asset::{AssetError, AssetLoader, LoadContext};
 use crate::core::error::ImageError;
 use crate::core::graphics::Image;
@@ -122,11 +124,51 @@ fn decode(bytes: &[u8], extension: &str) -> Result<Image, ImageError> {
 
 /// An SVG's pixels at `size`
 fn rasterise(svg: &[u8], size: SvgSize) -> Result<Image, String> {
-  match size {
-    SvgSize::Native => Image::from_svg_data(svg, 1.0),
-    SvgSize::Scale(scale) => Image::from_svg_data(svg, scale),
-    SvgSize::Fit { width, height } => Image::from_svg_data_fit(svg, width, height),
+  let tree = usvg::Tree::from_data(svg, &usvg::Options::default())
+    .map_err(|error| format!("Failed to parse SVG: {error}"))?;
+  let native = tree.size();
+  let scale = match size {
+    SvgSize::Native => 1.0,
+    SvgSize::Scale(scale) => scale,
+    SvgSize::Fit { width, height } => {
+      if native.width() == 0.0 || native.height() == 0.0 {
+        return Err("SVG has zero dimensions".to_string());
+      }
+      (width as f32 / native.width()).min(height as f32 / native.height())
+    }
+  };
+  let width = (native.width() * scale) as u32;
+  let height = (native.height() * scale) as u32;
+  if width == 0 || height == 0 {
+    return Err("SVG has zero dimensions".to_string());
   }
+  let mut pixmap =
+    tiny_skia::Pixmap::new(width, height).ok_or_else(|| "Failed to create pixmap".to_string())?;
+  resvg::render(
+    &tree,
+    tiny_skia::Transform::from_scale(scale, scale),
+    &mut pixmap.as_mut(),
+  );
+  Ok(Image::from_rgba(
+    straight_alpha(pixmap.data()),
+    width,
+    height,
+  ))
+}
+
+/// tiny-skia's premultiplied pixels with straight alpha, as an image holds them
+fn straight_alpha(premultiplied: &[u8]) -> Vec<u8> {
+  let mut straight = Vec::with_capacity(premultiplied.len());
+  for &[r, g, b, a] in premultiplied.as_chunks::<4>().0 {
+    if a == 0 {
+      straight.extend_from_slice(&[0, 0, 0, 0]);
+      continue;
+    }
+    let alpha = a as f32 / 255.0;
+    straight.extend([r, g, b].map(|channel| (channel as f32 / alpha).min(255.0) as u8));
+    straight.push(a);
+  }
+  straight
 }
 
 #[cfg(test)]
@@ -234,36 +276,70 @@ mod tests {
     let files = MemorySource::new();
     files.insert("icon.svg", SVG);
     let mut world = images_over(files);
-    let bytes = SVG.as_bytes();
+    // The sizes, and the scale the rect and the circle's middle are drawn at
     let cases = [
-      (SvgSize::Native, (24, 12), Image::from_svg_data(bytes, 1.0)),
-      (
-        SvgSize::Scale(2.0),
-        (48, 24),
-        Image::from_svg_data(bytes, 2.0),
-      ),
+      (SvgSize::Native, (24, 12), 1.0),
+      (SvgSize::Scale(2.0), (48, 24), 2.0),
       (
         SvgSize::Fit {
           width: 32,
           height: 32,
         },
         (32, 16),
-        Image::from_svg_data_fit(bytes, 32, 32),
+        32.0 / 24.0,
       ),
     ];
-    for (size, expected, before) in cases {
-      let before = match before {
-        Ok(image) => image,
-        Err(error) => panic!("{size:?} before: {error}"),
-      };
+    for (size, expected, scale) in cases {
       let image = loaded(&mut world, "icon.svg", svg(size));
       assert_eq!((image.width(), image.height()), expected, "{size:?}");
+      let pixel = |x: f32, y: f32| {
+        let at = (((y * scale) as u32 * image.width() + (x * scale) as u32) * 4) as usize;
+        image.data()[at..at + 4].to_vec()
+      };
       assert_eq!(
-        (before.width(), before.height()),
-        expected,
-        "{size:?}: the size load_svg gives"
+        pixel(20.0, 6.0),
+        [0x30, 0x80, 0xf0, 255],
+        "{size:?}: the rect"
       );
-      assert!(image.data() == before.data(), "{size:?}: the same pixels");
+      // Half of the circle's colour over the rect's: (144, 160, 136)
+      let middle = pixel(6.0, 6.0);
+      let blend = [144, 160, 136, 255];
+      assert!(
+        middle
+          .iter()
+          .zip(blend)
+          .all(|(&got, want)| got.abs_diff(want) <= 2),
+        "{size:?}: the circle's middle is {middle:?}, not about {blend:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn an_svg_keeps_straight_alpha_and_refuses_a_size_of_nothing() {
+    // A 40% opaque square: straight alpha keeps its colour whole
+    let translucent = r##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">
+      <rect width="4" height="4" fill="#f04080" fill-opacity="0.4"/>
+    </svg>"##;
+    let Ok(image) = rasterise(translucent.as_bytes(), SvgSize::Native) else {
+      panic!("a 4x4 SVG rasterises");
+    };
+    let first = &image.data()[..4];
+    assert_eq!(first[3], 102, "40% of 255");
+    for (got, want) in first[..3].iter().zip([0xf0u8, 0x40, 0x80]) {
+      assert!(got.abs_diff(want) <= 2, "{first:?}");
+    }
+    assert!(!image.is_opaque());
+    for nothing in [
+      SvgSize::Scale(0.0),
+      SvgSize::Fit {
+        width: 0,
+        height: 10,
+      },
+    ] {
+      assert!(
+        rasterise(SVG.as_bytes(), nothing).is_err(),
+        "{nothing:?} is no pixels"
+      );
     }
   }
 

@@ -5,7 +5,7 @@
 //! - `ManagerError` - The old `AssetManager`'s errors (the registry's are
 //!   `asset::error::AssetError`)
 //! - `AudioError` - Audio system errors
-//! - `ImageError` - Image loading errors
+//! - `ImageError` - Image decoding errors
 //!
 //! All error types implement `std::error::Error` and use `thiserror` for
 //! ergonomic error handling.
@@ -72,12 +72,9 @@ pub enum ManagerError {
 /// Result type for the old `AssetManager`'s operations
 pub type ManagerResult<T> = Result<T, ManagerError>;
 
-/// Errors that can occur when loading images
+/// Errors that can occur when decoding images
 #[derive(Error, Debug)]
 pub enum ImageError {
-  /// Failed to decode image
-  #[error("Failed to decode image {path}: {reason}")]
-  DecodeError { path: PathBuf, reason: String },
   /// The bytes are not an image the `image` crate can decode (`Image::decode`)
   #[error(transparent)]
   Decode(#[from] image::ImageError),
@@ -232,12 +229,11 @@ mod tests {
   }
 
   #[test]
-  fn sprite_error_chains_to_asset_error() {
-    let sprite_err = ImageError::DecodeError {
-      path: PathBuf::from("test.png"),
-      reason: "truncated".to_string(),
+  fn image_error_chains_to_manager_error() {
+    let Err(image_err) = crate::core::graphics::Image::decode(b"truncated") else {
+      panic!("no image decodes from text");
     };
-    let asset_err: ManagerError = sprite_err.into();
-    assert!(matches!(asset_err, ManagerError::Image(_)));
+    let manager_err: ManagerError = image_err.into();
+    assert!(matches!(manager_err, ManagerError::Image(_)));
   }
 }
