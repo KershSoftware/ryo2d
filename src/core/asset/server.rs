@@ -298,6 +298,18 @@ impl AssetServer {
     }
   }
 
+  /// How many loaded values the pump holds back until their dependencies
+  /// load: for tests that need a frame with a parent waiting
+  #[doc(hidden)]
+  pub fn waiting_count(&self) -> usize {
+    let table = self.inner.table();
+    table
+      .waiting
+      .iter()
+      .filter(|waiting| table.is_current(waiting.arrived.id, waiting.arrived.job))
+      .count()
+  }
+
   /// Whether `T` is registered (`register_asset`)
   pub(crate) fn is_registered<T: Asset>(&self) -> bool {
     self.ledger_of(TypeId::of::<T>()).is_some()

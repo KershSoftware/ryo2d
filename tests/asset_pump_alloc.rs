@@ -116,11 +116,18 @@ impl AssetSource for Held {
   }
 }
 
-/// Pumps until `done`, failing after five seconds
-fn pump_until(world: &mut World, mut done: impl FnMut(&mut World) -> bool) {
+/// Pumps until `done`, failing with `what` after five seconds
+fn pump_until(world: &mut World, what: &str, mut done: impl FnMut() -> bool) {
   let start = Instant::now();
-  while !done(world) {
-    assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+  loop {
+    pump(world);
+    if done() {
+      return;
+    }
+    assert!(
+      start.elapsed() < Duration::from_secs(5),
+      "timed out: {what}"
+    );
     std::thread::sleep(Duration::from_millis(1));
   }
 }
@@ -184,21 +191,27 @@ fn the_pump_allocates_nothing_with_nothing_to_load_reload_or_free() {
     "100 frames cloning and dropping a held handle allocated {held} times"
   );
 
-  // A parent whose dependency is still reading waits in the pump. Taking
-  // its result in allocates (the cycle walk, the waiting list), so the
-  // first pump that allocates is the one it arrives in
+  // A parent whose dependency is still reading waits in the pump: pumped
+  // until the server holds it back, then measured. Allocations are only
+  // measured here, never waited on
   let parent = server.load::<Bundle>("parent.bundle");
-  pump_until(&mut world, |world| allocations(|| pump(world)) > 0);
-  assert!(matches!(server.state(&parent), LoadState::Loading));
+  pump_until(&mut world, "the parent never waited on slow.txt", || {
+    server.waiting_count() == 1
+  });
+  // The parent's dependency, found by its key: no new load
+  let slow = server.load::<Text>("slow.txt");
   let waiting = hundred_pumps(&mut world);
+  // Every measured pump ran with the parent held back
+  assert_eq!(server.waiting_count(), 1, "the parent still waits");
+  assert!(matches!(server.state(&parent), LoadState::Loading));
+  assert!(matches!(server.state(&slow), LoadState::Loading));
   assert_eq!(
     waiting, 0,
     "100 pumps with a parent waiting allocated {waiting} times"
   );
 
   source.open();
-  pump_until(&mut world, |world| {
-    pump(world);
+  pump_until(&mut world, "the parent never loaded after slow.txt", || {
     server.state(&parent).is_loaded()
   });
   assert!(

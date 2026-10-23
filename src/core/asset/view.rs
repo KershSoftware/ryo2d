@@ -33,11 +33,21 @@ pub struct AssetsView<'w> {
 
 impl<'w> AssetsView<'w> {
   /// The registry of `world`. A world with no `AssetServer` (one the engine
-  /// did not make) is given one over an empty `MemorySource`
+  /// did not make) is given one over an empty `MemorySource`, with a warning
   pub(crate) fn new(world: &'w mut World) -> Self {
-    let server = world
-      .get_resource_or_insert_with(|| AssetServer::new(MemorySource::new()))
-      .clone();
+    let server = match world.get_resource::<AssetServer>() {
+      Some(server) => server.clone(),
+      None => {
+        // Once per world: the next view finds this server
+        crate::engine_warn!(
+          module: "asset",
+          "this world has no asset server; it gets one over an empty memory source"
+        );
+        let server = AssetServer::new(MemorySource::new());
+        world.insert_resource(server.clone());
+        server
+      }
+    };
     Self { world, server }
   }
 
@@ -68,14 +78,15 @@ impl<'w> AssetsView<'w> {
   }
 
   /// Adds an asset made in code; it lives while the handle (or a clone)
-  /// does. A type not registered yet is registered first
+  /// does. A type not registered yet, or with no store in this world, is
+  /// registered first
   pub fn add<T: Asset>(&mut self, value: T) -> Handle<T> {
-    if !self.server.is_registered::<T>() {
+    if !self.server.is_registered::<T>() || !self.world.contains_resource::<Assets<T>>() {
       self.server.register_asset::<T>(self.world);
     }
     match self.world.get_resource_mut::<Assets<T>>() {
       Some(mut assets) => assets.add(value),
-      // Registering inserts the store, so this is not reached
+      // `register_asset` has just made sure the store is there
       None => Handle::detached(),
     }
   }
@@ -145,6 +156,18 @@ mod tests {
     }
     assert_eq!(assets.get(&note), Some(&Note("b")));
     assert_ne!(world.resource::<Assets<Note>>().version(&note), before);
+  }
+
+  #[test]
+  fn add_puts_a_store_in_a_world_that_has_none() {
+    let server = AssetServer::new(MemorySource::new());
+    let mut first = World::new();
+    server.register_asset::<Note>(&mut first);
+    // The same server in a second world, which has no store for the type yet
+    let mut second = World::new();
+    second.insert_resource(server);
+    let note = AssetsView::new(&mut second).add(Note("a"));
+    assert_eq!(AssetsView::new(&mut second).get(&note), Some(&Note("a")));
   }
 
   #[test]

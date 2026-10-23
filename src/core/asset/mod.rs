@@ -46,10 +46,10 @@ pub use view::AssetsView;
 /// made in code and added with `Assets::add`
 pub trait Asset: Send + Sync + 'static {}
 
-/// Puts `server` in `world` as its asset registry, with the engine's own
-/// asset types registered. The engine's world, the test worlds and
-/// `UiHarness` all start this way, so a loader's `check` finds every
-/// built-in type's store before anything loads
+/// Puts `server` in `world` as its asset registry. The engine's world, the
+/// test worlds and `UiHarness` all start this way, so the engine's own asset
+/// types, registered here (there are none yet), have their stores before
+/// anything loads and a loader's `check` finds them
 pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: AssetServer) {
   world.insert_resource(server);
 }

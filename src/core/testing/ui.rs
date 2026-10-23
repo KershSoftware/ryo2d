@@ -992,6 +992,50 @@ mod tests {
   use super::*;
 
   #[test]
+  fn a_frame_runs_the_asset_pump() {
+    use crate::core::asset::{Asset, AssetError, AssetLoader, LoadContext};
+
+    struct Note(String);
+    impl Asset for Note {}
+    struct NoteLoader;
+    impl AssetLoader for NoteLoader {
+      type Asset = Note;
+      type Settings = ();
+      fn extensions(&self) -> &[&'static str] {
+        &["note"]
+      }
+      fn load(&self, bytes: Vec<u8>, _: &(), cx: &mut LoadContext<'_>) -> Result<Note, AssetError> {
+        String::from_utf8(bytes)
+          .map(Note)
+          .map_err(|e| AssetError::decode(cx.path(), e))
+      }
+    }
+
+    let files = MemorySource::new();
+    files.insert("hello.note", "hi");
+    let mut h = UiHarness::new(320.0, 240.0);
+    let server = AssetServer::new(files);
+    server.register_asset::<Note>(&mut h.world);
+    server.register_loader(NoteLoader);
+    insert_registry(&mut h.world, server);
+    let note = h.registry().load::<Note>("hello.note");
+    // A queued load lands only in a pump, and nothing but `frame` pumps here
+    let start = std::time::Instant::now();
+    while !h.registry().state(&note).is_loaded() {
+      assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "timed out: no frame put the note in its store"
+      );
+      h.frame(|_| {});
+      std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(
+      h.registry().get(&note).map(|note| note.0.as_str()),
+      Some("hi")
+    );
+  }
+
+  #[test]
   fn a_snapshot_holds_the_values_of_the_widget_states() {
     fn area(ui: &mut UiContext<'_>) {
       ui.scroll().width(200.0).height(60.0).show(|ui| {

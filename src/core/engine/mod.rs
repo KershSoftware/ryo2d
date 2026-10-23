@@ -1437,8 +1437,8 @@ impl EngineBuilder {
   }
 
   /// Adds a loader for the game's own asset type (and registers the type),
-  /// before any scene starts. For an extension an engine loader also takes,
-  /// the game's loader wins
+  /// before any scene starts. For an extension an engine loader of the same
+  /// asset type also takes, the game's loader wins
   pub fn asset_loader<L: AssetLoader>(mut self, loader: L) -> Self {
     self
       .pending_resources
@@ -1459,9 +1459,11 @@ impl EngineBuilder {
     self
   }
 
-  /// Watches the asset folder and reloads changed files (default: on in
-  /// debug builds, off in headless ones). `true` turns it on for headless
-  /// builds too
+  /// Whether changed asset files reload while the game runs (default: on
+  /// in debug builds, off in headless ones). The switch is stored for the
+  /// asset registry, which does not watch the asset folder yet; for now it
+  /// turns the old asset manager's watcher on or off, which runs only in
+  /// windowed debug builds
   pub fn hot_reload(mut self, on: bool) -> Self {
     self.hot_reload = Some(on);
     self
