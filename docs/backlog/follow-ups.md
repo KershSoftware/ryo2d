@@ -2,7 +2,81 @@
 
 Small issues found while building each sub-project and left for later: deferred review findings, known limits and pre-existing bugs seen along the way. Each line names where it came from. Remove a line when it is fixed.
 
-Items from 4f, 4g and 4h were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+Items from 4f to 4i were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+
+## UI fragments (4i)
+
+- Performance accepted as measured (owner decision, 2026-10-22; numbers and levers in `docs/backlog/ui-retained-nodes.md`, "4i: fragments (measured)"):
+  - the UI pass while scrolling is 22.5 µs and the render step +31.3 µs, against the spec's 20 µs (guarded at 27 and 35 µs);
+  - the virtual lists are 3 to 4% and scrolling with retention off 4.7% over before 4i;
+  - the one-label render step meets its 25 µs narrowly and depends on load.
+  - Levers measured and not taken: records placed by their fragment (still screens faster, focus and scrolling slower), a thin kept root (no gain), position-independent reuse of in-place runs (about 0.5 µs), padded stable runs (about 2 µs; interest-step frames, about one in five while scrolling, rewrite the instance array from the first row to leave), and R8 changed.
+- Never run outside Metal:
+  - the GPU suites on D3D12, Vulkan and GL/WebGL2, covering the slot uniform in the instance buffer (`VERTEX | UNIFORM`, dynamic offset), `write_buffer_with`'s joined write and the CPU-against-shader exact-pixel test. If that test flakes on another backend, make it a rigidity assertion;
+  - the web build's slot uniform and vertex culling.
+- Limits:
+  - a window resize rebuilds every node (`UiEnv.size` is an input);
+  - the pixel-art target never copies slot runs and places slot content on the CPU (R1), so at fractional scales its scrolled text can sit a pixel from the shader path's (R8);
+  - the Big list at 1.25 rests with one row border a pixel off the pre-4i image after a wheel scroll (the half-pixel case);
+  - a node list's rows trail a dragged thumb by one frame, and a track press pages it a frame later;
+  - a game changing a node list's scroll axes or bar mid-drag gets the old ones for a frame.
+- Rulings the owner may revisit:
+  - R7 narrows plan difference 3: in debug builds a spot capture equal to last frame's fragment survives `restart_pass`, proven equal;
+  - the spec puts an `at` node in "the area's parent slot"; the code keeps it in slot 0, as before 4i.
+- Pre-existing:
+  - `tests/e2e/ui_retain.rs`'s `glyph_pressure_from_the_ui_matches` flakes (main failed 3 of 85 runs). Retention on and off differ by pixels under UI glyph pressure, likely the scaled-glyph atlas limit (unverified);
+  - release builds ignore `RYO_INPUT` and `RYO_HEADLESS`, and `RYO_INPUT` has no trackpad event.
+- Speed:
+  - `Scratch::capture_of` is a linear search, so a frame capturing C fragments costs O(C²): about 1 ms, once, for 1,000;
+  - new runs can spend the held-run far-search budget early in a hold, leaving a later departure of more than 16 runs rescanned;
+  - animated runs are stored with empty instances and always rejected, and empty runs force a redraw when their version changes;
+  - `vs_ui` evaluates `quad_corner` five times per vertex;
+  - `kept_column_frame` warms its two harnesses before its filter check.
+- Code:
+  - direct indexing, valid by construction, in `tree.rs` (resolve, `Placing`), `layout/engine.rs:237-238` and `ui_retain/mod.rs`;
+  - `Inputs::slot` is a `u8` with magic values 0, 1 and 2;
+  - `push_kept` returns false after side effects (unreachable);
+  - `draw_clean` assumes a single-root tape, so a builder pushing a second top-level node would be dropped; this wants a debug assertion;
+  - `outside_clip` duplicates `outside`;
+  - two functions are named `spot_check`;
+  - "slot" means both atlas slot and scroll slot in `fix_sprites`;
+  - `copy_run` adds offsets unchecked while `keep_built` saturates;
+  - an unneeded `too_many_arguments` allow sits on `command_of`;
+  - `Placing::s` is set in `clear` while `place` reads `from.s` (equal by construction);
+  - a slot index missing from the slot table marks its run absolute (degenerate, safe);
+  - a record clip under an inner clipper in a slot is an ulp off at 1.25 (derive it by the absolute rule);
+  - a spot-built capture that differs with equal inputs silently takes a new version instead of counting as a difference;
+  - `choose_spot` loses fragment-check frames to the node spot path;
+  - `rewind_frame` loses fragments taken in a rewound frame (harness only);
+  - a lost fragment's slot persists across a rerun pass until the next frame.
+- Console and docs:
+  - the overlay prints copies as "kept";
+  - `ui:fragments` says "on" while `ui:cache` is off;
+  - the ryo-ui skill's "one and a half times a still frame" is the UI pass only, and its spot-check wording ("lay out afresh") is loose.
+- Tests, weak or missing pins:
+  - `a_page_at_rest_draws_as_it_did` checks only that rects sit on the grid;
+  - the drawn offset's rounding mode;
+  - `push_slot` saturation;
+  - `a_kept_text_leaf`'s height check (the `asked` check is the one that discriminates);
+  - a kept descendant without an entry, and `placed_below` on an unheld id;
+  - a popup in `a_popup_or_a_placed_node_is_never_kept`;
+  - `assert_reused` passes on any frame;
+  - the Inputs checks that no scenario fails alone: scale, layer, scene, `in_popup`, the carried-only rule and the top flag;
+  - a sprite's draw inside a run;
+  - the CPU slot tests' coverage of own clips;
+  - a cyclic or over-depth scroll chain in `Nav`'s `seen_from`;
+  - the breakout HUD changing;
+  - the empty-pass test asserts only `>`, and its rerun `+=` path is untested.
+- Tests, shape:
+  - the CPU slot test rebuilds its instance itself;
+  - `scene_pushed_over_fragments` cannot split its stats per scene;
+  - `a_window_resize` duplicates `each_env_change`;
+  - the e2e runs snapshot is parsed from a debug string;
+  - the hover test's `.take(8)` could hover fewer rows;
+  - breakout's `game_folder` is copied a third time;
+  - `an_evicted_glyph_page` runs 600 frames of readback;
+  - the GPU build tests skip silently without a GPU;
+  - `ui_renderer/gpu_tests.rs` passes 3,800 lines.
 
 ## UI renderer (4h)
 
@@ -15,7 +89,6 @@ Items from 4f, 4g and 4h were copied from their execution records. Items from ea
 - `sprite.wgsl`'s "Sampling and colour space" header now covers only `texel_size`.
 - Game sprite shaders get `quad_corner` in their prelude (`include/quad.wgsl`), so a game shader function of that name clashes.
 - `SPRITE_LINEAR` (a render target shown as a UI sprite) is covered at GPU level only: no UI command can show a render target today.
-- The `ui_render` guard's 40 µs one-label assertion holds with about 6 µs of margin on a quiet machine; under load (another process holding a core) it can read 39-40 µs and fail.
 - Tests: the CPU-only build checks are GPU-gated, so they pass vacuously without a GPU (the crate's pattern); the 3,000-label growth test relies on validation rather than asserting growth; no GPU test passes a kept or all-culled frame between uploads (safe by reasoning); the building tests compare `build_ui` against the shared functions it calls (their value is the fixed clips, kinds, order, culling and texture needs); no "state happened" asserts in the e2e `scroll_clipping` (scrolled), `sprites_and_a_standalone_image` (standalone) and `resize_and_theme_change` (applied) tests; the line comparison's mask admits any in-panel pixel that differs from the background (bounded by the line slack); `INTERLEAVED_RUNS == 4` depends on Inter's "◯" metrics and the page sizes without asserting the page counts; the pixel-art UI test's line is whole-pixel and horizontal; `lines_at` (e2e) and `test_lines` (GPU tests) are near-duplicate scenes; wgpu has no public strong count, so the release test checks only the renderer's own references to the textures it dropped.
 
 ## UI focus and debug overlay (4h hand-play)
