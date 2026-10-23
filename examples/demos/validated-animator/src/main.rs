@@ -16,23 +16,29 @@ const HURT: &str = "hurt";
 const DEATH: &str = "death";
 
 struct ValidatedAnimatorPage {
-  animator: ValidatedAnimator,
+  /// Made on enter, when its frames can be added to the asset registry
+  animator: Option<ValidatedAnimator>,
   last_transition_result: Option<(String, bool)>,
   transition_log: Vec<String>,
 }
 
 impl ValidatedAnimatorPage {
   fn new() -> Self {
-    // Create simple colored frame animations (simulating sprite sheets);
-    // the page shows their states, not their frames, so the frames live in
-    // a store of their own
-    let mut images = Assets::<Image>::default();
-    let ctx = &mut images;
-    let idle_anim = Self::create_animation(ctx, "idle", 4, 0.3);
-    let walk_anim = Self::create_animation(ctx, "walk", 6, 0.1);
-    let attack_anim = Self::create_animation(ctx, "attack", 4, 0.08).with_loop_mode(LoopMode::Once);
-    let hurt_anim = Self::create_animation(ctx, "hurt", 2, 0.15).with_loop_mode(LoopMode::Once);
-    let death_anim = Self::create_animation(ctx, "death", 5, 0.2).with_loop_mode(LoopMode::Once);
+    Self {
+      animator: None,
+      last_transition_result: None,
+      transition_log: vec!["Started in IDLE".to_string()],
+    }
+  }
+
+  fn animator(assets: &mut AssetsView) -> ValidatedAnimator {
+    // Create simple colored frame animations (simulating sprite sheets)
+    let idle_anim = Self::create_animation(assets, "idle", 4, 0.3);
+    let walk_anim = Self::create_animation(assets, "walk", 6, 0.1);
+    let attack_anim =
+      Self::create_animation(assets, "attack", 4, 0.08).with_loop_mode(LoopMode::Once);
+    let hurt_anim = Self::create_animation(assets, "hurt", 2, 0.15).with_loop_mode(LoopMode::Once);
+    let death_anim = Self::create_animation(assets, "death", 5, 0.2).with_loop_mode(LoopMode::Once);
 
     // Create validated animator with transition rules:
     //
@@ -48,7 +54,7 @@ impl ValidatedAnimatorPage {
     //   attack --> walk    (can't walk mid-attack)
     //   death --> *        (can't recover from death)
     //
-    let animator = ValidatedAnimator::new(idle_anim, IDLE)
+    ValidatedAnimator::new(idle_anim, IDLE)
       .with_animation(walk_anim, WALK)
       .with_animation(attack_anim, ATTACK)
       .with_animation(hurt_anim, HURT)
@@ -65,17 +71,11 @@ impl ValidatedAnimatorPage {
       // Death can be entered from anywhere
       .with_transition_from_any(DEATH)
       // Can recover from hurt
-      .with_transition(HURT, IDLE);
-
-    Self {
-      animator,
-      last_transition_result: None,
-      transition_log: vec!["Started in IDLE".to_string()],
-    }
+      .with_transition(HURT, IDLE)
   }
 
   fn create_animation(
-    images: &mut Assets<Image>,
+    assets: &mut AssetsView,
     name: &str,
     frame_count: usize,
     frame_duration: f32,
@@ -85,7 +85,7 @@ impl ValidatedAnimatorPage {
     let frames: Vec<Handle<Image>> = (0..frame_count)
       .map(|i| {
         let color = Self::state_color(name, i);
-        images.add(Image::solid_rect(64, 64, color.0, color.1, color.2, 255))
+        assets.add(Image::solid_rect(64, 64, color.0, color.1, color.2, 255))
       })
       .collect();
 
@@ -106,8 +106,11 @@ impl ValidatedAnimatorPage {
   }
 
   fn try_transition(&mut self, target: &'static str) {
-    let from = self.animator.current();
-    let success = self.animator.set_animation(target);
+    let Some(animator) = &mut self.animator else {
+      return;
+    };
+    let from = animator.current();
+    let success = animator.set_animation(target);
 
     let msg = if success {
       format!("{} -> {} [OK]", from, target)
@@ -123,8 +126,11 @@ impl ValidatedAnimatorPage {
   }
 
   fn force_transition(&mut self, target: &'static str) {
-    let from = self.animator.current();
-    self.animator.force_animation(target);
+    let Some(animator) = &mut self.animator else {
+      return;
+    };
+    let from = animator.current();
+    animator.force_animation(target);
 
     let msg = format!("{} -> {} [FORCED]", from, target);
     self.last_transition_result = Some((target.to_string(), true));
@@ -162,6 +168,10 @@ impl DemoPage for ValidatedAnimatorPage {
     ]
   }
 
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.animator = Some(Self::animator(&mut ctx.assets()));
+  }
+
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Handle input
     if ctx.input.key_pressed(KeyCode::Digit1) {
@@ -184,24 +194,29 @@ impl DemoPage for ValidatedAnimatorPage {
     }
 
     // Auto-transition when attack/hurt finishes
-    if self.animator.just_finished() {
-      let current = self.animator.current();
-      if current == ATTACK || current == HURT {
-        self.try_transition(IDLE);
-      }
+    if let Some(animator) = &self.animator
+      && animator.just_finished()
+      && matches!(animator.current(), ATTACK | HURT)
+    {
+      self.try_transition(IDLE);
     }
 
     // Update animator
-    self.animator.update(dt);
+    if let Some(animator) = &mut self.animator {
+      animator.update(dt);
+    }
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
+    let Some(animator) = &self.animator else {
+      return;
+    };
     let area = content_area(ui);
     let center_x = area.x + area.width / 2.0;
 
     // Current state display (large, centered)
     let state_y = area.y + 10.0;
-    let current = self.animator.current();
+    let current = animator.current();
     let state_color = match current {
       IDLE => Color::hex(0x00FF00),
       WALK => Color::hex(0x00FFFF),
@@ -221,7 +236,7 @@ impl DemoPage for ValidatedAnimatorPage {
 
     // Time in state
     ui.draw_text(
-      &format!("Time: {:.1}s", self.animator.time_in_state()),
+      &format!("Time: {:.1}s", animator.time_in_state()),
       center_x - 40.0,
       state_y + 50.0,
       Color::hex(0xAAAAAA),
@@ -289,7 +304,7 @@ impl DemoPage for ValidatedAnimatorPage {
 
     let all_states = [IDLE, WALK, ATTACK, HURT, DEATH];
     for (i, state) in all_states.iter().enumerate() {
-      let can = self.animator.can_transition_to(state);
+      let can = animator.can_transition_to(state);
       let color = if can {
         Color::hex(0x88FF88)
       } else {
