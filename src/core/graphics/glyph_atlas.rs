@@ -1,7 +1,9 @@
 //! Glyph images in their own pages beside the sprite atlas: R8 coverage
 //! (raster glyphs), RGBA (colour glyphs, sRGB bytes) and RGBA distances
 //! (MSDF). Glyphs are placed on first use and evicted a page at a time,
-//! least recently used first, never one drawn this frame.
+//! least recently used first, never one drawn this frame. A face that is
+//! freed or whose data changes loses its glyphs, and a page that leaves
+//! empty is freed with its texture.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +13,7 @@ use etagere::{AllocId, BucketedAtlasAllocator, size2};
 use crate::core::graphics::atlas::PageBindGroups;
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::render::batch::Sampling;
-use crate::core::text::{GlyphFormat, GlyphImage, GlyphKey};
+use crate::core::text::{FontId, Fonts, GlyphFormat, GlyphImage, GlyphKey};
 use crate::engine_warn;
 
 /// Page edge in texels
@@ -61,10 +63,9 @@ pub(crate) struct ShelfEntry {
   left: i32,
   top: i32,
   base: f32,
-  // Kept so a placed rectangle can be freed individually; freeing one glyph
-  // must also change its page's generation, or texts reused from earlier
-  // frames would sample the wrong glyph
-  #[allow(dead_code)]
+  // Kept so a placed rectangle can be freed on its own (a forgotten face's
+  // glyphs); that changes its page's generation, or texts reused from
+  // earlier frames would sample whatever is placed there next
   alloc: AllocId,
   last_used: u64,
 }
@@ -105,7 +106,9 @@ fn next_page_generation() -> u64 {
 pub(crate) struct GlyphShelves {
   size: u32,
   max_pages: usize,
-  pages: FastMap<GlyphFormat, Vec<ShelfPage>>,
+  /// By format and index; a freed page leaves a hole, which the next page
+  /// of its format takes, so the other pages keep their indices
+  pages: FastMap<GlyphFormat, Vec<Option<ShelfPage>>>,
   /// The hot map: looked up for every glyph every frame
   entries: FastMap<GlyphKey, ShelfEntry>,
   warned: HashSet<(u32, u32)>,
@@ -139,15 +142,103 @@ impl GlyphShelves {
     Some(entry)
   }
 
-  /// A new empty page of `format`
-  pub(crate) fn add_page(&mut self, format: GlyphFormat) {
+  /// A new empty page of `format`, in the first freed place or after the
+  /// others; its index
+  pub(crate) fn add_page(&mut self, format: GlyphFormat) -> usize {
     let side = self.size as i32;
-    self.pages.entry(format).or_default().push(ShelfPage {
+    let page = ShelfPage {
       allocator: BucketedAtlasAllocator::new(size2(side, side)),
       keys: FastSet::default(),
       generation: next_page_generation(),
       pinned: 0,
+    };
+    let pages = self.pages.entry(format).or_default();
+    match pages.iter().position(Option::is_none) {
+      Some(hole) => {
+        if let Some(slot) = pages.get_mut(hole) {
+          *slot = Some(page);
+        }
+        hole
+      }
+      None => {
+        pages.push(Some(page));
+        pages.len() - 1
+      }
+    }
+  }
+
+  fn page(&self, format: GlyphFormat, index: usize) -> Option<&ShelfPage> {
+    self.pages.get(&format)?.get(index)?.as_ref()
+  }
+
+  fn page_mut(&mut self, format: GlyphFormat, index: usize) -> Option<&mut ShelfPage> {
+    self.pages.get_mut(&format)?.get_mut(index)?.as_mut()
+  }
+
+  /// The pages of `format` there are, freed ones not counted
+  fn live_pages(&self, format: GlyphFormat) -> usize {
+    self
+      .pages
+      .get(&format)
+      .map_or(0, |pages| pages.iter().flatten().count())
+  }
+
+  /// The pages there are, of every format (tests)
+  #[cfg(test)]
+  pub(crate) fn page_count(&self) -> usize {
+    self.pages.values().flatten().flatten().count()
+  }
+
+  /// Forget every glyph of `font`: their room is free again, and each page
+  /// they were on changes its generation. A page left with no glyph is
+  /// freed; those are returned
+  pub(crate) fn forget_font(&mut self, font: FontId) -> Vec<GlyphPage> {
+    let pages = &mut self.pages;
+    let mut touched: Vec<(GlyphFormat, usize)> = Vec::new();
+    self.entries.retain(|key, entry| {
+      if key.font != font {
+        return true;
+      }
+      if let Some(page) = pages
+        .get_mut(&entry.format)
+        .and_then(|pages| pages.get_mut(entry.page))
+        .and_then(Option::as_mut)
+      {
+        page.allocator.deallocate(entry.alloc);
+        page.keys.remove(key);
+      }
+      if !touched.contains(&(entry.format, entry.page)) {
+        touched.push((entry.format, entry.page));
+      }
+      false
     });
+    let mut freed = Vec::new();
+    for (format, index) in touched {
+      let Some(slot) = pages
+        .get_mut(&format)
+        .and_then(|pages| pages.get_mut(index))
+      else {
+        continue;
+      };
+      match slot {
+        Some(page) if page.keys.is_empty() => {
+          *slot = None;
+          freed.push(GlyphPage {
+            format,
+            index: u16::try_from(index).unwrap_or(u16::MAX),
+          });
+        }
+        Some(page) => page.generation = next_page_generation(),
+        None => {}
+      }
+    }
+    // Trailing holes go, so a format's page list stays as long as it needs
+    for pages in pages.values_mut() {
+      while pages.last().is_some_and(Option::is_none) {
+        pages.pop();
+      }
+    }
+    freed
   }
 
   /// Find room for a `(w, h)` image of `key`, evicting the least recently
@@ -173,13 +264,13 @@ impl GlyphShelves {
         return placed;
       }
     }
-    if page_count < self.max_pages {
+    if self.live_pages(format) < self.max_pages {
       return Placement::NeedPage;
     }
     // The page whose newest glyph is oldest, if that is before this frame
     let victim = (0..page_count)
       .filter_map(|index| {
-        let page = self.pages.get(&format)?.get(index)?;
+        let page = self.page(format, index)?;
         let newest = page
           .keys
           .iter()
@@ -208,7 +299,12 @@ impl GlyphShelves {
   /// Empty page `index` of `format`: its glyphs are forgotten and its
   /// generation changes
   fn clear_page(&mut self, format: GlyphFormat, index: usize) {
-    if let Some(page) = self.pages.get_mut(&format).and_then(|p| p.get_mut(index)) {
+    if let Some(page) = self
+      .pages
+      .get_mut(&format)
+      .and_then(|p| p.get_mut(index))
+      .and_then(Option::as_mut)
+    {
       page.allocator.clear();
       for evicted in page.keys.drain() {
         self.entries.remove(&evicted);
@@ -219,23 +315,26 @@ impl GlyphShelves {
 
   /// The generation of page `index` of `format` (`None`: no such page)
   pub(crate) fn page_generation(&self, format: GlyphFormat, index: usize) -> Option<u64> {
-    Some(self.pages.get(&format)?.get(index)?.generation)
+    Some(self.page(format, index)?.generation)
   }
 
   /// The last frame page `index` of `format` was pinned in (tests)
   #[cfg(test)]
   fn page_pinned(&self, format: GlyphFormat, index: usize) -> Option<u64> {
-    Some(self.pages.get(&format)?.get(index)?.pinned)
+    Some(self.page(format, index)?.pinned)
+  }
+
+  /// How many glyphs of `font` are placed
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn glyphs_of(&self, font: FontId) -> usize {
+    self.entries.keys().filter(|key| key.font == font).count()
   }
 
   /// Keep page `index` of `format` from eviction in `frame`: something
   /// built from its glyphs earlier is drawn in it
   pub(crate) fn pin(&mut self, format: GlyphFormat, index: usize, frame: u64) {
-    if let Some(page) = self
-      .pages
-      .get_mut(&format)
-      .and_then(|pages| pages.get_mut(index))
-    {
+    if let Some(page) = self.page_mut(format, index) {
       page.pinned = page.pinned.max(frame);
     }
   }
@@ -260,7 +359,7 @@ impl GlyphShelves {
     (w, h): (u32, u32),
     frame: u64,
   ) -> Option<Placement> {
-    let page = self.pages.get_mut(&format)?.get_mut(index)?;
+    let page = self.page_mut(format, index)?;
     let alloc = page.allocator.allocate(want)?;
     let rect = TexelRect {
       x: alloc.rectangle.min.x as u32 + PADDING,
@@ -294,9 +393,14 @@ struct GpuPage {
 /// The glyph pages on the GPU
 pub(crate) struct GlyphAtlas {
   shelves: GlyphShelves,
-  pages: FastMap<GlyphFormat, Vec<GpuPage>>,
+  /// By format and index, as the shelves' pages (a freed page is a hole)
+  pages: FastMap<GlyphFormat, Vec<Option<GpuPage>>>,
   /// Keys that have no image (spaces, refused glyphs): not asked for again
   empty: FastSet<GlyphKey>,
+  /// The registry's faces and their serials as of the last `sync_fonts`,
+  /// and its generation then: what the placed glyphs were made from
+  faces: Vec<(FontId, u64)>,
+  fonts_generation: Option<u64>,
 }
 
 impl GlyphAtlas {
@@ -305,7 +409,66 @@ impl GlyphAtlas {
       shelves: GlyphShelves::new(GLYPH_PAGE_SIZE, GLYPH_PAGES),
       pages: FastMap::default(),
       empty: FastSet::default(),
+      faces: Vec::new(),
+      fonts_generation: None,
     }
+  }
+
+  /// Bring the glyphs in line with `fonts` before a frame draws text: every
+  /// glyph of a face freed or changed since the last call is forgotten
+  /// (also the keys found to have no image), and a page left empty is
+  /// freed with its texture. Runs between frames, so no glyph a frame drew
+  /// or pinned goes while it draws. Costs a comparison when the registry has
+  /// not changed
+  pub(crate) fn sync_fonts(&mut self, fonts: &Fonts) {
+    if self.fonts_generation == Some(fonts.generation()) {
+      return;
+    }
+    self.fonts_generation = Some(fonts.generation());
+    let faces = std::mem::take(&mut self.faces);
+    for &(font, serial) in &faces {
+      if fonts.face_serial(font) != Some(serial) {
+        self.forget_font(font);
+      }
+    }
+    self.faces = faces;
+    self.faces.clear();
+    self
+      .faces
+      .extend(fonts.faces().map(|(font, face)| (font, face.serial)));
+  }
+
+  /// Forget every glyph of `font`, and free the pages that leaves empty
+  fn forget_font(&mut self, font: FontId) {
+    self.empty.retain(|key| key.font != font);
+    for page in self.shelves.forget_font(font) {
+      if let Some(slot) = self
+        .pages
+        .get_mut(&page.format)
+        .and_then(|pages| pages.get_mut(usize::from(page.index)))
+      {
+        *slot = None;
+      }
+    }
+    for pages in self.pages.values_mut() {
+      while pages.last().is_some_and(Option::is_none) {
+        pages.pop();
+      }
+    }
+  }
+
+  /// How many glyphs of `font` are placed (tests)
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn glyphs_of(&self, font: FontId) -> usize {
+    self.shelves.glyphs_of(font)
+  }
+
+  /// How many glyph pages have textures (tests)
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn page_count(&self) -> usize {
+    self.pages.values().flatten().flatten().count()
   }
 
   /// `key` was found to have no image
@@ -430,11 +593,17 @@ impl GlyphAtlas {
       });
       let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
       let bind_groups = bind(&view);
-      self.pages.entry(format).or_default().push(GpuPage {
-        texture,
-        bind_groups,
-      });
-      self.shelves.add_page(format);
+      let index = self.shelves.add_page(format);
+      let pages = self.pages.entry(format).or_default();
+      if pages.len() <= index {
+        pages.resize_with(index + 1, || None);
+      }
+      if let Some(slot) = pages.get_mut(index) {
+        *slot = Some(GpuPage {
+          texture,
+          bind_groups,
+        });
+      }
       placement = self.shelves.place(&key, format, size, frame);
     }
     let (page, rect) = match placement {
@@ -446,7 +615,7 @@ impl GlyphAtlas {
       }
       Placement::NeedPage | Placement::Full => return None,
     };
-    let texture = &self.pages.get(&format)?.get(page)?.texture;
+    let texture = &self.pages.get(&format)?.get(page)?.as_ref()?.texture;
 
     // One write of the image inside its transparent border
     let bpp = if format == GlyphFormat::Mask { 1 } else { 4 };
@@ -493,7 +662,11 @@ impl GlyphAtlas {
 
   /// The bind group sampling `page` with `sampling`
   pub(crate) fn bind_group(&self, page: GlyphPage, sampling: Sampling) -> Option<&wgpu::BindGroup> {
-    let gpu = self.pages.get(&page.format)?.get(usize::from(page.index))?;
+    let gpu = self
+      .pages
+      .get(&page.format)?
+      .get(usize::from(page.index))?
+      .as_ref()?;
     Some(gpu.bind_groups.get(sampling))
   }
 
@@ -502,7 +675,8 @@ impl GlyphAtlas {
     self
       .pages
       .get(&page.format)?
-      .get(usize::from(page.index))
+      .get(usize::from(page.index))?
+      .as_ref()
       .map(|p| &p.texture)
   }
 }
@@ -708,6 +882,128 @@ mod tests {
       .filter(|e| e.message.contains("Msdf glyph pages are full"))
       .count();
     assert_eq!(warnings, 1, "warned once, not once a frame");
+  }
+
+  fn of(font: u32, glyph: u16) -> GlyphKey {
+    GlyphKey::fill(FontId(font), glyph, 16.0, 0.0)
+  }
+
+  fn place(shelves: &mut GlyphShelves, key: GlyphKey) -> usize {
+    match shelves.place(&key, GlyphFormat::Mask, (12, 12), 1) {
+      Placement::Placed { page, .. } => page,
+      other => panic!("{key:?}: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn forgetting_a_font_frees_its_glyphs_and_keeps_the_others() {
+    // One page of sixteen 12x12 glyphs: eight of font 0, then eight of font 1
+    let mut shelves = GlyphShelves::new(64, 1);
+    shelves.add_page(GlyphFormat::Mask);
+    for font in [0, 1] {
+      for glyph in 0..8 {
+        place(&mut shelves, of(font, glyph));
+      }
+    }
+    assert!(matches!(
+      shelves.place(&of(2, 0), GlyphFormat::Mask, (12, 12), 1),
+      Placement::Full
+    ));
+    let freed = shelves.forget_font(FontId(1));
+    assert!(freed.is_empty(), "font 0's glyphs keep the page");
+    for glyph in 0..8 {
+      assert!(shelves.lookup(&of(1, glyph), 2).is_none(), "{glyph}");
+      assert!(shelves.lookup(&of(0, glyph), 2).is_some(), "{glyph}");
+    }
+    assert_eq!(shelves.glyphs_of(FontId(1)), 0);
+    // Its room is free again (the allocator takes back space a bucket at a
+    // time, and these were placed together): eight more fit, nothing evicted
+    for glyph in 0..8 {
+      place(&mut shelves, of(2, glyph));
+    }
+    assert_eq!(shelves.evictions(), 0);
+    assert_eq!(shelves.glyphs_of(FontId(0)), 8);
+  }
+
+  #[test]
+  fn forgetting_a_font_changes_the_generation_of_the_pages_it_was_on() {
+    // Pages of four: page 0 holds font 0's glyphs; page 1 font 1's, then font 0's
+    let mut shelves = GlyphShelves::new(32, 2);
+    shelves.add_page(GlyphFormat::Mask);
+    shelves.add_page(GlyphFormat::Mask);
+    for glyph in 0..4 {
+      assert_eq!(place(&mut shelves, of(0, glyph)), 0);
+    }
+    for glyph in 0..2 {
+      assert_eq!(place(&mut shelves, of(1, glyph)), 1);
+    }
+    assert_eq!(place(&mut shelves, of(0, 9)), 1);
+    let before = (
+      shelves.page_generation(GlyphFormat::Mask, 0),
+      shelves.page_generation(GlyphFormat::Mask, 1),
+    );
+    assert!(shelves.forget_font(FontId(1)).is_empty());
+    assert_eq!(shelves.page_generation(GlyphFormat::Mask, 0), before.0);
+    assert!(shelves.page_generation(GlyphFormat::Mask, 1).is_some());
+    assert_ne!(
+      shelves.page_generation(GlyphFormat::Mask, 1),
+      before.1,
+      "what was built from page 1 is built again"
+    );
+  }
+
+  #[test]
+  fn a_page_a_forgotten_font_empties_is_freed_and_its_place_reused() {
+    let mut shelves = GlyphShelves::new(32, 2);
+    shelves.add_page(GlyphFormat::Mask);
+    shelves.add_page(GlyphFormat::Mask);
+    for glyph in 0..4 {
+      assert_eq!(place(&mut shelves, of(0, glyph)), 0);
+    }
+    for glyph in 0..4 {
+      assert_eq!(place(&mut shelves, of(1, glyph)), 1);
+    }
+    let freed = shelves.forget_font(FontId(1));
+    assert_eq!(
+      freed,
+      vec![GlyphPage {
+        format: GlyphFormat::Mask,
+        index: 1,
+      }]
+    );
+    assert_eq!(shelves.page_generation(GlyphFormat::Mask, 1), None, "gone");
+    assert!(shelves.page_generation(GlyphFormat::Mask, 0).is_some());
+    assert_eq!(shelves.page_count(), 1);
+    // Page 0 is full: a new page is asked for, and takes the freed place
+    assert!(matches!(
+      shelves.place(&of(2, 0), GlyphFormat::Mask, (12, 12), 2),
+      Placement::NeedPage
+    ));
+    assert_eq!(shelves.add_page(GlyphFormat::Mask), 1);
+    assert_eq!(place(&mut shelves, of(2, 0)), 1);
+    assert_eq!(shelves.page_count(), 2);
+  }
+
+  #[test]
+  fn a_freed_page_in_the_middle_keeps_the_others_indices() {
+    let mut shelves = GlyphShelves::new(32, 3);
+    for _ in 0..3 {
+      shelves.add_page(GlyphFormat::Mask);
+    }
+    for (font, page) in [(0, 0), (1, 1), (2, 2)] {
+      for glyph in 0..4 {
+        assert_eq!(place(&mut shelves, of(font, glyph)), page);
+      }
+    }
+    let last = shelves.page_generation(GlyphFormat::Mask, 2);
+    assert_eq!(shelves.forget_font(FontId(1)).len(), 1);
+    assert_eq!(shelves.page_generation(GlyphFormat::Mask, 2), last);
+    assert_eq!(
+      shelves.lookup(&of(2, 0), 2).map(|entry| entry.page),
+      Some(2),
+      "page 2 is still page 2"
+    );
+    assert_eq!(shelves.add_page(GlyphFormat::Mask), 1, "the hole is filled");
   }
 
   #[test]

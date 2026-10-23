@@ -6,24 +6,34 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 - `parley` (layout), `swash` (raster glyphs, font tables) and `fdsm` (MSDF)
   are named only in this module. Everything else sees `FontId`, `TextStyle`,
   `TextLayout` and `GlyphImage`.
-- `Fonts` is the registry (a resource, `ctx.fonts()`). Built-in fonts come
+- `Fonts` is the registry (a resource, `ctx.fonts()`) of the faces of the
+  font assets (`Font`, `BitmapFont`) the world holds. Built-in fonts come
   from `src/assets/fonts/` behind the `default-fonts` feature (on by
   default): Inter (UI and world), JetBrains Mono (console, overlays, dev
-  windows), m5x7 (pixel, ASCII only). Sources, licences and the subset
-  command are in `src/assets/fonts/README.md`.
+  windows), m5x7 (pixel, ASCII only), added to `Assets<Font>` at startup
+  and held by `BuiltinFonts`. Sources, licences and the subset command are
+  in `src/assets/fonts/README.md`.
+- `Fonts` follows the font stores (`fonts_follow_assets`, by their change
+  lists): right after the asset pump, at the start of each UI pass and in
+  `ctx.fonts()`, so a scene sees a font it has just added. A freed font's
+  face leaves; a changed one takes its new data in place (same `FontId`,
+  new face serial). Faces register in the order their fonts arrive, the
+  built-ins first. Roles hold their font's handle (`set_role`).
 - Every real change to `Fonts` bumps `generation`; the text engine re-syncs
-  and drops cached layouts when it changes. Registering is idempotent: the
-  same bytes and face index (a hash of the bytes, then a byte compare), the
-  same canonical path (`load`) or the same bitmap family, sheet, cell and
-  characters return the existing id, and a `set_role` or `set_render` to
-  the current value bumps nothing, so a game calling them every frame costs
-  no relayout.
+  and drops cached layouts when it changes. Registering is idempotent: two
+  fonts of the same bytes and face index (a hash of the bytes, then a byte
+  compare), or bitmap fonts of the same family, sheet, cell and characters,
+  share one face, and a `set_role` or `set_render` to the current value
+  bumps nothing, so a game calling them every frame costs no relayout.
 - `Fonts` has no public constructor (`new` is crate-internal, no
-  `Default`): `FontId`s are registry indices that the glyph atlas and
-  swash's cache key on, so a replaced registry would alias them. Its
-  `Debug` (and `FaceSource`'s) leaves the font bytes out.
-- There is no file system on the web: `Fonts::load` fails there, so games
-  embed fonts with `add_bytes(include_bytes!(..))`.
+  `Default`): `FontId`s are registry indices, never reused, that the glyph
+  atlas keys on. Its `Debug` (and `FaceSource`'s, and `Font`'s) leaves the
+  font bytes out.
+- The layout cache holds no font: its sources name `TextFont::Face` by an
+  unheld handle (`TextStyle::unheld`), so a cached layout never keeps a font
+  loaded.
+- There is no file system on the web: games embed fonts with
+  `ctx.assets().add(Font::from_bytes(include_bytes!(..))?)`.
 
 ## Layout
 
@@ -58,8 +68,8 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
 - Fallback: a style's font, its fallbacks, then the UI font, then the mono font.
   A character no font has draws glyph 0 (the font's box) and is warned once
   per family, naming the first five such characters and how many more.
-- Bitmap fonts (`Fonts::add_bitmap`) are laid out by a monospace grid
-  layouter; a text uses bitmap or outline fonts, not both.
+- Bitmap fonts (`BitmapFont` assets, reached by family) are laid out by a
+  monospace grid layouter; a text uses bitmap or outline fonts, not both.
 - Clusters: each glyph and icon carries its character cluster in logical
   order; reveal and per-glyph effects count clusters. An icon shares the
   cluster after it; an icon with no character after it gets a cluster of
@@ -73,9 +83,11 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   `TextEngine::snapped` applies it to the style before layout, line height
   and the caret queries; `span_runs` to spans that set a size or a pixel
   font. The cache key keeps the size as asked.
-- `TextFont::Id` lays out that exact face: Parley picks faces by family,
-  weight and slant, so the face's own weight and slant are pushed. A word
-  wider than the wrap width breaks inside it (`OverflowWrap::Anywhere`).
+- `TextFont::Face` lays out that exact font's face: Parley picks faces by
+  family, weight and slant, so the face's own weight and slant are pushed.
+  A font that is not registered (loading, failed, freed) falls back as an
+  unknown family does, warned once per font. A word wider than the wrap
+  width breaks inside it (`OverflowWrap::Anywhere`).
 - `min_content_width` (UI layout's min-content measure) is the widest word
   or icon: Parley's content widths shaped with `OverflowWrap::Normal`, since
   `Anywhere` would make it the widest grapheme; on a bitmap grid, the widest
@@ -123,8 +135,9 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   font. The rasterizer itself refuses sizes above 1024 px. Bitmap fonts
   have no glyph images: the renderer draws their cells from the sprite
   sheet.
-- One `GlyphRasterizer` serves one `Fonts`: swash caches parsed fonts
-  under `[FontId, face index]`. The engine owns one of each.
+- Swash caches parsed fonts under `[face serial, face index]`: a serial is
+  unique in the process and new when a face's data changes, so a changed
+  font is parsed again. The engine owns one `GlyphRasterizer`.
 - The built-in fonts are subset with `--notdef-outline`, so a character no
   font has draws a box (`hb-subset` empties `.notdef` by default).
 

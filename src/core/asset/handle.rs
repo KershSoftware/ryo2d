@@ -49,6 +49,20 @@ impl<T: Asset> Handle<T> {
     }))
   }
 
+  /// A handle to `id` that does not hold it: equal to its handles (handles
+  /// compare by id), for a cache that compares by handle but must not keep
+  /// what it compares alive. Its drop tells no store
+  pub(crate) fn unheld(id: AssetId<T>) -> Self {
+    static NOWHERE: std::sync::OnceLock<Sender<(u32, u32)>> = std::sync::OnceLock::new();
+    // Its receiver is dropped at once, so a drop notice goes nowhere
+    let drops = NOWHERE.get_or_init(|| crossbeam_channel::unbounded().0);
+    Self::from_shared(Arc::new(Shared {
+      index: id.index(),
+      generation: id.generation(),
+      drops: drops.clone(),
+    }))
+  }
+
   /// The asset's id, which does not keep it alive
   pub fn id(&self) -> AssetId<T> {
     AssetId::new(self.shared.index, self.shared.generation)

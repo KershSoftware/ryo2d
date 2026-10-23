@@ -484,6 +484,10 @@ fn an_inline_icon_draws_its_sprite() {
   assert!(count(&frame, bright) > 20, "beside the A");
 }
 
+/// Keeps a bitmap font loaded while its entity lives
+#[derive(Component)]
+struct HeldFont(#[allow(dead_code)] Handle<BitmapFont>);
+
 #[test]
 fn a_bitmap_font_draws_its_cells() {
   let Some(frame) = frame_of(
@@ -498,11 +502,15 @@ fn a_bitmap_font_draws_its_cells() {
         }
       }
       let sheet = ctx.assets().add(Image::from_rgba(pixels, 8, 4));
-      let font = ctx.fonts().add_bitmap("Grid", sheet, (4, 4), "#.").unwrap();
-      let style = TextStyle::new().font(TextFont::Id(font)).size(16.0);
+      let font = ctx
+        .assets()
+        .add(BitmapFont::new("Grid", sheet, (4, 4), "#."));
+      let style = TextStyle::new().family("Grid").size(16.0);
+      // The text's entity holds its font
       ctx.world.spawn((
         Transform::from_xy(0.0, 0.0),
         Text2d::new("#.#").with_style(style),
+        HeldFont(font),
       ));
     },
   ) else {

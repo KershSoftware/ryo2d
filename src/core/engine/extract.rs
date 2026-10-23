@@ -95,6 +95,11 @@ impl Engine {
     let shaders = shaders_of(&self.world);
     gpu.sync_shaders(&self.freed_shaders, shaders);
     rend.sync_shaders(&self.freed_shaders, shaders);
+    // Faces freed or changed since the last frame lose their glyphs, before
+    // any text is drawn
+    if let Some(fonts) = self.world.get_resource::<Fonts>() {
+      gpu.sync_fonts(fonts);
+    }
     let (alpha, real_time, game_time) = {
       let time = self.world.resource::<Time>();
       (

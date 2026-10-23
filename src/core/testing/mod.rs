@@ -45,6 +45,8 @@ mod atlas_bleeding;
 mod capture_matches_frame;
 #[doc(hidden)]
 pub mod fixtures;
+#[cfg(test)]
+mod font_gpu;
 mod gpu;
 #[cfg(test)]
 mod gpu_world;

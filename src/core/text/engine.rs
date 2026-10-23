@@ -17,12 +17,13 @@ use parley::{
   PositionedLayoutItem, RangedBuilder, Selection, StyleProperty, VerticalAlign,
 };
 
+use crate::core::asset::AssetId;
 use crate::core::hash::{FastHasher, FastMap, FastSet};
 use crate::core::text::key::TextKey;
 use crate::core::text::layout::{GlyphStyle, LineInfo, PlacedGlyph, PlacedIcon, TextLayout};
 use crate::core::text::rich::{Icon, RichText};
 use crate::core::text::style::{TextAlign, TextFont, TextLayoutOptions, TextOverflow, TextStyle};
-use crate::core::text::{BitmapFace, FaceSource, FontId, FontRender, FontRole, Fonts};
+use crate::core::text::{BitmapFace, FaceSource, Font, FontId, FontRender, FontRole, Fonts};
 use crate::core::ui::Rect;
 use crate::engine_warn;
 
@@ -87,6 +88,8 @@ pub(crate) struct TextEngine {
   fcx: FontContext,
   lcx: LayoutContext<u16>,
   faces: HashMap<FontId, FaceInfo>,
+  /// The faces of the registry's font assets, by slot (`TextFont::Face`)
+  font_slots: Vec<Option<(u32, FontId)>>,
   /// Parley font (blob id, face index) to the registry's id
   by_blob: HashMap<(u64, u32), FontId>,
   roles: [Option<FontId>; 3],
@@ -113,6 +116,7 @@ impl TextEngine {
       fcx: font_context(),
       lcx: LayoutContext::new(),
       faces: HashMap::new(),
+      font_slots: Vec::new(),
       by_blob: HashMap::new(),
       roles: [None; 3],
       cache: FastMap::default(),
@@ -136,6 +140,8 @@ impl TextEngine {
     self.cache.clear();
     self.lines.clear();
     self.roles = ROLES.map(|role| fonts.role(role));
+    self.font_slots.clear();
+    self.font_slots.extend_from_slice(fonts.font_slots());
     for (id, face) in fonts.faces() {
       let bitmap = match &face.source {
         FaceSource::Outline { data, index } => {
@@ -230,9 +236,10 @@ impl TextEngine {
     }
 
     self.stats.misses += 1;
+    // The source holds no font: a cached layout must not keep one alive
     let source = Source {
-      text: text.clone(),
-      style: style.clone(),
+      text: text.unheld(),
+      style: style.unheld(),
       options: *options,
       scale,
     };
@@ -561,7 +568,7 @@ impl TextEngine {
   fn resolve(&self, font: &TextFont) -> Option<FontId> {
     match font {
       TextFont::Role(role) => self.roles[role.index()].filter(|id| self.faces.contains_key(id)),
-      TextFont::Id(id) => self.faces.contains_key(id).then_some(*id),
+      TextFont::Face(font) => self.face_of(font.id()),
       // The regular face of the family, as `Fonts::find`
       TextFont::Family(name) => self
         .faces
@@ -576,15 +583,22 @@ impl TextEngine {
     }
   }
 
-  /// The weight and slant of an exact outline face (`TextFont::Id`): Parley
-  /// picks faces by family, weight and slant, so these select that face
+  /// The face a font asset registered as, if it is registered
+  fn face_of(&self, font: AssetId<Font>) -> Option<FontId> {
+    let (generation, face) = (*self.font_slots.get(font.index() as usize)?)?;
+    (generation == font.generation() && self.faces.contains_key(&face)).then_some(face)
+  }
+
+  /// The weight and slant of an exact outline face (`TextFont::Face`):
+  /// Parley picks faces by family, weight and slant, so these select that
+  /// face
   fn exact_face(&self, font: &TextFont) -> Option<(f32, bool)> {
-    let TextFont::Id(id) = font else {
+    let TextFont::Face(font) = font else {
       return None;
     };
     self
       .faces
-      .get(id)
+      .get(&self.face_of(font.id())?)
       .filter(|face| face.bitmap.is_none())
       .map(|face| (face.weight, face.italic))
   }
@@ -602,14 +616,15 @@ impl TextEngine {
   fn stack(&mut self, style: &TextStyle, span_font: Option<&TextFont>) -> Vec<String> {
     let mut ids = Vec::with_capacity(style.fallbacks.len() + 3);
     let mut unknown = Vec::new();
+    let mut unloaded = Vec::new();
     for font in std::iter::once(span_font.unwrap_or(&style.font)).chain(&style.fallbacks) {
       match self.resolve(font) {
         Some(id) => ids.push(id),
-        None => {
-          if let TextFont::Family(name) = font {
-            unknown.push(name.clone());
-          }
-        }
+        None => match font {
+          TextFont::Family(name) => unknown.push(name.clone()),
+          TextFont::Face(font) => unloaded.push(font.id()),
+          TextFont::Role(_) => {}
+        },
       }
     }
     ids.extend(
@@ -631,6 +646,12 @@ impl TextEngine {
     for name in unknown {
       if self.first_warning(hash_of(&("family", &name))) {
         engine_warn!(module: "text", "no font family named {name:?}; using the fallbacks");
+      }
+    }
+    // Still loading, failed, or (named by a cache) freed
+    for font in unloaded {
+      if self.first_warning(hash_of(&("face", font))) {
+        engine_warn!(module: "text", "font {font:?} is not loaded; using the fallbacks");
       }
     }
     names
@@ -1891,8 +1912,16 @@ fn to_u32(value: usize) -> u32 {
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
   use super::*;
-  use crate::core::text::{FontRole, Fonts, Span};
+  use crate::core::asset::{AssetServer, AssetsView, Handle, MemorySource, insert_registry, pump};
+  use crate::core::ecs::kernel::World;
+  use crate::core::text::fonts::TestFonts;
+  use crate::core::text::{
+    BitmapFont, Font, FontRole, Fonts, Span, fonts_follow_assets, insert_fonts,
+  };
   use crate::core::ui::Color;
+
+  const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+  const MONO: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf");
 
   fn engine() -> (TextEngine, Fonts) {
     let fonts = Fonts::with_builtins();
@@ -1982,7 +2011,7 @@ mod tests {
       .layout_keyed(key, &text, &style, &options, 1.0)
       .unwrap();
     // Pointing the mono role at the UI font is a new generation
-    let ui_font = fonts.role(FontRole::Ui).unwrap();
+    let ui_font = fonts.role_font(FontRole::Ui).cloned().unwrap();
     fonts.set_role(FontRole::Mono, ui_font);
     engine.sync(&fonts);
     let after = engine
@@ -2016,30 +2045,122 @@ mod tests {
     );
   }
 
+  const PRESS_START: &[u8] =
+    include_bytes!("../../../examples/games/breakout/assets/fonts/PressStart2P-Regular.ttf");
+
+  /// A world with the engine's registry over `files` and its fonts, as the
+  /// engine starts
+  fn world_over(files: MemorySource) -> World {
+    let mut world = World::new();
+    insert_registry(&mut world, AssetServer::new(files));
+    insert_fonts(&mut world);
+    world
+  }
+
+  #[test]
+  fn a_loaded_font_is_used_by_its_family() {
+    let files = MemorySource::new();
+    files.insert("fonts/press.ttf", PRESS_START);
+    let mut world = world_over(files);
+    let mut engine = TextEngine::new();
+    engine.sync(world.resource::<Fonts>());
+    let style = TextStyle::default().family("Press Start 2P");
+    let ui = world.resource::<Fonts>().role(FontRole::Ui);
+    let before = layout(&mut engine, "abc", &style);
+    assert!(
+      before.glyphs.iter().all(|g| Some(g.font) == ui),
+      "not loaded yet: the UI font"
+    );
+
+    let font = match AssetsView::new(&mut world).load_now::<Font>("fonts/press.ttf") {
+      Ok(font) => font,
+      Err(error) => panic!("press.ttf: {}", error.report()),
+    };
+    fonts_follow_assets(&mut world);
+    let fonts = world.resource::<Fonts>();
+    let face = fonts.face_of(&font);
+    assert!(face.is_some(), "registered");
+    assert_eq!(
+      face.and_then(|face| fonts.family(face)),
+      Some("Press Start 2P")
+    );
+    engine.sync(fonts);
+    let after = layout(&mut engine, "abc", &style);
+    assert!(!Arc::ptr_eq(&before, &after), "laid out again");
+    assert!(
+      after.glyphs.iter().all(|g| Some(g.font) == face),
+      "drawn in the loaded font"
+    );
+  }
+
+  #[test]
+  fn text_whose_font_was_freed_falls_back() {
+    // Review Focus 5: a font freed while text naming it is still laid out
+    let mut world = world_over(MemorySource::new());
+    let Ok(press) = Font::from_bytes(PRESS_START) else {
+      panic!("Press Start 2P is a font");
+    };
+    let font = AssetsView::new(&mut world).add(press);
+    fonts_follow_assets(&mut world);
+    let face = world.resource::<Fonts>().face_of(&font);
+    assert!(face.is_some());
+    let mut engine = TextEngine::new();
+    engine.sync(world.resource::<Fonts>());
+    let style = TextStyle::default().font(TextFont::Face(font.clone()));
+    let laid = layout(&mut engine, "abc", &style);
+    assert!(laid.glyphs.iter().all(|g| Some(g.font) == face));
+
+    // The style was the font's last holder (the layout cache holds none)
+    let id = font.id();
+    drop((font, style));
+    pump(&mut world);
+    fonts_follow_assets(&mut world);
+    let fonts = world.resource::<Fonts>();
+    assert_eq!(fonts.face_of(id), None, "freed, so unregistered");
+    assert_eq!(
+      face.and_then(|face| fonts.family(face)),
+      None,
+      "its face is gone"
+    );
+    engine.sync(fonts);
+
+    // Text that still names it falls back as an unknown family does
+    let ui = fonts.role(FontRole::Ui);
+    let named = TextStyle::default().font(TextFont::Face(Handle::unheld(id)));
+    let again = layout(&mut engine, "abc", &named);
+    assert_eq!(again.glyphs.len(), 3);
+    assert!(
+      again.glyphs.iter().all(|g| Some(g.font) == ui),
+      "the UI font"
+    );
+    let _ = layout(&mut engine, "abcd", &named);
+    let warned = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains(&format!("{id:?}")) && e.message.contains("not loaded"))
+      .count();
+    assert_eq!(warned, 1, "warned once");
+  }
+
   #[test]
   fn a_font_registration_invalidates_cached_layouts() {
-    let mut fonts = Fonts::new();
-    let inter = fonts
-      .add_bytes(include_bytes!("../../assets/fonts/Inter-Regular.ttf").to_vec())
-      .unwrap();
-    fonts.set_role(FontRole::Ui, inter);
+    let mut fonts = TestFonts::empty();
+    let (inter, inter_face) = fonts.add(INTER);
+    fonts.registry.set_role(FontRole::Ui, inter);
     let mut engine = TextEngine::new();
-    engine.sync(&fonts);
+    engine.sync(&fonts.registry);
     let style = TextStyle::default().family("JetBrains Mono");
     let before = layout(&mut engine, "abc", &style);
     assert!(
-      before.glyphs.iter().all(|g| g.font == inter),
+      before.glyphs.iter().all(|g| Some(g.font) == inter_face),
       "falls back to the UI font"
     );
 
-    let mono = fonts
-      .add_bytes(include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf").to_vec())
-      .unwrap();
-    engine.sync(&fonts);
+    let (_mono, mono_face) = fonts.add(MONO);
+    engine.sync(&fonts.registry);
     let after = layout(&mut engine, "abc", &style);
     assert!(!Arc::ptr_eq(&before, &after));
     assert!(
-      after.glyphs.iter().all(|g| g.font == mono),
+      after.glyphs.iter().all(|g| Some(g.font) == mono_face),
       "now uses the new font"
     );
   }
@@ -2269,13 +2390,13 @@ mod tests {
 
   #[test]
   fn a_bitmap_font_lays_out_on_its_grid() {
-    let mut fonts = Fonts::with_builtins();
+    let mut fonts = TestFonts::new();
     let sheet = crate::core::asset::Assets::default().add(
       crate::core::graphics::Image::solid_rect(24, 8, 255, 255, 255, 255),
     );
-    fonts.add_bitmap("Grid", sheet, (8, 8), "ABC").unwrap();
+    let _grid = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "ABC"));
     let mut engine = TextEngine::new();
-    engine.sync(&fonts);
+    engine.sync(&fonts.registry);
     let style = TextStyle::default().family("Grid").size(16.0);
     let laid = layout(&mut engine, "ABCA", &style);
     assert!(laid.pixel);
@@ -2331,13 +2452,13 @@ mod tests {
   }
 
   fn bitmap_engine() -> TextEngine {
-    let mut fonts = Fonts::with_builtins();
+    let mut fonts = TestFonts::new();
     let sheet = crate::core::asset::Assets::default().add(
       crate::core::graphics::Image::solid_rect(40, 8, 255, 255, 255, 255),
     );
-    fonts.add_bitmap("Grid", sheet, (8, 8), "ABC.?").unwrap();
+    let _grid = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "ABC.?"));
     let mut engine = TextEngine::new();
-    engine.sync(&fonts);
+    engine.sync(&fonts.registry);
     engine
   }
 
@@ -2451,19 +2572,22 @@ mod tests {
 
   #[test]
   fn an_exact_face_lays_out_in_that_face() {
-    let (mut engine, fonts) = engine();
-    let bold = fonts
-      .faces()
-      .find(|(_, face)| face.family == "Inter" && face.weight == 700.0)
-      .map(|(id, _)| id)
-      .unwrap();
+    let fonts = TestFonts::new();
+    let mut engine = TextEngine::new();
+    engine.sync(&fonts.registry);
+    let handle = fonts.builtins.bold.clone().unwrap();
+    let bold = fonts.registry.face_of(&handle).unwrap();
+    assert_eq!(
+      fonts.registry.face(bold).map(|face| face.weight),
+      Some(700.0)
+    );
     let laid = layout(
       &mut engine,
       "Bold",
-      &TextStyle::default().font(TextFont::Id(bold)),
+      &TextStyle::default().font(TextFont::Face(handle.clone())),
     );
     assert!(laid.glyphs.iter().all(|g| g.font == bold));
-    let span = RichText::new("a").span("b", Span::font(TextFont::Id(bold)));
+    let span = RichText::new("a").span("b", Span::font(TextFont::Face(handle)));
     let laid = layout(&mut engine, span, &TextStyle::default());
     assert_ne!(laid.glyphs[0].font, bold);
     assert_eq!(laid.glyphs[1].font, bold);

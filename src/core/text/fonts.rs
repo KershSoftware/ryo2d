@@ -1,24 +1,28 @@
-//! The font registry games add fonts to (`ctx.fonts()`), the built-in
-//! fonts, and each font's render mode. The text engine picks up changes at
-//! the start of the next frame (it compares `generation`).
+//! The font registry text lays out with (`ctx.fonts()`): the faces of the
+//! font assets the game holds and of the built-in fonts, and how each face
+//! draws. It follows the font stores (`Assets<Font>`, `Assets<BitmapFont>`)
+//! right after the asset pump each frame, at the start of each UI pass and
+//! whenever a scene takes `ctx.fonts()`; the text engine picks up a change
+//! when it next syncs (it compares `generation`).
 
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::Path;
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use swash::{FontRef, StringId};
 use thiserror::Error;
 
-use crate::core::asset::{Assets, Handle};
+use crate::core::asset::{Asset, AssetId, Assets, Handle};
 use crate::core::ecs::Resource;
-use crate::core::error::{ManagerError, ManagerResult};
+use crate::core::ecs::kernel::{DetectChangesMut, World};
 use crate::core::graphics::Image;
+use crate::engine_warn;
 
-/// One registered font face: a font file, or one face of a collection
+/// One registered font face: a font asset's face, a bitmap font's, or a
+/// built-in one. Ids are never reused, so one names a single face for the
+/// registry's life
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FontId(pub(crate) u32);
 
@@ -91,11 +95,130 @@ pub enum FontError {
   EmptyBitmap,
 }
 
-/// A grid of glyphs on an image: `chars[i]` is cell `i`, row-major, in as
-/// many columns as the image is wide
+/// One font face: a TrueType or OpenType file, or one face of a collection
+/// (`.ttc`, the face chosen by `FontSettings`). Load one with
+/// `ctx.assets().load_now::<Font>("fonts/Game.ttf")`, or embed one, which
+/// the web build needs (it has no files):
+///
+/// ```
+/// use ryo2d::prelude::*;
+///
+/// fn use_game_font(ctx: &mut SceneContext<'_>, bytes: &'static [u8]) -> Result<(), FontError> {
+///   let font = ctx.assets().add(Font::from_bytes(bytes)?);
+///   ctx.fonts().set_role(FontRole::Ui, font);
+///   Ok(())
+/// }
+/// ```
+///
+/// Its face is registered with the text system while a handle holds it,
+/// and leaves it, with its glyphs, once the font is freed. Text reaches it
+/// by its family (`TextStyle::family`), through a role (`Fonts::set_role`,
+/// which holds it) or exactly (`TextFont::Face`, which holds it too). A
+/// changed or reloaded font draws its new glyphs; text using it lays out
+/// again. Two fonts of the same bytes and face share one face
+#[derive(Clone)]
+pub struct Font {
+  data: Arc<[u8]>,
+  index: u32,
+  family: Arc<str>,
+}
+
+impl Asset for Font {}
+
+impl Font {
+  /// A TrueType or OpenType font (face 0 of a collection)
+  pub fn from_bytes(data: impl Into<Arc<[u8]>>) -> Result<Font, FontError> {
+    Self::from_bytes_face(data, 0)
+  }
+
+  /// Face `index` of a font collection (or 0 of a single font)
+  pub fn from_bytes_face(data: impl Into<Arc<[u8]>>, index: u32) -> Result<Font, FontError> {
+    let data = data.into();
+    let family = {
+      let font = FontRef::from_index(&data, index as usize).ok_or(if index == 0 {
+        FontError::Invalid
+      } else {
+        FontError::NoFace(index)
+      })?;
+      family_name(&font).ok_or(FontError::Invalid)?
+    };
+    Ok(Font {
+      data,
+      index,
+      family: family.into(),
+    })
+  }
+
+  /// The family text names it by
+  pub fn family(&self) -> &str {
+    &self.family
+  }
+}
+
+// The font bytes are left out: a font file is hundreds of kilobytes
+impl fmt::Debug for Font {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("Font")
+      .field("family", &self.family)
+      .field("face", &self.index)
+      .field("bytes", &self.data.len())
+      .finish()
+  }
+}
+
+/// A font drawn from a sheet image of fixed cells: `chars` names the cells
+/// in order, left to right, then top to bottom, in as many columns as the
+/// sheet is wide. Load one from a `.bitmap.ron` descriptor, whose sheet is a
+/// dependency (`(sheet: "fonts/pixel.png", cell: (8, 8), chars: " !..",
+/// family: "Pixel")`), or make one from an image the game holds with
+/// [`BitmapFont::new`] and `ctx.assets().add(..)`.
+///
+/// Text reaches it by its family (`TextStyle::family`) while a handle holds
+/// it. It draws as a pixel font designed at its cell's height, its cells
+/// taken from the sheet as it is now, so a changed or reloaded sheet
+/// redraws its text. One with an empty cell or no characters is not
+/// registered (warned)
 #[derive(Debug, Clone)]
+pub struct BitmapFont {
+  /// The family text names it by
+  pub family: String,
+  /// The sheet its cells are on; the font holds it
+  pub sheet: Handle<Image>,
+  /// A cell's width and height in texels
+  pub cell: (u32, u32),
+  /// The cells' characters, in order
+  pub chars: String,
+}
+
+impl Asset for BitmapFont {}
+
+impl BitmapFont {
+  /// A bitmap font of `family` with `cell`-sized cells on `sheet`
+  pub fn new(
+    family: impl Into<String>,
+    sheet: Handle<Image>,
+    cell: (u32, u32),
+    chars: impl Into<String>,
+  ) -> BitmapFont {
+    BitmapFont {
+      family: family.into(),
+      sheet,
+      cell,
+      chars: chars.into(),
+    }
+  }
+
+  /// Whether it has cells to draw
+  pub(crate) fn is_drawable(&self) -> bool {
+    self.cell.0 > 0 && self.cell.1 > 0 && !self.chars.is_empty()
+  }
+}
+
+/// A grid of glyphs on a sheet image: `chars[i]` is cell `i`, row-major, in
+/// as many columns as the image is wide
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BitmapFace {
-  pub(crate) sprite: Handle<Image>,
+  pub(crate) sheet: AssetId<Image>,
   pub(crate) cell: (u32, u32),
   pub(crate) chars: Vec<char>,
 }
@@ -105,6 +228,14 @@ pub(crate) struct BitmapFace {
 pub(crate) enum FaceSource {
   Outline { data: Arc<[u8]>, index: u32 },
   Bitmap(BitmapFace),
+}
+
+impl FaceSource {
+  /// Whether `font` is this face's data
+  fn is_font(&self, font: &Font) -> bool {
+    matches!(self, Self::Outline { data, index }
+      if *index == font.index && (Arc::ptr_eq(data, &font.data) || **data == *font.data))
+  }
 }
 
 // The font bytes are left out: a font file is hundreds of kilobytes
@@ -129,6 +260,21 @@ pub(crate) struct Face {
   pub(crate) italic: bool,
   pub(crate) source: FaceSource,
   pub(crate) render: FontRender,
+  /// Unique in the process and new whenever the face's data is replaced:
+  /// the glyph atlas and swash's scaler cache key on it, so neither keeps
+  /// what was made from the old data
+  pub(crate) serial: u64,
+  /// The font assets registered as this face (two of the same data share it)
+  holders: u32,
+  /// An outline face's key in `Fonts::by_data`: a hash of its bytes, and
+  /// its face index
+  key: Option<(u64, u32)>,
+}
+
+/// A face serial no face has had in this process
+fn next_face_serial() -> u64 {
+  static NEXT: AtomicU64 = AtomicU64::new(1);
+  NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// A request to build glyphs ahead of their first use
@@ -139,42 +285,74 @@ pub(crate) struct Prewarm {
   pub(crate) chars: String,
 }
 
-/// The fonts text can use: built-in (feature `default-fonts`) and added by
-/// the game. A resource: `ctx.fonts()` in scenes, `ResMut<Fonts>` in systems.
+/// The font a role uses, and the face it draws with: its font's, or until
+/// that is registered the face the role had before
+#[derive(Clone)]
+struct RoleFont {
+  font: Handle<Font>,
+  face: Option<FontId>,
+}
+
+/// The faces of the fonts in a followed store, by slot: each live asset's
+/// generation and the face it registered as
+type Slots = Vec<Option<(u32, FontId)>>;
+
+/// The built-in fonts' handles (feature `default-fonts`): the engine holds
+/// them, so they are never freed whatever the roles are pointed at
+#[derive(Resource, Clone, Default, Debug)]
+pub(crate) struct BuiltinFonts {
+  pub(crate) ui: Option<Handle<Font>>,
+  // Held, not read outside tests: no role keeps Inter Bold
+  #[cfg_attr(not(test), allow(dead_code))]
+  pub(crate) bold: Option<Handle<Font>>,
+  pub(crate) mono: Option<Handle<Font>>,
+  pub(crate) pixel: Option<Handle<Font>>,
+}
+
+/// The fonts text can use: the built-in ones (feature `default-fonts`) and
+/// the font assets the game adds or loads. A resource: `ctx.fonts()` in
+/// scenes, `ResMut<Fonts>` in systems.
 ///
-/// The engine makes the one registry: `FontId`s are its indices, and the
-/// glyph caches key on them, so there is no public constructor. A game that
-/// wants no built-in fonts turns the `default-fonts` feature off; the
-/// registry then starts empty.
+/// The registry follows the world's font stores: a font is registered once
+/// it is in `Assets<Font>` (a scene's `ctx.fonts()` sees one it has just
+/// added; a system sees it from the next frame) and unregistered when it is
+/// freed. Its glyphs then leave the glyph atlas. Faces are registered in
+/// the order their fonts arrive, the built-ins first; a family's faces are
+/// told apart by weight and slant, and at a tie the face registered first
+/// wins.
 ///
-/// Registering is idempotent: the same bytes and face index, the same file
-/// path, or the same bitmap sheet, cell and characters return the id the
-/// font already has, and a `set_role` or `set_render` that changes nothing
-/// bumps nothing.
+/// `FontId`s are its indices, never reused, which the glyph caches key on,
+/// so there is no public constructor. Registering is idempotent: two fonts
+/// of the same bytes and face index, or bitmap fonts of the same family,
+/// sheet, cell and characters, share one face, and a `set_role` or
+/// `set_render` that changes nothing bumps nothing.
 #[derive(Resource)]
 pub struct Fonts {
-  faces: Vec<Face>,
-  roles: [Option<FontId>; 3],
+  faces: Vec<Option<Face>>,
+  roles: [Option<RoleFont>; 3],
   generation: u64,
   prewarm: Vec<Prewarm>,
   /// Outline faces by a hash of their bytes, and their face index
   by_data: HashMap<(u64, u32), FontId>,
-  /// Fonts `load` read, by canonical path
-  #[cfg(not(target_arch = "wasm32"))]
-  by_path: HashMap<PathBuf, FontId>,
+  /// The followed `Assets<Font>`'s fonts and `Assets<BitmapFont>`'s
+  fonts: Slots,
+  bitmaps: Slots,
+  /// The stores followed (`Assets::serial`)
+  font_store: Option<u64>,
+  bitmap_store: Option<u64>,
 }
 
 // Faces are listed by name: their font bytes are not printed
 impl fmt::Debug for Fonts {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     let faces: Vec<_> = self
-      .faces
-      .iter()
-      .map(|face| (&face.family, face.weight, face.italic, face.render))
+      .faces()
+      .map(|(id, face)| (id, &face.family, face.weight, face.italic, face.render))
       .collect();
+    let roles = [FontRole::Ui, FontRole::Mono, FontRole::Pixel].map(|role| self.role(role));
     f.debug_struct("Fonts")
       .field("faces", &faces)
-      .field("roles", &self.roles)
+      .field("roles", &roles)
       .field("generation", &self.generation)
       .field("prewarm", &self.prewarm.len())
       .finish_non_exhaustive()
@@ -182,150 +360,35 @@ impl fmt::Debug for Fonts {
 }
 
 impl Fonts {
-  /// An empty registry (no built-in fonts)
+  /// An empty registry (no built-in fonts), following no store yet
   pub(crate) fn new() -> Self {
     Self {
       faces: Vec::new(),
-      roles: [None; 3],
+      roles: [None, None, None],
       generation: 0,
       prewarm: Vec::new(),
       by_data: HashMap::new(),
-      #[cfg(not(target_arch = "wasm32"))]
-      by_path: HashMap::new(),
+      fonts: Vec::new(),
+      bitmaps: Vec::new(),
+      font_store: None,
+      bitmap_store: None,
     }
   }
 
-  /// The registry the engine starts with: the built-in fonts when the
-  /// `default-fonts` feature is on, otherwise empty
+  /// A registry of the built-in fonts (feature `default-fonts`) in a store
+  /// of its own, for text that has no world (the dev windows, tests). It
+  /// must not follow a world's stores: their ids are another store's
   pub(crate) fn with_builtins() -> Self {
-    #[cfg_attr(not(feature = "default-fonts"), allow(unused_mut))]
     let mut fonts = Self::new();
-    #[cfg(feature = "default-fonts")]
-    builtins::register(&mut fonts);
+    let mut store = Assets::<Font>::default();
+    let _ = builtins::add(&mut fonts, &mut store);
     fonts
   }
 
-  /// Add a TrueType or OpenType font (face 0 of a collection). The same
-  /// bytes again return the id they already have.
-  pub fn add_bytes(&mut self, bytes: impl Into<Arc<[u8]>>) -> Result<FontId, FontError> {
-    self.add_face(bytes.into(), 0)
-  }
-
-  /// Add face `index` of a font collection. The same bytes and index again
-  /// return the id that face already has.
-  pub fn add_face(&mut self, data: Arc<[u8]>, index: u32) -> Result<FontId, FontError> {
-    let key = (hash_bytes(&data), index);
-    if let Some(&id) = self.by_data.get(&key)
-      && self.face(id).is_some_and(
-        |face| matches!(&face.source, FaceSource::Outline { data: known, .. } if **known == *data),
-      )
-    {
-      return Ok(id);
-    }
-    let font = FontRef::from_index(&data, index as usize).ok_or(if index == 0 {
-      FontError::Invalid
-    } else {
-      FontError::NoFace(index)
-    })?;
-    let family = family_name(&font).ok_or(FontError::Invalid)?;
-    let attributes = font.attributes();
-    let face = Face {
-      family,
-      weight: f32::from(attributes.weight().0),
-      italic: !matches!(attributes.style(), swash::Style::Normal),
-      source: FaceSource::Outline { data, index },
-      render: FontRender::Raster,
-    };
-    let id = self.push(face);
-    self.by_data.insert(key, id);
-    Ok(id)
-  }
-
-  /// Read a font file (relative paths are relative to the working
-  /// directory, as sprites load by default). The same file again (by its
-  /// canonical path) returns the id it already has without reading it.
-  /// There is no file system on the web: embed fonts with
-  /// `add_bytes(include_bytes!(..))` there.
-  pub fn load(&mut self, path: impl AsRef<Path>) -> ManagerResult<FontId> {
-    let path = path.as_ref();
-    #[cfg(target_arch = "wasm32")]
-    {
-      Err(ManagerError::LoadError {
-        path: path.to_path_buf(),
-        reason: "the web has no file system: embed the font with Fonts::add_bytes".into(),
-      })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-      let canonical = std::fs::canonicalize(path).ok();
-      if let Some(&id) = canonical.as_ref().and_then(|at| self.by_path.get(at)) {
-        return Ok(id);
-      }
-      let bytes = std::fs::read(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-          ManagerError::NotFound(path.to_path_buf())
-        } else {
-          ManagerError::LoadError {
-            path: path.to_path_buf(),
-            reason: error.to_string(),
-          }
-        }
-      })?;
-      let id = self
-        .add_bytes(bytes)
-        .map_err(|error| ManagerError::LoadError {
-          path: path.to_path_buf(),
-          reason: error.to_string(),
-        })?;
-      if let Some(canonical) = canonical {
-        self.by_path.insert(canonical, id);
-      }
-      Ok(id)
-    }
-  }
-
-  /// A pixel font from a grid of `cell`-sized glyphs on an image:
-  /// `chars` names the cells in order, left to right, then top to bottom.
-  /// The same family, image, cell and characters again return the id that
-  /// font already has.
-  pub fn add_bitmap(
-    &mut self,
-    family: &str,
-    sprite: Handle<Image>,
-    cell: (u32, u32),
-    chars: &str,
-  ) -> Result<FontId, FontError> {
-    if cell.0 == 0 || cell.1 == 0 || chars.is_empty() {
-      return Err(FontError::EmptyBitmap);
-    }
-    let known = self.faces().find(|(_, face)| {
-      face.family == family
-        && matches!(&face.source, FaceSource::Bitmap(bitmap)
-          if bitmap.sprite == sprite
-            && bitmap.cell == cell
-            && bitmap.chars.iter().copied().eq(chars.chars()))
-    });
-    if let Some((id, _)) = known {
-      return Ok(id);
-    }
-    let face = Face {
-      family: family.to_string(),
-      weight: 400.0,
-      italic: false,
-      source: FaceSource::Bitmap(BitmapFace {
-        sprite,
-        cell,
-        chars: chars.chars().collect(),
-      }),
-      render: FontRender::pixel(cell.1 as f32),
-    };
-    Ok(self.push(face))
-  }
-
-  /// Change how a font draws; text using it lays out again (the mode it
+  /// Change how a face draws; text using it lays out again (the mode it
   /// already has changes nothing)
   pub fn set_render(&mut self, font: FontId, render: FontRender) {
-    if let Some(face) = self.faces.get_mut(font.0 as usize)
+    if let Some(face) = self.face_mut(font)
       && !same_render(face.render, render)
     {
       face.render = render;
@@ -333,16 +396,22 @@ impl Fonts {
     }
   }
 
-  /// How a font draws (`Raster` for an unknown id)
+  /// How a face draws (`Raster` for an unknown id)
   pub fn render(&self, font: FontId) -> FontRender {
     self
       .face(font)
       .map_or(FontRender::Raster, |face| face.render)
   }
 
-  /// The family a font belongs to
+  /// The family a face belongs to (`None` once its font is freed)
   pub fn family(&self, font: FontId) -> Option<&str> {
     self.face(font).map(|face| face.family.as_str())
+  }
+
+  /// The face a font registered as: `None` while it is not loaded, and
+  /// once it is freed
+  pub fn face_of(&self, font: impl Into<AssetId<Font>>) -> Option<FontId> {
+    self.slot_face(&self.fonts, font.into())
   }
 
   /// A face of `family`, the regular (weight 400, upright) one if there
@@ -370,16 +439,32 @@ impl Fonts {
     best.map(|(id, _)| id)
   }
 
-  /// The font a role uses
+  /// The face a role draws with
   pub fn role(&self, role: FontRole) -> Option<FontId> {
-    self.roles[role.index()]
+    self.roles[role.index()].as_ref().and_then(|role| role.face)
   }
 
-  /// Use `font` for a role (e.g. a game's own UI font); the font the role
-  /// already uses changes nothing
-  pub fn set_role(&mut self, role: FontRole, font: FontId) {
-    if self.face(font).is_some() && self.roles[role.index()] != Some(font) {
-      self.roles[role.index()] = Some(font);
+  /// The font a role uses
+  pub fn role_font(&self, role: FontRole) -> Option<&Handle<Font>> {
+    self.roles[role.index()].as_ref().map(|role| &role.font)
+  }
+
+  /// Use `font` for a role (e.g. a game's own UI font); the role holds it,
+  /// so it stays loaded while the role uses it. A font not registered yet
+  /// (still loading) takes over once it is; until then the role keeps the
+  /// face it had. Setting the font the role already uses changes nothing
+  pub fn set_role(&mut self, role: FontRole, font: Handle<Font>) {
+    let slot = role.index();
+    if self.roles[slot]
+      .as_ref()
+      .is_some_and(|role| role.font == font)
+    {
+      return;
+    }
+    let before = self.role(role);
+    let face = self.face_of(&font).or(before);
+    self.roles[slot] = Some(RoleFont { font, face });
+    if face != before {
       self.generation += 1;
     }
   }
@@ -394,37 +479,62 @@ impl Fonts {
     });
   }
 
-  /// Changes whenever a font is added or changed
+  /// Changes whenever a face is added, changed or removed, or a role or
+  /// render mode changes
   pub fn generation(&self) -> u64 {
     self.generation
   }
 
-  /// A hash of each bitmap face's image version (id and version in
-  /// `images`): changes when an image is changed or reloaded, which
+  /// A hash of each bitmap face's sheet version (id and version in
+  /// `images`): changes when a sheet is changed or reloaded, which
   /// `generation` does not see (0 with no bitmap faces)
   pub(crate) fn bitmap_stamp(&self, images: &Assets<Image>) -> u64 {
     let mut hasher = crate::core::hash::FastHasher::default();
     let mut any = false;
-    for face in &self.faces {
+    for (_, face) in self.faces() {
       if let FaceSource::Bitmap(bitmap) = &face.source {
         any = true;
-        bitmap.sprite.id().hash(&mut hasher);
-        images.version(&bitmap.sprite).hash(&mut hasher);
+        bitmap.sheet.hash(&mut hasher);
+        images.version(bitmap.sheet).hash(&mut hasher);
       }
     }
     if any { hasher.finish() } else { 0 }
   }
 
   pub(crate) fn face(&self, font: FontId) -> Option<&Face> {
-    self.faces.get(font.0 as usize)
+    self.faces.get(font.0 as usize)?.as_ref()
   }
 
+  fn face_mut(&mut self, font: FontId) -> Option<&mut Face> {
+    self.faces.get_mut(font.0 as usize)?.as_mut()
+  }
+
+  /// The live faces, in registration order
   pub(crate) fn faces(&self) -> impl Iterator<Item = (FontId, &Face)> {
     self
       .faces
       .iter()
       .enumerate()
-      .map(|(i, face)| (FontId(i as u32), face))
+      .filter_map(|(i, face)| Some((FontId(u32::try_from(i).ok()?), face.as_ref()?)))
+  }
+
+  /// A face's serial (`None`: no such face, or freed)
+  pub(crate) fn face_serial(&self, font: FontId) -> Option<u64> {
+    self.face(font).map(|face| face.serial)
+  }
+
+  /// The faces of the followed store's fonts, by slot (the text engine
+  /// resolves `TextFont::Face` with them)
+  pub(crate) fn font_slots(&self) -> &[Option<(u32, FontId)>] {
+    &self.fonts
+  }
+
+  /// The face a bitmap font registered as (tests)
+  #[cfg(test)]
+  pub(crate) fn bitmap_face_of(&self, font: impl Into<AssetId<BitmapFont>>) -> Option<FontId> {
+    let font = font.into();
+    let (generation, face) = (*self.bitmaps.get(font.index() as usize)?)?;
+    (generation == font.generation() && self.face(face).is_some()).then_some(face)
   }
 
   /// The glyphs asked for ahead, once (the renderer builds them)
@@ -432,12 +542,393 @@ impl Fonts {
     std::mem::take(&mut self.prewarm)
   }
 
+  fn slot_face(&self, slots: &Slots, font: AssetId<Font>) -> Option<FontId> {
+    let (generation, face) = (*slots.get(font.index() as usize)?)?;
+    (generation == font.generation() && self.face(face).is_some()).then_some(face)
+  }
+
+  /// Follows `store` alone (the built-ins, and tests)
+  pub(crate) fn follow_fonts(&mut self, store: &mut Assets<Font>) {
+    let fonts = Changed::take(store, self.font_store);
+    self.apply(StoreChanges {
+      fonts,
+      bitmaps: Changed::default(),
+    });
+  }
+
+  /// Brings the registry in line with what changed in the stores
+  fn apply(&mut self, changes: StoreChanges) {
+    let StoreChanges { fonts, bitmaps } = changes;
+    if let Some((serial, whole)) = fonts.store {
+      // Another store's ids are not this one's: start over
+      if whole {
+        for (_, face) in std::mem::take(&mut self.fonts).into_iter().flatten() {
+          self.release(face);
+        }
+      }
+      self.font_store = Some(serial);
+      for (index, now) in fonts.slots {
+        self.font_slot(index, now);
+      }
+    }
+    if let Some((serial, whole)) = bitmaps.store {
+      if whole {
+        for (_, face) in std::mem::take(&mut self.bitmaps).into_iter().flatten() {
+          self.release(face);
+        }
+      }
+      self.bitmap_store = Some(serial);
+      for (index, now) in bitmaps.slots {
+        self.bitmap_slot(index, now);
+      }
+    }
+    self.resolve_roles();
+  }
+
+  /// Slot `index` of the font store holds `now` (its generation and font)
+  fn font_slot(&mut self, index: u32, now: Option<(u32, Font)>) {
+    let at = index as usize;
+    let held = self.fonts.get(at).copied().flatten();
+    match (held, now) {
+      // The same asset, changed in place or reloaded
+      (Some((generation, face)), Some((now_generation, font))) if generation == now_generation => {
+        let face = self.change_font(face, &font);
+        set_slot(&mut self.fonts, at, face.map(|face| (generation, face)));
+      }
+      (held, now) => {
+        if let Some((_, face)) = held {
+          set_slot(&mut self.fonts, at, None);
+          self.release(face);
+        }
+        if let Some((generation, font)) = now {
+          let face = self.hold_font(&font, FontRender::Raster);
+          set_slot(&mut self.fonts, at, face.map(|face| (generation, face)));
+        }
+      }
+    }
+  }
+
+  /// Slot `index` of the bitmap font store holds `now`
+  fn bitmap_slot(&mut self, index: u32, now: Option<(u32, BitmapFont)>) {
+    let at = index as usize;
+    let held = self.bitmaps.get(at).copied().flatten();
+    match (held, now) {
+      // The same asset, changed in place, reloaded, or told its sheet did
+      (Some((generation, face)), Some((now_generation, font))) if generation == now_generation => {
+        let face = self.change_bitmap(face, &font);
+        set_slot(&mut self.bitmaps, at, face.map(|face| (generation, face)));
+      }
+      (held, now) => {
+        if let Some((_, face)) = held {
+          set_slot(&mut self.bitmaps, at, None);
+          self.release(face);
+        }
+        if let Some((generation, font)) = now {
+          let face = self.hold_bitmap(&font);
+          set_slot(&mut self.bitmaps, at, face.map(|face| (generation, face)));
+        }
+      }
+    }
+  }
+
+  /// The face `font` registers as: the face of the same data if there is
+  /// one, else a new face drawn with `render`
+  fn hold_font(&mut self, font: &Font, render: FontRender) -> Option<FontId> {
+    let key = (hash_bytes(&font.data), font.index);
+    if let Some(&id) = self.by_data.get(&key)
+      && let Some(face) = self.face_mut(id)
+      && face.source.is_font(font)
+    {
+      face.holders += 1;
+      return Some(id);
+    }
+    let Some((weight, italic)) = attributes(font) else {
+      engine_warn!(module: "text", "font {:?} could not be read; text falls back", font.family);
+      return None;
+    };
+    let id = self.push(Face {
+      family: font.family.to_string(),
+      weight,
+      italic,
+      source: FaceSource::Outline {
+        data: Arc::clone(&font.data),
+        index: font.index,
+      },
+      render,
+      serial: next_face_serial(),
+      holders: 1,
+      key: Some(key),
+    });
+    self.by_data.insert(key, id);
+    Some(id)
+  }
+
+  /// A font registered as `face` changed to `font`: a face it holds alone
+  /// takes the new data in place (keeping its id and render mode); a shared
+  /// one is let go for a face of its own. The face it is registered as now
+  fn change_font(&mut self, face: FontId, font: &Font) -> Option<FontId> {
+    let Some(known) = self.face(face) else {
+      return self.hold_font(font, FontRender::Raster);
+    };
+    if known.source.is_font(font) {
+      return Some(face);
+    }
+    let render = known.render;
+    if known.holders > 1 {
+      self.release(face);
+      return self.hold_font(font, render);
+    }
+    let Some((weight, italic)) = attributes(font) else {
+      engine_warn!(module: "text", "font {:?} could not be read; text falls back", font.family);
+      self.release(face);
+      return None;
+    };
+    self.forget_key(face);
+    let key = (hash_bytes(&font.data), font.index);
+    self.by_data.entry(key).or_insert(face);
+    if let Some(known) = self.face_mut(face) {
+      known.family = font.family.to_string();
+      known.weight = weight;
+      known.italic = italic;
+      known.source = FaceSource::Outline {
+        data: Arc::clone(&font.data),
+        index: font.index,
+      };
+      known.serial = next_face_serial();
+      known.key = Some(key);
+    }
+    self.generation += 1;
+    Some(face)
+  }
+
+  /// A bitmap font registered as `face` changed to `font`: what it draws is
+  /// the same (a sheet that reloaded is the same sheet), or a face it holds
+  /// alone takes the new cells in place, or a shared one is let go for a
+  /// face of its own. The face it is registered as now
+  fn change_bitmap(&mut self, face: FontId, font: &BitmapFont) -> Option<FontId> {
+    let bitmap = bitmap_face(font);
+    let Some(known) = self.face(face) else {
+      return self.hold_bitmap(font);
+    };
+    let same = known.family == font.family
+      && matches!(&known.source, FaceSource::Bitmap(known) if *known == bitmap);
+    if same && font.is_drawable() {
+      return Some(face);
+    }
+    if known.holders > 1 || !font.is_drawable() {
+      self.release(face);
+      return self.hold_bitmap(font);
+    }
+    if let Some(known) = self.face_mut(face) {
+      known.family = font.family.clone();
+      known.source = FaceSource::Bitmap(bitmap);
+      known.render = FontRender::pixel(font.cell.1 as f32);
+      known.serial = next_face_serial();
+    }
+    self.generation += 1;
+    Some(face)
+  }
+
+  /// The face a bitmap font registers as: the face of the same family,
+  /// sheet, cell and characters if there is one, else a new one. `None` for
+  /// one with nothing to draw (warned)
+  fn hold_bitmap(&mut self, font: &BitmapFont) -> Option<FontId> {
+    if !font.is_drawable() {
+      engine_warn!(module: "text", "bitmap font {:?} has an empty cell or no characters; it is not registered", font.family);
+      return None;
+    }
+    let bitmap = bitmap_face(font);
+    let known = self.faces().find_map(|(id, face)| {
+      (face.family == font.family
+        && matches!(&face.source, FaceSource::Bitmap(known) if *known == bitmap))
+      .then_some(id)
+    });
+    if let Some(id) = known
+      && let Some(face) = self.face_mut(id)
+    {
+      face.holders += 1;
+      return Some(id);
+    }
+    Some(self.push(Face {
+      family: font.family.clone(),
+      weight: 400.0,
+      italic: false,
+      source: FaceSource::Bitmap(bitmap),
+      render: FontRender::pixel(font.cell.1 as f32),
+      serial: next_face_serial(),
+      holders: 1,
+      key: None,
+    }))
+  }
+
+  /// One holder of `face` goes; the face goes with its last
+  fn release(&mut self, face: FontId) {
+    let Some(known) = self.face_mut(face) else {
+      return;
+    };
+    known.holders = known.holders.saturating_sub(1);
+    if known.holders > 0 {
+      return;
+    }
+    self.forget_key(face);
+    if let Some(slot) = self.faces.get_mut(face.0 as usize) {
+      *slot = None;
+    }
+    self.generation += 1;
+  }
+
+  /// `face`'s data key no longer finds it
+  fn forget_key(&mut self, face: FontId) {
+    if let Some(key) = self.face(face).and_then(|known| known.key)
+      && self.by_data.get(&key) == Some(&face)
+    {
+      self.by_data.remove(&key);
+    }
+  }
+
+  /// Each role draws with its font's face once that is registered, and
+  /// with no face once the one it kept is gone
+  fn resolve_roles(&mut self) {
+    for at in 0..self.roles.len() {
+      let Some(role) = self.roles[at].as_ref() else {
+        continue;
+      };
+      let kept = role.face.filter(|&face| self.face(face).is_some());
+      let face = self.face_of(&role.font).or(kept);
+      if let Some(role) = self.roles[at].as_mut()
+        && role.face != face
+      {
+        role.face = face;
+        self.generation += 1;
+      }
+    }
+  }
+
   fn push(&mut self, face: Face) -> FontId {
-    let id = FontId(self.faces.len() as u32);
-    self.faces.push(face);
+    let id = FontId(u32::try_from(self.faces.len()).unwrap_or(u32::MAX));
+    self.faces.push(Some(face));
     self.generation += 1;
     id
   }
+}
+
+/// Slot `at` of `slots` holds `value`
+fn set_slot(slots: &mut Slots, at: usize, value: Option<(u32, FontId)>) {
+  if slots.len() <= at {
+    if value.is_none() {
+      return;
+    }
+    slots.resize(at + 1, None);
+  }
+  if let Some(slot) = slots.get_mut(at) {
+    *slot = value;
+  }
+}
+
+/// What changed in one store since the registry last followed it
+struct Changed<T> {
+  /// The store's serial, and whether every slot is given (a store not
+  /// followed before); `None`: no store
+  store: Option<(u64, bool)>,
+  /// The slots changed, in the order they changed: each live asset's
+  /// generation and value
+  slots: Vec<(u32, Option<(u32, T)>)>,
+}
+
+impl<T> Default for Changed<T> {
+  fn default() -> Self {
+    Self {
+      store: None,
+      slots: Vec::new(),
+    }
+  }
+}
+
+impl<T: Asset + Clone> Changed<T> {
+  /// What changed in `store` since a registry following `followed` last
+  /// looked: allocates only when something did
+  fn take(store: &mut Assets<T>, followed: Option<u64>) -> Self {
+    let whole = followed != Some(store.serial());
+    let mut slots = Vec::new();
+    store.take_changes(whole, |index, now| {
+      slots.push((index, now.map(|now| (now.generation, now.value.clone()))));
+    });
+    Self {
+      store: Some((store.serial(), whole)),
+      slots,
+    }
+  }
+
+  fn is_empty(&self) -> bool {
+    self.slots.is_empty() && self.store.is_none_or(|(_, whole)| !whole)
+  }
+}
+
+/// What changed in the font stores
+struct StoreChanges {
+  fonts: Changed<Font>,
+  bitmaps: Changed<BitmapFont>,
+}
+
+/// Brings the world's `Fonts` in line with its font stores: fonts added,
+/// changed or freed since it last did. The engine runs it right after the
+/// asset pump (so a freed font's face goes before the frame's text is laid
+/// out), at the start of each UI pass and in `ctx.fonts()`. Nothing changed,
+/// it costs a few lookups and allocates nothing
+pub(crate) fn fonts_follow_assets(world: &mut World) {
+  let Some(fonts) = world.get_resource::<Fonts>() else {
+    return;
+  };
+  let (font_store, bitmap_store) = (fonts.font_store, fonts.bitmap_store);
+  let mut changes = StoreChanges {
+    fonts: Changed::default(),
+    bitmaps: Changed::default(),
+  };
+  // Following a store changes nothing a reader of the store can see
+  if let Some(mut store) = world.get_resource_mut::<Assets<Font>>() {
+    changes.fonts = Changed::take(store.bypass_change_detection(), font_store);
+  }
+  if let Some(mut store) = world.get_resource_mut::<Assets<BitmapFont>>() {
+    changes.bitmaps = Changed::take(store.bypass_change_detection(), bitmap_store);
+  }
+  if changes.fonts.is_empty() && changes.bitmaps.is_empty() {
+    return;
+  }
+  if let Some(mut fonts) = world.get_resource_mut::<Fonts>() {
+    fonts.apply(changes);
+  }
+}
+
+/// Puts the engine's fonts in `world`: the built-in fonts (feature
+/// `default-fonts`) added to its `Assets<Font>`, held by `BuiltinFonts`,
+/// and the `Fonts` registry following its stores
+pub(crate) fn insert_fonts(world: &mut World) {
+  let mut fonts = Fonts::new();
+  let builtins = match world.get_resource_mut::<Assets<Font>>() {
+    Some(mut store) => builtins::add(&mut fonts, store.bypass_change_detection()),
+    None => BuiltinFonts::default(),
+  };
+  world.insert_resource(builtins);
+  world.insert_resource(fonts);
+}
+
+/// What a bitmap font draws, as a face holds it
+fn bitmap_face(font: &BitmapFont) -> BitmapFace {
+  BitmapFace {
+    sheet: font.sheet.id(),
+    cell: font.cell,
+    chars: font.chars.chars().collect(),
+  }
+}
+
+/// A face's weight and slant, read from its font
+fn attributes(font: &Font) -> Option<(f32, bool)> {
+  let face = FontRef::from_index(&font.data, font.index as usize)?;
+  let attributes = face.attributes();
+  Some((
+    f32::from(attributes.weight().0),
+    !matches!(attributes.style(), swash::Style::Normal),
+  ))
 }
 
 /// Whether two render modes are the same, bit for bit (so a mode with a
@@ -462,7 +953,7 @@ fn same_render(a: FontRender, b: FontRender) -> bool {
   }
 }
 
-/// A hash of a font's bytes, to find a font added before
+/// A hash of a font's bytes, to find a face of the same data
 fn hash_bytes(data: &[u8]) -> u64 {
   let mut h = DefaultHasher::new();
   data.hash(&mut h);
@@ -480,35 +971,131 @@ fn family_name(font: &FontRef<'_>) -> Option<String> {
     .filter(|name| !name.is_empty())
 }
 
-#[cfg(feature = "default-fonts")]
 mod builtins {
-  use std::sync::Arc;
+  use super::{Assets, BuiltinFonts, Font, Fonts};
+  #[cfg(feature = "default-fonts")]
+  use super::{FontRender, FontRole};
 
-  use super::{FontRender, FontRole, Fonts};
-
+  #[cfg(feature = "default-fonts")]
   const INTER_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+  #[cfg(feature = "default-fonts")]
   const INTER_BOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-Bold.ttf");
+  #[cfg(feature = "default-fonts")]
   const JETBRAINS_MONO: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf");
+  #[cfg(feature = "default-fonts")]
   const M5X7: &[u8] = include_bytes!("../../assets/fonts/m5x7.ttf");
 
-  pub(super) fn register(fonts: &mut Fonts) {
-    if let Some(ui) = add(fonts, INTER_REGULAR) {
-      fonts.set_role(FontRole::Ui, ui);
+  /// Adds the built-in fonts to `store`, in order, registers them in
+  /// `fonts` (which then follows `store`) and points the roles at them.
+  /// Without `default-fonts` it adds nothing
+  pub(super) fn add(fonts: &mut Fonts, store: &mut Assets<Font>) -> BuiltinFonts {
+    #[cfg(feature = "default-fonts")]
+    {
+      // A built-in font that fails to parse is left out (its role stays
+      // empty and text using it falls back), never a panic
+      let mut add = |bytes: &'static [u8]| Font::from_bytes(bytes).ok().map(|font| store.add(font));
+      let builtins = BuiltinFonts {
+        ui: add(INTER_REGULAR),
+        bold: add(INTER_BOLD),
+        mono: add(JETBRAINS_MONO),
+        pixel: add(M5X7),
+      };
+      fonts.follow_fonts(store);
+      if let Some(ui) = &builtins.ui {
+        fonts.set_role(FontRole::Ui, ui.clone());
+      }
+      if let Some(mono) = &builtins.mono {
+        fonts.set_role(FontRole::Mono, mono.clone());
+      }
+      if let Some(pixel) = &builtins.pixel {
+        if let Some(face) = fonts.face_of(pixel) {
+          fonts.set_render(face, FontRender::pixel(16.0));
+        }
+        fonts.set_role(FontRole::Pixel, pixel.clone());
+      }
+      builtins
     }
-    let _ = add(fonts, INTER_BOLD);
-    if let Some(mono) = add(fonts, JETBRAINS_MONO) {
-      fonts.set_role(FontRole::Mono, mono);
-    }
-    if let Some(pixel) = add(fonts, M5X7) {
-      fonts.set_render(pixel, FontRender::pixel(16.0));
-      fonts.set_role(FontRole::Pixel, pixel);
+    #[cfg(not(feature = "default-fonts"))]
+    {
+      fonts.follow_fonts(store);
+      BuiltinFonts::default()
     }
   }
+}
 
-  /// A built-in font that fails to parse is left out (its role stays empty
-  /// and text using it falls back), never a panic
-  fn add(fonts: &mut Fonts, bytes: &'static [u8]) -> Option<crate::core::text::FontId> {
-    fonts.add_bytes(Arc::<[u8]>::from(bytes)).ok()
+/// The built-in fonts in stores of their own, with a registry following
+/// them, for tests without a world
+#[cfg(test)]
+pub(crate) struct TestFonts {
+  pub(crate) registry: Fonts,
+  pub(crate) store: Assets<Font>,
+  pub(crate) bitmaps: Assets<BitmapFont>,
+  pub(crate) builtins: BuiltinFonts,
+}
+
+#[cfg(test)]
+impl TestFonts {
+  /// The built-in fonts (feature `default-fonts`)
+  pub(crate) fn new() -> Self {
+    let mut registry = Fonts::new();
+    let mut store = Assets::default();
+    let builtins = builtins::add(&mut registry, &mut store);
+    let mut fonts = Self {
+      registry,
+      store,
+      bitmaps: Assets::default(),
+      builtins,
+    };
+    fonts.follow();
+    fonts
+  }
+
+  /// No fonts
+  pub(crate) fn empty() -> Self {
+    let mut fonts = Self {
+      registry: Fonts::new(),
+      store: Assets::default(),
+      bitmaps: Assets::default(),
+      builtins: BuiltinFonts::default(),
+    };
+    fonts.follow();
+    fonts
+  }
+
+  /// Adds the font in `bytes` and registers it
+  pub(crate) fn add(&mut self, bytes: &[u8]) -> (Handle<Font>, Option<FontId>) {
+    let font = match Font::from_bytes(bytes.to_vec()) {
+      Ok(font) => font,
+      Err(error) => panic!("not a font: {error}"),
+    };
+    let handle = self.store.add(font);
+    self.follow();
+    let face = self.registry.face_of(&handle);
+    (handle, face)
+  }
+
+  /// Adds `font` and registers it
+  pub(crate) fn add_bitmap(&mut self, font: BitmapFont) -> (Handle<BitmapFont>, Option<FontId>) {
+    let handle = self.bitmaps.add(font);
+    self.follow();
+    let face = self.registry.bitmap_face_of(&handle);
+    (handle, face)
+  }
+
+  /// Frees the fonts no handle holds, as the pump does, and follows
+  pub(crate) fn free_unheld(&mut self) {
+    self.store.free_unheld(&mut Vec::new());
+    self.bitmaps.free_unheld(&mut Vec::new());
+    self.follow();
+  }
+
+  /// Brings the registry in line with the stores
+  pub(crate) fn follow(&mut self) {
+    let changes = StoreChanges {
+      fonts: Changed::take(&mut self.store, self.registry.font_store),
+      bitmaps: Changed::take(&mut self.bitmaps, self.registry.bitmap_store),
+    };
+    self.registry.apply(changes);
   }
 }
 
@@ -516,12 +1103,25 @@ mod builtins {
 mod tests {
   use super::*;
 
+  const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+  const MONO: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf");
+  const PRESS_START: &[u8] =
+    include_bytes!("../../../examples/games/breakout/assets/fonts/PressStart2P-Regular.ttf");
+
+  fn font(bytes: &[u8]) -> Font {
+    match Font::from_bytes(bytes.to_vec()) {
+      Ok(font) => font,
+      Err(error) => panic!("not a font: {error}"),
+    }
+  }
+
   #[cfg(feature = "default-fonts")]
   #[test]
   fn the_builtin_fonts_fill_every_role() {
     let fonts = Fonts::with_builtins();
     for role in [FontRole::Ui, FontRole::Mono, FontRole::Pixel] {
       assert!(fonts.role(role).is_some(), "{role:?} has a font");
+      assert!(fonts.role_font(role).is_some(), "{role:?} holds its font");
     }
     let ui = fonts.role(FontRole::Ui).unwrap();
     assert_eq!(fonts.family(ui), Some("Inter"));
@@ -529,6 +1129,27 @@ mod tests {
     assert_eq!(fonts.family(mono), Some("JetBrains Mono"));
     let pixel = fonts.role(FontRole::Pixel).unwrap();
     assert!(matches!(fonts.render(pixel), FontRender::Pixel { .. }));
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn the_builtin_fonts_keep_their_order() {
+    // Family lookup and fallback follow registration order: the built-ins
+    // are the first four faces, as they always were
+    let fonts = Fonts::with_builtins();
+    let faces: Vec<(FontId, &str, f32)> = fonts
+      .faces()
+      .map(|(id, face)| (id, face.family.as_str(), face.weight))
+      .collect();
+    assert_eq!(
+      faces,
+      vec![
+        (FontId(0), "Inter", 400.0),
+        (FontId(1), "Inter", 700.0),
+        (FontId(2), "JetBrains Mono", 400.0),
+        (FontId(3), "m5x7", 500.0),
+      ]
+    );
   }
 
   #[cfg(feature = "default-fonts")]
@@ -575,12 +1196,15 @@ mod tests {
 
   #[test]
   fn bytes_that_are_not_a_font_are_refused() {
-    let mut fonts = Fonts::new();
     assert!(matches!(
-      fonts.add_bytes(vec![1u8, 2, 3]),
+      Font::from_bytes(vec![1u8, 2, 3]),
       Err(FontError::Invalid)
     ));
-    assert!(fonts.faces().next().is_none());
+    assert!(matches!(
+      Font::from_bytes_face(INTER.to_vec(), 1),
+      Err(FontError::NoFace(1))
+    ));
+    assert_eq!(font(PRESS_START).family(), "Press Start 2P");
   }
 
   #[cfg(feature = "default-fonts")]
@@ -600,13 +1224,15 @@ mod tests {
     let mut fonts = Fonts::with_builtins();
     let ui = fonts.role(FontRole::Ui).unwrap();
     let pixel = fonts.role(FontRole::Pixel).unwrap();
+    let ui_font = fonts.role_font(FontRole::Ui).cloned().unwrap();
     let before = fonts.generation();
-    fonts.set_role(FontRole::Ui, ui);
+    fonts.set_role(FontRole::Ui, ui_font.clone());
     fonts.set_render(ui, FontRender::Raster);
     fonts.set_render(pixel, fonts.render(pixel));
     assert_eq!(fonts.generation(), before, "nothing changed");
-    fonts.set_role(FontRole::Mono, ui);
+    fonts.set_role(FontRole::Mono, ui_font);
     assert!(fonts.generation() > before, "a real change still counts");
+    assert_eq!(fonts.role(FontRole::Mono), Some(ui));
   }
 
   #[cfg(feature = "default-fonts")]
@@ -621,95 +1247,258 @@ mod tests {
       format!("{face:?}").len() < 1000,
       "a face prints no bytes either"
     );
+    let printed = format!("{:?}", font(INTER));
+    assert!(
+      printed.contains("Inter") && printed.len() < 200,
+      "{printed}"
+    );
   }
 
   #[cfg(feature = "default-fonts")]
   #[test]
-  fn the_same_font_bytes_twice_are_one_font() {
-    const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
-    let mut fonts = Fonts::with_builtins();
-    let builtin = fonts.role(FontRole::Ui).unwrap();
-    let before = fonts.generation();
-    let first = fonts.add_bytes(INTER.to_vec()).unwrap();
-    let second = fonts.add_bytes(Arc::<[u8]>::from(INTER)).unwrap();
-    assert_eq!((first, second), (builtin, builtin), "the built-in face");
-    assert_eq!(fonts.add_face(Arc::from(INTER), 0).unwrap(), builtin);
-    assert_eq!(fonts.generation(), before, "nothing was added");
-    assert!(matches!(
-      fonts.add_face(Arc::from(INTER), 1),
-      Err(FontError::NoFace(1))
-    ));
-  }
-
-  #[cfg(all(feature = "default-fonts", not(target_arch = "wasm32")))]
-  #[test]
-  fn the_same_font_file_twice_is_one_font() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("Mono.ttf");
-    std::fs::write(
-      &path,
-      include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"),
-    )
-    .unwrap();
-    let mut fonts = Fonts::new();
-    let first = fonts.load(&path).unwrap();
-    let generation = fonts.generation();
-    // The same file by another spelling of its path
-    let again = fonts.load(dir.path().join(".").join("Mono.ttf")).unwrap();
-    assert_eq!(again, first);
-    assert_eq!(fonts.generation(), generation);
-    assert_eq!(fonts.faces().count(), 1);
+  fn the_same_font_bytes_twice_are_one_face() {
+    let mut fonts = TestFonts::new();
+    let builtin = fonts.registry.role(FontRole::Ui);
+    let before = fonts.registry.generation();
+    let (first, first_face) = fonts.add(INTER);
+    let (second, second_face) = fonts.add(INTER);
+    assert_ne!(first, second, "two assets");
+    assert_eq!(
+      (first_face, second_face),
+      (builtin, builtin),
+      "the built-in face"
+    );
+    assert_eq!(fonts.registry.generation(), before, "nothing was added");
+    // The face stays while any of its fonts is held
+    drop(first);
+    fonts.free_unheld();
+    assert_eq!(fonts.registry.face_of(&second), builtin);
+    assert!(builtin.is_some_and(|face| fonts.registry.face(face).is_some()));
   }
 
   #[test]
-  fn the_same_bitmap_font_twice_is_one_font() {
-    let mut fonts = Fonts::new();
+  fn fonts_register_in_the_order_they_are_added() {
+    let mut fonts = TestFonts::empty();
+    let (_press, press) = fonts.add(PRESS_START);
+    let (_mono, mono) = fonts.add(MONO);
+    let (_inter, inter) = fonts.add(INTER);
+    assert!(press < mono && mono < inter, "{press:?} {mono:?} {inter:?}");
+    assert_eq!(fonts.registry.find("Press Start 2P"), press);
+  }
+
+  #[test]
+  fn a_freed_font_leaves_the_registry_and_its_id_is_not_reused() {
+    let mut fonts = TestFonts::empty();
+    let (press, face) = fonts.add(PRESS_START);
+    let face = face.unwrap();
+    let id = press.id();
+    let generation = fonts.registry.generation();
+    drop(press);
+    fonts.free_unheld();
+    assert_eq!(fonts.registry.face_of(id), None);
+    assert_eq!(fonts.registry.family(face), None, "the face is gone");
+    assert_eq!(fonts.registry.face_serial(face), None);
+    assert!(fonts.registry.find("Press Start 2P").is_none());
+    assert!(fonts.registry.generation() > generation);
+    // The store reuses the slot; the registry never reuses the face's id
+    let (mono, mono_face) = fonts.add(MONO);
+    assert_eq!(mono.id().index(), id.index(), "the slot is reused");
+    assert!(mono_face.is_some_and(|mono_face| mono_face > face));
+  }
+
+  #[test]
+  fn a_changed_font_replaces_its_face_in_place() {
+    let mut fonts = TestFonts::empty();
+    let (press, face) = fonts.add(PRESS_START);
+    let face = face.unwrap();
+    fonts.registry.set_render(face, FontRender::pixel(8.0));
+    let (serial, generation) = (
+      fonts.registry.face_serial(face),
+      fonts.registry.generation(),
+    );
+    if let Some(changed) = fonts.store.get_mut(&press) {
+      *changed = font(MONO);
+    }
+    fonts.follow();
+    assert_eq!(fonts.registry.face_of(&press), Some(face), "the same face");
+    assert_eq!(fonts.registry.family(face), Some("JetBrains Mono"));
+    assert!(fonts.registry.face_serial(face).is_some());
+    assert_ne!(fonts.registry.face_serial(face), serial, "its data is new");
+    assert!(
+      fonts.registry.generation() > generation,
+      "text lays out again"
+    );
+    assert_eq!(
+      fonts.registry.render(face),
+      FontRender::pixel(8.0),
+      "it draws as it did"
+    );
+  }
+
+  #[test]
+  fn a_change_that_leaves_a_font_as_it_was_changes_nothing() {
+    let mut fonts = TestFonts::empty();
+    let (press, face) = fonts.add(PRESS_START);
+    let (serial, generation) = (
+      face.and_then(|face| fonts.registry.face_serial(face)),
+      fonts.registry.generation(),
+    );
+    let _ = fonts.store.get_mut(&press);
+    fonts.follow();
+    assert_eq!(fonts.registry.generation(), generation);
+    assert_eq!(
+      face.and_then(|face| fonts.registry.face_serial(face)),
+      serial
+    );
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn a_role_holds_its_font() {
+    let mut fonts = TestFonts::new();
+    let (press, face) = fonts.add(PRESS_START);
+    fonts.registry.set_role(FontRole::Ui, press.clone());
+    assert_eq!(fonts.registry.role(FontRole::Ui), face);
+    assert_eq!(fonts.registry.role_font(FontRole::Ui), Some(&press));
+    let id = press.id();
+    drop(press);
+    fonts.free_unheld();
+    assert_eq!(fonts.registry.face_of(id), face, "the role keeps it");
+    // Pointing the role elsewhere lets it go
+    let inter = fonts.builtins.ui.clone().unwrap();
+    fonts.registry.set_role(FontRole::Ui, inter);
+    fonts.free_unheld();
+    assert_eq!(fonts.registry.face_of(id), None);
+    assert_eq!(
+      fonts.registry.role(FontRole::Ui),
+      fonts.registry.find("Inter")
+    );
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn a_role_keeps_its_face_until_its_new_font_registers() {
+    let mut fonts = TestFonts::new();
+    let inter = fonts.registry.role(FontRole::Ui);
+    let press = fonts.store.add(font(PRESS_START));
+    fonts.registry.set_role(FontRole::Ui, press.clone());
+    assert_eq!(
+      fonts.registry.role(FontRole::Ui),
+      inter,
+      "not registered yet"
+    );
+    fonts.follow();
+    assert_eq!(
+      fonts.registry.role(FontRole::Ui),
+      fonts.registry.face_of(&press),
+      "registered: the role draws with it"
+    );
+    assert_ne!(fonts.registry.role(FontRole::Ui), inter);
+  }
+
+  #[test]
+  fn the_same_bitmap_font_twice_is_one_face() {
+    let mut fonts = TestFonts::empty();
     let sheet = Assets::default().add(Image::solid_rect(64, 16, 255, 255, 255, 255));
-    let first = fonts
-      .add_bitmap("Grid", sheet.clone(), (8, 8), "AB")
-      .unwrap();
-    let generation = fonts.generation();
-    let again = fonts
-      .add_bitmap("Grid", sheet.clone(), (8, 8), "AB")
-      .unwrap();
-    assert_eq!((again, fonts.generation()), (first, generation));
-    // Another cell size or character set is another font
-    let other = fonts.add_bitmap("Grid", sheet, (8, 16), "AB").unwrap();
-    assert_ne!(other, first);
+    let (first, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), "AB"));
+    let generation = fonts.registry.generation();
+    let (_again, again) = fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), "AB"));
+    assert_eq!((again, fonts.registry.generation()), (face, generation));
+    // Another cell size or character set is another face
+    let (_other, other) = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 16), "AB"));
+    assert!(other.is_some() && other != face);
+    drop(first);
+    fonts.free_unheld();
+    assert!(
+      face.is_some_and(|face| fonts.registry.face(face).is_some()),
+      "still held"
+    );
   }
 
   #[test]
   fn a_bitmap_font_needs_a_cell_and_characters() {
-    let mut fonts = Fonts::new();
+    let mut fonts = TestFonts::empty();
     let sheet = Assets::default().add(Image::solid_rect(64, 16, 255, 255, 255, 255));
-    assert!(matches!(
-      fonts.add_bitmap("Grid", sheet.clone(), (0, 8), "AB"),
-      Err(FontError::EmptyBitmap)
-    ));
-    assert!(matches!(
-      fonts.add_bitmap("Grid", sheet.clone(), (8, 8), ""),
-      Err(FontError::EmptyBitmap)
-    ));
-    let id = fonts
-      .add_bitmap("Grid", sheet.clone(), (8, 8), "ABCDEFGH")
-      .unwrap();
-    assert!(matches!(fonts.render(id), FontRender::Pixel { design_size } if design_size == 8.0));
+    let (_no_cell, no_cell) =
+      fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (0, 8), "AB"));
+    let (_no_chars, no_chars) =
+      fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), ""));
+    assert_eq!((no_cell, no_chars), (None, None), "not registered");
+    let (_grid, id) = fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), "ABCDEFGH"));
+    let id = id.unwrap();
+    assert!(
+      matches!(fonts.registry.render(id), FontRender::Pixel { design_size } if design_size == 8.0)
+    );
     let Some(Face {
       source: FaceSource::Bitmap(grid),
       ..
-    }) = fonts.face(id)
+    }) = fonts.registry.face(id)
     else {
       panic!("a bitmap face");
     };
-    assert_eq!(grid.sprite, sheet);
+    assert_eq!(grid.sheet, sheet.id());
   }
 
-  #[cfg(not(target_arch = "wasm32"))]
   #[test]
-  fn loading_a_missing_file_says_not_found() {
-    let mut fonts = Fonts::new();
-    let err = fonts.load("does/not/exist.ttf").unwrap_err();
-    assert!(matches!(err, crate::core::error::ManagerError::NotFound(_)));
+  fn a_freed_bitmap_font_leaves_the_registry() {
+    let mut fonts = TestFonts::empty();
+    let sheet = Assets::default().add(Image::solid_rect(16, 8, 255, 255, 255, 255));
+    let (grid, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "AB"));
+    assert_eq!(fonts.registry.find("Grid"), face);
+    drop(grid);
+    fonts.free_unheld();
+    assert_eq!(fonts.registry.find("Grid"), None);
+    assert_eq!(face.and_then(|face| fonts.registry.family(face)), None);
+  }
+
+  #[test]
+  fn a_bitmap_font_told_its_sheet_reloaded_keeps_its_face() {
+    // A sheet's reload touches the fonts that hold it; the stamp redraws them
+    let mut fonts = TestFonts::empty();
+    let sheet = Assets::default().add(Image::solid_rect(16, 8, 255, 255, 255, 255));
+    let (grid, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "AB"));
+    let generation = fonts.registry.generation();
+    let _ = fonts.bitmaps.get_mut(&grid);
+    fonts.follow();
+    assert_eq!(fonts.registry.bitmap_face_of(&grid), face);
+    assert_eq!(
+      fonts.registry.generation(),
+      generation,
+      "nothing to lay out again"
+    );
+  }
+
+  #[test]
+  fn a_changed_bitmap_font_takes_its_new_cells_in_place() {
+    let mut fonts = TestFonts::empty();
+    let sheet = Assets::default().add(Image::solid_rect(16, 16, 255, 255, 255, 255));
+    let (grid, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "AB"));
+    let generation = fonts.registry.generation();
+    if let Some(font) = fonts.bitmaps.get_mut(&grid) {
+      font.cell = (8, 16);
+    }
+    fonts.follow();
+    assert_eq!(fonts.registry.bitmap_face_of(&grid), face, "the same face");
+    let face = face.unwrap();
+    assert_eq!(fonts.registry.render(face), FontRender::pixel(16.0));
+    assert!(fonts.registry.generation() > generation);
+  }
+
+  #[test]
+  fn the_bitmap_stamp_moves_with_its_sheet() {
+    let mut fonts = TestFonts::empty();
+    let mut images = Assets::default();
+    let sheet = images.add(Image::solid_rect(16, 8, 255, 255, 255, 255));
+    assert_eq!(fonts.registry.bitmap_stamp(&images), 0, "no bitmap faces");
+    let (_grid, _) = fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), "AB"));
+    let stamp = fonts.registry.bitmap_stamp(&images);
+    assert_ne!(stamp, 0);
+    let _ = images.get_mut(&sheet);
+    assert_ne!(
+      fonts.registry.bitmap_stamp(&images),
+      stamp,
+      "the sheet changed"
+    );
   }
 
   #[cfg(feature = "default-fonts")]

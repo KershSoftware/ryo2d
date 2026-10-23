@@ -580,7 +580,7 @@ fn theme_scale_and_device_changes_look_the_same_cached() {
     // The UI font changes: the mono font takes the UI role, then goes back
     .then(Do(|h| {
       let mut fonts = Fonts::with_builtins();
-      if let Some(mono) = fonts.role(FontRole::Mono) {
+      if let Some(mono) = fonts.role_font(FontRole::Mono).cloned() {
         fonts.set_role(FontRole::Ui, mono);
       }
       h.text.sync(&fonts);
@@ -2663,7 +2663,7 @@ fn each_env_change() {
     .frames(3)
     .then(Do(|h| {
       let mut fonts = Fonts::with_builtins();
-      if let Some(mono) = fonts.role(FontRole::Mono) {
+      if let Some(mono) = fonts.role_font(FontRole::Mono).cloned() {
         fonts.set_role(FontRole::Ui, mono);
       }
       h.text.sync(&fonts);

@@ -561,6 +561,8 @@ impl Engine {
     self.renderer.as_ref()?;
     let started = Instant::now();
     self.ui_commands.clear();
+    // Fonts added since the pump (a scene's `on_enter`) are laid out with
+    crate::core::text::fonts_follow_assets(&mut self.world);
     if let Some(fonts) = self.world.get_resource::<crate::core::text::Fonts>() {
       self.text.sync(fonts);
     }
@@ -836,9 +838,12 @@ pub(crate) fn update_messages_system(world: &mut World) {
 
 /// `PreUpdate`, before `asset_pump_system`: the asset registry's pump puts
 /// finished loads and reloads in their stores, frees unheld assets and sends
-/// their `AssetEvent`s.
+/// their `AssetEvent`s; then the font registry follows the font stores.
 pub(crate) fn asset_registry_system(world: &mut World) {
   crate::core::asset::pump(world);
+  // Right after the pump: a freed font's face goes before any text is laid
+  // out this frame, and a loaded one is there for it
+  crate::core::text::fonts_follow_assets(world);
 }
 
 /// `PreUpdate`: the old manager's hot reloads (dev builds).

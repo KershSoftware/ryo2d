@@ -518,6 +518,28 @@ impl HeadlessEngine {
     self.engine.shader_pipeline_count()
   }
 
+  /// How many glyphs of `font` the glyph atlas holds (tests that watch a
+  /// freed font's glyphs go)
+  #[doc(hidden)]
+  pub fn glyph_count(&self, font: crate::core::text::FontId) -> usize {
+    self
+      .engine
+      .sprite_gpu
+      .as_ref()
+      .map_or(0, |gpu| gpu.glyphs_of(font))
+  }
+
+  /// How many glyph pages (and their textures) there are, of every format
+  /// (tests that watch an emptied page freed)
+  #[doc(hidden)]
+  pub fn glyph_page_count(&self) -> usize {
+    self
+      .engine
+      .sprite_gpu
+      .as_ref()
+      .map_or(0, |gpu| gpu.glyph_page_count())
+  }
+
   /// How many textures have room in the atlas: a rect on a page or a
   /// standalone texture (tests that watch an image's room freed)
   #[doc(hidden)]

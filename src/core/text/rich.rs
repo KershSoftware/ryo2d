@@ -203,6 +203,23 @@ pub struct RichText {
 }
 
 impl RichText {
+  /// A copy that compares equal but holds no font: for caches, which must
+  /// not keep a font alive
+  pub(crate) fn unheld(&self) -> RichText {
+    let mut text = self.clone();
+    let spans = text.spans.iter_mut().map(|mark| &mut mark.span);
+    let prompts = text
+      .prompts
+      .iter_mut()
+      .filter_map(|mark| mark.span.as_mut());
+    for span in spans.chain(prompts) {
+      if let Some(font) = &mut span.font {
+        font.unhold();
+      }
+    }
+    text
+  }
+
   /// Plain text in the base style
   pub fn new(text: impl Into<String>) -> Self {
     Self {

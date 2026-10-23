@@ -219,9 +219,13 @@ impl SceneContext<'_> {
     self.world.resource_mut::<RenderPipeline>()
   }
 
-  /// The fonts text can use ([`Fonts`]): add a font file or bytes, pick a
-  /// font's render mode, choose the fonts the built-in roles use
+  /// The fonts text can use ([`Fonts`]): the faces of the built-in fonts
+  /// and of the fonts in `ctx.assets()`, a font added there just before
+  /// included. Pick a face's render mode, choose the fonts the built-in
+  /// roles use
   pub fn fonts(&mut self) -> Mut<'_, Fonts> {
+    // A font the scene has just added is there, with its face
+    crate::core::text::fonts_follow_assets(self.world);
     self.world.resource_mut::<Fonts>()
   }
 

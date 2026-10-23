@@ -158,9 +158,10 @@ pub(crate) fn raster_size_step(px: f32) -> f32 {
 
 /// Makes glyph images; owns swash's scaling caches.
 ///
-/// One rasterizer serves one `Fonts`: swash caches each font's parsed data
-/// under the id `[FontId, face index]`, and another registry's fonts reuse
-/// those ids for different files. The engine owns one of each.
+/// Swash caches each font's parsed data under the id `[face serial, face
+/// index]`. A face's serial is unique in the process and new whenever its
+/// data is replaced, so a changed font is parsed again and no two
+/// registries' faces share an id.
 pub(crate) struct GlyphRasterizer {
   scale: ScaleContext,
 }
@@ -185,12 +186,13 @@ impl GlyphRasterizer {
     if !(px.is_finite() && px > 0.0 && px <= MAX_GLYPH_PX) {
       return None;
     }
-    let FaceSource::Outline { data, index } = &fonts.face(key.font)?.source else {
+    let face = fonts.face(key.font)?;
+    let FaceSource::Outline { data, index } = &face.source else {
       return None;
     };
     let font = FontRef::from_index(data, *index as usize)?;
     // A stable id lets swash reuse its parsed font data between glyphs
-    let cache_id = [u64::from(key.font.0), u64::from(*index)];
+    let cache_id = [face.serial, u64::from(*index)];
     match key.kind {
       GlyphKind::Msdf { range64 } => crate::core::text::msdf::generate(
         &mut self.scale,

@@ -1019,7 +1019,7 @@ fn emit_bitmap(
   let (layout, place) = (block.layout, block.place);
   let (cw, ch) = (bitmap.cell.0 as f32, bitmap.cell.1 as f32);
   // An image not loaded draws nothing: its cells are not known
-  let Some(image) = block.sources.images.get(&bitmap.sprite) else {
+  let Some(image) = block.sources.images.get(bitmap.sheet) else {
     return;
   };
   let sheet = Vec2::new(image.width() as f32, image.height() as f32);
@@ -1056,7 +1056,7 @@ fn emit_bitmap(
     push_sprite(
       block.targets,
       place,
-      (bitmap.sprite.id(), block.sources.images),
+      (bitmap.sheet, block.sources.images),
       Filter::Nearest,
       instance,
     );

@@ -107,16 +107,14 @@ fn a_sprite_updated_in_place_redraws() {
 struct BitmapUi {
   sheet: Swatch,
   held: Option<(Handle<Image>, u32)>,
-  font: Option<FontId>,
+  font: Option<Handle<BitmapFont>>,
 }
 
 impl Scene for BitmapUi {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let held = self.sheet.add(ctx);
-    self.font = ctx
-      .fonts()
-      .add_bitmap("Grid", held.0.clone(), (4, 4), "#.")
-      .ok();
+    let font = BitmapFont::new("Grid", held.0.clone(), (4, 4), "#.");
+    self.font = Some(ctx.assets().add(font));
     self.held = Some(held);
   }
 
@@ -128,8 +126,8 @@ impl Scene for BitmapUi {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    if let Some(font) = self.font {
-      let style = TextStyle::new().font(TextFont::Id(font)).size(16.0);
+    if self.font.is_some() {
+      let style = TextStyle::new().family("Grid").size(16.0);
       ui.draw_text_styled("#.#.#", 8.0, 8.0, &style);
     }
     SceneAction::Continue
@@ -137,7 +135,7 @@ impl Scene for BitmapUi {
 }
 
 #[test]
-fn a_bitmap_font_sheet_updated_in_place_redraws() {
+fn a_reloaded_bitmap_sheet_redraws_its_text() {
   // Two 4x4 cells: "#" solid, "." empty
   let sheet_of = |rgba: [u8; 4]| {
     let mut pixels = vec![0u8; 8 * 4 * 4];
@@ -166,10 +164,14 @@ fn a_bitmap_font_sheet_updated_in_place_redraws() {
   };
   pair.frames(10, "red cells");
   assert!(pair.on.ui_render_stats().kept);
+  let red = pair.on.frame().unwrap().get_pixel(10, 10).0;
+  assert_eq!(red, [255, 0, 0, 255], "drawn from the sheet");
   sheet.set(sheet_of([0, 0, 255, 255]));
   pair.frames(1, "blue cells, the same size");
   assert!(!pair.on.ui_render_stats().kept, "the update redraws the UI");
   pair.frames(5, "blue cells");
+  let blue = pair.on.frame().unwrap().get_pixel(10, 10).0;
+  assert_eq!(blue, [0, 0, 255, 255], "drawn from the new sheet");
 }
 
 /// The settings screen as a node tree

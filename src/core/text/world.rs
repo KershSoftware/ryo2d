@@ -343,7 +343,11 @@ mod tests {
       .id();
     crate::core::render::text::layout_world_text(&mut world, &mut engine, &Default::default());
     let before = world.get::<TextBounds>(e).unwrap().size.x;
-    let mono = world.resource::<Fonts>().role(FontRole::Mono).unwrap();
+    let mono = world
+      .resource::<Fonts>()
+      .role_font(FontRole::Mono)
+      .cloned()
+      .unwrap();
     world.resource_mut::<Fonts>().set_role(FontRole::Ui, mono);
     crate::core::render::text::layout_world_text(&mut world, &mut engine, &Default::default());
     let after = world.get::<TextBounds>(e).unwrap().size.x;

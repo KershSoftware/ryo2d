@@ -124,9 +124,9 @@ pub mod prelude {
 
   // Text
   pub use crate::core::text::{
-    FontError, FontId, FontRender, FontRole, Fonts, Glow, GlyphContext, GlyphMod, Icon, IconSource,
-    Outline, RichText, Shadow, Span, Text2d, TextAlign, TextBounds, TextEffects, TextFont,
-    TextIcons, TextLayoutOptions, TextOverflow, TextReveal, TextRevealed, TextStyle,
+    BitmapFont, Font, FontError, FontId, FontRender, FontRole, Fonts, Glow, GlyphContext, GlyphMod,
+    Icon, IconSource, Outline, RichText, Shadow, Span, Text2d, TextAlign, TextBounds, TextEffects,
+    TextFont, TextIcons, TextLayoutOptions, TextOverflow, TextReveal, TextRevealed, TextStyle,
   };
 
   // Tiled rendering
@@ -171,8 +171,9 @@ pub mod prelude {
   // Assets
   pub use crate::core::asset::{
     Asset, AssetError, AssetEvent, AssetId, AssetLoader, AssetPath, AssetServer, AssetSettings,
-    AssetSource, Assets, AssetsView, DiskSource, Handle, ImageLoader, ImageSettings, LoadContext,
-    LoadState, MemorySource, Progress, ShaderLoader, SvgSize, UntypedAssetId,
+    AssetSource, Assets, AssetsView, BitmapFontLoader, DiskSource, FontLoader, FontSettings,
+    Handle, ImageLoader, ImageSettings, LoadContext, LoadState, MemorySource, Progress,
+    ShaderLoader, SvgSize, UntypedAssetId,
   };
   pub use crate::core::asset::{AssetManager, AssetStats, TypeStats};
 

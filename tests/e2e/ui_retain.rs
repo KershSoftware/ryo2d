@@ -667,7 +667,7 @@ fn only_a_new_ui_image_redraws() {
 
 /// A counter changing every frame, and a label in a bitmap font
 struct BitmapLabel {
-  font: Option<FontId>,
+  font: Option<Handle<BitmapFont>>,
   frame: u32,
 }
 
@@ -681,7 +681,11 @@ impl Scene for BitmapLabel {
       }
     }
     let sheet = ctx.assets().add(Image::from_rgba(pixels, 8, 4));
-    self.font = ctx.fonts().add_bitmap("Grid", sheet, (4, 4), "#.").ok();
+    self.font = Some(
+      ctx
+        .assets()
+        .add(BitmapFont::new("Grid", sheet, (4, 4), "#.")),
+    );
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -691,8 +695,8 @@ impl Scene for BitmapLabel {
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     self.frame += 1;
     ui.draw_text(&format!("Frame {}", self.frame), 200.0, 8.0, Color::WHITE);
-    if let Some(font) = self.font {
-      let style = TextStyle::new().font(TextFont::Id(font)).size(16.0);
+    if self.font.is_some() {
+      let style = TextStyle::new().family("Grid").size(16.0);
       ui.draw_text_styled("#.#.#", 8.0, 8.0, &style);
     }
     SceneAction::Continue

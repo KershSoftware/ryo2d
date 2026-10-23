@@ -4,7 +4,8 @@ use std::hash::{Hash, Hasher};
 
 use glam::Vec2;
 
-use crate::core::text::{FontId, FontRole};
+use crate::core::asset::Handle;
+use crate::core::text::{Font, FontRole};
 use crate::core::ui::{Anchor, Color};
 
 /// Which font a style asks for
@@ -14,9 +15,21 @@ pub enum TextFont {
   Role(FontRole),
   /// A family by name
   Family(String),
-  /// One exact face: its family, at its own weight and slant (the style's
-  /// `weight` and `italic` do not apply)
-  Id(FontId),
+  /// One exact font, which the style holds: its family, at its own weight
+  /// and slant (the style's `weight` and `italic` do not apply). A font not
+  /// loaded yet, or one that failed, falls back as an unknown family does
+  /// (warned once)
+  Face(Handle<Font>),
+}
+
+impl TextFont {
+  /// Names a `Face` by a handle that does not hold it: the same font,
+  /// equal to what it was
+  pub(crate) fn unhold(&mut self) {
+    if let Self::Face(font) = self {
+      *font = Handle::unheld(font.id());
+    }
+  }
 }
 
 impl Default for TextFont {
@@ -151,6 +164,15 @@ impl TextStyle {
   pub fn fallback(mut self, font: TextFont) -> Self {
     self.fallbacks.push(font);
     self
+  }
+
+  /// A copy that compares equal but holds no font: for caches, which must
+  /// not keep a font alive
+  pub(crate) fn unheld(&self) -> TextStyle {
+    let mut style = self.clone();
+    style.font.unhold();
+    style.fallbacks.iter_mut().for_each(TextFont::unhold);
+    style
   }
 
   /// Size and line height usable for layout

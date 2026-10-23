@@ -1,14 +1,14 @@
 //! Scene-start asset loading: what a scene's `on_enter` does. Forty PNGs
-//! (ten each at 32, 64, 128 and 256 pixels square) loaded at once through
-//! the asset registry (`load_now::<Image>`) and three UI files (the second
+//! (ten each at 32, 64, 128 and 256 pixels square) and two fonts (Press
+//! Start 2P and JetBrains Mono) loaded at once through the asset registry
+//! (`load_now::<Image>`, `load_now::<Font>`), and three UI files (the second
 //! importing the first) through `AssetManager`, on a fresh registry and
 //! manager each iteration. The same bench on the old manager's image loads,
 //! before the registry, is what it is measured against.
 //!
-//! The two fonts a scene start also adds are not measured here: the bench is
-//! an external crate and has no public way to build a `Fonts` registry (its
-//! constructors are crate-private and the UI harness keeps its fonts inside).
-//! The fonts join the bench when they are registry assets.
+//! The fonts are measured from the registry's fonts on: before them the
+//! bench had no public way to build a `Fonts` registry, so the "before"
+//! build loads no fonts.
 //!
 //! The median is read from where criterion writes its results:
 //! `$CRITERION_HOME`, else `$CARGO_TARGET_DIR/criterion`, else the
@@ -113,9 +113,29 @@ fn ui_source(tag: &str, import_a: bool) -> String {
   )
 }
 
+/// The two fonts, written to `dir`: a game's own and a second distinct one
+fn write_fonts(dir: &Path) -> [&'static str; 2] {
+  let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+  let fonts = [
+    (
+      "PressStart2P-Regular.ttf",
+      root.join("examples/games/breakout/assets/fonts/PressStart2P-Regular.ttf"),
+    ),
+    (
+      "JetBrainsMono-Regular.ttf",
+      root.join("src/assets/fonts/JetBrainsMono-Regular.ttf"),
+    ),
+  ];
+  for (name, from) in &fonts {
+    std::fs::copy(from, dir.join(name)).expect("copy a bench font");
+  }
+  fonts.map(|(name, _)| name)
+}
+
 fn scene_start(c: &mut Criterion) {
   let dir = tempfile::TempDir::new().expect("temp dir");
   let pngs = write_pngs(dir.path());
+  let fonts = write_fonts(dir.path());
   let uis = ["a.ui.ron", "b.ui.ron", "c.ui.ron"];
   std::fs::write(dir.path().join("a.ui.ron"), ui_source("a", false)).expect("write ui");
   std::fs::write(dir.path().join("b.ui.ron"), ui_source("b", true)).expect("write ui");
@@ -128,6 +148,8 @@ fn scene_start(c: &mut Criterion) {
     let server = AssetServer::new(DiskSource::new(dir.path()));
     server.register_asset::<Image>(&mut world);
     server.register_loader(ImageLoader);
+    server.register_asset::<Font>(&mut world);
+    server.register_loader(FontLoader);
     world.insert_resource(server.clone());
     (server, world, AssetManager::with_base_path(dir.path()))
   };
@@ -138,6 +160,10 @@ fn scene_start(c: &mut Criterion) {
         for name in &pngs {
           let image = server.load_now::<Image>(&mut world, name);
           std::hint::black_box(image.expect("load image"));
+        }
+        for name in fonts {
+          let font = server.load_now::<Font>(&mut world, name);
+          std::hint::black_box(font.expect("load font"));
         }
         for name in uis {
           std::hint::black_box(manager.load_ui(name).expect("load ui"));
@@ -167,7 +193,7 @@ fn main() {
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|_| "uptime unavailable".into());
   println!("machine: {load}");
-  println!("assets bench: images and UI files; fonts are not measured (not yet registry assets)");
+  println!("assets bench: images, fonts and UI files");
   let results = results_dir();
   let mut criterion = Criterion::default()
     .sample_size(20)

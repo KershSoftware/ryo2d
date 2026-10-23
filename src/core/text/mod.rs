@@ -17,8 +17,8 @@ mod style;
 mod world;
 
 pub use effects::{GlyphContext, GlyphMod, TextEffects};
-pub(crate) use fonts::{BitmapFace, FaceSource};
-pub use fonts::{FontError, FontId, FontRender, FontRole, Fonts};
+pub(crate) use fonts::{BitmapFace, FaceSource, fonts_follow_assets, insert_fonts};
+pub use fonts::{BitmapFont, Font, FontError, FontId, FontRender, FontRole, Fonts};
 pub use icons::{IconSource, TextIcons};
 pub use rich::{Icon, RichText, Span};
 pub use style::{

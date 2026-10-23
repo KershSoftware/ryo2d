@@ -456,6 +456,22 @@ mod tests {
   }
 
   #[test]
+  fn an_unheld_handle_equals_its_assets_handles_and_holds_nothing() {
+    let mut assets = Assets::<Text>::default();
+    let handle = assets.add(Text("a".into()));
+    let id = handle.id();
+    let unheld = Handle::<Text>::unheld(id);
+    assert_eq!(unheld, handle, "equal, as handles compare by id");
+    drop(handle);
+    let mut freed = Vec::new();
+    assets.free_unheld(&mut freed);
+    assert_eq!(freed, vec![id], "the unheld handle did not keep it");
+    drop(unheld);
+    assets.free_unheld(&mut freed);
+    assert_eq!(freed, vec![id], "and its drop tells the store nothing");
+  }
+
+  #[test]
   fn a_stale_id_finds_nothing_in_its_reused_slot() {
     let mut assets = Assets::<Text>::default();
     let old = assets.add(Text("old".into())).id();

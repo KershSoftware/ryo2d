@@ -467,6 +467,26 @@ impl TextureAtlas {
     self.glyphs.evictions()
   }
 
+  /// Forget the glyphs of faces freed or changed in `fonts` since the last
+  /// call, freeing the glyph pages that leaves empty
+  pub(crate) fn sync_fonts(&mut self, fonts: &crate::core::text::Fonts) {
+    self.glyphs.sync_fonts(fonts);
+  }
+
+  /// How many glyphs of `font` are placed (tests)
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn glyphs_of(&self, font: crate::core::text::FontId) -> usize {
+    self.glyphs.glyphs_of(font)
+  }
+
+  /// How many glyph pages there are (tests)
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn glyph_page_count(&self) -> usize {
+    self.glyphs.page_count()
+  }
+
   /// Glyphs refused so far for a full atlas
   pub(crate) fn glyphs_refused(&self) -> u64 {
     self.glyphs.refused()
