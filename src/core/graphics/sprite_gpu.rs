@@ -440,6 +440,9 @@ pub struct SpriteGpuRenderer {
   missing: Option<AssetId<Image>>,
   // Image textures written so far (tests watch it)
   uploads: u64,
+  /// The times the standalone cap looked through the textures
+  #[cfg(test)]
+  standalone_scans: u64,
 }
 
 /// What a frame draws for an image: the image itself, or the checker in its
@@ -471,6 +474,8 @@ impl SpriteGpuRenderer {
       resident_scratch: HashSet::new(),
       missing: None,
       uploads: 0,
+      #[cfg(test)]
+      standalone_scans: 0,
     }
   }
 
@@ -877,8 +882,13 @@ impl SpriteGpuRenderer {
   /// [`MAX_STANDALONE_ENTITY_SPRITES`], sparing any used this frame; a
   /// freed one is uploaded again when a frame draws it.
   fn cap_standalone_sprites(&mut self) {
-    if self.registry.len() <= MAX_STANDALONE_ENTITY_SPRITES {
+    // Every standalone image is one of the atlas's standalone textures
+    if self.atlas.standalone_count() <= MAX_STANDALONE_ENTITY_SPRITES {
       return;
+    }
+    #[cfg(test)]
+    {
+      self.standalone_scans += 1;
     }
     let mut standalone = self.standalone_sprites();
     let Some(excess) = standalone
@@ -1435,6 +1445,26 @@ mod tests {
     collector.push_to(&mut list, DrawKind::Sprite, renderer, images);
     list.sorted();
     list
+  }
+
+  #[test]
+  fn the_standalone_cap_looks_through_nothing_while_it_is_not_reached() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
+    let mut images = Assets::<Image>::default();
+    // More textures than the cap, all in the atlas's pages
+    let small: Vec<_> = (0..MAX_STANDALONE_ENTITY_SPRITES + 6)
+      .map(|_| solid(&mut images))
+      .collect();
+    let entries: Vec<_> = small.iter().map(|image| (image, 0)).collect();
+    for _ in 0..3 {
+      let list = world_list(&mut renderer, &images, &entries);
+      renderer.prepare_textures(&device, &queue, &list, &[]);
+    }
+    assert!(renderer.registry.len() > MAX_STANDALONE_ENTITY_SPRITES);
+    assert_eq!(renderer.standalone_scans, 0);
   }
 
   #[test]

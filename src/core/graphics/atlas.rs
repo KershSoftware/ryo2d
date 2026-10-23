@@ -373,6 +373,11 @@ pub(crate) struct TextureAtlas {
 }
 
 impl TextureAtlas {
+  /// How many standalone textures it holds
+  pub(crate) fn standalone_count(&self) -> usize {
+    self.standalone.len()
+  }
+
   /// An empty atlas whose textures bind with `layout` (texture, then
   /// sampler).
   pub(crate) fn new(device: &wgpu::Device, layout: wgpu::BindGroupLayout) -> Self {
