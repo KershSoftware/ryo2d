@@ -216,8 +216,12 @@ fn draw_calls_for(a_src: &'static str, b_src: &'static str) -> Option<u32> {
   }
   impl Scene for Shaded {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let a = ShaderHandle::from_source("split-a.wgsl", self.sources.0);
-      let b = ShaderHandle::from_source("split-b.wgsl", self.sources.1);
+      let a = ctx
+        .assets()
+        .add(Shader::from_wgsl("split-a.wgsl", self.sources.0));
+      let b = ctx
+        .assets()
+        .add(Shader::from_wgsl("split-b.wgsl", self.sources.1));
       let sprite = ctx.assets().add(Image::solid_rect(4, 4, 200, 30, 40, 255));
       for (i, shader) in [&a, &a, &b, &b].into_iter().enumerate() {
         ctx.world.spawn((
@@ -264,21 +268,18 @@ fn handles_with_one_source_share_a_draw_run() {
 
 #[test]
 fn editing_a_shader_file_redraws_with_the_new_source() {
-  use crate::core::asset::HotReloadEvent;
-
   const GREEN_SHADER: &str = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return vec4<f32>(0.0, 1.0, 0.0, 1.0); }";
   const BLUE_SHADER: &str = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return vec4<f32>(0.0, 0.0, 1.0, 1.0); }";
 
-  /// Draws a sprite with the shader in `path`, then rewrites the file and
-  /// delivers the change the way the engine's per-frame reload does
-  struct Edits {
-    path: std::path::PathBuf,
-    updates: u32,
-  }
+  /// Draws a sprite with the shader in `edit.wgsl`
+  struct Edits;
   impl Scene for Edits {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
       ctx.look().tonemap = Tonemap::Clamp;
-      let shader = ctx.assets.load_shader(&self.path).expect("load shader");
+      let shader = ctx
+        .assets()
+        .load_now::<Shader>("edit.wgsl")
+        .expect("load shader");
       let sprite = ctx.assets().add(Image::solid_rect(8, 8, 200, 30, 40, 255));
       ctx.world.spawn((
         Transform::from_xy(4.0, 4.0),
@@ -287,18 +288,6 @@ fn editing_a_shader_file_redraws_with_the_new_source() {
           .with_shader(SpriteShader::custom(shader)),
       ));
     }
-    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-      self.updates += 1;
-      if self.updates == 3 {
-        std::fs::write(&self.path, BLUE_SHADER).expect("rewrite shader");
-        assert!(
-          ctx
-            .assets
-            .handle_reload_event(HotReloadEvent::FileModified(self.path.clone()))
-        );
-      }
-      SceneAction::Continue
-    }
   }
 
   let dir = tempfile::tempdir().expect("temp dir");
@@ -306,14 +295,25 @@ fn editing_a_shader_file_redraws_with_the_new_source() {
   std::fs::write(&path, GREEN_SHADER).expect("write shader");
   let builder = EngineBuilder::new()
     .resolution(32, 32)
-    .start_scene(Edits { path, updates: 0 });
+    .asset_source(DiskSource::new(dir.path()))
+    .start_scene(Edits);
   let Some(mut engine) = engine(builder) else {
     return;
   };
   engine.step_frames(2).unwrap();
   assert_eq!(engine.frame().unwrap().get_pixel(8, 8).0, [0, 255, 0, 255]);
-  engine.step_frames(3).unwrap();
-  assert_eq!(engine.frame().unwrap().get_pixel(8, 8).0, [0, 0, 255, 255]);
+  // The file changes, and the registry reloads it as its watcher would
+  std::fs::write(&path, BLUE_SHADER).expect("rewrite shader");
+  engine.assets().server().reload("edit.wgsl");
+  let start = std::time::Instant::now();
+  let blue = [0, 0, 255, 255];
+  while engine.frame().unwrap().get_pixel(8, 8).0 != blue
+    && start.elapsed() < std::time::Duration::from_secs(2)
+  {
+    engine.step().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+  }
+  assert_eq!(engine.frame().unwrap().get_pixel(8, 8).0, blue);
 }
 
 #[test]

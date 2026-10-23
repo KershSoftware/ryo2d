@@ -76,7 +76,7 @@ struct PostProcessingPage {
   scanline_strength: f32,
 
   // Custom WGSL effect, None if the shader file could not be loaded
-  scanlines: Option<ShaderHandle>,
+  scanlines: Option<Handle<Shader>>,
 
   // Animation
   time: f32,
@@ -301,7 +301,7 @@ impl DemoPage for PostProcessingPage {
     self.screen_height = height;
 
     // A missing shader only disables the scanlines effect; the rest still works.
-    match ctx.assets.load_shader("assets/shaders/scanlines.wgsl") {
+    match ctx.assets().load_now::<Shader>("shaders/scanlines.wgsl") {
       Ok(shader) => self.scanlines = Some(shader),
       Err(e) => eprintln!("Could not load scanlines.wgsl: {e}"),
     }

@@ -2,7 +2,7 @@
 
 use crate::core::render::context::image_texture;
 use crate::core::render::{FrameImage, FrameInfo, RenderContext, RenderPass, pass_ids};
-use crate::core::shaders::{EffectStage, OutputBuffer};
+use crate::core::shaders::{CustomChain, EffectStage, OutputBuffer};
 
 /// Runs the active display effects on the display image the tonemap pass
 /// wrote; the chain's output becomes the latest image.
@@ -26,6 +26,7 @@ impl RenderPass for PostProcess {
       .map(|effect| (effect, effects.time()))
       .collect();
     let custom: Vec<_> = effects.enabled_custom_in(EffectStage::Display).collect();
+    let shaders = ctx.scene.shaders;
     let time = effects.time();
     let RenderContext {
       encoder,
@@ -53,7 +54,11 @@ impl RenderPass for PostProcess {
         },
       );
     }
-    let output = display.apply_chain(device, queue, encoder, &active, &custom, time);
+    let custom = CustomChain {
+      effects: &custom,
+      shaders,
+    };
+    let output = display.apply_chain(device, queue, encoder, &active, custom, time);
     *image = FrameImage::Display(output);
   }
 }
@@ -84,6 +89,7 @@ impl RenderPass for HdrEffects {
     if active.is_empty() && custom.is_empty() {
       return;
     }
+    let shaders = ctx.scene.shaders;
     let RenderContext {
       encoder,
       targets,
@@ -109,9 +115,13 @@ impl RenderPass for HdrEffects {
         );
       }
     }
+    let custom = CustomChain {
+      effects: &custom,
+      shaders,
+    };
     let output = stages
       .hdr
-      .apply_chain(device, queue, encoder, &active, &custom, time);
+      .apply_chain(device, queue, encoder, &active, custom, time);
     *image = FrameImage::Hdr(output);
   }
 }

@@ -18,6 +18,23 @@ fn solid(ctx: &mut SceneContext, size: u32, c: [u8; 4]) -> Handle<Image> {
     .add(Image::solid_rect(size, size, c[0], c[1], c[2], c[3]))
 }
 
+/// The WGSL `source`, named `name`, added to the scene's world
+fn shader(ctx: &mut SceneContext, name: &str, source: &str) -> Handle<Shader> {
+  ctx.assets().add(Shader::from_wgsl(name, source))
+}
+
+/// A slot a scene puts a shader handle in, for the test to change it through
+type ShaderSlot = Arc<Mutex<Option<Handle<Shader>>>>;
+
+/// The handle in `slot`
+fn held(slot: &ShaderSlot) -> Handle<Shader> {
+  slot
+    .lock()
+    .unwrap()
+    .clone()
+    .expect("the scene added its shader")
+}
+
 const INVERT: &str = "
 fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
   let c = sample(in.uv);
@@ -87,14 +104,14 @@ fn render(engine: &mut HeadlessEngine) -> image::RgbaImage {
 
 #[test]
 fn custom_shader_inverts_its_sprite() {
-  let shader = ShaderHandle::from_source("t2-invert.wgsl", INVERT);
   let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, "t2-invert.wgsl", INVERT);
     let image = solid(ctx, 20, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 20.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
-        .with_shader(SpriteShader::custom(shader.clone())),
+        .with_shader(SpriteShader::custom(shader)),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -134,14 +151,14 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 
 #[test]
 fn sprite_time_advances() {
-  let shader = ShaderHandle::from_source("t2-clock.wgsl", CLOCK);
   let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, "t2-clock.wgsl", CLOCK);
     let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
-        .with_shader(SpriteShader::custom(shader.clone())),
+        .with_shader(SpriteShader::custom(shader)),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -158,13 +175,13 @@ fn sprite_time_advances() {
 
 #[test]
 fn params_reach_the_shader() {
-  let shader = ShaderHandle::from_source("t2-params.wgsl", PARAMS);
   let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, "t2-params.wgsl", PARAMS);
     let sprite = solid(ctx, 10, RED);
     let on = SpriteShader::custom(shader.clone())
       .with_param("a", 1.0)
       .with_param("color", Color::rgb(10, 200, 90));
-    let off = SpriteShader::custom(shader.clone())
+    let off = SpriteShader::custom(shader)
       .with_param("a", 0.0)
       .with_param("color", Color::rgb(10, 200, 90));
     ctx.world.spawn((
@@ -197,14 +214,14 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
   return sample(in.uv + vec2<f32>(0.2, 0.0));
 }
 ";
-  let shader = ShaderHandle::from_source("t2-shift.wgsl", shifted);
   let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, "t2-shift.wgsl", shifted);
     let image = solid(ctx, 8, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
-        .with_shader(SpriteShader::custom(shader.clone())),
+        .with_shader(SpriteShader::custom(shader)),
     ));
     // Right next to it, on the same atlas page
     let image = solid(ctx, 8, GREEN);
@@ -240,15 +257,15 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 
 #[test]
 fn tint_applies_after_the_custom_shader() {
-  let shader = ShaderHandle::from_source("t2-tint.wgsl", IDENTITY);
   let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, "t2-tint.wgsl", IDENTITY);
     let image = solid(ctx, 10, [200, 200, 200, 255]);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
         .with_tint(Color::rgb(130, 130, 130))
-        .with_shader(SpriteShader::custom(shader.clone())),
+        .with_shader(SpriteShader::custom(shader)),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -265,21 +282,21 @@ fn tint_applies_after_the_custom_shader() {
 
 #[test]
 fn material_wins_over_renderable_shader() {
-  let invert = ShaderHandle::from_source("t2-mat-invert.wgsl", INVERT);
   let blue = "
 fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
   return vec4<f32>(0.0, 0.0, 1.0, sample(in.uv).a);
 }
 ";
-  let blue = ShaderHandle::from_source("t2-mat-blue.wgsl", blue);
   let scene = Fixture::entities(move |ctx| {
+    let invert = shader(ctx, "t2-mat-invert.wgsl", INVERT);
+    let blue = shader(ctx, "t2-mat-blue.wgsl", blue);
     let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
-        .with_shader(SpriteShader::custom(invert.clone())),
-      Material::custom(blue.clone()),
+        .with_shader(SpriteShader::custom(invert)),
+      Material::custom(blue),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -292,19 +309,20 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 
 #[test]
 fn render_gpu_sprites_can_use_custom_shaders() {
-  let shader = ShaderHandle::from_source("t2-gpu-invert.wgsl", INVERT);
   // Added on enter, drawn every frame
-  let sprite: Arc<Mutex<Option<Handle<Image>>>> = Arc::default();
-  let added = sprite.clone();
+  type Drawn = Arc<Mutex<Option<(Handle<Image>, Handle<Shader>)>>>;
+  let drawn: Drawn = Arc::default();
+  let added = drawn.clone();
   let mut scene = Fixture::gpu(move |gpu| {
     let instance = SpriteInstance::new().with_transform(30.0, 30.0, 0.0, 20.0, 20.0);
     let draw = SpriteDraw::default();
-    if let Some(sprite) = &*sprite.lock().unwrap() {
-      gpu.add_custom_sprite(sprite, &shader, &ShaderParams::new(), instance, draw);
+    if let Some((sprite, shader)) = &*drawn.lock().unwrap() {
+      gpu.add_custom_sprite(sprite, shader, &ShaderParams::new(), instance, draw);
     }
   });
   scene.setup = Some(Box::new(move |ctx| {
-    *added.lock().unwrap() = Some(solid(ctx, 4, RED));
+    let shader = shader(ctx, "t2-gpu-invert.wgsl", INVERT);
+    *added.lock().unwrap() = Some((solid(ctx, 4, RED), shader));
   }));
   let Some(mut engine) = start(scene) else {
     return;
@@ -321,14 +339,14 @@ fn broken_sprite_shader_falls_back() {
   return vec4<f32>(1.0, 0.0 0.0, 1.0);
 }
 ";
-  let shader = ShaderHandle::from_source(id, source);
   let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, id, source);
     let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
-        .with_shader(SpriteShader::custom(shader.clone())),
+        .with_shader(SpriteShader::custom(shader)),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -349,15 +367,17 @@ fn broken_sprite_shader_falls_back() {
 
 #[test]
 fn replaced_source_changes_the_next_frame() {
-  let shader = ShaderHandle::from_source("t2-replace.wgsl", IDENTITY);
-  let handle = shader.clone();
+  let slot = ShaderSlot::default();
+  let added = slot.clone();
   let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, "t2-replace.wgsl", IDENTITY);
+    *added.lock().unwrap() = Some(shader.clone());
     let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
-        .with_shader(SpriteShader::custom(shader.clone())),
+        .with_shader(SpriteShader::custom(shader)),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -365,21 +385,22 @@ fn replaced_source_changes_the_next_frame() {
   };
   assert_eq!(render(&mut engine).get_pixel(15, 15).0, RED);
 
-  handle.replace_source(INVERT);
+  let replaced = Shader::from_wgsl("t2-replace.wgsl", INVERT);
+  *engine.assets().get_mut(&held(&slot)).unwrap() = replaced;
 
   assert_eq!(render(&mut engine).get_pixel(15, 15).0, [35, 225, 215, 255]);
 }
 
 #[test]
 fn material_built_in_effect_wins_over_renderable_shader() {
-  let identity = ShaderHandle::from_source("t2-mat-builtin-identity.wgsl", IDENTITY);
   let scene = Fixture::entities(move |ctx| {
+    let identity = shader(ctx, "t2-mat-builtin-identity.wgsl", IDENTITY);
     let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
-        .with_shader(SpriteShader::custom(identity.clone())),
+        .with_shader(SpriteShader::custom(identity)),
       Material::invert(),
     ));
   });
@@ -393,15 +414,17 @@ fn material_built_in_effect_wins_over_renderable_shader() {
 
 #[test]
 fn fixed_shader_recovers_after_an_error() {
-  let shader = ShaderHandle::from_source("t2-recover.wgsl", "fn sprite( {");
-  let handle = shader.clone();
+  let slot = ShaderSlot::default();
+  let added = slot.clone();
   let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, "t2-recover.wgsl", "fn sprite( {");
+    *added.lock().unwrap() = Some(shader.clone());
     let image = solid(ctx, 10, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 10.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
-        .with_shader(SpriteShader::custom(shader.clone())),
+        .with_shader(SpriteShader::custom(shader)),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -413,7 +436,8 @@ fn fixed_shader_recovers_after_an_error() {
     "plain while broken"
   );
 
-  handle.replace_source(INVERT);
+  let fixed = Shader::from_wgsl("t2-recover.wgsl", INVERT);
+  *engine.assets().get_mut(&held(&slot)).unwrap() = fixed;
 
   assert_eq!(render(&mut engine).get_pixel(15, 15).0, [35, 225, 215, 255]);
 }
@@ -437,7 +461,7 @@ fn effect(in: EffectIn, params: Params) -> vec4<f32> {
 }
 ";
 
-type EffectCommand = Box<dyn FnOnce(&mut EffectsManager) + Send>;
+type EffectCommand = Box<dyn FnOnce(&mut SceneContext) + Send>;
 
 /// A red screen whose effects are set up on enter and changed by queued commands.
 struct EffectScene {
@@ -453,7 +477,7 @@ impl Scene for EffectScene {
       Renderable::image(image).with_anchor(Anchor::TopLeft),
     ));
     if let Some(setup) = self.setup.take() {
-      setup(&mut ctx.effects());
+      setup(ctx);
     }
   }
 
@@ -464,7 +488,7 @@ impl Scene for EffectScene {
       .map(|mut q| q.drain(..).collect())
       .unwrap_or_default();
     for command in pending {
-      command(&mut ctx.effects());
+      command(ctx);
     }
     SceneAction::Continue
   }
@@ -473,7 +497,7 @@ impl Scene for EffectScene {
 type Queue = std::sync::Arc<std::sync::Mutex<Vec<EffectCommand>>>;
 
 fn effect_engine(
-  setup: impl FnOnce(&mut EffectsManager) + Send + 'static,
+  setup: impl FnOnce(&mut SceneContext) + Send + 'static,
 ) -> Option<(HeadlessEngine, Queue)> {
   let queue = Queue::default();
   let scene = EffectScene {
@@ -484,7 +508,7 @@ fn effect_engine(
   HeadlessEngine::new_or_skip(builder).map(|e| (e, queue))
 }
 
-fn send(queue: &Queue, command: impl FnOnce(&mut EffectsManager) + Send + 'static) {
+fn send(queue: &Queue, command: impl FnOnce(&mut SceneContext) + Send + 'static) {
   if let Ok(mut q) = queue.lock() {
     q.push(Box::new(command));
   }
@@ -492,8 +516,9 @@ fn send(queue: &Queue, command: impl FnOnce(&mut EffectsManager) + Send + 'stati
 
 #[test]
 fn custom_grayscale_effect() {
-  let shader = ShaderHandle::from_source("t3-gray.wgsl", GRAYSCALE);
-  let Some((mut engine, queue)) = effect_engine(move |fx| {
+  let Some((mut engine, queue)) = effect_engine(|ctx| {
+    let shader = shader(ctx, "t3-gray.wgsl", GRAYSCALE);
+    let mut fx = ctx.effects();
     assert!(fx.add_custom("gray", shader).is_ok());
     assert!(fx.set_custom_param("gray", "strength", 0.0));
   }) else {
@@ -502,8 +527,8 @@ fn custom_grayscale_effect() {
   let off = render(&mut engine).get_pixel(10, 10).0;
   assert_eq!(off, RED, "strength 0 leaves the frame unchanged");
 
-  send(&queue, |fx| {
-    assert!(fx.set_custom_param("gray", "strength", 1.0));
+  send(&queue, |ctx| {
+    assert!(ctx.effects().set_custom_param("gray", "strength", 1.0));
   });
   let on = render(&mut engine).get_pixel(10, 10).0;
   let (r, g, b) = (on[0] as i32, on[1] as i32, on[2] as i32);
@@ -513,8 +538,9 @@ fn custom_grayscale_effect() {
 
 #[test]
 fn custom_effect_runs_after_built_ins() {
-  let shader = ShaderHandle::from_source("t3-flat.wgsl", FLAT_GREY);
-  let Some((mut engine, _)) = effect_engine(move |fx| {
+  let Some((mut engine, _)) = effect_engine(|ctx| {
+    let shader = shader(ctx, "t3-flat.wgsl", FLAT_GREY);
+    let mut fx = ctx.effects();
     fx.set_vignette_custom(1.0, 0.2, 0.3);
     assert!(fx.add_custom("flat", shader).is_ok());
   }) else {
@@ -531,8 +557,9 @@ fn custom_effect_runs_after_built_ins() {
 
 #[test]
 fn disabled_and_removed_effects_do_not_run() {
-  let shader = ShaderHandle::from_source("t3-toggle.wgsl", FLAT_GREY);
-  let Some((mut engine, queue)) = effect_engine(move |fx| {
+  let Some((mut engine, queue)) = effect_engine(|ctx| {
+    let shader = shader(ctx, "t3-toggle.wgsl", FLAT_GREY);
+    let mut fx = ctx.effects();
     assert!(fx.add_custom("flat", shader).is_ok());
     assert!(fx.has_custom("flat"));
   }) else {
@@ -540,17 +567,18 @@ fn disabled_and_removed_effects_do_not_run() {
   };
   assert_ne!(render(&mut engine).get_pixel(10, 10).0, RED, "runs");
 
-  send(&queue, |fx| {
-    assert!(fx.set_custom_enabled("flat", false));
+  send(&queue, |ctx| {
+    assert!(ctx.effects().set_custom_enabled("flat", false));
   });
   assert_eq!(render(&mut engine).get_pixel(10, 10).0, RED, "disabled");
 
-  send(&queue, |fx| {
-    assert!(fx.set_custom_enabled("flat", true));
+  send(&queue, |ctx| {
+    assert!(ctx.effects().set_custom_enabled("flat", true));
   });
   assert_ne!(render(&mut engine).get_pixel(10, 10).0, RED, "re-enabled");
 
-  send(&queue, |fx| {
+  send(&queue, |ctx| {
+    let mut fx = ctx.effects();
     assert!(fx.remove_custom("flat"));
     assert!(!fx.has_custom("flat"));
     assert!(!fx.remove_custom("flat"));
@@ -563,7 +591,8 @@ fn disabled_and_removed_effects_do_not_run() {
 #[test]
 fn duplicate_custom_effect_names_are_rejected() {
   let mut fx = EffectsManager::new();
-  let shader = ShaderHandle::from_source("t3-dup.wgsl", FLAT_GREY);
+  let mut shaders = Assets::<Shader>::default();
+  let shader = shaders.add(Shader::from_wgsl("t3-dup.wgsl", FLAT_GREY));
   assert!(fx.add_custom("a", shader.clone()).is_ok());
   let err = fx.add_custom("a", shader).unwrap_err();
   assert!(err.to_string().contains("\"a\""), "{err}");
@@ -577,9 +606,9 @@ fn broken_effect_is_skipped() {
   return vec4<f32>(1.0, 0.0 0.0, 1.0);
 }
 ";
-  let shader = ShaderHandle::from_source(id, source);
-  let Some((mut engine, _)) = effect_engine(move |fx| {
-    assert!(fx.add_custom("broken", shader).is_ok());
+  let Some((mut engine, _)) = effect_engine(move |ctx| {
+    let shader = shader(ctx, id, source);
+    assert!(ctx.effects().add_custom("broken", shader).is_ok());
   }) else {
     return;
   };
@@ -605,9 +634,10 @@ fn broken_effect_is_skipped() {
   assert!(errors[0].message.contains(":2:"), "{}", errors[0].message);
 }
 
-/// Red top-left quadrant on green, with `effect` added as a custom effect
+/// Red top-left quadrant on green, with the WGSL `effect` added as a custom
+/// effect
 struct Quadrants {
-  effect: Option<ShaderHandle>,
+  effect: &'static str,
 }
 
 impl Scene for Quadrants {
@@ -623,9 +653,8 @@ impl Scene for Quadrants {
       Transform::from_xy(0.0, 0.0),
       Renderable::image(image).with_anchor(Anchor::TopLeft),
     ));
-    if let Some(shader) = self.effect.take() {
-      assert!(ctx.effects().add_custom("fx", shader).is_ok());
-    }
+    let shader = shader(ctx, "t3-quadrants.wgsl", self.effect);
+    assert!(ctx.effects().add_custom("fx", shader).is_ok());
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -633,13 +662,10 @@ impl Scene for Quadrants {
   }
 }
 
-fn quadrants_with(effect: &str) -> Option<image::RgbaImage> {
-  let shader = ShaderHandle::from_source("t3-quadrants.wgsl", effect);
+fn quadrants_with(effect: &'static str) -> Option<image::RgbaImage> {
   let builder = EngineBuilder::new()
     .resolution(64, 64)
-    .start_scene(Quadrants {
-      effect: Some(shader),
-    });
+    .start_scene(Quadrants { effect });
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   Some(render(&mut engine))
 }
@@ -681,14 +707,14 @@ fn effect_uv_runs_from_the_top_left() {
 
 #[test]
 fn a_custom_shader_applies_once_the_gpu_has_accepted_it() {
-  let shader = ShaderHandle::from_source("t3-pending.wgsl", INVERT);
   let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, "t3-pending.wgsl", INVERT);
     let image = solid(ctx, 20, RED);
     ctx.world.spawn((
       Transform::from_xy(10.0, 20.0),
       Renderable::image(image)
         .with_anchor(Anchor::TopLeft)
-        .with_shader(SpriteShader::custom(shader.clone())),
+        .with_shader(SpriteShader::custom(shader)),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -707,8 +733,11 @@ fn a_custom_shader_applies_once_the_gpu_has_accepted_it() {
   );
 }
 
-/// A red square seen by a texture camera, shown by a sprite with `shader`.
-fn red_through_a_target(shader: SpriteShader) -> Fixture {
+/// A red square seen by a texture camera, shown by a sprite with the shader
+/// `shader` makes.
+fn red_through_a_target(
+  shader: impl Fn(&mut SceneContext) -> SpriteShader + Send + 'static,
+) -> Fixture {
   Fixture::entities(move |ctx| {
     let image = solid(ctx, 16, RED);
     ctx
@@ -722,9 +751,10 @@ fn red_through_a_target(shader: SpriteShader) -> Fixture {
         ..Default::default()
       },
     ));
+    let shader = shader(ctx);
     ctx.world.spawn((
       Transform::from_xy(32.0, 32.0),
-      Renderable::render_target(target).with_shader(shader.clone()),
+      Renderable::render_target(target).with_shader(shader),
     ));
   })
 }
@@ -737,8 +767,9 @@ fn assert_near(pixel: [u8; 4], want: [u8; 4]) {
 
 #[test]
 fn a_custom_shader_sees_a_render_target_as_straight_srgb() {
-  let shader = ShaderHandle::from_source("t2-rt-invert.wgsl", INVERT);
-  let Some(mut engine) = start(red_through_a_target(SpriteShader::custom(shader))) else {
+  let invert =
+    |ctx: &mut SceneContext| SpriteShader::custom(shader(ctx, "t2-rt-invert.wgsl", INVERT));
+  let Some(mut engine) = start(red_through_a_target(invert)) else {
     return;
   };
   assert_near(render(&mut engine).get_pixel(32, 32).0, [35, 225, 215, 255]);
@@ -746,9 +777,142 @@ fn a_custom_shader_sees_a_render_target_as_straight_srgb() {
 
 #[test]
 fn a_built_in_effect_sees_a_render_target_as_straight_srgb() {
-  let invert = SpriteShader::BuiltIn(SpriteEffect::Invert);
+  let invert = |_: &mut SceneContext| SpriteShader::BuiltIn(SpriteEffect::Invert);
   let Some(mut engine) = start(red_through_a_target(invert)) else {
     return;
   };
   assert_near(render(&mut engine).get_pixel(32, 32).0, [35, 225, 215, 255]);
+}
+
+// ---------------------------------------------------------------------------
+// Shaders as registry assets: reloads, and pipelines freed with the shader
+// ---------------------------------------------------------------------------
+
+const INVERTED: [u8; 4] = [35, 225, 215, 255];
+
+#[test]
+fn a_reloaded_shader_recompiles() {
+  let files = MemorySource::new();
+  files.insert("shaders/look.wgsl", IDENTITY);
+  let slot = ShaderSlot::default();
+  let loaded = slot.clone();
+  let scene = Fixture::entities(move |ctx| {
+    let shader = ctx
+      .assets()
+      .load_now::<Shader>("shaders/look.wgsl")
+      .expect("look.wgsl loads");
+    *loaded.lock().unwrap() = Some(shader.clone());
+    let image = solid(ctx, 10, RED);
+    ctx.world.spawn((
+      Transform::from_xy(10.0, 10.0),
+      Renderable::image(image)
+        .with_anchor(Anchor::TopLeft)
+        .with_shader(SpriteShader::custom(shader)),
+    ));
+  });
+  let builder = EngineBuilder::new()
+    .resolution(64, 64)
+    .asset_source(files.clone())
+    .hot_reload(true)
+    .start_scene(scene);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  assert_eq!(render(&mut engine).get_pixel(15, 15).0, RED, "the identity");
+  // Over the file the shader came from: the source's watcher sees it, and
+  // the file is read again on a worker
+  files.insert("shaders/look.wgsl", INVERT);
+  let shader = held(&slot);
+  let start = std::time::Instant::now();
+  while engine.assets().get(&shader).map(Shader::source) != Some(INVERT) {
+    assert!(
+      start.elapsed() < std::time::Duration::from_secs(2),
+      "the reload never landed"
+    );
+    engine.step().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+  }
+  // The new version compiles at once; its pipeline is usable once the
+  // GPU's check comes back, a frame later
+  assert_eq!(
+    render(&mut engine).get_pixel(15, 15).0,
+    INVERTED,
+    "drawn with the reloaded source"
+  );
+}
+
+/// Draws a sprite with a shader only the sprite holds, until `drop` is
+/// set; then despawns it, and the shader's last handle goes with it
+struct DropsItsShader {
+  sprite: Option<Entity>,
+  drop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Scene for DropsItsShader {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    let shader = ctx
+      .assets()
+      .add(Shader::from_wgsl("t9-unheld.wgsl", INVERT));
+    let image = solid(ctx, 10, RED);
+    let sprite = ctx.world.spawn((
+      Transform::from_xy(10.0, 10.0),
+      Renderable::image(image)
+        .with_anchor(Anchor::TopLeft)
+        .with_shader(SpriteShader::custom(shader)),
+    ));
+    self.sprite = Some(sprite.id());
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if self.drop.load(std::sync::atomic::Ordering::SeqCst)
+      && let Some(sprite) = self.sprite.take()
+    {
+      ctx.world.despawn(sprite);
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn an_unheld_shader_drops_its_pipeline() {
+  let drop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+  let scene = DropsItsShader {
+    sprite: None,
+    drop: drop.clone(),
+  };
+  let builder = EngineBuilder::new().resolution(64, 64).start_scene(scene);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  assert_eq!(engine.frame().unwrap().get_pixel(15, 15).0, INVERTED);
+  assert_eq!(engine.shader_pipeline_count(), 1, "one blend mode drawn");
+  drop.store(true, std::sync::atomic::Ordering::SeqCst);
+  engine.step_frames(2).unwrap();
+  assert_eq!(
+    engine.shader_pipeline_count(),
+    0,
+    "the pipeline went with the shader"
+  );
+}
+
+#[test]
+fn a_removed_effect_drops_its_pipeline() {
+  let Some((mut engine, queue)) = effect_engine(|ctx| {
+    let shader = ctx
+      .assets()
+      .add(Shader::from_wgsl("t9-removed-effect.wgsl", FLAT_GREY));
+    assert!(ctx.effects().add_custom("flat", shader).is_ok());
+  }) else {
+    return;
+  };
+  assert_ne!(render(&mut engine).get_pixel(10, 10).0, RED, "runs");
+  assert_eq!(engine.shader_pipeline_count(), 1);
+  // The effect held the shader's only handle
+  send(&queue, |ctx| {
+    assert!(ctx.effects().remove_custom("flat"));
+  });
+  engine.step_frames(2).unwrap();
+  assert_eq!(engine.shader_pipeline_count(), 0);
 }

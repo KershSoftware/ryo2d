@@ -308,7 +308,7 @@ impl Scene for Quartered {
       ));
     }
     ctx.look().tonemap = Tonemap::Clamp;
-    let shader = ShaderHandle::from_source("quarter.wgsl", QUARTER);
+    let shader = ctx.assets().add(Shader::from_wgsl("quarter.wgsl", QUARTER));
     let _ = ctx.effects().add_custom_in("quarter", shader, self.0);
   }
 

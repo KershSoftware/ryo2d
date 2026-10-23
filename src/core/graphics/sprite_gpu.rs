@@ -21,11 +21,12 @@ use super::render_targets::RenderTargets;
 use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
 use super::{Image, RenderLayers, RenderTarget};
 use crate::core::asset::{AssetId, Assets, Handle};
-use crate::core::ecs::{Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
+use crate::core::ecs::{Material, Shader, ShaderParams, SpriteEffect, SpriteShader};
 use crate::core::render::batch::{BlendMode, Filter, Sampling};
 use crate::core::render::ui_renderer::TexKey;
 use crate::core::render::{DrawKind, DrawList, SpriteLook, SpriteShading};
-use crate::core::shaders::custom::{self, CompiledShader, ShaderKind};
+use crate::core::shaders::cache::ShaderCache;
+use crate::core::shaders::custom::ShaderKind;
 use crate::core::text::{GlyphImage, GlyphKey};
 use crate::core::ui::Color;
 
@@ -265,165 +266,15 @@ const PRUNE_EVERY: u64 = 120;
 /// every frame can't hold hundreds of them until the TTL.
 const MAX_STANDALONE_ENTITY_SPRITES: usize = 64;
 
-/// What the cache knows about one shader handle's current version.
-struct CustomEntry {
-  generation: u64,
-  /// Its source's key in [`CustomShaders::compiled`]
-  source: u64,
-  /// Atlas frame the shader was last drawn in, to drop unused shaders
-  last_used: u64,
-}
-
-/// One compiled source, shared by every handle with that source.
-struct CompiledSource {
-  /// The composed WGSL and its `Params` layout; `None` when it failed to
-  /// compile (failed sources are not retried)
-  shader: Option<CompiledShader>,
-  /// The shader's id, for labelling and reporting its pipelines
-  name: String,
-  last_used: u64,
-}
-
-/// Shaders unused for this many frames are forgotten, so handles created per
-/// spawn don't keep their pipelines forever.
+/// Compiled sprite shader sources no shader has used for this many frames
+/// are forgotten; a shader's own entry goes when it is freed
 const CUSTOM_SHADER_TTL: u64 = 600;
-
-/// Game sprite shaders compiled to WGSL on first use and again when the
-/// shader's source changes; the batch makes their pipelines.
-#[derive(Default)]
-struct CustomShaders {
-  /// By `ShaderHandle::serial()`
-  entries: HashMap<u64, CustomEntry>,
-  /// Compiled sources by [`custom::source_key`]: handles with equal sources
-  /// compile once
-  compiled: HashMap<u64, CompiledSource>,
-  /// Parameter names already warned about, by (serial, generation)
-  warned: HashMap<(u64, u64), HashSet<String>>,
-}
-
-impl CustomShaders {
-  /// Make sure the cache holds the shader's current version; the key to draw
-  /// it with ([`source`](Self::source)), or `None` if it failed.
-  fn prepare(&mut self, shader: &ShaderHandle, frame: u64) -> Option<u64> {
-    let serial = shader.serial();
-    // Cheap check first: this runs for every custom sprite of every frame
-    if let Some(entry) = self.entries.get_mut(&serial)
-      && entry.generation == shader.generation()
-      && let Some(compiled) = self.compiled.get_mut(&entry.source)
-    {
-      entry.last_used = frame;
-      compiled.last_used = frame;
-      return compiled.shader.is_some().then_some(entry.source);
-    }
-    let (generation, source) = shader.snapshot();
-    let key = custom::source_key(ShaderKind::Sprite, &source);
-    self.compiled.entry(key).or_insert_with(|| {
-      let compiled = match custom::compile(ShaderKind::Sprite, shader.id(), &source) {
-        Ok(compiled) => Some(compiled),
-        Err(error) => {
-          custom::report_once(key, &error);
-          None
-        }
-      };
-      CompiledSource {
-        shader: compiled,
-        name: shader.id().to_string(),
-        last_used: frame,
-      }
-    });
-    self.entries.insert(
-      serial,
-      CustomEntry {
-        generation,
-        source: key,
-        last_used: frame,
-      },
-    );
-    let compiled = self.compiled.get_mut(&key)?;
-    compiled.last_used = frame;
-    compiled.shader.is_some().then_some(key)
-  }
-
-  /// Drop shaders unused for [`CUSTOM_SHADER_TTL`] frames and their warnings.
-  fn prune(&mut self, frame: u64) {
-    self
-      .entries
-      .retain(|_, e| frame.saturating_sub(e.last_used) < CUSTOM_SHADER_TTL);
-    self
-      .compiled
-      .retain(|_, c| frame.saturating_sub(c.last_used) < CUSTOM_SHADER_TTL);
-    let entries = &self.entries;
-    self.warned.retain(|(serial, generation), _| {
-      entries
-        .get(serial)
-        .is_some_and(|e| e.generation == *generation)
-    });
-  }
-
-  /// Put `params` into the instance's eight effect floats, in the layout of
-  /// the shader's `Params`. Names the shader doesn't have are warned about
-  /// once per shader version; correct names allocate nothing.
-  fn pack(&mut self, shader: &ShaderHandle, params: &ShaderParams, instance: &mut SpriteInstance) {
-    let serial = shader.serial();
-    let Some(entry) = self.entries.get(&serial) else {
-      return;
-    };
-    let Some(ready) = self
-      .compiled
-      .get(&entry.source)
-      .and_then(|c| c.shader.as_ref())
-    else {
-      return;
-    };
-    let generation = entry.generation;
-    debug_assert_eq!(custom::uniform_size(ShaderKind::Sprite, &ready.layout), 32);
-    let mut bytes = [0u8; 32];
-    let warned = &mut self.warned;
-    custom::pack_with(&ready.layout, params, &mut bytes, |name, expected| {
-      let seen = warned
-        .get(&(serial, generation))
-        .is_some_and(|names| names.contains(name));
-      if seen {
-        return;
-      }
-      warned
-        .entry((serial, generation))
-        .or_default()
-        .insert(name.to_string());
-      match expected {
-        None => crate::engine_warn!(
-          module: "Shaders",
-          "{}: parameter `{}` is not a field of Params and is ignored",
-          shader.id(),
-          name
-        ),
-        Some(kind) => crate::engine_warn!(
-          module: "Shaders",
-          "{}: parameter `{}` has the wrong type (Params expects {:?}) and is ignored",
-          shader.id(),
-          name,
-          kind
-        ),
-      }
-    });
-    let floats: [f32; 8] = bytemuck::cast(bytes);
-    instance.effect_params = [floats[0], floats[1], floats[2], floats[3]];
-    instance.effect_extra = [floats[4], floats[5], floats[6], floats[7]];
-  }
-
-  /// The name and composed WGSL of a key from [`prepare`](Self::prepare).
-  fn source(&self, key: u64) -> Option<(&str, &str)> {
-    let compiled = self.compiled.get(&key)?;
-    let shader = compiled.shader.as_ref()?;
-    Some((compiled.name.as_str(), shader.wgsl.as_str()))
-  }
-}
 
 /// The sprites' textures and game shaders: every texture drawn lives in its
 /// atlas, and game sprite shaders are compiled here; the 2D batch draws them.
 pub struct SpriteGpuRenderer {
-  // Game sprite shaders
-  custom: CustomShaders,
+  // Game sprite shaders, compiled to WGSL; the batch makes their pipelines
+  custom: ShaderCache<()>,
 
   // Every texture drawn lives in the atlas under its `TextureId`
   atlas: TextureAtlas,
@@ -466,7 +317,7 @@ impl SpriteGpuRenderer {
   pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue) -> Self {
     let texture_layout = crate::core::render::batch::texture_layout(device);
     Self {
-      custom: CustomShaders::default(),
+      custom: ShaderCache::new(ShaderKind::Sprite),
       atlas: TextureAtlas::new(device, texture_layout),
       registry: TextureRegistry::new(),
       names: HashMap::new(),
@@ -700,24 +551,54 @@ impl SpriteGpuRenderer {
   /// The name and composed WGSL of the game shader with source key `key`
   /// (from [`shade_custom`](Self::shade_custom)), while it is kept.
   pub(crate) fn custom_shader(&self, key: u64) -> Option<(&str, &str)> {
-    self.custom.source(key)
+    let compiled = self.custom.source(key)?;
+    let shader = compiled.shader.as_ref().ok()?;
+    Some((compiled.name.as_str(), shader.wgsl.as_str()))
+  }
+
+  /// Whether a game shader still uses the source key `key`: the batch keeps
+  /// its pipelines only while one does
+  pub(crate) fn custom_shader_in_use(&self, key: u64) -> bool {
+    self.custom.in_use(key)
   }
 
   /// Compile (or reuse) the game shader and pack `params` into `instance`.
   ///
   /// Returns the key to draw the sprite with ([`SpriteShading::Custom`];
-  /// handles with equal sources share it), or `None` when the shader failed, in which
-  /// case the sprite draws plain. Call at emit time, so nothing per-sprite
-  /// has to be kept until the frame is laid out.
+  /// shaders with equal sources share it), or `None` when the shader is not
+  /// loaded or failed to compile, in which case the sprite draws plain. Call
+  /// at emit time, so nothing per-sprite has to be kept until the frame is
+  /// laid out.
   pub(crate) fn shade_custom(
     &mut self,
-    shader: &ShaderHandle,
+    shader: AssetId<Shader>,
+    shaders: &Assets<Shader>,
     params: &ShaderParams,
     instance: &mut SpriteInstance,
   ) -> Option<u64> {
-    let key = self.custom.prepare(shader, self.frame)?;
-    self.custom.pack(shader, params, instance);
+    let (key, compiled) = self.custom.prepare(shader, shaders, self.frame)?;
+    compiled.shader.as_ref().ok()?;
+    // Eight floats: the instance's two effect lanes
+    let mut bytes = [0u8; 32];
+    self.custom.pack(shader, shaders, params, &mut bytes)?;
+    let floats: [f32; 8] = bytemuck::cast(bytes);
+    instance.effect_params = [floats[0], floats[1], floats[2], floats[3]];
+    instance.effect_extra = [floats[4], floats[5], floats[6], floats[7]];
     Some(key)
+  }
+
+  /// Bring the game shaders in line with the shader store before a frame
+  /// draws: the shaders freed since the last frame (`removed`, from
+  /// `AssetEvent::Removed`) are forgotten at once, and the batch drops the
+  /// pipelines no shader uses any more. Now and then every shader is checked
+  /// against `shaders` too, so one whose event was missed does not stay
+  pub(crate) fn sync_shaders(&mut self, removed: &[AssetId<Shader>], shaders: &Assets<Shader>) {
+    for &shader in removed {
+      self.custom.remove(shader);
+    }
+    if self.frame.is_multiple_of(PRUNE_EVERY) {
+      self.custom.sweep(shaders);
+    }
   }
 
   /// Where a texture uploaded by name currently lives in the atlas.
@@ -870,7 +751,7 @@ impl SpriteGpuRenderer {
     if !self.frame.is_multiple_of(PRUNE_EVERY) {
       return;
     }
-    self.custom.prune(self.frame);
+    self.custom.prune(self.frame, CUSTOM_SHADER_TTL);
     for id in self.registry.prune(self.frame, TEXTURE_TTL) {
       self.atlas.remove(id);
     }
@@ -1263,6 +1144,7 @@ impl BatchCollector {
 mod tests {
   use super::*;
   use crate::core::graphics::SlotPage;
+  use crate::core::shaders::custom;
 
   #[test]
   fn emission_lives_in_the_unused_transform_lane() {
@@ -1593,46 +1475,6 @@ mod tests {
     let params = params.with("typo", 1.0);
     custom::pack_with(&layout, &params, &mut bytes, |_, _| problems += 1);
     assert_eq!(problems, 1);
-  }
-
-  #[test]
-  fn unused_custom_shaders_are_forgotten() {
-    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
-      return;
-    };
-    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let src = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
-    let shader = ShaderHandle::from_source("prune.wgsl", src);
-    let mut instance = SpriteInstance::new();
-    let key = renderer.shade_custom(&shader, &ShaderParams::new(), &mut instance);
-    assert!(key.is_some());
-    assert_eq!(renderer.custom.entries.len(), 1);
-
-    renderer.custom.prune(CUSTOM_SHADER_TTL - 1);
-    assert_eq!(renderer.custom.entries.len(), 1);
-    renderer.custom.prune(CUSTOM_SHADER_TTL);
-    assert!(renderer.custom.entries.is_empty());
-  }
-
-  #[test]
-  fn handles_with_the_same_source_share_one_compiled_source() {
-    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
-      return;
-    };
-    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let src =
-      "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv) * 0.5; }";
-    let mut instance = SpriteInstance::new();
-    let shaders: Vec<ShaderHandle> = (0..3)
-      .map(|i| ShaderHandle::from_source(format!("shared-{i}.wgsl"), src))
-      .collect();
-    let keys: Vec<Option<u64>> = shaders
-      .iter()
-      .map(|shader| renderer.shade_custom(shader, &ShaderParams::new(), &mut instance))
-      .collect();
-    assert!(keys[0].is_some());
-    assert!(keys.iter().all(|k| *k == keys[0]), "{keys:?}");
-    assert_eq!(renderer.custom.compiled.len(), 1);
   }
 
   // =========================================================================

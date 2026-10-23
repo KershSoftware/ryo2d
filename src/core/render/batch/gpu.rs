@@ -197,9 +197,10 @@ impl Batch2D {
     textures.prepare_textures(device, queue, list, extra_textures);
     let textures: &SpriteGpuRenderer = textures;
     self.pipelines.settle();
-    // Shaders the sprite renderer forgot take their pipelines with them
+    // A source no game shader uses any more (its shaders freed, or changed)
+    // takes its pipelines with it, in the frame the last one went
     self.pipelines.retain(|key| match key.shader {
-      BatchShader::Custom(source) => textures.custom_shader(source).is_some(),
+      BatchShader::Custom(source) => textures.custom_shader_in_use(source),
       _ => true,
     });
 
@@ -423,6 +424,14 @@ impl Batch2D {
       .iter()
       .find(|d| d.camera == Some(camera))
       .map_or(&[], |drawn| &drawn.lights)
+  }
+
+  /// How many pipelines game sprite shaders have: one per blend mode and
+  /// page kind each is drawn with (tests that watch them go)
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn custom_pipeline_count(&self) -> usize {
+    self.pipelines.custom_count()
   }
 
   /// How many draw calls the laid-out frame issues.

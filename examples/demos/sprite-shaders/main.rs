@@ -287,7 +287,8 @@ impl DemoPage for EffectsPage {
 
     // Middle: sprite with a custom WGSL shader loaded from disk. A missing or
     // unreadable file is reported and the sprite is simply left out.
-    match ctx.assets.load_shader("assets/shaders/dissolve.wgsl") {
+    let dissolve = ctx.assets().load_now::<Shader>("shaders/dissolve.wgsl");
+    match dissolve {
       Ok(shader) => {
         let handle3 = ctx.assets().add(create_test_sprite());
         self.custom_sprite = Some(

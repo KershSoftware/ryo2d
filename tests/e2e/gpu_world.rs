@@ -1299,10 +1299,10 @@ fn a_custom_shader_draws_with_two_blend_modes_in_one_frame() {
   struct TwoBlends;
   impl Scene for TwoBlends {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let shader = ShaderHandle::from_source(
+      let shader = ctx.assets().add(Shader::from_wgsl(
         "two-blends",
         "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }",
-      );
+      ));
       let grey = solid(ctx, 64, [100, 100, 100, 255]);
       ctx
         .world

@@ -28,12 +28,12 @@ use std::collections::HashSet;
 use super::batch::{BlendMode, Filter};
 use super::scratch::recycle;
 use super::{CameraDraw, DrawKind, DrawList, SpriteLook, SpriteShading};
-use crate::core::asset::Assets;
+use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::QueryState;
 use crate::core::ecs::{
-  Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable,
-  ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort, entity_order,
+  Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable, Shader,
+  ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort, entity_order, shaders_of,
 };
 use crate::core::graphics::TileDirection;
 use crate::core::graphics::sprite_gpu::{ShownImage, effective_shader};
@@ -164,6 +164,7 @@ impl EntityDrawer {
       cameras,
       targets: world.get_resource::<RenderTargets>(),
       images,
+      shaders: shaders_of(world),
       layers: RenderLayers::default(),
       shows: None,
       filter: Filter::Default,
@@ -343,7 +344,7 @@ struct Shading<'a> {
   alpha: f32,
   effect: Option<&'a SpriteEffect>,
   /// A game shader and its parameters (instead of `effect`)
-  custom: Option<(&'a ShaderHandle, &'a ShaderParams)>,
+  custom: Option<(AssetId<Shader>, &'a ShaderParams)>,
   /// Shadows blend over what is below whatever their entity's blend
   blend: BlendMode,
   /// Multiplies the light (see `Renderable::emission`)
@@ -384,7 +385,9 @@ impl<'a> Shading<'a> {
     let mut shading = Self::tinted(tint, alpha);
     match shader {
       Some(SpriteShader::BuiltIn(effect)) => shading.effect = Some(effect),
-      Some(SpriteShader::Custom { shader, params }) => shading.custom = Some((shader, params)),
+      Some(SpriteShader::Custom { shader, params }) => {
+        shading.custom = Some((shader.id(), params));
+      }
       None => {}
     }
     shading
@@ -404,6 +407,8 @@ struct Emitter<'a> {
   targets: Option<&'a RenderTargets>,
   /// The images entities draw
   images: &'a Assets<Image>,
+  /// The game shaders they draw with
+  shaders: &'a Assets<Shader>,
   /// The layers of the entity being drawn, and the render target it shows
   layers: RenderLayers,
   shows: Option<RenderTarget>,
@@ -506,7 +511,10 @@ impl<'a> Emitter<'a> {
       (Some(_), _) => SpriteShading::Effect,
       (None, Some((shader, params))) => {
         // Params are packed into the instance now; a failed shader draws plain
-        match self.gpu.shade_custom(shader, params, &mut instance) {
+        match self
+          .gpu
+          .shade_custom(shader, self.shaders, params, &mut instance)
+        {
           Some(key) => SpriteShading::Custom(key),
           None => SpriteShading::Plain,
         }

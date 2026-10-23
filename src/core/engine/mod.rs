@@ -220,6 +220,12 @@ pub struct Engine {
     crate::core::asset::AssetEvent<crate::core::graphics::Image>,
   >,
   freed_images: Vec<crate::core::asset::AssetId<crate::core::graphics::Image>>,
+  /// Where the renderer has read the shaders' events to (their `Removed`
+  /// free pipelines), and the freed ids of a frame (reused)
+  shader_events: crate::core::ecs::kernel::MessageCursor<
+    crate::core::asset::AssetEvent<crate::core::ecs::Shader>,
+  >,
+  freed_shaders: Vec<crate::core::asset::AssetId<crate::core::ecs::Shader>>,
   /// The checker drawn in place of an image that is not loaded (debug
   /// builds), added at startup
   missing_image: crate::core::asset::Handle<crate::core::graphics::Image>,
@@ -689,6 +695,8 @@ impl Engine {
       batch_collector: BatchCollector::new(),
       image_events: Default::default(),
       freed_images: Vec::new(),
+      shader_events: Default::default(),
+      freed_shaders: Vec::new(),
       missing_image,
       ui_commands: UiCommands::default(),
       ui_images: Default::default(),
@@ -1023,6 +1031,21 @@ impl Engine {
   #[cfg(all(test, not(target_arch = "wasm32")))]
   pub(crate) fn debug_config_mut(&mut self) -> &mut DebugConfig {
     &mut self.config.debug
+  }
+
+  /// How many pipelines game shaders have: the batch's for sprite shaders
+  /// and both effect stages' for custom effects
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn shader_pipeline_count(&self) -> usize {
+    let sprites = self
+      .batch
+      .as_ref()
+      .map_or(0, |batch| batch.custom_pipeline_count());
+    let effects = self
+      .renderer
+      .as_ref()
+      .map_or(0, |renderer| renderer.custom_effect_pipeline_count());
+    sprites + effects
   }
 
   /// The last frame's render step on the CPU (building, uploading and

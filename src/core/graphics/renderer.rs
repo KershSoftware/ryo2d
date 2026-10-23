@@ -731,6 +731,25 @@ impl WgpuRenderer {
     self.ui_drawn
   }
 
+  /// Bring both effect stages' custom effects in line with the shader
+  /// store: the shaders freed since the last frame (`removed`) go at once,
+  /// with their pipelines. Call once a frame
+  pub(crate) fn sync_shaders(
+    &mut self,
+    removed: &[crate::core::asset::AssetId<crate::core::ecs::Shader>],
+    shaders: &crate::core::asset::Assets<crate::core::ecs::Shader>,
+  ) {
+    self.hdr_effects.sync_shaders(removed, shaders);
+    self.display_effects.sync_shaders(removed, shaders);
+  }
+
+  /// How many pipelines the custom effects of both stages have (tests)
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn custom_effect_pipeline_count(&self) -> usize {
+    self.hdr_effects.custom_pipeline_count() + self.display_effects.custom_pipeline_count()
+  }
+
   /// Render a frame by running `pipeline`'s passes on one encoder.
   pub(crate) fn render_frame(
     &mut self,
@@ -845,6 +864,7 @@ impl WgpuRenderer {
       effects: &effects,
       look: &look,
       images: &images,
+      shaders: crate::core::ecs::no_shaders(),
       server: None,
       ui_frame: None,
       ui_size: self.compositor.ui_size(),

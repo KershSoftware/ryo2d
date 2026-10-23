@@ -5,7 +5,8 @@
 
 use super::super::ui::Color;
 use super::effects::{EffectStage, PostProcessEffect};
-use crate::core::ecs::{ParamValue, Resource, ShaderHandle, ShaderParams};
+use crate::core::asset::Handle;
+use crate::core::ecs::{ParamValue, Resource, Shader, ShaderParams};
 use std::time::Duration;
 
 /// Why a custom effect could not be registered
@@ -16,18 +17,19 @@ pub enum EffectError {
   DuplicateName(String),
 }
 
-/// A game-written full-screen effect with its parameters
+/// A game-written full-screen effect with its parameters; it keeps its
+/// shader loaded
 #[derive(Debug, Clone)]
 pub(crate) struct CustomEffect {
   name: String,
-  shader: ShaderHandle,
+  shader: Handle<Shader>,
   params: ShaderParams,
   enabled: bool,
   stage: EffectStage,
 }
 
 impl CustomEffect {
-  pub(crate) fn shader(&self) -> &ShaderHandle {
+  pub(crate) fn shader(&self) -> &Handle<Shader> {
     &self.shader
   }
 
@@ -195,7 +197,9 @@ impl EffectsManager {
   /// Colour space: the scene texture is sRGB-format, so `scene()` returns
   /// linear colour and the returned colour is linear too.
   ///
-  /// A shader that fails to compile is logged once and skipped; the rest of
+  /// The effect holds its shader, so the shader stays loaded until the
+  /// effect is removed. A shader that is not loaded is skipped, and one that
+  /// fails to compile is logged once per version and skipped; the rest of
   /// the chain still runs.
   ///
   /// # Errors
@@ -204,7 +208,7 @@ impl EffectsManager {
   pub fn add_custom(
     &mut self,
     name: impl Into<String>,
-    shader: ShaderHandle,
+    shader: Handle<Shader>,
   ) -> Result<(), EffectError> {
     self.add_custom_in(name, shader, EffectStage::Display)
   }
@@ -218,7 +222,7 @@ impl EffectsManager {
   pub fn add_custom_in(
     &mut self,
     name: impl Into<String>,
-    shader: ShaderHandle,
+    shader: Handle<Shader>,
     stage: EffectStage,
   ) -> Result<(), EffectError> {
     let name = name.into();
@@ -575,10 +579,11 @@ mod tests {
   #[test]
   fn custom_effects_run_in_the_stage_they_were_added_to() {
     let mut manager = EffectsManager::new();
-    let shader = ShaderHandle::from_source(
+    let mut shaders = crate::core::asset::Assets::<Shader>::default();
+    let shader = shaders.add(Shader::from_wgsl(
       "stage.wgsl",
       "fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv); }",
-    );
+    ));
     manager.add_custom("late", shader.clone()).unwrap();
     manager
       .add_custom_in("early", shader, EffectStage::Hdr)

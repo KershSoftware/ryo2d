@@ -3,14 +3,15 @@
 //! Manages GPU resources for rendering post-processing effects.
 //! Uses ping-pong buffers for effect chaining.
 
-use super::custom::{self, ParamLayout, ShaderError, ShaderKind};
+use super::cache::ShaderCache;
+use super::custom::{self, CompiledShader, ShaderError, ShaderKind};
 use super::effects::{EffectParams, GodRaysParams, PostProcessEffect};
 use super::manager::CustomEffect;
 use super::post_process_shaders;
 use super::scope::Checked;
-use crate::core::ecs::{ShaderHandle, ShaderParams};
+use crate::core::asset::{AssetId, Assets};
+use crate::core::ecs::{Shader, ShaderParams};
 use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
-use std::collections::{HashMap, HashSet};
 
 /// Which buffer contains the effect output
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,31 +78,13 @@ const BLOOM_SIGMA_PER_RADIUS: f32 = 1.7;
 const CUSTOM_PARAMS_BYTES: u64 = 64;
 /// Custom effect globals: `time_resolution: vec4<f32>`
 const CUSTOM_GLOBALS_BYTES: u64 = 16;
-/// Custom effects unused for this many frames are forgotten
+/// Compiled effect sources no effect has used for this many frames are
+/// forgotten; an effect shader's own entry, and its pipeline, go when it is
+/// freed
 const CUSTOM_EFFECT_TTL: u64 = 600;
-
-/// A compiled game effect
-struct CustomPipeline {
-  pipeline: wgpu::RenderPipeline,
-  layout: ParamLayout,
-}
-
-/// What the cache knows about one effect handle's current version
-struct CustomEntry {
-  generation: u64,
-  /// Its source's key in [`CustomEffectPipelines::compiled`]
-  source: u64,
-  last_used: u64,
-}
-
-/// One compiled source, shared by every handle with that source
-struct CompiledSource {
-  /// Pending until the GPU's check comes back; failed sources are not retried
-  state: Checked<CustomPipeline>,
-  /// The shader's id, for reporting a pipeline the GPU rejects
-  shader: String,
-  last_used: u64,
-}
+/// How often freed effect shaders whose events were missed, and unused
+/// compiled sources, are looked for
+const CUSTOM_EFFECT_PRUNE_EVERY: u64 = 120;
 
 /// Pipelines of game effects, built on first use and rebuilt when the shader's
 /// source changes.
@@ -109,13 +92,9 @@ struct CustomEffectPipelines {
   bind_group_layout: wgpu::BindGroupLayout,
   pipeline_layout: wgpu::PipelineLayout,
   format: wgpu::TextureFormat,
-  /// By `ShaderHandle::serial()`
-  entries: HashMap<u64, CustomEntry>,
-  /// Compiled pipelines by [`custom::source_key`]: handles with equal sources
-  /// compile once
-  compiled: HashMap<u64, CompiledSource>,
-  /// Parameter names already warned about, by (serial, generation)
-  warned: HashMap<(u64, u64), HashSet<String>>,
+  /// The effects' shaders, and each source's pipeline while an effect uses it
+  /// (pending until the GPU's check comes back; a failed one is not rebuilt)
+  cache: ShaderCache<Checked<wgpu::RenderPipeline>>,
 }
 
 impl CustomEffectPipelines {
@@ -162,150 +141,62 @@ impl CustomEffectPipelines {
       bind_group_layout,
       pipeline_layout,
       format,
-      entries: HashMap::new(),
-      compiled: HashMap::new(),
-      warned: HashMap::new(),
+      cache: ShaderCache::new(ShaderKind::Effect),
     }
   }
 
-  /// Make sure the cache holds the shader's current version; the key to run
-  /// it with ([`pipeline`](Self::pipeline)), or `None` if it failed.
-  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle, frame: u64) -> Option<u64> {
-    let serial = shader.serial();
-    if let Some(entry) = self.entries.get_mut(&serial)
-      && entry.generation == shader.generation()
-      && let Some(compiled) = self.compiled.get_mut(&entry.source)
-    {
-      entry.last_used = frame;
-      compiled.last_used = frame;
-      return compiled.state.ready().is_some().then_some(entry.source);
-    }
-    let (generation, source) = shader.snapshot();
-    let key = custom::source_key(ShaderKind::Effect, &source);
-    if !self.compiled.contains_key(&key) {
-      let state = self.build(device, shader, key, &source);
-      self.compiled.insert(
-        key,
-        CompiledSource {
-          state,
-          shader: shader.id().to_string(),
-          last_used: frame,
-        },
-      );
-    }
-    self.entries.insert(
-      serial,
-      CustomEntry {
-        generation,
-        source: key,
-        last_used: frame,
-      },
-    );
-    let compiled = self.compiled.get_mut(&key)?;
-    compiled.last_used = frame;
-    compiled.state.ready().is_some().then_some(key)
-  }
-
-  /// Drop effects unused for [`CUSTOM_EFFECT_TTL`] frames and their warnings.
-  fn prune(&mut self, frame: u64) {
-    self
-      .entries
-      .retain(|_, e| frame.saturating_sub(e.last_used) < CUSTOM_EFFECT_TTL);
-    self
-      .compiled
-      .retain(|_, c| frame.saturating_sub(c.last_used) < CUSTOM_EFFECT_TTL);
-    let entries = &self.entries;
-    self.warned.retain(|(serial, generation), _| {
-      entries
-        .get(serial)
-        .is_some_and(|e| e.generation == *generation)
-    });
-  }
-
-  /// Compile `source` (whose key is `key`) and build its pipeline; any
-  /// failure is logged once and leaves the effect skipped.
-  fn build(
-    &self,
+  /// Make sure the cache holds the shader's current version and its
+  /// pipeline; the key to run it with ([`pipeline`](Self::pipeline)), or
+  /// `None` while it is not loaded, failed, or waits on the GPU's check.
+  fn prepare(
+    &mut self,
     device: &wgpu::Device,
-    shader: &ShaderHandle,
-    key: u64,
-    source: &str,
-  ) -> Checked<CustomPipeline> {
-    let compiled = match custom::compile(ShaderKind::Effect, shader.id(), source) {
-      Ok(compiled) => compiled,
-      Err(error) => {
-        custom::report_once(key, &error);
-        return Checked::Failed;
-      }
+    shader: AssetId<Shader>,
+    shaders: &Assets<Shader>,
+    frame: u64,
+  ) -> Option<u64> {
+    let (key, compiled) = self.cache.prepare(shader, shaders, frame)?;
+    let ready = compiled.shader.as_ref().ok()?;
+    let state = match &mut compiled.made {
+      Some(state) => state,
+      made => made.insert(build(
+        device,
+        &self.pipeline_layout,
+        self.format,
+        &compiled.name,
+        ready,
+      )),
     };
-    if custom::uniform_size(ShaderKind::Effect, &compiled.layout) as u64 > CUSTOM_PARAMS_BYTES {
-      let error = ShaderError {
-        shader: shader.id().to_string(),
-        line: None,
-        column: None,
-        message: format!("Params is larger than {CUSTOM_PARAMS_BYTES} bytes"),
-      };
-      custom::report_once(key, &error);
-      return Checked::Failed;
-    }
+    state.ready().is_some().then_some(key)
+  }
 
-    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-      label: Some(shader.id()),
-      source: wgpu::ShaderSource::Wgsl(compiled.wgsl.into()),
-    });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-      label: Some(shader.id()),
-      layout: Some(&self.pipeline_layout),
-      vertex: wgpu::VertexState {
-        module: &module,
-        entry_point: Some("vs_main"),
-        buffers: &[],
-        compilation_options: Default::default(),
-      },
-      fragment: Some(wgpu::FragmentState {
-        module: &module,
-        entry_point: Some("fs_main"),
-        targets: &[Some(wgpu::ColorTargetState {
-          format: self.format,
-          blend: Some(wgpu::BlendState::REPLACE),
-          write_mask: wgpu::ColorWrites::ALL,
-        })],
-        compilation_options: Default::default(),
-      }),
-      primitive: wgpu::PrimitiveState {
-        topology: wgpu::PrimitiveTopology::TriangleList,
-        ..Default::default()
-      },
-      depth_stencil: None,
-      multisample: wgpu::MultisampleState::default(),
-      multiview_mask: None,
-      cache: None,
-    });
-    // Anything naga accepted but the device rejects is found by a later
-    // frame's `settle`, without waiting on the GPU here
-    let _ = key;
-    Checked::pending(
-      CustomPipeline {
-        pipeline,
-        layout: compiled.layout,
-      },
-      scope,
-    )
+  /// Forget the effect shaders freed since the last frame (`removed`) at
+  /// once, with the pipelines no effect uses any more; now and then check
+  /// every one against `shaders`, and forget unused compiled sources.
+  fn sync(&mut self, removed: &[AssetId<Shader>], shaders: &Assets<Shader>, frame: u64) {
+    for &shader in removed {
+      self.cache.remove(shader);
+    }
+    if frame.is_multiple_of(CUSTOM_EFFECT_PRUNE_EVERY) {
+      self.cache.sweep(shaders);
+      self.cache.prune(frame, CUSTOM_EFFECT_TTL);
+    }
   }
 
   /// Settle pipelines whose GPU checks have come back; a rejected one is
-  /// reported once and its sprites keep drawing plain.
+  /// reported once and its effect stays skipped.
   fn settle(&mut self) {
-    for (key, compiled) in &mut self.compiled {
-      if let Some(message) = compiled.state.settle() {
+    for (key, compiled) in self.cache.sources_mut() {
+      if let Some(state) = &mut compiled.made
+        && let Some(message) = state.settle()
+      {
         let error = ShaderError {
-          shader: compiled.shader.clone(),
+          shader: compiled.name.clone(),
           line: None,
           column: None,
           message,
         };
-        custom::report_once(*key, &error);
+        custom::report_once(key, &error);
       }
     }
   }
@@ -315,51 +206,78 @@ impl CustomEffectPipelines {
   /// shader version.
   fn pack(
     &mut self,
-    shader: &ShaderHandle,
+    shader: AssetId<Shader>,
+    shaders: &Assets<Shader>,
     params: &ShaderParams,
     out: &mut [u8; CUSTOM_PARAMS_BYTES as usize],
   ) -> Option<usize> {
-    let serial = shader.serial();
-    let entry = self.entries.get(&serial)?;
-    let ready = self.compiled.get(&entry.source)?.state.ready()?;
-    let generation = entry.generation;
-    let size = custom::uniform_size(ShaderKind::Effect, &ready.layout);
-    let warned = &mut self.warned;
-    custom::pack_with(&ready.layout, params, &mut out[..size], |name, expected| {
-      let seen = warned
-        .get(&(serial, generation))
-        .is_some_and(|names| names.contains(name));
-      if seen {
-        return;
-      }
-      warned
-        .entry((serial, generation))
-        .or_default()
-        .insert(name.to_string());
-      match expected {
-        None => crate::engine_warn!(
-          module: "Shaders",
-          "{}: parameter `{}` is not a field of Params and is ignored",
-          shader.id(),
-          name
-        ),
-        Some(kind) => crate::engine_warn!(
-          module: "Shaders",
-          "{}: parameter `{}` has the wrong type (Params expects {:?}) and is ignored",
-          shader.id(),
-          name,
-          kind
-        ),
-      }
-    });
-    Some(size)
+    self.cache.pack(shader, shaders, params, out)
   }
 
   /// The pipeline for a key from [`prepare`](Self::prepare)
   fn pipeline(&self, key: u64) -> Option<&wgpu::RenderPipeline> {
-    let ready = self.compiled.get(&key)?.state.ready()?;
-    Some(&ready.pipeline)
+    self.cache.source(key)?.made.as_ref()?.ready()
   }
+
+  /// How many effect pipelines are kept
+  fn pipeline_count(&self) -> usize {
+    self.cache.made_count()
+  }
+}
+
+/// The pipeline of a compiled game effect, checked by the GPU on a later
+/// frame instead of waited on
+fn build(
+  device: &wgpu::Device,
+  layout: &wgpu::PipelineLayout,
+  format: wgpu::TextureFormat,
+  name: &str,
+  compiled: &CompiledShader,
+) -> Checked<wgpu::RenderPipeline> {
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some(name),
+    source: wgpu::ShaderSource::Wgsl(compiled.wgsl.as_str().into()),
+  });
+  let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    label: Some(name),
+    layout: Some(layout),
+    vertex: wgpu::VertexState {
+      module: &module,
+      entry_point: Some("vs_main"),
+      buffers: &[],
+      compilation_options: Default::default(),
+    },
+    fragment: Some(wgpu::FragmentState {
+      module: &module,
+      entry_point: Some("fs_main"),
+      targets: &[Some(wgpu::ColorTargetState {
+        format,
+        blend: Some(wgpu::BlendState::REPLACE),
+        write_mask: wgpu::ColorWrites::ALL,
+      })],
+      compilation_options: Default::default(),
+    }),
+    primitive: wgpu::PrimitiveState {
+      topology: wgpu::PrimitiveTopology::TriangleList,
+      ..Default::default()
+    },
+    depth_stencil: None,
+    multisample: wgpu::MultisampleState::default(),
+    multiview_mask: None,
+    cache: None,
+  });
+  // Anything naga accepted but the device rejects is found by a later
+  // frame's `settle`, without waiting on the GPU here
+  Checked::pending(pipeline, scope)
+}
+
+/// The game's effects a chain runs, in order, and the store their shaders
+/// are in
+#[derive(Clone, Copy)]
+pub(crate) struct CustomChain<'a> {
+  pub(crate) effects: &'a [&'a CustomEffect],
+  pub(crate) shaders: &'a Assets<Shader>,
 }
 
 /// GPU pipeline for post-processing effects
@@ -727,24 +645,28 @@ impl PostProcessPipeline {
     encoder: &mut wgpu::CommandEncoder,
     effects: &[(&PostProcessEffect, f32)], // (effect, time)
   ) -> OutputBuffer {
-    self.apply_chain(device, queue, encoder, effects, &[], 0.0)
+    let custom = CustomChain {
+      effects: &[],
+      shaders: crate::core::ecs::no_shaders(),
+    };
+    self.apply_chain(device, queue, encoder, effects, custom, 0.0)
   }
 
   /// [`apply_effects`](Self::apply_effects), then the game's custom effects in
-  /// order. A custom effect that failed to compile, or whose pipeline isn't
-  /// ready, is skipped and the image carries through.
+  /// order. A custom effect whose shader is not loaded or failed to compile,
+  /// or whose pipeline isn't ready, is skipped and the image carries through.
   pub(crate) fn apply_chain(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
     effects: &[(&PostProcessEffect, f32)],
-    custom: &[&CustomEffect],
+    custom: CustomChain<'_>,
     time: f32,
   ) -> OutputBuffer {
     // Effects built on an earlier frame become usable once the GPU accepted them
     self.custom.settle();
-    if effects.is_empty() && custom.is_empty() {
+    if effects.is_empty() && custom.effects.is_empty() {
       return OutputBuffer::A;
     }
 
@@ -843,7 +765,7 @@ impl PostProcessPipeline {
       use_a_as_input = !use_a_as_input;
     }
 
-    if !custom.is_empty() {
+    if !custom.effects.is_empty() {
       use_a_as_input = self.apply_custom(device, queue, encoder, custom, time, use_a_as_input);
     }
 
@@ -864,23 +786,26 @@ impl PostProcessPipeline {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
-    custom: &[&CustomEffect],
+    custom: CustomChain<'_>,
     time: f32,
     mut use_a_as_input: bool,
   ) -> bool {
-    self.custom_frame += 1;
+    let CustomChain { effects, shaders } = custom;
     let frame = self.custom_frame;
     self.custom_params.reset();
     self.custom_globals.reset();
     let globals = [time, self.width as f32, self.height as f32, 0.0];
 
-    for effect in custom {
-      let shader = effect.shader();
-      let Some(key) = self.custom.prepare(device, shader, frame) else {
+    for effect in effects {
+      let shader = effect.shader().id();
+      let Some(key) = self.custom.prepare(device, shader, shaders, frame) else {
         continue;
       };
       let mut bytes = [0u8; CUSTOM_PARAMS_BYTES as usize];
-      let Some(size) = self.custom.pack(shader, effect.params(), &mut bytes) else {
+      let Some(size) = self
+        .custom
+        .pack(shader, shaders, effect.params(), &mut bytes)
+      else {
         continue;
       };
       let params_index = self.custom_params.write(device, queue, &bytes[..size]);
@@ -930,8 +855,23 @@ impl PostProcessPipeline {
       }
       use_a_as_input = !use_a_as_input;
     }
-    self.custom.prune(frame);
     use_a_as_input
+  }
+
+  /// Bring the custom effects in line with the shader store: the shaders
+  /// freed since the last frame (`removed`, from `AssetEvent::Removed`) are
+  /// forgotten at once, with the pipelines no effect uses any more. Call
+  /// once a frame, whether or not effects run
+  pub(crate) fn sync_shaders(&mut self, removed: &[AssetId<Shader>], shaders: &Assets<Shader>) {
+    self.custom_frame += 1;
+    self.custom.sync(removed, shaders, self.custom_frame);
+  }
+
+  /// How many pipelines the custom effects have (tests that watch them go)
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn custom_pipeline_count(&self) -> usize {
+    self.custom.pipeline_count()
   }
 
   /// Get the view for a specific output buffer
@@ -1472,27 +1412,33 @@ mod tests {
   use super::*;
 
   #[test]
-  fn effect_handles_with_the_same_source_share_one_pipeline() {
+  fn effect_shaders_of_one_source_share_a_pipeline_until_the_last_goes() {
     let Ok((device, _queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
     let mut effects = CustomEffectPipelines::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let mut shaders = Assets::<Shader>::default();
     let src = "fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv) * 0.5; }";
-    let shaders: Vec<ShaderHandle> = (0..3)
-      .map(|i| ShaderHandle::from_source(format!("shared-fx-{i}.wgsl"), src))
+    let handles: Vec<_> = (0..3)
+      .map(|i| shaders.add(Shader::from_wgsl(format!("shared-fx-{i}.wgsl"), src)))
       .collect();
+    let ids: Vec<AssetId<Shader>> = handles.iter().map(|handle| handle.id()).collect();
     assert!(
-      effects.prepare(&device, &shaders[0], 1).is_none(),
+      effects.prepare(&device, ids[0], &shaders, 1).is_none(),
       "pending"
     );
     effects.settle();
-    let keys: Vec<Option<u64>> = shaders
+    let keys: Vec<Option<u64>> = ids
       .iter()
-      .map(|shader| effects.prepare(&device, shader, 1))
+      .map(|&id| effects.prepare(&device, id, &shaders, 1))
       .collect();
     assert!(keys[0].is_some());
     assert!(keys.iter().all(|k| *k == keys[0]), "{keys:?}");
-    assert_eq!(effects.compiled.len(), 1);
-    assert_eq!(effects.entries.len(), 3);
+    assert_eq!(effects.pipeline_count(), 1, "one pipeline for the source");
+    effects.sync(&ids[..2], &shaders, 1);
+    assert_eq!(effects.pipeline_count(), 1, "an effect still runs it");
+    effects.sync(&ids[2..], &shaders, 1);
+    assert_eq!(effects.pipeline_count(), 0, "gone with its last shader");
+    assert!(keys[0].is_some_and(|key| effects.pipeline(key).is_none()));
   }
 }

@@ -510,6 +510,14 @@ impl HeadlessEngine {
       .map_or(0, |gpu| gpu.image_uploads())
   }
 
+  /// How many pipelines game shaders have: one per blend mode a sprite
+  /// shader is drawn with, and one per custom effect's source (tests that
+  /// watch a freed shader's pipelines go)
+  #[doc(hidden)]
+  pub fn shader_pipeline_count(&self) -> usize {
+    self.engine.shader_pipeline_count()
+  }
+
   /// How many textures have room in the atlas: a rect on a page or a
   /// standalone texture (tests that watch an image's room freed)
   #[doc(hidden)]

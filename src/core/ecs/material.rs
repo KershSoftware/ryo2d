@@ -29,7 +29,7 @@
 //! ));
 //!
 //! // Pattern 3: Custom user shader (WGSL `fn sprite(in: SpriteIn, params: Params)`)
-//! let dissolve = assets.load_shader("shaders/dissolve.wgsl")?;
+//! let dissolve = ctx.assets().load_now::<Shader>("shaders/dissolve.wgsl")?;
 //! world.spawn((
 //!     Transform::from_xy(100.0, 200.0),
 //!     Renderable::image(image),
@@ -53,126 +53,61 @@
 
 use super::kernel::Component;
 use super::sprite_effects::SpriteEffect;
+use crate::core::asset::{Asset, Assets, Handle};
 use crate::core::ui::Color;
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
-static NEXT_SHADER_SERIAL: AtomicU64 = AtomicU64::new(1);
-
-/// Shared state behind a [`ShaderHandle`]
-struct ShaderSourceCell {
-  id: String,
-  serial: u64,
-  source: Mutex<String>,
-  generation: AtomicU64,
+/// WGSL source for a sprite shader or a post-process effect: the game's own
+/// function (`fn sprite(in: SpriteIn, params: Params) -> vec4<f32>` or
+/// `fn effect(in: EffectIn, params: Params) -> vec4<f32>`) and an optional
+/// `struct Params`.
+///
+/// Load one from a `.wgsl` file with `ctx.assets().load_now::<Shader>(path)`
+/// (its name is then its asset path), or embed one with
+/// `ctx.assets().add(Shader::from_wgsl(name, source))`. Mistakes in it are
+/// reported under its name, at the line of its own source. A shader whose
+/// source changes, by a reload or through `Assets::get_mut`, is compiled
+/// again for the next frame; shaders with equal sources compile once
+#[derive(Debug, Clone)]
+pub struct Shader {
+  name: Arc<str>,
+  source: Arc<str>,
 }
 
-/// Handle to a loaded shader resource
-///
-/// Shaders are loaded via the asset system and cached. Clones share one
-/// source and one identity, so a hot reload (or [`replace_source`]) is seen by
-/// every sprite using the shader. The generation counter increases on every
-/// source change so renderers know when to recompile.
-///
-/// [`replace_source`]: ShaderHandle::replace_source
-#[derive(Clone)]
-pub struct ShaderHandle {
-  inner: Arc<ShaderSourceCell>,
-}
+impl Asset for Shader {}
 
-impl ShaderHandle {
-  fn new(id: String, source: String) -> Self {
+impl Shader {
+  /// A shader of WGSL `source`, reported as `name` in its errors
+  pub fn from_wgsl(name: impl Into<Arc<str>>, source: impl Into<Arc<str>>) -> Self {
     Self {
-      inner: Arc::new(ShaderSourceCell {
-        id,
-        serial: NEXT_SHADER_SERIAL.fetch_add(1, Ordering::Relaxed),
-        source: Mutex::new(source),
-        generation: AtomicU64::new(0),
-      }),
+      name: name.into(),
+      source: source.into(),
     }
   }
 
-  /// Create a shader handle from WGSL source
-  ///
-  /// Each call makes a distinct handle (its own `replace_source`), but handles
-  /// with the same source share one compiled pipeline, so only the first
-  /// compiles. Cloning one handle is still cheapest. Typically you'd use
-  /// `assets.load_shader()`, which caches by path.
-  pub fn from_source(id: impl Into<String>, source: impl Into<String>) -> Self {
-    Self::new(id.into(), source.into())
+  /// The name its errors are reported under: the asset path for a loaded shader
+  pub fn name(&self) -> &str {
+    &self.name
   }
 
-  /// Create a handle for a shader loaded from `path`
-  pub(crate) fn from_file(path: &Path, source: String) -> Self {
-    Self::new(path.to_string_lossy().into_owned(), source)
-  }
-
-  /// The name given at creation (the path, for loaded shaders), used in error
-  /// messages. Two handles can share an id and still be distinct shaders.
-  pub fn id(&self) -> &str {
-    &self.inner.id
-  }
-
-  /// Get a copy of the current WGSL source code
-  pub fn source(&self) -> String {
-    self
-      .inner
-      .source
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .clone()
-  }
-
-  /// Number of times the source has been replaced (0 for a fresh handle)
-  pub fn generation(&self) -> u64 {
-    self.inner.generation.load(Ordering::Acquire)
-  }
-
-  /// Identity shared by all clones of this handle
-  pub(crate) fn serial(&self) -> u64 {
-    self.inner.serial
-  }
-
-  /// The generation and source read together under one lock
-  ///
-  /// Prefer this over separate `generation()` and `source()` calls: a reload
-  /// between those two reads would pair a new generation with old source (or
-  /// the reverse) and the compiled shader would never be refreshed.
-  pub fn snapshot(&self) -> (u64, String) {
-    let guard = self.inner.source.lock().unwrap_or_else(|e| e.into_inner());
-    (self.inner.generation.load(Ordering::Acquire), guard.clone())
-  }
-
-  /// Replace the WGSL source and bump the generation
-  ///
-  /// Used by hot reload; also lets tools and tests update inline shaders.
-  /// Replacing with identical source is a no-op, so saving an unchanged file
-  /// does not trigger a recompile.
-  pub fn replace_source(&self, source: impl Into<String>) {
-    let source = source.into();
-    let mut guard = self.inner.source.lock().unwrap_or_else(|e| e.into_inner());
-    if *guard == source {
-      return;
-    }
-    *guard = source;
-    self.inner.generation.fetch_add(1, Ordering::Release);
+  /// The game's WGSL
+  pub fn source(&self) -> &str {
+    &self.source
   }
 }
 
-impl std::fmt::Debug for ShaderHandle {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("ShaderHandle")
-      .field("id", &self.inner.id)
-      .field("generation", &self.generation())
-      .finish()
-  }
+/// The world's shaders: its `Assets<Shader>`, or an empty store for a world
+/// without one
+pub(crate) fn shaders_of(world: &super::World) -> &Assets<Shader> {
+  world
+    .get_resource::<Assets<Shader>>()
+    .unwrap_or_else(|| no_shaders())
 }
 
-impl PartialEq for ShaderHandle {
-  fn eq(&self, other: &Self) -> bool {
-    self.serial() == other.serial() && self.generation() == other.generation()
-  }
+/// A store with no shaders, for drawing without a world
+pub(crate) fn no_shaders() -> &'static Assets<Shader> {
+  static NONE: OnceLock<Assets<Shader>> = OnceLock::new();
+  NONE.get_or_init(Default::default)
 }
 
 /// A value for a custom shader parameter
@@ -277,8 +212,8 @@ pub enum SpriteShader {
 
   /// A custom user-provided shader
   Custom {
-    /// Handle to the loaded shader
-    shader: ShaderHandle,
+    /// The shader, kept loaded while the sprite holds it
+    shader: Handle<Shader>,
     /// Named parameters passed to the shader
     params: ShaderParams,
   },
@@ -378,7 +313,7 @@ impl SpriteShader {
   // =========================================================================
 
   /// Create a custom shader with no parameters
-  pub fn custom(shader: ShaderHandle) -> Self {
+  pub fn custom(shader: Handle<Shader>) -> Self {
     Self::Custom {
       shader,
       params: ShaderParams::new(),
@@ -386,7 +321,7 @@ impl SpriteShader {
   }
 
   /// Create a custom shader with parameters
-  pub fn custom_with_params(shader: ShaderHandle, params: ShaderParams) -> Self {
+  pub fn custom_with_params(shader: Handle<Shader>, params: ShaderParams) -> Self {
     Self::Custom { shader, params }
   }
 
@@ -421,7 +356,7 @@ impl SpriteShader {
   }
 
   /// Get the shader handle if this is a custom shader
-  pub fn shader_handle(&self) -> Option<&ShaderHandle> {
+  pub fn shader_handle(&self) -> Option<&Handle<Shader>> {
     match self {
       Self::Custom { shader, .. } => Some(shader),
       _ => None,
@@ -571,12 +506,12 @@ impl Material {
   // =========================================================================
 
   /// Create a custom shader material
-  pub fn custom(shader: ShaderHandle) -> Self {
+  pub fn custom(shader: Handle<Shader>) -> Self {
     Self::new(SpriteShader::custom(shader))
   }
 
   /// Create a custom shader material with initial parameters
-  pub fn custom_with_params(shader: ShaderHandle, params: ShaderParams) -> Self {
+  pub fn custom_with_params(shader: Handle<Shader>, params: ShaderParams) -> Self {
     Self::new(SpriteShader::custom_with_params(shader, params))
   }
 
@@ -617,41 +552,6 @@ mod tests {
   use super::*;
 
   #[test]
-  fn clones_share_identity() {
-    let a = ShaderHandle::from_source("test", "fn sprite() {}");
-    let b = a.clone();
-    let other = ShaderHandle::from_source("test", "fn sprite() {}");
-
-    assert_eq!(a, b);
-    assert_ne!(a, other); // same id, different shader
-    b.replace_source("fn sprite() { }");
-    assert_eq!(a.source(), "fn sprite() { }");
-    assert_eq!(a, b);
-  }
-
-  #[test]
-  fn replace_source_bumps_generation() {
-    let h = ShaderHandle::from_source("test", "a");
-    let before = h.clone();
-    assert_eq!(h.generation(), 0);
-    h.replace_source("b");
-    assert_eq!(h.generation(), 1);
-    assert_eq!(before.generation(), 1);
-    assert_eq!(h.source(), "b");
-    assert!(format!("{h:?}").contains("generation"));
-  }
-
-  #[test]
-  fn identical_replacement_keeps_generation() {
-    let h = ShaderHandle::from_source("test", "a");
-    h.replace_source("a");
-    assert_eq!(h.generation(), 0);
-    h.replace_source("b");
-    h.replace_source("b");
-    assert_eq!(h.snapshot(), (1, "b".to_string()));
-  }
-
-  #[test]
   fn shader_params_basic() {
     let mut params = ShaderParams::new();
     params.set("progress", 0.5);
@@ -689,7 +589,8 @@ mod tests {
 
   #[test]
   fn sprite_shader_custom() {
-    let handle = ShaderHandle::from_source("dissolve", "// shader code");
+    let mut shaders = Assets::<Shader>::default();
+    let handle = shaders.add(Shader::from_wgsl("dissolve", "// shader code"));
     let shader = SpriteShader::custom(handle);
 
     assert!(!shader.is_builtin());
@@ -700,7 +601,8 @@ mod tests {
 
   #[test]
   fn material_with_param() {
-    let handle = ShaderHandle::from_source("test", "// code");
+    let mut shaders = Assets::<Shader>::default();
+    let handle = shaders.add(Shader::from_wgsl("test", "// code"));
     let material = Material::custom(handle)
       .with_param("progress", 0.5)
       .with_param("edge", 1.0);

@@ -46,6 +46,7 @@
 //! ```
 
 // Consumed by the sprite and effect pipelines
+pub(crate) mod cache;
 pub(crate) mod compose;
 pub(crate) mod custom;
 mod effects;
@@ -55,6 +56,7 @@ pub(crate) mod scope;
 
 pub use effects::{EffectParams, EffectStage, GodRaysParams, PostProcessEffect};
 pub use manager::{EffectError, EffectsManager};
+pub(crate) use pipeline::CustomChain;
 pub use pipeline::{OutputBuffer, PostProcessPipeline};
 
 /// Embed core shaders at compile time

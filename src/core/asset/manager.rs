@@ -1,9 +1,9 @@
-//! The old asset manager: shaders and UI files, until they load through the
-//! registry
+//! The old asset manager: UI files, until they load through the registry
 //!
-//! - `AssetManager` - loads and caches shaders and UI files by path, and
-//!   reloads them when the hot reload watcher sees them change
-//! - Images are registry assets (`ctx.assets().load_now::<Image>(path)`);
+//! - `AssetManager` - loads and caches UI files by path, and reloads them
+//!   when the hot reload watcher sees them change
+//! - Images and shaders are registry assets
+//!   (`ctx.assets().load_now::<Image>(path)`, `load_now::<Shader>(path)`);
 //!   `load_sprite` is a thin call to the registry, kept until the manager goes
 //!
 //! The engine's manager is a resource (`ctx.assets` in scene callbacks); it
@@ -15,7 +15,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::core::ecs::{Resource, ShaderHandle, World};
+use crate::core::ecs::{Resource, World};
 use crate::core::error::{ManagerError, ManagerResult};
 use crate::core::graphics::Image;
 use crate::core::ui::file::build::Placeholders;
@@ -31,23 +31,20 @@ use crate::{engine_error, engine_info, engine_warn};
 // AssetManager
 // ============================================================================
 
-/// The old manager for shaders and UI files, cached by path and reloaded
-/// when they change. Images load through the asset registry
+/// The old manager for UI files, cached by path and reloaded when they
+/// change. Images and shaders load through the asset registry
 /// (`ctx.assets()`)
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// let mut assets = AssetManager::new();
-/// let dissolve = assets.load_shader("shaders/dissolve.wgsl")?;
 /// let menu = assets.load_ui("ui/menu.ui.ron")?;
 /// ```
 #[derive(Resource)]
 pub struct AssetManager {
   /// Base directory for resolving relative paths
   base_path: PathBuf,
-  /// Cache of loaded shaders, keyed by resolved path
-  shaders: HashMap<PathBuf, ShaderHandle>,
   /// Hot reload watcher (optional, for development)
   watcher: Option<HotReloadWatcher>,
   /// Hot reloads since the engine last took them: the path, or the path and
@@ -66,7 +63,6 @@ impl AssetManager {
   pub fn new() -> Self {
     AssetManager {
       base_path: PathBuf::from("."),
-      shaders: HashMap::new(),
       watcher: None,
       reload_outcomes: Vec::new(),
       ui_files: HashMap::new(),
@@ -81,7 +77,6 @@ impl AssetManager {
   pub fn with_base_path<P: AsRef<Path>>(base_path: P) -> Self {
     AssetManager {
       base_path: base_path.as_ref().to_path_buf(),
-      shaders: HashMap::new(),
       watcher: None,
       reload_outcomes: Vec::new(),
       ui_files: HashMap::new(),
@@ -129,42 +124,6 @@ impl AssetManager {
     path: &str,
   ) -> Result<Handle<Image>, Arc<AssetError>> {
     AssetsView::new(world).load_now::<Image>(path)
-  }
-
-  /// Load a custom WGSL shader from a file
-  ///
-  /// Cached by resolved path, so loading the same file twice returns clones of
-  /// one handle. With hot reload enabled, editing the file updates the handle
-  /// in place and every sprite using it picks up the new code.
-  ///
-  /// The source is compiled lazily by the renderer; WGSL errors are reported
-  /// in the dev log with the line numbers of the game's own file.
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// let dissolve = assets.load_shader("shaders/dissolve.wgsl")?;
-  /// let material = Material::custom(dissolve).with_param("progress", 0.5);
-  /// ```
-  pub fn load_shader<P: AsRef<Path>>(&mut self, path: P) -> ManagerResult<ShaderHandle> {
-    let full_path = self.resolve_path(&path);
-    let key = self.cache_key(&path);
-
-    if let Some(handle) = self.shaders.get(&key) {
-      return Ok(handle.clone());
-    }
-
-    let source = std::fs::read_to_string(&full_path).map_err(|e| match e.kind() {
-      std::io::ErrorKind::NotFound => ManagerError::NotFound(full_path.clone()),
-      _ => ManagerError::LoadError {
-        path: full_path.clone(),
-        reason: e.to_string(),
-      },
-    })?;
-
-    let handle = ShaderHandle::from_file(&full_path, source);
-    self.shaders.insert(key, handle.clone());
-    Ok(handle)
   }
 
   /// Read a file's text, as an asset error
@@ -422,21 +381,6 @@ impl AssetManager {
     match event {
       HotReloadEvent::FileModified(path) | HotReloadEvent::FileCreated(path) => {
         let key = std::fs::canonicalize(&path).unwrap_or(path);
-        if let Some(handle) = self.shaders.get(&key) {
-          match std::fs::read_to_string(&key) {
-            Ok(source) => {
-              handle.replace_source(source);
-              reloaded = true;
-              self.reload_outcomes.push(Ok(key.clone()));
-              #[cfg(debug_assertions)]
-              engine_info!(module: "HotReload", "Reloaded shader: {:?}", key);
-            }
-            Err(e) => {
-              engine_error!(module: "HotReload", "Failed to reload {:?}: {}", key, e);
-              self.reload_outcomes.push(Err((key.clone(), e.to_string())));
-            }
-          }
-        }
         if let Some(file) = self.ui_files.get(&key).cloned()
           && !file.is_embedded()
         {
@@ -743,63 +687,6 @@ mod tests {
     std::fs::write(&path, "(root: Te").unwrap();
     assert!(!assets.handle_reload_event(HotReloadEvent::FileModified(path)));
     assert_eq!(warned(), 2, "reported again");
-  }
-
-  #[test]
-  fn shader_reload_matches_an_absolute_event_path() {
-    let (dir, mut assets) = event_fixture();
-    std::fs::create_dir_all(dir.path().join("assets/shaders")).expect("mkdir");
-    let file = dir.path().join("assets/shaders/x.wgsl");
-    std::fs::write(&file, "old").expect("write");
-    let handle = assets.load_shader("assets/shaders/x.wgsl").expect("load");
-    let before = handle.generation();
-
-    std::fs::write(&file, "new").expect("rewrite");
-    let absolute = std::fs::canonicalize(&file).expect("canonical");
-
-    assert!(assets.handle_reload_event(HotReloadEvent::FileModified(absolute)));
-    assert_eq!(handle.source(), "new");
-    assert!(handle.generation() > before);
-  }
-
-  #[test]
-  fn reload_also_matches_a_relative_event_path() {
-    let (dir, mut assets) = event_fixture();
-    let file = dir.path().join("r.wgsl");
-    std::fs::write(&file, "old").expect("write");
-    let handle = assets.load_shader("r.wgsl").expect("load");
-
-    std::fs::write(&file, "new").expect("rewrite");
-
-    assert!(assets.handle_reload_event(HotReloadEvent::FileModified(file)));
-    assert_eq!(handle.source(), "new");
-  }
-
-  #[test]
-  fn load_shader_caches_by_path() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    std::fs::write(dir.path().join("a.wgsl"), "fn sprite() {}").expect("write shader");
-    let mut assets = AssetManager::with_base_path(dir.path());
-
-    let first = assets.load_shader("a.wgsl").expect("load shader");
-    let second = assets.load_shader("a.wgsl").expect("load shader again");
-
-    assert_eq!(first, second);
-    assert_eq!(first.source(), "fn sprite() {}");
-    assert!(first.id().ends_with("a.wgsl"));
-    first.replace_source("changed");
-    assert_eq!(second.source(), "changed");
-  }
-
-  #[test]
-  fn missing_shader_file_is_an_error() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let mut assets = AssetManager::with_base_path(dir.path());
-
-    assert!(matches!(
-      assets.load_shader("nope.wgsl"),
-      Err(ManagerError::NotFound(_))
-    ));
   }
 
   #[test]

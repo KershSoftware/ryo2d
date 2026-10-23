@@ -4,22 +4,22 @@
 use web_time::Instant;
 
 use super::{Engine, PresentOutcome, SceneHost};
-use crate::core::asset::AssetEvent;
+use crate::core::asset::{Asset, AssetEvent, AssetId};
 use crate::core::config::DebugStats;
 use crate::core::config::debug::{OverlayFlags, overlay_shapes};
 use crate::core::ecs::interpolate::render_global;
-use crate::core::ecs::kernel::Messages;
+use crate::core::ecs::kernel::{MessageCursor, Messages};
 use crate::core::ecs::kernel::{QueryState, SystemIdMarker};
 use crate::core::ecs::{
   DetectChangesMut, Entity, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform,
-  Vec2, World,
+  Vec2, World, shaders_of,
 };
 use crate::core::graphics::camera_gpu::CameraGlobals;
 use crate::core::graphics::camera_mut::main_view;
 use crate::core::graphics::renderer::FrameError;
 use crate::core::graphics::{
-  Camera2d, CameraView, GpuRenderContext, Image, Presentation, RenderLayers, RenderTargets,
-  ScreenMapping, images_of,
+  Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers, RenderTargets, ScreenMapping,
+  images_of,
 };
 use crate::core::graphics::{ParallaxLayer, parallax};
 use crate::core::lighting::{FrameLight, Light2D, LightOccluder2D, LightingSettings};
@@ -84,18 +84,17 @@ impl Engine {
     // Images freed since the last frame lose their textures at once; the
     // checker stands in for images that are not loaded (debug builds)
     let missing = Some(self.missing_image.id());
-    self.freed_images.clear();
-    if let Some(events) = self.world.get_resource::<Messages<AssetEvent<Image>>>() {
-      let freed = self
-        .image_events
-        .read(events)
-        .filter_map(|event| match event {
-          AssetEvent::Removed { id } => Some(*id),
-          _ => None,
-        });
-      self.freed_images.extend(freed);
-    }
+    freed_since(&self.world, &mut self.image_events, &mut self.freed_images);
     gpu.sync_images(self.freed_images.drain(..), images_of(&self.world), missing);
+    // Shaders freed since the last frame lose their pipelines at once
+    freed_since(
+      &self.world,
+      &mut self.shader_events,
+      &mut self.freed_shaders,
+    );
+    let shaders = shaders_of(&self.world);
+    gpu.sync_shaders(&self.freed_shaders, shaders);
+    rend.sync_shaders(&self.freed_shaders, shaders);
     let (alpha, real_time, game_time) = {
       let time = self.world.resource::<Time>();
       (
@@ -528,6 +527,7 @@ impl Engine {
           effects: world.resource::<EffectsManager>(),
           look: world.resource::<crate::core::render::Look>(),
           images: images_of(world),
+          shaders: shaders_of(world),
           server: world.get_resource::<crate::core::asset::AssetServer>(),
           ui_frame,
           ui_size: self.ui_space.image,
@@ -586,6 +586,23 @@ impl Engine {
       self.on_frame_presented();
     }
     outcome
+  }
+}
+
+/// The ids of the `T`s freed since `cursor` last read the world's events,
+/// in `freed` (emptied first)
+fn freed_since<T: Asset>(
+  world: &World,
+  cursor: &mut MessageCursor<AssetEvent<T>>,
+  freed: &mut Vec<AssetId<T>>,
+) {
+  freed.clear();
+  if let Some(events) = world.get_resource::<Messages<AssetEvent<T>>>() {
+    let removed = cursor.read(events).filter_map(|event| match event {
+      AssetEvent::Removed { id } => Some(*id),
+      _ => None,
+    });
+    freed.extend(removed);
   }
 }
 

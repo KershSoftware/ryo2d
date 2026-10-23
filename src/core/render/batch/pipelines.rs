@@ -305,6 +305,17 @@ impl Pipelines {
   pub(crate) fn retain(&mut self, mut keep: impl FnMut(&PipelineKey) -> bool) {
     self.built.retain(|key, _| keep(key));
   }
+
+  /// How many pipelines game shaders have
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn custom_count(&self) -> usize {
+    self
+      .built
+      .keys()
+      .filter(|key| matches!(key.shader, BatchShader::Custom(_)))
+      .count()
+  }
 }
 
 /// A pipeline drawing `key`'s stream (instanced quads or indexed triangles)

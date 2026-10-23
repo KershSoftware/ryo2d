@@ -2,7 +2,7 @@
 
 use super::{BatchCollector, CameraView, Image, SpriteDraw, SpriteGpuRenderer, SpriteInstance};
 use crate::core::asset::Handle;
-use crate::core::ecs::{ShaderHandle, ShaderParams, World};
+use crate::core::ecs::{Shader, ShaderParams, World, shaders_of};
 
 /// Context for GPU sprite rendering.
 ///
@@ -58,18 +58,20 @@ impl<'a> GpuRenderContext<'a> {
   ///
   /// `params` are matched by name to the fields of the shader's `Params`
   /// struct (the sprite's own effect parameters are overwritten with them). A
-  /// shader that fails to compile is logged and the sprite is drawn plain.
+  /// shader that is not loaded draws the sprite plain, as one that fails to
+  /// compile does (that one is logged once per version).
   pub fn add_custom_sprite(
     &mut self,
     image: &Handle<Image>,
-    shader: &ShaderHandle,
+    shader: &Handle<Shader>,
     params: &ShaderParams,
     mut instance: SpriteInstance,
     draw: SpriteDraw,
   ) {
+    let shaders = shaders_of(self.world);
     let shading = match self
       .gpu_renderer
-      .shade_custom(shader, params, &mut instance)
+      .shade_custom(shader.id(), shaders, params, &mut instance)
     {
       Some(key) => crate::core::render::SpriteShading::Custom(key),
       None => crate::core::render::SpriteShading::Plain,
