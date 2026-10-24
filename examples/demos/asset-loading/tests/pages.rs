@@ -263,11 +263,11 @@ fn the_hot_reload_page_counts_each_reload_as_modified() {
     return;
   };
   engine.step_frames(3).unwrap();
-  // A `load_now` that fails gives its error and no handle, so the registry
-  // keeps nothing of the missing file
+  // The missing file's `load_now` fails, and its `load` handle waits for the
+  // file to appear
   assert_eq!(
     counts(&mut engine),
-    [(IMAGES, 0, 0), (2, 0, 0), (1, 0, 0)],
+    [(IMAGES, 0, 1), (2, 0, 0), (1, 0, 0)],
     "everything is loaded at once"
   );
   let before = texts(&engine);
@@ -338,4 +338,50 @@ fn a_reload_that_fails_shows_its_error_and_keeps_the_asset() {
   );
   let [(images, _, _), _, _] = counts(&mut engine);
   assert_eq!(images, 1, "the last good bg.png stays loaded");
+}
+
+#[test]
+fn a_file_missing_when_the_hot_reload_page_opens_is_picked_up_when_it_appears() {
+  // Every file but bg.png, which a save puts back later (the test simulates
+  // the watcher's save with `AssetServer::reload`)
+  let files = MemorySource::new();
+  let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+  for path in ["fonts/m5x7.ttf", "ui/card.ui.ron"] {
+    files.insert(path, std::fs::read(folder.join(path)).unwrap());
+  }
+  let source = files.clone();
+  let builder = demo()
+    .start_page(HOT_RELOAD)
+    .configure(move |b| b.asset_source(source))
+    .engine_builder();
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let before = texts(&engine);
+  assert_eq!(
+    row(&before, "bg.png", 3),
+    ["bg.png", "modified 0", "failed: no asset at \"bg.png\""]
+  );
+
+  files.insert("bg.png", std::fs::read(folder.join("bg.png")).unwrap());
+  engine.assets().server().reload("bg.png");
+  step_until(&mut engine, "the file to load", |engine| {
+    !texts(engine)
+      .iter()
+      .any(|text| text.contains("no asset at \"bg.png\""))
+  });
+  engine.step_frames(2).unwrap();
+  let after = texts(&engine);
+  assert!(
+    !after.iter().any(|text| text.contains("bg.png\"")),
+    "the error is gone: {after:?}"
+  );
+  assert_eq!(row(&after, "bg.png", 2), ["bg.png", "modified 0"]);
+
+  // From then on it reloads in place, and counts
+  engine.assets().server().reload("bg.png");
+  step_until(&mut engine, "the reload to count", |engine| {
+    row(&texts(engine), "bg.png", 2) == ["bg.png", "modified 1"]
+  });
 }

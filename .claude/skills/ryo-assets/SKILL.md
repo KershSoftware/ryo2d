@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.1.6
+  version: 1.1.7
 ---
 
 # Ryo2D Assets
@@ -36,6 +36,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 - **One path is one asset.** Asking for the same path (and settings) again while the asset lives gives the same handle, loaded, loading or failed, so every scene can load what it uses and each file is read once. A failed asset is not tried again until its file changes, or nothing holds it and it is asked for again.
 - `load` never fails on the spot: a bad path, or an extension no loader takes for that type, gives a failed handle (`AssetError::InvalidPath`, `NoLoader`), warned once.
 - `load_now` of an asset already loading on a worker loads it here instead.
+- A `load_now` that fails holds nothing: no handle, and nothing watches its path, so a file that appears later is picked up only through a `load` handle (a failed `load` loads again when its file changes). To show a file that may be missing now and present later, keep a `load` handle beside the failed `load_now`.
 - **`load_now` does the whole load on the calling thread**, a large image's mip levels too, which cost more than its decode: a 2048 x 2048 PNG takes about 15 to 40 ms (its levels 13 to 28 ms of it, on an Apple M5 Pro), so a scene that waits on several large images starts late. Load large images with `load` behind a loading screen (section 4), or in an earlier scene, and keep `load_now` for what the scene draws at once.
 - Systems reach the same registry: `Res<AssetServer>` (`server.load::<Image>(path)`) and the stores as `Res<Assets<Image>>`.
 

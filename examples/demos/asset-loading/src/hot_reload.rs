@@ -20,6 +20,9 @@ struct Row {
   path: &'static str,
   /// The asset, or why it did not load
   held: Result<Held, String>,
+  /// For a `load_now` that failed: a `load` handle, which loads the file
+  /// when it appears; the row then holds it as `held`
+  waiting: Option<Held>,
   /// Its `AssetEvent::Modified` events since the page opened
   modified: u32,
   /// Why its last reload failed (it keeps its last good value), until it
@@ -34,6 +37,20 @@ pub(crate) struct HotReloadPage {
 impl HotReloadPage {
   pub(crate) fn new() -> Self {
     Self { rows: Vec::new() }
+  }
+
+  /// Move a waiting asset that has loaded into its row
+  fn adopt(&mut self, ctx: &mut SceneContext) {
+    let assets = ctx.assets();
+    for row in &mut self.rows {
+      if row
+        .waiting
+        .as_ref()
+        .is_some_and(|held| held.state(&assets).is_loaded())
+      {
+        row.held = Ok(row.waiting.take().expect("checked above"));
+      }
+    }
   }
 
   /// Count this step's events for `T`'s assets
@@ -71,11 +88,18 @@ impl DemoPage for HotReloadPage {
   fn enter(&mut self, ctx: &mut SceneContext) {
     let mut assets = ctx.assets();
     self.rows = tracked::listed()
-      .map(|(path, kind)| Row {
-        path,
-        held: Held::load_now(&mut assets, path, kind).map_err(|error| error.report()),
-        modified: 0,
-        reload_error: None,
+      .map(|(path, kind)| {
+        let held = Held::load_now(&mut assets, path, kind).map_err(|error| error.report());
+        // A failed `load_now` holds nothing; a `load` handle is loaded again
+        // when its file appears
+        let waiting = held.is_err().then(|| Held::load(&assets, path, kind));
+        Row {
+          path,
+          held,
+          waiting,
+          modified: 0,
+          reload_error: None,
+        }
       })
       .collect();
     // The panel the UI file describes: a reload of the file updates it in place
@@ -102,6 +126,7 @@ impl DemoPage for HotReloadPage {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    self.adopt(ctx);
     self.count::<Image>(ctx);
     self.count::<Font>(ctx);
     self.count::<UiFile>(ctx);
