@@ -32,9 +32,10 @@ impl AssetLoader for ShaderLoader {
   fn load(&self, bytes: Vec<u8>, _: &(), cx: &mut LoadContext<'_>) -> Result<Shader, AssetError> {
     let path = cx.path();
     let source = String::from_utf8(bytes).map_err(|error| AssetError::decode(path, error))?;
-    // Compiled here, off the main thread, and kept with the shader for the
-    // renderer. The error names the file already: the shader's own report
-    // gives the place in it
+    // Compiled here, on the loader's thread (a worker for `load` and
+    // reloads, the caller's for `load_now`), and kept with the shader for
+    // the renderer. The error names the file already: the shader's own
+    // report gives the place in it
     let shader = Shader::from_wgsl(path.as_str(), source);
     shader
       .check()
