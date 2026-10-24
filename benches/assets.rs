@@ -1,28 +1,77 @@
-//! Scene-start asset loading: what a scene's `on_enter` does. Forty PNGs
-//! (ten each at 32, 64, 128 and 256 pixels square), two fonts (Press Start
-//! 2P and JetBrains Mono) and three UI files (the second importing the
-//! first) loaded at once through the asset registry (`load_now::<Image>`,
-//! `load_now::<Font>`, `load_now::<UiFile>`), on a fresh registry each
-//! iteration. The same bench on the old manager's loads, before the
-//! registry, is what it is measured against.
+//! The asset registry against its targets.
 //!
-//! The fonts are measured from the registry's fonts on: before them the
-//! bench had no public way to build a `Fonts` registry, so the "before"
-//! build loads no fonts.
+//! Scene start, what a scene's `on_enter` does, on a fresh registry each
+//! iteration:
+//! - `scene_start`: forty PNGs (ten each at 32, 64, 128 and 256 pixels
+//!   square) and three UI files (the second importing the first) loaded at
+//!   once (`load_now`). It loads what the same bench on the old manager
+//!   loaded, before the registry, and is measured against that build;
+//! - `scene_start_fonts`: the same with two fonts (Press Start 2P and
+//!   JetBrains Mono), the spec's whole set. The build before the registry
+//!   had no public way to build a `Fonts` registry, so this has no "before";
+//! - `scene_start_async`: `scene_start`'s assets through `load`, pumped
+//!   until their `progress` is done. Its workers have started already (an
+//!   untimed load of a 1x1 image), as a game's have by its second scene.
 //!
-//! The median is read from where criterion writes its results:
+//! Before criterion runs, the reload guard runs a `HeadlessEngine`
+//! (1280x720) drawing a 2048x2048 PNG and a 256 px SVG, read from a
+//! `MemorySource` with hot reload on. Over 2,000 frames every 50th inserts
+//! a changed PNG and SVG; the source tells the server, the workers decode
+//! them, and the pump swaps each new value in, under the same handle, in
+//! some later frame, whose render step uploads it. Each frame's
+//! main-thread time is the wall time of the whole step (the pump, the
+//! update, the UI pass and the render step), with the GPU finished before
+//! each step, outside the measure, as `benches/ui_render.rs`'s guard does.
+//!
+//! The frames are paced at 60 Hz, as a game's are. Stepped back to back
+//! (under 100 µs each), the PNG took longer to decode than 50 frames, so
+//! each change overtook the last and it never landed. The wait spins: when
+//! the main thread slept through it, it ran on a slower core and an
+//! ordinary frame took about six times as long (716 µs against 122).
+//!
+//! The guard prints the median of the frames no reload landed in, the
+//! median and maximum of the frames each image's new value landed in, and
+//! of the frame after. It holds each landing median to within 0.5 ms of an
+//! ordinary frame's (the spec). A miss fails the run once criterion's
+//! benches have run, printing the command to profile it with. The
+//! `reload_hitch` criterion bench steps the same engine back to back,
+//! changing the files once the last change has landed and 50 frames have
+//! passed, for that profile; its median is of every frame, mostly ordinary
+//! ones. The guard runs only where criterion measures `reload_hitch`: with
+//! no filter or one naming it, and not for `--list`, `--test` or
+//! `--profile-time`.
+//!
+//! Last, the pump with parents waiting on a dependency that does not load:
+//! 10, 100 and 1000 UI files importing one whose read is held. It prints
+//! the median of a pump with nothing to settle, and of a pump that takes
+//! in one more parent. It runs with no filter or one naming
+//! `pump_waiting`.
+//!
+//! Medians are read from where criterion writes its results:
 //! `$CRITERION_HOME`, else `$CARGO_TARGET_DIR/criterion`, else the
 //! workspace's `target/criterion`.
 
+mod guards;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant, SystemTime};
 
 use criterion::{BatchSize, Criterion};
+use ryo2d::core::asset::pump;
 use ryo2d::prelude::*;
+use ryo2d::testing::{HeadlessEngine, shared_gpu};
 
 const SIZES: [u32; 4] = [32, 64, 128, 256];
 const PER_SIZE: u32 = 10;
+/// The criterion benches whose medians are printed
+const BENCHES: [&str; 4] = [
+  "scene_start",
+  "scene_start_fonts",
+  "scene_start_async",
+  "reload_hitch",
+];
 
 fn write_pngs(dir: &Path) -> Vec<String> {
   let mut names = Vec::new();
@@ -132,19 +181,41 @@ fn write_fonts(dir: &Path) -> [&'static str; 2] {
   fonts.map(|(name, _)| name)
 }
 
-fn scene_start(c: &mut Criterion) {
-  let dir = tempfile::TempDir::new().expect("temp dir");
-  let pngs = write_pngs(dir.path());
-  let fonts = write_fonts(dir.path());
-  let uis = ["a.ui.ron", "b.ui.ron", "c.ui.ron"];
-  std::fs::write(dir.path().join("a.ui.ron"), ui_source("a", false)).expect("write ui");
-  std::fs::write(dir.path().join("b.ui.ron"), ui_source("b", true)).expect("write ui");
-  std::fs::write(dir.path().join("c.ui.ron"), ui_source("c", false)).expect("write ui");
+/// The scene-start benches' folder: the PNGs, the fonts, the UI files and
+/// the image that starts the workers
+struct SceneFiles {
+  dir: tempfile::TempDir,
+  pngs: Vec<String>,
+  fonts: [&'static str; 2],
+  uis: [&'static str; 3],
+}
 
-  // A fresh registry each iteration, over the same folder
-  let fresh = || {
+const WARM: &str = "warm.png";
+
+impl SceneFiles {
+  fn new() -> SceneFiles {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let pngs = write_pngs(dir.path());
+    let fonts = write_fonts(dir.path());
+    let uis = ["a.ui.ron", "b.ui.ron", "c.ui.ron"];
+    std::fs::write(dir.path().join("a.ui.ron"), ui_source("a", false)).expect("write ui");
+    std::fs::write(dir.path().join("b.ui.ron"), ui_source("b", true)).expect("write ui");
+    std::fs::write(dir.path().join("c.ui.ron"), ui_source("c", false)).expect("write ui");
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]))
+      .save(dir.path().join(WARM))
+      .expect("write the warm-up png");
+    SceneFiles {
+      dir,
+      pngs,
+      fonts,
+      uis,
+    }
+  }
+
+  /// A fresh registry over the folder
+  fn registry(&self) -> (AssetServer, ryo2d::ecs::World) {
     let mut world = ryo2d::ecs::World::new();
-    let server = AssetServer::new(DiskSource::new(dir.path()));
+    let server = AssetServer::new(DiskSource::new(self.dir.path()));
     server.register_asset::<Image>(&mut world);
     server.register_loader(ImageLoader);
     server.register_asset::<Font>(&mut world);
@@ -153,28 +224,539 @@ fn scene_start(c: &mut Criterion) {
     server.register_loader(UiFileLoader);
     world.insert_resource(server.clone());
     (server, world)
-  };
-  c.bench_function("scene_start", |b| {
+  }
+
+  /// A fresh registry whose workers have started: an image loaded through
+  /// them and pumped in
+  fn registry_with_workers(&self) -> (AssetServer, ryo2d::ecs::World, Handle<Image>) {
+    let (server, mut world) = self.registry();
+    let warm = server.load::<Image>(WARM);
+    pump_until_done(&server, &mut world, &[warm.id().untyped()]);
+    (server, world, warm)
+  }
+}
+
+/// Pumps until every one of `ids` is loaded
+fn pump_until_done(server: &AssetServer, world: &mut ryo2d::ecs::World, ids: &[UntypedAssetId]) {
+  loop {
+    pump(world);
+    let progress = server.progress(ids);
+    if progress.is_done() {
+      assert_eq!(progress.failed, 0, "every asset loads");
+      return;
+    }
+    std::thread::yield_now();
+  }
+}
+
+fn scene_start(c: &mut Criterion, files: &SceneFiles) {
+  for (name, fonts) in [("scene_start", false), ("scene_start_fonts", true)] {
+    c.bench_function(name, |b| {
+      b.iter_batched(
+        || files.registry(),
+        |(server, mut world)| {
+          for name in &files.pngs {
+            let image = server.load_now::<Image>(&mut world, name);
+            std::hint::black_box(image.expect("load image"));
+          }
+          if fonts {
+            for name in files.fonts {
+              let font = server.load_now::<Font>(&mut world, name);
+              std::hint::black_box(font.expect("load font"));
+            }
+          }
+          for name in files.uis {
+            let file = server.load_now::<UiFile>(&mut world, name);
+            std::hint::black_box(file.expect("load ui"));
+          }
+          (server, world)
+        },
+        BatchSize::PerIteration,
+      );
+    });
+  }
+  c.bench_function("scene_start_async", |b| {
     b.iter_batched(
-      fresh,
-      |(server, mut world)| {
-        for name in &pngs {
-          let image = server.load_now::<Image>(&mut world, name);
-          std::hint::black_box(image.expect("load image"));
-        }
-        for name in fonts {
-          let font = server.load_now::<Font>(&mut world, name);
-          std::hint::black_box(font.expect("load font"));
-        }
-        for name in uis {
-          let file = server.load_now::<UiFile>(&mut world, name);
-          std::hint::black_box(file.expect("load ui"));
-        }
-        (server, world)
+      || files.registry_with_workers(),
+      |(server, mut world, warm)| {
+        let images: Vec<Handle<Image>> = files
+          .pngs
+          .iter()
+          .map(|name| server.load::<Image>(name))
+          .collect();
+        let uis: Vec<Handle<UiFile>> = files
+          .uis
+          .iter()
+          .map(|name| server.load::<UiFile>(name))
+          .collect();
+        let ids: Vec<UntypedAssetId> = images
+          .iter()
+          .map(|image| image.id().untyped())
+          .chain(uis.iter().map(|file| file.id().untyped()))
+          .collect();
+        pump_until_done(&server, &mut world, &ids);
+        (server, world, warm, images, uis)
       },
       BatchSize::PerIteration,
     );
   });
+}
+
+/// The reload guard's frames
+const HITCH_FRAMES: usize = 2000;
+/// Frames between changed files
+const RELOAD_EVERY: usize = 50;
+/// The spec's reload hitch: a landing frame within this of an ordinary one
+const HITCH_TARGET: Duration = Duration::from_micros(500);
+/// A 60 Hz frame: the guard starts a frame no sooner than this after the last
+const PACE: Duration = Duration::from_micros(16_667);
+const BIG: &str = "big.png";
+const BIG_SIDE: u32 = 2048;
+const ICON: &str = "icon.svg";
+
+/// A 2048 px PNG in one of two looks, `variant` 0 or 1
+fn big_png(variant: u32) -> Vec<u8> {
+  let image = image::RgbaImage::from_fn(BIG_SIDE, BIG_SIDE, |x, y| {
+    let v = x.wrapping_mul(31) ^ y.wrapping_mul(17) ^ variant.wrapping_mul(97);
+    image::Rgba([
+      v as u8,
+      (v >> 3) as u8,
+      (x ^ y) as u8 ^ (variant as u8 * 85),
+      255,
+    ])
+  });
+  let mut bytes = Vec::new();
+  image
+    .write_to(
+      &mut std::io::Cursor::new(&mut bytes),
+      image::ImageFormat::Png,
+    )
+    .expect("encode the big png");
+  bytes
+}
+
+/// A 256 px SVG icon in one of two looks, `variant` 0 or 1
+fn icon_svg(variant: u32) -> Vec<u8> {
+  let (from, to, mark) = if variant == 0 {
+    ("#3060c0", "#80e0ff", "#ffd040")
+  } else {
+    ("#c03040", "#ffb080", "#40ff90")
+  };
+  format!(
+    r##"<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="{from}"/>
+      <stop offset="1" stop-color="{to}"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="32" fill="url(#g)"/>
+  <circle cx="128" cy="128" r="84" fill="none" stroke="#ffffff" stroke-width="12"/>
+  <path d="M128 60 L184 168 L72 168 Z" fill="{mark}" stroke="#202020" stroke-width="4"/>
+</svg>
+"##
+  )
+  .into_bytes()
+}
+
+/// Both looks of both files, encoded once
+struct Looks {
+  big: [Vec<u8>; 2],
+  icon: [Vec<u8>; 2],
+}
+
+impl Looks {
+  fn new() -> Looks {
+    Looks {
+      big: [big_png(0), big_png(1)],
+      icon: [icon_svg(0), icon_svg(1)],
+    }
+  }
+}
+
+/// Draws the big PNG at a quarter of its size, and the SVG
+struct Reloading;
+
+impl Scene for Reloading {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let big = ctx.assets().load_now::<Image>(BIG).expect("the big png");
+    let icon = ctx.assets().load_now::<Image>(ICON).expect("the svg");
+    ctx.world.spawn((
+      Transform::from_xy(400.0, 360.0).with_scale(Vec2::splat(0.25)),
+      Renderable::image(big),
+    ));
+    ctx
+      .world
+      .spawn((Transform::from_xy(900.0, 360.0), Renderable::image(icon)));
+  }
+}
+
+/// An engine drawing the two images, and the files it reads
+struct ReloadRig {
+  files: MemorySource,
+  engine: HeadlessEngine,
+  big: AssetId<Image>,
+  icon: AssetId<Image>,
+  /// Changes made so far
+  changes: usize,
+}
+
+impl ReloadRig {
+  /// The engine, warmed up; none without a GPU
+  fn new(looks: &Looks) -> Option<ReloadRig> {
+    let files = MemorySource::new();
+    files.insert(BIG, looks.big[0].clone());
+    files.insert(ICON, looks.icon[0].clone());
+    let builder = EngineBuilder::new()
+      .resolution(1280, 720)
+      .asset_source(files.clone())
+      .hot_reload(true)
+      .start_scene(Reloading);
+    let mut engine = HeadlessEngine::new_or_skip(builder)?;
+    engine.step_frames(60).expect("the warm-up frames");
+    let big = engine.assets().load_now::<Image>(BIG).expect("the big png");
+    let icon = engine.assets().load_now::<Image>(ICON).expect("the svg");
+    Some(ReloadRig {
+      files,
+      engine,
+      big: big.id(),
+      icon: icon.id(),
+      changes: 0,
+    })
+  }
+
+  /// Puts the other look of each file in the source, which tells the server
+  fn change(&mut self, looks: &Looks) {
+    self.changes += 1;
+    let look = self.changes % 2;
+    self.files.insert(BIG, looks.big[look].clone());
+    self.files.insert(ICON, looks.icon[look].clone());
+  }
+
+  /// The two images' versions in the store
+  fn versions(&self) -> (Option<u64>, Option<u64>) {
+    let images = self.engine.world().resource::<Assets<Image>>();
+    (images.version(self.big), images.version(self.icon))
+  }
+}
+
+/// One frame of the reload guard
+struct HitchFrame {
+  /// The whole step on the main thread
+  step: Duration,
+  /// Its render step
+  render: Duration,
+  /// The PNG's new value landed in it
+  big: bool,
+  /// The SVG's new value landed in it
+  icon: bool,
+  /// Images uploaded in it
+  uploads: u64,
+}
+
+/// The median and maximum of `times`, or None for none
+fn median_max(mut times: Vec<Duration>) -> Option<(Duration, Duration)> {
+  times.sort_unstable();
+  Some((*times.get(times.len() / 2)?, *times.last()?))
+}
+
+fn us(time: Duration) -> f64 {
+  time.as_secs_f64() * 1e6
+}
+
+/// The reload hitch: the main-thread time of the frames a reloaded image
+/// lands in against an ordinary frame's. Every median is printed, and each
+/// landing median over the target is noted for the run to fail on
+fn reload_guard(looks: &Looks) {
+  let Some(mut rig) = ReloadRig::new(looks) else {
+    return;
+  };
+  let Ok((device, _)) = shared_gpu() else {
+    return;
+  };
+  let mut frames = Vec::with_capacity(HITCH_FRAMES);
+  let mut next = Instant::now();
+  for frame in 0..HITCH_FRAMES {
+    if frame > 0 && frame.is_multiple_of(RELOAD_EVERY) {
+      rig.change(looks);
+    }
+    device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .expect("the GPU finishes its work");
+    // Spun, not slept: a thread that sleeps most of each frame runs its
+    // frames on a slower core, nine times as long
+    while Instant::now() < next {
+      std::hint::spin_loop();
+    }
+    let (big, icon) = rig.versions();
+    let uploads = rig.engine.image_uploads();
+    let started = Instant::now();
+    next = started + PACE;
+    rig.engine.step().expect("a guard frame");
+    let step = started.elapsed();
+    let (big_now, icon_now) = rig.versions();
+    frames.push(HitchFrame {
+      step,
+      render: rig.engine.render_time(),
+      big: big_now != big,
+      icon: icon_now != icon,
+      uploads: rig.engine.image_uploads() - uploads,
+    });
+  }
+  let landed = |frame: &HitchFrame| frame.big || frame.icon;
+  let steps = |keep: &dyn Fn(&HitchFrame) -> bool| -> Vec<Duration> {
+    frames
+      .iter()
+      .filter(|frame| keep(frame))
+      .map(|frame| frame.step)
+      .collect()
+  };
+  let renders = |keep: &dyn Fn(&HitchFrame) -> bool| -> Vec<Duration> {
+    frames
+      .iter()
+      .filter(|frame| keep(frame))
+      .map(|frame| frame.render)
+      .collect()
+  };
+  let Some((ordinary, _)) = median_max(steps(&|frame| !landed(frame))) else {
+    guards::miss("reload_hitch: no ordinary frame".into());
+    return;
+  };
+  let (ordinary_render, _) = median_max(renders(&|frame| !landed(frame))).unwrap_or_default();
+  // The frame after each landing, which no reload landed in
+  let after: Vec<Duration> = frames
+    .windows(2)
+    .filter(|pair| landed(&pair[0]) && !landed(&pair[1]))
+    .map(|pair| pair[1].step)
+    .collect();
+  let changes = rig.changes;
+  let mut lines = Vec::new();
+  let mut missed = Vec::new();
+  type Keep = fn(&HitchFrame) -> bool;
+  let kinds: [(&str, Keep); 3] = [
+    ("the PNG", |frame| frame.big && !frame.icon),
+    ("the SVG", |frame| frame.icon && !frame.big),
+    ("every landing", |frame| frame.big || frame.icon),
+  ];
+  let both = frames
+    .iter()
+    .filter(|frame| frame.big && frame.icon)
+    .count();
+  for (kind, keep) in kinds {
+    let count = frames.iter().filter(|frame| keep(frame)).count();
+    let uploaded = frames
+      .iter()
+      .filter(|frame| keep(frame) && frame.uploads > 0)
+      .count();
+    let Some((median, max)) = median_max(steps(&keep)) else {
+      lines.push(format!("{kind}: no frame"));
+      continue;
+    };
+    let (render, _) = median_max(renders(&keep)).unwrap_or_default();
+    let over = median.saturating_sub(ordinary);
+    let met = over <= HITCH_TARGET;
+    let verdict = if met { "met" } else { "missed" };
+    let line = format!(
+      "{kind}: {count} frames ({uploaded} uploading), median {:.1} µs ({:+.1}; render step \
+       {:.1}), max {:.1} µs ({:+.1}); within {} µs: {verdict}",
+      us(median),
+      us(median) - us(ordinary),
+      us(render),
+      us(max),
+      us(max) - us(ordinary),
+      HITCH_TARGET.as_micros(),
+    );
+    if !met {
+      missed.push(format!("reload_hitch, {line}"));
+    }
+    lines.push(line);
+  }
+  let big_landings = frames.iter().filter(|frame| frame.big).count();
+  let icon_landings = frames.iter().filter(|frame| frame.icon).count();
+  if big_landings == 0 || icon_landings == 0 {
+    missed.push(format!(
+      "reload_hitch: of {changes} changes the PNG landed {big_landings} times, the SVG \
+       {icon_landings}"
+    ));
+  }
+  let after = median_max(after).map_or("none".to_string(), |(median, max)| {
+    format!(
+      "median {:.1} µs ({:+.1}), max {:.1} µs ({:+.1})",
+      us(median),
+      us(median) - us(ordinary),
+      us(max),
+      us(max) - us(ordinary)
+    )
+  });
+  eprintln!(
+    "reload_hitch guard, main-thread frame time (the whole step, the GPU finished before \
+     each), {HITCH_FRAMES} frames at 60 Hz, a changed PNG and SVG every {RELOAD_EVERY}th ({changes} \
+     changes; the PNG landed {big_landings} times, the SVG {icon_landings}, together in \
+     {both} frames). Ordinary frames: median {:.1} µs (render step {:.1}). {}. The frame \
+     after a landing: {after}",
+    us(ordinary),
+    us(ordinary_render),
+    lines.join("; "),
+  );
+  for miss in missed {
+    guards::miss(miss);
+  }
+}
+
+/// The reload rig stepped back to back by criterion, the files changed
+/// once the last change has landed and `RELOAD_EVERY` frames have passed:
+/// the profile of a reload
+fn reload_bench(c: &mut Criterion, looks: &Looks) {
+  let Some(mut rig) = ReloadRig::new(looks) else {
+    return;
+  };
+  let mut since = 0usize;
+  // The versions the last change replaced, until both have moved on
+  let mut waiting: Option<(Option<u64>, Option<u64>)> = None;
+  c.bench_function("reload_hitch", |b| {
+    b.iter(|| {
+      since += 1;
+      match waiting {
+        Some((big, icon)) => {
+          let (big_now, icon_now) = rig.versions();
+          if big_now != big && icon_now != icon {
+            waiting = None;
+          }
+        }
+        None if since >= RELOAD_EVERY => {
+          waiting = Some(rig.versions());
+          rig.change(looks);
+          since = 0;
+        }
+        None => {}
+      }
+      rig.engine.step()
+    })
+  });
+}
+
+/// The file the waiting parents import, which cannot be read until opened
+const GATE: &str = "gate.ui.ron";
+/// Parents taken in, one at a time, after the waiting ones
+const ARRIVALS: usize = 50;
+/// Pumps with nothing to settle
+const STILL_PUMPS: usize = 1000;
+
+/// A source whose `GATE` read waits until it is opened
+#[derive(Clone)]
+struct Gated {
+  files: MemorySource,
+  open: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl Gated {
+  fn open(&self) {
+    let (open, opened) = &*self.open;
+    *open.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    opened.notify_all();
+  }
+}
+
+impl AssetSource for Gated {
+  fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+    if path.as_str() == GATE {
+      let (open, opened) = &*self.open;
+      let mut open = open.lock().unwrap_or_else(PoisonError::into_inner);
+      while !*open {
+        open = opened.wait(open).unwrap_or_else(PoisonError::into_inner);
+      }
+    }
+    self.files.read(path)
+  }
+}
+
+/// A parent UI file importing the gate
+fn parent_source(n: usize) -> String {
+  format!(
+    "(\n  imports: [\"{GATE}\"],\n  root: Column(children: [Text(text: \"parent {n}\")]),\n)\n"
+  )
+}
+
+/// Pumps until `count` values wait, or ten seconds pass
+fn pump_until_waiting(server: &AssetServer, world: &mut ryo2d::ecs::World, count: usize) {
+  let start = Instant::now();
+  while server.waiting_count() < count {
+    assert!(
+      start.elapsed() < Duration::from_secs(10),
+      "{count} parents wait (only {})",
+      server.waiting_count()
+    );
+    pump(world);
+    std::thread::yield_now();
+  }
+}
+
+/// The pump's cost with 10, 100 and 1000 parents waiting on a dependency:
+/// a pump with nothing to settle, and one taking in another parent
+fn pump_waiting() {
+  let mut lines = Vec::new();
+  for parents in [10, 100, 1000] {
+    let files = MemorySource::new();
+    files.insert(GATE, "(root: Column(children: []))");
+    for n in 0..parents + ARRIVALS {
+      files.insert(&format!("p{n}.ui.ron"), parent_source(n));
+    }
+    let source = Gated {
+      files,
+      open: Arc::default(),
+    };
+    let mut world = ryo2d::ecs::World::new();
+    let server = AssetServer::new(source.clone());
+    server.register_asset::<UiFile>(&mut world);
+    server.register_loader(UiFileLoader);
+    world.insert_resource(server.clone());
+    let mut held: Vec<Handle<UiFile>> = (0..parents)
+      .map(|n| server.load::<UiFile>(&format!("p{n}.ui.ron")))
+      .collect();
+    pump_until_waiting(&server, &mut world, parents);
+    let mut still = Vec::with_capacity(STILL_PUMPS);
+    for _ in 0..STILL_PUMPS {
+      let started = Instant::now();
+      pump(&mut world);
+      still.push(started.elapsed());
+    }
+    assert_eq!(server.waiting_count(), parents, "nothing settled");
+    // Each new parent's result is in once a pump takes it in
+    let mut taking = Vec::with_capacity(ARRIVALS);
+    for n in parents..parents + ARRIVALS {
+      held.push(server.load::<UiFile>(&format!("p{n}.ui.ron")));
+      let start = Instant::now();
+      loop {
+        let started = Instant::now();
+        pump(&mut world);
+        let time = started.elapsed();
+        if server.waiting_count() > n {
+          taking.push(time);
+          break;
+        }
+        assert!(
+          start.elapsed() < Duration::from_secs(10),
+          "parent {n} waits"
+        );
+        std::thread::yield_now();
+      }
+    }
+    source.open();
+    let ids: Vec<UntypedAssetId> = held.iter().map(|file| file.id().untyped()).collect();
+    pump_until_done(&server, &mut world, &ids);
+    let (still, _) = median_max(still).unwrap_or_default();
+    let (taking, taking_max) = median_max(taking).unwrap_or_default();
+    lines.push(format!(
+      "{parents} waiting: a still pump {:.2} µs, a pump taking in one more {:.2} µs (max {:.1})",
+      us(still),
+      us(taking),
+      us(taking_max)
+    ));
+  }
+  eprintln!(
+    "pump_waiting, medians of {STILL_PUMPS} still pumps and {ARRIVALS} taking in a parent: {}",
+    lines.join("; ")
+  );
 }
 
 /// Where criterion writes its results, and the median is read from
@@ -195,27 +777,46 @@ fn main() {
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|_| "uptime unavailable".into());
   println!("machine: {load}");
-  println!("assets bench: images, fonts and UI files");
+  println!("assets bench: scene start, the reload hitch and the waiting pump");
   let results = results_dir();
   let mut criterion = Criterion::default()
     .sample_size(20)
     .output_directory(&results)
     .configure_from_args();
-  scene_start(&mut criterion);
+  let looks = Looks::new();
+  if guards::runs(&["reload_hitch"]) {
+    reload_guard(&looks);
+  }
+  let files = SceneFiles::new();
+  scene_start(&mut criterion, &files);
+  reload_bench(&mut criterion, &looks);
+  if guards::runs(&["pump_waiting"]) {
+    pump_waiting();
+  }
   criterion.final_summary();
-  print_median(&results, started);
+  for bench in BENCHES {
+    print_median(&results, bench, started);
+  }
+  guards::verdict(
+    "assets",
+    "Profile the reload (the bench binary is the one `cargo bench --bench assets --no-run` \
+     names) with\n  xcrun xctrace record --template 'Time Profiler' --output reload_hitch.trace \
+     --launch -- target/release/deps/assets-<hash> --bench --profile-time 20 \
+     '^reload_hitch$'\nand charge each sample's time to the nearest ryo2d function from the \
+     leaf up; the frames between reloads are the baseline.",
+  );
 }
 
-/// The median of the run criterion just wrote to `results`, in
+/// The median of `bench` from the run criterion just wrote to `results`, in
 /// microseconds; nothing for results an earlier run left (this run skipped
 /// the bench, as a filter or `--list` does)
-fn print_median(results: &Path, started: SystemTime) {
-  let path = results.join("scene_start/new/estimates.json");
+fn print_median(results: &Path, bench: &str, started: SystemTime) {
+  let path = results.join(bench).join("new/estimates.json");
   let written = std::fs::metadata(&path)
     .and_then(|meta| meta.modified())
     .is_ok_and(|modified| modified >= started);
   if !written {
-    println!("scene_start median: not measured in this run");
+    println!("{bench} median: not measured in this run");
     return;
   }
   let median = std::fs::read_to_string(&path).ok().and_then(|text| {
@@ -226,7 +827,7 @@ fn print_median(results: &Path, started: SystemTime) {
     rest[from..to].trim().parse::<f64>().ok()
   });
   match median {
-    Some(ns) => println!("scene_start median: {:.0} us", ns / 1000.0),
-    None => println!("scene_start median: unavailable ({})", path.display()),
+    Some(ns) => println!("{bench} median: {:.0} us", ns / 1000.0),
+    None => println!("{bench} median: unavailable ({})", path.display()),
   }
 }
