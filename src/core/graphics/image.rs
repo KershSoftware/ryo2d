@@ -1,5 +1,6 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use super::atlas::PreparedUpload;
 use crate::core::asset::Asset;
 use crate::core::error::ImageError;
 
@@ -23,8 +24,13 @@ pub struct Image {
   opaque: OnceLock<bool>,
   /// The mip levels below the first of the image's own texture, made by the
   /// loader for an image too large for the atlas's shared pages (see
-  /// [`Image::prepare_mips`]); none once the pixels change
+  /// [`Image::prepare_upload`]). Kept, so a texture freed unused and drawn
+  /// again need not make them; none once the pixels change
   mips: Option<Arc<Vec<Vec<u8>>>>,
+  /// The rest of its upload, made by the loader (see
+  /// [`Image::prepare_upload`]) until the renderer takes it, shared with
+  /// clones; none once the pixels change
+  upload: Arc<Mutex<Option<PreparedUpload>>>,
 }
 
 impl Asset for Image {}
@@ -82,6 +88,7 @@ impl Image {
       height,
       opaque: OnceLock::from(is_opaque),
       mips: None,
+      upload: Arc::default(),
     }
   }
 
@@ -272,6 +279,7 @@ impl Image {
   /// its version on, so what was built from it is built again
   pub fn data_mut(&mut self) -> &mut [u8] {
     self.mips = None;
+    self.upload = Arc::default();
     self.opaque = OnceLock::new();
     Arc::make_mut(&mut self.data).as_mut_slice()
   }
@@ -281,18 +289,43 @@ impl Image {
     &self.data
   }
 
-  /// Makes the mip levels below the first of the image's own texture, for
-  /// an image too large for the atlas's shared pages (over 256 px on a
-  /// side); nothing for a smaller one. The loader calls it on its thread, so
-  /// the upload does not make them on the main thread
-  pub(crate) fn prepare_mips(&mut self) {
-    self.mips = super::atlas::standalone_mips(&self.data, self.width, self.height).map(Arc::new);
+  /// Makes what uploading the pixels needs besides them: the pixels with
+  /// their border, and the mip levels below. The loader calls it on its
+  /// thread, so the upload only copies them. An image too large for the
+  /// atlas's shared pages (over 256 px on a side) keeps its levels below the
+  /// first (`mips`); the rest goes to the renderer the first time it uploads
+  /// the image ([`Image::take_upload`])
+  pub(crate) fn prepare_upload(&mut self) {
+    let upload = PreparedUpload::new(&self.data, self.width, self.height);
+    self.mips = upload
+      .as_ref()
+      .filter(|_| self.has_own_texture())
+      .map(|upload| Arc::clone(upload.below()));
+    self.upload = Arc::new(Mutex::new(upload));
   }
 
-  /// The mip levels [`Image::prepare_mips`] made: none for an image in the
-  /// atlas's shared pages, one made in code, or one changed since
+  /// Whether the image gets a texture of its own on the GPU rather than a
+  /// place on one of the atlas's shared pages: over 256 px on a side
+  pub(crate) fn has_own_texture(&self) -> bool {
+    super::atlas::own_texture(self.width, self.height)
+  }
+
+  /// The mip levels below the first of the image's own texture
+  /// [`Image::prepare_upload`] made: none for an image in the atlas's shared
+  /// pages, one made in code, or one changed since
   pub(crate) fn mips(&self) -> Option<&Arc<Vec<Vec<u8>>>> {
     self.mips.as_ref()
+  }
+
+  /// The upload [`Image::prepare_upload`] made, once: it is the renderer's
+  /// from then on, freed once written. None for an image made in code, one
+  /// changed since, or one whose upload was taken (by a clone too)
+  pub(crate) fn take_upload(&self) -> Option<PreparedUpload> {
+    self
+      .upload
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .take()
   }
 
   /// Create a new image with pre-scaled pixel data (nearest-neighbor).
@@ -741,19 +774,46 @@ mod tests {
     assert_eq!(frame, original); // Should be unchanged
   }
 
-  /// A 300x300 opaque image with its mips prepared
+  /// A 300x300 opaque image with its upload prepared
   fn large() -> Image {
     let mut image = Image::solid_rect(300, 300, 40, 80, 120, 255);
-    image.prepare_mips();
+    image.prepare_upload();
     image
   }
 
   #[test]
-  fn editing_the_pixels_drops_the_prepared_mips() {
+  fn editing_the_pixels_drops_the_prepared_upload() {
     let mut image = large();
     assert!(image.mips().is_some(), "300 px is too large for the atlas");
     image.data_mut()[0] = 0;
     assert!(image.mips().is_none(), "the old levels show the old pixels");
+    assert!(image.take_upload().is_none(), "and so does the rest");
+  }
+
+  #[test]
+  fn a_prepared_upload_is_taken_once_and_the_large_keep_their_mips() {
+    let image = large();
+    let copy = image.clone();
+    let upload = image.take_upload().expect("prepared");
+    assert_eq!(upload.size(), (300, 300));
+    assert!(upload.fits(300, 300) && !upload.fits(300, 299));
+    assert!(image.take_upload().is_none(), "taken once");
+    assert!(copy.take_upload().is_none(), "a clone shares it");
+    assert!(
+      image
+        .mips()
+        .is_some_and(|mips| Arc::ptr_eq(mips, upload.below())),
+      "the levels below the first stay with the image"
+    );
+    let mut small = Image::solid_rect(64, 32, 1, 2, 3, 255);
+    small.prepare_upload();
+    assert!(
+      small.mips().is_none(),
+      "a shared page's levels go with its upload"
+    );
+    let upload = small.take_upload().expect("prepared");
+    assert!(upload.fits(64, 32));
+    assert_eq!(upload.below().len(), 3, "the pages' three levels below");
   }
 
   #[test]

@@ -877,9 +877,13 @@ fn build_run(
     RunAt::Slot(k) => k,
     RunAt::Image | RunAt::Elsewhere => 0,
   };
+  // A kept run holds its sprites before they are placed in their textures
+  // (`UiRenderer::finish`), so the version a texture shows is not its
+  // concern: the store's is
   let stamps = StampSources {
     images: frame.images,
     icons: frame.sources.map(|sources| sources.icons),
+    showing: &[],
   };
   if runs.keeps() && !matches!(at, RunAt::Elsewhere) {
     let sprites = &*targets.sprites;

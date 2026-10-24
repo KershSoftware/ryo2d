@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::atlas::{ImagePixels, PreparedUpload};
 use super::{Image, RenderTarget};
 use crate::core::asset::AssetId;
 
@@ -18,7 +19,10 @@ pub(crate) enum TextureSource {
     id: AssetId<Image>,
     pixels: Arc<Vec<u8>>,
     /// The levels below the first of its own texture, made by its loader
+    /// (kept with the image)
     mips: Option<Arc<Vec<Vec<u8>>>>,
+    /// The rest of its upload as its loader made it, until written
+    prepared: Option<PreparedUpload>,
     version: u64,
   },
   Pixels(Arc<[u8]>),
@@ -44,14 +48,45 @@ impl TextureSource {
       TextureSource::Pixels(_) | TextureSource::Target => None,
     }
   }
+
+  /// The upload its loader made, until written
+  pub(crate) fn prepared(&self) -> Option<&PreparedUpload> {
+    match self {
+      TextureSource::Image { prepared, .. } => prepared.as_ref(),
+      TextureSource::Pixels(_) | TextureSource::Target => None,
+    }
+  }
+
+  /// The upload its loader made, taken (to be written over frames)
+  pub(crate) fn take_prepared(&mut self) -> Option<PreparedUpload> {
+    match self {
+      TextureSource::Image { prepared, .. } => prepared.take(),
+      TextureSource::Pixels(_) | TextureSource::Target => None,
+    }
+  }
+
+  /// Its pixels as the atlas takes them, `width`x`height`
+  pub(crate) fn pixels(&self, width: u32, height: u32) -> ImagePixels<'_> {
+    ImagePixels {
+      width,
+      height,
+      rgba: self.rgba(),
+      mips: self.mips(),
+      prepared: self.prepared(),
+    }
+  }
 }
 
 pub(crate) struct TextureEntry {
   pub source: TextureSource,
   pub width: u32,
   pub height: u32,
-  /// The image's version (or 0 for pixels) last uploaded
+  /// The image's version (or 0 for pixels) last uploaded: what its
+  /// texture shows
   pub uploaded_content: Option<u64>,
+  /// The image's version being written into a new texture over frames,
+  /// which takes the texture's place once whole
+  pub writing: Option<u64>,
   pub last_used: u64,
 }
 
@@ -100,7 +135,8 @@ impl TextureRegistry {
   }
 
   /// The texture of image `id`, `image` at `version`, registered on first
-  /// use. A new version takes its pixels and size, and is uploaded again
+  /// use. A new version takes its pixels, size and prepared upload, and is
+  /// uploaded again
   pub(crate) fn image(
     &mut self,
     id: AssetId<Image>,
@@ -112,11 +148,7 @@ impl TextureRegistry {
       && let Some(entry) = self.get_mut(texture)
     {
       entry.last_used = frame;
-      if !matches!(entry.source, TextureSource::Image { version: held, .. } if held == version) {
-        entry.source = Self::image_source(id, image, version);
-        entry.width = image.width();
-        entry.height = image.height();
-      }
+      Self::follow(entry, id, image, version);
       return texture;
     }
     let texture = self.insert(TextureEntry {
@@ -124,10 +156,30 @@ impl TextureRegistry {
       width: image.width(),
       height: image.height(),
       uploaded_content: None,
+      writing: None,
       last_used: frame,
     });
     self.by_image.insert(id, texture);
     texture
+  }
+
+  /// Bring image `id`'s texture, `texture`, to `image` at `version`
+  /// without marking it used: a new version, seen before a frame draws
+  pub(crate) fn refresh(&mut self, texture: TextureId, image: &Image, version: u64) {
+    if let Some(entry) = self.get_mut(texture)
+      && let TextureSource::Image { id, .. } = entry.source
+    {
+      Self::follow(entry, id, image, version);
+    }
+  }
+
+  /// `entry`, image `id`'s, at `version`
+  fn follow(entry: &mut TextureEntry, id: AssetId<Image>, image: &Image, version: u64) {
+    if !matches!(entry.source, TextureSource::Image { version: held, .. } if held == version) {
+      entry.source = Self::image_source(id, image, version);
+      entry.width = image.width();
+      entry.height = image.height();
+    }
   }
 
   fn image_source(id: AssetId<Image>, image: &Image, version: u64) -> TextureSource {
@@ -135,6 +187,7 @@ impl TextureRegistry {
       id,
       pixels: Arc::clone(image.pixels()),
       mips: image.mips().cloned(),
+      prepared: image.take_upload(),
       version,
     }
   }
@@ -171,6 +224,7 @@ impl TextureRegistry {
       width,
       height,
       uploaded_content: None,
+      writing: None,
       last_used: frame,
     });
     self.by_name.insert(name.to_string(), id);
@@ -198,10 +252,14 @@ impl TextureRegistry {
     }
   }
 
+  /// Whether `id`'s pixels are to be written: new, or a new version not
+  /// already being written into a new texture
   pub(crate) fn needs_upload(&self, id: TextureId) -> bool {
     self.get(id).is_some_and(|entry| {
+      let content = Some(Self::content(entry));
       !matches!(entry.source, TextureSource::Target)
-        && entry.uploaded_content != Some(Self::content(entry))
+        && entry.uploaded_content != content
+        && entry.writing != content
     })
   }
 
@@ -219,6 +277,7 @@ impl TextureRegistry {
       width,
       height,
       uploaded_content: None,
+      writing: None,
       last_used: 0,
     });
     self.by_target.insert(target, id);
@@ -244,9 +303,29 @@ impl TextureRegistry {
     gone
   }
 
+  /// `id`'s texture shows its pixels now; their prepared upload is freed
   pub(crate) fn mark_uploaded(&mut self, id: TextureId) {
     if let Some(entry) = self.get_mut(id) {
       entry.uploaded_content = Some(Self::content(entry));
+      entry.writing = None;
+      entry.source.take_prepared();
+    }
+  }
+
+  /// `id`'s pixels are being written into a new texture over frames
+  pub(crate) fn mark_writing(&mut self, id: TextureId) {
+    if let Some(entry) = self.get_mut(id) {
+      entry.writing = Some(Self::content(entry));
+    }
+  }
+
+  /// The new texture `id`'s pixels were written into took the old one's
+  /// place: it shows the version written
+  pub(crate) fn mark_written(&mut self, id: TextureId) {
+    if let Some(entry) = self.get_mut(id)
+      && let Some(written) = entry.writing.take()
+    {
+      entry.uploaded_content = Some(written);
     }
   }
 

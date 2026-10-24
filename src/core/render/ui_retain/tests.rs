@@ -62,7 +62,11 @@ fn text(layout: &Arc<TextLayout>) -> UiCommand {
 
 /// What the commands draw from: `images`, and `icons` by name
 fn from<'a>(images: &'a Assets<Image>, icons: Option<&'a TextIcons>) -> StampSources<'a> {
-  StampSources { images, icons }
+  StampSources {
+    images,
+    icons,
+    showing: &[],
+  }
 }
 
 /// No images and no icons

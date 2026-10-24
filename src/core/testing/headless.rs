@@ -525,6 +525,26 @@ impl HeadlessEngine {
       .is_some_and(|gpu| gpu.upload_pending(id))
   }
 
+  /// How many images are being written into new textures over frames
+  /// (tests that watch a dropped one go)
+  #[cfg(test)]
+  pub(crate) fn spread_uploads(&self) -> usize {
+    self
+      .engine
+      .sprite_gpu
+      .as_ref()
+      .map_or(0, |gpu| gpu.spread_uploads())
+  }
+
+  /// Write at most `bytes` of image pixels a frame into textures being
+  /// replaced (tests that spread a small image over many frames)
+  #[cfg(test)]
+  pub(crate) fn set_upload_budget(&mut self, bytes: u64) {
+    if let Some(gpu) = self.engine.sprite_gpu.as_mut() {
+      gpu.set_upload_budget(bytes);
+    }
+  }
+
   /// How many pipelines game shaders have: one per blend mode a sprite
   /// shader is drawn with, and one per custom effect's source (tests that
   /// watch a freed shader's pipelines go)

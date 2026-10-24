@@ -18,8 +18,8 @@ use crate::core::graphics::camera_gpu::CameraGlobals;
 use crate::core::graphics::camera_mut::main_view;
 use crate::core::graphics::renderer::FrameError;
 use crate::core::graphics::{
-  Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers, RenderTargets, ScreenMapping,
-  images_of,
+  Camera2d, CameraView, GpuRenderContext, Image, Presentation, RenderLayers, RenderTargets,
+  ScreenMapping, images_of,
 };
 use crate::core::graphics::{ParallaxLayer, parallax};
 use crate::core::lighting::{FrameLight, Light2D, LightOccluder2D, LightingSettings};
@@ -81,11 +81,22 @@ impl Engine {
     let mut lighting = self.lighting.take();
 
     let camera = main_view(&mut self.world);
-    // Images freed since the last frame lose their textures at once; the
-    // checker stands in for images that are not loaded (debug builds)
+    // Images freed since the last frame lose their textures at once, and
+    // changed ones start their new ones, before anything draws; the checker
+    // stands in for images that are not loaded (debug builds)
     let missing = Some(self.missing_image.id());
-    freed_since(&self.world, &mut self.image_events, &mut self.freed_images);
-    gpu.sync_images(self.freed_images.drain(..), images_of(&self.world), missing);
+    image_changes(
+      &self.world,
+      &mut self.image_events,
+      (&mut self.freed_images, &mut self.changed_images),
+    );
+    gpu.sync_images(
+      rend.device(),
+      self.freed_images.drain(..),
+      self.changed_images.drain(..),
+      images_of(&self.world),
+      missing,
+    );
     // Shaders freed since the last frame lose their pipelines at once
     freed_since(
       &self.world,
@@ -387,14 +398,6 @@ impl Engine {
         // A game that removed the text resources draws its UI without text
         _ => None,
       };
-      let mut text_targets = TextTargets {
-        raster: &mut self.glyph_raster,
-        sprites: &mut gpu,
-        device: rend.device(),
-        queue: rend.queue(),
-        list: &mut self.draw_list,
-        warned: &mut self.text_warned,
-      };
       // An unchanged UI keeps the UI image: none of it is built, uploaded
       // or drawn (render module notes, "UI render retention")
       let retain = self.config.debug.ui_retain;
@@ -414,11 +417,20 @@ impl Engine {
       let stamps = StampSources {
         images: images_of(&self.world),
         icons: sources.as_ref().map(|sources| sources.icons),
+        showing: gpu.showing_old(),
       };
       let ui_kept = retain
         && self
           .ui_retain
           .keep(&self.ui_commands, stamps, env, rend.ui_image_epoch());
+      let mut text_targets = TextTargets {
+        raster: &mut self.glyph_raster,
+        sprites: &mut gpu,
+        device: rend.device(),
+        queue: rend.queue(),
+        list: &mut self.draw_list,
+        warned: &mut self.text_warned,
+      };
       // A changed UI is built by the UI renderer. It is drawn when it
       // recorded anything, also when all of it is culled: the `ui` pass then
       // clears the UI image, so an unchanged next frame keeps it
@@ -608,6 +620,25 @@ fn freed_since<T: Asset>(
       _ => None,
     });
     freed.extend(removed);
+  }
+}
+
+/// The images freed (`Removed`) and changed (`Modified`) since `cursor`
+fn image_changes(
+  world: &World,
+  cursor: &mut MessageCursor<AssetEvent<Image>>,
+  (freed, changed): (&mut Vec<AssetId<Image>>, &mut Vec<AssetId<Image>>),
+) {
+  freed.clear();
+  changed.clear();
+  if let Some(events) = world.get_resource::<Messages<AssetEvent<Image>>>() {
+    for event in cursor.read(events) {
+      match event {
+        AssetEvent::Removed { id } => freed.push(*id),
+        AssetEvent::Modified { id } => changed.push(*id),
+        _ => {}
+      }
+    }
   }
 }
 

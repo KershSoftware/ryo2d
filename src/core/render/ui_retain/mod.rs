@@ -7,6 +7,7 @@ use std::ops::Range;
 
 use crate::core::asset::Assets;
 use crate::core::graphics::Image;
+use crate::core::graphics::atlas::Showing;
 use crate::core::hash::FastHasher;
 use crate::core::render::UiSpace;
 use crate::core::text::{Icon, TextIcons};
@@ -354,15 +355,32 @@ pub(crate) struct StampSources<'a> {
   pub(crate) images: &'a Assets<Image>,
   /// The icons texts name (`None`: the game removed them)
   pub(crate) icons: Option<&'a TextIcons>,
+  /// The images whose textures show an older version while the new one is
+  /// written into a new texture (`SpriteGpuRenderer::showing_old`)
+  pub(crate) showing: &'a [Showing],
 }
 
-/// What `command` draws from besides its own value: an image's version, or
-/// a text's icons (each image's id and version; a name's image and region
-/// in the icons); 0 for neither
+/// What `command` draws from besides its own value: the version of an
+/// image its texture shows, or a text's icons (each image's id and version;
+/// a name's image and region in the icons); 0 for neither
 pub(crate) fn stamp_of(command: &UiCommand, sources: StampSources<'_>) -> u64 {
-  let StampSources { images, icons } = sources;
-  // 0 stands for an image that is not loaded: versions start at 1
-  let version = |image| images.version(image).unwrap_or(0);
+  let StampSources {
+    images,
+    icons,
+    showing,
+  } = sources;
+  // 0 stands for an image that is not loaded: versions start at 1. A
+  // texture still showing an older version draws that one, until its new
+  // texture takes its place
+  let version = |image| {
+    showing
+      .iter()
+      .find(|showing| showing.image == image)
+      .map_or_else(
+        || images.version(image).unwrap_or(0),
+        |showing| showing.version,
+      )
+  };
   match command {
     UiCommand::Sprite { sprite, .. } => version(sprite.id()),
     UiCommand::Text { layout, .. } if !layout.icons.is_empty() => {

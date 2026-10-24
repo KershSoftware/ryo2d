@@ -213,11 +213,13 @@ pub struct Engine {
   draw_list: DrawList,
   batch_collector: BatchCollector,
   /// Where the renderer has read the images' events to (their `Removed`
-  /// free textures), and the freed ids of a frame (reused)
+  /// free textures, their `Modified` start new ones), and the freed and
+  /// changed ids of a frame (reused)
   image_events: crate::core::ecs::kernel::MessageCursor<
     crate::core::asset::AssetEvent<crate::core::graphics::Image>,
   >,
   freed_images: Vec<crate::core::asset::AssetId<crate::core::graphics::Image>>,
+  changed_images: Vec<crate::core::asset::AssetId<crate::core::graphics::Image>>,
   /// Where the renderer has read the shaders' events to (their `Removed`
   /// free pipelines), and the freed ids of a frame (reused)
   shader_events: crate::core::ecs::kernel::MessageCursor<
@@ -670,6 +672,7 @@ impl Engine {
       batch_collector: BatchCollector::new(),
       image_events: Default::default(),
       freed_images: Vec::new(),
+      changed_images: Vec::new(),
       shader_events: Default::default(),
       freed_shaders: Vec::new(),
       missing_image,

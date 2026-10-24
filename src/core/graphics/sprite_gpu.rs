@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use super::atlas::Showing;
 use super::glyph_atlas::{GlyphPage, GlyphSlot};
 use super::render_targets::RenderTargets;
 use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
@@ -303,12 +304,15 @@ pub(crate) struct ShownImage<'i> {
   pub(crate) id: AssetId<Image>,
   pub(crate) image: &'i Image,
   version: u64,
+  /// The size its texture shows it at: an older version's while a new one
+  /// is written into a new texture
+  size: (u32, u32),
 }
 
 impl ShownImage<'_> {
   /// The size it draws at, in texels
   pub(crate) fn size(&self) -> (u32, u32) {
-    (self.image.width(), self.image.height())
+    self.size
   }
 }
 
@@ -388,15 +392,17 @@ impl SpriteGpuRenderer {
   }
 
   /// Make `id` resident in the atlas: write its pixels when they are new,
-  /// changed (a reloaded image) or were evicted. `None` when they cannot
-  /// be uploaded (empty, mismatched or larger than the device allows).
+  /// changed (a reloaded image) or were evicted. A large new version made
+  /// ahead is written into a new texture over frames instead, the old one
+  /// drawn meanwhile (`spread`). `None` when they cannot be uploaded
+  /// (empty, mismatched or larger than the device allows).
   fn resident(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     id: TextureId,
   ) -> Option<AtlasSlot> {
-    if self.registry.needs_upload(id) {
+    if self.registry.needs_upload(id) && !self.spread(device, id) {
       // Changed content: free the old pixels' rect, so the new ones are written
       self.atlas.remove(id);
     }
@@ -407,27 +413,70 @@ impl SpriteGpuRenderer {
     }
     let image = matches!(entry.source, TextureSource::Image { .. });
     let written = self.atlas.writes();
-    let slot = self.atlas.slot(
-      device,
-      queue,
-      id,
-      entry.width,
-      entry.height,
-      entry.source.rgba(),
-      entry.source.mips(),
-      self.frame,
-    );
-    if slot.is_some() {
+    let pixels = entry.source.pixels(entry.width, entry.height);
+    let slot = self.atlas.slot(device, queue, id, pixels, self.frame);
+    // While its new version is written over frames, the old one shows
+    if slot.is_some() && !self.atlas.is_spreading(id) {
       self.registry.mark_uploaded(id);
     }
     if image && self.atlas.writes() != written {
       self.uploads += 1;
     }
+    self.take_swaps();
     slot
   }
 
+  /// Start writing texture `id`'s new version into a new texture over
+  /// frames, while its texture draws the old one: when its loader made its
+  /// upload, it is too large for a frame's budget, and it has a texture to
+  /// draw meanwhile (`TextureAtlas::spreads`). Whether it did
+  fn spread(&mut self, device: &wgpu::Device, id: TextureId) -> bool {
+    let Some(entry) = self.registry.get(id) else {
+      return false;
+    };
+    let TextureSource::Image {
+      id: image,
+      prepared: Some(upload),
+      ..
+    } = &entry.source
+    else {
+      return false;
+    };
+    if !upload.fits(entry.width, entry.height) || !self.atlas.spreads(device, id, upload) {
+      return false;
+    }
+    let shows = (*image, entry.uploaded_content.unwrap_or_default());
+    let Some(upload) = self
+      .registry
+      .get_mut(id)
+      .and_then(|entry| entry.source.take_prepared())
+    else {
+      return false;
+    };
+    self.atlas.spread(device, id, upload, shows);
+    self.registry.mark_writing(id);
+    true
+  }
+
+  /// The images whose new texture took the old one's place: they show the
+  /// version written, and count as uploaded
+  fn take_swaps(&mut self) {
+    let Self {
+      atlas,
+      registry,
+      uploads,
+      ..
+    } = self;
+    for texture in atlas.take_swapped() {
+      registry.mark_written(texture);
+      *uploads += 1;
+    }
+  }
+
   /// Make the textures `ids` resident for this frame: re-upload what the
-  /// atlas evicted, mark them used and run the atlas housekeeping.
+  /// atlas evicted, mark them used, write the bands of images being
+  /// replaced that the frame's budget leaves room for, and run the atlas
+  /// housekeeping.
   fn make_resident(
     &mut self,
     device: &wgpu::Device,
@@ -438,6 +487,7 @@ impl SpriteGpuRenderer {
       self.touch(id);
       self.resident(device, queue, id);
     }
+    self.atlas.write_spreads(queue);
     self.atlas.end_frame(self.frame);
     self.prune();
     self.frame += 1;
@@ -473,6 +523,8 @@ impl SpriteGpuRenderer {
   }
 
   /// Where `texture` lives in the atlas, and the size of its page.
+  // The batch asks for every sprite (see `TextureAtlas::lookup`)
+  #[inline]
   pub(crate) fn slot(&self, texture: TextureId) -> Option<(AtlasSlot, (u32, u32))> {
     let slot = self.atlas.lookup(texture)?;
     let page = self.atlas.texture(slot.page)?;
@@ -671,10 +723,14 @@ impl SpriteGpuRenderer {
     images: &'i Assets<Image>,
   ) -> Option<ShownImage<'i>> {
     let shown = |id: AssetId<Image>| {
+      let image = images.get(id)?;
       Some(ShownImage {
         id,
-        image: images.get(id)?,
+        image,
         version: images.version(id)?,
+        size: self
+          .showing(id)
+          .map_or((image.width(), image.height()), |showing| showing.size),
       })
     };
     shown(id).or_else(|| {
@@ -732,13 +788,20 @@ impl SpriteGpuRenderer {
   /// Bring the images' textures in line with the image store before a
   /// frame draws: the textures of the images freed since the last frame
   /// (`removed`, from `AssetEvent::Removed`) go at once, with their atlas
-  /// space. `missing` is the checker drawn in place of an image that is not
+  /// space and any new texture being written for them; new textures
+  /// written whole take their old ones' places; and an image changed since
+  /// (`changed`, from `AssetEvent::Modified`) that has a texture takes its
+  /// new version, a large one made ahead starting to be written into a new
+  /// texture over frames, so all of this frame draws its old pixels.
+  /// `missing` is the checker drawn in place of an image that is not
   /// loaded (debug builds). Now and then every image texture is checked
   /// against `images` too, so one whose event was missed (a frame not
   /// drawn) does not stay
   pub(crate) fn sync_images(
     &mut self,
+    device: &wgpu::Device,
     removed: impl IntoIterator<Item = AssetId<Image>>,
+    changed: impl IntoIterator<Item = AssetId<Image>>,
     images: &Assets<Image>,
     missing: Option<AssetId<Image>>,
   ) {
@@ -747,6 +810,20 @@ impl SpriteGpuRenderer {
       if let Some(texture) = self.registry.image_texture(image) {
         self.atlas.remove(texture);
         self.registry.remove(texture);
+      }
+    }
+    self.atlas.swap_spreads(self.frame);
+    self.take_swaps();
+    for image in changed {
+      let Some(texture) = self.registry.image_texture(image) else {
+        continue;
+      };
+      let (Some(value), Some(version)) = (images.get(image), images.version(image)) else {
+        continue;
+      };
+      self.registry.refresh(texture, value, version);
+      if self.registry.needs_upload(texture) {
+        self.spread(device, texture);
       }
     }
     if self.frame.is_multiple_of(PRUNE_EVERY) {
@@ -761,6 +838,21 @@ impl SpriteGpuRenderer {
         self.registry.remove(texture);
       }
     }
+  }
+
+  /// What each image being written into a new texture draws meanwhile:
+  /// its old texture, at an older version and size
+  pub(crate) fn showing_old(&self) -> &[Showing] {
+    self.atlas.showing()
+  }
+
+  /// What image `id`'s texture shows while its new version is written
+  fn showing(&self, id: AssetId<Image>) -> Option<&Showing> {
+    self
+      .atlas
+      .showing()
+      .iter()
+      .find(|showing| showing.image == id)
   }
 
   /// Forget named pixel textures neither uploaded nor drawn for
@@ -846,12 +938,23 @@ impl SpriteGpuRenderer {
   }
 
   /// Whether image `id`'s new version is being written into a new texture
-  /// over frames, its old texture drawn meanwhile: never, as every upload
-  /// is written in the frame it is asked for
+  /// over frames, its old texture drawn meanwhile
   // The headless engine reads it, which the web has not
   #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-  pub(crate) fn upload_pending(&self, _id: AssetId<Image>) -> bool {
-    false
+  pub(crate) fn upload_pending(&self, id: AssetId<Image>) -> bool {
+    self.showing(id).is_some()
+  }
+
+  /// How many images are being written into new textures (tests)
+  #[cfg(test)]
+  pub(crate) fn spread_uploads(&self) -> usize {
+    self.atlas.spread_count()
+  }
+
+  /// The bytes a frame writes into textures being replaced (tests)
+  #[cfg(test)]
+  pub(crate) fn set_upload_budget(&mut self, bytes: u64) {
+    self.atlas.set_budget(bytes);
   }
 
   /// How many textures have room in the atlas (for tests that watch it
@@ -1453,7 +1556,7 @@ mod tests {
     let mut removed = Vec::new();
     images.free_unheld(&mut removed);
     assert_eq!(removed, vec![id]);
-    renderer.sync_images(removed, &images, None);
+    renderer.sync_images(&device, removed, [], &images, None);
     assert!(renderer.lookup_image(id).is_none());
     assert_eq!(renderer.texture_count(), 1);
     assert!(renderer.lookup_image(kept.id()).is_some());
@@ -1474,11 +1577,11 @@ mod tests {
     images.free_unheld(&mut Vec::new());
     // Its `Removed` was never read; the store no longer has it
     while !renderer.frame.is_multiple_of(PRUNE_EVERY) {
-      renderer.sync_images([], &images, None);
+      renderer.sync_images(&device, [], [], &images, None);
       assert!(renderer.lookup_image(id).is_some(), "kept until the check");
       renderer.prepare_textures(&device, &queue, &DrawList::default(), &[]);
     }
-    renderer.sync_images([], &images, None);
+    renderer.sync_images(&device, [], [], &images, None);
     assert!(renderer.lookup_image(id).is_none());
   }
 

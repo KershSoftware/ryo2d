@@ -89,6 +89,12 @@ impl<'a> LoadContext<'a> {
     self.path
   }
 
+  /// Whether the load was queued: on a worker thread (in the pump on the
+  /// web), not on the thread that called `load_now`
+  pub(crate) fn queued(&self) -> bool {
+    matches!(self.mode, LoadMode::Queued)
+  }
+
   /// The world `load_now` loads into, which holds the dependencies loaded
   /// so far; none on the workers
   pub(crate) fn world(&self) -> Option<&World> {

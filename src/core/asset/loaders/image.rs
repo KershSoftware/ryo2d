@@ -78,9 +78,13 @@ pub struct ImageSettings {
 /// QOI and ICO through the `image` crate, and SVG through resvg at the
 /// settings' [`SvgSize`]. Every registry has it.
 ///
-/// An image too large for the atlas's shared pages (over 256 px on a side)
-/// gets its own texture, with mip levels: the loader makes them here, off
-/// the main thread
+/// What uploading an image needs besides its pixels (the pixels with their
+/// border, and their mip levels) is made here, so the renderer only copies
+/// it: on the workers for every image, and under `load_now` for an image
+/// too large for the atlas's shared pages (over 256 px on a side), which
+/// keeps its levels. A smaller one loaded at once has its levels made when
+/// it is first drawn, as making them here would cost the same thread the
+/// same time
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ImageLoader;
 
@@ -108,7 +112,9 @@ impl AssetLoader for ImageLoader {
     } else {
       decode(&bytes, extension).map_err(|error| AssetError::decode(path, error))?
     };
-    image.prepare_mips();
+    if cx.queued() || image.has_own_texture() {
+      image.prepare_upload();
+    }
     Ok(image)
   }
 }
@@ -361,7 +367,7 @@ mod tests {
   }
 
   #[test]
-  fn a_large_image_has_the_mips_the_atlas_would_make() {
+  fn a_large_image_has_the_upload_the_atlas_would_make() {
     let rgba = pattern(512, 512);
     let files = MemorySource::new();
     files.insert("big.png", png(&rgba, 512, 512));
@@ -369,30 +375,66 @@ mod tests {
     files.insert("small.png", png(&pattern(256, 256), 256, 256));
     let mut world = images_over(files);
     // What the atlas makes for a standalone texture: the image with its
-    // border, halved down to one texel; the first level is the image itself
+    // border, halved down to one texel
     let Some(bordered) = extrude_border(&rgba, 512, 512, BORDER) else {
       panic!("512x512 pixels are 512x512");
     };
     let side = 512 + 2 * BORDER;
     let levels = 32 - side.leading_zeros();
-    let expected: Vec<Vec<u8>> = mip_chain(&bordered, side, side, levels)
+    let expected: Vec<Vec<u8>> = mip_chain(bordered, side, side, levels)
       .into_iter()
-      .skip(1)
       .map(|(_, _, pixels)| pixels)
       .collect();
     let big = loaded(&mut world, "big.png", ImageSettings::default());
     let mips = big.mips().map(|mips| mips.as_slice());
     assert!(
-      mips == Some(expected.as_slice()),
+      mips == expected.get(1..),
       "{:?} levels, not {}",
       mips.map(<[_]>::len),
-      expected.len()
+      expected.len() - 1
     );
+    let Some(upload) = big.take_upload() else {
+      panic!("the first level with its border is made too");
+    };
+    assert!(upload.fits(512, 512));
+    assert!(Some(upload.first()) == expected.first().map(Vec::as_slice));
     let wide = loaded(&mut world, "wide.png", ImageSettings::default());
     assert!(wide.mips().is_some(), "over 256 px on one side is enough");
-    // The atlas makes a shared page's levels with the page
+    // At once on the calling thread, a shared page's levels are made at
+    // upload: here they would cost that thread the same
     let small = loaded(&mut world, "small.png", ImageSettings::default());
-    assert!(small.mips().is_none());
+    assert!(small.mips().is_none() && small.take_upload().is_none());
+  }
+
+  #[test]
+  fn an_image_loaded_on_the_workers_has_its_upload_made_there() {
+    let rgba = pattern(64, 32);
+    let files = MemorySource::new();
+    files.insert("small.png", png(&rgba, 64, 32));
+    let mut world = images_over(files);
+    let handle = world.resource::<AssetServer>().load::<Image>("small.png");
+    let start = std::time::Instant::now();
+    while world.resource::<Assets<Image>>().get(&handle).is_none() {
+      assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "loaded"
+      );
+      crate::core::asset::pump(&mut world);
+      std::thread::yield_now();
+    }
+    let image = world.resource::<Assets<Image>>().get(&handle).cloned();
+    let Some(upload) = image.as_ref().and_then(Image::take_upload) else {
+      panic!("made on the worker");
+    };
+    let Some(bordered) = extrude_border(&rgba, 64, 32, BORDER) else {
+      panic!("64x32 pixels are 64x32");
+    };
+    let expected = mip_chain(bordered, 80, 48, 4);
+    assert!(upload.fits(64, 32));
+    assert!(upload.first() == expected[0].2.as_slice());
+    let below: Vec<&[u8]> = upload.below().iter().map(Vec::as_slice).collect();
+    let made: Vec<&[u8]> = expected[1..].iter().map(|(_, _, p)| p.as_slice()).collect();
+    assert!(below == made, "the shared pages' three levels below");
   }
 
   #[test]
