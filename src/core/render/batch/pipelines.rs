@@ -290,6 +290,14 @@ impl Pipelines {
       .map(|(key, _)| *key)
   }
 
+  /// Whether a pipeline made on the main thread for game shader source
+  /// `source` still has its GPU check out
+  pub(crate) fn checking(&self, source: u64) -> bool {
+    self.built.iter().any(|(key, built)| {
+      key.shader == BatchShader::Custom(source) && matches!(built.state, Checked::Pending { .. })
+    })
+  }
+
   /// Takes in `pipeline`, which the shader thread made (and the GPU
   /// accepted) for game shader source `source`, named `name`; one made
   /// meanwhile is kept

@@ -11,8 +11,13 @@
 //!   takes over once they are made (`advance`, at the start of a frame).
 //!   The renderer sends one version at a time (`wanted`); one saved over
 //!   while it compiles, or whose shader is freed, is dropped when it comes
-//!   back (`landed`). A shader with no such pipeline compiles at once, as
-//!   does every shader on the web (no threads).
+//!   back (`landed`). A source that comes back while a pipeline the main
+//!   thread made from the same text (a twin compiled at once) still has its
+//!   check out is not taken as accepted until that check is back, so the
+//!   shaders moving to it keep their last good version meanwhile. A job
+//!   that panics gives its waiting shaders' version up (`panicked`). A
+//!   shader with no such pipeline compiles at once, as does every shader on
+//!   the web (no threads).
 //! - A version that does not compile, or whose pipeline the GPU rejects,
 //!   draws the shader's last version the GPU accepted, kept until a newer
 //!   one is accepted; with none, it draws as one that is not loaded. It is
@@ -327,7 +332,13 @@ impl<P> ShaderCache<P> {
   /// renderer made from it (`made`, an effect's pipeline; the batch keeps a
   /// sprite shader's own), and whether the GPU accepted that (`outcome`).
   /// Kept only while a shader uses or waits for it: a version saved over
-  /// while it compiled, or whose shader was freed, is dropped (`false`)
+  /// while it compiled, or whose shader was freed, is dropped (`false`).
+  ///
+  /// `checking`: a pipeline the main thread made from the same source (a
+  /// twin shader compiled at once, or a blend mode first drawn) still has
+  /// its GPU check out. Then the source is not taken as accepted yet: that
+  /// check settles it, so if the GPU rejects it the shaders drawing the
+  /// source still have their last good version to fall back to
   pub(crate) fn landed(
     &mut self,
     key: u64,
@@ -335,6 +346,7 @@ impl<P> ShaderCache<P> {
     compiled: Result<Arc<CompiledShader>, ShaderError>,
     made: Option<P>,
     outcome: Result<(), String>,
+    checking: bool,
   ) -> bool {
     if !self.in_use(key) {
       return false;
@@ -347,16 +359,17 @@ impl<P> ShaderCache<P> {
       source.made = made;
     }
     match outcome {
-      Ok(()) if source.shader.is_ok() => self.accepted(key),
+      Ok(()) if source.shader.is_ok() && !checking => self.accepted(key),
       Ok(()) => {}
       Err(message) => self.rejected(key, message),
     }
     true
   }
 
-  /// The job compiling the source under `key` panicked: the source fails,
-  /// so the shaders waiting for it draw their last good version (warned
-  /// once) rather than wait on, or send it again
+  /// The job making the source under `key` panicked: each shader waiting
+  /// for it gives that version up (warned once) and draws its last good
+  /// version, rather than wait on or have it sent again. The source itself
+  /// is left as it is: another shader may hold it, drawn and good
   pub(crate) fn panicked(&mut self, key: u64) {
     let failure = ShaderError {
       shader: String::new(),
@@ -364,7 +377,16 @@ impl<P> ShaderCache<P> {
       column: None,
       message: "compiling it panicked".to_string(),
     };
-    self.landed(key, "", Err(failure), None, Ok(()));
+    for entry in self.entries.values_mut() {
+      if entry.next.as_ref().is_some_and(|next| next.key == key)
+        && let Some(next) = entry.next.take()
+      {
+        unwait(&mut self.waiting, next.key);
+        // Its version is taken as one that failed: not waited for again
+        entry.version = next.version;
+        warn_failed(next.shader.name(), &failure);
+      }
+    }
   }
 
   /// Takes each shader waiting for a newer version to it once `ready` says
@@ -500,8 +522,9 @@ impl<P> ShaderCache<P> {
 
   /// Whether shader `id`, which this renderer draws, is not yet drawn at
   /// its current version in `shaders` by a pipeline the GPU accepted: a new
-  /// version waits, or its pipeline's check is out. `false` for a shader
-  /// this renderer has not drawn
+  /// version waits, or its pipeline's check is out. A current version that
+  /// failed and draws its last good one counts as drawn. `false` for a
+  /// shader this renderer has not drawn
   pub(crate) fn pending(&self, id: AssetId<Shader>, shaders: &Assets<Shader>) -> bool {
     let (Some(version), Some(entry)) = (shaders.version(id), self.entries.get(&id)) else {
       return false;
@@ -951,7 +974,7 @@ mod tests {
     let new = custom::source_key(ShaderKind::Sprite, &blue);
     assert_eq!(wanted, [(new, good)], "made to match what the old one has");
     assert!(cache.in_use(new), "what is made for it is kept");
-    assert!(cache.landed(new, "t14c-waits.wgsl", compiled(&blue), None, Ok(())));
+    assert!(cache.landed(new, "t14c-waits.wgsl", compiled(&blue), None, Ok(()), false));
     cache.advance(|_, _, _| false);
     assert_eq!(
       key_of(&mut cache, &handle, &shaders),
@@ -987,11 +1010,11 @@ mod tests {
     let wanted: Vec<u64> = cache.wanted().map(|w| w.key).collect();
     assert_eq!(wanted, [newest], "only the newest is wanted");
     assert!(
-      !cache.landed(stale, name, compiled(&blue), None, Ok(())),
+      !cache.landed(stale, name, compiled(&blue), None, Ok(()), false),
       "dropped"
     );
     assert!(cache.source(stale).is_none());
-    assert!(cache.landed(newest, name, compiled(&white), None, Ok(())));
+    assert!(cache.landed(newest, name, compiled(&white), None, Ok(()), false));
     cache.advance(|_, _, _| true);
     assert_eq!(key_of(&mut cache, &handle, &shaders), Some(newest));
   }
@@ -1004,7 +1027,14 @@ mod tests {
     let new = custom::source_key(ShaderKind::Sprite, &blue);
     cache.remove(handle.id());
     assert!(!cache.waiting() && !cache.in_use(new) && !cache.in_use(good));
-    assert!(!cache.landed(new, "t14c-freed-cache.wgsl", compiled(&blue), None, Ok(())));
+    assert!(!cache.landed(
+      new,
+      "t14c-freed-cache.wgsl",
+      compiled(&blue),
+      None,
+      Ok(()),
+      false
+    ));
     assert!(cache.source(new).is_none());
   }
 
@@ -1017,7 +1047,7 @@ mod tests {
     let new = custom::source_key(ShaderKind::Sprite, broken);
     let failed = custom::compile(ShaderKind::Sprite, name, broken).map(Arc::new);
     assert!(failed.is_err());
-    assert!(cache.landed(new, name, failed, None, Ok(())));
+    assert!(cache.landed(new, name, failed, None, Ok(()), false));
     cache.advance(|_, _, _| false);
     for _ in 0..3 {
       assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
@@ -1038,7 +1068,8 @@ mod tests {
       name,
       compiled(&blue),
       None,
-      Err("no such binding".into())
+      Err("no such binding".into()),
+      false
     ));
     cache.advance(|_, _, _| false);
     assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
@@ -1077,6 +1108,107 @@ mod tests {
       warned,
       [format!("could not load \"{name}\": compiling it panicked")]
     );
+  }
+
+  #[test]
+  fn a_compile_that_panicked_on_a_text_still_held_drops_the_version_and_is_not_sent_again() {
+    let name = "t14c-panicked-held.wgsl";
+    let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
+    let (mut cache, mut shaders, handle, good) = changed(name, &blue);
+    key_of(&mut cache, &handle, &shaders);
+    let new = custom::source_key(ShaderKind::Sprite, &blue);
+    assert!(cache.landed(new, name, compiled(&blue), None, Ok(()), false));
+    cache.advance(|_, _, _| true);
+    assert_eq!(key_of(&mut cache, &handle, &shaders), Some(new));
+    // Saved back to the first text, which the cache still holds: it waits
+    // for it again, and the job making it panics
+    if let Some(shader) = shaders.get_mut(&handle) {
+      *shader = Shader::from_wgsl(name, PLAIN);
+    }
+    assert_eq!(key_of(&mut cache, &handle, &shaders), Some(new));
+    let wanted: Vec<u64> = cache.wanted().map(|w| w.key).collect();
+    assert_eq!(wanted, [good]);
+    cache.panicked(good);
+    cache.advance(|_, _, _| false);
+    assert!(!cache.waiting(), "it does not wait on");
+    assert_eq!(cache.wanted().count(), 0, "nor is it sent again");
+    for _ in 0..3 {
+      assert_eq!(
+        key_of(&mut cache, &handle, &shaders),
+        Some(new),
+        "its last good version draws, and the version is not waited for again"
+      );
+    }
+    assert!(!cache.waiting());
+    assert!(
+      !cache.pending(handle.id(), &shaders),
+      "a failed version counts as drawn"
+    );
+    let warned: Vec<_> = dev_log::get_entries()
+      .into_iter()
+      .filter(|entry| entry.message.contains(name))
+      .map(|entry| entry.message)
+      .collect();
+    assert_eq!(
+      warned,
+      [format!("could not load \"{name}\": compiling it panicked")]
+    );
+  }
+
+  /// `a` drawing `PLAIN` (accepted) waits for `blue`, and `b`, a new shader
+  /// of that text, compiled it at once: its own pipeline check is out. Then
+  /// `a`'s version comes back from the thread with that check still out.
+  /// The cache, the two handles, `PLAIN`'s key and `blue`'s
+  fn twin_checking(
+    name: &str,
+  ) -> (
+    ShaderCache<()>,
+    Assets<Shader>,
+    [Handle<Shader>; 2],
+    u64,
+    u64,
+  ) {
+    let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
+    let (mut cache, mut shaders, a, good) = changed(name, &blue);
+    assert_eq!(key_of(&mut cache, &a, &shaders), Some(good), "a waits");
+    let new = custom::source_key(ShaderKind::Sprite, &blue);
+    let b = shaders.add(Shader::from_wgsl(
+      "t14c-twin-b-checking.wgsl",
+      blue.as_str(),
+    ));
+    assert_eq!(
+      key_of(&mut cache, &b, &shaders),
+      Some(new),
+      "b compiled it at once"
+    );
+    assert!(cache.landed(new, name, compiled(&blue), None, Ok(()), true));
+    cache.advance(|_, _, _| true);
+    assert_eq!(key_of(&mut cache, &a, &shaders), Some(new), "a draws it");
+    (cache, shaders, [a, b], good, new)
+  }
+
+  #[test]
+  fn a_version_from_the_thread_keeps_the_last_good_one_while_a_twins_check_of_it_is_out() {
+    let (mut cache, shaders, [a, _b], good, new) = twin_checking("t14c-twin-a-rejected.wgsl");
+    assert!(
+      cache.in_use(good),
+      "a keeps its last good version meanwhile"
+    );
+    // The twin's check comes back: the GPU rejects its pipeline
+    cache.rejected(new, "no such entry point".to_string());
+    assert_eq!(
+      key_of(&mut cache, &a, &shaders),
+      Some(good),
+      "a draws its last good version, not plain"
+    );
+  }
+
+  #[test]
+  fn a_twins_check_accepted_lets_go_of_the_last_good_version() {
+    let (mut cache, shaders, [a, _b], good, new) = twin_checking("t14c-twin-a-accepted.wgsl");
+    cache.accepted(new);
+    assert!(!cache.in_use(good), "let go once the check is back");
+    assert_eq!(key_of(&mut cache, &a, &shaders), Some(new));
   }
 
   #[test]

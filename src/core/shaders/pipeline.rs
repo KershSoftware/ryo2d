@@ -225,9 +225,15 @@ impl CustomEffectPipelines {
             Some(Err(message)) => (None, Err(message)),
             None => (None, Ok(())),
           };
+          // A twin compiled it at once, and its check is out
+          let checking = self
+            .cache
+            .source(key)
+            .and_then(|source| source.made.as_ref())
+            .is_some_and(|made| matches!(made, Checked::Pending { .. }));
           self
             .cache
-            .landed(key, &done.name, done.compiled, made, outcome);
+            .landed(key, &done.name, done.compiled, made, outcome, checking);
         }
         None => self.cache.panicked(key),
       }

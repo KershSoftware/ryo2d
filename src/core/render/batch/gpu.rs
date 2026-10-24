@@ -172,7 +172,10 @@ impl Batch2D {
               }
             }
           });
-          textures.custom_shader_landed(key, &done.name, done.compiled, outcome);
+          // A twin compiled at once, or a blend mode first drawn, may have
+          // a check of its own out on the same source
+          let checking = self.pipelines.checking(key);
+          textures.custom_shader_landed(key, &done.name, done.compiled, outcome, checking);
         }
         None => textures.custom_shader_panicked(key),
       }

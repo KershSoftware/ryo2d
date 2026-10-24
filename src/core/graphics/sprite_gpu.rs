@@ -668,15 +668,19 @@ impl SpriteGpuRenderer {
 
   /// A game shader source the shader thread compiled came back
   /// (`ShaderCache::landed`): `outcome` says whether the GPU accepted its
-  /// pipelines, which the batch keeps
+  /// pipelines, which the batch keeps; `checking`, whether a pipeline the
+  /// main thread made from it still has its check out
   pub(crate) fn custom_shader_landed(
     &mut self,
     key: u64,
     name: &str,
     compiled: Result<std::sync::Arc<CompiledShader>, ShaderError>,
     outcome: Result<(), String>,
+    checking: bool,
   ) {
-    self.custom.landed(key, name, compiled, None, outcome);
+    self
+      .custom
+      .landed(key, name, compiled, None, outcome, checking);
   }
 
   /// The job compiling game shader source `key` panicked
