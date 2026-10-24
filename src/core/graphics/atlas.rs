@@ -216,11 +216,6 @@ impl AtlasLayout {
     Some(entry.slot)
   }
 
-  /// The last frame `key`'s slot was used in
-  fn last_used(&self, key: TextureId) -> Option<u64> {
-    self.entries.get(&key).map(|e| e.last_used)
-  }
-
   /// Release the empty pages at the end (earlier pages keep their index)
   pub(crate) fn release_empty(&mut self) {
     let used = self.entries.values().map(|e| e.page + 1).max().unwrap_or(0);
@@ -355,13 +350,14 @@ struct TargetPage {
   bind_groups: PageBindGroups,
 }
 
+/// A texture of its own keeps no time of use: no rule frees one for going
+/// unused (the standalone cap goes by the texture registry's)
 struct Standalone {
   key: TextureId,
   texture: wgpu::Texture,
   bind_groups: PageBindGroups,
   slot: AtlasSlot,
   size: (u32, u32),
-  last_used: u64,
 }
 
 /// What an image being written into a new texture draws until the new one
@@ -749,7 +745,7 @@ impl TextureAtlas {
       match finished {
         Some(bytes) => {
           self.spent += bytes;
-          return self.install(key, frame);
+          return self.install(key);
         }
         None => self.drop_spread(key),
       }
@@ -770,10 +766,9 @@ impl TextureAtlas {
     }
 
     if let Some(id) = self.standalone_ids.get(&key).copied() {
-      if let Some(s) = self.standalone.get_mut(&id)
+      if let Some(s) = self.standalone.get(&id)
         && s.size == (width, height)
       {
-        s.last_used = frame;
         return Some(s.slot);
       }
       self.remove_standalone(id);
@@ -853,7 +848,7 @@ impl TextureAtlas {
       }
     };
     self.spent += written;
-    Some(self.add_standalone(key, (texture, bind_groups), (width, height), frame))
+    Some(self.add_standalone(key, (texture, bind_groups), (width, height)))
   }
 
   /// Whether `upload`, a new version of `key`'s image, is written into a
@@ -958,14 +953,14 @@ impl TextureAtlas {
   /// one's place (before a frame draws anything, so all of it draws the
   /// same pixels); their keys are taken with
   /// [`take_swapped`](Self::take_swapped)
-  pub(crate) fn swap_spreads(&mut self, frame: u64) {
+  pub(crate) fn swap_spreads(&mut self) {
     while let Some(key) = self
       .spreads
       .iter()
       .find(|(_, spread)| spread.done())
       .map(|(key, _)| *key)
     {
-      self.install(key, frame);
+      self.install(key);
     }
   }
 
@@ -1023,14 +1018,12 @@ impl TextureAtlas {
   }
 
   /// Put `key`'s new texture, written whole, in its old one's place
-  fn install(&mut self, key: TextureId, frame: u64) -> Option<AtlasSlot> {
+  fn install(&mut self, key: TextureId) -> Option<AtlasSlot> {
     if !self.spreads.get(&key).is_some_and(Spread::done) {
       return None;
     }
     let spread = self.spreads.remove(&key)?;
     self.showing.retain(|showing| showing.key != key);
-    // It carries on where the old one was used
-    let last_used = self.last_used(key).unwrap_or(frame);
     if let Some(id) = self.standalone_ids.get(&key).copied() {
       self.remove_standalone(id);
     }
@@ -1040,7 +1033,7 @@ impl TextureAtlas {
       texture, upload, ..
     } = spread;
     // The upload's levels are freed with it
-    Some(self.add_standalone(key, texture?, upload.size(), last_used))
+    Some(self.add_standalone(key, texture?, upload.size()))
   }
 
   /// Drop `key`'s new texture, which can never be whole: its old texture
@@ -1053,19 +1046,16 @@ impl TextureAtlas {
   }
 
   /// Mark the texture `key` draws now used in `frame`, without uploading
-  /// anything: a kept UI image shows it
+  /// anything: a kept UI image shows it. One lookup: only a rect on a page
+  /// keeps a time of use
   pub(crate) fn mark_used(&mut self, key: TextureId, frame: u64) {
-    self.touch(key, frame);
+    self.layout.touch(key, frame);
   }
 
   /// The slot of the texture `key` draws now, marked used in `frame`
   fn touch(&mut self, key: TextureId, frame: u64) -> Option<AtlasSlot> {
     match self.standalone_ids.get(&key) {
-      Some(id) => {
-        let standalone = self.standalone.get_mut(id)?;
-        standalone.last_used = frame;
-        Some(standalone.slot)
-      }
+      Some(id) => self.standalone.get(id).map(|standalone| standalone.slot),
       None => self.layout.touch(key, frame),
     }
   }
@@ -1075,14 +1065,6 @@ impl TextureAtlas {
     match self.standalone_ids.get(&key) {
       Some(id) => self.standalone.get(id).map(|s| s.size),
       None => self.layout.size(key),
-    }
-  }
-
-  /// The last frame `key`'s texture was used in
-  fn last_used(&self, key: TextureId) -> Option<u64> {
-    match self.standalone_ids.get(&key) {
-      Some(id) => self.standalone.get(id).map(|s| s.last_used),
-      None => self.layout.last_used(key),
     }
   }
 
@@ -1276,7 +1258,6 @@ impl TextureAtlas {
     key: TextureId,
     (texture, bind_groups): (wgpu::Texture, PageBindGroups),
     (width, height): (u32, u32),
-    last_used: u64,
   ) -> AtlasSlot {
     let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
     let id = self.next_standalone;
@@ -1299,7 +1280,6 @@ impl TextureAtlas {
         bind_groups,
         slot,
         size: (width, height),
-        last_used,
       },
     );
     slot
@@ -2107,11 +2087,11 @@ mod tests {
     let image = crate::core::graphics::image::test_handle(Image::solid_rect(1, 1, 0, 0, 0, 255));
     atlas.spread(id(0), broken, (image.id(), 1));
     for frame in 1..4 {
-      atlas.swap_spreads(frame);
+      atlas.swap_spreads();
       atlas.write_spreads(&device, &queue);
       atlas.end_frame(frame);
     }
-    atlas.swap_spreads(4);
+    atlas.swap_spreads();
     assert_eq!(atlas.spread_count(), 0, "dropped");
     assert_eq!(
       atlas.take_swapped().count(),

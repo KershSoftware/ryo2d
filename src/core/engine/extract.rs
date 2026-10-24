@@ -493,12 +493,15 @@ impl Engine {
       self.draw_list.sorted();
       // The UI renderer's sprite textures are made resident with the
       // world's, then its frame is finished with their slots. A kept UI
-      // image shows the last build's: they count as used, so the standalone
-      // cap and a full atlas free the textures shown least recently
+      // image shows the last build's: they count as used, each once, so the
+      // standalone cap and a full atlas free the textures shown least
+      // recently
+      if !ui_built {
+        gpu.mark_shown(ui_renderer.kept_textures());
+      }
       let ui_textures = if ui_built {
         ui_renderer.sprite_textures()
       } else {
-        gpu.mark_shown(ui_renderer.sprite_textures());
         &[]
       };
       batch.prepare(

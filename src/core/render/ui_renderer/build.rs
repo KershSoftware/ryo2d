@@ -8,6 +8,7 @@
 //! so it stays the same while the slot scrolls, unless no run is kept
 //! (retention off), when it is culled as a loose draw is.
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use glam::Vec2;
@@ -190,6 +191,12 @@ pub(crate) struct UiBuild {
   resident: Vec<(u32, TextureId)>,
   /// `resident`'s textures, in the order recorded
   textures: Vec<TextureId>,
+  /// `textures` each once, in the order first recorded: what a frame
+  /// keeping the UI image marks shown. Worked out at the first ask after a
+  /// build (`shown_textures`), with `seen`, and kept until the next
+  shown: Vec<TextureId>,
+  seen: HashSet<TextureId>,
+  shown_current: bool,
   /// The commands' painter's order, when they arrive out of it
   order: Vec<u32>,
   /// A line's points and triangles
@@ -216,6 +223,7 @@ impl UiBuild {
     self.slots.clear();
     self.resident.clear();
     self.textures.clear();
+    self.shown_current = false;
   }
 
   /// Whether the last frame had `segment` (a kept run, marked with its
@@ -257,6 +265,27 @@ impl UiBuild {
   /// (see `resident`)
   pub(crate) fn sprite_textures(&self) -> &[TextureId] {
     &self.textures
+  }
+
+  /// The sprite textures each once, in the order first recorded: a frame
+  /// that keeps the UI image marks them shown, so it does work per texture,
+  /// not per command (a skin is nine commands, a bitmap-font text one a
+  /// cell). Worked out once a build, at the first frame that keeps it
+  pub(crate) fn shown_textures(&mut self) -> &[TextureId] {
+    if !self.shown_current {
+      self.shown.clear();
+      self.seen.clear();
+      let mut previous = None;
+      for &texture in &self.textures {
+        // Commands mostly repeat the one before: no hash for those
+        if previous != Some(texture) && self.seen.insert(texture) {
+          self.shown.push(texture);
+        }
+        previous = Some(texture);
+      }
+      self.shown_current = true;
+    }
+    &self.shown
   }
 
   fn push(&mut self, instance: UiInstance, need: TexNeed) {

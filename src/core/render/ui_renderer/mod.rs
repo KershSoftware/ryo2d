@@ -121,6 +121,12 @@ impl UiRenderer {
     self.build.sprite_textures()
   }
 
+  /// The last build's sprite textures each once: what a frame that keeps
+  /// the UI image shows
+  pub(crate) fn kept_textures(&mut self) -> &[TextureId] {
+    self.build.shown_textures()
+  }
+
   /// The last build's texts: those built, then those reused
   pub(crate) fn text_counts(&self) -> (u32, u32) {
     (self.texts.built(), self.texts.reused())

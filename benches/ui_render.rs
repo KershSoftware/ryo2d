@@ -51,6 +51,12 @@
 //! screen: with no filter or one naming `settings_idle`, `settings_label`
 //! or `settings_scrolling`, and not for `--list`, `--test` or
 //! `--profile-time` (the profile command).
+//!
+//! The guard also steps a kept skinned menu: twenty buttons drawn with a
+//! nine-slice skin, each beside a label in a bitmap font, so the UI image
+//! it keeps shows hundreds of sprite commands of two textures. A kept frame
+//! marks the textures it shows used (`SpriteGpuRenderer::mark_shown`); the
+//! menu's render step over an empty frame's is printed, with no target.
 
 mod guards;
 
@@ -135,6 +141,46 @@ impl Scene for Empty {
   }
 }
 
+/// Twenty buttons drawn with a nine-slice skin, each beside a label in a
+/// bitmap font: a kept UI image of a few hundred sprite commands, every one
+/// of them of the skin's image or the font's sheet
+#[derive(Default)]
+struct Skinned {
+  font: Option<Handle<BitmapFont>>,
+}
+
+/// The skinned menu's bitmap font: 8 px cells, sixteen to a row
+const SHEET_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789";
+
+impl Scene for Skinned {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let mut assets = ctx.assets();
+    let skin = assets.add(Image::solid_rect(24, 24, 200, 150, 90, 255));
+    let sheet = assets.add(Image::solid_rect(128, 24, 255, 255, 255, 255));
+    self.font = Some(assets.add(BitmapFont::new("Sheet", sheet, (8, 8), SHEET_CHARS)));
+    let mut theme = Theme::dark().skin("wood", Skin::from_image(skin, [8.0; 4], Filter::Nearest));
+    theme.widgets.button.normal.skin = Some("wood".into());
+    ctx.ui_theme().set(theme);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let style = TextStyle::new().family("Sheet").size(16.0);
+    for row in 0..20u32 {
+      let y = 20.0 + row as f32 * 34.0;
+      let (button, label) = (format!("ITEM {row}"), format!("OPTION NUMBER {row}"));
+      ui.column().at(Rect::new(40.0, y, 160.0, 28.0)).show(|ui| {
+        ui.button(button.as_str()).width(160.0).height(28.0);
+      });
+      ui.draw_text_styled(label.as_str(), 220.0, y + 6.0, &style);
+    }
+    SceneAction::Continue
+  }
+}
+
 /// A settings screen, `tree`; with `label`, a counter over it changes every
 /// frame
 struct Settings {
@@ -172,6 +218,8 @@ enum Screen {
   Label,
   /// The settings screen whose list scrolls, turned by the wheel every frame
   Scrolling,
+  /// The skinned menu, unchanged
+  Skinned,
 }
 
 /// An engine on `screen`, warmed up; scrolling, the pointer over the list
@@ -187,6 +235,7 @@ fn engine(screen: Screen, retain: bool) -> Option<HeadlessEngine> {
     Screen::Idle => builder.start_scene(settings(settings_tree_overflowing, false)),
     Screen::Label => builder.start_scene(settings(settings_tree_overflowing, true)),
     Screen::Scrolling => builder.start_scene(settings(settings_tree, false)),
+    Screen::Skinned => builder.start_scene(Skinned::default()),
   };
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   if screen == Screen::Scrolling {
@@ -306,6 +355,7 @@ fn guard() {
     (Screen::Idle, false),
     (Screen::Label, false),
     (Screen::Scrolling, false),
+    (Screen::Skinned, true),
   ];
   let mut probes = Vec::new();
   for (screen, retain) in screens {
@@ -352,6 +402,7 @@ fn guard() {
   let (idle_off, _) = median(Screen::Idle, false);
   let (label_off, _) = median(Screen::Label, false);
   let (scrolling_off, _) = median(Screen::Scrolling, false);
+  let (skinned, skinned_kept) = median(Screen::Skinned, true);
   let us = |time: Duration| over(time, empty);
   let verdict = |met: bool| if met { "met" } else { "missed" };
   let against = |time: Duration, check: Check| {
@@ -374,6 +425,11 @@ fn guard() {
     off(label_off, label),
     against(scrolling, SCROLLING_LIMIT),
     off(scrolling_off, scrolling),
+  );
+  eprintln!(
+    "ui_render guard, a kept skinned menu (twenty nine-slice buttons with bitmap-font \
+     labels): render step {:+.1} µs over an empty frame ({skinned_kept} kept)",
+    us(skinned)
   );
   let mut missed = Vec::new();
   for (screen, time, check) in [

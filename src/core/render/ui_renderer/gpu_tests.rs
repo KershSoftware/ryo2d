@@ -1683,7 +1683,7 @@ mod building {
       on_layer(&b, 40.0, 0),
       on_layer(&a, 900.0, 0),
     ]);
-    let build = built(&mut writes, &commands, env(), None);
+    let mut build = built(&mut writes, &commands, env(), None);
     let (a, b) = (
       writes
         .sprites
@@ -1696,6 +1696,8 @@ mod building {
     );
     assert_eq!(build.needs, [TexNeed::Sprite(b), TexNeed::Sprite(a)]);
     assert_eq!(build.sprite_textures(), [a, b, a]);
+    // A frame keeping the UI image marks each once
+    assert_eq!(build.shown_textures(), [a, b]);
   }
 
   /// Built-in fonts: texts as glyphs

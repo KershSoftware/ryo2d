@@ -392,8 +392,9 @@ impl SpriteGpuRenderer {
   }
 
   /// Mark the textures `ids` used this frame without making them resident:
-  /// a kept UI image shows them. A texture that went meanwhile stays gone
-  /// until a frame draws it
+  /// a kept UI image shows them (each once: `UiBuild::shown_textures`). One
+  /// lookup each beside the registry's slot. A texture that went meanwhile
+  /// stays gone until a frame draws it
   pub(crate) fn mark_shown(&mut self, ids: &[TextureId]) {
     for &id in ids {
       self.touch(id);
@@ -838,15 +839,16 @@ impl SpriteGpuRenderer {
         self.registry.remove(texture);
       }
     }
-    self.atlas.swap_spreads(self.frame);
+    self.atlas.swap_spreads();
     self.take_swaps();
     for image in changed {
       let (Some(value), Some(version)) = (images.get(image), images.version(image)) else {
         continue;
       };
       let Some(texture) = self.registry.image_texture(image) else {
-        // Not drawn yet: a large one's first draw borders it, rather than
-        // it keeping a second copy of its pixels until then
+        // No texture: not drawn yet, or the standalone cap freed it for
+        // room (with its entry). A large one's next draw borders it, rather
+        // than it keeping a second copy of its pixels until then
         if value.has_own_texture() {
           value.take_upload();
         }
@@ -854,7 +856,8 @@ impl SpriteGpuRenderer {
       };
       self.registry.refresh(texture, value, version);
       if self.registry.needs_upload(texture) && !self.spread(device, texture) {
-        // A large one with no texture to draw meanwhile (none was made) is
+        // A large one with no texture to draw meanwhile (it could not be
+        // uploaded) is
         // bordered when next drawn, as a first draw is; one within the
         // budget is written at once with what its loader made
         if value.has_own_texture()
