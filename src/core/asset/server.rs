@@ -402,7 +402,7 @@ impl AssetServer {
   ///
   /// The whole load runs on the calling thread: an image's decode and, for
   /// one over 256 px, its mip levels, which cost more than the decode. A
-  /// 2048 x 2048 PNG takes about 15 to 40 ms here (its levels 13 to 25 ms
+  /// 2048 x 2048 PNG takes about 15 to 40 ms here (its levels 13 to 28 ms
   /// of it, measured on an Apple M5 Pro), so a scene that waits on several
   /// shows it. Load large images with [`load`](Self::load) behind a loading
   /// screen, or in an earlier scene, and keep `load_now` for what the scene

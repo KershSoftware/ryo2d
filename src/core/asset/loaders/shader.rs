@@ -10,7 +10,14 @@ use crate::core::shaders::custom;
 /// effect if it defines `fn effect`; naga parses and validates it), so a
 /// file that does not compile fails its load with `AssetError::Decode`, at
 /// its line and column: a first load is `Failed`, and a reload is
-/// `ReloadFailed` and keeps the last good shader. Every registry has it
+/// `ReloadFailed` and keeps the last good shader.
+///
+/// A `Shader` is a sprite shader or an effect, so a file that defines
+/// neither `fn sprite` nor `fn effect` fails its load. WGSL for a render
+/// pass of your own is not a `Shader`: give it an asset type of your own
+/// with a loader that takes `wgsl` (loaders are picked by the type asked
+/// for, then the extension), so it loads and reloads from `assets/` too,
+/// or embed it with `include_str!`. Every registry has it
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ShaderLoader;
 

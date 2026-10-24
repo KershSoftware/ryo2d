@@ -285,8 +285,9 @@ impl DemoPage for EffectsPage {
         .id(),
     );
 
-    // Middle: sprite with a custom WGSL shader loaded from disk. A missing or
-    // unreadable file is reported and the sprite is simply left out.
+    // Middle: sprite with a custom WGSL shader loaded from disk. A file that
+    // is missing, unreadable or does not compile (at the line and column the
+    // error gives) is reported and the sprite is simply left out.
     let dissolve = ctx.assets().load_now::<Shader>("shaders/dissolve.wgsl");
     match dissolve {
       Ok(shader) => {

@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.1.3
+  version: 1.1.4
 ---
 
 # Ryo2D Assets
@@ -36,7 +36,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 - **One path is one asset.** Asking for the same path (and settings) again while the asset lives gives the same handle, loaded, loading or failed, so every scene can load what it uses and each file is read once. A failed asset is not tried again until its file changes, or nothing holds it and it is asked for again.
 - `load` never fails on the spot: a bad path, or an extension no loader takes for that type, gives a failed handle (`AssetError::InvalidPath`, `NoLoader`), warned once.
 - `load_now` of an asset already loading on a worker loads it here instead.
-- **`load_now` does the whole load on the calling thread**, a large image's mip levels too, which cost more than its decode: a 2048 x 2048 PNG takes about 15 to 40 ms (its levels 13 to 25 ms of it, on an Apple M5 Pro), so a scene that waits on several large images starts late. Load large images with `load` behind a loading screen (section 4), or in an earlier scene, and keep `load_now` for what the scene draws at once.
+- **`load_now` does the whole load on the calling thread**, a large image's mip levels too, which cost more than its decode: a 2048 x 2048 PNG takes about 15 to 40 ms (its levels 13 to 28 ms of it, on an Apple M5 Pro), so a scene that waits on several large images starts late. Load large images with `load` behind a loading screen (section 4), or in an earlier scene, and keep `load_now` for what the scene draws at once.
 - Systems reach the same registry: `Res<AssetServer>` (`server.load::<Image>(path)`) and the stores as `Res<Assets<Image>>`.
 
 ### Paths
@@ -48,7 +48,7 @@ Asset paths are relative to the project's `assets/` folder (an example's own `as
 | Type | Files | Settings |
 |---|---|---|
 | `Image` | `png`, `jpg`, `jpeg`, `bmp`, `gif` (its first frame), `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg` | `ImageSettings { svg: SvgSize }` |
-| `Shader` | `wgsl`: a sprite shader or a post-process effect (`ryo-renderer`) | |
+| `Shader` | `wgsl`: a sprite shader or a post-process effect (`ryo-renderer`). The file is compiled as it loads and must define `fn sprite` or `fn effect`; WGSL for a render pass of your own wants an asset type of its own whose loader takes `wgsl` (section 8), or `include_str!` | |
 | `Font` | `ttf`, `otf`, `ttc` (`ryo-text`) | `FontSettings { face: u32 }` |
 | `BitmapFont` | `bitmap.ron`: `(sheet: "fonts/pixel.png", cell: (8, 8), chars: " !\"#..", family: "Pixel")`, its sheet loaded with it | |
 | `UiFile` | `ui.ron` (`ryo-ui`, Files) | |

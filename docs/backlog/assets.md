@@ -111,7 +111,7 @@ No frame was more than 1.1 ms over an ordinary one in 19 runs of the guard (1,49
 
 **Memory per 2048x2048 image.**
 - The pixels, 16.8 MB, as before.
-- The levels below the first, 5.7 MB, kept with the image for its life, as before. A texture freed unused (300 frames undrawn, or the 64-texture cap) and drawn again then needs only the border made on the main thread (about 2.3 ms), not its levels (19 to 29 ms).
+- The levels below the first, 5.7 MB, kept with the image for its life, as before. A texture freed for room (the 64-texture cap; nothing frees one for going undrawn) and drawn again then needs only the border made on the main thread (about 2.3 ms), not its levels (19 to 29 ms).
 - The bordered first level, 17.0 MB, only for a reload, from its load until the swap (12 frames when the image is drawn). A first load, and a reload with no texture to draw meanwhile, keep none.
 - On the GPU, 22.7 MB; while a reload is written, 45.4 MB (both textures) for 11 frames.
 
