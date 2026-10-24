@@ -1,7 +1,6 @@
 //! A UI file: its top level, templates and imports, checked at load, and
 //! the entry points that build its root or a template into a `UiNode`
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -368,14 +367,12 @@ impl UiFile {
   /// Build the root and every template once against the imports' documents
   /// in `world`, as the file's loader checks it. A file the load checked
   /// whole is not built again while its imports are as they were then
-  pub(crate) fn check(&self, world: &World) -> Result<(), AssetError> {
+  pub(crate) fn check(&self, world: &World) -> Result<(), UiFileError> {
     if self.checked.is_some() && self.checked == Some(imports_version(&self.doc, Some(world))) {
       return Ok(());
     }
     let issues = check_built(&self.path, &self.doc, Reach::check(Some(world), None));
-    UiFileError::check(issues).map_err(|error| {
-      AssetError::decode(&AssetPath::from_normal(Cow::Borrowed(&self.path)), error)
-    })
+    UiFileError::check(issues)
   }
 }
 

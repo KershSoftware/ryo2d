@@ -31,10 +31,12 @@ pub trait AssetLoader: Send + Sync + 'static {
   ) -> Result<Self::Asset, AssetError>;
 
   /// Checks the asset against its dependencies, once they are loaded and
-  /// whenever one reloads (on the main thread). An error fails the load, or
-  /// a reload, which keeps the last good value. The default accepts
-  fn check(&self, asset: &Self::Asset, world: &World) -> Result<(), AssetError> {
-    let _ = (asset, world);
+  /// whenever one reloads (on the main thread): `cx.world()` holds their
+  /// stores. An error fails the load, or a reload, which keeps the last good
+  /// value; name the asset in it with `AssetError::decode(cx.path(), error)`.
+  /// The default accepts
+  fn check(&self, asset: &Self::Asset, cx: &CheckContext<'_>) -> Result<(), AssetError> {
+    let _ = (asset, cx);
     Ok(())
   }
 
@@ -151,6 +153,30 @@ impl<'a> LoadContext<'a> {
   }
 }
 
+/// What a loader's `check` can see: the asset's path, and the world with
+/// every store, its dependencies' among them
+pub struct CheckContext<'a> {
+  path: &'a AssetPath,
+  world: &'a World,
+}
+
+impl<'a> CheckContext<'a> {
+  pub(crate) fn new(path: &'a AssetPath, world: &'a World) -> Self {
+    Self { path, world }
+  }
+
+  /// The path of the asset being checked, to name it in an error
+  pub fn path(&self) -> &AssetPath {
+    self.path
+  }
+
+  /// The world: the stores the asset's dependencies are in
+  /// (`cx.world().resource::<Assets<Image>>()`)
+  pub fn world(&self) -> &World {
+    self.world
+  }
+}
+
 /// A loader with its types erased, for the server's table
 pub(crate) trait ErasedLoader: Send + Sync + 'static {
   fn extensions(&self) -> &[&'static str];
@@ -234,7 +260,7 @@ impl<L: AssetLoader> ErasedLoader for Erased<L> {
         "a broken invariant: its loader was given a value of another type to check",
       ));
     };
-    self.loader.check(asset, world)
+    self.loader.check(asset, &CheckContext::new(path, world))
   }
 
   fn dependency_failed(&self, value: &dyn Any, error: &AssetError) -> Option<AssetError> {

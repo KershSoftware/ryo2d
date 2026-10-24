@@ -125,15 +125,3 @@ impl From<&Held> for UntypedAssetId {
     held.id()
   }
 }
-
-/// An error and its causes on one line
-pub(crate) fn explained(error: &dyn std::error::Error) -> String {
-  let mut text = error.to_string();
-  let mut cause = error.source();
-  while let Some(next) = cause {
-    text.push_str(": ");
-    text.push_str(&next.to_string());
-    cause = next.source();
-  }
-  text
-}

@@ -5,7 +5,7 @@
 
 use demo_kit::prelude::*;
 
-use crate::tracked::{self, Held, explained};
+use crate::tracked::{self, Held};
 
 const ROW: f32 = 26.0;
 const CHANGED: Color = Color::XP_GOLD;
@@ -41,7 +41,7 @@ impl HotReloadPage {
     for event in ctx.messages::<AssetEvent<T>>() {
       let (id, error) = match event {
         AssetEvent::Modified { id } => (id.untyped(), None),
-        AssetEvent::ReloadFailed { id, error } => (id.untyped(), Some(explained(&*error))),
+        AssetEvent::ReloadFailed { id, error } => (id.untyped(), Some(error.report())),
         _ => continue,
       };
       let held = |row: &&mut Row| row.held.as_ref().is_ok_and(|held| held.id() == id);
@@ -73,7 +73,7 @@ impl DemoPage for HotReloadPage {
     self.rows = tracked::listed()
       .map(|(path, kind)| Row {
         path,
-        held: Held::load_now(&mut assets, path, kind).map_err(|error| explained(&*error)),
+        held: Held::load_now(&mut assets, path, kind).map_err(|error| error.report()),
         modified: 0,
         reload_error: None,
       })

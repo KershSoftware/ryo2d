@@ -1545,7 +1545,9 @@ mod tests {
 
   use super::*;
   use crate::core::asset::event::TypeStats;
-  use crate::core::asset::{AssetEvent, Assets, AssetsView, LoadContext, MemorySource, pump};
+  use crate::core::asset::{
+    AssetEvent, Assets, AssetsView, CheckContext, LoadContext, MemorySource, pump,
+  };
   use crate::core::ecs::kernel::{
     MessageCursor, MessageReader, Messages, ResMut, Schedule, ScheduleLabel,
   };
@@ -1637,7 +1639,6 @@ mod tests {
   /// A file of paths, one a line, each loaded as a dependency: another
   /// bundle for a ".bundle" path, else a `Text`
   struct Bundle {
-    path: AssetPath,
     parts: Vec<Part>,
   }
   impl Asset for Bundle {}
@@ -1666,19 +1667,16 @@ mod tests {
           Part::Text(cx.load(line)?)
         });
       }
-      Ok(Bundle {
-        path: cx.path().clone(),
-        parts,
-      })
+      Ok(Bundle { parts })
     }
     /// Fails when a text it holds reads "bad"
-    fn check(&self, bundle: &Bundle, world: &World) -> Result<(), AssetError> {
-      let texts = world.resource::<Assets<Text>>();
+    fn check(&self, bundle: &Bundle, cx: &CheckContext<'_>) -> Result<(), AssetError> {
+      let texts = cx.world().resource::<Assets<Text>>();
       let bad = bundle.parts.iter().any(
         |part| matches!(part, Part::Text(text) if texts.get(text).is_some_and(|t| t.0 == "bad")),
       );
       if bad {
-        return Err(AssetError::decode(&bundle.path, "it holds a bad text"));
+        return Err(AssetError::decode(cx.path(), "it holds a bad text"));
       }
       Ok(())
     }
@@ -2317,6 +2315,38 @@ mod tests {
     assert!(world.resource::<Assets<Text>>().is_empty());
     assert!(matches!(server.state(id), LoadState::NotLoaded));
     assert_eq!(server.path(id), None);
+  }
+
+  /// Takes any text, and fails every check, naming its asset by the path
+  /// its check is given
+  struct PickyLoader;
+  impl AssetLoader for PickyLoader {
+    type Asset = Text;
+    type Settings = ();
+    fn extensions(&self) -> &[&'static str] {
+      &["picky"]
+    }
+    fn load(&self, bytes: Vec<u8>, _: &(), _: &mut LoadContext<'_>) -> Result<Text, AssetError> {
+      Ok(Text(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+    fn check(&self, _: &Text, cx: &CheckContext<'_>) -> Result<(), AssetError> {
+      Err(AssetError::decode(cx.path(), "not good enough"))
+    }
+  }
+
+  #[test]
+  fn a_failing_check_names_its_asset() {
+    let source = MemorySource::new();
+    source.insert("levels/one.picky", "x");
+    let (mut world, server) = world_with(source);
+    server.register_loader(PickyLoader);
+    let failed = server
+      .load_now::<Text>(&mut world, "levels/one.picky")
+      .err();
+    assert_eq!(
+      failed.map(|error| error.report()).as_deref(),
+      Some("could not load \"levels/one.picky\": not good enough")
+    );
   }
 
   #[test]

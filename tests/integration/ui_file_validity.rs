@@ -107,14 +107,7 @@ fn every_theme_file_loads_from_its_asset_folder() {
     let assets = assets_of(file);
     let (mut world, server) = registry(&assets);
     if let Err(error) = server.load_now::<Theme>(&mut world, &asset_path(file, &assets)) {
-      // The error and its causes
-      let mut text = error.to_string();
-      let mut cause = std::error::Error::source(&*error);
-      while let Some(next) = cause {
-        text.push_str(&format!(": {next}"));
-        cause = next.source();
-      }
-      problems.push(format!("{shown}: {text}"));
+      problems.push(format!("{shown}: {}", error.report()));
     }
   }
   assert!(problems.is_empty(), "{}", problems.join("\n"));

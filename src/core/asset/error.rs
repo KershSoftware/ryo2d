@@ -81,8 +81,23 @@ impl AssetError {
     }
   }
 
-  /// The error and its sources on one line, for the log
-  pub(crate) fn report(&self) -> String {
+  /// The error and every cause under it on one line, each after a colon:
+  /// what the engine's warnings print. `Display` gives only the first part
+  /// (`could not load "level.ron"`), and the reason is in the causes
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// let path = AssetPath::parse("levels/one.level")?;
+  /// let error = AssetError::decode(&path, "no name on the first line");
+  /// assert_eq!(error.to_string(), "could not load \"levels/one.level\"");
+  /// assert_eq!(
+  ///   error.report(),
+  ///   "could not load \"levels/one.level\": no name on the first line"
+  /// );
+  /// # Ok::<(), AssetError>(())
+  /// ```
+  pub fn report(&self) -> String {
     let mut line = self.to_string();
     let mut source = std::error::Error::source(self);
     while let Some(error) = source {

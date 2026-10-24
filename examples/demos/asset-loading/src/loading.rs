@@ -4,7 +4,7 @@
 
 use demo_kit::prelude::*;
 
-use crate::tracked::{self, Held, explained};
+use crate::tracked::{self, Held};
 
 const ROW: f32 = 22.0;
 const LOADED: Color = Color::rgb(120, 220, 120);
@@ -181,7 +181,7 @@ impl DemoPage for LoadingPage {
             };
             (text, LOADED)
           }
-          LoadState::Failed(error) => (format!("failed: {}", explained(&*error)), FAILED),
+          LoadState::Failed(error) => (format!("failed: {}", error.report()), FAILED),
         },
       };
       ui.draw_text_wrapped(&state, state_x, y, state_width as u32, color);

@@ -1,7 +1,6 @@
 //! UI files from `.ui.ron` text
 
-use crate::core::asset::{AssetError, AssetLoader, LoadContext};
-use crate::core::ecs::kernel::World;
+use crate::core::asset::{AssetError, AssetLoader, CheckContext, LoadContext};
 use crate::core::ui::UiFile;
 
 /// Loads [`UiFile`]s from `.ui.ron` files. The files a file imports and the
@@ -32,8 +31,10 @@ impl AssetLoader for UiFileLoader {
     UiFile::load(&path, &text, cx)
   }
 
-  fn check(&self, file: &UiFile, world: &World) -> Result<(), AssetError> {
-    file.check(world)
+  fn check(&self, file: &UiFile, cx: &CheckContext<'_>) -> Result<(), AssetError> {
+    file
+      .check(cx.world())
+      .map_err(|error| AssetError::decode(cx.path(), error))
   }
 
   /// An import or image that did not load, at the position the file names
@@ -61,8 +62,8 @@ mod tests {
   use super::UiFileLoader;
   use crate::core::asset::AssetEvent;
   use crate::core::asset::{
-    AssetError, AssetLoader, AssetPath, AssetServer, AssetSource, Assets, AssetsView, LoadState,
-    MemorySource, insert_registry, pump,
+    AssetError, AssetLoader, AssetPath, AssetServer, AssetSource, Assets, AssetsView, CheckContext,
+    LoadState, MemorySource, insert_registry, pump,
   };
   use crate::core::ecs::kernel::{MessageCursor, Messages, World};
   use crate::core::graphics::Image;
@@ -252,9 +253,12 @@ mod tests {
     };
     let checks = |world: &World| {
       let files = world.resource::<Assets<UiFile>>();
-      files
-        .get(&menu)
-        .map(|file| UiFileLoader.check(file, world).is_ok())
+      let path = AssetPath::parse("ui/menu.ui.ron").ok()?;
+      files.get(&menu).map(|file| {
+        UiFileLoader
+          .check(file, &CheckContext::new(&path, world))
+          .is_ok()
+      })
     };
     assert_eq!(checks(&world), Some(true));
     // The import loses the template the menu uses

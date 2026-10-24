@@ -31,7 +31,7 @@ pub use error::AssetError;
 pub use event::{AssetEvent, AssetStats, LoadState, Progress, TypeStats};
 pub use handle::Handle;
 pub use id::{AssetId, UntypedAssetId};
-pub use loader::{AssetLoader, AssetSettings, LoadContext};
+pub use loader::{AssetLoader, AssetSettings, CheckContext, LoadContext};
 pub use loaders::{
   BitmapFontLoader, FontLoader, FontSettings, ImageLoader, ImageSettings, ShaderLoader, SvgSize,
   ThemeLoader, UiFileLoader,

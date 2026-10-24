@@ -53,25 +53,13 @@ impl ThemeDemo {
           return;
         }
         Err(error) => {
-          self.theme_load_error = Some(explained(&*error));
+          self.theme_load_error = Some(error.report());
           Theme::dark()
         }
       },
     };
     ctx.ui_theme().set(theme);
   }
-}
-
-/// An error and its causes on one line
-fn explained(error: &dyn std::error::Error) -> String {
-  let mut text = error.to_string();
-  let mut cause = error.source();
-  while let Some(next) = cause {
-    text.push_str(": ");
-    text.push_str(&next.to_string());
-    cause = next.source();
-  }
-  text
 }
 
 /// A neon theme: the dark theme with a purple palette, looks for buttons,

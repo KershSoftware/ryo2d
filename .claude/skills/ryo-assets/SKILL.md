@@ -18,7 +18,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
     Ok(image) => {
       ctx.world.spawn((Transform::from_xy(320.0, 180.0), Renderable::image(image)));
     }
-    Err(error) => game_warn!("no player: {error}"),
+    Err(error) => game_warn!("no player: {}", error.report()),
   }
   // On a worker thread: a handle at once, the image a few frames later
   self.backdrop = Some(ctx.assets().load::<Image>("level2/backdrop.png"));
@@ -133,7 +133,7 @@ impl Scene for Loading {
 - `state(&handle) -> LoadState`: `NotLoaded`, `Loading`, `Loaded` or `Failed(Arc<AssetError>)`, with `is_loaded()`, `is_failed()` and `error()`. `is_ready(&handle)` is loaded with every dependency loaded too (a UI file's images, a theme's skins).
 - `stats() -> AssetStats` counts loaded, loading and failed assets per type (`types: Vec<TypeStats { name, loaded, loading, failed }>`), for a debug overlay.
 - Loads land in the pump at the start of the frame (`PreUpdate`), before `ui` and `update`: a `load` asked for in `on_enter` lands a frame later at the earliest.
-- `AssetError` (`#[non_exhaustive]`): `NotFound { path }`, `Io { path, source }`, `Decode { path, source }`, `NoLoader { path, extension }`, `Dependency { path, dependency, error }`, `Cycle { path, chain }`, `InvalidPath { path, reason }`. `Display` is one line; the causes are its `source()` chain. The engine warns once about every failure in the dev log, so a game only handles what it can do something about.
+- `AssetError` (`#[non_exhaustive]`): `NotFound { path }`, `Io { path, source }`, `Decode { path, source }`, `NoLoader { path, extension }`, `Dependency { path, dependency, error }`, `Cycle { path, chain }`, `InvalidPath { path, reason }`. `Display` is one line naming the path (`could not load "level.ron"`) and the causes are its `source()` chain: `error.report()` is the error with every cause on one line, as the engine's warnings print it. The engine warns once about every failure in the dev log, so a game only handles what it can do something about.
 
 ## 5. Made in code, and embedded
 
@@ -224,8 +224,8 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
       AssetEvent::Added { id } => game_info!("{id:?} is loaded (or was added in code)"),
       AssetEvent::Modified { id } => game_info!("{id:?} changed: reloaded, a dependency reloaded, or get_mut"),
       AssetEvent::Removed { id } => game_info!("{id:?} was freed: its last handle dropped"),
-      AssetEvent::Failed { id, error } => game_warn!("{id:?} will not load: {error}"),
-      AssetEvent::ReloadFailed { id, error } => game_warn!("{id:?} kept its last good value: {error}"),
+      AssetEvent::Failed { id, error } => game_warn!("{id:?} will not load: {}", error.report()),
+      AssetEvent::ReloadFailed { id, error } => game_warn!("{id:?} kept its last good value: {}", error.report()),
     }
   }
   SceneAction::Continue
@@ -278,7 +278,19 @@ fn main() -> EngineResult<()> {
 Then `ctx.assets().load_now::<Level>("levels/one.level")`, or `load` it.
 
 - `load` runs on a worker thread, or on the calling thread under `load_now`: it turns the bytes into the asset and loads dependencies, nothing more. A dependency loaded through `cx.load` (or `cx.load_with`) is kept by the value, as its handle in a field; the asset is inserted only once its dependencies have loaded, a dependency that fails fails it (`AssetError::Dependency`), and one that reloads makes it `Modified`.
-- `check(&self, asset: &Level, world: &World) -> Result<(), AssetError>` (optional) runs on the main thread once the dependencies are loaded, and again whenever one reloads: check the asset against them there (`world.get_resource::<Assets<Image>>()`). An error fails the load, or keeps the last good value after a reload.
+- `check(&self, asset: &Level, cx: &CheckContext<'_>) -> Result<(), AssetError>` (optional) runs on the main thread once the dependencies are loaded, and again whenever one reloads: check the asset against them there (`cx.world().resource::<Assets<Image>>()`), and fail it with `AssetError::decode(cx.path(), error)`. An error fails the load, or keeps the last good value after a reload:
+
+  ```rust
+  fn check(&self, level: &Level, cx: &CheckContext<'_>) -> Result<(), AssetError> {
+    let images = cx.world().resource::<Assets<Image>>();
+    match images.get(&level.background) {
+      Some(background) if background.width() < 640 => {
+        Err(AssetError::decode(cx.path(), "the background is narrower than the screen"))
+      }
+      _ => Ok(()),
+    }
+  }
+  ```
 - `type Settings` is any `Default + Clone + Hash + Eq + Send + Sync + 'static` type (`()` for none). Settings are part of the asset's key: one file loaded with two settings (`load_with`) is two assets.
 - Fail a bad file with `AssetError::decode(cx.path(), error)`, from any error type or a message. A loader that panics fails its asset (`AssetError::Decode`), not the game.
 - A game loader for an extension an engine loader of the same type takes replaces the engine's.
