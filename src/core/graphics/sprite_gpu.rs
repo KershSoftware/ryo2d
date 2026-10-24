@@ -255,16 +255,16 @@ impl Default for SpriteInstance {
 
 /// Named pixel textures neither uploaded nor drawn for this many frames are
 /// forgotten, with their pixels. An image's texture lives until its asset is
-/// freed
+/// freed, or until the standalone cap or a full atlas needs its room
 const TEXTURE_TTL: u64 = 600;
 
 /// How often forgotten textures are pruned, and images' textures checked
 /// against the image store
 const PRUNE_EVERY: u64 = 120;
 
-/// Most sprites kept as standalone (over 256 px) textures; the least
-/// recently used beyond it are freed, so a game minting large sprite handles
-/// every frame can't hold hundreds of them until the TTL.
+/// Most images kept as standalone (over 256 px) textures; beyond it the
+/// least recently shown are freed (uploaded again when next drawn), so a
+/// game holding hundreds of large images does not hold their textures too
 const MAX_STANDALONE_ENTITY_SPRITES: usize = 64;
 
 /// Compiled sprite shader sources no shader has used for this many frames
@@ -388,6 +388,16 @@ impl SpriteGpuRenderer {
   fn touch(&mut self, id: TextureId) {
     if let Some(entry) = self.registry.get_mut(id) {
       entry.last_used = self.frame;
+    }
+  }
+
+  /// Mark the textures `ids` used this frame without making them resident:
+  /// a kept UI image shows them. A texture that went meanwhile stays gone
+  /// until a frame draws it
+  pub(crate) fn mark_shown(&mut self, ids: &[TextureId]) {
+    for &id in ids {
+      self.touch(id);
+      self.atlas.mark_used(id, self.frame);
     }
   }
 
@@ -834,7 +844,7 @@ impl SpriteGpuRenderer {
       };
       self.registry.refresh(texture, value, version);
       if self.registry.needs_upload(texture) && !self.spread(device, texture) {
-        // A large one with no texture to draw meanwhile (it went unused) is
+        // A large one with no texture to draw meanwhile (none was made) is
         // bordered when next drawn, as a first draw is; one within the
         // budget is written at once with what its loader made
         if value.has_own_texture()
@@ -1649,7 +1659,7 @@ mod tests {
   }
 
   #[test]
-  fn a_reload_of_an_image_whose_texture_went_unused_keeps_no_bordered_copy() {
+  fn a_reload_of_an_image_whose_texture_is_gone_keeps_no_bordered_copy() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
@@ -1659,8 +1669,7 @@ mod tests {
     let list = world_list(&mut renderer, &images, &[(&handle, 0)]);
     renderer.prepare_textures(&device, &queue, &list, &[]);
     let texture = renderer.registry.image_texture(handle.id()).unwrap();
-    // As the sweep frees a standalone texture nothing has drawn for 300
-    // frames
+    // As if its texture had gone
     renderer.atlas.remove(texture);
     *images.get_mut(&handle).unwrap() = reloaded(20);
     renderer.sync_images(&device, [], [handle.id()], &images, None);

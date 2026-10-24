@@ -956,3 +956,214 @@ fn a_large_reload_whose_event_frames_missed_starts_from_its_next_draw() {
     "then the new pixels at the new size"
   );
 }
+
+/// A 4K image: a texture of its own, with a full mip chain
+const FOUR_K: (u32, u32) = (3840, 2160);
+
+/// Draws a 4K image added in code in the UI, over a fixed rect, and a label
+/// that changes once `change` is set: a UI left alone, then changed
+struct IdleUi {
+  image: Option<Handle<Image>>,
+  change: Arc<AtomicBool>,
+}
+
+impl Scene for IdleUi {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    let (width, height) = FOUR_K;
+    self.image = Some(
+      ctx
+        .assets()
+        .add(Image::solid_rect(width, height, 220, 30, 40, 255)),
+    );
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    if let Some(image) = &self.image {
+      ui.draw_sprite_rect(image, Rect::new(10.0, 10.0, 160.0, 90.0), Color::WHITE);
+    }
+    let label = if self.change.load(Ordering::SeqCst) {
+      "changed"
+    } else {
+      "idle"
+    };
+    ui.draw_text(label, 10.0, 120.0, Color::WHITE);
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_held_image_shown_only_by_an_idle_ui_keeps_its_texture() {
+  let change = Arc::new(AtomicBool::new(false));
+  let scene = IdleUi {
+    image: None,
+    change: change.clone(),
+  };
+  let Some(mut engine) = large_engine(MemorySource::new(), scene) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  assert_eq!(pixel(&engine, 50, 50), RED, "drawn");
+  let (uploads, rects) = (engine.image_uploads(), engine.atlas_rects());
+  // Ten seconds of a UI that does not change: its kept image is shown
+  engine.step_frames(600).unwrap();
+  assert!(engine.ui_render_stats().kept, "the UI image was kept");
+  assert_eq!(engine.atlas_rects(), rects, "the image keeps its texture");
+  change.store(true, Ordering::SeqCst);
+  engine.step().unwrap();
+  assert!(!engine.ui_render_stats().kept, "the UI was drawn again");
+  assert_eq!(pixel(&engine, 50, 50), RED, "with the image");
+  assert_eq!(engine.image_uploads(), uploads, "which uploaded nothing");
+}
+
+/// Holds a 4K image added in code, and draws it as a sprite while `shown`
+/// is set
+struct Undrawn {
+  image: Option<Handle<Image>>,
+  sprite: Option<Entity>,
+  shown: Arc<AtomicBool>,
+}
+
+impl Scene for Undrawn {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let (width, height) = FOUR_K;
+    self.image = Some(
+      ctx
+        .assets()
+        .add(Image::solid_rect(width, height, 220, 30, 40, 255)),
+    );
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let shown = self.shown.load(Ordering::SeqCst);
+    match (shown, self.sprite, &self.image) {
+      (true, None, Some(image)) => {
+        let sprite = spawn_sprite(ctx, image.clone());
+        if let Some(mut at) = ctx.world.get_mut::<Transform>(sprite) {
+          // A quarter of a quarter: the whole of it on screen
+          *at = Transform::from_xy(10.0, 10.0).with_scale(Vec2::splat(1.0 / 16.0));
+        }
+        self.sprite = Some(sprite);
+      }
+      (false, Some(sprite), _) => {
+        ctx.world.despawn(sprite);
+        self.sprite = None;
+      }
+      _ => {}
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_held_image_not_drawn_for_600_frames_keeps_its_texture() {
+  let shown = Arc::new(AtomicBool::new(true));
+  let scene = Undrawn {
+    image: None,
+    sprite: None,
+    shown: shown.clone(),
+  };
+  let Some(mut engine) = large_engine(MemorySource::new(), scene) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  assert_eq!(pixel(&engine, 50, 50), RED, "drawn");
+  let (uploads, rects) = (engine.image_uploads(), engine.atlas_rects());
+  shown.store(false, Ordering::SeqCst);
+  engine.step_frames(600).unwrap();
+  assert_ne!(pixel(&engine, 50, 50), RED, "not drawn");
+  assert_eq!(engine.atlas_rects(), rects, "it keeps its texture");
+  shown.store(true, Ordering::SeqCst);
+  engine.step_frames(2).unwrap();
+  assert_eq!(pixel(&engine, 50, 50), RED, "drawn again");
+  assert_eq!(engine.image_uploads(), uploads, "uploading nothing");
+}
+
+/// A 300 x 150 image of `shade`, added in code: a texture of its own
+fn large_image(ctx: &mut SceneContext, shade: u8) -> Handle<Image> {
+  ctx
+    .assets()
+    .add(Image::solid_rect(LARGE.0, LARGE.1, shade, 30, 40, 255))
+}
+
+/// The standalone cap's 64 images: one shown in a UI left alone, and 63
+/// drawn as sprites until `hide` is set, then held undrawn. Once `extra`
+/// is set, one more large image is drawn, so the cap must free one; once
+/// `change` is set, the UI changes
+struct AtTheCap {
+  ui_image: Option<Handle<Image>>,
+  held: Vec<Handle<Image>>,
+  sprites: Vec<Entity>,
+  extra: Option<Entity>,
+  flags: [Arc<AtomicBool>; 3],
+}
+
+impl Scene for AtTheCap {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    self.ui_image = Some(large_image(ctx, 220));
+    for shade in 0..63 {
+      let image = large_image(ctx, shade);
+      self.sprites.push(spawn_sprite(ctx, image.clone()));
+      self.held.push(image);
+    }
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let [hide, extra, _] = &self.flags;
+    if hide.load(Ordering::SeqCst) {
+      for sprite in self.sprites.drain(..) {
+        ctx.world.despawn(sprite);
+      }
+    }
+    if extra.load(Ordering::SeqCst) && self.extra.is_none() {
+      let image = large_image(ctx, 100);
+      self.extra = Some(spawn_sprite(ctx, image));
+    }
+    SceneAction::Continue
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    if let Some(image) = &self.ui_image {
+      ui.draw_sprite_rect(image, Rect::new(10.0, 200.0, 150.0, 75.0), Color::WHITE);
+    }
+    let label = if self.flags[2].load(Ordering::SeqCst) {
+      "changed"
+    } else {
+      "idle"
+    };
+    ui.draw_text(label, 200.0, 200.0, Color::WHITE);
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn the_standalone_cap_frees_the_image_shown_least_recently_counting_a_kept_ui() {
+  let flags: [Arc<AtomicBool>; 3] = Default::default();
+  let scene = AtTheCap {
+    ui_image: None,
+    held: Vec::new(),
+    sprites: Vec::new(),
+    extra: None,
+    flags: flags.clone(),
+  };
+  let Some(mut engine) = large_engine(MemorySource::new(), scene) else {
+    return;
+  };
+  let [hide, extra, change] = flags;
+  // The sprites are drawn for longer than the UI is built
+  engine.step_frames(20).unwrap();
+  assert!(engine.ui_render_stats().kept, "the UI image is kept");
+  hide.store(true, Ordering::SeqCst);
+  engine.step_frames(10).unwrap();
+  // A 65th: the cap frees the image shown least recently, one of the
+  // sprites, as the kept UI image shows its image every frame
+  extra.store(true, Ordering::SeqCst);
+  engine.step_frames(2).unwrap();
+  let uploads = engine.image_uploads();
+  change.store(true, Ordering::SeqCst);
+  engine.step().unwrap();
+  assert!(!engine.ui_render_stats().kept, "the UI was drawn again");
+  assert_eq!(pixel(&engine, 50, 230), RED, "with its image");
+  assert_eq!(engine.image_uploads(), uploads, "which kept its texture");
+}

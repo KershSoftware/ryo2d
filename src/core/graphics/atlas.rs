@@ -33,9 +33,6 @@ const PAGE_SIZE: u32 = 2048;
 const MAX_PAGES: usize = 8;
 /// Images larger than this on either side are standalone.
 const MAX_ATLAS_IMAGE: u32 = 256;
-/// Entries unused for this many frames may be freed when a page is full, and
-/// are freed every [`RELEASE_EVERY`] frames.
-const STALE_FRAMES: u64 = 300;
 /// Most entries evicted for a single placement before giving up (the image
 /// then falls back to a standalone texture rather than flushing the atlas).
 const MAX_EVICTIONS: usize = 64;
@@ -47,7 +44,7 @@ pub(crate) const BORDER: u32 = 8;
 const CELL: u32 = 8;
 /// Mip levels of an atlas page (2048 down to 256 px).
 pub(crate) const MIP_LEVELS: u32 = 4;
-/// How often stale atlas entries are freed and empty pages released
+/// How often the empty pages at the end are released
 const RELEASE_EVERY: u64 = 60;
 /// The most bytes of image levels a frame writes into the textures of
 /// images being replaced, counting the frame's other image writes first.
@@ -224,23 +221,8 @@ impl AtlasLayout {
     self.entries.get(&key).map(|e| e.last_used)
   }
 
-  /// Free every entry unused for [`STALE_FRAMES`] or more frames.
-  pub(crate) fn free_stale(&mut self, frame: u64) {
-    let stale: Vec<TextureId> = self
-      .entries
-      .iter()
-      .filter(|(_, e)| frame.saturating_sub(e.last_used) >= STALE_FRAMES)
-      .map(|(k, _)| *k)
-      .collect();
-    for key in stale {
-      self.remove(key);
-    }
-  }
-
-  /// Free entries unused for [`STALE_FRAMES`] frames, then release empty
-  /// pages at the end (earlier pages keep their index)
-  pub(crate) fn release_stale(&mut self, frame: u64) {
-    self.free_stale(frame);
+  /// Release the empty pages at the end (earlier pages keep their index)
+  pub(crate) fn release_empty(&mut self) {
     let used = self.entries.values().map(|e| e.page + 1).max().unwrap_or(0);
     self.pages.truncate(used);
   }
@@ -271,15 +253,12 @@ impl AtlasLayout {
     None
   }
 
-  /// Allocation order: existing pages, stale entries, new pages, then LRU eviction.
+  /// Allocation order: existing pages, new pages, then the least recently
+  /// used go. Nothing goes for going undrawn while there is room
   fn allocate(&mut self, bw: u32, bh: u32, frame: u64) -> Option<(usize, AllocId, u32, u32)> {
     if bw > self.page_size || bh > self.page_size {
       return None;
     }
-    if let Some(found) = self.try_allocate(bw, bh) {
-      return Some(found);
-    }
-    self.free_stale(frame);
     if let Some(found) = self.try_allocate(bw, bh) {
       return Some(found);
     }
@@ -1073,6 +1052,12 @@ impl TextureAtlas {
     }
   }
 
+  /// Mark the texture `key` draws now used in `frame`, without uploading
+  /// anything: a kept UI image shows it
+  pub(crate) fn mark_used(&mut self, key: TextureId, frame: u64) {
+    self.touch(key, frame);
+  }
+
   /// The slot of the texture `key` draws now, marked used in `frame`
   fn touch(&mut self, key: TextureId, frame: u64) -> Option<AtlasSlot> {
     match self.standalone_ids.get(&key) {
@@ -1240,24 +1225,15 @@ impl TextureAtlas {
     }
   }
 
-  /// Housekeeping: start the next frame's budget, drop standalone textures
-  /// unused for 300 or more frames, and every [`RELEASE_EVERY`] frames free
-  /// stale atlas entries and the pages left empty at the end, so the GPU
-  /// memory comes back.
+  /// Housekeeping: start the next frame's budget, and every
+  /// [`RELEASE_EVERY`] frames release the pages left empty at the end, so
+  /// the GPU memory comes back. Nothing is freed for going undrawn: a
+  /// texture goes when its image is freed, or when room is needed
   pub(crate) fn end_frame(&mut self, frame: u64) {
     self.spent = 0;
     if frame.is_multiple_of(RELEASE_EVERY) {
-      self.layout.release_stale(frame);
+      self.layout.release_empty();
       self.pages.truncate(self.layout.page_count());
-    }
-    let stale: Vec<usize> = self
-      .standalone
-      .iter()
-      .filter(|(_, s)| frame.saturating_sub(s.last_used) >= STALE_FRAMES)
-      .map(|(id, _)| *id)
-      .collect();
-    for id in stale {
-      self.remove_standalone(id);
     }
   }
 
@@ -1847,17 +1823,23 @@ mod tests {
   }
 
   #[test]
-  fn stale_entries_are_freed_and_empty_trailing_pages_released() {
+  fn entries_unused_however_long_stay_and_emptied_last_pages_are_released() {
     let mut layout = AtlasLayout::new(128, 3);
     for n in 0..8 {
       layout.place(id(n), Q, Q, 1);
     }
     assert_eq!(layout.page_count(), 2);
-    // Only one image on page 0 is still drawn
-    layout.place(id(0), Q, Q, 200);
-    layout.release_stale(301);
-    assert!(layout.holds(id(0), Q, Q));
-    assert!(!(1..8).any(|n| layout.holds(id(n), Q, Q)));
+    layout.release_empty();
+    assert!(
+      (0..8).all(|n| layout.holds(id(n), Q, Q)),
+      "a held image keeps its room however long it goes undrawn"
+    );
+    assert_eq!(layout.page_count(), 2);
+    // The images on page 1 are freed
+    for n in 4..8 {
+      layout.remove(id(n));
+    }
+    layout.release_empty();
     assert_eq!(layout.page_count(), 1, "the emptied last page is released");
   }
 
@@ -1888,32 +1870,20 @@ mod tests {
   }
 
   #[test]
-  fn full_page_frees_entries_unused_for_300_frames() {
+  fn a_full_page_opens_another_before_freeing_entries_unused_however_long() {
     let mut layout = AtlasLayout::new(128, 2);
     let old: Vec<_> = (0..4)
       .map(|n| layout.place(id(n), Q, Q, 0).unwrap())
       .collect();
-    let p = layout.place(id(9), Q, Q, 300).unwrap();
-    assert_eq!(layout.page_count(), 1);
-    assert_eq!(p.slot.page, SlotPage::Atlas(0));
-    assert!(old.iter().any(|o| (o.x, o.y) == (p.x, p.y)));
-    assert_live_disjoint(&layout);
-  }
-
-  #[test]
-  fn fresh_entries_are_kept_and_a_page_is_opened() {
-    let mut layout = AtlasLayout::new(128, 2);
-    let old: Vec<_> = (0..4)
-      .map(|n| layout.place(id(n), Q, Q, 0).unwrap())
-      .collect();
-    let p = layout.place(id(9), Q, Q, 299).unwrap();
+    let p = layout.place(id(9), Q, Q, 100_000).unwrap();
     assert_eq!(layout.page_count(), 2);
     assert_eq!(p.slot.page, SlotPage::Atlas(1));
     for (n, o) in old.iter().enumerate() {
-      let again = layout.place(id(n), Q, Q, 299).unwrap();
+      let again = layout.place(id(n), Q, Q, 100_000).unwrap();
       assert!(!again.newly_allocated);
       assert_eq!(again.slot, o.slot);
     }
+    assert_live_disjoint(&layout);
   }
 
   #[test]
