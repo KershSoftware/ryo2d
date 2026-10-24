@@ -46,9 +46,10 @@ impl<P> Checked<P> {
     }
   }
 
-  /// Settle a pending pipeline whose check came back: it becomes ready, or
-  /// failed with the GPU's message, which is returned.
-  pub(crate) fn settle(&mut self) -> Option<String> {
+  /// Settle a pending pipeline whose check came back: it becomes ready
+  /// (`Ok`), or failed with the GPU's message (`Err`). `None` while the
+  /// check is out, or once it was settled
+  pub(crate) fn settle(&mut self) -> Option<Result<(), String>> {
     let Checked::Pending { check, .. } = self else {
       return None;
     };
@@ -58,9 +59,9 @@ impl<P> Checked<P> {
     match (std::mem::replace(self, Checked::Failed), result) {
       (Checked::Pending { pipeline, .. }, None) => {
         *self = Checked::Ready(pipeline);
-        None
+        Some(Ok(()))
       }
-      (_, error) => error,
+      (_, error) => Some(Err(error.unwrap_or_default())),
     }
   }
 }

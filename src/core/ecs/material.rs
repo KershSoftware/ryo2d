@@ -65,9 +65,17 @@ use std::sync::{Arc, OnceLock};
 /// Load one from a `.wgsl` file with `ctx.assets().load_now::<Shader>(path)`
 /// (its name is then its asset path), or embed one with
 /// `ctx.assets().add(Shader::from_wgsl(name, source))`. Mistakes in it are
-/// reported under its name, at the line of its own source. A shader whose
-/// source changes, by a reload or through `Assets::get_mut`, is compiled
-/// again for the next frame; shaders with equal sources compile once
+/// reported under its name, at the line and column of its own source.
+///
+/// A file is compiled as it loads, so one that does not compile fails its
+/// load (`AssetError::Decode`), and a saved file that does not compile
+/// fails its reload (`AssetEvent::ReloadFailed`) and keeps the last good
+/// shader. A shader whose source changes, by a reload or through
+/// `Assets::get_mut`, is compiled again for the next frame; shaders with
+/// equal sources compile once. A version that does not compile there (one
+/// made in code), or whose pipeline the GPU rejects, draws the shader's
+/// last version the GPU accepted, warned about once; with none, a sprite
+/// draws plain and an effect is skipped
 #[derive(Debug, Clone)]
 pub struct Shader {
   name: Arc<str>,

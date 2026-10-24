@@ -356,13 +356,15 @@ fn broken_sprite_shader_falls_back() {
   let frame = engine.frame().unwrap();
 
   assert_eq!(frame.get_pixel(15, 15).0, RED, "drawn as a plain sprite");
-  let errors: Vec<_> = dev_log::get_entries()
-    .into_iter()
-    .filter(|e| e.message.contains(id))
-    .collect();
-  assert_eq!(errors.len(), 1, "{errors:?}");
-  assert_eq!(errors[0].level, LogLevel::Error);
-  assert!(errors[0].message.contains(":2:"), "{}", errors[0].message);
+  assert_eq!(
+    logged(id),
+    [(
+      LogLevel::Warn,
+      Some("asset".to_string()),
+      format!("could not load \"{id}\": 2:29: expected `)`, found \"0.0\"")
+    )],
+    "warned once, as a file that does not load is"
+  );
 }
 
 #[test]
@@ -625,14 +627,15 @@ fn broken_effect_is_skipped() {
     expected.as_raw(),
     "frame without the effect"
   );
-
-  let errors: Vec<_> = dev_log::get_entries()
-    .into_iter()
-    .filter(|e| e.message.contains(id))
-    .collect();
-  assert_eq!(errors.len(), 1, "{errors:?}");
-  assert_eq!(errors[0].level, LogLevel::Error);
-  assert!(errors[0].message.contains(":2:"), "{}", errors[0].message);
+  assert_eq!(
+    logged(id),
+    [(
+      LogLevel::Warn,
+      Some("asset".to_string()),
+      format!("could not load \"{id}\": 2:29: expected `)`, found \"0.0\"")
+    )],
+    "warned once, as a file that does not load is"
+  );
 }
 
 /// Red top-left quadrant on green, with the WGSL `effect` added as a custom
@@ -916,4 +919,277 @@ fn a_removed_effect_drops_its_pipeline() {
   });
   engine.step_frames(2).unwrap();
   assert_eq!(engine.shader_pipeline_count(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// A shader that does not compile keeps the last good one
+// ---------------------------------------------------------------------------
+
+/// A sprite shader with a comma missing on its second line
+const BROKEN_SPRITE: &str = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
+  return vec4<f32>(1.0, 0.0 0.0, 1.0);
+}
+";
+
+/// An effect with a comma missing on its second line
+const BROKEN_EFFECT: &str = "fn effect(in: EffectIn, params: Params) -> vec4<f32> {
+  return vec4<f32>(1.0, 0.0 0.0, 1.0);
+}
+";
+
+/// The dev log's entries naming `name`: their level, module and message
+fn logged(name: &str) -> Vec<(LogLevel, Option<String>, String)> {
+  dev_log::get_entries()
+    .into_iter()
+    .filter(|entry| entry.message.contains(name))
+    .map(|entry| (entry.level, entry.module, entry.message))
+    .collect()
+}
+
+/// Saves `text` over `path` and steps until a shader's reload fails (two
+/// seconds at most); the shader events sent meanwhile
+fn save_until_it_fails(
+  engine: &mut HeadlessEngine,
+  files: &MemorySource,
+  path: &str,
+  text: &str,
+) -> Vec<String> {
+  let mut events = engine
+    .world()
+    .resource::<Messages<AssetEvent<Shader>>>()
+    .get_cursor_current();
+  files.insert(path, text);
+  let mut sent = Vec::new();
+  let start = std::time::Instant::now();
+  while !sent.iter().any(|event: &String| event == "ReloadFailed") {
+    assert!(
+      start.elapsed() < std::time::Duration::from_secs(2),
+      "the reload never failed: {sent:?}"
+    );
+    engine.step().unwrap();
+    let messages = engine.world().resource::<Messages<AssetEvent<Shader>>>();
+    sent.extend(events.read(messages).map(|event| match event {
+      AssetEvent::Modified { .. } => "Modified".to_string(),
+      AssetEvent::ReloadFailed { .. } => "ReloadFailed".to_string(),
+      other => format!("{other:?}"),
+    }));
+    std::thread::sleep(std::time::Duration::from_millis(2));
+  }
+  sent
+}
+
+#[test]
+fn a_broken_shader_save_keeps_the_last_good_shader() {
+  let path = "shaders/t33-saved.wgsl";
+  let files = MemorySource::new();
+  files.insert(path, INVERT);
+  let scene = Fixture::entities(move |ctx| {
+    let shader = ctx.assets().load_now::<Shader>(path).expect("it loads");
+    let image = solid(ctx, 10, RED);
+    ctx.world.spawn((
+      Transform::from_xy(10.0, 10.0),
+      Renderable::image(image)
+        .with_anchor(Anchor::TopLeft)
+        .with_shader(SpriteShader::custom(shader)),
+    ));
+  });
+  let builder = EngineBuilder::new()
+    .resolution(64, 64)
+    .asset_source(files.clone())
+    .hot_reload(true)
+    .start_scene(scene);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  assert_eq!(render(&mut engine).get_pixel(15, 15).0, INVERTED);
+  let sent = save_until_it_fails(&mut engine, &files, path, BROKEN_SPRITE);
+  assert_eq!(sent, ["ReloadFailed"], "not Modified");
+  for _ in 0..3 {
+    engine.step().unwrap();
+    assert_eq!(
+      engine.frame().unwrap().get_pixel(15, 15).0,
+      INVERTED,
+      "the last good shader draws"
+    );
+  }
+  assert_eq!(
+    logged(path),
+    [(
+      LogLevel::Warn,
+      Some("asset".to_string()),
+      format!("could not load \"{path}\": 2:29: expected `)`, found \"0.0\"")
+    )]
+  );
+}
+
+/// A red screen running the effect loaded from `path` in `files`, watched
+fn watched_effect(files: &MemorySource, path: &'static str) -> Option<HeadlessEngine> {
+  let scene = EffectScene {
+    setup: Some(Box::new(move |ctx: &mut SceneContext| {
+      let shader = ctx.assets().load_now::<Shader>(path).expect("it loads");
+      assert!(ctx.effects().add_custom("fx", shader).is_ok());
+    })),
+    queue: Queue::default(),
+  };
+  let builder = EngineBuilder::new()
+    .resolution(64, 64)
+    .asset_source(files.clone())
+    .hot_reload(true)
+    .start_scene(scene);
+  HeadlessEngine::new_or_skip(builder)
+}
+
+/// Whether the effect's flat grey covers `frame` (linear 0.5 is sRGB 188)
+fn grey(frame: &image::RgbaImage) -> bool {
+  frame
+    .pixels()
+    .all(|p| (187..=189).contains(&p.0[0]) && p.0[0] == p.0[1] && p.0[1] == p.0[2])
+}
+
+#[test]
+fn a_broken_effect_save_keeps_the_last_good_effect() {
+  let path = "shaders/t33-effect.wgsl";
+  let files = MemorySource::new();
+  files.insert(path, FLAT_GREY);
+  let Some(mut engine) = watched_effect(&files, path) else {
+    return;
+  };
+  assert!(grey(&render(&mut engine)), "the effect runs");
+  let sent = save_until_it_fails(&mut engine, &files, path, BROKEN_EFFECT);
+  assert_eq!(sent, ["ReloadFailed"], "not Modified");
+  for _ in 0..3 {
+    engine.step().unwrap();
+    assert!(grey(&engine.frame().unwrap()), "the last good effect runs");
+  }
+  assert_eq!(
+    logged(path),
+    [(
+      LogLevel::Warn,
+      Some("asset".to_string()),
+      format!("could not load \"{path}\": 2:29: expected `)`, found \"0.0\"")
+    )]
+  );
+}
+
+/// A sprite shader naga accepts that the sprite pipeline cannot take: its
+/// binding is in no group the pipeline has
+const REJECTED_SPRITE: &str = "@group(3) @binding(0) var<uniform> extra: vec4<f32>;
+fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
+  return sample(in.uv) * extra;
+}
+";
+
+/// An effect naga accepts that the effect pipeline cannot take
+const REJECTED_EFFECT: &str = "@group(1) @binding(0) var<uniform> extra: vec4<f32>;
+fn effect(in: EffectIn, params: Params) -> vec4<f32> {
+  return scene(in.uv) * extra;
+}
+";
+
+/// An engine drawing a red sprite with the shader `source` named `name`,
+/// and the slot holding the shader's handle
+fn shaded(name: &'static str, source: &'static str) -> Option<(HeadlessEngine, ShaderSlot)> {
+  let slot = ShaderSlot::default();
+  let added = slot.clone();
+  let scene = Fixture::entities(move |ctx| {
+    let shader = shader(ctx, name, source);
+    *added.lock().unwrap() = Some(shader.clone());
+    let image = solid(ctx, 10, RED);
+    ctx.world.spawn((
+      Transform::from_xy(10.0, 10.0),
+      Renderable::image(image)
+        .with_anchor(Anchor::TopLeft)
+        .with_shader(SpriteShader::custom(shader)),
+    ));
+  });
+  Some((start(scene)?, slot))
+}
+
+#[test]
+fn a_shader_changed_in_code_that_does_not_compile_draws_its_last_good_version() {
+  let name = "t33-changed.wgsl";
+  let Some((mut engine, slot)) = shaded(name, INVERT) else {
+    return;
+  };
+  assert_eq!(render(&mut engine).get_pixel(15, 15).0, INVERTED);
+  let broken = Shader::from_wgsl(name, BROKEN_SPRITE);
+  *engine.assets().get_mut(&held(&slot)).unwrap() = broken;
+  for _ in 0..4 {
+    engine.step().unwrap();
+    assert_eq!(
+      engine.frame().unwrap().get_pixel(15, 15).0,
+      INVERTED,
+      "its last good version draws"
+    );
+  }
+  assert_eq!(
+    logged(name),
+    [(
+      LogLevel::Warn,
+      Some("asset".to_string()),
+      format!("could not load \"{name}\": 2:29: expected `)`, found \"0.0\"")
+    )],
+    "once for the version"
+  );
+}
+
+#[test]
+fn a_shader_the_gpu_rejects_draws_its_last_good_version() {
+  let name = "t33-rejected.wgsl";
+  let Some((mut engine, slot)) = shaded(name, INVERT) else {
+    return;
+  };
+  assert_eq!(render(&mut engine).get_pixel(15, 15).0, INVERTED);
+  let rejected = Shader::from_wgsl(name, REJECTED_SPRITE);
+  *engine.assets().get_mut(&held(&slot)).unwrap() = rejected;
+  // Its pipeline is made and checked, then the check comes back
+  engine.step_frames(3).unwrap();
+  for _ in 0..3 {
+    engine.step().unwrap();
+    assert_eq!(
+      engine.frame().unwrap().get_pixel(15, 15).0,
+      INVERTED,
+      "its last good version draws"
+    );
+  }
+  let logged = logged(name);
+  assert!(
+    matches!(
+      logged.as_slice(),
+      [(LogLevel::Warn, Some(module), message)]
+        if module == "asset" && message.starts_with(&format!("could not load \"{name}\": "))
+    ),
+    "once for the version: {logged:?}"
+  );
+}
+
+#[test]
+fn an_effect_the_gpu_rejects_runs_its_last_good_version() {
+  let name = "t33-rejected-effect.wgsl";
+  let slot = ShaderSlot::default();
+  let added = slot.clone();
+  let Some((mut engine, _)) = effect_engine(move |ctx| {
+    let shader = shader(ctx, name, FLAT_GREY);
+    *added.lock().unwrap() = Some(shader.clone());
+    assert!(ctx.effects().add_custom("fx", shader).is_ok());
+  }) else {
+    return;
+  };
+  assert!(grey(&render(&mut engine)), "the effect runs");
+  let rejected = Shader::from_wgsl(name, REJECTED_EFFECT);
+  *engine.assets().get_mut(&held(&slot)).unwrap() = rejected;
+  engine.step_frames(3).unwrap();
+  for _ in 0..3 {
+    engine.step().unwrap();
+    assert!(grey(&engine.frame().unwrap()), "its last good version runs");
+  }
+  let logged = logged(name);
+  assert!(
+    matches!(
+      logged.as_slice(),
+      [(LogLevel::Warn, Some(module), message)]
+        if module == "asset" && message.starts_with(&format!("could not load \"{name}\": "))
+    ),
+    "once for the version: {logged:?}"
+  );
 }

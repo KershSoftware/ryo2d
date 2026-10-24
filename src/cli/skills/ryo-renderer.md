@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.1.1
+  version: 2.2.0
 ---
 
 # Ryo2D Renderer Specialist
@@ -161,7 +161,7 @@ Every texture the renderer draws has one `TextureId` in the `TextureRegistry` (i
 
 ### Shaders, errors and the web
 
-Custom shader compilation never blocks the frame: errors are collected asynchronously and a failed sprite shader draws plain (with a warning). GPU setup failures are `GpuError`s (`NoAdapter`, `RequestDevice`, `CreateSurface`, `DeviceLost`). The engine builds for `wasm32` on WebGPU: `./dev.sh web <demo>` serves a demo with trunk (only demos with an `index.html` and `Trunk.toml`, such as `lighting`).
+A custom shader's pipeline is checked by the GPU without waiting on it: a version that does not compile, or whose pipeline the GPU rejects, draws the shader's last good version (with a warning), and a shader with no good version draws plain (an effect is skipped). GPU setup failures are `GpuError`s (`NoAdapter`, `RequestDevice`, `CreateSurface`, `DeviceLost`). The engine builds for `wasm32` on WebGPU: `./dev.sh web <demo>` serves a demo with trunk (only demos with an `index.html` and `Trunk.toml`, such as `lighting`).
 
 ## Parallax
 
@@ -253,7 +253,7 @@ Post-process effect: see `src/core/shaders/AGENTS.md` (`effects.rs`, `post-proce
 
 ## Custom Shaders
 
-Games write WGSL; the engine wraps it with a prelude and a generated entry point (`src/core/shaders/custom.rs`). A shader is a `Shader` asset: load a `.wgsl` file with `ctx.assets().load_now::<Shader>("shaders/x.wgsl")` (an asset path; a `Result`: a missing or unreadable file is `Err`, while WGSL mistakes are reported when it compiles), or embed one with `ctx.assets().add(Shader::from_wgsl(name, wgsl))`. A sprite or effect holds its `Handle<Shader>`, so the shader stays loaded while something uses it. Shaders with the same source share one compiled source (and one error report), so only the first compiles; the batch makes a pipeline per blend mode it is drawn with, and a source's pipelines go when the last shader of that source is freed. Changing a shader (`Assets<Shader>::get_mut`, or a reload) compiles it again for the next frame.
+Games write WGSL; the engine wraps it with a prelude and a generated entry point (`src/core/shaders/custom.rs`). A shader is a `Shader` asset: load a `.wgsl` file with `ctx.assets().load_now::<Shader>("shaders/x.wgsl")` (an asset path; a `Result`: a missing or unreadable file is `Err`, and so is WGSL that does not compile, since the loader compiles it as the renderer will, at its line and column), or embed one with `ctx.assets().add(Shader::from_wgsl(name, wgsl))`. A sprite or effect holds its `Handle<Shader>`, so the shader stays loaded while something uses it. Shaders with the same source share one compiled source, so only the first compiles; the batch makes a pipeline per blend mode it is drawn with, and a source's pipelines go when the last shader of that source is freed. Changing a shader (`Assets<Shader>::get_mut`, or a reload) compiles it again for the next frame.
 
 ### Sprite shader
 
@@ -316,7 +316,7 @@ Custom effects run after the built-in effects of their stage, in insertion order
 
 ### Hot reload and errors
 
-In debug builds with a window the engine watches the game's `assets/` folder, with nothing to call (`EngineBuilder::hot_reload` turns it on or off): saving a `.wgsl` file reloads the shader under the same handle about 100 ms after the last write, and the next frame compiles it. A bad shader is logged once per version in the dev log as `<name>:<line>:<column>: <message>` (the name is the asset path) with the line in your own file; a sprite then draws plain and an effect is skipped, as they are while the shader is not loaded. Nothing panics.
+In debug builds with a window the engine watches the game's `assets/` folder, with nothing to call (`EngineBuilder::hot_reload` turns it on or off): saving a `.wgsl` file reloads the shader under the same handle about 100 ms after the last write, and the next frame compiles it. A save that does not compile keeps the last good shader (`AssetEvent::ReloadFailed`), warned once in the dev log as `could not load "<path>": <line>:<column>: <message>`, with the line and column in your own file; fix it and save again. A shader made or changed in code that does not compile, or whose pipeline the GPU rejects (a binding the pipeline has no place for), draws its last version the GPU accepted, warned once per version in the same words; with none, a sprite draws plain and an effect is skipped, as they are while the shader is not loaded. Nothing panics.
 
 ## Post-Processing
 

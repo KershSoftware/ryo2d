@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.9.1
+  version: 2.9.2
 ---
 
 # Ryo2D API Reference
@@ -201,7 +201,7 @@ Shadows (all `Default`, builder style):
 
 - `enum SpriteShader { BuiltIn(SpriteEffect), Custom { shader: Handle<Shader>, params: ShaderParams } }` (the sprite holds its shader); also `as_builtin()`, `shader_handle() -> Option<&Handle<Shader>>`, `params()`, `params_mut()`.
 - `enum SpriteEffect { Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline }` with the constructors above plus `glow_with_intensity`, `hit_flash`, `full_grayscale`; `is_animated()`, `update(dt) -> bool` (advances a `Wave`'s phase; the engine does not call it), `apply_cpu(..)`.
-- `Shader` (an asset): `from_wgsl(name, source)` (`name` is what its errors are reported under), `name()`, `source()`. Load one from a `.wgsl` file with `ctx.assets().load_now::<Shader>(path)` (named by its asset path) or embed one with `ctx.assets().add(Shader::from_wgsl(..))`; a reload or a `get_mut` compiles it again for the next frame, and shaders with equal sources compile once.
+- `Shader` (an asset): `from_wgsl(name, source)` (`name` is what its errors are reported under), `name()`, `source()`. Load one from a `.wgsl` file with `ctx.assets().load_now::<Shader>(path)` (named by its asset path) or embed one with `ctx.assets().add(Shader::from_wgsl(..))`; a reload or a `get_mut` compiles it again for the next frame, and shaders with equal sources compile once. `ShaderLoader` compiles the file as it loads (as a sprite shader if it defines `fn sprite`, an effect if `fn effect`), so WGSL that does not compile is `AssetError::Decode` at its line and column, and a broken save is `ReloadFailed`, keeping the last good shader. A version that fails in the renderer anyway (made in code, or a pipeline the GPU rejects) draws the last version the GPU accepted, warned once per version.
 - `ShaderParams`: `new()`, `set(name, value) -> &mut Self`, `with(name, value) -> Self`, `get(name) -> Option<ParamValue>`. `enum ParamValue { F32, Vec2, Vec3, Vec4, Color }`, `From<f32 | Vec2 | Vec3 | Vec4 | Color>` (a `Color` is sRGB bytes divided by 255, not linear).
 - A custom sprite shader's time input is game time (it stops with pause and slows with speed).
 
@@ -944,7 +944,7 @@ One registry for every asset type. `AssetServer` (a resource; systems take `Res<
 | `set_bloom(intensity)`, `set_bloom_custom(threshold, intensity, radius, blur_passes)`, `disable_bloom()`, `has_bloom()` | |
 | `set_god_rays(intensity, light_positions: Vec<(f32, f32)>)`, `set_god_rays_custom(intensity, samples, decay, density, threshold, positions)`, `update_god_rays_lights(positions)`, `disable_god_rays()`, `has_god_rays()` | |
 | `set_ambient_occlusion(intensity, radius)`, `set_ambient_occlusion_custom(.., bias)`, `disable_ambient_occlusion()`, `has_ambient_occlusion()` | |
-| `add_custom(name, Handle<Shader>) -> Result<(), EffectError>`, `add_custom_in(name, Handle<Shader>, EffectStage) -> Result<(), EffectError>`, `set_custom_param(name, param, value) -> bool`, `set_custom_enabled(name, bool) -> bool`, `remove_custom(name) -> bool`, `has_custom(name)` | game-written full-screen WGSL; `add_custom` runs on the display image, `add_custom_in` in the stage you pick. The effect holds its shader; one not loaded (or failing to compile) is skipped |
+| `add_custom(name, Handle<Shader>) -> Result<(), EffectError>`, `add_custom_in(name, Handle<Shader>, EffectStage) -> Result<(), EffectError>`, `set_custom_param(name, param, value) -> bool`, `set_custom_enabled(name, bool) -> bool`, `remove_custom(name) -> bool`, `has_custom(name)` | game-written full-screen WGSL; `add_custom` runs on the display image, `add_custom_in` in the stage you pick. The effect holds its shader; one not loaded (or with no version that compiles and the GPU accepted) is skipped |
 | `new()`, `update(dt)`, `time()`, `active_effects()`, `active_effects_in(EffectStage)`, `has_active_effects()`, `has_active_effects_in(EffectStage)`, `clear()` | |
 
 `enum PostProcessEffect { Fade, ColorTint, Vignette, ScreenFlash, Crt, ChromaticAberration, GodRays, AmbientOcclusion, Bloom }` (what `active_effects` yields); `PostProcessEffect::stage() -> EffectStage`; `enum EffectError { DuplicateName(String) }`.

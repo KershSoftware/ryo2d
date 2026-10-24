@@ -195,8 +195,12 @@ impl Batch2D {
     extra_textures: &[TextureId],
   ) {
     textures.prepare_textures(device, queue, list, extra_textures);
+    // A game shader whose pipeline the GPU rejected draws its last good
+    // version from the next frame
+    self
+      .pipelines
+      .settle(|source, outcome| textures.custom_shader_settled(source, outcome));
     let textures: &SpriteGpuRenderer = textures;
-    self.pipelines.settle();
     // A source no game shader uses any more (its shaders freed, or changed)
     // takes its pipelines with it, in the frame the last one went
     self.pipelines.retain(|key| match key.shader {
@@ -546,7 +550,7 @@ impl Batch2D {
     };
     self.pipelines.ensure(device, key, Some(("test", wgsl)));
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    self.pipelines.settle();
+    self.pipelines.settle(|_, _| {});
     self.pipelines.get(&key).is_some()
   }
 

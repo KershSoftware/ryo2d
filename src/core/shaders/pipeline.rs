@@ -4,7 +4,7 @@
 //! Uses ping-pong buffers for effect chaining.
 
 use super::cache::ShaderCache;
-use super::custom::{self, CompiledShader, ShaderError, ShaderKind};
+use super::custom::{CompiledShader, ShaderKind};
 use super::effects::{EffectParams, GodRaysParams, PostProcessEffect};
 use super::manager::CustomEffect;
 use super::post_process_shaders;
@@ -183,22 +183,11 @@ impl CustomEffectPipelines {
     }
   }
 
-  /// Settle pipelines whose GPU checks have come back; a rejected one is
-  /// reported once and its effect stays skipped.
+  /// Settle pipelines whose GPU checks have come back: an effect whose
+  /// pipeline the GPU rejected runs its last good version, or is skipped
+  /// (warned once per version, at its next `prepare`).
   fn settle(&mut self) {
-    for (key, compiled) in self.cache.sources_mut() {
-      if let Some(state) = &mut compiled.made
-        && let Some(message) = state.settle()
-      {
-        let error = ShaderError {
-          shader: compiled.name.clone(),
-          line: None,
-          column: None,
-          message,
-        };
-        custom::report_once(key, &error);
-      }
-    }
+    self.cache.settle(Checked::settle);
   }
 
   /// Pack `params` for the shader's `Params` into `out`; the number of bytes

@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.1.1
+  version: 1.1.2
 ---
 
 # Ryo2D Assets
@@ -212,7 +212,7 @@ In debug builds with a window the engine watches `assets/`: a saved file reloads
 
 - A reload keeps the asset's id and moves its version on: an image's texture uploads again, trees from a `.ui.ron` file are brought in line (`UiReloaded`), a followed theme applies again, a shader compiles again, text in a font lays out again.
 - The assets that hold a reloaded one are checked again: a UI file importing the saved file, a theme whose skin image changed, a bitmap font whose sheet did.
-- A reload that fails (a typo in a file) keeps the last good value and warns once; fix the file and save again. A removed file keeps its asset as it was.
+- A reload that fails (a typo in a file) keeps the last good value and warns once, naming the file and, where its format gives one, the line and column: ``could not load "shaders/glow.wgsl": 16:3: expected `;`, found "let"``. Fix the file and save again. A shader is compiled as its file loads, so a `.wgsl` file that does not compile fails as any other file does. A removed file keeps its asset as it was.
 - `ctx.assets().server().reload(path)` asks for the same reload by hand (a headless test, a console command).
 
 Every asset type has a message, `AssetEvent<T>`:

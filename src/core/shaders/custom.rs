@@ -45,7 +45,21 @@ pub(crate) struct ShaderError {
   pub(crate) message: String,
 }
 
+impl ShaderError {
+  /// The message at its place in the game's own source, without the
+  /// shader's name: `line:column: message`, or the message alone where it
+  /// has no place. What a warning naming the shader prints after the name
+  pub(crate) fn located(&self) -> String {
+    match (self.line, self.column) {
+      (Some(line), Some(column)) => format!("{line}:{column}: {}", self.message),
+      (Some(line), None) => format!("{line}: {}", self.message),
+      _ => self.message.clone(),
+    }
+  }
+}
+
 impl std::fmt::Display for ShaderError {
+  /// `name:line:column: message`, with the parts it has
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(f, "{}", self.shader)?;
     if let Some(line) = self.line {
@@ -525,6 +539,94 @@ pub(crate) fn compile(
   })
 }
 
+/// Check a game shader as it will be compiled: as a sprite shader if its
+/// code defines `fn sprite`, and as an effect if it defines `fn effect`
+/// (`compile` for each). A shader is one or the other, so one defining
+/// neither is an error too. `name` labels the error
+pub(crate) fn check(name: &str, source: &str) -> Result<(), ShaderError> {
+  let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+  let (sprite, effect) = entry_functions(source);
+  if !sprite && !effect {
+    return Err(ShaderError {
+      shader: name.to_string(),
+      line: None,
+      column: None,
+      message: "no `sprite` or `effect` function; expected \
+        `fn sprite(in: SpriteIn, params: Params) -> vec4<f32>` or \
+        `fn effect(in: EffectIn, params: Params) -> vec4<f32>`"
+        .to_string(),
+    });
+  }
+  if sprite {
+    compile(ShaderKind::Sprite, name, source)?;
+  }
+  if effect {
+    compile(ShaderKind::Effect, name, source)?;
+  }
+  Ok(())
+}
+
+/// Whether the WGSL `source` defines `fn sprite` and `fn effect`, read
+/// token by token past comments (WGSL has no strings)
+fn entry_functions(source: &str) -> (bool, bool) {
+  let (mut sprite, mut effect) = (false, false);
+  let mut after_fn = false;
+  let mut chars = source.char_indices().peekable();
+  while let Some((start, c)) = chars.next() {
+    if c == '/' && chars.peek().is_some_and(|&(_, next)| next == '/') {
+      // A line comment
+      for (_, c) in chars.by_ref() {
+        if c == '\n' {
+          break;
+        }
+      }
+      continue;
+    }
+    if c == '/' && chars.peek().is_some_and(|&(_, next)| next == '*') {
+      // A block comment; they nest
+      chars.next();
+      let mut depth = 1;
+      while depth > 0 {
+        match chars.next() {
+          Some((_, '/')) if chars.peek().is_some_and(|&(_, next)| next == '*') => {
+            chars.next();
+            depth += 1;
+          }
+          Some((_, '*')) if chars.peek().is_some_and(|&(_, next)| next == '/') => {
+            chars.next();
+            depth -= 1;
+          }
+          Some(_) => {}
+          None => break,
+        }
+      }
+      continue;
+    }
+    if c.is_whitespace() {
+      continue;
+    }
+    if c.is_alphabetic() || c == '_' {
+      let mut end = start + c.len_utf8();
+      while let Some(&(at, next)) = chars.peek() {
+        if !(next.is_alphanumeric() || next == '_') {
+          break;
+        }
+        end = at + next.len_utf8();
+        chars.next();
+      }
+      let word = source.get(start..end).unwrap_or_default();
+      if after_fn {
+        sprite |= word == "sprite";
+        effect |= word == "effect";
+      }
+      after_fn = word == "fn";
+      continue;
+    }
+    after_fn = false;
+  }
+  (sprite, effect)
+}
+
 /// Pack named values into the layout's bytes, calling `on_problem` for every
 /// name the shader has no field for (`None`) and every value of the wrong type
 /// for its field (`Some(expected)`)
@@ -575,30 +677,14 @@ pub(crate) fn pack(layout: &ParamLayout, params: &ShaderParams, out: &mut [u8]) 
 }
 
 /// Identifies a shader's source for its kind: shaders whose sources are
-/// equal share one compiled pipeline. A compile error is still reported for
-/// each shader and version (`ShaderCache::refresh`); only a pipeline the GPU
-/// rejects is reported once per source ([`report_once`])
+/// equal share one compiled pipeline. A failure is still reported for each
+/// shader and version (`ShaderCache::prepare`)
 pub(crate) fn source_key(kind: ShaderKind, source: &str) -> u64 {
   use std::hash::{Hash, Hasher};
   let mut hasher = std::collections::hash_map::DefaultHasher::new();
   kind.hash(&mut hasher);
   source.hash(&mut hasher);
   hasher.finish()
-}
-
-/// Log a shader error once per source (see [`source_key`]); returns whether it
-/// was logged now
-pub(crate) fn report_once(key: u64, error: &ShaderError) -> bool {
-  use std::collections::HashSet;
-  use std::sync::{Mutex, OnceLock};
-
-  static SEEN: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
-  let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-  let first = seen.lock().unwrap_or_else(|e| e.into_inner()).insert(key);
-  if first {
-    crate::engine_error!(module: "Shaders", "{}", error);
-  }
-  first
 }
 
 #[cfg(test)]
@@ -676,6 +762,32 @@ mod tests {
     let too_big = "struct Params { a: vec4<f32>, b: vec4<f32>, c: vec4<f32>, d: vec4<f32>, e: f32 }\n\
       fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv) * params.e; }\n";
     assert!(compile(ShaderKind::Effect, "fx.wgsl", too_big).is_err());
+  }
+
+  #[test]
+  fn entry_functions_are_found_past_comments() {
+    assert_eq!(entry_functions("fn sprite(in: SpriteIn) {}"), (true, false));
+    assert_eq!(
+      entry_functions("// fn sprite(\n/* fn effect( /* nested */ fn sprite */ fn effect ( )"),
+      (false, true)
+    );
+    assert_eq!(
+      entry_functions("fn sprites() {} fn my_effect() {} let fn_sprite = sprite;"),
+      (false, false)
+    );
+    assert_eq!(
+      entry_functions("fn\n  sprite\n(in: SpriteIn)"),
+      (true, false)
+    );
+  }
+
+  #[test]
+  fn a_check_compiles_each_kind_the_source_defines() {
+    let both = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }\n\
+      fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv) * nope; }\n";
+    let err = check("both.wgsl", both).expect_err("its effect does not compile");
+    assert_eq!(err.line, Some(2), "{err}");
+    assert!(check("sprite.wgsl", &sprite_src("", "return sample(in.uv);")).is_ok());
   }
 
   #[test]
@@ -807,27 +919,6 @@ mod tests {
     let err = compile_sprite(broken).err().expect("unknown name");
     assert_eq!(err.line, Some(1), "{err}");
     assert_eq!(err.column, Some(63), "{err}");
-  }
-
-  #[test]
-  fn report_once_logs_once_per_source() {
-    let err = ShaderError {
-      shader: "x".into(),
-      line: Some(1),
-      column: None,
-      message: "bad".into(),
-    };
-    let key = source_key(ShaderKind::Sprite, "report-once-a");
-    assert!(report_once(key, &err));
-    assert!(!report_once(key, &err));
-    assert!(report_once(
-      source_key(ShaderKind::Sprite, "report-once-b"),
-      &err
-    ));
-    assert!(report_once(
-      source_key(ShaderKind::Effect, "report-once-a"),
-      &err
-    ));
   }
 
   #[test]

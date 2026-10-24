@@ -643,6 +643,16 @@ impl SpriteGpuRenderer {
     Some((compiled.name.as_str(), shader.wgsl.as_str()))
   }
 
+  /// The GPU accepted a pipeline made from the game shader source `key`
+  /// (`Ok`) or rejected it (`Err`, its message): a shader drawing a
+  /// rejected source draws its last good version
+  pub(crate) fn custom_shader_settled(&mut self, key: u64, outcome: Result<(), String>) {
+    match outcome {
+      Ok(()) => self.custom.accepted(key),
+      Err(message) => self.custom.rejected(key, message),
+    }
+  }
+
   /// Whether a game shader still uses the source key `key`: the batch keeps
   /// its pipelines only while one does
   pub(crate) fn custom_shader_in_use(&self, key: u64) -> bool {

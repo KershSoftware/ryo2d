@@ -7,7 +7,6 @@ use super::polyline::Vertex2D;
 use super::{BatchShader, BlendMode, LightStep, PageKind, Stream};
 use crate::core::graphics::SpriteInstance;
 use crate::core::render::UI_FORMAT;
-use crate::core::shaders::custom::{self, ShaderError};
 use crate::core::shaders::scope::Checked;
 
 /// The blend state of `mode`. Every batch shader writes colour premultiplied
@@ -283,20 +282,16 @@ impl Pipelines {
     self.built.get(key)?.state.ready()
   }
 
-  /// Settle pipelines whose GPU checks came back; a rejected one is
-  /// reported once and its drawables fall back to plain sprites.
-  pub(crate) fn settle(&mut self) {
+  /// Settle pipelines whose GPU checks came back, telling `outcome` which
+  /// game shader source each was made from and whether the GPU accepted it
+  /// (`Ok`) or rejected it (`Err`, its message). A rejected one's drawables
+  /// draw plain.
+  pub(crate) fn settle(&mut self, mut outcome: impl FnMut(u64, Result<(), String>)) {
     for built in self.built.values_mut() {
-      if let Some(message) = built.state.settle()
-        && let Some((shader, source)) = &built.custom
+      if let Some(settled) = built.state.settle()
+        && let Some((_, source)) = &built.custom
       {
-        let error = ShaderError {
-          shader: shader.clone(),
-          line: None,
-          column: None,
-          message,
-        };
-        custom::report_once(*source, &error);
+        outcome(*source, settled);
       }
     }
   }
