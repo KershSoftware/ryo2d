@@ -2,11 +2,15 @@
 name = "asset-loading-demo"
 version = "0.1.0"
 edition = "2024"
-description = "Asset loading demo - async loading with progress tracking"
+description = "Asset loading demo - load states, progress, failures and hot reload"
+
+[lib]
+name = "asset_loading_demo"
+path = "src/lib.rs"
 
 [[bin]]
 name = "asset-loading-demo"
-path = "main.rs"
+path = "src/main.rs"
 
 [dependencies]
 ryo2d = { path = "../../.." }

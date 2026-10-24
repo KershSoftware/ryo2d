@@ -1,0 +1,11 @@
+// The Hot reload page spawns this panel. Save a change to it while the demo
+// runs (a debug build with a window) and the panel follows it in place.
+(
+  root: Panel(
+    anchor: TopRight, offset: (-16, 124), width: 250, gap: 6,
+    children: [
+      Text(text: "A panel from a UI file", heading: true),
+      Text(text: "Change this text in ui/card.ui.ron and save it.", muted: true, wrap: 218),
+    ],
+  ),
+)

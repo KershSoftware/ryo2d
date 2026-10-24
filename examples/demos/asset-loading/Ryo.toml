@@ -1,11 +1,11 @@
 # Asset Loading Demo - Ryo2D Engine Project Configuration
-# Demonstrates async asset loading with progress tracking
+# Load states, progress, a failure and hot reload through the asset registry
 
 [project]
 name = "Asset Loading Demo"
 
 [paths]
-entry_point = "main.rs"
+entry_point = "src/main.rs"
 assets = "assets"
 
 [system]

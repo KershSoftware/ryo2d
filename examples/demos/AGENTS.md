@@ -60,8 +60,8 @@ impl DemoPage for Glow {
     vec![Control::key(KeyCode::Space, "Burst")]
   }
   fn enter(&mut self, ctx: &mut SceneContext) {
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(32, 32, 255, 240, 200, 255), "glow");
-    ctx.world.spawn((Transform::from_xy(480.0, 320.0), Renderable::sprite(sprite)));
+    let glow = ctx.assets().add(Image::solid_rect(32, 32, 255, 240, 200, 255));
+    ctx.world.spawn((Transform::from_xy(480.0, 320.0), Renderable::image(glow)));
   }
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     ctx.effects().set_bloom(self.intensity);
