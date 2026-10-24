@@ -2,14 +2,14 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.2.1
+  version: 2.3.0
 ---
 
 # Ryo2D Game Developer
 
 You help users build complete games with Ryo2D: scenes on a stack, entities in one shared ECS world, systems in the engine's phases.
 
-**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-animation`, `ryo-ui`, `ryo-text` (fonts, rich text, world text), `ryo-audio`, `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
+**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-assets` (loading images, fonts, shaders, UI files and themes; handles and hot reload), `ryo-animation`, `ryo-ui`, `ryo-text` (fonts, rich text, world text), `ryo-audio`, `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
 
 ## Project Setup
 
@@ -62,15 +62,14 @@ impl Scene for Level {
     // world (0, 0) is its top-left
     let center = ctx.camera().position();
 
-    let sprite = ctx
-      .assets
-      .create_sprite(Sprite::solid_rect(32, 32, 255, 80, 80, 255), "player");
+    // An image made in code; from a file: ctx.assets().load_now::<Image>("player.png")
+    let sprite = ctx.assets().add(Image::solid_rect(32, 32, 255, 80, 80, 255));
     let player = ctx
       .world
       .spawn((
         Player,
         Transform::from_xy(center.x, center.y),
-        Renderable::sprite(sprite).with_z_order(10),
+        Renderable::image(sprite).with_z_order(10),
       ))
       .id();
     self.player = Some(player);
@@ -139,12 +138,11 @@ Entities are not drawn by `render`: anything with `Transform` + `Renderable` is 
 | `ctx.world` | `&mut World` | Entities, components, queries, resources |
 | `ctx.time` | `&mut Time` | `real`, `game` and `fixed` clocks |
 | `ctx.input` | `&mut Input` | Keyboard, mouse, gamepad, text |
-| `ctx.assets` | `&mut AssetManager` | Sprites (`load_sprite`, `create_sprite`) |
 | `ctx.audio` | `&mut Audio` | Sounds and music (calls return `AudioError::Unavailable` without a device) |
 
-Helpers: `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
+Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-assets`), `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
 
-**`time`, `input` and `assets` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
+**`time` and `input` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
 
 ## Entities and Components
 
@@ -154,7 +152,7 @@ struct Enemy;
 
 let e = ctx
   .world
-  .spawn((Transform::from_xy(10.0, 20.0), Renderable::sprite(sprite)))
+  .spawn((Transform::from_xy(10.0, 20.0), Renderable::image(sprite)))
   .id(); // spawn returns EntityWorldMut; .id() is the Entity
 
 if let Some(mut t) = ctx.world.get_mut::<Transform>(e) {
@@ -264,7 +262,7 @@ fn add_score(mut coins: MessageReader<CoinCollected>, mut score: ResMut<Score>) 
 ```
 
 - A message stays readable until two fixed steps have run after it was written, so per-frame and fixed-step readers both see it; each scene and each reader sees it once. Read a type in one place per scene.
-- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `AssetReloaded`/`AssetLoadFailed`, `ParticleCollision`. Details: `ryo-messages`.
+- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision`, and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
 
 ```rust
 // A coin is a trigger with a Pickup: the engine collects and despawns it
@@ -349,10 +347,10 @@ return SceneAction::SwitchWith(
 
 ## Sprites and Anchors
 
-- `Renderable::sprite(handle)` draws the sprite with its **centre** on the entity's position (`Anchor::Center`). Rotation and scale happen about the anchor.
+- `Renderable::image(handle)` draws the image with its **centre** on the entity's position (`Anchor::Center`). Rotation and scale happen about the anchor.
 - Things laid out as a grid or from a corner (backgrounds, tiles, panels) take `.with_anchor(Anchor::TopLeft)`; things that move, rotate or scale keep the centre.
 - `Renderable::tiled(..)` and composite tiles are laid out from the entity's position (the first tile's top-left), whatever the anchor.
-- Sprites: `ctx.assets.load_sprite("player.png")` (relative to `assets/`, returns a `Result`), `ctx.assets.create_sprite(Sprite::solid_rect(w, h, r, g, b, a), "name")`, `Sprite::solid_circle(..)`.
+- Images: `ctx.assets().load_now::<Image>("player.png")` (an asset path, relative to `assets/`; a `Result`, the image ready to draw), `ctx.assets().add(Image::solid_rect(w, h, r, g, b, a))`, `Image::solid_circle(..)`. The handle keeps the image loaded: hold it (the `Renderable` does), and keep what the whole game uses in a resource (`ryo-assets`). An image not loaded draws a magenta checker in debug builds and nothing in release ones.
 - Crisp versus smooth: `.with_filter(Filter::Nearest)` keeps hard texels when scaled (pixel art in a smooth game), `.with_filter(Filter::Linear)` smooths (a portrait in a pixel-art game); `Filter::Default` follows the presentation. Linear sprites drawn small stay smooth (mipmaps).
 - Glows and light: `.with_blend(BlendMode::Additive)` adds light (fire, sparks, lasers); `Multiply` darkens, `Screen` lightens (a 0..1 formula: over pixels brighter than white it dims them; use `Additive` for light above white). `.with_lighting(false)` keeps a sprite at full brightness in the dark.
 
@@ -394,7 +392,7 @@ fn show_paths(mut debug: ResMut<DebugDraw>, agents: Query<&Path>) {
 ```rust
 ctx.world.spawn((
   Transform::from_xy(200.0, 100.0),
-  Renderable::sprite(sprite),
+  Renderable::image(sprite),
   RigidBody::dynamic(),
   Collider::rect(32.0, 32.0),
 ));
@@ -526,7 +524,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
   for row in 0..5 {
     ctx.world.spawn((
       Transform::from_xy(400.0, 540.0 - 32.0 * row as f32 - 16.0),
-      Renderable::sprite(self.crate_sprite.clone()),
+      Renderable::image(self.crate_sprite.clone()),
       RigidBody::dynamic(),
       Collider::rect(32.0, 32.0).with_friction(0.6),
     ));
@@ -590,7 +588,7 @@ Queries see the world as the last step left it, so a wall spawned this tick does
 ## Hierarchy and Interpolation
 
 ```rust
-let turret = ctx.spawn_child(ship, (Transform::from_xy(0.0, -12.0), Renderable::sprite(sprite)));
+let turret = ctx.spawn_child(ship, (Transform::from_xy(0.0, -12.0), Renderable::image(sprite)));
 ctx.world.detach_keep_world(turret); // leave the parent, stay where it is
 ```
 
@@ -605,7 +603,7 @@ ctx.world.detach_keep_world(turret); // leave the parent, stay where it is
 struct Bullet;
 
 let mut bullets = Pool::new(
-  move || (Bullet, Transform::IDENTITY, Velocity::zero(), Renderable::sprite(sprite.clone())),
+  move || (Bullet, Transform::IDENTITY, Velocity::zero(), Renderable::image(sprite.clone())),
   PoolConfig::default(),
 );
 
@@ -650,7 +648,7 @@ ctx.world.spawn((
   Camera2d { zoom: 0.1, viewport: Viewport::new(0.78, 0.02, 0.2, 0.2), order: 10, clear: CameraClear::Color(Color::new(0, 0, 0, 160)), ..Default::default() },
   RenderLayers::layer(0).with(1), // the world plus minimap-only markers on layer 1
 ));
-ctx.world.spawn((Transform::from_xy(x, y), Renderable::sprite(dot), RenderLayers::layer(1)));
+ctx.world.spawn((Transform::from_xy(x, y), Renderable::image(dot), RenderLayers::layer(1)));
 ```
 
 Render to texture: a camera draws into a target, and a sprite shows it (this frame's image: texture cameras render first).
@@ -685,18 +683,19 @@ The world renders in linear HDR and `ctx.look()` (a `Mut<Look>`) decides how it 
 // A glowing pickup: emission above 1, unlit so it glows in the dark, and bloom
 ctx.world.spawn((
   Transform::from_xy(x, y),
-  Renderable::sprite(gem).with_emission(4.0).with_lighting(false),
+  Renderable::image(gem).with_emission(4.0).with_lighting(false),
 ));
 ctx.effects().set_bloom(1.0);
 
 // A moody level: cooler, less saturated, crushed blacks, and a LUT
-let night = ctx.assets.load_sprite("luts/night.png").ok();
+let night = ctx.assets().load_now::<Image>("luts/night.png").ok();
+let lut = night.and_then(|strip| ColorLut::from_sprite(&strip, ctx.world.resource::<Assets<Image>>()).ok());
 ctx.look().grading = ColorGrading {
   temperature: -0.3,
   saturation: 0.8,
   contrast: 1.2,
   lift: Vec3::splat(-0.02),
-  lut: night.as_ref().and_then(|strip| ColorLut::from_sprite(strip).ok()),
+  lut, // the LUT holds its image
   lut_strength: 0.6,
   ..ColorGrading::default()
 };

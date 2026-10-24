@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.7.5
+  version: 2.8.0
 ---
 
 # Ryo2D API Reference
@@ -15,7 +15,7 @@ Conventions: 2D with +Y down, units are pixels, rotation is radians unless a nam
 use ryo2d::prelude::*;
 ```
 
-Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Sprites](#sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [Text](#text) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
+Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Images](#images) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [Text](#text) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
 
 ---
 
@@ -74,7 +74,7 @@ fn count_coins(mut coins: MessageReader<CoinCollected>, mut score: ResMut<Score>
 World idioms (scene code works on `ctx.world` directly):
 
 ```rust
-let e = world.spawn((Transform::from_xy(100.0, 50.0), Renderable::sprite(sprite))).id();
+let e = world.spawn((Transform::from_xy(100.0, 50.0), Renderable::image(image))).id();
 world.entity_mut(e).insert(Velocity::new(10.0, 0.0));
 if let Some(mut t) = world.get_mut::<Transform>(e) { t.rotation += 0.1; }
 let has_velocity = world.get::<Velocity>(e).is_some();
@@ -136,16 +136,16 @@ Engine systems for tests and tools, outside the prelude: `ryo2d::ecs::propagate:
 
 ### Renderable
 
-Sprite or tiled run on an entity with a `Transform`.
+An image, or a tiled run of one, on an entity with a `Transform`.
 
 ```rust
 pub struct Renderable {
-  pub sprite: SpriteHandle, pub style: RenderStyle, pub visible: bool, pub z_order: i32,
+  pub image: Handle<Image>, pub style: RenderStyle, pub visible: bool, pub z_order: i32,
   pub flip_x: bool, pub flip_y: bool, pub alpha: f32, pub tint: Color,
   pub shader: Option<SpriteShader>, pub drop_shadow: Option<DropShadow>,
   pub blob_shadow: Option<BlobShadow>, pub contact_shadow: Option<ContactShadow>,
   pub anchor: Anchor, // default Anchor::Center
-  pub target: Option<RenderTarget>, // drawn instead of `sprite` (see render_target)
+  pub target: Option<RenderTarget>, // drawn instead of `image` (see render_target)
   pub blend: BlendMode,  // default Alpha (Premultiplied for render_target)
   pub filter: Filter,    // default Filter::Default (the presentation's)
   pub lighting: bool,    // default true; false draws it (and its shadows) after lighting
@@ -156,9 +156,9 @@ pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f3
 
 | Method | |
 |---|---|
-| `sprite(SpriteHandle) -> Self` | single sprite, placed by its anchor |
+| `image(Handle<Image>) -> Self` | a single sprite, placed by its anchor; it holds the image. An image that is not loaded draws the checker in debug builds and nothing in release ones |
 | `render_target(RenderTarget) -> Self` | shows a render target at its size, placed, tinted, faded, scaled, turned and flipped like a sprite (see [Cameras](#cameras)); blends `Premultiplied` |
-| `tiled(SpriteHandle, TileDirection, target_size: f32) -> Self` | repeated to fill `target_size`, laid out from the entity's position (first tile's top-left); ignores `anchor` |
+| `tiled(Handle<Image>, TileDirection, target_size: f32) -> Self` | repeated to fill `target_size`, laid out from the entity's position (first tile's top-left); ignores `anchor` |
 | `with_anchor(Anchor)`, `with_z_order(i32)`, `with_visible(bool)`, `with_flip_x(bool)`, `with_flip_y(bool)`, `with_alpha(f32)`, `with_tint(Color)` | builders |
 | `with_shader(SpriteShader)`, `with_drop_shadow(DropShadow)`, `with_blob_shadow(BlobShadow)`, `with_contact_shadow(ContactShadow)` | effects |
 | `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)` | how it is drawn (shadows always blend `Alpha`) |
@@ -175,7 +175,7 @@ Blend and filter modes (on `Renderable`, `ParticleEmitter`, `SpriteDraw`, `Paral
 | `Screen` | lightens what is below without blowing out; a 0..1 formula, so over pixels brighter than white (HDR light, emission) it dims them, and an emissive Screen drawable over a bright pixel can go below zero and show black: use `Additive` for light above white |
 
 `enum Filter { Default, Nearest, Linear }`: `Default` is nearest under `pixel_art` and linear otherwise. Linear sampling uses mipmaps, so sprites drawn small stay smooth; nearest keeps hard texels.
-| `has_shader`, `has_drop_shadow`, `has_blob_shadow`, `has_contact_shadow`, `is_single`, `is_tiled`, `tile_count() -> u32` | queries |
+| `has_shader`, `has_drop_shadow`, `has_blob_shadow`, `has_contact_shadow`, `is_single`, `is_tiled`, `tile_count(&Assets<Image>) -> u32` | queries |
 
 Shadows (all `Default`, builder style):
 
@@ -196,12 +196,12 @@ Shadows (all `Default`, builder style):
 | | Constructors (same set on `Material` and `SpriteShader`) |
 |---|---|
 | built-in | `outline(Color, thickness: u32)`, `white_outline(u32)`, `glow(Color, radius)`, `flash(Color, intensity)`, `damage_flash(intensity)`, `color_shift(Color, amount)`, `silhouette(Color)`, `shadow()`, `pixelate(block: u32)`, `wave(amplitude, frequency, speed)`, `dissolve(progress)`, `dissolve_with_edge(progress, Color)`, `invert()`, `grayscale(intensity)`, `directional_outline(solid: Color, passable: Color, u32)`, `platform_outline(u32)` |
-| custom WGSL | `custom(ShaderHandle)`, `custom_with_params(ShaderHandle, ShaderParams)`, `.with_param(name, impl Into<ParamValue>)` |
+| custom WGSL | `custom(Handle<Shader>)`, `custom_with_params(Handle<Shader>, ShaderParams)`, `.with_param(name, impl Into<ParamValue>)` |
 | other | `Material::new(SpriteShader)`, `is_builtin()`, `is_custom()`, `update(&mut self, dt) -> bool` |
 
-- `enum SpriteShader { BuiltIn(SpriteEffect), Custom { shader: ShaderHandle, params: ShaderParams } }`; also `as_builtin()`, `shader_handle()`, `params()`, `params_mut()`.
+- `enum SpriteShader { BuiltIn(SpriteEffect), Custom { shader: Handle<Shader>, params: ShaderParams } }` (the sprite holds its shader); also `as_builtin()`, `shader_handle() -> Option<&Handle<Shader>>`, `params()`, `params_mut()`.
 - `enum SpriteEffect { Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline }` with the constructors above plus `glow_with_intensity`, `hit_flash`, `full_grayscale`; `is_animated()`, `update(dt) -> bool` (advances a `Wave`'s phase; the engine does not call it), `apply_cpu(..)`.
-- `ShaderHandle`: `from_source(id, wgsl)`, `id()`, `source()`, `generation()`, `snapshot()`, `replace_source(wgsl)`; load from disk with `ctx.assets.load_shader(path)`.
+- `Shader` (an asset): `from_wgsl(name, source)` (`name` is what its errors are reported under), `name()`, `source()`. Load one from a `.wgsl` file with `ctx.assets().load_now::<Shader>(path)` (named by its asset path) or embed one with `ctx.assets().add(Shader::from_wgsl(..))`; a reload or a `get_mut` compiles it again for the next frame, and shaders with equal sources compile once.
 - `ShaderParams`: `new()`, `set(name, value) -> &mut Self`, `with(name, value) -> Self`, `get(name) -> Option<ParamValue>`. `enum ParamValue { F32, Vec2, Vec3, Vec4, Color }`, `From<f32 | Vec2 | Vec3 | Vec4 | Color>` (a `Color` is sRGB bytes divided by 255, not linear).
 - A custom sprite shader's time input is game time (it stops with pause and slows with speed).
 
@@ -319,7 +319,7 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | Step | Runs |
 |---|---|
 | `First` | advance clocks, publish `Input`, advance message buffers |
-| `PreUpdate` | async asset loads, hot reload |
+| `PreUpdate` | a running scene transition, then the asset pump (loads and reloads land, unheld assets are freed, `AssetEvent`s sent); then the console |
 | UI pass | `Scene::ui` for visible scenes, bottom-up; input it consumes never reaches gameplay |
 | `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Movement` (trigger behaviours, tile collider rebuilds, movement input, knockback, movement presets) → `Physics` (one system: the whole physics step) → `Transforms` → `Trails` |
 | `Update` | `UpdateSet::Game` (scene per-frame systems) |
@@ -381,16 +381,16 @@ pub struct SceneContext<'a> {
   pub world: &'a mut World,
   pub time: &'a mut Time,
   pub input: &'a mut Input,
-  pub assets: &'a mut AssetManager,
   pub audio: &'a mut Audio,
   /* the scene's schedules, message cursors, console scope */
 }
 ```
 
-`time`, `input` and `assets` are taken out of the world for the callback: use the fields (`ctx.world.resource::<Time>()` panics inside a callback). Systems always see them as resources. Cameras are entities: `ctx.camera()` reaches the main one.
+`time` and `input` are taken out of the world for the callback: use the fields (`ctx.world.resource::<Time>()` panics inside a callback). Systems always see them as resources. Cameras are entities: `ctx.camera()` reaches the main one.
 
 | Helper | |
 |---|---|
+| `assets(&mut self) -> AssetsView<'_>` | the asset registry: load, add and read assets (see [Assets](#assets)); it borrows the world, so take it, use it and let it go |
 | `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems; `FixedUpdate` and `Update` only (other phases: `SceneScheduleError::UnsupportedPhase`; `SceneScheduleError` is in the prelude) |
 | `messages<T: Message + Clone>(&mut self) -> Vec<T>` | messages written since this scene last read `T` |
 | `write_message<T: Message>(&mut self, message: T)` | registers `T` on first use |
@@ -430,7 +430,7 @@ pub struct SceneContext<'a> {
 | `screen_size() -> (f32, f32)`, `screen_width()`, `screen_height()` | screen space: the window in logical pixels, or the pixel-art target |
 | `scale_factor() -> f64`, `display_mode() -> DisplayMode` | from `WindowInfo` |
 | `request_display_mode(DisplayMode)`, `request_resolution(w, h)`, `request_display_change(w, h, DisplayMode)`, `request_ui_scale(Option<f32>)` | window changes; the UI scale is render pixels per UI unit, `None` for automatic |
-| `set_cursor(CursorStyle)`, `set_cursor_visible(bool)`, `show_cursor()`, `hide_cursor()`, `set_cursor_confined(bool)` (not on macOS or the web: the cursor stays free, warned once), `cursor_confinement_supported() -> bool`, `set_cursor_locked(bool)`, `set_custom_cursor(&SpriteHandle, hot_x: u16, hot_y: u16)`, `set_custom_cursor_centered(&SpriteHandle)` | cursor |
+| `set_cursor(CursorStyle)`, `set_cursor_visible(bool)`, `show_cursor()`, `hide_cursor()`, `set_cursor_confined(bool)` (not on macOS or the web: the cursor stays free, warned once), `cursor_confinement_supported() -> bool`, `set_cursor_locked(bool)`, `set_custom_cursor(&Handle<Image>, hot_x: u16, hot_y: u16)`, `set_custom_cursor_centered(&Handle<Image>)` (an image not loaded leaves the cursor as it is) | cursor |
 
 Helpers that return `Mut<..>` borrow the context: chain one call (`ctx.effects().set_bloom(0.6)`) or bind `let mut fx = ctx.effects();` for several.
 
@@ -444,10 +444,10 @@ struct Level { player: Option<Entity>, particles: ParticleSystem }
 
 impl Scene for Level {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let sprite = ctx.assets.create_sprite(Sprite::solid_rect(16, 16, 255, 255, 255, 255), "player");
+    let sprite = ctx.assets().add(Image::solid_rect(16, 16, 255, 255, 255, 255));
     let player = ctx.world.spawn((
       Transform::from_xy(320.0, 180.0),
-      Renderable::sprite(sprite).with_z_order(10),
+      Renderable::image(sprite).with_z_order(10),
       Player { speed: 120.0 },
       RigidBody::dynamic(),
       Collider::rect(16.0, 16.0),
@@ -511,6 +511,9 @@ EngineBuilder::new()
 | `background_fps(u32)`, `background_rendering(bool)` | unfocused behaviour |
 | `pixel_art(w: u32, h: u32)`, `window_size(w: u32, h: u32)`, `resizable(bool)`, `display_mode(DisplayMode)`, `ui_scale(Option<f32>)`, `ui_resolution(UiResolution)` | presentation; `ui_scale(None)` (default) keeps UI units equal to screen units, `Some(s)` is `s` render pixels per UI unit; `UiResolution::Render` (default) or `Window` |
 | `ui_theme(Theme)` | the starting UI theme (default `Theme::dark()`) |
+| `asset_loader(impl AssetLoader)` | a loader for the game's own asset type, registering the type too; for an extension an engine loader of the same type takes, the game's wins |
+| `asset_source(impl AssetSource)` | read assets from this source instead of the project's `assets/` folder (a test's `MemorySource`) |
+| `hot_reload(bool)` | whether a saved asset file reloads while the game runs; default on in debug builds with a window, off in release and headless ones |
 | `ui_cache(bool)` | whether node trees replay their unchanged nodes instead of building them (default `true`); `false` builds every node every frame, the same UI slower, to rule caching out of a UI bug (also `DebugConfig::ui_cache`, the console's `ui:cache on\|off`) |
 | `ui_fragments(bool)` | whether node trees keep the layout and resolved output of their unchanged subtrees and copy them (default `true`; only while `ui_cache` is on); `false` replays and resolves every unchanged subtree every frame, the same UI slower, to rule the copies out of a UI bug (also `DebugConfig::ui_fragments`, the console's `ui:fragments on\|off`) |
 | `ui_retain(bool)` | whether the renderer keeps the UI image while the UI is unchanged and reuses unchanged texts' glyphs (default `true`); `false` draws the whole UI every frame, the same pixels slower, to rule retention out of a rendering bug (also `DebugConfig::ui_retain`, the console's `ui:retain on\|off`) |
@@ -549,8 +552,7 @@ Engine messages (all `Message + Clone`):
 | `TweenCompleted` | `entity, finished: bool` | each iteration; `finished` on the last |
 | `KnockbackStarted` / `KnockbackFinished` | `entity` | written in `FixedSet::Movement`; a finish once however it ends (decayed, `stop()`, a head-on hit) |
 | `SquashStretchStarted` / `SquashStretchFinished` | `entity` | |
-| `AssetReloaded` | `path: PathBuf` | hot reload (dev builds) |
-| `AssetLoadFailed` | `path: PathBuf, error: String` | |
+| `AssetEvent<T>` (one per asset type) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` | the asset pump (`PreUpdate`) put an asset in its store, changed it, freed it, or could not load or reload it; `load_now` sends its own at once (see [Assets](#assets)) |
 | `ParticleCollision` | see [Particles](#particles) | |
 | `UiEvent` | `node: Entity, name: Option<String>, action: Option<String>, kind: UiEventKind` | a UI node was clicked, changed, dropped on, focused ... (see [Node trees](#node-trees)); also triggered on the node as an entity event |
 | `UiListBind` | `list, row: Entity, index: usize` | a list node gave a pooled row an item, at the start of the UI pass; the row is drawn from the next frame; also triggered on the row |
@@ -613,7 +615,7 @@ Engine messages (all `Message + Clone`):
 - `SoundOptions { volume, panning, playback_rate }`: `new()`, `volume(f32)`, `panning(-1..1)`, `playback_rate(f32)`.
 - `MusicOptions { volume, panning, playback_rate, looping: true, fade_in, fade_out_on_drop }`: `new()`, `volume`, `panning`, `playback_rate`, `looping(bool)`, `once()`, `fade_in(Duration)`, `fade_out_on_drop(Duration)`.
 - `SoundHandle`: `stop`, `pause`, `resume`, `set_volume`, `set_panning`, `set_playback_rate`, `is_playing`, `is_finished`.
-- `MusicHandle`: the same plus `fade_to(volume, Duration)`, `fade_out(Duration)`, `fade_out_and_stop(Duration)`, `update_category_volume(f32)`; dropping it stops the music (with its `fade_out_on_drop`).
+- `MusicHandle`: the same plus `fade_to(volume, Duration)`, `fade_out(Duration)`, `fade_out_and_stop(Duration)`, `update_category_volume(f32)`. Dropping it leaves the music playing, unless `fade_out_on_drop` was set, which fades it out and stops it; stop music with `stop`, `fade_out_and_stop` or `ctx.audio.stop_music()`.
 
 See `ryo-audio`.
 
@@ -677,19 +679,19 @@ ctx.world.spawn((Transform::from_xy(2000.0, 0.0), Camera2d { target: CameraTarge
 ctx.world.spawn((Transform::from_xy(400.0, 200.0), Renderable::render_target(screen)));
 ```
 
-## Sprites
+## Images
 
-`Sprite` (CPU image data):
+`Image` (an asset: RGBA pixels, 4 bytes a pixel, rows from the top; clones share their pixels until one changes its own). Sprites, particles, parallax, trails and the UI draw a `Handle<Image>`.
 
 | | |
 |---|---|
-| `from_rgba(Vec<u8>, w, h)`, `solid_rect(w, h, r, g, b, a)`, `solid_circle(diameter, r, g, b, a)`, `solid_ellipse(w, h, r, g, b, a)` | build |
-| `load(path) -> SpriteResult<Self>` (PNG, JPEG, SVG, ...), `load_svg(path, scale)`, `load_svg_fit(path, max_w, max_h)`, `from_svg_data(&[u8], scale)`, `from_svg_data_fit(..)` | load |
-| `width()`, `height()`, `data() -> &[u8]`, `is_opaque()`, `scaled(f32)`, `scaled_xy(sx, sy)`, `draw(..)`, `draw_scaled(..)`, `draw_scaled_xy(..)` | |
+| `ctx.assets().load_now::<Image>(path)`, `load::<Image>(path)`, `load_now_with::<Image, _>(path, ImageSettings { svg: SvgSize::Fit { width, height } })` | from a file in `assets/`: PNG, JPEG, BMP, GIF, WebP, TGA, TIFF, QOI, ICO, or SVG at a size (see [Assets](#assets)) |
+| `from_rgba(Vec<u8>, w, h)`, `solid_rect(w, h, r, g, b, a)`, `solid_circle(diameter, r, g, b, a)`, `solid_ellipse(w, h, r, g, b, a)`, `decode(&[u8]) -> Result<Image, ImageError>` (raster bytes, such as `include_bytes!`) | made in code; `ctx.assets().add(image)` gives its handle |
+| `width()`, `height()`, `data() -> &[u8]`, `data_mut() -> &mut [u8]`, `is_opaque()`, `scaled(f32)`, `scaled_xy(sx, sy)`, `draw(..)`, `draw_scaled(..)`, `draw_scaled_xy(..)` | |
 
-Wrap a `Sprite` in a `SpriteHandle` for rendering: `ctx.assets.create_sprite(sprite, "name")` or `SpriteHandle::from_sprite(sprite, "name")`.
+An image that is not loaded (not yet, failed or freed) draws a magenta-and-black checker in debug builds and nothing in release ones. `ImageError { Decode(image::ImageError) }`.
 
-`AnimatedSprite` (CPU sheet player): `from_sheet(Sprite, frame_count, fps)`, `update(dt)`, `draw(..)`, `frame_size()`.
+`AnimatedSprite` (CPU sheet player): `from_sheet(Image, frame_count, fps)`, `update(dt)`, `draw(..)`, `frame_size()`.
 
 `Gpu { pub device: Arc<wgpu::Device>, pub queue: Arc<wgpu::Queue> }` is a resource once the GPU is up.
 
@@ -699,7 +701,7 @@ Wrap a `Sprite` in a `SpriteHandle` for rendering: `ctx.assets.create_sprite(spr
 
 | Type | API |
 |---|---|
-| `Animation` | `new(name, frames: Vec<SpriteHandle>, frame_duration: f32)`, `with_frame_durations(name, frames, durations: Vec<f32>)`, `with_loop_mode(LoopMode)`, `name()`, `duration()`, `frame_count()`, `frame(i)`, `frame_duration(i)`, `loop_mode()` |
+| `Animation` | `new(name, frames: Vec<Handle<Image>>, frame_duration: f32)`, `with_frame_durations(name, frames, durations: Vec<f32>)`, `with_loop_mode(LoopMode)`, `name()`, `duration()`, `frame_count()`, `frame(i)`, `frame_duration(i)`, `loop_mode()` |
 | `Animator` (component, engine-driven) | `new(Animation)`, `set_animation(Animation)`, `play`, `pause`, `stop`, `reset`, `set_speed(f32)`, `speed()`, `is_playing()`, `just_finished()`, `current_sprite()`, `current_frame_index()`, `animation_name()`, `update(dt)` |
 | `AnimationController` (component, engine-driven) | `new()`, `add_animation(AnimationId, Animation)`, `set_state(AnimationId)`, `transition_after_finish(AnimationId)`, `current_state()`, `just_finished()`, `current_sprite()`, `reset`, `pause`, `play`, `set_speed`, `update(dt)` |
 | `ValidatedAnimator` (engine-driven on an entity, like `Animator`) | `new(Animation, AnimationId)`, `with_animation(Animation, AnimationId)`, `with_transition(from, to)`, `with_bidirectional(a, b)`, `with_transition_from_any(to)`, `set_animation(id) -> bool`, `force_animation(id)`, `transition_after_finish(id) -> bool`, `current()`, `current_sprite()`, `just_entered()`, `just_finished()`, `can_transition_to(id)`, `time_in_state()`, `pause`, `play`, `set_speed`, `reset`, `update(dt)` |
@@ -718,17 +720,17 @@ pub struct GpuRenderContext<'a> { pub batch: &'a mut BatchCollector, pub world: 
 
 | `GpuRenderContext` | |
 |---|---|
-| `add_sprite(&SpriteHandle, instance: SpriteInstance, draw: SpriteDraw)` | one sprite, in world space (the instance's centre is a world position; for something fixed on screen, place it with `camera().screen_to_world`); its texture uploads when first drawn and is dropped 600 frames after it was last drawn |
-| `add_custom_sprite(&SpriteHandle, &ShaderHandle, &ShaderParams, SpriteInstance, SpriteDraw)` | one sprite with a game shader |
+| `add_sprite(&Handle<Image>, instance: SpriteInstance, draw: SpriteDraw)` | one sprite, in world space (the instance's centre is a world position; for something fixed on screen, place it with `camera().screen_to_world`); its texture uploads when first drawn and is freed with the image's last handle |
+| `add_custom_sprite(&Handle<Image>, &Handle<Shader>, &ShaderParams, SpriteInstance, SpriteDraw)` | one sprite with a game shader |
 | `screen_size()`, `screen_width()`, `screen_height()`, `camera() -> &CameraView` (the main camera's view) | |
 
 - `SpriteInstance { transform, uv_rect, tint, effect_params, effect_extra, uv_bounds }`: `new()`, `with_transform(x, y, rotation, width, height)` (the quad's centre and size in world units), `with_uv(u_min, v_min, u_max, v_max)`, `with_tint(Color, alpha)`, `with_effect(&SpriteEffect)`, `with_emission(f32)`, `emission() -> f32` (default 1; kept in the transform's last lane as `emission - 1`).
 - `SpriteDraw { z: i32, blend: BlendMode, filter: Filter, lit: bool, effects: bool, emission: f32 }` (`Default`: z 0, `Alpha`, `Filter::Default`, lit, no effects, emission 1; `effects` when the instance carries `with_effect`; `with_emission(f32)` multiplies the instance's emission): `SpriteDraw { z: 5, blend: BlendMode::Additive, ..Default::default() }`.
-- `BatchCollector`: `new()`, `with_capacity(n)`, `add(&SpriteHandle, SpriteInstance, SpriteDraw)`, `sprite_count()`, `clear()`.
+- `BatchCollector`: `new()`, `with_capacity(n)`, `add(&Handle<Image>, SpriteInstance, SpriteDraw)`, `sprite_count()`, `clear()`.
 
 Parallax layers (components; spawn one entity per layer):
 
-- `ParallaxLayer { sprite, scroll: Vec2, auto_scroll: Vec2, offset: Vec2, tile: TileMode, scale, tint, z_order, blend, filter, lighting, scrolled: Vec2 }`: `new(&SpriteHandle)` (fixed on screen at its top-left, untiled, scale 1, white, lit), `with_scroll(Vec2)` (per axis: 0 stays on screen, 1 moves with the world), `with_auto_scroll(Vec2)` (world units per second, game time), `with_offset(Vec2)` (positive moves it right and down), `with_tile(TileMode)`, `with_scale(f32)`, `with_tint(Color)`, `with_z_order(i32)`, `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)`. `scrolled` is how far it has auto-scrolled (set it to carry a backdrop across scenes).
+- `ParallaxLayer { sprite: Handle<Image>, scroll: Vec2, auto_scroll: Vec2, offset: Vec2, tile: TileMode, scale, tint, z_order, blend, filter, lighting, scrolled: Vec2 }`: `new(&Handle<Image>)` (fixed on screen at its top-left, untiled, scale 1, white, lit), `with_scroll(Vec2)` (per axis: 0 stays on screen, 1 moves with the world), `with_auto_scroll(Vec2)` (world units per second, game time), `with_offset(Vec2)` (positive moves it right and down), `with_tile(TileMode)`, `with_scale(f32)`, `with_tint(Color)`, `with_z_order(i32)`, `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)`. `scrolled` is how far it has auto-scrolled (set it to carry a backdrop across scenes).
 - Every camera on its `RenderLayers` lays it out from its own view, so split screen and minimaps each get their own parallax.
 - `enum TileMode { None, Horizontal, InfiniteScroll }`.
 
@@ -738,9 +740,9 @@ Parallax layers (components; spawn one entity per layer):
 
 Multi-part sprites laid out from the entity's position (parts at offsets from it, not anchored).
 
-- `CompositeTileBuilder`: `new()`, `cap(sprite, offset_x, offset_y)`, `cap_flipped_y(..)`, `cap_flipped(sprite, x, y, flip_x, flip_y)`, `static_part(..)`, `body_tiled(sprite, x, y, TileDirection, target_size)`, `body_tiled_flipped(..)`, `tiled_part(..)`, `z_order(i32)`, `visible(bool)`, `build() -> CompositeTile`, `build_with_collider() -> (CompositeTile, Collider)` (a rect collider offset over all the parts).
-- `CompositeTile { parts: Vec<TilePart>, visible, z_order }` (component): `new()`, `add_part(TilePart)`, `with_visible`, `with_z_order`, `bounds() -> (f32, f32, f32, f32)`, `size()`.
-- `TilePart { sprite, offset_x, offset_y, tiling: Option<(TileDirection, f32)>, flip_x, flip_y }`: `static_part(sprite, x, y)`, `tiled_part(sprite, x, y, direction, target_size)`, `with_flip_x`, `with_flip_y`, `is_tiled()`, `bounds()`.
+- `CompositeTileBuilder`: `new()`, `cap(sprite, offset_x, offset_y)`, `cap_flipped_y(..)`, `cap_flipped(sprite, x, y, flip_x, flip_y)`, `static_part(..)`, `body_tiled(sprite, x, y, TileDirection, target_size)`, `body_tiled_flipped(..)`, `tiled_part(..)`, `z_order(i32)`, `visible(bool)`, `build() -> CompositeTile`, `build_with_collider(&Assets<Image>) -> (CompositeTile, Collider)` (a rect collider offset over all the parts, sized from the images, so build it once they are loaded).
+- `CompositeTile { parts: Vec<TilePart>, visible, z_order }` (component): `new()`, `add_part(TilePart)`, `with_visible`, `with_z_order`, `bounds(&Assets<Image>) -> (f32, f32, f32, f32)`, `size(&Assets<Image>)`.
+- `TilePart { sprite: Handle<Image>, offset_x, offset_y, tiling: Option<(TileDirection, f32)>, flip_x, flip_y }`: `static_part(sprite, x, y)`, `tiled_part(sprite, x, y, direction, target_size)`, `with_flip_x`, `with_flip_y`, `is_tiled()`, `bounds(&Assets<Image>)`.
 - `enum TileDirection { Up, Down, Left, Right }`: `offset(tile_size)`, `is_horizontal()`, `is_vertical()`.
 
 ---
@@ -854,8 +856,8 @@ Lights and occluders sit at their entity's `GlobalTransform`. A light with a `Re
 | `Look { exposure: f32, tonemap: Tonemap, grading: ColorGrading, auto_exposure: Option<AutoExposure> }` | `Default`: exposure 0 EV (+1 doubles the light), `Tonemap::Soft { knee: 0.8, white: 4.0 }`, neutral grading, no auto-exposure. Order: exposure (plus the auto EV), white balance, contrast and saturation, the curve, lift/gamma/gain, then the LUT in sRGB |
 | `enum Tonemap { Soft { knee, white }, Clamp, Aces, AgX }` | `apply(self, Vec3) -> Vec3` (linear in after exposure, linear display colour out). `Soft` is identity up to `knee`, then reaches 1 at `white`, keeping hues; `Clamp` clips at 1 (the pre-HDR look); `Aces` is contrasty; `AgX` is soft with hue-faithful highlights |
 | `ColorGrading { temperature, tint, contrast, saturation, lift: Vec3, gamma: Vec3, gain: Vec3, lut: Option<ColorLut>, lut_strength }` | `Default`: 0, 0, 1, 1, `Vec3::ZERO`, `Vec3::ONE`, `Vec3::ONE`, none, 1.0. `temperature` and `tint` are -1 to 1; `contrast` pivots on mid-grey 0.18; `lift`, `gamma` and `gain` work per channel on the display colour |
-| `ColorLut` | `from_sprite(&SpriteHandle) -> Result<ColorLut, LutError>`, `size() -> u32`, `identity_strip(size: u32) -> Sprite` (N from 2 to 64). A strip is N tiles of N x N side by side (N*N wide, N high; 1024x32 for N = 32): tile `b` holds blue `b / (N - 1)`, red grows to the right and green downward. Looked up in sRGB; follows its sprite's hot reload |
-| `enum LutError { WrongSize { width, height } }` | the sprite is not a strip |
+| `ColorLut` | `from_sprite(&Handle<Image>, &Assets<Image>) -> Result<ColorLut, LutError>` (it holds the image), `size() -> u32`, `identity_strip(size: u32) -> Image` (N from 2 to 64). A strip is N tiles of N x N side by side (N*N wide, N high; 1024x32 for N = 32): tile `b` holds blue `b / (N - 1)`, red grows to the right and green downward. Looked up in sRGB; follows its image's reloads, keeping the last good strip |
+| `enum LutError { WrongSize { width, height }, NotLoaded }` | the image is not a strip, or not loaded yet |
 | `AutoExposure { min_ev, max_ev, compensation, speed_up, speed_down }` | `Default`: -4, 4, 0, 3, 1 (EV; speeds in EV per second, real time). Measured on the GPU from the scene (the average luminance without its darkest and brightest 5%) and brought to mid-grey; added to `exposure` |
 
 ```rust
@@ -867,25 +869,54 @@ ctx.look().tonemap = Tonemap::Aces;
 
 ## Assets
 
-`AssetManager` is a resource and `ctx.assets`. The engine finishes async loads and hot reloads in `PreUpdate`.
+One registry for every asset type. `AssetServer` (a resource; systems take `Res<AssetServer>`) loads by asset path, relative to the project's `assets/` folder, through loaders chosen by extension, and each type's values are in its `Assets<T>` resource. Scenes reach both through `ctx.assets() -> AssetsView<'_>`, which borrows the world. Each frame the pump (`PreUpdate`) lands finished loads, sends `AssetEvent`s and frees assets whose last handle dropped. The guide is `ryo-assets`.
 
-| `AssetManager` | |
+| `AssetsView` (`ctx.assets()`; also `HeadlessEngine::assets()`, `UiHarness::assets()`) | |
 |---|---|
-| `load_sprite<P: AsRef<Path>>(path) -> AssetResult<SpriteHandle>` | cached by path |
-| `load_shader(path) -> AssetResult<ShaderHandle>` | WGSL, hot-reloadable |
-| `load_ui<P: AsRef<Path>>(path) -> AssetResult<UiFile>` | a `.ui.ron` file, cached by path; imports load through the cache. Mistakes come back together in `AssetError::UiFile(UiFileError)` |
-| `add_ui<P: AsRef<Path>>(path, text: &str) -> Result<UiFile, UiFileError>` | check text the game embedded (`include_str!`) and cache it under `path`; never reloaded from disk |
-| `reload_ui<P: AsRef<Path>>(path) -> AssetResult<()>` | read a cached file again and check it and its importers; on a mistake the old contents stay. The next frame brings the trees built from it in line |
-| `create_sprite(Sprite, name) -> SpriteHandle` | from generated pixels |
-| `load_sprite_async(path) -> AsyncSpriteHandle` | background load |
-| `start_loading(paths)`, `loading_progress() -> LoadingProgress`, `is_loading_complete()`, `reset_loading_progress()` | batch loading screens |
-| `enable_hot_reload(watch_paths) -> AssetResult<()>`, `disable_hot_reload()`, `is_hot_reload_enabled()` | dev builds |
-| `new()`, `with_base_path(p)`, `set_base_path(p)`, `base_path()`, `is_sprite_cached(p)`, `sprite_count()`, `gc_sprites()`, `clear_sprite_cache()`, `cache_sprite_handle(h)`, `stats() -> AssetStats`, `pending_load_count()`, `has_pending_loads()`, `process_async_loads()`, `process_reloads()` | |
+| `load<T: Asset>(&self, path: &str) -> Handle<T>` | queued on the worker threads (in the pump on the web, at most 4 ms a frame); returns at once. A bad path or an extension no loader takes gives a failed handle. One path (with one settings value) is one asset: asking again while it lives gives the same handle |
+| `load_with<T: Asset, S: AssetSettings>(&self, path: &str, settings: S) -> Handle<T>` | with the loader's settings, part of the asset's key; settings of another type fail the load |
+| `load_now<T: Asset>(&mut self, path: &str) -> Result<Handle<T>, Arc<AssetError>>` | at once on this thread, dependencies too, its `Added` or `Failed` sent at once; an asset already loaded comes back without a read |
+| `load_now_with<T: Asset, S: AssetSettings>(&mut self, path: &str, settings: S) -> Result<Handle<T>, Arc<AssetError>>` | |
+| `add<T: Asset>(&mut self, value: T) -> Handle<T>` | an asset made in code (its type is registered at the first add); never reloaded |
+| `get<T: Asset>(&self, id: impl Into<AssetId<T>>) -> Option<&T>`, `get_mut<T: Asset>(&mut self, id) -> Option<&mut T>` | the value once loaded (`&handle` converts); `get_mut` moves its version on, so what was built from it is built again, and sends `Modified` at the next pump |
+| `state<T: Asset>(&self, id) -> LoadState`, `is_ready<T: Asset>(&self, id) -> bool` | its own state; loaded with every dependency loaded too |
+| `progress(&self, ids: &[UntypedAssetId]) -> Progress`, `stats(&self) -> AssetStats` | a group's progress (an id neither loaded nor loading is not counted); counts per type |
+| `server(&self) -> &AssetServer` | for `reload`, `path` and `dependency_state` |
 
-- `SpriteHandle` (cheap clone, shared): `new(Sprite, PathBuf)`, `from_sprite(Sprite, name)`, `width()`, `height()`, `path()`, `id() -> String` (texture id for batching), `sprite()` (read guard), `with_sprite(|s| ..)`, `ref_count()`.
-- `AsyncSpriteHandle`: `state() -> LoadingState`, `is_loading()`, `is_complete()`, `is_loaded()`, `is_failed()`, `get() -> Option<SpriteHandle>`, `get_or(&fallback)`, `path()`. `enum LoadingState { Loading, Loaded, Failed(String) }`.
-- `LoadingProgress { total, completed, succeeded, failed, current, failures }`: `percentage()`, `is_loading()`, `is_complete()`, `current_asset()`, `has_failures()`, `none()`.
-- `AssetStats { sprites_cached, sprites_total_refs, sprites_loading }`.
+| `AssetServer` (resource, cheap to clone) | |
+|---|---|
+| `load`, `load_with`, `state`, `is_ready`, `progress`, `stats` | as on `AssetsView` |
+| `load_now<T: Asset>(&self, world: &mut World, path: &str) -> Result<Handle<T>, Arc<AssetError>>`, `load_now_with(..)` | with the world (exclusive systems, tests) |
+| `dependency_state<T: Asset>(&self, id) -> LoadState` | `Loading` until every dependency is loaded; `Failed` with the first failed one's error, as an `AssetError::Dependency` |
+| `reload(&self, path: &str)` | reload every asset loaded from `path` (each settings variant) on the workers: each keeps its id; a failure keeps the last good value (`ReloadFailed`) |
+| `path<T: Asset>(&self, id) -> Option<AssetPath>` | the path it was loaded from |
+| `new(impl AssetSource) -> AssetServer`, `register_asset::<T: Asset>(&self, &mut World)`, `register_loader(&self, impl AssetLoader)` | a registry of your own (tests); the engine makes the world's, with every engine type and loader registered |
+
+- `Handle<T>` (`Clone`, `Eq`, `Hash`, `Debug`): `id() -> AssetId<T>`. The asset lives while any clone does; the pump frees it once the last one drops (`Removed`). Hold what a scene uses in the scene or its components, and what the whole game uses in a resource.
+- `AssetId<T>` (`Copy`, `Eq`, `Hash`, `Debug`; `From<&Handle<T>>`): `index()`, `generation()`, `untyped() -> UntypedAssetId`. It names an asset without keeping it alive; a stale id finds nothing. `UntypedAssetId::typed::<T>() -> Option<AssetId<T>>`.
+- `Assets<T>` (resource: `Res<Assets<T>>`, `ResMut<Assets<T>>`): `add(T) -> Handle<T>`, `get(id) -> Option<&T>`, `get_mut(id) -> Option<&mut T>`, `version(id) -> Option<u64>` (moves on whenever the value changes), `len()`, `is_empty()`, `iter() -> impl Iterator<Item = (AssetId<T>, &T)>`.
+- `enum LoadState { NotLoaded, Loading, Loaded, Failed(Arc<AssetError>) }`: `is_loaded()`, `is_failed()`, `error() -> Option<&Arc<AssetError>>`. An asset added in code is `Loaded` while it lives.
+- `Progress { loaded, failed, pending }` (`Copy`, `Eq`, `Default`): `is_done()` (nothing pending), `fraction()` (the share loaded or failed; 1 for an empty group). `AssetStats { types: Vec<TypeStats> }`, `TypeStats { name, loaded, loading, failed }`, one per registered type.
+- `enum AssetEvent<T: Asset> { Added { id }, Modified { id }, Removed { id }, Failed { id, error: Arc<AssetError> }, ReloadFailed { id, error } }` (`Clone`, `Debug`): a message per asset type (`ctx.messages::<AssetEvent<Image>>()`, `MessageReader<AssetEvent<T>>`). The pump sends them in `PreUpdate`, `load_now` its own at once; an asset's events come in the order its changes happened, `Removed` last.
+- `AssetPath` (`Clone`, `Eq`, `Hash`, `Ord`, `Display`): `parse(&str) -> Result<AssetPath, AssetError>` (`\` to `/`, `.` dropped, `..` resolved; absolute or leaving the root is `InvalidPath`), `as_str()`, `extensions()` (longest first: `"ui.ron"`, `"ron"`), `parent()`.
+- The engine's types and loaders, in every registry: `Image` (`ImageLoader`: `png`, `jpg`, `jpeg`, `bmp`, `gif`, `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg`; settings `ImageSettings { svg: SvgSize }`, `enum SvgSize { Native (default), Scale(f32), Fit { width: u32, height: u32 } }`), `Shader` (`ShaderLoader`: `wgsl`), `Font` (`FontLoader`: `ttf`, `otf`, `ttc`; `FontSettings { face: u32 }`), `BitmapFont` (`BitmapFontLoader`: `bitmap.ron`), `UiFile` (`UiFileLoader`: `ui.ron`) and `Theme` (`ThemeLoader`: `theme.ron`). A path's loader is the one taking its longest extension.
+- A type of your own: `trait Asset: Send + Sync + 'static {}`, and for files a loader registered with `EngineBuilder::asset_loader(loader)`:
+
+  ```rust
+  pub trait AssetLoader: Send + Sync + 'static {
+    type Asset: Asset;
+    type Settings: AssetSettings; // `()` for none
+    fn extensions(&self) -> &[&'static str]; // without the dot: "level", "ui.ron"
+    fn load(&self, bytes: Vec<u8>, settings: &Self::Settings, cx: &mut LoadContext<'_>) -> Result<Self::Asset, AssetError>;
+    fn check(&self, asset: &Self::Asset, world: &World) -> Result<(), AssetError> { Ok(()) } // main thread, once the dependencies load and whenever one reloads
+    fn dependency_failed(&self, asset: &Self::Asset, error: &AssetError) -> Option<AssetError> { None } // a better error than the server's `Dependency`
+  }
+  ```
+
+  `AssetSettings` is any `Default + Clone + Hash + Eq + Send + Sync + 'static` type. `LoadContext`: `path() -> &AssetPath`, `load::<T>(path) -> Result<Handle<T>, AssetError>`, `load_with::<T, S>(path, settings)`: a dependency, kept by keeping its handle in the asset; the asset is inserted once its dependencies are loaded. A panic in a loader fails its asset.
+- `trait AssetSource: Send + Sync + 'static { fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError>; fn watch(..) }`: `DiskSource::new(root)` (`root()`; the engine's reads `assets/`), `MemorySource` (`new()`, `insert(path, bytes)`, `remove(path)`; clones share their files, and an `insert` over a path tells a watcher it changed). `EngineBuilder::asset_source(source)` reads from another source.
+- `AssetError` (`#[non_exhaustive]`; `Display` is one line, the causes its `source()` chain): `NotFound { path }`, `Io { path, source: io::Error }` (`ErrorKind::Unsupported` on the web, which has no files), `Decode { path, source }`, `NoLoader { path, extension }`, `Dependency { path, dependency, error: Arc<AssetError> }`, `Cycle { path, chain }`, `InvalidPath { path: String, reason }`; `AssetError::decode(&AssetPath, impl Into<Box<dyn Error + Send + Sync>>)` makes a `Decode` in a loader. Each failure is warned once in the dev log.
+- Hot reload (`EngineBuilder::hot_reload`, default on in debug builds with a window): a file saved in `assets/` reloads under the same handle about 100 ms after its last write, and the assets that hold it are checked again; a reload that fails keeps the last good value.
 
 ---
 
@@ -913,7 +944,7 @@ ctx.look().tonemap = Tonemap::Aces;
 | `set_bloom(intensity)`, `set_bloom_custom(threshold, intensity, radius, blur_passes)`, `disable_bloom()`, `has_bloom()` | |
 | `set_god_rays(intensity, light_positions: Vec<(f32, f32)>)`, `set_god_rays_custom(intensity, samples, decay, density, threshold, positions)`, `update_god_rays_lights(positions)`, `disable_god_rays()`, `has_god_rays()` | |
 | `set_ambient_occlusion(intensity, radius)`, `set_ambient_occlusion_custom(.., bias)`, `disable_ambient_occlusion()`, `has_ambient_occlusion()` | |
-| `add_custom(name, ShaderHandle) -> Result<(), EffectError>`, `add_custom_in(name, ShaderHandle, EffectStage) -> Result<(), EffectError>`, `set_custom_param(name, param, value) -> bool`, `set_custom_enabled(name, bool) -> bool`, `remove_custom(name) -> bool`, `has_custom(name)` | game-written full-screen WGSL; `add_custom` runs on the display image, `add_custom_in` in the stage you pick |
+| `add_custom(name, Handle<Shader>) -> Result<(), EffectError>`, `add_custom_in(name, Handle<Shader>, EffectStage) -> Result<(), EffectError>`, `set_custom_param(name, param, value) -> bool`, `set_custom_enabled(name, bool) -> bool`, `remove_custom(name) -> bool`, `has_custom(name)` | game-written full-screen WGSL; `add_custom` runs on the display image, `add_custom_in` in the stage you pick. The effect holds its shader; one not loaded (or failing to compile) is skipped |
 | `new()`, `update(dt)`, `time()`, `active_effects()`, `active_effects_in(EffectStage)`, `has_active_effects()`, `has_active_effects_in(EffectStage)`, `clear()` | |
 
 `enum PostProcessEffect { Fade, ColorTint, Vignette, ScreenFlash, Crt, ChromaticAberration, GodRays, AmbientOcclusion, Bloom }` (what `active_effects` yields); `PostProcessEffect::stage() -> EffectStage`; `enum EffectError { DuplicateName(String) }`.
@@ -927,7 +958,7 @@ Bloom's `threshold` is linear luminance, 0 or more and unbounded above (default 
 ## Trails and lines
 
 - `with_emission(f32)` (default 1) on `Trail2D`, `Line2D`, `ParticleEmitter` and `Renderable` multiplies the colour's light: above 1 it glows past white and feeds bloom. `Trail2D` and `Line2D` read it with `emission()`; `Renderable` and `ParticleEmitter` have a public `emission` field.
-- `Trail2D` (component, on an entity with a `Transform`): records the entity's world position every fixed step (points are world space). Constructors `new(Color, width)`, `bullet(Color)`, `swipe(Color, w)`, `particle(Color)`, `laser(Color, w)`, `fading_laser(Color, w, fade_time)`, `lightning(Color, w)`, `fire(Color, w)`, `energy(Color, w)`; builders `with_length(max_points)` (≤ 128), `with_end_width`, `with_taper(ratio)`, `with_fade(bool)`, `with_end_color`, `with_min_distance`, `with_emit_interval`, `with_lifetime(secs)`, `with_fade_distance(px)`, `with_texture(SpriteHandle)`, `with_texture_mode(TextureMode)`, `with_tile_length`, `with_style(TrailStyle)`, `with_effect(TrailEffect)`, `with_cap(LineCap)`, `with_join(LineJoin)`, `with_blend(BlendMode)`, `with_filter(Filter)` (textured trails), `with_lighting(bool)`, `with_z_order(i32)`; control `set_enabled`, `set_visible`, `set_recording`, `clear`, `push_point(x, y)`, `push_point_back`, `populate_line(..)`, `update(x, y, dt)`, plus getters/setters for each setting.
+- `Trail2D` (component, on an entity with a `Transform`): records the entity's world position every fixed step (points are world space). Constructors `new(Color, width)`, `bullet(Color)`, `swipe(Color, w)`, `particle(Color)`, `laser(Color, w)`, `fading_laser(Color, w, fade_time)`, `lightning(Color, w)`, `fire(Color, w)`, `energy(Color, w)`; builders `with_length(max_points)` (≤ 128), `with_end_width`, `with_taper(ratio)`, `with_fade(bool)`, `with_end_color`, `with_min_distance`, `with_emit_interval`, `with_lifetime(secs)`, `with_fade_distance(px)`, `with_texture(Handle<Image>)`, `with_texture_mode(TextureMode)`, `with_tile_length`, `with_style(TrailStyle)`, `with_effect(TrailEffect)`, `with_cap(LineCap)`, `with_join(LineJoin)`, `with_blend(BlendMode)`, `with_filter(Filter)` (textured trails), `with_lighting(bool)`, `with_z_order(i32)`; control `set_enabled`, `set_visible`, `set_recording`, `clear`, `push_point(x, y)`, `push_point_back`, `populate_line(..)`, `update(x, y, dt)`, plus getters/setters for each setting.
 - `Line2D` (component, on an entity with a `Transform`): drawn at the entity's world position (points are offsets from it). `new(points: Vec<Vec2>, Color, width)`, `segment(start, end, Color, w)`, `horizontal(y, x0, x1, Color, w)`, `vertical(x, y0, y1, Color, w)`, `rect(x, y, w, h, Color, line_w)`, `circle(center, r, Color, w, segments)`, `arc(..)`, `quadratic_bezier(..)`, `bezier(..)`, `arrow(start, end, Color, w, head)`; builders `with_end_color`, `with_end_width`, `with_taper`, `with_closed(bool)`, `with_z_order`, `with_style`, `with_cap`, `with_join(LineJoin)`, `with_blend(BlendMode)`, `with_lighting(bool)`; editing `points_mut`, `set_points`, `push_point`, `pop_point`, `clear`; `length()`, `point_at_distance(d)`, `color_at(t)`, `width_at(t)`.
 - `TrailPoint { x, y, age }`: `new(x, y)`.
 - `enum TrailStyle { Solid, Soft, Glow }`, `enum LineCap { Butt, Round, Square }`, `enum LineJoin { Miter (default), Bevel, Round }`, `enum TextureMode { Stretch, Tile }`, `enum TrailEffect { Lightning { .. }, Noise { .. }, UvScroll { .. }, Ribbon { .. } }`.
@@ -979,7 +1010,7 @@ The scene owns a `ParticleSystem`; emitters and attractors are components.
 | `collect_for_render(&mut self, world: &World, collector: &mut BatchCollector)` | call in `render`: `collect_for_render(gpu.world, gpu.batch)`; particles are centred on their position, in world space |
 | `particle_count()`, `clear()`, `clear_emitter(Entity)` | |
 
-- `ParticleEmitter` (component; emits from its entity's `GlobalTransform`) with public fields for every setting (`mode`, `shape`, `sprite`, `enabled`, lifetime/size/color/speed/rotation ranges, `gravity`, `drag`, `z_order`, `effect`, `blend`, `filter`, `lighting`, `collision`, `layer`, `max_particles`). `new(SpriteHandle)`, `with_mode(EmissionMode)`, `with_shape(EmissionShape)`, `with_lifetime(min, max)`, `with_size(min, max)`, `with_end_size(min, max)`, `with_color(start, end)`, `with_speed(min, max)`, `with_rotation(min, max)`, `with_angular_velocity(min, max)`, `with_gravity(x, y)`, `with_drag(f32)`, `with_z_order(i32)`, `with_effect(SpriteEffect)`, `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)`, `with_layer(u32)`, `with_collision(CollisionConfig)`, `with_max_particles(u32)`, `one_shot()`, `set_enabled(bool)`, `reset()`, `burst(count)`, `is_finished()`. Presets (each `(SpriteHandle) -> Self`): `fire`, `flame_small`, `smoke`, `smoke_thick`, `magic`, `magic_heal`, `rain`, `snow`, `sparks`, `dust`, `confetti`, `bubbles`, `comet_trail`, `exhaust`; `explosion(sprite, count)`, `explosion_debris(sprite, count)`.
+- `ParticleEmitter` (component; emits from its entity's `GlobalTransform`) with public fields for every setting (`mode`, `shape`, `sprite`, `enabled`, lifetime/size/color/speed/rotation ranges, `gravity`, `drag`, `z_order`, `effect`, `blend`, `filter`, `lighting`, `collision`, `layer`, `max_particles`). `new(Handle<Image>)`, `with_mode(EmissionMode)`, `with_shape(EmissionShape)`, `with_lifetime(min, max)`, `with_size(min, max)`, `with_end_size(min, max)`, `with_color(start, end)`, `with_speed(min, max)`, `with_rotation(min, max)`, `with_angular_velocity(min, max)`, `with_gravity(x, y)`, `with_drag(f32)`, `with_z_order(i32)`, `with_effect(SpriteEffect)`, `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)`, `with_layer(u32)`, `with_collision(CollisionConfig)`, `with_max_particles(u32)`, `one_shot()`, `set_enabled(bool)`, `reset()`, `burst(count)`, `is_finished()`. Presets (each `(Handle<Image>) -> Self`): `fire`, `flame_small`, `smoke`, `smoke_thick`, `magic`, `magic_heal`, `rain`, `snow`, `sparks`, `dust`, `confetti`, `bubbles`, `comet_trail`, `exhaust`; `explosion(sprite, count)`, `explosion_debris(sprite, count)`.
 - `enum EmissionMode { Continuous { rate }, Burst { count }, BurstRepeating { count, interval, repeats: Option<u32> } }`.
 - `enum EmissionShape { Point, Line { start_x, start_y, end_x, end_y }, Circle { radius, hollow }, Rectangle { width, height }, Cone { direction, spread, min_speed, max_speed } }` (radians).
 - `ParticleAttractor { attractor_type, layer_mask, enabled }` (component): `new(AttractorType)`, `point(strength, radius)`, `gravity_well(strength, radius)`, `line(x0, y0, x1, y1, strength, radius)`, `area(w, h, fx, fy)`, `vortex(strength, radius)`, `spiral(strength, radius, inward_pull)`, `turbulence(strength, scale, speed)`, `with_layer_mask(u32)`, `with_enabled(bool)`. `enum AttractorType { Point { strength, radius, falloff }, Line { .. }, Area { .. }, Vortex { .. }, Turbulence { .. } }`.
@@ -1071,15 +1102,15 @@ Fonts, styles, rich text, effects and world text. The guide is `ryo-text`.
 
 | `Fonts` (resource; `ctx.fonts()`) | |
 |---|---|
-| `add_bytes(impl Into<Arc<[u8]>>) -> Result<FontId, FontError>`, `add_face(Arc<[u8]>, index: u32) -> Result<FontId, FontError>`, `load(impl AsRef<Path>) -> AssetResult<FontId>` | add fonts (the same bytes and index, or the same canonical path, return the existing id); `load` fails on the web (no file system), so embed with `add_bytes(include_bytes!(..))` there |
-| `add_bitmap(family: &str, SpriteHandle, cell: (u32, u32), chars: &str) -> Result<FontId, FontError>` | a grid of glyph cells on a sprite sheet (`chars` row-major); the same family, handle, cell and characters return the existing id |
+| `face_of(impl Into<AssetId<Font>>) -> Option<FontId>` | the face a font asset registered as: `None` while it is not loaded, and once it is freed. A font registers while it is in its store (`ctx.assets().add(Font::from_bytes(bytes)?)` or `load_now::<Font>(path)`) and leaves, with its glyphs, once freed; two fonts of the same bytes and face share one face |
 | `find(&str) -> Option<FontId>` | the family's regular face (weight 400, upright) |
 | `find_face(family: &str, weight: f32, italic: bool) -> Option<FontId>` | the face nearest `weight` preferring the slant; on ties the face added first wins |
-| `family(FontId) -> Option<&str>`, `role(FontRole) -> Option<FontId>`, `set_role(FontRole, FontId)` | families and role fonts (setting the font a role already uses changes nothing) |
+| `family(FontId) -> Option<&str>`, `role(FontRole) -> Option<FontId>`, `role_font(FontRole) -> Option<&Handle<Font>>`, `set_role(FontRole, Handle<Font>)` | families and role fonts: the role holds its font; one still loading takes over once it registers, the role keeping its old face meanwhile (setting the font a role already uses changes nothing) |
 | `set_render(FontId, FontRender)`, `render(FontId) -> FontRender` | how a font draws (the mode it already has changes nothing) |
 | `prewarm(FontId, size: f32, chars: &str)`, `generation() -> u64` | build glyphs ahead (MSDF glyphs cost about 0.46 ms each); `generation` changes on every real font change |
 
-- `Fonts` has no public constructor: the engine owns the one registry (the glyph caches key on its ids). Register fonts once, at startup or in the first scene's `on_enter`; re-registering is harmless. Without the `default-fonts` feature the registry starts empty.
+- `Fonts` has no public constructor: the engine owns the one registry (the glyph caches key on its ids), and it follows the font stores: a font added in a scene is there in the same `ctx.fonts()`. Without the `default-fonts` feature it starts empty.
+- `Font` (an asset; `.ttf`, `.otf`, `.ttc` files, `FontSettings { face }` for a collection's face): `from_bytes(impl Into<Arc<[u8]>>) -> Result<Font, FontError>`, `from_bytes_face(bytes, index: u32)`, `family() -> &str`. Embed with `Font::from_bytes(include_bytes!(..).as_slice())` (the web has no files). `BitmapFont { family, sheet: Handle<Image>, cell: (u32, u32), chars }` (an asset; `.bitmap.ron` files, whose sheet is a dependency): `new(family, sheet, cell, chars)`; text reaches it by its family.
 - `FontId` (`Copy`, `Eq`, `Hash`, `Ord`). `enum FontRole { Ui (default), Mono, Pixel }`: Inter, JetBrains Mono, m5x7 (feature `default-fonts`, on by default).
 - `enum FontRender { Raster (default), Pixel { design_size: f32 }, Msdf { base: f32, range: f32 } }` (`#[non_exhaustive]`); `FontRender::pixel(design_size)`; `FontRender::msdf()` is base 32, range 4. Pixel sizes snap to whole multiples of the design size. MSDF effect reach is `range / 2` base pixels; MSDF fonts get no synthesized italic or bold.
 - `enum FontError { Invalid, NoFace(u32), EmptyBitmap }`.
@@ -1089,16 +1120,16 @@ Fonts, styles, rich text, effects and world text. The guide is `ryo-text`.
 | fields | `font: TextFont` (default `Role(Ui)`), `fallbacks: Vec<TextFont>`, `size: f32` (14.0), `weight: f32` (400.0), `italic: bool`, `color: Color` (white), `line_height: f32` (1.2), `letter_spacing: f32` (0.0), `outline: Option<Outline>`, `shadow: Option<Shadow>`, `glow: Option<Glow>` |
 | builders | `new()`, `font(TextFont)`, `role(FontRole)`, `family(impl Into<String>)`, `size(f32)`, `weight(f32)`, `bold()`, `italic()`, `color(Color)`, `line_height(f32)`, `letter_spacing(f32)`, `outline(width, Color)`, `shadow(offset: Vec2, Color, softness)`, `glow(radius, Color)`, `fallback(TextFont)` |
 
-- `enum TextFont { Role(FontRole), Family(String), Id(FontId) }`. `Outline { width, color }`, `Shadow { offset: Vec2, color, softness }`, `Glow { radius, color }`. Glow needs an MSDF font; shadow softness only applies to MSDF fonts.
+- `enum TextFont { Role(FontRole), Family(String), Face(Handle<Font>) }`: `Face` is one exact font, held by the style, at its own weight and slant (one still loading falls back as an unknown family does). `Outline { width, color }`, `Shadow { offset: Vec2, color, softness }`, `Glow { radius, color }`. Glow needs an MSDF font; shadow softness only applies to MSDF fonts.
 - `TextLayoutOptions` (`#[non_exhaustive]`, `Default`): fields `wrap: Option<f32>`, `align: TextAlign`, `max_lines: Option<u32>`, `overflow: TextOverflow`, `anchor: Anchor` (default `TopLeft`); builders `wrap(f32)`, `align(TextAlign)`, `max_lines(u32)`, `overflow(TextOverflow)`, `anchor(Anchor)`. `enum TextAlign { Start, Center, End, Justify }`, `enum TextOverflow { Clip, Ellipsis }`.
 
 | Rich text | |
 |---|---|
-| `RichText` | `new(impl Into<String>)`, `markup(&str)`, `escape(&str) -> Cow<str>` (doubles every `[`, so untrusted text can go inside markup), `plain(&str)`, `span(&str, Span)`, `icon(SpriteHandle)`, `icon_sized(SpriteHandle, Vec2)`, `icon_named(impl Into<String>)`, `pause(seconds)`, `prompt(action: &str)` (the key or button that triggers `action` on the last device, as a registered glyph or a label such as `[A]` in the accent colour), `as_str()`, `is_empty()`; `From<&str>` and `From<String>` (plain, no markup) |
+| `RichText` | `new(impl Into<String>)`, `markup(&str)`, `escape(&str) -> Cow<str>` (doubles every `[`, so untrusted text can go inside markup), `plain(&str)`, `span(&str, Span)`, `icon(Handle<Image>)`, `icon_sized(Handle<Image>, Vec2)`, `icon_named(impl Into<String>)`, `pause(seconds)`, `prompt(action: &str)` (the key or button that triggers `action` on the last device, as a registered glyph or a label such as `[A]` in the accent colour), `as_str()`, `is_empty()`; `From<&str>` and `From<String>` (plain, no markup) |
 | `Span` (`#[non_exhaustive]`, `Default`) | fields `color`, `size`, `font`, `weight`, `italic`, `outline`, `effect` (all `Option`); constructors `new()`, `color(Color)`, `size(f32)`, `font(TextFont)`, `bold()`, `italic()`, `outline(width, Color)`, `effect(impl Into<String>)`; builders `with_color`, `with_size`, `with_font`, `with_weight`, `with_italic`, `with_outline`, `with_effect` |
-| `Icon` | `enum Icon { Sprite { sprite: SpriteHandle, size: Option<Vec2> }, Named { name: String, size: Option<Vec2> } }` |
-| `TextIcons` (resource) | `insert(name, SpriteHandle)`, `insert_region(name, SpriteHandle, Rect)`, `get(&str) -> Option<&IconSource>`, `remove(&str)` (re-insert a name to swap an icon set) |
-| `IconSource` | `sprite: SpriteHandle`, `region: Option<Rect>` (pixels on the sprite; `None` is the whole sprite) |
+| `Icon` | `enum Icon { Sprite { sprite: Handle<Image>, size: Option<Vec2> }, Named { name: String, size: Option<Vec2> } }` |
+| `TextIcons` (resource) | `insert(name, Handle<Image>)`, `insert_region(name, Handle<Image>, Rect)`, `get(&str) -> Option<&IconSource>`, `remove(&str)` (re-insert a name to swap an icon set) |
+| `IconSource` | `sprite: Handle<Image>`, `region: Option<Rect>` (pixels on the image; `None` is the whole image) |
 | `TextEffects` (resource) | `register(name, Fn(&GlyphContext) -> GlyphMod + Send + Sync + 'static)` (a pure function of the context: it runs per glyph per pass per camera), `contains(&str)`; built in `wave`, `shake`, `rainbow` |
 | `GlyphContext` (`#[non_exhaustive]`) | `index: u32`, `cluster: u32`, `line: u32`, `time: f32` (real time in the UI, game time in the world), `size: f32`, `seed: u64`, `args: String` |
 | `GlyphMod` | `offset: Vec2`, `scale: f32`, `color: Option<Color>`, `alpha: f32`; `Default` is no change |
@@ -1146,7 +1177,7 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `list(count: usize) -> List` | a virtual list: a scroll area exactly as long as its rows that builds only the rows in view and the overscan, each item in a container keyed by its index (`ryo-ui` section 16). Give it a height (`height`, `max_height`, `fill`/`fill_height`, or `grow` in a sized parent): without one it grows to its whole length, cannot scroll, builds only the rows that show and warns once |
 | `list_scroll_to(list: UiId, index: usize)`, `list_focus(list: UiId, index: usize)` | scroll the list (its `ListResponse::id`) by the least that shows item `index`'s row; `list_focus` also focuses the row's first focusable widget, up to two frames after it is built. A jump further than a view lands one view short at the list's next draw, then eases. An index past the end is the last item; a list not drawn yet ignores both |
 
-- `Container`: `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `fill_height()`, `fill()`, `min_width(f32)`, `max_width(f32)`, `min_height(f32)`, `max_height(f32)`, `padding(impl Into<Edges>)`, `margin(impl Into<Edges>)`, `gap(f32)`, `align(Align)`, `justify(Justify)`, `center()`, `grow(f32)`, `wrap_items()`, `aspect(ratio)`, `tracks(&[f32])` (grid column widths), `anchor(Anchor)` and `offset(x, y)` (at the top level or in a stack; default `TopLeft`), `at(Rect)` (absolute, even inside a container, keeping its parent's ids, scope and clip), `id(impl Hash)`, `background(Color)` (a fill behind its children), `focus_scope()`, `trap()` and `wrap_focus()` (each a focus scope too), `block_pointer()`, `drag_source::<P>(P)`, `drop_target::<P>()`, `drag_ghost(&SpriteHandle)`, `show(impl FnOnce(&mut UiContext)) -> Response`.
+- `Container`: `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `fill_height()`, `fill()`, `min_width(f32)`, `max_width(f32)`, `min_height(f32)`, `max_height(f32)`, `padding(impl Into<Edges>)`, `margin(impl Into<Edges>)`, `gap(f32)`, `align(Align)`, `justify(Justify)`, `center()`, `grow(f32)`, `wrap_items()`, `aspect(ratio)`, `tracks(&[f32])` (grid column widths), `anchor(Anchor)` and `offset(x, y)` (at the top level or in a stack; default `TopLeft`), `at(Rect)` (absolute, even inside a container, keeping its parent's ids, scope and clip), `id(impl Hash)`, `background(Color)` (a fill behind its children), `focus_scope()`, `trap()` and `wrap_focus()` (each a focus scope too), `block_pointer()`, `drag_source::<P>(P)`, `drop_target::<P>()`, `drag_ghost(&Handle<Image>)`, `show(impl FnOnce(&mut UiContext)) -> Response`.
 - `Scroll`: `vertical()` (default), `horizontal()`, `both()`, `no_bar()`, and `width`, `height`, `fill_width`, `fill_height`, `fill`, `min_width`, `max_width`, `min_height`, `max_height`, `padding`, `margin`, `gap`, `grow`, `anchor`, `offset`, `at`, `id`, the drag methods and `show(..) -> Response` as on `Container`.
 - `List` (vertical): `row_height(f32)` (required: finite and above 0, else the list draws empty, warned once), `columns(u16)` (a grid of equal cells, 1 to 256), `gap(f32)` (between rows and cells), `overscan(usize)` (rows built past each edge of the view, default 2, 1 to 64), `id(impl Hash)`, `width`, `height`, `fill_width`, `fill_height`, `fill`, `min_width`, `max_width`, `min_height`, `max_height`, `padding`, `margin`, `grow`, `anchor`, `offset`, `at`, `no_bar()`, and `show(impl FnMut(&mut UiContext, usize)) -> ListResponse` (the closure builds item `index`). At most 4,096 items are built for the view a frame (warned once). The scroll length is `rows × (row_height + gap) - gap` whatever the rows hold.
 - `ListResponse { pub id: UiId, pub range: Range<usize>, pub response: Response }`: the list's id (for `list_scroll_to`, `list_focus`, `scroll_offset`), the items built for the view this frame (the rows in view and the overscan; a focused row kept built out of view is not in it), and the scroll area's response.
@@ -1158,9 +1189,9 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 
 | `UiContext` | Own builder methods | Ends with |
 |---|---|---|
-| `button(impl Into<RichText>) -> Button` | `icon(&SpriteHandle)` | `show() -> Response`, `clicked() -> bool` |
+| `button(impl Into<RichText>) -> Button` | `icon(&Handle<Image>)` | `show() -> Response`, `clicked() -> bool` |
 | `text(impl Into<RichText>) -> UiText` | see [Text](#text); without `at` it is a layout leaf | `draw() -> Vec2` |
-| `image(&SpriteHandle) -> Image` | `size(w, h)`, `tint(Color)`, `filter(Filter)` (`Filter::Default`: nearest in pixel art, else linear), `uv([l, t, r, b])` | `show() -> Response` |
+| `image(&Handle<Image>) -> ImageWidget` | `size(w, h)` (without one it is the image's own size: nothing until it is loaded), `tint(Color)`, `filter(Filter)` (`Filter::Default`: nearest in pixel art, else linear), `uv([l, t, r, b])` | `show() -> Response` |
 | `checkbox(&mut bool, impl Into<RichText>) -> Checkbox`, `toggle(&mut bool, impl Into<RichText>) -> Toggle` | | `show()` |
 | `radio<T: PartialEq + Copy>(&mut T, value: T, impl Into<RichText>) -> Radio<T>` | | `show()` |
 | `slider(&mut f32, RangeInclusive<f32>) -> Slider` | `step(f32)`, `show_value()`, `label(impl Into<RichText>)` | `show()` |
@@ -1168,14 +1199,14 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `text_input(&mut String) -> TextInput` | `placeholder(impl Into<String>)`, `max_len(chars: usize)`, `password()` | `show()` (`changed`, `submitted` on Enter, `focused`) |
 | `dropdown(&mut usize, &[&str]) -> Dropdown`, `tabs(&mut usize, &[&str]) -> Tabs` | | `show()` |
 | `choice_list(&[&str]) -> ChoiceList` | `default(index)` | `show() -> Option<usize>` |
-| `slot() -> Slot` | `icon(&SpriteHandle)`, `count(u32)`, `selected(bool)`, `filter(Filter)` | `show()` |
+| `slot() -> Slot` | `icon(&Handle<Image>)`, `count(u32)`, `selected(bool)`, `filter(Filter)` | `show()` |
 | `prompt(action: &str) -> Prompt` | | `show()` |
 | `rebind(action: &str) -> Rebind` | `label(impl Into<RichText>)`, `slot(usize)` | `show()` (`changed()` the frame it captured) |
 | `custom(width: f32, height: f32) -> Custom` | `sense(Sense)` (default `hover`), `takes_horizontal()`, `takes_vertical()`, `takes_confirm(bool)` | `paint(impl FnOnce(&mut Painter, &Response)) -> Response`, `show()` |
 | `separator() -> Response`, `spacer() -> Response` | | |
 
-- Shared builder methods (every widget above but `text`, `separator` and `spacer`): `id(impl Hash)`, `enabled(bool)`, `at(Rect)`, `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `margin(impl Into<Edges>)`, `anchor(Anchor)`, `offset(x, y)`, `grow(f32)`, `min_width(f32)`, `max_width(f32)`, `default_focus()`, `nav_up(UiId)`, `nav_down(UiId)`, `nav_left(UiId)`, `nav_right(UiId)`, `nav_skip()`, `focusable(bool)`, `variant(&str)`, `style(LookPatch)`, `tooltip(impl Into<RichText>)`, `drag_source::<P: Clone + Send + Sync + 'static>(P)`, `drop_target::<P: 'static>()`, `drag_ghost(&SpriteHandle)`.
-- `Painter` (a custom widget's own units, (0, 0) its top-left): `size() -> Vec2`, `rect(Rect, Color)`, `rounded_rect(Rect, radius, Color)`, `bordered_rect(Rect, fill, radius, border_width, border_color)`, `text(impl Into<RichText>, x, y, &TextStyle)`, `sprite(&SpriteHandle, Rect, tint: Color)`, `line(&[Vec2], width, Color)`.
+- Shared builder methods (every widget above but `text`, `separator` and `spacer`): `id(impl Hash)`, `enabled(bool)`, `at(Rect)`, `width(impl Into<Length>)`, `height(..)`, `fill_width()`, `margin(impl Into<Edges>)`, `anchor(Anchor)`, `offset(x, y)`, `grow(f32)`, `min_width(f32)`, `max_width(f32)`, `default_focus()`, `nav_up(UiId)`, `nav_down(UiId)`, `nav_left(UiId)`, `nav_right(UiId)`, `nav_skip()`, `focusable(bool)`, `variant(&str)`, `style(LookPatch)`, `tooltip(impl Into<RichText>)`, `drag_source::<P: Clone + Send + Sync + 'static>(P)`, `drop_target::<P: 'static>()`, `drag_ghost(&Handle<Image>)`.
+- `Painter` (a custom widget's own units, (0, 0) its top-left): `size() -> Vec2`, `rect(Rect, Color)`, `rounded_rect(Rect, radius, Color)`, `bordered_rect(Rect, fill, radius, border_width, border_color)`, `text(impl Into<RichText>, x, y, &TextStyle)`, `sprite(&Handle<Image>, Rect, tint: Color)`, `line(&[Vec2], width, Color)`.
 - `Response { pub id: UiId, pub rect: Rect, .. }`: `hovered()`, `pressed()`, `clicked()` (released over it, or Confirm while focused), `secondary_clicked()`, `double_clicked()` (within 0.3 s), `drag_started()`, `dragging()`, `drag_released()`, `drag_delta() -> Vec2`, `changed()`, `focused()`, `gained_focus()`, `lost_focus()`, `submitted()`, `pointer() -> Option<Vec2>`, `dropped::<T: Clone + 'static>() -> Option<T>`, `drag_hover::<T: 'static>() -> bool`, `drag_started_here()`.
 - `Sense`: `hover()`, `click()`, `drag()`, `click_and_drag()`. `UiId` (`Copy`, `Eq`, `Hash`, `Ord`, `Default`): `UiId::NONE`; made from the call site and how often it ran in its container, or `.id(key)`.
 
@@ -1191,7 +1222,7 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `wants_keyboard() -> bool` | a text field or a capturing rebind row has the focus, or an open dropdown list or `ui.popup` is up (not a modal) |
 | `input() -> &UiInput`, `consume_key(KeyCode)`, `consume_scroll()`, `into_input() -> UiInput` | the frame's input; consumption carries over to gameplay |
 | `draw_rect(Rect, Color)`, `draw_rect_outline(Rect, Color, thickness)`, `draw_rounded_rect(Rect, radius, Color)`, `draw_rect_bordered(Rect, fill, radius, border_width, border_color)`, `draw_panel(Rect, bg, border: Option<Color>)`, `draw_progress_bar(Rect, progress, fill, bg)`, `draw_progress_bar_with_border(Rect, progress, fill, bg, border)`, `draw_modal_overlay(Color)` | absolute shapes; rects are analytic (rounded, bordered, anti-aliased) |
-| `draw_sprite(&SpriteHandle, x, y)`, `draw_sprite_scaled(&SpriteHandle, x, y, scale)`, `draw_sprite_rect(&SpriteHandle, Rect, tint)`, `draw_nine_slice(&SpriteHandle, Rect, insets: [f32; 4], tint)` (insets `[left, top, right, bottom]` in texels), `draw_line(&[Vec2], width, Color)` | sprites and polylines |
+| `draw_sprite(&Handle<Image>, x, y)`, `draw_sprite_scaled(&Handle<Image>, x, y, scale)`, `draw_sprite_rect(&Handle<Image>, Rect, tint)`, `draw_nine_slice(&Handle<Image>, Rect, insets: [f32; 4], tint)` (insets `[left, top, right, bottom]` in texels), `draw_line(&[Vec2], width, Color)` | images and polylines; an image not loaded draws the checker in debug builds only where a rect is given |
 | `draw_text(&str, x, y, Color)`, `draw_text_styled(impl Into<RichText>, x, y, &TextStyle)`, `draw_text_anchored(&str, Anchor, offset_x, offset_y, Color)`, `draw_text_anchored_styled(&str, Anchor, offset_x, offset_y, &TextStyle)`, `draw_text_centered(&str, Rect, Color)`, `draw_text_wrapped(&str, x, y, max_width: u32, Color)`, `draw_text_wrapped_centered(&str, Rect, Color)`, `label(&str, x, y, Color, bg: Option<Color>)` | text shorthand (default style: `FontRole::Ui`, 14 px; carry the colour's alpha as opacity) |
 | `measure_text(impl Into<RichText>, &TextStyle) -> Vec2`, `line_height(&TextStyle) -> f32`, `text_size(&str) -> (u32, u32)`, `wrapped_text_size(&str, max_width: u32) -> (u32, u32)`, `wrap_text(&str, max_width: u32) -> Vec<String>`, `wrap_text_styled(&str, width: f32, &TextStyle) -> Vec<String>` | measuring and wrapping, in UI units |
 | `push_clip(Rect)`, `pop_clip()`, `with_no_clip(f) -> R`, `current_clip() -> Option<Rect>`, `has_clip()`, `clip_depth()`, `clear_clips()`, `point_in_clip(x, y)` | the clip stack (nests and intersects; an empty pop warns once) |
@@ -1237,7 +1268,7 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 | `column()`, `row()`, `grid(columns: u16)`, `stack()`, `panel()`, `scroll()` | |
 | `popup(anchor: impl Into<String>)` | a popup below the node of that name in the same tree |
 | `text(impl Into<String>)`, `button(impl Into<String>)` | `UiLabel` |
-| `image(SpriteHandle)` | `UiImage` |
+| `image(Handle<Image>)` | `UiImage` |
 | `checkbox(label: impl Into<String>, checked: bool)`, `toggle(label: impl Into<String>, on: bool)` | `UiLabel`, `UiChecked` |
 | `radio_group(options: &[&str], selected: usize)`, `dropdown(options: &[&str], selected: usize)`, `tabs(options: &[&str], selected: usize)`, `choice_list(options: &[&str])` | `UiOptions`, `UiIndex` |
 | `slider(range: RangeInclusive<f32>, value: f32)`, `progress(fraction: f32)` | `UiValue` |
@@ -1255,7 +1286,7 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 | node-only | `action(impl Into<String>)`, `name(impl Into<String>)` (a `UiName`), `hidden()` (a `UiHidden`), `embedded()` (drawn only by `ui.node`), `insert(impl Bundle)` (after the engine's components), `child(UiNode)`, `children(impl IntoIterator<Item = UiNode>)` |
 | text | `markup()` (also buttons; text is plain without it), `style(TextStyle)`, `role(TextRole)`, `heading()`, `muted()` (these three read the theme when drawn), `size(f32)`, `color(Color)`, `text_align(TextAlign)`, `wrap(f32)`, `max_lines(u32)`, `ellipsis()`, `typewriter(TextReveal)` (inserts the `TextReveal`) |
 | image | `image_size(w, h)`, `tint(Color)`, `filter(Filter)` (also slots), `uv([f32; 4])` |
-| button, slot | `icon(SpriteHandle)`; slot: `count(u32)`, `selected(bool)` |
+| button, slot | `icon(Handle<Image>)`; slot: `count(u32)`, `selected(bool)` |
 | slider | `step(f32)`, `show_value()`, `label(impl Into<String>)` (also progress and rebind) |
 | text input | `placeholder(impl Into<String>)`, `max_len(usize)`, `password()` |
 | radio group, scroll | `horizontal()`; scroll: `both()`, `no_bar()` |
@@ -1270,8 +1301,8 @@ A UI described once as a `UiNode`, spawned with `ctx.spawn_ui` as one entity per
 |---|---|
 | `UiRoot { pub anchor: Anchor, pub offset: Vec2, pub at: Option<Rect>, .. }` | on a root: its placement, which the game may change |
 | `UiNodeKind` | every node: `name() -> &'static str` (`"button"`, ...), `action() -> Option<&str>` |
-| `UiLabel(pub String)`, `UiImage(pub SpriteHandle)`, `UiChecked(pub bool)`, `UiValue(pub f32)`, `UiIndex(pub usize)`, `UiOptions(pub Vec<String>)`, `UiTextValue(pub String)`, `UiTooltip(pub String)` | state components; the walk writes a value only when the player changes it |
-| `UiSlot { pub icon: Option<SpriteHandle>, pub count: u32, pub selected: bool }` | a slot's contents |
+| `UiLabel(pub String)`, `UiImage(pub Handle<Image>)`, `UiChecked(pub bool)`, `UiValue(pub f32)`, `UiIndex(pub usize)`, `UiOptions(pub Vec<String>)`, `UiTextValue(pub String)`, `UiTooltip(pub String)` | state components; the walk writes a value only when the player changes it |
+| `UiSlot { pub icon: Option<Handle<Image>>, pub count: u32, pub selected: bool }` | a slot's contents |
 | `UiName(pub String)`, `UiHidden`, `UiDisabled` | markers: insert or remove to name, hide (with its subtree) or disable |
 | `UiInteraction` | every node, as of its last draw: `hovered() -> bool`, `focused() -> bool`, `id() -> Option<UiId>` |
 | `UiListRow` | each pooled row of a list node: `index() -> usize`, the item it shows. A row is its own binding and naming scope (`ui_set(row, ..)`, `find_ui_in(row, ..)`) |
@@ -1290,8 +1321,9 @@ A screen written in a `.ui.ron` file loads into the same `UiNode`. The guide is 
 
 | Type | |
 |---|---|
-| `UiFile` | a cheap, cloneable handle to a checked file: `parse(name: &str, text: &str) -> Result<UiFile, UiFileError>` (no imports), `path() -> &str`, `generation() -> u64` (counts reloads), `root(&self, assets: &mut AssetManager) -> Result<UiNode, UiFileError>`, `template(&self, name: &str, args: &UiArgs, assets: &mut AssetManager) -> Result<UiNode, UiFileError>` |
-| `UiFileError { pub issues: Vec<UiFileIssue> }` | every mistake found; `Display` prints one `path:line:column: message` per line |
+| `UiFile` | an asset (`.ui.ron`, `UiFileLoader`), checked when it loads, its imports and images loaded with it: `ctx.assets().load_now::<UiFile>(path)`, or `parse(name: &str, text: &str) -> Result<UiFile, UiFileError>` for text the game holds, then `ctx.assets().add(file)` (its imports load at its first build); `path() -> &str` |
+| `Handle<UiFile>` | `root(&self, assets: &mut AssetsView<'_>) -> Result<UiNode, UiFileError>`, `template(&self, name: &str, args: &UiArgs, assets: &mut AssetsView<'_>) -> Result<UiNode, UiFileError>` (pass `&mut ctx.assets()`): build the root or an instance of a template; the tree holds the file, and follows its reloads |
+| `UiFileError { pub issues: Vec<UiFileIssue> }` | every mistake found; `Display` prints one `path:line:column: message` per line. `From<Arc<AssetError>>`, so `?` turns a failed load into one |
 | `UiFileIssue { pub path: String, pub line: u32, pub column: u32, pub message: String }` | one mistake; lines and columns count from 1, line 0 means no place in the text |
 | `UiArgs` | a template's arguments: `new()`, `with(self, name: &str, value: impl Into<UiArg>) -> UiArgs`; giving a name again replaces it. A name is a parameter or any option of the template's root node (`.with("default_focus", true)`); a reload applies them again, while options set in code on the built node are lost |
 | `enum UiArg { Number(f64), Text(String), Bool(bool), List(Vec<UiArg>) }` | `From` for `f32`, `f64`, `i32`, `i64`, `u32`, `u64`, `usize`, `bool`, `&str`, `String`, `Vec<T: Into<UiArg>>` and `&[&str]` |
@@ -1309,10 +1341,9 @@ A screen written in a `.ui.ron` file loads into the same `UiNode`. The guide is 
 |---|---|---|
 | `EngineError` | `Window(String)`, `Render(String)`, `Save(SaveError)`, `WorkspaceError(String)`, `Gpu(GpuError)` | `EngineResult<T>` |
 | `GpuError` | `NoAdapter`, `RequestDevice`, `CreateSurface`, `DeviceLost` (`String`) | |
-| `AssetError` | `NotFound(PathBuf)`, `LoadError { path, reason }`, `WatchError(String)`, `Sprite(SpriteError)` | `AssetResult<T>` |
-| `SpriteError` | `DecodeError { path, reason }` | `SpriteResult<T>` |
+| `AssetError` | `NotFound`, `Io`, `Decode`, `NoLoader`, `Dependency`, `Cycle`, `InvalidPath` (see [Assets](#assets)); shared as `Arc<AssetError>` | |
+| `ImageError` | `Decode(image::ImageError)` (from `Image::decode`) | |
 | `AudioError` | `InitError`, `LoadError`, `PlayError`, `NotFound` (all `String`), `Unavailable` | `AudioResult<T>` |
-| `HotReloadError` | `WatcherCreation(String)` | `HotReloadResult<T>` |
 | `SaveError` | `Serialization`, `Deserialization`, `Compression`, `Decompression` (`String`), `Io(io::Error)`, `NotFound(PathBuf)`, `InvalidSlot(String)` | `SaveResult<T>` |
 | `NetworkError` | `InitError`, `ConnectionError`, `SendError`, `ReceiveError`, `TransportError` (`String`) | `NetworkResult<T>` |
 | `ReplicationError` | `SerializationError`, `DeserializationError` (`String`), `TypeMismatch { expected, found }`, `UnknownComponent(ComponentTypeId)`, `EntityNotFound(u64)` | `ReplicationResult<T>` |
@@ -1414,6 +1445,7 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `window_frame()` | `-> Result<RgbaImage, HeadlessError>`: the last window, bars included |
 | `frame_count()`, `resize(w, h)` | `resize` as if the window became `w`x`h` physical pixels |
 | `world()` / `world_mut()` | the world between steps |
+| `assets() -> AssetsView<'_>` | the asset registry between steps; loads queued with `load` land in a step's pump |
 | `press_key` / `release_key` / `tap_key` / `type_text(&str)` | keyboard input (`KeyCode`) |
 | `press_mouse` / `release_mouse` / `mouse_move(x, y)` | mouse input (screen space) |
 | `mouse_move_window(x, y)` | the pointer at physical window pixels, mapped like a real cursor |
@@ -1430,7 +1462,7 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `UiHarness::frame_with_world(\|ui, world\| ..) -> R` | `frame`, with the world too (for `ui.node(root, world)`) |
 | `UiHarness::update_ui(node, tree) -> Entity`, `ui_set(node, name, value)`, `ui_get::<T>(node, name) -> Option<T>` | as on `SceneContext` |
 | `UiHarness::ui_list_count(list, count)`, `ui_list_refresh(list)`, `ui_list_refresh_row(list, index)`, `ui_list_scroll_to(list, index)`, `ui_list_focus(list, index)`, `ui_list_index(node) -> Option<usize>` | list nodes, as on `SceneContext`; read a frame's binds with `messages::<UiListBind>()` |
-| `UiHarness::with_assets(dir) -> UiHarness`, `assets() -> &mut AssetManager`, `spawn_ui_file(path) -> Result<Entity, UiFileError>`, `reload_ui(path) -> AssetResult<()>`, `messages::<M>() -> impl Iterator<Item = M>` | UI files through an asset manager the harness owns, rooted at `dir`; `reload_ui` brings the trees in line at the next `frame`, and `messages::<UiReloaded>()` lists that frame's reloads |
+| `UiHarness::with_asset_source(impl AssetSource) -> UiHarness`, `assets() -> AssetsView<'_>`, `spawn_ui_file(path) -> Result<Entity, UiFileError>`, `reload_ui(path) -> Result<(), Arc<AssetError>>`, `messages::<M>() -> impl Iterator<Item = M>` | the harness's asset registry, over an empty `MemorySource` unless given a source (a `DiskSource` over a folder, or the test's `MemorySource`); each `frame` runs the pump first. `reload_ui` reads a UI file again and waits until the reload lands, so the next `frame` brings its trees in line, and `messages::<UiReloaded>()` lists that frame's reloads |
 | `UiHarness::set_theme(Theme)`, `resize(width, height)`, `type_text(&str)` | from the next frame: draw with another theme, change the UI's size (UI units), type text into the focused field |
 | `UiHarness::set_ui_cache(bool)`, `set_ui_fragments(bool)`, `set_ui_spot_check(bool)`, `ui_cache_stats() -> UiCacheStats` | the node cache from the next frame: on (default) or off (every node built, as `EngineBuilder::ui_cache(false)`); fragments on (default) or off (unchanged subtrees replayed, as `EngineBuilder::ui_fragments(false)`); the debug spot check, off in the harness (the engine runs it in debug builds; release builds have none); what the last frame's walk did |
 | `UiCacheStats { pub built: usize, pub replayed: usize, pub rebuilt: Vec<Entity>, pub spot_checked: Option<Entity>, pub records: usize, pub reused: usize, pub resolved_again: usize, pub captured: usize, pub spot_fragment: Option<UiId>, pub spot_fragment_differed: usize, pub spot_kept: usize }` | the nodes built, the tree nodes replayed (an open dropdown is its trigger, list and options), the nodes built in walk order, the node the spot check built in place of its replay (not in `built`), the records the cache keeps; the unchanged subtrees copied from their kept fragments, the kept fragments resolved again (moved, resized or under another clip), the subtrees replayed and kept; the kept fragment the spot check resolved in place of its copy (by its root's id), those it found differing (never, while every input a fragment's output follows from is checked) and those the spot checks captured afresh and found the same (not in `reused`) |

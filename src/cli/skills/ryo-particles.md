@@ -2,7 +2,7 @@
 name: ryo-particles
 description: Particle system - emitters, attractors, collisions, presets for visual effects.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Particle System Specialist
@@ -16,15 +16,22 @@ You help users create particle effects (fire, smoke, explosions, magic, weather)
 Particles are scene-driven: the engine never runs them. The scene owns a `ParticleSystem`, steps it in `update` and draws it in `render`:
 
 ```rust
+#[derive(Default)]
 struct Level {
   particles: ParticleSystem,
-  spark: SpriteHandle,
+  spark: Option<Handle<Image>>,
 }
 
 impl Scene for Level {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    self.spark = ctx.assets.load_sprite("particle.png").expect("particle sprite");
-    ctx.world.spawn((Transform::from_xy(400.0, 500.0), ParticleEmitter::fire(self.spark.clone())));
+    // An asset path, relative to assets/ (see ryo-assets)
+    match ctx.assets().load_now::<Image>("particle.png") {
+      Ok(spark) => {
+        ctx.world.spawn((Transform::from_xy(400.0, 500.0), ParticleEmitter::fire(spark.clone())));
+        self.spark = Some(spark); // for the emitters spawned later
+      }
+      Err(error) => game_warn!("no particle sprite: {error}"),
+    }
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
@@ -40,6 +47,7 @@ impl Scene for Level {
 }
 ```
 
+- An emitter's sprite is a `Handle<Image>` (`ParticleEmitter::sprite`), and the emitter holds it: the image stays loaded while any emitter uses it. Presets and `ParticleEmitter::new` take the handle by value, so clone it for each emitter. An image that is not loaded draws the checker in debug builds and nothing in release ones.
 - `ParticleSystem::new()` is randomly seeded; `ParticleSystem::with_seed(n)` gives the same particles for the same updates (headless tests, replays).
 - `update(world, dt)` runs at the fixed rate with the `dt` `update` receives, so slow motion and pause apply.
 - Particles sort by the emitter's `z_order` (`with_z_order`, default 0) together with entities, other sprites and trails; the UI draws last.

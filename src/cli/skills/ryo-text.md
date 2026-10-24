@@ -2,12 +2,12 @@
 name: ryo-text
 description: "Text: fonts, styles, rich text and markup, inline icons, typewriter reveal and glyph effects, world text (Text2d) and the damage-number recipe."
 metadata:
-  version: 1.2.0
+  version: 1.3.0
 ---
 
 # Ryo2D Text Specialist
 
-Text is drawn on the GPU, in the UI and in the world, with one text engine behind both. Everything below is in the prelude. Complete signatures are in `ryo-api`; UI widgets are in `ryo-ui`.
+Text is drawn on the GPU, in the UI and in the world, with one text engine behind both. Everything below is in the prelude. Complete signatures are in `ryo-api`; UI widgets are in `ryo-ui`; loading and holding fonts as assets is in `ryo-assets`.
 
 ## 1. When to Use What
 
@@ -38,7 +38,8 @@ fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
 
 `Fonts` is a resource, reached with `ctx.fonts()` in scenes (`ResMut<Fonts>` in systems). Changes take effect at the start of the next frame; text using a changed font lays out again.
 
-- **Register fonts once**, at startup or in the first scene's `on_enter`, and keep the `FontId`s. Registering again is harmless: the same bytes and face index, the same file path or the same bitmap sheet, cell and characters return the id the font already has, and a `set_role` or `set_render` to what a font already is changes nothing, so no text lays out again.
+- **Fonts are assets.** A `Font` (or `BitmapFont`) joins `Fonts` while it is in the asset registry, loaded or added from embedded bytes, and leaves, with its glyphs, once it is freed: hold its handle as long as text uses it (a scene field, a resource, or a role, which holds its own). In a scene `ctx.fonts()` already has a font just added; one loaded with `load` joins when it lands, and text naming it meanwhile falls back quietly, as an unknown family does.
+- Registering is idempotent: two fonts of the same bytes and face index, or bitmap fonts of the same family, sheet, cell and characters, share one face, and a `set_role` or `set_render` to what a font already is changes nothing, so no text lays out again.
 - There is no `Fonts::new()`: the engine owns the one registry, and the glyph caches key on its ids. For a registry without the built-in fonts, turn the `default-fonts` feature off (see Limits).
 
 ### The built-in fonts (feature `default-fonts`, on by default)
@@ -54,15 +55,16 @@ They cover Latin, Latin Extended, Greek and Cyrillic (m5x7: ASCII only).
 ### Adding fonts
 
 ```rust
-let id: FontId = ctx.fonts().load("assets/fonts/Game.ttf")?;              // native: AssetResult<FontId>
-let id: FontId = ctx.fonts().add_bytes(include_bytes!("../assets/Game.ttf").as_slice())?;   // anywhere, the web included
-let id: FontId = ctx.fonts().add_face(bytes_arc, 2)?;                    // face 2 of a .ttc collection
+let font: Handle<Font> = ctx.assets().load_now::<Font>("fonts/Game.ttf")?;      // a file in assets/
+let font = ctx.assets().add(Font::from_bytes(include_bytes!("../assets/fonts/Game.ttf").as_slice())?); // embedded: anywhere, the web included
+let bold = ctx.assets().load_now_with::<Font, _>("fonts/Family.ttc", FontSettings { face: 1 })?;    // face 1 of a .ttc collection
+let face: Option<FontId> = ctx.fonts().face_of(&font);   // the face it registered as: None until it has, and once it is freed
 ```
 
-- `load` reads a file (relative to the working directory). **The web has no file system: `load` fails there, so embed fonts with `add_bytes(include_bytes!(..))`.**
-- `add_bytes(impl Into<Arc<[u8]>>)` and `add_face(Arc<[u8]>, index)` return `Result<FontId, FontError>` (`Invalid`, `NoFace(index)`, `EmptyBitmap`). Fonts are TrueType or OpenType.
+- Paths are asset paths, relative to `assets/` (`ryo-assets`); `.ttf`, `.otf` and `.ttc` files load as fonts. **The web has no file system: a load fails there, so embed fonts with `Font::from_bytes(include_bytes!(..).as_slice())` and `ctx.assets().add(..)`** (`from_bytes` takes `impl Into<Arc<[u8]>>`, which a slice is and an array reference is not).
+- `Font::from_bytes(bytes)` and `Font::from_bytes_face(bytes, index)` return `Result<Font, FontError>` (`Invalid`, `NoFace(index)`); `font.family()` is the family text reaches it by. Fonts are TrueType or OpenType.
 - A face is described by its family name, weight and slant, read from the file.
-- `load` reads a file once: the same file again (by its canonical path) returns its id without reading it.
+- Loading the same path (and face) again gives the same handle without reading the file again; two handles to fonts of equal bytes share one face.
 
 ### Finding fonts and roles
 
@@ -71,10 +73,14 @@ let id: FontId = ctx.fonts().add_face(bytes_arc, 2)?;                    // face
 | `fonts.find("Inter") -> Option<FontId>` | the family's regular (weight 400, upright) face |
 | `fonts.find_face("Inter", 700.0, false) -> Option<FontId>` | the face nearest that weight, preferring the slant asked for; at equal distance the face added first wins |
 | `fonts.family(id) -> Option<&str>` | the family a face belongs to |
+| `fonts.face_of(&font) -> Option<FontId>` | the face a font asset registered as |
 | `fonts.role(FontRole::Ui) -> Option<FontId>` | the face a role uses |
-| `fonts.set_role(FontRole::Ui, id)` | point a role at your font (all default-style text, the console and the overlays follow) |
+| `fonts.set_role(FontRole::Ui, font)` | point a role at your font (a `Handle<Font>`; all default-style text, the console and the overlays follow). The role holds the font; one still loading takes over once it registers, the role keeping its old face until then |
+| `fonts.role_font(FontRole::Ui) -> Option<&Handle<Font>>` | the font a role uses |
 
 ### Render modes
+
+Render modes and `prewarm` act on a face: `let id = ctx.fonts().face_of(&font)` (or `find`, `find_face`, `role`).
 
 ```rust
 ctx.fonts().set_render(id, FontRender::Raster);
@@ -97,12 +103,16 @@ let mode = ctx.fonts().render(id);
 ### Bitmap fonts
 
 ```rust
-let sheet = ctx.assets.load_sprite("fonts/hud_font.png")?;                  // a grid of equal cells
-let font = ctx.fonts().add_bitmap("HudFont", sheet, (8, 8), "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ")?;
-ctx.fonts().set_role(FontRole::Ui, font);                                   // or use TextStyle::family("HudFont")
+// fonts/hud.bitmap.ron names its sheet (loaded with it as a dependency), cell size, characters and family:
+// (sheet: "fonts/hud_font.png", cell: (8, 8), chars: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ", family: "HudFont")
+let hud: Handle<BitmapFont> = ctx.assets().load_now::<BitmapFont>("fonts/hud.bitmap.ron")?;
+// Or from a sheet image you hold: a grid of equal cells
+let sheet = ctx.assets().load_now::<Image>("fonts/hud_font.png")?;
+let hud = ctx.assets().add(BitmapFont::new("HudFont", sheet, (8, 8), "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "));
+let style = TextStyle::new().family("HudFont");                             // text reaches it by its family
 ```
 
-`chars` names the cells row-major (left to right, then top to bottom). A bitmap face lays out on a monospace grid, draws as a pixel font (design size = the cell height), and a text uses bitmap or outline fonts, not both.
+`chars` names the cells row-major (left to right, then top to bottom). A bitmap face lays out on a monospace grid, draws as a pixel font (design size = the cell height), and a text uses bitmap or outline fonts, not both. The font holds its sheet and draws its cells from the sheet as it is at each draw, so a reloaded or changed sheet redraws its text. A file with an empty cell or no characters fails to load (an `AssetError::Decode` over `FontError::EmptyBitmap`); one made in code is not registered (warned).
 
 ### Fallback
 
@@ -112,7 +122,7 @@ A style's font, then its `fallbacks`, then the UI font, then the mono font. A ch
 
 ```rust
 let style = TextStyle::new()
-  .role(FontRole::Ui)           // or .family("Inter"), .font(TextFont::Id(id))
+  .role(FontRole::Ui)           // or .family("Inter"), .font(TextFont::Face(font))
   .size(18.0)
   .bold()                       // .weight(650.0); .italic()
   .color(Color::WHITE)
@@ -126,7 +136,7 @@ let style = TextStyle::new()
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `font: TextFont` | `Role(FontRole::Ui)` | `Role(FontRole)`, `Family(String)`, or `Id(FontId)` (one exact face; `weight` and `italic` do not apply) |
+| `font: TextFont` | `Role(FontRole::Ui)` | `Role(FontRole)`, `Family(String)`, or `Face(Handle<Font>)` (one exact font, which the style holds; `weight` and `italic` do not apply; one still loading falls back quietly, as an unknown family does) |
 | `fallbacks: Vec<TextFont>` | empty | tried in order when the font lacks a character |
 | `size: f32` | `14.0` | text units: pixels in the UI, world units on entities |
 | `weight: f32` | `400.0` | 100 to 900; `bold()` is 700 |
@@ -168,7 +178,7 @@ let rich = RichText::new("Press ")
 let parsed = RichText::markup("Deal [b][color=#f44]20[/color][/b] damage[pause=0.4]!");
 ```
 
-- Builders: `new`, `plain(&str)`, `span(&str, Span)`, `icon(SpriteHandle)`, `icon_sized(SpriteHandle, Vec2)`, `icon_named(name)`, `pause(seconds)`, `prompt(action)`, `markup(&str)`; read with `as_str()` (characters only) and `is_empty()`.
+- Builders: `new`, `plain(&str)`, `span(&str, Span)`, `icon(Handle<Image>)`, `icon_sized(Handle<Image>, Vec2)`, `icon_named(name)`, `pause(seconds)`, `prompt(action)`, `markup(&str)`; read with `as_str()` (characters only) and `is_empty()`.
 - `Span` overrides (all optional, unset keeps the base style): `color`, `size`, `font`, `weight`, `italic`, `outline`, `effect`. Constructors `Span::color(c)`, `size(s)`, `font(TextFont)`, `bold()`, `italic()`, `outline(width, color)`, `effect(name)`; chain with `with_color`, `with_size`, `with_font`, `with_weight`, `with_italic`, `with_outline`, `with_effect`.
 - Spans never overlap (`RichText` appends); a text uses a span's size and pixel face with the same snapping as a style.
 
@@ -209,17 +219,17 @@ let hint = RichText::new("Hold ").prompt("dash").plain(" to dash");
 
 ## 5. Icons
 
-`TextIcons` is a resource mapping names to sprites. Markup (`[icon=jump]`) and `RichText::icon_named` look the name up when the text is drawn.
+`TextIcons` is a resource mapping names to images (it holds them). Markup (`[icon=jump]`) and `RichText::icon_named` look the name up when the text is drawn.
 
 ```rust
 let mut icons = ctx.world.resource_mut::<TextIcons>();
-icons.insert("jump", key_z_sprite);                                              // a whole sprite
+icons.insert("jump", key_z_image);                                               // a whole image (a Handle<Image>)
 icons.insert_region("coin", icon_sheet, Rect::new(16.0, 0.0, 16.0, 16.0));      // a pixel region of a sheet
 let has_jump = icons.get("jump").is_some();                                    // Option<&IconSource>
 icons.remove("coin");
 ```
 
-- `get` returns an `IconSource { sprite: SpriteHandle, region: Option<Rect> }` (in the prelude).
+- `get` returns an `IconSource { sprite: Handle<Image>, region: Option<Rect> }` (in the prelude).
 - An icon is a square as high as the font size by default; `icon_sized` and `Icon::Sprite { sprite, size }` set a size in text units.
 - **Swap a set by inserting the same names again** (keyboard keys for gamepad buttons): the text does not change, and the icons update on the next draw.
 - An unknown name leaves its space empty and is warned once. Icon regions are inset half a texel so linear filtering never reads the sheet's neighbours.
@@ -506,22 +516,21 @@ See section 6 (`bounce`). Register it once (on a scene's `on_enter`), then use `
 ```rust
 // Once, in the first scene's on_enter
 fn install_game_font(ctx: &mut SceneContext) {
-  // Native reads the file; the web has no file system, so it embeds the bytes
+  // Native reads the file (and reloads it when saved); the web has no file system, so it embeds the bytes
   #[cfg(not(target_arch = "wasm32"))]
-  let font = ctx.fonts().load("assets/fonts/Game.ttf").ok();
+  let font = ctx.assets().load_now::<Font>("fonts/Game.ttf").ok();
   #[cfg(target_arch = "wasm32")]
-  let font = ctx
-    .fonts()
-    .add_bytes(include_bytes!("../assets/fonts/Game.ttf").as_slice())
-    .ok();
+  let font = Font::from_bytes(include_bytes!("../assets/fonts/Game.ttf").as_slice())
+    .ok()
+    .map(|font| ctx.assets().add(font));
 
   if let Some(font) = font {
-    ctx.fonts().set_role(FontRole::Ui, font);
+    ctx.fonts().set_role(FontRole::Ui, font); // the role holds the font
   }
 }
 ```
 
-Embedding on every target (`add_bytes` only) is simpler and always works; `load` is there for fonts a player or mod can replace.
+Embedding on every target (`Font::from_bytes` and `add` only) is simpler and always works; loading the file is there for fonts a player or mod can replace, and for hot reload while you work on them.
 
 ## 10. Limits and Gotchas
 
@@ -533,7 +542,7 @@ Embedding on every target (`add_bytes` only) is simpler and always works; `load`
 - **CJK, emoji and other scripts need a font that has them.** The built-in fonts cover Latin, Latin Extended, Greek and Cyrillic. Add a font and put it in `TextStyle::fallback(..)` or `set_role`.
 - **The built-in fonts' licences ship with the game.** Inter and JetBrains Mono are SIL OFL 1.1 (each copy must carry its notice and licence), m5x7 is CC0. `ryo2d build` writes them to `release/licenses/` and `ryo2d export` puts them in the zip; a web build you make yourself must ship that folder too (`ryo-cli`).
 - **Binary size.** The built-in fonts are about 0.58 MB in the binary. A game that ships its own fonts can turn the `default-fonts` cargo feature off (`ryo2d = { default-features = false }`); the registry then starts empty: add a font and assign it to each role you use (`set_role`), or no text draws.
-- **The web has no file system:** `Fonts::load` fails there; embed fonts with `add_bytes(include_bytes!(..))`.
+- **The web has no file system:** loading a font file fails there; embed fonts with `ctx.assets().add(Font::from_bytes(include_bytes!(..).as_slice())?)`.
 - **Fades go through opacity**, never the style colour (a colour fade relays out every frame).
 - **Effects are pure functions of their `GlyphContext`.**
 - Invalid input warns once (a bad style size, markup, an unknown effect, a missing icon, a missing character) and never panics.

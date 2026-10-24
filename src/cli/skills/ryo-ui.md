@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.5.9
+  version: 4.6.0
 ---
 
 # Ryo2D UI Specialist
@@ -127,7 +127,7 @@ ui.panel()                       // a column with the panel look and padding; it
 |---|---|---|
 | Button | `if ui.button("Play").clicked() {}` | `.icon(&sprite)` left of the label, `.variant("danger")`, `.style(LookPatch::default().fill(c))` |
 | Text | `ui.text("Score 1200");` | a layout leaf; `.style`, `.size`, `.color`, `.wrap(w)`, `.align`, `.max_lines`, `.ellipsis()`, `.opacity`, `.typewriter(&mut reveal)` (see `ryo-text`) |
-| Image | `ui.image(&sprite).size(32.0, 32.0).filter(Filter::Nearest);` | `.tint(c)`, `.uv([l, t, r, b])`; the sprite's size by default |
+| Image | `ui.image(&image).size(32.0, 32.0).filter(Filter::Nearest);` | takes a `Handle<Image>`; `.tint(c)`, `.uv([l, t, r, b])`; the image's own size by default, which is nothing until it is loaded. Given a size, an image not loaded draws the magenta checker in debug builds (nothing in release); at its own size it takes no room, so a UI lays out alike in both. An image first loaded inside `ui` is sized from the next frame |
 | Checkbox | `if ui.checkbox(&mut self.sound, "Sound").show().changed() {}` | the whole row clicks |
 | Toggle | `ui.toggle(&mut self.fullscreen, "Fullscreen");` | a switch |
 | Radio | `ui.radio(&mut self.difficulty, Difficulty::Hard, "Hard");` | any `PartialEq + Copy` value |
@@ -336,7 +336,7 @@ ui.draw_rounded_rect(rect, 8.0, Color::DARK_GRAY);
 ui.draw_rect_bordered(rect, fill, 8.0, 2.0, border_color);              // fill, radius, border width, border colour
 ui.draw_panel(rect, Color::DARK_GRAY, Some(Color::WHITE));
 ui.draw_progress_bar(rect, 0.75, Color::HEALTH_RED, Color::DARK_GRAY);
-ui.draw_sprite(&handle, x, y);                                          // one UI unit per texel; _scaled, _rect
+ui.draw_sprite(&handle, x, y);                                          // a Handle<Image>, one UI unit per texel; _scaled, _rect
 ui.draw_nine_slice(&handle, rect, [8.0, 8.0, 8.0, 8.0], Color::WHITE);  // insets left, top, right, bottom in texels
 ui.draw_line(&[Vec2::new(10.0, 10.0), Vec2::new(90.0, 40.0)], 2.0, Color::WHITE);
 ui.draw_modal_overlay(Color::new(0, 0, 0, 160));                        // dims the whole UI, ignoring clips
@@ -702,7 +702,7 @@ struct Inventory {
   bag: [Option<Item>; 16],
   equipment: [Option<Item>; 2],
   /// An icon per `Kind`
-  icons: Vec<SpriteHandle>,
+  icons: Vec<Handle<Image>>,
   status: String,
 }
 
@@ -812,15 +812,13 @@ impl Seen {
 
 impl Scene for Inventory {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Placeholder icons in `Kind` order; a game loads its own sprites
+    // Placeholder icons in `Kind` order; a game loads its own images
+    // (ctx.assets().load_now::<Image>("items/sword.png"))
     let colours = [(200, 200, 220), (160, 120, 60), (220, 60, 80)];
+    let mut assets = ctx.assets();
     self.icons = colours
       .into_iter()
-      .enumerate()
-      .map(|(i, (r, g, b))| {
-        let sprite = Sprite::solid_rect(12, 12, r, g, b, 255);
-        ctx.assets.create_sprite(sprite, format!("icon-{i}"))
-      })
+      .map(|(r, g, b)| assets.add(Image::solid_rect(12, 12, r, g, b, 255)))
       .collect();
   }
 
@@ -1137,7 +1135,7 @@ Constructors and options use the closure builders' names: `UiNode::column()`, `r
 | Node | Spawns with |
 |---|---|
 | `text`, `button` | `UiLabel(String)` |
-| `image` | `UiImage(SpriteHandle)` |
+| `image` | `UiImage(Handle<Image>)` |
 | `checkbox`, `toggle` | `UiLabel`, `UiChecked(bool)` |
 | `slider`, `progress` | `UiValue(f32)` |
 | `text_input` | `UiTextValue(String)` |
@@ -1296,7 +1294,7 @@ A node is built again, with its ancestors, when:
 - **its components change**: a state component (`UiLabel`, `UiValue`, `UiChecked`, ...), `UiTooltip`, `UiHidden`, `UiDisabled`, `UiRoot`, its `TextReveal`, or its children (added, removed, reordered, reparented). `ctx.ui_set`, `ctx.update_ui` and file reloads write these, so they count too;
 - **the player is on it**, this frame or the last: hovered, pressed, clicked, focused, dragged or dropped on. A focused widget builds every frame it holds the focus;
 - **it is live**: every scroll area and list builds its own node each frame (what they hold is still copied, each row or child a subtree of its own, so a subtree holding a scroll area is never copied whole), an unfinished typewriter, tabs while Q/E or a shoulder button is pressed, a choice list while a number key is, drop targets while something is carried, a rebinding row while it captures or shows its swap note;
-- **something else it read changed**: the id of a `nav_*` neighbour or of a popup's anchor (moved to another parent, say), where an open dropdown is, a filling text field's last size, the size of a sprite it is sized by (a hot reload);
+- **something else it read changed**: the id of a `nav_*` neighbour or of a popup's anchor (moved to another parent, say), where an open dropdown is, a filling text field's last size, the size of an image it is sized by (a reload changes an image in place);
 - **the environment changes**: the theme (its skins loading too), the UI scale or size, the fonts, the prompts (the player's device or pad family, the bindings, the text icons), or which scene is on top. Every tree builds once.
 
 The renderer copies an unchanged subtree's drawing too, and while a list scrolls its rows are drawn unchanged at a moving offset (section 6).
@@ -1515,7 +1513,7 @@ struct BagSlot(usize);
 #[derive(Clone)]
 struct Stack {
   name: &'static str,
-  icon: SpriteHandle,
+  icon: Handle<Image>,
   count: u32,
 }
 
@@ -1562,9 +1560,7 @@ impl Scene for NodeInventory {
         .into_iter()
         .enumerate()
     {
-      let icon = ctx
-        .assets
-        .create_sprite(Sprite::solid_rect(12, 12, r, g, b, 255), name);
+      let icon = ctx.assets().add(Image::solid_rect(12, 12, r, g, b, 255));
       self.bag[i] = Some(Stack { name, icon, count });
     }
     let root = ctx.spawn_ui(
@@ -1791,7 +1787,7 @@ A Skip finishes the line at its next draw, and the choices replace Skip in the f
 
 ### Files
 
-A screen can be written in a RON file, `assets/ui/pause.ui.ron`, instead of Rust. The file loads into the same `UiNode` as section 15's builders make, so everything above applies: spawning, ownership, state components, events, focus, modals. The file holds the look and layout; game code answers `UiEvent`s and sets values. In debug builds the running game picks up a saved file without a rebuild.
+A screen can be written in a RON file, `assets/ui/pause.ui.ron`, instead of Rust. The file is an asset (`UiFile`, loaded through the registry: `ryo-assets`) that builds into the same `UiNode` as section 15's builders make, so everything above applies: spawning, ownership, state components, events, focus, modals. The file holds the look and layout; game code answers `UiEvent`s and sets values. In debug builds the running game picks up a saved file without a rebuild.
 
 | Use | When |
 |---|---|
@@ -1808,7 +1804,7 @@ A UI file is valid RON. Its top level is an unnamed struct; every field is optio
 ```ron
 // assets/ui/pause.ui.ron
 (
-  imports: ["assets/ui/common.ui.ron"],      // other files whose templates this one uses
+  imports: ["ui/common.ui.ron"],             // other files whose templates this one uses (asset paths)
   templates: {
     "MenuButton": (
       params: ["label", "action"],
@@ -1835,7 +1831,7 @@ A UI file is valid RON. Its top level is an unnamed struct; every field is optio
 - **A node is a named value.** Its name is a kind (below) or a template; its fields are options. Kinds are `UiNode`'s constructors in CamelCase (`radio_group` is `RadioGroup`); options are `UiNode`'s method names (`fill_width`, `nav_up`). A constructor's arguments are options named after its parameters (`Checkbox(label: "Sound", checked: true)`), except `Popup`'s anchor node, which is `anchor_node`, and `Prompt`'s and `Rebind`'s action, which is `input`.
 - **Short forms.** RON cannot mix a positional value with named fields, so a node takes named options or its main value alone: `Text("Paused")`, `Button("OK")`, `Separator`, `Spacer`. A node with a short form and other options writes its main value by name: `Text(text: "Paused", heading: true)`.
 - **`children: [..]`** lists a container's children. A widget takes none.
-- **Paths are relative to the game's working directory**, as `load_sprite`'s are: `assets/ui/common.ui.ron`, `icon: "assets/items/sword.png"`.
+- **Paths are asset paths**, relative to `assets/`, as every load's are: `ui/common.ui.ron` (the file `assets/ui/common.ui.ron`), `icon: "items/sword.png"`. The images and imports a file names load with it, as its dependencies.
 - **Not in files:** `insert` (Rust components; add them in code to the built node) and `style` (a whole `TextStyle`; files use `role`, `size`, `color` and `text_align`).
 
 | Kind | Short form | Constructor options (required in bold) |
@@ -1874,7 +1870,7 @@ A UI file is valid RON. Its top level is an unnamed struct; every field is optio
 | a number (characters per second) or `(per_second: .., punctuation_pause: .., fade: ..)` | `typewriter` |
 
 - **An option the kind does not take is an error** (the same rule as the spawn warning in Spawning, above). `name`, `action`, `hidden` and `key` suit every kind. **`Text` takes only the text options** (`markup`, `role`, `heading`, `size`, `color`, `muted`, `text_align`, `wrap`, `max_lines`, `ellipsis`, `typewriter`, `embedded`): it has no `width`, `margin` or `tooltip`. Wrap it in a sized `Column`: `Column(width: 96, children: [Text(label)])`.
-- **Mistakes come with a place.** `assets/ui/pause.ui.ron:12:5: Button has no option "fil_width"; did you mean "fill_width"?` Unknown kinds, options, enum values, templates and parameters get the nearest name. One load reports every mistake in the file together.
+- **Mistakes come with a place.** `ui/pause.ui.ron:12:5: Button has no option "fil_width"; did you mean "fill_width"?` Unknown kinds, options, enum values, templates and parameters get the nearest name. One load reports every mistake in the file together.
 
 #### Keys
 
@@ -1892,7 +1888,7 @@ templates: {
 }
 ```
 
-- **Used like a kind:** `ItemSlot(icon: "assets/items/sword.png", count: 3)`. A use's fields are the template's parameters first, then any option of its root node, applied over the template's own: `MenuButton(label: "Resume", action: "resume", default_focus: true)`. A parameter is either required (in `params`) or has a default (in `defaults`), never both: listing a name in both is a load error. A missing required parameter or an unknown field is an error at the use.
+- **Used like a kind:** `ItemSlot(icon: "items/sword.png", count: 3)`. A use's fields are the template's parameters first, then any option of its root node, applied over the template's own: `MenuButton(label: "Resume", action: "resume", default_focus: true)`. A parameter is either required (in `params`) or has a default (in `defaults`), never both: listing a name in both is a load error. A missing required parameter or an unknown field is an error at the use.
 - **`false` cannot turn off a flag the template's body sets.** A flag option (`fill_width`, `default_focus`, ..) given `false` is just not applied, so it never turns off what the template's node sets: `MenuButton(fill_width: false)` does nothing when `MenuButton`'s node says `fill_width: true`. Make a flag optional with a parameter that has a default: `defaults: { "wide": true }` and `node: Button(label: label, fill_width: wide)`, then `MenuButton(label: "Back", wide: false)`.
 - **A bare lowercase name that is a parameter** stands for the argument's value wherever a value can go (`icon: icon`). Kinds, templates and enum values are CamelCase, so a lowercase name is always a parameter reference.
 - **A parameter can stand for a node:** `Labelled(label: "Volume", widget: Slider(range: (0, 1), bind: "volume"))` with `node: Row(children: [Text(label), widget])`. A bare template name works as the argument too (`widget: VolumeSlider`).
@@ -1903,7 +1899,7 @@ templates: {
 
 #### Imports
 
-`imports: ["assets/ui/common.ui.ron"]` makes another file's templates usable here; its `root` is ignored. A template name defined twice across a file and its imports is an error, as is an import cycle. **Imports are not transitive**: a file sees its own templates and its direct imports' only, and a node passed as an argument is checked in the file that wrote it, so it may name only templates visible there. Import what you use.
+`imports: ["ui/common.ui.ron"]` makes another file's templates usable here; its `root` is ignored. A template name defined twice across a file and its imports is an error, as is an import cycle. **Imports are not transitive**: a file sees its own templates and its direct imports' only, and a node passed as an argument is checked in the file that wrote it, so it may name only templates visible there. Import what you use.
 
 #### Placeholders
 
@@ -1913,18 +1909,20 @@ An empty named container, `Column(name: "extras")`, is where code adds nodes wit
 
 | Call | Does |
 |---|---|
-| `ctx.spawn_ui_file(path) -> Result<Entity, UiFileError>` | load, build and spawn the file's `root` |
-| `ctx.assets.load_ui(path) -> AssetResult<UiFile>` | load and check a file; cached by path, imports through the same cache |
-| `file.root(ctx.assets) -> Result<UiNode, UiFileError>` | build the `root` |
+| `ctx.spawn_ui_file(path) -> Result<Entity, UiFileError>` | load the file at once, build its `root` and spawn it; the tree holds the file |
+| `ctx.assets().load_now::<UiFile>(path) -> Result<Handle<UiFile>, Arc<AssetError>>` | load and check a file at once, its imports and images with it; one path is one asset, so a second load reads nothing |
+| `ctx.assets().load::<UiFile>(path) -> Handle<UiFile>` | load it on the worker threads (a loading screen); it builds once it is loaded |
+| `file.root(&mut ctx.assets()) -> Result<UiNode, UiFileError>` | build the `root` from a `Handle<UiFile>` |
 | `ctx.ui_template(path, name, &args) -> Result<UiNode, UiFileError>` | load a file and build one instance of its template (or an import's) |
-| `file.template(name, &args, ctx.assets)` | the same, on a file you hold |
-| `ctx.assets.add_ui(path, text) -> Result<UiFile, UiFileError>` | check text the game embedded and cache it under `path`; never reloaded |
-| `UiFile::parse(name, text)` | check text with no asset manager (tests, tools); such a file cannot import |
+| `file.template(name, &args, &mut ctx.assets())` | the same, on a file you hold |
+| `UiFile::parse(name, text) -> Result<UiFile, UiFileError>`, then `ctx.assets().add(file)` | check text the game embedded (`include_str!`) as the file `name` and add it: a `Handle<UiFile>` like a loaded one, never reloaded. Its imports (asset paths) load at its first build |
 | `UiArgs::new().with("label", "Resume").with("count", 3)` | a template's arguments: text, numbers, bools and lists; its parameters, and any option of its root node (`.with("default_focus", true)`) |
 
 - The built `UiNode` is ordinary: spawn it with `spawn_ui` or `spawn_ui_in`, or put it in a code tree.
 - **Give a template instance its options in `UiArgs`, not as methods on the built node.** An argument may be any option of the template's root node, as in a file: `UiArgs::new().with("default_focus", true)`, `.with("name", "slot-3")`. A reload builds the instance again from its template and its arguments, so options passed this way are applied again, while an option set in code on the result (`.default_focus()`, `.name(..)`) is gone after the next reload. What code adds that a reload keeps is `.insert(MyComponent)` components and `.child(..)` nodes.
-- Images are loaded while building; a missing one is an error at the `sprite` or `icon` value.
+- A file's images load with it, as its dependencies; a missing one is an error at its `sprite` or `icon` value. An image passed in from code (a template argument) loads when the tree is built.
+- **The tree holds the file**, and the file holds its imports and images, so they stay loaded while any tree built from them lives.
+- A `load_now` that fails gives an `Arc<AssetError>`; `UiFileError` converts from it (`?`), and the file's own mistakes come back as its `issues`.
 - `UiFileError` lists every mistake, each with `path`, `line`, `column` and `message`; `Display` prints one per line. Log it with `game_error!("{error}")`. A game that cannot load a file should show something, not panic.
 - **Build every tree before spawning any.** A template that fails to build then leaves nothing half on screen: build the root and every template instance first, then `spawn_ui` and `spawn_ui_in`.
 
@@ -1956,13 +1954,13 @@ A binding is a name whose value text shows and value widgets read and write.
 
 #### Hot reload
 
-In debug builds with an assets directory (never headless), the asset manager watches `.ui.ron` files. When one changes, it is read and checked again, and so is every loaded file that imports it. A clean file replaces the old one, and every tree built from it is reconciled before that frame's UI pass: roots and code-built template instances, in every scene. Then a `UiReloaded { root, replaced }` message goes out for each root touched: `replaced` is the old root when the file gave the root a new kind (so the root is a new entity), and `None` when it was updated in place.
+In debug builds with a window (never headless; `EngineBuilder::hot_reload` changes it), the engine watches `assets/`. When a `.ui.ron` file is saved, it is read and checked again about 100 ms after the last write, and so is every loaded file that imports it. A clean file replaces the old one, and every tree built from it is reconciled before that frame's UI pass: roots and code-built template instances, in every scene. Then a `UiReloaded { root, replaced }` message goes out for each root touched: `replaced` is the old root when the file gave the root a new kind (so the root is a new entity), and `None` when it was updated in place.
 
 - **What a reload keeps:** entities and their ids, focus, scroll, widget state, and what the game and the player wrote, unless the file changed that same value (the update rules above). Bindings keep their values and pick up new and removed names.
 - **What it leaves:** components the game inserted, `spawn_ui_in` subtrees and `.child(..)` additions (a template instance among them is rebuilt from its template with its arguments and updated in place). An option set in code on a template instance's built node is lost; pass it in `UiArgs` (Loading and building). A node the file gives a new kind is a new entity, so a game that holds a root, filled a placeholder or looked up a node by entity listens for `UiReloaded`: it swaps a held root when `replaced` names it, and looks nodes up again by name (and fills them again) when `root` is its tree.
 - **A broken file** keeps the old document and trees. The errors are warned once per broken text, with positions; saving a mistake again after the file was fixed or reverted warns again.
 - **A file that checks but lost its `root` or a template** replaces the old document like any clean file. Trees that can no longer be built (from the lost root, or instances of the lost template) are kept as they were and warned about once, everything else is brought in line, and new `ctx.ui_template` calls for the lost template fail.
-- `ctx.assets.reload_ui(path)` asks for the same reload directly (tests, headless runs). A file added with `add_ui` is never reloaded. Release builds read files once and never watch them.
+- `ctx.assets().server().reload(path)` asks for the same reload directly (headless runs; `UiHarness::reload_ui` in tests). A file added from text (`UiFile::parse`) is never reloaded. Release builds read files once and never watch them.
 - `ryo2d check-ui [files]` (`ryo-cli`) checks files without running the game: syntax, vocabulary, templates, imports, keys and image paths, with the same messages.
 
 A game that holds a root or a node of a file's tree follows what a reload replaced:
@@ -2012,7 +2010,7 @@ Read held nodes with `ctx.world.get_mut::<C>(node)` or `ctx.world.get_entity_mut
 ```
 
 ```rust
-const MENU: &str = "assets/ui/main_menu.ui.ron";
+const MENU: &str = "ui/main_menu.ui.ron"; // assets/ui/main_menu.ui.ron
 
 #[derive(Default)]
 struct MainMenu {
@@ -2081,7 +2079,7 @@ The file's buttons carry `action` strings; the game matches them, as for any nod
 
 ```rust
 // on_enter
-self.hud = ctx.spawn_ui_file("assets/ui/hud.ui.ron").ok();
+self.hud = ctx.spawn_ui_file("ui/hud.ui.ron").ok();
 
 // update, every frame: ui_set does nothing when a value is unchanged
 if let Some(hud) = self.hud {
@@ -2128,11 +2126,11 @@ for reloaded in ctx.messages::<UiReloaded>() {
 #[derive(Component, Clone, Copy)]
 struct ShopItem(usize);
 
-const SHOP: &str = "assets/ui/shop.ui.ron";
+const SHOP: &str = "ui/shop.ui.ron";
 
 fn open_shop(ctx: &mut SceneContext, stock: &[(&str, u32)]) -> Result<Entity, UiFileError> {
   // Build the root and every row first, then spawn: a failure leaves nothing on screen
-  let root = ctx.assets.load_ui(SHOP)?.root(ctx.assets)?;
+  let root = ctx.assets().load_now::<UiFile>(SHOP)?.root(&mut ctx.assets())?;
   let mut rows = Vec::new();
   for (i, (name, price)) in stock.iter().enumerate() {
     let args = UiArgs::new().with("name", *name).with("price", *price);
@@ -2158,7 +2156,7 @@ The rows are template instances the game added: a reload of `shop.ui.ron` update
 /// The choices column for what the player can do now: one tree from the data
 fn choices_tree(ctx: &mut SceneContext, labels: Vec<String>) -> Result<UiNode, UiFileError> {
   let args = UiArgs::new().with("options", labels);
-  let list = ctx.ui_template("assets/ui/dialogue.ui.ron", "Choices", &args)?;
+  let list = ctx.ui_template("ui/dialogue.ui.ron", "Choices", &args)?;
   Ok(UiNode::column().focus_scope().name("choices").child(list))
 }
 // "Choices" in the file: params: ["options"], node: ChoiceList(options: options, action: "choose", name: "pick")
@@ -2180,20 +2178,29 @@ If `choices` is a placeholder in a file (`Column(focus_scope: true, name: "choic
 
 ##### Loading with an embedded fallback
 
-A game that ships as one binary or for the web has no assets directory at run time. Keep the file on disk for development and embed a copy:
+A game that ships for the web has no files at run time (a load there fails with `AssetError::Io`, `ErrorKind::Unsupported`). Keep the file in `assets/` for development and embed a copy:
 
 ```rust
-/// A UI file of the game: from disk when `path` is there (debug builds reload it when
-/// it is saved), else the copy embedded in the binary
-pub fn ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Result<UiFile, UiFileError> {
-  match ctx.assets.load_ui(path) {
-    Err(AssetError::NotFound(_)) => ctx.assets.add_ui(path, embedded),
+/// A UI file of the game: from the asset folder when `path` (an asset path) is there
+/// (debug builds reload it when it is saved), else the copy embedded in the binary
+pub fn ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Result<Handle<UiFile>, UiFileError> {
+  match ctx.assets().load_now::<UiFile>(path) {
+    Err(error) if not_on_disk(&error) => Ok(ctx.assets().add(UiFile::parse(path, embedded)?)),
     loaded => Ok(loaded?),
   }
 }
 
+/// No file at the path, or no files at all (the web)
+fn not_on_disk(error: &AssetError) -> bool {
+  match error {
+    AssetError::NotFound { .. } => true,
+    AssetError::Io { source, .. } => source.kind() == std::io::ErrorKind::Unsupported,
+    _ => false,
+  }
+}
+
 pub fn spawn_ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Option<Entity> {
-  let tree = ui_file(ctx, path, embedded).and_then(|file| file.root(ctx.assets));
+  let tree = ui_file(ctx, path, embedded).and_then(|file| file.root(&mut ctx.assets()));
   match tree {
     Ok(tree) => Some(ctx.spawn_ui(tree)),
     Err(error) => {
@@ -2203,10 +2210,10 @@ pub fn spawn_ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Opti
   }
 }
 
-// spawn_ui_file(ctx, "assets/ui/pause.ui.ron", include_str!("../assets/ui/pause.ui.ron"))
+// spawn_ui_file(ctx, "ui/pause.ui.ron", include_str!("../assets/ui/pause.ui.ron"))
 ```
 
-`add_ui` caches the text under `path`, so later loads and imports of that path find it. An embedded file imports other files by their paths too: embed those and `add_ui` them first, or they are read from disk. This is breakout's `look.rs` (`ui_file`, `spawn_ui_file`); any error other than a missing file, such as a mistake in the file on disk, is returned rather than hidden by the embedded copy.
+An embedded file's imports and images are asset paths, loaded through the registry when it is first built, so on the web embed a file that imports nothing and names no images, or give the engine a `MemorySource` of the embedded files (`EngineBuilder::asset_source`, `ryo-assets`). This is breakout's `look.rs` (`ui_file`, `spawn_ui_file`); any error other than a missing file, such as a mistake in the file on disk, is returned rather than hidden by the embedded copy.
 
 ## 16. Virtual Lists
 
@@ -2453,7 +2460,7 @@ The same board (`Entry` above) as a node list. The file holds the row as a templ
 ```
 
 ```rust
-const LEADERBOARD: &str = "assets/ui/leaderboard.ui.ron";
+const LEADERBOARD: &str = "ui/leaderboard.ui.ron";
 
 /// The leaderboard as a node list from a file: a screenful of pooled rows,
 /// each filled from the game's data when it is given an item
@@ -2550,7 +2557,7 @@ impl Scene for NodeLeaderboard {
 /// One stack in the bag
 struct Item {
   name: String,
-  icon: SpriteHandle,
+  icon: Handle<Image>,
   count: u32,
 }
 
@@ -2665,7 +2672,7 @@ fn the_slider_steps_with_the_pad() {
   assert_eq!(ui.world().get::<UiChecked>(sound), Some(&UiChecked(true)));
   assert!(ui.events().iter().any(|e| e.node == sound && e.kind == UiEventKind::Changed));
   ```
-- **UI files in a test:** `UiHarness::new(w, h).with_assets(dir)` loads files and images relative to `dir`; `spawn_ui_file(path) -> Result<Entity, UiFileError>` spawns one; `update_ui(node, tree)`, `ui_set(node, name, value)` and `ui_get::<T>(node, name)` work as on `SceneContext`. After editing the file on disk, `reload_ui(path)` makes the next `frame` bring the trees in line, and `messages::<UiReloaded>()` lists the roots it touched. `UiFile::parse(name, text)` checks text alone, for asserting a file's errors.
+- **UI files in a test:** `UiHarness::new(w, h).with_asset_source(DiskSource::new(dir))` loads files and images from `dir` (asset paths are relative to it), or `with_asset_source(files)` from a `MemorySource` the test fills (`files.insert("ui/menu.ui.ron", text)`); `spawn_ui_file(path) -> Result<Entity, UiFileError>` spawns one; `update_ui(node, tree)`, `ui_set(node, name, value)` and `ui_get::<T>(node, name)` work as on `SceneContext`. After changing the file, `reload_ui(path)` reads it again and waits until the reload lands, so the next `frame` brings the trees in line, and `messages::<UiReloaded>()` lists the roots it touched. `UiFile::parse(name, text)` checks text alone, for asserting a file's errors.
 - **Lists in a test:** `frame` draws a closure list like any widget. A node list's binds are in `messages::<UiListBind>()` after the frame that sent them: fill the rows there with `ui_set`, as a scene's `ui` would, and they are drawn from the next `frame`. `ui_list_count`, `ui_list_refresh`, `ui_list_refresh_row`, `ui_list_scroll_to`, `ui_list_focus` and `ui_list_index` work as on `SceneContext`.
 
   ```rust

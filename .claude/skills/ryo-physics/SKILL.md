@@ -2,7 +2,7 @@
 name: ryo-physics
 description: Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.
 metadata:
-  version: 3.1.0
+  version: 3.2.0
 ---
 
 # Ryo2D Physics Specialist
@@ -112,13 +112,13 @@ Collider::rect(40.0, 8.0).with_rotation(0.3)     // turned relative to the entit
 
 ### Composite tiles
 
-`CompositeTileBuilder::build_with_collider()` returns the tile and a rect `Collider` already offset to cover all the parts:
+`CompositeTileBuilder::build_with_collider(images)` returns the tile and a rect `Collider` already offset to cover all the parts. It reads the parts' sizes from the image store (a part not loaded counts as zero), so load its images with `load_now` first:
 
 ```rust
 let (composite, collider) = CompositeTileBuilder::new()
   .cap(cap_sprite, 0.0, 0.0)
   .body_tiled(body_sprite, 0.0, 32.0, TileDirection::Down, 128.0)
-  .build_with_collider();
+  .build_with_collider(ctx.world.resource::<Assets<Image>>());
 
 ctx.world.spawn((Transform::from_xy(100.0, 50.0), RigidBody::fixed(), composite, collider));
 ```
@@ -305,7 +305,7 @@ F2 draws Rapier's geometry: green dynamic, orange kinematic, blue fixed (and bar
 ```rust
 ctx.world.spawn((
   Transform::from_xy(x, y),
-  Renderable::sprite(coin_sprite),
+  Renderable::image(coin_sprite),
   Collider::circle(12.0).as_trigger(),
   Coin { value: 10 },
 ));

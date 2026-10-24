@@ -2,7 +2,7 @@
 name: ryo-lighting
 description: 2D lighting - Light2D and LightOccluder2D entities, ctx.lighting() for ambient, atmosphere and on/off, shadows, volumetric beams, sprite shadows and ambient occlusion.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Lighting Specialist
@@ -133,16 +133,16 @@ ctx.lighting().set_atmosphere(
 Drawn with the sprite, independent of lights:
 
 ```rust
-Renderable::sprite(handle).with_drop_shadow(DropShadow::below(8.0))
-Renderable::sprite(handle).with_drop_shadow(DropShadow::diagonal(6.0))
-Renderable::sprite(handle).with_drop_shadow(DropShadow::squashed(12.0, 0.3))
-Renderable::sprite(handle).with_drop_shadow(
+Renderable::image(handle).with_drop_shadow(DropShadow::below(8.0))
+Renderable::image(handle).with_drop_shadow(DropShadow::diagonal(6.0))
+Renderable::image(handle).with_drop_shadow(DropShadow::squashed(12.0, 0.3))
+Renderable::image(handle).with_drop_shadow(
   DropShadow::new().offset(4.0, 8.0).color(Color::new(0, 0, 0, 100)).scale(1.0, 0.6),
 )
-Renderable::sprite(handle).with_blob_shadow(
+Renderable::image(handle).with_blob_shadow(
   BlobShadow::ellipse(20.0, 10.0).offset(48.0).with_height_scale(true).max_height(150.0),
 )
-Renderable::sprite(handle).with_contact_shadow(ContactShadow::new().radius(8.0).intensity(0.6).falloff(2.0))
+Renderable::image(handle).with_contact_shadow(ContactShadow::new().radius(8.0).intensity(0.6).falloff(2.0))
 ```
 
 ## Ambient Occlusion

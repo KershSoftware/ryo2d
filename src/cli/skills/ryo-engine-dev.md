@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.2.4
+  version: 2.3.0
 ---
 
 # Ryo2D Engine Developer
@@ -32,8 +32,10 @@ Engine::frame
 ├─ queue input        RYO_INPUT script, gamepads (gilrs), window events already queued
 ├─ First              advance the clocks · publish Input · advance every message buffer
 │                     then the engine's debug keys consume their presses
-├─ PreUpdate          async asset loads, hot reload (AssetReloaded / AssetLoadFailed)
-│                     then the console (animation, input, commands)
+├─ PreUpdate          a running scene transition, then the asset pump, chained: finished loads
+│                     and reloads land, code changes' events are sent, unheld assets are freed
+│                     (AssetEvent<T>); the font registry follows the font stores; then the
+│                     console (animation, input, commands)
 ├─ UI pass            resolve first, once a frame, against last frame's UI records: the
 │                     pointer, the wheel, then focus and navigation from the ui.* actions;
 │                     then each visible scene bottom-up: its node trees (unchanged subtrees
@@ -78,11 +80,11 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetManager`, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the text engine (layout cache) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (scene stack + Kira `Audio`), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
-- Scene callbacks get `Time`, `Input` and `AssetManager` as `SceneContext` fields, taken out of the world for the callback (`SceneContext::scoped`). Systems always see them as resources. Cameras are entities (`Camera2d`); the main one (`MainCamera`) is spawned with the world and survives world cleanup, and `ctx.camera()` edits it.
+- Scene callbacks get `Time` and `Input` as `SceneContext` fields, taken out of the world for the callback (`SceneContext::scoped`); `ctx.assets()` is an `AssetsView` borrowing the world (the `AssetServer` and the stores stay resources). Systems always see them as resources. Cameras are entities (`Camera2d`); the main one (`MainCamera`) is spawned with the world and survives world cleanup, and `ctx.camera()` edits it.
 - Per-frame requests from scenes to the window go through resources (`WindowRequest`, `CursorRequest`) applied in `about_to_wait` (`engine/window.rs`), never by borrowing the window during a callback. The window's cursor is resolved there too (`CursorResolver`): the console's per-frame override (`Engine::console_cursor`, `None` = no opinion), else the game's last cursor, applied only when it changes and once more when the left button is released.
 
 ## Module Map (`src/core/`)
@@ -98,7 +100,7 @@ Engine::frame
 | `messages/` | Engine message types, registration, per-scene cursors |
 | `scene/` | `Scene`, `SceneAction`, `SceneContext`, `SceneManager`, cleanup |
 | `render/` | `RenderPipeline` of `RenderPass`es (camera and frame scopes), the draw list, entity extraction, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, polylines), `DebugDraw` |
-| `graphics/` | wgpu renderer, sprite textures and game shader sources, cameras and render targets, the screen mapping, texture registry and mipmapped atlas, bind-group helper, compositor, sprite animation, tiles, `ParallaxLayer` |
+| `graphics/` | `Image`, the wgpu renderer, sprite textures (by image id) and game shader sources, cameras and render targets, the screen mapping, texture registry and mipmapped atlas, bind-group helper, compositor, sprite animation, tiles, `ParallaxLayer` |
 | `shaders/` | Post-process effects (`EffectsManager`) and sprite shaders |
 | `lighting/` | 2D lights, occluders, `LightingSettings` |
 | `physics/` | Rapier integration, `RigidBody`, `Collider`, `Physics`, the character controller, one-way colliders, triggers, tile colliders |
@@ -107,7 +109,7 @@ Engine::frame
 | `text/` | Fonts (`Fonts`), `TextStyle`, rich text and markup, layout (Parley), glyph rasterization (swash, fdsm), effects, reveal, `Text2d` and `CpuText` for the dev windows; GPU-free |
 | `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`) and their cache (`nodes/cache.rs`, the records and the dirty set; `tape.rs`, what a build pushed and its replay; `fragment.rs`, the unchanged subtrees kept and copied), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` and `debug:ui-rebuilds` overlays (`debug.rs`) |
 | `hash.rs` | The engine's fast hasher (`FastHasher`, `FastMap`, `FastSet`, `fast_hash`) for keys it makes itself: ids, the UI's memory and layout maps, the text caches; never SipHash, never saved |
-| `asset/` | `AssetManager`, async loads, hot reload |
+| `asset/` | The asset registry: `AssetId` and `Handle`, the `Assets<T>` stores, `AssetServer` (keys, loaders, sources, worker threads), the pump (`pump.rs`), the watcher and its debounce (`watch.rs`), the engine's loaders (`loaders/`); `src/core/asset/AGENTS.md` |
 | `audio.rs` | Kira audio (`Audio`, `AudioManager`) |
 | `config/` | `Ryo.toml` workspace, user preferences (`system.json`), saves |
 | `console/` | Developer console and commands |
@@ -132,7 +134,8 @@ Dependencies point toward the core: nothing in `src/` uses a crate in `crates/`,
 
 ## Public API
 
-- Export from the prelude what games spawn, query, implement or store: components, `Scene`, handles, builders, message types. ECS items arrive through the `crate::core::ecs::*` glob, so anything `pub` in `ecs/mod.rs` is public.
+- Export from the prelude what games spawn, query, implement or store: components, `Scene`, asset types and their loaders, builders, message types.
+- Engine code that keeps something built from an asset keys it by `AssetId` (and the store's version), never by a `Handle`: only handles keep assets alive, so a cache holding one keeps what the game let go. A new engine asset type is registered with its loader in `insert_registry` (`asset/mod.rs`). How to add one: `src/core/asset/AGENTS.md`. ECS items arrive through the `crate::core::ecs::*` glob, so anything `pub` in `ecs/mod.rs` is public.
 - Keep engine plumbing out: system functions, `SceneManager`, renderers, registration helpers.
 - Games never name `bevy_ecs`; it is re-exported (hidden) only so the derives resolve. New kernel types go through `ecs/kernel.rs`.
 - Rustdoc every public item; it is the API reference. The `ryo-api` skill mirrors the prelude.
@@ -150,7 +153,7 @@ See `ryo-ecs-internals` and `src/core/systems/AGENTS.md`. In short: derive `Comp
 | Integration | `tests/integration/` (target `integration`) | `cargo test --test integration` |
 | End-to-end, GPU | `tests/e2e/` with `HeadlessEngine` (target `e2e`) | `cargo test --test e2e`, `./dev.sh test:e2e` |
 | Demo tour | every page of every demo, headless | `./dev.sh demos:tour [demo...]` → `target/demo-tour/<demo>/page-N.png` |
-| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, the node version unchanged under 35 µs, a 2,000-node static tree, an embedded node tree, the node cache's dirty check, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU) | `cargo bench --bench ui` |
+| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, the node version unchanged under 35 µs, a 2,000-node static tree, an embedded node tree, the node cache's dirty check, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU), `ui_render`, `assets` (a scene's start with `load_now` and with `load`, and a guard on the frame time of large hot reloads) | `cargo bench --bench ui` |
 
 - Rendering regressions: write the failing pixel assertion in `tests/e2e/` first (see `src/core/testing/AGENTS.md`).
 - UI behaviour: unit tests drive frames with `ui::test_util::UiDriver` (a `UiHarness` plus keys, pad buttons, held directions and scenes); games use the public `ryo2d::testing::UiHarness`.

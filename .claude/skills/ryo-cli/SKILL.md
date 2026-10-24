@@ -2,7 +2,7 @@
 name: ryo-cli
 description: Using the ryo2d CLI for building, running, and developing games.
 metadata:
-  version: 1.1.0
+  version: 1.2.0
 ---
 
 # Ryo2D CLI Specialist
@@ -31,7 +31,7 @@ ryo2d check-ui                          # every *.ui.ron under the project's ass
 ryo2d check-ui assets/ui/menu.ui.ron    # just these files
 ```
 
-It reads each file as the game would at load: syntax, node kinds and options, templates, imports (read from disk) and sibling keys, plus whether the images the file names exist. Each problem prints as `path:line:column: message` (paths from the project root, with a suggestion for a misspelt name), and the command exits non-zero when any file has one. Paths inside UI files are relative to the project root, like `assets/ui/common.ui.ron`. Run it before `ryo2d dev` or in CI; see `ryo-ui` section 15, Files.
+It loads each file through the asset registry, as the game does: syntax, node kinds and options, templates, imports and sibling keys, plus whether the images the file names load. Each problem prints as `path:line:column: message` (paths relative to the assets directory, with a suggestion for a misspelt name), a file's images after its other problems, and the command exits non-zero when any file has one. Paths inside UI files are asset paths too: `ui/common.ui.ron` is `assets/ui/common.ui.ron`. The files given must be under the assets directory. Run it before `ryo2d dev` or in CI; see `ryo-ui` section 15, Files.
 
 ## Project Structure
 

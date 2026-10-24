@@ -2,7 +2,7 @@
 name: ryo-messages
 description: Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.
 metadata:
-  version: 2.2.0
+  version: 2.3.0
 ---
 
 # Ryo2D Messages
@@ -104,7 +104,7 @@ A reader ordered after the writer in the same schedule sees the message the same
 | Physics (`CollisionStarted`, `CollisionStopped`, `TriggerEntered`, `TriggerExited`, `ContactForce`, `JointBroken`) | each fixed step, in `FixedSet::Physics` | the next step's `update` |
 | Gameplay (`MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `KnockbackStarted`, `KnockbackFinished`) | each fixed step, in `FixedSet::Movement`: after `Scene::update` and the scene's fixed systems, before physics | the next step's `update` |
 | Juice systems (tweens, squash and stretch) | each fixed step, before `Scene::update` | the same step's `update` |
-| Hot reload (`AssetReloaded`, `AssetLoadFailed`) | `PreUpdate`, once a frame | this frame's `ui` and steps |
+| The asset pump (`AssetEvent<T>` for each asset type: loads, reloads, frees and failures); `load_now` writes its own `Added` or `Failed` at once | `PreUpdate`, once a frame | this frame's `ui` and steps |
 | The UI pass (`UiReloaded`, then `UiListBind`, before any tree is drawn; `UiEvent` as each scene's node trees are walked, or after `ui` for embedded trees) | once a frame, before the fixed steps | this frame's `ui` and steps |
 | `ParticleSystem::update` (`ParticleCollision`) | where the scene calls it | after that call |
 
@@ -124,7 +124,7 @@ fn cleanup_on_exit(&self) -> SceneCleanup {
 
 ## Engine messages
 
-All are in the prelude and registered at engine build.
+All are in the prelude and registered at engine build; `AssetEvent<T>` is registered with its asset type (the engine's at build, a game's with `EngineBuilder::asset_loader` or its first `ctx.assets().add`).
 
 | Message | Fields | Written when |
 |---------|--------|--------------|
@@ -142,12 +142,11 @@ All are in the prelude and registered at engine build.
 | `Killed` | `entity`, `zone` | something entered a `KillZone` |
 | `CheckpointReached` | `checkpoint`, `entity` | a `Checkpoint` moved `entity`'s `Respawn` point |
 | `SquashStretchStarted` / `SquashStretchFinished` | `entity` | a squash starts / recovers |
-| `AssetReloaded` | `path: PathBuf` | hot reload replaced an asset (dev builds) |
-| `AssetLoadFailed` | `path`, `error: String` | a hot reload failed (dev builds); an async load reports failure on its `AsyncSpriteHandle` (`state()`) instead |
+| `AssetEvent<T>` (one type per asset type: `AssetEvent<Image>`, `AssetEvent<Font>`, ...) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` (`id: AssetId<T>`, `error: Arc<AssetError>`) | an asset landed in its store (or was added in code), changed (reloaded, a dependency reloaded, or `get_mut`), was freed (its last handle dropped), will not load, or failed to reload and kept its last good value. An asset's events come in the order its changes happened (see `ryo-assets`) |
 | `ParticleCollision` | `emitter_entity`, `collider_entity`, `position_x/y`, `normal_x/y`, `velocity_x/y` | a particle hits a collider (see `ryo-particles`) |
 | `UiEvent` | `node`, `name`, `action`, `kind: UiEventKind` (`Clicked`, `SecondaryClicked`, `Changed`, `Submitted`, `Dropped { source }`, `Back`, `FocusGained`, `FocusLost`) | a UI node reported something, during the UI pass, before the fixed steps (see `ryo-ui`, Nodes). A scene reads its own nodes' with `ctx.ui_events()`, which shares this message's cursor |
 | `UiListBind` | `list` (the list node), `row` (the pooled row), `index` (the item) | a UI list node gave one of its pooled rows an item (a new row, a row reused for another item, or `ctx.ui_list_refresh`), at the start of the UI pass, before any tree is drawn. The game fills the row (`ctx.ui_set(row, ..)`) in `ui`, and the row is drawn from the next frame. Every list's binds reach every scene: keep to your list's `list`. Also triggered on the row as an entity event (see `ryo-ui`, Virtual Lists) |
-| `UiReloaded` | `root: Entity`, `replaced: Option<Entity>` | a UI node tree was brought in line with its changed `.ui.ron` file (dev builds, or `ctx.assets.reload_ui`), once per root, before that frame's UI pass. `replaced` is the old root when the file gave the root a new kind, so a game holding it swaps in `root`. Nodes the file gave a new kind are new entities, so a game that filled a placeholder fills it again here (see `ryo-ui`, Files) |
+| `UiReloaded` | `root: Entity`, `replaced: Option<Entity>` | a UI node tree was brought in line with its changed `.ui.ron` file (saved while hot reload is on, debug builds with a window, or reloaded with `ctx.assets().server().reload(path)`), once per root, before that frame's UI pass. `replaced` is the old root when the file gave the root a new kind, so a game holding it swaps in `root`. Nodes the file gave a new kind are new entities, so a game that filled a placeholder fills it again here (see `ryo-ui`, Files) |
 
 ```rust
 // A coin is a trigger: who entered is `actor()`, the coin is `trigger`

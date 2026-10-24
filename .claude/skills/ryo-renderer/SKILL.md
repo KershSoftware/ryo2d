@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.0.4
+  version: 2.1.0
 ---
 
 # Ryo2D Renderer Specialist
@@ -129,9 +129,9 @@ For screen-wide effects written in WGSL, use a custom post-process effect (see C
 
 ## Draw Order
 
-Everything in the world draws on the GPU in one z-sorted list, which each camera filters by `RenderLayers` and its view: entities (`Renderable`, `CompositeTile`, shadows), world text (`Text2d`), `Scene::render` sprites (particles), parallax layers and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then world text, then sprite (`Scene::render`, parallax), then trail/line; within a kind, in submission order. Consecutive drawables with equal draw states merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top: its own camera, image and composite step (below).
+Everything in the world draws on the GPU in one z-sorted list, which each camera filters by `RenderLayers` and its view: entities (`Renderable`, `CompositeTile`, shadows), world text (`Text2d`), `Scene::render` sprites (particles), parallax layers and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then world text, then sprite (`Scene::render`, parallax), then trail/line. Within a kind, entities tie by entity index (`ecs::entity_order`), never by query order, which changes whenever an archetype is made; the other kinds go in submission order. To keep one sprite in front of another, give it a higher `z_order`. Consecutive drawables with equal draw states merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top: its own camera, image and composite step (below).
 
-Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; world text, sprites, particles and trails at the same z draw after the layer's entities. Debug shapes (`DebugDraw`, the overlays, `draw_skeleton`) are unlit on top at `i32::MAX`; the transition fade covers the world but not the UI. Nothing in the frame is drawn on the CPU (`Sprite::draw` is a CPU blit the dev windows use for their own pixel buffers).
+Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; world text, sprites, particles and trails at the same z draw after the layer's entities. Debug shapes (`DebugDraw`, the overlays, `draw_skeleton`) are unlit on top at `i32::MAX`; the transition fade covers the world but not the UI. Nothing in the frame is drawn on the CPU (`Image::draw` is a CPU blit the dev windows use for their own pixel buffers).
 
 ## The 2D Batch
 
@@ -153,7 +153,7 @@ Particles, parallax and trails default to z 0: give them an explicit z to sit be
 
 ### Texture Atlas and Fidelity
 
-Every texture the renderer draws has one `TextureId` in the `TextureRegistry` (sprites by handle, named pixel textures such as the shadow ellipse, and render targets). Sprite images are packed into shared atlas pages (2048x2048, four mip levels); each slot starts on an 8-pixel grid with an 8-pixel extruded border, so no level bleeds a neighbour. Images over 256 px get their own texture with a full mip chain. Mip levels are averaged on the CPU in linear light (weighted by alpha): by the image loader on its thread for a loaded image, else when the texture is uploaded. A large reloaded image is written into a new texture a band a frame while its old one draws, and takes its place once whole. Two samplers (nearest at level 0; trilinear) with a bind group per page each; fragment entries take the UV derivatives first and sample by gradient. UVs outside a sprite's own rect are transparent; only textured trails and lines repeat their texture, inside its slot (`sample_wrapped`). Unused entries are evicted and re-uploaded automatically. Render targets are pages of their own (`SlotPage::Target`): `Rgba16Float` textures that cameras draw into and sprites sample as linear premultiplied colour (the `*_linear` shader entries, `PageKind::Linear`); they are never evicted, and keep light above 1. Their contents are premultiplied, so `Renderable::render_target` blends `Premultiplied`. Atlas pages stay `Rgba8Unorm` raw sRGB bytes. Tint and effects run in sRGB space, quantised like the old CPU path, so opaque tinted pixels look as before; translucent overlaps blend in linear light, on the float image. Outline, glow and directional outline draw outside the sprite. Blob and contact shadows are a tinted ellipse; drop shadows are the sprite's silhouette. `DebugStats::draw_calls` counts the world draws of every camera.
+Every texture the renderer draws has one `TextureId` in the `TextureRegistry` (images by their asset id, named pixel textures such as the shadow ellipse, and render targets). The renderer holds ids, never handles, so it keeps no image alive: it takes an image's pixels by `Arc` when a frame draws it, and frees its texture on the image's `AssetEvent::Removed` (with a check against the store every 120 frames for an event a frame missed). Sprite images are packed into shared atlas pages (2048x2048, four mip levels); each slot starts on an 8-pixel grid with an 8-pixel extruded border, so no level bleeds a neighbour. Images over 256 px get their own texture with a full mip chain. Mip levels are averaged on the CPU in linear light (weighted by alpha): by the image loader on its thread for a loaded image (a small one loaded with `load_now` excepted), else when the texture is uploaded (an image made or changed in code). A large reloaded image that has a texture is written into a new texture a band of rows a frame, within `UPLOAD_BUDGET` (2 MiB a frame, shared with the frame's other image writes), while its old one draws, and takes its place at the start of a frame once whole; until then it draws and sorts at its old size. A first upload is written at once. An image that is not loaded draws a magenta-and-black checker in debug builds and nothing in release builds. Two samplers (nearest at level 0; trilinear) with a bind group per page each; fragment entries take the UV derivatives first and sample by gradient. UVs outside a sprite's own rect are transparent; only textured trails and lines repeat their texture, inside its slot (`sample_wrapped`). Unused entries are evicted and re-uploaded automatically. Render targets are pages of their own (`SlotPage::Target`): `Rgba16Float` textures that cameras draw into and sprites sample as linear premultiplied colour (the `*_linear` shader entries, `PageKind::Linear`); they are never evicted, and keep light above 1. Their contents are premultiplied, so `Renderable::render_target` blends `Premultiplied`. Atlas pages stay `Rgba8Unorm` raw sRGB bytes. Tint and effects run in sRGB space, quantised like the old CPU path, so opaque tinted pixels look as before; translucent overlaps blend in linear light, on the float image. Outline, glow and directional outline draw outside the sprite. Blob and contact shadows are a tinted ellipse; drop shadows are the sprite's silhouette. `DebugStats::draw_calls` counts the world draws of every camera.
 
 ### Resolution and the window
 
@@ -253,7 +253,7 @@ Post-process effect: see `src/core/shaders/AGENTS.md` (`effects.rs`, `post-proce
 
 ## Custom Shaders
 
-Games write WGSL; the engine wraps it with a prelude and a generated entry point (`src/core/shaders/custom.rs`). Load with `assets.load_shader("shaders/x.wgsl")` (cached by path; only IO errors are `Err`, so `match` it). `ShaderHandle::from_source(id, wgsl)` makes an inline shader and `handle.replace_source(..)` updates it. Handles with the same source share one compiled source (and one error report), so only the first compiles; the batch makes a pipeline per blend mode it is drawn with. Cloning one handle is still cheapest.
+Games write WGSL; the engine wraps it with a prelude and a generated entry point (`src/core/shaders/custom.rs`). A shader is a `Shader` asset: load a `.wgsl` file with `ctx.assets().load_now::<Shader>("shaders/x.wgsl")` (an asset path; a `Result`: a missing or unreadable file is `Err`, while WGSL mistakes are reported when it compiles), or embed one with `ctx.assets().add(Shader::from_wgsl(name, wgsl))`. A sprite or effect holds its `Handle<Shader>`, so the shader stays loaded while something uses it. Shaders with the same source share one compiled source (and one error report), so only the first compiles; the batch makes a pipeline per blend mode it is drawn with, and a source's pipelines go when the last shader of that source is freed. Changing a shader (`Assets<Shader>::get_mut`, or a reload) compiles it again for the next frame.
 
 ### Sprite shader
 
@@ -276,10 +276,10 @@ WGSL alignment applies: a `vec3<f32>` member takes 16 bytes of alignment, so `{ 
 Without a `Params` struct the engine supplies `struct Params { unused: f32 }`. The function works in the sprite's sRGB values (straight alpha); the engine applies the tint, rounding, linear conversion and premultiplication afterwards. Custom shaders draw within the sprite's quad. Shadows and tiled tiles draw plain.
 
 ```rust
-if let Ok(handle) = ctx.assets.load_shader("shaders/dissolve.wgsl") {
+if let Ok(handle) = ctx.assets().load_now::<Shader>("shaders/dissolve.wgsl") {
     // Params are set by name; a Color is sRGB/255 (rgb into a vec3, rgba into a vec4).
     let fx = SpriteShader::custom(handle).with_param("amount", 0.4).with_param("edge", Color::rgb(255, 120, 0));
-    Renderable::sprite(sprite).with_shader(fx);   // or a Material component (wins over Renderable::shader)
+    ctx.world.spawn((Transform::from_xy(200.0, 120.0), Renderable::image(sprite).with_shader(fx)));   // or a Material component (wins over Renderable::shader)
 }
 // Scene::render: gpu.add_custom_sprite(&sprite, &handle, &params, instance, SpriteDraw::default());
 ```
@@ -303,10 +303,10 @@ fn effect(in: EffectIn, params: Params) -> vec4<f32> {
 ```
 
 ```rust
-if let Ok(h) = ctx.assets.load_shader("shaders/scan.wgsl") {
+if let Ok(h) = ctx.assets().load_now::<Shader>("shaders/scan.wgsl") {
   let mut fx = ctx.effects();
-  fx.add_custom("scan", h)?;                           // Err(EffectError::DuplicateName)
-  let _ = fx.set_custom_param("scan", "strength", 0.3); // setters return false (#[must_use]) for an unknown name
+  fx.add_custom("scan", h)?;                           // Err(EffectError::DuplicateName); the effect holds the shader
+  let _ = fx.set_custom_param("scan", "strength", 0.3); // setters return false for an unknown name
   let _ = fx.set_custom_enabled("scan", false);
   fx.remove_custom("scan");                            // has_custom("scan")
 }
@@ -316,7 +316,7 @@ Custom effects run after the built-in effects of their stage, in insertion order
 
 ### Hot reload and errors
 
-In debug builds the engine watches the game's `assets/` folder and reloads changed files every frame, with nothing to call: editing a `.wgsl` file loaded with `assets.load_shader` updates the handle and the next frame rebuilds. (`assets.enable_hot_reload(dirs)` watches other folders.) A bad shader is logged once per version in the dev log as `<id>:<line>:<column>: <message>` with the line in your own file; a sprite then draws plain and an effect is skipped. Nothing panics.
+In debug builds with a window the engine watches the game's `assets/` folder, with nothing to call (`EngineBuilder::hot_reload` turns it on or off): saving a `.wgsl` file reloads the shader under the same handle about 100 ms after the last write, and the next frame compiles it. A bad shader is logged once per version in the dev log as `<name>:<line>:<column>: <message>` (the name is the asset path) with the line in your own file; a sprite then draws plain and an effect is skipped, as they are while the shader is not loaded. Nothing panics.
 
 ## Post-Processing
 

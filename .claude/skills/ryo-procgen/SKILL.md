@@ -2,7 +2,7 @@
 name: ryo-procgen
 description: The optional ryo2d-procgen crate - dungeons (BSP), caves (cellular), noise terrain, random walks, Poisson sampling, WFC and MST corridors.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Procedural Generation Specialist
@@ -351,7 +351,7 @@ const TILE: f32 = 16.0;
 
 for (x, y) in result.grid().iter_type(TileType::Wall) {
   let position = Transform::from_xy(x as f32 * TILE + TILE / 2.0, y as f32 * TILE + TILE / 2.0);
-  ctx.world.spawn((position, Renderable::sprite(wall.clone())));
+  ctx.world.spawn((position, Renderable::image(wall.clone()))); // wall: a Handle<Image>
 }
 ```
 

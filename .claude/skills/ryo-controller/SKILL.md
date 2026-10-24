@@ -2,7 +2,7 @@
 name: ryo-controller
 description: Gamepad/controller input with gilrs - buttons, sticks, triggers, actions and stick directions, pad families and button prompts, the last-used device, and scripted or headless pad input.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Gamepad/Controller Specialist
@@ -82,10 +82,10 @@ ui.text(RichText::markup("Press [prompt=jump] to jump")); // the same inside tex
 
 - `ctx.input.last_device()` is the device the player used last (`InputDevice::Keyboard`, `Mouse` or `Gamepad`): a key press, a mouse press, wheel or motion, or a pad press or stick past 0.5. Prompts follow it, and so does the UI's focus ring (shown for the keyboard and the pad only).
 - `ctx.input.pad_family()` is `PadFamily::Xbox` (the default), `PlayStation` or `Nintendo`, from the pad's name (`PadFamily::from_name`: "dualsense", "dualshock", "playstation", "sony", "ps4", "ps5"; "nintendo", "switch", "pro controller", "joy-con"). `Binding::label(family)` is what a prompt shows: South is "A" on Xbox, "×" on PlayStation, "B" on Nintendo; a stick direction is "L↑".
-- **Glyphs:** register a sprite per button in `TextIcons` under `prompt.pad.<xbox|playstation|nintendo>.<GamepadButton>` (`prompt.pad.xbox.South`), `prompt.key.<KeyCode>` (`prompt.key.Space`) or `prompt.stick.<Stick><Direction>` (`prompt.stick.LeftUp`), and prompts draw it instead of the text label.
+- **Glyphs:** register an image per button in `TextIcons` (it holds the image) under `prompt.pad.<xbox|playstation|nintendo>.<GamepadButton>` (`prompt.pad.xbox.South`), `prompt.key.<KeyCode>` (`prompt.key.Space`) or `prompt.stick.<Stick><Direction>` (`prompt.stick.LeftUp`), and prompts draw it instead of the text label.
 
 ```rust
-if let Ok(a_button) = ctx.assets.load_sprite("assets/prompts/xbox_a.png") {
+if let Ok(a_button) = ctx.assets().load_now::<Image>("prompts/xbox_a.png") { // assets/prompts/xbox_a.png
     ctx.world.resource_mut::<TextIcons>().insert("prompt.pad.xbox.South", a_button);
 }
 ```

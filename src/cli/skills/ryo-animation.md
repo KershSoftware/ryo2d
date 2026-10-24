@@ -2,7 +2,7 @@
 name: ryo-animation
 description: Sprite animations (Animator, AnimationController), tweens, knockback and squash/stretch.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Animation Specialist
@@ -41,7 +41,7 @@ let attack = Animation::with_frame_durations("attack", attack_frames, vec![0.1, 
   .with_loop_mode(LoopMode::Once);
 ```
 
-`LoopMode`: `Once` (stops on the last frame), `Loop` (default), `PingPong`, `Times(n)`. Frames are `SpriteHandle`s.
+`LoopMode`: `Once` (stops on the last frame), `Loop` (default), `PingPong`, `Times(n)`. Frames are `Handle<Image>`s (`ctx.assets().load_now::<Image>(path)` for each, or `add` for images made in code; see `ryo-assets`); the animation holds them, so they stay loaded while it lives.
 
 ### Animator: one animation
 
@@ -50,7 +50,7 @@ let coin = ctx
   .world
   .spawn((
     Transform::from_xy(100.0, 100.0),
-    Renderable::sprite(coin_frames[0].clone()),
+    Renderable::image(coin_frames[0].clone()),
     Animator::new(Animation::new("spin", coin_frames, 0.08)),
   ))
   .id();
@@ -79,7 +79,7 @@ let player = ctx
   .world
   .spawn((
     Transform::from_xy(100.0, 100.0),
-    Renderable::sprite(idle_frames[0].clone()),
+    Renderable::image(idle_frames[0].clone()),
     controller,
   ))
   .id();
@@ -133,14 +133,14 @@ use std::f32::consts::PI;
 // Move with a bounce
 ctx.world.spawn((
   Transform::from_xy(100.0, 100.0),
-  Renderable::sprite(sprite.clone()),
+  Renderable::image(sprite.clone()),
   Tween::to_position(400.0, 300.0, 2.0).with_easing(Ease::OutBounce),
 ));
 
 // Pulse forever
 ctx.world.spawn((
   Transform::from_xy(300.0, 300.0),
-  Renderable::sprite(sprite.clone()),
+  Renderable::image(sprite.clone()),
   Tween::to_scale(1.2, 1.2, 0.3)
     .with_easing(Ease::InOutSine)
     .with_loop(TweenLoop::PingPong),
@@ -149,7 +149,7 @@ ctx.world.spawn((
 // Several targets, after a delay
 ctx.world.spawn((
   Transform::IDENTITY,
-  Renderable::sprite(sprite.clone()),
+  Renderable::image(sprite.clone()),
   Tween::new(1.5)
     .to_x(200.0)
     .to_y(100.0)
@@ -211,7 +211,7 @@ for done in ctx.messages::<TweenCompleted>() {
 ```rust
 ctx.world.spawn((
   Transform::from_xy(100.0, 100.0),
-  Renderable::sprite(sprite.clone()),
+  Renderable::image(sprite.clone()),
   TweenSequence::new()
     .then(Tween::to_position(200.0, 100.0, 0.5).with_easing(Ease::OutQuad))
     .then(Tween::to_position(200.0, 50.0, 0.3))

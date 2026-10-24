@@ -2,7 +2,7 @@
 name: ryo-character
 description: Characters - the character controller, platformer and top-down movement presets, MoveIntent and key bindings, one-way platforms, triggers with pickups, kill zones, checkpoints and respawns, tile colliders and knockback.
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # Ryo2D Characters
@@ -301,9 +301,7 @@ impl Scene for Level {
     ctx.world.spawn((Transform::from_xy(400.0, 580.0), Collider::rect(800.0, 40.0)));
     ctx.world.spawn((Transform::from_xy(520.0, 500.0), Collider::rect(160.0, 12.0).one_way()));
 
-    let look = ctx
-      .assets
-      .create_sprite(Sprite::solid_rect(14, 26, 240, 240, 255, 255), "player");
+    let look = ctx.assets().add(Image::solid_rect(14, 26, 240, 240, 255, 255));
     let player = ctx
       .world
       .spawn((
@@ -320,7 +318,7 @@ impl Scene for Level {
       ))
       .id();
     // The sprite is a child, so squash and stretch leave the hitbox alone
-    self.sprite = Some(ctx.spawn_child(player, (Transform::IDENTITY, Renderable::sprite(look))));
+    self.sprite = Some(ctx.spawn_child(player, (Transform::IDENTITY, Renderable::image(look))));
     self.player = Some(player);
   }
 
@@ -579,9 +577,7 @@ struct Level {
 
 impl Scene for Level {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let coin = ctx
-      .assets
-      .create_sprite(Sprite::solid_rect(8, 8, 255, 220, 60, 255), "coin");
+    let coin = ctx.assets().add(Image::solid_rect(8, 8, 255, 220, 60, 255));
     let width = LEVEL.iter().map(|row| row.len()).max().unwrap_or(0);
     let mut cells = Vec::with_capacity(width * LEVEL.len());
     for (row, line) in LEVEL.iter().enumerate() {
@@ -599,7 +595,7 @@ impl Scene for Level {
           b'o' => {
             ctx.world.spawn((
               Transform::from_translation(at - Vec2::new(0.0, TILE / 2.0)),
-              Renderable::sprite(coin.clone()),
+              Renderable::image(coin.clone()),
               Collider::circle(5.0).as_trigger(),
               Pickup::new(),
             ));

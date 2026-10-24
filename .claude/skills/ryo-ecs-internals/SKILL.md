@@ -2,7 +2,7 @@
 name: ryo-ecs-internals
 description: Working on Ryo2D's ECS (bevy_ecs presented as ryo2d::ecs) - kernel re-exports, components, propagation, interpolation, pooling and engine systems.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D ECS Internals
@@ -32,7 +32,7 @@ src/core/ecs/
   pooling.rs         Pool, PoolConfig, PoolExhaustedPolicy, PoolStats
   components.rs      Velocity, ZLayer
   renderable.rs      Renderable, RenderStyle, DropShadow, BlobShadow, ContactShadow
-  material.rs        Material, SpriteShader, ShaderHandle, ShaderParams, ParamValue
+  material.rs        Material, SpriteShader, Shader (an asset: a game's WGSL), ShaderParams, ParamValue
   sprite_effects.rs  SpriteEffect
   y_sort.rs          YSort
   tween.rs           Tween, TweenSequence, TweenLoop, Ease
@@ -179,6 +179,8 @@ let ids: Vec<Entity> = world
 ```
 
 Building a `QueryState` is not free: in per-frame engine code prefer a system with `Query` parameters, or keep the state.
+
+A query visits archetypes in an order that changes whenever an archetype is made, and every resource is an entity with an archetype of its own, so adding any resource can reorder a query's results. Wherever an order shows (draw-order ties, physics registration, the order of messages), sort by `ecs::entity_order` (entity index), never by a query's or a hash set's order. Index order is spawn order only for entities spawned fresh: bevy gives a despawned entity's index to a later spawn.
 
 ## Checks
 

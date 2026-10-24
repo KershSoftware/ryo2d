@@ -46,6 +46,11 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
     include_str!("../skills/ryo-api.md"),
   ),
   (
+    "ryo-assets",
+    "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker.",
+    include_str!("../skills/ryo-assets.md"),
+  ),
+  (
     "ryo-audio",
     "Sound effects and music with Kira audio backend.",
     include_str!("../skills/ryo-audio.md"),
