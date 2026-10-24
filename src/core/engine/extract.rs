@@ -106,6 +106,9 @@ impl Engine {
     let shaders = shaders_of(&self.world);
     gpu.sync_shaders(&self.freed_shaders, shaders);
     rend.sync_shaders(&self.freed_shaders, shaders);
+    // New versions of shaders already drawn, made off the main thread, take
+    // over before anything draws
+    batch.sync_shaders(rend.device(), &mut gpu);
     // Faces freed or changed since the last frame lose their glyphs, before
     // any text is drawn
     if let Some(fonts) = self.world.get_resource::<Fonts>() {

@@ -47,6 +47,7 @@
 
 // Consumed by the sprite and effect pipelines
 pub(crate) mod cache;
+pub(crate) mod compile;
 pub(crate) mod compose;
 pub(crate) mod custom;
 mod effects;

@@ -102,6 +102,30 @@ fn render(engine: &mut HeadlessEngine) -> image::RgbaImage {
   engine.frame().unwrap()
 }
 
+/// Steps until `done` holds of the last frame (five seconds at most),
+/// calling `each` with every frame before it: a shader drawn already
+/// compiles a new version on a thread of its own while the old one draws
+fn step_until(
+  engine: &mut HeadlessEngine,
+  mut each: impl FnMut(&image::RgbaImage),
+  done: impl Fn(&image::RgbaImage) -> bool,
+) {
+  let start = std::time::Instant::now();
+  loop {
+    engine.step().unwrap();
+    let frame = engine.frame().unwrap();
+    if done(&frame) {
+      return;
+    }
+    each(&frame);
+    assert!(
+      start.elapsed() < std::time::Duration::from_secs(5),
+      "it never came"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1));
+  }
+}
+
 #[test]
 fn custom_shader_inverts_its_sprite() {
   let scene = Fixture::entities(move |ctx| {
@@ -368,7 +392,7 @@ fn broken_sprite_shader_falls_back() {
 }
 
 #[test]
-fn replaced_source_changes_the_next_frame() {
+fn a_replaced_source_draws_once_it_is_compiled() {
   let slot = ShaderSlot::default();
   let added = slot.clone();
   let scene = Fixture::entities(move |ctx| {
@@ -390,7 +414,16 @@ fn replaced_source_changes_the_next_frame() {
   let replaced = Shader::from_wgsl("t2-replace.wgsl", INVERT);
   *engine.assets().get_mut(&held(&slot)).unwrap() = replaced;
 
-  assert_eq!(render(&mut engine).get_pixel(15, 15).0, [35, 225, 215, 255]);
+  // The old source draws until the new one's pipeline is made
+  step_until(
+    &mut engine,
+    |frame| assert_eq!(frame.get_pixel(15, 15).0, RED, "the old source"),
+    |frame| frame.get_pixel(15, 15).0 != RED,
+  );
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(15, 15).0,
+    [35, 225, 215, 255]
+  );
 }
 
 #[test]
@@ -836,10 +869,15 @@ fn a_reloaded_shader_recompiles() {
     engine.step().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
   }
-  // The new version compiles at once; its pipeline is usable once the
-  // GPU's check comes back, a frame later
+  // The identity draws until the new version's pipeline is made, on a
+  // thread of its own; then the new one
+  step_until(
+    &mut engine,
+    |frame| assert_eq!(frame.get_pixel(15, 15).0, RED, "the identity meanwhile"),
+    |frame| frame.get_pixel(15, 15).0 != RED,
+  );
   assert_eq!(
-    render(&mut engine).get_pixel(15, 15).0,
+    engine.frame().unwrap().get_pixel(15, 15).0,
     INVERTED,
     "drawn with the reloaded source"
   );
@@ -1114,7 +1152,19 @@ fn a_shader_changed_in_code_that_does_not_compile_draws_its_last_good_version() 
   assert_eq!(render(&mut engine).get_pixel(15, 15).0, INVERTED);
   let broken = Shader::from_wgsl(name, BROKEN_SPRITE);
   *engine.assets().get_mut(&held(&slot)).unwrap() = broken;
-  for _ in 0..4 {
+  // Compiled on the shader thread, it fails there
+  step_until(
+    &mut engine,
+    |frame| {
+      assert_eq!(
+        frame.get_pixel(15, 15).0,
+        INVERTED,
+        "its last good version draws"
+      )
+    },
+    |_| !logged(name).is_empty(),
+  );
+  for _ in 0..3 {
     engine.step().unwrap();
     assert_eq!(
       engine.frame().unwrap().get_pixel(15, 15).0,
@@ -1142,8 +1192,18 @@ fn a_shader_the_gpu_rejects_draws_its_last_good_version() {
   assert_eq!(render(&mut engine).get_pixel(15, 15).0, INVERTED);
   let rejected = Shader::from_wgsl(name, REJECTED_SPRITE);
   *engine.assets().get_mut(&held(&slot)).unwrap() = rejected;
-  // Its pipeline is made and checked, then the check comes back
-  engine.step_frames(3).unwrap();
+  // Its pipeline is made and checked on the shader thread, which comes back
+  step_until(
+    &mut engine,
+    |frame| {
+      assert_eq!(
+        frame.get_pixel(15, 15).0,
+        INVERTED,
+        "its last good version draws"
+      )
+    },
+    |_| !logged(name).is_empty(),
+  );
   for _ in 0..3 {
     engine.step().unwrap();
     assert_eq!(
@@ -1178,7 +1238,11 @@ fn an_effect_the_gpu_rejects_runs_its_last_good_version() {
   assert!(grey(&render(&mut engine)), "the effect runs");
   let rejected = Shader::from_wgsl(name, REJECTED_EFFECT);
   *engine.assets().get_mut(&held(&slot)).unwrap() = rejected;
-  engine.step_frames(3).unwrap();
+  step_until(
+    &mut engine,
+    |frame| assert!(grey(frame), "its last good version runs"),
+    |_| !logged(name).is_empty(),
+  );
   for _ in 0..3 {
     engine.step().unwrap();
     assert!(grey(&engine.frame().unwrap()), "its last good version runs");

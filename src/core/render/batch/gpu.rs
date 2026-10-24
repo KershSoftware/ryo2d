@@ -3,6 +3,7 @@
 //! draw with.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
@@ -18,6 +19,8 @@ use crate::core::graphics::{
   AtlasSlot, Presentation, SlotPage, SpriteGpuRenderer, SpriteInstance, TextureId, place_in_slot,
 };
 use crate::core::render::{CameraDraw, DrawItem, DrawList, DrawPayload, SpriteShading};
+use crate::core::shaders::compile::{self, Compiler};
+use crate::core::shaders::custom::{CompiledShader, ShaderError, ShaderKind};
 
 /// Instances, vertices and indices the buffers hold at first; each doubles
 /// when a frame needs more.
@@ -44,6 +47,19 @@ pub(crate) struct Batch2D {
   triangles: Triangles,
   vertices: GrowingBuffer,
   indices: GrowingBuffer,
+  // Makes the new versions of game sprite shaders already drawn, while the
+  // old ones draw
+  compiler: Compiler<SpriteCompiled>,
+}
+
+/// What the shader thread made of a game sprite shader's new version
+struct SpriteCompiled {
+  /// Its name, which labels what is made from it
+  name: String,
+  compiled: Result<Arc<CompiledShader>, ShaderError>,
+  /// Its pipelines by key, or the GPU's message rejecting them (none if it
+  /// does not compile)
+  pipelines: Result<Vec<(PipelineKey, wgpu::RenderPipeline)>, String>,
 }
 
 /// A GPU buffer that doubles when a frame needs more.
@@ -129,7 +145,114 @@ impl Batch2D {
         std::mem::size_of::<u32>(),
         wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
       ),
+      compiler: Compiler::new(),
     }
+  }
+
+  /// Game sprite shaders' new versions made off the main thread take over,
+  /// before anything draws: the pipelines that came back are taken in, and
+  /// each shader waiting for a version moves to it once every pipeline its
+  /// old one has is made for it (or the new one failed: it draws its last
+  /// good version). Then the next version wanted is sent. Call once a
+  /// frame, before the frame's sprites are gathered
+  pub(crate) fn sync_shaders(&mut self, device: &wgpu::Device, textures: &mut SpriteGpuRenderer) {
+    if !self.compiler.busy() && !textures.custom_shaders_waiting() {
+      return;
+    }
+    if let Some((key, done)) = self.compiler.finished() {
+      match done {
+        Some(done) => {
+          let outcome = done.pipelines.map(|made| {
+            // Not for a version saved over meanwhile, or a shader freed
+            if textures.custom_shader_in_use(key) {
+              for (pipeline_key, pipeline) in made {
+                self
+                  .pipelines
+                  .take_made(pipeline_key, pipeline, &done.name, key);
+              }
+            }
+          });
+          textures.custom_shader_landed(key, &done.name, done.compiled, outcome);
+        }
+        None => textures.custom_shader_panicked(key),
+      }
+    }
+    let pipelines = &self.pipelines;
+    textures.advance_custom_shaders(|next, _, drawn| {
+      pipelines.custom_keys(drawn).all(|key| {
+        pipelines
+          .get(&PipelineKey {
+            shader: BatchShader::Custom(next),
+            ..key
+          })
+          .is_some()
+      })
+    });
+    self.compile_next(device, textures);
+  }
+
+  /// Sends the next new version a game sprite shader waits for to the
+  /// shader thread, unless one is out: the pipelines the source it draws
+  /// meanwhile has that the new one lacks, made from its compiled source
+  fn compile_next(&mut self, device: &wgpu::Device, textures: &SpriteGpuRenderer) {
+    if self.compiler.busy() || !textures.custom_shaders_waiting() {
+      return;
+    }
+    let pipelines = &self.pipelines;
+    let job = textures.wanted_custom_shaders().find_map(|wanted| {
+      if wanted.compiled.is_some_and(|source| source.failed()) {
+        return None;
+      }
+      let keys: Vec<PipelineKey> = pipelines
+        .custom_keys(wanted.drawn)
+        .map(|key| PipelineKey {
+          shader: BatchShader::Custom(wanted.key),
+          ..key
+        })
+        .filter(|key| !pipelines.made(key))
+        .collect();
+      // A source no shader compiled yet comes back even with nothing to
+      // make, so its shaders can move to it
+      (!keys.is_empty() || wanted.compiled.is_none())
+        .then(|| (wanted.key, wanted.shader.clone(), keys))
+    });
+    let Some((key, shader, keys)) = job else {
+      return;
+    };
+    let (device, layout) = (device.clone(), self.pipelines.custom_layout().clone());
+    self.compiler.start(key, move || {
+      let compiled = shader.compiled(ShaderKind::Sprite).clone();
+      let pipelines = match &compiled {
+        Ok(ready) => compile::checked(&device, || {
+          let module = pipelines::custom_module(&device, shader.name(), &ready.wgsl);
+          keys
+            .iter()
+            .map(|&key| {
+              let made = pipelines::custom_pipeline(&device, &layout, shader.name(), &module, key);
+              (key, made)
+            })
+            .collect()
+        }),
+        Err(_) => Ok(Vec::new()),
+      };
+      SpriteCompiled {
+        name: shader.name().to_string(),
+        compiled,
+        pipelines,
+      }
+    });
+  }
+
+  /// The shader thread's gate (tests)
+  #[cfg(test)]
+  pub(crate) fn compile_gate(&self) -> Arc<compile::CompileGate> {
+    self.compiler.gate()
+  }
+
+  /// Compiles sent to the shader thread, and whether one is out (tests)
+  #[cfg(test)]
+  pub(crate) fn compiles(&self) -> (usize, bool) {
+    (self.compiler.started(), self.compiler.busy())
   }
 
   /// The frame's trail and line triangles, for gathering them (clear first).
@@ -409,6 +532,9 @@ impl Batch2D {
     self.vertices.write(device, queue, vertices);
     let indices = bytemuck::cast_slice(&triangles.indices);
     self.indices.write(device, queue, indices);
+    // A new version this frame's sprites found waits for its pipelines,
+    // made for what was made this frame: sent now, it starts a frame sooner
+    self.compile_next(device, textures);
   }
 
   /// The draws [`prepare`](Self::prepare) laid out for `camera`, in order:

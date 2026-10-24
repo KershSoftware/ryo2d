@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.1.4
+  version: 1.1.5
 ---
 
 # Ryo2D Assets
@@ -213,6 +213,7 @@ let heart = ctx.assets().load_now_with::<Image, _>("icons/heart.svg", fit);
 In debug builds with a window the engine watches `assets/`: a saved file reloads under the same handle about 100 ms after its last write, so whatever draws it changes in place, with nothing to call. Release and headless builds do not watch; `EngineBuilder::hot_reload(true)` turns watching on in any build, and `false` turns it off.
 
 - A reload keeps the asset's id and moves its version on: an image's texture uploads again, trees from a `.ui.ron` file are brought in line (`UiReloaded`), a followed theme applies again, a shader compiles again, text in a font lays out again.
+- **A saved shader keeps drawing its last version until the new one is compiled.** A shader already drawn compiles its new version on a thread of the renderer's own (about 70 to 130 ms of GPU compile on Metal for new WGSL) and draws it from the start of the frame after, so a save costs no frame time and nothing draws plain meanwhile. A shader first drawn after the save, or one with no version that ever drew, compiles in its first frame. On the web there are no threads to compile on, so there the next frame compiles it.
 - The assets that hold a reloaded one are checked again: a UI file importing the saved file, a theme whose skin image changed, a bitmap font whose sheet did.
 - A reload that fails (a typo in a file) keeps the last good value and warns once, naming the file and, where its format gives one, the line and column: ``could not load "shaders/glow.wgsl": 16:3: expected `;`, found "let"``. Fix the file and save again. A shader is compiled as its file loads, so a `.wgsl` file that does not compile fails as any other file does. A removed file keeps its asset as it was.
 - `ctx.assets().server().reload(path)` asks for the same reload by hand (a headless test, a console command).

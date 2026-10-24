@@ -574,6 +574,36 @@ impl HeadlessEngine {
     self.engine.shader_reload_pending(id)
   }
 
+  /// Holds the next compile on every shader thread until released, or
+  /// releases them (tests of what draws while a new version compiles)
+  #[cfg(test)]
+  pub(crate) fn hold_shader_compiles(&mut self, hold: bool) {
+    for gate in self.engine.shader_compile_gates() {
+      gate.hold(hold);
+    }
+  }
+
+  /// The shader threads' gates, to release them once the engine is gone
+  /// (tests)
+  #[cfg(test)]
+  pub(crate) fn shader_compile_gates(
+    &self,
+  ) -> Vec<std::sync::Arc<crate::core::shaders::compile::CompileGate>> {
+    self.engine.shader_compile_gates()
+  }
+
+  /// Compiles sent to the shader threads so far (tests)
+  #[cfg(test)]
+  pub(crate) fn shader_compiles_started(&self) -> usize {
+    self.engine.shader_compiles().0
+  }
+
+  /// Compiles out on the shader threads (tests)
+  #[cfg(test)]
+  pub(crate) fn shader_compiles_out(&self) -> usize {
+    self.engine.shader_compiles().1
+  }
+
   /// How many glyphs of `font` the glyph atlas holds (tests that watch a
   /// freed font's glyphs go)
   #[doc(hidden)]

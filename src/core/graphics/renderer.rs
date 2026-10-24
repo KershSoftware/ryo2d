@@ -733,14 +733,19 @@ impl WgpuRenderer {
 
   /// Bring both effect stages' custom effects in line with the shader
   /// store: the shaders freed since the last frame (`removed`) go at once,
-  /// with their pipelines. Call once a frame
+  /// with their pipelines, and new versions made off the main thread take
+  /// over. Call once a frame, before anything draws
   pub(crate) fn sync_shaders(
     &mut self,
     removed: &[crate::core::asset::AssetId<crate::core::ecs::Shader>],
     shaders: &crate::core::asset::Assets<crate::core::ecs::Shader>,
   ) {
-    self.hdr_effects.sync_shaders(removed, shaders);
-    self.display_effects.sync_shaders(removed, shaders);
+    self
+      .hdr_effects
+      .sync_shaders(&self.device, removed, shaders);
+    self
+      .display_effects
+      .sync_shaders(&self.device, removed, shaders);
   }
 
   /// Whether the effect shader `id` waits to run at its current version in
@@ -752,6 +757,26 @@ impl WgpuRenderer {
     shaders: &crate::core::asset::Assets<crate::core::ecs::Shader>,
   ) -> bool {
     self.hdr_effects.custom_pending(id, shaders) || self.display_effects.custom_pending(id, shaders)
+  }
+
+  /// Both effect stages' shader threads' gates (tests)
+  #[cfg(test)]
+  pub(crate) fn compile_gates(&self) -> [Arc<crate::core::shaders::compile::CompileGate>; 2] {
+    [
+      self.hdr_effects.compile_gate(),
+      self.display_effects.compile_gate(),
+    ]
+  }
+
+  /// Compiles sent to both effect stages' shader threads, and how many are
+  /// out (tests)
+  #[cfg(test)]
+  pub(crate) fn effect_compiles(&self) -> (usize, usize) {
+    let (hdr, display) = (self.hdr_effects.compiles(), self.display_effects.compiles());
+    (
+      hdr.0 + display.0,
+      usize::from(hdr.1) + usize::from(display.1),
+    )
   }
 
   /// How many pipelines the custom effects of both stages have (tests)

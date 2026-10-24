@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.9.3
+  version: 2.9.4
 ---
 
 # Ryo2D API Reference
@@ -201,7 +201,7 @@ Shadows (all `Default`, builder style):
 
 - `enum SpriteShader { BuiltIn(SpriteEffect), Custom { shader: Handle<Shader>, params: ShaderParams } }` (the sprite holds its shader); also `as_builtin()`, `shader_handle() -> Option<&Handle<Shader>>`, `params()`, `params_mut()`.
 - `enum SpriteEffect { Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline }` with the constructors above plus `glow_with_intensity`, `hit_flash`, `full_grayscale`; `is_animated()`, `update(dt) -> bool` (advances a `Wave`'s phase; the engine does not call it), `apply_cpu(..)`.
-- `Shader` (an asset): `from_wgsl(name, source)` (`name` is what its errors are reported under), `name()`, `source()`. Load one from a `.wgsl` file with `ctx.assets().load_now::<Shader>(path)` (named by its asset path) or embed one with `ctx.assets().add(Shader::from_wgsl(..))`; a reload or a `get_mut` compiles it again for the next frame, and shaders with equal sources compile once. `ShaderLoader` compiles the file as it loads (as a sprite shader if it defines `fn sprite`, an effect if `fn effect`), so WGSL that does not compile is `AssetError::Decode` at its line and column, and a broken save is `ReloadFailed`, keeping the last good shader. A version that fails in the renderer anyway (made in code, or a pipeline the GPU rejects) draws the last version the GPU accepted, warned once per version.
+- `Shader` (an asset): `from_wgsl(name, source)` (`name` is what its errors are reported under), `name()`, `source()`. Load one from a `.wgsl` file with `ctx.assets().load_now::<Shader>(path)` (named by its asset path) or embed one with `ctx.assets().add(Shader::from_wgsl(..))`; a reload or a `get_mut` compiles it again (a shader already drawn keeps drawing while its new version compiles off the main thread, then draws it from the start of a frame), and shaders with equal sources compile once. `ShaderLoader` compiles the file as it loads (as a sprite shader if it defines `fn sprite`, an effect if `fn effect`), so WGSL that does not compile is `AssetError::Decode` at its line and column, and a broken save is `ReloadFailed`, keeping the last good shader. A version that fails in the renderer anyway (made in code, or a pipeline the GPU rejects) draws the last version the GPU accepted, warned once per version.
 - `ShaderParams`: `new()`, `set(name, value) -> &mut Self`, `with(name, value) -> Self`, `get(name) -> Option<ParamValue>`. `enum ParamValue { F32, Vec2, Vec3, Vec4, Color }`, `From<f32 | Vec2 | Vec3 | Vec4 | Color>` (a `Color` is sRGB bytes divided by 255, not linear).
 - A custom sprite shader's time input is game time (it stops with pause and slows with speed).
 

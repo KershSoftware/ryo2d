@@ -3,8 +3,11 @@
 //! Manages GPU resources for rendering post-processing effects.
 //! Uses ping-pong buffers for effect chaining.
 
+use std::sync::Arc;
+
 use super::cache::ShaderCache;
-use super::custom::{CompiledShader, ShaderKind};
+use super::compile::{self, Compiler};
+use super::custom::{CompiledShader, ShaderError, ShaderKind};
 use super::effects::{EffectParams, GodRaysParams, PostProcessEffect};
 use super::manager::CustomEffect;
 use super::post_process_shaders;
@@ -95,6 +98,19 @@ struct CustomEffectPipelines {
   /// The effects' shaders, and each source's pipeline while an effect uses it
   /// (pending until the GPU's check comes back; a failed one is not rebuilt)
   cache: ShaderCache<Checked<wgpu::RenderPipeline>>,
+  /// Makes the new versions of effects that already run, while the old
+  /// ones run
+  compiler: Compiler<EffectCompiled>,
+}
+
+/// What the shader thread made of an effect's new version
+struct EffectCompiled {
+  /// Its name, which labels what is made from it
+  name: String,
+  compiled: Result<Arc<CompiledShader>, ShaderError>,
+  /// Its pipeline, or the GPU's message rejecting it; none if it does not
+  /// compile
+  pipeline: Option<Result<wgpu::RenderPipeline, String>>,
 }
 
 impl CustomEffectPipelines {
@@ -142,6 +158,7 @@ impl CustomEffectPipelines {
       pipeline_layout,
       format,
       cache: ShaderCache::new(ShaderKind::Effect),
+      compiler: Compiler::new(),
     }
   }
 
@@ -172,8 +189,16 @@ impl CustomEffectPipelines {
 
   /// Forget the effect shaders freed since the last frame (`removed`) at
   /// once, with the pipelines no effect uses any more; now and then check
-  /// every one against `shaders`, and forget unused compiled sources.
-  fn sync(&mut self, removed: &[AssetId<Shader>], shaders: &Assets<Shader>, frame: u64) {
+  /// every one against `shaders`, and forget unused compiled sources. Then
+  /// the new versions made off the main thread take over, before anything
+  /// runs, and the next one wanted is sent
+  fn sync(
+    &mut self,
+    device: &wgpu::Device,
+    removed: &[AssetId<Shader>],
+    shaders: &Assets<Shader>,
+    frame: u64,
+  ) {
     for &shader in removed {
       self.cache.remove(shader);
     }
@@ -181,6 +206,74 @@ impl CustomEffectPipelines {
       self.cache.sweep(shaders);
       self.cache.prune(frame, CUSTOM_EFFECT_TTL);
     }
+    self.take_compiled();
+    self.compile_next(device);
+  }
+
+  /// Takes in the new version the shader thread made, if one came back,
+  /// and moves the effects waiting for a version to it once its pipeline
+  /// is made (or it failed: they run their last good version)
+  fn take_compiled(&mut self) {
+    if !self.compiler.busy() && !self.cache.waiting() {
+      return;
+    }
+    if let Some((key, done)) = self.compiler.finished() {
+      match done {
+        Some(done) => {
+          let (made, outcome) = match done.pipeline {
+            Some(Ok(pipeline)) => (Some(Checked::Ready(pipeline)), Ok(())),
+            Some(Err(message)) => (None, Err(message)),
+            None => (None, Ok(())),
+          };
+          self
+            .cache
+            .landed(key, &done.name, done.compiled, made, outcome);
+        }
+        None => self.cache.panicked(key),
+      }
+    }
+    self.cache.advance(|_, source, _| {
+      source
+        .made
+        .as_ref()
+        .is_some_and(|made| made.ready().is_some())
+    });
+  }
+
+  /// Sends the next new version an effect waits for to the shader thread,
+  /// unless one is out: its pipeline is made there from its compiled source
+  fn compile_next(&mut self, device: &wgpu::Device) {
+    if self.compiler.busy() || !self.cache.waiting() {
+      return;
+    }
+    // Not one made already or being checked (a shader of its text was
+    // compiled at once), nor one that failed
+    let Some((key, shader)) = self
+      .cache
+      .wanted()
+      .find(|wanted| {
+        wanted
+          .compiled
+          .is_none_or(|source| source.made.is_none() && !source.failed())
+      })
+      .map(|wanted| (wanted.key, wanted.shader.clone()))
+    else {
+      return;
+    };
+    let (device, layout, format) = (device.clone(), self.pipeline_layout.clone(), self.format);
+    self.compiler.start(key, move || {
+      let compiled = shader.compiled(ShaderKind::Effect).clone();
+      let pipeline = compiled.as_ref().ok().map(|ready| {
+        compile::checked(&device, || {
+          effect_pipeline(&device, &layout, format, shader.name(), ready)
+        })
+      });
+      EffectCompiled {
+        name: shader.name().to_string(),
+        compiled,
+        pipeline,
+      }
+    });
   }
 
   /// Settle pipelines whose GPU checks have come back: an effect whose
@@ -224,11 +317,25 @@ fn build(
   compiled: &CompiledShader,
 ) -> Checked<wgpu::RenderPipeline> {
   let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let pipeline = effect_pipeline(device, layout, format, name, compiled);
+  // Anything naga accepted but the device rejects is found by a later
+  // frame's `settle`, without waiting on the GPU here
+  Checked::pending(pipeline, scope)
+}
+
+/// The pipeline drawing a compiled game effect into `format`
+fn effect_pipeline(
+  device: &wgpu::Device,
+  layout: &wgpu::PipelineLayout,
+  format: wgpu::TextureFormat,
+  name: &str,
+  compiled: &CompiledShader,
+) -> wgpu::RenderPipeline {
   let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
     label: Some(name),
     source: wgpu::ShaderSource::Wgsl(compiled.wgsl.as_str().into()),
   });
-  let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+  device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
     label: Some(name),
     layout: Some(layout),
     vertex: wgpu::VertexState {
@@ -255,10 +362,7 @@ fn build(
     multisample: wgpu::MultisampleState::default(),
     multiview_mask: None,
     cache: None,
-  });
-  // Anything naga accepted but the device rejects is found by a later
-  // frame's `settle`, without waiting on the GPU here
-  Checked::pending(pipeline, scope)
+  })
 }
 
 /// The game's effects a chain runs, in order, and the store their shaders
@@ -844,16 +948,27 @@ impl PostProcessPipeline {
       }
       use_a_as_input = !use_a_as_input;
     }
+    // A new version this frame found waits for its pipeline: sent now, it
+    // starts a frame sooner
+    self.custom.compile_next(device);
     use_a_as_input
   }
 
   /// Bring the custom effects in line with the shader store: the shaders
   /// freed since the last frame (`removed`, from `AssetEvent::Removed`) are
-  /// forgotten at once, with the pipelines no effect uses any more. Call
-  /// once a frame, whether or not effects run
-  pub(crate) fn sync_shaders(&mut self, removed: &[AssetId<Shader>], shaders: &Assets<Shader>) {
+  /// forgotten at once, with the pipelines no effect uses any more, and the
+  /// new versions made off the main thread take over. Call once a frame,
+  /// whether or not effects run, before any runs
+  pub(crate) fn sync_shaders(
+    &mut self,
+    device: &wgpu::Device,
+    removed: &[AssetId<Shader>],
+    shaders: &Assets<Shader>,
+  ) {
     self.custom_frame += 1;
-    self.custom.sync(removed, shaders, self.custom_frame);
+    self
+      .custom
+      .sync(device, removed, shaders, self.custom_frame);
   }
 
   /// Whether the effect shader `id` waits to run at its current version
@@ -861,6 +976,19 @@ impl PostProcessPipeline {
   #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
   pub(crate) fn custom_pending(&self, id: AssetId<Shader>, shaders: &Assets<Shader>) -> bool {
     self.custom.cache.pending(id, shaders)
+  }
+
+  /// The custom effects' shader thread's gate (tests)
+  #[cfg(test)]
+  pub(crate) fn compile_gate(&self) -> Arc<compile::CompileGate> {
+    self.custom.compiler.gate()
+  }
+
+  /// Compiles sent to the custom effects' shader thread, and whether one
+  /// is out (tests)
+  #[cfg(test)]
+  pub(crate) fn compiles(&self) -> (usize, bool) {
+    (self.custom.compiler.started(), self.custom.compiler.busy())
   }
 
   /// How many pipelines the custom effects have (tests that watch them go)
@@ -1431,9 +1559,9 @@ mod tests {
     assert!(keys[0].is_some());
     assert!(keys.iter().all(|k| *k == keys[0]), "{keys:?}");
     assert_eq!(effects.pipeline_count(), 1, "one pipeline for the source");
-    effects.sync(&ids[..2], &shaders, 1);
+    effects.sync(&device, &ids[..2], &shaders, 1);
     assert_eq!(effects.pipeline_count(), 1, "an effect still runs it");
-    effects.sync(&ids[2..], &shaders, 1);
+    effects.sync(&device, &ids[2..], &shaders, 1);
     assert_eq!(effects.pipeline_count(), 0, "gone with its last shader");
     assert!(keys[0].is_some_and(|key| effects.pipeline(key).is_none()));
   }

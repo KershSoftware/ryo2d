@@ -1,10 +1,18 @@
 //! Game shaders as one renderer keeps them: an entry per shader, by id, for
-//! the version it was last prepared at, pointing at that version's source,
-//! compiled once for every shader with the same text.
+//! the version it draws, pointing at that version's source, compiled once
+//! for every shader with the same text.
 //!
 //! - A shader that is not loaded (not yet, failed, or freed) has no entry and
 //!   is drawn as one that failed to compile: a sprite plain, an effect
 //!   skipped. Its load error is the asset server's to report.
+//! - A shader drawn with a pipeline the GPU accepted keeps drawing it when
+//!   its version moves on: the new version waits (`Entry::next`) while the
+//!   renderer makes its pipelines on the shader thread (`compile.rs`), and
+//!   takes over once they are made (`advance`, at the start of a frame).
+//!   The renderer sends one version at a time (`wanted`); one saved over
+//!   while it compiles, or whose shader is freed, is dropped when it comes
+//!   back (`landed`). A shader with no such pipeline compiles at once, as
+//!   does every shader on the web (no threads).
 //! - A version that does not compile, or whose pipeline the GPU rejects,
 //!   draws the shader's last version the GPU accepted, kept until a newer
 //!   one is accepted; with none, it draws as one that is not loaded. It is
@@ -12,20 +20,22 @@
 //!   about a file that does not load (`could not load "name": line:column:
 //!   message`).
 //! - A freed shader's entry goes at once (`remove`). A source no shader uses
-//!   any more drops what the renderer made from it (an effect's pipeline), and
-//!   the batch drops a sprite shader's pipelines in the same frame
-//!   (`in_use`). The source itself stays for a while (`prune`), so a shader
-//!   of the same text added again is not compiled again.
+//!   or waits for drops what the renderer made from it (an effect's
+//!   pipeline), and the batch drops a sprite shader's pipelines in the same
+//!   frame (`in_use`). The source itself stays for a while (`prune`), so a
+//!   shader of the same text added again is not compiled again.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use super::compile::OFF_THREAD;
 use super::custom::{self, CompiledShader, ShaderError, ShaderKind};
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::{Shader, ShaderParams};
 
 /// What the cache knows of one shader
 struct Entry {
-  /// The content version it was last prepared at
+  /// The content version of `source`
   version: u64,
   /// That version's source, in [`ShaderCache::sources`]
   source: u64,
@@ -37,6 +47,9 @@ struct Entry {
   drawn: u64,
   /// `source` failed and that is not warned about yet
   unwarned: bool,
+  /// A newer version whose pipelines are being made off the main thread,
+  /// while `drawn` draws
+  next: Option<Next>,
 }
 
 impl Entry {
@@ -47,11 +60,20 @@ impl Entry {
   }
 }
 
+/// A shader's newer version, waiting for its pipelines
+struct Next {
+  version: u64,
+  /// Its source key
+  key: u64,
+  /// The value, which the job making its pipelines compiles
+  shader: Shader,
+}
+
 /// One source text compiled, shared by every shader with that text
 pub(crate) struct Compiled<P> {
   /// The composed WGSL and its `Params` layout, or why it failed (a failed
   /// source is not compiled again)
-  pub(crate) shader: Result<CompiledShader, ShaderError>,
+  pub(crate) shader: Result<Arc<CompiledShader>, ShaderError>,
   /// The first shader's name, which labels what is made from it
   pub(crate) name: String,
   /// What the renderer made from it (an effect's pipeline), dropped with
@@ -68,8 +90,21 @@ pub(crate) struct Compiled<P> {
 }
 
 impl<P> Compiled<P> {
+  /// A source as `shader` compiles, nothing made from it yet
+  fn new(shader: Result<Arc<CompiledShader>, ShaderError>, name: &str) -> Self {
+    Self {
+      shader,
+      name: name.to_string(),
+      made: None,
+      last_used: 0,
+      users: 0,
+      accepted: false,
+      rejected: None,
+    }
+  }
+
   /// Whether it cannot be drawn: it does not compile, or the GPU rejected it
-  fn failed(&self) -> bool {
+  pub(crate) fn failed(&self) -> bool {
     self.shader.is_err() || self.rejected.is_some()
   }
 
@@ -93,6 +128,19 @@ impl<P> Compiled<P> {
   }
 }
 
+/// A newer version a shader waits for (from [`ShaderCache::wanted`])
+pub(crate) struct Wanted<'a, P> {
+  /// Its source key
+  pub(crate) key: u64,
+  /// The source the shader draws meanwhile: the new one is made for what
+  /// was made for this one
+  pub(crate) drawn: u64,
+  /// The value, to compile
+  pub(crate) shader: &'a Shader,
+  /// The source, when a shader of its text has it compiled already
+  pub(crate) compiled: Option<&'a Compiled<P>>,
+}
+
 /// Game shaders of one kind, by id, for one renderer
 pub(crate) struct ShaderCache<P> {
   kind: ShaderKind,
@@ -101,23 +149,37 @@ pub(crate) struct ShaderCache<P> {
   sources: HashMap<u64, Compiled<P>>,
   /// Parameter names already warned about, by shader and version
   warned: HashMap<(AssetId<Shader>, u64), HashSet<String>>,
+  /// How many entries wait for each source key (`Entry::next`)
+  waiting: HashMap<u64, usize>,
+  /// Whether a shader drawn with a pipeline the GPU accepted waits for its
+  /// new version's pipelines, made off the main thread, rather than
+  /// compiling it at once
+  off_thread: bool,
 }
 
 impl<P> ShaderCache<P> {
   pub(crate) fn new(kind: ShaderKind) -> Self {
+    Self::with_threads(kind, OFF_THREAD)
+  }
+
+  /// A cache whose new versions compile off the main thread, or at once
+  pub(crate) fn with_threads(kind: ShaderKind, off_thread: bool) -> Self {
     Self {
       kind,
       entries: HashMap::new(),
       sources: HashMap::new(),
       warned: HashMap::new(),
+      waiting: HashMap::new(),
+      off_thread,
     }
   }
 
   /// The source key `id` draws with now and its compiled source: its
   /// current version's, compiled on first use and when the shader's version
   /// moves on, or, while that one has failed, the last one the GPU accepted
-  /// (the failure warned about once per version). `None` while `id` is not
-  /// loaded in `shaders`
+  /// (the failure warned about once per version). A shader drawn with a
+  /// pipeline the GPU accepted keeps drawing it while its newer version
+  /// waits for its pipelines. `None` while `id` is not loaded in `shaders`
   pub(crate) fn prepare(
     &mut self,
     id: AssetId<Shader>,
@@ -128,9 +190,17 @@ impl<P> ShaderCache<P> {
     // This runs for every custom sprite of every frame: the source is
     // hashed only when the version moves on
     let entry = match self.entries.get_mut(&id) {
-      Some(entry) if entry.version == version => entry,
+      Some(entry)
+        if entry.version == version
+          || entry
+            .next
+            .as_ref()
+            .is_some_and(|next| next.version == version) =>
+      {
+        entry
+      }
       _ => {
-        self.refresh(id, shaders.get(id)?, version);
+        self.update(id, shaders.get(id)?, version);
         self.entries.get_mut(&id)?
       }
     };
@@ -149,21 +219,56 @@ impl<P> ShaderCache<P> {
     Some((key, compiled))
   }
 
+  /// Takes `id` to `shader`'s `version`: a shader drawing a source the GPU
+  /// accepted waits for it (its pipelines made off the main thread), unless
+  /// it is the text it has; any other compiles at once
+  fn update(&mut self, id: AssetId<Shader>, shader: &Shader, version: u64) {
+    let key = custom::source_key(self.kind, shader.source());
+    let waits = self.off_thread
+      && self.entries.get(&id).is_some_and(|entry| {
+        key != entry.source
+          && key != entry.drawn
+          && self.sources.get(&entry.drawn).is_some_and(Compiled::good)
+      });
+    if waits {
+      let next = Next {
+        version,
+        key,
+        shader: shader.clone(),
+      };
+      if let Some(entry) = self.entries.get_mut(&id)
+        && let Some(old) = entry.next.replace(next)
+      {
+        unwait(&mut self.waiting, old.key);
+      }
+      *self.waiting.entry(key).or_default() += 1;
+    } else {
+      self.stop_waiting(id);
+      self.refresh(id, shader, version);
+    }
+  }
+
+  /// `id` no longer waits for a newer version
+  fn stop_waiting(&mut self, id: AssetId<Shader>) {
+    if let Some(next) = self
+      .entries
+      .get_mut(&id)
+      .and_then(|entry| entry.next.take())
+    {
+      unwait(&mut self.waiting, next.key);
+    }
+  }
+
   /// Points `id`'s entry at its `version`'s source, compiling the source if
   /// no shader has it yet, and keeps the shader's last source the GPU
   /// accepted to fall back to until this one is accepted
   fn refresh(&mut self, id: AssetId<Shader>, shader: &Shader, version: u64) {
     let kind = self.kind;
     let key = custom::source_key(kind, shader.source());
-    let compiled = self.sources.entry(key).or_insert_with(|| Compiled {
-      shader: custom::compile(kind, shader.name(), shader.source()),
-      name: shader.name().to_string(),
-      made: None,
-      last_used: 0,
-      users: 0,
-      accepted: false,
-      rejected: None,
-    });
+    let compiled = self
+      .sources
+      .entry(key)
+      .or_insert_with(|| Compiled::new(shader.compiled(kind).clone(), shader.name()));
     // Counted before the old sources are let go, which may be this one
     compiled.users += 1;
     let (settled, failed) = (compiled.good(), compiled.failed());
@@ -188,13 +293,112 @@ impl<P> ShaderCache<P> {
       fallback,
       drawn: key,
       unwarned: false,
+      next: None,
     };
     if failed {
       entry.fall_back();
     }
     self.entries.insert(id, entry);
     if let Some(old) = old {
-      release_entry(&mut self.sources, &old);
+      release_entry(&mut self.sources, &mut self.waiting, &old);
+    }
+  }
+
+  /// The newer versions shaders wait for, one per waiting shader: the
+  /// renderer makes their pipelines off the main thread, one at a time
+  pub(crate) fn wanted(&self) -> impl Iterator<Item = Wanted<'_, P>> {
+    self.entries.values().filter_map(|entry| {
+      let next = entry.next.as_ref()?;
+      Some(Wanted {
+        key: next.key,
+        drawn: entry.drawn,
+        shader: &next.shader,
+        compiled: self.sources.get(&next.key),
+      })
+    })
+  }
+
+  /// Whether any shader waits for a newer version's pipelines
+  pub(crate) fn waiting(&self) -> bool {
+    !self.waiting.is_empty()
+  }
+
+  /// A source made off the main thread came back: `compiled`, what the
+  /// renderer made from it (`made`, an effect's pipeline; the batch keeps a
+  /// sprite shader's own), and whether the GPU accepted that (`outcome`).
+  /// Kept only while a shader uses or waits for it: a version saved over
+  /// while it compiled, or whose shader was freed, is dropped (`false`)
+  pub(crate) fn landed(
+    &mut self,
+    key: u64,
+    name: &str,
+    compiled: Result<Arc<CompiledShader>, ShaderError>,
+    made: Option<P>,
+    outcome: Result<(), String>,
+  ) -> bool {
+    if !self.in_use(key) {
+      return false;
+    }
+    let source = self
+      .sources
+      .entry(key)
+      .or_insert_with(|| Compiled::new(compiled, name));
+    if source.made.is_none() {
+      source.made = made;
+    }
+    match outcome {
+      Ok(()) if source.shader.is_ok() => self.accepted(key),
+      Ok(()) => {}
+      Err(message) => self.rejected(key, message),
+    }
+    true
+  }
+
+  /// The job compiling the source under `key` panicked: the source fails,
+  /// so the shaders waiting for it draw their last good version (warned
+  /// once) rather than wait on, or send it again
+  pub(crate) fn panicked(&mut self, key: u64) {
+    let failure = ShaderError {
+      shader: String::new(),
+      line: None,
+      column: None,
+      message: "compiling it panicked".to_string(),
+    };
+    self.landed(key, "", Err(failure), None, Ok(()));
+  }
+
+  /// Takes each shader waiting for a newer version to it once `ready` says
+  /// what it is drawn with is made (given the new source's key, the source
+  /// and the key of the one drawn meanwhile), or once it failed, so it
+  /// draws its last good version as any failed version does. Call at the
+  /// start of a frame, before anything is drawn
+  pub(crate) fn advance(&mut self, mut ready: impl FnMut(u64, &Compiled<P>, u64) -> bool) {
+    if self.waiting.is_empty() {
+      return;
+    }
+    let sources = &self.sources;
+    let moving: Vec<AssetId<Shader>> = self
+      .entries
+      .iter()
+      .filter(|(_, entry)| {
+        entry.next.as_ref().is_some_and(|next| {
+          sources
+            .get(&next.key)
+            .is_some_and(|source| source.failed() || ready(next.key, source, entry.drawn))
+        })
+      })
+      .map(|(&id, _)| id)
+      .collect();
+    for id in moving {
+      let Some(next) = self
+        .entries
+        .get_mut(&id)
+        .and_then(|entry| entry.next.take())
+      else {
+        continue;
+      };
+      unwait(&mut self.waiting, next.key);
+      self.refresh(id, &next.shader, next.version);
     }
   }
 
@@ -230,27 +434,27 @@ impl<P> ShaderCache<P> {
     }
   }
 
-  /// Forgets freed shader `id` at once
+  /// Forgets freed shader `id` at once, and any newer version it waits for
   pub(crate) fn remove(&mut self, id: AssetId<Shader>) {
     if let Some(entry) = self.entries.remove(&id) {
-      release_entry(&mut self.sources, &entry);
+      release_entry(&mut self.sources, &mut self.waiting, &entry);
       if !self.warned.is_empty() {
         self.warned.retain(|(shader, _), _| *shader != id);
       }
     }
   }
 
-  /// Forgets every shader whose id or version is no longer current in
-  /// `shaders`: one freed while its `Removed` went unread, or one changed
-  /// and not prepared since
+  /// Forgets every shader no longer loaded in `shaders`: one freed while
+  /// its `Removed` went unread. A shader changed and not drawn since keeps
+  /// its entry, so its last good version draws until its new one is made
   pub(crate) fn sweep(&mut self, shaders: &Assets<Shader>) {
-    let sources = &mut self.sources;
+    let (sources, waiting) = (&mut self.sources, &mut self.waiting);
     self.entries.retain(|&id, entry| {
-      let current = shaders.version(id) == Some(entry.version);
-      if !current {
-        release_entry(sources, entry);
+      let loaded = shaders.version(id).is_some();
+      if !loaded {
+        release_entry(sources, waiting, entry);
       }
-      current
+      loaded
     });
     let entries = &self.entries;
     self.warned.retain(|(id, version), _| {
@@ -260,12 +464,15 @@ impl<P> ShaderCache<P> {
     });
   }
 
-  /// Drops the sources no shader uses that were last prepared `ttl` or more
-  /// frames ago
+  /// Drops the sources no shader uses or waits for that were last prepared
+  /// `ttl` or more frames ago
   pub(crate) fn prune(&mut self, frame: u64, ttl: u64) {
-    self
-      .sources
-      .retain(|_, compiled| compiled.users > 0 || frame.saturating_sub(compiled.last_used) < ttl);
+    let waiting = &self.waiting;
+    self.sources.retain(|key, compiled| {
+      compiled.users > 0
+        || waiting.contains_key(key)
+        || frame.saturating_sub(compiled.last_used) < ttl
+    });
   }
 
   /// The compiled source under `key`, while it is kept
@@ -299,15 +506,18 @@ impl<P> ShaderCache<P> {
     let (Some(version), Some(entry)) = (shaders.version(id), self.entries.get(&id)) else {
       return false;
     };
-    entry.version != version || !self.sources.get(&entry.drawn).is_some_and(Compiled::good)
+    entry.next.is_some()
+      || entry.version != version
+      || !self.sources.get(&entry.drawn).is_some_and(Compiled::good)
   }
 
-  /// Whether a shader uses the source under `key`
+  /// Whether a shader uses the source under `key`, or waits for it
   pub(crate) fn in_use(&self, key: u64) -> bool {
-    self
-      .sources
-      .get(&key)
-      .is_some_and(|compiled| compiled.users > 0)
+    self.waiting.contains_key(&key)
+      || self
+        .sources
+        .get(&key)
+        .is_some_and(|compiled| compiled.users > 0)
   }
 
   /// How many sources hold something the renderer made from them
@@ -375,11 +585,29 @@ fn release<P>(sources: &mut HashMap<u64, Compiled<P>>, key: u64) {
   }
 }
 
-/// `entry` lets go of its source and what it falls back to
-fn release_entry<P>(sources: &mut HashMap<u64, Compiled<P>>, entry: &Entry) {
+/// One fewer shader waits for the source under `key`
+fn unwait(waiting: &mut HashMap<u64, usize>, key: u64) {
+  if let Some(count) = waiting.get_mut(&key) {
+    *count -= 1;
+    if *count == 0 {
+      waiting.remove(&key);
+    }
+  }
+}
+
+/// `entry` lets go of its source, what it falls back to, and the newer
+/// version it waits for
+fn release_entry<P>(
+  sources: &mut HashMap<u64, Compiled<P>>,
+  waiting: &mut HashMap<u64, usize>,
+  entry: &Entry,
+) {
   release(sources, entry.source);
   if let Some(fallback) = entry.fallback {
     release(sources, fallback);
+  }
+  if let Some(next) = &entry.next {
+    unwait(waiting, next.key);
   }
 }
 
@@ -595,7 +823,8 @@ mod tests {
   fn a_version_that_does_not_compile_draws_the_last_one_the_gpu_accepted() {
     let name = "t33-cache-fallback.wgsl";
     let mut shaders = Assets::<Shader>::new();
-    let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
+    // Compiled at once, as on the web
+    let mut cache = ShaderCache::<()>::with_threads(ShaderKind::Sprite, false);
     let handle = shaders.add(Shader::from_wgsl(name, PLAIN));
     let Some(good) = key_of(&mut cache, &handle, &shaders) else {
       panic!("compiles");
@@ -632,7 +861,8 @@ mod tests {
   fn the_last_good_version_goes_once_the_gpu_accepts_the_new_one() {
     let name = "t33-cache-replaced.wgsl";
     let mut shaders = Assets::<Shader>::new();
-    let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
+    // Compiled at once, as on the web
+    let mut cache = ShaderCache::<()>::with_threads(ShaderKind::Sprite, false);
     let handle = shaders.add(Shader::from_wgsl(name, PLAIN));
     let Some(good) = key_of(&mut cache, &handle, &shaders) else {
       panic!("compiles");
@@ -658,7 +888,8 @@ mod tests {
   fn a_version_the_gpu_rejects_draws_the_last_good_one() {
     let name = "t33-cache-rejected.wgsl";
     let mut shaders = Assets::<Shader>::new();
-    let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
+    // Compiled at once, as on the web
+    let mut cache = ShaderCache::<()>::with_threads(ShaderKind::Sprite, false);
     let handle = shaders.add(Shader::from_wgsl(name, PLAIN));
     let Some(good) = key_of(&mut cache, &handle, &shaders) else {
       panic!("compiles");
@@ -683,6 +914,198 @@ mod tests {
       warned,
       [format!("could not load \"{name}\": no such binding")]
     );
+  }
+
+  /// What the shader thread makes of `source`: it compiled
+  fn compiled(source: &str) -> Result<Arc<CompiledShader>, ShaderError> {
+    custom::compile(ShaderKind::Sprite, "thread.wgsl", source).map(Arc::new)
+  }
+
+  /// A cache whose shader `name` draws `PLAIN`, accepted by the GPU, then
+  /// changed to `source`: the cache, the store, the handle and the key drawn
+  fn changed(name: &str, source: &str) -> (ShaderCache<()>, Assets<Shader>, Handle<Shader>, u64) {
+    let mut shaders = Assets::<Shader>::new();
+    let mut cache = ShaderCache::<()>::with_threads(ShaderKind::Sprite, true);
+    let handle = shaders.add(Shader::from_wgsl(name, PLAIN));
+    let Some(good) = key_of(&mut cache, &handle, &shaders) else {
+      panic!("compiles");
+    };
+    cache.accepted(good);
+    if let Some(shader) = shaders.get_mut(&handle) {
+      *shader = Shader::from_wgsl(name, source);
+    }
+    (cache, shaders, handle, good)
+  }
+
+  #[test]
+  fn a_good_shaders_new_version_waits_and_the_old_one_draws_until_it_is_made() {
+    let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
+    let (mut cache, shaders, handle, good) = changed("t14c-waits.wgsl", &blue);
+    assert_eq!(
+      key_of(&mut cache, &handle, &shaders),
+      Some(good),
+      "the old one draws"
+    );
+    assert!(cache.pending(handle.id(), &shaders));
+    let wanted: Vec<(u64, u64)> = cache.wanted().map(|w| (w.key, w.drawn)).collect();
+    let new = custom::source_key(ShaderKind::Sprite, &blue);
+    assert_eq!(wanted, [(new, good)], "made to match what the old one has");
+    assert!(cache.in_use(new), "what is made for it is kept");
+    assert!(cache.landed(new, "t14c-waits.wgsl", compiled(&blue), None, Ok(())));
+    cache.advance(|_, _, _| false);
+    assert_eq!(
+      key_of(&mut cache, &handle, &shaders),
+      Some(good),
+      "until it is made"
+    );
+    cache.advance(|key, _, drawn| key == new && drawn == good);
+    assert_eq!(
+      key_of(&mut cache, &handle, &shaders),
+      Some(new),
+      "then the new one"
+    );
+    assert!(!cache.pending(handle.id(), &shaders));
+    assert!(!cache.in_use(good), "and the old one goes");
+    assert!(!cache.waiting());
+  }
+
+  #[test]
+  fn a_version_saved_over_while_it_compiles_is_dropped_when_it_comes_back() {
+    let (blue, white) = (
+      sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)"),
+      sprite("vec4<f32>(1.0)"),
+    );
+    let name = "t14c-saved-over.wgsl";
+    let (mut cache, mut shaders, handle, good) = changed(name, &blue);
+    key_of(&mut cache, &handle, &shaders);
+    let stale = custom::source_key(ShaderKind::Sprite, &blue);
+    if let Some(shader) = shaders.get_mut(&handle) {
+      *shader = Shader::from_wgsl(name, white.as_str());
+    }
+    assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
+    let newest = custom::source_key(ShaderKind::Sprite, &white);
+    let wanted: Vec<u64> = cache.wanted().map(|w| w.key).collect();
+    assert_eq!(wanted, [newest], "only the newest is wanted");
+    assert!(
+      !cache.landed(stale, name, compiled(&blue), None, Ok(())),
+      "dropped"
+    );
+    assert!(cache.source(stale).is_none());
+    assert!(cache.landed(newest, name, compiled(&white), None, Ok(())));
+    cache.advance(|_, _, _| true);
+    assert_eq!(key_of(&mut cache, &handle, &shaders), Some(newest));
+  }
+
+  #[test]
+  fn a_shader_freed_while_its_new_version_compiles_takes_nothing_in() {
+    let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
+    let (mut cache, shaders, handle, good) = changed("t14c-freed-cache.wgsl", &blue);
+    key_of(&mut cache, &handle, &shaders);
+    let new = custom::source_key(ShaderKind::Sprite, &blue);
+    cache.remove(handle.id());
+    assert!(!cache.waiting() && !cache.in_use(new) && !cache.in_use(good));
+    assert!(!cache.landed(new, "t14c-freed-cache.wgsl", compiled(&blue), None, Ok(())));
+    assert!(cache.source(new).is_none());
+  }
+
+  #[test]
+  fn a_new_version_that_does_not_compile_keeps_the_old_one_and_is_warned_about_once() {
+    let name = "t14c-broken-next.wgsl";
+    let broken = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return nope_t14c; }";
+    let (mut cache, shaders, handle, good) = changed(name, broken);
+    key_of(&mut cache, &handle, &shaders);
+    let new = custom::source_key(ShaderKind::Sprite, broken);
+    let failed = custom::compile(ShaderKind::Sprite, name, broken).map(Arc::new);
+    assert!(failed.is_err());
+    assert!(cache.landed(new, name, failed, None, Ok(())));
+    cache.advance(|_, _, _| false);
+    for _ in 0..3 {
+      assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
+    }
+    assert!(!cache.waiting());
+    assert_eq!(errors_for(name), 1);
+  }
+
+  #[test]
+  fn a_new_version_the_gpu_rejects_keeps_the_old_one() {
+    let name = "t14c-rejected-next.wgsl";
+    let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
+    let (mut cache, shaders, handle, good) = changed(name, &blue);
+    key_of(&mut cache, &handle, &shaders);
+    let new = custom::source_key(ShaderKind::Sprite, &blue);
+    assert!(cache.landed(
+      new,
+      name,
+      compiled(&blue),
+      None,
+      Err("no such binding".into())
+    ));
+    cache.advance(|_, _, _| false);
+    assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
+    assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
+    let warned: Vec<_> = dev_log::get_entries()
+      .into_iter()
+      .filter(|entry| entry.message.contains(name))
+      .map(|entry| entry.message)
+      .collect();
+    assert_eq!(
+      warned,
+      [format!("could not load \"{name}\": no such binding")]
+    );
+  }
+
+  #[test]
+  fn a_compile_that_panicked_fails_its_version_and_the_old_one_draws() {
+    let name = "t14c-panicked.wgsl";
+    let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
+    let (mut cache, shaders, handle, good) = changed(name, &blue);
+    key_of(&mut cache, &handle, &shaders);
+    cache.panicked(custom::source_key(ShaderKind::Sprite, &blue));
+    cache.advance(|_, _, _| false);
+    assert!(
+      !cache.waiting(),
+      "it does not wait on, nor is it sent again"
+    );
+    assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
+    assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
+    let warned: Vec<_> = dev_log::get_entries()
+      .into_iter()
+      .filter(|entry| entry.message.contains(name))
+      .map(|entry| entry.message)
+      .collect();
+    assert_eq!(
+      warned,
+      [format!("could not load \"{name}\": compiling it panicked")]
+    );
+  }
+
+  #[test]
+  fn the_sweep_keeps_the_last_good_version_of_a_shader_changed_while_undrawn() {
+    let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
+    let (mut cache, shaders, handle, good) = changed("t14c-swept.wgsl", &blue);
+    cache.sweep(&shaders);
+    assert!(cache.in_use(good), "kept past the sweep");
+    assert_eq!(
+      key_of(&mut cache, &handle, &shaders),
+      Some(good),
+      "and drawn while the new version is made"
+    );
+    assert!(cache.waiting());
+  }
+
+  #[test]
+  fn going_back_to_the_text_it_draws_waits_for_nothing() {
+    let name = "t14c-back.wgsl";
+    let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
+    let (mut cache, mut shaders, handle, good) = changed(name, &blue);
+    key_of(&mut cache, &handle, &shaders);
+    assert!(cache.waiting());
+    if let Some(shader) = shaders.get_mut(&handle) {
+      *shader = Shader::from_wgsl(name, PLAIN);
+    }
+    assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
+    assert!(!cache.waiting(), "nothing to make");
+    assert!(!cache.pending(handle.id(), &shaders));
   }
 
   #[test]

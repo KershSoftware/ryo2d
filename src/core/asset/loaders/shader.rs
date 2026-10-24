@@ -2,15 +2,15 @@
 
 use crate::core::asset::{AssetError, AssetLoader, LoadContext};
 use crate::core::ecs::Shader;
-use crate::core::shaders::custom;
 
 /// Loads [`Shader`]s from `.wgsl` files: the file's text, named by its asset
 /// path, which its errors are reported under. The text is compiled as the
 /// renderer will compile it (a sprite shader if it defines `fn sprite`, an
-/// effect if it defines `fn effect`; naga parses and validates it), so a
-/// file that does not compile fails its load with `AssetError::Decode`, at
-/// its line and column: a first load is `Failed`, and a reload is
-/// `ReloadFailed` and keeps the last good shader.
+/// effect if it defines `fn effect`; naga parses and validates it), and the
+/// renderer takes that compile rather than make its own. So a file that
+/// does not compile fails its load with `AssetError::Decode`, at its line
+/// and column: a first load is `Failed`, and a reload is `ReloadFailed` and
+/// keeps the last good shader.
 ///
 /// A `Shader` is a sprite shader or an effect, so a file that defines
 /// neither `fn sprite` nor `fn effect` fails its load. WGSL for a render
@@ -32,11 +32,14 @@ impl AssetLoader for ShaderLoader {
   fn load(&self, bytes: Vec<u8>, _: &(), cx: &mut LoadContext<'_>) -> Result<Shader, AssetError> {
     let path = cx.path();
     let source = String::from_utf8(bytes).map_err(|error| AssetError::decode(path, error))?;
-    // The error names the file already: the shader's own report gives the
-    // place in it
-    custom::check(path.as_str(), &source)
+    // Compiled here, off the main thread, and kept with the shader for the
+    // renderer. The error names the file already: the shader's own report
+    // gives the place in it
+    let shader = Shader::from_wgsl(path.as_str(), source);
+    shader
+      .check()
       .map_err(|error| AssetError::decode(path, error.located()))?;
-    Ok(Shader::from_wgsl(path.as_str(), source))
+    Ok(shader)
   }
 }
 

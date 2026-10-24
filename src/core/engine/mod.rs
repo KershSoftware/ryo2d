@@ -1044,6 +1044,37 @@ impl Engine {
     sprites || effects
   }
 
+  /// The gates of the threads game shaders compile on: the batch's and
+  /// both effect stages' (tests)
+  #[cfg(test)]
+  pub(crate) fn shader_compile_gates(
+    &self,
+  ) -> Vec<std::sync::Arc<crate::core::shaders::compile::CompileGate>> {
+    let mut gates = Vec::new();
+    if let Some(batch) = self.batch.as_ref() {
+      gates.push(batch.compile_gate());
+    }
+    if let Some(renderer) = self.renderer.as_ref() {
+      gates.extend(renderer.compile_gates());
+    }
+    gates
+  }
+
+  /// Compiles sent to the shader threads so far, and how many are out
+  /// (tests)
+  #[cfg(test)]
+  pub(crate) fn shader_compiles(&self) -> (usize, usize) {
+    let (sprites, out) = self
+      .batch
+      .as_ref()
+      .map_or((0, false), |batch| batch.compiles());
+    let (effects, effects_out) = self
+      .renderer
+      .as_ref()
+      .map_or((0, 0), |renderer| renderer.effect_compiles());
+    (sprites + effects, usize::from(out) + effects_out)
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding; not the UI pass)
   #[cfg(not(target_arch = "wasm32"))]

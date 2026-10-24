@@ -26,8 +26,8 @@ use crate::core::ecs::{Material, Shader, ShaderParams, SpriteEffect, SpriteShade
 use crate::core::render::batch::{BlendMode, Filter, Sampling};
 use crate::core::render::ui_renderer::TexKey;
 use crate::core::render::{DrawKind, DrawList, SpriteLook, SpriteShading};
-use crate::core::shaders::cache::ShaderCache;
-use crate::core::shaders::custom::ShaderKind;
+use crate::core::shaders::cache::{Compiled, ShaderCache, Wanted};
+use crate::core::shaders::custom::{CompiledShader, ShaderError, ShaderKind};
 use crate::core::text::{GlyphImage, GlyphKey};
 use crate::core::ui::Color;
 
@@ -652,6 +652,46 @@ impl SpriteGpuRenderer {
       Ok(()) => self.custom.accepted(key),
       Err(message) => self.custom.rejected(key, message),
     }
+  }
+
+  /// Whether a game shader waits for a newer version's pipelines, made off
+  /// the main thread
+  pub(crate) fn custom_shaders_waiting(&self) -> bool {
+    self.custom.waiting()
+  }
+
+  /// The newer versions game shaders wait for, for the batch to make their
+  /// pipelines on the shader thread
+  pub(crate) fn wanted_custom_shaders(&self) -> impl Iterator<Item = Wanted<'_, ()>> {
+    self.custom.wanted()
+  }
+
+  /// A game shader source the shader thread compiled came back
+  /// (`ShaderCache::landed`): `outcome` says whether the GPU accepted its
+  /// pipelines, which the batch keeps
+  pub(crate) fn custom_shader_landed(
+    &mut self,
+    key: u64,
+    name: &str,
+    compiled: Result<std::sync::Arc<CompiledShader>, ShaderError>,
+    outcome: Result<(), String>,
+  ) {
+    self.custom.landed(key, name, compiled, None, outcome);
+  }
+
+  /// The job compiling game shader source `key` panicked
+  /// (`ShaderCache::panicked`)
+  pub(crate) fn custom_shader_panicked(&mut self, key: u64) {
+    self.custom.panicked(key);
+  }
+
+  /// Moves each game shader waiting for a newer version to it once `ready`
+  /// says its pipelines are made (`ShaderCache::advance`)
+  pub(crate) fn advance_custom_shaders(
+    &mut self,
+    ready: impl FnMut(u64, &Compiled<()>, u64) -> bool,
+  ) {
+    self.custom.advance(ready);
   }
 
   /// Whether game shader `id` waits to be drawn at its current version

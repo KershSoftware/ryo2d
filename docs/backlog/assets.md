@@ -23,6 +23,8 @@ Measured on an Apple M5 Pro (Metal), on a shared machine (a browser, Discord and
 | 10,000 sprites, whole step (`foundation`) | 1,059.6 µs | 1,006.3 µs | within 3%: **met**, -5.0% |
 | Reload hitch: a 2048x2048 PNG | +4.0 to +4.2 ms, written in the frame it lands | +313 to +356 µs, the slowest frame of each reload until it is drawn (12 frames) | within 0.5 ms: **met** |
 | Reload hitch: a 256 px SVG | +419 to +499 µs, made and written in the frame it lands | +150 to +184 µs, written in the frame it lands | within 0.5 ms: **met** |
+| Shader reload: a sprite shader saved as new WGSL | +90.8 ms, compiled in the frame it lands, which draws the sprite plain | +104 to +136 µs, the slowest frame of each reload until it is drawn (7 frames), the old shader drawing meanwhile | within 0.5 ms: **met** |
+| Shader reload: a display effect, and an HDR effect | +72.5 and +71.8 ms, compiled in the frame it lands, which skips the effect | +81 to +104 and +80 to +99 µs (6 frames), the old effect running meanwhile | within 0.5 ms: **met** |
 
 The fonts (`scene_start_fonts`, branch only: the build before had no public way to make a `Fonts` registry) take the same set to 5,505 µs (5,469, 5,511, 5,541, 5,499), 4 to 55 µs over the round's `scene_start`. `scene_start_async`'s workers have already started (an untimed one-pixel load), as a game's have by its second scene; starting them was not measured. The workers make each small image's upload (its bordered pixels and the pages' levels) as they load it, about 1.4 ms of the 3.1 ms of worker time: the frame that first draws those images then makes none of it.
 
@@ -66,6 +68,20 @@ Stepped back to back, `settings_label` and `settings_scrolling` are paced by the
 The 10k-sprite frame looks up each sprite's place in the atlas (`TextureAtlas::lookup` and `texture`, through `SpriteGpuRenderer::slot`). Once the atlas grew, those calls stopped being inlined, and the frame took about 40 µs (3.8%) longer than with the build just before. Marked `#[inline]`, the frame is faster than that build's.
 
 Propagation ran the same source on both sides. Its 8 µs "nothing moved" case swings from 6.8 to 9.4 µs between rounds of one build, so its change is noise, not the registry.
+
+**After the shader reload work**, the targets above were measured again in a second campaign, four alternated rounds against 2ba51866 (loads 3.5 to 4.0 at the runs' starts). The machine was busier than in the first (a music application and the window server took about 90% of a core between them), so both sides read higher than in the tables above; the changes are what count.
+
+| Target | Before | After | Change |
+|---|---|---|---|
+| Scene start, `load_now` | 6,339 µs (6,340, 6,291, 6,364, 6,338) | 5,911 µs (5,909, 5,912, 5,892, 6,040) | -6.8%: **met** |
+| Scene start, `load` and the workers | 6,339 µs (synchronous) | 3,234 µs (3,269, 3,228, 3,239, 3,223) | -49.0%: **met** |
+| Empty frame, render step (`ui_render` guard) | 71.8 µs (70.4, 71.6, 75.5, 72.0) | 71.4 µs (73.0, 72.1, 70.6, 70.5) | -0.6%: **met** |
+| Idle settings screen, render step | 72.0 µs (71.1, 71.3, 76.1, 72.6) | 71.0 µs (73.2, 71.8, 69.9, 70.2) | -1.3%: **met** |
+| `empty_frame` | 208.5 µs | 201.1 µs | -3.5%: **met** |
+| `settings_idle` | 211.5 µs | 201.8 µs | -4.6%: **met** |
+| 10,000 sprites (`foundation`) | 1,107.0 µs | 1,075.1 µs | -2.9%: **met** |
+
+`scene_start_fonts`: 5,945 µs. The reload guard read the PNG at +332 to +356 µs and the SVG at +121 to +151 µs, as before. On both builds the `ui_render` guard's own one-label target (25 µs) missed in every run (+26.1 to +31.8 µs) and its scrolling limit (35 µs) in two runs of four, as they do at these loads.
 
 ### The reload hitch
 
@@ -123,6 +139,31 @@ Other designs:
 - A large image's first upload is written in the frame it first draws, with its pixels bordered on the main thread: about 4 ms at 2048 px (2.3 ms of border, then the copy). That includes one first loaded with `load` during play, in the frame it lands.
 - The UI lays an image it draws at its natural size out at the image's new size from the frame it lands. A large reload that changes the image's size draws its old pixels stretched into the new rect until the new texture takes over. Text icons and bitmap-font sheets that change size are drawn from the new size's regions of the old texture until then.
 - Should the frame a large reload lands in go undrawn for long enough that its `Modified` event is missed, the reload starts from the next draw instead; in that one frame a resized image draws its old pixels at its new size.
+
+### The shader reload
+
+**What lands without a hitch.** Metal compiles a pipeline in the call that makes it, 70 to 130 ms for WGSL it has not compiled before. A shader already drawn with a pipeline the GPU accepted keeps drawing it when it is saved: its new version's module and pipelines are made on a thread of the renderer's own (the sprite batch's, or the effect stage's) through the shared `Device`, inside a validation error scope popped there, and the new version takes over at the start of the frame after they come back (shaders module notes). The loader's naga compile is kept with the shader, so the renderer runs naga on a loaded file no more; wgpu still parses the composed WGSL when it makes the module, on that thread. A first compile, and every compile on the web, is made at once on the main thread as before.
+
+**The guard** (`benches/assets.rs`, `shader_reload_guard`) runs a 1280x720 `HeadlessEngine` drawing a 256 px sprite with a custom sprite shader and running a custom effect in each stage (display and HDR), all three from a `MemorySource` with hot reload on. Over 2,000 frames at 60 Hz, every 25th frame saves the next of the three as WGSL with a constant no save had before, so neither the engine's shared sources nor the system's shader cache knows it: a text saved before costs 1.6 to 5.9 ms instead, a cache hit. A reload's hitch is the slowest frame from the one its new version lands in to the first one drawn with it (`HeadlessEngine::shader_reload_pending`); the guard holds each shader's median to within 0.5 ms of the median ordinary frame.
+
+**Before** (each new version compiled on the main thread in the frame it landed in, the sprite drawn plain and the effect skipped in that frame), at load 7.4: the landing frame, median +90.8 ms for the sprite shader (max +96.6), +72.5 ms for the display effect (max +80.6) and +71.8 ms for the HDR effect (max +84.1).
+
+**After**, four runs of the guard (the campaign below, loads 3.6 to 4.0):
+
+| Run | Ordinary frame | Sprite shader: slowest frame of each reload, median and max; landing frame | Display effect | HDR effect |
+|---|---|---|---|---|
+| 1 | 343.4 µs | +104.4 µs, +229.3; +15.0 | +80.7 µs, +326.0; +11.6 | +79.8 µs, +341.5; +32.3 |
+| 2 | 330.8 µs | +105.1 µs, +176.6; +0.0 | +88.9 µs, +385.6; +15.0 | +91.4 µs, +138.4; +13.3 |
+| 3 | 321.4 µs | +123.4 µs, +161.9; +19.8 | +95.6 µs, +304.4; +11.7 | +97.8 µs, +183.3; +24.5 |
+| 4 | 326.5 µs | +136.2 µs, +294.5; +24.4 | +103.9 µs, +1,535.5; -32.2 | +98.8 µs, +199.5; +32.1 |
+
+- Every save landed and was drawn: 27 sprite and 26 of each effect's reloads a run. The sprite shader was drawn 7 frames after it landed (the landing frame counted; at most 10), each effect 6.
+- Frames more than 1.1 ms over an ordinary one: 1 of about 500 reload frames in the four runs (run 4's display effect), and 0 to 2 of about 1,500 ordinary frames a run (one +32 ms).
+- The hand-play harness, saving new WGSL each time (debug build, 60 Hz): `reload shader`'s two good saves took 133.2 and 99.2 ms before, and their slowest frames 0.70 and 0.65 ms after, against a 0.49 ms ordinary frame. `reload effect`'s took 113.8 and 76.7 ms before (the landing frame ran no effect), and 0.66 and 0.62 ms after (0.53 ms ordinary); the effect ran in every frame, the new one from 5 to 7 frames after landing.
+
+**Limits.**
+- A shader first drawn during play still compiles in the frame it first draws, on the main thread, and draws plain (an effect is skipped) until its pipeline's check comes back a frame later. So does a blend mode a shader is first drawn with.
+- On the web there are no threads: a saved shader compiles in the next frame it draws, as before.
 
 ### Physics sort cost
 

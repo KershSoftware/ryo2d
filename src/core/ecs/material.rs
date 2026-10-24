@@ -54,6 +54,7 @@
 use super::kernel::Component;
 use super::sprite_effects::SpriteEffect;
 use crate::core::asset::{Asset, Assets, Handle};
+use crate::core::shaders::custom::{self, CompiledShader, ShaderError, ShaderKind};
 use crate::core::ui::Color;
 use std::sync::{Arc, OnceLock};
 
@@ -71,15 +72,38 @@ use std::sync::{Arc, OnceLock};
 /// load (`AssetError::Decode`), and a saved file that does not compile
 /// fails its reload (`AssetEvent::ReloadFailed`) and keeps the last good
 /// shader. A shader whose source changes, by a reload or through
-/// `Assets::get_mut`, is compiled again for the next frame; shaders with
-/// equal sources compile once. A version that does not compile there (one
-/// made in code), or whose pipeline the GPU rejects, draws the shader's
-/// last version the GPU accepted, warned about once; with none, a sprite
-/// draws plain and an effect is skipped
-#[derive(Debug, Clone)]
+/// `Assets::get_mut`, is compiled again: one already drawn keeps drawing
+/// while its new version compiles on a thread of the renderer's own, and
+/// draws the new one from the start of the frame after (on the web, with
+/// no threads, the next frame compiles it); shaders with equal sources
+/// compile once. A version that does not compile there (one made in code),
+/// or whose pipeline the GPU rejects, draws the shader's last version the
+/// GPU accepted, warned about once; with none, a sprite draws plain and an
+/// effect is skipped
+#[derive(Clone)]
 pub struct Shader {
   name: Arc<str>,
   source: Arc<str>,
+  /// Its source compiled as each kind, made once and shared by its clones:
+  /// by the loader, which checks a file as it loads, or at first use
+  compiled: Arc<CompiledKinds>,
+}
+
+/// A shader's source compiled as a sprite shader and as an effect, each
+/// made on first use
+#[derive(Default)]
+struct CompiledKinds {
+  sprite: OnceLock<Result<Arc<CompiledShader>, ShaderError>>,
+  effect: OnceLock<Result<Arc<CompiledShader>, ShaderError>>,
+}
+
+impl std::fmt::Debug for Shader {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("Shader")
+      .field("name", &self.name)
+      .field("source", &self.source)
+      .finish()
+  }
 }
 
 impl Asset for Shader {}
@@ -90,7 +114,29 @@ impl Shader {
     Self {
       name: name.into(),
       source: source.into(),
+      compiled: Arc::default(),
     }
+  }
+
+  /// Its source compiled as `kind`: the composed WGSL and its `Params`
+  /// layout, or why it does not compile. Compiled on the first call, on
+  /// whichever thread makes it (the loader's for a loaded file, which
+  /// checks it; the shader thread's for a version changed in code), and
+  /// kept with the value
+  pub(crate) fn compiled(&self, kind: ShaderKind) -> &Result<Arc<CompiledShader>, ShaderError> {
+    let compiled = match kind {
+      ShaderKind::Sprite => &self.compiled.sprite,
+      ShaderKind::Effect => &self.compiled.effect,
+    };
+    compiled.get_or_init(|| custom::compile(kind, &self.name, &self.source).map(Arc::new))
+  }
+
+  /// Checks it as the renderer will compile it ([`custom::check_with`]),
+  /// keeping each kind's result for the renderer
+  pub(crate) fn check(&self) -> Result<(), ShaderError> {
+    custom::check_with(&self.name, &self.source, |kind| {
+      self.compiled(kind).as_ref().map(drop).map_err(Clone::clone)
+    })
   }
 
   /// The name its errors are reported under: the asset path for a loaded shader

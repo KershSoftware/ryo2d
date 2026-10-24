@@ -236,18 +236,8 @@ impl Pipelines {
           return;
         };
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-          label: Some(name),
-          source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-        });
-        let fragment = if linear {
-          "fs_custom_linear"
-        } else if premultiplied {
-          "fs_custom_premultiplied"
-        } else {
-          "fs_custom"
-        };
-        let pipeline = batch_pipeline(device, &self.layout, name, &module, fragment, key);
+        let module = custom_module(device, name, wgsl);
+        let pipeline = custom_pipeline(device, &self.layout, name, &module, key);
         // Anything naga accepted but the device rejects is found by a
         // later frame's `settle`, without waiting on the GPU here
         slot.insert(Built {
@@ -282,6 +272,45 @@ impl Pipelines {
     self.built.get(key)?.state.ready()
   }
 
+  /// Whether `key`'s pipeline was made: usable, being checked, or rejected
+  pub(crate) fn made(&self, key: &PipelineKey) -> bool {
+    self.built.contains_key(key)
+  }
+
+  /// The keys of the pipelines made for game shader source `source` that
+  /// the GPU has not rejected: a newer version of a shader drawn with it is
+  /// made for the same before it takes over
+  pub(crate) fn custom_keys(&self, source: u64) -> impl Iterator<Item = PipelineKey> + '_ {
+    self
+      .built
+      .iter()
+      .filter(move |(key, built)| {
+        key.shader == BatchShader::Custom(source) && !matches!(built.state, Checked::Failed)
+      })
+      .map(|(key, _)| *key)
+  }
+
+  /// Takes in `pipeline`, which the shader thread made (and the GPU
+  /// accepted) for game shader source `source`, named `name`; one made
+  /// meanwhile is kept
+  pub(crate) fn take_made(
+    &mut self,
+    key: PipelineKey,
+    pipeline: wgpu::RenderPipeline,
+    name: &str,
+    source: u64,
+  ) {
+    self.built.entry(key).or_insert_with(|| Built {
+      state: Checked::Ready(pipeline),
+      custom: Some((name.to_string(), source)),
+    });
+  }
+
+  /// The layout game shaders' pipelines are made with: camera, then texture
+  pub(crate) fn custom_layout(&self) -> &wgpu::PipelineLayout {
+    &self.layout
+  }
+
   /// Settle pipelines whose GPU checks came back, telling `outcome` which
   /// game shader source each was made from and whether the GPU accepted it
   /// (`Ok`) or rejected it (`Err`, its message). A rejected one's drawables
@@ -311,6 +340,34 @@ impl Pipelines {
       .filter(|key| matches!(key.shader, BatchShader::Custom(_)))
       .count()
   }
+}
+
+/// A game sprite shader's module, from its composed WGSL
+pub(crate) fn custom_module(device: &wgpu::Device, name: &str, wgsl: &str) -> wgpu::ShaderModule {
+  device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some(name),
+    source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+  })
+}
+
+/// A game sprite shader's pipeline for `key`, from its `module`: the entry
+/// for `key`'s page and blend (linear pages, premultiplied textures, or
+/// straight colour)
+pub(crate) fn custom_pipeline(
+  device: &wgpu::Device,
+  layout: &wgpu::PipelineLayout,
+  name: &str,
+  module: &wgpu::ShaderModule,
+  key: PipelineKey,
+) -> wgpu::RenderPipeline {
+  let fragment = if key.page == PageKind::Linear {
+    "fs_custom_linear"
+  } else if key.blend == BlendMode::Premultiplied {
+    "fs_custom_premultiplied"
+  } else {
+    "fs_custom"
+  };
+  batch_pipeline(device, layout, name, module, fragment, key)
 }
 
 /// A pipeline drawing `key`'s stream (instanced quads or indexed triangles)

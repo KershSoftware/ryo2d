@@ -54,6 +54,8 @@ mod headless;
 #[cfg(test)]
 mod image_gpu;
 mod retain;
+#[cfg(test)]
+mod shader_gpu;
 pub(crate) mod ui;
 
 pub use headless::{HeadlessEngine, OffscreenOptions, StepOutcome, offscreen_with_format};

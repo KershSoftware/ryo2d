@@ -543,7 +543,18 @@ pub(crate) fn compile(
 /// code defines `fn sprite`, and as an effect if it defines `fn effect`
 /// (`compile` for each). A shader is one or the other, so one defining
 /// neither is an error too. `name` labels the error
+#[cfg(test)]
 pub(crate) fn check(name: &str, source: &str) -> Result<(), ShaderError> {
+  check_with(name, source, |kind| compile(kind, name, source).map(drop))
+}
+
+/// [`check`], with `compiled` compiling the source as each kind it defines
+/// (`Shader::check` keeps what it compiles)
+pub(crate) fn check_with(
+  name: &str,
+  source: &str,
+  mut compiled: impl FnMut(ShaderKind) -> Result<(), ShaderError>,
+) -> Result<(), ShaderError> {
   let source = source.strip_prefix('\u{feff}').unwrap_or(source);
   let (sprite, effect) = entry_functions(source);
   if !sprite && !effect {
@@ -558,10 +569,10 @@ pub(crate) fn check(name: &str, source: &str) -> Result<(), ShaderError> {
     });
   }
   if sprite {
-    compile(ShaderKind::Sprite, name, source)?;
+    compiled(ShaderKind::Sprite)?;
   }
   if effect {
-    compile(ShaderKind::Effect, name, source)?;
+    compiled(ShaderKind::Effect)?;
   }
   Ok(())
 }
