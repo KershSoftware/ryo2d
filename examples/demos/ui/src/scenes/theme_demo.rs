@@ -49,7 +49,7 @@ impl ThemeDemo {
       3 => neon_theme(),
       _ => match ctx.assets().load_now::<Theme>(THEME_FILE) {
         Ok(theme) => {
-          ctx.ui_theme().follow(theme);
+          ctx.follow_ui_theme(theme);
           return;
         }
         Err(error) => {

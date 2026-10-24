@@ -20,7 +20,9 @@ use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
 use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
-use crate::core::ui::{BindValue, UiArgs, UiFile, UiFileError, UiId, UiNode, UiTheme, nodes};
+use crate::core::ui::{
+  BindValue, Theme, UiArgs, UiFile, UiFileError, UiId, UiNode, UiTheme, nodes,
+};
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
 
 #[cfg(test)]
@@ -202,6 +204,21 @@ impl SceneContext<'_> {
   /// change applies from the next frame.
   pub fn ui_theme(&mut self) -> Mut<'_, UiTheme> {
     self.world.resource_mut::<UiTheme>()
+  }
+
+  /// Follow the theme asset `theme` with the UI theme: used at once if it is
+  /// loaded (one still loading is used when it lands), so `ui_theme().get()`
+  /// straight after returns it and a `modify` straight after lasts until the
+  /// asset next changes; and used again whenever it changes (its file saved,
+  /// or `Assets<Theme>::get_mut`). `ui_theme().set(..)` stops following.
+  ///
+  /// ```ignore
+  /// if let Ok(theme) = ctx.assets().load_now::<Theme>("ui/game.theme.ron") {
+  ///   ctx.follow_ui_theme(theme);
+  /// }
+  /// ```
+  pub fn follow_ui_theme(&mut self, theme: Handle<Theme>) {
+    crate::core::ui::theme::follow_now(self.world, theme);
   }
 
   /// The scene's tilemaps: tile reads and writes, coordinate conversion and

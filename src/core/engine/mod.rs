@@ -258,7 +258,7 @@ pub struct Engine {
   ui_layout: LayoutEngine,
   /// The query `reload_trees` keeps over the trees built from UI files
   ui_sources: crate::core::ui::nodes::SourceQuery,
-  /// The `UiTheme` generation whose skin sprites are loaded
+  /// The `UiTheme` generation whose skin images are loaded
   theme_generation: Option<u64>,
   /// The `UiTheme` generation whose sounds are loaded
   sounds_generation: Option<u64>,
@@ -1420,7 +1420,7 @@ impl EngineBuilder {
   }
 
   /// Start with `theme` as the UI theme (`ctx.ui_theme()` changes it later;
-  /// `ctx.ui_theme().follow(handle)` follows a `.theme.ron` file through its
+  /// `ctx.follow_ui_theme(handle)` follows a `.theme.ron` file through its
   /// reloads).
   pub fn ui_theme(self, theme: crate::core::ui::Theme) -> Self {
     self.insert_resource(crate::core::ui::UiTheme::new(theme))

@@ -32,10 +32,13 @@ fn png() -> Vec<u8> {
   bytes
 }
 
-/// An engine with a GPU (`None` without one) reading and watching `files`,
-/// its UI theme following the theme at `path`, one frame in
+/// An engine with a GPU (`None`, with a skip line, without one) reading and
+/// watching `files`, its UI theme following the theme at `path`, one frame in
 fn following(files: &MemorySource, path: &str) -> Option<(Engine, Handle<Theme>)> {
-  let (device, queue) = crate::core::testing::shared_gpu().ok()?;
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    eprintln!("skipping: no GPU available for the engine");
+    return None;
+  };
   let mut engine = EngineBuilder::new()
     .resolution(320, 240)
     .asset_source(files.clone())

@@ -409,6 +409,7 @@ pub struct SceneContext<'a> {
 | `render_targets(&mut self) -> Mut<'_, RenderTargets>` | textures cameras render into and sprites show |
 | `actions(&mut self) -> &mut Actions` | bind, rebind and reset the game's actions (read them with `ctx.input.action_pressed(..)`; see [Input](#input)) |
 | `ui_theme(&mut self) -> Mut<'_, UiTheme>` | the UI theme (`get`, `set`, `modify`), from the next frame (see [UI](#ui)) |
+| `follow_ui_theme(&mut self, theme: Handle<Theme>)` | follow a theme asset: used at once if loaded (else when it lands), and again whenever it changes; a `modify` after it lasts until the asset next changes |
 | `spawn_ui(&mut self, tree: UiNode) -> Entity` | spawn a UI node tree as a root this scene owns (despawned when the scene leaves the stack); see [Node trees](#node-trees) |
 | `spawn_ui_in(&mut self, parent: Entity, tree: UiNode) -> Option<Entity>` | add a subtree as the last child of a container node; `None` (warned) if `parent` is not one |
 | `find_ui(&self, name: &str) -> Option<Entity>`, `find_ui_in(&self, root: Entity, name: &str) -> Option<Entity>` | the first node with that `.name(..)` in this scene's trees (spawn order), or in one tree |
@@ -1206,7 +1207,7 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 
 | | |
 |---|---|
-| `UiTheme` (resource; `ctx.ui_theme()`, `EngineBuilder::ui_theme(Theme)`) | `new(Theme)`, `get() -> &Theme`, `set(Theme)` (stops following), `modify(impl FnOnce(&mut Theme))`, `follow(Handle<Theme>)` (uses the asset once loaded and again whenever it changes; a failed reload keeps the theme); a change applies from the next frame |
+| `UiTheme` (resource; `ctx.ui_theme()`, `EngineBuilder::ui_theme(Theme)`) | `new(Theme)`, `get() -> &Theme`, `set(Theme)` (stops following), `modify(impl FnOnce(&mut Theme))`, `follow(Handle<Theme>)` (uses the asset once loaded and again whenever it changes; a failed reload keeps the theme; alone it first applies at the next UI pass, so prefer `ctx.follow_ui_theme`); a change applies from the next frame |
 | `Theme { name, palette: Palette, metrics: Metrics, text: TextRoles, widgets: WidgetLooks, variants: BTreeMap<String, Variant>, skins: BTreeMap<String, Skin>, sounds: UiSounds }` | `dark()` (default), `light()`, `pixel()`, `save(impl AsRef<Path>) -> Result<(), ThemeError>`, `look(WidgetKind, variant: Option<&str>, WidgetState) -> UiLook`, `variant(name, Variant) -> Theme`, `skin(name, Skin) -> Theme`; an asset, loaded from `*.theme.ron` by `ThemeLoader` with its skins' images as dependencies |
 | `Palette` | `background`, `surface`, `text`, `muted`, `accent`, `danger`, `success`, `warning` |
 | `Metrics` | `radius`, `spacing`, `border`, `focus_ring: FocusRing { width, offset, color }` (2, 2), `scroll_line` (40), `scroll_smoothing` (0.08), `repeat_delay` (0.35), `repeat_rate` (0.1), `tooltip_delay` (0.5), `drag_threshold` (4), `double_click` (0.3), `sizes: Sizes` |
@@ -1221,7 +1222,7 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `UiSounds { focus, confirm, back, tick, error: Option<String>, volume: f32 }` | files the engine plays (one of each per frame at most); none by default |
 | `enum WidgetKind` | `Button`, `Panel`, `Checkbox`, `Toggle`, `Radio`, `Slider`, `TextInput`, `Dropdown`, `Tab`, `Choice`, `Tooltip`, `Scroll`, `Slot`, `Progress`, `Rebind`, `Modal`, `Prompt` |
 | `enum WidgetState` | `Normal`, `Hovered`, `Pressed`, `Focused` (ring showing), `Disabled` |
-| `ThemeError` | why `Theme::save` could not write a theme (names the path) |
+| `ThemeError` | why `Theme::save` could not write a theme: `Io` (names the path) or `Serialize` |
 
 - A RON theme file is merged over `Theme::dark()` map by map, so it states only what it changes; `Variant::base`, `TextLook::font` and `Skin::filter` are strings there (`base: "Button"`, `font: "Pixel"`, `filter: "Nearest"`).
 - `ui.theme()` reads the theme while drawing (`ui.theme().text.heading.style()`, `ui.theme().palette.accent`). Widgets take `.variant(name)` and `.style(LookPatch)`; an unknown variant or skin warns once and draws the plain look.

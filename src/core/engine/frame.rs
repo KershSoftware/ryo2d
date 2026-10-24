@@ -28,7 +28,7 @@ use crate::core::ui::interact::{
 };
 use crate::core::ui::memory::UiSound;
 use crate::core::ui::nav::{NavInput, resolve_focus};
-use crate::core::ui::theme::{Theme, load_skin, refresh_skins};
+use crate::core::ui::theme::{Theme, load_skin, refresh_skins, use_followed};
 use crate::core::ui::widgets::rebind::note_swap;
 use crate::core::ui::{UiContext, UiInput, UiTheme};
 use crate::{engine_warn, profile_scope};
@@ -475,9 +475,7 @@ impl Engine {
     self
       .world
       .resource_scope(|world, mut theme: crate::core::ecs::Mut<UiTheme>| {
-        if let Some(themes) = world.get_resource::<crate::core::asset::Assets<Theme>>() {
-          theme.update_followed(themes);
-        }
+        use_followed(&mut theme, world);
         let mut assets = AssetsView::new(world);
         refresh_skins(&mut theme, loaded, |source| load_skin(&mut assets, source));
         theme.shared()

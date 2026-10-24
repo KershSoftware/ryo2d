@@ -8,8 +8,8 @@
 //! changes: it is merged over the dark theme map by map (a file's `variants`
 //! add to dark's). Three enum fields are written as strings holding their
 //! variant names: `base: "Button"` (a variant's kind), `font: "Pixel"` and
-//! `filter: "Nearest"`. The UI theme follows a theme asset with
-//! [`UiTheme::follow`], through its reloads.
+//! `filter: "Nearest"`. The UI theme follows a theme asset through its
+//! reloads (`ctx.follow_ui_theme`).
 //!
 //! ```ignore
 //! let theme = Theme::dark().variant(
@@ -20,9 +20,9 @@
 //! // ...
 //! if ui.button("Buy").variant("gold").clicked() { /* ... */ }
 //!
-//! // Or a file, used again whenever it is saved
+//! // Or a file, used at once and again whenever it is saved
 //! let file = ctx.assets().load_now::<Theme>("ui/game.theme.ron")?;
-//! ctx.ui_theme().follow(file);
+//! ctx.follow_ui_theme(file);
 //! ```
 
 use std::collections::BTreeMap;
@@ -35,6 +35,7 @@ use super::Color;
 use super::memory::UiSound;
 use crate::core::asset::{Asset, Assets, AssetsView, Handle};
 use crate::core::ecs::Resource;
+use crate::core::ecs::kernel::{Mut, World};
 use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::text::{FontRole, TextStyle};
@@ -571,8 +572,30 @@ pub(crate) fn load_skin(
   }
 }
 
+/// Follow `theme` with `world`'s UI theme and use it at once if it is
+/// loaded (one still loading is used when it lands), so a `get` or `modify`
+/// straight after sees it (`SceneContext::follow_ui_theme`)
+pub(crate) fn follow_now(world: &mut World, theme: Handle<Theme>) {
+  if !world.contains_resource::<UiTheme>() {
+    world.insert_resource(UiTheme::default());
+  }
+  world.try_resource_scope(|world, mut ui: Mut<UiTheme>| {
+    ui.follow(theme);
+    use_followed(&mut ui, world);
+  });
+}
+
+/// Use the followed theme asset if it changed since `ui` last used it: the
+/// start of each UI pass (`refresh_ui_theme`), and `follow_now`
+pub(crate) fn use_followed(ui: &mut UiTheme, world: &World) {
+  if let Some(themes) = world.get_resource::<Assets<Theme>>() {
+    ui.update_followed(themes);
+  }
+}
+
 /// The world resource holding the UI's theme (the dark theme by default):
-/// one set in code, or a theme asset it follows ([`UiTheme::follow`])
+/// one set in code, or a theme asset it follows (`ctx.follow_ui_theme`,
+/// [`UiTheme::follow`])
 #[derive(Resource, Debug, Clone)]
 pub struct UiTheme {
   theme: Arc<Theme>,
@@ -627,18 +650,23 @@ impl UiTheme {
     self.generation = next_generation();
   }
 
-  /// Follow the theme asset `theme`: the UI uses its value from its next
-  /// pass once it is loaded, and again whenever it changes (its file saved,
-  /// an image of its skins reloaded, or a change through
-  /// `Assets<Theme>::get_mut`), each time as [`UiTheme::set`] would. A
-  /// reload that fails keeps the theme in use, and the registry warns once
-  /// per error. The resource holds the handle while it follows, so the
-  /// asset stays loaded; `set` stops following, and `follow` with another
-  /// handle follows that one instead.
+  /// Follow the theme asset `theme`: its value is used once it is loaded,
+  /// and again whenever it changes (its file saved, an image of its skins
+  /// reloaded, or a change through `Assets<Theme>::get_mut`), each time as
+  /// [`UiTheme::set`] would. A reload that fails keeps the theme in use, and
+  /// the registry warns once per error. The resource holds the handle while
+  /// it follows, so the asset stays loaded; `set` stops following, and
+  /// `follow` with another handle follows that one instead.
+  ///
+  /// The resource cannot reach the theme store, so alone this uses the
+  /// value at the next UI pass: until then `get` returns the old theme, and
+  /// a `modify` made before then is overwritten. `ctx.follow_ui_theme(theme)`
+  /// follows and uses a loaded theme at once, so use that from a scene:
   ///
   /// ```ignore
-  /// let theme = ctx.assets().load_now::<Theme>("ui/game.theme.ron")?;
-  /// ctx.ui_theme().follow(theme);
+  /// if let Ok(theme) = ctx.assets().load_now::<Theme>("ui/game.theme.ron") {
+  ///   ctx.follow_ui_theme(theme);
+  /// }
   /// ```
   pub fn follow(&mut self, theme: Handle<Theme>) {
     self.followed = Some(Followed { theme, used: None });
@@ -668,7 +696,10 @@ impl UiTheme {
   }
 
   /// Change the theme in use, from the next frame. A followed theme asset's
-  /// next change replaces it
+  /// next change replaces it, and so does its first use after
+  /// [`UiTheme::follow`] alone (at the next UI pass); after
+  /// `ctx.follow_ui_theme`, which uses a loaded theme at once, the change
+  /// lasts until the asset next changes
   pub fn modify(&mut self, change: impl FnOnce(&mut Theme)) {
     change(Arc::make_mut(&mut self.theme));
     self.generation = next_generation();
@@ -707,7 +738,7 @@ mod tests {
   }
 
   #[test]
-  fn the_pixel_theme_skins_buttons_and_panels_with_nearest_sprites() {
+  fn the_pixel_theme_skins_buttons_and_panels_with_nearest_images() {
     let theme = Theme::pixel();
     for (name, kind) in [("button", WidgetKind::Button), ("panel", WidgetKind::Panel)] {
       let skin = &theme.skins[name];
@@ -870,5 +901,199 @@ mod tests {
     refresh_skins(&mut theme, &mut loaded, &mut load);
     assert_eq!(asked, 1, "loaded on the first pass, not again");
     assert!(theme.get().skins["start"].image.is_some());
+  }
+
+  /// Followed through a registry, as a scene and the engine's UI passes do,
+  /// without a GPU
+  mod registry {
+    use std::time::{Duration, Instant};
+
+    use super::super::{Theme, UiTheme, follow_now, use_followed};
+    use crate::core::asset::{
+      AssetEvent, AssetServer, Assets, AssetsView, Handle, MemorySource, insert_registry, pump,
+    };
+    use crate::core::ecs::kernel::{Messages, Mut, World};
+    use crate::core::ui::Color;
+
+    /// A registry over `files` and the UI theme, as a scene's world has them
+    fn scene_world(files: &MemorySource) -> World {
+      let mut world = World::new();
+      insert_registry(&mut world, AssetServer::new(files.clone()));
+      world.insert_resource(UiTheme::default());
+      world
+    }
+
+    /// A frame up to its UI pass: the pump, then what the pass does first
+    /// with the followed theme (`refresh_ui_theme`)
+    fn ui_pass(world: &mut World) {
+      pump(world);
+      world.resource_scope(|world, mut ui: Mut<UiTheme>| use_followed(&mut ui, world));
+    }
+
+    fn load(world: &mut World, path: &str) -> Handle<Theme> {
+      match AssetsView::new(world).load_now::<Theme>(path) {
+        Ok(theme) => theme,
+        Err(error) => panic!("{path}: {}", error.report()),
+      }
+    }
+
+    /// The name of the theme in use, and its generation
+    fn in_use(world: &World) -> (String, u64) {
+      let ui = world.resource::<UiTheme>();
+      (ui.get().name.clone(), ui.generation())
+    }
+
+    /// Pumps until `done`, failing after five seconds
+    fn pump_until(world: &mut World, mut done: impl FnMut(&World) -> bool) {
+      let start = Instant::now();
+      loop {
+        pump(world);
+        if done(world) {
+          return;
+        }
+        assert!(
+          start.elapsed() < Duration::from_secs(5),
+          "timed out waiting"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+      }
+    }
+
+    /// A `side` x `side` PNG
+    fn png(side: u32) -> Vec<u8> {
+      let image = image::RgbaImage::from_pixel(side, side, image::Rgba([255; 4]));
+      let mut bytes = Vec::new();
+      if let Err(error) = image.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+      ) {
+        panic!("encoding a png: {error}");
+      }
+      bytes
+    }
+
+    #[test]
+    fn get_after_follow_returns_the_followed_theme() {
+      let files = MemorySource::new();
+      files.insert("ui/now.theme.ron", "(name: \"file\")");
+      let mut world = scene_world(&files);
+      let theme = load(&mut world, "ui/now.theme.ron");
+      follow_now(&mut world, theme);
+      assert_eq!(world.resource::<UiTheme>().get().name, "file");
+    }
+
+    #[test]
+    fn a_modify_right_after_follow_survives_the_next_ui_pass() {
+      let files = MemorySource::new();
+      files.insert("ui/tweaked.theme.ron", "(name: \"file\")");
+      let mut world = scene_world(&files);
+      let theme = load(&mut world, "ui/tweaked.theme.ron");
+      follow_now(&mut world, theme.clone());
+      world
+        .resource_mut::<UiTheme>()
+        .modify(|t| t.palette.accent = Color::RED);
+      ui_pass(&mut world);
+      ui_pass(&mut world);
+      let accent = |world: &World| world.resource::<UiTheme>().get().palette.accent;
+      assert_eq!(in_use(&world).0, "file");
+      assert_eq!(accent(&world), Color::RED, "the change lasts");
+      // Until the followed theme next changes
+      if let Some(value) = world.resource_mut::<Assets<Theme>>().get_mut(&theme) {
+        value.name = "changed".to_string();
+      }
+      ui_pass(&mut world);
+      assert_eq!(in_use(&world).0, "changed");
+      assert_eq!(accent(&world), Theme::dark().palette.accent);
+    }
+
+    #[test]
+    fn a_theme_followed_while_loading_is_used_when_it_lands() {
+      let files = MemorySource::new();
+      files.insert("ui/later.theme.ron", "(name: \"later\")");
+      let mut world = scene_world(&files);
+      let server = world.resource::<AssetServer>().clone();
+      let theme = server.load::<Theme>("ui/later.theme.ron");
+      follow_now(&mut world, theme.clone());
+      assert_eq!(in_use(&world).0, "dark", "not loaded yet");
+      pump_until(&mut world, |_| server.is_ready(&theme));
+      ui_pass(&mut world);
+      assert_eq!(in_use(&world).0, "later");
+    }
+
+    #[test]
+    fn a_skin_image_reload_uses_the_followed_theme_again_once() {
+      let files = MemorySource::new();
+      files.insert(
+        "ui/skinned.theme.ron",
+        r#"(skins: {"frame": (path: "ui/frame.png", insets: (1.0, 1.0, 1.0, 1.0))})"#,
+      );
+      files.insert("ui/frame.png", png(2));
+      let mut world = scene_world(&files);
+      let theme = load(&mut world, "ui/skinned.theme.ron");
+      follow_now(&mut world, theme.clone());
+      ui_pass(&mut world);
+      let before = in_use(&world).1;
+      let version = |world: &World| world.resource::<Assets<Theme>>().version(&theme);
+      let touched = version(&world);
+      files.insert("ui/frame.png", png(4));
+      world.resource::<AssetServer>().reload("ui/frame.png");
+      pump_until(&mut world, |world| version(world) != touched);
+      ui_pass(&mut world);
+      let after = in_use(&world).1;
+      assert_ne!(after, before, "used again for its new image");
+      ui_pass(&mut world);
+      ui_pass(&mut world);
+      assert_eq!(in_use(&world).1, after, "once");
+    }
+
+    #[test]
+    fn the_ui_theme_keeps_a_followed_theme_the_game_dropped() {
+      let path = "ui/dropped.theme.ron";
+      let files = MemorySource::new();
+      files.insert(path, "(name: \"first\")");
+      let mut world = scene_world(&files);
+      let theme = load(&mut world, path);
+      follow_now(&mut world, theme);
+      // The game's handle is gone; frames free what nothing holds
+      ui_pass(&mut world);
+      ui_pass(&mut world);
+      assert_eq!(world.resource::<Assets<Theme>>().len(), 1, "still held");
+      files.insert(path, "(name: \"second\")");
+      world.resource::<AssetServer>().reload(path);
+      let start = Instant::now();
+      while in_use(&world).0 != "second" {
+        assert!(start.elapsed() < Duration::from_secs(5), "never reloaded");
+        ui_pass(&mut world);
+        std::thread::sleep(Duration::from_millis(1));
+      }
+    }
+
+    #[test]
+    fn a_failed_reload_leaves_the_followed_theme_in_use() {
+      let path = "ui/fails.theme.ron";
+      let files = MemorySource::new();
+      files.insert(path, "(name: \"kept\")");
+      let mut world = scene_world(&files);
+      let theme = load(&mut world, path);
+      follow_now(&mut world, theme);
+      ui_pass(&mut world);
+      let before = in_use(&world);
+      let mut events = world
+        .resource::<Messages<AssetEvent<Theme>>>()
+        .get_cursor_current();
+      files.insert(path, "(name: \"broken\", palette: nonsense");
+      world.resource::<AssetServer>().reload(path);
+      pump_until(&mut world, |world| {
+        events
+          .read(world.resource::<Messages<AssetEvent<Theme>>>())
+          .any(|event| matches!(event, AssetEvent::ReloadFailed { .. }))
+      });
+      ui_pass(&mut world);
+      assert_eq!(
+        in_use(&world),
+        before,
+        "the same theme, at the same generation"
+      );
+    }
   }
 }

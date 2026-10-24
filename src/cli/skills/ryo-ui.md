@@ -271,9 +271,9 @@ The theme is the `UiTheme` world resource: a palette, metrics (radius, timings, 
 ```rust
 EngineBuilder::new().ui_theme(Theme::pixel());               // or Theme::dark() (the default), Theme::light()
 if let Ok(file) = ctx.assets().load_now::<Theme>("ui/game.theme.ron") {   // merged over dark
-  ctx.ui_theme().follow(file);                               // used again whenever it is saved
+  ctx.follow_ui_theme(file);                                 // used at once, and again whenever it is saved
 }
-ctx.ui_theme().modify(|t| t.palette.accent = Color::rgb(255, 120, 40));
+ctx.ui_theme().modify(|t| t.palette.accent = Color::rgb(255, 120, 40));   // lasts until the file next changes
 let accent = ui.theme().palette.accent;                      // read it while drawing
 let heading = ui.theme().text.heading.style();               // a text role as a TextStyle
 ```
@@ -303,7 +303,7 @@ let heading = ui.theme().text.heading.style();               // a text role as a
   )
   ```
 
-  `Theme::save(path)` writes one. A skin's `path` in a file is loaded with the theme, as its dependency. A file that fails to load (or whose skin image does not) is an `AssetError` naming the path. `ctx.ui_theme().follow(handle)` uses the theme again whenever it changes (saved, or changed with `Assets<Theme>::get_mut`); a reload that fails keeps the theme in use, and the registry warns once. `set` stops following.
+  `Theme::save(path)` writes one. A skin's `path` in a file is loaded with the theme, as its dependency. A file that fails to load (or whose skin image does not) is an `AssetError` naming the path. `ctx.follow_ui_theme(handle)` uses the theme at once (or when it lands, if still loading) and again whenever it changes (saved, or changed with `Assets<Theme>::get_mut`); a reload that fails keeps the theme in use, and the registry warns once. A `modify` after it lasts until the file next changes; `set` stops following. `ctx.ui_theme().follow(handle)` alone waits for the next UI pass, which overwrites a `modify` made before it.
 
 ## 11. Input and Consumption
 
