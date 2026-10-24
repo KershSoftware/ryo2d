@@ -37,6 +37,16 @@ pub trait AssetLoader: Send + Sync + 'static {
     let _ = (asset, world);
     Ok(())
   }
+
+  /// Why the asset did not load, a dependency it asked for having failed
+  /// (on the workers, or in a reload): `error` is the server's
+  /// `AssetError::Dependency`, which names both paths. A loader that knows
+  /// where its file names the dependency can give a better error; the
+  /// default keeps the server's
+  fn dependency_failed(&self, asset: &Self::Asset, error: &AssetError) -> Option<AssetError> {
+    let _ = (asset, error);
+    None
+  }
 }
 
 /// What a loader can do while loading
@@ -136,6 +146,8 @@ pub(crate) trait ErasedLoader: Send + Sync + 'static {
   ) -> Result<Box<dyn Any + Send>, AssetError>;
   /// The loader's `check` of a value it made, the asset at `path`
   fn check(&self, value: &dyn Any, world: &World, path: &AssetPath) -> Result<(), AssetError>;
+  /// The loader's `dependency_failed` for a value it made
+  fn dependency_failed(&self, value: &dyn Any, error: &AssetError) -> Option<AssetError>;
 }
 
 struct Erased<L: AssetLoader> {
@@ -202,5 +214,11 @@ impl<L: AssetLoader> ErasedLoader for Erased<L> {
       ));
     };
     self.loader.check(asset, world)
+  }
+
+  fn dependency_failed(&self, value: &dyn Any, error: &AssetError) -> Option<AssetError> {
+    // A value of another type keeps the server's error
+    let asset = value.downcast_ref::<L::Asset>()?;
+    self.loader.dependency_failed(asset, error)
   }
 }

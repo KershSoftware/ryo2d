@@ -28,6 +28,7 @@ pub fn pump(world: &mut World) {
     match settled {
       Settled::Ready(waiting) => settle(world, &server, waiting),
       Settled::Failed(waiting, error) => {
+        let error = explained(&server, &waiting, error);
         let arrived = waiting.arrived;
         drop(waiting);
         fail(world, &server, arrived, error);
@@ -187,6 +188,22 @@ fn settle(world: &mut World, server: &AssetServer, waiting: Waiting) {
   server.set_loaded(arrived.id, arrived.job, dependencies);
   if arrived.arrival == Arrival::Reload {
     recheck_dependents(world, server, arrived.id);
+  }
+}
+
+/// A failed dependency's error as the waiting value's loader gives it
+/// (`AssetLoader::dependency_failed`), else the server's; a panic in the
+/// loader keeps the server's
+fn explained(server: &AssetServer, waiting: &Waiting, error: Arc<AssetError>) -> Arc<AssetError> {
+  let Some((loader, _)) = server.checker(waiting.arrived.id) else {
+    return error;
+  };
+  let better = catch_unwind(AssertUnwindSafe(|| {
+    loader.dependency_failed(&*waiting.value, &error)
+  }));
+  match better {
+    Ok(Some(better)) => Arc::new(better),
+    Ok(None) | Err(_) => error,
   }
 }
 

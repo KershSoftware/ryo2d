@@ -164,4 +164,17 @@ mod tests {
       ]
     );
   }
+
+  #[test]
+  fn a_file_outside_the_asset_folder_is_not_an_asset_path() {
+    let dir = assets(&[]);
+    let elsewhere = assets(&[("menu.ui.ron", b"(root: Column)")]);
+    let issues = check_files(dir.path(), &[elsewhere.path().join("menu.ui.ron")]);
+    assert_eq!(issues.len(), 1);
+    assert!(
+      issues[0].message.contains("is not an asset path"),
+      "{}",
+      issues[0]
+    );
+  }
 }

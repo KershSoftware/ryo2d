@@ -3050,7 +3050,7 @@ mod file_tests {
       assert_eq!(line_of(&h, row), format!("{}. P{index}", index + 1));
     }
     assert_eq!(
-      warnings_containing("needs \"gone-leader.png\", which did not load"),
+      warnings_containing("cannot load the image \"gone-leader.png\""),
       1
     );
     rewrite(

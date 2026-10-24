@@ -60,10 +60,12 @@ DESCRIPTION:
     Checks every *.ui.ron file under the project's assets directory, or the
     files given, loading each as the game does. Imports and images are read
     from the assets directory, and an image that does not load is reported
-    at its value. Each problem is printed as path:line:column: message, and
-    the command exits with an error when any file has a problem. Paths in UI
-    files, and the paths printed, are relative to the assets directory
-    (ui/menu.ui.ron for assets/ui/menu.ui.ron).
+    at its value. Each problem is printed as path:line:column: message, a
+    file's images after its other problems, and the command exits with an
+    error when any file has a problem. Paths in UI files, and the paths
+    printed, are relative to the assets directory (ui/menu.ui.ron for
+    assets/ui/menu.ui.ron). FILES must be under the assets directory: any
+    other is reported as not an asset path.
 
 EXAMPLE:
     ryo2d check-ui

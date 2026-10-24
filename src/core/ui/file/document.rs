@@ -7,6 +7,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use crate::core::asset::path::normalise;
 use crate::core::asset::{
   Asset, AssetError, AssetId, AssetPath, AssetServer, Assets, AssetsView, Handle, LoadContext,
 };
@@ -63,6 +64,8 @@ pub struct UiFile {
   /// The images the file names: held, so they live while it does
   #[allow(dead_code)]
   images: Vec<Handle<Image>>,
+  /// Each of those images' path, and where the file names it
+  image_paths: Vec<(String, Pos)>,
   /// The newest version among its imports when the load checked it whole
   /// (under `load_now`, or with no imports): until one changes, `check` has
   /// nothing to build again
@@ -84,6 +87,9 @@ pub(crate) struct Document {
   imports: OnceLock<Vec<Handle<UiFile>>>,
   /// The path of each import, and where the file names it
   import_paths: Vec<(String, Pos)>,
+  /// For text read with `parse` that imports files: how its check against
+  /// them came out at its first build, given again at every later one
+  parsed_check: OnceLock<Result<(), UiFileError>>,
   /// Starting values for names, from `bindings`
   pub(crate) seeds: Vec<(String, BindValue)>,
 }
@@ -261,6 +267,7 @@ impl UiFile {
       path: name.to_string(),
       doc,
       images: Vec::new(),
+      image_paths: Vec::new(),
       checked: None,
     })
   }
@@ -310,9 +317,13 @@ impl UiFile {
       issues.extend(built);
     }
     let mut images = Vec::with_capacity(named.len());
+    let mut image_paths = Vec::with_capacity(named.len());
     for (image, pos) in named {
       match cx.load::<Image>(&image) {
-        Ok(handle) => images.push(handle),
+        Ok(handle) => {
+          images.push(handle);
+          image_paths.push((image, pos));
+        }
         Err(error) => {
           let message = format!("cannot load the image \"{image}\": {}", reason(&error));
           issues.push(issue_at(name, pos, message));
@@ -324,7 +335,33 @@ impl UiFile {
       path: name.to_string(),
       doc,
       images,
+      image_paths,
       checked,
+    })
+  }
+
+  /// The mistake a dependency that did not load (`error`) makes in the file,
+  /// at the position the file names it, as the load reports it at once;
+  /// none if the file does not name it
+  pub(crate) fn dependency_issues(
+    &self,
+    dependency: &AssetPath,
+    error: &AssetError,
+  ) -> Option<UiFileError> {
+    let names = |raw: &str| normalise(raw).is_ok_and(|path| path == dependency.as_str());
+    if let Some((import, pos)) = self.doc.import_paths.iter().find(|(raw, _)| names(raw)) {
+      let mut issues = vec![issue_at(
+        &self.path,
+        *pos,
+        format!("cannot import \"{import}\""),
+      )];
+      issues.extend(issues_of(error, import));
+      return Some(UiFileError { issues });
+    }
+    let (image, pos) = self.image_paths.iter().find(|(raw, _)| names(raw))?;
+    let message = format!("cannot load the image \"{image}\": {}", reason(error));
+    Some(UiFileError {
+      issues: vec![issue_at(&self.path, *pos, message)],
     })
   }
 
@@ -523,8 +560,12 @@ fn build(
 }
 
 /// A file read with `parse` loads its imports at its first build, and is
-/// checked against them then; a file that loaded has them already
+/// checked against them then, which every later build reports again; a
+/// file that loaded has them already
 fn resolve_imports(path: &str, doc: &Arc<Document>, world: &mut World) -> Result<(), UiFileError> {
+  if let Some(checked) = doc.parsed_check.get() {
+    return checked.clone();
+  }
   if doc.imports.get().is_some() {
     return Ok(());
   }
@@ -542,7 +583,9 @@ fn resolve_imports(path: &str, doc: &Arc<Document>, world: &mut World) -> Result
   // Not held: the next build tries again, and says why again
   UiFileError::check(issues)?;
   let _ = doc.imports.set(imports);
-  UiFileError::check(check_built(path, doc, Reach::check(Some(world), None)))
+  let checked = UiFileError::check(check_built(path, doc, Reach::check(Some(world), None)));
+  let _ = doc.parsed_check.set(checked.clone());
+  checked
 }
 
 /// A file's mistakes in building: its templates defined twice across it
@@ -655,6 +698,7 @@ impl Document {
       order: defs.into_iter().map(|(def, _)| def).collect(),
       imports,
       import_paths,
+      parsed_check: OnceLock::new(),
       seeds,
     }
   }
@@ -1278,6 +1322,33 @@ mod tests {
     assert!(
       error.to_string().contains("did you mean \"Outer\""),
       "checked against its imports: {error}"
+    );
+  }
+
+  #[test]
+  fn parsed_text_that_fails_its_check_against_its_imports_fails_every_build() {
+    // A template it does not build, named twice across it and its import
+    let mut file = parsed(
+      "ui/x.ui.ron",
+      r#"(imports: ["ui/common.ui.ron"], templates: {"Inner": (node: Text("mine"))}, root: Column)"#,
+      &[COMMON],
+    );
+    for build in ["first", "second"] {
+      let error = file
+        .file
+        .root(&mut AssetsView::new(&mut file.world))
+        .err()
+        .unwrap_or_else(|| panic!("the {build} build succeeds"));
+      assert!(error.to_string().contains("defined twice"), "{error}");
+    }
+  }
+
+  #[test]
+  fn a_literal_image_path_with_a_brace_outside_a_template_is_loaded() {
+    let issues = messages(load(r#"(root: Image("x{y}.png"))"#, &[]));
+    assert_eq!(
+      issues,
+      ["cannot load the image \"x{y}.png\": no asset at \"x{y}.png\""]
     );
   }
 

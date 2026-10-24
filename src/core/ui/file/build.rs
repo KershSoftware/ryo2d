@@ -406,9 +406,11 @@ impl BuildCx<'_> {
     let loaded = match &mut self.reach {
       Reach::Build(world) => AssetsView::new(world).load_now::<Image>(path),
       Reach::Check { images, .. } => {
-        // A hole a parameter fills: not a path until the template is used
+        // In a template, a hole a parameter fills: not a path until the
+        // template is used. Outside one, a brace is part of the path
+        let unfilled = !self.stack.is_empty() && path.contains('{');
         if let Some(images) = images
-          && !path.contains('{')
+          && !unfilled
           && !images.iter().any(|(named, _)| named == path)
         {
           images.push((path.clone(), value.pos));

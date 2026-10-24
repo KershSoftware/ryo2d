@@ -7,7 +7,8 @@ use crate::core::ui::UiFile;
 /// Loads [`UiFile`]s from `.ui.ron` files. The files a file imports and the
 /// images it names are its dependencies (asset paths, loaded through the
 /// registry), so a file is ready once they are, and an import that leads
-/// back to the file fails it with `AssetError::Cycle`. Once they load, the
+/// back to the file fails it with `AssetError::Cycle`; one that does not
+/// load fails it at the position the file names it. Once they load, the
 /// file's root and every template are built once against them (`check`),
 /// so a mistake anywhere fails the load with every issue's line and column
 /// (`AssetError::Decode` over a `UiFileError`); a file importing one that
@@ -34,18 +35,36 @@ impl AssetLoader for UiFileLoader {
   fn check(&self, file: &UiFile, world: &World) -> Result<(), AssetError> {
     file.check(world)
   }
+
+  /// An import or image that did not load, at the position the file names
+  /// it, as `load_now` reports it
+  fn dependency_failed(&self, file: &UiFile, error: &AssetError) -> Option<AssetError> {
+    let AssetError::Dependency {
+      path,
+      dependency,
+      error,
+    } = error
+    else {
+      return None;
+    };
+    let issues = file.dependency_issues(dependency, error)?;
+    Some(AssetError::decode(path, issues))
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use std::time::{Duration, Instant};
 
+  use std::sync::Arc;
+
   use super::UiFileLoader;
+  use crate::core::asset::AssetEvent;
   use crate::core::asset::{
     AssetError, AssetLoader, AssetPath, AssetServer, AssetSource, Assets, AssetsView, LoadState,
     MemorySource, insert_registry, pump,
   };
-  use crate::core::ecs::kernel::World;
+  use crate::core::ecs::kernel::{MessageCursor, Messages, World};
   use crate::core::graphics::Image;
   use crate::core::ui::{UiFile, UiFileError};
 
@@ -252,5 +271,80 @@ mod tests {
       *file = emptied;
     }
     assert_eq!(checks(&world), Some(false), "built again against it");
+  }
+
+  /// The issues of a `Decode` error over a UI file's mistakes, shown
+  fn shown(error: &AssetError) -> Vec<String> {
+    let AssetError::Decode { source, .. } = error else {
+      panic!("not a decode error: {}", error.report());
+    };
+    let Some(file) = source.downcast_ref::<UiFileError>() else {
+      panic!("not the file's mistakes: {}", error.report());
+    };
+    file.issues.iter().map(ToString::to_string).collect()
+  }
+
+  #[test]
+  fn on_the_workers_a_missing_import_fails_at_its_position() {
+    let files = MemorySource::new();
+    files.insert(
+      "ui/menu.ui.ron",
+      "(imports: [\"ui/gone.ui.ron\"], root: Column)",
+    );
+    let mut world = registry_over(files);
+    let server = world.resource::<AssetServer>().clone();
+    let menu = server.load::<UiFile>("ui/menu.ui.ron");
+    pump_until(&mut world, |_| server.state(&menu).is_failed());
+    let LoadState::Failed(error) = server.state(&menu) else {
+      panic!("the menu loads");
+    };
+    assert_eq!(
+      shown(&error),
+      [
+        "ui/menu.ui.ron:1:12: cannot import \"ui/gone.ui.ron\"",
+        "ui/gone.ui.ron: no asset at \"ui/gone.ui.ron\"",
+      ]
+    );
+  }
+
+  #[test]
+  fn a_reload_naming_a_missing_image_fails_at_its_position() {
+    let files = MemorySource::new();
+    files.insert("ui/hud.ui.ron", "(root: Column)");
+    let mut world = registry_over(files.clone());
+    let server = world.resource::<AssetServer>().clone();
+    server.start_watching();
+    let hud = match AssetsView::new(&mut world).load_now::<UiFile>("ui/hud.ui.ron") {
+      Ok(hud) => hud,
+      Err(error) => panic!("hud.ui.ron: {}", error.report()),
+    };
+    let mut events = world
+      .resource::<Messages<AssetEvent<UiFile>>>()
+      .get_cursor_current();
+    files.insert(
+      "ui/hud.ui.ron",
+      "(root: Column(children: [\n  Image(\"gone.png\"),\n]))",
+    );
+    let failed = |world: &World, events: &mut MessageCursor<AssetEvent<UiFile>>| {
+      events
+        .read(world.resource::<Messages<AssetEvent<UiFile>>>())
+        .find_map(|event| match event {
+          AssetEvent::ReloadFailed { id, error } if *id == hud.id() => Some(Arc::clone(error)),
+          _ => None,
+        })
+    };
+    let start = Instant::now();
+    let error = loop {
+      pump(&mut world);
+      if let Some(error) = failed(&world, &mut events) {
+        break error;
+      }
+      assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+      std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(
+      shown(&error),
+      ["ui/hud.ui.ron:2:9: cannot load the image \"gone.png\": no asset at \"gone.png\""]
+    );
   }
 }
