@@ -13,7 +13,7 @@ Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports
 | Step | Cadence | Engine work |
 |------|---------|-------------|
 | `First` | once | advance the clocks, publish `Input`, advance every message buffer; then the engine's debug and console keys consume their presses |
-| `PreUpdate` | once | the asset registry's pump (finished loads, reloads and frees land, and their `AssetEvent`s are sent); then the console |
+| `PreUpdate` | once | a running scene transition, then the asset registry's pump (finished loads, reloads and frees land, and their `AssetEvent`s are sent), chained so a switch's frees and the entering scene's loads are pumped in its frame; then the console |
 | UI pass | once | `Scene::ui` for visible scenes bottom-up, debug overlays, console; consumption applied to `Input`; a returned `SceneAction` applies at once, and a scene change redraws the UI once so the new scene shows this frame |
 | `FixedUpdate` | 0..N | one run per fixed step; the sets below, chained |
 | `Update` | once | `UpdateSet::Game`: scene per-frame systems and builder ones by default |

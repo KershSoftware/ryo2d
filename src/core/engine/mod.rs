@@ -439,7 +439,9 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   );
   schedules.add_systems(
     Phase::PreUpdate,
-    (asset_registry_system, scene_transition_system),
+    // The pump after the transition: in a switch's frame, what the leaving scene let go is
+    // freed and what the entering one asked for is pumped before the new scene's UI pass
+    (scene_transition_system, asset_registry_system).chain(),
   );
   schedules.add_systems(
     Phase::FixedUpdate,

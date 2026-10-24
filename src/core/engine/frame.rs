@@ -834,9 +834,9 @@ pub(crate) fn update_messages_system(world: &mut World) {
   update_messages(world);
 }
 
-/// `PreUpdate`: the asset registry's pump puts finished loads and reloads in
-/// their stores, frees unheld assets and sends their `AssetEvent`s; then the
-/// font registry follows the font stores.
+/// `PreUpdate`, after the scene transition: the asset registry's pump puts
+/// finished loads and reloads in their stores, frees unheld assets and sends
+/// their `AssetEvent`s; then the font registry follows the font stores.
 pub(crate) fn asset_registry_system(world: &mut World) {
   crate::core::asset::pump(world);
   // Right after the pump: a freed font's face goes before any text is laid
@@ -1099,6 +1099,98 @@ mod tests {
       "the fade ends on real time"
     );
     assert_eq!(host.scenes.scene_names(), ["Arrived"]);
+  }
+
+  #[test]
+  fn the_asset_pump_runs_after_the_scene_transition_in_its_frame() {
+    use crate::core::asset::{AssetId, AssetServer, Assets, Handle, MemorySource};
+    use crate::core::graphics::Image;
+    use crate::core::scene::Transition;
+    use crate::core::ui::UiContext;
+
+    /// What the entering scene's first UI pass saw: whether its own load had
+    /// landed, and whether the image the scene it replaced held was still in
+    /// the store
+    #[derive(Resource, Default)]
+    struct FirstPass(Option<(bool, bool)>);
+    #[derive(Resource)]
+    struct Dropped(AssetId<Image>);
+
+    /// Holds an image it made, and leaves at once through a fade
+    #[derive(Default)]
+    struct Leaving {
+      image: Option<Handle<Image>>,
+      left: bool,
+    }
+    impl Scene for Leaving {
+      fn on_enter(&mut self, ctx: &mut SceneContext) {
+        let image = ctx.assets().add(Image::solid_rect(2, 2, 9, 9, 9, 255));
+        ctx.world.insert_resource(Dropped(image.id()));
+        self.image = Some(image);
+      }
+      fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        if std::mem::replace(&mut self.left, true) {
+          return SceneAction::Continue;
+        }
+        // The switch happens in the next frame's transition, in `PreUpdate`
+        SceneAction::SwitchWith(
+          Box::new(Entering::default()),
+          Transition::fade(Duration::ZERO),
+        )
+      }
+    }
+    #[derive(Default)]
+    struct Entering {
+      image: Option<Handle<Image>>,
+    }
+    impl Scene for Entering {
+      fn on_enter(&mut self, ctx: &mut SceneContext) {
+        self.image = Some(ctx.assets().load::<Image>("dot.png"));
+      }
+      fn ui(&mut self, _ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+        let loaded = self
+          .image
+          .as_ref()
+          .is_some_and(|image| ctx.assets().state(image).is_loaded());
+        let dropped = ctx.world.resource::<Dropped>().0;
+        let kept = ctx.world.resource::<Assets<Image>>().get(dropped).is_some();
+        ctx
+          .world
+          .resource_mut::<FirstPass>()
+          .0
+          .get_or_insert((loaded, kept));
+        SceneAction::Continue
+      }
+    }
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let files = MemorySource::new();
+    let mut png = Vec::new();
+    image::RgbaImage::new(2, 2)
+      .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+      .unwrap();
+    files.insert("dot.png", png);
+    let mut e = EngineBuilder::new()
+      .resolution(16, 16)
+      .asset_source(files)
+      .insert_resource(FirstPass::default())
+      .start_scene(Leaving::default())
+      .build_headless();
+    // No worker threads: the pump runs the loads itself, as on the web
+    e.world().resource::<AssetServer>().limit_workers(0);
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 16, 16), 1.0);
+    for _ in 0..4 {
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    assert_eq!(
+      e.world().resource::<FirstPass>().0,
+      Some((true, false)),
+      "in the frame of the switch, the pump runs after the transition: the \
+       entering scene's load lands and the leaving scene's image is freed \
+       before its first UI pass"
+    );
   }
 
   #[test]
