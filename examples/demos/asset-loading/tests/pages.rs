@@ -226,6 +226,38 @@ fn space_on_a_finished_load_reads_every_file_again() {
 }
 
 #[test]
+fn load_again_finishes_while_another_holder_keeps_one_of_its_assets() {
+  let Some(mut engine) = engine_on(LOADING) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  // Held outside the page, as another scene might hold it
+  let kept = engine
+    .assets()
+    .load_now::<Image>("back_decor.png")
+    .expect("it loads");
+  engine.tap_key(KeyCode::Space);
+  engine.step().unwrap();
+  step_until(&mut engine, "the first load to settle", settled);
+  engine.step_frames(2).unwrap();
+
+  engine.tap_key(KeyCode::Space);
+  let done = |engine: &mut HeadlessEngine| texts(engine).iter().any(|t| t.starts_with("Done:"));
+  step_until(&mut engine, "the page to load again", |engine| {
+    !done(engine)
+  });
+  // The kept image is not freed, and the page does not wait for it
+  step_until(&mut engine, "the second load to finish", done);
+  let shown = texts(&engine);
+  assert!(shown.iter().any(|text| text == "14 / 14"), "{shown:?}");
+  assert_eq!(
+    row(&shown, "back_decor.png", 3),
+    ["back_decor.png", "Image", "loaded 3840×2160"]
+  );
+  drop(kept);
+}
+
+#[test]
 fn the_hot_reload_page_counts_each_reload_as_modified() {
   let Some(mut engine) = engine_on(HOT_RELOAD) else {
     return;

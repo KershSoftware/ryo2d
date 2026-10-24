@@ -20,17 +20,16 @@ enum Phase {
   Loading,
   /// Every asset loaded or failed
   Done,
-  /// The last load let go of, until the pump has freed it: a load of an
-  /// asset still in its store would find it loaded and read nothing
-  Freeing,
+  /// The last load let go of in frame `since`. The next frame's pump frees
+  /// what nothing else holds, so the load after it reads those files again;
+  /// one another holder keeps is found loaded at once
+  Releasing { since: u64 },
 }
 
 pub(crate) struct LoadingPage {
   phase: Phase,
   /// The handles of the load, in the table's order (empty until asked)
   held: Vec<Held>,
-  /// The last load's assets, while they are being freed
-  freeing: Vec<UntypedAssetId>,
   /// The Load button was clicked in this frame's UI pass
   clicked: bool,
 }
@@ -40,7 +39,6 @@ impl LoadingPage {
     Self {
       phase: Phase::Idle,
       held: Vec::new(),
-      freeing: Vec::new(),
       clicked: false,
     }
   }
@@ -82,18 +80,15 @@ impl DemoPage for LoadingPage {
       }
       Phase::Done if asked => {
         // Dropping the handles frees the assets at the next pump
-        self.freeing = self.held.iter().map(Held::id).collect();
         self.held.clear();
-        self.phase = Phase::Freeing;
+        self.phase = Phase::Releasing {
+          since: ctx.time.frame_count(),
+        };
       }
-      Phase::Freeing => {
-        // A freed asset is neither loaded, loading nor failed
-        if ctx.assets().progress(&self.freeing) == Progress::default() {
-          self.freeing.clear();
-          self.load(ctx);
-        }
-      }
-      Phase::Idle | Phase::Done => {}
+      // A pump has run since: the bar counts the new handles, whatever
+      // another holder kept
+      Phase::Releasing { since } if ctx.time.frame_count() > since => self.load(ctx),
+      Phase::Idle | Phase::Done | Phase::Releasing { .. } => {}
     }
   }
 
@@ -106,7 +101,7 @@ impl DemoPage for LoadingPage {
 
     let status = match self.phase {
       Phase::Idle => format!("Space or Load asks for these {total} assets on the worker threads."),
-      Phase::Loading | Phase::Freeing => "Loading on the worker threads...".to_string(),
+      Phase::Loading | Phase::Releasing { .. } => "Loading on the worker threads...".to_string(),
       Phase::Done => format!(
         "Done: {} loaded, {} failed. Space loads them again.",
         progress.loaded, progress.failed
