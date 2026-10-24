@@ -291,6 +291,17 @@ impl<P> ShaderCache<P> {
     }
   }
 
+  /// Whether shader `id`, which this renderer draws, is not yet drawn at
+  /// its current version in `shaders` by a pipeline the GPU accepted: a new
+  /// version waits, or its pipeline's check is out. `false` for a shader
+  /// this renderer has not drawn
+  pub(crate) fn pending(&self, id: AssetId<Shader>, shaders: &Assets<Shader>) -> bool {
+    let (Some(version), Some(entry)) = (shaders.version(id), self.entries.get(&id)) else {
+      return false;
+    };
+    entry.version != version || !self.sources.get(&entry.drawn).is_some_and(Compiled::good)
+  }
+
   /// Whether a shader uses the source under `key`
   pub(crate) fn in_use(&self, key: u64) -> bool {
     self

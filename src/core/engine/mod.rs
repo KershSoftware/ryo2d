@@ -1024,6 +1024,26 @@ impl Engine {
     sprites + effects
   }
 
+  /// Whether game shader `id` waits to be drawn at its current version, by
+  /// the sprite renderer or an effect stage: its new version is not yet
+  /// drawn with a pipeline the GPU accepted
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn shader_reload_pending(
+    &self,
+    id: crate::core::asset::AssetId<crate::core::ecs::Shader>,
+  ) -> bool {
+    let shaders = crate::core::ecs::shaders_of(&self.world);
+    let sprites = self
+      .sprite_gpu
+      .as_ref()
+      .is_some_and(|gpu| gpu.custom_shader_pending(id, shaders));
+    let effects = self
+      .renderer
+      .as_ref()
+      .is_some_and(|renderer| renderer.custom_effect_pending(id, shaders));
+    sprites || effects
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding; not the UI pass)
   #[cfg(not(target_arch = "wasm32"))]

@@ -562,6 +562,18 @@ impl HeadlessEngine {
     self.engine.shader_pipeline_count()
   }
 
+  /// Whether game shader `id`'s current version waits to be drawn: its
+  /// pipeline is not yet made and accepted by the GPU, by the sprite
+  /// renderer or an effect stage that draws it (benches that measure a
+  /// reload until it is drawn)
+  #[doc(hidden)]
+  pub fn shader_reload_pending(
+    &self,
+    id: crate::core::asset::AssetId<crate::core::ecs::Shader>,
+  ) -> bool {
+    self.engine.shader_reload_pending(id)
+  }
+
   /// How many glyphs of `font` the glyph atlas holds (tests that watch a
   /// freed font's glyphs go)
   #[doc(hidden)]

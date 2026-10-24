@@ -654,6 +654,17 @@ impl SpriteGpuRenderer {
     }
   }
 
+  /// Whether game shader `id` waits to be drawn at its current version
+  /// (tests and benches that measure a reload until it is drawn)
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn custom_shader_pending(
+    &self,
+    id: AssetId<Shader>,
+    shaders: &Assets<Shader>,
+  ) -> bool {
+    self.custom.pending(id, shaders)
+  }
+
   /// Whether a game shader still uses the source key `key`: the batch keeps
   /// its pipelines only while one does
   pub(crate) fn custom_shader_in_use(&self, key: u64) -> bool {

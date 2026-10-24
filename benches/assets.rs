@@ -48,6 +48,19 @@
 //! `--list`, `--test` or `--profile-time`. What each part needs (the
 //! encoded files, the scene folder, the engine) is made only when it runs.
 //!
+//! Then the shader guard runs a `HeadlessEngine` (1280x720) drawing a
+//! sprite with a custom shader and running a custom effect in each stage
+//! (display and HDR), all three loaded from a `MemorySource` with hot
+//! reload on. Over 2,000 frames at 60 Hz, every 25th saves the next of the
+//! three as WGSL with a constant no save had before, so neither the
+//! engine's shared sources nor the system's shader cache knows it. A
+//! reload's hitch is the slowest frame from the one its new version lands
+//! in to the first one drawn with it (`shader_reload_pending`). The guard
+//! prints each shader's median and maximum hitch over an ordinary frame
+//! and how many frames each reload took to be drawn, holds each median to
+//! within 0.5 ms (the spec), and fails a reload not drawn by the end. It
+//! runs with no filter or one naming `shader_reload`.
+//!
 //! Last, the pump with parents waiting on a dependency that does not load:
 //! 10, 100 and 1000 UI files importing one whose read is held. It prints
 //! the median of a pump with nothing to settle, and of a pump that takes
@@ -751,6 +764,301 @@ fn reload_guard(looks: &Looks) {
   }
 }
 
+/// The shader guard's frames
+const SHADER_FRAMES: usize = 2000;
+/// Frames between saves: each saves the next of the three shaders, so each
+/// is saved every third
+const SHADER_EVERY: usize = 25;
+/// The sprite shader, the display effect and the HDR effect
+const SHADER_FILES: [&str; 3] = [
+  "shaders/sprite.wgsl",
+  "shaders/display.wgsl",
+  "shaders/hdr.wgsl",
+];
+const SHADER_KINDS: [&str; 3] = ["the sprite shader", "the display effect", "the HDR effect"];
+
+/// Shader `kind` saved with `salt` in a constant, so every save is WGSL
+/// neither the engine's shared sources nor the system's shader cache has
+/// seen: the constant changes the code the GPU compiles, not just the text
+fn shader_wgsl(kind: usize, salt: u32) -> String {
+  match kind {
+    0 => format!(
+      "struct Params {{\n  edge: vec3<f32>,\n  amount: f32,\n}}\n\n\
+       fn hash(p: vec2<f32>) -> f32 {{\n  return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);\n}}\n\n\
+       fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {{\n  let color = sample(in.uv);\n  \
+       let noise = hash(floor(in.uv * in.size));\n  let edge_width = {:.7};\n  \
+       if noise < params.amount {{\n    return vec4<f32>(0.0);\n  }}\n  \
+       let glow = 1.0 - smoothstep(params.amount, params.amount + edge_width, noise);\n  \
+       return vec4<f32>(mix(color.rgb, params.edge, glow), color.a);\n}}\n",
+      0.08 + salt as f64 * 1e-7
+    ),
+    1 => format!(
+      "struct Params {{\n  density: f32,\n  strength: f32,\n}}\n\n\
+       fn effect(in: EffectIn, params: Params) -> vec4<f32> {{\n  let color = scene(in.uv);\n  \
+       let line = 0.5 + 0.5 * sin(in.uv.y * params.density + in.time * 4.0);\n  \
+       let dim = 1.0 - params.strength * line;\n  let centered = in.uv - vec2<f32>(0.5);\n  \
+       let vignette = 1.0 - dot(centered, centered) * {:.6};\n  \
+       return vec4<f32>(color.rgb * dim * vignette, color.a);\n}}\n",
+      0.8 + salt as f64 * 1e-6
+    ),
+    _ => format!(
+      "fn effect(in: EffectIn, params: Params) -> vec4<f32> {{\n  let color = scene(in.uv);\n  \
+       let lift = max(color.rgb - vec3<f32>(0.6), vec3<f32>(0.0)) * {:.6};\n  \
+       return vec4<f32>(color.rgb + lift, color.a);\n}}\n",
+      1.0 + salt as f64 * 1e-6
+    ),
+  }
+}
+
+/// Draws a 256 px sprite with the sprite shader, and runs both effects
+struct ShaderReloading;
+
+impl Scene for ShaderReloading {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let [sprite, display, hdr] = SHADER_FILES.map(|path| {
+      ctx
+        .assets()
+        .load_now::<Shader>(path)
+        .unwrap_or_else(|error| panic!("{}", error.report()))
+    });
+    let pixels = (0..256 * 256u32)
+      .flat_map(|i| [(i % 256) as u8, (i / 256) as u8, 160, 255])
+      .collect();
+    let image = ctx.assets().add(Image::from_rgba(pixels, 256, 256));
+    let shading = SpriteShader::custom(sprite)
+      .with_param("amount", 0.3)
+      .with_param("edge", Color::rgb(255, 200, 60));
+    ctx.world.spawn((
+      Transform::from_xy(640.0, 360.0),
+      Renderable::image(image).with_shader(shading),
+    ));
+    let mut effects = ctx.effects();
+    effects
+      .add_custom("display", display)
+      .expect("the display effect");
+    effects
+      .add_custom_in("hdr", hdr, EffectStage::Hdr)
+      .expect("the HDR effect");
+    effects.set_custom_param("display", "density", 400.0);
+    effects.set_custom_param("display", "strength", 0.2);
+  }
+}
+
+/// An engine drawing the three shaders, and the files it reads
+struct ShaderRig {
+  files: MemorySource,
+  engine: HeadlessEngine,
+  ids: [AssetId<Shader>; 3],
+  /// Saved last, counted on from a start the clock picks, so a later run
+  /// saves texts this one did not
+  salt: u32,
+}
+
+impl ShaderRig {
+  /// The engine, warmed up; none without a GPU
+  fn new() -> Option<ShaderRig> {
+    let files = MemorySource::new();
+    for (kind, path) in SHADER_FILES.iter().enumerate() {
+      files.insert(path, shader_wgsl(kind, 0));
+    }
+    let builder = EngineBuilder::new()
+      .resolution(1280, 720)
+      .asset_source(files.clone())
+      .hot_reload(true)
+      .start_scene(ShaderReloading);
+    let mut engine = HeadlessEngine::new_or_skip(builder)?;
+    engine.step_frames(60).expect("the warm-up frames");
+    let ids = SHADER_FILES.map(|path| {
+      engine
+        .assets()
+        .load_now::<Shader>(path)
+        .expect("a guard shader")
+        .id()
+    });
+    let since = SystemTime::now()
+      .duration_since(SystemTime::UNIX_EPOCH)
+      .unwrap_or_default();
+    Some(ShaderRig {
+      files,
+      engine,
+      ids,
+      salt: (since.as_millis() % 50_000) as u32 + 1,
+    })
+  }
+
+  /// Saves shader `kind` as new WGSL
+  fn save(&mut self, kind: usize) {
+    self.salt += 1;
+    self
+      .files
+      .insert(SHADER_FILES[kind], shader_wgsl(kind, self.salt));
+  }
+
+  /// The three shaders' versions in the store
+  fn versions(&self) -> [Option<u64>; 3] {
+    let shaders = self.engine.world().resource::<Assets<Shader>>();
+    self.ids.map(|id| shaders.version(id))
+  }
+}
+
+/// One frame of the shader guard
+struct ShaderFrame {
+  /// The whole step on the main thread
+  step: Duration,
+  /// Each shader's new version landed in it
+  landed: [bool; 3],
+  /// After it, each shader's current version still waited to be drawn
+  pending: [bool; 3],
+}
+
+/// The shader reload hitch: every frame from the one a saved shader's new
+/// version lands in to the first one drawn with it, against an ordinary
+/// frame. A reload's hitch is the slowest of those frames; each shader's
+/// median hitch over the target is noted for the run to fail on, as is a
+/// reload not drawn by the end of the run
+fn shader_reload_guard() {
+  let Some(mut rig) = ShaderRig::new() else {
+    return;
+  };
+  let Ok((device, _)) = shared_gpu() else {
+    return;
+  };
+  let mut frames = Vec::with_capacity(SHADER_FRAMES);
+  let mut saves = 0usize;
+  let mut next = Instant::now();
+  for frame in 0..SHADER_FRAMES {
+    if frame > 0 && frame.is_multiple_of(SHADER_EVERY) {
+      rig.save(saves % 3);
+      saves += 1;
+    }
+    device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .expect("the GPU finishes its work");
+    while Instant::now() < next {
+      std::hint::spin_loop();
+    }
+    let before = rig.versions();
+    let started = Instant::now();
+    next = started + PACE;
+    rig.engine.step().expect("a guard frame");
+    let step = started.elapsed();
+    let after = rig.versions();
+    frames.push(ShaderFrame {
+      step,
+      landed: std::array::from_fn(|kind| after[kind] != before[kind]),
+      pending: rig.ids.map(|id| rig.engine.shader_reload_pending(id)),
+    });
+  }
+  // Each shader's reloads: (landed, drawn)
+  let reloads: Vec<Vec<(usize, Option<usize>)>> = (0..3)
+    .map(|kind| {
+      frames
+        .iter()
+        .enumerate()
+        .filter(|(_, frame)| frame.landed[kind])
+        .map(|(at, _)| (at, (at..frames.len()).find(|&k| !frames[k].pending[kind])))
+        .collect()
+    })
+    .collect();
+  let mut reloading = vec![false; frames.len()];
+  for &(landed, drawn) in reloads.iter().flatten() {
+    for frame in &mut reloading[landed..=drawn.unwrap_or(frames.len() - 1)] {
+      *frame = true;
+    }
+  }
+  let ordinary_steps: Vec<Duration> = frames
+    .iter()
+    .zip(&reloading)
+    .filter(|(_, reloading)| !**reloading)
+    .map(|(frame, _)| frame.step)
+    .collect();
+  let ordinary_count = ordinary_steps.len();
+  let Some((ordinary, ordinary_max)) = median_max(ordinary_steps) else {
+    guards::miss("shader_reload: no ordinary frame".into());
+    return;
+  };
+  let over = |time: Duration| us(time) - us(ordinary);
+  let slow = |reload: bool| {
+    frames
+      .iter()
+      .zip(&reloading)
+      .filter(|(frame, reloading)| {
+        **reloading == reload && frame.step.saturating_sub(ordinary) > OUTLIER
+      })
+      .count()
+  };
+  let mut lines = Vec::new();
+  let mut missed = Vec::new();
+  for (kind, reloads) in reloads.iter().enumerate() {
+    let name = SHADER_KINDS[kind];
+    if reloads.is_empty() {
+      missed.push(format!("shader_reload: {name} never landed"));
+      continue;
+    }
+    let undrawn = reloads.iter().filter(|(_, drawn)| drawn.is_none()).count();
+    if undrawn > 0 {
+      missed.push(format!(
+        "shader_reload: {undrawn} of {name}'s reloads were not drawn by the end of the run"
+      ));
+    }
+    let drawn: Vec<(usize, usize)> = reloads
+      .iter()
+      .filter_map(|&(landed, drawn)| Some((landed, drawn?)))
+      .collect();
+    let worst: Vec<Duration> = drawn
+      .iter()
+      .filter_map(|&(landed, drawn)| frames[landed..=drawn].iter().map(|f| f.step).max())
+      .collect();
+    let spans: Vec<usize> = drawn
+      .iter()
+      .map(|&(landed, drawn)| drawn - landed + 1)
+      .collect();
+    let landing: Vec<Duration> = reloads
+      .iter()
+      .map(|&(landed, _)| frames[landed].step)
+      .collect();
+    let (Some((median, max)), Some((span, span_max)), Some((landing, _))) =
+      (median_max(worst), median_max(spans), median_max(landing))
+    else {
+      continue;
+    };
+    let met = median.saturating_sub(ordinary) <= HITCH_TARGET;
+    let line = format!(
+      "{name}: {} reloads, drawn {span} frames after landing (median, the landing frame \
+       counted; max {span_max}); the slowest frame of each, median {:.1} µs ({:+.1}), max \
+       {:.1} µs ({:+.1}); the landing frame, median {:+.1}; within {} µs: {}",
+      reloads.len(),
+      us(median),
+      over(median),
+      us(max),
+      over(max),
+      over(landing),
+      HITCH_TARGET.as_micros(),
+      if met { "met" } else { "missed" },
+    );
+    if !met {
+      missed.push(format!("shader_reload, {line}"));
+    }
+    lines.push(line);
+  }
+  eprintln!(
+    "shader_reload guard, main-thread frame time (the whole step, the GPU finished before \
+     each), {SHADER_FRAMES} frames at 60 Hz, one of three shaders saved as new WGSL every \
+     {SHADER_EVERY}th ({saves} saves). Ordinary frames ({ordinary_count} of them, outside \
+     every reload): median {:.1} µs, max {:+.1}. {}. Frames more than {} µs over an ordinary \
+     one: outside reloads {}, in reloads {}",
+    us(ordinary),
+    over(ordinary_max),
+    lines.join("; "),
+    OUTLIER.as_micros(),
+    slow(false),
+    slow(true),
+  );
+  for miss in missed {
+    guards::miss(miss);
+  }
+}
+
 /// Frames the criterion bench waits for a change to be drawn before it
 /// changes the files again
 const GIVE_UP: usize = 600;
@@ -950,6 +1258,9 @@ fn main() {
   let looks = OnceCell::new();
   if guards::runs(&["reload_hitch"]) {
     reload_guard(looks.get_or_init(Looks::new));
+  }
+  if guards::runs(&["shader_reload"]) {
+    shader_reload_guard();
   }
   scene_start(&mut criterion, &OnceCell::new());
   reload_bench(&mut criterion, &looks);

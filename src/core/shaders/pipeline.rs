@@ -856,6 +856,13 @@ impl PostProcessPipeline {
     self.custom.sync(removed, shaders, self.custom_frame);
   }
 
+  /// Whether the effect shader `id` waits to run at its current version
+  /// (tests and benches that measure a reload until it runs)
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn custom_pending(&self, id: AssetId<Shader>, shaders: &Assets<Shader>) -> bool {
+    self.custom.cache.pending(id, shaders)
+  }
+
   /// How many pipelines the custom effects have (tests that watch them go)
   // The headless engine reads it, which the web has not
   #[cfg_attr(target_arch = "wasm32", allow(dead_code))]

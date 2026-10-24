@@ -743,6 +743,17 @@ impl WgpuRenderer {
     self.display_effects.sync_shaders(removed, shaders);
   }
 
+  /// Whether the effect shader `id` waits to run at its current version in
+  /// either stage (tests and benches)
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn custom_effect_pending(
+    &self,
+    id: crate::core::asset::AssetId<crate::core::ecs::Shader>,
+    shaders: &crate::core::asset::Assets<crate::core::ecs::Shader>,
+  ) -> bool {
+    self.hdr_effects.custom_pending(id, shaders) || self.display_effects.custom_pending(id, shaders)
+  }
+
   /// How many pipelines the custom effects of both stages have (tests)
   // The headless engine reads it, which the web has not
   #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
