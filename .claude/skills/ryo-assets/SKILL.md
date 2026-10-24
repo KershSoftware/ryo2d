@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.1.2
+  version: 1.1.3
 ---
 
 # Ryo2D Assets
@@ -36,6 +36,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 - **One path is one asset.** Asking for the same path (and settings) again while the asset lives gives the same handle, loaded, loading or failed, so every scene can load what it uses and each file is read once. A failed asset is not tried again until its file changes, or nothing holds it and it is asked for again.
 - `load` never fails on the spot: a bad path, or an extension no loader takes for that type, gives a failed handle (`AssetError::InvalidPath`, `NoLoader`), warned once.
 - `load_now` of an asset already loading on a worker loads it here instead.
+- **`load_now` does the whole load on the calling thread**, a large image's mip levels too, which cost more than its decode: a 2048 x 2048 PNG takes about 15 to 40 ms (its levels 13 to 25 ms of it, on an Apple M5 Pro), so a scene that waits on several large images starts late. Load large images with `load` behind a loading screen (section 4), or in an earlier scene, and keep `load_now` for what the scene draws at once.
 - Systems reach the same registry: `Res<AssetServer>` (`server.load::<Image>(path)`) and the stores as `Res<Assets<Image>>`.
 
 ### Paths
@@ -98,7 +99,7 @@ if let Some(backdrop) = &self.backdrop
   ```
 
 - A handle you drop at once frees the asset at the next pump: loading something and throwing the handle away loads it for nothing.
-- Nothing the engine draws keeps an image alive past the game's last handle: the renderer names textures by id.
+- Nothing the engine draws keeps an image alive past the game's last handle: the renderer names textures by id. While the game holds an image, its texture stays however long it goes undrawn (an image off screen, a UI left alone), so drawing it again uploads nothing; only a full atlas, or more than 64 large images, frees the textures shown least recently.
 
 ## 4. Load states and loading screens
 
@@ -131,6 +132,7 @@ impl Scene for Loading {
 
 - `progress(group) -> Progress { loaded, failed, pending }` takes a group's handles (`&self.held`, `[&bg, &tiles]`) or ids; a group across types gives untyped ids, `[image.id().untyped(), font.id().untyped()]` (any `Into<UntypedAssetId>`). `fraction()` is the share settled, loaded or failed (1 for an empty group); `is_done()` is nothing pending. An id neither loaded nor loading (freed, or never asked for) is not counted.
 - `state(&handle) -> LoadState`: `NotLoaded`, `Loading`, `Loaded` or `Failed(Arc<AssetError>)`, with `is_loaded()`, `is_failed()` and `error()`. `is_ready(&handle)` is loaded with every dependency loaded too (a UI file's images, a theme's skins).
+- To load a group again from its files, drop its handles and load it after the next pump (the frame after): the pump frees what nothing else holds, so those files are read again, and an asset something else still holds is found loaded at once. Count the new handles; waiting for every old one to be freed waits for good if another holder keeps one.
 - `stats() -> AssetStats` counts loaded, loading and failed assets per type (`types: Vec<TypeStats { name, loaded, loading, failed }>`), for a debug overlay.
 - Loads land in the pump at the start of the frame (`PreUpdate`), before `ui` and `update`: a `load` asked for in `on_enter` usually lands a few frames later. When a transition entered the scene, the pump runs right after it in the same frame, so a small file can land in that frame (on the web, where the pump runs the loads itself, it often does).
 - `AssetError` (`#[non_exhaustive]`): `NotFound { path }`, `Io { path, source }`, `Decode { path, source }`, `NoLoader { path, extension }`, `Dependency { path, dependency, error }`, `Cycle { path, chain }`, `InvalidPath { path, reason }`. `Display` is one line naming the path (`could not load "level.ron"`) and the causes are its `source()` chain: `error.report()` is the error with every cause on one line, as the engine's warnings print it. The engine warns once about every failure in the dev log, so a game only handles what it can do something about.
@@ -214,6 +216,7 @@ In debug builds with a window the engine watches `assets/`: a saved file reloads
 - The assets that hold a reloaded one are checked again: a UI file importing the saved file, a theme whose skin image changed, a bitmap font whose sheet did.
 - A reload that fails (a typo in a file) keeps the last good value and warns once, naming the file and, where its format gives one, the line and column: ``could not load "shaders/glow.wgsl": 16:3: expected `;`, found "let"``. Fix the file and save again. A shader is compiled as its file loads, so a `.wgsl` file that does not compile fails as any other file does. A removed file keeps its asset as it was.
 - `ctx.assets().server().reload(path)` asks for the same reload by hand (a headless test, a console command).
+- **A large image shows its new pixels after its `Modified`.** An image whose texture's levels are more than a frame's upload budget (2 MiB; a square image over about 610 px) is written into a new texture over frames, about a frame per 2 MiB (11 frames at 2048 x 2048, about 22 at 3840 x 2160), while its old pixels draw, and the new ones replace them whole. `Modified` is sent when the new value lands, at the start, so a count of reloads moves first and the picture follows a few hundred milliseconds later. A smaller image draws its new pixels in the frame it lands.
 
 Every asset type has a message, `AssetEvent<T>`:
 

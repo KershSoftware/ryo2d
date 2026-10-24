@@ -63,7 +63,9 @@ impl<'w> AssetsView<'w> {
   }
 
   /// Loads at once on this thread, dependencies too, and puts the asset in
-  /// its store. See [`AssetServer::load_now`]
+  /// its store: a large image's mip levels too, about 15 to 40 ms for a
+  /// 2048 px one, so a large image is better loaded with [`load`](Self::load)
+  /// behind a loading screen. See [`AssetServer::load_now`]
   pub fn load_now<T: Asset>(&mut self, path: &str) -> Result<Handle<T>, Arc<AssetError>> {
     self.server.load_now(self.world, path)
   }
