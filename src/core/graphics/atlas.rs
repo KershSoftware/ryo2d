@@ -438,12 +438,22 @@ impl Spread {
     self.texture.is_some() && self.level >= self.levels
   }
 
-  /// Write the next bands, up to `room` bytes of levels and at least a
-  /// row, as `write_mips` would write them whole; the bytes written. None
-  /// when the upload lacks a level the texture has, so the texture can
-  /// never be whole
-  fn write(&mut self, make: &Maker<'_>, queue: &wgpu::Queue, room: u64) -> Option<u64> {
+  /// Write the next bands, up to `room` bytes of levels (and at least a
+  /// row when `floor`), as `write_mips` would write them whole; the bytes
+  /// written. None when the upload lacks a level the texture has, so the
+  /// texture can never be whole. The texture is made only when a row goes
+  /// in
+  fn write(
+    &mut self,
+    make: &Maker<'_>,
+    queue: &wgpu::Queue,
+    (room, floor): (u64, bool),
+  ) -> Option<u64> {
     let (width, height) = self.upload.size();
+    let first_row = u64::from(width + 2 * BORDER) * 4;
+    if self.texture.is_none() && !floor && room < first_row {
+      return Some(0);
+    }
     if self.texture.is_none() {
       crate::profile_scope!("atlas:spread texture");
       let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
@@ -472,8 +482,12 @@ impl Spread {
       let row_bytes = u64::from(width) * 4;
       while *row < rows {
         let fit = room.saturating_sub(written) / row_bytes;
-        // At least a row a call, so a spread always moves on
-        let fit = if written == 0 { fit.max(1) } else { fit };
+        // The first spread always moves on, at least a row a call
+        let fit = if floor && written == 0 {
+          fit.max(1)
+        } else {
+          fit
+        };
         let band = fit.min(u64::from(rows - *row));
         if band == 0 {
           return Some(written);
@@ -752,7 +766,7 @@ impl TextureAtlas {
       let finished = self
         .spreads
         .get_mut(&key)
-        .and_then(|spread| spread.write(&make, queue, u64::MAX));
+        .and_then(|spread| spread.write(&make, queue, (u64::MAX, true)));
       match finished {
         Some(bytes) => {
           self.spent += bytes;
@@ -910,8 +924,9 @@ impl TextureAtlas {
 
   /// Write as many bands of the images being replaced as the frame's budget
   /// leaves room for, after the frame's other image writes. The first gets
-  /// at least a quarter of the budget whatever the frame wrote, so it ends
-  /// however much else is written every frame. One whose upload cannot fill
+  /// at least a quarter of the budget (and at least a row) whatever the
+  /// frame wrote, so it ends however much else is written every frame;
+  /// another starts only with room for a row. One whose upload cannot fill
   /// its texture is dropped ([`take_dropped`](Self::take_dropped))
   pub(crate) fn write_spreads(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
     let make = Maker {
@@ -932,8 +947,11 @@ impl TextureAtlas {
       if room == 0 {
         return true;
       }
-      first = false;
-      match spread.write(&make, queue, room) {
+      // Only the first gets a row whatever its room: a later one with room
+      // for less waits, its texture not made, so images reloaded together
+      // make their textures (and wgpu's clears) a frame at a time
+      let floor = std::mem::replace(&mut first, false);
+      match spread.write(&make, queue, (room, floor)) {
         Some(bytes) => {
           *spent += bytes;
           true
@@ -1001,6 +1019,16 @@ impl TextureAtlas {
   #[cfg(test)]
   pub(crate) fn spread_count(&self) -> usize {
     self.spreads.len()
+  }
+
+  /// How many of them have made their texture (tests)
+  #[cfg(test)]
+  pub(crate) fn spread_textures(&self) -> usize {
+    self
+      .spreads
+      .values()
+      .filter(|spread| spread.texture.is_some())
+      .count()
   }
 
   /// Write at most `bytes` a frame into the textures of images being

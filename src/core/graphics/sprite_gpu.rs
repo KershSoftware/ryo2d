@@ -1698,6 +1698,35 @@ mod tests {
   }
 
   #[test]
+  fn two_large_reloads_landing_together_make_one_new_texture_a_frame() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
+    // 51 of a 316 px texture's 1,264-byte rows, and 1,072 bytes over
+    renderer.set_upload_budget(64 * 1024);
+    let mut images = Assets::<Image>::default();
+    let (a, b) = (images.add(reloaded(10)), images.add(reloaded(20)));
+    let list = world_list(&mut renderer, &images, &[(&a, 0), (&b, 0)]);
+    renderer.prepare_textures(&device, &queue, &list, &[]);
+    *images.get_mut(&a).unwrap() = reloaded(30);
+    *images.get_mut(&b).unwrap() = reloaded(40);
+    renderer.sync_images(&device, [], [a.id(), b.id()], &images, None);
+    assert_eq!(
+      renderer.atlas.spread_count(),
+      2,
+      "both are written over frames"
+    );
+    let list = world_list(&mut renderer, &images, &[(&a, 0), (&b, 0)]);
+    renderer.prepare_textures(&device, &queue, &list, &[]);
+    assert_eq!(
+      renderer.atlas.spread_textures(),
+      1,
+      "the second waits for room for a row before it makes its texture"
+    );
+  }
+
+  #[test]
   fn shading_is_copy_so_sprites_carry_no_heap_data() {
     fn assert_copy<T: Copy>() {}
     assert_copy::<SpriteShading>();
