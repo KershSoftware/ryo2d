@@ -10,7 +10,7 @@ use super::MenuScene;
 use crate::look::spawn_ui_file;
 use crate::save::save_high_score;
 
-const PAUSE: &str = "assets/ui/pause.ui.ron";
+const PAUSE: &str = "ui/pause.ui.ron";
 const PAUSE_EMBEDDED: &str = include_str!("../../assets/ui/pause.ui.ron");
 
 /// Pause menu overlay

@@ -531,27 +531,12 @@ impl Engine {
       hot_reload,
     } = resolved;
 
-    let mut assets = AssetManager::new();
+    let assets = AssetManager::new();
     let initial_size = (config.width, config.height);
 
     // Tell players and developers where settings and saves are kept
     if !headless && let Some(workspace) = &workspace {
       engine_info!(module: "Save", "Save data: {}", workspace.save_location().display());
-    }
-
-    // The old manager watches the asset folder in debug builds when hot
-    // reload is on, never headless
-    if cfg!(debug_assertions)
-      && hot_reload
-      && !headless
-      && let Some(workspace) = &workspace
-    {
-      let assets_dir = workspace.assets_dir();
-      if assets_dir.exists()
-        && let Err(e) = assets.enable_hot_reload(vec![assets_dir])
-      {
-        engine_warn!(module: "HotReload", "Failed to enable: {}", e);
-      }
     }
 
     // Assets load from the project's asset folder unless the game gave a source
@@ -1514,8 +1499,7 @@ impl EngineBuilder {
   /// The default is on in windowed debug builds, and off in release and
   /// headless ones. `true` turns it on in any build, release and headless
   /// included, as tests of reloading do; `false` turns it off. The web build
-  /// has no folder to watch. Until the old asset manager goes, its sprites
-  /// and UI files reload only in windowed debug builds with this on
+  /// has no folder to watch
   pub fn hot_reload(mut self, on: bool) -> Self {
     self.hot_reload = Some(on);
     self

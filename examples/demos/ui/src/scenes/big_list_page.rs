@@ -5,8 +5,8 @@
 
 use demo_kit::prelude::*;
 
-/// The node list's file, relative to the working directory
-const BIG_LIST: &str = "assets/ui/big_list.ui.ron";
+/// The node list's file, an asset path (under `assets/`)
+const BIG_LIST: &str = "ui/big_list.ui.ron";
 
 /// Players on the board
 const PLAYERS: usize = 10_000;
@@ -220,7 +220,8 @@ impl BigListPage {
 
   /// Build the file's tree, then spawn it
   fn spawn_board(&mut self, ctx: &mut SceneContext) -> Result<(), UiFileError> {
-    let tree = ctx.assets.load_ui(BIG_LIST)?.root(&mut ctx.assets())?;
+    let file = ctx.assets().load_now::<UiFile>(BIG_LIST)?;
+    let tree = file.root(&mut ctx.assets())?;
     let root = ctx.spawn_ui(tree);
     let Some(list) = ctx.find_ui_in(root, "board") else {
       ctx.world.despawn(root);

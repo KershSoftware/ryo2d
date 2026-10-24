@@ -45,12 +45,19 @@ pub fn use_game_look(ctx: &mut SceneContext) {
   });
 }
 
-/// A UI file of the game: from disk when `path` is there (debug builds reload
-/// it when it is saved), else the copy embedded in the binary, which is what
-/// the web build and the tests have
-pub fn ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Result<UiFile, UiFileError> {
-  match ctx.assets.load_ui(path) {
-    Err(ManagerError::NotFound(_)) => ctx.assets.add_ui(path, embedded),
+/// A UI file of the game: from the asset folder when `path` (an asset path)
+/// is there (debug builds reload it when it is saved), else the copy embedded
+/// in the binary, which is what the web build and the tests have
+pub fn ui_file(
+  ctx: &mut SceneContext,
+  path: &str,
+  embedded: &str,
+) -> Result<Handle<UiFile>, UiFileError> {
+  match ctx.assets().load_now::<UiFile>(path) {
+    Err(error) if matches!(*error, AssetError::NotFound { .. }) => {
+      let file = UiFile::parse(path, embedded)?;
+      Ok(ctx.assets().add(file))
+    }
     loaded => Ok(loaded?),
   }
 }

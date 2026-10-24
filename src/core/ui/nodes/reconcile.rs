@@ -4,7 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use crate::core::asset::AssetsView;
+use crate::core::asset::Assets;
 use crate::core::ecs::kernel::{
   ChildOf, Children, Component, DetectChangesMut, Entity, EntityWorldMut, Messages, QueryState,
   World, WorldId,
@@ -12,7 +12,8 @@ use crate::core::ecs::kernel::{
 use crate::core::messages::register_message;
 use crate::core::text::TextReveal;
 use crate::core::ui::Anchor;
-use crate::core::ui::file::document::TreeSource;
+use crate::core::ui::UiFile;
+use crate::core::ui::file::document::{TreeSource, version_of};
 use crate::core::ui::theme::warn_once;
 
 use super::bindings::{self, Pattern, UiBind, UiBindings, UiPattern};
@@ -98,8 +99,9 @@ pub(crate) fn reconcile(world: &mut World, entity: Entity, mut tree: UiNode, mod
 #[derive(Default)]
 pub(crate) struct SourceQuery(Option<(WorldId, QueryState<(Entity, &'static UiSource)>)>);
 
-/// The trees whose file moved since they were built, with the generation seen.
-/// The query is made once `UiSource` is registered, and again for another world.
+/// The trees whose file, or a file it imports, changed since they were
+/// built, with the version seen. The query is made once `UiSource` is
+/// registered, and again for another world.
 fn stale_sources(world: &World, cache: &mut SourceQuery) -> Vec<(Entity, Arc<TreeSource>, u64)> {
   if cache.0.as_ref().is_none_or(|(id, _)| *id != world.id()) {
     cache.0 = world
@@ -109,19 +111,24 @@ fn stale_sources(world: &World, cache: &mut SourceQuery) -> Vec<(Entity, Arc<Tre
   let Some((_, sources)) = cache.0.as_mut() else {
     return Vec::new();
   };
+  // A tree from a file holds the file, so its store is there
+  let Some(files) = world.get_resource::<Assets<UiFile>>() else {
+    return Vec::new();
+  };
   sources
     .iter(world)
     .filter_map(|(entity, held)| {
-      let now = held.source.file.generation();
-      (now != held.generation).then(|| (entity, Arc::clone(&held.source), now))
+      let now = version_of(&held.source.file, files);
+      (now != held.version).then(|| (entity, Arc::clone(&held.source), now))
     })
     .collect()
 }
 
-/// Bring every tree built from a UI file that changed since in line with the
-/// file, outer trees first, and send a `UiReloaded` for each root touched.
-/// A tree that cannot be rebuilt (a missing image, a template gone) is kept as
-/// it was and warned about once.
+/// Bring every tree built from a UI file that changed since (the file or one
+/// it imports, reloaded or changed in code) in line with the file, outer
+/// trees first, and send a `UiReloaded` for each root touched. A tree that
+/// cannot be rebuilt (a missing image, a template gone) is kept as it was and
+/// warned about once.
 ///
 /// Runs every frame before the UI pass; with no tree from a file it is one
 /// query, and none at all until one has been spawned.
@@ -140,9 +147,7 @@ pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
       continue;
     }
     let mut built: Option<Arc<TreeSource>> = None;
-    let built_tree = source
-      .file
-      .build_source(&source, &mut AssetsView::new(world));
+    let built_tree = source.file.build_source(&source, world);
     let top = match built_tree {
       Ok(tree) => {
         built = tree.source.clone();
@@ -158,7 +163,7 @@ pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
         top
       }
       Err(error) => {
-        let path = source.file.path();
+        let path = file_path(world, &source);
         warn_once(format!("ui-rebuild:{path}:{now}"), || {
           format!("could not rebuild a tree from {path}; keeping it as it was:\n{error}")
         });
@@ -169,10 +174,10 @@ pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
     if let Some(mut held) = world.get_mut::<UiSource>(top) {
       match built {
         Some(built) => {
-          held.generation = built.generation;
+          held.version = built.version;
           held.source = built;
         }
-        None => held.generation = now,
+        None => held.version = now,
       }
     }
   }
@@ -185,6 +190,15 @@ pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
       messages.write(reloaded);
     }
   }
+}
+
+/// The path of the file a tree came from, for a warning
+fn file_path(world: &World, source: &TreeSource) -> String {
+  world
+    .get_resource::<Assets<UiFile>>()
+    .and_then(|files| files.get(&source.file))
+    .map(|file| file.path().to_string())
+    .unwrap_or_default()
 }
 
 /// How many ancestors `entity` has
@@ -640,7 +654,7 @@ fn set_source(node: &mut EntityWorldMut<'_>, source: Option<Arc<TreeSource>>) {
     write(
       node,
       source.map(|source| UiSource {
-        generation: source.generation,
+        version: source.version,
         source,
       }),
     );
@@ -649,8 +663,9 @@ fn set_source(node: &mut EntityWorldMut<'_>, source: Option<Arc<TreeSource>>) {
 
 /// A list's row shape is the tree's. A new one waits for the next pool
 /// update, which builds it (a file's images load through the world's asset
-/// manager, which a reload holds out of the world) and brings the rows in
-/// line when it builds another row; one taken away releases the rows.
+/// registry, which the reconcile's entity borrow keeps it from) and brings
+/// the rows in line when it builds another row; one taken away releases the
+/// rows.
 fn update_row_shape(node: &mut EntityWorldMut<'_>, shape: Option<RowShape>) {
   match (node.get_mut::<UiListShape>(), shape) {
     (Some(mut held), Some(shape)) => held.bypass_change_detection().next = Some(shape),
@@ -1510,7 +1525,7 @@ mod reload_tests {
   #[test]
   fn a_tree_built_before_a_reload_and_spawned_after_it_reloads() {
     let (dir, mut h) = harness(&[("late.ui.ron", r#"(root: Column(children: [Text("a")]))"#)]);
-    let file = h.assets().load_ui("late.ui.ron").unwrap();
+    let file = h.registry().load_now::<UiFile>("late.ui.ron").unwrap();
     let tree = file.root(&mut h.registry()).unwrap();
     std::fs::write(
       dir.path().join("late.ui.ron"),
@@ -1625,7 +1640,7 @@ mod reload_tests {
     let (dir, mut h) = harness(&[("opts.ui.ron", file)]);
     h.spawn_ui_file("opts.ui.ron").unwrap();
     let picks = h.find_ui("picks").unwrap();
-    let ui_file = h.assets().load_ui("opts.ui.ron").unwrap();
+    let ui_file = h.registry().load_now::<UiFile>("opts.ui.ron").unwrap();
     let args = UiArgs::new()
       .with("name", "pick-3")
       .with("default_focus", true);
@@ -1683,7 +1698,7 @@ mod reload_tests {
     let (dir, mut h) = harness(&[("inv.ui.ron", file)]);
     h.spawn_ui_file("inv.ui.ron").unwrap();
     let list = h.find_ui("list").unwrap();
-    let ui_file = h.assets().load_ui("inv.ui.ron").unwrap();
+    let ui_file = h.registry().load_now::<UiFile>("inv.ui.ron").unwrap();
     let node = ui_file
       .template(
         "Item",
@@ -1723,20 +1738,68 @@ mod reload_tests {
   }
 
   #[test]
-  fn a_reload_that_cannot_build_keeps_the_tree_and_warns_once() {
+  fn a_reload_that_cannot_load_keeps_the_tree_and_warns_once() {
     let (dir, mut h) = harness(&[("img.ui.ron", r#"(root: Column(children: [Text("a")]))"#)]);
     let root = h.spawn_ui_file("img.ui.ron").unwrap();
-    rewrite(
-      &dir,
-      &mut h,
-      "img.ui.ron",
+    std::fs::write(
+      dir.path().join("img.ui.ron"),
       r#"(root: Column(children: [Image("missing.png")]))"#,
-    );
+    )
+    .unwrap();
+    // The image is a dependency: the file does not load without it
+    assert!(h.reload_ui("img.ui.ron").is_err());
+    h.frame(|_| {});
     h.frame(|_| {});
     let child = h.world().get::<Children>(root).unwrap()[0];
     assert_eq!(h.world().get::<UiNodeKind>(child).unwrap().name(), "text");
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("cannot load the image \"missing.png\""),
+      crate::core::ui::test_util::warnings_containing(
+        "\"img.ui.ron\" needs \"missing.png\", which did not load"
+      ),
+      1
+    );
+  }
+
+  #[test]
+  fn an_import_reload_rebuilds_its_importers_trees_and_one_that_fails_keeps_them() {
+    let common = r#"(templates: {"Title": (node: Text(text: "a", name: "title"))})"#;
+    let (dir, mut h) = harness(&[
+      ("common.ui.ron", common),
+      (
+        "menu.ui.ron",
+        r#"(imports: ["common.ui.ron"], root: Column(children: [Title]))"#,
+      ),
+    ]);
+    let root = h.spawn_ui_file("menu.ui.ron").unwrap();
+    let title = h.find_ui("title").unwrap();
+    rewrite(
+      &dir,
+      &mut h,
+      "common.ui.ron",
+      &common.replace("\"a\"", "\"b\""),
+    );
+    assert_eq!(h.find_ui("title"), Some(title), "the same entity");
+    assert_eq!(h.world().get::<UiLabel>(title).unwrap().0, "b");
+    let reloaded: Vec<_> = h.messages::<UiReloaded>().collect();
+    assert_eq!(
+      reloaded,
+      [UiReloaded {
+        root,
+        replaced: None
+      }]
+    );
+    // The import no longer has the template: its importer does not check
+    // against it, so its tree is kept
+    rewrite(
+      &dir,
+      &mut h,
+      "common.ui.ron",
+      r#"(templates: {"Other": (node: Text("c"))})"#,
+    );
+    h.frame(|_| {});
+    assert_eq!(h.world().get::<UiLabel>(title).unwrap().0, "b", "kept");
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing("could not rebuild a tree from menu.ui.ron"),
       1
     );
   }
@@ -1744,7 +1807,7 @@ mod reload_tests {
   #[test]
   fn children_the_game_added_before_spawning_survive_a_reload() {
     let (dir, mut h) = harness(&[("m.ui.ron", r#"(root: Column(children: [Text("file")]))"#)]);
-    let file = h.assets().load_ui("m.ui.ron").unwrap();
+    let file = h.registry().load_now::<UiFile>("m.ui.ron").unwrap();
     let tree = file
       .root(&mut h.registry())
       .unwrap()

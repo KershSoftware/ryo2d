@@ -13,22 +13,23 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   }
 
   let workspace = discover_workspace()?;
+  let assets = workspace.assets_dir();
   let files: Vec<PathBuf> = if args.is_empty() {
-    ui_files_under(&workspace.assets_dir())
+    ui_files_under(&assets)
   } else {
     let cwd = std::env::current_dir().map_err(CliError::Io)?;
     args.iter().map(|a| cwd.join(a)).collect()
   };
 
   if files.is_empty() {
-    Output::warning(&format!(
-      "no *.ui.ron files under {}",
-      workspace.assets_dir().display()
-    ));
+    Output::warning(&format!("no *.ui.ron files under {}", assets.display()));
     return Ok(());
   }
 
-  let issues = check_files(workspace.root(), &files);
+  // The registry warns about each file that does not load; the command
+  // prints those mistakes itself, once each
+  crate::core::dev_log::set_stdout_enabled(false);
+  let issues = check_files(&assets, &files);
   for issue in &issues {
     eprintln!("{issue}");
   }
@@ -57,10 +58,12 @@ OPTIONS:
 
 DESCRIPTION:
     Checks every *.ui.ron file under the project's assets directory, or the
-    files given. Imports are read from disk, and images that do not exist are
-    reported at their values. Each problem is printed as
-    path:line:column: message, and the command exits with an error when any
-    file has a problem. Paths in UI files are relative to the project root.
+    files given, loading each as the game does. Imports and images are read
+    from the assets directory, and an image that does not load is reported
+    at its value. Each problem is printed as path:line:column: message, and
+    the command exits with an error when any file has a problem. Paths in UI
+    files, and the paths printed, are relative to the assets directory
+    (ui/menu.ui.ron for assets/ui/menu.ui.ron).
 
 EXAMPLE:
     ryo2d check-ui

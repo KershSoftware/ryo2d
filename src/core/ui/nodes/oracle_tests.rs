@@ -1433,10 +1433,7 @@ fn a_reloaded_ui_file_looks_the_same_cached() {
       _ => return,
     };
     std::fs::write(&path, text).unwrap();
-    world
-      .resource_mut::<crate::core::asset::AssetManager>()
-      .reload_ui("menu.ui.ron")
-      .unwrap();
+    crate::core::testing::reload_and_wait::<crate::core::ui::UiFile>(world, "menu.ui.ron").unwrap();
   };
   let script = Script::default()
     .frames(3)
@@ -1448,7 +1445,10 @@ fn a_reloaded_ui_file_looks_the_same_cached() {
     .frames(3);
   let run = oracle_with(
     |h| {
-      h.assets().set_base_path(dir.path());
+      crate::core::asset::insert_registry(
+        h.world_mut(),
+        crate::core::asset::AssetServer::new(crate::core::asset::DiskSource::new(dir.path())),
+      );
       h.spawn_ui_file("menu.ui.ron").unwrap();
     },
     &ui,

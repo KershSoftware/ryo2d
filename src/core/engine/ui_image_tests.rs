@@ -110,15 +110,14 @@ fn a_ui_hook_reads_the_image_store_and_builds_ui_files_that_name_images() {
   image::RgbaImage::from_pixel(6, 4, image::Rgba([255, 0, 0, 255]))
     .save(dir.path().join("icon.png"))
     .unwrap();
-  let file = dir.path().join("menu.ui.ron");
   std::fs::write(
-    &file,
+    dir.path().join("menu.ui.ron"),
     r#"(templates: {"Icon": (node: Image("icon.png"))}, root: Column(children: [Icon()]))"#,
   )
   .unwrap();
   let seen = Arc::new(Mutex::new(Seen::default()));
   let scene = BuildsInUi {
-    file: file.display().to_string(),
+    file: "menu.ui.ron".to_string(),
     seen: Arc::clone(&seen),
     built: false,
   };
@@ -290,11 +289,14 @@ fn an_image_a_ui_file_first_loads_in_ui_is_sized_from_the_next_pass() {
   image::RgbaImage::from_pixel(6, 4, image::Rgba([255, 0, 0, 255]))
     .save(dir.path().join("icon.png"))
     .unwrap();
-  let file = dir.path().join("icon.ui.ron");
-  std::fs::write(&file, r#"(root: Column(children: [Image("icon.png")]))"#).unwrap();
+  std::fs::write(
+    dir.path().join("icon.ui.ron"),
+    r#"(root: Column(children: [Image("icon.png")]))"#,
+  )
+  .unwrap();
   let image = Arc::new(Mutex::new(None));
   let scene = LoadsInUi {
-    file: file.display().to_string(),
+    file: "icon.ui.ron".to_string(),
     image: Arc::clone(&image),
   };
   let Some(mut e) = engine(scene, Some(DiskSource::new(dir.path()))) else {

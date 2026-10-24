@@ -14,7 +14,7 @@ use crate::levels::{level_path, load_level};
 use crate::look::{spawn_ui_file, text_style};
 use crate::save::save_high_score;
 
-const HUD: &str = "assets/ui/hud.ui.ron";
+const HUD: &str = "ui/hud.ui.ron";
 const HUD_EMBEDDED: &str = include_str!("../../assets/ui/hud.ui.ron");
 
 /// Main gameplay scene

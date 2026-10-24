@@ -8,10 +8,10 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use crate::core::asset::{
-  AssetManager, AssetServer, AssetsView, DiskSource, MemorySource, insert_registry, pump,
+  Asset, AssetError, AssetEvent, AssetServer, AssetsView, DiskSource, MemorySource,
+  insert_registry, pump,
 };
 use crate::core::ecs::kernel::{Entity, Message, Messages, Tick, World};
-use crate::core::error::ManagerResult;
 use crate::core::input::{Direction, GamepadButton, InputView};
 use crate::core::messages::{register_message, update_messages};
 use crate::core::render::UiSpace;
@@ -27,8 +27,8 @@ use crate::core::ui::nav::{NavInput, NavOutcome, resolve_focus};
 use crate::core::ui::theme::{load_skin, warn_once};
 use crate::core::ui::widgets::scroll::drag_ahead;
 use crate::core::ui::{
-  BindValue, Theme, UiConsumed, UiContext, UiEvent, UiFileError, UiId, UiInput, UiListBind, UiNode,
-  UiReloaded, nodes,
+  BindValue, Theme, UiConsumed, UiContext, UiEvent, UiFile, UiFileError, UiId, UiInput, UiListBind,
+  UiNode, UiReloaded, nodes,
 };
 #[cfg(test)]
 use crate::core::ui::{
@@ -113,8 +113,8 @@ pub struct UiHarness {
   pub(crate) prompts: Arc<PromptContext>,
   /// The presses rebinding rows captured in the last frame
   pub(crate) rebinds: Vec<PendingRebind>,
-  /// The entities of spawned UI nodes, the asset manager UI files load
-  /// through and the asset registry
+  /// The entities of spawned UI nodes, and the asset registry UI files and
+  /// images load through
   world: World,
   /// What the UI sizes images by, brought in line with the world's store
   /// at the start of each frame
@@ -141,8 +141,8 @@ pub struct UiHarness {
 
 impl UiHarness {
   /// A UI `width` by `height` UI units with the built-in fonts, at scale 1,
-  /// in the dark theme, the pointer at the origin, loading files relative to
-  /// the working directory
+  /// in the dark theme, the pointer at the origin, with an asset registry
+  /// over an empty `MemorySource` (`with_assets` reads a folder)
   pub fn new(width: f32, height: f32) -> UiHarness {
     let mut text = TextEngine::new();
     text.sync(&Fonts::with_builtins());
@@ -150,7 +150,6 @@ impl UiHarness {
     register_message::<UiEvent>(&mut world);
     register_message::<UiReloaded>(&mut world);
     register_message::<UiListBind>(&mut world);
-    world.insert_resource(AssetManager::new());
     insert_registry(&mut world, AssetServer::new(MemorySource::new()));
     UiHarness {
       memory: UiMemory::new(),
@@ -206,41 +205,35 @@ impl UiHarness {
     nodes::update_ui(&mut self.world, node, tree)
   }
 
-  /// Load UI files relative to `dir`, and their images with `dir` as the
-  /// registry's asset folder
+  /// Load UI files and images from `dir`, the registry's asset folder
   pub fn with_assets(mut self, dir: impl Into<PathBuf>) -> UiHarness {
     let dir = dir.into();
     insert_registry(&mut self.world, AssetServer::new(DiskSource::new(&dir)));
-    self.assets().set_base_path(dir);
     self
-  }
-
-  /// The asset manager the harness loads UI files through
-  pub fn assets(&mut self) -> &mut AssetManager {
-    self
-      .world
-      .get_resource_or_insert_with(AssetManager::new)
-      .into_inner()
   }
 
   /// The asset registry of the harness's world, as scenes reach it with
-  /// `ctx.assets()`: an `AssetServer` over an empty `MemorySource`. Each
-  /// frame runs its pump first, as the engine does
+  /// `ctx.assets()`: an `AssetServer` over an empty `MemorySource`, or the
+  /// folder `with_assets` gave. Each frame runs its pump first, as the
+  /// engine does
   pub fn registry(&mut self) -> AssetsView<'_> {
     AssetsView::new(&mut self.world)
   }
 
-  /// Load a UI file, build its root and spawn it, as `ctx.spawn_ui_file`
+  /// Load a UI file at once, build its root and spawn it, as
+  /// `ctx.spawn_ui_file`
   pub fn spawn_ui_file(&mut self, path: &str) -> Result<Entity, UiFileError> {
-    let file = self.assets().load_ui(path)?;
+    let file = self.registry().load_now::<UiFile>(path)?;
     let tree = file.root(&mut self.registry())?;
     Ok(self.spawn_ui(tree))
   }
 
-  /// Read a loaded UI file from disk again, as `ctx.assets.reload_ui`: the
-  /// next frame brings the trees built from it in line before drawing
-  pub fn reload_ui(&mut self, path: &str) -> ManagerResult<()> {
-    self.assets().reload_ui(path)
+  /// Read a loaded UI file again, as hot reload does when it is saved, and
+  /// wait until the reload lands: the next frame brings the trees built from
+  /// it in line before drawing. A reload that fails keeps the file as it was
+  /// and gives its error
+  pub fn reload_ui(&mut self, path: &str) -> Result<(), Arc<AssetError>> {
+    reload_and_wait::<UiFile>(&mut self.world, path)
   }
 
   /// The `M` messages written in the last frame, `UiReloaded` among them
@@ -1003,6 +996,54 @@ pub(crate) fn direction_index(direction: Direction) -> usize {
     Direction::Down => 1,
     Direction::Left => 2,
     Direction::Right => 3,
+  }
+}
+
+/// Reload the asset at `path` in `world` through its registry, pumping until
+/// the reload lands (`Modified`) or fails (`ReloadFailed`), as a frame's pump
+/// applies a saved file. A path that was not loaded loads, and lands when it
+/// is in. Gives up after five seconds
+pub(crate) fn reload_and_wait<T: Asset>(
+  world: &mut World,
+  path: &str,
+) -> Result<(), Arc<AssetError>> {
+  let server = AssetsView::new(world).server().clone();
+  let asset = server.load::<T>(path);
+  let Some(mut events) = world
+    .get_resource::<Messages<AssetEvent<T>>>()
+    .map(Messages::get_cursor_current)
+  else {
+    return Err(Arc::new(AssetError::decode(
+      &crate::core::asset::AssetPath::parse(path).map_err(Arc::new)?,
+      "its type has no events in this world",
+    )));
+  };
+  server.reload(path);
+  let start = std::time::Instant::now();
+  loop {
+    pump(world);
+    let landed = events
+      .read(world.resource::<Messages<AssetEvent<T>>>())
+      .find_map(|event| match event {
+        AssetEvent::Added { id } | AssetEvent::Modified { id } if *id == asset.id() => Some(Ok(())),
+        AssetEvent::Failed { id, error } | AssetEvent::ReloadFailed { id, error }
+          if *id == asset.id() =>
+        {
+          Some(Err(Arc::clone(error)))
+        }
+        _ => None,
+      });
+    if let Some(landed) = landed {
+      return landed;
+    }
+    if start.elapsed() > std::time::Duration::from_secs(5) {
+      let path = crate::core::asset::AssetPath::parse(path).map_err(Arc::new)?;
+      return Err(Arc::new(AssetError::decode(
+        &path,
+        "the reload did not land in 5 s",
+      )));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1));
   }
 }
 

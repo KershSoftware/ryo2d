@@ -138,12 +138,13 @@ pub(crate) struct UiApplied {
   pub(crate) place: Option<(Anchor, Vec2, Option<Rect>)>,
 }
 
-/// The top of a tree built from a UI file: what it was built from, and the
-/// file's generation it was last built from, so a reload finds it
+/// The top of a tree built from a UI file: what it was built from (holding
+/// the file), and the file's version it was last built from, its imports'
+/// counted, so a reload finds it
 #[derive(Component)]
 pub(crate) struct UiSource {
   pub(crate) source: Arc<TreeSource>,
-  pub(crate) generation: u64,
+  pub(crate) version: u64,
 }
 
 /// A confirm's No button: the node Back answers as if it were clicked

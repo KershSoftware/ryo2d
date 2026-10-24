@@ -2,7 +2,7 @@
 // and the dialogs are templates the page spawns. Debug builds reload this file
 // when it is saved.
 (
-  imports: ["assets/ui/common.ui.ron"],
+  imports: ["ui/common.ui.ron"],
   templates: {
     "Title": (
       node: Column(

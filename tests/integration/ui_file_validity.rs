@@ -1,7 +1,9 @@
-//! Every `*.ui.ron` file in the repository is valid RON and a valid UI file
+//! Every `*.ui.ron` file in the repository is valid RON and a valid UI file,
+//! loaded through the asset registry as its game loads it
 
 use std::path::{Path, PathBuf};
 
+use ryo2d::ecs::World;
 use ryo2d::prelude::*;
 
 /// The `*.ui.ron` files under `dir`, skipping build output
@@ -21,20 +23,31 @@ fn ui_files(dir: &Path, found: &mut Vec<PathBuf>) {
   }
 }
 
-/// The project a file belongs to: the parent of its `assets` directory,
-/// where its imports and images resolve from
-fn project_of(file: &Path) -> PathBuf {
+/// The asset folder a file belongs to: its project's `assets` directory,
+/// where its imports and images resolve from, else its own folder
+fn assets_of(file: &Path) -> PathBuf {
   file
     .ancestors()
     .find(|dir| dir.file_name().is_some_and(|name| name == "assets"))
-    .and_then(Path::parent)
     .or_else(|| file.parent())
     .map(Path::to_path_buf)
     .unwrap_or_default()
 }
 
+/// A registry reading `assets` that loads UI files and images
+fn registry(assets: &Path) -> (World, AssetServer) {
+  let mut world = World::new();
+  let server = AssetServer::new(DiskSource::new(assets));
+  server.register_asset::<Image>(&mut world);
+  server.register_loader(ImageLoader);
+  server.register_asset::<UiFile>(&mut world);
+  server.register_loader(UiFileLoader);
+  world.insert_resource(server.clone());
+  (world, server)
+}
+
 #[test]
-fn every_ui_file_is_valid_ron_and_a_valid_ui_file() {
+fn every_ui_file_is_valid_ron_and_loads_from_its_asset_folder() {
   let root = Path::new(env!("CARGO_MANIFEST_DIR"));
   let mut files = Vec::new();
   ui_files(&root.join("examples"), &mut files);
@@ -59,15 +72,15 @@ fn every_ui_file_is_valid_ron_and_a_valid_ui_file() {
       problems.push(format!("{shown}: not valid RON: {error}"));
       continue;
     }
-    if text.contains("imports") {
-      let project = project_of(file);
-      let relative = file.strip_prefix(&project).unwrap_or(file);
-      let mut assets = AssetManager::with_base_path(&project);
-      if let Err(error) = assets.load_ui(relative) {
-        problems.push(format!("{shown}: {error}"));
-      }
-    } else if let Err(error) = UiFile::parse(&shown.to_string(), &text) {
-      problems.push(format!("{shown}: {error}"));
+    let assets = assets_of(file);
+    let path = file
+      .strip_prefix(&assets)
+      .unwrap_or(file)
+      .to_string_lossy()
+      .replace('\\', "/");
+    let (mut world, server) = registry(&assets);
+    if let Err(error) = server.load_now::<UiFile>(&mut world, &path) {
+      problems.push(format!("{shown}: {}", UiFileError::from(error)));
     }
   }
   assert!(problems.is_empty(), "{}", problems.join("\n"));

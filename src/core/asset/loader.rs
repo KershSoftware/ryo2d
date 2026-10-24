@@ -79,6 +79,15 @@ impl<'a> LoadContext<'a> {
     self.path
   }
 
+  /// The world `load_now` loads into, which holds the dependencies loaded
+  /// so far; none on the workers
+  pub(crate) fn world(&self) -> Option<&World> {
+    match &self.mode {
+      LoadMode::Now { world, .. } => Some(world),
+      LoadMode::Queued => None,
+    }
+  }
+
   /// Loads a dependency: the asset being loaded holds the handle and is ready
   /// only once this is. While `load_now` runs, dependencies load now too
   pub fn load<T: Asset>(&mut self, path: &str) -> Result<Handle<T>, AssetError> {

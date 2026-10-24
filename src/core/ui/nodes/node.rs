@@ -597,6 +597,12 @@ impl UiNode {
     UiNode::with_state(Kind::Image(ImageOpts::default()), state)
   }
 
+  /// An image node with no sprite: what a check builds for an image it
+  /// does not load (the node is never drawn)
+  pub(crate) fn unloaded_image() -> UiNode {
+    UiNode::of(Kind::Image(ImageOpts::default()))
+  }
+
   /// A checkbox with a label
   pub fn checkbox(label: impl Into<String>, checked: bool) -> UiNode {
     let state = NodeState {

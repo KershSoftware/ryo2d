@@ -17,8 +17,8 @@ pub struct FileMenuPage {
   error: Option<String>,
 }
 
-/// The page's file, relative to the working directory
-const MENU: &str = "assets/ui/menu.ui.ron";
+/// The page's file, an asset path (under `assets/`)
+const MENU: &str = "ui/menu.ui.ron";
 
 impl FileMenuPage {
   pub fn new() -> Self {
@@ -87,7 +87,8 @@ impl FileMenuPage {
   /// The title screen: its title, the menu, and the status line
   fn spawn_screen(ctx: &mut SceneContext) -> Result<(), UiFileError> {
     let title = ctx.ui_template(MENU, "Title", &UiArgs::new())?;
-    let menu = ctx.assets.load_ui(MENU)?.root(&mut ctx.assets())?;
+    let file = ctx.assets().load_now::<UiFile>(MENU)?;
+    let menu = file.root(&mut ctx.assets())?;
     let status = ctx.ui_template(MENU, "Status", &UiArgs::new().with("status", NO_SAVE))?;
     ctx.spawn_ui(title);
     ctx.spawn_ui(menu);

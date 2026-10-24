@@ -115,12 +115,9 @@ impl Ctor<'_> {
     self.read(cx, name, |cx, v| cx.range(v))
   }
 
-  pub(crate) fn asset(
-    &self,
-    cx: &mut BuildCx<'_>,
-    name: &'static str,
-  ) -> Option<crate::core::asset::Handle<crate::core::graphics::Image>> {
-    self.read(cx, name, |cx, v| cx.asset(v))
+  /// An `Image` node from the argument `name`
+  pub(crate) fn image(&self, cx: &mut BuildCx<'_>, name: &'static str) -> Option<UiNode> {
+    self.read(cx, name, |cx, v| cx.image(v))
   }
 
   pub(crate) fn row_shape(&self, cx: &mut BuildCx<'_>, name: &'static str) -> Option<RowShape> {
@@ -204,7 +201,7 @@ pub(crate) static KINDS: &[KindSpec] = &[
     name: "Image",
     main: Some("sprite"),
     args: &[arg("sprite", true)],
-    make: |c, cx| c.asset(cx, "sprite").map(UiNode::image),
+    make: |c, cx| c.image(cx, "sprite"),
   },
   KindSpec {
     name: "Checkbox",

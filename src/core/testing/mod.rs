@@ -58,6 +58,8 @@ pub(crate) mod ui;
 
 pub use headless::{HeadlessEngine, OffscreenOptions, StepOutcome, offscreen_with_format};
 pub use retain::PixelPair;
+#[cfg(test)]
+pub(crate) use ui::reload_and_wait;
 pub use ui::{UiCacheStats, UiHarness};
 
 pub use crate::core::error::HeadlessError;

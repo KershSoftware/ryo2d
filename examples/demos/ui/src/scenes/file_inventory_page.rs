@@ -6,8 +6,8 @@ use demo_kit::prelude::*;
 
 use super::inventory_model::{BAG, EquipSlot, IDLE, Icons, Inventory, Item, ItemKind, SlotRef};
 
-/// The page's file, relative to the working directory
-const INVENTORY: &str = "assets/ui/inventory.ui.ron";
+/// The page's file, an asset path (under `assets/`)
+const INVENTORY: &str = "ui/inventory.ui.ron";
 
 /// Which bag or equipment place a slot node shows
 #[derive(Component, Debug, Clone, Copy)]
@@ -115,7 +115,8 @@ impl FileInventoryPage {
   }
 
   fn build(ctx: &mut SceneContext) -> Result<Built, UiFileError> {
-    let root = ctx.assets.load_ui(INVENTORY)?.root(&mut ctx.assets())?;
+    let file = ctx.assets().load_now::<UiFile>(INVENTORY)?;
+    let root = file.root(&mut ctx.assets())?;
     let mut equipment = Vec::new();
     for equip in EquipSlot::ALL {
       let args = UiArgs::new().with("label", equip.name());

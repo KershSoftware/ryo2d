@@ -382,8 +382,8 @@ pub(crate) fn spawn_node(
     entity.insert(ChildOf(parent));
   }
   if let Some(source) = source {
-    let generation = source.generation;
-    entity.insert(UiSource { source, generation });
+    let version = source.version;
+    entity.insert(UiSource { source, version });
   }
   if is_list {
     entity.insert(UiList {

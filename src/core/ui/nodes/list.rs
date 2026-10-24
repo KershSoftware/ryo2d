@@ -12,7 +12,8 @@
 //! jump waits until the focus lands.
 //!
 //! A file's list (`List(row_shape: LeaderRow)`) builds its rows from the
-//! file, loading their images through the world's `AssetManager`. A row
+//! file, reading its imports from `Assets<UiFile>` and loading their images
+//! through the world's asset registry. A row
 //! shape the list's tree gives later (a reload, `update_ui`) is built and
 //! set against the row the pool was built as: another row brings every
 //! pooled row in line where it is, hidden until it is bound again.
@@ -22,7 +23,6 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use crate::core::asset::AssetsView;
 use crate::core::ecs::kernel::{
   ChildOf, Children, Component, DetectChangesMut, Entity, Messages, Mut, World,
 };
@@ -60,7 +60,7 @@ impl RowShape {
   fn build(&self, world: &mut World) -> Result<UiNode, UiFileError> {
     match self {
       RowShape::Code(shape) => Ok(shape()),
-      RowShape::File(row) => row.build(&mut AssetsView::new(world)),
+      RowShape::File(row) => row.build(world),
     }
   }
 }
@@ -2833,9 +2833,8 @@ mod api_tests {
 #[cfg(test)]
 mod file_tests {
   use super::*;
-  use crate::core::asset::HotReloadEvent;
   use crate::core::testing::UiHarness;
-  use crate::core::ui::file::build::Placeholders;
+  use crate::core::ui::file::build::{BuildCx, Reach, build_node};
   use crate::core::ui::nodes::*;
   use crate::core::ui::test_util::warnings_containing;
   use crate::prelude::*;
@@ -2847,6 +2846,17 @@ mod file_tests {
     }
     let h = UiHarness::new(640.0, 480.0).with_assets(dir.path());
     (dir, h)
+  }
+
+  /// A tree built from file text as a check builds it, its images not
+  /// loaded: a row shape's image that is found nowhere fails only where the
+  /// list builds its rows
+  fn unloaded(text: &str) -> UiNode {
+    let value = crate::core::ui::file::reader::read(text).expect("reads");
+    let mut cx = BuildCx::new(Reach::check(None, None));
+    let node = build_node(&value, &mut cx).expect("builds");
+    assert!(cx.issues.is_empty(), "{:?}", cx.issues);
+    node
   }
 
   /// Write a file anew and reload it, then draw the frame that takes it up
@@ -2983,15 +2993,15 @@ mod file_tests {
     let pool = rows(&h, list);
     let path = dir.path().join("parse-rows.ui.ron");
     std::fs::write(&path, "(templates: { \"LeaderRow\": (node: Row(children: [").unwrap();
-    // A watcher may report one save more than once
+    // Saved twice with the same mistake
     for _ in 0..2 {
-      assert!(
-        !h.assets()
-          .handle_reload_event(HotReloadEvent::FileModified(path.clone()))
-      );
+      assert!(h.reload_ui("parse-rows.ui.ron").is_err());
       assert!(step(&mut h).is_empty(), "nothing bound again");
     }
-    assert_eq!(warnings_containing("could not reload parse-rows.ui.ron"), 1);
+    assert_eq!(
+      warnings_containing("could not load \"parse-rows.ui.ron\""),
+      1
+    );
     assert_eq!(rows(&h, list), pool, "the same rows");
     for &(index, row) in &pool {
       assert!(drawn_now(&h, row), "item {index} still drawn");
@@ -3002,10 +3012,7 @@ mod file_tests {
       template.replace("\"{rank}. {name}\"", "\"#{rank} {name}\""),
     )
     .unwrap();
-    assert!(
-      h.assets()
-        .handle_reload_event(HotReloadEvent::FileModified(path))
-    );
+    assert!(h.reload_ui("parse-rows.ui.ron").is_ok());
     assert_eq!(step(&mut h), pool, "the fix rebuilds and binds every row");
     for _ in 0..2 {
       step(&mut h);
@@ -3027,12 +3034,13 @@ mod file_tests {
       step(&mut h);
     }
     let pool = rows(&h, list);
-    // It checks (images are placeholders when checked) and cannot build
+    // The image is a dependency: the file does not load without it
     let lost = BOARD.replace(
       "name: \"line\")",
       "name: \"line\"), Image(\"gone-leader.png\")",
     );
-    rewrite(&dir, &mut h, name, &lost);
+    std::fs::write(dir.path().join(name), lost).unwrap();
+    assert!(h.reload_ui(name).is_err());
     for _ in 0..3 {
       assert!(step(&mut h).is_empty(), "nothing bound again");
     }
@@ -3042,7 +3050,7 @@ mod file_tests {
       assert_eq!(line_of(&h, row), format!("{}. P{index}", index + 1));
     }
     assert_eq!(
-      warnings_containing("cannot load the image \"gone-leader.png\""),
+      warnings_containing("needs \"gone-leader.png\", which did not load"),
       1
     );
     rewrite(
@@ -3335,13 +3343,12 @@ mod file_tests {
       step(&mut h);
     }
     let pool = rows(&h, list);
-    // Built against placeholder images: the image is found nowhere else
-    let file = UiFile::parse(
-      "ui/lost-row.ui.ron",
-      r#"(root: List(count: 100, row_height: 20, height: 100, width: 200, name: "board", row_shape: Image("lost-row.png")))"#,
-    )
-    .unwrap();
-    let tree = || file.build_root(&mut Placeholders::default()).unwrap();
+    // The image is found nowhere: rows cannot build where the list is
+    let tree = || {
+      unloaded(
+        r#"List(count: 100, row_height: 20, height: 100, width: 200, name: "board", row_shape: Image("lost-row.png"))"#,
+      )
+    };
     h.update_ui(list, tree());
     for _ in 0..3 {
       assert!(step(&mut h).is_empty(), "nothing bound again");
@@ -3379,12 +3386,11 @@ mod file_tests {
     for _ in 0..3 {
       step(&mut h);
     }
-    let file = UiFile::parse(
-      "ui/lost-again.ui.ron",
-      r#"(root: List(count: 100, row_height: 20, height: 100, width: 200, name: "board", row_shape: Image("lost-again.png")))"#,
-    )
-    .unwrap();
-    let lost = || file.build_root(&mut Placeholders::default()).unwrap();
+    let lost = || {
+      unloaded(
+        r#"List(count: 100, row_height: 20, height: 100, width: 200, name: "board", row_shape: Image("lost-again.png"))"#,
+      )
+    };
     // The same mistake given every frame warns once
     for _ in 0..3 {
       h.update_ui(list, lost());

@@ -5,8 +5,8 @@ use demo_kit::prelude::*;
 
 use super::settings_data::{TABS, bind_actions};
 
-/// The page's file, relative to the working directory
-const SETTINGS: &str = "assets/ui/settings.ui.ron";
+/// The page's file, an asset path (under `assets/`)
+const SETTINGS: &str = "ui/settings.ui.ron";
 
 pub struct FileSettingsPage {
   /// The file's tree

@@ -1,13 +1,12 @@
 //! Checking UI files from disk without running a game (`ryo2d check-ui`)
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::core::asset::{Assets, Handle};
+use crate::core::asset::{AssetServer, DiskSource, ImageLoader, UiFileLoader};
+use crate::core::ecs::kernel::World;
 use crate::core::graphics::Image;
 
-use super::build::SpriteSource;
-use super::document::{ImportResolver, UiFile};
+use super::document::UiFile;
 use super::error::{UiFileError, UiFileIssue};
 
 /// Every `*.ui.ron` under `dir`, sorted
@@ -34,141 +33,89 @@ pub(crate) fn ui_files_under(dir: &Path) -> Vec<PathBuf> {
   found
 }
 
-/// Check each file, resolving imports and images against `root`. Issue paths
-/// are relative to `root`, with `/` separators; each issue is listed once.
-pub(crate) fn check_files(root: &Path, files: &[PathBuf]) -> Vec<UiFileIssue> {
-  let mut disk = Disk {
-    root: root.to_path_buf(),
-    loaded: HashMap::new(),
-    loading: Vec::new(),
-  };
+/// Load each file through a registry over the asset folder `assets`, as the
+/// game would: imports and images are read from it, and each file is
+/// checked against them. Issue paths are asset paths; each issue is listed
+/// once.
+pub(crate) fn check_files(assets: &Path, files: &[PathBuf]) -> Vec<UiFileIssue> {
+  let mut world = World::new();
+  let server = AssetServer::new(DiskSource::new(assets));
+  server.register_asset::<Image>(&mut world);
+  server.register_loader(ImageLoader);
+  server.register_asset::<UiFile>(&mut world);
+  server.register_loader(UiFileLoader);
+  world.insert_resource(server.clone());
   let mut issues: Vec<UiFileIssue> = Vec::new();
   for file in files {
-    let name = relative(root, file);
-    let result = match std::fs::read_to_string(root.join(&name)) {
-      Ok(text) => {
-        let mut sprites = disk.sprites();
-        UiFile::check(&name, &text, &mut disk, &mut sprites).map(|_| ())
-      }
-      Err(e) => Err(UiFileError::one(
-        &name,
-        format!("cannot read the file: {e}"),
-      )),
+    let path = relative(assets, file);
+    // A file an earlier one imported is loaded already, or failed already
+    let Err(error) = server.load_now::<UiFile>(&mut world, &path) else {
+      continue;
     };
-    if let Err(error) = result {
-      for issue in error.issues {
-        if !issues.contains(&issue) {
-          issues.push(issue);
-        }
+    for issue in UiFileError::from(error).issues {
+      if !issues.contains(&issue) {
+        issues.push(issue);
       }
     }
   }
   issues
 }
 
-fn relative(root: &Path, file: &Path) -> String {
-  let path = file.strip_prefix(root).unwrap_or(file);
+/// `file`'s asset path under `assets`, with `/` separators
+fn relative(assets: &Path, file: &Path) -> String {
+  let path = file.strip_prefix(assets).unwrap_or(file);
   path.to_string_lossy().replace('\\', "/")
-}
-
-/// Reads imports from disk, each file once per run, refusing circles
-struct Disk {
-  root: PathBuf,
-  loaded: HashMap<String, UiFile>,
-  loading: Vec<String>,
-}
-
-/// Images that exist under the root, as 1x1 placeholders
-struct DiskSprites {
-  root: PathBuf,
-  images: Assets<Image>,
-  handles: HashMap<String, Handle<Image>>,
-}
-
-impl Disk {
-  /// A sprite source of its own, so the resolver and sprites borrow apart
-  fn sprites(&self) -> DiskSprites {
-    DiskSprites {
-      root: self.root.clone(),
-      images: Assets::default(),
-      handles: HashMap::new(),
-    }
-  }
-}
-
-impl SpriteSource for DiskSprites {
-  fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String> {
-    if !self.root.join(path).is_file() {
-      return Err(format!("no image at \"{path}\""));
-    }
-    let images = &mut self.images;
-    let handle = self
-      .handles
-      .entry(path.to_string())
-      .or_insert_with(|| images.add(Image::solid_rect(1, 1, 0, 0, 0, 0)));
-    Ok(handle.clone())
-  }
-}
-
-impl ImportResolver for Disk {
-  fn import(&mut self, path: &str) -> Result<UiFile, UiFileError> {
-    if let Some(file) = self.loaded.get(path) {
-      return Ok(file.clone());
-    }
-    if let Some(start) = self.loading.iter().position(|p| p == path) {
-      let chain: Vec<&str> = self.loading[start..]
-        .iter()
-        .map(String::as_str)
-        .chain(std::iter::once(path))
-        .collect();
-      return Err(UiFileError::one(
-        path,
-        format!("the imports go round in a circle: {}", chain.join(" -> ")),
-      ));
-    }
-    let text = std::fs::read_to_string(self.root.join(path))
-      .map_err(|e| UiFileError::one(path, format!("cannot read the file: {e}")))?;
-    self.loading.push(path.to_string());
-    let mut sprites = self.sprites();
-    let file = UiFile::load(path, &text, self, &mut sprites, false);
-    self.loading.pop();
-    if let Ok(file) = &file {
-      self.loaded.insert(path.to_string(), file.clone());
-    }
-    file
-  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
 
-  fn project(files: &[(&str, &str)]) -> tempfile::TempDir {
+  /// A project's asset folder holding `files`
+  fn assets(files: &[(&str, &[u8])]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    for (name, text) in files {
+    for (name, bytes) in files {
       let path = dir.path().join(name);
       std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-      std::fs::write(path, text).unwrap();
+      std::fs::write(path, bytes).unwrap();
     }
     dir
   }
 
+  fn png() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    image::RgbaImage::new(1, 1)
+      .write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+      )
+      .unwrap();
+    bytes
+  }
+
+  fn shown(dir: &tempfile::TempDir) -> Vec<String> {
+    check_files(dir.path(), &ui_files_under(dir.path()))
+      .iter()
+      .map(ToString::to_string)
+      .collect()
+  }
+
   #[test]
   fn a_clean_project_has_no_issues() {
-    let dir = project(&[
+    let png = png();
+    let dir = assets(&[
       (
-        "assets/ui/common.ui.ron",
-        r#"(templates: {"T": (node: Image("assets/icon.png"))})"#,
+        "ui/common.ui.ron",
+        br#"(templates: {"T": (node: Image("icon.png"))})"#,
       ),
       (
-        "assets/ui/menu.ui.ron",
-        r#"(imports: ["assets/ui/common.ui.ron"], root: T)"#,
+        "ui/menu.ui.ron",
+        br#"(imports: ["ui/common.ui.ron"], root: T)"#,
       ),
-      ("assets/icon.png", ""),
+      ("icon.png", &png),
     ]);
-    let files = ui_files_under(&dir.path().join("assets"));
-    assert_eq!(files.len(), 2);
-    assert_eq!(check_files(dir.path(), &files), []);
+    assert_eq!(ui_files_under(dir.path()).len(), 2);
+    assert_eq!(shown(&dir), Vec::<String>::new());
   }
 
   #[test]
@@ -177,44 +124,44 @@ mod tests {
     templates: { "LeaderRow": (node: Row(children: [Button(label: "{rank}. {name}", name: "line")])) },
     root: Column(focus_scope: true, children: [List(count: 1000, row_height: 20, height: 100, width: 200, name: "board", row_shape: LeaderRow)]),
   )"#;
-    let clean = project(&[("assets/ui/board.ui.ron", BOARD)]);
-    let files = ui_files_under(&clean.path().join("assets"));
-    assert_eq!(check_files(clean.path(), &files), []);
+    let clean = assets(&[("ui/board.ui.ron", BOARD.as_bytes())]);
+    assert_eq!(shown(&clean), Vec::<String>::new());
 
-    let broken = project(&[(
-      "assets/ui/board.ui.ron",
-      "(root: Column(children: [\n  List(count: 3),\n]))",
+    let broken = assets(&[(
+      "ui/board.ui.ron",
+      b"(root: Column(children: [\n  List(count: 3),\n]))",
     )]);
-    let issues = check_files(
-      broken.path(),
-      &ui_files_under(&broken.path().join("assets")),
-    );
-    let shown: Vec<String> = issues.iter().map(ToString::to_string).collect();
     assert_eq!(
-      shown,
+      shown(&broken),
       [
-        "assets/ui/board.ui.ron:2:3: List needs \"row_height\"",
-        "assets/ui/board.ui.ron:2:3: List needs \"row_shape\"",
+        "ui/board.ui.ron:2:3: List needs \"row_height\"",
+        "ui/board.ui.ron:2:3: List needs \"row_shape\"",
       ]
     );
   }
 
   #[test]
-  fn broken_files_and_missing_images_are_reported_with_positions() {
-    let dir = project(&[
-      ("assets/ui/a.ui.ron", "(root: Column(\n  gpa: 1))"),
-      ("assets/ui/b.ui.ron", r#"(root: Image("assets/gone.png"))"#),
+  fn broken_files_missing_images_and_import_cycles_are_reported() {
+    let dir = assets(&[
+      ("ui/a.ui.ron", b"(root: Column(\n  gpa: 1))"),
+      ("ui/b.ui.ron", br#"(root: Image("gone.png"))"#),
+      (
+        "ui/c.ui.ron",
+        br#"(imports: ["ui/d.ui.ron"], templates: {"C": (node: Column)})"#,
+      ),
+      (
+        "ui/d.ui.ron",
+        br#"(imports: ["ui/c.ui.ron"], templates: {"D": (node: Column)})"#,
+      ),
     ]);
-    let issues = check_files(dir.path(), &ui_files_under(&dir.path().join("assets")));
-    let shown: Vec<String> = issues.iter().map(ToString::to_string).collect();
     assert_eq!(
-      shown[0],
-      "assets/ui/a.ui.ron:2:3: Column has no option \"gpa\"; did you mean \"gap\"?"
-    );
-    assert!(
-      shown[1].starts_with("assets/ui/b.ui.ron:1:14:")
-        && shown[1].contains("no image at \"assets/gone.png\""),
-      "{shown:?}"
+      shown(&dir),
+      [
+        "ui/a.ui.ron:2:3: Column has no option \"gpa\"; did you mean \"gap\"?",
+        "ui/b.ui.ron:1:14: cannot load the image \"gone.png\": no asset at \"gone.png\"",
+        // The cycle fails both files with one error, listed once
+        "\"ui/c.ui.ron\" imports itself: ui/c.ui.ron → ui/d.ui.ron → ui/c.ui.ron",
+      ]
     );
   }
 }

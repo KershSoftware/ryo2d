@@ -1,17 +1,22 @@
 //! A UI file: its top level, templates and imports, checked at load, and
 //! the entry points that build its root or a template into a `UiNode`
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, OnceLock};
 
-use crate::core::asset::AssetsView;
+use crate::core::asset::{
+  Asset, AssetError, AssetId, AssetPath, AssetServer, Assets, AssetsView, Handle, LoadContext,
+};
+use crate::core::ecs::kernel::World;
+use crate::core::graphics::Image;
 use crate::core::ui::UiNode;
 use crate::core::ui::nodes::BindValue;
 
-use super::build::{BuildCx, Placeholders, Scope, SpriteSource, build_node, check_template};
-use super::error::{UiFileError, UiFileIssue, describe};
+use super::build::{BuildCx, Reach, Scope, build_node, check_template};
+use super::error::{UiFileError, UiFileIssue, describe, issues_of, reason};
 use super::reader::{Body, Field, Pos, Value, ValueKind, read};
 use super::vocab::{kind_spec, nearest};
 
@@ -19,15 +24,23 @@ use super::vocab::{kind_spec, nearest};
 /// those code added; 0 is a node built in code
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
+/// How many files `version_of` reads through a file's imports at most:
+/// imports cannot go round (a load refuses a cycle), so this only bounds
+/// the cost of files many others share
+const MAX_IMPORT_VISITS: usize = 256;
+
 const TOP_FIELDS: &[&str] = &["root", "templates", "imports", "bindings"];
 const TEMPLATE_FIELDS: &[&str] = &["params", "defaults", "node"];
 
-/// A loaded UI file: a cheap, cloneable handle to its checked contents.
+/// A UI file (`.ui.ron`): an asset, checked when it loads.
 ///
-/// Load one with `assets.load_ui(path)`, or check text with
-/// [`UiFile::parse`]. Build its `root`, or an instance of one of its
-/// templates, into a [`UiNode`] to spawn. A reload replaces the contents in
-/// place, so every clone of the handle sees it.
+/// Load one through the registry (`ctx.assets().load_now::<UiFile>(path)`,
+/// a path under `assets/`), or check text the game holds with
+/// [`UiFile::parse`] and add it (`ctx.assets().add(..)`). Build its `root`,
+/// or an instance of one of its templates, from the handle, into a
+/// [`UiNode`] to spawn. Each tree holds the file's handle, and a reload
+/// (the file saved while the game runs, or one it imports) brings the trees
+/// in line.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -39,31 +52,47 @@ const TEMPLATE_FIELDS: &[&str] = &["params", "defaults", "node"];
 ///       "Item": (params: ["name", "count"], node: Button(label: "{name} x{count}")),
 ///     })"#,
 ///   )?;
+///   let file = ctx.assets().add(file);
 ///   let args = UiArgs::new().with("name", "Sword").with("count", 3);
 ///   file.template("Item", &args, &mut ctx.assets())
 /// }
 /// ```
-#[derive(Clone)]
-pub struct UiFile(Arc<FileCell>);
-
-struct FileCell {
+pub struct UiFile {
   path: String,
-  /// Text the game gave rather than a file on disk: never reloaded from disk
-  embedded: bool,
-  doc: RwLock<Arc<Document>>,
-  generation: AtomicU64,
+  pub(crate) doc: Arc<Document>,
+  /// The images the file names: held, so they live while it does
+  #[allow(dead_code)]
+  images: Vec<Handle<Image>>,
+  /// The newest version among its imports when the load checked it whole
+  /// (under `load_now`, or with no imports): until one changes, `check` has
+  /// nothing to build again
+  checked: Option<u64>,
 }
+
+impl Asset for UiFile {}
 
 /// A file's checked contents
 pub(crate) struct Document {
-  /// The text it was read from, to check again when an import changes
-  pub(crate) text: String,
   pub(crate) root: Option<Value>,
   /// The file's own templates; its imports hold theirs
   pub(crate) templates: HashMap<String, Arc<TemplateDef>>,
-  pub(crate) imports: Vec<UiFile>,
+  /// Every template the file defines, in file order, so a check reports in
+  /// that order
+  order: Vec<Arc<TemplateDef>>,
+  /// The imported files, in the order named: set when the file loads, or,
+  /// for text read with `parse`, when it is first built
+  imports: OnceLock<Vec<Handle<UiFile>>>,
+  /// The path of each import, and where the file names it
+  import_paths: Vec<(String, Pos)>,
   /// Starting values for names, from `bindings`
   pub(crate) seeds: Vec<(String, BindValue)>,
+}
+
+impl Document {
+  /// The imported files; none until they are known
+  pub(crate) fn imports(&self) -> &[Handle<UiFile>] {
+    self.imports.get().map_or(&[], Vec::as_slice)
+  }
 }
 
 /// A template as its file defines it
@@ -81,30 +110,15 @@ pub(crate) struct TemplateDef {
 /// What a built tree came from, so a reload can build it again as the same
 /// instance
 pub(crate) struct TreeSource {
-  pub(crate) file: UiFile,
+  /// The file, held while the tree lives
+  pub(crate) file: Handle<UiFile>,
   /// The template, or `None` for the file's root
   pub(crate) template: Option<String>,
   pub(crate) args: UiArgs,
   pub(crate) instance: u64,
-  /// The file's generation when this tree was built
-  pub(crate) generation: u64,
-}
-
-/// Where a file's imports come from
-pub(crate) trait ImportResolver {
-  fn import(&mut self, path: &str) -> Result<UiFile, UiFileError>;
-}
-
-/// Refuses every import: for files read with [`UiFile::parse`]
-pub(crate) struct NoImports;
-
-impl ImportResolver for NoImports {
-  fn import(&mut self, path: &str) -> Result<UiFile, UiFileError> {
-    Err(UiFileError::one(
-      path,
-      "files read with UiFile::parse cannot import; load the file with assets.load_ui",
-    ))
-  }
+  /// The file's version when this tree was built, its imports' counted
+  /// (`version_of`)
+  pub(crate) version: u64,
 }
 
 /// The arguments of a template built from code.
@@ -215,43 +229,134 @@ impl From<&[&str]> for UiArg {
 
 impl fmt::Debug for UiFile {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    f.debug_struct("UiFile")
-      .field("path", &self.0.path)
-      .field("generation", &self.generation())
-      .finish()
+    f.debug_struct("UiFile").field("path", &self.path).finish()
   }
 }
 
 impl UiFile {
-  /// Check a UI file's text without an asset manager, for tests and tools.
-  /// A file read this way cannot import other files.
+  /// Read and check text the game holds (for instance `include_str!`), as
+  /// the file `name`; add it to the registry (`ctx.assets().add(..)`) to
+  /// build from it. Every mistake comes back together, each with its line
+  /// and column.
+  ///
+  /// It is never reloaded. Its imports are asset paths, loaded at once when
+  /// it is first built (they must be files the registry can load), and it
+  /// is checked against them then; its images load when it is built.
   pub fn parse(name: &str, text: &str) -> Result<UiFile, UiFileError> {
-    UiFile::load(
-      name,
-      text,
-      &mut NoImports,
-      &mut Placeholders::default(),
-      true,
-    )
+    let read = read_file(name, text)?;
+    let mut issues = read.issues;
+    // Checked against its imports once they load, at its first build
+    let deferred = !read.imports.is_empty();
+    let imports = if deferred {
+      OnceLock::new()
+    } else {
+      OnceLock::from(Vec::new())
+    };
+    let doc = Arc::new(Document::new(read.parts, read.imports, imports));
+    if !deferred {
+      issues.extend(check_built(name, &doc, Reach::check(None, None)));
+    }
+    UiFileError::check(issues)?;
+    Ok(UiFile {
+      path: name.to_string(),
+      doc,
+      images: Vec::new(),
+      checked: None,
+    })
   }
 
   /// The path the file was loaded from, or the name it was parsed with
   pub fn path(&self) -> &str {
-    &self.0.path
+    &self.path
   }
 
-  /// How many times the file's contents have been replaced by a reload
-  pub fn generation(&self) -> u64 {
-    self.0.generation.load(Ordering::Acquire)
+  /// Read `text` as the file at `path` and check its top level; load its
+  /// imports and the images it names through `cx`, as its dependencies.
+  /// While `load_now` runs, the imports are loaded by now, so the file's
+  /// templates and root are checked here too, and every mistake comes back
+  /// together; on the workers that waits for `check`
+  pub(crate) fn load(
+    path: &AssetPath,
+    text: &str,
+    cx: &mut LoadContext<'_>,
+  ) -> Result<UiFile, AssetError> {
+    let name = path.as_str();
+    let read = read_file(name, text).map_err(|error| AssetError::decode(path, error))?;
+    let mut issues = read.issues;
+    let sees_imports = cx.world().is_some() || read.imports.is_empty();
+    let mut imports = Vec::with_capacity(read.imports.len());
+    let mut loaded = Vec::with_capacity(read.imports.len());
+    for (import, pos) in read.imports {
+      match cx.load::<UiFile>(&import) {
+        Ok(file) => {
+          imports.push(file);
+          loaded.push((import, pos));
+        }
+        // As it is, so the load that started it names it
+        Err(error @ AssetError::Cycle { .. }) => return Err(error),
+        Err(error) => {
+          issues.push(issue_at(name, pos, format!("cannot import \"{import}\"")));
+          issues.extend(issues_of(&error, &import));
+        }
+      }
+    }
+    let doc = Arc::new(Document::new(read.parts, loaded, OnceLock::from(imports)));
+    // Built once to find the images it names. With its imports in the world
+    // (or none to read) that is the whole check, so its mistakes count now
+    let mut named = Vec::new();
+    let built = check_built(name, &doc, Reach::check(cx.world(), Some(&mut named)));
+    let checked = sees_imports.then(|| imports_version(&doc, cx.world()));
+    if sees_imports {
+      issues.extend(built);
+    }
+    let mut images = Vec::with_capacity(named.len());
+    for (image, pos) in named {
+      match cx.load::<Image>(&image) {
+        Ok(handle) => images.push(handle),
+        Err(error) => {
+          let message = format!("cannot load the image \"{image}\": {}", reason(&error));
+          issues.push(issue_at(name, pos, message));
+        }
+      }
+    }
+    UiFileError::check(issues).map_err(|error| AssetError::decode(path, error))?;
+    Ok(UiFile {
+      path: name.to_string(),
+      doc,
+      images,
+      checked,
+    })
   }
 
+  /// Build the root and every template once against the imports' documents
+  /// in `world`, as the file's loader checks it. A file the load checked
+  /// whole is not built again while its imports are as they were then
+  pub(crate) fn check(&self, world: &World) -> Result<(), AssetError> {
+    if self.checked.is_some() && self.checked == Some(imports_version(&self.doc, Some(world))) {
+      return Ok(());
+    }
+    let issues = check_built(&self.path, &self.doc, Reach::check(Some(world), None));
+    UiFileError::check(issues).map_err(|error| {
+      AssetError::decode(&AssetPath::from_normal(Cow::Borrowed(&self.path)), error)
+    })
+  }
+}
+
+impl Handle<UiFile> {
   /// Build the file's `root`, loading its images at once through the asset
   /// registry (`&mut ctx.assets()`); their paths are asset paths.
   ///
   /// Each build is a new instance with the file's `bindings` as starting
-  /// values; a missing image is an error at its value's position.
+  /// values; a missing image is an error at its value's position. A file
+  /// still loading on the workers builds nothing yet: an error says so.
   pub fn root(&self, assets: &mut AssetsView<'_>) -> Result<UiNode, UiFileError> {
-    self.build_root(assets)
+    build(
+      self,
+      None,
+      &UiArgs::default(),
+      next_instance(),
+      assets.world_mut(),
+    )
   }
 
   /// Build an instance of the template `name` (the file's or an import's)
@@ -266,225 +371,319 @@ impl UiFile {
     args: &UiArgs,
     assets: &mut AssetsView<'_>,
   ) -> Result<UiNode, UiFileError> {
-    self.build_template(name, args, assets)
-  }
-
-  /// Read and check `text`, and hold the result as the file at `path`
-  pub(crate) fn load(
-    path: &str,
-    text: &str,
-    imports: &mut dyn ImportResolver,
-    sprites: &mut dyn SpriteSource,
-    embedded: bool,
-  ) -> Result<UiFile, UiFileError> {
-    let doc = UiFile::check(path, text, imports, sprites)?;
-    Ok(UiFile(Arc::new(FileCell {
-      path: path.to_string(),
-      embedded,
-      doc: RwLock::new(doc),
-      generation: AtomicU64::new(0),
-    })))
-  }
-
-  /// Read and check `text` as the file at `path`: its top level, imports,
-  /// templates (each alone, its required parameters unknown) and its root,
-  /// with every mistake collected
-  pub(crate) fn check(
-    path: &str,
-    text: &str,
-    imports: &mut dyn ImportResolver,
-    sprites: &mut dyn SpriteSource,
-  ) -> Result<Arc<Document>, UiFileError> {
-    let value = read(text).map_err(|issue| UiFileError {
-      issues: vec![UiFileIssue::at(path, issue)],
-    })?;
-    let mut check = Check {
-      path,
-      issues: Vec::new(),
-    };
-    let top = check.top_level(&value);
-    let imported = check.imports(top.imports, imports);
-    let defs = check.templates(top.templates);
-    check.duplicates(&defs, &imported);
-    let seeds = check.bindings(top.bindings);
-    let doc = Arc::new(Document {
-      text: text.to_string(),
-      root: top.root.cloned(),
-      templates: defs
-        .iter()
-        .filter(|(_, usable)| *usable)
-        .map(|(def, _)| (def.name.clone(), def.clone()))
-        .collect(),
-      imports: imported.into_iter().map(|(file, _)| file).collect(),
-      seeds,
-    });
-
-    let scope = Scope {
-      path: path.to_string(),
-      doc: doc.clone(),
-    };
-    let mut cx = BuildCx::in_file(sprites, scope, 0);
-    for (def, _) in &defs {
-      check_template(def, &mut cx);
-    }
-    if let Some(root) = &doc.root {
-      build_node(root, &mut cx);
-    }
-    let built = cx
-      .issues
-      .into_iter()
-      .map(|issue| UiFileIssue::at(path, issue));
-    check.issues.extend(built);
-    UiFileError::check(check.issues)?;
-    Ok(doc)
-  }
-
-  pub(crate) fn doc(&self) -> Arc<Document> {
-    self
-      .0
-      .doc
-      .read()
-      .unwrap_or_else(PoisonError::into_inner)
-      .clone()
-  }
-
-  /// Hold `doc` as the file's contents from now on
-  pub(crate) fn replace(&self, doc: Arc<Document>) {
-    *self.0.doc.write().unwrap_or_else(PoisonError::into_inner) = doc;
-    self.0.generation.fetch_add(1, Ordering::AcqRel);
-  }
-
-  /// Whether both are the same file (not just equal)
-  pub(crate) fn same_file(&self, other: &UiFile) -> bool {
-    Arc::ptr_eq(&self.0, &other.0)
-  }
-
-  pub(crate) fn is_embedded(&self) -> bool {
-    self.0.embedded
-  }
-
-  /// `root()` with any sprite source
-  pub(crate) fn build_root(&self, sprites: &mut dyn SpriteSource) -> Result<UiNode, UiFileError> {
-    self.build(None, &UiArgs::default(), next_instance(), sprites)
-  }
-
-  /// `template()` with any sprite source
-  pub(crate) fn build_template(
-    &self,
-    name: &str,
-    args: &UiArgs,
-    sprites: &mut dyn SpriteSource,
-  ) -> Result<UiNode, UiFileError> {
-    self.build(Some(name), args, next_instance(), sprites)
+    build(self, Some(name), args, next_instance(), assets.world_mut())
   }
 
   /// Build again what `source` built, as the same instance
   pub(crate) fn build_source(
     &self,
     source: &TreeSource,
-    sprites: &mut dyn SpriteSource,
+    world: &mut World,
   ) -> Result<UiNode, UiFileError> {
-    self.build(
+    build(
+      self,
       source.template.as_deref(),
       &source.args,
       source.instance,
-      sprites,
+      world,
     )
   }
+}
 
-  /// Whether the file imports `other` itself (not through another file)
-  pub(crate) fn imports_file(&self, other: &UiFile) -> bool {
-    self
-      .doc()
-      .imports
-      .iter()
-      .any(|file| Arc::ptr_eq(&file.0, &other.0))
+/// The newest content version among `file` and the files it imports,
+/// through every import: it moves on whenever any of them changes, since a
+/// store's versions only grow and each change takes the next one
+pub(crate) fn version_of(file: &Handle<UiFile>, files: &Assets<UiFile>) -> u64 {
+  fn newest(id: AssetId<UiFile>, files: &Assets<UiFile>, visits: &mut usize) -> u64 {
+    let own = files.version(id).unwrap_or(0);
+    if *visits == 0 {
+      return own;
+    }
+    *visits -= 1;
+    files.get(id).map_or(own, |file| {
+      file.doc.imports().iter().fold(own, |newest_yet, import| {
+        newest_yet.max(newest(import.id(), files, visits))
+      })
+    })
   }
+  let mut visits = MAX_IMPORT_VISITS;
+  newest(file.id(), files, &mut visits)
+}
 
-  fn build(
-    &self,
-    template: Option<&str>,
-    args: &UiArgs,
-    instance: u64,
-    sprites: &mut dyn SpriteSource,
-  ) -> Result<UiNode, UiFileError> {
-    let path = self.path();
-    // Before the document, so a reload between them reads as older
-    let generation = self.generation();
-    let doc = self.doc();
-    let scope = Scope {
-      path: path.to_string(),
-      doc: doc.clone(),
-    };
-    let built = match template {
-      None => {
-        let Some(root) = &doc.root else {
-          return Err(UiFileError::one(path, "the file has no root"));
-        };
-        let mut cx = BuildCx::in_file(sprites, scope, instance);
-        let node = build_node(root, &mut cx);
-        (node, cx.issues, path.to_string())
-      }
-      Some(name) => {
-        let Some((def, defined)) = scope.find(name) else {
-          let mut message = format!("no template \"{name}\" in this file or its imports");
-          if let Some(close) = nearest(name, scope.names().iter().map(String::as_str)) {
-            message.push_str(&format!("; did you mean \"{close}\"?"));
-          }
-          return Err(UiFileError::one(path, message));
-        };
-        // The arguments are the fields of a use at the template's position
-        let fields = args
-          .args
-          .iter()
-          .map(|(name, arg)| Field {
-            name: name.clone(),
-            pos: def.pos,
-            value: arg.value(def.pos),
-          })
-          .collect();
-        let used = Value {
-          kind: ValueKind::Named {
-            name: def.name.clone(),
-            body: Body::Fields(fields),
-          },
+/// The newest version among the files `doc` imports, through every import
+fn imports_version(doc: &Document, world: Option<&World>) -> u64 {
+  let Some(files) = world.and_then(|world| world.get_resource::<Assets<UiFile>>()) else {
+    return 0;
+  };
+  doc
+    .imports()
+    .iter()
+    .map(|import| version_of(import, files))
+    .max()
+    .unwrap_or(0)
+}
+
+/// Build `file`'s root (no `template`) or a template, as `instance`
+fn build(
+  file: &Handle<UiFile>,
+  template: Option<&str>,
+  args: &UiArgs,
+  instance: u64,
+  world: &mut World,
+) -> Result<UiNode, UiFileError> {
+  let loaded = world
+    .get_resource::<Assets<UiFile>>()
+    .and_then(|files| files.get(file))
+    .map(|loaded| (loaded.path.clone(), Arc::clone(&loaded.doc)));
+  let Some((path, doc)) = loaded else {
+    let path = world
+      .get_resource::<AssetServer>()
+      .and_then(|server| server.path(file))
+      .map(|path| path.as_str().to_string())
+      .unwrap_or_default();
+    return Err(UiFileError::one(
+      &path,
+      "the file is not loaded (loading on the workers, failed or freed)",
+    ));
+  };
+  resolve_imports(&path, &doc, world)?;
+  let version = world
+    .get_resource::<Assets<UiFile>>()
+    .map_or(0, |files| version_of(file, files));
+  let scope = Scope {
+    path: path.clone(),
+    doc: Arc::clone(&doc),
+  };
+  let built = match template {
+    None => {
+      let Some(root) = &doc.root else {
+        return Err(UiFileError::one(&path, "the file has no root"));
+      };
+      let mut cx = BuildCx::in_file(Reach::Build(world), scope, instance);
+      let node = build_node(root, &mut cx);
+      (node, cx.issues, path.clone())
+    }
+    Some(name) => {
+      let reach = Reach::Build(world);
+      let Some((def, defined)) = scope.find(name, &reach) else {
+        let mut message = format!("no template \"{name}\" in this file or its imports");
+        let names = scope.names(&reach);
+        if let Some(close) = nearest(name, names.iter().map(String::as_str)) {
+          message.push_str(&format!("; did you mean \"{close}\"?"));
+        }
+        return Err(UiFileError::one(&path, message));
+      };
+      // The arguments are the fields of a use at the template's position
+      let fields = args
+        .args
+        .iter()
+        .map(|(name, arg)| Field {
+          name: name.clone(),
           pos: def.pos,
-        };
-        let mut cx = BuildCx::in_file(sprites, scope, instance);
-        let node = build_node(&used, &mut cx);
-        // The positions are in the text of the file that defines it
-        (node, cx.issues, defined.path)
-      }
-    };
-    let (node, issues, at) = built;
-    UiFileError::check(
-      issues
-        .into_iter()
-        .map(|issue| UiFileIssue::at(&at, issue))
-        .collect(),
-    )?;
-    let Some(mut node) = node else {
-      let what = template.unwrap_or("the root");
-      return Err(UiFileError::one(path, format!("{what} builds no node")));
-    };
-    if template.is_none() {
-      for (name, value) in &doc.seeds {
-        node = node.seed(name.clone(), value.clone());
+          value: arg.value(def.pos),
+        })
+        .collect();
+      let used = Value {
+        kind: ValueKind::Named {
+          name: def.name.clone(),
+          body: Body::Fields(fields),
+        },
+        pos: def.pos,
+      };
+      let mut cx = BuildCx::in_file(reach, scope, instance);
+      let node = build_node(&used, &mut cx);
+      // The positions are in the text of the file that defines it
+      (node, cx.issues, defined.path)
+    }
+  };
+  let (node, issues, at) = built;
+  UiFileError::check(
+    issues
+      .into_iter()
+      .map(|issue| UiFileIssue::at(&at, issue))
+      .collect(),
+  )?;
+  let Some(mut node) = node else {
+    let what = template.unwrap_or("the root");
+    return Err(UiFileError::one(&path, format!("{what} builds no node")));
+  };
+  if template.is_none() {
+    for (name, value) in &doc.seeds {
+      node = node.seed(name.clone(), value.clone());
+    }
+  }
+  node.source = Some(Arc::new(TreeSource {
+    file: file.clone(),
+    template: template.map(str::to_string),
+    args: args.clone(),
+    instance,
+    version,
+  }));
+  Ok(node)
+}
+
+/// A file read with `parse` loads its imports at its first build, and is
+/// checked against them then; a file that loaded has them already
+fn resolve_imports(path: &str, doc: &Arc<Document>, world: &mut World) -> Result<(), UiFileError> {
+  if doc.imports.get().is_some() {
+    return Ok(());
+  }
+  let mut imports = Vec::with_capacity(doc.import_paths.len());
+  let mut issues = Vec::new();
+  for (import, pos) in &doc.import_paths {
+    match AssetsView::new(world).load_now::<UiFile>(import) {
+      Ok(file) => imports.push(file),
+      Err(error) => {
+        issues.push(issue_at(path, *pos, format!("cannot import \"{import}\"")));
+        issues.extend(issues_of(&error, import));
       }
     }
-    node.source = Some(Arc::new(TreeSource {
-      file: self.clone(),
-      template: template.map(str::to_string),
-      args: args.clone(),
-      instance,
-      generation,
-    }));
-    Ok(node)
+  }
+  // Not held: the next build tries again, and says why again
+  UiFileError::check(issues)?;
+  let _ = doc.imports.set(imports);
+  UiFileError::check(check_built(path, doc, Reach::check(Some(world), None)))
+}
+
+/// A file's mistakes in building: its templates defined twice across it
+/// and its imports, then its root and every template built once, each
+/// template alone (its required parameters unknown)
+fn check_built(path: &str, doc: &Arc<Document>, reach: Reach<'_>) -> Vec<UiFileIssue> {
+  let mut issues = duplicates(path, doc, &reach);
+  let scope = Scope {
+    path: path.to_string(),
+    doc: Arc::clone(doc),
+  };
+  let mut cx = BuildCx::in_file(reach, scope, 0);
+  for def in &doc.order {
+    check_template(def, &mut cx);
+  }
+  if let Some(root) = &doc.root {
+    build_node(root, &mut cx);
+  }
+  issues.extend(
+    cx.issues
+      .into_iter()
+      .map(|issue| UiFileIssue::at(path, issue)),
+  );
+  issues
+}
+
+/// A template name defined in the file and an import, or in two imports
+fn duplicates(path: &str, doc: &Document, reach: &Reach<'_>) -> Vec<UiFileIssue> {
+  let mut issues = Vec::new();
+  // Each imported name, and the file that first defined it
+  let mut defined: HashMap<&str, &str> = HashMap::new();
+  for (file, (_, pos)) in doc.imports().iter().zip(&doc.import_paths) {
+    let Some(file) = reach.file(file) else {
+      continue;
+    };
+    let mut names: Vec<&String> = file.doc.templates.keys().collect();
+    names.sort_unstable();
+    for name in names {
+      match defined.get(name.as_str()) {
+        Some(first) => {
+          let message =
+            format!("the template \"{name}\" is defined twice (here and in \"{first}\")");
+          issues.push(issue_at(path, *pos, message));
+        }
+        None => {
+          defined.insert(name, file.path());
+        }
+      }
+    }
+  }
+  for def in &doc.order {
+    if let (true, Some(import)) = (
+      doc.templates.contains_key(&def.name),
+      defined.get(def.name.as_str()),
+    ) {
+      let message = format!(
+        "the template \"{}\" is defined twice (here and in \"{import}\")",
+        def.name
+      );
+      issues.push(issue_at(path, def.pos, message));
+    }
+  }
+  issues
+}
+
+fn issue_at(path: &str, pos: Pos, message: String) -> UiFileIssue {
+  UiFileIssue {
+    path: path.to_string(),
+    line: pos.line,
+    column: pos.column,
+    message,
   }
 }
 
 fn next_instance() -> u64 {
   NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed)
+}
+
+/// What a file's text holds once read, before its imports are known
+struct Parts {
+  root: Option<Value>,
+  /// Every template, in file order, with whether its name can be used
+  defs: Vec<(Arc<TemplateDef>, bool)>,
+  seeds: Vec<(String, BindValue)>,
+}
+
+/// A file's text read and its top level checked
+struct Read {
+  parts: Parts,
+  /// Each import's path, and where it is named
+  imports: Vec<(String, Pos)>,
+  /// The mistakes found so far
+  issues: Vec<UiFileIssue>,
+}
+
+impl Document {
+  fn new(
+    parts: Parts,
+    import_paths: Vec<(String, Pos)>,
+    imports: OnceLock<Vec<Handle<UiFile>>>,
+  ) -> Document {
+    let Parts { root, defs, seeds } = parts;
+    Document {
+      root,
+      templates: defs
+        .iter()
+        .filter(|(_, usable)| *usable)
+        .map(|(def, _)| (def.name.clone(), Arc::clone(def)))
+        .collect(),
+      order: defs.into_iter().map(|(def, _)| def).collect(),
+      imports,
+      import_paths,
+      seeds,
+    }
+  }
+}
+
+/// Read `text` as the file at `path`: its top level, its imports' paths,
+/// its templates and its bindings, with every mistake collected. A file
+/// that cannot be read at all is an error
+fn read_file(path: &str, text: &str) -> Result<Read, UiFileError> {
+  let value = read(text).map_err(|issue| UiFileError {
+    issues: vec![UiFileIssue::at(path, issue)],
+  })?;
+  let mut check = Check {
+    path,
+    issues: Vec::new(),
+  };
+  let top = check.top_level(&value);
+  let imports = check.imports(top.imports);
+  let defs = check.templates(top.templates);
+  let seeds = check.bindings(top.bindings);
+  Ok(Read {
+    parts: Parts {
+      root: top.root.cloned(),
+      defs,
+      seeds,
+    },
+    imports,
+    issues: check.issues,
+  })
 }
 
 /// The top level's fields
@@ -557,12 +756,8 @@ impl Check<'_> {
     top
   }
 
-  /// The imported files, each with where it is named
-  fn imports(
-    &mut self,
-    value: Option<&Value>,
-    resolver: &mut dyn ImportResolver,
-  ) -> Vec<(UiFile, Pos)> {
+  /// The imported files' paths, each with where it is named
+  fn imports(&mut self, value: Option<&Value>) -> Vec<(String, Pos)> {
     let Some(value) = value else {
       return Vec::new();
     };
@@ -574,8 +769,7 @@ impl Check<'_> {
       self.issue(value.pos, message);
       return Vec::new();
     };
-    let mut files: Vec<(UiFile, Pos)> = Vec::new();
-    let mut named: Vec<&str> = Vec::new();
+    let mut paths: Vec<(String, Pos)> = Vec::new();
     for item in items {
       let ValueKind::Str(path) = &item.kind else {
         let message = format!(
@@ -585,20 +779,13 @@ impl Check<'_> {
         self.issue(item.pos, message);
         continue;
       };
-      if named.contains(&path.as_str()) {
+      if paths.iter().any(|(named, _)| named == path) {
         self.issue(item.pos, format!("\"{path}\" is imported twice"));
         continue;
       }
-      named.push(path);
-      match resolver.import(path) {
-        Ok(file) => files.push((file, item.pos)),
-        Err(error) => {
-          self.issue(item.pos, format!("cannot import \"{path}\""));
-          self.issues.extend(error.issues);
-        }
-      }
+      paths.push((path.clone(), item.pos));
     }
-    files
+    paths
   }
 
   /// The templates in file order, each with whether its name can be used
@@ -752,38 +939,6 @@ impl Check<'_> {
     lower
   }
 
-  /// A template name defined in the file and an import, or in two imports
-  fn duplicates(&mut self, defs: &[(Arc<TemplateDef>, bool)], imported: &[(UiFile, Pos)]) {
-    // Each imported name, and the file that first defined it
-    let mut defined: HashMap<String, String> = HashMap::new();
-    for (file, pos) in imported {
-      let doc = file.doc();
-      let mut names: Vec<&String> = doc.templates.keys().collect();
-      names.sort_unstable();
-      for name in names {
-        match defined.get(name) {
-          Some(first) => {
-            let message =
-              format!("the template \"{name}\" is defined twice (here and in \"{first}\")");
-            self.issue(*pos, message);
-          }
-          None => {
-            defined.insert(name.clone(), file.path().to_string());
-          }
-        }
-      }
-    }
-    for (def, usable) in defs {
-      if let (true, Some(import)) = (*usable, defined.get(&def.name)) {
-        let message = format!(
-          "the template \"{}\" is defined twice (here and in \"{import}\")",
-          def.name
-        );
-        self.issue(def.pos, message);
-      }
-    }
-  }
-
   fn bindings(&mut self, value: Option<&Value>) -> Vec<(String, BindValue)> {
     let Some(value) = value else {
       return Vec::new();
@@ -824,58 +979,68 @@ impl Check<'_> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::ui::file::build::Placeholders;
+  use crate::core::asset::{MemorySource, insert_registry};
   use crate::core::ui::nodes::fingerprint;
   use crate::prelude::*;
 
-  /// Imports from an in-memory set of files
-  struct Files(HashMap<String, String>, Vec<String>);
-  impl ImportResolver for Files {
-    fn import(&mut self, path: &str) -> Result<UiFile, UiFileError> {
-      if self.1.iter().any(|p| p == path) {
-        return Err(UiFileError::one(path, "the imports go round in a circle"));
-      }
-      let text = self
-        .0
-        .get(path)
-        .cloned()
-        .ok_or_else(|| UiFileError::one(path, "no such file"))?;
-      self.1.push(path.to_string());
-      let file = UiFile::load(path, &text, self, &mut Placeholders::default(), false);
-      self.1.pop();
-      file
+  /// A registry over `files`
+  fn world_over(files: &[(&str, &str)]) -> World {
+    let source = MemorySource::new();
+    for (path, text) in files {
+      source.insert(path, *text);
+    }
+    let mut world = World::new();
+    insert_registry(&mut world, AssetServer::new(source));
+    world
+  }
+
+  /// A file in a registry of its own
+  struct Loaded {
+    world: World,
+    file: Handle<UiFile>,
+  }
+
+  impl Loaded {
+    fn root(&mut self) -> UiNode {
+      self
+        .file
+        .root(&mut AssetsView::new(&mut self.world))
+        .expect("builds")
+    }
+
+    fn template(&mut self, name: &str, args: &UiArgs) -> Result<UiNode, UiFileError> {
+      self
+        .file
+        .template(name, args, &mut AssetsView::new(&mut self.world))
     }
   }
 
-  fn files(list: &[(&str, &str)]) -> Files {
-    Files(
-      list
-        .iter()
-        .map(|(p, t)| (p.to_string(), t.to_string()))
-        .collect(),
-      Vec::new(),
-    )
+  /// `text` loaded as `ui/test.ui.ron`, beside `files`
+  fn load(text: &str, files: &[(&str, &str)]) -> Result<Loaded, UiFileError> {
+    let mut all = files.to_vec();
+    all.push(("ui/test.ui.ron", text));
+    let mut world = world_over(&all);
+    let file = AssetsView::new(&mut world).load_now::<UiFile>("ui/test.ui.ron")?;
+    Ok(Loaded { world, file })
   }
 
-  fn load(text: &str, imports: &mut Files) -> Result<UiFile, UiFileError> {
-    UiFile::load(
-      "ui/test.ui.ron",
-      text,
-      imports,
-      &mut Placeholders::default(),
-      false,
-    )
+  /// Text read with `parse` and added to a registry over `files`
+  fn parsed(name: &str, text: &str, files: &[(&str, &str)]) -> Loaded {
+    let mut world = world_over(files);
+    let file = UiFile::parse(name, text).expect("parses");
+    let file = AssetsView::new(&mut world).add(file);
+    Loaded { world, file }
   }
 
-  fn root(file: &UiFile) -> UiNode {
-    file
-      .build_root(&mut Placeholders::default())
-      .expect("builds")
+  fn error(result: Result<Loaded, UiFileError>) -> UiFileError {
+    match result {
+      Ok(_) => panic!("should fail"),
+      Err(error) => error,
+    }
   }
 
-  fn messages(result: Result<UiFile, UiFileError>) -> Vec<String> {
-    result
-      .expect_err("should fail")
+  fn messages(result: Result<Loaded, UiFileError>) -> Vec<String> {
+    error(result)
       .issues
       .into_iter()
       .map(|i| i.message)
@@ -898,8 +1063,7 @@ mod tests {
 
   #[test]
   fn a_template_expands_with_arguments_defaults_and_root_options() {
-    let file = load(MENU, &mut files(&[])).unwrap();
-    let built = root(&file);
+    let built = load(MENU, &[]).unwrap().root();
     let play = &built.children[0];
     assert_eq!(
       play.state.label.as_deref(),
@@ -915,18 +1079,17 @@ mod tests {
 
   #[test]
   fn false_on_a_use_leaves_a_flag_the_template_sets() {
-    let file = load(
+    let mut file = load(
       r#"(templates: {"Wide": (node: Button(label: "a", fill_width: true))}, root: Wide(fill_width: false))"#,
-      &mut files(&[]),
+      &[],
     )
     .unwrap();
-    assert_eq!(root(&file).layout.width, Some(Length::Fill));
+    assert_eq!(file.root().layout.width, Some(Length::Fill));
   }
 
   #[test]
   fn keys_of_template_instances_use_the_template_name() {
-    let file = load(MENU, &mut files(&[])).unwrap();
-    let built = root(&file);
+    let built = load(MENU, &[]).unwrap().root();
     assert_eq!(
       crate::core::ui::nodes::child_keys(&built.children),
       ["MenuButton#0", "MenuButton#1"]
@@ -935,94 +1098,99 @@ mod tests {
 
   #[test]
   fn a_string_hole_that_is_not_a_parameter_stays_a_binding() {
-    let file = load(
+    let mut file = load(
       r#"(templates: {"Gold": (params: ["who"], node: Text("{who} has {gold}"))}, root: Gold(who: "Kai"))"#,
-      &mut files(&[]),
+      &[],
     )
     .unwrap();
-    assert_eq!(root(&file).state.label.as_deref(), Some("Kai has {gold}"));
+    assert_eq!(file.root().state.label.as_deref(), Some("Kai has {gold}"));
   }
+
+  const COMMON: (&str, &str) = (
+    "ui/common.ui.ron",
+    r#"(templates: {
+      "Inner": (params: ["t"], node: Text(t)),
+      "Outer": (params: ["t"], node: Column(children: [Inner(t: t)])),
+    })"#,
+  );
 
   #[test]
   fn templates_come_from_imports_and_resolve_in_their_own_file() {
-    let mut imports = files(&[(
-      "ui/common.ui.ron",
-      r#"(templates: {
-        "Inner": (params: ["t"], node: Text(t)),
-        "Outer": (params: ["t"], node: Column(children: [Inner(t: t)])),
-      })"#,
-    )]);
-    let file = load(
+    let mut file = load(
       r#"(imports: ["ui/common.ui.ron"], root: Outer(t: "hi"))"#,
-      &mut imports,
+      &[COMMON],
     )
     .unwrap();
-    assert_eq!(root(&file).children[0].state.label.as_deref(), Some("hi"));
+    assert_eq!(file.root().children[0].state.label.as_deref(), Some("hi"));
   }
 
   #[test]
   fn template_mistakes_are_reported() {
-    let none = || files(&[]);
     assert_eq!(
-      messages(load("(root: Column, other: 1)", &mut none())),
+      messages(load("(root: Column, other: 1)", &[])),
       ["a UI file has root, templates, imports and bindings; \"other\" is not one"]
     );
     assert_eq!(
-      messages(load("()", &mut none())),
+      messages(load("()", &[])),
       ["a UI file needs a root or templates"]
     );
     assert!(
-      messages(load(
-        r#"(templates: {"button": (node: Column)})"#,
-        &mut none()
-      ))[0]
+      messages(load(r#"(templates: {"button": (node: Column)})"#, &[]))[0]
         .contains("template names are CamelCase")
     );
     assert!(
-      messages(load(
-        r#"(templates: {"Button": (node: Column)})"#,
-        &mut none()
-      ))[0]
+      messages(load(r#"(templates: {"Button": (node: Column)})"#, &[]))[0]
         .contains("is a node kind")
     );
     assert!(
       messages(load(
         r#"(templates: {"A": (params: ["x"], node: Text(x))}, root: A())"#,
-        &mut none()
+        &[]
       ))[0]
         .contains("A needs \"x\"")
     );
     assert!(
       messages(load(
         r#"(templates: {"A": (params: ["x"], node: Text(x))}, root: A(x: "1", y: 2))"#,
-        &mut none()
+        &[]
       ))[0]
         .contains("A has no parameter or option \"y\"")
     );
     assert!(
       messages(load(
         r#"(templates: {"A": (params: ["label"], node: Text(labl))})"#,
-        &mut none()
+        &[]
       ))[0]
         .contains("did you mean \"label\"")
     );
     assert!(
       messages(load(
         r#"(templates: {"A": (node: B), "B": (node: A)})"#,
-        &mut none()
+        &[]
       ))[0]
         .contains("uses itself")
     );
     assert!(
-      messages(load(r#"(templates: {"A": (node: Buton)})"#, &mut none()))[0]
+      messages(load(r#"(templates: {"A": (node: Buton)})"#, &[]))[0]
         .contains("did you mean \"Button\""),
       "bodies are checked at load"
     );
   }
 
   #[test]
+  fn a_load_reports_its_top_level_and_build_mistakes_together() {
+    assert_eq!(
+      messages(load("(other: 1, root: Column(\n  gpa: 1))", &[])),
+      [
+        "a UI file has root, templates, imports and bindings; \"other\" is not one",
+        "Column has no option \"gpa\"; did you mean \"gap\"?",
+      ]
+    );
+  }
+
+  #[test]
   fn import_mistakes_are_reported() {
-    let mut cycle = files(&[
+    let cycle = [
       (
         "a.ui.ron",
         r#"(imports: ["b.ui.ron"], templates: {"A": (node: Column)})"#,
@@ -1031,19 +1199,19 @@ mod tests {
         "b.ui.ron",
         r#"(imports: ["a.ui.ron"], templates: {"B": (node: Column)})"#,
       ),
-    ]);
-    let issues = messages(load(r#"(imports: ["a.ui.ron"], root: Column)"#, &mut cycle));
-    assert!(issues.iter().any(|m| m.contains("circle")), "{issues:?}");
-    let mut twice = files(&[("c.ui.ron", r#"(templates: {"X": (node: Column)})"#)]);
+    ];
+    let issues = messages(load(r#"(imports: ["a.ui.ron"], root: Column)"#, &cycle));
+    assert_eq!(
+      issues,
+      ["\"a.ui.ron\" imports itself: a.ui.ron → b.ui.ron → a.ui.ron"]
+    );
+    let twice = [("c.ui.ron", r#"(templates: {"X": (node: Column)})"#)];
     let issues = messages(load(
       r#"(imports: ["c.ui.ron"], templates: {"X": (node: Row)}, root: X)"#,
-      &mut twice,
+      &twice,
     ));
     assert!(issues[0].contains("defined twice"), "{issues:?}");
-    let issues = messages(load(
-      r#"(imports: ["missing.ui.ron"], root: Column)"#,
-      &mut files(&[]),
-    ));
+    let issues = messages(load(r#"(imports: ["missing.ui.ron"], root: Column)"#, &[]));
     assert!(
       issues[0].contains("cannot import \"missing.ui.ron\""),
       "{issues:?}"
@@ -1051,11 +1219,21 @@ mod tests {
   }
 
   #[test]
-  fn parse_refuses_imports_and_errors_print_with_positions() {
-    let error = UiFile::parse("ui/x.ui.ron", "(imports: [\"y.ui.ron\"], root: Column)")
-      .err()
-      .unwrap();
-    assert!(error.to_string().contains("cannot import"), "{error}");
+  fn an_import_with_mistakes_lists_them_after_the_import() {
+    let broken = [("ui/broken.ui.ron", "(templates: {\"T\": (node: Buton)})")];
+    let error = error(load(
+      r#"(imports: ["ui/broken.ui.ron"], root: Column)"#,
+      &broken,
+    ));
+    assert_eq!(
+      error.to_string(),
+      "ui/test.ui.ron:1:12: cannot import \"ui/broken.ui.ron\"\n\
+       ui/broken.ui.ron:1:26: unknown node kind \"Buton\"; did you mean \"Button\"?"
+    );
+  }
+
+  #[test]
+  fn errors_print_with_positions() {
     let error = UiFile::parse("ui/x.ui.ron", "(root: Column(\n  gpa: 1))")
       .err()
       .unwrap();
@@ -1066,18 +1244,54 @@ mod tests {
   }
 
   #[test]
+  fn parsed_text_loads_its_imports_at_its_first_build_and_is_checked_then() {
+    let mut file = parsed(
+      "ui/x.ui.ron",
+      r#"(imports: ["ui/common.ui.ron"], root: Outer(t: "hi"))"#,
+      &[COMMON],
+    );
+    assert_eq!(file.root().children[0].state.label.as_deref(), Some("hi"));
+
+    let mut missing = parsed(
+      "ui/x.ui.ron",
+      r#"(imports: ["ui/gone.ui.ron"], root: Column)"#,
+      &[],
+    );
+    let error = missing
+      .file
+      .root(&mut AssetsView::new(&mut missing.world))
+      .err()
+      .unwrap();
+    assert!(
+      error
+        .to_string()
+        .starts_with("ui/x.ui.ron:1:12: cannot import \"ui/gone.ui.ron\""),
+      "{error}"
+    );
+
+    let mut unknown = parsed(
+      "ui/x.ui.ron",
+      r#"(imports: ["ui/common.ui.ron"], templates: {"Mine": (node: Outr(t: "a"))}, root: Column)"#,
+      &[COMMON],
+    );
+    let error = unknown.template("Mine", &UiArgs::new()).err().unwrap();
+    assert!(
+      error.to_string().contains("did you mean \"Outer\""),
+      "checked against its imports: {error}"
+    );
+  }
+
+  #[test]
   fn a_template_built_from_code_takes_args_and_carries_its_source() {
-    let file = UiFile::parse(
+    let mut file = parsed(
       "ui/slot.ui.ron",
       r#"(templates: {"Item": (params: ["name", "count"], node: Button(label: "{name} x{count}"))})"#,
-    )
-    .unwrap();
-    let mut assets = Placeholders::default();
+      &[],
+    );
     let node = file
-      .build_template(
+      .template(
         "Item",
         &UiArgs::new().with("name", "Sword").with("count", 3),
-        &mut assets,
       )
       .unwrap();
     assert_eq!(node.state.label.as_deref(), Some("Sword x3"));
@@ -1086,22 +1300,15 @@ mod tests {
       .as_ref()
       .expect("the top node carries its source");
     assert_eq!(source.template.as_deref(), Some("Item"));
+    assert_eq!(source.file, file.file, "it holds the file");
     assert_ne!(node.instance, 0);
     let error = file
-      .build_template(
-        "Item",
-        &UiArgs::new().with("name", "S").with("cnt", 1),
-        &mut assets,
-      )
+      .template("Item", &UiArgs::new().with("name", "S").with("cnt", 1))
       .err()
       .unwrap();
     assert!(error.to_string().contains("\"cnt\""), "{error}");
     let other = file
-      .build_template(
-        "Item",
-        &UiArgs::new().with("name", "A").with("count", 1),
-        &mut assets,
-      )
+      .template("Item", &UiArgs::new().with("name", "A").with("count", 1))
       .unwrap();
     assert_ne!(
       other.instance, node.instance,
@@ -1111,17 +1318,15 @@ mod tests {
 
   #[test]
   fn the_root_seeds_its_bindings_and_rebuilds_with_the_same_instance() {
-    let file = UiFile::parse(
+    let mut file = parsed(
       "ui/hud.ui.ron",
       r#"(bindings: {"score": 0}, root: Text("{score}"))"#,
-    )
-    .unwrap();
-    let built = root(&file);
+      &[],
+    );
+    let built = file.root();
     assert_eq!(built.seeds, [("score".to_string(), BindValue::Number(0.0))]);
     let source = built.source.clone().unwrap();
-    let again = file
-      .build_source(&source, &mut Placeholders::default())
-      .unwrap();
+    let again = source.file.build_source(&source, &mut file.world).unwrap();
     assert_eq!(again.instance, built.instance);
     assert_eq!(fingerprint(&again), fingerprint(&built));
   }
@@ -1130,7 +1335,7 @@ mod tests {
   fn an_image_whose_sprite_is_a_parameter_is_still_checked() {
     let issues = messages(load(
       r#"(templates: {"Pic": (params: ["src"], node: Image(sprite: src, image_sze: (1, 1)))})"#,
-      &mut files(&[]),
+      &[],
     ));
     assert_eq!(
       issues,
@@ -1139,14 +1344,33 @@ mod tests {
   }
 
   #[test]
+  fn a_missing_image_is_an_issue_at_its_value() {
+    let issues = error(load(
+      r#"(templates: {"Icon": (params: ["name"], node: Image("icons/{name}.png"))}, root: Column(children: [Image("gone.png")]))"#,
+      &[],
+    ))
+    .issues;
+    assert_eq!(
+      issues.len(),
+      1,
+      "a path with a parameter's hole is not loaded: {issues:?}"
+    );
+    assert_eq!((issues[0].line, issues[0].column), (1, 106));
+    assert_eq!(
+      issues[0].message,
+      "cannot load the image \"gone.png\": no asset at \"gone.png\""
+    );
+  }
+
+  #[test]
   fn a_parameter_can_stand_for_a_node_written_in_the_using_file() {
-    let mut imports = files(&[(
+    let labelled = (
       "ui/common.ui.ron",
       r#"(templates: {
         "Labelled": (params: ["label", "widget"], node: Row(children: [Text(label), widget])),
       })"#,
-    )]);
-    let file = load(
+    );
+    let built = load(
       r#"(
         imports: ["ui/common.ui.ron"],
         templates: {"Volume": (node: Slider(range: (0, 1), bind: "volume"))},
@@ -1155,10 +1379,10 @@ mod tests {
           Labelled(label: "Master", widget: Volume),
         ]),
       )"#,
-      &mut imports,
+      &[labelled],
     )
-    .unwrap();
-    let built = root(&file);
+    .unwrap()
+    .root();
     let music = &built.children[0];
     assert_eq!(music.children[0].state.label.as_deref(), Some("Music"));
     assert_eq!(music.children[1].kind.name(), "slider");
@@ -1173,13 +1397,13 @@ mod tests {
 
   #[test]
   fn string_holes_format_numbers_and_leave_escapes_and_other_holes() {
-    let file = load(
+    let mut file = load(
       r#"(templates: {"Hp": (params: ["hp", "n"], node: Text("{hp:.2}/{n} {{hp}} {hp"))}, root: Hp(hp: 2.5, n: 3))"#,
-      &mut files(&[]),
+      &[],
     )
     .unwrap();
     assert_eq!(
-      root(&file).state.label.as_deref(),
+      file.root().state.label.as_deref(),
       Some("2.50/3 {{hp}} {hp")
     );
   }
@@ -1188,7 +1412,7 @@ mod tests {
   fn a_default_is_checked_where_its_template_places_it() {
     let issues = messages(load(
       r#"(templates: {"Gap": (defaults: {"g": "wide"}, node: Column(gap: g))})"#,
-      &mut files(&[]),
+      &[],
     ));
     assert_eq!(issues, ["\"gap\" takes a number, not a string"]);
   }
@@ -1197,7 +1421,7 @@ mod tests {
   fn a_mistake_in_a_template_body_is_reported_once_however_often_it_is_used() {
     let issues = messages(load(
       r#"(templates: {"A": (node: Text(text: "a", sise: 3))}, root: Column(children: [A, A]))"#,
-      &mut files(&[]),
+      &[],
     ));
     assert_eq!(issues.len(), 1, "{issues:?}");
   }
@@ -1211,7 +1435,7 @@ mod tests {
       "(templates: {{{}, \"T80\": (node: Text(\"end\"))}}, root: T0)",
       chain.join(", ")
     );
-    let issues = messages(load(&text, &mut files(&[])));
+    let issues = messages(load(&text, &[]));
     assert!(
       issues.iter().any(|m| m.contains("nest more than 64 deep")),
       "{issues:?}"
@@ -1220,29 +1444,34 @@ mod tests {
 
   #[test]
   fn an_error_prints_one_issue_per_line_and_no_position_at_line_0() {
-    let error = load(
-      r#"(imports: ["missing.ui.ron"], root: Column)"#,
-      &mut files(&[]),
-    )
-    .err()
-    .unwrap();
+    let error = error(load(r#"(imports: ["missing.ui.ron"], root: Column)"#, &[]));
     assert_eq!(
       error.to_string(),
-      "ui/test.ui.ron:1:12: cannot import \"missing.ui.ron\"\nmissing.ui.ron: no such file"
+      "ui/test.ui.ron:1:12: cannot import \"missing.ui.ron\"\nmissing.ui.ron: no asset at \"missing.ui.ron\""
     );
   }
 
   #[test]
   fn an_unknown_template_from_code_is_named_with_a_suggestion() {
-    let file = UiFile::parse("ui/slot.ui.ron", r#"(templates: {"Item": (node: Slot)})"#).unwrap();
-    let error = file
-      .build_template("Itme", &UiArgs::new(), &mut Placeholders::default())
-      .err()
-      .unwrap();
+    let mut file = parsed(
+      "ui/slot.ui.ron",
+      r#"(templates: {"Item": (node: Slot)})"#,
+      &[],
+    );
+    let error = file.template("Itme", &UiArgs::new()).err().unwrap();
     assert!(
       error.to_string().contains("did you mean \"Item\""),
       "{error}"
     );
+  }
+
+  #[test]
+  fn a_file_still_loading_builds_nothing_yet() {
+    let mut world = world_over(&[("ui/late.ui.ron", "(root: Column)")]);
+    let server = world.resource::<AssetServer>().clone();
+    let file = server.load::<UiFile>("ui/late.ui.ron");
+    let error = file.root(&mut AssetsView::new(&mut world)).err().unwrap();
+    assert!(error.to_string().contains("not loaded"), "{error}");
   }
 
   #[test]
@@ -1276,39 +1505,39 @@ mod tests {
 
   #[test]
   fn a_template_used_inside_its_own_argument_is_not_a_cycle() {
-    let file = load(
+    let built = load(
       r#"(
         templates: {"Card": (params: ["content"], node: Panel(children: [content]))},
         root: Card(content: Card(content: Text("x"))),
       )"#,
-      &mut files(&[]),
+      &[],
     )
-    .unwrap();
-    let built = root(&file);
+    .unwrap()
+    .root();
     assert_eq!(
       built.children[0].children[0].state.label.as_deref(),
       Some("x")
     );
 
-    let mut imports = files(&[(
+    let labelled = (
       "ui/common.ui.ron",
       r#"(templates: {
         "Labelled": (params: ["label", "widget"], node: Row(children: [Text(label), widget])),
       })"#,
-    )]);
+    );
     let file = load(
       r#"(
         imports: ["ui/common.ui.ron"],
         templates: {"Volume": (node: Labelled(label: "v", widget: Slider(range: (0, 1))))},
         root: Labelled(label: "Master", widget: Volume),
       )"#,
-      &mut imports,
+      &[labelled],
     );
     assert!(file.is_ok(), "{:?}", file.err());
 
     let issues = messages(load(
       r#"(templates: {"A": (defaults: {"c": A}, node: Panel(children: [c]))})"#,
-      &mut files(&[]),
+      &[],
     ));
     assert!(
       issues[0].contains("uses itself"),
@@ -1318,18 +1547,17 @@ mod tests {
 
   #[test]
   fn imports_are_not_transitive_even_in_arguments() {
-    let mut imports = files(&[
+    let files = [
       (
         "a.ui.ron",
         r#"(imports: ["c.ui.ron"], templates: {"A": (params: ["w"], node: Column(children: [w]))})"#,
       ),
       ("c.ui.ron", r#"(templates: {"Foo": (node: Text("foo"))})"#),
-    ]);
-    let error = load(
+    ];
+    let error = error(load(
       "(imports: [\"a.ui.ron\"],\n  root: A(w: Foo))",
-      &mut imports,
-    )
-    .expect_err("Foo is a.ui.ron's import, not this file's");
+      &files,
+    ));
     assert_eq!(error.issues.len(), 1, "{error}");
     let issue = &error.issues[0];
     assert_eq!(
@@ -1344,18 +1572,18 @@ mod tests {
 
   #[test]
   fn an_imported_template_built_from_code_reports_issues_in_its_own_file() {
-    let mut imports = files(&[(
+    let common = (
       "ui/common.ui.ron",
       r#"(templates: {"Item": (params: ["name"], node: Button(label: name))})"#,
-    )]);
-    let file = load(
+    );
+    let mut file = load(
       r#"(imports: ["ui/common.ui.ron"], root: Column)"#,
-      &mut imports,
+      &[common],
     )
     .unwrap();
     let args = UiArgs::new().with("name", "S").with("cnt", 1);
     let error = file
-      .build_template("Item", &args, &mut Placeholders::default())
+      .template("Item", &args)
       .expect_err("cnt is not an argument of Item");
     assert_eq!(error.issues.len(), 1, "{error}");
     assert_eq!(
@@ -1363,5 +1591,27 @@ mod tests {
       "the position is in the text of the file that defines Item"
     );
     assert!(error.issues[0].message.contains("\"cnt\""), "{error}");
+  }
+
+  #[test]
+  fn the_version_counts_every_import_through_imports() {
+    let mut file = load(
+      r#"(imports: ["ui/a.ui.ron"], root: Column)"#,
+      &[
+        (
+          "ui/a.ui.ron",
+          r#"(imports: ["ui/b.ui.ron"], templates: {"A": (node: Column)})"#,
+        ),
+        ("ui/b.ui.ron", r#"(templates: {"B": (node: Column)})"#),
+      ],
+    )
+    .unwrap();
+    let b = AssetsView::new(&mut file.world)
+      .load_now::<UiFile>("ui/b.ui.ron")
+      .unwrap();
+    let before = version_of(&file.file, file.world.resource::<Assets<UiFile>>());
+    let _ = file.world.resource_mut::<Assets<UiFile>>().get_mut(&b);
+    let after = version_of(&file.file, file.world.resource::<Assets<UiFile>>());
+    assert!(after > before, "{before} -> {after}");
   }
 }

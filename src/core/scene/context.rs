@@ -20,7 +20,7 @@ use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
 use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
-use crate::core::ui::{BindValue, UiArgs, UiFileError, UiId, UiNode, UiTheme, nodes};
+use crate::core::ui::{BindValue, UiArgs, UiFile, UiFileError, UiId, UiNode, UiTheme, nodes};
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
 
 #[cfg(test)]
@@ -281,10 +281,12 @@ impl SceneContext<'_> {
     nodes::spawn_ui(self.world, self.scope_id, tree)
   }
 
-  /// Load a UI file (`.ui.ron`) through `ctx.assets`, build its root and
-  /// spawn it as a root owned by this scene, as `spawn_ui` does.
+  /// Load a UI file (`.ui.ron`, an asset path) at once through the asset
+  /// registry, build its root and spawn it as a root owned by this scene, as
+  /// `spawn_ui` does. The tree holds the file.
   ///
-  /// When the file changes (hot reload, or `ctx.assets.reload_ui(path)`), the
+  /// When the file changes (saved while hot reload is on, or reloaded with
+  /// `ctx.assets().server().reload(path)`), or a file it imports does, the
   /// tree is brought in line with it in place before the next UI pass and a
   /// `UiReloaded` message names its root (and the root it replaced, if the
   /// file gave the root a new kind). Every mistake in the file comes back
@@ -294,7 +296,7 @@ impl SceneContext<'_> {
   /// use ryo2d::prelude::*;
   ///
   /// fn open_pause(ctx: &mut SceneContext<'_>) {
-  ///   match ctx.spawn_ui_file("assets/ui/pause.ui.ron") {
+  ///   match ctx.spawn_ui_file("ui/pause.ui.ron") {
   ///     Ok(menu) => {
   ///       let resume = ctx.find_ui_in(menu, "resume");
   ///       # let _ = resume;
@@ -304,22 +306,22 @@ impl SceneContext<'_> {
   /// }
   /// ```
   pub fn spawn_ui_file(&mut self, path: &str) -> Result<Entity, UiFileError> {
-    let file = self.assets.load_ui(path)?;
+    let file = self.assets().load_now::<UiFile>(path)?;
     let tree = file.root(&mut self.assets())?;
     Ok(self.spawn_ui(tree))
   }
 
-  /// Load a UI file through `ctx.assets` and build an instance of its
-  /// template `name` (or one it imports) with `args`, to spawn or add to a
-  /// tree. Spawned anywhere, the instance follows the template when the file
-  /// is reloaded.
+  /// Load a UI file at once through the asset registry and build an instance
+  /// of its template `name` (or one it imports) with `args`, to spawn or add
+  /// to a tree. Spawned anywhere, the instance follows the template when the
+  /// file is reloaded.
   ///
   /// ```
   /// use ryo2d::prelude::*;
   ///
   /// fn add_item(ctx: &mut SceneContext<'_>, list: Entity, name: &str, count: u32) {
   ///   let args = UiArgs::new().with("name", name).with("count", count);
-  ///   if let Ok(item) = ctx.ui_template("assets/ui/inventory.ui.ron", "Item", &args) {
+  ///   if let Ok(item) = ctx.ui_template("ui/inventory.ui.ron", "Item", &args) {
   ///     ctx.spawn_ui_in(list, item);
   ///   }
   /// }
@@ -330,7 +332,7 @@ impl SceneContext<'_> {
     name: &str,
     args: &UiArgs,
   ) -> Result<UiNode, UiFileError> {
-    let file = self.assets.load_ui(path)?;
+    let file = self.assets().load_now::<UiFile>(path)?;
     file.template(name, args, &mut self.assets())
   }
 

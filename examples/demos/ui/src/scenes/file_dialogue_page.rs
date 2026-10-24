@@ -10,8 +10,8 @@ use super::dialogue_data::{Next, Shop, TREE};
 /// The conversation's end, as the closure page shows it
 const GOODBYE: &str = "The shopkeeper waves goodbye. R starts again.";
 
-/// The page's file, relative to the working directory
-const DIALOGUE: &str = "assets/ui/dialogue.ui.ron";
+/// The page's file, an asset path (under `assets/`)
+const DIALOGUE: &str = "ui/dialogue.ui.ron";
 
 /// The HUD's tree, moved to follow the shell's content area
 struct Hud {
@@ -135,7 +135,8 @@ impl FileDialoguePage {
 
   /// Spawn the conversation panel and fill it
   fn spawn_panel(&mut self, ctx: &mut SceneContext) -> Result<(), UiFileError> {
-    let panel = ctx.assets.load_ui(DIALOGUE)?.root(&mut ctx.assets())?;
+    let file = ctx.assets().load_now::<UiFile>(DIALOGUE)?;
+    let panel = file.root(&mut ctx.assets())?;
     let root = ctx.spawn_ui(panel);
     match Conversation::find(ctx, root) {
       Ok(conversation) => self.conversation = Some(conversation),

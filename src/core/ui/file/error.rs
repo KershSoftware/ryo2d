@@ -1,8 +1,9 @@
 //! Words for the mistakes a UI file can hold, and the error that lists them
 
 use std::fmt;
+use std::sync::Arc;
 
-use crate::core::error::ManagerError;
+use crate::core::asset::AssetError;
 
 use super::reader::{Issue, ValueKind};
 
@@ -28,7 +29,7 @@ pub(crate) fn describe(kind: &ValueKind) -> String {
 /// `Display` prints one per line, as `path:line:column: message`:
 ///
 /// ```text
-/// assets/ui/pause.ui.ron:12:5: Button has no option "fil_width"; did you mean "fill_width"?
+/// ui/pause.ui.ron:12:5: Button has no option "fil_width"; did you mean "fill_width"?
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiFileError {
@@ -91,21 +92,45 @@ impl UiFileError {
   }
 }
 
-impl From<ManagerError> for UiFileError {
-  /// A UI file's mistakes as they are; any other asset error (a file that
-  /// cannot be found or read) as one issue with no position
-  fn from(error: ManagerError) -> UiFileError {
-    match error {
-      ManagerError::UiFile(error) => error,
-      ManagerError::NotFound(path) => {
-        UiFileError::one(&path.display().to_string(), "file not found")
-      }
-      ManagerError::LoadError { path, reason } => {
-        UiFileError::one(&path.display().to_string(), reason)
-      }
-      other => UiFileError::one("", other.to_string()),
+impl From<Arc<AssetError>> for UiFileError {
+  /// A UI file's mistakes as they are; any other asset error (a file that is
+  /// not there, an import that goes round) as one issue with no position
+  fn from(error: Arc<AssetError>) -> UiFileError {
+    UiFileError {
+      issues: issues_of(&error, ""),
     }
   }
+}
+
+/// What failed in a dependency: its own error, not the wrapping that names
+/// the file that needs it
+fn failed(error: &AssetError) -> &AssetError {
+  match error {
+    AssetError::Dependency { error, .. } => failed(error),
+    other => other,
+  }
+}
+
+/// Why a dependency did not load, on one line
+pub(crate) fn reason(error: &AssetError) -> String {
+  failed(error).report()
+}
+
+/// A file's failure as issues: a UI file's own mistakes as they are,
+/// anything else as one issue for `path` with no position
+pub(crate) fn issues_of(error: &AssetError, path: &str) -> Vec<UiFileIssue> {
+  let error = failed(error);
+  if let AssetError::Decode { source, .. } = error
+    && let Some(file) = source.downcast_ref::<UiFileError>()
+  {
+    return file.issues.clone();
+  }
+  vec![UiFileIssue {
+    path: path.to_string(),
+    line: 0,
+    column: 0,
+    message: error.report(),
+  }]
 }
 
 impl fmt::Display for UiFileIssue {
@@ -144,9 +169,8 @@ impl std::error::Error for UiFileError {}
 
 #[cfg(test)]
 mod tests {
-  use std::path::PathBuf;
-
   use super::*;
+  use crate::core::asset::AssetPath;
 
   #[test]
   fn an_issue_prints_the_parts_it_has() {
@@ -164,18 +188,18 @@ mod tests {
 
   #[test]
   fn an_asset_error_becomes_the_files_mistakes_or_one_issue_without_a_position() {
-    let mistakes = UiFileError::one("menu.ui.ron", "no root");
-    assert_eq!(
-      UiFileError::from(ManagerError::UiFile(mistakes.clone())),
-      mistakes
-    );
-    let missing = UiFileError::from(ManagerError::NotFound(PathBuf::from("ui/gone.ui.ron")));
-    assert_eq!(missing.to_string(), "ui/gone.ui.ron: file not found");
+    let path = AssetPath::parse("ui/menu.ui.ron").unwrap();
+    let mistakes = UiFileError::one("ui/menu.ui.ron", "no root");
+    let decode = Arc::new(AssetError::decode(&path, mistakes.clone()));
+    assert_eq!(UiFileError::from(Arc::clone(&decode)), mistakes);
+    let needed = Arc::new(AssetError::Dependency {
+      path: AssetPath::parse("ui/game.ui.ron").unwrap(),
+      dependency: path.clone(),
+      error: decode,
+    });
+    assert_eq!(UiFileError::from(needed), mistakes, "the import's mistakes");
+    let missing = UiFileError::from(Arc::new(AssetError::NotFound { path }));
+    assert_eq!(missing.to_string(), "no asset at \"ui/menu.ui.ron\"");
     assert_eq!(missing.issues[0].line, 0);
-    let other = UiFileError::from(ManagerError::WatchError("no watcher".into()));
-    assert_eq!(
-      other.to_string(),
-      "Failed to set up file watcher: no watcher"
-    );
   }
 }

@@ -13,8 +13,6 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
-use crate::core::ui::file::UiFileError;
-
 /// Top-level engine error type
 ///
 /// This encompasses all errors that can occur within the engine.
@@ -63,10 +61,6 @@ pub enum ManagerError {
   /// Image loading error (wraps ImageError)
   #[error(transparent)]
   Image(#[from] ImageError),
-
-  /// A UI file has mistakes
-  #[error("{0}")]
-  UiFile(UiFileError),
 }
 
 /// Result type for the old `AssetManager`'s operations

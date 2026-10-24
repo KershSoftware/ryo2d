@@ -9,13 +9,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::core::asset::{Assets, AssetsView, Handle};
+use crate::core::ecs::kernel::World;
 use crate::core::graphics::Image;
 use crate::core::text::TextReveal;
 use crate::core::ui::nodes::bindings::parse_hole;
 use crate::core::ui::nodes::{BindValue, RowShape};
 use crate::core::ui::{Color, Edges, Length, UiNode};
 
-use super::document::{Document, TemplateDef};
+use super::document::{Document, TemplateDef, UiFile};
 use super::error::{UiFileError, UiFileIssue, describe};
 use super::reader::{Body, Field, Issue, Pos, Value, ValueKind};
 use super::vocab::{Ctor, Form, KINDS, OPTIONS, UNIVERSAL, kind_spec, nearest, option_spec};
@@ -24,34 +25,38 @@ use super::vocab::{Ctor, Form, KINDS, OPTIONS, UNIVERSAL, kind_spec, nearest, op
 /// nodes to each other cannot overflow the stack
 const MAX_DEPTH: usize = 64;
 
-/// Where a file's images come from
-pub(crate) trait SpriteSource {
-  fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String>;
+/// What a build reaches of the asset registry: where imported files'
+/// documents are read and images come from
+pub(crate) enum Reach<'a> {
+  /// A build to spawn: images load at once through the world's registry
+  Build(&'a mut World),
+  /// A check: imports are read from `world` when there is one (a file read
+  /// alone sees only its own templates), and an image is only its path,
+  /// noted in `images` when given; the load makes those its dependencies
+  Check {
+    world: Option<&'a World>,
+    images: Option<&'a mut Vec<(String, Pos)>>,
+  },
 }
 
-/// Stands in for every image: one shared 1x1 image per path, never failing
-#[derive(Default)]
-pub(crate) struct Placeholders {
-  images: Assets<Image>,
-  handles: HashMap<String, Handle<Image>>,
-}
-
-impl SpriteSource for Placeholders {
-  fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String> {
-    let images = &mut self.images;
-    let handle = self
-      .handles
-      .entry(path.to_string())
-      .or_insert_with(|| images.add(Image::solid_rect(1, 1, 0, 0, 0, 0)));
-    Ok(handle.clone())
+impl<'a> Reach<'a> {
+  pub(crate) fn check(
+    world: Option<&'a World>,
+    images: Option<&'a mut Vec<(String, Pos)>>,
+  ) -> Self {
+    Reach::Check { world, images }
   }
-}
 
-/// A file's images load at once through the asset registry; their paths are
-/// asset paths
-impl SpriteSource for AssetsView<'_> {
-  fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String> {
-    self.load_now::<Image>(path).map_err(|error| error.report())
+  fn world(&self) -> Option<&World> {
+    match self {
+      Reach::Build(world) => Some(world),
+      Reach::Check { world, .. } => *world,
+    }
+  }
+
+  /// The UI file `handle` names, if it is loaded
+  pub(crate) fn file(&self, handle: &Handle<UiFile>) -> Option<&UiFile> {
+    self.world()?.get_resource::<Assets<UiFile>>()?.get(handle)
   }
 }
 
@@ -65,27 +70,41 @@ pub(crate) struct Scope {
 impl Scope {
   /// The template `name`, from the file or else its imports, and the scope
   /// its body builds in
-  pub(crate) fn find(&self, name: &str) -> Option<(Arc<TemplateDef>, Scope)> {
+  pub(crate) fn find(&self, name: &str, reach: &Reach<'_>) -> Option<(Arc<TemplateDef>, Scope)> {
     if let Some(def) = self.doc.templates.get(name) {
       return Some((def.clone(), self.clone()));
     }
-    self.doc.imports.iter().find_map(|file| {
-      let doc = file.doc();
-      let def = doc.templates.get(name)?.clone();
-      let path = file.path().to_string();
-      Some((def, Scope { path, doc }))
+    self.doc.imports().iter().find_map(|file| {
+      let file = reach.file(file)?;
+      let def = file.doc.templates.get(name)?.clone();
+      let scope = Scope {
+        path: file.path().to_string(),
+        doc: Arc::clone(&file.doc),
+      };
+      Some((def, scope))
     })
   }
 
   /// Every template name the scope can use, sorted, for suggestions
-  pub(crate) fn names(&self) -> Vec<String> {
+  pub(crate) fn names(&self, reach: &Reach<'_>) -> Vec<String> {
     let mut names: Vec<String> = self.doc.templates.keys().cloned().collect();
-    for file in &self.doc.imports {
-      names.extend(file.doc().templates.keys().cloned());
+    for file in self.doc.imports() {
+      if let Some(file) = reach.file(file) {
+        names.extend(file.doc.templates.keys().cloned());
+      }
     }
     names.sort_unstable();
     names
   }
+}
+
+/// What a build makes of an image's value
+enum Sprite {
+  Loaded(Handle<Image>),
+  /// A check's: a path the load makes a dependency, or a template parameter
+  Unloaded,
+  /// Not an image path, or it did not load; an issue says why
+  Failed,
 }
 
 /// A file list's row shape (`List(row_shape: ..)`): the value as the file
@@ -106,12 +125,13 @@ impl FileRow {
     self.scope.as_ref().map_or("", |scope| scope.path.as_str())
   }
 
-  /// One row's tree, its images loaded through `sprites`
-  pub(crate) fn build(&self, sprites: &mut dyn SpriteSource) -> Result<UiNode, UiFileError> {
+  /// One row's tree, its images loaded through the world's registry and
+  /// its imports read as they are now
+  pub(crate) fn build(&self, world: &mut World) -> Result<UiNode, UiFileError> {
     let mut cx = BuildCx {
       scope: self.scope.clone(),
       pinned: self.pinned.clone(),
-      ..BuildCx::new(sprites)
+      ..BuildCx::new(Reach::Build(world))
     };
     let node = build_node(&self.value, &mut cx);
     let path = self.path();
@@ -125,7 +145,7 @@ impl FileRow {
 }
 
 pub(crate) struct BuildCx<'a> {
-  pub(crate) sprites: &'a mut dyn SpriteSource,
+  pub(crate) reach: Reach<'a>,
   pub(crate) issues: Vec<Issue>,
   /// The option or argument being read, for messages
   pub(crate) what: &'static str,
@@ -140,10 +160,10 @@ pub(crate) struct BuildCx<'a> {
   depth: usize,
 }
 
-impl BuildCx<'_> {
-  pub(crate) fn new(sprites: &mut dyn SpriteSource) -> BuildCx<'_> {
+impl<'a> BuildCx<'a> {
+  pub(crate) fn new(reach: Reach<'a>) -> BuildCx<'a> {
     BuildCx {
-      sprites,
+      reach,
       issues: Vec::new(),
       what: "",
       scope: None,
@@ -155,18 +175,16 @@ impl BuildCx<'_> {
   }
 
   /// A build in `scope`'s file, giving every node `instance`
-  pub(crate) fn in_file(
-    sprites: &mut dyn SpriteSource,
-    scope: Scope,
-    instance: u64,
-  ) -> BuildCx<'_> {
+  pub(crate) fn in_file(reach: Reach<'a>, scope: Scope, instance: u64) -> BuildCx<'a> {
     BuildCx {
       scope: Some(scope),
       instance,
-      ..BuildCx::new(sprites)
+      ..BuildCx::new(reach)
     }
   }
+}
 
+impl BuildCx<'_> {
   /// The index of the current scope among the scopes arguments were
   /// written in
   fn pin_scope(&mut self) -> Option<usize> {
@@ -355,26 +373,55 @@ impl BuildCx<'_> {
     }
   }
 
+  /// An image's handle, loaded at once; none while checking
   pub(crate) fn asset(&mut self, value: &Value) -> Option<Handle<Image>> {
-    // A template parameter while the template is checked: a stand-in, so
-    // the rest of its node is checked too (the node is never drawn)
+    match self.sprite(value) {
+      Sprite::Loaded(handle) => Some(handle),
+      Sprite::Unloaded | Sprite::Failed => None,
+    }
+  }
+
+  /// An `Image` node. While checking it has no image: the rest of the node
+  /// is checked, and it is never drawn
+  pub(crate) fn image(&mut self, value: &Value) -> Option<UiNode> {
+    match self.sprite(value) {
+      Sprite::Loaded(handle) => Some(UiNode::image(handle)),
+      Sprite::Unloaded => Some(UiNode::unloaded_image()),
+      Sprite::Failed => None,
+    }
+  }
+
+  fn sprite(&mut self, value: &Value) -> Sprite {
+    // A template parameter while the template is checked
     if matches!(value.kind, ValueKind::Any) {
-      return Some(Handle::detached());
+      return Sprite::Unloaded;
     }
     if !self.readable(value) {
-      return None;
+      return Sprite::Failed;
     }
     let ValueKind::Str(path) = &value.kind else {
-      return self.mismatch(value, Form::Asset);
+      let _: Option<()> = self.mismatch(value, Form::Asset);
+      return Sprite::Failed;
     };
-    match self.sprites.sprite(path) {
-      Ok(handle) => Some(handle),
-      Err(message) => {
-        self.issue(
-          value.pos,
-          format!("cannot load the image \"{path}\": {message}"),
-        );
-        None
+    let loaded = match &mut self.reach {
+      Reach::Build(world) => AssetsView::new(world).load_now::<Image>(path),
+      Reach::Check { images, .. } => {
+        // A hole a parameter fills: not a path until the template is used
+        if let Some(images) = images
+          && !path.contains('{')
+          && !images.iter().any(|(named, _)| named == path)
+        {
+          images.push((path.clone(), value.pos));
+        }
+        return Sprite::Unloaded;
+      }
+    };
+    match loaded {
+      Ok(handle) => Sprite::Loaded(handle),
+      Err(error) => {
+        let message = format!("cannot load the image \"{path}\": {}", error.report());
+        self.issue(value.pos, message);
+        Sprite::Failed
       }
     }
   }
@@ -729,10 +776,18 @@ fn build_value(value: &Value, cx: &mut BuildCx<'_>) -> Option<UiNode> {
     return None;
   }
   let Some(spec) = kind_spec(name) else {
-    if let Some((def, scope)) = cx.scope.as_ref().and_then(|scope| scope.find(name)) {
+    if let Some((def, scope)) = cx
+      .scope
+      .as_ref()
+      .and_then(|scope| scope.find(name, &cx.reach))
+    {
       return expand(value, body, &def, scope, cx);
     }
-    let templates = cx.scope.as_ref().map(Scope::names).unwrap_or_default();
+    let templates = cx
+      .scope
+      .as_ref()
+      .map(|scope| scope.names(&cx.reach))
+      .unwrap_or_default();
     let mut message = format!("unknown node kind \"{name}\"");
     let known = KINDS
       .iter()
@@ -1186,21 +1241,45 @@ fn add_children(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::graphics::Image;
+  use crate::core::asset::{AssetServer, MemorySource, insert_registry};
   use crate::core::ui::file::reader::read;
   use crate::core::ui::nodes::{RowShape, fingerprint};
   use crate::prelude::*;
 
+  /// A 1 x 1 PNG
+  fn png() -> Vec<u8> {
+    let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4]));
+    let mut bytes = Vec::new();
+    if let Err(error) = image.write_to(
+      &mut std::io::Cursor::new(&mut bytes),
+      image::ImageFormat::Png,
+    ) {
+      panic!("encoding a png: {error}");
+    }
+    bytes
+  }
+
+  /// A registry holding the images the tests name
+  fn world() -> World {
+    let files = MemorySource::new();
+    for path in ["items/sword.png", "a.png", "i.png", "s.png"] {
+      files.insert(path, png());
+    }
+    let mut world = World::new();
+    insert_registry(&mut world, AssetServer::new(files));
+    world
+  }
+
   thread_local! {
-    /// One stand-in image per path for the whole test, so a file's image and
-    /// the code's are the same
-    static PLACEHOLDERS: std::cell::RefCell<Placeholders> = std::cell::RefCell::default();
+    /// One registry for the whole test, so a file's image and the code's
+    /// are the same
+    static WORLD: std::cell::RefCell<World> = std::cell::RefCell::new(world());
   }
 
   fn build(text: &str) -> (Option<UiNode>, Vec<Issue>) {
     let value = read(text).expect("reads");
-    PLACEHOLDERS.with_borrow_mut(|sprites| {
-      let mut cx = BuildCx::new(sprites);
+    WORLD.with_borrow_mut(|world| {
+      let mut cx = BuildCx::new(Reach::Build(world));
       let node = build_node(&value, &mut cx);
       (node, cx.issues)
     })
@@ -1224,9 +1303,9 @@ mod tests {
   }
 
   fn sprite(path: &str) -> Handle<Image> {
-    PLACEHOLDERS
-      .with_borrow_mut(|sprites| sprites.sprite(path))
-      .expect("a stand-in")
+    WORLD
+      .with_borrow_mut(|world| AssetsView::new(world).load_now::<Image>(path))
+      .expect("the image loads")
   }
 
   fn messages(text: &str) -> Vec<String> {
@@ -1504,30 +1583,38 @@ mod tests {
 
   #[test]
   fn a_failing_image_is_an_issue_at_its_value() {
-    struct Missing;
-    impl SpriteSource for Missing {
-      fn sprite(&mut self, path: &str) -> Result<Handle<Image>, String> {
-        Err(format!("no file {path}"))
-      }
-    }
     let value = read("Image(sprite: \"gone.png\")").unwrap();
-    let mut missing = Missing;
-    let mut cx = BuildCx::new(&mut missing);
+    let mut world = world();
+    let mut cx = BuildCx::new(Reach::Build(&mut world));
     build_node(&value, &mut cx);
     assert_eq!(cx.issues.len(), 1);
-    assert!(
-      cx.issues[0]
-        .message
-        .contains("cannot load the image \"gone.png\"")
+    assert_eq!(
+      cx.issues[0].message,
+      "cannot load the image \"gone.png\": no asset at \"gone.png\""
     );
     assert_eq!(cx.issues[0].pos.column, 15);
   }
 
   #[test]
+  fn a_check_notes_each_image_path_once_and_builds_the_node_without_it() {
+    let value =
+      read("Column(children: [Image(\"a.png\"), Image(sprite: \"a.png\", tint: \"#ff0000\")])")
+        .unwrap();
+    let mut named = Vec::new();
+    let mut cx = BuildCx::new(Reach::check(None, Some(&mut named)));
+    let node = build_node(&value, &mut cx).expect("builds");
+    assert!(cx.issues.is_empty(), "{:?}", cx.issues);
+    assert_eq!(node.children.len(), 2, "both images are checked");
+    assert!(node.children[1].state.image.is_none(), "not loaded");
+    drop(cx);
+    assert_eq!(named.len(), 1);
+    assert_eq!(named[0].0, "a.png");
+  }
+
+  #[test]
   fn every_node_a_kind_builds_carries_the_build_instance() {
     let value = read("Confirm(title: \"Quit?\", message: \"Sure?\")").unwrap();
-    let mut sprites = Placeholders::default();
-    let mut cx = BuildCx::new(&mut sprites);
+    let mut cx = BuildCx::new(Reach::check(None, None));
     cx.instance = 7;
     let node = build_node(&value, &mut cx).expect("builds");
     fn instances(node: &UiNode, out: &mut Vec<u64>) {
@@ -1626,13 +1713,15 @@ mod tests {
         &format!("(templates: {{{templates}}}, root: List(row_height: 20, row_shape: {row}))"),
       )
     };
+    let mut world = world();
     for row in ["Leader", "\"Leader\"", "Column(children: [Leader])"] {
       let file = file(row).unwrap_or_else(|e| panic!("{row}: {e}"));
-      let list = file.build_root(&mut Placeholders::default()).unwrap();
+      let file = AssetsView::new(&mut world).add(file);
+      let list = file.root(&mut AssetsView::new(&mut world)).unwrap();
       let Some(RowShape::File(shape)) = &list.row_shape else {
         panic!("{row}: a file row shape")
       };
-      let mut built = shape.build(&mut Placeholders::default()).unwrap();
+      let mut built = shape.build(&mut world).unwrap();
       while built.kind.name() == "column" {
         built = built.children.remove(0);
       }

@@ -6,7 +6,7 @@ use ryo2d::prelude::*;
 
 use crate::look::spawn_ui_file;
 
-const QUIT_CONFIRM: &str = "assets/ui/quit_confirm.ui.ron";
+const QUIT_CONFIRM: &str = "ui/quit_confirm.ui.ron";
 const QUIT_CONFIRM_EMBEDDED: &str = include_str!("../../assets/ui/quit_confirm.ui.ron");
 
 /// Quit confirmation overlay

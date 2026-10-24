@@ -133,6 +133,11 @@ impl<'w> AssetsView<'w> {
   pub fn server(&self) -> &AssetServer {
     &self.server
   }
+
+  /// The world the view borrows
+  pub(crate) fn world_mut(&mut self) -> &mut World {
+    self.world
+  }
 }
 
 #[cfg(test)]

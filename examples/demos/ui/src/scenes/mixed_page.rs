@@ -3,8 +3,8 @@
 
 use demo_kit::prelude::*;
 
-/// The grid's file, relative to the working directory
-const MIXED: &str = "assets/ui/mixed.ui.ron";
+/// The grid's file, an asset path (under `assets/`)
+const MIXED: &str = "ui/mixed.ui.ron";
 
 const START_CELLS: u32 = 8;
 const MAX_CELLS: u32 = 16;
@@ -78,7 +78,8 @@ impl MixedPage {
 impl MixedPage {
   /// Build the grid and its first cells, then spawn them
   fn spawn_grid(&mut self, ctx: &mut SceneContext) -> Result<(), UiFileError> {
-    let root = ctx.assets.load_ui(MIXED)?.root(&mut ctx.assets())?;
+    let file = ctx.assets().load_now::<UiFile>(MIXED)?;
+    let root = file.root(&mut ctx.assets())?;
     let cells = (1..=START_CELLS)
       .map(|n| Self::cell(ctx, n))
       .collect::<Result<Vec<_>, _>>()?;

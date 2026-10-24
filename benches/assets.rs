@@ -1,10 +1,10 @@
 //! Scene-start asset loading: what a scene's `on_enter` does. Forty PNGs
-//! (ten each at 32, 64, 128 and 256 pixels square) and two fonts (Press
-//! Start 2P and JetBrains Mono) loaded at once through the asset registry
-//! (`load_now::<Image>`, `load_now::<Font>`), and three UI files (the second
-//! importing the first) through `AssetManager`, on a fresh registry and
-//! manager each iteration. The same bench on the old manager's image loads,
-//! before the registry, is what it is measured against.
+//! (ten each at 32, 64, 128 and 256 pixels square), two fonts (Press Start
+//! 2P and JetBrains Mono) and three UI files (the second importing the
+//! first) loaded at once through the asset registry (`load_now::<Image>`,
+//! `load_now::<Font>`, `load_now::<UiFile>`), on a fresh registry each
+//! iteration. The same bench on the old manager's loads, before the
+//! registry, is what it is measured against.
 //!
 //! The fonts are measured from the registry's fonts on: before them the
 //! bench had no public way to build a `Fonts` registry, so the "before"
@@ -141,8 +141,7 @@ fn scene_start(c: &mut Criterion) {
   std::fs::write(dir.path().join("b.ui.ron"), ui_source("b", true)).expect("write ui");
   std::fs::write(dir.path().join("c.ui.ron"), ui_source("c", false)).expect("write ui");
 
-  // A fresh registry each iteration, over the same folder; UI files still
-  // load through the old manager
+  // A fresh registry each iteration, over the same folder
   let fresh = || {
     let mut world = ryo2d::ecs::World::new();
     let server = AssetServer::new(DiskSource::new(dir.path()));
@@ -150,13 +149,15 @@ fn scene_start(c: &mut Criterion) {
     server.register_loader(ImageLoader);
     server.register_asset::<Font>(&mut world);
     server.register_loader(FontLoader);
+    server.register_asset::<UiFile>(&mut world);
+    server.register_loader(UiFileLoader);
     world.insert_resource(server.clone());
-    (server, world, AssetManager::with_base_path(dir.path()))
+    (server, world)
   };
   c.bench_function("scene_start", |b| {
     b.iter_batched(
       fresh,
-      |(server, mut world, mut manager)| {
+      |(server, mut world)| {
         for name in &pngs {
           let image = server.load_now::<Image>(&mut world, name);
           std::hint::black_box(image.expect("load image"));
@@ -166,9 +167,10 @@ fn scene_start(c: &mut Criterion) {
           std::hint::black_box(font.expect("load font"));
         }
         for name in uis {
-          std::hint::black_box(manager.load_ui(name).expect("load ui"));
+          let file = server.load_now::<UiFile>(&mut world, name);
+          std::hint::black_box(file.expect("load ui"));
         }
-        (server, world, manager)
+        (server, world)
       },
       BatchSize::PerIteration,
     );

@@ -11,7 +11,7 @@ use crate::constants::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use crate::look::{spawn_ui_file, use_game_look};
 use crate::save::load_high_score;
 
-const MENU: &str = "assets/ui/menu.ui.ron";
+const MENU: &str = "ui/menu.ui.ron";
 const MENU_EMBEDDED: &str = include_str!("../../assets/ui/menu.ui.ron");
 
 /// Main menu scene
