@@ -845,6 +845,15 @@ impl SpriteGpuRenderer {
     self.uploads
   }
 
+  /// Whether image `id`'s new version is being written into a new texture
+  /// over frames, its old texture drawn meanwhile: never, as every upload
+  /// is written in the frame it is asked for
+  // The headless engine reads it, which the web has not
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  pub(crate) fn upload_pending(&self, _id: AssetId<Image>) -> bool {
+    false
+  }
+
   /// How many textures have room in the atlas (for tests that watch it
   /// freed).
   // The headless engine reads it, which the web has not

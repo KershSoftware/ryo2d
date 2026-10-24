@@ -510,6 +510,21 @@ impl HeadlessEngine {
       .map_or(0, |gpu| gpu.image_uploads())
   }
 
+  /// Whether image `id`'s new version is being written into a new texture
+  /// over frames while its old texture draws (benches that measure a reload
+  /// until its new pixels are drawn)
+  #[doc(hidden)]
+  pub fn image_upload_pending(
+    &self,
+    id: crate::core::asset::AssetId<crate::core::graphics::Image>,
+  ) -> bool {
+    self
+      .engine
+      .sprite_gpu
+      .as_ref()
+      .is_some_and(|gpu| gpu.upload_pending(id))
+  }
+
   /// How many pipelines game shaders have: one per blend mode a sprite
   /// shader is drawn with, and one per custom effect's source (tests that
   /// watch a freed shader's pipelines go)

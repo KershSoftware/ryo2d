@@ -18,10 +18,12 @@
 //! `MemorySource` with hot reload on. Over 2,000 frames every 50th inserts
 //! a changed PNG and SVG; the source tells the server, the workers decode
 //! them, and the pump swaps each new value in, under the same handle, in
-//! some later frame, whose render step uploads it. Each frame's
-//! main-thread time is the wall time of the whole step (the pump, the
-//! update, the UI pass and the render step), with the GPU finished before
-//! each step, outside the measure, as `benches/ui_render.rs`'s guard does.
+//! some later frame. That frame starts its upload: the SVG's is written at
+//! once, the PNG's into a new texture a band a frame while the old one
+//! draws, until the new one takes its place. Each frame's main-thread time
+//! is the wall time of the whole step (the pump, the update, the UI pass
+//! and the render step), with the GPU finished before each step, outside
+//! the measure, as `benches/ui_render.rs`'s guard does.
 //!
 //! The frames are paced at 60 Hz, as a game's are. Stepped back to back
 //! (under 100 µs each), the PNG took longer to decode than 50 frames, so
@@ -29,17 +31,21 @@
 //! the main thread slept through it, it ran on a slower core and an
 //! ordinary frame took about six times as long (716 µs against 122).
 //!
-//! The guard prints the median of the frames no reload landed in, the
-//! median and maximum of the frames each image's new value landed in, and
-//! of the frame after. It holds each landing median to within 0.5 ms of an
-//! ordinary frame's (the spec). A miss fails the run once criterion's
-//! benches have run, printing the command to profile it with. The
-//! `reload_hitch` criterion bench steps the same engine back to back,
-//! changing the files once the last change has landed and 50 frames have
-//! passed, for that profile; its median is of every frame, mostly ordinary
-//! ones. The guard runs only where criterion measures `reload_hitch`: with
-//! no filter or one naming it, and not for `--list`, `--test` or
-//! `--profile-time`.
+//! A reload's hitch is the slowest frame from the one its new value landed
+//! in to the one its new pixels were first drawn in. The guard prints, for
+//! each image, the median and maximum hitch over an ordinary frame (one
+//! outside every reload), how many frames each reload took to be drawn, and
+//! the frame after. It holds each image's median hitch to within 0.5 ms of
+//! an ordinary frame (the spec), and fails a reload whose upload did not
+//! begin in the frame it landed in, or that was not drawn by the end. A
+//! miss fails the run once criterion's benches have run, printing the
+//! command to profile it with. The `reload_hitch` criterion bench steps the
+//! same engine back to back, changing the files once the last change is
+//! drawn and 50 frames have passed, for that profile; its median is of
+//! every frame, most of them ordinary. The guard runs only where criterion
+//! measures `reload_hitch`: with no filter or one naming it, and not for
+//! `--list`, `--test` or `--profile-time`. What each part needs (the
+//! encoded files, the scene folder, the engine) is made only when it runs.
 //!
 //! Last, the pump with parents waiting on a dependency that does not load:
 //! 10, 100 and 1000 UI files importing one whose read is held. It prints
@@ -53,6 +59,7 @@
 
 mod guards;
 
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -65,12 +72,16 @@ use ryo2d::testing::{HeadlessEngine, shared_gpu};
 
 const SIZES: [u32; 4] = [32, 64, 128, 256];
 const PER_SIZE: u32 = 10;
-/// The criterion benches whose medians are printed
-const BENCHES: [&str; 4] = [
-  "scene_start",
-  "scene_start_fonts",
-  "scene_start_async",
-  "reload_hitch",
+/// The criterion benches whose medians are printed, with what each
+/// median is of
+const BENCHES: [(&str, &str); 4] = [
+  ("scene_start", "an iteration"),
+  ("scene_start_fonts", "an iteration"),
+  ("scene_start_async", "an iteration"),
+  (
+    "reload_hitch",
+    "every frame of the back-to-back reloads, most of them ordinary (the guard reads the hitch)",
+  ),
 ];
 
 fn write_pngs(dir: &Path) -> Vec<String> {
@@ -249,9 +260,13 @@ fn pump_until_done(server: &AssetServer, world: &mut ryo2d::ecs::World, ids: &[U
   }
 }
 
-fn scene_start(c: &mut Criterion, files: &SceneFiles) {
+fn scene_start(c: &mut Criterion, files: &OnceCell<SceneFiles>) {
+  // The folder is written when criterion first runs one of these, not for
+  // a filter that skips them all
+  let files = || files.get_or_init(SceneFiles::new);
   for (name, fonts) in [("scene_start", false), ("scene_start_fonts", true)] {
     c.bench_function(name, |b| {
+      let files = files();
       b.iter_batched(
         || files.registry(),
         |(server, mut world)| {
@@ -276,6 +291,7 @@ fn scene_start(c: &mut Criterion, files: &SceneFiles) {
     });
   }
   c.bench_function("scene_start_async", |b| {
+    let files = files();
     b.iter_batched(
       || files.registry_with_workers(),
       |(server, mut world, warm)| {
@@ -450,12 +466,46 @@ struct HitchFrame {
   big: bool,
   /// The SVG's new value landed in it
   icon: bool,
-  /// Images uploaded in it
+  /// Image textures made whole in it: uploaded at once, or a new texture
+  /// written over frames taking the old one's place
   uploads: u64,
+  /// After it, the PNG's new version was still being written into a new
+  /// texture (its old pixels drawn meanwhile)
+  big_pending: bool,
+  /// After it, the SVG's was
+  icon_pending: bool,
+}
+
+/// One reload: the frame its new value landed in, and the frame its new
+/// pixels were first drawn in (none: not within the run)
+struct Reload {
+  landed: usize,
+  drawn: Option<usize>,
+  /// Its upload began in the frame it landed in: uploaded at once, or the
+  /// new texture started
+  began: bool,
+}
+
+/// The reloads of the image `landed` and `pending` read
+fn reloads(
+  frames: &[HitchFrame],
+  landed: fn(&HitchFrame) -> bool,
+  pending: fn(&HitchFrame) -> bool,
+) -> Vec<Reload> {
+  frames
+    .iter()
+    .enumerate()
+    .filter(|(_, frame)| landed(frame))
+    .map(|(at, frame)| Reload {
+      landed: at,
+      drawn: (at..frames.len()).find(|&k| !pending(&frames[k])),
+      began: frame.uploads > 0 || pending(frame),
+    })
+    .collect()
 }
 
 /// The median and maximum of `times`, or None for none
-fn median_max(mut times: Vec<Duration>) -> Option<(Duration, Duration)> {
+fn median_max<T: Ord + Copy>(mut times: Vec<T>) -> Option<(T, T)> {
   times.sort_unstable();
   Some((*times.get(times.len() / 2)?, *times.last()?))
 }
@@ -464,9 +514,12 @@ fn us(time: Duration) -> f64 {
   time.as_secs_f64() * 1e6
 }
 
-/// The reload hitch: the main-thread time of the frames a reloaded image
-/// lands in against an ordinary frame's. Every median is printed, and each
-/// landing median over the target is noted for the run to fail on
+/// The reload hitch: every frame from the one a reloaded image's new value
+/// lands in to the one its new pixels are first drawn in, against an
+/// ordinary frame. A reload's hitch is the slowest of its frames; each
+/// image's median hitch over the target is noted for the run to fail on,
+/// as is a reload whose upload did not begin in the frame it landed in or
+/// that was not drawn by the end of the run
 fn reload_guard(looks: &Looks) {
   let Some(mut rig) = ReloadRig::new(looks) else {
     return;
@@ -501,69 +554,129 @@ fn reload_guard(looks: &Looks) {
       big: big_now != big,
       icon: icon_now != icon,
       uploads: rig.engine.image_uploads() - uploads,
+      big_pending: rig.engine.image_upload_pending(rig.big),
+      icon_pending: rig.engine.image_upload_pending(rig.icon),
     });
   }
-  let landed = |frame: &HitchFrame| frame.big || frame.icon;
-  let steps = |keep: &dyn Fn(&HitchFrame) -> bool| -> Vec<Duration> {
-    frames
-      .iter()
-      .filter(|frame| keep(frame))
-      .map(|frame| frame.step)
-      .collect()
-  };
-  let renders = |keep: &dyn Fn(&HitchFrame) -> bool| -> Vec<Duration> {
-    frames
-      .iter()
-      .filter(|frame| keep(frame))
-      .map(|frame| frame.render)
-      .collect()
-  };
-  let Some((ordinary, _)) = median_max(steps(&|frame| !landed(frame))) else {
+  let kinds: [(&str, Vec<Reload>); 2] = [
+    (
+      "the PNG",
+      reloads(&frames, |frame| frame.big, |frame| frame.big_pending),
+    ),
+    (
+      "the SVG",
+      reloads(&frames, |frame| frame.icon, |frame| frame.icon_pending),
+    ),
+  ];
+  // Every frame from a landing to its drawing, of either image
+  let mut reloading = vec![false; frames.len()];
+  for (_, reloads) in &kinds {
+    for reload in reloads {
+      let last = reload.drawn.unwrap_or(frames.len() - 1);
+      for frame in &mut reloading[reload.landed..=last] {
+        *frame = true;
+      }
+    }
+  }
+  let ordinary_frames: Vec<&HitchFrame> = frames
+    .iter()
+    .zip(&reloading)
+    .filter(|(_, reloading)| !**reloading)
+    .map(|(frame, _)| frame)
+    .collect();
+  let Some((ordinary, ordinary_max)) =
+    median_max(ordinary_frames.iter().map(|frame| frame.step).collect())
+  else {
     guards::miss("reload_hitch: no ordinary frame".into());
     return;
   };
-  let (ordinary_render, _) = median_max(renders(&|frame| !landed(frame))).unwrap_or_default();
-  // The frame after each landing, which no reload landed in
-  let after: Vec<Duration> = frames
-    .windows(2)
-    .filter(|pair| landed(&pair[0]) && !landed(&pair[1]))
-    .map(|pair| pair[1].step)
+  let (ordinary_render, _) =
+    median_max(ordinary_frames.iter().map(|frame| frame.render).collect()).unwrap_or_default();
+  let ordinary_p95 = {
+    let mut steps: Vec<Duration> = ordinary_frames.iter().map(|frame| frame.step).collect();
+    steps.sort_unstable();
+    steps[steps.len() * 95 / 100]
+  };
+  // The frame after each reload is drawn, outside every reload
+  let after: Vec<Duration> = kinds
+    .iter()
+    .flat_map(|(_, reloads)| reloads)
+    .filter_map(|reload| reload.drawn.map(|drawn| drawn + 1))
+    .filter(|&k| k < frames.len() && !reloading[k])
+    .map(|k| frames[k].step)
     .collect();
+  let over = |time: Duration| us(time) - us(ordinary);
   let changes = rig.changes;
   let mut lines = Vec::new();
   let mut missed = Vec::new();
-  type Keep = fn(&HitchFrame) -> bool;
-  let kinds: [(&str, Keep); 3] = [
-    ("the PNG", |frame| frame.big && !frame.icon),
-    ("the SVG", |frame| frame.icon && !frame.big),
-    ("every landing", |frame| frame.big || frame.icon),
-  ];
-  let both = frames
-    .iter()
-    .filter(|frame| frame.big && frame.icon)
-    .count();
-  for (kind, keep) in kinds {
-    let count = frames.iter().filter(|frame| keep(frame)).count();
-    let uploaded = frames
+  let mut every = Vec::new();
+  for (kind, reloads) in &kinds {
+    if reloads.is_empty() {
+      missed.push(format!(
+        "reload_hitch: of {changes} changes {kind} never landed"
+      ));
+      continue;
+    }
+    let unbegun = reloads.iter().filter(|reload| !reload.began).count();
+    if unbegun > 0 {
+      missed.push(format!(
+        "reload_hitch: {unbegun} of {kind}'s landings began no upload in their frame"
+      ));
+    }
+    let undrawn = reloads
       .iter()
-      .filter(|frame| keep(frame) && frame.uploads > 0)
+      .filter(|reload| reload.drawn.is_none())
       .count();
-    let Some((median, max)) = median_max(steps(&keep)) else {
-      lines.push(format!("{kind}: no frame"));
+    if undrawn > 0 {
+      missed.push(format!(
+        "reload_hitch: {undrawn} of {kind}'s reloads were not drawn by the end of the run"
+      ));
+    }
+    // A reload's hitch: the slowest frame from its landing to its drawing
+    let worst: Vec<Duration> = reloads
+      .iter()
+      .filter_map(|reload| {
+        let drawn = reload.drawn?;
+        frames[reload.landed..=drawn]
+          .iter()
+          .map(|frame| frame.step)
+          .max()
+      })
+      .collect();
+    every.extend(worst.iter().copied());
+    let spans: Vec<usize> = reloads
+      .iter()
+      .filter_map(|reload| Some(reload.drawn? - reload.landed + 1))
+      .collect();
+    let renders: Vec<Duration> = reloads
+      .iter()
+      .filter_map(|reload| Some(&frames[reload.landed..=reload.drawn?]))
+      .flatten()
+      .map(|frame| frame.render)
+      .collect();
+    let landing: Vec<Duration> = reloads
+      .iter()
+      .map(|reload| frames[reload.landed].step)
+      .collect();
+    let (Some((median, max)), Some((span, span_max)), Some((landing, _))) =
+      (median_max(worst), median_max(spans), median_max(landing))
+    else {
       continue;
     };
-    let (render, _) = median_max(renders(&keep)).unwrap_or_default();
-    let over = median.saturating_sub(ordinary);
-    let met = over <= HITCH_TARGET;
+    let (render, _) = median_max(renders).unwrap_or_default();
+    let met = median.saturating_sub(ordinary) <= HITCH_TARGET;
     let verdict = if met { "met" } else { "missed" };
     let line = format!(
-      "{kind}: {count} frames ({uploaded} uploading), median {:.1} µs ({:+.1}; render step \
-       {:.1}), max {:.1} µs ({:+.1}); within {} µs: {verdict}",
+      "{kind}: {} reloads, drawn {span} frames after landing (median; max {span_max}); the \
+       slowest frame of each, median {:.1} µs ({:+.1}), max {:.1} µs ({:+.1}); the landing \
+       frame, median {:+.1}; render step of those frames {render:.1?}; within {} µs: \
+       {verdict}",
+      reloads.len(),
       us(median),
-      us(median) - us(ordinary),
-      us(render),
+      over(median),
       us(max),
-      us(max) - us(ordinary),
+      over(max),
+      over(landing),
       HITCH_TARGET.as_micros(),
     );
     if !met {
@@ -571,31 +684,40 @@ fn reload_guard(looks: &Looks) {
     }
     lines.push(line);
   }
-  let big_landings = frames.iter().filter(|frame| frame.big).count();
-  let icon_landings = frames.iter().filter(|frame| frame.icon).count();
-  if big_landings == 0 || icon_landings == 0 {
-    missed.push(format!(
-      "reload_hitch: of {changes} changes the PNG landed {big_landings} times, the SVG \
-       {icon_landings}"
-    ));
+  if let Some((median, max)) = median_max(every) {
+    let met = median.saturating_sub(ordinary) <= HITCH_TARGET;
+    let line = format!(
+      "every reload: the slowest frame of each, median {:+.1} µs, max {:+.1}; within {} µs: {}",
+      over(median),
+      over(max),
+      HITCH_TARGET.as_micros(),
+      if met { "met" } else { "missed" },
+    );
+    if !met {
+      missed.push(format!("reload_hitch, {line}"));
+    }
+    lines.push(line);
   }
   let after = median_max(after).map_or("none".to_string(), |(median, max)| {
     format!(
       "median {:.1} µs ({:+.1}), max {:.1} µs ({:+.1})",
       us(median),
-      us(median) - us(ordinary),
+      over(median),
       us(max),
-      us(max) - us(ordinary)
+      over(max)
     )
   });
   eprintln!(
     "reload_hitch guard, main-thread frame time (the whole step, the GPU finished before \
-     each), {HITCH_FRAMES} frames at 60 Hz, a changed PNG and SVG every {RELOAD_EVERY}th ({changes} \
-     changes; the PNG landed {big_landings} times, the SVG {icon_landings}, together in \
-     {both} frames). Ordinary frames: median {:.1} µs (render step {:.1}). {}. The frame \
-     after a landing: {after}",
+     each), {HITCH_FRAMES} frames at 60 Hz, a changed PNG and SVG every {RELOAD_EVERY}th \
+     ({changes} changes). Ordinary frames ({} of them, outside every reload): median {:.1} µs \
+     (render step {:.1}), 95th percentile {:+.1}, max {:+.1}. {}. The frame after a reload is \
+     drawn: {after}",
+    ordinary_frames.len(),
     us(ordinary),
     us(ordinary_render),
+    over(ordinary_p95),
+    over(ordinary_max),
     lines.join("; "),
   );
   for miss in missed {
@@ -603,29 +725,44 @@ fn reload_guard(looks: &Looks) {
   }
 }
 
-/// The reload rig stepped back to back by criterion, the files changed
-/// once the last change has landed and `RELOAD_EVERY` frames have passed:
-/// the profile of a reload
-fn reload_bench(c: &mut Criterion, looks: &Looks) {
-  let Some(mut rig) = ReloadRig::new(looks) else {
+/// Frames the criterion bench waits for a change to be drawn before it
+/// changes the files again
+const GIVE_UP: usize = 600;
+
+/// The reload rig stepped back to back by criterion, for the profile of a
+/// reload: the files change once the last change's new pixels are drawn
+/// and `RELOAD_EVERY` frames have passed (or `GIVE_UP` frames, should one
+/// never be). Its median is of every frame, most of them ordinary: the
+/// guard reads the hitch
+fn reload_bench(c: &mut Criterion, looks: &OnceCell<Looks>) {
+  if shared_gpu().is_err() {
     return;
-  };
+  }
+  // Made when criterion first runs the bench, not for a filter that skips it
+  let mut rig: Option<ReloadRig> = None;
   let mut since = 0usize;
   // The versions the last change replaced, until both have moved on
   let mut waiting: Option<(Option<u64>, Option<u64>)> = None;
   c.bench_function("reload_hitch", |b| {
+    let rig = rig
+      .get_or_insert_with(|| ReloadRig::new(looks.get_or_init(Looks::new)).expect("the GPU is up"));
     b.iter(|| {
       since += 1;
       match waiting {
         Some((big, icon)) => {
           let (big_now, icon_now) = rig.versions();
-          if big_now != big && icon_now != icon {
+          let drawn = big_now != big
+            && icon_now != icon
+            && !rig.engine.image_upload_pending(rig.big)
+            && !rig.engine.image_upload_pending(rig.icon);
+          if drawn || since >= GIVE_UP {
             waiting = None;
+            since = 0;
           }
         }
         None if since >= RELOAD_EVERY => {
           waiting = Some(rig.versions());
-          rig.change(looks);
+          rig.change(looks.get_or_init(Looks::new));
           since = 0;
         }
         None => {}
@@ -783,19 +920,19 @@ fn main() {
     .sample_size(20)
     .output_directory(&results)
     .configure_from_args();
-  let looks = Looks::new();
+  // Made only for what runs: a profile of `reload_hitch` makes no folder
+  let looks = OnceCell::new();
   if guards::runs(&["reload_hitch"]) {
-    reload_guard(&looks);
+    reload_guard(looks.get_or_init(Looks::new));
   }
-  let files = SceneFiles::new();
-  scene_start(&mut criterion, &files);
+  scene_start(&mut criterion, &OnceCell::new());
   reload_bench(&mut criterion, &looks);
   if guards::runs(&["pump_waiting"]) {
     pump_waiting();
   }
   criterion.final_summary();
-  for bench in BENCHES {
-    print_median(&results, bench, started);
+  for (bench, of) in BENCHES {
+    print_median(&results, bench, of, started);
   }
   guards::verdict(
     "assets",
@@ -807,10 +944,10 @@ fn main() {
   );
 }
 
-/// The median of `bench` from the run criterion just wrote to `results`, in
-/// microseconds; nothing for results an earlier run left (this run skipped
-/// the bench, as a filter or `--list` does)
-fn print_median(results: &Path, bench: &str, started: SystemTime) {
+/// The median of `bench` (of `of`) from the run criterion just wrote to
+/// `results`, in microseconds; nothing for results an earlier run left
+/// (this run skipped the bench, as a filter or `--list` does)
+fn print_median(results: &Path, bench: &str, of: &str, started: SystemTime) {
   let path = results.join(bench).join("new/estimates.json");
   let written = std::fs::metadata(&path)
     .and_then(|meta| meta.modified())
@@ -827,7 +964,7 @@ fn print_median(results: &Path, bench: &str, started: SystemTime) {
     rest[from..to].trim().parse::<f64>().ok()
   });
   match median {
-    Some(ns) => println!("{bench} median: {:.0} us", ns / 1000.0),
+    Some(ns) => println!("{bench} median, of {of}: {:.0} us", ns / 1000.0),
     None => println!("{bench} median: unavailable ({})", path.display()),
   }
 }
