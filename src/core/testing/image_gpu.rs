@@ -908,3 +908,51 @@ fn two_large_reloads_at_once_each_draw_their_old_pixels_then_their_new_whole() {
   }
   assert!(together, "the two were written over the same frames");
 }
+
+#[test]
+fn a_large_reload_whose_event_frames_missed_starts_from_its_next_draw() {
+  const OTHER: (u32, u32) = (260, 220);
+  let files = MemorySource::new();
+  files.insert("ship.png", png(LARGE.0, LARGE.1, RED));
+  let (scene, _) = Large::new("ship.png");
+  let Some(mut engine) = large_engine(files.clone(), scene) else {
+    return;
+  };
+  engine.set_upload_budget(16 * 1024);
+  engine.step_frames(2).unwrap();
+  let old = engine.frame().expect("a frame");
+  let id = image_id(&mut engine, "ship.png");
+  // Minimised, frames run but draw nothing: the reload lands, and its
+  // `Modified` is gone before a frame draws again
+  engine.resize(0, 0);
+  let green = png(OTHER.0, OTHER.1, GREEN);
+  reload_until_landed(&mut engine, &files, ("ship.png", id), green);
+  engine.step_frames(4).unwrap();
+  assert!(
+    !engine.image_upload_pending(id),
+    "nothing drawn, nothing started"
+  );
+  engine.resize(480, 320);
+  engine.step().unwrap();
+  // The draw starts it: this one frame draws the old pixels at the new size
+  assert!(
+    engine.image_upload_pending(id),
+    "written over frames from the draw"
+  );
+  assert_eq!(
+    pixel(&engine, 50, 200),
+    RED,
+    "the old pixels, in the new height"
+  );
+  assert_ne!(pixel(&engine, 290, 50), RED, "and only the new width");
+  engine.step().unwrap();
+  let frames = frames_drawing(&mut engine, id, &old);
+  assert!(
+    frames > 2,
+    "then at the old size, over {frames} more frames"
+  );
+  assert!(
+    engine.frame().expect("a frame") == drawn_from_the_start(OTHER, GREEN),
+    "then the new pixels at the new size"
+  );
+}
