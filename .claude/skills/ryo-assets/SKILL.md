@@ -159,7 +159,7 @@ fn embed(ctx: &mut SceneContext) -> Result<(), Box<dyn std::error::Error>> {
 
 - `Image::from_rgba(pixels, width, height)`, `solid_rect`, `solid_circle` and `solid_ellipse` make images; `Image::decode(bytes)` decodes any raster format the loader reads (not SVG). `Font::from_bytes` takes `impl Into<Arc<[u8]>>`, so give it a `&[u8]` (a `const` as above, or `include_bytes!(..).as_slice()`).
 - A `UiFile::parse` text's imports are asset paths, loaded when it is first built. A type of your own needs nothing registered to `add` it (section 8).
-- **The web build has no files.** `load` and `load_now` fail there (`AssetError::Io` with `ErrorKind::Unsupported`), so embed what a web build needs. To read the file from `assets/` where there is one (debug builds reload it when saved) and fall back to the embedded copy:
+- **The web build has no files.** `load` and `load_now` fail there (`AssetError::Io` with `ErrorKind::Unsupported`, noted in the dev log at debug level rather than warned about), so embed what a web build needs. To read the file from `assets/` where there is one (debug builds reload it when saved) and fall back to the embedded copy:
 
   ```rust
   fn ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Result<Handle<UiFile>, UiFileError> {
@@ -293,7 +293,7 @@ Then `ctx.assets().load_now::<Level>("levels/one.level")`, or `load` it.
   ```
 - `type Settings` is any `Default + Clone + Hash + Eq + Send + Sync + 'static` type (`()` for none). Settings are part of the asset's key: one file loaded with two settings (`load_with`) is two assets.
 - Fail a bad file with `AssetError::decode(cx.path(), error)`, from any error type or a message. A loader that panics fails its asset (`AssetError::Decode`), not the game.
-- A game loader for an extension an engine loader of the same type takes replaces the engine's.
+- `extensions` are matched without regard to case, and one written with its dot (`".level"`) is taken as `"level"`. A game loader for an extension an engine loader of the same type takes replaces the engine's.
 - A type only ever made in code needs no loader: `impl Asset for Note {}`, then `ctx.assets().add(Note(..))`.
 
 ## 9. Missing images: the checker
@@ -307,5 +307,37 @@ An image that is not loaded (still loading, failed or freed) draws a magenta-and
 ## 10. In tests
 
 - `EngineBuilder::asset_source(source)` reads assets from another `AssetSource`: a `MemorySource` of the test's files (`files.insert("ui/menu.ui.ron", text)`; an `insert` over a path reloads it when hot reload is on), or a `DiskSource::new(folder)`.
+- A source of your own implements `read`, and `watch` if it can tell when a file changed (it is asked once, when hot reload is on): keep the `AssetChanges` it is given and `send` each changed path from any thread, and the next pump reloads it:
+
+  ```rust
+  use std::sync::{Mutex, PoisonError};
+
+  /// Levels a level editor sends while the game runs
+  struct FromEditor {
+    files: MemorySource,
+    changes: Mutex<Option<AssetChanges>>,
+  }
+
+  impl FromEditor {
+    fn received(&self, path: &str, bytes: Vec<u8>) {
+      self.files.insert(path, bytes);
+      let changes = self.changes.lock().unwrap_or_else(PoisonError::into_inner);
+      if let (Some(changes), Ok(path)) = (changes.as_ref(), AssetPath::parse(path)) {
+        changes.send(path); // false once the game has quit
+      }
+    }
+  }
+
+  impl AssetSource for FromEditor {
+    fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+      self.files.read(path)
+    }
+
+    fn watch(&self, changes: AssetChanges) -> Result<(), AssetError> {
+      *self.changes.lock().unwrap_or_else(PoisonError::into_inner) = Some(changes);
+      Ok(())
+    }
+  }
+  ```
 - `HeadlessEngine::assets()` and `UiHarness::assets()` are the registry as `ctx.assets()` is; loads queued with `load` land in a step's pump. `UiHarness::new(w, h).with_asset_source(source)` gives the harness its files, and `reload_ui(path)` waits until a UI file's reload lands.
 - A test with no engine that needs handles takes a world with the registry, `ryo2d::testing::asset_world()`, and adds to its stores: `world.resource_mut::<Assets<Image>>().add(image)`. A store comes only from a world: `Assets` has no public constructor, since a handle from a store of its own would name another asset in the world's (the first image is the checker).

@@ -170,10 +170,10 @@ pub mod prelude {
 
   // Assets
   pub use crate::core::asset::{
-    Asset, AssetError, AssetEvent, AssetId, AssetLoader, AssetPath, AssetServer, AssetSettings,
-    AssetSource, Assets, AssetsView, BitmapFontLoader, CheckContext, DiskSource, FontLoader,
-    FontSettings, Handle, ImageLoader, ImageSettings, LoadContext, LoadState, MemorySource,
-    Progress, ShaderLoader, SvgSize, ThemeLoader, UiFileLoader, UntypedAssetId,
+    Asset, AssetChanges, AssetError, AssetEvent, AssetId, AssetLoader, AssetPath, AssetServer,
+    AssetSettings, AssetSource, Assets, AssetsView, BitmapFontLoader, CheckContext, DiskSource,
+    FontLoader, FontSettings, Handle, ImageLoader, ImageSettings, LoadContext, LoadState,
+    MemorySource, Progress, ShaderLoader, SvgSize, ThemeLoader, UiFileLoader, UntypedAssetId,
   };
   pub use crate::core::asset::{AssetStats, TypeStats};
 

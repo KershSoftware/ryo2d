@@ -19,7 +19,8 @@ pub trait AssetLoader: Send + Sync + 'static {
   /// What it can be told; `()` if nothing
   type Settings: AssetSettings;
 
-  /// The extensions this loader takes, without the leading dot ("png", "ui.ron")
+  /// The extensions this loader takes ("png", "ui.ron"), matched without
+  /// regard to case. One written with its dot (".png") is taken without it
   fn extensions(&self) -> &[&'static str];
 
   /// Makes the asset; dependencies are loaded through `cx`
@@ -200,13 +201,22 @@ pub(crate) trait ErasedLoader: Send + Sync + 'static {
 struct Erased<L: AssetLoader> {
   loader: L,
   default_hash: u64,
+  /// The loader's extensions without a leading dot, worked out once
+  extensions: Vec<&'static str>,
 }
 
 /// `loader` with its types erased
 pub(crate) fn erase<L: AssetLoader>(loader: L) -> Arc<dyn ErasedLoader> {
+  // ".level" is "level": a path's extensions are matched without their dot
+  let extensions = loader
+    .extensions()
+    .iter()
+    .map(|extension| extension.trim_start_matches('.'))
+    .collect();
   Arc::new(Erased {
     loader,
     default_hash: settings_hash(&L::Settings::default()),
+    extensions,
   })
 }
 
@@ -217,7 +227,7 @@ pub(crate) fn settings_hash<S: Hash + 'static>(settings: &S) -> u64 {
 
 impl<L: AssetLoader> ErasedLoader for Erased<L> {
   fn extensions(&self) -> &[&'static str] {
-    self.loader.extensions()
+    &self.extensions
   }
 
   fn settings_type(&self) -> (TypeId, &'static str) {

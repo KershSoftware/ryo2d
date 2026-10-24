@@ -856,7 +856,7 @@ fn assets_load_from_the_project_s_asset_folder_unless_given_a_source() {
 
 #[test]
 fn an_engine_with_hot_reload_off_starts_no_watcher() {
-  use crate::core::asset::{AssetError, AssetPath};
+  use crate::core::asset::{AssetChanges, AssetError, AssetPath};
 
   /// A source that records whether it was asked to watch
   #[derive(Clone, Default)]
@@ -865,7 +865,7 @@ fn an_engine_with_hot_reload_off_starts_no_watcher() {
     fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
       Err(AssetError::NotFound { path: path.clone() })
     }
-    fn watch(&self, _: crossbeam_channel::Sender<AssetPath>) -> Result<(), AssetError> {
+    fn watch(&self, _: AssetChanges) -> Result<(), AssetError> {
       self.0.store(true, Ordering::SeqCst);
       Ok(())
     }

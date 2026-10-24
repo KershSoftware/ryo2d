@@ -229,8 +229,8 @@ mod tests {
 
   use super::*;
   use crate::core::asset::{
-    Asset, AssetError, AssetEvent, AssetLoader, AssetServer, AssetSource, Assets, DiskSource,
-    Handle, LoadContext, insert_registry, pump,
+    Asset, AssetChanges, AssetError, AssetEvent, AssetLoader, AssetServer, AssetSource, Assets,
+    DiskSource, Handle, LoadContext, insert_registry, pump,
   };
   use crate::core::dev_log::LogLevel;
   use crate::core::ecs::kernel::{MessageCursor, Messages, World};
@@ -533,7 +533,7 @@ mod tests {
     let dir = temp_dir();
     let source = DiskSource::new(dir.path());
     let (changes, changed) = unbounded();
-    assert!(source.watch(changes).is_ok());
+    assert!(source.watch(AssetChanges::new(changes)).is_ok());
     write(dir.path(), ".a.txt.swp", "swap");
     write(dir.path(), "a.txt~", "backup");
     write(dir.path(), "a.txt", "saved");
@@ -576,7 +576,7 @@ mod tests {
     let source = DiskSource::new(dir.path());
     assert!(!source.is_watching(), "a new source watches nothing");
     let (changes, _changed) = unbounded();
-    assert!(source.watch(changes).is_ok());
+    assert!(source.watch(AssetChanges::new(changes)).is_ok());
     assert!(source.is_watching());
   }
 
@@ -587,7 +587,7 @@ mod tests {
     let source = DiskSource::new(&missing);
     let (changes, changed) = unbounded();
     assert!(
-      source.watch(changes).is_ok(),
+      source.watch(AssetChanges::new(changes)).is_ok(),
       "a missing folder fails nothing"
     );
     assert!(!source.is_watching());
@@ -613,7 +613,7 @@ mod tests {
     let dir = temp_dir();
     let source = DiskSource::new(dir.path());
     let (changes, changed) = unbounded();
-    assert!(source.watch(changes).is_ok());
+    assert!(source.watch(AssetChanges::new(changes)).is_ok());
     assert!(source.is_watching());
     drop(source);
     // The debounce thread held the only sender: it has ended

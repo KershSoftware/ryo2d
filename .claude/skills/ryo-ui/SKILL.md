@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.6.0
+  version: 4.6.1
 ---
 
 # Ryo2D UI Specialist
@@ -2178,7 +2178,7 @@ If `choices` is a placeholder in a file (`Column(focus_scope: true, name: "choic
 
 ##### Loading with an embedded fallback
 
-A game that ships for the web has no files at run time (a load there fails with `AssetError::Io`, `ErrorKind::Unsupported`). Keep the file in `assets/` for development and embed a copy:
+A game that ships for the web has no files at run time (a load there fails with `AssetError::Io`, `ErrorKind::Unsupported`, which the engine notes at debug level rather than warning about, so the fallback is quiet). Keep the file in `assets/` for development and embed a copy:
 
 ```rust
 /// A UI file of the game: from the asset folder when `path` (an asset path) is there

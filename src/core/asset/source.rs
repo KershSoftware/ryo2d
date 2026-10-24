@@ -6,17 +6,76 @@ use crossbeam_channel::Sender;
 
 use super::{AssetError, AssetPath};
 
-/// Where asset bytes come from
+/// Where asset bytes come from (`EngineBuilder::asset_source`). A source of
+/// a game's own, which can say when a file changed:
+///
+/// ```
+/// use std::sync::{Mutex, PoisonError};
+///
+/// use ryo2d::prelude::*;
+///
+/// /// Levels a level editor sends while the game runs
+/// struct FromEditor {
+///   files: MemorySource,
+///   changes: Mutex<Option<AssetChanges>>,
+/// }
+///
+/// impl FromEditor {
+///   /// The editor sent a level: hot reload loads it again
+///   fn received(&self, path: &str, bytes: Vec<u8>) {
+///     self.files.insert(path, bytes);
+///     let changes = self.changes.lock().unwrap_or_else(PoisonError::into_inner);
+///     if let (Some(changes), Ok(path)) = (changes.as_ref(), AssetPath::parse(path)) {
+///       changes.send(path);
+///     }
+///   }
+/// }
+///
+/// impl AssetSource for FromEditor {
+///   fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+///     self.files.read(path)
+///   }
+///
+///   fn watch(&self, changes: AssetChanges) -> Result<(), AssetError> {
+///     *self.changes.lock().unwrap_or_else(PoisonError::into_inner) = Some(changes);
+///     Ok(())
+///   }
+/// }
+/// ```
 pub trait AssetSource: Send + Sync + 'static {
   /// The bytes at `path`
   fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError>;
 
-  /// Starts telling `changed` about paths whose bytes changed; a source that
-  /// cannot watch returns Ok and never sends. The engine's server asks once,
-  /// when hot reload is on
-  fn watch(&self, changed: Sender<AssetPath>) -> Result<(), AssetError> {
-    let _ = changed;
+  /// Starts telling `changes` about paths whose bytes changed, from any
+  /// thread; a source that cannot watch returns Ok and never sends. The
+  /// engine's server asks once, when hot reload is on
+  fn watch(&self, changes: AssetChanges) -> Result<(), AssetError> {
+    let _ = changes;
     Ok(())
+  }
+}
+
+/// Where a watching source tells its asset server which paths changed
+/// ([`AssetSource::watch`]): the server reloads each at its next pump.
+/// Cheap to clone, and sent from any thread
+#[derive(Clone)]
+pub struct AssetChanges(Sender<AssetPath>);
+
+impl AssetChanges {
+  pub(crate) fn new(sender: Sender<AssetPath>) -> Self {
+    Self(sender)
+  }
+
+  /// Tells the server that `path`'s bytes changed. False once the server
+  /// is gone, when there is no one left to tell
+  pub fn send(&self, path: AssetPath) -> bool {
+    self.0.send(path).is_ok()
+  }
+
+  /// The channel inside, for the engine's own watcher
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn into_sender(self) -> Sender<AssetPath> {
+    self.0
   }
 }
 
@@ -86,11 +145,11 @@ impl AssetSource for DiskSource {
   /// that cannot be watched (warned about), is watched by no one; that is
   /// no error
   #[cfg(not(target_arch = "wasm32"))]
-  fn watch(&self, changed: Sender<AssetPath>) -> Result<(), AssetError> {
+  fn watch(&self, changes: AssetChanges) -> Result<(), AssetError> {
     let mut watching = self.watching.lock().unwrap_or_else(PoisonError::into_inner);
     // A second call replaces the first watch, which stops first
     *watching = None;
-    *watching = super::watch::Watching::start(&self.root, changed);
+    *watching = super::watch::Watching::start(&self.root, changes.into_sender());
     Ok(())
   }
 }
@@ -105,7 +164,7 @@ pub struct MemorySource {
 #[derive(Default)]
 struct MemoryFiles {
   bytes: HashMap<AssetPath, Arc<[u8]>>,
-  watcher: Option<Sender<AssetPath>>,
+  watcher: Option<AssetChanges>,
 }
 
 impl MemorySource {
@@ -128,7 +187,7 @@ impl MemorySource {
     let replaced = files.bytes.insert(path.clone(), bytes).is_some();
     if replaced && let Some(watcher) = &files.watcher {
       // A watcher that has gone away has nothing left to tell
-      let _ = watcher.send(path);
+      watcher.send(path);
     }
   }
 
@@ -153,8 +212,8 @@ impl AssetSource for MemorySource {
       .ok_or_else(|| AssetError::NotFound { path: path.clone() })
   }
 
-  fn watch(&self, changed: Sender<AssetPath>) -> Result<(), AssetError> {
-    self.files().watcher = Some(changed);
+  fn watch(&self, changes: AssetChanges) -> Result<(), AssetError> {
+    self.files().watcher = Some(changes);
     Ok(())
   }
 }
@@ -186,7 +245,7 @@ mod tests {
   fn a_memory_source_tells_its_watcher_when_a_file_is_replaced() {
     let source = MemorySource::new();
     let (changed, seen) = crossbeam_channel::unbounded();
-    assert!(source.watch(changed).is_ok());
+    assert!(source.watch(AssetChanges::new(changed)).is_ok());
     source.insert("a.txt", "one");
     assert!(seen.try_recv().is_err(), "a new file is not a change");
     source.clone().insert("a.txt", "two");

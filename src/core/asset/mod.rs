@@ -40,7 +40,7 @@ pub use path::AssetPath;
 #[doc(hidden)]
 pub use pump::pump;
 pub use server::AssetServer;
-pub use source::{AssetSource, DiskSource, MemorySource};
+pub use source::{AssetChanges, AssetSource, DiskSource, MemorySource};
 pub use view::AssetsView;
 
 /// A type the registry stores: loaded from files by an `AssetLoader`, or

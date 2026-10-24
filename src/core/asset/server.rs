@@ -15,6 +15,7 @@ use super::pump::{
   Arrival, Arrived, BROKEN_STORE, Finished, FreeUnheld, Loaded, SendQueued, Typed, Waiting, fail,
   free_unheld, run_check, send_queued,
 };
+use super::source::AssetChanges;
 use super::workers::{INLINE_BUDGET, Workers};
 use super::{
   Asset, AssetError, AssetEvent, AssetId, AssetLoader, AssetPath, AssetSettings, AssetSource,
@@ -286,7 +287,7 @@ impl AssetServer {
       .unwrap_or_else(PoisonError::into_inner)
       .take();
     if let Some(changes) = changes
-      && let Err(error) = self.inner.source.watch(changes)
+      && let Err(error) = self.inner.source.watch(AssetChanges::new(changes))
     {
       crate::engine_warn!(module: "asset", "the asset source cannot watch: {}", error.report());
     }
@@ -1086,7 +1087,10 @@ impl AssetServer {
     order
   }
 
-  /// Warns about `error` for `id`, unless it was the last error `id` warned about
+  /// Warns about `error` for `id`, unless it was the last error `id` warned
+  /// about. A read the source does not support (the web's, which has no
+  /// files) is noted at debug level: a web game falls back to what it
+  /// embeds, and would otherwise warn at every launch
   pub(crate) fn warn_once(&self, id: UntypedAssetId, error: &AssetError) {
     let report = error.report();
     let hash = fast_hash(&report);
@@ -1096,8 +1100,14 @@ impl AssetServer {
       .infos
       .get_mut(&id)
       .is_none_or(|info| info.warned.replace(hash) != Some(hash));
-    if fresh {
-      crate::engine_warn!(module: "asset", "{report}");
+    if !fresh {
+      return;
+    }
+    match error {
+      AssetError::Io { source, .. } if source.kind() == std::io::ErrorKind::Unsupported => {
+        crate::engine_debug!(module: "asset", "{report}");
+      }
+      _ => crate::engine_warn!(module: "asset", "{report}"),
     }
   }
 
@@ -2346,6 +2356,38 @@ mod tests {
     assert_eq!(
       failed.map(|error| error.report()).as_deref(),
       Some("could not load \"levels/one.picky\": not good enough")
+    );
+  }
+
+  /// Texts, its extensions written with their dots
+  struct DottedLoader;
+  impl AssetLoader for DottedLoader {
+    type Asset = Text;
+    type Settings = ();
+    fn extensions(&self) -> &[&'static str] {
+      &[".dotted", ".two.parts"]
+    }
+    fn load(&self, bytes: Vec<u8>, _: &(), _: &mut LoadContext<'_>) -> Result<Text, AssetError> {
+      Ok(Text(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+  }
+
+  #[test]
+  fn a_loader_extension_written_with_its_dot_matches_as_without() {
+    let source = MemorySource::new();
+    source.insert("a.dotted", "a");
+    source.insert("b.two.parts", "b");
+    let (mut world, server) = world_with(source);
+    server.register_loader(DottedLoader);
+    let a = server.load_now::<Text>(&mut world, "a.dotted");
+    let b = server.load_now::<Text>(&mut world, "b.two.parts");
+    let texts = (
+      a.map(|a| text(&world, &a).map(str::to_owned)),
+      b.map(|b| text(&world, &b).map(str::to_owned)),
+    );
+    assert!(
+      matches!(&texts, (Ok(Some(a)), Ok(Some(b))) if a == "a" && b == "b"),
+      "{texts:?}"
     );
   }
 
