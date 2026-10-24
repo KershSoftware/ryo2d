@@ -33,8 +33,8 @@ pub use handle::Handle;
 pub use id::{AssetId, UntypedAssetId};
 pub use loader::{AssetLoader, AssetSettings, CheckContext, LoadContext};
 pub use loaders::{
-  BitmapFontLoader, FontLoader, FontSettings, ImageLoader, ImageSettings, ShaderLoader, SvgSize,
-  ThemeLoader, UiFileLoader,
+  AudioClipLoader, AudioClipSettings, BitmapFontLoader, ClipMode, FontLoader, FontSettings,
+  ImageLoader, ImageSettings, ShaderLoader, SvgSize, ThemeLoader, UiFileLoader,
 };
 pub use path::AssetPath;
 #[doc(hidden)]
@@ -54,7 +54,8 @@ pub trait Asset: Send + Sync + 'static {}
 /// [`crate::core::text::Font`] with [`FontLoader`],
 /// [`crate::core::text::BitmapFont`] with [`BitmapFontLoader`],
 /// [`crate::core::ui::UiFile`] with [`UiFileLoader`] and
-/// [`crate::core::ui::Theme`] with [`ThemeLoader`]), have their
+/// [`crate::core::ui::Theme`] with [`ThemeLoader`] and
+/// [`crate::core::audio::AudioClip`] with [`AudioClipLoader`]), have their
 /// stores before anything loads and a loader's `check` finds them. A game's
 /// loaders are added after, so for an extension both take, the game's wins
 pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: AssetServer) {
@@ -70,5 +71,7 @@ pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: Asset
   server.register_loader(UiFileLoader);
   server.register_asset::<crate::core::ui::Theme>(world);
   server.register_loader(ThemeLoader);
+  server.register_asset::<crate::core::audio::AudioClip>(world);
+  server.register_loader(AudioClipLoader::default());
   world.insert_resource(server);
 }

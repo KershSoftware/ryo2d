@@ -2683,7 +2683,13 @@ mod api_tests {
     let row = row_of(&h, list, index).expect("pooled");
     assert!(row != dead && h.world().get_entity(row).is_ok());
     assert!(has_focus(&h, list, index), "the focus lands on the new row");
-    assert_eq!(warnings_containing(&format!("{dead}")), 0);
+    // The log is shared by the tests running alongside, whose entities may
+    // have the dead row's index: only a warning about a row counts
+    let about_a_row = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|w| w.message.contains(&format!("{dead}")) && w.message.contains("row"))
+      .count();
+    assert_eq!(about_a_row, 0);
   }
 
   /// The items in the view `setup`'s list was drawn at last frame (rows 20
