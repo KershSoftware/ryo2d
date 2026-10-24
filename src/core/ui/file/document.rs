@@ -287,7 +287,7 @@ impl UiFile {
     cx: &mut LoadContext<'_>,
   ) -> Result<UiFile, AssetError> {
     let name = path.as_str();
-    let read = read_file(name, text).map_err(|error| AssetError::decode(path, error))?;
+    let read = read_file(name, text).map_err(|error| error.failing(path))?;
     let mut issues = read.issues;
     let sees_imports = cx.world().is_some() || read.imports.is_empty();
     let mut imports = Vec::with_capacity(read.imports.len());
@@ -329,7 +329,7 @@ impl UiFile {
         }
       }
     }
-    UiFileError::check(issues).map_err(|error| AssetError::decode(path, error))?;
+    UiFileError::check(issues).map_err(|error| error.failing(path))?;
     Ok(UiFile {
       path: name.to_string(),
       doc,

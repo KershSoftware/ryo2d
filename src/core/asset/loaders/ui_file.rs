@@ -34,7 +34,7 @@ impl AssetLoader for UiFileLoader {
   fn check(&self, file: &UiFile, cx: &CheckContext<'_>) -> Result<(), AssetError> {
     file
       .check(cx.world())
-      .map_err(|error| AssetError::decode(cx.path(), error))
+      .map_err(|error| error.failing(cx.path()))
   }
 
   /// An import or image that did not load, at the position the file names
@@ -49,7 +49,7 @@ impl AssetLoader for UiFileLoader {
       return None;
     };
     let issues = file.dependency_issues(dependency, error)?;
-    Some(AssetError::decode(path, issues))
+    Some(issues.failing(path))
   }
 }
 
@@ -236,12 +236,15 @@ mod tests {
     let issue = &file.issues[0];
     assert_eq!(
       (issue.path.as_str(), issue.line, issue.column),
-      ("ui/menu.ui.ron", 3, 5)
+      ("", 3, 5),
+      "the asset error names the file"
     );
     assert_eq!(
       issue.message,
       "unknown node kind \"Itme\"; did you mean \"Item\"?"
     );
+    let issues = UiFileError::from(Arc::clone(&error)).issues;
+    assert_eq!(issues[0].path, "ui/menu.ui.ron", "given back its path");
   }
 
   #[test]
@@ -277,15 +280,52 @@ mod tests {
     assert_eq!(checks(&world), Some(false), "built again against it");
   }
 
-  /// The issues of a `Decode` error over a UI file's mistakes, shown
-  fn shown(error: &AssetError) -> Vec<String> {
-    let AssetError::Decode { source, .. } = error else {
+  /// The issues of a `Decode` error over a UI file's mistakes, shown with
+  /// their paths
+  fn shown(error: &Arc<AssetError>) -> Vec<String> {
+    let AssetError::Decode { source, .. } = &**error else {
       panic!("not a decode error: {}", error.report());
     };
-    let Some(file) = source.downcast_ref::<UiFileError>() else {
+    if source.downcast_ref::<UiFileError>().is_none() {
       panic!("not the file's mistakes: {}", error.report());
-    };
-    file.issues.iter().map(ToString::to_string).collect()
+    }
+    let mistakes = UiFileError::from(Arc::clone(error));
+    mistakes.issues.iter().map(ToString::to_string).collect()
+  }
+
+  /// The report of `path`'s load from `files`, which must fail
+  fn failed_load(files: MemorySource, path: &str) -> String {
+    let mut world = registry_over(files);
+    match AssetsView::new(&mut world).load_now::<UiFile>(path) {
+      Ok(_) => panic!("{path} loads"),
+      Err(error) => error.report(),
+    }
+  }
+
+  #[test]
+  fn a_broken_file_is_named_once_and_an_imported_one_by_its_own_path() {
+    let files = MemorySource::new();
+    files.insert(
+      "ui/menu.ui.ron",
+      "(root: Column(children: [\n  Buton(),\n]))",
+    );
+    assert_eq!(
+      failed_load(files.clone(), "ui/menu.ui.ron"),
+      "could not load \"ui/menu.ui.ron\": 2:3: unknown node kind \"Buton\"; did you mean \"Button\"?"
+    );
+    files.insert(
+      "ui/common.ui.ron",
+      "(root: Column(children: [\n  Buton(),\n]))",
+    );
+    files.insert(
+      "ui/game.ui.ron",
+      "(imports: [\"ui/common.ui.ron\"], root: Column)",
+    );
+    assert_eq!(
+      failed_load(files, "ui/game.ui.ron"),
+      "could not load \"ui/game.ui.ron\": 1:12: cannot import \"ui/common.ui.ron\"\n\
+       ui/common.ui.ron:2:3: unknown node kind \"Buton\"; did you mean \"Button\"?"
+    );
   }
 
   #[test]

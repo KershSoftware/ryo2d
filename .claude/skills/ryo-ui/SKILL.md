@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.6.1
+  version: 4.6.2
 ---
 
 # Ryo2D UI Specialist
@@ -303,7 +303,7 @@ let heading = ui.theme().text.heading.style();               // a text role as a
   )
   ```
 
-  `Theme::save(path)` writes one. A skin's `path` in a file is loaded with the theme, as its dependency; its `sounds` are audio paths (above). A file that fails to load (or whose skin image does not) is an `AssetError` naming the path. `ctx.follow_ui_theme(handle)` uses the theme at once (or when it lands, if still loading) and again whenever it changes (saved, or changed with `Assets<Theme>::get_mut`); a reload that fails keeps the theme in use, and the registry warns once. A `modify` after it lasts until the file next changes; `set` stops following. `ctx.ui_theme().follow(handle)` alone waits for the next UI pass, which overwrites a `modify` made before it.
+  `Theme::save(path)` writes one. A skin's `path` in a file is loaded with the theme, as its dependency; its `sounds` are audio paths (above). A file that fails to load (or whose skin image does not) is an `AssetError` naming the path, with the line and column RON gives for a syntax mistake (`could not load "ui/game.theme.ron": 3:3: Expected comma`). A `)` left out is found only at the end of the file: what follows reads as more fields of the struct it leaves open, and is well formed. `ctx.follow_ui_theme(handle)` uses the theme at once (or when it lands, if still loading) and again whenever it changes (saved, or changed with `Assets<Theme>::get_mut`); a reload that fails keeps the theme in use, and the registry warns once. A `modify` after it lasts until the file next changes; `set` stops following. `ctx.ui_theme().follow(handle)` alone waits for the next UI pass, which overwrites a `modify` made before it.
 
 ## 11. Input and Consumption
 
@@ -1924,6 +1924,7 @@ An empty named container, `Column(name: "extras")`, is where code adds nodes wit
 - **The tree holds the file**, and the file holds its imports and images, so they stay loaded while any tree built from them lives.
 - A `load_now` that fails gives an `Arc<AssetError>`; `UiFileError` converts from it (`?`), and the file's own mistakes come back as its `issues`.
 - `UiFileError` lists every mistake, each with `path`, `line`, `column` and `message`; `Display` prints one per line. Log it with `game_error!("{error}")`. A game that cannot load a file should show something, not panic.
+- The warning for a file that fails to load or reload names the file once, then each mistake in it at its line and column: `could not load "ui/pause.ui.ron": 12:5: Button has no option "fil_width"; did you mean "fill_width"?` (a mistake in an imported file keeps that file's path).
 - **Build every tree before spawning any.** A template that fails to build then leaves nothing half on screen: build the root and every template instance first, then `spawn_ui` and `spawn_ui_in`.
 
 #### Bindings

@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.9.2
+  version: 2.9.3
 ---
 
 # Ryo2D API Reference
@@ -1323,7 +1323,7 @@ A screen written in a `.ui.ron` file loads into the same `UiNode`. The guide is 
 |---|---|
 | `UiFile` | an asset (`.ui.ron`, `UiFileLoader`), checked when it loads, its imports and images loaded with it: `ctx.assets().load_now::<UiFile>(path)`, or `parse(name: &str, text: &str) -> Result<UiFile, UiFileError>` for text the game holds, then `ctx.assets().add(file)` (its imports load at its first build); `path() -> &str` |
 | `Handle<UiFile>` | `root(&self, assets: &mut AssetsView<'_>) -> Result<UiNode, UiFileError>`, `template(&self, name: &str, args: &UiArgs, assets: &mut AssetsView<'_>) -> Result<UiNode, UiFileError>` (pass `&mut ctx.assets()`): build the root or an instance of a template; the tree holds the file, and follows its reloads |
-| `UiFileError { pub issues: Vec<UiFileIssue> }` | every mistake found; `Display` prints one `path:line:column: message` per line. `From<Arc<AssetError>>`, so `?` turns a failed load into one |
+| `UiFileError` (`pub issues: Vec<UiFileIssue>`) | every mistake found; `Display` prints one `path:line:column: message` per line. In a failed load's `AssetError::Decode`, which names the file, the file's own mistakes have an empty `path` and print as `line:column: message`, and an import's keep theirs. `From<Arc<AssetError>>` (every mistake given its path), so `?` turns a failed load into one |
 | `UiFileIssue { pub path: String, pub line: u32, pub column: u32, pub message: String }` | one mistake; lines and columns count from 1, line 0 means no place in the text |
 | `UiArgs` | a template's arguments: `new()`, `with(self, name: &str, value: impl Into<UiArg>) -> UiArgs`; giving a name again replaces it. A name is a parameter or any option of the template's root node (`.with("default_focus", true)`); a reload applies them again, while options set in code on the built node are lost |
 | `enum UiArg { Number(f64), Text(String), Bool(bool), List(Vec<UiArg>) }` | `From` for `f32`, `f64`, `i32`, `i64`, `u32`, `u64`, `usize`, `bool`, `&str`, `String`, `Vec<T: Into<UiArg>>` and `&[&str]` |

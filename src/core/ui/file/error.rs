@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::core::asset::AssetError;
+use crate::core::asset::{AssetError, AssetPath};
 
 use super::reader::{Issue, ValueKind};
 
@@ -31,6 +31,11 @@ pub(crate) fn describe(kind: &ValueKind) -> String {
 /// ```text
 /// ui/pause.ui.ron:12:5: Button has no option "fil_width"; did you mean "fill_width"?
 /// ```
+///
+/// A failed load's error (`AssetError::Decode` over a `UiFileError`) names
+/// the file, so the file's own mistakes have an empty `path` there and
+/// print as `line:column: message`; an imported file's keep theirs.
+/// `UiFileError::from` the asset error gives every mistake its path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiFileError {
   /// Each mistake, in the order found
@@ -42,7 +47,8 @@ pub struct UiFileError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiFileIssue {
   /// The file the offending value is in: for a template's mistake, the file
-  /// that defines the template
+  /// that defines the template. Empty for the file itself in its failed
+  /// load's `AssetError`, which names it
   pub path: String,
   /// The line of the offending value, from 1; 0 when it has no place
   pub line: u32,
@@ -74,6 +80,17 @@ impl UiFileError {
         message: message.into(),
       }],
     }
+  }
+
+  /// The load of the file at `path` failing with these mistakes: the asset
+  /// error names the file, so its own mistakes leave their path to it
+  pub(crate) fn failing(mut self, path: &AssetPath) -> AssetError {
+    for issue in &mut self.issues {
+      if issue.path == path.as_str() {
+        issue.path.clear();
+      }
+    }
+    AssetError::decode(path, self)
   }
 
   /// `Ok` when there are no issues; each issue is kept once, in order
@@ -116,14 +133,21 @@ pub(crate) fn reason(error: &AssetError) -> String {
   failed(error).report()
 }
 
-/// A file's failure as issues: a UI file's own mistakes as they are,
-/// anything else as one issue for `path` with no position
+/// A file's failure as issues: a UI file's own mistakes, each with its
+/// path, anything else as one issue for `path` with no position
 pub(crate) fn issues_of(error: &AssetError, path: &str) -> Vec<UiFileIssue> {
   let error = failed(error);
-  if let AssetError::Decode { source, .. } = error
-    && let Some(file) = source.downcast_ref::<UiFileError>()
+  if let AssetError::Decode { path: file, source } = error
+    && let Some(mistakes) = source.downcast_ref::<UiFileError>()
   {
-    return file.issues.clone();
+    let with_path = |issue: &UiFileIssue| {
+      let mut issue = issue.clone();
+      if issue.path.is_empty() {
+        issue.path = file.as_str().to_string();
+      }
+      issue
+    };
+    return mistakes.issues.iter().map(with_path).collect();
   }
   vec![UiFileIssue {
     path: path.to_string(),

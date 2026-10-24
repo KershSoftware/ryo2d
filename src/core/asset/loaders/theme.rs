@@ -9,7 +9,10 @@ use crate::core::ui::Theme;
 /// keeps dark's other fields; a file's `variants` add to dark's), and a
 /// variant's `base`, a text role's `font` and a skin's `filter` are strings
 /// with the variant's name (`"Button"`, `"Pixel"`, `"Nearest"`). A mistake
-/// fails the load with `AssetError::Decode`, naming the path.
+/// fails the load with `AssetError::Decode`, naming the path, and a syntax
+/// mistake gives the line and column RON gives. A `)` left out shows only
+/// at the end of the file: the text after it reads as more fields of the
+/// struct it leaves open, one level deeper, and is well formed until then.
 ///
 /// The images its skins name (asset paths) are its dependencies, so a theme
 /// is ready once they are, one that does not load fails it
@@ -120,6 +123,23 @@ mod tests {
     };
     assert_eq!(loaded.palette, theme.palette);
     assert_eq!(loaded.widgets, theme.widgets);
+  }
+
+  #[test]
+  fn a_broken_theme_is_named_once_with_the_place_ron_gives() {
+    // A comma missing between two fields: RON stops at the second
+    assert_eq!(
+      load("ui/a.theme.ron", "(\n  name: \"a\"\n  palette: (),\n)\n").err(),
+      Some("could not load \"ui/a.theme.ron\": 3:3: Expected comma".to_string())
+    );
+    // A `)` missing: the fields after it read as fields of the open
+    // struct, one level deeper, and are well formed, so the text is RON up
+    // to its end, where the struct is still open
+    let unclosed = "(\n  palette: (\n    accent: (r: 1, g: 2, b: 3, a: 255,\n  ),\n)\n";
+    assert_eq!(
+      load("ui/b.theme.ron", unclosed).err(),
+      Some("could not load \"ui/b.theme.ron\": 6:1: Expected comma".to_string())
+    );
   }
 
   #[test]

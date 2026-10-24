@@ -1761,7 +1761,7 @@ mod reload_tests {
     assert_eq!(h.world().get::<UiNodeKind>(child).unwrap().name(), "text");
     assert_eq!(
       crate::core::ui::test_util::warnings_containing(
-        "img.ui.ron:1:32: cannot load the image \"missing.png\""
+        "could not load \"img.ui.ron\": 1:32: cannot load the image \"missing.png\""
       ),
       1
     );
