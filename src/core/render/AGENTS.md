@@ -32,7 +32,7 @@ The engine draws every frame through one `RenderPipeline` (a resource, `RenderPi
 
 - `Look` (`look.rs`, resource, `ctx.look()`) holds exposure, the `Tonemap` curve, `ColorGrading` and optional `AutoExposure`. The `tonemap` pass (`passes/tonemap.rs`, `tonemap.wgsl`) applies, in order: exposure (`exposure + auto EV`), white balance (temperature, tint), contrast and saturation, the curve, lift/gamma/gain on the display colour, then sRGB encoding and the LUT.
 - **`Tonemap::apply` in `look.rs` mirrors `tonemap.wgsl`: change them together.** `every_curve_on_the_gpu_matches_tonemap_apply` (`tests/e2e/look.rs`) pins them.
-- **The LUT** is a 3D texture (`LutTexture`, `passes/tonemap.rs`) uploaded from the strip sprite's pixels. It follows the sprite's generation (hot reload re-uploads; a bad reload keeps the last good one). Lookups are in sRGB.
+- **The LUT** is a 3D texture (`LutTexture`, `passes/tonemap.rs`) uploaded from the strip image's pixels. It follows the image's version, so a reload uploads it again; a version that is not a strip keeps the last good one (warned once, naming the image by its path), and so does an image that is not loaded. Lookups are in sRGB.
 - **Auto-exposure** (`exposure.rs`, `exposure.wgsl`): two compute dispatches each frame, one filling a luminance histogram from the scene image and one reducing it (trimmed mean) into a stored EV that moves toward its target at the configured speeds. The tonemap pass binds that stored EV; with auto-exposure off it adds nothing, and turning it off and on again restarts it at its target. The dispatches run inside the tonemap pass, on the scene image it is about to read.
 
 ## Lights in the Batch

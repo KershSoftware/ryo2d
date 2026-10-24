@@ -391,8 +391,13 @@ impl AssetServer {
   /// again; one already failed gives back its error, until it is freed or
   /// its file changes. One loading on a worker loads here instead, and the
   /// worker's result is dropped. Its dependencies are loaded here too, and
-  /// its loader's `check` runs before it is inserted. On failure the error
-  /// is returned and the state stays `Failed`
+  /// its loader's `check` runs before it is inserted, its `Added` sent at
+  /// once.
+  ///
+  /// On failure the error is returned and `Failed` is sent at once. The
+  /// failed asset is kept only while a handle holds it (one a `load` of the
+  /// same path gave out, say): otherwise the next pump frees it, and asking
+  /// again tries again
   pub fn load_now<T: Asset>(
     &self,
     world: &mut World,

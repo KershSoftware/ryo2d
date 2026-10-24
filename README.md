@@ -62,10 +62,11 @@ struct Level {
 
 impl Scene for Level {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(32, 32, 80, 200, 255, 255), "player");
+    // An image made in code; a file would be ctx.assets().load_now::<Image>("player.png")
+    let image = ctx.assets().add(Image::solid_rect(32, 32, 80, 200, 255, 255));
     let player = ctx
       .world
-      .spawn((Transform::from_xy(400.0, 300.0), Renderable::sprite(sprite)))
+      .spawn((Transform::from_xy(400.0, 300.0), Renderable::image(image)))
       .id();
     self.player = Some(player);
   }
@@ -93,7 +94,7 @@ impl Scene for Level {
   // Once a frame, before the fixed steps; input the UI uses never reaches update
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     ui.draw_text(&format!("Space presses: {}", self.presses), 10.0, 10.0, Color::WHITE);
-    if ui.button("Quit", Rect::new(10.0, 30.0, 80.0, 24.0)) {
+    if ui.button("Quit").at(Rect::new(10.0, 30.0, 80.0, 24.0)).clicked() {
       return SceneAction::Quit;
     }
     SceneAction::Continue
@@ -131,6 +132,7 @@ fn main() -> EngineResult<()> {
 - **Transforms** — Local `Transform` and engine-written `GlobalTransform` with parent/child hierarchy
 - **Scene Management** — Stack-based scenes with transitions and scene-owned systems
 - **Messages** — Typed messages between systems and scenes
+- **Assets** — One registry for images, SVG, shaders, fonts, UI files and themes (and the game's own types): loaded at once or on worker threads, kept alive by handles and freed when the last one drops
 - **Object Pooling** — Pre-allocated entity pools for bullets, particles, effects
 - **State Machines** — Generic FSM and state stack for player states, AI, menus
 
@@ -197,7 +199,7 @@ fn main() -> EngineResult<()> {
 - **Configuration** — TOML-based project settings, JSON user preferences
 
 ### Development Tools
-- **Hot Reload** — Asset changes apply without restart
+- **Hot Reload** — A saved asset reloads in place while the game runs (debug builds)
 - **Debug Visualization** — Colliders, velocities, origins, FPS overlay
 - **Developer Console** — Built-in and game commands
 - **Headless Runs** — Scripted input and frame capture without a window, for tests and agents

@@ -38,7 +38,9 @@ text. GPU-free: the renderer draws the bitmaps this module makes.
   unheld handle (`TextStyle::unheld`), so a cached layout never keeps a font
   loaded.
 - There is no file system on the web: games embed fonts with
-  `ctx.assets().add(Font::from_bytes(include_bytes!(..))?)`.
+  `ctx.assets().add(Font::from_bytes(include_bytes!(..).as_slice())?)`
+  (`from_bytes` takes `impl Into<Arc<[u8]>>`, which a slice is and an
+  array reference is not).
 
 ## Layout
 
