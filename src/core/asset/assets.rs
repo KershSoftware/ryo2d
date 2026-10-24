@@ -311,17 +311,21 @@ impl<T: Asset> Assets<T> {
     self.entry(id.into()).map(|e| e.version)
   }
 
-  /// The number of loaded assets
+  /// The number of loaded assets, the engine's own among them: the image
+  /// store holds the checker it draws for a missing image (and the pixel
+  /// theme's skin images while that theme is used), and the font store the
+  /// built-in fonts
   pub fn len(&self) -> usize {
     self.values.iter().flatten().count()
   }
 
-  /// Whether no asset is loaded
+  /// Whether no asset is loaded (the engine's own count, as for `len`)
   pub fn is_empty(&self) -> bool {
     self.values.iter().all(Option::is_none)
   }
 
-  /// Every loaded asset with its id
+  /// Every loaded asset with its id, the engine's own among them (as for
+  /// `len`: the checker, the pixel theme's skins, the built-in fonts)
   pub fn iter(&self) -> impl Iterator<Item = (AssetId<T>, &T)> {
     self.values.iter().enumerate().filter_map(|(index, entry)| {
       let entry = entry.as_ref()?;

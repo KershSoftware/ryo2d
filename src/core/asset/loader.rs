@@ -23,7 +23,9 @@ pub trait AssetLoader: Send + Sync + 'static {
   /// regard to case. One written with its dot (".png") is taken without it
   fn extensions(&self) -> &[&'static str];
 
-  /// Makes the asset; dependencies are loaded through `cx`
+  /// Makes the asset; dependencies are loaded through `cx`. Return an
+  /// error for bytes it cannot read rather than panic: in native builds a
+  /// panic fails the asset, but the web build aborts on one
   fn load(
     &self,
     bytes: Vec<u8>,

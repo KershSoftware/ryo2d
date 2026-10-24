@@ -496,7 +496,10 @@ impl Skin {
 /// (a refused drop, a cancelled rebind). The engine loads them when the
 /// theme changes and plays at most one of each kind per frame at `volume`.
 /// The default names none, so a game is silent until it sets some; a file
-/// that will not load (or no audio device) leaves that sound silent.
+/// that will not load (or no audio device) leaves that sound silent. The
+/// paths are audio paths, relative to the working directory as
+/// `Audio::load_sound` takes them (`"assets/ui/click.wav"`), not asset paths,
+/// in a `.theme.ron` file too.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiSounds {

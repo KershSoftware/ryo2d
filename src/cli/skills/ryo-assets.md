@@ -40,7 +40,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 ### Paths
 
-Asset paths are relative to the project's `assets/` folder (an example's own `assets/`): `"player.png"` is `assets/player.png`, `"ui/menu.ui.ron"` is `assets/ui/menu.ui.ron`. Paths inside asset files (a UI file's imports and images, a theme's skin images, a bitmap font's sheet) are asset paths too. `\` becomes `/`, `.` segments go and `..` resolves within the path; an absolute path, or one that leaves `assets/`, fails with `AssetError::InvalidPath`.
+Asset paths are relative to the project's `assets/` folder (an example's own `assets/`): `"player.png"` is `assets/player.png`, `"ui/menu.ui.ron"` is `assets/ui/menu.ui.ron`. Paths inside asset files (a UI file's imports and images, a theme's skin images, a bitmap font's sheet) are asset paths too, except a theme's `sounds`: audio is not in the registry yet, so they are relative to the working directory, as `ryo-audio` loads them (`"assets/ui/click.wav"`). `\` becomes `/`, `.` segments go and `..` resolves within the path; an absolute path, or one that leaves `assets/`, fails with `AssetError::InvalidPath`.
 
 ### Types and files
 
@@ -132,7 +132,7 @@ impl Scene for Loading {
 - `progress(group) -> Progress { loaded, failed, pending }` takes a group's handles (`&self.held`, `[&bg, &tiles]`) or ids; a group across types gives untyped ids, `[image.id().untyped(), font.id().untyped()]` (any `Into<UntypedAssetId>`). `fraction()` is the share settled, loaded or failed (1 for an empty group); `is_done()` is nothing pending. An id neither loaded nor loading (freed, or never asked for) is not counted.
 - `state(&handle) -> LoadState`: `NotLoaded`, `Loading`, `Loaded` or `Failed(Arc<AssetError>)`, with `is_loaded()`, `is_failed()` and `error()`. `is_ready(&handle)` is loaded with every dependency loaded too (a UI file's images, a theme's skins).
 - `stats() -> AssetStats` counts loaded, loading and failed assets per type (`types: Vec<TypeStats { name, loaded, loading, failed }>`), for a debug overlay.
-- Loads land in the pump at the start of the frame (`PreUpdate`), before `ui` and `update`: a `load` asked for in `on_enter` lands a frame later at the earliest.
+- Loads land in the pump at the start of the frame (`PreUpdate`), before `ui` and `update`: a `load` asked for in `on_enter` usually lands a few frames later. When a transition entered the scene, the pump runs right after it in the same frame, so a small file can land in that frame (on the web, where the pump runs the loads itself, it often does).
 - `AssetError` (`#[non_exhaustive]`): `NotFound { path }`, `Io { path, source }`, `Decode { path, source }`, `NoLoader { path, extension }`, `Dependency { path, dependency, error }`, `Cycle { path, chain }`, `InvalidPath { path, reason }`. `Display` is one line naming the path (`could not load "level.ron"`) and the causes are its `source()` chain: `error.report()` is the error with every cause on one line, as the engine's warnings print it. The engine warns once about every failure in the dev log, so a game only handles what it can do something about.
 
 ## 5. Made in code, and embedded
@@ -157,7 +157,7 @@ fn embed(ctx: &mut SceneContext) -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-- `Image::from_rgba(pixels, width, height)`, `solid_rect`, `solid_circle` and `solid_ellipse` make images; `Image::decode(bytes)` decodes any raster format the loader reads (not SVG). `Font::from_bytes` takes `impl Into<Arc<[u8]>>`, so give it a `&[u8]` (a `const` as above, or `include_bytes!(..).as_slice()`).
+- `Image::from_rgba(pixels, width, height)`, `solid_rect`, `solid_circle` and `solid_ellipse` make images; `Image::decode(bytes)` decodes any raster format the loader reads whose bytes name it: all but TGA (it has no signature; give a TGA its file and `load` it) and SVG. `Font::from_bytes` takes `impl Into<Arc<[u8]>>`, so give it a `&[u8]` (a `const` as above, or `include_bytes!(..).as_slice()`).
 - A `UiFile::parse` text's imports are asset paths, loaded when it is first built. A type of your own needs nothing registered to `add` it (section 8).
 - **The web build has no files.** `load` and `load_now` fail there (`AssetError::Io` with `ErrorKind::Unsupported`, noted in the dev log at debug level rather than warned about), so embed what a web build needs. To read the file from `assets/` where there is one (debug builds reload it when saved) and fall back to the embedded copy:
 
@@ -292,7 +292,7 @@ Then `ctx.assets().load_now::<Level>("levels/one.level")`, or `load` it.
   }
   ```
 - `type Settings` is any `Default + Clone + Hash + Eq + Send + Sync + 'static` type (`()` for none). Settings are part of the asset's key: one file loaded with two settings (`load_with`) is two assets.
-- Fail a bad file with `AssetError::decode(cx.path(), error)`, from any error type or a message. A loader that panics fails its asset (`AssetError::Decode`), not the game.
+- Fail a bad file with `AssetError::decode(cx.path(), error)`, from any error type or a message, rather than panic. In native builds a loader that panics fails its asset (`AssetError::Decode`), not the game; the web build aborts on a panic, so there a panicking loader ends the game.
 - `extensions` are matched without regard to case, and one written with its dot (`".level"`) is taken as `"level"`. A game loader for an extension an engine loader of the same type takes replaces the engine's.
 - A type only ever made in code needs no loader: `impl Asset for Note {}`, then `ctx.assets().add(Note(..))`.
 

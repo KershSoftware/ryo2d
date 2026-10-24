@@ -292,7 +292,7 @@ let heading = ui.theme().text.heading.style();               // a text role as a
   ```
 
 - **Skins** are nine-slice images a look draws in place of its fill and border (the fill tints it): `Theme::dark().skin("wood", Skin::from_path("ui/wood.png", [6.0; 4], Filter::Nearest))` (an asset path, loaded when the theme is set), then `LookPatch::default().skin("wood")` or `theme.widgets.panel.normal.skin = Some("wood".into())`. Insets are left, top, right, bottom in image pixels.
-- **Sounds:** `theme.sounds` names files for `focus` (navigation moved), `confirm` (a click or Confirm), `back`, `tick` (a slider step, at most every 0.05 s) and `error` (a refused drop, a cancelled rebind), at `volume`. None by default.
+- **Sounds:** `theme.sounds` names files for `focus` (navigation moved), `confirm` (a click or Confirm), `back`, `tick` (a slider step, at most every 0.05 s) and `error` (a refused drop, a cancelled rebind), at `volume`. None by default. Sound paths are audio paths, relative to the working directory as `ryo-audio` loads them (`"assets/ui/click.wav"`), not asset paths like a skin's (`"ui/wood.png"`), in a theme file too: audio is not in the asset registry yet.
 - **RON files** (`*.theme.ron`, registry assets) state only what they change (a nested struct keeps dark's other fields; an option needs no `Some(..)`). A variant's `base`, a text role's `font` and a skin's `filter` are strings there:
 
   ```ron
@@ -303,7 +303,7 @@ let heading = ui.theme().text.heading.style();               // a text role as a
   )
   ```
 
-  `Theme::save(path)` writes one. A skin's `path` in a file is loaded with the theme, as its dependency. A file that fails to load (or whose skin image does not) is an `AssetError` naming the path. `ctx.follow_ui_theme(handle)` uses the theme at once (or when it lands, if still loading) and again whenever it changes (saved, or changed with `Assets<Theme>::get_mut`); a reload that fails keeps the theme in use, and the registry warns once. A `modify` after it lasts until the file next changes; `set` stops following. `ctx.ui_theme().follow(handle)` alone waits for the next UI pass, which overwrites a `modify` made before it.
+  `Theme::save(path)` writes one. A skin's `path` in a file is loaded with the theme, as its dependency; its `sounds` are audio paths (above). A file that fails to load (or whose skin image does not) is an `AssetError` naming the path. `ctx.follow_ui_theme(handle)` uses the theme at once (or when it lands, if still loading) and again whenever it changes (saved, or changed with `Assets<Theme>::get_mut`); a reload that fails keeps the theme in use, and the registry warns once. A `modify` after it lasts until the file next changes; `set` stops following. `ctx.ui_theme().follow(handle)` alone waits for the next UI pass, which overwrites a `modify` made before it.
 
 ## 11. Input and Consumption
 

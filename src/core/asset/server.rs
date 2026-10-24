@@ -883,7 +883,8 @@ impl AssetServer {
   }
 
   /// Reads and loads one asset, a reload of a loaded value if `reload`. A
-  /// panic in the source or the loader is caught, and fails the asset
+  /// panic in the source or the loader is caught, and fails the asset (in
+  /// native builds: the web build aborts on a panic)
   fn run_load(
     &self,
     path: &AssetPath,

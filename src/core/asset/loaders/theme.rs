@@ -17,6 +17,10 @@ use crate::core::ui::Theme;
 /// too. A `UiTheme` following the theme (`UiTheme::follow`) uses it again
 /// whenever it changes.
 ///
+/// Its `sounds` are not asset paths: audio is not in the registry yet, so
+/// they are relative to the working directory, as `Audio::load_sound` takes
+/// them (`"assets/ui/click.wav"` beside a skin's `"ui/wood.png"`).
+///
 /// Every registry has it
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ThemeLoader;

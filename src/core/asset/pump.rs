@@ -272,7 +272,8 @@ fn free(world: &mut World, server: &AssetServer) {
   }
 }
 
-/// A loader's check of `value`; a panic in it fails the check
+/// A loader's check of `value`; a panic in it fails the check (in native
+/// builds: the web build aborts on a panic)
 pub(crate) fn run_check(
   loader: &dyn ErasedLoader,
   value: &dyn Any,

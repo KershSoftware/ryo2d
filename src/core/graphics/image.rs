@@ -126,7 +126,9 @@ impl Image {
     Self::from_parts(data, width, height, is_opaque)
   }
 
-  /// Decodes an image file's bytes (any raster format the `image` crate is built with)
+  /// Decodes an image file's bytes, in any raster format its bytes name: all
+  /// the image loader reads but TGA, which has no signature (load a TGA by
+  /// its path), and SVG
   pub fn decode(bytes: &[u8]) -> Result<Image, ImageError> {
     Ok(Self::from_decoded(image::load_from_memory(bytes)?))
   }
