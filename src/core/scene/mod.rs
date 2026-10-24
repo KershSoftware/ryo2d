@@ -421,7 +421,7 @@ pub struct PhysicsPaused(pub bool);
 /// Insert the resources scene callbacks and systems expect, for tests.
 #[cfg(test)]
 pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World) {
-  use crate::core::asset::{AssetManager, AssetServer, MemorySource};
+  use crate::core::asset::{AssetServer, MemorySource};
   use crate::core::console::{CommandRegistry, register_builtins};
   use crate::core::cursor::CursorRequest;
   use crate::core::graphics::{Presentation, ScreenMapping, camera_mut::spawn_main_camera};
@@ -441,7 +441,6 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
     1.0,
   ));
   spawn_main_camera(world, glam::Vec2::new(800.0, 600.0));
-  world.insert_resource(AssetManager::new());
   crate::core::asset::insert_registry(world, AssetServer::new(MemorySource::new()));
   world.insert_resource(EffectsManager::new());
   world.insert_resource(crate::core::render::Look::default());

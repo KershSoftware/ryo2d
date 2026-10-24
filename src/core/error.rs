@@ -2,10 +2,10 @@
 //!
 //! This module provides a hierarchy of error types:
 //! - `EngineError` - Top-level engine errors
-//! - `ManagerError` - The old `AssetManager`'s errors (the registry's are
-//!   `asset::error::AssetError`)
 //! - `AudioError` - Audio system errors
 //! - `ImageError` - Image decoding errors
+//!
+//! Assets that do not load give the registry's `asset::AssetError`.
 //!
 //! All error types implement `std::error::Error` and use `thiserror` for
 //! ergonomic error handling.
@@ -43,29 +43,6 @@ pub enum EngineError {
 /// Result type for engine operations
 pub type EngineResult<T> = Result<T, EngineError>;
 
-/// Errors from the old `AssetManager`, which the asset registry replaces
-#[derive(Error, Debug)]
-pub enum ManagerError {
-  /// Asset file not found
-  #[error("Asset not found: {0}")]
-  NotFound(PathBuf),
-
-  /// Failed to load asset data
-  #[error("Failed to load {path}: {reason}")]
-  LoadError { path: PathBuf, reason: String },
-
-  /// Failed to set up file watcher for hot reloading
-  #[error("Failed to set up file watcher: {0}")]
-  WatchError(String),
-
-  /// Image loading error (wraps ImageError)
-  #[error(transparent)]
-  Image(#[from] ImageError),
-}
-
-/// Result type for the old `AssetManager`'s operations
-pub type ManagerResult<T> = Result<T, ManagerError>;
-
 /// Errors that can occur when decoding images
 #[derive(Error, Debug)]
 pub enum ImageError {
@@ -73,9 +50,6 @@ pub enum ImageError {
   #[error(transparent)]
   Decode(#[from] image::ImageError),
 }
-
-/// Result type for image operations
-pub type ImageResult<T> = Result<T, ImageError>;
 
 /// Audio system errors
 #[derive(Error, Debug)]
@@ -103,17 +77,6 @@ pub enum AudioError {
 
 /// Result type for audio operations
 pub type AudioResult<T> = Result<T, AudioError>;
-
-/// Hot reload system errors
-#[derive(Error, Debug)]
-pub enum HotReloadError {
-  /// Failed to create the file watcher
-  #[error("Failed to create file watcher: {0}")]
-  WatcherCreation(String),
-}
-
-/// Result type for hot reload operations
-pub type HotReloadResult<T> = Result<T, HotReloadError>;
 
 /// Save/load system errors
 #[derive(Error, Debug)]
@@ -214,20 +177,5 @@ mod tests {
       format!("{}", err),
       "Texture format R8Unorm is not supported for capture"
     );
-  }
-
-  #[test]
-  fn asset_error_display() {
-    let err = ManagerError::NotFound(PathBuf::from("missing.png"));
-    assert_eq!(format!("{}", err), "Asset not found: missing.png");
-  }
-
-  #[test]
-  fn image_error_chains_to_manager_error() {
-    let Err(image_err) = crate::core::graphics::Image::decode(b"truncated") else {
-      panic!("no image decodes from text");
-    };
-    let manager_err: ManagerError = image_err.into();
-    assert!(matches!(manager_err, ManagerError::Image(_)));
   }
 }

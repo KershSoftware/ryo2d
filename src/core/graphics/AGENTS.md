@@ -47,7 +47,7 @@ Every camera has one uniform buffer (`camera_gpu.rs`: `CameraGlobals { view_proj
 ## GPU Sprite Batching
 
 - `BatchCollector` keeps each `Scene::render` sprite in submission order (texture id shared per texture) with its `SpriteDraw` (z, blend, filter, lit, effects) and pushes them into the `DrawList`. There are no per-texture batches: the batch (`render/batch`) merges **consecutive** drawables with equal draw states (page, shader, blend, sampling) into one draw, so many small textures still cost few draws.
-- Sprites pass their `SpriteHandle`; its texture is registered and uploaded the first time a frame draws it, and dropped once no frame has drawn it for 600 frames. Two handles are two textures, whatever their names.
+- Sprites pass their `Handle<Image>`; its texture is registered and uploaded the first time a frame draws it, uploaded again when the image's version moves, and dropped when the image is freed (`sync_images`, from `AssetEvent::Removed`). Clones of a handle share one texture; two images are two textures. Textures uploaded by name go once no frame has uploaded or drawn them for 600 frames.
 - `SpriteGpuRenderer` keeps the textures (registry, atlas, names) and compiles game sprite shaders to WGSL (`shade_custom`); the batch makes their pipelines. It makes the frame's textures resident in `prepare_textures` before the batch lays the frame out.
 
 ## Texture Atlas and Shading

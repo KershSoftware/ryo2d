@@ -94,8 +94,8 @@ pub mod prelude {
 
   // Engine messages
   pub use crate::core::messages::{
-    AssetLoadFailed, AssetReloaded, KnockbackFinished, KnockbackStarted, SquashStretchFinished,
-    SquashStretchStarted, TweenCompleted, TweenStarted,
+    KnockbackFinished, KnockbackStarted, SquashStretchFinished, SquashStretchStarted,
+    TweenCompleted, TweenStarted,
   };
 
   // Input (with winit's key and mouse button types)
@@ -175,7 +175,7 @@ pub mod prelude {
     Handle, ImageLoader, ImageSettings, LoadContext, LoadState, MemorySource, Progress,
     ShaderLoader, SvgSize, ThemeLoader, UiFileLoader, UntypedAssetId,
   };
-  pub use crate::core::asset::{AssetManager, AssetStats, TypeStats};
+  pub use crate::core::asset::{AssetStats, TypeStats};
 
   // Window and cursor
   pub use crate::core::cursor::{CursorRequest, CursorStyle};
@@ -241,8 +241,7 @@ pub mod prelude {
 
   // Errors
   pub use crate::core::error::{
-    AudioError, AudioResult, EngineError, EngineResult, HotReloadError, HotReloadResult,
-    ImageError, ImageResult, ManagerError, ManagerResult, SaveError, SaveResult,
+    AudioError, AudioResult, EngineError, EngineResult, ImageError, SaveError, SaveResult,
   };
   pub use crate::core::graphics::GpuError;
 

@@ -8,7 +8,7 @@
 - **Output** - Use the `Output::status/success/warning/error` helpers (Cargo-style right-aligned labels, no color)
 - **Font licences** - `build` writes `release/licenses/` and `export` writes it into the release before zipping: the built-in fonts' licence texts (`src/assets/fonts/`, two SIL OFL 1.1 and one CC0) and a README naming the fonts, compiled in with `include_str!` (`commands/licenses.rs`). OFL condition 2 asks that every copy of the fonts carries them. A new built-in font needs its licence added there. The CLI has no web build; a game shipped to the web by hand must ship `licenses/` itself
 
-- **`check-ui`** (`commands/check_ui.rs`) checks `*.ui.ron` files without running the game: the files given, or every one under the assets directory. The checks themselves live in `src/core/ui/file/check.rs` (the load checks, imports read from disk, image paths that do not exist), so the command only finds files, prints `path:line:column: message` and exits non-zero on any problem. Paths in UI files are relative to the project root, so issue paths are printed relative to it with `/` separators.
+- **`check-ui`** (`commands/check_ui.rs`) checks `*.ui.ron` files without running the game: the files given, or every one under the assets directory. The checks themselves live in `src/core/ui/file/check.rs` (the load checks, imports read from disk, image paths that do not exist), so the command only finds files, prints `path:line:column: message` and exits non-zero on any problem. Paths in UI files are asset paths, relative to the assets directory, and issue paths are printed the same way (`ui/menu.ui.ron`), with `/` separators; a file given that is not under the assets directory is reported as not an asset path.
 
 ## Skills
 

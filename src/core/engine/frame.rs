@@ -9,15 +9,15 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use super::{Engine, FrameOutcome, PresentOutcome, QuitRequested, SceneHost};
-use crate::core::asset::{AssetManager, AssetsView};
+use crate::core::asset::AssetsView;
 use crate::core::audio::SoundOptions;
 use crate::core::capture::CaptureTarget;
 use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::ecs::kernel::{CheckChangeTicks, DetectChanges};
-use crate::core::ecs::{MessageWriter, On, Res, ResMut, Resource, World};
+use crate::core::ecs::{On, Res, ResMut, Resource, World};
 use crate::core::input::{Binding, Input, InputEvent};
-use crate::core::messages::{AssetLoadFailed, AssetReloaded, update_messages};
+use crate::core::messages::update_messages;
 use crate::core::scene::SceneAction;
 use crate::core::schedule::Phase;
 use crate::core::shaders::EffectsManager;
@@ -834,34 +834,14 @@ pub(crate) fn update_messages_system(world: &mut World) {
   update_messages(world);
 }
 
-/// `PreUpdate`, before `asset_pump_system`: the asset registry's pump puts
-/// finished loads and reloads in their stores, frees unheld assets and sends
-/// their `AssetEvent`s; then the font registry follows the font stores.
+/// `PreUpdate`: the asset registry's pump puts finished loads and reloads in
+/// their stores, frees unheld assets and sends their `AssetEvent`s; then the
+/// font registry follows the font stores.
 pub(crate) fn asset_registry_system(world: &mut World) {
   crate::core::asset::pump(world);
   // Right after the pump: a freed font's face goes before any text is laid
   // out this frame, and a loaded one is there for it
   crate::core::text::fonts_follow_assets(world);
-}
-
-/// `PreUpdate`: the old manager's hot reloads (dev builds).
-pub(crate) fn asset_pump_system(
-  mut assets: ResMut<AssetManager>,
-  mut reloaded: MessageWriter<AssetReloaded>,
-  mut failed: MessageWriter<AssetLoadFailed>,
-) {
-  #[cfg(debug_assertions)]
-  assets.process_reloads();
-  for outcome in assets.take_reload_outcomes() {
-    match outcome {
-      Ok(path) => {
-        reloaded.write(AssetReloaded { path });
-      }
-      Err((path, error)) => {
-        failed.write(AssetLoadFailed { path, error });
-      }
-    }
-  }
 }
 
 /// `PostUpdate`: timed post-process effects run on real time.

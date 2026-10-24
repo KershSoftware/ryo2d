@@ -119,7 +119,7 @@ The UI has a renderer of its own, apart from the world's batch: the UI needs pai
 - **Tiled run** (`RenderStyle::Tiled`): laid out from the entity's position, which is the first tile's top-left (Up/Left runs grow backwards); the anchor is ignored; the run rotates and scales about that position.
 - **Composite tile:** parts at `origin + offset` (their top-left), scaled by the global scale, never rotated; the origin is blended for interpolated entities.
 - Instances carry world-space quads: centre, size (texels times scale, in world units), rotation and flips. The camera's `view_proj` takes them to its image; in pixel-art mode the sprite vertex shader snaps axis-aligned quads to whole target pixels. A quad is culled per camera by its half-diagonal box. Blending happens in linear light, on the float scene image.
-- Entity sprites are registry textures (`TextureId`) keyed by `SpriteHandle::serial()`, re-uploaded when `generation()` changes (hot reload). A renderable with `target: Some(t)` draws the render target's texture at the target's size; the camera drawing into `t` skips it (warned once per entity).
+- Entity sprites are registry textures (`TextureId`) keyed by the image's asset id, uploaded again when its store version moves (a reload, or `get_mut`) and freed with the image (`AssetEvent::Removed`). A renderable with `target: Some(t)` draws the render target's texture at the target's size; the camera drawing into `t` skips it (warned once per entity).
 
 ## Ordering Rules
 

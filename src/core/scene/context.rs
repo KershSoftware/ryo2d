@@ -1,6 +1,6 @@
 //! The context scene callbacks receive.
 
-use crate::core::asset::{AssetManager, Assets, AssetsView, Handle};
+use crate::core::asset::{Assets, AssetsView, Handle};
 use crate::core::audio::Audio;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::cursor::{CursorRequest, CursorStyle, CustomCursorData};
@@ -30,16 +30,15 @@ use super::SceneSlot;
 
 /// What a scene callback can reach.
 ///
-/// `time`, `input` and `assets` are the engine's resources, taken
-/// out of the world for the duration of the callback (systems see them as
-/// resources as usual). Everything else lives in `world`; the helpers below
-/// are shorthands for it, `assets()` (the asset registry) among them. The
-/// engine inserts every resource the helpers read before any scene runs.
+/// `time` and `input` are the engine's resources, taken out of the world for
+/// the duration of the callback (systems see them as resources as usual).
+/// Everything else lives in `world`; the helpers below are shorthands for
+/// it, `assets()` (the asset registry) among them. The engine inserts every
+/// resource the helpers read before any scene runs.
 pub struct SceneContext<'a> {
   pub world: &'a mut World,
   pub time: &'a mut Time,
   pub input: &'a mut Input,
-  pub assets: &'a mut AssetManager,
   pub audio: &'a mut Audio,
   schedules: &'a mut SceneSchedules,
   messages: &'a mut SceneMessages,
@@ -49,8 +48,8 @@ pub struct SceneContext<'a> {
 impl SceneContext<'_> {
   /// Build a context for `slot` over `world`, run `f`, put the scoped resources back.
   ///
-  /// Panics if `Time`, `Input` or `AssetManager` is not a resource (the
-  /// engine inserts all three at startup).
+  /// Panics if `Time` or `Input` is not a resource (the engine inserts both
+  /// at startup).
   #[cfg(test)]
   pub(crate) fn scoped<R>(
     world: &mut World,
@@ -79,19 +78,16 @@ impl SceneContext<'_> {
   ) -> R {
     world.resource_scope(|world, mut time: Mut<Time>| {
       world.resource_scope(|world, mut input: Mut<Input>| {
-        world.resource_scope(|world, mut assets: Mut<AssetManager>| {
-          let mut ctx = SceneContext {
-            world,
-            time: &mut time,
-            input: &mut input,
-            assets: &mut assets,
-            audio,
-            schedules,
-            messages,
-            scope_id,
-          };
-          f(&mut ctx)
-        })
+        let mut ctx = SceneContext {
+          world,
+          time: &mut time,
+          input: &mut input,
+          audio,
+          schedules,
+          messages,
+          scope_id,
+        };
+        f(&mut ctx)
       })
     })
   }

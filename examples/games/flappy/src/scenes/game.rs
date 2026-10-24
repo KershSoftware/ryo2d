@@ -185,7 +185,8 @@ impl GameScene {
   }
 
   fn spawn_ground(&mut self, ctx: &mut SceneContext) {
-    // Spawn ground segments for seamless scrolling (cached by AssetManager)
+    // Spawn ground segments for seamless scrolling (the registry loads the
+    // image once; asking again while it lives gives the same handle)
     let mut assets = ctx.assets();
     let ground_handle = assets
       .load_now::<Image>("bg-ground.png")
@@ -245,7 +246,7 @@ impl GameScene {
 
   fn spawn_background(&mut self, ctx: &mut SceneContext) {
     // Spawn two background segments for seamless parallax scrolling
-    // Background scrolls slower than pipes/ground for depth effect (cached by AssetManager)
+    // Background scrolls slower than pipes/ground for depth effect
     let mut assets = ctx.assets();
     let bg_handle = assets
       .load_now::<Image>("bg.png")

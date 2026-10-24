@@ -1,4 +1,4 @@
-//! Assets: the registry, and the old manager it is replacing.
+//! Assets: the registry.
 //!
 //! - [`AssetServer`] loads assets by path through [`AssetLoader`]s chosen by
 //!   extension, on worker threads, or at once with `load_now`. [`Assets<T>`]
@@ -9,19 +9,14 @@
 //!   watches the asset folder (native builds), so a saved file reloads once
 //!   its writes settle
 //! - [`AssetsView`] - the registry as scenes (`ctx.assets()`) and tests reach it
-//! - [`AssetManager`] - the old manager, which loads nothing the registry
-//!   does not; it goes next
-//! - [`HotReloadWatcher`] - the old manager's file watcher
 
 pub mod assets;
 pub mod error;
 pub mod event;
 pub mod handle;
-pub mod hot_reload;
 pub mod id;
 pub mod loader;
 mod loaders;
-pub mod manager;
 pub mod path;
 mod pump;
 pub mod server;
@@ -77,6 +72,3 @@ pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: Asset
   server.register_loader(ThemeLoader);
   world.insert_resource(server);
 }
-
-pub use hot_reload::{HotReloadConfig, HotReloadEvent, HotReloadWatcher};
-pub use manager::AssetManager;

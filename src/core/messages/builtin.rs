@@ -1,22 +1,6 @@
 //! The engine's own message types.
 
-use std::path::PathBuf;
-
 use crate::core::ecs::kernel::{Entity, Message};
-
-/// A sprite, shader or other asset was reloaded from disk (dev builds).
-#[derive(Message, Debug, Clone, PartialEq, Eq)]
-pub struct AssetReloaded {
-  pub path: PathBuf,
-}
-
-/// An asset failed to hot reload (dev builds); the previous version stays in
-/// use. Initial and async loads report failure through their own results.
-#[derive(Message, Debug, Clone, PartialEq, Eq)]
-pub struct AssetLoadFailed {
-  pub path: PathBuf,
-  pub error: String,
-}
 
 /// A `Tween` began playing.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]

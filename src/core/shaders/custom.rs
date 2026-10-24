@@ -574,8 +574,10 @@ pub(crate) fn pack(layout: &ParamLayout, params: &ShaderParams, out: &mut [u8]) 
   problems
 }
 
-/// Identifies a shader's source for its kind: handles whose sources are equal
-/// share one compiled pipeline (and one error report)
+/// Identifies a shader's source for its kind: shaders whose sources are
+/// equal share one compiled pipeline. A compile error is still reported for
+/// each shader and version (`ShaderCache::refresh`); only a pipeline the GPU
+/// rejects is reported once per source ([`report_once`])
 pub(crate) fn source_key(kind: ShaderKind, source: &str) -> u64 {
   use std::hash::{Hash, Hasher};
   let mut hasher = std::collections::hash_map::DefaultHasher::new();

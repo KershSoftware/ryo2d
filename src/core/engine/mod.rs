@@ -20,9 +20,7 @@ use winit::event_loop::EventLoop;
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 
-use crate::core::asset::{
-  AssetLoader, AssetManager, AssetServer, AssetSource, DiskSource, insert_registry,
-};
+use crate::core::asset::{AssetLoader, AssetServer, AssetSource, DiskSource, insert_registry};
 use crate::core::audio::{Audio, AudioManager};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
 use crate::core::config::{
@@ -72,9 +70,9 @@ use crate::core::window::{WindowInfo, WindowRequest};
 use crate::{engine_info, engine_warn};
 
 use frame::{
-  advance_clock_system, asset_pump_system, asset_registry_system, clear_trackers_system,
-  publish_input_system, scene_fixed_systems, scene_transition_system, scene_update_system,
-  scene_update_systems, update_effects_system, update_messages_system,
+  advance_clock_system, asset_registry_system, clear_trackers_system, publish_input_system,
+  scene_fixed_systems, scene_transition_system, scene_update_system, scene_update_systems,
+  update_effects_system, update_messages_system,
 };
 
 /// Events the engine sends its own event loop.
@@ -392,7 +390,6 @@ fn handle_system_error(error: crate::core::ecs::SystemError, ctx: crate::core::e
 pub(crate) fn init_world_resources(
   world: &mut World,
   config: &EngineConfig,
-  assets: AssetManager,
   registry: AssetServer,
   commands: CommandRegistry,
 ) {
@@ -401,7 +398,6 @@ pub(crate) fn init_world_resources(
   world.insert_resource(Input::new());
   world.insert_resource(ScreenMapping::new(config.presentation, (w, h), 1.0));
   spawn_main_camera(world, glam::Vec2::new(w as f32, h as f32));
-  world.insert_resource(assets);
   insert_registry(world, registry);
   world.insert_resource(EffectsManager::new());
   world.insert_resource(crate::core::render::Look::default());
@@ -443,11 +439,7 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   );
   schedules.add_systems(
     Phase::PreUpdate,
-    (
-      asset_registry_system.before(asset_pump_system),
-      asset_pump_system,
-      scene_transition_system,
-    ),
+    (asset_registry_system, scene_transition_system),
   );
   schedules.add_systems(
     Phase::FixedUpdate,
@@ -528,7 +520,6 @@ impl Engine {
       hot_reload,
     } = resolved;
 
-    let assets = AssetManager::new();
     let initial_size = (config.width, config.height);
 
     // Tell players and developers where settings and saves are kept
@@ -630,7 +621,7 @@ impl Engine {
     };
 
     let mut world = World::new();
-    init_world_resources(&mut world, &config, assets, registry, command_registry);
+    init_world_resources(&mut world, &config, registry, command_registry);
     // Drawn in place of an image that is not loaded (debug builds); held,
     // so it lives as long as the engine
     let missing_image =

@@ -110,8 +110,6 @@ pub fn register_engine_messages(world: &mut World) {
   register_message::<KnockbackFinished>(world);
   register_message::<SquashStretchStarted>(world);
   register_message::<SquashStretchFinished>(world);
-  register_message::<AssetReloaded>(world);
-  register_message::<AssetLoadFailed>(world);
   register_message::<crate::core::particles::ParticleCollision>(world);
   register_message::<crate::core::gameplay::MovementEvent>(world);
   register_message::<crate::core::gameplay::PickedUp>(world);
@@ -184,6 +182,6 @@ mod tests {
     let mut world = World::new();
     register_engine_messages(&mut world);
     assert!(world.contains_resource::<Messages<CollisionStarted>>());
-    assert!(world.contains_resource::<Messages<AssetLoadFailed>>());
+    assert!(world.contains_resource::<Messages<TweenCompleted>>());
   }
 }
