@@ -1007,41 +1007,37 @@ pub(crate) fn reload_and_wait<T: Asset>(
   world: &mut World,
   path: &str,
 ) -> Result<(), Arc<AssetError>> {
+  let asset_path = crate::core::asset::AssetPath::parse(path).map_err(Arc::new)?;
+  let gave_up = |why: &str| Arc::new(AssetError::decode(&asset_path, why.to_string()));
   let server = AssetsView::new(world).server().clone();
   let asset = server.load::<T>(path);
   let Some(mut events) = world
     .get_resource::<Messages<AssetEvent<T>>>()
     .map(Messages::get_cursor_current)
   else {
-    return Err(Arc::new(AssetError::decode(
-      &crate::core::asset::AssetPath::parse(path).map_err(Arc::new)?,
-      "its type has no events in this world",
-    )));
+    return Err(gave_up("its type has no events in this world"));
   };
   server.reload(path);
   let start = std::time::Instant::now();
   loop {
     pump(world);
-    let landed = events
-      .read(world.resource::<Messages<AssetEvent<T>>>())
-      .find_map(|event| match event {
-        AssetEvent::Added { id } | AssetEvent::Modified { id } if *id == asset.id() => Some(Ok(())),
-        AssetEvent::Failed { id, error } | AssetEvent::ReloadFailed { id, error }
-          if *id == asset.id() =>
-        {
-          Some(Err(Arc::clone(error)))
-        }
-        _ => None,
-      });
+    let Some(messages) = world.get_resource::<Messages<AssetEvent<T>>>() else {
+      return Err(gave_up("its type has no events in this world"));
+    };
+    let landed = events.read(messages).find_map(|event| match event {
+      AssetEvent::Added { id } | AssetEvent::Modified { id } if *id == asset.id() => Some(Ok(())),
+      AssetEvent::Failed { id, error } | AssetEvent::ReloadFailed { id, error }
+        if *id == asset.id() =>
+      {
+        Some(Err(Arc::clone(error)))
+      }
+      _ => None,
+    });
     if let Some(landed) = landed {
       return landed;
     }
     if start.elapsed() > std::time::Duration::from_secs(5) {
-      let path = crate::core::asset::AssetPath::parse(path).map_err(Arc::new)?;
-      return Err(Arc::new(AssetError::decode(
-        &path,
-        "the reload did not land in 5 s",
-      )));
+      return Err(gave_up("the reload did not land in 5 s"));
     }
     std::thread::sleep(std::time::Duration::from_millis(1));
   }
@@ -1050,6 +1046,15 @@ pub(crate) fn reload_and_wait<T: Asset>(
 #[cfg(all(test, feature = "default-fonts"))]
 mod tests {
   use super::*;
+
+  #[test]
+  fn reloading_a_type_with_no_events_is_an_error() {
+    struct Unregistered;
+    impl Asset for Unregistered {}
+    let mut h = UiHarness::new(320.0, 240.0);
+    let reloaded = reload_and_wait::<Unregistered>(h.world_mut(), "a.txt");
+    assert!(reloaded.is_err());
+  }
 
   #[test]
   fn a_frame_runs_the_asset_pump() {
