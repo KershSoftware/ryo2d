@@ -108,6 +108,7 @@ Unless explicitly told so, always confirm committing and the commit message with
 - **Progress incrementally** - don't jump ahead in the task list
 - **Before finishing** - run `cargo check`, `cargo clippy`, `cargo test` and verify no regressions
 - **Line endings** - LF everywhere on every platform, enforced by `.gitattributes`, `.editorconfig` and `rustfmt.toml`; edit files normally
+- **No git worktrees** - work in this checkout, on a branch, unless the owner explicitly asks for a worktree. This holds even when a skill or workflow says to create one. Each worktree builds its own `target/`, which grows to hundreds of GB. If other work in progress in the checkout would conflict with yours, ask the owner before starting.
 
 ### Commit Message Guidelines
 
