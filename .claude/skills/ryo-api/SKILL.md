@@ -1206,8 +1206,8 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 
 | | |
 |---|---|
-| `UiTheme` (resource; `ctx.ui_theme()`, `EngineBuilder::ui_theme(Theme)`) | `new(Theme)`, `get() -> &Theme`, `set(Theme)`, `modify(impl FnOnce(&mut Theme))`; a change applies from the next frame; a theme from `Theme::load` reloads when its file changes, in debug builds |
-| `Theme { name, palette: Palette, metrics: Metrics, text: TextRoles, widgets: WidgetLooks, variants: BTreeMap<String, Variant>, skins: BTreeMap<String, Skin>, sounds: UiSounds }` | `dark()` (default), `light()`, `pixel()`, `load(impl AsRef<Path>) -> Result<Theme, ThemeError>`, `save(impl AsRef<Path>) -> Result<(), ThemeError>`, `look(WidgetKind, variant: Option<&str>, WidgetState) -> UiLook`, `variant(name, Variant) -> Theme`, `skin(name, Skin) -> Theme`, `source() -> Option<&Path>` |
+| `UiTheme` (resource; `ctx.ui_theme()`, `EngineBuilder::ui_theme(Theme)`) | `new(Theme)`, `get() -> &Theme`, `set(Theme)` (stops following), `modify(impl FnOnce(&mut Theme))`, `follow(Handle<Theme>)` (uses the asset once loaded and again whenever it changes; a failed reload keeps the theme); a change applies from the next frame |
+| `Theme { name, palette: Palette, metrics: Metrics, text: TextRoles, widgets: WidgetLooks, variants: BTreeMap<String, Variant>, skins: BTreeMap<String, Skin>, sounds: UiSounds }` | `dark()` (default), `light()`, `pixel()`, `save(impl AsRef<Path>) -> Result<(), ThemeError>`, `look(WidgetKind, variant: Option<&str>, WidgetState) -> UiLook`, `variant(name, Variant) -> Theme`, `skin(name, Skin) -> Theme`; an asset, loaded from `*.theme.ron` by `ThemeLoader` with its skins' images as dependencies |
 | `Palette` | `background`, `surface`, `text`, `muted`, `accent`, `danger`, `success`, `warning` |
 | `Metrics` | `radius`, `spacing`, `border`, `focus_ring: FocusRing { width, offset, color }` (2, 2), `scroll_line` (40), `scroll_smoothing` (0.08), `repeat_delay` (0.35), `repeat_rate` (0.1), `tooltip_delay` (0.5), `drag_threshold` (4), `double_click` (0.3), `sizes: Sizes` |
 | `Sizes` | `button_padding: [f32; 2]`, `button_min_height`, `panel_padding`, `slider: [f32; 2]`, `slider_handle: [f32; 2]`, `toggle: [f32; 2]`, `checkbox`, `scrollbar`, `slot`, `text_input: [f32; 2]` |
@@ -1217,11 +1217,11 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `UiLook` (the UI's `Look`) | `fill`, `border`, `border_width`, `radius`, `text`, `padding: Edges`, `offset: [f32; 2]`, `skin: Option<Arc<str>>` |
 | `LookPatch` (each field an `Option`) | `fill(Color)`, `border(Color)`, `text(Color)`, `radius(f32)`, `skin(&str)` |
 | `Variant { base: WidgetKind, normal, hovered, pressed, focused, disabled: LookPatch }` | `of(WidgetKind)`, `normal(LookPatch)`, `hovered(..)`, `pressed(..)`, `focused(..)`, `disabled(..)` (without one, a disabled widget takes its kind's disabled look); built in: `danger`, `accent`, `tab` (buttons), `selected` (tabs) |
-| `Skin { path: Option<String>, insets: [f32; 4], filter: Filter, sprite: Option<SpriteHandle> }` | `from_path(&str, insets, Filter)`, `from_sprite(SpriteHandle, insets, Filter)`: a nine-slice drawn in place of a look's fill and border, the fill tinting it |
+| `Skin { path: Option<String>, insets: [f32; 4], filter: Filter, image: Option<Handle<Image>> }` | `from_path(&str, insets, Filter)`, `from_image(Handle<Image>, insets, Filter)`: a nine-slice drawn in place of a look's fill and border, the fill tinting it |
 | `UiSounds { focus, confirm, back, tick, error: Option<String>, volume: f32 }` | files the engine plays (one of each per frame at most); none by default |
 | `enum WidgetKind` | `Button`, `Panel`, `Checkbox`, `Toggle`, `Radio`, `Slider`, `TextInput`, `Dropdown`, `Tab`, `Choice`, `Tooltip`, `Scroll`, `Slot`, `Progress`, `Rebind`, `Modal`, `Prompt` |
 | `enum WidgetState` | `Normal`, `Hovered`, `Pressed`, `Focused` (ring showing), `Disabled` |
-| `ThemeError` | why a theme file could not be read, parsed or written (names the path) |
+| `ThemeError` | why `Theme::save` could not write a theme (names the path) |
 
 - A RON theme file is merged over `Theme::dark()` map by map, so it states only what it changes; `Variant::base`, `TextLook::font` and `Skin::filter` are strings there (`base: "Button"`, `font: "Pixel"`, `filter: "Nearest"`).
 - `ui.theme()` reads the theme while drawing (`ui.theme().text.heading.style()`, `ui.theme().palette.accent`). Widgets take `.variant(name)` and `.style(LookPatch)`; an unknown variant or skin warns once and draws the plain look.

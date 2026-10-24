@@ -468,19 +468,16 @@ impl Engine {
     }
   }
 
-  /// The theme for this UI pass: a watched theme file that changed is
-  /// reloaded (debug builds), and the images of new skins are loaded
+  /// The theme for this UI pass: a followed theme asset that changed is
+  /// used, and the images of new skins are loaded
   fn refresh_ui_theme(&mut self) -> Arc<Theme> {
-    #[cfg(debug_assertions)]
-    let now = f64::from(self.world.resource::<Time>().real.elapsed());
     let loaded = &mut self.theme_generation;
-    #[cfg(debug_assertions)]
-    let watch = &mut self.theme_watch;
     self
       .world
       .resource_scope(|world, mut theme: crate::core::ecs::Mut<UiTheme>| {
-        #[cfg(debug_assertions)]
-        watch.poll(&mut theme, now);
+        if let Some(themes) = world.get_resource::<crate::core::asset::Assets<Theme>>() {
+          theme.update_followed(themes);
+        }
         let mut assets = AssetsView::new(world);
         refresh_skins(&mut theme, loaded, |source| load_skin(&mut assets, source));
         theme.shared()

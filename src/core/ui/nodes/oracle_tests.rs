@@ -2199,7 +2199,7 @@ fn a_skin_replaced_in_place_at_another_size_redraws_its_kept_fragment() {
     .then(At("hovered"))
     .frames(3)
     .then(Do(|h| {
-      let skin = h.theme().skins.get("button").and_then(|s| s.sprite.clone());
+      let skin = h.theme().skins.get("button").and_then(|s| s.image.clone());
       let sprite = skin.expect("the pixel theme's button skin");
       *h.registry().get_mut(&sprite).unwrap() = Image::solid_rect(24, 20, 90, 90, 140, 255);
     }))

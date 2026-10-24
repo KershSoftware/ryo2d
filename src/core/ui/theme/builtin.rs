@@ -422,7 +422,6 @@ pub(super) fn dark() -> Theme {
     variants: standard_variants(),
     skins: BTreeMap::new(),
     sounds: UiSounds::default(),
-    source: None,
   }
 }
 

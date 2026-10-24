@@ -3,11 +3,13 @@
 //!
 //! The theme is the [`UiTheme`] world resource (`ctx.ui_theme()`); the UI
 //! reads it once a pass, so a change applies from the next frame. A theme is
-//! plain data: it loads from and saves to RON, and a file states only what it
+//! plain data, and an asset: `.theme.ron` files load through the registry
+//! (`ThemeLoader`) and [`Theme::save`] writes one. A file states only what it
 //! changes: it is merged over the dark theme map by map (a file's `variants`
 //! add to dark's). Three enum fields are written as strings holding their
 //! variant names: `base: "Button"` (a variant's kind), `font: "Pixel"` and
-//! `filter: "Nearest"`.
+//! `filter: "Nearest"`. The UI theme follows a theme asset with
+//! [`UiTheme::follow`], through its reloads.
 //!
 //! ```ignore
 //! let theme = Theme::dark().variant(
@@ -17,10 +19,13 @@
 //! ctx.ui_theme().set(theme);
 //! // ...
 //! if ui.button("Buy").variant("gold").clicked() { /* ... */ }
+//!
+//! // Or a file, used again whenever it is saved
+//! let file = ctx.assets().load_now::<Theme>("ui/game.theme.ron")?;
+//! ctx.ui_theme().follow(file);
 //! ```
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -28,7 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Color;
 use super::memory::UiSound;
-use crate::core::asset::{AssetsView, Handle};
+use crate::core::asset::{Asset, Assets, AssetsView, Handle};
 use crate::core::ecs::Resource;
 use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
@@ -39,8 +44,6 @@ mod file;
 mod look;
 
 pub use file::ThemeError;
-#[cfg(any(test, debug_assertions))]
-pub(crate) use file::ThemeWatch;
 pub(crate) use look::warn_once;
 pub use look::{Look, LookPatch, Looks, Variant, WidgetKind, WidgetLooks, WidgetState};
 
@@ -141,12 +144,9 @@ pub struct Theme {
   pub widgets: WidgetLooks,
   /// Named changes to a widget kind's looks, picked with `.variant(name)`
   pub variants: BTreeMap<String, Variant>,
-  /// Named nine-slice sprites, drawn by looks that name them
+  /// Named nine-slice images, drawn by looks that name them
   pub skins: BTreeMap<String, Skin>,
   pub sounds: UiSounds,
-  /// The file it was loaded from, watched for changes in debug builds
-  #[serde(skip)]
-  source: Option<PathBuf>,
 }
 
 impl Default for Theme {
@@ -154,6 +154,8 @@ impl Default for Theme {
     Theme::dark()
   }
 }
+
+impl Asset for Theme {}
 
 impl Theme {
   /// Whether a skin has a path (or is a built-in theme's) and no image yet
@@ -169,7 +171,7 @@ impl Theme {
   ) {
     for skin in self.skins.values_mut() {
       if let Some(source) = skin.source() {
-        skin.sprite = load(source);
+        skin.image = load(source);
       }
     }
   }
@@ -200,11 +202,6 @@ impl Theme {
   pub fn skin(mut self, name: &str, skin: Skin) -> Theme {
     self.skins.insert(name.to_string(), skin);
     self
-  }
-
-  /// The file this theme was loaded from
-  pub fn source(&self) -> Option<&Path> {
-    self.source.as_deref()
   }
 }
 
@@ -382,21 +379,22 @@ impl ThemeFont {
   }
 }
 
-/// A nine-slice sprite: a look that names it draws it in place of its fill
-/// and border, the fill tinting the sprite
+/// A nine-slice image: a look that names it draws it in place of its fill
+/// and border, the fill tinting the image
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Skin {
-  /// The sprite's file, loaded by the engine
+  /// The image's file, an asset path: loaded with the theme for a theme
+  /// file, and by the engine when a theme made in code is set
   pub path: Option<String>,
-  /// How far in the corners reach, in sprite pixels: left, top, right, bottom
+  /// How far in the corners reach, in image pixels: left, top, right, bottom
   pub insets: [f32; 4],
   /// Written as a string in files: `"Nearest"`
   #[serde(with = "names")]
   pub filter: Filter,
   /// The loaded image
   #[serde(skip)]
-  pub sprite: Option<Handle<Image>>,
+  pub image: Option<Handle<Image>>,
   /// A built-in theme's image, made in code when the skin is loaded
   #[serde(skip)]
   pub(crate) builtin: Option<BuiltinSkin>,
@@ -423,7 +421,7 @@ impl Default for Skin {
       path: None,
       insets: [0.0; 4],
       filter: Filter::Default,
-      sprite: None,
+      image: None,
       builtin: None,
     }
   }
@@ -434,20 +432,20 @@ impl PartialEq for Skin {
     self.path == other.path
       && self.insets == other.insets
       && self.filter == other.filter
-      && self.sprite == other.sprite
+      && self.image == other.image
       && self.builtin == other.builtin
   }
 }
 
 impl Skin {
-  /// A skin of `sprite`, whose corners reach `insets` (left, top, right,
-  /// bottom) in sprite pixels
-  pub fn from_sprite(sprite: Handle<Image>, insets: [f32; 4], filter: Filter) -> Skin {
+  /// A skin of `image`, whose corners reach `insets` (left, top, right,
+  /// bottom) in image pixels
+  pub fn from_image(image: Handle<Image>, insets: [f32; 4], filter: Filter) -> Skin {
     Skin {
       path: None,
       insets,
       filter,
-      sprite: Some(sprite),
+      image: Some(image),
       builtin: None,
     }
   }
@@ -458,14 +456,14 @@ impl Skin {
       path: None,
       insets,
       filter,
-      sprite: None,
+      image: None,
       builtin: Some(image),
     }
   }
 
   /// Where this skin's image comes from while it has none
   fn source(&self) -> Option<SkinSource<'_>> {
-    if self.sprite.is_some() {
+    if self.image.is_some() {
       return None;
     }
     match (self.builtin, &self.path) {
@@ -477,7 +475,7 @@ impl Skin {
 
   /// Whether this skin has a path (or is a built-in theme's) and no image
   fn wants_image(&self) -> bool {
-    self.sprite.is_none() && (self.builtin.is_some() || self.path.is_some())
+    self.image.is_none() && (self.builtin.is_some() || self.path.is_some())
   }
 
   /// A skin of the image file `path` (an asset path), loaded by the engine
@@ -486,7 +484,7 @@ impl Skin {
       path: Some(path.to_string()),
       insets,
       filter,
-      sprite: None,
+      image: None,
       builtin: None,
     }
   }
@@ -573,7 +571,8 @@ pub(crate) fn load_skin(
   }
 }
 
-/// The world resource holding the UI's theme (the dark theme by default)
+/// The world resource holding the UI's theme (the dark theme by default):
+/// one set in code, or a theme asset it follows ([`UiTheme::follow`])
 #[derive(Resource, Debug, Clone)]
 pub struct UiTheme {
   theme: Arc<Theme>,
@@ -582,6 +581,16 @@ pub struct UiTheme {
   /// the theme it replaced (the engine loads skins, and the node cache
   /// rebuilds, when it moves)
   generation: u64,
+  /// The theme asset it follows
+  followed: Option<Followed>,
+}
+
+/// A theme asset the UI theme follows, held so it stays loaded
+#[derive(Debug, Clone)]
+struct Followed {
+  theme: Handle<Theme>,
+  /// The asset's version in use; `None` until its value is first used
+  used: Option<u64>,
 }
 
 /// A generation no theme state has had in this process
@@ -602,6 +611,7 @@ impl UiTheme {
     UiTheme {
       theme: Arc::new(theme),
       generation: next_generation(),
+      followed: None,
     }
   }
 
@@ -610,13 +620,55 @@ impl UiTheme {
     &self.theme
   }
 
-  /// Use `theme` from the next frame
+  /// Use `theme` from the next frame, no longer following a theme asset
   pub fn set(&mut self, theme: Theme) {
+    self.followed = None;
     self.theme = Arc::new(theme);
     self.generation = next_generation();
   }
 
-  /// Change the theme in use, from the next frame
+  /// Follow the theme asset `theme`: the UI uses its value from its next
+  /// pass once it is loaded, and again whenever it changes (its file saved,
+  /// an image of its skins reloaded, or a change through
+  /// `Assets<Theme>::get_mut`), each time as [`UiTheme::set`] would. A
+  /// reload that fails keeps the theme in use, and the registry warns once
+  /// per error. The resource holds the handle while it follows, so the
+  /// asset stays loaded; `set` stops following, and `follow` with another
+  /// handle follows that one instead.
+  ///
+  /// ```ignore
+  /// let theme = ctx.assets().load_now::<Theme>("ui/game.theme.ron")?;
+  /// ctx.ui_theme().follow(theme);
+  /// ```
+  pub fn follow(&mut self, theme: Handle<Theme>) {
+    self.followed = Some(Followed { theme, used: None });
+  }
+
+  /// Use the followed theme asset's value if it changed since it was last
+  /// used: a load landing, a reload and a change in code each move its
+  /// version on. One not in the store (still loading, or failed) leaves the
+  /// theme in use. Called once a UI pass; with nothing changed it is one
+  /// lookup
+  pub(crate) fn update_followed(&mut self, themes: &Assets<Theme>) {
+    let Some(followed) = &mut self.followed else {
+      return;
+    };
+    let Some(version) = themes.version(&followed.theme) else {
+      return;
+    };
+    if followed.used == Some(version) {
+      return;
+    }
+    let Some(value) = themes.get(&followed.theme) else {
+      return;
+    };
+    followed.used = Some(version);
+    self.theme = Arc::new(value.clone());
+    self.generation = next_generation();
+  }
+
+  /// Change the theme in use, from the next frame. A followed theme asset's
+  /// next change replaces it
   pub fn modify(&mut self, change: impl FnOnce(&mut Theme)) {
     change(Arc::make_mut(&mut self.theme));
     self.generation = next_generation();
@@ -660,7 +712,7 @@ mod tests {
     for (name, kind) in [("button", WidgetKind::Button), ("panel", WidgetKind::Panel)] {
       let skin = &theme.skins[name];
       assert!(
-        skin.builtin.is_some() && skin.sprite.is_none(),
+        skin.builtin.is_some() && skin.image.is_none(),
         "{name}'s image is made in code when the skin is loaded"
       );
       assert_eq!((skin.insets, skin.filter), ([4.0; 4], Filter::Nearest));
@@ -679,10 +731,7 @@ mod tests {
     });
     assert!(!theme.missing_skins());
     for name in ["button", "panel"] {
-      let image = theme.skins[name]
-        .sprite
-        .as_ref()
-        .and_then(|s| images.get(s));
+      let image = theme.skins[name].image.as_ref().and_then(|s| images.get(s));
       assert_eq!(image.map(|i| (i.width(), i.height())), Some((12, 12)));
     }
   }
@@ -729,7 +778,81 @@ mod tests {
       });
     }
     assert_eq!(asked, ["ui/frame.png"]);
-    assert!(theme.get().skins["frame"].sprite.is_some());
+    assert!(theme.get().skins["frame"].image.is_some());
+  }
+
+  #[test]
+  fn a_followed_theme_is_used_once_for_each_change() {
+    let mut themes = crate::core::asset::Assets::default();
+    let file = themes.add(Theme::light());
+    let mut theme = UiTheme::default();
+    theme.follow(file.clone());
+    theme.update_followed(&themes);
+    assert_eq!(theme.get().name, "light");
+    let used = theme.generation();
+    theme.update_followed(&themes);
+    assert_eq!(theme.generation(), used, "nothing changed");
+    if let Some(value) = themes.get_mut(&file) {
+      value.name = "changed".to_string();
+    }
+    theme.update_followed(&themes);
+    assert_eq!(theme.get().name, "changed");
+    assert_ne!(theme.generation(), used);
+  }
+
+  #[test]
+  fn a_followed_theme_still_loading_leaves_the_theme_in_use() {
+    let mut themes = crate::core::asset::Assets::<Theme>::default();
+    // A slot reserved for a load that has not landed
+    let loading = themes
+      .ledger()
+      .lock()
+      .unwrap_or_else(std::sync::PoisonError::into_inner)
+      .reserve::<Theme>();
+    let mut theme = UiTheme::default();
+    let start = theme.generation();
+    theme.follow(loading.clone());
+    theme.update_followed(&themes);
+    assert_eq!(
+      (theme.get().name.as_str(), theme.generation()),
+      ("dark", start)
+    );
+    themes.insert(loading.id(), Theme::light());
+    theme.update_followed(&themes);
+    assert_eq!(theme.get().name, "light", "used once it lands");
+  }
+
+  #[test]
+  fn setting_a_theme_stops_following() {
+    let mut themes = crate::core::asset::Assets::default();
+    let file = themes.add(Theme::light());
+    let mut theme = UiTheme::default();
+    theme.follow(file.clone());
+    theme.update_followed(&themes);
+    theme.set(Theme::pixel());
+    if let Some(value) = themes.get_mut(&file) {
+      value.name = "changed".to_string();
+    }
+    theme.update_followed(&themes);
+    assert_eq!(theme.get().name, "pixel");
+  }
+
+  #[test]
+  fn following_another_theme_replaces_the_first() {
+    let mut themes = crate::core::asset::Assets::default();
+    let first = themes.add(Theme::light());
+    let second = themes.add(Theme::pixel());
+    let mut theme = UiTheme::default();
+    theme.follow(first.clone());
+    theme.update_followed(&themes);
+    theme.follow(second);
+    theme.update_followed(&themes);
+    assert_eq!(theme.get().name, "pixel");
+    if let Some(value) = themes.get_mut(&first) {
+      value.name = "changed".to_string();
+    }
+    theme.update_followed(&themes);
+    assert_eq!(theme.get().name, "pixel", "the first is no longer followed");
   }
 
   #[test]
@@ -746,6 +869,6 @@ mod tests {
     refresh_skins(&mut theme, &mut loaded, &mut load);
     refresh_skins(&mut theme, &mut loaded, &mut load);
     assert_eq!(asked, 1, "loaded on the first pass, not again");
-    assert!(theme.get().skins["start"].sprite.is_some());
+    assert!(theme.get().skins["start"].image.is_some());
   }
 }

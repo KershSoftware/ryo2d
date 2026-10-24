@@ -893,20 +893,20 @@ impl<'a> UiContext<'a> {
   }
 
   /// Draw `look`'s fill and border on `node`: its skin as a nine-slice,
-  /// tinted by the fill, when it names one the theme has a sprite for, else
+  /// tinted by the fill, when it names one the theme has an image for, else
   /// a rounded rect
   pub(crate) fn push_look_box(&mut self, node: usize, look: &Look) {
     if let Some(name) = &look.skin {
       match self.theme.skins.get(&**name) {
         Some(Skin {
-          sprite: Some(sprite),
+          image: Some(image),
           insets,
           filter,
           ..
         }) => {
           let kind = DrawKind::NineSlice {
             inset: Edges::ZERO,
-            sprite: sprite.clone(),
+            sprite: image.clone(),
             insets: *insets,
             tint: look.fill,
             filter: *filter,
@@ -916,7 +916,7 @@ impl<'a> UiContext<'a> {
         }
         Some(_) => warn_once(format!("skin:{name}"), || {
           format!(
-            "UI skin {name:?} has no sprite (give it a loadable path or a sprite); drawing the plain look"
+            "UI skin {name:?} has no image (give it a loadable path or an image); drawing the plain look"
           )
         }),
         None => warn_once(format!("skin:{name}"), || {

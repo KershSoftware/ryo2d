@@ -270,7 +270,9 @@ The theme is the `UiTheme` world resource: a palette, metrics (radius, timings, 
 
 ```rust
 EngineBuilder::new().ui_theme(Theme::pixel());               // or Theme::dark() (the default), Theme::light()
-ctx.ui_theme().set(Theme::load("assets/ui/theme.ron").unwrap_or_default());   // merged over dark; reloads when saved, in debug builds
+if let Ok(file) = ctx.assets().load_now::<Theme>("ui/game.theme.ron") {   // merged over dark
+  ctx.ui_theme().follow(file);                               // used again whenever it is saved
+}
 ctx.ui_theme().modify(|t| t.palette.accent = Color::rgb(255, 120, 40));
 let accent = ui.theme().palette.accent;                      // read it while drawing
 let heading = ui.theme().text.heading.style();               // a text role as a TextStyle
@@ -289,9 +291,9 @@ let heading = ui.theme().text.heading.style();               // a text role as a
   ui.button("One-off").style(LookPatch::default().fill(Color::RED));   // this widget only, in every state
   ```
 
-- **Skins** are nine-slice sprites a look draws in place of its fill and border (the fill tints it): `Theme::dark().skin("wood", Skin::from_path("assets/ui/wood.png", [6.0; 4], Filter::Nearest))`, then `LookPatch::default().skin("wood")` or `theme.widgets.panel.normal.skin = Some("wood".into())`. Insets are left, top, right, bottom in sprite pixels.
+- **Skins** are nine-slice images a look draws in place of its fill and border (the fill tints it): `Theme::dark().skin("wood", Skin::from_path("ui/wood.png", [6.0; 4], Filter::Nearest))` (an asset path, loaded when the theme is set), then `LookPatch::default().skin("wood")` or `theme.widgets.panel.normal.skin = Some("wood".into())`. Insets are left, top, right, bottom in image pixels.
 - **Sounds:** `theme.sounds` names files for `focus` (navigation moved), `confirm` (a click or Confirm), `back`, `tick` (a slider step, at most every 0.05 s) and `error` (a refused drop, a cancelled rebind), at `volume`. None by default.
-- **RON files** state only what they change (a nested struct keeps dark's other fields; an option needs no `Some(..)`). A variant's `base`, a text role's `font` and a skin's `filter` are strings there:
+- **RON files** (`*.theme.ron`, registry assets) state only what they change (a nested struct keeps dark's other fields; an option needs no `Some(..)`). A variant's `base`, a text role's `font` and a skin's `filter` are strings there:
 
   ```ron
   (
@@ -301,7 +303,7 @@ let heading = ui.theme().text.heading.style();               // a text role as a
   )
   ```
 
-  `Theme::save(path)` writes one. A file that fails to load returns a `ThemeError` naming the path; a hot reload that fails warns once and keeps the old theme.
+  `Theme::save(path)` writes one. A skin's `path` in a file is loaded with the theme, as its dependency. A file that fails to load (or whose skin image does not) is an `AssetError` naming the path. `ctx.ui_theme().follow(handle)` uses the theme again whenever it changes (saved, or changed with `Assets<Theme>::get_mut`); a reload that fails keeps the theme in use, and the registry warns once. `set` stops following.
 
 ## 11. Input and Consumption
 

@@ -267,9 +267,6 @@ pub struct Engine {
   /// How many of this frame's UI sounds were played already (a rerun pass
   /// appends to the frame's list)
   sounds_played: usize,
-  /// Reloads the theme's file when it changes
-  #[cfg(debug_assertions)]
-  theme_watch: crate::core::ui::theme::ThemeWatch,
   /// UI passes run this frame (a scene switched from `ui` runs a second)
   ui_pass_index: u32,
   /// What the frame's UI pass did besides drawing, for headless snapshots
@@ -701,8 +698,6 @@ impl Engine {
       sounds_generation: None,
       sounds_warned: Default::default(),
       sounds_played: 0,
-      #[cfg(debug_assertions)]
-      theme_watch: Default::default(),
       ui_pass_index: 0,
       #[cfg(not(target_arch = "wasm32"))]
       ui_pass_log: frame::UiPassLog::default(),
@@ -1424,9 +1419,9 @@ impl EngineBuilder {
     self
   }
 
-  /// Start with `theme` as the UI theme (`ctx.ui_theme()` changes it later).
-  /// A theme loaded with `Theme::load` reloads when its file changes, in
-  /// debug builds.
+  /// Start with `theme` as the UI theme (`ctx.ui_theme()` changes it later;
+  /// `ctx.ui_theme().follow(handle)` follows a `.theme.ron` file through its
+  /// reloads).
   pub fn ui_theme(self, theme: crate::core::ui::Theme) -> Self {
     self.insert_resource(crate::core::ui::UiTheme::new(theme))
   }
@@ -1768,3 +1763,5 @@ fn load_user_preferences(
 mod tests;
 #[cfg(test)]
 mod ui_image_tests;
+#[cfg(test)]
+mod ui_theme_tests;

@@ -3,7 +3,7 @@
 // written without `Some(..)`. A variant's `base`, a text role's `font` and a
 // skin's `filter` are strings, e.g. `base: "Button"`.
 // While the demo shows the "File" theme, edit and save this file: debug
-// builds reload it within a second.
+// builds reload it once the save settles, and the UI uses it again.
 (
     name: "file",
     palette: (

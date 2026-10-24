@@ -711,10 +711,8 @@ mod tests {
     let sprite = d
       .registry()
       .add(Image::solid_rect(12, 12, 255, 255, 255, 255));
-    let mut theme = Theme::dark().skin(
-      "frame",
-      Skin::from_sprite(sprite, [4.0; 4], Filter::Nearest),
-    );
+    let mut theme =
+      Theme::dark().skin("frame", Skin::from_image(sprite, [4.0; 4], Filter::Nearest));
     theme.widgets.panel.normal.skin = Some("frame".into());
     d.set_theme(theme);
     d.frame(|ui| {

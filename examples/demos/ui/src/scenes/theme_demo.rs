@@ -1,10 +1,11 @@
 //! Theme demo page - the UI theme: built-in themes, variants, skins and a
-//! hot-reloaded theme file
+//! theme file the UI follows through its reloads
 
 use demo_kit::prelude::*;
 
-/// The theme file the "File" theme loads, and reloads when it is saved
-const THEME_FILE: &str = "assets/ui/theme.ron";
+/// The theme file the "File" theme follows, an asset path (under `assets/`):
+/// saved, it reloads and the UI uses it again
+const THEME_FILE: &str = "ui/demo.theme.ron";
 
 /// The themes the T key cycles through
 const THEME_NAMES: [&str; 5] = ["Dark", "Light", "Pixel", "Neon", "File"];
@@ -46,16 +47,31 @@ impl ThemeDemo {
       1 => Theme::light(),
       2 => Theme::pixel(),
       3 => neon_theme(),
-      _ => match Theme::load(THEME_FILE) {
-        Ok(theme) => theme,
+      _ => match ctx.assets().load_now::<Theme>(THEME_FILE) {
+        Ok(theme) => {
+          ctx.ui_theme().follow(theme);
+          return;
+        }
         Err(error) => {
-          self.theme_load_error = Some(error.to_string());
+          self.theme_load_error = Some(explained(&*error));
           Theme::dark()
         }
       },
     };
     ctx.ui_theme().set(theme);
   }
+}
+
+/// An error and its causes on one line
+fn explained(error: &dyn std::error::Error) -> String {
+  let mut text = error.to_string();
+  let mut cause = error.source();
+  while let Some(next) = cause {
+    text.push_str(": ");
+    text.push_str(&next.to_string());
+    cause = next.source();
+  }
+  text
 }
 
 /// A neon theme: the dark theme with a purple palette, looks for buttons,
@@ -117,7 +133,7 @@ impl DemoPage for ThemeDemo {
   }
 
   fn description(&self) -> &str {
-    "Buttons and panels in the dark, light, pixel, neon and file themes (assets/ui/theme.ron reloads when saved)."
+    "Buttons and panels in the dark, light, pixel, neon and file themes (assets/ui/demo.theme.ron reloads when saved)."
   }
 
   fn controls(&self) -> Vec<Control> {
@@ -333,7 +349,7 @@ impl DemoPage for ThemeDemo {
       ui.draw_text("I - Toggle instructions", inst_x, inst_y, Color::LIGHT_GRAY);
       inst_y += inst_line_h + 5.0;
       ui.draw_text(
-        "Edit theme.ron for hot-reload!",
+        "Edit demo.theme.ron for hot-reload!",
         inst_x,
         inst_y,
         Color::rgb(150, 200, 255),
@@ -349,7 +365,7 @@ impl DemoPage for ThemeDemo {
     }
 
     // Theme file path info
-    let path_text = format!("Theme file: {THEME_FILE}");
+    let path_text = format!("Theme file: assets/{THEME_FILE}");
     ui.draw_text_anchored(&path_text, Anchor::BottomRight, -10.0, -34.0, muted_color);
   }
 }

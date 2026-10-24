@@ -390,11 +390,11 @@ mod tests {
   #[test]
   fn a_skinned_look_round_trips_through_a_theme_file() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("theme.ron");
+    let path = dir.path().join("skinned.theme.ron");
     let mut theme = Theme::dark();
     theme.widgets.button.normal.skin = Some("button.png".into());
     theme.save(&path).unwrap();
-    let back = Theme::load(&path).unwrap();
+    let back = Theme::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(
       back.widgets.button.normal.skin.as_deref(),
       Some("button.png")

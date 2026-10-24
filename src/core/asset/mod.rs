@@ -39,7 +39,7 @@ pub use id::{AssetId, UntypedAssetId};
 pub use loader::{AssetLoader, AssetSettings, LoadContext};
 pub use loaders::{
   BitmapFontLoader, FontLoader, FontSettings, ImageLoader, ImageSettings, ShaderLoader, SvgSize,
-  UiFileLoader,
+  ThemeLoader, UiFileLoader,
 };
 pub use path::AssetPath;
 #[doc(hidden)]
@@ -56,9 +56,10 @@ pub trait Asset: Send + Sync + 'static {}
 /// test worlds and `UiHarness` all start this way, so the engine's own asset
 /// types, registered here with their loaders ([`crate::core::graphics::Image`]
 /// with [`ImageLoader`], [`crate::core::ecs::Shader`] with [`ShaderLoader`],
-/// [`crate::core::text::Font`] with [`FontLoader`] and
-/// [`crate::core::text::BitmapFont`] with [`BitmapFontLoader`] and
-/// [`crate::core::ui::UiFile`] with [`UiFileLoader`]), have their
+/// [`crate::core::text::Font`] with [`FontLoader`],
+/// [`crate::core::text::BitmapFont`] with [`BitmapFontLoader`],
+/// [`crate::core::ui::UiFile`] with [`UiFileLoader`] and
+/// [`crate::core::ui::Theme`] with [`ThemeLoader`]), have their
 /// stores before anything loads and a loader's `check` finds them. A game's
 /// loaders are added after, so for an extension both take, the game's wins
 pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: AssetServer) {
@@ -72,6 +73,8 @@ pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: Asset
   server.register_loader(BitmapFontLoader);
   server.register_asset::<crate::core::ui::UiFile>(world);
   server.register_loader(UiFileLoader);
+  server.register_asset::<crate::core::ui::Theme>(world);
+  server.register_loader(ThemeLoader);
   world.insert_resource(server);
 }
 
