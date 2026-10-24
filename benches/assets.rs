@@ -34,8 +34,9 @@
 //! A reload's hitch is the slowest frame from the one its new value landed
 //! in to the one its new pixels were first drawn in. The guard prints, for
 //! each image, the median and maximum hitch over an ordinary frame (one
-//! outside every reload), how many frames each reload took to be drawn, and
-//! the frame after. It holds each image's median hitch to within 0.5 ms of
+//! outside every reload), how many frames each reload took to be drawn, the
+//! frame after, and how often a frame is more than 1.1 ms over an ordinary
+//! one, outside reloads and in them. It holds each image's median hitch to within 0.5 ms of
 //! an ordinary frame (the spec), and fails a reload whose upload did not
 //! begin in the frame it landed in, or that was not drawn by the end. A
 //! miss fails the run once criterion's benches have run, printing the
@@ -324,6 +325,8 @@ const HITCH_FRAMES: usize = 2000;
 const RELOAD_EVERY: usize = 50;
 /// The spec's reload hitch: a landing frame within this of an ordinary one
 const HITCH_TARGET: Duration = Duration::from_micros(500);
+/// A frame this much slower than an ordinary one is counted as an outlier
+const OUTLIER: Duration = Duration::from_micros(1_100);
 /// A 60 Hz frame: the guard starts a frame no sooner than this after the last
 const PACE: Duration = Duration::from_micros(16_667);
 const BIG: &str = "big.png";
@@ -606,6 +609,25 @@ fn reload_guard(looks: &Looks) {
     .map(|k| frames[k].step)
     .collect();
   let over = |time: Duration| us(time) - us(ordinary);
+  // How often a frame is an outlier, outside reloads and in them, so a
+  // reload's slowest frames can be told from the machine's
+  let outliers = |reload: bool| {
+    let kept: Vec<&HitchFrame> = frames
+      .iter()
+      .zip(&reloading)
+      .filter(|(_, reloading)| **reloading == reload)
+      .map(|(frame, _)| frame)
+      .collect();
+    let slow = kept
+      .iter()
+      .filter(|frame| frame.step.saturating_sub(ordinary) > OUTLIER)
+      .count();
+    format!(
+      "{slow} of {} ({:.2}%)",
+      kept.len(),
+      100.0 * slow as f64 / kept.len().max(1) as f64
+    )
+  };
   let changes = rig.changes;
   let mut lines = Vec::new();
   let mut missed = Vec::new();
@@ -712,13 +734,17 @@ fn reload_guard(looks: &Looks) {
      each), {HITCH_FRAMES} frames at 60 Hz, a changed PNG and SVG every {RELOAD_EVERY}th \
      ({changes} changes). Ordinary frames ({} of them, outside every reload): median {:.1} µs \
      (render step {:.1}), 95th percentile {:+.1}, max {:+.1}. {}. The frame after a reload is \
-     drawn: {after}",
+     drawn: {after}. Frames more than {} µs over an ordinary one: outside reloads {}, in \
+     reloads {}",
     ordinary_frames.len(),
     us(ordinary),
     us(ordinary_render),
     over(ordinary_p95),
     over(ordinary_max),
     lines.join("; "),
+    OUTLIER.as_micros(),
+    outliers(false),
+    outliers(true),
   );
   for miss in missed {
     guards::miss(miss);
