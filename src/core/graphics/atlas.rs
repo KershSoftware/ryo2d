@@ -923,10 +923,10 @@ impl TextureAtlas {
   }
 
   /// Write as many bands of the images being replaced as the frame's budget
-  /// leaves room for, after the frame's other image writes. The first gets
-  /// at least a quarter of the budget (and at least a row) whatever the
-  /// frame wrote, so it ends however much else is written every frame;
-  /// another starts only with room for a row. One whose upload cannot fill
+  /// leaves room for, after the frame's other image writes. The first with
+  /// bands left gets at least a quarter of the budget (and at least a row)
+  /// whatever the frame wrote, so it ends however much else is written
+  /// every frame; another starts only with room for a row. One whose upload cannot fill
   /// its texture is dropped ([`take_dropped`](Self::take_dropped))
   pub(crate) fn write_spreads(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
     let make = Maker {
@@ -938,6 +938,11 @@ impl TextureAtlas {
     let (budget, spent, dropped) = (self.budget, &mut self.spent, &mut self.dropped);
     let mut first = true;
     self.spreads.retain(|key, spread| {
+      // Whole and waiting for its swap: it writes nothing, and leaves the
+      // first's share to the next
+      if spread.done() {
+        return true;
+      }
       let left = budget.saturating_sub(*spent);
       let room = if first {
         left.max(budget / MIN_SPREAD_SHARE)
@@ -2146,6 +2151,47 @@ mod tests {
     assert_eq!(atlas.take_dropped().collect::<Vec<_>>(), vec![id(0)]);
     assert_eq!(atlas.lookup(id(0)), Some(old), "the old texture draws");
     assert!(atlas.showing().is_empty());
+  }
+
+  #[test]
+  fn a_finished_spread_waiting_for_its_swap_leaves_the_minimum_to_the_next() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut atlas = gpu_atlas(&device);
+    atlas.set_budget(4 * 1024);
+    let image = crate::core::graphics::image::test_handle(Image::solid_rect(1, 1, 0, 0, 0, 255));
+    // A 316x20 texture of 1,264-byte rows, 33 KB in all
+    let upload = |shade| PreparedUpload::new(&[shade; 300 * 4 * 4], 300, 4).unwrap();
+    atlas.spread(id(0), upload(1), (image.id(), 1));
+    let mut frame = 0;
+    while !atlas.spreads[&id(0)].done() {
+      atlas.write_spreads(&device, &queue);
+      atlas.end_frame(frame);
+      frame += 1;
+    }
+    // Whole, it waits for a swap that does not come; a second is started
+    atlas.spread(id(1), upload(2), (image.id(), 1));
+    let other = [9; 64 * 64 * 4];
+    let start = frame;
+    while !atlas.spreads[&id(1)].done() {
+      assert!(frame - start < 200, "the second never ends");
+      // Other writes use the whole budget: a 64 px image written again
+      atlas.remove(id(9));
+      atlas.slot(
+        &device,
+        &queue,
+        id(9),
+        ImagePixels::plain(64, 64, &other),
+        frame,
+      );
+      let before = (atlas.spreads[&id(1)].level, atlas.spreads[&id(1)].row);
+      atlas.write_spreads(&device, &queue);
+      let after = (atlas.spreads[&id(1)].level, atlas.spreads[&id(1)].row);
+      assert!(after > before, "frame {frame}: the second moves on");
+      atlas.end_frame(frame);
+      frame += 1;
+    }
   }
 
   #[test]
