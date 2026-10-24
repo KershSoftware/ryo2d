@@ -2684,10 +2684,13 @@ mod api_tests {
     assert!(row != dead && h.world().get_entity(row).is_ok());
     assert!(has_focus(&h, list, index), "the focus lands on the new row");
     // The log is shared by the tests running alongside, whose entities may
-    // have the dead row's index: only a warning about a row counts
+    // have the dead row's index: count only the cached-node warning, the one
+    // that names a UI entity (cache.rs, `spot_compare`)
     let about_a_row = crate::core::dev_log::get_entries()
       .iter()
-      .filter(|w| w.message.contains(&format!("{dead}")) && w.message.contains("row"))
+      .filter(|w| {
+        w.message.starts_with("the cached UI node") && w.message.contains(&format!("{dead:?}"))
+      })
       .count();
     assert_eq!(about_a_row, 0);
   }
