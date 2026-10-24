@@ -2582,9 +2582,9 @@ mod tests {
   #[test]
   fn a_bitmap_font_lays_out_on_its_grid() {
     let mut fonts = TestFonts::new();
-    let sheet = crate::core::asset::Assets::default().add(
-      crate::core::graphics::Image::solid_rect(24, 8, 255, 255, 255, 255),
-    );
+    let sheet = crate::core::asset::Assets::new().add(crate::core::graphics::Image::solid_rect(
+      24, 8, 255, 255, 255, 255,
+    ));
     let _grid = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "ABC"));
     let mut engine = TextEngine::new();
     engine.sync(&fonts.registry);
@@ -2644,9 +2644,9 @@ mod tests {
 
   fn bitmap_engine() -> TextEngine {
     let mut fonts = TestFonts::new();
-    let sheet = crate::core::asset::Assets::default().add(
-      crate::core::graphics::Image::solid_rect(40, 8, 255, 255, 255, 255),
-    );
+    let sheet = crate::core::asset::Assets::new().add(crate::core::graphics::Image::solid_rect(
+      40, 8, 255, 255, 255, 255,
+    ));
     let _grid = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "ABC.?"));
     let mut engine = TextEngine::new();
     engine.sync(&fonts.registry);

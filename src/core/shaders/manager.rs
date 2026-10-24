@@ -579,7 +579,7 @@ mod tests {
   #[test]
   fn custom_effects_run_in_the_stage_they_were_added_to() {
     let mut manager = EffectsManager::new();
-    let mut shaders = crate::core::asset::Assets::<Shader>::default();
+    let mut shaders = crate::core::asset::Assets::<Shader>::new();
     let shader = shaders.add(Shader::from_wgsl(
       "stage.wgsl",
       "fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv); }",

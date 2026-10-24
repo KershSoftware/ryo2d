@@ -306,7 +306,7 @@ mod tests {
     let text = RichText::markup("Press [prompt=jump] to jump");
     let resolved = resolve_prompts(&text, &context, Color::YELLOW);
     assert_eq!(resolved.as_str(), "Press [A] to jump");
-    let mut images = Assets::default();
+    let mut images = Assets::new();
     let sprite = images.add(Image::solid_rect(4, 4, 255, 255, 255, 255));
     context.icons.insert("prompt.pad.xbox.South", sprite);
     let resolved = resolve_prompts(&text, &context, Color::YELLOW);
@@ -337,7 +337,7 @@ mod tests {
     assert_eq!(resolved.icons[0].at, 0, "the icon stays first");
     assert!(resolved.prompts.is_empty());
     // A and C as glyphs: A, then [B], then C
-    let mut images = Assets::default();
+    let mut images = Assets::new();
     context.icons.insert("prompt.key.KeyA", glyph(&mut images));
     context.icons.insert("prompt.key.KeyC", glyph(&mut images));
     let resolved = resolve_prompts(&text, &context, Color::YELLOW);

@@ -774,7 +774,7 @@ mod tests {
   use crate::core::graphics::Image;
 
   fn test_handle() -> Handle<Image> {
-    Assets::<Image>::default().add(Image::solid_rect(16, 16, 255, 0, 0, 255))
+    Assets::<Image>::new().add(Image::solid_rect(16, 16, 255, 0, 0, 255))
   }
 
   #[test]
@@ -809,12 +809,12 @@ mod tests {
 
   #[test]
   fn tile_count_calculation() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let image = images.add(Image::solid_rect(16, 16, 255, 0, 0, 255));
     let r = Renderable::tiled(image, TileDirection::Right, 100.0);
     // 16px sprite, 100px target = ceil(100/16) = 7 tiles
     assert_eq!(r.tile_count(&images), 7);
-    assert_eq!(r.tile_count(&Assets::default()), 0, "not loaded");
+    assert_eq!(r.tile_count(&Assets::new()), 0, "not loaded");
   }
 
   #[test]

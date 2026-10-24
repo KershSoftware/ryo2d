@@ -282,7 +282,7 @@ mod tests {
 
   #[test]
   fn a_reused_slot_compiles_its_new_shader_never_the_freed_one() {
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
     let old = shaders.add(Shader::from_wgsl(
       "old.wgsl",
@@ -318,7 +318,7 @@ mod tests {
 
   #[test]
   fn shaders_of_one_source_share_it_until_the_last_goes() {
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
     let handles: Vec<_> = (0..3)
       .map(|i| shaders.add(Shader::from_wgsl(format!("shared-{i}.wgsl"), PLAIN)))
@@ -342,7 +342,7 @@ mod tests {
 
   #[test]
   fn a_changed_shader_compiles_its_new_version() {
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
     let handle = shaders.add(Shader::from_wgsl("changing.wgsl", PLAIN));
     let Some(before) = key_of(&mut cache, &handle, &shaders) else {
@@ -362,7 +362,7 @@ mod tests {
 
   #[test]
   fn a_source_nothing_uses_is_kept_for_the_ttl_then_dropped() {
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
     let handle = shaders.add(Shader::from_wgsl("kept.wgsl", PLAIN));
     let Some(key) = key_of(&mut cache, &handle, &shaders) else {
@@ -385,7 +385,7 @@ mod tests {
 
   #[test]
   fn a_shader_freed_unseen_goes_at_the_next_sweep() {
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
     let kept = shaders.add(Shader::from_wgsl("swept-kept.wgsl", PLAIN));
     let freed = shaders.add(Shader::from_wgsl(
@@ -408,7 +408,7 @@ mod tests {
 
   #[test]
   fn a_compile_error_is_reported_once_per_shader_version() {
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
     let broken = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return nope_t9; }";
     let other = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return also_nope_t9; }";
@@ -440,7 +440,7 @@ mod tests {
 
   #[test]
   fn a_shader_that_is_not_loaded_has_no_entry() {
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
     let handle = shaders.add(Shader::from_wgsl("t9-unloaded.wgsl", PLAIN));
     let id = handle.id();

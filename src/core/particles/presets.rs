@@ -370,7 +370,7 @@ mod tests {
   use crate::core::graphics::Image;
 
   fn test_sprite() -> Handle<Image> {
-    crate::core::asset::Assets::<Image>::default().add(Image::solid_rect(8, 8, 255, 255, 255, 255))
+    crate::core::asset::Assets::<Image>::new().add(Image::solid_rect(8, 8, 255, 255, 255, 255))
   }
 
   #[test]

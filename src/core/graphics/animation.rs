@@ -646,7 +646,7 @@ mod tests {
   use super::*;
 
   fn mock_sprite_handle() -> Handle<Image> {
-    crate::core::asset::Assets::<Image>::default().add(Image::solid_rect(1, 1, 255, 0, 0, 255))
+    crate::core::asset::Assets::<Image>::new().add(Image::solid_rect(1, 1, 255, 0, 0, 255))
   }
 
   #[test]

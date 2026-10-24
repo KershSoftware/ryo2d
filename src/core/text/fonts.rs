@@ -396,7 +396,7 @@ impl Fonts {
   /// must not follow a world's stores: their ids are another store's
   pub(crate) fn with_builtins() -> Self {
     let mut fonts = Self::new();
-    let mut store = Assets::<Font>::default();
+    let mut store = Assets::<Font>::new();
     let _ = builtins::add(&mut fonts, &mut store);
     fonts
   }
@@ -1084,12 +1084,12 @@ impl TestFonts {
   /// The built-in fonts (feature `default-fonts`)
   pub(crate) fn new() -> Self {
     let mut registry = Fonts::new();
-    let mut store = Assets::default();
+    let mut store = Assets::new();
     let builtins = builtins::add(&mut registry, &mut store);
     let mut fonts = Self {
       registry,
       store,
-      bitmaps: Assets::default(),
+      bitmaps: Assets::new(),
       builtins,
     };
     fonts.follow();
@@ -1100,8 +1100,8 @@ impl TestFonts {
   pub(crate) fn empty() -> Self {
     let mut fonts = Self {
       registry: Fonts::new(),
-      store: Assets::default(),
-      bitmaps: Assets::default(),
+      store: Assets::new(),
+      bitmaps: Assets::new(),
       builtins: BuiltinFonts::default(),
     };
     fonts.follow();
@@ -1417,7 +1417,7 @@ mod tests {
   #[test]
   fn a_changed_bitmap_font_that_shares_its_face_gets_one_of_its_own() {
     let mut fonts = TestFonts::empty();
-    let sheet = Assets::default().add(Image::solid_rect(16, 16, 255, 255, 255, 255));
+    let sheet = Assets::new().add(Image::solid_rect(16, 16, 255, 255, 255, 255));
     let (first, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), "AB"));
     let (second, shared) = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "AB"));
     assert_eq!(shared, face, "shared");
@@ -1532,7 +1532,7 @@ mod tests {
   #[test]
   fn the_same_bitmap_font_twice_is_one_face() {
     let mut fonts = TestFonts::empty();
-    let sheet = Assets::default().add(Image::solid_rect(64, 16, 255, 255, 255, 255));
+    let sheet = Assets::new().add(Image::solid_rect(64, 16, 255, 255, 255, 255));
     let (first, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), "AB"));
     let generation = fonts.registry.generation();
     let (_again, again) = fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), "AB"));
@@ -1551,7 +1551,7 @@ mod tests {
   #[test]
   fn a_bitmap_font_needs_a_cell_and_characters() {
     let mut fonts = TestFonts::empty();
-    let sheet = Assets::default().add(Image::solid_rect(64, 16, 255, 255, 255, 255));
+    let sheet = Assets::new().add(Image::solid_rect(64, 16, 255, 255, 255, 255));
     let (_no_cell, no_cell) =
       fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (0, 8), "AB"));
     let (_no_chars, no_chars) =
@@ -1575,7 +1575,7 @@ mod tests {
   #[test]
   fn a_freed_bitmap_font_leaves_the_registry() {
     let mut fonts = TestFonts::empty();
-    let sheet = Assets::default().add(Image::solid_rect(16, 8, 255, 255, 255, 255));
+    let sheet = Assets::new().add(Image::solid_rect(16, 8, 255, 255, 255, 255));
     let (grid, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "AB"));
     assert_eq!(fonts.registry.find("Grid"), face);
     drop(grid);
@@ -1588,7 +1588,7 @@ mod tests {
   fn a_bitmap_font_told_its_sheet_reloaded_keeps_its_face() {
     // A sheet's reload touches the fonts that hold it; the stamp redraws them
     let mut fonts = TestFonts::empty();
-    let sheet = Assets::default().add(Image::solid_rect(16, 8, 255, 255, 255, 255));
+    let sheet = Assets::new().add(Image::solid_rect(16, 8, 255, 255, 255, 255));
     let (grid, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "AB"));
     let generation = fonts.registry.generation();
     let _ = fonts.bitmaps.get_mut(&grid);
@@ -1604,7 +1604,7 @@ mod tests {
   #[test]
   fn a_changed_bitmap_font_takes_its_new_cells_in_place() {
     let mut fonts = TestFonts::empty();
-    let sheet = Assets::default().add(Image::solid_rect(16, 16, 255, 255, 255, 255));
+    let sheet = Assets::new().add(Image::solid_rect(16, 16, 255, 255, 255, 255));
     let (grid, face) = fonts.add_bitmap(BitmapFont::new("Grid", sheet, (8, 8), "AB"));
     let generation = fonts.registry.generation();
     if let Some(font) = fonts.bitmaps.get_mut(&grid) {
@@ -1620,7 +1620,7 @@ mod tests {
   #[test]
   fn the_bitmap_stamp_moves_with_its_sheet() {
     let mut fonts = TestFonts::empty();
-    let mut images = Assets::default();
+    let mut images = Assets::new();
     let sheet = images.add(Image::solid_rect(16, 8, 255, 255, 255, 255));
     assert_eq!(
       fonts.registry.bitmap_stamp(|sheet| images.version(sheet)),

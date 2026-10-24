@@ -59,7 +59,7 @@ mod tests {
 
   #[test]
   fn icons_are_found_by_name_and_replaced() {
-    let mut images = crate::core::asset::Assets::default();
+    let mut images = crate::core::asset::Assets::new();
     let mut sprite = || images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
     let mut icons = TextIcons::default();
     icons.insert("a_button", sprite());

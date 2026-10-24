@@ -439,7 +439,7 @@ mod tests {
 
   #[test]
   fn an_image_has_one_texture() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let mut registry = TextureRegistry::new();
     let a = image(&mut images);
     let id = texture(&mut registry, &images, &a, 0);
@@ -466,7 +466,7 @@ mod tests {
 
   #[test]
   fn a_changed_image_needs_uploading_again() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let mut registry = TextureRegistry::new();
     let handle = image(&mut images);
     let id = texture(&mut registry, &images, &handle, 0);
@@ -488,7 +488,7 @@ mod tests {
 
   #[test]
   fn a_removed_texture_is_forgotten_by_image_and_name() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let mut registry = TextureRegistry::new();
     let handle = image(&mut images);
     let image_id = texture(&mut registry, &images, &handle, 0);
@@ -508,7 +508,7 @@ mod tests {
 
   #[test]
   fn a_source_reads_its_pixels() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let mut registry = TextureRegistry::new();
     let id = registry.pixels("dot", 1, 1, &[1, 2, 3, 4], 0);
     assert_eq!(registry.get(id).unwrap().source.rgba(), &[1, 2, 3, 4]);
@@ -520,7 +520,7 @@ mod tests {
 
   #[test]
   fn images_outlive_the_ttl_and_pruned_pixels_are_never_valid_again() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let mut registry = TextureRegistry::new();
     let old = registry.pixels("old", 1, 1, &[1, 2, 3, 4], 0);
     let kept = registry.pixels("kept", 1, 1, &[1, 2, 3, 4], 0);

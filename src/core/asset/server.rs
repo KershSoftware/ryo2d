@@ -308,7 +308,7 @@ impl AssetServer {
   /// The store then queues the changes made in code for the pump to send
   pub fn register_asset<T: Asset>(&self, world: &mut World) {
     if !world.contains_resource::<Assets<T>>() {
-      world.init_resource::<Assets<T>>();
+      world.insert_resource(Assets::<T>::new());
     }
     register_message::<AssetEvent<T>>(world);
     if let Some(mut assets) = world.get_resource_mut::<Assets<T>>() {

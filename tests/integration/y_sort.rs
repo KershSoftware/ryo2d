@@ -179,7 +179,8 @@ fn ysort_query_with_transform() {
 /// Test typical game entity setup with Transform, Renderable, and YSort
 #[test]
 fn ysort_with_renderable() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let mut world = World::new();
 
   // Create a simple sprite for testing
@@ -219,7 +220,8 @@ fn ysort_with_renderable() {
 /// Test that entities at different Y positions produce different sort keys
 #[test]
 fn ysort_ordering_by_y() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(16, 16, 255, 0, 0, 255);
@@ -394,7 +396,8 @@ fn ysort_despawn() {
 /// Test managing many YSort entities (stress test)
 #[test]
 fn ysort_many_entities() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(8, 8, 255, 255, 255, 255);

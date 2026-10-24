@@ -145,7 +145,7 @@ mod tests {
   /// A world with an image store, and its table brought in line
   fn world() -> (World, ImageSizes) {
     let mut world = World::new();
-    world.insert_resource(Assets::<Image>::default());
+    world.insert_resource(Assets::<Image>::new());
     let mut sizes = ImageSizes::default();
     sizes.refresh(&mut world);
     (world, sizes)
@@ -215,7 +215,7 @@ mod tests {
     let old = add(&mut world, solid(4, 4));
     sizes.refresh(&mut world);
     // A new store: its first image takes the same id as the old store's
-    world.insert_resource(Assets::<Image>::default());
+    world.insert_resource(Assets::<Image>::new());
     let new = add(&mut world, solid(2, 6));
     assert_eq!(new.id(), old.id());
     sizes.refresh(&mut world);

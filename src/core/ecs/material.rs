@@ -107,7 +107,7 @@ pub(crate) fn shaders_of(world: &super::World) -> &Assets<Shader> {
 /// A store with no shaders, for drawing without a world
 pub(crate) fn no_shaders() -> &'static Assets<Shader> {
   static NONE: OnceLock<Assets<Shader>> = OnceLock::new();
-  NONE.get_or_init(Default::default)
+  NONE.get_or_init(Assets::new)
 }
 
 /// A value for a custom shader parameter
@@ -589,7 +589,7 @@ mod tests {
 
   #[test]
   fn sprite_shader_custom() {
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let handle = shaders.add(Shader::from_wgsl("dissolve", "// shader code"));
     let shader = SpriteShader::custom(handle);
 
@@ -601,7 +601,7 @@ mod tests {
 
   #[test]
   fn material_with_param() {
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let handle = shaders.add(Shader::from_wgsl("test", "// code"));
     let material = Material::custom(handle)
       .with_param("progress", 0.5)

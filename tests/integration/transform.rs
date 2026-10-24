@@ -33,7 +33,8 @@ fn the_default_transform_is_the_identity() {
 
 #[test]
 fn a_sprite_is_centred_on_its_position_by_default() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let sprite = images.add(Image::solid_rect(4, 4, 255, 255, 255, 255));
   assert_eq!(Renderable::image(sprite).anchor, Anchor::Center);
 }

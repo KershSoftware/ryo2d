@@ -65,3 +65,28 @@ pub use ui::{UiCacheStats, UiHarness};
 pub use crate::core::error::HeadlessError;
 pub use crate::core::render::UiRenderStats;
 pub use gpu::shared_gpu;
+
+use crate::core::asset::{AssetServer, MemorySource, insert_registry};
+use crate::core::ecs::World;
+
+/// A world with the asset registry, as the engine's world starts: an
+/// `AssetServer` over an empty `MemorySource`, and a store for each of the
+/// engine's asset types. A store comes only from a world (`Assets` says
+/// why), so a test with no engine adds its assets here:
+///
+/// ```
+/// use ryo2d::prelude::*;
+///
+/// let mut world = ryo2d::testing::asset_world();
+/// let dot = world
+///   .resource_mut::<Assets<Image>>()
+///   .add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+/// world.spawn((Transform::default(), Renderable::image(dot.clone())));
+/// let images = world.resource::<Assets<Image>>();
+/// assert_eq!(images.get(&dot).map(Image::width), Some(4));
+/// ```
+pub fn asset_world() -> World {
+  let mut world = World::new();
+  insert_registry(&mut world, AssetServer::new(MemorySource::new()));
+  world
+}

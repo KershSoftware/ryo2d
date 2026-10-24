@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.8.0
+  version: 2.9.0
 ---
 
 # Ryo2D API Reference
@@ -894,7 +894,7 @@ One registry for every asset type. `AssetServer` (a resource; systems take `Res<
 
 - `Handle<T>` (`Clone`, `Eq`, `Hash`, `Debug`): `id() -> AssetId<T>`. The asset lives while any clone does; the pump frees it once the last one drops (`Removed`). Hold what a scene uses in the scene or its components, and what the whole game uses in a resource.
 - `AssetId<T>` (`Copy`, `Eq`, `Hash`, `Debug`; `From<&Handle<T>>`): `index()`, `generation()`, `untyped() -> UntypedAssetId`. It names an asset without keeping it alive; a stale id finds nothing. `UntypedAssetId::typed::<T>() -> Option<AssetId<T>>`.
-- `Assets<T>` (resource: `Res<Assets<T>>`, `ResMut<Assets<T>>`): `add(T) -> Handle<T>`, `get(id) -> Option<&T>`, `get_mut(id) -> Option<&mut T>`, `version(id) -> Option<u64>` (moves on whenever the value changes), `len()`, `is_empty()`, `iter() -> impl Iterator<Item = (AssetId<T>, &T)>`.
+- `Assets<T>` (resource: `Res<Assets<T>>`, `ResMut<Assets<T>>`): `add(T) -> Handle<T>`, `get(id) -> Option<&T>`, `get_mut(id) -> Option<&mut T>`, `version(id) -> Option<u64>` (moves on whenever the value changes), `len()`, `is_empty()`, `iter() -> impl Iterator<Item = (AssetId<T>, &T)>`. A store comes only from the world (`ctx.assets()`, `ResMut<Assets<T>>`, `HeadlessEngine::assets()`, `testing::asset_world()`) and has no public constructor: a handle names a slot of the store that made it, and the renderer, the UI and `ctx.assets()` read the world's, so a handle from a store of its own would find nothing there, or another asset.
 - `enum LoadState { NotLoaded, Loading, Loaded, Failed(Arc<AssetError>) }`: `is_loaded()`, `is_failed()`, `error() -> Option<&Arc<AssetError>>`. An asset added in code is `Loaded` while it lives.
 - `Progress { loaded, failed, pending }` (`Copy`, `Eq`, `Default`): `is_done()` (nothing pending), `fraction()` (the share loaded or failed; 1 for an empty group). `AssetStats { types: Vec<TypeStats> }`, `TypeStats { name, loaded, loading, failed }`, one per registered type.
 - `enum AssetEvent<T: Asset> { Added { id }, Modified { id }, Removed { id }, Failed { id, error: Arc<AssetError> }, ReloadFailed { id, error } }` (`Clone`, `Debug`): a message per asset type (`ctx.messages::<AssetEvent<Image>>()`, `MessageReader<AssetEvent<T>>`). The pump sends them in `PreUpdate`, `load_now` its own at once; an asset's events come in the order its changes happened, `Removed` last.
@@ -1446,6 +1446,7 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `frame_count()`, `resize(w, h)` | `resize` as if the window became `w`x`h` physical pixels |
 | `world()` / `world_mut()` | the world between steps |
 | `assets() -> AssetsView<'_>` | the asset registry between steps; loads queued with `load` land in a step's pump |
+| `asset_world() -> World` | a world with the asset registry and no engine (every engine store, over an empty `MemorySource`), for a test that needs handles: `world.resource_mut::<Assets<Image>>().add(image)` |
 | `press_key` / `release_key` / `tap_key` / `type_text(&str)` | keyboard input (`KeyCode`) |
 | `press_mouse` / `release_mouse` / `mouse_move(x, y)` | mouse input (screen space) |
 | `mouse_move_window(x, y)` | the pointer at physical window pixels, mapped like a real cursor |

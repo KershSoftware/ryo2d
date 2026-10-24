@@ -1656,7 +1656,7 @@ mod tests {
         engine: &engine,
         effects: &effects,
         icons: &icons,
-        images: &Assets::default(),
+        images: &Assets::new(),
       };
       let last = layout.glyphs.len() - 1;
       let at = Glyph {
@@ -1724,7 +1724,7 @@ mod tests {
         engine: &engine,
         effects: &effects,
         icons: &icons,
-        images: &Assets::default(),
+        images: &Assets::new(),
       };
       let place = placement(None);
       let mut run = EffectRun::new(&place);
@@ -1759,7 +1759,7 @@ mod tests {
         engine: &engine,
         effects: &effects,
         icons: &icons,
-        images: &Assets::default(),
+        images: &Assets::new(),
       };
       let mut warned = HashSet::new();
       for glyph in &layout.glyphs {
@@ -1805,7 +1805,7 @@ mod tests {
         engine: &engine,
         effects: &effects,
         icons: &icons,
-        images: &Assets::default(),
+        images: &Assets::new(),
       };
       let mut sprites = SpriteGpuRenderer::new(&device, &queue);
       let (mut raster, mut list) = (GlyphRasterizer::new(), DrawList::default());

@@ -113,7 +113,30 @@ impl Ledger {
   }
 }
 
-/// Every asset of type `T`: a slot table. A world resource per type
+/// Every asset of type `T`: a slot table. A world resource per type, made
+/// when the type is registered.
+///
+/// A store comes only from the world: `ctx.assets()`, `Res<Assets<T>>` and
+/// `ResMut<Assets<T>>` in systems, `HeadlessEngine::assets()` and
+/// `ryo2d::testing::asset_world()` in tests. A handle names a slot of the
+/// store that made it, and everything that resolves handles (the renderer,
+/// the UI, `ctx.assets().get`) reads the world's store, so a handle from a
+/// store of its own would name nothing there, or another asset (the first
+/// image is the engine's checker). So a store has no public constructor:
+///
+/// ```compile_fail,E0599
+/// use ryo2d::prelude::*;
+///
+/// let images = Assets::<Image>::default();
+/// ```
+///
+/// and a world makes one only through the registry:
+///
+/// ```compile_fail,E0277
+/// use ryo2d::prelude::*;
+///
+/// World::new().init_resource::<Assets<Image>>();
+/// ```
 #[derive(Resource)]
 pub struct Assets<T: Asset> {
   ledger: Arc<Mutex<Ledger>>,
@@ -225,8 +248,10 @@ fn stored<T>(entry: &Option<Entry<T>>) -> Option<Stored<'_, T>> {
 
 static NEXT_SERIAL: AtomicU64 = AtomicU64::new(0);
 
-impl<T: Asset> Default for Assets<T> {
-  fn default() -> Self {
+impl<T: Asset> Assets<T> {
+  /// An empty store. Crate-only, and not `Default`, so a store is made
+  /// only by the registry (`register_asset`) and by the crate's own tests
+  pub(crate) fn new() -> Self {
     let (sender, drops) = unbounded();
     Self {
       ledger: Arc::new(Mutex::new(Ledger::new(sender))),
@@ -238,9 +263,7 @@ impl<T: Asset> Default for Assets<T> {
       events: None,
     }
   }
-}
 
-impl<T: Asset> Assets<T> {
   /// Adds an asset made in code; it lives while the returned handle (or a clone) does
   pub fn add(&mut self, value: T) -> Handle<T> {
     let handle = self
@@ -513,7 +536,7 @@ mod tests {
 
   #[test]
   fn each_changed_slot_is_given_once_with_what_it_holds_now() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let a = assets.add(Text("a".into()));
     let b = assets.add(Text("b".into()));
     assert!(
@@ -549,7 +572,7 @@ mod tests {
 
   #[test]
   fn a_whole_take_gives_every_slot_and_starts_the_list_over() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let a = assets.add(Text("a".into()));
     taken(&mut assets, false);
     assets.get_mut(&a).unwrap().0 = "a2".into();
@@ -569,7 +592,7 @@ mod tests {
 
   #[test]
   fn a_second_follower_gets_the_whole_store_then_its_own_changes() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let a = assets.add(Text("a".into()));
     let kept = assets.add(Text("kept".into()));
     let (first, second) = (follower_token(), follower_token());
@@ -600,7 +623,7 @@ mod tests {
   #[test]
   #[should_panic(expected = "two followers")]
   fn followers_taking_turns_on_one_store_are_caught() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     assets.add(Text("a".into()));
     let (first, second) = (follower_token(), follower_token());
     taken_by(&mut assets, first, false);
@@ -613,7 +636,7 @@ mod tests {
   fn a_follower_handed_the_store_back_gets_the_whole_store() {
     // Three followers, so the first comes back after a third, not straight
     // after the one that took the list from it (which the check catches)
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let a = assets.add(Text("a".into()));
     let kept = assets.add(Text("kept".into()));
     let [first, second, third] = [(); 3].map(|()| follower_token());
@@ -637,7 +660,7 @@ mod tests {
 
   #[test]
   fn a_store_no_server_owns_queues_no_events() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let a = assets.add(Text("a".into()));
     assets.get_mut(&a).unwrap().0 = "a2".into();
     let mut sent = Vec::new();
@@ -658,7 +681,7 @@ mod tests {
 
   #[test]
   fn unqueueing_a_stale_id_leaves_its_slots_new_event() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     assets.send_events();
     let old = assets.add(Text("old".into())).id();
     assets.take_events(|_| {});
@@ -677,13 +700,13 @@ mod tests {
 
   #[test]
   fn no_two_stores_share_a_serial() {
-    let (a, b) = (Assets::<Text>::default(), Assets::<Text>::default());
+    let (a, b) = (Assets::<Text>::new(), Assets::<Text>::new());
     assert_ne!(a.serial(), b.serial());
   }
 
   #[test]
   fn an_added_asset_is_got_by_its_handle() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let handle = assets.add(Text("a".into()));
     assert_eq!(assets.get(&handle).map(|t| t.0.as_str()), Some("a"));
     assert_eq!(assets.len(), 1);
@@ -691,7 +714,7 @@ mod tests {
 
   #[test]
   fn the_last_dropped_handle_frees_its_asset_at_the_next_free() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let handle = assets.add(Text("a".into()));
     let id = handle.id();
     let copy = handle.clone();
@@ -707,7 +730,7 @@ mod tests {
 
   #[test]
   fn an_unheld_handle_equals_its_assets_handles_and_holds_nothing() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let handle = assets.add(Text("a".into()));
     let id = handle.id();
     let unheld = Handle::<Text>::unheld(id);
@@ -723,7 +746,7 @@ mod tests {
 
   #[test]
   fn a_stale_id_finds_nothing_in_its_reused_slot() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let old = assets.add(Text("old".into())).id();
     assets.free_unheld(&mut Vec::new());
     let new = assets.add(Text("new".into()));
@@ -734,7 +757,7 @@ mod tests {
 
   #[test]
   fn a_new_handle_before_the_drop_is_seen_keeps_the_asset() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let ledger = assets.ledger();
     let id = assets.add(Text("a".into())).id();
     // The handle is gone, but the store has not seen it yet; a load of the
@@ -752,7 +775,7 @@ mod tests {
 
   #[test]
   fn a_rebound_slot_dropped_again_is_freed_exactly_once() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let ledger = assets.ledger();
     let id = assets.add(Text("a".into())).id();
     // Every handle dropped, then the slot rebound before the store sees it
@@ -778,7 +801,7 @@ mod tests {
 
   #[test]
   fn both_drop_notices_pending_free_the_slot_once() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let ledger = assets.ledger();
     let id = assets.add(Text("a".into())).id();
     let again = ledger
@@ -793,7 +816,7 @@ mod tests {
 
   #[test]
   fn insert_with_a_stale_id_changes_nothing() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let old = assets.add(Text("old".into())).id();
     assets.free_unheld(&mut Vec::new());
     assert!(!assets.insert(old, Text("stale".into())), "a freed slot");
@@ -808,7 +831,7 @@ mod tests {
 
   #[test]
   fn changing_an_asset_moves_its_version_on() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let handle = assets.add(Text("a".into()));
     let before = assets.version(&handle);
     if let Some(text) = assets.get_mut(&handle) {
@@ -819,7 +842,7 @@ mod tests {
 
   #[test]
   fn a_handle_outliving_its_store_drops_quietly() {
-    let mut assets = Assets::<Text>::default();
+    let mut assets = Assets::<Text>::new();
     let handle = assets.add(Text("a".into()));
     drop(assets);
     drop(handle);

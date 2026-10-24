@@ -469,7 +469,7 @@ mod tests {
 
   #[test]
   fn tile_part_bounds() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let sprite = test_sprite(&mut images, 32, 16);
 
     let static_part = TilePart::static_part(sprite.clone(), 0.0, 0.0);
@@ -481,7 +481,7 @@ mod tests {
 
   #[test]
   fn composite_tile_bounds() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let cap = test_sprite(&mut images, 32, 16);
     let body = test_sprite(&mut images, 32, 8);
 
@@ -508,7 +508,7 @@ mod tests {
 
   #[test]
   fn composite_tile_bounds_upward() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let cap = test_sprite(&mut images, 32, 16);
     let body = test_sprite(&mut images, 32, 8);
 
@@ -532,7 +532,7 @@ mod tests {
 
   #[test]
   fn build_with_collider_returns_a_rect_over_the_parts() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let sprite = test_sprite(&mut images, 32, 32);
     let (composite, collider) = CompositeTileBuilder::new()
       .cap(sprite.clone(), 0.0, 0.0)
@@ -550,7 +550,7 @@ mod tests {
 
   #[test]
   fn composite_builder() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let cap = test_sprite(&mut images, 32, 16);
     let body = test_sprite(&mut images, 32, 8);
 

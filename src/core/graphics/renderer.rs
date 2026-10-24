@@ -858,7 +858,7 @@ impl WgpuRenderer {
     let sprites = SpriteGpuRenderer::new(&self.device, &self.queue);
     let effects = EffectsManager::new();
     let look = crate::core::render::Look::default();
-    let images = crate::core::asset::Assets::default();
+    let images = crate::core::asset::Assets::new();
     let draw_list = DrawList::default();
     let scene = FrameScene {
       sprites: &sprites,

@@ -259,7 +259,7 @@ mod tests {
   }
 
   fn sprite() -> Renderable {
-    Renderable::image(Assets::default().add(Image::solid_rect(4, 4, 255, 255, 255, 255)))
+    Renderable::image(Assets::new().add(Image::solid_rect(4, 4, 255, 255, 255, 255)))
   }
 
   #[test]

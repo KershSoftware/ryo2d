@@ -819,7 +819,7 @@ mod draw_order_tests {
   /// when an unrelated resource is added.
   #[test]
   fn tied_sprites_draw_in_entity_order_whatever_the_resources() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let image = images.add(Image::solid_rect(4, 4, 255, 255, 255, 255));
     for k in 0..=MAX_UNRELATED {
       let mut world = World::new();
@@ -849,7 +849,7 @@ mod draw_order_tests {
 
   #[test]
   fn the_sort_key_is_the_feet_wherever_the_anchor_is() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let tall = images.add(Image::solid_rect(10, 20, 255, 255, 255, 255));
     let sprite_20_high = |anchor| Renderable::image(tall.clone()).with_anchor(anchor);
     let y_sort_key = |y_sort: &YSort, renderable: &Renderable, y| {
@@ -880,7 +880,7 @@ mod draw_order_tests {
 
   #[test]
   fn an_image_being_replaced_sorts_by_the_height_it_draws_at() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let tall = images.add(Image::solid_rect(10, 20, 255, 255, 255, 255));
     // Its texture still shows an older version, 40 px high
     let showing = [Showing {

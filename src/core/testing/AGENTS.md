@@ -1,6 +1,6 @@
 # AGENTS.md - Headless Testing
 
-`ryo2d::testing` has two harnesses: `HeadlessEngine`, the whole engine on an offscreen GPU, and `UiHarness`, UI frames with no GPU at all (see UiHarness below). The module is native only.
+`ryo2d::testing` has two harnesses: `HeadlessEngine`, the whole engine on an offscreen GPU, and `UiHarness`, UI frames with no GPU at all (see UiHarness below). The module is native only. `asset_world()` is a world with the asset registry and nothing else (`insert_registry` over an empty `MemorySource`), for a test outside the crate that needs handles, since a store comes only from a world (asset module notes).
 
 `HeadlessEngine` (`ryo2d::testing`) runs the real engine without a window: an offscreen `WgpuRenderer`, one `Engine::frame` per `step`, pixels via `frame()`. Spec: `docs/specs/2026-10-10-headless-rendering-design.md`.
 

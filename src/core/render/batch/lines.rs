@@ -300,9 +300,9 @@ mod tests {
 
   #[test]
   fn a_tiled_trail_runs_u_by_distance() {
-    let texture = crate::core::asset::Assets::default().add(
-      crate::core::graphics::Image::solid_rect(2, 2, 255, 255, 255, 255),
-    );
+    let texture = crate::core::asset::Assets::new().add(crate::core::graphics::Image::solid_rect(
+      2, 2, 255, 255, 255, 255,
+    ));
     let mut trail = Trail2D::new(Color::WHITE, 2.0)
       .with_texture(texture)
       .with_texture_mode(TextureMode::Tile)

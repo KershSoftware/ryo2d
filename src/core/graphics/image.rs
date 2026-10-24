@@ -51,7 +51,7 @@ pub(crate) fn images_of(world: &crate::core::ecs::World) -> &crate::core::asset:
 thread_local! {
   /// The test thread's own image store (leaked: tests only)
   static TEST_IMAGES: &'static std::cell::RefCell<crate::core::asset::Assets<Image>> =
-    Box::leak(Box::default());
+    Box::leak(Box::new(std::cell::RefCell::new(crate::core::asset::Assets::new())));
 }
 
 /// A handle to `image` in the test thread's own store ([`test_images`]):
@@ -71,7 +71,7 @@ pub(crate) fn test_images() -> std::cell::Ref<'static, crate::core::asset::Asset
 /// An empty image store, for what reads images where there are none
 pub(crate) fn no_images() -> &'static crate::core::asset::Assets<Image> {
   static NONE: OnceLock<crate::core::asset::Assets<Image>> = OnceLock::new();
-  NONE.get_or_init(Default::default)
+  NONE.get_or_init(crate::core::asset::Assets::new)
 }
 
 impl Image {

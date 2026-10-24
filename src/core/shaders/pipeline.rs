@@ -1417,7 +1417,7 @@ mod tests {
       return;
     };
     let mut effects = CustomEffectPipelines::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
-    let mut shaders = Assets::<Shader>::default();
+    let mut shaders = Assets::<Shader>::new();
     let src = "fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv) * 0.5; }";
     let handles: Vec<_> = (0..3)
       .map(|i| shaders.add(Shader::from_wgsl(format!("shared-fx-{i}.wgsl"), src)))

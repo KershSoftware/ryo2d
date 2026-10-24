@@ -237,8 +237,8 @@ mod tests {
   }
 
   fn layer() -> ParallaxLayer {
-    let sprite = crate::core::asset::Assets::<Image>::default()
-      .add(Image::solid_rect(16, 16, 255, 255, 255, 255));
+    let sprite =
+      crate::core::asset::Assets::<Image>::new().add(Image::solid_rect(16, 16, 255, 255, 255, 255));
     ParallaxLayer::new(&sprite)
       .with_scroll(Vec2::splat(0.5))
       .with_tile(TileMode::InfiniteScroll)

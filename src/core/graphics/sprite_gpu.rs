@@ -1505,7 +1505,7 @@ mod tests {
       return;
     };
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     // More textures than the cap, all in the atlas's pages
     let small: Vec<_> = (0..MAX_STANDALONE_ENTITY_SPRITES + 6)
       .map(|_| solid(&mut images))
@@ -1525,7 +1525,7 @@ mod tests {
       return;
     };
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let a = solid(&mut images);
     let list = world_list(&mut renderer, &images, &[(&a, 0)]);
     renderer.prepare_textures(&device, &queue, &list, &[]);
@@ -1555,7 +1555,7 @@ mod tests {
       return;
     };
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     renderer.upload_texture(&device, &queue, "gone", 2, 2, &[255; 16]);
     let drawn = solid(&mut images);
     let undrawn = solid(&mut images);
@@ -1583,7 +1583,7 @@ mod tests {
       return;
     };
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let kept = solid(&mut images);
     let freed = solid(&mut images);
     let list = world_list(&mut renderer, &images, &[(&kept, 0), (&freed, 0)]);
@@ -1605,7 +1605,7 @@ mod tests {
       return;
     };
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let freed = solid(&mut images);
     let list = world_list(&mut renderer, &images, &[(&freed, 0)]);
     renderer.prepare_textures(&device, &queue, &list, &[]);
@@ -1636,7 +1636,7 @@ mod tests {
       return;
     };
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let handle = images.add(reloaded(10));
     *images.get_mut(&handle).unwrap() = reloaded(20);
     renderer.sync_images(&device, [], [handle.id()], &images, None);
@@ -1654,7 +1654,7 @@ mod tests {
       return;
     };
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let handle = images.add(reloaded(10));
     let list = world_list(&mut renderer, &images, &[(&handle, 0)]);
     renderer.prepare_textures(&device, &queue, &list, &[]);
@@ -1680,7 +1680,7 @@ mod tests {
       return;
     };
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     // 300 px: a texture of its own, its levels well under a frame's budget
     let handle = images.add(reloaded(10));
     let list = world_list(&mut renderer, &images, &[(&handle, 0)]);
@@ -1705,7 +1705,7 @@ mod tests {
     let mut renderer = SpriteGpuRenderer::new(&device, &queue);
     // 51 of a 316 px texture's 1,264-byte rows, and 1,072 bytes over
     renderer.set_upload_budget(64 * 1024);
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let (a, b) = (images.add(reloaded(10)), images.add(reloaded(20)));
     let list = world_list(&mut renderer, &images, &[(&a, 0), (&b, 0)]);
     renderer.prepare_textures(&device, &queue, &list, &[]);
@@ -1757,7 +1757,7 @@ mod tests {
 
   #[test]
   fn collector_keeps_submission_order_and_counts() {
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     let (c, a) = (solid(&mut images), solid(&mut images));
     let mut collector = BatchCollector::new();
     let at = |z| SpriteDraw {

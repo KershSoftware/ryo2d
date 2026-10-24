@@ -58,7 +58,7 @@ mod tests {
 
   fn frames() -> Vec<Handle<Image>> {
     // One store, so each frame has its own id
-    let mut images = Assets::<Image>::default();
+    let mut images = Assets::<Image>::new();
     (0..3)
       .map(|i| images.add(Image::solid_rect(4, 4, i * 80, 0, 0, 255)))
       .collect()

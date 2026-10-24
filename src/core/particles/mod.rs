@@ -896,7 +896,7 @@ mod tests {
   }
 
   fn test_sprite() -> Handle<Image> {
-    Assets::<Image>::default().add(Image::solid_rect(8, 8, 255, 255, 255, 255))
+    Assets::<Image>::new().add(Image::solid_rect(8, 8, 255, 255, 255, 255))
   }
 
   /// One motionless particle at the origin and a strong point attractor 100px to its right.
@@ -1599,7 +1599,7 @@ mod tests {
   fn particles_are_centred_on_their_world_position() {
     let mut world = World::new();
     let mut system = ParticleSystem::new();
-    let sprite = Assets::<Image>::default().add(Image::solid_rect(2, 2, 255, 255, 255, 255));
+    let sprite = Assets::<Image>::new().add(Image::solid_rect(2, 2, 255, 255, 255, 255));
     let emitter = world
       .spawn((
         Transform::from_xy(100.0, 50.0),

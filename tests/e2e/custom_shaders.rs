@@ -591,7 +591,8 @@ fn disabled_and_removed_effects_do_not_run() {
 #[test]
 fn duplicate_custom_effect_names_are_rejected() {
   let mut fx = EffectsManager::new();
-  let mut shaders = Assets::<Shader>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut shaders = registry.resource_mut::<Assets<Shader>>();
   let shader = shaders.add(Shader::from_wgsl("t3-dup.wgsl", FLAT_GREY));
   assert!(fx.add_custom("a", shader.clone()).is_ok());
   let err = fx.add_custom("a", shader).unwrap_err();

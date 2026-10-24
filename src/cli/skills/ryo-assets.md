@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # Ryo2D Assets
@@ -297,3 +297,4 @@ An image that is not loaded (still loading, failed or freed) draws a magenta-and
 
 - `EngineBuilder::asset_source(source)` reads assets from another `AssetSource`: a `MemorySource` of the test's files (`files.insert("ui/menu.ui.ron", text)`; an `insert` over a path reloads it when hot reload is on), or a `DiskSource::new(folder)`.
 - `HeadlessEngine::assets()` and `UiHarness::assets()` are the registry as `ctx.assets()` is; loads queued with `load` land in a step's pump. `UiHarness::new(w, h).with_asset_source(source)` gives the harness its files, and `reload_ui(path)` waits until a UI file's reload lands.
+- A test with no engine that needs handles takes a world with the registry, `ryo2d::testing::asset_world()`, and adds to its stores: `world.resource_mut::<Assets<Image>>().add(image)`. A store comes only from a world: `Assets` has no public constructor, since a handle from a store of its own would name another asset in the world's (the first image is the checker).

@@ -116,7 +116,8 @@ fn regression_tween_captures_start_tint() {
 /// This ensures sprites are visible by default.
 #[test]
 fn regression_renderable_default_alpha() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
   let handle = images.add(sprite);
   let renderable = Renderable::image(handle);
@@ -132,7 +133,8 @@ fn regression_renderable_default_alpha() {
 /// WHITE tint means no color modification to the sprite.
 #[test]
 fn regression_renderable_default_tint() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
   let handle = images.add(sprite);
   let renderable = Renderable::image(handle);
@@ -149,7 +151,8 @@ fn regression_renderable_default_tint() {
 /// The rendering system must use these values when drawing.
 #[test]
 fn regression_renderable_alpha_tint_modifiable() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
   let handle = images.add(sprite);
   let mut renderable = Renderable::image(handle);
@@ -344,7 +347,8 @@ fn tween_sequence_restart() {
 /// Test Renderable with_alpha builder
 #[test]
 fn renderable_with_alpha() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
   let handle = images.add(sprite);
   let renderable = Renderable::image(handle).with_alpha(0.5);
@@ -355,7 +359,8 @@ fn renderable_with_alpha() {
 /// Test Renderable with_tint builder
 #[test]
 fn renderable_with_tint() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
   let handle = images.add(sprite);
   let renderable = Renderable::image(handle).with_tint(Color::GREEN);
@@ -370,7 +375,8 @@ fn renderable_with_tint() {
 /// Test Tween and Renderable together in ECS
 #[test]
 fn tween_renderable_ecs_integration() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
@@ -400,7 +406,8 @@ fn tween_renderable_ecs_integration() {
 /// Test TweenSequence with Renderable in ECS
 #[test]
 fn tween_sequence_renderable_ecs_integration() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);
@@ -428,7 +435,8 @@ fn tween_sequence_renderable_ecs_integration() {
 /// Test multiple entities with different tween types
 #[test]
 fn multiple_tween_entities() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let mut world = World::new();
 
   let sprite = Image::solid_rect(10, 10, 255, 255, 255, 255);

@@ -2550,7 +2550,7 @@ mod tests {
   #[test]
   fn sprites_record_their_rect_and_a_nine_slice_records_nine() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut images = crate::core::asset::Assets::default();
+    let mut images = crate::core::asset::Assets::new();
     let sprite = images.add(Image::solid_rect(16, 8, 255, 255, 255, 255));
     let images = ImageSizes::of(&images);
     let mut ui = context_with_images(&mut commands, &mut text, (320.0, 180.0), &images);
@@ -3099,7 +3099,7 @@ mod tests {
   /// The sprite pieces of a nine-slice of `image`: (rect, uv)
   fn slice_pieces(image: Image, rect: Rect, insets: [f32; 4]) -> Vec<(Rect, [f32; 4])> {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut images = crate::core::asset::Assets::default();
+    let mut images = crate::core::asset::Assets::new();
     let sprite = images.add(image);
     let images = ImageSizes::of(&images);
     let mut ui = context_with_images(&mut commands, &mut text, (320.0, 180.0), &images);

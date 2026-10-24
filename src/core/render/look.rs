@@ -559,7 +559,7 @@ mod tests {
   #[test]
   fn a_lut_strip_is_n_tiles_of_n_by_n() {
     let lut = |w: u32, h: u32| {
-      let mut images = Assets::default();
+      let mut images = Assets::new();
       let sprite = images.add(Image::solid_rect(w, h, 0, 0, 0, 255));
       ColorLut::from_sprite(&sprite, &images).map(|lut| lut.size())
     };
@@ -579,9 +579,9 @@ mod tests {
         height: 1
       })
     );
-    let unloaded = Assets::<Image>::default().add(ColorLut::identity_strip(4));
+    let unloaded = Assets::<Image>::new().add(ColorLut::identity_strip(4));
     assert_eq!(
-      ColorLut::from_sprite(&unloaded, &Assets::default()),
+      ColorLut::from_sprite(&unloaded, &Assets::new()),
       Err(LutError::NotLoaded)
     );
   }

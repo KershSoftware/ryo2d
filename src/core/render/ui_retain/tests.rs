@@ -202,7 +202,7 @@ fn no_commands_never_keep() {
 
 #[test]
 fn a_sprite_updated_in_place_redraws() {
-  let mut images = Assets::default();
+  let mut images = Assets::new();
   let sprite = images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
   let list = [UiCommand::Sprite {
     sprite: sprite.clone(),
@@ -221,7 +221,7 @@ fn a_sprite_updated_in_place_redraws() {
 
 #[test]
 fn a_renamed_icon_redraws() {
-  let mut images = Assets::default();
+  let mut images = Assets::new();
   let red = images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
   let blue = images.add(Image::solid_rect(4, 4, 0, 0, 255, 255));
   let mut icons = TextIcons::default();
@@ -450,7 +450,7 @@ fn draws_beside_a_run_are_compared_one_by_one() {
 
 #[test]
 fn a_sprite_in_a_run_updated_in_place_redraws() {
-  let mut images = Assets::default();
+  let mut images = Assets::new();
   let sprite = images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
   let frame = |x: f32| {
     let mut commands = UiCommands::default();

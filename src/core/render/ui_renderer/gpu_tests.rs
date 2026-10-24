@@ -1501,7 +1501,7 @@ mod building {
       return;
     };
     // The swatch in a store the text's sources read too
-    let mut images = Assets::default();
+    let mut images = Assets::new();
     let swatch = images.add(Image::solid_rect(4, 4, 255, 0, 0, 255));
     let icons = Arc::new(TextLayout {
       scale: 1.0,

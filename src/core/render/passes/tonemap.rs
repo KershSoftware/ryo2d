@@ -401,7 +401,7 @@ mod tests {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
-    let mut images = Assets::default();
+    let mut images = Assets::new();
     let handle = images.add(ColorLut::identity_strip(4));
     let Ok(lut) = ColorLut::from_sprite(&handle, &images) else {
       panic!("a 16x4 strip is a LUT");

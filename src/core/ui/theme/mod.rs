@@ -753,7 +753,7 @@ mod tests {
     assert_eq!(theme.text.button.font, ThemeFont::Pixel);
     assert_eq!(theme.text.button.size, 16.0);
     // Loaded, each skin gets its image, 12 px square
-    let mut images = crate::core::asset::Assets::default();
+    let mut images = crate::core::asset::Assets::new();
     let mut theme = theme;
     assert!(theme.missing_skins());
     theme.load_skins(|source| match source {
@@ -799,7 +799,7 @@ mod tests {
     let skin = Skin::from_path("ui/frame.png", [2.0; 4], Filter::Linear);
     let mut theme = UiTheme::new(Theme::dark().skin("frame", skin));
     let mut asked = Vec::new();
-    let mut images = crate::core::asset::Assets::default();
+    let mut images = crate::core::asset::Assets::new();
     for _ in 0..2 {
       theme.load_skins(|source| {
         if let SkinSource::Path(path) = source {
@@ -814,7 +814,7 @@ mod tests {
 
   #[test]
   fn a_followed_theme_is_used_once_for_each_change() {
-    let mut themes = crate::core::asset::Assets::default();
+    let mut themes = crate::core::asset::Assets::new();
     let file = themes.add(Theme::light());
     let mut theme = UiTheme::default();
     theme.follow(file.clone());
@@ -833,7 +833,7 @@ mod tests {
 
   #[test]
   fn a_followed_theme_still_loading_leaves_the_theme_in_use() {
-    let mut themes = crate::core::asset::Assets::<Theme>::default();
+    let mut themes = crate::core::asset::Assets::<Theme>::new();
     // A slot reserved for a load that has not landed
     let loading = themes
       .ledger()
@@ -855,7 +855,7 @@ mod tests {
 
   #[test]
   fn setting_a_theme_stops_following() {
-    let mut themes = crate::core::asset::Assets::default();
+    let mut themes = crate::core::asset::Assets::new();
     let file = themes.add(Theme::light());
     let mut theme = UiTheme::default();
     theme.follow(file.clone());
@@ -870,7 +870,7 @@ mod tests {
 
   #[test]
   fn following_another_theme_replaces_the_first() {
-    let mut themes = crate::core::asset::Assets::default();
+    let mut themes = crate::core::asset::Assets::new();
     let first = themes.add(Theme::light());
     let second = themes.add(Theme::pixel());
     let mut theme = UiTheme::default();
@@ -892,7 +892,7 @@ mod tests {
     let mut theme = UiTheme::new(Theme::dark().skin("start", skin));
     let mut loaded = None;
     let mut asked = 0;
-    let mut images = crate::core::asset::Assets::default();
+    let mut images = crate::core::asset::Assets::new();
     let mut load = |_: SkinSource<'_>| {
       asked += 1;
       Some(images.add(Image::solid_rect(4, 4, 255, 255, 255, 255)))

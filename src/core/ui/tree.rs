@@ -2727,7 +2727,7 @@ mod tests {
   #[test]
   fn box_sprite_and_local_draws_land_on_their_node() {
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
-    let mut images = crate::core::asset::Assets::default();
+    let mut images = crate::core::asset::Assets::new();
     let sprite = images.add(Image::solid_rect(4, 4, 255, 255, 255, 255));
     let images = ImageSizes::of(&images);
     let mut ui: UiContext<'_> =

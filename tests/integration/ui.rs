@@ -386,7 +386,8 @@ fn ui_scale_values_valid() {
 
 #[test]
 fn text_icons_hand_back_their_sources_as_a_prelude_type() {
-  let mut images = Assets::<Image>::default();
+  let mut registry = ryo2d::testing::asset_world();
+  let mut images = registry.resource_mut::<Assets<Image>>();
   let mut icons = TextIcons::default();
   let sheet = images.add(Image::solid_rect(32, 16, 255, 255, 255, 255));
   icons.insert_region("coin", sheet, Rect::new(16.0, 0.0, 16.0, 16.0));
