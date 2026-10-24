@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crossbeam_channel::Sender;
 
-use super::{Asset, AssetId};
+use super::{Asset, AssetId, UntypedAssetId};
 
 /// What a slot's strong handles share; dropping the last one tells the store
 pub(crate) struct Shared {
@@ -96,5 +96,16 @@ impl<T: Asset> fmt::Debug for Handle<T> {
 impl<T: Asset> From<&Handle<T>> for AssetId<T> {
   fn from(handle: &Handle<T>) -> Self {
     handle.id()
+  }
+}
+impl<T: Asset> From<&Handle<T>> for UntypedAssetId {
+  fn from(handle: &Handle<T>) -> Self {
+    handle.id().untyped()
+  }
+}
+// For a group written in place: `progress(&[&a, &b])`
+impl<T: Asset> From<&&Handle<T>> for UntypedAssetId {
+  fn from(handle: &&Handle<T>) -> Self {
+    handle.id().untyped()
   }
 }

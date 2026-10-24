@@ -45,10 +45,6 @@ impl LoadingPage {
     }
   }
 
-  fn ids(&self) -> Vec<UntypedAssetId> {
-    self.held.iter().map(Held::id).collect()
-  }
-
   /// Ask for every asset: each `load` returns its handle at once
   fn load(&mut self, ctx: &mut SceneContext) {
     let assets = ctx.assets();
@@ -80,13 +76,13 @@ impl DemoPage for LoadingPage {
     match self.phase {
       Phase::Idle if asked => self.load(ctx),
       Phase::Loading => {
-        if ctx.assets().progress(&self.ids()).is_done() {
+        if ctx.assets().progress(&self.held).is_done() {
           self.phase = Phase::Done;
         }
       }
       Phase::Done if asked => {
         // Dropping the handles frees the assets at the next pump
-        self.freeing = self.ids();
+        self.freeing = self.held.iter().map(Held::id).collect();
         self.held.clear();
         self.phase = Phase::Freeing;
       }
@@ -105,7 +101,7 @@ impl DemoPage for LoadingPage {
     let area = content_area(ui);
     let x = area.x + 20.0;
     let assets = ctx.assets();
-    let progress = assets.progress(&self.ids());
+    let progress = assets.progress(&self.held);
     let total = tracked::listed().count();
 
     let status = match self.phase {

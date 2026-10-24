@@ -119,6 +119,13 @@ impl Held {
   }
 }
 
+// So the handles a page holds are a group for `progress(&self.held)`
+impl From<&Held> for UntypedAssetId {
+  fn from(held: &Held) -> Self {
+    held.id()
+  }
+}
+
 /// An error and its causes on one line
 pub(crate) fn explained(error: &dyn std::error::Error) -> String {
   let mut text = error.to_string();

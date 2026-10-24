@@ -118,8 +118,7 @@ impl Scene for Loading {
   }
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-    let ids: Vec<UntypedAssetId> = self.held.iter().map(|h| h.id().untyped()).collect();
-    let progress = ctx.assets().progress(&ids);
+    let progress = ctx.assets().progress(&self.held);
     ui.progress(progress.fraction()).show();
     if progress.is_done() {
       // The level takes the handles, so the images stay loaded
@@ -130,7 +129,7 @@ impl Scene for Loading {
 }
 ```
 
-- `progress(&[UntypedAssetId]) -> Progress { loaded, failed, pending }`: `fraction()` is the share settled, loaded or failed (1 for an empty group); `is_done()` is nothing pending. An id neither loaded nor loading (freed, or never asked for) is not counted.
+- `progress(group) -> Progress { loaded, failed, pending }` takes a group's handles (`&self.held`, `[&bg, &tiles]`) or ids; a group across types gives untyped ids, `[image.id().untyped(), font.id().untyped()]` (any `Into<UntypedAssetId>`). `fraction()` is the share settled, loaded or failed (1 for an empty group); `is_done()` is nothing pending. An id neither loaded nor loading (freed, or never asked for) is not counted.
 - `state(&handle) -> LoadState`: `NotLoaded`, `Loading`, `Loaded` or `Failed(Arc<AssetError>)`, with `is_loaded()`, `is_failed()` and `error()`. `is_ready(&handle)` is loaded with every dependency loaded too (a UI file's images, a theme's skins).
 - `stats() -> AssetStats` counts loaded, loading and failed assets per type (`types: Vec<TypeStats { name, loaded, loading, failed }>`), for a debug overlay.
 - Loads land in the pump at the start of the frame (`PreUpdate`), before `ui` and `update`: a `load` asked for in `on_enter` lands a frame later at the earliest.
@@ -234,7 +233,7 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 ```
 
 - Compare an event's id with a handle's: `id == self.level.id()`.
-- The pump sends them at the start of the frame (`PreUpdate`); `load_now` sends its `Added` or `Failed` at once. An asset's events come in the order its changes happened, `Removed` last.
+- The pump sends them at the start of the frame (`PreUpdate`); `load_now` sends its `Added` or `Failed` at once. An asset's events come in the order its changes happened, `Removed` last, and only for an asset that was `Added`: a load dropped before it landed, or one that failed, is freed with no event.
 - Systems read them with `MessageReader<AssetEvent<T>>`.
 
 ## 8. Your own asset types

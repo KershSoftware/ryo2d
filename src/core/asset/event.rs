@@ -49,11 +49,12 @@ impl LoadState {
 ///    so one added, then changed, is `Added` only, and one changed many times
 ///    is `Modified` once; one the pump also loads, reloads or touches in step
 ///    1 has only that event;
-/// 3. `Removed` for each asset it frees.
+/// 3. `Removed` for each asset it frees that was in its store.
 ///
 /// So the order holds per asset: an asset's events come in the order its
-/// changes happened. Between assets it need not, as a change made in code
-/// before the pump is sent after the pump's own events
+/// changes happened, and `Removed` comes only after `Added`. Between assets
+/// it need not, as a change made in code before the pump is sent after the
+/// pump's own events
 #[derive(Message)]
 pub enum AssetEvent<T: Asset> {
   /// It is in its `Assets<T>`: a load finished (sent by the pump that put it
@@ -69,8 +70,10 @@ pub enum AssetEvent<T: Asset> {
     /// The asset
     id: AssetId<T>,
   },
-  /// Its last handle dropped and the pump freed it (after any event of the
-  /// same pump for it)
+  /// It left its `Assets<T>`: its last handle dropped and the pump freed it
+  /// (after any event of the same pump for it). Only an asset that was in
+  /// its store is `Removed`: a load dropped before it landed, or one that
+  /// failed, is freed with no event
   Removed {
     /// The asset
     id: AssetId<T>,

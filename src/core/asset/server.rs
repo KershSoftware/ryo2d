@@ -508,12 +508,17 @@ impl AssetServer {
     }
   }
 
-  /// How far a group of assets has loaded. An id neither loaded nor loading
-  /// (freed, or never asked for) is not counted
-  pub fn progress(&self, ids: &[UntypedAssetId]) -> Progress {
+  /// How far a group of assets has loaded: its handles (`&handles`,
+  /// `[&a, &b]`) or ids, or untyped ids for a group across types. An id
+  /// neither loaded nor loading (freed, or never asked for) is not counted
+  pub fn progress<I>(&self, ids: I) -> Progress
+  where
+    I: IntoIterator,
+    I::Item: Into<UntypedAssetId>,
+  {
     let mut progress = Progress::default();
-    for &id in ids {
-      match self.state_of(id) {
+    for id in ids {
+      match self.state_of(id.into()) {
         LoadState::Loaded => progress.loaded += 1,
         LoadState::Failed(_) => progress.failed += 1,
         LoadState::Loading => progress.pending += 1,
@@ -2286,7 +2291,7 @@ mod tests {
   }
 
   #[test]
-  fn a_load_dropped_before_it_finishes_is_discarded() {
+  fn a_load_dropped_before_it_lands_sends_no_event() {
     let files = MemorySource::new();
     files.insert("slow.txt", "late");
     let (release, held) = crossbeam_channel::unbounded();
@@ -2306,11 +2311,9 @@ mod tests {
       server.inner.finished_queue.is_empty(),
       "the result was applied"
     );
+    // It never was in its store: no `Added`, so no `Removed` either
     let sent = events(&world, &mut cursor);
-    assert!(
-      matches!(sent.as_slice(), [AssetEvent::Removed { id: removed }] if *removed == id),
-      "{sent:?}"
-    );
+    assert!(sent.is_empty(), "{sent:?}");
     assert!(world.resource::<Assets<Text>>().is_empty());
     assert!(matches!(server.state(id), LoadState::NotLoaded));
     assert_eq!(server.path(id), None);
@@ -2375,7 +2378,7 @@ mod tests {
       missing.id().untyped(),
       slow.id().untyped(),
     ];
-    let progress = server.progress(&group);
+    let progress = server.progress(group);
     assert_eq!(
       progress,
       Progress {
@@ -2414,7 +2417,7 @@ mod tests {
     );
     let _ = release.send(());
     pump_until(&mut world, |_| server.state(&slow).is_loaded());
-    assert!(server.progress(&group).is_done());
+    assert!(server.progress(group).is_done());
   }
 
   #[test]
@@ -2426,13 +2429,44 @@ mod tests {
     assert!(server.state(&added).is_loaded());
     assert_eq!(server.path(&added), None);
     assert_eq!(
-      server.progress(&[added.id().untyped()]),
+      server.progress([added.id().untyped()]),
       Progress {
         loaded: 1,
         failed: 0,
         pending: 0
       }
     );
+  }
+
+  // The borrowed forms are what a game writes for a group it keeps: they are what this pins
+  #[allow(clippy::needless_borrows_for_generic_args)]
+  #[test]
+  fn progress_takes_handles_of_one_type_or_ids_across_types() {
+    let (mut world, server) = world_with(MemorySource::new());
+    let mut texts = world.resource_mut::<Assets<Text>>();
+    let a = texts.add(Text("a".into()));
+    let b = texts.add(Text("b".into()));
+    let missing: Handle<Link> = server.load("nope.link");
+    pump_until(&mut world, |_| server.state(&missing).is_failed());
+    let both = Progress {
+      loaded: 2,
+      failed: 0,
+      pending: 0,
+    };
+    // One type: handles, or references to them
+    let held = vec![a.clone(), b.clone()];
+    assert_eq!(server.progress(&held), both);
+    assert_eq!(server.progress(&[&a, &b]), both);
+    // Across types: untyped ids
+    let mixed = [a.id().untyped(), missing.id().untyped()];
+    let one_each = Progress {
+      loaded: 1,
+      failed: 1,
+      pending: 0,
+    };
+    assert_eq!(server.progress(mixed), one_each);
+    assert_eq!(server.progress(&mixed), one_each);
+    assert_eq!(AssetsView::new(&mut world).progress(&held), both);
   }
 
   #[test]
@@ -2906,17 +2940,25 @@ mod tests {
       ],
       "{sent:?}"
     );
-    // Nothing on a cycle holds another now, so all three are freed
+    // Nothing on a cycle holds another now, so all three are freed; none
+    // was in its store, so none sends `Removed`
+    let failed: Vec<AssetId<Bundle>> = sent
+      .iter()
+      .filter_map(|e| match e {
+        AssetEvent::Failed { id, .. } => Some(*id),
+        _ => None,
+      })
+      .collect();
     drop(a);
     drop(me);
     pump(&mut world);
     pump(&mut world);
-    let removed = events(&world, &mut bundles)
-      .iter()
-      .chain(&sent)
-      .filter(|e| matches!(e, AssetEvent::Removed { .. }))
-      .count();
-    assert_eq!(removed, 3);
+    let after = events(&world, &mut bundles);
+    assert!(after.is_empty(), "{after:?}");
+    assert_eq!(failed.len(), 3);
+    for id in failed {
+      assert!(matches!(server.state(id), LoadState::NotLoaded), "{id:?}");
+    }
   }
 
   #[test]

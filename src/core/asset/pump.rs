@@ -115,7 +115,8 @@ impl Typed {
   }
 }
 
-/// Frees a type's unheld assets, sends `Removed` for each and adds their ids to the list
+/// Frees a type's unheld assets, sends `Removed` for each that was in its
+/// store and adds their ids to the list
 pub(crate) type FreeUnheld = fn(&mut World, &mut Vec<UntypedAssetId>);
 /// Sends the events a type's store queued for changes made in code
 pub(crate) type SendQueued = fn(&mut World);
@@ -373,9 +374,11 @@ pub(crate) fn free_unheld<T: Asset>(world: &mut World, freed: &mut Vec<UntypedAs
     }
     assets.set_changed();
   }
-  freed.extend(ids.iter().map(|id| id.untyped()));
+  freed.extend(ids.iter().map(|(id, _)| id.untyped()));
+  // Only what was in the store leaves it: a slot that never held a value
+  // (a load dropped before it landed, or a failed one) sends nothing
   if let Some(mut events) = world.get_resource_mut::<Messages<AssetEvent<T>>>() {
-    for id in ids {
+    for (id, _) in ids.into_iter().filter(|&(_, held)| held) {
       events.write(AssetEvent::Removed { id });
     }
   }

@@ -369,19 +369,23 @@ impl<T: Asset> Assets<T> {
     true
   }
 
-  /// Frees every asset whose last handle dropped, adding their ids to `freed`
-  pub(crate) fn free_unheld(&mut self, freed: &mut Vec<AssetId<T>>) {
+  /// Frees every asset whose last handle dropped, adding their ids to
+  /// `freed`, each with whether it held a value (a load dropped before it
+  /// landed, or one that failed, did not)
+  pub(crate) fn free_unheld(&mut self, freed: &mut Vec<(AssetId<T>, bool)>) {
     if self.drops.is_empty() {
       return;
     }
     let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
     for (index, generation) in self.drops.try_iter() {
       if ledger.release(index, generation) {
-        if let Some(slot) = self.values.get_mut(index as usize) {
-          *slot = None;
-        }
+        let held = self
+          .values
+          .get_mut(index as usize)
+          .and_then(Option::take)
+          .is_some_and(|entry| entry.generation == generation);
         note(&mut self.changes, index);
-        freed.push(AssetId::new(index, generation));
+        freed.push((AssetId::new(index, generation), held));
       }
     }
   }
@@ -724,7 +728,7 @@ mod tests {
     assert!(freed.is_empty(), "a clone still holds it");
     drop(copy);
     assets.free_unheld(&mut freed);
-    assert_eq!(freed, vec![id]);
+    assert_eq!(freed, vec![(id, true)]);
     assert!(assets.get(id).is_none());
   }
 
@@ -738,10 +742,14 @@ mod tests {
     drop(handle);
     let mut freed = Vec::new();
     assets.free_unheld(&mut freed);
-    assert_eq!(freed, vec![id], "the unheld handle did not keep it");
+    assert_eq!(freed, vec![(id, true)], "the unheld handle did not keep it");
     drop(unheld);
     assets.free_unheld(&mut freed);
-    assert_eq!(freed, vec![id], "and its drop tells the store nothing");
+    assert_eq!(
+      freed,
+      vec![(id, true)],
+      "and its drop tells the store nothing"
+    );
   }
 
   #[test]
@@ -788,14 +796,14 @@ mod tests {
     assert!(freed.is_empty(), "the rebound handle holds it");
     drop(again);
     assets.free_unheld(&mut freed);
-    assert_eq!(freed, vec![id]);
+    assert_eq!(freed, vec![(id, true)]);
     assets.free_unheld(&mut freed);
-    assert_eq!(freed, vec![id], "freed once");
+    assert_eq!(freed, vec![(id, true)], "freed once");
     // The slot's next asset is not freed by anything the old one left behind
     let next = assets.add(Text("b".into()));
     assert_eq!(next.id().index(), id.index());
     assets.free_unheld(&mut freed);
-    assert_eq!(freed, vec![id]);
+    assert_eq!(freed, vec![(id, true)]);
     assert_eq!(assets.get(&next).map(|t| t.0.as_str()), Some("b"));
   }
 
@@ -811,7 +819,7 @@ mod tests {
     drop(again);
     let mut freed = Vec::new();
     assets.free_unheld(&mut freed);
-    assert_eq!(freed, vec![id]);
+    assert_eq!(freed, vec![(id, true)]);
   }
 
   #[test]

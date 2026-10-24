@@ -71,7 +71,9 @@ impl<T: Asset> fmt::Debug for AssetId<T> {
   }
 }
 
-/// An asset id of any type
+/// An asset id of any type, for a group that spans types (`progress`).
+/// Typed ids and handles convert into it (`From`), so a group of one type
+/// is its handles: `progress(&handles)`, or `progress([&a, &b])`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UntypedAssetId {
   pub(crate) type_id: TypeId,
@@ -83,6 +85,24 @@ impl UntypedAssetId {
   /// The typed id, if it is of type `T`
   pub fn typed<T: Asset>(self) -> Option<AssetId<T>> {
     (self.type_id == TypeId::of::<T>()).then(|| AssetId::new(self.index, self.generation))
+  }
+}
+
+impl<T: Asset> From<AssetId<T>> for UntypedAssetId {
+  fn from(id: AssetId<T>) -> Self {
+    id.untyped()
+  }
+}
+
+impl<T: Asset> From<&AssetId<T>> for UntypedAssetId {
+  fn from(id: &AssetId<T>) -> Self {
+    id.untyped()
+  }
+}
+
+impl From<&UntypedAssetId> for UntypedAssetId {
+  fn from(id: &UntypedAssetId) -> Self {
+    *id
   }
 }
 

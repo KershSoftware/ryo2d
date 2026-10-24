@@ -1592,8 +1592,8 @@ mod tests {
     drop(freed);
     let mut removed = Vec::new();
     images.free_unheld(&mut removed);
-    assert_eq!(removed, vec![id]);
-    renderer.sync_images(&device, removed, [], &images, None);
+    assert_eq!(removed, vec![(id, true)]);
+    renderer.sync_images(&device, [id], [], &images, None);
     assert!(renderer.lookup_image(id).is_none());
     assert_eq!(renderer.texture_count(), 1);
     assert!(renderer.lookup_image(kept.id()).is_some());

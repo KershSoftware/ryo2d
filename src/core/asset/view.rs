@@ -118,8 +118,13 @@ impl<'w> AssetsView<'w> {
     self.server.is_ready(id)
   }
 
-  /// How far a group of assets has loaded. See [`AssetServer::progress`]
-  pub fn progress(&self, ids: &[UntypedAssetId]) -> Progress {
+  /// How far a group of assets has loaded: its handles, or untyped ids for
+  /// a group across types. See [`AssetServer::progress`]
+  pub fn progress<I>(&self, ids: I) -> Progress
+  where
+    I: IntoIterator,
+    I::Item: Into<UntypedAssetId>,
+  {
     self.server.progress(ids)
   }
 
