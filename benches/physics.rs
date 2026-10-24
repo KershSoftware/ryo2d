@@ -18,6 +18,10 @@
 //! every bouncing window at most 1% of the bodies may be asleep, or the
 //! benchmark stops.
 //!
+//! The compound scene is the typical-size scene with each body made of four
+//! colliders, 20 px squares on child entities around it, so every step
+//! moves 4,000 colliders with their 1,000 bodies.
+//!
 //! The character scene is a 120 x 40 `TileColliders` level of 16 px tiles
 //! (a floor, stairs and one-way rows) with 100 platformer characters
 //! (`PlatformerMovement` on 12 x 24 px colliders) whose `MoveIntent` a scene
@@ -47,41 +51,86 @@ const CHARACTERS: u32 = 100;
 /// The bouncing scene, every length and speed multiplied by its scale.
 struct Bouncing(f32);
 
+/// The bouncing scene's box, scaled by `k`
+fn spawn_walls(ctx: &mut SceneContext, k: f32) {
+  for (x, y, w, h) in [
+    (SIZE / 2.0, -10.0, SIZE + 40.0, 20.0),
+    (SIZE / 2.0, SIZE + 10.0, SIZE + 40.0, 20.0),
+    (-10.0, SIZE / 2.0, 20.0, SIZE + 40.0),
+    (SIZE + 10.0, SIZE / 2.0, 20.0, SIZE + 40.0),
+  ] {
+    let (x, y, w, h) = (x * k, y * k, w * k, h * k);
+    ctx.world.spawn((
+      Transform::from_xy(x, y),
+      RigidBody::fixed(),
+      Collider::rect(w, h)
+        .with_restitution(1.0)
+        .with_friction(0.0),
+    ));
+  }
+}
+
+/// The `i`th bouncing body's place and velocity, scaled by `k`
+fn body_start(i: usize, k: f32) -> (Transform, Velocity) {
+  let (col, row) = ((i % 40) as f32, (i / 40) as f32);
+  let angle = i as f32 * 2.399;
+  (
+    Transform::from_xy((20.0 + col * 14.0) * k, (20.0 + row * 14.0) * k),
+    Velocity {
+      dx: angle.cos() * 120.0 * k,
+      dy: angle.sin() * 120.0 * k,
+    },
+  )
+}
+
 impl Scene for Bouncing {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let k = self.0;
-    for (x, y, w, h) in [
-      (SIZE / 2.0, -10.0, SIZE + 40.0, 20.0),
-      (SIZE / 2.0, SIZE + 10.0, SIZE + 40.0, 20.0),
-      (-10.0, SIZE / 2.0, 20.0, SIZE + 40.0),
-      (SIZE + 10.0, SIZE / 2.0, 20.0, SIZE + 40.0),
-    ] {
-      let (x, y, w, h) = (x * k, y * k, w * k, h * k);
-      ctx.world.spawn((
-        Transform::from_xy(x, y),
-        RigidBody::fixed(),
-        Collider::rect(w, h)
-          .with_restitution(1.0)
-          .with_friction(0.0),
-      ));
-    }
+    spawn_walls(ctx, k);
     for i in 0..BODIES {
-      let (col, row) = ((i % 40) as f32, (i / 40) as f32);
-      let angle = i as f32 * 2.399;
       let collider = if i % 2 == 0 {
         Collider::circle(5.0 * k)
       } else {
         Collider::rect(8.0 * k, 8.0 * k)
       };
+      let (place, velocity) = body_start(i, k);
       ctx.world.spawn((
-        Transform::from_xy((20.0 + col * 14.0) * k, (20.0 + row * 14.0) * k),
-        Velocity {
-          dx: angle.cos() * 120.0 * k,
-          dy: angle.sin() * 120.0 * k,
-        },
+        place,
+        velocity,
         RigidBody::dynamic().with_gravity_scale(0.0).lock_rotation(),
         collider.with_restitution(1.0).with_friction(0.0),
       ));
+    }
+  }
+}
+
+/// The bouncing scene with each body made of four square colliders on
+/// child entities, as wide as the plain scene's square, scaled by its scale.
+struct Compound(f32);
+
+impl Scene for Compound {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let k = self.0;
+    spawn_walls(ctx, k);
+    for i in 0..BODIES {
+      let (place, velocity) = body_start(i, k);
+      let body = ctx
+        .world
+        .spawn((
+          place,
+          velocity,
+          RigidBody::dynamic().with_gravity_scale(0.0).lock_rotation(),
+        ))
+        .id();
+      for (dx, dy) in [(-2.5, -2.5), (2.5, -2.5), (-2.5, 2.5), (2.5, 2.5)] {
+        ctx.world.spawn((
+          Transform::from_xy(dx * k, dy * k),
+          Collider::rect(4.0 * k, 4.0 * k)
+            .with_restitution(1.0)
+            .with_friction(0.0),
+          ChildOf(body),
+        ));
+      }
     }
   }
 }
@@ -179,6 +228,12 @@ fn typical() -> EngineBuilder {
     .start_scene(Bouncing(TYPICAL))
 }
 
+fn compound() -> EngineBuilder {
+  EngineBuilder::new()
+    .resolution(300, 300)
+    .start_scene(Compound(TYPICAL))
+}
+
 fn empty() -> EngineBuilder {
   EngineBuilder::new().resolution(300, 300).start_scene(Empty)
 }
@@ -263,6 +318,9 @@ fn frame(c: &mut Criterion) {
   });
   c.bench_function("physics frame, 1000 bouncing 40-50 px bodies", |b| {
     b.iter_custom(|iters| time_frames(typical, iters, Some(check_awake)))
+  });
+  c.bench_function("physics frame, 1000 compound bodies of 4 colliders", |b| {
+    b.iter_custom(|iters| time_frames(compound, iters, Some(check_awake)))
   });
   c.bench_function("physics frame, 100 characters on tiles", |b| {
     b.iter_custom(|iters| time_frames(characters, iters, Some(check_inside)))
