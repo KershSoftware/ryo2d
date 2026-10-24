@@ -54,11 +54,21 @@ pub fn ui_file(
   embedded: &str,
 ) -> Result<Handle<UiFile>, UiFileError> {
   match ctx.assets().load_now::<UiFile>(path) {
-    Err(error) if matches!(*error, AssetError::NotFound { .. }) => {
+    Err(error) if not_on_disk(&error) => {
       let file = UiFile::parse(path, embedded)?;
       Ok(ctx.assets().add(file))
     }
     loaded => Ok(loaded?),
+  }
+}
+
+/// Whether a load failed because there is no file to read: none at the path,
+/// or no folder at all, as on the web, where reading a file is `Unsupported`
+fn not_on_disk(error: &AssetError) -> bool {
+  match error {
+    AssetError::NotFound { .. } => true,
+    AssetError::Io { source, .. } => source.kind() == std::io::ErrorKind::Unsupported,
+    _ => false,
   }
 }
 

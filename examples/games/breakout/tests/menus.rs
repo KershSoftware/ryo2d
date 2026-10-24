@@ -55,6 +55,40 @@ fn the_hud_shows_the_score_through_its_bindings() {
   assert_eq!(hud, ["Score: 0"]);
 }
 
+/// What the web build reads its assets from: no folder at all, so every
+/// read is `Unsupported`
+struct NoFolder;
+
+impl AssetSource for NoFolder {
+  fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+    Err(AssetError::Io {
+      path: path.clone(),
+      source: std::io::ErrorKind::Unsupported.into(),
+    })
+  }
+}
+
+#[test]
+fn the_hud_shows_where_there_is_no_folder_to_read_as_on_the_web() {
+  empty_folder();
+  let Some(mut engine) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(800, 600)
+      .asset_source(NoFolder)
+      .start_scene(GameScene::new(0, None)),
+  ) else {
+    return;
+  };
+  engine.step_frames(5).unwrap();
+  let world = engine.world_mut();
+  let mut labels = world.query::<&UiLabel>();
+  let hud = labels
+    .iter(world)
+    .filter(|label| label.0.starts_with("Score:"))
+    .count();
+  assert_eq!(hud, 1, "the embedded HUD");
+}
+
 #[test]
 fn the_pause_menu_is_navigable_by_pad() {
   empty_folder();
