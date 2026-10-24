@@ -5,7 +5,7 @@
 use std::hash::Hasher;
 use std::ops::Range;
 
-use crate::core::asset::Assets;
+use crate::core::asset::{AssetId, Assets};
 use crate::core::graphics::Image;
 use crate::core::graphics::atlas::Showing;
 use crate::core::hash::FastHasher;
@@ -360,6 +360,20 @@ pub(crate) struct StampSources<'a> {
   pub(crate) showing: &'a [Showing],
 }
 
+/// The version of `image` its texture shows: an older one while a new one
+/// is written into a new texture (`showing`), else its version in
+/// `images`
+pub(crate) fn shown_version(
+  images: &Assets<Image>,
+  showing: &[Showing],
+  image: AssetId<Image>,
+) -> Option<u64> {
+  match showing.iter().find(|showing| showing.image == image) {
+    Some(showing) => Some(showing.version),
+    None => images.version(image),
+  }
+}
+
 /// What `command` draws from besides its own value: the version of an
 /// image its texture shows, or a text's icons (each image's id and version;
 /// a name's image and region in the icons); 0 for neither
@@ -369,18 +383,8 @@ pub(crate) fn stamp_of(command: &UiCommand, sources: StampSources<'_>) -> u64 {
     icons,
     showing,
   } = sources;
-  // 0 stands for an image that is not loaded: versions start at 1. A
-  // texture still showing an older version draws that one, until its new
-  // texture takes its place
-  let version = |image| {
-    showing
-      .iter()
-      .find(|showing| showing.image == image)
-      .map_or_else(
-        || images.version(image).unwrap_or(0),
-        |showing| showing.version,
-      )
-  };
+  // 0 stands for an image that is not loaded: versions start at 1
+  let version = |image| shown_version(images, showing, image).unwrap_or(0);
   match command {
     UiCommand::Sprite { sprite, .. } => version(sprite.id()),
     UiCommand::Text { layout, .. } if !layout.icons.is_empty() => {

@@ -55,6 +55,9 @@ const RELEASE_EVERY: u64 = 60;
 /// and 85 to 110 µs a MB more, so 2 MiB is about 0.2 ms of the 0.5 ms a
 /// reload may add to a frame; a 2048 px image's 22.7 MB take 11 frames
 pub(crate) const UPLOAD_BUDGET: u64 = 2 * 1024 * 1024;
+/// The first image being replaced writes at least this share of the
+/// budget (a quarter) a frame, whatever else the frame wrote
+const MIN_SPREAD_SHARE: u64 = 4;
 const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Which texture holds an image.
@@ -396,93 +399,132 @@ pub(crate) struct Showing {
 }
 
 /// An image's new version, written into a texture of its own a band of
-/// rows at a time, every level in turn
+/// rows at a time, every level in turn. The texture is made with its first
+/// band, so images reloaded together do not all take their GPU memory in
+/// one frame
 struct Spread {
-  texture: wgpu::Texture,
-  bind_groups: PageBindGroups,
+  texture: Option<(wgpu::Texture, PageBindGroups)>,
   upload: PreparedUpload,
+  /// The texture's levels
+  levels: u32,
   /// The level the next band is in, and its first row
   level: u32,
   row: u32,
 }
 
+/// What a texture is made with: the device, and the bind group layout and
+/// samplers its bind groups take
+struct Maker<'a> {
+  device: &'a wgpu::Device,
+  layout: &'a wgpu::BindGroupLayout,
+  nearest: &'a wgpu::Sampler,
+  linear: &'a wgpu::Sampler,
+}
+
 impl Spread {
-  /// Whether every level is written
-  fn done(&self) -> bool {
-    self.level >= self.texture.mip_level_count()
+  fn new(upload: PreparedUpload) -> Spread {
+    let (width, height) = upload.size();
+    Spread {
+      texture: None,
+      upload,
+      levels: standalone_levels(width + 2 * BORDER, height + 2 * BORDER),
+      level: 0,
+      row: 0,
+    }
   }
 
-  /// Write the next bands, up to `room` bytes of levels, as `write_mips`
-  /// would write them whole; the bytes written
-  fn write(&mut self, queue: &wgpu::Queue, room: u64) -> u64 {
+  /// Whether every level is written
+  fn done(&self) -> bool {
+    self.texture.is_some() && self.level >= self.levels
+  }
+
+  /// Write the next bands, up to `room` bytes of levels and at least a
+  /// row, as `write_mips` would write them whole; the bytes written. None
+  /// when the upload lacks a level the texture has, so the texture can
+  /// never be whole
+  fn write(&mut self, make: &Maker<'_>, queue: &wgpu::Queue, room: u64) -> Option<u64> {
+    let (width, height) = self.upload.size();
+    if self.texture.is_none() {
+      crate::profile_scope!("atlas:spread texture");
+      let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
+      self.texture = Some(new_texture(make, (bw, bh), self.levels, "Atlas Standalone"));
+    }
     let Spread {
-      texture,
+      texture: Some((texture, _)),
       upload,
+      levels,
       level,
       row,
-      ..
-    } = self;
-    let count = texture.mip_level_count();
+    } = self
+    else {
+      return None;
+    };
+    let mut chain = upload.levels().skip(*level as usize);
     let mut written = 0u64;
-    for (at, (width, height, pixels)) in (0u32..).zip(upload.levels()).skip(*level as usize) {
-      if at >= count {
-        break;
-      }
+    while *level < *levels {
+      let (width, height, pixels) = chain.next()?;
       // The GPU rounds odd level sizes down: the last column or row (the
       // border's) is left out, as `write_mips` leaves it
       let size = texture
         .size()
-        .mip_level_size(at, wgpu::TextureDimension::D2);
+        .mip_level_size(*level, wgpu::TextureDimension::D2);
       let (columns, rows) = (width.min(size.width), height.min(size.height));
       let row_bytes = u64::from(width) * 4;
       while *row < rows {
-        let band = (room.saturating_sub(written) / row_bytes).min(u64::from(rows - *row));
+        let fit = room.saturating_sub(written) / row_bytes;
+        // At least a row a call, so a spread always moves on
+        let fit = if written == 0 { fit.max(1) } else { fit };
+        let band = fit.min(u64::from(rows - *row));
         if band == 0 {
-          return written;
+          return Some(written);
         }
         let start = u64::from(*row) * row_bytes;
         let bytes = band * row_bytes;
         let data = usize::try_from(start)
           .ok()
           .zip(usize::try_from(start + bytes).ok())
-          .and_then(|(start, end)| pixels.get(start..end));
-        let Some(data) = data else {
-          // Levels of another size: `fits` keeps them out
-          *level = count;
-          return written;
-        };
+          .and_then(|(start, end)| pixels.get(start..end))?;
         let band = band as u32;
-        queue.write_texture(
-          wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: at,
-            origin: wgpu::Origin3d {
-              x: 0,
-              y: *row,
-              z: 0,
+        let first = *level == 0 && *row == 0;
+        let write = || {
+          queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+              texture,
+              mip_level: *level,
+              origin: wgpu::Origin3d {
+                x: 0,
+                y: *row,
+                z: 0,
+              },
+              aspect: wgpu::TextureAspect::All,
             },
-            aspect: wgpu::TextureAspect::All,
-          },
-          data,
-          wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 4),
-            rows_per_image: Some(band),
-          },
-          wgpu::Extent3d {
-            width: columns,
-            height: band,
-            depth_or_array_layers: 1,
-          },
-        );
+            data,
+            wgpu::TexelCopyBufferLayout {
+              offset: 0,
+              bytes_per_row: Some(width * 4),
+              rows_per_image: Some(band),
+            },
+            wgpu::Extent3d {
+              width: columns,
+              height: band,
+              depth_or_array_layers: 1,
+            },
+          );
+        };
+        if first {
+          // wgpu clears the level before its first write
+          crate::profile_scope!("atlas:spread first band");
+          write();
+        } else {
+          write();
+        }
         written += bytes;
         *row += band;
       }
-      *level = at + 1;
+      *level += 1;
       *row = 0;
     }
-    *level = count;
-    written
+    Some(written)
   }
 }
 
@@ -512,6 +554,8 @@ pub(crate) struct TextureAtlas {
   showing: Vec<Showing>,
   /// Keys whose new texture took the old one's place, until taken
   swapped: Vec<TextureId>,
+  /// Keys whose new texture was dropped unfinished, until taken
+  dropped: Vec<TextureId>,
   /// Bytes of image levels written this frame
   spent: u64,
   /// The most a frame writes into `spreads` ([`UPLOAD_BUDGET`])
@@ -555,6 +599,7 @@ impl TextureAtlas {
       spreads: BTreeMap::new(),
       showing: Vec::new(),
       swapped: Vec::new(),
+      dropped: Vec::new(),
       spent: 0,
       budget: UPLOAD_BUDGET,
       bind_layout: layout,
@@ -696,10 +741,25 @@ impl TextureAtlas {
       if let Some(slot) = self.touch(key, frame) {
         return Some(slot);
       }
-      if let Some(spread) = self.spreads.get_mut(&key) {
-        self.spent += spread.write(queue, u64::MAX);
+      // The old texture is gone: the new one is finished now, or, should
+      // it never be whole, dropped and the pixels written below
+      let make = Maker {
+        device,
+        layout: &self.bind_layout,
+        nearest: &self.nearest,
+        linear: &self.linear,
+      };
+      let finished = self
+        .spreads
+        .get_mut(&key)
+        .and_then(|spread| spread.write(&make, queue, u64::MAX));
+      match finished {
+        Some(bytes) => {
+          self.spent += bytes;
+          return self.install(key, frame);
+        }
+        None => self.drop_spread(key),
       }
-      return self.install(key, frame);
     }
     let ImagePixels {
       width,
@@ -768,26 +828,36 @@ impl TextureAtlas {
     let levels = standalone_levels(bw, bh);
     let (texture, bind_groups) = self.create_texture(device, bw, bh, levels, "Atlas Standalone");
     let written = match bordered {
-      Bordered::Ahead(prepared) => write_mips(queue, &texture, 0, 0, prepared.levels()),
-      Bordered::Here(bordered) => match mips.filter(|mips| prepared_mips_fit(mips, bw, bh, levels))
-      {
-        // The loader made the levels below the first on its thread
-        Some(mips) => {
-          let below = halvings(bw, bh)
-            .skip(1)
-            .zip(mips)
-            .map(|((w, h), pixels)| (w, h, pixels.as_slice()));
-          let first = std::iter::once((bw, bh, bordered.as_slice()));
-          write_mips(queue, &texture, 0, 0, first.chain(below))
+      Bordered::Ahead(prepared) if prepared_mips_fit(prepared.below(), bw, bh, levels) => {
+        write_mips(queue, &texture, 0, 0, prepared.levels())
+      }
+      bordered => {
+        // A small image's upload has a page's four levels, too few for a
+        // texture of its own (a full atlas's fallback): its levels are
+        // made here from its bordered pixels
+        let bordered = match bordered {
+          Bordered::Ahead(prepared) => prepared.bordered.clone(),
+          Bordered::Here(bordered) => bordered,
+        };
+        match mips.filter(|mips| prepared_mips_fit(mips, bw, bh, levels)) {
+          // The loader made the levels below the first on its thread
+          Some(mips) => {
+            let below = halvings(bw, bh)
+              .skip(1)
+              .zip(mips)
+              .map(|((w, h), pixels)| (w, h, pixels.as_slice()));
+            let first = std::iter::once((bw, bh, bordered.as_slice()));
+            write_mips(queue, &texture, 0, 0, first.chain(below))
+          }
+          None => {
+            let chain = mip_chain(bordered, bw, bh, levels);
+            let chain = chain
+              .iter()
+              .map(|(w, h, pixels)| (*w, *h, pixels.as_slice()));
+            write_mips(queue, &texture, 0, 0, chain)
+          }
         }
-        None => {
-          let chain = mip_chain(bordered, bw, bh, levels);
-          let chain = chain
-            .iter()
-            .map(|(w, h, pixels)| (*w, *h, pixels.as_slice()));
-          write_mips(queue, &texture, 0, 0, chain)
-        }
-      },
+      }
     };
     self.spent += written;
     Some(self.add_standalone(key, (texture, bind_groups), (width, height), frame))
@@ -816,27 +886,18 @@ impl TextureAtlas {
   }
 
   /// Start writing `upload`, the new version of `key`'s image, into a new
-  /// texture of its own, a band a frame ([`write_spreads`](Self::write_spreads)).
+  /// texture of its own, a band a frame ([`write_spreads`](Self::write_spreads)),
+  /// the texture made with the first.
   /// Until it is whole `key`'s texture draws, `shows` (the image, and the
   /// version that texture shows); then it takes that texture's place
   /// ([`swap_spreads`](Self::swap_spreads)). A spread `key` had is dropped
   pub(crate) fn spread(
     &mut self,
-    device: &wgpu::Device,
     key: TextureId,
     upload: PreparedUpload,
     (image, version): (AssetId<Image>, u64),
   ) {
-    let (width, height) = upload.size();
-    let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
-    let (texture, bind_groups) = self.create_texture(
-      device,
-      bw,
-      bh,
-      standalone_levels(bw, bh),
-      "Atlas Standalone",
-    );
-    let size = self.image_size(key).unwrap_or((width, height));
+    let size = self.image_size(key).unwrap_or(upload.size());
     self.showing.retain(|showing| showing.key != key);
     self.showing.push(Showing {
       key,
@@ -844,27 +905,50 @@ impl TextureAtlas {
       version,
       size,
     });
-    self.spreads.insert(
-      key,
-      Spread {
-        texture,
-        bind_groups,
-        upload,
-        level: 0,
-        row: 0,
-      },
-    );
+    self.spreads.insert(key, Spread::new(upload));
   }
 
   /// Write as many bands of the images being replaced as the frame's budget
-  /// leaves room for, after the frame's other image writes
-  pub(crate) fn write_spreads(&mut self, queue: &wgpu::Queue) {
-    for spread in self.spreads.values_mut() {
-      let room = self.budget.saturating_sub(self.spent);
+  /// leaves room for, after the frame's other image writes. The first gets
+  /// at least a quarter of the budget whatever the frame wrote, so it ends
+  /// however much else is written every frame. One whose upload cannot fill
+  /// its texture is dropped ([`take_dropped`](Self::take_dropped))
+  pub(crate) fn write_spreads(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    let make = Maker {
+      device,
+      layout: &self.bind_layout,
+      nearest: &self.nearest,
+      linear: &self.linear,
+    };
+    let (budget, spent, dropped) = (self.budget, &mut self.spent, &mut self.dropped);
+    let mut first = true;
+    self.spreads.retain(|key, spread| {
+      let left = budget.saturating_sub(*spent);
+      let room = if first {
+        left.max(budget / MIN_SPREAD_SHARE)
+      } else {
+        left
+      };
       if room == 0 {
-        break;
+        return true;
       }
-      self.spent += spread.write(queue, room);
+      first = false;
+      match spread.write(&make, queue, room) {
+        Some(bytes) => {
+          *spent += bytes;
+          true
+        }
+        None => {
+          dropped.push(*key);
+          false
+        }
+      }
+    });
+    let dropped = &self.dropped;
+    if !dropped.is_empty() {
+      self
+        .showing
+        .retain(|showing| !dropped.contains(&showing.key));
     }
   }
 
@@ -887,6 +971,20 @@ impl TextureAtlas {
   /// call
   pub(crate) fn take_swapped(&mut self) -> std::vec::Drain<'_, TextureId> {
     self.swapped.drain(..)
+  }
+
+  /// The keys whose new texture could not be written whole, dropped with
+  /// it since the last call: their texture shows the old version still
+  pub(crate) fn take_dropped(&mut self) -> std::vec::Drain<'_, TextureId> {
+    self.dropped.drain(..)
+  }
+
+  /// Place nothing on the shared pages from now on, so every image gets a
+  /// texture of its own, as when every page is full (tests)
+  #[cfg(test)]
+  pub(crate) fn refuse_pages(&mut self) {
+    self.layout = AtlasLayout::new(PAGE_SIZE, 0);
+    self.pages.clear();
   }
 
   /// What each image being written into a new texture draws meanwhile
@@ -914,6 +1012,9 @@ impl TextureAtlas {
 
   /// Put `key`'s new texture, written whole, in its old one's place
   fn install(&mut self, key: TextureId, frame: u64) -> Option<AtlasSlot> {
+    if !self.spreads.get(&key).is_some_and(Spread::done) {
+      return None;
+    }
     let spread = self.spreads.remove(&key)?;
     self.showing.retain(|showing| showing.key != key);
     // It carries on where the old one was used
@@ -924,13 +1025,19 @@ impl TextureAtlas {
     self.layout.remove(key);
     self.swapped.push(key);
     let Spread {
-      texture,
-      bind_groups,
-      upload,
-      ..
+      texture, upload, ..
     } = spread;
     // The upload's levels are freed with it
-    Some(self.add_standalone(key, (texture, bind_groups), upload.size(), last_used))
+    Some(self.add_standalone(key, texture?, upload.size(), last_used))
+  }
+
+  /// Drop `key`'s new texture, which can never be whole: its old texture
+  /// shows the old version still
+  fn drop_spread(&mut self, key: TextureId) {
+    if self.spreads.remove(&key).is_some() {
+      self.showing.retain(|showing| showing.key != key);
+      self.dropped.push(key);
+    }
   }
 
   /// The slot of the texture `key` draws now, marked used in `frame`
@@ -1144,25 +1251,13 @@ impl TextureAtlas {
     mip_levels: u32,
     label: &str,
   ) -> (wgpu::Texture, PageBindGroups) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some(label),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: mip_levels,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: PAGE_FORMAT,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING
-        | wgpu::TextureUsages::COPY_DST
-        | wgpu::TextureUsages::COPY_SRC,
-      view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_groups = self.bind(device, &view, label);
-    (texture, bind_groups)
+    let make = Maker {
+      device,
+      layout: &self.bind_layout,
+      nearest: &self.nearest,
+      linear: &self.linear,
+    };
+    new_texture(&make, (width, height), mip_levels, label)
   }
 
   /// Register `texture` as `key`'s standalone texture, for an image
@@ -1200,6 +1295,42 @@ impl TextureAtlas {
     );
     slot
   }
+}
+
+/// A page-format texture `width`x`height` with `mip_levels` levels, and its
+/// bind groups
+fn new_texture(
+  make: &Maker<'_>,
+  (width, height): (u32, u32),
+  mip_levels: u32,
+  label: &str,
+) -> (wgpu::Texture, PageBindGroups) {
+  let texture = make.device.create_texture(&wgpu::TextureDescriptor {
+    label: Some(label),
+    size: wgpu::Extent3d {
+      width,
+      height,
+      depth_or_array_layers: 1,
+    },
+    mip_level_count: mip_levels,
+    sample_count: 1,
+    dimension: wgpu::TextureDimension::D2,
+    format: PAGE_FORMAT,
+    usage: wgpu::TextureUsages::TEXTURE_BINDING
+      | wgpu::TextureUsages::COPY_DST
+      | wgpu::TextureUsages::COPY_SRC,
+    view_formats: &[],
+  });
+  let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+  let bind_groups = bind_with(
+    make.device,
+    make.layout,
+    &view,
+    make.nearest,
+    make.linear,
+    label,
+  );
+  (texture, bind_groups)
 }
 
 /// An image's pixels as the atlas takes them: `rgba` (sRGB bytes,
@@ -1300,6 +1431,22 @@ impl PreparedUpload {
   #[cfg(test)]
   pub(crate) fn first(&self) -> &[u8] {
     &self.bordered
+  }
+
+  /// An upload of an image `width`x`height` px made of these levels, fit
+  /// or not (tests)
+  #[cfg(test)]
+  pub(crate) fn with_levels(
+    (width, height): (u32, u32),
+    bordered: Vec<u8>,
+    below: Vec<Vec<u8>>,
+  ) -> PreparedUpload {
+    PreparedUpload {
+      width,
+      height,
+      bordered,
+      below: Arc::new(below),
+    }
   }
 
   /// Every level with its size, the bordered first one first
@@ -1934,6 +2081,43 @@ mod tests {
     let x = (resized.uv[0] * 2048.0).round() as u32;
     let y = (resized.uv[1] * 2048.0).round() as u32;
     assert_eq!(img.get_pixel(x, y).0[0], 50);
+  }
+
+  #[test]
+  fn a_spread_that_cannot_fill_its_texture_is_dropped_not_swapped_in() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut atlas = gpu_atlas(&device);
+    let pixels = [9; 300 * 4 * 4];
+    let old = atlas
+      .slot(
+        &device,
+        &queue,
+        id(0),
+        ImagePixels::plain(300, 4, &pixels),
+        0,
+      )
+      .unwrap();
+    // A first level for the 316x20 texture, and too little below it
+    let broken = PreparedUpload::with_levels((300, 4), vec![1; 316 * 20 * 4], vec![vec![2; 4]]);
+    let image = crate::core::graphics::image::test_handle(Image::solid_rect(1, 1, 0, 0, 0, 255));
+    atlas.spread(id(0), broken, (image.id(), 1));
+    for frame in 1..4 {
+      atlas.swap_spreads(frame);
+      atlas.write_spreads(&device, &queue);
+      atlas.end_frame(frame);
+    }
+    atlas.swap_spreads(4);
+    assert_eq!(atlas.spread_count(), 0, "dropped");
+    assert_eq!(
+      atlas.take_swapped().count(),
+      0,
+      "never in the old one's place"
+    );
+    assert_eq!(atlas.take_dropped().collect::<Vec<_>>(), vec![id(0)]);
+    assert_eq!(atlas.lookup(id(0)), Some(old), "the old texture draws");
+    assert!(atlas.showing().is_empty());
   }
 
   #[test]

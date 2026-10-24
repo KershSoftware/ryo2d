@@ -509,17 +509,17 @@ impl Fonts {
     self.generation
   }
 
-  /// A hash of each bitmap face's sheet version (id and version in
-  /// `images`): changes when a sheet is changed or reloaded, which
-  /// `generation` does not see (0 with no bitmap faces)
-  pub(crate) fn bitmap_stamp(&self, images: &Assets<Image>) -> u64 {
+  /// A hash of each bitmap face's sheet version (its id, and `version` of
+  /// it: the version its texture shows): changes when a sheet is changed
+  /// or reloaded, which `generation` does not see (0 with no bitmap faces)
+  pub(crate) fn bitmap_stamp(&self, version: impl Fn(AssetId<Image>) -> Option<u64>) -> u64 {
     let mut hasher = crate::core::hash::FastHasher::default();
     let mut any = false;
     for (_, face) in self.faces() {
       if let FaceSource::Bitmap(bitmap) = &face.source {
         any = true;
         bitmap.sheet.hash(&mut hasher);
-        images.version(bitmap.sheet).hash(&mut hasher);
+        version(bitmap.sheet).hash(&mut hasher);
       }
     }
     if any { hasher.finish() } else { 0 }
@@ -1622,13 +1622,17 @@ mod tests {
     let mut fonts = TestFonts::empty();
     let mut images = Assets::default();
     let sheet = images.add(Image::solid_rect(16, 8, 255, 255, 255, 255));
-    assert_eq!(fonts.registry.bitmap_stamp(&images), 0, "no bitmap faces");
+    assert_eq!(
+      fonts.registry.bitmap_stamp(|sheet| images.version(sheet)),
+      0,
+      "no bitmap faces"
+    );
     let (_grid, _) = fonts.add_bitmap(BitmapFont::new("Grid", sheet.clone(), (8, 8), "AB"));
-    let stamp = fonts.registry.bitmap_stamp(&images);
+    let stamp = fonts.registry.bitmap_stamp(|sheet| images.version(sheet));
     assert_ne!(stamp, 0);
     let _ = images.get_mut(&sheet);
     assert_ne!(
-      fonts.registry.bitmap_stamp(&images),
+      fonts.registry.bitmap_stamp(|sheet| images.version(sheet)),
       stamp,
       "the sheet changed"
     );

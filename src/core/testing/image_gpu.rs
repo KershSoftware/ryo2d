@@ -661,3 +661,250 @@ fn a_large_reload_in_the_ui_draws_its_new_pixels_once_they_are_whole() {
     engine.step().unwrap();
   }
 }
+
+/// Loads a 64 px image on the workers and draws it at a 16th of its size,
+/// filtered linearly, from (100, 100): its smallest levels
+struct Small;
+
+impl Scene for Small {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let dot = ctx.assets().load::<Image>("dot.png");
+    let sprite = spawn_sprite(ctx, dot);
+    if let Some(mut at) = ctx.world.get_mut::<Transform>(sprite) {
+      *at = Transform::from_xy(100.0, 100.0).with_scale(Vec2::splat(1.0 / 16.0));
+    }
+    if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(sprite) {
+      renderable.filter = Filter::Linear;
+    }
+  }
+}
+
+#[test]
+fn a_small_image_given_a_texture_of_its_own_keeps_every_level() {
+  let files = MemorySource::new();
+  files.insert("dot.png", png(64, 64, GREEN));
+  let Some(mut engine) = large_engine(files, Small) else {
+    return;
+  };
+  // As when every page is full: it gets a texture of its own, with more
+  // levels than a page's four its loader made
+  engine.refuse_atlas_pages();
+  // Its handle, leaving it to the workers (`load_now` would load it here)
+  let id = engine.assets().load::<Image>("dot.png").id();
+  let start = std::time::Instant::now();
+  while version(&engine, id).is_none() {
+    assert!(
+      start.elapsed() < std::time::Duration::from_secs(2),
+      "loaded"
+    );
+    engine.step().unwrap();
+  }
+  engine.step_frames(2).unwrap();
+  assert_eq!(
+    pixel(&engine, 102, 102),
+    GREEN,
+    "drawn at a 16th, from levels below the page's four"
+  );
+}
+
+/// Loads a 300 x 150 sheet of two 150 px cells as the bitmap font "Sheet",
+/// and writes "A" in the UI with it
+#[derive(Default)]
+struct SheetUi {
+  font: Option<Handle<BitmapFont>>,
+}
+
+impl Scene for SheetUi {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    let sheet = ctx
+      .assets()
+      .load_now::<Image>("ship.png")
+      .expect("the sheet loads");
+    self.font = Some(
+      ctx
+        .assets()
+        .add(BitmapFont::new("Sheet", sheet, (150, 150), "AB")),
+    );
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let style = TextStyle::new().family("Sheet").size(150.0);
+    ui.draw_text_styled("A", 10.0, 10.0, &style);
+    SceneAction::Continue
+  }
+}
+
+/// What an engine running `scene` over `width` x `height` px of `colour`
+/// in `ship.png` shows from the start
+fn scene_from_the_start(
+  scene: impl Scene + 'static,
+  (width, height): (u32, u32),
+  colour: [u8; 4],
+) -> image::RgbaImage {
+  let files = MemorySource::new();
+  files.insert("ship.png", png(width, height, colour));
+  let mut engine = large_engine(files, scene).expect("a GPU, as the test's own engine had");
+  engine.step_frames(2).unwrap();
+  engine.frame().expect("a frame")
+}
+
+#[test]
+fn a_large_reload_of_a_bitmap_font_sheet_redraws_a_kept_ui_once_it_is_whole() {
+  let files = MemorySource::new();
+  files.insert("ship.png", png(LARGE.0, LARGE.1, RED));
+  let Some(mut engine) = large_engine(files.clone(), SheetUi::default()) else {
+    return;
+  };
+  engine.set_upload_budget(16 * 1024);
+  engine.step_frames(3).unwrap();
+  let old = engine.frame().expect("a frame");
+  let new = scene_from_the_start(SheetUi::default(), LARGE, GREEN);
+  assert!(old != new, "the sheet's pixels show");
+  let id = image_id(&mut engine, "ship.png");
+  let green = png(LARGE.0, LARGE.1, GREEN);
+  reload_until_landed(&mut engine, &files, ("ship.png", id), green);
+  assert!(engine.image_upload_pending(id), "it is written over frames");
+  frames_drawing(&mut engine, id, &old);
+  for _ in 0..3 {
+    assert!(
+      engine.frame().expect("a frame") == new,
+      "the text in the new sheet's pixels"
+    );
+    engine.step().unwrap();
+  }
+}
+
+/// [`Large`], and an image over 256 px drawn below it whose pixels change
+/// every frame, so every frame writes more than the tests' budget
+struct Busy {
+  large: Large,
+  canvas: Option<Handle<Image>>,
+}
+
+impl Scene for Busy {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    self.large.on_enter(ctx);
+    let canvas = ctx
+      .assets()
+      .add(Image::solid_rect(LARGE.0, LARGE.1, 0, 0, 200, 255));
+    let sprite = spawn_sprite(ctx, canvas.clone());
+    if let Some(mut at) = ctx.world.get_mut::<Transform>(sprite) {
+      *at = Transform::from_xy(10.0, 170.0);
+    }
+    self.canvas = Some(canvas);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if let Some(canvas) = &self.canvas
+      && let Some(image) = ctx.assets().get_mut(canvas)
+    {
+      image.data_mut()[0] ^= 1;
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_spread_upload_ends_while_other_writes_use_the_whole_budget() {
+  let files = MemorySource::new();
+  files.insert("ship.png", png(LARGE.0, LARGE.1, RED));
+  let (large, _) = Large::new("ship.png");
+  let scene = Busy {
+    large,
+    canvas: None,
+  };
+  let Some(mut engine) = large_engine(files.clone(), scene) else {
+    return;
+  };
+  engine.set_upload_budget(16 * 1024);
+  engine.step_frames(2).unwrap();
+  let id = image_id(&mut engine, "ship.png");
+  let green = png(LARGE.0, LARGE.1, GREEN);
+  reload_until_landed(&mut engine, &files, ("ship.png", id), green);
+  assert!(engine.image_upload_pending(id), "it is written over frames");
+  let mut frames = 0;
+  while engine.image_upload_pending(id) {
+    assert!(
+      frames < 1_500,
+      "the canvas's writes leave the upload no room"
+    );
+    assert_eq!(pixel(&engine, 150, 80), RED, "the old pixels meanwhile");
+    engine.step().unwrap();
+    frames += 1;
+  }
+  assert_eq!(pixel(&engine, 150, 80), GREEN, "then the new");
+  assert_eq!(pixel(&engine, 340, 20), GREEN, "every level of them");
+}
+
+/// Loads `a.png` and `b.png` and draws them at one pixel per texel, from
+/// (10, 10) and (10, 170)
+struct Pair;
+
+impl Scene for Pair {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    for (path, y) in [("a.png", 10.0), ("b.png", 170.0)] {
+      let image = ctx.assets().load_now::<Image>(path).expect("it loads");
+      let sprite = spawn_sprite(ctx, image);
+      if let Some(mut at) = ctx.world.get_mut::<Transform>(sprite) {
+        *at = Transform::from_xy(10.0, y);
+      }
+    }
+  }
+}
+
+#[test]
+fn two_large_reloads_at_once_each_draw_their_old_pixels_then_their_new_whole() {
+  let files = MemorySource::new();
+  files.insert("a.png", png(LARGE.0, LARGE.1, RED));
+  files.insert("b.png", png(LARGE.0, LARGE.1, BLUE));
+  let Some(mut engine) = large_engine(files.clone(), Pair) else {
+    return;
+  };
+  // A frame's budget writes a few rows: the first outlasts the second's
+  // decode
+  engine.set_upload_budget(4 * 1024);
+  engine.step_frames(2).unwrap();
+  let (a, b) = (
+    image_id(&mut engine, "a.png"),
+    image_id(&mut engine, "b.png"),
+  );
+  let before = (version(&engine, a), version(&engine, b));
+  files.insert("a.png", png(LARGE.0, LARGE.1, GREEN));
+  files.insert("b.png", png(LARGE.0, LARGE.1, GREEN));
+  engine.assets().server().reload("a.png");
+  engine.assets().server().reload("b.png");
+  let start = std::time::Instant::now();
+  while version(&engine, a) == before.0 || version(&engine, b) == before.1 {
+    assert!(
+      start.elapsed() < std::time::Duration::from_secs(2),
+      "both land"
+    );
+    engine.step().unwrap();
+  }
+  let mut together = false;
+  for frame in 0.. {
+    assert!(frame < 3_000, "both uploads end");
+    let drawn = engine.frame().expect("a frame");
+    let pending = [
+      (engine.image_upload_pending(a), RED, 10),
+      (engine.image_upload_pending(b), BLUE, 170),
+    ];
+    together |= pending[0].0 && pending[1].0;
+    for (pending, old, y) in pending {
+      let want = if pending { old } else { GREEN };
+      for (x, dy) in [(12, 2), (308, 2), (12, 148), (308, 148), (160, 75)] {
+        assert_eq!(
+          drawn.get_pixel(x, y + dy).0,
+          want,
+          "frame {frame}: the image at y {y}, whole, old or new"
+        );
+      }
+    }
+    if !pending[0].0 && !pending[1].0 {
+      break;
+    }
+    engine.step().unwrap();
+  }
+  assert!(together, "the two were written over the same frames");
+}

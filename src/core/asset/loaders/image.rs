@@ -80,11 +80,16 @@ pub struct ImageSettings {
 ///
 /// What uploading an image needs besides its pixels (the pixels with their
 /// border, and their mip levels) is made here, so the renderer only copies
-/// it: on the workers for every image, and under `load_now` for an image
-/// too large for the atlas's shared pages (over 256 px on a side), which
-/// keeps its levels. A smaller one loaded at once has its levels made when
-/// it is first drawn, as making them here would cost the same thread the
-/// same time
+/// it:
+/// - an image too large for the atlas's shared pages (over 256 px on a
+///   side) has its levels made on every load, and kept; its bordered first
+///   level only on a reload, which the renderer writes over frames from the
+///   next frame. A first load keeps no second copy of its pixels: its first
+///   draw borders them;
+/// - a smaller one has all of it made on the workers (at most 393 KB, until
+///   it is first drawn). Loaded at once, its levels are made when it is
+///   first drawn, as making them here would cost the same thread the same
+///   time
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ImageLoader;
 
@@ -112,7 +117,9 @@ impl AssetLoader for ImageLoader {
     } else {
       decode(&bytes, extension).map_err(|error| AssetError::decode(path, error))?
     };
-    if cx.queued() || image.has_own_texture() {
+    if image.has_own_texture() && !cx.is_reload() {
+      image.prepare_mips();
+    } else if image.has_own_texture() || cx.queued() {
       image.prepare_upload();
     }
     Ok(image)
@@ -367,7 +374,7 @@ mod tests {
   }
 
   #[test]
-  fn a_large_image_has_the_upload_the_atlas_would_make() {
+  fn a_large_image_has_the_levels_the_atlas_would_make() {
     let rgba = pattern(512, 512);
     let files = MemorySource::new();
     files.insert("big.png", png(&rgba, 512, 512));
@@ -393,17 +400,70 @@ mod tests {
       mips.map(<[_]>::len),
       expected.len() - 1
     );
-    let Some(upload) = big.take_upload() else {
-      panic!("the first level with its border is made too");
-    };
-    assert!(upload.fits(512, 512));
-    assert!(Some(upload.first()) == expected.first().map(Vec::as_slice));
     let wide = loaded(&mut world, "wide.png", ImageSettings::default());
     assert!(wide.mips().is_some(), "over 256 px on one side is enough");
     // At once on the calling thread, a shared page's levels are made at
     // upload: here they would cost that thread the same
     let small = loaded(&mut world, "small.png", ImageSettings::default());
     assert!(small.mips().is_none() && small.take_upload().is_none());
+  }
+
+  /// Pumps `world` until `handle`'s version is past `before`
+  fn pump_past(world: &mut World, handle: &Handle<Image>, before: Option<u64>) {
+    let start = std::time::Instant::now();
+    while world.resource::<Assets<Image>>().version(handle) == before {
+      assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "loaded"
+      );
+      crate::core::asset::pump(world);
+      std::thread::yield_now();
+    }
+  }
+
+  #[test]
+  fn a_large_image_loaded_anew_keeps_its_levels_and_no_bordered_copy() {
+    let files = MemorySource::new();
+    files.insert("now.png", png(&pattern(300, 300), 300, 300));
+    files.insert("queued.png", png(&pattern(300, 300), 300, 300));
+    let mut world = images_over(files);
+    let now = loaded(&mut world, "now.png", ImageSettings::default());
+    assert!(now.mips().is_some(), "its levels below the first");
+    assert!(now.take_upload().is_none(), "bordered when first drawn");
+    let handle = world.resource::<AssetServer>().load::<Image>("queued.png");
+    pump_past(&mut world, &handle, None);
+    let queued = world.resource::<Assets<Image>>().get(&handle).cloned();
+    assert!(queued.as_ref().is_some_and(|image| image.mips().is_some()));
+    assert!(
+      queued.and_then(|image| image.take_upload()).is_none(),
+      "on the workers too"
+    );
+  }
+
+  #[test]
+  fn a_large_image_reloaded_has_its_whole_upload_made() {
+    let rgba = pattern(300, 300);
+    let files = MemorySource::new();
+    files.insert("big.png", png(&pattern(300, 300), 300, 300));
+    let mut world = images_over(files.clone());
+    let handle = match load(&mut world, "big.png", ImageSettings::default()) {
+      Ok(handle) => handle,
+      Err(error) => panic!("{}", error.report()),
+    };
+    let before = world.resource::<Assets<Image>>().version(&handle);
+    let changed: Vec<u8> = rgba.iter().map(|byte| byte ^ 0x55).collect();
+    files.insert("big.png", png(&changed, 300, 300));
+    world.resource::<AssetServer>().reload("big.png");
+    pump_past(&mut world, &handle, before);
+    let image = world.resource::<Assets<Image>>().get(&handle).cloned();
+    let Some(upload) = image.and_then(|image| image.take_upload()) else {
+      panic!("a reload makes the bordered first level too");
+    };
+    let Some(bordered) = extrude_border(&changed, 300, 300, BORDER) else {
+      panic!("300x300 pixels are 300x300");
+    };
+    assert!(upload.fits(300, 300));
+    assert!(upload.first() == bordered.as_slice());
   }
 
   #[test]

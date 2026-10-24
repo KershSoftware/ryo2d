@@ -453,13 +453,14 @@ impl SpriteGpuRenderer {
     else {
       return false;
     };
-    self.atlas.spread(device, id, upload, shows);
+    self.atlas.spread(id, upload, shows);
     self.registry.mark_writing(id);
     true
   }
 
-  /// The images whose new texture took the old one's place: they show the
-  /// version written, and count as uploaded
+  /// The images whose new texture took the old one's place, which show the
+  /// version written and count as uploaded, and those whose new texture
+  /// was dropped unfinished, which are written at once when next drawn
   fn take_swaps(&mut self) {
     let Self {
       atlas,
@@ -470,6 +471,9 @@ impl SpriteGpuRenderer {
     for texture in atlas.take_swapped() {
       registry.mark_written(texture);
       *uploads += 1;
+    }
+    for texture in atlas.take_dropped() {
+      registry.stop_writing(texture);
     }
   }
 
@@ -487,7 +491,7 @@ impl SpriteGpuRenderer {
       self.touch(id);
       self.resident(device, queue, id);
     }
-    self.atlas.write_spreads(queue);
+    self.atlas.write_spreads(device, queue);
     self.atlas.end_frame(self.frame);
     self.prune();
     self.frame += 1;
@@ -792,7 +796,9 @@ impl SpriteGpuRenderer {
   /// written whole take their old ones' places; and an image changed since
   /// (`changed`, from `AssetEvent::Modified`) that has a texture takes its
   /// new version, a large one made ahead starting to be written into a new
-  /// texture over frames, so all of this frame draws its old pixels.
+  /// texture over frames, so all of this frame draws its old pixels. A
+  /// large one with no texture to draw meanwhile keeps no bordered copy of
+  /// its pixels: its next draw borders them.
   /// `missing` is the checker drawn in place of an image that is not
   /// loaded (debug builds). Now and then every image texture is checked
   /// against `images` too, so one whose event was missed (a frame not
@@ -815,15 +821,28 @@ impl SpriteGpuRenderer {
     self.atlas.swap_spreads(self.frame);
     self.take_swaps();
     for image in changed {
-      let Some(texture) = self.registry.image_texture(image) else {
-        continue;
-      };
       let (Some(value), Some(version)) = (images.get(image), images.version(image)) else {
         continue;
       };
+      let Some(texture) = self.registry.image_texture(image) else {
+        // Not drawn yet: a large one's first draw borders it, rather than
+        // it keeping a second copy of its pixels until then
+        if value.has_own_texture() {
+          value.take_upload();
+        }
+        continue;
+      };
       self.registry.refresh(texture, value, version);
-      if self.registry.needs_upload(texture) {
-        self.spread(device, texture);
+      if self.registry.needs_upload(texture) && !self.spread(device, texture) {
+        // A large one with no texture to draw meanwhile (it went unused) is
+        // bordered when next drawn, as a first draw is; one within the
+        // budget is written at once with what its loader made
+        if value.has_own_texture()
+          && let Some(entry) = self.registry.get_mut(texture)
+          && self.atlas.lookup(texture).is_none()
+        {
+          entry.source.take_prepared();
+        }
       }
     }
     if self.frame.is_multiple_of(PRUNE_EVERY) {
@@ -955,6 +974,24 @@ impl SpriteGpuRenderer {
   #[cfg(test)]
   pub(crate) fn set_upload_budget(&mut self, bytes: u64) {
     self.atlas.set_budget(bytes);
+  }
+
+  /// Give every image a texture of its own from now on, as a full atlas
+  /// does (tests)
+  #[cfg(test)]
+  pub(crate) fn refuse_atlas_pages(&mut self) {
+    self.atlas.refuse_pages();
+  }
+
+  /// Whether image `id`'s texture holds an upload made ahead, not yet
+  /// written (tests)
+  #[cfg(test)]
+  pub(crate) fn holds_prepared(&self, id: AssetId<Image>) -> bool {
+    self
+      .registry
+      .image_texture(id)
+      .and_then(|texture| self.registry.get(texture))
+      .is_some_and(|entry| entry.source.prepared().is_some())
   }
 
   /// How many textures have room in the atlas (for tests that watch it
@@ -1583,6 +1620,81 @@ mod tests {
     }
     renderer.sync_images(&device, [], [], &images, None);
     assert!(renderer.lookup_image(id).is_none());
+  }
+
+  /// A 300 px image, too large for the atlas's pages, its upload made as
+  /// a reload's is
+  fn reloaded(shade: u8) -> Image {
+    let mut image = Image::solid_rect(300, 300, shade, 0, 0, 255);
+    image.prepare_upload();
+    image
+  }
+
+  #[test]
+  fn a_reload_of_an_image_never_drawn_keeps_no_bordered_copy() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
+    let mut images = Assets::<Image>::default();
+    let handle = images.add(reloaded(10));
+    *images.get_mut(&handle).unwrap() = reloaded(20);
+    renderer.sync_images(&device, [], [handle.id()], &images, None);
+    let image = images.get(&handle).unwrap();
+    assert!(
+      image.take_upload().is_none(),
+      "dropped: a first draw borders it"
+    );
+    assert!(image.mips().is_some(), "its levels stay");
+  }
+
+  #[test]
+  fn a_reload_of_an_image_whose_texture_went_unused_keeps_no_bordered_copy() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
+    let mut images = Assets::<Image>::default();
+    let handle = images.add(reloaded(10));
+    let list = world_list(&mut renderer, &images, &[(&handle, 0)]);
+    renderer.prepare_textures(&device, &queue, &list, &[]);
+    let texture = renderer.registry.image_texture(handle.id()).unwrap();
+    // As the sweep frees a standalone texture nothing has drawn for 300
+    // frames
+    renderer.atlas.remove(texture);
+    *images.get_mut(&handle).unwrap() = reloaded(20);
+    renderer.sync_images(&device, [], [handle.id()], &images, None);
+    assert!(
+      !renderer.upload_pending(handle.id()),
+      "nothing to draw meanwhile"
+    );
+    assert!(
+      !renderer.holds_prepared(handle.id()),
+      "and no bordered copy kept until it is drawn"
+    );
+  }
+
+  #[test]
+  fn a_reload_within_the_budget_keeps_its_upload_until_it_is_written() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
+    let mut images = Assets::<Image>::default();
+    // 300 px: a texture of its own, its levels well under a frame's budget
+    let handle = images.add(reloaded(10));
+    let list = world_list(&mut renderer, &images, &[(&handle, 0)]);
+    renderer.prepare_textures(&device, &queue, &list, &[]);
+    *images.get_mut(&handle).unwrap() = reloaded(20);
+    renderer.sync_images(&device, [], [handle.id()], &images, None);
+    assert!(!renderer.upload_pending(handle.id()), "written at once");
+    assert!(
+      renderer.holds_prepared(handle.id()),
+      "with what its loader made, at its next draw"
+    );
+    let list = world_list(&mut renderer, &images, &[(&handle, 0)]);
+    renderer.prepare_textures(&device, &queue, &list, &[]);
+    assert!(!renderer.holds_prepared(handle.id()), "freed once written");
   }
 
   #[test]

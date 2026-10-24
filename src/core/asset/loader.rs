@@ -55,6 +55,8 @@ pub struct LoadContext<'a> {
   server: &'a AssetServer,
   dependencies: Vec<UntypedAssetId>,
   mode: LoadMode<'a>,
+  /// The load replaces a loaded value
+  reload: bool,
 }
 
 /// How a load runs: queued on the workers, or at once on the calling thread
@@ -76,7 +78,14 @@ impl<'a> LoadContext<'a> {
       server,
       dependencies: Vec::new(),
       mode,
+      reload: false,
     }
+  }
+
+  /// The context of a reload, replacing a loaded value, when `reload`
+  pub(crate) fn reloading(mut self, reload: bool) -> Self {
+    self.reload = reload;
+    self
   }
 
   /// The dependencies loaded through this context
@@ -93,6 +102,12 @@ impl<'a> LoadContext<'a> {
   /// web), not on the thread that called `load_now`
   pub(crate) fn queued(&self) -> bool {
     matches!(self.mode, LoadMode::Queued)
+  }
+
+  /// Whether the load is a reload, replacing a loaded value (a file that
+  /// changed, or `AssetServer::reload`)
+  pub(crate) fn is_reload(&self) -> bool {
+    self.reload
   }
 
   /// The world `load_now` loads into, which holds the dependencies loaded

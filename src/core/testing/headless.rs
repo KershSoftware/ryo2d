@@ -545,6 +545,15 @@ impl HeadlessEngine {
     }
   }
 
+  /// Give every image a texture of its own from now on, as a full atlas
+  /// does (tests of that fallback)
+  #[cfg(test)]
+  pub(crate) fn refuse_atlas_pages(&mut self) {
+    if let Some(gpu) = self.engine.sprite_gpu.as_mut() {
+      gpu.refuse_atlas_pages();
+    }
+  }
+
   /// How many pipelines game shaders have: one per blend mode a sprite
   /// shader is drawn with, and one per custom effect's source (tests that
   /// watch a freed shader's pipelines go)

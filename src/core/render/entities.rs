@@ -36,6 +36,7 @@ use crate::core::ecs::{
   ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort, entity_order, shaders_of,
 };
 use crate::core::graphics::TileDirection;
+use crate::core::graphics::atlas::Showing;
 use crate::core::graphics::sprite_gpu::{ShownImage, effective_shader};
 use crate::core::graphics::{
   CompositeTile, Image, RenderLayers, RenderTarget, RenderTargets, SpriteGpuRenderer,
@@ -153,7 +154,12 @@ impl EntityDrawer {
     let world: &World = world;
     let images = images_of(world);
     let mut items: Vec<(DrawOrder, Drawable<'_>)> = recycle(std::mem::take(&mut self.items));
-    in_draw_order(&mut drawables, world, images, &mut items);
+    in_draw_order(
+      &mut drawables,
+      world,
+      (images, gpu.showing_old()),
+      &mut items,
+    );
 
     let frame = EntityFrame { alpha };
     let mut out = Emitter {
@@ -212,7 +218,7 @@ impl EntityDrawer {
 fn in_draw_order<'w>(
   drawables: &mut QueryState<DrawableItem>,
   world: &'w World,
-  images: &Assets<Image>,
+  images: (&Assets<Image>, &[Showing]),
   items: &mut Vec<(DrawOrder, Drawable<'w>)>,
 ) {
   items.extend(
@@ -780,11 +786,20 @@ fn collect_composite(
 }
 
 /// The y a y-sorted entity sorts by: the point `foot_offset` of the way down
-/// its sprite (0 top, 1 bottom), plus `sort_offset`.
-fn y_sort_key(y_sort: &YSort, renderable: &Renderable, y: f32, images: &Assets<Image>) -> f32 {
-  let height = images
-    .get(&renderable.image)
-    .map_or(0.0, |image| image.height() as f32);
+/// its sprite (0 top, 1 bottom), plus `sort_offset`. `showing` gives the
+/// size of an image whose texture shows an older version.
+fn y_sort_key(
+  y_sort: &YSort,
+  renderable: &Renderable,
+  y: f32,
+  (images, showing): (&Assets<Image>, &[Showing]),
+) -> f32 {
+  // The height it draws at: an older version's while a new one is written
+  let id = renderable.image.id();
+  let height = match showing.iter().find(|showing| showing.image == id) {
+    Some(showing) => showing.size.1 as f32,
+    None => images.get(id).map_or(0.0, |image| image.height() as f32),
+  };
   // `y` is the anchor point; `calculate_sort_y` measures from the top
   let (_, pivot_y) = renderable.anchor.to_pivot();
   y_sort.calculate_sort_y(y - pivot_y * height, height)
@@ -797,6 +812,7 @@ mod draw_order_tests {
   use crate::core::ecs::test_util::{MAX_UNRELATED, Other, insert_unrelated};
   use crate::core::ecs::{Anchor, Entity, GlobalTransform, Renderable, World, YSort};
   use crate::core::graphics::Image;
+  use crate::core::graphics::atlas::Showing;
 
   /// Catches ties left in query order (`in_draw_order` breaks them by
   /// `entity_order`): a query visits archetypes in an order that changes
@@ -824,7 +840,7 @@ mod draw_order_tests {
       }
       let mut drawables = world.query::<DrawableItem>();
       let mut items = Vec::new();
-      in_draw_order(&mut drawables, &world, &images, &mut items);
+      in_draw_order(&mut drawables, &world, (&images, &[]), &mut items);
       let drawn: Vec<Entity> = items.iter().map(|(_, drawable)| drawable.entity).collect();
       let expected: Vec<Entity> = plain.into_iter().chain(sorted).collect();
       assert_eq!(drawn, expected, "with {k} unrelated resources");
@@ -836,8 +852,9 @@ mod draw_order_tests {
     let mut images = Assets::<Image>::default();
     let tall = images.add(Image::solid_rect(10, 20, 255, 255, 255, 255));
     let sprite_20_high = |anchor| Renderable::image(tall.clone()).with_anchor(anchor);
-    let y_sort_key =
-      |y_sort: &YSort, renderable: &Renderable, y| y_sort_key(y_sort, renderable, y, &images);
+    let y_sort_key = |y_sort: &YSort, renderable: &Renderable, y| {
+      y_sort_key(y_sort, renderable, y, (&images, &[]))
+    };
     let y_sort = YSort::new();
     // A 20 px sprite placed at y = 100: its feet are at 110 centred, 100
     // bottom-anchored, 120 top-anchored
@@ -858,6 +875,25 @@ mod draw_order_tests {
     assert_eq!(
       y_sort_key(&by_top, &sprite_20_high(Anchor::Center), 100.0),
       90.0
+    );
+  }
+
+  #[test]
+  fn an_image_being_replaced_sorts_by_the_height_it_draws_at() {
+    let mut images = Assets::<Image>::default();
+    let tall = images.add(Image::solid_rect(10, 20, 255, 255, 255, 255));
+    // Its texture still shows an older version, 40 px high
+    let showing = [Showing {
+      key: crate::core::graphics::TextureId::for_test(0),
+      image: tall.id(),
+      version: 1,
+      size: (10, 40),
+    }];
+    let sprite = Renderable::image(tall.clone()).with_anchor(Anchor::TopLeft);
+    let key = y_sort_key(&YSort::new(), &sprite, 100.0, (&images, &showing));
+    assert_eq!(
+      key, 140.0,
+      "the feet of the 40 px it draws, not the 20 px it is"
     );
   }
 

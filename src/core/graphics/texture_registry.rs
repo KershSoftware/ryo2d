@@ -319,6 +319,14 @@ impl TextureRegistry {
     }
   }
 
+  /// The new texture `id`'s pixels were being written into was dropped
+  /// unfinished: they are written at once when next drawn
+  pub(crate) fn stop_writing(&mut self, id: TextureId) {
+    if let Some(entry) = self.get_mut(id) {
+      entry.writing = None;
+    }
+  }
+
   /// The new texture `id`'s pixels were written into took the old one's
   /// place: it shows the version written
   pub(crate) fn mark_written(&mut self, id: TextureId) {

@@ -125,6 +125,8 @@ struct LoadJob {
   path: AssetPath,
   loader: Arc<dyn ErasedLoader>,
   settings: Arc<dyn Any + Send + Sync>,
+  /// It replaces a loaded value
+  reload: bool,
 }
 
 /// A waiting value the pump can act on, taken out of the waiting list
@@ -708,9 +710,10 @@ impl AssetServer {
         path,
         loader,
         settings,
+        reload,
       } = load;
       let outcome = server
-        .run_load(&path, &*loader, &*settings, LoadMode::Queued)
+        .run_load(&path, (&*loader, &*settings), LoadMode::Queued, reload)
         .map_err(Arc::new);
       let _ = server.inner.finished.send(Finished { id, job, outcome });
     }));
@@ -802,7 +805,7 @@ impl AssetServer {
       world: &mut *world,
       stack: &mut *stack,
     };
-    let outcome = self.run_load(&path, &*loader, &*settings, mode);
+    let outcome = self.run_load(&path, (&*loader, &*settings), mode, false);
     stack.pop();
     let arrived = Arrived {
       id,
@@ -868,18 +871,18 @@ impl AssetServer {
     Ok(())
   }
 
-  /// Reads and loads one asset. A panic in the source or the loader is
-  /// caught, and fails the asset
+  /// Reads and loads one asset, a reload of a loaded value if `reload`. A
+  /// panic in the source or the loader is caught, and fails the asset
   fn run_load(
     &self,
     path: &AssetPath,
-    loader: &dyn ErasedLoader,
-    settings: &(dyn Any + Send + Sync),
+    (loader, settings): (&dyn ErasedLoader, &(dyn Any + Send + Sync)),
     mode: LoadMode<'_>,
+    reload: bool,
   ) -> Result<Loaded, AssetError> {
     let bytes = catch_unwind(AssertUnwindSafe(|| self.inner.source.read(path)))
       .map_err(|_| AssetError::decode(path, "the source panicked"))??;
-    let mut cx = LoadContext::new(path, self, mode);
+    let mut cx = LoadContext::new(path, self, mode).reloading(reload);
     let value = catch_unwind(AssertUnwindSafe(|| loader.load(bytes, settings, &mut cx)))
       .map_err(|_| AssetError::decode(path, "the loader panicked"))??;
     Ok(Loaded {
@@ -1213,6 +1216,7 @@ impl Table {
       path,
       loader: request.loader,
       settings,
+      reload: false,
     }
   }
 
@@ -1233,6 +1237,7 @@ impl Table {
       path: path.clone(),
       loader: Arc::clone(loader),
       settings: Arc::clone(settings),
+      reload: info.state.is_loaded(),
     };
     info.job = job;
     info.in_flight = true;

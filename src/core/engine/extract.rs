@@ -29,7 +29,7 @@ use crate::core::render::text::{
   TextSources, TextTargets, WorldTextFrame, emit_world_text, layout_world_text, prewarm,
 };
 use crate::core::render::ui::{UI_CAMERA, ui_view};
-use crate::core::render::ui_retain::{StampSources, UiRenderEnv};
+use crate::core::render::ui_retain::{StampSources, UiRenderEnv, shown_version};
 use crate::core::render::{
   DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, SpriteLook, SpriteShading,
   UiRenderStats, plan_cameras,
@@ -404,20 +404,22 @@ impl Engine {
       if !retain {
         self.ui_retain.clear();
       }
+      let images = images_of(&self.world);
+      let showing = gpu.showing_old();
       let env = UiRenderEnv {
         space: self.ui_space,
         on_target: ui_on_target,
         text: sources.is_some(),
         fonts: self.text.generation(),
-        bitmaps: self
-          .world
-          .get_resource::<Fonts>()
-          .map_or(0, |fonts| fonts.bitmap_stamp(images_of(&self.world))),
+        // By the version each sheet's texture shows, as the stamps are
+        bitmaps: self.world.get_resource::<Fonts>().map_or(0, |fonts| {
+          fonts.bitmap_stamp(|sheet| shown_version(images, showing, sheet))
+        }),
       };
       let stamps = StampSources {
-        images: images_of(&self.world),
+        images,
         icons: sources.as_ref().map(|sources| sources.icons),
-        showing: gpu.showing_old(),
+        showing,
       };
       let ui_kept = retain
         && self

@@ -30,7 +30,7 @@ pub struct Image {
   /// The rest of its upload, made by the loader (see
   /// [`Image::prepare_upload`]) until the renderer takes it, shared with
   /// clones; none once the pixels change
-  upload: Arc<Mutex<Option<PreparedUpload>>>,
+  upload: Option<Arc<Mutex<Option<PreparedUpload>>>>,
 }
 
 impl Asset for Image {}
@@ -88,7 +88,7 @@ impl Image {
       height,
       opaque: OnceLock::from(is_opaque),
       mips: None,
-      upload: Arc::default(),
+      upload: None,
     }
   }
 
@@ -279,7 +279,7 @@ impl Image {
   /// its version on, so what was built from it is built again
   pub fn data_mut(&mut self) -> &mut [u8] {
     self.mips = None;
-    self.upload = Arc::default();
+    self.upload = None;
     self.opaque = OnceLock::new();
     Arc::make_mut(&mut self.data).as_mut_slice()
   }
@@ -301,7 +301,18 @@ impl Image {
       .as_ref()
       .filter(|_| self.has_own_texture())
       .map(|upload| Arc::clone(upload.below()));
-    self.upload = Arc::new(Mutex::new(upload));
+    self.upload = Some(Arc::new(Mutex::new(upload)));
+  }
+
+  /// Makes only the mip levels below the first of the image's own texture,
+  /// for an image too large for the atlas's shared pages (nothing for a
+  /// smaller one): what a large image loaded for the first time keeps, so
+  /// it holds no bordered copy of its pixels until it is drawn
+  pub(crate) fn prepare_mips(&mut self) {
+    if self.has_own_texture() {
+      self.mips = PreparedUpload::new(&self.data, self.width, self.height)
+        .map(|upload| Arc::clone(upload.below()));
+    }
   }
 
   /// Whether the image gets a texture of its own on the GPU rather than a
@@ -323,6 +334,7 @@ impl Image {
   pub(crate) fn take_upload(&self) -> Option<PreparedUpload> {
     self
       .upload
+      .as_ref()?
       .lock()
       .unwrap_or_else(PoisonError::into_inner)
       .take()
