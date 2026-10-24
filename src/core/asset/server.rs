@@ -2720,6 +2720,25 @@ mod tests {
   }
 
   #[test]
+  fn a_real_read_failure_warns_at_warn_level() {
+    let entries = |needle: &str| {
+      crate::core::dev_log::get_entries()
+        .into_iter()
+        .filter(|entry| entry.message.contains(needle))
+        .map(|entry| entry.level)
+        .collect::<Vec<_>>()
+    };
+    let (mut world, server) = world_with(MemorySource::new());
+    let missing: Handle<Text> = server.load("missing-warns-at-warn.txt");
+    pump_until(&mut world, |_| server.state(&missing).is_failed());
+    assert_eq!(
+      entries("missing-warns-at-warn.txt"),
+      [crate::core::dev_log::LogLevel::Warn],
+      "a missing file warns, and only at Warn"
+    );
+  }
+
+  #[test]
   fn a_broken_reload_warns_once_per_error() {
     use crate::core::ui::test_util::warnings_containing;
     let warned = || warnings_containing("warn-once.txt");

@@ -71,7 +71,8 @@ use crate::core::ecs::World;
 
 /// A world with the asset registry, as the engine's world starts: an
 /// `AssetServer` over an empty `MemorySource`, and a store for each of the
-/// engine's asset types. A store comes only from a world (`Assets` says
+/// engine's asset types. Its handles name assets only in this world, not in
+/// an engine's or another world's. A store comes only from a world (`Assets` says
 /// why), so a test with no engine adds its assets here:
 ///
 /// ```

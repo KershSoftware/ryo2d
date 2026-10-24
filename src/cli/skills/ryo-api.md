@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.9.0
+  version: 2.9.1
 ---
 
 # Ryo2D API Reference
@@ -892,7 +892,7 @@ One registry for every asset type. `AssetServer` (a resource; systems take `Res<
 | `path<T: Asset>(&self, id) -> Option<AssetPath>` | the path it was loaded from |
 | `new(impl AssetSource) -> AssetServer`, `register_asset::<T: Asset>(&self, &mut World)`, `register_loader(&self, impl AssetLoader)` | a registry of your own (tests); the engine makes the world's, with every engine type and loader registered |
 
-- `Handle<T>` (`Clone`, `Eq`, `Hash`, `Debug`): `id() -> AssetId<T>`. The asset lives while any clone does; the pump frees it once the last one drops (`Removed`). Hold what a scene uses in the scene or its components, and what the whole game uses in a resource.
+- `Handle<T>` (`Clone`, `Eq`, `Hash`, `Debug`): `id() -> AssetId<T>`. The asset lives while any clone does; the pump frees it once the last one drops (`Removed`, if it was in its store; a failed load is freed with no event). Hold what a scene uses in the scene or its components, and what the whole game uses in a resource.
 - `AssetId<T>` (`Copy`, `Eq`, `Hash`, `Debug`; `From<&Handle<T>>`): `index()`, `generation()`, `untyped() -> UntypedAssetId`. It names an asset without keeping it alive; a stale id finds nothing. `UntypedAssetId::typed::<T>() -> Option<AssetId<T>>`; `UntypedAssetId: From<AssetId<T>>`, `From<&Handle<T>>` (and from references to them).
 - `Assets<T>` (resource: `Res<Assets<T>>`, `ResMut<Assets<T>>`): `add(T) -> Handle<T>`, `get(id) -> Option<&T>`, `get_mut(id) -> Option<&mut T>`, `version(id) -> Option<u64>` (moves on whenever the value changes), `len()`, `is_empty()`, `iter() -> impl Iterator<Item = (AssetId<T>, &T)>` (the engine's own assets count: the checker and the pixel theme's skins among the images, the built-in fonts among the fonts). A store comes only from the world (`ctx.assets()`, `ResMut<Assets<T>>`, `HeadlessEngine::assets()`, `testing::asset_world()`) and has no public constructor: a handle names a slot of the store that made it, and the renderer, the UI and `ctx.assets()` read the world's, so a handle from a store of its own would find nothing there, or another asset.
 - `enum LoadState { NotLoaded, Loading, Loaded, Failed(Arc<AssetError>) }`: `is_loaded()`, `is_failed()`, `error() -> Option<&Arc<AssetError>>`. An asset added in code is `Loaded` while it lives.
@@ -1446,7 +1446,6 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `frame_count()`, `resize(w, h)` | `resize` as if the window became `w`x`h` physical pixels |
 | `world()` / `world_mut()` | the world between steps |
 | `assets() -> AssetsView<'_>` | the asset registry between steps; loads queued with `load` land in a step's pump |
-| `asset_world() -> World` | a world with the asset registry and no engine (every engine store, over an empty `MemorySource`), for a test that needs handles: `world.resource_mut::<Assets<Image>>().add(image)` |
 | `press_key` / `release_key` / `tap_key` / `type_text(&str)` | keyboard input (`KeyCode`) |
 | `press_mouse` / `release_mouse` / `mouse_move(x, y)` | mouse input (screen space) |
 | `mouse_move_window(x, y)` | the pointer at physical window pixels, mapped like a real cursor |
@@ -1455,6 +1454,7 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `StepOutcome` | `Running` \| `Quit` |
 | `HeadlessError` | `NoGpu` \| `Render(String)` \| `Capture(CaptureError)` |
 | `shared_gpu()` | one GPU device shared across tests |
+| `ryo2d::testing::asset_world() -> World` (a free function, not a method) | a world with the asset registry and no engine (every engine store, over an empty `MemorySource`), for a test that needs handles: `world.resource_mut::<Assets<Image>>().add(image)` |
 | `UiHarness::new(width, height)` | a UI with no window or GPU (built-in fonts, scale 1, the dark theme) for unit-testing game UI; `with_theme(Theme)` |
 | `UiHarness::frame(\|ui\| ..) -> R` | one 60 fps frame: resolve the scripted input against the last frame, run the closure as the top scene's `ui`, finish the frame |
 | `UiHarness::move_to(x, y)`, `press()`, `release()`, `wheel(dx, dy)`, `trackpad(dx, dy)`, `action(&str)` | script the next frame: the pointer (UI units), the left button (held from `press` to `release`), the wheel (lines), a trackpad (logical pixels, followed at once), a UI action (`ui.up`/`down`/`left`/`right`/`confirm`/`back`/`next`/`tab_next`/`tab_prev`; another name warns once and does nothing) |

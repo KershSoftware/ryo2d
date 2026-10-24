@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.1.0
+  version: 1.1.1
 ---
 
 # Ryo2D Assets
@@ -74,7 +74,7 @@ if let Some(backdrop) = &self.backdrop
 
 ## 3. What keeps an asset alive
 
-**An asset lives while a handle to it does.** When the last handle drops, the next pump frees it (`AssetEvent::Removed`), and its texture goes with it.
+**An asset lives while a handle to it does.** When the last handle drops, the next pump frees it (`AssetEvent::Removed` too, if it was in its store; a load that failed or never landed is freed with no event), and its texture goes with it.
 
 - Hold what a scene uses in the scene (`backdrop: Option<Handle<Image>>`) or in what uses it: a `Renderable` holds its image, a `ParticleEmitter` its sprite, a node tree its UI file, a font role its font, a followed theme its theme. Leaving the scene drops them, and what nothing else holds is freed at the next pump; an asset the next scene loads in its `on_enter` is kept, as the scene enters before that pump runs.
 - Hold what the whole game uses in a resource, which outlives every scene:

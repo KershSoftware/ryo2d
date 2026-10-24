@@ -2,7 +2,7 @@
 name: ryo-messages
 description: Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.
 metadata:
-  version: 2.3.0
+  version: 2.3.1
 ---
 
 # Ryo2D Messages
@@ -142,7 +142,7 @@ All are in the prelude and registered at engine build; `AssetEvent<T>` is regist
 | `Killed` | `entity`, `zone` | something entered a `KillZone` |
 | `CheckpointReached` | `checkpoint`, `entity` | a `Checkpoint` moved `entity`'s `Respawn` point |
 | `SquashStretchStarted` / `SquashStretchFinished` | `entity` | a squash starts / recovers |
-| `AssetEvent<T>` (one type per asset type: `AssetEvent<Image>`, `AssetEvent<Font>`, ...) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` (`id: AssetId<T>`, `error: Arc<AssetError>`) | an asset landed in its store (or was added in code), changed (reloaded, a dependency reloaded, or `get_mut`), was freed (its last handle dropped), will not load, or failed to reload and kept its last good value. An asset's events come in the order its changes happened (see `ryo-assets`) |
+| `AssetEvent<T>` (one type per asset type: `AssetEvent<Image>`, `AssetEvent<Font>`, ...) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` (`id: AssetId<T>`, `error: Arc<AssetError>`) | an asset landed in its store (or was added in code), changed (reloaded, a dependency reloaded, or `get_mut`), was freed (its last handle dropped, if it had landed), did not load (it loads again when its file changes), or failed to reload and kept its last good value. An asset's events come in the order its changes happened (see `ryo-assets`) |
 | `ParticleCollision` | `emitter_entity`, `collider_entity`, `position_x/y`, `normal_x/y`, `velocity_x/y` | a particle hits a collider (see `ryo-particles`) |
 | `UiEvent` | `node`, `name`, `action`, `kind: UiEventKind` (`Clicked`, `SecondaryClicked`, `Changed`, `Submitted`, `Dropped { source }`, `Back`, `FocusGained`, `FocusLost`) | a UI node reported something, during the UI pass, before the fixed steps (see `ryo-ui`, Nodes). A scene reads its own nodes' with `ctx.ui_events()`, which shares this message's cursor |
 | `UiListBind` | `list` (the list node), `row` (the pooled row), `index` (the item) | a UI list node gave one of its pooled rows an item (a new row, a row reused for another item, or `ctx.ui_list_refresh`), at the start of the UI pass, before any tree is drawn. The game fills the row (`ctx.ui_set(row, ..)`) in `ui`, and the row is drawn from the next frame. Every list's binds reach every scene: keep to your list's `list`. Also triggered on the row as an entity event (see `ryo-ui`, Virtual Lists) |

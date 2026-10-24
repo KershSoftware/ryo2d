@@ -13,7 +13,8 @@ pub enum LoadState {
   Loading,
   /// Its value is in its `Assets<T>`
   Loaded,
-  /// It will not load, for this reason
+  /// It did not load, for this reason. It is loaded again when its file
+  /// changes (hot reload, or `AssetServer::reload`)
   Failed(Arc<AssetError>),
 }
 
@@ -51,6 +52,22 @@ impl LoadState {
 ///    1 has only that event;
 /// 3. `Removed` for each asset it frees that was in its store.
 ///
+/// What an id gets, by cause:
+/// - `Added`: a load lands, or code calls `add`;
+/// - `Modified`: a reload lands, a dependency reloads, or code calls
+///   `get_mut` or `insert`;
+/// - `Failed`: a load fails;
+/// - `ReloadFailed`: a reload fails, and the last good value stays;
+/// - `Removed`: the last handle dropped, and only for an id that was
+///   `Added`.
+///
+/// An id's first event is `Added` or `Failed`. A failed one is loaded again
+/// when its file changes, so `Added` or `Failed` can follow `Failed`. While
+/// it is in its store it can be `Modified` or `ReloadFailed`. `Removed`
+/// comes last. An asset freed without an `Added` (a failed one, or a load
+/// dropped before it landed) gets no `Removed`, so a game that keeps
+/// failures by id drops them when it drops the handle.
+///
 /// So the order holds per asset: an asset's events come in the order its
 /// changes happened, and `Removed` comes only after `Added`. Between assets
 /// it need not, as a change made in code before the pump is sent after the
@@ -78,7 +95,9 @@ pub enum AssetEvent<T: Asset> {
     /// The asset
     id: AssetId<T>,
   },
-  /// It will not load (sent by the pump, or by `load_now` at once)
+  /// It did not load (sent by the pump, or by `load_now` at once). Its file
+  /// changing, or `AssetServer::reload`, loads it again: `Added`, or
+  /// `Failed` again
   Failed {
     /// The asset
     id: AssetId<T>,
