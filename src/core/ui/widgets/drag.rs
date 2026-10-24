@@ -462,7 +462,7 @@ mod tests {
     use crate::core::ui::immediate::{POPUP_LAYER, UiCommand};
     let mut d = UiDriver::new((200.0, 100.0));
     let icon = d
-      .registry()
+      .assets()
       .add(Image::solid_rect(16, 16, 255, 255, 255, 255));
     let draw = |ui: &mut UiContext<'_>| {
       ui.slot()

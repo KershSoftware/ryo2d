@@ -709,7 +709,7 @@ mod tests {
     use crate::core::ui::theme::{Skin, Theme};
     let mut d = UiDriver::new((200.0, 100.0));
     let sprite = d
-      .registry()
+      .assets()
       .add(Image::solid_rect(12, 12, 255, 255, 255, 255));
     let mut theme =
       Theme::dark().skin("frame", Skin::from_image(sprite, [4.0; 4], Filter::Nearest));

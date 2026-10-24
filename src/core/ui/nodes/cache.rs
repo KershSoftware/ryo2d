@@ -2593,9 +2593,7 @@ mod edge_tests {
   fn an_image_whose_sprite_is_replaced_at_another_size_looks_the_same() {
     let run = oracle(
       |h| {
-        let pic = h
-          .registry()
-          .add(Image::solid_rect(16, 16, 200, 40, 40, 255));
+        let pic = h.assets().add(Image::solid_rect(16, 16, 200, 40, 40, 255));
         h.spawn_ui(
           UiNode::column()
             .child(UiNode::image(pic).name("pic"))
@@ -2633,7 +2631,7 @@ mod edge_tests {
           InputDevice::Keyboard,
           &[("jump", vec![Binding::Key(KeyCode::Space)])],
         );
-        let glyph = h.registry().add(Image::solid_rect(16, 16, 9, 9, 9, 255));
+        let glyph = h.assets().add(Image::solid_rect(16, 16, 9, 9, 9, 255));
         prompts.icons.insert("prompt.key.Space", glyph);
         h.prompts = Arc::new(prompts);
         h.spawn_ui(
@@ -2653,7 +2651,7 @@ mod edge_tests {
             .unwrap()
             .sprite
             .clone();
-          *h.registry().get_mut(&glyph).unwrap() = Image::solid_rect(48, 16, 9, 9, 9, 255);
+          *h.assets().get_mut(&glyph).unwrap() = Image::solid_rect(48, 16, 9, 9, 9, 255);
         }),
         Frame,
         Frame,

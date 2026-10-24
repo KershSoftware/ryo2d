@@ -621,7 +621,7 @@ fn theme_scale_and_device_changes_look_the_same_cached() {
 /// A 16 px icon of one colour in `h`'s store; each run adds its icons in
 /// the same order, so their ids match from run to run
 fn icon(h: &mut UiHarness, r: u8, g: u8, b: u8) -> Handle<Image> {
-  h.registry().add(Image::solid_rect(16, 16, r, g, b, 255))
+  h.assets().add(Image::solid_rect(16, 16, r, g, b, 255))
 }
 
 /// An inventory: a grid of eight slots in a focus scope, three holding
@@ -2201,7 +2201,7 @@ fn a_skin_replaced_in_place_at_another_size_redraws_its_kept_fragment() {
     .then(Do(|h| {
       let skin = h.theme().skins.get("button").and_then(|s| s.image.clone());
       let sprite = skin.expect("the pixel theme's button skin");
-      *h.registry().get_mut(&sprite).unwrap() = Image::solid_rect(24, 20, 90, 90, 140, 255);
+      *h.assets().get_mut(&sprite).unwrap() = Image::solid_rect(24, 20, 90, 90, 140, 255);
     }))
     .frames(2);
   let run = oracle(

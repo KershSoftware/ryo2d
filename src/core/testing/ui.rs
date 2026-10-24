@@ -1,6 +1,5 @@
 //! A UI with no window or GPU, driven frame by frame over scripted input
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use glam::Vec2;
@@ -8,7 +7,7 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use crate::core::asset::{
-  Asset, AssetError, AssetEvent, AssetServer, AssetsView, DiskSource, MemorySource,
+  Asset, AssetError, AssetEvent, AssetServer, AssetSource, AssetsView, MemorySource,
   insert_registry, pump,
 };
 use crate::core::ecs::kernel::{Entity, Message, Messages, Tick, World};
@@ -142,7 +141,7 @@ pub struct UiHarness {
 impl UiHarness {
   /// A UI `width` by `height` UI units with the built-in fonts, at scale 1,
   /// in the dark theme, the pointer at the origin, with an asset registry
-  /// over an empty `MemorySource` (`with_assets` reads a folder)
+  /// over an empty `MemorySource` (`with_asset_source` gives another)
   pub fn new(width: f32, height: f32) -> UiHarness {
     let mut text = TextEngine::new();
     text.sync(&Fonts::with_builtins());
@@ -205,26 +204,28 @@ impl UiHarness {
     nodes::update_ui(&mut self.world, node, tree)
   }
 
-  /// Load UI files and images from `dir`, the registry's asset folder
-  pub fn with_assets(mut self, dir: impl Into<PathBuf>) -> UiHarness {
-    let dir = dir.into();
-    insert_registry(&mut self.world, AssetServer::new(DiskSource::new(&dir)));
+  /// Load UI files and images from `source` in place of the empty
+  /// `MemorySource`: a `DiskSource` over a folder, as the engine's registry
+  /// reads the project's asset folder, or a `MemorySource` of the test's
+  /// files. The registry starts afresh, so call it before loading anything
+  pub fn with_asset_source(mut self, source: impl AssetSource) -> UiHarness {
+    insert_registry(&mut self.world, AssetServer::new(source));
     self
   }
 
   /// The asset registry of the harness's world, as scenes reach it with
   /// `ctx.assets()`: an `AssetServer` over an empty `MemorySource`, or the
-  /// folder `with_assets` gave. Each frame runs its pump first, as the
-  /// engine does
-  pub fn registry(&mut self) -> AssetsView<'_> {
+  /// source `with_asset_source` gave. Each frame runs its pump first, as
+  /// the engine does
+  pub fn assets(&mut self) -> AssetsView<'_> {
     AssetsView::new(&mut self.world)
   }
 
   /// Load a UI file at once, build its root and spawn it, as
   /// `ctx.spawn_ui_file`
   pub fn spawn_ui_file(&mut self, path: &str) -> Result<Entity, UiFileError> {
-    let file = self.registry().load_now::<UiFile>(path)?;
-    let tree = file.root(&mut self.registry())?;
+    let file = self.assets().load_now::<UiFile>(path)?;
+    let tree = file.root(&mut self.assets())?;
     Ok(self.spawn_ui(tree))
   }
 
@@ -1083,10 +1084,10 @@ mod tests {
     server.register_asset::<Note>(&mut h.world);
     server.register_loader(NoteLoader);
     insert_registry(&mut h.world, server);
-    let note = h.registry().load::<Note>("hello.note");
+    let note = h.assets().load::<Note>("hello.note");
     // A queued load lands only in a pump, and nothing but `frame` pumps here
     let start = std::time::Instant::now();
-    while !h.registry().state(&note).is_loaded() {
+    while !h.assets().state(&note).is_loaded() {
       assert!(
         start.elapsed() < std::time::Duration::from_secs(5),
         "timed out: no frame put the note in its store"
@@ -1095,9 +1096,32 @@ mod tests {
       std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert_eq!(
-      h.registry().get(&note).map(|note| note.0.as_str()),
+      h.assets().get(&note).map(|note| note.0.as_str()),
       Some("hi")
     );
+  }
+
+  #[test]
+  fn with_asset_source_loads_through_the_source_given() {
+    let files = MemorySource::new();
+    files.insert("hello.ui.ron", r#"(root: Text(text: "from memory"))"#);
+    let mut h = UiHarness::new(320.0, 240.0).with_asset_source(files);
+    let loaded = h.assets().load_now::<UiFile>("hello.ui.ron");
+    assert!(loaded.is_ok(), "the memory source's file: {loaded:?}");
+  }
+
+  #[test]
+  fn with_asset_source_reads_a_folder_through_a_disk_source() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+      dir.path().join("hello.ui.ron"),
+      r#"(root: Text(text: "from disk", name: "hello"))"#,
+    )
+    .expect("write");
+    let source = crate::core::asset::DiskSource::new(dir.path());
+    let mut h = UiHarness::new(320.0, 240.0).with_asset_source(source);
+    let root = h.spawn_ui_file("hello.ui.ron");
+    assert!(root.is_ok(), "the folder's file: {root:?}");
   }
 
   #[test]

@@ -484,9 +484,7 @@ mod tests {
     let mut context = prompts_with(InputDevice::Gamepad, &[jump]);
     let mut d = UiDriver::new((200.0, 100.0));
     // An 8 x 4 glyph, in the store the UI sizes images by
-    let glyph = d
-      .registry()
-      .add(Image::solid_rect(8, 4, 255, 255, 255, 255));
+    let glyph = d.assets().add(Image::solid_rect(8, 4, 255, 255, 255, 255));
     context.icons.insert("prompt.pad.xbox.South", glyph);
     let mut d = d.prompts(context);
     let line = d.frame(|ui| {

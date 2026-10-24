@@ -1461,7 +1461,7 @@ mod reload_tests {
     for (name, text) in files {
       std::fs::write(dir.path().join(name), text).unwrap();
     }
-    let h = UiHarness::new(640.0, 480.0).with_assets(dir.path());
+    let h = UiHarness::new(640.0, 480.0).with_asset_source(DiskSource::new(dir.path()));
     (dir, h)
   }
 
@@ -1532,8 +1532,8 @@ mod reload_tests {
   #[test]
   fn a_tree_built_before_a_reload_and_spawned_after_it_reloads() {
     let (dir, mut h) = harness(&[("late.ui.ron", r#"(root: Column(children: [Text("a")]))"#)]);
-    let file = h.registry().load_now::<UiFile>("late.ui.ron").unwrap();
-    let tree = file.root(&mut h.registry()).unwrap();
+    let file = h.assets().load_now::<UiFile>("late.ui.ron").unwrap();
+    let tree = file.root(&mut h.assets()).unwrap();
     std::fs::write(
       dir.path().join("late.ui.ron"),
       r#"(root: Column(children: [Text("b")]))"#,
@@ -1647,13 +1647,13 @@ mod reload_tests {
     let (dir, mut h) = harness(&[("opts.ui.ron", file)]);
     h.spawn_ui_file("opts.ui.ron").unwrap();
     let picks = h.find_ui("picks").unwrap();
-    let ui_file = h.registry().load_now::<UiFile>("opts.ui.ron").unwrap();
+    let ui_file = h.assets().load_now::<UiFile>("opts.ui.ron").unwrap();
     let args = UiArgs::new()
       .with("name", "pick-3")
       .with("default_focus", true);
-    let given = ui_file.template("Pick", &args, &mut h.registry()).unwrap();
+    let given = ui_file.template("Pick", &args, &mut h.assets()).unwrap();
     let coded = ui_file
-      .template("Pick", &UiArgs::new(), &mut h.registry())
+      .template("Pick", &UiArgs::new(), &mut h.assets())
       .unwrap()
       .name("pick-coded");
     let given = spawn_ui_in(h.world_mut(), picks, given).unwrap();
@@ -1705,12 +1705,12 @@ mod reload_tests {
     let (dir, mut h) = harness(&[("inv.ui.ron", file)]);
     h.spawn_ui_file("inv.ui.ron").unwrap();
     let list = h.find_ui("list").unwrap();
-    let ui_file = h.registry().load_now::<UiFile>("inv.ui.ron").unwrap();
+    let ui_file = h.assets().load_now::<UiFile>("inv.ui.ron").unwrap();
     let node = ui_file
       .template(
         "Item",
         &UiArgs::new().with("name", "Sword"),
-        &mut h.registry(),
+        &mut h.assets(),
       )
       .unwrap();
     let item = spawn_ui_in(h.world_mut(), list, node).unwrap();
@@ -1815,9 +1815,9 @@ mod reload_tests {
   #[test]
   fn children_the_game_added_before_spawning_survive_a_reload() {
     let (dir, mut h) = harness(&[("m.ui.ron", r#"(root: Column(children: [Text("file")]))"#)]);
-    let file = h.registry().load_now::<UiFile>("m.ui.ron").unwrap();
+    let file = h.assets().load_now::<UiFile>("m.ui.ron").unwrap();
     let tree = file
-      .root(&mut h.registry())
+      .root(&mut h.assets())
       .unwrap()
       .child(UiNode::text("code").key("code"));
     let root = h.spawn_ui(tree);

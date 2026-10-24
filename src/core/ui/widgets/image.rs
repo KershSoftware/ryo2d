@@ -148,9 +148,7 @@ mod tests {
   #[test]
   fn an_image_draws_its_sprite_with_its_filter() {
     let mut d = UiDriver::new((100.0, 100.0));
-    let sprite = d
-      .registry()
-      .add(Image::solid_rect(8, 8, 255, 255, 255, 255));
+    let sprite = d.assets().add(Image::solid_rect(8, 8, 255, 255, 255, 255));
     d.frame(|ui| {
       ui.image(&sprite)
         .filter(Filter::Nearest)

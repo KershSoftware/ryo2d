@@ -314,9 +314,7 @@ mod tests {
   #[test]
   fn an_icon_sits_left_of_the_label_and_both_are_centred() {
     let mut d = UiDriver::new((300.0, 100.0));
-    let sprite = d
-      .registry()
-      .add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+    let sprite = d.assets().add(Image::solid_rect(4, 4, 255, 255, 255, 255));
     let at = Rect::new(10.0, 10.0, 200.0, 40.0);
     let (label, line) = d.frame(|ui| {
       ui.button("Save").at(at).icon(&sprite).show();

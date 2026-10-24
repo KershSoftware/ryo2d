@@ -2844,7 +2844,7 @@ mod file_tests {
     for (name, text) in files {
       std::fs::write(dir.path().join(name), text).unwrap();
     }
-    let h = UiHarness::new(640.0, 480.0).with_assets(dir.path());
+    let h = UiHarness::new(640.0, 480.0).with_asset_source(DiskSource::new(dir.path()));
     (dir, h)
   }
 

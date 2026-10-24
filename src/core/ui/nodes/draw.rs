@@ -2649,8 +2649,7 @@ mod drag {
   }
 
   fn icon(d: &mut UiDriver) -> Handle<Image> {
-    d.registry()
-      .add(Image::solid_rect(16, 16, 200, 50, 50, 255))
+    d.assets().add(Image::solid_rect(16, 16, 200, 50, 50, 255))
   }
 
   /// A row of three slots: the first holds an item, the second is empty,

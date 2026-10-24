@@ -200,9 +200,7 @@ mod tests {
   #[test]
   fn a_slot_draws_its_icon_and_count() {
     let mut d = UiDriver::new((100.0, 100.0));
-    let icon = d
-      .registry()
-      .add(Image::solid_rect(16, 16, 200, 50, 50, 255));
+    let icon = d.assets().add(Image::solid_rect(16, 16, 200, 50, 50, 255));
     d.frame(|ui| {
       ui.slot()
         .at(Rect::new(10.0, 10.0, 48.0, 48.0))

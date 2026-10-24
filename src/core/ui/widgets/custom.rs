@@ -538,9 +538,7 @@ mod tests {
   #[test]
   fn a_painter_draws_in_the_widgets_units() {
     let mut d = UiDriver::new((200.0, 100.0));
-    let sprite = d
-      .registry()
-      .add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+    let sprite = d.assets().add(Image::solid_rect(4, 4, 255, 255, 255, 255));
     d.frame(|ui| {
       ui.custom(50.0, 50.0)
         .at(Rect::new(100.0, 40.0, 50.0, 50.0))
