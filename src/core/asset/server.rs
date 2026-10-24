@@ -1088,6 +1088,18 @@ impl AssetServer {
     }
   }
 
+  /// Whether `id` keeps its last good value because its last reload, or
+  /// its last check after a dependency reloaded, failed: the server warned
+  /// about that, and a success clears it
+  pub(crate) fn kept_after_a_failure(&self, id: UntypedAssetId) -> bool {
+    self
+      .inner
+      .table()
+      .infos
+      .get(&id)
+      .is_some_and(|info| info.state.is_loaded() && info.warned.is_some())
+  }
+
   /// `id` passed again: its next error warns, even one it warned about before
   pub(crate) fn clear_warning(&self, id: UntypedAssetId) {
     if let Some(info) = self.inner.table().infos.get_mut(&id) {

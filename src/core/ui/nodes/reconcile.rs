@@ -4,7 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use crate::core::asset::Assets;
+use crate::core::asset::{AssetServer, Assets};
 use crate::core::ecs::kernel::{
   ChildOf, Children, Component, DetectChangesMut, Entity, EntityWorldMut, Messages, QueryState,
   World, WorldId,
@@ -163,10 +163,17 @@ pub(crate) fn reload_trees(world: &mut World, sources: &mut SourceQuery) {
         top
       }
       Err(error) => {
-        let path = file_path(world, &source);
-        warn_once(format!("ui-rebuild:{path}:{now}"), || {
-          format!("could not rebuild a tree from {path}; keeping it as it was:\n{error}")
-        });
+        // A file that failed its last reload or check keeps its last good
+        // value, and the registry has said why: its trees add nothing
+        let said = world
+          .get_resource::<AssetServer>()
+          .is_some_and(|server| server.kept_after_a_failure(source.file.id().untyped()));
+        if !said {
+          let path = file_path(world, &source);
+          warn_once(format!("ui-rebuild:{path}:{now}"), || {
+            format!("could not rebuild a tree from {path}; keeping it as it was:\n{error}")
+          });
+        }
         entity
       }
     };
@@ -1764,18 +1771,18 @@ mod reload_tests {
   fn an_import_reload_rebuilds_its_importers_trees_and_one_that_fails_keeps_them() {
     let common = r#"(templates: {"Title": (node: Text(text: "a", name: "title"))})"#;
     let (dir, mut h) = harness(&[
-      ("common.ui.ron", common),
+      ("imported.ui.ron", common),
       (
-        "menu.ui.ron",
-        r#"(imports: ["common.ui.ron"], root: Column(children: [Title]))"#,
+        "importer.ui.ron",
+        r#"(imports: ["imported.ui.ron"], root: Column(children: [Title]))"#,
       ),
     ]);
-    let root = h.spawn_ui_file("menu.ui.ron").unwrap();
+    let root = h.spawn_ui_file("importer.ui.ron").unwrap();
     let title = h.find_ui("title").unwrap();
     rewrite(
       &dir,
       &mut h,
-      "common.ui.ron",
+      "imported.ui.ron",
       &common.replace("\"a\"", "\"b\""),
     );
     assert_eq!(h.find_ui("title"), Some(title), "the same entity");
@@ -1789,18 +1796,19 @@ mod reload_tests {
       }]
     );
     // The import no longer has the template: its importer does not check
-    // against it, so its tree is kept
+    // against it, so its tree is kept, and that is said once
     rewrite(
       &dir,
       &mut h,
-      "common.ui.ron",
+      "imported.ui.ron",
       r#"(templates: {"Other": (node: Text("c"))})"#,
     );
     h.frame(|_| {});
     assert_eq!(h.world().get::<UiLabel>(title).unwrap().0, "b", "kept");
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("could not rebuild a tree from menu.ui.ron"),
-      1
+      crate::core::ui::test_util::warnings_containing("importer.ui.ron"),
+      1,
+      "the importer's check warned; its trees add nothing"
     );
   }
 
