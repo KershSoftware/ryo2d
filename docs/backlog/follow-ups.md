@@ -2,7 +2,70 @@
 
 Small issues found while building each sub-project and left for later: deferred review findings, known limits and pre-existing bugs seen along the way. Each line names where it came from. Remove a line when it is fixed.
 
-Items from 4f to 4i were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+Items from 4f to 5a were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+
+## Asset registry (5a)
+
+- Owner decisions (2026-10-24):
+  - The reload-hitch target is met in 5a, through two changes: images are uploaded over frames (14b), and shaders are compiled off the main thread (14c).
+  - The determinism fix was made in 5a: draw-order ties and physics registration follow entity index (`ecs::entity_order`). The tour's baseline is Task 1's commit with that fix.
+- Rulings the owner may revisit:
+  - **R27:** a large image's first upload borders on the main thread, about 4 ms at 2048². Only reloads are prepared off the main thread.
+  - **R29:** an `Assets<T>` store comes only from a world, with no public constructor. Tests use `testing::asset_world()`.
+  - **R32:** an image's texture is never dropped for going undrawn. GPU memory is bounded by count, not bytes: 64 standalone textures (up to about 2.9 GB at 4K) plus 8 atlas pages. A full atlas clears its least recently used page.
+  - **R33:** a `.wgsl` file must define `fn sprite` or `fn effect` to load as a `Shader`.
+- Limits:
+  - **Large first loads.** A large image first loaded with `load` during play uploads in the frame it lands (2–4 ms at 2048²). A shader first drawn during play, or a blend mode first used, compiles on the main thread in that frame and draws plain for one frame.
+  - **Resized reloads.** A large image reloaded at another size is drawn in the UI at its natural size from the landing frame, so its old pixels are stretched for the spread's frames. If a `Modified` is missed (frames not drawn), the spread starts from the next draw, which keeps the 17 MB bordered copy until then. `MessageCursor::missed_messages` could make that fallback exact.
+  - **Spreads.** They are served lowest key first, with no fairness across several large reloads. Frames during a shader compile cost about +0.1 ms. An engine runs up to three shader threads.
+  - **Mip chains.** Large images keep their mips on the CPU for life (+5.7 MB at 2048²), so an evicted texture re-uploads without remaking them.
+  - **Paths.** Asset keys are case-sensitive, so on a case-insensitive file system a path typed in another case loads but never hot-reloads. Theme sound paths, audio and `load_tiled_map` resolve against the working directory, not the asset root, until 5b and the tilemap work.
+  - **Embedding.** An added asset has no path, so an embedded UI file cannot be imported by another; on the web, embedded imports need a `MemorySource`. `Theme::parse` is crate-only.
+  - **Watching.** A folder created after startup is never watched. notify's dropped and rescan events are ignored. `Pending::record` is O(n²) for a large burst.
+  - **Events.** A failed asset, or a load dropped before it lands, is freed with no `Removed`. A missing image warns again in every scene that asks for it (bullet-hell's backdrop gives 4 lines). A `NotFound` fallback on native warns once per file.
+  - **UI files.**
+    - A file that imports a cycle it is not part of reports only the cycle, not its own position.
+    - A cached `parsed_check` error is permanent for that parsed document; key it on the imports' newest version.
+    - Two brace cases are skipped at check time and load at build: a literal `{` inside a template body, and a brace path passed from the root as a template argument.
+    - `check-ui` lists image issues after build issues, and files outside `assets/` fail as "not an asset path".
+  - **Uploads.** Scenes have no query for a pending upload; only `HeadlessEngine::image_upload_pending` exists. A reloaded image that is not drawn keeps its old pixel `Arc` in the texture registry until it is drawn again or freed (check after 14b).
+  - **Sibling query order.** It still follows query or command order, invisible in the tour, in composite tiles, world text, parallax, trails and lines, `push_changes`/`move_characters`, `track_disabled` re-enables and `forget_removed`.
+- Pre-existing, seen during 5a:
+  - Flappy's restart menu ignores Enter during its fade-in after Game Over, and START loses its focus ring (on both trees).
+  - The `dev_window` test needs a `target/` folder under the checkout, so it fails with an outside `CARGO_TARGET_DIR`.
+  - `Image::from_rgba` panics on a wrong length.
+  - The text engine rebuilds Parley's font collection on every font add or free.
+  - On wasm, the inline pump can stall a frame on one large decode beyond its 4 ms budget.
+- Speed:
+  - `next_settled` and `find_cycle` grow with the number of waiting values: about 6 ns per value per pump (measured in Task 14).
+  - `Assets::len`/`is_empty` are O(slots).
+  - Every `use_game_look` relays the UI text twice, once when the font copy is added and once when the old copy is freed; this happens once per menu entry.
+- Code:
+  - `AssetChanges` and `CheckContext` have no `Debug`.
+  - `AssetError::is_missing()` was suggested and not added.
+  - `AssetLoader::dependency_failed`'s doc does not say that the returned error must still describe the dependency failure.
+  - A load of an unregistered type warns on every call.
+  - `mod atlas` is `pub(crate)` only for the loader test's reach.
+  - In `shaders/cache.rs:39` the field `made` is named for its origin, not its meaning.
+  - Pipeline labels keep the first shader's name after that shader is freed.
+  - A shader in both effect stages logs its compile error twice per version.
+  - The renderer's fallback warning says "could not load" for a GPU rejection too.
+  - Comment wrap at `sprite_gpu.rs` around line 861.
+  - A doc comment in `benches/assets.rs` names `use_a` where the parameter is `import_a` (check).
+- Tests:
+  - A reversed edge pair changed together can fail the first-arriving reload with `Cycle` against the other's old edge, and nothing retries it; saving the file again recovers.
+  - `watching_stops_when_the_source_drops` cannot tell a joined thread from a stopping one.
+  - The first half of the N3 test (nothing drawn in the pass that loads) has no RED of its own.
+  - The lib reload test (`testing/gpu_world.rs`) polls up to 2 s, so the 120-frame sweep can rescue it.
+  - "Held but not drawn keeps its pipelines" is pinned only at the cache level.
+  - Nothing pins the full check of an importer reloaded on the workers.
+  - The shader panic test does not follow with a later save.
+  - Breakout's quiet-fallback assertion reads the process-wide dev log.
+  - `reload_and_wait` calls `AssetsView::new(world)` before its loop and panics without a registry.
+  - `benches/assets.rs`'s default results dir ignores a cargo `build.target-dir` config.
+- Examples:
+  - no shipped example shows the debug checker for a renamed file, and none uses a `BitmapFont`;
+  - the asset-loading Hot reload page picks up a file missing when it opened, but a `ui/card.ui.ron` that appears later loads without its panel being spawned (only `enter` spawns it).
 
 ## UI fragments (4i)
 
