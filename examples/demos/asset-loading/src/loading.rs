@@ -165,8 +165,10 @@ impl DemoPage for LoadingPage {
     ui.draw_text("Asset", x, header, Color::GRAY);
     ui.draw_text("Type", kind_x, header, Color::GRAY);
     ui.draw_text("LoadState", state_x, header, Color::GRAY);
+    // A long error wraps in its column, and the rows below make room for it
+    let state_width = area.x + area.width - 20.0 - state_x;
+    let mut y = header + 24.0;
     for (i, (path, kind)) in tracked::listed().enumerate() {
-      let y = header + 24.0 + i as f32 * ROW;
       ui.draw_text(path, x, y, Color::WHITE);
       ui.draw_text(kind.label(), kind_x, y, Color::GRAY);
       let (state, color) = match self.held.get(i) {
@@ -186,7 +188,9 @@ impl DemoPage for LoadingPage {
           LoadState::Failed(error) => (format!("failed: {}", explained(&*error)), FAILED),
         },
       };
-      ui.draw_text(&state, state_x, y, color);
+      ui.draw_text_wrapped(&state, state_x, y, state_width as u32, color);
+      let (_, height) = ui.wrapped_text_size(&state, state_width as u32);
+      y += ROW.max(height as f32 + 4.0);
     }
   }
 }

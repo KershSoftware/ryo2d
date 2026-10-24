@@ -86,6 +86,19 @@ fn texts(engine: &HeadlessEngine) -> Vec<String> {
   texts
 }
 
+/// The size, in UI units, of the first text drawn that starts with `start`
+fn drawn_size(engine: &HeadlessEngine, start: &str) -> Option<(f32, f32)> {
+  let snapshot = engine.ui_snapshot();
+  let commands = snapshot.lines().next().unwrap_or_default();
+  let escaped = format!("{start:?}");
+  let at = commands.find(&escaped[..escaped.len() - 1])?;
+  let rest = &commands[at..];
+  let size = &rest[rest.find("size: Vec2(")? + "size: Vec2(".len()..];
+  let (width, rest) = size.split_once(", ")?;
+  let height = &rest[..rest.find(')')?];
+  Some((width.parse().ok()?, height.parse().ok()?))
+}
+
 /// The `len` texts drawn from the first `label` on: one row of a page's table
 fn row<'a>(texts: &'a [String], label: &str, len: usize) -> Vec<&'a str> {
   let Some(at) = texts.iter().position(|text| text == label) else {
@@ -152,6 +165,32 @@ fn the_loading_screen_loads_every_asset_on_the_workers_once_asked() {
     ["ui/card.ui.ron", "UI file", "loaded"]
   );
   assert!(done.iter().any(|text| text == "14 / 14"), "{done:?}");
+}
+
+#[test]
+fn a_long_load_error_wraps_inside_the_page() {
+  // A broken image: its error names the decoder's cause, too long for a line
+  let files = MemorySource::new();
+  files.insert("bg.png", "not a png");
+  let builder = demo()
+    .start_page(LOADING)
+    .configure(move |b| b.asset_source(files))
+    .engine_builder();
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  engine.tap_key(KeyCode::Space);
+  engine.step().unwrap();
+  step_until(&mut engine, "every asset to settle", settled);
+  engine.step_frames(2).unwrap();
+  let error = "failed: could not load \"bg.png\": ";
+  let Some((width, height)) = drawn_size(&engine, error) else {
+    panic!("the error is drawn: {:?}", texts(&engine));
+  };
+  // The state column starts 370 units in, on an 800-unit page
+  assert!(width <= 800.0 - 370.0, "it stays on the page: {width} wide");
+  assert!(height > 30.0, "it wraps onto a second line: {height} high");
 }
 
 #[test]
