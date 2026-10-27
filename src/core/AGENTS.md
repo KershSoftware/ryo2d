@@ -6,7 +6,7 @@ Most subsystems have their own AGENTS.md or a skill in `.claude/skills/` (`physi
 
 - **Engine owns the loop** - `Engine::frame` (`engine/frame.rs`) runs the phases; game code runs in `Scene` callbacks and in systems added to phases, never calls update or render itself
 - **Ryo2D's ECS** - the kernel types (`World`, `Query`, `Commands`, `Resource`, `Message`, ...) are exposed directly from `ryo2d::ecs` and the prelude; `src/core/ecs/AGENTS.md` has the phases, the hierarchy and interpolation rules
-- **Resources over engine fields** - per-frame state the scenes and systems share (`Time`, `Input`, `ScreenMapping`, `AssetServer` and the `Assets<T>` stores, `EffectsManager`, `LightingSettings`, `RenderPipeline`, `RenderTargets`, `DebugDraw`, `Fonts`, `TextIcons`, `TextEffects`, ...) are resources, inserted by `init_world_resources` (`engine/mod.rs`); renderers, the text engine (layout cache), the frame's UI commands, the window, Kira audio and the scene stack stay engine-owned
+- **Resources over engine fields** - per-frame state the scenes and systems share (`Time`, `Input`, `ScreenMapping`, `AssetServer` and the `Assets<T>` stores, `EffectsManager`, `LightingSettings`, `RenderPipeline`, `RenderTargets`, `DebugDraw`, `Fonts`, `TextIcons`, `TextEffects`, ...) are resources, inserted by `init_world_resources` (`engine/mod.rs`), and so is the audio engine (`AudioEngine`, `ctx.audio()`); renderers, the text engine (layout cache), the frame's UI commands, the window, the old Kira `Audio` and the scene stack stay engine-owned
 - **Cameras are entities** - `Camera2d` + `Transform` (+ the computed `CameraView`), not a resource: viewports, render order, interpolation and per-camera visibility (`RenderLayers`) come from the ECS. The main camera (`MainCamera`) survives world cleanup; `ctx.camera()` edits it
 - **Assets via handles** - loaded through the asset registry (`ctx.assets()`: the `AssetServer` and each type's `Assets<T>`; `asset/AGENTS.md`) and kept alive by `Handle<T>`s; an asset is freed once its last handle drops
 - **Minimal public surface** - expose only what users need via the `lib.rs` prelude; internals stay private
@@ -36,7 +36,7 @@ Bevy clamps the change ticks of the systems in its own `Schedules` resource only
 
 ## Scenes (`scene/`)
 
-- The stack (`SceneManager`) and the Kira `Audio` live in the world as the non-send `SceneHost`; the scene systems (`engine/frame.rs`) take it out, build a `SceneContext` per call and put it back.
+- The stack (`SceneManager`) and the old Kira `Audio` (the `ctx.audio` field, beside the `AudioEngine` resource that `ctx.audio()` reaches) live in the world as the non-send `SceneHost`; the scene systems (`engine/frame.rs`) take it out, build a `SceneContext` per call and put it back.
 - Each stacked scene owns its `FixedUpdate`/`Update` schedules, its message cursors (starting past every message written before it entered) and a console scope (unique per instance): its systems, unread messages and console handlers leave with it.
 - Updating: the top scene, and below it while each scene above `updates_below`, bottom-up. Only the top scene's `SceneAction` is applied; a lower scene's non-`Continue` action (from `update` or `ui`) is dropped with a warning, logged once per scene instance. While a transition runs, `Scene::update` waits but scene systems keep running, and `Scene::ui` still draws but its scene changes are ignored (only `Quit` applies), so a second click during a fade cannot restart it.
 - Drawing and `ui`: the top, and below it while each scene above `is_transparent`.

@@ -1,6 +1,6 @@
 # AGENTS.md - Headless Testing
 
-`ryo2d::testing` has two harnesses: `HeadlessEngine`, the whole engine on an offscreen GPU, and `UiHarness`, UI frames with no GPU at all (see UiHarness below). The module is native only. `asset_world()` is a world with the asset registry and nothing else (`insert_registry` over an empty `MemorySource`), for a test outside the crate that needs handles, since a store comes only from a world (asset module notes).
+`ryo2d::testing` has two harnesses: `HeadlessEngine`, the whole engine on an offscreen GPU, and `UiHarness`, UI frames with no GPU at all (see UiHarness below). The module is native only. `asset_world()` is a world with the asset registry and nothing else (`insert_registry` over an empty `MemorySource`), for a test outside the crate that needs handles, since a store comes only from a world (asset module notes). `audio_world()` adds a `Time` and an `AudioEngine` on the mock backend with its log on, and `audio_step(world, dt)` is one frame of it (advance the clock, pump, `audio_system`).
 
 `HeadlessEngine` (`ryo2d::testing`) runs the real engine without a window: an offscreen `WgpuRenderer`, one `Engine::frame` per `step`, pixels via `frame()`. Spec: `docs/specs/2026-10-10-headless-rendering-design.md`.
 
@@ -30,6 +30,6 @@
 ## Gotchas
 
 - One process-wide device (`shared_gpu`): concurrent device creation deadlocks on Windows. `tests/common/gpu.rs` reuses it.
-- Headless mode has no audio device (`ctx.audio` works, but its `Result` methods return `AudioError::Unavailable`), no real gamepads (`press_pad`, `tap_pad`, `set_stick` drive a virtual pad), hot reload, dev windows or user preferences, ignores `RYO_CAPTURE_*` and `RYO_INPUT`, and forces the FPS, timing and stats overlays off. Engine debug keys (F1-F5, F9, F10, F12) are inert, so injected F-keys reach the game like any other key; the console key (`` ` ``) still toggles the console when `[debug] dev_console` is on (the default in debug builds). Keep new wall-clock-dependent features out of headless frames the same way.
+- Headless mode plays sound on kira's mock backend, silently: `ctx.audio()` works as on a device, rendered by the frame's real time (one fixed timestep per step), and `audio_log()` (doc-hidden) is the engine's audio log, on from before the start scene enters. The old `ctx.audio` field has no device (its `Result` methods return `AudioError::Unavailable`). No real gamepads (`press_pad`, `tap_pad`, `set_stick` drive a virtual pad), hot reload, dev windows or user preferences, ignores `RYO_CAPTURE_*` and `RYO_INPUT`, and forces the FPS, timing and stats overlays off. Engine debug keys (F1-F5, F9, F10, F12) are inert, so injected F-keys reach the game like any other key; the console key (`` ` ``) still toggles the console when `[debug] dev_console` is on (the default in debug builds). Keep new wall-clock-dependent features out of headless frames the same way.
 - Particle emitters seeded from entropy differ run to run; use `ParticleSystem::with_seed` when comparing frames exactly.
 - Tests in this module reach engine internals (`HeadlessEngine::engine`, `Engine::sprite_gpu`); pixel-level checks belong in `tests/e2e/`.

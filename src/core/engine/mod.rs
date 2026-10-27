@@ -21,7 +21,7 @@ use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 
 use crate::core::asset::{AssetLoader, AssetServer, AssetSource, DiskSource, insert_registry};
-use crate::core::audio::{Audio, AudioManager};
+use crate::core::audio::{Audio, AudioEngine, AudioManager, audio_system};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
 use crate::core::config::{
   DebugConfig, DebugStats, DisplayMode, FrameTimings, OverlayMode, SmoothedDebugStats,
@@ -394,6 +394,7 @@ pub(crate) fn init_world_resources(
   config: &EngineConfig,
   registry: AssetServer,
   commands: CommandRegistry,
+  audio: AudioEngine,
 ) {
   let (w, h) = (config.width, config.height);
   world.insert_resource(Time::new(config.fixed_hz));
@@ -401,6 +402,7 @@ pub(crate) fn init_world_resources(
   world.insert_resource(ScreenMapping::new(config.presentation, (w, h), 1.0));
   spawn_main_camera(world, glam::Vec2::new(w as f32, h as f32));
   insert_registry(world, registry);
+  world.insert_resource(audio);
   world.insert_resource(EffectsManager::new());
   world.insert_resource(crate::core::render::Look::default());
   world.insert_resource(LightingSettings::default());
@@ -483,6 +485,8 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
       (advance_parallax, advance_text_reveal, update_effects_system)
         .chain()
         .in_set(PostUpdateSet::Extract),
+      // After the scene's update and the cameras (the listener, later)
+      audio_system.after(PostUpdateSet::Camera),
     ),
   );
   // Removal events last two tracker clears, and the fixed steps may not run
@@ -625,7 +629,16 @@ impl Engine {
     };
 
     let mut world = World::new();
-    init_world_resources(&mut world, &config, registry, command_registry);
+    // On the device, or silently on kira's mock backend when headless or
+    // when the device fails to open
+    let audio_engine = AudioEngine::new(!headless);
+    init_world_resources(
+      &mut world,
+      &config,
+      registry,
+      command_registry,
+      audio_engine,
+    );
     // Drawn in place of an image that is not loaded (debug builds); held,
     // so it lives as long as the engine
     let missing_image =
@@ -1570,9 +1583,9 @@ impl EngineBuilder {
   /// afterwards. Resolve command-line file arguments before calling it.
   ///
   /// With `RYO_HEADLESS=1` in a dev build the engine is built like a
-  /// `HeadlessEngine` (no audio, gamepads, user preferences or wall-clock
-  /// overlays) but keeps `RYO_CAPTURE_*` and `RYO_INPUT`, and `run` renders
-  /// offscreen.
+  /// `HeadlessEngine` (sound on the silent mock backend; no gamepads, user
+  /// preferences or wall-clock overlays) but keeps `RYO_CAPTURE_*` and
+  /// `RYO_INPUT`, and `run` renders offscreen.
   pub fn build(self) -> Engine {
     let (offscreen, warning) = crate::core::capture::headless_run_from_env();
     if let Some(warning) = warning {
@@ -1588,8 +1601,9 @@ impl EngineBuilder {
     engine
   }
 
-  /// Build an engine for `testing::HeadlessEngine`: no audio, gamepads, hot
-  /// reload, user preferences, capture env vars or wall-clock overlays.
+  /// Build an engine for `testing::HeadlessEngine`: sound on the silent mock
+  /// backend; no gamepads, hot reload, user preferences, capture env vars or
+  /// wall-clock overlays.
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn build_headless(self) -> Engine {
     self.build_engine(true)

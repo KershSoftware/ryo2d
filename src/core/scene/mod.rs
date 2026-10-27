@@ -435,6 +435,7 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
 
   world.insert_resource(Time::new(60));
   world.insert_resource(Input::new());
+  world.insert_resource(crate::core::audio::AudioEngine::new(false));
   world.insert_resource(ScreenMapping::new(
     Presentation::ResolutionIndependent,
     (800, 600),

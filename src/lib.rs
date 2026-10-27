@@ -107,9 +107,11 @@ pub mod prelude {
   pub use winit::keyboard::KeyCode;
 
   // Audio
+  pub use crate::core::asset::{AudioClipLoader, AudioClipSettings, ClipMode};
   pub use crate::core::audio::{
     Audio, AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
   };
+  pub use crate::core::audio::{AudioClip, AudioView, PlayOptions, Voice};
 
   // Graphics
   pub use crate::core::graphics::{

@@ -23,9 +23,10 @@
 //! }
 //! ```
 //!
-//! Headless runs have no audio device (`ctx.audio` works, but its `Result`
-//! methods return `AudioError::Unavailable`), no gamepads, no hot reload and
-//! no dev windows; they never read or write `system.json` user preferences,
+//! Headless runs play sound on kira's mock backend, silently: `ctx.audio()`
+//! works as it does on a device (the old `ctx.audio` field has no device,
+//! and its `Result` methods return `AudioError::Unavailable`). They have no
+//! gamepads, no hot reload and no dev windows; they never read or write `system.json` user preferences,
 //! ignore `RYO_CAPTURE_*` and `RYO_INPUT`, and keep the FPS, frame-timing and
 //! stats overlays off. `Ryo.toml` is honoured as in a normal build. Input
 //! injected with `press_key`/`tap_key`/`press_mouse`/`mouse_move` is queued
@@ -68,8 +69,12 @@ pub use crate::core::error::HeadlessError;
 pub use crate::core::render::UiRenderStats;
 pub use gpu::shared_gpu;
 
+use std::time::Duration;
+
 use crate::core::asset::{AssetServer, MemorySource, insert_registry};
+use crate::core::audio::{AudioEngine, audio_system};
 use crate::core::ecs::World;
+use crate::core::time::Time;
 
 /// A world with the asset registry, as the engine's world starts: an
 /// `AssetServer` over an empty `MemorySource`, and a store for each of the
@@ -92,4 +97,56 @@ pub fn asset_world() -> World {
   let mut world = World::new();
   insert_registry(&mut world, AssetServer::new(MemorySource::new()));
   world
+}
+
+/// [`asset_world`] with a clock and the audio engine on kira's mock backend
+/// (silent, advanced by [`audio_step`]), its audio log on: a world to test
+/// what plays, with no engine or audio device.
+///
+/// ```
+/// use std::time::Duration;
+/// use ryo2d::prelude::*;
+/// use ryo2d::testing::{audio_step, audio_world};
+///
+/// let mut world = audio_world();
+/// let beep = world
+///   .resource_mut::<Assets<AudioClip>>()
+///   .add(AudioClip::from_frames(48_000, &[[0.2, 0.2]; 2_400]));
+/// let voice = AudioView::new(&mut world).play(&beep);
+/// assert!(voice.is_playing());
+/// audio_step(&mut world, Duration::from_millis(100));
+/// assert!(voice.is_stopped(), "a 50 ms beep is over after 100 ms");
+/// ```
+pub fn audio_world() -> World {
+  let mut world = asset_world();
+  add_audio(&mut world);
+  world
+}
+
+/// [`audio_world`] whose registry reads `files`
+#[cfg(test)]
+pub(crate) fn audio_world_over(files: MemorySource) -> World {
+  let mut world = World::new();
+  insert_registry(&mut world, AssetServer::new(files));
+  add_audio(&mut world);
+  world
+}
+
+fn add_audio(world: &mut World) {
+  world.insert_resource(Time::new(60));
+  let mut audio = AudioEngine::new(false);
+  audio.set_logging(true);
+  world.insert_resource(audio);
+}
+
+/// One frame of an [`audio_world`] lasting `dt` of real time: the clock
+/// advances, the asset registry pumps, and the audio engine applies the
+/// voices' commands and renders `dt` on the mock backend (in whole chunks
+/// of 128 frames at 48 kHz, the rest carried to the next step)
+pub fn audio_step(world: &mut World, dt: Duration) {
+  if let Some(mut time) = world.get_resource_mut::<Time>() {
+    time.advance(dt);
+  }
+  crate::core::asset::pump(world);
+  audio_system(world);
 }

@@ -1,7 +1,7 @@
 //! The context scene callbacks receive.
 
 use crate::core::asset::{Assets, AssetsView, Handle};
-use crate::core::audio::Audio;
+use crate::core::audio::{Audio, AudioView};
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::cursor::{CursorRequest, CursorStyle, CustomCursorData};
 use crate::core::ecs::{
@@ -109,6 +109,22 @@ impl SceneContext<'_> {
   /// ```
   pub fn assets(&mut self) -> AssetsView<'_> {
     AssetsView::new(self.world)
+  }
+
+  // --- audio ---
+
+  /// The audio engine: play sounds, each returning the [`Voice`](crate::core::audio::Voice)
+  /// that controls it. The view borrows the context, so take it for each use:
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn coin(ctx: &mut SceneContext<'_>, clip: &Handle<AudioClip>) -> Voice {
+  ///   ctx.audio().play(clip)
+  /// }
+  /// ```
+  pub fn audio(&mut self) -> AudioView<'_> {
+    AudioView::new(self.world)
   }
 
   // --- systems and messages ---

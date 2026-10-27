@@ -75,8 +75,6 @@ impl AudioClip {
     AudioClip::new(ClipData::Decoded(Box::new(data)), duration, sample_rate)
   }
 
-  // Read by the player
-  #[allow(dead_code)]
   pub(crate) fn data(&self) -> &ClipData {
     &self.data
   }

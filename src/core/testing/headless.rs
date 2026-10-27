@@ -9,6 +9,7 @@ use winit::keyboard::KeyCode;
 use super::ui::{UiCacheStats, UiSnapshot, runs_snapshot, ui_snapshot};
 use super::{HeadlessError, shared_gpu};
 use crate::core::asset::AssetsView;
+use crate::core::audio::{AudioEngine, AudioLogEntry};
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::Messages;
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
@@ -104,6 +105,10 @@ impl HeadlessEngine {
   ) -> Result<Self, HeadlessError> {
     let (device, queue) = shared_gpu()?;
     let mut engine = builder.build_headless();
+    // On before the start scene enters, so what it plays is in the log
+    if let Some(mut audio) = engine.world_mut().get_resource_mut::<AudioEngine>() {
+      audio.set_logging(true);
+    }
     let (width, height) = engine.game_size();
     if !(1..=MAX_DIMENSION).contains(&width) || !(1..=MAX_DIMENSION).contains(&height) {
       return Err(HeadlessError::Render(format!(
@@ -486,6 +491,19 @@ impl HeadlessEngine {
     page: crate::core::graphics::GlyphPage,
   ) -> Option<u64> {
     self.engine.sprite_gpu.as_ref()?.glyph_page_generation(page)
+  }
+
+  /// The audio log: each voice's start, stop and changes, oldest first (the
+  /// latest 4096). Headless engines play on kira's mock backend, silently,
+  /// with the log on from the start
+  #[doc(hidden)]
+  pub fn audio_log(&self) -> Vec<AudioLogEntry> {
+    self
+      .engine
+      .world()
+      .get_resource::<AudioEngine>()
+      .map(|audio| audio.log().to_vec())
+      .unwrap_or_default()
   }
 
   /// How many textures the renderer keeps: images', named pixels' and
