@@ -79,22 +79,19 @@ impl<'w> AudioView<'w> {
   /// lower than the sound's own settings
   pub fn play_with<'a>(&mut self, sound: impl Into<Playable<'a>>, options: PlayOptions) -> Voice {
     let Playable::Clip(clip) = sound.into();
-    let Some(source) = self
+    let Some((source, version)) = self
       .world
       .get_resource::<Assets<AudioClip>>()
-      .and_then(|clips| clips.get(clip))
-      .map(ClipSource::of)
+      .and_then(|clips| Some((ClipSource::of(clips.get(clip)?), clips.version(clip)?)))
     else {
       return Voice::stopped();
     };
-    // The server only names clips in the log
-    let server = self
-      .world
-      .get_resource::<AudioEngine>()
-      .filter(|engine| engine.is_logging())
-      .and_then(|_| self.world.get_resource::<AssetServer>().cloned());
+    // Names clips in the log and in warnings; a clone shares the server
+    let server = self.world.get_resource::<AssetServer>().cloned();
     match self.world.get_resource_mut::<AudioEngine>() {
-      Some(mut engine) => engine.play_clip(clip.clone(), source, &options, server.as_ref()),
+      Some(mut engine) => {
+        engine.play_clip(clip.clone(), version, source, &options, server.as_ref())
+      }
       None => Voice::stopped(),
     }
   }

@@ -2,7 +2,7 @@
 //! device, or on kira's mock backend when there is none), the bus tree and
 //! the live voices
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fmt::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Cursor;
@@ -35,11 +35,12 @@ pub(crate) const MIN_FADE: Duration = Duration::from_millis(10);
 
 /// The mock backend's sample rate
 const MOCK_SAMPLE_RATE: u32 = 48_000;
-/// kira renders in chunks of this many frames (its default internal buffer)
-const CHUNK_FRAMES: u128 = 128;
+/// kira renders in chunks of this many frames (its internal buffer size,
+/// set on both managers), applying changes once per chunk
+const CHUNK_FRAMES: usize = 128;
 /// The most real time the mock backend renders in one frame: a frame after
-/// the machine slept is not hours of audio
-const MAX_MOCK_STEP: Duration = Duration::from_secs(60);
+/// a stall (the machine slept, say) renders a second, not the whole stall
+const MAX_MOCK_STEP: Duration = Duration::from_secs(1);
 /// Voices the table holds before it grows
 const VOICE_CAPACITY: usize = 128;
 /// A voice's own gain, in dB: kira is silent at -60 and below
@@ -72,6 +73,7 @@ impl Manager {
       backend_settings: MockBackendSettings {
         sample_rate: MOCK_SAMPLE_RATE,
       },
+      internal_buffer_size: CHUNK_FRAMES,
       ..Default::default()
     };
     AudioManager::<MockBackend>::new(settings)
@@ -81,7 +83,11 @@ impl Manager {
 
   /// The default output device, or the mock backend with one warning
   fn device() -> Option<Manager> {
-    match AudioManager::<CpalBackend>::new(AudioManagerSettings::default()) {
+    let settings = AudioManagerSettings {
+      internal_buffer_size: CHUNK_FRAMES,
+      ..Default::default()
+    };
+    match AudioManager::<CpalBackend>::new(settings) {
       Ok(manager) => Some(Manager::Device(manager)),
       Err(error) => Manager::fallback(&error),
     }
@@ -274,6 +280,8 @@ struct LiveVoice {
   playback: Playback,
   /// Held, so the registry never frees a clip under playback
   clip: Handle<AudioClip>,
+  /// The clip's content version when the voice started
+  clip_version: u64,
   bus: usize,
   /// Its own gain in dB
   gain_db: f32,
@@ -281,7 +289,8 @@ struct LiveVoice {
   pitch: f32,
 }
 
-/// The live voices, in the order they started
+/// The live voices, in the order they started (a retired voice's removal
+/// keeps the others' order)
 struct VoiceTable {
   live: Vec<LiveVoice>,
   next_id: u32,
@@ -338,8 +347,9 @@ pub struct AudioEngine {
   /// (the web's stream reports none)
   #[cfg(any(test, not(target_arch = "wasm32")))]
   stream_error_warned: bool,
-  /// Clips whose stream failed to decode, warned about once each
-  clips_warned: HashSet<AssetId<AudioClip>>,
+  /// Clips whose stream failed to decode, with the content version that
+  /// failed: warned about once, and refused until they change (reload)
+  undecodable: HashMap<AssetId<AudioClip>, u64>,
   #[cfg(test)]
   injected_stream_errors: Vec<String>,
 }
@@ -376,7 +386,7 @@ impl AudioEngine {
       mock_owed: 0,
       #[cfg(any(test, not(target_arch = "wasm32")))]
       stream_error_warned: false,
-      clips_warned: HashSet::new(),
+      undecodable: HashMap::new(),
       #[cfg(test)]
       injected_stream_errors: Vec::new(),
     }
@@ -393,10 +403,6 @@ impl AudioEngine {
   #[doc(hidden)]
   pub fn log(&self) -> &[AudioLogEntry] {
     self.log.entries()
-  }
-
-  pub(crate) fn is_logging(&self) -> bool {
-    self.log.is_on()
   }
 
   /// Whether it runs on the mock backend (tests)
@@ -424,12 +430,15 @@ impl AudioEngine {
       .count()
   }
 
-  /// Start `clip` (whose samples are `source`) on the default bus. A play
-  /// kira has no room for, or a stream that cannot open, is refused: the
-  /// voice returned is already stopped. `server` names clips in the log
+  /// Start `clip` (whose samples are `source`, at content `version`) on the
+  /// default bus. A play kira has no room for, a stream that cannot open,
+  /// or a clip whose stream already failed to decode (until it reloads) is
+  /// refused: the voice returned is already stopped. `server` names clips
+  /// in the log and in warnings
   pub(crate) fn play_clip(
     &mut self,
     clip: Handle<AudioClip>,
+    version: u64,
     source: ClipSource,
     options: &PlayOptions,
     server: Option<&AssetServer>,
@@ -437,6 +446,12 @@ impl AudioEngine {
     let bus = self.buses.find(DEFAULT_BUS).unwrap_or(0);
     let gain_db = clamp_gain(options.volume_db);
     let pitch = clamp_pitch(options.pitch);
+    // Another decoder thread would only fail the same way
+    if self.undecodable.get(&clip.id()) == Some(&version) {
+      let entry = self.entry(AudioLogKind::Refused, 0, &clip, bus, gain_db, pitch, server);
+      self.log.push(entry);
+      return Voice::stopped();
+    }
     let started = match source {
       ClipSource::Decoded(mut data) => {
         data.settings.volume = Decibels(gain_db).into();
@@ -454,7 +469,7 @@ impl AudioEngine {
       Ok(playback) => playback,
       Err(refusal) => {
         if let Refusal::Undecodable(error) = &refusal {
-          self.warn_undecodable(&clip, error, server);
+          self.warn_undecodable(&clip, version, error, server);
         }
         let entry = self.entry(AudioLogKind::Refused, 0, &clip, bus, gain_db, pitch, server);
         self.log.push(entry);
@@ -466,6 +481,7 @@ impl AudioEngine {
       voice: voice.clone(),
       playback,
       clip,
+      clip_version: version,
       bus,
       gain_db,
       pitch,
@@ -597,44 +613,45 @@ impl AudioEngine {
   }
 
   /// Drop the voices kira reports stopped (played out, or faded out after a
-  /// stop), marking their handles stopped. A stream that failed to decode
-  /// as it played is stopped, and its clip warned about once
+  /// stop), marking their handles stopped, and keep the rest in start
+  /// order. A stream that failed to decode as it played is logged stopped
+  /// and its clip warned about once
   fn retire_ended(&mut self, server: Option<&AssetServer>) {
-    let mut index = 0;
-    while index < self.voices.live.len() {
+    for index in 0..self.voices.live.len() {
       let live = &mut self.voices.live[index];
       // The state first: a stream's error is queued before kira stops it
       let ended = live.playback.state() == PlaybackState::Stopped;
       if let Some(error) = live.playback.take_error() {
-        let clip = live.clip.clone();
+        let (clip, version) = (live.clip.clone(), live.clip_version);
+        // kira cuts a stream that fails to decode at its next chunk, with
+        // no fade, and ignores a stop after that: log what it did
         if live.voice.state() != VoiceState::Stopping {
-          live.playback.stop(tween(MIN_FADE));
           live.voice.set_state(VoiceState::Stopping);
-          self.record(index, AudioLogKind::Stop, MIN_FADE, server);
+          self.record(index, AudioLogKind::Stop, Duration::ZERO, server);
         }
-        self.warn_undecodable(&clip, &error, server);
+        self.warn_undecodable(&clip, version, &error, server);
       }
       if ended {
-        let live = self.voices.live.swap_remove(index);
-        live.voice.set_state(VoiceState::Stopped);
-      } else {
-        index += 1;
+        self.voices.live[index].voice.set_state(VoiceState::Stopped);
       }
     }
+    self.voices.live.retain(|live| !live.voice.is_stopped());
   }
 
-  /// Warn once per clip that its stream could not be decoded
+  /// Mark `clip` at content `version` undecodable, so it is refused until it
+  /// changes, warning once per version by its path
   fn warn_undecodable(
     &mut self,
     clip: &Handle<AudioClip>,
+    version: u64,
     error: &str,
     server: Option<&AssetServer>,
   ) {
-    if self.clips_warned.insert(clip.id()) {
+    if self.undecodable.insert(clip.id(), version) != Some(version) {
       let name = source_name(clip, server);
       crate::engine_warn!(
         module: "Audio",
-        "{name}: the clip's stream could not be decoded as it played ({error}); its voices stop"
+        "{name}: the clip's stream could not be decoded ({error}); it is not played again until it reloads"
       );
     }
   }
@@ -701,6 +718,16 @@ impl AudioEngine {
   }
 }
 
+/// The engine's voices outlive it as handles: with kira's manager gone,
+/// nothing plays, so they report stopped
+impl Drop for AudioEngine {
+  fn drop(&mut self) {
+    for live in &self.voices.live {
+      live.voice.set_state(VoiceState::Stopped);
+    }
+  }
+}
+
 /// A clip's asset path, or its id for a clip made in code
 fn source_name(clip: &Handle<AudioClip>, server: Option<&AssetServer>) -> String {
   match server.and_then(|server| server.path(clip)) {
@@ -756,7 +783,7 @@ fn tween(duration: Duration) -> Tween {
 /// How many whole chunks of the mock backend `real_delta` adds to what is
 /// `owed` (frame-nanoseconds), keeping the remainder owed
 fn chunks_due(owed: &mut u128, real_delta: Duration) -> u128 {
-  let chunk = CHUNK_FRAMES * 1_000_000_000;
+  let chunk = CHUNK_FRAMES as u128 * 1_000_000_000;
   *owed += real_delta.min(MAX_MOCK_STEP).as_nanos() * u128::from(MOCK_SAMPLE_RATE);
   let chunks = *owed / chunk;
   *owed %= chunk;
@@ -777,15 +804,52 @@ mod tests {
   const FRAME: Duration = Duration::from_nanos(16_666_667);
   const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/audio");
 
+  fn fixture(name: &str) -> Vec<u8> {
+    match std::fs::read(format!("{FIXTURES}/{name}")) {
+      Ok(bytes) => bytes,
+      Err(error) => panic!("{name}: {error}"),
+    }
+  }
+
   fn files(names: &[&str]) -> MemorySource {
     let files = MemorySource::new();
     for name in names {
-      match std::fs::read(format!("{FIXTURES}/{name}")) {
-        Ok(bytes) => files.insert(name, bytes),
-        Err(error) => panic!("{name}: {error}"),
-      }
+      files.insert(name, fixture(name));
     }
     files
+  }
+
+  /// `path` loaded to stream
+  fn streamed(world: &mut World, path: &str) -> Handle<AudioClip> {
+    let settings = AudioClipSettings {
+      mode: ClipMode::Stream,
+    };
+    match AssetsView::new(world).load_now_with::<AudioClip, _>(path, settings) {
+      Ok(clip) => clip,
+      Err(error) => panic!("{path} loads to stream: {}", error.report()),
+    }
+  }
+
+  /// Step until `voice` stops: a stream decodes on its own thread
+  fn wait_until_stopped(world: &mut World, voice: &Voice) {
+    for _ in 0..500 {
+      if voice.is_stopped() {
+        break;
+      }
+      audio_step(world, Duration::from_millis(10));
+      std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(voice.is_stopped(), "{voice:?}");
+  }
+
+  fn log(world: &World) -> Vec<AudioLogEntry> {
+    world.resource::<AudioEngine>().log().to_vec()
+  }
+
+  /// Warnings that a clip at `path` could not be decoded as a stream
+  fn undecodable_warnings(path: &str) -> usize {
+    let named = format!("{path}:");
+    warnings(|message| message.starts_with(&named) && message.contains("could not be decoded"))
   }
 
   fn tone(world: &mut World, mode: ClipMode) -> Handle<AudioClip> {
@@ -889,40 +953,125 @@ mod tests {
   }
 
   /// A surround file forced to stream loads (only its header is read) and
-  /// fails as it plays: the voice stops, and the clip is warned about once
+  /// fails as it plays. kira cuts the stream at its next chunk, with no fade
+  /// (it cannot be smoothed), and the log says so; the clip is warned about
+  /// once, by its path
   #[test]
   fn a_streamed_clip_that_cannot_decode_stops_and_warns_once() {
     let mut world = audio_world_over(files(&["surround.wav"]));
-    let settings = AudioClipSettings {
-      mode: ClipMode::Stream,
-    };
-    let clip =
-      match AssetsView::new(&mut world).load_now_with::<AudioClip, _>("surround.wav", settings) {
-        Ok(clip) => clip,
-        Err(error) => panic!("a streamed surround file loads: {}", error.report()),
-      };
-    for _ in 0..2 {
-      let voice = AudioView::new(&mut world).play(&clip);
-      // It starts: the stream decodes on its own thread, and fails there
-      assert!(voice.is_playing(), "{voice:?}");
-      for _ in 0..500 {
-        if voice.is_stopped() {
-          break;
-        }
-        audio_step(&mut world, Duration::from_millis(10));
-        std::thread::sleep(Duration::from_millis(2));
-      }
-      assert!(voice.is_stopped(), "{voice:?}");
-      let log = world.resource::<AudioEngine>().log().to_vec();
-      let stop = log
-        .iter()
-        .find(|entry| entry.kind == AudioLogKind::Stop && entry.voice == voice.id());
-      assert_eq!(stop.map(|stop| stop.fade), Some(MIN_FADE), "{log:#?}");
-    }
+    let clip = streamed(&mut world, "surround.wav");
+    let voice = AudioView::new(&mut world).play(&clip);
+    // It starts: the stream decodes on its own thread, and fails there
+    assert!(voice.is_playing(), "{voice:?}");
+    wait_until_stopped(&mut world, &voice);
+    let log = log(&world);
+    let stops: Vec<Duration> = log
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Stop && entry.voice == voice.id())
+      .map(|entry| entry.fade)
+      .collect();
+    assert_eq!(stops, [Duration::ZERO], "{log:#?}");
     assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 0);
-    let about_the_clip =
-      warnings(|message| message.contains("surround.wav") && message.contains("as it played"));
-    assert_eq!(about_the_clip, 1);
+    assert_eq!(undecodable_warnings("surround.wav"), 1);
+  }
+
+  /// Once a clip's stream has failed to decode, it is not played again (no
+  /// decoder thread is started for it) until it reloads
+  #[test]
+  fn a_clip_known_undecodable_is_refused_until_it_reloads() {
+    let files = MemorySource::new();
+    files.insert("surround-reloaded.wav", fixture("surround.wav"));
+    let mut world = audio_world_over(files.clone());
+    let clip = streamed(&mut world, "surround-reloaded.wav");
+    let first = AudioView::new(&mut world).play(&clip);
+    wait_until_stopped(&mut world, &first);
+    let again = AudioView::new(&mut world).play(&clip);
+    assert!(again.is_stopped(), "{again:?}");
+    assert_eq!(again.id(), 0);
+    let last = log(&world).pop();
+    assert_eq!(
+      last.as_ref().map(|entry| entry.kind),
+      Some(AudioLogKind::Refused)
+    );
+    assert_eq!(
+      last.map(|entry| entry.source).as_deref(),
+      Some("surround-reloaded.wav")
+    );
+    // A reload (here, to a stereo file) clears the mark
+    let version = |world: &World| world.resource::<Assets<AudioClip>>().version(&clip);
+    let before = version(&world);
+    files.insert("surround-reloaded.wav", fixture("tone.wav"));
+    world
+      .resource::<AssetServer>()
+      .reload("surround-reloaded.wav");
+    for _ in 0..500 {
+      if version(&world) != before {
+        break;
+      }
+      audio_step(&mut world, Duration::from_millis(10));
+      std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_ne!(version(&world), before, "the clip reloaded");
+    let reloaded = AudioView::new(&mut world).play(&clip);
+    assert!(reloaded.is_playing(), "{reloaded:?}");
+    wait_until_stopped(&mut world, &reloaded);
+    assert_eq!(undecodable_warnings("surround-reloaded.wav"), 1);
+  }
+
+  /// A stream that cannot even open when played is refused, and warned
+  /// about by its path, whether or not the log is on
+  #[test]
+  fn a_clip_that_cannot_open_is_named_by_its_path_with_the_log_off() {
+    let files = MemorySource::new();
+    files.insert("garbled-at-play.wav", fixture("tone.wav"));
+    let mut world = audio_world_over(files);
+    world.resource_mut::<AudioEngine>().set_logging(false);
+    let clip = streamed(&mut world, "garbled-at-play.wav");
+    // Its bytes go bad after loading
+    if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
+      let garbage: Arc<[u8]> = Arc::from(&b"not audio at all"[..]);
+      *clip = AudioClip::new(ClipData::Encoded(garbage), Duration::from_secs(1), 22_050);
+    }
+    let voice = AudioView::new(&mut world).play(&clip);
+    assert!(voice.is_stopped(), "{voice:?}");
+    assert_eq!(undecodable_warnings("garbled-at-play.wav"), 1);
+  }
+
+  #[test]
+  fn the_voice_table_keeps_the_order_voices_started_in() {
+    let mut world = audio_world();
+    let clip = second(&mut world);
+    let voices: Vec<Voice> = (0..4)
+      .map(|_| AudioView::new(&mut world).play(&clip))
+      .collect();
+    voices[0].stop(Duration::ZERO);
+    voices[2].stop(Duration::ZERO);
+    audio_step(&mut world, Duration::from_millis(50));
+    let order: Vec<u32> = world
+      .resource::<AudioEngine>()
+      .voices
+      .live
+      .iter()
+      .map(|live| live.voice.id())
+      .collect();
+    assert_eq!(order, [voices[1].id(), voices[3].id()]);
+  }
+
+  /// A voice kept after its engine is gone does not report itself playing
+  #[test]
+  fn dropping_the_engine_stops_its_voices() {
+    let mut world = audio_world();
+    let clip = second(&mut world);
+    let (playing, paused) = {
+      let mut audio = AudioView::new(&mut world);
+      (audio.play(&clip), audio.play(&clip))
+    };
+    paused.pause();
+    audio_step(&mut world, FRAME);
+    assert!(playing.is_playing() && !paused.is_stopped());
+    drop(world);
+    assert!(playing.is_stopped(), "{playing:?}");
+    assert!(paused.is_stopped(), "{paused:?}");
   }
 
   #[test]
@@ -949,6 +1098,9 @@ mod tests {
     let mut owed = 0;
     let second: u128 = (0..60).map(|_| chunks_due(&mut owed, FRAME)).sum();
     assert_eq!(second, 375, "a second of frames is 48,000 frames");
+    // A frame after a long stall renders at most a second
+    let mut owed = 0;
+    assert_eq!(chunks_due(&mut owed, Duration::from_secs(5)), 375);
   }
 
   #[test]

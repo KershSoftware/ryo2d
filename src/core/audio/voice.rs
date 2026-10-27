@@ -233,7 +233,10 @@ mod tests {
     let voice = AudioView::new(&mut world).play(&clip);
     assert!(voice.is_playing());
     voice.stop(Duration::from_millis(30));
-    audio_step(&mut world, Duration::from_millis(50));
+    // Still fading out after 20 ms: kira got the 30 ms fade
+    audio_step(&mut world, Duration::from_millis(20));
+    assert!(!voice.is_stopped() && !voice.is_playing(), "{voice:?}");
+    audio_step(&mut world, Duration::from_millis(30));
     let stop = entry(&world, AudioLogKind::Stop);
     assert_eq!(stop.fade, Duration::from_millis(30));
     assert_eq!(stop.voice, voice.id());
@@ -265,8 +268,8 @@ mod tests {
       AudioLogKind::Resume,
       AudioLogKind::Stop,
     ] {
-      let entry = entry(&world, kind);
-      assert!(entry.fade >= MIN_FADE, "{kind:?}: {:?}", entry.fade);
+      // `stop(ZERO)` among them: raised to the minimum
+      assert_eq!(entry(&world, kind).fade, MIN_FADE, "{kind:?}");
     }
     assert_eq!(entry(&world, AudioLogKind::Gain).gain_db, -6.0);
     assert!((entry(&world, AudioLogKind::Rate).rate - 2.0).abs() < 1e-9);
