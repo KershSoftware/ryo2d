@@ -91,7 +91,9 @@ impl AssetChanges {
 /// server about a file about 100 ms after its last write, so a save in
 /// several writes reloads once. Removed files and editors' temp files (a
 /// name starting with `.` or ending in `~`) are not reported. The web build
-/// has no files to read or watch
+/// has no files to read or watch: every read fails and nothing exists, so a
+/// web game gives its assets in its own source
+/// (`EngineBuilder::asset_source`), whose `exists` the engine asks
 pub struct DiskSource {
   root: PathBuf,
   /// The watch on `root`, once asked for; it stops when the source drops

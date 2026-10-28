@@ -6,7 +6,7 @@ use std::time::Duration;
 use web_time::Instant;
 
 use winit::application::ApplicationHandler;
-use winit::event::{Ime, WindowEvent};
+use winit::event::{ElementState, Ime, TouchPhase, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -41,6 +41,28 @@ fn cursor_grab_for_focus(
     // Lost focus: release cursor so user can interact with other windows
     Some((CursorGrabMode::None, true))
   }
+}
+
+/// Whether `event` is a gesture of the player's that browsers let a page
+/// start sound in, for the web's audio unlock: a key pressed, a mouse button,
+/// or a touch lifted
+fn is_user_gesture(event: &WindowEvent) -> bool {
+  match event {
+    WindowEvent::KeyboardInput { event, .. } => key_is_gesture(event.state, event.physical_key),
+    WindowEvent::MouseInput { .. } => true,
+    WindowEvent::Touch(touch) => touch_is_gesture(touch.phase),
+    _ => false,
+  }
+}
+
+/// A key pressed, but Escape: browsers do not count it as the player's
+fn key_is_gesture(state: ElementState, key: PhysicalKey) -> bool {
+  state == ElementState::Pressed && key != PhysicalKey::Code(KeyCode::Escape)
+}
+
+/// A touch lifted: browsers do not count its start as the player's
+fn touch_is_gesture(phase: TouchPhase) -> bool {
+  phase == TouchPhase::Ended
 }
 
 /// The platform's inability to confine the cursor was warned about
@@ -602,6 +624,12 @@ impl ApplicationHandler<EngineEvent> for Engine {
       return;
     }
 
+    // The web opens its audio at the player's first gesture: browsers start
+    // a page's sound only inside one (elsewhere it opened at start)
+    if is_user_gesture(&event) {
+      crate::core::audio::unlock(&mut self.world);
+    }
+
     match &event {
       WindowEvent::KeyboardInput { event, .. } => {
         let mut input = self.world.resource_mut::<Input>();
@@ -926,6 +954,24 @@ impl ApplicationHandler<EngineEvent> for Engine {
 mod tests {
   use super::*;
   use winit::window::CursorGrabMode;
+
+  /// The keys and touches the web's audio unlock counts: browsers do not
+  /// let a page start sound on Escape, a key's release or a touch's start
+  #[test]
+  fn a_gesture_is_a_key_pressed_but_escape_or_a_touch_lifted() {
+    let (pressed, space) = (ElementState::Pressed, PhysicalKey::Code(KeyCode::Space));
+    assert!(key_is_gesture(pressed, space));
+    assert!(!key_is_gesture(pressed, PhysicalKey::Code(KeyCode::Escape)));
+    assert!(!key_is_gesture(ElementState::Released, space));
+    assert!(touch_is_gesture(TouchPhase::Ended));
+    for phase in [
+      TouchPhase::Started,
+      TouchPhase::Moved,
+      TouchPhase::Cancelled,
+    ] {
+      assert!(!touch_is_gesture(phase), "{phase:?}");
+    }
+  }
 
   #[test]
   fn cursor_grab_for_focus_no_action_when_not_locked() {

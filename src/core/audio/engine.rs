@@ -219,6 +219,27 @@ impl Manager {
   }
 }
 
+/// The kira manager the web opens at its first user gesture: browsers start
+/// a page's audio only inside one, and kira keeps the browser's audio
+/// context to itself, so it is made there rather than resumed
+enum Unlock {
+  /// The audio device, its buffer fixed at this many frames when given
+  Device(Option<u32>),
+  /// The mock backend (tests)
+  #[cfg(test)]
+  Mock,
+}
+
+impl Unlock {
+  fn open(self) -> Option<Manager> {
+    match self {
+      Unlock::Device(buffer_frames) => Manager::device(buffer_frames),
+      #[cfg(test)]
+      Unlock::Mock => Manager::mock(),
+    }
+  }
+}
+
 impl Tracks for Manager {
   fn add_sub_track(&mut self, builder: TrackBuilder) -> Result<TrackHandle, ResourceLimitReached> {
     match self {
@@ -432,6 +453,38 @@ enum Playback {
   Static(StaticSoundHandle),
   #[cfg(not(target_arch = "wasm32"))]
   Stream(StreamingSoundHandle<kira::sound::FromFileError>),
+  /// A loop played before the web's unlock: nothing sounds until it starts
+  /// there
+  Waiting(Waiting),
+}
+
+/// A loop waiting for the web's unlock, as the game left it
+#[derive(Debug, Clone, Copy)]
+struct Waiting {
+  /// What it fades in over once it sounds
+  fade_in: Duration,
+  paused: bool,
+  stopped: bool,
+}
+
+impl Waiting {
+  fn new(fade_in: Duration) -> Self {
+    Self {
+      fade_in,
+      paused: false,
+      stopped: false,
+    }
+  }
+
+  fn state(self) -> PlaybackState {
+    if self.stopped {
+      PlaybackState::Stopped
+    } else if self.paused {
+      PlaybackState::Paused
+    } else {
+      PlaybackState::Playing
+    }
+  }
 }
 
 impl Playback {
@@ -440,6 +493,15 @@ impl Playback {
       Playback::Static(sound) => sound.state(),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound) => sound.state(),
+      Playback::Waiting(waiting) => waiting.state(),
+    }
+  }
+
+  /// What it fades in over once it sounds, if it waits for the unlock
+  fn waiting_fade(&self) -> Option<Duration> {
+    match self {
+      Playback::Waiting(waiting) => Some(waiting.fade_in),
+      _ => None,
     }
   }
 
@@ -448,6 +510,7 @@ impl Playback {
       Playback::Static(sound) => sound.stop(tween),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound) => sound.stop(tween),
+      Playback::Waiting(waiting) => waiting.stopped = true,
     }
   }
 
@@ -456,6 +519,7 @@ impl Playback {
       Playback::Static(sound) => sound.pause(tween),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound) => sound.pause(tween),
+      Playback::Waiting(waiting) => waiting.paused = true,
     }
   }
 
@@ -464,6 +528,7 @@ impl Playback {
       Playback::Static(sound) => sound.resume(tween),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound) => sound.resume(tween),
+      Playback::Waiting(waiting) => waiting.paused = false,
     }
   }
 
@@ -472,6 +537,7 @@ impl Playback {
       Playback::Static(sound) => sound.set_volume(Decibels(db), tween),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound) => sound.set_volume(Decibels(db), tween),
+      Playback::Waiting(_) => {}
     }
   }
 
@@ -480,6 +546,7 @@ impl Playback {
       Playback::Static(sound) => sound.set_panning(Panning(pan), tween),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound) => sound.set_panning(Panning(pan), tween),
+      Playback::Waiting(_) => {}
     }
   }
 
@@ -489,6 +556,7 @@ impl Playback {
       Playback::Static(sound) => sound.position(),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound) => sound.position(),
+      Playback::Waiting(_) => 0.0,
     }
   }
 
@@ -497,6 +565,7 @@ impl Playback {
       Playback::Static(sound) => sound.set_playback_rate(PlaybackRate(rate), tween),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound) => sound.set_playback_rate(PlaybackRate(rate), tween),
+      Playback::Waiting(_) => {}
     }
   }
 
@@ -504,7 +573,7 @@ impl Playback {
   /// dropped (a stream that fails keeps failing until it stops)
   fn take_error(&mut self) -> Option<String> {
     match self {
-      Playback::Static(_) => None,
+      Playback::Static(_) | Playback::Waiting(_) => None,
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound) => {
         let error = sound.pop_error()?;
@@ -851,12 +920,21 @@ struct Replay {
 /// world resource. Scenes reach it through `ctx.audio()`; the frame's
 /// `audio_system` applies the voices' commands. With no audio device (a
 /// headless run, or a device that failed to open) it runs on kira's mock
-/// backend: everything works, and nothing plays aloud
+/// backend: everything works, and nothing plays aloud.
+///
+/// On the web it opens the device at the player's first gesture (a key, a
+/// mouse button or a touch), as browsers start a page's sound only inside
+/// one. Until then a one-shot is dropped (logged as refused), while music
+/// and loops wait and start at that gesture, each fading in over its own
+/// fade-in
 #[derive(Resource)]
 pub struct AudioEngine {
-  /// `None` only if even the mock backend failed to start (it never does):
-  /// every play is then refused
+  /// `None` before the web's unlock (`pending`), or if even the mock
+  /// backend failed to start (it never does): every play is then refused
   manager: Option<Manager>,
+  /// The web, waiting for its first user gesture: the manager it opens
+  /// then ([`unlock`](Self::unlock))
+  pending: Option<Unlock>,
   buses: BusTree,
   voices: VoiceTable,
   log: AudioLog,
@@ -971,20 +1049,69 @@ impl AudioEngine {
   }
 
   /// [`AudioEngine::new`], the device's buffer fixed at `buffer_frames`
-  /// when given (`Ryo.toml`'s `audio_buffer_frames`)
+  /// when given (`Ryo.toml`'s `audio_buffer_frames`). The web opens its
+  /// device at the first user gesture instead ([`unlock`](Self::unlock))
   pub(crate) fn open(device: bool, buffer_frames: Option<u32>) -> AudioEngine {
-    let manager = if device {
-      Manager::device(buffer_frames)
-    } else {
-      Manager::mock()
-    };
-    Self::with_manager(manager)
+    match (device, cfg!(target_arch = "wasm32")) {
+      (false, _) => Self::with_manager(Manager::mock()),
+      (true, false) => Self::with_manager(Manager::device(buffer_frames)),
+      (true, true) => Self::locked(Unlock::Device(buffer_frames)),
+    }
   }
 
   /// The engine as it is when the device fails to open (tests)
   #[cfg(test)]
   pub(crate) fn new_failing_device() -> AudioEngine {
     Self::with_manager(Manager::fallback(&FAILING_DEVICE))
+  }
+
+  /// The engine as the web starts it, waiting for the first user gesture,
+  /// whose unlock opens the mock backend (tests)
+  #[cfg(test)]
+  pub(crate) fn new_locked() -> AudioEngine {
+    Self::locked(Unlock::Mock)
+  }
+
+  /// The engine with nothing open, waiting to open `unlock`'s manager
+  fn locked(unlock: Unlock) -> AudioEngine {
+    let mut engine = Self::with_manager(None);
+    engine.pending = Some(unlock);
+    engine
+  }
+
+  /// Whether it waits for the web's first user gesture to open
+  pub(crate) fn is_locked(&self) -> bool {
+    self.pending.is_some()
+  }
+
+  /// The web's first user gesture: open the manager it waited for, inside
+  /// the gesture's event, and build the buses on it from the mixer (the
+  /// standard layout while the mixer has yet to land). The music and loops
+  /// played before it start, each fading in over its own fade-in. An engine
+  /// already open is left alone, so only the first gesture opens it
+  pub(crate) fn unlock(&mut self, world: &World) {
+    let Some(unlock) = self.pending.take() else {
+      return;
+    };
+    self.manager = unlock.open();
+    // kira's main track starts at 0 dB: the rebuild gives it master's gain
+    if let Some(master) = self.buses.buses.first_mut() {
+      master.applied = 0.0;
+    }
+    self.find_listener(world);
+    let server = world.get_resource::<AssetServer>();
+    // The mixer the buses were built from, if it landed
+    let landed = self
+      .mixer
+      .as_ref()
+      .map(Handle::id)
+      .filter(|_| self.mixer_version.is_some())
+      .and_then(|id| world.get_resource::<Assets<Mixer>>()?.get(id))
+      .filter(|mixer| mixer.check().is_ok());
+    match landed {
+      Some(mixer) => self.rebuild(world, mixer, server),
+      None => self.rebuild(world, &Mixer::default(), server),
+    }
   }
 
   fn with_manager(mut manager: Option<Manager>) -> AudioEngine {
@@ -1005,6 +1132,7 @@ impl AudioEngine {
     let (commands, inbox) = crossbeam_channel::unbounded();
     let mut engine = AudioEngine {
       manager,
+      pending: None,
       buses,
       voices: VoiceTable::new(),
       log: AudioLog::default(),
@@ -1676,7 +1804,11 @@ impl AudioEngine {
         moved = self.restart(world, index, server);
       }
       if let Err(why) = moved {
-        self.warn_stuck(index, &why, server);
+        if self.voices.live[index].playback.waiting_fade().is_some() {
+          self.drop_waiting(index, &why, server);
+        } else {
+          self.warn_stuck(index, &why, server);
+        }
       }
     }
     for duck in &mut self.ducks {
@@ -1705,11 +1837,19 @@ impl AudioEngine {
         self.blend.shorten_to(remaining);
       }
     }
-    if let Some(pending) = self.pending_snapshot.take() {
+    // Built at the web's unlock while the mixer has yet to land, the
+    // standard buses leave a snapshot waiting for it, and a bus it may add
+    // unwarned
+    if !self.mixer_pending
+      && let Some(pending) = self.pending_snapshot.take()
+    {
       self.activate(pending.as_deref());
     }
     self.refresh_gains();
     self.refresh_cutoffs();
+    if self.mixer_pending {
+      return;
+    }
     let missing: Vec<String> = self
       .bus_volumes
       .keys()
@@ -1745,7 +1885,9 @@ impl AudioEngine {
   /// [`restart`](Self::restart) live voice `index` on `replay`: its source's
   /// data as the store now has it, its regions, its gain and its bus, which
   /// the voice takes once it has started. If it cannot start, it plays on
-  /// as it was, and why is returned
+  /// as it was, and why is returned. A loop waiting for the web's unlock
+  /// takes them and waits on before the unlock, and at it starts on them,
+  /// fading in over its own fade-in
   fn replay(
     &mut self,
     world: &World,
@@ -1757,26 +1899,46 @@ impl AudioEngine {
     let Some((samples, version)) = replay.source.as_ref().samples(world) else {
       return Err("its clip is not in the store".into());
     };
+    if self.is_locked() {
+      self.take_replay(index, replay, version);
+      return Ok(());
+    }
+    let waiting = live.playback.waiting_fade();
     // A paused or held voice starts paused, unheard
     let paused = live.voice.state() == VoiceState::Paused;
     let held = paused || live.held;
-    let cutoff = live.filter().map(|filter| filter.applied);
+    // A filtered voice's filter moves with it. One that waited for the
+    // unlock never had one: it gets the one its place gives now
+    let cutoff = match waiting {
+      Some(_) => live
+        .spatial
+        .as_ref()
+        .zip(live.position)
+        .and_then(|(spatial, position)| {
+          Hearing::of(&spatial.settings, position, self.listener.as_ref()).cutoff
+        }),
+      None => live.filter().map(|filter| filter.applied),
+    };
     let place_db = live.spatial.as_ref().map_or(0.0, |spatial| spatial.gain_db);
     let start = Start {
       gain_db: heard_db(replay.gain_db, place_db),
       pan: live.pan(),
       rate: rate_of(live.pitch) * live.scale,
       held,
-      fade_in: Some(tween(MIN_FADE)),
+      fade_in: waiting.map_or(Some(tween(MIN_FADE)), fade_in_of),
       region: replay.region.as_ref(),
       loop_region: replay.loop_region.as_ref(),
       looping: live.looping,
       position: live.playback.position(),
     };
     let bus = replay.bus;
-    // A filtered voice's filter moves with it, on a track of its own under
-    // its new bus (unfiltered if kira has no room for one)
-    let mut filter = cutoff.and_then(|hz| self.filter_track(bus, hz));
+    // The filter goes on a track of its own under its new bus (unfiltered
+    // if kira has no room for one, or a new one past the filtered voices'
+    // cap)
+    let mut filter = match waiting {
+      Some(_) => cutoff.and_then(|hz| self.voice_filter(bus, hz)),
+      None => cutoff.and_then(|hz| self.filter_track(bus, hz)),
+    };
     let track = filter.as_mut().map(|filter| &mut filter.track);
     let started = match samples {
       ClipSource::Decoded(data) => self.start_static(bus, track, data, &start),
@@ -1800,22 +1962,56 @@ impl AudioEngine {
     if let Some(spatial) = &mut live.spatial {
       spatial.filter = filter;
     }
+    // One that waited and starts held fades in at its resume
+    if let Some(fade) = waiting {
+      live.unheard = held.then_some(fade);
+    }
+    self.take_replay(index, replay, version);
+    // A paused or held one starts silent: its resume fades it in. One that
+    // waited had not started
+    let fade_in = if held {
+      Duration::ZERO
+    } else {
+      waiting.unwrap_or(MIN_FADE)
+    };
+    if waiting.is_none() {
+      self.record(index, AudioLogKind::Stop, MIN_FADE, server);
+    }
+    self.record(index, AudioLogKind::Start, fade_in, server);
+    Ok(())
+  }
+
+  /// Live voice `index` takes `replay`'s source (at content `version`), its
+  /// regions, its gain and its bus, on the live tree
+  fn take_replay(&mut self, index: usize, replay: Replay, version: u64) {
+    let live = &mut self.voices.live[index];
     live.generation = self.generation;
     live.version = version;
     live.source = replay.source;
     live.region = replay.region;
     live.loop_region = replay.loop_region;
     live.gain_db = replay.gain_db;
-    if live.bus != bus {
-      live.bus = bus;
+    if live.bus != replay.bus {
+      live.bus = replay.bus;
       // Its new bus's hold and time scale reach it in the frame's update
       self.voices_dirty = true;
     }
-    // A paused or held one starts silent: its resume fades it in
-    let fade_in = if held { Duration::ZERO } else { MIN_FADE };
-    self.record(index, AudioLogKind::Stop, MIN_FADE, server);
-    self.record(index, AudioLogKind::Start, fade_in, server);
-    Ok(())
+  }
+
+  /// Live voice `index`, a loop that waited for the web's unlock, could not
+  /// start at it (`why`): it ends, logged as refused, with a warning
+  fn drop_waiting(&mut self, index: usize, why: &str, server: Option<&AssetServer>) {
+    let Some(live) = self.voices.live.get_mut(index) else {
+      return;
+    };
+    live.playback.stop(tween(MIN_FADE));
+    live.voice.set_state(VoiceState::Stopping);
+    let name = voice_name(live, server);
+    crate::engine_warn!(
+      module: "Audio",
+      "{name}: the loop played before the audio started could not start with it ({why})"
+    );
+    self.record(index, AudioLogKind::Refused, Duration::ZERO, server);
   }
 
   /// Warn, once for live voice `index`, that its loop could not move to the
@@ -2355,7 +2551,8 @@ impl AudioEngine {
     let undecodable = source
       .clip()
       .is_some_and(|clip| self.undecodable.get(&clip.id()) == Some(&version));
-    !undecodable && self.buses.has_room(self.buses.playable(bus))
+    // Before the web's unlock it waits, needing no room yet
+    !undecodable && (self.is_locked() || self.buses.has_room(self.buses.playable(bus)))
   }
 
   /// Each frame: start the track waiting to load once it has (or forget it,
@@ -2467,48 +2664,60 @@ impl AudioEngine {
       .source
       .clip()
       .is_some_and(|clip| self.undecodable.get(&clip.id()) == Some(&version));
-    let refused =
-      undecodable || self.cooling(request) || !self.room_on(bus) || !self.make_room(bus, request);
+    // Before the web's unlock nothing can sound: a one-shot is dropped, and
+    // a loop waits, to start at the unlock
+    let waits = self.is_locked();
+    if waits && !request.looping {
+      return self.refuse(&subject, server);
+    }
+    let refused = undecodable
+      || self.cooling(request)
+      || (!waits && !self.room_on(bus))
+      || !self.make_room(bus, request);
     if refused {
       return self.refuse(&subject, server);
     }
-    // Its distance low-pass, on a track of its own while there is room
-    let mut filter = heard
-      .and_then(|(_, hearing)| hearing.cutoff)
-      .and_then(|hz| self.voice_filter(bus, hz));
-    let start = Start {
-      gain_db: subject.gain_db,
-      pan: subject.pan,
-      rate: subject.rate,
-      held,
-      fade_in: (!request.fade_in.is_zero()).then(|| tween(request.fade_in)),
-      region: request.region,
-      loop_region: request.loop_region,
-      looping: request.looping,
-      position: 0.0,
-    };
-    let track = filter.as_mut().map(|filter| &mut filter.track);
-    let started = match samples {
-      ClipSource::Decoded(data) => self.start_static(bus, track, data, &start),
-      ClipSource::Encoded(bytes) => self.start_stream(bus, track, bytes, &start),
-    };
-    let playback = match started {
-      Ok(playback) => playback,
-      Err(refusal) => {
-        match &refusal {
-          Refusal::Undecodable(error) => {
-            // Only a clip streams
-            if let Some(clip) = request.source.clip() {
-              self.warn_undecodable(clip, version, error, server);
+    let (playback, filter) = if waits {
+      (Playback::Waiting(Waiting::new(request.fade_in)), None)
+    } else {
+      // Its distance low-pass, on a track of its own while there is room
+      let mut filter = heard
+        .and_then(|(_, hearing)| hearing.cutoff)
+        .and_then(|hz| self.voice_filter(bus, hz));
+      let start = Start {
+        gain_db: subject.gain_db,
+        pan: subject.pan,
+        rate: subject.rate,
+        held,
+        fade_in: fade_in_of(request.fade_in),
+        region: request.region,
+        loop_region: request.loop_region,
+        looping: request.looping,
+        position: 0.0,
+      };
+      let track = filter.as_mut().map(|filter| &mut filter.track);
+      let started = match samples {
+        ClipSource::Decoded(data) => self.start_static(bus, track, data, &start),
+        ClipSource::Encoded(bytes) => self.start_stream(bus, track, bytes, &start),
+      };
+      match started {
+        Ok(playback) => (playback, filter),
+        Err(refusal) => {
+          match &refusal {
+            Refusal::Undecodable(error) => {
+              // Only a clip streams
+              if let Some(clip) = request.source.clip() {
+                self.warn_undecodable(clip, version, error, server);
+              }
+            }
+            Refusal::Full => {
+              self.count_kira_full();
+              self.warn_full(bus);
             }
           }
-          Refusal::Full => {
-            self.count_kira_full();
-            self.warn_full(bus);
-          }
+          self.victims.clear();
+          return self.refuse(&subject, server);
         }
-        self.victims.clear();
-        return self.refuse(&subject, server);
       }
     };
     self.steal_victims(server);
@@ -2551,18 +2760,21 @@ impl AudioEngine {
       generation: self.generation,
       stuck_warned: false,
     });
-    // A held start is silent and paused: its fade-in waits for its resume
+    // A held start is silent and paused: its fade-in waits for its resume.
+    // One waiting for the unlock is logged as it starts there
     let fade_in = if held {
       Duration::ZERO
     } else {
       request.fade_in
     };
-    self.record(
-      self.voices.live.len() - 1,
-      AudioLogKind::Start,
-      fade_in,
-      server,
-    );
+    if !waits {
+      self.record(
+        self.voices.live.len() - 1,
+        AudioLogKind::Start,
+        fade_in,
+        server,
+      );
+    }
     if let Some(id) = request.sound {
       let state = self.sounds.entry(id).or_default();
       state.last_start = Some(self.clock);
@@ -3344,6 +3556,49 @@ pub(crate) fn release_scene(world: &mut World, scope: u64) {
   });
 }
 
+/// A user gesture (a key, a mouse button or a touch) reached the game: on
+/// the web, the first that the browser counts as the player's opens the
+/// audio device ([`AudioEngine::unlock`]). Elsewhere the device opened at
+/// start, and this does nothing
+pub(crate) fn unlock(world: &mut World) {
+  let locked = world
+    .get_resource::<AudioEngine>()
+    .is_some_and(AudioEngine::is_locked);
+  if !locked || !user_activated() {
+    return;
+  }
+  world.try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+    engine.unlock(world);
+  });
+}
+
+/// Whether the browser counts the event being handled as the player's
+/// (transient user activation), so the page may start sound in it. A key,
+/// a mouse button or a touch mostly does, but not all (Escape, a touch's
+/// start, a pen's press), and an audio context made outside one stays
+/// silent: kira keeps it to itself, so it could not be resumed. True where
+/// the browser cannot say (`navigator.userActivation` is newer than some)
+#[cfg(target_arch = "wasm32")]
+fn user_activated() -> bool {
+  use wasm_bindgen::{JsCast, JsValue};
+  use web_sys::js_sys::Reflect;
+  let Some(navigator) = web_sys::window().map(|window| window.navigator()) else {
+    return true;
+  };
+  match Reflect::get(&navigator, &JsValue::from_str("userActivation")) {
+    Ok(activation) if activation.is_object() => activation
+      .unchecked_into::<web_sys::UserActivation>()
+      .is_active(),
+    _ => true,
+  }
+}
+
+/// Only the web waits for a gesture
+#[cfg(not(target_arch = "wasm32"))]
+fn user_activated() -> bool {
+  true
+}
+
 /// Stop the music as a scene's `SceneCleanup::MUSIC` does, fading it out over
 /// its track's crossfade. A world without an audio engine is left alone
 pub(crate) fn stop_scene_music(world: &mut World) {
@@ -3827,6 +4082,12 @@ fn rate_of(semitones: f32) -> f64 {
   PlaybackRate::from(Semitones(f64::from(semitones))).0
 }
 
+/// A voice's fade-in as kira starts it: none for no time, as a sound
+/// starting at its beginning does not click
+fn fade_in_of(duration: Duration) -> Option<Tween> {
+  (!duration.is_zero()).then(|| tween(duration))
+}
+
 /// A linear tween over `duration`, starting now
 fn tween(duration: Duration) -> Tween {
   Tween {
@@ -3851,7 +4112,7 @@ mod tests {
 
   use super::*;
   use crate::core::asset::{Assets, AssetsView, AudioClipSettings, ClipMode, MemorySource};
-  use crate::core::audio::AudioView;
+  use crate::core::audio::{AudioListener, AudioView, BusDef, Falloff};
   use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::World;
   use crate::core::testing::{audio_step, audio_world, audio_world_over};
@@ -4220,5 +4481,232 @@ mod tests {
       loop_region: None,
     };
     assert_eq!(sliced.wrap(0.5, 1_000, 400), 0.3);
+  }
+
+  /// An audio world as the web starts it: nothing opens until the first
+  /// user gesture
+  fn locked_world() -> World {
+    let mut world = audio_world();
+    let mut engine = AudioEngine::new_locked();
+    engine.set_logging(true);
+    world.insert_resource(engine);
+    world
+  }
+
+  /// A loop of `clip` on `bus`, fading in over `fade_in`
+  fn hum(
+    world: &mut World,
+    clip: &Handle<AudioClip>,
+    bus: &str,
+    fade_in: Duration,
+  ) -> Handle<Sound> {
+    world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip.clone())],
+      bus: bus.to_string(),
+      looping: true,
+      fade_in,
+      ..Default::default()
+    })
+  }
+
+  fn entries(world: &World, kind: AudioLogKind) -> Vec<AudioLogEntry> {
+    log(world)
+      .into_iter()
+      .filter(|entry| entry.kind == kind)
+      .collect()
+  }
+
+  #[test]
+  fn before_the_unlock_one_shots_drop_and_music_waits() {
+    let mut world = locked_world();
+    let clip = second(&mut world);
+    let mut theme = Music::looping(clip.clone(), 0.0, None);
+    theme.fade_in = Duration::from_millis(500);
+    let theme = world.resource_mut::<Assets<Music>>().add(theme);
+    let rain = hum(&mut world, &clip, "ambience", Duration::from_millis(200));
+    let (shot, rain) = {
+      let mut audio = AudioView::new(&mut world);
+      let shot = audio.play(&clip);
+      audio.play_music(&theme);
+      (shot, audio.play(&rain))
+    };
+    for _ in 0..3 {
+      audio_step(&mut world, FRAME);
+    }
+    // Nothing is open: the one-shot was dropped, and the loops wait
+    assert_eq!(world.resource::<AudioEngine>().kira_tracks(), (0, 0));
+    assert!(shot.is_stopped());
+    assert_eq!(entries(&world, AudioLogKind::Refused).len(), 1);
+    assert!(rain.is_playing(), "a loop waits, as playing: {rain:?}");
+    assert_eq!(AudioView::new(&mut world).current_music(), Some(theme.id()));
+    assert!(entries(&world, AudioLogKind::Start).is_empty());
+    // The first gesture: the music and the loop start, each fading in over
+    // its own fade-in
+    unlock(&mut world);
+    assert!(world.resource::<AudioEngine>().is_mock());
+    let starts: Vec<(String, Duration)> = entries(&world, AudioLogKind::Start)
+      .into_iter()
+      .map(|entry| (entry.bus, entry.fade))
+      .collect();
+    assert_eq!(
+      starts,
+      [
+        ("music".to_string(), Duration::from_millis(500)),
+        ("ambience".to_string(), Duration::from_millis(200)),
+      ]
+    );
+    audio_step(&mut world, FRAME);
+    let music = entries(&world, AudioLogKind::Start)[0].voice;
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(engine.voice_playback(music), Some(PlaybackState::Playing));
+    assert_eq!(
+      engine.voice_playback(rain.id()),
+      Some(PlaybackState::Playing)
+    );
+    // A one-shot after it plays
+    assert!(AudioView::new(&mut world).play(&clip).is_playing());
+  }
+
+  #[test]
+  fn the_unlock_happens_once() {
+    let mut world = locked_world();
+    let clip = second(&mut world);
+    let rain = hum(&mut world, &clip, "ambience", Duration::ZERO);
+    let rain = AudioView::new(&mut world).play(&rain);
+    audio_step(&mut world, FRAME);
+    assert_eq!(world.resource::<AudioEngine>().kira_tracks(), (0, 0));
+    unlock(&mut world);
+    for _ in 0..30 {
+      audio_step(&mut world, FRAME);
+    }
+    let engine = world.resource::<AudioEngine>();
+    let (tracks, logged) = (engine.kira_tracks(), engine.log().len());
+    let Some(played) = engine.voice_position(rain.id()) else {
+      panic!("the loop plays after the unlock: {rain:?}");
+    };
+    assert!(played > 0.4, "{played}");
+    // A second gesture changes nothing: the loop plays on where it was
+    unlock(&mut world);
+    audio_step(&mut world, FRAME);
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(engine.kira_tracks(), tracks);
+    let Some(now) = engine.voice_position(rain.id()) else {
+      panic!("the loop plays on: {rain:?}");
+    };
+    assert!(now > played, "{now} after {played}");
+    let later = &engine.log()[logged..];
+    assert!(
+      later.iter().all(|entry| entry.kind != AudioLogKind::Start),
+      "{later:?}"
+    );
+  }
+
+  /// What the game does to a loop waiting for the unlock holds at it: one
+  /// stopped never starts, and one paused starts paused, fading in over its
+  /// fade-in when it resumes
+  #[test]
+  fn a_loop_waiting_for_the_unlock_keeps_what_the_game_did_to_it() {
+    let mut world = locked_world();
+    let clip = second(&mut world);
+    let fade = Duration::from_millis(300);
+    let rain = hum(&mut world, &clip, "ambience", fade);
+    let (stopped, paused) = {
+      let mut audio = AudioView::new(&mut world);
+      (audio.play(&rain), audio.play(&rain))
+    };
+    stopped.stop(Duration::ZERO);
+    paused.pause();
+    audio_step(&mut world, FRAME);
+    assert!(stopped.is_stopped());
+    unlock(&mut world);
+    let starts: Vec<(u32, Duration)> = entries(&world, AudioLogKind::Start)
+      .into_iter()
+      .map(|entry| (entry.voice, entry.fade))
+      .collect();
+    assert_eq!(starts, [(paused.id(), Duration::ZERO)], "it starts held");
+    audio_step(&mut world, FRAME);
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(
+      engine.voice_playback(paused.id()),
+      Some(PlaybackState::Paused)
+    );
+    paused.resume();
+    audio_step(&mut world, FRAME);
+    // Fading in
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(
+      engine.voice_playback(paused.id()),
+      Some(PlaybackState::Resuming)
+    );
+    let resumes: Vec<Duration> = entries(&world, AudioLogKind::Resume)
+      .into_iter()
+      .filter(|entry| entry.voice == paused.id())
+      .map(|entry| entry.fade)
+      .collect();
+    assert_eq!(resumes, [fade]);
+  }
+
+  /// A loop played at a place before the unlock starts at it with the
+  /// distance low-pass its place gives
+  #[test]
+  fn a_placed_loop_waiting_for_the_unlock_starts_with_its_low_pass() {
+    let mut world = locked_world();
+    world.spawn(AudioListener);
+    let clip = second(&mut world);
+    let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      looping: true,
+      spatial: Some(Spatial {
+        min_distance: 100.0,
+        max_distance: 1000.0,
+        curve: Falloff::Linear,
+        pan_width: 1000.0,
+        low_pass_at_max: Some(500.0),
+      }),
+      ..Default::default()
+    });
+    audio_step(&mut world, FRAME);
+    let voice = AudioView::new(&mut world).play_at(&sound, Vec2::new(550.0, 0.0));
+    audio_step(&mut world, FRAME);
+    unlock(&mut world);
+    let Some(hz) = world.resource::<AudioEngine>().voice_cutoff(voice.id()) else {
+      panic!("it starts with its low-pass");
+    };
+    assert!(hz > 500.0 && hz < 20_000.0, "{hz}");
+  }
+
+  /// A mixer that lands before the first gesture is built on kira at it,
+  /// with the player's volumes: master's on kira's main track
+  #[test]
+  fn a_mixer_that_lands_before_the_unlock_is_built_at_it() {
+    let mut world = locked_world();
+    AudioView::new(&mut world).set_volume_setting(VolumeKind::Master, 0.5);
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![BusDef::new("ambience/rain")],
+      ..Default::default()
+    });
+    audio_step(&mut world, FRAME);
+    let clip = second(&mut world);
+    let rain = hum(&mut world, &clip, "ambience/rain", Duration::ZERO);
+    let rain = AudioView::new(&mut world).play(&rain);
+    audio_step(&mut world, FRAME);
+    assert_eq!(world.resource::<AudioEngine>().kira_tracks(), (0, 0));
+    let before = log(&world).len();
+    unlock(&mut world);
+    audio_step(&mut world, FRAME);
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(engine.sounds_on("ambience/rain"), 1);
+    assert_eq!(
+      engine.voice_playback(rain.id()),
+      Some(PlaybackState::Playing)
+    );
+    let master = engine.log()[before..]
+      .iter()
+      .find(|entry| entry.kind == AudioLogKind::Gain && entry.voice == 0 && entry.bus == "master")
+      .map(|entry| entry.gain_db);
+    let Some(master) = master else {
+      panic!("master's gain goes on kira's main track at the unlock");
+    };
+    assert!((master - volume_to_db(0.5)).abs() < 1e-3, "{master}");
   }
 }

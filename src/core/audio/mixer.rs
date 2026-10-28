@@ -25,7 +25,10 @@ use super::settings::SILENCE_DB;
 use crate::core::asset::{Asset, AssetServer, Handle};
 
 /// Where the engine looks for the game's mixer: loaded at start if it
-/// exists, the standard layout otherwise
+/// exists, the standard layout otherwise. The web build has no asset folder
+/// to look in, so there it comes from the game's own source
+/// (`EngineBuilder::asset_source`) if that has it, or from code
+/// ([`AudioView::set_mixer`](super::AudioView::set_mixer))
 pub const MIXER_PATH: &str = "audio/mixer.mixer.ron";
 
 /// The bus tree, loaded from a `.mixer.ron` file (the engine loads

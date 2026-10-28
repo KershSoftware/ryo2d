@@ -203,7 +203,8 @@ impl<'w> AudioView<'w> {
   }
 
   /// Build the buses from `mixer`, made in code, in place of the game's
-  /// mixer file (a game with no file, such as one on the web, or a test).
+  /// mixer file (a game with no file, or a test; on the web, one whose own
+  /// asset source does not hold it).
   /// It applies at the end of the frame as a saved file would: loops carry
   /// on, at their position, on the new buses, and one-shots finish where
   /// they are. A mixer that fails its check (a bus named twice, say) is
