@@ -10,7 +10,9 @@ use crate::core::asset::{
   AssetError, AssetLoader, AssetServer, Assets, AudioClipSettings, CheckContext, ClipMode,
   LoadContext,
 };
-use crate::core::audio::{AudioClip, Sound, SoundClip, Spatial, VoiceLimit, check_bus_name};
+use crate::core::audio::{
+  AudioClip, OPEN_HZ, Sound, SoundClip, Spatial, VoiceLimit, check_bus_name,
+};
 
 /// Loads [`Sound`]s from `.sound.ron` files. Every field but `clips` may be
 /// left out:
@@ -336,11 +338,12 @@ fn check_spatial(spatial: &Spatial) -> Result<(), String> {
   if !(pan_width.is_finite() && pan_width > 0.0) {
     return Err(format!("spatial: pan_width {pan_width} is not more than 0"));
   }
+  let open = f64::from(OPEN_HZ);
   if let Some(cutoff) = low_pass_at_max
-    && !(cutoff.is_finite() && cutoff > 0.0)
+    && !(cutoff.is_finite() && cutoff > 0.0 && cutoff <= open)
   {
     return Err(format!(
-      "spatial: low_pass_at_max {cutoff} is not a cutoff in Hz (more than 0)"
+      "spatial: low_pass_at_max {cutoff} is not a cutoff in Hz from above 0 to {open} (the filter is open, at {open}, near the listener and closes to it with distance)"
     ));
   }
   Ok(())
@@ -616,6 +619,22 @@ mod tests {
       );
       assert!(error.contains(names), "{text}: {error}");
     }
+  }
+
+  /// Review M5: a distance low-pass opens no wider than 20 kHz, so one
+  /// that would open as the listener goes away fails the load
+  #[test]
+  fn a_distance_low_pass_above_20_khz_fails_naming_the_field() {
+    let wide = r#"(clips: [(path: "m.wav")], spatial: (min_distance: 0.0, max_distance: 10.0, low_pass_at_max: 22000.0))"#;
+    let error = failure("sfx/wide-low-pass.sound.ron", wide, &["m.wav"]);
+    assert!(
+      error.starts_with("could not load \"sfx/wide-low-pass.sound.ron\""),
+      "{error}"
+    );
+    assert!(error.contains("low_pass_at_max"), "{error}");
+    assert!(error.contains("20000"), "{error}");
+    let open = r#"(clips: [(path: "m.wav")], spatial: (min_distance: 0.0, max_distance: 10.0, low_pass_at_max: 20000.0))"#;
+    assert!(load("sfx/open-low-pass.sound.ron", open, &["m.wav"]).is_ok());
   }
 
   #[test]

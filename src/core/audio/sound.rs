@@ -203,11 +203,11 @@ pub struct Spatial {
   /// The horizontal offset at which it is panned fully to one side
   /// (`max_distance` when left out)
   pub pan_width: f32,
-  /// A low-pass filter that closes with distance, to this cutoff in Hz at
-  /// `max_distance`; none when `None`. It is open within `min_distance`,
-  /// and closes in even steps of octaves between. Each voice with one plays
-  /// on a kira track of its own, so at most 32 have one at once: a voice
-  /// past them plays unfiltered
+  /// A low-pass filter that closes with distance, to this cutoff in Hz (at
+  /// most 20000) at `max_distance`; none when `None`. It is open (20 kHz)
+  /// within `min_distance`, and closes in even steps of octaves between.
+  /// Each voice with one plays on a kira track of its own, so at most 32
+  /// have one at once: a voice past them plays unfiltered
   pub low_pass_at_max: Option<f64>,
 }
 

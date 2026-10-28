@@ -25,6 +25,7 @@ pub(crate) use engine::{in_scene, release_scene};
 pub use legacy::*;
 #[doc(hidden)]
 pub use log::{AudioLogEntry, AudioLogKind};
+pub(crate) use mix::OPEN_HZ;
 #[doc(hidden)]
 pub use mixer::BusReport;
 pub use mixer::{

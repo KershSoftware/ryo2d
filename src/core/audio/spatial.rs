@@ -13,7 +13,7 @@ use super::mix::OPEN_HZ;
 use super::settings::SILENCE_DB;
 use super::{Falloff, Sound, Spatial};
 use crate::core::asset::Handle;
-use crate::core::ecs::kernel::{DeferredWorld, HookContext, QueryState, Remove, WorldId};
+use crate::core::ecs::kernel::{Add, DeferredWorld, HookContext, QueryState, Remove, WorldId};
 use crate::core::ecs::{
   Allow, Component, Disabled, Entity, GlobalTransform, On, Query, ResMut, Transform, Vec2, With,
   World,
@@ -63,13 +63,16 @@ pub struct AudioListener;
 /// ([`Sound::spatial`]).
 ///
 /// It plays as it is added to an entity when `play_on_spawn` is set (a sound
-/// still loading plays once it has), and again each time a disabled entity
-/// is enabled (a [`Pool`](crate::core::ecs::Pool) handing it out), or when
-/// the game asks (`ctx.audio().play_emitter(entity)`). Its voices belong to
-/// the entity, not to the scene: despawning it, disabling it (a pool putting
-/// it back), or taking its `AudioEmitter` away stops its loops with their
-/// `fade_out` (and any one-shot paused or held by the game's pause), and
-/// lets its one-shots playing finish where it was
+/// still loading plays once it has), again each time a disabled entity is
+/// enabled (a [`Pool`](crate::core::ecs::Pool) handing it out, recycled
+/// included), or when the game asks (`ctx.audio().play_emitter(entity)`).
+/// Its voices belong to the entity, not to the scene: despawning it,
+/// disabling it (a pool putting it back), taking its `AudioEmitter` away or
+/// putting another over it stops its loops with their `fade_out` (and any
+/// one-shot paused or held by the game's pause), and lets its one-shots
+/// playing finish where it was. An emitter put over another then plays its
+/// own sound if it plays on spawn; one put back and handed out in the same
+/// frame plays once
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -81,7 +84,7 @@ pub struct AudioListener;
 /// ```
 #[derive(Component, Debug, Clone)]
 #[require(Transform)]
-#[component(on_add = emitter_added)]
+#[component(on_insert = emitter_inserted, on_discard = emitter_discarded)]
 pub struct AudioEmitter {
   /// What it plays
   pub sound: Handle<Sound>,
@@ -90,11 +93,12 @@ pub struct AudioEmitter {
   pub play_on_spawn: bool,
 }
 
-/// An emitter was added: if it plays on spawn, and its entity is enabled
-/// (not one a pool keeps disabled), the audio engine plays it in the frame's
-/// audio update. The world's first emitter has the engine watch for
-/// entities being enabled, whose emitters then play as if spawned
-fn emitter_added(mut world: DeferredWorld, context: HookContext) {
+/// An emitter was added, or put over another: if it plays on spawn, and its
+/// entity is enabled (not one a pool keeps disabled), the audio engine plays
+/// it in the frame's audio update. The world's first emitter has the engine
+/// watch for entities being disabled and enabled, whose emitters then stop
+/// and play as if despawned and spawned
+fn emitter_inserted(mut world: DeferredWorld, context: HookContext) {
   let entity = context.entity;
   let plays = world
     .get::<AudioEmitter>(entity)
@@ -107,12 +111,41 @@ fn emitter_added(mut world: DeferredWorld, context: HookContext) {
     engine.emitter_spawned(entity);
   }
   if engine.watch_enabling() {
-    world.commands().add_observer(emitter_enabled);
+    let mut commands = world.commands();
+    commands.add_observer(emitter_disabled);
+    commands.add_observer(emitter_enabled);
+  }
+}
+
+/// An emitter is going (taken away, put over by another, or despawned with
+/// its entity): the voices it played are let go at once, to be released in
+/// the frame's audio update, so the next emitter's voices are not taken
+/// with them
+fn emitter_discarded(mut world: DeferredWorld, context: HookContext) {
+  if let Some(mut engine) = world.get_resource_mut::<AudioEngine>() {
+    engine.emitter_gone(context.entity);
+  }
+}
+
+/// An entity is being disabled (a pool putting it back): an emitter on it
+/// lets its voices go, as if despawned
+fn emitter_disabled(
+  disabled: On<Add<Disabled>>,
+  emitters: Query<(), (With<AudioEmitter>, Allow<Disabled>)>,
+  engine: Option<ResMut<AudioEngine>>,
+) {
+  let entity = disabled.entity;
+  if emitters.contains(entity)
+    && let Some(mut engine) = engine
+  {
+    engine.emitter_gone(entity);
   }
 }
 
 /// An entity is being enabled (a pool handing it out): an emitter on it that
-/// plays on spawn plays, as if spawned now
+/// plays on spawn plays, as if spawned now. bevy also triggers this as a
+/// disabled entity is despawned (every component is removed): its entry is
+/// dropped in the frame's audio update, as the entity is gone
 fn emitter_enabled(
   enabled: On<Remove<Disabled>>,
   emitters: Query<&AudioEmitter, Allow<Disabled>>,
@@ -179,11 +212,13 @@ fn amplitude_db(amplitude: f32) -> f32 {
 }
 
 /// `spatial`'s distance low-pass: its cutoff at the maximum distance, if it
-/// has one that is a frequency
+/// has one that is a frequency, at most open (20 kHz: a file's above that
+/// fails to load), so the filter never opens with distance
 fn low_pass(spatial: &Spatial) -> Option<f64> {
   spatial
     .low_pass_at_max
     .filter(|hz| hz.is_finite() && *hz > 0.0)
+    .map(|hz| hz.min(f64::from(OPEN_HZ)))
 }
 
 /// The cutoff of a distance low-pass closing to `closed` Hz: open (20 kHz)
@@ -398,7 +433,7 @@ mod tests {
     Voice, VoiceLimit,
   };
   use crate::core::dev_log::{self, LogLevel};
-  use crate::core::ecs::{Entity, Pool, PoolConfig, World};
+  use crate::core::ecs::{Entity, Pool, PoolConfig, PoolExhaustedPolicy, World};
   use crate::core::graphics::{Camera2d, MainCamera};
   use crate::core::testing::{audio_step, audio_world, audio_world_over};
   use crate::core::time::Time;
@@ -893,6 +928,162 @@ mod tests {
     assert!(pool.acquire(&mut world).is_some());
     audio_step(&mut world, FRAME);
     assert_eq!(started(&world).len(), 2, "{:#?}", log(&world));
+  }
+
+  /// The voices that stopped, with their fades
+  fn stops(world: &World) -> Vec<(u32, Duration)> {
+    log(world)
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Stop)
+      .map(|entry| (entry.voice, entry.fade))
+      .collect()
+  }
+
+  /// A pool of emitters of `sound` at (50, 0) that play on spawn
+  fn emitter_pool(sound: &Handle<Sound>, config: PoolConfig) -> Pool<(AudioEmitter, Transform)> {
+    let sound = sound.clone();
+    let factory = move || {
+      let emitter = AudioEmitter {
+        sound: sound.clone(),
+        play_on_spawn: true,
+      };
+      (emitter, Transform::from_xy(50.0, 0.0))
+    };
+    Pool::new(factory, config)
+  }
+
+  /// Review I1: a pool takes an entity back and hands it out again in one
+  /// frame (it hands out the latest freed first): its loop stops and plays
+  /// again once, not twice. Taking an emitter away and adding it back, or
+  /// disabling and enabling it, in one frame does the same
+  #[test]
+  fn an_emitter_put_back_and_handed_out_in_one_frame_plays_once() {
+    let mut world = audio_world();
+    world.spawn(AudioListener);
+    let hum = placed(&mut world, settings(Falloff::Linear), true);
+    let mut pool = emitter_pool(&hum, PoolConfig::default());
+    let Some(first) = pool.acquire(&mut world) else {
+      panic!("the pool hands one out");
+    };
+    audio_step(&mut world, FRAME);
+    let old = only_voice(&world);
+    pool.release(&mut world, first);
+    assert_eq!(pool.acquire(&mut world), Some(first), "the same entity");
+    for _ in 0..5 {
+      audio_step(&mut world, FRAME);
+    }
+    let fade = Duration::from_millis(40);
+    assert_eq!(stops(&world), [(old, fade)], "{:#?}", log(&world));
+    assert_eq!(started(&world).len(), 2);
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
+    // Its emitter taken away and added back
+    let again = started(&world)[1];
+    world.entity_mut(first).remove::<AudioEmitter>();
+    world.entity_mut(first).insert(AudioEmitter {
+      sound: hum.clone(),
+      play_on_spawn: true,
+    });
+    for _ in 0..5 {
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(stops(&world), [(old, fade), (again, fade)]);
+    assert_eq!(started(&world).len(), 3);
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
+    // Spawned, then disabled and enabled before the audio runs: once
+    let entity = emitter(&mut world, &hum, 50.0);
+    world.entity_mut(entity).insert(Disabled);
+    world.entity_mut(entity).remove::<Disabled>();
+    audio_step(&mut world, FRAME);
+    assert_eq!(started(&world).len(), 4, "{:#?}", log(&world));
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 2);
+  }
+
+  /// Review M1: a pool that recycles its oldest entity puts it back and
+  /// hands it out again: its loop stops and its emitter plays again
+  #[test]
+  fn a_recycled_pooled_emitter_plays_again() {
+    let mut world = audio_world();
+    world.spawn(AudioListener);
+    let hum = placed(&mut world, settings(Falloff::Linear), true);
+    let config = PoolConfig {
+      initial_capacity: 1,
+      max_capacity: 1,
+      expand_batch_size: 1,
+      exhausted_policy: PoolExhaustedPolicy::RecycleOldest,
+    };
+    let mut pool = emitter_pool(&hum, config);
+    let first = pool.acquire(&mut world);
+    audio_step(&mut world, FRAME);
+    let old = only_voice(&world);
+    assert_eq!(pool.acquire(&mut world), first, "recycled");
+    for _ in 0..5 {
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(started(&world).len(), 2, "{:#?}", log(&world));
+    assert_eq!(stops(&world), [(old, Duration::from_millis(40))]);
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
+  }
+
+  /// Review M2: an emitter put over another stops the old one's voice, with
+  /// its fade, and plays its own sound if it plays on spawn
+  #[test]
+  fn replacing_an_emitter_swaps_its_sound() {
+    let mut world = audio_world();
+    world.spawn(AudioListener);
+    let hum = placed(&mut world, settings(Falloff::Linear), true);
+    let drone = placed(&mut world, settings(Falloff::Linear), true);
+    let entity = emitter(&mut world, &hum, 50.0);
+    audio_step(&mut world, FRAME);
+    let old = only_voice(&world);
+    world.entity_mut(entity).insert(AudioEmitter {
+      sound: drone.clone(),
+      play_on_spawn: true,
+    });
+    audio_step(&mut world, FRAME);
+    let fade = Duration::from_millis(40);
+    assert_eq!(stops(&world), [(old, fade)], "{:#?}", log(&world));
+    let new = started(&world)[1..].to_vec();
+    assert_eq!(new.len(), 1, "{:#?}", log(&world));
+    let start = &entries(&world, new[0], AudioLogKind::Start)[0];
+    assert_eq!(start.sound, format!("{:?}", drone.id()));
+    // One that does not play on spawn only stops the old one
+    world.entity_mut(entity).insert(AudioEmitter {
+      sound: hum.clone(),
+      play_on_spawn: false,
+    });
+    audio_step(&mut world, FRAME);
+    assert_eq!(stops(&world), [(old, fade), (new[0], fade)]);
+    assert_eq!(started(&world).len(), 2);
+  }
+
+  /// Review M3: each filtered voice's kira track goes once its voice has
+  /// ended
+  #[test]
+  fn the_filter_tracks_go_once_their_voices_end() {
+    let mut world = audio_world();
+    world.spawn(AudioListener);
+    let mut spatial = settings(Falloff::Linear);
+    spatial.low_pass_at_max = Some(500.0);
+    let blip = clip(&mut world, 0.03);
+    let shot = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(blip)],
+      spatial: Some(spatial),
+      ..Default::default()
+    });
+    let mut filtered = 0;
+    for _ in 0..20 {
+      for _ in 0..4 {
+        let voice = play_at(&mut world, &shot, 300.0);
+        filtered += usize::from(cutoff(&world, &voice).is_some());
+      }
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(filtered, 80, "every one filtered");
+    for _ in 0..10 {
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 0);
+    assert_eq!(world.resource::<AudioEngine>().sub_tracks_on("sfx"), 0);
   }
 
   /// An emitter spawned while its sound loads plays once it has

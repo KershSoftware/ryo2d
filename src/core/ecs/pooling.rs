@@ -14,7 +14,9 @@ pub enum PoolExhaustedPolicy {
   Expand,
   /// Hand out nothing
   ReturnNone,
-  /// Take back the entity that has been active the longest
+  /// Take back the entity that has been active the longest, as `release`
+  /// would (disabled, so what watches `Disabled` sees it put back), and hand
+  /// it out again
   RecycleOldest,
 }
 
@@ -178,14 +180,19 @@ impl<B: Bundle> Pool<B> {
   }
 
   /// Free the longest-active entity the world still has, skipping stale and
-  /// dead entries. False if there is none.
-  fn recycle_oldest(&mut self, world: &World) -> bool {
+  /// dead entries, putting it back as `release` does (disabled, with its
+  /// descendants), so what watches `Disabled` sees it put back and handed
+  /// out again (an audio emitter stops and plays again). False if there is
+  /// none.
+  fn recycle_oldest(&mut self, world: &mut World) -> bool {
     while let Some((number, oldest)) = self.active.pop_front() {
       if self.active_since.get(&oldest) != Some(&number) {
         continue;
       }
       self.active_since.remove(&oldest);
-      if world.get_entity(oldest).is_ok() {
+      if let Ok(mut entity) = world.get_entity_mut(oldest) {
+        entity.insert(Disabled);
+        disable_descendants(world, oldest);
         self.available.push(oldest);
         return true;
       }
@@ -431,6 +438,39 @@ mod tests {
     let third = p.acquire(&mut world).unwrap();
     assert_eq!(third, first);
     assert_eq!(p.active().count(), 2);
+  }
+
+  /// Recycling puts the oldest entity back and hands it out again, as a
+  /// release and an acquire do: what watches `Disabled` (an audio emitter,
+  /// say) sees both
+  #[test]
+  fn recycling_puts_the_oldest_back_and_hands_it_out() {
+    #[derive(crate::core::ecs::kernel::Resource, Default)]
+    struct Toggles(Vec<&'static str>);
+    let mut world = World::new();
+    world.init_resource::<Toggles>();
+    world.add_observer(
+      |_: crate::core::ecs::kernel::On<crate::core::ecs::kernel::Add<Disabled>>,
+       mut toggles: crate::core::ecs::kernel::ResMut<Toggles>| {
+        toggles.0.push("disabled");
+      },
+    );
+    world.add_observer(
+      |_: crate::core::ecs::kernel::On<crate::core::ecs::kernel::Remove<Disabled>>,
+       mut toggles: crate::core::ecs::kernel::ResMut<Toggles>| {
+        toggles.0.push("enabled");
+      },
+    );
+    let mut p = pool(PoolConfig {
+      initial_capacity: 1,
+      max_capacity: 1,
+      expand_batch_size: 1,
+      exhausted_policy: PoolExhaustedPolicy::RecycleOldest,
+    });
+    let first = p.acquire(&mut world);
+    world.resource_mut::<Toggles>().0.clear();
+    assert_eq!(p.acquire(&mut world), first, "recycled");
+    assert_eq!(world.resource::<Toggles>().0, ["disabled", "enabled"]);
   }
 
   #[test]

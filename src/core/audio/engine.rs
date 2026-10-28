@@ -43,7 +43,7 @@ use super::{
   VoiceLimit, VolumeKind, volume_to_db,
 };
 use crate::core::asset::{AssetId, AssetServer, Assets, Handle, LoadState, UntypedAssetId};
-use crate::core::ecs::kernel::Mut;
+use crate::core::ecs::kernel::{EntityHashSet, Mut};
 use crate::core::ecs::{Disabled, Entity, Resource, Vec2, World};
 use crate::core::hash::{FastMap, FastSet};
 
@@ -732,6 +732,13 @@ pub struct AudioEngine {
   listener_query: Option<ListenerQuery>,
   /// Emitters added to entities, to play on spawn once their sounds load
   spawned: Vec<Entity>,
+  /// The entities played from `spawned` in a frame: one queued twice (an
+  /// emitter spawned and a pool's put back and handed out in one frame, say)
+  /// plays once. Kept to reuse
+  spawned_seen: EntityHashSet,
+  /// Voices whose emitter went (despawned, disabled, taken away or put
+  /// over), by id, to release in the frame's update. Kept to reuse
+  orphans: Vec<u32>,
   /// The world's entities being enabled are watched, for their emitters
   watching_enabled: bool,
   /// Sounds and clips played at a place without spatial settings, warned
@@ -851,6 +858,8 @@ impl AudioEngine {
       listener: None,
       listener_query: None,
       spawned: Vec::new(),
+      spawned_seen: EntityHashSet::default(),
+      orphans: Vec::new(),
       watching_enabled: false,
       warned_flat: FastSet::default(),
       victims: Vec::new(),
@@ -1030,9 +1039,40 @@ impl AudioEngine {
   }
 
   /// True the first time it is asked: the world's first emitter is being
-  /// added, and the engine should start watching for entities being enabled
+  /// added, and the engine should start watching for entities being
+  /// disabled and enabled
   pub(crate) fn watch_enabling(&mut self) -> bool {
     !std::mem::replace(&mut self.watching_enabled, true)
+  }
+
+  /// `entity`'s emitter went (despawned, disabled, taken away or put over
+  /// by another): the voices it played no longer follow it, and are
+  /// released in the frame's update. Voices played from it afterwards (its
+  /// next emitter's) are its own again
+  pub(crate) fn emitter_gone(&mut self, entity: Entity) {
+    for live in &mut self.voices.live {
+      if live.emitter == Some(entity) {
+        live.emitter = None;
+        self.orphans.push(live.voice.id());
+      }
+    }
+  }
+
+  /// Release the voices whose emitter went, as a scene's exit would: a loop
+  /// stops with its fade, and a one-shot playing plays out where the
+  /// emitter was
+  fn release_orphans(&mut self, server: Option<&AssetServer>) {
+    if self.orphans.is_empty() {
+      return;
+    }
+    let mut orphans = std::mem::take(&mut self.orphans);
+    for &id in &orphans {
+      if let Some(index) = self.voices.index_of(id) {
+        self.release_voice(index, server);
+      }
+    }
+    orphans.clear();
+    self.orphans = orphans;
   }
 
   /// Each bus as it stands, `master` first and parents before children
@@ -2123,6 +2163,7 @@ impl AudioEngine {
       self.apply(command, server);
     }
     self.apply_mixer(world, server);
+    self.release_orphans(server);
     self.follow_listener(world, real_delta, server);
     self.play_spawned(world, server);
     self.follow_game(game, real_delta, server);
@@ -2295,16 +2336,22 @@ impl AudioEngine {
 
   /// Play the emitters added to entities (or enabled) this frame, or before
   /// while their sounds loaded, that play on spawn, where their entities
-  /// are. One whose sound is still loading waits for it; one gone, disabled
-  /// (it plays again when enabled), or no longer an emitter is forgotten
+  /// are, each once however often it was queued. One whose sound is still
+  /// loading waits for it; one gone, disabled (it plays again when
+  /// enabled), or no longer an emitter is forgotten
   fn play_spawned(&mut self, world: &World, server: Option<&AssetServer>) {
     if self.spawned.is_empty() {
       return;
     }
-    // Taken out to play from, and put back with its room kept
+    // Taken out to play from, and put back with their room kept
     let mut spawned = std::mem::take(&mut self.spawned);
+    let mut seen = std::mem::take(&mut self.spawned_seen);
+    seen.clear();
     let sounds = world.get_resource::<Assets<Sound>>();
     spawned.retain(|&entity| {
+      if !seen.insert(entity) {
+        return false;
+      }
       let Some(emitter) = world.get::<AudioEmitter>(entity) else {
         return false;
       };
@@ -2322,6 +2369,7 @@ impl AudioEngine {
     });
     spawned.append(&mut self.spawned);
     self.spawned = spawned;
+    self.spawned_seen = seen;
   }
 
   /// The time scale a voice on `bus` carries: the game's, if the bus
