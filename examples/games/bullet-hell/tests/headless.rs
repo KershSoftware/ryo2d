@@ -81,3 +81,62 @@ fn the_pause_menu_resumes_by_pad() {
   engine.step_frames(4).expect("frames");
   assert!(!paused(&engine), "South on Resume popped it");
 }
+
+/// A game playing a loop on `sfx`, under the pause menu it pushes on its
+/// first update
+struct LoopUnder {
+  sound: Option<Handle<Sound>>,
+  pushed: bool,
+}
+
+impl Scene for LoopUnder {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let clip = AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]).expect("a rate");
+    let clip = ctx.assets().add(clip);
+    let sound = ctx.assets().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      looping: true,
+      ..Default::default()
+    });
+    ctx.audio().play(&sound);
+    self.sound = Some(sound);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if self.pushed {
+      return SceneAction::Continue;
+    }
+    self.pushed = true;
+    SceneAction::Push(Box::new(bullet_hell::scenes::PauseScene::new()))
+  }
+}
+
+/// The pause menu holds the game's sounds as it freezes the game, with no
+/// code of its own for it, and Resume lets them go
+#[test]
+fn the_pause_menu_holds_the_game_s_sounds() {
+  use ryo2d::core::audio::AudioLogKind;
+  let builder = EngineBuilder::new()
+    .pixel_art(1920, 1080)
+    .fixed_hz(144)
+    .start_scene(LoopUnder {
+      sound: None,
+      pushed: false,
+    });
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  let held = |engine: &HeadlessEngine, kind: AudioLogKind| {
+    engine
+      .audio_log()
+      .iter()
+      .filter(|entry| entry.voice != 0 && entry.bus == "sfx" && entry.kind == kind)
+      .count()
+  };
+  engine.step_frames(4).expect("frames");
+  assert_eq!(held(&engine, AudioLogKind::Pause), 1, "held under the menu");
+  // Resume is the default focus
+  engine.tap_pad(GamepadButton::South);
+  engine.step_frames(4).expect("frames");
+  assert_eq!(held(&engine, AudioLogKind::Resume), 1, "let go as it pops");
+}

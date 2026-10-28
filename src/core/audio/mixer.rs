@@ -118,9 +118,11 @@ pub struct BusDef {
   /// bus: it plays no voices of its own
   pub sends: Vec<(String, f32)>,
   /// Whether its voices pause where they are while the game is paused
-  /// (`time.game.pause()`), resuming from there; `None` keeps the standard
-  /// bus's default (sfx, ambience and voice do), or its parent's. Each bus
-  /// goes by its own: one that does not pause under one that does plays on
+  /// (`time.game.pause()`), resuming from there, and while the scene that
+  /// played them is not updated (`Scene::holds_audio_below`); `None` keeps
+  /// the standard bus's default (sfx, ambience and voice do), or its
+  /// parent's. Each bus goes by its own: one that does not pause under one
+  /// that does plays on
   pub pauses_with_game: Option<bool>,
   /// Whether its voices follow the game's time scale: they play at their
   /// pitch's rate times the game's speed (up to 8 times), and pause while

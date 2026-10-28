@@ -125,11 +125,21 @@ struct VoiceShared {
 /// follows time scale (`sfx` and `ambience`) it plays at its pitch's rate
 /// times the game's speed (up to 8 times), and pauses while time stands
 /// still (the game paused, or a speed of 0.01 or less). Hitstop does not
-/// hold it: a hit's sound plays through the freeze. A voice played while
-/// its bus is held waits, unheard, and fades in over its own fade-in when
-/// the bus lets it go. These holds are the engine's and leave the voice's
-/// own [`pause`](Self::pause) alone: a held voice still reports playing,
-/// and one paused itself stays paused when the game resumes.
+/// hold it: a hit's sound plays through the freeze.
+///
+/// A scene that is not updated is not heard: while a scene above it does
+/// not update it (a pause menu pushed over the level, say), its voices on
+/// buses that pause with the game are held the same way, and so are the
+/// emitters' (the world's entities stop with it, as physics does); they
+/// resume when it updates again. The top scene can leave the scenes below
+/// audible ([`Scene::holds_audio_below`](crate::core::scene::Scene::holds_audio_below)).
+/// A voice held both by its scene and by the game's pause resumes once
+/// both let it go.
+///
+/// A voice played while held waits, unheard, and fades in over its own
+/// fade-in when it is let go. These holds are the engine's and leave the
+/// voice's own [`pause`](Self::pause) alone: a held voice still reports
+/// playing, and one paused itself stays paused when the game resumes.
 ///
 /// ```
 /// use std::time::Duration;
@@ -272,8 +282,8 @@ impl Voice {
   }
 
   /// Whether it is playing: started, not paused, not stopping or stopped.
-  /// A voice its bus holds while the game is paused still counts as
-  /// playing
+  /// A voice held by the game's pause, or while its scene is not updated,
+  /// still counts as playing
   pub fn is_playing(&self) -> bool {
     self.state() == VoiceState::Playing
   }

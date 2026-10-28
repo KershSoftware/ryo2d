@@ -25,7 +25,9 @@ pub(crate) use clip::{ClipData, DECODE_THRESHOLD, EncodedClip};
 pub use engine::AudioEngine;
 #[cfg(test)]
 pub(crate) use engine::Meter;
-pub(crate) use engine::{HEADLESS_SEED, in_scene, release_scene, stop_scene_music, unlock};
+pub(crate) use engine::{
+  HEADLESS_SEED, hold_scenes, in_scene, release_scene, stop_scene_music, unlock,
+};
 #[doc(hidden)]
 pub use log::{AudioLogEntry, AudioLogKind};
 pub(crate) use mix::OPEN_HZ;

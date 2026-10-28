@@ -343,7 +343,7 @@ impl Engine {
         let scenes = &mut host.scenes;
         let before = scenes.top_scope();
         let keep_running = scenes.handle_action(action, world);
-        scenes.sync_physics_paused(world);
+        scenes.sync_pauses(world);
         (keep_running, scenes.top_scope() != before)
       });
       if !keep_running {
@@ -931,7 +931,7 @@ pub(crate) fn scene_update_system(world: &mut World) {
     if !scenes.handle_action(action, world) {
       world.insert_resource(QuitRequested);
     }
-    scenes.sync_physics_paused(world);
+    scenes.sync_pauses(world);
   });
 }
 
@@ -945,7 +945,7 @@ pub(crate) fn scene_transition_system(world: &mut World) {
       return;
     }
     scenes.update_transition(dt, world);
-    scenes.sync_physics_paused(world);
+    scenes.sync_pauses(world);
     if scenes.is_empty() {
       world.insert_resource(QuitRequested);
     }

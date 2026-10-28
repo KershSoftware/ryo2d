@@ -116,6 +116,19 @@ fn holds(bus: &Bus, game: GameTime) -> bool {
     && ((bus.pauses_with_game && game.paused) || (bus.follows_time_scale && still))
 }
 
+/// Whether a voice owned by `scope` (a scene's; `None` for the engine's),
+/// or played from an emitter, is held by its owner while the scene stack
+/// holds the scenes in `held`: a scene's voice while its scene is there,
+/// and an emitter's while any is (the world's entities stop with the
+/// scenes below the top, as physics does). Only on a bus that pauses with
+/// the game
+fn owner_holds(held: &[u64], scope: Option<u64>, emitter: bool) -> bool {
+  match scope {
+    Some(scope) => held.contains(&scope),
+    None => emitter && !held.is_empty(),
+  }
+}
+
 /// The bus a UI sound plays on: `bus` if it is `ui` or one under it, and
 /// `ui` if not
 fn ui_bus(bus: &str) -> &str {
@@ -700,9 +713,13 @@ struct LiveVoice {
   /// The time scale its rate carries: the game's for a voice on a bus that
   /// follows time scale, 1 otherwise
   scale: f64,
-  /// Its bus holds it: paused while the game is (or time stands still),
-  /// apart from any pause of its own
+  /// It is held, apart from any pause of its own: by its bus (paused while
+  /// the game is, or time stands still), or by its owner (`owner_held`)
   held: bool,
+  /// Its owner holds it: its scene is not updated (below a top scene that
+  /// holds the scenes below), or, played from an emitter, any scene is
+  /// held. Only on a bus that pauses with the game
+  owner_held: bool,
   /// kira's sound is paused, as kira was last told: it paused itself, or
   /// its bus holds it. At most one pause or resume goes to kira a frame
   kira_paused: bool,
@@ -1229,6 +1246,10 @@ pub struct AudioEngine {
   focus_loss: FocusLoss,
   /// The scene whose code runs now: the voices it plays are its own
   scope: Option<u64>,
+  /// The scenes the scene stack does not update, under a top scene that
+  /// holds them: their voices, and the emitters', are held
+  /// ([`hold_scopes`](Self::hold_scopes))
+  held_scopes: Vec<u64>,
   /// The one music player: the track playing, and one waiting to load
   music: MusicPlayer,
   /// Where it is in the registry's events for what it plays
@@ -1394,6 +1415,7 @@ impl AudioEngine {
       focused: true,
       focus_loss: FocusLoss::Keep,
       scope: None,
+      held_scopes: Vec::new(),
       music: MusicPlayer::default(),
       reloads: Reloads::default(),
       #[cfg(test)]
@@ -1520,6 +1542,21 @@ impl AudioEngine {
   /// stop when it exits. `None` is the engine's own code
   pub(crate) fn set_scope(&mut self, scope: Option<u64>) -> Option<u64> {
     std::mem::replace(&mut self.scope, scope)
+  }
+
+  /// Hold the voices of the scenes in `scopes` (those the scene stack does
+  /// not update, under a top scene that holds them), and the emitters'
+  /// while there are any, on the buses that pause with the game; let go of
+  /// the rest. Each held voice pauses where it is over [`MIN_FADE`] in the
+  /// frame's update, and resumes from there once its owner lets go and its
+  /// bus does too. A voice its owner holds as it starts starts held
+  pub(crate) fn hold_scopes(&mut self, scopes: impl Iterator<Item = u64> + Clone) {
+    if self.held_scopes.iter().copied().eq(scopes.clone()) {
+      return;
+    }
+    self.held_scopes.clear();
+    self.held_scopes.extend(scopes);
+    self.voices_dirty = true;
   }
 
   /// Scene `scope` exited: stop the loops it played, the one-shots paused
@@ -3137,7 +3174,20 @@ impl AudioEngine {
     });
     let pitch = clamp_pitch(request.pitch);
     let scale = self.scale_on(bus);
-    let held = self.buses.buses.get(bus).is_some_and(|bus| bus.held);
+    // An emitter's voice belongs to its entity, a persistent one to the
+    // engine
+    let scope = if request.persist || request.emitter.is_some() {
+      None
+    } else {
+      self.scope
+    };
+    let (bus_held, owner_held) = self.buses.buses.get(bus).map_or((false, false), |bus| {
+      (
+        bus.held,
+        bus.pauses_with_game && owner_holds(&self.held_scopes, scope, request.emitter.is_some()),
+      )
+    });
+    let held = bus_held || owner_held;
     let own_db = clamp_gain(request.gain_db);
     // As played: with the changes the game made to a voice that waited
     let played_db = clamp_gain(own_db + request.game_db);
@@ -3317,15 +3367,11 @@ impl AudioEngine {
       game_pitch: request.game_pitch,
       scale,
       held,
+      owner_held,
       kira_paused: starts_held,
       unheard: starts_held.then_some(request.fade_in),
       own_fade: None,
-      // An emitter's voice belongs to its entity
-      scope: if request.persist || request.emitter.is_some() {
-        None
-      } else {
-        self.scope
-      },
+      scope,
       priority: request.priority,
       position: request.position,
       emitter: request.emitter,
@@ -3752,15 +3798,17 @@ impl AudioEngine {
   /// Follow the game's clock. A bus that pauses with the game holds its
   /// voices while the game is paused, and one that follows time scale
   /// while time stands still (a scale at or below [`HOLD_SCALE`]: the game
-  /// paused, or a speed of about 0; hitstop does not hold): held, a voice
-  /// is paused in kira where it is, over [`MIN_FADE`], and resumes from
-  /// there (a voice held from its start, over its own fade-in). A voice on
-  /// a bus that follows time scale plays at its pitch's rate times the
+  /// paused, or a speed of about 0; hitstop does not hold), and a voice on
+  /// a bus that pauses with the game is held while its owner is
+  /// ([`hold_scopes`](Self::hold_scopes)): held, a voice is paused in kira
+  /// where it is, over [`MIN_FADE`], and resumes from there once nothing
+  /// holds it (a voice held from its start, over its own fade-in). A voice
+  /// on a bus that follows time scale plays at its pitch's rate times the
   /// scale, gliding over the frame; held, it keeps its rate. Each bus held
-  /// or let go is logged (`Pause`, `Resume`), each voice's first resume
-  /// after a held start, and each rate change. The voices' own pauses and
-  /// resumes, applied this frame, reach kira here too, so each voice gets
-  /// at most one pause or resume a frame
+  /// or let go is logged (`Pause`, `Resume`), each voice its owner holds or
+  /// lets go, each voice's first resume after a held start, and each rate
+  /// change. The voices' own pauses and resumes, applied this frame, reach
+  /// kira here too, so each voice gets at most one pause or resume a frame
   fn follow_game(&mut self, game: GameTime, real_delta: Duration, server: Option<&AssetServer>) {
     self.game = game;
     let still = game.scale <= HOLD_SCALE;
@@ -3799,18 +3847,33 @@ impl AudioEngine {
       let Some(bus) = self.buses.buses.get(live.bus) else {
         continue;
       };
-      let let_go = live.held && !bus.held;
-      live.held = bus.held;
+      // Held by its bus, or by its owner (a scene not updated), or both:
+      // it plays again once neither holds it
+      let owner =
+        bus.pauses_with_game && owner_holds(&self.held_scopes, live.scope, live.emitter.is_some());
+      let owner_changed = owner != live.owner_held;
+      live.owner_held = owner;
+      let held = bus.held || owner;
+      let let_go = live.held && !held;
+      live.held = held;
       // Paused itself, or held: kira reads a pause before a resume sent in
       // the same frame, so only where it ends up is sent. Its own pause or
       // resume this frame gives the fade; a hold's is the shortest
       let paused = state == VoiceState::Paused || live.held;
-      let own = live.own_fade.take().unwrap_or(MIN_FADE);
+      let own_fade = live.own_fade.take();
+      let own = own_fade.unwrap_or(MIN_FADE);
       let mut first_heard = None;
+      // A hold by its owner is logged on the voice (a bus's on the bus);
+      // its own pause or resume logged itself
+      let mut owner_hold = None;
       if paused != live.kira_paused {
         live.kira_paused = paused;
+        let by_owner = owner_changed && own_fade.is_none();
         if paused {
           live.playback.pause(own);
+          if by_owner {
+            owner_hold = Some((AudioLogKind::Pause, own));
+          }
         } else if live.playback.waiting_fade().is_some() {
           // Not heard yet: it starts at the web's unlock, fading in there
           live.playback.resume(MIN_FADE);
@@ -3818,9 +3881,10 @@ impl AudioEngine {
           let unheard = live.unheard.take();
           let fade = unheard.map_or(own, |fade| fade.max(own));
           live.playback.resume(fade);
-          // Its own resume logged itself
           if let_go && unheard.is_some() {
             first_heard = Some(fade);
+          } else if by_owner {
+            owner_hold = Some((AudioLogKind::Resume, fade));
           }
         }
       }
@@ -3842,6 +3906,9 @@ impl AudioEngine {
       }
       if let Some(fade) = first_heard {
         self.record(index, AudioLogKind::Resume, fade, server);
+      }
+      if let Some((kind, fade)) = owner_hold {
+        self.record(index, kind, fade, server);
       }
       if rescaled {
         self.record(index, AudioLogKind::Rate, glide, server);
@@ -4240,6 +4307,20 @@ pub(crate) fn release_scene(world: &mut World, scope: u64) {
   world.try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
     engine.release_scope(world, scope);
   });
+}
+
+/// The scene stack holds the scenes `scopes` (those it does not update,
+/// under a top scene that holds them): their voices, and the emitters',
+/// are held on the buses that pause with the game until they update again
+/// ([`AudioEngine::hold_scopes`]). Called as the stack changes and after
+/// each step; the engine is touched only when the scenes held change
+pub(crate) fn hold_scenes(world: &mut World, scopes: impl Iterator<Item = u64> + Clone) {
+  let changed = world
+    .get_resource::<AudioEngine>()
+    .is_some_and(|engine| !engine.held_scopes.iter().copied().eq(scopes.clone()));
+  if changed && let Some(mut engine) = world.get_resource_mut::<AudioEngine>() {
+    engine.hold_scopes(scopes);
+  }
 }
 
 /// A user gesture (a key, a mouse button or a touch) reached the game: on

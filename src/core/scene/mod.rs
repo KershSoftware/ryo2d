@@ -400,6 +400,23 @@ pub trait Scene: 'static {
     false
   }
 
+  /// Whether the scenes this one does not update are held silent while it
+  /// is on top. A scene that is not updated is not heard: the voices those
+  /// scenes played, and the emitters' (the world's entities stop with
+  /// them, as physics does), are held with a 10 ms fade on the buses that
+  /// pause with the game (`sfx`, `ambience` and `voice` by default), and
+  /// resume where they were when those scenes update again (after a `Pop`,
+  /// say). This scene's own voices, the engine's (music, and voices played
+  /// with `persist`) and voices on buses that do not pause with the game
+  /// (`ui`, `music`) play on.
+  ///
+  /// Only the top scene's answer counts. Return `false` to leave the scenes
+  /// below audible (a dialogue box over a level whose ambience should carry
+  /// on); a scene that `updates_below` leaves them audible anyway.
+  fn holds_audio_below(&self) -> bool {
+    true
+  }
+
   /// Which engine state is reset when this scene exits via `Switch` or `Reset`.
   fn cleanup_on_exit(&self) -> SceneCleanup {
     SceneCleanup::DEFAULT
@@ -537,6 +554,7 @@ mod tests {
     assert!(!scene.is_transparent());
     assert!(!scene.updates_below());
     assert!(!scene.is_physics_paused());
+    assert!(scene.holds_audio_below());
     assert_eq!(scene.cleanup_on_exit(), SceneCleanup::DEFAULT);
     let mut world = crate::core::ecs::World::new();
     init_world_resources_for_tests(&mut world);

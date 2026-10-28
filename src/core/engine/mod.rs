@@ -1183,7 +1183,7 @@ impl Engine {
 
     frame::with_host(&mut self.world, |world, host| {
       host.scenes.enter_initial(world);
-      host.scenes.sync_physics_paused(world);
+      host.scenes.sync_pauses(world);
     });
 
     engine_info!(module: "Init", "Engine initialized successfully!");

@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::time::Duration;
 
-use crate::core::audio::{in_scene, release_scene};
+use crate::core::audio::{hold_scenes, in_scene, release_scene};
 use crate::core::console::CommandRegistry;
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::CheckChangeTicks;
@@ -204,6 +204,7 @@ impl SceneManager {
   }
 
   fn enter_top(&mut self, world: &mut World) {
+    self.sync_audio_holds(world);
     let Some(top) = self.scenes.last_mut() else {
       return;
     };
@@ -291,6 +292,8 @@ impl SceneManager {
     slot.call(world, |scene, ctx| scene.on_exit(ctx));
     release_scope(world, slot.scope_id);
     self.exited.push(slot.scope_id);
+    // The scenes below update again, and are heard as the new top resumes
+    self.sync_audio_holds(world);
     if let Some(top) = self.scenes.last_mut() {
       top.call(world, |scene, ctx| scene.on_resume(ctx, returned));
     }
@@ -320,6 +323,7 @@ impl SceneManager {
       release_scope(world, slot.scope_id);
       self.exited.push(slot.scope_id);
     }
+    self.sync_audio_holds(world);
   }
 
   /// Exit every scene, run the top scene's cleanup, then enter `scene`.
@@ -657,11 +661,25 @@ impl SceneManager {
     top.scene.is_physics_paused() || (self.scenes.len() > 1 && !top.scene.updates_below())
   }
 
-  /// Write `is_physics_paused` into the `PhysicsPaused` resource.
-  pub fn sync_physics_paused(&self, world: &mut World) {
+  /// Write the stack's pauses into the world: `is_physics_paused` into the
+  /// `PhysicsPaused` resource, and the scenes whose voices the audio engine
+  /// holds (see [`Scene::holds_audio_below`]). The stack's changes do the
+  /// second as they happen; this follows a scene whose answers changed.
+  pub fn sync_pauses(&self, world: &mut World) {
     if let Some(mut paused) = world.get_resource_mut::<PhysicsPaused>() {
       paused.0 = self.is_physics_paused();
     }
+    self.sync_audio_holds(world);
+  }
+
+  /// Tell the audio engine which scenes are not heard: those not updated
+  /// (below `update_from`), when the top scene `holds_audio_below`.
+  fn sync_audio_holds(&self, world: &mut World) {
+    let held = match self.scenes.last() {
+      Some(top) if top.scene.holds_audio_below() => &self.scenes[..self.update_from()],
+      _ => &[],
+    };
+    hold_scenes(world, held.iter().map(|slot| slot.scope_id));
   }
 }
 
@@ -1731,7 +1749,8 @@ mod tests {
   }
 
   /// A voice a scene's system plays is the scene's too; a scene pushed
-  /// above leaves it playing, and it stops when its scene pops
+  /// above holds it (its handle still says it plays) and never stops it,
+  /// and it stops when its scene pops
   #[test]
   fn a_scene_s_systems_play_its_voices_and_a_scene_above_leaves_them_alone() {
     use crate::core::audio::{AudioView, Voice};
@@ -1827,6 +1846,310 @@ mod tests {
     assert_eq!(world.resource::<AudioEngine>().voices_on("sfx"), 1);
     m.pop(&mut world, None);
     assert_eq!(audio_stops(&world).len(), 1, "the click's loop stops");
+  }
+
+  /// A pause menu: plays each of its sounds as it enters, and holds the
+  /// scenes below it unless `holds` is false
+  struct PauseMenu {
+    sounds: Vec<crate::core::asset::Handle<crate::core::audio::Sound>>,
+    played: Voices,
+    holds: bool,
+  }
+
+  impl PauseMenu {
+    fn new(holds: bool) -> Box<Self> {
+      Box::new(Self {
+        sounds: Vec::new(),
+        played: Arc::default(),
+        holds,
+      })
+    }
+  }
+
+  impl Scene for PauseMenu {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let voices: Vec<_> = self
+        .sounds
+        .iter()
+        .map(|sound| ctx.audio().play(sound))
+        .collect();
+      self.played.lock().unwrap().extend(voices);
+    }
+    fn holds_audio_below(&self) -> bool {
+      self.holds
+    }
+  }
+
+  /// A one-second one-shot on `bus`
+  fn shot_on(
+    world: &mut World,
+    bus: &str,
+  ) -> crate::core::asset::Handle<crate::core::audio::Sound> {
+    use crate::core::audio::{AudioClip, Sound, SoundClip};
+    let clip = world
+      .resource_mut::<crate::core::asset::Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]).unwrap());
+    world
+      .resource_mut::<crate::core::asset::Assets<Sound>>()
+      .add(Sound {
+        clips: vec![SoundClip::new(clip)],
+        bus: bus.to_string(),
+        ..Default::default()
+      })
+  }
+
+  /// What kira is doing with `voice`'s sound
+  fn kira(world: &World, voice: &crate::core::audio::Voice) -> Option<kira::sound::PlaybackState> {
+    world
+      .resource::<crate::core::audio::AudioEngine>()
+      .voice_playback(voice.id())
+  }
+
+  /// The voices the audio log has an entry of `kind` for, with its fade
+  fn voice_log(world: &World, kind: crate::core::audio::AudioLogKind) -> Vec<(u32, Duration)> {
+    world
+      .resource::<crate::core::audio::AudioEngine>()
+      .log()
+      .iter()
+      .filter(|entry| entry.voice != 0 && entry.kind == kind)
+      .map(|entry| (entry.voice, entry.fade))
+      .collect()
+  }
+
+  const FRAME: Duration = Duration::from_nanos(16_666_667);
+
+  /// The engine's pause idiom, a menu pushed over the level, silences the
+  /// level as it freezes its physics: the level's loop is held (its handle
+  /// still says it plays), while the menu's own sounds, on `ui` and on
+  /// `sfx`, the music and the engine's own loop play on. A pop resumes the
+  /// loop where it was
+  #[test]
+  fn a_pushed_pause_menu_holds_the_level_s_voices_until_it_pops() {
+    use crate::core::audio::{AudioLogKind, AudioView};
+    use crate::core::testing::audio_step;
+    use kira::sound::PlaybackState::{Paused, Playing};
+    let (mut world, sound) = audio_scene_world();
+    let track = theme(&mut world);
+    let click = shot_on(&mut world, "ui");
+    let blip = shot_on(&mut world, "sfx");
+    let level: Voices = Arc::default();
+    let mut m = SceneManager::with_scene(Box::new(PlaysLoop(sound.clone(), level.clone())));
+    m.enter_initial(&mut world);
+    let mut view = AudioView::new(&mut world);
+    view.play_music(&track);
+    let engine_owned = view.play(&sound);
+    audio_step(&mut world, FRAME);
+    let menu: Voices = Arc::default();
+    let pause = Box::new(PauseMenu {
+      sounds: vec![click, blip],
+      played: menu.clone(),
+      holds: true,
+    });
+    m.push(pause, &mut world);
+    audio_step(&mut world, FRAME);
+    let [bed] = voices(&level);
+    let [click, blip] = voices(&menu);
+    assert_eq!(kira(&world, &bed), Some(Paused), "held");
+    assert!(bed.is_playing(), "a hold leaves it playing: {bed:?}");
+    for voice in [&click, &blip, &engine_owned] {
+      assert_eq!(kira(&world, voice), Some(Playing), "{voice:?}");
+    }
+    assert_eq!(voice_log(&world, AudioLogKind::Pause), [(bed.id(), MIN)]);
+    assert_eq!(
+      voice_entries(&world, "music", AudioLogKind::Start).len(),
+      1,
+      "the music plays on"
+    );
+    m.pop(&mut world, None);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira(&world, &bed), Some(Playing), "resumed");
+    assert_eq!(voice_log(&world, AudioLogKind::Resume), [(bed.id(), MIN)]);
+    assert!(
+      audio_stops(&world)
+        .iter()
+        .all(|(voice, _)| *voice != bed.id()),
+      "never stopped: {:?}",
+      audio_stops(&world)
+    );
+  }
+
+  const MIN: Duration = Duration::from_millis(10);
+
+  /// A top scene that leaves the scenes below audible holds nothing
+  #[test]
+  fn a_top_scene_that_leaves_the_scenes_below_audible_holds_nothing() {
+    use crate::core::audio::AudioLogKind;
+    use crate::core::testing::audio_step;
+    let (mut world, sound) = audio_scene_world();
+    let level: Voices = Arc::default();
+    let mut m = SceneManager::with_scene(Box::new(PlaysLoop(sound, level.clone())));
+    m.enter_initial(&mut world);
+    audio_step(&mut world, FRAME);
+    m.push(PauseMenu::new(false), &mut world);
+    audio_step(&mut world, FRAME);
+    let [bed] = voices(&level);
+    assert_eq!(
+      kira(&world, &bed),
+      Some(kira::sound::PlaybackState::Playing)
+    );
+    assert_eq!(voice_log(&world, AudioLogKind::Pause), []);
+  }
+
+  /// A voice held both by its scene and by the game's pause resumes only
+  /// once both let it go, whichever lets go first
+  #[test]
+  fn a_voice_held_by_its_scene_and_the_game_s_pause_waits_for_both() {
+    use crate::core::testing::audio_step;
+    use kira::sound::PlaybackState::{Paused, Playing};
+    let (mut world, sound) = audio_scene_world();
+    let level: Voices = Arc::default();
+    let mut m = SceneManager::with_scene(Box::new(PlaysLoop(sound, level.clone())));
+    m.enter_initial(&mut world);
+    audio_step(&mut world, FRAME);
+    let [bed] = voices(&level);
+    let clock = |world: &mut World, paused: bool| {
+      let mut time = world.resource_mut::<Time>();
+      if paused {
+        time.game.pause();
+      } else {
+        time.game.resume();
+      }
+    };
+    // The menu lets go first
+    m.push(PauseMenu::new(true), &mut world);
+    clock(&mut world, true);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira(&world, &bed), Some(Paused));
+    m.pop(&mut world, None);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira(&world, &bed), Some(Paused), "the clock still holds it");
+    clock(&mut world, false);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira(&world, &bed), Some(Playing));
+    // The clock lets go first
+    clock(&mut world, true);
+    m.push(PauseMenu::new(true), &mut world);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira(&world, &bed), Some(Paused));
+    clock(&mut world, false);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira(&world, &bed), Some(Paused), "the menu still holds it");
+    m.pop(&mut world, None);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira(&world, &bed), Some(Playing));
+  }
+
+  /// A loop the level played while its sound loaded lands under the pause
+  /// menu: it starts held, silent, and fades in over its fade-in as the
+  /// menu pops
+  #[test]
+  fn a_loop_that_lands_under_a_pause_menu_starts_held() {
+    use crate::core::asset::{AssetServer, AssetsView, MemorySource, insert_registry};
+    use crate::core::audio::{AudioEngine, AudioLogKind, Sound};
+    use crate::core::testing::audio_step;
+    use kira::sound::PlaybackState::{Paused, Resuming};
+
+    struct LoadsBed(Voices);
+
+    impl Scene for LoadsBed {
+      fn on_enter(&mut self, ctx: &mut SceneContext) {
+        let sound = ctx.assets().load::<Sound>("sfx/bed-lands.sound.ron");
+        let voice = ctx.audio().play(&sound);
+        self.0.lock().unwrap().push(voice);
+      }
+    }
+
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/bed-lands.sound.ron",
+      r#"(clips: [(path: "sfx/bed-lands.wav")], looping: true, fade_in: 0.2)"#,
+    );
+    files.insert(
+      "sfx/bed-lands.wav",
+      crate::core::testing::wav(48_000, 96_000, 4_000),
+    );
+    let mut world = world();
+    insert_registry(&mut world, AssetServer::new(files));
+    world.resource_mut::<AudioEngine>().set_logging(true);
+    let level: Voices = Arc::default();
+    let mut m = SceneManager::with_scene(Box::new(LoadsBed(level.clone())));
+    m.enter_initial(&mut world);
+    m.push(PauseMenu::new(true), &mut world);
+    let sound = AssetsView::new(&mut world).load::<Sound>("sfx/bed-lands.sound.ron");
+    for _ in 0..300 {
+      if AssetsView::new(&mut world).is_ready(&sound) {
+        break;
+      }
+      audio_step(&mut world, FRAME);
+    }
+    audio_step(&mut world, FRAME);
+    let [bed] = voices(&level);
+    assert_eq!(
+      voice_log(&world, AudioLogKind::Start),
+      [(bed.id(), Duration::ZERO)],
+      "started silent"
+    );
+    assert_eq!(kira(&world, &bed), Some(Paused), "started held");
+    assert!(bed.is_playing(), "{bed:?}");
+    m.pop(&mut world, None);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira(&world, &bed), Some(Resuming), "fading in");
+    assert_eq!(
+      voice_log(&world, AudioLogKind::Resume),
+      [(bed.id(), Duration::from_millis(200))]
+    );
+  }
+
+  /// The world's entities stop with the scenes below, as physics does: an
+  /// emitter's loop is held under the pause menu, and resumes as it pops
+  #[test]
+  fn an_emitter_s_loop_is_held_under_a_pause_menu() {
+    use crate::core::audio::{AudioEmitter, AudioLogKind, Sound};
+    use crate::core::testing::audio_step;
+    use kira::sound::PlaybackState::{Paused, Playing};
+
+    struct SpawnsEmitter(crate::core::asset::Handle<Sound>);
+
+    impl Scene for SpawnsEmitter {
+      fn on_enter(&mut self, ctx: &mut SceneContext) {
+        let emitter = AudioEmitter {
+          sound: self.0.clone(),
+          play_on_spawn: true,
+        };
+        ctx.world.spawn((emitter, Transform::IDENTITY));
+      }
+    }
+
+    let (mut world, sound) = audio_scene_world();
+    let mut sounds = world.resource_mut::<crate::core::asset::Assets<Sound>>();
+    let Some(mut placed) = sounds.get(&sound).cloned() else {
+      panic!("the loop is in the store");
+    };
+    placed.spatial = Some(crate::core::audio::Spatial {
+      min_distance: 100.0,
+      max_distance: 500.0,
+      curve: crate::core::audio::Falloff::Linear,
+      pan_width: 200.0,
+      low_pass_at_max: None,
+    });
+    let placed = sounds.add(placed);
+    let mut m = SceneManager::with_scene(Box::new(SpawnsEmitter(placed)));
+    m.enter_initial(&mut world);
+    audio_step(&mut world, FRAME);
+    let starts = voice_entries(&world, "sfx", AudioLogKind::Start);
+    let [start] = &starts[..] else {
+      panic!("the emitter started: {starts:?}");
+    };
+    let engine = world.resource::<crate::core::audio::AudioEngine>();
+    assert_eq!(engine.voice_playback(start.voice), Some(Playing));
+    m.push(PauseMenu::new(true), &mut world);
+    audio_step(&mut world, FRAME);
+    let engine = world.resource::<crate::core::audio::AudioEngine>();
+    assert_eq!(engine.voice_playback(start.voice), Some(Paused));
+    m.pop(&mut world, None);
+    audio_step(&mut world, FRAME);
+    let engine = world.resource::<crate::core::audio::AudioEngine>();
+    assert_eq!(engine.voice_playback(start.voice), Some(Playing));
   }
 
   /// A track of a two-second loop that crossfades over 300 ms
