@@ -667,10 +667,17 @@ struct LiveVoice {
   /// The music it plays, if it is the music player's
   music: Option<AssetId<Music>>,
   bus: usize,
-  /// Its own gain in dB
+  /// Its sound's level in dB as it plays it: its definition's volume, the
+  /// spread it drew and its play's options, moved by its definition's
+  /// reloads
   gain_db: f32,
-  /// Its own pitch in semitones
+  /// Its sound's pitch in semitones, the same way
   pitch: f32,
+  /// The game's change to its gain in dB (`Voice::set_volume`), added to
+  /// its sound's level
+  game_db: f32,
+  /// The game's change to its pitch in semitones (`Voice::set_pitch`)
+  game_pitch: f32,
   /// The time scale its rate carries: the game's for a voice on a bus that
   /// follows time scale, 1 otherwise
   scale: f64,
@@ -719,14 +726,29 @@ impl LiveVoice {
       bus: self.bus,
       gain_db: self.heard_db(),
       pan: self.pan(),
-      rate: rate_of(self.pitch) * self.scale,
+      rate: self.rate(),
     }
+  }
+
+  /// Its own gain: its sound's level and the game's change to it
+  fn own_db(&self) -> f32 {
+    clamp_gain(self.gain_db + self.game_db)
+  }
+
+  /// Its own pitch: its sound's and the game's change to it
+  fn own_pitch(&self) -> f32 {
+    clamp_pitch(self.pitch + self.game_pitch)
+  }
+
+  /// Its playback rate: its own pitch's, times the time scale it carries
+  fn rate(&self) -> f64 {
+    rate_of(self.own_pitch()) * self.scale
   }
 
   /// Its gain as heard: its own, plus its place's falloff
   fn heard_db(&self) -> f32 {
     heard_db(
-      self.gain_db,
+      self.own_db(),
       self.spatial.as_ref().map_or(0.0, |spatial| spatial.gain_db),
     )
   }
@@ -769,12 +791,10 @@ impl VoiceTable {
   }
 }
 
-/// A definition's volume (dB) and pitch (semitones) as a voice's own gain
-/// and pitch last took them: a reload of the definition moves each by its
-/// change, keeping the spread the voice drew and its play's options. A part
-/// the game set on the voice (`Voice::set_volume`, `set_pitch`) replaced
-/// what it was played with, so is the game's from then on: `None`, as for a
-/// voice with no definition
+/// A definition's volume (dB) and pitch (semitones) as a voice's sound
+/// level last took them: a reload of the definition moves each by its
+/// change, keeping the spread the voice drew, its play's options and the
+/// game's changes on top. `None` for a voice with no definition
 #[derive(Debug, Clone, Copy, Default)]
 struct Tuning {
   volume_db: Option<f32>,
@@ -783,7 +803,7 @@ struct Tuning {
 
 /// How far a voice's `part` of its definition (its volume or pitch, as it
 /// last took it) moves to the definition's value `now`, which it takes; 0
-/// for a part the game set (`None`), which stays the game's
+/// for a voice with no definition (`None`)
 fn follow_change(part: &mut Option<f32>, now: f32) -> f32 {
   part
     .as_mut()
@@ -1003,7 +1023,7 @@ struct Replay {
   source: Source,
   region: Option<Range<f64>>,
   loop_region: Option<Range<f64>>,
-  /// Its own gain in dB
+  /// Its sound's level in dB (the game's change goes on top)
   gain_db: f32,
   bus: usize,
 }
@@ -2056,10 +2076,11 @@ impl AudioEngine {
       None => live.filter().map(|filter| filter.applied),
     };
     let place_db = live.spatial.as_ref().map_or(0.0, |spatial| spatial.gain_db);
+    let own_db = clamp_gain(replay.gain_db + live.game_db);
     let start = Start {
-      gain_db: heard_db(replay.gain_db, place_db),
+      gain_db: heard_db(own_db, place_db),
       pan: live.pan(),
-      rate: rate_of(live.pitch) * live.scale,
+      rate: live.rate(),
       held,
       fade_in: waiting.map_or(Some(tween(MIN_FADE)), fade_in_of),
       region: replay.region.as_ref(),
@@ -2347,8 +2368,8 @@ impl AudioEngine {
 
   /// Move each loop playing one of `sounds` (reloaded) by the change in its
   /// definition's volume and pitch, over [`MIN_FADE`]: the spread it drew
-  /// and its play's options stay, and a volume or pitch the game set on the
-  /// voice is left alone
+  /// and its play's options stay, and the game's changes to the voice stay
+  /// on top
   fn retune(&mut self, world: &World, sounds: &[AssetId<Sound>], server: Option<&AssetServer>) {
     let Some(defs) = world.get_resource::<Assets<Sound>>() else {
       return;
@@ -2377,9 +2398,7 @@ impl AudioEngine {
       let rate = higher != 0.0;
       if rate {
         live.pitch = clamp_pitch(live.pitch + higher);
-        live
-          .playback
-          .set_rate(rate_of(live.pitch) * live.scale, tween(MIN_FADE));
+        live.playback.set_rate(live.rate(), tween(MIN_FADE));
       }
       if gain {
         self.record(index, AudioLogKind::Gain, MIN_FADE, server);
@@ -2922,6 +2941,8 @@ impl AudioEngine {
       bus,
       gain_db: own_db,
       pitch,
+      game_db: 0.0,
+      game_pitch: 0.0,
       scale,
       held,
       kira_paused: held,
@@ -3441,9 +3462,7 @@ impl AudioEngine {
       };
       if rescaled {
         live.scale = scale;
-        live
-          .playback
-          .set_rate(rate_of(live.pitch) * scale, tween(glide));
+        live.playback.set_rate(live.rate(), tween(glide));
       }
       if let Some(fade) = first_heard {
         self.record(index, AudioLogKind::Resume, fade, server);
@@ -3491,7 +3510,7 @@ impl AudioEngine {
         }
       }
       let live = &mut self.voices.live[index];
-      let own_db = live.gain_db;
+      let own_db = live.own_db();
       let (Some(spatial), Some(position)) = (&mut live.spatial, live.position) else {
         continue;
       };
@@ -3627,19 +3646,14 @@ impl AudioEngine {
         (AudioLogKind::Resume, fade)
       }
       VoiceChange::Volume(db) => {
-        live.gain_db = clamp_gain(db);
-        // The game's from now on: a reload of its definition leaves it
-        live.tuning.volume_db = None;
+        live.game_db = clamp_offset(db, GAIN_RANGE.1 - GAIN_RANGE.0);
         let heard = live.heard_db();
         live.playback.set_volume(heard, smooth);
         (AudioLogKind::Gain, change_fade)
       }
       VoiceChange::Pitch(semitones) => {
-        live.pitch = clamp_pitch(semitones);
-        live.tuning.pitch = None;
-        live
-          .playback
-          .set_rate(rate_of(live.pitch) * live.scale, smooth);
+        live.game_pitch = clamp_offset(semitones, 2.0 * PITCH_RANGE);
+        live.playback.set_rate(live.rate(), smooth);
         (AudioLogKind::Rate, change_fade)
       }
     };
@@ -4356,6 +4370,17 @@ fn clamp_gain(db: f32) -> f32 {
     0.0
   } else {
     db.clamp(GAIN_RANGE.0, GAIN_RANGE.1)
+  }
+}
+
+/// A change to a level (dB or semitones) that a sum is then clamped by:
+/// NaN is none, the rest clamped to ±`span`, the whole of what the sum may
+/// cover
+fn clamp_offset(change: f32, span: f32) -> f32 {
+  if change.is_nan() {
+    0.0
+  } else {
+    change.clamp(-span, span)
   }
 }
 

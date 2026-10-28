@@ -41,9 +41,9 @@ pub(crate) enum VoiceChange {
   Stop(Duration),
   Pause,
   Resume,
-  /// The voice's own gain, in dB
+  /// The game's change to the voice's gain, in dB
   Volume(f32),
-  /// The voice's own pitch, in semitones
+  /// The game's change to the voice's pitch, in semitones
   Pitch(f32),
 }
 
@@ -208,15 +208,22 @@ impl Voice {
     self.send(VoiceChange::Resume);
   }
 
-  /// Set the voice's own gain in dB (0 is the clip as recorded; -60 and
-  /// below are silent; at most +24), replacing the gain it was played with
+  /// Set the game's change to the voice's gain in dB, relative to the
+  /// sound's level (its definition's volume, the spread its play drew and
+  /// its [`PlayOptions`](super::PlayOptions)), as `PlayOptions` are: 0
+  /// plays it at the sound's level, -6 about half as loud. The sum is at
+  /// most +24 dB, and -60 and below are silent. A reload of the definition
+  /// still moves the sound's level beneath it. Smoothed over 10 ms
   pub fn set_volume(&self, db: f32) {
     self.send(VoiceChange::Volume(db));
   }
 
-  /// Set the voice's own pitch in semitones (-48 to 48), replacing the
-  /// pitch it was played with. Pitch changes speed too, as on a turntable.
-  /// On a bus that follows time scale, the game's speed still multiplies it
+  /// Set the game's change to the voice's pitch in semitones, relative to
+  /// the sound's pitch (its definition's, the spread its play drew and its
+  /// [`PlayOptions`](super::PlayOptions)), as `PlayOptions` are: 12 is an
+  /// octave above the sound. The sum is kept within 48 semitones either
+  /// way. Pitch changes speed too, as on a turntable. On a bus that follows
+  /// time scale, the game's speed still multiplies it. Smoothed over 10 ms
   pub fn set_pitch(&self, semitones: f32) {
     self.send(VoiceChange::Pitch(semitones));
   }

@@ -25,7 +25,8 @@ use crate::core::asset::{Asset, Handle};
 /// Saved while it plays (hot reload), it applies to the plays after; its
 /// loops playing take the change in its volume and pitch at once (each
 /// keeps the spread it drew, and a volume or pitch the game set on its
-/// [`Voice`](super::Voice) stays the game's), and stay on their bus. A save
+/// [`Voice`](super::Voice) stays on top, relative to the sound's level), and
+/// stay on their bus. A save
 /// that does not load changes nothing.
 ///
 /// ```

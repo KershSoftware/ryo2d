@@ -249,8 +249,9 @@ mod tests {
       "{:?}",
       rates(&world, &ui)
     );
-    // The voice's own pitch still counts, the time scale multiplying it
-    sfx.set_pitch(0.0);
+    // The voice's own pitch still counts, the time scale multiplying it: an
+    // octave down from the octave up it was played at
+    sfx.set_pitch(-12.0);
     audio_step(&mut world, FRAME);
     assert!(
       close(&rates(&world, &sfx), &[2.0, 1.0, 0.5]),
@@ -1109,42 +1110,62 @@ mod tests {
     assert_eq!(log(&world).pop().map(|entry| entry.gain_db), Some(-6.0));
   }
 
-  /// A volume or pitch the game set on a voice replaces the one it was
-  /// played with: a reload of its definition leaves that one alone
+  /// A volume or pitch the game sets on a voice is relative to its sound's
+  /// level, as `PlayOptions` are: a definition at -12 dB set to -6 plays at
+  /// -18, and a reload of the definition still moves the sound beneath the
+  /// game's change
   #[test]
-  fn a_reload_leaves_a_volume_the_game_set() {
+  fn a_voice_s_volume_and_pitch_are_relative_to_its_sound() {
     let hum = wav_of(2.0, 3_000);
     let (mut world, files) = world_over(&[
       ("sfx/hum.wav", &hum),
       (
         "sfx/hum.sound.ron",
-        br#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -6.0)"#,
+        br#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -12.0)"#,
       ),
     ]);
     let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
     let voice = AudioView::new(&mut world).play(&sound);
-    voice.set_volume(-60.0);
     steps(&mut world, 3);
-    let louder = r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: 0.0, pitch: 2.0)"#;
-    save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", louder);
-    assert_eq!(
-      entries(&world, voice.id()),
-      [
-        (AudioLogKind::Start, Duration::ZERO),
-        // Set in the frame it started: at once
-        (AudioLogKind::Gain, Duration::ZERO),
-        (AudioLogKind::Rate, MIN_FADE)
-      ],
-      "the pitch moves, the muted volume does not: {:#?}",
-      log(&world)
-    );
-    assert_eq!(log(&world).pop().map(|entry| entry.gain_db), Some(-60.0));
-    // A pitch it set stays too
-    voice.set_pitch(-1.0);
+    voice.set_volume(-6.0);
+    voice.set_pitch(2.0);
     audio_step(&mut world, FRAME);
-    let higher = r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: 0.0, pitch: 5.0)"#;
-    save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", higher);
-    assert_eq!(entries(&world, voice.id()).len(), 4, "{:#?}", log(&world));
+    let heard = |world: &World, kind: AudioLogKind| {
+      log(world)
+        .iter()
+        .rev()
+        .find(|entry| entry.voice == voice.id() && entry.kind == kind)
+        .map(|entry| (entry.gain_db, entry.rate))
+    };
+    let semitones = |rate: f64| 12.0 * rate.log2();
+    let Some((gain, _)) = heard(&world, AudioLogKind::Gain) else {
+      panic!("no gain change: {:#?}", log(&world));
+    };
+    assert!((gain + 18.0).abs() < 1e-4, "{gain}");
+    let Some((_, rate)) = heard(&world, AudioLogKind::Rate) else {
+      panic!("no rate change: {:#?}", log(&world));
+    };
+    assert!((semitones(rate) - 2.0).abs() < 1e-6, "{rate}");
+    let louder = r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -10.0, pitch: 1.0)"#;
+    save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", louder);
+    let Some((gain, _)) = heard(&world, AudioLogKind::Gain) else {
+      panic!("no gain change: {:#?}", log(&world));
+    };
+    assert!(
+      (gain + 16.0).abs() < 1e-4,
+      "the reload moves it beneath: {gain}"
+    );
+    let Some((_, rate)) = heard(&world, AudioLogKind::Rate) else {
+      panic!("no rate change: {:#?}", log(&world));
+    };
+    assert!((semitones(rate) - 3.0).abs() < 1e-6, "{rate}");
+    // Back to 0, it plays at the sound's level
+    voice.set_volume(0.0);
+    audio_step(&mut world, FRAME);
+    let Some((gain, _)) = heard(&world, AudioLogKind::Gain) else {
+      panic!("no gain change: {:#?}", log(&world));
+    };
+    assert!((gain + 10.0).abs() < 1e-4, "{gain}");
   }
 
   /// A loop paused through its clip's switch stays paused where it was,
