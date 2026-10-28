@@ -2,7 +2,7 @@
 name: ryo-audio
 description: "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log."
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Ryo2D Audio
@@ -82,7 +82,8 @@ Every type here is in the prelude unless a path is given; complete signatures ar
 
 - `ctx.audio()` is an `AudioView` that borrows the context: take it, use it, let it go.
 - A `Handle<AudioClip>` plays directly too (`ctx.audio().play(&clip)`), with the empty definition: the `sfx` bus, 0 dB, no variation and no limit.
-- **A sound that has not loaded plays nothing** (a `load` handle for its first few frames), and one that failed warns once in the dev log with its path. Load what a scene plays at once with `load_now` in `on_enter`, or `load` behind a loading screen (`ryo-assets`).
+- **A loop played while its sound loads waits for it**: its voice reports playing, takes what the game does to it, and starts with its `fade_in` once the sound is ready, so `load` then `play` of an ambience bed in `on_enter` just works. Its scene's exit ends it as it does any loop, and a sound that fails to load ends it (the registry's one warning says why).
+- **A one-shot played while its sound loads is refused**, as it would only be late: logged, and warned about once in a debug build. A definition still loading is not known to loop until it lands, so any play of one waits until then, and a one-shot is refused at that point. Load what a scene plays at once with `load_now` in `on_enter`, or `load` behind a loading screen (`ryo-assets`). A sound that failed to load plays nothing, warned once with its path.
 - A voice holds its clip while it plays, so a scene may drop its handles while the last sounds play out.
 
 ## 2. Sound definitions (`.sound.ron`)
@@ -99,12 +100,13 @@ Every field but `clips` may be left out; an option is written without `Some(..)`
 | `limit` | none | `(max: 4, rule: StopOldest)`: how many of its voices play at once and what a play past that does (section 4) |
 | `priority` | 128 | 0 to 255, **higher is more important** (section 4) |
 | `cooldown` | 0.0 | Seconds: a play sooner than this after the last is refused |
+| `per_frame` | 1 | The most of its voices that start in one frame, wherever they play (section 4). 0 fails the load |
 | `looping` | false | Loops until stopped, over each clip's `loop_region` or its whole region |
 | `fade_in`, `fade_out` | 0.0, 0.0 | Seconds. `fade_out` is used whenever the engine stops it (a limit, a scene exit, an emitter going), at least 10 ms |
 | `spatial` | none | `(min_distance: 50.0, max_distance: 800.0, curve: Inverse, pan_width: 400.0, low_pass_at_max: 2000.0)`: heard from a place (section 7) |
 | `mode` | `Auto` | How its clips load: `Auto` decodes up to 10 s and streams longer, `Decode` and `Stream` force one (the web decodes every clip) |
 
-- The clips are the definition's dependencies: it is ready once every clip is, and a clip that fails fails it (`AssetError::Dependency`, naming both). A region past its clip's end, a weight below 0, a loop region on a sound that does not loop, a `limit` of 0, or a bus name that is not a path under a standard bus fails the load with `AssetError::Decode`, naming the file and the mistake.
+- The clips are the definition's dependencies: it is ready once every clip is, and a clip that fails fails it (`AssetError::Dependency`, naming both). A region past its clip's end, a weight below 0, a loop region on a sound that does not loop, a `limit` or `per_frame` of 0, or a bus name that is not a path under a standard bus fails the load with `AssetError::Decode`, naming the file and the mistake.
 - A bus the mixer does not have plays on the nearest bus above it, warned once (`sfx/footstep` typed for `sfx/footsteps` plays on `sfx`).
 - A definition can be made in code (`Sound { clips: vec![SoundClip::new(clip)], volume_db: -6.0, ..Default::default() }`) and added with `ctx.assets().add(sound)`.
 
@@ -114,27 +116,31 @@ Every field but `clips` may be left out; an option is written without `Some(..)`
 
 ```rust
 let engine = ctx.audio().play_with(&self.engine_loop, PlayOptions { volume_db: -3.0, ..Default::default() });
-engine.set_pitch(2.0);                     // semitones, replacing the pitch it played with
-engine.set_volume(-12.0);                  // dB, replacing the gain it played with
-engine.pause();                            // fades out, keeps its place
+engine.set_pitch(2.0);                     // semitones above the sound's pitch
+engine.set_volume(-12.0);                  // dB below the sound's level
+engine.set_volume_over(-24.0, Duration::from_secs(2)); // a slow fade down
+engine.pause_over(Duration::from_millis(200)); // fades out, keeps its place
 engine.resume();
 engine.stop(Duration::from_millis(300));   // fades out, then ends for good
 let over = engine.is_stopped();            // ended, or never started
 ```
 
-- **Every change is smoothed by at least 10 ms**, so no change clicks. Changes are applied once a frame, after the scenes' updates, so `is_playing` reflects them by the next update.
-- **Dropping a `Voice` never stops it**; clones control the same playback, and `Voice::default()` is a voice that never started (for a field). A play refused by a limit, a cooldown, an unloaded sound or distance returns a voice that is already stopped, on which every method does nothing: no error to handle.
+- **`set_volume` and `set_pitch` are relative to the sound's level**: a game layer added to its definition's volume, the spread its play drew and its `PlayOptions`, as `PlayOptions` are. `set_volume(0.0)` puts it back at the sound's level, and a reload of its definition still moves the sound's level beneath the game's change, so a designer's balance survives game code.
+- **Every change is smoothed by at least 10 ms**, so no change clicks: the plain forms over 10 ms, and `set_volume_over(db, fade)`, `set_pitch_over(semitones, fade)`, `pause_over(fade)` and `resume_over(fade)` over a fade of their own (at least 10 ms), as `stop(fade)` takes one. A change to a playing voice ramps from where it is.
+- **Fades to and from silence are shaped** (a `fade_in`, a stop, a pause or resume, a music crossfade): a fade-out eases in and a fade-in eases out, each about -3.75 dB halfway, so two sounds crossfading hold their level as an equal-power crossfade does (a fade in a line of dB would dip about 27 dB in its middle). A 10 ms smoothing stays a line, too short to hear its curve, and a change between two levels (`set_volume`, a bus's gain) moves in a line of dB.
+- **When changes apply:** as the scene code that made them ends (a callback, one of its systems, an observer of its UI nodes), and the rest once a frame after the scenes' updates, so `is_playing` reflects them by the next update. A change made in the frame a voice started, which nothing has heard yet, applies at once; still, the level and pitch it starts at belong in its `PlayOptions`, as on a device its first milliseconds may already be playing.
+- **Dropping a `Voice` never stops it**; clones control the same playback, and `Voice::default()` is a voice that never started (for a field). A play refused by its `per_frame`, a limit, a cooldown, a one-shot's sound still loading or distance returns a voice that is already stopped, on which every method does nothing: no error to handle.
 - `PlayOptions { position, persist, volume_db, pitch }` changes one play: a place in the world, ownership by the engine, and gain and pitch added to the definition's.
 - `voice.pick()` says what a play picked and drew: `VoicePick { clip_index, clip, volume_db, pitch }` (a subtitle for a line picked at random, say). `ctx.audio().seed(n)` makes the picks and draws repeat from the same seed, for replays and captures; headless runs start seeded.
-- `ctx.audio().voices_on("sfx")` counts the voices playing on a bus and every bus under it.
+- `ctx.audio().voices_on("sfx")` counts the voices playing on a bus and every bus under it. It builds a mixer that has landed first, so it takes the view mutably (`let mut audio = ctx.audio();` to call it on a binding).
 
 **Who owns a voice decides when it stops on its own:**
 
 | Played | Belongs to | Stops by itself when |
 |---|---|---|
-| From a scene's callbacks, systems or UI node observers | That scene | The scene exits (popped, switched away, reset): its loops stop with their `fade_out`, as do its one-shots paused or held by the game's pause; its one-shots playing finish, so a click just before a switch is heard out |
+| From a scene's callbacks, systems or UI node observers | That scene | The scene exits (popped, switched away, reset): its loops stop with their `fade_out`, as do its one-shots paused or held and its one-shots with more than 2 s left; its one-shots nearly over, and those on `ui`, finish, so a click just before a switch is heard out while a 20 s voice-over does not run on into the menu |
 | With `PlayOptions { persist: true, .. }`, or from a global system | The engine | Never: stop it yourself. Rain that carries on into the next scene needs `persist` |
-| From an `AudioEmitter` | Its entity | The entity is despawned, disabled (a pool putting it back) or loses its emitter, by the scene rule |
+| From an `AudioEmitter` | Its entity | The entity is despawned, disabled (a pool putting it back) or loses its emitter: its loops and its paused or held one-shots stop with their `fade_out`, and its one-shots playing play out whatever their length (a death cry as it despawns) |
 | `play_music` | The engine's music player | It is replaced or stopped, or a scene whose `cleanup_on_exit` includes `SceneCleanup::MUSIC` is switched away from or reset (cleanup does not run on `Pop`) |
 
 A system plays through the world: an exclusive system takes `&mut World` and calls `AudioView::new(world).play(&handle)`; an observer queues the same with `commands.queue(move |world: &mut World| { AudioView::new(world).play(&handle); })`.
@@ -152,9 +158,10 @@ A system plays through the world: an exclusive system takes `&mut World` and cal
 | `PreventNew` | nothing: the new play is refused |
 
 - **Three layers of limits** apply to each play, in order: its definition's `limit` (its voices on its bus and the buses under it), each bus `limit` in the mixer from its bus up to `master` (every voice on that bus's subtree), and the engine's cap of 96 voices on a bus's own track. A bus limit uses the playing sound's rule (the cap's order when the sound has no limit); the cap stops the least important voice, then the quietest, then the oldest.
-- **A voice is never stopped for a less important play, nor for an equally important one in the frame it started.** A burst of a hundred identical plays in one frame therefore starts up to its limit and refuses the rest, instead of stopping its own starts in turn and stacking into distortion. With nothing it may stop, the play is refused. Only music stops music.
+- **A sound starts at most `per_frame` voices a frame** (1 by default), counted across every bus and place it plays at, before any limit. Copies started together play in step and add up (ten are 20 dB over one), so a hundred identical plays in one frame start one voice and the rest are refused, logged `Refused` with the reason `per_frame`. A bare clip counts as its own sound. Raise `per_frame` for a sound meant to layer in one frame (a shotgun's pellets). Emitters of one sound spawned together take turns instead, starting as many a frame as it allows.
+- **A voice is never stopped for a less important play, nor for an equally important one in the frame it started**, so many starts in one frame fill a limit and refuse the rest, instead of stopping their own starts in turn. With nothing it may stop, the play is refused. Only music stops music.
 - A voice a rule stops fades over its own `fade_out` (at least 10 ms); one the cap stops fades over 10 ms.
-- A voice fading out no longer counts toward a limit, but holds its place on kira's track (128 sounds a track, which the cap of 96 leaves room in) until its fade ends. Many long `fade_out`s on one busy bus can fill it; plays there are then refused, with one warning naming the bus. Keep the `fade_out`s of sounds stopped by limits short.
+- A voice fading out does not count toward a limit, but holds its place on kira's track (128 sounds a track, which the cap of 96 leaves room in) until its fade ends. Many long `fade_out`s on one busy bus can fill it; plays there are then refused, with one warning naming the bus. Keep the `fade_out`s of sounds stopped by limits short.
 - `cooldown` refuses a repeat sooner than its time, before any limit: a coin pickup triggered by two colliders in one step plays once.
 - There are no virtual voices: a loop a limit stops does not come back by itself when room frees. Give ambience beds and emitter loops a higher priority than one-shots.
 
@@ -201,7 +208,7 @@ The engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has
 - **Gain layers add in dB:** the mixer's (or the game's) volume, the player's setting, the active snapshot and the duck (and the focus loss, on `master`). A snapshot never overrides a slider, and a slider moved under a snapshot is heard at once.
 - **`on_focus_loss`** is `Keep` (the default), `Duck(dB)` or `Mute`: what `master` does while the window is not focused, smoothed over 10 ms.
 - **A mixer made in code**, for a game with no file: `ctx.audio().set_mixer(Mixer { buses: vec![BusDef { volume_db: -3.0, ..BusDef::new("sfx") }], ..Default::default() })`. Its snapshots and ducks are `SnapshotDef`, `SnapshotBus` and `DuckDef`.
-- The engine loads the mixer on a worker, so its buses exist a few frames after start. A scene that plays on a game bus, or calls a snapshot, from its first frame loads it at once with `ctx.assets().load_now::<Mixer>(MIXER_PATH)` (the demo's pages do). The buses are then built at the end of that first frame, in the frame's audio update: a loop started before then moves onto its bus there, while a one-shot played before then plays out on the nearest bus above it (its parent), and a snapshot asked for before then applies there.
+- The engine loads the mixer on a worker, so its buses exist a few frames after start. A scene that plays on a game bus, or calls a snapshot, from its first frame loads it at once with `ctx.assets().load_now::<Mixer>(MIXER_PATH)` (the demo's pages do). A mixer that has landed, or one set with `set_mixer`, is built before the next play, snapshot, `set_bus_volume` or `voices_on`, so the scene's first sounds play on their own buses. A bus built while the game is paused holds its voices at once.
 
 ## 6. The player's volume settings
 
@@ -220,7 +227,7 @@ let music = ctx.audio().volume_setting(VolumeKind::Music);
 
 A linear slider leaves 50% at only -6 dB and puts everything below -12 dB in its bottom quarter; on this curve 50% is about -12 dB, near half as loud (loudness halves at about -10 dB), and each halving of the setting is the same 12 dB step. 0 is exact silence; a value outside 0 to 1 is clamped, and one that is not a number is the kind's default.
 
-- **Defaults** come from `Ryo.toml` (`[system] master_volume = 0.89`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume`, `ambience_volume`); without them master is 0.89, about -2 dB (the gain a linear 0.8 gives), and the rest 1.
+- **Defaults** come from `Ryo.toml` (`[system] master_volume = 1.0`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume`, `ambience_volume`); without them every setting is 1, the mix as designed, and `ryo2d init` writes 1.0. A game that wants headroom on master sets less there (0.89 is about -2 dB).
 - **Saving:** `SystemState` keeps the six as `master_volume`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume` and `ambience_volume` (`ryo-config-save`). With `EngineBuilder::with_user_preferences` allowing them (`UserPreference::MasterVolume` .. `AmbienceVolume`), the engine applies the saved values at start. A saved value is read as a point on this curve and never rescaled, so a `system.json` written for a linear volume scale plays its settings below 1 quieter than it was written for.
 
 A settings screen:
@@ -283,38 +290,36 @@ A definition with `spatial` is heard from a place: quieter with distance from th
 ## 8. Pause, time scale and focus
 
 - **The game clock drives audio.** While `ctx.time.game` is paused, every bus that pauses with the game (`sfx`, `voice`, `ambience`) holds its voices where they are (a 10 ms fade) and resumes them from there; `ui` and `music` carry on, so menus click and the music plays under a pause. A bus in the mixer decides with `pauses_with_game`.
-- **A pause menu pauses the clock itself.** Pushing a scene over the level stops the level's updates, not the clock, so its loops would play on:
+- **A scene that is not updated is not heard.** A pushed scene that does not update the scenes below (`updates_below` false, the default; the engine's pause idiom, which pauses their physics too) holds their voices on the buses that pause with the game, and the emitters' (the world's entities stop with them, as physics does), with the same 10 ms fade. A `Pop` lets them go, and they resume where they were. The pushed scene's own voices, the music, voices played with `persist`, and voices on `ui` (or any bus that does not pause with the game) play on. A loop that finishes loading while its scene is held starts held.
+- **The holds add up**: a voice held by its scene and by the game's pause resumes only once both let it go, so a pause menu that also pauses the clock (to stop the sprites' animation) works the same.
+- **`Scene::holds_audio_below`** (true by default) is the top scene's choice: a dialogue box over a level whose ambience should carry on returns false. Only the top scene's answer counts, and a scene that `updates_below` leaves the scenes below audible anyway.
 
   ```rust
   struct PauseMenu;
 
   impl Scene for PauseMenu {
     fn is_transparent(&self) -> bool {
-      true
+      true // the level shows under the menu; it is not updated, so not heard
     }
 
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-      ctx.time.game.pause();          // sfx, voice and ambience hold where they are
-      ctx.audio().snapshot("paused"); // the mixer's muffled preset (section 9)
+      ctx.audio().snapshot("paused"); // the mixer's muffled preset for the music (section 9)
     }
 
     fn on_exit(&mut self, ctx: &mut SceneContext) {
-      ctx.time.game.resume();
       ctx.audio().clear_snapshot();
     }
 
     fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-      // No fixed step runs while the clock is paused, so `update` does not
-      // either: read the menu's input here
       if ui.back() {
-        return SceneAction::Pop;
+        return SceneAction::Pop; // the level's sounds resume where they were
       }
       SceneAction::Continue
     }
   }
   ```
 
-- **A voice played while its bus is held** waits, unheard, and fades in over its own `fade_in` when the bus lets it go. The engine's hold leaves a voice's own `pause()` alone: a voice the game paused stays paused when the clock resumes.
+- **A voice played while held** waits, unheard, and fades in over its own `fade_in` when it is let go. The engine's holds leave a voice's own `pause()` alone: a held voice still reports playing, and a voice the game paused stays paused when the hold ends.
 - **Time scale:** on a bus that follows it (`sfx`, `ambience`), a voice plays at its pitch's rate times `time.game.speed()`, so slow motion lowers pitch and tempo together, as tape does. Audio follows at most 8 times speed (a faster game clock would swamp the audio thread). A speed of 0.01 or less holds those buses, as a pause does.
 - **Hitstop does not hold audio.** It is a visual freeze, and the hit's sound playing through it is what sells the impact.
 - **Focus:** the mixer's `on_focus_loss` (section 5).
@@ -368,7 +373,7 @@ In debug builds with a window, saving a file in `assets/` changes what is playin
 | Saved | What happens |
 |---|---|
 | A clip | Its loops and the music playing it switch to the new file where they are, crossfading over 10 ms; its one-shots finish as they were; the next plays use the new file |
-| A sound definition | The next plays use it; its playing loops take the new volume and pitch at once (each keeps its own spread, and a volume or pitch the game set on the voice stays the game's) |
+| A sound definition | The next plays use it; its playing loops take the new volume and pitch at once, each keeping its own spread and its play's options, with the game's `set_volume` and `set_pitch` still on top (a definition at -12 dB given `set_volume(-6.0)` plays at -18 dB, and saved at -10 dB plays at -16) |
 | A music definition, its clip, or its intro or loop file | The track switches, where it is, to what the saved definition says, crossfading over 10 ms |
 | The mixer | The buses are built again: loops carry on, at their position, on the new buses; one-shots finish on the old ones |
 
@@ -415,8 +420,9 @@ In debug builds with a window, saving a file in `assets/` changes what is playin
 
 ## 14. Testing
 
-- **`ryo2d::testing::HeadlessEngine`** plays on the mock backend, rendered by each step's time, its picks seeded so runs repeat. `engine.audio_log()` (doc-hidden, for tests) lists what the engine did with each voice: `AudioLogEntry { kind, voice, sound, source, bus, gain_db, pan, rate, fade }`, with `kind` one of `AudioLogKind::{Start, Stop, Pause, Resume, Gain, Pan, Rate, Refused, Culled, Stolen}` (`use ryo2d::core::audio::{AudioLogEntry, AudioLogKind}`).
+- **`ryo2d::testing::HeadlessEngine`** plays on the mock backend, rendered by each step's time, its picks seeded so runs repeat. `engine.audio_log()` (doc-hidden, for tests and debug tooling) lists what the engine did with each voice: `AudioLogEntry { kind, voice, sound, source, bus, gain_db, pan, rate, fade, reason }`, with `kind` one of `AudioLogKind::{Start, Stop, Pause, Resume, Gain, Pan, Rate, Refused, Culled, Stolen}` (`use ryo2d::core::audio::{AudioLogEntry, AudioLogKind}`). On a `Refused` entry, `reason` names the rule that refused the play first (`per_frame`, `cooldown`, `limit`, `full`, `undecodable`, `locked`, `unlock` or `loading`), then says what it means; it is empty on every other kind.
 - **A test without an engine** takes `ryo2d::testing::audio_world()`: the asset registry, a clock and the audio engine on the mock backend with its log on. `audio_world_over(files)` reads a `MemorySource` the test keeps (to save over a file and `reload` it); `audio_step(&mut world, dt)` is one frame. `audio_world()` is not seeded: call `AudioView::new(&mut world).seed(n)` before plays whose picks the test checks.
+- **A clip made in code:** `AudioClip::from_frames(rate, &frames)` returns `Result<AudioClip, AudioClipError>`; a rate of 0 is `AudioClipError::ZeroSampleRate`, as such a clip would never play to its end.
 
 ```rust
 use std::time::Duration;
@@ -428,10 +434,12 @@ use ryo2d::testing::{audio_step, audio_world};
 fn a_fourth_step_is_refused_and_the_pause_holds_sfx() {
   let mut world = audio_world();
   let frames = vec![[0.2_f32, 0.2]; 48_000]; // a second at 48 kHz
-  let clip = world.resource_mut::<Assets<AudioClip>>().add(AudioClip::from_frames(48_000, &frames));
+  let clip = AudioClip::from_frames(48_000, &frames).expect("a sample rate");
+  let clip = world.resource_mut::<Assets<AudioClip>>().add(clip);
   let step = world.resource_mut::<Assets<Sound>>().add(Sound {
     clips: vec![SoundClip::new(clip)],
     limit: Some(VoiceLimit { max: 3, rule: LimitRule::PreventNew }),
+    per_frame: 4, // four starts in this frame, for the limit to refuse one
     ..Default::default()
   });
   let mut audio = AudioView::new(&mut world);
@@ -447,18 +455,20 @@ fn a_fourth_step_is_refused_and_the_pause_holds_sfx() {
 }
 ```
 
-- A bus's own change is logged with `voice` 0. Assert on what a player would notice: a voice refused, a bus held, a gain that moved, a stop with its fade.
+- A bus's own change is logged with `voice` 0; a voice its scene holds logs its own `Pause` and `Resume`. Assert on what a player would notice: a voice refused, a bus held, a gain that moved, a stop with its fade.
 
 ## 15. When something sounds wrong
 
 | Symptom | Look at |
 |---|---|
-| Nothing plays | The sound still loading (`load` returns at once; use `load_now` or check `is_ready`), a load failure (warned once with its path), a volume setting at 0, a bus held by the game's pause, a one-shot culled beyond its `max_distance`, a cooldown or limit refusing it (`Refused` in the audio log), or on the web the first gesture not yet given |
+| Nothing plays | A one-shot played while its sound loads (refused; use `load_now` or check `is_ready`), a load failure (warned once with its path), a volume setting at 0, a bus held by the game's pause, its scene held under a pushed scene, a one-shot culled beyond its `max_distance`, its `per_frame`, a cooldown or a limit refusing it (`Refused` in the audio log, with the reason), or on the web the first gesture not yet given |
 | A streamed file is silent or stops early | A bad streamed file shows up when it plays, not at `play`: its voice ends and the failure is warned once, naming the file, and the clip is refused until it is saved again. A packet that will not decode plays as silence |
 | A sound plays on the wrong bus | A bus name the mixer lacks plays on the nearest bus above it, warned once; a send bus plays on its parent |
-| A burst sounds thin, or a sound cuts out | Its `limit`, a bus `limit`, or the cap of 96 per bus stopping it; check `priority` (higher is more important) |
+| A burst sounds like one sound | Its `per_frame` (1 by default) starts one copy a frame; raise it for a sound meant to layer |
+| A sound cuts out | Its `limit`, a bus `limit`, or the cap of 96 per bus stopping it; check `priority` (higher is more important) |
+| A long line stops at a scene change | A one-shot with more than 2 s left stops at its scene's exit (on `ui` it finishes); play it with `persist` to keep it |
 | Plays refused on a busy bus with "the bus is full" | Long `fade_out`s holding kira's room on that bus |
-| Loops keep playing under the pause menu | The menu did not pause the game clock (section 8) |
+| Loops keep playing under the pause menu | The menu `updates_below`, or returns false from `holds_audio_below`; or the loop is the engine's (`persist`), or on a bus that does not pause with the game (section 8) |
 | A rain loop stops at a scene change | It belonged to the scene: play it with `persist` |
 | Music restarts on a scene change | Something called `stop_music`, or the scene switched away from (or reset) has `SceneCleanup::MUSIC` in its cleanup; `play_music` of the track already playing changes nothing |
 | A pushed scene's music plays on after it pops | Cleanup does not run on `Pop`: stop the track in the pushed scene's `on_exit` (`stop_music(fade)`), or play the level's own track again in the level's `on_resume` |

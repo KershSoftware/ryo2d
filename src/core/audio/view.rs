@@ -39,12 +39,13 @@ pub struct PlayOptions {
   /// them
   pub position: Option<Vec2>,
   /// It belongs to the engine and outlives the scene that played it. It
-  /// matters for loops, for one-shots paused or held by the game's pause,
-  /// and for one-shots with more than 2 s left: when the scene exits, those
-  /// stop with their fade, while a one-shot nearly over, or one on `ui`,
-  /// plays to its end (a click just before a switch is heard out). A loop
-  /// meant to carry on into the next scene (rain, say), or a long line of
-  /// dialogue meant to, needs it
+  /// matters for loops, for one-shots paused or held, and for one-shots
+  /// with more than 2 s left: when the scene exits, those stop with their
+  /// fade, while a one-shot nearly over, or one on `ui`, plays to its end
+  /// (a click just before a switch is heard out). A loop meant to carry on
+  /// into the next scene (rain, say), or a long line of dialogue meant to,
+  /// needs it. It also plays on while the scene is not updated (a pause
+  /// menu pushed over it; `Scene::holds_audio_below`)
   pub persist: bool,
   /// Added to the sound's gain, in dB (-6 is about half as loud)
   pub volume_db: f32,

@@ -173,11 +173,11 @@ fn main() -> EngineResult<()> {
 - **Juice** — Knockback, squash and stretch, camera shake
 
 ### Audio
-- **Sound definitions** — Variations, no-repeat, volume and pitch ranges, cooldowns, fades and voice limits with priorities, in `.sound.ron` files beside the DAW's exports
+- **Sound definitions** — Variations, no-repeat, volume and pitch ranges, cooldowns, one start a frame unless a sound allows more, fades and voice limits with priorities, in `.sound.ron` files beside the DAW's exports; loops played while their sound loads start when it is ready
 - **Mixer** — Buses with effects and sends, snapshots and ducking, from one `.mixer.ron` file; the player's volume settings on a perceptual curve, heard on sounds already playing
 - **2D spatial sound** — Listeners and emitters with distance falloff, panning and a distance low-pass
-- **Music** — An intro into a gapless loop, crossfades, carried across scene changes
-- **Game clock** — Buses pause with the game and slow with time scale; every stop, pause and change is smoothed over at least 10 ms
+- **Music** — An intro into a gapless loop, crossfades that hold their level, carried across scene changes
+- **Scenes and the game clock** — A scene's sounds leave with it, a pushed menu holds the scenes below it silent, buses pause with the game and slow with time scale; every stop, pause and change is smoothed over at least 10 ms
 - **Hot reload, web and tests** — Saved files change what plays, the web starts at the first click or tap, and headless runs play silently on a mock backend for tests
 
 ### UI

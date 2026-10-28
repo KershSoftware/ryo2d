@@ -2,7 +2,7 @@
 name: ryo-config-save
 description: Project configuration (Ryo.toml), player settings (system.json, SystemState) and game saves (SaveManager, GameSaveData).
 metadata:
-  version: 2.2.0
+  version: 2.3.0
 ---
 
 # Ryo2D Configuration and Saves
@@ -63,7 +63,7 @@ resolution = "1280x720"    # the game's canvas, scaled to fit the window
 pixel_art = false           # true: resolution is a pixel-art target, scaled by whole numbers
 vsync = true
 display_mode = "windowed"   # windowed | exclusive_fullscreen | borderless_fullscreen
-master_volume = 0.89        # the player's volume settings, 0 to 1 on the audio curve
+master_volume = 1.0         # the player's volume settings, 0 to 1 on the audio curve (1: the mix as designed)
 music_volume = 1.0
 sfx_volume = 1.0
 ui_volume = 1.0

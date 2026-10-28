@@ -15,12 +15,14 @@ pub enum AudioLogKind {
   Start,
   /// It was told to stop, fading out over `fade`
   Stop,
-  /// It was paused. With `voice` 0, a bus held its voices where they are:
-  /// the game paused, or time stood still on a bus that follows time scale
+  /// It was paused: by its own call, or held by its owner (its scene not
+  /// updated, under a top scene that holds the scenes below). With `voice`
+  /// 0, a bus held its voices where they are: the game paused, or time
+  /// stood still on a bus that follows time scale
   Pause,
-  /// It was resumed. With `voice` 0, a bus let its voices go. A voice that
-  /// started held (its start logs no fade) logs its first resume, with
-  /// its fade-in
+  /// It was resumed: by its own call, or let go by its owner. With `voice`
+  /// 0, a bus let its voices go. A voice that started held (its start logs
+  /// no fade) logs its first resume, with its fade-in
   Resume,
   /// Its gain changed to `gain_db`: its own (`Voice::set_volume`), or its
   /// place's falloff as it or the listener moved. With `voice` 0 and no
@@ -68,8 +70,10 @@ pub struct AudioLogEntry {
   /// How long the change takes: a stop's fade-out, the smoothing of any
   /// other change, zero for a start without a fade-in
   pub fade: Duration,
-  /// Why a play was refused (`Refused`), naming the rule that refused it;
-  /// empty for every other kind
+  /// Why a play was refused (`Refused`): the rule that refused it, first
+  /// (`per_frame`, `cooldown`, `limit`, `full`, `undecodable`, `locked`,
+  /// `unlock` or `loading`), then a few words on what it means; empty for
+  /// every other kind
   pub reason: &'static str,
 }
 

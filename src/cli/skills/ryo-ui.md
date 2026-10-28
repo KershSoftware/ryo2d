@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.7.0
+  version: 4.8.0
 ---
 
 # Ryo2D UI Specialist
@@ -292,17 +292,17 @@ let heading = ui.theme().text.heading.style();               // a text role as a
   ```
 
 - **Skins** are nine-slice images a look draws in place of its fill and border (the fill tints it): `Theme::dark().skin("wood", Skin::from_path("ui/wood.png", [6.0; 4], Filter::Nearest))` (an asset path, loaded when the theme is set), then `LookPatch::default().skin("wood")` or `theme.widgets.panel.normal.skin = Some("wood".into())`. Insets are left, top, right, bottom in image pixels.
-- **Sounds:** `theme.sounds` has a `ThemeSound` for `focus` (navigation moved), `confirm` (a click or Confirm), `back`, `tick` (a slider step, at most every 0.05 s) and `error` (a refused drop, a cancelled rebind), and a `volume`. None by default, so a game is silent until it sets some.
+- **Sounds:** `theme.sounds` has a `ThemeSound` for `focus` (navigation moved), `confirm` (a click or Confirm), `back`, `tick` (a slider step, at most every 0.05 s) and `error` (a refused drop, a cancelled rebind), and a `volume_db`. None by default, so a game is silent until it sets some.
   - Each names an asset path: a sound definition (`"ui/click.sound.ron"`, played as it says, with its variations and limits) or a clip (`"ui/back.wav"`, played as it is). In code: `ThemeSound::from_path("ui/click.sound.ron")`, or `from_sound(handle)` / `from_clip(handle)` for what is already loaded.
   - They play through the audio engine on the `ui` bus, or on a bus under `ui` a definition names (a definition on any other bus plays on `ui`): `ui` does not pause with the game, so a pause menu clicks, and the player's ui volume setting applies (`ryo-audio`).
-  - At most one of each kind plays a frame, so a burst of focus moves is one sound. `volume` scales them all as an amplitude (0.5 is about -6 dB).
-  - A theme file's sounds are its dependencies, like its skins' images: the theme is ready once they load, one that fails fails the theme (`AssetError::Dependency`), and saving one reloads it. A theme made in code loads its `from_path` sounds when it is set, warning once about one that does not load and leaving that sound silent; a sound still loading plays nothing.
+  - At most one of each kind plays a frame, so a burst of focus moves is one sound. `volume_db` is added to each sound's own level, in dB as a designer writes every level (0 by default plays each as it is, -6 about half as loud, -60 or less silent). A theme file that writes the amplitude `volume` fails to load, naming `volume_db`.
+  - A theme file's sounds load with it but are not its dependencies, unlike its skins' images: the theme is ready without them, one that does not load is warned about once and leaves its sound silent (the rest of the theme applies), and saving one reloads it in place. A theme made in code loads its `from_path` sounds when it is set, the same way; a sound still loading plays nothing.
 
   ```ron
   sounds: (
     confirm: (path: "ui/click.sound.ron"),
     back: (path: "ui/back.wav"),
-    volume: 0.8,
+    volume_db: -2.0,
   ),
   ```
 - **RON files** (`*.theme.ron`, registry assets) state only what they change (a nested struct keeps dark's other fields; an option needs no `Some(..)`). A variant's `base`, a text role's `font` and a skin's `filter` are strings there:
@@ -315,7 +315,7 @@ let heading = ui.theme().text.heading.style();               // a text role as a
   )
   ```
 
-  `Theme::save(path)` writes one. A skin's `path` in a file is loaded with the theme, as its dependency, and so are its `sounds` (above). A file that fails to load (or whose skin image does not) is an `AssetError` naming the path, with the line and column RON gives for a syntax mistake (`could not load "ui/game.theme.ron": 3:3: Expected comma`). A `)` left out is found only at the end of the file: what follows reads as more fields of the struct it leaves open, and is well formed. `ctx.follow_ui_theme(handle)` uses the theme at once (or when it lands, if still loading) and again whenever it changes (saved, or changed with `Assets<Theme>::get_mut`); a reload that fails keeps the theme in use, and the registry warns once. A `modify` after it lasts until the file next changes; `set` stops following. `ctx.ui_theme().follow(handle)` alone waits for the next UI pass, which overwrites a `modify` made before it.
+  `Theme::save(path)` writes one. A skin's `path` in a file is loaded with the theme, as its dependency; its `sounds` load with it too, but not as dependencies (above). A file that fails to load (or whose skin image does not) is an `AssetError` naming the path, with the line and column RON gives for a syntax mistake (`could not load "ui/game.theme.ron": 3:3: Expected comma`). A `)` left out is found only at the end of the file: what follows reads as more fields of the struct it leaves open, and is well formed. `ctx.follow_ui_theme(handle)` uses the theme at once (or when it lands, if still loading) and again whenever it changes (saved, or changed with `Assets<Theme>::get_mut`); a reload that fails keeps the theme in use, and the registry warns once. A `modify` after it lasts until the file next changes; `set` stops following. `ctx.ui_theme().follow(handle)` alone waits for the next UI pass, which overwrites a `modify` made before it.
 
 ## 11. Input and Consumption
 
@@ -444,7 +444,7 @@ impl Scene for MainMenu {
 ### Pause menu with a settings modal
 
 ```rust
-/// Pushed over the level, which draws under it, paused
+/// Pushed over the level, which draws under it, not updated and not heard
 struct PauseMenu {
   settings_open: bool,
   volume: f32,
@@ -455,7 +455,7 @@ impl Default for PauseMenu {
   fn default() -> Self {
     Self {
       settings_open: false,
-      volume: 0.89,
+      volume: 1.0,
       shake: true,
     }
   }
@@ -471,8 +471,10 @@ impl Scene for PauseMenu {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     // The slider starts where the player's setting is
     self.volume = ctx.audio().volume_setting(VolumeKind::Master);
-    // To hold the level's sounds and tweens too, pause the game clock here
-    // (`ctx.time.game.pause()`) and resume it in `on_exit` (ryo-audio)
+    // The level's sounds are held while this menu is on top, as it does not
+    // update the level (Scene::holds_audio_below). To freeze its tweens and
+    // animation too, pause the game clock here (`ctx.time.game.pause()`) and
+    // resume it in `on_exit` (ryo-audio)
   }
 
   fn is_transparent(&self) -> bool {
@@ -1445,7 +1447,7 @@ impl NodeSettings {
       .name("page-0")
       .child(setting(
         "Master",
-        UiNode::slider(0.0..=1.0, 0.89)
+        UiNode::slider(0.0..=1.0, 1.0)
           .step(0.05)
           .show_value()
           .width(200.0)

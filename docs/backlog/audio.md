@@ -26,7 +26,7 @@ Measured on 2026-10-28 on an Apple M5 Pro (18 cores, Metal, macOS 27.0.1), a sha
 | Idle frame: 10,000 sprites, whole step (`foundation`) | 1,023.1 µs (1,022.8, 1,024.5, 1,023.1) | 1,045.0 µs (1,037.2, 1,045.0, 1,051.5) | within 3%: **met**, +2.1% |
 | 64 voices, 32 of them spatial: `audio_system`'s main-thread time | | median 3.6 µs (runs 3.2, 3.7, 3.6); after the final fixes 4.2 µs (4.0, 4.2, 5.4) | median at most 50 µs: **met** |
 | `play` of a decoded clip | | median 0.71 µs (0.71, 0.71, 0.71); after the final fixes 0.75 µs (0.75, 0.75, 0.75) | median at most 5 µs: **met** |
-| `play` of a streamed clip (the 48 s OGG): the main thread's part | | median 23.9 µs (23.6, 23.9, 24.2) | median at most 100 µs: **met** |
+| `play` of a streamed clip (the 48 s OGG): the main thread's part | | median 23.9 µs (23.6, 23.9, 24.2) | the spec's `play` at most 5 µs: **not met, an exception** (below); guarded at 100 µs |
 | No allocation for audio on an idle frame | | 0 in 100 frames, fresh and after sounds played (`tests/audio_alloc.rs`) | **met** |
 | A reload: a 1 s WAV playing as a loop (decoded) | | the slowest landing +19.4 to +87.0 µs; median +12.5 to +13.1 µs | every landing at most 0.5 ms: **met** |
 | A reload: a 48 s OGG playing as a loop (streamed) | | the slowest landing +57.3 to +118.6 µs, mid-file +57.3 to +118.6 µs; median +45.2 to +51.5 µs | every landing at most 0.5 ms: **met** |
@@ -85,6 +85,8 @@ The load guard plays three files from a `MemorySource`: a 1 s WAV as a decoded l
 | 1 | +12.5 µs (6.9; 8.0), +87.0 | +51.5 µs (7.3; 46.4), +118.6; +51.5, +118.6 | +51.3 µs (8.0; 45.6), +64.8; +50.7, +64.8 |
 | 2 | +13.1 µs (7.3; 8.2), +41.8 | +48.9 µs (6.8; 44.7), +80.4; +48.2, +62.9 | +48.0 µs (7.7; 43.4), +64.2; +48.0, +56.4 |
 | 3 | +12.7 µs (7.2; 8.0), +19.4 | +45.2 µs (7.1; 41.4), +57.3; +45.5, +57.3 | +46.1 µs (7.5; 40.7), +62.4; +44.7, +62.4 |
+
+**The streamed `play` is an exception to the spec's 5 µs, reported to the owner.** A play of a streamed clip costs the main thread about 24 µs, almost all of it kira's: the buffers it allocates for each stream and the decoder thread it spawns for it (the engine's own decoder stores only the clip's bytes, rate and length). Opening the file, its codec's setup and the seek happen on that thread, not here. The cost is per start of a stream (a streamed loop or one-shot, a streamed music track, a loop moved by a rebuild or a reload), a few a scene at most, so no player hears it, but it is not the 5 µs the spec asks of every play. The bench holds it at 100 µs, a ceiling neither the spec nor the plan set, only to catch a regression; it is not recorded as met.
 
 Every save landed: 39 WAV, 40 OGG and 40 MP3 reloads in each run. Mid-file means landings 20 s or more into the stream, 17 of each a run.
 

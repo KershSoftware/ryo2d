@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.4.0
+  version: 2.5.0
 ---
 
 # Ryo2D Game Developer
@@ -127,6 +127,7 @@ Every method has a default; implement what the scene needs.
 | `is_transparent()` | Scenes below are still drawn and still get `ui` (overlays, HUDs), but only the top scene's widgets take input |
 | `updates_below()` | Scenes below still update and run their systems; only the top scene's returned `SceneAction` is applied (a lower scene's is dropped with a warning) |
 | `is_physics_paused()` | Pause physics while this scene is on top |
+| `holds_audio_below()` | Default `true`: while this scene is on top, the scenes it does not update are not heard (their voices on `sfx`, `voice` and `ambience` are held, and resume when they update again); `false` leaves them audible |
 | `cleanup_on_exit()` | Which engine state `Switch`/`Reset` resets (default `SceneCleanup::DEFAULT`) |
 
 Entities are not drawn by `render`: anything with `Transform` + `Renderable` is drawn by the engine every frame.
@@ -282,7 +283,7 @@ for picked in ctx.messages::<PickedUp>() {
 
 - The step rate is `EngineBuilder::fixed_hz(hz)` (default 60). Slow motion runs fewer steps, pause and hitstop run none; `dt` never changes. Physics follows all of it.
 - While the game clock is paused or in hitstop **no `update` runs anywhere**; `ui` still runs every frame, so unpause from `ui`.
-- Audio follows the game clock: a pause holds the buses that pause with the game, and slow motion lowers the pitch of those that follow time scale (`ryo-audio`, Pause, time scale and focus). Hitstop leaves audio alone, so a hit's sound plays through the freeze.
+- Audio follows the game clock: a pause holds the buses that pause with the game, and slow motion lowers the pitch of those that follow time scale (`ryo-audio`, Pause, time scale and focus). Hitstop leaves audio alone, so a hit's sound plays through the freeze. A scene that is not updated is not heard either (Scene changes, below).
 
 ## Input
 
@@ -340,10 +341,10 @@ return SceneAction::SwitchWith(
 
 - Transitions run on real time, once a frame, so a fade finishes even with the game clock paused or slowed.
 - While one runs, `update` is not called and a scene change returned from `ui` is ignored (only `Quit` applies): a second click during a fade does not start another.
-- A pushed scene that does not `updates_below` stops the scenes below and pauses physics; engine animation, tweens and sound keep running (pause the game clock to freeze them too: the `sfx`, `voice` and `ambience` buses hold while it is paused, `ui` and `music` play on).
+- A pushed scene that does not `updates_below` stops the scenes below, pauses physics and holds their sounds: their voices on the buses that pause with the game (`sfx`, `voice`, `ambience`), and the emitters', wait where they are until a `Pop` (`holds_audio_below` returning `false` leaves them audible). The pushed scene's own sounds, the music, `persist` voices and `ui` play on. Engine animation and tweens keep running: pause the game clock to freeze them too.
 - A pause menu: a transparent pushed scene whose `ui` draws a focus-scoped menu and returns `SceneAction::Pop` on Resume or `ui.back()` (`ryo-ui`'s pause menu recipe). Scenes under it still draw, but only the top scene's widgets take input, so its buttons win the clicks.
 - Cleanup on `Switch`/`Reset` (not on `Push`/`Pop`): `SceneCleanup` flags `WORLD`, `CAMERA`, `EFFECTS`, `LIGHTING`, `TIME`, `MUSIC`, `MESSAGES`; `DEFAULT` is all but `MUSIC` (so a track carries on from menu to game), plus `NONE` and `ALL`. Combine with `|`, remove with `-`: `SceneCleanup::DEFAULT - SceneCleanup::WORLD` keeps the entities.
-- A scene's console commands and systems leave with it, and so do its sounds as it exits by any action (`Pop` too): its loops stop with their fade, its one-shots playing finish (`ryo-audio`, Voices).
+- A scene's console commands and systems leave with it, and so do its sounds as it exits by any action (`Pop` too): its loops stop with their fade, as do its one-shots with more than 2 s left (not on `ui`), and its shorter one-shots finish (`ryo-audio`, Voices).
 
 ## Sprites and Anchors
 
