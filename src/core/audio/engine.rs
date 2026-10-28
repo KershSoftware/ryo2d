@@ -6505,6 +6505,140 @@ mod tests {
     );
   }
 
+  /// A loop played and still held (the game paused) at the unlock starts
+  /// there held: silent and paused in kira, playing to the game, logged
+  /// once as it is first heard, with its fade-in, when the game resumes
+  #[test]
+  fn a_loop_still_held_at_the_unlock_starts_held() {
+    let mut world = locked_world();
+    let clip = second(&mut world);
+    let fade = Duration::from_millis(250);
+    let rain = hum(&mut world, &clip, "ambience", fade);
+    world.resource_mut::<Time>().game.pause();
+    audio_step(&mut world, FRAME);
+    let voice = AudioView::new(&mut world).play(&rain);
+    audio_step(&mut world, FRAME);
+    unlock(&mut world);
+    audio_step(&mut world, FRAME);
+    let about = |world: &World| -> Vec<(AudioLogKind, Duration)> {
+      log(world)
+        .into_iter()
+        .filter(|entry| entry.voice == voice.id())
+        .map(|entry| (entry.kind, entry.fade))
+        .collect()
+    };
+    assert_eq!(about(&world), [(AudioLogKind::Start, Duration::ZERO)]);
+    let playback = world.resource::<AudioEngine>().voice_playback(voice.id());
+    assert_eq!(playback, Some(PlaybackState::Paused), "held, silent");
+    assert!(voice.is_playing(), "{voice:?}");
+    world.resource_mut::<Time>().game.resume();
+    audio_step(&mut world, FRAME);
+    assert_eq!(
+      about(&world),
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Resume, fade)
+      ]
+    );
+    let playback = world.resource::<AudioEngine>().voice_playback(voice.id());
+    assert_eq!(playback, Some(PlaybackState::Resuming), "fading in");
+  }
+
+  /// Files for many loops on two buses a mixer adds: two looping sounds,
+  /// `sfx/crowded-a.sound.ron` and `sfx/crowded-b.sound.ron`, of the clip
+  /// `crowded.wav` (named for these tests' warnings alone), and the mixer
+  /// that adds their buses
+  fn crowded_files() -> (MemorySource, Mixer) {
+    let files = MemorySource::new();
+    files.insert("crowded.wav", fixture("tone.wav"));
+    for side in ["a", "b"] {
+      files.insert(
+        &format!("sfx/crowded-{side}.sound.ron"),
+        format!(
+          r#"(clips: [(path: "crowded.wav")], bus: "sfx/crowded-{side}", looping: true, per_frame: 255)"#
+        ),
+      );
+    }
+    let mixer = Mixer {
+      buses: vec![BusDef::new("sfx/crowded-a"), BusDef::new("sfx/crowded-b")],
+      ..Default::default()
+    };
+    (files, mixer)
+  }
+
+  /// Play `count` loops of each crowded sound
+  fn crowd(world: &mut World, count: usize) -> Vec<Voice> {
+    let mut voices = Vec::new();
+    for side in ["a", "b"] {
+      let path = format!("sfx/crowded-{side}.sound.ron");
+      let sound = match AssetsView::new(world).load_now::<Sound>(&path) {
+        Ok(sound) => sound,
+        Err(error) => panic!("{path}: {}", error.report()),
+      };
+      for _ in 0..count {
+        voices.push(AudioView::new(world).play(&sound));
+      }
+    }
+    voices
+  }
+
+  /// Warnings about the crowded loops (named by their clip) saying `text`
+  fn crowded_warnings(text: &str) -> usize {
+    warnings(|message| message.starts_with("crowded.wav:") && message.contains(text))
+  }
+
+  /// A rebuild that moves more loops onto one bus than kira's track holds
+  /// (two buses the new mixer drops, both onto `sfx`): those with no room
+  /// play on where they were, each warned once, and a later rebuild that
+  /// still has no room warns no more
+  #[test]
+  fn a_loop_with_no_room_on_the_rebuilt_bus_plays_on_warned_once() {
+    let (files, mixer) = crowded_files();
+    let mut world = audio_world_over(files);
+    AudioView::new(&mut world).set_mixer(mixer);
+    let voices = crowd(&mut world, 70);
+    audio_step(&mut world, FRAME);
+    assert!(voices.iter().all(Voice::is_playing));
+    AudioView::new(&mut world).set_mixer(Mixer::default());
+    audio_step(&mut world, FRAME);
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(engine.sounds_on("sfx"), 128, "kira's room on the track");
+    let stuck = "could not move to the rebuilt buses";
+    assert_eq!(crowded_warnings(stuck), 12);
+    assert!(voices.iter().all(Voice::is_playing), "the 12 play on");
+    AudioView::new(&mut world).set_mixer(Mixer::default());
+    audio_step(&mut world, FRAME);
+    assert_eq!(crowded_warnings(stuck), 12, "warned once each");
+  }
+
+  /// The same crowding at the web's unlock: the loops that waited for it
+  /// and find no room there end, each refused (`unlock`) and warned once
+  #[test]
+  fn a_waiting_loop_with_no_room_at_the_unlock_ends_refused() {
+    let (files, mixer) = crowded_files();
+    let mut world = audio_world_over(files);
+    let mut engine = AudioEngine::new_locked();
+    engine.set_logging(true);
+    world.insert_resource(engine);
+    AudioView::new(&mut world).set_mixer(mixer);
+    let voices = crowd(&mut world, 70);
+    audio_step(&mut world, FRAME);
+    assert!(voices.iter().all(Voice::is_playing), "waiting, as playing");
+    AudioView::new(&mut world).set_mixer(Mixer::default());
+    audio_step(&mut world, FRAME);
+    unlock(&mut world);
+    audio_step(&mut world, FRAME);
+    assert_eq!(world.resource::<AudioEngine>().sounds_on("sfx"), 128);
+    let refused: Vec<&str> = entries(&world, AudioLogKind::Refused)
+      .into_iter()
+      .map(|entry| entry.reason)
+      .collect();
+    assert_eq!(refused.len(), 12, "{refused:?}");
+    assert!(refused.iter().all(|reason| reason.starts_with("unlock")));
+    assert_eq!(voices.iter().filter(|voice| voice.is_stopped()).count(), 12);
+    assert_eq!(crowded_warnings("could not start with it"), 12);
+  }
+
   /// The web's unlock is not a pause: it logs no bus's Pause, whether the
   /// game runs or is paused as it comes (a bus held by the game's pause was
   /// logged once, as the game paused)

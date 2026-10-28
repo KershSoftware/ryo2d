@@ -807,6 +807,44 @@ mod tests {
     assert_eq!(current(&mut world), Some(track.id()));
   }
 
+  /// When only the music could give way, a play that is not music is
+  /// refused, however important: the track plays on
+  #[test]
+  fn a_play_whose_only_victim_is_the_music_is_refused() {
+    use crate::core::audio::{Sound, SoundClip};
+    let mut world = audio_world();
+    let clip = world
+      .resource_mut::<Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]).unwrap());
+    let track = world
+      .resource_mut::<Assets<Music>>()
+      .add(Music::looping(clip.clone(), 0.0, None));
+    let loud = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      looping: true,
+      priority: u8::MAX,
+      ..Default::default()
+    });
+    world
+      .resource_mut::<AudioEngine>()
+      .set_bus_limit("master", Some(1));
+    AudioView::new(&mut world).play_music(&track);
+    steps(&mut world, 2);
+    let refused = AudioView::new(&mut world).play(&loud);
+    assert!(refused.is_stopped(), "{refused:?}");
+    let entries: Vec<(AudioLogKind, &str)> = log(&world)
+      .iter()
+      .map(|entry| (entry.kind, entry.reason))
+      .collect();
+    let [(AudioLogKind::Start, _), (AudioLogKind::Refused, reason)] = entries[..] else {
+      panic!("the music started and the play was refused: {entries:?}");
+    };
+    assert!(reason.starts_with("limit"), "{reason}");
+    steps(&mut world, 2);
+    assert_eq!(current(&mut world), Some(track.id()));
+    assert_eq!(voices_on_music(&mut world), 1, "the track plays on");
+  }
+
   /// Review M2 (ruling P14): a track that did not load changes nothing: the
   /// track playing plays on, and one still loading still takes over
   #[test]

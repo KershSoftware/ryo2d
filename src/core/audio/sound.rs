@@ -1031,15 +1031,20 @@ mod tests {
   }
 
   /// When voices fading out hold all of kira's room on a bus, the plays it
-  /// refuses warn once, naming the bus, not only in the audio log
+  /// refuses warn once, naming the bus, not only in the audio log. The bus
+  /// is this test's alone, so the process's log holds its warning only
   #[test]
   fn a_full_track_warns_once_naming_its_bus() {
     let mut world = audio_world();
+    AudioView::new(&mut world).set_mixer(crate::core::audio::Mixer {
+      buses: vec![crate::core::audio::BusDef::new("ambience/full-track")],
+      ..Default::default()
+    });
     let long = clip(&mut world, 2.0);
     let rain = add(
       &mut world,
       Sound {
-        bus: "ambience".to_string(),
+        bus: "ambience/full-track".to_string(),
         ..burst(&[&long])
       },
     );
@@ -1056,7 +1061,7 @@ mod tests {
     }
     assert_eq!(stolen(&world).len(), 64);
     let about_it = warnings(|message| {
-      message.contains("\"ambience\" bus is full") && message.contains("fading")
+      message.contains("\"ambience/full-track\" bus is full") && message.contains("fading")
     });
     assert_eq!(about_it, 1);
   }

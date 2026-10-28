@@ -2441,6 +2441,137 @@ mod tests {
     assert_eq!(bus(&world, "music").duck_db, 0.0);
   }
 
+  /// A duck on a bus above a sender reaches its send route, as a snapshot
+  /// does: the reverb of the footsteps dips with them
+  #[test]
+  fn a_duck_reaches_a_send_route_through_the_buses_above_the_sender() {
+    let text = r#"(
+      buses: {
+        "sfx/footsteps": (sends: { "sfx/reverb": -12.0 }),
+        "sfx/reverb": (effects: [Reverb(mix: 1.0)]),
+      },
+      ducks: [(trigger: "voice", target: "sfx", by: -9.0, attack: 0.1, release: 0.6)],
+    )"#;
+    let (mut world, _files) = world_with_mixer(text);
+    let clip = clip(&mut world, 2.0);
+    let line = looping(&mut world, clip, "voice");
+    let route = |world: &World| bus(world, "sfx/footsteps").send_gains[0].1;
+    assert!(close(route(&world), -12.0));
+    AudioView::new(&mut world).play(&line);
+    run(&mut world, 0.2);
+    assert!((bus(&world, "sfx").duck_db + 9.0).abs() < 0.01);
+    assert!(
+      close(route(&world), -21.0),
+      "-12 plus sfx's -9 dip: {:?}",
+      bus(&world, "sfx/footsteps")
+    );
+  }
+
+  /// A snapshot with a blend of 0 lands in the call that asks for it, its
+  /// change smoothed over the 10 ms every change takes, and clearing it the
+  /// same; the next update changes nothing more
+  #[test]
+  fn a_blend_of_zero_lands_in_its_call() {
+    let text = r#"(snapshots: {
+      "cut": (blend: 0.0, buses: { "music": (volume: -12.0, low_pass: 500.0) }),
+    })"#;
+    let (mut world, _files) = world_with_mixer(text);
+    AudioView::new(&mut world).snapshot("cut");
+    let music = bus(&world, "music");
+    assert_eq!(music.snapshot_db, -12.0, "{music:?}");
+    assert_eq!(music.cutoff_hz, Some(500.0), "{music:?}");
+    let fades = |world: &World| -> Vec<Duration> {
+      bus_gains(world, "music")
+        .iter()
+        .map(|entry| entry.fade)
+        .collect()
+    };
+    assert_eq!(fades(&world), [MIN_FADE]);
+    audio_step(&mut world, FRAME);
+    assert_eq!(fades(&world), [MIN_FADE], "nothing more to step");
+    AudioView::new(&mut world).clear_snapshot();
+    let music = bus(&world, "music");
+    assert_eq!(music.snapshot_db, 0.0, "{music:?}");
+    assert_eq!(music.cutoff_hz, Some(20_000.0), "{music:?}");
+    assert_eq!(fades(&world), [MIN_FADE, MIN_FADE]);
+  }
+
+  /// Two rules ducking one bus add their dips while both trigger, and the
+  /// bus comes back as each lets go
+  #[test]
+  fn two_ducks_on_one_target_add_their_dips() {
+    let text = r#"(ducks: [
+      (trigger: "voice", target: "music", by: -9.0, attack: 0.1, release: 0.2),
+      (trigger: "sfx", target: "music", by: -6.0, attack: 0.1, release: 0.2),
+    ])"#;
+    let (mut world, _files) = world_with_mixer(text);
+    let line = clip(&mut world, 2.0);
+    let line = looping(&mut world, line, "voice");
+    let shot = clip(&mut world, 2.0);
+    let shot = looping(&mut world, shot, "sfx");
+    let (line, shot) = {
+      let mut audio = AudioView::new(&mut world);
+      (audio.play(&line), audio.play(&shot))
+    };
+    run(&mut world, 0.2);
+    let music = bus(&world, "music");
+    assert!((music.duck_db + 15.0).abs() < 0.01, "-9 and -6: {music:?}");
+    assert!(close(music.gain_db, -15.0), "{music:?}");
+    line.stop(Duration::ZERO);
+    run(&mut world, 0.4);
+    assert!(
+      (bus(&world, "music").duck_db + 6.0).abs() < 0.01,
+      "the sfx rule's"
+    );
+    shot.stop(Duration::ZERO);
+    run(&mut world, 0.4);
+    assert_eq!(bus(&world, "music").duck_db, 0.0);
+  }
+
+  /// A bus that sends to a send bus under itself is heard with its own
+  /// volume in the return once (kira takes a send after the sender's own
+  /// volume) and the buses above it once (on the route, not again on the
+  /// return): measured on kira's main track, the return adds the send's
+  /// level to what the bus plays directly
+  #[test]
+  fn a_send_into_the_sender_s_own_subtree_is_heard_once() {
+    let heard = |text: &str| {
+      let (mut world, meter) = crate::core::testing::metered_audio_world();
+      let mixer = match Mixer::parse(text) {
+        Ok(mixer) => mixer,
+        Err(error) => panic!("{error}"),
+      };
+      AudioView::new(&mut world).set_mixer(mixer);
+      let clip = clip(&mut world, 2.0);
+      let sound = looping(&mut world, clip, "sfx/steps");
+      AudioView::new(&mut world).play(&sound);
+      run(&mut world, 0.2);
+      meter.last().left
+    };
+    let direct = heard(
+      r#"(buses: {
+        "sfx": (volume: -4.0),
+        "sfx/steps": (volume: -5.0),
+      })"#,
+    );
+    let with_room = heard(
+      r#"(buses: {
+        "sfx": (volume: -4.0),
+        "sfx/steps": (volume: -5.0, sends: { "sfx/steps/room": -6.0 }),
+        "sfx/steps/room": (),
+      })"#,
+    );
+    assert!(direct > 0.01, "heard: {direct}");
+    // The direct path is -9 dB; the return -5 (the sender's own), then -6
+    // and sfx's -4 on the route: -15 dB, 6 dB under the direct path
+    let ratio = with_room / direct;
+    let expected = 1.0 + 10f32.powf(-6.0 / 20.0);
+    assert!(
+      (ratio - expected).abs() < 0.01,
+      "{with_room} against {direct}: {ratio}, not {expected}"
+    );
+  }
+
   #[test]
   fn the_snapshot_and_a_duck_survive_a_rebuild() {
     let (mut world, _files) = world_with_mixer(SNAPSHOTS);
