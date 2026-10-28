@@ -1775,4 +1775,177 @@ mod tests {
     m.pop(&mut world, &mut audio, None);
     assert_eq!(audio_stops(&world).len(), 1, "the click's loop stops");
   }
+
+  /// A track of a two-second loop that crossfades over 300 ms
+  fn theme(world: &mut World) -> crate::core::asset::Handle<crate::core::audio::Music> {
+    use crate::core::audio::{AudioClip, Music};
+    let clip = world
+      .resource_mut::<crate::core::asset::Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]));
+    let mut track = Music::looping(clip, 0.0, None);
+    track.crossfade = Duration::from_millis(300);
+    world
+      .resource_mut::<crate::core::asset::Assets<Music>>()
+      .add(track)
+  }
+
+  /// Plays its track as it enters (a no-op while it plays), and its loop
+  /// and one-shot if it has them
+  struct PlaysMusic {
+    track: crate::core::asset::Handle<crate::core::audio::Music>,
+    sound: Option<crate::core::asset::Handle<crate::core::audio::Sound>>,
+    shot: Option<crate::core::asset::Handle<crate::core::audio::AudioClip>>,
+    cleanup: SceneCleanup,
+  }
+
+  impl PlaysMusic {
+    fn new(track: &crate::core::asset::Handle<crate::core::audio::Music>) -> Box<Self> {
+      Box::new(Self {
+        track: track.clone(),
+        sound: None,
+        shot: None,
+        cleanup: SceneCleanup::DEFAULT,
+      })
+    }
+  }
+
+  impl Scene for PlaysMusic {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.audio().play_music(&self.track);
+      if let Some(sound) = &self.sound {
+        ctx.audio().play(sound);
+      }
+      if let Some(shot) = &self.shot {
+        ctx.audio().play(shot);
+      }
+    }
+
+    fn cleanup_on_exit(&self) -> SceneCleanup {
+      self.cleanup
+    }
+  }
+
+  /// The log's entries of `kind` for voices on `bus`
+  fn voice_entries(
+    world: &World,
+    bus: &str,
+    kind: crate::core::audio::AudioLogKind,
+  ) -> Vec<crate::core::audio::AudioLogEntry> {
+    use crate::core::audio::AudioEngine;
+    world
+      .resource::<AudioEngine>()
+      .log()
+      .iter()
+      .filter(|entry| entry.voice != 0 && entry.bus == bus && entry.kind == kind)
+      .cloned()
+      .collect()
+  }
+
+  /// Music belongs to the engine: a switch, a scene pushed over it and
+  /// popped, and a reset, each with the default cleanup, leave it playing,
+  /// and a scene that plays the track already playing changes nothing
+  #[test]
+  fn music_survives_a_scene_change() {
+    use crate::core::audio::{AudioLogKind, AudioView};
+    use crate::core::testing::audio_step;
+    let (mut world, mut audio, _) = audio_scene_world();
+    let track = theme(&mut world);
+    let mut m = SceneManager::with_scene(PlaysMusic::new(&track));
+    m.enter_initial(&mut world, &mut audio);
+    let frame = Duration::from_nanos(16_666_667);
+    audio_step(&mut world, frame);
+    m.switch(rec(&Arc::default(), "next"), &mut world, &mut audio);
+    audio_step(&mut world, frame);
+    m.push(rec(&Arc::default(), "pause"), &mut world, &mut audio);
+    m.pop(&mut world, &mut audio, None);
+    audio_step(&mut world, frame);
+    m.reset(PlaysMusic::new(&track), &mut world, &mut audio);
+    audio_step(&mut world, frame);
+    m.switch(PlaysMusic::new(&track), &mut world, &mut audio);
+    for _ in 0..30 {
+      audio_step(&mut world, frame);
+    }
+    assert_eq!(voice_entries(&world, "music", AudioLogKind::Start).len(), 1);
+    assert_eq!(voice_entries(&world, "music", AudioLogKind::Stop), []);
+    let view = AudioView::new(&mut world);
+    assert_eq!(view.current_music(), Some(track.id()));
+    assert_eq!(view.voices_on("music"), 1);
+  }
+
+  /// A scene whose cleanup holds `MUSIC` stops the music as it is switched
+  /// away, fading it out over its crossfade, and kira lets it go
+  #[test]
+  fn scene_cleanup_music_stops_it() {
+    use crate::core::audio::{AudioEngine, AudioLogKind, AudioView};
+    use crate::core::testing::audio_step;
+    let (mut world, mut audio, _) = audio_scene_world();
+    let track = theme(&mut world);
+    let mut scene = PlaysMusic::new(&track);
+    scene.cleanup = SceneCleanup::ALL;
+    let mut m = SceneManager::with_scene(scene);
+    m.enter_initial(&mut world, &mut audio);
+    audio_step(&mut world, Duration::from_millis(20));
+    m.switch(rec(&Arc::default(), "menu"), &mut world, &mut audio);
+    let stops: Vec<Duration> = voice_entries(&world, "music", AudioLogKind::Stop)
+      .iter()
+      .map(|entry| entry.fade)
+      .collect();
+    assert_eq!(stops, [Duration::from_millis(300)]);
+    assert_eq!(AudioView::new(&mut world).current_music(), None);
+    audio_step(&mut world, Duration::from_millis(150));
+    assert_eq!(AudioView::new(&mut world).voices_on("music"), 1, "fading");
+    audio_step(&mut world, Duration::from_millis(200));
+    assert_eq!(AudioView::new(&mut world).voices_on("music"), 0);
+    assert_eq!(world.resource::<AudioEngine>().sounds_on("music"), 0);
+  }
+
+  /// Review Focus 2: a scene switch every frame, each scene playing the
+  /// track (already playing), a loop and a one-shot. No voice leaks: once
+  /// the loops have faded and the one-shots ended, only the music plays,
+  /// started once and never restarted
+  #[test]
+  fn fifty_scene_switches_leak_no_voice_and_keep_one_music() {
+    use crate::core::audio::{AudioClip, AudioEngine, AudioLogKind, AudioView};
+    use crate::core::testing::audio_step;
+    let (mut world, mut audio, sound) = audio_scene_world();
+    let track = theme(&mut world);
+    let shot = world
+      .resource_mut::<crate::core::asset::Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 2_400]));
+    let level = || {
+      Box::new(PlaysMusic {
+        track: track.clone(),
+        sound: Some(sound.clone()),
+        shot: Some(shot.clone()),
+        cleanup: SceneCleanup::DEFAULT,
+      })
+    };
+    let frame = Duration::from_nanos(16_666_667);
+    let mut m = SceneManager::with_scene(level());
+    m.enter_initial(&mut world, &mut audio);
+    for _ in 0..50 {
+      audio_step(&mut world, frame);
+      m.switch(level(), &mut world, &mut audio);
+    }
+    // The last level's loop and shot play on; the rest fade out and end
+    for _ in 0..30 {
+      audio_step(&mut world, frame);
+    }
+    assert_eq!(voice_entries(&world, "music", AudioLogKind::Start).len(), 1);
+    assert_eq!(voice_entries(&world, "music", AudioLogKind::Stop), []);
+    assert_eq!(voice_entries(&world, "sfx", AudioLogKind::Start).len(), 102);
+    assert_eq!(
+      voice_entries(&world, "sfx", AudioLogKind::Stop).len(),
+      50,
+      "each exited level's loop stopped once"
+    );
+    let view = AudioView::new(&mut world);
+    assert_eq!(view.current_music(), Some(track.id()));
+    assert_eq!(view.voices_on("music"), 1);
+    assert_eq!(view.voices_on("sfx"), 1, "the last level's loop");
+    assert_eq!(view.voices_on("master"), 2);
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(engine.sounds_on("sfx"), 1, "kira holds only that loop");
+    assert_eq!(engine.sounds_on("music"), 1);
+  }
 }

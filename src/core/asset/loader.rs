@@ -124,6 +124,14 @@ impl<'a> LoadContext<'a> {
     }
   }
 
+  /// Reads the file at `path` on the loader's thread, without making an
+  /// asset of it: for a loader that builds its asset from other files'
+  /// contents (music joining its intro and loop). It is not a dependency,
+  /// so a change to that file does not reload this asset
+  pub(crate) fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+    self.server.read(path)
+  }
+
   /// Loads a dependency: the asset being loaded holds the handle and is ready
   /// only once this is. While `load_now` runs, dependencies load now too
   pub fn load<T: Asset>(&mut self, path: &str) -> Result<Handle<T>, AssetError> {

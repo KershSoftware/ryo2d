@@ -1,8 +1,10 @@
 //! [`AudioView`]: the audio engine as a scene reaches it (`ctx.audio()`)
 
+use std::time::Duration;
+
 use super::engine::AudioEngine;
-use super::{AudioClip, Mixer, Sound, Voice, VolumeKind};
-use crate::core::asset::{Assets, Handle};
+use super::{AudioClip, Mixer, Music, Sound, Voice, VolumeKind};
+use crate::core::asset::{AssetId, Assets, Handle};
 use crate::core::ecs::kernel::Mut;
 use crate::core::ecs::{Entity, Vec2, World};
 
@@ -214,6 +216,74 @@ impl<'w> AudioView<'w> {
     if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
       engine.set_mixer(Some(mixer));
     }
+  }
+
+  /// Play `music` on the engine's one music player, on its bus (`music`, or
+  /// one under it). It belongs to the engine, not to the scene playing it:
+  /// it carries on across scene changes until it is stopped or replaced, or
+  /// a scene's `SceneCleanup::MUSIC` stops it.
+  ///
+  /// - With a track playing, that track fades out and `music` fades in, both
+  ///   over `music`'s crossfade ([`Music::crossfade`]); with none, it fades
+  ///   in over its own fade-in.
+  /// - The track already playing plays on: nothing restarts (a paused one
+  ///   resumes), so every scene can ask for its track as it enters.
+  /// - A track still loading takes over once it has loaded, and the track
+  ///   playing plays until then; one that did not load is warned about once
+  ///   and changes nothing
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn to_battle(ctx: &mut SceneContext<'_>, battle: &Handle<Music>) {
+  ///   ctx.audio().play_music(battle);
+  /// }
+  /// ```
+  pub fn play_music(&mut self, music: &Handle<Music>) {
+    self
+      .world
+      .try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+        engine.play_music(world, music);
+      });
+  }
+
+  /// Stop the music, fading out over `fade` (at least 10 ms), and forget a
+  /// track still loading. Nothing plays until the next
+  /// [`play_music`](Self::play_music)
+  pub fn stop_music(&mut self, fade: Duration) {
+    self
+      .world
+      .try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+        engine.stop_music(world, fade);
+      });
+  }
+
+  /// Pause the music where it is (smoothed over 10 ms), until
+  /// [`resume_music`](Self::resume_music), or `play_music` of the same track
+  pub fn pause_music(&mut self) {
+    self
+      .world
+      .try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+        engine.pause_music(world);
+      });
+  }
+
+  /// Resume paused music where it paused (smoothed over 10 ms)
+  pub fn resume_music(&mut self) {
+    self
+      .world
+      .try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+        engine.resume_music(world);
+      });
+  }
+
+  /// The music playing (or paused), or the track asked for that takes over
+  /// once it has loaded; `None` with no music, or once it was stopped
+  pub fn current_music(&self) -> Option<AssetId<Music>> {
+    self
+      .world
+      .get_resource::<AudioEngine>()
+      .and_then(AudioEngine::current_music)
   }
 
   /// How many voices play on `bus` and every bus under it (`master` counts

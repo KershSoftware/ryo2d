@@ -31,6 +31,7 @@ use super::mixer::{
   BusReport, BusTree, GainLayers, MAX_BUS_DB, Output, PlannedBus, Route, SEND_TRACK_CAPACITY,
   Tracks, plan,
 };
+use super::music::{MusicPlayer, Track};
 use super::settings::{SILENCE_DB, VolumeSettings};
 use super::spatial::{
   AudioEmitter, Hearing, Listener, ListenerQuery, MAX_FILTERED, SpatialVoice, VoiceFilter,
@@ -39,8 +40,8 @@ use super::spatial::{
 use super::view::{PlayOptions, Playable};
 use super::voice::{Voice, VoiceChange, VoiceCommand, VoiceState};
 use super::{
-  AudioClip, ClipData, FocusLoss, LimitRule, Mixer, SnapshotDef, Sound, SoundClip, Spatial,
-  VoiceLimit, VolumeKind, volume_to_db,
+  AudioClip, ClipData, FocusLoss, LimitRule, Mixer, Music, MusicData, SnapshotDef, Sound,
+  SoundClip, Spatial, VoiceLimit, VolumeKind, volume_to_db,
 };
 use crate::core::asset::{AssetId, AssetServer, Assets, Handle, LoadState, UntypedAssetId};
 use crate::core::ecs::kernel::{EntityHashSet, Mut};
@@ -75,6 +76,10 @@ const GAIN_EPSILON: f32 = 1e-4;
 const CUTOFF_EPSILON: f32 = 0.01;
 /// Where a clip played directly goes
 const DEFAULT_BUS: &str = "sfx";
+/// Where music plays, or under it
+const MUSIC_BUS: &str = "music";
+/// A music voice's priority: the highest, so no other voice takes its room
+const MUSIC_PRIORITY: u8 = u8::MAX;
 /// A time scale at or below this stands time still for the buses that
 /// follow it: their voices are held, as kira cannot play a rate of 0
 const HOLD_SCALE: f32 = 0.01;
@@ -330,6 +335,84 @@ impl ClipSource {
   }
 }
 
+/// What a voice plays
+enum Source {
+  /// A clip: played directly, picked by a sound definition, or a music's
+  /// one clip
+  Clip(Handle<AudioClip>),
+  /// A music's intro and loop, joined into one sound as it loaded
+  Joined(Handle<Music>),
+}
+
+impl Source {
+  fn as_ref(&self) -> SourceRef<'_> {
+    match self {
+      Source::Clip(clip) => SourceRef::Clip(clip),
+      Source::Joined(music) => SourceRef::Joined(music),
+    }
+  }
+}
+
+/// A [`Source`], borrowed for one play
+#[derive(Clone, Copy)]
+enum SourceRef<'a> {
+  Clip(&'a Handle<AudioClip>),
+  Joined(&'a Handle<Music>),
+}
+
+impl<'a> SourceRef<'a> {
+  /// The source, held by a voice
+  fn held(self) -> Source {
+    match self {
+      SourceRef::Clip(clip) => Source::Clip(clip.clone()),
+      SourceRef::Joined(music) => Source::Joined(music.clone()),
+    }
+  }
+
+  /// The clip, if it is one
+  fn clip(self) -> Option<&'a Handle<AudioClip>> {
+    match self {
+      SourceRef::Clip(clip) => Some(clip),
+      SourceRef::Joined(_) => None,
+    }
+  }
+
+  fn untyped(self) -> UntypedAssetId {
+    match self {
+      SourceRef::Clip(clip) => clip.id().untyped(),
+      SourceRef::Joined(music) => music.id().untyped(),
+    }
+  }
+
+  /// Its samples, taken from `world`'s stores to play, and their content
+  /// version; `None` if it is not loaded
+  fn samples(self, world: &World) -> Option<(ClipSource, u64)> {
+    match self {
+      SourceRef::Clip(clip) => {
+        let clips = world.get_resource::<Assets<AudioClip>>()?;
+        Some((ClipSource::of(clips.get(clip)?), clips.version(clip)?))
+      }
+      SourceRef::Joined(music) => {
+        let musics = world.get_resource::<Assets<Music>>()?;
+        let MusicData::Concatenated(data) = musics.get(music)?.data() else {
+          return None;
+        };
+        let data = StaticSoundData::clone(data);
+        Some((ClipSource::Decoded(data), musics.version(music)?))
+      }
+    }
+  }
+
+  /// Its name in the log and in warnings: the clip's asset path, or the
+  /// music's (its id for one made in code)
+  fn name(self, server: Option<&AssetServer>) -> String {
+    match self {
+      SourceRef::Clip(clip) => source_name(clip, server),
+      SourceRef::Joined(music) => music_name(music.id(), server),
+    }
+  }
+}
+
 /// A live voice's kira handle
 enum Playback {
   Static(StaticSoundHandle),
@@ -423,12 +506,15 @@ struct LiveVoice {
   /// Shares its id and state with the game's handles
   voice: Voice,
   playback: Playback,
-  /// Held, so the registry never frees a clip under playback
-  clip: Handle<AudioClip>,
-  /// The clip's content version when the voice started
-  clip_version: u64,
-  /// The definition it plays; `None` for a clip played directly
+  /// Held, so the registry never frees a clip (or a joined music) under
+  /// playback
+  source: Source,
+  /// Its source's content version when the voice started
+  version: u64,
+  /// The definition it plays; `None` for a clip played directly, or music
   sound: Option<AssetId<Sound>>,
+  /// The music it plays, if it is the music player's
+  music: Option<AssetId<Music>>,
   bus: usize,
   /// Its own gain in dB
   gain_db: f32,
@@ -539,7 +625,9 @@ struct Victim {
 /// One play, resolved from a definition (or a bare clip's empty one)
 struct Request<'a> {
   sound: Option<AssetId<Sound>>,
-  clip: &'a Handle<AudioClip>,
+  /// The music it plays, for the music player
+  music: Option<AssetId<Music>>,
+  source: SourceRef<'a>,
   /// Which of the definition's clips it is, for no-repeat
   pick: usize,
   no_repeat: u8,
@@ -568,7 +656,8 @@ impl<'a> Request<'a> {
   fn clip(clip: &'a Handle<AudioClip>, options: &PlayOptions) -> Self {
     Self {
       sound: None,
-      clip,
+      music: None,
+      source: SourceRef::Clip(clip),
       pick: 0,
       no_repeat: 0,
       region: None,
@@ -601,7 +690,8 @@ impl<'a> Request<'a> {
     let clip = sound.clips.get(pick)?;
     Some(Self {
       sound: Some(id),
-      clip: &clip.clip,
+      music: None,
+      source: SourceRef::Clip(&clip.clip),
       pick,
       no_repeat: sound.no_repeat,
       region: clip.region.as_ref(),
@@ -669,7 +759,8 @@ impl Start<'_> {
 /// Who a log entry is about
 struct Subject<'a> {
   sound: Option<AssetId<Sound>>,
-  clip: &'a Handle<AudioClip>,
+  music: Option<AssetId<Music>>,
+  source: SourceRef<'a>,
   bus: usize,
   /// Its gain as heard (its own and its place's)
   gain_db: f32,
@@ -789,6 +880,8 @@ pub struct AudioEngine {
   focus_loss: FocusLoss,
   /// The scene whose code runs now: the voices it plays are its own
   scope: Option<u64>,
+  /// The one music player: the track playing, and one waiting to load
+  music: MusicPlayer,
   #[cfg(test)]
   injected_stream_errors: Vec<String>,
   /// Plays kira refused for want of room: none should ever be
@@ -882,6 +975,7 @@ impl AudioEngine {
       focused: true,
       focus_loss: FocusLoss::Keep,
       scope: None,
+      music: MusicPlayer::default(),
       #[cfg(test)]
       injected_stream_errors: Vec::new(),
       #[cfg(test)]
@@ -1543,10 +1637,7 @@ impl AudioEngine {
     server: Option<&AssetServer>,
   ) -> Result<(), String> {
     let live = &self.voices.live[index];
-    let Some(clip) = world
-      .get_resource::<Assets<AudioClip>>()
-      .and_then(|clips| clips.get(&live.clip))
-    else {
+    let Some((samples, _)) = live.source.as_ref().samples(world) else {
       return Err("its clip is not in the store".into());
     };
     let (region, loop_region) = (live.region.clone(), live.loop_region.clone());
@@ -1569,7 +1660,7 @@ impl AudioEngine {
     // its new bus (unfiltered if kira has no room for one)
     let mut filter = cutoff.and_then(|hz| self.filter_track(bus, hz));
     let track = filter.as_mut().map(|filter| &mut filter.track);
-    let started = match ClipSource::of(clip) {
+    let started = match samples {
       ClipSource::Decoded(data) => self.start_static(bus, track, data, &start),
       ClipSource::Encoded(bytes) => self.start_stream(bus, track, bytes, &start),
     };
@@ -1577,8 +1668,10 @@ impl AudioEngine {
       Ok(playback) => playback,
       Err(Refusal::Undecodable(error)) => {
         let live = &self.voices.live[index];
-        let (clip, version) = (live.clip.clone(), live.clip_version);
-        self.warn_undecodable(&clip, version, &error, server);
+        if let Source::Clip(clip) = &live.source {
+          let (clip, version) = (clip.clone(), live.version);
+          self.warn_undecodable(&clip, version, &error, server);
+        }
         return Err(format!("its clip could not be opened again: {error}"));
       }
       Err(Refusal::Full) => return Err("its new bus has no room".into()),
@@ -1609,10 +1702,16 @@ impl AudioEngine {
     if std::mem::replace(&mut live.stuck_warned, true) {
       return;
     }
-    let name = live
-      .sound
-      .and_then(|id| server.and_then(|server| server.path(id)))
-      .map_or_else(|| source_name(&live.clip, server), |path| path.to_string());
+    // Its definition's path, or else its clip's (or joined music's)
+    let path = match (live.sound, live.music) {
+      (Some(sound), _) => server.and_then(|server| server.path(sound)),
+      (None, Some(music)) => server.and_then(|server| server.path(music)),
+      (None, None) => None,
+    };
+    let name = path.map_or_else(
+      || live.source.as_ref().name(server),
+      |path| path.to_string(),
+    );
     crate::engine_warn!(
       module: "Audio",
       "{name}: the loop could not move to the rebuilt buses ({why}); it plays on as it was, at the old buses' volumes, until it stops"
@@ -1723,11 +1822,230 @@ impl AudioEngine {
     }
   }
 
+  /// Play `music` on the music player. If a track is playing, it fades
+  /// out and `music` fades in, both over `music`'s crossfade; with none, it
+  /// fades in over its own fade-in. The track already playing plays on (a
+  /// paused one resumes). A track still loading takes over once it has
+  /// loaded; one that did not load is warned about once and changes
+  /// nothing. Music belongs to the engine, not to the scene playing it
+  pub(crate) fn play_music(&mut self, world: &World, music: &Handle<Music>) {
+    let server = world.get_resource::<AssetServer>();
+    let id = music.id();
+    if let Some(track) = self.music.live()
+      && track.music.id() == id
+    {
+      let voice = track.voice.id();
+      // Asked for again, it wins over a track asked for since that has yet
+      // to load
+      self.music.pending = None;
+      self.apply(
+        VoiceCommand {
+          voice,
+          change: VoiceChange::Resume,
+        },
+        server,
+      );
+      return;
+    }
+    if self
+      .music
+      .pending
+      .as_ref()
+      .is_some_and(|pending| pending.id() == id)
+    {
+      return;
+    }
+    match readiness(world, music, server) {
+      Readiness::Ready => {
+        self.music.pending = None;
+        self.start_music(world, music, server);
+      }
+      Readiness::Loading => self.music.pending = Some(music.clone()),
+      Readiness::Failed => {
+        self.music.pending = None;
+        self.warn_music(id, server);
+      }
+    }
+  }
+
+  /// Stop the music, fading out over `fade` (at least [`MIN_FADE`]), and
+  /// forget a track waiting to load
+  pub(crate) fn stop_music(&mut self, world: &World, fade: Duration) {
+    let server = world.get_resource::<AssetServer>();
+    self.music.pending = None;
+    if let Some(track) = self.music.current.take()
+      && track.is_live()
+    {
+      let voice = track.voice.id();
+      self.apply(
+        VoiceCommand {
+          voice,
+          change: VoiceChange::Stop(fade),
+        },
+        server,
+      );
+    }
+  }
+
+  /// Stop the music as a scene's `SceneCleanup::MUSIC` does: fading out over
+  /// its track's crossfade
+  pub(crate) fn stop_music_with_crossfade(&mut self, world: &World) {
+    let fade = self
+      .music
+      .live()
+      .map_or(Duration::ZERO, |track| track.crossfade);
+    self.stop_music(world, fade);
+  }
+
+  /// Pause the music where it is, fading out over [`MIN_FADE`]
+  pub(crate) fn pause_music(&mut self, world: &World) {
+    self.change_music(world, VoiceChange::Pause);
+  }
+
+  /// Resume paused music where it paused, fading in over [`MIN_FADE`]
+  pub(crate) fn resume_music(&mut self, world: &World) {
+    self.change_music(world, VoiceChange::Resume);
+  }
+
+  /// Apply `change` to the track playing or paused, if there is one
+  fn change_music(&mut self, world: &World, change: VoiceChange) {
+    let Some(voice) = self.music.live().map(|track| track.voice.id()) else {
+      return;
+    };
+    let server = world.get_resource::<AssetServer>();
+    self.apply(VoiceCommand { voice, change }, server);
+  }
+
+  /// The music playing or paused, or the track waiting to load that takes
+  /// over once it has
+  pub(crate) fn current_music(&self) -> Option<AssetId<Music>> {
+    self.music.current_music()
+  }
+
+  /// Start `handle`'s track (loaded, with its clip) on its bus, taking over
+  /// from the track playing: that one fades out and this one fades in over
+  /// this one's crossfade. With none playing it fades in over its fade-in
+  fn start_music(&mut self, world: &World, handle: &Handle<Music>, server: Option<&AssetServer>) {
+    let Some(music) = world
+      .get_resource::<Assets<Music>>()
+      .and_then(|musics| musics.get(handle))
+    else {
+      return;
+    };
+    let fade_in = match self.music.current.take() {
+      Some(old) if old.is_live() => {
+        let voice = old.voice.id();
+        let change = VoiceChange::Stop(music.crossfade);
+        self.apply(VoiceCommand { voice, change }, server);
+        music.crossfade
+      }
+      _ => music.fade_in,
+    };
+    let (source, loop_region) = match music.data() {
+      MusicData::Concatenated(data) => (SourceRef::Joined(handle), joined_loop(data)),
+      MusicData::Looping {
+        clip,
+        loop_start,
+        loop_end,
+      } => {
+        let length = world
+          .get_resource::<Assets<AudioClip>>()
+          .and_then(|clips| clips.get(clip))
+          .map_or(0.0, |clip| clip.duration().as_secs_f64());
+        (
+          SourceRef::Clip(clip),
+          clip_loop(*loop_start, *loop_end, length),
+        )
+      }
+    };
+    let bus = if music.bus == MUSIC_BUS || music.bus.starts_with("music/") {
+      music.bus.as_str()
+    } else {
+      self.warn_music_bus(handle.id(), &music.bus, server);
+      MUSIC_BUS
+    };
+    let request = Request {
+      sound: None,
+      music: Some(handle.id()),
+      source,
+      pick: 0,
+      no_repeat: 0,
+      region: None,
+      loop_region: Some(&loop_region),
+      looping: true,
+      bus,
+      gain_db: music.volume_db,
+      pitch: 0.0,
+      limit: None,
+      priority: MUSIC_PRIORITY,
+      cooldown: Duration::ZERO,
+      fade_in,
+      fade_out: music.crossfade,
+      position: None,
+      spatial: None,
+      emitter: None,
+      persist: true,
+    };
+    let voice = self.start(world, &request, server);
+    if !voice.is_stopped() {
+      self.music.current = Some(Track {
+        music: handle.clone(),
+        voice,
+        crossfade: music.crossfade,
+      });
+    }
+  }
+
+  /// Each frame: start the track waiting to load once it has (or forget it,
+  /// warned about, if it failed)
+  fn step_music(&mut self, world: &World, server: Option<&AssetServer>) {
+    let Some(pending) = &self.music.pending else {
+      return;
+    };
+    match readiness(world, pending, server) {
+      Readiness::Loading => {}
+      Readiness::Ready => {
+        if let Some(pending) = self.music.pending.take() {
+          self.start_music(world, &pending, server);
+        }
+      }
+      Readiness::Failed => {
+        let id = pending.id();
+        self.music.pending = None;
+        self.warn_music(id, server);
+      }
+    }
+  }
+
+  /// Warn, once for `music`, that it did not load
+  fn warn_music(&mut self, music: AssetId<Music>, server: Option<&AssetServer>) {
+    if self.music.warned.insert(music) {
+      let name = music_name(music, server);
+      crate::engine_warn!(
+        module: "Audio",
+        "{name}: the music did not load, so it does not play (the asset warning for it says why)"
+      );
+    }
+  }
+
+  /// Warn, once for `music`, that its bus is outside `music`
+  fn warn_music_bus(&mut self, music: AssetId<Music>, bus: &str, server: Option<&AssetServer>) {
+    if self.music.warned_buses.insert(music) {
+      let name = music_name(music, server);
+      crate::engine_warn!(
+        module: "Audio",
+        "{name}: music plays on the music bus or one under it, not {bus:?}, so it plays on \"music\""
+      );
+    }
+  }
+
   /// Start `request`'s voice, unless its clip is not loaded (a stopped
   /// voice, not logged), or it is a one-shot out of range (culled) or
   /// refused (a stopped voice, logged)
   fn start(&mut self, world: &World, request: &Request<'_>, server: Option<&AssetServer>) -> Voice {
-    let bus = self.resolve_bus(request.bus, request.sound, server);
+    let bus = self.resolve_bus(request.bus, || {
+      owner_name(request.sound, request.music, server)
+    });
     let pitch = clamp_pitch(request.pitch);
     let scale = self.scale_on(bus);
     let held = self.buses.buses.get(bus).is_some_and(|bus| bus.held);
@@ -1744,16 +2062,14 @@ impl AudioEngine {
       });
     let subject = Subject {
       sound: request.sound,
-      clip: request.clip,
+      music: request.music,
+      source: request.source,
       bus,
       gain_db: heard_db(own_db, heard.map_or(0.0, |(_, hearing)| hearing.gain_db)),
       pan: heard.map_or(0.0, |(_, hearing)| hearing.pan),
       rate: rate_of(pitch) * scale,
     };
-    let Some((clip, version)) = world
-      .get_resource::<Assets<AudioClip>>()
-      .and_then(|clips| Some((clips.get(request.clip)?, clips.version(request.clip)?)))
-    else {
+    let Some((samples, version)) = request.source.samples(world) else {
       return Voice::stopped();
     };
     if request.position.is_some() && request.spatial.is_none() {
@@ -1769,10 +2085,12 @@ impl AudioEngine {
     // A clip whose stream failed to decode would only fail the same way on
     // another decoder thread. Kira's room is asked before any limit stops
     // a voice: a stopped voice holds its room until it has faded out
-    let refused = self.undecodable.get(&request.clip.id()) == Some(&version)
-      || self.cooling(request)
-      || !self.room_on(bus)
-      || !self.make_room(bus, request);
+    let undecodable = request
+      .source
+      .clip()
+      .is_some_and(|clip| self.undecodable.get(&clip.id()) == Some(&version));
+    let refused =
+      undecodable || self.cooling(request) || !self.room_on(bus) || !self.make_room(bus, request);
     if refused {
       return self.refuse(&subject, server);
     }
@@ -1792,7 +2110,7 @@ impl AudioEngine {
       position: 0.0,
     };
     let track = filter.as_mut().map(|filter| &mut filter.track);
-    let started = match ClipSource::of(clip) {
+    let started = match samples {
       ClipSource::Decoded(data) => self.start_static(bus, track, data, &start),
       ClipSource::Encoded(bytes) => self.start_stream(bus, track, bytes, &start),
     };
@@ -1801,7 +2119,10 @@ impl AudioEngine {
       Err(refusal) => {
         match &refusal {
           Refusal::Undecodable(error) => {
-            self.warn_undecodable(request.clip, version, error, server)
+            // Only a clip streams
+            if let Some(clip) = request.source.clip() {
+              self.warn_undecodable(clip, version, error, server);
+            }
           }
           Refusal::Full => {
             self.count_kira_full();
@@ -1817,9 +2138,10 @@ impl AudioEngine {
     self.voices.live.push(LiveVoice {
       voice: voice.clone(),
       playback,
-      clip: request.clip.clone(),
-      clip_version: version,
+      source: request.source.held(),
+      version,
       sound: request.sound,
+      music: request.music,
       bus,
       gain_db: own_db,
       pitch,
@@ -1905,12 +2227,12 @@ impl AudioEngine {
   fn warn_flat(&mut self, request: &Request<'_>, server: Option<&AssetServer>) {
     let id = request
       .sound
-      .map_or_else(|| request.clip.id().untyped(), AssetId::untyped);
+      .map_or_else(|| request.source.untyped(), AssetId::untyped);
     if !self.warned_flat.insert(id) {
       return;
     }
     let name = request.sound.map_or_else(
-      || source_name(request.clip, server),
+      || request.source.name(server),
       |sound| sound_name(sound, server),
     );
     crate::engine_warn!(
@@ -2032,19 +2354,15 @@ impl AudioEngine {
 
   /// The bus named `name`, or the nearest bus above it that plays voices
   /// (`sfx` for `sfx/steps`; a send bus's parent), or `sfx`, warning once
-  /// per name, unless the mixer that may add it has yet to land
-  fn resolve_bus(
-    &mut self,
-    name: &str,
-    sound: Option<AssetId<Sound>>,
-    server: Option<&AssetServer>,
-  ) -> usize {
+  /// per name (naming `who` plays on it), unless the mixer that may add it
+  /// has yet to land
+  fn resolve_bus(&mut self, name: &str, who: impl FnOnce() -> String) -> usize {
     let bus = self.buses.playable(name);
     if self.buses.name(bus) == name || self.mixer_pending || self.warned_buses.contains(name) {
       return bus;
     }
     self.warned_buses.insert(name.to_string());
-    let who = sound.map_or_else(String::new, |id| sound_name(id, server));
+    let who = who();
     let on = self.buses.name(bus);
     if self.buses.find(name).is_some() {
       crate::engine_warn!(
@@ -2163,6 +2481,7 @@ impl AudioEngine {
       self.apply(command, server);
     }
     self.apply_mixer(world, server);
+    self.step_music(world, server);
     self.release_orphans(server);
     self.follow_listener(world, real_delta, server);
     self.play_spawned(world, server);
@@ -2176,6 +2495,15 @@ impl AudioEngine {
       }
     }
     self.retire_ended(server);
+    // A track whose voice ended lets its definition go
+    if self
+      .music
+      .current
+      .as_ref()
+      .is_some_and(|track| track.voice.is_stopped())
+    {
+      self.music.current = None;
+    }
     self.step_mix(real_delta);
     if !self.retired_sends.is_empty() {
       let live = &self.voices.live;
@@ -2473,14 +2801,20 @@ impl AudioEngine {
       // The state first: a stream's error is queued before kira stops it
       let ended = live.playback.state() == PlaybackState::Stopped;
       if let Some(error) = live.playback.take_error() {
-        let (clip, version) = (live.clip.clone(), live.clip_version);
+        // Only a clip streams
+        let failed = match &live.source {
+          Source::Clip(clip) => Some((clip.clone(), live.version)),
+          Source::Joined(_) => None,
+        };
         // kira cuts a stream that fails to decode at its next chunk, with
         // no fade, and ignores a stop after that: log what it did
         if live.voice.state() != VoiceState::Stopping {
           live.voice.set_state(VoiceState::Stopping);
           self.record(index, AudioLogKind::Stop, Duration::ZERO, server);
         }
-        self.warn_undecodable(&clip, version, &error, server);
+        if let Some((clip, version)) = failed {
+          self.warn_undecodable(&clip, version, &error, server);
+        }
       }
       if ended {
         self.voices.live[index].voice.set_state(VoiceState::Stopped);
@@ -2523,7 +2857,8 @@ impl AudioEngine {
     };
     let subject = Subject {
       sound: live.sound,
-      clip: &live.clip,
+      music: live.music,
+      source: live.source.as_ref(),
       bus: live.bus,
       gain_db: live.heard_db(),
       pan: live.pan(),
@@ -2547,12 +2882,13 @@ impl AudioEngine {
     AudioLogEntry {
       kind,
       voice,
-      sound: match subject.sound {
-        Some(id) if on => sound_name(id, server),
-        _ => String::new(),
+      sound: if on {
+        owner_name(subject.sound, subject.music, server)
+      } else {
+        String::new()
       },
       source: if on {
-        source_name(subject.clip, server)
+        subject.source.name(server)
       } else {
         String::new()
       },
@@ -2619,6 +2955,81 @@ pub(crate) fn release_scene(world: &mut World, scope: u64) {
   world.try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
     engine.release_scope(world, scope);
   });
+}
+
+/// Stop the music as a scene's `SceneCleanup::MUSIC` does, fading it out over
+/// its track's crossfade. A world without an audio engine is left alone
+pub(crate) fn stop_scene_music(world: &mut World) {
+  world.try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+    engine.stop_music_with_crossfade(world);
+  });
+}
+
+/// Whether a track can start
+enum Readiness {
+  /// It is loaded, with its clip
+  Ready,
+  /// It, or its clip, is still loading
+  Loading,
+  /// It, or its clip, did not load
+  Failed,
+}
+
+/// Whether `music` can start: it and its clip loaded (a file's music is
+/// inserted only once its clip has loaded; one made in code may name a clip
+/// still loading)
+fn readiness(world: &World, music: &Handle<Music>, server: Option<&AssetServer>) -> Readiness {
+  let Some(def) = world
+    .get_resource::<Assets<Music>>()
+    .and_then(|musics| musics.get(music))
+  else {
+    let loading = server.is_some_and(|server| matches!(server.state(music), LoadState::Loading));
+    return if loading {
+      Readiness::Loading
+    } else {
+      Readiness::Failed
+    };
+  };
+  match def.data() {
+    MusicData::Concatenated(_) => Readiness::Ready,
+    MusicData::Looping { clip, .. } => {
+      let clips = world.get_resource::<Assets<AudioClip>>();
+      if clips.is_some_and(|clips| clips.get(clip).is_some()) {
+        Readiness::Ready
+      } else if server.is_some_and(|server| matches!(server.state(clip), LoadState::Loading)) {
+        Readiness::Loading
+      } else {
+        Readiness::Failed
+      }
+    }
+  }
+}
+
+/// A joined track's loop, in seconds of it: from its loop region's start
+/// (the intro's end) to its end
+fn joined_loop(data: &StaticSoundData) -> Range<f64> {
+  let rate = f64::from(data.sample_rate.max(1));
+  let start = match data.settings.loop_region.map(|region| region.start) {
+    Some(PlaybackPosition::Samples(frames)) => frames as f64 / rate,
+    Some(PlaybackPosition::Seconds(seconds)) => seconds,
+    None => 0.0,
+  };
+  start..data.frames.len() as f64 / rate
+}
+
+/// A one-clip track's loop in seconds, in a clip `length` long: from
+/// `start` (0 for one that is not a time from 0) to `end`, or the clip's
+/// end for none, or one not after the start
+fn clip_loop(start: f64, end: Option<f64>, length: f64) -> Range<f64> {
+  let start = if start.is_finite() && start >= 0.0 {
+    start
+  } else {
+    0.0
+  };
+  let end = end
+    .filter(|end| end.is_finite() && *end > start)
+    .unwrap_or(length);
+  start..end
 }
 
 /// A planned bus's gain layers: the game's volume for it, or the mixer's,
@@ -2908,6 +3319,28 @@ fn sound_name(sound: AssetId<Sound>, server: Option<&AssetServer>) -> String {
   match server.and_then(|server| server.path(sound)) {
     Some(path) => path.to_string(),
     None => format!("{sound:?}"),
+  }
+}
+
+/// A music's asset path, or its id for one made in code
+fn music_name(music: AssetId<Music>, server: Option<&AssetServer>) -> String {
+  match server.and_then(|server| server.path(music)) {
+    Some(path) => path.to_string(),
+    None => format!("{music:?}"),
+  }
+}
+
+/// What a voice plays, by name: its sound definition's, or its music's;
+/// empty for a clip played directly
+fn owner_name(
+  sound: Option<AssetId<Sound>>,
+  music: Option<AssetId<Music>>,
+  server: Option<&AssetServer>,
+) -> String {
+  match (sound, music) {
+    (Some(sound), _) => sound_name(sound, server),
+    (None, Some(music)) => music_name(music, server),
+    (None, None) => String::new(),
   }
 }
 

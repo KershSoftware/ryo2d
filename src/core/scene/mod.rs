@@ -89,7 +89,9 @@ impl SceneCleanup {
   pub const LIGHTING: Self = Self(1 << 3);
   /// Reset the game clock's speed, pause and hitstop.
   pub const TIME: Self = Self(1 << 4);
-  /// Stop any playing music.
+  /// Stop the music (`ctx.audio().play_music`), fading it out over its
+  /// track's crossfade. Music belongs to the engine, so without this it
+  /// carries on into the next scene.
   pub const MUSIC: Self = Self(1 << 5);
   /// Drop every buffered message.
   pub const MESSAGES: Self = Self(1 << 6);

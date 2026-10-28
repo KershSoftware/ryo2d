@@ -108,14 +108,14 @@ pub mod prelude {
 
   // Audio
   pub use crate::core::asset::{
-    AudioClipLoader, AudioClipSettings, ClipMode, MixerLoader, SoundLoader,
+    AudioClipLoader, AudioClipSettings, ClipMode, MixerLoader, MusicLoader, SoundLoader,
   };
   pub use crate::core::audio::{
     Audio, AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
   };
   pub use crate::core::audio::{
     AudioClip, AudioEmitter, AudioListener, AudioView, BusDef, DistortionKind, EffectDef, EqKind,
-    Falloff, FocusLoss, LimitRule, Mixer, PlayOptions, Sound, SoundClip, Spatial, Voice,
+    Falloff, FocusLoss, LimitRule, Mixer, Music, PlayOptions, Sound, SoundClip, Spatial, Voice,
     VoiceLimit, VolumeKind, falloff_gain_db, pan_for, volume_to_db,
   };
 

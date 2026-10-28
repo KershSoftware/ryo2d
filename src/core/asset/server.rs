@@ -900,8 +900,7 @@ impl AssetServer {
     mode: LoadMode<'_>,
     reload: bool,
   ) -> Result<Loaded, AssetError> {
-    let bytes = catch_unwind(AssertUnwindSafe(|| self.inner.source.read(path)))
-      .map_err(|_| AssetError::decode(path, "the source panicked"))??;
+    let bytes = self.read(path)?;
     let mut cx = LoadContext::new(path, self, mode).reloading(reload);
     let value = catch_unwind(AssertUnwindSafe(|| loader.load(bytes, settings, &mut cx)))
       .map_err(|_| AssetError::decode(path, "the loader panicked"))??;
@@ -909,6 +908,14 @@ impl AssetServer {
       value,
       dependencies: cx.into_dependencies(),
     })
+  }
+
+  /// The bytes at `path`, read from the source on the calling thread. A
+  /// panic in the source fails the read (in native builds: the web build
+  /// aborts on a panic)
+  pub(crate) fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+    catch_unwind(AssertUnwindSafe(|| self.inner.source.read(path)))
+      .map_err(|_| AssetError::decode(path, "the source panicked"))?
   }
 
   // The pump's side

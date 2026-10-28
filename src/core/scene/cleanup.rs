@@ -1,6 +1,6 @@
 //! What a scene switch or reset clears.
 
-use crate::core::audio::Audio;
+use crate::core::audio::{Audio, stop_scene_music};
 use crate::core::ecs::With;
 use crate::core::ecs::World;
 use crate::core::ecs::world_ext::despawn_game_entities;
@@ -60,7 +60,9 @@ pub(super) fn execute_cleanup(cleanup: SceneCleanup, world: &mut World, audio: &
     time.game.clear_hitstop();
   }
   if cleanup.contains(SceneCleanup::MUSIC) {
+    // The old player's, until the games move over
     audio.stop_music();
+    stop_scene_music(world);
   }
   if cleanup.contains(SceneCleanup::MESSAGES) {
     clear_messages(world);
