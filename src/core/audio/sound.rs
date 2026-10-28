@@ -754,6 +754,82 @@ mod tests {
     assert_eq!(last(&world).kind, AudioLogKind::Refused);
   }
 
+  /// The cap takes the least important voice first, however loud, and
+  /// only then the quietest of the rest
+  #[test]
+  fn the_cap_takes_the_least_important_before_the_quietest() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let normal = add(&mut world, of(&[&long]));
+    let minor = add(
+      &mut world,
+      Sound {
+        priority: 64,
+        ..of(&[&long])
+      },
+    );
+    for _ in 0..94 {
+      play(&mut world, &normal);
+    }
+    let loud_but_minor = play(&mut world, &minor);
+    let quiet = play_with(
+      &mut world,
+      &normal,
+      PlayOptions {
+        volume_db: -20.0,
+        ..Default::default()
+      },
+    );
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 96);
+    audio_step(&mut world, FRAME);
+    assert!(play(&mut world, &normal).is_playing());
+    assert_eq!(stolen(&world), [(loud_but_minor.id(), MIN_FADE)]);
+    assert!(play(&mut world, &normal).is_playing());
+    assert_eq!(
+      stolen(&world),
+      [(loud_but_minor.id(), MIN_FADE), (quiet.id(), MIN_FADE)]
+    );
+  }
+
+  /// Victims are planned before any stops: a play the sound's own limit
+  /// would make room for, but a bus limit then refuses, stops nothing
+  #[test]
+  fn a_play_a_later_limit_refuses_stops_nothing() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let important = add(
+      &mut world,
+      Sound {
+        priority: 200,
+        ..of(&[&long])
+      },
+    );
+    let single = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::StopOldest,
+        }),
+        ..of(&[&long])
+      },
+    );
+    let kept = play(&mut world, &important);
+    let first = play(&mut world, &single);
+    audio_step(&mut world, FRAME);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_bus_limit("master", Some(1));
+    // The sound's limit would stop `first`, but master's would then have to
+    // stop the more important voice too
+    let refused = play(&mut world, &single);
+    assert!(refused.is_stopped(), "{refused:?}");
+    assert_eq!(last(&world).kind, AudioLogKind::Refused);
+    assert!(stolen(&world).is_empty(), "{:?}", stolen(&world));
+    audio_step(&mut world, FRAME);
+    assert!(kept.is_playing() && first.is_playing());
+  }
+
   #[test]
   fn a_region_plays_its_part_and_a_loop_loops() {
     let mut world = audio_world();
@@ -789,15 +865,31 @@ mod tests {
   fn regions_are_kept_inside_the_clip() {
     let mut world = audio_world();
     let long = clip(&mut world, 0.25);
-    let mut wild = Sound {
-      looping: true,
-      ..of(&[&long, &long, &long])
-    };
-    wild.clips[0].region = Some(0.1..10.0);
-    wild.clips[1].loop_region = Some(0.1..0.1);
-    wild.clips[2].region = Some(f64::NAN..-1.0);
-    wild.clips[2].loop_region = Some(5.0..9.0);
-    let wild = add(&mut world, wild);
+    // Each case is a sound of its own, so every run plays every one
+    let cases = [
+      ("a region past the clip's end", Some(0.1..10.0), None),
+      ("an empty loop region", None, Some(0.1..0.1)),
+      ("a backwards loop region", None, Some(0.2..0.05)),
+      ("a region that is not a span", Some(f64::NAN..-1.0), None),
+      (
+        "a loop region past what plays",
+        Some(0.0..0.1),
+        Some(5.0..9.0),
+      ),
+    ];
+    let mut voices = Vec::new();
+    for (case, region, loop_region) in cases {
+      let mut wild = Sound {
+        looping: true,
+        ..of(&[&long])
+      };
+      wild.clips[0].region = region;
+      wild.clips[0].loop_region = loop_region;
+      let wild = add(&mut world, wild);
+      let voice = play(&mut world, &wild);
+      assert!(voice.is_playing(), "{case}: {voice:?}");
+      voices.push((case, voice));
+    }
     let empty = clip(&mut world, 0.0);
     let silent = add(
       &mut world,
@@ -806,12 +898,13 @@ mod tests {
         ..of(&[&empty])
       },
     );
-    let voices: Vec<Voice> = (0..6).map(|_| play(&mut world, &wild)).collect();
     let nothing = play(&mut world, &silent);
     for _ in 0..30 {
       audio_step(&mut world, FRAME);
     }
-    assert!(voices.iter().all(Voice::is_playing), "{voices:?}");
+    for (case, voice) in &voices {
+      assert!(voice.is_playing(), "{case} loops on: {voice:?}");
+    }
     assert!(
       nothing.is_stopped(),
       "an empty clip does not loop: {nothing:?}"
