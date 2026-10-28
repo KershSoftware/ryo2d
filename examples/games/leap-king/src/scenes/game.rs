@@ -64,8 +64,9 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 }
 
 /// The game's sounds, as definitions under `assets/`: the local player's
-/// play unplaced, and remote players' are heard from where they are
-/// (`play_at`) by the local player, its `AudioListener`
+/// play unplaced, and remote players' are heard from where they are by the
+/// local player, its `AudioListener` (`play_from` where this side simulates
+/// them, `play_at` where a client follows the host's updates)
 struct Sounds {
   jump: Handle<Sound>,
   land: Handle<Sound>,
@@ -1865,7 +1866,7 @@ impl GameScene {
           }
 
           if let Some(sounds) = &self.sounds {
-            ctx.audio().play(&sounds.jump);
+            self.play_from(ctx, entity, &sounds.jump, PlayOptions::default());
           }
         } else if input.charging {
           // Update charge
@@ -1984,7 +1985,7 @@ impl GameScene {
             timer: LANDING_RECOVERY_TIME,
           };
           if let Some(sounds) = &self.sounds {
-            ctx.audio().play(&sounds.land);
+            self.play_from(ctx, entity, &sounds.land, PlayOptions::default());
           }
         }
         // Off the floor without leaping: pushed or carried off an edge, or
@@ -2008,15 +2009,43 @@ impl GameScene {
     }
   }
 
-  /// A bounce off another player's head: the landing, quieter
-  fn play_head_bounce(&self, ctx: &mut SceneContext) {
+  /// `entity`'s bounce off another player's head: the landing, quieter
+  fn play_head_bounce(&self, ctx: &mut SceneContext, entity: Entity) {
     if let Some(sounds) = &self.sounds {
       let quieter = PlayOptions {
         volume_db: HEAD_BOUNCE_DB,
         ..Default::default()
       };
-      ctx.audio().play_with(&sounds.land, quieter);
+      self.play_from(ctx, entity, &sounds.land, quieter);
     }
+  }
+
+  /// Play a player's sound: the local player's unplaced, any other's from
+  /// where it is, heard by the local player (its `AudioListener`), whether
+  /// this side simulates it (the host) or follows the host's updates (a
+  /// client)
+  fn play_from(
+    &self,
+    ctx: &mut SceneContext,
+    entity: Entity,
+    sound: &Handle<Sound>,
+    options: PlayOptions,
+  ) {
+    let position = if self.get_local_player_entity() == Some(entity) {
+      None
+    } else {
+      ctx
+        .world
+        .get::<Transform>(entity)
+        .map(|transform| transform.translation)
+    };
+    ctx.audio().play_with(
+      sound,
+      PlayOptions {
+        position,
+        ..options
+      },
+    );
   }
 
   /// Check for player-to-player collisions
@@ -2079,7 +2108,7 @@ impl GameScene {
           if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity_a) {
             vel.dy = HEAD_BOUNCE_VELOCITY;
           }
-          self.play_head_bounce(ctx);
+          self.play_head_bounce(ctx, entity_a);
           any_collision = true;
           continue; // Don't apply push collision for head bounce
         }
@@ -2090,7 +2119,7 @@ impl GameScene {
           if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity_b) {
             vel.dy = HEAD_BOUNCE_VELOCITY;
           }
-          self.play_head_bounce(ctx);
+          self.play_head_bounce(ctx, entity_b);
           any_collision = true;
           continue;
         }
@@ -3448,5 +3477,134 @@ impl Scene for GameScene {
     self
       .particle_system
       .collect_for_render(gpu.world, gpu.batch);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use ryo2d::core::audio::{AudioLogEntry, AudioLogKind};
+  use ryo2d::testing::HeadlessEngine;
+
+  /// The single player game with a second player, in slot 1 at the spawn
+  /// platform's right end, which this side simulates as a host simulates a
+  /// remote player. Once the sounds have loaded and the players stand, the
+  /// local player leaps straight up, then the other one.
+  struct WithRemote {
+    game: GameScene,
+    remote: Option<Entity>,
+    /// Updates since the sounds loaded
+    step: u32,
+  }
+
+  impl WithRemote {
+    /// Leap `entity` straight up, as a released charge does
+    fn leap(&mut self, ctx: &mut SceneContext, entity: Entity, dt: f32) {
+      if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
+        player.leap_state = LeapState::Charging {
+          charge_time: 0.3,
+          aim_angle: 90.0,
+        };
+      }
+      let input = LeapInput {
+        release: true,
+        facing_right: true,
+        aim_angle: 90.0,
+        charge_time: 0.3,
+        ..Default::default()
+      };
+      self.game.apply_input(ctx, entity, &input, dt);
+    }
+  }
+
+  impl Scene for WithRemote {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      self.game.on_enter(ctx);
+      let id = ClientId::from(1u64);
+      self.game.client_slots.insert(id, 1);
+      self.remote = Some(self.game.spawn_player(ctx, 1, id));
+    }
+
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+      let action = self.game.update(ctx, dt);
+      let loaded = self.game.sounds.as_ref().is_some_and(|sounds| {
+        ctx.assets().is_ready(&sounds.jump) && ctx.assets().is_ready(&sounds.land)
+      });
+      if loaded {
+        self.step += 1;
+      }
+      if self.step == 30
+        && let Some(local) = self.game.get_local_player_entity()
+      {
+        self.leap(ctx, local, dt);
+      }
+      if self.step == 120
+        && let Some(remote) = self.remote
+      {
+        self.leap(ctx, remote, dt);
+      }
+      action
+    }
+  }
+
+  /// The starts of `sound` in the engine's audio log
+  fn starts(engine: &HeadlessEngine, sound: &str) -> Vec<AudioLogEntry> {
+    engine
+      .audio_log()
+      .into_iter()
+      .filter(|entry| entry.kind == AudioLogKind::Start && entry.sound == sound)
+      .collect()
+  }
+
+  /// Where every player is simulated (single player, the host), a remote
+  /// player's leap and landing are heard from where it is, as a client hears
+  /// them; the local player's play unplaced
+  #[test]
+  fn the_host_hears_a_remote_player_s_leaps_from_where_it_is() {
+    let game = GameScene::new_single_player()
+      .expect("single player")
+      .with_seed(42);
+    let scene = WithRemote {
+      game,
+      remote: None,
+      step: 0,
+    };
+    let builder = EngineBuilder::new().pixel_art(1280, 720).start_scene(scene);
+    let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+      return;
+    };
+    for _ in 0..900 {
+      engine.step().expect("frame");
+      if starts(&engine, "land.sound.ron").len() >= 2 {
+        break;
+      }
+    }
+
+    // The remote player stands 252 px to the local player's right: with the
+    // definitions' linear falloff over 750 px and 400 px pan width, about
+    // 3.5 dB down and panned 0.63 right
+    for sound in ["jump.sound.ron", "land.sound.ron"] {
+      let starts = starts(&engine, sound);
+      let heard: Vec<(f32, f32)> = starts
+        .iter()
+        .map(|entry| (entry.gain_db, entry.pan))
+        .collect();
+      assert_eq!(heard.len(), 2, "{sound}: the local leap, then the remote");
+      let (local_db, local_pan) = heard[0];
+      assert_eq!(
+        (local_db, local_pan),
+        (-26.0, 0.0),
+        "{sound}: local, unplaced"
+      );
+      let (remote_db, remote_pan) = heard[1];
+      assert!(
+        (remote_pan - 0.63).abs() < 0.05,
+        "{sound}: remote, panned right: {heard:?}"
+      );
+      assert!(
+        (remote_db - -29.55).abs() < 0.5,
+        "{sound}: remote, quieter with distance: {heard:?}"
+      );
+    }
   }
 }
