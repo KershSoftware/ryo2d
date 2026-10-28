@@ -21,17 +21,20 @@ mod variations;
 use demo_kit::prelude::*;
 
 pub use embedded::{EMBEDDED, embedded};
+pub use hot_reload::Reloads;
+use shared::WebHint;
 
-/// The demo's seven pages
+/// The demo's seven pages, each showing "click or tap to start sound" on
+/// the web until the player's first gesture opens the audio device
 pub fn demo() -> Demo {
   Demo::new("Audio")
     .resolution(960, 600)
     .configure(|b| b.show_fps(true))
-    .page(buses::BusesPage::new)
-    .page(variations::VariationsPage::new)
-    .page(limits::LimitsPage::new)
-    .page(spatial::SpatialPage::new)
-    .page(mix::MixPage::new)
-    .page(music::MusicPage::new)
-    .page(hot_reload::HotReloadPage::new)
+    .page(|| WebHint(buses::BusesPage::new()))
+    .page(|| WebHint(variations::VariationsPage::new()))
+    .page(|| WebHint(limits::LimitsPage::new()))
+    .page(|| WebHint(spatial::SpatialPage::new()))
+    .page(|| WebHint(mix::MixPage::new()))
+    .page(|| WebHint(music::MusicPage::new()))
+    .page(|| WebHint(hot_reload::HotReloadPage::new()))
 }

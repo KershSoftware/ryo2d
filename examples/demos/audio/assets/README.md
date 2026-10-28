@@ -1,6 +1,6 @@
 # Audio demo assets
 
-Every `.wav` here is written from code by `src/bin/make-sounds.rs`, so none carries a licence restriction: tones, noise bursts, loops, and a short piece of music in two forms (an intro and its loop at one rate, and one clip with a loop region). Each file is mono, 16-bit, at 44.1 kHz, and the noise is seeded, so the program writes the same bytes on every run. To change a sound, edit the program and run it again:
+Every `.wav` here is written from code by `src/bin/make-sounds.rs`, so none carries a licence restriction: tones, noise bursts, loops, and a short piece of music in two forms (an intro and its loop at one rate, and one clip with a loop region). Each file is mono, 16-bit, at 44.1 kHz, and the noise is seeded, so the program writes the same bytes on every run on one platform. Another platform's maths library (`sin`, `exp`, `powf`) may round a few samples' last bit differently, so a run there can show a small diff in the WAVs that changes nothing audible. To change a sound, edit the program and run it again:
 
 ```sh
 cargo run -p audio-demo --bin make-sounds

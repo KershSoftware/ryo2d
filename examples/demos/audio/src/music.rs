@@ -6,7 +6,7 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, HOT, bar, bus_meters, load, steady_start};
+use crate::shared::{DIM, HOT, bar, bus_meters, load, load_mixer};
 
 /// Where the night track's loop starts, in seconds, as its file says
 const NIGHT_LOOP_START: f32 = 1.0;
@@ -91,7 +91,7 @@ impl DemoPage for MusicPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self._mixer = steady_start(ctx);
+    self._mixer = load_mixer(ctx);
     let theme_intro = seconds(ctx, "music/theme-intro.wav");
     let theme_loop = seconds(ctx, "music/theme-loop.wav");
     let night = seconds(ctx, "music/night.wav");

@@ -8,7 +8,7 @@
 use demo_kit::prelude::*;
 use ryo2d::core::audio::MIXER_PATH;
 
-use crate::shared::{BAD, DIM, HOT, bus_meters, load, steady_start};
+use crate::shared::{BAD, DIM, HOT, bus_meters, load, load_mixer};
 
 const DRONE: &str = "hot/drone.sound.ron";
 const BEEP: &str = "hot/beep.sound.ron";
@@ -47,6 +47,25 @@ struct Row {
   error: Option<String>,
 }
 
+/// The Hot reload page's counts while it is open: each file's
+/// `AssetEvent::Modified` since the page opened. The page keeps them as a
+/// resource, so a test (or another system) can read them
+#[derive(Resource, Debug, Default)]
+pub struct Reloads {
+  counts: Vec<(&'static str, u32)>,
+}
+
+impl Reloads {
+  /// `path`'s count, if the page tracks it
+  pub fn modified(&self, path: &str) -> Option<u32> {
+    self
+      .counts
+      .iter()
+      .find(|(tracked, _)| *tracked == path)
+      .map(|&(_, count)| count)
+  }
+}
+
 pub(crate) struct HotReloadPage {
   rows: Vec<Row>,
   drone: Option<Handle<Sound>>,
@@ -62,8 +81,19 @@ impl HotReloadPage {
     }
   }
 
+  /// The counts, as the page keeps them in [`Reloads`]
+  fn publish(&self, ctx: &mut SceneContext) {
+    let counts = self
+      .rows
+      .iter()
+      .map(|row| (row.path, row.modified))
+      .collect();
+    ctx.world.insert_resource(Reloads { counts });
+  }
+
   /// Count this step's events for `T`'s assets
   fn count<T: Asset>(&mut self, ctx: &mut SceneContext) {
+    let mut changed = false;
     for event in ctx.messages::<AssetEvent<T>>() {
       let (id, error) = match event {
         AssetEvent::Modified { id } => (id.untyped(), None),
@@ -77,9 +107,13 @@ impl HotReloadPage {
         None => {
           row.modified += 1;
           row.error = None;
+          changed = true;
         }
         Some(error) => row.error = Some(format!("reload failed: {error}")),
       }
+    }
+    if changed {
+      self.publish(ctx);
     }
   }
 }
@@ -98,7 +132,7 @@ impl DemoPage for HotReloadPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    let mixer = steady_start(ctx);
+    let mixer = load_mixer(ctx);
     self.drone = load(ctx, DRONE);
     self.beep = load(ctx, BEEP);
     let clips = ["sounds/drone.wav", "sounds/beep.wav"].map(|path| (path, load(ctx, path)));
@@ -131,9 +165,15 @@ impl DemoPage for HotReloadPage {
         error: None,
       });
     }
+    self.publish(ctx);
     if let Some(drone) = &self.drone {
       ctx.audio().play(drone);
     }
+  }
+
+  fn exit(&mut self, ctx: &mut SceneContext) {
+    // A resource outlives the page unless taken away
+    ctx.world.remove_resource::<Reloads>();
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {

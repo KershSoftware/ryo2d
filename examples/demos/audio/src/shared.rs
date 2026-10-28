@@ -1,8 +1,6 @@
-//! What the pages share: a start that plays the same way on every run, the
-//! sound-started flag the web needs, and the bars and meters each page
+//! What the pages share: the mixer loaded at once, the web's "click or tap
+//! to start sound" line on every page, and the bars and meters each page
 //! draws its state with
-
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use demo_kit::prelude::*;
 use ryo2d::core::audio::MIXER_PATH;
@@ -16,12 +14,13 @@ pub(crate) const HOT: Color = Color::XP_GOLD;
 /// Something refused or failed
 pub(crate) const BAD: Color = Color::rgb(255, 110, 100);
 
-/// Start a page's audio the same way on every run, as the tour compares
-/// its frames run to run (a headless run's picks and draws are seeded):
-/// load the mixer at once, so its buses are built at the end of the first
-/// frame rather than whenever a worker finishes reading it. The handle
-/// keeps the mixer for the page to read its snapshots and ducks
-pub(crate) fn steady_start(ctx: &mut SceneContext) -> Option<Handle<Mixer>> {
+/// The game's mixer, loaded at once. The engine loads it by itself, on a
+/// worker; a scene that plays on the mixer's own buses (the limits page's
+/// rows) or reads its snapshots from its first frame loads it at once, so
+/// its buses are built at the end of that frame. Every page here does, so
+/// the tour's captures do not wait on a worker. The handle keeps it for the
+/// page to read
+pub(crate) fn load_mixer(ctx: &mut SceneContext) -> Option<Handle<Mixer>> {
   ctx.assets().load_now::<Mixer>(MIXER_PATH).ok()
 }
 
@@ -30,22 +29,65 @@ pub(crate) fn load<T: Asset>(ctx: &mut SceneContext, path: &str) -> Option<Handl
   ctx.assets().load_now(path).ok()
 }
 
-/// A one-shot has started since the demo began. On the web the audio
-/// device opens at the player's first click, tap or key press, and until
-/// then every one-shot is refused: the engine says no more than that, so
-/// the Buses page watches its ticks to know when sound has started
-static SOUND_STARTED: AtomicBool = AtomicBool::new(false);
+/// A page with the web's "click or tap to start sound" line: on the web
+/// the audio device opens at the player's first click, tap or key press,
+/// and until then nothing sounds. Natively it never shows
+pub(crate) struct WebHint<P>(pub(crate) P);
 
-/// Note a one-shot's voice: one that started means sound has started
-pub(crate) fn note_started(voice: &Voice) {
-  if !voice.is_stopped() {
-    SOUND_STARTED.store(true, Ordering::Relaxed);
+impl<P: DemoPage> DemoPage for WebHint<P> {
+  fn name(&self) -> &str {
+    self.0.name()
   }
-}
 
-/// Whether any one-shot has started
-pub(crate) fn sound_started() -> bool {
-  SOUND_STARTED.load(Ordering::Relaxed)
+  fn description(&self) -> &str {
+    self.0.description()
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    self.0.settings(s);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    self.0.controls()
+  }
+
+  fn wants_escape(&self) -> bool {
+    self.0.wants_escape()
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.0.enter(ctx);
+  }
+
+  fn exit(&mut self, ctx: &mut SceneContext) {
+    self.0.exit(ctx);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    self.0.update(ctx, dt);
+  }
+
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
+    self.0.ui(ui, ctx);
+    if ctx.audio().waiting_for_gesture() {
+      // Over the foot of the page's content, as a banner
+      let area = content_area(ui);
+      let text = "Click or tap to start sound (a gamepad cannot start it)";
+      let (w, h) = ui.text_size(text);
+      let banner = Rect::new(
+        area.x,
+        area.y + area.height - h as f32 - 12.0,
+        w as f32 + 20.0,
+        h as f32 + 12.0,
+      );
+      ui.draw_rect(banner, Color::new(20, 20, 30, 230));
+      ui.draw_text(text, banner.x + 10.0, banner.y + 6.0, HOT);
+    }
+  }
+
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
+    self.0.render(gpu);
+  }
 }
 
 /// Each bus's colour, by the standard bus it is under

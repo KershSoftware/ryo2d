@@ -152,18 +152,27 @@ fn demo_dirs(demos_dir: &Path, wanted: &[String]) -> Result<Vec<PathBuf>, String
     .collect()
 }
 
-/// The package and binary target whose manifest is in `dir`
+/// The package and binary target whose manifest is in `dir`: its
+/// `default-run`, or else its first binary (a demo with a tool beside it,
+/// such as the audio demo's make-sounds, names the demo as its default)
 fn bin_for(metadata: &serde_json::Value, dir: &Path) -> Option<(String, String)> {
   metadata["packages"].as_array()?.iter().find_map(|package| {
     let manifest = Path::new(package["manifest_path"].as_str()?);
     if manifest.parent()? != dir {
       return None;
     }
-    let bin = package["targets"].as_array()?.iter().find(|target| {
+    let default_run = package["default_run"].as_str();
+    let bins = package["targets"].as_array()?.iter().filter(|target| {
       target["kind"]
         .as_array()
         .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
-    })?;
+    });
+    let mut bins = bins.peekable();
+    let first = bins.peek().copied();
+    let bin = match default_run {
+      Some(name) => bins.find(|target| target["name"] == name).or(first),
+      None => first,
+    }?;
     Some((
       package["name"].as_str()?.to_string(),
       bin["name"].as_str()?.to_string(),
@@ -409,6 +418,34 @@ mod tests {
     assert_eq!(
       bin_for(&metadata, Path::new("/repo/examples/demos/fog")),
       None
+    );
+  }
+
+  #[test]
+  fn a_package_s_default_run_is_its_binary() {
+    let dir = Path::new("/repo/examples/demos/audio");
+    let package = |default_run: serde_json::Value| {
+      serde_json::json!({
+        "packages": [
+          { "name": "audio-demo", "manifest_path": "/repo/examples/demos/audio/Cargo.toml",
+            "default_run": default_run,
+            "targets": [
+              { "name": "audio_demo", "kind": ["lib"] },
+              { "name": "make-sounds", "kind": ["bin"] },
+              { "name": "audio-demo", "kind": ["bin"] }
+            ] }
+        ]
+      })
+    };
+    assert_eq!(
+      bin_for(&package(serde_json::json!("audio-demo")), dir),
+      Some(("audio-demo".to_string(), "audio-demo".to_string())),
+      "the default, not the first binary"
+    );
+    assert_eq!(
+      bin_for(&package(serde_json::Value::Null), dir),
+      Some(("audio-demo".to_string(), "make-sounds".to_string())),
+      "without one, the first binary"
     );
   }
 }

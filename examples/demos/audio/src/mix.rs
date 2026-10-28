@@ -8,12 +8,11 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, HOT, bus_color, bus_meters, load, steady_start};
+use crate::shared::{DIM, HOT, bus_color, bus_meters, load, load_mixer};
 
 const SNAPSHOTS: [&str; 3] = ["none", "muffled", "quiet"];
 /// The buses the page shows, and whether each pauses with the game and
-/// follows the time scale (the standard buses' defaults; the demo's mixer
-/// leaves them)
+/// follows the time scale by default: what a mixer that leaves them says
 const BUSES: [(&str, bool, bool); 5] = [
   ("music", false, false),
   ("sfx", true, true),
@@ -78,7 +77,7 @@ impl DemoPage for MixPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self.mixer = steady_start(ctx);
+    self.mixer = load_mixer(ctx);
     self.sounds = (|| {
       Some(Sounds {
         theme: load(ctx, "music/theme.music.ron")?,
@@ -164,7 +163,22 @@ impl DemoPage for MixPage {
     ui.draw_text("Now", state_x, y, DIM);
     y += 24.0;
     let still = self.paused || self.time_scale <= 0.01;
-    for (bus, pauses, follows) in BUSES {
+    // What the mixer says of each bus, or the standard bus's default
+    let buses = {
+      let assets = ctx.assets();
+      let mixer = self.mixer.as_ref().and_then(|mixer| assets.get(mixer));
+      BUSES.map(|(bus, pauses, follows)| {
+        let def = mixer.and_then(|mixer| mixer.buses.iter().find(|def| def.name == bus));
+        (
+          bus,
+          def.and_then(|def| def.pauses_with_game).unwrap_or(pauses),
+          def
+            .and_then(|def| def.follows_time_scale)
+            .unwrap_or(follows),
+        )
+      })
+    };
+    for (bus, pauses, follows) in buses {
       let held = (pauses && self.paused) || (follows && still);
       let state = if held {
         "held".to_string()

@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 
 use demo_kit::prelude::*;
 
-use crate::shared::{BAD, DIM, bus_color, load, steady_start, voice_dots};
+use crate::shared::{BAD, DIM, bus_color, load, load_mixer, voice_dots};
 
 /// The voices each row's limit allows
 pub const MAX_VOICES: usize = 3;
@@ -68,11 +68,13 @@ impl Rule {
 
   fn says(self) -> &'static str {
     match self {
-      Rule::PreventNew => "a fourth play is refused",
-      Rule::StopOldest => "a fourth play stops the oldest",
-      Rule::StopQuietest => "a fourth play stops the quietest",
-      Rule::StopFarthest => "a fourth play stops the farthest",
-      Rule::StopLowestPriority => "a fourth stops the least important",
+      Rule::PreventNew => "a play past three is refused",
+      Rule::StopOldest => "a play past three stops the oldest",
+      Rule::StopQuietest => "a play past three stops the quietest",
+      Rule::StopFarthest => "a play past three stops the farthest from the listener",
+      Rule::StopLowestPriority => {
+        "a play past three stops a less important voice; one less important than all three is refused"
+      }
     }
   }
 
@@ -263,7 +265,7 @@ impl DemoPage for LimitsPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self._mixer = steady_start(ctx);
+    self._mixer = load_mixer(ctx);
     // The farthest row is heard from here
     ctx
       .world
@@ -308,10 +310,13 @@ impl DemoPage for LimitsPage {
     let area = content_area(ui);
     let x = area.x + 16.0;
     let mut y = area.y + 10.0;
-    let cells_x = x + 220.0;
+    let cells_x = x + 260.0;
     let (cell_w, cell_h) = (46.0, 26.0);
+    let n = self.plays_per_second;
     ui.draw_text(
-      "Each bell rings for about a second, so five a second pass the limit of three.",
+      &format!(
+        "A bell rings for about a second: at {n} a second, a row holds about {n}, against a limit of three."
+      ),
       x,
       y,
       Color::LIGHT_GRAY,
@@ -337,22 +342,33 @@ impl DemoPage for LimitsPage {
       let voices = ctx.audio().voices_on(row.bus);
       ui.draw_text(row.rule.name(), x, y, color);
       voice_dots(ui, x + 150.0, y, voices, MAX_VOICES, color);
-      ui.draw_text(row.rule.says(), x, y + 20.0, DIM);
       ui.draw_text(
         &format!("voices_on(\"{}\") = {voices}", row.bus),
         x,
-        y + 40.0,
+        y + 20.0,
         DIM,
       );
+      // Wrapped short of the cells; the row is as tall as it needs
+      let says = ui
+        .text(row.rule.says())
+        .at(x, y + 40.0)
+        .wrap(cells_x - x - 16.0)
+        .color(Color::LIGHT_GRAY)
+        .draw();
 
       for (i, play) in row.plays.iter().enumerate() {
-        let cell = Rect::new(cells_x + i as f32 * (cell_w + 4.0), y + 4.0, cell_w, cell_h);
+        let cell = Rect::new(
+          cells_x + i as f32 * (cell_w + 4.0),
+          y + 14.0,
+          cell_w,
+          cell_h,
+        );
         let (fill, text) = play.state().colors();
         ui.draw_rect(cell, fill);
         let label = if play.refused { "no" } else { &play.label };
         ui.draw_text(label, cell.x + 5.0, cell.y + 5.0, text);
       }
-      y += 76.0;
+      y += 40.0 + says.y + 12.0;
     }
 
     let sfx = ctx.audio().voices_on("sfx");

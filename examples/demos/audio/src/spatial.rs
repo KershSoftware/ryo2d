@@ -2,11 +2,13 @@
 //! at, each a loop heard from where it is, on one of the three falloff
 //! curves. Walk the listener (an `AudioListener`) towards and away from
 //! them: each gets quieter with distance and pans by its offset. The page
-//! uses UI units as world units, so what it draws is where the sounds are
+//! uses UI units as world units, so what it draws is where the sounds are;
+//! a game with a camera turns a screen position (the pointer's, say) into a
+//! world one with `ctx.camera().screen_to_world` before playing there
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, bar, bus_meters, db_fraction, db_text, load, steady_start};
+use crate::shared::{DIM, bar, bus_meters, db_fraction, db_text, load, load_mixer};
 
 /// Where the listener starts, and the emitters circle
 const CENTRE: Vec2 = Vec2::new(430.0, 380.0);
@@ -99,7 +101,7 @@ impl DemoPage for SpatialPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self._mixer = steady_start(ctx);
+    self._mixer = load_mixer(ctx);
     self.ping = load(ctx, "spatial/ping.sound.ron");
     self.listener = Some(
       ctx
@@ -189,6 +191,8 @@ impl DemoPage for SpatialPage {
     {
       *transform = Transform::from_xy(self.at.x, self.at.y);
     }
+    // Screen and world units are one here; a game converts the pointer with
+    // `ctx.camera().screen_to_world`
     if let (Some(place), Some(ping)) = (click, &self.ping) {
       ctx.audio().play_at(ping, place);
       self.pinged = Some((place, self.frame));

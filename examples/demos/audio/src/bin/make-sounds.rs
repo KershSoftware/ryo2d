@@ -2,7 +2,8 @@
 //! tones, noise bursts, loops and a short piece of music (an intro and its
 //! loop at one rate, and one clip with a loop region). Every file is mono,
 //! 16-bit, at 44.1 kHz, and the noise is seeded, so a run writes the same
-//! bytes each time.
+//! bytes each time on one platform (another's maths library may round a
+//! few samples' last bit differently).
 //!
 //! `cargo run -p audio-demo --bin make-sounds`
 

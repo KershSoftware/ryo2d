@@ -5,10 +5,7 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{
-  self, DIM, HOT, bar, bus_color, db_fraction, db_text, load, note_started, steady_start,
-  voice_dots,
-};
+use crate::shared::{DIM, bar, bus_color, db_fraction, db_text, load, load_mixer, voice_dots};
 
 /// The rows' labels, in `VolumeKind::ALL` order
 const LABELS: [&str; 6] = ["Master", "Music", "Sfx", "UI", "Voice", "Ambience"];
@@ -43,12 +40,6 @@ impl BusesPage {
       _mixer: None,
     }
   }
-
-  /// Play a one-shot, noting whether sound has started (the web's unlock)
-  fn one_shot(ctx: &mut SceneContext, sound: &Handle<Sound>) {
-    let voice = ctx.audio().play(sound);
-    note_started(&voice);
-  }
 }
 
 impl DemoPage for BusesPage {
@@ -76,7 +67,7 @@ impl DemoPage for BusesPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self._mixer = steady_start(ctx);
+    self._mixer = load_mixer(ctx);
     self.sounds = (|| {
       Some(Sounds {
         theme: load(ctx, "music/theme.music.ron")?,
@@ -122,13 +113,13 @@ impl DemoPage for BusesPage {
     let click = input.key_pressed(KeyCode::Digit2) || (self.pattern && frame % 45 == 25);
     let line = input.key_pressed(KeyCode::Digit3) || (self.pattern && frame % 240 == 60);
     if tick {
-      Self::one_shot(ctx, &sounds.tick);
+      ctx.audio().play(&sounds.tick);
     }
     if click {
-      Self::one_shot(ctx, &sounds.click);
+      ctx.audio().play(&sounds.click);
     }
     if line {
-      Self::one_shot(ctx, &sounds.voice);
+      ctx.audio().play(&sounds.voice);
     }
   }
 
@@ -136,16 +127,6 @@ impl DemoPage for BusesPage {
     let area = content_area(ui);
     let x = area.x + 16.0;
     let mut y = area.y + 10.0;
-
-    if cfg!(target_arch = "wasm32") && !shared::sound_started() {
-      ui.draw_text(
-        "Click or tap to start sound (a gamepad cannot start it)",
-        x,
-        y,
-        HOT,
-      );
-      y += 28.0;
-    }
 
     let (bar_x, value_x, gain_x, heard_x, voices_x) =
       (x + 100.0, x + 260.0, x + 310.0, x + 400.0, x + 490.0);
