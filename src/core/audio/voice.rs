@@ -89,8 +89,14 @@ struct VoiceShared {
 /// One playing sound, returned by `ctx.audio().play(..)`. Keep it to stop,
 /// pause or adjust that playback; clones control the same sound.
 ///
-/// Every change is smoothed (at least 10 ms) so nothing clicks. The engine
-/// applies changes once a frame, after the scenes' updates, so what
+/// A change to a playing voice ramps from where it is over at least 10 ms,
+/// so nothing clicks. The level and pitch a sound starts at belong in its
+/// play ([`PlayOptions`](super::PlayOptions)): a change made in the frame a
+/// voice started, which nothing has heard yet, applies at once, but on an
+/// audio device the first few milliseconds may already be playing. The
+/// engine applies changes as the scene code that made them (a callback,
+/// one of its systems, an observer of its UI nodes) ends, and the rest
+/// once a frame after the scenes' updates, so what
 /// [`is_playing`](Self::is_playing) reports has changed by the next update.
 /// Dropping a `Voice` never stops its sound, and a play that is refused (a
 /// clip not loaded yet, say) returns a voice that is already stopped, on
@@ -123,9 +129,8 @@ struct VoiceShared {
 /// use ryo2d::prelude::*;
 ///
 /// fn jump(ctx: &mut SceneContext<'_>, clip: &Handle<AudioClip>) -> Voice {
-///   let voice = ctx.audio().play_with(clip, PlayOptions { pitch: 2.0, ..Default::default() });
-///   voice.set_volume(-6.0);
-///   voice
+///   let options = PlayOptions { pitch: 2.0, volume_db: -6.0, ..Default::default() };
+///   ctx.audio().play_with(clip, options)
 /// }
 ///
 /// fn land(voice: &Voice) {
@@ -296,6 +301,33 @@ mod tests {
     }
   }
 
+  /// A change made in the scene code that plays a voice reaches kira with
+  /// its start: applied as the scene's code ends, with no ramp, so the
+  /// first audio rendered is at the level set
+  #[test]
+  fn a_change_made_as_a_voice_starts_is_heard_from_its_first_audio() {
+    let (mut world, meter) = crate::core::testing::metered_audio_world();
+    let clip = clip(&mut world, 1.0);
+    let voice = crate::core::audio::in_scene(&mut world, 1, |world| {
+      let voice = AudioView::new(world).play(&clip);
+      voice.set_volume(-20.0);
+      voice
+    });
+    let gain = entry(&world, AudioLogKind::Gain);
+    assert_eq!(
+      (gain.voice, gain.gain_db, gain.fade),
+      (voice.id(), -20.0, Duration::ZERO)
+    );
+    audio_step(&mut world, FRAME);
+    let frames = meter.frames();
+    let (first, settled) = (frames[0].left, frames[frames.len() - 1].left);
+    assert!(settled > 0.001, "heard: {settled}");
+    assert!(
+      (first / settled - 1.0).abs() < 0.01,
+      "the first audio is at the level set: {first} against {settled}"
+    );
+  }
+
   #[test]
   fn stop_fades_and_really_stops() {
     let mut world = audio_world();
@@ -322,6 +354,8 @@ mod tests {
       let mut audio = AudioView::new(&mut world);
       (audio.play(&one), audio.play(&other))
     };
+    // Playing, past the frame they started in
+    audio_step(&mut world, FRAME);
     changed.set_volume(-6.0);
     changed.set_pitch(12.0);
     changed.pause();

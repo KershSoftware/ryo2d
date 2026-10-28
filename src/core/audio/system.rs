@@ -1131,7 +1131,8 @@ mod tests {
       entries(&world, voice.id()),
       [
         (AudioLogKind::Start, Duration::ZERO),
-        (AudioLogKind::Gain, MIN_FADE),
+        // Set in the frame it started: at once
+        (AudioLogKind::Gain, Duration::ZERO),
         (AudioLogKind::Rate, MIN_FADE)
       ],
       "the pitch moves, the muted volume does not: {:#?}",

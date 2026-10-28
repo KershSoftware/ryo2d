@@ -1009,8 +1009,9 @@ struct Replay {
 }
 
 /// The engine's audio: kira's manager, the bus tree and the live voices, a
-/// world resource. Scenes reach it through `ctx.audio()`; the frame's
-/// `audio_system` applies the voices' commands. With no audio device (a
+/// world resource. Scenes reach it through `ctx.audio()`; the voices'
+/// commands are applied as the scene code that sent them ends, and in the
+/// frame's `audio_system`. With no audio device (a
 /// headless run, or a device that failed to open) it runs on kira's mock
 /// backend: everything works, and nothing plays aloud.
 ///
@@ -3294,11 +3295,8 @@ impl AudioEngine {
   /// retired tree's send tracks once its voices have)
   pub(crate) fn update(&mut self, world: &World, real_delta: Duration, game: GameTime) {
     let server = world.get_resource::<AssetServer>();
-    self.frame = self.frame.wrapping_add(1);
     self.clock = self.clock.saturating_add(real_delta);
-    while let Ok(command) = self.inbox.try_recv() {
-      self.apply(command, server);
-    }
+    self.apply_queued(server);
     self.apply_mixer(world, server);
     self.follow_reloads(world, server);
     self.step_music(world, server);
@@ -3337,8 +3335,22 @@ impl AudioEngine {
         .retired_sends
         .retain(|(generation, _)| live.iter().any(|voice| voice.generation == *generation));
     }
-    // The next frame's starts count afresh
+    // The next frame's starts count afresh, and its voices are new to
+    // kira until it renders them
     self.frame_starts.clear();
+    self.frame = self.frame.wrapping_add(1);
+  }
+
+  /// Whether voices' changes wait to be applied
+  pub(crate) fn has_queued(&self) -> bool {
+    !self.inbox.is_empty()
+  }
+
+  /// Apply the voices' queued changes, in the order they were sent
+  pub(crate) fn apply_queued(&mut self, server: Option<&AssetServer>) {
+    while let Ok(command) = self.inbox.try_recv() {
+      self.apply(command, server);
+    }
   }
 
   /// Follow the game's clock. A bus that pauses with the game holds its
@@ -3381,6 +3393,7 @@ impl AudioEngine {
       return;
     }
     let glide = real_delta.max(MIN_FADE);
+    let frame = self.frame;
     for index in 0..self.voices.live.len() {
       let live = &mut self.voices.live[index];
       let state = live.voice.state();
@@ -3420,6 +3433,12 @@ impl AudioEngine {
         1.0
       };
       let rescaled = (scale - live.scale).abs() > SCALE_EPSILON;
+      // One started this frame has not been heard: its rate moves at once
+      let glide = if live.frame == frame {
+        Duration::ZERO
+      } else {
+        glide
+      };
       if rescaled {
         live.scale = scale;
         live
@@ -3450,12 +3469,18 @@ impl AudioEngine {
       return;
     }
     self.find_listener(world);
-    let glide = real_delta.max(MIN_FADE);
+    let frame = self.frame;
     for index in 0..self.voices.live.len() {
       let live = &mut self.voices.live[index];
       if !matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused) {
         continue;
       }
+      // One started this frame has not been heard: it moves at once
+      let glide = if live.frame == frame {
+        Duration::ZERO
+      } else {
+        real_delta.max(MIN_FADE)
+      };
       if let Some(entity) = live.emitter {
         match emitter_position(world, entity) {
           Some(position) => live.position = Some(position),
@@ -3551,17 +3576,25 @@ impl AudioEngine {
   }
 
   /// Apply one queued change, smoothed over at least [`MIN_FADE`]. A voice
-  /// already stopping or gone takes no more changes
+  /// already stopping or gone takes no more changes. A volume or pitch
+  /// change to a voice started this frame, which kira has yet to render,
+  /// applies at once, so its first audio is at the level set
   fn apply(&mut self, command: VoiceCommand, server: Option<&AssetServer>) {
     let Some(index) = self.voices.index_of(command.voice) else {
       return;
     };
+    let frame = self.frame;
     let live = &mut self.voices.live[index];
     let state = live.voice.state();
     if matches!(state, VoiceState::Stopping | VoiceState::Stopped) {
       return;
     }
-    let smooth = tween(MIN_FADE);
+    let change_fade = if live.frame == frame {
+      Duration::ZERO
+    } else {
+      MIN_FADE
+    };
+    let smooth = tween(change_fade);
     let (kind, fade) = match command.change {
       VoiceChange::Stop(fade) => {
         let fade = fade.max(MIN_FADE);
@@ -3599,7 +3632,7 @@ impl AudioEngine {
         live.tuning.volume_db = None;
         let heard = live.heard_db();
         live.playback.set_volume(heard, smooth);
-        (AudioLogKind::Gain, MIN_FADE)
+        (AudioLogKind::Gain, change_fade)
       }
       VoiceChange::Pitch(semitones) => {
         live.pitch = clamp_pitch(semitones);
@@ -3607,7 +3640,7 @@ impl AudioEngine {
         live
           .playback
           .set_rate(rate_of(live.pitch) * live.scale, smooth);
-        (AudioLogKind::Rate, MIN_FADE)
+        (AudioLogKind::Rate, change_fade)
       }
     };
     self.record(index, kind, fade, server);
@@ -3767,17 +3800,35 @@ impl Drop for AudioEngine {
 
 /// Run `f` as scene `scope`'s code (a callback, one of its systems, or its
 /// UI nodes' observers): the voices it plays belong to that scene, and all
-/// but its playing one-shots stop as it exits. A world without an audio
-/// engine just runs `f`
+/// but its playing one-shots stop as it exits. The changes it made to
+/// voices are applied as it ends, so those made to a voice it started reach
+/// kira with the start. A world without an audio engine just runs `f`
 pub(crate) fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut World) -> R) -> R {
   let previous = world
     .get_resource_mut::<AudioEngine>()
     .map(|mut engine| engine.set_scope(Some(scope)));
   let result = f(world);
-  if let (Some(previous), Some(mut engine)) = (previous, world.get_resource_mut::<AudioEngine>()) {
-    engine.set_scope(previous);
+  if let Some(previous) = previous {
+    apply_queued(world);
+    if let Some(mut engine) = world.get_resource_mut::<AudioEngine>() {
+      engine.set_scope(previous);
+    }
   }
   result
+}
+
+/// Apply the voices' queued changes now, if there are any
+fn apply_queued(world: &mut World) {
+  if !world
+    .get_resource::<AudioEngine>()
+    .is_some_and(AudioEngine::has_queued)
+  {
+    return;
+  }
+  let server = world.get_resource::<AssetServer>().cloned();
+  if let Some(mut engine) = world.get_resource_mut::<AudioEngine>() {
+    engine.apply_queued(server.as_ref());
+  }
 }
 
 /// Scene `scope` exited: stop the loops it played and its one-shots paused
