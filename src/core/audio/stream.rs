@@ -12,7 +12,12 @@
 //! window's frame count: a file that ends early is padded with silence to
 //! it, and frames past it are dropped. A packet the codec cannot decode is
 //! skipped, its frames silence; a gap in the file's timestamps is silence
-//! too, given at most [`SILENCE_CHUNK`] frames a call.
+//! too, given at most [`SILENCE_CHUNK`] frames a call. A file that cannot
+//! open, or that fails partway (a reader's error other than the end of the
+//! file, or the codec's that is not one packet's), never fails the stream:
+//! the decoder reports why through its [`StreamFailure`] and gives silence
+//! to the window's end, so the engine stops the voice with its fade (kira
+//! cuts a stream whose decoder returns an error, with no fade).
 //!
 //! kira's own decoder opens the file on the thread that calls `play`, 0.3 to
 //! 1.2 ms for an OGG, and miscounts frames after a Vorbis seek (the first
@@ -23,10 +28,10 @@
 use std::fmt;
 use std::io::{Cursor, ErrorKind};
 use std::ops::Range;
-use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use kira::Frame;
 use kira::sound::streaming::Decoder;
@@ -38,7 +43,7 @@ use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDe
 use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo, Track, TrackType};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::units::Timestamp;
 
 /// The most frames of silence one `decode` gives past the file's end
@@ -49,11 +54,6 @@ const SILENCE_CHUNK: usize = 4096;
 /// overlap and bit reservoir) decodes the target exactly. The OGG reader
 /// steps back for Vorbis itself
 const PREROLL: usize = 2048;
-
-/// How long `decode` waits before saying again why the stream failed: kira
-/// asks again at once until the mixer stops the sound, which would
-/// otherwise spin a core
-const FAILED_RETRY: Duration = Duration::from_millis(1);
 
 /// Why a streamed clip could not be decoded, in the words the engine reports
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +82,38 @@ impl std::error::Error for StreamError {}
 impl From<SymphoniaError> for StreamError {
   fn from(error: SymphoniaError) -> Self {
     StreamError(error.to_string())
+  }
+}
+
+/// Where a stream's decoder reports that it failed, for the engine to read:
+/// shared by the decoder (on kira's decoder thread) and the engine's voice
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StreamFailure(Arc<FailureSlot>);
+
+#[derive(Debug, Default)]
+struct FailureSlot {
+  /// Set while an error waits in `error`, so a frame's check is one load
+  failed: AtomicBool,
+  error: Mutex<Option<StreamError>>,
+}
+
+impl StreamFailure {
+  /// Report `error`, unless one waits to be taken
+  fn report(&self, error: StreamError) {
+    if let Ok(mut slot) = self.0.error.lock()
+      && slot.is_none()
+    {
+      *slot = Some(error);
+      self.0.failed.store(true, Ordering::Release);
+    }
+  }
+
+  /// The error reported since the last call, if any
+  pub(crate) fn take(&self) -> Option<StreamError> {
+    if !self.0.failed.swap(false, Ordering::AcqRel) {
+      return None;
+    }
+    self.0.error.lock().ok()?.take()
   }
 }
 
@@ -119,8 +151,12 @@ pub(crate) fn probe(bytes: &Arc<[u8]>) -> Result<StreamInfo, StreamError> {
 
 /// A format reader over `bytes`, past the file's header
 fn open_reader(bytes: &Arc<[u8]>) -> Result<Box<dyn FormatReader>, StreamError> {
-  let source = Cursor::new(Arc::clone(bytes));
-  let stream = MediaSourceStream::new(Box::new(source), Default::default());
+  open_source(Box::new(Cursor::new(Arc::clone(bytes))))
+}
+
+/// A format reader over `source`, past the file's header
+fn open_source(source: Box<dyn MediaSource>) -> Result<Box<dyn FormatReader>, StreamError> {
+  let stream = MediaSourceStream::new(source, Default::default());
   let reader = symphonia::default::get_probe().probe(
     &Hint::default(),
     stream,
@@ -167,17 +203,22 @@ pub(crate) struct ClipDecoder {
   /// before them to be given first
   pending: Option<(usize, Vec<Frame>)>,
   state: State,
+  /// Where it reports that it failed
+  failure: StreamFailure,
   /// Where the frames the codec decodes are counted (tests)
   #[cfg(test)]
   decoded: Option<Arc<AtomicUsize>>,
+  /// The byte of the file from which reading it fails (tests)
+  #[cfg(test)]
+  fail_reading_at: Option<u64>,
 }
 
 enum State {
   /// Not opened yet: the first `decode` opens the file
   Closed,
   Open(Box<Opened>),
-  /// It failed to open or decode: every `decode` says why
-  Failed(StreamError),
+  /// It failed to open or decode, and reported why: it gives silence
+  Failed,
 }
 
 /// An open file: its reader, its codec's decoder and the track they read
@@ -203,9 +244,17 @@ impl ClipDecoder {
       ended: false,
       pending: None,
       state: State::Closed,
+      failure: StreamFailure::default(),
       #[cfg(test)]
       decoded: None,
+      #[cfg(test)]
+      fail_reading_at: None,
     }
+  }
+
+  /// Where it reports that it failed: the engine reads it each frame
+  pub(crate) fn failure(&self) -> StreamFailure {
+    self.failure.clone()
   }
 
   /// Count every frame the codec decodes into `decoded` (tests)
@@ -215,33 +264,51 @@ impl ClipDecoder {
     self
   }
 
-  /// Open the file and move it to `next`, unless that was done
-  fn open(&mut self) -> Result<(), StreamError> {
-    match &self.state {
-      State::Open(_) => return Ok(()),
-      State::Failed(error) => {
-        std::thread::sleep(FAILED_RETRY);
-        return Err(error.clone());
-      }
-      State::Closed => {}
+  /// Fail every read of the file from byte `at` on, as a file whose
+  /// storage goes bad would (tests): the format reader's error partway
+  #[cfg(test)]
+  pub(crate) fn failing_at(mut self, at: u64) -> Self {
+    self.fail_reading_at = Some(at);
+    self
+  }
+
+  /// Open the file and move it to `next`, unless that was done (or it
+  /// failed)
+  fn open(&mut self) {
+    if !matches!(self.state, State::Closed) {
+      return;
     }
-    let opened = Opened::new(&self.bytes).and_then(|mut opened| {
+    let opened = Opened::new(self.media()).and_then(|mut opened| {
       if self.next > 0 {
         self.ended = opened.seek(self.next, self.end)?;
       }
       Ok(opened)
     });
-    self.state = match opened {
-      Ok(opened) => State::Open(Box::new(opened)),
-      Err(error) => return Err(self.fail(error)),
-    };
-    Ok(())
+    match opened {
+      Ok(opened) => self.state = State::Open(Box::new(opened)),
+      Err(error) => self.fail(error),
+    }
   }
 
-  /// Fail the stream with `error`, which every later `decode` gives again
-  fn fail(&mut self, error: StreamError) -> StreamError {
-    self.state = State::Failed(error.clone());
-    error
+  /// The file's bytes, as its reader reads them
+  fn media(&self) -> Box<dyn MediaSource> {
+    #[cfg(test)]
+    if let Some(at) = self.fail_reading_at {
+      return Box::new(FailingSource {
+        bytes: Cursor::new(Arc::clone(&self.bytes)),
+        at,
+      });
+    }
+    Box::new(Cursor::new(Arc::clone(&self.bytes)))
+  }
+
+  /// The stream failed with `error`: report it, and give silence from here
+  /// to the window's end (and again from wherever a loop seeks back to)
+  fn fail(&mut self, error: StreamError) {
+    self.failure.report(error);
+    self.state = State::Failed;
+    self.pending = None;
+    self.ended = true;
   }
 
   /// Up to [`SILENCE_CHUNK`] frames of silence from `next`, to `until`
@@ -273,8 +340,9 @@ impl ClipDecoder {
       if self.ended {
         return Ok(self.silence(self.end));
       }
+      // Not open (nor failed, which has ended) cannot happen here
       let State::Open(opened) = &mut self.state else {
-        return Ok(Vec::new());
+        return Ok(self.silence(self.end));
       };
       let packet = match opened.reader.next_packet() {
         Ok(Some(packet)) => packet,
@@ -337,9 +405,9 @@ impl ClipDecoder {
 }
 
 impl Opened {
-  /// Probe `bytes` and make its codec's decoder. Only mono and stereo play
-  fn new(bytes: &Arc<[u8]>) -> Result<Opened, StreamError> {
-    let reader = open_reader(bytes)?;
+  /// Probe `source` and make its codec's decoder. Only mono and stereo play
+  fn new(source: Box<dyn MediaSource>) -> Result<Opened, StreamError> {
+    let reader = open_source(source)?;
     let (track, params) = audio_track(reader.as_ref())?;
     // Probed already, but for a clip made in code
     check_channels(params)?;
@@ -387,13 +455,21 @@ impl Decoder for ClipDecoder {
     self.end - self.start
   }
 
+  /// Never an error: a stream that fails reports it and gives silence
   fn decode(&mut self) -> Result<Vec<Frame>, StreamError> {
-    self.open()?;
-    self.next_frames().map_err(|error| self.fail(error))
+    self.open();
+    match self.next_frames() {
+      Ok(frames) => Ok(frames),
+      Err(error) => {
+        self.fail(error);
+        Ok(self.silence(self.end))
+      }
+    }
   }
 
   /// Exact, in the window's frames: an open file seeks now, one not yet
-  /// open on its first `decode`
+  /// open on its first `decode`. Never an error: a seek that fails reports
+  /// it, and the stream gives silence from there
   fn seek(&mut self, index: usize) -> Result<usize, StreamError> {
     let index = index.min(self.end - self.start);
     let target = self.start + index;
@@ -402,11 +478,11 @@ impl Decoder for ClipDecoder {
         self.pending = None;
         match opened.seek(target, self.end) {
           Ok(ended) => self.ended = ended,
-          Err(error) => return Err(self.fail(error)),
+          Err(error) => self.fail(error),
         }
       }
-      State::Open(_) => {}
-      State::Closed | State::Failed(_) => self.ended = false,
+      State::Open(_) | State::Failed => {}
+      State::Closed => self.ended = false,
     }
     self.next = target;
     Ok(index)
@@ -422,6 +498,45 @@ fn skips_packet(error: &SymphoniaError) -> bool {
     error,
     SymphoniaError::DecodeError(_) | SymphoniaError::IoError(_)
   )
+}
+
+/// The file's bytes, every read from byte `at` on failing (tests)
+#[cfg(test)]
+struct FailingSource {
+  bytes: Cursor<Arc<[u8]>>,
+  at: u64,
+}
+
+#[cfg(test)]
+impl std::io::Read for FailingSource {
+  fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    let left = self.at.saturating_sub(self.bytes.position());
+    if left == 0 {
+      return Err(std::io::Error::other(
+        "the storage failed (the test's seam)",
+      ));
+    }
+    let take = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+    std::io::Read::read(&mut self.bytes, &mut buf[..take])
+  }
+}
+
+#[cfg(test)]
+impl std::io::Seek for FailingSource {
+  fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+    std::io::Seek::seek(&mut self.bytes, to)
+  }
+}
+
+#[cfg(test)]
+impl MediaSource for FailingSource {
+  fn is_seekable(&self) -> bool {
+    true
+  }
+
+  fn byte_len(&self) -> Option<u64> {
+    Some(self.bytes.get_ref().len() as u64)
+  }
 }
 
 /// Push `take` frames of `buffer`, from its frame `skip`, onto `out`
@@ -671,15 +786,49 @@ mod tests {
     assert!(frames[sound..].iter().all(|frame| *frame == Frame::ZERO));
   }
 
-  /// Nothing is probed until kira's decoder thread asks for frames
+  /// Nothing is probed until kira's decoder thread asks for frames. A
+  /// file that cannot open is reported, once, and plays as silence to the
+  /// window's end, so the engine fades the voice out rather than kira
+  /// cutting it
   #[test]
   fn opening_waits_for_the_first_decode() {
     let mut decoder = ClipDecoder::new(Arc::from(&b"not audio at all"[..]), 44_100, 0..44_100);
+    let failure = decoder.failure();
     assert_eq!(decoder.sample_rate(), 44_100);
     assert_eq!(decoder.num_frames(), 44_100);
     assert_eq!(decoder.seek(22_050), Ok(22_050));
-    assert!(decoder.decode().is_err());
-    assert!(decoder.decode().is_err(), "it stays failed");
+    assert!(failure.take().is_none(), "nothing opened yet");
+    let frames = collect(&mut decoder, usize::MAX);
+    assert_eq!(frames.len(), 22_050);
+    assert!(frames.iter().all(|frame| *frame == Frame::ZERO));
+    assert!(failure.take().is_some(), "reported");
+    assert!(failure.take().is_none(), "once");
+    // A loop seeks back: silence again, with nothing more reported
+    assert_eq!(seek(&mut decoder, 0), 0);
+    assert_eq!(collect(&mut decoder, usize::MAX).len(), 44_100);
+    assert!(failure.take().is_none());
+  }
+
+  /// A format reader's error other than the end of the file (here the
+  /// file's storage failing from the third audio page on) does not fail
+  /// the stream: the decoder reports it, once, and gives silence to the
+  /// window's end, so the engine can fade the voice out (kira cuts a
+  /// stream whose decoder fails, with no fade)
+  #[test]
+  fn a_reader_error_is_reported_and_plays_on_as_silence() {
+    let file = decoded("tone-3s.ogg");
+    // The OGG's third audio page starts at byte 6,828, after frame 44,032
+    let mut decoder = decoder("tone-3s.ogg").failing_at(6_828);
+    let failure = decoder.failure();
+    let frames = collect(&mut decoder, usize::MAX);
+    assert_eq!(frames.len(), decoder.num_frames());
+    assert_same("tone-3s.ogg", &frames[..40_000], &file[..40_000], 0);
+    assert!(frames[50_000..].iter().all(|frame| *frame == Frame::ZERO));
+    let Some(error) = failure.take() else {
+      panic!("the reader's error is reported");
+    };
+    assert!(error.to_string().contains("the test's seam"), "{error}");
+    assert!(failure.take().is_none(), "once");
   }
 
   /// Streamed from the start, with no seek, each format gives the decoded
@@ -803,7 +952,7 @@ mod tests {
   /// The first packet `bytes`' codec fails on, read with symphonia itself:
   /// its first frame, its length, and the error
   fn first_failure(bytes: &Arc<[u8]>) -> (usize, usize, SymphoniaError) {
-    let Ok(mut opened) = Opened::new(bytes) else {
+    let Ok(mut opened) = Opened::new(Box::new(Cursor::new(Arc::clone(bytes)))) else {
       panic!("the file opens");
     };
     loop {
@@ -912,11 +1061,14 @@ mod tests {
   }
 
   /// The decoder checks the channels again as it opens (a clip made in code
-  /// is not probed)
+  /// is not probed): six channels are reported, and play as silence
   #[test]
   fn a_surround_stream_is_an_error() {
     let mut decoder = ClipDecoder::new(fixture("surround.wav"), 22_050, 0..1_102);
-    let Err(error) = decoder.decode() else {
+    let failure = decoder.failure();
+    let frames = collect(&mut decoder, usize::MAX);
+    assert!(frames.iter().all(|frame| *frame == Frame::ZERO));
+    let Some(error) = failure.take() else {
       panic!("six channels decoded");
     };
     assert!(error.to_string().contains("6 channels"), "{error}");

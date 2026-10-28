@@ -37,7 +37,7 @@ use super::spatial::{
   emitter_position, heard_db,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use super::stream::{ClipDecoder, StreamError};
+use super::stream::{ClipDecoder, StreamError, StreamFailure};
 use super::view::{PlayOptions, Playable};
 use super::voice::{Voice, VoiceChange, VoiceCommand, VoicePick, VoiceState};
 use super::{
@@ -539,8 +539,9 @@ impl<'a> SourceRef<'a> {
 /// A live voice's kira handle
 enum Playback {
   Static(StaticSoundHandle),
+  /// A stream, and where its decoder reports that it failed
   #[cfg(not(target_arch = "wasm32"))]
-  Stream(StreamingSoundHandle<StreamError>),
+  Stream(StreamingSoundHandle<StreamError>, StreamFailure),
   /// A loop played before the web's unlock: nothing sounds until it starts
   /// there
   Waiting(Waiting),
@@ -582,7 +583,7 @@ impl Playback {
     match self {
       Playback::Static(sound) => sound.state(),
       #[cfg(not(target_arch = "wasm32"))]
-      Playback::Stream(sound) => sound.state(),
+      Playback::Stream(sound, _) => sound.state(),
       Playback::Waiting(waiting) => waiting.state(),
     }
   }
@@ -601,7 +602,7 @@ impl Playback {
     match self {
       Playback::Static(sound) => sound.stop(tween),
       #[cfg(not(target_arch = "wasm32"))]
-      Playback::Stream(sound) => sound.stop(tween),
+      Playback::Stream(sound, _) => sound.stop(tween),
       Playback::Waiting(waiting) => waiting.stopped = true,
     }
   }
@@ -612,7 +613,7 @@ impl Playback {
     match self {
       Playback::Static(sound) => sound.pause(tween),
       #[cfg(not(target_arch = "wasm32"))]
-      Playback::Stream(sound) => sound.pause(tween),
+      Playback::Stream(sound, _) => sound.pause(tween),
       Playback::Waiting(waiting) => waiting.paused = true,
     }
   }
@@ -623,7 +624,7 @@ impl Playback {
     match self {
       Playback::Static(sound) => sound.resume(tween),
       #[cfg(not(target_arch = "wasm32"))]
-      Playback::Stream(sound) => sound.resume(tween),
+      Playback::Stream(sound, _) => sound.resume(tween),
       Playback::Waiting(waiting) => waiting.paused = false,
     }
   }
@@ -632,7 +633,7 @@ impl Playback {
     match self {
       Playback::Static(sound) => sound.set_volume(Decibels(db), tween),
       #[cfg(not(target_arch = "wasm32"))]
-      Playback::Stream(sound) => sound.set_volume(Decibels(db), tween),
+      Playback::Stream(sound, _) => sound.set_volume(Decibels(db), tween),
       Playback::Waiting(_) => {}
     }
   }
@@ -641,7 +642,7 @@ impl Playback {
     match self {
       Playback::Static(sound) => sound.set_panning(Panning(pan), tween),
       #[cfg(not(target_arch = "wasm32"))]
-      Playback::Stream(sound) => sound.set_panning(Panning(pan), tween),
+      Playback::Stream(sound, _) => sound.set_panning(Panning(pan), tween),
       Playback::Waiting(_) => {}
     }
   }
@@ -651,7 +652,7 @@ impl Playback {
     match self {
       Playback::Static(sound) => sound.position(),
       #[cfg(not(target_arch = "wasm32"))]
-      Playback::Stream(sound) => sound.position(),
+      Playback::Stream(sound, _) => sound.position(),
       Playback::Waiting(_) => 0.0,
     }
   }
@@ -660,21 +661,25 @@ impl Playback {
     match self {
       Playback::Static(sound) => sound.set_playback_rate(PlaybackRate(rate), tween),
       #[cfg(not(target_arch = "wasm32"))]
-      Playback::Stream(sound) => sound.set_playback_rate(PlaybackRate(rate), tween),
+      Playback::Stream(sound, _) => sound.set_playback_rate(PlaybackRate(rate), tween),
       Playback::Waiting(_) => {}
     }
   }
 
-  /// The first decode error a stream reported since the last call, the rest
-  /// dropped (a stream that fails keeps failing until it stops)
+  /// Why a stream failed, if its decoder reported it since the last call:
+  /// it plays silence from there (kira's own errors, which cut a stream
+  /// with no fade, are read too, the rest dropped)
   fn take_error(&mut self) -> Option<String> {
     match self {
       Playback::Static(_) | Playback::Waiting(_) => None,
       #[cfg(not(target_arch = "wasm32"))]
-      Playback::Stream(sound) => {
-        let error = sound.pop_error()?;
+      Playback::Stream(sound, failure) => {
+        let error = failure
+          .take()
+          .or_else(|| sound.pop_error())
+          .map(|error| error.to_string());
         while sound.pop_error().is_some() {}
-        Some(error.to_string())
+        error
       }
     }
   }
@@ -1273,6 +1278,9 @@ pub struct AudioEngine {
   /// Where the streams started count the frames they decode (tests)
   #[cfg(test)]
   stream_decoding: Option<Arc<std::sync::atomic::AtomicUsize>>,
+  /// The byte from which the files of streams started fail to read (tests)
+  #[cfg(test)]
+  stream_reads_fail_at: Option<u64>,
   /// Plays kira refused for want of room: none should ever be
   #[cfg(test)]
   kira_full: usize,
@@ -1437,6 +1445,8 @@ impl AudioEngine {
       #[cfg(test)]
       stream_decoding: None,
       #[cfg(test)]
+      stream_reads_fail_at: None,
+      #[cfg(test)]
       kira_full: 0,
     };
     // master's gain goes on kira's main track
@@ -1501,6 +1511,13 @@ impl AudioEngine {
     let decoded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     self.stream_decoding = Some(Arc::clone(&decoded));
     decoded
+  }
+
+  /// Make the files of the streams started from now on fail to read from
+  /// byte `at` (tests): their readers fail partway
+  #[cfg(test)]
+  pub(crate) fn fail_stream_reads_at(&mut self, at: u64) {
+    self.stream_reads_fail_at = Some(at);
   }
 
   /// How many plays kira refused for want of room (tests: it never should)
@@ -3747,9 +3764,15 @@ impl AudioEngine {
     // does. kira's own slice would seek the decoder from the file's start
     let (from, to) = span.slice.unwrap_or((0, frames));
     let decoder = ClipDecoder::new(clip.bytes, rate, from..to);
+    let failure = decoder.failure();
     #[cfg(test)]
     let decoder = match &self.stream_decoding {
       Some(decoded) => decoder.counting(Arc::clone(decoded)),
+      None => decoder,
+    };
+    #[cfg(test)]
+    let decoder = match self.stream_reads_fail_at {
+      Some(at) => decoder.failing_at(at),
       None => decoder,
     };
     let data = StreamingSoundData::from_decoder(decoder)
@@ -3764,7 +3787,7 @@ impl AudioEngine {
       None => self.buses.play(bus, data),
     };
     match played {
-      Ok(sound) => Ok(start.hold(Playback::Stream(sound))),
+      Ok(sound) => Ok(start.hold(Playback::Stream(sound, failure))),
       Err(kira::PlaySoundError::SoundLimitReached) => Err(Refusal::Full),
       Err(kira::PlaySoundError::IntoSoundError(error)) => {
         Err(Refusal::Undecodable(error.to_string()))
@@ -4192,12 +4215,16 @@ impl AudioEngine {
 
   /// Drop the voices kira reports stopped (played out, or faded out after a
   /// stop), marking their handles stopped, and keep the rest in start
-  /// order. A stream that failed to decode as it played is logged stopped
-  /// and its clip warned about once
+  /// order. A stream that failed as it played (its file could not open, or
+  /// its reader failed partway), which its decoder fills with silence, is
+  /// stopped with its sound's `fade_out` (at least [`MIN_FADE`]; a bare
+  /// clip's and the music's over [`MIN_FADE`], the music's crossfade being
+  /// for a track replaced) and its clip warned about once
   fn retire_ended(&mut self, server: Option<&AssetServer>) {
     for index in 0..self.voices.live.len() {
       let live = &mut self.voices.live[index];
-      // The state first: a stream's error is queued before kira stops it
+      // The state first: an error kira reports is queued before it stops
+      // the stream
       let ended = live.playback.state() == PlaybackState::Stopped;
       if let Some(error) = live.playback.take_error() {
         // Only a clip streams
@@ -4205,11 +4232,14 @@ impl AudioEngine {
           Source::Clip(clip) => Some((clip.clone(), live.version)),
           Source::Joined(_) => None,
         };
-        // kira cuts a stream that fails to decode at its next chunk, with
-        // no fade, and ignores a stop after that: log what it did
-        if live.voice.state() != VoiceState::Stopping {
+        if matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused) {
+          let fade = match live.sound {
+            Some(_) => live.fade_out.max(MIN_FADE),
+            None => MIN_FADE,
+          };
+          live.playback.stop(fade);
           live.voice.set_state(VoiceState::Stopping);
-          self.record(index, AudioLogKind::Stop, Duration::ZERO, server);
+          self.record(index, AudioLogKind::Stop, fade, server);
         }
         if let Some((clip, version)) = failed {
           self.warn_undecodable(&clip, version, &error, server);
@@ -5281,8 +5311,8 @@ mod tests {
   }
 
   /// A surround clip streamed (made in code: the loader refuses one) fails
-  /// as it plays. kira cuts the stream at its next chunk, with no fade (it
-  /// cannot be smoothed), and the log says so; the clip is warned about
+  /// as it plays: its decoder reports it and plays silence, the engine
+  /// stops it over 10 ms (a bare clip's fade), and the clip is warned about
   /// once, by its path
   #[test]
   fn a_streamed_clip_that_cannot_decode_stops_and_warns_once() {
@@ -5297,7 +5327,7 @@ mod tests {
       .filter(|entry| entry.kind == AudioLogKind::Stop && entry.voice == voice.id())
       .map(|entry| entry.fade)
       .collect();
-    assert_eq!(stops, [Duration::ZERO], "{log:#?}");
+    assert_eq!(stops, [MIN_FADE], "{log:#?}");
     assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 0);
     assert_eq!(undecodable_warnings("surround-in-code.wav"), 1);
   }
@@ -5342,9 +5372,55 @@ mod tests {
     assert_eq!(undecodable_warnings("undecodable-reloaded.wav"), 1);
   }
 
+  /// A stream whose file's reader fails partway (its storage failing from
+  /// the third audio page on, a second into the file) is reported by its
+  /// decoder, which plays on as silence: the engine stops the voice with
+  /// its sound's `fade_out` (a bare clip's with 10 ms), warns once by
+  /// path, and refuses the clip afterwards until it reloads
+  #[test]
+  fn a_stream_that_fails_as_it_plays_fades_out() {
+    let files = MemorySource::new();
+    files.insert("fails-midway.ogg", fixture("tone-3s.ogg"));
+    let mut world = audio_world_over(files);
+    world
+      .resource_mut::<AudioEngine>()
+      .fail_stream_reads_at(6_828);
+    let clip = streamed(&mut world, "fails-midway.ogg");
+    let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip.clone())],
+      fade_out: Duration::from_millis(50),
+      ..Default::default()
+    });
+    let (defined, bare) = {
+      let mut audio = AudioView::new(&mut world);
+      (audio.play(&sound), audio.play(&clip))
+    };
+    assert!(defined.is_playing() && bare.is_playing());
+    wait_until_stopped(&mut world, &defined);
+    wait_until_stopped(&mut world, &bare);
+    let stops = |voice: &Voice| -> Vec<Duration> {
+      log(&world)
+        .iter()
+        .filter(|entry| entry.kind == AudioLogKind::Stop && entry.voice == voice.id())
+        .map(|entry| entry.fade)
+        .collect()
+    };
+    assert_eq!(stops(&defined), [Duration::from_millis(50)]);
+    assert_eq!(stops(&bare), [MIN_FADE]);
+    assert_eq!(undecodable_warnings("fails-midway.ogg"), 1);
+    let again = AudioView::new(&mut world).play(&clip);
+    assert!(again.is_stopped(), "{again:?}");
+    let last = log(&world).pop();
+    assert_eq!(
+      last.map(|entry| (entry.kind, entry.reason)),
+      Some((AudioLogKind::Refused, REFUSED_UNDECODABLE))
+    );
+  }
+
   /// A stream opens on its decoder thread, so one that cannot open starts
-  /// (nothing is read on the calling thread), then ends: cut with no fade,
-  /// as kira cuts a stream that fails, and warned about once
+  /// (nothing is read on the calling thread), then ends: its decoder
+  /// reports it and plays silence, the engine stops it with its fade, and
+  /// it is warned about once
   #[test]
   fn a_stream_that_cannot_open_reports_once_and_ends() {
     let (mut world, clip) = garbled("cannot-open.wav");
@@ -5361,7 +5437,7 @@ mod tests {
       entries,
       [
         (AudioLogKind::Start, Duration::ZERO),
-        (AudioLogKind::Stop, Duration::ZERO)
+        (AudioLogKind::Stop, MIN_FADE)
       ]
     );
     assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 0);
