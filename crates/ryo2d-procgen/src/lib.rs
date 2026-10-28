@@ -8,13 +8,13 @@
 //!
 //! | Algorithm | Use Case |
 //! |-----------|----------|
-//! | [`bsp`] | Structured dungeons with rooms and corridors |
-//! | [`cellular`] | Organic caves using cellular automata |
-//! | [`noise`] | Terrain and heightmaps via Perlin/Simplex |
-//! | [`random_walk`] | Organic paths and caves (drunkard's walk) |
-//! | [`poisson`] | Even point distribution for object placement |
-//! | [`wfc`] | Constraint-based pattern generation |
-//! | [`mst`] | Connecting regions with minimum spanning tree |
+//! | BSP ([`BspConfig`]) | Structured dungeons with rooms and corridors |
+//! | Cellular automata ([`CellularConfig`]) | Organic caves using cellular automata |
+//! | Noise ([`NoiseConfig`]) | Terrain and heightmaps via Perlin/Simplex |
+//! | Random walk ([`RandomWalkConfig`]) | Organic paths and caves (drunkard's walk) |
+//! | Poisson disk ([`PoissonConfig`]) | Even point distribution for object placement |
+//! | Wave function collapse ([`WfcConfig`]) | Constraint-based pattern generation |
+//! | Minimum spanning tree ([`MstConfig`]) | Connecting regions with minimum spanning tree |
 //!
 //! # Quick Start
 //!

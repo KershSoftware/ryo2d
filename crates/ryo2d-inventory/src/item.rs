@@ -9,7 +9,7 @@ use std::fmt;
 // ItemId
 // ---------------------------------------------------------------------------
 
-/// Unique identifier for an item type in the [`ItemRegistry`].
+/// Unique identifier for an item type in the [`ItemRegistry`](crate::ItemRegistry).
 ///
 /// `ItemId` is a lightweight `Copy` wrapper around a `u32` index.
 /// Two `ItemId` values are equal if and only if they refer to the same
@@ -20,7 +20,7 @@ pub struct ItemId(u32);
 impl ItemId {
   /// Create an `ItemId` from a raw index.
   ///
-  /// Prefer using [`ItemRegistry::register`] to obtain ids; this
+  /// Prefer using [`ItemRegistry::register`](crate::ItemRegistry::register) to obtain ids; this
   /// constructor is mainly useful for tests and deserialization.
   pub fn new(index: u32) -> Self {
     Self(index)
@@ -91,7 +91,7 @@ impl Clone for Box<dyn ItemData> {
 ///
 /// `ItemStack` is a *value type* — cheap to move, clone-able, and never stored
 /// as an ECS entity on its own.  When items are dropped into the game world
-/// they become full entities via [`ItemDrop`].
+/// they become full entities via [`ItemDrop`](crate::ItemDrop).
 ///
 /// Optional [`ItemData`] can be attached for per-instance properties
 /// (e.g. enchantments, durability).
@@ -169,7 +169,7 @@ impl fmt::Debug for ItemStack {
 
 /// Blueprint that defines an item type's static properties.
 ///
-/// Templates are registered in the [`ItemRegistry`] and referenced by
+/// Templates are registered in the [`ItemRegistry`](crate::ItemRegistry) and referenced by
 /// [`ItemId`].  They hold shared data (name, max stack size, tags) that
 /// does *not* vary between individual item stacks.
 ///
@@ -243,7 +243,7 @@ impl ItemTemplate {
     self.data.as_deref()
   }
 
-  /// Set the registry-assigned id.  Called by [`ItemRegistry::register`].
+  /// Set the registry-assigned id.  Called by [`ItemRegistry::register`](crate::ItemRegistry::register).
   pub(crate) fn set_id(&mut self, id: ItemId) {
     self.id = id;
   }
@@ -324,7 +324,7 @@ impl ItemTemplateBuilder {
   /// Consume the builder and produce a finished [`ItemTemplate`].
   ///
   /// The template's `id` is set to `ItemId(0)` and will be assigned by
-  /// the [`ItemRegistry`] upon registration.
+  /// the [`ItemRegistry`](crate::ItemRegistry) upon registration.
   pub fn build(self) -> ItemTemplate {
     let display = self.display_name.unwrap_or_else(|| self.name.clone());
 

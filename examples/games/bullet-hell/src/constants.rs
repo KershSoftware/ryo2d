@@ -2,7 +2,7 @@
 //!
 //! Note: Screen dimensions are obtained from the engine at runtime via
 //! `ctx.screen_width()` and `ctx.screen_height()`. Configure resolution
-//! in Ryo.toml [system] section or via EngineBuilder::resolution().
+//! in the Ryo.toml `[system]` section or via `EngineBuilder::resolution()`.
 
 // Player configuration (movement is the engine's platformer preset)
 pub const PLAYER_SIZE: f32 = 24.0;
