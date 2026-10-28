@@ -90,14 +90,10 @@ impl Scene for MenuScene {
       self.bird_flap = Some((up, down, width));
     }
 
-    // Start background music (persists across scenes)
-    ctx.audio.set_music_volume(0.4);
-    ctx.audio.set_sfx_volume(0.5);
-
-    let options = MusicOptions::new().looping(true);
-    if let Err(e) = ctx.audio.play_music_once("assets/8bit-bg.mp3", options) {
-      eprintln!("Failed to play background music: {}", e);
-    }
+    // The music: it carries on across scenes, and the track already
+    // playing plays on
+    let music = ctx.assets().load::<Music>("8bit-bg.music.ron");
+    ctx.audio().play_music(&music);
 
     // Spawn scrolling background (uses cached assets)
     self.spawn_background(ctx);

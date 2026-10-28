@@ -1,0 +1,5 @@
+// The bird hitting a pipe or the ground
+(
+  clips: [(path: "death.wav")],
+  volume: -8.0,
+)

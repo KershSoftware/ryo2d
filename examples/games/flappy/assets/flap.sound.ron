@@ -1,0 +1,5 @@
+// A flap
+(
+  clips: [(path: "flap.wav")],
+  volume: -10.5,
+)

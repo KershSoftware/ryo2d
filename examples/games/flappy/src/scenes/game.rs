@@ -7,8 +7,11 @@ use crate::components::*;
 use crate::constants::*;
 use crate::save::save_high_score;
 
-const FLAP_SOUND: &str = "flap";
-const DEATH_SOUND: &str = "death";
+/// The game's sounds, as definitions under `assets/`
+struct Sounds {
+  flap: Handle<Sound>,
+  death: Handle<Sound>,
+}
 
 pub struct GameScene {
   // Game state
@@ -26,6 +29,8 @@ pub struct GameScene {
   ground_entities: Vec<Entity>,
   ground_border_entities: Vec<Entity>,
   background_entities: Vec<Entity>,
+  /// The game's sounds, loaded as it enters
+  sounds: Option<Sounds>,
 }
 
 const DEATH_DELAY: f32 = 1.0; // seconds to show death animation
@@ -43,6 +48,7 @@ impl GameScene {
       ground_entities: Vec::new(),
       ground_border_entities: Vec::new(),
       background_entities: Vec::new(),
+      sounds: None,
     }
   }
 
@@ -291,25 +297,25 @@ impl GameScene {
     // Get bird component and check input
     let should_flap =
       ctx.input.key_pressed(KeyCode::Space) || ctx.input.mouse_pressed(MouseButton::Left);
-    let velocity_y = {
+    let (velocity_y, flapped) = {
       let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) else {
         return;
       };
 
       // Handle flapping
-      if should_flap && bird.is_alive {
+      let flapped = should_flap && bird.is_alive;
+      if flapped {
         bird.flap();
-        // Play flap sound
-        let _ = ctx
-          .audio
-          .play_sound_with(FLAP_SOUND, SoundOptions::new().volume(0.6));
       }
 
       // Apply gravity
       bird.apply_gravity(dt);
 
-      bird.velocity_y
+      (bird.velocity_y, flapped)
     };
+    if flapped && let Some(sounds) = &self.sounds {
+      ctx.audio().play(&sounds.flap);
+    }
 
     // Update velocity
     if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(bird_entity) {
@@ -501,9 +507,11 @@ impl Scene for GameScene {
       .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
-    // Load sound effects
-    let _ = ctx.audio.load_sound(FLAP_SOUND, "assets/flap.wav");
-    let _ = ctx.audio.load_sound(DEATH_SOUND, "assets/death.wav");
+    let assets = ctx.assets();
+    self.sounds = Some(Sounds {
+      flap: assets.load("flap.sound.ron"),
+      death: assets.load("death.sound.ron"),
+    });
 
     // Spawn entities
     self.spawn_background(ctx);
@@ -542,10 +550,9 @@ impl Scene for GameScene {
       && self.death_timer.is_none()
     {
       self.death_timer = Some(0.0);
-      // Play death sound
-      let _ = ctx
-        .audio
-        .play_sound_with(DEATH_SOUND, SoundOptions::new().volume(0.8));
+      if let Some(sounds) = &self.sounds {
+        ctx.audio().play(&sounds.death);
+      }
     }
 
     // Handle death timer

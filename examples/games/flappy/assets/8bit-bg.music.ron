@@ -1,0 +1,5 @@
+// The music, from the menu on, carrying on across scenes
+(
+  clip: "8bit-bg.mp3",
+  volume: -8.0,
+)
