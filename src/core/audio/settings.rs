@@ -62,8 +62,8 @@ impl VolumeKind {
     }
   }
 
-  /// The setting a game starts with when nothing sets it: 0.89 for master,
-  /// 1 for the rest. A setting that is not a number becomes this
+  /// The setting a game starts with when nothing sets it: 1 for every
+  /// kind, the mix as designed. A setting that is not a number becomes this
   pub fn default_value(self) -> f32 {
     match self {
       VolumeKind::Master => DEFAULT_MASTER_VOLUME,
@@ -147,12 +147,12 @@ mod tests {
   #[test]
   fn a_setting_is_clamped_and_nan_is_its_default() {
     assert_eq!(VolumeKind::Sfx.sanitize(f32::NAN), 1.0);
-    assert_eq!(VolumeKind::Master.sanitize(f32::NAN), 0.89);
+    assert_eq!(VolumeKind::Master.sanitize(f32::NAN), 1.0);
     assert_eq!(VolumeKind::Music.sanitize(-1.0), 0.0);
     assert_eq!(VolumeKind::Ui.sanitize(5.0), 1.0);
     assert_eq!(VolumeKind::Voice.sanitize(f32::NEG_INFINITY), 0.0);
     let mut settings = VolumeSettings::default();
-    assert_eq!(settings.get(VolumeKind::Master), 0.89);
+    assert_eq!(settings.get(VolumeKind::Master), 1.0);
     assert_eq!(settings.set(VolumeKind::Ambience, 0.25), 0.25);
     assert_eq!(settings.get(VolumeKind::Ambience), 0.25);
   }

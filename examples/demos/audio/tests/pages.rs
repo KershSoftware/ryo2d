@@ -186,11 +186,12 @@ fn a_slider_sets_its_volume_setting() {
     audio(&mut engine).volume_setting(VolumeKind::Master),
     master
   );
-  // The panel has the focus, on its first row: Master
+  // The panel has the focus, on its first row: Master, a step of 0.05
+  // down from 1
   engine.tap_key(KeyCode::ArrowLeft);
   engine.step_frames(3).unwrap();
   let lowered = audio(&mut engine).volume_setting(VolumeKind::Master);
-  assert!((lowered - 0.85).abs() < 1e-4, "master is {lowered}");
+  assert!((lowered - 0.95).abs() < 1e-4, "master is {lowered}");
 }
 
 #[test]

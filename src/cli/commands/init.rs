@@ -262,7 +262,7 @@ resolution = "1280x720"   # the game's canvas, scaled to fit the window
 # pixel_art = true    # render into the resolution, scaled by a whole number (crisp pixel art)
 vsync = true
 display_mode = "windowed"
-master_volume = 0.89
+master_volume = 1.0
 music_volume = 1.0
 sfx_volume = 1.0
 ui_volume = 1.0
@@ -529,4 +529,29 @@ EXAMPLES:
     ryo2d init
 "#
   );
+}
+
+#[cfg(test)]
+mod tests {
+  use super::generate_ryo_toml;
+
+  /// A new game starts at the mix as designed: master at 1, as the engine
+  /// does when Ryo.toml sets none
+  #[test]
+  fn a_new_game_s_master_volume_is_the_mix_as_designed() {
+    let toml: toml::Value = match toml::from_str(&generate_ryo_toml("game")) {
+      Ok(toml) => toml,
+      Err(error) => panic!("the template is TOML: {error}"),
+    };
+    let master = toml
+      .get("system")
+      .and_then(|system| system.get("master_volume"))
+      .and_then(toml::Value::as_float);
+    assert_eq!(master, Some(1.0));
+    assert_eq!(
+      crate::core::config::resolve::DEFAULT_MASTER_VOLUME,
+      1.0,
+      "the engine's default"
+    );
+  }
 }

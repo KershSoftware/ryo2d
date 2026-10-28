@@ -1812,13 +1812,14 @@ mod tests {
     // 0 is kira's silence exactly
     AudioView::new(&mut world).set_volume_setting(VolumeKind::Sfx, 0.0);
     assert_eq!(bus(&world, "sfx").gain_db, -60.0);
-    // NaN is each kind's own default
+    // NaN is each kind's own default: master's is 1, the mix as designed
+    AudioView::new(&mut world).set_volume_setting(VolumeKind::Master, 0.5);
     AudioView::new(&mut world).set_volume_setting(VolumeKind::Master, f32::NAN);
     assert_eq!(
       AudioView::new(&mut world).volume_setting(VolumeKind::Master),
-      0.89
+      1.0
     );
-    assert!(close(bus(&world, "master").gain_db, volume_to_db(0.89)));
+    assert!(close(bus(&world, "master").gain_db, 0.0));
   }
 
   #[test]

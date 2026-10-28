@@ -1334,8 +1334,8 @@ mod tests {
     let manager = SaveManager::new(dir.path()).unwrap();
 
     let state = manager.load_system().unwrap();
-    // Uses engine defaults: master=0.89, music=1.0
-    assert_eq!(state.master_volume, 0.89);
+    // Uses engine defaults: master=1.0, music=1.0
+    assert_eq!(state.master_volume, 1.0);
     assert_eq!(state.music_volume, 1.0);
   }
 
@@ -1560,8 +1560,8 @@ mod tests {
     assert_eq!(state.height, 720);
     assert_eq!(state.vsync, Some(true));
     assert_eq!(state.display_mode, DisplayMode::Windowed);
-    // Engine defaults: master=0.89, music=1.0, sfx=1.0
-    assert_eq!(state.master_volume, 0.89);
+    // Engine defaults: master=1.0, music=1.0, sfx=1.0
+    assert_eq!(state.master_volume, 1.0);
     assert_eq!(state.music_volume, 1.0);
     assert_eq!(state.sfx_volume, 1.0);
     assert_eq!(state.show_fps, Some(false));
@@ -2533,7 +2533,7 @@ mod tests {
       .unwrap();
 
     // Returned state is what the file loads as (engine defaults for absent keys)
-    assert_eq!(state.master_volume, 0.89);
+    assert_eq!(state.master_volume, 1.0);
     assert_eq!(state.width, 1280);
 
     // But file on disk only has volume keys
@@ -2621,7 +2621,7 @@ mod tests {
 
     // Loading the partial file should fill missing fields from serde defaults
     let loaded = manager.load_system().unwrap();
-    assert_eq!(loaded.master_volume, 0.89); // from file
+    assert_eq!(loaded.master_volume, 1.0); // from file
     assert_eq!(loaded.width, 1280); // from serde default
     assert_eq!(loaded.height, 720);
     assert!(loaded.show_fps.is_none()); // from serde default

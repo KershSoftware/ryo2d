@@ -12,4 +12,5 @@ assets = "assets"
 resolution = "960x600"
 vsync = true
 display_mode = "windowed"
+master_volume = 0.89
 show_fps = true

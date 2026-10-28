@@ -18,6 +18,7 @@ assets = "assets"
 [system]
 vsync = true
 display_mode = "borderless_fullscreen"
+master_volume = 0.89
 show_fps = true
 
 # =============================================================================
