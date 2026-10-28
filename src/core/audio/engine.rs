@@ -47,7 +47,7 @@ use super::{
 use crate::core::asset::{
   AssetEvent, AssetId, AssetServer, Assets, Handle, LoadState, UntypedAssetId,
 };
-use crate::core::ecs::kernel::{EntityHashSet, MessageCursor, Messages, Mut};
+use crate::core::ecs::kernel::{EntityHashMap, EntityHashSet, MessageCursor, Messages, Mut};
 use crate::core::ecs::{Disabled, Entity, Resource, Vec2, World};
 use crate::core::hash::{FastMap, FastSet};
 
@@ -1289,6 +1289,13 @@ pub struct AudioEngine {
   /// Voices whose emitter went (despawned, disabled, taken away or put
   /// over), by id, to release in the frame's update. Kept to reuse
   orphans: Vec<u32>,
+  /// The voices (live or waiting for their sounds) each entity's emitter
+  /// played, by id, so letting an entity's voices go finds them without
+  /// looking at any other voice, and an entity with none costs a lookup
+  emitter_voices: EntityHashMap<Vec<u32>>,
+  /// The voices and waiting plays `emitter_gone` has looked at (tests)
+  #[cfg(test)]
+  pub(crate) emitter_examined: usize,
   /// The world's entities being enabled are watched, for their emitters
   watching_enabled: bool,
   /// Sounds and clips played at a place without spatial settings, warned
@@ -1502,6 +1509,9 @@ impl AudioEngine {
       spawned: Vec::new(),
       spawned_seen: EntityHashSet::default(),
       orphans: Vec::new(),
+      emitter_voices: EntityHashMap::default(),
+      #[cfg(test)]
+      emitter_examined: 0,
       watching_enabled: false,
       warned_flat: FastSet::default(),
       victims: Vec::new(),
@@ -1795,20 +1805,49 @@ impl AudioEngine {
   /// `entity`'s emitter went (despawned, disabled, taken away or put over
   /// by another): the voices it played no longer follow it, and are
   /// released in the frame's update. Voices played from it afterwards (its
-  /// next emitter's) are its own again
+  /// next emitter's) are its own again. Only the entity's own voices are
+  /// looked at (`emitter_voices`): one with none (a pool's, any entity
+  /// disabled) costs a lookup
   pub(crate) fn emitter_gone(&mut self, entity: Entity) {
-    for live in &mut self.voices.live {
-      if live.emitter == Some(entity) {
-        live.emitter = None;
-        self.orphans.push(live.voice.id());
-      }
+    let Some(ids) = self.emitter_voices.remove(&entity) else {
+      return;
+    };
+    #[cfg(test)]
+    {
+      self.emitter_examined += ids.len();
     }
+    self.orphans.extend_from_slice(&ids);
     // Its plays still waiting for their sounds never start
     for pending in &self.pending {
-      if pending.emitter == Some(entity) {
+      if pending.emitter == Some(entity) && ids.contains(&pending.voice.id()) {
         pending.voice.set_state(VoiceState::Stopped);
       }
     }
+  }
+
+  /// Remember that `entity`'s emitter played voice `id` (live, or waiting
+  /// for its sound)
+  fn track_emitter_voice(&mut self, entity: Entity, id: u32) {
+    let ids = self.emitter_voices.entry(entity).or_default();
+    if !ids.contains(&id) {
+      ids.push(id);
+    }
+  }
+
+  /// Voice `id` of `entity`'s emitter ended, or never started: forget it
+  fn forget_emitter_voice(&mut self, entity: Entity, id: u32) {
+    if let Some(ids) = self.emitter_voices.get_mut(&entity) {
+      ids.retain(|&tracked| tracked != id);
+      if ids.is_empty() {
+        self.emitter_voices.remove(&entity);
+      }
+    }
+  }
+
+  /// The voices the engine keeps track of as played by emitters (tests)
+  #[cfg(test)]
+  pub(crate) fn emitter_voice_count(&self) -> usize {
+    self.emitter_voices.values().map(Vec::len).sum()
   }
 
   /// Release the voices whose emitter went, as a scene's exit would: a loop
@@ -1821,6 +1860,7 @@ impl AudioEngine {
     let mut orphans = std::mem::take(&mut self.orphans);
     for &id in &orphans {
       if let Some(index) = self.voices.index_of(id) {
+        self.voices.live[index].emitter = None;
         self.release_voice(index, false, server);
       }
     }
@@ -3086,6 +3126,9 @@ impl AudioEngine {
       game_db: 0.0,
       game_pitch: 0.0,
     });
+    if let Some(entity) = emitter {
+      self.track_emitter_voice(entity, voice.id());
+    }
     voice
   }
 
@@ -3126,12 +3169,25 @@ impl AudioEngine {
     while index < self.pending.len() {
       let pending = &self.pending[index];
       if pending.voice.is_stopped() {
-        self.pending.remove(index);
+        let pending = self.pending.remove(index);
+        if let Some(entity) = pending.emitter {
+          self.forget_emitter_voice(entity, pending.voice.id());
+        }
       } else if sound_loading(world, &pending.sound, server) {
         index += 1;
       } else {
         let pending = self.pending.remove(index);
+        // An emitter's play that does not start (refused, or its entity
+        // gone) is forgotten; one that starts is a live voice of its entity
+        let emitter = pending
+          .emitter
+          .map(|entity| (entity, pending.voice.clone()));
         self.start_pending(world, pending, server);
+        if let Some((entity, voice)) = emitter
+          && voice.is_stopped()
+        {
+          self.forget_emitter_voice(entity, voice.id());
+        }
       }
     }
   }
@@ -3228,9 +3284,12 @@ impl AudioEngine {
         pending.voice.set_state(VoiceState::Stopped);
         // Played this frame, it no longer counts against its per_frame
         let played = (pending.frame == self.frame).then(|| pending.sound.id().untyped());
-        self.pending.remove(index);
+        let pending = self.pending.remove(index);
         if let Some(key) = played {
           self.uncount_start(key);
+        }
+        if let Some(entity) = pending.emitter {
+          self.forget_emitter_voice(entity, pending.voice.id());
         }
       }
       VoiceChange::Pause(_) if state == VoiceState::Playing => {
@@ -3768,6 +3827,9 @@ impl AudioEngine {
       generation: self.generation,
       stuck_warned: false,
     });
+    if let Some(entity) = request.emitter {
+      self.track_emitter_voice(entity, voice.id());
+    }
     // A held start is silent and paused: its fade-in waits for its resume.
     // One waiting for the unlock is logged as it starts there
     let fade_in = if starts_held {
@@ -4346,6 +4408,8 @@ impl AudioEngine {
           Some(position) => live.position = Some(position),
           None => {
             live.emitter = None;
+            let id = live.voice.id();
+            self.forget_emitter_voice(entity, id);
             self.release_voice(index, false, server);
           }
         }
@@ -4572,7 +4636,12 @@ impl AudioEngine {
         }
       }
       if ended {
-        self.voices.live[index].voice.set_state(VoiceState::Stopped);
+        let live = &self.voices.live[index];
+        live.voice.set_state(VoiceState::Stopped);
+        if let Some(entity) = live.emitter {
+          let id = live.voice.id();
+          self.forget_emitter_voice(entity, id);
+        }
       }
     }
     self.voices.live.retain(|live| !live.voice.is_stopped());

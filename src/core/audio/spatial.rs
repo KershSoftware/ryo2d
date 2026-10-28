@@ -130,7 +130,9 @@ fn emitter_discarded(mut world: DeferredWorld, context: HookContext) {
 }
 
 /// An entity is being disabled (a pool putting it back): an emitter on it
-/// lets its voices go, as if despawned
+/// lets its voices go, as if despawned. Every entity disabled in a world
+/// with emitters comes here; one whose emitter played nothing costs a
+/// lookup
 fn emitter_disabled(
   disabled: On<Add<Disabled>>,
   emitters: Query<(), (With<AudioEmitter>, Allow<Disabled>)>,
@@ -962,6 +964,73 @@ mod tests {
     assert_eq!(started(&world).len(), 2, "{:#?}", log(&world));
   }
 
+  /// Letting an emitter's voices go looks only at that entity's voices: an
+  /// entity with none (a pool's, or any entity disabled in a world with
+  /// emitters) costs nothing however many voices play
+  #[test]
+  fn an_emitter_s_cleanup_looks_only_at_its_own_voices() {
+    let mut world = audio_world();
+    world.spawn(AudioListener);
+    let hum = placed(&mut world, settings(Falloff::Linear), true);
+    let bed = clip(&mut world, 2.0);
+    let bed = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(bed)],
+      looping: true,
+      per_frame: 40,
+      ..Default::default()
+    });
+    for _ in 0..40 {
+      assert!(AudioView::new(&mut world).play(&bed).is_playing());
+    }
+    let playing = emitter(&mut world, &hum, 50.0);
+    let quiet = world
+      .spawn((
+        AudioEmitter {
+          sound: hum.clone(),
+          play_on_spawn: false,
+        },
+        Transform::default(),
+      ))
+      .id();
+    let bare = world.spawn(Transform::default()).id();
+    audio_step(&mut world, FRAME);
+    assert_eq!(started(&world).len(), 41, "{:#?}", log(&world));
+    let examined = |world: &World| world.resource::<AudioEngine>().emitter_examined;
+    let before = examined(&world);
+
+    // Entities with no emitter voices: disabled, their emitter taken away
+    world.entity_mut(quiet).insert(Disabled);
+    world.entity_mut(bare).insert(Disabled);
+    world.entity_mut(quiet).remove::<AudioEmitter>();
+    assert_eq!(
+      examined(&world),
+      before,
+      "nothing to clean, nothing looked at"
+    );
+
+    // The playing emitter's one voice, and only it, is looked at and let go
+    let tracked = |world: &World| world.resource::<AudioEngine>().emitter_voice_count();
+    assert_eq!(tracked(&world), 1);
+    let voice = started(&world)[40];
+    world.despawn(playing);
+    assert_eq!(examined(&world), before + 1);
+    assert_eq!(tracked(&world), 0);
+    audio_step(&mut world, FRAME);
+    assert_eq!(stops(&world), [(voice, Duration::from_millis(40))]);
+
+    // An emitter's one-shot that plays out is forgotten as it ends, its
+    // entity still there
+    let shot = placed(&mut world, settings(Falloff::Linear), false);
+    let shooter = emitter(&mut world, &shot, 50.0);
+    audio_step(&mut world, FRAME);
+    assert_eq!(tracked(&world), 1);
+    for _ in 0..130 {
+      audio_step(&mut world, FRAME);
+    }
+    assert!(world.get_entity(shooter).is_ok());
+    assert_eq!(tracked(&world), 0, "a 2 s one-shot ended");
+  }
+
   /// The voices that stopped, with their fades
   fn stops(world: &World) -> Vec<(u32, Duration)> {
     log(world)
@@ -1208,6 +1277,12 @@ mod tests {
     assert!(looped.is_playing(), "{looped:?}");
     assert!(gone.is_stopped(), "{gone:?}");
     assert!(refused.is_stopped(), "{refused:?}");
+    let tracked = |world: &World| world.resource::<AudioEngine>().emitter_voice_count();
+    assert_eq!(
+      tracked(&world),
+      1,
+      "the loop; the plays that never started are forgotten"
+    );
     let refusals: Vec<(String, &str)> = log(&world)
       .into_iter()
       .filter(|entry| entry.kind == AudioLogKind::Refused)
@@ -1222,6 +1297,7 @@ mod tests {
     world.despawn(looping);
     audio_step(&mut world, FRAME);
     assert_eq!(entries(&world, looped.id(), AudioLogKind::Stop).len(), 1);
+    assert_eq!(tracked(&world), 0);
   }
 
   /// A sound with no spatial settings played at a place is heard as if at
