@@ -1471,6 +1471,91 @@ mod tests {
     assert_eq!(named("rebuilt buses"), 0);
   }
 
+  /// What the engine remembers about an asset that failed (a definition or
+  /// a music that did not load, a clip whose stream failed) is forgotten
+  /// when its file changes: fixed, it loads afresh (`Added`) or reloads
+  /// (`Modified`), plays, and is warned about again should it fail again
+  #[test]
+  fn a_fixed_file_leaves_nothing_remembered() {
+    let (mut world, files) = world_over(&[
+      ("sfx/fixed-later.sound.ron", b"(clips: ["),
+      ("music/fixed-later.music.ron", b"(clip: "),
+      ("sfx/fixed-later.wav", &wav_of(0.5, 3_000)),
+      ("sfx/garbled-later.wav", &wav_of(0.5, 3_000)),
+    ]);
+    let server = world.resource::<AssetServer>().clone();
+    let sound = server.load::<Sound>("sfx/fixed-later.sound.ron");
+    let track = server.load::<Music>("music/fixed-later.music.ron");
+    let stream = crate::core::asset::AudioClipSettings {
+      mode: crate::core::asset::ClipMode::Stream,
+    };
+    let clip = match AssetsView::new(&mut world)
+      .load_now_with::<AudioClip, _>("sfx/garbled-later.wav", stream)
+    {
+      Ok(clip) => clip,
+      Err(error) => panic!("{}", error.report()),
+    };
+    let start = Instant::now();
+    while !(server.state(&sound).is_failed() && server.state(&track).is_failed()) {
+      assert!(start.elapsed() < Duration::from_secs(5), "they fail");
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    // Played, each is warned about once and remembered
+    assert!(AudioView::new(&mut world).play(&sound).is_stopped());
+    AudioView::new(&mut world).play_music(&track);
+    if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
+      let garbage: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"not audio at all"[..]);
+      *clip = AudioClip::new(
+        ClipData::Encoded(EncodedClip {
+          bytes: garbage,
+          frames: 24_000,
+        }),
+        Duration::from_millis(500),
+        48_000,
+      );
+    }
+    audio_step(&mut world, FRAME);
+    let failing = AudioView::new(&mut world).play(&clip);
+    let start = Instant::now();
+    while !failing.is_stopped() {
+      assert!(start.elapsed() < Duration::from_secs(5), "the stream fails");
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(world.resource::<AudioEngine>().remembered(), 3);
+    // Fixed: each loads, or reloads, and nothing about it is kept
+    files.insert(
+      "sfx/fixed-later.sound.ron",
+      r#"(clips: [(path: "sfx/fixed-later.wav")])"#,
+    );
+    files.insert(
+      "music/fixed-later.music.ron",
+      r#"(clip: "sfx/fixed-later.wav")"#,
+    );
+    for path in [
+      "sfx/fixed-later.sound.ron",
+      "music/fixed-later.music.ron",
+      "sfx/garbled-later.wav",
+    ] {
+      server.reload(path);
+    }
+    let version = world.resource::<Assets<AudioClip>>().version(&clip);
+    let start = Instant::now();
+    while !(server.is_ready(&sound)
+      && server.is_ready(&track)
+      && world.resource::<Assets<AudioClip>>().version(&clip) != version)
+    {
+      assert!(start.elapsed() < Duration::from_secs(5), "they load");
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    audio_step(&mut world, FRAME);
+    assert_eq!(world.resource::<AudioEngine>().remembered(), 0);
+    assert!(AudioView::new(&mut world).play(&sound).is_playing());
+    assert!(AudioView::new(&mut world).play(&clip).is_playing());
+  }
+
   fn warnings(matching: impl Fn(&str) -> bool) -> usize {
     dev_log::get_entries()
       .iter()

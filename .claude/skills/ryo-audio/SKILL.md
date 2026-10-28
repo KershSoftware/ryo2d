@@ -383,6 +383,7 @@ In debug builds with a window, saving a file in `assets/` changes what is playin
 - A switch partway through a `fade_in` or a music crossfade carries on with what is left of it rather than jumping to full level.
 - Loops a reload cannot switch (their bus out of room, as when one save switches many loops on one bus) play on as they were, with one warning saying how many.
 - A save that does not load (a typo) changes nothing and warns once with the file and, for RON, the line and column; fix it and save again.
+- A file that failed (a definition or music that did not load, a streamed clip that failed as it played) plays once it is saved fixed, and is warned about again should it break again.
 - The same happens for a change made in code: `ctx.assets().get_mut(&clip)` or `get_mut(&music)` switches what plays, so change them when they should switch, not every frame.
 - The audio demo's Hot reload page shows it: save `assets/hot/drone.sound.ron` while it plays.
 

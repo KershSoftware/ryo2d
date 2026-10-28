@@ -1267,8 +1267,11 @@ pub struct AudioEngine {
   frame: u64,
   /// What each definition played remembers
   sounds: FastMap<AssetId<Sound>, SoundState>,
-  /// Definitions warned about once (one that did not load, or has no clips)
+  /// Definitions warned about once that have no clips
   warned_sounds: FastSet<AssetId<Sound>>,
+  /// Definitions that did not load, warned about once (by the registry,
+  /// and by a play of one): forgotten once the file loads afresh
+  failed_sounds: FastSet<AssetId<Sound>>,
   /// Bus names warned about once (a bus there is not)
   warned_buses: FastSet<String>,
   /// The listener as last found: none (every voice is heard as if at it)
@@ -1489,6 +1492,7 @@ impl AudioEngine {
       frame: 0,
       sounds: FastMap::default(),
       warned_sounds: FastSet::default(),
+      failed_sounds: FastSet::default(),
       warned_buses: FastSet::default(),
       listener: None,
       listener_query: None,
@@ -1583,6 +1587,7 @@ impl AudioEngine {
   pub(crate) fn remembered(&self) -> usize {
     self.sounds.len()
       + self.warned_sounds.len()
+      + self.failed_sounds.len()
       + self.warned_flat.len()
       + self.undecodable.len()
       + self.music.warned.len()
@@ -2542,25 +2547,35 @@ impl AudioEngine {
   /// loop playing it to the new data where it is, crossfading over
   /// [`MIN_FADE`], and lets its one-shots finish on the old; a reloaded
   /// definition retunes its playing loops by the change in its volume and
-  /// pitch (the rest of it is for new plays). A reload that failed
-  /// (`ReloadFailed`) kept the last good value, so nothing changes. An
-  /// asset removed takes with it what the engine remembered of it: a
-  /// definition's recent picks and cooldown, a clip's failed decode, and
-  /// the warnings given once
+  /// pitch, and moves them to its new bus (the rest of it is for new
+  /// plays). A reload that failed (`ReloadFailed`) kept the last good
+  /// value, so nothing changes. An asset whose file changed (`Modified`,
+  /// or `Added` as it loads afresh after it failed) is no longer known to
+  /// have failed: its failed decode and the warnings given once about it
+  /// go, so a fixed file plays and is warned about again should it fail
+  /// again. An asset removed takes with it all the engine remembered of
+  /// it: a definition's recent picks and cooldown too
   fn follow_reloads(&mut self, world: &World, server: Option<&AssetServer>) {
     let mut music_changed = false;
     if let Some(events) = world.get_resource::<Messages<AssetEvent<Music>>>() {
       for event in self.reloads.musics.read(events) {
         match event {
+          // Loaded afresh from its file after it failed: no longer failed
+          // (one made in code is added at the pump after its first plays,
+          // which may have found its clip failed)
+          AssetEvent::Added { id } if from_file(server, *id) => {
+            self.music.warned.remove(id);
+          }
+          // Its file changed: what was warned about it may be fixed
           AssetEvent::Modified { id } => {
+            self.music.forget(*id);
             music_changed |= self
               .music
               .live()
               .is_some_and(|track| track.music.id() == *id);
           }
           AssetEvent::Removed { id } => {
-            self.music.warned.remove(id);
-            self.music.warned_buses.remove(id);
+            self.music.forget(*id);
             self.warned_unswitched.remove(&id.untyped());
           }
           _ => {}
@@ -2572,7 +2587,11 @@ impl AudioEngine {
     if let Some(events) = world.get_resource::<Messages<AssetEvent<AudioClip>>>() {
       for event in self.reloads.clips.read(events) {
         match event {
-          AssetEvent::Modified { id } => clips.push(*id),
+          // Its file changed: a stream that failed may play now
+          AssetEvent::Modified { id } => {
+            self.undecodable.remove(id);
+            clips.push(*id);
+          }
           AssetEvent::Removed { id } => {
             self.undecodable.remove(id);
             self.warned_flat.remove(&id.untyped());
@@ -2587,9 +2606,20 @@ impl AudioEngine {
     if let Some(events) = world.get_resource::<Messages<AssetEvent<Sound>>>() {
       for event in self.reloads.sounds.read(events) {
         match event {
-          AssetEvent::Modified { id } => sounds.push(*id),
+          // Loaded afresh from its file after it failed: no longer failed
+          AssetEvent::Added { id } => {
+            self.failed_sounds.remove(id);
+          }
+          // Its file changed: what was warned about it may be fixed
+          AssetEvent::Modified { id } => {
+            self.failed_sounds.remove(id);
+            self.warned_sounds.remove(id);
+            self.warned_flat.remove(&id.untyped());
+            sounds.push(*id);
+          }
           AssetEvent::Removed { id } => {
             self.sounds.remove(id);
+            self.failed_sounds.remove(id);
             self.warned_sounds.remove(id);
             self.warned_flat.remove(&id.untyped());
             self.warned_loading.remove(&id.untyped());
@@ -2980,11 +3010,13 @@ impl AudioEngine {
           if loading {
             return self.refuse_unknown(id, REFUSED_LOADING, server);
           }
-          if server.is_some_and(|server| server.state(id).is_failed()) {
-            self.warn_sound(
-              id,
-              "it did not load, so it plays nothing (the asset warning for it says why)",
-              server,
+          if server.is_some_and(|server| server.state(id).is_failed())
+            && self.failed_sounds.insert(id)
+          {
+            let name = sound_name(id, server);
+            crate::engine_warn!(
+              module: "Audio",
+              "{name}: it did not load, so it plays nothing (the asset warning for it says why)"
             );
           }
           return Voice::stopped();
@@ -3124,7 +3156,7 @@ impl AudioEngine {
       // The registry warned once that it did not load, saying why: that is
       // its one warning, which a later play of it does not repeat
       pending.voice.set_state(VoiceState::Stopped);
-      self.warned_sounds.insert(id);
+      self.failed_sounds.insert(id);
       return;
     };
     if !sound.looping {
@@ -5183,6 +5215,13 @@ fn region((start, end): (usize, usize)) -> Region {
     start: PlaybackPosition::Samples(start),
     end: EndPosition::Custom(PlaybackPosition::Samples(end)),
   }
+}
+
+/// Whether `id` was loaded from a file, so its `Added` means it loaded
+/// (afresh, if it had failed); one made in code is added at the pump after
+/// its first plays
+fn from_file<A: crate::core::asset::Asset>(server: Option<&AssetServer>, id: AssetId<A>) -> bool {
+  server.is_some_and(|server| server.path(id).is_some())
 }
 
 /// A clip's asset path, or its id for a clip made in code

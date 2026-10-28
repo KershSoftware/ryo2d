@@ -284,6 +284,13 @@ impl MusicPlayer {
       .map(Handle::id)
       .or_else(|| self.live().map(|track| track.music.id()))
   }
+
+  /// Forget the warnings given once about `music`: its file changed, or it
+  /// went
+  pub(super) fn forget(&mut self, music: AssetId<Music>) {
+    self.warned.remove(&music);
+    self.warned_buses.remove(&music);
+  }
 }
 
 #[cfg(test)]
