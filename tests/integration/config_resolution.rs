@@ -118,7 +118,8 @@ fn system_state_malformed_resolution_uses_engine_defaults() {
 
 #[test]
 fn an_old_system_json_loads_the_new_volumes_at_one() {
-  // Written before the ui, voice and ambience volumes existed
+  // Written before the ui, voice and ambience volumes existed, by an engine
+  // whose volumes were amplitudes (no format version)
   let json = serde_json::json!({
     "master_volume": 0.4,
     "music_volume": 0.6,
@@ -128,7 +129,8 @@ fn an_old_system_json_loads_the_new_volumes_at_one() {
   let state: SystemState = serde_json::from_value(json).unwrap();
   assert_eq!(
     (state.master_volume, state.music_volume, state.sfx_volume),
-    (0.4, 0.6, 0.7)
+    (0.63, 0.77, 0.84),
+    "each converted to √v, the same loudness on today's curve"
   );
   assert_eq!(
     (state.ui_volume, state.voice_volume, state.ambience_volume),

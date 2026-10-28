@@ -268,6 +268,17 @@ const SAVE_VERSION: u32 = 1;
 /// File extension for system saves (JSON)
 const SYSTEM_EXTENSION: &str = "json";
 
+/// The format `system.json` is written in, kept in its `format_version` key.
+///
+/// - 1 (no `format_version`): each volume an amplitude, heard at `20·log10(v)` dB.
+/// - 2: each volume a point on the settings curve, heard at `40·log10(v)` dB
+///   (`volume_to_db`). A format 1 file has its volumes converted to the value
+///   heard at the same dB, √v, as it loads (`RawSystemFile::upgrade`).
+pub(crate) const SYSTEM_FORMAT: u32 = 2;
+
+/// The JSON key that holds [`SYSTEM_FORMAT`].
+const FORMAT_KEY: &str = "format_version";
+
 /// File extension for game saves
 const GAME_EXTENSION: &str = "ryo-save";
 
@@ -302,8 +313,14 @@ fn system_state_map(state: &SystemState) -> SaveResult<serde_json::Map<String, s
 /// The engine reads it at startup (see
 /// [`EngineBuilder::with_user_preferences`](crate::core::engine::EngineBuilder::with_user_preferences)):
 /// saved preferences override builder calls and Ryo.toml, and a new file is seeded from the
-/// resolved settings. Keys missing from the file load as engine defaults here but are not
-/// treated as preferences at startup.
+/// resolved settings. Keys missing from the file are not preferences at startup; they load
+/// as the game's defaults through [`SaveManager::load_or_create_system`] (as the engine plays
+/// them) and as the engine's through [`SaveManager::load_system`].
+///
+/// The file carries its format version (`format_version`). One without it was written by an
+/// engine whose volumes were amplitudes (heard at `20·log10(v)` dB): each saved volume is
+/// converted as it loads to the setting heard at the same dB on today's curve (√v), once, and
+/// the file is saved with the version by the loads that write it.
 ///
 /// # Contents
 ///
@@ -466,6 +483,7 @@ impl Serialize for SystemState {
   fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
     use serde::ser::SerializeMap;
     let mut map = serializer.serialize_map(None)?;
+    map.serialize_entry(FORMAT_KEY, &SYSTEM_FORMAT)?;
     map.serialize_entry("master_volume", &clean_f32(self.master_volume))?;
     map.serialize_entry("music_volume", &clean_f32(self.music_volume))?;
     map.serialize_entry("sfx_volume", &clean_f32(self.sfx_volume))?;
@@ -489,8 +507,9 @@ impl Serialize for SystemState {
 }
 
 /// `system.json` as stored on disk: every key optional, legacy nested `display` supported.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct RawSystemFile {
+  format_version: Option<u32>,
   master_volume: Option<f32>,
   music_volume: Option<f32>,
   sfx_volume: Option<f32>,
@@ -509,7 +528,7 @@ struct RawSystemFile {
   display: Option<LegacyDisplay>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct LegacyDisplay {
   resolution: Option<String>,
   width: Option<u32>,
@@ -574,18 +593,58 @@ impl RawSystemFile {
     }
   }
 
+  /// Bring a file written in an older format up to [`SYSTEM_FORMAT`]: a
+  /// format 1 file's volumes are amplitudes, each converted to the setting
+  /// heard at the same dB on today's curve (√v, to two decimals as the file
+  /// keeps them; not a number is left for the resolve to make the default).
+  /// Returns whether anything changed, so the file is saved with the version.
+  fn upgrade(&mut self) -> bool {
+    if self
+      .format_version
+      .is_some_and(|version| version >= SYSTEM_FORMAT)
+    {
+      return false;
+    }
+    for volume in [
+      &mut self.master_volume,
+      &mut self.music_volume,
+      &mut self.sfx_volume,
+      &mut self.ui_volume,
+      &mut self.voice_volume,
+      &mut self.ambience_volume,
+    ]
+    .into_iter()
+    .flatten()
+    {
+      if !volume.is_nan() {
+        *volume = clean_f32(volume.max(0.0).sqrt()) as f32;
+      }
+    }
+    self.format_version = Some(SYSTEM_FORMAT);
+    true
+  }
+
   /// Fill absent keys with engine defaults.
   fn into_state(self) -> SystemState {
+    self.into_state_over(&super::workspace::SystemDefaults::default())
+  }
+
+  /// Fill absent settings from `defaults` (a game's `Ryo.toml [system]`):
+  /// the volumes and the display mode. The window size is the player's (the
+  /// project's resolution is the game's, not a window), so an absent one is
+  /// the engine's; an absent vsync or show_fps stays `None`, which already
+  /// means the game's resolved setting.
+  fn into_state_over(self, defaults: &super::workspace::SystemDefaults) -> SystemState {
     let (width, height) = self.resolution().unwrap_or(DEFAULT_RESOLUTION);
-    let display_mode = self.display_mode().unwrap_or_default();
+    let display_mode = self.display_mode().unwrap_or(defaults.display_mode);
     let vsync = self.vsync();
     SystemState {
-      master_volume: self.master_volume.unwrap_or(DEFAULT_MASTER_VOLUME),
-      music_volume: self.music_volume.unwrap_or(DEFAULT_MUSIC_VOLUME),
-      sfx_volume: self.sfx_volume.unwrap_or(DEFAULT_SFX_VOLUME),
-      ui_volume: self.ui_volume.unwrap_or(DEFAULT_UI_VOLUME),
-      voice_volume: self.voice_volume.unwrap_or(DEFAULT_VOICE_VOLUME),
-      ambience_volume: self.ambience_volume.unwrap_or(DEFAULT_AMBIENCE_VOLUME),
+      master_volume: self.master_volume.unwrap_or(defaults.master_volume),
+      music_volume: self.music_volume.unwrap_or(defaults.music_volume),
+      sfx_volume: self.sfx_volume.unwrap_or(defaults.sfx_volume),
+      ui_volume: self.ui_volume.unwrap_or(defaults.ui_volume),
+      voice_volume: self.voice_volume.unwrap_or(defaults.voice_volume),
+      ambience_volume: self.ambience_volume.unwrap_or(defaults.ambience_volume),
       width,
       height,
       display_mode,
@@ -599,8 +658,9 @@ impl RawSystemFile {
 
 impl<'de> Deserialize<'de> for SystemState {
   fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-    let raw = RawSystemFile::deserialize(deserializer)?;
+    let mut raw = RawSystemFile::deserialize(deserializer)?;
     raw.warn_if_resolution_malformed();
+    raw.upgrade();
     Ok(raw.into_state())
   }
 }
@@ -831,13 +891,16 @@ impl SaveManager {
   // System State (JSON, uncompressed)
   // ==========================================================================
 
-  /// Save system state as human-editable JSON.
+  /// Save system state as human-editable JSON, with the format version.
   ///
   /// When `system.json` already exists, keys already in the file are updated,
   /// and a key missing from the file is added only when its value differs from
-  /// what the file loads as - so a file written with a narrow
-  /// [`UserPreferenceFilter`] keeps its shape until the player changes a
-  /// setting it doesn't hold yet. When no file exists, writes the full state.
+  /// what the file loads as with the engine's defaults - so a file written with
+  /// a narrow [`UserPreferenceFilter`] keeps its shape until the player changes
+  /// a setting it doesn't hold yet. A state from
+  /// [`load_or_create_system`](Self::load_or_create_system) holds the game's
+  /// defaults for the settings the file lacks, so saving it adds those that
+  /// differ from the engine's. When no file exists, writes the full state.
   pub fn save_system(&self, state: &SystemState) -> SaveResult<()> {
     let path = self.system_path();
 
@@ -879,13 +942,16 @@ impl SaveManager {
       }
     }
 
-    // No existing file or couldn't parse — write full state
+    // No existing file or couldn't parse — write full state (with the version)
     self.write_json_file(&path, state)
   }
 
   /// Load system state from JSON file.
   ///
-  /// Returns default state if no save file exists.
+  /// Returns default state if no save file exists. Keys the file doesn't hold
+  /// get the engine's defaults. A file from before the format version (an
+  /// older engine's) has its volumes converted to today's curve in the state
+  /// returned; the file is left as it is until it is saved.
   pub fn load_system(&self) -> SaveResult<SystemState> {
     let path = self.system_path();
     if !path.exists() {
@@ -898,7 +964,11 @@ impl SaveManager {
   ///
   /// Creates system.json from `defaults` (Ryo.toml `[system]`) when it doesn't exist;
   /// otherwise loads it and adds new `env` keys from `defaults`. Saved values are never
-  /// replaced.
+  /// replaced, and the volumes and display mode the file doesn't hold are the ones in
+  /// `defaults` (the game's, not the engine's), as the engine plays them; the file
+  /// keeps its shape. A file from before the format version (an older engine's) has
+  /// its volumes converted once to today's curve, keeping their loudness, and is
+  /// saved with the version.
   ///
   /// # Arguments
   ///
@@ -923,15 +993,26 @@ impl SaveManager {
       self.save_system(&state)?;
       return Ok(state);
     }
+    self.load_existing_system(defaults)
+  }
 
-    // Load existing and merge any missing fields
-    let mut state: SystemState = self.read_json_file(&path)?;
-
-    if state.merge_defaults(defaults) {
-      // Save updated state with merged fields
-      self.save_system(&state)?;
+  /// Load an existing `system.json` over `defaults`: absent settings take the
+  /// game's defaults; a file in an older format is converted, and one that
+  /// changed (converted, or new `env` keys) is saved as it loads with the
+  /// engine's defaults, so the save adds no key the file didn't hold.
+  fn load_existing_system(
+    &self,
+    defaults: &super::workspace::SystemDefaults,
+  ) -> SaveResult<SystemState> {
+    let mut raw: RawSystemFile = self.read_json_file(&self.system_path())?;
+    raw.warn_if_resolution_malformed();
+    let upgraded = raw.upgrade();
+    let mut stored = raw.clone().into_state();
+    if stored.merge_defaults(defaults) || upgraded {
+      self.save_system(&stored)?;
     }
-
+    let mut state = raw.into_state_over(defaults);
+    state.env = stored.env;
     Ok(state)
   }
 
@@ -941,7 +1022,8 @@ impl SaveManager {
   ///   `seed.env` isn't empty) and returns `Ok(None)` - the seed already is
   ///   what the game resolved, so there is nothing to override.
   /// - File present: adds `env` keys from `defaults` it doesn't have yet and
-  ///   returns the preferences it holds.
+  ///   returns the preferences it holds; a file in an older format has its
+  ///   volumes converted and is saved with the version.
   /// - Unparsable file: returns the error and leaves the file untouched.
   pub(crate) fn load_preferences_or_seed(
     &self,
@@ -955,16 +1037,17 @@ impl SaveManager {
       return Ok(None);
     }
 
-    let raw: RawSystemFile = self.read_json_file(&path)?;
+    let mut raw: RawSystemFile = self.read_json_file(&path)?;
     raw.warn_if_resolution_malformed();
+    let upgraded = raw.upgrade();
     let prefs = raw.stored_preferences();
     let mut state = raw.into_state();
     // Best effort: the preferences are already loaded, so a failed write
     // (e.g. a read-only file) mustn't discard them.
-    if state.merge_defaults(defaults)
+    if (state.merge_defaults(defaults) || upgraded)
       && let Err(e) = self.save_system(&state)
     {
-      eprintln!("[ryo2d] Warning: Couldn't add new [env] keys to system.json ({e})");
+      eprintln!("[ryo2d] Warning: Couldn't update system.json ({e})");
     }
     Ok(Some(prefs))
   }
@@ -1001,7 +1084,12 @@ impl SaveManager {
     self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION))
   }
 
-  fn write_system_map(&self, map: serde_json::Map<String, serde_json::Value>) -> SaveResult<()> {
+  /// Write `map` as `system.json`, with the format version.
+  fn write_system_map(
+    &self,
+    mut map: serde_json::Map<String, serde_json::Value>,
+  ) -> SaveResult<()> {
+    map.insert(FORMAT_KEY.to_string(), SYSTEM_FORMAT.into());
     let json = serde_json::to_string_pretty(&serde_json::Value::Object(map))
       .map_err(|e| SaveError::Serialization(e.to_string()))?;
     let mut file = File::create(self.system_path())?;
@@ -1014,32 +1102,26 @@ impl SaveManager {
   ///
   /// Behaves like [`load_or_create_system`](Self::load_or_create_system) when
   /// system.json already exists. When creating a new file, only the JSON keys
-  /// in `filter` are written (plus `env` when `defaults.env` isn't empty) - so a
-  /// filter of the six volumes produces a system.json with just
-  /// `master_volume`, `music_volume`, `sfx_volume`, `ui_volume`,
-  /// `voice_volume` and `ambience_volume`.
+  /// in `filter` are written (plus `env` when `defaults.env` isn't empty, and
+  /// the format version) - so a filter of the six volumes produces a
+  /// system.json with just `master_volume`, `music_volume`, `sfx_volume`,
+  /// `ui_volume`, `voice_volume` and `ambience_volume`.
   ///
-  /// Returns the state as it loads from disk: keys the file doesn't hold get
-  /// engine defaults.
+  /// Returns the state as it loads from disk over `defaults`: the volumes and
+  /// display mode the file doesn't hold are the game's defaults.
   pub fn load_or_create_system_filtered(
     &self,
     defaults: &super::workspace::SystemDefaults,
     filter: &UserPreferenceFilter,
   ) -> SaveResult<SystemState> {
-    if self.system_path().exists() {
-      let mut state = self.load_system()?;
-      if state.merge_defaults(defaults) {
-        self.save_system(&state)?;
-      }
-      return Ok(state);
+    if !self.system_path().exists() {
+      self.write_filtered_system(
+        &SystemState::from_defaults(defaults),
+        filter,
+        !defaults.env.is_empty(),
+      )?;
     }
-
-    self.write_filtered_system(
-      &SystemState::from_defaults(defaults),
-      filter,
-      !defaults.env.is_empty(),
-    )?;
-    self.load_system()
+    self.load_existing_system(defaults)
   }
 
   /// Check if system state exists.
@@ -1771,7 +1853,7 @@ mod tests {
     let manager = SaveManager::new(dir.path()).unwrap();
     write_system_json(
       dir.path(),
-      r#"{"master_volume": 0.5, "resolution": "1600x900"}"#,
+      r#"{"format_version": 2, "master_volume": 0.5, "resolution": "1600x900"}"#,
     );
 
     let prefs = stored_preferences(&manager).unwrap();
@@ -1813,7 +1895,10 @@ mod tests {
   fn stored_preferences_ignore_a_malformed_resolution() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(dir.path(), r#"{"resolution": "big", "master_volume": 0.5}"#);
+    write_system_json(
+      dir.path(),
+      r#"{"format_version": 2, "resolution": "big", "master_volume": 0.5}"#,
+    );
 
     let prefs = stored_preferences(&manager).unwrap();
 
@@ -1854,7 +1939,7 @@ mod tests {
   fn an_existing_file_is_not_reseeded() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(dir.path(), r#"{"master_volume": 0.5}"#);
+    write_system_json(dir.path(), r#"{"format_version": 2, "master_volume": 0.5}"#);
     let mut seed = SystemState::new();
     seed.master_volume = 0.3;
 
@@ -1877,7 +1962,7 @@ mod tests {
   fn new_env_keys_are_merged_into_an_existing_file() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(dir.path(), r#"{"master_volume": 0.5}"#);
+    write_system_json(dir.path(), r#"{"format_version": 2, "master_volume": 0.5}"#);
     let mut env = HashMap::new();
     env.insert("difficulty".to_string(), serde_json::json!("hard"));
     let defaults = super::super::workspace::SystemDefaults {
@@ -1899,7 +1984,7 @@ mod tests {
   fn a_failed_env_merge_write_keeps_the_loaded_preferences() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(dir.path(), r#"{"master_volume": 0.5}"#);
+    write_system_json(dir.path(), r#"{"format_version": 2, "master_volume": 0.5}"#);
     let path = dir.path().join("system.json");
     let mut perms = std::fs::metadata(&path).unwrap().permissions();
     perms.set_readonly(true);
@@ -1927,7 +2012,7 @@ mod tests {
     let manager = SaveManager::new(dir.path()).unwrap();
     write_system_json(
       dir.path(),
-      r#"{"master_volume": 0.5, "display": {"width": 1920, "height": 1080, "display_mode": "borderless_fullscreen", "vsync": false}}"#,
+      r#"{"format_version": 2, "master_volume": 0.5, "display": {"width": 1920, "height": 1080, "display_mode": "borderless_fullscreen", "vsync": false}}"#,
     );
     let mut env = HashMap::new();
     env.insert("difficulty".to_string(), serde_json::json!("hard"));
@@ -1980,7 +2065,7 @@ mod tests {
   fn save_system_writes_a_changed_key_missing_from_the_file() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(dir.path(), r#"{"master_volume": 0.5}"#);
+    write_system_json(dir.path(), r#"{"format_version": 2, "master_volume": 0.5}"#);
 
     let mut state = manager.load_system().unwrap();
     state.width = 1920;
@@ -2013,11 +2098,14 @@ mod tests {
   }
 
   #[test]
-  fn filtered_creation_returns_the_state_as_stored() {
+  fn filtered_creation_returns_the_defaults_for_the_keys_it_leaves_out() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
     let defaults = super::super::workspace::SystemDefaults {
       resolution: Some((800, 600)),
+      display_mode: DisplayMode::BorderlessFullscreen,
+      master_volume: 0.5,
+      music_volume: 0.63,
       ..Default::default()
     };
     let filter = UserPreferenceFilter::only([UserPreference::MasterVolume]);
@@ -2026,7 +2114,144 @@ mod tests {
       .load_or_create_system_filtered(&defaults, &filter)
       .unwrap();
 
+    assert_eq!(state.master_volume, 0.5);
+    assert_eq!(
+      state.music_volume, 0.63,
+      "the game's default, not the file's"
+    );
+    assert_eq!(state.display_mode, DisplayMode::BorderlessFullscreen);
+    // The window size is the player's, never a project default
     assert_eq!((state.width, state.height), (1280, 720));
+    let raw = read_system_json(dir.path());
+    assert!(raw.get("music_volume").is_none(), "{raw}");
+    assert!(raw.get("display_mode").is_none(), "{raw}");
+  }
+
+  /// Settings a `system.json` does not hold are the game's: the defaults the
+  /// call is handed (its `Ryo.toml [system]`), not the engine's, and the file
+  /// keeps its shape
+  #[test]
+  fn absent_settings_take_the_game_s_defaults() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(
+      dir.path(),
+      r#"{"format_version": 2, "master_volume": 0.5, "resolution": "1600x900"}"#,
+    );
+    let defaults = super::super::workspace::SystemDefaults {
+      display_mode: DisplayMode::BorderlessFullscreen,
+      master_volume: 0.89,
+      music_volume: 0.63,
+      sfx_volume: 0.7,
+      ui_volume: 0.4,
+      voice_volume: 0.3,
+      ambience_volume: 0.2,
+      ..Default::default()
+    };
+
+    let states = [
+      manager.load_or_create_system(&defaults).unwrap(),
+      manager
+        .load_or_create_system_filtered(&defaults, &UserPreferenceFilter::all())
+        .unwrap(),
+    ];
+
+    for state in states {
+      assert_eq!(state.master_volume, 0.5, "the player's");
+      assert_eq!((state.width, state.height), (1600, 900), "the player's");
+      assert_eq!(
+        [
+          state.music_volume,
+          state.sfx_volume,
+          state.ui_volume,
+          state.voice_volume,
+          state.ambience_volume
+        ],
+        [0.63, 0.7, 0.4, 0.3, 0.2]
+      );
+      assert_eq!(state.display_mode, DisplayMode::BorderlessFullscreen);
+      assert_eq!(state.vsync, None, "absent: the game's resolved setting");
+    }
+    let raw = read_system_json(dir.path());
+    assert_eq!(
+      raw,
+      serde_json::json!({"format_version": 2, "master_volume": 0.5, "resolution": "1600x900"})
+    );
+  }
+
+  /// A `system.json` from before the format version held each volume as an
+  /// amplitude (dB = 20·log10 v); today's curve is dB = 40·log10 v, so each
+  /// is converted once, to √v (two decimals, as the file keeps them), and the
+  /// file saved with the version
+  #[test]
+  fn settings_saved_before_the_format_version_keep_their_loudness() {
+    use crate::core::audio::volume_to_db;
+
+    let old = r#"{"master_volume": 0.25, "music_volume": 0.64, "sfx_volume": 0.3, "resolution": "1600x900"}"#;
+    let converted = (0.5, 0.8, 0.55);
+    let volumes = |state: &SystemState| (state.master_volume, state.music_volume, state.sfx_volume);
+    for (old_v, new_v) in [(0.25, 0.5), (0.64, 0.8), (0.3, 0.55)] {
+      let before = 20.0 * f32::log10(old_v);
+      assert!(
+        (volume_to_db(new_v) - before).abs() < 0.1,
+        "{old_v}: the same dB"
+      );
+    }
+
+    // The game's own load converts, saves, and does not convert again
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(dir.path(), old);
+    let defaults = super::super::workspace::SystemDefaults::default();
+    let state = manager.load_or_create_system(&defaults).unwrap();
+    assert_eq!(volumes(&state), converted);
+    let raw = read_system_json(dir.path());
+    assert_eq!(
+      raw,
+      serde_json::json!({
+        "format_version": 2,
+        "master_volume": 0.5,
+        "music_volume": 0.8,
+        "sfx_volume": 0.55,
+        "resolution": "1600x900"
+      }),
+      "converted once, with the version, in the file's shape"
+    );
+    let again = manager.load_or_create_system(&defaults).unwrap();
+    assert_eq!(volumes(&again), converted, "not converted again");
+    assert_eq!(volumes(&manager.load_system().unwrap()), converted);
+    assert_eq!(read_system_json(dir.path()), raw);
+
+    // The engine's startup read converts and saves too
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(dir.path(), old);
+    let prefs = stored_preferences(&manager).unwrap();
+    assert_eq!(
+      (prefs.master_volume, prefs.music_volume, prefs.sfx_volume),
+      (Some(0.5), Some(0.8), Some(0.55))
+    );
+    assert_eq!(prefs.ui_volume, None, "still no preference");
+    assert_eq!(read_system_json(dir.path()), raw);
+    let prefs = stored_preferences(&manager).unwrap();
+    assert_eq!(prefs.master_volume, Some(0.5), "not converted again");
+
+    // A plain load converts what it returns and leaves the file alone
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(dir.path(), old);
+    assert_eq!(volumes(&manager.load_system().unwrap()), converted);
+    assert_eq!(volumes(&manager.load_system().unwrap()), converted);
+    assert_eq!(
+      std::fs::read_to_string(dir.path().join("system.json")).unwrap(),
+      old
+    );
+    // ...and a save of it writes the version with what it converted
+    manager
+      .save_system(&manager.load_system().unwrap())
+      .unwrap();
+    assert_eq!(read_system_json(dir.path()), raw);
+    assert_eq!(volumes(&manager.load_system().unwrap()), converted);
   }
 
   #[test]
@@ -2049,10 +2274,21 @@ mod tests {
     assert_eq!(prefs.vsync, Some(true));
     assert_eq!(prefs.show_fps, Some(false));
 
+    // Saved again, its keys are kept, its volumes converted to today's curve
+    // (√v, the same loudness) and the format version added
     manager
       .save_system(&manager.load_system().unwrap())
       .unwrap();
-    let expected: serde_json::Value = serde_json::from_str(previous).unwrap();
+    let expected = serde_json::json!({
+      "format_version": 2,
+      "master_volume": 0.77,
+      "music_volume": 0.84,
+      "sfx_volume": 0.95,
+      "resolution": "1280x720",
+      "display_mode": "windowed",
+      "vsync": true,
+      "show_fps": false
+    });
     assert_eq!(read_system_json(dir.path()), expected);
   }
 
@@ -2276,7 +2512,8 @@ mod tests {
     let loaded = manager.load_system().unwrap();
     assert_eq!(loaded.width, 1600);
     assert_eq!(loaded.height, 900);
-    assert_eq!(loaded.master_volume, 0.75);
+    // An older engine's file: its amplitude 0.75 is 0.87 on today's curve
+    assert_eq!(loaded.master_volume, 0.87);
   }
 
   #[test]

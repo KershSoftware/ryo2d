@@ -2,7 +2,7 @@
 name: ryo-audio
 description: "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log."
 metadata:
-  version: 2.2.0
+  version: 2.3.0
 ---
 
 # Ryo2D Audio
@@ -230,7 +230,7 @@ let music = ctx.audio().volume_setting(VolumeKind::Music);
 A linear slider leaves 50% at only -6 dB and puts everything below -12 dB in its bottom quarter; on this curve 50% is about -12 dB, near half as loud (loudness halves at about -10 dB), and each halving of the setting is the same 12 dB step. 0 is exact silence; a value outside 0 to 1 is clamped, and one that is not a number is the kind's default.
 
 - **Defaults** come from `Ryo.toml` (`[system] master_volume = 1.0`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume`, `ambience_volume`); without them every setting is 1, the mix as designed, and `ryo2d init` writes 1.0. A game that wants headroom on master sets less there (0.89 is about -2 dB).
-- **Saving:** `SystemState` keeps the six as `master_volume`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume` and `ambience_volume` (`ryo-config-save`). With `EngineBuilder::with_user_preferences` allowing them (`UserPreference::MasterVolume` .. `AmbienceVolume`), the engine applies the saved values at start. A saved value is read as a point on this curve and never rescaled, so a `system.json` written for a linear volume scale plays its settings below 1 quieter than it was written for.
+- **Saving:** `SystemState` keeps the six as `master_volume`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume` and `ambience_volume` (`ryo-config-save`). With `EngineBuilder::with_user_preferences` allowing them (`UserPreference::MasterVolume` .. `AmbienceVolume`), the engine applies the saved values at start. A saved value is a point on this curve. A `system.json` from before its `format_version` (an engine whose volumes were amplitudes, 20·log10(v) dB) has each volume converted once as it loads to √v, which is heard at the same dB, and is saved with the version, so a player's settings keep their loudness. A setting the file lacks is the game's `[system]` default.
 
 A settings screen:
 

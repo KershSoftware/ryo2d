@@ -160,7 +160,8 @@ fn saved_720p_survives_a_different_ryo_toml_resolution() {
 
 #[test]
 fn an_old_system_json_without_the_new_volumes_takes_the_defaults() {
-  // Written before the ui, voice and ambience volumes existed
+  // Written before the ui, voice and ambience volumes existed, by an engine
+  // whose volumes were amplitudes
   let old = r#"{"master_volume": 0.4, "music_volume": 0.6, "sfx_volume": 0.7}"#;
   let resolve = |ryo_toml: &str, system_json: &str| {
     let (_dir, ws) = temp_workspace(ryo_toml, Some(system_json));
@@ -172,7 +173,8 @@ fn an_old_system_json_without_the_new_volumes_takes_the_defaults() {
   let r = resolve("[system]\nui_volume = 0.5\n", old);
   assert_eq!(
     (r.master_volume, r.music_volume, r.sfx_volume),
-    (0.4, 0.6, 0.7)
+    (0.63, 0.77, 0.84),
+    "converted to today's curve at the same loudness"
   );
   assert_eq!(r.ui_volume, 0.5, "Ryo.toml's default");
   assert_eq!(
@@ -183,7 +185,7 @@ fn an_old_system_json_without_the_new_volumes_takes_the_defaults() {
   // Saved, they win over Ryo.toml, and corrupted ones are cleaned
   let r = resolve(
     "[system]\nui_volume = 0.5\n",
-    r#"{"ui_volume": 0.2, "voice_volume": 7.0, "ambience_volume": -1.0}"#,
+    r#"{"format_version": 2, "ui_volume": 0.2, "voice_volume": 7.0, "ambience_volume": -1.0}"#,
   );
   assert_eq!(
     (r.ui_volume, r.voice_volume, r.ambience_volume),
@@ -421,7 +423,9 @@ fn repeated_builder_calls_and_filters() {
   use crate::core::config::UserPreference;
   let (_dir, ws) = temp_workspace(
     "",
-    Some(r#"{"master_volume": 0.2, "resolution": "1600x900", "vsync": false}"#),
+    Some(
+      r#"{"format_version": 2, "master_volume": 0.2, "resolution": "1600x900", "vsync": false}"#,
+    ),
   );
   let r = EngineBuilder::new()
     .vsync(false)
