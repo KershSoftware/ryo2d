@@ -63,35 +63,17 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
   (a + (b - a) * t).clamp(0.0, 255.0) as u8
 }
 
-/// Maximum distance for spatial audio (beyond this, volume is at minimum)
-const SPATIAL_AUDIO_MAX_DISTANCE: f32 = 600.0;
-/// Minimum volume for distant sounds (0.0 = silent at max distance)
-const SPATIAL_AUDIO_MIN_VOLUME: f32 = 0.2;
-/// How much horizontal offset maps to full panning (pixels)
-const SPATIAL_AUDIO_PAN_RANGE: f32 = 400.0;
-
-/// Calculate spatial sound options based on sound source position relative to listener.
-/// - Panning: Based on horizontal distance (left/right)
-/// - Volume: Based on total distance (attenuates with distance)
-fn spatial_sound_options(
-  listener_x: f32,
-  listener_y: f32,
-  source_x: f32,
-  source_y: f32,
-) -> SoundOptions {
-  let dx = source_x - listener_x;
-  let dy = source_y - listener_y;
-  let distance = (dx * dx + dy * dy).sqrt();
-
-  // Panning: -1.0 (left) to 1.0 (right) based on horizontal offset
-  let panning = (dx / SPATIAL_AUDIO_PAN_RANGE).clamp(-1.0, 1.0);
-
-  // Volume: Attenuate with distance (linear falloff)
-  let distance_factor = (1.0 - distance / SPATIAL_AUDIO_MAX_DISTANCE).clamp(0.0, 1.0);
-  let volume = SPATIAL_AUDIO_MIN_VOLUME + (1.0 - SPATIAL_AUDIO_MIN_VOLUME) * distance_factor;
-
-  SoundOptions::new().panning(panning).volume(volume)
+/// The game's sounds, as definitions under `assets/`: the local player's
+/// play unplaced, and remote players' are heard from where they are
+/// (`play_at`) by the local player, its `AudioListener`
+struct Sounds {
+  jump: Handle<Sound>,
+  land: Handle<Sound>,
 }
+
+/// A bounce off another player's head: the landing, quieter (0.6 times as
+/// loud)
+const HEAD_BOUNCE_DB: f32 = -4.4;
 
 /// Game mode
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -192,8 +174,8 @@ pub struct GameScene {
   // Particle system
   particle_system: ParticleSystem,
 
-  // Sound effects loaded flag
-  sounds_loaded: bool,
+  /// The game's sounds, loaded as it enters
+  sounds: Option<Sounds>,
 
   // Track previous leap state for remote players (to detect jumps/lands)
   previous_leap_states: HashMap<ClientId, NetworkLeapState>,
@@ -294,7 +276,7 @@ impl GameScene {
       rain_sprite: None,
       dust_sprite: None,
       particle_system: ParticleSystem::new(),
-      sounds_loaded: false,
+      sounds: None,
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
       remote_slots: HashMap::new(),
@@ -362,7 +344,7 @@ impl GameScene {
       rain_sprite: None,
       dust_sprite: None,
       particle_system: ParticleSystem::new(),
-      sounds_loaded: false,
+      sounds: None,
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
       remote_slots: HashMap::new(),
@@ -430,7 +412,7 @@ impl GameScene {
       rain_sprite: None,
       dust_sprite: None,
       particle_system: ParticleSystem::new(),
-      sounds_loaded: false,
+      sounds: None,
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
       remote_slots: HashMap::new(),
@@ -511,7 +493,7 @@ impl GameScene {
       rain_sprite: None,
       dust_sprite: None,
       particle_system: ParticleSystem::new(),
-      sounds_loaded: false,
+      sounds: None,
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
       remote_slots: HashMap::new(),
@@ -1107,6 +1089,10 @@ impl GameScene {
     // remote players stay bare colliders moved by the host's updates.
     if self.mode != GameMode::Client || is_local {
       self.make_controlled(ctx, entity);
+    }
+    // The local player hears the others' sounds from where it stands
+    if is_local {
+      ctx.world.entity_mut(entity).insert(AudioListener);
     }
     // Checkpoints are decided where everyone is simulated; a client's
     // respawn point comes from the host's checkpoint
@@ -1878,10 +1864,9 @@ impl GameScene {
             p.grounded = false;
           }
 
-          // Play jump sound
-          let _ = ctx
-            .audio
-            .play_sound_with("jump", SoundOptions::new().volume(0.05));
+          if let Some(sounds) = &self.sounds {
+            ctx.audio().play(&sounds.jump);
+          }
         } else if input.charging {
           // Update charge
           let new_charge = charge_time + dt;
@@ -1998,9 +1983,9 @@ impl GameScene {
           player.leap_state = LeapState::Landing {
             timer: LANDING_RECOVERY_TIME,
           };
-          let _ = ctx
-            .audio
-            .play_sound_with("land", SoundOptions::new().volume(0.05));
+          if let Some(sounds) = &self.sounds {
+            ctx.audio().play(&sounds.land);
+          }
         }
         // Off the floor without leaping: pushed or carried off an edge, or
         // put in the air by a correction
@@ -2020,6 +2005,17 @@ impl GameScene {
       if let Some(mut stored) = ctx.world.get_mut::<Velocity>(entity) {
         *stored = vel;
       }
+    }
+  }
+
+  /// A bounce off another player's head: the landing, quieter
+  fn play_head_bounce(&self, ctx: &mut SceneContext) {
+    if let Some(sounds) = &self.sounds {
+      let quieter = PlayOptions {
+        volume_db: HEAD_BOUNCE_DB,
+        ..Default::default()
+      };
+      ctx.audio().play_with(&sounds.land, quieter);
     }
   }
 
@@ -2083,10 +2079,7 @@ impl GameScene {
           if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity_a) {
             vel.dy = HEAD_BOUNCE_VELOCITY;
           }
-          // Play a subtle sound
-          let _ = ctx
-            .audio
-            .play_sound_with("land", SoundOptions::new().volume(0.03));
+          self.play_head_bounce(ctx);
           any_collision = true;
           continue; // Don't apply push collision for head bounce
         }
@@ -2097,9 +2090,7 @@ impl GameScene {
           if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity_b) {
             vel.dy = HEAD_BOUNCE_VELOCITY;
           }
-          let _ = ctx
-            .audio
-            .play_sound_with("land", SoundOptions::new().volume(0.03));
+          self.play_head_bounce(ctx);
           any_collision = true;
           continue;
         }
@@ -2751,7 +2742,7 @@ impl GameScene {
             };
           }
 
-          // Play sounds for remote player state changes (with spatial audio)
+          // Play sounds for remote player state changes
           let prev_state = self
             .previous_leap_states
             .get(&update.client_id)
@@ -2759,34 +2750,20 @@ impl GameScene {
             .unwrap_or(NetworkLeapState::Idle);
           let new_state = update.leap_state;
 
-          // Get local player position for spatial audio
-          let local_pos = self
-            .get_local_player_entity()
-            .and_then(|e| ctx.world.get::<Transform>(e))
-            .map(|t| (t.translation.x, t.translation.y));
-
-          // Detect jump (transition to Airborne)
-          if !matches!(prev_state, NetworkLeapState::Airborne)
-            && matches!(new_state, NetworkLeapState::Airborne)
-          {
-            let options = if let Some((lx, ly)) = local_pos {
-              spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
-            } else {
-              SoundOptions::new().volume(0.05)
-            };
-            let _ = ctx.audio.play_sound_with("jump", options);
-          }
-
-          // Detect land (transition to Landing)
-          if !matches!(prev_state, NetworkLeapState::Landing { .. })
-            && matches!(new_state, NetworkLeapState::Landing { .. })
-          {
-            let options = if let Some((lx, ly)) = local_pos {
-              spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
-            } else {
-              SoundOptions::new().volume(0.05)
-            };
-            let _ = ctx.audio.play_sound_with("land", options);
+          // Detect jump (transition to Airborne) and land (transition to
+          // Landing), heard from where the player is
+          let jumped = !matches!(prev_state, NetworkLeapState::Airborne)
+            && matches!(new_state, NetworkLeapState::Airborne);
+          let landed = !matches!(prev_state, NetworkLeapState::Landing { .. })
+            && matches!(new_state, NetworkLeapState::Landing { .. });
+          if let Some(sounds) = &self.sounds {
+            let at = Vec2::new(update.x, update.y);
+            if jumped {
+              ctx.audio().play_at(&sounds.jump, at);
+            }
+            if landed {
+              ctx.audio().play_at(&sounds.land, at);
+            }
           }
 
           // Store current state for next comparison
@@ -3233,10 +3210,11 @@ impl Scene for GameScene {
       CommandResult::Ok
     });
 
-    // Load jump and land sound effects
-    let _ = ctx.audio.load_sound("jump", "assets/jump.mp3");
-    let _ = ctx.audio.load_sound("land", "assets/land.wav");
-    self.sounds_loaded = true;
+    let assets = ctx.assets();
+    self.sounds = Some(Sounds {
+      jump: assets.load("jump.sound.ron"),
+      land: assets.load("land.sound.ron"),
+    });
 
     // Spawn spawn platform and the walls either side
     self.spawn_starting_platform(ctx);

@@ -1,0 +1,7 @@
+// A landing, heard as a leap is; a bounce off another player's head plays
+// it quieter
+(
+  clips: [(path: "land.wav")],
+  volume: -26.0,
+  spatial: (min_distance: 0.0, max_distance: 750.0, curve: Linear, pan_width: 400.0),
+)

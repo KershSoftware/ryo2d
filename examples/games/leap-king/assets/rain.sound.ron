@@ -1,0 +1,8 @@
+// The rain, from the menu on: a loop on the ambience bus, played to outlive
+// the scene that starts it
+(
+  clips: [(path: "rain.mp3")],
+  bus: "ambience",
+  volume: -8.0,
+  looping: true,
+)

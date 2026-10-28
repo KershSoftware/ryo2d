@@ -1,0 +1,9 @@
+// A leap. The local player's plays unplaced; a remote player's is heard
+// from where it is by the local player (its AudioListener): fading
+// linearly to silence 750 px away (a fifth as loud at 600 px) and panned
+// fully at 400 px to a side
+(
+  clips: [(path: "jump.mp3")],
+  volume: -26.0,
+  spatial: (min_distance: 0.0, max_distance: 750.0, curve: Linear, pan_width: 400.0),
+)

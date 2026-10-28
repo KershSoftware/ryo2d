@@ -241,11 +241,19 @@ impl Scene for MenuScene {
     // Spawn rain particles
     self.spawn_rain(ctx);
 
-    // Play rain ambient sound (persists between scenes with play_music_once)
-    let _ = ctx.audio.play_music_once(
-      "assets/rain.mp3",
-      MusicOptions::new().volume(0.4).looping(true),
-    );
+    // The rain: a loop that outlives the menu (persist), started once
+    if ctx.audio().voices_on("ambience") == 0 {
+      match ctx.assets().load_now::<Sound>("rain.sound.ron") {
+        Ok(rain) => {
+          let persist = PlayOptions {
+            persist: true,
+            ..Default::default()
+          };
+          ctx.audio().play_with(&rain, persist);
+        }
+        Err(error) => ryo2d::game_warn!("the rain could not be loaded: {}", error.report()),
+      }
+    }
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
