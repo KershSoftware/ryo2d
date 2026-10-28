@@ -81,8 +81,9 @@ pub struct Sound {
   /// bus and place it plays at (1 by default, and at least 1). Copies
   /// started together play in step and add up, ten of them 20 dB over one,
   /// so a burst (a volley of shots in one frame) is heard as one start and
-  /// the plays past it that frame are refused. Raise it for a sound meant
-  /// to layer in one frame
+  /// the plays past it that frame are refused. Plays that waited for it to
+  /// load count as they land, so a loop played twice while it loads starts
+  /// once. Raise it for a sound meant to layer in one frame
   pub per_frame: u8,
   /// It loops until stopped: over each clip's `loop_region`, or the whole
   /// clip (its `region`). A loop played while it is still loading waits for
@@ -1267,15 +1268,60 @@ mod tests {
     assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
   }
 
+  /// A frame of the audio engine with no pump: a sound loading stays
+  /// loading through it
+  fn frame_without_pump(world: &mut World) {
+    world
+      .resource_mut::<crate::core::time::Time>()
+      .advance(FRAME);
+    crate::core::audio::audio_system(world);
+    world.clear_trackers();
+  }
+
+  /// Plays that waited for their sound count against its `per_frame` as
+  /// they land, as plays made that frame do: the same loop played twice
+  /// while it loads (in two frames) starts once, and the other is refused
+  /// with the per-frame reason
+  #[test]
+  fn plays_that_waited_count_against_per_frame_as_they_land() {
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/twice-waits.sound.ron",
+      r#"(clips: [(path: "sfx/twice-waits.wav")], looping: true)"#,
+    );
+    files.insert("sfx/twice-waits.wav", tone());
+    let mut world = audio_world_over(files);
+    let sound = AssetsView::new(&mut world).load::<Sound>("sfx/twice-waits.sound.ron");
+    let first = play(&mut world, &sound);
+    frame_without_pump(&mut world);
+    let second = play(&mut world, &sound);
+    assert!(first.is_playing() && second.is_playing(), "both wait");
+    step_until(&mut world, |world| ready(world, &sound));
+    audio_step(&mut world, FRAME);
+    let starts: Vec<u32> = of_kind(&world, AudioLogKind::Start)
+      .iter()
+      .map(|entry| entry.voice)
+      .collect();
+    assert_eq!(starts, [first.id()], "{:#?}", log(&world));
+    let refused = of_kind(&world, AudioLogKind::Refused);
+    let [refused] = &refused[..] else {
+      panic!("one refused: {refused:#?}");
+    };
+    assert!(refused.reason.starts_with("per_frame"), "{refused:?}");
+    assert!(second.is_stopped(), "{second:?}");
+    assert!(first.is_playing(), "{first:?}");
+  }
+
   /// A waiting loop paused by the game starts paused, silent, and its
   /// resume takes its fade-in; one that starts while the game is paused is
-  /// held as any voice on its bus is
+  /// held as any voice on its bus is (the two land together, which its
+  /// `per_frame` of 2 allows)
   #[test]
   fn a_waiting_loop_keeps_its_pause_and_the_game_s() {
     let files = MemorySource::new();
     files.insert(
       "sfx/hum-waits.sound.ron",
-      r#"(clips: [(path: "sfx/hum-waits.wav")], looping: true, fade_in: 0.1)"#,
+      r#"(clips: [(path: "sfx/hum-waits.wav")], looping: true, fade_in: 0.1, per_frame: 2)"#,
     );
     files.insert("sfx/hum-waits.wav", tone());
     let mut world = audio_world_over(files);

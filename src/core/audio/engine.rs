@@ -891,10 +891,14 @@ struct Pending {
   sound: Handle<Sound>,
   options: PlayOptions,
   /// The scene that played it, which ends it as it exits; `None` for the
-  /// engine's own
+  /// engine's own (and an emitter's)
   scope: Option<u64>,
-  /// Played as one of the UI theme's sounds
-  ui: bool,
+  /// The entity it was played from, whose emitter it plays where the
+  /// entity is when it lands; the entity going ends it
+  emitter: Option<Entity>,
+  /// The engine frame it was played in, and counted against its sound's
+  /// `per_frame` in: landing in a later frame, it counts there too
+  frame: u64,
   /// What the game set on it meanwhile (`Voice::set_volume`, `set_pitch`)
   game_db: f32,
   game_pitch: f32,
@@ -932,9 +936,15 @@ struct Request<'a> {
   emitter: Option<Entity>,
   /// The engine's, not the playing scene's
   persist: bool,
-  /// The voice it starts as: one that waited for its sound to load (it is
-  /// not counted against its `per_frame` again); a new one when `None`
+  /// Played as one of the UI theme's sounds: one still loading is refused
+  /// without the debug warning, as a game cannot load a theme's sound ahead
+  ui: bool,
+  /// The voice it starts as: one that waited for its sound to load; a new
+  /// one when `None`
   voice: Option<Voice>,
+  /// It counted against its `per_frame` already this frame (a play that
+  /// waited, landing in the frame it was played)
+  counted: bool,
   /// The game's changes to its gain and pitch, made while it waited
   game_db: f32,
   game_pitch: f32,
@@ -966,7 +976,9 @@ impl<'a> Request<'a> {
       spatial: None,
       emitter: None,
       persist: options.persist,
+      ui: false,
       voice: None,
+      counted: false,
       game_db: 0.0,
       game_pitch: 0.0,
     }
@@ -1008,7 +1020,9 @@ impl<'a> Request<'a> {
       spatial: sound.spatial,
       emitter: None,
       persist: options.persist,
+      ui: false,
       voice: None,
+      counted: false,
       game_db: 0.0,
       game_pitch: 0.0,
     })
@@ -1657,6 +1671,12 @@ impl AudioEngine {
       if live.emitter == Some(entity) {
         live.emitter = None;
         self.orphans.push(live.voice.id());
+      }
+    }
+    // Its plays still waiting for their sounds never start
+    for pending in &self.pending {
+      if pending.emitter == Some(entity) {
+        pending.voice.set_state(VoiceState::Stopped);
       }
     }
   }
@@ -2594,12 +2614,12 @@ impl AudioEngine {
   /// Play `playable`, its clips and definitions read from `world`'s stores.
   /// A loop whose sound is still loading (and any play of a definition
   /// still loading, not yet known to loop) waits as a voice, to start once
-  /// it is ready ([`start_waiting`](Self::start_waiting)). A one-shot still
-  /// loading, or a play its `per_frame`, its cooldown, a voice limit or
-  /// kira's room refuses, a stream that cannot open, or a clip whose stream
-  /// already failed to decode (until it reloads) is refused and logged with
-  /// why; one of a sound that failed to load plays nothing, warned about
-  /// once. A refused play's voice is already stopped
+  /// it is ready ([`start_waiting`](Self::start_waiting)), counting against
+  /// its `per_frame` as it lands. A one-shot still loading, or a play its
+  /// `per_frame`, its cooldown, a voice limit or kira's room refuses, or a
+  /// clip whose stream already failed to decode (until it reloads) is
+  /// refused and logged with why; one of a sound that failed to load plays
+  /// nothing, warned about once. A refused play's voice is already stopped
   pub(crate) fn play(
     &mut self,
     world: &World,
@@ -2612,7 +2632,10 @@ impl AudioEngine {
   /// Play one of the UI theme's sounds, `volume_db` louder or quieter: a
   /// clip as it is, and a definition as it says, on the `ui` bus, or on the
   /// bus under `ui` a definition names (so the game's pause never holds a
-  /// UI sound, and the player's ui setting applies to it)
+  /// UI sound, and the player's ui setting applies to it). One still
+  /// loading is refused and logged, never waited for (a click heard late is
+  /// no use), and not warned about: a game cannot load a theme's sound
+  /// ahead
   pub(crate) fn play_ui(&mut self, world: &World, playable: Playable<'_>, volume_db: f32) -> Voice {
     let options = PlayOptions {
       volume_db,
@@ -2622,8 +2645,9 @@ impl AudioEngine {
   }
 
   /// Play the sound of `entity`'s [`AudioEmitter`] where the entity is, the
-  /// voice following it and belonging to it. An entity that is not an
-  /// emitter plays nothing
+  /// voice following it and belonging to it. A sound still loading waits as
+  /// [`play`](Self::play)'s does, to play where the entity is once it lands.
+  /// An entity that is not an emitter plays nothing
   pub(crate) fn play_emitter(&mut self, world: &World, entity: Entity) -> Voice {
     let Some(position) = emitter_position(world, entity) else {
       return Voice::stopped();
@@ -2666,6 +2690,7 @@ impl AudioEngine {
       Playable::Clip(clip) => {
         let mut request = Request {
           emitter,
+          ui,
           ..Request::clip(clip, options)
         };
         if ui {
@@ -2678,19 +2703,24 @@ impl AudioEngine {
         let sound = world
           .get_resource::<Assets<Sound>>()
           .and_then(|sounds| sounds.get(id));
-        // A loop played while its sound loads waits for it, as music and
-        // emitters do. A definition still loading is not known to loop yet,
-        // so a play of one waits too, until it lands (an emitter waits on
-        // its own, in `play_spawned`)
-        let waits = emitter.is_none()
+        let loading = sound.is_none()
+          && server.is_some_and(|server| matches!(server.state(id), LoadState::Loading));
+        // A loop played while its sound loads waits for it, as music does.
+        // A definition still loading is not known to loop yet, so a play of
+        // one waits too, until it lands. A theme's UI sound does not wait: a
+        // click heard late is no use
+        let waits = !ui
           && match sound {
-            None => server.is_some_and(|server| matches!(server.state(id), LoadState::Loading)),
+            None => loading,
             Some(sound) => sound.looping && clips_loading(world, sound, server),
           };
         if waits {
-          return self.wait_for(handle, sound, options, ui, server);
+          return self.wait_for(handle, sound, options, emitter, server);
         }
         let Some(sound) = sound else {
+          if loading {
+            return self.refuse_unknown(id, REFUSED_LOADING, server);
+          }
           if server.is_some_and(|server| server.state(id).is_failed()) {
             self.warn_sound(
               id,
@@ -2708,6 +2738,7 @@ impl AudioEngine {
           .and_then(|pick| Request::sound(id, sound, pick, &mut self.rng, options))
           .map(|request| Request {
             emitter,
+            ui,
             bus: if ui { ui_bus(request.bus) } else { request.bus },
             ..request
           });
@@ -2722,17 +2753,18 @@ impl AudioEngine {
     }
   }
 
-  /// A play of `handle` (its definition `sound`, if it has landed) that
-  /// waits for it to load: a voice that reports playing, started once the
-  /// sound is ready ([`start_waiting`](Self::start_waiting)). It counts
-  /// against the sound's `per_frame` now (the default while the definition
-  /// is not known); past it, it is refused
+  /// A play of `handle` (its definition `sound`, if it has landed), from
+  /// `emitter` when given, that waits for it to load: a voice that reports
+  /// playing, started once the sound is ready
+  /// ([`start_waiting`](Self::start_waiting)). It counts against the
+  /// sound's `per_frame` now (the default while the definition is not
+  /// known), and again as it lands in a later frame; past it, it is refused
   fn wait_for(
     &mut self,
     handle: &Handle<Sound>,
     sound: Option<&Sound>,
     options: &PlayOptions,
-    ui: bool,
+    emitter: Option<Entity>,
     server: Option<&AssetServer>,
   ) -> Voice {
     let key = handle.id().untyped();
@@ -2742,12 +2774,20 @@ impl AudioEngine {
     }
     self.count_start(key);
     let voice = Voice::new(self.voices.next_id(), self.commands.clone(), None);
+    // An emitter's voice belongs to its entity, a persistent one to the
+    // engine
+    let scope = if options.persist || emitter.is_some() {
+      None
+    } else {
+      self.scope
+    };
     self.pending.push(Pending {
       voice: voice.clone(),
       sound: handle.clone(),
       options: *options,
-      scope: if options.persist { None } else { self.scope },
-      ui,
+      scope,
+      emitter,
+      frame: self.frame,
       game_db: 0.0,
       game_pitch: 0.0,
     });
@@ -2781,9 +2821,11 @@ impl AudioEngine {
 
   /// Each frame: start the plays that waited for their sounds, once each
   /// sound is ready. A loop starts as it was played, with its fade-in, in
-  /// its scene, with what the game did to its voice meanwhile; a one-shot
-  /// is refused (it would only be late); a sound that did not load ends
-  /// its plays, with the registry's one warning about it
+  /// its scene (or where its emitter's entity is), with what the game did
+  /// to its voice meanwhile, counting against its `per_frame` as plays made
+  /// this frame do (past it, it is refused); a one-shot is refused (it
+  /// would only be late); a sound that did not load ends its plays, with
+  /// the registry's one warning about it
   fn start_waiting(&mut self, world: &World, server: Option<&AssetServer>) {
     let mut index = 0;
     while index < self.pending.len() {
@@ -2799,9 +2841,23 @@ impl AudioEngine {
     }
   }
 
-  /// Start `pending`, its sound done loading (or failed)
+  /// Start `pending`, its sound done loading (or failed). One played from
+  /// an emitter plays where its entity is now, and ends if the entity is no
+  /// longer an emitter that plays
   fn start_pending(&mut self, world: &World, pending: Pending, server: Option<&AssetServer>) {
     let id = pending.sound.id();
+    let mut options = pending.options;
+    if let Some(entity) = pending.emitter {
+      let Some(position) = emitter_position(world, entity) else {
+        pending.voice.set_state(VoiceState::Stopped);
+        return;
+      };
+      options.position = Some(position);
+    }
+    // Heard from a place: from where the listener is now
+    if options.position.is_some() {
+      self.find_listener(world);
+    }
     let Some(sound) = world
       .get_resource::<Assets<Sound>>()
       .and_then(|sounds| sounds.get(id))
@@ -2836,14 +2892,12 @@ impl AudioEngine {
       .get(&id)
       .map_or(&[][..], |state| state.recent.as_slice());
     let request = pick_clip(&mut self.rng, &sound.clips, recent, sound.no_repeat)
-      .and_then(|pick| Request::sound(id, sound, pick, &mut self.rng, &pending.options))
+      .and_then(|pick| Request::sound(id, sound, pick, &mut self.rng, &options))
       .map(|request| Request {
-        bus: if pending.ui {
-          ui_bus(request.bus)
-        } else {
-          request.bus
-        },
+        emitter: pending.emitter,
         voice: Some(pending.voice.clone()),
+        // Played this frame, it counted as it was played
+        counted: pending.frame == self.frame,
         game_db: pending.game_db,
         game_pitch: pending.game_pitch,
         ..request
@@ -3060,7 +3114,9 @@ impl AudioEngine {
       spatial: None,
       emitter: None,
       persist: true,
+      ui: false,
       voice: None,
+      counted: false,
       game_db: 0.0,
       game_pitch: 0.0,
     };
@@ -3227,12 +3283,15 @@ impl AudioEngine {
       if !loading {
         return Voice::stopped();
       }
-      self.warn_loading(start_key(request), || {
-        request.sound.map_or_else(
-          || request.source.name(server),
-          |sound| sound_name(sound, server),
-        )
-      });
+      // A game cannot load a theme's sound ahead: no advice to
+      if !request.ui {
+        self.warn_loading(start_key(request), || {
+          request.sound.map_or_else(
+            || request.source.name(server),
+            |sound| sound_name(sound, server),
+          )
+        });
+      }
       return self.refuse(&subject, REFUSED_LOADING, server);
     };
     if request.position.is_some() && request.spatial.is_none() {
@@ -3246,9 +3305,10 @@ impl AudioEngine {
       return Voice::stopped();
     }
     // Copies started in one frame play in step and add up: a sound starts
-    // as often as its `per_frame` allows a frame, wherever it plays. The
-    // music player's one track is not counted
-    let counted = (request.music.is_none() && request.voice.is_none()).then(|| start_key(request));
+    // as often as its `per_frame` allows a frame, wherever it plays, plays
+    // that waited for it landing included. The music player's one track is
+    // not counted
+    let counted = (request.music.is_none() && !request.counted).then(|| start_key(request));
     if counted.is_some_and(|key| self.per_frame_full(key, request.per_frame)) {
       return self.refuse(&subject, REFUSED_PER_FRAME, server);
     }
@@ -5143,6 +5203,56 @@ mod tests {
     // The engine carries on
     let clip = second(&mut world);
     assert!(AudioView::new(&mut world).play(&clip).is_playing());
+  }
+
+  /// A theme's UI sound played before it lands is refused and logged as
+  /// loading, a clip at once and a definition too (a click that waited
+  /// would only be late), with no warning: a game cannot load a theme's
+  /// sound ahead, so the advice to would be noise
+  #[test]
+  fn a_ui_sound_still_loading_is_refused_without_a_warning() {
+    let files = MemorySource::new();
+    files.insert("ui/early-click.wav", fixture("tone.wav"));
+    files.insert(
+      "ui/early-back.sound.ron",
+      r#"(clips: [(path: "ui/early-click.wav")])"#,
+    );
+    let mut world = audio_world_over(files);
+    let (click, back) = {
+      let assets = AssetsView::new(&mut world);
+      (
+        assets.load::<AudioClip>("ui/early-click.wav"),
+        assets.load::<Sound>("ui/early-back.sound.ron"),
+      )
+    };
+    let voices = world.resource_scope(|world, mut engine: Mut<AudioEngine>| {
+      [
+        engine.play_ui(world, Playable::Clip(&click), 0.0),
+        engine.play_ui(world, Playable::Sound(&back), 0.0),
+      ]
+    });
+    assert!(
+      voices.iter().all(Voice::is_stopped),
+      "refused at once: {voices:?}"
+    );
+    let refused: Vec<(String, &str)> = entries(&world, AudioLogKind::Refused)
+      .into_iter()
+      .map(|entry| (entry.sound, entry.reason))
+      .collect();
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    assert!(
+      refused
+        .iter()
+        .all(|(_, reason)| reason.starts_with("loading")),
+      "{refused:?}"
+    );
+    assert_eq!(refused[1].0, "ui/early-back.sound.ron");
+    let about = |path: &str| {
+      let named = format!("{path}:");
+      warnings(|message| message.starts_with(&named) && message.contains("still loading"))
+    };
+    assert_eq!(about("ui/early-click.wav"), 0);
+    assert_eq!(about("ui/early-back.sound.ron"), 0);
   }
 
   /// A world over `path`, a WAV loaded to stream whose bytes are then

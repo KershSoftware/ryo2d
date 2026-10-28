@@ -429,7 +429,7 @@ mod tests {
   use kira::sound::PlaybackState;
 
   use super::*;
-  use crate::core::asset::{Assets, AssetsView, MemorySource};
+  use crate::core::asset::{AssetServer, Assets, AssetsView, MemorySource};
   use crate::core::audio::{
     AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, LimitRule, Mixer, SoundClip,
     Voice, VoiceLimit,
@@ -1143,6 +1143,85 @@ mod tests {
       std::thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(started(&world).len(), 1, "{:#?}", log(&world));
+  }
+
+  /// `play_emitter` waits for a sound still loading as `play` does: a loop
+  /// reports playing and starts once its sound lands, its voice the
+  /// entity's (despawning the entity stops it); a one-shot is refused then,
+  /// logged as loading; and a play whose entity goes while it waits never
+  /// starts
+  #[test]
+  fn play_emitter_waits_for_a_sound_still_loading() {
+    let spatial = "spatial: (min_distance: 100.0, max_distance: 500.0)";
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/emitted-loop.sound.ron",
+      format!(r#"(clips: [(path: "sfx/emitted.wav")], looping: true, {spatial})"#),
+    );
+    files.insert(
+      "sfx/emitted-shot.sound.ron",
+      format!(r#"(clips: [(path: "sfx/emitted.wav")], {spatial})"#),
+    );
+    files.insert(
+      "sfx/emitted-gone.sound.ron",
+      format!(r#"(clips: [(path: "sfx/emitted.wav")], looping: true, {spatial})"#),
+    );
+    files.insert(
+      "sfx/emitted.wav",
+      std::fs::read(format!("{FIXTURES}/tone.wav")).unwrap_or_default(),
+    );
+    let mut world = audio_world_over(files);
+    world.spawn(AudioListener);
+    let quiet = |world: &mut World, path: &str, x: f32| {
+      let sound = AssetsView::new(world).load::<Sound>(path);
+      let emitter = AudioEmitter {
+        sound: sound.clone(),
+        play_on_spawn: false,
+      };
+      let entity = world.spawn((emitter, Transform::from_xy(x, 0.0))).id();
+      (sound, entity)
+    };
+    let (hum, looping) = quiet(&mut world, "sfx/emitted-loop.sound.ron", 50.0);
+    let (shot, once) = quiet(&mut world, "sfx/emitted-shot.sound.ron", 50.0);
+    let (_, going) = quiet(&mut world, "sfx/emitted-gone.sound.ron", 50.0);
+    let (looped, refused, gone) = {
+      let mut audio = AudioView::new(&mut world);
+      (
+        audio.play_emitter(looping),
+        audio.play_emitter(once),
+        audio.play_emitter(going),
+      )
+    };
+    assert!(looped.is_playing() && looped.id() != 0, "{looped:?}");
+    assert!(gone.is_playing(), "{gone:?}");
+    world.despawn(going);
+    for _ in 0..500 {
+      let server = world.resource::<AssetServer>();
+      if server.is_ready(&hum) && server.is_ready(&shot) {
+        break;
+      }
+      audio_step(&mut world, Duration::from_millis(10));
+      std::thread::sleep(Duration::from_millis(2));
+    }
+    audio_step(&mut world, FRAME);
+    assert_eq!(started(&world), [looped.id()], "{:#?}", log(&world));
+    assert!(looped.is_playing(), "{looped:?}");
+    assert!(gone.is_stopped(), "{gone:?}");
+    assert!(refused.is_stopped(), "{refused:?}");
+    let refusals: Vec<(String, &str)> = log(&world)
+      .into_iter()
+      .filter(|entry| entry.kind == AudioLogKind::Refused)
+      .map(|entry| (entry.sound, entry.reason))
+      .collect();
+    let [(sound, reason)] = &refusals[..] else {
+      panic!("one refused: {refusals:?}");
+    };
+    assert_eq!(sound, "sfx/emitted-shot.sound.ron");
+    assert!(reason.starts_with("loading"), "{reason}");
+    // The entity's: despawning it stops the loop
+    world.despawn(looping);
+    audio_step(&mut world, FRAME);
+    assert_eq!(entries(&world, looped.id(), AudioLogKind::Stop).len(), 1);
   }
 
   /// A sound with no spatial settings played at a place is heard as if at

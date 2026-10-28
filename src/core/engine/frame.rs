@@ -509,7 +509,7 @@ impl Engine {
 
   /// Play the theme's sound for each event this frame's UI raised, through
   /// the audio engine on the `ui` bus at the theme's volume. One still
-  /// loading plays nothing
+  /// loading is refused (logged), with no warning
   fn play_ui_sounds(&mut self, theme: &Theme) {
     let raised = &self.ui_memory.interact.sounds;
     let from = self.sounds_played.min(raised.len());

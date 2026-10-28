@@ -99,14 +99,16 @@ impl<'w> AudioView<'w> {
   /// playing, takes what the game does to it, and starts with its fade-in
   /// once the sound is ready (or ends if it fails to load, which the
   /// registry warns about once), and its scene's exit ends it as it does
-  /// any loop. A definition
-  /// still loading is not known to loop until it lands, so its play waits
-  /// either way, and a one-shot is refused then. A one-shot played while its
-  /// sound loads would only be late, so it is refused (logged, and warned
-  /// about once in a debug build), as is a play of a sound that failed to
-  /// load (warned about once). A play its cooldown, its
-  /// [`per_frame`](Sound::per_frame) or a voice limit refuses starts
-  /// nothing. A refused play's voice is already stopped
+  /// any loop. A definition still loading is not known to loop until it
+  /// lands, so its play waits either way, and a one-shot is refused then.
+  /// A play that waited counts against its sound's
+  /// [`per_frame`](Sound::per_frame) as it lands, as a play made then
+  /// does, so the same loop played twice while it loads starts once. A
+  /// one-shot played while its sound loads would only be late, so it is
+  /// refused (logged, and warned about once in a debug build), as is a play
+  /// of a sound that failed to load (warned about once). A play its
+  /// cooldown, its `per_frame` or a voice limit refuses starts nothing. A
+  /// refused play's voice is already stopped
   pub fn play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice {
     self.play_with(sound, PlayOptions::default())
   }
@@ -141,9 +143,11 @@ impl<'w> AudioView<'w> {
   /// where the entity is, as [`play_at`](Self::play_at) does, its voice
   /// following the entity as it moves. The voice belongs to the entity, not
   /// to the scene: it stops (a loop, or a one-shot paused) when the entity
-  /// is despawned, disabled or loses its emitter. An entity that is not an
-  /// emitter, or is disabled, plays nothing (the voice returned is already
-  /// stopped)
+  /// is despawned, disabled or loses its emitter. A sound still loading is
+  /// waited for as [`play`](Self::play) waits: a loop starts where the
+  /// entity is once it lands (unless the entity has gone), and a one-shot
+  /// is refused then. An entity that is not an emitter, or is disabled,
+  /// plays nothing (the voice returned is already stopped)
   pub fn play_emitter(&mut self, entity: Entity) -> Voice {
     self
       .world

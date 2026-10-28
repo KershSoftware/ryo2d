@@ -2,7 +2,7 @@
 name: ryo-audio
 description: "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log."
 metadata:
-  version: 2.1.1
+  version: 2.2.0
 ---
 
 # Ryo2D Audio
@@ -84,6 +84,8 @@ Every type here is in the prelude unless a path is given; complete signatures ar
 - A `Handle<AudioClip>` plays directly too (`ctx.audio().play(&clip)`), with the empty definition: the `sfx` bus, 0 dB, no variation and no limit.
 - **A loop played while its sound loads waits for it**: its voice reports playing, takes what the game does to it, and starts with its `fade_in` once the sound is ready, so `load` then `play` of an ambience bed in `on_enter` just works. Its scene's exit ends it as it does any loop, and a sound that fails to load ends it (the registry's one warning says why).
 - **A one-shot played while its sound loads is refused**, as it would only be late: logged, and warned about once in a debug build. A definition still loading is not known to loop until it lands, so any play of one waits until then, and a one-shot is refused at that point. Load what a scene plays at once with `load_now` in `on_enter`, or `load` behind a loading screen (`ryo-assets`). A sound that failed to load plays nothing, warned once with its path.
+- A play that waited counts against its sound's `per_frame` (section 4) as it lands, so the same loop played twice while it loads starts once.
+- A UI theme's sound clicked before it has loaded is refused the same way, never waited for, and not warned about: the theme loads its sounds as it loads, and a game has no way to load them sooner.
 - A voice holds its clip while it plays, so a scene may drop its handles while the last sounds play out.
 
 ## 2. Sound definitions (`.sound.ron`)
@@ -158,7 +160,7 @@ A system plays through the world: an exclusive system takes `&mut World` and cal
 | `PreventNew` | nothing: the new play is refused |
 
 - **Three layers of limits** apply to each play, in order: its definition's `limit` (its voices on its bus and the buses under it), each bus `limit` in the mixer from its bus up to `master` (every voice on that bus's subtree), and the engine's cap of 96 voices on a bus's own track. A bus limit uses the playing sound's rule (the cap's order when the sound has no limit); the cap stops the least important voice, then the quietest, then the oldest.
-- **A sound starts at most `per_frame` voices a frame** (1 by default), counted across every bus and place it plays at, before any limit. Copies started together play in step and add up (ten are 20 dB over one), so a hundred identical plays in one frame start one voice and the rest are refused, logged `Refused` with the reason `per_frame`. A bare clip counts as its own sound. Raise `per_frame` for a sound meant to layer in one frame (a shotgun's pellets). Emitters of one sound spawned together take turns instead, starting as many a frame as it allows.
+- **A sound starts at most `per_frame` voices a frame** (1 by default), counted across every bus and place it plays at, before any limit. Copies started together play in step and add up (ten are 20 dB over one), so a hundred identical plays in one frame start one voice and the rest are refused, logged `Refused` with the reason `per_frame`. A bare clip counts as its own sound. Raise `per_frame` for a sound meant to layer in one frame (a shotgun's pellets). Plays that waited for their sound to load count as they land. Emitters of one sound spawned together take turns instead, starting as many a frame as it allows.
 - **A voice is never stopped for a less important play, nor for an equally important one in the frame it started**, so many starts in one frame fill a limit and refuse the rest, instead of stopping their own starts in turn. With nothing it may stop, the play is refused. Only music stops music.
 - A voice a rule stops fades over its own `fade_out` (at least 10 ms); one the cap stops fades over 10 ms.
 - A voice fading out does not count toward a limit, but holds its place on kira's track (128 sounds a track, which the cap of 96 leaves room in) until its fade ends. Many long `fade_out`s on one busy bus can fill it; plays there are then refused, with one warning naming the bus. Keep the `fade_out`s of sounds stopped by limits short.
@@ -282,7 +284,7 @@ A definition with `spatial` is heard from a place: quieter with distance from th
 
 - **The listener** is the entity with an `AudioListener` (spawn it on the player when the camera leads or lags), else the main camera. Its rotation turns which way is right.
 - `ctx.audio().play_at(&boom, position)` plays at a fixed place. **A one-shot at or beyond its maximum distance is culled**: it never starts, so a distant explosion costs no voice. A loop there starts silent and is heard as the listener comes near.
-- **An emitter** follows an entity: `ctx.world.spawn((AudioEmitter { sound: roar.clone(), play_on_spawn: true }, Transform::from_xy(640.0, 200.0)))`. With `play_on_spawn` it plays as it is added (once its sound has loaded) and again each time its disabled entity is enabled; `ctx.audio().play_emitter(entity)` plays it at any time. Its voices follow the entity's position each frame and stop by the scene rule as it goes. A pooled entity works: a pool putting it back stops its loops, and handing it out (a `RecycleOldest` pool's recycle included) plays it again.
+- **An emitter** follows an entity: `ctx.world.spawn((AudioEmitter { sound: roar.clone(), play_on_spawn: true }, Transform::from_xy(640.0, 200.0)))`. With `play_on_spawn` it plays as it is added (once its sound has loaded) and again each time its disabled entity is enabled; `ctx.audio().play_emitter(entity)` plays it at any time (a loop whose sound is still loading waits for it as `play`'s does, then starts where the entity is). Its voices follow the entity's position each frame and stop by the scene rule as it goes. A pooled entity works: a pool putting it back stops its loops, and handing it out (a `RecycleOldest` pool's recycle included) plays it again.
 - At most 32 voices carry a distance low-pass at once (each needs a kira track of its own); a voice past them plays unfiltered, its gain and pan still following.
 - A sound without `spatial` played at a place is heard as if at the listener, warned once.
 - Positions are read after the frame's fixed steps and cameras, without interpolation. `falloff_gain_db(&spatial, distance)` and `pan_for(&spatial, dx)` give what the listener hears, for a meter or a test.
