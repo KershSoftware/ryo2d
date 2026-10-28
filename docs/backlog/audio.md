@@ -108,6 +108,18 @@ The final fix wave (ed340557 to a7959c3a) changed the play path and the frame: a
 - **Within the runs' spread:** the paced idle frame and 64 voices (each build's runs overlap), the streamed play, a definition's play, and every reload landing: the WAV's median +11.5 to +14.0 µs after against +11.7 to +14.0 before, the OGG's +45.6 to +46.8 against +46.2 to +48.5, the MP3's +45.9 to +48.4 against +46.2 to +47.9. The slowest landing of any file in the runs after was +148.5 µs (one MP3 landing in run 4; the next slowest +69.3), against the 0.5 ms each must stay under.
 - An earlier pair at load 10 to 12 read every paced median 2 to 4 times higher on both builds (idle 5.5 after and 6.1 before; 64 voices 8.4 and 11.7), and is left out of the table.
 
+### After the deferrals' first wave (`benches/audio.rs`, beside ac1bbe4c)
+
+The first wave of 5b's deferrals changed the play path and the frame: a play applies the voices' queued changes first, plays that waited count against `per_frame` as they land, a voice remembers a fade from silence in progress (so a restart carries it on), and the frame's glides are capped at 100 ms. `voices_64` and `play_cost` ran on 2026-10-28 beside the branch before the wave (ac1bbe4c, exported with `git archive` and built into the workspace's `target/`; each build's binary was kept aside and checked to come from its tree), alternated base, head, head, base, base, head. Ableton Live again took about a core; the 1-minute load was 3.0 to 4.3, but 7.5 at the first run.
+
+| Build | Idle audio frame | 64 voices: median | `play`: median; a definition's | Back to back: `voices_64`, `play_cost` |
+|---|---|---|---|---|
+| before | 1.04, 1.04, 1.00 µs | 2.7, 2.9, 2.8 µs | 0.75; 0.79 µs (each run) | 1.75, 1.72, 1.71 µs; 0.93, 0.92, 0.93 µs |
+| after | 1.00, 1.08, 1.04 µs | 2.8, 3.2, 2.9 µs | 0.75; 0.79 µs (each run) | 1.85, 1.80, 1.79 µs; 0.93, 0.92, 0.93 µs |
+
+- **What moved:** `voices_64` back to back, by about 0.07 µs (1.73 to 1.81 µs, +4%), in every run. A voice now carries its fade-in's start and length (`FadeIn`), so the voice table the frame walks several times is larger, and each placed voice's gain change asks whether a fade rides on its volume. It is far inside its 50 µs target.
+- **Within the runs' spread:** the paced idle frame and 64 voices, and `play` paced and back to back (the queued-change check a play now makes is one look at an empty channel).
+
 ### The reload hitch
 
 **What the landing frame does.** A reloaded clip lands in the pump: the workers loaded it, and the swap costs about 7 µs. In the same frame `audio_system` switches each loop playing the clip to the new data where it is, crossfading over 10 ms.
