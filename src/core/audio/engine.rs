@@ -710,6 +710,9 @@ struct LiveVoice {
   /// It started held and has not sounded yet: the fade-in it plays when it
   /// first does (its own, at least [`MIN_FADE`])
   unheard: Option<Duration>,
+  /// The fade of the pause or resume the game asked of it this frame, for
+  /// kira to hear in the frame's update
+  own_fade: Option<Duration>,
   /// The scene that played it, which stops it as it exits; `None` for the
   /// engine's own (`persist`, or played outside any scene)
   scope: Option<u64>,
@@ -2840,15 +2843,17 @@ impl AudioEngine {
         pending.voice.set_state(VoiceState::Stopped);
         self.pending.remove(index);
       }
-      VoiceChange::Pause if state == VoiceState::Playing => {
+      VoiceChange::Pause(_) if state == VoiceState::Playing => {
         pending.voice.set_state(VoiceState::Paused);
       }
-      VoiceChange::Resume if state == VoiceState::Paused => {
+      VoiceChange::Resume(_) if state == VoiceState::Paused => {
         pending.voice.set_state(VoiceState::Playing);
       }
-      VoiceChange::Pause | VoiceChange::Resume => {}
-      VoiceChange::Volume(db) => pending.game_db = clamp_offset(db, GAIN_SPAN),
-      VoiceChange::Pitch(semitones) => pending.game_pitch = clamp_offset(semitones, PITCH_SPAN),
+      VoiceChange::Pause(_) | VoiceChange::Resume(_) => {}
+      VoiceChange::Volume(db, _) => pending.game_db = clamp_offset(db, GAIN_SPAN),
+      VoiceChange::Pitch(semitones, _) => {
+        pending.game_pitch = clamp_offset(semitones, PITCH_SPAN);
+      }
     }
   }
 
@@ -2889,7 +2894,7 @@ impl AudioEngine {
       self.apply(
         VoiceCommand {
           voice,
-          change: VoiceChange::Resume,
+          change: VoiceChange::Resume(MIN_FADE),
         },
         server,
       );
@@ -2946,12 +2951,12 @@ impl AudioEngine {
 
   /// Pause the music where it is, fading out over [`MIN_FADE`]
   pub(crate) fn pause_music(&mut self, world: &World) {
-    self.change_music(world, VoiceChange::Pause);
+    self.change_music(world, VoiceChange::Pause(MIN_FADE));
   }
 
   /// Resume paused music where it paused, fading in over [`MIN_FADE`]
   pub(crate) fn resume_music(&mut self, world: &World) {
-    self.change_music(world, VoiceChange::Resume);
+    self.change_music(world, VoiceChange::Resume(MIN_FADE));
   }
 
   /// Apply `change` to the track playing or paused, if there is one
@@ -3315,6 +3320,7 @@ impl AudioEngine {
       held,
       kira_paused: starts_held,
       unheard: starts_held.then_some(request.fade_in),
+      own_fade: None,
       // An emitter's voice belongs to its entity
       scope: if request.persist || request.emitter.is_some() {
         None
@@ -3797,19 +3803,21 @@ impl AudioEngine {
       let let_go = live.held && !bus.held;
       live.held = bus.held;
       // Paused itself, or held: kira reads a pause before a resume sent in
-      // the same frame, so only where it ends up is sent
+      // the same frame, so only where it ends up is sent. Its own pause or
+      // resume this frame gives the fade; a hold's is the shortest
       let paused = state == VoiceState::Paused || live.held;
+      let own = live.own_fade.take().unwrap_or(MIN_FADE);
       let mut first_heard = None;
       if paused != live.kira_paused {
         live.kira_paused = paused;
         if paused {
-          live.playback.pause(MIN_FADE);
+          live.playback.pause(own);
         } else if live.playback.waiting_fade().is_some() {
           // Not heard yet: it starts at the web's unlock, fading in there
           live.playback.resume(MIN_FADE);
         } else {
           let unheard = live.unheard.take();
-          let fade = unheard.map_or(MIN_FADE, |fade| fade.max(MIN_FADE));
+          let fade = unheard.map_or(own, |fade| fade.max(own));
           live.playback.resume(fade);
           // Its own resume logged itself
           if let_go && unheard.is_some() {
@@ -3962,10 +3970,10 @@ impl AudioEngine {
     }
   }
 
-  /// Apply one queued change, smoothed over at least [`MIN_FADE`]. A voice
-  /// already stopping or gone takes no more changes. A volume or pitch
-  /// change to a voice started this frame, which kira has yet to render,
-  /// applies at once, so its first audio is at the level set
+  /// Apply one queued change, over its fade (at least [`MIN_FADE`]). A
+  /// voice already stopping or gone takes no more changes. A volume or
+  /// pitch change to a voice started this frame, which kira has yet to
+  /// render, applies at once, so its first audio is at the level set
   fn apply(&mut self, command: VoiceCommand, server: Option<&AssetServer>) {
     let Some(index) = self.voices.index_of(command.voice) else {
       self.change_pending(command);
@@ -3977,12 +3985,14 @@ impl AudioEngine {
     if matches!(state, VoiceState::Stopping | VoiceState::Stopped) {
       return;
     }
-    let change_fade = if live.frame == frame {
-      Duration::ZERO
-    } else {
-      MIN_FADE
+    let fresh = live.frame == frame;
+    let change_over = |fade: Duration| {
+      if fresh {
+        Duration::ZERO
+      } else {
+        fade.max(MIN_FADE)
+      }
     };
-    let smooth = tween(change_fade);
     let (kind, fade) = match command.change {
       VoiceChange::Stop(fade) => {
         let fade = fade.max(MIN_FADE);
@@ -3993,37 +4003,43 @@ impl AudioEngine {
       // kira hears of a pause or resume in the frame's `follow_game`, with
       // the bus's hold: a voice its bus holds stays paused until the bus
       // lets it go
-      VoiceChange::Pause => {
+      VoiceChange::Pause(fade) => {
         if state == VoiceState::Paused {
           return;
         }
+        let fade = fade.max(MIN_FADE);
         live.voice.set_state(VoiceState::Paused);
+        live.own_fade = Some(fade);
         self.voices_dirty = true;
-        (AudioLogKind::Pause, MIN_FADE)
+        (AudioLogKind::Pause, fade)
       }
-      VoiceChange::Resume => {
+      VoiceChange::Resume(fade) => {
         if state != VoiceState::Paused {
           return;
         }
+        let fade = fade.max(MIN_FADE);
         live.voice.set_state(VoiceState::Playing);
+        live.own_fade = Some(fade);
         self.voices_dirty = true;
-        // Its first sounding takes its fade-in
+        // Its first sounding takes its fade-in, if that is longer
         let fade = match live.unheard {
-          Some(fade) if !live.held => fade.max(MIN_FADE),
-          _ => MIN_FADE,
+          Some(fade_in) if !live.held => fade_in.max(fade),
+          _ => fade,
         };
         (AudioLogKind::Resume, fade)
       }
-      VoiceChange::Volume(db) => {
+      VoiceChange::Volume(db, fade) => {
+        let fade = change_over(fade);
         live.game_db = clamp_offset(db, GAIN_SPAN);
         let heard = live.heard_db();
-        live.playback.set_volume(heard, smooth);
-        (AudioLogKind::Gain, change_fade)
+        live.playback.set_volume(heard, tween(fade));
+        (AudioLogKind::Gain, fade)
       }
-      VoiceChange::Pitch(semitones) => {
+      VoiceChange::Pitch(semitones, fade) => {
+        let fade = change_over(fade);
         live.game_pitch = clamp_offset(semitones, PITCH_SPAN);
-        live.playback.set_rate(live.rate(), smooth);
-        (AudioLogKind::Rate, change_fade)
+        live.playback.set_rate(live.rate(), tween(fade));
+        (AudioLogKind::Rate, fade)
       }
     };
     self.record(index, kind, fade, server);
@@ -4927,7 +4943,7 @@ mod tests {
   fn second(world: &mut World) -> Handle<AudioClip> {
     world
       .resource_mut::<Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]))
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]).unwrap())
   }
 
   fn warnings(matching: impl Fn(&str) -> bool) -> usize {

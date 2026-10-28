@@ -59,7 +59,7 @@ mod tests {
     let frames = vec![[0.1, 0.1]; (48_000.0 * seconds) as usize];
     world
       .resource_mut::<Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &frames))
+      .add(AudioClip::from_frames(48_000, &frames).unwrap())
   }
 
   /// A loop of `clip` on `bus`
@@ -1034,7 +1034,7 @@ mod tests {
   fn replace_clip(world: &mut World, clip: &Handle<AudioClip>, seconds: f32) {
     let frames = vec![[0.2, 0.2]; (48_000.0 * seconds) as usize];
     if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(clip) {
-      *clip = AudioClip::from_frames(48_000, &frames);
+      *clip = AudioClip::from_frames(48_000, &frames).unwrap();
     }
   }
 

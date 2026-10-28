@@ -20,7 +20,7 @@ mod system;
 mod view;
 mod voice;
 
-pub use clip::AudioClip;
+pub use clip::{AudioClip, AudioClipError};
 pub(crate) use clip::{ClipData, DECODE_THRESHOLD, EncodedClip};
 pub use engine::AudioEngine;
 #[cfg(test)]

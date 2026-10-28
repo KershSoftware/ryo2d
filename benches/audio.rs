@@ -187,7 +187,7 @@ fn noise(seconds: f32, seed: u32) -> Vec<[f32; 2]> {
 fn add_clip(world: &mut World, seconds: f32, seed: u32) -> Handle<AudioClip> {
   world
     .resource_mut::<Assets<AudioClip>>()
-    .add(AudioClip::from_frames(48_000, &noise(seconds, seed)))
+    .add(AudioClip::from_frames(48_000, &noise(seconds, seed)).unwrap())
 }
 
 // voices_64

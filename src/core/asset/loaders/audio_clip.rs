@@ -132,7 +132,7 @@ mod tests {
 
   use super::*;
   use crate::core::asset::{AssetServer, Assets, AssetsView, MemorySource};
-  use crate::core::audio::{AudioClip, ClipData};
+  use crate::core::audio::{AudioClip, AudioClipError, ClipData};
   use crate::core::ecs::kernel::World;
 
   const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/audio");
@@ -316,10 +316,23 @@ mod tests {
 
   #[test]
   fn a_clip_made_from_frames_is_decoded() {
-    let clip = AudioClip::from_frames(1000, &[[0.0, 0.5]; 500]);
+    let clip = match AudioClip::from_frames(1000, &[[0.0, 0.5]; 500]) {
+      Ok(clip) => clip,
+      Err(error) => panic!("{error}"),
+    };
     assert!(!clip.is_streamed());
     assert_eq!(clip.sample_rate(), 1000);
     assert_eq!(clip.duration(), Duration::from_millis(500));
+  }
+
+  /// A clip at a sample rate of 0 never advances: it would never end, and
+  /// its voice would hold its place for good
+  #[test]
+  fn a_clip_needs_a_sample_rate() {
+    let error = AudioClip::from_frames(0, &[[0.1, 0.1]; 10]).err();
+    assert_eq!(error, Some(AudioClipError::ZeroSampleRate));
+    let message = error.map(|error| error.to_string()).unwrap_or_default();
+    assert!(message.contains("sample rate"), "{message}");
   }
 
   #[test]

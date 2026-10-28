@@ -9,6 +9,7 @@ use std::time::Duration;
 use crossbeam_channel::Sender;
 
 use super::AudioClip;
+use super::engine::MIN_FADE;
 use crate::core::asset::AssetId;
 
 /// What a voice is doing, as the engine last saw it
@@ -39,12 +40,15 @@ impl VoiceState {
 pub(crate) enum VoiceChange {
   /// Fade out over at least `MIN_FADE`, then stop
   Stop(Duration),
-  Pause,
-  Resume,
-  /// The game's change to the voice's gain, in dB
-  Volume(f32),
-  /// The game's change to the voice's pitch, in semitones
-  Pitch(f32),
+  /// Fade out over at least `MIN_FADE`, then pause
+  Pause(Duration),
+  /// Resume, fading in over at least `MIN_FADE`
+  Resume(Duration),
+  /// The game's change to the voice's gain, in dB, over at least `MIN_FADE`
+  Volume(f32, Duration),
+  /// The game's change to the voice's pitch, in semitones, over at least
+  /// `MIN_FADE`
+  Pitch(f32, Duration),
 }
 
 /// A change for voice `voice`, queued for `audio_system`
@@ -210,15 +214,28 @@ impl Voice {
     self.send(VoiceChange::Stop(fade));
   }
 
-  /// Fade out and pause, keeping the position, until [`resume`](Self::resume)
-  /// (the game resuming does not resume it)
+  /// Fade out over 10 ms and pause, keeping the position, until
+  /// [`resume`](Self::resume) (the game resuming does not resume it)
   pub fn pause(&self) {
-    self.send(VoiceChange::Pause);
+    self.pause_over(MIN_FADE);
   }
 
-  /// Resume a paused voice where it paused, fading in
+  /// [`pause`](Self::pause), fading out over `fade` (at least 10 ms): a
+  /// line of dialogue paused under a menu over 200 ms, say
+  pub fn pause_over(&self, fade: Duration) {
+    self.send(VoiceChange::Pause(fade));
+  }
+
+  /// Resume a paused voice where it paused, fading in over 10 ms
   pub fn resume(&self) {
-    self.send(VoiceChange::Resume);
+    self.resume_over(MIN_FADE);
+  }
+
+  /// [`resume`](Self::resume), fading in over `fade` (at least 10 ms; a
+  /// voice not heard yet, paused from its start, fades in over its own
+  /// fade-in if that is longer)
+  pub fn resume_over(&self, fade: Duration) {
+    self.send(VoiceChange::Resume(fade));
   }
 
   /// Set the game's change to the voice's gain in dB, relative to the
@@ -228,7 +245,14 @@ impl Voice {
   /// most +24 dB, and -60 and below are silent. A reload of the definition
   /// still moves the sound's level beneath it. Smoothed over 10 ms
   pub fn set_volume(&self, db: f32) {
-    self.send(VoiceChange::Volume(db));
+    self.set_volume_over(db, MIN_FADE);
+  }
+
+  /// [`set_volume`](Self::set_volume), moving there over `fade` (at least
+  /// 10 ms), in an even line of dB: a loop brought down 12 dB over 2 s,
+  /// say, with no stepping each frame
+  pub fn set_volume_over(&self, db: f32, fade: Duration) {
+    self.send(VoiceChange::Volume(db, fade));
   }
 
   /// Set the game's change to the voice's pitch in semitones, relative to
@@ -238,7 +262,13 @@ impl Voice {
   /// way. Pitch changes speed too, as on a turntable. On a bus that follows
   /// time scale, the game's speed still multiplies it. Smoothed over 10 ms
   pub fn set_pitch(&self, semitones: f32) {
-    self.send(VoiceChange::Pitch(semitones));
+    self.set_pitch_over(semitones, MIN_FADE);
+  }
+
+  /// [`set_pitch`](Self::set_pitch), gliding there over `fade` (at least
+  /// 10 ms)
+  pub fn set_pitch_over(&self, semitones: f32, fade: Duration) {
+    self.send(VoiceChange::Pitch(semitones, fade));
   }
 
   /// Whether it is playing: started, not paused, not stopping or stopped.
@@ -307,7 +337,7 @@ mod tests {
     let frames = vec![[0.1, 0.1]; (48_000.0 * seconds) as usize];
     world
       .resource_mut::<Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &frames))
+      .add(AudioClip::from_frames(48_000, &frames).unwrap())
   }
 
   fn log(world: &World) -> Vec<AudioLogEntry> {
@@ -347,6 +377,48 @@ mod tests {
       (first / settled - 1.0).abs() < 0.01,
       "the first audio is at the level set: {first} against {settled}"
     );
+  }
+
+  /// The `_over` forms change a playing voice over the fade they are given
+  /// (at least 10 ms), as `stop` does; the plain forms take 10 ms
+  #[test]
+  fn the_over_forms_take_their_fade() {
+    let mut world = audio_world();
+    let clip = clip(&mut world, 3.0);
+    let voice = AudioView::new(&mut world).play(&clip);
+    audio_step(&mut world, FRAME);
+    voice.set_volume_over(-6.0, Duration::from_secs(2));
+    voice.set_pitch_over(3.0, Duration::from_millis(500));
+    audio_step(&mut world, FRAME);
+    voice.pause_over(Duration::from_millis(200));
+    audio_step(&mut world, FRAME);
+    // kira is still fading it out to its pause
+    let pausing = world.resource::<AudioEngine>().voice_playback(voice.id());
+    assert_eq!(pausing, Some(kira::sound::PlaybackState::Pausing));
+    for _ in 0..15 {
+      audio_step(&mut world, FRAME);
+    }
+    voice.resume_over(Duration::from_millis(300));
+    audio_step(&mut world, FRAME);
+    voice.set_volume_over(0.0, Duration::ZERO);
+    audio_step(&mut world, FRAME);
+    let fades: Vec<(AudioLogKind, Duration)> = log(&world)
+      .iter()
+      .filter(|entry| entry.voice == voice.id() && entry.kind != AudioLogKind::Start)
+      .map(|entry| (entry.kind, entry.fade))
+      .collect();
+    assert_eq!(
+      fades,
+      [
+        (AudioLogKind::Gain, Duration::from_secs(2)),
+        (AudioLogKind::Rate, Duration::from_millis(500)),
+        (AudioLogKind::Pause, Duration::from_millis(200)),
+        (AudioLogKind::Resume, Duration::from_millis(300)),
+        (AudioLogKind::Gain, MIN_FADE),
+      ]
+    );
+    let resuming = world.resource::<AudioEngine>().voice_playback(voice.id());
+    assert_eq!(resuming, Some(kira::sound::PlaybackState::Resuming));
   }
 
   #[test]

@@ -268,7 +268,7 @@ fn headless_engines_pick_the_same_variations() {
     engine.world.resource_mut::<AudioEngine>().set_logging(true);
     let clips: Vec<Handle<AudioClip>> = (0..4)
       .map(|_| {
-        let clip = AudioClip::from_frames(48_000, &[[0.1, 0.1]; 480]);
+        let clip = AudioClip::from_frames(48_000, &[[0.1, 0.1]; 480]).unwrap();
         engine.world.resource_mut::<Assets<AudioClip>>().add(clip)
       })
       .collect();

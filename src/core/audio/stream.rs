@@ -548,9 +548,22 @@ mod tests {
     frames
   }
 
+  /// The loudest sample a reference must reach to prove a match: a silent
+  /// one matches any silence
+  const AUDIBLE: f32 = 0.01;
+
   /// `got` is `want` within 1e-4 a sample; `from` is `want`'s first frame
-  /// in the file
+  /// in the file. `want` must be audible (a peak above [`AUDIBLE`]), so a
+  /// silent fixture fails every check made with it, `starts_exactly`'s too
   fn assert_same(name: &str, got: &[Frame], want: &[Frame], from: usize) {
+    let peak = want
+      .iter()
+      .map(|frame| frame.left.abs().max(frame.right.abs()))
+      .fold(0.0, f32::max);
+    assert!(
+      peak > AUDIBLE,
+      "{name}: the reference frames from {from} are silent (peak {peak}), so they prove nothing"
+    );
     assert_eq!(got.len(), want.len(), "{name}: frames from {from}");
     for (offset, (got, want)) in got.iter().zip(want).enumerate() {
       let off = (got.left - want.left)
@@ -573,6 +586,15 @@ mod tests {
     assert_eq!(seek(&mut decoder, start), start);
     let frames = collect(&mut decoder, count);
     assert_same(name, &frames, &file[start..start + count], start);
+  }
+
+  /// The accuracy checks compare against sound: a silent reference would
+  /// match anything that is silent too, as a broken fixture once did
+  #[test]
+  #[should_panic(expected = "silent")]
+  fn the_accuracy_checks_refuse_a_silent_reference() {
+    let silence = [Frame::ZERO; 64];
+    assert_same("silence", &silence, &silence, 0);
   }
 
   #[test]

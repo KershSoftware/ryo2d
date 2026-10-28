@@ -31,6 +31,15 @@ pub(crate) struct EncodedClip {
   pub(crate) frames: usize,
 }
 
+/// Why [`AudioClip::from_frames`] cannot make a clip
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum AudioClipError {
+  /// Its sample rate is 0, so it would never advance
+  #[error("the clip's sample rate is 0: it is how many frames play a second (48000, say)")]
+  ZeroSampleRate,
+}
+
 /// A sound: WAV, OGG Vorbis, MP3 or FLAC, mono or stereo, loaded through the
 /// asset registry (`ctx.assets().load::<AudioClip>("sfx/jump.ogg")`).
 ///
@@ -78,17 +87,25 @@ impl AudioClip {
   }
 
   /// A clip made in code from stereo frames (`[left, right]`; give both the
-  /// same value for mono)
-  pub fn from_frames(sample_rate: u32, frames: &[[f32; 2]]) -> AudioClip {
+  /// same value for mono) at `sample_rate` frames a second. A rate of 0 is
+  /// an error: such a clip would never play on to its end
+  pub fn from_frames(sample_rate: u32, frames: &[[f32; 2]]) -> Result<AudioClip, AudioClipError> {
+    if sample_rate == 0 {
+      return Err(AudioClipError::ZeroSampleRate);
+    }
     let frames: Arc<[Frame]> = frames.iter().map(|&[l, r]| Frame::new(l, r)).collect();
-    let duration = Duration::from_secs_f64(frames.len() as f64 / f64::from(sample_rate.max(1)));
+    let duration = Duration::from_secs_f64(frames.len() as f64 / f64::from(sample_rate));
     let data = StaticSoundData {
       sample_rate,
       frames,
       settings: StaticSoundSettings::default(),
       slice: None,
     };
-    AudioClip::new(ClipData::Decoded(Box::new(data)), duration, sample_rate)
+    Ok(AudioClip::new(
+      ClipData::Decoded(Box::new(data)),
+      duration,
+      sample_rate,
+    ))
   }
 
   pub(crate) fn data(&self) -> &ClipData {

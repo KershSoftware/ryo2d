@@ -1323,7 +1323,7 @@ mod tests {
     world.resource_mut::<AudioEngine>().set_logging(true);
     let clip = world
       .resource_mut::<crate::core::asset::Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]));
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]).unwrap());
     let sound = world
       .resource_mut::<crate::core::asset::Assets<Sound>>()
       .add(Sound {
@@ -1397,8 +1397,8 @@ mod tests {
     use crate::core::testing::audio_step;
     let (mut world, sound) = audio_scene_world();
     let mut clips = world.resource_mut::<crate::core::asset::Assets<AudioClip>>();
-    let shot = clips.add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 14_400]));
-    let held = clips.add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 14_400]));
+    let shot = clips.add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 14_400]).unwrap());
+    let held = clips.add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 14_400]).unwrap());
     let played: Voices = Arc::default();
     let mut m = SceneManager::with_scene(Box::new(Player {
       sound: sound.clone(),
@@ -1462,8 +1462,8 @@ mod tests {
     let (mut world, _) = audio_scene_world();
     let rate = 8_000;
     let mut clips = world.resource_mut::<Assets<AudioClip>>();
-    let long = clips.add(AudioClip::from_frames(rate, &vec![[0.1, 0.1]; 20 * 8_000]));
-    let short = clips.add(AudioClip::from_frames(rate, &vec![[0.1, 0.1]; 8_000]));
+    let long = clips.add(AudioClip::from_frames(rate, &vec![[0.1, 0.1]; 20 * 8_000]).unwrap());
+    let short = clips.add(AudioClip::from_frames(rate, &vec![[0.1, 0.1]; 8_000]).unwrap());
     let streamed = clips.add(AudioClip::new(
       ClipData::Encoded(EncodedClip {
         bytes: wav(rate, 20 * 8_000, 3_000).into(),
@@ -1557,7 +1557,7 @@ mod tests {
     let (mut world, _) = audio_scene_world();
     let clip = world
       .resource_mut::<crate::core::asset::Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]));
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]).unwrap());
     let played: Voices = Arc::default();
     let mut m = SceneManager::with_scene(Box::new(PlaysShot(clip, played.clone())));
     m.enter_initial(&mut world);
@@ -1612,7 +1612,7 @@ mod tests {
     use crate::core::audio::{AudioClip, Sound, SoundClip};
     let clip = world
       .resource_mut::<crate::core::asset::Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]));
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]).unwrap());
     world
       .resource_mut::<crate::core::asset::Assets<Sound>>()
       .add(Sound {
@@ -1834,7 +1834,7 @@ mod tests {
     use crate::core::audio::{AudioClip, Music};
     let clip = world
       .resource_mut::<crate::core::asset::Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]));
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]).unwrap());
     let mut track = Music::looping(clip, 0.0, None);
     track.crossfade = Duration::from_millis(300);
     world
@@ -1964,7 +1964,7 @@ mod tests {
     let track = theme(&mut world);
     let shot = world
       .resource_mut::<crate::core::asset::Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 2_400]));
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 2_400]).unwrap());
     let level = || {
       Box::new(PlaysMusic {
         track: track.clone(),

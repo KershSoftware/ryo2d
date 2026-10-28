@@ -105,7 +105,7 @@ fn idle_frame_audio_allocates_nothing() {
   let frames = [[0.1, 0.1]; 2_400];
   let blip = world
     .resource_mut::<Assets<AudioClip>>()
-    .add(AudioClip::from_frames(48_000, &frames));
+    .add(AudioClip::from_frames(48_000, &frames).unwrap());
   let hum = world.resource_mut::<Assets<Sound>>().add(Sound {
     clips: vec![SoundClip::new(blip.clone())],
     looping: true,

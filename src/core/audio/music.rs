@@ -425,7 +425,7 @@ mod tests {
       let frames = vec![frame; 4 * 48_000];
       let clip = world
         .resource_mut::<Assets<AudioClip>>()
-        .add(AudioClip::from_frames(48_000, &frames));
+        .add(AudioClip::from_frames(48_000, &frames).unwrap());
       world
         .resource_mut::<Assets<Music>>()
         .add(Music::looping(clip, 0.0, None))
@@ -528,8 +528,8 @@ mod tests {
   fn a_joined_track_repeats_its_loop_not_its_intro() {
     let mut world = audio_world();
     // A 200 ms intro and a 100 ms loop at 48 kHz
-    let intro = AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 9_600]);
-    let looped = AudioClip::from_frames(48_000, &vec![[0.2, 0.2]; 4_800]);
+    let intro = AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 9_600]).unwrap();
+    let looped = AudioClip::from_frames(48_000, &vec![[0.2, 0.2]; 4_800]).unwrap();
     let track = match Music::intro_and_loop(&intro, &looped) {
       Ok(track) => track,
       Err(error) => panic!("{error}"),
@@ -547,7 +547,8 @@ mod tests {
 
   #[test]
   fn intro_and_loop_joins_decoded_clips() {
-    let clip = |rate: u32, frames: usize| AudioClip::from_frames(rate, &vec![[0.1, 0.1]; frames]);
+    let clip =
+      |rate: u32, frames: usize| AudioClip::from_frames(rate, &vec![[0.1, 0.1]; frames]).unwrap();
     let joined = Music::intro_and_loop(&clip(48_000, 10), &clip(48_000, 20));
     let Ok(joined) = joined else {
       panic!("{joined:?}");
@@ -700,7 +701,7 @@ mod tests {
     let mut world = audio_world();
     let clip = world
       .resource_mut::<Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 4_800]));
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 4_800]).unwrap());
     let mut track = Music::looping(clip, 0.0, None);
     track.bus = "sfx".to_string();
     let track = world.resource_mut::<Assets<Music>>().add(track);
@@ -717,8 +718,8 @@ mod tests {
     use crate::core::audio::Mixer;
     use crate::core::audio::engine::MIN_FADE;
     let mut world = audio_world();
-    let intro = AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 9_600]);
-    let looped = AudioClip::from_frames(48_000, &vec![[0.2, 0.2]; 4_800]);
+    let intro = AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 9_600]).unwrap();
+    let looped = AudioClip::from_frames(48_000, &vec![[0.2, 0.2]; 4_800]).unwrap();
     let track = match Music::intro_and_loop(&intro, &looped) {
       Ok(track) => track,
       Err(error) => panic!("{error}"),
@@ -761,7 +762,7 @@ mod tests {
     let mut world = audio_world();
     let clip = world
       .resource_mut::<Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]));
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]).unwrap());
     let track = world
       .resource_mut::<Assets<Music>>()
       .add(Music::looping(clip.clone(), 0.0, None));
@@ -910,7 +911,8 @@ mod tests {
   #[test]
   fn a_join_that_fails_says_why_in_its_error() {
     use std::sync::Arc;
-    let clip = |rate: u32, frames: usize| AudioClip::from_frames(rate, &vec![[0.1, 0.1]; frames]);
+    let clip =
+      |rate: u32, frames: usize| AudioClip::from_frames(rate, &vec![[0.1, 0.1]; frames]).unwrap();
     let encoded = EncodedClip {
       bytes: Arc::from(&b"bytes"[..]),
       frames: 48_000,

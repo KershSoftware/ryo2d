@@ -110,7 +110,7 @@ pub fn asset_world() -> World {
 /// let mut world = audio_world();
 /// let beep = world
 ///   .resource_mut::<Assets<AudioClip>>()
-///   .add(AudioClip::from_frames(48_000, &[[0.2, 0.2]; 2_400]));
+///   .add(AudioClip::from_frames(48_000, &[[0.2, 0.2]; 2_400]).unwrap());
 /// let voice = AudioView::new(&mut world).play(&beep);
 /// assert!(voice.is_playing());
 /// audio_step(&mut world, Duration::from_millis(100));

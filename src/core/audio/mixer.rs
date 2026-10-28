@@ -1631,7 +1631,7 @@ mod tests {
     let frames = vec![[0.1, 0.1]; (48_000.0 * seconds) as usize];
     world
       .resource_mut::<Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &frames))
+      .add(AudioClip::from_frames(48_000, &frames).unwrap())
   }
 
   fn looping(world: &mut World, clip: Handle<AudioClip>, bus: &str) -> Handle<Sound> {

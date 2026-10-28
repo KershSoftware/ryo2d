@@ -460,7 +460,7 @@ mod tests {
     let frames = vec![[0.1, 0.1]; (48_000.0 * seconds) as usize];
     world
       .resource_mut::<Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &frames))
+      .add(AudioClip::from_frames(48_000, &frames).unwrap())
   }
 
   /// A sound over a 2 s clip, heard from where it plays by `spatial`
