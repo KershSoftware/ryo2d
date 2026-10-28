@@ -108,12 +108,26 @@ impl fmt::Debug for MusicData {
   }
 }
 
-/// Why an intro and a loop cannot be joined
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JoinError {
-  /// They are at different sample rates (the intro's, then the loop's)
-  Rates(u32, u32),
+/// Why [`Music::intro_and_loop`] cannot join an intro and a loop
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum MusicJoinError {
+  /// The intro is streamed, so it has no frames to join
+  #[error("the intro is streamed, so it has no frames to join (load it with `ClipMode::Decode`)")]
+  StreamedIntro,
+  /// The loop is streamed, so it has no frames to join
+  #[error("the loop is streamed, so it has no frames to join (load it with `ClipMode::Decode`)")]
+  StreamedLoop,
+  /// They are at different sample rates, in Hz
+  #[error("the intro is at {intro} Hz and the loop at {looped} Hz: they must share a sample rate")]
+  Rates {
+    /// The intro's
+    intro: u32,
+    /// The loop's
+    looped: u32,
+  },
   /// The loop has no frames, so nothing would repeat
+  #[error("the loop has no frames")]
   EmptyLoop,
 }
 
@@ -153,20 +167,16 @@ impl Music {
   /// end. Both must be decoded clips (a streamed clip has no frames to join:
   /// load it with `ClipMode::Decode`) at the same sample rate, and the loop
   /// must not be empty; otherwise the error says which
-  pub fn intro_and_loop(intro: &AudioClip, looped: &AudioClip) -> Result<Music, String> {
-    let decoded = |clip: &AudioClip, which: &str| match clip.data() {
-      ClipData::Decoded(data) => Ok(data.as_ref().clone()),
-      ClipData::Encoded(_) => Err(format!(
-        "the {which} is streamed, so it has no frames to join (load it with `ClipMode::Decode`)"
-      )),
+  pub fn intro_and_loop(intro: &AudioClip, looped: &AudioClip) -> Result<Music, MusicJoinError> {
+    let (ClipData::Decoded(intro), ClipData::Decoded(looped)) = (intro.data(), looped.data())
+    else {
+      return Err(if intro.is_streamed() {
+        MusicJoinError::StreamedIntro
+      } else {
+        MusicJoinError::StreamedLoop
+      });
     };
-    let joined =
-      join(&decoded(intro, "intro")?, &decoded(looped, "loop")?).map_err(|error| match error {
-        JoinError::Rates(intro, looped) => format!(
-          "the intro is at {intro} Hz and the loop at {looped} Hz: they must share a sample rate"
-        ),
-        JoinError::EmptyLoop => "the loop has no frames".to_string(),
-      })?;
+    let joined = join(intro, looped)?;
     Ok(Self::with_data(MusicData::Concatenated(Box::new(joined))))
   }
 
@@ -190,13 +200,16 @@ fn played(data: &StaticSoundData) -> &[Frame] {
 pub(crate) fn join(
   intro: &StaticSoundData,
   looped: &StaticSoundData,
-) -> Result<StaticSoundData, JoinError> {
+) -> Result<StaticSoundData, MusicJoinError> {
   if intro.sample_rate != looped.sample_rate {
-    return Err(JoinError::Rates(intro.sample_rate, looped.sample_rate));
+    return Err(MusicJoinError::Rates {
+      intro: intro.sample_rate,
+      looped: looped.sample_rate,
+    });
   }
   let (intro, looped_frames) = (played(intro), played(looped));
   if looped_frames.is_empty() {
-    return Err(JoinError::EmptyLoop);
+    return Err(MusicJoinError::EmptyLoop);
   }
   // A chain of slices knows its length: the `Arc` is allocated once and
   // filled in place
@@ -268,8 +281,8 @@ mod tests {
   use kira::sound::PlaybackState;
 
   use super::*;
-  use crate::core::asset::{Assets, AssetsView, MemorySource};
-  use crate::core::audio::{AudioEngine, AudioLogEntry, AudioLogKind, AudioView};
+  use crate::core::asset::{AssetServer, Assets, AssetsView, MemorySource};
+  use crate::core::audio::{AudioEngine, AudioLogEntry, AudioLogKind, AudioView, MusicJoinError};
   use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::World;
   use crate::core::testing::{audio_step, audio_world, audio_world_over};
@@ -486,7 +499,7 @@ mod tests {
   }
 
   #[test]
-  fn intro_and_loop_need_decoded_clips_at_one_rate() {
+  fn intro_and_loop_joins_decoded_clips() {
     let clip = |rate: u32, frames: usize| AudioClip::from_frames(rate, &vec![[0.1, 0.1]; frames]);
     let joined = Music::intro_and_loop(&clip(48_000, 10), &clip(48_000, 20));
     let Ok(joined) = joined else {
@@ -496,15 +509,6 @@ mod tests {
       panic!("{joined:?}");
     };
     assert_eq!(data.frames.len(), 30);
-    let rates = Music::intro_and_loop(&clip(48_000, 10), &clip(44_100, 10));
-    assert!(
-      rates
-        .as_ref()
-        .is_err_and(|error| error.contains("48000") && error.contains("44100")),
-      "{rates:?}"
-    );
-    let empty = Music::intro_and_loop(&clip(48_000, 10), &clip(48_000, 0));
-    assert!(empty.is_err_and(|error| error.contains("loop")));
   }
 
   #[test]
@@ -699,5 +703,196 @@ mod tests {
       position(&world)
     );
     assert_eq!(world.resource::<AudioEngine>().sounds_on("music"), 1);
+  }
+
+  /// Review M1: a play that is not music never takes the music's place,
+  /// even a priority-255 sound under a limit on `master`, which counts the
+  /// music too
+  #[test]
+  fn a_sound_never_steals_the_music() {
+    use crate::core::audio::{LimitRule, Sound, SoundClip, VoiceLimit};
+    let mut world = audio_world();
+    let clip = world
+      .resource_mut::<Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]));
+    let track = world
+      .resource_mut::<Assets<Music>>()
+      .add(Music::looping(clip.clone(), 0.0, None));
+    let loud = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      looping: true,
+      priority: u8::MAX,
+      limit: Some(VoiceLimit {
+        max: 8,
+        rule: LimitRule::StopOldest,
+      }),
+      ..Default::default()
+    });
+    world
+      .resource_mut::<AudioEngine>()
+      .set_bus_limit("master", Some(2));
+    AudioView::new(&mut world).play_music(&track);
+    audio_step(&mut world, FRAME);
+    let first = AudioView::new(&mut world).play(&loud);
+    audio_step(&mut world, FRAME);
+    let second = AudioView::new(&mut world).play(&loud);
+    assert!(second.is_playing(), "{second:?}");
+    let music = log(&world)[0].voice;
+    let stopped: Vec<u32> = log(&world)
+      .iter()
+      .filter(|entry| matches!(entry.kind, AudioLogKind::Stolen | AudioLogKind::Stop))
+      .map(|entry| entry.voice)
+      .collect();
+    assert_eq!(
+      stopped,
+      [first.id()],
+      "the oldest sound gives way, not the music {music}"
+    );
+    assert_eq!(current(&mut world), Some(track.id()));
+  }
+
+  /// Review M2 (ruling P14): a track that did not load changes nothing: the
+  /// track playing plays on, and one still loading still takes over
+  #[test]
+  fn a_failed_track_keeps_the_track_still_loading() {
+    let mut world = world_with(&[
+      ("music/a.music.ron", r#"(clip: "music/tone.wav")"#),
+      ("music/next.music.ron", r#"(clip: "music/tone.wav")"#),
+      (
+        "music/broken-next.music.ron",
+        r#"(clip: "music/missing.wav")"#,
+      ),
+    ]);
+    let a = music(&mut world, "music/a.music.ron");
+    AudioView::new(&mut world).play_music(&a);
+    let broken = AssetsView::new(&mut world).load::<Music>("music/broken-next.music.ron");
+    wait_for(&mut world, |world| {
+      world.resource::<AssetServer>().state(&broken).is_failed()
+    });
+    let next = AssetsView::new(&mut world).load::<Music>("music/next.music.ron");
+    AudioView::new(&mut world).play_music(&next);
+    AudioView::new(&mut world).play_music(&broken);
+    assert_eq!(current(&mut world), Some(next.id()));
+    wait_for(&mut world, |world| {
+      !entries(world, "music/next.music.ron").is_empty()
+    });
+    assert_eq!(current(&mut world), Some(next.id()));
+  }
+
+  /// Review M3: a track that cannot start (its stream already failed to
+  /// open) leaves the track playing alone
+  #[cfg(not(target_arch = "wasm32"))]
+  #[test]
+  fn a_refused_track_leaves_the_old_one_playing() {
+    use std::sync::Arc;
+    let mut world = world_with(&[("music/a.music.ron", r#"(clip: "music/tone.wav")"#)]);
+    let garbage: Arc<[u8]> = Arc::from(&b"not audio at all"[..]);
+    let bad = AudioClip::new(ClipData::Encoded(garbage), Duration::from_secs(1), 22_050);
+    let bad = world.resource_mut::<Assets<AudioClip>>().add(bad);
+    let broken = world
+      .resource_mut::<Assets<Music>>()
+      .add(Music::looping(bad, 0.0, None));
+    // Its stream fails to open the first time, which marks its clip
+    AudioView::new(&mut world).play_music(&broken);
+    assert_eq!(current(&mut world), None);
+    let a = music(&mut world, "music/a.music.ron");
+    AudioView::new(&mut world).play_music(&a);
+    audio_step(&mut world, FRAME);
+    AudioView::new(&mut world).play_music(&broken);
+    audio_step(&mut world, FRAME);
+    assert_eq!(
+      entries(&world, "music/a.music.ron"),
+      [(AudioLogKind::Start, Duration::ZERO)],
+      "the old track was never stopped"
+    );
+    assert_eq!(current(&mut world), Some(a.id()));
+    assert_eq!(voices_on_music(&mut world), 1);
+    let refused = log(&world)
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Refused)
+      .count();
+    assert_eq!(refused, 2);
+  }
+
+  /// Review M5: a newer request replaces a track still loading, which then
+  /// never starts; a stop forgets one still loading
+  #[test]
+  fn a_newer_request_or_a_stop_replaces_a_track_still_loading() {
+    let mut world = world_with(&[
+      ("music/a.music.ron", r#"(clip: "music/tone.wav")"#),
+      ("music/first.music.ron", r#"(clip: "music/tone.wav")"#),
+      ("music/second.music.ron", r#"(clip: "music/tone.wav")"#),
+      ("music/stopped.music.ron", r#"(clip: "music/tone.wav")"#),
+    ]);
+    let a = music(&mut world, "music/a.music.ron");
+    AudioView::new(&mut world).play_music(&a);
+    let first = AssetsView::new(&mut world).load::<Music>("music/first.music.ron");
+    AudioView::new(&mut world).play_music(&first);
+    let second = AssetsView::new(&mut world).load::<Music>("music/second.music.ron");
+    AudioView::new(&mut world).play_music(&second);
+    assert_eq!(current(&mut world), Some(second.id()));
+    wait_for(&mut world, |world| {
+      !entries(world, "music/second.music.ron").is_empty()
+        && world.resource::<AssetServer>().is_ready(&first)
+    });
+    steps(&mut world, 3);
+    assert_eq!(entries(&world, "music/first.music.ron"), []);
+    let stopped = AssetsView::new(&mut world).load::<Music>("music/stopped.music.ron");
+    AudioView::new(&mut world).play_music(&stopped);
+    AudioView::new(&mut world).stop_music(Duration::ZERO);
+    assert_eq!(current(&mut world), None);
+    wait_for(&mut world, |world| {
+      world.resource::<AssetServer>().is_ready(&stopped)
+    });
+    steps(&mut world, 3);
+    assert_eq!(entries(&world, "music/stopped.music.ron"), []);
+    assert_eq!(current(&mut world), None);
+  }
+
+  /// Review M4: why an intro and a loop cannot be joined is a typed error
+  #[test]
+  fn a_join_that_fails_says_why_in_its_error() {
+    use std::sync::Arc;
+    let clip = |rate: u32, frames: usize| AudioClip::from_frames(rate, &vec![[0.1, 0.1]; frames]);
+    let streamed = AudioClip::new(
+      ClipData::Encoded(Arc::from(&b"bytes"[..])),
+      Duration::from_secs(1),
+      48_000,
+    );
+    let error = |result: Result<Music, MusicJoinError>| match result {
+      Ok(music) => panic!("joined: {music:?}"),
+      Err(error) => error,
+    };
+    assert_eq!(
+      error(Music::intro_and_loop(&streamed, &clip(48_000, 10))),
+      MusicJoinError::StreamedIntro
+    );
+    assert_eq!(
+      error(Music::intro_and_loop(&clip(48_000, 10), &streamed)),
+      MusicJoinError::StreamedLoop
+    );
+    let rates = error(Music::intro_and_loop(&clip(48_000, 10), &clip(44_100, 10)));
+    assert_eq!(
+      rates,
+      MusicJoinError::Rates {
+        intro: 48_000,
+        looped: 44_100
+      }
+    );
+    assert!(rates.to_string().contains("44100"), "{rates}");
+    assert_eq!(
+      error(Music::intro_and_loop(&clip(48_000, 10), &clip(48_000, 0))),
+      MusicJoinError::EmptyLoop
+    );
+  }
+
+  /// Step until `done`, which a load on the workers makes true
+  fn wait_for(world: &mut World, done: impl Fn(&World) -> bool) {
+    let started = Instant::now();
+    while !done(world) {
+      assert!(started.elapsed() < Duration::from_secs(5), "timed out");
+      audio_step(world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
   }
 }

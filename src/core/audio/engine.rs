@@ -384,6 +384,18 @@ impl<'a> SourceRef<'a> {
     }
   }
 
+  /// Its content version in `world`'s stores; `None` if it is not loaded
+  fn version(self, world: &World) -> Option<u64> {
+    match self {
+      SourceRef::Clip(clip) => world.get_resource::<Assets<AudioClip>>()?.version(clip),
+      SourceRef::Joined(music) => {
+        let musics = world.get_resource::<Assets<Music>>()?;
+        let joined = matches!(musics.get(music)?.data(), MusicData::Concatenated(_));
+        joined.then(|| musics.version(music)).flatten()
+      }
+    }
+  }
+
   /// Its samples, taken from `world`'s stores to play, and their content
   /// version; `None` if it is not loaded
   fn samples(self, world: &World) -> Option<(ClipSource, u64)> {
@@ -1827,7 +1839,8 @@ impl AudioEngine {
   /// fades in over its own fade-in. The track already playing plays on (a
   /// paused one resumes). A track still loading takes over once it has
   /// loaded; one that did not load is warned about once and changes
-  /// nothing. Music belongs to the engine, not to the scene playing it
+  /// nothing (ruling P14), nor does one that fails the checks its start
+  /// makes. Music belongs to the engine, not to the scene playing it
   pub(crate) fn play_music(&mut self, world: &World, music: &Handle<Music>) {
     let server = world.get_resource::<AssetServer>();
     let id = music.id();
@@ -1861,10 +1874,9 @@ impl AudioEngine {
         self.start_music(world, music, server);
       }
       Readiness::Loading => self.music.pending = Some(music.clone()),
-      Readiness::Failed => {
-        self.music.pending = None;
-        self.warn_music(id, server);
-      }
+      // Nothing changes: the track playing plays on, and one still loading
+      // still takes over
+      Readiness::Failed => self.warn_music(id, server),
     }
   }
 
@@ -1924,7 +1936,8 @@ impl AudioEngine {
 
   /// Start `handle`'s track (loaded, with its clip) on its bus, taking over
   /// from the track playing: that one fades out and this one fades in over
-  /// this one's crossfade. With none playing it fades in over its fade-in
+  /// this one's crossfade. With none playing it fades in over its fade-in.
+  /// A track that cannot start leaves the one playing alone
   fn start_music(&mut self, world: &World, handle: &Handle<Music>, server: Option<&AssetServer>) {
     let Some(music) = world
       .get_resource::<Assets<Music>>()
@@ -1932,14 +1945,18 @@ impl AudioEngine {
     else {
       return;
     };
-    let fade_in = match self.music.current.take() {
-      Some(old) if old.is_live() => {
-        let voice = old.voice.id();
-        let change = VoiceChange::Stop(music.crossfade);
-        self.apply(VoiceCommand { voice, change }, server);
-        music.crossfade
+    let old = self.music.live().map(|track| track.voice.id());
+    let crossfade = music.crossfade;
+    let stop_old = |engine: &mut AudioEngine| {
+      if let Some(voice) = old {
+        let change = VoiceChange::Stop(crossfade);
+        engine.apply(VoiceCommand { voice, change }, server);
       }
-      _ => music.fade_in,
+    };
+    let fade_in = if old.is_some() {
+      crossfade
+    } else {
+      music.fade_in
     };
     let (source, loop_region) = match music.data() {
       MusicData::Concatenated(data) => (SourceRef::Joined(handle), joined_loop(data)),
@@ -1986,14 +2003,43 @@ impl AudioEngine {
       emitter: None,
       persist: true,
     };
-    let voice = self.start(world, &request, server);
-    if !voice.is_stopped() {
-      self.music.current = Some(Track {
-        music: handle.clone(),
-        voice,
-        crossfade: music.crossfade,
-      });
+    // The old track stops first, so a limit on the music bus counts it as
+    // fading out and leaves the crossfade alone; but only once the new one
+    // passes the checks its start makes. What they cannot see (a stream
+    // that fails to open, or a limit refusing it) still leaves the music
+    // quiet, with the refusal logged
+    let clear = self.music_can_start(world, source, bus);
+    if clear {
+      stop_old(self);
     }
+    let voice = self.start(world, &request, server);
+    if voice.is_stopped() {
+      if clear {
+        self.music.current = None;
+      }
+      return;
+    }
+    if !clear {
+      stop_old(self);
+    }
+    self.music.current = Some(Track {
+      music: handle.clone(),
+      voice,
+      crossfade,
+    });
+  }
+
+  /// Whether a track playing `source` on the bus `bus` passes the checks its
+  /// start makes: its samples are in the store, a clip's stream has not
+  /// failed to decode at this version, and kira has room on the bus's track
+  fn music_can_start(&self, world: &World, source: SourceRef<'_>, bus: &str) -> bool {
+    let Some(version) = source.version(world) else {
+      return false;
+    };
+    let undecodable = source
+      .clip()
+      .is_some_and(|clip| self.undecodable.get(&clip.id()) == Some(&version));
+    !undecodable && self.buses.has_room(self.buses.playable(bus))
   }
 
   /// Each frame: start the track waiting to load once it has (or forget it,
@@ -2269,6 +2315,7 @@ impl AudioEngine {
       frame: self.frame,
       listener: self.listener.as_ref(),
       priority: request.priority,
+      music: request.music.is_some(),
     };
     let mut fits = match (request.sound, request.limit) {
       (Some(id), Some(limit)) => room.fit(
@@ -3098,6 +3145,8 @@ struct Room<'a> {
   listener: Option<&'a Listener>,
   /// The new play's priority
   priority: u8,
+  /// The new play is the music player's: only it may stop music
+  music: bool,
 }
 
 impl Room<'_> {
@@ -3148,14 +3197,16 @@ impl Room<'_> {
 
   /// The voice `rule` stops in `scope`, among those the new play may stop:
   /// never a more important one, nor an equally important one started this
-  /// frame (stopping it would only stack two starts of a burst). Voices are
-  /// in start order, so the oldest of equals wins
+  /// frame (stopping it would only stack two starts of a burst), and never
+  /// the music for a play that is not music. Voices are in start order, so
+  /// the oldest of equals wins
   fn victim(&self, scope: Scope, rule: Option<LimitRule>) -> Option<usize> {
     let mut chosen: Option<usize> = None;
     for index in 0..self.live.len() {
       let live = &self.live[index];
-      let may_stop = live.priority < self.priority
-        || (live.priority == self.priority && live.frame != self.frame);
+      let may_stop = (self.music || live.music.is_none())
+        && (live.priority < self.priority
+          || (live.priority == self.priority && live.frame != self.frame));
       if !may_stop || !self.counts(index, scope) {
         continue;
       }

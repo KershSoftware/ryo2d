@@ -12,7 +12,7 @@ use crate::core::asset::{
   AssetError, AssetLoader, AssetPath, AssetServer, Assets, AudioClipSettings, CheckContext,
   ClipMode, LoadContext,
 };
-use crate::core::audio::{AudioClip, JoinError, Music, MusicData, check_bus_name, join};
+use crate::core::audio::{AudioClip, Music, MusicData, MusicJoinError, check_bus_name, join};
 
 /// Loads [`Music`] from `.music.ron` files: an intro and a loop, or one
 /// clip with a loop region. Every field but the clips may be left out:
@@ -89,10 +89,12 @@ impl AssetLoader for MusicLoader {
         let (loop_path, looped) = decode(cx, &path, looped)?;
         let joined = join(&intro, &looped).map_err(|error| {
           let why = match error {
-            JoinError::Rates(intro, looped) => format!(
+            MusicJoinError::Rates { intro, looped } => format!(
               "the intro {intro_path:?} is at {intro} Hz and the loop {loop_path:?} at {looped} Hz: an intro and its loop must share a sample rate to join with no gap"
             ),
-            JoinError::EmptyLoop => format!("the loop {loop_path:?} has no frames"),
+            MusicJoinError::EmptyLoop => format!("the loop {loop_path:?} has no frames"),
+            // Both were decoded here, so neither is streamed
+            other => other.to_string(),
           };
           AssetError::decode(&path, why)
         })?;
@@ -721,5 +723,54 @@ mod tests {
     let error = failure("music/broken.music.ron", text, &files);
     assert!(error.contains("music/broken.music.ron"), "{error}");
     assert!(error.contains("music/bad.wav"), "{error}");
+  }
+
+  /// Review M5: a surround intro fails the music as a dependency, naming
+  /// the file
+  #[test]
+  fn a_surround_intro_fails_as_a_dependency_naming_it() {
+    let text = r#"(intro: "music/surround.wav", loop: "music/here.wav")"#;
+    let files = [
+      ("music/surround.wav", fixture("surround.wav")),
+      ("music/here.wav", fixture("tone.wav")),
+    ];
+    let error = failure("music/wide.music.ron", text, &files);
+    assert!(
+      error.starts_with("\"music/wide.music.ron\" needs \"music/surround.wav\""),
+      "{error}"
+    );
+  }
+
+  /// Review M5: an intro and loop loaded on the workers (`load`, not
+  /// `load_now`) are read and joined there
+  #[test]
+  fn an_intro_and_loop_load_and_join_on_the_workers() {
+    let files = MemorySource::new();
+    files.insert(
+      "music/w.music.ron",
+      r#"(intro: "music/w_intro.wav", loop: "music/w_loop.wav")"#,
+    );
+    files.insert("music/w_intro.wav", wav(22_050, 1_000, 10));
+    files.insert("music/w_loop.wav", wav(22_050, 2_000, 20));
+    let mut world = World::new();
+    insert_registry(&mut world, AssetServer::new(files));
+    let server = world.resource::<AssetServer>().clone();
+    let music = server.load::<Music>("music/w.music.ron");
+    let started = std::time::Instant::now();
+    while !server.is_ready(&music) {
+      assert!(started.elapsed() < Duration::from_secs(5), "timed out");
+      crate::core::asset::pump(&mut world);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    let loaded = world.resource::<Assets<Music>>().get(&music).cloned();
+    let Some(loaded) = loaded else {
+      panic!("not in the store");
+    };
+    let data = joined(&loaded);
+    assert_eq!(data.frames.len(), 3_000);
+    assert_eq!(
+      data.settings.loop_region.map(|region| region.start),
+      Some(PlaybackPosition::Samples(1_000))
+    );
   }
 }

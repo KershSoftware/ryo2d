@@ -230,7 +230,14 @@ impl<'w> AudioView<'w> {
   ///   resumes), so every scene can ask for its track as it enters.
   /// - A track still loading takes over once it has loaded, and the track
   ///   playing plays until then; one that did not load is warned about once
-  ///   and changes nothing
+  ///   and changes nothing, even to a track still loading.
+  /// - A track that cannot start (its stream already failed to decode, or
+  ///   kira has no room on its bus) leaves the track playing alone. One whose
+  ///   stream fails to open only as it starts, or that a limit on its bus
+  ///   refuses, is found out after the track playing was told to fade: the
+  ///   music goes quiet, and the refusal is logged and warned about.
+  /// - Only music stops music: no sound takes its place under a voice
+  ///   limit, whatever its priority
   ///
   /// ```
   /// use ryo2d::prelude::*;
