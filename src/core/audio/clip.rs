@@ -18,7 +18,17 @@ pub(crate) enum ClipData {
   /// All its frames, ready to play; cheap to clone
   Decoded(Box<StaticSoundData>),
   /// The file's bytes, decoded as they play: a stream is made for each play
-  Encoded(Arc<[u8]>),
+  Encoded(EncodedClip),
+}
+
+/// A streamed clip's file, and its length in frames as its header gives it
+/// (at the clip's sample rate)
+#[derive(Clone)]
+// The web never streams, so it never reads one
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct EncodedClip {
+  pub(crate) bytes: Arc<[u8]>,
+  pub(crate) frames: usize,
 }
 
 /// A sound: WAV, OGG Vorbis, MP3 or FLAC, mono or stereo, loaded through the
@@ -90,7 +100,7 @@ impl Clone for AudioClip {
   fn clone(&self) -> Self {
     let data = match &self.data {
       ClipData::Decoded(data) => ClipData::Decoded(data.clone()),
-      ClipData::Encoded(bytes) => ClipData::Encoded(Arc::clone(bytes)),
+      ClipData::Encoded(encoded) => ClipData::Encoded(encoded.clone()),
     };
     Self::new(data, self.duration, self.sample_rate)
   }

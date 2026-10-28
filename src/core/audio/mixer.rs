@@ -1554,12 +1554,12 @@ mod tests {
 
   use super::*;
   use crate::core::asset::{Assets, AssetsView, AudioClipSettings, ClipMode, MemorySource};
-  use crate::core::audio::ClipData;
   use crate::core::audio::engine::MIN_FADE;
   use crate::core::audio::{
     AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, Sound, SoundClip, Voice,
     VolumeKind, volume_to_db,
   };
+  use crate::core::audio::{ClipData, EncodedClip};
   use crate::core::ecs::World;
   use crate::core::testing::{audio_step, audio_world, audio_world_over};
 
@@ -2149,11 +2149,12 @@ mod tests {
     );
   }
 
-  /// Review M3: a loop that cannot start on the rebuilt buses (its clip's
-  /// bytes went bad after it started) plays on where it was, warned about
-  /// once, and is tried again at the next rebuild
+  /// Review M3, with streams that open on their decoder threads: a loop
+  /// whose clip's bytes go bad after it started is switched to them, as a
+  /// changed clip's loops are, fails there and ends, warned about once. The
+  /// rebuilds that follow have nothing left to move, and say nothing more
   #[test]
-  fn a_loop_that_cannot_move_to_the_rebuilt_buses_warns_once_and_plays_on() {
+  fn a_loop_whose_clip_goes_bad_ends_warned_once_and_rebuilds_leave_it() {
     let tone = match std::fs::read(concat!(
       env!("CARGO_MANIFEST_DIR"),
       "/tests/fixtures/audio/tone.wav"
@@ -2178,7 +2179,17 @@ mod tests {
     assert!(voice.is_playing(), "{voice:?}");
     if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
       let garbage: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"not audio at all"[..]);
-      *clip = AudioClip::new(ClipData::Encoded(garbage), Duration::from_secs(1), 22_050);
+      let encoded = EncodedClip {
+        bytes: garbage,
+        frames: 22_050,
+      };
+      *clip = AudioClip::new(ClipData::Encoded(encoded), Duration::from_secs(1), 22_050);
+    }
+    let start = Instant::now();
+    while !voice.is_stopped() {
+      assert!(start.elapsed() < Duration::from_secs(5), "{voice:?} ends");
+      audio_step(&mut world, Duration::from_millis(1));
+      std::thread::sleep(Duration::from_millis(1));
     }
     for volume in ["-9.0", "-10.0"] {
       let text = MIXER.replace("volume: -6.0", &format!("volume: {volume}"));
@@ -2192,11 +2203,12 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1));
       }
     }
-    assert!(voice.is_playing(), "it plays on: {voice:?}");
-    let stuck = warnings(|message| {
-      message.starts_with("stuck-loop-unique.wav:") && message.contains("rebuilt buses")
-    });
-    assert_eq!(stuck, 1);
+    assert!(voice.is_stopped(), "{voice:?}");
+    let named = |what: &str| {
+      warnings(|message| message.starts_with("stuck-loop-unique.wav:") && message.contains(what))
+    };
+    assert_eq!(named("could not be decoded"), 1);
+    assert_eq!(named("rebuilt buses"), 0);
   }
 
   /// Snapshots and a duck over the standard buses, and a send

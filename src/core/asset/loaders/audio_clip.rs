@@ -6,12 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kira::sound::static_sound::StaticSoundData;
-#[cfg(not(target_arch = "wasm32"))]
-use kira::sound::streaming::StreamingSoundData;
 use serde::Deserialize;
 
 use crate::core::asset::{AssetError, AssetLoader, LoadContext};
-use crate::core::audio::{AudioClip, ClipData, DECODE_THRESHOLD};
+use crate::core::audio::{AudioClip, ClipData, DECODE_THRESHOLD, EncodedClip};
 
 /// Whether a clip is decoded to memory or kept encoded for streaming (a
 /// sound definition's `mode: Stream` names it)
@@ -82,24 +80,17 @@ fn decode(bytes: Arc<[u8]>) -> Result<AudioClip, kira::sound::FromFileError> {
   ))
 }
 
-/// A file's length and sample rate, read from its header without decoding it
+/// A file's sample rate and length in frames, read from its header without
+/// decoding it
 #[cfg(not(target_arch = "wasm32"))]
-fn probe(bytes: &Arc<[u8]>) -> Result<(Duration, u32), kira::sound::FromFileError> {
-  let stream = StreamingSoundData::from_cursor(Cursor::new(Arc::clone(bytes)))?;
-  let duration = stream.duration();
-  let seconds = duration.as_secs_f64();
-  let rate = if seconds > 0.0 {
-    (stream.num_frames() as f64 / seconds).round() as u32
-  } else {
-    0
-  };
-  Ok((duration, rate))
+fn probe(bytes: &Arc<[u8]>) -> Result<(u32, usize), crate::core::audio::StreamError> {
+  crate::core::audio::probe_stream(bytes).map(|info| (info.sample_rate, info.frames))
 }
 
 /// The web has no streaming, so nothing is probed: every clip decodes
 #[cfg(target_arch = "wasm32")]
-fn probe(_bytes: &Arc<[u8]>) -> Result<(Duration, u32), kira::sound::FromFileError> {
-  Ok((Duration::ZERO, 0))
+fn probe(_bytes: &Arc<[u8]>) -> Result<(u32, usize), kira::sound::FromFileError> {
+  Ok((0, 0))
 }
 
 impl AssetLoader for AudioClipLoader {
@@ -120,15 +111,17 @@ impl AssetLoader for AudioClipLoader {
     let wasm = cfg!(target_arch = "wasm32");
     let bytes: Arc<[u8]> = Arc::from(bytes);
     // A clip that decodes anyway needs no probe
-    let (duration, rate) = if wasm || settings.mode == ClipMode::Decode {
-      (Duration::ZERO, 0)
+    let (rate, frames) = if wasm || settings.mode == ClipMode::Decode {
+      (0, 0)
     } else {
       probe(&bytes).map_err(|error| AssetError::decode(path, error))?
     };
+    let duration = Duration::from_secs_f64(frames as f64 / f64::from(rate.max(1)));
     if decodes(settings.mode, duration, self.threshold, wasm) {
       return decode(bytes).map_err(|error| AssetError::decode(path, error));
     }
-    Ok(AudioClip::new(ClipData::Encoded(bytes), duration, rate))
+    let encoded = EncodedClip { bytes, frames };
+    Ok(AudioClip::new(ClipData::Encoded(encoded), duration, rate))
   }
 }
 
@@ -269,11 +262,37 @@ mod tests {
     let clip = loaded(&mut world, "tone.ogg", ClipMode::Auto);
     assert!(clip.is_streamed());
     match clip.data() {
-      ClipData::Encoded(bytes) => assert_eq!(bytes.len(), fixture("tone.ogg").len()),
+      ClipData::Encoded(encoded) => assert_eq!(encoded.bytes.len(), fixture("tone.ogg").len()),
       ClipData::Decoded(_) => panic!("a clip over the threshold was decoded"),
     }
     // Decode still decodes it
     assert!(!loaded(&mut world, "tone.ogg", ClipMode::Decode).is_streamed());
+  }
+
+  /// A streamed clip keeps the sample rate and frame count its file's
+  /// header gives, which are what decoding the whole file gives
+  #[cfg(not(target_arch = "wasm32"))]
+  #[test]
+  fn a_streamed_clip_keeps_its_files_exact_rate_and_length() {
+    let names = [
+      "tone.wav",
+      "tone.ogg",
+      "tone.mp3",
+      "tone.flac",
+      "tone-3s.ogg",
+    ];
+    let mut world = clips_over(&names, AudioClipLoader::default());
+    for name in names {
+      let streamed = loaded(&mut world, name, ClipMode::Stream);
+      let decoded = loaded(&mut world, name, ClipMode::Decode);
+      let (ClipData::Encoded(encoded), ClipData::Decoded(data)) = (streamed.data(), decoded.data())
+      else {
+        panic!("{name}: one streamed and one decoded clip");
+      };
+      assert_eq!(encoded.frames, data.frames.len(), "{name}");
+      assert_eq!(streamed.sample_rate(), data.sample_rate, "{name}");
+      assert_eq!(streamed.duration(), decoded.duration(), "{name}");
+    }
   }
 
   #[test]

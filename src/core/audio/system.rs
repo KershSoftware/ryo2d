@@ -41,7 +41,7 @@ mod tests {
   use crate::core::audio::engine::MIN_FADE;
   use crate::core::audio::{
     AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, BusDef, ClipData, DuckDef,
-    FocusLoss, Mixer, Music, PlayOptions, Sound, SoundClip, Voice,
+    EncodedClip, FocusLoss, Mixer, Music, PlayOptions, Sound, SoundClip, Voice,
   };
   use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::World;
@@ -999,12 +999,23 @@ mod tests {
     let broken = world
       .resource_mut::<Assets<AudioClip>>()
       .add(AudioClip::new(
-        ClipData::Encoded(garbage),
+        ClipData::Encoded(EncodedClip {
+          bytes: garbage,
+          frames: 22_050,
+        }),
         Duration::from_secs(1),
         22_050,
       ));
-    AudioView::new(&mut world).play(&broken);
-    audio_step(&mut world, FRAME);
+    // It fails on its decoder thread, and its voice ends
+    let failing = AudioView::new(&mut world).play(&broken);
+    for _ in 0..500 {
+      if failing.is_stopped() {
+        break;
+      }
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(failing.is_stopped(), "{failing:?}");
     assert_eq!(world.resource::<AudioEngine>().remembered(), 4);
     drop((sound, track, broken));
     audio_step(&mut world, FRAME);

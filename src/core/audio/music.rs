@@ -293,7 +293,9 @@ mod tests {
 
   use super::*;
   use crate::core::asset::{AssetServer, Assets, AssetsView, MemorySource};
-  use crate::core::audio::{AudioEngine, AudioLogEntry, AudioLogKind, AudioView, MusicJoinError};
+  use crate::core::audio::{
+    AudioEngine, AudioLogEntry, AudioLogKind, AudioView, EncodedClip, MusicJoinError,
+  };
   use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::World;
   use crate::core::testing::{audio_step, audio_world, audio_world_over};
@@ -791,21 +793,31 @@ mod tests {
   }
 
   /// Review M3: a track that cannot start (its stream already failed to
-  /// open) leaves the track playing alone
+  /// decode) leaves the track playing alone
   #[cfg(not(target_arch = "wasm32"))]
   #[test]
   fn a_refused_track_leaves_the_old_one_playing() {
     use std::sync::Arc;
     let mut world = world_with(&[("music/a.music.ron", r#"(clip: "music/tone.wav")"#)]);
     let garbage: Arc<[u8]> = Arc::from(&b"not audio at all"[..]);
-    let bad = AudioClip::new(ClipData::Encoded(garbage), Duration::from_secs(1), 22_050);
+    let encoded = EncodedClip {
+      bytes: garbage,
+      frames: 22_050,
+    };
+    let bad = AudioClip::new(ClipData::Encoded(encoded), Duration::from_secs(1), 22_050);
     let bad = world.resource_mut::<Assets<AudioClip>>().add(bad);
     let broken = world
       .resource_mut::<Assets<Music>>()
       .add(Music::looping(bad, 0.0, None));
-    // Its stream fails to open the first time, which marks its clip
+    // Its stream fails on its decoder thread the first time, which marks
+    // its clip, and the track ends
     AudioView::new(&mut world).play_music(&broken);
-    assert_eq!(current(&mut world), None);
+    let started = Instant::now();
+    while current(&mut world).is_some() {
+      assert!(started.elapsed() < Duration::from_secs(5), "the track ends");
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
     let a = music(&mut world, "music/a.music.ron");
     AudioView::new(&mut world).play_music(&a);
     audio_step(&mut world, FRAME);
@@ -822,7 +834,7 @@ mod tests {
       .iter()
       .filter(|entry| entry.kind == AudioLogKind::Refused)
       .count();
-    assert_eq!(refused, 2);
+    assert_eq!(refused, 1);
   }
 
   /// Review M5: a newer request replaces a track still loading, which then
@@ -865,11 +877,11 @@ mod tests {
   fn a_join_that_fails_says_why_in_its_error() {
     use std::sync::Arc;
     let clip = |rate: u32, frames: usize| AudioClip::from_frames(rate, &vec![[0.1, 0.1]; frames]);
-    let streamed = AudioClip::new(
-      ClipData::Encoded(Arc::from(&b"bytes"[..])),
-      Duration::from_secs(1),
-      48_000,
-    );
+    let encoded = EncodedClip {
+      bytes: Arc::from(&b"bytes"[..]),
+      frames: 48_000,
+    };
+    let streamed = AudioClip::new(ClipData::Encoded(encoded), Duration::from_secs(1), 48_000);
     let error = |result: Result<Music, MusicJoinError>| match result {
       Ok(music) => panic!("joined: {music:?}"),
       Err(error) => error,

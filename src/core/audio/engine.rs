@@ -4,10 +4,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Display;
-#[cfg(not(target_arch = "wasm32"))]
-use std::io::Cursor;
 use std::ops::Range;
-use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -37,11 +34,13 @@ use super::spatial::{
   AudioEmitter, Hearing, Listener, ListenerQuery, MAX_FILTERED, SpatialVoice, VoiceFilter,
   emitter_position, heard_db,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use super::stream::{ClipDecoder, StreamError};
 use super::view::{PlayOptions, Playable};
 use super::voice::{Voice, VoiceChange, VoiceCommand, VoicePick, VoiceState};
 use super::{
-  AudioClip, ClipData, FocusLoss, LimitRule, Mixer, Music, MusicData, SnapshotDef, Sound,
-  SoundClip, Spatial, VoiceLimit, VolumeKind, volume_to_db,
+  AudioClip, ClipData, EncodedClip, FocusLoss, LimitRule, Mixer, Music, MusicData, SnapshotDef,
+  Sound, SoundClip, Spatial, VoiceLimit, VolumeKind, volume_to_db,
 };
 use crate::core::asset::{
   AssetEvent, AssetId, AssetServer, Assets, Handle, LoadState, UntypedAssetId,
@@ -359,15 +358,18 @@ fn fixed_buffer(
 enum ClipSource {
   /// Decoded frames (an `Arc` inside: cheap to clone)
   Decoded(StaticSoundData),
-  /// The file's bytes, to stream from
-  Encoded(Arc<[u8]>),
+  /// The file, to stream from at its sample rate
+  Encoded { clip: EncodedClip, rate: u32 },
 }
 
 impl ClipSource {
   fn of(clip: &AudioClip) -> ClipSource {
     match clip.data() {
       ClipData::Decoded(data) => ClipSource::Decoded(StaticSoundData::clone(data)),
-      ClipData::Encoded(bytes) => ClipSource::Encoded(Arc::clone(bytes)),
+      ClipData::Encoded(encoded) => ClipSource::Encoded {
+        clip: encoded.clone(),
+        rate: clip.sample_rate(),
+      },
     }
   }
 }
@@ -466,7 +468,7 @@ impl<'a> SourceRef<'a> {
 enum Playback {
   Static(StaticSoundHandle),
   #[cfg(not(target_arch = "wasm32"))]
-  Stream(StreamingSoundHandle<kira::sound::FromFileError>),
+  Stream(StreamingSoundHandle<StreamError>),
   /// A loop played before the web's unlock: nothing sounds until it starts
   /// there
   Waiting(Waiting),
@@ -918,7 +920,7 @@ struct Subject<'a> {
 enum Refusal {
   /// The bus's track has no room
   Full,
-  /// A stream could not be opened
+  /// A stream could not start
   Undecodable(String),
 }
 
@@ -1988,7 +1990,7 @@ impl AudioEngine {
     let track = filter.as_mut().map(|filter| &mut filter.track);
     let started = match samples {
       ClipSource::Decoded(data) => self.start_static(bus, track, data, &start),
-      ClipSource::Encoded(bytes) => self.start_stream(bus, track, bytes, &start),
+      ClipSource::Encoded { clip, rate } => self.start_stream(bus, track, clip, rate, &start),
     };
     let playback = match started {
       Ok(playback) => playback,
@@ -2769,7 +2771,7 @@ impl AudioEngine {
       let track = filter.as_mut().map(|filter| &mut filter.track);
       let started = match samples {
         ClipSource::Decoded(data) => self.start_static(bus, track, data, &start),
-        ClipSource::Encoded(bytes) => self.start_stream(bus, track, bytes, &start),
+        ClipSource::Encoded { clip, rate } => self.start_stream(bus, track, clip, rate, &start),
       };
       match started {
         Ok(playback) => (playback, filter),
@@ -3081,29 +3083,25 @@ impl AudioEngine {
     Ok(start.hold(playback))
   }
 
-  /// Open a stream over a clip's bytes and start it on `bus` (or `track`,
-  /// a voice's own under it). The web has no streaming, and decodes every
+  /// Start a stream of a clip's file, at its sample rate `rate`, on `bus`
+  /// (or `track`, a voice's own under it). Its decoder opens the file on
+  /// kira's decoder thread, so a file that cannot open fails there, as the
+  /// voice's decode error. The web has no streaming, and decodes every
   /// clip, so never gets here
   #[cfg(not(target_arch = "wasm32"))]
   fn start_stream(
     &mut self,
     bus: usize,
     track: Option<&mut TrackHandle>,
-    bytes: Arc<[u8]>,
+    clip: EncodedClip,
+    rate: u32,
     start: &Start<'_>,
   ) -> Result<Playback, Refusal> {
-    let mut data = StreamingSoundData::from_cursor(Cursor::new(bytes))
-      .map_err(|error| Refusal::Undecodable(error.to_string()))?;
-    let frames = data.num_frames();
-    let seconds = data.duration().as_secs_f64();
-    let rate = if seconds > 0.0 {
-      (frames as f64 / seconds).round() as u32
-    } else {
-      0
-    };
+    let frames = clip.frames;
     let span = Span::of(start, rate, frames);
-    data.slice = span.slice;
     let position = span.wrap(start.position, rate, frames);
+    let mut data = StreamingSoundData::from_decoder(ClipDecoder::new(clip.bytes, rate, frames));
+    data.slice = span.slice;
     let data = data
       .volume(Decibels(start.gain_db))
       .panning(Panning(start.pan))
@@ -3129,7 +3127,8 @@ impl AudioEngine {
     &mut self,
     _bus: usize,
     _track: Option<&mut TrackHandle>,
-    _bytes: Arc<[u8]>,
+    _clip: EncodedClip,
+    _rate: u32,
     _start: &Start<'_>,
   ) -> Result<Playback, Refusal> {
     Err(Refusal::Undecodable(
@@ -4185,6 +4184,7 @@ fn chunks_due(owed: &mut u128, real_delta: Duration) -> u128 {
 
 #[cfg(test)]
 mod tests {
+  use std::sync::Arc;
   use std::time::Duration;
 
   use super::*;
@@ -4430,23 +4430,145 @@ mod tests {
     assert_eq!(undecodable_warnings("surround-reloaded.wav"), 1);
   }
 
-  /// A stream that cannot even open when played is refused, and warned
-  /// about by its path, whether or not the log is on
-  #[test]
-  fn a_clip_that_cannot_open_is_named_by_its_path_with_the_log_off() {
+  /// A world over `path`, a WAV loaded to stream whose bytes then go bad,
+  /// so its stream cannot open
+  fn garbled(path: &str) -> (World, Handle<AudioClip>) {
     let files = MemorySource::new();
-    files.insert("garbled-at-play.wav", fixture("tone.wav"));
+    files.insert(path, fixture("tone.wav"));
     let mut world = audio_world_over(files);
-    world.resource_mut::<AudioEngine>().set_logging(false);
-    let clip = streamed(&mut world, "garbled-at-play.wav");
-    // Its bytes go bad after loading
+    let clip = streamed(&mut world, path);
     if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
       let garbage: Arc<[u8]> = Arc::from(&b"not audio at all"[..]);
-      *clip = AudioClip::new(ClipData::Encoded(garbage), Duration::from_secs(1), 22_050);
+      let encoded = EncodedClip {
+        bytes: garbage,
+        frames: 22_050,
+      };
+      *clip = AudioClip::new(ClipData::Encoded(encoded), Duration::from_secs(1), 22_050);
     }
+    (world, clip)
+  }
+
+  /// A stream opens on its decoder thread, so one that cannot open starts
+  /// (nothing is read on the calling thread), then ends: cut with no fade,
+  /// as kira cuts a stream that fails, and warned about once
+  #[test]
+  fn a_stream_that_cannot_open_reports_once_and_ends() {
+    let (mut world, clip) = garbled("cannot-open.wav");
     let voice = AudioView::new(&mut world).play(&clip);
-    assert!(voice.is_stopped(), "{voice:?}");
+    assert!(voice.is_playing(), "{voice:?}");
+    wait_until_stopped(&mut world, &voice);
+    assert_eq!(undecodable_warnings("cannot-open.wav"), 1);
+    let entries: Vec<(AudioLogKind, Duration)> = log(&world)
+      .iter()
+      .filter(|entry| entry.voice == voice.id())
+      .map(|entry| (entry.kind, entry.fade))
+      .collect();
+    assert_eq!(
+      entries,
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Stop, Duration::ZERO)
+      ]
+    );
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 0);
+  }
+
+  /// A stream that cannot open is warned about by its path whether or not
+  /// the log is on
+  #[test]
+  fn a_clip_that_cannot_open_is_named_by_its_path_with_the_log_off() {
+    let (mut world, clip) = garbled("garbled-at-play.wav");
+    world.resource_mut::<AudioEngine>().set_logging(false);
+    let voice = AudioView::new(&mut world).play(&clip);
+    wait_until_stopped(&mut world, &voice);
     assert_eq!(undecodable_warnings("garbled-at-play.wav"), 1);
+  }
+
+  /// Where `voice` is, in seconds from the start of what it plays
+  fn position(world: &World, voice: &Voice) -> f64 {
+    let engine = world.resource::<AudioEngine>();
+    match engine.voices.index_of(voice.id()) {
+      Some(index) => engine.voices.live[index].playback.position(),
+      None => panic!("{voice:?} is not playing"),
+    }
+  }
+
+  /// Step `seconds` of game time in frames, leaving the decoder threads
+  /// time between them
+  fn run_for(world: &mut World, seconds: f64) {
+    let frames = (seconds / FRAME.as_secs_f64()).round() as usize;
+    for _ in 0..frames {
+      audio_step(world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+  }
+
+  /// `voice` is at `seconds`, or a few ms behind (its stream waited for its
+  /// first frames)
+  fn assert_at(world: &World, voice: &Voice, seconds: f64) {
+    let at = position(world, voice);
+    assert!(
+      at <= seconds && at > seconds - 0.05,
+      "{at} s in, not {seconds}"
+    );
+  }
+
+  /// A Vorbis stream started partway in plays to the end of the file and
+  /// ends. Here a one-shot is started again where it is, as a reload
+  /// switches a loop
+  #[test]
+  fn a_streamed_vorbis_one_shot_started_partway_finishes() {
+    let mut world = audio_world_over(files(&["tone-3s.ogg"]));
+    let clip = streamed(&mut world, "tone-3s.ogg");
+    let voice = AudioView::new(&mut world).play(&clip);
+    run_for(&mut world, 2.5);
+    assert_at(&world, &voice, 2.5);
+    let restarted = world.resource_scope(|world, mut engine: Mut<AudioEngine>| {
+      let index = engine.voices.index_of(voice.id());
+      index.map(|index| engine.restart(world, index, world.get_resource::<AssetServer>()))
+    });
+    assert!(matches!(restarted, Some(Ok(()))), "{restarted:?}");
+    for _ in 0..90 {
+      if voice.is_stopped() {
+        break;
+      }
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(voice.is_stopped(), "it ends within 1.5 s: {voice:?}");
+  }
+
+  /// A Vorbis loop started partway in (a reload switches it to the saved
+  /// file where it is) wraps to its start at the end of the file
+  #[test]
+  fn a_streamed_vorbis_loop_started_partway_wraps() {
+    let files = files(&["tone-3s.ogg"]);
+    let mut world = audio_world_over(files.clone());
+    let clip = streamed(&mut world, "tone-3s.ogg");
+    let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip.clone())],
+      looping: true,
+      ..Default::default()
+    });
+    let voice = AudioView::new(&mut world).play(&sound);
+    run_for(&mut world, 2.5);
+    let version = |world: &World| world.resource::<Assets<AudioClip>>().version(&clip);
+    let before = version(&world);
+    files.insert("tone-3s.ogg", fixture("tone-3s.ogg"));
+    world.resource::<AssetServer>().reload("tone-3s.ogg");
+    for _ in 0..500 {
+      if version(&world) != before {
+        break;
+      }
+      audio_step(&mut world, Duration::ZERO);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_ne!(version(&world), before, "the clip reloaded");
+    assert_at(&world, &voice, 2.5);
+    run_for(&mut world, 1.5);
+    assert!(voice.is_playing(), "{voice:?}");
+    let at = position(&world, &voice);
+    assert!(at < 1.0, "it wrapped: {at} s in after 1.5 s");
   }
 
   #[test]

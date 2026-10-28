@@ -14,12 +14,14 @@ mod music;
 mod settings;
 mod sound;
 mod spatial;
+#[cfg(not(target_arch = "wasm32"))]
+mod stream;
 mod system;
 mod view;
 mod voice;
 
 pub use clip::AudioClip;
-pub(crate) use clip::{ClipData, DECODE_THRESHOLD};
+pub(crate) use clip::{ClipData, DECODE_THRESHOLD, EncodedClip};
 pub use engine::AudioEngine;
 pub(crate) use engine::{HEADLESS_SEED, in_scene, release_scene, stop_scene_music, unlock};
 #[doc(hidden)]
@@ -37,6 +39,8 @@ pub(crate) use music::{MusicData, join};
 pub use settings::{VolumeKind, volume_to_db};
 pub use sound::{Falloff, LimitRule, Sound, SoundClip, Spatial, VoiceLimit};
 pub use spatial::{AudioEmitter, AudioListener, falloff_gain_db, pan_for};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use stream::{StreamError, probe as probe_stream};
 #[doc(hidden)]
 pub use system::audio_system;
 pub use view::{AudioView, PlayOptions, Playable};
