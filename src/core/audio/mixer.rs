@@ -9,7 +9,7 @@ use kira::effect::compressor::CompressorBuilder;
 use kira::effect::delay::DelayBuilder;
 use kira::effect::distortion::{DistortionBuilder, DistortionKind as KiraDistortion};
 use kira::effect::eq_filter::{EqFilterBuilder, EqFilterKind};
-use kira::effect::filter::{FilterBuilder, FilterMode};
+use kira::effect::filter::{FilterBuilder, FilterHandle, FilterMode};
 use kira::effect::reverb::ReverbBuilder;
 use kira::effect::{Effect, EffectBuilder};
 use kira::sound::SoundData;
@@ -20,6 +20,7 @@ use serde::Deserialize;
 use serde::de::{MapAccess, Visitor};
 
 use super::VolumeKind;
+use super::mix::OPEN_HZ;
 use super::settings::SILENCE_DB;
 use crate::core::asset::{Asset, AssetServer, Handle};
 
@@ -48,11 +49,53 @@ pub const MIXER_PATH: &str = "audio/mixer.mixer.ron";
 pub struct Mixer {
   /// The buses it adjusts or adds, in any order
   pub buses: Vec<BusDef>,
+  /// Named presets of bus volumes and low-pass cutoffs, which
+  /// `ctx.audio().snapshot(name)` blends to
+  pub snapshots: Vec<SnapshotDef>,
+  /// Rules that dip one bus while another plays
+  pub ducks: Vec<DuckDef>,
   /// What the mix does while the game's window is not focused
   pub on_focus_loss: FocusLoss,
 }
 
 impl Asset for Mixer {}
+
+/// A snapshot of a [`Mixer`]: the volumes and low-pass cutoffs some buses
+/// blend to. A bus it does not name blends back to its own. Its volumes
+/// are a layer over the mixer's and the player's, in dB; a bus it names a
+/// `low_pass` for gets a filter, open at 20 kHz otherwise
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnapshotDef {
+  pub name: String,
+  /// Seconds to blend to it, or back from it
+  pub blend: f32,
+  pub buses: Vec<(String, SnapshotBus)>,
+}
+
+/// What a snapshot does to one bus
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SnapshotBus {
+  /// Added to the bus's gain, in dB
+  pub volume_db: f32,
+  /// The cutoff in Hz its low-pass closes to
+  pub low_pass: Option<f32>,
+}
+
+/// A ducking rule: while any voice plays on `trigger` (or a bus under it),
+/// `target` is `by_db` quieter. The engine moves the dip each frame, over
+/// `attack` seconds in and `release` seconds out: it is gain, not audio-rate
+/// side-chaining
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuckDef {
+  pub trigger: String,
+  pub target: String,
+  /// The dip in dB (below 0)
+  pub by_db: f32,
+  /// Seconds to reach the full dip
+  pub attack: f32,
+  /// Seconds to come back
+  pub release: f32,
+}
 
 /// One bus of a [`Mixer`]: a standard bus it adjusts, or a game's own
 #[derive(Debug, Clone, PartialEq)]
@@ -267,6 +310,38 @@ impl Mixer {
           limit: bus.limit,
         })
         .collect(),
+      snapshots: file
+        .snapshots
+        .0
+        .into_iter()
+        .map(|(name, snapshot)| SnapshotDef {
+          name,
+          blend: snapshot.blend,
+          buses: snapshot
+            .buses
+            .0
+            .into_iter()
+            .map(|(bus, target)| {
+              let target = SnapshotBus {
+                volume_db: target.volume,
+                low_pass: target.low_pass,
+              };
+              (bus, target)
+            })
+            .collect(),
+        })
+        .collect(),
+      ducks: file
+        .ducks
+        .into_iter()
+        .map(|duck| DuckDef {
+          trigger: duck.trigger,
+          target: duck.target,
+          by_db: duck.by,
+          attack: duck.attack,
+          release: duck.release,
+        })
+        .collect(),
       on_focus_loss: file.on_focus_loss,
     };
     mixer.check()?;
@@ -307,12 +382,93 @@ impl Mixer {
         .check_bus(bus, &sends)
         .map_err(|error| format!("the bus {:?}: {error}", bus.name))?;
     }
+    self.check_snapshots()?;
+    self.check_ducks()?;
     if let FocusLoss::Duck(db) = self.on_focus_loss
       && !(db.is_finite() && db < 0.0)
     {
       return Err(format!(
         "on_focus_loss: Duck({db}) is not a cut in dB (below 0)"
       ));
+    }
+    Ok(())
+  }
+
+  /// Whether `name` is a bus this mixer makes
+  fn makes(&self, name: &str) -> bool {
+    is_standard(name) || self.has(name)
+  }
+
+  fn check_snapshots(&self) -> Result<(), String> {
+    for (index, snapshot) in self.snapshots.iter().enumerate() {
+      let name = &snapshot.name;
+      if self.snapshots[..index]
+        .iter()
+        .any(|other| other.name == *name)
+      {
+        return Err(format!("it names the snapshot {name:?} twice"));
+      }
+      if !(snapshot.blend.is_finite() && (0.0..=MAX_SECONDS).contains(&snapshot.blend)) {
+        return Err(format!(
+          "the snapshot {name:?}: its blend {} is not a time from 0 to {MAX_SECONDS} seconds",
+          snapshot.blend
+        ));
+      }
+      for (at, (bus, target)) in snapshot.buses.iter().enumerate() {
+        if !self.makes(bus) {
+          return Err(format!(
+            "the snapshot {name:?} names the bus {bus:?}, which is not in the mixer"
+          ));
+        }
+        if snapshot.buses[..at].iter().any(|(other, _)| other == bus) {
+          return Err(format!("the snapshot {name:?} names the bus {bus:?} twice"));
+        }
+        if !(target.volume_db.is_finite() && target.volume_db <= MAX_BUS_DB) {
+          return Err(format!(
+            "the snapshot {name:?}, bus {bus:?}: its volume {} is not a gain in dB of at most +{MAX_BUS_DB}",
+            target.volume_db
+          ));
+        }
+        if let Some(hz) = target.low_pass {
+          frequency("snapshot", "low_pass", f64::from(hz))
+            .map_err(|error| format!("the snapshot {name:?}, bus {bus:?}: {error}"))?;
+        }
+      }
+    }
+    Ok(())
+  }
+
+  fn check_ducks(&self) -> Result<(), String> {
+    let sends = self.send_buses();
+    for duck in &self.ducks {
+      let (trigger, target) = (&duck.trigger, &duck.target);
+      let rule = format!("the duck of {target:?} under {trigger:?}");
+      for bus in [trigger, target] {
+        if !self.makes(bus) {
+          return Err(format!("{rule}: the bus {bus:?} is not in the mixer"));
+        }
+      }
+      if trigger == target {
+        return Err(format!("{rule}: a bus cannot duck itself"));
+      }
+      if sends.contains(&trigger.as_str()) {
+        return Err(format!(
+          "{rule}: {trigger:?} is a send bus, which plays no voices to trigger it"
+        ));
+      }
+      if !(duck.by_db.is_finite() && duck.by_db < 0.0 && duck.by_db >= SILENCE_DB) {
+        return Err(format!(
+          "{rule}: its by {} is not a cut in dB (below 0, to {SILENCE_DB})",
+          duck.by_db
+        ));
+      }
+      for (field, seconds) in [("attack", duck.attack), ("release", duck.release)] {
+        if !(seconds.is_finite() && (0.0..=MAX_SECONDS).contains(&seconds)) {
+          return Err(format!(
+            "{rule}: its {field} {seconds} is not a time from 0 to {MAX_SECONDS} seconds"
+          ));
+        }
+      }
     }
     Ok(())
   }
@@ -654,7 +810,55 @@ struct MixerFile {
   #[serde(default)]
   buses: Named<BusFile>,
   #[serde(default)]
+  snapshots: Named<SnapshotFile>,
+  #[serde(default)]
+  ducks: Vec<DuckFile>,
+  #[serde(default)]
   on_focus_loss: FocusLoss,
+}
+
+/// One of a file's snapshots
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotFile {
+  #[serde(default = "default_blend")]
+  blend: f32,
+  #[serde(default)]
+  buses: Named<SnapshotBusFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotBusFile {
+  #[serde(default)]
+  volume: f32,
+  #[serde(default)]
+  low_pass: Option<f32>,
+}
+
+/// One of a file's ducking rules
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DuckFile {
+  trigger: String,
+  target: String,
+  by: f32,
+  #[serde(default = "duck_attack")]
+  attack: f32,
+  #[serde(default = "duck_release")]
+  release: f32,
+}
+
+fn default_blend() -> f32 {
+  0.3
+}
+
+fn duck_attack() -> f32 {
+  0.1
+}
+
+fn duck_release() -> f32 {
+  0.6
 }
 
 /// One of a file's buses
@@ -736,6 +940,9 @@ pub(crate) const SEND_TRACK_CAPACITY: usize = 64;
 pub(crate) const MAX_BUS_DB: f32 = 24.0;
 /// The longest delay or compressor time, in seconds
 const MAX_DELAY: f64 = 10.0;
+/// The longest a snapshot's blend or a duck's attack or release is, in
+/// seconds
+const MAX_SECONDS: f32 = 60.0;
 /// The audible range, for cutoffs and EQ frequencies
 const MIN_HZ: f64 = 20.0;
 const MAX_HZ: f64 = 20_000.0;
@@ -756,6 +963,8 @@ pub(crate) struct PlannedBus<'a> {
   pub(crate) setting: Option<VolumeKind>,
   pub(crate) pauses_with_game: bool,
   pub(crate) follows_time_scale: bool,
+  /// A snapshot closes a low-pass on it, so it gets a filter
+  pub(crate) low_pass: bool,
 }
 
 /// `mixer`'s buses in build order: the standard six, then the game's by
@@ -776,6 +985,7 @@ pub(crate) fn plan(mixer: &Mixer) -> Vec<PlannedBus<'_>> {
       follows_time_scale: def
         .and_then(|def| def.follows_time_scale)
         .unwrap_or(follows),
+      low_pass: filtered(mixer, name),
     });
   }
   let mut custom: Vec<&BusDef> = mixer
@@ -801,9 +1011,20 @@ pub(crate) fn plan(mixer: &Mixer) -> Vec<PlannedBus<'_>> {
       setting: None,
       pauses_with_game: def.pauses_with_game.unwrap_or(above.pauses_with_game),
       follows_time_scale: def.follows_time_scale.unwrap_or(above.follows_time_scale),
+      low_pass: filtered(mixer, &def.name),
     });
   }
   planned
+}
+
+/// Whether any snapshot names a `low_pass` for `bus`
+fn filtered(mixer: &Mixer, bus: &str) -> bool {
+  mixer.snapshots.iter().any(|snapshot| {
+    snapshot
+      .buses
+      .iter()
+      .any(|(name, target)| name == bus && target.low_pass.is_some())
+  })
 }
 
 /// A bus's gain, as layers in dB that add: a snapshot or a duck never
@@ -831,6 +1052,13 @@ impl GainLayers {
     }
     layers.iter().sum::<f32>().clamp(SILENCE_DB, MAX_BUS_DB)
   }
+}
+
+/// The filter a snapshot closes: a low-pass, open
+fn snapshot_filter() -> FilterBuilder {
+  FilterBuilder::new()
+    .mode(FilterMode::LowPass)
+    .cutoff(f64::from(OPEN_HZ))
 }
 
 /// Warn that kira had no room for `bus`'s track (it never runs out with the
@@ -874,6 +1102,8 @@ pub(crate) struct Bus {
   /// The send buses it feeds
   pub(crate) sends: Vec<Route>,
   pub(crate) layers: GainLayers,
+  /// The low-pass snapshots close, if any names one for it
+  pub(crate) cutoff: Option<Cutoff>,
   /// The volume its kira track was last given, in dB (`master`'s goes to
   /// kira's main track)
   pub(crate) applied: f32,
@@ -883,6 +1113,24 @@ pub(crate) struct Bus {
   pub(crate) limit: Option<u16>,
   /// A play was refused for want of kira's room on its track: warned once
   pub(crate) full_warned: bool,
+}
+
+/// A bus's snapshot filter: a low-pass kira holds on its track, open at
+/// [`OPEN_HZ`] until a snapshot closes it
+pub(crate) struct Cutoff {
+  /// `None` while kira has no track for the bus
+  pub(crate) handle: Option<FilterHandle>,
+  /// The cutoff kira's filter was last given, in Hz
+  pub(crate) applied: f32,
+}
+
+impl Cutoff {
+  fn open(handle: Option<FilterHandle>) -> Self {
+    Self {
+      handle,
+      applied: OPEN_HZ,
+    }
+  }
 }
 
 /// One of a bus's sends: to send bus `to`, at the mixer's `level` in dB
@@ -936,6 +1184,7 @@ impl BusTree {
           effects: def.map_or(0, |def| def.effects.len()),
           sends: Vec::new(),
           layers: layers(planned),
+          cutoff: planned.low_pass.then(|| Cutoff::open(None)),
           applied: 0.0,
           pauses_with_game: planned.pauses_with_game,
           follows_time_scale: planned.follows_time_scale,
@@ -981,7 +1230,13 @@ impl BusTree {
       for effect in planned.def.map_or(&[][..], |def| &def.effects) {
         builder.add_built_effect(effect.build());
       }
+      let filter = planned
+        .low_pass
+        .then(|| builder.add_effect(snapshot_filter()));
       let send = tracks.add_send_track(builder).ok();
+      if let Some(cutoff) = &mut tree.buses[index].cutoff {
+        cutoff.handle = filter;
+      }
       if send.is_none() {
         warn_no_room(planned.name);
       }
@@ -1002,6 +1257,12 @@ impl BusTree {
         .persist_until_sounds_finish(true);
       for effect in planned.def.map_or(&[][..], |def| &def.effects) {
         builder.add_built_effect(effect.build());
+      }
+      let filter = planned
+        .low_pass
+        .then(|| builder.add_effect(snapshot_filter()));
+      if let Some(cutoff) = &mut tree.buses[index].cutoff {
+        cutoff.handle = filter;
       }
       for route in &tree.buses[index].sends {
         if let Some(to) = tree.send_id(route.to) {
@@ -1207,6 +1468,7 @@ impl BusTree {
         setting_db: bus.layers.setting,
         snapshot_db: bus.layers.snapshot,
         duck_db: bus.layers.duck,
+        cutoff_hz: bus.cutoff.as_ref().map(|cutoff| cutoff.applied),
         gain_db: bus.layers.total(),
         effective_db: self.effective_db(index),
         pauses_with_game: bus.pauses_with_game,
@@ -1240,6 +1502,9 @@ pub struct BusReport {
   pub setting_db: f32,
   pub snapshot_db: f32,
   pub duck_db: f32,
+  /// The cutoff in Hz of the low-pass snapshots close on it (20000 is
+  /// open), for a bus a snapshot names a `low_pass` for
+  pub cutoff_hz: Option<f32>,
   /// The layers added (silence if any is silent)
   pub gain_db: f32,
   /// What a voice on it plays at: its gain and every bus's above it
@@ -1850,6 +2115,208 @@ mod tests {
       message.starts_with("stuck-loop-unique.wav:") && message.contains("rebuilt buses")
     });
     assert_eq!(stuck, 1);
+  }
+
+  /// Snapshots and a duck over the standard buses, and a send
+  const SNAPSHOTS: &str = r#"(
+    buses: {
+      "sfx/footsteps": (sends: { "sfx/reverb": -12.0 }),
+      "sfx/reverb": (effects: [Reverb(feedback: 0.8, mix: 1.0)]),
+    },
+    snapshots: {
+      "pause": (blend: 0.3, buses: {
+        "music": (volume: -6.0, low_pass: 800.0),
+        "sfx": (volume: -6.0),
+      }),
+      "dive": (blend: 0.2, buses: { "music": (volume: -12.0, low_pass: 400.0) }),
+    },
+    ducks: [(trigger: "voice", target: "music", by: -9.0, attack: 0.1, release: 0.6)],
+  )"#;
+
+  /// Step `seconds` of frames
+  fn run(world: &mut World, seconds: f32) {
+    let frames = (seconds / FRAME.as_secs_f32()).round() as usize;
+    for _ in 0..frames {
+      audio_step(world, FRAME);
+    }
+  }
+
+  #[test]
+  fn a_snapshot_blends_to_its_targets_over_its_blend() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    assert_eq!(bus(&world, "music").cutoff_hz, Some(20_000.0));
+    assert_eq!(bus(&world, "ui").cutoff_hz, None, "no snapshot filters ui");
+    AudioView::new(&mut world).snapshot("pause");
+    run(&mut world, 0.15);
+    let half = bus(&world, "music");
+    assert!(
+      half.snapshot_db < -1.0 && half.snapshot_db > -5.0,
+      "{half:?}"
+    );
+    assert!(half.cutoff_hz.is_some_and(|hz| hz < 20_000.0 && hz > 800.0));
+    run(&mut world, 0.2);
+    let music = bus(&world, "music");
+    assert!((music.snapshot_db + 6.0).abs() < 0.1, "{music:?}");
+    assert_eq!(music.cutoff_hz, Some(800.0));
+    assert!((bus(&world, "sfx").snapshot_db + 6.0).abs() < 0.1);
+    assert_eq!(bus(&world, "voice").snapshot_db, 0.0);
+  }
+
+  #[test]
+  fn clear_snapshot_blends_back() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    AudioView::new(&mut world).snapshot("pause");
+    run(&mut world, 0.4);
+    AudioView::new(&mut world).clear_snapshot();
+    run(&mut world, 0.15);
+    let half = bus(&world, "music");
+    assert!(
+      half.snapshot_db < -1.0 && half.snapshot_db > -5.0,
+      "{half:?}"
+    );
+    run(&mut world, 0.2);
+    let music = bus(&world, "music");
+    assert!(music.snapshot_db.abs() < 0.1, "{music:?}");
+    assert_eq!(music.cutoff_hz, Some(20_000.0));
+  }
+
+  #[test]
+  fn a_new_snapshot_blends_from_where_the_mix_is() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    AudioView::new(&mut world).snapshot("pause");
+    run(&mut world, 0.15);
+    let before = bus(&world, "music").snapshot_db;
+    AudioView::new(&mut world).snapshot("dive");
+    audio_step(&mut world, FRAME);
+    let after = bus(&world, "music").snapshot_db;
+    assert!(
+      (after - before).abs() < 1.5 && before < -1.0,
+      "no jump: {before} then {after}"
+    );
+    run(&mut world, 0.3);
+    let music = bus(&world, "music");
+    assert!((music.snapshot_db + 12.0).abs() < 0.1, "{music:?}");
+    assert_eq!(music.cutoff_hz, Some(400.0));
+    // sfx is not in "dive": it blended back to 0
+    assert!(bus(&world, "sfx").snapshot_db.abs() < 0.1);
+  }
+
+  #[test]
+  fn a_slider_moved_under_a_snapshot_is_heard_at_once() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    AudioView::new(&mut world).snapshot("pause");
+    run(&mut world, 0.4);
+    AudioView::new(&mut world).set_volume_setting(VolumeKind::Music, 0.5);
+    let music = bus(&world, "music");
+    assert!(
+      close(music.gain_db, -6.0 + volume_to_db(0.5)),
+      "snapshot and slider add: {music:?}"
+    );
+  }
+
+  #[test]
+  fn a_snapshot_reaches_a_send_route_through_the_buses_above_the_sender() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    AudioView::new(&mut world).snapshot("pause");
+    run(&mut world, 0.4);
+    let footsteps = bus(&world, "sfx/footsteps");
+    assert!(
+      (footsteps.send_gains[0].1 + 18.0).abs() < 0.1,
+      "-12 plus sfx's -6: {footsteps:?}"
+    );
+  }
+
+  #[test]
+  fn music_ducks_while_a_voice_plays_and_releases_after() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    let clip = clip(&mut world, 0.5);
+    let line = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      bus: "voice".to_string(),
+      ..Default::default()
+    });
+    run(&mut world, 0.1);
+    assert_eq!(bus(&world, "music").duck_db, 0.0);
+    let voice = AudioView::new(&mut world).play(&line);
+    run(&mut world, 0.05);
+    let half = bus(&world, "music").duck_db;
+    assert!(half < -2.0 && half > -8.0, "mid attack: {half}");
+    run(&mut world, 0.07);
+    let music = bus(&world, "music");
+    assert!((music.duck_db + 9.0).abs() < 0.01, "{music:?}");
+    assert!(close(music.gain_db, -9.0), "{music:?}");
+    // While it plays it stays down; after it ends, it releases over 0.6 s
+    run(&mut world, 0.3);
+    assert!(voice.is_playing());
+    assert!((bus(&world, "music").duck_db + 9.0).abs() < 0.01);
+    run(&mut world, 0.2);
+    assert!(!voice.is_playing());
+    run(&mut world, 0.2);
+    let mid = bus(&world, "music").duck_db;
+    assert!(mid < -1.0 && mid > -8.9, "mid release: {mid}");
+    run(&mut world, 0.8);
+    assert_eq!(bus(&world, "music").duck_db, 0.0);
+  }
+
+  #[test]
+  fn the_snapshot_and_a_duck_survive_a_rebuild() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    let clip = clip(&mut world, 5.0);
+    let line = looping(&mut world, clip, "voice");
+    AudioView::new(&mut world).snapshot("pause");
+    AudioView::new(&mut world).play(&line);
+    run(&mut world, 0.5);
+    let before = bus(&world, "music");
+    assert!((before.duck_db + 9.0).abs() < 0.01 && before.cutoff_hz == Some(800.0));
+    let mixer = Mixer::parse(SNAPSHOTS).unwrap_or_default();
+    AudioView::new(&mut world).set_mixer(mixer);
+    audio_step(&mut world, FRAME);
+    let music = bus(&world, "music");
+    assert!((music.snapshot_db + 6.0).abs() < 0.1, "{music:?}");
+    assert!((music.duck_db + 9.0).abs() < 0.01, "{music:?}");
+    assert!(
+      close(music.gain_db, -15.0),
+      "the layers are on the new tree at once: {music:?}"
+    );
+    run(&mut world, 0.1);
+    assert_eq!(bus(&world, "music").cutoff_hz, Some(800.0));
+  }
+
+  #[test]
+  fn an_unknown_snapshot_warns_once_and_changes_nothing() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    for _ in 0..3 {
+      AudioView::new(&mut world).snapshot("no-such-snapshot-unique");
+    }
+    run(&mut world, 0.1);
+    assert_eq!(bus(&world, "music").snapshot_db, 0.0);
+    assert_eq!(
+      warnings(|message| message.contains("no-such-snapshot-unique")),
+      1
+    );
+  }
+
+  #[test]
+  fn snapshots_and_ducks_that_name_what_is_not_there_fail_the_check() {
+    let bad = |text: &str| match Mixer::parse(text) {
+      Ok(mixer) => panic!("{text} parsed: {mixer:?}"),
+      Err(error) => error,
+    };
+    let error = bad(r#"(snapshots: { "a": (buses: { "sfx/nope": (volume: -1.0) }) })"#);
+    assert!(error.contains("sfx/nope"), "{error}");
+    let error = bad(r#"(snapshots: { "a": (buses: { "music": (low_pass: 5.0) }) })"#);
+    assert!(error.contains("low_pass"), "{error}");
+    let error = bad(r#"(snapshots: { "a": (blend: -1.0) })"#);
+    assert!(error.contains("blend"), "{error}");
+    let error =
+      bad(r#"(ducks: [(trigger: "voice", target: "nope", by: -9.0, attack: 0.1, release: 0.1)])"#);
+    assert!(error.contains("nope"), "{error}");
+    let error =
+      bad(r#"(ducks: [(trigger: "voice", target: "music", by: 3.0, attack: 0.1, release: 0.1)])"#);
+    assert!(error.contains("by"), "{error}");
+    let error =
+      bad(r#"(ducks: [(trigger: "music", target: "music", by: -3.0, attack: 0.1, release: 0.1)])"#);
+    assert!(error.contains("itself"), "{error}");
   }
 
   fn warnings(matching: impl Fn(&str) -> bool) -> usize {

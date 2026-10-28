@@ -129,6 +129,24 @@ impl<'w> AudioView<'w> {
     }
   }
 
+  /// Blend the mix to the mixer's snapshot `name` over the snapshot's
+  /// blend time, from wherever it is: its volumes are a layer over the
+  /// mixer's and the player's, and its low-pass cutoffs close with it. One
+  /// snapshot is active at a time. A name the mixer has none of is warned
+  /// about once and changes nothing
+  pub fn snapshot(&mut self, name: &str) {
+    if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
+      engine.snapshot(name);
+    }
+  }
+
+  /// Blend back from the active snapshot, over its blend time
+  pub fn clear_snapshot(&mut self) {
+    if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
+      engine.clear_snapshot();
+    }
+  }
+
   /// Build the buses from `mixer`, made in code, in place of the game's
   /// mixer file (a game with no file, such as one on the web, or a test).
   /// It applies at the end of the frame as a saved file would: loops carry

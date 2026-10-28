@@ -26,6 +26,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use super::log::{AudioLog, AudioLogEntry, AudioLogKind};
+use super::mix::{Blend, DuckState, Level, OPEN_HZ};
 use super::mixer::{
   BusReport, BusTree, GainLayers, MAX_BUS_DB, Output, PlannedBus, Route, SEND_TRACK_CAPACITY,
   Tracks, plan,
@@ -34,7 +35,8 @@ use super::settings::{SILENCE_DB, VolumeSettings};
 use super::view::{PlayOptions, Playable};
 use super::voice::{Voice, VoiceChange, VoiceCommand, VoiceState};
 use super::{
-  AudioClip, ClipData, LimitRule, Mixer, Sound, SoundClip, VoiceLimit, VolumeKind, volume_to_db,
+  AudioClip, ClipData, LimitRule, Mixer, SnapshotDef, Sound, SoundClip, VoiceLimit, VolumeKind,
+  volume_to_db,
 };
 use crate::core::asset::{AssetId, AssetServer, Assets, Handle};
 use crate::core::ecs::{Resource, Vec2, World};
@@ -64,6 +66,8 @@ const GAIN_RANGE: (f32, f32) = (-60.0, 24.0);
 const PITCH_RANGE: f32 = 48.0;
 /// A bus gain change smaller than this (dB) is not sent to kira
 const GAIN_EPSILON: f32 = 1e-4;
+/// A cutoff change smaller than this (Hz) is not sent to kira
+const CUTOFF_EPSILON: f32 = 0.01;
 /// Where a clip played directly goes
 const DEFAULT_BUS: &str = "sfx";
 
@@ -592,6 +596,16 @@ pub struct AudioEngine {
   bus_volumes: FastMap<String, f32>,
   /// Bus names whose game volume was warned about once (no such bus)
   warned_volumes: FastSet<String>,
+  /// The mixer's snapshots, as of its last build
+  snapshots: Vec<SnapshotDef>,
+  /// The active snapshot and the blend toward it
+  blend: Blend,
+  /// A snapshot (or `None`, a clear) asked for before the mixer landed
+  pending_snapshot: Option<Option<String>>,
+  /// Snapshot names warned about once (there is none by that name)
+  warned_snapshots: FastSet<String>,
+  /// The mixer's ducking rules, as of its last build
+  ducks: Vec<DuckState>,
   /// The mixer the bus tree is built from: `None` is the standard layout
   mixer: Option<Handle<Mixer>>,
   /// The mixer's content version the tree was last built from
@@ -640,7 +654,15 @@ impl AudioEngine {
     let settings = VolumeSettings::default();
     let buses = BusTree::standard(
       manager.as_mut().map(|manager| manager as &mut dyn Tracks),
-      |planned| layers_of(planned, &settings, &FastMap::default()),
+      |planned| {
+        layers_of(
+          planned,
+          &settings,
+          &FastMap::default(),
+          &Blend::default(),
+          &[],
+        )
+      },
     );
     let (commands, inbox) = crossbeam_channel::unbounded();
     let mut engine = AudioEngine {
@@ -665,6 +687,11 @@ impl AudioEngine {
       settings,
       bus_volumes: FastMap::default(),
       warned_volumes: FastSet::default(),
+      snapshots: Vec::new(),
+      blend: Blend::default(),
+      pending_snapshot: None,
+      warned_snapshots: FastSet::default(),
+      ducks: Vec::new(),
       mixer: None,
       mixer_version: None,
       mixer_pending: false,
@@ -856,6 +883,131 @@ impl AudioEngine {
     }
   }
 
+  /// Blend to the mixer's snapshot `name` over its blend time, from where
+  /// the mix is. One is active at a time. A name the mixer lacks is warned
+  /// about once and changes nothing; before the mixer lands, the call waits
+  /// for it
+  pub(crate) fn snapshot(&mut self, name: &str) {
+    if self.mixer_pending {
+      self.pending_snapshot = Some(Some(name.to_string()));
+    } else {
+      self.activate(Some(name));
+    }
+  }
+
+  /// Blend back from the active snapshot over its blend time
+  pub(crate) fn clear_snapshot(&mut self) {
+    if self.mixer_pending {
+      self.pending_snapshot = Some(None);
+    } else {
+      self.activate(None);
+    }
+  }
+
+  /// Start blending to snapshot `name`, or to no snapshot
+  fn activate(&mut self, name: Option<&str>) {
+    match name {
+      Some(name) => {
+        let Some(def) = self.snapshots.iter().find(|snapshot| snapshot.name == name) else {
+          self.warn_snapshot(name);
+          return;
+        };
+        let targets = def.buses.iter().map(|(bus, target)| {
+          let level = Level {
+            db: target.volume_db,
+            hz: target.low_pass.unwrap_or(OPEN_HZ),
+          };
+          (bus.as_str(), level)
+        });
+        self.blend.begin(Some(name), def.blend, targets);
+      }
+      None => {
+        if self.blend.active.is_none() {
+          return;
+        }
+        let seconds = self.blend.seconds();
+        self.blend.begin(None, seconds, std::iter::empty());
+      }
+    }
+    // A blend of no time lands in this call
+    self.step_blend(0.0);
+  }
+
+  /// Warn, once for `name`, that the mixer has no such snapshot
+  fn warn_snapshot(&mut self, name: &str) {
+    if !self.warned_snapshots.insert(name.to_string()) {
+      return;
+    }
+    crate::engine_warn!(
+      module: "Audio",
+      "snapshot: the mixer has no snapshot {name:?}; the mix stays as it is"
+    );
+  }
+
+  /// Move the snapshot's blend on by `seconds` and put its levels on the
+  /// buses
+  fn step_blend(&mut self, seconds: f32) {
+    if !self.blend.step(seconds) {
+      return;
+    }
+    for (name, level) in self.blend.levels() {
+      if let Some(index) = self.buses.find(name) {
+        self.buses.buses[index].layers.snapshot = level.db;
+      }
+    }
+    self.blend.settle();
+    self.refresh_gains();
+    self.refresh_cutoffs();
+  }
+
+  /// Each frame: the snapshot's blend, and the ducks. A duck dips while any
+  /// voice plays on its trigger bus or under it
+  fn step_mix(&mut self, delta: Duration) {
+    let seconds = delta.as_secs_f32();
+    self.step_blend(seconds);
+    let mut moved = false;
+    for duck in &mut self.ducks {
+      let trigger = duck.trigger;
+      let playing = self.voices.live.iter().any(|live| {
+        live.voice.state() == VoiceState::Playing && self.buses.within(live.bus, trigger)
+      });
+      moved |= duck.step(playing, seconds);
+    }
+    if !moved {
+      return;
+    }
+    for duck in &self.ducks {
+      let depth: f32 = self
+        .ducks
+        .iter()
+        .filter(|other| other.target == duck.target)
+        .map(|other| other.depth)
+        .sum();
+      if let Some(bus) = self.buses.buses.get_mut(duck.target) {
+        bus.layers.duck = depth;
+      }
+    }
+    self.refresh_gains();
+  }
+
+  /// Give each snapshot filter the cutoff the snapshot blend is at, where
+  /// it changed, smoothed over [`MIN_FADE`]
+  fn refresh_cutoffs(&mut self) {
+    for bus in &mut self.buses.buses {
+      let Some(cutoff) = &mut bus.cutoff else {
+        continue;
+      };
+      let hz = self.blend.level(&bus.name).hz;
+      if (hz - cutoff.applied).abs() < CUTOFF_EPSILON {
+        continue;
+      }
+      cutoff.applied = hz;
+      if let Some(handle) = &mut cutoff.handle {
+        handle.set_cutoff(f64::from(hz), tween(MIN_FADE));
+      }
+    }
+  }
+
   /// Set `bus`'s snapshot and duck layers (tests, until snapshots and
   /// ducking set them)
   #[cfg(test)]
@@ -946,14 +1098,32 @@ impl AudioEngine {
   /// still reaches what plays out there
   fn rebuild(&mut self, world: &World, mixer: &Mixer, server: Option<&AssetServer>) {
     let planned = plan(mixer);
+    // The new rules first: the tree is built with the dips the old ones
+    // have reached, so an active duck is not lost
+    self.snapshots.clone_from(&mixer.snapshots);
+    let old_ducks = std::mem::take(&mut self.ducks);
+    self.ducks = mixer
+      .ducks
+      .iter()
+      .map(|def| DuckState {
+        def: def.clone(),
+        trigger: 0,
+        target: 0,
+        depth: old_ducks
+          .iter()
+          .find(|old| old.def.trigger == def.trigger && old.def.target == def.target)
+          .map_or(0.0, |old| old.depth),
+      })
+      .collect();
     let (settings, volumes) = (&self.settings, &self.bus_volumes);
+    let (blend, ducks) = (&self.blend, &self.ducks);
     let mut tree = BusTree::build(
       self
         .manager
         .as_mut()
         .map(|manager| manager as &mut dyn Tracks),
       &planned,
-      |planned| layers_of(planned, settings, volumes),
+      |planned| layers_of(planned, settings, volumes, blend, ducks),
     );
     // The main track keeps master's gain until the refresh below
     tree.buses[0].applied = self.buses.buses[0].applied;
@@ -990,7 +1160,20 @@ impl AudioEngine {
         self.warn_stuck(index, &why, server);
       }
     }
+    for duck in &mut self.ducks {
+      duck.trigger = self.buses.find(&duck.def.trigger).unwrap_or(0);
+      duck.target = self.buses.find(&duck.def.target).unwrap_or(0);
+    }
+    // The active snapshot blends to the new mixer's version of it, or
+    // clears if the new mixer has none
+    if let Some(active) = self.blend.active.clone() {
+      self.activate(Some(&active));
+    }
+    if let Some(pending) = self.pending_snapshot.take() {
+      self.activate(pending.as_deref());
+    }
     self.refresh_gains();
+    self.refresh_cutoffs();
     let missing: Vec<String> = self
       .bus_volumes
       .keys()
@@ -1472,6 +1655,7 @@ impl AudioEngine {
       }
     }
     self.retire_ended(server);
+    self.step_mix(real_delta);
     if !self.retired_sends.is_empty() {
       let live = &self.voices.live;
       self
@@ -1661,11 +1845,14 @@ impl Drop for AudioEngine {
 }
 
 /// A planned bus's gain layers: the game's volume for it, or the mixer's,
-/// and the player's setting it carries
+/// the player's setting it carries, and the active snapshot's and ducks'
+/// levels now
 fn layers_of(
   planned: &PlannedBus<'_>,
   settings: &VolumeSettings,
   volumes: &FastMap<String, f32>,
+  blend: &Blend,
+  ducks: &[DuckState],
 ) -> GainLayers {
   GainLayers {
     base: volumes
@@ -1675,8 +1862,12 @@ fn layers_of(
     setting: planned
       .setting
       .map_or(0.0, |kind| volume_to_db(settings.get(kind))),
-    snapshot: 0.0,
-    duck: 0.0,
+    snapshot: blend.level(planned.name).db,
+    duck: ducks
+      .iter()
+      .filter(|duck| duck.def.target == planned.name)
+      .map(|duck| duck.depth)
+      .sum(),
   }
 }
 

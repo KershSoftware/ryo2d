@@ -8,6 +8,7 @@ mod clip;
 mod engine;
 mod legacy;
 mod log;
+mod mix;
 mod mixer;
 mod settings;
 mod sound;
@@ -23,7 +24,10 @@ pub use legacy::*;
 pub use log::{AudioLogEntry, AudioLogKind};
 #[doc(hidden)]
 pub use mixer::BusReport;
-pub use mixer::{BusDef, DistortionKind, EffectDef, EqKind, FocusLoss, MIXER_PATH, Mixer};
+pub use mixer::{
+  BusDef, DistortionKind, DuckDef, EffectDef, EqKind, FocusLoss, MIXER_PATH, Mixer, SnapshotBus,
+  SnapshotDef,
+};
 pub(crate) use mixer::{check_bus_name, default_mixer};
 pub use settings::{VolumeKind, volume_to_db};
 pub use sound::{Falloff, LimitRule, Sound, SoundClip, Spatial, VoiceLimit};

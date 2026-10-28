@@ -133,6 +133,32 @@ mod tests {
   }
 
   #[test]
+  fn snapshots_and_ducks_read_as_written() {
+    let mixer = loaded(
+      r#"(
+        snapshots: {
+          "pause": (blend: 0.5, buses: { "music": (volume: -6.0, low_pass: 800.0), "sfx": () }),
+          "plain": (),
+        },
+        ducks: [(trigger: "voice", target: "music", by: -9.0, attack: 0.2, release: 0.7),
+                (trigger: "ui", target: "ambience", by: -3.0)],
+      )"#,
+    );
+    assert_eq!(mixer.snapshots.len(), 2);
+    let pause = &mixer.snapshots[0];
+    assert_eq!((pause.name.as_str(), pause.blend), ("pause", 0.5));
+    assert_eq!(pause.buses[0].0, "music");
+    assert_eq!(pause.buses[0].1.volume_db, -6.0);
+    assert_eq!(pause.buses[0].1.low_pass, Some(800.0));
+    assert_eq!(pause.buses[1].1, Default::default());
+    assert_eq!(mixer.snapshots[1].blend, 0.3, "the default blend");
+    assert_eq!(mixer.ducks[0].by_db, -9.0);
+    assert_eq!((mixer.ducks[0].attack, mixer.ducks[0].release), (0.2, 0.7));
+    assert_eq!((mixer.ducks[1].attack, mixer.ducks[1].release), (0.1, 0.6));
+    assert!(failure(r#"(snapshots: { "a": (), "a": () })"#).contains("twice"));
+  }
+
+  #[test]
   fn every_field_reads_as_written() {
     let mixer = loaded(
       r#"(
