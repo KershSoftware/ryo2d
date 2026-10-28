@@ -30,7 +30,8 @@ use crate::core::hash::FastSet;
 /// Saved while it plays (hot reload: its file, its clip, or its intro or
 /// loop file), the track switches to what it now says where it is,
 /// crossfading over 10 ms: its new clips, loop, volume, bus and crossfade.
-/// A save that does not load changes nothing. Changed in code
+/// Partway through its fade-in or a crossfade, it carries on with what is
+/// left of it. A save that does not load changes nothing. Changed in code
 /// (`Assets::get_mut`), the track playing it switches the same way, as a
 /// save does: each change starts it again where it is, so change it when it
 /// should switch, not every frame.

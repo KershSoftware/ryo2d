@@ -376,10 +376,12 @@ In debug builds with a window, saving a file in `assets/` changes what is playin
 | Saved | What happens |
 |---|---|
 | A clip | Its loops and the music playing it switch to the new file where they are, crossfading over 10 ms; its one-shots finish as they were; the next plays use the new file |
-| A sound definition | The next plays use it; its playing loops take the new volume and pitch at once, each keeping its own spread and its play's options, with the game's `set_volume` and `set_pitch` still on top (a definition at -12 dB given `set_volume(-6.0)` plays at -18 dB, and saved at -10 dB plays at -16) |
+| A sound definition | The next plays use it; its playing loops take the new volume and pitch at once, each keeping its own spread and its play's options, with the game's `set_volume` and `set_pitch` still on top (a definition at -12 dB given `set_volume(-6.0)` plays at -18 dB, and saved at -10 dB plays at -16). Saved with a new `bus`, its loops move there where they are, crossfading over 10 ms, and its one-shots finish where they are |
 | A music definition, its clip, or its intro or loop file | The track switches, where it is, to what the saved definition says, crossfading over 10 ms |
 | The mixer | The buses are built again: loops carry on, at their position, on the new buses; one-shots finish on the old ones |
 
+- A switch partway through a `fade_in` or a music crossfade carries on with what is left of it rather than jumping to full level.
+- Loops a reload cannot switch (their bus out of room, as when one save switches many loops on one bus) play on as they were, with one warning saying how many.
 - A save that does not load (a typo) changes nothing and warns once with the file and, for RON, the line and column; fix it and save again.
 - The same happens for a change made in code: `ctx.assets().get_mut(&clip)` or `get_mut(&music)` switches what plays, so change them when they should switch, not every frame.
 - The audio demo's Hot reload page shows it: save `assets/hot/drone.sound.ron` while it plays.

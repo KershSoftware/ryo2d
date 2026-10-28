@@ -782,7 +782,7 @@ mod tests {
     let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
     let voice = AudioView::new(&mut world).play(&sound);
     steps(&mut world, 3);
-    let retuned = r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -12.0, pitch: 2.0, bus: "ambience")"#;
+    let retuned = r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -12.0, pitch: 2.0)"#;
     save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", retuned);
     assert_eq!(
       entries(&world, voice.id()),
@@ -799,14 +799,14 @@ mod tests {
     let (gain, rate) = (&last[last.len() - 2], &last[last.len() - 1]);
     assert_eq!(gain.gain_db, -12.0);
     assert!((rate.rate - octave_sixth).abs() < 1e-9, "{}", rate.rate);
-    // It stays on its bus; a new play takes everything new
+    // A new play takes everything new
     assert_eq!(rate.bus, "sfx");
     let fresh = AudioView::new(&mut world).play(&sound);
     let start = log(&world)
       .into_iter()
       .find(|entry| entry.voice == fresh.id())
       .map(|entry| (entry.gain_db, entry.rate, entry.bus));
-    assert_eq!(start, Some((-12.0, octave_sixth, "ambience".to_string())));
+    assert_eq!(start, Some((-12.0, octave_sixth, "sfx".to_string())));
   }
 
   #[test]
@@ -1239,5 +1239,242 @@ mod tests {
       "{}",
       position(&world, &voice)
     );
+  }
+
+  /// A definition saved with a new bus moves its playing loops there,
+  /// where they are, crossfading over 10 ms as a clip's reload does, while
+  /// its one-shots finish where they are; its limit then counts the loops
+  /// on their new bus
+  #[test]
+  fn a_definition_saved_onto_another_bus_moves_its_loops() {
+    let hum = wav_of(2.0, 3_000);
+    let shot = r#"(clips: [(path: "sfx/hum.wav")])"#;
+    let (mut world, files) = world_over(&[
+      ("sfx/hum.wav", &hum),
+      ("sfx/hum.sound.ron", HUM.as_bytes()),
+      ("sfx/shot.sound.ron", shot.as_bytes()),
+    ]);
+    let (sound, once) = (
+      load::<Sound>(&mut world, "sfx/hum.sound.ron"),
+      load::<Sound>(&mut world, "sfx/shot.sound.ron"),
+    );
+    let voice = AudioView::new(&mut world).play(&sound);
+    let one_shot = AudioView::new(&mut world).play(&once);
+    steps(&mut world, 12);
+    let before = position(&world, &voice);
+    let moved = r#"(clips: [(path: "sfx/hum.wav")], looping: true, bus: "ambience", limit: (max: 1, rule: PreventNew))"#;
+    save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", moved);
+    let shot_moved = r#"(clips: [(path: "sfx/hum.wav")], bus: "ambience")"#;
+    save::<Sound>(&mut world, &files, "sfx/shot.sound.ron", shot_moved);
+    assert_eq!(
+      entries(&world, voice.id()),
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Stop, MIN_FADE),
+        (AudioLogKind::Start, MIN_FADE)
+      ],
+      "{:#?}",
+      log(&world)
+    );
+    assert_eq!(started_on(&world, "ambience"), voice.id());
+    let after = position(&world, &voice);
+    assert!((after - before).abs() <= CHUNK, "{before} then {after}");
+    assert_eq!(
+      entries(&world, one_shot.id()),
+      [(AudioLogKind::Start, Duration::ZERO)],
+      "the one-shot plays on where it was"
+    );
+    let mut audio = AudioView::new(&mut world);
+    assert_eq!(
+      (audio.voices_on("ambience"), audio.voices_on("sfx")),
+      (1, 1)
+    );
+    // Its limit counts the loop on its new bus
+    assert!(audio.play(&sound).is_stopped(), "{:#?}", log(&world));
+  }
+
+  /// The Stop logged for the old voice at a switch is the old voice as it
+  /// played: its bus and gain, not the new one's
+  #[test]
+  fn a_switch_logs_the_old_voice_s_stop_as_it_was() {
+    let hum = wav_of(2.0, 3_000);
+    let (mut world, files) = world_over(&[
+      ("sfx/hum.wav", &hum),
+      (
+        "sfx/hum.sound.ron",
+        br#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -6.0)"#,
+      ),
+    ]);
+    let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
+    let voice = AudioView::new(&mut world).play(&sound);
+    steps(&mut world, 3);
+    let moved =
+      r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -12.0, bus: "ambience")"#;
+    save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", moved);
+    let switch: Vec<(AudioLogKind, String, f32)> = log(&world)
+      .into_iter()
+      .filter(|entry| entry.voice == voice.id())
+      .skip(1)
+      .map(|entry| (entry.kind, entry.bus, entry.gain_db))
+      .collect();
+    assert_eq!(
+      switch,
+      [
+        (AudioLogKind::Stop, "sfx".to_string(), -6.0),
+        (AudioLogKind::Start, "ambience".to_string(), -12.0)
+      ]
+    );
+  }
+
+  /// A track restarted by a reload partway through its fade-in carries on
+  /// with what was left of it, rather than jumping to its level
+  #[test]
+  fn a_music_restart_keeps_what_was_left_of_its_fade_in() {
+    let (mut world, meter) = crate::core::testing::metered_audio_world();
+    let clip = clip(&mut world, 5.0);
+    let mut theme = Music::looping(clip, 0.0, None);
+    theme.fade_in = Duration::from_secs(2);
+    let track = world.resource_mut::<Assets<Music>>().add(theme);
+    AudioView::new(&mut world).play_music(&track);
+    steps(&mut world, 30);
+    let before = meter.last().left;
+    assert!(before > 0.005 && before < 0.02, "a quarter in: {before}");
+    // Changed in code, as unchanged: a reload all the same
+    let _ = world.resource_mut::<Assets<Music>>().get_mut(&track);
+    audio_step(&mut world, FRAME);
+    let voice = started_on(&world, "music");
+    assert_eq!(entries(&world, voice).len(), 3, "it switched");
+    steps(&mut world, 2);
+    let after = meter.last().left;
+    assert!(
+      after > before && after < 0.03,
+      "it carries on fading in: {before} then {after}"
+    );
+    // At the fade-in's end, 2 s after the start, it is at its level
+    steps(&mut world, 90);
+    let level = meter.last().left;
+    assert!((level - 0.1).abs() < 0.002, "{level}");
+  }
+
+  /// Retuning at a reload moves the sound's level as the definition says,
+  /// the clamp (+24 dB, ±48 semitones) applying to the sum once: a
+  /// definition at +30 dB plays at +24, and saved at +20 plays at +20
+  #[test]
+  fn retuning_starts_from_the_unclamped_level() {
+    let hum = wav_of(2.0, 3_000);
+    let (mut world, files) = world_over(&[
+      ("sfx/hum.wav", &hum),
+      (
+        "sfx/hum.sound.ron",
+        br#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: 30.0, pitch: 60.0)"#,
+      ),
+    ]);
+    let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
+    let voice = AudioView::new(&mut world).play(&sound);
+    steps(&mut world, 3);
+    let start = log(&world)
+      .into_iter()
+      .find(|entry| entry.voice == voice.id())
+      .map(|entry| (entry.gain_db, entry.rate));
+    assert_eq!(start, Some((24.0, 16.0)), "clamped as played");
+    let quieter = r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: 20.0, pitch: 40.0)"#;
+    save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", quieter);
+    let last = |kind: AudioLogKind| {
+      log(&world)
+        .into_iter()
+        .rev()
+        .find(|entry| entry.voice == voice.id() && entry.kind == kind)
+    };
+    assert_eq!(
+      last(AudioLogKind::Gain).map(|entry| entry.gain_db),
+      Some(20.0)
+    );
+    let rate = last(AudioLogKind::Rate).map_or(0.0, |entry| entry.rate);
+    assert!((rate - 2f64.powf(40.0 / 12.0)).abs() < 1e-9, "{rate}");
+  }
+
+  /// Many loops a clip's reload cannot switch (kira's track full: 96 loops
+  /// leave room to switch 32, whose old sounds then hold the rest of the
+  /// room while they fade) give one warning with the count, not one each
+  #[test]
+  fn many_loops_that_cannot_switch_warn_once_with_the_count() {
+    let files = MemorySource::new();
+    files.insert("sfx/crowd-unique.wav", wav_of(2.0, 3_000));
+    let mut world = audio_world_over(files);
+    let clip = load::<AudioClip>(&mut world, "sfx/crowd-unique.wav");
+    let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip.clone())],
+      looping: true,
+      per_frame: u8::MAX,
+      ..Default::default()
+    });
+    let voices: Vec<Voice> = (0..96)
+      .map(|_| AudioView::new(&mut world).play(&sound))
+      .collect();
+    assert!(voices.iter().all(Voice::is_playing));
+    steps(&mut world, 2);
+    replace_clip(&mut world, &clip, 1.0);
+    audio_step(&mut world, Duration::ZERO);
+    let switched = log(&world)
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Stop)
+      .count();
+    let refused = 96 - switched;
+    assert!(refused > 1, "{switched} switched");
+    let about = |count: Option<usize>| {
+      warnings(|message| {
+        message.starts_with("sfx/crowd-unique.wav:")
+          && message.contains("could not switch")
+          && count.is_none_or(|count| message.contains(&format!("{count} loops")))
+      })
+    };
+    assert_eq!(about(None), 1);
+    assert_eq!(about(Some(refused)), 1);
+  }
+
+  /// A track whose switch fails as the mixer rebuilds (its definition now
+  /// names a clip still loading) moves to the new buses as it was, with
+  /// the warning that it could not switch, not the one that it could not
+  /// move
+  #[test]
+  fn a_track_that_cannot_switch_at_a_rebuild_moves_as_it_was() {
+    let theme = wav_of(2.0, 2_000);
+    let (mut world, _files) = world_over(&[
+      ("music/rebuilt.wav", &theme),
+      ("music/rebuilt.music.ron", br#"(clip: "music/rebuilt.wav")"#),
+    ]);
+    let track = load::<Music>(&mut world, "music/rebuilt.music.ron");
+    AudioView::new(&mut world).play_music(&track);
+    steps(&mut world, 3);
+    let voice = started_on(&world, "music");
+    let loading = world
+      .resource::<AssetServer>()
+      .load::<AudioClip>("music/not-yet-there.wav");
+    if let Some(track) = world.resource_mut::<Assets<Music>>().get_mut(&track) {
+      *track = Music::looping(loading, 0.0, None);
+    }
+    AudioView::new(&mut world).set_mixer(Mixer::default());
+    assert_eq!(
+      entries(&world, voice),
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Stop, MIN_FADE),
+        (AudioLogKind::Start, MIN_FADE)
+      ],
+      "{:#?}",
+      log(&world)
+    );
+    let named = |what: &str| {
+      warnings(|message| message.starts_with("music/rebuilt.music.ron:") && message.contains(what))
+    };
+    assert_eq!(named("could not switch"), 1);
+    assert_eq!(named("rebuilt buses"), 0);
+  }
+
+  fn warnings(matching: impl Fn(&str) -> bool) -> usize {
+    dev_log::get_entries()
+      .iter()
+      .filter(|entry| entry.level == LogLevel::Warn && matching(&entry.message))
+      .count()
   }
 }
