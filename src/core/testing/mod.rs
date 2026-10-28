@@ -122,9 +122,29 @@ pub fn audio_world() -> World {
   world
 }
 
-/// [`audio_world`] whose registry reads `files`
-#[cfg(test)]
-pub(crate) fn audio_world_over(files: MemorySource) -> World {
+/// [`audio_world`] whose registry reads `files`: a test (or bench) can save
+/// over a file and reload it, as hot reload would
+///
+/// ```
+/// use std::time::Duration;
+/// use ryo2d::prelude::*;
+/// use ryo2d::testing::{audio_step, audio_world_over};
+///
+/// let files = MemorySource::new();
+/// let path = "audio/mixer.mixer.ron";
+/// files.insert(path, r#"(buses: { "sfx": (volume: -6.0) })"#);
+/// let mut world = audio_world_over(files.clone());
+/// let server = world.resource::<AssetServer>().clone();
+/// let mixer = server.load_now::<Mixer>(&mut world, path).unwrap();
+/// let first = world.resource::<Assets<Mixer>>().version(&mixer);
+/// // Save a change over the file, and reload it as hot reload would
+/// files.insert(path, r#"(buses: { "sfx": (volume: -12.0) })"#);
+/// server.reload(path);
+/// while world.resource::<Assets<Mixer>>().version(&mixer) == first {
+///   audio_step(&mut world, Duration::ZERO);
+/// }
+/// ```
+pub fn audio_world_over(files: MemorySource) -> World {
   let mut world = World::new();
   insert_registry(&mut world, AssetServer::new(files));
   add_audio(&mut world);

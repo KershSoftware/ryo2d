@@ -126,6 +126,10 @@ harness = false
 name = "assets"
 harness = false
 
+[[bench]]
+name = "audio"
+harness = false
+
 # Dev builds: optimize dependencies and engine for performance, keep game code light for fast iteration
 # The engine's pixel operations (parallax, sprite blitting) need full optimization
 [profile.dev]

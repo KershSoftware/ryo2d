@@ -978,6 +978,8 @@ pub struct AudioEngine {
   /// Mock frames owed, in frame-nanoseconds (frames times 10^9), so no
   /// fraction of a frame is lost between frames
   mock_owed: u128,
+  /// The wall time the last update spent rendering on the mock backend
+  mock_render: Duration,
   /// The device's stream reported an error: later ones are not warned about
   /// (the web's stream reports none)
   #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -1174,6 +1176,7 @@ impl AudioEngine {
       commands,
       inbox,
       mock_owed: 0,
+      mock_render: Duration::ZERO,
       #[cfg(any(test, not(target_arch = "wasm32")))]
       stream_error_warned: false,
       undecodable: HashMap::new(),
@@ -1233,6 +1236,14 @@ impl AudioEngine {
   #[doc(hidden)]
   pub fn log(&self) -> &[AudioLogEntry] {
     self.log.entries()
+  }
+
+  /// The wall time the last frame's update spent rendering on the mock
+  /// backend (zero on a device, which renders on its own thread): the
+  /// audio benches leave it out of the frame's main-thread time
+  #[doc(hidden)]
+  pub fn mock_render_time(&self) -> Duration {
+    self.mock_render
   }
 
   /// Seed the generator that picks clips and draws gains and pitches, so a
@@ -3149,11 +3160,17 @@ impl AudioEngine {
     self.play_spawned(world, server);
     self.follow_game(game, real_delta, server);
     self.report_stream_errors();
+    self.mock_render = Duration::ZERO;
     if let Some(Manager::Mock(manager)) = &mut self.manager {
-      let backend = manager.backend_mut();
-      for _ in 0..chunks_due(&mut self.mock_owed, real_delta) {
-        backend.on_start_processing();
-        backend.process();
+      let chunks = chunks_due(&mut self.mock_owed, real_delta);
+      if chunks > 0 {
+        let started = web_time::Instant::now();
+        let backend = manager.backend_mut();
+        for _ in 0..chunks {
+          backend.on_start_processing();
+          backend.process();
+        }
+        self.mock_render = started.elapsed();
       }
     }
     self.retire_ended(server);
@@ -4248,6 +4265,24 @@ mod tests {
       .iter()
       .filter(|entry| entry.level == LogLevel::Warn && matching(&entry.message))
       .count()
+  }
+
+  /// The mock backend renders on the main thread, where a device renders on
+  /// its own: the time it took is reported, so a bench can leave it out
+  #[test]
+  fn the_mock_backend_reports_its_render_time() {
+    let mut world = audio_world();
+    let clip = second(&mut world);
+    AudioView::new(&mut world).play(&clip);
+    audio_step(&mut world, FRAME);
+    let rendered = world.resource::<AudioEngine>().mock_render_time();
+    assert!(rendered > Duration::ZERO, "a frame was rendered");
+    audio_step(&mut world, Duration::ZERO);
+    assert_eq!(
+      world.resource::<AudioEngine>().mock_render_time(),
+      Duration::ZERO,
+      "nothing was rendered"
+    );
   }
 
   #[test]
