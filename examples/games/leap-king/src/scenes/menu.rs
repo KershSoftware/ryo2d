@@ -16,6 +16,47 @@ fn generate_room_code() -> String {
     .collect()
 }
 
+/// The rain, from the menu on: a looping sound on the ambience bus that
+/// outlives the menu (`persist`). Its definition is held for the session, so
+/// a saved `rain.sound.ron` retunes the loop, and it loads off the main
+/// thread (the clip is 24 MB): the menu starts the loop once it has loaded,
+/// once a session. One that does not load stays silent (the registry warns)
+#[derive(Resource)]
+struct Rain {
+  sound: Handle<Sound>,
+  started: bool,
+}
+
+impl Rain {
+  /// Start loading the rain, once a session
+  fn load(ctx: &mut SceneContext) {
+    if !ctx.world.contains_resource::<Rain>() {
+      let sound = ctx.assets().load::<Sound>("rain.sound.ron");
+      ctx.world.insert_resource(Rain {
+        sound,
+        started: false,
+      });
+    }
+  }
+
+  /// Start the loop once the rain has loaded, unless it has started
+  fn start(ctx: &mut SceneContext) {
+    let sound = match ctx.world.get_resource::<Rain>() {
+      Some(rain) if !rain.started => rain.sound.clone(),
+      _ => return,
+    };
+    if !ctx.assets().is_ready(&sound) {
+      return;
+    }
+    let persist = PlayOptions {
+      persist: true,
+      ..Default::default()
+    };
+    ctx.audio().play_with(&sound, persist);
+    ctx.world.resource_mut::<Rain>().started = true;
+  }
+}
+
 /// Host mode: LAN (UDP) or Internet (WebRTC)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostMode {
@@ -241,23 +282,13 @@ impl Scene for MenuScene {
     // Spawn rain particles
     self.spawn_rain(ctx);
 
-    // The rain: a loop that outlives the menu (persist), started once
-    if ctx.audio().voices_on("ambience") == 0 {
-      match ctx.assets().load_now::<Sound>("rain.sound.ron") {
-        Ok(rain) => {
-          let persist = PlayOptions {
-            persist: true,
-            ..Default::default()
-          };
-          ctx.audio().play_with(&rain, persist);
-        }
-        Err(error) => ryo2d::game_warn!("the rain could not be loaded: {}", error.report()),
-      }
-    }
+    // The rain starts once it has loaded
+    Rain::load(ctx);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     self.elapsed_time += dt;
+    Rain::start(ctx);
 
     // Animate fairy lights
     let t = self.elapsed_time;
