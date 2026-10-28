@@ -132,17 +132,6 @@ impl UiSound {
     UiSound::Tick,
     UiSound::Error,
   ];
-
-  /// Its name: the theme's field for its sound (`UiSounds`)
-  pub(crate) fn name(self) -> &'static str {
-    match self {
-      UiSound::Focus => "focus",
-      UiSound::Confirm => "confirm",
-      UiSound::Back => "back",
-      UiSound::Tick => "tick",
-      UiSound::Error => "error",
-    }
-  }
 }
 
 /// The least time between two slider ticks, in seconds

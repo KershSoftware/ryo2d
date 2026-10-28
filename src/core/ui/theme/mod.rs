@@ -497,27 +497,28 @@ impl Skin {
 /// refused drop, a cancelled rebind). The engine plays at most one of each
 /// kind per frame, through the audio engine on the `ui` bus (so the game's
 /// pause never holds them, and the player's ui volume setting applies),
-/// scaled by `volume`. The default names none, so a game is silent until it
-/// sets some.
+/// `volume_db` louder or quieter. The default names none, so a game is
+/// silent until it sets some.
 ///
 /// ```ron
 /// sounds: (
 ///   confirm: (path: "ui/click.sound.ron"),
 ///   back: (path: "ui/back.wav"),
-///   volume: 0.8,
+///   volume_db: -2.0,
 /// ),
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct UiSounds {
   pub focus: ThemeSound,
   pub confirm: ThemeSound,
   pub back: ThemeSound,
   pub tick: ThemeSound,
   pub error: ThemeSound,
-  /// Scales every UI sound, from 0 (silent) to 1 (as the sound is): an
-  /// amplitude, so 0.5 is about -6 dB
-  pub volume: f32,
+  /// Added to every UI sound's own level, in dB, as a sound definition's
+  /// volume is (0 plays each as it is, -6 about half as loud; -60 or less is
+  /// silent)
+  pub volume_db: f32,
 }
 
 impl UiSounds {
@@ -532,8 +533,8 @@ impl UiSounds {
     }
   }
 
-  /// Each event's sound, with its event
-  pub(crate) fn each_mut(&mut self) -> [(UiSound, &mut ThemeSound); 5] {
+  /// Each event's sound
+  pub(crate) fn each_mut(&mut self) -> [&mut ThemeSound; 5] {
     let UiSounds {
       focus,
       confirm,
@@ -542,23 +543,19 @@ impl UiSounds {
       error,
       ..
     } = self;
-    [
-      (UiSound::Focus, focus),
-      (UiSound::Confirm, confirm),
-      (UiSound::Back, back),
-      (UiSound::Tick, tick),
-      (UiSound::Error, error),
-    ]
+    [focus, confirm, back, tick, error]
   }
 
-  /// `volume` as a gain in dB; `None` when it is silent
-  pub(crate) fn volume_db(&self) -> Option<f32> {
-    let volume = if self.volume.is_nan() {
-      1.0
+  /// The gain the UI's sounds play at, in dB: `volume_db`, NaN as 0, at
+  /// most +24 dB (the most a voice takes); `None` when it is silent (at or
+  /// below kira's -60 dB)
+  pub(crate) fn gain(&self) -> Option<f32> {
+    let db = if self.volume_db.is_nan() {
+      0.0
     } else {
-      self.volume.min(1.0)
+      self.volume_db.min(24.0)
     };
-    (volume > 0.0).then(|| 20.0 * volume.log10())
+    (db > -60.0).then_some(db)
   }
 }
 
@@ -570,7 +567,7 @@ impl Default for UiSounds {
       back: ThemeSound::default(),
       tick: ThemeSound::default(),
       error: ThemeSound::default(),
-      volume: 1.0,
+      volume_db: 0.0,
     }
   }
 }
@@ -578,14 +575,14 @@ impl Default for UiSounds {
 /// One of the UI's sounds ([`UiSounds`]): a sound definition (`.sound.ron`),
 /// played as it says but on the `ui` bus unless it names a bus under `ui`,
 /// or a clip (`.wav`, `.ogg`, `.mp3`, `.flac`), played as it is on the `ui`
-/// bus. A theme file's are loaded with the theme, and are its dependencies
-/// like its skins' images: a theme is ready once they are, one that does not
-/// load fails it (`AssetError::Dependency`), and saving one reloads it. A
-/// theme made in code names a file with [`ThemeSound::from_path`], which the
-/// engine loads when the theme is set (warning once about a file that does
-/// not load, and leaving that sound silent), or gives what to play with
-/// [`ThemeSound::from_sound`] or [`ThemeSound::from_clip`]. A sound still
-/// loading plays nothing.
+/// bus. A theme file's are loaded with the theme but are not its
+/// dependencies, unlike its skins' images: a theme is ready without them,
+/// and saving one reloads it in place. A theme made in code names a file
+/// with [`ThemeSound::from_path`], which the engine loads when the theme is
+/// set, or gives what to play with [`ThemeSound::from_sound`] or
+/// [`ThemeSound::from_clip`]. Either way a file that does not load is
+/// warned about once and leaves its sound silent, and a sound still loading
+/// plays nothing.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeSound {

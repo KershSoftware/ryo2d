@@ -515,7 +515,7 @@ impl Engine {
     let from = self.sounds_played.min(raised.len());
     let fresh = &raised[from..];
     self.sounds_played = raised.len();
-    let Some(volume_db) = theme.sounds.volume_db() else {
+    let Some(volume_db) = theme.sounds.gain() else {
       return;
     };
     if fresh.is_empty() {
@@ -2464,7 +2464,7 @@ mod tests {
       r#"(sounds: (
         confirm: (path: "ui/click.wav"),
         back: (path: "ui/back.sound.ron"),
-        volume: 0.5,
+        volume_db: -6.0,
       ))"#,
     );
     let Some(mut e) = themed(files) else {
@@ -2483,8 +2483,8 @@ mod tests {
         ("ui/click.wav", "ui"),
         "{starts:?}"
       );
-      // The theme's volume of 0.5 is an amplitude: about -6 dB
-      assert!((gain_db + 6.02).abs() < 0.01, "{starts:?}");
+      // The theme's volume, in dB
+      assert_eq!(*gain_db, -6.0, "{starts:?}");
     }
   }
 

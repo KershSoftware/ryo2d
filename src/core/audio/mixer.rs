@@ -1589,6 +1589,32 @@ mod tests {
     world.resource::<AudioEngine>().buses()
   }
 
+  /// A mixer made in code needs only the prelude, its snapshots and ducks
+  /// included
+  #[test]
+  fn a_mixer_s_snapshots_and_ducks_are_made_from_the_prelude() {
+    let paused = crate::prelude::SnapshotBus {
+      volume_db: -12.0,
+      low_pass: Some(800.0),
+    };
+    let mixer = crate::prelude::Mixer {
+      snapshots: vec![crate::prelude::SnapshotDef {
+        name: "paused".into(),
+        blend: 0.3,
+        buses: vec![("sfx".into(), paused)],
+      }],
+      ducks: vec![crate::prelude::DuckDef {
+        trigger: "voice".into(),
+        target: "music".into(),
+        by_db: -9.0,
+        attack: 0.1,
+        release: 0.5,
+      }],
+      ..Default::default()
+    };
+    assert!(mixer.check().is_ok(), "{:?}", mixer.check());
+  }
+
   fn bus(world: &World, name: &str) -> BusReport {
     let buses = buses(world);
     match buses.iter().find(|bus| bus.name == name) {

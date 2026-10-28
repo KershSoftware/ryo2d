@@ -4111,9 +4111,11 @@ impl AudioEngine {
     self.record(index, kind, fade, server);
   }
 
-  /// Warn about the first error the device's output stream reports; the
-  /// engine carries on (kira restarts the stream), and later errors are not
-  /// warned about
+  /// Warn about the first error the device's output stream reports, and
+  /// not about later ones. The engine carries on, but sound may have
+  /// stopped: kira reopens the stream on a device that can take it, and
+  /// gives up when there is none (the only output gone), so the warning
+  /// says to restart the game if it is silent
   fn report_stream_errors(&mut self) {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(Manager::Device(manager)) = &mut self.manager {
@@ -4854,7 +4856,7 @@ fn warn_stream_error(warned: &mut bool, error: &dyn Display) {
   }
   crate::engine_warn!(
     module: "Audio",
-    "the audio output stream reported an error ({error}); sound carries on, and later stream errors are not reported"
+    "the audio output stream reported an error ({error}); sound may have stopped: restart the game if it is silent (later stream errors are not reported)"
   );
 }
 
@@ -5125,6 +5127,16 @@ mod tests {
     audio_step(&mut world, FRAME);
     assert_eq!(
       warnings(|message| message.contains("(stream error seam")),
+      1
+    );
+    // kira may not get the stream back (no device to reopen), so the
+    // warning does not promise sound
+    assert_eq!(
+      warnings(|message| {
+        message.contains("(stream error seam")
+          && message.contains("sound may have stopped")
+          && message.contains("restart the game if it is silent")
+      }),
       1
     );
     // The engine carries on

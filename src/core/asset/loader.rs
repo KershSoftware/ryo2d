@@ -159,6 +159,25 @@ impl<'a> LoadContext<'a> {
     self.load_request(path, Some(settings))
   }
 
+  /// Loads an asset this one uses but can do without (a theme's UI sound):
+  /// not a dependency, so this asset is ready without it, and one that
+  /// does not load fails only itself, warned about once by the registry,
+  /// as a [`AssetServer::load`] that fails is. While `load_now` runs it
+  /// loads now too; on the workers it is queued beside this one. The
+  /// handle it gives is never `None`: a bad path gives a failed one
+  pub(crate) fn load_optional<T: Asset>(&mut self, path: &str) -> Handle<T> {
+    if let LoadMode::Now { world, stack } = &mut self.mode
+      && let Ok(handle) = self
+        .server
+        .load_now_request::<T, ()>(world, path, None, stack)
+    {
+      return handle;
+    }
+    // A load that failed just now is found failed (and was warned about);
+    // a refused path gives a failed handle, warned about at the next pump
+    self.server.load(path)
+  }
+
   fn load_request<T: Asset, S: AssetSettings>(
     &mut self,
     path: &str,

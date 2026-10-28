@@ -15,12 +15,15 @@ use crate::core::ui::{Theme, ThemeSound, ThemeSoundSource};
 /// at the end of the file: the text after it reads as more fields of the
 /// struct it leaves open, one level deeper, and is well formed until then.
 ///
-/// The images its skins name and the files its UI sounds name (asset paths:
-/// a `.sound.ron` loads as a [`Sound`], any other as an [`AudioClip`]) are
-/// its dependencies, so a theme is ready once they are, one that does not
-/// load fails it (`AssetError::Dependency`), and a theme whose image or
-/// sound reloads is `Modified` too. A `UiTheme` following the theme
-/// (`UiTheme::follow`) uses it again whenever it changes.
+/// The images its skins name are its dependencies, so a theme is ready once
+/// they are, one that does not load fails it (`AssetError::Dependency`), and
+/// a theme whose image reloads is `Modified` too. The files its UI sounds
+/// name (asset paths: a `.sound.ron` loads as a [`Sound`], any other as an
+/// [`AudioClip`]) load with it, at once under `load_now`, but are not
+/// dependencies: one that does not load is warned about once and leaves
+/// its sound silent, as a theme made in code does, and one still loading
+/// plays nothing. A saved sound reloads in place. A `UiTheme` following the
+/// theme (`UiTheme::follow`) uses it again whenever it changes.
 ///
 /// Every registry has it
 #[derive(Debug, Default, Clone, Copy)]
@@ -50,23 +53,16 @@ impl AssetLoader for ThemeLoader {
       })?;
       skin.image = Some(loaded);
     }
-    for (event, sound) in theme.sounds.each_mut() {
+    // A missing UI sound is that sound's silence, not the theme's failure
+    for sound in theme.sounds.each_mut() {
       let Some(file) = sound.path.as_deref() else {
         continue;
       };
-      let loaded = if ThemeSound::is_definition(file) {
-        cx.load::<Sound>(file).map(ThemeSoundSource::Sound)
+      sound.sound = Some(if ThemeSound::is_definition(file) {
+        ThemeSoundSource::Sound(cx.load_optional::<Sound>(file))
       } else {
-        cx.load::<AudioClip>(file).map(ThemeSoundSource::Clip)
-      };
-      let loaded = loaded.map_err(|error| match error {
-        AssetError::Dependency { .. } => error,
-        refused => AssetError::decode(
-          &path,
-          format!("the {} sound: {}", event.name(), refused.report()),
-        ),
-      })?;
-      sound.sound = Some(loaded);
+        ThemeSoundSource::Clip(cx.load_optional::<AudioClip>(file))
+      });
     }
     Ok(theme)
   }
@@ -309,18 +305,78 @@ mod tests {
     );
   }
 
+  /// The theme's UI sound volume is a dB offset, as a designer writes every
+  /// level; the amplitude it replaced is refused, naming the field to use
   #[test]
-  fn a_ui_sound_that_does_not_load_fails_its_theme() {
-    let loaded = load(
+  fn a_theme_s_ui_sound_volume_is_in_db() {
+    let theme = load("ui/db.theme.ron", "(sounds: (volume_db: -6.0))");
+    assert_eq!(theme.map(|theme| theme.sounds.volume_db), Ok(-6.0));
+    assert_eq!(Theme::dark().sounds.volume_db, 0.0, "as the sound is");
+    let old = load("ui/amplitude.theme.ron", "(sounds: (volume: 0.5))");
+    assert!(
+      old.as_ref().is_err_and(|error| error.contains("volume_db")),
+      "{old:?}"
+    );
+  }
+
+  /// How many warnings in the dev log name `path` (the log is the
+  /// process's: each test names files of its own)
+  fn warnings_naming(path: &str) -> usize {
+    crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|entry| entry.message.contains(path))
+      .count()
+  }
+
+  /// A UI sound that does not load leaves its theme loaded and that sound
+  /// silent, with one warning naming it, as a theme made in code does; the
+  /// theme's other sounds load with it. Loaded at once or queued alike
+  #[test]
+  fn a_ui_sound_that_does_not_load_is_silent_with_one_warning() {
+    use crate::core::audio::AudioClip;
+    use crate::core::ui::ThemeSoundSource;
+    let files = MemorySource::new();
+    files.insert(
       "ui/quiet.theme.ron",
-      r#"(sounds: (tick: (path: "ui/gone.wav")))"#,
+      r#"(sounds: (tick: (path: "ui/gone-now.wav"), confirm: (path: "ui/here.wav")))"#,
     );
-    assert_eq!(
-      loaded.err().as_deref(),
-      Some(
-        "\"ui/quiet.theme.ron\" needs \"ui/gone.wav\", which did not load: no asset at \"ui/gone.wav\""
-      )
+    files.insert(
+      "ui/queued.theme.ron",
+      r#"(sounds: (tick: (path: "ui/gone-queued.wav")))"#,
     );
+    files.insert("ui/here.wav", crate::core::testing::wav(22_050, 220, 1_000));
+    let mut world = registry_over(files);
+    let clip = |sound: &crate::core::ui::ThemeSound| match &sound.sound {
+      Some(ThemeSoundSource::Clip(clip)) => clip.clone(),
+      other => panic!("a clip: {other:?}"),
+    };
+    let mut assets = AssetsView::new(&mut world);
+    let theme = assets.load_now::<Theme>("ui/quiet.theme.ron");
+    let Some(sounds) = theme
+      .ok()
+      .and_then(|theme| assets.get(&theme).map(|theme| theme.sounds.clone()))
+    else {
+      panic!("ui/quiet.theme.ron loads");
+    };
+    assert!(assets.state(&clip(&sounds.tick)).is_failed());
+    let here = assets.load::<AudioClip>("ui/here.wav");
+    assert!(assets.is_ready(&here), "loaded with the theme");
+    assert_eq!(clip(&sounds.confirm), here);
+    let server = world.resource::<AssetServer>().clone();
+    let queued = server.load::<Theme>("ui/queued.theme.ron");
+    pump_until(&mut world, |world| {
+      let tick = world
+        .resource::<Assets<Theme>>()
+        .get(&queued)
+        .and_then(|theme| theme.sounds.tick.sound.clone());
+      match tick {
+        Some(ThemeSoundSource::Clip(tick)) => server.state(&tick).is_failed(),
+        _ => false,
+      }
+    });
+    assert!(server.is_ready(&queued));
+    assert_eq!(warnings_naming("ui/gone-now.wav"), 1);
+    assert_eq!(warnings_naming("ui/gone-queued.wav"), 1);
   }
 
   /// Files whose skin image is not read until the test lets it go
