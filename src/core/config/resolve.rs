@@ -22,8 +22,9 @@ use crate::core::graphics::screen::{Presentation, initial_window_size};
 
 /// Engine default resolution.
 pub(crate) const DEFAULT_RESOLUTION: (u32, u32) = (1280, 720);
-/// Engine default master volume.
-pub(crate) const DEFAULT_MASTER_VOLUME: f32 = 0.8;
+/// Engine default master volume: about -2 dB on the volume curve
+/// (amplitude = v²).
+pub(crate) const DEFAULT_MASTER_VOLUME: f32 = 0.89;
 /// Engine default music volume.
 pub(crate) const DEFAULT_MUSIC_VOLUME: f32 = 1.0;
 /// Engine default sound effects volume.
@@ -571,7 +572,7 @@ mod tests {
     assert!(s.vsync);
     assert_eq!(
       (s.master_volume, s.music_volume, s.sfx_volume),
-      (0.8, 1.0, 1.0)
+      (0.89, 1.0, 1.0)
     );
     assert!(!s.disable_debug_keys);
     assert_eq!((s.background_fps, s.background_rendering), (0, true));

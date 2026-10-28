@@ -36,7 +36,7 @@
 //! vsync = true
 //! display_mode = "windowed"
 //! master_volume = 1.0
-//! music_volume = 0.8
+//! music_volume = 0.89
 //! sfx_volume = 1.0
 //! ui_volume = 1.0
 //! voice_volume = 1.0
@@ -1083,8 +1083,8 @@ mod tests {
     // VSync on, windowed
     assert!(defaults.vsync);
     assert_eq!(defaults.display_mode, DisplayMode::Windowed);
-    // Audio: master=0.8, the rest 1.0, the device's own buffer
-    assert_eq!(defaults.master_volume, 0.8);
+    // Audio: master=0.89 (about -2 dB), the rest 1.0, the device's own buffer
+    assert_eq!(defaults.master_volume, 0.89);
     assert_eq!(defaults.music_volume, 1.0);
     assert_eq!(defaults.sfx_volume, 1.0);
     assert_eq!(defaults.ui_volume, 1.0);
@@ -1126,7 +1126,7 @@ mod tests {
     let config = WorkspaceConfig::default();
     // System defaults should be engine defaults (no resolution set)
     assert_eq!(config.system.resolution, None);
-    assert_eq!(config.system.master_volume, 0.8);
+    assert_eq!(config.system.master_volume, 0.89);
     assert!(!config.system.show_fps);
   }
 

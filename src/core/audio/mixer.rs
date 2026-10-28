@@ -1758,9 +1758,9 @@ mod tests {
     AudioView::new(&mut world).set_volume_setting(VolumeKind::Master, f32::NAN);
     assert_eq!(
       AudioView::new(&mut world).volume_setting(VolumeKind::Master),
-      0.8
+      0.89
     );
-    assert!(close(bus(&world, "master").gain_db, volume_to_db(0.8)));
+    assert!(close(bus(&world, "master").gain_db, volume_to_db(0.89)));
   }
 
   #[test]
