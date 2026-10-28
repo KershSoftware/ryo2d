@@ -8,6 +8,9 @@ use std::time::Duration;
 
 use crossbeam_channel::Sender;
 
+use super::AudioClip;
+use crate::core::asset::AssetId;
+
 /// What a voice is doing, as the engine last saw it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -51,6 +54,26 @@ pub(crate) struct VoiceCommand {
   pub(crate) change: VoiceChange,
 }
 
+/// What a play picked and drew, as its voice started: which of its
+/// sound's clips, and its gain and pitch, which are the definition's plus
+/// the spread drawn from its ranges plus the play's [`PlayOptions`]. They
+/// leave out how far away it is heard from and the game's time scale, and
+/// keep what was drawn when the game later changes the voice (with
+/// [`Voice::set_volume`] or [`Voice::set_pitch`]). See [`Voice::pick`]
+///
+/// [`PlayOptions`]: super::PlayOptions
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VoicePick {
+  /// Its place in the sound's clips (0 for a clip played directly)
+  pub clip_index: usize,
+  /// The clip it plays
+  pub clip: AssetId<AudioClip>,
+  /// Its gain in dB (0 is the clip as recorded)
+  pub volume_db: f32,
+  /// Its pitch in semitones (12 is an octave up)
+  pub pitch: f32,
+}
+
 /// What a voice's handles share with the engine's voice table
 struct VoiceShared {
   /// From 1; 0 is a voice that never started
@@ -58,6 +81,9 @@ struct VoiceShared {
   state: AtomicU8,
   /// `None` for a voice that never started
   commands: Option<Sender<VoiceCommand>>,
+  /// `None` for a voice that never started, or one that plays no clip of
+  /// its own (music joined from an intro and a loop)
+  pick: Option<VoicePick>,
 }
 
 /// One playing sound, returned by `ctx.audio().play(..)`. Keep it to stop,
@@ -110,11 +136,12 @@ struct VoiceShared {
 pub struct Voice(Arc<VoiceShared>);
 
 impl Voice {
-  pub(crate) fn new(id: u32, commands: Sender<VoiceCommand>) -> Voice {
+  pub(crate) fn new(id: u32, commands: Sender<VoiceCommand>, pick: Option<VoicePick>) -> Voice {
     Voice(Arc::new(VoiceShared {
       id,
       state: AtomicU8::new(VoiceState::Playing as u8),
       commands: Some(commands),
+      pick,
     }))
   }
 
@@ -127,6 +154,7 @@ impl Voice {
           id: 0,
           state: AtomicU8::new(VoiceState::Stopped as u8),
           commands: None,
+          pick: None,
         }))
       })
       .clone()
@@ -199,6 +227,22 @@ impl Voice {
   /// started. A stopped voice cannot be resumed
   pub fn is_stopped(&self) -> bool {
     self.state() == VoiceState::Stopped
+  }
+
+  /// Which clip the play picked and the gain and pitch it drew, as it
+  /// started; `None` for a play that never started (refused, or a sound not
+  /// loaded yet). A subtitle for a line picked at random, say:
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn bark(ctx: &mut SceneContext<'_>, barks: &Handle<Sound>, lines: &[&str]) -> Option<String> {
+  ///   let pick = ctx.audio().play(barks).pick()?;
+  ///   lines.get(pick.clip_index).map(|line| line.to_string())
+  /// }
+  /// ```
+  pub fn pick(&self) -> Option<VoicePick> {
+    self.0.pick
   }
 }
 

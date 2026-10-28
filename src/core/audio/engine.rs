@@ -38,7 +38,7 @@ use super::spatial::{
   emitter_position, heard_db,
 };
 use super::view::{PlayOptions, Playable};
-use super::voice::{Voice, VoiceChange, VoiceCommand, VoiceState};
+use super::voice::{Voice, VoiceChange, VoiceCommand, VoicePick, VoiceState};
 use super::{
   AudioClip, ClipData, FocusLoss, LimitRule, Mixer, Music, MusicData, SnapshotDef, Sound,
   SoundClip, Spatial, VoiceLimit, VolumeKind, volume_to_db,
@@ -57,6 +57,10 @@ pub(crate) const MIN_FADE: Duration = Duration::from_millis(10);
 /// The most voices playing on one bus's own track. kira holds 128 sounds a
 /// track, so the voices stolen past the cap have room to fade out
 pub(crate) const VOICE_CAP: usize = 96;
+
+/// The seed a headless engine (`HeadlessEngine`, `RYO_HEADLESS`) starts
+/// its picks and draws from, so its runs repeat
+pub(crate) const HEADLESS_SEED: u64 = 0x5EED_A0D1;
 
 /// The mock backend's sample rate
 const MOCK_SAMPLE_RATE: u32 = 48_000;
@@ -954,7 +958,9 @@ struct Replay {
 /// fade-in. A gamepad does not count: browsers do not let a page start sound
 /// on one, so a player with only a pad hears nothing until they click, tap
 /// or press a key. A web game should open on a "click or tap to start"
-/// screen
+/// screen, shown while [`AudioView::waiting_for_gesture`] says so
+///
+/// [`AudioView::waiting_for_gesture`]: super::AudioView::waiting_for_gesture
 #[derive(Resource)]
 pub struct AudioEngine {
   /// `None` before the web's unlock (while `locked`), or if even the mock
@@ -1230,9 +1236,9 @@ impl AudioEngine {
   }
 
   /// Seed the generator that picks clips and draws gains and pitches, so a
-  /// run picks the same way each time
-  #[doc(hidden)]
-  pub fn seed(&mut self, seed: u64) {
+  /// run picks the same way each time (`AudioView::seed`; headless engines
+  /// start at [`HEADLESS_SEED`])
+  pub(crate) fn seed(&mut self, seed: u64) {
     self.rng = SmallRng::seed_from_u64(seed);
   }
 
@@ -2775,7 +2781,13 @@ impl AudioEngine {
       }
     };
     self.steal_victims(server);
-    let voice = Voice::new(self.voices.next_id(), self.commands.clone());
+    let pick = request.source.clip().map(|clip| VoicePick {
+      clip_index: request.pick,
+      clip: clip.id(),
+      volume_db: own_db,
+      pitch,
+    });
+    let voice = Voice::new(self.voices.next_id(), self.commands.clone(), pick);
     self.voices.live.push(LiveVoice {
       voice: voice.clone(),
       playback,
@@ -4563,6 +4575,20 @@ mod tests {
       .into_iter()
       .filter(|entry| entry.kind == kind)
       .collect()
+  }
+
+  #[test]
+  fn a_view_says_it_waits_for_the_gesture_until_the_unlock() {
+    // Native and headless engines open at start: nothing to wait for
+    let mut world = audio_world();
+    assert!(!AudioView::new(&mut world).waiting_for_gesture());
+    // The web's engine waits for the player's first gesture
+    let mut world = locked_world();
+    assert!(AudioView::new(&mut world).waiting_for_gesture());
+    audio_step(&mut world, FRAME);
+    assert!(AudioView::new(&mut world).waiting_for_gesture());
+    unlock(&mut world);
+    assert!(!AudioView::new(&mut world).waiting_for_gesture());
   }
 
   #[test]

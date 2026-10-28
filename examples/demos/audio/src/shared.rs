@@ -5,10 +5,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use demo_kit::prelude::*;
-use ryo2d::core::audio::{AudioEngine, MIXER_PATH};
-
-/// The seed for the clips a sound picks and the gains and pitches it draws
-const SEED: u64 = 5;
+use ryo2d::core::audio::MIXER_PATH;
 
 /// Background of a bar
 pub(crate) const TRACK: Color = Color::new(255, 255, 255, 26);
@@ -20,15 +17,11 @@ pub(crate) const HOT: Color = Color::XP_GOLD;
 pub(crate) const BAD: Color = Color::rgb(255, 110, 100);
 
 /// Start a page's audio the same way on every run, as the tour compares
-/// its frames run to run: seed the picks and draws (the engine seeds them
-/// from the system otherwise; its `seed` is a test hook), and load the
-/// mixer at once, so its buses are built at the end of the first frame
-/// rather than whenever a worker finishes reading it. The handle keeps the
-/// mixer for the page to read its snapshots and ducks
+/// its frames run to run (a headless run's picks and draws are seeded):
+/// load the mixer at once, so its buses are built at the end of the first
+/// frame rather than whenever a worker finishes reading it. The handle
+/// keeps the mixer for the page to read its snapshots and ducks
 pub(crate) fn steady_start(ctx: &mut SceneContext) -> Option<Handle<Mixer>> {
-  if let Some(mut engine) = ctx.world.get_resource_mut::<AudioEngine>() {
-    engine.seed(SEED);
-  }
   ctx.assets().load_now::<Mixer>(MIXER_PATH).ok()
 }
 

@@ -612,6 +612,11 @@ impl Engine {
     // On the device, or silently on kira's mock backend when headless or
     // when the device fails to open, at the player's volume settings
     let mut audio_engine = AudioEngine::open(!headless, audio_buffer_frames);
+    // A headless run picks clips and draws gains and pitches the same way
+    // each time, so its captures and tests repeat
+    if headless {
+      audio_engine.seed(crate::core::audio::HEADLESS_SEED);
+    }
     let volumes = [
       master_volume,
       music_volume,
@@ -1577,9 +1582,10 @@ impl EngineBuilder {
   /// afterwards. Resolve command-line file arguments before calling it.
   ///
   /// With `RYO_HEADLESS=1` in a dev build the engine is built like a
-  /// `HeadlessEngine` (sound on the silent mock backend; no gamepads, user
-  /// preferences or wall-clock overlays) but keeps `RYO_CAPTURE_*` and
-  /// `RYO_INPUT`, and `run` renders offscreen.
+  /// `HeadlessEngine` (sound on the silent mock backend, its variations
+  /// seeded so runs repeat; no gamepads, user preferences or wall-clock
+  /// overlays) but keeps `RYO_CAPTURE_*` and `RYO_INPUT`, and `run` renders
+  /// offscreen.
   pub fn build(self) -> Engine {
     let (offscreen, warning) = crate::core::capture::headless_run_from_env();
     if let Some(warning) = warning {

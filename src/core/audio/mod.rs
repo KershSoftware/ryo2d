@@ -21,7 +21,7 @@ mod voice;
 pub use clip::AudioClip;
 pub(crate) use clip::{ClipData, DECODE_THRESHOLD};
 pub use engine::AudioEngine;
-pub(crate) use engine::{in_scene, release_scene, stop_scene_music, unlock};
+pub(crate) use engine::{HEADLESS_SEED, in_scene, release_scene, stop_scene_music, unlock};
 #[doc(hidden)]
 pub use log::{AudioLogEntry, AudioLogKind};
 pub(crate) use mix::OPEN_HZ;
@@ -40,4 +40,4 @@ pub use spatial::{AudioEmitter, AudioListener, falloff_gain_db, pan_for};
 #[doc(hidden)]
 pub use system::audio_system;
 pub use view::{AudioView, PlayOptions, Playable};
-pub use voice::Voice;
+pub use voice::{Voice, VoicePick};

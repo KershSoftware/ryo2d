@@ -252,6 +252,55 @@ fn the_engine_loads_the_game_s_mixer_when_it_has_one() {
   }
 }
 
+/// A headless engine (`HeadlessEngine`, `RYO_HEADLESS`) picks a sound's
+/// clips and draws its gains and pitches the same way on every run, so its
+/// captures and tests repeat without the game seeding anything
+#[test]
+fn headless_engines_pick_the_same_variations() {
+  use crate::core::asset::{Assets, Handle};
+  use crate::core::audio::{AudioClip, AudioEngine, AudioLogKind, AudioView, Sound, SoundClip};
+
+  let picks = || {
+    let resolved = EngineBuilder::new()
+      .start_scene(EmptyScene)
+      .resolve_in(None, true);
+    let mut engine = Engine::new(resolved, true);
+    engine.world.resource_mut::<AudioEngine>().set_logging(true);
+    let clips: Vec<Handle<AudioClip>> = (0..4)
+      .map(|_| {
+        let clip = AudioClip::from_frames(48_000, &[[0.1, 0.1]; 480]);
+        engine.world.resource_mut::<Assets<AudioClip>>().add(clip)
+      })
+      .collect();
+    let sound = Sound {
+      clips: clips.iter().cloned().map(SoundClip::new).collect(),
+      volume_range_db: 3.0,
+      pitch_range: 2.0,
+      ..Default::default()
+    };
+    let sound = engine.world.resource_mut::<Assets<Sound>>().add(sound);
+    for _ in 0..32 {
+      AudioView::new(&mut engine.world).play(&sound);
+    }
+    let engine_audio = engine.world.resource::<AudioEngine>();
+    engine_audio
+      .log()
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Start)
+      .map(|entry| {
+        let clip = clips
+          .iter()
+          .position(|clip| entry.source == format!("{:?}", clip.id()));
+        (clip, entry.gain_db, entry.rate)
+      })
+      .collect::<Vec<_>>()
+  };
+  let first = picks();
+  assert_eq!(first.len(), 32);
+  assert!(first.iter().all(|(clip, _, _)| clip.is_some()), "{first:?}");
+  assert_eq!(first, picks(), "a second headless run picks the same");
+}
+
 #[test]
 fn first_run_seeds_system_json_from_builder_and_project() {
   let (dir, ws) = temp_workspace("[system]\nmaster_volume = 0.3\n", None);

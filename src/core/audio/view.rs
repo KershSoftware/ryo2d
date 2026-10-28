@@ -294,6 +294,38 @@ impl<'w> AudioView<'w> {
       .and_then(AudioEngine::current_music)
   }
 
+  /// Seed what picks a sound's clips and draws its gains and pitches: from
+  /// the same seed, the same plays in the same order pick and draw the same.
+  /// For replays, tests and captures. Headless runs (`HeadlessEngine`,
+  /// `RYO_HEADLESS`) start seeded, so they repeat without it; a game's
+  /// otherwise starts from the system's randomness
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn start_replay(ctx: &mut SceneContext<'_>, seed: u64) {
+  ///   ctx.audio().seed(seed);
+  /// }
+  /// ```
+  pub fn seed(&mut self, seed: u64) {
+    if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
+      engine.seed(seed);
+    }
+  }
+
+  /// Whether the audio waits for the player's first gesture: true only on
+  /// the web, until a click, a tap or a key press (not Escape) opens the
+  /// audio device. Until then one-shots are refused, and loops and music
+  /// wait to start. A gamepad never opens it (browsers do not count pad
+  /// input), so a web game shows "click or tap to start" while this is
+  /// true
+  pub fn waiting_for_gesture(&self) -> bool {
+    self
+      .world
+      .get_resource::<AudioEngine>()
+      .is_some_and(AudioEngine::is_locked)
+  }
+
   /// How many voices play on `bus` and every bus under it (`master` counts
   /// them all); 0 for a bus that does not exist
   pub fn voices_on(&self, bus: &str) -> usize {

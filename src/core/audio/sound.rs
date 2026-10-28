@@ -268,6 +268,7 @@ mod tests {
   use crate::core::audio::engine::MIN_FADE;
   use crate::core::audio::{
     AudioEngine, AudioListener, AudioLogEntry, AudioLogKind, AudioView, PlayOptions, Voice,
+    VoicePick,
   };
   use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::{Vec2, World};
@@ -456,6 +457,109 @@ mod tests {
         assert_eq!(seen.len(), distinct, "no_repeat {no_repeat}: {picks:?}");
       }
     }
+  }
+
+  /// A sound of four clips with gain and pitch ranges, and what forty
+  /// plays of it pick after `seed`
+  fn picks_after(seed: u64) -> Vec<Option<VoicePick>> {
+    let mut world = audio_world();
+    AudioView::new(&mut world).seed(seed);
+    let clips: Vec<Handle<AudioClip>> = (0..4).map(|_| clip(&mut world, 0.001)).collect();
+    let sound = add(
+      &mut world,
+      Sound {
+        volume_range_db: 3.0,
+        pitch_range: 2.0,
+        no_repeat: 1,
+        ..of(&clips.iter().collect::<Vec<_>>())
+      },
+    );
+    (0..40)
+      .map(|_| {
+        let pick = play(&mut world, &sound).pick();
+        audio_step(&mut world, Duration::from_millis(5));
+        pick
+      })
+      .collect()
+  }
+
+  #[test]
+  fn a_seed_repeats_the_picks_and_draws() {
+    let first = picks_after(9);
+    assert!(first.iter().all(Option::is_some), "{first:?}");
+    assert_eq!(first, picks_after(9), "the same seed picks the same");
+    assert_ne!(first, picks_after(10), "another seed picks otherwise");
+  }
+
+  #[test]
+  fn a_voice_says_what_it_picked() {
+    let mut world = audio_world();
+    let clips: Vec<Handle<AudioClip>> = (0..3).map(|_| clip(&mut world, 0.001)).collect();
+    let sound = add(
+      &mut world,
+      Sound {
+        volume_db: -6.0,
+        volume_range_db: 2.0,
+        pitch: 1.0,
+        pitch_range: 1.0,
+        ..of(&clips.iter().collect::<Vec<_>>())
+      },
+    );
+    let options = PlayOptions {
+      volume_db: -3.0,
+      pitch: 2.0,
+      ..Default::default()
+    };
+    for _ in 0..30 {
+      let voice = play_with(&mut world, &sound, options);
+      let start = last(&world);
+      assert_eq!(start.kind, AudioLogKind::Start);
+      let Some(pick) = voice.pick() else {
+        panic!("a voice that started picked: {voice:?}");
+      };
+      // As the engine started it: the clip, and the gain and pitch drawn
+      // with the play's options added
+      assert_eq!(name(&clips[pick.clip_index]), start.source);
+      assert_eq!(pick.clip, clips[pick.clip_index].id());
+      assert!(
+        (pick.volume_db - start.gain_db).abs() < 1e-5,
+        "{pick:?} {start:?}"
+      );
+      assert!((-11.0..=-7.0).contains(&pick.volume_db), "{pick:?}");
+      let rate = 2f64.powf(f64::from(pick.pitch) / 12.0);
+      assert!((rate - start.rate).abs() < 1e-6, "{pick:?} {start:?}");
+      assert!((2.0..=4.0).contains(&pick.pitch), "{pick:?}");
+      // The game's own changes later do not rewrite what was drawn
+      voice.set_volume(-30.0);
+      voice.set_pitch(-12.0);
+      audio_step(&mut world, Duration::from_millis(5));
+      assert_eq!(voice.pick(), Some(pick));
+    }
+
+    // A clip played directly is its only clip, at the play's options
+    let direct = AudioView::new(&mut world).play_with(&clips[1], options);
+    let pick = direct.pick();
+    assert_eq!(
+      pick.map(|pick| (pick.clip_index, pick.clip, pick.volume_db, pick.pitch)),
+      Some((0, clips[1].id(), -3.0, 2.0))
+    );
+
+    // A refused play picked nothing
+    let long = clip(&mut world, 1.0);
+    let one = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::PreventNew,
+        }),
+        ..of(&[&long])
+      },
+    );
+    assert!(play(&mut world, &one).pick().is_some());
+    let refused = play(&mut world, &one);
+    assert!(refused.is_stopped());
+    assert_eq!(refused.pick(), None);
   }
 
   #[test]
