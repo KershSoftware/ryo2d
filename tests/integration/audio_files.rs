@@ -77,6 +77,12 @@ fn every_game_audio_file_loads() {
     let is_clip = |path: &&String| CLIPS.iter().any(|ext| path.ends_with(ext));
     let is_definition =
       |path: &&String| path.ends_with(".sound.ron") || path.ends_with(".music.ron");
+    if !paths.iter().any(|path| is_clip(&path)) {
+      problems.push(format!(
+        "{game}: no audio under {} (a missing or empty assets folder)",
+        assets.display()
+      ));
+    }
     let mut world = registry(&assets);
     for path in paths.iter().filter(|p| is_clip(p) || is_definition(p)) {
       if let Err(error) = load(&mut world, path) {

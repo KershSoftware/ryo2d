@@ -24,8 +24,8 @@
 //! ```
 //!
 //! Headless runs play sound on kira's mock backend, silently: `ctx.audio()`
-//! works as it does on a device. They have no
-//! gamepads, no hot reload and no dev windows; they never read or write `system.json` user preferences,
+//! works as it does on a device. They have no gamepads, no hot reload and no
+//! dev windows; they never read or write `system.json` user preferences,
 //! ignore `RYO_CAPTURE_*` and `RYO_INPUT`, and keep the FPS, frame-timing and
 //! stats overlays off. `Ryo.toml` is honoured as in a normal build. Input
 //! injected with `press_key`/`tap_key`/`press_mouse`/`mouse_move` is queued

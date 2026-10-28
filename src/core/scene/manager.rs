@@ -1264,7 +1264,7 @@ mod tests {
     let mut m = SceneManager::with_scene(rec(&log, "a"));
     m.enter_initial(&mut world);
     let fade = Transition::fade(Duration::from_millis(50));
-    assert!(m.handle_action(SceneAction::SwitchWith(rec(&log, "b"), fade), &mut world,));
+    assert!(m.handle_action(SceneAction::SwitchWith(rec(&log, "b"), fade), &mut world));
     assert_eq!(m.transition_overlay_color(), Some([0, 0, 0, 255]));
     let mut steps = 0;
     while m.is_transitioning() {

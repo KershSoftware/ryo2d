@@ -2380,32 +2380,83 @@ mod tests {
     assert_eq!(warnings, 1, "a warning naming the sound, once");
   }
 
-  #[test]
-  fn a_theme_ui_sound_plays_on_the_ui_bus() {
-    use crate::core::asset::MemorySource;
-    use crate::core::audio::AudioLogKind;
-    use crate::core::testing::HeadlessEngine;
-    use crate::core::ui::{Rect, Theme, UiContext};
-    use winit::event::MouseButton;
+  /// A button to click (at 20, 20, 80 x 30), Back taken, and the theme
+  /// file `ui/sounds.theme.ron` followed when there is one
+  struct Themed;
 
-    struct Themed;
-    impl Scene for Themed {
-      fn on_enter(&mut self, ctx: &mut SceneContext) {
-        if let Ok(theme) = ctx.assets().load_now::<Theme>("ui/sounds.theme.ron") {
-          ctx.follow_ui_theme(theme);
-        }
-      }
-      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-        ui.button("Ok").at(Rect::new(20.0, 20.0, 80.0, 30.0));
-        ui.back();
-        SceneAction::Continue
+  impl Scene for Themed {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      if let Ok(theme) = ctx
+        .assets()
+        .load_now::<crate::core::ui::Theme>("ui/sounds.theme.ron")
+      {
+        ctx.follow_ui_theme(theme);
       }
     }
-    let files = MemorySource::new();
-    files.insert(
-      "ui/click.wav",
-      crate::core::testing::wav(22_050, 2_205, 4_000),
-    );
+
+    fn ui(&mut self, ui: &mut crate::core::ui::UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      ui.button("Ok")
+        .at(crate::core::ui::Rect::new(20.0, 20.0, 80.0, 30.0));
+      ui.back();
+      SceneAction::Continue
+    }
+  }
+
+  /// A headless engine reading `files`, on [`Themed`]
+  fn themed(
+    files: crate::core::asset::MemorySource,
+  ) -> Option<crate::core::testing::HeadlessEngine> {
+    crate::core::testing::HeadlessEngine::new_or_skip(
+      EngineBuilder::new()
+        .resolution(320, 240)
+        .asset_source(files)
+        .start_scene(Themed),
+    )
+  }
+
+  /// Click [`Themed`]'s button
+  fn click_themed(e: &mut crate::core::testing::HeadlessEngine) {
+    use winit::event::MouseButton;
+    e.mouse_move(40.0, 30.0);
+    e.step_frames(1).unwrap();
+    e.press_mouse(MouseButton::Left);
+    e.step_frames(1).unwrap();
+    e.release_mouse(MouseButton::Left);
+    e.step_frames(1).unwrap();
+  }
+
+  /// The voices started so far: what each plays, its bus and its gain
+  fn starts(e: &crate::core::testing::HeadlessEngine) -> Vec<(String, String, f32)> {
+    e.audio_log()
+      .into_iter()
+      .filter(|entry| entry.kind == crate::core::audio::AudioLogKind::Start)
+      .map(|entry| (entry.source, entry.bus, entry.gain_db))
+      .collect()
+  }
+
+  /// Step `e` until `done`, at most 300 frames
+  fn step_until(
+    e: &mut crate::core::testing::HeadlessEngine,
+    mut done: impl FnMut(&mut crate::core::testing::HeadlessEngine) -> bool,
+  ) {
+    for _ in 0..300 {
+      if done(e) {
+        return;
+      }
+      e.step().unwrap();
+    }
+    panic!("not done after 300 frames");
+  }
+
+  /// A short click, as a WAV file of `frames` frames
+  fn click_wav(frames: usize) -> Vec<u8> {
+    crate::core::testing::wav(22_050, frames, 4_000)
+  }
+
+  #[test]
+  fn a_theme_ui_sound_plays_on_the_ui_bus() {
+    let files = crate::core::asset::MemorySource::new();
+    files.insert("ui/click.wav", click_wav(2_205));
     // A definition naming no bus, which alone would play on `sfx`
     files.insert("ui/back.sound.ron", r#"(clips: [(path: "ui/click.wav")])"#);
     files.insert(
@@ -2416,30 +2467,15 @@ mod tests {
         volume: 0.5,
       ))"#,
     );
-    let Some(mut e) = HeadlessEngine::new_or_skip(
-      EngineBuilder::new()
-        .resolution(320, 240)
-        .asset_source(files)
-        .start_scene(Themed),
-    ) else {
+    let Some(mut e) = themed(files) else {
       return;
     };
     e.step_frames(2).unwrap();
     // A click on the button confirms, and Escape goes back
-    e.mouse_move(40.0, 30.0);
-    e.step_frames(1).unwrap();
-    e.press_mouse(MouseButton::Left);
-    e.step_frames(1).unwrap();
-    e.release_mouse(MouseButton::Left);
-    e.step_frames(1).unwrap();
+    click_themed(&mut e);
     e.tap_key(KeyCode::Escape);
     e.step_frames(2).unwrap();
-    let starts: Vec<(String, String, f32)> = e
-      .audio_log()
-      .into_iter()
-      .filter(|entry| entry.kind == AudioLogKind::Start)
-      .map(|entry| (entry.source, entry.bus, entry.gain_db))
-      .collect();
+    let starts = starts(&e);
     assert_eq!(starts.len(), 2, "the confirm and the back: {starts:?}");
     for (source, bus, gain_db) in &starts {
       assert_eq!(
@@ -2450,6 +2486,56 @@ mod tests {
       // The theme's volume of 0.5 is an amplitude: about -6 dB
       assert!((gain_db + 6.02).abs() < 0.01, "{starts:?}");
     }
+  }
+
+  #[test]
+  fn a_code_made_theme_s_ui_sound_plays_on_the_ui_bus() {
+    use crate::core::audio::AudioClip;
+    use crate::core::ui::{Theme, ThemeSound, UiTheme};
+    let files = crate::core::asset::MemorySource::new();
+    files.insert("ui/click.wav", click_wav(2_205));
+    let Some(mut e) = themed(files) else {
+      return;
+    };
+    let mut theme = Theme::dark();
+    theme.sounds.confirm = ThemeSound::from_path("ui/click.wav");
+    e.world_mut().resource_mut::<UiTheme>().set(theme);
+    // The engine loads it, off the main thread
+    let clip = e.assets().load::<AudioClip>("ui/click.wav");
+    step_until(&mut e, |e| e.assets().is_ready(&clip));
+    click_themed(&mut e);
+    assert_eq!(
+      starts(&e),
+      [("ui/click.wav".to_string(), "ui".to_string(), 0.0)]
+    );
+  }
+
+  #[test]
+  fn a_reloaded_theme_file_swaps_its_ui_sounds() {
+    use crate::core::asset::AssetServer;
+    use crate::core::ui::UiTheme;
+    let theme = |confirm: &str| format!(r#"(sounds: (confirm: (path: "{confirm}")))"#);
+    let files = crate::core::asset::MemorySource::new();
+    files.insert("ui/click.wav", click_wav(2_205));
+    files.insert("ui/clack.wav", click_wav(1_100));
+    files.insert("ui/sounds.theme.ron", theme("ui/click.wav"));
+    let Some(mut e) = themed(files.clone()) else {
+      return;
+    };
+    e.step_frames(2).unwrap();
+    click_themed(&mut e);
+    files.insert("ui/sounds.theme.ron", theme("ui/clack.wav"));
+    e.world()
+      .resource::<AssetServer>()
+      .reload("ui/sounds.theme.ron");
+    step_until(&mut e, |e| {
+      let ui = e.world().resource::<UiTheme>();
+      ui.get().sounds.confirm.path.as_deref() == Some("ui/clack.wav")
+    });
+    e.step_frames(1).unwrap();
+    click_themed(&mut e);
+    let played: Vec<String> = starts(&e).into_iter().map(|(source, ..)| source).collect();
+    assert_eq!(played, ["ui/click.wav", "ui/clack.wav"]);
   }
 
   #[test]

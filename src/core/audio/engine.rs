@@ -78,16 +78,6 @@ const GAIN_EPSILON: f32 = 1e-4;
 const CUTOFF_EPSILON: f32 = 0.01;
 /// Where a clip played directly goes
 const DEFAULT_BUS: &str = "sfx";
-
-/// The bus a UI sound plays on: `bus` if it is `ui` or one under it, and
-/// `ui` if not
-fn ui_bus(bus: &str) -> &str {
-  if bus == "ui" || bus.starts_with("ui/") {
-    bus
-  } else {
-    "ui"
-  }
-}
 /// Where music plays, or under it
 const MUSIC_BUS: &str = "music";
 /// A music voice's priority: the highest, so no other voice takes its room
@@ -100,6 +90,16 @@ const SCALE_EPSILON: f64 = 1e-6;
 /// The fastest time scale audio follows: the game clock runs up to 100
 /// times as fast, which would swamp kira's mixing thread
 const MAX_SCALE: f32 = 8.0;
+
+/// The bus a UI sound plays on: `bus` if it is `ui` or one under it, and
+/// `ui` if not
+fn ui_bus(bus: &str) -> &str {
+  if bus == "ui" || bus.starts_with("ui/") {
+    bus
+  } else {
+    "ui"
+  }
+}
 
 /// The game's clock as audio follows it, read from `Time` each frame
 #[derive(Debug, Clone, Copy, PartialEq)]
