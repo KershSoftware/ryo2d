@@ -330,7 +330,8 @@ A definition with `spatial` is heard from a place: quieter with distance from th
 
 - **A snapshot** is a named mixer preset of bus volumes (dB, a layer over the mixer's and the player's) and low-pass cutoffs (Hz). `ctx.audio().snapshot("paused")` blends to it over its `blend` (0.3 s by default), from wherever the mix is; `clear_snapshot()` blends back. One is active at a time, and calling another blends from the current mix to it.
 - A snapshot is a full preset: a bus it does not name, or names without a `low_pass`, blends back to its own level and open. Cutoffs sweep evenly in octaves.
-- A name the mixer does not have warns once and changes nothing. A snapshot called before the mixer has loaded applies once it does.
+- A name the mixer does not have warns once and changes nothing. A snapshot called before the mixer has loaded applies once it does (the last call wins); if the mixer fails to load, one warning names the snapshot that waited.
+- The mix moves once a frame, each step gliding over the frame, so a long frame (a hitch) glides over at most 100 ms and the mix does not trail it; a blend lands on the frame its time runs out. A mixer reload that drops the active snapshot blends back to open over its whole blend.
 - **A duck** dips one bus while another plays: `(trigger: "voice", target: "music", by: -9.0, attack: 0.1, release: 0.6)` turns `music` down 9 dB over 0.1 s while any voice plays on `voice` or a bus under it, and back over 0.6 s after. It is bus gain moved each frame, not an audio-rate side-chain, so it suits dialogue over music rather than pumping a kick. Two ducks on one target add their dips.
 
 ## 10. Music

@@ -2,6 +2,8 @@
 //! rules' dips. Each moves a gain layer (and a cutoff) over time; the engine
 //! puts what they say on the buses
 
+use std::time::Duration;
+
 use super::mixer::DuckDef;
 use crate::core::hash::FastMap;
 
@@ -37,21 +39,23 @@ impl Level {
 }
 
 /// The active snapshot and the blend toward it (or back from it): the level
-/// each bus is at now, found by name so it outlives a rebuilt bus tree
+/// each bus is at now, found by name so it outlives a rebuilt bus tree. Its
+/// time is kept exactly (a sum of frames' `Duration`s), so a blend lands
+/// on the frame its time runs out
 #[derive(Default)]
 pub(crate) struct Blend {
   /// The snapshot blended to; `None` once cleared
   pub(crate) active: Option<String>,
   /// How long the snapshot named in `active` (or last active) blends
-  seconds: f32,
+  blend: Duration,
   /// Each bus's level now: the buses a snapshot has moved, and not yet
   /// back to open
   current: FastMap<String, Level>,
   /// Where the running blend started and where it goes, over the same buses
   from: FastMap<String, Level>,
   to: FastMap<String, Level>,
-  elapsed: f32,
-  duration: f32,
+  elapsed: Duration,
+  duration: Duration,
   running: bool,
 }
 
@@ -69,21 +73,21 @@ impl Blend {
       .map(|(bus, level)| (bus.as_str(), *level))
   }
 
-  /// How long the snapshot last active blends, in seconds
-  pub(crate) fn seconds(&self) -> f32 {
-    self.seconds
+  /// How long the snapshot last active blends
+  pub(crate) fn blend(&self) -> Duration {
+    self.blend
   }
 
   /// Blend from the levels now to `targets` (every other bus to open) over
-  /// `seconds`, and make `active` the active snapshot
+  /// `blend`, and make `active` the active snapshot
   pub(crate) fn begin<'a>(
     &mut self,
     active: Option<&str>,
-    seconds: f32,
+    blend: Duration,
     targets: impl Iterator<Item = (&'a str, Level)>,
   ) {
     self.active = active.map(str::to_string);
-    self.seconds = seconds;
+    self.blend = blend;
     self.from.clear();
     self.to.clear();
     for (bus, level) in &self.current {
@@ -96,8 +100,8 @@ impl Blend {
       }
       self.to.insert(bus.to_string(), level);
     }
-    self.elapsed = 0.0;
-    self.duration = seconds;
+    self.elapsed = Duration::ZERO;
+    self.duration = blend;
     self.running = true;
   }
 
@@ -105,31 +109,31 @@ impl Blend {
     self.running
   }
 
-  /// Seconds the running blend has left (0 when none runs)
-  pub(crate) fn remaining(&self) -> f32 {
+  /// The time the running blend has left (none when none runs)
+  pub(crate) fn remaining(&self) -> Duration {
     if self.running {
-      (self.duration - self.elapsed).max(0.0)
+      self.duration.saturating_sub(self.elapsed)
     } else {
-      0.0
+      Duration::ZERO
     }
   }
 
-  /// Make the blend just begun take `seconds` instead of its full time
-  pub(crate) fn shorten_to(&mut self, seconds: f32) {
-    self.duration = seconds;
+  /// Make the blend just begun take `time` instead of its full blend
+  pub(crate) fn shorten_to(&mut self, time: Duration) {
+    self.duration = time;
   }
 
-  /// Move the blend on by `seconds`; whether it did anything (the engine
+  /// Move the blend on by `delta`; whether it did anything (the engine
   /// then puts the levels on the buses)
-  pub(crate) fn step(&mut self, seconds: f32) -> bool {
+  pub(crate) fn step(&mut self, delta: Duration) -> bool {
     if !self.running {
       return false;
     }
-    self.elapsed += seconds;
-    let t = if self.duration > 0.0 {
-      (self.elapsed / self.duration).min(1.0)
-    } else {
+    self.elapsed = self.elapsed.saturating_add(delta);
+    let t = if self.elapsed >= self.duration {
       1.0
+    } else {
+      (self.elapsed.as_secs_f64() / self.duration.as_secs_f64()) as f32
     };
     for (bus, from) in &self.from {
       let to = self.to.get(bus).copied().unwrap_or(Level::OPEN);

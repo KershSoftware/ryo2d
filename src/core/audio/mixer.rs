@@ -1555,7 +1555,9 @@ mod tests {
   use kira::sound::PlaybackState;
 
   use super::*;
-  use crate::core::asset::{Assets, AssetsView, AudioClipSettings, ClipMode, MemorySource};
+  use crate::core::asset::{
+    AssetServer, Assets, AssetsView, AudioClipSettings, ClipMode, MemorySource,
+  };
   use crate::core::audio::engine::MIN_FADE;
   use crate::core::audio::{
     AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, Sound, SoundClip, Voice,
@@ -2495,7 +2497,11 @@ mod tests {
     run(&mut world, 0.17);
     let music = bus(&world, "music");
     assert!((music.snapshot_db + 6.0).abs() < 0.1, "{music:?}");
-    assert_eq!(music.cutoff_hz, Some(800.0));
+    // At its target, to within the change a cutoff is sent for (0.01 Hz)
+    assert!(
+      music.cutoff_hz.is_some_and(|hz| (hz - 800.0).abs() < 0.01),
+      "{music:?}"
+    );
   }
 
   #[test]
@@ -2512,6 +2518,173 @@ mod tests {
     assert_eq!(
       bus_gains(&world, "music").last().map(|e| e.fade),
       Some(MIN_FADE)
+    );
+  }
+
+  /// A long frame (a 2 s hitch) glides what the frame steps over at most
+  /// 100 ms, so the mix does not trail the hitch by its length: the
+  /// snapshot's blend on the bus gains, a voice's rate following time
+  /// scale, and a placed voice's gain following its place
+  #[test]
+  fn a_long_frame_glides_over_at_most_100_ms() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    let long = clip(&mut world, 30.0);
+    let hum = looping(&mut world, long.clone(), "sfx");
+    let placed = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(long)],
+      looping: true,
+      spatial: Some(crate::core::audio::Spatial {
+        min_distance: 10.0,
+        max_distance: 1000.0,
+        curve: crate::core::audio::Falloff::Linear,
+        pan_width: 1000.0,
+        low_pass_at_max: None,
+      }),
+      ..Default::default()
+    });
+    let listener = world
+      .spawn((
+        crate::core::audio::AudioListener,
+        crate::core::ecs::Transform::default(),
+      ))
+      .id();
+    let (hummed, near) = {
+      let mut audio = AudioView::new(&mut world);
+      (
+        audio.play(&hum),
+        audio.play_at(&placed, crate::core::ecs::Vec2::new(100.0, 0.0)),
+      )
+    };
+    audio_step(&mut world, FRAME);
+    AudioView::new(&mut world).snapshot("pause");
+    world
+      .resource_mut::<crate::core::time::Time>()
+      .game
+      .set_speed(0.5);
+    world
+      .entity_mut(listener)
+      .insert(crate::core::ecs::Transform::from_xy(400.0, 0.0));
+    audio_step(&mut world, Duration::from_secs(2));
+    let cap = Duration::from_millis(100);
+    let fades = |voice: u32, kind: AudioLogKind| -> Vec<Duration> {
+      log(&world)
+        .iter()
+        .filter(|entry| entry.voice == voice && entry.kind == kind)
+        .map(|entry| entry.fade)
+        .collect()
+    };
+    assert_eq!(
+      bus_gains(&world, "music").last().map(|entry| entry.fade),
+      Some(cap)
+    );
+    assert_eq!(fades(hummed.id(), AudioLogKind::Rate).last(), Some(&cap));
+    assert_eq!(fades(near.id(), AudioLogKind::Gain).last(), Some(&cap));
+  }
+
+  /// A blend keeps exact time: a 1 s blend stepped in frames of 1/60 s is
+  /// at its target after 60 of them, not 61
+  #[test]
+  fn a_blend_lands_on_the_frame_its_time_runs_out() {
+    let mut world = audio_world();
+    AudioView::new(&mut world).set_mixer(Mixer {
+      snapshots: vec![SnapshotDef {
+        name: "slow".into(),
+        blend: 1.0,
+        buses: vec![(
+          "music".into(),
+          SnapshotBus {
+            volume_db: -12.0,
+            low_pass: None,
+          },
+        )],
+      }],
+      ..Default::default()
+    });
+    AudioView::new(&mut world).snapshot("slow");
+    for _ in 0..59 {
+      audio_step(&mut world, FRAME);
+    }
+    assert_ne!(bus(&world, "music").snapshot_db, -12.0, "still blending");
+    audio_step(&mut world, FRAME);
+    assert_eq!(bus(&world, "music").snapshot_db, -12.0);
+  }
+
+  /// A snapshot whose target the reloaded mixer lacks, mid-blend, blends
+  /// back to open over the whole blend, not what was left of the blend
+  /// toward it
+  #[test]
+  fn a_snapshot_dropped_mid_blend_blends_back_over_its_whole_blend() {
+    let named = SNAPSHOTS.replace("\"pause\"", "\"dropped-mid-blend\"");
+    let (mut world, _files) = world_with_mixer(&named);
+    AudioView::new(&mut world).snapshot("dropped-mid-blend");
+    run(&mut world, 0.15);
+    let renamed = Mixer::parse(&SNAPSHOTS.replace("\"pause\"", "\"other\"")).unwrap_or_default();
+    AudioView::new(&mut world).set_mixer(renamed);
+    audio_step(&mut world, FRAME);
+    // 0.17 s of the 0.3 s back: a third of the way left
+    run(&mut world, 0.17);
+    let music = bus(&world, "music");
+    assert!(music.snapshot_db < -0.5, "still blending back: {music:?}");
+    run(&mut world, 0.15);
+    assert!(bus(&world, "music").snapshot_db.abs() < 0.01);
+  }
+
+  /// A snapshot asked for before the mixer lands waits for it, the last
+  /// call winning
+  #[test]
+  fn the_last_snapshot_asked_for_before_the_mixer_lands_applies() {
+    let files = MemorySource::new();
+    files.insert(MIXER_PATH, SNAPSHOTS);
+    let mut world = audio_world_over(files);
+    let mixer = AssetsView::new(&mut world).load::<Mixer>(MIXER_PATH);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_mixer(Some(mixer.clone()));
+    {
+      let mut audio = AudioView::new(&mut world);
+      audio.snapshot("pause");
+      audio.snapshot("dive");
+    }
+    let started = Instant::now();
+    while world.resource::<Assets<Mixer>>().get(&mixer).is_none() {
+      assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the mixer loads"
+      );
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    run(&mut world, 0.4);
+    let music = bus(&world, "music");
+    assert!((music.snapshot_db + 12.0).abs() < 0.01, "dive: {music:?}");
+    assert!(bus(&world, "sfx").snapshot_db.abs() < 0.01, "not pause");
+  }
+
+  /// A snapshot asked for before a mixer that then fails to load is
+  /// warned about once, by name: it can never apply
+  #[test]
+  fn a_snapshot_waiting_for_a_mixer_that_fails_warns_once() {
+    let files = MemorySource::new();
+    files.insert(MIXER_PATH, "(buses: { \"sfx\": (volume: oops) })");
+    let mut world = audio_world_over(files);
+    let mixer = AssetsView::new(&mut world).load::<Mixer>(MIXER_PATH);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_mixer(Some(mixer.clone()));
+    AudioView::new(&mut world).snapshot("stranded-unique");
+    let started = Instant::now();
+    while !world.resource::<AssetServer>().state(&mixer).is_failed() {
+      assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the mixer fails"
+      );
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    run(&mut world, 0.1);
+    assert_eq!(
+      warnings(|message| message.contains("\"stranded-unique\"")),
+      1
     );
   }
 

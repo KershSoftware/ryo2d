@@ -71,6 +71,12 @@ const CHUNK_FRAMES: usize = 128;
 /// The most real time the mock backend renders in one frame: a frame after
 /// a stall (the machine slept, say) renders a second, not the whole stall
 const MAX_MOCK_STEP: Duration = Duration::from_secs(1);
+/// The longest a change made once a frame glides (a snapshot's blend on the
+/// bus gains and cutoffs, a voice's rate following time scale, a placed
+/// voice's gain, pan and cutoff following its place): each glides over the
+/// frame's length, so the steps join up, but a long frame (a 2 s hitch)
+/// glides over this, so the mix does not trail the hitch by its length
+const MAX_GLIDE: Duration = Duration::from_millis(100);
 /// Voices the table holds before it grows
 const VOICE_CAPACITY: usize = 128;
 /// The most a one-shot playing as its scene exits may have left to finish:
@@ -1838,7 +1844,8 @@ impl AudioEngine {
   /// Blend to the mixer's snapshot `name` over its blend time, from where
   /// the mix is. One is active at a time. A name the mixer lacks is warned
   /// about once and changes nothing; before the mixer lands, the call waits
-  /// for it
+  /// for it (the last such call wins), warned about by name if the mixer
+  /// fails to load
   pub(crate) fn snapshot(&mut self, name: &str) {
     if self.mixer_pending {
       self.pending_snapshot = Some(Some(name.to_string()));
@@ -1871,18 +1878,18 @@ impl AudioEngine {
           };
           (bus.as_str(), level)
         });
-        self.blend.begin(Some(name), def.blend, targets);
+        self.blend.begin(Some(name), blend_time(def.blend), targets);
       }
       None => {
         if self.blend.active.is_none() {
           return;
         }
-        let seconds = self.blend.seconds();
-        self.blend.begin(None, seconds, std::iter::empty());
+        let blend = self.blend.blend();
+        self.blend.begin(None, blend, std::iter::empty());
       }
     }
     // A blend of no time lands in this call
-    self.step_blend(0.0);
+    self.step_blend(Duration::ZERO);
   }
 
   /// Warn, once for `name`, that the mixer has no such snapshot
@@ -1896,10 +1903,10 @@ impl AudioEngine {
     );
   }
 
-  /// Move the snapshot's blend on by `seconds` and put its levels on the
+  /// Move the snapshot's blend on by `delta` and put its levels on the
   /// buses
-  fn step_blend(&mut self, seconds: f32) {
-    if !self.blend.step(seconds) {
+  fn step_blend(&mut self, delta: Duration) {
+    if !self.blend.step(delta) {
       return;
     }
     for (name, level) in self.blend.levels() {
@@ -1915,15 +1922,16 @@ impl AudioEngine {
   /// Each frame: the snapshot's blend, and the ducks. A duck dips while any
   /// voice plays on its trigger bus or under it
   fn step_mix(&mut self, delta: Duration) {
-    let seconds = delta.as_secs_f32();
-    // A slow frame glides over the whole frame, so a blend does not step
-    self.glide = delta.max(MIN_FADE);
-    self.step_mix_by(seconds);
+    // A slow frame glides over the frame (up to [`MAX_GLIDE`]), so a blend
+    // does not step
+    self.glide = frame_glide(delta);
+    self.step_mix_by(delta);
     self.glide = MIN_FADE;
   }
 
-  fn step_mix_by(&mut self, seconds: f32) {
-    self.step_blend(seconds);
+  fn step_mix_by(&mut self, delta: Duration) {
+    self.step_blend(delta);
+    let seconds = delta.as_secs_f32();
     let mut moved = false;
     for duck in &mut self.ducks {
       let trigger = duck.trigger;
@@ -2054,9 +2062,16 @@ impl AudioEngine {
       mixers.and_then(|mixers| Some((mixers.get(id)?, mixers.version(id)?)))
     else {
       // A mixer that failed to load leaves the standard layout, and the
-      // buses it would have added are warned about from now on
+      // buses it would have added are warned about from now on; a snapshot
+      // that waited for it can never apply
       if self.mixer_pending && server.is_some_and(|server| server.state(id).is_failed()) {
         self.mixer_pending = false;
+        if let Some(Some(name)) = self.pending_snapshot.take() {
+          crate::engine_warn!(
+            module: "Audio",
+            "snapshot {name:?} was asked for before the mixer loaded, and the mixer did not load (the asset warning for it says why); the mix stays as it is"
+          );
+        }
       }
       return;
     };
@@ -2073,6 +2088,11 @@ impl AudioEngine {
         module: "Audio",
         "{name}: the mixer is not used ({error}); the buses stay as they were"
       );
+      // A snapshot that waited for it applies to the buses as they are, or
+      // is warned about by name if they have no such snapshot
+      if let Some(pending) = self.pending_snapshot.take() {
+        self.activate(pending.as_deref());
+      }
       return;
     }
     self.rebuild(world, mixer, server);
@@ -2182,23 +2202,25 @@ impl AudioEngine {
     // The active snapshot blends to the new mixer's version of it, or
     // clears if the new mixer has none
     if let Some(active) = self.blend.active.clone() {
-      // The blend carries on from where it is, with the time it has left
-      let remaining = self.blend.running().then(|| self.blend.remaining());
       if self
         .snapshots
         .iter()
         .any(|snapshot| snapshot.name == active)
       {
+        // The blend carries on from where it is, with the time it has left
+        let remaining = self.blend.running().then(|| self.blend.remaining());
         self.activate(Some(&active));
+        if let Some(remaining) = remaining {
+          self.blend.shorten_to(remaining);
+        }
       } else {
+        // Back to open over the whole blend, whatever was left of the blend
+        // toward it
         crate::engine_warn!(
           module: "Audio",
           "snapshot {active:?} is not in the reloaded mixer; the mix blends back to open"
         );
         self.activate(None);
-      }
-      if let Some(remaining) = remaining {
-        self.blend.shorten_to(remaining);
       }
     }
     // Built at the web's unlock while the mixer has yet to land, the
@@ -3957,7 +3979,7 @@ impl AudioEngine {
     if !std::mem::take(&mut self.voices_dirty) {
       return;
     }
-    let glide = real_delta.max(MIN_FADE);
+    let glide = frame_glide(real_delta);
     let frame = self.frame;
     for index in 0..self.voices.live.len() {
       let live = &mut self.voices.live[index];
@@ -4063,7 +4085,7 @@ impl AudioEngine {
       let glide = if live.frame == frame {
         Duration::ZERO
       } else {
-        real_delta.max(MIN_FADE)
+        frame_glide(real_delta)
       };
       if let Some(entity) = live.emitter {
         match emitter_position(world, entity) {
@@ -5064,6 +5086,19 @@ fn shaped(duration: Duration, easing: Easing) -> Tween {
     easing,
     ..Default::default()
   }
+}
+
+/// How long a change made once a frame glides after a frame of
+/// `real_delta`: the frame's length, so the steps join up, at least
+/// [`MIN_FADE`] and at most [`MAX_GLIDE`]
+fn frame_glide(real_delta: Duration) -> Duration {
+  real_delta.clamp(MIN_FADE, MAX_GLIDE)
+}
+
+/// A snapshot's blend, `seconds` long (checked to be a time from 0 when its
+/// mixer loaded; anything else blends at once)
+fn blend_time(seconds: f32) -> Duration {
+  Duration::try_from_secs_f32(seconds).unwrap_or(Duration::ZERO)
 }
 
 /// A linear tween over `duration`, starting now: a change between two

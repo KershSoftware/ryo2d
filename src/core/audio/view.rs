@@ -202,7 +202,9 @@ impl<'w> AudioView<'w> {
   /// blend time, from wherever it is: its volumes are a layer over the
   /// mixer's and the player's, and its low-pass cutoffs close with it. One
   /// snapshot is active at a time. A name the mixer has none of is warned
-  /// about once and changes nothing
+  /// about once and changes nothing. Asked for before the mixer has loaded,
+  /// it applies once the mixer lands (the last call before then wins); if
+  /// the mixer fails to load, one warning names the snapshot
   pub fn snapshot(&mut self, name: &str) {
     self.with_mixer(|engine| engine.snapshot(name));
   }
