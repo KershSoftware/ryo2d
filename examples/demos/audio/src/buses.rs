@@ -13,6 +13,9 @@ const LABELS: [&str; 6] = ["Master", "Music", "Sfx", "UI", "Voice", "Ambience"];
 pub(crate) struct BusesPage {
   /// The six settings, in `VolumeKind::ALL` order
   levels: [f32; 6],
+  /// The settings as the page found them (the game's: `Ryo.toml`'s), put
+  /// back as it closes
+  found: [f32; 6],
   /// The pattern of one-shots plays by itself
   pattern: bool,
   /// Fixed steps since the page opened
@@ -34,6 +37,7 @@ impl BusesPage {
   pub(crate) fn new() -> Self {
     Self {
       levels: VolumeKind::ALL.map(VolumeKind::default_value),
+      found: VolumeKind::ALL.map(VolumeKind::default_value),
       pattern: true,
       frame: 0,
       sounds: None,
@@ -78,9 +82,9 @@ impl DemoPage for BusesPage {
       })
     })();
     let mut audio = ctx.audio();
-    for (kind, level) in VolumeKind::ALL.into_iter().zip(self.levels) {
-      audio.set_volume_setting(kind, level);
-    }
+    // The sliders start where the game's settings are
+    self.found = VolumeKind::ALL.map(|kind| audio.volume_setting(kind));
+    self.levels = self.found;
     if let Some(sounds) = &self.sounds {
       audio.play_music(&sounds.theme);
       // A loop: it stops, fading out, as the page closes
@@ -89,10 +93,10 @@ impl DemoPage for BusesPage {
   }
 
   fn exit(&mut self, ctx: &mut SceneContext) {
-    // The other pages start from the default mix
+    // The other pages start from the game's mix
     let mut audio = ctx.audio();
-    for kind in VolumeKind::ALL {
-      audio.set_volume_setting(kind, kind.default_value());
+    for (kind, level) in VolumeKind::ALL.into_iter().zip(self.found) {
+      audio.set_volume_setting(kind, level);
     }
   }
 

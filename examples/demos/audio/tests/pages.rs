@@ -175,23 +175,27 @@ fn each_limit_row_keeps_within_its_voices_while_its_rule_acts() {
   );
 }
 
+/// The Buses page's sliders start at the game's settings (the demo's
+/// `Ryo.toml` sets master to 0.89), a slider sets its setting, and the
+/// page puts back what it found as it closes
 #[test]
 fn a_slider_sets_its_volume_setting() {
   let Some(mut engine) = engine_on(BUSES) else {
     return;
   };
   engine.step_frames(3).unwrap();
-  let master = VolumeKind::Master.default_value();
-  assert_eq!(
-    audio(&mut engine).volume_setting(VolumeKind::Master),
-    master
-  );
+  let master = |engine: &mut HeadlessEngine| audio(engine).volume_setting(VolumeKind::Master);
+  assert_eq!(master(&mut engine), 0.89, "as the demo's Ryo.toml sets it");
   // The panel has the focus, on its first row: Master, a step of 0.05
-  // down from 1
+  // down
   engine.tap_key(KeyCode::ArrowLeft);
   engine.step_frames(3).unwrap();
-  let lowered = audio(&mut engine).volume_setting(VolumeKind::Master);
-  assert!((lowered - 0.95).abs() < 1e-4, "master is {lowered}");
+  let lowered = master(&mut engine);
+  assert!((lowered - 0.85).abs() < 1e-4, "master is {lowered}");
+  // The next page starts from the game's mix
+  engine.tap_key(KeyCode::PageDown);
+  engine.step_frames(3).unwrap();
+  assert_eq!(master(&mut engine), 0.89);
 }
 
 #[test]
