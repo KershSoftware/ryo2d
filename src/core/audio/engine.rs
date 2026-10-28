@@ -221,7 +221,6 @@ impl Manager {
       capacities: capacities(),
       internal_buffer_size: CHUNK_FRAMES,
       main_track_builder: main,
-      ..Default::default()
     };
     AudioManager::<MockBackend>::new(settings)
       .ok()
