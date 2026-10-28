@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.11.1
+  version: 2.11.2
 ---
 
 # Ryo2D API Reference
@@ -606,10 +606,10 @@ A mixer on kira 0.12. Clips, sound definitions, music and the mixer are registry
 
 | `AudioView` (`ctx.audio()`; `AudioView::new(&mut World)` in an exclusive system or a test) | |
 |---|---|
-| `play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice` | a `&Handle<Sound>` (played as the definition says) or a `&Handle<AudioClip>` (the empty definition: `sfx`, 0 dB, no limit, priority 128, one start a frame). A loop whose sound is still loading (and any play of a definition still loading) waits, reporting playing, and starts once it is ready; a one-shot still loading is refused (warned once in debug builds). Failed (warned once), past its `per_frame`, cooling down or refused by a limit: the voice returned is already stopped |
+| `play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice` | a `&Handle<Sound>` (played as the definition says) or a `&Handle<AudioClip>` (the empty definition: `sfx`, 0 dB, no limit, priority 128, one start a frame). A loop whose sound is still loading (and any play of a definition still loading) waits, reporting playing, and starts once it is ready, counting against its `per_frame` as it lands; a one-shot still loading is refused (warned once in debug builds). Failed (warned once), past its `per_frame`, cooling down or refused by a limit: the voice returned is already stopped. A voice whose `stop` was called holds no room under a limit or `per_frame` |
 | `play_at<'a>(&mut self, sound, position: Vec2) -> Voice` | heard from `position` by the sound's `spatial`; a one-shot at or beyond its maximum distance is culled, a loop there starts silent |
 | `play_with<'a>(&mut self, sound, options: PlayOptions) -> Voice` | with a place, `persist`, extra gain or pitch |
-| `play_emitter(&mut self, entity: Entity) -> Voice` | the entity's `AudioEmitter`, following it; stopped voice if it has none or is disabled |
+| `play_emitter(&mut self, entity: Entity) -> Voice` | the entity's `AudioEmitter`, following it; a sound still loading waits as `play`'s does, starting where the entity is; stopped voice if it has none or is disabled |
 | `play_music(&mut self, music: &Handle<Music>)` | the one music player: crossfades over the new track's `crossfade` (fades in over `fade_in` from silence); the track already playing plays on (a paused one resumes); a loading track takes over once loaded; a failed one warns once and changes nothing |
 | `stop_music(&mut self, fade: Duration)`, `pause_music(&mut self)`, `resume_music(&mut self)`, `current_music(&self) -> Option<AssetId<Music>>` | `stop_music` also forgets a track still loading; `current_music` is the track playing, paused or waiting to load |
 | `set_volume_setting(&mut self, kind: VolumeKind, value: f32)`, `volume_setting(&self, kind: VolumeKind) -> f32` | the player's settings, 0 to 1 on the curve `volume_to_db`; playing sounds follow at once. Clamped; NaN is the kind's default |

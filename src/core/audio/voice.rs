@@ -220,7 +220,9 @@ impl Voice {
     }
   }
 
-  /// Fade out over `fade` (at least 10 ms), then stop for good
+  /// Fade out over `fade` (at least 10 ms), then stop for good. From the
+  /// call it holds no room under its sound's voice limit or `per_frame`:
+  /// a play made after it, even in the same frame, applies the stop first
   pub fn stop(&self, fade: Duration) {
     self.send(VoiceChange::Stop(fade));
   }

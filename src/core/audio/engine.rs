@@ -1642,7 +1642,25 @@ impl AudioEngine {
     let fade = live.fade_out.max(MIN_FADE);
     live.playback.stop(fade);
     live.voice.set_state(VoiceState::Stopping);
+    self.uncount(index);
     self.record(index, AudioLogKind::Stop, fade, server);
+  }
+
+  /// Live voice `index` was just stopped: started this frame, it no longer
+  /// counts against its sound's `per_frame` (a stopped voice holds no
+  /// sound's room; it still holds kira's place on its track until its fade
+  /// ends)
+  fn uncount(&mut self, index: usize) {
+    let Some(live) = self.voices.live.get(index) else {
+      return;
+    };
+    if live.frame != self.frame || live.music.is_some() {
+      return;
+    }
+    let key = live
+      .sound
+      .map_or_else(|| live.source.as_ref().untyped(), AssetId::untyped);
+    self.uncount_start(key);
   }
 
   /// Make ready to find the listener in `world` (once; again for another
@@ -2363,6 +2381,7 @@ impl AudioEngine {
     let live = &mut self.voices.live[index];
     live.playback.stop(MIN_FADE);
     live.voice.set_state(VoiceState::Stopping);
+    self.uncount(index);
   }
 
   /// Warn, once for live voice `index`, that its loop could not move to the
@@ -2696,6 +2715,9 @@ impl AudioEngine {
     ui: bool,
   ) -> Voice {
     let server = world.get_resource::<AssetServer>();
+    // The voices' changes queued so far apply first: a voice whose stop is
+    // queued holds no room under its sound's limit or per_frame
+    self.apply_queued(server);
     // A mixer that landed or changed is built first: a one-shot cannot move
     // to a bus built after it starts
     self.apply_mixer(world, server);
@@ -2948,7 +2970,12 @@ impl AudioEngine {
     match command.change {
       VoiceChange::Stop(_) => {
         pending.voice.set_state(VoiceState::Stopped);
+        // Played this frame, it no longer counts against its per_frame
+        let played = (pending.frame == self.frame).then(|| pending.sound.id().untyped());
         self.pending.remove(index);
+        if let Some(key) = played {
+          self.uncount_start(key);
+        }
       }
       VoiceChange::Pause(_) if state == VoiceState::Playing => {
         pending.voice.set_state(VoiceState::Paused);
@@ -3606,6 +3633,7 @@ impl AudioEngine {
         live.playback.stop(fade);
         live.voice.set_state(VoiceState::Stopping);
       }
+      self.uncount(index);
       self.record(index, AudioLogKind::Stolen, fade, server);
     }
     self.victims.clear();
@@ -3671,6 +3699,17 @@ impl AudioEngine {
     {
       Some((_, count)) => *count = count.saturating_add(1),
       None => self.frame_starts.push((key, 1)),
+    }
+  }
+
+  /// Take back a start of `key` counted this frame (its voice stopped)
+  fn uncount_start(&mut self, key: UntypedAssetId) {
+    if let Some((_, count)) = self
+      .frame_starts
+      .iter_mut()
+      .find(|(started, _)| *started == key)
+    {
+      *count = count.saturating_sub(1);
     }
   }
 
@@ -4192,6 +4231,9 @@ impl AudioEngine {
         (AudioLogKind::Rate, fade)
       }
     };
+    if kind == AudioLogKind::Stop {
+      self.uncount(index);
+    }
     self.record(index, kind, fade, server);
   }
 
@@ -4239,6 +4281,7 @@ impl AudioEngine {
           };
           live.playback.stop(fade);
           live.voice.set_state(VoiceState::Stopping);
+          self.uncount(index);
           self.record(index, AudioLogKind::Stop, fade, server);
         }
         if let Some((clip, version)) = failed {

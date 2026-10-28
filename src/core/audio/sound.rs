@@ -83,7 +83,8 @@ pub struct Sound {
   /// so a burst (a volley of shots in one frame) is heard as one start and
   /// the plays past it that frame are refused. Plays that waited for it to
   /// load count as they land, so a loop played twice while it loads starts
-  /// once. Raise it for a sound meant to layer in one frame
+  /// once, and a voice stopped in the frame it started is not counted.
+  /// Raise it for a sound meant to layer in one frame
   pub per_frame: u8,
   /// It loops until stopped: over each clip's `loop_region`, or the whole
   /// clip (its `region`). A loop played while it is still loading waits for
@@ -177,8 +178,9 @@ impl SoundClip {
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VoiceLimit {
-  /// The most voices playing at once (a voice fading out after a stop is
-  /// no longer counted)
+  /// The most voices playing at once (a voice stopped is no longer
+  /// counted, even one whose stop was asked for in the frame of the play:
+  /// a play applies the stops queued before it)
   pub max: u16,
   #[serde(default)]
   pub rule: LimitRule,
@@ -1266,6 +1268,46 @@ mod tests {
     }
     assert!(rain.is_playing(), "it loops: {rain:?}");
     assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
+  }
+
+  /// A voice whose stop is queued, or that is fading out, does not count
+  /// against its sound's limit or its `per_frame`: a sound limited to one
+  /// voice (`PreventNew`) stopped and played again in one frame starts the
+  /// new voice, as does one played, stopped and played again in a single
+  /// frame. A stopped voice still holds its place on kira's track until
+  /// its fade ends
+  #[test]
+  fn a_stopped_voice_does_not_hold_its_sound_s_limit() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let sound = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::PreventNew,
+        }),
+        ..of(&[&long])
+      },
+    );
+    let first = play(&mut world, &sound);
+    audio_step(&mut world, FRAME);
+    first.stop(Duration::from_millis(100));
+    let second = play(&mut world, &sound);
+    assert!(second.is_playing(), "the limit: {:#?}", log(&world));
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(engine.sounds_on("sfx"), 2, "kira's room holds both");
+    audio_step(&mut world, FRAME);
+    second.stop(MIN_FADE);
+    let third = play(&mut world, &sound);
+    third.stop(MIN_FADE);
+    let fourth = play(&mut world, &sound);
+    assert!(
+      third.id() != 0 && fourth.is_playing(),
+      "per_frame: {:#?}",
+      log(&world)
+    );
+    assert!(of_kind(&world, AudioLogKind::Refused).is_empty());
   }
 
   /// A frame of the audio engine with no pump: a sound loading stays
